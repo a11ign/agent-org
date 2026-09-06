@@ -24,13 +24,27 @@ import path from "node:path";
  */
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
 
-function claimText(): string {
-  const readme = readFileSync(path.join(REPO, "README.md"), "utf8");
-  const begin = readme.indexOf("<!-- CLAIM:BEGIN");
-  const end = readme.indexOf("<!-- CLAIM:END");
+/* EVERY file that states the measurement publicly, not just the one somebody remembered.
+ *
+ * The README was guarded and `docs/try-it.md` -- the page an outside user is SENT -- carried the same
+ * sentence unguarded. When the README moved from 1,398 to the measured 1,405, try-it.md kept 1,398, and
+ * the guard reported green because it had never been told the second copy existed. That is this repo's
+ * fact-stated-twice shape landing on the one number a stranger reads before deciding to trust the tool.
+ *
+ * So the list is the guard. Adding a public claim without adding it here is the only way back in. */
+const CLAIM_FILES = ["README.md", "docs/try-it.md"] as const;
+
+function claimBlockIn(file: string): string {
+  const text = readFileSync(path.join(REPO, file), "utf8");
+  const begin = text.indexOf("<!-- CLAIM:BEGIN");
+  const end = text.indexOf("<!-- CLAIM:END");
   assert.ok(begin !== -1 && end > begin,
-    "README.md has no CLAIM:BEGIN/CLAIM:END block, so nothing checks what the tool claims publicly");
-  return readme.slice(begin, end);
+    `${file} has no CLAIM:BEGIN/CLAIM:END block, so nothing checks what the tool claims publicly there`);
+  return text.slice(begin, end);
+}
+
+function claimText(): string {
+  return CLAIM_FILES.map(claimBlockIn).join("\n");
 }
 
 function recordedGateOutput(): string {
@@ -79,7 +93,13 @@ test("the claim never says 'no false positives'", () => {
 });
 
 test("every population the claim mentions carries the denominator it was measured on", () => {
-  const claim = claimText();
+  // Per FILE, not over the concatenation: a denominator present in the README and missing from
+  // try-it.md must fail, and a joined string cannot see that.
+  for (const file of CLAIM_FILES) assertDenominators(claimBlockIn(file), file);
+});
+
+function assertDenominators(claim: string, file: string): void {
+  assert.ok(claim.length > 0, `${file} has an empty claim block`);
   // `\s+` rather than a literal space: README.md hard-wraps, so a figure and the population it counts
   // are routinely split across a line break. A literal space passed on the corpus figure and failed on
   // the real-page one purely because of where the line happened to end -- which would have read as the
@@ -97,7 +117,7 @@ test("every population the claim mentions carries the denominator it was measure
   // it. It has one now, so requiring that phrase would force the claim to disclaim a measurement it
   // actually has. What survives is the rule underneath it, and it is the assertion above: every
   // population the claim mentions carries the denominator it was measured on.
-});
+}
 
 test("the claim block is reachable from the README a stranger opens", () => {
   // A guard over a block nobody renders is a guard over nothing.
