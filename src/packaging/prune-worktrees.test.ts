@@ -23,7 +23,7 @@ import { mkdtempSync, writeFileSync, rmSync, existsSync, realpathSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  parseWorktreeList, isPrimaryWorktree, classify, isStandingBranch, isMergedIntoMain, isContentMerged,
+  parseWorktreeList, isPrimaryWorktree, classify, isStandingBranch, mergeStatus, isContentMerged,
   isWorkingTreeClean, pruneWorktrees,
 } from "../../../../scripts/prune-worktrees.mjs";
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
@@ -134,7 +134,7 @@ test("isStandingBranch: main itself is standing", () => {
 
 // --- classify: pure ---
 
-const C = { branch: "agent/x", mergedIntoMain: true, workingTreeClean: true, contentMerged: false };
+const C = { branch: "agent/x", merge: "merged" as const, workingTreeClean: true, contentMerged: false };
 
 test("classify: merged and clean is REMOVE", () => {
   assert.equal(classify(C), "remove");
@@ -143,7 +143,7 @@ test("classify: merged but dirty working tree is DIRTY, not removed", () => {
   assert.equal(classify({ ...C, workingTreeClean: false }), "dirty");
 });
 test("classify: unmerged, not content-merged, even with a clean working tree, is DIRTY", () => {
-  assert.equal(classify({ ...C, mergedIntoMain: false }), "dirty");
+  assert.equal(classify({ ...C, merge: "not-merged" }), "dirty");
 });
 test("classify: a detached worktree is DIRTY regardless of the other facts", () => {
   assert.equal(classify({ ...C, branch: null }), "dirty");
@@ -152,10 +152,22 @@ test("classify: a STANDING branch is never REMOVE, even merged and clean", () =>
   assert.equal(classify({ ...C, branch: "dispatcher/merge" }), "standing");
 });
 test("classify: unmerged but CONTENT-merged (cherry-picked) is its own state, not dirty and not removed", () => {
-  assert.equal(classify({ ...C, mergedIntoMain: false, contentMerged: true }), "cherry-picked");
+  assert.equal(classify({ ...C, merge: "not-merged", contentMerged: true }), "cherry-picked");
 });
 test("classify: standing beats cherry-picked -- a role branch is never auto-classified either way", () => {
-  assert.equal(classify({ ...C, branch: "lead/x", mergedIntoMain: false, contentMerged: true }), "standing");
+  assert.equal(classify({ ...C, branch: "lead/x", merge: "not-merged", contentMerged: true }), "standing");
+});
+test("classify: merge status UNKNOWN is its own state -- never guessed as merged or not-merged", () => {
+  assert.equal(classify({ ...C, merge: "unknown" }), "inconclusive");
+});
+test("classify: working tree UNKNOWN is its own state, even when merge status is clean", () => {
+  assert.equal(classify({ ...C, workingTreeClean: "unknown" }), "inconclusive");
+});
+test("classify: inconclusive beats cherry-picked -- 'could not tell' must never be folded into a resolved state", () => {
+  assert.equal(classify({ ...C, merge: "unknown", contentMerged: true }), "inconclusive");
+});
+test("classify: standing beats inconclusive too -- a role tree is never anything but standing", () => {
+  assert.equal(classify({ ...C, branch: "lead/x", merge: "unknown" }), "standing");
 });
 
 // --- Live, against real disposable fixtures ---
@@ -168,16 +180,16 @@ test("isPrimaryWorktree tells a real primary (.git dir) from a real linked workt
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("isMergedIntoMain and isWorkingTreeClean read the three fixture shapes correctly", () => {
+test("mergeStatus and isWorkingTreeClean read the three fixture shapes correctly", () => {
   const { root, merged, dirtyUncommitted, dirtyUnmerged } = buildFixtureRepo();
   try {
-    assert.equal(isMergedIntoMain(root, "agent/merged-clean"), true);
+    assert.equal(mergeStatus(root, "agent/merged-clean"), "merged");
     assert.equal(isWorkingTreeClean(merged, "agent/merged-clean"), true);
 
-    assert.equal(isMergedIntoMain(root, "agent/dirty-uncommitted"), true);
+    assert.equal(mergeStatus(root, "agent/dirty-uncommitted"), "merged");
     assert.equal(isWorkingTreeClean(dirtyUncommitted, "agent/dirty-uncommitted"), false);
 
-    assert.equal(isMergedIntoMain(root, "agent/dirty-unmerged"), false);
+    assert.equal(mergeStatus(root, "agent/dirty-unmerged"), "not-merged");
     assert.equal(isWorkingTreeClean(dirtyUnmerged, "agent/dirty-unmerged"), true,
       "the FILES are clean -- the unmerged commit is what must be caught, independently of file state");
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -186,12 +198,30 @@ test("isMergedIntoMain and isWorkingTreeClean read the three fixture shapes corr
 test("isContentMerged: TRUE for a cherry-picked branch, FALSE for a genuinely unmerged one", () => {
   const { root } = buildFixtureRepo();
   try {
-    assert.equal(isMergedIntoMain(root, "agent/cherry-picked"), false,
+    assert.equal(mergeStatus(root, "agent/cherry-picked"), "not-merged",
       "a cherry-pick must NOT read as a literal ancestor -- that is the whole reason this state exists");
     assert.equal(isContentMerged(root, "agent/cherry-picked"), true);
 
     assert.equal(isContentMerged(root, "agent/dirty-unmerged"), false,
       "a genuinely unmerged branch must not be mistaken for a cherry-picked one");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("mergeStatus: no origin/main to compare against is UNKNOWN, never guessed as merged or not-merged", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "a11y-prune-inconclusive-")));
+  git(root, "init", "--quiet", "-b", "main");
+  git(root, "config", "user.email", "t@example.invalid");
+  git(root, "config", "user.name", "Fixture");
+  writeFileSync(join(root, "base.txt"), "base\n");
+  git(root, "add", "base.txt");
+  git(root, "commit", "-q", "-m", "base");
+  const baseSha = git(root, "rev-parse", "HEAD").trim();
+  const wt = join(root, "wt-unknown");
+  // deliberately NO refs/remotes/origin/main -- merge-base --is-ancestor cannot even ask the question,
+  // which is the real-world shape of a missing/renamed remote-tracking ref, not a contrived error.
+  git(root, "worktree", "add", "--quiet", "-b", "agent/unknown-status", wt, baseSha);
+  try {
+    assert.equal(mergeStatus(root, "agent/unknown-status"), "unknown");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -211,6 +241,26 @@ test("pruneWorktrees removes the merged+clean fixture, names dirty/standing/cher
     assert.equal(existsSync(standing), true, "a standing (role) worktree must never be removed");
     assert.equal(existsSync(cherryPicked), true, "a cherry-picked worktree must never be auto-removed");
     assert.equal(existsSync(root), true, "the primary must never be removed");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("pruneWorktrees reports an UNKNOWN merge status as inconclusive, never as dirty or removed", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "a11y-prune-inconclusive-e2e-")));
+  git(root, "init", "--quiet", "-b", "main");
+  git(root, "config", "user.email", "t@example.invalid");
+  git(root, "config", "user.name", "Fixture");
+  writeFileSync(join(root, "base.txt"), "base\n");
+  git(root, "add", "base.txt");
+  git(root, "commit", "-q", "-m", "base");
+  const baseSha = git(root, "rev-parse", "HEAD").trim();
+  const wt = join(root, "wt-unknown");
+  git(root, "worktree", "add", "--quiet", "-b", "agent/unknown-status", wt, baseSha); // no origin/main at all
+  try {
+    const report = pruneWorktrees(root, { remove: () => { assert.fail("must never attempt to remove an inconclusive worktree"); } });
+    assert.deepEqual(report.inconclusive.map((i) => i.path), [wt]);
+    assert.deepEqual(report.removed, []);
+    assert.deepEqual(report.dirty, []);
+    assert.equal(existsSync(wt), true, "an inconclusive worktree must be left exactly as found");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
