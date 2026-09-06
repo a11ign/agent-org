@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -32,7 +32,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../.
  * fact-stated-twice shape landing on the one number a stranger reads before deciding to trust the tool.
  *
  * So the list is the guard. Adding a public claim without adding it here is the only way back in. */
-const CLAIM_FILES = ["README.md", "docs/try-it.md"] as const;
+const CLAIM_FILES = ["README.md", "docs/try-it.md", "docs/github-action.md"] as const;
 
 function claimBlockIn(file: string): string {
   const text = readFileSync(path.join(REPO, file), "utf8");
@@ -100,6 +100,27 @@ test("every population the claim mentions carries the denominator it was measure
 
 function assertDenominators(claim: string, file: string): void {
   assert.ok(claim.length > 0, `${file} has an empty claim block`);
+
+  // A BLOCK MAY CLAIM NOTHING, and that is the one alternative to stating the denominators. This file's
+  // own header already blesses it: *"where no gate has printed a figure yet, the claim says the figure is
+  // being re-measured -- that is not a placeholder to be tidied away later, it is the honest state."*
+  //
+  // `docs/github-action.md` is why it needed saying in code. It carried "zero false positives across
+  // 1,034 conformant records" while the README said 1,183 and the guarded claim said 1,405 -- three
+  // documents, one measurement, and only 1,405 in a recorded gate. Requiring denominators there would
+  // have forced a number to be PICKED, which is a judgement about what the page claims and not a
+  // mechanism.
+  //
+  // NOT ABUSABLE, because the escape is conditional on claiming nothing: a block that says it is being
+  // re-measured must carry NO figure at all. "Being re-measured, and by the way it was 1,034" is the
+  // stale claim wearing the honest sentence, so it is refused by the same check.
+  if (/being re-measured/i.test(claim)) {
+    assert.deepEqual(figuresIn(claim), [],
+      `${file} says its figure is being re-measured AND states one. That is the stale claim wearing the `
+      + "honest sentence: either give the denominators, or claim nothing until a recorded gate prints "
+      + "one.");
+    return;
+  }
   // `\s+` rather than a literal space: README.md hard-wraps, so a figure and the population it counts
   // are routinely split across a line break. A literal space passed on the corpus figure and failed on
   // the real-page one purely because of where the line happened to end -- which would have read as the
@@ -260,3 +281,34 @@ test("PROOF: prose with a number and no outcome is NOT matched, or the guard get
   assert.ok(OUTCOME.test("zero false positives across 1,183 conformant records"),
     "and the sentence this row is about must still match, or the guard covers nothing");
 });
+
+test("every file carrying a CLAIM block is IN the list, so one cannot be added unguarded", () => {
+  // "So the list is the guard" -- this file's own header, and the acknowledged hole in it: a new public
+  // claim is protected only if somebody remembers to add its file here. That is a rule a human has to
+  // remember, which this repo's own doctrine says does not happen.
+  //
+  // DERIVED, in the direction that matters. Adding a CLAIM block and not listing the file now fails;
+  // removing a file from the list AND deleting its block stays possible, because that is a deliberate act
+  // rather than an omission. `docs/` is the whole surface a stranger is sent to, plus the README.
+  const roots = ["README.md", ...walkDocs()];
+  const carrying = roots.filter((file) =>
+    readFileSync(path.join(REPO, file), "utf8").includes("<!-- CLAIM:BEGIN"));
+  assert.ok(carrying.length >= 3,
+    `only ${carrying.length} file(s) carry a CLAIM block; the scan is broken, not the claims withdrawn`);
+
+  const unlisted = carrying.filter((file) => !(CLAIM_FILES as readonly string[]).includes(file));
+  assert.deepEqual(unlisted, [],
+    "these files carry a CLAIM:BEGIN block and are not in CLAIM_FILES, so nothing checks their figures:\n"
+    + unlisted.map((f) => `  ${f}`).join("\n")
+    + "\n\nA claim block that nothing reads is worse than none: it looks guarded.");
+});
+
+/** Every markdown file under `docs/`, which with the README is the surface a stranger is sent to. */
+function walkDocs(dir = "docs"): string[] {
+  return readdirSync(path.join(REPO, dir), { withFileTypes: true }).flatMap((entry) => {
+    if (entry.name === "node_modules") return [];
+    const rel = `${dir}/${entry.name}`;
+    if (entry.isDirectory()) return walkDocs(rel);
+    return entry.name.endsWith(".md") ? [rel] : [];
+  });
+}
