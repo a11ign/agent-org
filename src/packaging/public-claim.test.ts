@@ -51,11 +51,19 @@ test("every figure in the public claim is sourceable from a recorded gate result
   const unsourced = figuresIn(claim).filter((n) =>
     !gates.includes(n) && !gates.includes(n.replace(/,/g, "")));
 
-  // The corpus figure is the one exception, and it is declared rather than assumed: it is cited three
-  // times in the project's own record and has never disagreed with itself. Everything else must come
-  // from a gate somebody ran.
-  const DECLARED = new Set(["1,398"]);
-  const offending = unsourced.filter((n) => !DECLARED.has(n));
+  // THERE IS NO EXEMPTION, and the one there used to be is why this comment is long.
+  //
+  // `DECLARED` held "1,398" -- the corpus figure -- on the reasoning that it "is cited three times in the
+  // project's own record and has never disagreed with itself". On 2026-09-06 it disagreed with itself:
+  // `promote:gated` printed 1,405. So the premise the exemption rested on was gone, and what the
+  // exemption then did was keep a stale number in the public claim while this test reported green --
+  // the vacuous guard this file was written to prevent, arriving through the exception rather than
+  // through the check.
+  //
+  // An exemption whose premise has moved reads exactly like an exemption that still applies. The figure
+  // is now sourceable from a recorded gate, which is what the rest of this test asks of every other
+  // number, so it no longer needs one.
+  const offending = unsourced;
 
   assert.deepEqual(offending, [],
     "these figures are in the public claim and in no recorded gate output, so nothing keeps them true: "
@@ -70,13 +78,25 @@ test("the claim never says 'no false positives'", () => {
     "the claim must state what was measured and on what, never the unbounded phrase");
 });
 
-test("the claim states its denominator, and says so where a figure is not yet measured", () => {
+test("every population the claim mentions carries the denominator it was measured on", () => {
   const claim = claimText();
-  assert.match(claim, /1,398 conformant records/,
+  // `\s+` rather than a literal space: README.md hard-wraps, so a figure and the population it counts
+  // are routinely split across a line break. A literal space passed on the corpus figure and failed on
+  // the real-page one purely because of where the line happened to end -- which would have read as the
+  // claim missing its denominator when the denominator was there.
+  // PINNED AS A SHAPE, NEVER AS A LITERAL. This read `/1,398 conformant records/`, so the moment the
+  // corpus grew the guard did not merely fail to notice -- it REQUIRED the stale number, and updating
+  // the claim to the measured 1,405 would have failed the test protecting the claim. A test that pins a
+  // figure it does not source is a test that enforces staleness.
+  assert.match(claim, /[\d,]+\s+conformant records/,
     "the corpus figure and its denominator are the substance of the claim");
-  assert.match(claim, /re-measured|being re-measured/i,
-    "where a figure is not yet sourceable the claim must say so, rather than omitting it silently — an "
-    + "absent number reads as a claim not made, and this one is a claim awaiting its measurement");
+  assert.match(claim, /[\d,]+\s+conformant real pages/,
+    "the real-page claim needs its denominator for the same reason the corpus one does — 'clean on real "
+    + "pages' without a count is the unbounded phrase this file already forbids, one population along");
+  // The claim used to have to say "being re-measured", because the real-page figure had no gate behind
+  // it. It has one now, so requiring that phrase would force the claim to disclaim a measurement it
+  // actually has. What survives is the rule underneath it, and it is the assertion above: every
+  // population the claim mentions carries the denominator it was measured on.
 });
 
 test("the claim block is reachable from the README a stranger opens", () => {
