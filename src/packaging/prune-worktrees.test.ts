@@ -8,6 +8,13 @@
  * own explicit requirement -- a prune that removes a dirty worktree is unrecoverable, so this proves the
  * logic against disposable repositories built and destroyed entirely under `/tmp`, structurally unable to
  * reach the real checkout this test itself runs from.
+ *
+ * GIT_* SCRUBBED on every spawn, including this file's own fixture-building `git()` helper: if `GIT_DIR`
+ * happened to be set (this hook exports it into a hook environment, which is exactly why
+ * `scripts/git-env.mjs` exists), an unscrubbed git call in a fixture helper would redirect onto whatever
+ * `GIT_DIR` names instead of the intended disposable `/tmp` repo -- the identical class of defect closed
+ * elsewhere today, caught here by `git-spawn-classification.test.ts`'s own discovery before this file
+ * ever shipped.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -19,8 +26,9 @@ import {
   parseWorktreeList, isPrimaryWorktree, classify, isStandingBranch, isMergedIntoMain, isContentMerged,
   isWorkingTreeClean, pruneWorktrees,
 } from "../../../../scripts/prune-worktrees.mjs";
+import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 
-const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" });
+const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, env: sandboxGitEnv(), encoding: "utf8" });
 
 /**
  * A disposable "primary" repo with three linked worktrees, each demonstrating one shape:
