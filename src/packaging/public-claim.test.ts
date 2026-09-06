@@ -54,7 +54,14 @@ function recordedGateOutput(): string {
 
 /** Figures a reader would act on. Years and version-like tokens are not claims about measurement. */
 function figuresIn(text: string): string[] {
-  const body = text.replace(/<!--[\s\S]*?-->/g, " ");            // the marker comments are not the claim
+  const body = text
+    .replace(/<!--[\s\S]*?-->/g, " ")                              // the marker comments are not the claim
+    // AN ISO DATE IS NOT A MEASUREMENT, and it took a withdrawal to notice. `2026-09-06` was read as the
+    // figures 09 and 06 and demanded of the gate output, so the sentence "under re-measurement since
+    // <date>" could not be written at all -- the guard blocking the one honest thing to say when a
+    // figure is withdrawn. Same reasoning as the year filter below: a date is a claim about WHEN, never
+    // about what was measured.
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, " ");
   return [...new Set((body.match(/\b\d[\d,]*\b/g) ?? [])
     .filter((n) => !/^(19|20)\d\d$/.test(n.replace(/,/g, ""))))];
 }
@@ -121,23 +128,37 @@ function assertDenominators(claim: string, file: string): void {
       + "one.");
     return;
   }
-  // `\s+` rather than a literal space: README.md hard-wraps, so a figure and the population it counts
-  // are routinely split across a line break. A literal space passed on the corpus figure and failed on
-  // the real-page one purely because of where the line happened to end -- which would have read as the
-  // claim missing its denominator when the denominator was there.
-  // PINNED AS A SHAPE, NEVER AS A LITERAL. This read `/1,398 conformant records/`, so the moment the
-  // corpus grew the guard did not merely fail to notice -- it REQUIRED the stale number, and updating
-  // the claim to the measured 1,405 would have failed the test protecting the claim. A test that pins a
-  // figure it does not source is a test that enforces staleness.
-  assert.match(claim, /[\d,]+\s+conformant records/,
-    "the corpus figure and its denominator are the substance of the claim");
-  assert.match(claim, /[\d,]+\s+conformant real pages/,
-    "the real-page claim needs its denominator for the same reason the corpus one does — 'clean on real "
-    + "pages' without a count is the unbounded phrase this file already forbids, one population along");
-  // The claim used to have to say "being re-measured", because the real-page figure had no gate behind
-  // it. It has one now, so requiring that phrase would force the claim to disclaim a measurement it
-  // actually has. What survives is the rule underneath it, and it is the assertion above: every
-  // population the claim mentions carries the denominator it was measured on.
+  // A POPULATION IS WITHDRAWN INDEPENDENTLY, not the whole block. On 2026-09-06 a refreshed baseline
+  // produced findings on real pages an older baseline had passed, so the REAL-PAGE figure had to be
+  // withdrawn while the CORPUS figure was untouched and still correct. The block-level escape above
+  // could not express that: it is all-or-nothing, so honouring it would have withdrawn a good claim to
+  // withdraw a bad one, and keeping the block would have gone on publishing a figure under
+  // investigation.
+  //
+  // So each population states its figure OR says it is under re-measurement WITH A DATE. The date is
+  // the load-bearing part: "under re-measurement" with no date is how a withdrawal becomes permanent
+  // furniture, and this repo has paid for exactly that shape more than once.
+  //
+  // `\s+` rather than a literal space throughout: these files hard-wrap, so a figure and the population
+  // it counts are routinely split across a line break. A literal space passed on the corpus figure and
+  // failed on the real-page one purely because of where the line happened to end.
+  const POPULATIONS = [
+    { what: "the corpus", figure: /[\d,]+\s+conformant\s+records/ },
+    { what: "real pages", figure: /[\d,]+\s+conformant\s+real\s+pages/ },
+  ] as const;
+  const withdrawn = /under\s+re-measurement\s+since\s+\d{4}-\d{2}-\d{2}/i.test(claim);
+
+  for (const { what, figure } of POPULATIONS) {
+    if (figure.test(claim)) continue;
+    assert.ok(withdrawn,
+      `${file}'s claim states no figure for ${what} and does not say it is under re-measurement with a `
+      + "date. A population is either measured and stated, or withdrawn and dated — silence about one "
+      + "reads to a stranger as a claim not made, and this project has had both of those be wrong.");
+  }
+  // PINNED AS A SHAPE, NEVER AS A LITERAL. The corpus assertion once read `/1,398 conformant records/`,
+  // so the moment the corpus grew the guard did not merely fail to notice -- it REQUIRED the stale
+  // number, and updating the claim to the measured 1,405 would have failed the test protecting the
+  // claim. A test that pins a figure it does not source is a test that enforces staleness.
 }
 
 test("the claim block is reachable from the README a stranger opens", () => {
