@@ -209,3 +209,34 @@ test("a held region names each branch's PR state, and `no PR` stays its own answ
   assert.match(text, /\(no PR\)/, "unproposed is not abandoned, and must not read as either of the others");
   assert.equal(v.code, 0, "contention is still a merge cost, not a blocker -- decorating it changes nothing");
 });
+
+/**
+ * "NAMED NOTHING" AND "NAMED PROSE" ARE TWO DIFFERENT SENTENCES (#228).
+ *
+ * The `.md` filter is correct: there is no symbol to verify in a README, and pretending to check one
+ * would be worse than saying nothing. But dropping prose paths SILENTLY made the verdict tell a docs row
+ * it *"names no source path"* — when it named one, `packages/cli/README.md`, in a Region field that was
+ * filled in correctly. That sends its author to fix something that is not broken.
+ *
+ * This is the third time tonight this tool's WALK was right and its SENTENCE was wider: #218 said
+ * STARTABLE for a closed row, #227 said a branch held a region without saying whether it would ever land,
+ * and this. All three are the census's own fourth shape, in the tool its author wrote.
+ */
+test("a row whose Region is PROSE is told so, and NOT told to add a Region it already has", () => {
+  const v = startability({ ...clear, examined: { paths: 0, symbols: 0, prose: 1 } });
+  assert.equal(v.code, 2, "still inconclusive -- this checks code and cannot judge a document");
+  const text = v.lines.join("\n");
+  assert.match(text, /names 1 document\(s\)/);
+  assert.match(text, /NOT a missing Region: do not add one/,
+    "the whole point: its author filled the field in correctly and must not be sent back to it");
+  assert.doesNotMatch(text, /names no source path/,
+    "that is the OTHER sentence, for a row that named nothing at all");
+});
+
+test("a row that named nothing at all still gets the original sentence", () => {
+  const v = startability({ ...clear, examined: { paths: 0, symbols: 0, prose: 0 } });
+  assert.equal(v.code, 2);
+  assert.match(v.lines.join("\n"), /names no source path and no symbol/);
+  assert.doesNotMatch(v.lines.join("\n"), /document\(s\)/,
+    "collapsing the two is what made the docs message wrong; keep them apart in both directions");
+});
