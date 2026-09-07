@@ -12,10 +12,18 @@
  * copy of a decision drifts from the first, and this hook genuinely still governs every commit and
  * checkout in the shared checkout while these tests run.
  *
- * IDENTITY IS `.git` BEING A REAL DIRECTORY, never a branch name or a path — `withGitSandbox`'s own
- * throwaway repository IS one (a plain `git init`), which makes it stand in for "the primary" here without
- * any special-casing; a nested `git worktree add` off it stands in for a linked worktree, exactly as
- * `prune-worktrees.mjs`'s `isPrimaryWorktree` distinguishes the two in production.
+ * IDENTITY IS AN EXPLICIT LOCAL-CONFIG MARK, and this header used to say `.git` being a real directory.
+ *
+ * That was #198: a real `.git` directory is true of every ordinary CLONE, so `core.hooksPath` carried
+ * `post-checkout` to the lab with a `git pull` and every `lab:job -e ref=<branch>` began failing —
+ * `run-job.yml` detaches at the ref you asked for, which is how every job runs at a branch. The predicate
+ * is correct for `prune-worktrees.mjs`'s question (within one repo, primary worktree or linked one?) and
+ * answers nothing about WHICH MACHINE this is.
+ *
+ * So the sandbox now MARKS itself (`git config --local a11y.primaryCheckout true`), which is what a real
+ * primary carries and what a clone cannot acquire. `markPrimary` below is that one line, and the test
+ * directly beneath the marked ones asserts the other direction: an UNMARKED sandbox — the lab's exact
+ * shape, real `.git` directory and all — is left alone.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -38,6 +46,17 @@ type Verdict = { status: number; stderr: string };
  * `execFileSync`: the latter discards stderr entirely on a SUCCESSFUL run, and the override case needs to
  * assert the reason was printed even when the hook exits 0.
  */
+/**
+ * Mark a sandbox as the fleet-driving checkout, the way `npm run primary:mark -- --set` does.
+ *
+ * LOCAL config, i.e. `.git/config`, which is not cloned and not pulled — that is the whole property the
+ * fix for #198 rests on, and using the real key here rather than a test double is what makes these tests
+ * exercise the same decision production makes.
+ */
+function markPrimary(sandbox: GitSandbox): void {
+  sandbox.run(["config", "--local", "a11y.primaryCheckout", "true"]);
+}
+
 function runPreCommit(sandbox: GitSandbox, env: Record<string, string> = {}): Verdict {
   writeFileSync(join(sandbox.dir, "f.txt"), "content\n");
   sandbox.run(["add", "f.txt"]);
@@ -79,8 +98,9 @@ function addWorktree(sandbox: GitSandbox, branch: string): string {
   return dir;
 }
 
-test("pre-commit REFUSES a commit in the primary (a plain repo, .git is a directory)", () => {
+test("pre-commit REFUSES a commit in the primary (marked, and .git is a directory)", () => {
   withGitSandbox((sandbox) => {
+    markPrimary(sandbox);
     const result = runPreCommit(sandbox);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /REFUSING.*fleet-driving checkout.*commit in a worktree/i);
@@ -89,6 +109,7 @@ test("pre-commit REFUSES a commit in the primary (a plain repo, .git is a direct
 
 test("pre-commit ALLOWS the override, and PRINTS the reason rather than swallowing it", () => {
   withGitSandbox((sandbox) => {
+    markPrimary(sandbox);
     const result = runPreCommit(sandbox, { A11Y_PRIMARY_COMMIT_REASON: "deliberate test exception" });
     assert.equal(result.status, 0, `expected the override to pass, got: ${result.stderr}`);
     assert.match(result.stderr, /overridden: deliberate test exception/);
@@ -98,6 +119,7 @@ test("pre-commit ALLOWS the override, and PRINTS the reason rather than swallowi
 test("pre-commit does NOT fire in a linked worktree (.git is a file there)", () => {
   withGitSandbox((sandbox) => {
     sandbox.commit("init", ["--allow-empty"]);
+    markPrimary(sandbox);
     const wt = realpathSync(mkdtempSync(join(tmpdir(), "a11y-git-sandbox-wt-")));
     rmSync(wt, { recursive: true, force: true });
     try {
@@ -115,6 +137,7 @@ test("pre-commit does NOT fire in a linked worktree (.git is a file there)", () 
 test("post-checkout SELF-CORRECTS a branch landing in the primary, back to detached origin/main", () => {
   withGitSandbox((sandbox) => {
     sandbox.commit("init", ["--allow-empty"]);
+    markPrimary(sandbox);
     const mainSha = sandbox.run(["rev-parse", "HEAD"]).trim();
     sandbox.run(["update-ref", "refs/remotes/origin/main", mainSha]);
     sandbox.run(["checkout", "--detach", mainSha]);
@@ -135,6 +158,7 @@ test("post-checkout SELF-CORRECTS a branch landing in the primary, back to detac
 test("post-checkout SELF-CORRECTS a detach at the wrong commit, back to origin/main", () => {
   withGitSandbox((sandbox) => {
     sandbox.commit("init", ["--allow-empty"]);
+    markPrimary(sandbox);
     const mainSha = sandbox.run(["rev-parse", "HEAD"]).trim();
     sandbox.run(["update-ref", "refs/remotes/origin/main", mainSha]);
     sandbox.commit("a second, non-origin commit", ["--allow-empty"]);
@@ -151,6 +175,7 @@ test("post-checkout SELF-CORRECTS a detach at the wrong commit, back to origin/m
 test("post-checkout is SILENT when already detached at origin/main — the correct resting state", () => {
   withGitSandbox((sandbox) => {
     sandbox.commit("init", ["--allow-empty"]);
+    markPrimary(sandbox);
     const mainSha = sandbox.run(["rev-parse", "HEAD"]).trim();
     sandbox.run(["update-ref", "refs/remotes/origin/main", mainSha]);
     sandbox.run(["checkout", "--detach", mainSha]);
@@ -164,6 +189,7 @@ test("post-checkout is SILENT when already detached at origin/main — the corre
 test("post-checkout ALLOWS the override, and PRINTS the reason rather than correcting silently", () => {
   withGitSandbox((sandbox) => {
     sandbox.commit("init", ["--allow-empty"]);
+    markPrimary(sandbox);
     const mainSha = sandbox.run(["rev-parse", "HEAD"]).trim();
     sandbox.run(["update-ref", "refs/remotes/origin/main", mainSha]);
     sandbox.run(["checkout", "--detach", mainSha]);
@@ -181,6 +207,7 @@ test("post-checkout ALLOWS the override, and PRINTS the reason rather than corre
 test("post-checkout ignores a FILE-level checkout — flag 0 never moves HEAD and is not its business", () => {
   withGitSandbox((sandbox) => {
     sandbox.commit("init", ["--allow-empty"]);
+    markPrimary(sandbox);
     const mainSha = sandbox.run(["rev-parse", "HEAD"]).trim();
     sandbox.run(["update-ref", "refs/remotes/origin/main", mainSha]);
     sandbox.run(["checkout", "-b", "some-branch"]); // deliberately left on a branch
@@ -194,6 +221,7 @@ test("post-checkout ignores a FILE-level checkout — flag 0 never moves HEAD an
 test("post-checkout does NOT fire in a linked worktree (.git is a file there)", () => {
   withGitSandbox((sandbox) => {
     sandbox.commit("init", ["--allow-empty"]);
+    markPrimary(sandbox);
     const mainSha = sandbox.run(["rev-parse", "HEAD"]).trim();
     sandbox.run(["update-ref", "refs/remotes/origin/main", mainSha]);
     const wt = addWorktree(sandbox, "wt-branch");
@@ -213,6 +241,7 @@ test("post-checkout does NOT fire in a linked worktree (.git is a file there)", 
 test("post-checkout is silent before any fetch has ever populated origin/main", () => {
   withGitSandbox((sandbox) => {
     sandbox.commit("init", ["--allow-empty"]);
+    markPrimary(sandbox);
     const sha = sandbox.run(["rev-parse", "HEAD"]).trim();
     sandbox.run(["checkout", "-b", "no-origin-yet"]); // no refs/remotes/origin/main exists at all
     const result = runPostCheckout(sandbox, { prevHead: sha, newHead: sha, isBranchCheckout: "1" });
@@ -229,6 +258,7 @@ test("post-checkout is silent before any fetch has ever populated origin/main", 
 test("updatePrimary refuses outside the primary (a linked worktree)", () => {
   withGitSandbox((sandbox) => {
     sandbox.commit("init", ["--allow-empty"]);
+    markPrimary(sandbox);
     const wt = addWorktree(sandbox, "feature");
     try {
       assert.throws(() => updatePrimary(wt), /not the primary checkout/);
@@ -250,5 +280,33 @@ test("updatePrimary in the primary calls fetch, then checkout --detach origin/ma
       ["checkout", "--detach", "origin/main", "--quiet"],
       ["rev-parse", "HEAD"],
     ], "fetch, then detach at origin/main, then read the result -- nothing else");
+  });
+});
+
+test("neither hook fires in an UNMARKED clone — the lab's exact shape, and #198", () => {
+  // `withGitSandbox`'s repository is a plain `git init`: a real `.git` DIRECTORY, which is what the old
+  // predicate keyed on and what every ordinary clone has. Without the mark it must be left entirely alone.
+  //
+  // This is the case that broke the lab. `core.hooksPath` is committed, so `post-checkout` arrived there
+  // with a `git pull`, and `run-job.yml` detaches at the ref you asked for — which is how every job runs
+  // at a branch. Every `lab:job -e ref=<branch>` failed; `-e ref=main` still worked, so it presented as
+  // "branches are broken" rather than as a hook.
+  withGitSandbox((sandbox) => {
+    sandbox.commit("init", ["--allow-empty"]);
+    // deliberately NOT marked
+    const commit = runPreCommit(sandbox);
+    assert.equal(commit.status, 0,
+      `an unmarked clone must be free to commit; the lab and every colleague's checkout is one. ${commit.stderr}`);
+    sandbox.commit("second", ["--allow-empty"]);
+    const head = sandbox.run(["rev-parse", "HEAD"]).trim();
+    const before = sandbox.run(["rev-parse", "HEAD~1"]).trim();
+    // The REAL parameter names. The first version of this test passed `{previous, next, branchCheckout}`,
+    // which `runPostCheckout` ignores — so `isBranchCheckout` was undefined, the hook saw "0", exited 0 on
+    // its very first line, and the assertion passed having exercised NOTHING. Lint and the unit run were
+    // both green; `tsc` caught it. A test written against a shape you did not verify, in the test for the
+    // guard that had just been fixed for the same class of mistake.
+    const checkout = runPostCheckout(sandbox, { prevHead: before, newHead: head, isBranchCheckout: "1" });
+    assert.equal(checkout.status, 0,
+      `an unmarked clone must be free to detach at any ref; that is how every lab job runs. ${checkout.stderr}`);
   });
 });
