@@ -181,3 +181,31 @@ test("an OPEN row's output is unchanged — refusing more is not automatically b
   assert.deepEqual(open.lines, stateless.lines,
     "adding the state check must not change what an open row prints");
 });
+
+/**
+ * THE REGION HALF SAYS AS MUCH ABOUT A BRANCH AS THE SUBJECT HALF DOES.
+ *
+ * #208 taught the SUBJECT half to report a blocking ref's PR state — `(PR #89 CLOSED)` means nobody is
+ * coming, `(PR #172 OPEN)` means wait. **The region half never got it**, so one tool said two different
+ * amounts about the same branch, and an undecorated `REGION HELD` reads as *"wait for that to land"*
+ * even when the branch is dead. Found by `dispatcher` using the tool four minutes after #221 merged:
+ * `REGION HELD … origin/agent/identify-input-purpose-79`, whose PR #89 is closed and whose work moved
+ * wholesale to another row.
+ *
+ * `(no PR)` is a THIRD message and deliberately not folded into the other two: a branch nobody has
+ * proposed is not abandoned, it is plausibly somebody's live work, and it is the one case where "wait"
+ * may genuinely be right.
+ */
+test("a held region names each branch's PR state, and `no PR` stays its own answer", () => {
+  const v = startability({
+    ...clear,
+    heldRegions: [{ path: "packages/evidence/src/verify.ts", refs: [
+      "origin/agent/identify-input-purpose-79 (PR #89 CLOSED)",
+      "origin/agent/same-document-resolved-url (no PR)",
+    ] }],
+  });
+  const text = v.lines.join("\n");
+  assert.match(text, /PR #89 CLOSED/, "nobody is coming");
+  assert.match(text, /\(no PR\)/, "unproposed is not abandoned, and must not read as either of the others");
+  assert.equal(v.code, 0, "contention is still a merge cost, not a blocker -- decorating it changes nothing");
+});
