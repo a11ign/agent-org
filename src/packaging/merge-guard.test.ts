@@ -27,6 +27,7 @@ import { join } from "node:path";
 
 import {
   mergeReadiness, reasonKind, recordVerdict, latestVerdictFor, realOutcomeFor, reconcile,
+  claimedCloseCoveredBy,
 } from "../../../../scripts/merge-guard.mjs";
 
 const REQUIRED = ["changed", "ts", "python", "ansible", "docs", "changeset"];
@@ -502,4 +503,39 @@ test("#249: omitting `session` treats every claimed row it would close as somebo
     closes: CLOSES_CLAIMED,
   });
   assert.equal(v.code, 1, "a check that does not know who is asking cannot vouch for the asker");
+});
+
+/**
+ * #249's follow-up (2026-09-07): measured 10 of 13 open PRs' armings fire the collision, and every one of
+ * the 10 is author == claimant — the real incident (a DIFFERENT session's row) is 0 of 10. `--session`
+ * cannot see PR authorship at all (every session pushes as the same GitHub identity), so
+ * `--allow-claimed-close` becomes the flag passed four times in five, and an unfalsifiable bypass at that
+ * rate is the `A11Y_SKIP_VERIFY=1` shape. `claimedCloseCoveredBy` turns "I confirmed" into a CHECKABLE
+ * claim: it re-reads the row's own labels, the same way `decideClaim` does, rather than trusting whatever
+ * string was typed on the command line.
+ */
+test("claimedCloseCoveredBy: the named session covers a row it actually holds", () => {
+  const covered = claimedCloseCoveredBy(
+    [{ number: 237, labels: ["in-progress", "session:worker-judge", "started"] }], "worker-judge");
+  assert.deepEqual([...covered], [237]);
+});
+
+test("claimedCloseCoveredBy: a name that matches NO real claimant covers nothing", () => {
+  const covered = claimedCloseCoveredBy(
+    [{ number: 237, labels: ["in-progress", "session:worker-judge", "started"] }], "dispatcher");
+  assert.deepEqual([...covered], []);
+});
+
+test("claimedCloseCoveredBy: an unclaimed row is never covered, however the flag is spelled", () => {
+  const covered = claimedCloseCoveredBy([{ number: 999, labels: [] }], "worker-judge");
+  assert.deepEqual([...covered], []);
+});
+
+test("claimedCloseCoveredBy: covers only the rows the name actually holds, among several closed", () => {
+  const covered = claimedCloseCoveredBy([
+    { number: 237, labels: ["in-progress", "session:worker-judge"] },
+    { number: 238, labels: ["in-progress", "session:worker-audit"] },
+    { number: 239, labels: [] },
+  ], "worker-judge");
+  assert.deepEqual([...covered], [237]);
 });
