@@ -323,6 +323,7 @@ test("recordVerdict appends one entry with its reason KINDS, not just READY/REFU
     const log = join(dir, "log.jsonl");
     recordVerdict(log, 165, { code: 1, reasons: ["THIS HEAD DOES NOT CONTAIN main's TIP — it is 2 commit(s) behind.\n  more"] });
     const entry = latestVerdictFor(log, 165);
+    assert.ok(entry);
     assert.equal(entry.prNumber, 165);
     assert.equal(entry.code, 1);
     assert.deepEqual(entry.reasonKinds, ["ANCESTRY"]);
@@ -341,6 +342,7 @@ test("latestVerdictFor picks the MOST RECENT entry when a PR was checked more th
     recordVerdict(log, 165, { code: 1, reasons: ["THIS HEAD DOES NOT CONTAIN main's TIP — it is 2 commit(s) behind."] });
     recordVerdict(log, 165, { code: 0, reasons: [] });
     const entry = latestVerdictFor(log, 165);
+    assert.ok(entry);
     assert.equal(entry.code, 0, "the branch was updated between the two checks; the later verdict wins");
   });
 });
