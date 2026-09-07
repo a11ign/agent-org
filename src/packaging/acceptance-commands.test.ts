@@ -111,6 +111,25 @@ test("extractAcceptanceSection: comment lines INSIDE A FENCE are skipped, not ru
   assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
 });
 
+test("extractAcceptanceSection: ACCEPTANCE (follow-up) -- an unfilled HTML-comment template is MISSING, "
+  + "never a command", () => {
+  // GitHub's own PR-template convention (`<!-- one command per line -->`) is exactly what a real,
+  // well-meaning template guidance under this header looks like -- and it must never reach `execSync`.
+  const body = "Acceptance:\n<!-- one command per line -->";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "missing" });
+});
+
+test("extractAcceptanceSection: MUTATION TARGET -- an HTML comment is stripped even OUTSIDE a fence, "
+  + "unlike `#` which reads as a heading there", () => {
+  const body = "Acceptance:\n<!-- one command per line -->\nnpx tsx --test a.test.ts";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
+});
+
+test("extractAcceptanceSection: a MULTI-LINE HTML comment is stripped in full, not just its first line", () => {
+  const body = "Acceptance:\n<!--\n  one command per line\n  see CONTRIBUTING.md\n-->\nnpx tsx --test a.test.ts";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
+});
+
 test('extractAcceptanceSection: "Acceptance: none — <reason>" is a deliberate, honest opt-out', () => {
   assert.deepEqual(extractAcceptanceSection("Acceptance: none — this PR only reorders comments, nothing to run"),
     { kind: "none", reason: "this PR only reorders comments, nothing to run" });
