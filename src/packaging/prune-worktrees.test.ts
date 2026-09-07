@@ -24,11 +24,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   parseWorktreeList, isPrimaryWorktree, classify, isStandingBranch, mergeStatus, isContentMerged,
-  isWorkingTreeClean, pruneWorktrees,
+  isWorkingTreeClean, pruneWorktrees, recentGitActivity, ACTIVITY_WINDOW_MS,
 } from "../../../../scripts/prune-worktrees.mjs";
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, env: sandboxGitEnv(), encoding: "utf8" });
+
+// Every fixture below is built moments before its assertions run, so its gitdir's `index`/`HEAD` mtimes
+// are always "now" -- real, not contrived. Existing REMOVE assertions therefore pass a `now` this far
+// past fixture construction, standing in for "nobody has touched this tree since it finished" -- the
+// LIVE window is exercised by its own dedicated tests below, against real elapsed wall-clock time.
+const LONG_AFTER = () => Date.now() + ACTIVITY_WINDOW_MS + 60_000;
 
 /**
  * A disposable "primary" repo with three linked worktrees, each demonstrating one shape:
@@ -134,10 +140,22 @@ test("isStandingBranch: main itself is standing", () => {
 
 // --- classify: pure ---
 
-const C = { branch: "agent/x", merge: "merged" as const, workingTreeClean: true, contentMerged: false };
+const C = {
+  branch: "agent/x", merge: "merged" as const, workingTreeClean: true, contentMerged: false,
+  recentlyActive: false as boolean | "unknown",
+};
 
 test("classify: merged and clean is REMOVE", () => {
   assert.equal(classify(C), "remove");
+});
+test("classify: merged, clean, but RECENTLY ACTIVE is its own state (#220) -- not removed, not called dirty", () => {
+  assert.equal(classify({ ...C, recentlyActive: true }), "active");
+});
+test("classify: activity status UNKNOWN is inconclusive, even when merge and clean both read positively", () => {
+  assert.equal(classify({ ...C, recentlyActive: "unknown" }), "inconclusive");
+});
+test("classify: standing beats an unknown activity status too -- a role tree is never anything but standing", () => {
+  assert.equal(classify({ ...C, branch: "lead/x", recentlyActive: "unknown" }), "standing");
 });
 test("classify: merged but dirty working tree is DIRTY, not removed", () => {
   assert.equal(classify({ ...C, workingTreeClean: false }), "dirty");
@@ -228,7 +246,7 @@ test("mergeStatus: no origin/main to compare against is UNKNOWN, never guessed a
 test("pruneWorktrees removes the merged+clean fixture, names dirty/standing/cherry-picked separately, skips the primary", () => {
   const { root, merged, dirtyUncommitted, dirtyUnmerged, standing, cherryPicked } = buildFixtureRepo();
   try {
-    const report = pruneWorktrees(root);
+    const report = pruneWorktrees(root, { now: LONG_AFTER() });
     assert.deepEqual(report.removed.map((r) => r.path), [merged]);
     assert.deepEqual(report.dirty.map((d) => d.path).sort(), [dirtyUncommitted, dirtyUnmerged].sort());
     assert.deepEqual(report.standing.map((s) => s.path), [standing]);
@@ -277,7 +295,7 @@ test("MUTATION: committing the uncommitted file turns a refused fixture into a r
     git(dirtyUncommitted, "commit", "-q", "-m", "actually finished");
     git(root, "update-ref", "refs/remotes/origin/main", git(dirtyUncommitted, "rev-parse", "HEAD").trim());
 
-    const after = pruneWorktrees(root, { remove: (p) => rmSync(p, { recursive: true, force: true }) });
+    const after = pruneWorktrees(root, { now: LONG_AFTER(), remove: (p) => rmSync(p, { recursive: true, force: true }) });
     assert.ok(after.removed.some((r) => r.path === dirtyUncommitted),
       "once genuinely clean and merged, the same fixture must now be removed -- proving the earlier "
       + "refusal was a real discrimination, not a fixture that could never be removed for some other reason");
@@ -294,10 +312,64 @@ test("MUTATION: fast-forwarding origin/main turns an unmerged-but-clean fixture 
 
     git(root, "update-ref", "refs/remotes/origin/main", git(dirtyUnmerged, "rev-parse", "HEAD").trim());
 
-    const after = pruneWorktrees(root, { remove: (p) => rmSync(p, { recursive: true, force: true }) });
+    const after = pruneWorktrees(root, { now: LONG_AFTER(), remove: (p) => rmSync(p, { recursive: true, force: true }) });
     assert.ok(after.removed.some((r) => r.path === dirtyUnmerged),
       "once origin/main actually includes the commit, the same fixture must now be removed");
     assert.equal(existsSync(dirtyUnmerged), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// --- #220: "clean" is not "finished" -- a stash makes a tree momentarily clean, and a prune running
+// inside that window must not remove it. ---
+
+test("recentGitActivity: true right after a git operation, false once `now` is past the window, unknown for a bad path", () => {
+  const { root, merged } = buildFixtureRepo();
+  try {
+    assert.equal(recentGitActivity(merged), true, "the fixture's own setup commit just touched the gitdir");
+    assert.equal(recentGitActivity(merged, { now: LONG_AFTER() }), false,
+      "the identical gitdir state, asked about from far enough in the future, is NOT recent");
+    assert.equal(recentGitActivity(join(merged, "does-not-exist")), "unknown",
+      "a path `git rev-parse --absolute-git-dir` cannot resolve is UNKNOWN, never guessed as false");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("REPRODUCE (#220, acceptance step 1): touch a file, stash -u, prune runs inside the window -- removed anyway before the fix, and this is the failing shape", () => {
+  const { root, merged } = buildFixtureRepo();
+  try {
+    // `merged` is already merged+clean by construction. Simulate the exact incident: a session about to
+    // switch branches stashes an in-progress edit, which makes `git status --porcelain` read empty again.
+    writeFileSync(join(merged, "mid-switch.txt"), "not yet committed\n");
+    git(merged, "stash", "-u");
+    assert.equal(isWorkingTreeClean(merged, "agent/merged-clean"), true,
+      "stashing is exactly what makes the tree read clean -- the premise of the whole incident");
+
+    // No `now` override: this is the LIVE window, seconds after the stash, exactly like the real incident.
+    const report = pruneWorktrees(root);
+    assert.deepEqual(report.removed.map((r) => r.path), [],
+      "must NOT be removed -- a session mid-stash is exactly the case #220 exists to catch");
+    assert.deepEqual(report.active.map((r) => r.path), [merged],
+      "reported as ACTIVE, not silently dropped and not folded into DIRTY (there is no uncommitted work "
+      + "git status can see) -- naming the real reason is the point of the fix");
+    assert.equal(existsSync(merged), true, "the directory itself must still be there");
+
+    git(merged, "stash", "pop"); // leave the fixture as buildFixtureRepo() promised it
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("after the fix, the SAME sequence removes it once the activity window has genuinely passed (acceptance step 2/3)", () => {
+  const { root, merged } = buildFixtureRepo();
+  try {
+    writeFileSync(join(merged, "mid-switch.txt"), "not yet committed\n");
+    git(merged, "stash", "-u");
+
+    const stillActive = pruneWorktrees(root, { now: Date.now() + 1000 }); // one second later: still inside the window
+    assert.deepEqual(stillActive.removed, [], "one second later is still inside the window");
+
+    const laterOn = pruneWorktrees(root, { now: LONG_AFTER() }); // the window has genuinely passed
+    assert.deepEqual(laterOn.removed.map((r) => r.path), [merged],
+      "a GENUINELY abandoned tree -- merged, clean, and no activity for the whole window -- must still be "
+      + "pruned. A prune that stops pruning is worse than the defect it fixes (this file's own header).");
+    assert.equal(existsSync(merged), false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -321,7 +393,7 @@ test("the primary is NEVER passed to remove(), even if (hypothetically) it looke
   const { root, merged } = buildFixtureRepo();
   const removedPaths: string[] = [];
   try {
-    pruneWorktrees(root, { remove: (p) => { removedPaths.push(p); rmSync(p, { recursive: true, force: true }); } });
+    pruneWorktrees(root, { now: LONG_AFTER(), remove: (p) => { removedPaths.push(p); rmSync(p, { recursive: true, force: true }); } });
     assert.ok(!removedPaths.includes(root), "the primary path must never reach the remove function");
     assert.deepEqual(removedPaths, [merged]);
   } finally { rmSync(root, { recursive: true, force: true }); }
