@@ -53,6 +53,17 @@ function filesMatching(glob: string): string[] {
 }
 
 /**
+ * A REAL `GH_TOKEN` assignment, never a mention. Anchored to the trimmed line START, so a comment --
+ * `# GH_TOKEN: ...`, or this very file's own prose explaining why a job needs it -- never counts. Found
+ * live, not hypothesised: writing the #382 fix's own explanatory comment ("GH_TOKEN: #382, measured on PR
+ * #370 …") into the `acceptance` job made the OLD substring test (`/GH_TOKEN:/.test(line)`) report
+ * `hasToken: true` even with the real `env:` line stripped out from under it -- the exact "obvious test
+ * would find nothing" shape this guard's own header already warns about, one layer further in. Every real
+ * assignment in this file is `GH_TOKEN: ${{ github.token }}`, so the value is pinned too, not just the key.
+ */
+const REAL_GH_TOKEN_LINE = /^GH_TOKEN:\s*\$\{\{\s*github\.token\s*\}\}\s*$/;
+
+/**
  * Each ci.yml job, its literal test globs, and whether it declares GH_TOKEN.
  *
  * Parsed by indentation rather than with a YAML library, the same way `lab-job.mjs` slices its catalogue
@@ -60,20 +71,90 @@ function filesMatching(glob: string): string[] {
  * assertion below is what makes that safe — a parse that finds no jobs FAILS rather than passing over an
  * empty set, which is this repository's most-recorded defect and the one a source scrape invites.
  */
-function jobs(): { name: string; globs: string[]; hasToken: boolean }[] {
-  const lines = readFileSync(CI, "utf8").split("\n");
+function jobs(text: string = readFileSync(CI, "utf8")): { name: string; globs: string[]; hasToken: boolean }[] {
+  const lines = text.split("\n");
   const found: { name: string; globs: string[]; hasToken: boolean }[] = [];
   let cur: { name: string; globs: string[]; hasToken: boolean } | null = null;
   for (const line of lines) {
     const head = line.match(/^ {2}([a-zA-Z][\w-]*):\s*$/);
     if (head) { if (cur) found.push(cur); cur = { name: head[1], globs: [], hasToken: false }; continue; }
     if (!cur) continue;
-    if (/GH_TOKEN:/.test(line)) cur.hasToken = true;
+    if (REAL_GH_TOKEN_LINE.test(line.trim())) cur.hasToken = true;
     for (const m of line.matchAll(/["'](packages\/[^"']*\.test\.ts)["']/g)) cur.globs.push(m[1]);
   }
   if (cur) found.push(cur);
   return found;
 }
+
+/**
+ * JOBS THAT RUN A COMMAND THEY DID NOT AUTHOR — #382.
+ *
+ * The glob-based discovery above walks a job's own `*.test.ts` files and their imports, because that is
+ * where a `gh` spawn lives for every job that tests THIS repo's own code. `acceptance` (#353) is a
+ * different shape entirely: its command arrives at runtime, in a PR body, and may be anything a PR author
+ * writes — there is no test file for the walker to find, because the command is not written down
+ * anywhere in this repo until someone opens a PR. Measured: `acceptance` had no `GH_TOKEN`, and an
+ * acceptance command reaching `gh` failed on the token rather than on its own subject (6 of 19 subtests,
+ * PR #370) — invisible to the test above because its `job.globs` is empty.
+ *
+ * NOT A HARD-CODED EXCEPTION FOR `acceptance` — a population this census enforces on every member. The
+ * rule: a job that runs a command it did not author needs every credential any command might need, since
+ * it cannot know in advance which one a PR body will ask for. `acceptance` is the only job in that class
+ * today; a future one must be ADDED here, with its own reason, or it is invisible to this guard for the
+ * identical shape.
+ */
+const UNAUTHORED_COMMAND_JOBS: Record<string, string> = {
+  acceptance: "#382/#353 -- runs a PR body's own Acceptance: command(s) at runtime; may invoke `gh` "
+    + "directly or through any import a PR author writes, so it needs GH_TOKEN unconditionally rather "
+    + "than by glob-discovered reach",
+};
+
+test("every job that runs a command it did not author declares GH_TOKEN, regardless of test-glob discovery", () => {
+  const parsed = jobs();
+  const offenders: string[] = [];
+  for (const [name, reason] of Object.entries(UNAUTHORED_COMMAND_JOBS)) {
+    const job = parsed.find((j) => j.name === name);
+    assert.ok(job, `${name} is named in UNAUTHORED_COMMAND_JOBS but not found in ci.yml -- the census is stale`);
+    if (!job?.hasToken) offenders.push(`${name} (${reason})`);
+  }
+  assert.deepEqual(offenders, [],
+    "these jobs run author-supplied commands and must carry GH_TOKEN unconditionally -- see the reason "
+    + "recorded against each in UNAUTHORED_COMMAND_JOBS.");
+});
+
+test("MUTATION SHAPE FOUND WHILE FIXING #382: a COMMENT mentioning `GH_TOKEN:` must never count as a "
+  + "real assignment", () => {
+  // The exact defeat this file's own #382 fix walked into: writing the fix's OWN explanatory comment
+  // ("GH_TOKEN: #382, measured on PR #370 …") into the `acceptance` job made the substring-matching
+  // predecessor of REAL_GH_TOKEN_LINE report `hasToken: true` with the real `env:` line stripped out from
+  // under it -- a job with NO token, reading as guarded. Reproduced directly, without touching the real
+  // file: a job whose ONLY mention of the phrase is a `#`-comment must still be reported token-less.
+  const fixture = [
+    "jobs:",
+    "  acceptance:",
+    "    steps:",
+    "      # GH_TOKEN: needed because this job runs an author-supplied command",
+    "      - run: node scripts/acceptance-commands.mjs",
+  ].join("\n");
+  const [job] = jobs(fixture);
+  assert.equal(job.name, "acceptance");
+  assert.equal(job.hasToken, false,
+    "a bare comment mentioning GH_TOKEN must not be read as the job declaring it");
+});
+
+test("and the real assignment shape IS recognised, so the test above is a true negative, not a broken "
+  + "positive check", () => {
+  const fixture = [
+    "jobs:",
+    "  acceptance:",
+    "    steps:",
+    "      - env:",
+    "          GH_TOKEN: ${{ github.token }}",
+    "        run: node scripts/acceptance-commands.mjs",
+  ].join("\n");
+  const [job] = jobs(fixture);
+  assert.equal(job.hasToken, true, "a real GH_TOKEN: ${{ github.token }} line must still be recognised");
+});
 
 test("ci.yml parses into real jobs — a scrape that finds nothing must FAIL, not pass vacuously", () => {
   const parsed = jobs();
