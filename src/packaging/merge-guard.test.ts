@@ -268,7 +268,7 @@ test("the real behindBy fetch is oriented main...head, never the reverse (#188)"
  *
  *   PR165_HEAD  = 56c34b683e550155816872dedd2364e4d397aedb   (#165's head BEFORE
  *                 `gh pr update-branch 165` force-pushed a merge of main into it)
- *     gh api repos/DanBeckDev/a11y-witness/pulls/165/commits --jq '.[] | {sha, date: .commit.committer.date}'
+ *     gh api repos/a11ign/a11ign/pulls/165/commits --jq '.[] | {sha, date: .commit.committer.date}'
  *
  *   git merge-base --is-ancestor 4050b31a42f08f6a2cc6a711824e717c610fb2d7 56c34b683e550155816872dedd2364e4d397aedb
  *   -> exit 1: MAIN_TIP_SHA is NOT an ancestor. The branch did not contain main's tip.
@@ -276,7 +276,7 @@ test("the real behindBy fetch is oriented main...head, never the reverse (#188)"
  *   git rev-list --count 56c34b683e550155816872dedd2364e4d397aedb..4050b31a42f08f6a2cc6a711824e717c610fb2d7
  *   -> 2   (BEHIND_BY, verified a third way against the live compare API: behind_by=2 ahead_by=10)
  *
- *   gh api repos/DanBeckDev/a11y-witness/commits/56c34b683e550155816872dedd2364e4d397aedb/check-runs \
+ *   gh api repos/a11ign/a11ign/commits/56c34b683e550155816872dedd2364e4d397aedb/check-runs \
  *     --paginate --jq '.check_runs[] | {name, status, conclusion, completed_at}'
  *   -> the seven runs below, verbatim. Newest (`gate`) completed 01:32:56Z, AFTER MAIN_TIP_ISO — the
  *      exact "newer in time, older in history" shape the pre-#184 clock check could not see.
