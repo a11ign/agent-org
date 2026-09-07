@@ -12,6 +12,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { stalledVerdict, mergeTreeConflict, DEFAULT_STALL_THRESHOLD_MS } from "../../../../scripts/queue-stalled.mjs";
+import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 
 const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../scripts/queue-stalled.mjs");
 
@@ -114,10 +115,10 @@ test("mergeTreeConflict: the tree-oid line itself is never reported as a conflic
 
 test("mergeTreeConflict: runs the REAL git binary against real objects in this repo -- own head vs. own "
   + "head is trivially clean", () => {
-  const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", env: sandboxGitEnv() }).trim();
   const result = mergeTreeConflict(head, head, (args) => {
     try {
-      const stdout = execFileSync("git", args, { encoding: "utf8" });
+      const stdout = execFileSync("git", args, { encoding: "utf8", env: sandboxGitEnv() });
       return { status: 0, stdout };
     } catch (cause) {
       const err = cause as { status?: number, stdout?: string };
