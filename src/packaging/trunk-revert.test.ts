@@ -82,7 +82,7 @@ test("revertPrBody names the original PR, its author, the reverted sha and the r
   const body = revertPrBody({
     pushSha: PUSH,
     originPr: { number: 309, author: "worker-config", title: "feat(#298): CI/CD pipeline unit 1" },
-    runUrl: "https://github.com/DanBeckDev/a11y-witness/actions/runs/123",
+    runUrl: "https://github.com/a11ign/a11ign/actions/runs/123",
   });
   assert.match(body, /#309/);
   assert.match(body, /@worker-config/);
