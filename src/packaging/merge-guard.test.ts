@@ -209,7 +209,13 @@ test("the guard never reads mergeStateStatus, not even to cross-check", () => {
   assert.doesNotMatch(code, /\.mergeStateStatus\b/,
     "reading it -- even alongside the real check -- reintroduces the failure mode this tool exists to "
     + "avoid: a verification sharing a failure mode with the action verifies nothing");
-  assert.match(code, /commits\/\$\{pr\.headRefOid\}\/check-runs/,
+  // `${sha}`, not `${pr.headRefOid}` literally -- #118 (workflow-run-liveness.mjs) needed the identical
+  // per-sha check-runs lookup for a commit that is not (yet, or ever) a PR head, so it moved into
+  // `lookupCheckRuns(sha)` and this call site now passes `pr.headRefOid` as that argument. The property
+  // under test is unchanged: the authoritative source is still the check runs FOR A SPECIFIC SHA, never a
+  // bounded `gh run list --limit N | grep`, which is what turned a stale-run PR into a runless one in this
+  // finding's own first draft.
+  assert.match(code, /commits\/\$\{sha\}\/check-runs/,
     "the authoritative source is the check runs FOR THE HEAD SHA. A `gh run list --limit N | grep` is "
     + "what turned a stale-run PR into a runless one in this finding's own first draft.");
 });
