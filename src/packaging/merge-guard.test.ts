@@ -27,6 +27,7 @@ import { join } from "node:path";
 
 import {
   mergeReadiness, reasonKind, recordVerdict, latestVerdictFor, realOutcomeFor, reconcile,
+  headVsTipReason, mergeSafetyVerdict,
 } from "../../../../scripts/merge-guard.mjs";
 
 const REQUIRED = ["changed", "ts", "python", "ansible", "docs", "changeset"];
@@ -502,4 +503,94 @@ test("#249: omitting `session` treats every claimed row it would close as somebo
     closes: CLOSES_CLAIMED,
   });
   assert.equal(v.code, 1, "a check that does not know who is asking cannot vouch for the asker");
+});
+
+/**
+ * #294 / #298 (unit 1): GitHub's recorded head must agree with `git ls-remote`'s answer, or the merge is
+ * refused rather than treated as ready. `headVsTipReason` is the pure comparison; `mergeSafetyVerdict` is
+ * the narrower, self-reference-safe composite a required CI job runs mid-workflow (see that function's
+ * own comment for why it never asks about check-run conclusions).
+ */
+
+test("headVsTipReason: silent when GitHub's recorded head agrees with the remote tip", () => {
+  assert.deepEqual(headVsTipReason("d5c2436601abcdef", "d5c2436601abcdef"), []);
+});
+
+test("headVsTipReason: THE REAL #195 SHAPE — a stale recorded head disagrees with the branch's real tip", () => {
+  const reasons = headVsTipReason("ac306fe9", "7c2e16fc");
+  assert.equal(reasons.length, 1);
+  assert.match(reasons[0], /GITHUB'S RECORDED HEAD.*ac306fe9.*DOES NOT MATCH.*7c2e16fc/s);
+  assert.equal(reasonKind(reasons[0]), "HEAD_MISMATCH");
+});
+
+test("headVsTipReason: a failed ls-remote lookup (null) is silent here — mergeReadiness/mergeSafetyVerdict own the CANNOT_ASK, not this pure comparison", () => {
+  assert.deepEqual(headVsTipReason("d5c2436601abcdef", null), []);
+});
+
+test("mergeReadiness: omitting remoteHeadOid entirely skips the #294 check — every pre-#294 call site keeps working", () => {
+  const v = mergeReadiness({ pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0 });
+  assert.equal(v.code, 0, `expected READY with no remoteHeadOid asked for, got: ${v.reasons.join(" | ")}`);
+});
+
+test("mergeReadiness: remoteHeadOid=null (asked for, lookup failed) is CANNOT_ASK, never a silent pass", () => {
+  const v = mergeReadiness({
+    pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0, remoteHeadOid: null,
+  });
+  assert.equal(v.code, 2);
+  assert.match(v.reasons[0], /git ls-remote/);
+});
+
+test("mergeReadiness: a real remoteHeadOid mismatch refuses, folded in alongside every other reason", () => {
+  const v = mergeReadiness({
+    pr: pr({ headRefOid: "ac306fe9" }), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0,
+    remoteHeadOid: "7c2e16fc",
+  });
+  assert.equal(v.code, 1);
+  assert.equal(reasonKind(v.reasons.find((r) => /GITHUB'S RECORDED HEAD/.test(r)) ?? ""), "HEAD_MISMATCH");
+});
+
+test("mergeSafetyVerdict: READY when ancestry, closing-claim and head-vs-tip are all clean", () => {
+  const v = mergeSafetyVerdict({
+    pr: pr(), behindBy: 0, closes: [], session: "ci", remoteHeadOid: "d5c2436601abcdef",
+  });
+  assert.equal(v.code, 0, `expected READY, got: ${v.reasons.join(" | ")}`);
+});
+
+test("mergeSafetyVerdict: refuses on ancestry alone, with no check-run inspection at all — the self-reference this function exists to avoid", () => {
+  const v = mergeSafetyVerdict({
+    pr: pr(), behindBy: 3, closes: [], session: "ci", remoteHeadOid: "d5c2436601abcdef",
+  });
+  assert.equal(v.code, 1);
+  assert.equal(reasonKind(v.reasons[0]), "ANCESTRY");
+});
+
+test("mergeSafetyVerdict: refuses on the #294 shape", () => {
+  const v = mergeSafetyVerdict({
+    pr: pr({ headRefOid: "ac306fe9" }), behindBy: 0, closes: [], session: "ci", remoteHeadOid: "7c2e16fc",
+  });
+  assert.equal(v.code, 1);
+  assert.equal(reasonKind(v.reasons[0]), "HEAD_MISMATCH");
+});
+
+test("mergeSafetyVerdict: refuses on the #262 closing-claim shape, same rule as mergeReadiness", () => {
+  const v = mergeSafetyVerdict({
+    pr: pr(), behindBy: 0, closes: CLOSES_CLAIMED, session: "dispatcher", remoteHeadOid: "d5c2436601abcdef",
+  });
+  assert.equal(v.code, 1);
+  assert.equal(reasonKind(v.reasons[0]), "CLAIMED_BY_ANOTHER_SESSION");
+});
+
+test("MUTATION target: mergeSafetyVerdict is CANNOT_ASK, never READY, when any of its three lookups is null", () => {
+  const missingAncestry = mergeSafetyVerdict({
+    pr: pr(), behindBy: null, closes: [], session: "ci", remoteHeadOid: "d5c2436601abcdef",
+  });
+  const missingCloses = mergeSafetyVerdict({
+    pr: pr(), behindBy: 0, closes: null, session: "ci", remoteHeadOid: "d5c2436601abcdef",
+  });
+  const missingRemote = mergeSafetyVerdict({
+    pr: pr(), behindBy: 0, closes: [], session: "ci", remoteHeadOid: null,
+  });
+  for (const v of [missingAncestry, missingCloses, missingRemote]) {
+    assert.equal(v.code, 2, `expected CANNOT_ASK, got code ${v.code}: ${v.reasons.join(" | ")}`);
+  }
 });
