@@ -142,3 +142,42 @@ test("the `blocked` label is read, and STARTABLE says what it did not check", ()
   assert.match(startable.lines.join("\n"), /never "nothing blocks this"/,
     "STARTABLE must name its own limit, or it is read as a wider claim than it makes");
 });
+
+/**
+ * A CLOSED ROW GETS NO VERDICT AT ALL — not a verdict with a caveat (#218).
+ *
+ * Measured 2026-09-07: #83 read `STARTABLE: no unmerged branch is in its region`, and **both sentences
+ * were true** — nothing held the region and every symbol was on `main`, BECAUSE the work was done and
+ * merged twenty-five minutes earlier. `dispatcher` briefed a worker on that reading; it cost nothing only
+ * because that worker checked GitHub themselves before starting.
+ *
+ * This is #208's limit reached one field earlier than the limit it states. STARTABLE was documented as
+ * *"nothing I can see"* — and what it could not see here was not a subtle dependency. **It was the
+ * issue's own `state`, already in the query being made for the labels.**
+ *
+ * IT RETURNS EARLY RATHER THAN APPENDING A NOTE, because a green light with a caveat beside it is still
+ * a green light, and the role file's target for units dispatched at closed rows is zero.
+ */
+test("a CLOSED row is refused outright, and the region check is not even consulted", () => {
+  const v = startability({
+    ...clear, row: 83, state: "CLOSED", closedAt: "2026-09-07T03:17:43Z",
+    subjectsMissing: [], heldRegions: [],
+  });
+  assert.equal(v.code, 1);
+  const text = v.lines.join("\n");
+  assert.match(text, /#83 IS CLOSED \(2026-09-07T03:17:43Z\)/, "it names the state and when");
+  assert.doesNotMatch(text, /STARTABLE/,
+    "a closed row must not print a startable verdict at all -- a caveat beside one is still a green light");
+  assert.match(text, /BECAUSE the work landed/,
+    "and it must say WHY the region being clear is not evidence here, or the next reader re-derives it");
+});
+
+test("an OPEN row's output is unchanged — refusing more is not automatically better", () => {
+  // This check is consulted before every dispatch. A version that refuses more things gets distrusted,
+  // and then it is not consulted at all.
+  const open = startability({ ...clear, state: "OPEN" });
+  const stateless = startability(clear);
+  assert.equal(open.code, 0);
+  assert.deepEqual(open.lines, stateless.lines,
+    "adding the state check must not change what an open row prints");
+});
