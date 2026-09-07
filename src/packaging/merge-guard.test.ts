@@ -26,8 +26,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
-  mergeReadiness, reasonKind, recordVerdict, latestVerdictFor, realOutcomeFor, reconcile,
-  headVsTipReason, mergeSafetyVerdict,
+  mergeReadiness, reasonKind, recordVerdict, latestVerdictFor, realOutcomeFor, reconcile, lookupBranchTip,
+  mergeSafetyVerdict,
 } from "../../../../scripts/merge-guard.mjs";
 
 const REQUIRED = ["changed", "ts", "python", "ansible", "docs", "changeset"];
@@ -35,9 +35,13 @@ const MAIN_TIP = "2026-09-07T00:41:07Z";
 const AFTER = "2026-09-07T00:45:35Z";
 const BEFORE = "2026-09-07T00:08:02Z";
 
+const HEAD = "d5c2436601abcdef";
 const pr = (over: object = {}) => ({
-  number: 148, state: "OPEN", baseRefName: "main", headRefOid: "d5c2436601abcdef", ...over,
+  number: 148, state: "OPEN", baseRefName: "main", headRefOid: HEAD, ...over,
 });
+// `branchTip: HEAD` on every fixture below that is not itself testing #294 -- otherwise every one of
+// them would trip the new head/tip-mismatch reason, since `pr()`'s `headRefOid` and a real branch tip
+// are now two different facts that must be asked to agree.
 const green = (at = AFTER) => REQUIRED.map((name) => ({
   name, status: "completed", conclusion: name === "ts" ? "success" : "skipped", completedAt: at,
 }));
@@ -46,6 +50,7 @@ test("THE #148 CASE: a base that is not main, and not one check run — both nam
   const v = mergeReadiness({
     pr: pr({ baseRefName: "lead/real-page-outcome-is-stated" }),
     required: REQUIRED, runs: [], mainTipIso: MAIN_TIP, behindBy: 0,
+    branchTip: HEAD,
   });
   assert.equal(v.code, 1);
   assert.equal(v.reasons.length, 2, "two independent causes, two sentences -- they need different fixes");
@@ -60,7 +65,8 @@ test("A GENUINELY GREEN PR AGAINST main IS ACCEPTED — so this is not simply al
   // The half that stops a guard being deleted in a week. `skipped` is a path filter declining to run a
   // job, which is how this repo's own required contexts report on most PRs -- treating it as a failure
   // would refuse every correct PR in the tree.
-  const v = mergeReadiness({ pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0 });
+  const v = mergeReadiness({ pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0,
+    branchTip: HEAD });
   assert.equal(v.code, 0, `expected READY, got: ${v.reasons.join(" | ")}`);
   assert.deepEqual(v.reasons, []);
 });
@@ -68,7 +74,8 @@ test("A GENUINELY GREEN PR AGAINST main IS ACCEPTED — so this is not simply al
 test("THE STALE SHAPE: real runs, real conclusions, against a base that has moved", () => {
   // The dangerous one, because the runs look like evidence. Measured on #135: newest run 00:08:02Z
   // against a main tipped 00:41:07Z.
-  const v = mergeReadiness({ pr: pr(), required: REQUIRED, runs: green(BEFORE), mainTipIso: MAIN_TIP, behindBy: 0 });
+  const v = mergeReadiness({ pr: pr(), required: REQUIRED, runs: green(BEFORE), mainTipIso: MAIN_TIP,
+    behindBy: 0, branchTip: HEAD });
   assert.equal(v.code, 1);
   assert.equal(v.reasons.length, 1);
   assert.match(v.reasons[0], /EVERY RUN PREDATES THE CURRENT main/);
@@ -80,7 +87,8 @@ test("THE STALE SHAPE: real runs, real conclusions, against a base that has move
 
 test("A REQUIRED CONTEXT THAT NEVER RAN is distinct from an empty list and from a failure", () => {
   const runs = green().filter((run) => run.name !== "changeset");
-  const v = mergeReadiness({ pr: pr(), required: REQUIRED, runs, mainTipIso: MAIN_TIP, behindBy: 0 });
+  const v = mergeReadiness({ pr: pr(), required: REQUIRED, runs, mainTipIso: MAIN_TIP, behindBy: 0,
+    branchTip: HEAD });
   assert.equal(v.code, 1);
   assert.match(v.reasons[0], /REQUIRED CONTEXT NEVER RAN: changeset/);
   assert.match(v.reasons[0], /Present-and-failing and never-ran are different states/);
@@ -88,12 +96,13 @@ test("A REQUIRED CONTEXT THAT NEVER RAN is distinct from an empty list and from 
 
 test("a failing context and a still-running one are separate sentences", () => {
   const failing = green().map((r) => (r.name === "ts" ? { ...r, conclusion: "failure" } : r));
-  assert.match(mergeReadiness({ pr: pr(), required: REQUIRED, runs: failing, mainTipIso: MAIN_TIP, behindBy: 0 })
-    .reasons.join("\n"), /FAILING: ts \(failure\)/);
+  assert.match(mergeReadiness({ pr: pr(), required: REQUIRED, runs: failing, mainTipIso: MAIN_TIP,
+    behindBy: 0, branchTip: HEAD }).reasons.join("\n"), /FAILING: ts \(failure\)/);
 
   const running = green().map((r) => (r.name === "ts"
     ? { ...r, status: "in_progress", conclusion: null, completedAt: null } : r));
-  const v = mergeReadiness({ pr: pr(), required: REQUIRED, runs: running, mainTipIso: MAIN_TIP, behindBy: 0 });
+  const v = mergeReadiness({ pr: pr(), required: REQUIRED, runs: running, mainTipIso: MAIN_TIP, behindBy: 0,
+    branchTip: HEAD });
   assert.equal(v.code, 1);
   assert.match(v.reasons.join("\n"), /STILL RUNNING: ts/);
   assert.match(v.reasons.join("\n"), /ask again/, "in-flight is not a defect and must not read as one");
@@ -102,19 +111,24 @@ test("a failing context and a still-running one are separate sentences", () => {
 test("`[]` AND `null` ARE DIFFERENT ANSWERS, and this is the sharpest case in the file", () => {
   // "nothing ran" and "I could not ask" demand opposite responses. A lookup that fell through to an empty
   // array would report the safest-looking verdict for the least examined PR -- this repo's oldest defect.
-  const nothingRan = mergeReadiness({ pr: pr(), required: REQUIRED, runs: [], mainTipIso: MAIN_TIP, behindBy: 0 });
+  const nothingRan = mergeReadiness({ pr: pr(), required: REQUIRED, runs: [], mainTipIso: MAIN_TIP,
+    behindBy: 0, branchTip: HEAD });
   assert.equal(nothingRan.code, 1, "an empty list is a FINDING");
 
-  const couldNotAsk = mergeReadiness({ pr: pr(), required: REQUIRED, runs: null, mainTipIso: MAIN_TIP, behindBy: 0 });
+  const couldNotAsk = mergeReadiness({ pr: pr(), required: REQUIRED, runs: null, mainTipIso: MAIN_TIP,
+    behindBy: 0, branchTip: HEAD });
   assert.equal(couldNotAsk.code, 2, "a failed lookup is INCONCLUSIVE, and must never be either 0 or 1");
   assert.match(couldNotAsk.reasons[0], /CANNOT SAY/);
   assert.match(couldNotAsk.reasons[0], /check runs for head d5c2436601/, "it names WHICH lookup failed");
 });
 
 test("every failed lookup is inconclusive, and all of them are named at once", () => {
-  const v = mergeReadiness({ pr: pr(), required: null, runs: null, mainTipIso: null, behindBy: null });
+  const v = mergeReadiness({ pr: pr(), required: null, runs: null, mainTipIso: null, behindBy: null,
+    branchTip: null });
   assert.equal(v.code, 2);
-  for (const expected of [/branch protection/, /check runs/, /tip of `main`/]) {
+  // `branchTip` (#294) is the fifth lookup, added after this test was written -- included here rather
+  // than left green with a passing default, since the test's own name is "all of them are named at once".
+  for (const expected of [/branch protection/, /check runs/, /tip of `main`/, /branch's real tip/]) {
     assert.match(v.reasons[0], expected, "one round trip should tell you everything that is missing");
   }
 });
@@ -136,6 +150,7 @@ test("every failed lookup is inconclusive, and all of them are named at once", (
 test("THE FALSE PASS: runs NEWER than main's tip, on a head that does not contain it", () => {
   const v = mergeReadiness({
     pr: pr(), required: REQUIRED, runs: green(AFTER), mainTipIso: MAIN_TIP, behindBy: 2,
+    branchTip: HEAD,
   });
   assert.equal(v.code, 1, "before #182 this returned 0 — the clock said fresh, the graph said behind");
   assert.equal(v.reasons.length, 1, "ONLY the ancestry reason: the runs really are newer than the tip");
@@ -151,6 +166,7 @@ test("the two staleness faults stay separable, and a contained head raises neith
   // `behindBy: 0` with old runs is the #135 shape and must still print the timestamps.
   const oldRuns = mergeReadiness({
     pr: pr(), required: REQUIRED, runs: green(BEFORE), mainTipIso: MAIN_TIP, behindBy: 0,
+    branchTip: HEAD,
   });
   assert.match(oldRuns.reasons.join("\n"), /PREDATES/);
   assert.doesNotMatch(oldRuns.reasons.join("\n"), /DOES NOT CONTAIN/);
@@ -166,6 +182,7 @@ test("the two staleness faults stay separable, and a contained head raises neith
   const both = mergeReadiness({
     pr: pr(), required: REQUIRED, runs: green("2026-09-07T01:38:32Z"),
     mainTipIso: "2026-09-07T01:38:39Z", behindBy: 1,
+    branchTip: HEAD,
   });
   assert.equal(both.reasons.length, 2, "two faults, two sentences");
   assert.match(both.reasons[0], /DOES NOT CONTAIN main's TIP — it is 1 commit\(s\) behind/,
@@ -177,6 +194,7 @@ test("a FAILED ancestry lookup is inconclusive, never read as contained", () => 
   // the exact false pass #182 is about, this time silently and for a different reason.
   const v = mergeReadiness({
     pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: null,
+    branchTip: HEAD,
   });
   assert.equal(v.code, 2);
   assert.match(v.reasons[0], /whether this head contains `main`'s tip/);
@@ -184,7 +202,7 @@ test("a FAILED ancestry lookup is inconclusive, never read as contained", () => 
 
 test("a PR that is not open is annotated rather than silently judged as if it were", () => {
   const v = mergeReadiness({ pr: pr({ state: "MERGED" }), required: REQUIRED, runs: green(),
-    mainTipIso: MAIN_TIP, behindBy: 0 });
+    mainTipIso: MAIN_TIP, behindBy: 0, branchTip: HEAD });
   assert.match(v.notes.join("\n"), /MERGED, so this is a post-mortem/);
 });
 
@@ -279,10 +297,81 @@ test("THE REAL #165 INCIDENT: today's guard refuses it, by ancestry, using the o
     ],
     mainTipIso: "2026-09-07T01:31:03Z",
     behindBy: 2,
+    branchTip: "56c34b683e550155816872dedd2364e4d397aedb",
   });
   assert.equal(v.code, 1, "before #182 this was the exact case that returned 0");
   assert.equal(v.reasons.length, 1, "the runs are genuinely newer than the tip; only ancestry fires");
   assert.match(v.reasons[0], /DOES NOT CONTAIN main's TIP — it is 2 commit\(s\) behind/);
+});
+
+/**
+ * THE #195 INCIDENT — GitHub's recorded head can be the branch tip's PARENT, and every check GitHub
+ * reports belongs to that older commit (#294).
+ *
+ *   git ls-remote origin lead/prune-orphan-captures    -> 7c2e16fc   the branch's real tip
+ *   gh api .../pulls/195 --jq .head.sha                -> ac306fe9   GitHub's recorded head
+ *   gh api .../commits/7c2e16fc/check-runs total_count -> 0          the tip: never tested
+ *   gh api .../commits/ac306fe9/check-runs total_count -> 9          all green
+ *
+ * `gh pr checks 195` reports green on `ac306fe9`, the tip's parent -- not on `7c2e16fc`, the commit that
+ * would actually merge.
+ */
+test("THE #195 INCIDENT: GitHub's recorded head is the branch tip's PARENT, and the mismatch is its own reason", () => {
+  const v = mergeReadiness({
+    pr: { number: 195, state: "OPEN", baseRefName: "main", headRefOid: "ac306fe9" },
+    required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0,
+    branchTip: "7c2e16fc",
+  });
+  assert.equal(v.code, 1, "green checks on the wrong commit must not read as READY");
+  assert.equal(v.reasons.length, 1, "nothing else is wrong here -- isolate the one real fault");
+  assert.match(v.reasons[0], /GITHUB'S HEAD IS NOT THE BRANCH TIP/);
+  assert.match(v.reasons[0], /ac306fe9/, "GitHub's recorded head, named");
+  assert.match(v.reasons[0], /7c2e16fc/, "the branch's real tip, named");
+  assert.match(v.reasons[0], /re-push/i, "the remedy: re-push, not update-the-branch");
+});
+
+test("a head/tip mismatch is NOT collapsed into the ancestry reason -- they need opposite remedies", () => {
+  // Behind main: update the branch. GitHub's head is not the tip: re-push. Conflating the two sends
+  // someone to merge `main` in when the actual fix is a `git push --force-with-lease` on their own branch.
+  const v = mergeReadiness({
+    pr: { number: 195, state: "OPEN", baseRefName: "main", headRefOid: "ac306fe9" },
+    required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 2,
+    branchTip: "7c2e16fc",
+  });
+  assert.equal(v.reasons.length, 2, "ancestry and tip-mismatch are independent faults");
+  assert.match(v.reasons.join("\n"), /GITHUB'S HEAD IS NOT THE BRANCH TIP/);
+  assert.match(v.reasons.join("\n"), /DOES NOT CONTAIN main's TIP/);
+});
+
+test("branchTip === headRefOid adds no reason -- the common case", () => {
+  const v = mergeReadiness({ pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0,
+    branchTip: HEAD });
+  assert.equal(v.code, 0);
+  assert.doesNotMatch(v.reasons.join("\n"), /BRANCH TIP/i);
+});
+
+test("a FAILED branch-tip lookup is CANNOT_ASK, never READY -- null and equal are different answers", () => {
+  const v = mergeReadiness({ pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0,
+    branchTip: null });
+  assert.equal(v.code, 2, "a failed `git ls-remote` must not fall through to 'no mismatch found'");
+  assert.match(v.reasons[0], /branch's real tip/);
+});
+
+/**
+ * `lookupBranchTip` is exercised directly rather than through `facts()`, because `facts()` needs a live
+ * PR to call `gh pr view` against -- the same reason `lookupCheckRuns`/`lookupRequiredContexts` above it
+ * have no fixture-driven test either. What IS testable offline is the parsing: `git ls-remote` on a real
+ * branch in THIS repo, and the empty/malformed cases `lookup`'s try/catch and the `|| null` guard cover.
+ */
+test("lookupBranchTip reads the real tip of a real branch in this repo", () => {
+  const tip = lookupBranchTip("main");
+  assert.ok(tip, "main always has a tip");
+  assert.match(tip as string, /^[0-9a-f]{40}$/, "a full sha, not an abbreviation or a ref name");
+});
+
+test("lookupBranchTip returns null for a branch that does not exist, never an empty string", () => {
+  const tip = lookupBranchTip("this-branch-does-not-exist-294");
+  assert.equal(tip, null);
 });
 
 // --- #188: recording the guard's verdict against what the platform actually did ---
@@ -459,6 +548,7 @@ const CLOSES_CLAIMED = [{ number: 237, title: "example row", labels: ["in-progre
 test("#249 case 1: REFUSES arming a PR that would close a row claimed by a DIFFERENT session", () => {
   const v = mergeReadiness({
     pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0,
+    branchTip: HEAD,
     closes: CLOSES_CLAIMED, session: "dispatcher",
   });
   assert.equal(v.code, 1, `expected REFUSED, got: ${v.reasons.join(" | ")}`);
@@ -469,6 +559,7 @@ test("#249 case 1: REFUSES arming a PR that would close a row claimed by a DIFFE
 test("#249 case 2: does NOT refuse when the session ASKING already holds the row — resuming is not a collision", () => {
   const v = mergeReadiness({
     pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0,
+    branchTip: HEAD,
     closes: CLOSES_CLAIMED, session: "worker-judge",
   });
   assert.equal(v.code, 0, `expected READY, got: ${v.reasons.join(" | ")}`);
@@ -477,12 +568,14 @@ test("#249 case 2: does NOT refuse when the session ASKING already holds the row
 test("#249 case 3: an empty closes list, or an unclaimed row, stays silent — the common case", () => {
   const empty = mergeReadiness({
     pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0,
+    branchTip: HEAD,
     closes: [], session: "dispatcher",
   });
   assert.equal(empty.code, 0);
 
   const unclaimed = mergeReadiness({
     pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0,
+    branchTip: HEAD,
     closes: [{ number: 999, labels: [] }], session: "dispatcher",
   });
   assert.equal(unclaimed.code, 0);
@@ -491,6 +584,7 @@ test("#249 case 3: an empty closes list, or an unclaimed row, stays silent — t
 test("#249 case 4: closes === null (a failed lookup) is CANNOT_ASK, never READY — [] and null are different answers", () => {
   const v = mergeReadiness({
     pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0,
+    branchTip: HEAD,
     closes: null, session: "dispatcher",
   });
   assert.equal(v.code, 2);
@@ -500,73 +594,33 @@ test("#249 case 4: closes === null (a failed lookup) is CANNOT_ASK, never READY 
 test("#249: omitting `session` treats every claimed row it would close as somebody else's — the conservative default", () => {
   const v = mergeReadiness({
     pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0,
+    branchTip: HEAD,
     closes: CLOSES_CLAIMED,
   });
   assert.equal(v.code, 1, "a check that does not know who is asking cannot vouch for the asker");
 });
 
 /**
- * #294 / #298 (unit 1): GitHub's recorded head must agree with `git ls-remote`'s answer, or the merge is
- * refused rather than treated as ready. `headVsTipReason` is the pure comparison; `mergeSafetyVerdict` is
- * the narrower, self-reference-safe composite a required CI job runs mid-workflow (see that function's
- * own comment for why it never asks about check-run conclusions).
+ * #298 (unit 1): `mergeSafetyVerdict` is the narrower, self-reference-safe composite of ancestry (#182),
+ * closing-claim (#262) and head-vs-tip (#294, `headTipMismatchReason` -- see its own tests above) that a
+ * required CI job runs mid-workflow. It deliberately never asks about check-run conclusions -- see that
+ * function's own comment for why `mergeReadiness`'s check-run inspection cannot safely run there.
  */
 
-test("headVsTipReason: silent when GitHub's recorded head agrees with the remote tip", () => {
-  assert.deepEqual(headVsTipReason("d5c2436601abcdef", "d5c2436601abcdef"), []);
-});
-
-test("headVsTipReason: THE REAL #195 SHAPE — a stale recorded head disagrees with the branch's real tip", () => {
-  const reasons = headVsTipReason("ac306fe9", "7c2e16fc");
-  assert.equal(reasons.length, 1);
-  assert.match(reasons[0], /GITHUB'S RECORDED HEAD.*ac306fe9.*DOES NOT MATCH.*7c2e16fc/s);
-  assert.equal(reasonKind(reasons[0]), "HEAD_MISMATCH");
-});
-
-test("headVsTipReason: a failed ls-remote lookup (null) is silent here — mergeReadiness/mergeSafetyVerdict own the CANNOT_ASK, not this pure comparison", () => {
-  assert.deepEqual(headVsTipReason("d5c2436601abcdef", null), []);
-});
-
-test("mergeReadiness: omitting remoteHeadOid entirely skips the #294 check — every pre-#294 call site keeps working", () => {
-  const v = mergeReadiness({ pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0 });
-  assert.equal(v.code, 0, `expected READY with no remoteHeadOid asked for, got: ${v.reasons.join(" | ")}`);
-});
-
-test("mergeReadiness: remoteHeadOid=null (asked for, lookup failed) is CANNOT_ASK, never a silent pass", () => {
-  const v = mergeReadiness({
-    pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0, remoteHeadOid: null,
-  });
-  assert.equal(v.code, 2);
-  assert.match(v.reasons[0], /git ls-remote/);
-});
-
-test("mergeReadiness: a real remoteHeadOid mismatch refuses, folded in alongside every other reason", () => {
-  const v = mergeReadiness({
-    pr: pr({ headRefOid: "ac306fe9" }), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0,
-    remoteHeadOid: "7c2e16fc",
-  });
-  assert.equal(v.code, 1);
-  assert.equal(reasonKind(v.reasons.find((r) => /GITHUB'S RECORDED HEAD/.test(r)) ?? ""), "HEAD_MISMATCH");
-});
-
 test("mergeSafetyVerdict: READY when ancestry, closing-claim and head-vs-tip are all clean", () => {
-  const v = mergeSafetyVerdict({
-    pr: pr(), behindBy: 0, closes: [], session: "ci", remoteHeadOid: "d5c2436601abcdef",
-  });
+  const v = mergeSafetyVerdict({ pr: pr(), behindBy: 0, closes: [], session: "ci", branchTip: HEAD });
   assert.equal(v.code, 0, `expected READY, got: ${v.reasons.join(" | ")}`);
 });
 
 test("mergeSafetyVerdict: refuses on ancestry alone, with no check-run inspection at all — the self-reference this function exists to avoid", () => {
-  const v = mergeSafetyVerdict({
-    pr: pr(), behindBy: 3, closes: [], session: "ci", remoteHeadOid: "d5c2436601abcdef",
-  });
+  const v = mergeSafetyVerdict({ pr: pr(), behindBy: 3, closes: [], session: "ci", branchTip: HEAD });
   assert.equal(v.code, 1);
   assert.equal(reasonKind(v.reasons[0]), "ANCESTRY");
 });
 
-test("mergeSafetyVerdict: refuses on the #294 shape", () => {
+test("mergeSafetyVerdict: refuses on the #294 shape, same reason mergeReadiness would give", () => {
   const v = mergeSafetyVerdict({
-    pr: pr({ headRefOid: "ac306fe9" }), behindBy: 0, closes: [], session: "ci", remoteHeadOid: "7c2e16fc",
+    pr: pr({ headRefOid: "ac306fe9" }), behindBy: 0, closes: [], session: "ci", branchTip: "7c2e16fc",
   });
   assert.equal(v.code, 1);
   assert.equal(reasonKind(v.reasons[0]), "HEAD_MISMATCH");
@@ -574,7 +628,7 @@ test("mergeSafetyVerdict: refuses on the #294 shape", () => {
 
 test("mergeSafetyVerdict: refuses on the #262 closing-claim shape, same rule as mergeReadiness", () => {
   const v = mergeSafetyVerdict({
-    pr: pr(), behindBy: 0, closes: CLOSES_CLAIMED, session: "dispatcher", remoteHeadOid: "d5c2436601abcdef",
+    pr: pr(), behindBy: 0, closes: CLOSES_CLAIMED, session: "dispatcher", branchTip: HEAD,
   });
   assert.equal(v.code, 1);
   assert.equal(reasonKind(v.reasons[0]), "CLAIMED_BY_ANOTHER_SESSION");
@@ -582,15 +636,15 @@ test("mergeSafetyVerdict: refuses on the #262 closing-claim shape, same rule as 
 
 test("MUTATION target: mergeSafetyVerdict is CANNOT_ASK, never READY, when any of its three lookups is null", () => {
   const missingAncestry = mergeSafetyVerdict({
-    pr: pr(), behindBy: null, closes: [], session: "ci", remoteHeadOid: "d5c2436601abcdef",
+    pr: pr(), behindBy: null, closes: [], session: "ci", branchTip: HEAD,
   });
   const missingCloses = mergeSafetyVerdict({
-    pr: pr(), behindBy: 0, closes: null, session: "ci", remoteHeadOid: "d5c2436601abcdef",
+    pr: pr(), behindBy: 0, closes: null, session: "ci", branchTip: HEAD,
   });
-  const missingRemote = mergeSafetyVerdict({
-    pr: pr(), behindBy: 0, closes: [], session: "ci", remoteHeadOid: null,
+  const missingBranchTip = mergeSafetyVerdict({
+    pr: pr(), behindBy: 0, closes: [], session: "ci", branchTip: null,
   });
-  for (const v of [missingAncestry, missingCloses, missingRemote]) {
+  for (const v of [missingAncestry, missingCloses, missingBranchTip]) {
     assert.equal(v.code, 2, `expected CANNOT_ASK, got code ${v.code}: ${v.reasons.join(" | ")}`);
   }
 });
