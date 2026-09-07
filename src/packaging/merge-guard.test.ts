@@ -601,6 +601,73 @@ test("#249: omitting `session` treats every claimed row it would close as somebo
 });
 
 /**
+ * IS SOMEBODY ELSE HOLDING THIS PR? — #266, and it is #197's finding one object along.
+ *
+ * Measured 2026-09-07 on PR #258: the dispatcher said "arming on green" and ran `update-branch`; the
+ * author ran this guard, saw `7 commit(s) behind`, rebased and pushed. `--force-with-lease` refused, and
+ * it is the only reason nothing was lost — a plain `--force` would have taken the branch to a base
+ * fetched before #229 merged, silently reverting that PR's README and changeset inside an unrelated
+ * branch.
+ *
+ * The stated rule named ARMED PRs; #258 was unarmed, so by that rule it was the author's, while the
+ * dispatcher was updating it in preparation for arming. **The other party cannot see that state**, so
+ * the collision was a property of the rule rather than of anyone's care.
+ *
+ * A LABEL RATHER THAN AN AGREEMENT, because #197 already ran this experiment on rows: a claim existing
+ * only as a sentence in a dispatch message produced three double-dispatches, each caught by a worker's
+ * caution and never by the tool. Repeating a measured negative is not a trial.
+ */
+// `branchTip: HEAD` for the reason stated at the top of this file: without it every fixture here trips
+// #294's head-vs-tip reason and the hold tests would refuse for a cause unrelated to holds -- the
+// canary-that-cannot-express-the-fault trap these same tests were written to avoid once already.
+const HELD_BASE = { pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0,
+  branchTip: HEAD };
+
+test("the hold fixture is READY before a hold is added — or the refusals below prove nothing", () => {
+  // A canary that cannot express the fault is worthless: the first draft of these tests used `runs: []`,
+  // so every case "refused" on NO CHECK RUNS EXIST and two of them passed for a reason unrelated to holds.
+  const v = mergeReadiness({ ...HELD_BASE, prLabels: [], session: "worker-capture" });
+  assert.equal(v.code, 0, `the baseline must be READY, got: ${v.reasons.join(" | ")}`);
+});
+
+test("a PR held by another session is REFUSED, and the holder is NAMED", () => {
+  const v = mergeReadiness({ ...HELD_BASE, prLabels: ["session:dispatcher"], session: "worker-capture" });
+  assert.equal(v.code, 1);
+  assert.match(v.reasons[0], /IS HELD by dispatcher/,
+    "'held' and 'held by X' are different instructions -- one of them tells you who to ask");
+  assert.match(v.reasons[0], /you are worker-capture/, "and who it thinks YOU are, or the reader cannot tell "
+    + "a real collision from a mis-set --session");
+  assert.match(v.reasons[0], /pr:hold/, "it must name the command that takes the hold, not just refuse");
+});
+
+test("a PR held by ME is not a collision — resuming your own work must not refuse", () => {
+  const v = mergeReadiness({ ...HELD_BASE, prLabels: ["session:worker-capture"], session: "worker-capture" });
+  assert.equal(v.code, 0, `expected READY, got: ${v.reasons.join(" | ")}`);
+});
+
+test("an UNHELD PR is silent — the common case must not gain a sentence", () => {
+  // A check that fires on every PR is one people stop reading, which is this repo's own rule about
+  // refusing more not being automatically better.
+  const v = mergeReadiness({ ...HELD_BASE, prLabels: ["ready", "backlog"], session: "worker-capture" });
+  assert.equal(v.code, 0, `expected READY, got: ${v.reasons.join(" | ")}`);
+});
+
+test("a FAILED label lookup is CANNOT_ASK, never READY — `[]` and `null` differ", () => {
+  // `[]` is "nobody holds this PR"; `null` is "I could not ask". Reporting the second as the first is
+  // exactly the false pass this whole file exists to prevent.
+  const v = mergeReadiness({ ...HELD_BASE, prLabels: null, session: "worker-capture" });
+  assert.equal(v.code, 2);
+  assert.match(v.reasons[0], /could not read this PR's own labels/);
+});
+
+test("with no --session, every holder is somebody else — the safe default when the asker is anonymous", () => {
+  const v = mergeReadiness({ ...HELD_BASE, prLabels: ["session:dispatcher"] });
+  assert.equal(v.code, 1);
+  assert.match(v.reasons[0], /IS HELD by dispatcher/);
+  assert.doesNotMatch(v.reasons[0], /you are/, "it must not claim an identity the caller never gave");
+});
+
+/**
  * #298 (unit 1): `mergeSafetyVerdict` is the narrower, self-reference-safe check a required CI job runs
  * mid-workflow -- head-vs-tip (#294, `headTipMismatchReason` -- see its own tests above) ONLY.
  *
