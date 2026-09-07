@@ -382,6 +382,165 @@ test("every file carrying a CLAIM block is IN the list, so one cannot be added u
     + "\n\nA claim block that nothing reads is worse than none: it looks guarded.");
 });
 
+/* #313: A TIME/DURATION PROMISE IS A CLAIM TOO, and every check above only ever looked for a NUMERAL.
+ * "Expect the run to take a few minutes." carries no digit, so it was invisible to `figuresIn` even had
+ * it been inside the guarded block -- and it was not: `docs/try-it.md`'s CLAIM block sources only the
+ * corpus and real-page denominators, 105 lines below this sentence.
+ *
+ * THE PROMISE IS REAL AND UNSOURCED, NOT WRONG. The only recorded timing for a page of this shape is
+ * `CLAUDE.md`'s "abandoned at the 280 s hard timeout", measured on the deprecated UTM guests under an
+ * older recording format -- not a figure this claim could honestly cite. #311 (fleet-gated) is the row
+ * that produces a current one. Until it lands, the honest state is the same one this file already
+ * requires of a withdrawn NUMERIC figure: say plainly that the exact timing is under re-measurement,
+ * rather than asserting a duration nothing currently backs.
+ *
+ * PARAGRAPH-SCOPED, not line-scoped like the OUTCOME/FIGURE scan above. These files hard-wrap (the same
+ * fact the denominator regexes above use `\s+` for), so "Expect the run to take a few minutes." and its
+ * sourcing sentence routinely fall on different physical lines of the same paragraph. Scanning by
+ * paragraph (blank-line-separated) means a duration promise and an adjacent "under re-measurement"
+ * sentence are read together regardless of where the editor wrapped them.
+ */
+const DURATION_PROMISE = /\b(?:takes?|took|expect(?:s|ed)?|costs?)\b/i;
+const DURATION_UNIT = /\b(?:minutes?|seconds?|hours?)\b/i;
+
+/** Paragraphs (outside every claim block) that promise a duration, keyed by the line their text starts on. */
+function durationClaimParagraphsOutsideBlocks(file: string): { line: number; text: string }[] {
+  return durationClaimParagraphsIn(readFileSync(path.join(REPO, file), "utf8"));
+}
+
+/** The pure half of `durationClaimParagraphsOutsideBlocks`, so the paragraph/list-boundary logic itself
+ * is testable on synthetic text and cannot drift out of sync with whatever the real docs say today. */
+function durationClaimParagraphsIn(src: string): { line: number; text: string }[] {
+  const lines = src.split("\n");
+  const found: { line: number; text: string }[] = [];
+  let inClaimBlock = false;
+  let para: string[] = [];
+  let paraStartLine = 1;
+  let paraTouchedBlock = false;
+  const flush = () => {
+    if (para.length > 0 && !paraTouchedBlock) {
+      const text = para.join(" ");
+      if (DURATION_PROMISE.test(text) && DURATION_UNIT.test(text)) {
+        found.push({ line: paraStartLine, text });
+      }
+    }
+    para = [];
+    paraTouchedBlock = false;
+  };
+  // A markdown LIST has no blank line between items, so a blank-line-only paragraph boundary joins every
+  // bullet in a list into one "paragraph" -- which is how a duration promise in one bullet and unrelated
+  // prose three bullets later ended up read as a single claim. Each list item starts its own paragraph.
+  const LIST_ITEM = /^(?:[-*]|\d+\.)\s/;
+  lines.forEach((rawLine, index) => {
+    const line = rawLine.trim();
+    if (line.includes("CLAIM:BEGIN")) inClaimBlock = true;
+    if (inClaimBlock) paraTouchedBlock = true; // a paragraph straddling the block is never "outside" it
+    if (line.includes("CLAIM:END")) inClaimBlock = false;
+    if (line === "") {
+      flush();
+      return;
+    }
+    if (LIST_ITEM.test(line)) flush(); // a new bullet/numbered item is never a continuation
+    if (para.length === 0) paraStartLine = index + 1;
+    para.push(line);
+  });
+  flush();
+  return found;
+}
+
+const UNDER_REMEASUREMENT = /under\s+re-measurement\s+since\s+\d{4}-\d{2}-\d{2}/i;
+
+/**
+ * Reads like a duration promise and is not one worth sourcing. Same discipline as `NOT_A_MEASURED_CLAIM`
+ * above: a REASON, never a bare line number, keyed on a distinctive substring so a moved or edited
+ * sentence silently stops matching rather than silently keeping a stale exemption alive.
+ */
+const NOT_A_DURATION_CLAIM: Record<string, string> = {
+  "Getting one takes ~20 minutes":
+    "Setup time for provisioning NVDA once, not a claim about how long a capture or a run takes -- no "
+    + "capture gate has ever measured, or should measure, a one-time Windows setup step.",
+  "the real cost of the two hours":
+    "Refers back to this page's own title-level time budget for the whole exercise (setup plus "
+    + "evaluation), not a measured capture duration -- there is no gate that could source a reader's own "
+    + "time investment in trying the tool.",
+  "Was it worth the minutes it cost":
+    "A question posed TO the reader in a self-assessment checklist, not a promise made BY this page -- "
+    + "there is nothing here for a gate to source because nothing here asserts a duration.",
+  "expected to add 1-2 minutes":
+    "Already self-qualified as untested rather than asserted as measured fact -- the same sentence says "
+    + "outright 'it has not run on a Windows runner', which is the honest disclosure this guard exists to "
+    + "require elsewhere.",
+  "checked before you spend the minutes":
+    "'Spend the minutes' is idiomatic for wasted effort, not a duration figure, and the promise-verb match "
+    + "in the same bullet ('takes us one capture to answer') counts CAPTURES, not time -- there is no "
+    + "duration claim in this sentence for a gate to source.",
+};
+
+function assertDurationClaimSourced(file: string): void {
+  const discovered = durationClaimParagraphsOutsideBlocks(file);
+  const offenders = discovered
+    .filter(({ text }) => !Object.keys(NOT_A_DURATION_CLAIM).some((key) => text.includes(key)))
+    .filter(({ text }) => !UNDER_REMEASUREMENT.test(text))
+    .map(({ line, text }) => `  ${file}:${line}  ${text.slice(0, 120)}`);
+
+  assert.deepEqual(offenders, [],
+    "these paragraphs promise a time or duration, sit outside the claim block, and neither cite a "
+    + "recorded measurement nor say the timing is under re-measurement:\n" + offenders.join("\n")
+    + "\n\nEither cite a recorded gate's timing inside a CLAIM block, say the timing is 'under "
+    + "re-measurement since <date>', classify the sentence in NOT_A_DURATION_CLAIM with a reason, or "
+    + "do not promise a duration at all.");
+}
+
+test("every time/duration promise outside the claim block is sourced, disclosed, or classified", () => {
+  for (const file of CLAIM_FILES) assertDurationClaimSourced(file);
+});
+
+test("every duration classification still matches a real sentence", () => {
+  // The vacuity guard, same shape as the one above for NOT_A_MEASURED_CLAIM.
+  const text = CLAIM_FILES
+    .flatMap((file) => durationClaimParagraphsOutsideBlocks(file).map((p) => p.text))
+    .join("\n");
+  for (const [key, reason] of Object.entries(NOT_A_DURATION_CLAIM)) {
+    assert.ok(reason.length > 40, `NOT_A_DURATION_CLAIM["${key}"] needs a real reason, not a placeholder`);
+    assert.ok(text.includes(key),
+      `NOT_A_DURATION_CLAIM["${key}"] no longer matches any discovered paragraph -- the prose was edited `
+      + "or the scan drifted. Delete the entry, or re-check the signature.");
+  }
+});
+
+test("PROOF: a duration promise with no unit, and a unit with no promise verb, are both NOT matched", () => {
+  assert.equal(DURATION_PROMISE.test("A capture is around a minute on an ordinary page.")
+    && DURATION_UNIT.test("A capture is around a minute on an ordinary page."), false,
+    "'is' is not a promise verb -- this sentence alone must not trip the guard, or it would fire on any "
+    + "prose that merely mentions a duration in passing");
+  assert.ok(DURATION_PROMISE.test("Expect the run to take a few minutes.")
+    && DURATION_UNIT.test("Expect the run to take a few minutes."),
+    "and the sentence this row is about must still match, or the guard covers nothing");
+});
+
+test("PROOF: durationClaimParagraphsIn joins a wrapped paragraph and reads the whole thing", () => {
+  // Synthetic, not read from a real doc -- driven this way so the SHAPE (a duration promise wrapping onto
+  // a second physical line, with its sourcing sentence continuing there too) is proven regardless of
+  // whatever today's real prose happens to say.
+  const found = durationClaimParagraphsIn(
+    "Expect the run to take a few minutes. Timing is under re-measurement since\n2026-09-07 (#311).");
+  assert.equal(found.length, 1, "the two-line paragraph must be read as ONE paragraph, not discarded or "
+    + "split into two half-sentences neither of which matches both signatures");
+  assert.match(found[0].text, UNDER_REMEASUREMENT,
+    "the re-measurement sentence that continues on the NEXT physical line must be read as part of the "
+    + "same paragraph, or a duration promise and its own sourcing two lines below it would never be seen "
+    + "together");
+});
+
+test("PROOF: a markdown LIST does not join unrelated bullets into one paragraph", () => {
+  const found = durationClaimParagraphsIn(
+    "- Expect the run to take a few minutes.\n- Nothing else in this bullet mentions time at all.");
+  assert.equal(found.length, 1, "only the FIRST bullet promises a duration; joining both into one "
+    + "paragraph would make an unrelated later bullet part of the same (unsourced) claim");
+  assert.doesNotMatch(found[0].text, /Nothing else/,
+    "the second bullet must not have been absorbed into the first bullet's paragraph");
+});
+
 /** Every markdown file under `docs/`, which with the README is the surface a stranger is sent to. */
 function walkDocs(dir = "docs"): string[] {
   return readdirSync(path.join(REPO, dir), { withFileTypes: true }).flatMap((entry) => {
