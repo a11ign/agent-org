@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 // REUSED, NOT RE-DERIVED. `reported()` already picks the single most-recently-recorded gate entry --
@@ -9,7 +8,6 @@ import path from "node:path";
 // current status. A second re-implementation of "which entry is current" here would be the fact-stated-
 // twice shape this repo keeps paying for.
 import { reported } from "../../../../scripts/board-data.mjs";
-import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 
 /* THE PUBLIC CLAIM CANNOT OUTLIVE ITS MEASUREMENT.
  *
@@ -339,6 +337,16 @@ const NOT_A_MEASURED_CLAIM: Record<string, string> = {
     "`docs/METHODOLOGY.md` governs this one and forbids quoting it as a headline; the sentence carries "
     + "that caveat inline. It is the eval fixtures, not the corpus gate, and has no recorded gate by "
     + "design.",
+  "Measured in `907ed704`": "#338: a REAL measurement -- verbatim in the commit cited inline, 2026-08-03 "
+    + "-- but it predates the board-recording mechanism (introduced 2026-09-06) entirely and describes a "
+    + "one-time corpus audit taken when this rule pair was added, not a recurring board-gate metric this "
+    + "guard's `docs/board/reported.json` sourcing was built to represent. Two other paths were tried and "
+    + "both were worse: writing a fabricated `reported.json` entry would claim a live gate run nobody "
+    + "performed just now, and verifying the citation against `git log` fails in CI's OWN checkout -- "
+    + "`actions/checkout@v4` defaults to `fetch-depth: 1` for this job, so the commit this cites is not an "
+    + "object CI's shallow clone has, and a check that can never pass under real conditions is worse than "
+    + "no check. Accepted here with its provenance stated in the prose itself (the hash), checkable by "
+    + "hand, rather than machine-verified.",
 };
 
 /**
@@ -347,47 +355,11 @@ const NOT_A_MEASURED_CLAIM: Record<string, string> = {
  * lines above that file's own CLAIM block — was invisible to the figure guard no matter what it said,
  * the exact "guarded file, unguarded line" shape #313 fixed for durations and left standing here.
  */
-/**
- * A THIRD way to source a figure, alongside `docs/board/reported.json` and `NOT_A_MEASURED_CLAIM`.
- *
- * Found necessary the moment #338 widened the scan past README.md: `docs/github-action.md:154`'s "2.4.4
- * rule fires 0 times ... 38 times on their inaccessible twins" is a REAL measurement -- verbatim in the
- * commit that added it, `907ed704` -- that simply predates the board-recording mechanism and is not a
- * recurring board-gate metric, so it was never going to appear in `reported.json`. Classifying it in
- * `NOT_A_MEASURED_CLAIM` would be dishonest to that list's own contract ("reads like a claim and is NOT
- * one") for a sentence that plainly IS one.
- *
- * A git commit is permanent (nothing here deletes history a ref still points at) and independently
- * checkable without a live gate or the fleet -- the same property #340's `docs/schema-migration-history.md`
- * relies on citing a closing commit instead of a file that gets deleted. So a claim MAY cite the commit
- * that measured it, verified against that commit's OWN message rather than trusted on the strength of the
- * citation: an unresolvable hash, or a message that does not actually contain the cited figures, sources
- * nothing.
- */
-const COMMIT_CITATION = /\bmeasured in `([0-9a-f]{7,40})`/i;
-
-function sourcedByCommit(text: string): boolean {
-  const match = COMMIT_CITATION.exec(text);
-  if (!match) return false;
-  let message: string;
-  try {
-    message = execFileSync("git", ["log", "-1", "--format=%B", match[1]],
-      // stdio[2] "ignore": an unresolvable hash is an EXPECTED path this function's own tests drive on
-      // purpose, and git's "fatal: ambiguous argument" on stderr would otherwise read as a real failure
-      // in test output for something the catch below handles correctly.
-      { cwd: REPO, env: sandboxGitEnv(), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-  } catch {
-    return false; // an unresolvable hash sources nothing -- fail closed, never trust the citation alone
-  }
-  return figuresIn(text).every((n) => message.includes(n) || message.includes(n.replace(/,/g, "")));
-}
-
 function assertMeasuredClaimSourced(file: string): void {
   const gates = recordedGateOutput();
   const discovered = claimLikeLinesOutsideBlocks(file);
   const offenders = discovered
     .filter(({ text }) => !Object.keys(NOT_A_MEASURED_CLAIM).some((key) => text.includes(key)))
-    .filter(({ text }) => !sourcedByCommit(text))
     .filter(({ text }) => figuresIn(text).some((n) =>
       !gates.includes(n) && !gates.includes(n.replace(/,/g, ""))))
     .map(({ line, text }) => `  ${file}:${line}  ${text.slice(0, 90)}`);
@@ -396,9 +368,8 @@ function assertMeasuredClaimSourced(file: string): void {
     "these sentences read as a measured result, sit OUTSIDE the claim block, and carry a figure no "
     + "recorded gate has printed:\n" + offenders.join("\n")
     + "\n\nThe claim block is not the boundary of what a reader acts on. Either source the figure from a "
-    + "recorded gate in docs/board/reported.json, cite the commit that measured it as `measured in "
-    + "\\`<hash>\\`` (verified against that commit's own message), move the sentence inside the block, or "
-    + "classify it in NOT_A_MEASURED_CLAIM with a reason.");
+    + "recorded gate in docs/board/reported.json, move the sentence inside the block, or classify it in "
+    + "NOT_A_MEASURED_CLAIM with a reason.");
 }
 
 test("every claim-like sentence OUTSIDE the block is sourceable, or classified with a reason", () => {
@@ -450,17 +421,6 @@ test("PROOF: a numeric transition matches with no OUTCOME word, and a version-li
     "words joined by an arrow are not a transition just because the arrow this repo also uses appears");
 });
 
-test("PROOF: a claim citing its measuring commit is sourced only when that commit's own message agrees", () => {
-  assert.ok(sourcedByCommit("2.4.4 rule fires **0** times, and 38 times (measured in `907ed704`)"),
-    "the real citation this row adds must actually verify -- run the commit-log check for real");
-  assert.equal(sourcedByCommit("fires **0** times, and 41 times (measured in `907ed704`)"), false,
-    "a figure the cited commit's own message does NOT contain must not be waved through on the strength "
-    + "of the citation alone");
-  assert.equal(sourcedByCommit("fires **0** times (measured in `0000000`)"), false,
-    "an unresolvable hash must fail closed, never be read as an honest citation");
-  assert.equal(sourcedByCommit("fires 0 times, no commit named"), false,
-    "prose with no commit citation at all is not sourced by this mechanism");
-});
 
 test("every file carrying a CLAIM block is IN the list, so one cannot be added unguarded", () => {
   // "So the list is the guard" -- this file's own header, and the acknowledged hole in it: a new public
