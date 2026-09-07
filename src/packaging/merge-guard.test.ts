@@ -441,7 +441,7 @@ test("MUTATION: a write failure is never a silent no-op", () => {
   // permissions bits, which behave differently across CI and a laptop.
   withTempLogDir((dir) => {
     assert.throws(() => recordVerdict(dir, 165, { code: 0, reasons: [] }),
-      /could not write the merge-guard log/,
+      /could not write the log/,
       "a log that cannot write must say so loudly, not swallow the error and continue silently");
   });
 });
