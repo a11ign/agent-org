@@ -51,3 +51,49 @@ test("a PR held by me AND somebody else is still a collision", () => {
   assert.equal(d.code, 1);
   assert.match(d.message, /dispatcher/);
 });
+
+/**
+ * A STEAL THAT DOES NOT DISPLACE IS THE DEFECT THIS COMMAND EXISTS TO PREVENT, ONE LEVEL UP.
+ *
+ * Found by `dispatcher` running `--steal` against the real PR within a minute of it being pushed:
+ *
+ *     #268: STEALING from worker-capture — say why to them
+ *     #268 is now held by dispatcher.
+ *     $ gh pr view 268 --json labels  ->  session:worker-capture, session:dispatcher    BOTH
+ *
+ * So the thief was simultaneously a holder and REFUSED by `merge-guard`, and the refusal named somebody
+ * who no longer thought they held it. `--steal` exists because `--add-label` is idempotent and therefore
+ * says nothing about what happened; the fix said nothing about what happened either.
+ *
+ * The tests above could not have caught it — they exercise the DECISION and the defect was in the WRITE.
+ * `displaces` is what makes the write checkable here; the command also reads the labels back afterwards,
+ * because two writes can half-succeed and `gh pr edit` exiting 0 means the request was accepted.
+ */
+test("a steal NAMES who it displaces, so the caller can actually remove them", () => {
+  const d = holdDecision({ holders: ["dispatcher"], session: "worker-capture", steal: true });
+  assert.equal(d.act, true);
+  assert.deepEqual(d.displaces, ["dispatcher"],
+    "printing 'STEALING from X' while displacing nobody is how #268 left two holders on one PR");
+});
+
+test("a steal from SEVERAL holders displaces all of them", () => {
+  const d = holdDecision({ holders: ["dispatcher", "worker-judge"], session: "worker-capture", steal: true });
+  assert.deepEqual(d.displaces, ["dispatcher", "worker-judge"]);
+});
+
+test("taking an UNHELD PR displaces nobody — no spurious removals", () => {
+  assert.deepEqual(holdDecision({ holders: [], session: "worker-capture", steal: false }).displaces, []);
+});
+
+test("a REFUSED take displaces nobody, however many hold it", () => {
+  // The refusal path must not report work it is about to decline to do.
+  const d = holdDecision({ holders: ["dispatcher"], session: "worker-capture", steal: false });
+  assert.equal(d.act, false);
+  assert.deepEqual(d.displaces, []);
+});
+
+test("your own label is never in `displaces` — re-stealing must not remove yourself", () => {
+  const d = holdDecision({ holders: ["worker-capture", "dispatcher"], session: "worker-capture", steal: true });
+  assert.deepEqual(d.displaces, ["dispatcher"],
+    "removing your own label as part of taking the hold would end with the PR unheld");
+});
