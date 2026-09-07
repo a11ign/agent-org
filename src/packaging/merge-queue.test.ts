@@ -13,7 +13,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { refusalFor, wantedPrNumber } from "../../../../scripts/merge-queue.mjs";
+import { refusalFor, wantedPrNumber, orphanedCommitsFrom } from "../../../../scripts/merge-queue.mjs";
 
 /** @param {object} over */
 const pr = (over: object) => ({
@@ -93,4 +93,42 @@ test("no --merge flag at all means list mode, not a crash", () => {
 
 test("--merge as the last argument, with nothing after it, is null rather than a stray flag string", () => {
   assert.equal(wantedPrNumber(["node", "merge-queue.mjs", "--merge"]), null);
+});
+
+/**
+ * A BRANCH'S POST-MERGE COMMITS ARE INVISIBLE, AND THE EVIDENCE THAT WOULD CATCH IT CAN ITSELF VANISH
+ * (#152). Found recovering #123: commit `23a2a3e2` landed on `agent/ci-rebuild` AFTER its PR (#109) had
+ * already merged an earlier point of the branch. `git log origin/<branch> --not origin/main` would have
+ * caught it, but only if run before the branch ref moved again -- on a second run the ref had already
+ * gone back to the exact commit that WAS merged, erasing the evidence. So the check has to run at the one
+ * point it's guaranteed to see the truth: right after merging, before the branch is deleted.
+ */
+test("orphanedCommitsFrom: ahead_by 0 after a merge means the branch was fully absorbed", () => {
+  const result = orphanedCommitsFrom({ ahead_by: 0, commits: [] });
+  assert.ok(result);
+  assert.equal(result.count, 0);
+  assert.deepEqual(result.commits, []);
+});
+
+test("THE #123 SHAPE: commits landed on the branch that the merge never absorbed", () => {
+  const result = orphanedCommitsFrom({
+    ahead_by: 1,
+    commits: [{ sha: "23a2a3e2abcdef", commit: { message: "add board-report/host-address coverage\n\nbody" } }],
+  });
+  assert.ok(result);
+  assert.equal(result.count, 1);
+  assert.deepEqual(result.commits, [{ sha: "23a2a3e2abcdef", message: "add board-report/host-address coverage" }]);
+});
+
+test("a failed compare lookup is INCONCLUSIVE, never read as zero orphans", () => {
+  // Falling through to 0 here would mean "fully absorbed", which is the exact false confidence #152
+  // exists to prevent -- a lookup failure must never look like a clean answer.
+  assert.equal(orphanedCommitsFrom(null), null);
+  assert.equal(orphanedCommitsFrom({}), null, "no ahead_by field at all is a malformed answer, not zero");
+});
+
+test("a missing commits array on a clean compare does not crash — ahead_by 0 needs no list", () => {
+  const result = orphanedCommitsFrom({ ahead_by: 0 });
+  assert.ok(result);
+  assert.deepEqual(result.commits, []);
 });
