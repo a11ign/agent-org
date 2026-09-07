@@ -25,6 +25,7 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { ownerOf, stashLines } from "../../../../scripts/stash-whose.mjs";
+import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const HOOK = join(REPO, "scripts/git-hooks/reference-transaction");
@@ -32,7 +33,8 @@ const HOOK = join(REPO, "scripts/git-hooks/reference-transaction");
 /** Run git in `cwd`, returning `{code, stderr}` rather than throwing — the refusal IS the result here. */
 function git(cwd: string, args: string[]): { code: number; stderr: string } {
   try {
-    execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    execFileSync("git", args,
+      { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: sandboxGitEnv() });
     return { code: 0, stderr: "" };
   } catch (error) {
     const e = error as { status?: number; stderr?: string };
@@ -76,7 +78,7 @@ test("THE PREMISE: refs/stash is SHARED — a stash made in one worktree is visi
   try {
     writeFileSync(join(main, "a.txt"), "changed in main\n");
     assert.equal(git(main, ["stash", "push", "-m", "main: mine"]).code, 0);
-    const listed = execFileSync("git", ["stash", "list"], { cwd: second, encoding: "utf8" });
+    const listed = execFileSync("git", ["stash", "list"], { cwd: second, encoding: "utf8", env: sandboxGitEnv() });
     assert.match(listed, /main: mine/,
       "the second worktree can see -- and therefore pop -- a stash the first one made");
   } finally { cleanup(); }
@@ -94,7 +96,7 @@ test("an UNLABELLED stash is refused, and the change stays in the working tree",
     // THE HALF THAT MATTERS: refusing must not cost the work.
     const content = execFileSync("cat", [join(main, "a.txt")], { encoding: "utf8" });
     assert.equal(content, "unsaved work\n", "the working tree keeps the change when the stash is refused");
-    assert.equal(execFileSync("git", ["stash", "list"], { cwd: main, encoding: "utf8" }), "",
+    assert.equal(execFileSync("git", ["stash", "list"], { cwd: main, encoding: "utf8", env: sandboxGitEnv() }), "",
       "and nothing reached the shared pile");
   } finally { cleanup(); }
 });
@@ -104,7 +106,7 @@ test("a LABELLED stash proceeds — the guard must not stop the practice, only t
   try {
     writeFileSync(join(main, "a.txt"), "labelled work\n");
     assert.equal(git(main, ["stash", "push", "-m", "agent/my-branch: wip"]).code, 0);
-    assert.match(execFileSync("git", ["stash", "list"], { cwd: main, encoding: "utf8" }),
+    assert.match(execFileSync("git", ["stash", "list"], { cwd: main, encoding: "utf8", env: sandboxGitEnv() }),
       /agent\/my-branch: wip/);
   } finally { cleanup(); }
 });
@@ -129,8 +131,9 @@ test("A11Y_STASH_ANY=1 is honoured, so the guard has a named way through", () =>
   const { main, cleanup } = twoWorktrees();
   try {
     writeFileSync(join(main, "a.txt"), "deliberate\n");
-    execFileSync("git", ["stash", "push"], { cwd: main, env: { ...process.env, A11Y_STASH_ANY: "1" } });
-    assert.match(execFileSync("git", ["stash", "list"], { cwd: main, encoding: "utf8" }), /WIP on main/);
+    execFileSync("git", ["stash", "push"],
+      { cwd: main, env: { ...sandboxGitEnv(), A11Y_STASH_ANY: "1" } });
+    assert.match(execFileSync("git", ["stash", "list"], { cwd: main, encoding: "utf8", env: sandboxGitEnv() }), /WIP on main/);
   } finally { cleanup(); }
 });
 
