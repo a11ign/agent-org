@@ -40,7 +40,7 @@ const green = (at = AFTER) => REQUIRED.map((name) => ({
 test("THE #148 CASE: a base that is not main, and not one check run — both named", () => {
   const v = mergeReadiness({
     pr: pr({ baseRefName: "lead/real-page-outcome-is-stated" }),
-    required: REQUIRED, runs: [], mainTipIso: MAIN_TIP,
+    required: REQUIRED, runs: [], mainTipIso: MAIN_TIP, behindBy: 0,
   });
   assert.equal(v.code, 1);
   assert.equal(v.reasons.length, 2, "two independent causes, two sentences -- they need different fixes");
@@ -55,7 +55,7 @@ test("A GENUINELY GREEN PR AGAINST main IS ACCEPTED — so this is not simply al
   // The half that stops a guard being deleted in a week. `skipped` is a path filter declining to run a
   // job, which is how this repo's own required contexts report on most PRs -- treating it as a failure
   // would refuse every correct PR in the tree.
-  const v = mergeReadiness({ pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP });
+  const v = mergeReadiness({ pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0 });
   assert.equal(v.code, 0, `expected READY, got: ${v.reasons.join(" | ")}`);
   assert.deepEqual(v.reasons, []);
 });
@@ -63,7 +63,7 @@ test("A GENUINELY GREEN PR AGAINST main IS ACCEPTED — so this is not simply al
 test("THE STALE SHAPE: real runs, real conclusions, against a base that has moved", () => {
   // The dangerous one, because the runs look like evidence. Measured on #135: newest run 00:08:02Z
   // against a main tipped 00:41:07Z.
-  const v = mergeReadiness({ pr: pr(), required: REQUIRED, runs: green(BEFORE), mainTipIso: MAIN_TIP });
+  const v = mergeReadiness({ pr: pr(), required: REQUIRED, runs: green(BEFORE), mainTipIso: MAIN_TIP, behindBy: 0 });
   assert.equal(v.code, 1);
   assert.equal(v.reasons.length, 1);
   assert.match(v.reasons[0], /EVERY RUN PREDATES THE CURRENT main/);
@@ -75,7 +75,7 @@ test("THE STALE SHAPE: real runs, real conclusions, against a base that has move
 
 test("A REQUIRED CONTEXT THAT NEVER RAN is distinct from an empty list and from a failure", () => {
   const runs = green().filter((run) => run.name !== "changeset");
-  const v = mergeReadiness({ pr: pr(), required: REQUIRED, runs, mainTipIso: MAIN_TIP });
+  const v = mergeReadiness({ pr: pr(), required: REQUIRED, runs, mainTipIso: MAIN_TIP, behindBy: 0 });
   assert.equal(v.code, 1);
   assert.match(v.reasons[0], /REQUIRED CONTEXT NEVER RAN: changeset/);
   assert.match(v.reasons[0], /Present-and-failing and never-ran are different states/);
@@ -83,12 +83,12 @@ test("A REQUIRED CONTEXT THAT NEVER RAN is distinct from an empty list and from 
 
 test("a failing context and a still-running one are separate sentences", () => {
   const failing = green().map((r) => (r.name === "ts" ? { ...r, conclusion: "failure" } : r));
-  assert.match(mergeReadiness({ pr: pr(), required: REQUIRED, runs: failing, mainTipIso: MAIN_TIP })
+  assert.match(mergeReadiness({ pr: pr(), required: REQUIRED, runs: failing, mainTipIso: MAIN_TIP, behindBy: 0 })
     .reasons.join("\n"), /FAILING: ts \(failure\)/);
 
   const running = green().map((r) => (r.name === "ts"
     ? { ...r, status: "in_progress", conclusion: null, completedAt: null } : r));
-  const v = mergeReadiness({ pr: pr(), required: REQUIRED, runs: running, mainTipIso: MAIN_TIP });
+  const v = mergeReadiness({ pr: pr(), required: REQUIRED, runs: running, mainTipIso: MAIN_TIP, behindBy: 0 });
   assert.equal(v.code, 1);
   assert.match(v.reasons.join("\n"), /STILL RUNNING: ts/);
   assert.match(v.reasons.join("\n"), /ask again/, "in-flight is not a defect and must not read as one");
@@ -97,26 +97,89 @@ test("a failing context and a still-running one are separate sentences", () => {
 test("`[]` AND `null` ARE DIFFERENT ANSWERS, and this is the sharpest case in the file", () => {
   // "nothing ran" and "I could not ask" demand opposite responses. A lookup that fell through to an empty
   // array would report the safest-looking verdict for the least examined PR -- this repo's oldest defect.
-  const nothingRan = mergeReadiness({ pr: pr(), required: REQUIRED, runs: [], mainTipIso: MAIN_TIP });
+  const nothingRan = mergeReadiness({ pr: pr(), required: REQUIRED, runs: [], mainTipIso: MAIN_TIP, behindBy: 0 });
   assert.equal(nothingRan.code, 1, "an empty list is a FINDING");
 
-  const couldNotAsk = mergeReadiness({ pr: pr(), required: REQUIRED, runs: null, mainTipIso: MAIN_TIP });
+  const couldNotAsk = mergeReadiness({ pr: pr(), required: REQUIRED, runs: null, mainTipIso: MAIN_TIP, behindBy: 0 });
   assert.equal(couldNotAsk.code, 2, "a failed lookup is INCONCLUSIVE, and must never be either 0 or 1");
   assert.match(couldNotAsk.reasons[0], /CANNOT SAY/);
   assert.match(couldNotAsk.reasons[0], /check runs for head d5c2436601/, "it names WHICH lookup failed");
 });
 
 test("every failed lookup is inconclusive, and all of them are named at once", () => {
-  const v = mergeReadiness({ pr: pr(), required: null, runs: null, mainTipIso: null });
+  const v = mergeReadiness({ pr: pr(), required: null, runs: null, mainTipIso: null, behindBy: null });
   assert.equal(v.code, 2);
   for (const expected of [/branch protection/, /check runs/, /tip of `main`/]) {
     assert.match(v.reasons[0], expected, "one round trip should tell you everything that is missing");
   }
 });
 
+/**
+ * NEWER IN TIME, OLDER IN HISTORY — the false PASS this guard shipped with (#182).
+ *
+ * The staleness check compared the newest run's completion time against `main`'s tip commit DATE, as a
+ * proxy for *"was this head ever tested alongside the code it is about to join"*. **A run can finish
+ * AFTER `main`'s tip was committed while the branch still does not contain that commit**, which is what
+ * ordinary concurrent merging produces. Measured on #165: `main` tipped 01:31:03Z, the run finished
+ * later, the branch had never seen that commit, and this tool printed *"run against the current main"*
+ * and exited 0. Only strict branch protection stopped it — a guard whose wrong answers are absorbed by
+ * something else is one whose wrongness is invisible.
+ *
+ * This is the case that cannot be reproduced from live PRs once `main` moves again, because both reasons
+ * then fire together. Driven from fixtures for exactly that reason.
+ */
+test("THE FALSE PASS: runs NEWER than main's tip, on a head that does not contain it", () => {
+  const v = mergeReadiness({
+    pr: pr(), required: REQUIRED, runs: green(AFTER), mainTipIso: MAIN_TIP, behindBy: 2,
+  });
+  assert.equal(v.code, 1, "before #182 this returned 0 — the clock said fresh, the graph said behind");
+  assert.equal(v.reasons.length, 1, "ONLY the ancestry reason: the runs really are newer than the tip");
+  assert.match(v.reasons[0], /DOES NOT CONTAIN main's TIP — it is 2 commit\(s\) behind/);
+  assert.match(v.reasons[0], /may be minutes fresh/,
+    "the message must say why a recent run does not settle it, or the reader re-runs CI and tries again");
+  assert.doesNotMatch(v.reasons[0], /PREDATES/,
+    "these are different faults: the runs are old, versus the TREE is old. Collapsing them loses the "
+    + "diagnosis the original check was built for");
+});
+
+test("the two staleness faults stay separable, and a contained head raises neither", () => {
+  // `behindBy: 0` with old runs is the #135 shape and must still print the timestamps.
+  const oldRuns = mergeReadiness({
+    pr: pr(), required: REQUIRED, runs: green(BEFORE), mainTipIso: MAIN_TIP, behindBy: 0,
+  });
+  assert.match(oldRuns.reasons.join("\n"), /PREDATES/);
+  assert.doesNotMatch(oldRuns.reasons.join("\n"), /DOES NOT CONTAIN/);
+
+  // AND THE THIRD CASE, WHICH IS THE WORST TO NOTICE: right answer, unsound method.
+  //
+  // #137, measured 2026-09-07 and used here as the fixture rather than invented numbers: newest run
+  // 01:38:32Z against a `main` tipped 01:38:39Z, and `behind_by` 1. The clock refused it correctly on a
+  // SEVEN-SECOND margin -- a gap that decided a question about commit containment and happened to land on
+  // the right side. Neither of the other two cases covers this: it is not a false pass, and it is not
+  // #135's honest refusal. It is the one that makes the defect hard to see in normal operation, because
+  // the guard looks like it is working.
+  const both = mergeReadiness({
+    pr: pr(), required: REQUIRED, runs: green("2026-09-07T01:38:32Z"),
+    mainTipIso: "2026-09-07T01:38:39Z", behindBy: 1,
+  });
+  assert.equal(both.reasons.length, 2, "two faults, two sentences");
+  assert.match(both.reasons[0], /DOES NOT CONTAIN main's TIP — it is 1 commit\(s\) behind/,
+    "the ancestry reason is the load-bearing one here; the timestamp reason is right by seven seconds");
+});
+
+test("a FAILED ancestry lookup is inconclusive, never read as contained", () => {
+  // The sharp one: `behind_by` falling through to 0 would mean "contains main's tip" and would restore
+  // the exact false pass #182 is about, this time silently and for a different reason.
+  const v = mergeReadiness({
+    pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: null,
+  });
+  assert.equal(v.code, 2);
+  assert.match(v.reasons[0], /whether this head contains `main`'s tip/);
+});
+
 test("a PR that is not open is annotated rather than silently judged as if it were", () => {
   const v = mergeReadiness({ pr: pr({ state: "MERGED" }), required: REQUIRED, runs: green(),
-    mainTipIso: MAIN_TIP });
+    mainTipIso: MAIN_TIP, behindBy: 0 });
   assert.match(v.notes.join("\n"), /MERGED, so this is a post-mortem/);
 });
 
