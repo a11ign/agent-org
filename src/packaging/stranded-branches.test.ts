@@ -11,7 +11,7 @@ import { mkdtempSync, writeFileSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  fetchPushedBranches, fetchAllPRHeadRefs, branchesWithNoPR, aheadCount, strandedCandidates,
+  fetchPushedBranches, fetchAllPRHeadRefs, branchesWithNoPR, aheadCount, strandedCandidates, PR_LIST_LIMIT,
 } from "../../../../scripts/stranded-branches.mjs";
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 
@@ -126,6 +126,25 @@ test("MUTATION: a PR entry missing headRefName is refused, not silently skipped"
 test("CONTROL: genuinely zero PRs anywhere is accepted as a real, empty Set", () => {
   const run = jsonRun(JSON.stringify([]));
   assert.equal(fetchAllPRHeadRefs({ run }).size, 0);
+});
+
+/**
+ * #321: `gh pr list` is NEWEST-first, so a response that arrives at exactly `PR_LIST_LIMIT` cannot be
+ * told apart from "there are more, and the oldest ones just fell off the end" -- and the oldest branches
+ * are precisely the ones stage 1 of this file's own filter ("has this branch EVER had a PR") most needs
+ * to be right about. A silent truncation there does not make the tool miss a stranded branch, it makes
+ * the tool MANUFACTURE one.
+ */
+test("MUTATION (#321): a response landing EXACTLY at the configured limit is refused, not read as 'a lot of PRs'", () => {
+  const atCap = Array.from({ length: PR_LIST_LIMIT }, (_, i) => ({ headRefName: `agent/x${i}` }));
+  const run = jsonRun(JSON.stringify(atCap));
+  assert.throws(() => fetchAllPRHeadRefs({ run }), /exactly \d+ PRs.*cannot tell whether/s);
+});
+
+test("CONTROL: one PR short of the limit is a real, trustworthy count -- the guard must not fire early", () => {
+  const almost = Array.from({ length: PR_LIST_LIMIT - 1 }, (_, i) => ({ headRefName: `agent/x${i}` }));
+  const run = jsonRun(JSON.stringify(almost));
+  assert.equal(fetchAllPRHeadRefs({ run }).size, PR_LIST_LIMIT - 1);
 });
 
 // --- branchesWithNoPR: pure ---
