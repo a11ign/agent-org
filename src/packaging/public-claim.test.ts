@@ -3,6 +3,11 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+// REUSED, NOT RE-DERIVED. `reported()` already picks the single most-recently-recorded gate entry --
+// the same one `board-data.mjs`'s own consumers (the daily report, the weekly document) treat as the
+// current status. A second re-implementation of "which entry is current" here would be the fact-stated-
+// twice shape this repo keeps paying for.
+import { reported } from "../../../../scripts/board-data.mjs";
 
 /* THE PUBLIC CLAIM CANNOT OUTLIVE ITS MEASUREMENT.
  *
@@ -160,6 +165,59 @@ function assertDenominators(claim: string, file: string): void {
   // number, and updating the claim to the measured 1,405 would have failed the test protecting the
   // claim. A test that pins a figure it does not source is a test that enforces staleness.
 }
+
+/* A REAL-PAGE FIGURE STATES ITS AGE BESIDE IT -- issue #128.
+ *
+ * `rules:real-pages` prints its own date-range and hour-spread line -- "*** 298 hour(s) between the
+ * oldest and newest, so this compares a MIXED population against one baseline" -- and what reached
+ * `docs/board/reported.json` was a bare "PASS — all 84 of 84 ... examined and clean", with no date range
+ * and no hour spread. That bare figure is what travelled into the README, `docs/try-it.md` and the
+ * release's real-page claim: four places carrying "84 of 84" and none of them able to say as of when. A
+ * refreshed baseline invalidated it the same night, and it was caught by a person noticing, not by
+ * anything in the pipeline being able to tell.
+ *
+ * So two things are checked, matching the row's own two acceptance cases: the RECORDING keeps the spread
+ * the gate printed (an entry that has been trimmed past it is the defect at its source), and a PUBLIC
+ * CLAIM stating a real-page figure carries its as-of date beside it, the same way the denominator and the
+ * withdrawal already are required above. */
+const REAL_PAGE_RESULT = /\b\d[\d,]*\s+of\s+\d[\d,]*\b[^\n]*\breal pages\b/i;
+const DATE_RANGE = /\b\d{4}-\d{2}-\d{2}T[\d:.]+Z?\s*\.\.\s*\d{4}-\d{2}-\d{2}T[\d:.]+Z?\b/;
+const HOUR_SPREAD = /hour\(s\)\s+between/i;
+const AS_OF_DATE = /\bas of\s+\d{4}-\d{2}-\d{2}\b/i;
+
+test("the most recently recorded gate entry keeps the capture spread it printed, if it states a real-page result", () => {
+  // Scoped to the LATEST entry only, matching `reported()`'s own selection -- that is the one entry
+  // anything downstream (the board document's risk line, this file's own figure-sourcing) ever treats as
+  // CURRENT. An older entry sitting further back in the array already carries whatever it carried before
+  // this row existed and is archival evidence, not a live claim; checking it would be checking something
+  // nothing downstream reads, and would hold pre-existing recordings to a rule written after them.
+  const { latestGate } = reported();
+  if (!latestGate || !REAL_PAGE_RESULT.test(latestGate.output ?? "")) return;
+
+  assert.ok(DATE_RANGE.test(latestGate.output) && HOUR_SPREAD.test(latestGate.output),
+    "the most recently recorded gate entry states a real-page result and has been trimmed past the date "
+    + "range and hour-spread line the gate itself printed, so a figure quoted from it later cannot say as "
+    + `of when (#128): ${latestGate.command}`);
+});
+
+function assertRealPageAsOfDate(claim: string, file: string): void {
+  if (!REAL_PAGE_RESULT.test(claim)) return; // withdrawn, or states no real-page figure at all -- covered above
+  assert.match(claim, AS_OF_DATE,
+    `${file} states a real-page figure with no "as of <date>" beside it, so a reader cannot tell how old `
+    + "the captures behind it are (#128). State the date the gate ran, the way the denominator and the "
+    + "withdrawal are already required above.");
+}
+
+test("a public claim stating a real-page figure carries its as-of date beside it", () => {
+  for (const file of CLAIM_FILES) assertRealPageAsOfDate(claimBlockIn(file), file);
+});
+
+test("PROOF: a real-page figure with its as-of date renders normally, and one without does not", () => {
+  assert.doesNotThrow(() => assertRealPageAsOfDate(
+    "84 of 84 conformant real pages examined and clean, as of 2026-09-06.", "synthetic"));
+  assert.throws(() => assertRealPageAsOfDate(
+    "84 of 84 conformant real pages examined and clean.", "synthetic"));
+});
 
 test("the claim block is reachable from the README a stranger opens", () => {
   // A guard over a block nobody renders is a guard over nothing.
