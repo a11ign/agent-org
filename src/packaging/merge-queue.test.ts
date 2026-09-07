@@ -13,7 +13,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { refusalFor } from "../../../../scripts/merge-queue.mjs";
+import { refusalFor, wantedPrNumber } from "../../../../scripts/merge-queue.mjs";
 
 /** @param {object} over */
 const pr = (over: object) => ({
@@ -63,4 +63,34 @@ test("SKIPPED and NEUTRAL are not failures — a path-filtered job that did not 
 
 test("a draft is held, whatever its checks say", () => {
   assert.match(String(refusalFor(pr({ isDraft: true }))), /draft/);
+});
+
+/**
+ * `--merge=<n>` AND `--merge <n>` MUST BEHAVE IDENTICALLY (#178).
+ *
+ * `--merge=156` fell through to the list branch silently before this fix -- a known flag, in the shape
+ * every other command in this repo uses, discarded because the hand-rolled parser only matched the
+ * space-separated form. On the highest-consequence CLI in the repo (it merges pull requests), that read
+ * as "nothing to merge" and nothing said a merge did not happen.
+ */
+test("--merge=<n> (equals form) is read, not silently dropped to list mode", () => {
+  assert.equal(wantedPrNumber(["node", "merge-queue.mjs", "--merge=156"]), "156");
+});
+
+test("--merge <n> (space form) still works — the fix must not break the shape that already worked", () => {
+  assert.equal(wantedPrNumber(["node", "merge-queue.mjs", "--merge", "156"]), "156");
+});
+
+test("both shapes produce the IDENTICAL wanted value for the same PR", () => {
+  const equals = wantedPrNumber(["node", "merge-queue.mjs", "--merge=156"]);
+  const space = wantedPrNumber(["node", "merge-queue.mjs", "--merge", "156"]);
+  assert.equal(equals, space);
+});
+
+test("no --merge flag at all means list mode, not a crash", () => {
+  assert.equal(wantedPrNumber(["node", "merge-queue.mjs"]), null);
+});
+
+test("--merge as the last argument, with nothing after it, is null rather than a stray flag string", () => {
+  assert.equal(wantedPrNumber(["node", "merge-queue.mjs", "--merge"]), null);
 });
