@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 // REUSED, NOT RE-DERIVED. `reported()` already picks the single most-recently-recorded gate entry --
@@ -8,6 +9,7 @@ import path from "node:path";
 // current status. A second re-implementation of "which entry is current" here would be the fact-stated-
 // twice shape this repo keeps paying for.
 import { reported } from "../../../../scripts/board-data.mjs";
+import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 
 /* THE PUBLIC CLAIM CANNOT OUTLIVE ITS MEASUREMENT.
  *
@@ -258,11 +260,20 @@ test("the claim block is reachable from the README a stranger opens", () => {
  * ## What counts as a claim, and why the signature is narrow
  *
  * A guard that fired on every sentence containing a digit would be switched off within a week, and the
- * row that asked for this said so. So the signature is a RESULT OVER A DENOMINATOR — an outcome word
- * (`false positives`, `true positives`, `asserted wrongly`, `conformant records`) in the same sentence as
- * a figure. Prose that merely mentions a number is not matched at all; prose that reads like a claim IS
- * matched, and is then classified rather than silently excused, because "nothing distinguishes a measured
- * public claim from prose that reads like one" is the row's actual finding.
+ * row that asked for this said so. So there are TWO signatures, both narrow: a RESULT OVER A DENOMINATOR
+ * — an outcome word (`false positives`, `true positives`, `asserted wrongly`, `conformant records`) in the
+ * same sentence as a figure — or a NUMERIC TRANSITION, a before-and-after pair joined by an arrow
+ * (`headings went 5 → 0`). Prose that merely mentions a number is not matched at all; prose that reads
+ * like a claim IS matched, and is then classified rather than silently excused, because "nothing
+ * distinguishes a measured public claim from prose that reads like one" is the row's actual finding.
+ *
+ * THE TRANSITION SIGNATURE IS #338: `docs/try-it.md:73` — "headings went 5 → 0, links 6 → 1, graphics
+ * 1 → 0" — carries none of the OUTCOME words above, so the first signature alone could never see it, and
+ * it is the single interpretive instruction that tells a first reader whether a thin report means their
+ * page is fine or their run was swallowed by a consent overlay. An arrow between two figures is narrow on
+ * purpose: checked against every CLAIM_FILES today, it matches ONLY this sentence — a version number, a
+ * WCAG criterion, a line count and a CLI flag never take this shape, because none of them is a recorded
+ * before-and-after.
  *
  * A discovered sentence passes if EITHER every figure in it is sourceable from a recorded gate, OR it is
  * classified below with a reason. Nothing passes by being outside a block.
@@ -271,6 +282,7 @@ test("the claim block is reachable from the README a stranger opens", () => {
 const OUTCOME =
   /\b(false positives?|false negatives?|true positives?|asserted wrongly|conformant records?|conformant pages?)\b/i;
 const FIGURE = /\b(zero|no|\d[\d,]*)\b/i;
+const NUMERIC_TRANSITION = /\d[\d,]*\s*(?:→|->)\s*\d[\d,]*/;
 
 /** Sentences outside every claim block that read as a measured result. */
 function claimLikeLinesOutsideBlocks(file: string): { line: number; text: string }[] {
@@ -283,7 +295,8 @@ function claimLikeLinesOutsideBlocks(file: string): { line: number; text: string
     const at = offset;
     offset += text.length + 1;
     if (begin >= 0 && end > begin && at > begin && at < end) return;
-    if (OUTCOME.test(text) && FIGURE.test(text)) found.push({ line: index + 1, text: text.trim() });
+    const isMeasuredClaim = (OUTCOME.test(text) && FIGURE.test(text)) || NUMERIC_TRANSITION.test(text);
+    if (isMeasuredClaim) found.push({ line: index + 1, text: text.trim() });
   });
   return found;
 }
@@ -328,28 +341,76 @@ const NOT_A_MEASURED_CLAIM: Record<string, string> = {
     + "design.",
 };
 
-test("every claim-like sentence OUTSIDE the block is sourceable, or classified with a reason", () => {
+/**
+ * #338: this used to read `claimLikeLinesOutsideBlocks("README.md")` ALONE. The duration-promise check
+ * below it already looped over every `CLAIM_FILES` entry; this one did not, so `docs/try-it.md:73` — 92
+ * lines above that file's own CLAIM block — was invisible to the figure guard no matter what it said,
+ * the exact "guarded file, unguarded line" shape #313 fixed for durations and left standing here.
+ */
+/**
+ * A THIRD way to source a figure, alongside `docs/board/reported.json` and `NOT_A_MEASURED_CLAIM`.
+ *
+ * Found necessary the moment #338 widened the scan past README.md: `docs/github-action.md:154`'s "2.4.4
+ * rule fires 0 times ... 38 times on their inaccessible twins" is a REAL measurement -- verbatim in the
+ * commit that added it, `907ed704` -- that simply predates the board-recording mechanism and is not a
+ * recurring board-gate metric, so it was never going to appear in `reported.json`. Classifying it in
+ * `NOT_A_MEASURED_CLAIM` would be dishonest to that list's own contract ("reads like a claim and is NOT
+ * one") for a sentence that plainly IS one.
+ *
+ * A git commit is permanent (nothing here deletes history a ref still points at) and independently
+ * checkable without a live gate or the fleet -- the same property #340's `docs/schema-migration-history.md`
+ * relies on citing a closing commit instead of a file that gets deleted. So a claim MAY cite the commit
+ * that measured it, verified against that commit's OWN message rather than trusted on the strength of the
+ * citation: an unresolvable hash, or a message that does not actually contain the cited figures, sources
+ * nothing.
+ */
+const COMMIT_CITATION = /\bmeasured in `([0-9a-f]{7,40})`/i;
+
+function sourcedByCommit(text: string): boolean {
+  const match = COMMIT_CITATION.exec(text);
+  if (!match) return false;
+  let message: string;
+  try {
+    message = execFileSync("git", ["log", "-1", "--format=%B", match[1]],
+      // stdio[2] "ignore": an unresolvable hash is an EXPECTED path this function's own tests drive on
+      // purpose, and git's "fatal: ambiguous argument" on stderr would otherwise read as a real failure
+      // in test output for something the catch below handles correctly.
+      { cwd: REPO, env: sandboxGitEnv(), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  } catch {
+    return false; // an unresolvable hash sources nothing -- fail closed, never trust the citation alone
+  }
+  return figuresIn(text).every((n) => message.includes(n) || message.includes(n.replace(/,/g, "")));
+}
+
+function assertMeasuredClaimSourced(file: string): void {
   const gates = recordedGateOutput();
-  const discovered = claimLikeLinesOutsideBlocks("README.md");
-
-  // A signature this specific finding NOTHING would mean the scan broke, not that the README is clean --
-  // twelve matched by hand during this unit's own survey.
-  assert.ok(discovered.length >= 8,
-    `only ${discovered.length} claim-like sentence(s) found outside the block; the scan is broken, not `
-    + "the README suddenly free of measurement prose");
-
+  const discovered = claimLikeLinesOutsideBlocks(file);
   const offenders = discovered
     .filter(({ text }) => !Object.keys(NOT_A_MEASURED_CLAIM).some((key) => text.includes(key)))
+    .filter(({ text }) => !sourcedByCommit(text))
     .filter(({ text }) => figuresIn(text).some((n) =>
       !gates.includes(n) && !gates.includes(n.replace(/,/g, ""))))
-    .map(({ line, text }) => `  README.md:${line}  ${text.slice(0, 90)}`);
+    .map(({ line, text }) => `  ${file}:${line}  ${text.slice(0, 90)}`);
 
   assert.deepEqual(offenders, [],
     "these sentences read as a measured result, sit OUTSIDE the claim block, and carry a figure no "
     + "recorded gate has printed:\n" + offenders.join("\n")
     + "\n\nThe claim block is not the boundary of what a reader acts on. Either source the figure from a "
-    + "recorded gate in docs/board/reported.json, move the sentence inside the block, or classify it in "
-    + "NOT_A_MEASURED_CLAIM with a reason.");
+    + "recorded gate in docs/board/reported.json, cite the commit that measured it as `measured in "
+    + "\\`<hash>\\`` (verified against that commit's own message), move the sentence inside the block, or "
+    + "classify it in NOT_A_MEASURED_CLAIM with a reason.");
+}
+
+test("every claim-like sentence OUTSIDE the block is sourceable, or classified with a reason", () => {
+  // A signature this specific finding NOTHING would mean the scan broke, not that the docs are suddenly
+  // clean of measurement prose -- twelve matched by hand in README.md alone during this unit's original
+  // survey, plus try-it.md:73 once #338 taught the scan the numeric-transition shape.
+  const discovered = CLAIM_FILES.flatMap((file) => claimLikeLinesOutsideBlocks(file));
+  assert.ok(discovered.length >= 9,
+    `only ${discovered.length} claim-like sentence(s) found outside the block across ${CLAIM_FILES.length} `
+    + "file(s); the scan is broken, not the docs suddenly free of measurement prose");
+
+  for (const file of CLAIM_FILES) assertMeasuredClaimSourced(file);
 });
 
 test("every classification still matches a real sentence, so none excuses a problem that moved", () => {
@@ -357,7 +418,9 @@ test("every classification still matches a real sentence, so none excuses a prob
   // list look like coverage -- and this file's own history is the argument: an exemption held "1,398" on
   // a premise that later stopped being true, and kept a stale number in the public claim while the test
   // reported green.
-  const text = claimLikeLinesOutsideBlocks("README.md").map((l) => l.text).join("\n");
+  const text = CLAIM_FILES
+    .flatMap((file) => claimLikeLinesOutsideBlocks(file).map((l) => l.text))
+    .join("\n");
   for (const [key, reason] of Object.entries(NOT_A_MEASURED_CLAIM)) {
     assert.ok(reason.length > 40, `NOT_A_MEASURED_CLAIM["${key}"] needs a real reason, not a placeholder`);
     assert.ok(text.includes(key),
@@ -373,6 +436,30 @@ test("PROOF: prose with a number and no outcome is NOT matched, or the guard get
     "a figure with a unit is not a claim about findings");
   assert.ok(OUTCOME.test("zero false positives across 1,183 conformant records"),
     "and the sentence this row is about must still match, or the guard covers nothing");
+});
+
+test("PROOF: a numeric transition matches with no OUTCOME word, and a version-like number does not", () => {
+  // #338's actual addition. try-it.md:73 carries none of the OUTCOME words, so this is the shape that
+  // proves the transition signature is doing real work rather than being redundant with OUTCOME/FIGURE.
+  assert.ok(NUMERIC_TRANSITION.test("headings went 5 → 0, links 6 → 1, graphics 1 → 0."),
+    "the sentence this row is about must match, or the guard still cannot see it");
+  assert.ok(NUMERIC_TRANSITION.test("throughput rose from 36.7 -> 12.4 s"), "the ASCII arrow form too");
+  assert.equal(NUMERIC_TRANSITION.test("capture -> axe -> judge -> report"), false,
+    "a pipeline diagram with no digits either side of an arrow is not a measured transition");
+  assert.equal(NUMERIC_TRANSITION.test("Perceive → Navigate → Interact"), false,
+    "words joined by an arrow are not a transition just because the arrow this repo also uses appears");
+});
+
+test("PROOF: a claim citing its measuring commit is sourced only when that commit's own message agrees", () => {
+  assert.ok(sourcedByCommit("2.4.4 rule fires **0** times, and 38 times (measured in `907ed704`)"),
+    "the real citation this row adds must actually verify -- run the commit-log check for real");
+  assert.equal(sourcedByCommit("fires **0** times, and 41 times (measured in `907ed704`)"), false,
+    "a figure the cited commit's own message does NOT contain must not be waved through on the strength "
+    + "of the citation alone");
+  assert.equal(sourcedByCommit("fires **0** times (measured in `0000000`)"), false,
+    "an unresolvable hash must fail closed, never be read as an honest citation");
+  assert.equal(sourcedByCommit("fires 0 times, no commit named"), false,
+    "prose with no commit citation at all is not sourced by this mechanism");
 });
 
 test("every file carrying a CLAIM block is IN the list, so one cannot be added unguarded", () => {
