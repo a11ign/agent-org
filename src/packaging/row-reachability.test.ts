@@ -118,3 +118,27 @@ test("a blocking ref carries its PR state, so 'wait' and 'nobody is coming' are 
     "the VERDICT is the same in both -- the subject is not on main either way. Only the reader can decide "
     + "whether an abandoned blocker is a blocker, and this tool must not decide it for them");
 });
+
+/**
+ * THE SIXTH STATE: a row blocked by another ROW, which neither regions nor symbols can express.
+ *
+ * `dispatcher` ran the merged tool across the backlog and found #77 reported STARTABLE while its own
+ * title reads *"blocked behind #35's schema migration"* and #35 is open. The tool was correct about what
+ * it examined — the region is clear and the symbols are on `main` — and a reader takes STARTABLE as
+ * *nothing blocks this*. That is #187's fourth shape, in the tool built to compute reachability.
+ *
+ * IT READS THE LABEL, NOT THE PROSE. Parsing a title for a blocker is the coarse inference this tool
+ * refuses everywhere else; the `blocked` label is the same authoritative record `row-claim` already
+ * trusts for `in-progress`, so reading it is not a guess. And the STARTABLE sentence now states its own
+ * limit, because a verdict that cannot say what it did not check is the defect the census catalogues.
+ */
+test("the `blocked` label is read, and STARTABLE says what it did not check", () => {
+  const blocked = startability({ ...clear, row: 77, blockedLabel: true });
+  assert.equal(blocked.code, 1, "a row somebody has recorded as blocked must not read as startable");
+  assert.match(blocked.lines.join("\n"), /CARRIES THE `blocked` LABEL/);
+
+  const startable = startability(clear);
+  assert.equal(startable.code, 0);
+  assert.match(startable.lines.join("\n"), /never "nothing blocks this"/,
+    "STARTABLE must name its own limit, or it is read as a wider claim than it makes");
+});
