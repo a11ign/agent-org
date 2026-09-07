@@ -182,7 +182,6 @@ function assertDenominators(claim: string, file: string): void {
  * withdrawal already are required above. */
 const REAL_PAGE_RESULT = /\b\d[\d,]*\s+of\s+\d[\d,]*\b[^\n]*\breal pages\b/i;
 const DATE_RANGE = /\b\d{4}-\d{2}-\d{2}T[\d:.]+Z?\s*\.\.\s*\d{4}-\d{2}-\d{2}T[\d:.]+Z?\b/;
-const HOUR_SPREAD = /hour\(s\)\s+between/i;
 const AS_OF_DATE = /\bas of\s+\d{4}-\d{2}-\d{2}\b/i;
 
 test("the most recently recorded gate entry keeps the capture spread it printed, if it states a real-page result", () => {
@@ -194,10 +193,25 @@ test("the most recently recorded gate entry keeps the capture spread it printed,
   const { latestGate } = reported();
   if (!latestGate || !REAL_PAGE_RESULT.test(latestGate.output ?? "")) return;
 
-  assert.ok(DATE_RANGE.test(latestGate.output) && HOUR_SPREAD.test(latestGate.output),
+  // THE DATE RANGE IS THE AGE STATEMENT. THE HOUR LINE IS A JUDGEMENT ABOUT THE AGE, AND IT IS
+  // CONDITIONAL -- corrected 2026-09-07, after this assertion refused a healthy run.
+  //
+  // `real-page-freshness.mjs:50,91` emits `*** N hour(s) between the oldest and newest` only when
+  // `spreadMs > ROLE_SPREAD_WARN_MS` (six hours). #82's refresh brought the spread to 1h 07m, so the
+  // gate correctly printed no such line -- and requiring it unconditionally meant this test PASSED on
+  // the 298-hour mixed-population run it was written about and REFUSED the one-hour uniform one that
+  // fixed it. **Strictest about exactly the runs needing no scrutiny**, and it would have accepted every
+  // edition since the corpus went mixed.
+  //
+  // That is the same shape as `realPageCaptureAge` one file along, fixed in the same change: a reader
+  // keyed on a WARNING goes silent when the news is good. So the requirement is the date range, which is
+  // printed unconditionally, is more precise than the derived hours, and is what #128's property
+  // actually asks for -- "a real-page figure states its age beside it". The hour line is welcome when
+  // present and cannot be required, because its absence is good news.
+  assert.ok(DATE_RANGE.test(latestGate.output),
     "the most recently recorded gate entry states a real-page result and has been trimmed past the date "
-    + "range and hour-spread line the gate itself printed, so a figure quoted from it later cannot say as "
-    + `of when (#128): ${latestGate.command}`);
+    + "range the gate itself printed, so a figure quoted from it later cannot say as of when (#128): "
+    + `${latestGate.command}`);
 });
 
 function assertRealPageAsOfDate(claim: string, file: string): void {
