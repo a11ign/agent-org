@@ -445,3 +445,61 @@ test("MUTATION: a write failure is never a silent no-op", () => {
       "a log that cannot write must say so loudly, not swallow the error and continue silently");
   });
 });
+
+/**
+ * #249: ARMING CLOSES ROWS, AND NOTHING AT THAT END EVER CHECKED WHETHER SOMEBODY ELSE WAS INSIDE ONE.
+ *
+ * `row-claim check` runs before a worker dispatches or starts a row; nothing ran before a PR closing that
+ * row was armed, and arming is the act that actually closes it. `closingClaimReasons` reuses
+ * `row-claim.mjs`'s own `decideClaim` rather than re-deriving "is this row somebody else's" a second time.
+ */
+const CLOSES_CLAIMED = [{ number: 237, title: "example row", labels: ["in-progress", "session:worker-judge", "started"] }];
+
+test("#249 case 1: REFUSES arming a PR that would close a row claimed by a DIFFERENT session", () => {
+  const v = mergeReadiness({
+    pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0,
+    closes: CLOSES_CLAIMED, session: "dispatcher",
+  });
+  assert.equal(v.code, 1, `expected REFUSED, got: ${v.reasons.join(" | ")}`);
+  assert.match(v.reasons.join("\n"), /claim|held|session:worker-judge/i);
+  assert.equal(reasonKind(v.reasons.find((r) => /WOULD CLOSE/.test(r)) ?? ""), "CLAIMED_BY_ANOTHER_SESSION");
+});
+
+test("#249 case 2: does NOT refuse when the session ASKING already holds the row — resuming is not a collision", () => {
+  const v = mergeReadiness({
+    pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0,
+    closes: CLOSES_CLAIMED, session: "worker-judge",
+  });
+  assert.equal(v.code, 0, `expected READY, got: ${v.reasons.join(" | ")}`);
+});
+
+test("#249 case 3: an empty closes list, or an unclaimed row, stays silent — the common case", () => {
+  const empty = mergeReadiness({
+    pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0,
+    closes: [], session: "dispatcher",
+  });
+  assert.equal(empty.code, 0);
+
+  const unclaimed = mergeReadiness({
+    pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0,
+    closes: [{ number: 999, labels: [] }], session: "dispatcher",
+  });
+  assert.equal(unclaimed.code, 0);
+});
+
+test("#249 case 4: closes === null (a failed lookup) is CANNOT_ASK, never READY — [] and null are different answers", () => {
+  const v = mergeReadiness({
+    pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0,
+    closes: null, session: "dispatcher",
+  });
+  assert.equal(v.code, 2);
+  assert.match(v.reasons[0], /which rows this PR would close/);
+});
+
+test("#249: omitting `session` treats every claimed row it would close as somebody else's — the conservative default", () => {
+  const v = mergeReadiness({
+    pr: pr(), required: REQUIRED, runs: green(), mainTipIso: MAIN_TIP, behindBy: 0,
+    closes: CLOSES_CLAIMED,
+  });
+  assert.equal(v.code, 1, "a check that does not know who is asking cannot vouch for the asker");
+});
