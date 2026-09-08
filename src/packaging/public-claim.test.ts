@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 // REUSED, NOT RE-DERIVED. `reported()` already picks the single most-recently-recorded gate entry --
@@ -13,7 +13,7 @@ import { reported } from "../../../../scripts/board-data.mjs";
  *
  * The README states what this tool was measured to do, and a stranger acts on that sentence. Every figure
  * in it must be sourceable from a gate result somebody actually ran and recorded verbatim in
- * `docs/board/reported.json` -- the same channel the board document quotes, for the same reason.
+ * `docs/board/reported/` -- the same channel the board document quotes, for the same reason.
  *
  * WHY THIS TEST EXISTS AT ALL. The sentence originally proposed for the README carried "88 conformant
  * real pages". That number appears nowhere: the project's own record says 85 in two places and 86 in
@@ -53,7 +53,12 @@ function claimText(): string {
 }
 
 function recordedGateOutput(): string {
-  const raw = JSON.parse(readFileSync(path.join(REPO, "docs/board/reported.json"), "utf8"));
+  // ONE FILE PER GATE ENTRY since #159 -- the single JSON file conflicted whenever two agents recorded
+  // into it. The QUESTION is unchanged: every figure in the claim must appear in some gate's verbatim
+  // output, so this reads the directory and joins what it finds rather than trusting one file's shape.
+  const dir = path.join(REPO, "docs/board/reported/gates");
+  const raw = { gates: !existsSync(dir) ? [] : readdirSync(dir).filter((f) => f.endsWith(".json"))
+    .map((f) => JSON.parse(readFileSync(path.join(dir, f), "utf8"))) };
   return (raw.gates ?? []).map((g: { output?: string }) => g.output ?? "").join("\n");
 }
 
@@ -93,7 +98,7 @@ test("every figure in the public claim is sourceable from a recorded gate result
 
   assert.deepEqual(offending, [],
     "these figures are in the public claim and in no recorded gate output, so nothing keeps them true: "
-    + `${offending.join(", ")}. Record the gate's verbatim output in docs/board/reported.json, or take `
+    + `${offending.join(", ")}. Record the gate's verbatim output in docs/board/reported/, or take `
     + "the figure out of the claim and say it is being re-measured.");
 });
 
@@ -368,7 +373,7 @@ function assertMeasuredClaimSourced(file: string): void {
     "these sentences read as a measured result, sit OUTSIDE the claim block, and carry a figure no "
     + "recorded gate has printed:\n" + offenders.join("\n")
     + "\n\nThe claim block is not the boundary of what a reader acts on. Either source the figure from a "
-    + "recorded gate in docs/board/reported.json, move the sentence inside the block, or classify it in "
+    + "recorded gate in docs/board/reported/, move the sentence inside the block, or classify it in "
     + "NOT_A_MEASURED_CLAIM with a reason.");
 }
 
