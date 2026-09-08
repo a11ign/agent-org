@@ -208,11 +208,20 @@ test("C3 ACCEPTANCE: decideRevert fires on trunkGate's or trunkBuildTest's failu
     + "to catch");
   assert.ok(doc.jobs.trunkBuildTest?.uses, "trunkBuildTest must call a reusable workflow, not carry its "
     + "own steps -- otherwise this test is checking a job that no longer exists in this shape");
+  // `always() &&` IS REQUIRED, not decorative -- and this assertion itself pinned the WRONG condition
+  // until dispatcher measured the consequence directly: an `if:` with no status-check function carries an
+  // IMPLICIT `success()`, so `needs.trunkGate.result == 'failure'` alone means
+  // `success() && needs.trunkGate.result == 'failure'` -- self-contradictory, since `success()` is false
+  // exactly when a needed job failed. Measured on the real repo: 5 of the newest 40 trunk-guard runs had
+  // `trunkGate=failure`, and `decideRevert` read `skipped` in every one -- this job had never fired.
+  // `always()` LIFTS the implicit success without making the job unconditional: the explicit
+  // `result == 'failure'` checks still exclude a green run, and `cancelled` (someone manually cancelled
+  // the run) is still excluded too, because `always()` does not turn a cancellation into a failure.
   assert.equal(decideRevert.if,
-    "needs.trunkGate.result == 'failure' || needs.trunkBuildTest.result == 'failure'",
-    "must be EXACTLY this condition -- `always()` would also fire on a CANCELLED run (not a real "
-    + "failure, per trunk-revert.mjs's own header), and `failure()` alone (without naming either job) "
-    + "would fire on failures from unrelated jobs added to this workflow later");
+    "always() && (needs.trunkGate.result == 'failure' || needs.trunkBuildTest.result == 'failure')",
+    "must be EXACTLY this condition, `always()` prefix included -- without it the job's default implicit "
+    + "`success()` makes the whole condition unsatisfiable whenever it should fire, which is the exact "
+    + "defect measured on the real repo (0 of 5 real failures reached this job)");
 });
 
 /**
