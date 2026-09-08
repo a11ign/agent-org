@@ -535,6 +535,18 @@ const NOT_A_DURATION_CLAIM: Record<string, string> = {
     "'Spend the minutes' is idiomatic for wasted effort, not a duration figure, and the promise-verb match "
     + "in the same bullet ('takes us one capture to answer') counts CAPTURES, not time -- there is no "
     + "duration claim in this sentence for a gate to source.",
+  "Expect five to eight minutes for a real page":
+    "#396: a REAL, sourced duration promise -- 4 m 38 s / 4 m 50 s / 7 m 54 s across three dissimilar real "
+    + "pages, cited inline with the issue that recorded it (#311), replacing the honest 'under "
+    + "re-measurement' placeholder #313's own mechanism produced while nobody knew. It is a one-time "
+    + "orchestrator-run timing measurement, not a recurring board-gate metric `docs/board/reported.json` "
+    + "was built to hold, and #338 already found that verifying an inline citation against git history "
+    + "fails in CI's shallow checkout -- so this is disclosed the same way that row settled on, provenance "
+    + "stated in the prose itself rather than machine-verified.",
+  "Expect five to eight minutes**, per the measurement above":
+    "The second mention of the same #396 measurement, in the 'how long a large page takes' section -- same "
+    + "sourcing, same reasoning as the entry above; kept separate because #313's own history is that a "
+    + "figure fixed in one copy and left stale in a second is this repo's most expensive recurring shape.",
 };
 
 function assertDurationClaimSourced(file: string): void {
