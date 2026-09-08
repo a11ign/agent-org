@@ -10,10 +10,89 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { updateBranchDecision, isBehind } from "../../../../scripts/update-branch-sweep.mjs";
+import { updateBranchDecision, isBehind, newestConclusion } from "../../../../scripts/update-branch-sweep.mjs";
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 
 const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../scripts/update-branch-sweep.mjs");
+
+// --- newestConclusion: #498, a superseded check run stays attached to the head for ever ---
+//
+// The rollup entries below are the REAL ones from PR #485's head `b9b9a0ee`, copied verbatim from
+// `gh pr list --json statusCheckRollup` on 2026-09-08 -- a `gate` that FAILED inside a cancelled `ci.yml`
+// run at 07:32, and the `gate` that SUCCEEDED in the live run three minutes later. Both are permanently
+// attached to that head. The sweep read the first and skipped a green PR that was 16 commits behind.
+
+/** PR #485's real `gate` rollup entries, oldest first -- the order GitHub actually returned. */
+const CANCELLED_THEN_SUCCESS = [
+  { name: "ts", conclusion: "CANCELLED", completedAt: "2026-09-08T07:32:30Z", startedAt: "2026-09-08T07:32:00Z" },
+  { name: "gate", conclusion: "FAILURE", completedAt: "2026-09-08T07:32:37Z", startedAt: "2026-09-08T07:32:35Z" },
+  { name: "gate", conclusion: "SUCCESS", completedAt: "2026-09-08T07:35:37Z", startedAt: "2026-09-08T07:35:34Z" },
+];
+
+test("newestConclusion: MUTATION TARGET -- a superseded FAILURE never outranks the newer SUCCESS (#498)", () => {
+  assert.equal(newestConclusion(CANCELLED_THEN_SUCCESS, "gate"), "SUCCESS");
+});
+
+test("newestConclusion: MUTATION TARGET -- the whole decision, on #485's real head, is UPDATE not SKIP", () => {
+  const gateConclusion = newestConclusion(CANCELLED_THEN_SUCCESS, "gate");
+  const d = updateBranchDecision({ armed: true, gateConclusion, behind: true });
+  assert.equal(d.update, true,
+    `#485 was green and 16 commits behind; the sweep skipped it. Decision said: ${d.reason}`);
+});
+
+test("newestConclusion: ARRAY ORDER IS NOT TRUSTED -- newest-first input gives the same answer", () => {
+  const reversed = [...CANCELLED_THEN_SUCCESS].reverse();
+  assert.equal(newestConclusion(reversed, "gate"), "SUCCESS");
+});
+
+test("newestConclusion: a genuinely failing head is STILL read as failing -- the skip must survive", () => {
+  const runs = [
+    { name: "gate", conclusion: "SUCCESS", completedAt: "2026-09-08T07:00:00Z", startedAt: "2026-09-08T06:59:00Z" },
+    { name: "gate", conclusion: "FAILURE", completedAt: "2026-09-08T08:00:00Z", startedAt: "2026-09-08T07:59:00Z" },
+  ];
+  assert.equal(newestConclusion(runs, "gate"), "FAILURE");
+  assert.equal(updateBranchDecision({ armed: true, gateConclusion: "FAILURE", behind: true }).update, false);
+});
+
+test("newestConclusion: a still-running newest run reports null, which is 'not yet answered', not 'failing'", () => {
+  const runs = [
+    { name: "gate", conclusion: "FAILURE", completedAt: "2026-09-08T07:32:37Z", startedAt: "2026-09-08T07:32:35Z" },
+    { name: "gate", conclusion: null, completedAt: null, startedAt: "2026-09-08T07:40:00Z" },
+  ];
+  assert.equal(newestConclusion(runs, "gate"), null);
+  assert.equal(updateBranchDecision({ armed: true, gateConclusion: null, behind: true }).update, true);
+});
+
+test("newestConclusion: no run of that name, an empty rollup and a null rollup are all null, never a throw", () => {
+  assert.equal(newestConclusion(CANCELLED_THEN_SUCCESS, "mergeSafety"), null);
+  assert.equal(newestConclusion([], "gate"), null);
+  assert.equal(newestConclusion(null, "gate"), null);
+  assert.equal(newestConclusion(undefined, "gate"), null);
+});
+
+test("newestConclusion: an UNTIMED entry never outranks a timed one -- absence is not newness", () => {
+  const runs = [
+    { name: "gate", conclusion: "SUCCESS", completedAt: "2026-09-08T07:35:37Z", startedAt: "2026-09-08T07:35:34Z" },
+    { name: "gate", conclusion: "FAILURE", completedAt: null, startedAt: null },
+  ];
+  assert.equal(newestConclusion(runs, "gate"), "SUCCESS");
+});
+
+test("newestConclusion: startedAt is the fallback key when completedAt is absent on both", () => {
+  const runs = [
+    { name: "gate", conclusion: "FAILURE", completedAt: null, startedAt: "2026-09-08T07:00:00Z" },
+    { name: "gate", conclusion: "SUCCESS", completedAt: null, startedAt: "2026-09-08T08:00:00Z" },
+  ];
+  assert.equal(newestConclusion(runs, "gate"), "SUCCESS");
+});
+
+test("the skip message NAMES THE READING, so a wrong skip is falsifiable from the log alone (#498)", () => {
+  const d = updateBranchDecision({ armed: true, gateConclusion: "FAILURE", behind: true });
+  assert.equal(d.update, false);
+  assert.match(d.reason, /NEWEST gate run on the head/,
+    "the reason must say the conclusion was the newest, not merely that the gate failed");
+  assert.match(d.reason, /#498/, "the reason must name the shape to report if the PR looks green");
+});
 
 // --- updateBranchDecision: the pure decision ---
 
