@@ -10,11 +10,19 @@
  * it must exit non-zero to pass, and -- the rule that matters most -- a `Refutation:` command that exits 0
  * FAILS the job, because a guard shown NOT to bite is the finding. `npm run mutate` already encodes the
  * identical idea for a mutation check; this is the same verdict applied to a PR body.
+ *
+ * #516: THAT LAST SENTENCE IS THE TRAP, NOT JUST AN ANALOGY. `npm run mutate`'s own contract is exit 0 =
+ * the guard bites -- the OPPOSITE of `Refutation:`'s success-is-non-zero convention this file tests. Naming
+ * `mutate` on a `Refutation:` line inverts the verdict, and the dangerous half is silent: a guard that did
+ * NOT bite exits 1, which `Refutation:` reads as REFUSED -- the passing state. `classifyCommand` now refuses
+ * (parse time, never runs it) rather than misreading it; see `MUTATE_PATTERN` there and the tests below.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { extractAcceptanceSection, extractRefutationSection, acceptanceReport } from "../../../../scripts/acceptance-commands.mjs";
+import {
+  extractAcceptanceSection, extractRefutationSection, acceptanceReport, classifyCommand,
+} from "../../../../scripts/acceptance-commands.mjs";
 
 // --- extractRefutationSection: same parser, a different field name ---
 
@@ -112,4 +120,61 @@ test("acceptanceReport: multiple Refutation: commands, one refused and one not -
   assert.equal(report.lines.length, 3);
   assert.match(report.lines[1], /-> refused \(exit 1\)$/);
   assert.match(report.lines[2], /-> fail \(did not refuse\) \(exit 0\)$/);
+});
+
+// --- #516: `mutate` on a `Refutation:` line inverts the verdict -- classifyCommand must refuse it ---
+
+test("classifyCommand: MUTATION TARGET -- `npm run mutate` on a Refutation: section is REFUSED, named, "
+  + "never treated as a runnable command whose exit code Refutation: could misread (#516's own stated "
+  + "acceptance: refused, not runnable)", () => {
+  const result = classifyCommand("npm run mutate -- --file=x --mutate='...' --test='...'",
+    { section: "REFUTATION" });
+  assert.equal(result.verdict, "refused");
+  assert.match((/** @type {{reason:string}} */(result)).reason, /inverts the Refutation: verdict/);
+});
+
+test("classifyCommand: the identical `mutate` command is untouched on Acceptance: (or with no section at "
+  + "all) -- the inversion is specific to Refutation:'s success-is-non-zero convention", () => {
+  const command = "npm run mutate -- --file=x --mutate='...' --test='...'";
+  assert.deepEqual(classifyCommand(command, { section: "ACCEPTANCE" }), { verdict: "runnable" });
+  assert.deepEqual(classifyCommand(command), { verdict: "runnable" });
+});
+
+test("classifyCommand: a bare invocation of scripts/mutation-check.mjs is caught the same way, "
+  + "not just the npm script alias", () => {
+  const result = classifyCommand("node scripts/mutation-check.mjs --file=x --mutate='...' --test='...'",
+    { section: "REFUTATION" });
+  assert.equal(result.verdict, "refused");
+});
+
+test("classifyCommand: a command that merely contains the word MUTATE inside an unrelated path is not "
+  + "caught -- the pattern matches the invocation shape, not the bare word", () => {
+  assert.deepEqual(classifyCommand("npx tsx --test packages/lab/src/packaging/mutate-fixture.test.ts",
+    { section: "REFUTATION" }), { verdict: "runnable" });
+});
+
+test("classifyCommand: an already-NEGATED `! npm run mutate ...` is not caught by THIS check -- the "
+  + "negation already un-inverts the exit code at the shell level, so this guard exists to catch the "
+  + "unnegated collision, not to police the rejected #386/#440 negation idiom. `!` itself is not a real "
+  + "executable, so classifyCommand's ordinary logic still calls it prose -- for an unrelated reason, "
+  + "never `MUTATE_PATTERN`'s", () => {
+  const result = classifyCommand("! npm run mutate -- --file=x --mutate='...' --test='...'",
+    { section: "REFUTATION" });
+  assert.notEqual(result.verdict, "refused", "the mutate/Refutation refusal must not fire on a negated line");
+  assert.doesNotMatch((/** @type {{reason?:string}} */(result)).reason ?? "", /inverts the Refutation: verdict/);
+});
+
+test("acceptanceReport: MUTATION TARGET -- a Refutation: line naming `npm run mutate` is REFUSED and "
+  + "never calls run() for THAT command, rather than letting a real exit code be misread. Refused, like "
+  + "a fleet/lab/corpus pattern, keeps ok:true -- this is the SAME mechanism, per #516's own acceptance", () => {
+  let mutateCalled = false;
+  const body = 'Acceptance: node -e "process.exit(0)"\nRefutation:\n'
+    + "npm run mutate -- --file=x --mutate='...' --test='...'\n";
+  const report = acceptanceReport(body, (cmd) => {
+    if (cmd.includes("mutate")) { mutateCalled = true; return 1; }
+    return 0;
+  });
+  assert.equal(mutateCalled, false, "a refused refutation command must never actually execute");
+  assert.equal(report.ok, true, "a REFUSED command is an honest \"not this job's to judge by\", like fleet/lab/corpus");
+  assert.match(report.lines[1], /^REFUTATION: REFUSED npm run mutate .* -> inverts the Refutation: verdict/);
 });
