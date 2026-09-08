@@ -128,3 +128,21 @@ test("#549 MUTATION TARGET: extra undeclared closures alongside correctly-declar
     assert.match(report.reasons[0], /#999/);
   }
 });
+
+// --- MUTATION TARGET: a well-formed PR must NEVER be refused -- a false refusal stops the whole queue,
+// not just this row, since this check runs unconditionally in mergeSafety's required `gate` context ---
+
+test("#549 MUTATION TARGET: a genuinely clean PR (declared matches resolved, several numbers, any order) "
+  + "is never refused -- this is the failure mode that stops the pipeline, not just one row", () => {
+  const clean = [
+    [CLOSES([510, 497]), [510, 497]],
+    [CLOSES([497, 510]), [510, 497]],
+    [NONE, []],
+    [CLOSES([1]), [1]],
+  ] as const;
+  for (const [declaration, resolved] of clean) {
+    const report = closesMismatchReport(declaration, [...resolved], "irrelevant body for this check");
+    assert.deepEqual(report, { ok: true },
+      `expected a clean match to be allowed: declared ${JSON.stringify(declaration)}, resolved ${JSON.stringify(resolved)}`);
+  }
+});
