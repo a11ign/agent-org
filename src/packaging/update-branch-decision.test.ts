@@ -16,7 +16,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { updateBranchDecision, headQuietSeconds, newestConclusion, HEAD_QUIET_SECONDS }
+import { updateBranchDecision, headQuietSeconds, newestConclusion, HEAD_QUIET_SECONDS, ZERO_DATE }
   from "../../../../scripts/update-branch-sweep.mjs";
 
 const NOW = new Date("2026-09-08T09:00:00Z");
@@ -109,4 +109,31 @@ test("no start times anywhere → null, never a number", () => {
   assert.equal(headQuietSeconds(null, NOW), null);
   assert.equal(headQuietSeconds([{ startedAt: "0001-01-01T00:00:00Z" }], NOW), null,
     "a head whose only timestamp is the zero date cannot be shown to be quiet");
+});
+
+test("the SUCCESS reason names the quiet window when that is why the PR was eligible", () => {
+  // The window is this change's whole subject, so a sync that happens BECAUSE of it must say so. #498's
+  // failure read from the other side: there the SKIP line named the author instead of the reading, and
+  // the log could not falsify it. This is the line somebody reads when they ask "why did it push under
+  // me?", and an unasserted log line is a comment.
+  const d = decide(null, 412);
+  assert.equal(d.update, true);
+  assert.match(d.reason, /quiet 412s, over the 300s window/);
+});
+
+test("a GREEN gate's success reason does NOT claim a quiet window it did not use", () => {
+  // Green skips the window entirely, so mentioning it would be a reason that is not the reason -- the
+  // shape where a message describes a check that never ran.
+  assert.doesNotMatch(decide("SUCCESS", 1).reason, /quiet/);
+});
+
+test("ZERO_DATE is one const, shared by both readers of 'has this run finished'", () => {
+  // It was defined twice, in a file whose morning was about one fact written in two places. Asserted
+  // rather than trusted: the next person to learn GitHub emits some other sentinel must have one place
+  // to change, or the two readers disagree about whether a run is running.
+  assert.equal(ZERO_DATE, "0001-01-01T00:00:00Z");
+  assert.equal(newestConclusion(
+    [{ name: "gate", conclusion: "", completedAt: ZERO_DATE, startedAt: "2026-09-08T09:00:00Z" }],
+    "gate"), null);
+  assert.equal(headQuietSeconds([{ startedAt: ZERO_DATE }], NOW), null);
 });
