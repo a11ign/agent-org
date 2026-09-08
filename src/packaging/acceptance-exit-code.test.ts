@@ -1,0 +1,115 @@
+/**
+ * #438: A GUARD CAN ONLY BE SHOWN TO BITE BY A COMMAND WHOSE SUCCESS IS A NON-ZERO EXIT, and
+ * `acceptanceReport` hardcoded `passed = code === 0` -- so #418's own `Acceptance:` line, demonstrating
+ * `trunk-revert-guard.mjs` correctly REFUSING a known-bad merge, was reported as this job's own failure
+ * for doing exactly what the PR set out to prove.
+ *
+ * ceo's ruling: a separate `Refutation:` section, sharing `Acceptance:`'s own parser rather than a second
+ * dialect (this repo's own reason: that parser has already been fixed five times for forms authors keep
+ * writing -- #419, #424, #432 -- and a second one would need every fix again, silently). Every command in
+ * it must exit non-zero to pass, and -- the rule that matters most -- a `Refutation:` command that exits 0
+ * FAILS the job, because a guard shown NOT to bite is the finding. `npm run mutate` already encodes the
+ * identical idea for a mutation check; this is the same verdict applied to a PR body.
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+
+import { extractAcceptanceSection, extractRefutationSection, acceptanceReport } from "../../../../scripts/acceptance-commands.mjs";
+
+// --- extractRefutationSection: same parser, a different field name ---
+
+test("extractRefutationSection: no Refutation: line anywhere is MISSING -- and that is fine, it is optional", () => {
+  assert.deepEqual(extractRefutationSection("Acceptance:\nnpm test\n"), { kind: "missing" });
+});
+
+test("extractRefutationSection: an inline command on the header's own line", () => {
+  assert.deepEqual(extractRefutationSection("Refutation: node script.mjs --bad-input"),
+    { kind: "commands", commands: ["node script.mjs --bad-input"] });
+});
+
+test("extractRefutationSection: a `## Refutation` markdown heading is a header, exactly as `## Acceptance` is", () => {
+  const body = "## Refutation\n\nnode script.mjs --bad-input\n";
+  assert.deepEqual(extractRefutationSection(body), { kind: "commands", commands: ["node script.mjs --bad-input"] });
+});
+
+test("extractRefutationSection: a stated none carries its reason", () => {
+  assert.deepEqual(extractRefutationSection("Refutation: none — nothing this PR refuses"),
+    { kind: "none", reason: "nothing this PR refuses" });
+});
+
+test("extractRefutationSection: a bare Refutation: line ends an in-progress Acceptance: block, "
+  + "not swallowed as one more acceptance command", () => {
+  const body = "Acceptance:\nnpm test\nRefutation:\nnode script.mjs --bad-input\n";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npm test"] });
+  assert.deepEqual(extractRefutationSection(body), { kind: "commands", commands: ["node script.mjs --bad-input"] });
+});
+
+// --- acceptanceReport: the composed verdict, with Refutation: in the mix ---
+
+test("acceptanceReport: no Refutation: section at all -- no REFUTATION line, ok unaffected", () => {
+  const report = acceptanceReport('Acceptance: node -e "process.exit(0)"', () => 0);
+  assert.equal(report.ok, true);
+  assert.deepEqual(report.lines, ['ACCEPTANCE: RAN node -e "process.exit(0)" -> pass (exit 0)']);
+});
+
+test("acceptanceReport: THE #438 PROOF -- a Refutation: command that exits NON-ZERO passes, printed as refused", () => {
+  const body = 'Acceptance: node -e "process.exit(0)"\nRefutation: node -e "process.exit(1)"';
+  const report = acceptanceReport(body, (cmd) => (cmd.includes('"process.exit(1)"') ? 1 : 0));
+  assert.equal(report.ok, true);
+  assert.match(report.lines[1], /^REFUTATION: RAN .* -> refused \(exit 1\)$/);
+});
+
+test("acceptanceReport: MUTATION TARGET -- a Refutation: command that exits ZERO FAILS the report, "
+  + "because a guard shown not to bite is the finding this section exists to catch", () => {
+  const body = 'Acceptance: node -e "process.exit(0)"\nRefutation: node -e "process.exit(0)"';
+  const report = acceptanceReport(body, () => 0);
+  assert.equal(report.ok, false, "an unrefuted Refutation: command must fail the whole report");
+  assert.match(report.lines[1], /^REFUTATION: RAN .* -> fail \(did not refuse\) \(exit 0\)$/);
+});
+
+test("acceptanceReport: an ordinary Acceptance: command is unaffected in both directions -- "
+  + "exit 0 still passes, exit non-zero still fails, exactly as before #438", () => {
+  const passing = acceptanceReport('Acceptance: node -e "process.exit(0)"', () => 0);
+  assert.equal(passing.ok, true);
+  assert.match(passing.lines[0], /-> pass \(exit 0\)$/);
+
+  const failing = acceptanceReport('Acceptance: node -e "process.exit(1)"', () => 1);
+  assert.equal(failing.ok, false);
+  assert.match(failing.lines[0], /-> fail \(exit 1\)$/);
+});
+
+test("acceptanceReport: a stated Refutation: none is ok:true and names the reason, printed as its own line", () => {
+  const body = 'Acceptance: node -e "process.exit(0)"\nRefutation: none — nothing this PR refuses';
+  const report = acceptanceReport(body, () => 0);
+  assert.equal(report.ok, true);
+  assert.deepEqual(report.lines[1], "REFUTATION: NONE -> nothing this PR refuses");
+});
+
+test("acceptanceReport: a REFUSED Refutation: command (fleet/lab/corpus) never calls run(), "
+  + "and does not fail the report on its own", () => {
+  let called = false;
+  const body = 'Acceptance: node -e "process.exit(0)"\nRefutation:\nnpm run fleet:deploy\n';
+  const report = acceptanceReport(body, (cmd) => { if (cmd.includes("fleet")) called = true; return 0; });
+  assert.equal(called, false, "a refused refutation command must never actually execute");
+  assert.equal(report.ok, true);
+  assert.match(report.lines[1], /^REFUTATION: REFUSED npm run fleet:deploy -> /);
+});
+
+test("acceptanceReport: Acceptance: MISSING still fails the whole report even when Refutation: is present "
+  + "and would otherwise pass -- Acceptance is mandatory, Refutation is not", () => {
+  const body = "Refutation: node -e \"process.exit(1)\"";
+  const report = acceptanceReport(body, () => 1);
+  assert.equal(report.ok, false);
+  assert.equal(report.lines[0], "ACCEPTANCE: MISSING");
+});
+
+test("acceptanceReport: multiple Refutation: commands, one refused and one not -- "
+  + "the unrefused one decides, the refused one is still reported on its own line", () => {
+  const body = 'Acceptance: node -e "process.exit(0)"\nRefutation:\n'
+    + 'node -e "process.exit(1)"\nnode -e "process.exit(0)"\n';
+  const report = acceptanceReport(body, (cmd) => (cmd.includes('"process.exit(1)"') ? 1 : 0));
+  assert.equal(report.ok, false);
+  assert.equal(report.lines.length, 3);
+  assert.match(report.lines[1], /-> refused \(exit 1\)$/);
+  assert.match(report.lines[2], /-> fail \(did not refuse\) \(exit 0\)$/);
+});
