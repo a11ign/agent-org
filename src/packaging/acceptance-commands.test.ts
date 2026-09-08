@@ -388,3 +388,51 @@ test("#419 MUTATION TARGET (form 4): reverting to tokenizing the RAW command mus
   assert.ok(missing.length > 0, "documents that the RAW tokenizer (no comment strip) reads the comment "
     + "text itself as file arguments -- exactly the defect this row fixes");
 });
+
+// --- #419 FOLLOW-UP, form 5: a blank line after the HEADER is not the terminator, only one after a
+// command is. Markdown convention puts a blank line after every heading, so `## Acceptance` -- the form
+// #419 itself just made acceptable -- combined with that convention landed straight back on MISSING,
+// found live on PR #413. This form is MORE likely after #419's own fix, not less. ---
+
+test("#419b form 5: a markdown heading followed by a blank line, then the command, is NOT missing", () => {
+  // The exact shape measured on #413: `## Acceptance`, a blank line, then the command.
+  const body = "## Acceptance\n\nnpx tsx --test a.test.ts\n";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
+});
+
+test("#419b form 5: the BARE header followed by a blank line is the identical shape and must work too", () => {
+  const body = "Acceptance:\n\nnpx tsx --test a.test.ts\n";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
+});
+
+test("#419b form 5: MULTIPLE leading blank lines before the first command are all skipped", () => {
+  const body = "## Acceptance\n\n\nnpx tsx --test a.test.ts\n";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
+});
+
+test("#419b form 5: a blank line AFTER a real command still ends the block, exactly as before", () => {
+  const body = "Acceptance:\nnpx tsx --test a.test.ts\n\nMore prose after a blank line.";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
+});
+
+test("#419b form 5: a header with a blank line and NOTHING after it stays MISSING -- the leading-blank "
+  + "skip must not manufacture a command that was never written", () => {
+  const body = "Acceptance:\n\nMutation:\nnpm run mutate -- --file=x\n";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "missing" });
+});
+
+test("#419b form 5: two commands with a blank line only before the first are both read", () => {
+  const body = "## Acceptance\n\nnpx tsx --test a.test.ts\nnpx tsx --test b.test.ts\n";
+  assert.deepEqual(extractAcceptanceSection(body),
+    { kind: "commands", commands: ["npx tsx --test a.test.ts", "npx tsx --test b.test.ts"] });
+});
+
+test("#419b MUTATION TARGET (form 5): removing the leading-blank skip must reproduce the exact MISSING "
+  + "verdict measured live on PR #413", () => {
+  // The naive, pre-fix behaviour: ANY blank line ends the block immediately, including the one that
+  // markdown convention puts straight after a heading.
+  const naiveBreakOnAnyBlank = (trimmed: string) => trimmed === "";
+  assert.equal(naiveBreakOnAnyBlank(""), true,
+    "documents the exact regression this row exists to prevent -- the naive rule cannot distinguish a "
+    + "leading blank (before any command) from the real terminator (after one)");
+});
