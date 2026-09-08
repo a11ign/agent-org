@@ -11,7 +11,11 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { stalledVerdict, mergeTreeConflict, DEFAULT_STALL_THRESHOLD_MS } from "../../../../scripts/queue-stalled.mjs";
+import {
+  stalledVerdict, mergeTreeConflict, DEFAULT_STALL_THRESHOLD_MS,
+  armedBehindVerdict, behindByCount, formatBehindWatchdogLine, DEFAULT_BEHIND_STALL_THRESHOLD_SECONDS,
+} from "../../../../scripts/queue-stalled.mjs";
+import { newestConclusion, headQuietSeconds } from "../../../../scripts/update-branch-sweep.mjs";
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 
 const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../scripts/queue-stalled.mjs");
@@ -126,6 +130,182 @@ test("mergeTreeConflict: runs the REAL git binary against real objects in this r
     }
   });
   assert.equal(result.conflict, false);
+});
+
+// --- armedBehindVerdict: C5a/#509's pure decision ---
+
+test("armedBehindVerdict: not armed is never this check's concern", () => {
+  const v = armedBehindVerdict({ armed: false, gateConclusion: "SUCCESS", behindBy: 30, quietSeconds: 3000 });
+  assert.equal(v.stalled, false);
+  assert.equal(v.code, "NOT_ARMED");
+});
+
+test("armedBehindVerdict: gate not SUCCESS is WAITING, not stalled", () => {
+  const v = armedBehindVerdict({ armed: true, gateConclusion: "FAILURE", behindBy: 30, quietSeconds: 3000 });
+  assert.equal(v.stalled, false);
+  assert.equal(v.code, "WAITING");
+});
+
+test("armedBehindVerdict: armed, green, current with main (behindBy 0) is HEALTHY", () => {
+  const v = armedBehindVerdict({ armed: true, gateConclusion: "SUCCESS", behindBy: 0, quietSeconds: 3000 });
+  assert.equal(v.stalled, false);
+  assert.equal(v.code, "HEALTHY");
+});
+
+test("armedBehindVerdict: REFUSE RATHER THAN PRINT ZERO -- behind with no timed check run is "
+  + "UNRESOLVABLE, never HEALTHY", () => {
+  const v = armedBehindVerdict({ armed: true, gateConclusion: "SUCCESS", behindBy: 14, quietSeconds: null });
+  assert.equal(v.stalled, false);
+  assert.equal(v.code, "UNRESOLVABLE");
+});
+
+test("armedBehindVerdict: behind but the head is quiet only 3 minutes -- TOO_RECENT, matches the "
+  + "issue's own 'synced 3 minutes ago' fixture naming none", () => {
+  const v = armedBehindVerdict({ armed: true, gateConclusion: "SUCCESS", behindBy: 30, quietSeconds: 180 });
+  assert.equal(v.stalled, false);
+  assert.equal(v.code, "TOO_RECENT");
+});
+
+test("armedBehindVerdict: MUTATION TARGET -- armed, green, behind, quiet 40+ minutes IS stalled, "
+  + "matching the issue's own fixture", () => {
+  const v = armedBehindVerdict({ armed: true, gateConclusion: "SUCCESS", behindBy: 30, quietSeconds: 40 * 60 });
+  assert.equal(v.stalled, true);
+  assert.equal(v.code, "BEHIND");
+});
+
+test("armedBehindVerdict: exactly at the 15m threshold counts as past it -- inclusive of staleness", () => {
+  const v = armedBehindVerdict({
+    armed: true, gateConclusion: "SUCCESS", behindBy: 1, quietSeconds: DEFAULT_BEHIND_STALL_THRESHOLD_SECONDS,
+  });
+  assert.equal(v.stalled, true);
+});
+
+test("armedBehindVerdict: a custom thresholdSeconds is honoured, not the default silently", () => {
+  const v = armedBehindVerdict({
+    armed: true, gateConclusion: "SUCCESS", behindBy: 1, quietSeconds: 100, thresholdSeconds: 50,
+  });
+  assert.equal(v.stalled, true);
+});
+
+// --- behindByCount: the real commit-count git does not expose via the API ---
+
+test("behindByCount: zero when base and head are the same object", () => {
+  const n = behindByCount("origin/main", "origin/main", (args) => {
+    try {
+      const stdout = execFileSync("git", args, { encoding: "utf8", env: sandboxGitEnv() });
+      return { status: 0, stdout };
+    } catch (cause) {
+      const err = cause as { status?: number, stdout?: string };
+      return { status: err.status ?? 1, stdout: err.stdout ?? "" };
+    }
+  });
+  assert.equal(n, 0);
+});
+
+test("behindByCount: reads the real rev-list --count output", () => {
+  const n = behindByCount("origin/main", "deadbeef", () => ({ status: 0, stdout: "14\n" }));
+  assert.equal(n, 14);
+});
+
+test("behindByCount: a failed git call reports 0, never a negative or NaN count", () => {
+  const n = behindByCount("origin/main", "deadbeef", () => ({ status: 128, stdout: "" }));
+  assert.equal(n, 0);
+});
+
+// --- formatBehindWatchdogLine: every number states its window, refuse rather than print zero ---
+
+test("formatBehindWatchdogLine: zero stalled still STATES THE WINDOW -- how many were examined", () => {
+  const line = formatBehindWatchdogLine([], [], 7, DEFAULT_BEHIND_STALL_THRESHOLD_SECONDS);
+  assert.match(line, /0 of 7/);
+  assert.match(line, /15m/);
+});
+
+test("formatBehindWatchdogLine: names every stalled PR and its own reason", () => {
+  const line = formatBehindWatchdogLine(
+    [{ number: 485, behindBy: 30, reason: "armed and green, 30 commit(s) behind" },
+     { number: 490, behindBy: 14, reason: "armed and green, 14 commit(s) behind" }],
+    [], 2, DEFAULT_BEHIND_STALL_THRESHOLD_SECONDS);
+  assert.match(line, /#485/);
+  assert.match(line, /#490/);
+  assert.match(line, /2 of 2/);
+});
+
+test("formatBehindWatchdogLine: an UNRESOLVABLE PR is named on its own line, never folded into "
+  + "'0 stalled' -- 'nothing stalled' and 'could not ask' must never be the same output", () => {
+  const line = formatBehindWatchdogLine([], [{ number: 501, reason: "no timed check run" }], 1,
+    DEFAULT_BEHIND_STALL_THRESHOLD_SECONDS);
+  assert.match(line, /0 of 1/);
+  assert.match(line, /UNRESOLVABLE/);
+  assert.match(line, /#501/);
+});
+
+// --- the exact fixture the issue's own acceptance names: #485/#490, behind 14 and 30, stalled 40+ min ---
+
+test("ACCEPTANCE FIXTURE: two PRs armed, latest gate SUCCESS, behind 14 and 30, quiet 40+ minutes -- "
+  + "the watchdog line names both", () => {
+  const now = new Date("2026-09-08T09:00:00Z");
+  // Real shape (#498's own incident): a cancelled ci.yml run leaves a FAILED gate OLDER than the real
+  // SUCCESS, and the rollup's array order is not chronological -- the older, failed run is listed FIRST.
+  const rollup485 = [
+    { name: "gate", conclusion: "FAILURE", startedAt: "2026-09-08T08:10:00Z", completedAt: "2026-09-08T08:10:05Z" },
+    { name: "gate", conclusion: "SUCCESS", startedAt: "2026-09-08T08:15:34Z", completedAt: "2026-09-08T08:15:40Z" },
+  ];
+  const rollup490 = [
+    { name: "gate", conclusion: "FAILURE", startedAt: "2026-09-08T08:05:00Z", completedAt: "2026-09-08T08:05:05Z" },
+    { name: "gate", conclusion: "SUCCESS", startedAt: "2026-09-08T08:12:28Z", completedAt: "2026-09-08T08:12:33Z" },
+  ];
+  const prs = [
+    { number: 485, behindBy: 30, rollup: rollup485 },
+    { number: 490, behindBy: 14, rollup: rollup490 },
+  ];
+  const stalledList = [];
+  for (const pr of prs) {
+    const gateConclusion = newestConclusion(pr.rollup, "gate");
+    const quietSeconds = headQuietSeconds(pr.rollup, now);
+    const v = armedBehindVerdict({ armed: true, gateConclusion, behindBy: pr.behindBy, quietSeconds });
+    if (v.stalled) stalledList.push({ number: pr.number, behindBy: pr.behindBy, reason: v.reason });
+  }
+  const line = formatBehindWatchdogLine(stalledList, [], prs.length, DEFAULT_BEHIND_STALL_THRESHOLD_SECONDS);
+  assert.match(line, /#485/, "the watchdog must name #485");
+  assert.match(line, /#490/, "the watchdog must name #490");
+});
+
+test("ACCEPTANCE FIXTURE, other half: the same two PRs synced 3 minutes ago -- the line names neither", () => {
+  const now = new Date("2026-09-08T09:00:00Z");
+  const recentRollup = [
+    { name: "gate", conclusion: "SUCCESS", startedAt: "2026-09-08T08:57:00Z", completedAt: "2026-09-08T08:57:05Z" },
+  ];
+  const prs = [
+    { number: 485, behindBy: 30, rollup: recentRollup },
+    { number: 490, behindBy: 14, rollup: recentRollup },
+  ];
+  const stalledList = [];
+  for (const pr of prs) {
+    const gateConclusion = newestConclusion(pr.rollup, "gate");
+    const quietSeconds = headQuietSeconds(pr.rollup, now);
+    const v = armedBehindVerdict({ armed: true, gateConclusion, behindBy: pr.behindBy, quietSeconds });
+    if (v.stalled) stalledList.push({ number: pr.number, behindBy: pr.behindBy, reason: v.reason });
+  }
+  const line = formatBehindWatchdogLine(stalledList, [], prs.length, DEFAULT_BEHIND_STALL_THRESHOLD_SECONDS);
+  assert.doesNotMatch(line, /#485/);
+  assert.doesNotMatch(line, /#490/);
+  assert.match(line, /0 of 2/);
+});
+
+test("MUTATION: dropping the 'latest gate' read for the rollup's FIRST entry makes the acceptance "
+  + "fixture miss both stalled PRs -- proving newestConclusion is load-bearing here, not decorative", () => {
+  const rollup485 = [
+    { name: "gate", conclusion: "FAILURE", startedAt: "2026-09-08T08:32:35Z", completedAt: "2026-09-08T08:32:40Z" },
+    { name: "gate", conclusion: "SUCCESS", startedAt: "2026-09-08T08:15:34Z", completedAt: "2026-09-08T08:15:40Z" },
+  ];
+  // The OLD, buggy read #498 shipped with: the first matching entry in array order, not the newest.
+  const buggyGateConclusion = rollup485.find((c) => c.name === "gate")?.conclusion ?? null;
+  const v = armedBehindVerdict({
+    armed: true, gateConclusion: buggyGateConclusion, behindBy: 30, quietSeconds: 40 * 60,
+  });
+  assert.equal(v.stalled, false, "the buggy 'first entry' read must miss the stall (WAITING on the "
+    + "stale failure), which is exactly what made #485/#490 invisible for hours");
+  assert.equal(v.code, "WAITING");
 });
 
 // --- the CLI, guarded like every other argv-reading script here ---
