@@ -13,6 +13,13 @@
  * fall back to `GITHUB_TOKEN`, with a printed warning, when it is not -- so the pipeline keeps arming
  * before the token exists rather than stopping (#382's own lesson: a job that cannot do its intended work
  * must say which path it took).
+ *
+ * Scoped to EXACTLY these two jobs' own `run:` text, never the whole file -- C2 (#416's sibling) added a
+ * THIRD job, `update-branch`, to this same workflow, and it prints its own `A11IGN_BOT_TOKEN is not set`
+ * warning for a deliberately DIFFERENT reason (it skips outright rather than falling back -- see that
+ * job's own comment). A whole-file regex count would have made this file's assertions couple to a job
+ * this file is not about, and either broken a correct third job or hidden a real regression in the two
+ * jobs this file actually specifies. See `auto-arm-update-branch.test.ts` for the third job's own tests.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -22,6 +29,11 @@ import { parse as parseYaml } from "yaml";
 
 const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
 const WORKFLOW = `${REPO}.github/workflows/auto-arm.yml`;
+
+/** @param {{ jobs: Record<string, { steps: Array<{ env?: Record<string,string>, run?: string }> }> }} doc */
+function jobRunText(doc: { jobs: Record<string, { steps: Array<{ run?: string }> }> }, jobName: string): string {
+  return (doc.jobs[jobName]?.steps ?? []).map((s) => s.run ?? "").join("\n");
+}
 
 test("both arm and sweep read A11IGN_BOT_TOKEN as an env var -- never as a CLI argument or echoed", () => {
   const doc = parseYaml(readFileSync(WORKFLOW, "utf8")) as {
@@ -39,18 +51,21 @@ test("both arm and sweep read A11IGN_BOT_TOKEN as an env var -- never as a CLI a
 
 test("MUTATION TARGET: both jobs actually BRANCH on whether the token is set -- a present secret is used, "
   + "not merely read and ignored", () => {
-  const text = readFileSync(WORKFLOW, "utf8");
-  const branches = [...text.matchAll(/if \[ -n "\$A11IGN_BOT_TOKEN" \]/g)];
-  assert.equal(branches.length, 2, `expected the same conditional in both arm and sweep, found `
-    + `${branches.length}`);
+  const doc = parseYaml(readFileSync(WORKFLOW, "utf8")) as Parameters<typeof jobRunText>[0];
+  for (const jobName of ["arm", "sweep"]) {
+    const branches = [...jobRunText(doc, jobName).matchAll(/if \[ -n "\$A11IGN_BOT_TOKEN" \]/g)];
+    assert.equal(branches.length, 1, `expected exactly one such conditional in ${jobName}, found `
+      + `${branches.length}`);
+  }
 });
 
 test("the fallback prints a warning naming what breaks -- trunk-guard, close-rows, the push watchdogs, "
   + "and #416 itself, so the next reader knows this path is temporary", () => {
-  const text = readFileSync(WORKFLOW, "utf8");
-  const warnings = [...text.matchAll(/::warning::A11IGN_BOT_TOKEN is not set[^\n]*/g)];
-  assert.equal(warnings.length, 2, "both jobs must print the fallback warning, not just one");
-  for (const [warning] of warnings) {
+  const doc = parseYaml(readFileSync(WORKFLOW, "utf8")) as Parameters<typeof jobRunText>[0];
+  for (const jobName of ["arm", "sweep"]) {
+    const warnings = [...jobRunText(doc, jobName).matchAll(/::warning::A11IGN_BOT_TOKEN is not set[^\n]*/g)];
+    assert.equal(warnings.length, 1, `${jobName} must print exactly one fallback warning`);
+    const [[warning]] = warnings;
     assert.match(warning, /trunk-guard/);
     assert.match(warning, /close-rows/);
     assert.match(warning, /#416/);
@@ -58,9 +73,14 @@ test("the fallback prints a warning naming what breaks -- trunk-guard, close-row
 });
 
 test("the fallback token is GITHUB_TOKEN (github.token), never a hard-coded or absent value", () => {
-  const text = readFileSync(WORKFLOW, "utf8");
-  const fallbacks = [...text.matchAll(/FALLBACK_TOKEN: \$\{\{ github\.token \}\}/g)];
-  assert.equal(fallbacks.length, 2, "both jobs must map github.token as the fallback");
+  const doc = parseYaml(readFileSync(WORKFLOW, "utf8")) as {
+    jobs: Record<string, { steps: Array<{ env?: Record<string, string> }> }>,
+  };
+  for (const jobName of ["arm", "sweep"]) {
+    const steps = doc.jobs[jobName]?.steps ?? [];
+    const fallbacks = steps.filter((s) => s.env?.FALLBACK_TOKEN === "${{ github.token }}");
+    assert.equal(fallbacks.length, 1, `${jobName} must map github.token as the fallback exactly once`);
+  }
 });
 
 test("A11IGN_BOT_TOKEN never appears as a bare CLI argument anywhere in the workflow", () => {
