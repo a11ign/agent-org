@@ -102,6 +102,43 @@ test("extractClosesDeclaration: a separate line mixed with a comma-list on anoth
   assert.deepEqual(extractClosesDeclaration("Closes #1, #2\nCloses #3"), { kind: "closes", numbers: [1, 2, 3] });
 });
 
+test("extractClosesDeclaration: A DELIBERATE WIDENING -- a `closes #N` mention in ORDINARY PROSE now also "
+  + "reports, and this is correct, not a regression", () => {
+  // Before #527's matchAll fix, `.exec()` once ignored every `Closes` keyword after the first, including
+  // one sitting in a prose sentence rather than its own declaration line. matchAll now collects it too.
+  // That WIDENS what this function reports -- and it is the right direction: GitHub's own
+  // closingIssuesReferences would close #999 here as well (the keyword is real, wherever it sits), so the
+  // gate reporting it is the gate agreeing with GitHub more closely, not less. Pinned as its own fixture
+  // so a future reader sees this as a stated decision rather than mistaking it for a bug on the day the
+  // count moves.
+  assert.deepEqual(
+    extractClosesDeclaration("Closes #510\n\nThis also closes #999 as a side effect."),
+    { kind: "closes", numbers: [510, 999] });
+});
+
+test("extractClosesDeclaration: A KNOWN, LIVE DIVERGENCE FROM GITHUB -- `Closes: none` short-circuits even "
+  + "when its own REASON TEXT contains a real `closes #N`", () => {
+  // #537's real body, verbatim in shape: `Closes: none — <reason>`, where the reason itself happens to
+  // read "...closes #494". CLOSES_NONE_PATTERN matches first (deliberately -- an opt-out's reason is
+  // prose, not a second declaration), so this function reports `none`. GitHub does NOT read it that way:
+  // it resolved the `closes #494` keyword INSIDE that reason text as a real closing reference and closed
+  // #494 when #537 merged, while #530 -- the PR that actually wires the gate -- stayed open. That is a
+  // measured, live disagreement between what this file reports and what GitHub does, on a real merged PR.
+  //
+  // NOT FIXED HERE, on purpose. Making `none` refuse to short-circuit because its reason text CONTAINS the
+  // word "closes" would be worse: an opt-out's whole point is that its reason is free prose, and policing
+  // that prose for accidental keywords would produce false MALFORMED verdicts on ordinary explanations.
+  // This test exists so the disagreement is a documented fact instead of a surprise the next reader
+  // rediscovers by reopening an issue -- the same shape `announcement.test.ts` uses to pin an old and a
+  // new NVDA container word side by side rather than picking a winner.
+  assert.deepEqual(
+    extractClosesDeclaration("Closes: none — the wiring PR (#530) closes #494."),
+    { kind: "none", reason: "the wiring PR (#530) closes #494." });
+  // The pinned fact this test is FOR: GitHub itself closed #494 when this exact body's PR (#537) merged,
+  // even though this function reports `none`. Search this repo's issue tracker for #537/#494 for the
+  // live incident this fixture is named after.
+});
+
 // --- realistic PR-body shapes, not just the bare line ---
 
 test("extractClosesDeclaration: the declaration works embedded in a real multi-paragraph body", () => {
