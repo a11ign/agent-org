@@ -90,6 +90,31 @@ function skipIfShallow(fn: () => void): void {
   }
 }
 
+/**
+ * `conflictMetrics` calls `gh`, and `docs/pipeline.md`'s own record of the `acceptance` job is explicit:
+ * its ONLY `env:` is `PR_BODY` -- no `GH_TOKEN`, so `gh` has no credentials there at all. Verified by
+ * reproducing the exact failure this job would hit: `env -u GH_TOKEN -u GITHUB_TOKEN HOME=<empty> gh pr
+ * list ...` prints "To get started with GitHub CLI, please run: gh auth login" and exits 4 -- a different
+ * message from `skipIfShallow`'s shallow-clone case, because it is a different cause, and this repository's
+ * own rule is that two different faults must not print (or be caught by) the same pattern.
+ *
+ * This is `skipIfShallow`'s own remedy given the SAME treatment on the SECOND path that needed it -- #518
+ * itself was called out for applying the fix to `mergedPRNeededReconciliation`'s tests and missing the
+ * live `conflictMetrics` test, the "remedy reaching one of several paths" shape this repository's CLAUDE.md
+ * names as its most expensive recurring one.
+ */
+function skipIfNoGhAuth(fn: () => void): void {
+  try {
+    fn();
+  } catch (error) {
+    const message = String((error as { stderr?: string; message?: string }).stderr ?? error);
+    if (!/gh auth login|GH_TOKEN environment variable/i.test(message)) throw error;
+    console.log("SKIPPED: no GitHub CLI credentials in this environment (the acceptance job's token is "
+      + "scoped to contents:read and never exposed as GH_TOKEN) -- an honest skip, not a pass. Proven for "
+      + "real in the `ts` job, which has network and a real token (see PR body).");
+  }
+}
+
 test("mergedPRNeededReconciliation: THE REAL RECONCILED CASE -- PR #503's merge commit synced main twice", () => {
   skipIfShallow(() => {
     const result = mergedPRNeededReconciliation({ number: 503,
@@ -117,25 +142,29 @@ test("mergedPRNeededReconciliation: a bogus sha is unresolvable (null), not thro
 // --- conflictMetrics: live, real -- THE COMPOSED FIGURE, exercised end to end ---
 
 test("conflictMetrics: THE COMPOSED SHAPE, live -- every figure states its window and its method", () => {
-  // ONE HOUR, NOT A DAY -- this repository merges fast enough that a 24h window once meant a hundred-plus
-  // merged PRs, each costing `mergedPRNeededReconciliation` two or three real git subprocesses. A live
-  // wiring test proves the plumbing reaches GitHub and git for real; it does not need the whole day's
-  // volume to do that, and a shrinking window keeps this test's cost from growing with the queue's.
-  const since = new Date(Date.now() - 3600_000).toISOString();
-  const result = conflictMetrics(since);
-  assert.equal(result.since, since);
-  assert.equal(typeof result.method, "string");
-  assert.ok(result.method.length > 20, "the method must be a real sentence, not a placeholder");
-  assert.equal(typeof result.opened, "number");
-  assert.equal(typeof result.merged, "number");
-  assert.equal(typeof result.closedUnmerged, "number");
-  assert.equal(typeof result.lifetimeMinutes.count, "number");
-  assert.equal(typeof result.reconciliation.of, "number");
-  assert.equal(typeof result.reconciliation.unresolvable, "number");
-  assert.ok(Array.isArray(result.hotspotFiles));
-  // THE REFUSE-RATHER-THAN-ZERO PROPERTY, live: an uninspectable merge is never folded into the clean
-  // count -- neededReconciliation + (merges that resolved to false) + unresolvable must account for `of`.
-  assert.ok(result.reconciliation.neededReconciliation + result.reconciliation.unresolvable <= result.reconciliation.of);
+  skipIfNoGhAuth(() => {
+    // ONE HOUR, NOT A DAY -- this repository merges fast enough that a 24h window once meant a
+    // hundred-plus merged PRs, each costing `mergedPRNeededReconciliation` two or three real git
+    // subprocesses. A live wiring test proves the plumbing reaches GitHub and git for real; it does not
+    // need the whole day's volume to do that, and a shrinking window keeps this test's cost from growing
+    // with the queue's.
+    const since = new Date(Date.now() - 3600_000).toISOString();
+    const result = conflictMetrics(since);
+    assert.equal(result.since, since);
+    assert.equal(typeof result.method, "string");
+    assert.ok(result.method.length > 20, "the method must be a real sentence, not a placeholder");
+    assert.equal(typeof result.opened, "number");
+    assert.equal(typeof result.merged, "number");
+    assert.equal(typeof result.closedUnmerged, "number");
+    assert.equal(typeof result.lifetimeMinutes.count, "number");
+    assert.equal(typeof result.reconciliation.of, "number");
+    assert.equal(typeof result.reconciliation.unresolvable, "number");
+    assert.ok(Array.isArray(result.hotspotFiles));
+    // THE REFUSE-RATHER-THAN-ZERO PROPERTY, live: an uninspectable merge is never folded into the clean
+    // count -- neededReconciliation + (merges that resolved to false) + unresolvable must account for `of`.
+    assert.ok(result.reconciliation.neededReconciliation + result.reconciliation.unresolvable
+      <= result.reconciliation.of);
+  });
 });
 
 // --- MUTATION TARGET ---
