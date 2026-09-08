@@ -84,6 +84,24 @@ test("extractClosesDeclaration: a colon is accepted before the number too (`Clos
   assert.deepEqual(extractClosesDeclaration("Closes: #451"), { kind: "closes", numbers: [451] });
 });
 
+test("extractClosesDeclaration: THE #527 MEASUREMENT -- two SEPARATE Closes lines both report, not just the first", () => {
+  // Caught live on #522: the body declared `Closes #510` and `Closes #497` on separate lines, and the
+  // gate printed only `CLOSES: #510` -- #497 vanished with no warning, even though close-rows-for-merged-
+  // pr.mjs (which reads GitHub's own closingIssuesReferences, never this regex) closed both for real. A
+  // reporting defect, not a closing one -- but the report and GitHub disagreeing about a fact both see is
+  // exactly the shape this repository has already paid for.
+  assert.deepEqual(extractClosesDeclaration("Closes #510\nCloses #497"), { kind: "closes", numbers: [510, 497] });
+});
+
+test("extractClosesDeclaration: three separate Closes lines all report, in the order written", () => {
+  assert.deepEqual(extractClosesDeclaration("Closes #1\nsome text in between\nCloses #2\nCloses #3"),
+    { kind: "closes", numbers: [1, 2, 3] });
+});
+
+test("extractClosesDeclaration: a separate line mixed with a comma-list on another line -- both contribute", () => {
+  assert.deepEqual(extractClosesDeclaration("Closes #1, #2\nCloses #3"), { kind: "closes", numbers: [1, 2, 3] });
+});
+
 // --- realistic PR-body shapes, not just the bare line ---
 
 test("extractClosesDeclaration: the declaration works embedded in a real multi-paragraph body", () => {
