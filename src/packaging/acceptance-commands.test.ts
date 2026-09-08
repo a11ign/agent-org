@@ -12,11 +12,21 @@ import { existsSync } from "node:fs";
 
 import {
   classifyCommand, extractAcceptanceSection, acceptanceReport, testFileArgumentsResolve,
+  testFileRequirements, unmetRequirements, unmetCommandRequirements,
+  hasFullHistoryDeclaration, jobCapabilities,
 } from "../../../../scripts/acceptance-commands.mjs";
 
 // A file known to exist, relative to the repo root -- where every real invocation of this command runs
 // from. This test file names itself, so it cannot go stale independently of being renamed.
 const REAL_FILE = "packages/lab/src/packaging/acceptance-commands.test.ts";
+
+// The REAL fixture #510/#497 exist for: `pre-push-resolve-toward-main.test.ts` genuinely carries
+// `// requires: history` (its own `shallowHere()`/`t.skip()` guards need full git history), so testing
+// against it exercises the actual mechanism rather than an invented stand-in.
+const HISTORY_FIXTURE = "packages/lab/src/packaging/pre-push-resolve-toward-main.test.ts";
+
+const NO_HISTORY = { history: false, token: false, fleet: false };
+const WITH_HISTORY = { history: true, token: false, fleet: false };
 
 // --- classifyCommand ---
 
@@ -435,4 +445,143 @@ test("#419b MUTATION TARGET (form 5): removing the leading-blank skip must repro
   assert.equal(naiveBreakOnAnyBlank(""), true,
     "documents the exact regression this row exists to prevent -- the naive rule cannot distinguish a "
     + "leading blank (before any command) from the real terminator (after one)");
+});
+
+// --- #510: a test file declares `// requires: <capability>`; a command naming it is REFUSED, named, in
+// a job that does not have that capability -- rather than reporting a green RAN that only happened to be
+// true because the test's own `t.skip()` fallback quietly passed. #497 adds the one axis a PR body can
+// change: `History: full` deepens the checkout that declaration asks for. ---
+
+test("#510 testFileRequirements: parses a comma-separated `// requires:` header, trimmed", () => {
+  assert.deepEqual(testFileRequirements("// requires: history, token\nrest of file"), ["history", "token"]);
+});
+
+test("#510 testFileRequirements: absent header is an empty list, not an error", () => {
+  assert.deepEqual(testFileRequirements("no header here at all"), []);
+});
+
+test("#510 testFileRequirements: found ANYWHERE in the file, not windowed to the first few lines -- this "
+  + "repo's own test files carry long doc-comment headers before any `//` line (see HISTORY_FIXTURE)", () => {
+  const text = "/**\n * a long doc comment\n * spanning several lines\n */\n// requires: history\nimport x;";
+  assert.deepEqual(testFileRequirements(text), ["history"]);
+});
+
+test("#510 unmetRequirements: an UNKNOWN requirement word reads as unmet, never silently satisfied -- a "
+  + "typo must never read as \"needs nothing\"", () => {
+  assert.deepEqual(unmetRequirements(["gpu"], WITH_HISTORY), ["gpu"]);
+});
+
+test("#510 unmetRequirements: a satisfied requirement is filtered out", () => {
+  assert.deepEqual(unmetRequirements(["history"], WITH_HISTORY), []);
+});
+
+test("#510 unmetCommandRequirements: the REAL history fixture, against a job with no history, names "
+  + "itself as the declaring file", () => {
+  assert.deepEqual(
+    unmetCommandRequirements(`npx tsx --test ${HISTORY_FIXTURE}`, NO_HISTORY),
+    [{ requirement: "history", files: [HISTORY_FIXTURE] }]);
+});
+
+test("#510 unmetCommandRequirements: the same fixture against a job WITH history has nothing unmet", () => {
+  assert.deepEqual(unmetCommandRequirements(`npx tsx --test ${HISTORY_FIXTURE}`, WITH_HISTORY), []);
+});
+
+test("#510 unmetCommandRequirements: a file with no `// requires:` header at all names nothing", () => {
+  assert.deepEqual(unmetCommandRequirements(`npx tsx --test ${REAL_FILE}`, NO_HISTORY), []);
+});
+
+test("#510 unmetCommandRequirements: a non-`tsx --test` command is never inspected", () => {
+  assert.deepEqual(unmetCommandRequirements("npm run lint", NO_HISTORY), []);
+});
+
+test("#510 classifyCommand: the real history fixture is REFUSED, named, when the job has no history", () => {
+  const result = classifyCommand(`npx tsx --test ${HISTORY_FIXTURE}`, { capabilities: NO_HISTORY });
+  assert.equal(result.verdict, "refused");
+  assert.match((/** @type {{reason:string}} */(result)).reason, /`history`/);
+  assert.match((/** @type {{reason:string}} */(result)).reason, new RegExp(HISTORY_FIXTURE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("#510 classifyCommand: MUTATION TARGET -- the identical command is runnable once history is "
+  + "available", () => {
+  assert.deepEqual(classifyCommand(`npx tsx --test ${HISTORY_FIXTURE}`, { capabilities: WITH_HISTORY }),
+    { verdict: "runnable" });
+});
+
+test("#510 classifyCommand: defaults to FULL_CAPABILITIES when no capabilities are passed, so every "
+  + "existing caller/test that never mentions capabilities is unaffected", () => {
+  assert.deepEqual(classifyCommand(`npx tsx --test ${HISTORY_FIXTURE}`), { verdict: "runnable" });
+});
+
+test("#510 classifyCommand: a hypothetical `requires: token` is refused the same way, proven at the "
+  + "pure-function layer since no real file in this repo declares it yet", () => {
+  const text = "// requires: token\nrest of file";
+  const unmet = unmetRequirements(testFileRequirements(text), NO_HISTORY);
+  assert.deepEqual(unmet, ["token"], "token is structurally false in every real job -- FULL_CAPABILITIES "
+    + "in a test is the only way this requirement is ever satisfied");
+});
+
+// --- #497: `History: full` in a PR body ---
+
+test("#497 hasFullHistoryDeclaration: a bare `History: full` line is recognised", () => {
+  assert.equal(hasFullHistoryDeclaration("Closes #1\nHistory: full\n"), true);
+});
+
+test("#497 hasFullHistoryDeclaration: absent from an ordinary body", () => {
+  assert.equal(hasFullHistoryDeclaration("Closes #1\nAcceptance: npm test\n"), false);
+});
+
+test("#497 hasFullHistoryDeclaration: a MENTION mid-sentence does not count -- it must be the whole line", () => {
+  assert.equal(hasFullHistoryDeclaration("This PR needs the full History: full commit graph to work."), false);
+});
+
+test("#497 jobCapabilities: history follows the body declaration; token/fleet are structurally always false", () => {
+  assert.deepEqual(jobCapabilities("History: full"), { history: true, token: false, fleet: false });
+  assert.deepEqual(jobCapabilities("Acceptance: npm test"), { history: false, token: false, fleet: false });
+});
+
+// --- #510/#497 integration through `acceptanceReport`, which is what `main()` actually calls ---
+
+test("#510 acceptanceReport: the history fixture is REFUSED (named), not RAN, with no `History: full` "
+  + "declared -- and REFUSED never fails the report on its own", () => {
+  const body = `Closes #1\nAcceptance: npx tsx --test ${HISTORY_FIXTURE}\n`;
+  const report = acceptanceReport(body, () => 0);
+  assert.equal(report.ok, true);
+  assert.match(report.lines[0], /^ACCEPTANCE: REFUSED/);
+  assert.match(report.lines[0], /`history`/);
+});
+
+test("#497 acceptanceReport: `History: full` makes the same fixture actually RUN", () => {
+  const body = `Closes #1\nAcceptance: npx tsx --test ${HISTORY_FIXTURE}\nHistory: full\n`;
+  const report = acceptanceReport(body, () => 0);
+  assert.equal(report.ok, true);
+  assert.match(report.lines[0], /^ACCEPTANCE: RAN/);
+});
+
+test("#497 acceptanceReport: `History: full` with a command that FAILS still fails the report -- the "
+  + "declaration only changes whether the command runs, never whether its result counts", () => {
+  const body = `Closes #1\nAcceptance: npx tsx --test ${HISTORY_FIXTURE}\nHistory: full\n`;
+  const report = acceptanceReport(body, () => 1);
+  assert.equal(report.ok, false);
+});
+
+test("#497 acceptanceReport: MUTATION TARGET -- `History: full` declared with NO command that uses it "
+  + "gets a WARNING, and the warning never fails the report (\"worth a warning, not a refusal, since the "
+  + "cost is only time\" -- #497's own stated boundary)", () => {
+  const body = `Closes #1\nAcceptance: npx tsx --test ${REAL_FILE}\nHistory: full\n`;
+  const report = acceptanceReport(body, () => 0);
+  assert.equal(report.ok, true);
+  assert.ok(report.lines.some((l) => l.startsWith("WARNING:") && l.includes("History: full")),
+    "expected a WARNING line naming the unused declaration");
+});
+
+test("#497 acceptanceReport: no warning when `History: full` is declared and actually used", () => {
+  const body = `Closes #1\nAcceptance: npx tsx --test ${HISTORY_FIXTURE}\nHistory: full\n`;
+  const report = acceptanceReport(body, () => 0);
+  assert.ok(!report.lines.some((l) => l.startsWith("WARNING:")), "no unused-declaration warning expected");
+});
+
+test("#497 acceptanceReport: no warning when `History: full` is simply absent", () => {
+  const body = `Closes #1\nAcceptance: npx tsx --test ${REAL_FILE}\n`;
+  const report = acceptanceReport(body, () => 0);
+  assert.ok(!report.lines.some((l) => l.startsWith("WARNING:")));
 });

@@ -14,6 +14,12 @@
  * is still in flight, and this move is independently correct with or without it. Recorded here so a reader
  * of this header does not read the header's absence as forgotten rather than sequenced.
  */
+// requires: token
+//
+// #510/B8: this job's `token` capability is structurally always false (contents: read only, see the header
+// above), so `acceptance-commands.mjs` REFUSES a `tsx --test` command naming this file, named, before ever
+// reaching the API call that used to fail unattributed. Naming this file alone -- never the whole
+// `row-claim.test.ts` -- is what #513 built the split for.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fetchLabels } from "../../../../scripts/row-claim.mjs";
