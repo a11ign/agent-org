@@ -76,18 +76,26 @@ test("hotspotFiles: no PRs at all is an empty table", () => {
 
 /**
  * `git show`/`git merge-base`/`git log --merges` on a real, old commit need FULL history, which a shallow
- * clone (a sandbox, a depth-limited checkout) does not have. Skips honestly rather than failing on an
- * environment this repository's own `git-spawn-classification.test.ts`-adjacent tooling did not create.
+ * clone (a sandbox, the `acceptance` job's depth-1 checkout) does not have -- but `mergedPRNeededReconciliation`
+ * ITSELF SWALLOWS that failure into its own `null` ("could not inspect") return, on exactly the contract
+ * #466 was filed to build: a lookup failure is refused, never folded into a false clean. So this checker
+ * does NOT wrap the call in a try/catch -- the function never throws here, and the first version of this
+ * guard caught nothing, exactly because it was built to catch an exception that this function's own
+ * design deliberately never lets escape. It checks the RETURN VALUE instead: `null` is read as "this
+ * environment could not tell", the honest skip; anything else is asserted against `expected`.
+ *
+ * FOUND BY WATCHING IT FAIL TO SKIP, not by reasoning about it -- the first version of this test read
+ * `assert.equal(result, true)` inside `skipIfShallow(() => {...})` and failed for real in the `acceptance`
+ * job with `null !== true`, never reaching the catch block at all. A guard must be shown to fire before it
+ * is trusted, this repository's own rule, and the wrong shape here would have shipped believing it did.
  */
-function skipIfShallow(fn: () => void): void {
-  try {
-    fn();
-  } catch (error) {
-    const message = String((error as { stderr?: string; message?: string }).stderr ?? error);
-    if (!/not a valid object name|bad object|fatal: Not a valid object/i.test(message)) throw error;
-    console.log("SKIPPED: this checkout does not have the commit history mergedPRNeededReconciliation "
-      + "needs (a shallow clone) -- an honest skip, not a pass.");
+function assertOrSkipIfUnresolvable(actual: boolean | null, expected: boolean, testName: string): void {
+  if (actual === null) {
+    console.log(`SKIPPED: ${testName} -- this checkout could not inspect the commit history `
+      + "mergedPRNeededReconciliation needs (a shallow clone) -- an honest skip, not a pass.");
+    return;
   }
+  assert.equal(actual, expected);
 }
 
 /**
@@ -116,19 +124,15 @@ function skipIfNoGhAuth(fn: () => void): void {
 }
 
 test("mergedPRNeededReconciliation: THE REAL RECONCILED CASE -- PR #503's merge commit synced main twice", () => {
-  skipIfShallow(() => {
-    const result = mergedPRNeededReconciliation({ number: 503,
-      mergeCommit: { oid: "5fd57e051db0784fe23d24bf91700d8ce681f69f" } });
-    assert.equal(result, true);
-  });
+  const result = mergedPRNeededReconciliation({ number: 503,
+    mergeCommit: { oid: "5fd57e051db0784fe23d24bf91700d8ce681f69f" } });
+  assertOrSkipIfUnresolvable(result, true, "PR #503's reconciled case");
 });
 
 test("mergedPRNeededReconciliation: THE REAL CLEAN CASE -- PR #502's merge commit needed no sync at all", () => {
-  skipIfShallow(() => {
-    const result = mergedPRNeededReconciliation({ number: 502,
-      mergeCommit: { oid: "67e4022226c35629a319d3eade62a0d6460fd784" } });
-    assert.equal(result, false);
-  });
+  const result = mergedPRNeededReconciliation({ number: 502,
+    mergeCommit: { oid: "67e4022226c35629a319d3eade62a0d6460fd784" } });
+  assertOrSkipIfUnresolvable(result, false, "PR #502's clean case");
 });
 
 test("mergedPRNeededReconciliation: no mergeCommit.oid at all is unresolvable (null), never a false clean", () => {
