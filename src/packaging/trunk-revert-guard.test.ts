@@ -187,19 +187,31 @@ test("C3 ACCEPTANCE: trunk-revert-guard.mjs's step has no continue-on-error -- i
     + "step level instead of the job level.");
 });
 
-test("C3 ACCEPTANCE: decideRevert fires on trunkGate's failure and ONLY trunkGate's failure", () => {
+test("C3 ACCEPTANCE: decideRevert fires on trunkGate's or trunkBuildTest's failure, and ONLY those", () => {
+  // A1 (#452) split the original single `trunkGate` job in two: `trunkGate` (the revert-guard check
+  // alone) and `trunkBuildTest` (a CALL to reusable-build-test.yml). Either can now be the real failure,
+  // so decideRevert must watch both -- but `trunkBuildTest`'s own `needs: trunkGate` already means it
+  // reads `skipped`, never `failure`, when trunkGate itself failed, so checking both here does not
+  // double-fire on one real failure.
   const doc = parseYaml(readFileSync(`${REPO}/.github/workflows/trunk-guard.yml`, "utf8")) as {
-    jobs: Record<string, { needs?: string | string[], if?: string }>,
+    jobs: Record<string, { needs?: string | string[], if?: string, uses?: string }>,
   };
   const decideRevert = doc.jobs.decideRevert;
   assert.ok(decideRevert, "decideRevert must exist as its own job");
   const needs = Array.isArray(decideRevert.needs) ? decideRevert.needs : [decideRevert.needs];
   assert.ok(needs.includes("trunkGate"),
-    "decideRevert must declare `needs: trunkGate` -- without it, GitHub cannot resolve "
+    "decideRevert must declare trunkGate among its needs -- without it, GitHub cannot resolve "
     + "`needs.trunkGate.result` at all and the job would fail to even start, not skip quietly");
-  assert.equal(decideRevert.if, "needs.trunkGate.result == 'failure'",
+  assert.ok(needs.includes("trunkBuildTest"),
+    "decideRevert must also declare trunkBuildTest among its needs -- the real build/test suite now runs "
+    + "there, and a revert decision that cannot see its result would miss the exact failure #316 exists "
+    + "to catch");
+  assert.ok(doc.jobs.trunkBuildTest?.uses, "trunkBuildTest must call a reusable workflow, not carry its "
+    + "own steps -- otherwise this test is checking a job that no longer exists in this shape");
+  assert.equal(decideRevert.if,
+    "needs.trunkGate.result == 'failure' || needs.trunkBuildTest.result == 'failure'",
     "must be EXACTLY this condition -- `always()` would also fire on a CANCELLED run (not a real "
-    + "failure, per trunk-revert.mjs's own header), and `failure()` alone (without naming trunkGate) "
+    + "failure, per trunk-revert.mjs's own header), and `failure()` alone (without naming either job) "
     + "would fire on failures from unrelated jobs added to this workflow later");
 });
 
