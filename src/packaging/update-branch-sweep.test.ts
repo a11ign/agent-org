@@ -60,7 +60,10 @@ test("newestConclusion: a still-running newest run reports null, which is 'not y
     { name: "gate", conclusion: null, completedAt: null, startedAt: "2026-09-08T07:40:00Z" },
   ];
   assert.equal(newestConclusion(runs, "gate"), null);
-  assert.equal(updateBranchDecision({ armed: true, gateConclusion: null, behind: true }).update, true);
+  // `quietSeconds` since #488: a running gate updates only when the head has been still. Passing a quiet
+  // head keeps this test's own subject -- that a running run is "not yet answered" rather than "failing".
+  assert.equal(updateBranchDecision(
+    { armed: true, gateConclusion: null, behind: true, quietSeconds: 600 }).update, true);
 });
 
 test("newestConclusion: no run of that name, an empty rollup and a null rollup are all null, never a throw", () => {
@@ -101,8 +104,12 @@ test("updateBranchDecision: not armed at all is never this job's concern", () =>
   assert.equal(d.update, false);
 });
 
-test("updateBranchDecision: armed, gate still running (no conclusion), behind -- update, don't wait", () => {
-  const d = updateBranchDecision({ armed: true, gateConclusion: null, behind: true });
+test("updateBranchDecision: armed, gate still running, behind, AND THE HEAD IS QUIET -- update", () => {
+  // #488 narrowed this: "still running" alone is no longer enough, because an author who has just pushed
+  // HAS a running gate, and syncing under them rejects their next push. The head must also have been
+  // still for `HEAD_QUIET_SECONDS`. The case this test was written for -- a SLOW CI on a settled head --
+  // is unchanged and is what `quietSeconds: 600` expresses.
+  const d = updateBranchDecision({ armed: true, gateConclusion: null, behind: true, quietSeconds: 600 });
   assert.equal(d.update, true);
 });
 
