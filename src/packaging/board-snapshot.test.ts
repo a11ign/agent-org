@@ -86,6 +86,66 @@ test("fetchBoardItems throws on a response missing the expected shape, rather th
   assert.throws(() => fetchBoardItems({ run }), /did not have the shape/);
 });
 
+// --- #555: the refusal must name the GraphQL error, not just "could not read Project N items" ---
+
+test("#555: a non-zero exit whose stdout carries a GraphQL error quotes its type and message", () => {
+  // The exact shape measured on the real FORBIDDEN failure that cost #546 three hours: `gh` exits 1, but
+  // the response body it printed before exiting still carries the API's own diagnosis.
+  const stdout = JSON.stringify({
+    errors: [{ type: "FORBIDDEN", path: ["user", "projectV2"],
+      message: "Resource not accessible by personal access token" }],
+  });
+  const run = () => {
+    const err = new Error("Command failed: gh api graphql ...") as Error & { stdout: string; stderr: string };
+    err.stdout = stdout;
+    err.stderr = "gh: Resource not accessible by personal access token\n";
+    throw err;
+  };
+  assert.throws(() => fetchBoardItems({ run }),
+    /FORBIDDEN \(user\.projectV2\): Resource not accessible by personal access token/);
+});
+
+test("#555: a non-zero exit with no parseable GraphQL error falls back to the plain exit message, "
+  + "rather than inventing a cause", () => {
+  const run = () => { throw new Error("gh: not authenticated"); };
+  assert.throws(() => fetchBoardItems({ run }), /could not read Project.*not authenticated/s);
+});
+
+test("#555 MUTATION TARGET: a 200 response carrying `data` AND `errors` together is REFUSED, never read "
+  + "as a complete board -- the exact shape the real probe returned: totalCount correct, every node null", () => {
+  // GraphQL's own answer when the token can COUNT an item but not READ it: the request otherwise
+  // succeeds (exit 0, `data` present, `pageInfo` well-formed), but the `nodes` list is null exactly
+  // where an item should be, and the `errors` array is the only place that says why.
+  const run = () => JSON.stringify({
+    data: { user: { projectV2: { items: {
+      pageInfo: { hasNextPage: false, endCursor: null },
+      nodes: [null, null, null],
+    } } } },
+    errors: [
+      { type: "FORBIDDEN", path: ["user", "projectV2", "items", "nodes", 0], message: "Resource not accessible by personal access token" },
+      { type: "FORBIDDEN", path: ["user", "projectV2", "items", "nodes", 1], message: "Resource not accessible by personal access token" },
+      { type: "FORBIDDEN", path: ["user", "projectV2", "items", "nodes", 2], message: "Resource not accessible by personal access token" },
+    ],
+  });
+  assert.throws(() => fetchBoardItems({ run }), /FORBIDDEN/);
+  assert.throws(() => fetchBoardItems({ run }), /Resource not accessible by personal access token/);
+});
+
+test("#555 CONTROL: an ordinary clean response (no errors array at all) is unaffected", () => {
+  const run = () => page({ nodes: [{ id: "PVTI_1", number: 1, title: "fine", status: "Ready" }] });
+  const items = fetchBoardItems({ run });
+  assert.deepEqual(items, [{ itemId: "PVTI_1", number: 1, title: "fine", status: "Ready" }]);
+});
+
+test("#555: an `errors` array with data still present is refused BEFORE the shape check would even run "
+  + "-- so a caller never sees \"did not have the shape\" for a response that actually named its own cause", () => {
+  const run = () => JSON.stringify({
+    data: { user: { projectV2: { items: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } } },
+    errors: [{ type: "SOME_OTHER_TYPE", message: "a different failure entirely" }],
+  });
+  assert.throws(() => fetchBoardItems({ run }), /SOME_OTHER_TYPE: a different failure entirely/);
+});
+
 test("PROJECT_OWNER and PROJECT_NUMBER match the real board (a11y-witness -- what is open, Project 2)", () => {
   assert.equal(PROJECT_OWNER, "DanBeckDev");
   assert.equal(PROJECT_NUMBER, 2);
