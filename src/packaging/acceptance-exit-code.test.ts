@@ -161,7 +161,7 @@ test("classifyCommand: an already-NEGATED `! npm run mutate ...` is not caught b
   const result = classifyCommand("! npm run mutate -- --file=x --mutate='...' --test='...'",
     { section: "REFUTATION" });
   assert.notEqual(result.verdict, "refused", "the mutate/Refutation refusal must not fire on a negated line");
-  assert.doesNotMatch((/** @type {{reason?:string}} */(result)).reason ?? "", /inverts the Refutation: verdict/);
+  assert.doesNotMatch("reason" in result ? result.reason : "", /inverts the Refutation: verdict/);
 });
 
 test("acceptanceReport: MUTATION TARGET -- a Refutation: line naming `npm run mutate` is REFUSED and "
