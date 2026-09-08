@@ -106,7 +106,21 @@ test("close-rows-sweep.mjs refuses to run without GITHUB_REPOSITORY -- CANNOT AS
   assert.ok(threw, "with no repo to sweep, the script must refuse rather than guess one");
 });
 
-// --- the workflow wiring: close-rows.yml's manual dispatch, trunk-guard.yml's sweep job ---
+// --- the workflow wiring: close-rows.yml's manual dispatch only. There is deliberately no job-wiring
+// test for the sweep script itself here -- 2026-09-08: a `closeRowsSweep` job used to ride trunk-
+// guard.yml's `push: branches: [main]` trigger, and was removed because GitHub does not trigger
+// workflows from events created with GITHUB_TOKEN, so a job riding that trigger could never fire for a
+// bot merge -- the one case it existed to catch. `mergedPrsInWindow`/`closeOnePr` above are correct and
+// carried forward for #417, which wires this same script to a `schedule` trigger instead (the token
+// rule cannot suppress a cron). See trunk-guard.yml's own header at the point the job used to be.
+
+test("close-rows-sweep.mjs is NOT wired to trunk-guard.yml's push trigger -- that job was removed "
+  + "2026-09-08 because GITHUB_TOKEN events (every bot merge) never fire push at all", () => {
+  const text = readFileSync(`${REPO}/.github/workflows/trunk-guard.yml`, "utf8");
+  assert.doesNotMatch(text, /close-rows-sweep\.mjs/,
+    "if this matches, someone re-wired the sweep to a push trigger it structurally cannot fire under for "
+    + "its own target case -- #417's schedule trigger is what this script is waiting for, not a re-add here.");
+});
 
 test("close-rows.yml declares a workflow_dispatch `pr` input, required, alongside pull_request:closed", () => {
   const doc = parseYaml(readFileSync(`${REPO}/.github/workflows/close-rows.yml`, "utf8")) as {
@@ -125,17 +139,4 @@ test("close-rows.yml's close job accepts EITHER trigger, and the run step reads 
     "the job's `if:` must explicitly admit workflow_dispatch, or a manual run is silently skipped");
   assert.match(text, /github\.event\.inputs\.pr \|\| github\.event\.pull_request\.number/,
     "the run step must fall back to the pull_request event's PR number when there is no dispatch input");
-});
-
-test("trunk-guard.yml carries a closeRowsSweep job, independent of trunkGate's result", () => {
-  const doc = parseYaml(readFileSync(`${REPO}/.github/workflows/trunk-guard.yml`, "utf8")) as {
-    jobs: Record<string, { needs?: string | string[], if?: string, steps: Array<Record<string, unknown>> }>,
-  };
-  const job = doc.jobs.closeRowsSweep;
-  assert.ok(job, "trunk-guard.yml must carry a closeRowsSweep job -- #394's second entry point");
-  assert.ok(!job.needs, "closeRowsSweep must not depend on trunkGate -- row-closing is unrelated to "
-    + "whether main's new tip is green, and gating it on that would strand a merged PR's row behind an "
-    + "unrelated test failure");
-  const runLines = (job.steps ?? []).map((s) => String(s.run ?? "")).join("\n");
-  assert.match(runLines, /node scripts\/close-rows-sweep\.mjs/);
 });
