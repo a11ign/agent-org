@@ -7,8 +7,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, execFileSync as rawExecFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, realpathSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, realpathSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import {
   fetchPushedBranches, fetchAllPRHeadRefs, branchesWithNoPR, aheadCount, strandedCandidates, PR_LIST_LIMIT, decideForPR, staleClosureComment, sweepPullRequests, prForDecision } from "../../../../scripts/stranded-branches.mjs";
@@ -335,4 +336,65 @@ test("checksGreen is NOT read from statusCheckRollup — that field unions super
   const dirty = prForDecision({ number: 2, headRefName: "d", createdAt: "2026-09-08T00:00:00Z",
     isDraft: false, labels: [], mergeStateStatus: "DIRTY" }, now);
   assert.equal(dirty.checksGreen, false, "DIRTY is the PR's own problem; the train will not touch it");
+});
+
+/**
+ * THE FIXTURE ACCEPTANCE — `ceo`'s ruling, 2026-09-08.
+ *
+ * A row whose evidence is the live queue proves itself twice: its pure decision runs in the acceptance
+ * job against **recorded API output committed beside the test**, and the live run is pasted on the row by
+ * the owner with a clock, as evidence rather than as the check.
+ *
+ * **An `Acceptance:` command may never use `gh`** — the acceptance job runs author-written commands under
+ * read-only, tracker-less credentials, always, because granting it a token would hand every PR body one.
+ *
+ * **And a fixture holds the cases that matter, which a live run cannot promise.** Tonight's queue held two
+ * PRs, neither four hours old: a live dry-run could not have exercised a single closure, and would have
+ * reported `0 past it` as though that proved something. The fixture carries the boundary a minute either
+ * side, a draft, a `blocked` PR, the green-and-behind case decided rather than discovered, and #172's
+ * actual shape.
+ */
+test("THE FIXTURE: every decision, against recorded gh output committed beside this test", () => {
+  const fixture = JSON.parse(readFileSync(
+    fileURLToPath(new URL("./fixtures/open-prs-lifetime.json", import.meta.url)), "utf8"));
+  const now = new Date(fixture._now);
+  const decided = new Map<number, ReturnType<typeof decideForPR>>(fixture.prs
+    .map((pr: { number: number }) => [pr.number, decideForPR(prForDecision(pr, now), { maxAgeHours: 4 })]));
+
+  // Guard the guard: a fixture that failed to load, or a filter that matched nothing, would make every
+  // assertion below vacuous -- and this file's own subject is a sweep that must never act on an empty set.
+  assert.equal(decided.size, 8, "the fixture must carry all eight rows");
+
+  assert.equal(decided.get(901)?.action, "keep", "3h59m is under the line");
+  assert.equal(decided.get(902)?.action, "close", "4h01m is over it");
+  assert.equal(decided.get(903)?.action, "keep", "a 30h draft was never offered for merge");
+  assert.equal(decided.get(904)?.action, "keep", "a person labelled it `blocked`; a clock does not overrule that");
+  assert.equal(decided.get(905)?.action, "keep", "green and behind is the train's, waiting its turn");
+  assert.equal(decided.get(906)?.action, "close", "25h and DIRTY -- nothing is coming for it (#172's shape)");
+  // The two RECORDED rows were minutes old when captured, so both are kept. That is not a weak assertion:
+  // it is the fixture proving the recorded half is real queue data rather than more constructed rows.
+  assert.equal(decided.get(486)?.action, "keep");
+  assert.equal(decided.get(485)?.action, "keep");
+});
+
+test("the fixture says which rows are RECORDED and which are CONSTRUCTED", () => {
+  // A fixture that blurs the two invites a reader to believe a hand-written row is evidence of what the
+  // queue does. `_source` is required on every row, and at least one must be real recorded output.
+  const fixture = JSON.parse(readFileSync(
+    fileURLToPath(new URL("./fixtures/open-prs-lifetime.json", import.meta.url)), "utf8"));
+  // CLASSIFIED, not measured by length. The first version required `_source.length > 8` and rejected the
+  // literal "recorded" -- exactly eight characters -- so the guard refused precisely the rows it most
+  // wants to exist. A length heuristic standing in for a decision is the shape this repository names; the
+  // question is which of two kinds a row is, and a constructed one owes a reason.
+  for (const pr of fixture.prs) {
+    const source = String(pr._source ?? "");
+    const classified = source === "recorded"
+      || (source.startsWith("constructed") && source.length > "constructed — ".length + 10);
+    assert.ok(classified,
+      `PR ${pr.number}'s _source is ${JSON.stringify(source)} -- it must be exactly "recorded", or `
+      + "\"constructed — <why this case is not in the live queue>\"");
+  }
+  assert.ok(fixture.prs.some((pr: { _source: string }) => pr._source === "recorded"),
+    "at least one row must be real recorded output, or this is a hand-written set wearing a fixture's name");
+  assert.match(fixture._recordedAt, /^\d{4}-\d{2}-\d{2}T/, "a recording without a date cannot be aged");
 });
