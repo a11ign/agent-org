@@ -585,3 +585,58 @@ test("#497 acceptanceReport: no warning when `History: full` is simply absent", 
   const report = acceptanceReport(body, () => 0);
   assert.ok(!report.lines.some((l) => l.startsWith("WARNING:")));
 });
+
+// --- #540: a second Acceptance:/Refutation: header is DUPLICATE, never silently the first ---
+
+test("#540 THE REAL REGRESSION -- two separate Acceptance: lines used to silently report only the first", () => {
+  const body = "Acceptance: npm test\n\ntext\n\nAcceptance: npm run lint";
+  assert.deepEqual(extractAcceptanceSection(body), {
+    kind: "duplicate",
+    occurrences: [
+      { line: 1, text: "Acceptance: npm test" },
+      { line: 5, text: "Acceptance: npm run lint" },
+    ],
+  });
+});
+
+test("#540 a single Acceptance: section is completely unaffected", () => {
+  assert.deepEqual(extractAcceptanceSection("Acceptance: npm test"),
+    { kind: "commands", commands: ["npm test"] });
+});
+
+test("#540 two `## Acceptance` markdown headings are ALSO caught, not just the bold/plain form", () => {
+  const body = "## Acceptance\nnpm test\n\n## Acceptance\nnpm run lint";
+  const section = extractAcceptanceSection(body);
+  assert.equal(section.kind, "duplicate");
+  assert.equal(section.occurrences.length, 2);
+});
+
+test("#540 acceptanceReport: DUPLICATE fails the job (ok: false) and names every occurrence's line and text", () => {
+  const body = "Acceptance: npm test\n\ntext\n\nAcceptance: npm run lint";
+  const report = acceptanceReport(body, () => 0);
+  assert.equal(report.ok, false);
+  assert.equal(report.lines.length, 1);
+  assert.match(report.lines[0], /^ACCEPTANCE: DUPLICATE/);
+  assert.match(report.lines[0], /line 1: "Acceptance: npm test"/);
+  assert.match(report.lines[0], /line 5: "Acceptance: npm run lint"/);
+});
+
+test("#540 acceptanceReport: a DUPLICATE Acceptance: never runs any command from either section", () => {
+  const body = "Acceptance: npm test\n\ntext\n\nAcceptance: npm run lint";
+  let ran = false;
+  acceptanceReport(body, () => { ran = true; return 0; });
+  assert.ok(!ran, "a body this parser cannot read unambiguously must never execute anything from it");
+});
+
+test("#540 MUTATION TARGET -- restoring the old single-findIndex behaviour must make the two-section "
+  + "fixture pass with ok:true, which is exactly the silent regression this row exists to end", () => {
+  // Reproduces the pre-fix behaviour directly (not by re-implementing extractSection) so this test fails
+  // if the real fix is ever reverted to `lines.findIndex`, without needing to touch acceptance-commands.mjs.
+  const body = "Acceptance: npm test\n\ntext\n\nAcceptance: npm run lint";
+  const lines = body.split(/\r\n|\r|\n/);
+  const oldStyleHeaderIndex = lines.findIndex((line) => /^Acceptance:/.test(line));
+  assert.equal(oldStyleHeaderIndex, 0, "the old, buggy read finds only the FIRST header");
+  const currentBehaviour = extractAcceptanceSection(body);
+  assert.notDeepEqual(currentBehaviour, { kind: "commands", commands: ["npm test"] },
+    "the fixed parser must not silently agree with the old single-header read");
+});

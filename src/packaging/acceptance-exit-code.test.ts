@@ -52,6 +52,35 @@ test("extractRefutationSection: a bare Refutation: line ends an in-progress Acce
   assert.deepEqual(extractRefutationSection(body), { kind: "commands", commands: ["node script.mjs --bad-input"] });
 });
 
+// --- #540: DUPLICATE applies to Refutation: too, sharing the one parser with Acceptance: (#438's rule) ---
+
+test("#540 extractRefutationSection: two Refutation: sections are DUPLICATE, not silently the first", () => {
+  const body = "Refutation: node a.mjs\n\ntext\n\nRefutation: node b.mjs";
+  assert.deepEqual(extractRefutationSection(body), {
+    kind: "duplicate",
+    occurrences: [
+      { line: 1, text: "Refutation: node a.mjs" },
+      { line: 5, text: "Refutation: node b.mjs" },
+    ],
+  });
+});
+
+test("#540 acceptanceReport: a DUPLICATE Refutation: fails the job even though Refutation: is otherwise "
+  + "optional -- an ambiguous body is not the same as an absent one", () => {
+  const body = "Acceptance: npm test\n\nRefutation: node a.mjs\n\ntext\n\nRefutation: node b.mjs";
+  const report = acceptanceReport(body, () => 0);
+  assert.equal(report.ok, false);
+  assert.ok(report.lines.some((l) => l.startsWith("REFUTATION: DUPLICATE")));
+});
+
+test("#540 acceptanceReport: a DUPLICATE Refutation: still reports the Acceptance: result, "
+  + "since the two sections are independent facts about the same body", () => {
+  const body = "Acceptance: npm test\n\nRefutation: node a.mjs\n\ntext\n\nRefutation: node b.mjs";
+  const report = acceptanceReport(body, () => 0);
+  assert.ok(report.lines.some((l) => l.startsWith("ACCEPTANCE: RAN")),
+    "the valid Acceptance: section must still run and report, independent of Refutation:'s ambiguity");
+});
+
 // --- acceptanceReport: the composed verdict, with Refutation: in the mix ---
 
 test("acceptanceReport: no Refutation: section at all -- no REFUTATION line, ok unaffected", () => {
