@@ -5,10 +5,18 @@
  * and the bot completed the merge before the push finished, leaving the commit stranded on a branch that
  * `branches:stranded` correctly excludes (it is not unmerged) and the tracker has no record of.
  *
- * `racesAnArmedMerge` is the pure predicate, driven here against all four states the acceptance section
- * names: no PR, an unarmed PR, an armed-but-not-green PR, and the one that must refuse -- armed AND green.
- * `lookupArmedPrStatus` (the `gh`-calling half) is exercised only for its FAIL-OPEN contract, never
- * against the network -- see its own comment for why `null` must always mean allow.
+ * #442: that guard's premise moved when strict branch protection was restored (02:15Z) -- a merge cannot
+ * FIRE while the head is behind `main`, so armed + green + BEHIND is not a race, it is the frozen state
+ * this closes (a PR that goes green and then falls behind, which every merge to `main` produces for every
+ * OTHER open PR, could neither merge -- blocked for being behind -- nor be synced -- refused by this
+ * guard for being green). `behindBy` is the new axis; the other three states are unchanged.
+ *
+ * `racesAnArmedMerge` is the pure predicate, driven here against every state the acceptance section
+ * names: no PR, an unarmed PR, an armed-but-not-green PR, armed + green + up-to-date (must still refuse,
+ * #386's real case), armed + green + BEHIND (must now allow, #442), and armed + green + behindBy
+ * unknowable (must allow, the fail-open direction one level in). `lookupArmedPrStatus` (the `gh`-calling
+ * half) is exercised only for its FAIL-OPEN contract, never against the network -- see its own comment
+ * for why `null` must always mean allow.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -68,8 +76,23 @@ test("an armed PR whose gate FAILED is ALLOWED -- fixing it up is exactly what a
   assert.equal(racesAnArmedMerge({ armed: true, green: false }), false);
 });
 
-test("armed AND green is the one case that REFUSES -- the window where a merge can land", () => {
-  assert.equal(racesAnArmedMerge({ armed: true, green: true }), true);
+test("armed, green AND up to date is the one case that REFUSES -- the window where a merge can land, #386's real case, unchanged", () => {
+  assert.equal(racesAnArmedMerge({ armed: true, green: true, behindBy: 0 }), true);
+});
+
+test("#442 ACCEPTANCE: armed, green and BEHIND is ALLOWED -- under strict protection the merge this "
+  + "guards against cannot fire while behind, so there is no race left and the push IS the remedy", () => {
+  assert.equal(racesAnArmedMerge({ armed: true, green: true, behindBy: 9 }), false);
+});
+
+test("MUTATION TARGET (#442): armed, green, behindBy could not be determined (null) is ALLOWED -- "
+  + "the fail-open direction applied to the new axis, one level in from the top-level null case below", () => {
+  assert.equal(racesAnArmedMerge({ armed: true, green: true, behindBy: null }), false);
+});
+
+test("armed, green, `behindBy` OMITTED entirely is ALLOWED -- a status shape from before #442 must "
+  + "never silently read as up to date", () => {
+  assert.equal(racesAnArmedMerge({ armed: true, green: true }), false);
 });
 
 test("armed but green-ness ITSELF could not be confirmed is ALLOWED -- the fail-open direction, one level in", () => {
