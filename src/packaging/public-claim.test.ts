@@ -258,11 +258,20 @@ test("the claim block is reachable from the README a stranger opens", () => {
  * ## What counts as a claim, and why the signature is narrow
  *
  * A guard that fired on every sentence containing a digit would be switched off within a week, and the
- * row that asked for this said so. So the signature is a RESULT OVER A DENOMINATOR — an outcome word
- * (`false positives`, `true positives`, `asserted wrongly`, `conformant records`) in the same sentence as
- * a figure. Prose that merely mentions a number is not matched at all; prose that reads like a claim IS
- * matched, and is then classified rather than silently excused, because "nothing distinguishes a measured
- * public claim from prose that reads like one" is the row's actual finding.
+ * row that asked for this said so. So there are TWO signatures, both narrow: a RESULT OVER A DENOMINATOR
+ * — an outcome word (`false positives`, `true positives`, `asserted wrongly`, `conformant records`) in the
+ * same sentence as a figure — or a NUMERIC TRANSITION, a before-and-after pair joined by an arrow
+ * (`headings went 5 → 0`). Prose that merely mentions a number is not matched at all; prose that reads
+ * like a claim IS matched, and is then classified rather than silently excused, because "nothing
+ * distinguishes a measured public claim from prose that reads like one" is the row's actual finding.
+ *
+ * THE TRANSITION SIGNATURE IS #338: `docs/try-it.md:73` — "headings went 5 → 0, links 6 → 1, graphics
+ * 1 → 0" — carries none of the OUTCOME words above, so the first signature alone could never see it, and
+ * it is the single interpretive instruction that tells a first reader whether a thin report means their
+ * page is fine or their run was swallowed by a consent overlay. An arrow between two figures is narrow on
+ * purpose: checked against every CLAIM_FILES today, it matches ONLY this sentence — a version number, a
+ * WCAG criterion, a line count and a CLI flag never take this shape, because none of them is a recorded
+ * before-and-after.
  *
  * A discovered sentence passes if EITHER every figure in it is sourceable from a recorded gate, OR it is
  * classified below with a reason. Nothing passes by being outside a block.
@@ -271,6 +280,7 @@ test("the claim block is reachable from the README a stranger opens", () => {
 const OUTCOME =
   /\b(false positives?|false negatives?|true positives?|asserted wrongly|conformant records?|conformant pages?)\b/i;
 const FIGURE = /\b(zero|no|\d[\d,]*)\b/i;
+const NUMERIC_TRANSITION = /\d[\d,]*\s*(?:→|->)\s*\d[\d,]*/;
 
 /** Sentences outside every claim block that read as a measured result. */
 function claimLikeLinesOutsideBlocks(file: string): { line: number; text: string }[] {
@@ -283,7 +293,8 @@ function claimLikeLinesOutsideBlocks(file: string): { line: number; text: string
     const at = offset;
     offset += text.length + 1;
     if (begin >= 0 && end > begin && at > begin && at < end) return;
-    if (OUTCOME.test(text) && FIGURE.test(text)) found.push({ line: index + 1, text: text.trim() });
+    const isMeasuredClaim = (OUTCOME.test(text) && FIGURE.test(text)) || NUMERIC_TRANSITION.test(text);
+    if (isMeasuredClaim) found.push({ line: index + 1, text: text.trim() });
   });
   return found;
 }
@@ -326,23 +337,32 @@ const NOT_A_MEASURED_CLAIM: Record<string, string> = {
     "`docs/METHODOLOGY.md` governs this one and forbids quoting it as a headline; the sentence carries "
     + "that caveat inline. It is the eval fixtures, not the corpus gate, and has no recorded gate by "
     + "design.",
+  "Measured in `907ed704`": "#338: a REAL measurement -- verbatim in the commit cited inline, 2026-08-03 "
+    + "-- but it predates the board-recording mechanism (introduced 2026-09-06) entirely and describes a "
+    + "one-time corpus audit taken when this rule pair was added, not a recurring board-gate metric this "
+    + "guard's `docs/board/reported.json` sourcing was built to represent. Two other paths were tried and "
+    + "both were worse: writing a fabricated `reported.json` entry would claim a live gate run nobody "
+    + "performed just now, and verifying the citation against `git log` fails in CI's OWN checkout -- "
+    + "`actions/checkout@v4` defaults to `fetch-depth: 1` for this job, so the commit this cites is not an "
+    + "object CI's shallow clone has, and a check that can never pass under real conditions is worse than "
+    + "no check. Accepted here with its provenance stated in the prose itself (the hash), checkable by "
+    + "hand, rather than machine-verified.",
 };
 
-test("every claim-like sentence OUTSIDE the block is sourceable, or classified with a reason", () => {
+/**
+ * #338: this used to read `claimLikeLinesOutsideBlocks("README.md")` ALONE. The duration-promise check
+ * below it already looped over every `CLAIM_FILES` entry; this one did not, so `docs/try-it.md:73` — 92
+ * lines above that file's own CLAIM block — was invisible to the figure guard no matter what it said,
+ * the exact "guarded file, unguarded line" shape #313 fixed for durations and left standing here.
+ */
+function assertMeasuredClaimSourced(file: string): void {
   const gates = recordedGateOutput();
-  const discovered = claimLikeLinesOutsideBlocks("README.md");
-
-  // A signature this specific finding NOTHING would mean the scan broke, not that the README is clean --
-  // twelve matched by hand during this unit's own survey.
-  assert.ok(discovered.length >= 8,
-    `only ${discovered.length} claim-like sentence(s) found outside the block; the scan is broken, not `
-    + "the README suddenly free of measurement prose");
-
+  const discovered = claimLikeLinesOutsideBlocks(file);
   const offenders = discovered
     .filter(({ text }) => !Object.keys(NOT_A_MEASURED_CLAIM).some((key) => text.includes(key)))
     .filter(({ text }) => figuresIn(text).some((n) =>
       !gates.includes(n) && !gates.includes(n.replace(/,/g, ""))))
-    .map(({ line, text }) => `  README.md:${line}  ${text.slice(0, 90)}`);
+    .map(({ line, text }) => `  ${file}:${line}  ${text.slice(0, 90)}`);
 
   assert.deepEqual(offenders, [],
     "these sentences read as a measured result, sit OUTSIDE the claim block, and carry a figure no "
@@ -350,6 +370,18 @@ test("every claim-like sentence OUTSIDE the block is sourceable, or classified w
     + "\n\nThe claim block is not the boundary of what a reader acts on. Either source the figure from a "
     + "recorded gate in docs/board/reported.json, move the sentence inside the block, or classify it in "
     + "NOT_A_MEASURED_CLAIM with a reason.");
+}
+
+test("every claim-like sentence OUTSIDE the block is sourceable, or classified with a reason", () => {
+  // A signature this specific finding NOTHING would mean the scan broke, not that the docs are suddenly
+  // clean of measurement prose -- twelve matched by hand in README.md alone during this unit's original
+  // survey, plus try-it.md:73 once #338 taught the scan the numeric-transition shape.
+  const discovered = CLAIM_FILES.flatMap((file) => claimLikeLinesOutsideBlocks(file));
+  assert.ok(discovered.length >= 9,
+    `only ${discovered.length} claim-like sentence(s) found outside the block across ${CLAIM_FILES.length} `
+    + "file(s); the scan is broken, not the docs suddenly free of measurement prose");
+
+  for (const file of CLAIM_FILES) assertMeasuredClaimSourced(file);
 });
 
 test("every classification still matches a real sentence, so none excuses a problem that moved", () => {
@@ -357,7 +389,9 @@ test("every classification still matches a real sentence, so none excuses a prob
   // list look like coverage -- and this file's own history is the argument: an exemption held "1,398" on
   // a premise that later stopped being true, and kept a stale number in the public claim while the test
   // reported green.
-  const text = claimLikeLinesOutsideBlocks("README.md").map((l) => l.text).join("\n");
+  const text = CLAIM_FILES
+    .flatMap((file) => claimLikeLinesOutsideBlocks(file).map((l) => l.text))
+    .join("\n");
   for (const [key, reason] of Object.entries(NOT_A_MEASURED_CLAIM)) {
     assert.ok(reason.length > 40, `NOT_A_MEASURED_CLAIM["${key}"] needs a real reason, not a placeholder`);
     assert.ok(text.includes(key),
@@ -374,6 +408,19 @@ test("PROOF: prose with a number and no outcome is NOT matched, or the guard get
   assert.ok(OUTCOME.test("zero false positives across 1,183 conformant records"),
     "and the sentence this row is about must still match, or the guard covers nothing");
 });
+
+test("PROOF: a numeric transition matches with no OUTCOME word, and a version-like number does not", () => {
+  // #338's actual addition. try-it.md:73 carries none of the OUTCOME words, so this is the shape that
+  // proves the transition signature is doing real work rather than being redundant with OUTCOME/FIGURE.
+  assert.ok(NUMERIC_TRANSITION.test("headings went 5 → 0, links 6 → 1, graphics 1 → 0."),
+    "the sentence this row is about must match, or the guard still cannot see it");
+  assert.ok(NUMERIC_TRANSITION.test("throughput rose from 36.7 -> 12.4 s"), "the ASCII arrow form too");
+  assert.equal(NUMERIC_TRANSITION.test("capture -> axe -> judge -> report"), false,
+    "a pipeline diagram with no digits either side of an arrow is not a measured transition");
+  assert.equal(NUMERIC_TRANSITION.test("Perceive → Navigate → Interact"), false,
+    "words joined by an arrow are not a transition just because the arrow this repo also uses appears");
+});
+
 
 test("every file carrying a CLAIM block is IN the list, so one cannot be added unguarded", () => {
   // "So the list is the guard" -- this file's own header, and the acknowledged hole in it: a new public
@@ -488,6 +535,18 @@ const NOT_A_DURATION_CLAIM: Record<string, string> = {
     "'Spend the minutes' is idiomatic for wasted effort, not a duration figure, and the promise-verb match "
     + "in the same bullet ('takes us one capture to answer') counts CAPTURES, not time -- there is no "
     + "duration claim in this sentence for a gate to source.",
+  "Expect five to eight minutes for a real page":
+    "#396: a REAL, sourced duration promise -- 4 m 38 s / 4 m 50 s / 7 m 54 s across three dissimilar real "
+    + "pages, cited inline with the issue that recorded it (#311), replacing the honest 'under "
+    + "re-measurement' placeholder #313's own mechanism produced while nobody knew. It is a one-time "
+    + "orchestrator-run timing measurement, not a recurring board-gate metric `docs/board/reported.json` "
+    + "was built to hold, and #338 already found that verifying an inline citation against git history "
+    + "fails in CI's shallow checkout -- so this is disclosed the same way that row settled on, provenance "
+    + "stated in the prose itself rather than machine-verified.",
+  "Expect five to eight minutes**, per the measurement above":
+    "The second mention of the same #396 measurement, in the 'how long a large page takes' section -- same "
+    + "sourcing, same reasoning as the entry above; kept separate because #313's own history is that a "
+    + "figure fixed in one copy and left stale in a second is this repo's most expensive recurring shape.",
 };
 
 function assertDurationClaimSourced(file: string): void {

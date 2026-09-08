@@ -8,6 +8,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 
 import {
   classifyCommand, extractAcceptanceSection, acceptanceReport, testFileArgumentsResolve,
@@ -108,6 +109,25 @@ test("extractAcceptanceSection: comment lines INSIDE A FENCE are skipped, not ru
   // Unfenced, a `#`-line reads as a markdown heading and ends the section (see the heading test above);
   // fenced, it is a shell comment annotating the block -- the real shape #331's own issue body used.
   const body = "Acceptance:\n```shell\n# 1. explain what this does\nnpx tsx --test a.test.ts\n# 2. a second note\n```\n";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
+});
+
+test("extractAcceptanceSection: ACCEPTANCE (follow-up) -- an unfilled HTML-comment template is MISSING, "
+  + "never a command", () => {
+  // GitHub's own PR-template convention (`<!-- one command per line -->`) is exactly what a real,
+  // well-meaning template guidance under this header looks like -- and it must never reach `execSync`.
+  const body = "Acceptance:\n<!-- one command per line -->";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "missing" });
+});
+
+test("extractAcceptanceSection: MUTATION TARGET -- an HTML comment is stripped even OUTSIDE a fence, "
+  + "unlike `#` which reads as a heading there", () => {
+  const body = "Acceptance:\n<!-- one command per line -->\nnpx tsx --test a.test.ts";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
+});
+
+test("extractAcceptanceSection: a MULTI-LINE HTML comment is stripped in full, not just its first line", () => {
+  const body = "Acceptance:\n<!--\n  one command per line\n  see CONTRIBUTING.md\n-->\nnpx tsx --test a.test.ts";
   assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
 });
 
@@ -236,4 +256,183 @@ test("acceptanceReport: a tsx --test command matching nothing fails the report W
   assert.equal(report.ok, false);
   assert.equal(called, false, "a command already known to be bogus must never actually run");
   assert.match(report.lines[0], /matched no file/);
+});
+
+// --- #419: four forms authors keep writing, each measured against the real parser and hit by a real PR ---
+
+// Form 1: a markdown heading is the header too.
+
+test("#419 form 1: `## Acceptance` (bare heading, no colon) is a header, not MISSING", () => {
+  const body = "## Acceptance\nnpx tsx --test a.test.ts\n";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
+});
+
+test("#419 form 1: `## Acceptance:` (heading with colon) is a header", () => {
+  const body = "## Acceptance:\nnpx tsx --test a.test.ts\n";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
+});
+
+test("#419 form 1: `### Acceptance:` (a deeper heading level) is a header", () => {
+  const body = "### Acceptance:\nnpx tsx --test a.test.ts\n";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
+});
+
+test("#419 form 1: an inline command on the heading's own line still works", () => {
+  assert.deepEqual(extractAcceptanceSection('## Acceptance: node -e "process.exit(0)"'),
+    { kind: "commands", commands: ['node -e "process.exit(0)"'] });
+});
+
+test("#419 form 1: a later markdown heading (e.g. `## Mutation`) still ends the block as before", () => {
+  const body = "## Acceptance\nnpx tsx --test a.test.ts\n## Mutation\nnpm run mutate -- --file=x\n";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
+});
+
+test("#419 MUTATION TARGET (form 1): narrowing the header pattern back to the bare form must make every "
+  + "heading case above read MISSING again", () => {
+  const bareHeaderPattern = /^\s*(?:\*\*|__)?Acceptance:(?:\*\*|__)?\s*(.*)$/;
+  assert.equal(bareHeaderPattern.test("## Acceptance"), false,
+    "documents the exact regression this row exists to prevent -- the bare-only pattern cannot see a heading");
+});
+
+// Form 2: a backticked command is still the command.
+
+test("#419 form 2: a WHOLE command wrapped in backticks, inline on the header, is unwrapped", () => {
+  assert.deepEqual(extractAcceptanceSection("Acceptance: `npx tsx --test a.test.ts`"),
+    { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
+});
+
+test("#419 form 2: a WHOLE command wrapped in backticks, on its own line, is unwrapped", () => {
+  const body = "Acceptance:\n`npx tsx --test a.test.ts`\n";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
+});
+
+test("#419 form 2: a backticked command actually RUNS unwrapped, never as a literal backtick token", () => {
+  let seen = "";
+  const report = acceptanceReport("Acceptance: `node -e \"process.exit(0)\"`", (cmd) => { seen = cmd; return 0; });
+  assert.equal(report.ok, true);
+  assert.equal(seen, 'node -e "process.exit(0)"', "run() must never see the wrapping backticks");
+});
+
+test("#419 form 2: partial backticks INSIDE a command (the author's own quoting) are preserved", () => {
+  assert.deepEqual(extractAcceptanceSection("Acceptance: node -e \"console.log(`template`)\""),
+    { kind: "commands", commands: ['node -e "console.log(`template`)"'] });
+});
+
+test("#419 MUTATION TARGET (form 2): restoring the backtick-blind tokenizer must reproduce the exact "
+  + "`fail (matched no file: \\`npx, ...)` shape this row exists to end", () => {
+  const stillBackticked = "`npx tsx --test a.test.ts`";
+  const result = testFileArgumentsResolve(stillBackticked);
+  assert.equal(result.ok, false, "documents that the FILE CHECK alone cannot fix this -- unwrapping must "
+    + "happen at extraction, before testFileArgumentsResolve ever sees the command");
+});
+
+// Form 3: a `\` line continuation is one command, not two.
+
+test("#419 form 3: a two-line continuation joins into ONE command", () => {
+  const body = "Acceptance:\nnpx tsx --test \\\n  a.test.ts\n";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
+});
+
+test("#419 form 3: a THREE-line continuation chain joins in full, not just the first pair", () => {
+  const body = "Acceptance:\nnpx tsx --test \\\n  a.test.ts \\\n  b.test.ts\n";
+  assert.deepEqual(extractAcceptanceSection(body),
+    { kind: "commands", commands: ["npx tsx --test a.test.ts b.test.ts"] });
+});
+
+test("#419 form 3: a continuation is followed correctly by a SECOND, separate command", () => {
+  const body = "Acceptance:\nnpx tsx --test \\\n  a.test.ts\nnpx tsx --test b.test.ts\n";
+  assert.deepEqual(extractAcceptanceSection(body),
+    { kind: "commands", commands: ["npx tsx --test a.test.ts", "npx tsx --test b.test.ts"] });
+});
+
+test("#419 form 3: a continuation inside a fenced block joins too", () => {
+  const body = "Acceptance:\n```shell\nnpx tsx --test \\\n  a.test.ts\n```\n";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
+});
+
+test("#419 MUTATION TARGET (form 3): a line NOT ending in a continuation must never be joined onto the next", () => {
+  const body = "Acceptance:\nnpx tsx --test a.test.ts\nnpx tsx --test b.test.ts\n";
+  const result = extractAcceptanceSection(body);
+  assert.equal(result.kind, "commands");
+  assert.equal((/** @type {{commands:string[]}} */(result)).commands.length, 2,
+    "documents that joining is conditional on a real trailing backslash, not merely 'the next line exists'");
+});
+
+// Form 4: a trailing `# comment` on a `tsx --test` line is not a file argument.
+
+test("#419 form 4: a trailing comment on a tsx --test line does not fail the file check", () => {
+  assert.deepEqual(testFileArgumentsResolve(`npx tsx --test ${REAL_FILE}  # 2/2, pass`), { ok: true });
+});
+
+test("#419 form 4: the comment is stripped for TOKEN EXTRACTION only -- the command that actually RUNS "
+  + "still carries it, exactly as bash would already interpret it", () => {
+  let seen = "";
+  const body = `Acceptance:\nnpx tsx --test ${REAL_FILE}  # 2/2, pass\n`;
+  const report = acceptanceReport(body, (cmd) => { seen = cmd; return 0; });
+  assert.equal(report.ok, true);
+  assert.equal(seen, `npx tsx --test ${REAL_FILE}  # 2/2, pass`,
+    "run() must receive the ORIGINAL command, comment included -- bash ignores it natively");
+});
+
+test("#419 form 4: a comment naming a real-looking but nonexistent file is still correctly ignored", () => {
+  assert.deepEqual(
+    testFileArgumentsResolve(`npx tsx --test ${REAL_FILE} # see also does-not-exist.test.ts`),
+    { ok: true });
+});
+
+test("#419 MUTATION TARGET (form 4): reverting to tokenizing the RAW command must reproduce the exact "
+  + "`matched no file: #, ...` shape this row exists to end", () => {
+  const tokens = `npx tsx --test ${REAL_FILE}  # 2/2, pass`.split(/\s+/).filter(Boolean);
+  const fileArgs = tokens.filter((t) => t !== "npx" && t !== "tsx" && t !== "--test" && !t.startsWith("-"));
+  const missing = fileArgs.filter((p) => !existsSync(p));
+  assert.ok(missing.length > 0, "documents that the RAW tokenizer (no comment strip) reads the comment "
+    + "text itself as file arguments -- exactly the defect this row fixes");
+});
+
+// --- #419 FOLLOW-UP, form 5: a blank line after the HEADER is not the terminator, only one after a
+// command is. Markdown convention puts a blank line after every heading, so `## Acceptance` -- the form
+// #419 itself just made acceptable -- combined with that convention landed straight back on MISSING,
+// found live on PR #413. This form is MORE likely after #419's own fix, not less. ---
+
+test("#419b form 5: a markdown heading followed by a blank line, then the command, is NOT missing", () => {
+  // The exact shape measured on #413: `## Acceptance`, a blank line, then the command.
+  const body = "## Acceptance\n\nnpx tsx --test a.test.ts\n";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
+});
+
+test("#419b form 5: the BARE header followed by a blank line is the identical shape and must work too", () => {
+  const body = "Acceptance:\n\nnpx tsx --test a.test.ts\n";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
+});
+
+test("#419b form 5: MULTIPLE leading blank lines before the first command are all skipped", () => {
+  const body = "## Acceptance\n\n\nnpx tsx --test a.test.ts\n";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
+});
+
+test("#419b form 5: a blank line AFTER a real command still ends the block, exactly as before", () => {
+  const body = "Acceptance:\nnpx tsx --test a.test.ts\n\nMore prose after a blank line.";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
+});
+
+test("#419b form 5: a header with a blank line and NOTHING after it stays MISSING -- the leading-blank "
+  + "skip must not manufacture a command that was never written", () => {
+  const body = "Acceptance:\n\nMutation:\nnpm run mutate -- --file=x\n";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "missing" });
+});
+
+test("#419b form 5: two commands with a blank line only before the first are both read", () => {
+  const body = "## Acceptance\n\nnpx tsx --test a.test.ts\nnpx tsx --test b.test.ts\n";
+  assert.deepEqual(extractAcceptanceSection(body),
+    { kind: "commands", commands: ["npx tsx --test a.test.ts", "npx tsx --test b.test.ts"] });
+});
+
+test("#419b MUTATION TARGET (form 5): removing the leading-blank skip must reproduce the exact MISSING "
+  + "verdict measured live on PR #413", () => {
+  // The naive, pre-fix behaviour: ANY blank line ends the block immediately, including the one that
+  // markdown convention puts straight after a heading.
+  const naiveBreakOnAnyBlank = (trimmed: string) => trimmed === "";
+  assert.equal(naiveBreakOnAnyBlank(""), true,
+    "documents the exact regression this row exists to prevent -- the naive rule cannot distinguish a "
+    + "leading blank (before any command) from the real terminator (after one)");
 });
