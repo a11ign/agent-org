@@ -7,12 +7,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, execFileSync as rawExecFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, realpathSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, realpathSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import {
-  fetchPushedBranches, fetchAllPRHeadRefs, branchesWithNoPR, aheadCount, strandedCandidates, PR_LIST_LIMIT,
-} from "../../../../scripts/stranded-branches.mjs";
+  fetchPushedBranches, fetchAllPRHeadRefs, branchesWithNoPR, aheadCount, strandedCandidates, PR_LIST_LIMIT, decideForPR, staleClosureComment, sweepPullRequests, prForDecision } from "../../../../scripts/stranded-branches.mjs";
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, env: sandboxGitEnv(), encoding: "utf8" });
@@ -232,4 +232,169 @@ test("the real CLI runs against the real repo and exits with one of its own thre
   }
   assert.ok([0, 1, 2].includes(exitCode),
     `expected exit 0 (OK), 1 (candidates found) or 2 (could not ask); got ${exitCode}`);
+});
+
+/**
+ * A PULL REQUEST LIVES FOUR HOURS — B1, and what it REFUSES to close is the substance.
+ *
+ * Closing a PR is the most destructive action in this toolset, so the tests below are weighted the way
+ * the risk is: one for the action, four for the refusals. p90 to merge is 2.5 h and the median is 12
+ * minutes; the two PRs closed by hand at 02:00Z had been open ~25 hours at 373 and 392 commits behind,
+ * and neither was ever going to merge.
+ *
+ * **`update-branch` changed what "old" means**, and without that the threshold reads as aggressive: PRs no
+ * longer drift unattended, so an old PR is one that is genuinely ABANDONED rather than merely stale.
+ */
+test("THE BOUNDARY: 3h59m is spared and 4h01m is closed — the row's own mutation", () => {
+  const spared = decideForPR({ number: 1, ageHours: 3 + 59 / 60 }, { maxAgeHours: 4 });
+  const closed = decideForPR({ number: 2, ageHours: 4 + 1 / 60 }, { maxAgeHours: 4 });
+  assert.equal(spared.action, "keep");
+  assert.equal(closed.action, "close");
+  // The rendering matters AT the boundary, which is exactly where somebody checks whether the sweep was
+  // right. `toFixed(1)` rendered both as "4.0h", so a spared PR read "4.0h old, under the 4h line" — a
+  // number contradicting its own sentence in the one place it would be read closely.
+  assert.match(spared.why, /3h59m/);
+  assert.match(closed.why, /4h01m/);
+});
+
+test("A DRAFT IS NEVER CLOSED BY THE CLOCK — it was never offered for merge", () => {
+  const d = decideForPR({ number: 3, ageHours: 30, isDraft: true }, { maxAgeHours: 4 });
+  assert.equal(d.action, "keep");
+  assert.match(d.why, /draft/);
+});
+
+test("`blocked` OUTRANKS THE CLOCK — a person refused it, and a sweep does not overrule a person", () => {
+  const d = decideForPR({ number: 4, ageHours: 30, labels: ["blocked"] }, { maxAgeHours: 4 });
+  assert.equal(d.action, "keep", "the auto-arm sweep already skips `blocked` for this reason; a sweep "
+    + "that closes must honour it at least as strictly as one that merely arms");
+});
+
+test("GREEN AND BEHIND IS THE TRAIN'S, waiting its turn — B3's interaction, decided here", () => {
+  // #460 asks for this to be settled in the row rather than discovered at 4h01m. While syncing is
+  // serialised a PR can legitimately wait hours through no fault of its own, and closing it would punish
+  // it for the queue's latency. B3 is temporary; this rule is not.
+  const queued = decideForPR({ number: 5, ageHours: 9, checksGreen: true, behind: 12 }, { maxAgeHours: 4 });
+  assert.equal(queued.action, "keep");
+  assert.match(queued.why, /waiting its turn/);
+  // But RED and behind is not waiting on the train — the train skips red PRs, so nothing is coming for it.
+  const abandoned = decideForPR({ number: 6, ageHours: 9, checksGreen: false, behind: 12 }, { maxAgeHours: 4 });
+  assert.equal(abandoned.action, "close");
+});
+
+test("THE CLOSURE COMMENT SAYS STALE, NAMES THE BRANCH, AND SAYS IT IS KEPT", () => {
+  // A sweep that closed AND deleted would have destroyed #172's work, which turned out to be sound and
+  // was re-derived from the branch in an hour. "Stale" and "rejected" need different words because the
+  // recoveries are opposite: rebuild this, versus do not.
+  const comment = staleClosureComment({ number: 7, headRefName: "agent/example-row" }, "9h00m old");
+  assert.match(comment, /STALE by the lifetime sweep, not rejected/);
+  assert.match(comment, /agent\/example-row/, "the comment must name the branch somebody has to rebuild from");
+  assert.match(comment, /is kept/);
+  assert.doesNotMatch(comment, /reject(ed|ing) (this|the) work/i);
+});
+
+test("THE SWEEP IS DRY BY DEFAULT — closing is a thing somebody types", () => {
+  // `corpus-prune-orphans.mjs` (#195) set this shape and it matters more here: a scheduled job that
+  // forgot a flag must not close pull requests. Without `--close` this names what it WOULD close and
+  // touches nothing.
+  const calls: string[][] = [];
+  const run = (_cmd: string, args: string[]) => {
+    calls.push(args);
+    return JSON.stringify([{ number: 9, headRefName: "agent/old", createdAt: "2026-09-08T00:00:00Z",
+      isDraft: false, labels: [], mergeStateStatus: "DIRTY" }]);
+  };
+  const closing = sweepPullRequests({ now: new Date("2026-09-08T10:00:00Z"), run });
+  assert.equal(closing.length, 1, "a 10h-old PR nothing is waiting on is past the line");
+  assert.equal(calls.length, 1, "dry by default: one `gh pr list`, and no close and no comment");
+  assert.ok(!calls.some((a) => a.includes("close")), "nothing may be closed without --close");
+});
+
+test("WITH --close IT COMMENTS FIRST, CLOSES SECOND, AND NEVER DELETES THE BRANCH", () => {
+  const calls: string[][] = [];
+  const run = (_cmd: string, args: string[]) => {
+    calls.push(args);
+    return JSON.stringify([{ number: 9, headRefName: "agent/old", createdAt: "2026-09-08T00:00:00Z",
+      isDraft: false, labels: [], mergeStateStatus: "DIRTY" }]);
+  };
+  sweepPullRequests({ now: new Date("2026-09-08T10:00:00Z"), close: true, run });
+  const verbs = calls.map((a) => a[1]);
+  assert.deepEqual(verbs, ["list", "comment", "close"],
+    "the comment must land BEFORE the close, or a reader finds a closed PR with no explanation");
+  // THE SAFETY PROPERTY IS AN ABSENT FLAG, which is invisible in review unless something asserts it.
+  // #172's branch was kept and its work re-derived from it; a sweep that deleted would have destroyed it.
+  assert.ok(!calls.some((a) => a.includes("--delete-branch")),
+    "the branch must survive: `gh pr close` without --delete-branch is the whole safety property");
+});
+
+test("checksGreen is NOT read from statusCheckRollup — that field unions superseded runs", () => {
+  // Measured tonight: the rollup reported three PRs as failing whose latest run had succeeded, and two
+  // sessions read them as red (#450). A sweep that CLOSES on a wrong red is the worst consumer of it.
+  const now = new Date("2026-09-08T10:00:00Z");
+  const behind = prForDecision({ number: 1, headRefName: "b", createdAt: "2026-09-08T00:00:00Z",
+    isDraft: false, labels: [], mergeStateStatus: "BEHIND" }, now);
+  assert.equal(behind.checksGreen, true);
+  assert.equal(decideForPR(behind, { maxAgeHours: 4 }).action, "keep");
+  const dirty = prForDecision({ number: 2, headRefName: "d", createdAt: "2026-09-08T00:00:00Z",
+    isDraft: false, labels: [], mergeStateStatus: "DIRTY" }, now);
+  assert.equal(dirty.checksGreen, false, "DIRTY is the PR's own problem; the train will not touch it");
+});
+
+/**
+ * THE FIXTURE ACCEPTANCE — `ceo`'s ruling, 2026-09-08.
+ *
+ * A row whose evidence is the live queue proves itself twice: its pure decision runs in the acceptance
+ * job against **recorded API output committed beside the test**, and the live run is pasted on the row by
+ * the owner with a clock, as evidence rather than as the check.
+ *
+ * **An `Acceptance:` command may never use `gh`** — the acceptance job runs author-written commands under
+ * read-only, tracker-less credentials, always, because granting it a token would hand every PR body one.
+ *
+ * **And a fixture holds the cases that matter, which a live run cannot promise.** Tonight's queue held two
+ * PRs, neither four hours old: a live dry-run could not have exercised a single closure, and would have
+ * reported `0 past it` as though that proved something. The fixture carries the boundary a minute either
+ * side, a draft, a `blocked` PR, the green-and-behind case decided rather than discovered, and #172's
+ * actual shape.
+ */
+test("THE FIXTURE: every decision, against recorded gh output committed beside this test", () => {
+  const fixture = JSON.parse(readFileSync(
+    fileURLToPath(new URL("./fixtures/open-prs-lifetime.json", import.meta.url)), "utf8"));
+  const now = new Date(fixture._now);
+  const decided = new Map<number, ReturnType<typeof decideForPR>>(fixture.prs
+    .map((pr: { number: number }) => [pr.number, decideForPR(prForDecision(pr, now), { maxAgeHours: 4 })]));
+
+  // Guard the guard: a fixture that failed to load, or a filter that matched nothing, would make every
+  // assertion below vacuous -- and this file's own subject is a sweep that must never act on an empty set.
+  assert.equal(decided.size, 8, "the fixture must carry all eight rows");
+
+  assert.equal(decided.get(901)?.action, "keep", "3h59m is under the line");
+  assert.equal(decided.get(902)?.action, "close", "4h01m is over it");
+  assert.equal(decided.get(903)?.action, "keep", "a 30h draft was never offered for merge");
+  assert.equal(decided.get(904)?.action, "keep", "a person labelled it `blocked`; a clock does not overrule that");
+  assert.equal(decided.get(905)?.action, "keep", "green and behind is the train's, waiting its turn");
+  assert.equal(decided.get(906)?.action, "close", "25h and DIRTY -- nothing is coming for it (#172's shape)");
+  // The two RECORDED rows were minutes old when captured, so both are kept. That is not a weak assertion:
+  // it is the fixture proving the recorded half is real queue data rather than more constructed rows.
+  assert.equal(decided.get(486)?.action, "keep");
+  assert.equal(decided.get(485)?.action, "keep");
+});
+
+test("the fixture says which rows are RECORDED and which are CONSTRUCTED", () => {
+  // A fixture that blurs the two invites a reader to believe a hand-written row is evidence of what the
+  // queue does. `_source` is required on every row, and at least one must be real recorded output.
+  const fixture = JSON.parse(readFileSync(
+    fileURLToPath(new URL("./fixtures/open-prs-lifetime.json", import.meta.url)), "utf8"));
+  // CLASSIFIED, not measured by length. The first version required `_source.length > 8` and rejected the
+  // literal "recorded" -- exactly eight characters -- so the guard refused precisely the rows it most
+  // wants to exist. A length heuristic standing in for a decision is the shape this repository names; the
+  // question is which of two kinds a row is, and a constructed one owes a reason.
+  for (const pr of fixture.prs) {
+    const source = String(pr._source ?? "");
+    const classified = source === "recorded"
+      || (source.startsWith("constructed") && source.length > "constructed — ".length + 10);
+    assert.ok(classified,
+      `PR ${pr.number}'s _source is ${JSON.stringify(source)} -- it must be exactly "recorded", or `
+      + "\"constructed — <why this case is not in the live queue>\"");
+  }
+  assert.ok(fixture.prs.some((pr: { _source: string }) => pr._source === "recorded"),
+    "at least one row must be real recorded output, or this is a hand-written set wearing a fixture's name");
+  assert.match(fixture._recordedAt, /^\d{4}-\d{2}-\d{2}T/, "a recording without a date cannot be aged");
 });
