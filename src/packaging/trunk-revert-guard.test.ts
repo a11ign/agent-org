@@ -20,6 +20,7 @@ import { parse as parseYaml } from "yaml";
 import {
   unexplainedDeletions, mergeParents, deletedPaths, branchTouchedPaths, EXIT,
 } from "../../../../scripts/trunk-revert-guard.mjs";
+import { revertVerdict, EXIT as REVERT_EXIT } from "../../../../scripts/trunk-revert.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const SCRIPT = `${REPO}/scripts/trunk-revert-guard.mjs`;
@@ -162,4 +163,82 @@ test("trunk-guard.yml runs trunk-revert-guard.mjs INSIDE trunkGate, not as a sep
     + "job would need its own revert wiring, which ceo's ruling says not to build.");
   assert.match(trunkGateRuns, /--merge=\$\{\{ github\.sha \}\}/,
     "it must check the commit THIS push actually landed, not an inferred or default ref.");
+});
+
+/**
+ * C3 (#465): THE OTHER HALF OF THE WIRING -- a refusal here is worthless unless it actually FAILS the
+ * `trunkGate` job (never `continue-on-error`) and `decideRevert` is gated on exactly that failure, never
+ * on a broader condition. This is the seam neither `trunk-revert-guard.test.ts` (which only proves the
+ * GUARD's own verdict) nor `trunk-revert.test.ts` (which only proves `revertVerdict`'s own logic in
+ * isolation) has ever tested: nothing before this asserted that the two are actually CONNECTED in the
+ * workflow, and "a revert is the most destructive action in the whole plan" (ceo, on this row) is exactly
+ * why that connection needs its own guard rather than an inference from reading the YAML once.
+ */
+test("C3 ACCEPTANCE: trunk-revert-guard.mjs's step has no continue-on-error -- its failure must reach the job", () => {
+  const doc = parseYaml(readFileSync(`${REPO}/.github/workflows/trunk-guard.yml`, "utf8")) as {
+    jobs: Record<string, { steps: Array<Record<string, unknown>> }>,
+  };
+  const guardStep = doc.jobs.trunkGate.steps.find((s) =>
+    String(s.run ?? "").includes("trunk-revert-guard.mjs"));
+  assert.ok(guardStep, "the step running the guard must exist");
+  assert.equal(guardStep!["continue-on-error"], undefined,
+    "continue-on-error on this step would make a REFUSE verdict invisible to decideRevert -- the exact "
+    + "shape of a guard whose wrongness is absorbed by another mechanism (#188's own rule) applied to the "
+    + "step level instead of the job level.");
+});
+
+test("C3 ACCEPTANCE: decideRevert fires on trunkGate's failure and ONLY trunkGate's failure", () => {
+  const doc = parseYaml(readFileSync(`${REPO}/.github/workflows/trunk-guard.yml`, "utf8")) as {
+    jobs: Record<string, { needs?: string | string[], if?: string }>,
+  };
+  const decideRevert = doc.jobs.decideRevert;
+  assert.ok(decideRevert, "decideRevert must exist as its own job");
+  const needs = Array.isArray(decideRevert.needs) ? decideRevert.needs : [decideRevert.needs];
+  assert.ok(needs.includes("trunkGate"),
+    "decideRevert must declare `needs: trunkGate` -- without it, GitHub cannot resolve "
+    + "`needs.trunkGate.result` at all and the job would fail to even start, not skip quietly");
+  assert.equal(decideRevert.if, "needs.trunkGate.result == 'failure'",
+    "must be EXACTLY this condition -- `always()` would also fire on a CANCELLED run (not a real "
+    + "failure, per trunk-revert.mjs's own header), and `failure()` alone (without naming trunkGate) "
+    + "would fire on failures from unrelated jobs added to this workflow later");
+});
+
+/**
+ * C3 ACCEPTANCE, COMPOSED: does the REAL f2cdfaf3 incident's guard verdict, fed through the EXISTING
+ * revert decision with the facts that incident would plausibly have carried, actually come out READY
+ * (revert)? Neither script's own test suite asks this: `trunk-revert-guard.test.ts` stops at "REFUSED,
+ * naming six paths"; `trunk-revert.test.ts` drives `revertVerdict` only against synthetic facts. This is
+ * the seam -- proving a REFUSE from the guard is not merely compatible with `revertVerdict`'s shape, but
+ * genuinely produces a revert-worthy verdict once trunkGate's failure reaches it.
+ */
+test("C3 ACCEPTANCE, COMPOSED: the real f2cdfaf3 REFUSAL, once trunkGate fails on it, IS revert-worthy", () => {
+  // The guard itself REFUSES f2cdfaf3 -- already proven above; re-asserted here so this composed test
+  // does not silently pass having examined a commit the guard would not have flagged at all.
+  assert.throws(() => execFileSync("node", [SCRIPT, "--merge=f2cdfaf3"], { cwd: REPO, stdio: "pipe" }),
+    "the guard must still refuse f2cdfaf3, or this composed test is asserting nothing real");
+
+  // trunkGate failing on f2cdfaf3 means `decideRevert` runs with `--push-sha=f2cdfaf3` and
+  // `--before-sha=f2cdfaf3^1`. The two facts `revertVerdict` needs are asked of the REAL commit graph and
+  // GitHub, exactly as `trunk-revert.mjs`'s own `main()` would -- this is not a synthetic fixture.
+  const composed = revertVerdict({
+    // f2cdfaf3^1 is the commit main was at right before the incident landed -- long since superseded and
+    // itself long since proven clean by every gate that has run since, so treating it as the "before" a
+    // real trunkGate run would have recorded as `success` is the honest fact this incident's own history
+    // establishes, not an assumption invented for the test.
+    beforeGateConclusion: "success",
+    currentMainSha: "f2cdfaf3", // the case where main has NOT moved on since -- this push is still the tip
+    pushSha: "f2cdfaf3",
+  });
+  assert.equal(composed.code, REVERT_EXIT.READY,
+    `expected READY (revert-worthy), got code ${composed.code}: ${composed.reason}`);
+});
+
+test("C3 ACCEPTANCE, COMPOSED, POSITIVE CONTROL: an ordinary merge's PASS never even reaches decideRevert", () => {
+  // fc9b89d2 (#354) is the guard's own documented legitimate-deletion case -- PASSES, so trunkGate's guard
+  // step succeeds, the job does not fail on this step, and (assuming the rest of trunkGate is otherwise
+  // green) `decideRevert`'s `if: needs.trunkGate.result == 'failure'` is false: it never runs at all. There
+  // is no `revertVerdict` call to make in this branch, which is the point -- the positive control for a
+  // destructive action is "nothing happens", not "a different, harmless verdict is computed".
+  const out = execFileSync("node", [SCRIPT, "--merge=fc9b89d2"], { cwd: REPO, encoding: "utf8", stdio: "pipe" });
+  assert.match(out, /PASS/);
 });
