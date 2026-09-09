@@ -10,6 +10,23 @@
  * `gh pr view --json files` -- both FAIL to distinguish the two, because the loss happened several commits
  * deep inside the branch's own internal main-sync history, not at the outermost merge.
  */
+// requires: history
+//
+// #497. Every spawn below runs the guard against two REAL merges -- `f2cdfaf3` (the incident) and
+// `fc9b89d2` (#354's documented legitimate deletion). The acceptance job checks out at depth 1,
+// deliberately (`reusable-acceptance.yml`: "NO `fetch-depth: 0` HERE"), and a shallow checkout does not
+// contain them:
+//
+//     fatal: ambiguous argument 'fc9b89d2': unknown revision or path not in the working tree
+//
+// Measured on #895's own acceptance run, 2026-09-09. NOT caused by the clone #890 introduced -- a clone
+// of a shallow repository is shallow, and `cwd: REPO` against the same checkout fails identically.
+// Naming this file in an acceptance command for the first time is what made a standing requirement
+// visible; these tests could never have run there.
+//
+// The declaration is what turns that git failure into a refusal BY NAME, before the spawn, and lets a PR
+// that needs them deepen the checkout with `History: full`.
+
 // no-token: gh
 //
 // #827. `revertVerdict` takes its facts as an argument and returns a verdict -- `trunk-revert.mjs`'s
