@@ -640,7 +640,9 @@ test("#790 renderBudget names an EXHAUSTED pool as exhausted, not as a small num
     core: { remaining: 2887, limit: 5000, used: 2113, resetInMinutes: 16 },
     graphql: { remaining: 0, limit: 5000, used: 5000, resetInMinutes: 15 },
   }, 11);
-  assert.match(out, /graphql 0\/5000/);
+  // The words, not the fraction: `graphql 0/5000` was the old spelling and it is banned now -- see the
+  // bare-fraction test below for the incident.
+  assert.match(out, /graphql 5000 used, 0 remaining of 5000/);
   assert.match(out, /GRAPHQL IS EXHAUSTED/,
     "0 of 5000 in a row of numbers reads as a number; it needs its own line");
   assert.match(out, /gh pr list.*fail/, "and it must say what stops working, not only that a pool is empty");
@@ -666,4 +668,33 @@ test("#790 under 10% warns without claiming exhaustion", () => {
 
 test("#790 both pools unreadable says so once, and still reports what the table spent", () => {
   assert.match(renderBudget(null, 14), /could not read either pool.*spent 14/);
+});
+
+/**
+ * A BARE FRACTION IS BANNED IN THIS LINE, and the reason is an incident rather than a preference.
+ *
+ * It read `core 4961/5000` until 2026-09-09 17:2xZ. `dispatcher` — who wrote the line two hours earlier
+ * — read it as used-of-limit, declared an account-wide exhaustion that was not happening, froze eight
+ * sessions, cancelled two scheduled passes and asked every session to hunt a loop that did not exist.
+ * 4961 was REMAINING; 39 was used. `ceo` read the same pair of headers in the opposite direction a
+ * quarter of an hour earlier, so it was not one person's slip.
+ *
+ * `4961/5000` is the natural spelling of a budget SPENT, which is what a reader arrives expecting, and
+ * nothing in the glyphs says otherwise.
+ */
+test("the budget line NAMES each quantity -- `used` and `remaining` beside their numbers, never a bare fraction", () => {
+  const pool = { remaining: 4961, limit: 5000, used: 39, resetInMinutes: 54 };
+  const out = renderBudget({ core: pool, graphql: pool }, 19);
+  assert.match(out, /core 39 used, 4961 remaining of 5000/);
+  assert.doesNotMatch(out, /core 4961\/5000/,
+    "the fraction that was misread must not be reconstructible from this line");
+  assert.match(out, /resets in 54m/,
+    "and the reset says `resets in`, or `(54m)` reads as 54 minutes of budget left");
+});
+
+test("MUTATION: the words are not decoration -- swapping used and remaining changes what the line says", () => {
+  const out = renderBudget(
+    { core: { remaining: 39, limit: 5000, used: 4961, resetInMinutes: 3 }, graphql: null }, 19);
+  assert.match(out, /core 4961 used, 39 remaining of 5000/);
+  assert.match(out, /under 10%/, "and 39 of 5000 remaining must still raise its own line");
 });
