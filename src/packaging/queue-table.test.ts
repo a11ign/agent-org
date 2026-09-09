@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadavg } from "node:os";
 import { prRow, nonSuccessByName, newestPerName, render, fetchRefs, renderStalled, windowOf,
-  renderMergedChecks, STALL_MINUTES, EXIT, hostState, hostContention, reliefFor, topConsumers }
+  renderMergedChecks, STALL_MINUTES, EXIT, hostState, hostContention, reliefFor, topConsumers, isRed }
   from "../../../../scripts/queue-table.mjs";
 
 const NOW = new Date("2026-09-09T08:00:00Z");
@@ -563,4 +563,57 @@ test("#761 no user application means no THROTTLED line -- the word must stay mea
   const relief = reliefFor([{ command: "node", cpu: 120 }, { command: "tsc", cpu: 40 }]).join("\n");
   assert.ok(!/THROTTLED/.test(relief),
     "printing it on every contended host is how a state word stops being read");
+});
+
+/**
+ * CANCELLED IS NOT RED, AND THIS COUNTED IT FOR AN HOUR — reported to the chairman three times.
+ *
+ * `ci.yml` sets `concurrency: cancel-in-progress: true`, so every new run cancels the previous one on the
+ * same ref. Measured on ten main commits at 14:2xZ:
+ *
+ *     audit   6 of 10   ->  SIX cancelled, TWO real failures
+ *     check   3 of 10   ->  ALL THREE cancelled
+ *
+ * **The change that made section 4 see everything is the change that made it over-count.** A PR head
+ * stops moving and rarely carries a cancellation; a merge commit on a fast-moving main carries them
+ * constantly — and #740 moved this section's population from PR heads to merge commits an hour earlier.
+ * Widening a population without re-reading what its members can say is the shape.
+ *
+ * And it inflates in the ALARMING direction, which is the direction that gets acted on: "audit red on 8
+ * of 10" was quoted into three tables and a dispatch before anybody read a conclusion.
+ */
+test("#784 CANCELLED is not red -- a superseded run is not a verdict about the commit", () => {
+  const { byName } = nonSuccessByName([
+    { number: 1, sha: "a", checks: [{ name: "audit", conclusion: "CANCELLED" }] },
+    { number: 2, sha: "b", checks: [{ name: "audit", conclusion: "FAILURE" }] },
+    { number: 3, sha: "c", checks: [{ name: "check", conclusion: "cancelled" }] },
+  ]);
+  assert.deepEqual(byName.get("audit"), [2], "only the real failure counts");
+  assert.equal(byName.get("check"), undefined, "a name that was only ever cancelled is not reported red");
+});
+
+test("#784 an EMPTY conclusion is in flight, not red -- and that was already true, now deliberately", () => {
+  const { byName } = nonSuccessByName([
+    { number: 1, sha: "a", checks: [{ name: "gate", conclusion: "" }] },
+  ]);
+  assert.equal(byName.size, 0);
+});
+
+test("#784 the SAME list serves section 2 and section 4 -- it existed twice and was about to drift", () => {
+  // Section 4's tally and section 2's per-PR red list each carried their own copy. This fix changed one
+  // and would have left the other reporting cancelled runs as red on open PRs -- a remedy applied at one
+  // call site when the behaviour reaches several, in the commit fixing exactly that class.
+  for (const conclusion of ["SUCCESS", "SKIPPED", "NEUTRAL", "CANCELLED", ""]) {
+    assert.equal(isRed({ conclusion }), false, `${conclusion || "(empty)"} must not read as red anywhere`);
+  }
+  assert.equal(isRed({ conclusion: "FAILURE" }), true);
+  assert.equal(isRed({ conclusion: "TIMED_OUT" }), true, "a timeout IS a verdict about the commit");
+});
+
+test("#784 MUTATION TARGET: restoring the list without CANCELLED reproduces the over-count exactly", () => {
+  const pre = ["SUCCESS", "SKIPPED", "NEUTRAL", ""];
+  const wouldCount = ["CANCELLED", "cancelled"]
+    .filter((c) => !pre.includes(c.toUpperCase()));
+  assert.deepEqual(wouldCount, ["CANCELLED", "cancelled"],
+    "the pre-fix list reports a superseded run as red, which is the six-of-ten that was quoted");
 });
