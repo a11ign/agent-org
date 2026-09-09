@@ -13,6 +13,8 @@ import { prRow, nonSuccessByName, newestPerName, render, fetchRefs, renderStalle
   from "../../../../scripts/queue-table.mjs";
 
 const NOW = new Date("2026-09-09T08:00:00Z");
+/** A host with room, so tests about OTHER sections are not decided by section 5. */
+const HOST_OK = { freeMb: 4000, compressedMb: 2000, inactiveMb: 3000, worktrees: 12 };
 const pr = (over = {}) => ({
   number: 1, headRefName: "pm/x", headRefOid: "a".repeat(40), mergeStateStatus: "BLOCKED",
   armed: true, updatedAt: "2026-09-09T07:55:00Z", redChecks: [], ...over,
@@ -79,28 +81,28 @@ test("an in-flight check reports the ZERO DATE and must not outrank a real compl
 
 test("STILL RUNNING IS NOT RED -- a table that shouts on every in-flight run is one people stop reading", () => {
   const running = render({ trunk: { sha: "a".repeat(40), runId: "1", status: "in_progress", conclusion: "" },
-    prs: [], merged: [], now: NOW, required: [] });
+    prs: [], merged: [], now: NOW, required: [], host: HOST_OK });
   assert.match(running.text, /still running/);
   assert.doesNotMatch(running.text, /NOT GREEN/);
   const failed = render({ trunk: { sha: "a".repeat(40), runId: "1", status: "completed", conclusion: "failure" },
-    prs: [], merged: [], now: NOW, required: [] });
+    prs: [], merged: [], now: NOW, required: [], host: HOST_OK });
   assert.match(failed.text, /NOT GREEN/);
 });
 
 test("ANTI-VACUITY: a section it could not read exits INCOMPLETE, never EXAMINED", () => {
-  assert.equal(render({ trunk: null, prs: [], merged: [], now: NOW, required: [] }).code, EXIT.INCOMPLETE);
+  assert.equal(render({ trunk: null, prs: [], merged: [], now: NOW, required: [], host: HOST_OK }).code, EXIT.INCOMPLETE);
   assert.equal(render({ trunk: { sha: "a", runId: "1", status: "completed", conclusion: "success" },
-    prs: null, merged: [], now: NOW, required: [] }).code, EXIT.INCOMPLETE);
+    prs: null, merged: [], now: NOW, required: [], host: HOST_OK }).code, EXIT.INCOMPLETE);
   assert.equal(render({ trunk: { sha: "a", runId: "1", status: "completed", conclusion: "success" },
-    prs: [], merged: null, now: NOW, required: [] }).code, EXIT.INCOMPLETE);
+    prs: [], merged: null, now: NOW, required: [], host: HOST_OK }).code, EXIT.INCOMPLETE);
   assert.equal(render({ trunk: { sha: "a", runId: "1", status: "completed", conclusion: "success" },
-    prs: [], merged: [], now: NOW, required: [] }).code, EXIT.EXAMINED);
+    prs: [], merged: [], now: NOW, required: [], host: HOST_OK }).code, EXIT.EXAMINED);
 });
 
 test("all four sections are always printed, including the empty ones -- a section that vanishes when it "
   + "has nothing to say is indistinguishable from one that was dropped", () => {
   const { text } = render({ trunk: { sha: "a", runId: "1", status: "completed", conclusion: "success" },
-    prs: [], merged: [], now: NOW, required: [] });
+    prs: [], merged: [], now: NOW, required: [], host: HOST_OK });
   for (const heading of ["1. TRUNK", "2. OPEN PRs", "3. STALLED", "4. NON-SUCCESS CHECKS"]) {
     assert.ok(text.includes(heading), `${heading} must always appear`);
   }
@@ -114,11 +116,11 @@ test("MUTATION TARGET: a FAILED fetch says so and exits INCOMPLETE -- every coun
   // repository can say how far apart they are, and only for objects it holds. A table whose counts are
   // all unknown while it says nothing about why is the vacuous answer this file exists to refuse.
   const trunk = { sha: "a".repeat(40), runId: "1", status: "completed", conclusion: "success" };
-  const stale = render({ trunk, prs: [], merged: [], now: NOW, fetched: false, required: [] });
+  const stale = render({ trunk, prs: [], merged: [], now: NOW, fetched: false, required: [], host: HOST_OK });
   assert.match(stale.text, /git fetch FAILED/);
   assert.match(stale.text, /unknown, not zero/);
   assert.equal(stale.code, EXIT.INCOMPLETE);
-  assert.equal(render({ trunk, prs: [], merged: [], now: NOW, fetched: true, required: [] }).code, EXIT.EXAMINED);
+  assert.equal(render({ trunk, prs: [], merged: [], now: NOW, fetched: true, required: [], host: HOST_OK }).code, EXIT.EXAMINED);
 });
 
 test("fetchRefs asks for every branch, not just main -- a PR head that was never fetched cannot be "
@@ -210,4 +212,55 @@ test("merged PRs whose times could not be read is INCOMPLETE; nothing merged at 
   const quiet = renderMergedChecks([], []);
   assert.match(quiet.lines[0], /no merged PRs in range/);
   assert.equal(quiet.incomplete, false, "nothing merged is a legitimate state, not a lookup failure");
+});
+
+// ---------------------------------------------------------------------------------------------------
+// SECTION 5: THE HOST, because on 2026-09-09 it was the bottleneck and the table named people instead.
+//
+// At 08:57Z this machine had 56 MB free and 164 worktrees, with 58 concurrent git processes across seven
+// sessions. Four PRs read as "not carried by their owners" for twenty minutes -- and every one of those
+// carries is a git merge plus a pre-push gate running lint and typecheck, which on that host were minutes
+// each or were killed outright. The table named four idle owners and the truth was one starved machine.
+// ---------------------------------------------------------------------------------------------------
+import { renderHost, HOST_FREE_MB_FLOOR } from "../../../../scripts/queue-table.mjs";
+
+const HOST = { freeMb: 4000, compressedMb: 2000, inactiveMb: 3000, worktrees: 12 };
+
+test("section 5 prints free, compressed AND inactive -- never one number", () => {
+  // `vm_stat` is distorted by exactly the condition it must detect: macOS counts compressed and inactive
+  // pages as available, and it advertised 13.7 GB free while two guests were starving. The free figure
+  // understates what is reclaimable; the compressor figure is the one that says whether the host is in
+  // trouble. Offering either alone is the measurement that lied.
+  const text = renderHost(HOST).lines.join("\n");
+  assert.match(text, /free 4000 MB/);
+  assert.match(text, /compressed 2000 MB/);
+  assert.match(text, /inactive 3000 MB/);
+  assert.match(text, /worktrees 12/);
+});
+
+test("MUTATION TARGET: under the floor it says a PR not carried is a starved MACHINE, not an idle owner", () => {
+  const starved = renderHost({ ...HOST, freeMb: HOST_FREE_MB_FLOOR - 1 });
+  const text = starved.lines.join("\n");
+  assert.match(text, /starved machine, NOT an idle owner/);
+  assert.match(text, /do not name people for it/);
+  assert.match(text, /Remove every worktree whose PR has merged/,
+    "and it names the cheapest relief, which is nobody's job in particular and so does not happen");
+});
+
+test("above the floor it says none of that -- a warning that always fires is one people filter", () => {
+  const text = renderHost(HOST).lines.join("\n");
+  assert.doesNotMatch(text, /starved machine/);
+  assert.doesNotMatch(text, /UNDER/);
+});
+
+test("an unreadable host is CANNOT-ASK, never a healthy default", () => {
+  const v = renderHost(null);
+  assert.match(v.lines[0], /could not read/);
+  assert.equal(v.incomplete, true);
+});
+
+test("section 5 is always present, like the other four", () => {
+  const { text } = render({ trunk: { sha: "a", runId: "1", status: "completed", conclusion: "success" },
+    prs: [], merged: [], now: NOW, required: [], host: HOST });
+  assert.match(text, /5\. THIS HOST/);
 });
