@@ -10,30 +10,22 @@
 // `board-style.test.ts` imports `scripts/board-data.mjs`, and it is `collect()` down there that shells
 // out. So this walks each job's test glob AND every local import beneath it, to any depth, and asks
 // whether a `gh` spawn is reachable at all.
+// #621: `localImports` moved to `scripts/local-import-closure.mjs`, SHARED with `acceptance-commands.mjs`
+// -- which derives a test's requirements (token/corpus/history) from the identical closure walk. Two
+// independently-drifting copies of "what does this file import, one hop, locally" is this repo's own
+// most-recorded shape; see that module's header for why `pre-install-import-graph.test.ts` keeps its own.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { localImports } from "../../../../scripts/local-import-closure.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const CI = join(REPO, ".github/workflows/ci.yml");
 
 /** A `gh` invocation, not the two letters. `execFileSync("gh", …)` and `run("gh", …)` both count. */
 const SPAWNS_GH = /(?:execFileSync|execSync|spawnSync|spawn|run)\s*\(\s*(['"`])gh\1/;
-
-/** Every local (relative) import a module names. Bare specifiers are out of scope — they are packages. */
-function localImports(file: string): string[] {
-  const src = readFileSync(file, "utf8");
-  const out: string[] = [];
-  for (const m of src.matchAll(/(?:from|import)\s*\(?\s*['"](\.[^'"]+)['"]/g)) {
-    const raw = resolve(dirname(file), m[1]);
-    for (const cand of [raw, `${raw}.ts`, `${raw}.mjs`, `${raw}.js`, join(raw, "index.ts")]) {
-      if (existsSync(cand) && !cand.endsWith("/")) { out.push(cand); break; }
-    }
-  }
-  return out;
-}
 
 /** Can a `gh` spawn be reached from this file, through any depth of local imports? */
 function reachesGh(entry: string, seen = new Set<string>()): boolean {
