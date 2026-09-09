@@ -23,7 +23,7 @@ import { mkdtempSync, writeFileSync, rmSync, existsSync, realpathSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  parseWorktreeList, isPrimaryWorktree, classify, isStandingBranch, mergeStatus, isContentMerged,
+  parseWorktreeList, isPrimaryWorktree, classify, detachedMergeStatus, mergeStatus, isContentMerged,
   isWorkingTreeClean, pruneWorktrees, recentGitActivity, ACTIVITY_WINDOW_MS,
 } from "../../../../scripts/prune-worktrees.mjs";
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
@@ -45,7 +45,8 @@ const LONG_AFTER = () => Date.now() + ACTIVITY_WINDOW_MS + 60_000;
  *   - agent/merged-clean      -- fully merged into origin/main, no uncommitted changes: REMOVE
  *   - agent/dirty-uncommitted -- merged, but an uncommitted file sits in the working tree: DIRTY
  *   - agent/dirty-unmerged    -- a real commit `origin/main` does not have, working tree itself clean: DIRTY
- *   - dispatcher/merge        -- a ROLE branch, merged and clean: STANDING (never removed regardless)
+ *   - dispatcher/merge        -- a ROLE branch, merged and clean: REMOVE since #671, and the
+ *                                 fixture is unchanged -- only the question it is asked
  *   - agent/cherry-picked     -- content landed on origin/main via a DIFFERENT commit (cherry-pick), so
  *                                `merge-base --is-ancestor` reads NOT merged forever: CHERRY-PICKED
  * `refs/remotes/origin/main` is set directly (no real remote needed) so "merged" is a fact this fixture
@@ -129,23 +130,47 @@ test("parseWorktreeList reads path, branch, and detached state from real porcela
   ]);
 });
 
-// --- isStandingBranch: pure ---
+// --- #671/#696: THE PREDICATE IS ABOUT STATE, AND THERE IS NO NAME CLAUSE LEFT ---
+//
+// `isStandingBranch(branch) { return !branch.startsWith("agent/"); }` is GONE, and so is
+// `classify`'s `if (branch === null) return "dirty"`. Between them they exempted 54 of 103 worktrees on
+// the live host -- 42 by prefix, 12 by detachment -- and neither exemption was about whether removing
+// the tree was safe. The tests below assert the inversion directly, so restoring either clause fails
+// here rather than in six weeks on somebody's disk.
 
-test("isStandingBranch: an agent/* branch is NOT standing -- it is a unit tree", () => {
-  assert.equal(isStandingBranch("agent/some-unit"), false);
+test("#671/#696: `classify` CANNOT BE TOLD a branch name -- the strongest form the fix has", () => {
+  // The obvious test here would be `classify({ ...C, branch: "lead/x" })` against every role prefix and
+  // against null, asserting the name is ignored. IT DOES NOT COMPILE, and that is a better result than
+  // any assertion: the parameter type no longer has a `branch` field, so a future clause reading one
+  // cannot be written without changing the signature -- which is a diff a reviewer sees. A runtime
+  // assertion that a value is ignored can be defeated by adding the value back; a type cannot.
+  //
+  // What remains testable is that state alone decides, which is the whole predicate:
+  assert.equal(classify({ ...C }), "remove");
+  assert.equal(classify({ ...C, merge: "not-merged" }), "dirty");
+  assert.equal(classify({ ...C, workingTreeClean: false }), "dirty");
+  assert.equal(classify({ ...C, merge: "unknown" }), "inconclusive");
+  assert.equal(classify({ ...C, recentlyActive: true }), "active");
+  assert.equal(classify({ ...C, merge: "not-merged", contentMerged: true }), "cherry-picked");
 });
-test("isStandingBranch: dispatcher/* and lead/* ARE standing -- role trees, real examples", () => {
-  assert.equal(isStandingBranch("dispatcher/merge"), true);
-  assert.equal(isStandingBranch("lead/fleet-tree-rule"), true);
-});
-test("isStandingBranch: main itself is standing", () => {
-  assert.equal(isStandingBranch("main"), true);
+
+test("#671 LIVE: a merged, clean ROLE tree is removed -- against real branches, where the name still exists", () => {
+  // The type removes the name from `classify`. Only the live path can show that a real `dispatcher/*`
+  // worktree is now reached at all, since `pruneWorktrees` used to intercept it before classify was
+  // ever asked. `buildFixtureRepo`'s `standing` tree IS `dispatcher/merge`, merged and clean.
+  const { root, standing } = buildFixtureRepo();
+  try {
+    const report = pruneWorktrees(root, { now: LONG_AFTER() });
+    assert.ok(report.removed.map((r) => r.path).includes(standing),
+      "a merged, clean dispatcher/* worktree is as removable as an agent/* one -- #671");
+    assert.equal(existsSync(standing), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 // --- classify: pure ---
 
 const C = {
-  branch: "agent/x", merge: "merged" as const, workingTreeClean: true, contentMerged: false,
+  merge: "merged" as const, workingTreeClean: true, contentMerged: false,
   recentlyActive: false as boolean | "unknown",
 };
 
@@ -158,26 +183,26 @@ test("classify: merged, clean, but RECENTLY ACTIVE is its own state (#220) -- no
 test("classify: activity status UNKNOWN is inconclusive, even when merge and clean both read positively", () => {
   assert.equal(classify({ ...C, recentlyActive: "unknown" }), "inconclusive");
 });
-test("classify: standing beats an unknown activity status too -- a role tree is never anything but standing", () => {
-  assert.equal(classify({ ...C, branch: "lead/x", recentlyActive: "unknown" }), "standing");
-});
 test("classify: merged but dirty working tree is DIRTY, not removed", () => {
   assert.equal(classify({ ...C, workingTreeClean: false }), "dirty");
 });
 test("classify: unmerged, not content-merged, even with a clean working tree, is DIRTY", () => {
   assert.equal(classify({ ...C, merge: "not-merged" }), "dirty");
 });
-test("classify: a detached worktree is DIRTY regardless of the other facts", () => {
-  assert.equal(classify({ ...C, branch: null }), "dirty");
-});
-test("classify: a STANDING branch is never REMOVE, even merged and clean", () => {
-  assert.equal(classify({ ...C, branch: "dispatcher/merge" }), "standing");
+test("#696: a detached worktree is classified on its STATE, not on having no branch name", () => {
+  // Was `if (branch === null) return "dirty"` -- filed under a heading reading "uncommitted or unmerged
+  // work" without either being measured. Twelve of the fifteen detached trees on the live host had
+  // neither: 0 uncommitted files, 0 commits `origin/main` lacks.
+  // `branch: null` is not passed here either, and cannot be -- see the type note above. The detached
+  // case is proved end to end instead, by `#696 LIVE` below, which builds real detached worktrees.
+  assert.equal(classify({ ...C }), "remove");
+  assert.equal(classify({ ...C, workingTreeClean: false }), "dirty");
+  assert.equal(classify({ ...C, merge: "not-merged" }), "dirty");
+  assert.equal(classify({ ...C, merge: "unknown" }), "inconclusive");
+  assert.equal(classify({ ...C, recentlyActive: true }), "active");
 });
 test("classify: unmerged but CONTENT-merged (cherry-picked) is its own state, not dirty and not removed", () => {
   assert.equal(classify({ ...C, merge: "not-merged", contentMerged: true }), "cherry-picked");
-});
-test("classify: standing beats cherry-picked -- a role branch is never auto-classified either way", () => {
-  assert.equal(classify({ ...C, branch: "lead/x", merge: "not-merged", contentMerged: true }), "standing");
 });
 test("classify: merge status UNKNOWN is its own state -- never guessed as merged or not-merged", () => {
   assert.equal(classify({ ...C, merge: "unknown" }), "inconclusive");
@@ -187,9 +212,6 @@ test("classify: working tree UNKNOWN is its own state, even when merge status is
 });
 test("classify: inconclusive beats cherry-picked -- 'could not tell' must never be folded into a resolved state", () => {
   assert.equal(classify({ ...C, merge: "unknown", contentMerged: true }), "inconclusive");
-});
-test("classify: standing beats inconclusive too -- a role tree is never anything but standing", () => {
-  assert.equal(classify({ ...C, branch: "lead/x", merge: "unknown" }), "standing");
 });
 
 // --- Live, against real disposable fixtures ---
@@ -206,13 +228,13 @@ test("mergeStatus and isWorkingTreeClean read the three fixture shapes correctly
   const { root, merged, dirtyUncommitted, dirtyUnmerged } = buildFixtureRepo();
   try {
     assert.equal(mergeStatus(root, "agent/merged-clean"), "merged");
-    assert.equal(isWorkingTreeClean(merged, "agent/merged-clean"), true);
+    assert.equal(isWorkingTreeClean(merged), true);
 
     assert.equal(mergeStatus(root, "agent/dirty-uncommitted"), "merged");
-    assert.equal(isWorkingTreeClean(dirtyUncommitted, "agent/dirty-uncommitted"), false);
+    assert.equal(isWorkingTreeClean(dirtyUncommitted), false);
 
     assert.equal(mergeStatus(root, "agent/dirty-unmerged"), "not-merged");
-    assert.equal(isWorkingTreeClean(dirtyUnmerged, "agent/dirty-unmerged"), true,
+    assert.equal(isWorkingTreeClean(dirtyUnmerged), true,
       "the FILES are clean -- the unmerged commit is what must be caught, independently of file state");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -247,22 +269,62 @@ test("mergeStatus: no origin/main to compare against is UNKNOWN, never guessed a
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("pruneWorktrees removes the merged+clean fixture, names dirty/standing/cherry-picked separately, skips the primary", () => {
+test("pruneWorktrees removes every merged+clean tree INCLUDING the role one, names the rest, skips the primary", () => {
+  // `standing` here is `dispatcher/merge` -- merged and clean, and until #671 exempt purely for not
+  // being `agent/*`. It is removed now, and that IS the change: the fixture did not move, the question
+  // did.
   const { root, merged, dirtyUncommitted, dirtyUnmerged, standing, cherryPicked } = buildFixtureRepo();
   try {
     const report = pruneWorktrees(root, { now: LONG_AFTER() });
-    assert.deepEqual(report.removed.map((r) => r.path), [merged]);
+    assert.deepEqual(report.removed.map((r) => r.path).sort(), [merged, standing].sort());
     assert.deepEqual(report.dirty.map((d) => d.path).sort(), [dirtyUncommitted, dirtyUnmerged].sort());
-    assert.deepEqual(report.standing.map((s) => s.path), [standing]);
     assert.deepEqual(report.cherryPicked.map((c) => c.path), [cherryPicked]);
     assert.equal(report.skippedPrimary, root);
 
     assert.equal(existsSync(merged), false, "the clean, merged worktree must actually be gone from disk");
+    assert.equal(existsSync(standing), false,
+      "a merged, clean ROLE tree is as removable as an agent one -- #671");
     assert.equal(existsSync(dirtyUncommitted), true, "a dirty worktree must still exist afterwards");
     assert.equal(existsSync(dirtyUnmerged), true, "a dirty worktree must still exist afterwards");
-    assert.equal(existsSync(standing), true, "a standing (role) worktree must never be removed");
     assert.equal(existsSync(cherryPicked), true, "a cherry-picked worktree must never be auto-removed");
     assert.equal(existsSync(root), true, "the primary must never be removed");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#696 LIVE: a DETACHED, merged, clean worktree is removed -- and a detached UNMERGED one is not", () => {
+  const { root, mergedSha, baseSha } = buildFixtureRepo();
+  const detachedMerged = join(root, "wt-detached-merged");
+  git(root, "worktree", "add", "--quiet", "--detach", detachedMerged, baseSha); // an ancestor of main
+  const detachedAhead = join(root, "wt-detached-ahead");
+  git(root, "worktree", "add", "--quiet", "--detach", detachedAhead, mergedSha);
+  writeFileSync(join(detachedAhead, "only-here.txt"), "real work\n");
+  git(detachedAhead, "add", "only-here.txt");
+  git(detachedAhead, "commit", "-q", "-m", "a commit origin/main does not have");
+  try {
+    const report = pruneWorktrees(root, { now: LONG_AFTER() });
+    assert.ok(report.removed.map((r) => r.path).includes(detachedMerged),
+      "detached and fully merged and clean: every input to REMOVE is present, and no name is needed");
+    assert.ok(report.dirty.map((d) => d.path).includes(detachedAhead),
+      "detached with a commit main lacks: refused, and now for the reason that is actually true");
+    assert.equal(existsSync(detachedAhead), true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#696 detachedMergeStatus: merged, not-merged and unknown are three answers, not two", () => {
+  const { root, mergedSha, baseSha } = buildFixtureRepo();
+  const wt = join(root, "wt-status-probe");
+  git(root, "worktree", "add", "--quiet", "--detach", wt, baseSha);
+  try {
+    assert.equal(detachedMergeStatus(wt), "merged");
+    git(wt, "checkout", "-q", "--detach", mergedSha);
+    writeFileSync(join(wt, "ahead.txt"), "x\n");
+    git(wt, "add", "ahead.txt");
+    git(wt, "commit", "-q", "-m", "ahead");
+    assert.equal(detachedMergeStatus(wt), "not-merged");
+    // No `origin/main` to compare against at all -- git exits 128, not 1.
+    git(root, "update-ref", "-d", "refs/remotes/origin/main");
+    assert.equal(detachedMergeStatus(wt), "unknown",
+      "a failed comparison is never the answer `not-merged`");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -338,20 +400,20 @@ test("recentGitActivity: true right after a git operation, false once `now` is p
 });
 
 test("REPRODUCE (#220, acceptance step 1): touch a file, stash -u, prune runs inside the window -- removed anyway before the fix, and this is the failing shape", () => {
-  const { root, merged } = buildFixtureRepo();
+  const { root, merged, standing } = buildFixtureRepo();
   try {
     // `merged` is already merged+clean by construction. Simulate the exact incident: a session about to
     // switch branches stashes an in-progress edit, which makes `git status --porcelain` read empty again.
     writeFileSync(join(merged, "mid-switch.txt"), "not yet committed\n");
     git(merged, "stash", "-u");
-    assert.equal(isWorkingTreeClean(merged, "agent/merged-clean"), true,
+    assert.equal(isWorkingTreeClean(merged), true,
       "stashing is exactly what makes the tree read clean -- the premise of the whole incident");
 
     // No `now` override: this is the LIVE window, seconds after the stash, exactly like the real incident.
     const report = pruneWorktrees(root);
     assert.deepEqual(report.removed.map((r) => r.path), [],
       "must NOT be removed -- a session mid-stash is exactly the case #220 exists to catch");
-    assert.deepEqual(report.active.map((r) => r.path), [merged],
+    assert.deepEqual(report.active.map((r) => r.path).sort(), [merged, standing].sort(),
       "reported as ACTIVE, not silently dropped and not folded into DIRTY (there is no uncommitted work "
       + "git status can see) -- naming the real reason is the point of the fix");
     assert.equal(existsSync(merged), true, "the directory itself must still be there");
@@ -361,7 +423,7 @@ test("REPRODUCE (#220, acceptance step 1): touch a file, stash -u, prune runs in
 });
 
 test("after the fix, the SAME sequence removes it once the activity window has genuinely passed (acceptance step 2/3)", () => {
-  const { root, merged } = buildFixtureRepo();
+  const { root, merged, standing } = buildFixtureRepo();
   try {
     writeFileSync(join(merged, "mid-switch.txt"), "not yet committed\n");
     git(merged, "stash", "-u");
@@ -370,9 +432,10 @@ test("after the fix, the SAME sequence removes it once the activity window has g
     assert.deepEqual(stillActive.removed, [], "one second later is still inside the window");
 
     const laterOn = pruneWorktrees(root, { now: LONG_AFTER() }); // the window has genuinely passed
-    assert.deepEqual(laterOn.removed.map((r) => r.path), [merged],
+    assert.deepEqual(laterOn.removed.map((r) => r.path).sort(), [merged, standing].sort(),
       "a GENUINELY abandoned tree -- merged, clean, and no activity for the whole window -- must still be "
-      + "pruned. A prune that stops pruning is worse than the defect it fixes (this file's own header).");
+      + "pruned. A prune that stops pruning is worse than the defect it fixes (this file's own header). "
+      + "`standing` is here because #671 removed the prefix clause: the role tree is abandoned too.");
     assert.equal(existsSync(merged), false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -394,12 +457,12 @@ test("CONTROL: a totally empty repo (no linked worktrees) reports nothing to rem
 });
 
 test("the primary is NEVER passed to remove(), even if (hypothetically) it looked mergeable", () => {
-  const { root, merged } = buildFixtureRepo();
+  const { root, merged, standing } = buildFixtureRepo();
   const removedPaths: string[] = [];
   try {
     pruneWorktrees(root, { now: LONG_AFTER(), remove: (p) => { removedPaths.push(p); rmSync(p, { recursive: true, force: true }); } });
     assert.ok(!removedPaths.includes(root), "the primary path must never reach the remove function");
-    assert.deepEqual(removedPaths, [merged]);
+    assert.deepEqual(removedPaths.sort(), [merged, standing].sort());
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
