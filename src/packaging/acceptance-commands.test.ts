@@ -345,6 +345,88 @@ test("#419 MUTATION TARGET (form 2): restoring the backtick-blind tokenizer must
     + "happen at extraction, before testFileArgumentsResolve ever sees the command");
 });
 
+// #658: a closing backtick is an end-of-command marker even when it is not the last character on the
+// line, and a bare command's trailing em-dash commentary must never reach argv.
+
+test("#658 THE REAL REGRESSION -- a backticked command followed by prose after the closing backtick "
+  + "used to keep the leading backtick attached, reading as a missing executable", () => {
+  const body = "Acceptance: `npx tsx --test a.test.ts` — 12/12 passing, was 7";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
+  assert.equal(classifyCommand("npx tsx --test a.test.ts").verdict, "runnable");
+});
+
+test("#658 the identical shape on its own line (not inline on the header) unwraps the same way", () => {
+  const body = "Acceptance:\n`npx tsx --test a.test.ts` — 12/12 passing, was 7\n";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
+});
+
+test("#658 a backticked command with trailing prose actually RUNS unwrapped, prose and all discarded", () => {
+  let seen = "";
+  const report = acceptanceReport(
+    "Acceptance: `node -e \"process.exit(0)\"` — 12/12 passing", (cmd) => { seen = cmd; return 0; });
+  assert.equal(report.ok, true);
+  assert.equal(seen, 'node -e "process.exit(0)"',
+    "run() must see neither the backticks nor the trailing commentary");
+});
+
+test("#658 THE MORE EXPENSIVE HALF -- a BARE command with trailing em-dash commentary must never reach "
+  + "argv, even though extraction keeps the raw text (heading-title-not-command.test.ts's own contract)", () => {
+  const body = "Acceptance: npx tsx --test a.test.ts — 12/12 passing";
+  // Extraction stays literal -- this is the SAME rule heading-title-not-command.test.ts already pins for
+  // a bare "none — nothing to run" command line, so this row's fix must not special-case away from it.
+  assert.deepEqual(extractAcceptanceSection(body),
+    { kind: "commands", commands: ["npx tsx --test a.test.ts — 12/12 passing"] });
+  let seen = null;
+  const report = acceptanceReport(body, (cmd) => { seen = cmd; return 0; });
+  assert.equal(seen, null,
+    "run() must never be called with a fabricated test file -- the file check must refuse first, "
+    + "against the TRUNCATED command, before execution is ever attempted");
+  assert.equal(report.ok, false, "a body that could not resolve to a real file must fail the report");
+  assert.match(report.lines[0], /fail \(matched no file: a\.test\.ts\)/,
+    "the failure must name the missing FILE, not blame npx or report a confusing executable-not-found");
+});
+
+test("#658 a BARE command with trailing prose, naming a REAL file, runs with the prose stripped from argv", () => {
+  let seen = null;
+  const body = "Acceptance: npx tsx --test packages/lab/src/packaging/acceptance-commands.test.ts — 12/12 passing";
+  const report = acceptanceReport(body, (cmd) => { seen = cmd; return 0; });
+  assert.equal(seen, "npx tsx --test packages/lab/src/packaging/acceptance-commands.test.ts",
+    "the em-dash and everything after it must never reach argv");
+  assert.equal(report.ok, true);
+  // The REPORTED line still shows the ORIGINAL text, em-dash and all -- an author sees exactly what they
+  // wrote, not a silently-edited version, even though a different string was what actually ran.
+  assert.match(report.lines[0], /RAN npx tsx --test packages\/lab\/src\/packaging\/acceptance-commands\.test\.ts — 12\/12 passing -> pass/);
+});
+
+test("#658 CONTROL: heading-title-not-command.test.ts's own em-dash fixture is unaffected -- a bare "
+  + "command line containing an em-dash, with no `Acceptance:`/`Refutation:` header at all, extracts "
+  + "with its literal text intact", () => {
+  // Reproduces that file's own fixture shape here too, so a future change to stripTrailingCommentary's
+  // call site cannot silently regress this without a failure in THIS file as well as that one.
+  const body = "## Acceptance — a title\n\nnone — nothing to run\n";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["none — nothing to run"] });
+});
+
+test("#658 ASCII `--` in a real command's own flags is never treated as a delimiter", () => {
+  const body = "Acceptance: npm run build -- --production";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npm run build -- --production"] });
+  let seen = null;
+  acceptanceReport(body, (cmd) => { seen = cmd; return 0; });
+  assert.equal(seen, "npm run build -- --production",
+    "an ASCII double-hyphen is real, common flag syntax and must reach argv unchanged");
+});
+
+test("#658 MUTATION TARGET: restoring the closing-backtick-must-be-last-character rule reproduces the "
+  + "exact `no executable \"`npx\"` shape this row exists to end", () => {
+  const original = "`npx tsx --test a.test.ts` — 12/12 passing, was 7";
+  const stillAttached = /^`[^`]+`$/.test(original) ? original.slice(1, -1) : original;
+  const classification = classifyCommand(stillAttached);
+  assert.equal(classification.verdict, "prose",
+    "the pre-fix tokenizer leaves the leading backtick attached to the executable name");
+  assert.match((/** @type {{reason:string}} */(classification)).reason, /no executable "`npx"/,
+    "documents the exact misleading message this row exists to end");
+});
+
 // Form 3: a `\` line continuation is one command, not two.
 
 test("#419 form 3: a two-line continuation joins into ONE command", () => {
