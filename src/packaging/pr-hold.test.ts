@@ -6,6 +6,14 @@
  * success says nothing about what it did — so the decision is a pure function with three distinct
  * outcomes, and the two that matter cannot be produced on demand against a live API.
  */
+// no-token: gh
+//
+// #827. Every function this file exercises is PURE -- `holdDecision`, `armVerdict`,
+// `disarmVerdict` and the `REARM_LABEL` constant all take fixtures and return verdicts. `pr-hold.mjs`'s
+// `gh` helper is reached by the closure walk because it lives in the same module, never because these
+// tests call it: `takeHold` and `releaseHold`, the two functions that do, appear in this file only
+// inside an assertion message. The declaration is verified against the entry's own code, so a wrong one
+// is refused as its own state rather than trusted.
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -138,4 +146,40 @@ test("armVerdict and disarmVerdict are OPPOSITE readings of the same field, not 
   assert.equal(disarmVerdict(armed).disarmed, false);
   assert.equal(armVerdict({ autoMergeRequest: null }).armed, false);
   assert.equal(disarmVerdict({ autoMergeRequest: null }).disarmed, true);
+});
+
+// --- MERGED IS NOT DISARMED, AND MERGED IS NOT UNARMED ---
+//
+// `autoMergeRequest` reads null on a MERGED PR exactly as it does on a disarmed one, and the field
+// cannot tell you which. Measured live on #845, 2026-09-09 17:25:53Z: `arm-pr` reported "armed #845",
+// the PR merged four seconds later, and three separate reads across two APIs then reported NOT-ARMED.
+// I spent several minutes treating a successful arm as a broken tool.
+
+test("MUTATION: a MERGED PR is not `disarmed` -- reporting it so makes takeHold announce a hold over a "
+  + "PR that has already landed", () => {
+  const v = disarmVerdict({ autoMergeRequest: null, state: "MERGED" });
+  assert.equal(v.disarmed, false, "this is the reassuring direction, which is the one that matters");
+  assert.match(v.reason, /ALREADY MERGED/);
+});
+
+test("REST's spelling too -- `merged: true` with state `closed`, since `closed` alone does not "
+  + "distinguish a merged PR from one somebody shut", () => {
+  assert.equal(disarmVerdict({ autoMergeRequest: null, state: "closed", merged: true }).disarmed, false);
+  assert.equal(disarmVerdict({ autoMergeRequest: null, state: "closed", merged: false }).disarmed, true,
+    "a PR somebody CLOSED really is disarmed -- only a merge is the special case");
+});
+
+test("MUTATION: a MERGED PR is not `unarmed` either -- the mirror, and it would send an operator to "
+  + "re-arm something that has already landed", () => {
+  const v = armVerdict({ autoMergeRequest: null, state: "MERGED" });
+  assert.equal(v.armed, true);
+  assert.match(v.reason, /MERGED/);
+});
+
+test("CONTROL: the ordinary readings are untouched -- null is disarmed, non-null is armed", () => {
+  assert.equal(disarmVerdict({ autoMergeRequest: null, state: "OPEN" }).disarmed, true);
+  assert.equal(armVerdict({ autoMergeRequest: { mergeMethod: "MERGE" }, state: "OPEN" }).armed, true);
+  assert.equal(armVerdict({ autoMergeRequest: null, state: "OPEN" }).armed, false);
+  assert.equal(disarmVerdict(null).disarmed, true,
+    "and an unreadable PR keeps whatever it meant before -- this row does not change that question");
 });

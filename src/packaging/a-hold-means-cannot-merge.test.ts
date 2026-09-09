@@ -42,6 +42,17 @@
  * And the ordinary case must be untouched. A hold that fires routinely is routed around; this
  * repository's own record of that is `A11Y_SKIP_VERIFY=1` reached for six times in one evening.
  */
+// no-token: gh
+//
+// #827. Every function here is called with FIXTURES and returns a verdict: `armabilityOf`, `holdersOf`,
+// `disarmVerdict`, `sweepDecision`, `armDecision`, and `mergeSafetyVerdict`, whose whole design is that
+// the facts are looked up by its caller and passed in -- `ciGateFacts` does the `gh` calls, and nothing
+// in this file invokes it. The closure walk reaches `gh` through `merge-guard.mjs`'s module graph rather
+// than through anything these tests execute.
+//
+// The declaration is verified against the entry's own code, so if `mergeSafetyVerdict` ever starts doing
+// its own lookups this refuses rather than trusting the comment -- which is the point of declaring it
+// here rather than leaving the file permanently unrunnable in CI.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
