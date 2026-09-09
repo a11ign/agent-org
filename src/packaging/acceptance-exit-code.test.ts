@@ -67,7 +67,10 @@ test("#540 extractRefutationSection: two Refutation: sections are DUPLICATE, not
 
 test("#540 acceptanceReport: a DUPLICATE Refutation: fails the job even though Refutation: is otherwise "
   + "optional -- an ambiguous body is not the same as an absent one", () => {
-  const body = "Acceptance: npm test\n\nRefutation: node a.mjs\n\ntext\n\nRefutation: node b.mjs";
+  // NOT `npm test`, since 2026-09-09: a whole-suite command is now REFUSED by the capability gate in a
+  // job without the corpus or a token, so it would report REFUSED rather than RAN and this test would be
+  // asserting about the capability gate instead of about Refutation:'s ambiguity, which is its subject.
+  const body = 'Acceptance: node -e "process.exit(0)"\n\nRefutation: node a.mjs\n\ntext\n\nRefutation: node b.mjs';
   const report = acceptanceReport(body, () => 0);
   assert.equal(report.ok, false);
   assert.ok(report.lines.some((l) => l.startsWith("REFUTATION: DUPLICATE")));
@@ -75,7 +78,10 @@ test("#540 acceptanceReport: a DUPLICATE Refutation: fails the job even though R
 
 test("#540 acceptanceReport: a DUPLICATE Refutation: still reports the Acceptance: result, "
   + "since the two sections are independent facts about the same body", () => {
-  const body = "Acceptance: npm test\n\nRefutation: node a.mjs\n\ntext\n\nRefutation: node b.mjs";
+  // NOT `npm test`, since 2026-09-09: a whole-suite command is now REFUSED by the capability gate in a
+  // job without the corpus or a token, so it would report REFUSED rather than RAN and this test would be
+  // asserting about the capability gate instead of about Refutation:'s ambiguity, which is its subject.
+  const body = 'Acceptance: node -e "process.exit(0)"\n\nRefutation: node a.mjs\n\ntext\n\nRefutation: node b.mjs';
   const report = acceptanceReport(body, () => 0);
   assert.ok(report.lines.some((l) => l.startsWith("ACCEPTANCE: RAN")),
     "the valid Acceptance: section must still run and report, independent of Refutation:'s ambiguity");
