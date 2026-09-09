@@ -271,9 +271,12 @@ test("updatePrimary refuses outside the primary (a linked worktree)", () => {
 test("updatePrimary in the primary calls fetch, then checkout --detach origin/main, and nothing else", () => {
   withGitSandbox((sandbox) => {
     // Injected run(), never a real fetch: `updatePrimary` must not need a network to be proven correct.
+    // The BUILD is injected for the same reason (#749 added it after the checkout) -- and this test's
+    // subject is unchanged by that: it pins the GIT calls, and a build is not one. Asserting the same
+    // three commands after the build was added is the point, not an accommodation of it.
     const calls: string[][] = [];
     const run = (args: string[]) => { calls.push(args); return "abc123\n"; };
-    const sha = updatePrimary(sandbox.dir, run);
+    const sha = updatePrimary(sandbox.dir, run, () => {});
     assert.equal(sha, "abc123");
     assert.deepEqual(calls, [
       ["fetch", "origin"],

@@ -1,0 +1,71 @@
+/**
+ * `primary:update` is the ONE sanctioned way to move the primary checkout (#126), which makes it the only
+ * place a rebuild can live and be reached every time.
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { updatePrimary } from "../../../../scripts/update-primary.mjs";
+
+/**
+ * MOVING THE PRIMARY MOVES EVERY WORKTREE'S `dist`, AND NOTHING ELSE DOES.
+ *
+ * Every linked worktree shares the primary's `node_modules`, so a cross-package import from any of them
+ * resolves to THE PRIMARY'S `dist` — CLAUDE.md states it, and `docs/operational-lessons.md` records the
+ * afternoon spent finding that "resolves to dist" does not say whose. So a fast-forward advances the
+ * SOURCE nine worktrees compile against while leaving the COMPILED OUTPUT wherever it last was.
+ *
+ * Measured 2026-09-09: the orchestrator's DOCS-ONLY push was refused by the pre-push hook on a module
+ * `main` has and the primary's `dist` did not. A docs change, refused by a resolution failure, in a
+ * worktree that had never been anything but current — and nothing in the message could point at the
+ * primary, because the primary was not what they had touched.
+ *
+ * The build belongs IN the update rather than beside it: anything a human has to remember is something
+ * that does not happen, and `primary:update` is already the one sanctioned way to move this checkout
+ * (#126), which makes it the only place this can live and be reached every time.
+ */
+test("#749 updatePrimary BUILDS after the fast-forward -- the source moves and dist must follow", () => {
+  const calls: string[][] = [];
+  const root = mkdtempSync(join(tmpdir(), "a11y-primary-build-"));
+  try {
+    mkdirSync(join(root, ".git"));
+    const built: string[] = [];
+    updatePrimary(root, (args) => { calls.push(args); return "abc123\n"; }, (cwd) => built.push(cwd));
+    assert.deepEqual(built, [root], "the build runs, once, in the primary");
+    const order = calls.map((c) => c[0]);
+    assert.deepEqual(order, ["fetch", "checkout", "rev-parse"],
+      "and it runs AFTER the checkout -- building the tree you are about to move is building the wrong tree");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#749 a FAILED build throws, naming what it means, and does NOT roll the checkout back", () => {
+  const root = mkdtempSync(join(tmpdir(), "a11y-primary-buildfail-"));
+  try {
+    mkdirSync(join(root, ".git"));
+    const calls: string[][] = [];
+    assert.throws(
+      () => updatePrimary(root, (args) => { calls.push(args); return "abc123\n"; },
+        () => { throw Object.assign(new Error("boom"), { status: 2 }); }),
+      /worktree resolves THIS checkout's dist/,
+      "the message must say what a stale dist DOES, not merely that a build failed");
+    assert.ok(calls.some((c) => c[0] === "checkout"),
+      "the fast-forward already happened and is correct; a failed build must not revert a checkout "
+      + "somebody else may already be reading");
+    assert.ok(!calls.some((c) => c[0] === "reset" || c[0] === "revert"));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#749 MUTATION TARGET: without the build call the source moves and dist does not, silently", () => {
+  // The pre-#749 shape, written out: fetch, checkout, rev-parse, return. Nothing announces that every
+  // worktree is now compiling against a dist one or more commits behind its own source.
+  const calls: string[][] = [];
+  const root = mkdtempSync(join(tmpdir(), "a11y-primary-mutation-"));
+  try {
+    mkdirSync(join(root, ".git"));
+    const built: string[] = [];
+    updatePrimary(root, (args) => { calls.push(args); return "abc123\n"; }, (cwd) => built.push(cwd));
+    assert.notDeepEqual(built, [], "if this passes with an empty list, the build is no longer wired");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
