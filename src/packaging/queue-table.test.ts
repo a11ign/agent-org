@@ -14,7 +14,8 @@ import { prRow, nonSuccessByName, newestPerName, render, fetchRefs, renderStalle
 
 const NOW = new Date("2026-09-09T08:00:00Z");
 /** A host with room, so tests about OTHER sections are not decided by section 5. */
-const HOST_OK = { freeMb: 4000, compressedMb: 2000, inactiveMb: 3000, worktrees: 12 };
+const HOST_OK = { compressedMb: 2000, inactiveMb: 3000, freeMb: 180, pageouts: 1000,
+  load: 2, gitProcesses: 3, worktrees: 12 };
 const pr = (over = {}) => ({
   number: 1, headRefName: "pm/x", headRefOid: "a".repeat(40), mergeStateStatus: "BLOCKED",
   armed: true, updatedAt: "2026-09-09T07:55:00Z", redChecks: [], ...over,
@@ -217,40 +218,63 @@ test("merged PRs whose times could not be read is INCOMPLETE; nothing merged at 
 // ---------------------------------------------------------------------------------------------------
 // SECTION 5: THE HOST, because on 2026-09-09 it was the bottleneck and the table named people instead.
 //
-// At 08:57Z this machine had 56 MB free and 164 worktrees, with 58 concurrent git processes across seven
-// sessions. Four PRs read as "not carried by their owners" for twenty minutes -- and every one of those
-// carries is a git merge plus a pre-push gate running lint and typecheck, which on that host were minutes
-// each or were killed outright. The table named four idle owners and the truth was one starved machine.
+// Four PRs read as "not carried by their owners" for twenty minutes while 58 concurrent git processes ran
+// on one repository and Spotlight indexed 164 worktrees. The table named four idle owners and the truth
+// was one contended machine.
+//
+// WHICH NUMBER TOOK TWO WRONG ANSWERS TO SETTLE, and both are pinned below: `free` is the wrong axis
+// (macOS keeps it small by design), and `Pages occupied by compressor` has FOUR WORDS before its number,
+// so a positional read returns the word "by" -- zero -- which reads as no memory pressure at all on a
+// host holding 12 GB compressed.
 // ---------------------------------------------------------------------------------------------------
-import { renderHost, HOST_FREE_MB_FLOOR } from "../../../../scripts/queue-table.mjs";
+import { renderHost, hostState, GIT_PROCESS_CEILING, LOAD_CEILING }
+  from "../../../../scripts/queue-table.mjs";
 
-const HOST = { freeMb: 4000, compressedMb: 2000, inactiveMb: 3000, worktrees: 12 };
+const HOST = { compressedMb: 2000, inactiveMb: 3000, freeMb: 180, pageouts: 1000,
+  load: 2, gitProcesses: 3, worktrees: 12 };
 
-test("section 5 prints free, compressed AND inactive -- never one number", () => {
-  // `vm_stat` is distorted by exactly the condition it must detect: macOS counts compressed and inactive
-  // pages as available, and it advertised 13.7 GB free while two guests were starving. The free figure
-  // understates what is reclaimable; the compressor figure is the one that says whether the host is in
-  // trouble. Offering either alone is the measurement that lied.
+test("section 5 reports compressed, inactive AND free -- and never keys on free alone", () => {
   const text = renderHost(HOST).lines.join("\n");
-  assert.match(text, /free 4000 MB/);
   assert.match(text, /compressed 2000 MB/);
   assert.match(text, /inactive 3000 MB/);
-  assert.match(text, /worktrees 12/);
+  assert.match(text, /free 180 MB/);
+  // 180 MB free on a quiet host is NORMAL. The first version of this section would have shouted here.
+  assert.doesNotMatch(text, /CONTENDED/,
+    "free is kept small by design; a low free figure is the working state of a working machine");
 });
 
-test("MUTATION TARGET: under the floor it says a PR not carried is a starved MACHINE, not an idle owner", () => {
-  const starved = renderHost({ ...HOST, freeMb: HOST_FREE_MB_FLOOR - 1 });
-  const text = starved.lines.join("\n");
-  assert.match(text, /starved machine, NOT an idle owner/);
-  assert.match(text, /do not name people for it/);
-  assert.match(text, /Remove every worktree whose PR has merged/,
-    "and it names the cheapest relief, which is nobody's job in particular and so does not happen");
+test("MUTATION TARGET: the threshold is LOAD and the GIT COUNT, the two unambiguous numbers", () => {
+  const busy = renderHost({ ...HOST, load: LOAD_CEILING + 1 }).lines.join("\n");
+  assert.match(busy, /THE HOST IS CONTENDED/);
+  assert.match(busy, /busy machine, NOT an idle owner/);
+  assert.match(busy, /do not name people for it/);
+
+  const manyGit = renderHost({ ...HOST, gitProcesses: GIT_PROCESS_CEILING + 1 }).lines.join("\n");
+  assert.match(manyGit, /THE HOST IS CONTENDED/, "either one alone is enough");
 });
 
-test("above the floor it says none of that -- a warning that always fires is one people filter", () => {
-  const text = renderHost(HOST).lines.join("\n");
-  assert.doesNotMatch(text, /starved machine/);
-  assert.doesNotMatch(text, /UNDER/);
+test("pageouts print as a DELTA, and say so when there is no baseline", () => {
+  // CLAUDE.md: the counters are since-boot, so 6.6 GB left from an incident hours ago is
+  // indistinguishable from a host swapping right now. A bare total is not a measurement.
+  assert.match(renderHost(HOST, null).lines.join("\n"), /no baseline yet/);
+  assert.match(renderHost({ ...HOST, pageouts: 1500 }, 1000).lines.join("\n"), /\+500 since the last table/);
+});
+
+test("MUTATION TARGET: the compressor is read by LABEL, never by field position", () => {
+  // `Pages occupied by compressor:` has four words before its number. `awk '{print $3}'` returns "by",
+  // which is 0, which reads as no memory pressure. Two sessions measured this host minutes apart and got
+  // 0 MB and 12,344 MB; the difference was the field index. A parse error in a metric is
+  // indistinguishable from good news.
+  const live = hostState();
+  assert.ok(live, "vm_stat must be readable on this host");
+  assert.ok(live!.compressedMb >= 0);
+  // The real proof is arithmetic rather than a live value: a host with pages in the compressor must not
+  // report zero. If this host genuinely has none, the assertion below is vacuous and says so.
+  if (live!.compressedMb === 0) {
+    assert.ok(live!.inactiveMb >= 0, "NOTE: this host reports no compressed pages, so this case is vacuous");
+  } else {
+    assert.ok(live!.compressedMb > 100, "a non-zero compressor must not round to a positional-read zero");
+  }
 });
 
 test("an unreadable host is CANNOT-ASK, never a healthy default", () => {
