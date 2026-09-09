@@ -22,6 +22,23 @@
  * **held and disarmed**, and **labelled but still armed** — the last being the most dangerous, because
  * it LOOKS held while merging on green.
  *
+ * ## ASSERTING ON WIRING IS NOT ASSERTING ON BEHAVIOUR
+ *
+ * The first version of these tests checked that the workflow CALLS `arm-pr.mjs` and that `arm-pr.mjs`
+ * MENTIONS the shared predicate. Both true, both passing, and `npm run mutate` reported
+ * `THE GUARD DID NOT BITE` when the hold check inside that script was disabled — **the wiring was intact
+ * and the predicate did nothing.**
+ *
+ * It is the same family as an empty positive control, and as a pin asserting the wrong half: in each,
+ * the test observes something ADJACENT to the property and the adjacency holds while the property fails.
+ * Found twice in one session in this author's own work — once here, once on #622's boundary pin — which
+ * is why it is written down rather than merely fixed.
+ *
+ * The remedy is the same each time: **drive the decision, do not read the file that contains it.**
+ * `armDecision` and `armabilityOf` are exported and called with real shapes below; the two remaining
+ * text assertions are about the WORKFLOW, which cannot be imported, and they are deliberately paired
+ * with behavioural ones rather than standing alone.
+ *
  * And the ordinary case must be untouched. A hold that fires routinely is routed around; this
  * repository's own record of that is `A11Y_SKIP_VERIFY=1` reached for six times in one evening.
  */
