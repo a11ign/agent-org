@@ -10,6 +10,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { holdDecision } from "../../../../scripts/pr-hold.mjs";
+import { armVerdict, disarmVerdict, REARM_LABEL } from "../../../../scripts/pr-hold-state.mjs";
 
 test("an unheld PR is taken, and says it was unheld", () => {
   const d = holdDecision({ holders: [], session: "worker-capture", steal: false });
@@ -96,4 +97,45 @@ test("your own label is never in `displaces` — re-stealing must not remove you
   const d = holdDecision({ holders: ["worker-capture", "dispatcher"], session: "worker-capture", steal: true });
   assert.deepEqual(d.displaces, ["dispatcher"],
     "removing your own label as part of taking the hold would end with the PR unheld");
+});
+
+// --- A RELEASE THAT LEAVES A PR UNARMED IS A HOLD THAT OUTLIVES ITS REASON ---
+//
+// Measured on #816 at 15:45Z 2026-09-09: `pr:hold` took the hold and disarmed correctly, read back null;
+// `--release` removed the label and left `auto_merge` null. The PR was then free, green and unarmed,
+// with nothing on it saying it was waiting — the state the README calls the most dangerous, because
+// there is no longer anything to notice.
+
+test("armVerdict reads the STATE, not the exit code — non-null autoMergeRequest is the only proof", () => {
+  assert.equal(armVerdict({ autoMergeRequest: { mergeMethod: "MERGE" } }).armed, true);
+});
+
+test("MUTATION: a null autoMergeRequest after arming is NOT armed, however `gh pr merge` exited", () => {
+  const v = armVerdict({ autoMergeRequest: null });
+  assert.equal(v.armed, false);
+  assert.match(v.reason, /STILL UNARMED/);
+  assert.match(v.reason, /gh pr merge --auto --merge/, "the message must be followable");
+});
+
+test("MUTATION: an UNREADABLE PR is not armed either — unverified is not armed, the mirror of the disarm rule", () => {
+  assert.equal(armVerdict(null).armed, false);
+});
+
+/**
+ * The take disarms unconditionally, so by release time "was armed and I turned it off" and "was never
+ * armed" have the same end state. Re-arming on the strength of the wrong one arms a PR nobody armed,
+ * which is the failure pointed in the dangerous direction — so the take RECORDS what it found.
+ */
+test("the re-arm label is a real, distinct label — the take records what the release cannot recover", () => {
+  assert.equal(REARM_LABEL, "rearm-on-release");
+  assert.ok(!REARM_LABEL.startsWith("session:"),
+    "it must not collide with the hold vocabulary `claimStatus` parses, or a hold marker becomes a holder");
+});
+
+test("armVerdict and disarmVerdict are OPPOSITE readings of the same field, not two spellings of one", () => {
+  const armed = { autoMergeRequest: { mergeMethod: "MERGE" } };
+  assert.equal(armVerdict(armed).armed, true);
+  assert.equal(disarmVerdict(armed).disarmed, false);
+  assert.equal(armVerdict({ autoMergeRequest: null }).armed, false);
+  assert.equal(disarmVerdict({ autoMergeRequest: null }).disarmed, true);
 });
