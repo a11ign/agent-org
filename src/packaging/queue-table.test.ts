@@ -731,11 +731,25 @@ test("branchPrefixCensus: `main` is the one accepted no-prefix name, never repor
 
 test("fetchRemoteBranchesChecked: local mirror count matches the remote's own count -- returns both", () => {
   const run = (args: string[]) => (args[0] === "for-each-ref"
-    ? "origin/agent/foo-1\norigin/main\n"
+    ? "origin/agent/foo-1\t\norigin/main\t\n"
     : "abc\trefs/heads/agent/foo-1\ndef\trefs/heads/main\n");
   const result = fetchRemoteBranchesChecked({ run });
   assert.deepEqual(result.branches, ["agent/foo-1", "main"]);
   assert.equal(result.remoteCount, 2);
+});
+
+test("#790 CORRECTION (tracker-auditor, 2026-09-09): `origin/HEAD` is a SYMBOLIC REF, not a branch -- "
+  + "its own short name collapses to the bare string `origin`, which reads exactly like the anomaly this "
+  + "census exists to catch. Excluded by `%(symref)` being non-empty, never by name, and does not count "
+  + "against the remote's own head total either", () => {
+  const run = (args: string[]) => (args[0] === "for-each-ref"
+    ? "origin/agent/foo-1\t\norigin/main\t\norigin\trefs/remotes/origin/main\n"
+    : "abc\trefs/heads/agent/foo-1\ndef\trefs/heads/main\n");
+  const result = fetchRemoteBranchesChecked({ run });
+  assert.deepEqual(result.branches, ["agent/foo-1", "main"], "origin/HEAD must not appear as a branch");
+  assert.equal(result.remoteCount, 2, "and it must not inflate the count the remote is compared against");
+  const census = branchPrefixCensus(result.branches);
+  assert.deepEqual(census.noPrefix, [], "so it is never named as a prefix-less stray");
 });
 
 test("#790 ACCEPTANCE, MUTATION TARGET: the local mirror reading FEWER branches than the remote reports "
