@@ -268,12 +268,21 @@ test("updatePrimary refuses outside the primary (a linked worktree)", () => {
   });
 });
 
-test("updatePrimary in the primary calls fetch, then checkout --detach origin/main, and nothing else", () => {
+test("updatePrimary in the primary calls fetch, then checkout --detach origin/main, then moves the "
+  + "shared local `main` -- and nothing else", () => {
   withGitSandbox((sandbox) => {
     // Injected run(), never a real fetch: `updatePrimary` must not need a network to be proven correct.
     // The BUILD is injected for the same reason (#749 added it after the checkout) -- and this test's
-    // subject is unchanged by that: it pins the GIT calls, and a build is not one. Asserting the same
-    // three commands after the build was added is the point, not an accommodation of it.
+    // subject is unchanged by that: it pins the GIT calls, and a build is not one.
+    //
+    // THE FOURTH CALL IS `moveLocalMain` READING `refs/heads/main`, and it stops there because this
+    // stub answers every `rev-parse` with the same sha -- the branch is already at the target, so
+    // nothing is written. The DIVERGED and BEHIND paths are driven in `update-primary.test.ts`; what
+    // this list pins is that no OTHER command crept in.
+    //
+    // The local `main` branch is shared by every worktree and nothing had ever moved it: measured
+    // 2026-09-09 at 1405 commits behind `origin/main`, so `rev-list main..<branch>` had been answering
+    // a two-day-old question in all 76 of them.
     const calls: string[][] = [];
     const run = (args: string[]) => { calls.push(args); return "abc123\n"; };
     const sha = updatePrimary(sandbox.dir, run, () => {});
@@ -282,7 +291,8 @@ test("updatePrimary in the primary calls fetch, then checkout --detach origin/ma
       ["fetch", "origin"],
       ["checkout", "--detach", "origin/main", "--quiet"],
       ["rev-parse", "HEAD"],
-    ], "fetch, then detach at origin/main, then read the result -- nothing else");
+      ["rev-parse", "refs/heads/main"],
+    ], "fetch, detach at origin/main, read the result, then ask where the shared `main` is -- nothing else");
   });
 });
 
