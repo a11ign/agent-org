@@ -90,17 +90,33 @@ test("MUTATION target: the overlap check compares actual paths, not merely count
   assert.equal(reason, null);
 });
 
-// --- lookupMyRegionFiles: reads the SAME extraction row-reachability.mjs's STARTABLE check uses ---
+// --- lookupMyRegionFiles: #710 -- reads the row's DECLARED Region section, never every path its prose
+// mentions anywhere (that question belongs to row-reachability.mjs's STARTABLE check, unchanged) ---
 
-test("lookupMyRegionFiles extracts repo-relative paths from the issue body", () => {
+test("lookupMyRegionFiles extracts repo-relative paths from the issue body's Region section", () => {
   const run = () => JSON.stringify({ body: "Region: `scripts/row-claim.mjs` and its test under "
     + "`packages/lab/src/packaging/row-claim.test.ts`." });
   const files = lookupMyRegionFiles(455, { run });
   assert.deepEqual(files, ["scripts/row-claim.mjs", "packages/lab/src/packaging/row-claim.test.ts"]);
 });
 
-test("lookupMyRegionFiles: a row naming no path returns [], not null -- a real, different state from a failure", () => {
-  const run = () => JSON.stringify({ body: "Just prose, no paths here." });
+test("lookupMyRegionFiles: a Region section naming no path returns [], not null -- a real, different " +
+  "state from having no Region at all", () => {
+  const run = () => JSON.stringify({ body: "## Region\n\nJust prose, no paths here." });
+  assert.deepEqual(lookupMyRegionFiles(455, { run }), []);
+});
+
+test("#710 ACCEPTANCE: a body with NO Region section returns null -- CANNOT_ASK, not an empty list and " +
+  "not a scan of the whole body's prose", () => {
+  const run = () => JSON.stringify({ body: "Just prose, no Region heading or line anywhere." });
+  assert.equal(lookupMyRegionFiles(455, { run }), null);
+});
+
+test("#710 REGRESSION FIXTURE: #705-vs-#698's real shape -- a file cited in prose as a worked example, " +
+  "outside the Region section, is never returned", () => {
+  const run = () => JSON.stringify({ body:
+    "Rescuing `packages/lab/scripts/audit-rule-coverage.ts` from `lead/inventory-bootstrap`.\n\n"
+    + "## Region\n\n`scripts/` for the helper, `packages/lab/src/packaging/` for its test." });
   assert.deepEqual(lookupMyRegionFiles(455, { run }), []);
 });
 

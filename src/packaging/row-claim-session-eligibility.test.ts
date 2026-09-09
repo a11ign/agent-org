@@ -99,6 +99,23 @@ test("B2 is checked BEFORE B4 -- an unhealthy own PR is reported without even as
     + "already decided to refuse");
 });
 
+// --- #710: the overlap check reads the DECLARED Region section, never every path the row's prose
+// mentions -- #705-vs-#698 is the real shape this measured against ---
+
+test("#710 REGRESSION FIXTURE: #705's real body cites a fixture file in prose that #698's real PR " +
+  "actually changed -- and #705's own Region section never names it. Must NOT refuse", () => {
+  const run = routedRun({
+    issueViewBody: "## The fixture: what it would actually have taken\n\n"
+      + "Rescuing `packages/lab/scripts/audit-rule-coverage.ts` from `lead/inventory-bootstrap` "
+      + "(2026-09-06):\n\n"
+      + "## Region\n\n`scripts/` for the helper, `packages/lab/src/packaging/` for its test, and "
+      + "`docs/` wherever the stranded-branch procedure ends up being written down.\n",
+    prList: JSON.stringify([{ number: 698, files: [{ path: "packages/lab/scripts/audit-rule-coverage.ts" }] }]),
+  });
+  assert.equal(sessionEligibilityReason(455, "worker-judge", { run }), null,
+    "a file cited as a worked example, outside the Region section, must never be read as an overlap");
+});
+
 test("a failed lookup anywhere fails OPEN, never blocking a claim on a network error", () => {
   const run = (): string => { throw new Error("gh: rate limited"); };
   assert.equal(sessionEligibilityReason(455, "worker-judge", { run }),
