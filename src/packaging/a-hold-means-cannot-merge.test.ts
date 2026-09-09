@@ -47,6 +47,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { armabilityOf, holdersOf, disarmVerdict, HOLD_PREFIX } from "../../../../scripts/pr-hold-state.mjs";
+import { mergeSafetyVerdict } from "../../../../scripts/merge-guard.mjs";
+
+/** A head sha that matches its branch tip -- the clean #294 case, so these tests isolate the hold. */
+const HEAD = "1c81c2076c750203a1b49b152736e1fa57269b68";
 import { sweepDecision } from "../../../../scripts/auto-arm-sweep.mjs";
 import { armDecision } from "../../../../scripts/arm-pr.mjs";
 
@@ -171,18 +175,79 @@ test("MUTATION: the row vocabulary and the hold vocabulary do not overlap -- one
 });
 
 /**
- * NAMED, because the rename does not do it and a reader of a hold namespace will assume it does.
- * `merge-guard.mjs --ci-gate` -- the only required context on this repository -- calls
- * `mergeSafetyVerdict`, which reads head-vs-tip and never touches labels. So a hold on an ALREADY-ARMED
- * PR stops nothing, before this change and after it. Eleven of orchestrator's twelve labelled PRs merged
- * on 2026-09-09. Enforcement is at ARM time only: `pr-hold` disarms, and `armabilityOf` refuses to re-arm.
+ * THE SCOPE OF THE HOLD, AND IT MOVED. This test read the opposite until 2026-09-09: it asserted that
+ * `mergeSafetyVerdict` -- the only required context on this repository -- consulted no label, and said in
+ * its own message that if it ever failed, the heading was the thing to update rather than the assertion
+ * to delete. That is what happened.
+ *
+ * Before: a hold was enforced at ARM time only. `pr-hold` disarmed and `armabilityOf` refused to re-arm,
+ * so a hold TAKEN through the tool worked -- and a hold placed on a PR that was already armed stopped
+ * nothing, because GitHub's auto-merge consults no label and `gate` read head-vs-tip. Eleven of the
+ * twelve PRs one session labelled that day merged, labelled and armed.
+ *
+ * After: `gate` refuses a `hold:` label outright, so the label stops a merge rather than only stopping an
+ * arming -- which is what everybody already believed it did.
  */
-test("THE SCOPE OF THE HOLD, stated: mergeSafetyVerdict does not consult labels, so the required gate "
-  + "does not enforce a hold -- arming does", () => {
-  const guard = read("scripts/merge-guard.mjs");
-  const verdict = guard.slice(guard.indexOf("export function mergeSafetyVerdict"));
-  const body = verdict.slice(0, verdict.indexOf("\n}"));
-  assert.equal(/prLabels|holdersOf|armabilityOf/.test(body), false,
-    "if this now fails, the required gate HAS started reading holds -- which is the follow-up PR, and "
-    + "this test's heading is the thing to update rather than the assertion to delete");
+test("THE REQUIRED GATE REFUSES A HELD PR, and the refusal names the holder and the way out", () => {
+  const v = mergeSafetyVerdict({
+    pr: { number: 819, headRefOid: HEAD }, branchTip: HEAD, prLabels: ["hold:ceo", "ready"] });
+  assert.equal(v.code, 1, `expected REFUSED, got ${v.code}: ${v.reasons.join(" | ")}`);
+  assert.match(v.reasons[0], /IS HELD by ceo/);
+  assert.match(v.reasons[0], /pr:release/, "a refusal a reader cannot act on is one they route around");
+});
+
+test("CONTROL: an OWNERSHIP label is not a hold, and the normal case is a PR with no label at all -- a "
+  + "required job refusing the normal case is how a gate gets bypassed", () => {
+  assert.equal(mergeSafetyVerdict({ pr: { number: 1, headRefOid: HEAD }, branchTip: HEAD,
+    prLabels: ["session:orchestrator", "ready"] }).code, 0);
+  assert.equal(mergeSafetyVerdict({ pr: { number: 1, headRefOid: HEAD }, branchTip: HEAD,
+    prLabels: [] }).code, 0);
+  assert.equal(mergeSafetyVerdict({ pr: { number: 1, headRefOid: HEAD }, branchTip: HEAD }).code, 0,
+    "and an omitted prLabels defaults to unheld, so every existing caller keeps its meaning");
+});
+
+test("MUTATION: UNREADABLE LABELS ARE CANNOT_ASK, NOT UNHELD -- and the message must not say `held`, "
+  + "because `nobody looked` and `somebody holds it` send a reader to different places", () => {
+  const v = mergeSafetyVerdict({
+    pr: { number: 819, headRefOid: HEAD }, branchTip: HEAD, prLabels: null });
+  assert.equal(v.code, 2, `expected CANNOT_ASK, got ${v.code}`);
+  assert.match(v.reasons[0], /labels could not be read/);
+  assert.match(v.reasons[0], /INCONCLUSIVE, not unheld/);
+  assert.doesNotMatch(v.reasons[0], /IS HELD by/);
+});
+
+/**
+ * THE HALF THAT MAKES THE OTHER HALF TRUE. A hold is placed by adding a label, which changes no file and
+ * moves no commit. Without `labeled`/`unlabeled` in `ci.yml`'s `pull_request` types, a hold placed on a
+ * GREEN PR never re-runs the check that would refuse it, and auto-merge takes it -- so the refusal above
+ * would protect only PRs that happen to be pushed to afterwards.
+ *
+ * `edited` is the precedent, one field along: it was added because `acceptance` reads the PR BODY and no
+ * default type fires on a body edit, which deadlocked the queue for eight hours.
+ */
+test("ci.yml re-runs on `labeled` and `unlabeled`, or the gate's hold refusal never fires on a green PR", () => {
+  const ci = read(".github/workflows/ci.yml");
+  const types = /^\s*types: \[([^\]]*)\]/m.exec(ci)?.[1] ?? "";
+  assert.ok(types.length > 0, "the pull_request types list must be findable, or this asserts nothing");
+  for (const type of ["labeled", "unlabeled", "edited", "opened", "synchronize", "reopened"]) {
+    assert.ok(types.includes(type), `\`${type}\` is missing from ci.yml's pull_request types: ${types}`);
+  }
+});
+
+/**
+ * #690's RULE, ONE FIELD FURTHER. `labeled`/`unlabeled` reach a CLOSED PR exactly as `edited` does, and
+ * `gate` is deliberately ungated (`if: always()`), so a merged PR still carrying its `hold:` label would
+ * go permanently red on its own head. That red blocks nothing, lands in the report of non-success checks
+ * on merged heads, and trains people to skip the section — which is how one real red sat on seven merged
+ * PRs for ninety minutes.
+ */
+test("A CLOSED PR IS NEVER REFUSED FOR A HOLD -- it cannot merge, so the refusal protects nothing and "
+  + "the red would be permanent", () => {
+  const held = { prLabels: ["hold:ceo"], branchTip: HEAD };
+  assert.equal(mergeSafetyVerdict({ ...held, pr: { number: 1, headRefOid: HEAD, state: "open" } }).code, 1);
+  assert.equal(mergeSafetyVerdict({ ...held, pr: { number: 1, headRefOid: HEAD, state: "closed" } }).code, 0,
+    "a closed PR carrying a stale hold label must not be red for ever");
+  assert.equal(mergeSafetyVerdict({ ...held, pr: { number: 1, headRefOid: HEAD } }).code, 1,
+    "and an omitted state is treated as open -- the refusing direction, since an unknown state must not "
+    + "become a way past the hold");
 });
