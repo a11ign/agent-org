@@ -209,10 +209,19 @@ test("acceptanceReport: a command that exits zero passes the report", () => {
 });
 
 test("acceptanceReport: a REFUSED command never calls run(), and does not fail the report on its own", () => {
-  let called = false;
-  const report = acceptanceReport("Acceptance:\nnpm run fleet:deploy\n", () => { called = true; return 0; });
-  assert.equal(called, false, "a refused command must never actually execute");
-  assert.equal(report.ok, true, "REFUSED is not a pass and not a failure -- but it must not block a merge either");
+  // PAIRED WITH A RUNNABLE COMMAND since 2026-09-09. A section in which NOTHING ran now fails on its own,
+  // because 55 of the 145 PRs merged that day reported success having executed no command. This test's
+  // subject is unchanged: a refused command must never EXECUTE, and must not by itself sink a section
+  // that examined something.
+  /** @type {string[]} */
+  const called: string[] = [];
+  const report = acceptanceReport(
+    "Acceptance:\nnpm run fleet:deploy\nnode -e \"process.exit(0)\"\n",
+    (cmd) => { called.push(cmd); return 0; });
+  assert.deepEqual(called.filter((c) => c.includes("fleet")), [],
+    "a refused command must never actually execute");
+  assert.equal(report.ok, true,
+    "REFUSED is not a pass and not a failure -- beside a command that RAN it must not block a merge");
   assert.match(report.lines[0], /^ACCEPTANCE: REFUSED npm run fleet:deploy -> /);
 });
 
@@ -645,7 +654,9 @@ test("#497 jobCapabilities: history follows the body declaration; token/fleet/co
 
 test("#510 acceptanceReport: the history fixture is REFUSED (named), not RAN, with no `History: full` "
   + "declared -- and REFUSED never fails the report on its own", () => {
-  const body = `Closes #1\nAcceptance: npx tsx --test ${HISTORY_FIXTURE}\n`;
+  // The runnable second command is what keeps this a test about `history` rather than about a section
+  // that examined nothing -- see the EXECUTED NOTHING rule below.
+  const body = `Closes #1\nAcceptance:\nnpx tsx --test ${HISTORY_FIXTURE}\nnode -e "process.exit(0)"\n`;
   const report = acceptanceReport(body, () => 0);
   assert.equal(report.ok, true);
   assert.match(report.lines[0], /^ACCEPTANCE: REFUSED/);
@@ -1057,8 +1068,78 @@ test("CONTROL: a refusal of a NAMED file stays a pass -- the author did their pa
   + "run that one file. Failing both would make the two indistinguishable, and they need opposite fixes", () => {
   const caps = { history: false, token: false, fleet: false, corpus: false };
   const named = acceptanceReport(
-    "Acceptance: npx tsx --test packages/lab/src/packaging/queue-table.test.ts", () => 0, { capabilities: caps });
+    'Acceptance:\nnpx tsx --test packages/lab/src/packaging/queue-table.test.ts\n'
+    + 'node -e "process.exit(0)"\n', () => 0, { capabilities: caps });
   assert.equal(named.ok, true);
   assert.match(named.lines[0], /REFUSED/);
   assert.doesNotMatch(named.lines[0], /Name the files/);
+});
+
+// --- A SECTION THAT EXECUTED NOTHING IS NOT A SECTION THAT PASSED ---
+//
+// `evidence:check`'s examined-nothing shape, in the acceptance job. MEASURED 2026-09-09: 55 of the 145
+// PRs merged that day had an acceptance job that executed no command and concluded success. Almost every
+// one was `tsx --test packages/lab/src/packaging/<x>.test.ts` refused for `token` -- the tracker and
+// pipeline tooling, which is exactly the code the rest of the org now relies on.
+//
+// Three of the 55 were found by the PM re-running the declared commands at the merge commit by hand. The
+// shape is generic to the closure walk, not to those three, which is why this is a rule rather than
+// three fixes.
+
+test("EXECUTED NOTHING FAILS: every command refused and none run is the absence of an answer, not a pass", () => {
+  const caps = { history: false, token: false, fleet: false, corpus: false };
+  const report = acceptanceReport(
+    "Acceptance: npx tsx --test packages/lab/src/packaging/row-claim-live.test.ts", () => 0,
+    { capabilities: caps });
+  assert.equal(report.ok, false);
+  assert.ok(report.lines.some((l) => l.startsWith("ACCEPTANCE: EXECUTED NOTHING")),
+    "the verdict must be its own line, not a modifier on the refusal -- a reader scanning for a failure "
+    + "reads line starts");
+  assert.match(report.lines.join("\n"), /no token, no fleet and no corpus/,
+    "and it must say what this job cannot do, or the author reads it as the tool being broken");
+});
+
+test("A REFUSED LINE PASSES ONLY BESIDE A RAN LINE -- refusing one named file while another actually "
+  + "runs is a partial answer; refusing every one is no answer at all", () => {
+  const caps = { history: false, token: false, fleet: false, corpus: false };
+  const mixed = acceptanceReport(
+    'Acceptance:\nnpx tsx --test packages/lab/src/packaging/row-claim-live.test.ts\n'
+    + 'node -e "process.exit(0)"\n', () => 0, { capabilities: caps });
+  assert.equal(mixed.ok, true, "one command ran, so the section examined something");
+  assert.ok(!mixed.lines.some((l) => l.startsWith("ACCEPTANCE: EXECUTED NOTHING")));
+});
+
+test("CONTROL: a section with commands that all RUN is untouched, and an empty section is not this "
+  + "verdict -- MISSING and NONE are their own answers and must not be renamed", () => {
+  const caps = { history: false, token: false, fleet: false, corpus: false };
+  const ran = acceptanceReport('Acceptance: node -e "process.exit(0)"', () => 0, { capabilities: caps });
+  assert.equal(ran.ok, true);
+  assert.ok(!ran.lines.some((l) => /EXECUTED NOTHING/.test(l)));
+
+  assert.deepEqual(acceptanceReport("no sections here", () => 0, { capabilities: caps }).lines,
+    ["ACCEPTANCE: MISSING"], "MISSING is not EXECUTED NOTHING: one is a body with no declaration, the "
+    + "other a declaration this job cannot act on");
+});
+
+/**
+ * THE BOUNDARY, and it is #516's rather than a convenience. I wrote this test asserting the opposite
+ * first -- "the rule is about a section examining nothing, not about the word Acceptance" -- and the
+ * suite refused it, correctly.
+ *
+ * `Refutation:` is OPTIONAL, and this repo's own rule tells authors to declare `npm run mutate` there,
+ * which the classifier refuses BY DESIGN: mutate's exit 0 means the guard BITES, while `Refutation:`
+ * reads success as a non-zero exit, so running it would invert the verdict. A rule that failed a section
+ * for executing nothing would refuse the body the tree itself asks the author to write.
+ *
+ * An Acceptance section has no such case: every refusal there is a capability this job lacks.
+ */
+test("THE BOUNDARY: a REFUTATION section that executed nothing does NOT fail -- the tree tells authors "
+  + "to declare a command it refuses by design there, and refusing their body for obeying it is worse", () => {
+  const caps = { history: false, token: false, fleet: false, corpus: false };
+  const report = acceptanceReport(
+    'Acceptance:\nnode -e "process.exit(0)"\n'
+    + "Refutation:\nnpx tsx --test packages/lab/src/packaging/row-claim-live.test.ts\n", () => 0,
+    { capabilities: caps });
+  assert.equal(report.ok, true);
+  assert.ok(!report.lines.some((l) => /EXECUTED NOTHING/.test(l)));
 });
