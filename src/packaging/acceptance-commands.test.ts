@@ -1218,13 +1218,25 @@ test("a whole-suite acceptance line FAILS the job, and the message names the fix
 
 test("CONTROL: a refusal of a NAMED file stays a pass -- the author did their part and this job cannot "
   + "run that one file. Failing both would make the two indistinguishable, and they need opposite fixes", () => {
+  // #790/#878: this USED TO name a real production test file (first `queue-table.test.ts`, then
+  // `row-claim-live.test.ts`) as its "a file this job refuses" fixture -- and it broke exactly the way
+  // ceo named: a `// no-token:` declaration landing on that real file (for an unrelated PR) made this
+  // control pass or fail on whether somebody edited it, which is #777's own fixture-fragility shape one
+  // layer over. A SYNTHETIC fixture this test creates and destroys itself cannot break under a future
+  // declaration on anybody else's file, ever.
   const caps = { history: false, token: false, fleet: false, corpus: false };
-  const named = acceptanceReport(
-    'Acceptance:\nnpx tsx --test packages/lab/src/packaging/row-claim-live.test.ts\n'
-    + 'node -e "process.exit(0)"\n', () => 0, { capabilities: caps });
-  assert.equal(named.ok, true);
-  assert.match(named.lines[0], /REFUSED/);
-  assert.doesNotMatch(named.lines[0], /Name the files/);
+  const dir = mkdtempSync(join(tmpdir(), "acceptance-control-"));
+  try {
+    const fixture = join(dir, "needs-token.test.ts");
+    writeFileSync(fixture, "// requires: token\n");
+    const named = acceptanceReport(
+      `Acceptance:\nnpx tsx --test ${fixture}\nnode -e "process.exit(0)"\n`, () => 0, { capabilities: caps });
+    assert.equal(named.ok, true);
+    assert.match(named.lines[0], /REFUSED/);
+    assert.doesNotMatch(named.lines[0], /Name the files/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // --- A SECTION THAT EXECUTED NOTHING IS NOT A SECTION THAT PASSED ---
