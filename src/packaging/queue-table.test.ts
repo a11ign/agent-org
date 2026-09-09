@@ -16,7 +16,7 @@ import { prRow, nonSuccessByName, newestPerName, render, fetchRefs, renderStalle
 const NOW = new Date("2026-09-09T08:00:00Z");
 /** A host with room, so tests about OTHER sections are not decided by section 5. */
 const HOST_OK = { compressedMb: 2000, inactiveMb: 3000, freeMb: 180, pageouts: 1000,
-  load: 2, gitProcesses: 3, worktrees: 12 };
+  load: 2, gitProcesses: 3, worktrees: 12, topConsumers: null };
 const pr = (over = {}) => ({
   number: 1, headRefName: "pm/x", headRefOid: "a".repeat(40), mergeStateStatus: "BLOCKED",
   armed: true, updatedAt: "2026-09-09T07:55:00Z", redChecks: [], ...over,
@@ -232,7 +232,7 @@ import { renderHost, GIT_PROCESS_CEILING, LOAD_CEILING }
   from "../../../../scripts/queue-table.mjs";
 
 const HOST = { compressedMb: 2000, inactiveMb: 3000, freeMb: 180, pageouts: 1000,
-  load: 2, gitProcesses: 3, worktrees: 12 };
+  load: 2, gitProcesses: 3, worktrees: 12, topConsumers: null };
 
 test("section 5 reports compressed, inactive AND free -- and never keys on free alone", () => {
   const text = renderHost(HOST).lines.join("\n");
