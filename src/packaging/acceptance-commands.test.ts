@@ -1035,3 +1035,30 @@ test("the suite population is real -- a floor, because every check above passes 
     "the file whose token requirement started this must be IN the population, or the gate cannot have "
     + "caught it");
 });
+
+/**
+ * REFUSED IS NOT GREEN FOR A WHOLE-SUITE COMMAND (ceo, 2026-09-09). "An acceptance job that passes
+ * having verified nothing is how `verified` comes to mean `unexamined`."
+ *
+ * Every OTHER refusal stays `ok: true`, and the distinction is not a nicety: those are a legitimate "not
+ * this job's to run" — the author NAMED a file, and this job cannot run that particular one. `npm test`
+ * names nothing, so refusing it means the PR has declared no acceptance this job can act on at all.
+ */
+test("a whole-suite acceptance line FAILS the job, and the message names the fix rather than the state", () => {
+  const caps = { history: false, token: false, fleet: false, corpus: false };
+  const report = acceptanceReport("Acceptance: npm test", () => 0, { capabilities: caps });
+  assert.equal(report.ok, false, "passing here is how `verified` comes to mean `unexamined`");
+  assert.match(report.lines[0], /Name the files this change is verified by/);
+  assert.match(report.lines[0], /no token and no corpus/,
+    "the refusal must say WHY this job cannot, or the author reads it as the tool being broken");
+});
+
+test("CONTROL: a refusal of a NAMED file stays a pass -- the author did their part and this job cannot "
+  + "run that one file. Failing both would make the two indistinguishable, and they need opposite fixes", () => {
+  const caps = { history: false, token: false, fleet: false, corpus: false };
+  const named = acceptanceReport(
+    "Acceptance: npx tsx --test packages/lab/src/packaging/queue-table.test.ts", () => 0, { capabilities: caps });
+  assert.equal(named.ok, true);
+  assert.match(named.lines[0], /REFUSED/);
+  assert.doesNotMatch(named.lines[0], /Name the files/);
+});
