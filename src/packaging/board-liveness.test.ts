@@ -113,3 +113,51 @@ test("the check does NOT run on a schedule, which is the property it exists for"
     + "runs on push, which cannot be disabled by inactivity because a push IS the activity");
   assert.match(workflow, /^\s*push:/m, "it must run on push -- the trigger that inactivity cannot silence");
 });
+
+// ---------------------------------------------------------------------------------------------------
+// #590: THE HEADER CLAIMED TWO WORKFLOWS AND THE CODE GUARDED ONE.
+//
+// `board-liveness.yml`'s header has always said it watches both `board-report.yml` and
+// `board-summary-check.yml`. `board-schedule-liveness.mjs` guarded only the first, through a single
+// constant -- in the one place whose entire job is noticing silence. On 2026-09-08 the summary check
+// stopped running for nineteen hours, nothing said so, and the first anyone knew was the next morning,
+// when the missing summary turned main's own tip red and blocked every PR in the repository.
+// ---------------------------------------------------------------------------------------------------
+import { GUARDED_WORKFLOWS, missedTodaysWindow } from "../../../../scripts/board-schedule-liveness.mjs";
+
+test("#590 every workflow the watchdog's HEADER names is one its code actually guards", () => {
+  // DERIVED FROM THE HEADER, never a second hand-written list -- a second list is exactly what the first
+  // constant became. If the header stops naming a workflow, or starts naming a third, this fails until
+  // somebody decides which of the two is wrong.
+  const header = readFileSync(path.join(REPO_ROOT, ".github/workflows/board-liveness.yml"), "utf8")
+    .split("\n").filter((l) => l.trimStart().startsWith("#")).join("\n");
+  const named = [...new Set([...header.matchAll(/`(board-[a-z-]+\.yml)`/g)].map((m) => m[1]))];
+  assert.ok(named.length >= 2, `the header must still name the workflows it guards; found ${named.length}`);
+  for (const workflow of named) {
+    assert.ok(GUARDED_WORKFLOWS.includes(workflow),
+      `${workflow} is named in board-liveness.yml's header but is not in GUARDED_WORKFLOWS -- the header `
+      + "claiming more than the code guards is the defect #590 was filed for");
+  }
+});
+
+test("#590 NOT A STALENESS THRESHOLD: 'not yet' and 'did not' stay different answers", () => {
+  const today = "2026-09-09";
+  // Before the deadline hour, a missing run is NOT YET -- null, never false and never true.
+  assert.equal(missedTodaysWindow({ runDays: [], today, londonHour: 6, afterHour: 8 }), null);
+  // After it, a missing run is the finding.
+  assert.equal(missedTodaysWindow({ runDays: ["2026-09-08"], today, londonHour: 9, afterHour: 8 }), true);
+  // And a run today is fine however old the rest of the history is.
+  assert.equal(missedTodaysWindow({ runDays: [today, "2026-09-01"], today, londonHour: 9, afterHour: 8 }), false);
+  // A failed lookup is never an answer.
+  assert.equal(missedTodaysWindow({ runDays: null, today, londonHour: 9, afterHour: 8 }), null);
+});
+
+test("#590 MUTATION TARGET: the nineteen-hour silence a staleness threshold could not have caught", () => {
+  // The obvious check -- "the newest scheduled run is more than N hours old" -- would have missed this.
+  // board-summary-check.yml fires four daily crons whose largest legitimate gap is about 22 hours, so a
+  // nineteen-hour silence sits inside any honest threshold. The measured incident: last run 2026-09-08
+  // 12:17Z, nothing overnight, and the summary was missing by 07:09Z the next morning.
+  assert.equal(
+    missedTodaysWindow({ runDays: ["2026-09-08"], today: "2026-09-09", londonHour: 8, afterHour: 8 }),
+    true, "a run yesterday and none today, asked after the deadline hour, is the finding");
+});
