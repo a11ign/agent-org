@@ -143,7 +143,7 @@ test("#891 ACCEPTANCE: no issue is ever created for a leaking body, even with --
 
 test("#891 ACCEPTANCE: pr-open's checkBody refuses a leaking body and never runs the real Acceptance "
   + "command from it", () => {
-  const body = "## Acceptance\n\n```\ntrue\n```\n\nSSH key at ~/.ssh/deploy_ed25519.\n\nCloses #1\n";
+  const body = "## Acceptance\n\n```\ntrue\n```\n\nSSH key at ~/.ssh/a11y-fixture_ed25519.\n\nCloses #1\n";
   const result = checkBody(body, { run: NEVER_RUN });
   assert.equal(result.ok, false);
   assert.match(result.lines.join("\n"), /a named SSH private key file/);
@@ -175,7 +175,7 @@ test("#891 MUTATION TARGET: with LEAK_PATTERNS emptied, leakRefusalReason goes s
   const address = ipv4(10, 20, 30, 40);
   const saved = LEAK_PATTERNS.splice(0, LEAK_PATTERNS.length);
   try {
-    assert.equal(leakRefusalReason(`the page server is at ${address}, and ~/.ssh/deploy_ed25519 too`),
+    assert.equal(leakRefusalReason(`the page server is at ${address}, and ~/.ssh/a11y-fixture_ed25519 too`),
       null, "with the shared predicate neutered, every leak must go undetected here as well");
   } finally {
     LEAK_PATTERNS.splice(0, LEAK_PATTERNS.length, ...saved);
