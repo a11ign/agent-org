@@ -37,6 +37,12 @@
  * Recorded here rather than left silent, per this row's own acceptance ("or is recorded as accepted, with
  * the reason and what the absence would cost").
  */
+// no-token: gh
+// no-token: git
+//
+// #827/#790. Every test here either passes its own injected `run` fixture to a fetcher
+// (`fetchOpenIssuesChecked`, `fetchRemoteBranchesChecked`) or asserts on a cited function's `typeof`/on
+// this file's own text -- nothing calls the real `gh`/`git` wrappers those fetchers default to.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";

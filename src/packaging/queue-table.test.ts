@@ -6,6 +6,14 @@
  *
  * These pin the parts that would silently give a wrong table rather than no table.
  */
+// no-token: gh
+// no-token: git
+//
+// #827/#790. Every test in this file drives a PURE function (`prRow`, `nonSuccessByName`,
+// `branchPrefixCensus`, `renderBranchPrefixes`, ...) or passes its own injected `run` fixture to a
+// fetcher (`fetchRemoteBranchesChecked`) -- `queue-table.mjs`'s real `gh`/`git` wrappers are declared in
+// the same module these tests import from, which is why a closure walk reaches them, but nothing here
+// ever calls the real ones.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadavg } from "node:os";
