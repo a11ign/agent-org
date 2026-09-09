@@ -19,7 +19,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { revertVerdict, revertPrBody, revertTriggerJobs, newestRunFor, conclusionOf,
-  prCreateArgs, EXIT }
+  prCreateArgs, pushedNoPrMessage, EXIT }
   from "../../../../scripts/trunk-revert.mjs";
 
 const PUSH = "a1b2c3d4e5f6789012345678901234567890abcd";
@@ -262,6 +262,35 @@ test("#616 the revert PR is opened as a DRAFT -- the one flag standing between a
     + "opened it has not been read by anyone");
   assert.deepEqual(args.slice(0, 2), ["pr", "create"]);
   assert.ok(args.includes("--head") && args.includes("revert/abc-316"));
+});
+
+// --- #578: PUSHED, PR NOT OPENED is its own distinct, named outcome ---
+
+test("#578 ACCEPTANCE: EXIT.PUSHED_NO_PR is distinct from every other exit code", () => {
+  const codes = Object.values(EXIT);
+  assert.equal(new Set(codes).size, codes.length, "every EXIT code must be unique");
+  assert.equal(typeof EXIT.PUSHED_NO_PR, "number");
+});
+
+test("#578 ACCEPTANCE, MUTATION TARGET: the message names the branch, the real gh error, and how to "
+  + "finish by hand -- measured on run 34275102543's exact failure ('GraphQL: GitHub Actions is not "
+  + "permitted to create or approve pull requests')", () => {
+  const message = pushedNoPrMessage({
+    branch: "revert/4e87c87565-316",
+    pushSha: "4e87c87565aabbccddeeff00112233445566778",
+    cause: new Error("GraphQL: GitHub Actions is not permitted to create or approve pull requests "
+      + "(createPullRequest)"),
+  });
+  assert.match(message, /revert\/4e87c87565-316/, "the branch name must be in the message, not implied");
+  assert.match(message, /GraphQL: GitHub Actions is not permitted/, "the real cause, not a generic label");
+  assert.match(message, /gh pr create/, "the exact command to finish this by hand");
+  assert.match(message, /git push origin --delete/, "the exact command to clean up, if the revert was wrong");
+});
+
+test("#578: the message is built from a plain Error OR a non-Error throw -- gh's own execFileSync "
+  + "failures are not guaranteed to be Error instances", () => {
+  const message = pushedNoPrMessage({ branch: "revert/x-316", pushSha: "x".repeat(40), cause: "raw string" });
+  assert.match(message, /raw string/);
 });
 
 test("#616 MUTATION TARGET: nothing in the revert path arms the PR", () => {
