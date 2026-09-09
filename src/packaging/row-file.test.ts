@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   bodyFromArgv, fileRefusalReason, createIssue, sessionFromArgv, appendFiledBy, withFiledBy,
-  boardingFor, issueNumberFromUrl, unverifiedFilingFields, fetchIssueBoardStatus,
+  boardingFor, issueNumberFromUrl, unverifiedFilingFields, fetchIssueBoardStatus, laneLabelsFor,
 } from "../../../../scripts/row-file.mjs";
 import { filedByLine } from "../../../../scripts/row-claim.mjs";
 
@@ -147,6 +147,52 @@ test("boardingFor: --ready given -- ready label, Ready Status, never both", () =
   assert.deepEqual(boardingFor(["--title", "x", "--ready"]), { label: "ready", status: "Ready" });
 });
 
+// --- #883: laneLabelsFor -- derived from the SAME docs/lane-ownership.json the merge guard reads ---
+
+const PIPELINE_LANE = { lane: "the pipeline", owner: "dispatcher", branchPrefixes: ["dispatcher/"],
+  paths: [".github/workflows/"], why: "trunk health", except: [".github/workflows/consumer-gate.yml"] };
+const DOCS_LANE = { lane: "docs", owner: "pm", branchPrefixes: ["pm/"], paths: ["docs/"], why: "docs" };
+
+test("laneLabelsFor: a Region touching one lane's paths gets that lane's owner", () => {
+  const labels = laneLabelsFor([".github/workflows/ci.yml"], { lanes: [PIPELINE_LANE] });
+  assert.deepEqual(labels, ["lane:dispatcher"]);
+});
+
+test("#883 ACCEPTANCE: a Region touching TWO lanes names BOTH, never picks one silently", () => {
+  const labels = laneLabelsFor([".github/workflows/ci.yml", "docs/README.md"],
+    { lanes: [PIPELINE_LANE, DOCS_LANE] });
+  assert.deepEqual(labels.sort(), ["lane:dispatcher", "lane:pm"]);
+});
+
+test("laneLabelsFor: a Region touching NO lane's paths gets lane:any -- a real answer, not a fallback", () => {
+  const labels = laneLabelsFor(["scripts/row-file.mjs"], { lanes: [PIPELINE_LANE] });
+  assert.deepEqual(labels, ["lane:any"]);
+});
+
+test("laneLabelsFor: an EMPTY Region (a non-code row) also gets lane:any", () => {
+  assert.deepEqual(laneLabelsFor([], { lanes: [PIPELINE_LANE] }), ["lane:any"]);
+});
+
+test("#883 ACCEPTANCE, MUTATION TARGET: the label MOVES when lane-ownership.json's paths move -- a "
+  + "row touching a path now assigned to a lane derives that lane; the identical row against the OLD "
+  + "config (the path unassigned) derives lane:any instead. If the label does not move with the config, "
+  + "it is a copy of the ruling, not a reading of it", () => {
+  const path = "scripts/new-tool.mjs";
+  const before = laneLabelsFor([path], { lanes: [PIPELINE_LANE] }); // path not yet owned by any lane
+  assert.deepEqual(before, ["lane:any"]);
+  const movedConfig = { lanes: [{ ...PIPELINE_LANE, paths: [...PIPELINE_LANE.paths, "scripts/new-tool.mjs"] }] };
+  const after = laneLabelsFor([path], movedConfig); // the SAME path, now inside the lane's own paths
+  assert.deepEqual(after, ["lane:dispatcher"]);
+});
+
+test("laneLabelsFor: an EXCEPTED path inside a lane's own directory does not pull that lane's label -- "
+  + "the identical subtraction workflow-lane-check.mjs's own laneVerdict makes", () => {
+  const labels = laneLabelsFor([".github/workflows/consumer-gate.yml"], { lanes: [PIPELINE_LANE] });
+  assert.deepEqual(labels, ["lane:any"],
+    "consumer-gate.yml is generated from README.md and excepted from the pipeline lane -- touching only "
+    + "it must not derive lane:dispatcher");
+});
+
 // --- #844: issueNumberFromUrl ---
 
 test("issueNumberFromUrl reads the number off gh issue create's own bare-URL stdout", () => {
@@ -158,39 +204,59 @@ test("issueNumberFromUrl is null on anything that does not end in /issues/<digit
   assert.equal(issueNumberFromUrl("https://github.com/DanBeckDev/a11y-witness/pull/900"), null);
 });
 
-// --- #844: unverifiedFilingFields -- named, not a bare boolean ---
+// --- #844/#883: unverifiedFilingFields -- named, not a bare boolean ---
 
-test("unverifiedFilingFields: all three confirmed -- empty", () => {
-  const after = { labels: ["backlog"], body: "## Region\nfoo\n\nFiled-by: worker-contracts\n", boardStatus: "Backlog" };
-  assert.deepEqual(unverifiedFilingFields(after, { session: "worker-contracts", label: "backlog", status: "Backlog" }), []);
+test("unverifiedFilingFields: everything confirmed, including a lane label -- empty", () => {
+  const after = { labels: ["backlog", "lane:any"], body: "## Region\nfoo\n\nFiled-by: worker-contracts\n", boardStatus: "Backlog" };
+  assert.deepEqual(unverifiedFilingFields(after,
+    { session: "worker-contracts", label: "backlog", status: "Backlog", laneLabels: ["lane:any"] }), []);
 });
 
 test("unverifiedFilingFields: missing label named", () => {
-  const after = { labels: [], body: "Filed-by: worker-contracts\n", boardStatus: "Backlog" };
-  const missing = unverifiedFilingFields(after, { session: "worker-contracts", label: "backlog", status: "Backlog" });
+  const after = { labels: ["lane:any"], body: "Filed-by: worker-contracts\n", boardStatus: "Backlog" };
+  const missing = unverifiedFilingFields(after,
+    { session: "worker-contracts", label: "backlog", status: "Backlog", laneLabels: ["lane:any"] });
   assert.deepEqual(missing, ["the `backlog` label"]);
 });
 
+test("#883: unverifiedFilingFields: a missing lane label is named distinctly from the board label", () => {
+  const after = { labels: ["backlog"], body: "Filed-by: worker-contracts\n", boardStatus: "Backlog" };
+  const missing = unverifiedFilingFields(after,
+    { session: "worker-contracts", label: "backlog", status: "Backlog", laneLabels: ["lane:dispatcher"] });
+  assert.deepEqual(missing, ["`lane:dispatcher` label(s)"]);
+});
+
+test("#883: unverifiedFilingFields: MULTIPLE missing lane labels are all named together, not just one", () => {
+  const after = { labels: ["backlog"], body: "Filed-by: worker-contracts\n", boardStatus: "Backlog" };
+  const missing = unverifiedFilingFields(after,
+    { session: "worker-contracts", label: "backlog", status: "Backlog", laneLabels: ["lane:dispatcher", "lane:pm"] });
+  assert.deepEqual(missing, ["`lane:dispatcher`/`lane:pm` label(s)"]);
+});
+
 test("unverifiedFilingFields: missing Filed-by named -- wrong session or absent line, both count", () => {
-  const after = { labels: ["backlog"], body: "## Region\nfoo\n", boardStatus: "Backlog" };
-  const missing = unverifiedFilingFields(after, { session: "worker-contracts", label: "backlog", status: "Backlog" });
+  const after = { labels: ["backlog", "lane:any"], body: "## Region\nfoo\n", boardStatus: "Backlog" };
+  const missing = unverifiedFilingFields(after,
+    { session: "worker-contracts", label: "backlog", status: "Backlog", laneLabels: ["lane:any"] });
   assert.deepEqual(missing, ["the Filed-by line"]);
 });
 
 test("unverifiedFilingFields: never on the board at all vs. on it with the WRONG Status are named "
   + "differently", () => {
-  const notBoarded = { labels: ["backlog"], body: "Filed-by: worker-contracts\n", boardStatus: null };
-  assert.deepEqual(unverifiedFilingFields(notBoarded, { session: "worker-contracts", label: "backlog", status: "Backlog" }),
+  const notBoarded = { labels: ["backlog", "lane:any"], body: "Filed-by: worker-contracts\n", boardStatus: null };
+  assert.deepEqual(unverifiedFilingFields(notBoarded,
+    { session: "worker-contracts", label: "backlog", status: "Backlog", laneLabels: ["lane:any"] }),
     ["Project 2 membership"]);
-  const wrongStatus = { labels: ["backlog"], body: "Filed-by: worker-contracts\n", boardStatus: "Ready" };
-  assert.deepEqual(unverifiedFilingFields(wrongStatus, { session: "worker-contracts", label: "backlog", status: "Backlog" }),
+  const wrongStatus = { labels: ["backlog", "lane:any"], body: "Filed-by: worker-contracts\n", boardStatus: "Ready" };
+  assert.deepEqual(unverifiedFilingFields(wrongStatus,
+    { session: "worker-contracts", label: "backlog", status: "Backlog", laneLabels: ["lane:any"] }),
     ['Project 2 Status (reads "Ready", not "Backlog")']);
 });
 
-test("unverifiedFilingFields: all three missing at once are all named, not just the first", () => {
+test("unverifiedFilingFields: everything missing at once is all named, not just the first", () => {
   const after = { labels: [], body: null, boardStatus: null };
-  const missing = unverifiedFilingFields(after, { session: "worker-contracts", label: "backlog", status: "Backlog" });
-  assert.equal(missing.length, 3);
+  const missing = unverifiedFilingFields(after,
+    { session: "worker-contracts", label: "backlog", status: "Backlog", laneLabels: ["lane:any"] });
+  assert.equal(missing.length, 4);
 });
 
 // --- #844: fetchIssueBoardStatus -- a single targeted read, not the whole board ---
@@ -254,8 +320,13 @@ function happyDeps(session: string, label: string, overrides: Record<string, unk
     spawnGh: () => FILED_URL,
     run: afterRun(appendFiledBy(COMPLETE_BODY, session)),
     fetchBoardStatus: () => (label === "ready" ? "Ready" : "Backlog"),
-    fetchLabels: () => ({ number: 900, title: "a real row", labels: [label] }),
+    fetchLabels: () => ({ number: 900, title: "a real row", labels: [label, "lane:any"] }),
     moveStatus: () => ({ moved: true as const }),
+    // #883: an EMPTY lane list -- no lane's `paths` can match anything, so `laneLabelsFor` always derives
+    // `lane:any` regardless of COMPLETE_BODY's own Region content, keeping these tests independent of
+    // docs/lane-ownership.json's real, changeable contents.
+    loadLanesConfig: () => ({ lanes: [] }),
+    ensureLabels: () => {},
     ...overrides,
   };
 }
@@ -326,6 +397,49 @@ test("ACCEPTANCE, MUTATION TARGET: the issue number and https URL are read back 
   } finally {
     process.stdout.write = original;
   }
+});
+
+test("#883 ACCEPTANCE: a MULTI-LANE Region derives and applies BOTH lane labels through the whole "
+  + "createIssue flow -- ensureLabels is asked to create both, and both are added in the same edit call "
+  + "as the board label", () => {
+  const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts"];
+  // Two synthetic lanes both genuinely covering COMPLETE_BODY's own Region path
+  // (packages/lab/src/packaging/foo.ts) by prefix, so this exercises real matching end to end rather
+  // than a config chosen to avoid matching anything.
+  const wideLane = { ...PIPELINE_LANE, lane: "wide", owner: "worker-a", paths: ["packages/lab/"] };
+  const narrowLane = { ...DOCS_LANE, lane: "narrow", owner: "worker-b", paths: ["packages/lab/src/packaging/"] };
+  const ensured: string[][] = [];
+  let editArgs: string[] | null = null;
+  const code = createIssue(argv, {
+    ...happyDeps("worker-contracts", "backlog", {
+      fetchLabels: () => ({ number: 900, title: "a real row",
+        labels: ["backlog", "lane:worker-a", "lane:worker-b"] }),
+      loadLanesConfig: () => ({ lanes: [wideLane, narrowLane] }),
+    }),
+    run: (cmd: string, args: string[]) => {
+      if (args[1] === "edit") editArgs = args;
+      return afterRun(appendFiledBy(COMPLETE_BODY, "worker-contracts"))(cmd, args);
+    },
+    ensureLabels: (labels: string[]) => { ensured.push(labels); },
+  });
+  assert.equal(code, 0);
+  assert.deepEqual(ensured[0]?.sort(), ["backlog", "lane:worker-a", "lane:worker-b"].sort());
+  const finalEditArgs = editArgs as string[] | null;
+  assert.ok(finalEditArgs, "expected a gh issue edit call");
+  assert.ok(finalEditArgs.includes("lane:worker-a") && finalEditArgs.includes("lane:worker-b"),
+    `expected both lane labels in the edit call; got: ${JSON.stringify(finalEditArgs)}`);
+});
+
+test("#883 ACCEPTANCE, MUTATION TARGET: an unreadable/malformed docs/lane-ownership.json refuses BEFORE "
+  + "gh issue create runs -- CANNOT_ASK, never \"nothing has a lane\"", () => {
+  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts"];
+  let called = false;
+  const code = createIssue(argv, {
+    spawnGh: () => { called = true; return FILED_URL; },
+    loadLanesConfig: () => null,
+  });
+  assert.equal(code, 1);
+  assert.equal(called, false, "nothing must be filed when the lane cannot be derived");
 });
 
 test("ACCEPTANCE: no --session= at all refuses -- spawnGh is NEVER called, even with a complete body", () => {
@@ -408,7 +522,7 @@ test("#844 ACCEPTANCE: a label-add failure AFTER a successful Status move is ref
     });
     assert.equal(code, 2);
     assert.match(stderr, /FILED as #900, boarded with Status "Backlog"/);
-    assert.match(stderr, /`backlog` label could not be added/);
+    assert.match(stderr, /`backlog`\/`lane:any` could not be added/);
   } finally {
     process.stderr.write = original;
   }
