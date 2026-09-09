@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   bodyFromArgv, fileRefusalReason, createIssue, sessionFromArgv, appendFiledBy, withFiledBy,
+  boardingFor, issueNumberFromUrl, unverifiedFilingFields, fetchIssueBoardStatus,
 } from "../../../../scripts/row-file.mjs";
 import { filedByLine } from "../../../../scripts/row-claim.mjs";
 
@@ -130,6 +131,94 @@ test("withFiledBy also strips a --body-file form, replacing it with the augmente
   assert.deepEqual(result, ["--title", "x", "--body", "## Region\nfoo\n\nFiled-by: worker-contracts\n"]);
 });
 
+test("withFiledBy strips --ready too -- #844's own flag, not gh's", () => {
+  const argv = ["--title", "x", "--body", "## Region\nfoo", "--session=worker-contracts", "--ready"];
+  const result = withFiledBy(argv, "worker-contracts", "## Region\nfoo");
+  assert.deepEqual(result, ["--title", "x", "--body", "## Region\nfoo\n\nFiled-by: worker-contracts\n"]);
+});
+
+// --- #844: boardingFor -- backlog unless --ready is explicitly given ---
+
+test("boardingFor: no --ready -- backlog label, Backlog Status", () => {
+  assert.deepEqual(boardingFor(["--title", "x"]), { label: "backlog", status: "Backlog" });
+});
+
+test("boardingFor: --ready given -- ready label, Ready Status, never both", () => {
+  assert.deepEqual(boardingFor(["--title", "x", "--ready"]), { label: "ready", status: "Ready" });
+});
+
+// --- #844: issueNumberFromUrl ---
+
+test("issueNumberFromUrl reads the number off gh issue create's own bare-URL stdout", () => {
+  assert.equal(issueNumberFromUrl("https://github.com/DanBeckDev/a11y-witness/issues/900\n"), 900);
+});
+
+test("issueNumberFromUrl is null on anything that does not end in /issues/<digits>", () => {
+  assert.equal(issueNumberFromUrl("not a url"), null);
+  assert.equal(issueNumberFromUrl("https://github.com/DanBeckDev/a11y-witness/pull/900"), null);
+});
+
+// --- #844: unverifiedFilingFields -- named, not a bare boolean ---
+
+test("unverifiedFilingFields: all three confirmed -- empty", () => {
+  const after = { labels: ["backlog"], body: "## Region\nfoo\n\nFiled-by: worker-contracts\n", boardStatus: "Backlog" };
+  assert.deepEqual(unverifiedFilingFields(after, { session: "worker-contracts", label: "backlog", status: "Backlog" }), []);
+});
+
+test("unverifiedFilingFields: missing label named", () => {
+  const after = { labels: [], body: "Filed-by: worker-contracts\n", boardStatus: "Backlog" };
+  const missing = unverifiedFilingFields(after, { session: "worker-contracts", label: "backlog", status: "Backlog" });
+  assert.deepEqual(missing, ["the `backlog` label"]);
+});
+
+test("unverifiedFilingFields: missing Filed-by named -- wrong session or absent line, both count", () => {
+  const after = { labels: ["backlog"], body: "## Region\nfoo\n", boardStatus: "Backlog" };
+  const missing = unverifiedFilingFields(after, { session: "worker-contracts", label: "backlog", status: "Backlog" });
+  assert.deepEqual(missing, ["the Filed-by line"]);
+});
+
+test("unverifiedFilingFields: never on the board at all vs. on it with the WRONG Status are named "
+  + "differently", () => {
+  const notBoarded = { labels: ["backlog"], body: "Filed-by: worker-contracts\n", boardStatus: null };
+  assert.deepEqual(unverifiedFilingFields(notBoarded, { session: "worker-contracts", label: "backlog", status: "Backlog" }),
+    ["Project 2 membership"]);
+  const wrongStatus = { labels: ["backlog"], body: "Filed-by: worker-contracts\n", boardStatus: "Ready" };
+  assert.deepEqual(unverifiedFilingFields(wrongStatus, { session: "worker-contracts", label: "backlog", status: "Backlog" }),
+    ['Project 2 Status (reads "Ready", not "Backlog")']);
+});
+
+test("unverifiedFilingFields: all three missing at once are all named, not just the first", () => {
+  const after = { labels: [], body: null, boardStatus: null };
+  const missing = unverifiedFilingFields(after, { session: "worker-contracts", label: "backlog", status: "Backlog" });
+  assert.equal(missing.length, 3);
+});
+
+// --- #844: fetchIssueBoardStatus -- a single targeted read, not the whole board ---
+
+test("fetchIssueBoardStatus reads the Status option name off the one matching project", () => {
+  const run = () => JSON.stringify({ data: { repository: { issue: { projectItems: { nodes: [
+    { project: { number: 2 }, fieldValueByName: { name: "Backlog" } },
+  ] } } } } });
+  assert.equal(fetchIssueBoardStatus(900, { run }), "Backlog");
+});
+
+test("fetchIssueBoardStatus: no project item at all reads as null, not a crash", () => {
+  const run = () => JSON.stringify({ data: { repository: { issue: { projectItems: { nodes: [] } } } } });
+  assert.equal(fetchIssueBoardStatus(900, { run }), null);
+});
+
+test("fetchIssueBoardStatus: an item on a DIFFERENT project is not read as this one's Status", () => {
+  const run = () => JSON.stringify({ data: { repository: { issue: { projectItems: { nodes: [
+    { project: { number: 7 }, fieldValueByName: { name: "Done" } },
+  ] } } } } });
+  assert.equal(fetchIssueBoardStatus(900, { run }), null);
+});
+
+test("MUTATION: fetchIssueBoardStatus throws, never returns null as if unboarded, when gh fails", () => {
+  const run = () => { throw new Error("gh: not authenticated"); };
+  assert.throws(() => fetchIssueBoardStatus(900, { run }), /could not read #900's Project membership/);
+});
+
 // --- #771 ACCEPTANCE: filedByLine (row-claim.mjs) reads exactly what row-file.mjs writes, and only that ---
 
 test("#771 ACCEPTANCE: filedByLine reads the exact line appendFiledBy writes", () => {
@@ -148,22 +237,101 @@ test("filedByLine is null on a body with no Filed-by line at all", () => {
   assert.equal(filedByLine("## Region\nfoo\n"), null);
 });
 
-// --- createIssue: the CLI's own decision, with gh's spawn injected so nothing reaches the network ---
+// --- createIssue: the CLI's own decision, with every gh-facing dependency injected so nothing reaches
+// the network. #844: files, labels, boards, sets Status, then reads all three back before reporting. ---
+
+const FILED_URL = "https://github.com/DanBeckDev/a11y-witness/issues/900";
+
+/** A `run` fake for the calls createIssue makes AFTER spawnGh: `gh project item-add` and the body
+ * read-back (`gh issue view ... --json body --jq .body`). Everything else answers "" harmlessly. */
+function afterRun(body: string) {
+  return (_cmd: string, args: string[]) => (args.includes("body") ? body : "");
+}
+
+/** The full set of happy-path dependencies, so each test overrides only what it means to test. */
+function happyDeps(session: string, label: string, overrides: Record<string, unknown> = {}) {
+  return {
+    spawnGh: () => FILED_URL,
+    run: afterRun(appendFiledBy(COMPLETE_BODY, session)),
+    fetchBoardStatus: () => (label === "ready" ? "Ready" : "Backlog"),
+    fetchLabels: () => ({ number: 900, title: "a real row", labels: [label] }),
+    moveStatus: () => ({ moved: true as const }),
+    ...overrides,
+  };
+}
 
 test("ACCEPTANCE: a complete body with --session= files -- spawnGh receives the body WITH Filed-by "
-  + "appended, --session stripped, everything else unchanged", () => {
-  const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts", "--label", "backlog"];
+  + "appended and --session stripped, but NO --label at all: the board label is added later, never at "
+  + "creation time (see #844's own header for why)", () => {
+  const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts"];
   let called: string[] | null = null;
-  const code = createIssue(argv, { spawnGh: (a) => { called = a; } });
+  const code = createIssue(argv, {
+    ...happyDeps("worker-contracts", "backlog"),
+    spawnGh: (a) => { called = a; return FILED_URL; },
+  });
   assert.equal(code, 0);
-  assert.deepEqual(called, ["--title", "a real row", "--label", "backlog", "--body",
+  assert.deepEqual(called, ["--title", "a real row", "--body",
     appendFiledBy(COMPLETE_BODY, "worker-contracts")]);
+});
+
+test("#844 ACCEPTANCE, MUTATION TARGET: the board label is added via a SEPARATE gh issue edit call, "
+  + "AFTER the Status move succeeds, never before -- the exact ordering #867's own live dogfooding run "
+  + "proved necessary: a `ready` label present before the item has a Status makes the row itself the "
+  + "shape #747's board-safety floor refuses, on its own snapshot, every time", () => {
+  const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts", "--ready"];
+  const order: string[] = [];
+  const code = createIssue(argv, {
+    ...happyDeps("worker-contracts", "ready"),
+    run: (cmd: string, args: string[]) => {
+      if (args[1] === "item-add") order.push("board");
+      if (args.includes("--add-label")) order.push(`label:${args[args.indexOf("--add-label") + 1]}`);
+      return afterRun(appendFiledBy(COMPLETE_BODY, "worker-contracts"))(cmd, args);
+    },
+    moveStatus: (n: number, s: string) => { order.push(`status:${s}`); return { moved: true as const }; },
+  });
+  assert.equal(code, 0);
+  assert.deepEqual(order, ["board", "status:Ready", "label:ready"],
+    `board, then Status, then the label -- got: ${JSON.stringify(order)}`);
+});
+
+test("ACCEPTANCE: the issue is added to Project 2 and its Status is moved to match the label, both "
+  + "AFTER a successful gh issue create", () => {
+  const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts"];
+  const projectCalls: string[][] = [];
+  const moveCalls: [number, string][] = [];
+  const code = createIssue(argv, {
+    ...happyDeps("worker-contracts", "backlog"),
+    run: (cmd: string, args: string[]) => {
+      if (args[1] === "item-add") projectCalls.push(args);
+      return afterRun(appendFiledBy(COMPLETE_BODY, "worker-contracts"))(cmd, args);
+    },
+    moveStatus: (n: number, s: string) => { moveCalls.push([n, s]); return { moved: true }; },
+  });
+  assert.equal(code, 0);
+  assert.equal(projectCalls.length, 1);
+  assert.ok(projectCalls[0].includes("--url") && projectCalls[0].includes(FILED_URL));
+  assert.deepEqual(moveCalls, [[900, "Backlog"]]);
+});
+
+test("ACCEPTANCE, MUTATION TARGET: the issue number and https URL are read back and printed only after "
+  + "every check confirms -- prints exactly the issue's own URL", () => {
+  const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts"];
+  let printed = "";
+  const original = process.stdout.write;
+  process.stdout.write = ((chunk: string) => { printed += chunk; return true; }) as typeof process.stdout.write;
+  try {
+    const code = createIssue(argv, happyDeps("worker-contracts", "backlog"));
+    assert.equal(code, 0);
+    assert.equal(printed, `${FILED_URL}\n`);
+  } finally {
+    process.stdout.write = original;
+  }
 });
 
 test("ACCEPTANCE: no --session= at all refuses -- spawnGh is NEVER called, even with a complete body", () => {
   const argv = ["--title", "a real row", "--body", COMPLETE_BODY];
   let called = false;
-  const code = createIssue(argv, { spawnGh: () => { called = true; } });
+  const code = createIssue(argv, { spawnGh: () => { called = true; return FILED_URL; } });
   assert.equal(code, 1);
   assert.equal(called, false);
 });
@@ -171,7 +339,7 @@ test("ACCEPTANCE: no --session= at all refuses -- spawnGh is NEVER called, even 
 test("ACCEPTANCE: an incomplete body still refuses even with --session= present -- spawnGh is NEVER called", () => {
   const argv = ["--title", "a real row", "--body", "no sections at all", "--session=worker-contracts"];
   let called = false;
-  const code = createIssue(argv, { spawnGh: () => { called = true; } });
+  const code = createIssue(argv, { spawnGh: () => { called = true; return FILED_URL; } });
   assert.equal(code, 1);
   assert.equal(called, false, "gh issue create must never run when the body is incomplete");
 });
@@ -182,6 +350,88 @@ test("a gh failure (non-zero exit) is surfaced as this tool's own exit code, not
     spawnGh: () => { throw Object.assign(new Error("gh failed"), { status: 7 }); },
   });
   assert.equal(code, 7);
+});
+
+test("#844 ACCEPTANCE: gh issue create succeeding but printing something that is not a real issue URL "
+  + "is refused distinctly -- filed, but unboardable and unverifiable", () => {
+  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts"];
+  const code = createIssue(argv, { spawnGh: () => "not a url at all" });
+  assert.equal(code, 2);
+});
+
+test("#844 ACCEPTANCE: a failure adding the issue to Project 2 is refused distinctly (exit 2), naming "
+  + "the issue number and the hand-recovery command -- it is NOT reported as a plain success", () => {
+  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts"];
+  let stderr = "";
+  const original = process.stderr.write;
+  process.stderr.write = ((chunk: string) => { stderr += chunk; return true; }) as typeof process.stderr.write;
+  try {
+    const code = createIssue(argv, {
+      ...happyDeps("worker-contracts", "backlog"),
+      run: (_cmd: string, args: string[]) => {
+        if (args[1] === "item-add") throw new Error("gh: could not add item");
+        return "";
+      },
+    });
+    assert.equal(code, 2);
+    assert.match(stderr, /FILED as #900/);
+    assert.match(stderr, /could NOT add it to Project/);
+    assert.match(stderr, /gh project item-add 2 --owner DanBeckDev --url/);
+  } finally {
+    process.stderr.write = original;
+  }
+});
+
+test("#844 ACCEPTANCE, MUTATION TARGET: a Status move that does not succeed is refused distinctly "
+  + "(exit 2), never reported as filed cleanly", () => {
+  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts"];
+  const code = createIssue(argv, {
+    ...happyDeps("worker-contracts", "backlog"),
+    moveStatus: () => ({ moved: false, reason: "gh: rate limited", notOnBoard: false }),
+  });
+  assert.equal(code, 2);
+});
+
+test("#844 ACCEPTANCE: a label-add failure AFTER a successful Status move is refused distinctly (exit "
+  + "2), naming the issue number and the Status already set, never reported as filed cleanly", () => {
+  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts"];
+  let stderr = "";
+  const original = process.stderr.write;
+  process.stderr.write = ((chunk: string) => { stderr += chunk; return true; }) as typeof process.stderr.write;
+  try {
+    const code = createIssue(argv, {
+      ...happyDeps("worker-contracts", "backlog"),
+      run: (_cmd: string, args: string[]) => {
+        if (args.includes("--add-label")) throw new Error("gh: label add failed");
+        return afterRun(appendFiledBy(COMPLETE_BODY, "worker-contracts"))(_cmd, args);
+      },
+    });
+    assert.equal(code, 2);
+    assert.match(stderr, /FILED as #900, boarded with Status "Backlog"/);
+    assert.match(stderr, /`backlog` label could not be added/);
+  } finally {
+    process.stderr.write = original;
+  }
+});
+
+test("#844 ACCEPTANCE, MUTATION TARGET: everything succeeds but the READ-BACK disagrees (e.g. the label "
+  + "did not actually stick) -- refused distinctly (exit 2), naming what is missing, never reported as "
+  + "filed cleanly on the strength of the write calls alone", () => {
+  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts"];
+  let stderr = "";
+  const original = process.stderr.write;
+  process.stderr.write = ((chunk: string) => { stderr += chunk; return true; }) as typeof process.stderr.write;
+  try {
+    const code = createIssue(argv, {
+      ...happyDeps("worker-contracts", "backlog"),
+      fetchLabels: () => ({ number: 900, title: "x", labels: [] }), // the write claimed success; the read-back disagrees
+    });
+    assert.equal(code, 2);
+    assert.match(stderr, /FILED as #900/);
+    assert.match(stderr, /the `backlog` label/);
+  } finally {
+    process.stderr.write = original;
+  }
 });
 
 // --- the REAL CLI, spawned -- proves it is guarded (cli-flags.test.ts's discovery test requires it) ---
