@@ -47,6 +47,11 @@ function withHeldBranchTopology<T>(fn: (t: { origin: string; primary: string; ow
   try {
     execFileSync("git", ["init", "--quiet", "--bare", origin], { env: sandboxGitEnv() });
     execFileSync("git", ["clone", "--quiet", origin, primary], { env: sandboxGitEnv() });
+    // `init.defaultBranch` differs by host (`main` locally, `master` on a GitHub Actions runner) -- this
+    // repo's own `pre-push-stale-base.test.ts` records the identical trap. Cloning a truly EMPTY bare
+    // repo leaves an UNBORN HEAD named by whatever the clone's own default is, so the branch this test
+    // means by "main" is forced explicitly rather than assumed, before the first commit exists to rename.
+    git(primary, ["symbolic-ref", "HEAD", "refs/heads/main"]);
     commit(primary, "README.md", "primary\n", "initial commit on main");
     git(primary, ["push", "-q", "-u", "origin", "main"]);
     git(primary, ["checkout", "-q", "-b", branch]);
