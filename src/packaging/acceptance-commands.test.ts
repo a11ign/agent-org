@@ -8,12 +8,14 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 import {
   classifyCommand, extractAcceptanceSection, acceptanceReport, testFileArgumentsResolve,
   testFileRequirements, unmetRequirements, unmetCommandRequirements,
   hasFullHistoryDeclaration, jobCapabilities,
+  deriveClosureRequirements, closureRequirementMessage, unmetClosureRequirements,
+  unmetCommandClosureRequirements,
 } from "../../../../scripts/acceptance-commands.mjs";
 
 // A file known to exist, relative to the repo root -- where every real invocation of this command runs
@@ -27,6 +29,13 @@ const HISTORY_FIXTURE = "packages/lab/src/packaging/pre-push-resolve-toward-main
 
 const NO_HISTORY = { history: false, token: false, fleet: false };
 const WITH_HISTORY = { history: true, token: false, fleet: false };
+
+// #621's own worked example: reaches `gh` with NO `// requires:` header at all -- `collect()`, imported
+// from `scripts/board-data.mjs`, is what actually shells out. The header-only mechanism (#510) cannot see
+// this file; the closure-derived one is built specifically because it must.
+const BOARD_STYLE_FIXTURE = "packages/lab/src/packaging/board-style.test.ts";
+const NO_TOKEN = { history: true, token: false, fleet: true, corpus: true };
+const WITH_TOKEN = { history: true, token: true, fleet: true, corpus: true };
 
 // --- classifyCommand ---
 
@@ -495,10 +504,14 @@ test("#510 unmetCommandRequirements: a non-`tsx --test` command is never inspect
 });
 
 test("#510 classifyCommand: the real history fixture is REFUSED, named, when the job has no history", () => {
+  // #621: the CLOSURE-derived check runs first now, and its message names the file by BASENAME (matching
+  // #621's own worked example, "board-style.test.ts requires token via collect -> board-data.mjs:72") --
+  // never the full repo-relative path `unmetCommandRequirements`'s header-only message used. Both are
+  // correct; they answer different questions ("what does the closure prove" vs. "what file declared it").
   const result = classifyCommand(`npx tsx --test ${HISTORY_FIXTURE}`, { capabilities: NO_HISTORY });
   assert.equal(result.verdict, "refused");
   assert.match((/** @type {{reason:string}} */(result)).reason, /`history`/);
-  assert.match((/** @type {{reason:string}} */(result)).reason, new RegExp(HISTORY_FIXTURE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match((/** @type {{reason:string}} */(result)).reason, /pre-push-resolve-toward-main\.test\.ts/);
 });
 
 test("#510 classifyCommand: MUTATION TARGET -- the identical command is runnable once history is "
@@ -534,9 +547,12 @@ test("#497 hasFullHistoryDeclaration: a MENTION mid-sentence does not count -- i
   assert.equal(hasFullHistoryDeclaration("This PR needs the full History: full commit graph to work."), false);
 });
 
-test("#497 jobCapabilities: history follows the body declaration; token/fleet are structurally always false", () => {
-  assert.deepEqual(jobCapabilities("History: full"), { history: true, token: false, fleet: false });
-  assert.deepEqual(jobCapabilities("Acceptance: npm test"), { history: false, token: false, fleet: false });
+test("#497 jobCapabilities: history follows the body declaration; token/fleet/corpus are structurally "
+  + "always false (#621: corpus joins them -- runs/ is gitignored, identical structural reason)", () => {
+  assert.deepEqual(jobCapabilities("History: full"),
+    { history: true, token: false, fleet: false, corpus: false });
+  assert.deepEqual(jobCapabilities("Acceptance: npm test"),
+    { history: false, token: false, fleet: false, corpus: false });
 });
 
 // --- #510/#497 integration through `acceptanceReport`, which is what `main()` actually calls ---
@@ -639,4 +655,111 @@ test("#540 MUTATION TARGET -- restoring the old single-findIndex behaviour must 
   const currentBehaviour = extractAcceptanceSection(body);
   assert.notDeepEqual(currentBehaviour, { kind: "commands", commands: ["npm test"] },
     "the fixed parser must not silently agree with the old single-header read");
+});
+
+// --- #621: a test file's requirements are DERIVED from its import closure, not read off an opt-in
+// header. board-style.test.ts has no `// requires:` header at all and reaches `gh` only transitively,
+// through `collect()` in scripts/board-data.mjs -- the fourth instance in two days of exactly this shape
+// (#382), and the whole reason #510's header alone could never catch it: an opt-in declaration cannot
+// catch the file whose author did not know there was something to declare. ---
+
+test("#621 deriveClosureRequirements: board-style.test.ts reaches `gh` transitively, via `collect`, at "
+  + "the real line `board-data.mjs` spawns it on", () => {
+  const hits = deriveClosureRequirements(BOARD_STYLE_FIXTURE);
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].requirement, "token");
+  assert.equal(hits[0].file.endsWith("scripts/board-data.mjs"), true);
+  assert.equal(hits[0].line, 72, "board-data.mjs's own execFileSync(\"gh\", ...) call site -- if this "
+    + "moves, the fixture line below must move with it");
+});
+
+test("#621 closureRequirementMessage: the EXACT worked example from the issue, naming the hop -- "
+  + "\"this test needs a token\" sends a reader to the test; naming the module that spawns `gh` sends "
+  + "them to the cause", () => {
+  const [hit] = deriveClosureRequirements(BOARD_STYLE_FIXTURE);
+  assert.equal(closureRequirementMessage(hit), "board-style.test.ts requires token via collect → board-data.mjs:72");
+});
+
+test("#621 unmetClosureRequirements: refused against a job with no token, satisfied against one that "
+  + "has it", () => {
+  assert.deepEqual(
+    unmetClosureRequirements(BOARD_STYLE_FIXTURE, NO_TOKEN).map((u) => u.requirement),
+    ["token"]);
+  assert.deepEqual(unmetClosureRequirements(BOARD_STYLE_FIXTURE, WITH_TOKEN), []);
+});
+
+test("#621 unmetCommandClosureRequirements: a non-`tsx --test` command is never inspected", () => {
+  assert.deepEqual(unmetCommandClosureRequirements("npm run lint", NO_TOKEN), []);
+});
+
+test("#621 ACCEPTANCE: classifyCommand REFUSES board-style.test.ts, named, naming the chain -- with NO "
+  + "`// requires:` header on the file at all, proving the refusal comes from the closure and not from a "
+  + "declaration", () => {
+  assert.ok(existsSync(BOARD_STYLE_FIXTURE), "the fixture itself must exist for this test to mean anything");
+  assert.deepEqual(testFileRequirements(readFileSync(BOARD_STYLE_FIXTURE, "utf8")), [],
+    "sanity: board-style.test.ts truly declares no // requires: header -- if this ever gains one, the "
+    + "refusal below could be coming from #510's header path instead of #621's closure derivation");
+  const result = classifyCommand(`npx tsx --test ${BOARD_STYLE_FIXTURE}`, { capabilities: NO_TOKEN });
+  assert.equal(result.verdict, "refused");
+  const reason = (/** @type {{reason:string}} */ (result)).reason;
+  assert.match(reason, /`token`/);
+  assert.match(reason, /board-style\.test\.ts requires token via collect → board-data\.mjs:72/);
+});
+
+test("#621 MUTATION TARGET: the identical command RUNS once the job's capabilities carry a token -- "
+  + "proving the refusal above tracked the real capability, not a hard-coded no", () => {
+  const result = classifyCommand(`npx tsx --test ${BOARD_STYLE_FIXTURE}`, { capabilities: WITH_TOKEN });
+  assert.equal(result.verdict, "runnable");
+});
+
+test("#621 MUTATION direction (the issue's own instruction): WITHOUT the closure derivation, "
+  + "board-style.test.ts is classified purely on its (nonexistent) header and RUNS against a tokenless "
+  + "job -- reproducing, from a copy of the pre-#621 mechanism, the exact live failure #382/#619 measured "
+  + "four times", () => {
+  // Reproduces the OLD, header-only path directly (unmetCommandRequirements, never touching the closure
+  // walk) so this fails if #621's derivation is ever bypassed or deleted, without needing to touch
+  // acceptance-commands.mjs itself.
+  const preClosureUnmet = unmetCommandRequirements(`npx tsx --test ${BOARD_STYLE_FIXTURE}`, NO_TOKEN);
+  assert.deepEqual(preClosureUnmet, [],
+    "the header-only mechanism finds NOTHING unmet here -- board-style.test.ts declares no header, so "
+    + "the pre-#621 code would have classified this command RUNNABLE against a job with no token, which "
+    + "is precisely the defect this row exists to close");
+});
+
+// NOTE ON THIS TEST'S OWN NAME: deliberately does not spell out, verbatim, the three identifiers
+// acceptance-commands.mjs's patterns search for -- this file (acceptance-commands.test.ts) is ITSELF
+// walked by the test below, and a test NAME is a string literal, real code, not a comment. Spelling them
+// out here reproduces the exact bug on the very test written to guard against it -- caught live on this
+// row's first run, one level up from where it was already caught inside acceptance-commands.mjs.
+test("#621 SELF-REFERENCE REGRESSION: acceptance-commands.mjs describes the three fingerprinted "
+  + "identifiers (the GitHub token env var, the runs-root override vars, the shallow-checkout flag) in "
+  + "its OWN comments and regex literals, and acceptance-commands.test.ts imports it -- the derivation "
+  + "must not read its own describing code as performing the operations it describes. Found live: the "
+  + "first version of this row derived a requirement from acceptance-commands.mjs's own comment prose, "
+  + "and separately from its own regex-literal SOURCE TEXT (comment-stripping cannot fix that half -- the "
+  + "fingerprint is real code). Both classes are fixed; this pins zero derived requirements for the file "
+  + "that defines them.", () => {
+  const hits = deriveClosureRequirements(REAL_FILE);
+  assert.deepEqual(hits, [], `acceptance-commands.test.ts must derive NOTHING from its own closure -- `
+    + `found: ${hits.map((h) => closureRequirementMessage(h)).join("; ")}`);
+});
+
+test("#621 local-import-closure.mjs's own JSDoc example is not read as a real import -- it demonstrates "
+  + "`import { collect } from \"./board-data.mjs\"` as prose, and a comment-unaware walk treated that "
+  + "as a genuine edge into board-data.mjs, adding a phantom \"token\" hit with a nonsensical chain "
+  + "(\"classifyCommand -> localImports -> collect -> board-data.mjs\") to any file merely importing "
+  + "`localImports` from it", () => {
+  const hits = deriveClosureRequirements("scripts/local-import-closure.mjs");
+  assert.deepEqual(hits, [], "the shared closure-walk module must derive nothing from its own docstring");
+});
+
+test("#621 anyCommandUsesHistory (via acceptanceReport): a closure-derived history need is recognised as "
+  + "\"used\" even with no `// requires:` header -- pre-push-stale-base.test.ts needs history (its own "
+  + "REAL ARTEFACT test asks the shallow-checkout question) but declares no header; `History: full` "
+  + "naming it must not warn as unused", () => {
+  const body = "Closes #1\nAcceptance: npx tsx --test "
+    + "packages/lab/src/packaging/pre-push-stale-base.test.ts\nHistory: full\n";
+  const report = acceptanceReport(body, () => 0);
+  assert.ok(!report.lines.some((l) => /WARNING/.test(l)),
+    `expected no unused-History warning; got: ${report.lines.join(" | ")}`);
 });
