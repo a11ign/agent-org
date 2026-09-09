@@ -138,24 +138,39 @@ test("parseWorktreeList reads path, branch, and detached state from real porcela
 // the tree was safe. The tests below assert the inversion directly, so restoring either clause fails
 // here rather than in six weeks on somebody's disk.
 
-test("#671: a merged, clean ROLE tree is REMOVE -- the prefix was never the question", () => {
-  for (const branch of ["dispatcher/merge", "lead/fleet-tree-rule", "pm/board", "ceo/roles", "main"]) {
-    assert.equal(classify({ ...C, branch }), "remove",
-      `${branch} is merged and clean, which is the whole question`);
-  }
+test("#671/#696: `classify` CANNOT BE TOLD a branch name -- the strongest form the fix has", () => {
+  // The obvious test here would be `classify({ ...C, branch: "lead/x" })` against every role prefix and
+  // against null, asserting the name is ignored. IT DOES NOT COMPILE, and that is a better result than
+  // any assertion: the parameter type no longer has a `branch` field, so a future clause reading one
+  // cannot be written without changing the signature -- which is a diff a reviewer sees. A runtime
+  // assertion that a value is ignored can be defeated by adding the value back; a type cannot.
+  //
+  // What remains testable is that state alone decides, which is the whole predicate:
+  assert.equal(classify({ ...C }), "remove");
+  assert.equal(classify({ ...C, merge: "not-merged" }), "dirty");
+  assert.equal(classify({ ...C, workingTreeClean: false }), "dirty");
+  assert.equal(classify({ ...C, merge: "unknown" }), "inconclusive");
+  assert.equal(classify({ ...C, recentlyActive: true }), "active");
+  assert.equal(classify({ ...C, merge: "not-merged", contentMerged: true }), "cherry-picked");
 });
 
-test("#671: and a role tree that is NOT merged is still refused -- for the true reason", () => {
-  assert.equal(classify({ ...C, branch: "lead/x", merge: "not-merged" }), "dirty");
-  assert.equal(classify({ ...C, branch: "lead/x", workingTreeClean: false }), "dirty");
-  assert.equal(classify({ ...C, branch: "lead/x", merge: "unknown" }), "inconclusive");
-  assert.equal(classify({ ...C, branch: "lead/x", recentlyActive: true }), "active");
+test("#671 LIVE: a merged, clean ROLE tree is removed -- against real branches, where the name still exists", () => {
+  // The type removes the name from `classify`. Only the live path can show that a real `dispatcher/*`
+  // worktree is now reached at all, since `pruneWorktrees` used to intercept it before classify was
+  // ever asked. `buildFixtureRepo`'s `standing` tree IS `dispatcher/merge`, merged and clean.
+  const { root, standing } = buildFixtureRepo();
+  try {
+    const report = pruneWorktrees(root, { now: LONG_AFTER() });
+    assert.ok(report.removed.map((r) => r.path).includes(standing),
+      "a merged, clean dispatcher/* worktree is as removable as an agent/* one -- #671");
+    assert.equal(existsSync(standing), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 // --- classify: pure ---
 
 const C = {
-  branch: "agent/x", merge: "merged" as const, workingTreeClean: true, contentMerged: false,
+  merge: "merged" as const, workingTreeClean: true, contentMerged: false,
   recentlyActive: false as boolean | "unknown",
 };
 
@@ -178,11 +193,13 @@ test("#696: a detached worktree is classified on its STATE, not on having no bra
   // Was `if (branch === null) return "dirty"` -- filed under a heading reading "uncommitted or unmerged
   // work" without either being measured. Twelve of the fifteen detached trees on the live host had
   // neither: 0 uncommitted files, 0 commits `origin/main` lacks.
-  assert.equal(classify({ ...C, branch: null }), "remove");
-  assert.equal(classify({ ...C, branch: null, workingTreeClean: false }), "dirty");
-  assert.equal(classify({ ...C, branch: null, merge: "not-merged" }), "dirty");
-  assert.equal(classify({ ...C, branch: null, merge: "unknown" }), "inconclusive");
-  assert.equal(classify({ ...C, branch: null, recentlyActive: true }), "active");
+  // `branch: null` is not passed here either, and cannot be -- see the type note above. The detached
+  // case is proved end to end instead, by `#696 LIVE` below, which builds real detached worktrees.
+  assert.equal(classify({ ...C }), "remove");
+  assert.equal(classify({ ...C, workingTreeClean: false }), "dirty");
+  assert.equal(classify({ ...C, merge: "not-merged" }), "dirty");
+  assert.equal(classify({ ...C, merge: "unknown" }), "inconclusive");
+  assert.equal(classify({ ...C, recentlyActive: true }), "active");
 });
 test("classify: unmerged but CONTENT-merged (cherry-picked) is its own state, not dirty and not removed", () => {
   assert.equal(classify({ ...C, merge: "not-merged", contentMerged: true }), "cherry-picked");
