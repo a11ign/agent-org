@@ -10,12 +10,14 @@
  * `gh pr view --json files` -- both FAIL to distinguish the two, because the loss happened several commits
  * deep inside the branch's own internal main-sync history, not at the outermost merge.
  */
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
-import { readFileSync } from "node:fs";
+import { dirname, resolve, join } from "node:path";
+import { readFileSync, mkdtempSync, rmSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 import { parse as parseYaml } from "yaml";
 import {
   unexplainedDeletions, mergeParents, deletedPaths, branchTouchedPaths, EXIT,
@@ -24,6 +26,34 @@ import { revertVerdict, EXIT as REVERT_EXIT } from "../../../../scripts/trunk-re
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const SCRIPT = `${REPO}/scripts/trunk-revert-guard.mjs`;
+
+/**
+ * A LOCAL CLONE WITH ITS OWN `origin`, BECAUSE THIS SCRIPT REALLY FETCHES.
+ *
+ * `trunk-revert-guard.mjs` runs `git fetch origin --quiet` before it looks at anything (line ~145,
+ * unconditional, and deliberately so -- worker-contracts' finding that the guard must not read a
+ * remote-tracking ref that a checkout happens to have fetched an hour ago). Every spawn below used to
+ * pass `cwd: REPO`, which resolves to whichever checkout is running the suite -- so a `npm test` in any
+ * worktree fetched into the SHARED primary `.git`, writing its remote-tracking refs while another
+ * worktree may be doing the same. A test mutating the checkout that drives the fleet, with a lock in the
+ * failure mode. #640's class, found by worker-audit from a real collision (#890).
+ *
+ * `git clone --local` hardlinks the object store, so this costs almost nothing and keeps the real
+ * history the tests need: `f2cdfaf3` and `fc9b89d2` are documented merges on main, and a synthetic
+ * fixture could not stand in for them without inventing the very shapes the guard is being proved
+ * against.
+ *
+ * THE CLONE'S `origin` IS THE PRIMARY, so the script's `fetch` READS it and writes only inside the
+ * clone. Reading is not the hazard; the hazard was two writers on one ref namespace.
+ *
+ * Cloned ONCE for the whole file rather than per test -- four spawns, one clone -- and removed in
+ * `after()`. A clone per spawn would be correct and four times the cost for no extra isolation, since
+ * none of these tests writes to it.
+ */
+const CLONE = realpathSync(mkdtempSync(join(tmpdir(), "a11y-revert-guard-")));
+execFileSync("git", ["clone", "--local", "--quiet", REPO, CLONE], { stdio: "pipe", env: sandboxGitEnv() });
+
+after(() => rmSync(CLONE, { recursive: true, force: true }));
 
 // --- unexplainedDeletions: the pure decision ---
 
@@ -97,7 +127,7 @@ test("ACCEPTANCE (#411, criterion 2): the real incident (f2cdfaf3) is REFUSED, n
   + "paths no branch commit ever touched", () => {
   let out;
   try {
-    execFileSync("node", [SCRIPT, "--merge=f2cdfaf3"], { cwd: REPO, encoding: "utf8", stdio: "pipe" });
+    execFileSync("node", [SCRIPT, "--merge=f2cdfaf3"], { cwd: CLONE, encoding: "utf8", stdio: "pipe" });
     assert.fail("expected the guard to refuse and exit non-zero");
   } catch (cause) {
     const err = cause as { status?: number, stderr?: string };
@@ -125,7 +155,7 @@ test("ACCEPTANCE (#411, criterion 2): the real incident (f2cdfaf3) is REFUSED, n
 
 test("ACCEPTANCE (#411, criterion 3): a legitimate deletion (#354, fc9b89d2) is NOT refused -- the half "
   + "that decides whether this survives a week", () => {
-  const out = execFileSync("node", [SCRIPT, "--merge=fc9b89d2"], { cwd: REPO, encoding: "utf8" });
+  const out = execFileSync("node", [SCRIPT, "--merge=fc9b89d2"], { cwd: CLONE, encoding: "utf8" });
   assert.match(out, /PASS/);
 });
 
@@ -134,7 +164,8 @@ test("ACCEPTANCE (#411, criterion 3): a legitimate deletion (#354, fc9b89d2) is 
 test("trunk-revert-guard.mjs refuses an unknown flag rather than silently ignoring it", () => {
   let threw = false;
   try {
-    execFileSync("node", [SCRIPT, "--merge=abc", "--bogus"], { encoding: "utf8", stdio: "pipe" });
+    execFileSync("node", [SCRIPT, "--merge=abc", "--bogus"],
+      { cwd: CLONE, encoding: "utf8", stdio: "pipe" });
   } catch (cause) {
     threw = true;
     const err = cause as { status?: number, stderr?: string };
@@ -147,7 +178,7 @@ test("trunk-revert-guard.mjs refuses an unknown flag rather than silently ignori
 test("trunk-revert-guard.mjs refuses to run without --merge", () => {
   let threw = false;
   try {
-    execFileSync("node", [SCRIPT], { encoding: "utf8", stdio: "pipe" });
+    execFileSync("node", [SCRIPT], { cwd: CLONE, encoding: "utf8", stdio: "pipe" });
   } catch (cause) {
     threw = true;
     const err = cause as { status?: number, stderr?: string };
@@ -242,7 +273,7 @@ test("C3 ACCEPTANCE: decideRevert fires on trunkGate's or trunkBuildTest's failu
 test("C3 ACCEPTANCE, COMPOSED: the real f2cdfaf3 REFUSAL, once trunkGate fails on it, IS revert-worthy", () => {
   // The guard itself REFUSES f2cdfaf3 -- already proven above; re-asserted here so this composed test
   // does not silently pass having examined a commit the guard would not have flagged at all.
-  assert.throws(() => execFileSync("node", [SCRIPT, "--merge=f2cdfaf3"], { cwd: REPO, stdio: "pipe" }),
+  assert.throws(() => execFileSync("node", [SCRIPT, "--merge=f2cdfaf3"], { cwd: CLONE, stdio: "pipe" }),
     "the guard must still refuse f2cdfaf3, or this composed test is asserting nothing real");
 
   // trunkGate failing on f2cdfaf3 means `decideRevert` runs with `--push-sha=f2cdfaf3` and
@@ -277,6 +308,36 @@ test("C3 ACCEPTANCE, COMPOSED, POSITIVE CONTROL: an ordinary merge's PASS never 
   // green) `decideRevert`'s `if: needs.trunkGate.result == 'failure'` is false: it never runs at all. There
   // is no `revertVerdict` call to make in this branch, which is the point -- the positive control for a
   // destructive action is "nothing happens", not "a different, harmless verdict is computed".
-  const out = execFileSync("node", [SCRIPT, "--merge=fc9b89d2"], { cwd: REPO, encoding: "utf8", stdio: "pipe" });
+  const out = execFileSync("node", [SCRIPT, "--merge=fc9b89d2"], { cwd: CLONE, encoding: "utf8", stdio: "pipe" });
   assert.match(out, /PASS/);
+});
+
+/**
+ * THE FIX IS THE `cwd`, SO THE `cwd` IS PINNED.
+ *
+ * Every spawn in this file runs a script that calls `git fetch origin` unconditionally. Pointed at the
+ * real checkout — which is what `cwd: REPO` did until #890 — that fetch writes remote-tracking refs in
+ * the `.git` every worktree shares, so a suite run anywhere could collide with another worktree's fetch.
+ * worker-audit found it from a real collision.
+ *
+ * Reverting one `cwd` is a one-line edit that changes nothing a type or a lint check can see, and the
+ * tests pass either way — the clone has the same history. **So the only thing that can catch it is a
+ * check on the text.** That is this file's own lesson from `browser-session.mjs`'s comment, applied to
+ * this file: a comment saying "the position is the property" is worth nothing unless something reads it.
+ */
+test("#890 every spawn runs against the CLONE, never the real checkout", () => {
+  // INCLUDING THE TWO FLAG-REFUSAL SPAWNS, which today exit before the fetch -- `refuseUnknownFlags` and
+  // the missing-`--merge` check both run first. That is a fact about the script's current statement
+  // ORDER, and this row exists because a statement's position is exactly the property nothing else
+  // notices moving. A uniform `cwd` needs no such reasoning to stay correct.
+  const src = readFileSync(fileURLToPath(import.meta.url), "utf8");
+  const spawns = [...src.matchAll(/execFileSync\(\s*"node",[^)]*?\{([^}]*)\}/gs)].map((m) => m[1]);
+  assert.ok(spawns.length >= 4,
+    `only ${spawns.length} node spawn(s) found; this file had four when the guard was written, and a `
+    + "check that examines fewer than it should reports cleanly about a population it never walked");
+  for (const options of spawns) {
+    assert.match(options, /cwd:\s*CLONE\b/, `a spawn runs with ${options.trim()} rather than cwd: CLONE`);
+    assert.doesNotMatch(options, /cwd:\s*REPO\b/,
+      "cwd: REPO points at whichever checkout runs the suite, and this script FETCHES");
+  }
 });
