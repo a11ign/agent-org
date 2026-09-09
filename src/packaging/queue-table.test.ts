@@ -10,13 +10,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadavg } from "node:os";
 import { prRow, nonSuccessByName, newestPerName, render, fetchRefs, renderStalled, windowOf,
-  renderMergedChecks, STALL_MINUTES, EXIT, hostState, hostContention }
+  renderMergedChecks, STALL_MINUTES, EXIT, hostState, hostContention, reliefFor, topConsumers }
   from "../../../../scripts/queue-table.mjs";
 
 const NOW = new Date("2026-09-09T08:00:00Z");
 /** A host with room, so tests about OTHER sections are not decided by section 5. */
 const HOST_OK = { compressedMb: 2000, inactiveMb: 3000, freeMb: 180, pageouts: 1000,
-  load: 2, gitProcesses: 3, worktrees: 12 };
+  load: 2, gitProcesses: 3, worktrees: 12, topConsumers: null };
 const pr = (over = {}) => ({
   number: 1, headRefName: "pm/x", headRefOid: "a".repeat(40), mergeStateStatus: "BLOCKED",
   armed: true, updatedAt: "2026-09-09T07:55:00Z", redChecks: [], ...over,
@@ -232,7 +232,7 @@ import { renderHost, GIT_PROCESS_CEILING, LOAD_CEILING }
   from "../../../../scripts/queue-table.mjs";
 
 const HOST = { compressedMb: 2000, inactiveMb: 3000, freeMb: 180, pageouts: 1000,
-  load: 2, gitProcesses: 3, worktrees: 12 };
+  load: 2, gitProcesses: 3, worktrees: 12, topConsumers: null };
 
 test("section 5 reports compressed, inactive AND free -- and never keys on free alone", () => {
   const text = renderHost(HOST).lines.join("\n");
@@ -328,7 +328,7 @@ test("section 5 is always present, like the other four", () => {
  */
 test("#681 hostContention: an UNREADABLE load is never a verdict that the host is fine", () => {
   const host = { compressedMb: 1, inactiveMb: 1, freeMb: 1, pageouts: 0, load: null,
-    gitProcesses: 3, worktrees: 10 };
+    gitProcesses: 3, worktrees: 10, topConsumers: null };
   const { contended, unknown } = hostContention(host);
   assert.equal(contended, false, "it cannot claim contention it did not measure either");
   assert.deepEqual(unknown, ["load"], "but it must SAY the load is missing, not print a bare `no`");
@@ -339,7 +339,7 @@ test("#681 hostContention: an UNREADABLE load is never a verdict that the host i
 
 test("#681 MUTATION TARGET: restoring `host.load ?? 0` makes an unreadable load pass the ceiling test silently", () => {
   const host = { compressedMb: 1, inactiveMb: 1, freeMb: 1, pageouts: 0, load: null,
-    gitProcesses: null, worktrees: 10 };
+    gitProcesses: null, worktrees: 10, topConsumers: null };
   // The pre-#681 expression, written out so the defect is reproducible rather than described:
   const oldVerdict = (host.load ?? 0) > LOAD_CEILING || (host.gitProcesses ?? 0) > GIT_PROCESS_CEILING;
   assert.equal(oldVerdict, false, "the old expression says `not contended` on two unreadable metrics");
@@ -352,7 +352,7 @@ test("#681 MUTATION TARGET: restoring `host.load ?? 0` makes an unreadable load 
 
 test("#681 a load genuinely above the ceiling is still reported as contended, with the reading printed", () => {
   const host = { compressedMb: 1, inactiveMb: 1, freeMb: 1, pageouts: 0, load: 15.08,
-    gitProcesses: 2, worktrees: 10 };
+    gitProcesses: 2, worktrees: 10, topConsumers: null };
   assert.deepEqual(hostContention(host), { contended: true, unknown: [] });
   const rendered = renderHost(host).lines.join("\n");
   assert.match(rendered, /load 15\.08/, "the number is printed, not just its verdict");
@@ -362,7 +362,7 @@ test("#681 a load genuinely above the ceiling is still reported as contended, wi
 
 test("#681 a NaN load is treated as unreadable, not as a number below the ceiling", () => {
   const host = { compressedMb: 1, inactiveMb: 1, freeMb: 1, pageouts: 0, load: NaN,
-    gitProcesses: 1, worktrees: 10 };
+    gitProcesses: 1, worktrees: 10, topConsumers: null };
   // `Number("")` and `Number(undefined)` are both NaN, and `NaN > 12` is false -- the identical
   // failure-into-good-news the null case has, arriving through a parse rather than through a spawn.
   const { contended, unknown } = hostContention(host);
@@ -390,4 +390,68 @@ test("#681 the load reads with no PATH dependency -- os.loadavg(), never a subpr
   const host = hostState();
   if (host === null) return; // no `vm_stat`: not this test's subject, and not a pass to fake either
   assert.equal(host.load, oneMinute, "hostState reports that same number, unmediated");
+});
+
+/**
+ * "CONTENDED" WITHOUT THE CONSUMER IS A VERDICT WITHOUT A CAUSE, and the remedies are disjoint enough
+ * that naming the wrong one costs the whole cycle. Measured 2026-09-09T11:30Z: the table said "stop
+ * running `npm test` locally" while the top five by CPU were Docker's VM at 134%, Spotlight at 61%,
+ * WindowServer at 51% and Zoom at 39% -- not one of them ours. Every session could have stopped
+ * everything and the load would not have moved.
+ */
+test("#681 reliefFor: when NONE of the top five is ours, it says so and says throttling will not help", () => {
+  const lines = reliefFor([
+    { command: "com.apple.Virtualization.VirtualMachine", cpu: 134 },
+    { command: "mds_stores", cpu: 61 }, { command: "WindowServer", cpu: 51 },
+    { command: "zoom.us", cpu: 39 }, { command: "diagnosticd", cpu: 25 },
+  ]).join("\n");
+  assert.match(lines, /SOMEBODY IS USING THIS MACHINE \(zoom\.us\)/);
+  assert.match(lines, /one push at a time across all/);
+  assert.match(lines, /Spotlight is indexing the worktrees/);
+  assert.match(lines, /NONE of the top five is ours/);
+  assert.ok(!lines.includes("Ours, and stoppable now"),
+    "it must not name our own processes as the cause when none of them is in the list");
+});
+
+test("#681 reliefFor: when our own suites ARE the cause, it names them with their cost", () => {
+  const lines = reliefFor([{ command: "node", cpu: 127 }, { command: "tsc", cpu: 88 }]).join("\n");
+  assert.match(lines, /Ours, and stoppable now: node 127%, tsc 88%/);
+  assert.ok(!lines.includes("NONE of the top five is ours"));
+  assert.ok(!lines.includes("SOMEBODY IS USING THIS MACHINE"),
+    "no user application in the list, so no claim that a person is at the keyboard");
+});
+
+test("#681 reliefFor: an unreadable consumer list refuses to guess a remedy", () => {
+  assert.deepEqual(reliefFor(null), ["     No CPU reading, so no cause -- do not guess at a remedy."]);
+});
+
+/**
+ * `top -l 1` REPORTS 0.0% FOR EVERY PROCESS, because one sample has no interval to measure against.
+ * Measured on a host at load 35 -- five processes all reading 0.0 while `ps` put `mds_stores` at 52%.
+ * That is this file's own defect class arriving through a sampling window instead of a missing PATH:
+ * an unmeasurable value printed as a small number reads as good news. `ps -r` needs no interval.
+ */
+test("#681 topConsumers reads real percentages -- not the 0.0 a single top sample returns", () => {
+  const consumers = topConsumers();
+  if (consumers === null) return; // no `ps`: not this test's subject, and not a pass to fake
+  assert.ok(consumers.length > 0, "something is always using the CPU");
+  assert.ok(consumers.some((c) => c.cpu > 0),
+    "every process reading 0.0% is the `top -l 1` signature, not a measurement");
+  assert.ok(consumers.every((c) => !c.command.includes("/")),
+    "the basename is what a reader recognises, not 96 characters of framework path");
+  for (let i = 1; i < consumers.length; i += 1) {
+    assert.ok(consumers[i - 1].cpu >= consumers[i].cpu, "sorted by cost, so the top one is the cause");
+  }
+});
+
+test("#681 gitProcessCount: pgrep's exit 1 is a real ZERO, and any other failure is null", () => {
+  // pgrep exits 1 for "nothing matched" and 2+/ENOENT for "I could not look". The first draft asked a
+  // control question -- `pgrep -x <a name nothing has>` -- which returns the IDENTICAL exit status as
+  // the real query, so it answered nothing. A control sharing the failure mode of what it controls for
+  // is not a control (#645's shape).
+  const host = hostState();
+  if (host === null) return;
+  assert.ok(host.gitProcesses === null || typeof host.gitProcesses === "number");
+  assert.notEqual(host.gitProcesses, null,
+    "pgrep exists on this machine, so the count is a number even when it is 0");
 });
