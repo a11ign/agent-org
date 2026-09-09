@@ -455,3 +455,76 @@ test("#681 gitProcessCount: pgrep's exit 1 is a real ZERO, and any other failure
   assert.notEqual(host.gitProcesses, null,
     "pgrep exists on this machine, so the count is a number even when it is 0");
 });
+
+/**
+ * SECTION 4 WAS BLIND TO EXACTLY THE INCIDENT ITS OWN HEADER CITES.
+ *
+ * That header reads: *"a red `audit` check sat on seven merged PRs for ninety minutes"* — and on
+ * 2026-09-09 the section printed **NONE for three consecutive tables** while `ready-label-audit` had been
+ * failing since 12:11Z. Measured on the real tree the moment the population changed:
+ *
+ *     commits examined: 10
+ *       RED: audit                 -> 7 of 10
+ *       RED: trunkBuildTest / run  -> 6 of 10
+ *       RED: decideRevert          -> 4 of 10
+ *
+ * Seven of ten. The same number, the same check name, and the section written to catch it could not see
+ * it.
+ *
+ * THE CAUSE IS THE POPULATION, NOT THE QUERY. It read `gh pr list --state merged --json
+ * statusCheckRollup`, whose rollup hangs off `headRefOid` — the BRANCH TIP BEFORE THE MERGE. The merge
+ * commit is a different sha. So the section answered *"did each PR's own CI pass before it merged"* while
+ * its heading, and the chairman reading it, asked *"what is red on main"*.
+ *
+ * `ready-label-audit` runs on the `issues` event against main's tip, so its check-runs attach to merge
+ * commits (861ffbb7, bdf9c0ba) that `gh pr list --json headRefOid` matches by construction never. It was
+ * not MISSED — it was UNREACHABLE, along with every post-merge workflow, every scheduled run pinned to a
+ * sha, and every non-code event. **That is precisely the class of check that can be red on main while
+ * blocking nothing, which is the class this section exists to surface.**
+ */
+import { mergeCommitsOnMain } from "../../../../scripts/queue-table.mjs";
+
+test("#737 mergeCommitsOnMain reads the FIRST-PARENT chain and names the PR each merge carries", () => {
+  const log = [
+    "aaaa1111\t2026-09-09T13:00:00+01:00\tMerge pull request #729 from DanBeckDev/agent/x",
+    "bbbb2222\t2026-09-09T12:59:00+01:00\tMerge pull request #734 from DanBeckDev/dispatcher/y",
+    "cccc3333\t2026-09-09T12:58:00+01:00\ta direct commit with no PR",
+  ].join("\n");
+  const rows = mergeCommitsOnMain(3, { run: () => log });
+  assert.ok(rows, "a readable log yields rows");
+  assert.deepEqual(rows.map((r) => r.pr), [729, 734, null],
+    "a commit that names no PR is null, never guessed -- a direct push to main is a real thing");
+  assert.deepEqual(rows.map((r) => r.sha), ["aaaa1111", "bbbb2222", "cccc3333"]);
+});
+
+test("#737 THE REGRESSION: a check on the MERGE COMMIT is counted -- the old population could not reach it", () => {
+  // `ready-label-audit` runs on the `issues` event against main's tip. Its check-runs attach here and
+  // nowhere else; a PR's `headRefOid` is a different sha and always will be.
+  const merged = [
+    { number: 729, sha: "bdf9c0ba", checks: [{ name: "audit", conclusion: "FAILURE" }] },
+    { number: 734, sha: "8786c9eb", checks: [{ name: "audit", conclusion: "FAILURE" }] },
+    { number: 723, sha: "861ffbb7", checks: [{ name: "gate", conclusion: "SUCCESS" }] },
+  ];
+  const { byName } = nonSuccessByName(merged);
+  assert.deepEqual(byName.get("audit"), [729, 734],
+    "the section must report a check that is red on main, whatever event produced it");
+});
+
+test("#737 a commit whose checks could not be READ is unreadable, never a clean commit", () => {
+  const { byName, unreadable } = nonSuccessByName([
+    { number: 1, sha: "aaaa", checks: null },
+    { number: 2, sha: "bbbb", checks: [{ name: "gate", conclusion: "SUCCESS" }] },
+  ]);
+  assert.deepEqual(unreadable, [1], "a failed lookup is CANNOT-ASK, and folding it into clean is the "
+    + "defect this file has now hit five times in other guards");
+  assert.equal(byName.size, 0);
+});
+
+test("#737 a direct commit to main with a red check still counts, with no PR number to name", () => {
+  const { byName } = nonSuccessByName([
+    { number: null, sha: "dddd4444", checks: [{ name: "audit", conclusion: "FAILURE" }] },
+  ]);
+  assert.deepEqual(byName.get("audit"), [null],
+    "red on main is red on main; a check that arrived without a PR is exactly the kind this section "
+    + "exists to surface, and dropping it would rebuild the blind spot one level down");
+});
