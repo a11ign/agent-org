@@ -95,7 +95,7 @@ test("lookupIssueOpenState returns null, never a guessed state, on a failed look
 
 // --- resolveBlockedByOverride: THE COMPOSED VERDICT ---
 
-const OWN_PR = { number: 900, state: "OPEN" as const, red: true };
+const OWN_PR = { number: 900, state: "OPEN" as const, reasons: ["FAILING: ts (failure)."] };
 
 function routedRun(routes: { comments?: string, state?: string }) {
   return (args: string[]): string => {
