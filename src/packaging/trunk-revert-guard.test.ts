@@ -10,6 +10,17 @@
  * `gh pr view --json files` -- both FAIL to distinguish the two, because the loss happened several commits
  * deep inside the branch's own internal main-sync history, not at the outermost merge.
  */
+// no-token: gh
+//
+// #827. `revertVerdict` takes its facts as an argument and returns a verdict -- `trunk-revert.mjs`'s
+// caller does the lookups -- and this file calls it with a fixture. The closure walk reaches `gh` through
+// that module's graph rather than through anything these tests execute.
+//
+// The spawned script runs `git`, not `gh`, and since #890 it runs against a local clone rather than the
+// checkout hosting the suite.
+//
+// Verified against the entry's own code by #827's mechanism, so if `revertVerdict` ever starts doing its
+// own lookups this refuses rather than trusting the comment.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
