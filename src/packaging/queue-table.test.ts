@@ -528,3 +528,39 @@ test("#737 a direct commit to main with a red check still counts, with no PR num
     "red on main is red on main; a check that arrived without a PR is exactly the kind this section "
     + "exists to surface, and dropping it would rebuild the blind spot one level down");
 });
+
+
+/**
+ * ONE FACT, FOUR COPIES, AND #734 CORRECTED TWO OF THEM.
+ *
+ * `.metadata_never_index` was measured on 2026-09-09 and does not work per-directory: placed on all 68
+ * worktrees at 12:47Z and verified present, `mds_stores` read 54.8% at 12:45Z and 80% at 12:52Z. #734
+ * corrected the claim in `.gitignore` and `scripts/spotlight-exclude.mjs` — and missed `queue-table.mjs`'s
+ * relief line and `docs/pipeline.md`'s remedy table, **which are the two a reader actually reaches**.
+ *
+ * The fix was found by grepping for the SENTENCE rather than revisiting the file that was edited. That is
+ * this repository's most-repeated defect stated exactly: a fact in more than one place, with nothing
+ * comparing them, and a correction that reached the copies its author was looking at.
+ */
+test("#761 section 5 never recommends the marker, which was measured not to work", () => {
+  const consumers = [{ command: "mds_stores", cpu: 80 }, { command: "WindowServer", cpu: 30 }];
+  const relief = reliefFor(consumers).join("\n");
+  assert.match(relief, /Spotlight is indexing the worktrees/, "the cause is still named");
+  assert.match(relief, /does NOT help/, "and the marker is named as not helping");
+  assert.ok(!/stops it being indexed at all/.test(relief),
+    "the withdrawn claim must not survive anywhere a reader reaches");
+});
+
+test("#761 a user application makes the state say THROTTLED, not merely describe it", () => {
+  const relief = reliefFor([{ command: "zoom.us", cpu: 49 }, { command: "mds_stores", cpu: 61 }]).join("\n");
+  assert.match(relief, /THROTTLED/,
+    "a reader must be able to SEE the state rather than infer it from a paragraph");
+  assert.match(relief, /zoom\.us/, "and which application, so they can tell when it is gone");
+  assert.match(relief, /carries serialise/);
+});
+
+test("#761 no user application means no THROTTLED line -- the word must stay meaningful", () => {
+  const relief = reliefFor([{ command: "node", cpu: 120 }, { command: "tsc", cpu: 40 }]).join("\n");
+  assert.ok(!/THROTTLED/.test(relief),
+    "printing it on every contended host is how a state word stops being read");
+});
