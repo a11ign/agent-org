@@ -177,3 +177,131 @@ test("RESUMING a row this session already holds skips eligibility entirely -- no
   assert.equal(listAsked, false, "resuming a row already yours must not spend a round trip re-checking "
     + "eligibility for a front that was never new");
 });
+
+/**
+ * #741: `--blocked-by=#N` END TO END THROUGH `claimRow` -- releases B2 only with a measurement comment
+ * already on the claimant's own open PR, and only while `#N` is confirmed open. See
+ * `row-claim-blocked-by-rule.test.ts` for the pure-function coverage of `blocked-by-rule.mjs` itself; this
+ * proves the WIRING in `writeRowLabels` (the comment is posted on the RIGHT row, the label write still
+ * happens, and a losing race never posts one).
+ */
+const QUALIFYING_MEASUREMENT_COMMENT = "Blocked-by measurement: #722 is red only on assertions introduced "
+  + "by #718's merge, outside this PR's diff.\n\n"
+  + "- ts (newest run): \"Cannot find module './closure'\" -- outside the diff\n";
+
+/** Routes an `issue view` call by its REQUESTED `--json` field, since #741 asks it of two different
+ * issues (the row being claimed, and the `--blocked-by` blocker) with two different field lists. Pulled
+ * apart into small named routes, rather than one long `if` chain, to keep complexity below the lint gate. */
+function issueViewRoute(args: string[], routes: { rowLabels?: string, blockerState?: string }): string {
+  const fields = args[args.indexOf("--json") + 1];
+  if (fields === "state") return routes.blockerState ?? JSON.stringify({ state: "OPEN" });
+  return routes.rowLabels ?? JSON.stringify({ number: 700, title: "A row", labels: [] });
+}
+
+function blockedByRun(routes: { rowLabels?: string, blockerState?: string, comments?: string,
+  onEdit?: () => void, onComment?: (body: string) => void }) {
+  return (cmd: string, args: string[]): string => {
+    const shape = args.slice(0, 2).join(" ");
+    if (shape === "issue edit") { routes.onEdit?.(); return ""; }
+    if (shape === "issue comment") { routes.onComment?.(args[args.length - 1]); return ""; }
+    if (shape === "issue list") return JSON.stringify([{ number: 472 }]);
+    if (shape === "api graphql") {
+      return JSON.stringify({ data: { repository: { issue: {
+        closedByPullRequestsReferences: { nodes: [{ number: 900, state: "OPEN", headRefOid: "abc" }] } } } } });
+    }
+    if (shape === "pr view") return routes.comments ?? JSON.stringify({ comments: [] });
+    if (shape === "issue view") return issueViewRoute(args, routes);
+    return "[]";
+  };
+}
+
+test("#741's own acceptance shape: measurement comment present and #N open -- the claim succeeds and the "
+  + "claim comment carries the exception and names #N", () => {
+  let editCalled = false;
+  let commentBody: string | undefined;
+  const run = blockedByRun({
+    comments: JSON.stringify({ comments: [{ body: QUALIFYING_MEASUREMENT_COMMENT }] }),
+    onEdit: () => { editCalled = true; },
+    onComment: (body) => { commentBody = body; },
+  });
+  const result = claimRow(700, "worker-audit", { run, moveStatus: () => ({ moved: true }),
+    requiredContexts: () => ["ts"],
+    checkRuns: () => [{ name: "ts", status: "completed", conclusion: "success", completedAt: null }],
+    blockedBy: "#731" });
+  assert.equal(result.claimed, true);
+  assert.ok(editCalled, "the claim labels must still be written -- the override releases B2, it does not "
+    + "skip claiming");
+  assert.ok(commentBody, "the exception must be written into a claim comment, per #741's own acceptance");
+  assert.match(commentBody as string, /#731/);
+});
+
+test("#741's own acceptance shape: without the measurement comment, refused, naming what the comment must "
+  + "contain -- and no comment is posted", () => {
+  let commentPosted = false;
+  const run = blockedByRun({
+    comments: JSON.stringify({ comments: [{ body: "looks fine to me" }] }),
+    onComment: () => { commentPosted = true; },
+  });
+  const result = claimRow(700, "worker-audit", { run, moveStatus: () => ({ moved: true }),
+    requiredContexts: () => ["ts"],
+    checkRuns: () => [{ name: "ts", status: "completed", conclusion: "success", completedAt: null }],
+    blockedBy: "#731" });
+  assert.equal(result.claimed, false);
+  assert.match((result as { reason: string }).reason, /measurement comment/);
+  assert.equal(commentPosted, false);
+});
+
+test("#741's own acceptance shape: with #N closed, refused", () => {
+  const run = blockedByRun({
+    comments: JSON.stringify({ comments: [{ body: QUALIFYING_MEASUREMENT_COMMENT }] }),
+    blockerState: JSON.stringify({ state: "CLOSED" }),
+  });
+  const result = claimRow(700, "worker-audit", { run, moveStatus: () => ({ moved: true }),
+    requiredContexts: () => ["ts"],
+    checkRuns: () => [{ name: "ts", status: "completed", conclusion: "success", completedAt: null }],
+    blockedBy: "#731" });
+  assert.equal(result.claimed, false);
+  assert.match((result as { reason: string }).reason, /#731/);
+  assert.match((result as { reason: string }).reason, /closed/);
+});
+
+test("#741's own acceptance shape: WITHOUT --blocked-by, B2 refuses exactly as it does today -- the flag "
+  + "is the only new path, nothing else relaxes", () => {
+  let commentPosted = false;
+  const run = blockedByRun({
+    comments: JSON.stringify({ comments: [{ body: QUALIFYING_MEASUREMENT_COMMENT }] }),
+    onComment: () => { commentPosted = true; },
+  });
+  const result = claimRow(700, "worker-audit", { run, moveStatus: () => ({ moved: true }),
+    requiredContexts: () => ["ts"],
+    checkRuns: () => [{ name: "ts", status: "completed", conclusion: "success", completedAt: null }] });
+  assert.equal(result.claimed, false);
+  assert.doesNotMatch((result as { reason: string }).reason, /blocked-by/i,
+    "with no --blocked-by, the refusal must read exactly like plain B2 -- a qualifying comment sitting "
+    + "unused on the PR must never be discovered and applied on its own");
+  assert.equal(commentPosted, false);
+});
+
+test("MUTATION TARGET: --blocked-by given while the refusal is B4 (file overlap), not B2, must not apply "
+  + "-- the override is specific to the claimant's own PR being unhealthy", () => {
+  const body = "## Region\n\n`scripts/merge-guard.mjs`.\n\n## Acceptance\n\nSomething checkable.\n\n"
+    + "## Open-check\n\nSomething runnable.\n";
+  const run = (cmd: string, args: string[]): string => {
+    // `issue view` is asked for two different `--json` shapes here (labels, then `body` for both #707's
+    // template check and B4's own region lookup) -- routed by the requested field, since answering both
+    // with the same object is what silently skipped B4 entirely the first time this test was written.
+    if (args[0] === "issue" && args[1] === "view") {
+      const fields = args[args.indexOf("--json") + 1];
+      if (fields === "body") return JSON.stringify({ body });
+      return JSON.stringify({ number: 700, title: "A row", labels: [] });
+    }
+    if (args[0] === "pr" && args[1] === "list") {
+      return JSON.stringify([{ number: 406, files: [{ path: "scripts/merge-guard.mjs" }] }]);
+    }
+    return "[]";
+  };
+  const result = claimRow(700, "worker-judge", { run, moveStatus: () => ({ moved: true }), blockedBy: "#731" });
+  assert.equal(result.claimed, false);
+  assert.match((result as { reason: string }).reason, /#406/);
+  assert.doesNotMatch((result as { reason: string }).reason, /blocked-by/i);
+});

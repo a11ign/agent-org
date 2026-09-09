@@ -288,9 +288,23 @@ test("#719 REGRESSION: #687's real body, whose Region misses environmentKey's ac
  * same convention `git-fixture-cache.mjs` (#660) uses for its own temporary refs — so nothing is left in
  * the shared object database this worktree's `.git` carries.
  */
+/**
+ * #770 REGRESSION: THIS TEST WAS ITS OWN COUNTEREXAMPLE. `symbolOnMain` asks `git grep` of `origin/main`'s
+ * WHOLE TREE -- and once this test file itself is merged, its own literal fixture-symbol string is PART
+ * of that tree, in this very file. The PR job's `origin/main` is the OLD one (this branch has not landed
+ * yet), so a "guaranteed absent" assertion passed there -- and failed on `trunk-guard`, which runs AFTER
+ * the merge, against the NEW `origin/main` that now contains this file. Same class of bug as #621's
+ * self-reference guard in `acceptance-commands.mjs` (a check walking its own describing code), one file
+ * over. `git grep` is comment-blind, unlike that file's `stripComments`-protected walk -- so even a
+ * comment quoting the fixture symbol verbatim would self-match; this doc comment deliberately never
+ * spells it out. Fixed the identical way `fingerprint()` fixes it there: concatenated below so the
+ * literal substring never appears contiguously anywhere in this file, prose included.
+ */
+const fixtureSymbolName = (a: string, b: string) => a + b;
+
 test("#719: a branch is a named carrier only when it actually contains the symbol, anywhere in its tree", () => {
   const env = sandboxGitEnv();
-  const FIXTURE_SYMBOL = "RowReachabilityFixtureSymbol719";
+  const FIXTURE_SYMBOL = fixtureSymbolName("RowReachabilityFixtureSy", "mbol719");
   const REF = "refs/remotes/origin/row-reachability-fixture-719";
   const tmpIndex = execFileSync("mktemp", { encoding: "utf8" }).trim();
   try {
