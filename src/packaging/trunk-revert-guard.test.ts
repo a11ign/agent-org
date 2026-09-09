@@ -114,6 +114,13 @@ test("ACCEPTANCE (#411, criterion 2): the real incident (f2cdfaf3) is REFUSED, n
   ]) {
     assert.ok(out.includes(p), `expected the refusal to name ${p}, got:\n${out}`);
   }
+  // #655: naming the deleted paths is not a remedy on its own -- decideRevert deliberately never
+  // auto-reverts a trunkGate-only failure (a question this merge's own two parents cannot answer by
+  // re-running a suite), so a human must be told what to actually DO, not just what is wrong.
+  assert.match(out, /git revert -m 1 f2cdfaf3/,
+    `expected the refusal to name the exact recovery command, got:\n${out}`);
+  assert.match(out, /not auto-reverted/i,
+    `expected the refusal to say this is NOT handled automatically, got:\n${out}`);
 });
 
 test("ACCEPTANCE (#411, criterion 3): a legitimate deletion (#354, fc9b89d2) is NOT refused -- the half "
