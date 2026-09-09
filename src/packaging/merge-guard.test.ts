@@ -177,7 +177,10 @@ test("the composed baseline is READY before either #249 or #266 fires -- or the 
 });
 
 test("#249 and #266 fire independently when composed, and stay two sentences", () => {
-  const v = mergeReadiness({ ...HELD_BASE, prLabels: ["session:dispatcher"], closes: CLOSES_CLAIMED,
+  // `hold:` since 2026-09-09: `session:` on a PR is OWNERSHIP and no longer a hold. The row in
+  // CLOSES_CLAIMED still carries `session:worker-judge` deliberately -- a ROW's claim vocabulary is
+  // unchanged, and this test composing both is what proves the two are read by different predicates.
+  const v = mergeReadiness({ ...HELD_BASE, prLabels: ["hold:dispatcher"], closes: CLOSES_CLAIMED,
     session: "worker-capture" });
   assert.equal(v.code, 1);
   assert.equal(v.reasons.length, 2, "a held PR AND a claimed row it would close are two independent faults");
