@@ -21,6 +21,16 @@
  * which is the same reason `packedButUntracked` had to learn ignored-versus-forgotten and the reason
  * `real-page-corpus-freshness.test.ts` keeps an EXEMPT table instead of a bare list.
  */
+// no-token: gh
+//
+// #827. Every test here is driven with FIXTURES or an INJECTED `run` -- `livenessVerdict`,
+// `missedTodaysWindow`, `daysSince`, `scheduleNeverFired`, `watchdogSilenceLine` all take their inputs as
+// arguments, and `hoursSincePreviousRun` takes the runner as its first parameter, which these tests
+// supply as a closure over a fixture string. The closure walk reaches `board-data.mjs`'s `gh` through
+// `EXIT -> REPO`, a constant, rather than through anything these tests execute.
+//
+// The declaration is verified against the entry's own code, so if one of these functions ever starts
+// doing its own lookups this refuses rather than trusting the comment.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -124,6 +134,7 @@ test("the check does NOT run on a schedule, which is the property it exists for"
 // when the missing summary turned main's own tip red and blocked every PR in the repository.
 // ---------------------------------------------------------------------------------------------------
 import { GUARDED_WORKFLOWS, missedTodaysWindow } from "../../../../scripts/board-schedule-liveness.mjs";
+import { hoursSincePreviousRun, watchdogSilenceLine } from "../../../../scripts/board-schedule-liveness.mjs";
 
 test("#590 every workflow the watchdog's HEADER names is one its code actually guards", () => {
   // DERIVED FROM THE HEADER, never a second hand-written list -- a second list is exactly what the first
@@ -160,4 +171,51 @@ test("#590 MUTATION TARGET: the nineteen-hour silence a staleness threshold coul
   assert.equal(
     missedTodaysWindow({ runDays: ["2026-09-08"], today: "2026-09-09", londonHour: 8, afterHour: 8 }),
     true, "a run yesterday and none today, asked after the deadline hour, is the finding");
+});
+
+// ---------------------------------------------------------------------------------------------------
+// #272: THE WATCHDOG REPORTS ITS OWN SILENCE.
+//
+// This check runs on `push` and only on `push`, and the test above pins that. The cost of the choice is
+// a gap: on a day nobody pushes to main it does not run, and a missing edition goes unreported until the
+// next push. **Not noticed and nothing wrong look identical from the outside** — which is the failure
+// this whole file exists to end, turned on the file itself.
+//
+// Two alternatives were refused, and the reasons are the row's: a `schedule:` contradicts the header and
+// the pinned test; a second event trigger buys a workflow firing on every label change — measured on
+// `ready-label-audit` the same day at 200 runs, 175 cancelled, 0 succeeded — to cover a gap that has not
+// occurred once (a push to main on every one of the last 15 days).
+
+test("#272 the previous run is read at INDEX 1, because index 0 is this run reporting on itself", () => {
+  const now = new Date("2026-09-09T18:00:00Z");
+  const runs = [{ createdAt: "2026-09-09T17:59:00Z" }, { createdAt: "2026-09-09T12:00:00Z" }];
+  const hours = hoursSincePreviousRun(() => JSON.stringify(runs), now);
+  assert.equal(Math.round(hours ?? -1), 6,
+    "index 0 would answer ~0h — true, useless, and indistinguishable from a healthy answer");
+});
+
+test("#272 UNREADABLE SAYS SO -- a failed lookup is not `it ran recently`", () => {
+  assert.equal(hoursSincePreviousRun(() => { throw new Error("gh: not authenticated"); }, new Date()), null);
+  assert.equal(hoursSincePreviousRun(() => JSON.stringify([{ createdAt: "2026-09-09T17:59:00Z" }]), new Date()),
+    null, "one run means there is no PREVIOUS run to measure -- the answer is unknown, not zero");
+  assert.match(String(watchdogSilenceLine(null)), /UNKNOWN/);
+  assert.match(String(watchdogSilenceLine(null)), /Unknown is not recent/);
+});
+
+test("#272 past the threshold the line is a warning ABOUT THE CHECK, not about the board -- a reader who "
+  + "sees `editions are arriving` has no way to know the sentence is a day old", () => {
+  const quiet = String(watchdogSilenceLine(30));
+  assert.match(quiet, /WARNING ABOUT THIS CHECK, NOT ABOUT THE BOARD/);
+  assert.match(quiet, /30h/);
+  assert.match(quiet, /nobody pushed/, "it must name the mechanism, or the reader cannot act on it");
+
+  const fine = String(watchdogSilenceLine(3));
+  assert.match(fine, /3h/, "and under the threshold it still prints the number");
+  assert.doesNotMatch(fine, /WARNING/, "a number a reader can weigh beats an alarm they learn to ignore");
+});
+
+test("#272 MUTATION: the threshold is 26h, not 24 -- a full day plus a margin, so ordinary drift between "
+  + "one push and the next does not read as a dead watchdog", () => {
+  assert.doesNotMatch(String(watchdogSilenceLine(25)), /WARNING/);
+  assert.match(String(watchdogSilenceLine(26)), /WARNING/);
 });
