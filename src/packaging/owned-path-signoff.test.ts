@@ -18,6 +18,8 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { signoffVerdict, isOwned, loadFacts } from "../../../../scripts/owned-path-signoff.mjs";
 
@@ -74,6 +76,57 @@ test("a partial sign-off is refused, and names only what is missing", () => {
   assert.match(v.reasons[0], /weights/);
   assert.doesNotMatch(v.reasons[0], /say one of: unchanged, bumped/,
     "a fact that IS stated must not be listed as missing -- a refusal that names satisfied work is noise");
+});
+
+test("ANY line naming a fact satisfies it, not just the FIRST — #603's own bug", () => {
+  // A line explaining the fact (naming it, no state) precedes the line that actually declares its state.
+  // `find` stops at the first naming line and reports this as unstated, which is FALSE.
+  const body = [
+    "CAPTURE_PROTOCOL_VERSION is the capture cache key; bumping it forces a full recapture.",
+    "CAPTURE_PROTOCOL_VERSION: unchanged",
+    "weights: unchanged",
+  ].join("\n");
+  const v = signoffVerdict({ changed: ["packages/nvda-worker/src/capture-core.mjs"], body, facts: FACTS });
+  assert.equal(v.code, 0, `expected SIGNED (a later line states it), got: ${v.reasons.join(" | ")}`);
+});
+
+test("CONTRADICTING states for the same fact across two lines is a real finding, refused with both quoted", () => {
+  const body = [
+    "CAPTURE_PROTOCOL_VERSION: unchanged",
+    "Actually, CAPTURE_PROTOCOL_VERSION: bumped -- correcting the line above.",
+    "weights: unchanged",
+  ].join("\n");
+  const v = signoffVerdict({ changed: ["packages/nvda-worker/src/capture-core.mjs"], body, facts: FACTS });
+  assert.equal(v.code, 1, "document order must not silently pick one of two disagreeing lines");
+  assert.match(v.reasons.join("\n"), /CONTRADICTING/);
+  assert.match(v.reasons.join("\n"), /CAPTURE_PROTOCOL_VERSION: unchanged/);
+  assert.match(v.reasons.join("\n"), /CAPTURE_PROTOCOL_VERSION: bumped/);
+});
+
+// --- verified against REAL PR bodies, not synthesised fixtures (#584, #613) ---
+
+test("real body: #584 (guest-paths-are-measured) states all four owned-path-facts on packages/nvda-worker/", () => {
+  const body = readFileSync(
+    fileURLToPath(new URL("../../../../packages/lab/src/packaging/fixtures/pr-584-body.md", import.meta.url)),
+    "utf8");
+  const real = loadFacts();
+  assert.ok(real);
+  const v = signoffVerdict({
+    changed: ["packages/nvda-worker/src/browsers.mjs"], body, facts: real,
+  });
+  assert.equal(v.code, 0, `expected SIGNED against #584's real body, got: ${v.reasons.join(" | ")}`);
+});
+
+test("real body: #613 (profile-identity-is-a-key) states all four owned-path-facts on packages/nvda-worker/", () => {
+  const body = readFileSync(
+    fileURLToPath(new URL("../../../../packages/lab/src/packaging/fixtures/pr-613-body.md", import.meta.url)),
+    "utf8");
+  const real = loadFacts();
+  assert.ok(real);
+  const v = signoffVerdict({
+    changed: ["packages/nvda-worker/src/browser-profile.mjs"], body, facts: real,
+  });
+  assert.equal(v.code, 0, `expected SIGNED against #613's real body, got: ${v.reasons.join(" | ")}`);
 });
 
 test("a failed lookup is CANNOT_ASK, never a pass — `[]` and `null` differ", () => {
