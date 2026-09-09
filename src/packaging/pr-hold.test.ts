@@ -16,6 +16,8 @@
 // is refused as its own state rather than trusted.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { holdDecision } from "../../../../scripts/pr-hold.mjs";
 import { armVerdict, disarmVerdict, REARM_LABEL } from "../../../../scripts/pr-hold-state.mjs";
@@ -182,4 +184,41 @@ test("CONTROL: the ordinary readings are untouched -- null is disarmed, non-null
   assert.equal(armVerdict({ autoMergeRequest: null, state: "OPEN" }).armed, false);
   assert.equal(disarmVerdict(null).disarmed, true,
     "and an unreadable PR keeps whatever it meant before -- this row does not change that question");
+});
+
+/**
+ * THE MARKER IS THE ONLY THING THAT SURVIVES FROM THE HOLD TO THE RELEASE, and on 2026-09-09 it did not
+ * land at all.
+ *
+ * `gh pr edit --add-label` REFUSES a label the repository does not have — `'rearm-on-release' not found`
+ * — and #822 shipped the label's name without creating it. The write threw, its result was never
+ * inspected, and `pr:release` then printed *"it carried no `rearm-on-release`, so it was already unarmed
+ * when the hold was taken"*: a true sentence about a label that was never written, and a PR left unarmed
+ * with nothing on it saying why.
+ *
+ * Measured on #862, live: held, disarmed, released, not re-armed — the exact failure #822 was written to
+ * prevent, reintroduced by a missing label.
+ *
+ * The hold label three lines above it was read back deliberately in that same change. The second write
+ * in the same function was not: a fix at one of two call sites, inside the change that was about reading
+ * writes back.
+ */
+test("#822's two writes are verified the SAME WAY -- the source proves the marker is read back, not "
+  + "trusted to `gh pr edit`'s exit code", () => {
+  const src = readFileSync(
+    fileURLToPath(new URL("../../../../scripts/pr-hold.mjs", import.meta.url)), "utf8");
+  const marker = src.slice(src.indexOf("function markForRearm"));
+  const body = marker.slice(0, marker.indexOf("\n}"));
+  assert.match(body, /prLabels\(number\)/,
+    "it must ASK the PR what it now carries -- an exit code says the request was accepted");
+  assert.match(body, /includes\(REARM_LABEL\)/);
+  assert.doesNotMatch(body, /return true;\s*$/,
+    "no path may report success without the read");
+
+  assert.match(src, /!markForRearm\(number\)/,
+    "and takeHold must ACT on the answer: an unverified marker is a re-arm that silently will not happen");
+  const takeHold = src.slice(src.indexOf("function takeHold"));
+  assert.match(takeHold.slice(0, takeHold.indexOf("\n}")), /could not mark it/,
+    "the refusal must say what will happen next -- `pr:release` leaving the PR unarmed is the "
+    + "consequence, and a message naming only the failed write does not tell the operator that");
 });
