@@ -849,43 +849,81 @@ test("#621 anyCommandUsesHistory (via acceptanceReport): a closure-derived histo
 });
 
 // --- #731: `runsRoot` (the corpus-location resolver) means TWO things -- reading evidence, and choosing a
-// writable location -- and the closure walk above could only ask one question of a call to it.
-// `git-fixture-cache.mjs` (#660) calls it to pick a cache location it creates itself; #718 merged that file
-// and #722 (a PR that never touched it) inherited a `corpus` refusal for a chain it does not own.
-// `HISTORY_FIXTURE` (above) is #722's own real chain:
-// `pre-push-resolve-toward-main.test.ts → checkoutFixturePair → git-fixture-cache.mjs`.
+// writable location -- and the closure walk above could only ask one question of a call to it. #718
+// (git-fixture-cache.mjs, a real file that called it to pick a cache location it creates itself) was the
+// motivating case and was REVERTED as the incident's stopgap while this fix landed -- so it is gone from
+// `main`, and a test naming it as its subject would pass or fail on whether somebody reverted that file,
+// which is exactly what happened here. THE CLASSIFIER'S BEHAVIOUR IS THE SUBJECT; a file that happens to
+// exercise it is not -- so every fixture below is built by the test, not borrowed from the tree, except
+// `corpus-settled.mjs` (kept deliberately: a REAL file whose corpus dependency is real, the boundary that
+// stops this fix becoming "never refuse").
 //
-// NEITHER THIS SECTION NOR ITS FIXTURE BELOW SPELLS THE RESOLVER'S NAME FOLLOWED BY `(` CONTIGUOUSLY --
-// this file is itself walked by the #621 self-reference test below, and a call-shaped mention in a test
-// NAME or a fixture STRING LITERAL is real code, not a comment; `stripComments` cannot fix that half. Every
-// mention here either drops the trailing parenthesis (harmless in prose) or is built the same
-// concatenated way `fingerprint()` builds its own patterns in acceptance-commands.mjs. ---
+// NEITHER THIS SECTION NOR ITS FIXTURES SPELL THE RESOLVER'S NAME FOLLOWED BY `(` CONTIGUOUSLY -- this file
+// is itself walked by the #621 self-reference test below, and a call-shaped mention in a test NAME or a
+// fixture STRING LITERAL is real code, not a comment; `stripComments` cannot fix that half. Every mention
+// here either drops the trailing parenthesis (harmless in prose) or is built the same concatenated way
+// `fingerprint()` builds its own patterns in acceptance-commands.mjs. ---
 
 const REAL_JOB_CAPABILITIES = jobCapabilities("History: full");
 // Matches acceptance-commands.mjs's own `fingerprint` -- concatenated so the resolver's name never
 // appears contiguously in this file's own source.
 const spell = (a: string, b: string) => a + b;
 
-test("#731 REGRESSION: #722's exact real chain classifies runnable -- git-fixture-cache.mjs's corpus-root "
-  + "call is a verified write location, not corpus evidence", () => {
-  const result = classifyCommand(`npx tsx --test ${HISTORY_FIXTURE}`, { capabilities: REAL_JOB_CAPABILITIES });
-  assert.equal(result.verdict, "runnable",
-    `expected runnable; got: ${JSON.stringify(result)} -- this is the exact command #722 saw refused`);
+/**
+ * A SYNTHETIC git-fixture-cache.mjs-SHAPED writer -- the general case #718 was the specific instance of: a
+ * module that calls the corpus-root resolver only to choose a location it creates itself (a real
+ * `mkdirSync`, at the declared subdirectory), declares that honestly, and never reads pre-existing
+ * evidence there.
+ */
+function writeSyntheticCacheWriter(dir: string, subdir = "synthetic-cache"): string {
+  const fixture = join(dir, "cache-writer.mjs");
+  writeFileSync(fixture, [
+    `// writes: runs/${subdir}`,
+    "import { mkdirSync } from \"node:fs\";",
+    "import { join } from \"node:path\";",
+    `export function useCache() { mkdirSync(join(${spell("runsRo", "ot()")}, "${subdir}"), { recursive: true }); }`,
+  ].join("\n"));
+  return fixture;
+}
+
+test("#731 REGRESSION: an entry that imports a write-only corpus-root user, TWO HOPS deep, classifies "
+  + "runnable -- the shape #718's real chain had (a test → a helper → the resolver)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "acceptance-writes-"));
+  try {
+    writeSyntheticCacheWriter(dir);
+    const entry = join(dir, "consumer.test.mjs");
+    writeFileSync(entry, [
+      "import { useCache } from \"./cache-writer.mjs\";",
+      "useCache();",
+    ].join("\n"));
+    const result = classifyCommand(`npx tsx --test ${entry}`, { capabilities: REAL_JOB_CAPABILITIES });
+    assert.equal(result.verdict, "runnable",
+      `expected runnable; got: ${JSON.stringify(result)}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
-test("#731: git-fixture-cache.mjs itself derives NO requirement at all from its own corpus-root call, "
-  + "now that its `// writes:` declaration is verified against a real mkdirSync at the declared path", () => {
-  const hits = deriveClosureRequirements("packages/lab/src/packaging/git-fixture-cache.mjs");
-  assert.deepEqual(hits, [], `expected no hits; got: ${hits.map(closureRequirementMessage).join("; ")}`);
+test("#731: a write-only corpus-root user derives NO requirement at all from its own call, now that its "
+  + "`// writes:` declaration is verified against a real mkdirSync at the declared path", () => {
+  const dir = mkdtempSync(join(tmpdir(), "acceptance-writes-"));
+  try {
+    const writer = writeSyntheticCacheWriter(dir);
+    const hits = deriveClosureRequirements(writer);
+    assert.deepEqual(hits, [], `expected no hits; got: ${hits.map(closureRequirementMessage).join("; ")}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("#731: a file that genuinely reads the corpus is UNAFFECTED -- the fix must not become "
   + "\"never refuse\"; dataset-paths.mjs's own corpus-root definition, reached with no `// writes:` "
-  + "declaration at all, still derives `corpus`", () => {
+  + "declaration at all, still derives `corpus`. A REAL file, deliberately: this is the boundary that "
+  + "stops the fix over-reaching, and `rules:gate`/`check-signals`/`corpus:starvation`/`scorer:shortcuts` "
+  + "all depend on it staying true", () => {
   const hits = deriveClosureRequirements("packages/lab/src/training/corpus-settled.mjs");
   assert.deepEqual(hits.map((h) => h.requirement), ["corpus"],
-    "a real corpus-reading chain must still be caught -- rules:gate, check-signals, corpus:starvation and "
-    + "scorer:shortcuts all depend on this staying true");
+    "a real corpus-reading chain must still be caught");
   assert.equal(hits[0].wrongDeclaration, undefined, "no declaration was made here, so none can be wrong");
 });
 
@@ -912,19 +950,19 @@ test("#731: a `// writes:` declaration that does not hold is named as WRONG, nev
   }
 });
 
-test("#731 MUTATION: point git-fixture-cache.mjs's declared write path at somewhere it does not actually "
-  + "write, and its closure hit must return -- proving the exemption is EARNED by the file's own code, not "
-  + "granted by the header alone", () => {
+test("#731 MUTATION: point a write-only corpus-root user's declared write path at somewhere it does not "
+  + "actually write, and its closure hit must return -- proving the exemption is EARNED by the file's own "
+  + "code, not granted by the header alone", () => {
   const dir = mkdtempSync(join(tmpdir(), "acceptance-writes-"));
   try {
-    const real = readFileSync("packages/lab/src/packaging/git-fixture-cache.mjs", "utf8");
-    assert.match(real, /^\/\/ writes: runs\/git-fixture-cache$/m,
-      "sanity: git-fixture-cache.mjs must actually carry the declaration this test mutates");
-    const mutated = real.replace("// writes: runs/git-fixture-cache", "// writes: runs/somewhere-else");
-    assert.notEqual(mutated, real, "the replacement must actually land, or this proves nothing");
-    const fixture = join(dir, "git-fixture-cache.mjs");
-    writeFileSync(fixture, mutated);
-    const hits = deriveClosureRequirements(fixture);
+    const writer = writeSyntheticCacheWriter(dir);
+    const clean = readFileSync(writer, "utf8");
+    assert.match(clean, /^\/\/ writes: runs\/synthetic-cache$/m,
+      "sanity: the fixture must actually carry the declaration this test mutates");
+    const mutated = clean.replace("// writes: runs/synthetic-cache", "// writes: runs/somewhere-else");
+    assert.notEqual(mutated, clean, "the replacement must actually land, or this proves nothing");
+    writeFileSync(writer, mutated);
+    const hits = deriveClosureRequirements(writer);
     assert.equal(hits.length, 1, `expected the corpus hit to return once the declaration no longer holds; `
       + `got: ${JSON.stringify(hits)}`);
     assert.equal(hits[0].wrongDeclaration, true,
