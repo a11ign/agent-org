@@ -250,6 +250,13 @@ test("C3 ACCEPTANCE, COMPOSED: the real f2cdfaf3 REFUSAL, once trunkGate fails o
     // `trunkGate: success` and `trunkBuildTest: failure` read as green, and this fixture would have
     // asserted READY on the strength of half an answer.
     beforeConclusions: { trunkGate: "success", trunkBuildTest: "success" },
+    // #616: the composed acceptance now needs the parent's failing check RE-RUN, not just its recorded
+    // conclusion. `f2cdfaf3^1` has been proven clean by every gate that has run since, so a re-check of
+    // it passing is the honest fact this incident's own history establishes -- the same reasoning the
+    // comment above gives for treating its recorded conclusion as `success`, applied to the second
+    // question. Without this the case reads CANNOT_ASK, which is correct behaviour and not this test's
+    // subject.
+    parentRecheck: "pass" as const,
     currentMainSha: "f2cdfaf3", // the case where main has NOT moved on since -- this push is still the tip
     pushSha: "f2cdfaf3",
   });
