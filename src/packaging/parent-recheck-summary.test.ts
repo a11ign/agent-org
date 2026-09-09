@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { summarizeTestLog } from "../../../../scripts/parent-recheck-summary.mjs";
+import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 
 const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
 
@@ -129,14 +130,6 @@ test("CLI: an undeterminable log prints UNKNOWN and RECHECK_RESULT=unknown, neve
 // reproduces it." The #616 re-check pins the WORKING TREE at the parent commit (`git worktree add /tmp/
 // parent "$BEFORE" --detach`) but shares the same underlying repository -- objects and refs, including
 // `refs/remotes/origin/main` -- with the checkout that created it. Pinning a tree does not pin a ref.
-
-function sandboxGitEnv() {
-  const scrubbed: Record<string, string | undefined> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (!key.startsWith("GIT_")) scrubbed[key] = value;
-  }
-  return scrubbed;
-}
 
 test("#744 HYPOTHESIS, REPRODUCED: a worktree pinned at an OLD commit still sees origin/main AS IT IS NOW, "
   + "not as it was when that commit was tested -- so a test reading origin/main directly can fail on a "
