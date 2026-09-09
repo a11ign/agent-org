@@ -1220,7 +1220,7 @@ test("CONTROL: a refusal of a NAMED file stays a pass -- the author did their pa
   + "run that one file. Failing both would make the two indistinguishable, and they need opposite fixes", () => {
   const caps = { history: false, token: false, fleet: false, corpus: false };
   const named = acceptanceReport(
-    'Acceptance:\nnpx tsx --test packages/lab/src/packaging/queue-table.test.ts\n'
+    'Acceptance:\nnpx tsx --test packages/lab/src/packaging/row-claim-live.test.ts\n'
     + 'node -e "process.exit(0)"\n', () => 0, { capabilities: caps });
   assert.equal(named.ok, true);
   assert.match(named.lines[0], /REFUSED/);
