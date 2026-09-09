@@ -6,6 +6,14 @@
  * success says nothing about what it did — so the decision is a pure function with three distinct
  * outcomes, and the two that matter cannot be produced on demand against a live API.
  */
+// no-token: gh
+//
+// #827. Every function this file exercises is PURE -- `holdDecision`, `armVerdict`,
+// `disarmVerdict` and the `REARM_LABEL` constant all take fixtures and return verdicts. `pr-hold.mjs`'s
+// `gh` helper is reached by the closure walk because it lives in the same module, never because these
+// tests call it: `takeHold` and `releaseHold`, the two functions that do, appear in this file only
+// inside an assertion message. The declaration is verified against the entry's own code, so a wrong one
+// is refused as its own state rather than trusted.
 import test from "node:test";
 import assert from "node:assert/strict";
 
