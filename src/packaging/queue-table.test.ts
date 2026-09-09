@@ -8,7 +8,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { prRow, nonSuccessByName, newestPerName, render, STALL_MINUTES, EXIT }
+import { prRow, nonSuccessByName, newestPerName, render, fetchRefs, STALL_MINUTES, EXIT }
   from "../../../../scripts/queue-table.mjs";
 
 const NOW = new Date("2026-09-09T08:00:00Z");
@@ -103,4 +103,28 @@ test("all four sections are always printed, including the empty ones -- a sectio
   for (const heading of ["1. TRUNK", "2. OPEN PRs", "3. STALLED", "4. NON-SUCCESS CHECKS"]) {
     assert.ok(text.includes(heading), `${heading} must always appear`);
   }
+});
+
+test("MUTATION TARGET: a FAILED fetch says so and exits INCOMPLETE -- every count would be unknown, not "
+  + "zero", () => {
+  // Found by running it, not by reading it. The checkout this command happens to be in had no objects for
+  // a sha pushed a minute earlier, so `git rev-list --count <head>..<base>` exited 128 with `Invalid
+  // revision range` and EVERY row printed `behind=?`. The API knows what the shas are; only the local
+  // repository can say how far apart they are, and only for objects it holds. A table whose counts are
+  // all unknown while it says nothing about why is the vacuous answer this file exists to refuse.
+  const trunk = { sha: "a".repeat(40), runId: "1", status: "completed", conclusion: "success" };
+  const stale = render({ trunk, prs: [], merged: [], now: NOW, fetched: false });
+  assert.match(stale.text, /git fetch FAILED/);
+  assert.match(stale.text, /unknown, not zero/);
+  assert.equal(stale.code, EXIT.INCOMPLETE);
+  assert.equal(render({ trunk, prs: [], merged: [], now: NOW, fetched: true }).code, EXIT.EXAMINED);
+});
+
+test("fetchRefs asks for every branch, not just main -- a PR head that was never fetched cannot be "
+  + "counted against anything", () => {
+  const calls: string[][] = [];
+  assert.equal(fetchRefs((args: string[]) => { calls.push(args); return { status: 0, stdout: "" }; }), true);
+  assert.deepEqual(calls, [["fetch", "--quiet", "origin", "+refs/heads/*:refs/remotes/origin/*"]]);
+  assert.equal(fetchRefs(() => ({ status: 1, stdout: "" })), false,
+    "a failed fetch must be reported to the caller, never silently tolerated");
 });
