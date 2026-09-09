@@ -246,7 +246,10 @@ test("C3 ACCEPTANCE, COMPOSED: the real f2cdfaf3 REFUSAL, once trunkGate fails o
     // itself long since proven clean by every gate that has run since, so treating it as the "before" a
     // real trunkGate run would have recorded as `success` is the honest fact this incident's own history
     // establishes, not an assumption invented for the test.
-    beforeGateConclusion: "success",
+    // #582: EVERY trigger job, not one of them. `trunkGate` alone was the defect -- a parent with
+    // `trunkGate: success` and `trunkBuildTest: failure` read as green, and this fixture would have
+    // asserted READY on the strength of half an answer.
+    beforeConclusions: { trunkGate: "success", trunkBuildTest: "success" },
     currentMainSha: "f2cdfaf3", // the case where main has NOT moved on since -- this push is still the tip
     pushSha: "f2cdfaf3",
   });
