@@ -10,7 +10,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadavg } from "node:os";
 import { prRow, nonSuccessByName, newestPerName, render, fetchRefs, renderStalled, windowOf,
-  renderMergedChecks, STALL_MINUTES, EXIT, hostState, hostContention, reliefFor, topConsumers, isRed, renderBudget }
+  renderMergedChecks, STALL_MINUTES, EXIT, hostState, hostContention, reliefFor, topConsumers, isRed, renderBudget,
+  fetchRemoteBranchesChecked, branchPrefixCensus, renderBranchPrefixes }
   from "../../../../scripts/queue-table.mjs";
 
 const NOW = new Date("2026-09-09T08:00:00Z");
@@ -697,4 +698,82 @@ test("MUTATION: the words are not decoration -- swapping used and remaining chan
     { core: { remaining: 39, limit: 5000, used: 4961, resetInMinutes: 3 }, graphql: null }, 19);
   assert.match(out, /core 4961 used, 39 remaining of 5000/);
   assert.match(out, /under 10%/, "and 39 of 5000 remaining must still raise its own line");
+});
+
+// --- #790: branch prefixes -- a branch can exist with no owner prefix at all, and only naming it,
+// never assuming it does not exist, tells that apart from a normal role branch (`agent/`, `lead/`,
+// `dispatcher/`, `pm/`, `ceo/`). `main` is the sole accepted exception; it is the trunk, not a stray. ---
+
+test("branchPrefixCensus: every branch carries a prefix -- none named", () => {
+  const census = branchPrefixCensus(["agent/foo-1", "lead/bar-2", "dispatcher/baz-3", "main"]);
+  assert.equal(census.total, 4);
+  assert.deepEqual(census.noPrefix, []);
+});
+
+test("#790 ACCEPTANCE, MUTATION TARGET: a branch with no prefix at all is NAMED, exactly #790's own "
+  + "measured anomaly (a branch literally called `origin`)", () => {
+  const census = branchPrefixCensus(["agent/foo-1", "origin", "main"]);
+  assert.deepEqual(census.noPrefix, ["origin"]);
+});
+
+test("branchPrefixCensus: `main` is the one accepted no-prefix name, never reported as a stray", () => {
+  const census = branchPrefixCensus(["main"]);
+  assert.deepEqual(census.noPrefix, []);
+});
+
+test("fetchRemoteBranchesChecked: local mirror count matches the remote's own count -- returns both", () => {
+  const run = (args: string[]) => (args[0] === "for-each-ref"
+    ? "origin/agent/foo-1\norigin/main\n"
+    : "abc\trefs/heads/agent/foo-1\ndef\trefs/heads/main\n");
+  const result = fetchRemoteBranchesChecked({ run });
+  assert.deepEqual(result.branches, ["agent/foo-1", "main"]);
+  assert.equal(result.remoteCount, 2);
+});
+
+test("#790 ACCEPTANCE, MUTATION TARGET: the local mirror reading FEWER branches than the remote reports "
+  + "REFUSES -- the exact shape a stale `fetch` would produce", () => {
+  const run = (args: string[]) => (args[0] === "for-each-ref"
+    ? "origin/main\n"
+    : "abc\trefs/heads/agent/foo-1\ndef\trefs/heads/main\n");
+  assert.throws(() => fetchRemoteBranchesChecked({ run }),
+    /examined 1 branch\(es\) from the local mirror but the remote reports 2/);
+});
+
+test("fetchRemoteBranchesChecked throws, never returns an empty census, when git fails", () => {
+  const run = () => { throw new Error("git: not a repository"); };
+  assert.throws(() => fetchRemoteBranchesChecked({ run }), /could not list remote-tracking branches/);
+});
+
+test("renderBranchPrefixes: OK line states examined against the remote's own count", () => {
+  const out = renderBranchPrefixes({ branches: ["agent/foo-1", "main"], remoteCount: 2 });
+  assert.match(out.lines[0], /OK\s+2 of 2 remote branch\(es\) checked/);
+  assert.equal(out.incomplete, false);
+});
+
+test("renderBranchPrefixes: a no-prefix stray is named, not folded into the OK line", () => {
+  const out = renderBranchPrefixes({ branches: ["agent/foo-1", "origin", "main"], remoteCount: 3 });
+  assert.match(out.lines[0], /NO PREFIX\s+origin/);
+});
+
+test("renderBranchPrefixes: a failed census is shown, not treated as INCOMPLETE -- no owner to page over "
+  + "a branch read the way a stale trunk fetch would be", () => {
+  const out = renderBranchPrefixes(null);
+  assert.match(out.lines[0], /could not census remote branches/);
+  assert.equal(out.incomplete, false);
+});
+
+test("section 6 (branch prefixes) is always printed, and a missing census does not fail the table's exit "
+  + "code", () => {
+  const { text, code } = render({ trunk: { sha: "a", runId: "1", status: "completed", conclusion: "success" },
+    prs: [], merged: [], now: NOW, required: [], host: HOST_OK });
+  assert.match(text, /6\. BRANCH PREFIXES/);
+  assert.match(text, /could not census remote branches/);
+  assert.equal(code, EXIT.EXAMINED);
+});
+
+test("section 6 reports a real branch census when collect() supplies one", () => {
+  const { text } = render({ trunk: { sha: "a", runId: "1", status: "completed", conclusion: "success" },
+    prs: [], merged: [], now: NOW, required: [], host: HOST_OK,
+    branchCensus: { branches: ["agent/foo-1", "origin", "main"], remoteCount: 3 } });
+  assert.match(text, /NO PREFIX\s+origin/);
 });
