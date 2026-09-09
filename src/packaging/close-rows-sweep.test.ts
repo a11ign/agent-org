@@ -62,7 +62,7 @@ test("close-rows-sweep imports the SAME closurePlan close-rows-for-merged-pr.mjs
   // unchanged -- the exact "fact stated twice" shape #394's own header names. Proven by behavioural
   // identity on a case closurePlan's own tests already cover: a mix of OPEN and already-closed issues.
   const result = closurePlan([{ number: 1, state: "OPEN" }, { number: 2, state: "CLOSED" }]);
-  assert.deepEqual(result, { close: [1], already: [2], none: false });
+  assert.deepEqual(result, { close: [{ number: 1, labels: [] }], already: [2], none: false });
 });
 
 // --- IDEMPOTENCY: running against the same issues twice closes nothing the second time ---
@@ -70,7 +70,7 @@ test("close-rows-sweep imports the SAME closurePlan close-rows-for-merged-pr.mjs
 test("ACCEPTANCE (#394, criterion 2): the sweep is idempotent -- a second closurePlan call against "
   + "issues already closed reports ALREADY CLOSED for all of them, closes nothing new", () => {
   const firstPass = closurePlan([{ number: 10, state: "OPEN" }]);
-  assert.deepEqual(firstPass, { close: [10], already: [], none: false });
+  assert.deepEqual(firstPass, { close: [{ number: 10, labels: [] }], already: [], none: false });
   // After #10 is closed (simulated: its state is now CLOSED, as it would be on GitHub after the first run)
   const secondPass = closurePlan([{ number: 10, state: "CLOSED" }]);
   assert.deepEqual(secondPass, { close: [], already: [10], none: false });
