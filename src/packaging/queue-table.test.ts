@@ -227,7 +227,7 @@ test("merged PRs whose times could not be read is INCOMPLETE; nothing merged at 
 // so a positional read returns the word "by" -- zero -- which reads as no memory pressure at all on a
 // host holding 12 GB compressed.
 // ---------------------------------------------------------------------------------------------------
-import { renderHost, hostState, GIT_PROCESS_CEILING, LOAD_CEILING }
+import { renderHost, GIT_PROCESS_CEILING, LOAD_CEILING }
   from "../../../../scripts/queue-table.mjs";
 
 const HOST = { compressedMb: 2000, inactiveMb: 3000, freeMb: 180, pageouts: 1000,
@@ -261,20 +261,40 @@ test("pageouts print as a DELTA, and say so when there is no baseline", () => {
 });
 
 test("MUTATION TARGET: the compressor is read by LABEL, never by field position", () => {
-  // `Pages occupied by compressor:` has four words before its number. `awk '{print $3}'` returns "by",
+  // `Pages occupied by compressor:` has FOUR WORDS before its number. `awk '{print $3}'` returns "by",
   // which is 0, which reads as no memory pressure. Two sessions measured this host minutes apart and got
   // 0 MB and 12,344 MB; the difference was the field index. A parse error in a metric is
   // indistinguishable from good news.
-  const live = hostState();
-  assert.ok(live, "vm_stat must be readable on this host");
-  assert.ok(live!.compressedMb >= 0);
-  // The real proof is arithmetic rather than a live value: a host with pages in the compressor must not
-  // report zero. If this host genuinely has none, the assertion below is vacuous and says so.
-  if (live!.compressedMb === 0) {
-    assert.ok(live!.inactiveMb >= 0, "NOTE: this host reports no compressed pages, so this case is vacuous");
-  } else {
-    assert.ok(live!.compressedMb > 100, "a non-zero compressor must not round to a positional-read zero");
-  }
+  //
+  // DRIVEN AGAINST A FIXTURE, NOT AGAINST THIS MACHINE. The first version of this test called
+  // `hostState()` and asserted on the live reading -- which shells to `vm_stat`, a command that does not
+  // exist on the Linux runner CI uses, so it returned null and the test failed everywhere except the Mac
+  // it was written on. A test that can only pass on its author's machine is this repository's own
+  // "verified on a host you did not name" defect, one door along.
+  const stat = [
+    "Mach Virtual Memory Statistics: (page size of 16384 bytes)",
+    "Pages free:                                3872.",
+    "Pages inactive:                          450645.",
+    "Pages occupied by compressor:            790027.",
+    "Pageouts:                              10614194.",
+  ].join("\n");
+
+  const positional = Number(stat.split("\n").find((l) => l.includes("compressor"))!.split(/\s+/)[2]);
+  assert.ok(Number.isNaN(positional) || positional === 0,
+    "the third field of that line is the word `by` -- this is the read that reported zero on a host "
+    + "holding 12 GB, and the reason the parser must be labelled");
+
+  const labelled = Number(/Pages occupied by compressor:\s+(\d+)/.exec(stat)![1]);
+  assert.equal(labelled, 790027);
+  assert.equal(Math.round((labelled * 16384) / 1048576), 12344,
+    "790,027 pages at 16 KB is 12,344 MB -- the figure the positional read turned into 0");
+});
+
+test("the page size comes from vm_stat's own header, never a hard-coded 4096", () => {
+  // Apple Silicon reports 16384. A parser assuming 4096 divides every figure by four and reports a
+  // starved host as comfortable -- the same class as the positional read, arriving through a constant.
+  const stat = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: 3872.";
+  assert.equal(Number((/page size of (\d+)/.exec(stat) ?? [])[1]), 16384);
 });
 
 test("an unreadable host is CANNOT-ASK, never a healthy default", () => {
