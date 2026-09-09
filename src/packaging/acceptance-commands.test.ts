@@ -18,6 +18,8 @@ import {
   hasFullHistoryDeclaration, jobCapabilities,
   deriveClosureRequirements, closureRequirementMessage, unmetClosureRequirements,
   unmetCommandClosureRequirements,
+  runsTheWholeSuite,
+  suiteTestFiles
 } from "../../../../scripts/acceptance-commands.mjs";
 
 // A file known to exist, relative to the repo root -- where every real invocation of this command runs
@@ -970,4 +972,93 @@ test("#731 MUTATION: point a write-only corpus-root user's declared write path a
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- #513's OTHER HALF: the command everybody actually types ---
+//
+// `unmetCommandRequirements` and `unmetCommandClosureRequirements` both opened with
+// `if (!/tsx --test/.test(command)) return []`, so the capability gate asked whether a command NAMED a
+// file needing a capability. `npm test` names none and runs them all.
+//
+// Measured 2026-09-09: four PRs red on `acceptance / run` at once, every one for `gh: To use GitHub CLI
+// in a GitHub Actions workflow, set the GH_TOKEN environment variable`, in a job that passes no token BY
+// DESIGN because it runs commands taken from a stranger's PR body. None of the four had touched the code
+// that failed; the check named their authors for a line they never wrote.
+//
+// #513 split `row-claim-live.test.ts` out precisely so a `tsx --test` command naming it could be refused.
+// That half worked. This is the half nobody had.
+
+test("A WHOLE-SUITE COMMAND IS SEEN BY THE CAPABILITY GATE -- `npm test` names no file and runs all of "
+  + "them, and asking whether it NAMES one is a question about the adjacent property", () => {
+  const caps = { history: false, token: false, fleet: false, corpus: false };
+  const verdict = classifyCommand("npm test", { capabilities: caps });
+  assert.equal(verdict.verdict, "refused");
+  assert.match(verdict.reason, /which this job does not have/);
+  assert.match(verdict.reason, /\.test\.ts/, "the refusal must NAME a file, or it is not followable");
+});
+
+test("`npm run test:ts` is the same command by another name, and the gate must not be fooled by which "
+  + "spelling an author used", () => {
+  const caps = { history: false, token: false, fleet: false, corpus: false };
+  assert.equal(classifyCommand("npm run test:ts", { capabilities: caps }).verdict, "refused");
+});
+
+test("CONTROL: a job WITH the capabilities still runs the suite -- this gate refuses on absence, never "
+  + "on the command's shape", () => {
+  const caps = { history: true, token: true, fleet: true, corpus: true };
+  assert.equal(classifyCommand("npm test", { capabilities: caps }).verdict, "runnable");
+});
+
+test("CONTROL: a command that merely mentions the word test is not a whole-suite command", () => {
+  const caps = { history: false, token: false, fleet: false, corpus: false };
+  assert.equal(runsTheWholeSuite("node scripts/test-helper.mjs"), false);
+  assert.equal(runsTheWholeSuite("npm run test:python"), false,
+    "python has its own population and its own skip -- widening this to every `test:` script would "
+    + "refuse a command whose files this walk never examined");
+  assert.equal(classifyCommand("node -e \"process.exit(0)\"", { capabilities: caps }).verdict, "runnable");
+});
+
+/**
+ * THE FLOOR. Every assertion above is satisfied by finding FEWER files: an empty population makes the
+ * union of requirements empty, `npm test` reads as needing nothing, and the gate passes having examined
+ * nothing -- the failure this whole mechanism exists to prevent, reintroduced one layer up.
+ *
+ * `suiteTestFiles` throws rather than returning `[]` for the same reason, and this proves the glob it
+ * reads out of `package.json` actually resolves against this tree.
+ */
+test("the suite population is real -- a floor, because every check above passes vacuously over an empty one", () => {
+  const files = suiteTestFiles();
+  assert.ok(files.length >= 300,
+    `only ${files.length} test file(s) found; \`test:ts\` itself asserts --min=300, so fewer means the `
+    + "glob no longer resolves and this gate is answering about a population it never examined");
+  assert.ok(files.some((f: string) => f.endsWith("row-claim-live.test.ts")),
+    "the file whose token requirement started this must be IN the population, or the gate cannot have "
+    + "caught it");
+});
+
+/**
+ * REFUSED IS NOT GREEN FOR A WHOLE-SUITE COMMAND (ceo, 2026-09-09). "An acceptance job that passes
+ * having verified nothing is how `verified` comes to mean `unexamined`."
+ *
+ * Every OTHER refusal stays `ok: true`, and the distinction is not a nicety: those are a legitimate "not
+ * this job's to run" — the author NAMED a file, and this job cannot run that particular one. `npm test`
+ * names nothing, so refusing it means the PR has declared no acceptance this job can act on at all.
+ */
+test("a whole-suite acceptance line FAILS the job, and the message names the fix rather than the state", () => {
+  const caps = { history: false, token: false, fleet: false, corpus: false };
+  const report = acceptanceReport("Acceptance: npm test", () => 0, { capabilities: caps });
+  assert.equal(report.ok, false, "passing here is how `verified` comes to mean `unexamined`");
+  assert.match(report.lines[0], /Name the files this change is verified by/);
+  assert.match(report.lines[0], /no token and no corpus/,
+    "the refusal must say WHY this job cannot, or the author reads it as the tool being broken");
+});
+
+test("CONTROL: a refusal of a NAMED file stays a pass -- the author did their part and this job cannot "
+  + "run that one file. Failing both would make the two indistinguishable, and they need opposite fixes", () => {
+  const caps = { history: false, token: false, fleet: false, corpus: false };
+  const named = acceptanceReport(
+    "Acceptance: npx tsx --test packages/lab/src/packaging/queue-table.test.ts", () => 0, { capabilities: caps });
+  assert.equal(named.ok, true);
+  assert.match(named.lines[0], /REFUSED/);
+  assert.doesNotMatch(named.lines[0], /Name the files/);
 });

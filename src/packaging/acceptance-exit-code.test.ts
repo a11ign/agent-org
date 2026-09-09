@@ -67,7 +67,10 @@ test("#540 extractRefutationSection: two Refutation: sections are DUPLICATE, not
 
 test("#540 acceptanceReport: a DUPLICATE Refutation: fails the job even though Refutation: is otherwise "
   + "optional -- an ambiguous body is not the same as an absent one", () => {
-  const body = "Acceptance: npm test\n\nRefutation: node a.mjs\n\ntext\n\nRefutation: node b.mjs";
+  // NOT `npm test`, since 2026-09-09: a whole-suite command is now REFUSED by the capability gate in a
+  // job without the corpus or a token, so it would report REFUSED rather than RAN and this test would be
+  // asserting about the capability gate instead of about Refutation:'s ambiguity, which is its subject.
+  const body = 'Acceptance: node -e "process.exit(0)"\n\nRefutation: node a.mjs\n\ntext\n\nRefutation: node b.mjs';
   const report = acceptanceReport(body, () => 0);
   assert.equal(report.ok, false);
   assert.ok(report.lines.some((l) => l.startsWith("REFUTATION: DUPLICATE")));
@@ -75,7 +78,10 @@ test("#540 acceptanceReport: a DUPLICATE Refutation: fails the job even though R
 
 test("#540 acceptanceReport: a DUPLICATE Refutation: still reports the Acceptance: result, "
   + "since the two sections are independent facts about the same body", () => {
-  const body = "Acceptance: npm test\n\nRefutation: node a.mjs\n\ntext\n\nRefutation: node b.mjs";
+  // NOT `npm test`, since 2026-09-09: a whole-suite command is now REFUSED by the capability gate in a
+  // job without the corpus or a token, so it would report REFUSED rather than RAN and this test would be
+  // asserting about the capability gate instead of about Refutation:'s ambiguity, which is its subject.
+  const body = 'Acceptance: node -e "process.exit(0)"\n\nRefutation: node a.mjs\n\ntext\n\nRefutation: node b.mjs';
   const report = acceptanceReport(body, () => 0);
   assert.ok(report.lines.some((l) => l.startsWith("ACCEPTANCE: RAN")),
     "the valid Acceptance: section must still run and report, independent of Refutation:'s ambiguity");
@@ -206,4 +212,23 @@ test("acceptanceReport: MUTATION TARGET -- a Refutation: line naming `npm run mu
   assert.equal(mutateCalled, false, "a refused refutation command must never actually execute");
   assert.equal(report.ok, true, "a REFUSED command is an honest \"not this job's to judge by\", like fleet/lab/corpus");
   assert.match(report.lines[1], /^REFUTATION: REFUSED npm run mutate .* -> inverts the Refutation: verdict/);
+});
+
+/**
+ * AND `pr:open` MEETS THE AUTHOR BEFORE CI DOES, with NO SECOND PARSER: `checkBody` already calls
+ * `acceptanceReport`, and `jobCapabilities` already describes the JOB (`token`/`fleet`/`corpus` false
+ * unconditionally) rather than the machine the author is typing on. So the same body that fails in CI
+ * fails at open time, by construction rather than by a second copy of the rule that could drift.
+ *
+ * This test exists because "by construction" is exactly the kind of claim that stops being true silently.
+ */
+test("pr:open refuses a whole-suite acceptance line at open time, through the SAME report CI runs", async () => {
+  const { checkBody } = await import("../../../../scripts/pr-open.mjs");
+  const refused = checkBody("Acceptance: npm test\n\nCloses: none — a reason", { run: () => 0 });
+  assert.equal(refused.ok, false);
+  assert.match(refused.lines.join("\n"), /Name the files this change is verified by/);
+
+  const accepted = checkBody(
+    'Acceptance: node -e "process.exit(0)"\n\nCloses: none — a reason', { run: () => 0 });
+  assert.equal(accepted.ok, true, "the ordinary case must still open, or this refuses everything");
 });
