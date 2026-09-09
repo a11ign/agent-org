@@ -8,7 +8,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { prRow, nonSuccessByName, newestPerName, render, fetchRefs, STALL_MINUTES, EXIT }
+import { prRow, nonSuccessByName, newestPerName, render, fetchRefs, renderStalled, windowOf,
+  renderMergedChecks, STALL_MINUTES, EXIT }
   from "../../../../scripts/queue-table.mjs";
 
 const NOW = new Date("2026-09-09T08:00:00Z");
@@ -78,28 +79,28 @@ test("an in-flight check reports the ZERO DATE and must not outrank a real compl
 
 test("STILL RUNNING IS NOT RED -- a table that shouts on every in-flight run is one people stop reading", () => {
   const running = render({ trunk: { sha: "a".repeat(40), runId: "1", status: "in_progress", conclusion: "" },
-    prs: [], merged: [], now: NOW });
+    prs: [], merged: [], now: NOW, required: [] });
   assert.match(running.text, /still running/);
   assert.doesNotMatch(running.text, /NOT GREEN/);
   const failed = render({ trunk: { sha: "a".repeat(40), runId: "1", status: "completed", conclusion: "failure" },
-    prs: [], merged: [], now: NOW });
+    prs: [], merged: [], now: NOW, required: [] });
   assert.match(failed.text, /NOT GREEN/);
 });
 
 test("ANTI-VACUITY: a section it could not read exits INCOMPLETE, never EXAMINED", () => {
-  assert.equal(render({ trunk: null, prs: [], merged: [], now: NOW }).code, EXIT.INCOMPLETE);
+  assert.equal(render({ trunk: null, prs: [], merged: [], now: NOW, required: [] }).code, EXIT.INCOMPLETE);
   assert.equal(render({ trunk: { sha: "a", runId: "1", status: "completed", conclusion: "success" },
-    prs: null, merged: [], now: NOW }).code, EXIT.INCOMPLETE);
+    prs: null, merged: [], now: NOW, required: [] }).code, EXIT.INCOMPLETE);
   assert.equal(render({ trunk: { sha: "a", runId: "1", status: "completed", conclusion: "success" },
-    prs: [], merged: null, now: NOW }).code, EXIT.INCOMPLETE);
+    prs: [], merged: null, now: NOW, required: [] }).code, EXIT.INCOMPLETE);
   assert.equal(render({ trunk: { sha: "a", runId: "1", status: "completed", conclusion: "success" },
-    prs: [], merged: [], now: NOW }).code, EXIT.EXAMINED);
+    prs: [], merged: [], now: NOW, required: [] }).code, EXIT.EXAMINED);
 });
 
 test("all four sections are always printed, including the empty ones -- a section that vanishes when it "
   + "has nothing to say is indistinguishable from one that was dropped", () => {
   const { text } = render({ trunk: { sha: "a", runId: "1", status: "completed", conclusion: "success" },
-    prs: [], merged: [], now: NOW });
+    prs: [], merged: [], now: NOW, required: [] });
   for (const heading of ["1. TRUNK", "2. OPEN PRs", "3. STALLED", "4. NON-SUCCESS CHECKS"]) {
     assert.ok(text.includes(heading), `${heading} must always appear`);
   }
@@ -113,11 +114,11 @@ test("MUTATION TARGET: a FAILED fetch says so and exits INCOMPLETE -- every coun
   // repository can say how far apart they are, and only for objects it holds. A table whose counts are
   // all unknown while it says nothing about why is the vacuous answer this file exists to refuse.
   const trunk = { sha: "a".repeat(40), runId: "1", status: "completed", conclusion: "success" };
-  const stale = render({ trunk, prs: [], merged: [], now: NOW, fetched: false });
+  const stale = render({ trunk, prs: [], merged: [], now: NOW, fetched: false, required: [] });
   assert.match(stale.text, /git fetch FAILED/);
   assert.match(stale.text, /unknown, not zero/);
   assert.equal(stale.code, EXIT.INCOMPLETE);
-  assert.equal(render({ trunk, prs: [], merged: [], now: NOW, fetched: true }).code, EXIT.EXAMINED);
+  assert.equal(render({ trunk, prs: [], merged: [], now: NOW, fetched: true, required: [] }).code, EXIT.EXAMINED);
 });
 
 test("fetchRefs asks for every branch, not just main -- a PR head that was never fetched cannot be "
@@ -127,4 +128,86 @@ test("fetchRefs asks for every branch, not just main -- a PR head that was never
   assert.deepEqual(calls, [["fetch", "--quiet", "origin", "+refs/heads/*:refs/remotes/origin/*"]]);
   assert.equal(fetchRefs(() => ({ status: 1, stdout: "" })), false,
     "a failed fetch must be reported to the caller, never silently tolerated");
+});
+
+// ---------------------------------------------------------------------------------------------------
+// #600: ABSORBED IS A STATE THE STALL PREDICATE STRUCTURALLY CANNOT SEE.
+// ---------------------------------------------------------------------------------------------------
+
+test("#600 a PR that is behind AND red is ABSORBED, even though its owner just pushed", () => {
+  // The train carries only GREEN PRs, so a red one cannot be carried at all -- it falls further behind
+  // while its owner fixes the red. An owner actively pushing keeps `updatedAt` fresh, so it is never
+  // "untouched" and never reads as stalled, while being the one that can least escape. Measured
+  // 2026-09-09: #564 was carried to zero behind at 07:30:30Z and read 14 behind seven merges later.
+  const row = prRow(pr({ redChecks: ["gate"] }), 5, NOW);
+  assert.equal(row.absorbed, true);
+  assert.equal(row.stalled, false, "it was pushed a minute ago, so the stall predicate says nothing");
+});
+
+test("#600 behind-and-green is not absorbed -- the train will carry that one", () => {
+  assert.equal(prRow(pr({ redChecks: [] }), 5, NOW).absorbed, false);
+});
+
+test("#600 red-but-current is not absorbed either -- it is just a red PR", () => {
+  assert.equal(prRow(pr({ redChecks: ["gate"] }), 0, NOW).absorbed, false);
+});
+
+test("#600 section 3 names an absorbed PR as absorbed, with the reds that hold it there", () => {
+  const rows = [prRow(pr({ number: 564, redChecks: ["docs", "gate"] }), 41, NOW)];
+  const [line] = renderStalled(rows);
+  assert.match(line, /#564/);
+  assert.match(line, /ABSORBED/);
+  assert.match(line, /behind=41/);
+  assert.match(line, /docs gate/, "naming WHICH reds, since those are what the owner has to clear");
+});
+
+test("#600 an absorbed PR is not double-reported as stalled as well", () => {
+  const idle = new Date(NOW.getTime() - (STALL_MINUTES + 5) * 60000).toISOString();
+  const rows = [prRow(pr({ number: 7, redChecks: ["gate"], updatedAt: idle }), 5, NOW)];
+  assert.equal(renderStalled(rows).length, 1, "one PR, one line -- two lines would double the count");
+  assert.match(renderStalled(rows)[0], /ABSORBED/, "and the more specific state wins");
+});
+
+// ---------------------------------------------------------------------------------------------------
+// A COUNT WITHOUT ITS DENOMINATOR AND ITS WINDOW IS NOT A MEASUREMENT -- product-manager's requirement.
+// ---------------------------------------------------------------------------------------------------
+
+test("section 4 states the WINDOW it covers, so a bare count cannot be read as a rate", () => {
+  const merged = [
+    { number: 2, mergedAt: "2026-09-09T07:10:29Z", checks: [{ name: "audit", conclusion: "FAILURE" }] },
+    { number: 3, mergedAt: "2026-09-09T07:40:00Z", checks: [{ name: "audit", conclusion: "FAILURE" }] },
+  ];
+  assert.equal(windowOf(merged), "2026-09-09T07:10:29Z", "the OLDEST merge in the set bounds the window");
+  const { lines } = renderMergedChecks(merged, []);
+  assert.match(lines[0], /since 2026-09-09T07:10:29Z/);
+});
+
+test("a check is marked REQUIRED or NON-BLOCKING, because that is why a red one goes unread", () => {
+  const merged = [{ number: 2, mergedAt: "2026-09-09T07:10:29Z",
+    checks: [{ name: "audit", conclusion: "FAILURE" }, { name: "gate", conclusion: "FAILURE" }] }];
+  const text = renderMergedChecks(merged, ["gate"]).lines.join("\n");
+  assert.match(text, /audit .*non-blocking/);
+  assert.match(text, /gate .*REQUIRED -- this one blocks/);
+});
+
+test("MUTATION TARGET: unknown required-contexts prints UNKNOWN, never 'non-blocking'", () => {
+  // Guessing in that direction understates the problem: it would tell a reader a red check is harmless
+  // on the one occasion nobody can confirm that it is.
+  const merged = [{ number: 2, mergedAt: "2026-09-09T07:10:29Z",
+    checks: [{ name: "audit", conclusion: "FAILURE" }] }];
+  const { lines, incomplete } = renderMergedChecks(merged, null);
+  assert.match(lines.join("\n"), /required\? unknown/);
+  assert.equal(incomplete, true, "and an unknown makes the whole table INCOMPLETE");
+});
+
+test("merged PRs whose times could not be read is INCOMPLETE; nothing merged at all is not", () => {
+  // "Could not ask" and "asked and got nothing" are different answers, and only the first is a fault.
+  // A quiet hour must not report as a broken one.
+  const unreadable = renderMergedChecks([{ number: 2, mergedAt: null, checks: [] }], []);
+  assert.match(unreadable.lines[0], /merge times unreadable/);
+  assert.equal(unreadable.incomplete, true);
+
+  const quiet = renderMergedChecks([], []);
+  assert.match(quiet.lines[0], /no merged PRs in range/);
+  assert.equal(quiet.incomplete, false, "nothing merged is a legitimate state, not a lookup failure");
 });
