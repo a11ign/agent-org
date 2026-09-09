@@ -307,8 +307,15 @@ test("#719: a branch is a named carrier only when it actually contains the symbo
     execFileSync("git", ["update-index", "--add", "--cacheinfo", "100644", blob,
       "zz-row-reachability-fixture-719.mjs"], { encoding: "utf8", env: indexEnv });
     const tree = execFileSync("git", ["write-tree"], { encoding: "utf8", env: indexEnv }).trim();
-    const commit = execFileSync("git", ["commit-tree", tree, "-p", "origin/main", "-m",
-      "row-reachability #719 fixture (throwaway, deleted at the end of this test)"],
+    // `-c user.name=`/`-c user.email=` -- PER-INVOCATION, never touching the real repo's config. A CI
+    // runner has no global git identity configured (only this machine does), and `commit-tree` refuses
+    // to make a commit object without one -- measured live: this exact test failed in CI with "Author
+    // identity unknown" while passing locally, the same class of environment-dependent gap this session's
+    // own `runInSyntheticRepo` (pre-push-resolve-toward-main.test.ts) already works around.
+    const commit = execFileSync("git",
+      ["-c", "user.name=row-reachability-fixture", "-c", "user.email=fixture@example.invalid",
+        "commit-tree", tree, "-p", "origin/main", "-m",
+        "row-reachability #719 fixture (throwaway, deleted at the end of this test)"],
       { encoding: "utf8", env }).trim();
     execFileSync("git", ["update-ref", REF, commit], { encoding: "utf8", env });
 
