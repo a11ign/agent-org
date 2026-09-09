@@ -8,8 +8,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { loadavg } from "node:os";
 import { prRow, nonSuccessByName, newestPerName, render, fetchRefs, renderStalled, windowOf,
-  renderMergedChecks, STALL_MINUTES, EXIT }
+  renderMergedChecks, STALL_MINUTES, EXIT, hostState, hostContention }
   from "../../../../scripts/queue-table.mjs";
 
 const NOW = new Date("2026-09-09T08:00:00Z");
@@ -307,4 +308,86 @@ test("section 5 is always present, like the other four", () => {
   const { text } = render({ trunk: { sha: "a", runId: "1", status: "completed", conclusion: "success" },
     prs: [], merged: [], now: NOW, required: [], host: HOST });
   assert.match(text, /5\. THIS HOST/);
+});
+
+/**
+ * SECTION 5 REPORTED A CONTENDED HOST AS FINE FOR NINETY MINUTES, and the mechanism is this repository's
+ * most-repeated defect wearing a new hat.
+ *
+ * `hostState().load` shelled to `sysctl`, which lives in `/usr/sbin` -- not on the PATH a node script
+ * inherits from a shell that exported a minimal one. `ask()` caught the ENOENT and returned null, and the
+ * verdict was `(host.load ?? 0) > LOAD_CEILING`: **the absence of the reading, coalesced to zero, answers
+ * "is this host contended" with "no".** Measured 2026-09-09T10:44Z -- real load 15.08 against a ceiling
+ * of 12, and the table printed `load ?` with no contention warning under a heading whose own text says
+ * "it was the bottleneck and nothing said so."
+ *
+ * A metric that fails into the REASSURING answer is worse than no metric, because it is believed. This is
+ * the same sentence as `INCONCLUSIVE` never folding into "not merged" (prune), as CANNOT_ASK never
+ * folding into READY (row-claim), and as the publish blocker's NOT EXAMINED never folding into `found: 0`
+ * -- four instances in one day, in four unrelated files.
+ */
+test("#681 hostContention: an UNREADABLE load is never a verdict that the host is fine", () => {
+  const host = { compressedMb: 1, inactiveMb: 1, freeMb: 1, pageouts: 0, load: null,
+    gitProcesses: 3, worktrees: 10 };
+  const { contended, unknown } = hostContention(host);
+  assert.equal(contended, false, "it cannot claim contention it did not measure either");
+  assert.deepEqual(unknown, ["load"], "but it must SAY the load is missing, not print a bare `no`");
+  const rendered = renderHost(host).lines.join("\n");
+  assert.match(rendered, /COULD NOT READ: load/);
+  assert.match(rendered, /not a reading of zero/);
+});
+
+test("#681 MUTATION TARGET: restoring `host.load ?? 0` makes an unreadable load pass the ceiling test silently", () => {
+  const host = { compressedMb: 1, inactiveMb: 1, freeMb: 1, pageouts: 0, load: null,
+    gitProcesses: null, worktrees: 10 };
+  // The pre-#681 expression, written out so the defect is reproducible rather than described:
+  const oldVerdict = (host.load ?? 0) > LOAD_CEILING || (host.gitProcesses ?? 0) > GIT_PROCESS_CEILING;
+  assert.equal(oldVerdict, false, "the old expression says `not contended` on two unreadable metrics");
+  const { contended, unknown } = hostContention(host);
+  assert.equal(contended, false);
+  assert.deepEqual(unknown, ["load", "git process count"],
+    "the new one says the same `false` and NAMES what it could not ask -- the whole difference");
+  assert.match(renderHost(host).lines.join("\n"), /COULD NOT READ: load, git process count/);
+});
+
+test("#681 a load genuinely above the ceiling is still reported as contended, with the reading printed", () => {
+  const host = { compressedMb: 1, inactiveMb: 1, freeMb: 1, pageouts: 0, load: 15.08,
+    gitProcesses: 2, worktrees: 10 };
+  assert.deepEqual(hostContention(host), { contended: true, unknown: [] });
+  const rendered = renderHost(host).lines.join("\n");
+  assert.match(rendered, /load 15\.08/, "the number is printed, not just its verdict");
+  assert.match(rendered, /THE HOST IS CONTENDED/);
+  assert.ok(!rendered.includes("COULD NOT READ"), "nothing was missing, so nothing is named missing");
+});
+
+test("#681 a NaN load is treated as unreadable, not as a number below the ceiling", () => {
+  const host = { compressedMb: 1, inactiveMb: 1, freeMb: 1, pageouts: 0, load: NaN,
+    gitProcesses: 1, worktrees: 10 };
+  // `Number("")` and `Number(undefined)` are both NaN, and `NaN > 12` is false -- the identical
+  // failure-into-good-news the null case has, arriving through a parse rather than through a spawn.
+  const { contended, unknown } = hostContention(host);
+  assert.equal(contended, false);
+  assert.deepEqual(unknown, ["load"]);
+});
+
+/**
+ * AND THIS TEST NEARLY SHIPPED THE SAME DEFECT AS THE ONE ABOVE IT. Its first draft opened with
+ * `const host = hostState(); assert.ok(host)` -- and `hostState()` shells to `vm_stat`, which does not
+ * exist on the Linux runner, so it returned null and the assertion failed there while passing here. That
+ * is precisely the fault fixed in this file hours earlier (`the compressor test ran vm_stat, so it could
+ * only pass on the machine it was written on`), reintroduced by the person who fixed it, inside the
+ * commit that fixes the same CLASS in the code under test.
+ *
+ * So the property is asserted where it actually lives: `loadavg()` is Node's own call and works on every
+ * platform, which is the entire reason it replaced `sysctl`. The host-dependent half SKIPS HONESTLY.
+ */
+test("#681 the load reads with no PATH dependency -- os.loadavg(), never a subprocess", () => {
+  const [oneMinute] = loadavg();
+  assert.equal(typeof oneMinute, "number");
+  assert.ok(!Number.isNaN(oneMinute), "os.loadavg() cannot ENOENT the way `sysctl` on a minimal PATH did");
+  assert.ok(oneMinute >= 0);
+
+  const host = hostState();
+  if (host === null) return; // no `vm_stat`: not this test's subject, and not a pass to fake either
+  assert.equal(host.load, oneMinute, "hostState reports that same number, unmediated");
 });
