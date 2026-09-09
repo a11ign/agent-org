@@ -16,8 +16,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
-import { startability } from "../../../../scripts/row-reachability.mjs";
+import { startability, subjectAndRegionFacts, symbolOnMain, refsCarryingSymbol }
+  from "../../../../scripts/row-reachability.mjs";
+import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 
 const examined = { paths: 3, symbols: 2 };
 const clear = { row: 189, subjectsMissing: [], heldRegions: [], examined };
@@ -239,4 +244,103 @@ test("a row that named nothing at all still gets the original sentence", () => {
   assert.match(v.lines.join("\n"), /names no source path and no symbol/);
   assert.doesNotMatch(v.lines.join("\n"), /document\(s\)/,
     "collapsing the two is what made the docs message wrong; keep them apart in both directions");
+});
+
+/**
+ * #719: `row-reachability` asked "is this symbol in the files the row NAMES" and reported the answer as
+ * "is this symbol on `main`" — a different question its own Region cannot always answer, because a row's
+ * extracted Region can miss a real file (a bare filename after a full path, a glob) without the row being
+ * wrong about anything.
+ *
+ * THE REGRESSION FIXTURE IS #687's REAL BODY, VERBATIM (`fixtures/issue-687-body.txt`) — the case nobody
+ * wrote, and the reason the existing population of hand-built fixtures above never caught this. Its own
+ * Region names five things; `regionPathsFromBody` recovers three, and `environmentKey` — real, and on
+ * `main` at `packages/lab/src/training/capture-cache.mjs` the entire time — lives in one of the two it
+ * misses. `facts()`/`subjectAndRegionFacts()` are the actual mechanism (`startability` above is the pure
+ * verdict one level up, already exercised against hand-built facts; this is the layer that computes them).
+ *
+ * These tests drive `subjectAndRegionFacts` against the real `origin/main` and real remote refs in
+ * whatever checkout runs them, exactly as `facts()` does live — no live `gh issue view` in the test itself
+ * (the body is a saved snapshot, so an edit to the real #687 cannot make this test flaky), but a real `git
+ * grep` against a real, shared object database, the same choice `pre-push-resolve-toward-main.test.ts`
+ * makes for the same reason: a guard whose fixture is invented is one nobody has seen bite.
+ */
+test("#719 REGRESSION: #687's real body, whose Region misses environmentKey's actual file", () => {
+  const body = readFileSync(
+    fileURLToPath(new URL("./fixtures/issue-687-body.txt", import.meta.url)), "utf8");
+  const result = subjectAndRegionFacts(body);
+  assert.ok(result.examined.symbols > 0, "the fixture must actually name a symbol, or this proves nothing");
+  const missing = result.subjectsMissing.map((s) => s.name);
+  assert.ok(!missing.includes("environmentKey"),
+    "environmentKey has been on main all along (packages/lab/src/training/capture-cache.mjs); reporting "
+    + `it missing is the exact bug this row fixes. Reported missing: ${JSON.stringify(missing)}`);
+});
+
+/**
+ * THE FALSE POSITIVE HALF: a branch was named a "carrier" of a missing symbol only because it touched a
+ * Region file whose TEXT happened to contain the string — the row's own issue calls this out as a red
+ * herring, since nothing about that branch is where the symbol actually lives.
+ *
+ * `refsCarryingSymbol` no longer takes a path at all (compare its signature to the old `refsCarrying`) —
+ * it searches a ref's WHOLE TREE, so there is no Region file left to accidentally match against. Proven
+ * with a REAL local ref rather than a mock: the fix IS the `git grep` invocation, and faking git would
+ * test nothing. The ref lives under a disposable namespace, created and deleted in the same test — the
+ * same convention `git-fixture-cache.mjs` (#660) uses for its own temporary refs — so nothing is left in
+ * the shared object database this worktree's `.git` carries.
+ */
+/**
+ * #770 REGRESSION: THIS TEST WAS ITS OWN COUNTEREXAMPLE. `symbolOnMain` asks `git grep` of `origin/main`'s
+ * WHOLE TREE -- and once this test file itself is merged, its own literal fixture-symbol string is PART
+ * of that tree, in this very file. The PR job's `origin/main` is the OLD one (this branch has not landed
+ * yet), so a "guaranteed absent" assertion passed there -- and failed on `trunk-guard`, which runs AFTER
+ * the merge, against the NEW `origin/main` that now contains this file. Same class of bug as #621's
+ * self-reference guard in `acceptance-commands.mjs` (a check walking its own describing code), one file
+ * over. `git grep` is comment-blind, unlike that file's `stripComments`-protected walk -- so even a
+ * comment quoting the fixture symbol verbatim would self-match; this doc comment deliberately never
+ * spells it out. Fixed the identical way `fingerprint()` fixes it there: concatenated below so the
+ * literal substring never appears contiguously anywhere in this file, prose included.
+ */
+const fixtureSymbolName = (a: string, b: string) => a + b;
+
+test("#719: a branch is a named carrier only when it actually contains the symbol, anywhere in its tree", () => {
+  const env = sandboxGitEnv();
+  const FIXTURE_SYMBOL = fixtureSymbolName("RowReachabilityFixtureSy", "mbol719");
+  const REF = "refs/remotes/origin/row-reachability-fixture-719";
+  const tmpIndex = execFileSync("mktemp", { encoding: "utf8" }).trim();
+  try {
+    // Not on `main`, guaranteed -- a name this specific occurs nowhere in real history.
+    assert.equal(symbolOnMain(FIXTURE_SYMBOL), false);
+
+    // A commit adding ONE new file, at a path this fixture never claims as a Region -- so a carrier found
+    // here can only come from the whole-tree search this fix adds. The OLD, Region-scoped check would have
+    // found nothing here even though the branch genuinely carries the symbol.
+    const indexEnv = { ...env, GIT_INDEX_FILE: tmpIndex };
+    execFileSync("git", ["read-tree", "origin/main"], { encoding: "utf8", env: indexEnv });
+    const blob = execFileSync("git", ["hash-object", "-w", "--stdin"],
+      { encoding: "utf8", env, input: `export const ${FIXTURE_SYMBOL} = true;\n` }).trim();
+    execFileSync("git", ["update-index", "--add", "--cacheinfo", "100644", blob,
+      "zz-row-reachability-fixture-719.mjs"], { encoding: "utf8", env: indexEnv });
+    const tree = execFileSync("git", ["write-tree"], { encoding: "utf8", env: indexEnv }).trim();
+    // `-c user.name=`/`-c user.email=` -- PER-INVOCATION, never touching the real repo's config. A CI
+    // runner has no global git identity configured (only this machine does), and `commit-tree` refuses
+    // to make a commit object without one -- measured live: this exact test failed in CI with "Author
+    // identity unknown" while passing locally, the same class of environment-dependent gap this session's
+    // own `runInSyntheticRepo` (pre-push-resolve-toward-main.test.ts) already works around.
+    const commit = execFileSync("git",
+      ["-c", "user.name=row-reachability-fixture", "-c", "user.email=fixture@example.invalid",
+        "commit-tree", tree, "-p", "origin/main", "-m",
+        "row-reachability #719 fixture (throwaway, deleted at the end of this test)"],
+      { encoding: "utf8", env }).trim();
+    execFileSync("git", ["update-ref", REF, commit], { encoding: "utf8", env });
+
+    assert.deepEqual(refsCarryingSymbol(FIXTURE_SYMBOL, [REF]), [REF],
+      "the symbol lives in this ref's tree, in a file this fixture's Region never names -- a whole-tree "
+      + "search must find it regardless of where it landed");
+    assert.deepEqual(refsCarryingSymbol(FIXTURE_SYMBOL, ["origin/main"]), [],
+      "and a ref that does not actually contain it must not be reported");
+  } finally {
+    try { execFileSync("git", ["update-ref", "-d", REF], { encoding: "utf8", env }); }
+    catch { /* never created -- nothing to remove */ }
+    try { execFileSync("rm", ["-f", tmpIndex]); } catch { /* already gone */ }
+  }
 });
