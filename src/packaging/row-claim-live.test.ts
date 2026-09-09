@@ -22,7 +22,8 @@
 // `row-claim.test.ts` -- is what #513 built the split for.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fetchLabels } from "../../../../scripts/row-claim.mjs";
+import { execFileSync } from "node:child_process";
+import { fetchLabels, filedByLine } from "../../../../scripts/row-claim.mjs";
 
 // --- Live, read-only smoke test against the real repo ---
 
@@ -32,4 +33,23 @@ test("fetchLabels against the real #55 succeeds structurally, live", () => {
   const result = fetchLabels(55);
   assert.equal(result.number, 55);
   assert.ok(Array.isArray(result.labels));
+});
+
+function liveBody(n: number): string {
+  return JSON.parse(execFileSync("gh",
+    ["issue", "view", String(n), "--repo", "DanBeckDev/a11y-witness", "--json", "body"],
+    { encoding: "utf8" })).body;
+}
+
+// --- #771: filedByLine, against the REAL #737 and #758 -- the issue's own named fixtures ---
+
+test("#771 ACCEPTANCE, LIVE: #737 and #758 both carry only the OLDER 'Filed by `orchestrator`' prose "
+  + "(no hyphen, no colon-value line) -- filedByLine must read both as absent, never infer from it", () => {
+  for (const n of [737, 758]) {
+    const body = liveBody(n);
+    assert.match(body, /Filed by `orchestrator`/,
+      `#${n} no longer carries the prose this test is named for -- re-check the fixture`);
+    assert.equal(filedByLine(body), null,
+      `#${n}'s older prose must never be read as a Filed-by: line`);
+  }
 });
