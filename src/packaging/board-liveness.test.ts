@@ -21,6 +21,16 @@
  * which is the same reason `packedButUntracked` had to learn ignored-versus-forgotten and the reason
  * `real-page-corpus-freshness.test.ts` keeps an EXEMPT table instead of a bare list.
  */
+// no-token: gh
+//
+// #827. Every test here is driven with FIXTURES or an INJECTED `run` -- `livenessVerdict`,
+// `missedTodaysWindow`, `daysSince`, `scheduleNeverFired`, `watchdogSilenceLine` all take their inputs as
+// arguments, and `hoursSincePreviousRun` takes the runner as its first parameter, which these tests
+// supply as a closure over a fixture string. The closure walk reaches `board-data.mjs`'s `gh` through
+// `EXIT -> REPO`, a constant, rather than through anything these tests execute.
+//
+// The declaration is verified against the entry's own code, so if one of these functions ever starts
+// doing its own lookups this refuses rather than trusting the comment.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
