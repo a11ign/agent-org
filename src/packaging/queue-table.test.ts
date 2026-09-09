@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadavg } from "node:os";
 import { prRow, nonSuccessByName, newestPerName, render, fetchRefs, renderStalled, windowOf,
-  renderMergedChecks, STALL_MINUTES, EXIT, hostState, hostContention, reliefFor, topConsumers, isRed }
+  renderMergedChecks, STALL_MINUTES, EXIT, hostState, hostContention, reliefFor, topConsumers, isRed, renderBudget }
   from "../../../../scripts/queue-table.mjs";
 
 const NOW = new Date("2026-09-09T08:00:00Z");
@@ -616,4 +616,54 @@ test("#784 MUTATION TARGET: restoring the list without CANCELLED reproduces the 
     .filter((c) => !pre.includes(c.toUpperCase()));
   assert.deepEqual(wouldCount, ["CANCELLED", "cancelled"],
     "the pre-fix list reports a superseded run as red, which is the six-of-ten that was quoted");
+});
+
+/**
+ * `gh api rate_limit` REPORTS ZERO USED, ALWAYS, FOR THESE TOKENS.
+ *
+ * Measured 2026-09-09: after five real API calls it still read `core used 0, remaining 5000` on every
+ * resource, while the SAME call's response headers read `X-Ratelimit-Used: 2109, Remaining: 2891`.
+ *
+ * The first version of `apiBudget` used that endpoint. It would have printed `5000/5000` on every table
+ * while the pool ran to zero — **a meter reading full as the tank empties, which is the exact failure it
+ * was written to catch**, and the same shape as `load ?` reading as a quiet host. Caught by making two
+ * real calls and reading it again: a number that does not move when the thing it measures moves is not a
+ * measurement.
+ *
+ * AND THE CALL FAILS EXACTLY WHEN THE POOL IS EXHAUSTED. With graphql at 0 of 5000, `gh api graphql -i`
+ * exits non-zero, so a plain success-only read reported `graphql UNREADABLE` during the one outage the
+ * line exists to report. GitHub sends `X-Ratelimit-*` on the 403 like any other response, and
+ * `execFileSync` puts it on the thrown error's `stdout`.
+ */
+test("#790 renderBudget names an EXHAUSTED pool as exhausted, not as a small number", () => {
+  const out = renderBudget({
+    core: { remaining: 2887, limit: 5000, used: 2113, resetInMinutes: 16 },
+    graphql: { remaining: 0, limit: 5000, used: 5000, resetInMinutes: 15 },
+  }, 11);
+  assert.match(out, /graphql 0\/5000/);
+  assert.match(out, /GRAPHQL IS EXHAUSTED/,
+    "0 of 5000 in a row of numbers reads as a number; it needs its own line");
+  assert.match(out, /gh pr list.*fail/, "and it must say what stops working, not only that a pool is empty");
+  assert.match(out, /SHARED across every session/);
+  assert.ok(!/CORE IS EXHAUSTED/.test(out), "the healthy pool must not be reported as exhausted");
+});
+
+test("#790 a pool that could not be READ is UNREADABLE, never zero", () => {
+  const out = renderBudget({ core: null, graphql: { remaining: 400, limit: 5000, used: 4600, resetInMinutes: 9 } }, 3);
+  assert.match(out, /core UNREADABLE/,
+    "'I could not ask' and 'nothing is left' are the two states this line exists to keep apart");
+  assert.ok(!/CORE IS EXHAUSTED/.test(out));
+});
+
+test("#790 under 10% warns without claiming exhaustion", () => {
+  const out = renderBudget({
+    core: { remaining: 400, limit: 5000, used: 4600, resetInMinutes: 9 },
+    graphql: { remaining: 5000, limit: 5000, used: 0, resetInMinutes: 59 },
+  }, 7);
+  assert.match(out, /core under 10%/);
+  assert.ok(!/EXHAUSTED/.test(out), "400 left is not none left");
+});
+
+test("#790 both pools unreadable says so once, and still reports what the table spent", () => {
+  assert.match(renderBudget(null, 14), /could not read either pool.*spent 14/);
 });
