@@ -48,7 +48,7 @@ import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { fetchOpenIssuesChecked, fetchReportedOpenIssueCount, labellessRows, openRowsAbsentFromBoard }
+import { fetchOpenIssuesChecked, fetchReportedOpenIssueNumbers, labellessRows, openRowsAbsentFromBoard }
   from "../../../../scripts/ready-label-audit.mjs";
 import { fetchRemoteBranchesChecked, branchPrefixCensus, renderBranchPrefixes }
   from "../../../../scripts/queue-table.mjs";
@@ -65,7 +65,7 @@ const repoPath = (relative: string) => fileURLToPath(new URL(`../../../../${rela
 test("#790: every 'already fixed' or 'already the model' row on this file's own census table still names "
   + "a real, exported mechanism", () => {
   assert.equal(typeof fetchOpenIssuesChecked, "function");
-  assert.equal(typeof fetchReportedOpenIssueCount, "function");
+  assert.equal(typeof fetchReportedOpenIssueNumbers, "function");
   assert.equal(typeof labellessRows, "function");
   assert.equal(typeof openRowsAbsentFromBoard, "function");
   assert.equal(typeof fetchRemoteBranchesChecked, "function");
@@ -75,12 +75,14 @@ test("#790: every 'already fixed' or 'already the model' row on this file's own 
     "the 'reported/ kinds' row cites board-style.test.ts as the model -- it must still exist");
 });
 
-test("#790: the issue-labels and Project-items rows' own completeness statement still refuses on a "
+test("#790: the issue-labels and Project-items rows' own completeness statement still refuses (on both "
+  + "of two reads -- the retry #788 later added for a live tracker moving between reads) on a genuinely "
   + "narrowed population -- re-run here so this file's claim that #788 already covers them is a fact "
   + "this suite checks, not only a sentence in its own header", () => {
   const run = () => JSON.stringify([{ number: 1, title: "a", labels: [] }]);
-  assert.throws(() => fetchOpenIssuesChecked({ run, fetchReportedCount: () => 5 }),
-    /examined 1 open issue\(s\) but GitHub's search index reports 5 open/);
+  assert.throws(
+    () => fetchOpenIssuesChecked({ run, fetchReportedNumbers: () => [1, 2, 3, 4, 5] }),
+    /disagree with GitHub's search index on BOTH reads/);
 });
 
 test("#790: the branch-prefix row built here refuses on a narrowed population the identical way", () => {
