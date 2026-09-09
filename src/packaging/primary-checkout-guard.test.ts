@@ -35,6 +35,7 @@ import { fileURLToPath } from "node:url";
 import { withGitSandbox, sandboxGitEnv } from "../../../../scripts/test-support/git-sandbox.ts";
 import type { GitSandbox } from "../../../../scripts/test-support/git-sandbox.ts";
 import { updatePrimary } from "../../../../scripts/update-primary.mjs";
+import { UPDATE_PRIMARY_ARGV } from "./update-primary-argv.mjs";
 
 const PRE_COMMIT = fileURLToPath(new URL("../../../../scripts/git-hooks/pre-commit", import.meta.url));
 const POST_CHECKOUT = fileURLToPath(new URL("../../../../scripts/git-hooks/post-checkout", import.meta.url));
@@ -287,12 +288,10 @@ test("updatePrimary in the primary calls fetch, then checkout --detach origin/ma
     const run = (args: string[]) => { calls.push(args); return "abc123\n"; };
     const sha = updatePrimary(sandbox.dir, run, () => {});
     assert.equal(sha, "abc123");
-    assert.deepEqual(calls, [
-      ["fetch", "origin"],
-      ["checkout", "--detach", "origin/main", "--quiet"],
-      ["rev-parse", "HEAD"],
-      ["rev-parse", "refs/heads/main"],
-    ], "fetch, detach at origin/main, read the result, then ask where the shared `main` is -- nothing else");
+    // THE LIST IS OWNED BY `update-primary-argv.mjs`, not written here. It was written in two files, and
+    // when `moveLocalMain` added a fourth call the other one was updated and this was found by CI.
+    assert.deepEqual(calls, UPDATE_PRIMARY_ARGV.map((argv) => [...argv]),
+      "fetch, detach at origin/main, read the result, then ask where the shared `main` is -- nothing else");
   });
 });
 

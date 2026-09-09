@@ -4,10 +4,12 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { updatePrimary } from "../../../../scripts/update-primary.mjs";
+import { UPDATE_PRIMARY_VERBS } from "./update-primary-argv.mjs";
 
 /**
  * MOVING THE PRIMARY MOVES EVERY WORKTREE'S `dist`, AND NOTHING ELSE DOES.
@@ -38,7 +40,9 @@ test("#749 updatePrimary BUILDS after the fast-forward -- the source moves and d
     // The second `rev-parse` is `moveLocalMain` reading `refs/heads/main`; this stub returns the same sha
     // for everything, so it finds the branch already at the target and stops there. The order that
     // matters is unchanged: the build runs AFTER the checkout.
-    assert.deepEqual(order, ["fetch", "checkout", "rev-parse", "rev-parse"],
+    // The verbs come from the SAME list `primary-checkout-guard.test.ts` asserts in full -- see
+    // `update-primary-argv.mjs` for why that is one constant rather than two.
+    assert.deepEqual(order, [...UPDATE_PRIMARY_VERBS],
       "and it runs AFTER the checkout -- building the tree you are about to move is building the wrong tree");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -129,4 +133,27 @@ test("CONTROL: a `main` already at the target writes nothing -- no ref update, n
   const calls = driveUpdate(() => "same333\n");
   assert.equal(calls.some((c) => c[0] === "update-ref"), false);
   assert.equal(calls.some((c) => c[0] === "merge-base"), false);
+});
+
+/**
+ * THE COPY MUST NOT COME BACK. Both argv assertions now read `update-primary-argv.mjs`; nothing stops a
+ * future edit from inlining the list again, and inlining it is exactly what produced the merge-blocking
+ * red on 2026-09-09 — one file updated, the other found by CI.
+ *
+ * So this asserts on the SOURCE of both test files: neither may contain the argv literal itself. It is a
+ * text check because that is what the defect is — two copies of one fact — and no behavioural test can
+ * see the difference between one constant and two identical ones.
+ */
+test("neither argv assertion carries its own copy of the list -- the fact is stated once", () => {
+  const here = (name: string) =>
+    readFileSync(fileURLToPath(new URL(name, import.meta.url)), "utf8");
+  for (const name of ["update-primary.test.ts", "primary-checkout-guard.test.ts"]) {
+    const src = here(name);
+    assert.match(src, /UPDATE_PRIMARY_(ARGV|VERBS)/,
+      `${name} must assert THROUGH the shared list`);
+    assert.doesNotMatch(src.replace(/^\s*\/\/.*$/gm, ""),
+      /\["checkout", "--detach", "origin\/main", "--quiet"\]/,
+      `${name} carries its own copy of the argv list -- that is the fact stated twice, and the copy `
+      + "that survives is the one nobody is looking at");
+  }
 });
