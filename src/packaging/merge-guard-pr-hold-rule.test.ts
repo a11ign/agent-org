@@ -14,7 +14,7 @@ test("an UNHELD PR is silent -- the common case must not gain a sentence", () =>
 });
 
 test("THE #258 SHAPE: a PR held by another session is refused, and the holder is NAMED", () => {
-  const reasons = prHoldReasons(pr, ["session:dispatcher"], "worker-capture");
+  const reasons = prHoldReasons(pr, ["hold:dispatcher"], "worker-capture");
   assert.equal(reasons.length, 1);
   assert.match(reasons[0], /IS HELD by dispatcher/,
     "'held' and 'held by X' are different instructions -- one of them tells you who to ask");
@@ -24,17 +24,17 @@ test("THE #258 SHAPE: a PR held by another session is refused, and the holder is
 });
 
 test("a PR held by ME is not a collision -- resuming your own work must not refuse", () => {
-  assert.deepEqual(prHoldReasons(pr, ["session:worker-capture"], "worker-capture"), []);
+  assert.deepEqual(prHoldReasons(pr, ["hold:worker-capture"], "worker-capture"), []);
 });
 
 test("with no session given, every holder is somebody else -- the safe default for an anonymous asker", () => {
-  const reasons = prHoldReasons(pr, ["session:dispatcher"], null);
+  const reasons = prHoldReasons(pr, ["hold:dispatcher"], null);
   assert.equal(reasons.length, 1);
   assert.match(reasons[0], /IS HELD by dispatcher/);
   assert.doesNotMatch(reasons[0], /you are/, "it must not claim an identity the caller never gave");
 });
 
 test("EVERY holder is named, not just the first -- two sessions is a collision worth seeing in full", () => {
-  const reasons = prHoldReasons(pr, ["session:dispatcher", "session:worker-audit"], "worker-capture");
+  const reasons = prHoldReasons(pr, ["hold:dispatcher", "hold:worker-audit"], "worker-capture");
   assert.match(reasons[0], /IS HELD by dispatcher, worker-audit/);
 });
