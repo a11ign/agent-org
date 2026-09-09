@@ -10,6 +10,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   fetchBoardItems,
+  fetchReadyIssueNumbers,
+  readyRowsMissingStatus,
   writeBoardSnapshot,
   withBoardSnapshot,
   snapshotStamp,
@@ -48,13 +50,13 @@ function page({ nodes, hasNextPage = false, endCursor = null }: {
 
 test("fetchBoardItems reads number, title and Status off a single page", () => {
   const run = () => page({ nodes: [{ id: "PVTI_1", number: 42, title: "the row", status: "Ready" }] });
-  const items = fetchBoardItems({ run });
+  const items = fetchBoardItems({ run, fetchReady: () => [] });
   assert.deepEqual(items, [{ itemId: "PVTI_1", number: 42, title: "the row", status: "Ready" }]);
 });
 
 test("a draft item (no linked issue) is recorded with number/title null, never dropped", () => {
   const run = () => page({ nodes: [{ id: "PVTI_draft" }] });
-  const items = fetchBoardItems({ run });
+  const items = fetchBoardItems({ run, fetchReady: () => [] });
   assert.deepEqual(items, [{ itemId: "PVTI_draft", number: null, title: null, status: null }]);
 });
 
@@ -69,7 +71,7 @@ test("fetchBoardItems follows pagination across multiple pages", () => {
     assert.ok(args.includes("cursor=CUR"), "the second page must pass back the first page's endCursor");
     return page({ nodes: [{ id: "PVTI_2", number: 2, title: "b" }], hasNextPage: false });
   };
-  const items = fetchBoardItems({ run });
+  const items = fetchBoardItems({ run, fetchReady: () => [] });
   assert.equal(items.length, 2);
   assert.deepEqual(items.map((i) => i.number), [1, 2]);
 });
@@ -78,12 +80,12 @@ test("fetchBoardItems throws rather than returning a partial list when gh fails"
   const run = () => {
     throw new Error("gh: not authenticated");
   };
-  assert.throws(() => fetchBoardItems({ run }), /could not read Project/);
+  assert.throws(() => fetchBoardItems({ run, fetchReady: () => [] }), /could not read Project/);
 });
 
 test("fetchBoardItems throws on a response missing the expected shape, rather than guessing", () => {
   const run = () => JSON.stringify({ data: { user: { projectV2: null } } });
-  assert.throws(() => fetchBoardItems({ run }), /did not have the shape/);
+  assert.throws(() => fetchBoardItems({ run, fetchReady: () => [] }), /did not have the shape/);
 });
 
 // --- #555: the refusal must name the GraphQL error, not just "could not read Project N items" ---
@@ -101,14 +103,14 @@ test("#555: a non-zero exit whose stdout carries a GraphQL error quotes its type
     err.stderr = "gh: Resource not accessible by personal access token\n";
     throw err;
   };
-  assert.throws(() => fetchBoardItems({ run }),
+  assert.throws(() => fetchBoardItems({ run, fetchReady: () => [] }),
     /FORBIDDEN \(user\.projectV2\): Resource not accessible by personal access token/);
 });
 
 test("#555: a non-zero exit with no parseable GraphQL error falls back to the plain exit message, "
   + "rather than inventing a cause", () => {
   const run = () => { throw new Error("gh: not authenticated"); };
-  assert.throws(() => fetchBoardItems({ run }), /could not read Project.*not authenticated/s);
+  assert.throws(() => fetchBoardItems({ run, fetchReady: () => [] }), /could not read Project.*not authenticated/s);
 });
 
 test("#555 MUTATION TARGET: a 200 response carrying `data` AND `errors` together is REFUSED, never read "
@@ -127,13 +129,13 @@ test("#555 MUTATION TARGET: a 200 response carrying `data` AND `errors` together
       { type: "FORBIDDEN", path: ["user", "projectV2", "items", "nodes", 2], message: "Resource not accessible by personal access token" },
     ],
   });
-  assert.throws(() => fetchBoardItems({ run }), /FORBIDDEN/);
-  assert.throws(() => fetchBoardItems({ run }), /Resource not accessible by personal access token/);
+  assert.throws(() => fetchBoardItems({ run, fetchReady: () => [] }), /FORBIDDEN/);
+  assert.throws(() => fetchBoardItems({ run, fetchReady: () => [] }), /Resource not accessible by personal access token/);
 });
 
 test("#555 CONTROL: an ordinary clean response (no errors array at all) is unaffected", () => {
   const run = () => page({ nodes: [{ id: "PVTI_1", number: 1, title: "fine", status: "Ready" }] });
-  const items = fetchBoardItems({ run });
+  const items = fetchBoardItems({ run, fetchReady: () => [] });
   assert.deepEqual(items, [{ itemId: "PVTI_1", number: 1, title: "fine", status: "Ready" }]);
 });
 
@@ -143,7 +145,7 @@ test("#555: an `errors` array with data still present is refused BEFORE the shap
     data: { user: { projectV2: { items: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } } },
     errors: [{ type: "SOME_OTHER_TYPE", message: "a different failure entirely" }],
   });
-  assert.throws(() => fetchBoardItems({ run }), /SOME_OTHER_TYPE: a different failure entirely/);
+  assert.throws(() => fetchBoardItems({ run, fetchReady: () => [] }), /SOME_OTHER_TYPE: a different failure entirely/);
 });
 
 test("PROJECT_OWNER and PROJECT_NUMBER match the real board (a11y-witness -- what is open, Project 2)", () => {
@@ -164,6 +166,7 @@ test("writeBoardSnapshot fetches, then writes JSON to runs/board-snapshots/<stam
   const mkdirs: string[] = [];
   const path = writeBoardSnapshot({
     run,
+    fetchReady: () => [],
     mkdir: (p) => mkdirs.push(p),
     writeFile: (p, data) => written.push({ path: p, data }),
     now: () => new Date("2026-09-08T00:01:02.000Z"),
@@ -182,7 +185,7 @@ test("writeBoardSnapshot throws, never swallows, when the fetch fails", () => {
   const run = () => {
     throw new Error("network unreachable");
   };
-  assert.throws(() => writeBoardSnapshot({ run, mkdir: () => {}, writeFile: () => {} }),
+  assert.throws(() => writeBoardSnapshot({ run, fetchReady: () => [], mkdir: () => {}, writeFile: () => {} }),
     /could not read Project/);
 });
 
@@ -195,6 +198,7 @@ test("MUTATION: a failing snapshot write means the mutation never runs", () => {
   let mutateCalled = false;
   assert.throws(() => withBoardSnapshot(() => { mutateCalled = true; return "ok"; }, {
     run,
+    fetchReady: () => [],
     mkdir: () => {},
     writeFile: () => { throw new Error("disk full"); },
   }), /could not write the snapshot/);
@@ -210,6 +214,7 @@ test("withBoardSnapshot calls the mutation, and only after logging the snapshot 
     return "mutation result";
   }, {
     run,
+    fetchReady: () => [],
     mkdir: () => {},
     writeFile: () => {},
     now: () => new Date("2026-09-08T00:00:00.000Z"),
@@ -219,4 +224,107 @@ test("withBoardSnapshot calls the mutation, and only after logging the snapshot 
   assert.equal(result, "mutation result");
   assert.equal(log.length, 1);
   assert.match(log[0], /wrote runs\/board-snapshots\/2026-09-08T00-00-00-000Z\.json before mutating/);
+});
+
+// --- #747: fieldValues is nested inside items, the one shape with no totalCount to check itself. An
+// independently-derived floor -- every open `ready` issue must show up in the snapshot WITH a Status --
+// catches a narrowed read that every assertion available inside the response itself would pass. ---
+
+test("readyRowsMissingStatus: a ready row with a Status is not reported", () => {
+  const items = [{ itemId: "PVTI_1", number: 725, title: "row", status: "Ready" }];
+  assert.deepEqual(readyRowsMissingStatus(items, [725]), []);
+});
+
+test("readyRowsMissingStatus: a ready row present but with a null Status IS reported -- the exact shape "
+  + "a narrowed fieldValues read produces", () => {
+  const items = [{ itemId: "PVTI_1", number: 725, title: "row", status: null }];
+  assert.deepEqual(readyRowsMissingStatus(items, [725]), [725]);
+});
+
+test("readyRowsMissingStatus: a ready row absent from the snapshot entirely IS reported -- \"appears "
+  + "with a Status\" fails on either half", () => {
+  assert.deepEqual(readyRowsMissingStatus([], [725]), [725]);
+});
+
+test("readyRowsMissingStatus: draft items (number null) never match a ready issue number and are "
+  + "ignored rather than crashing the lookup", () => {
+  const items = [{ itemId: "PVTI_draft", number: null, title: null, status: null }];
+  assert.deepEqual(readyRowsMissingStatus(items, [725]), [725]);
+});
+
+test("readyRowsMissingStatus: an empty ready population always passes -- nothing to check", () => {
+  assert.deepEqual(readyRowsMissingStatus([{ itemId: "x", number: 1, title: "t", status: null }], []), []);
+});
+
+test("fetchReadyIssueNumbers: reads --json number off gh issue list, filtered to open + ready", () => {
+  let seenArgs: string[] = [];
+  const run = (_cmd: string, args: string[]) => {
+    seenArgs = args;
+    return JSON.stringify([{ number: 717 }, { number: 725 }]);
+  };
+  assert.deepEqual(fetchReadyIssueNumbers({ run }), [717, 725]);
+  assert.ok(seenArgs.includes("--label") && seenArgs.includes("ready"));
+  assert.ok(seenArgs.includes("--state") && seenArgs.includes("open"));
+  assert.ok(seenArgs.includes("--json") && seenArgs.includes("number"));
+});
+
+test("fetchReadyIssueNumbers: exactly `limit` rows back is refused as indistinguishable from truncated, "
+  + "same discipline as ready-label-audit.mjs's fetchIssues", () => {
+  const run = () => JSON.stringify(Array.from({ length: 3 }, (_, i) => ({ number: i })));
+  assert.throws(() => fetchReadyIssueNumbers({ run, limit: 3 }), /exactly the requested limit/);
+});
+
+test("fetchReadyIssueNumbers: a non-array response is refused rather than guessed at", () => {
+  const run = () => JSON.stringify({ not: "a list" });
+  assert.throws(() => fetchReadyIssueNumbers({ run }), /was not a list/);
+});
+
+test("fetchReadyIssueNumbers: gh failing throws, never falls back to an empty (falsely clean) "
+  + "population", () => {
+  const run = () => { throw new Error("gh: not authenticated"); };
+  assert.throws(() => fetchReadyIssueNumbers({ run }), /could not list open ready issues/);
+});
+
+/** A `run` that answers BOTH calls `fetchBoardItems` now makes: the items page, and the ready-issue list. */
+function dualRun(itemsPageJson: string, readyNumbers: number[]) {
+  return (_cmd: string, args: string[]) => {
+    if (args[0] === "issue" && args[1] === "list") return JSON.stringify(readyNumbers.map((number) => ({ number })));
+    return itemsPageJson;
+  };
+}
+
+test("fetchBoardItems: every ready row carries a Status -- passes unchanged, same as today's 203 items", () => {
+  const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 725, title: "row", status: "Ready" }] }), [725]);
+  const items = fetchBoardItems({ run });
+  assert.deepEqual(items, [{ itemId: "PVTI_1", number: 725, title: "row", status: "Ready" }]);
+});
+
+test("#747 ACCEPTANCE, MUTATION TARGET: a ready row's fieldValues dropped (the narrowed-connection "
+  + "shape) makes fetchBoardItems REFUSE and NAME it, rather than returning it with no Status", () => {
+  // #725 is `ready` and on the board, but its fieldValues came back empty -- exactly what a shared-budget
+  // narrowing produces, and what today's response with no totalCount on fieldValues cannot itself catch.
+  const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 725, title: "row" }] }), [725]);
+  assert.throws(() => fetchBoardItems({ run }), /1 open ready row\(s\) came back with no Status/);
+  assert.throws(() => fetchBoardItems({ run }), /#725/);
+});
+
+test("fetchBoardItems: a ready row missing from the board entirely is also refused and named", () => {
+  const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 1, title: "unrelated", status: "Ready" }] }), [725]);
+  assert.throws(() => fetchBoardItems({ run }), /#725/);
+});
+
+test("fetchBoardItems: two ready rows both missing Status are both named", () => {
+  const run = dualRun(page({ nodes: [
+    { id: "PVTI_1", number: 717, title: "a" },
+    { id: "PVTI_2", number: 718, title: "b" },
+  ] }), [717, 718]);
+  assert.throws(() => fetchBoardItems({ run }), /#717, #718/);
+});
+
+test("fetchBoardItems: an empty ready population (fetchReady: () => []) skips the check entirely -- "
+  + "every pre-#747 test in this file uses exactly this to isolate the pagination/error-handling behaviour "
+  + "they actually test", () => {
+  const run = () => page({ nodes: [{ id: "PVTI_1", number: 1, title: "row" }] });
+  const items = fetchBoardItems({ run, fetchReady: () => [] });
+  assert.equal(items.length, 1);
 });
