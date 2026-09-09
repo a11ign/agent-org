@@ -4,10 +4,12 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { updatePrimary } from "../../../../scripts/update-primary.mjs";
+import { UPDATE_PRIMARY_VERBS } from "./update-primary-argv.mjs";
 
 /**
  * MOVING THE PRIMARY MOVES EVERY WORKTREE'S `dist`, AND NOTHING ELSE DOES.
@@ -35,7 +37,12 @@ test("#749 updatePrimary BUILDS after the fast-forward -- the source moves and d
     updatePrimary(root, (args) => { calls.push(args); return "abc123\n"; }, (cwd) => built.push(cwd));
     assert.deepEqual(built, [root], "the build runs, once, in the primary");
     const order = calls.map((c) => c[0]);
-    assert.deepEqual(order, ["fetch", "checkout", "rev-parse"],
+    // The second `rev-parse` is `moveLocalMain` reading `refs/heads/main`; this stub returns the same sha
+    // for everything, so it finds the branch already at the target and stops there. The order that
+    // matters is unchanged: the build runs AFTER the checkout.
+    // The verbs come from the SAME list `primary-checkout-guard.test.ts` asserts in full -- see
+    // `update-primary-argv.mjs` for why that is one constant rather than two.
+    assert.deepEqual(order, [...UPDATE_PRIMARY_VERBS],
       "and it runs AFTER the checkout -- building the tree you are about to move is building the wrong tree");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -68,4 +75,85 @@ test("#749 MUTATION TARGET: without the build call the source moves and dist doe
     updatePrimary(root, (args) => { calls.push(args); return "abc123\n"; }, (cwd) => built.push(cwd));
     assert.notDeepEqual(built, [], "if this passes with an empty list, the build is no longer wired");
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+
+// ---------------------------------------------------------------------------------------------------
+// THE LOCAL `main` BRANCH IS SHARED BY EVERY WORKTREE, AND NOTHING MOVED IT.
+//
+// The primary is detached at `origin/main` deliberately — that is what makes it read-only except
+// fast-forward. But `main` is a branch in the same `.git`, checked out nowhere. Measured 2026-09-09: it
+// sat at `11d77ade` from 07 Sep while `origin/main` was `cb9dfbce`, **1405 commits behind**, and all 76
+// worktrees resolve that one ref.
+//
+// A range against bare `main` therefore answers a two-day-old question, and the answer looks exactly
+// like an answer: `rev-list --count main..<branch>` reported 502 where `origin/main..<branch>` reported
+// 1, and a session called a one-commit `wip` branch an old divergent rewrite on the strength of it.
+
+/** Drives `updatePrimary` with a scripted `run`, recording every argv. */
+function driveUpdate(reply: (args: string[]) => string) {
+  const calls: string[][] = [];
+  const root = mkdtempSync(join(tmpdir(), "a11y-primary-main-"));
+  try {
+    mkdirSync(join(root, ".git"));
+    updatePrimary(root, (args) => { calls.push(args); return reply(args); }, () => {});
+  } finally { rmSync(root, { recursive: true, force: true }); }
+  return calls;
+}
+
+test("the local `main` branch is fast-forwarded to the same sha the primary moved to", () => {
+  const calls = driveUpdate((args) =>
+    args[0] === "rev-parse" && args[1] === "refs/heads/main" ? "old111\n" : "new222\n");
+  const update = calls.find((c) => c[0] === "update-ref");
+  assert.deepEqual(update, ["update-ref", "refs/heads/main", "new222", "old111"],
+    "and it passes the EXPECTED OLD VALUE, so the write refuses rather than races if another session "
+    + "moved the ref first");
+});
+
+test("MUTATION: a DIVERGED local `main` is left alone -- it is somebody's unpushed work, and this "
+  + "command destroys nothing", () => {
+  const calls = driveUpdate((args) => {
+    if (args[0] === "merge-base") throw new Error("not an ancestor");
+    return args[1] === "refs/heads/main" ? "old111\n" : "new222\n";
+  });
+  assert.equal(calls.some((c) => c[0] === "update-ref"), false,
+    "`git branch -f` would move it without complaint, which is the one thing this must not do");
+});
+
+test("CONTROL: no local `main` at all is not an error, and does not create one", () => {
+  const calls = driveUpdate((args) => {
+    if (args[0] === "rev-parse" && args[1] === "refs/heads/main") throw new Error("unknown revision");
+    return "new222\n";
+  });
+  assert.equal(calls.some((c) => c[0] === "update-ref"), false);
+  assert.equal(calls.some((c) => c[0] === "branch"), false, "creating one is not this command's job");
+});
+
+test("CONTROL: a `main` already at the target writes nothing -- no ref update, no merge-base", () => {
+  const calls = driveUpdate(() => "same333\n");
+  assert.equal(calls.some((c) => c[0] === "update-ref"), false);
+  assert.equal(calls.some((c) => c[0] === "merge-base"), false);
+});
+
+/**
+ * THE COPY MUST NOT COME BACK. Both argv assertions now read `update-primary-argv.mjs`; nothing stops a
+ * future edit from inlining the list again, and inlining it is exactly what produced the merge-blocking
+ * red on 2026-09-09 — one file updated, the other found by CI.
+ *
+ * So this asserts on the SOURCE of both test files: neither may contain the argv literal itself. It is a
+ * text check because that is what the defect is — two copies of one fact — and no behavioural test can
+ * see the difference between one constant and two identical ones.
+ */
+test("neither argv assertion carries its own copy of the list -- the fact is stated once", () => {
+  const here = (name: string) =>
+    readFileSync(fileURLToPath(new URL(name, import.meta.url)), "utf8");
+  for (const name of ["update-primary.test.ts", "primary-checkout-guard.test.ts"]) {
+    const src = here(name);
+    assert.match(src, /UPDATE_PRIMARY_(ARGV|VERBS)/,
+      `${name} must assert THROUGH the shared list`);
+    assert.doesNotMatch(src.replace(/^\s*\/\/.*$/gm, ""),
+      /\["checkout", "--detach", "origin\/main", "--quiet"\]/,
+      `${name} carries its own copy of the argv list -- that is the fact stated twice, and the copy `
+      + "that survives is the one nobody is looking at");
+  }
 });
