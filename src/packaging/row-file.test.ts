@@ -7,12 +7,16 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   bodyFromArgv, fileRefusalReason, createIssue,
 } from "../../../../scripts/row-file.mjs";
+
+const CLI = fileURLToPath(new URL("../../../../scripts/row-file.mjs", import.meta.url));
 
 const COMPLETE_BODY = "## Region\n\npackages/lab/src/packaging/foo.ts\n\n"
   + "## Acceptance\n\n```\nnpx tsx --test x\n```\n\n"
@@ -112,4 +116,32 @@ test("a gh failure (non-zero exit) is surfaced as this tool's own exit code, not
     spawnGh: () => { throw Object.assign(new Error("gh failed"), { status: 7 }); },
   });
   assert.equal(code, 7);
+});
+
+// --- the REAL CLI, spawned -- proves it is guarded (cli-flags.test.ts's discovery test requires it) ---
+
+test("REAL CLI: an unrecognised flag is refused by name, before gh ever runs", () => {
+  assert.throws(
+    () => execFileSync("node", [CLI, "--title", "x", "--body", "y", "--bogus-flag"], { encoding: "utf8" }),
+    (error: unknown) => {
+      const e = error as { status?: number; stderr?: string };
+      assert.equal(e.status, 2, `expected exit 2 from refuseUnknownFlags, got: ${e.stderr}`);
+      assert.match(e.stderr ?? "", /--bogus-flag/);
+      return true;
+    },
+  );
+});
+
+test("REAL CLI: a genuinely known gh flag (e.g. -l/--label) is NOT refused by the flag guard -- it is "
+  + "refused by the SECTION check instead, proving the guard did not swallow it as unknown", () => {
+  assert.throws(
+    () => execFileSync("node", [CLI, "--title", "x", "--body", "no sections", "-l", "backlog"], { encoding: "utf8" }),
+    (error: unknown) => {
+      const e = error as { status?: number; stderr?: string };
+      assert.equal(e.status, 1, `expected the section-check refusal (exit 1), got: ${e.stderr}`);
+      assert.match(e.stderr ?? "", /missing/);
+      assert.doesNotMatch(e.stderr ?? "", /unknown flag/i);
+      return true;
+    },
+  );
 });
