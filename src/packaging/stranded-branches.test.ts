@@ -12,7 +12,8 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import {
-  fetchPushedBranches, fetchAllPRHeadRefs, branchesWithNoPR, aheadCount, strandedCandidates, PR_LIST_LIMIT, decideForPR, staleClosureComment, sweepPullRequests, prForDecision } from "../../../../scripts/stranded-branches.mjs";
+  fetchPushedBranches, fetchAllPRHeadRefs, fetchOpenPRs, branchesWithNoPR, aheadCount, strandedCandidates,
+  PR_LIST_LIMIT, PR_PAGE_SIZE, MAX_PR_PAGES, decideForPR, staleClosureComment, sweepPullRequests, prForDecision } from "../../../../scripts/stranded-branches.mjs";
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, env: sandboxGitEnv(), encoding: "utf8" });
@@ -88,6 +89,19 @@ test("MUTATION: git itself failing is a thrown error, never an empty (= nothing-
 
 // --- fetchAllPRHeadRefs: the vacuity guard, mirroring fetchLabels/fetchOpenIssues exactly ---
 
+/** A `run` that serves the given pages in order and records the argv it was asked for. */
+function pagedRun(pages: Array<Array<{ ref: string }> | string>) {
+  const seen: string[][] = [];
+  const run = (_cmd: string, args: string[]) => {
+    seen.push(args);
+    const page = pages[seen.length - 1] ?? [];
+    return typeof page === "string" ? page : JSON.stringify(page);
+  };
+  return { run, seen };
+}
+function refPage(n: number, offset = 0) {
+  return Array.from({ length: n }, (_, i) => ({ ref: `agent/x${offset + i}` }));
+}
 function jsonRun(response: string) {
   return () => response;
 }
@@ -96,16 +110,74 @@ function throwingRun(message: string) {
 }
 
 test("fetchAllPRHeadRefs parses a well-formed gh response into a Set", () => {
-  const run = jsonRun(JSON.stringify([{ headRefName: "agent/x" }, { headRefName: "lead/y" }]));
-  const refs = fetchAllPRHeadRefs({ run });
+  const { run } = pagedRun([[{ ref: "agent/x" }, { ref: "lead/y" }]]);
+  const { refs, calls, prs } = fetchAllPRHeadRefs({ run });
   assert.ok(refs.has("agent/x"));
   assert.ok(refs.has("lead/y"));
   assert.equal(refs.size, 2);
+  assert.equal(calls, 1, "the cost is REPORTED, not inferred by the caller from the count");
+  assert.equal(prs, 2);
+});
+
+/** Measured live at 402 PRs / 399 refs: reporting the Set's size as a PR count is a real number about
+ * the quantity NEXT TO the one named. */
+test("ROWS AND REFS ARE DIFFERENT NUMBERS -- a branch reused across two PRs is two rows, one ref", () => {
+  const { run } = pagedRun([[{ ref: "agent/x" }, { ref: "agent/x" }, { ref: "lead/y" }]]);
+  const { refs, prs } = fetchAllPRHeadRefs({ run });
+  assert.equal(prs, 3, "PRs counted as rows");
+  assert.equal(refs.size, 2, "head refs collapsed");
+});
+
+/**
+ * THE REASON THIS FILE CHANGED. The 400-PR cap fired for real on 2026-09-09 at 402 PRs and the audit
+ * could not run. A bigger number moves the cliff; walking to the end removes it. The assertion that
+ * matters is that a page which comes back FULL is followed by another request — the failure this
+ * replaces was precisely a full response read as a complete one.
+ */
+test("PAGINATES TO THE END: a full page is followed by another request, and a short page ends the walk", () => {
+  const { run, seen } = pagedRun([refPage(PR_PAGE_SIZE), refPage(PR_PAGE_SIZE, 100), refPage(2, 200)]);
+  const { refs, calls } = fetchAllPRHeadRefs({ run });
+  assert.equal(refs.size, 202, "402-PR-shaped walk: two full pages and a short one");
+  assert.equal(calls, 3);
+  assert.deepEqual(seen.map((args) => args[0]), ["api", "api", "api"],
+    "REST (core), never `gh pr list` (GraphQL) -- the listing was the heaviest consumer in an 816-call pass");
+  assert.ok(seen.every((args) => /sort=created&direction=asc/.test(args[1] ?? "")),
+    "ASCENDING: newest-first paging shifts every later page when a PR is opened mid-walk, so an entry is "
+    + "silently seen twice or not at all");
+  // `[&]page=` and not `page=`: the bare form matched `per_page=100` first and this assertion read
+  // ["100","100","100"] -- the page number checked against its own NEIGHBOUR in the query string.
+  assert.deepEqual(seen.map((args) => /[&?]page=(\d+)/.exec(args[1] ?? "")?.[1]), ["1", "2", "3"]);
+});
+
+test("CONTROL: an exactly-full LAST page costs one more call and terminates, rather than being guessed at", () => {
+  const { run, seen } = pagedRun([refPage(PR_PAGE_SIZE), []]);
+  const { refs, calls } = fetchAllPRHeadRefs({ run });
+  assert.equal(refs.size, PR_PAGE_SIZE);
+  assert.equal(calls, 2, "asking again costs one call and answers definitely; guessing costs the audit");
+  assert.equal(seen.length, 2);
+});
+
+test("MUTATION (#321, moved not deleted): a walk still receiving full pages at the runaway bound REFUSES", () => {
+  const { run } = pagedRun(Array.from({ length: MAX_PR_PAGES + 5 }, (_, i) => refPage(PR_PAGE_SIZE, i * 100)));
+  assert.throws(() => fetchAllPRHeadRefs({ run }),
+    /still receiving full pages after \d+ of \d+ -- refusing to guess/);
 });
 
 test("MUTATION: gh itself failing is a thrown error, never an empty Set -- that would OVER-report every pushed branch as stranded", () => {
   const run = throwingRun("gh: authentication required");
   assert.throws(() => fetchAllPRHeadRefs({ run }), /could not list PRs/);
+});
+
+test("MUTATION: a page failing PART WAY THROUGH the walk is refused, never the pages already collected", () => {
+  let call = 0;
+  const run = () => {
+    call += 1;
+    if (call === 1) return JSON.stringify(refPage(PR_PAGE_SIZE));
+    throw new Error("gh: HTTP 403 rate limit exceeded");
+  };
+  assert.throws(() => fetchAllPRHeadRefs({ run }), /page 2.*refusing to guess/s,
+    "a partial walk is CANNOT-ASK; returning page 1's refs would manufacture stranded branches from "
+    + "every PR on the pages never read");
 });
 
 test("MUTATION: non-JSON output is a thrown error, never a silent empty Set", () => {
@@ -118,33 +190,38 @@ test("MUTATION: a non-array response is refused rather than read as zero PRs", (
   assert.throws(() => fetchAllPRHeadRefs({ run }), /was not an array/);
 });
 
-test("MUTATION: a PR entry missing headRefName is refused, not silently skipped", () => {
-  const run = jsonRun(JSON.stringify([{ number: 1 }]));
-  assert.throws(() => fetchAllPRHeadRefs({ run }), /entry 0 has no headRefName/);
+/**
+ * The request PROJECTS to `{ref: .head.ref}` rather than to a bare line, so that a PR whose head ref is
+ * missing arrives as JSON `null` and can be refused. Projected to lines it would arrive as the four
+ * characters `null`, indistinguishable from a branch actually named that.
+ */
+test("MUTATION: a PR entry with no head ref is refused, not read as a branch named 'null'", () => {
+  const run = jsonRun(JSON.stringify([{ ref: null }]));
+  assert.throws(() => fetchAllPRHeadRefs({ run }), /entry 0 on page 1 has no head ref/);
 });
 
 test("CONTROL: genuinely zero PRs anywhere is accepted as a real, empty Set", () => {
   const run = jsonRun(JSON.stringify([]));
-  assert.equal(fetchAllPRHeadRefs({ run }).size, 0);
+  const { refs, calls } = fetchAllPRHeadRefs({ run });
+  assert.equal(refs.size, 0);
+  assert.equal(calls, 1);
 });
 
 /**
- * #321: `gh pr list` is NEWEST-first, so a response that arrives at exactly `PR_LIST_LIMIT` cannot be
- * told apart from "there are more, and the oldest ones just fell off the end" -- and the oldest branches
- * are precisely the ones stage 1 of this file's own filter ("has this branch EVER had a PR") most needs
- * to be right about. A silent truncation there does not make the tool miss a stranded branch, it makes
- * the tool MANUFACTURE one.
+ * #321 AT ITS SECOND CALL SITE. The at-the-cap refusal lived in `fetchAllPRHeadRefs`, and `fetchOpenPRs`
+ * — which uses the same constant, and has `--close` behind it — never had one. Moving the all-PRs
+ * listing to pagination would have taken the guard out of the file entirely.
  */
-test("MUTATION (#321): a response landing EXACTLY at the configured limit is refused, not read as 'a lot of PRs'", () => {
-  const atCap = Array.from({ length: PR_LIST_LIMIT }, (_, i) => ({ headRefName: `agent/x${i}` }));
+test("MUTATION (#321): fetchOpenPRs landing EXACTLY at the limit is refused, not read as 'a lot of open PRs'", () => {
+  const atCap = Array.from({ length: PR_LIST_LIMIT }, (_, i) => ({ number: i, headRefName: `agent/x${i}` }));
   const run = jsonRun(JSON.stringify(atCap));
-  assert.throws(() => fetchAllPRHeadRefs({ run }), /exactly \d+ PRs.*cannot tell whether/s);
+  assert.throws(() => fetchOpenPRs({ run }), /exactly \d+ OPEN PRs.*cannot tell whether/s);
 });
 
-test("CONTROL: one PR short of the limit is a real, trustworthy count -- the guard must not fire early", () => {
-  const almost = Array.from({ length: PR_LIST_LIMIT - 1 }, (_, i) => ({ headRefName: `agent/x${i}` }));
+test("CONTROL: one open PR short of the limit is a real, trustworthy count -- the guard must not fire early", () => {
+  const almost = Array.from({ length: PR_LIST_LIMIT - 1 }, (_, i) => ({ number: i, headRefName: `agent/x${i}` }));
   const run = jsonRun(JSON.stringify(almost));
-  assert.equal(fetchAllPRHeadRefs({ run }).size, PR_LIST_LIMIT - 1);
+  assert.equal(fetchOpenPRs({ run }).length, PR_LIST_LIMIT - 1);
 });
 
 // --- branchesWithNoPR: pure ---
