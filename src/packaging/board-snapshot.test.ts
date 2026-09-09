@@ -328,3 +328,38 @@ test("fetchBoardItems: an empty ready population (fetchReady: () => []) skips th
   const items = fetchBoardItems({ run, fetchReady: () => [] });
   assert.equal(items.length, 1);
 });
+
+// --- #891, live 2026-09-09: a row freshly `gh project item-add`-ed, ready-labelled (a real `gh issue
+// create -l ready`, not row-file's own later `--ready` sentinel), with no Status yet, tripped the #747
+// floor ON ITSELF -- moveProjectStatus's own pre-write snapshot refused the very call meant to fix it.
+// `excludeIssueNumber` lets the caller name the ONE row currently being boarded so the floor stops
+// treating "about to be fixed" the same as "silently neglected", without blinding it to any other row. ---
+
+test("readyRowsMissingStatus: excludeIssueNumber removes exactly that row from the report, even though "
+  + "it is genuinely ready with no Status -- the #891 self-trip shape", () => {
+  assert.deepEqual(readyRowsMissingStatus([], [891], 891), []);
+});
+
+test("readyRowsMissingStatus: excludeIssueNumber does not blind the floor to a DIFFERENT ready row "
+  + "missing its Status -- only the named row is exempt", () => {
+  const items = [{ itemId: "PVTI_1", number: 717, title: "unrelated", status: null }];
+  assert.deepEqual(readyRowsMissingStatus(items, [717, 891], 891), [717]);
+});
+
+test("readyRowsMissingStatus: excludeIssueNumber defaults to null, excluding nothing -- every existing "
+  + "caller (a plain snapshot, an audit) sees every row honestly", () => {
+  assert.deepEqual(readyRowsMissingStatus([], [725]), [725]);
+});
+
+test("fetchBoardItems: excludeIssueNumber threaded through end-to-end reproduces the #891 fix -- a "
+  + "freshly boarded, ready-labelled, Status-less row does NOT refuse when it is the excluded row", () => {
+  const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 891, title: "row" }] }), [891]);
+  const items = fetchBoardItems({ run, excludeIssueNumber: 891 });
+  assert.deepEqual(items, [{ itemId: "PVTI_1", number: 891, title: "row", status: null }]);
+});
+
+test("fetchBoardItems, MUTATION TARGET: excludeIssueNumber naming the WRONG row still refuses -- proving "
+  + "the exclusion is by number, not a blanket bypass of the floor", () => {
+  const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 891, title: "row" }] }), [891]);
+  assert.throws(() => fetchBoardItems({ run, excludeIssueNumber: 1 }), /#891/);
+});
