@@ -36,8 +36,14 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../.
  * the guard reported green because it had never been told the second copy existed. That is this repo's
  * fact-stated-twice shape landing on the one number a stranger reads before deciding to trust the tool.
  *
+ * `examples/workflow.yml` -- the ONE file `docs/github-action.md` itself tells a reader is "copy-
+ * pasteable" -- carried the retired "1,034 conformant records" figure unguarded until #324's V1
+ * rehearsal found it, and by then it had already been copied verbatim into a real consumer's own
+ * committed workflow: the exact fact-stated-twice failure this list exists to close, landing on the one
+ * file a stranger is explicitly told to copy rather than merely read.
+ *
  * So the list is the guard. Adding a public claim without adding it here is the only way back in. */
-const CLAIM_FILES = ["README.md", "docs/try-it.md", "docs/github-action.md"] as const;
+const CLAIM_FILES = ["README.md", "docs/try-it.md", "docs/github-action.md", "examples/workflow.yml"] as const;
 
 function claimBlockIn(file: string): string {
   const text = readFileSync(path.join(REPO, file), "utf8");
@@ -552,6 +558,11 @@ const NOT_A_DURATION_CLAIM: Record<string, string> = {
     "The second mention of the same #396 measurement, in the 'how long a large page takes' section -- same "
     + "sourcing, same reasoning as the entry above; kept separate because #313's own history is that a "
     + "figure fixed in one copy and left stale in a second is this repo's most expensive recurring shape.",
+  "unreachable in a user's first ten minutes":
+    "Newly discovered by #324's V1 rehearsal, which added examples/workflow.yml to CLAIM_FILES for the "
+    + "first time -- this describes how quickly a PAST defect (probe-forms silently off) would have been "
+    + "noticed, not a promise about how long using this tool takes. There is no duration claim here for a "
+    + "gate to source.",
 };
 
 function assertDurationClaimSourced(file: string): void {
