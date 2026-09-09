@@ -18,7 +18,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { revertVerdict, revertPrBody, revertTriggerJobs, newestRunFor, conclusionOf, EXIT }
+import { revertVerdict, revertPrBody, revertTriggerJobs, newestRunFor, conclusionOf,
+  prCreateArgs, EXIT }
   from "../../../../scripts/trunk-revert.mjs";
 
 const PUSH = "a1b2c3d4e5f6789012345678901234567890abcd";
@@ -236,4 +237,39 @@ test("#582 the READY sentence NAMES the jobs it checked, so a future narrowing i
   const v = revertVerdict({ beforeConclusions: GREEN, currentMainSha: PUSH, pushSha: PUSH });
   assert.equal(v.code, EXIT.READY);
   for (const job of revertTriggerJobs(WORKFLOW)) assert.match(v.reason, new RegExp(job));
+});
+
+// ---------------------------------------------------------------------------------------------------
+// #616: A REVERT PR OPENS AS A DRAFT, BECAUSE THIS DECISION CANNOT YET TELL A BROKEN PUSH FROM A CLOCK.
+// ---------------------------------------------------------------------------------------------------
+
+test("#616 the revert PR is opened as a DRAFT -- the one flag standing between a wrong verdict and a "
+  + "merged revert", () => {
+  // 2026-09-09, this decision's first end-to-end execution: main went red on a WALL-CLOCK assertion ("the
+  // summary states WHEN it was written, and that time is within 60 minutes of the render"). The previous
+  // commit was green, verifiably, in its own run sixty-one minutes earlier -- so the verdict was true of
+  // its inputs and false of the world, and #615 was opened, ARMED, against a merge that touched only the
+  // merge-guard rules. #582 taught this to recognise a failure that ALREADY EXISTED; it still cannot
+  // recognise one that DID NOT EXIST when the parent was measured. Both print "the commit before was
+  // green" and only one means it.
+  //
+  // Asserted on the argv rather than on `performRevert`, which spawns git and `gh` and has no unit test.
+  // A one-flag decision is exactly what a refactor loses silently.
+  const args = prCreateArgs({ title: "revert: x broke main", body: "b", branch: "revert/abc-316" });
+  assert.ok(args.includes("--draft"),
+    "without --draft the revert PR is mergeable the moment its own gate is green, and the verdict that "
+    + "opened it has not been read by anyone");
+  assert.deepEqual(args.slice(0, 2), ["pr", "create"]);
+  assert.ok(args.includes("--head") && args.includes("revert/abc-316"));
+});
+
+test("#616 MUTATION TARGET: nothing in the revert path arms the PR", () => {
+  // The old code armed it directly, because a PR created with GITHUB_TOKEN fires no `pull_request` event
+  // and `auto-arm.yml` would therefore never see it. That fact is unchanged and is now load-bearing in
+  // the other direction: un-drafting alone does not arm it either, so whoever confirms the attribution
+  // must arm it by hand. That is the right amount of friction for an action that deletes merged work.
+  const source = readFileSync(path.join(REPO_ROOT, "scripts/trunk-revert.mjs"), "utf8");
+  const armCall = /gh\(\[\s*"pr",\s*"merge"[\s\S]{0,120}?"--auto"/.exec(source);
+  assert.equal(armCall, null,
+    "trunk-revert.mjs must not arm its own revert PR: a draft that arms itself is not a hold");
 });
