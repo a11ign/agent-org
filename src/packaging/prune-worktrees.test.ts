@@ -28,6 +28,10 @@ import {
 } from "../../../../scripts/prune-worktrees.mjs";
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 
+// The CLI is spawned as a real process below, so the argv path -- the only place `dryRun` is
+// decided -- is exercised rather than reasoned about.
+const PRUNE_CLI = new URL("../../../../scripts/prune-worktrees.mjs", import.meta.url).pathname;
+
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, env: sandboxGitEnv(), encoding: "utf8" });
 
 // Every fixture below is built moments before its assertions run, so its gitdir's `index`/`HEAD` mtimes
@@ -396,5 +400,62 @@ test("the primary is NEVER passed to remove(), even if (hypothetically) it looke
     pruneWorktrees(root, { now: LONG_AFTER(), remove: (p) => { removedPaths.push(p); rmSync(p, { recursive: true, force: true }); } });
     assert.ok(!removedPaths.includes(root), "the primary path must never reach the remove function");
     assert.deepEqual(removedPaths, [merged]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+/**
+ * THROUGH argv, NOT THROUGH THE EXPORT. Everything above calls `pruneWorktrees()` directly, which cannot
+ * see the one thing #669 changed: which way round the DEFAULT is. `dryRun` is computed in `main()` from
+ * `process.argv`, so a mutation there -- `includes("--apply")` inverted, the flag renamed, the constant
+ * dropped -- passes every test above and removes three sessions' worktrees on the next unattended run.
+ *
+ * THESE THREE REPLACE AN ACCEPTANCE COMMAND THAT COULD NOT EXIST. #669 first stated the refusal as
+ * `node scripts/prune-worktrees.mjs --dry-run  # must be REFUSED` in its acceptance block, and the
+ * acceptance runner ran it, got the exit 2 the refusal is FOR, and failed the job -- because an
+ * acceptance command's verdict IS its exit code, so a command whose correct answer is nonzero cannot be
+ * one. A negative case belongs where the expected exit code can be written down.
+ */
+const runCli = (repoRoot: string, ...args: string[]) => {
+  try {
+    const stdout = execFileSync(process.execPath, [PRUNE_CLI, repoRoot, ...args],
+      { env: sandboxGitEnv(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    return { status: 0, stdout, stderr: "" };
+  } catch (err) {
+    const e = err as { status?: number; stdout?: string; stderr?: string };
+    return { status: e.status ?? -1, stdout: e.stdout ?? "", stderr: e.stderr ?? "" };
+  }
+};
+
+test("#669: `--dry-run` is REFUSED BY NAME with a nonzero exit, and the message says what it does take", () => {
+  const { root } = buildFixtureRepo();
+  try {
+    const { status, stderr } = runCli(root, "--dry-run");
+    assert.notEqual(status, 0, "a refused flag must exit nonzero -- an ignored flag runs the default");
+    assert.match(stderr, /unknown flag --dry-run/);
+    assert.match(stderr, /--apply/, "the refusal must name the flag that does exist, not just reject");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#669 THE WHOLE POINT: the bare command REPORTS and every worktree is still on disk afterwards", () => {
+  const { root, merged, dirtyUncommitted, standing } = buildFixtureRepo();
+  try {
+    const { status, stdout } = runCli(root);
+    assert.equal(status, 0);
+    assert.match(stdout, /^WOULD REMOVE /, "the default must say WOULD REMOVE, never `removed`");
+    assert.match(stdout, /pass --apply to remove them/);
+    for (const path of [merged, dirtyUncommitted, standing]) {
+      assert.ok(existsSync(path), `the default removed ${path} -- it must remove NOTHING`);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#669 MUTATION DIRECTION: `--apply` reaches dryRun -- the heading is `removed`, the word the listing may never print", () => {
+  const { root } = buildFixtureRepo();
+  try {
+    const { status, stdout } = runCli(root, "--apply");
+    assert.equal(status, 0);
+    assert.match(stdout, /^removed \d+ worktree\(s\):/,
+      "with --apply the heading must be `removed`; if it still says WOULD REMOVE the flag never reached dryRun");
+    assert.ok(!stdout.includes("WOULD REMOVE"), "a mutating run must never print the listing's wording");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
