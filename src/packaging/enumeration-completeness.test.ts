@@ -18,7 +18,7 @@
  * | issue labels           | `ready:audit`, the Ready lane, WIP, dead-claim, the hourly table | FIXED -- #788. `fetchOpenIssuesChecked` (`ready-label-audit.mjs`) states examined-vs-GitHub's-own-reported-count and refuses on mismatch; `labellessRows`/`reportLabelless` name a row with no label at all. |
  * | Project items          | the board view, `openRowsAbsentFromBoard`                  | FIXED -- #788, same commit. `openRowsAbsentFromBoard` reads EVERY open issue via `fetchOpenIssuesChecked`, not a `ready`-only subset (`ready-label-audit.mjs:812`, "EVERY OPEN ROW, not just `ready`"); `reportAbsentFromBoard` prints `OK N of M open issue(s) checked` or names each absent row. |
  * | branch prefixes        | `queue:table`'s owner column, the stranded-branch sweep, `worktrees:prune`'s exemptions | BUILT HERE. `fetchRemoteBranchesChecked` (`queue-table.mjs`) states the local mirror's count against `git ls-remote`'s own independent read and refuses on a mismatch (a stale `fetch`); `branchPrefixCensus`/`renderBranchPrefixes` name any branch with no owner prefix at all -- section 6 of `queue-table.mjs`'s own output. Deliberately does NOT classify which prefix is "correct" (a judgement, not a census -- see the issue's own "What this row is NOT"); it only answers whether one exists. |
- * | `reported/` kinds      | `board-data.mjs`'s `REPORTED_KINDS`, the appendix, section 3 | ALREADY THE MODEL. `board-style.test.ts` already compares the directory listing on disk against the declared kinds and fails on a mismatch -- the one enumeration on this table that already asserted its own completeness before this row existed. Nothing to build; cited as the shape the rest of this table copies. |
+ * | `reported/` kinds      | `board-data.mjs`'s `REPORTED_KINDS`, the appendix, section 3 | ALREADY THE MODEL. `board-reported-data-integrity.test.ts` (extracted from `board-style.test.ts` in guard triage 4 of 6, #906 -- the rest of that file's content/style checks retired, this data-integrity pair did not) already compares the directory listing on disk against the declared kinds and fails on a mismatch -- the one enumeration on this table that already asserted its own completeness before this row existed. Nothing to build; cited as the shape the rest of this table copies. |
  * | workflow / check names | `checkReasons`, the arm path, `gh pr checks`                | ALREADY THE RIGHT SHAPE. A required context that never ran is handled as its OWN state (`checkReasons`'s "no run reported" branch, distinct from a check that ran and failed) rather than folded into either -- the exact "the thing can be absent, name that too" property this row asks for, already present because a required-but-silent context is a state this project was already forced to build for `arm-pr.mjs` to be safe at all. |
  * | session sockets        | `ListAgents`, every cross-session message                  | ACCEPTED, NOT BUILDABLE HERE. See the note below this table. |
  *
@@ -71,8 +71,8 @@ test("#790: every 'already fixed' or 'already the model' row on this file's own 
   assert.equal(typeof fetchRemoteBranchesChecked, "function");
   assert.equal(typeof branchPrefixCensus, "function");
   assert.equal(typeof renderBranchPrefixes, "function");
-  assert.ok(existsSync(repoPath("packages/lab/src/packaging/board-style.test.ts")),
-    "the 'reported/ kinds' row cites board-style.test.ts as the model -- it must still exist");
+  assert.ok(existsSync(repoPath("packages/lab/src/packaging/board-reported-data-integrity.test.ts")),
+    "the 'reported/ kinds' row cites board-reported-data-integrity.test.ts as the model -- it must still exist");
 });
 
 test("#790: the issue-labels and Project-items rows' own completeness statement still refuses (on both "

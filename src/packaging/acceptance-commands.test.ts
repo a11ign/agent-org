@@ -34,10 +34,16 @@ const HISTORY_FIXTURE = "packages/lab/src/packaging/pre-push-resolve-toward-main
 const NO_HISTORY = { history: false, token: false, fleet: false };
 const WITH_HISTORY = { history: true, token: false, fleet: false };
 
-// #621's own worked example: reaches `gh` with NO `// requires:` header at all -- `collect()`, imported
-// from `scripts/board-data.mjs`, is what actually shells out. The header-only mechanism (#510) cannot see
-// this file; the closure-derived one is built specifically because it must.
-const BOARD_STYLE_FIXTURE = "packages/lab/src/packaging/board-style.test.ts";
+// #621's own worked example: reaches `gh` with NO `// requires:` header at all -- `resolveChromeBinary()`,
+// imported from `scripts/board-document.mjs`, is what actually shells out. The header-only mechanism
+// (#510) cannot see this file; the closure-derived one is built specifically because it must.
+//
+// board-style.test.ts (the ORIGINAL worked example, via `collect()` in `scripts/board-data.mjs`) retired
+// 2026-09-10 in guard triage 4 of 6 (#906) -- this file has the identical shape (no header, reaches `gh`
+// only through a local import) and survives that row. Values below re-derived directly from
+// `deriveClosureRequirements`/`closureRequirementMessage` against this fixture, not carried over from the
+// old one.
+const BOARD_STYLE_FIXTURE = "packages/lab/src/packaging/board-document-chrome-resolver.test.ts";
 const NO_TOKEN = { history: true, token: false, fleet: true, corpus: true };
 const WITH_TOKEN = { history: true, token: true, fleet: true, corpus: true };
 
@@ -600,9 +606,10 @@ test("#510 unmetCommandRequirements: a non-`tsx --test` command is never inspect
 
 test("#510 classifyCommand: the real history fixture is REFUSED, named, when the job has no history", () => {
   // #621: the CLOSURE-derived check runs first now, and its message names the file by BASENAME (matching
-  // #621's own worked example, "board-style.test.ts requires token via collect -> board-data.mjs:72") --
-  // never the full repo-relative path `unmetCommandRequirements`'s header-only message used. Both are
-  // correct; they answer different questions ("what does the closure prove" vs. "what file declared it").
+  // #621's own worked example, "board-document-chrome-resolver.test.ts requires token via
+  // resolveChromeBinary -> board-document.mjs:1190") -- never the full repo-relative path
+  // `unmetCommandRequirements`'s header-only message used. Both are correct; they answer different
+  // questions ("what does the closure prove" vs. "what file declared it").
   const result = classifyCommand(`npx tsx --test ${HISTORY_FIXTURE}`, { capabilities: NO_HISTORY });
   assert.equal(result.verdict, "refused");
   assert.match((/** @type {{reason:string}} */(result)).reason, /`history`/);
@@ -755,26 +762,28 @@ test("#540 MUTATION TARGET -- restoring the old single-findIndex behaviour must 
 });
 
 // --- #621: a test file's requirements are DERIVED from its import closure, not read off an opt-in
-// header. board-style.test.ts has no `// requires:` header at all and reaches `gh` only transitively,
-// through `collect()` in scripts/board-data.mjs -- the fourth instance in two days of exactly this shape
-// (#382), and the whole reason #510's header alone could never catch it: an opt-in declaration cannot
-// catch the file whose author did not know there was something to declare. ---
+// header. board-document-chrome-resolver.test.ts has no `// requires:` header at all and reaches `gh`
+// only transitively, through `resolveChromeBinary()` in scripts/board-document.mjs -- the fourth instance
+// in two days of exactly this shape (#382), and the whole reason #510's header alone could never catch
+// it: an opt-in declaration cannot catch the file whose author did not know there was something to
+// declare. (Original worked example, board-style.test.ts via `collect()`, retired 2026-09-10 -- #906.) ---
 
-test("#621 deriveClosureRequirements: board-style.test.ts reaches `gh` transitively, via `collect`, at "
-  + "the real line `board-data.mjs` spawns it on", () => {
+test("#621 deriveClosureRequirements: board-document-chrome-resolver.test.ts reaches `gh` transitively, "
+  + "via `resolveChromeBinary`, at the real line `board-document.mjs` spawns it on", () => {
   const hits = deriveClosureRequirements(BOARD_STYLE_FIXTURE);
   assert.equal(hits.length, 1);
   assert.equal(hits[0].requirement, "token");
-  assert.equal(hits[0].file.endsWith("scripts/board-data.mjs"), true);
-  assert.equal(hits[0].line, 72, "board-data.mjs's own execFileSync(\"gh\", ...) call site -- if this "
-    + "moves, the fixture line below must move with it");
+  assert.equal(hits[0].file.endsWith("scripts/board-document.mjs"), true);
+  assert.equal(hits[0].line, 1190, "board-document.mjs's own execFileSync(\"gh\", ...) call site -- if "
+    + "this moves, the fixture line below must move with it");
 });
 
 test("#621 closureRequirementMessage: the EXACT worked example from the issue, naming the hop -- "
   + "\"this test needs a token\" sends a reader to the test; naming the module that spawns `gh` sends "
   + "them to the cause", () => {
   const [hit] = deriveClosureRequirements(BOARD_STYLE_FIXTURE);
-  assert.equal(closureRequirementMessage(hit), "board-style.test.ts requires token via collect → board-data.mjs:72");
+  assert.equal(closureRequirementMessage(hit),
+    "board-document-chrome-resolver.test.ts requires token via resolveChromeBinary → board-document.mjs:1190");
 });
 
 test("#621 unmetClosureRequirements: refused against a job with no token, satisfied against one that "
@@ -789,18 +798,20 @@ test("#621 unmetCommandClosureRequirements: a non-`tsx --test` command is never 
   assert.deepEqual(unmetCommandClosureRequirements("npm run lint", NO_TOKEN), []);
 });
 
-test("#621 ACCEPTANCE: classifyCommand REFUSES board-style.test.ts, named, naming the chain -- with NO "
-  + "`// requires:` header on the file at all, proving the refusal comes from the closure and not from a "
-  + "declaration", () => {
+test("#621 ACCEPTANCE: classifyCommand REFUSES board-document-chrome-resolver.test.ts, named, naming the "
+  + "chain -- with NO `// requires:` header on the file at all, proving the refusal comes from the "
+  + "closure and not from a declaration", () => {
   assert.ok(existsSync(BOARD_STYLE_FIXTURE), "the fixture itself must exist for this test to mean anything");
   assert.deepEqual(testFileRequirements(readFileSync(BOARD_STYLE_FIXTURE, "utf8")), [],
-    "sanity: board-style.test.ts truly declares no // requires: header -- if this ever gains one, the "
-    + "refusal below could be coming from #510's header path instead of #621's closure derivation");
+    "sanity: board-document-chrome-resolver.test.ts truly declares no // requires: header -- if this ever "
+    + "gains one, the refusal below could be coming from #510's header path instead of #621's closure "
+    + "derivation");
   const result = classifyCommand(`npx tsx --test ${BOARD_STYLE_FIXTURE}`, { capabilities: NO_TOKEN });
   assert.equal(result.verdict, "refused");
   const reason = (/** @type {{reason:string}} */ (result)).reason;
   assert.match(reason, /`token`/);
-  assert.match(reason, /board-style\.test\.ts requires token via collect → board-data\.mjs:72/);
+  assert.match(reason,
+    /board-document-chrome-resolver\.test\.ts requires token via resolveChromeBinary → board-document\.mjs:1190/);
 });
 
 test("#621 MUTATION TARGET: the identical command RUNS once the job's capabilities carry a token -- "
@@ -810,15 +821,16 @@ test("#621 MUTATION TARGET: the identical command RUNS once the job's capabiliti
 });
 
 test("#621 MUTATION direction (the issue's own instruction): WITHOUT the closure derivation, "
-  + "board-style.test.ts is classified purely on its (nonexistent) header and RUNS against a tokenless "
-  + "job -- reproducing, from a copy of the pre-#621 mechanism, the exact live failure #382/#619 measured "
-  + "four times", () => {
+  + "board-document-chrome-resolver.test.ts is classified purely on its (nonexistent) header and RUNS "
+  + "against a tokenless job -- reproducing, from a copy of the pre-#621 mechanism, the exact live "
+  + "failure #382/#619 measured four times", () => {
   // Reproduces the OLD, header-only path directly (unmetCommandRequirements, never touching the closure
   // walk) so this fails if #621's derivation is ever bypassed or deleted, without needing to touch
   // acceptance-commands.mjs itself.
   const preClosureUnmet = unmetCommandRequirements(`npx tsx --test ${BOARD_STYLE_FIXTURE}`, NO_TOKEN);
   assert.deepEqual(preClosureUnmet, [],
-    "the header-only mechanism finds NOTHING unmet here -- board-style.test.ts declares no header, so "
+    "the header-only mechanism finds NOTHING unmet here -- board-document-chrome-resolver.test.ts "
+    + "declares no header, so "
     + "the pre-#621 code would have classified this command RUNNABLE against a job with no token, which "
     + "is precisely the defect this row exists to close");
 });
@@ -1124,18 +1136,13 @@ test("#827: removing every runnable command from a body must still not report su
   assert.equal(report.ok, false, "a whole-suite command naming no file must still fail the job");
 });
 
-test("#827 ACCEPTANCE, against the REAL files this row was filed over: board-markdown.test.ts and "
-  + "board-achievement-retirement.test.ts each carry `// no-token:` now, and each derives NO token "
-  + "requirement from board-document.mjs's own `gh release view` spawn", () => {
-  for (const file of [
-    "packages/lab/src/packaging/board-markdown.test.ts",
-    "packages/lab/src/packaging/board-achievement-retirement.test.ts",
-  ]) {
-    const hits = deriveClosureRequirements(file);
-    assert.deepEqual(hits, [], `${file} must derive no requirement now that it declares \`// no-token:\` `
-      + `and never calls the function it names; got: ${hits.map(closureRequirementMessage).join("; ")}`);
-  }
-});
+// #827's own two REAL fixtures, board-markdown.test.ts and board-achievement-retirement.test.ts, retired
+// 2026-09-10 in guard triage 4 of 6 (#906). No other surviving packaging test imports only a SAFE export
+// of a module that also spawns `gh` elsewhere, so the acceptance test that named them directly (asserting
+// their `// no-token:` declaration was honoured) is removed rather than re-pointed at a fixture that would
+// not reproduce the same shape. The mechanism itself is unaffected and still proven by the REGRESSION and
+// MUTATION tests above, against `writeSyntheticMixedModule` -- this test was the additional, real-world
+// confirmation, and its premise (these two specific files existing) is now false.
 
 // --- #513's OTHER HALF: the command everybody actually types ---
 //
