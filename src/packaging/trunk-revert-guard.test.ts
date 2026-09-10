@@ -81,6 +81,31 @@ const SCRIPT = `${REPO}/scripts/trunk-revert-guard.mjs`;
 const CLONE = realpathSync(mkdtempSync(join(tmpdir(), "a11y-revert-guard-")));
 execFileSync("git", ["clone", "--local", "--quiet", REPO, CLONE], { stdio: "pipe", env: sandboxGitEnv() });
 
+/**
+ * A clone of a SHALLOW checkout is shallow, and the two real merges below are then simply absent --
+ * `fatal: ambiguous argument 'fc9b89d2': unknown revision`, which the guard correctly reports as
+ * CANNOT_ASK (exit 2), which these tests then read as a wrong verdict (expected 1 or PASS). That is what
+ * turned main red for 27 hours from #895's merge (48aef3f2, 2026-09-09 19:11Z): trunk-guard's unscoped
+ * build took the shallow checkout, and every later push was declined as INHERITED. #901.
+ *
+ * So each spawning test asks first whether the fixture is present, and SKIPS BY NAME when it is not --
+ * the same shape `backlog-file-facts.test.ts` uses for a blob the checkout cannot see. A skip is honest
+ * where a pass would be a lie and a fail blames the wrong thing; the job that must actually run these is
+ * `trunk-guard`'s unscoped build, whose checkout is full-history since the same PR, and a PR body can
+ * deepen the acceptance job's with `History: full`.
+ */
+const fixturePresent = (sha: string): boolean => {
+  try {
+    execFileSync("git", ["cat-file", "-e", `${sha}^{commit}`], { cwd: CLONE, stdio: "pipe", env: sandboxGitEnv() });
+    return true;
+  } catch {
+    return false;
+  }
+};
+const NO_FIXTURE = (sha: string) =>
+  `SKIPPED: fixture merge ${sha} is not in this checkout (shallow clone) -- the acceptance ran nowhere here. `
+  + "trunk-guard's full-history build runs it; a PR body can declare `History: full` to run it in acceptance.";
+
 after(() => rmSync(CLONE, { recursive: true, force: true }));
 
 // --- unexplainedDeletions: the pure decision ---
@@ -152,7 +177,8 @@ test("branchTouchedPaths: a path with an empty log is NOT touched", () => {
 // --- ACCEPTANCE: driven live against this repository's own two real fixtures ---
 
 test("ACCEPTANCE (#411, criterion 2): the real incident (f2cdfaf3) is REFUSED, naming the six deleted "
-  + "paths no branch commit ever touched", () => {
+  + "paths no branch commit ever touched", (t) => {
+  if (!fixturePresent("f2cdfaf3")) return t.skip(NO_FIXTURE("f2cdfaf3"));
   let out;
   try {
     execFileSync("node", [SCRIPT, "--merge=f2cdfaf3"], { cwd: CLONE, encoding: "utf8", stdio: "pipe" });
@@ -182,7 +208,8 @@ test("ACCEPTANCE (#411, criterion 2): the real incident (f2cdfaf3) is REFUSED, n
 });
 
 test("ACCEPTANCE (#411, criterion 3): a legitimate deletion (#354, fc9b89d2) is NOT refused -- the half "
-  + "that decides whether this survives a week", () => {
+  + "that decides whether this survives a week", (t) => {
+  if (!fixturePresent("fc9b89d2")) return t.skip(NO_FIXTURE("fc9b89d2"));
   const out = execFileSync("node", [SCRIPT, "--merge=fc9b89d2"], { cwd: CLONE, encoding: "utf8" });
   assert.match(out, /PASS/);
 });
@@ -330,7 +357,8 @@ test("C3 ACCEPTANCE, COMPOSED: the real f2cdfaf3 REFUSAL, once trunkGate fails o
     `expected READY (revert-worthy), got code ${composed.code}: ${composed.reason}`);
 });
 
-test("C3 ACCEPTANCE, COMPOSED, POSITIVE CONTROL: an ordinary merge's PASS never even reaches decideRevert", () => {
+test("C3 ACCEPTANCE, COMPOSED, POSITIVE CONTROL: an ordinary merge's PASS never even reaches decideRevert", (t) => {
+  if (!fixturePresent("fc9b89d2")) return t.skip(NO_FIXTURE("fc9b89d2"));
   // fc9b89d2 (#354) is the guard's own documented legitimate-deletion case -- PASSES, so trunkGate's guard
   // step succeeds, the job does not fail on this step, and (assuming the rest of trunkGate is otherwise
   // green) `decideRevert`'s `if: needs.trunkGate.result == 'failure'` is false: it never runs at all. There

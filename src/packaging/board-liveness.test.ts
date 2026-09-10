@@ -112,16 +112,25 @@ test("daysSince counts whole days, so 'today' is 0 and does not read as stale", 
   assert.equal(daysSince("2026-09-17", NOW), 3);
 });
 
+// #901: the watchdog is a step in `trunk-guard.yml`'s `watchdogs` job since 2026-09-10, not a workflow of
+// its own -- same trigger, same script, no workflow run of its own. The pin follows it there.
+const TRUNK_GUARD = path.join(REPO_ROOT, ".github/workflows/trunk-guard.yml");
+
 test("the check does NOT run on a schedule, which is the property it exists for", () => {
   // PINNED, because it is the one design decision that cannot be recovered by reading the script: a
   // watchdog moved onto a cron is disabled by the same repository inactivity it watches for, and the
-  // change would look like tidying two scheduled jobs into three.
-  const workflow = readFileSync(path.join(REPO_ROOT, ".github/workflows/board-liveness.yml"), "utf8");
+  // change would look like tidying a push-triggered step into the nightly file.
+  const workflow = readFileSync(TRUNK_GUARD, "utf8");
   assert.ok(!/^\s*schedule:/m.test(workflow),
-    "board-liveness.yml must not be scheduled. GitHub disables scheduled workflows repository-wide after "
+    "trunk-guard.yml must not be scheduled. GitHub disables scheduled workflows repository-wide after "
     + "60 days of inactivity, so a scheduled watchdog dies in the same breath as the jobs it guards. It "
     + "runs on push, which cannot be disabled by inactivity because a push IS the activity");
   assert.match(workflow, /^\s*push:/m, "it must run on push -- the trigger that inactivity cannot silence");
+  assert.match(workflow, /run: node scripts\/board-schedule-liveness\.mjs --post --issue=20/,
+    "the board watchdog step must still be in trunk-guard.yml -- a watchdog in no workflow has silently stopped");
+  const nightly = readFileSync(path.join(REPO_ROOT, ".github/workflows/nightly.yml"), "utf8");
+  assert.doesNotMatch(nightly, /board-schedule-liveness\.mjs/,
+    "the board watchdog must not ALSO be in nightly.yml -- a cron copy would look like it covers the gap");
 });
 
 // ---------------------------------------------------------------------------------------------------
@@ -140,13 +149,13 @@ test("#590 every workflow the watchdog's HEADER names is one its code actually g
   // DERIVED FROM THE HEADER, never a second hand-written list -- a second list is exactly what the first
   // constant became. If the header stops naming a workflow, or starts naming a third, this fails until
   // somebody decides which of the two is wrong.
-  const header = readFileSync(path.join(REPO_ROOT, ".github/workflows/board-liveness.yml"), "utf8")
+  const header = readFileSync(TRUNK_GUARD, "utf8")
     .split("\n").filter((l) => l.trimStart().startsWith("#")).join("\n");
   const named = [...new Set([...header.matchAll(/`(board-[a-z-]+\.yml)`/g)].map((m) => m[1]))];
   assert.ok(named.length >= 2, `the header must still name the workflows it guards; found ${named.length}`);
   for (const workflow of named) {
     assert.ok(GUARDED_WORKFLOWS.includes(workflow),
-      `${workflow} is named in board-liveness.yml's header but is not in GUARDED_WORKFLOWS -- the header `
+      `${workflow} is named in trunk-guard.yml's header but is not in GUARDED_WORKFLOWS -- the header `
       + "claiming more than the code guards is the defect #590 was filed for");
   }
 });
