@@ -16,7 +16,9 @@
 // ever calls the real ones.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadavg } from "node:os";
+import { loadavg, tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { prRow, nonSuccessByName, newestPerName, render, fetchRefs, renderStalled, windowOf,
   renderMergedChecks, STALL_MINUTES, EXIT, hostState, hostContention, reliefFor, topConsumers, isRed, renderBudget,
   fetchRemoteBranchesChecked, branchPrefixCensus, renderBranchPrefixes }
@@ -395,10 +397,72 @@ test("#681 the load reads with no PATH dependency -- os.loadavg(), never a subpr
   assert.equal(typeof oneMinute, "number");
   assert.ok(!Number.isNaN(oneMinute), "os.loadavg() cannot ENOENT the way `sysctl` on a minimal PATH did");
   assert.ok(oneMinute >= 0);
+});
 
-  const host = hostState();
-  if (host === null) return; // no `vm_stat`: not this test's subject, and not a pass to fake either
-  assert.equal(host.load, oneMinute, "hostState reports that same number, unmediated");
+/**
+ * #1003: THE SECOND HALF OF THAT TEST COMPARED TWO SAMPLES OF A MOVING QUANTITY, AND SO FAILED UNDER LOAD.
+ *
+ * It read `assert.equal(host.load, oneMinute, "hostState reports that same number, unmediated")`, where
+ * `oneMinute` came from this file's own `loadavg()` and `host.load` from `hostState()`'s — two calls, two
+ * instants. On a quiet host they agree; on a busy one they do not, and a parallel `npm test` is exactly
+ * when the machine is busy. **Measured on one failing run: 20.875 against 19.92.** It cost three sessions a
+ * diagnosis in one evening, each on a branch that does not touch this file.
+ *
+ * A TOLERANCE WOULD BE THE WRONG FIX. #681's subject is a MECHANISM — `hostState` must read `os.loadavg()`
+ * rather than shelling out to `sysctl`, which lives in `/usr/sbin` and returned nothing for ninety minutes
+ * on a host whose real load was 15.08 against a ceiling of 12, while the table printed `load ?` beside
+ * "the host is fine". Equality of two live samples was a way of showing the number came from the same
+ * place; it cannot show that, and a tolerance would only make the false failure rarer while proving no
+ * more. So the mechanism is asserted directly: put a `sysctl` on `PATH` that SHOUTS if anything runs it,
+ * and read the load anyway.
+ */
+const SYSCTL_MARKER = join(tmpdir(), `a11y-1003-sysctl-ran.${process.pid}`);
+
+/** A `PATH` whose first entry holds a `sysctl` that records being run and fails. */
+function pathWithShoutingSysctl(): string {
+  const dir = mkdtempSync(join(tmpdir(), "a11y-1003-"));
+  writeFileSync(join(dir, "sysctl"), `#!/bin/sh
+touch ${SYSCTL_MARKER}
+echo "sysctl was run" >&2
+exit 97
+`);
+  chmodSync(join(dir, "sysctl"), 0o755);
+  return `${dir}:${process.env.PATH ?? ""}`;
+}
+
+test("#1003: hostState's load survives a PATH whose `sysctl` refuses -- the mechanism, not two samples", () => {
+  const realPath = process.env.PATH;
+  rmSync(SYSCTL_MARKER, { force: true });
+  process.env.PATH = pathWithShoutingSysctl();
+  try {
+    const host = hostState();
+    // `vm_stat` is macOS-only and this half of `hostState` genuinely needs it. SKIPS HONESTLY, as the
+    // paragraph above this test has said since #681 -- a null here is "not this test's subject", never a
+    // pass to fake. The assertions above it still run everywhere.
+    if (host === null) return;
+    assert.equal(typeof host.load, "number");
+    assert.ok(!Number.isNaN(host.load) && host.load >= 0,
+      `hostState read the load as ${host.load} with a refusing sysctl on PATH -- it is shelling out again`);
+  } finally {
+    process.env.PATH = realPath;
+  }
+  assert.equal(existsSync(SYSCTL_MARKER), false,
+    "hostState ran `sysctl` for the load. That is #681's own defect returning: /usr/sbin is not on the "
+    + "PATH a node script inherits from a shell with a minimal one, and the failure is silent");
+});
+
+test("#1003 REPRODUCED: the assertion this replaced fails on two readings of a number that moved", () => {
+  // The defect written out rather than described, and with no clock in it: the pair is the one measured on
+  // the run that failed. `assert.equal` on two samples of a moving quantity is the whole fault, and it is
+  // not about load averages -- it is about comparing a value to itself across an interval in which it is
+  // free to change.
+  const readings = [20.875, 19.92];
+  const sample = () => readings.shift() as number;
+  const oneMinute = sample();
+  const hostLoad = sample();
+  assert.throws(() => assert.equal(hostLoad, oneMinute),
+    "if these two ever compare equal the reproduction has stopped reproducing, and the row's evidence "
+    + "with it");
 });
 
 /**
