@@ -26,13 +26,16 @@
  * included, and that is where a measurement is useful. Only the ONE verdict slot filters by kind.
  *
  * Adopted from `dispatcher`'s uncommitted work in the row's worktree (`ceo`'s ruling: a worktree travels
- * with its row), read line by line, and committed under `worker-judge`. The last test below is new: it
- * runs against the tracked record itself.
+ * with its row), read line by line, and committed under `worker-judge`.
+ *
+ * Imports the PURE `board-gates.mjs`, never `board-data.mjs`, which spawns `gh`: that keeps this file
+ * runnable by CI's acceptance job. The one test that needs the tracked record is
+ * `board-appendix-gate-record.test.ts`.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { isConformanceGate, latestVerdictGate, reported, worstVerdict } from "../../../../scripts/board-data.mjs";
+import { latestVerdictGate } from "../../../../scripts/board-gates.mjs";
 
 /** The row's own demonstrated population, reproduced verbatim (dates/commands as given on #429). */
 const CONFORMANCE_MAIN = {
@@ -134,20 +137,4 @@ test("#429: two verdict-carrying entries at the identical timestamp is decided b
   const tied = { ...CONFORMANCE_BRANCH, at: CONFORMANCE_MAIN.at };
   const selected = latestVerdictGate([CONFORMANCE_MAIN, tied]);
   assert.ok(selected === CONFORMANCE_MAIN || selected === tied);
-});
-
-test("#429, ON THE TRACKED RECORD: the appendix slot holds a conformance gate that carries a verdict, or nothing", () => {
-  // Not a fixture. On `origin/main` before this fix the slot read the newest entry of ANY kind, which on
-  // 2026-09-11 was `#659 step 1 -- replay of the three captures...`, an operational note with no verdict
-  // line at all. The board's "Most recent automated check result" was a diagnostic, while the 2026-09-07
-  // `rules-real-pages` FAIL sat three entries down. The property is stated so it survives new entries.
-  const { latestGate, gates } = reported();
-  assert.ok(gates.length > 0, "no gate recorded, so this asserts over nothing");
-  if (latestGate === null) {
-    assert.ok(!gates.some((g: unknown) => isConformanceGate(g) && worstVerdict((g as { output?: string }).output) !== null),
-      "the slot is empty while a verdict-bearing conformance gate is recorded");
-    return;
-  }
-  assert.ok(isConformanceGate(latestGate), `the slot holds a non-conformance entry: ${String(latestGate.command).split("\n")[0]}`);
-  assert.notEqual(worstVerdict(latestGate.output), null, "the slot holds a conformance run with no verdict line");
 });
