@@ -135,15 +135,17 @@ test("#989: the Region reading DELEGATES to the tree's own parser -- it is not a
   // paths itself, so each of those reaches B2 with no edit here -- which is the property worth asserting,
   // not any one grammar.
   //
-  // THE EXTENSIONLESS CASE IS NOT ASSERTED HERE ON PURPOSE: #999 (PR #1005) is open, not merged, so a
-  // fenced `scripts/git-hooks/pre-push` declares nothing TODAY and this file would be pinning a parser it
-  // does not own to a version that has not landed. When #1005 merges, that row becomes in-build-detectable
-  // with no change to this rule, and that is the delegation working.
+  // THE DELEGATION, PAYING OFF WHILE THIS ROW WAS BEING WRITTEN: when I drafted these tests #999 (PR
+  // #1005) was open, so a fenced `scripts/git-hooks/pre-push` declared nothing and asserting it would have
+  // pinned a parser this rule does not own to a version that had not landed. #1005 merged an hour later,
+  // and the case below now passes with NO change to the rule -- which is the property worth having.
   const body = (region: string) => JSON.stringify({ body: `## Region\n\n${region}\n` });
   const shapeFor = (region: string) => lookupRowShape(989, {
     run: (args) => (args[0] === "issue" ? body(region) : "[]"),
   });
   assert.equal(shapeFor("```\nscripts/row-claim/own-pr-health-rule.mjs\n```")?.declaresPaths, true);
+  assert.equal(shapeFor("```\nscripts/git-hooks/pre-push\n```")?.declaresPaths, true, "#999's fenced "
+    + "extensionless path -- #911's own Region, which declared nothing before PR #1005 merged");
   assert.equal(shapeFor("packages/control/ansible/")?.declaresPaths, true, "#941's directory item");
   assert.equal(shapeFor("Whatever it needs under `docs/`, and the ruling on the row.")?.declaresPaths, false);
 });
