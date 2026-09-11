@@ -3,19 +3,6 @@
  * `scripts/merge-guard/checks-rule.mjs`. Four distinct states -- empty, missing, still running, failing --
  * each needing a different sentence and a different fix.
  */
-// no-token: gh
-//
-// #1007: this file imports `own-pr-health-rule.mjs` to drive the CONSUMER of the sentences below, and that
-// module's own import closure reaches `lookups.mjs`, which spawns `gh`. The closure walk charges the whole
-// chain (`merge-guard-checks-rule.test.ts requires token via own-pr-health-rule.mjs → gh → lookups.mjs:22`),
-// which is true of the IMPORT and false of the CALL: the one function driven here, `ownPrHealthReason`, is
-// pure -- it takes the reasons array already built and returns a sentence.
-//
-// DECLARED AND THEN VERIFIED, never substituted. The mechanism's own check is shallow (this file must not
-// call `gh(`), so it was proved rather than asserted: run with `GH_TOKEN`/`GITHUB_TOKEN` unset and a fake
-// `gh` first on `PATH` that exits 97 and shouts, the suite is 17 pass / 0 fail and the fake is never
-// invoked. If the pure path ever starts shelling out, that probe fails loudly rather than silently
-// returning something plausible.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -196,14 +183,22 @@ test("#1007: an OLDER cancelled run beside a newer conclusion is still #902's ca
   assert.deepEqual(checkReasons(pr, ["gate"], superseded), []);
 });
 
-test("#1007 CONSUMER: `row-claim`'s own colour reads this as a wait, not RED -- the case that blocked a claim", async () => {
-  // Read through the consumer rather than asserted here twice: `own-pr-health-rule.mjs` derives its colour
-  // by matching `checkReasons`'s own sentences, so the prefix chosen above is what decides the verdict a
-  // claimant actually sees. That file belongs to another row (#989) and is not touched -- this drives it.
-  const { ownPrHealthReason } = await import("../../../../scripts/row-claim/own-pr-health-rule.mjs");
-  const reason = ownPrHealthReason({ number: 1005, state: "OPEN", reasons: checkReasons(pr, ["gate"], LIVE_1005) });
-  assert.match(String(reason), /STILL RUNNING/);
-  assert.ok(!/RED/.test(String(reason)),
-    "this is the exact verdict that refused a claim with `RED (a required check is failing)` while "
-    + "`gh pr checks` showed no failure at all -- it does not list a cancelled check-run");
-});
+/**
+ * #1007: THE CONSUMER ASSERTION IS DELIBERATELY ABSENT, and worker-judge's review of #1008 is why.
+ *
+ * An earlier version drove `ownPrHealthReason` (`scripts/row-claim/own-pr-health-rule.mjs`) to prove that
+ * `row-claim`'s own colour reads the sentence above as a wait rather than RED -- the exact verdict that
+ * refused a claim. **#989 dissolves that relationship**: B2 stops reading check state at all, so
+ * `colourFor` and its prefix-matching go with it. The assertion pinned a path about to stop existing, and
+ * both pull requests were green alone while whichever merged second would have broken.
+ *
+ * It was also the only reason this file needed a `// no-token: gh` declaration: importing that module
+ * pulls `lookups.mjs` into the closure, which spawns `gh`, and the acceptance job has no token. One
+ * deletion removes the collision, the declaration and the proof burden.
+ *
+ * NOTHING THIS MODULE OWNS IS LOST. The `STILL RUNNING:` prefix is still asserted above against this
+ * module's own output, which is the property `checks-rule.mjs` is responsible for. The other two consumers
+ * (`merge-guard.mjs`, `armed-race-rule.mjs`) read `reasons.length` and never the prefixes -- checked, not
+ * assumed -- so after #989 no caller parses these sentences and there is no cross-module contract left to
+ * pin from here.
+ */
