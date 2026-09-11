@@ -173,6 +173,14 @@ test("laneLabelsFor: an EMPTY Region (a non-code row) also gets lane:any", () =>
   assert.deepEqual(laneLabelsFor([], { lanes: [PIPELINE_LANE] }), ["lane:any"]);
 });
 
+test("#941: a DIRECTORY entry touches a lane lying inside it, or around it -- never lane:any by omission", () => {
+  assert.deepEqual(laneLabelsFor([".github/"], { lanes: [PIPELINE_LANE] }), ["lane:dispatcher"], "the lane is inside it");
+  assert.deepEqual(laneLabelsFor([".github/workflows/"], { lanes: [PIPELINE_LANE] }), ["lane:dispatcher"]);
+  assert.deepEqual(laneLabelsFor([".github/workflows/nested/"], { lanes: [PIPELINE_LANE] }), ["lane:dispatcher"],
+    "it is inside the lane");
+  assert.deepEqual(laneLabelsFor(["scripts/", "docs/board/"], { lanes: [PIPELINE_LANE] }), ["lane:any"]);
+});
+
 test("#883 ACCEPTANCE, MUTATION TARGET: the label MOVES when lane-ownership.json's paths move -- a "
   + "row touching a path now assigned to a lane derives that lane; the identical row against the OLD "
   + "config (the path unassigned) derives lane:any instead. If the label does not move with the config, "

@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import {
   fileOverlapReason, lookupMyRegionFiles, lookupOpenPrFiles,
 } from "../../../../scripts/row-claim/file-overlap-rule.mjs";
+import { declaredRegionFiles } from "../../../../scripts/region-paths.mjs";
 
 // --- fileOverlapReason: THE VERDICT, PURE ---
 
@@ -87,6 +88,21 @@ test("MUTATION target: the overlap check compares actual paths, not merely count
     ["scripts/row-claim.mjs"],
     [{ number: 406, files: ["scripts/merge-guard.mjs"] }],
   );
+  assert.equal(reason, null);
+});
+
+// --- #941: a DIRECTORY in a Region is a prefix, and the overlap DECISION honours it ---
+
+test("#941: a zero-declaration row's Region, read through the REAL parser, now overlaps an open PR under it", () => {
+  // #918 and #921 declared exactly this, and to this rule they claimed nothing at all.
+  const mine = declaredRegionFiles("## Region\n\n```\npackages/control/ansible/\n```\n") ?? [];
+  const { reason } = fileOverlapReason(mine, [{ number: 950, files: ["packages/control/ansible/lab-reset.yml"] }]);
+  assert.match(reason ?? "", /overlaps #950, which already touches: packages\/control\/ansible\/lab-reset\.yml/);
+});
+
+test("#941: ...and a directory does not overlap a file BESIDE it, or one that merely shares its spelling", () => {
+  const { reason } = fileOverlapReason(["packages/control/ansible/"],
+    [{ number: 951, files: ["packages/control/src/fleet.mjs", "packages/control/ansible.md"] }]);
   assert.equal(reason, null);
 });
 
