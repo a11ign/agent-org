@@ -237,37 +237,37 @@ test("#848: a row whose stateReason was never read stays reportable", () => {
 });
 
 test("#848: #887's shape -- closed by a merged PR from BEFORE #839 -- names the work, not the worker", () => {
-  const { attributed, line } = attributionFor({
+  const { verdict, line } = attributionFor({
     number: 894, headRefName: "agent/exhausted-over-a-gap-887", merged: true,
     createdAt: "2026-09-09T16:00:00Z", sessionLabels: [],
   });
-  assert.equal(attributed, false, "a branch name is not an attribution");
+  assert.equal(verdict, "work", "a branch name is not an attribution -- and not a finding either");
   assert.match(line, /PR #894 \(agent\/exhausted-over-a-gap-887\)/);
   assert.match(line, /the WORK, not the worker/);
 });
 
 test("#848: #853's shape -- no closing PR at all -- is the one that needs a person", () => {
-  const { attributed, line } = attributionFor(null);
-  assert.equal(attributed, false);
+  const { verdict, line } = attributionFor(null);
+  assert.equal(verdict, "undeclared");
   assert.match(line, /no merged pull request declared it/);
   assert.doesNotMatch(line, /PR #/, "there is no PR to name, and inventing one would be worse than none");
 });
 
 test("#848: a PR armed after #839 carries the worker and IS an attribution", () => {
-  const { attributed, line } = attributionFor({
+  const { verdict, line } = attributionFor({
     number: 900, headRefName: "agent/anything-1", merged: true,
     createdAt: ARM_LABELS_FROM, sessionLabels: ["session:worker-capture"],
   });
-  assert.equal(attributed, true);
+  assert.equal(verdict, "worker");
   assert.match(line, /session:worker-capture/);
 });
 
 test("#848: an UNMERGED closing reference attributes nothing", () => {
-  const { attributed } = attributionFor({
+  const { verdict } = attributionFor({
     number: 89, headRefName: "agent/never-landed", merged: false,
     createdAt: "2026-09-09T18:00:00Z", sessionLabels: ["session:worker-judge"],
   });
-  assert.equal(attributed, false, "#89 closed unmerged and #79 was closed anyway -- the work never landed");
+  assert.equal(verdict, "undeclared", "#89 closed unmerged and #79 was closed anyway -- the work never landed");
 });
 
 test("#848: a closing-PR response that cannot be parsed THROWS rather than reading as 'nothing closed it'", () => {
@@ -276,4 +276,35 @@ test("#848: a closing-PR response that cannot be parsed THROWS rather than readi
   assert.equal(closingPrFromResponse(JSON.stringify(
     { data: { repository: { issue: { timelineItems: { nodes: [{ closer: null }] } } } } }, null, 0), 853),
   null, "a hand close has no closer, and that is a fact rather than a failure");
+});
+
+test("#848: a PR opened AFTER #839 with no session label is a finding -- there, absence means something", () => {
+  // `arm-pr` copies the row's `session:` label onto its PR since #839, so a PR opened after it without
+  // one closed a row nobody claimed through `row-claim`. Before #839 the same absence says nothing, which
+  // is why the pre-#839 shape above is `work` and this one is not.
+  const { verdict, line } = attributionFor({
+    number: 912, headRefName: "agent/unclaimed-912", merged: true,
+    createdAt: ARM_LABELS_FROM, sessionLabels: [],
+  });
+  assert.equal(verdict, "undeclared");
+  assert.match(line, /never claimed through row-claim/);
+});
+
+test("#848: NOT_PLANNED reaches the filter through the REAL fetch path -- asked for, and carried", () => {
+  // The first version filtered on `stateReason` while `fetchClosedRowEvents` never asked `gh` for it and
+  // rebuilt each row without it, so in production the filter could not fire and the audit's
+  // "N closed NOT_PLANNED are not counted" always said 0. The synthetic rows above carried the field by
+  // hand, which is how every assertion passed.
+  const calls: string[][] = [];
+  const listing = JSON.stringify([
+    { number: 798, title: "probe", closedAt: "2026-09-09T15:04:24Z", stateReason: "NOT_PLANNED" },
+    { number: 853, title: "a real bypass", closedAt: "2026-09-09T17:46:42Z", stateReason: "COMPLETED" },
+  ]);
+  const run = (_cmd: string, args: string[]) => { calls.push(args); return args[0] === "issue" ? listing : ""; };
+  const rows = fetchClosedRowEvents({ run: run as never });
+
+  const listingArgs = calls.find((args) => args[0] === "issue") ?? [];
+  assert.match(listingArgs[listingArgs.indexOf("--json") + 1] ?? "", /\bstateReason\b/,
+    "the listing must ASK for stateReason");
+  assert.deepEqual(reportableUnattributable(rows, { since: PROVENANCE_REQUIRED_FROM }).map((r) => r.number), [853]);
 });
