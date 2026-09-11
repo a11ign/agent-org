@@ -138,3 +138,14 @@ test("#429: two verdict-carrying entries at the identical timestamp is decided b
   const selected = latestVerdictGate([CONFORMANCE_MAIN, tied]);
   assert.ok(selected === CONFORMANCE_MAIN || selected === tied);
 });
+
+test("#429: `rules-real-pages-update` is a DIFFERENT job -- the one that rewrites the baseline -- and never takes the slot", () => {
+  // worker-capture's review of #946: the name ended at `\b`, so `-update` matched, and its PASS recorded a day
+  // after the conformance FAIL held the slot. #429's own shape, one job over in `lab-job.yml`'s catalogue.
+  const update = { command: "npm run lab:job -- -e job=rules-real-pages-update -e ref=main",
+    at: "2026-09-08T09:00:00Z", output: "PASS — the baseline was rewritten from this run" };
+  assert.equal(latestVerdictGate([...FOUR_ENTRIES, update]), CONFORMANCE_MAIN);
+  // The control: the same job, quoted, IS the conformance gate, so the fix narrowed the name and nothing else.
+  const quoted = { ...CONFORMANCE_MAIN, command: "npm run lab:job -- -e job=\"rules-real-pages\" -e ref=main", at: "2026-09-08T10:00:00Z" };
+  assert.equal(latestVerdictGate([...FOUR_ENTRIES, update, quoted]), quoted);
+});
