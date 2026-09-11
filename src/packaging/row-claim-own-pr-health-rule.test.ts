@@ -1,3 +1,13 @@
+// no-token: gh
+//
+// #827's check charges a command the WHOLE import closure of what it imports, and this file imports
+// `own-pr-health-rule.mjs`, whose closure reaches `lookups.mjs`, which spawns `gh`. That is true of the
+// IMPORT and false of the CALL: every function driven here is pure or takes its `run` injected, and no
+// test below lets a real spawn happen.
+//
+// PROVED, NOT ASSERTED, since the check is deliberately shallow: with GH_TOKEN and GITHUB_TOKEN unset and a
+// fake `gh` first on PATH that exits 97 and shouts to stderr -- 17 pass, 0 fail, and the fake never printed.
+
 /**
  * RULE: DOES THE CLAIMING SESSION ALREADY HOLD A ROW IN BUILD? -- B2, #476, rewritten by #989. See
  * `scripts/row-claim/own-pr-health-rule.mjs` for the full account.
