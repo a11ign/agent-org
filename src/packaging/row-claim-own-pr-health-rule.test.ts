@@ -1,188 +1,170 @@
+// no-token: gh
+//
+// #827's check charges a command the WHOLE import closure of what it imports, and this file imports
+// `own-pr-health-rule.mjs`, whose closure reaches `lookups.mjs`, which spawns `gh`. That is true of the
+// IMPORT and false of the CALL: every function driven here is pure or takes its `run` injected, and no
+// test below lets a real spawn happen.
+//
+// PROVED, NOT ASSERTED, since the check is deliberately shallow: with GH_TOKEN and GITHUB_TOKEN unset and a
+// fake `gh` first on PATH that exits 97 and shouts to stderr -- 17 pass, 0 fail, and the fake never printed.
+
 /**
- * RULE: IS THE CLAIMING SESSION'S OWN OPEN PR RED OR UNMERGED? -- B2, #476. See
- * `scripts/row-claim/own-pr-health-rule.mjs` for the full account (#472's owner reported a clean local
- * run and moved on while CI went red; nine PRs sat red the same night with their owners asleep).
+ * RULE: DOES THE CLAIMING SESSION ALREADY HOLD A ROW IN BUILD? -- B2, #476, rewritten by #989. See
+ * `scripts/row-claim/own-pr-health-rule.mjs` for the full account.
  *
- * #733: `reasons` carries `checkReasons`'s OWN returned strings, never a boolean collapsing them --
- * `product-manager` was sent looking for a failure that did not exist because a still-running required
- * check was reported as "a required check is failing". See `colourFor` in the rule file itself.
+ * The predicate it replaces asked whether the session's own PR was OPEN AT ALL, so a PR that was green and
+ * waiting only on its reviewer blocked its author from starting anything -- #988 was green from 07:46Z and
+ * waited through a twelve-hour restart gap. ceo granted a hand exception three times in one day and then
+ * ruled that an engineer does not wait on review: as many PRs in review as it takes, ONE row in build.
+ *
+ * IN BUILD MEANS A CLAIMED ROW WHOSE OWN DELIVERABLE IS A COMMIT THAT DOES NOT EXIST YET.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  ownPrHealthReason, lookupOtherHeldIssues, lookupClosingPrHealth, lookupOwnPrHealth,
+  inBuildReason, isInBuild, lookupOtherHeldIssues, lookupClosingPrHealth, lookupRowShape,
 } from "../../../../scripts/row-claim/own-pr-health-rule.mjs";
 
-// --- ownPrHealthReason: THE VERDICT, PURE ---
+/** A row owed a commit: held, declaring files, no sub-rows, no PR. Each test changes ONE fact from this. */
+const inBuild = { number: 989, declaresPaths: true, subIssues: 0, closingPr: undefined };
 
-test("no own PR at all raises nothing -- the common, first-claim case", () => {
-  assert.equal(ownPrHealthReason(null), null);
+// --- THE VERDICT, PURE -------------------------------------------------------------------------------
+
+test("#989: no rows at all raises nothing -- the common, first-claim case", () => {
+  assert.equal(inBuildReason([]), null);
 });
 
-test("#476's own acceptance shape: a genuinely FAILING open PR refuses, naming the PR and RED", () => {
-  const reason = ownPrHealthReason({ number: 472, state: "OPEN", reasons: ["FAILING: ts (failure)."] });
+test("#989: a row in build refuses, BY NUMBER, and names both ways out", () => {
+  const reason = inBuildReason([inBuild]);
   assert.ok(reason);
-  assert.match(reason as string, /#472/);
-  assert.match(reason as string, /RED/);
+  assert.match(reason as string, /#989 is IN BUILD/);
+  assert.match(reason as string, /Finish it, or `decline` it/,
+    "a refusal a reader cannot follow is the shape this repo has paid for most often");
+  assert.match(reason as string, /one ROW in build per session/);
 });
 
-test("#733's own acceptance shape: a check that has merely NOT FINISHED must NOT be told 'failing'", () => {
-  const reason = ownPrHealthReason({ number: 472, state: "OPEN",
-    reasons: ["STILL RUNNING: ts. Not a refusal forever -- ask again."] });
+/**
+ * THE CASE THE OLD PREDICATE GOT WRONG, and the reason this row exists: N open pull requests block nothing
+ * as long as no row is in build. N = 0, 1 and 3, so the rule is not accidentally a one-PR rule wearing a
+ * longer sentence.
+ */
+for (const n of [0, 1, 3]) {
+  test(`#989: ${n} open PR(s) and no row in build -- the claim proceeds`, () => {
+    const rows = Array.from({ length: n }, (_, i) => (
+      { number: 900 + i, declaresPaths: true, subIssues: 0, closingPr: { state: "OPEN" as const } }));
+    assert.equal(inBuildReason(rows), null,
+      "an open PR means the commit is PROPOSED; waiting on a reviewer is not a build");
+  });
+}
+
+test("#989: a row whose PR is MERGED while the row is still OPEN is NOT in build", () => {
+  // product-manager's mirror, and the one case where a wrong answer blocks a session that has DELIVERED.
+  // Real shape: issue #159 carries both #172 CLOSED and #473 MERGED. "No PR at all" would have called it a
+  // build; "no PR that is open or merged" gets it right. (#159 itself is closed, so the row-still-open half
+  // is constructed here -- the window between a merge and the row's auto-close is about a second.)
+  assert.equal(inBuildReason([{ ...inBuild, closingPr: { state: "MERGED" } }]), null);
+});
+
+test("#989: a row whose PR was CLOSED WITHOUT MERGING IS in build -- the commit still does not exist", () => {
+  // Abandoning a PR and starting a third thing is exactly what B2 should refuse. Real shape: issues #79 and
+  // #93, whose PRs #89 and #107 are closed-unmerged. Measured: the query this rule runs does not return
+  // them at all (`includeClosedPrs` defaults to false), so they arrive here as `undefined` in practice --
+  // this fixture drives the explicit filter, which guards a future query rather than today's.
+  assert.ok(inBuildReason([{ ...inBuild, closingPr: { state: "CLOSED" } }]));
+});
+
+test("#989: a row declaring no Region path is not in build -- its deliverable is not a commit", () => {
+  // A settings change, a ruling, a measurement posted on the row. #916 and #918 are the live shapes.
+  assert.equal(inBuildReason([{ ...inBuild, declaresPaths: false }]), null);
+});
+
+test("#989: a PARENT is not in build -- its deliverable is its sub-rows' commits", () => {
+  // #908's shape: it declares `eslint.config.js` and the packaging directory, and #986 was filed against
+  // it. A parent held for weeks while its sub-rows land must not block its holder.
+  assert.equal(inBuildReason([{ ...inBuild, number: 908, subIssues: 1 }]), null);
+});
+
+test("#989: a parent PLUS an in-build sub-row refuses, naming the SUB-ROW", () => {
+  const reason = inBuildReason([{ ...inBuild, number: 908, subIssues: 2 }, { ...inBuild, number: 986 }]);
   assert.ok(reason);
-  assert.doesNotMatch(reason as string, /failing/i, "product-manager's own #733 finding: a reader sent "
-    + "looking for a failure that does not exist");
-  assert.match(reason as string, /STILL RUNNING/);
-  assert.match(reason as string, /ask again/i);
+  assert.match(reason as string, /#986 is IN BUILD/,
+    "the parent must not absorb the blame for the row actually in build");
+  assert.doesNotMatch(reason as string, /#908 is IN BUILD/);
 });
 
-test("#733's own acceptance shape: BOTH still-running and failing names both, rather than picking one", () => {
-  const reason = ownPrHealthReason({ number: 472, state: "OPEN",
-    reasons: ["STILL RUNNING: lint. Not a refusal forever -- ask again.", "FAILING: ts (failure)."] });
-  assert.ok(reason);
-  assert.match(reason as string, /RED/);
-  assert.match(reason as string, /STILL RUNNING/);
+/**
+ * KNOWN LIMITATION, PINNED RATHER THAN DESCRIBED. The parent property reads GitHub's sub-issue link, which
+ * exists only where the sub-row was filed with `row-file --parent`. A parent whose sub-rows were all filed
+ * without it answers `[]` and reads as IN BUILD. That is why the refusal names the command that links one:
+ * an invisible dependency costs an evening, a followable one costs a command. When a future row closes this,
+ * this test is what it flips.
+ */
+test("#989 LIMITATION: a parent with no sub-issue LINKS reads as in build, and the refusal says how to fix it", () => {
+  const reason = inBuildReason([{ ...inBuild, number: 908, subIssues: 0 }]);
+  assert.ok(reason, "the link, not the fact of parenthood, is what this can see");
+  assert.match(reason as string, /sub_issues -f sub_issue_id=/,
+    "so the reader is told the one command that lifts it");
 });
 
-test("a required context that NEVER RAN reads as a genuine problem, same as failing -- not as a wait", () => {
-  const reason = ownPrHealthReason({ number: 472, state: "OPEN",
-    reasons: ["REQUIRED CONTEXT NEVER RAN: ts."] });
-  assert.ok(reason);
-  assert.match(reason as string, /RED/);
+test("#989: isInBuild is the whole predicate, and each clause is load-bearing", () => {
+  assert.equal(isInBuild(inBuild), true);
+  assert.equal(isInBuild({ ...inBuild, closingPr: { state: "OPEN" } }), false);
+  assert.equal(isInBuild({ ...inBuild, closingPr: { state: "MERGED" } }), false);
+  assert.equal(isInBuild({ ...inBuild, closingPr: { state: "CLOSED" } }), true);
+  assert.equal(isInBuild({ ...inBuild, declaresPaths: false }), false);
+  assert.equal(isInBuild({ ...inBuild, subIssues: 1 }), false);
 });
 
-test("an open PR that is simply not yet merged ALSO refuses -- one PR in flight, not one green PR in flight", () => {
-  const reason = ownPrHealthReason({ number: 300, state: "OPEN", reasons: [] });
-  assert.ok(reason);
-  assert.match(reason as string, /not yet merged/);
-  assert.doesNotMatch(reason as string, /RED/, "a green-but-open PR must not be told it is red");
-  assert.doesNotMatch(reason as string, /STILL RUNNING/);
+// --- THE LOOKUPS: what each clause is READ from ------------------------------------------------------
+
+test("#989: the held population is this session's own rows -- another session's do not count", () => {
+  // `lookupOtherHeldIssues` filters on `session:<name>`, and this guards that from widening later, which is
+  // the failure nobody notices.
+  const calls: string[][] = [];
+  const run = (args: string[]) => { calls.push(args); return "[]"; };
+  lookupOtherHeldIssues("worker-judge", 989, { run });
+  assert.deepEqual(calls[0].filter((a) => a.startsWith("session:")), ["session:worker-judge"]);
+  assert.ok(calls[0].includes("in-progress"));
 });
 
-test("#476's own acceptance shape: a MERGED PR allows -- a unit finished, not merely green", () => {
-  assert.equal(ownPrHealthReason({ number: 472, state: "MERGED", reasons: [] }), null);
+test("#989: the row being claimed is never checked against itself", () => {
+  const run = () => JSON.stringify([{ number: 989 }, { number: 908 }]);
+  assert.deepEqual(lookupOtherHeldIssues("worker-judge", 989, { run }), [908]);
 });
 
-test("a CLOSED (abandoned) PR allows -- it is no longer 'in flight', whatever its outcome", () => {
-  assert.equal(ownPrHealthReason({ number: 300, state: "CLOSED", reasons: [] }), null);
+test("#989: a failed lookup is INCONCLUSIVE -- null, never an empty list read as 'holds nothing'", () => {
+  const run = () => { throw new Error("gh: network"); };
+  assert.equal(lookupOtherHeldIssues("worker-judge", 989, { run }), null);
+  assert.equal(lookupRowShape(989, { run }), null);
+  assert.equal(lookupClosingPrHealth(989, { run }), null);
 });
 
-test("`behind` alone must never appear in this reason -- ceo's ruling: behind never blocks", () => {
-  // The type itself carries no `behindBy` field at all -- this asserts the STRONGER property that no
-  // code path could smuggle a behind-based sentence back in by accident.
-  const reason = ownPrHealthReason({ number: 406, state: "OPEN", reasons: [] });
-  assert.doesNotMatch(reason as string, /behind/i);
+test("#989: the Region reading DELEGATES to the tree's own parser -- it is not a second reading", () => {
+  // `declaredRegionFiles` is where the Region grammar lives and keeps changing: #941 taught it directory
+  // items, #975 root-level files, #999 fenced extensionless paths. This rule asks it rather than matching
+  // paths itself, so each of those reaches B2 with no edit here -- which is the property worth asserting,
+  // not any one grammar.
+  //
+  // THE DELEGATION, PAYING OFF WHILE THIS ROW WAS BEING WRITTEN: when I drafted these tests #999 (PR
+  // #1005) was open, so a fenced `scripts/git-hooks/pre-push` declared nothing and asserting it would have
+  // pinned a parser this rule does not own to a version that had not landed. #1005 merged an hour later,
+  // and the case below now passes with NO change to the rule -- which is the property worth having.
+  const body = (region: string) => JSON.stringify({ body: `## Region\n\n${region}\n` });
+  const shapeFor = (region: string) => lookupRowShape(989, {
+    run: (args) => (args[0] === "issue" ? body(region) : "[]"),
+  });
+  assert.equal(shapeFor("```\nscripts/row-claim/own-pr-health-rule.mjs\n```")?.declaresPaths, true);
+  assert.equal(shapeFor("```\nscripts/git-hooks/pre-push\n```")?.declaresPaths, true, "#999's fenced "
+    + "extensionless path -- #911's own Region, which declared nothing before PR #1005 merged");
+  assert.equal(shapeFor("packages/control/ansible/")?.declaresPaths, true, "#941's directory item");
+  assert.equal(shapeFor("Whatever it needs under `docs/`, and the ruling on the row.")?.declaresPaths, false);
 });
 
-// --- lookupOtherHeldIssues: `[]` and `null` stay different answers ---
-
-test("lookupOtherHeldIssues excludes the row being claimed right now", () => {
-  const run = (args: string[]) => {
-    assert.ok(args.includes("in-progress"));
-    assert.ok(args.includes("session:worker-judge"));
-    return JSON.stringify([{ number: 455 }, { number: 300 }]);
-  };
-  const held = lookupOtherHeldIssues("worker-judge", 455, { run });
-  assert.deepEqual(held, [300]);
-});
-
-test("lookupOtherHeldIssues returns null, never [], on a failed lookup", () => {
-  const run = (): string => { throw new Error("gh: authentication required"); };
-  assert.equal(lookupOtherHeldIssues("worker-judge", 455, { run }), null);
-});
-
-test("lookupOtherHeldIssues: genuinely holding nothing else is a real, different [] answer", () => {
-  const run = () => JSON.stringify([{ number: 455 }]);
-  assert.deepEqual(lookupOtherHeldIssues("worker-judge", 455, { run }), []);
-});
-
-// --- lookupClosingPrHealth: undefined (no PR yet) vs null (failed) vs a real answer ---
-
-test("lookupClosingPrHealth: an issue with no closing PR yet is undefined, not null and not a refusal", () => {
-  const run = () => JSON.stringify({ data: { repository: { issue: {
-    closedByPullRequestsReferences: { nodes: [] } } } } });
-  assert.equal(lookupClosingPrHealth(300, { run }), undefined);
-});
-
-test("lookupClosingPrHealth: a MERGED closing PR is reported merged, never re-asked for its check runs", () => {
-  const run = () => JSON.stringify({ data: { repository: { issue: {
-    closedByPullRequestsReferences: { nodes: [{ number: 475, state: "MERGED", headRefOid: "abc123" }] } } } } });
-  let requiredContextsAsked = false;
-  const requiredContexts = () => { requiredContextsAsked = true; return []; };
-  const health = lookupClosingPrHealth(455, { run, requiredContexts });
-  assert.deepEqual(health, { number: 475, state: "MERGED", reasons: [] });
-  assert.equal(requiredContextsAsked, false, "a merged PR's own colour does not matter -- asking for its "
-    + "check runs would be a wasted round trip");
-});
-
-test("lookupClosingPrHealth: an OPEN closing PR with a failing required check carries checkReasons's own "
-  + "FAILING string, real -- not a call site's own boolean", () => {
-  const run = () => JSON.stringify({ data: { repository: { issue: {
-    closedByPullRequestsReferences: { nodes: [{ number: 472, state: "OPEN", headRefOid: "def456" }] } } } } });
-  const requiredContexts = () => ["ts"];
-  const checkRuns = () => [{ name: "ts", status: "completed", conclusion: "failure", completedAt: null }];
-  const health = lookupClosingPrHealth(455, { run, requiredContexts, checkRuns });
-  assert.equal(health?.number, 472);
-  assert.equal(health?.state, "OPEN");
-  assert.equal(health?.reasons.length, 1);
-  assert.match(health?.reasons[0] as string, /^FAILING/);
-});
-
-test("#733's own MUTATION shape: an OPEN closing PR with a required check merely UNFINISHED (not yet "
-  + "completed) carries checkReasons's real STILL RUNNING string, never a FAILING one", () => {
-  const run = () => JSON.stringify({ data: { repository: { issue: {
-    closedByPullRequestsReferences: { nodes: [{ number: 472, state: "OPEN", headRefOid: "def456" }] } } } } });
-  const requiredContexts = () => ["ts"];
-  const checkRuns = () => [{ name: "ts", status: "in_progress", conclusion: null, completedAt: null }];
-  const health = lookupClosingPrHealth(455, { run, requiredContexts, checkRuns });
-  assert.equal(health?.reasons.length, 1);
-  assert.match(health?.reasons[0] as string, /^STILL RUNNING/);
-  assert.doesNotMatch(health?.reasons.join(" ") as string, /FAILING/,
-    "this IS #733's own mutation instruction: a check that only has NOT FINISHED must never produce a "
-    + "FAILING reason");
-});
-
-test("lookupClosingPrHealth: an OPEN closing PR with every required check satisfied has no reasons at all", () => {
-  const run = () => JSON.stringify({ data: { repository: { issue: {
-    closedByPullRequestsReferences: { nodes: [{ number: 472, state: "OPEN", headRefOid: "def456" }] } } } } });
-  const requiredContexts = () => ["ts"];
-  const checkRuns = () => [{ name: "ts", status: "completed", conclusion: "success", completedAt: null }];
-  const health = lookupClosingPrHealth(455, { run, requiredContexts, checkRuns });
-  assert.deepEqual(health, { number: 472, state: "OPEN", reasons: [] });
-});
-
-test("lookupClosingPrHealth returns null on a failed GraphQL lookup", () => {
-  const run = (): string => { throw new Error("network error"); };
-  assert.equal(lookupClosingPrHealth(300, { run }), null);
-});
-
-// --- #733's own live case, end to end: lookupClosingPrHealth -> ownPrHealthReason ---
-
-test("#733's own live shape: a PR pending only on ts/run (every other check pass) is refused as STILL "
-  + "RUNNING, never told a check is failing -- product-manager's own #730 finding", () => {
-  const run = () => JSON.stringify({ data: { repository: { issue: {
-    closedByPullRequestsReferences: { nodes: [{ number: 730, state: "OPEN", headRefOid: "abc" }] } } } } });
-  const requiredContexts = () => ["ts", "lint"];
-  const checkRuns = () => [
-    { name: "ts", status: "in_progress", conclusion: null, completedAt: null },
-    { name: "lint", status: "completed", conclusion: "success", completedAt: "2026-09-09T14:00:00Z" },
-  ];
-  const health = lookupClosingPrHealth(703, { run, requiredContexts, checkRuns });
-  const reason = ownPrHealthReason(health ?? null);
-  assert.ok(reason);
-  assert.match(reason as string, /#730/);
-  assert.doesNotMatch(reason as string, /failing/i);
-  assert.match(reason as string, /STILL RUNNING/);
-});
-
-// --- lookupOwnPrHealth: THE FULL LOOKUP, composed, fail-open throughout ---
-
-test("lookupOwnPrHealth: a failed 'other held issues' lookup is null, never read as healthy", () => {
-  const run = (): string => { throw new Error("gh: rate limited"); };
-  assert.equal(lookupOwnPrHealth("worker-judge", 455, { run }), null);
-});
-
-test("lookupOwnPrHealth: holding nothing else at all is null (nothing to be unhealthy)", () => {
-  const run = () => JSON.stringify([]);
-  assert.equal(lookupOwnPrHealth("worker-judge", 455, { run }), null);
+test("#989: the parent reading is GitHub's own sub-issue link, counted", () => {
+  const shape = lookupRowShape(908, {
+    run: (args) => (args[0] === "issue"
+      ? JSON.stringify({ body: "## Region\n\n```\neslint.config.js\n```\n" })
+      : JSON.stringify([{ number: 986 }, { number: 1000 }])),
+  });
+  assert.equal(shape?.subIssues, 2);
 });
