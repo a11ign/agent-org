@@ -174,11 +174,16 @@ test("MUTATION TARGET: FAILS CLOSED on a failed blocker-state lookup too", () =>
   assert.equal(result.ok, false);
 });
 
-test("no own PR at all is refused rather than crashing", () => {
+test("no own PR at all is refused rather than crashing -- and the refusal is FOLLOWABLE (#989)", () => {
+  // After #989 this is the COMMON case, not an edge: B2's only remaining refusal is a row IN BUILD, which
+  // has no PR by definition. Naming the missing PR alone would point at an action the claimant cannot
+  // take, so it names the door that exists -- the same one B2's own refusal names.
   const run = routedRun({});
   const result = resolveBlockedByOverride(null, "#731", { run });
   assert.equal(result.ok, false);
-  assert.match((result as { reason: string }).reason, /no open PR/);
+  const reason = (result as { reason: string }).reason;
+  assert.match(reason, /no PR of this session's own to attach a measurement comment to/);
+  assert.match(reason, /decline/, "following a refusal exactly must pass; this one must name how");
 });
 
 // --- blockedByExceptionNote: what actually lands in the claim comment ---

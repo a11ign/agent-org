@@ -282,8 +282,10 @@ test("#989: --blocked-by cannot excuse a row IN BUILD, and says why rather than 
   const reason = (result as { reason: string }).reason;
   assert.match(reason, /#472 is IN BUILD/);
   assert.match(reason, /--blocked-by=#731 did not apply/);
-  assert.match(reason, /no open PR of this session's own was found/,
-    "the override's own words, which are exactly right now: an in-build row has no PR to attach to");
+  assert.match(reason, /no PR of this session's own to attach a measurement comment to/);
+  assert.match(reason, /`row-claim\.mjs decline <n> --session=<name>`/,
+    "product-manager's ruling on #1012: naming the missing PR alone is a refusal nobody can follow, because "
+    + "an in-build row has no PR and none is coming. It must name the door that exists.");
 });
 
 test("MUTATION TARGET: --blocked-by given while the refusal is B4 (file overlap), not B2, must not apply "
