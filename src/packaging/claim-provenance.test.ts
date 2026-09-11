@@ -16,6 +16,7 @@ import assert from "node:assert/strict";
 import {
   claimsFromEvents, describeClaims, unattributableClosedRows, parseEventLines, labelEventsByIssue,
   parseClosedRows, claimsWithNoEvent, fetchClosedRowEvents, PROVENANCE_REQUIRED_FROM,
+  reportableUnattributable, attributionFor, closingPrFromResponse, ARM_LABELS_FROM,
 } from "../../../../scripts/claim-provenance.mjs";
 
 const row = (number: number, closedAt: string, events: unknown[] = []) =>
@@ -204,4 +205,119 @@ test("the floor passes when every live claim's applying event is in the log", ()
     openIssues: [{ number: 9, labels: ["session:worker-judge"] }],
   });
   assert.equal(rows.length, 1);
+});
+
+// --- #848: THE THREE VERDICTS. Ten rows read as one population on 2026-09-09 because "no claim event"
+// was printed as "unattributable": five had been closed by a merged PR that declared them, three were
+// never worked, and two needed a person. These pin the split, with #887 (a record gap) and #853 (a real
+// bypass) as the two fixtures that must read DIFFERENTLY.
+
+const closedRow = (number: number, closedAt: string, stateReason?: string) =>
+  ({ number, title: `row ${number}`, closedAt, events: [], stateReason });
+
+test("#848: a row closed NOT_PLANNED is not reported -- it was never worked", () => {
+  const rows = [
+    closedRow(798, "2026-09-09T15:04:24Z", "NOT_PLANNED"),   // a junk row from a write used as a probe
+    closedRow(397, "2026-09-09T17:45:30Z", "NOT_PLANNED"),   // premise refuted by measurement
+    closedRow(853, "2026-09-09T17:46:42Z", "COMPLETED"),     // the real bypass
+  ];
+
+  assert.deepEqual(reportableUnattributable(rows as never, { since: PROVENANCE_REQUIRED_FROM })
+    .map((r) => r.number), [853]);
+
+  // The vacuity guard: without the filter all three come back, so the assertion above is about the
+  // filter and not about an empty input.
+  assert.equal(unattributableClosedRows(rows as never, { since: PROVENANCE_REQUIRED_FROM }).length, 3);
+});
+
+test("#848: a row whose stateReason was never read stays reportable", () => {
+  const rows = [closedRow(601, "2026-09-09T14:33:49Z")];
+  assert.deepEqual(reportableUnattributable(rows as never, { since: PROVENANCE_REQUIRED_FROM })
+    .map((r) => r.number), [601], "absent is not NOT_PLANNED -- reading it as such empties the finding");
+});
+
+test("#848: #887's shape -- closed by a merged PR from BEFORE #839 -- names the work, not the worker", () => {
+  const { verdict, line } = attributionFor({
+    number: 894, headRefName: "agent/exhausted-over-a-gap-887", merged: true,
+    createdAt: "2026-09-09T16:00:00Z", sessionLabels: [],
+  });
+  assert.equal(verdict, "work", "a branch name is not an attribution -- and not a finding either");
+  assert.match(line, /PR #894 \(agent\/exhausted-over-a-gap-887\)/);
+  assert.match(line, /the WORK, not the worker/);
+});
+
+test("#848: #853's shape -- no closing PR at all -- is the one that needs a person", () => {
+  const { verdict, line } = attributionFor(null);
+  assert.equal(verdict, "undeclared");
+  assert.match(line, /no merged pull request declared it/);
+  assert.doesNotMatch(line, /PR #/, "there is no PR to name, and inventing one would be worse than none");
+});
+
+test("#848: a PR armed after #839 carries the worker and IS an attribution", () => {
+  const { verdict, line } = attributionFor({
+    number: 900, headRefName: "agent/anything-1", merged: true,
+    createdAt: ARM_LABELS_FROM, sessionLabels: ["session:worker-capture"],
+  });
+  assert.equal(verdict, "worker");
+  assert.match(line, /session:worker-capture/);
+});
+
+test("#848: an UNMERGED closing reference attributes nothing", () => {
+  const { verdict } = attributionFor({
+    number: 89, headRefName: "agent/never-landed", merged: false,
+    createdAt: "2026-09-09T18:00:00Z", sessionLabels: ["session:worker-judge"],
+  });
+  assert.equal(verdict, "undeclared", "#89 closed unmerged and #79 was closed anyway -- the work never landed");
+});
+
+test("#848: a closing-PR response that cannot be parsed THROWS rather than reading as 'nothing closed it'", () => {
+  assert.throws(() => closingPrFromResponse("not json", 887), /was not JSON/);
+  assert.throws(() => closingPrFromResponse(JSON.stringify({ data: {} }), 887), /had no timeline/);
+  assert.equal(closingPrFromResponse(JSON.stringify(
+    { data: { repository: { issue: { timelineItems: { nodes: [{ closer: null }] } } } } }, null, 0), 853),
+  null, "a hand close has no closer, and that is a fact rather than a failure");
+});
+
+test("#848: a PR opened AFTER #839 with no session label is a finding -- there, absence means something", () => {
+  // `arm-pr` copies the row's `session:` label onto its PR since #839, so a PR opened after it without
+  // one closed a row nobody claimed through `row-claim`. Before #839 the same absence says nothing, which
+  // is why the pre-#839 shape above is `work` and this one is not.
+  const { verdict, line } = attributionFor({
+    number: 912, headRefName: "agent/unclaimed-912", merged: true,
+    createdAt: ARM_LABELS_FROM, sessionLabels: [],
+  });
+  assert.equal(verdict, "undeclared");
+  assert.match(line, /never claimed through row-claim/);
+});
+
+test("#848: NOT_PLANNED reaches the filter through the REAL fetch path -- asked for, and carried", () => {
+  // The first version filtered on `stateReason` while `fetchClosedRowEvents` never asked `gh` for it and
+  // rebuilt each row without it, so in production the filter could not fire and the audit's
+  // "N closed NOT_PLANNED are not counted" always said 0. The synthetic rows above carried the field by
+  // hand, which is how every assertion passed.
+  const calls: string[][] = [];
+  const listing = JSON.stringify([
+    { number: 798, title: "probe", closedAt: "2026-09-09T15:04:24Z", stateReason: "NOT_PLANNED" },
+    { number: 853, title: "a real bypass", closedAt: "2026-09-09T17:46:42Z", stateReason: "COMPLETED" },
+  ]);
+  const run = (_cmd: string, args: string[]) => { calls.push(args); return args[0] === "issue" ? listing : ""; };
+  const rows = fetchClosedRowEvents({ run: run as never });
+
+  const listingArgs = calls.find((args) => args[0] === "issue") ?? [];
+  assert.match(listingArgs[listingArgs.indexOf("--json") + 1] ?? "", /\bstateReason\b/,
+    "the listing must ASK for stateReason");
+  assert.deepEqual(reportableUnattributable(rows, { since: PROVENANCE_REQUIRED_FROM }).map((r) => r.number), [853]);
+});
+
+test("#848: a closing PR with no createdAt THROWS -- read as the earlier side of #839 it would leave the finding", () => {
+  // worker-capture's review of #942: `createdAt` defaulted to "" compared earlier than ARM_LABELS_FROM, so a
+  // malformed response read as `work` and dropped out of the count -- the one field that failed OPEN.
+  const closer = (createdAt: unknown) => JSON.stringify({ data: { repository: { issue: { timelineItems: { nodes: [
+    { closer: { number: 913, headRefName: "agent/unclaimed-912", merged: true, createdAt, labels: { nodes: [] } } },
+  ] } } } } });
+  for (const createdAt of [undefined, null, "", 20260910]) {
+    assert.throws(() => closingPrFromResponse(closer(createdAt), 912), /no createdAt/, `createdAt ${String(createdAt)}`);
+  }
+  // The control: the same closer WITH a createdAt parses, so the throws above are about the field.
+  assert.equal(closingPrFromResponse(closer(ARM_LABELS_FROM), 912)?.createdAt, ARM_LABELS_FROM);
 });
