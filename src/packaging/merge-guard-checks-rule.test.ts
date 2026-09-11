@@ -3,6 +3,19 @@
  * `scripts/merge-guard/checks-rule.mjs`. Four distinct states -- empty, missing, still running, failing --
  * each needing a different sentence and a different fix.
  */
+// no-token: gh
+//
+// #1007: this file imports `own-pr-health-rule.mjs` to drive the CONSUMER of the sentences below, and that
+// module's own import closure reaches `lookups.mjs`, which spawns `gh`. The closure walk charges the whole
+// chain (`merge-guard-checks-rule.test.ts requires token via own-pr-health-rule.mjs → gh → lookups.mjs:22`),
+// which is true of the IMPORT and false of the CALL: the one function driven here, `ownPrHealthReason`, is
+// pure -- it takes the reasons array already built and returns a sentence.
+//
+// DECLARED AND THEN VERIFIED, never substituted. The mechanism's own check is shallow (this file must not
+// call `gh(`), so it was proved rather than asserted: run with `GH_TOKEN`/`GITHUB_TOKEN` unset and a fake
+// `gh` first on `PATH` that exits 97 and shouts, the suite is 17 pass / 0 fail and the fake is never
+// invoked. If the pure path ever starts shelling out, that probe fails loudly rather than silently
+// returning something plausible.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
