@@ -308,3 +308,16 @@ test("#848: NOT_PLANNED reaches the filter through the REAL fetch path -- asked 
     "the listing must ASK for stateReason");
   assert.deepEqual(reportableUnattributable(rows, { since: PROVENANCE_REQUIRED_FROM }).map((r) => r.number), [853]);
 });
+
+test("#848: a closing PR with no createdAt THROWS -- read as the earlier side of #839 it would leave the finding", () => {
+  // worker-capture's review of #942: `createdAt` defaulted to "" compared earlier than ARM_LABELS_FROM, so a
+  // malformed response read as `work` and dropped out of the count -- the one field that failed OPEN.
+  const closer = (createdAt: unknown) => JSON.stringify({ data: { repository: { issue: { timelineItems: { nodes: [
+    { closer: { number: 913, headRefName: "agent/unclaimed-912", merged: true, createdAt, labels: { nodes: [] } } },
+  ] } } } } });
+  for (const createdAt of [undefined, null, "", 20260910]) {
+    assert.throws(() => closingPrFromResponse(closer(createdAt), 912), /no createdAt/, `createdAt ${String(createdAt)}`);
+  }
+  // The control: the same closer WITH a createdAt parses, so the throws above are about the field.
+  assert.equal(closingPrFromResponse(closer(ARM_LABELS_FROM), 912)?.createdAt, ARM_LABELS_FROM);
+});
