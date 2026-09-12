@@ -60,49 +60,44 @@ test("trunk-sweep.mjs refuses to run without GITHUB_REPOSITORY -- CANNOT ASK, ne
 
 // --- the workflow: a SCHEDULE (deliberately, unlike every other watchdog here), both halves present ---
 
-test("trunk-sweep.yml is scheduled every 15 minutes, and also carries a manual dispatch", () => {
-  const doc = parseYaml(readFileSync(`${REPO}/.github/workflows/trunk-sweep.yml`, "utf8")) as {
+test("#417's sweep is hourly on nightly.yml's :37 cron since #909, and also runs on workflow_dispatch", () => {
+  // Moved from trunk-sweep.yml (every 15 minutes) by #909. It is the one thing in this repo that MUST be
+  // scheduled: every push/pull_request trigger it could ride is exactly what a token-suppressed merge or a
+  // missed scheduler tick leaves unfired. It lives in nightly.yml, NOT trunk.yml, because a schedule on the
+  // trunk workflow would expose the watchdogs and the revert to GitHub's 60-day schedule-disable.
+  const doc = parseYaml(readFileSync(`${REPO}/.github/workflows/nightly.yml`, "utf8")) as {
     on: { schedule?: Array<{ cron: string }>, workflow_dispatch?: unknown },
+    jobs: Record<string, { if?: string, needs?: string | string[], steps: Array<Record<string, unknown>> }>,
   };
-  assert.ok(doc.on.schedule && doc.on.schedule.length > 0,
-    "this is the one workflow in this repo that MUST be scheduled -- every push/pull_request trigger it "
-    + "could ride instead is exactly what GITHUB_TOKEN merges suppress (#394).");
-  assert.equal(doc.on.schedule?.[0]?.cron, "*/15 * * * *");
+  assert.ok(doc.on.schedule?.some((s) => s.cron === "37 * * * *"), "the hourly cron the sweep rides");
   assert.ok("workflow_dispatch" in doc.on, "a manual kick for exercising the sweep on demand");
-});
-
-test("trunk-sweep.yml carries both gateSweep and closeRowsSweep, as independent jobs", () => {
-  const doc = parseYaml(readFileSync(`${REPO}/.github/workflows/trunk-sweep.yml`, "utf8")) as {
-    jobs: Record<string, { needs?: string | string[], steps: Array<Record<string, unknown>> }>,
-  };
-  assert.ok(doc.jobs.gateSweep, "must carry gateSweep -- the unit-3 redundancy a bot merge suppresses");
-  assert.ok(doc.jobs.closeRowsSweep, "must carry closeRowsSweep -- the row-closing backstop");
-  assert.ok(!doc.jobs.gateSweep.needs && !doc.jobs.closeRowsSweep.needs,
-    "the two halves are independent -- one failing must not block the other from running");
-
-  const gateRuns = (doc.jobs.gateSweep.steps ?? []).map((s) => String(s.run ?? "")).join("\n");
+  for (const job of ["gateSweep", "closeRowsSweep"]) {
+    assert.ok(doc.jobs[job], `must carry ${job}`);
+    assert.match(String(doc.jobs[job].if ?? ""), /schedule == '37 \* \* \* \*'/, `${job} runs on the hourly cron`);
+    assert.match(String(doc.jobs[job].if ?? ""), /workflow_dispatch/, `${job} runs on a hand dispatch too`);
+    assert.ok(!doc.jobs[job].needs, "the two halves are independent -- one failing must not block the other");
+  }
+  const gateRuns = doc.jobs.gateSweep.steps.map((s) => String(s.run ?? "")).join("\n");
   assert.match(gateRuns, /node scripts\/trunk-sweep\.mjs/);
-
-  const closeRuns = (doc.jobs.closeRowsSweep.steps ?? []).map((s) => String(s.run ?? "")).join("\n");
-  assert.match(closeRuns, /node scripts\/close-rows-sweep\.mjs --window=60/,
-    "the 60-minute window against a 15-minute schedule is DELIBERATE overlap -- see the workflow's own "
-    + "header for why, and this pins the number so a future edit cannot silently narrow it to the schedule "
-    + "interval, which would lose a row on any single missed tick");
+  const closeRuns = doc.jobs.closeRowsSweep.steps.map((s) => String(s.run ?? "")).join("\n");
+  assert.match(closeRuns, /node scripts\/close-rows-sweep\.mjs --window=120/,
+    "a 120-minute window against an hourly schedule is DELIBERATE overlap, so a single missed tick cannot lose "
+    + "a row; this pins the number so a future edit cannot narrow it to the schedule interval");
 });
 
-test("trunk-guard.yml carries workflow_dispatch, so trunk-sweep.yml can trigger a real gate run", () => {
-  const doc = parseYaml(readFileSync(`${REPO}/.github/workflows/trunk-guard.yml`, "utf8")) as {
+test("trunk.yml carries workflow_dispatch, so nightly.yml's gateSweep can trigger a real gate run", () => {
+  const doc = parseYaml(readFileSync(`${REPO}/.github/workflows/trunk.yml`, "utf8")) as {
     on: { push?: unknown, workflow_dispatch?: unknown },
   };
   assert.ok("push" in doc.on, "the original push trigger must still be there -- this ADDS a path, it "
     + "does not replace the one that works for human merges");
   assert.ok("workflow_dispatch" in doc.on,
-    "without this, trunk-sweep.yml has nothing to trigger and the gate half of #417 does nothing");
+    "without this, the gate sweep has nothing to trigger and the gate half of #417 does nothing");
 });
 
-test("trunk-guard.yml's decideRevert falls back to a computed before-sha when github.event.before is "
+test("trunk.yml's decideRevert falls back to a computed before-sha when github.event.before is "
   + "absent -- the workflow_dispatch case this PR adds", () => {
-  const text = readFileSync(`${REPO}/.github/workflows/trunk-guard.yml`, "utf8");
+  const text = readFileSync(`${REPO}/.github/workflows/trunk.yml`, "utf8");
   assert.match(text, /git rev-parse HEAD\^1/,
     "github.event.before only exists on a real push event; without a fallback, a sweep-triggered run "
     + "would pass an empty --before-sha and trunk-revert.mjs refuses to run at all");

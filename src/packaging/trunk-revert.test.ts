@@ -25,7 +25,7 @@ import { revertVerdict, revertPrBody, revertTriggerJobs, newestRunFor, conclusio
 const PUSH = "a1b2c3d4e5f6789012345678901234567890abcd";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
-const WORKFLOW = readFileSync(path.join(REPO_ROOT, ".github/workflows/trunk-guard.yml"), "utf8");
+const WORKFLOW = readFileSync(path.join(REPO_ROOT, ".github/workflows/trunk.yml"), "utf8");
 
 /** Every trigger job at one conclusion -- what the pre-#582 single-value argument used to mean. */
 const bothAt = (conclusion: string | null): Record<string, string | null> =>
@@ -172,7 +172,7 @@ test("#582 one job with no completed record is CANNOT_ASK -- 'not yet known to b
   assert.notEqual(v.code, EXIT.REFUSED, "an unknown job must not be silently counted as a red one");
 });
 
-test("#582 DERIVED, NEVER LISTED: the job set comes from trunk-guard.yml's own if:, and contains both", () => {
+test("#582 DERIVED, NEVER LISTED: the job set comes from trunk.yml's own if:, and contains both", () => {
   const jobs = revertTriggerJobs(WORKFLOW);
   assert.deepEqual([...jobs].sort(), ["trunkBuildTest", "trunkGate"],
     "if this fails because a job was added to decideRevert's if:, that is the guard working -- add it to "

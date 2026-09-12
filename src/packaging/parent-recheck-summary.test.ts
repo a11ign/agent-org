@@ -1,5 +1,5 @@
 /**
- * #744: `trunk-guard.yml`'s #616 parent re-check used to print `tail -40 /tmp/parent-test.log` when the
+ * #744: `trunk.yml`'s #616 parent re-check used to print `tail -40 /tmp/parent-test.log` when the
  * parent failed the suite now. A `node:test` TAP log's last forty lines are the trailing PASSING
  * subtests, never the failure -- measured live on #718 (2026-09-09): a genuine failure produced a step
  * output of `ok 4180`, `ok 4181`, `ok 4182`, not one of them a failure, and `decideRevert` correctly
@@ -176,7 +176,7 @@ test("#744 HYPOTHESIS, REPRODUCED: a worktree pinned at an OLD commit still sees
     const { primary, before, currentOriginMain } = buildOriginMoveFixture(root);
     const parentWorktree = join(root, "parent");
 
-    // THE OLD RE-CHECK: pin a linked worktree at BEFORE, exactly as trunk-guard.yml's step did before #775.
+    // THE OLD RE-CHECK: pin a linked worktree at BEFORE, exactly as trunk.yml's step did before #775.
     git(primary, ["worktree", "add", "--detach", parentWorktree, before]);
     const parentHead = git(parentWorktree, ["rev-parse", "HEAD"]).trim();
     assert.equal(parentHead, before, "the worktree's own tree is genuinely pinned at BEFORE");
@@ -208,7 +208,7 @@ test("#744 HYPOTHESIS, REPRODUCED: a worktree pinned at an OLD commit still sees
 
 // --- #775: THE FIX -- a fresh clone with origin/main explicitly pinned, never a linked worktree ---
 
-/** trunk-guard.yml's own #775 fix, driven exactly as the real step now does (`git clone --quiet . /tmp/
+/** trunk.yml's own #775 fix, driven exactly as the real step now does (`git clone --quiet . /tmp/
  *  parent`, run from the checkout -- `primary` here stands in for that checkout). */
 function reCheckViaClone(primary: string, before: string, parentClone: string) {
   git(primary, ["clone", "--quiet", primary, parentClone]);

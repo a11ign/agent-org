@@ -1,5 +1,5 @@
 /**
- * #394: A BACKSTOP FOR close-rows.yml, WHICH FIRES FOR SOME MERGES AND NOT OTHERS FOR AN UNEXPLAINED
+ * #394: A BACKSTOP FOR THE CLOSE-ROWS PATH (close-rows.yml until #909, now trunk.yml's closeRows job), WHICH FIRED FOR SOME MERGES AND NOT OTHERS FOR AN UNEXPLAINED
  * REASON. `mergedPrsInWindow` is driven with an injected `gh` so the query shape is proven without a live
  * repo; `main()`'s CLI behaviour (unknown flags, missing GITHUB_REPOSITORY) is driven for real, the same
  * way `queue-stalled.test.ts` and `auto-arm-sweep.mjs`'s siblings are. `closurePlan` itself (imported from
@@ -106,37 +106,24 @@ test("close-rows-sweep.mjs refuses to run without GITHUB_REPOSITORY -- CANNOT AS
   assert.ok(threw, "with no repo to sweep, the script must refuse rather than guess one");
 });
 
-// --- the workflow wiring: close-rows.yml's manual dispatch only. There is deliberately no job-wiring
-// test for the sweep script itself here -- 2026-09-08: a `closeRowsSweep` job used to ride trunk-
-// guard.yml's `push: branches: [main]` trigger, and was removed because GitHub does not trigger
-// workflows from events created with GITHUB_TOKEN, so a job riding that trigger could never fire for a
-// bot merge -- the one case it existed to catch. `mergedPrsInWindow`/`closeOnePr` above are correct and
-// carried forward for #417, which wires this same script to a `schedule` trigger instead (the token
-// rule cannot suppress a cron). See trunk-guard.yml's own header at the point the job used to be.
-
-test("close-rows-sweep.mjs is NOT wired to trunk-guard.yml's push trigger -- that job was removed "
-  + "2026-09-08 because GITHUB_TOKEN events (every bot merge) never fire push at all", () => {
-  const text = readFileSync(`${REPO}/.github/workflows/trunk-guard.yml`, "utf8");
-  assert.doesNotMatch(text, /close-rows-sweep\.mjs/,
-    "if this matches, someone re-wired the sweep to a push trigger it structurally cannot fire under for "
-    + "its own target case -- #417's schedule trigger is what this script is waiting for, not a re-add here.");
-});
-
-test("close-rows.yml declares a workflow_dispatch `pr` input, required, alongside pull_request:closed", () => {
-  const doc = parseYaml(readFileSync(`${REPO}/.github/workflows/close-rows.yml`, "utf8")) as {
-    on: { pull_request?: { types: string[] }, workflow_dispatch?: { inputs?: Record<string, { required?: boolean }> } },
+// --- the workflow wiring since #909 (2026-09-12): the sweep RIDES trunk.yml's push as its `closeRows` job. The
+// 2026-09-08 removal was measured under GITHUB_TOKEN merges, which fire no push; since #416 every merge is
+// completed with the A11IGN_BOT_TOKEN PAT and does fire push (every merge today ran trunk.yml), so the
+// original design is correct again. The scheduled backstop half lives in nightly.yml (trunk-sweep.test.ts).
+test("#909: close-rows-sweep.mjs IS wired to trunk.yml's push, as the closeRows job, with a dispatch path for one PR", () => {
+  const doc = parseYaml(readFileSync(`${REPO}/.github/workflows/trunk.yml`, "utf8")) as {
+    on: { push?: { branches: string[] }, workflow_dispatch?: { inputs?: Record<string, { required?: boolean }> } },
+    jobs: Record<string, { needs?: unknown, permissions?: Record<string, string>, steps: Array<{ run?: string }> }>,
   };
-  assert.ok(doc.on.pull_request?.types.includes("closed"), "the immediate path must still be there -- "
-    + "this is a backstop, not a replacement (#394)");
+  assert.deepEqual(doc.on.push?.branches, ["main"]);
   assert.ok(doc.on.workflow_dispatch, "workflow_dispatch must exist, or #394's criterion 1 has no trigger");
-  assert.ok(doc.on.workflow_dispatch?.inputs?.pr?.required,
-    "the `pr` input must be required -- an optional one invites a run with no PR to act on");
-});
-
-test("close-rows.yml's close job accepts EITHER trigger, and the run step reads the input OR the event", () => {
-  const text = readFileSync(`${REPO}/.github/workflows/close-rows.yml`, "utf8");
-  assert.match(text, /github\.event_name == 'workflow_dispatch'/,
-    "the job's `if:` must explicitly admit workflow_dispatch, or a manual run is silently skipped");
-  assert.match(text, /github\.event\.inputs\.pr \|\| github\.event\.pull_request\.number/,
-    "the run step must fall back to the pull_request event's PR number when there is no dispatch input");
+  assert.equal(doc.on.workflow_dispatch?.inputs?.pr?.required, false,
+    "the `pr` input is optional here: a bare dispatch runs the gate (the #417 sweep's use), a dispatch with pr closes one PR's rows");
+  const job = doc.jobs.closeRows;
+  assert.ok(job, "trunk.yml carries a closeRows job");
+  assert.ok(!job.needs, "closeRows does not wait on the gate: a red push still closes the rows its PR declared");
+  const run = job.steps.map((s) => s.run ?? "").join("\n");
+  assert.match(run, /node scripts\/close-rows-sweep\.mjs --window=60/, "the push path sweeps the last hour, idempotently");
+  assert.match(run, /node scripts\/close-rows-for-merged-pr\.mjs "\$DISPATCH_PR"/, "the dispatch path closes the named PR's rows");
+  assert.match(run, /if \[ -n "\$DISPATCH_PR" \]/, "and the two are chosen by whether a pr was given");
 });
