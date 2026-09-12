@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { commitLiveness, EXIT } from "../../../../scripts/workflow-run-liveness.mjs";
-import { LIVE_SHAPE } from "./merge-guard-checks-rule.test.ts";
+import { LIVE_SHAPE } from "./check-run-fixtures.ts";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
 

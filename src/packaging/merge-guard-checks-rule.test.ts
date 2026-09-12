@@ -7,7 +7,31 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { checkReasons, newestPerName, SATISFIED } from "../../../../scripts/merge-guard/checks-rule.mjs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 import { reasonKind } from "../../../../scripts/merge-guard/reason-kind.mjs";
+
+const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
+
+/**
+ * Every `.test.*` specifier a source imports from. Named so the sweep's CONTROL can drive the same
+ * predicate the assertion depends on; inline, it could only ever be asserted empty.
+ */
+function testFileImportsIn(text: string): string[] {
+  return [...text.matchAll(/^\s*import\s[^;]*?from\s+"([^"]+)"/gm)]
+    .map(([, spec]) => spec).filter((spec) => /\.test\.(ts|mts|mjs|js)$/.test(spec));
+}
+
+/** Tracked files matching a pathspec, from git rather than a walk — the tree's own list. */
+function tracked(pathspec: string): string[] {
+  return execFileSync("git", ["ls-files", pathspec],
+    { cwd: REPO, encoding: "utf8", env: sandboxGitEnv() }).split("\n").filter(Boolean);
+}
+
+import { LIVE_SHAPE } from "./check-run-fixtures.ts";
 
 const REQUIRED = ["changed", "ts", "python", "ansible", "docs", "changeset"];
 const pr = { headRefOid: "d5c2436601abcdef" };
@@ -216,26 +240,6 @@ test("#1007: an OLDER cancelled run beside a newer conclusion is still #902's ca
 // conclusion at all.
 // ---------------------------------------------------------------------------------------------------
 
-/**
- * #1008's head at 23:3xZ, the shape that produced the report — `ts / run` in flight, no `gate` at all.
- *
- * EXPORTED, because the consumer assertions this row also requires live in `merge-guard.test.ts` and
- * `workflow-run-liveness.test.ts` -- see the note at the foot of this file for why they are not here --
- * and a second copy of the fixture is the fact-stated-twice shape on the population the whole row is
- * about.
- *
- * `completedAt` is carried because the CONSUMERS read it: `stalenessReason` compares it to `main`'s tip,
- * and a population of nulls would make it speak and hand those assertions a refusal for a reason that has
- * nothing to do with this row. Dated AFTER the `mainTipIso` they pass, so the only sentence in play is
- * the one under test.
- */
-export const LIVE_SHAPE = [
-  { id: 1, name: "changed", status: "completed", conclusion: "success", completedAt: "2026-09-12T01:00:00Z" },
-  { id: 2, name: "ts / run", status: "in_progress", conclusion: null, completedAt: null },
-  { id: 3, name: "acceptance", status: "completed", conclusion: "success", completedAt: "2026-09-12T01:00:00Z" },
-  { id: 4, name: "deliberateRefusals", status: "completed", conclusion: "success", completedAt: "2026-09-12T01:00:00Z" },
-  { id: 5, name: "python", status: "completed", conclusion: "skipped", completedAt: "2026-09-12T01:00:00Z" },
-];
 
 test("#1009 ACCEPTANCE: a required context with no run, while something else is UNFINISHED, is a WAIT", () => {
   const reasons = checkReasons(pr, ["gate"], LIVE_SHAPE);
@@ -300,6 +304,68 @@ test("#1009: the waiting sentence CLASSIFIES as STILL_RUNNING, not UNCLASSIFIED"
     "and the genuine absence keeps its own kind, or the two are indistinguishable in the log too");
 });
 
+
+test("#1101: NO test file imports another test file — the cause, not the symptom", () => {
+  // A `.test.ts` importing a `.test.ts` RUNS that file's tests inside the importer. Measured on
+  // `1f5897db`, when `LIVE_SHAPE` lived in this file: 52 tests declared across three files, 94 reported,
+  // and #1093's pull request published mutation counts its own published acceptance command could not
+  // produce. A reviewer nearly filed that as a wrong number before decomposing per file.
+  //
+  // THE COUNTS ARE THE SYMPTOM AND THIS IS THE CAUSE, which is why the guard is here rather than a pin on
+  // three numbers: a count assertion protects the three files that exist today, and this protects the
+  // next one. The row asked for the counts; they are asserted below as well, on one file, because a
+  // structural rule nobody has watched fail is worth less than a rule plus one instance of it holding.
+  const files = tracked("packages/*/src/**/*.test.ts");
+  // THE POPULATION'S OWN VACUITY GUARD, and I did not have it until `git-population-vacuity.test.ts`
+  // refused this file. My control below proves the PREDICATE can match; nothing proved the FILE LIST was
+  // non-empty, so an `ls-files` returning nothing would have made the sweep vacuously green. **Third
+  // layer of the same emptiness defect in one row** -- the assertion, then its control, then the list the
+  // control runs over.
+  assert.ok(files.length > 200,
+    `only ${files.length} tracked test files -- the ls-files scan is broken, not the tree clean`);
+  const offenders = files
+    .flatMap((file) => testFileImportsIn(readFileSync(join(REPO, file), "utf8"))
+      .map((spec) => `${file} -> ${spec}`));
+  assert.deepEqual(offenders, [],
+    "these import a TEST file, so its tests run again inside the importer and every count that file "
+    + "reports is inflated:\n  " + offenders.join("\n  ")
+    + "\nPut the shared value in a plain module beside the tests -- `check-run-fixtures.ts` is the one "
+    + "this row created, and `leak-patterns.mjs` the pattern it follows.");
+
+  // THE CONTROL, and my FIRST version of it was the same defect one level out. It asserted that some
+  // file matched the IMPORT pattern -- true whatever the offender pattern does -- so narrowing the
+  // offender test to match nothing was **0 red**, measured. A control has to exercise the predicate the
+  // assertion depends on, not a neighbouring one.
+  //
+  // This drives `testFileImportsIn` over a source that MUST produce an offender and one that must not.
+  const control = 'import { X } from "./other.test.ts";\nimport { Y } from "./plain.ts";\n';
+  assert.deepEqual(testFileImportsIn(control), ["./other.test.ts"],
+    "the predicate must FIND a test-file import and must not flag a plain one -- otherwise the sweep "
+    + "above is empty by construction rather than because the tree is clean");
+});
+
+test("#1101: this file's reported test count equals what it declares", () => {
+  // The row's own acceptance, asserted on one file by RUNNING it rather than by reading the rule above.
+  // `--test-reporter=tap` is forced deliberately: this asserts a COUNT, and node's default reporter
+  // differs by version (#1089), so pinning the format is what makes the number readable at all.
+  const file = "packages/lab/src/packaging/workflow-run-liveness.test.ts";
+  const declared = readFileSync(join(REPO, file), "utf8").split("\n")
+    .filter((line) => line.startsWith("test(")).length;
+  // `NODE_TEST_CONTEXT` MUST GO, and I hit this an hour after reviewing #1089 for the same defect. The
+  // test runner sets it for its own children, and a child that sees it emits the **v8 serialiser**
+  // regardless of `--test-reporter` -- so the spawn returned bytes in neither format and the count could
+  // not be read at all. **The harness was shaping the output it was being used to measure.**
+  const { NODE_TEST_CONTEXT, ...env } = process.env;
+  void NODE_TEST_CONTEXT;
+  const run = spawnSync(process.execPath,
+    [join(REPO, "node_modules/.bin/tsx"), "--test", "--test-reporter=tap", join(REPO, file)],
+    { encoding: "utf8", env });
+  const reported = /^# tests (\d+)$/m.exec(`${run.stdout}${run.stderr}`);
+  assert.ok(reported, `could not read a TAP test count from the run:\n${run.stdout.slice(0, 300)}`);
+  assert.equal(Number(reported[1]), declared,
+    `${file} declares ${declared} tests and reports ${reported[1]}. A gap means it is running somebody `
+    + "else's -- which is what importing a `.test.ts` does");
+});
 
 // WHY THE CONSUMER ASSERTIONS ARE NOT IN THIS FILE.
 //
