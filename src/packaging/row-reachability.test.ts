@@ -727,9 +727,15 @@ test("#1054: the verdict NAMES the rule it did not run -- B4 lives on the claim 
     row: 189, subjectsMissing: [], heldRegions: [], state: "OPEN",
     examined: { paths: 3, symbols: 2, refs: 40, region: 2 },
   });
-  assert.match(v.lines.join("\n"), /IT DOES NOT RUN B4/,
+  // #1063 CHANGED THIS ASSERTION RATHER THAN DELETING IT, and that is deliberate. `row-claim check` now
+  // RUNS B4 and prints its refusal beside this verdict, so the old sentence -- "IT DOES NOT RUN B4 ...
+  // row-claim claim does" -- became false about the command a reader actually runs. **A test that goes
+  // red when the fact changes is the whole point of having written it**; deleting it as "no longer true"
+  // is the failure mode. It now holds the sentence that IS true: this script alone is half the check.
+  assert.match(v.lines.join("\n"), /It does NOT run B4/,
     "a pre-check that answers in the deciding rule's vocabulary must say which rule it skipped");
-  assert.match(v.lines.join("\n"), /can read STARTABLE where the claim is refused/);
+  assert.match(v.lines.join("\n"), /run through\s+.*`row-claim`, not this script directly/s,
+    "and must send the reader to the command that runs both halves");
 });
 
 test("#1054: an OPEN pull request in the region is not 'a merge cost' -- claim WILL refuse", () => {
@@ -741,6 +747,11 @@ test("#1054: an OPEN pull request in the region is not 'a merge cost' -- claim W
   });
   const text = contested.lines.join("\n");
   assert.match(text, /EXPECT `row-claim claim` TO REFUSE THIS/);
+  // #1063: the prediction stays and now says it IS one. `row-claim check` runs B4 and prints its own
+  // refusal below this block, so a reader running the wrapper gets the rule; a reader running this script
+  // directly gets only the inference, and must be told which they have.
+  assert.match(text, /PREDICTED here from the OPEN PR above, and RUN by `row-claim check`/,
+    "a prediction that does not say it is one reads as the verdict");
   assert.ok(!/merge cost, not a blocker/.test(text),
     "telling a reader it is only a merge cost sends them to a refusal they were assured would not happen");
   assert.match(text, /Narrowing the Region to route around it is not a remedy/);
