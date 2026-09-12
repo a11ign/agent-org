@@ -185,7 +185,7 @@ test("#1100: THE PRODUCTION VOCABULARY — statusCheckRollup's UPPER spelling re
 
   // AND THE NORMALISATION IS AT THE EDGE, where the other two spellings of absence are already collapsed.
   assert.equal(newestConclusion(
-    [{ name: "gate", status: "COMPLETED", conclusion: "CANCELLED", completedAt: "2026-09-12T12:00:00Z" }],
+    [{ name: "gate", conclusion: "CANCELLED", completedAt: "2026-09-12T12:00:00Z" }],
     "gate"), NO_VERDICT,
   "`newestConclusion` must hand the decision one vocabulary -- `gh` spells absent three ways across its "
   + "own sources and case is the third");
