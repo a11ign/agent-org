@@ -105,7 +105,8 @@ test("#1100: the reason SAYS WHICH CASE it is in — a quieter path is a regress
   // must not be quieter: "updated despite a red base" and "updated because behind and green" are
   // different events and the log must not spell them the same.
   const red = updateBranchDecision({ armed: true, gateConclusion: "FAILURE", behind: true, quietSeconds: 9999 });
-  assert.match(red.reason, /gate = FAILURE/, "the conclusion it saw, not a summary of it");
+  assert.match(red.reason, /gate = failure/,
+    "the conclusion it saw, NORMALISED, not a summary of it");
   assert.match(red.reason, /UPDATED ANYWAY/, "and that this is the deliberate new path, not the old one");
   assert.match(red.reason, /if it CLEARS, the red was the base's/,
     "and what the next reading MEANS -- the update is the instrument that tells the two causes apart, "
@@ -114,7 +115,7 @@ test("#1100: the reason SAYS WHICH CASE it is in — a quieter path is a regress
     "#498 is relocated, not overruled: a red that survives an update is still the author's");
 
   const green = updateBranchDecision({ armed: true, gateConclusion: "SUCCESS", behind: true, quietSeconds: 9999 });
-  assert.doesNotMatch(green.reason, /UPDATED ANYWAY|FAILURE/,
+  assert.doesNotMatch(green.reason, /UPDATED ANYWAY|failure/i,
     "and the ordinary green update must not borrow the red path's words, or the log stops distinguishing "
     + "them and this test is the only place that ever did");
 
@@ -149,6 +150,45 @@ test("#1100: a CANCELLED gate is NO VERDICT, not a red — and the update would 
   assert.equal(updateBranchDecision({
     armed: true, gateConclusion: "cancelled", behind: true, quietSeconds: 10 }).update, false,
   "a cancelled gate inside the quiet window is held, like a running one -- a replacement run is going");
+});
+
+test("#1100: THE PRODUCTION VOCABULARY — statusCheckRollup's UPPER spelling reaches the same decision", () => {
+  // THE BLOCKER, AND MY TEST WAS THE REASON IT SHIPPED GREEN. `updateBranchDecision` is fed from
+  // `gh pr list --json statusCheckRollup`, which spells conclusions UPPER; `checks-rule.mjs` is fed from
+  // `gh api .../check-runs`, which spells them lower. My fixture was written in the SECOND vocabulary, so
+  // the imported lowercase `NO_VERDICT` never matched the uppercase value production supplies: the branch
+  // was dead and the file read as though it were closed. **A correct value read from the wrong place.**
+  //
+  // Measured at the same moment on this repository:
+  //
+  //     gh pr list --json statusCheckRollup      #1107: COMPLETED/FAILURE   #1104: COMPLETED/SUCCESS
+  //     gh api .../commits/<head>/check-runs      completed/success
+  //
+  // Driven in BOTH vocabularies and asserted to AGREE, because a predicate correct only for the spelling
+  // its usual caller happens to use is exactly what shipped once.
+  for (const [upper, lower] of [["CANCELLED", "cancelled"], ["FAILURE", "failure"], ["SUCCESS", "success"]]) {
+    const fromRollup = updateBranchDecision({
+      armed: true, gateConclusion: upper, behind: true, quietSeconds: 9999 });
+    const fromRest = updateBranchDecision({
+      armed: true, gateConclusion: lower, behind: true, quietSeconds: 9999 });
+    assert.deepEqual(fromRollup, fromRest,
+      `\`${upper}\` and \`${lower}\` are the same verdict in two APIs and must reach the same decision`);
+  }
+
+  // AND THE ONE THAT MATTERED: the uppercase cancelled must NOT be described as a red.
+  const cancelled = updateBranchDecision({
+    armed: true, gateConclusion: "CANCELLED", behind: true, quietSeconds: 9999 });
+  assert.doesNotMatch(cancelled.reason, /UPDATED ANYWAY|red has two causes/,
+    "this is the exact line the fix was written to stop printing, and the production spelling is the one "
+    + "that was still printing it");
+  assert.match(cancelled.reason, /NO VERDICT/);
+
+  // AND THE NORMALISATION IS AT THE EDGE, where the other two spellings of absence are already collapsed.
+  assert.equal(newestConclusion(
+    [{ name: "gate", status: "COMPLETED", conclusion: "CANCELLED", completedAt: "2026-09-12T12:00:00Z" }],
+    "gate"), NO_VERDICT,
+  "`newestConclusion` must hand the decision one vocabulary -- `gh` spells absent three ways across its "
+  + "own sources and case is the third");
 });
 
 test("#1100: the ruling on `cancelled` is IMPORTED from checks-rule, never restated", () => {
@@ -217,7 +257,9 @@ test("#500's own measured case still reads SUCCESS — this fix does not undo th
   assert.equal(newestConclusion([
     { name: "gate", conclusion: "FAILURE", completedAt: "2026-09-08T07:32:35Z" },
     { name: "gate", conclusion: "SUCCESS", completedAt: "2026-09-08T07:35:34Z" },
-  ], "gate"), "SUCCESS");
+  ], "gate"), "success",
+  "#1100: the fixture keeps the API's own UPPER spelling and the expectation is normalised -- the ordering "
+  + "this test is about is unchanged, only the vocabulary downstream of it");
 });
 
 test("quiet time comes from the OLDEST check-run start, and a zero date is not a start", () => {
