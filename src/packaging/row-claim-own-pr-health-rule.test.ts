@@ -102,8 +102,13 @@ test("#989: a parent PLUS an in-build sub-row refuses, naming the SUB-ROW", () =
 test("#989 LIMITATION: a parent with no sub-issue LINKS reads as in build, and the refusal says how to fix it", () => {
   const reason = inBuildReason([{ ...inBuild, number: 908, subIssues: 0 }]);
   assert.ok(reason, "the link, not the fact of parenthood, is what this can see");
-  assert.match(reason as string, /sub_issues -f sub_issue_id=/,
-    "so the reader is told the one command that lifts it");
+  // #1161: `-F`, and this line is the finding rather than a consequence of it. **A test anchored on the
+  // BROKEN flag held it in place**: from #989 to #1161 this assertion read `-f sub_issue_id=` and passed
+  // every run, so the guard whose job was to hold the remedy followable was the thing defending the remedy
+  // that could not be followed. Pinning a string does not check that the string works, and a test written
+  // from the implementation inherits the implementation's defect with the implementation's confidence.
+  assert.match(reason as string, /sub_issues (?:-F|--field) sub_issue_id=/,
+    "so the reader is told the one command that lifts it, in the spelling that actually lifts it");
 });
 
 test("#989: isInBuild is the whole predicate, and each clause is load-bearing", () => {
@@ -167,4 +172,85 @@ test("#989: the parent reading is GitHub's own sub-issue link, counted", () => {
       : JSON.stringify([{ number: 986 }, { number: 1000 }])),
   });
   assert.equal(shape?.subIssues, 2);
+});
+
+/**
+ * #1161: THE COMMAND IN THE MESSAGE IS ASSERTED, NOT THE PROSE AROUND IT.
+ *
+ * A test matching `sub_issues` passes on either flag, which is how `-f` survived from #989 to #1161 inside
+ * a message this file already had assertions about. **The flag is the defect, so the flag is what is
+ * anchored** — and anchored ADJACENT to the parameter it types, because `-f` appears nowhere else in the
+ * sentence but would if the message ever grew another one.
+ *
+ * `gh api -f` sends every value as a string; the sub-issues endpoint requires an integer, so following this
+ * line verbatim returned HTTP 422 every time. The rule it broke is the one that makes naming a remedy worth
+ * doing: **follow the refusal exactly and you must pass.**
+ */
+test("#1161: the B2 refusal's own command sends a TYPED field, so following it verbatim works", () => {
+  const reason = String(inBuildReason([{ ...inBuild, number: 908, subIssues: 0 }]));
+
+  // BOTH SPELLINGS OF THE TYPED FLAG, because `--field` IS `-F`. worker-capture's finding on this guard,
+  // and it is the sharpening I gave them on #1164 returned: **pin the rule, not the rendering** -- except
+  // where the rendering IS the rule, and here it is not, since both forms are equally copy-pasteable for
+  // the reader this message is written for. A maintainer spelling it long would otherwise get a red saying
+  // the remedy is broken when it is correct, and the guard could not tell that edit from the defect.
+  assert.match(reason, /sub_issues (?:-F|--field) sub_issue_id=/,
+    "`-f` sends the id as a string and the endpoint refuses it with 422 -- a refusal whose remedy fails is "
+    + "worse than one with no remedy, because the reader debugs the remedy instead of doing the work");
+  assert.doesNotMatch(reason, /sub_issues (?:-f|--raw-field) sub_issue_id=/,
+    "and BOTH spellings of the untyped flag must be gone rather than merely outnumbered -- a message "
+    + "carrying one would satisfy the assertion above while still printing a line that returns 422");
+});
+
+test("#1161: the assertion is on the FLAG, so it cannot pass on a message that only mentions sub_issues", () => {
+  // The mutation this file could not previously express: put `-f` back and clause 1 must go red. Driven on
+  // the returned STRING rather than on the source, because the string is what a reader is handed.
+  // THE REPLACEMENT MATCHES WHATEVER FLAG IS THERE, not the one the source happens to spell today. My
+  // first version anchored on the literal `-F`, so under a source spelling it `--field` the mutation
+  // silently did not apply and the test passed having changed nothing -- #1165's shape, produced while
+  // building the guard against it, and caught only because the four-spelling matrix below showed `--field`
+  // failing when it should pass.
+  const withTheOldFlag = String(inBuildReason([{ ...inBuild, number: 908, subIssues: 0 }]))
+    .replace(/sub_issues \S+ sub_issue_id=/, "sub_issues -f sub_issue_id=");
+
+  assert.doesNotMatch(withTheOldFlag, /sub_issues (?:-F|--field) sub_issue_id=/,
+    "the mutation genuinely changes what the first assertion looks at -- without this, a green test above "
+    + "proves only that the string contains something, which is what let `-f` through for eight rows");
+  assert.match(withTheOldFlag, /sub_issues/,
+    "and it is still recognisably the same message, so the mutation changes the MEANING and not the subject");
+});
+
+/**
+ * #1161: ALL FOUR SPELLINGS, so the guard is a claim about the FLAG and not about seven characters.
+ *
+ * `--field` is `-F` and `--raw-field` is `-f`. The first version of the guard above matched `-F` literally,
+ * which fails safe -- but it could not tell a maintainer spelling the flag long (a correct edit) from the
+ * defect it exists to catch, and would have reported the working remedy as broken. worker-capture's finding
+ * on review, and it is the sharpening I had given them on #1164 returned: **pin the rule, not the
+ * rendering -- except where the rendering IS the rule.** Here it is not, because both forms are equally
+ * copy-pasteable by the reader the message is written for.
+ */
+test("#1161: both TYPED spellings pass and both UNTYPED spellings fail, which is the property", () => {
+  const message = String(inBuildReason([{ ...inBuild, number: 908, subIssues: 0 }]));
+  const spell = (flag: string) => {
+    const spelled = message.replace(/sub_issues \S+ sub_issue_id=/, `sub_issues ${flag} sub_issue_id=`);
+    // ASSERT THE REWRITE LANDED, on the result rather than on the input. Anchoring on one spelling is how
+    // a mutation silently does not apply, and a rewrite that changed nothing returns the same green as one
+    // that did. Checked here rather than trusted because this function's whole job is to vary the flag.
+    assert.ok(spelled.includes(`sub_issues ${flag} sub_issue_id=`),
+      `the rewrite must LAND: asked for ${flag} and the message does not carry it`);
+    return spelled;
+  };
+  const typed = /sub_issues (?:-F|--field) sub_issue_id=/;
+  const untyped = /sub_issues (?:-f|--raw-field) sub_issue_id=/;
+
+  for (const flag of ["-F", "--field"]) {
+    assert.match(spell(flag), typed, `${flag} sends the id typed, so the endpoint accepts it`);
+    assert.doesNotMatch(spell(flag), untyped, `${flag} must not also read as the untyped flag`);
+  }
+  for (const flag of ["-f", "--raw-field"]) {
+    assert.match(spell(flag), untyped, `${flag} sends the id as a string and the endpoint returns 422`);
+    assert.doesNotMatch(spell(flag), typed, `${flag} must not satisfy the guard -- \`--raw-field\` ends in `
+      + "`-field`, so a pattern without the second dash anchored would have let it through");
+  }
 });
