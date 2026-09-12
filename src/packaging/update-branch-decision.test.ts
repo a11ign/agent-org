@@ -1,3 +1,17 @@
+// no-token: gh
+//
+// #827's declaration, and this file has the honest claim for it: every test here calls `updateBranchDecision`,
+// `headQuietSeconds` or `newestConclusion`, all PURE over their arguments. The `gh` helper it declares lives
+// in `update-branch-sweep.mjs:291`, an imported file this one does not control and never reaches -- and the
+// rule is verified shallowly against this file's own text, which contains no `gh(` at all.
+//
+// WITHOUT IT THIS ROW'S OWN ACCEPTANCE COMMAND IS REFUSED. `pr-open` said so:
+//
+//     REFUSED npx tsx --test .../update-branch-decision.test.ts -> needs `token`, which this job does not
+//     have -- requires token via updateBranchDecision -> update-branch-sweep.mjs:291
+//
+// Its sibling `update-branch-sweep.test.ts` has carried this same line since #1018 for the same reason, so
+// the mechanism is the one already in use rather than an exemption invented for this row.
 /**
  * A RUNNING GATE MAY MEAN "THE AUTHOR IS PUSHING RIGHT NOW" — #488.
  *
