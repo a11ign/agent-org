@@ -19,7 +19,7 @@ import { readFileSync } from "node:fs";
 
 import { mergeReadiness, mergeSafetyVerdict } from "../../../../scripts/merge-guard.mjs";
 import { reasonKind } from "../../../../scripts/merge-guard/reason-kind.mjs";
-import { LIVE_SHAPE } from "./merge-guard-checks-rule.test.ts";
+import { LIVE_SHAPE } from "./check-run-fixtures.ts";
 
 const REQUIRED = ["changed", "ts", "python", "ansible", "docs", "changeset"];
 const MAIN_TIP = "2026-09-07T00:41:07Z";
