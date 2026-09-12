@@ -716,8 +716,13 @@ test("#1011: a failed milestone LOOKUP does not turn the refusal into a pass", (
     { milestones: () => null });
   assert.equal(code, 1);
   assert.equal(created, null);
-  assert.match(milestoneRefusal(null), /gh api repos\/.+\/milestones/,
-    "when it cannot name them it names how to ask");
+  const unreadable = milestoneRefusal(null);
+  assert.match(unreadable, /gh api repos\/.+\/milestones/, "when it cannot name them it names how to ask");
+  // worker-capture's review of #1016: the fallback gets its OWN line rather than being interpolated where
+  // a list belongs -- `--milestone <one of the milestone list could not be read...>` reads as garbage
+  // inside angle brackets, in the one case where the reader cannot see the list either.
+  assert.doesNotMatch(unreadable, /<one of .*could not be read/);
+  assert.match(unreadable, /--milestone <a milestone>/);
 });
 
 test("#1011: nothing INFERS a milestone -- labels, a parent and a Region do not decide a release", () => {
