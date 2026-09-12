@@ -1,3 +1,15 @@
+// no-token: gh
+//
+// This file imports `fileRefusalReason` from `scripts/row-file.mjs`, and that module's `openMilestones`
+// (`:303`) spawns `gh` for the milestone list -- a path none of these tests take: every one of them hands
+// the wrapper a body and an injected runner, and the runner this file injects THROWS if it is ever called
+// for a body the test expects refused.
+//
+// DECLARED AND THEN PROVED, because the mechanism's own check is shallow (this file must not call `gh(`).
+// Run with `GH_TOKEN`/`GITHUB_TOKEN` unset and a fake `gh` first on `PATH` that exits 97 and announces
+// itself: 14 pass / 0 fail / 0 skipped, and the fake was never called. A declaration that only says "it
+// does not need a token" is a claim; this one has a run behind it.
+
 /**
  * #891: nothing checked what got written to GitHub -- the tree-wide guard runs on tracked FILES at push
  * time, and a tracker body is neither. `product-manager`'s own sweep, run with the tree guard's OWN
