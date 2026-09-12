@@ -14,18 +14,27 @@
  * Driven against the pure verdict: the states worth testing are combinations of lookup results, and
  * arranging them against real refs would mean creating branches at the moment the test runs.
  */
+// no-token: gh
+//
+// #772: this file imports `row-reachability.mjs` for `startability`, `symbolOnMain` and
+// `refsCarryingSymbol`, and that module's line 53 spawns `gh` for the ISSUE fetch — a path none of these
+// tests take: every one of them drives git against a real local tree, or hands `startability` a facts
+// object built here. DECLARED AND THEN PROVED, because the mechanism's own check is shallow (this file
+// must not call `gh(`): run with `GH_TOKEN`/`GITHUB_TOKEN` unset and a fake `gh` first on `PATH` that
+// exits 97 and shouts, and the suite passes with the fake never invoked.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { startability, subjectAndRegionFacts, symbolOnMain, refsCarryingSymbol }
+import { startability, subjectAndRegionFacts, symbolOnMain, refsCarryingSymbol, proveOriginMainReadable, onMain }
   from "../../../../scripts/row-reachability.mjs";
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 
 const examined = { paths: 3, symbols: 2 };
 const clear = { row: 189, subjectsMissing: [], heldRegions: [], examined };
+
 
 test("THE #186 CASE: the subject does not exist on main, and no region check would see it", () => {
   const v = startability({
@@ -56,8 +65,23 @@ test("a clear row is STARTABLE and says what it examined", () => {
   const v = startability(clear);
   assert.equal(v.code, 0);
   assert.match(v.lines.join("\n"), /STARTABLE/);
-  assert.match(v.lines.join("\n"), /3 path\(s\), 2 symbol\(s\) examined/,
+  assert.match(v.lines.join("\n"), /3 path\(s\), 2 symbol\(s\), \d+ unmerged ref\(s\) examined/,
     "a count of what was looked at, or 'startable' is indistinguishable from 'nothing was checked'");
+});
+
+test("#772: ZERO unmerged refs is reported, because the search then had nothing to look at", () => {
+  // `unmergedRefs()` reads what this checkout has FETCHED, not what the remote holds. A fresh clone
+  // searches nothing, every symbol comes back carried by nobody, and the verdict is STARTABLE -- from an
+  // EMPTY POPULATION rather than from a search. worker-judge's finding on #1023: the empty list, not the
+  // 128, is what actually produced the symptom this row was filed for, and nothing counted it.
+  const noRefs = { ...clear, examined: { ...clear.examined, refs: 0 } };
+  const said = startability(noRefs).lines.join("\n");
+  assert.equal(startability(noRefs).code, 0, "zero refs is legitimate -- a fresh clone -- not a refusal");
+  assert.match(said, /fetched NO unmerged remote branches/,
+    "the narrowness must be visible: STARTABLE from an unsearched population reads exactly like STARTABLE "
+    + "from a clean one");
+  assert.doesNotMatch(startability({ ...clear, examined: { ...clear.examined, refs: 4 } }).lines.join("\n"),
+    /fetched NO unmerged/, "and it must not fire when there was a population to search");
 });
 
 test("EXAMINED NOTHING is inconclusive, never startable — the sharpest case here", () => {
@@ -265,11 +289,53 @@ test("a row that named nothing at all still gets the original sentence", () => {
  * grep` against a real, shared object database, the same choice `pre-push-resolve-toward-main.test.ts`
  * makes for the same reason: a guard whose fixture is invented is one nobody has seen bite.
  */
+/**
+ * Is `origin/main` a readable ref HERE? — #772, and the answer is not always yes.
+ *
+ * CI's acceptance job checks out the PR's merge ref and has no `origin/main`: measured, `git grep … 
+ * origin/main` there is `fatal: ambiguous argument 'origin/main': unknown revision`. The tests below drive
+ * the real object database deliberately — a guard whose fixture is invented is one nobody has seen bite —
+ * but that choice means the ref they need can be absent, and **before #772 those runs passed anyway**,
+ * because an unreadable ref returned the same empty list as a ref that genuinely lacked the symbol. Three
+ * assertions in this file were green in CI for that reason, which is the very conflation the row fixes.
+ *
+ * So they SKIP LOUDLY where the ref is missing, rather than asserting against an environment they do not
+ * have — and rather than passing for a reason that has nothing to do with what they claim.
+ */
+function originMainReadable(): boolean {
+  try {
+    execFileSync("git", ["rev-parse", "--verify", "--quiet", "origin/main"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Checked at RUN time and reported, never as a `{ skip }` option: a skipped test is invisible in an
+ * ordinary run and reads as "not applicable", and this one is skipped for a reason a reader needs — the
+ * checkout has no `origin/main`, so the real-object-database tests below cannot be asked at all.
+ */
+function skipsWithoutOriginMain(): boolean {
+  if (originMainReadable()) return false;
+  console.error("SKIPPED (no `origin/main` in this checkout, as CI's acceptance job has none): this test "
+    + "drives the real object database, and a ref it cannot read is not a result it can assert on.");
+  return true;
+}
+
 test("#719 REGRESSION: #687's real body, whose Region misses environmentKey's actual file", () => {
+  if (skipsWithoutOriginMain()) return;
   const body = readFileSync(
     fileURLToPath(new URL("./fixtures/issue-687-body.txt", import.meta.url)), "utf8");
   const result = subjectAndRegionFacts(body);
   assert.ok(result.examined.symbols > 0, "the fixture must actually name a symbol, or this proves nothing");
+  // #772: AND THE REF POPULATION, for the same reason one line up. `refs: refs.length` being spelled in the
+  // source is not the same as `unmergedRefs()` being what fills it -- `const refs = []` keeps the spelling,
+  // keeps the count, and reports zero for every row for ever, with the NOTE printing each time.
+  assert.ok(result.examined.refs !== undefined && result.examined.refs > 0,
+    "this checkout has unmerged remote branches, so a zero here means the search read no population -- "
+    + "the same 'proves nothing' the symbol floor beside it guards against");
   const missing = result.subjectsMissing.map((s) => s.name);
   assert.ok(!missing.includes("environmentKey"),
     "environmentKey has been on main all along (packages/lab/src/training/capture-cache.mjs); reporting "
@@ -303,6 +369,7 @@ test("#719 REGRESSION: #687's real body, whose Region misses environmentKey's ac
 const fixtureSymbolName = (a: string, b: string) => a + b;
 
 test("#719: a branch is a named carrier only when it actually contains the symbol, anywhere in its tree", () => {
+  if (skipsWithoutOriginMain()) return;
   const env = sandboxGitEnv();
   const FIXTURE_SYMBOL = fixtureSymbolName("RowReachabilityFixtureSy", "mbol719");
   const REF = "refs/remotes/origin/row-reachability-fixture-719";
@@ -344,3 +411,68 @@ test("#719: a branch is a named carrier only when it actually contains the symbo
     try { execFileSync("rm", ["-f", tmpIndex]); } catch { /* already gone */ }
   }
 });
+
+/**
+ * #772: "NO MATCH" AND "COULD NOT READ THIS REF" ARE NOT THE SAME ANSWER.
+ *
+ * `refsCarryingSymbol` caught every `git grep` failure and treated it as "this ref does not carry it" —
+ * the old comment said so outright: *"either way, it does not carry it"*. In a checkout with no remote
+ * branches fetched, every ref is unreadable, so every symbol reads as carried by nothing, `subjectsMissing`
+ * comes back empty and the row reports STARTABLE. **A clean answer from a question never asked**, which is
+ * the direction that looks like success.
+ *
+ * `symbolOnMain` — thirty lines above it in the same file — already draws the line: exit 1 is git grep's
+ * own "no match", a real no; anything else (128 for an unreadable revision) must reach `main()`'s
+ * CANNOT_ASK path. The rule was stated once and not followed by its neighbour.
+ */
+test("#772: an UNREADABLE ref throws rather than reporting the symbol absent", () => {
+  // Concatenated: a literal here would put the symbol in this file's own tree, and a later assertion that
+  // it is absent from `origin/main` would then fail once this test merges — #770's own regression, which
+  // this file already carries a doc comment about.
+  const symbol = `refsCarry${"ingSymbol"}`;
+  assert.throws(() => refsCarryingSymbol(symbol, ["origin/this-ref-does-not-exist"]),
+    (error: unknown) => (error as { status?: number }).status !== 1,
+    "a ref git cannot read must not be silently reported as not carrying the symbol -- with no remote "
+    + "branches fetched, that reads every row as STARTABLE");
+});
+
+test("#772 CONTROL: a real ref that genuinely lacks the symbol is still a plain, quiet no",
+  () => {
+  if (skipsWithoutOriginMain()) return;
+  // The other direction, and the one a fix aimed only at the throw would break: exit 1 is a real answer.
+  // CONCATENATED for the reason the doc comment above `fixtureSymbolName` gives, which this test did not
+  // take and #1023's merge then proved: written whole, the literal was guaranteed absent from
+  // `origin/main` only until this very file merged INTO `origin/main`, at which point `refsCarryingSymbol`
+  // correctly found it here and the control failed. The function was right; the fixture named itself.
+  const absentEverywhere = fixtureSymbolName("no-tree-here-holds", "-this-symbol-zzz");
+  assert.deepEqual(refsCarryingSymbol(absentEverywhere, ["origin/main"]), [],
+    "git grep's exit 1 is a genuine 'not present', and must stay a quiet empty result");
+});
+
+test("#772: `onMain` THROWS when `origin/main` cannot be read -- it never reports the path absent", () => {
+  // THE CALL SITE, not the function. Driving `proveOriginMainReadable` holds the function and misses the
+  // call being DELETED from `onMain`; asserting the call on the source holds the call and misses a
+  // swallowed failure inside. worker-judge: neither half alone holds it, and the failure is identical
+  // either way -- one line gone, every declared path reads as absent, nothing goes red.
+  const throwing = () => { throw new Error("fatal: bad revision"); };
+  assert.throws(() => onMain("packages/lab/src/dataset-paths.mjs", { run: throwing }), /bad revision/,
+    "an unreadable origin/main must reach main()'s CANNOT_ASK path, never `return false` -- `cat-file -e` "
+    + "gives 128 for a missing PATH and a missing REVISION alike, so `false` here would report the whole "
+    + "Region unlanded");
+});
+
+test("#772: proving `origin/main` is DRIVEN -- a `rev-parse` that fails must reach CANNOT_ASK", () => {
+  // The stub is the whole fixture, and it is here because the alternative -- a checkout with no
+  // `origin/main` inside one that has it -- is a sandbox this test does not need. `cat-file -e` returns
+  // 128 for a missing PATH and 128 for a missing REVISION alike, so without proving the revision first
+  // every declared path reads as absent and the row reports its whole Region unlanded.
+  //
+  // Driven rather than asserted on the source: a text check catches the call being DELETED and misses a
+  // swallowing `try` inside it -- still called, still named, unable to fail. worker-judge's finding, and
+  // it is the proof that proves nothing.
+  assert.throws(() => proveOriginMainReadable({ run: () => { throw new Error("fatal: bad revision"); } }),
+    /bad revision/, "an unreadable origin/main must throw out to main()'s CANNOT_ASK path");
+  assert.doesNotThrow(() => proveOriginMainReadable({ run: () => "abc123" }),
+    "and a readable one must not -- the guard is a refusal, not a wall");
+});
+
