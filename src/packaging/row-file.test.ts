@@ -29,7 +29,7 @@ import { declaredRegionFiles } from "../../../../scripts/region-paths.mjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendFiledBy, boardingFor, bodyFromArgv, createIssue, fetchIssueBoardStatus, fileRefusalReason, issueNumberFromUrl, laneLabelsFor, milestoneRefusal, openCheckTranscriptRefusal, sessionFromArgv, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy } from "../../../../scripts/row-file.mjs";
+import { appendFiledBy, boardingFor, bodyFromArgv, createIssue, directoryRegionWarning, fetchIssueBoardStatus, fileRefusalReason, issueNumberFromUrl, laneLabelsFor, milestoneRefusal, openCheckTranscriptRefusal, sessionFromArgv, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy } from "../../../../scripts/row-file.mjs";
 import { filedByLine } from "../../../../scripts/row-claim.mjs";
 
 const CLI = fileURLToPath(new URL("../../../../scripts/row-file.mjs", import.meta.url));
@@ -927,4 +927,17 @@ test("#1174: two commands in a row are two commands, not a command and its outpu
   // of several commands and no output at all satisfies it, which is most of the bodies this refuses.
   const body = openCheckBody("**Prints `0` today.**\n\n```\n$ git fetch origin\n$ grep -c foo bar.md\n```");
   assert.match(String(openCheckTranscriptRefusal(body)), /directly underneath/);
+});
+
+test("#1186 clause 2: the warning says what to write instead, and reaches the author", () => {
+  // An exported function nobody calls is not "surfaced" -- #1158's lesson and #1085's shape. row-file
+  // prints this at filing time, while the author still has the body in front of them.
+  const body = "## Region\n\n```\npackages/\n```\n\n## Acceptance\n\n`npx tsx --test x.test.ts`\n"
+    + "\n## Open-check\n\nOpen while the guard is missing.\n";
+  const warned = String(directoryRegionWarning(body));
+  assert.match(warned, /packages\/ \(\d+ file\(s\)\)/, "the count, not just the fact");
+  assert.match(warned, /name the files, or say the exclusion in words/, "what to write instead");
+  // And it must NOT refuse: a directory Region is sometimes exactly right.
+  assert.equal(fileRefusalReason(body), fileRefusalReason(body.replace("packages/", "docs/README.md")),
+    "a directory must not change whether the row is refused");
 });
