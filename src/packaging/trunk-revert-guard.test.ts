@@ -94,17 +94,64 @@ execFileSync("git", ["clone", "--local", "--quiet", REPO, CLONE], { stdio: "pipe
  * `trunk-guard`'s unscoped build, whose checkout is full-history since the same PR, and a PR body can
  * deepen the acceptance job's with `History: full`.
  */
-const fixturePresent = (sha: string): boolean => {
+/**
+ * #1040: THE SKIP LINE STATES A CAUSE, AND `cat-file -e` CANNOT SUPPORT IT.
+ *
+ * `NO_FIXTURE` below says `(shallow clone)`. That is a diagnosis, and this catch was bare. Measured
+ * 2026-09-12 against this repository:
+ *
+ *     missing object in a real repo   -> 128
+ *     a directory that is NOT a repo  -> 128
+ *     present object (control)        ->   0
+ *
+ * **No status separates them**, so #1023's remedy -- exit 1 is a real no, anything else is a failure --
+ * does not transfer. It needs a POSITIVE CONTROL: prove the clone readable first, and then a 128 is
+ * genuinely about the object. The same shape `assertOriginMainReadable` uses one file over.
+ *
+ * `cloneReadable` is computed ONCE and memoised, because the answer cannot change inside a run and
+ * spawning git per fixture per test is the cost this file already avoids elsewhere.
+ * @returns {boolean} true when `CLONE` is a readable repository
+ */
+function cloneReadable(cwd: string = CLONE): boolean {
+  if (cwd !== CLONE) return objectPresent("HEAD", cwd);   // an injected clone is never memoised
+  if (cloneProved === null) cloneProved = objectPresent("HEAD", CLONE);
+  return cloneProved;
+}
+let cloneProved: boolean | null = null;
+
+/** Does `rev` resolve to a commit in `cwd`? The bare question, with no diagnosis attached. */
+function objectPresent(rev: string, cwd: string): boolean {
   try {
-    execFileSync("git", ["cat-file", "-e", `${sha}^{commit}`], { cwd: CLONE, stdio: "pipe", env: sandboxGitEnv() });
+    execFileSync("git", ["cat-file", "-e", `${rev}^{commit}`], { cwd, stdio: "pipe", env: sandboxGitEnv() });
     return true;
   } catch {
     return false;
   }
-};
-const NO_FIXTURE = (sha: string) =>
-  `SKIPPED: fixture merge ${sha} is not in this checkout (shallow clone) -- the acceptance ran nowhere here. `
-  + "trunk-guard's full-history build runs it; a PR body can declare `History: full` to run it in acceptance.";
+}
+
+/**
+ * INJECTABLE `cwd`, and that is not a convenience. The fix is a positive control, and a control can only
+ * be shown to work by pointing it at a clone that genuinely cannot be read -- which cannot be `CLONE`.
+ * Without the seam, dropping the control turned **0 red**: the measurement was tested and the wiring was
+ * not, which is the shape this whole night has been about.
+ */
+const fixturePresent = (sha: string, cwd: string = CLONE): boolean =>
+  // NO CONTROL HERE, DELIBERATELY, AND I HAD ONE UNTIL A MUTATION SAID IT WAS DOING NOTHING. Guarding this
+  // with `cloneReadable` returns `false` for an unreadable clone -- which `objectPresent` already does,
+  // since git errors either way. Dropping the guard turned **0 red**, and the honest reading is that it
+  // was never load-bearing: the two states are indistinguishable in the ANSWER and distinguishable only in
+  // the DIAGNOSIS. So the control lives in `NO_FIXTURE`, where the cause is stated, and this stays the
+  // bare question it always was. A line kept because it looks careful is a line nothing can hold.
+  objectPresent(sha, cwd);
+// #1040: TWO STATES, TWO LINES. The skip may name `(shallow clone)` only on the path where the clone was
+// proved readable; an unreadable clone is a different report with a different remedy, and saying the first
+// when the second is true sends a reader to deepen a checkout that is not the problem.
+const NO_FIXTURE = (sha: string, cwd: string = CLONE) => (cloneReadable(cwd)
+  ? `SKIPPED: fixture merge ${sha} is not in this checkout (shallow clone) -- the acceptance ran nowhere `
+    + "here. trunk-guard's full-history build runs it; a PR body can declare `History: full` to run it in "
+    + "acceptance."
+  : `SKIPPED: the test clone at ${cwd} could not be read at all, so whether ${sha} is present is `
+    + "UNKNOWN -- this is not a shallow checkout, it is an unreadable one, and deepening will not fix it.");
 
 after(() => rmSync(CLONE, { recursive: true, force: true }));
 
@@ -420,4 +467,64 @@ test("#890 every spawn runs against the CLONE, never the real checkout", () => {
     assert.doesNotMatch(options, /cwd:\s*REPO\b/,
       "cwd: REPO points at whichever checkout runs the suite, and this script FETCHES");
   }
+});
+
+test("#1040 ACCEPTANCE: an UNREADABLE clone is reported as unreadable, never as a shallow checkout", () => {
+  // The skip line used to state `(shallow clone)` as the cause, and `cat-file -e` cannot support it.
+  // Measured against this repository: a missing object is 128 and a directory that is not a repository is
+  // ALSO 128, so no status separates them and #1023's exit-code remedy does not transfer.
+  //
+  // Driven over a real directory rather than by stubbing git, for the reason this file already gives: a
+  // hand-written stub of git is a second copy of the predicate wearing git's name.
+  const notARepo = realpathSync(mkdtempSync(join(tmpdir(), "a11y-not-a-repo-")));
+  try {
+    const readable = (cwd: string) => {
+      try {
+        execFileSync("git", ["cat-file", "-e", "HEAD^{commit}"], { cwd, stdio: "pipe", env: sandboxGitEnv() });
+        return true;
+      } catch { return false; }
+    };
+    assert.equal(readable(notARepo), false, "a directory that is not a repository must not read as readable");
+    assert.equal(readable(CLONE), true, "AND the real clone must -- or this control proves only that git errors");
+
+    // The two 128s, side by side. This is the measurement the old skip line asserted without making.
+    const status = (args: string[], cwd: string) => {
+      try {
+        execFileSync("git", args, { cwd, stdio: "pipe", env: sandboxGitEnv() });
+        return 0;
+      } catch (cause) { return (cause as { status?: number }).status; }
+    };
+    assert.equal(status(["cat-file", "-e", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef^{commit}"], CLONE), 128,
+      "a missing OBJECT in a real repository");
+    assert.equal(status(["cat-file", "-e", "HEAD^{commit}"], notARepo), 128,
+      "and an unreadable REPOSITORY -- the same code, which is why a positive control is the only separator");
+  } finally {
+    rmSync(notARepo, { recursive: true, force: true });
+  }
+});
+
+test("#1040 ACCEPTANCE: against an UNREADABLE clone, fixturePresent says absent and the LINE says why -- "
+  + "driven through the shipped functions, not through a copy of them", () => {
+  const notARepo = realpathSync(mkdtempSync(join(tmpdir(), "a11y-not-a-repo-")));
+  try {
+    assert.equal(fixturePresent("f2cdfaf3", notARepo), false,
+      "it cannot claim the fixture is present, and it must not throw either");
+    const line = NO_FIXTURE("f2cdfaf3", notARepo);
+    assert.match(line, /could not be read at all/);
+    assert.match(line, /deepening will not fix it/,
+      "the remedy, which is the whole point -- `(shallow clone)` sends a reader to deepen a checkout that "
+      + "is not the problem");
+    assert.doesNotMatch(line, /shallow clone/, "and NOT the other cause");
+  } finally {
+    rmSync(notARepo, { recursive: true, force: true });
+  }
+});
+
+test("#1040: the skip line names the cause it actually established", () => {
+  // `CLONE` is readable here, so the line may say `(shallow clone)`. The other branch is exercised by the
+  // control above, which proves the predicate it depends on rather than the string it produces.
+  const line = NO_FIXTURE("f2cdfaf3");
+  assert.match(line, /shallow clone/);
+  assert.doesNotMatch(line, /could not be read at all/,
+    "and only one of the two -- a line offering both causes is a line that established neither");
 });
