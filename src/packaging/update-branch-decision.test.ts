@@ -41,8 +41,85 @@ test("green + behind → UPDATE, unchanged, and the quiet window is NOT applied 
   assert.equal(decide("SUCCESS", 1).update, true, "one second of quiet, green gate: still eligible");
 });
 
-test("failure → SKIP, unchanged", () => {
-  assert.equal(decide("FAILURE", 9999).update, false);
+// ---------------------------------------------------------------------------------------------------
+// #1100: A RED, ARMED, BEHIND PR IS UPDATED — the skip that lived here was self-sustaining.
+//
+// The test that stood at this spot asserted `decide("FAILURE", 9999).update === false` and is REPLACED
+// rather than deleted, because the behaviour it pinned is this row's subject: `gate = FAILURE` has two
+// causes — red from what the PR changed, and red from what MAIN changed underneath it — the conclusion is
+// identical in both, and the correct action is opposite.
+//
+// Measured on sweep run `34692306488` at 11:55:56Z: #1093 skipped here, its failure `not ok 357` from
+// `claude-md-content-preservation.test.ts`, a file #1080 had DELETED from main at 11:27:11Z. **No fix the
+// author could push** — the assertion did not exist to be satisfied — and the update that would clear it
+// was refused because of the red it would clear.
+// ---------------------------------------------------------------------------------------------------
+
+test("#1100 ACCEPTANCE: an armed, behind PR with a FAILING gate is UPDATED", () => {
+  const d = updateBranchDecision({ armed: true, gateConclusion: "FAILURE", behind: true, quietSeconds: 9999 });
+  assert.equal(d.update, true,
+    "the skip that used to live here could never be cleared: updating is the only action that clears a "
+    + "red caused by the base, and it was refused BECAUSE OF that red");
+});
+
+test("#1100: `armed` still bounds the population — an UNARMED PR is skipped, red or green", () => {
+  // The `armed` gate is deliberately untouched: it means a reviewer was convinced, which is what makes
+  // the population small by construction. Updating unarmed PRs is a different and much larger change.
+  for (const gateConclusion of ["FAILURE", "SUCCESS", null]) {
+    const d = updateBranchDecision({ armed: false, gateConclusion, behind: true, quietSeconds: 9999 });
+    assert.equal(d.update, false, `unarmed with gate ${gateConclusion} must still be skipped`);
+    assert.match(d.reason, /not armed for auto-merge/,
+      "and skipped FOR THAT REASON -- a skip that reports the wrong cause is how #498 hid for hours");
+  }
+});
+
+test("#1100: a PR that is NOT behind is still skipped, red or green — nothing licenses an empty push", () => {
+  // DELIBERATELY ONLY `update`. The reason this skip gives is asserted in the reason test below, not here,
+  // and the split is not tidiness: the row's own mutation (restoring the gate skip) must leave THIS clause
+  // passing, and an assertion on the reason string would make it fail -- under that mutation a not-behind
+  // red PR is still skipped, correctly, but skipped one branch earlier and so for a different stated
+  // cause. A clause that cannot survive the mutation it is paired against is measuring the wrong thing.
+  for (const gateConclusion of ["FAILURE", "SUCCESS", null]) {
+    const d = updateBranchDecision({ armed: true, gateConclusion, behind: false, quietSeconds: 9999 });
+    assert.equal(d.update, false, `not behind with gate ${gateConclusion} must still be skipped`);
+  }
+});
+
+test("#1100: the reason SAYS WHICH CASE it is in — a quieter path is a regression even when green", () => {
+  // #498's real value was that its skip named the READING rather than only the verdict. The replacement
+  // must not be quieter: "updated despite a red base" and "updated because behind and green" are
+  // different events and the log must not spell them the same.
+  const red = updateBranchDecision({ armed: true, gateConclusion: "FAILURE", behind: true, quietSeconds: 9999 });
+  assert.match(red.reason, /gate = FAILURE/, "the conclusion it saw, not a summary of it");
+  assert.match(red.reason, /UPDATED ANYWAY/, "and that this is the deliberate new path, not the old one");
+  assert.match(red.reason, /if it CLEARS, the red was the base's/,
+    "and what the next reading MEANS -- the update is the instrument that tells the two causes apart, "
+    + "which is the whole argument for doing it");
+  assert.match(red.reason, /author owns the fix/,
+    "#498 is relocated, not overruled: a red that survives an update is still the author's");
+
+  const green = updateBranchDecision({ armed: true, gateConclusion: "SUCCESS", behind: true, quietSeconds: 9999 });
+  assert.doesNotMatch(green.reason, /UPDATED ANYWAY|FAILURE/,
+    "and the ordinary green update must not borrow the red path's words, or the log stops distinguishing "
+    + "them and this test is the only place that ever did");
+
+  // AND EACH SKIP STILL NAMES ITS OWN CAUSE, which is the property moved out of the not-behind clause
+  // above so that clause survives this row's own mutation. A skip reporting the wrong cause is how #498
+  // hid for hours: the log read as work correctly handed back rather than as the sweep being wrong.
+  assert.match(updateBranchDecision({ armed: true, gateConclusion: "FAILURE", behind: false, quietSeconds: 9999 })
+    .reason, /nothing to update/,
+  "a red PR that is already up to date is skipped for being up to date, not for being red");
+});
+
+test("#1100: a CONCLUDED failing gate does not wait on the quiet window", () => {
+  // The window guards an author mid-push (#488). A concluded gate -- green or red -- means CI has
+  // finished, so nobody is mid-push; the existing code already reasons that way for SUCCESS and this
+  // keeps the two consistent rather than inventing a third rule. NOT a widening of the window: the
+  // running-gate case below is untouched.
+  assert.equal(updateBranchDecision({ armed: true, gateConclusion: "FAILURE", behind: true, quietSeconds: 1 })
+    .update, true, "one second of quiet, concluded red gate: still eligible");
+  assert.equal(updateBranchDecision({ armed: true, gateConclusion: null, behind: true, quietSeconds: 1 })
+    .update, false, "and a RUNNING gate one second after a push is still held -- the window is untouched");
 });
 
 test("THE BOUNDARY IS INCLUSIVE AT 300s — 299 skips, 300 and 301 update", () => {

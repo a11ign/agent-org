@@ -66,7 +66,12 @@ test("newestConclusion: a genuinely failing head is STILL read as failing -- the
     { name: "gate", conclusion: "FAILURE", completedAt: "2026-09-08T08:00:00Z", startedAt: "2026-09-08T07:59:00Z" },
   ];
   assert.equal(newestConclusion(runs, "gate"), "FAILURE");
-  assert.equal(updateBranchDecision({ armed: true, gateConclusion: "FAILURE", behind: true }).update, false);
+  // #1100: THE READER'S ANSWER IS UNCHANGED AND IS WHAT THIS TEST IS ABOUT -- a genuinely failing head
+  // still READS as failing. What changed is what the sweep DOES with that reading: an armed, behind PR is
+  // now updated anyway, because `gate = FAILURE` has two causes and the update is the only thing that
+  // tells them apart. The decision half is asserted here in its new direction rather than dropped, so
+  // this file cannot silently stop saying anything about it.
+  assert.equal(updateBranchDecision({ armed: true, gateConclusion: "FAILURE", behind: true }).update, true);
 });
 
 test("newestConclusion: a still-running newest run reports null, which is 'not yet answered', not 'failing'", () => {
@@ -104,12 +109,21 @@ test("newestConclusion: startedAt is the fallback key when completedAt is absent
   assert.equal(newestConclusion(runs, "gate"), "SUCCESS");
 });
 
-test("the skip message NAMES THE READING, so a wrong skip is falsifiable from the log alone (#498)", () => {
+test("#498's rule is RELOCATED, not lost: the line still names the reading, now on the UPDATE (#1100)", () => {
+  // THIS TEST USED TO PIN THE SKIP. #1100 removed that skip -- a red, armed, behind PR is updated,
+  // because its red has two causes and updating is the only instrument that distinguishes them. **#498's
+  // value was never the skip; it was that the line named the READING rather than only the verdict**, so
+  // a wrong decision is falsifiable from the log alone. That property is asserted here on the new path.
   const d = updateBranchDecision({ armed: true, gateConclusion: "FAILURE", behind: true });
-  assert.equal(d.update, false);
-  assert.match(d.reason, /NEWEST gate run on the head/,
-    "the reason must say the conclusion was the newest, not merely that the gate failed");
-  assert.match(d.reason, /#498/, "the reason must name the shape to report if the PR looks green");
+  assert.equal(d.update, true, "the decision reversed -- see #1100 and the ACCEPTANCE test in "
+    + "update-branch-decision.test.ts");
+  assert.match(d.reason, /gate = FAILURE/,
+    "the reason must still say WHAT IT READ, not merely that it acted");
+  assert.match(d.reason, /#498/,
+    "and it must still name #498, because the author still owns a red that survives the update");
+  assert.match(d.reason, /if it CLEARS, the red was the base's/,
+    "and it must say what the next reading MEANS -- otherwise the update is a cost paid on a guess "
+    + "rather than the answer to the question the old skip guessed at");
 });
 
 // --- updateBranchDecision: the pure decision ---
@@ -128,9 +142,14 @@ test("updateBranchDecision: armed, gate still running, behind, AND THE HEAD IS Q
   assert.equal(d.update, true);
 });
 
-test("updateBranchDecision: armed, gate FAILURE, behind -- a failing PR needs a fix, not a stale-main push", () => {
+test("updateBranchDecision: armed, gate FAILURE, behind -- UPDATED, and #1100 is why", () => {
+  // REPLACED RATHER THAN DELETED. The old assertion (`update === false`, "a failing PR needs a fix, not a
+  // stale-main push") was correct about a PR red on its OWN contents and wrong about one red because of
+  // its base -- and nothing in the gate conclusion tells those apart. Measured on sweep run
+  // `34692306488`: #1093 skipped here, red from a guard #1080 had deleted from main, with no fix its
+  // author could push. The full argument lives in `update-branch-decision.test.ts`'s #1100 block.
   const d = updateBranchDecision({ armed: true, gateConclusion: "FAILURE", behind: true });
-  assert.equal(d.update, false);
+  assert.equal(d.update, true);
 });
 
 test("updateBranchDecision: armed, green, already up to date -- nothing to do", () => {
