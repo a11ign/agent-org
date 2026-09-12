@@ -22,7 +22,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { regionRefusalReason } from "../../../../scripts/row-file.mjs";
+import { declaredRegionFiles } from "../../../../scripts/region-paths.mjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -731,4 +733,93 @@ test("#1011: nothing INFERS a milestone -- labels, a parent and a Region do not 
   const { code } = fileWith(["--title", "a real row", "--body", COMPLETE_BODY,
     "--session=worker-contracts", "--label", "ready", "--parent", "908"]);
   assert.equal(code, 1, "a row rich in signals is still refused -- none of them names a release");
+});
+
+// ---------------------------------------------------------------------------------------------------
+// #1117: A REGION THAT NAMES NO PATH MUST SAY IT MEANS TO.
+//
+// The row's premise was that a non-commit row CANNOT BE FILED without a false Region. Measured: it can.
+// `missingTemplateFields` requires the SECTION, not paths, so a prose-only Region already passes and
+// `declaredRegionFiles` already returns `[]`. #1042's workaround was never necessary.
+//
+// THE GAP IS THE OTHER WAY ROUND AND IT IS WORSE: a row whose author FORGOT the paths is
+// indistinguishable from one that has none. Both file cleanly and both reserve nothing under B4 — so the
+// first is a row nobody can route work around, which is the same over-blocking harm the row describes,
+// arrived at from the side nobody was looking at.
+// ---------------------------------------------------------------------------------------------------
+
+const rowWith = (region: string) =>
+  `## What it is\nx\n\n## Region\n${region}\n\n## Acceptance\nNot a test.\n\n## Open-check\nn/a\n`;
+
+test("#1117: a row whose deliverable is NOT A COMMIT files with no Region path", () => {
+  const body = rowWith("**Not a commit.** Its deliverable is not a commit: a destination somebody "
+    + "provisions, plus the one line of configuration that points at it.");
+  assert.equal(regionRefusalReason(body), null,
+    "a row that declares itself must file -- #1042's workaround named files it would never touch, and a "
+    + "Region typed to satisfy a refusal reserves them for nobody");
+  assert.deepEqual(declaredRegionFiles(body), [],
+    "and it must reserve NOTHING: this is the clause that pays for the change, because the whole harm "
+    + "today is false reservations under B4");
+});
+
+test("#1117: a Region that names no path and does NOT say so is still REFUSED", () => {
+  // THE DIRECTION THAT MUST NOT WEAKEN. "No Region paths" must not become the easy path past the check:
+  // an author who forgot is the common case and a declaration is the rare one.
+  const reason = regionRefusalReason(rowWith("The corpus backup destination, on the lab."));
+  assert.ok(reason, "a pathless Region with no declaration must refuse");
+  assert.match(reason as string, /indistinguishable from one that has none/,
+    "and the refusal must say WHY -- an author who forgot needs to know it reserves nothing, not merely "
+    + "that a section is wrong");
+  assert.match(reason as string, /its deliverable is not a commit/,
+    "and it must quote the sentence that satisfies it: follow the refusal exactly and you must pass");
+});
+
+test("#1117: a Region that names files is untouched", () => {
+  assert.equal(regionRefusalReason(rowWith("```\nscripts/row-file.mjs\n```")), null);
+});
+
+test("#1117: the declaration's vocabulary is #989's, so the clock and the filer name ONE category", () => {
+  // #989's in-build rule reads `declaresPaths: false` as "its deliverable is not a commit" — a settings
+  // change, a ruling, a measurement posted on the row. Two tools reading one tracker must not describe
+  // that category in two spellings; keyed on the sentence rather than on a keyword nobody would guess.
+  const source = readFileSync(new URL("../../../../scripts/row-file.mjs", import.meta.url), "utf8");
+  const claimSide = readFileSync(
+    new URL("./row-claim-own-pr-health-rule.test.ts", import.meta.url), "utf8");
+  const PHRASE = "its deliverable is not a commit";
+  assert.ok(source.includes(PHRASE), `row-file.mjs must use #989's own words: ${PHRASE}`);
+  assert.ok(claimSide.includes(PHRASE),
+    "and the claim side must still use them -- if this fails the two have drifted, which is the defect "
+    + "rather than this test being wrong");
+});
+
+test("#1117: the SHARED extractor draws the scope — the two forms that prove which parser runs", () => {
+  // NOTHING IN THIS SUITE COULD TELL, and that is why these two cases exist. worker-judge substituted the
+  // shared extractor for my hand-written regex and the suite read 71/0 BOTH WAYS -- so the scoping was
+  // unheld and a future edit could swap either way with no signal. These are the only two shapes where
+  // the two implementations disagree, which makes them the only two that pin it.
+
+  // THE INLINE FORM. `REGION_INLINE` accepts `Region: ...`; my regex required a `## Region` heading, so a
+  // row using this form could not make the declaration AT ALL -- a refusal its author cannot follow.
+  assert.equal(regionRefusalReason(
+    "## What it is\nx\n\n**Region:** its deliverable is not a commit.\n\n"
+    + "## Acceptance\nNot a test.\n\n## Open-check\nn/a\n"), null,
+  "the inline Region form must be able to carry the declaration, or the refusal is unfollowable");
+
+  // THE `###` SUB-HEADING. It ENDS the Region section everywhere else (#170's recorded shape); my regex
+  // ran past it, so a declaration under `### Why` would have been accepted here and invisible to B4 --
+  // exactly the divergence the header claimed could not exist.
+  assert.ok(regionRefusalReason(
+    "## What it is\nx\n\n## Region\nThe destination.\n\n### Why\nIts deliverable is not a commit.\n\n"
+    + "## Acceptance\nNot a test.\n\n## Open-check\nn/a\n"),
+  "a `###` sub-heading ends the Region section, so a declaration below it is outside the scope B4 reads");
+});
+
+test("#1117: the declaration counts only inside the Region section", () => {
+  // A phrase that can be made accidentally anywhere in a body is the easy path past the check this
+  // refusal exists to close -- and it is not hypothetical: #1117's own body uses the sentence twice in
+  // prose while declaring real files. Scoped, so a row that says it in passing still refuses.
+  const elsewhere = `## What it is\nIts deliverable is not a commit, they said.\n\n`
+    + `## Region\nThe corpus backup destination.\n\n## Acceptance\nNot a test.\n\n## Open-check\nn/a\n`;
+  assert.ok(regionRefusalReason(elsewhere),
+    "the phrase outside the Region section must not satisfy the declaration");
 });
