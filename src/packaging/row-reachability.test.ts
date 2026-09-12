@@ -31,6 +31,7 @@ import { fileURLToPath } from "node:url";
 import { startability, subjectAndRegionFacts, symbolOnMain, refsCarryingSymbol, proveOriginMainReadable, onMain }
   from "../../../../scripts/row-reachability.mjs";
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
+import { ABSENT_FIXTURE_SYMBOLS } from "../../../../scripts/fixture-symbols.mjs";
 
 const examined = { paths: 3, symbols: 2 };
 const clear = { row: 189, subjectsMissing: [], heldRegions: [], examined };
@@ -366,12 +367,22 @@ test("#719 REGRESSION: #687's real body, whose Region misses environmentKey's ac
  * spells it out. Fixed the identical way `fingerprint()` fixes it there: concatenated below so the
  * literal substring never appears contiguously anywhere in this file, prose included.
  */
-const fixtureSymbolName = (a: string, b: string) => a + b;
+/**
+ * #1038: THE SYMBOLS MOVED TO `scripts/fixture-symbols.mjs`, AND THE COMMENT ABOVE IS WHY THEY HAD TO.
+ *
+ * That doc comment named this exact trap, for the #719 fixture, eight lines above a control that then
+ * walked into it — and main went red for 0.38 hours on this file's own merge. **A comment is not a
+ * guard.** The registry is now data in one module, and `fixture-absence-guard.test.ts` asserts every entry
+ * is absent from the TRACKED WORKING TREE — the tree that contains the file under review, which
+ * `origin/main` at review time structurally cannot be.
+ */
+
 
 test("#719: a branch is a named carrier only when it actually contains the symbol, anywhere in its tree", () => {
   if (skipsWithoutOriginMain()) return;
   const env = sandboxGitEnv();
-  const FIXTURE_SYMBOL = fixtureSymbolName("RowReachabilityFixtureSy", "mbol719");
+  const FIXTURE_SYMBOL =
+    ABSENT_FIXTURE_SYMBOLS["row-reachability.test.ts #719: the carrier fixture's symbol"];
   const REF = "refs/remotes/origin/row-reachability-fixture-719";
   const tmpIndex = execFileSync("mktemp", { encoding: "utf8" }).trim();
   try {
@@ -444,7 +455,11 @@ test("#772 CONTROL: a real ref that genuinely lacks the symbol is still a plain,
   // take and #1023's merge then proved: written whole, the literal was guaranteed absent from
   // `origin/main` only until this very file merged INTO `origin/main`, at which point `refsCarryingSymbol`
   // correctly found it here and the control failed. The function was right; the fixture named itself.
-  const absentEverywhere = fixtureSymbolName("no-tree-here-holds", "-this-symbol-zzz");
+  // #1038: FROM THE REGISTRY, so the guard that checks the working tree has this claim in its population.
+  // Assembled here it would be invisible to it, which is how this assertion came to be checked only
+  // against a tree that could not disagree with it.
+  const absentEverywhere =
+    ABSENT_FIXTURE_SYMBOLS["row-reachability.test.ts #772 CONTROL: the symbol no tree holds"];
   assert.deepEqual(refsCarryingSymbol(absentEverywhere, ["origin/main"]), [],
     "git grep's exit 1 is a genuine 'not present', and must stay a quiet empty result");
 });
