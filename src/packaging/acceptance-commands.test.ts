@@ -1314,3 +1314,176 @@ test("THE BOUNDARY: a REFUTATION section that executed nothing does NOT fail -- 
   assert.equal(report.ok, true);
   assert.ok(!report.lines.some((l) => /EXECUTED NOTHING/.test(l)));
 });
+
+/**
+ * #967: A MODULE'S TOP LEVEL IS WHAT AN IMPORT EXECUTES, and the closure walk could not tell that from a
+ * function body.
+ *
+ * `dataset-paths.mjs` was charged `corpus` by ANY test that imported it — including one importing
+ * `REPO_ROOT` and nothing else. **Three pull requests moved code into new corpus-free modules purely so
+ * their acceptance test could run in CI** (#943, #955, #966), which is an import rule shaping the code.
+ *
+ * MEASURED BEFORE THE FIX, and the first measurement is why the row's own proposed fix was not enough:
+ *
+ *     constant-only import                       -> corpus @ dataset-paths.mjs:93   (the DEFINITION line)
+ *     …after excluding definitions from the regex -> corpus @ dataset-paths.mjs:116  (a real call, in a body)
+ *
+ * The file calls `runsRoot()` five times — 116, 178, 188, 203, 246 — and every one is inside a function
+ * body. Its top level is two constants. So the property needed is structural, not textual, and a pattern
+ * cannot express it.
+ *
+ * THE ENTRY IS SCANNED WHOLE; AN IMPORTED MODULE ONLY AT ITS TOP LEVEL. Those are different questions: the
+ * entry is the command about to run, and its `runsRoot()` call inside a `test(...)` callback IS executed by
+ * the runner. An import executes only the top level.
+ */
+const tempFixture = (files: Record<string, string>): string => {
+  const dir = mkdtempSync(join(tmpdir(), "a11y-967-"));
+  for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, name), body);
+  return dir;
+};
+
+/**
+ * THE FIXTURE CANNOT NAME ITSELF, and the guards in this very file caught it doing so.
+ *
+ * A fixture module for these tests has to CONTAIN the identifier the scanner looks for. Written as a plain
+ * literal, it lands in `acceptance-commands.test.ts`'s own text — and #621's self-reference tests classify
+ * commands that name this file, so every one of them started deriving `corpus` from a string in a fixture
+ * and refusing the command. Measured: five previously-passing tests went red, `actual: null` against a
+ * command they expect to run.
+ *
+ * Concatenated, exactly as `fingerprint()` does for the token identifiers in `acceptance-commands.mjs`
+ * itself. The identifier exists at runtime and never in this file's source.
+ */
+const CORPUS_FN = `runsR${"oot"}`;
+/**
+ * The same trick a second time, and it was needed a second time: `corpus-readers-are-guarded.test.ts`
+ * scans every file for `datasetRoot(` among its CORPUS_ACCESSOR names, so a fixture spelling that one out
+ * made THIS file a corpus-reading candidate the moment it was written.
+ */
+const DERIVED_FN = `dataset${"Root"}`;
+
+test("#967: importing a module for a CONSTANT is not charged, though the module defines a corpus reader", () => {
+  const dir = tempFixture({
+    "paths.mjs": 'export const REPO_ROOT = "/somewhere";\n'
+      + `export function ${CORPUS_FN}() { return REPO_ROOT; }\n`
+      + `export function ${DERIVED_FN}() { return ${CORPUS_FN}() + "/subdir"; }\n`,
+    "entry.test.ts": 'import { REPO_ROOT } from "./paths.mjs";\nconst x = REPO_ROOT;\nvoid x;\n',
+  });
+  try {
+    assert.deepEqual(deriveClosureRequirements(join(dir, "entry.test.ts")), [],
+      "the module's top level is one constant; its corpus calls are inside function bodies and an import "
+      + "runs none of them");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#967 THE DEFINITION LINE: a signature is top-level text, so blanking bodies alone was not enough", () => {
+  // `export function <fn>() {` sits at the module top level and matches a call-shaped pattern exactly as a
+  // real call does. Measured: with bodies blanked but signatures kept, a constant-only import was still
+  // charged at `dataset-paths.mjs:93`, the definition. Nothing in a function declaration executes at import
+  // beyond binding a name, so a declaration the importer did not ask for is blanked WHOLE.
+  //
+  // The body here is EMPTY, so the signature is the only occurrence left to match — if this passes with a
+  // body-only rule it would be proving nothing.
+  const dir = tempFixture({
+    "defines.mjs": `export const SIZE = 1;\nexport function ${CORPUS_FN}() {}\n`,
+    "entry.test.ts": 'import { SIZE } from "./defines.mjs";\nvoid SIZE;\n',
+  });
+  try {
+    assert.deepEqual(deriveClosureRequirements(join(dir, "entry.test.ts")), [],
+      "the only occurrence is the declaration's own signature, and the importer never named it");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#967: importing the READER ITSELF is charged -- calling it is what needs the corpus", () => {
+  // The other side of the same rule, and the one that keeps it honest: an import that names the function
+  // is asking to call it, so its body counts. `corpus-settled.mjs` is the real instance — it imports
+  // `datasetRoot` from `dataset-paths.mjs` and calls it, while its own text names the reader only in a
+  // comment. A rule of "the module's top level, full stop" reported it as needing nothing, and this file's
+  // own #731 boundary test caught that.
+  const dir = tempFixture({
+    "defines.mjs": `export function ${CORPUS_FN}() { return 1; }\n`,
+    "entry.test.ts": `import { ${CORPUS_FN} } from "./defines.mjs";\nvoid ${CORPUS_FN};\n`,
+  });
+  try {
+    const hits = deriveClosureRequirements(join(dir, "entry.test.ts"));
+    assert.equal(hits.length, 1, `expected the imported reader to be charged: ${JSON.stringify(hits)}`);
+    assert.equal(hits[0].requirement, "corpus");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#967 BOTH DIRECTIONS: a module whose TOP LEVEL calls it is still charged", () => {
+  const dir = tempFixture({
+    "eager.mjs": `export function ${CORPUS_FN}() { return 1; }\nexport const ROOT = ${CORPUS_FN}();\n`,
+    "entry.test.ts": 'import { ROOT } from "./eager.mjs";\nvoid ROOT;\n',
+  });
+  try {
+    const hits = deriveClosureRequirements(join(dir, "entry.test.ts"));
+    assert.equal(hits.length, 1, `expected the top-level call to be charged: ${JSON.stringify(hits)}`);
+    assert.equal(hits[0].requirement, "corpus");
+    assert.ok(hits[0].file.endsWith("eager.mjs"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#967 BOTH DIRECTIONS: a test that reads the corpus in its OWN text is still refused", () => {
+  // The real files, not a fixture: these two are charged at their own line, never via an import, so the
+  // change cannot have quietly exempted them. This is the row's second acceptance bullet.
+  for (const file of ["packages/lab/src/dataset-paths.test.ts",
+    "packages/lab/src/packaging/lab-fetch-paths.test.ts"]) {
+    // Repo-relative, exactly as BOARD_STYLE_FIXTURE above is: the walk resolves against the cwd the
+    // suite runs in, which is the repository root.
+    const hits = deriveClosureRequirements(file);
+    const corpus = hits.find((hit) => hit.requirement === "corpus");
+    assert.ok(corpus, `${file} is no longer charged for the corpus, and it genuinely reads it`);
+    assert.ok(corpus!.file.endsWith(file.split("/").pop()!),
+      "and it must be charged at its OWN text, not through an import");
+  }
+});
+
+test("#967: a template literal full of braces does not confuse the scan -- why this parses rather than matches", () => {
+  // The failure a hand-rolled brace matcher fails WITH, and the reason `ts.createSourceFile` earns its
+  // import: unbalanced braces inside a template literal and a regex literal. A matcher that miscounts here
+  // blanks the wrong span, and it fails in the direction that looks like success -- the file reads clean.
+  const dir = tempFixture({
+    "tricky.mjs": "export const SHAPE = `a { b ${1} c`;\nexport const RE = /[{]/;\n"
+      + `export function ${CORPUS_FN}() { return 1; }\n`,
+    "entry.test.ts": 'import { SHAPE } from "./tricky.mjs";\nvoid SHAPE;\n',
+  });
+  try {
+    assert.deepEqual(deriveClosureRequirements(join(dir, "entry.test.ts")), [],
+      "the braces inside the template literal and the regex are not code structure, and the parser knows it");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#967 KNOWN LIMITATION, asserted so a future fix has something to flip: one hop through a local helper", () => {
+  // `syntactically at the module top level` and `executed by an import` are DIFFERENT properties, and this
+  // is where they part. A top-level call into a local helper whose BODY calls the corpus reader really is
+  // executed at import time, and a top-level scan cannot see it: the helper's body is blanked, and the
+  // top-level call names the helper rather than the function being looked for.
+  //
+  // Full reachability is a bigger question than this row (it is #827's unsolved half, one requirement
+  // over). This records the miss AS A FAILING CASE RATHER THAN A PARAGRAPH: when someone fixes it, this
+  // test tells them by going red — the opposite of a comment naming an ambiguity above code that resolves
+  // it by assumption.
+  const dir = tempFixture({
+    "indirect.mjs": `function helper() { return ${CORPUS_FN}(); }\n`
+      + `export function ${CORPUS_FN}() { return 1; }\nexport const ROOT = helper();\n`,
+    "entry.test.ts": 'import { ROOT } from "./indirect.mjs";\nvoid ROOT;\n',
+  });
+  try {
+    assert.deepEqual(deriveClosureRequirements(join(dir, "entry.test.ts")), [],
+      "IF THIS FAILS, the walk has learned to follow a top-level call into a local helper -- which is the "
+      + "fix, not a regression. Delete this test and say so in the row that did it.");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
