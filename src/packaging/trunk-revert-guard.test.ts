@@ -325,11 +325,35 @@ test("C3 ACCEPTANCE: decideRevert fires on trunkGate's or trunkBuildTest's failu
  * the seam -- proving a REFUSE from the guard is not merely compatible with `revertVerdict`'s shape, but
  * genuinely produces a revert-worthy verdict once trunkGate's failure reaches it.
  */
-test("C3 ACCEPTANCE, COMPOSED: the real f2cdfaf3 REFUSAL, once trunkGate fails on it, IS revert-worthy", () => {
-  // The guard itself REFUSES f2cdfaf3 -- already proven above; re-asserted here so this composed test
-  // does not silently pass having examined a commit the guard would not have flagged at all.
-  assert.throws(() => execFileSync("node", [SCRIPT, "--merge=f2cdfaf3"], { cwd: CLONE, stdio: "pipe" }),
-    "the guard must still refuse f2cdfaf3, or this composed test is asserting nothing real");
+test("C3 ACCEPTANCE, COMPOSED: the real f2cdfaf3 REFUSAL, once trunkGate fails on it, IS revert-worthy", (t) => {
+  // #928: THIS TEST WAS THE FOURTH ONE, AND IT DID NOT FAIL IN THE INCIDENT -- IT PASSED.
+  //
+  // The three tests #928 names skipped correctly once #923 gave them `fixturePresent`. This one spawns the
+  // same fixture and was left unguarded, and its assertion was `assert.throws` with no code: **that accepts
+  // ANY non-zero exit.** Measured in a deliberately shallow checkout on 2026-09-12:
+  //
+  //     full history   --merge=f2cdfaf3  ->  exit 1   REFUSE
+  //     full history   --merge=fc9b89d2  ->  exit 0   PASS
+  //     depth 1        --merge=f2cdfaf3  ->  exit 2   CANNOT_ASK
+  //
+  // So on a shallow checkout this test PASSED, having asserted "the guard must still refuse f2cdfaf3, or
+  // this composed test is asserting nothing real" against a run that refused nothing. **A green test that
+  // examined a question it could not ask** is worse than the three red ones beside it, because nothing in
+  // the log says so. Both halves are fixed: the fixture is guarded like its siblings, AND the exit code is
+  // asserted as REFUSE rather than as merely non-zero -- the second half closes it in ANY checkout.
+  if (!fixturePresent("f2cdfaf3")) return t.skip(NO_FIXTURE("f2cdfaf3"));
+  // `assert.throws` returns undefined, so the error is caught by hand -- the exit CODE is the subject here
+  // and `throws` alone cannot see it. That is the whole defect in one line.
+  let status: number | undefined;
+  try {
+    execFileSync("node", [SCRIPT, "--merge=f2cdfaf3"], { cwd: CLONE, stdio: "pipe" });
+  } catch (cause) {
+    status = (cause as { status?: number }).status;
+  }
+  assert.equal(status, EXIT.REFUSE,
+    `expected REFUSE (${EXIT.REFUSE}); PASS (${EXIT.PASS}) would mean the guard did not flag it and `
+    + `CANNOT_ASK (${EXIT.CANNOT_ASK}) is an unanswerable question, not a refusal -- reading the second as `
+    + "the first is how this test passed while its three siblings failed for 27.8 hours");
 
   // trunkGate failing on f2cdfaf3 means `decideRevert` runs with `--push-sha=f2cdfaf3` and
   // `--before-sha=f2cdfaf3^1`. The two facts `revertVerdict` needs are asked of the REAL commit graph and
