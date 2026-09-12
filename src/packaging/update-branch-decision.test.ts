@@ -30,7 +30,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { updateBranchDecision, headQuietSeconds, newestConclusion, HEAD_QUIET_SECONDS, ZERO_DATE }
+import { updateBranchDecision, headQuietSeconds, newestConclusion, HEAD_QUIET_SECONDS, ZERO_DATE,
+  redCause, newestRun, newestRunCompletedAt, mainTipCommittedAt }
   from "../../../../scripts/update-branch-sweep.mjs";
 import { NO_VERDICT } from "../../../../scripts/merge-guard/checks-rule.mjs";
 
@@ -306,4 +307,128 @@ test("ZERO_DATE is one const, shared by both readers of 'has this run finished'"
     [{ name: "gate", conclusion: "", completedAt: ZERO_DATE, startedAt: "2026-09-08T09:00:00Z" }],
     "gate"), null);
   assert.equal(headQuietSeconds([{ startedAt: ZERO_DATE }], NOW), null);
+});
+
+/**
+ * #1126: A RED'S CAUSE IS DECIDABLE FROM TIME, BEFORE THE UPDATE.
+ *
+ * #1100 made an armed, behind, red PR updatable on the argument that the update is the only instrument
+ * separating a red caused by the BASE from one caused by the PR's own contents. Sound, and *post hoc*:
+ * you learn the cause by watching whether it clears. worker-judge's point on that review is that the
+ * discriminator already exists and is not the conclusion — **a red whose newest `gate` run completed
+ * BEFORE main's current tip landed cannot have been evaluated against current main.** That is "red
+ * because of the base" stated positively instead of guessed.
+ *
+ * The verdict does not change: both classified cases still UPDATE. #498's rule lives on this path and a
+ * sweep that syncs too little is indistinguishable from a quiet queue. What changes is what the line says.
+ */
+const RED = { armed: true, gateConclusion: "FAILURE", behind: true, quietSeconds: 9999 };
+
+test("#1126 clause 1: a gate that concluded BEFORE main's tip landed is the BASE's red, and says so", () => {
+  const decision = updateBranchDecision({ ...RED,
+    gateCompletedAt: "2026-09-12T10:00:00Z", mainTipAt: "2026-09-12T11:00:00Z" });
+  assert.equal(decision.update, true, "a classified red still updates -- the verdict must not become a refusal");
+  assert.match(decision.reason, /THE BASE'S/);
+  assert.match(decision.reason, /determined rather than guessed/);
+  // The post-hoc sentence must be GONE, not merely joined: leaving it would say both "we determined it"
+  // and "we will find out", and a log line that states a finding and a plan for the same fact is the one
+  // nobody can act on.
+  assert.doesNotMatch(decision.reason, /if it CLEARS/);
+});
+
+test("#1126 clause 2: a gate that concluded AFTER main's tip landed is the PR's OWN red, and still updates", () => {
+  const decision = updateBranchDecision({ ...RED,
+    gateCompletedAt: "2026-09-12T11:30:00Z", mainTipAt: "2026-09-12T11:00:00Z" });
+  assert.equal(decision.update, true,
+    "#498: being current is not the author's job to arrange, so this is NOT a refusal");
+  assert.match(decision.reason, /THIS PR'S OWN/);
+  assert.match(decision.reason, /the author owns the fix/);
+  assert.doesNotMatch(decision.reason, /if it CLEARS/);
+});
+
+test("#1126 clause 3: timing that cannot be READ is neither cause, and keeps #1100's sentence", () => {
+  // "Could not ask" and "the answer is no" must not render the same -- the distinction this file already
+  // draws for `quietSeconds` and `ZERO_DATE`. When the timing is unreadable the experiment really IS the
+  // only instrument, so the post-hoc reason is not a fallback here, it is the correct answer.
+  for (const [label, input] of [
+    ["no gate completion stamp", { gateCompletedAt: null, mainTipAt: "2026-09-12T11:00:00Z" }],
+    ["git could not answer", { gateCompletedAt: "2026-09-12T10:00:00Z", mainTipAt: null }],
+    ["neither", { gateCompletedAt: null, mainTipAt: null }],
+    ["an unparseable stamp", { gateCompletedAt: "not a date", mainTipAt: "2026-09-12T11:00:00Z" }],
+  ] as const) {
+    const decision = updateBranchDecision({ ...RED, ...input });
+    assert.equal(decision.update, true, label);
+    assert.match(decision.reason, /CANNOT BE READ/, label);
+    assert.match(decision.reason, /if it CLEARS/, `${label}: #1100's sentence is kept verbatim here`);
+    assert.doesNotMatch(decision.reason, /determined rather than guessed/, label);
+  }
+});
+
+test("#1126 clause 4: NO_VERDICT is untouched -- a cancelled gate still takes the wait path", () => {
+  // The discriminator applies only to a conclusion that is a verdict ABOUT THE HEAD. #1007 ruled a
+  // cancelled run joins the WAIT and never `failing`, and supplying timestamps must not reclassify it.
+  const decision = updateBranchDecision({ armed: true, gateConclusion: NO_VERDICT, behind: true,
+    quietSeconds: 9999, gateCompletedAt: "2026-09-12T10:00:00Z", mainTipAt: "2026-09-12T11:00:00Z" });
+  assert.doesNotMatch(decision.reason, /THE BASE'S|THIS PR'S OWN/,
+    "a cancelled gate carries no verdict to attribute, so it must not be attributed");
+});
+
+test("#1126: redCause returns THREE answers, and the third is not a verdict", () => {
+  assert.equal(redCause({ gateCompletedAt: "2026-09-12T10:00:00Z", mainTipAt: "2026-09-12T11:00:00Z" }), "base");
+  assert.equal(redCause({ gateCompletedAt: "2026-09-12T12:00:00Z", mainTipAt: "2026-09-12T11:00:00Z" }), "its own");
+  assert.equal(redCause({ gateCompletedAt: null, mainTipAt: "2026-09-12T11:00:00Z" }), null);
+  assert.equal(redCause({ gateCompletedAt: "2026-09-12T10:00:00Z", mainTipAt: null }), null);
+  assert.equal(redCause({ gateCompletedAt: "rubbish", mainTipAt: "2026-09-12T11:00:00Z" }), null);
+  // COMPARED AS INSTANTS, NEVER AS STRINGS. `git log --format=%cI` emits a local offset and GitHub emits
+  // `Z`; lexicographically "2026-09-12T11:30:00+02:00" sorts AFTER "2026-09-12T10:00:00Z" while being
+  // 09:30Z — earlier. A string comparison would report "its own" for a red the base caused.
+  assert.equal(redCause({ gateCompletedAt: "2026-09-12T10:00:00Z", mainTipAt: "2026-09-12T11:30:00+02:00" }),
+    "its own", "09:30Z tip is BEFORE the 10:00Z gate, so the red is the PR's own despite the string order");
+});
+
+test("#1126: the conclusion and the timestamp come from the SAME run", () => {
+  // Two scans for "the newest run" could disagree on a head whose runs tie or carry no stamps, and the
+  // verdict would then be dated by a run that did not produce it. One scan, both readers.
+  const runs = [
+    { name: "gate", conclusion: "SUCCESS", completedAt: "2026-09-12T09:00:00Z", startedAt: "2026-09-12T08:00:00Z" },
+    { name: "gate", conclusion: "FAILURE", completedAt: "2026-09-12T10:00:00Z", startedAt: "2026-09-12T09:30:00Z" },
+  ];
+  assert.equal(newestConclusion(runs, "gate"), "failure");
+  assert.equal(newestRunCompletedAt(runs, "gate"), "2026-09-12T10:00:00Z");
+  assert.equal(newestRun(runs, "gate")?.conclusion, "FAILURE", "the same run answers both");
+});
+
+test("#1126: a still-running newest gate has NO completion time -- startedAt must not stand in", () => {
+  // Reading a start as an end dates a verdict earlier than it exists, which in this comparison is the
+  // direction that wrongly reports "the base did it". The zero date is absence wearing a timestamp.
+  const running = [{ name: "gate", conclusion: "", completedAt: ZERO_DATE, startedAt: "2026-09-12T08:00:00Z" }];
+  assert.equal(newestRunCompletedAt(running, "gate"), null);
+  assert.equal(newestRunCompletedAt([{ name: "gate", conclusion: "", startedAt: "2026-09-12T08:00:00Z" }], "gate"), null);
+});
+
+test("#1126: mainTipCommittedAt distinguishes a git FAILURE from an empty answer", () => {
+  assert.equal(mainTipCommittedAt(() => ({ status: 0, stdout: "2026-09-12T11:00:00+01:00\n" })),
+    "2026-09-12T11:00:00+01:00");
+  assert.equal(mainTipCommittedAt(() => ({ status: 1, stdout: "" })), null, "a failed git is not an answer");
+  assert.equal(mainTipCommittedAt(() => ({ status: 0, stdout: "" })), null, "and neither is an empty one");
+  // The failure path returns no `stdout` key at all; reading it must still be null rather than throwing.
+  assert.equal(mainTipCommittedAt(() => ({ status: 128 })), null);
+});
+
+test("#1126: the readers added to bounded-window-reads' NAMES_ITS_WINDOW actually narrow", () => {
+  // A name on that list is a claim about behaviour. Proved here the way `newestConclusionOf` is proved
+  // above: a rollup carrying a SUPERSEDED failure alongside a current success must yield the current one,
+  // in either array order, because the rollup's order is not documented to be chronological.
+  const rollup = [
+    { name: "gate", conclusion: "FAILURE", completedAt: "2026-09-12T09:00:00Z", startedAt: "2026-09-12T08:00:00Z" },
+    { name: "gate", conclusion: "SUCCESS", completedAt: "2026-09-12T10:00:00Z", startedAt: "2026-09-12T09:30:00Z" },
+    { name: "ts", conclusion: "FAILURE", completedAt: "2026-09-12T10:05:00Z", startedAt: "2026-09-12T10:00:00Z" },
+  ];
+  for (const order of [rollup, [...rollup].reverse()]) {
+    assert.equal(newestRun(order, "gate")?.conclusion, "SUCCESS",
+      "the superseded FAILURE must not win, in either order");
+    assert.equal(newestRunCompletedAt(order, "gate"), "2026-09-12T10:00:00Z");
+  }
+  assert.equal(newestRun(rollup, "absent"), null, "a name with no runs is null, not the newest of another name");
+  assert.equal(newestRunCompletedAt(rollup, "absent"), null);
 });
