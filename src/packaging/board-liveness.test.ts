@@ -262,6 +262,17 @@ test("#1154: the ref is split at the `@` first, because the git ref half contain
     "trunk.yml", "taking the basename before cutting the `@` would yield `main`");
   assert.equal(hostWorkflowFile({ GITHUB_WORKFLOW_REF: "o/r/.github/workflows/nightly.yaml@refs/tags/v1" }),
     "nightly.yaml");
+  // worker-capture drove these two by hand in review. They are here so the claim is held rather than
+  // demonstrated once: a BRANCH NAME may contain `@`, and cutting at the LAST one takes `2` as the ref and
+  // leaves `ci.yml@refs/heads/feature` as the path -- which the pattern rejects, turning a valid run into
+  // UNKNOWN. That is the same 3-red mutation, reached from a realistic ref instead of a constructed one.
+  assert.equal(hostWorkflowFile({ GITHUB_WORKFLOW_REF: "o/r/.github/workflows/ci.yml@refs/heads/feature@2" }),
+    "ci.yml", "cut at the FIRST `@` -- a branch name may contain one");
+  // A REUSABLE WORKFLOW RESOLVES TO THE CALLED FILE. Correct for this guard, and pinned because the
+  // correct answer reads like a bug to anyone expecting the caller.
+  assert.equal(
+    hostWorkflowFile({ GITHUB_WORKFLOW_REF: "o/r/.github/workflows/reusable-build-test.yml@refs/heads/main" }),
+    "reusable-build-test.yml", "the run being reported on is the reusable one, not `ci.yml` that called it");
   for (const ref of [undefined, "", "   ", "o/r/.github/workflows/trunk@refs/heads/main", "refs/heads/main"]) {
     assert.equal(hostWorkflowFile({ GITHUB_WORKFLOW_REF: ref }), null,
       `a ref that does not resolve to a workflow FILE must be null, not a guess: ${String(ref)}`);
