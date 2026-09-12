@@ -1545,3 +1545,41 @@ test("#1035: `History: full` as the ONLY thing in the section is MISSING, not a 
   // which sends them to look at a command they never wrote.
   assert.equal(extractAcceptanceSection("## Acceptance\n\nHistory: full\n").kind, "missing");
 });
+
+test("#1036: a BOLDED declaration is honoured and does not eat the command -- `commandLinesAfter`'s own "
+  + "stop rule six lines below already tolerates the wrapper", () => {
+  // worker-capture's finding on #1035's own fix. `HISTORY_FULL_PATTERN` was strict where
+  // `SECTION_FIELD_NAMES`'s rule three lines away is not (`^(?:\*\*|__)?${name}:(?:\*\*|__)?`), so
+  // `**History: full**` -- a spelling these bodies reach for constantly -- was recognised NOWHERE: the
+  // checkout stayed shallow AND the line became a command that terminated the scan, reproducing the exact
+  // pair of misleading messages in the commit that fixed them.
+  for (const decl of ["**History: full**", "__History: full__"]) {
+    const body = `## Acceptance\n\n${decl}\n\n\`\`\`bash\n${HISTORY_CMD}\n\`\`\`\n`;
+    assert.equal(hasFullHistoryDeclaration(body), true, `${decl} must be honoured`);
+    assert.deepEqual((extractAcceptanceSection(body) as { commands: string[] }).commands, [HISTORY_CMD],
+      `${decl} must not become the command`);
+  }
+});
+
+test("#1036: a NEAR-MISS is skipped but NOT honoured -- one refusal, and it names the real problem", () => {
+  // `History: full.` is not the declaration, so the checkout stays shallow and the command is refused for
+  // needing `history` -- which is followable. What it must not also do is become a command and terminate
+  // the scan, because then the only refusal is about a line the author wrote as a declaration, and the
+  // real command never enters the list at all.
+  for (const decl of ["History: full.", "History: shallow", "**History: full** — and why"]) {
+    const body = `## Acceptance\n\n${decl}\n\n\`\`\`bash\n${HISTORY_CMD}\n\`\`\`\n`;
+    assert.equal(hasFullHistoryDeclaration(body), false, `${decl} is not the declaration`);
+    assert.deepEqual((extractAcceptanceSection(body) as { commands: string[] }).commands, [HISTORY_CMD],
+      `${decl} must not become the command either`);
+  }
+});
+
+test("#1036: the tolerance is for the WRAPPER, never for surrounding text -- a real command mentioning "
+  + "History is still a command", () => {
+  // The mutation guard for the widening. An unanchored or word-based skip would swallow this line, which
+  // is the same defect pointed the other way: a check that silently drops a real command.
+  const body = "## Acceptance\n\nnode scripts/x.mjs --History: full-run\n";
+  assert.deepEqual((extractAcceptanceSection(body) as { commands: string[] }).commands,
+    ["node scripts/x.mjs --History: full-run"]);
+  assert.equal(hasFullHistoryDeclaration(body), false);
+});
