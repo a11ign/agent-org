@@ -396,3 +396,65 @@ test("#1018: a PR the DECISION declines is reported too -- an unattended sweep's
   assert.equal(result.lines.length, 1, "and it still produces a line");
   assert.match(result.lines[0], /#5 SKIPPED -- /, "naming the PR and the reason it was declined");
 });
+
+/**
+ * #1126: THE ORCHESTRATION HALF. `updateBranchDecision` is pure and takes both timestamps as inputs, so
+ * something has to READ them — and until this row `sweepPrs` was not passing main's tip time at all. The
+ * row warned that this reaches a third file; it is this one, and it is declared rather than discovered.
+ */
+test("#1126: main's tip time is read ONCE per sweep, not once per PR", () => {
+  // One fact, every PR compared against the same one. Reading it in the loop would let the answer change
+  // mid-sweep if main moved, so two PRs with identical gates could be classified differently by an
+  // accident of ordering -- a verdict that depends on position in a list is not a verdict.
+  const gitCalls: string[][] = [];
+  const armedRed = {
+    autoMergeRequest: {},
+    statusCheckRollup: [{ name: "gate", conclusion: "FAILURE",
+      completedAt: "2026-09-12T10:00:00Z", startedAt: "2026-09-12T09:00:00Z" }],
+  };
+  const result = sweepPrs(
+    [{ number: 1, headRefOid: SHA("a"), ...armedRed }, { number: 2, headRefOid: SHA("b"), ...armedRed }],
+    {
+      repo: "o/r",
+      run: () => "",
+      readHead: ({ number }: { number: number }) => (number === 1 ? SHA("a") : SHA("b")),
+      runGit: (args: string[]) => {
+        gitCalls.push(args);
+        if (args[0] === "log") return { status: 0, stdout: "2026-09-12T11:00:00Z\n" };
+        return { status: 1 };   // merge-base: behind
+      },
+      now: new Date("2026-09-12T12:00:00Z"),
+    },
+  );
+  const logCalls = gitCalls.filter((args) => args[0] === "log");
+  assert.equal(logCalls.length, 1, `main's tip must be asked for once, got ${logCalls.length}`);
+  assert.deepEqual(logCalls[0], ["log", "-1", "--format=%cI", "origin/main"],
+    "the COMMITTER date: a rebased commit keeps an author date that can predate every gate on every open "
+    + "PR, which would classify the whole queue as 'its own'");
+
+  // And the classification reaches the line both PRs are logged with -- the decision being right is not
+  // the same claim as the sweep printing it.
+  assert.equal(result.lines.length, 2);
+  for (const line of result.lines) {
+    assert.match(line, /THE BASE'S/, `gate concluded 10:00Z, main's tip landed 11:00Z: ${line}`);
+  }
+});
+
+test("#1126: when git cannot answer, the sweep falls back to #1100's sentence rather than guessing", () => {
+  // The control for the test above. Without it, a sweep whose `mainTipAt` was silently always-null would
+  // pass every assertion about the unreadable path while never exercising the readable one -- and the
+  // existing suite did exactly that before this row, because its `runGit` returns status 1 for everything.
+  const result = sweepPrs(
+    [{ number: 1, headRefOid: SHA("a"), autoMergeRequest: {},
+      statusCheckRollup: [{ name: "gate", conclusion: "FAILURE", completedAt: "2026-09-12T10:00:00Z" }] }],
+    {
+      repo: "o/r",
+      run: () => "",
+      readHead: () => SHA("a"),
+      runGit: () => ({ status: 1 }),
+      now: new Date("2026-09-12T12:00:00Z"),
+    },
+  );
+  assert.match(result.lines[0], /CANNOT BE READ/);
+  assert.match(result.lines[0], /if it CLEARS/);
+});
