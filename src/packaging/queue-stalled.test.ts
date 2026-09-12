@@ -16,11 +16,53 @@ import {
   armedBehindVerdict, behindByCount, formatBehindWatchdogLine, DEFAULT_BEHIND_STALL_THRESHOLD_SECONDS,
 } from "../../../../scripts/queue-stalled.mjs";
 import { newestConclusion, headQuietSeconds } from "../../../../scripts/update-branch-sweep.mjs";
+
+// ---------------------------------------------------------------------------------------------------
+// #1100: THIS FILE'S SUBJECT HAS A SECOND VOCABULARY, and it arrived through a shared function.
+//
+// `newestConclusion` lives in `update-branch-sweep.mjs` and normalises `gh`'s two spellings of the same
+// verdict -- `SUCCESS` on `statusCheckRollup`, `success` on the REST check-runs API -- at its own edge.
+// **That changed what THIS file reads**, and its three comparisons still spelled `"SUCCESS"`, so every
+// green armed pull request reported "has not concluded SUCCESS" and the watchdog found 0 of 2.
+//
+// A fix applied at one call site when the behaviour reaches several: this repository's most expensive
+// recurring shape, and the fix for a vocabulary split walked straight into it.
+// ---------------------------------------------------------------------------------------------------
+
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 
 const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../scripts/queue-stalled.mjs");
 
 // --- stalledVerdict: the pure decision ---
+
+test("#1100: BOTH of gh's spellings reach the same verdict, in this file's predicates too", () => {
+  // The regression was invisible to this suite because its fixtures are written in `statusCheckRollup`'s
+  // vocabulary and the pure functions were compared against a literal in that same vocabulary -- the
+  // agreement was between two copies of one spelling, not between the function and its real input.
+  //
+  // Driven in both, asserted on the WHOLE verdict rather than on `.stalled`, so a code or reason that
+  // diverged by spelling would fail here rather than read as agreement.
+  for (const [upper, lower] of [["SUCCESS", "success"], ["FAILURE", "failure"], ["CANCELLED", "cancelled"]]) {
+    assert.deepEqual(
+      armedBehindVerdict({ armed: true, gateConclusion: upper, behindBy: 14, quietSeconds: 3000 }),
+      armedBehindVerdict({ armed: true, gateConclusion: lower, behindBy: 14, quietSeconds: 3000 }),
+      `armedBehindVerdict must not care which API spelled \`${upper}\``);
+    assert.deepEqual(
+      stalledVerdict({ armed: true, gateConclusion: upper, conflict: false, ageMs: 9e8 }),
+      stalledVerdict({ armed: true, gateConclusion: lower, conflict: false, ageMs: 9e8 }),
+      `stalledVerdict must not care which API spelled \`${upper}\``);
+  }
+
+  // AND THE ONE THAT BROKE: a green armed PR must read as green through the real reader.
+  const rollup = [{ name: "gate", conclusion: "SUCCESS", completedAt: "2026-09-12T12:00:00Z" }];
+  const found = armedBehindVerdict({
+    armed: true, gateConclusion: newestConclusion(rollup, "gate"), behindBy: 14, quietSeconds: 3000,
+  });
+  assert.equal(found.stalled, true,
+    "fed from `newestConclusion` -- THE PRODUCTION PATH -- a green armed behind PR must still be found; "
+    + "this is the assertion the regression would have failed, and the suite had none like it");
+  assert.equal(found.code, "BEHIND", "and reported under its own code, not a neighbouring one");
+});
 
 test("stalledVerdict: not armed at all is never this check's concern", () => {
   const v = stalledVerdict({ armed: false, gateConclusion: "SUCCESS", conflict: true, ageMs: 1e9 });

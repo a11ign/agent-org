@@ -1,5 +1,15 @@
 // no-token: gh
 //
+// #1100: THE FIXTURES SPEAK `statusCheckRollup`'s VOCABULARY AND THE EXPECTATIONS SPEAK THE NORMALISED
+// ONE, and that asymmetry is the point rather than an inconsistency. `gh pr list --json statusCheckRollup`
+// -- the call this file's subject is fed from -- returns `COMPLETED`/`SUCCESS`/`FAILURE`/`CANCELLED`,
+// while `gh api .../check-runs` returns `completed`/`success`/`null`. **`newestConclusion` normalises at
+// that edge**, alongside the zero date and the empty string, so every reader downstream has ONE
+// vocabulary and the `NO_VERDICT` it imports from `checks-rule.mjs` means what it says.
+//
+// So the inputs below stay UPPER -- they are what the API really returns -- and the expected outputs are
+// lower. **A fixture written in the other API's vocabulary is what let a dead branch read green once.**
+//
 // #1018: this file imports `update-branch-sweep.mjs`, whose `gh` helper (`:266`) spawns a real `gh`, and
 // the parser charges a command its whole import closure. True of the IMPORT and false of the CALL: every
 // test here is either pure (`updateBranchDecision`, `movedHeadRefusal`, `newestConclusion`) or injects its
@@ -45,7 +55,7 @@ const CANCELLED_THEN_SUCCESS = [
 ];
 
 test("newestConclusion: MUTATION TARGET -- a superseded FAILURE never outranks the newer SUCCESS (#498)", () => {
-  assert.equal(newestConclusion(CANCELLED_THEN_SUCCESS, "gate"), "SUCCESS");
+  assert.equal(newestConclusion(CANCELLED_THEN_SUCCESS, "gate"), "success");
 });
 
 test("newestConclusion: MUTATION TARGET -- the whole decision, on #485's real head, is UPDATE not SKIP", () => {
@@ -57,7 +67,7 @@ test("newestConclusion: MUTATION TARGET -- the whole decision, on #485's real he
 
 test("newestConclusion: ARRAY ORDER IS NOT TRUSTED -- newest-first input gives the same answer", () => {
   const reversed = [...CANCELLED_THEN_SUCCESS].reverse();
-  assert.equal(newestConclusion(reversed, "gate"), "SUCCESS");
+  assert.equal(newestConclusion(reversed, "gate"), "success");
 });
 
 test("newestConclusion: a genuinely failing head is STILL read as failing -- the skip must survive", () => {
@@ -65,8 +75,13 @@ test("newestConclusion: a genuinely failing head is STILL read as failing -- the
     { name: "gate", conclusion: "SUCCESS", completedAt: "2026-09-08T07:00:00Z", startedAt: "2026-09-08T06:59:00Z" },
     { name: "gate", conclusion: "FAILURE", completedAt: "2026-09-08T08:00:00Z", startedAt: "2026-09-08T07:59:00Z" },
   ];
-  assert.equal(newestConclusion(runs, "gate"), "FAILURE");
-  assert.equal(updateBranchDecision({ armed: true, gateConclusion: "FAILURE", behind: true }).update, false);
+  assert.equal(newestConclusion(runs, "gate"), "failure");
+  // #1100: THE READER'S ANSWER IS UNCHANGED AND IS WHAT THIS TEST IS ABOUT -- a genuinely failing head
+  // still READS as failing. What changed is what the sweep DOES with that reading: an armed, behind PR is
+  // now updated anyway, because `gate = FAILURE` has two causes and the update is the only thing that
+  // tells them apart. The decision half is asserted here in its new direction rather than dropped, so
+  // this file cannot silently stop saying anything about it.
+  assert.equal(updateBranchDecision({ armed: true, gateConclusion: "FAILURE", behind: true }).update, true);
 });
 
 test("newestConclusion: a still-running newest run reports null, which is 'not yet answered', not 'failing'", () => {
@@ -93,7 +108,7 @@ test("newestConclusion: an UNTIMED entry never outranks a timed one -- absence i
     { name: "gate", conclusion: "SUCCESS", completedAt: "2026-09-08T07:35:37Z", startedAt: "2026-09-08T07:35:34Z" },
     { name: "gate", conclusion: "FAILURE", completedAt: null, startedAt: null },
   ];
-  assert.equal(newestConclusion(runs, "gate"), "SUCCESS");
+  assert.equal(newestConclusion(runs, "gate"), "success");
 });
 
 test("newestConclusion: startedAt is the fallback key when completedAt is absent on both", () => {
@@ -101,15 +116,24 @@ test("newestConclusion: startedAt is the fallback key when completedAt is absent
     { name: "gate", conclusion: "FAILURE", completedAt: null, startedAt: "2026-09-08T07:00:00Z" },
     { name: "gate", conclusion: "SUCCESS", completedAt: null, startedAt: "2026-09-08T08:00:00Z" },
   ];
-  assert.equal(newestConclusion(runs, "gate"), "SUCCESS");
+  assert.equal(newestConclusion(runs, "gate"), "success");
 });
 
-test("the skip message NAMES THE READING, so a wrong skip is falsifiable from the log alone (#498)", () => {
+test("#498's rule is RELOCATED, not lost: the line still names the reading, now on the UPDATE (#1100)", () => {
+  // THIS TEST USED TO PIN THE SKIP. #1100 removed that skip -- a red, armed, behind PR is updated,
+  // because its red has two causes and updating is the only instrument that distinguishes them. **#498's
+  // value was never the skip; it was that the line named the READING rather than only the verdict**, so
+  // a wrong decision is falsifiable from the log alone. That property is asserted here on the new path.
   const d = updateBranchDecision({ armed: true, gateConclusion: "FAILURE", behind: true });
-  assert.equal(d.update, false);
-  assert.match(d.reason, /NEWEST gate run on the head/,
-    "the reason must say the conclusion was the newest, not merely that the gate failed");
-  assert.match(d.reason, /#498/, "the reason must name the shape to report if the PR looks green");
+  assert.equal(d.update, true, "the decision reversed -- see #1100 and the ACCEPTANCE test in "
+    + "update-branch-decision.test.ts");
+  assert.match(d.reason, /gate = failure/,
+    "the reason must still say WHAT IT READ, not merely that it acted");
+  assert.match(d.reason, /#498/,
+    "and it must still name #498, because the author still owns a red that survives the update");
+  assert.match(d.reason, /if it CLEARS, the red was the base's/,
+    "and it must say what the next reading MEANS -- otherwise the update is a cost paid on a guess "
+    + "rather than the answer to the question the old skip guessed at");
 });
 
 // --- updateBranchDecision: the pure decision ---
@@ -128,9 +152,14 @@ test("updateBranchDecision: armed, gate still running, behind, AND THE HEAD IS Q
   assert.equal(d.update, true);
 });
 
-test("updateBranchDecision: armed, gate FAILURE, behind -- a failing PR needs a fix, not a stale-main push", () => {
+test("updateBranchDecision: armed, gate FAILURE, behind -- UPDATED, and #1100 is why", () => {
+  // REPLACED RATHER THAN DELETED. The old assertion (`update === false`, "a failing PR needs a fix, not a
+  // stale-main push") was correct about a PR red on its OWN contents and wrong about one red because of
+  // its base -- and nothing in the gate conclusion tells those apart. Measured on sweep run
+  // `34692306488`: #1093 skipped here, red from a guard #1080 had deleted from main, with no fix its
+  // author could push. The full argument lives in `update-branch-decision.test.ts`'s #1100 block.
   const d = updateBranchDecision({ armed: true, gateConclusion: "FAILURE", behind: true });
-  assert.equal(d.update, false);
+  assert.equal(d.update, true);
 });
 
 test("updateBranchDecision: armed, green, already up to date -- nothing to do", () => {
