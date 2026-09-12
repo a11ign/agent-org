@@ -29,11 +29,7 @@ import { declaredRegionFiles } from "../../../../scripts/region-paths.mjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  bodyFromArgv, fileRefusalReason, createIssue, sessionFromArgv, appendFiledBy, withFiledBy,
-  boardingFor, issueNumberFromUrl, unverifiedFilingFields, fetchIssueBoardStatus, laneLabelsFor,
-  milestoneRefusal,
-} from "../../../../scripts/row-file.mjs";
+import { appendFiledBy, boardingFor, bodyFromArgv, createIssue, fetchIssueBoardStatus, fileRefusalReason, issueNumberFromUrl, laneLabelsFor, milestoneRefusal, sessionFromArgv, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy } from "../../../../scripts/row-file.mjs";
 import { filedByLine } from "../../../../scripts/row-claim.mjs";
 
 const CLI = fileURLToPath(new URL("../../../../scripts/row-file.mjs", import.meta.url));
@@ -863,4 +859,24 @@ test("#1130: neither is still REFUSED, and a row with no label is untouched -- t
   assert.deepEqual(outOfReleaseArgv(["-m", OUT_OF_RELEASE_MILESTONE]), ["-m", OUT_OF_RELEASE_MILESTONE],
     "the milestone alone is left alone: adding labels a caller did not ask for is a wider change than "
     + "this row's, and the tracker-level check in `ready-label-audit.test.ts` is what catches that side");
+});
+
+/**
+ * #1158: THE WARNING REACHES THE AUTHOR. Lives here rather than in `region-paths.test.ts` because this
+ * file already imports `row-file.mjs` and already carries its closure -- #1116's remedy is placement, and
+ * pulling a `gh`-spawning module into the parser's own test to assert one line is how a test file loses
+ * the job that runs it.
+ */
+test("#1158: the warning reaches the author, and is a warning rather than a refusal", () => {
+  // An exported function nobody calls is not "surfaced" -- #1085's shape, where the test proved a
+  // reporter EXISTED and the deliverable was that the caller CALLS it.
+  const warned = unrecognisedRegionWarning("## Region\n\n`nosuchdir/thing.md`\n");
+  assert.match(String(warned), /nosuchdir\/thing\.md/);
+  assert.match(String(warned), /WARNING/);
+  assert.equal(unrecognisedRegionWarning("## Region\n\n`docs/README.md`\n"), null);
+  // And it must NOT be a refusal: a Region may legitimately mention a path in prose, and blocking a
+  // correct filing to prevent a possible mistake is the wrong trade for a failure mode that is silence.
+  assert.equal(fileRefusalReason("## Region\n\n`nosuchdir/thing.md`\n\n## Acceptance\n\n`npx tsx --test x.test.ts`\n"),
+    fileRefusalReason("## Region\n\n`docs/README.md`\n\n## Acceptance\n\n`npx tsx --test x.test.ts`\n"),
+    "a stray path must not change whether the row is refused");
 });
