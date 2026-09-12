@@ -1487,3 +1487,61 @@ test("#967 KNOWN LIMITATION, asserted so a future fix has something to flip: one
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// --- #1035: `History: full` IS A DECLARATION, NOT A COMMAND, WHEREVER IT SITS ---
+//
+// Found 2026-09-12 while opening #1034. The line is documented as position-independent -- "a bare line,
+// deliberately … needs no section parser" -- and `hasFullHistoryDeclaration` reads it from the WHOLE body.
+// But `commandLinesAfter` took it as a command AND, being followed by a blank line, terminated on the next
+// one, so the fenced block below it was never reached:
+//
+//     INSIDE  the section:  commands = ["History: full"]     <- the prose line, and nothing else
+//     OUTSIDE the section:  commands = ["npx tsx --test …"]
+//
+// The tool then printed "every command above was refused" (true, of a command nobody wrote as one) and
+// "`History: full` is declared, but no named test file declares `// requires: history`" (the named file
+// declares it on line 13). One placement, two messages, neither naming it -- and it cost three checks of
+// things that were already right before I read the parser instead of the message.
+
+const HISTORY_CMD = "npx tsx --test packages/lab/src/packaging/acceptance-commands.test.ts";
+
+test("#1035 ACCEPTANCE: a bare `History: full` INSIDE the section leaves the real command intact", () => {
+  const body = `## Acceptance\n\nHistory: full\n\n\`\`\`bash\n${HISTORY_CMD}\n\`\`\`\n`;
+  const section = extractAcceptanceSection(body);
+  assert.equal(section.kind, "commands");
+  assert.deepEqual((section as { commands: string[] }).commands, [HISTORY_CMD],
+    "the fenced command must survive -- it used to be dropped entirely, because the prose line both "
+    + "became the command and terminated the scan on the blank line after it");
+});
+
+test("#1035: and the declaration is still HONOURED there -- skipped, not refused, because it is "
+  + "position-independent by design", () => {
+  const body = `## Acceptance\n\nHistory: full\n\n\`\`\`bash\n${HISTORY_CMD}\n\`\`\`\n`;
+  assert.equal(hasFullHistoryDeclaration(body), true);
+  assert.equal(jobCapabilities(body).history, true,
+    "honouring it wherever it lands is the behaviour the author already expects; refusing the placement "
+    + "would be a second rule to remember for a line that needs none");
+});
+
+test("#1035: OUTSIDE the section is unchanged -- the documented placement must keep working exactly", () => {
+  const body = `History: full\n\n## Acceptance\n\n\`\`\`bash\n${HISTORY_CMD}\n\`\`\`\n`;
+  assert.deepEqual((extractAcceptanceSection(body) as { commands: string[] }).commands, [HISTORY_CMD]);
+  assert.equal(hasFullHistoryDeclaration(body), true);
+});
+
+test("#1035: a line that merely MENTIONS history is still a command -- the skip is anchored to the exact "
+  + "declaration, not to the word", () => {
+  // The declaration's own pattern is anchored (`^\s*History:\s*full\s*$`), and this asserts the skip
+  // inherits that rather than widening it. A skip that swallowed any line containing "History" would
+  // silently drop a real command, which is the same defect pointed the other way.
+  const body = "## Acceptance\n\nnode scripts/x.mjs --History: full-run\n";
+  assert.deepEqual((extractAcceptanceSection(body) as { commands: string[] }).commands,
+    ["node scripts/x.mjs --History: full-run"]);
+});
+
+test("#1035: `History: full` as the ONLY thing in the section is MISSING, not a command", () => {
+  // The honest verdict: an author who wrote a declaration and no command has named no acceptance, and
+  // `missing` is the refusal that says so. Reading it as a command said "every command was refused",
+  // which sends them to look at a command they never wrote.
+  assert.equal(extractAcceptanceSection("## Acceptance\n\nHistory: full\n").kind, "missing");
+});
