@@ -792,6 +792,28 @@ test("#1117: the declaration's vocabulary is #989's, so the clock and the filer 
     + "rather than this test being wrong");
 });
 
+test("#1117: the SHARED extractor draws the scope — the two forms that prove which parser runs", () => {
+  // NOTHING IN THIS SUITE COULD TELL, and that is why these two cases exist. worker-judge substituted the
+  // shared extractor for my hand-written regex and the suite read 71/0 BOTH WAYS -- so the scoping was
+  // unheld and a future edit could swap either way with no signal. These are the only two shapes where
+  // the two implementations disagree, which makes them the only two that pin it.
+
+  // THE INLINE FORM. `REGION_INLINE` accepts `Region: ...`; my regex required a `## Region` heading, so a
+  // row using this form could not make the declaration AT ALL -- a refusal its author cannot follow.
+  assert.equal(regionRefusalReason(
+    "## What it is\nx\n\n**Region:** its deliverable is not a commit.\n\n"
+    + "## Acceptance\nNot a test.\n\n## Open-check\nn/a\n"), null,
+  "the inline Region form must be able to carry the declaration, or the refusal is unfollowable");
+
+  // THE `###` SUB-HEADING. It ENDS the Region section everywhere else (#170's recorded shape); my regex
+  // ran past it, so a declaration under `### Why` would have been accepted here and invisible to B4 --
+  // exactly the divergence the header claimed could not exist.
+  assert.ok(regionRefusalReason(
+    "## What it is\nx\n\n## Region\nThe destination.\n\n### Why\nIts deliverable is not a commit.\n\n"
+    + "## Acceptance\nNot a test.\n\n## Open-check\nn/a\n"),
+  "a `###` sub-heading ends the Region section, so a declaration below it is outside the scope B4 reads");
+});
+
 test("#1117: the declaration counts only inside the Region section", () => {
   // A phrase that can be made accidentally anywhere in a body is the easy path past the check this
   // refusal exists to close -- and it is not hypothetical: #1117's own body uses the sentence twice in
