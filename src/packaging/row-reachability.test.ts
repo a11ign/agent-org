@@ -440,7 +440,12 @@ test("#772 CONTROL: a real ref that genuinely lacks the symbol is still a plain,
   () => {
   if (skipsWithoutOriginMain()) return;
   // The other direction, and the one a fix aimed only at the throw would break: exit 1 is a real answer.
-  assert.deepEqual(refsCarryingSymbol("a-symbol-no-tree-here-contains-zzz", ["origin/main"]), [],
+  // CONCATENATED for the reason the doc comment above `fixtureSymbolName` gives, which this test did not
+  // take and #1023's merge then proved: written whole, the literal was guaranteed absent from
+  // `origin/main` only until this very file merged INTO `origin/main`, at which point `refsCarryingSymbol`
+  // correctly found it here and the control failed. The function was right; the fixture named itself.
+  const absentEverywhere = fixtureSymbolName("no-tree-here-holds", "-this-symbol-zzz");
+  assert.deepEqual(refsCarryingSymbol(absentEverywhere, ["origin/main"]), [],
     "git grep's exit 1 is a genuine 'not present', and must stay a quiet empty result");
 });
 
