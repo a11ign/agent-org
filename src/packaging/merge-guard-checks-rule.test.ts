@@ -7,6 +7,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { checkReasons, newestPerName, SATISFIED } from "../../../../scripts/merge-guard/checks-rule.mjs";
+import { reasonKind } from "../../../../scripts/merge-guard/reason-kind.mjs";
+import { mergeReadiness } from "../../../../scripts/merge-guard.mjs";
+import { commitLiveness, EXIT } from "../../../../scripts/workflow-run-liveness.mjs";
 
 const REQUIRED = ["changed", "ts", "python", "ansible", "docs", "changeset"];
 const pr = { headRefOid: "d5c2436601abcdef" };
@@ -202,3 +205,128 @@ test("#1007: an OLDER cancelled run beside a newer conclusion is still #902's ca
  * assumed -- so after #989 no caller parses these sentences and there is no cross-module contract left to
  * pin from here.
  */
+
+// ---------------------------------------------------------------------------------------------------
+// #1009: the two never-rans. "That job was deleted" and "that job has not started" were one sentence.
+//
+// `gate` on this repository `needs: [changed, ts, python, ansible, changeset, rulesFitness]`, so it
+// produces no check-run at all until its needs finish — it is the LAST job to report on every single
+// pull request. **For most of every run, the healthy state and the broken state read identically**, and
+// the remedies differ: *ask again* versus *go and find out why that job never fired*.
+//
+// Sibling of #1007, same function, the other branch: that one is a `cancelled` conclusion, this is no
+// conclusion at all.
+// ---------------------------------------------------------------------------------------------------
+
+/**
+ * #1008's head at 23:3xZ, the shape that produced the report — `ts / run` in flight, no `gate` at all.
+ *
+ * `completedAt` is carried because the CONSUMERS read it: `stalenessReason` compares it to `main`'s tip,
+ * and a population of nulls would make it speak and hand the consumer assertions below a refusal for a
+ * reason that has nothing to do with this row. Dated AFTER the `mainTipIso` those tests pass, so the only
+ * sentence in play is the one under test.
+ */
+const LIVE_SHAPE = [
+  { id: 1, name: "changed", status: "completed", conclusion: "success", completedAt: "2026-09-12T01:00:00Z" },
+  { id: 2, name: "ts / run", status: "in_progress", conclusion: null, completedAt: null },
+  { id: 3, name: "acceptance", status: "completed", conclusion: "success", completedAt: "2026-09-12T01:00:00Z" },
+  { id: 4, name: "deliberateRefusals", status: "completed", conclusion: "success", completedAt: "2026-09-12T01:00:00Z" },
+  { id: 5, name: "python", status: "completed", conclusion: "skipped", completedAt: "2026-09-12T01:00:00Z" },
+];
+
+test("#1009 ACCEPTANCE: a required context with no run, while something else is UNFINISHED, is a WAIT", () => {
+  const reasons = checkReasons(pr, ["gate"], LIVE_SHAPE);
+  const joined = reasons.join("\n");
+  assert.match(joined, /STILL RUNNING:.*\bgate\b/,
+    `the waiting context must be named in the WAIT: got ${JSON.stringify(reasons)}`);
+  assert.match(joined, /no run has reported it yet/,
+    "and annotated, so nobody mistakes it for a job that is actually executing");
+  assert.doesNotMatch(joined, /NEVER RAN/,
+    "this is the whole row: a healthy mid-run pull request must not be reported as an absence. `gate` "
+    + "needs six other jobs, so this is the NORMAL state for most of every run");
+  assert.match(joined, /ask again/, "and the remedy must be the waiting one, not the investigating one");
+});
+
+test("#1009: a required context with no run while every other run has CONCLUDED is still an ABSENCE", () => {
+  // Unchanged, and this is the assertion that makes the split a split rather than a rename. If the
+  // waiting mutation below leaves this passing AND the one above passing, the two cases were never
+  // separated.
+  const reasons = checkReasons(pr, ["gate"], [
+    { id: 1, name: "changed", status: "completed", conclusion: "success" },
+    { id: 2, name: "ts / run", status: "completed", conclusion: "success" },
+  ]);
+  const joined = reasons.join("\n");
+  assert.match(joined, /REQUIRED CONTEXT NEVER RAN: gate/, "a genuine absence keeps its sentence");
+  assert.match(joined, /removed, renamed, or/,
+    "and now says WHY it is not 'not yet' -- every other run concluded, so waiting is not the remedy");
+  assert.doesNotMatch(joined, /STILL RUNNING/, "with nothing running, there is nothing to wait for");
+});
+
+test("#1009: the #148 case is untouched — no runs at all is neither of the two never-rans", () => {
+  const reasons = checkReasons(pr, ["gate"], []);
+  assert.equal(reasons.length, 1);
+  assert.match(reasons[0], /NO CHECK RUNS EXIST/);
+  assert.doesNotMatch(reasons[0], /STILL RUNNING|NEVER RAN/,
+    "nothing has tested this code at all, which is a third thing and already has its own sentence");
+});
+
+test("#1009: a SUPERSEDED run counts as unfinished — the replacement has not reported either", () => {
+  // #1007's ruling applied here rather than restated: a cancelled context means a replacement run is
+  // already going, the same world as one in flight. Taking only `in_progress` would report an absence on
+  // exactly the head whose replacement has not yet produced its check-runs.
+  const joined = checkReasons(pr, ["gate"], [
+    { id: 1, name: "ts / run", status: "completed", conclusion: "cancelled" },
+  ]).join("\n");
+  assert.match(joined, /STILL RUNNING:.*\bgate\b/, "the missing required context waits on the replacement");
+  assert.doesNotMatch(joined, /NEVER RAN/, "a cancelled sibling is not 'everything concluded'");
+});
+
+test("#1009: the waiting sentence CLASSIFIES as STILL_RUNNING, not UNCLASSIFIED", () => {
+  // WHY THE WAIT JOINS THE EXISTING SENTENCE INSTEAD OF GETTING A NEW PREFIX. `reason-kind.mjs` maps a
+  // reason to a kind by PREFIX and returns `UNCLASSIFIED` for anything it does not recognise -- silently.
+  // A new prefix would be a second copy of the sentence, in another file, with nothing comparing them,
+  // and #188's reconciliation log would file every waiting refusal under `UNCLASSIFIED` while every test
+  // here passed. That file's own header names this shape.
+  const waiting = checkReasons(pr, ["gate"], LIVE_SHAPE)[0];
+  assert.equal(reasonKind(waiting), "STILL_RUNNING",
+    `the waiting reason classified as ${reasonKind(waiting)}; a new prefix needs a new REASON_KINDS entry `
+    + "and the miss is silent");
+  const absence = checkReasons(pr, ["gate"], [
+    { id: 1, name: "ts", status: "completed", conclusion: "success" }]).join("\n");
+  assert.equal(reasonKind(absence), "MISSING_REQUIRED_CONTEXT",
+    "and the genuine absence keeps its own kind, or the two are indistinguishable in the log too");
+});
+
+// --- AT THE CONSUMERS, because the two sentences are separate strings with nothing tying them ---
+
+/** `mergeReadiness`'s other inputs, all benign, so only the check-run population is under test. */
+const readinessInputs = {
+  pr: { number: 1, state: "open", baseRefName: "main", headRefOid: "d5c2436601abcdef" },
+  required: ["gate"], mainTipIso: "2026-09-12T00:00:00Z", behindBy: 0,
+  branchTip: "d5c2436601abcdef", closes: [], prLabels: [], session: null,
+};
+
+test("#1009 CONSUMER: `merge-guard` renders the waiting case as a wait, not an absence", () => {
+  const waiting = mergeReadiness({ ...readinessInputs, runs: LIVE_SHAPE });
+  const joined = waiting.reasons.join("\n");
+  assert.doesNotMatch(joined, /NEVER RAN/,
+    `the merge path still reports an absence: ${JSON.stringify(waiting.reasons)}`);
+  assert.match(joined, /STILL RUNNING:.*\bgate\b/, "it must name the context it is waiting on");
+
+  // AND IT STILL REFUSES. A wait is not a pass: merging while the one required context has reached no
+  // verdict is the thing the guard exists to stop, and #1007 makes the same point one case over.
+  assert.notEqual(waiting.code, 0, "a wait must not become a merge");
+});
+
+test("#1009 CONSUMER: `workflow-run-liveness` renders it as a wait too", () => {
+  const verdict = commitLiveness({
+    sha: "d5c2436601abcdef",
+    pulls: [{ number: 1, headRefOid: "d5c2436601abcdef" }],
+    required: ["gate"], runs: LIVE_SHAPE,
+  });
+  const joined = verdict.reasons.join("\n");
+  assert.doesNotMatch(joined, /NEVER RAN/, `still an absence on the liveness path: ${joined}`);
+  assert.match(joined, /STILL RUNNING:.*\bgate\b/);
+  assert.equal(verdict.code, EXIT.NOT_TESTED,
+    "and NOT_TESTED is still right -- not yet tested is not tested; only the WORDS were wrong");
+});
