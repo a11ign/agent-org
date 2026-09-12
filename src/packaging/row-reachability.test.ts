@@ -273,7 +273,43 @@ test("a row that named nothing at all still gets the original sentence", () => {
  * grep` against a real, shared object database, the same choice `pre-push-resolve-toward-main.test.ts`
  * makes for the same reason: a guard whose fixture is invented is one nobody has seen bite.
  */
+/**
+ * Is `origin/main` a readable ref HERE? — #772, and the answer is not always yes.
+ *
+ * CI's acceptance job checks out the PR's merge ref and has no `origin/main`: measured, `git grep … 
+ * origin/main` there is `fatal: ambiguous argument 'origin/main': unknown revision`. The tests below drive
+ * the real object database deliberately — a guard whose fixture is invented is one nobody has seen bite —
+ * but that choice means the ref they need can be absent, and **before #772 those runs passed anyway**,
+ * because an unreadable ref returned the same empty list as a ref that genuinely lacked the symbol. Three
+ * assertions in this file were green in CI for that reason, which is the very conflation the row fixes.
+ *
+ * So they SKIP LOUDLY where the ref is missing, rather than asserting against an environment they do not
+ * have — and rather than passing for a reason that has nothing to do with what they claim.
+ */
+function originMainReadable(): boolean {
+  try {
+    execFileSync("git", ["rev-parse", "--verify", "--quiet", "origin/main"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Checked at RUN time and reported, never as a `{ skip }` option: a skipped test is invisible in an
+ * ordinary run and reads as "not applicable", and this one is skipped for a reason a reader needs — the
+ * checkout has no `origin/main`, so the real-object-database tests below cannot be asked at all.
+ */
+function skipsWithoutOriginMain(): boolean {
+  if (originMainReadable()) return false;
+  console.error("SKIPPED (no `origin/main` in this checkout, as CI's acceptance job has none): this test "
+    + "drives the real object database, and a ref it cannot read is not a result it can assert on.");
+  return true;
+}
+
 test("#719 REGRESSION: #687's real body, whose Region misses environmentKey's actual file", () => {
+  if (skipsWithoutOriginMain()) return;
   const body = readFileSync(
     fileURLToPath(new URL("./fixtures/issue-687-body.txt", import.meta.url)), "utf8");
   const result = subjectAndRegionFacts(body);
@@ -311,6 +347,7 @@ test("#719 REGRESSION: #687's real body, whose Region misses environmentKey's ac
 const fixtureSymbolName = (a: string, b: string) => a + b;
 
 test("#719: a branch is a named carrier only when it actually contains the symbol, anywhere in its tree", () => {
+  if (skipsWithoutOriginMain()) return;
   const env = sandboxGitEnv();
   const FIXTURE_SYMBOL = fixtureSymbolName("RowReachabilityFixtureSy", "mbol719");
   const REF = "refs/remotes/origin/row-reachability-fixture-719";
@@ -377,7 +414,9 @@ test("#772: an UNREADABLE ref throws rather than reporting the symbol absent", (
     + "branches fetched, that reads every row as STARTABLE");
 });
 
-test("#772 CONTROL: a real ref that genuinely lacks the symbol is still a plain, quiet no", () => {
+test("#772 CONTROL: a real ref that genuinely lacks the symbol is still a plain, quiet no",
+  () => {
+  if (skipsWithoutOriginMain()) return;
   // The other direction, and the one a fix aimed only at the throw would break: exit 1 is a real answer.
   assert.deepEqual(refsCarryingSymbol("a-symbol-no-tree-here-contains-zzz", ["origin/main"]), [],
     "git grep's exit 1 is a genuine 'not present', and must stay a quiet empty result");
