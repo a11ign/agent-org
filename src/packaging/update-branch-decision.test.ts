@@ -32,6 +32,7 @@ import assert from "node:assert/strict";
 
 import { updateBranchDecision, headQuietSeconds, newestConclusion, HEAD_QUIET_SECONDS, ZERO_DATE }
   from "../../../../scripts/update-branch-sweep.mjs";
+import { NO_VERDICT } from "../../../../scripts/merge-guard/checks-rule.mjs";
 
 const NOW = new Date("2026-09-08T09:00:00Z");
 const decide = (gateConclusion: string | null, quietSeconds: number | null) =>
@@ -123,6 +124,42 @@ test("#1100: the reason SAYS WHICH CASE it is in — a quieter path is a regress
   assert.match(updateBranchDecision({ armed: true, gateConclusion: "FAILURE", behind: false, quietSeconds: 9999 })
     .reason, /nothing to update/,
   "a red PR that is already up to date is skipped for being up to date, not for being red");
+});
+
+test("#1100: a CANCELLED gate is NO VERDICT, not a red — and the update would have created it", () => {
+  // worker-judge's blocker, and it is the one I would have shipped. `ci.yml:119` is
+  // `cancel-in-progress: true`, so a push to main that supersedes a run leaves the gate CANCELLED.
+  // Measured on runs `34693906245`, `34693717423`, `34693471314` -- all three `gate: conclusion=cancelled`
+  // -- and `"cancelled" !== "SUCCESS"`, so it fell into the update-anyway branch and was logged as a red.
+  //
+  // **THE ACTION PRODUCES THE STATE IT MISREADS**: main moves, the run is cancelled, the gate reads red,
+  // this updates, a new run starts, main moves again. The red neither CLEARS nor PERSISTS -- it is
+  // REPLACED -- so the instrument this row rests on has no reading for it, and the update destroys the
+  // run whose verdict would have answered the question. 5 of the last 40 ci runs were cancelled.
+  const cancelled = updateBranchDecision({
+    armed: true, gateConclusion: "cancelled", behind: true, quietSeconds: 9999 });
+  assert.equal(cancelled.update, true, "a superseded run is not a reason to hold a behind PR");
+  assert.doesNotMatch(cancelled.reason, /UPDATED ANYWAY|red has two causes/,
+    "but it must NOT be described as a red -- `checks-rule.mjs` already ruled this string NO VERDICT "
+    + "(#1007) and two predicates meaning different things by the same conclusion is the defect");
+  assert.match(cancelled.reason, /NO VERDICT/, "the reason must say what it actually read");
+
+  // AND IT TAKES THE NO-VERDICT PATH, which is what breaks the loop: an author mid-push still holds
+  // their branch, exactly as for a gate that is still running.
+  assert.equal(updateBranchDecision({
+    armed: true, gateConclusion: "cancelled", behind: true, quietSeconds: 10 }).update, false,
+  "a cancelled gate inside the quiet window is held, like a running one -- a replacement run is going");
+});
+
+test("#1100: the ruling on `cancelled` is IMPORTED from checks-rule, never restated", () => {
+  // The whole point of the fix: one fact, one place. A second copy of the string here is the
+  // fact-stated-twice shape on a value that decides whether a pull request is pushed.
+  assert.equal(NO_VERDICT, "cancelled", "if this ever changes, both readers change together");
+  const byConst = updateBranchDecision({
+    armed: true, gateConclusion: NO_VERDICT, behind: true, quietSeconds: 9999 });
+  assert.match(byConst.reason, /NO VERDICT/,
+    "the decision must route on the IMPORTED constant, so a rename in checks-rule.mjs cannot leave this "
+    + "file reading a string nothing produces any more");
 });
 
 test("#1100: a CONCLUDED failing gate does not wait on the quiet window", () => {
