@@ -83,3 +83,64 @@ test("the guidance states both rules, each with the mechanism rather than only t
   assert.match(text, /cannot name a file that verifies it has no acceptance/,
     "quote pr:open's own refusal, so a filer who follows the refusal exactly passes");
 });
+
+/**
+ * #1163: THE TWO SENTENCES ADDED 2026-09-12, EACH EARNED BY A ROW REFUSED OR CORRECTED THAT DAY.
+ *
+ * Asserted by their LOAD-BEARING PARTS rather than as frozen strings. A test pinning a whole sentence
+ * fails on a comma and teaches the next person to edit the test instead of the prose -- which is the same
+ * failure as a guard that reports the file it was pointed at rather than the property it was written for.
+ */
+/**
+ * WHITESPACE IS COLLAPSED IN EVERY ASSERTION BELOW, and this unit needed the lesson three separate times
+ * before it stuck: `guidanceDrift`'s own patterns missed `does not mean\nunimportant`, this test missed
+ * `An\nacceptance names the files that must RUN`, and only the third write got it right first time.
+ *
+ * **A prose assertion against a WRAPPED file is matching a line, not a sentence.** The page wraps at 110
+ * characters and the phrases worth pinning are longer than the gap left at the end of a line, so the
+ * probability that a load-bearing phrase spans a wrap is high rather than incidental -- and the failure is
+ * a silent non-match, which reads exactly like the prose being absent.
+ */
+const flat = () => guidance().replace(/\s+/g, " ");
+
+test("#1163: the acceptance rule says which POPULATION the files come from, not only that files are named", () => {
+  const text = flat();
+
+  assert.match(text, /a transcript names the files a defect is IN/i,
+    "the wrong population has to be named, or the rule reads as advice about being careful");
+  assert.match(text, /an acceptance names the files that must RUN/i,
+    "the right population, stated as the contrast -- this is the half a filer applies");
+  assert.match(text, /does not transfer/i,
+    "the two lists overlap enough to look interchangeable, which is why the rule exists at all");
+  assert.match(text, /comm -3/,
+    "a rule with no command to check it against is one nobody re-checks -- the same standard the Region "
+    + "rule above is held to, which carries `declaredRegionFiles` for the reader to run");
+});
+
+test("#1163: `out-of-release` is stated as answering ONE question, with importance said elsewhere", () => {
+  const text = flat();
+
+  assert.match(text, /answers one question/i, "the whole point is the singular");
+  assert.match(text, /does this block the 20 September publish/i,
+    "the question itself, or the rule cannot be applied to a row");
+  assert.match(text, /does not mean unimportant/i,
+    "the reading that moved #1161 into the release on the wrong axis");
+  assert.match(text, /out of release, ready/i, "how a row says BOTH things at once");
+  assert.match(text, /importance is said by the ready order/i,
+    "where importance actually lives -- without this the rule only forbids and offers nothing");
+
+  // WHITESPACE COLLAPSED FIRST, because markdown wraps and every one of these spans a line break somewhere.
+  // The live check learned this by failing on this page: `does not mean\nunimportant` matched nothing.
+  assert.ok(/does not mean\s+unimportant/.test(guidance()) === true,
+    "sanity: the phrase really is in the raw file too, so the collapse above is convenience and not a "
+    + "weakening -- if this ever fails the assertions above are passing on a normalisation artefact");
+});
+
+test("#1163: the guidance says the milestone description is COMPARED, not merely that it agrees", () => {
+  const text = flat();
+
+  assert.match(text, /guidanceDrift/,
+    "the page names the guard that compares it, so a reader can check the claim rather than trust it");
+  assert.match(text, /two copies of one rule with nothing comparing them/i,
+    "and says WHY, which is the defect this page would otherwise be a second instance of");
+});
