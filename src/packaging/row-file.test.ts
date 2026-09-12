@@ -29,7 +29,7 @@ import { declaredRegionFiles } from "../../../../scripts/region-paths.mjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendFiledBy, boardingFor, bodyFromArgv, createIssue, fetchIssueBoardStatus, fileRefusalReason, issueNumberFromUrl, laneLabelsFor, milestoneRefusal, sessionFromArgv, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy } from "../../../../scripts/row-file.mjs";
+import { appendFiledBy, boardingFor, bodyFromArgv, createIssue, fetchIssueBoardStatus, fileRefusalReason, issueNumberFromUrl, laneLabelsFor, milestoneRefusal, openCheckTranscriptRefusal, sessionFromArgv, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy } from "../../../../scripts/row-file.mjs";
 import { filedByLine } from "../../../../scripts/row-claim.mjs";
 
 const CLI = fileURLToPath(new URL("../../../../scripts/row-file.mjs", import.meta.url));
@@ -879,4 +879,52 @@ test("#1158: the warning reaches the author, and is a warning rather than a refu
   assert.equal(fileRefusalReason("## Region\n\n`nosuchdir/thing.md`\n\n## Acceptance\n\n`npx tsx --test x.test.ts`\n"),
     fileRefusalReason("## Region\n\n`docs/README.md`\n\n## Acceptance\n\n`npx tsx --test x.test.ts`\n"),
     "a stray path must not change whether the row is refused");
+});
+
+/**
+ * #1174: AN OPEN-CHECK THAT ASSERTS AN OUTPUT MUST SHOW ONE, ADJACENT TO THE COMMAND.
+ *
+ * Eleven instances between two engineers in one day; three were open-checks written from belief.
+ * product-manager's #1129: *"Prints `0` today — I ran it"* against a command that prints **7**, with the
+ * file that refuted the row among the seven. Mine on #1161: *"Run at `9941bef4`"* above a block that
+ * returns `0` and exits 1 — in a row whose subject was a command nobody executed.
+ *
+ * **A pasted transcript is only a transcript if it was pasted FROM A RUN.** Adjacency is the closest
+ * machine-checkable proxy: a figure that came from the run sits under the command.
+ */
+const openCheckBody = (openCheck: string) =>
+  `## Region\n\n\`docs/README.md\`\n\n## Acceptance\n\n\`npx tsx --test x.test.ts\`\n\n## Open-check\n\n${openCheck}\n`;
+
+test("#1174 clause 1: an Open-check asserting an output with NO transcript is refused", () => {
+  const body = openCheckBody("**Prints `0` today -- I ran it.**\n\n```\ngrep -c foo bar.md\n```");
+  assert.match(String(fileRefusalReason(body)), /Open-check/);
+  assert.match(String(fileRefusalReason(body)), /pasted FROM A RUN/);
+});
+
+test("#1174 clause 2: a transcript present but NON-ADJACENT is refused", () => {
+  // THE CLAUSE THAT CARRIES THE ROW. A check asking only whether a command and a number both appear in
+  // the block would accept this -- and this is the shape a reconstructed transcript actually takes: the
+  // command copied from somewhere real, the figure written from what the author expected it to say.
+  const body = openCheckBody(
+    "**Prints `0` today.**\n\n```\ngrep -c foo bar.md\n```\n\nand separately:\n\n```\n0\n```");
+  assert.match(String(fileRefusalReason(body)), /directly underneath/);
+});
+
+test("#1174 clause 3: command and output adjacent is accepted, unchanged", () => {
+  const body = openCheckBody("**Prints `0` today.**\n\n```\n$ grep -c foo bar.md\n0\n```");
+  assert.equal(openCheckTranscriptRefusal(body), null);
+});
+
+test("#1174 clause 4: an Open-check that asserts NOTHING is still accepted", () => {
+  // The rule is about unbacked CLAIMS, not about mandating output. Some rows' checks are a command whose
+  // meaning the reader judges, and refusing those would make the rule a different, worse rule.
+  const body = openCheckBody("Open while the guard is missing.\n\n```\ngrep -c foo bar.md\n```");
+  assert.equal(openCheckTranscriptRefusal(body), null);
+});
+
+test("#1174: two commands in a row are two commands, not a command and its output", () => {
+  // The adjacency test must not read the second command as the first one's output -- otherwise a block
+  // of several commands and no output at all satisfies it, which is most of the bodies this refuses.
+  const body = openCheckBody("**Prints `0` today.**\n\n```\n$ git fetch origin\n$ grep -c foo bar.md\n```");
+  assert.match(String(openCheckTranscriptRefusal(body)), /directly underneath/);
 });
