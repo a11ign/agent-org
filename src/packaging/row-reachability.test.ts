@@ -28,7 +28,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { startability, subjectAndRegionFacts, symbolOnMain, refsCarryingSymbol, proveOriginMainReadable }
+import { startability, subjectAndRegionFacts, symbolOnMain, refsCarryingSymbol, proveOriginMainReadable, onMain }
   from "../../../../scripts/row-reachability.mjs";
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 
@@ -442,6 +442,18 @@ test("#772 CONTROL: a real ref that genuinely lacks the symbol is still a plain,
   // The other direction, and the one a fix aimed only at the throw would break: exit 1 is a real answer.
   assert.deepEqual(refsCarryingSymbol("a-symbol-no-tree-here-contains-zzz", ["origin/main"]), [],
     "git grep's exit 1 is a genuine 'not present', and must stay a quiet empty result");
+});
+
+test("#772: `onMain` THROWS when `origin/main` cannot be read -- it never reports the path absent", () => {
+  // THE CALL SITE, not the function. Driving `proveOriginMainReadable` holds the function and misses the
+  // call being DELETED from `onMain`; asserting the call on the source holds the call and misses a
+  // swallowed failure inside. worker-judge: neither half alone holds it, and the failure is identical
+  // either way -- one line gone, every declared path reads as absent, nothing goes red.
+  const throwing = () => { throw new Error("fatal: bad revision"); };
+  assert.throws(() => onMain("packages/lab/src/dataset-paths.mjs", { run: throwing }), /bad revision/,
+    "an unreadable origin/main must reach main()'s CANNOT_ASK path, never `return false` -- `cat-file -e` "
+    + "gives 128 for a missing PATH and a missing REVISION alike, so `false` here would report the whole "
+    + "Region unlanded");
 });
 
 test("#772: proving `origin/main` is DRIVEN -- a `rev-parse` that fails must reach CANNOT_ASK", () => {
