@@ -344,3 +344,33 @@ test("#719: a branch is a named carrier only when it actually contains the symbo
     try { execFileSync("rm", ["-f", tmpIndex]); } catch { /* already gone */ }
   }
 });
+
+/**
+ * #772: "NO MATCH" AND "COULD NOT READ THIS REF" ARE NOT THE SAME ANSWER.
+ *
+ * `refsCarryingSymbol` caught every `git grep` failure and treated it as "this ref does not carry it" —
+ * the old comment said so outright: *"either way, it does not carry it"*. In a checkout with no remote
+ * branches fetched, every ref is unreadable, so every symbol reads as carried by nothing, `subjectsMissing`
+ * comes back empty and the row reports STARTABLE. **A clean answer from a question never asked**, which is
+ * the direction that looks like success.
+ *
+ * `symbolOnMain` — thirty lines above it in the same file — already draws the line: exit 1 is git grep's
+ * own "no match", a real no; anything else (128 for an unreadable revision) must reach `main()`'s
+ * CANNOT_ASK path. The rule was stated once and not followed by its neighbour.
+ */
+test("#772: an UNREADABLE ref throws rather than reporting the symbol absent", () => {
+  // Concatenated: a literal here would put the symbol in this file's own tree, and a later assertion that
+  // it is absent from `origin/main` would then fail once this test merges — #770's own regression, which
+  // this file already carries a doc comment about.
+  const symbol = `refsCarry${"ingSymbol"}`;
+  assert.throws(() => refsCarryingSymbol(symbol, ["origin/this-ref-does-not-exist"]),
+    (error: unknown) => (error as { status?: number }).status !== 1,
+    "a ref git cannot read must not be silently reported as not carrying the symbol -- with no remote "
+    + "branches fetched, that reads every row as STARTABLE");
+});
+
+test("#772 CONTROL: a real ref that genuinely lacks the symbol is still a plain, quiet no", () => {
+  // The other direction, and the one a fix aimed only at the throw would break: exit 1 is a real answer.
+  assert.deepEqual(refsCarryingSymbol("a-symbol-no-tree-here-contains-zzz", ["origin/main"]), [],
+    "git grep's exit 1 is a genuine 'not present', and must stay a quiet empty result");
+});
