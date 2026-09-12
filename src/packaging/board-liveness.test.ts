@@ -115,7 +115,9 @@ test("daysSince counts whole days, so 'today' is 0 and does not read as stale", 
 // #901: the watchdog is a step in `trunk.yml`'s `watchdogs` job since 2026-09-10, not a workflow of
 // #909 (2026-09-12): the no-`schedule:` assertion below is on the WHOLE file, so it also covers `decideRevert`
 // and `closeRows`, which live in `trunk.yml` as tenants -- measured by worker-capture on #1145: a cron added to
-// trunk.yml fails exactly this test. It is the ONE guard holding that constraint, not three.
+// trunk.yml fails this test AND the identical assertions in npm-token-liveness.test.ts and
+// workflow-run-liveness.test.ts (measured by ceo, each file run alone: 1 red in all three). Three guards hold
+// the constraint; a run that names only one of them has left the other two out of its set.
 // its own -- same trigger, same script, no workflow run of its own. The pin follows it there.
 const TRUNK_GUARD = path.join(REPO_ROOT, ".github/workflows/trunk.yml");
 
