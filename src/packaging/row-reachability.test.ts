@@ -346,10 +346,27 @@ function skipsWithoutOriginMain(): boolean {
  * So: the sibling of `skipsWithoutOriginMain`, one population along. A ref population it cannot have is
  * not a result it can assert on either.
  *
- * WHAT MAKES THE READ NON-CIRCULAR. Asking "are there unmerged refs" a second way would be asking the
- * function under test. This asks a DIFFERENT question with a certain answer: does this checkout hold any
- * remote-tracking ref under `origin/` besides main and HEAD? If it holds none, zero is explained by the
- * checkout and the floor can discriminate nothing.
+ * WHAT MAKES THE READ NON-CIRCULAR, AND MY FIRST ANSWER WAS WRONG. I wrote that this asks "a different
+ * question", and it did -- through a BYTE-IDENTICAL invocation and filter:
+ *
+ *     the subject   git for-each-ref --format=%(refname:short) refs/remotes/origin   (row-reachability.mjs)
+ *                     .filter(r => r && r !== "origin/main" && !r.startsWith("origin/HEAD"))
+ *     the guard     the same command, the same filter
+ *
+ * worker-capture reviewing #1070: **circular with an extra step, and the step is zero-width.** A defect in
+ * `unmergedRefs` -- a wrong refspec, a filter eating too much -- makes the subject see zero AND this
+ * report zero available, and the test then SKIPS BY NAME saying the checkout cannot hold a population,
+ * when the truth is the function under test cannot see the population that is there. **A skip nobody can
+ * second-guess reports as "not applicable".**
+ *
+ * So it takes a DIFFERENT ROUTE to the same store. `git branch -r` and `for-each-ref refs/remotes/origin`
+ * read the same refs and do not agree on how many there are -- measured here, 313 against 302, because
+ * `branch -r` renders the `origin/HEAD -> origin/main` symref as a line and formats differently. **The
+ * assertion is not that the counts match; it is that a route the subject does not use also finds refs
+ * here.** Two commands cannot both be wrong in the same way, which is the only property this needs.
+ *
+ * The class it protects against is a wrong invocation, not a corrupt ref database -- if the store itself
+ * is unreadable both routes return nothing and the skip is then correct.
  *
  * AND A NOTE ON THE NAME, because the message below inherits it. `unmergedRefs()` enumerates
  * `refs/remotes/origin` minus `origin/main` and `origin/HEAD` -- it never asks whether anything is
@@ -358,7 +375,7 @@ function skipsWithoutOriginMain(): boolean {
  * name (out of #1064's Region) and will not repeat it.
  */
 export function remoteRefsBesidesMain(
-  { run = defaultForEachRef }: { run?: () => string } = {},
+  { run = defaultRemoteBranchListing }: { run?: () => string } = {},
 ): number {
   try {
     return run().split("\n").map((r) => r.trim())
@@ -368,9 +385,10 @@ export function remoteRefsBesidesMain(
   }
 }
 
-const defaultForEachRef = (): string =>
-  execFileSync("git", ["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin"],
-    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+/** DELIBERATELY NOT the subject's `for-each-ref` -- see the header above for why the difference is the
+ *  whole point. `branch -r` indents and renders the HEAD symref as `origin/HEAD -> origin/main`. */
+export const defaultRemoteBranchListing = (): string =>
+  execFileSync("git", ["branch", "-r"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
 /**
  * #1064: `"skip"` when the checkout cannot hold a population, `"held"` when the floor is satisfied,
@@ -800,9 +818,41 @@ test("#1064: the two impure halves are driven too -- the seam is not the call si
     "with a population available the floor is REACHED -- an unconditional skip is the mutation this catches");
   assert.deepEqual(said, [], "and nothing is announced when nothing was skipped");
 
-  const refs = ["origin/main", "origin/HEAD -> origin/main", "origin/agent/x", "origin/agent/y", ""];
+  // THE FIXTURE IS `git branch -r`'s REAL OUTPUT, indentation and symref arrow included. It used to be
+  // `for-each-ref`'s shape, and after the route changed a fixture in the old shape would have tested a
+  // format the command no longer produces -- passing while proving nothing about the command it stands in
+  // for.
+  const refs = ["  origin/HEAD -> origin/main", "  origin/main", "  origin/agent/x", "  origin/agent/y", ""];
   assert.equal(remoteRefsBesidesMain({ run: () => refs.join("\n") }), 2,
     "main, HEAD and the blank line are excluded and the two branches counted -- an environment read that "
     + "always answers zero makes the skip permanent and nothing else here would notice");
-  assert.equal(remoteRefsBesidesMain({ run: () => "origin/main\n" }), 0, "and a CI-shaped checkout is zero");
+  assert.equal(remoteRefsBesidesMain({ run: () => "  origin/HEAD -> origin/main\n  origin/main\n" }), 0,
+    "and a CI-shaped checkout -- the base ref and nothing else -- is zero");
+});
+
+
+test("#1064: the environment read takes a DIFFERENT ROUTE, held by the route's own signature", () => {
+  // Mutation found this unheld: switching `defaultRemoteBranchListing` back to the subject's own
+  // `for-each-ref --format=%(refname:short) refs/remotes/origin` was **0 red**. The fix for the
+  // circularity was real and nothing stopped anyone undoing it -- which is this row's shape, inside the
+  // fix for this row.
+  //
+  // HELD BY SIGNATURE RATHER THAN BY ARGV, and rather than by comparing the two counts. Comparing them
+  // would assert they DISAGREE (313 against 302 here, because `branch -r` renders the HEAD symref as a
+  // line) -- true in a developer checkout and false in CI, where both routes see only the base ref and
+  // agree at zero. A test that passes here and fails there is worse than no test.
+  //
+  // `git branch -r` INDENTS every line; `for-each-ref --format=%(refname:short)` never does. So a
+  // non-empty listing whose lines all start flush-left is the subject's command wearing the guard's name.
+  const listing = defaultRemoteBranchListing();
+  const lines = listing.split("\n").filter((l) => l.trim() !== "");
+  if (lines.length === 0) {
+    console.error("SKIPPED, route signature only (this checkout lists no remote branches at all): the "
+      + "signature cannot be read from an empty listing. The rest of this test still ran.");
+    return;
+  }
+  assert.ok(lines.every((l) => /^\s/.test(l)),
+    "every line of `git branch -r` is indented. A flush-left listing means this is `for-each-ref` again -- "
+    + "the subject's own command, which makes the skip circular: a defect in `unmergedRefs` would make "
+    + `both see zero and the floor would skip saying the checkout cannot hold a population. First line: ${JSON.stringify(lines[0])}`);
 });
