@@ -23,7 +23,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
-import { regionRefusalReason } from "../../../../scripts/row-file.mjs";
+import { regionRefusalReason, declaresRelease, outOfReleaseArgv, OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE }
+  from "../../../../scripts/row-file.mjs";
 import { declaredRegionFiles } from "../../../../scripts/region-paths.mjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -822,4 +823,44 @@ test("#1117: the declaration counts only inside the Region section", () => {
     + `## Region\nThe corpus backup destination.\n\n## Acceptance\nNot a test.\n\n## Open-check\nn/a\n`;
   assert.ok(regionRefusalReason(elsewhere),
     "the phrase outside the Region section must not satisfy the declaration");
+});
+
+
+// ---------------------------------------------------------------------------------------------------
+// #1130: TWO FACTS SAY "OUTSIDE EVERY RELEASE" -- the `out-of-release` LABEL and the `Out of release`
+// MILESTONE, created 2026-09-12 so the board can see that population rather than meet it as nine
+// unmilestoned rows. Nothing compared them.
+//
+// `declaresRelease` already accepted the milestone: any `--milestone` with a value satisfies it, so
+// clause 1 passed before this row and I say so rather than count it as delivered. The gap was the other
+// direction -- the LABEL alone was accepted and left the row OUT of the milestone, recreating one row at
+// a time exactly the state the milestone was made to end.
+// ---------------------------------------------------------------------------------------------------
+
+test("#1130: `--milestone \"Out of release\"` alone is accepted -- ALREADY TRUE, asserted so it stays", () => {
+  assert.equal(declaresRelease(["--milestone", OUT_OF_RELEASE_MILESTONE]), true);
+  assert.equal(declaresRelease([`--milestone=${OUT_OF_RELEASE_MILESTONE}`]), true);
+});
+
+test("#1130: the LABEL alone is accepted AND gets the milestone, so filing cannot produce a disagreement", () => {
+  const filed = outOfReleaseArgv(["--label", OUT_OF_RELEASE, "--title", "x"]);
+  assert.deepEqual(filed.slice(-2), ["--milestone", OUT_OF_RELEASE_MILESTONE],
+    "a row declaring itself out of release by label must land in the milestone that says the same thing, "
+    + "or it is invisible to every milestone view -- the state that milestone was created to end");
+  assert.deepEqual(filed.slice(0, 3), ["--label", OUT_OF_RELEASE, "--title"], "and nothing else moves");
+});
+
+test("#1130: an explicit milestone is NOT overridden -- the caller's choice wins", () => {
+  const given = ["--label", OUT_OF_RELEASE, "-m", "Road to version one"];
+  assert.deepEqual(outOfReleaseArgv(given), given,
+    "adding a second --milestone would make `gh` pick one and the filer the other, which is a "
+    + "disagreement created by the code that exists to prevent one");
+});
+
+test("#1130: neither is still REFUSED, and a row with no label is untouched -- the direction that must not weaken", () => {
+  assert.equal(declaresRelease(["--title", "x"]), false);
+  assert.deepEqual(outOfReleaseArgv(["--title", "x"]), ["--title", "x"]);
+  assert.deepEqual(outOfReleaseArgv(["-m", OUT_OF_RELEASE_MILESTONE]), ["-m", OUT_OF_RELEASE_MILESTONE],
+    "the milestone alone is left alone: adding labels a caller did not ask for is a wider change than "
+    + "this row's, and the tracker-level check in `ready-label-audit.test.ts` is what catches that side");
 });
