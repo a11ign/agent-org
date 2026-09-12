@@ -315,7 +315,15 @@ test("#1101: NO test file imports another test file — the cause, not the sympt
   // three numbers: a count assertion protects the three files that exist today, and this protects the
   // next one. The row asked for the counts; they are asserted below as well, on one file, because a
   // structural rule nobody has watched fail is worth less than a rule plus one instance of it holding.
-  const offenders = tracked("packages/*/src/**/*.test.ts")
+  const files = tracked("packages/*/src/**/*.test.ts");
+  // THE POPULATION'S OWN VACUITY GUARD, and I did not have it until `git-population-vacuity.test.ts`
+  // refused this file. My control below proves the PREDICATE can match; nothing proved the FILE LIST was
+  // non-empty, so an `ls-files` returning nothing would have made the sweep vacuously green. **Third
+  // layer of the same emptiness defect in one row** -- the assertion, then its control, then the list the
+  // control runs over.
+  assert.ok(files.length > 200,
+    `only ${files.length} tracked test files -- the ls-files scan is broken, not the tree clean`);
+  const offenders = files
     .flatMap((file) => testFileImportsIn(readFileSync(join(REPO, file), "utf8"))
       .map((spec) => `${file} -> ${spec}`));
   assert.deepEqual(offenders, [],
