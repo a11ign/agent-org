@@ -25,6 +25,7 @@ import { join } from "node:path";
 import {
   parseWorktreeList, isPrimaryWorktree, classify, detachedMergeStatus, mergeStatus, isContentMerged,
   isWorkingTreeClean, pruneWorktrees, recentGitActivity, ACTIVITY_WINDOW_MS,
+  strandedWork, formatStranded, trackedChanges,
 } from "../../../../scripts/prune-worktrees.mjs";
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 
@@ -520,5 +521,150 @@ test("#669 MUTATION DIRECTION: `--apply` reaches dryRun -- the heading is `remov
     assert.match(stdout, /^removed \d+ worktree\(s\):/,
       "with --apply the heading must be `removed`; if it still says WOULD REMOVE the flag never reached dryRun");
     assert.ok(!stdout.includes("WOULD REMOVE"), "a mutating run must never print the listing's wording");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// --- #933: uncommitted work in a retired session's worktree, enumerated ---
+
+/**
+ * A repo with the three shapes the stranded-work report has to tell apart, built fresh each time:
+ *   - `agent/live`         — a MODIFIED TRACKED file, branch at main's tip: the work IS the change
+ *   - `dispatcher/retired` — a tracked change on a RETIRED session's prefix, one commit ahead
+ *   - `agent/noise`        — an UNTRACKED file only: the 31-of-58 case that must NOT be listed
+ */
+function buildStrandedFixture() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "a11y-stranded-")));
+  git(root, "init", "--quiet", "-b", "main");
+  git(root, "config", "user.email", "t@example.invalid");
+  git(root, "config", "user.name", "Fixture");
+  writeFileSync(join(root, "base.txt"), "base\n");
+  git(root, "add", "base.txt");
+  git(root, "commit", "-q", "-m", "base");
+  git(root, "update-ref", "refs/remotes/origin/main", git(root, "rev-parse", "HEAD").trim());
+
+  const live = join(root, "wt-live");
+  git(root, "worktree", "add", "--quiet", "-b", "agent/live", live, "main");
+  writeFileSync(join(live, "base.txt"), "base\nan uncommitted line\n");
+
+  const retired = join(root, "wt-retired");
+  git(root, "worktree", "add", "--quiet", "-b", "dispatcher/retired", retired, "main");
+  writeFileSync(join(retired, "landed.txt"), "committed\n");
+  git(retired, "add", "landed.txt");
+  git(retired, "commit", "-q", "-m", "a commit origin/main does not have");
+  writeFileSync(join(retired, "base.txt"), "base\nand an uncommitted one\n");
+
+  const noise = join(root, "wt-noise");
+  git(root, "worktree", "add", "--quiet", "-b", "agent/noise", noise, "main");
+  writeFileSync(join(noise, ".metadata_never_index"), ""); // what macOS puts in all 58 of them
+  return root;
+}
+
+test("#933: the report names worktrees with MODIFIED TRACKED files and no others", () => {
+  // The whole value is the narrowing. Measured on the live host 2026-09-12: 58 worktrees, 38 with
+  // something uncommitted, 7 with modified tracked files — the other 31 carry `.metadata_never_index` and
+  // nothing else. A report that names 38 is a report nobody reads, and the entries that matter are
+  // invisible inside it.
+  const root = buildStrandedFixture();
+  try {
+    const { examined, stranded } = strandedWork(root);
+    assert.ok(examined >= 4, `expected the primary and its three worktrees, examined ${examined}`);
+    const named = stranded.map((w) => w.branch).sort();
+    assert.deepEqual(named, ["agent/live", "dispatcher/retired"],
+      "the untracked-only worktree must NOT appear — it is the 31-of-58 noise this report exists to drop");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#933 MUTATION TARGET: dropping the tracked-file filter floods the noise back in", () => {
+  // The row's own mutation, expressed as a test rather than left to a reviewer: the same fixture read with
+  // a bare `git status --porcelain` predicate lists the untracked-only worktree too. If this ever fails,
+  // the narrowing has been removed and the report has become the 38-entry listing nobody reads.
+  const root = buildStrandedFixture();
+  try {
+    const tracked = strandedWork(root).stranded.map((w) => w.branch).sort();
+    const anyUncommitted = ["agent/live", "agent/noise", "dispatcher/retired"];
+    assert.deepEqual(tracked, ["agent/live", "dispatcher/retired"]);
+    assert.notDeepEqual(tracked, anyUncommitted,
+      "if these ever match, the predicate is counting untracked files and the narrowing is gone");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#933: each entry carries the branch, the line counts, the commits ahead, and the retired mark", () => {
+  const root = buildStrandedFixture();
+  try {
+    const byBranch = new Map(strandedWork(root).stranded.map((w) => [w.branch, w]));
+
+    const live = byBranch.get("agent/live");
+    assert.ok(live);
+    assert.equal(live.files, 1);
+    assert.equal(live.insertions, 1, "the line counts, so a reader can tell 1 line from 45");
+    assert.equal(live.commitsAhead, 0,
+      "a branch at main's tip: the uncommitted change is ALL the work there is");
+    assert.equal(live.retiredSession, false, "`agent/` is the live prefix and must not be marked");
+
+    const retired = byBranch.get("dispatcher/retired");
+    assert.ok(retired);
+    assert.equal(retired.commitsAhead, 1,
+      "COMMITS AHEAD, not merely `merged` — a branch cut from main minutes ago reads `merged` identically "
+      + "to one whose commits landed a week ago, and calling the first a leftover tells a reader to "
+      + "discard a live working directory. The count separates them and the boolean cannot");
+    assert.equal(retired.retiredSession, true, "`dispatcher/` no longer runs — nobody to ask");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#933: the report states its EXAMINED COUNT, so a zero means something", () => {
+  // A sweep that walked nothing reports no stranded work, which is the cleanest possible output and
+  // indistinguishable from a clean host. The count is what makes the zero a measurement.
+  const root = buildStrandedFixture();
+  try {
+    const text = formatStranded(strandedWork(root));
+    assert.match(text, /^\d+ worktree\(s\) examined, \d+ carry uncommitted TRACKED changes/);
+    assert.match(text, /NOTHING HAS BEEN REMOVED/, "and says so, because the prune beside it does remove");
+    assert.match(text, /BRANCH PREFIX NAMES A RETIRED SESSION/, "the case with nobody to ask is called out");
+    const empty = formatStranded({ examined: 12, stranded: [], unreadable: [] });
+    assert.match(empty, /12 worktree\(s\) examined, 0 carry/,
+      "and a clean host still reports what it walked — otherwise 'nothing found' and 'nothing looked at' "
+      + "are the same line");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#933: the report NEVER removes — asserted on the injected runner's argv", () => {
+  // `pruneWorktrees` beside it does remove, so this cannot rest on the report having no reason to.
+  const root = buildStrandedFixture();
+  const spawned: string[][] = [];
+  try {
+    const run = (cmd: string, args: string[], opts?: { cwd?: string }) => {
+      spawned.push([cmd, ...args]);
+      return execFileSync(cmd, args, { ...opts, env: sandboxGitEnv(), encoding: "utf8" });
+    };
+    strandedWork(root, { run });
+    assert.ok(spawned.length > 0, "this must not pass by having spawned nothing at all");
+    const destructive = spawned.filter(([, ...a]) =>
+      a.includes("remove") || a.includes("prune") || a.includes("clean") || a.includes("checkout"));
+    assert.deepEqual(destructive, [],
+      "a read-only report may run `worktree list`, `status`, `diff` and `rev-list` and nothing else");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#933: a worktree that CANNOT BE READ is counted and named, never dropped as clean", () => {
+  // Found by mutation: making `trackedChanges` return 0 instead of "unknown" on an unreadable worktree was
+  // **0 red**, and the comment beside it claimed the distinction mattered. A comment asserting a property
+  // with nothing holding it is the shape this whole file is about. Dropping such a worktree silently makes
+  // the head line ("N examined, M carry changes") true of a population quietly smaller than N.
+  const root = buildStrandedFixture();
+  const gone = join(root, "wt-does-not-exist");
+  try {
+    assert.equal(trackedChanges(gone), "unknown",
+      "a path that is not a readable worktree is `unknown`, never `{ files: 0 }`");
+    const read = strandedWork(root, {
+      // one entry the real `git worktree list` cannot produce, to drive the branch without deleting a
+      // worktree out from under git and leaving the fixture in a state the teardown cannot clean
+      run: (cmd: string, args: string[], opts?: { cwd?: string }) => (args[0] === "worktree"
+        ? `${execFileSync(cmd, args, { ...opts, env: sandboxGitEnv(), encoding: "utf8" })}\nworktree ${gone}\n`
+        : execFileSync(cmd, args, { ...opts, env: sandboxGitEnv(), encoding: "utf8" })),
+    });
+    assert.deepEqual(read.unreadable, [gone], "named, so somebody can go and look at it");
+    assert.ok(!read.stranded.some((w) => w.path === gone), "and not counted among the stranded");
+    assert.match(formatStranded(read), /COULD NOT BE READ/,
+      "and the head line says so, because 'M carry changes' out of N is false if one of the N was skipped");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
