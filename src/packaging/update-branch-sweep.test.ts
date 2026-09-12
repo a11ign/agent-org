@@ -8,9 +8,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { updateBranchDecision, isBehind, newestConclusion } from "../../../../scripts/update-branch-sweep.mjs";
+import { updateBranchDecision, isBehind, newestConclusion, movedHeadRefusal, readHeadNow }
+  from "../../../../scripts/update-branch-sweep.mjs";
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 
 const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../scripts/update-branch-sweep.mjs");
@@ -181,4 +183,75 @@ test("update-branch-sweep.mjs refuses to run without GITHUB_REPOSITORY -- CANNOT
     assert.match(String(err.stderr), /GITHUB_REPOSITORY is unset/);
   }
   assert.ok(threw, "with no repo to examine, the script must refuse rather than guess one");
+});
+
+// --- #1018: THE DECISION IS PINNED TO THE HEAD IT WAS MADE FROM ---
+//
+// `gh pr list` names every open PR's `headRefOid` in one call; every decision above is computed from that
+// snapshot; and the action, `gh pr update-branch <n>`, takes a PR NUMBER and no sha. So a push landing in
+// the gap makes the DECISION wrong rather than the push, in BOTH directions: a PR already updated is
+// pushed again on a stale `behind`, and a PR that has since fallen behind is skipped on a stale
+// `up to date`. Neither printed anything a reader could act on.
+//
+// This row is NOT "`gh pr list` returns a stale head" -- that claim was considered and dropped on the row
+// itself, because the observation is equally explained by the list lagging and by the read simply
+// preceding the push. The property that holds either way is that a head is a value read at a time.
+
+const SHA = (c: string) => c.repeat(40);
+
+test("#1018 ACCEPTANCE: a head that MOVED between the decision and the action is refused, and the "
+  + "refusal names the PR and both shas", () => {
+  const refusal = movedHeadRefusal({ number: 1023, decidedFrom: SHA("a"), headNow: SHA("b") })!;
+  assert.ok(refusal, "acting on a verdict computed from a head that no longer exists is the defect");
+  assert.match(refusal, /#1023/, "which PR");
+  assert.match(refusal, /aaaaaaaaaaaa/, "the sha it decided from");
+  assert.match(refusal, /bbbbbbbbbbbb/, "and the sha the head is now, so a reader can tell a race from a fault");
+  assert.match(refusal, /re-decided on the next sweep/,
+    "and what happens next -- a refusal that does not say is indistinguishable from a dropped PR");
+});
+
+test("#1018 ACCEPTANCE (the direction this kind of fix fails in): an UNMOVED head still updates", () => {
+  assert.equal(movedHeadRefusal({ number: 1023, decidedFrom: SHA("a"), headNow: SHA("a") }), null,
+    "without this the pin becomes `never update`, which is a quieter version of the same outage");
+});
+
+test("#1018: an UNREADABLE head is refused, never treated as unchanged -- this sweep runs unattended and "
+  + "pushes to other sessions' branches", () => {
+  const refusal = movedHeadRefusal({ number: 1023, decidedFrom: SHA("a"), headNow: null })!;
+  assert.ok(refusal);
+  assert.match(refusal, /unreadable head is not an unchanged one/);
+  assert.doesNotMatch(refusal, /MOVED/, "an unreadable head is a different report from a moved one");
+});
+
+test("#1018: readHeadNow returns null rather than a guess when the read fails or is unrecognisable", () => {
+  const ok = readHeadNow({ number: 1, repo: "o/r", run: () => JSON.stringify({ headRefOid: SHA("c") }) });
+  assert.equal(ok, SHA("c"), "and the reading path must work, or the refusals below prove nothing");
+  for (const [name, run] of [
+    ["a failed call", () => { throw new Error("gh: HTTP 502"); }],
+    ["not JSON", () => "<html>proxy error</html>"],
+    ["no headRefOid", () => JSON.stringify({ number: 1 })],
+    ["an empty headRefOid", () => JSON.stringify({ headRefOid: "" })],
+  ] as [string, () => string][]) {
+    assert.equal(readHeadNow({ number: 1, repo: "o/r", run }), null, `${name} must read as null`);
+  }
+  // AND null FEEDS A REFUSAL, not a pass -- the two halves are only correct together.
+  assert.ok(movedHeadRefusal({ number: 1, decidedFrom: SHA("a"),
+    headNow: readHeadNow({ number: 1, repo: "o/r", run: () => { throw new Error("x"); } }) }));
+});
+
+test("#1018: `queue-stalled.mjs` is UNTOUCHED, and is not silently assumed to share this fix", () => {
+  // The row's own instruction. `queue-stalled.mjs:320` reads the same snapshot the same way and REPORTS
+  // rather than acting, so it has the same shape and a cheaper consequence -- worth the same fix, not the
+  // same commit. This asserts the pair have not been quietly merged into one claim.
+  const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+  const queueStalled = readFileSync(resolve(repo, "scripts/queue-stalled.mjs"), "utf8");
+  assert.doesNotMatch(queueStalled, /movedHeadRefusal|readHeadNow/,
+    "if queue-stalled starts importing these, the two files' guarantees have merged and this test should "
+    + "be replaced by one asserting the shared behaviour -- not deleted");
+  // AND NOT A THIRD ASSERTION THAT THE FILE STILL MENTIONS `expected_head_sha`. I wrote one, then
+  // mutated it: deleting the heading of that comment block left the phrase elsewhere in the block and the
+  // test stayed green -- so it was pinning a STRING, not the reasoning. Worse, pinning that a comment
+  // survives is the exact shape #1027 is about (a check that reads the explanation of a thing instead of
+  // the thing). The reasoning for not adopting the atomic form lives in the code and on the PR, where a
+  // reader who disagrees can argue with it; a test cannot tell whether it is still true.
 });
