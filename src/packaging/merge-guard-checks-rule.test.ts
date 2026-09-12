@@ -8,8 +8,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { checkReasons, newestPerName, SATISFIED } from "../../../../scripts/merge-guard/checks-rule.mjs";
 import { reasonKind } from "../../../../scripts/merge-guard/reason-kind.mjs";
-import { mergeReadiness } from "../../../../scripts/merge-guard.mjs";
-import { commitLiveness, EXIT } from "../../../../scripts/workflow-run-liveness.mjs";
 
 const REQUIRED = ["changed", "ts", "python", "ansible", "docs", "changeset"];
 const pr = { headRefOid: "d5c2436601abcdef" };
@@ -221,12 +219,17 @@ test("#1007: an OLDER cancelled run beside a newer conclusion is still #902's ca
 /**
  * #1008's head at 23:3xZ, the shape that produced the report — `ts / run` in flight, no `gate` at all.
  *
+ * EXPORTED, because the consumer assertions this row also requires live in `merge-guard.test.ts` and
+ * `workflow-run-liveness.test.ts` -- see the note at the foot of this file for why they are not here --
+ * and a second copy of the fixture is the fact-stated-twice shape on the population the whole row is
+ * about.
+ *
  * `completedAt` is carried because the CONSUMERS read it: `stalenessReason` compares it to `main`'s tip,
- * and a population of nulls would make it speak and hand the consumer assertions below a refusal for a
- * reason that has nothing to do with this row. Dated AFTER the `mainTipIso` those tests pass, so the only
- * sentence in play is the one under test.
+ * and a population of nulls would make it speak and hand those assertions a refusal for a reason that has
+ * nothing to do with this row. Dated AFTER the `mainTipIso` they pass, so the only sentence in play is
+ * the one under test.
  */
-const LIVE_SHAPE = [
+export const LIVE_SHAPE = [
   { id: 1, name: "changed", status: "completed", conclusion: "success", completedAt: "2026-09-12T01:00:00Z" },
   { id: 2, name: "ts / run", status: "in_progress", conclusion: null, completedAt: null },
   { id: 3, name: "acceptance", status: "completed", conclusion: "success", completedAt: "2026-09-12T01:00:00Z" },
@@ -297,36 +300,18 @@ test("#1009: the waiting sentence CLASSIFIES as STILL_RUNNING, not UNCLASSIFIED"
     "and the genuine absence keeps its own kind, or the two are indistinguishable in the log too");
 });
 
-// --- AT THE CONSUMERS, because the two sentences are separate strings with nothing tying them ---
 
-/** `mergeReadiness`'s other inputs, all benign, so only the check-run population is under test. */
-const readinessInputs = {
-  pr: { number: 1, state: "open", baseRefName: "main", headRefOid: "d5c2436601abcdef" },
-  required: ["gate"], mainTipIso: "2026-09-12T00:00:00Z", behindBy: 0,
-  branchTip: "d5c2436601abcdef", closes: [], prLabels: [], session: null,
-};
-
-test("#1009 CONSUMER: `merge-guard` renders the waiting case as a wait, not an absence", () => {
-  const waiting = mergeReadiness({ ...readinessInputs, runs: LIVE_SHAPE });
-  const joined = waiting.reasons.join("\n");
-  assert.doesNotMatch(joined, /NEVER RAN/,
-    `the merge path still reports an absence: ${JSON.stringify(waiting.reasons)}`);
-  assert.match(joined, /STILL RUNNING:.*\bgate\b/, "it must name the context it is waiting on");
-
-  // AND IT STILL REFUSES. A wait is not a pass: merging while the one required context has reached no
-  // verdict is the thing the guard exists to stop, and #1007 makes the same point one case over.
-  assert.notEqual(waiting.code, 0, "a wait must not become a merge");
-});
-
-test("#1009 CONSUMER: `workflow-run-liveness` renders it as a wait too", () => {
-  const verdict = commitLiveness({
-    sha: "d5c2436601abcdef",
-    pulls: [{ number: 1, headRefOid: "d5c2436601abcdef" }],
-    required: ["gate"], runs: LIVE_SHAPE,
-  });
-  const joined = verdict.reasons.join("\n");
-  assert.doesNotMatch(joined, /NEVER RAN/, `still an absence on the liveness path: ${joined}`);
-  assert.match(joined, /STILL RUNNING:.*\bgate\b/);
-  assert.equal(verdict.code, EXIT.NOT_TESTED,
-    "and NOT_TESTED is still right -- not yet tested is not tested; only the WORDS were wrong");
-});
+// WHY THE CONSUMER ASSERTIONS ARE NOT IN THIS FILE.
+//
+// The row requires them ("asserted at the consumer and not only at `checkReasons`, because the two
+// sentences are separate strings with nothing tying them"), and they were here first. Importing
+// `mergeReadiness` puts `gh` in this file's IMPORT CLOSURE -- the test never calls it, every input is
+// injected -- and `pr-open`'s acceptance check refused on exactly that:
+//
+//     REFUSED npx tsx --test …/merge-guard-checks-rule.test.ts -> needs `token`, which this job does
+//     not have -- merge-guard-checks-rule.test.ts requires token via mergeReadiness -> gh -> lookups.mjs:26
+//
+// **Satisfying the row would have disqualified this file from the job that runs acceptance commands.**
+// So they live in `merge-guard.test.ts` and `workflow-run-liveness.test.ts`, which already import those
+// modules and already carry that constraint, and they share `LIVE_SHAPE` from here rather than retyping
+// the population.

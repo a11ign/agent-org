@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { commitLiveness, EXIT } from "../../../../scripts/workflow-run-liveness.mjs";
+import { LIVE_SHAPE } from "./merge-guard-checks-rule.test.ts";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
 
@@ -122,4 +123,18 @@ test("the workflow that runs this has no schedule key -- it must fire on push, n
   assert.match(step![0], /continue-on-error:\s*true/,
     "this step's finding is about a commit that already merged -- it must never fail the push that "
     + "happens to trigger it, which would blame an unrelated author for a gap that opened earlier");
+});
+
+// #1009: the waiting case AT THE LIVENESS PATH, over the same imported population.
+test("#1009 CONSUMER: `workflow-run-liveness` renders it as a wait too", () => {
+  const verdict = commitLiveness({
+    sha: "d5c2436601abcdef",
+    pulls: [{ number: 1, headRefOid: "d5c2436601abcdef" }],
+    required: ["gate"], runs: LIVE_SHAPE,
+  });
+  const joined = verdict.reasons.join("\n");
+  assert.doesNotMatch(joined, /NEVER RAN/, `still an absence on the liveness path: ${joined}`);
+  assert.match(joined, /STILL RUNNING:.*\bgate\b/);
+  assert.equal(verdict.code, EXIT.NOT_TESTED,
+    "and NOT_TESTED is still right -- not yet tested is not tested; only the WORDS were wrong");
 });

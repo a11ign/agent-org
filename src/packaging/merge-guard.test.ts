@@ -19,6 +19,7 @@ import { readFileSync } from "node:fs";
 
 import { mergeReadiness, mergeSafetyVerdict } from "../../../../scripts/merge-guard.mjs";
 import { reasonKind } from "../../../../scripts/merge-guard/reason-kind.mjs";
+import { LIVE_SHAPE } from "./merge-guard-checks-rule.test.ts";
 
 const REQUIRED = ["changed", "ts", "python", "ansible", "docs", "changeset"];
 const MAIN_TIP = "2026-09-07T00:41:07Z";
@@ -294,3 +295,25 @@ test("both real behindBy fetches are oriented main...head, never the reverse (#1
       + "same pair");
   }
 });
+
+// #1009: the waiting case AT THE MERGE PATH. `LIVE_SHAPE` is #1008's head at 23:3xZ, imported rather
+// than retyped -- see `merge-guard-checks-rule.test.ts` for the population and why it lives there.
+/** `mergeReadiness`'s other inputs, all benign, so only the check-run population is under test. */
+const readinessInputs = {
+  pr: { number: 1, state: "open", baseRefName: "main", headRefOid: "d5c2436601abcdef" },
+  required: ["gate"], mainTipIso: "2026-09-12T00:00:00Z", behindBy: 0,
+  branchTip: "d5c2436601abcdef", closes: [], prLabels: [], session: null,
+};
+
+test("#1009 CONSUMER: `merge-guard` renders the waiting case as a wait, not an absence", () => {
+  const waiting = mergeReadiness({ ...readinessInputs, runs: LIVE_SHAPE });
+  const joined = waiting.reasons.join("\n");
+  assert.doesNotMatch(joined, /NEVER RAN/,
+    `the merge path still reports an absence: ${JSON.stringify(waiting.reasons)}`);
+  assert.match(joined, /STILL RUNNING:.*\bgate\b/, "it must name the context it is waiting on");
+
+  // AND IT STILL REFUSES. A wait is not a pass: merging while the one required context has reached no
+  // verdict is the thing the guard exists to stop, and #1007 makes the same point one case over.
+  assert.notEqual(waiting.code, 0, "a wait must not become a merge");
+});
+
