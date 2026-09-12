@@ -29,7 +29,7 @@ import { declaredRegionFiles } from "../../../../scripts/region-paths.mjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendFiledBy, boardingFor, bodyFromArgv, createIssue, directoryRegionWarning, fetchIssueBoardStatus, fileRefusalReason, issueNumberFromUrl, laneLabelsFor, milestoneRefusal, openCheckTranscriptRefusal, sessionFromArgv, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy } from "../../../../scripts/row-file.mjs";
+import { appendFiledBy, boardingFor, bodyFromArgv, createIssue, directoryRegionWarning, fetchIssueBoardStatus, fileRefusalReason, issueNumberFromUrl, laneLabelsFor, milestoneRefusal, openCheckTranscriptRefusal, sessionFromArgv, slashlessDirectoryWarning, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy } from "../../../../scripts/row-file.mjs";
 import { filedByLine } from "../../../../scripts/row-claim.mjs";
 
 const CLI = fileURLToPath(new URL("../../../../scripts/row-file.mjs", import.meta.url));
@@ -940,4 +940,62 @@ test("#1186 clause 2: the warning says what to write instead, and reaches the au
   // And it must NOT refuse: a directory Region is sometimes exactly right.
   assert.equal(fileRefusalReason(body), fileRefusalReason(body.replace("packages/", "docs/README.md")),
     "a directory must not change whether the row is refused");
+});
+
+/**
+ * #1193: EXACTLY ONE OF THE THREE REGION WARNINGS SPEAKS, FOR EVERY WAY OF WRITING A DIRECTORY.
+ *
+ * NOT FOUR HAND-PICKED CASES. Four examples pass while the rule is still wrong, which is how this got
+ * here: three sessions wrote three different tables of these spellings, each sampled a different pair of
+ * shapes, and each generalised to an axis (fenced vs inline) that turned out not to be the axis at all.
+ * It is *alone on its line* vs *inside a prose sentence*. Enumerating the cross-product is what found
+ * that; no amount of care on a sample would have.
+ *
+ * Before this row, four of the ten cells fired TWO warnings that contradicted each other ("declares
+ * NOTHING" beside "reserves 107 files", same directory, same run) and one fired none at all — and the
+ * silent cell is the one an author reaches by following the contradictory message.
+ *
+ * The directory is one level down on purpose: `docs/` is one of the eight tracked top-level names, and
+ * every one of them was green while the defect was live.
+ */
+const DIRECTORY_SPELLINGS = {
+  fenced: (p: string) => `## Region\n\n\`\`\`\n${p}\n\`\`\`\n`,
+  "bare line": (p: string) => `## Region\n\n${p}\n`,
+  "backticked line": (p: string) => `## Region\n\n\`${p}\`\n`,
+  bullet: (p: string) => `## Region\n\n- \`${p}\`\n`,
+  "in a prose sentence": (p: string) => `## Region\n\nOnly \`${p}\` is touched.\n`,
+};
+
+test("#1193 clause 4: every spelling of a directory Region gets EXACTLY ONE witness", () => {
+  const cells: string[] = [];
+  for (const [shape, write] of Object.entries(DIRECTORY_SPELLINGS)) {
+    for (const slash of ["/", ""]) {
+      const body = write(`docs/adr${slash}`);
+      const spoke = [
+        directoryRegionWarning(body) ? "reserves" : null,
+        unrecognisedRegionWarning(body) ? "stray" : null,
+        slashlessDirectoryWarning(body) ? "slashless" : null,
+      ].filter(Boolean);
+      // The cell is named in the message: a bare count tells the next reader a number and not which of
+      // ten ways of writing one path it came from.
+      assert.equal(spoke.length, 1,
+        `${shape} + ${slash || "no slash"}: expected exactly one warning, got ${spoke.length} `
+        + `(${spoke.join(" and ") || "silence"}). Two is the contradiction this row fixed; none is the `
+        + `cell an author lands on by following it.`);
+      cells.push(`${shape}/${slash || "none"}`);
+    }
+  }
+  // The population is asserted, not assumed: a shape table someone trims later must fail here rather
+  // than quietly testing fewer cells. `assert.ok(cells.length)` would pass on a table of one.
+  assert.equal(cells.length, 10, "five shapes times two spellings -- if this moved, so did the claim");
+});
+
+test("#1193 clause 5: a top-level directory keeps producing exactly one warning", () => {
+  // THE POSITIVE CONTROL, and the reason it is here: `docs/` was green through the entire life of the
+  // defect, so a fix that suppressed the stray check for anything with a slash would pass clause 4 and
+  // break nothing visible. This pins that the correct spelling still reports its reservation.
+  const body = "## Region\n\n```\ndocs/\n```\n";
+  assert.ok(directoryRegionWarning(body), "docs/ reserves every file beneath it and must still say so");
+  assert.equal(unrecognisedRegionWarning(body), null);
+  assert.equal(slashlessDirectoryWarning(body), null);
 });
