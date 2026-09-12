@@ -102,8 +102,13 @@ test("#989: a parent PLUS an in-build sub-row refuses, naming the SUB-ROW", () =
 test("#989 LIMITATION: a parent with no sub-issue LINKS reads as in build, and the refusal says how to fix it", () => {
   const reason = inBuildReason([{ ...inBuild, number: 908, subIssues: 0 }]);
   assert.ok(reason, "the link, not the fact of parenthood, is what this can see");
-  assert.match(reason as string, /sub_issues -f sub_issue_id=/,
-    "so the reader is told the one command that lifts it");
+  // #1161: `-F`, and this line is the finding rather than a consequence of it. **A test anchored on the
+  // BROKEN flag held it in place**: from #989 to #1161 this assertion read `-f sub_issue_id=` and passed
+  // every run, so the guard whose job was to hold the remedy followable was the thing defending the remedy
+  // that could not be followed. Pinning a string does not check that the string works, and a test written
+  // from the implementation inherits the implementation's defect with the implementation's confidence.
+  assert.match(reason as string, /sub_issues -F sub_issue_id=/,
+    "so the reader is told the one command that lifts it, in the spelling that actually lifts it");
 });
 
 test("#989: isInBuild is the whole predicate, and each clause is load-bearing", () => {
@@ -167,4 +172,40 @@ test("#989: the parent reading is GitHub's own sub-issue link, counted", () => {
       : JSON.stringify([{ number: 986 }, { number: 1000 }])),
   });
   assert.equal(shape?.subIssues, 2);
+});
+
+/**
+ * #1161: THE COMMAND IN THE MESSAGE IS ASSERTED, NOT THE PROSE AROUND IT.
+ *
+ * A test matching `sub_issues` passes on either flag, which is how `-f` survived from #989 to #1161 inside
+ * a message this file already had assertions about. **The flag is the defect, so the flag is what is
+ * anchored** — and anchored ADJACENT to the parameter it types, because `-f` appears nowhere else in the
+ * sentence but would if the message ever grew another one.
+ *
+ * `gh api -f` sends every value as a string; the sub-issues endpoint requires an integer, so following this
+ * line verbatim returned HTTP 422 every time. The rule it broke is the one that makes naming a remedy worth
+ * doing: **follow the refusal exactly and you must pass.**
+ */
+test("#1161: the B2 refusal's own command sends a TYPED field, so following it verbatim works", () => {
+  const reason = String(inBuildReason([{ ...inBuild, number: 908, subIssues: 0 }]));
+
+  assert.match(reason, /sub_issues -F sub_issue_id=/,
+    "`-f` sends the id as a string and the endpoint refuses it with 422 -- a refusal whose remedy fails is "
+    + "worse than one with no remedy, because the reader debugs the remedy instead of doing the work");
+  assert.doesNotMatch(reason, /-f sub_issue_id=/,
+    "and the wrong spelling must be gone rather than merely outnumbered -- a message carrying both would "
+    + "satisfy the assertion above while still printing the broken line");
+});
+
+test("#1161: the assertion is on the FLAG, so it cannot pass on a message that only mentions sub_issues", () => {
+  // The mutation this file could not previously express: put `-f` back and clause 1 must go red. Driven on
+  // the returned STRING rather than on the source, because the string is what a reader is handed.
+  const withTheOldFlag = String(inBuildReason([{ ...inBuild, number: 908, subIssues: 0 }]))
+    .replace("-F sub_issue_id=", "-f sub_issue_id=");
+
+  assert.doesNotMatch(withTheOldFlag, /sub_issues -F sub_issue_id=/,
+    "the mutation genuinely changes what the first assertion looks at -- without this, a green test above "
+    + "proves only that the string contains something, which is what let `-f` through for eight rows");
+  assert.match(withTheOldFlag, /sub_issues/,
+    "and it is still recognisably the same message, so the mutation changes the MEANING and not the subject");
 });
