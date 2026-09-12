@@ -148,7 +148,8 @@ test("the check does NOT run on a schedule, which is the property it exists for"
 // when the missing summary turned main's own tip red and blocked every PR in the repository.
 // ---------------------------------------------------------------------------------------------------
 import { GUARDED_WORKFLOWS, missedTodaysWindow } from "../../../../scripts/board-schedule-liveness.mjs";
-import { hoursSincePreviousRun, watchdogSilenceLine } from "../../../../scripts/board-schedule-liveness.mjs";
+import { hostWorkflowFile, hoursSincePreviousRun, watchdogSilenceLine }
+  from "../../../../scripts/board-schedule-liveness.mjs";
 
 test("#590 every workflow the watchdog's HEADER names is one its code actually guards", () => {
   // DERIVED FROM THE HEADER, never a second hand-written list -- a second list is exactly what the first
@@ -200,20 +201,82 @@ test("#590 MUTATION TARGET: the nineteen-hour silence a staleness threshold coul
 // `ready-label-audit` the same day at 200 runs, 175 cancelled, 0 succeeded — to cover a gap that has not
 // occurred once (a push to main on every one of the last 15 days).
 
+// #1154: every call below passes its own `env`. The third argument exists because the workflow file is
+// read from the RUN rather than written down, and `process.env` outside Actions has no `GITHUB_WORKFLOW_REF`.
+const IN_TRUNK = { GITHUB_WORKFLOW_REF: "DanBeckDev/a11y-witness/.github/workflows/trunk.yml@refs/heads/main" };
+
 test("#272 the previous run is read at INDEX 1, because index 0 is this run reporting on itself", () => {
   const now = new Date("2026-09-09T18:00:00Z");
   const runs = [{ createdAt: "2026-09-09T17:59:00Z" }, { createdAt: "2026-09-09T12:00:00Z" }];
-  const hours = hoursSincePreviousRun(() => JSON.stringify(runs), now);
+  const hours = hoursSincePreviousRun(() => JSON.stringify(runs), now, IN_TRUNK);
   assert.equal(Math.round(hours ?? -1), 6,
     "index 0 would answer ~0h — true, useless, and indistinguishable from a healthy answer");
 });
 
 test("#272 UNREADABLE SAYS SO -- a failed lookup is not `it ran recently`", () => {
-  assert.equal(hoursSincePreviousRun(() => { throw new Error("gh: not authenticated"); }, new Date()), null);
-  assert.equal(hoursSincePreviousRun(() => JSON.stringify([{ createdAt: "2026-09-09T17:59:00Z" }]), new Date()),
+  assert.equal(hoursSincePreviousRun(() => { throw new Error("gh: not authenticated"); }, new Date(), IN_TRUNK),
+    null);
+  assert.equal(
+    hoursSincePreviousRun(() => JSON.stringify([{ createdAt: "2026-09-09T17:59:00Z" }]), new Date(), IN_TRUNK),
     null, "one run means there is no PREVIOUS run to measure -- the answer is unknown, not zero");
   assert.match(String(watchdogSilenceLine(null)), /UNKNOWN/);
   assert.match(String(watchdogSilenceLine(null)), /Unknown is not recent/);
+});
+
+// ---- #1154: the workflow is read from the run, never written down ------------------------------------
+//
+// The defect this replaces: this function asked for `board-liveness.yml` for eleven days after #901
+// deleted it. GitHub answered 200 with the deleted entity's frozen history, so the check reported
+// "it last ran 42h ago ... a quiet spell here means nobody pushed" across 538 pushes to main.
+//
+// **ASSERTED ON THE ARGV, NOT ON THE PARSED ANSWER.** A test that feeds a run list and checks the hours
+// passes whatever workflow was asked for -- which is exactly how the old literal survived its own
+// deletion. The request is the thing that was wrong, so the request is the thing pinned.
+
+test("#1154: the workflow asked for is the one this run is executing, not a name in the source", () => {
+  const asked: string[][] = [];
+  const run = (args: string[]) => {
+    asked.push(args);
+    return JSON.stringify([{ createdAt: "2026-09-09T17:59:00Z" }, { createdAt: "2026-09-09T12:00:00Z" }]);
+  };
+  hoursSincePreviousRun(run, new Date("2026-09-09T18:00:00Z"), IN_TRUNK);
+  const argv = asked[0] ?? [];
+  const named = argv[argv.indexOf("--workflow") + 1];
+  assert.equal(named, "trunk.yml",
+    "the file comes from GITHUB_WORKFLOW_REF; a literal here is a name that outlives the workflow");
+  assert.equal(argv.includes("board-liveness.yml"), false,
+    "board-liveness.yml was deleted by #901 and its endpoint still answers with frozen runs");
+});
+
+test("#1154: OUTSIDE ACTIONS THE ANSWER IS UNKNOWN, and no call is made at all", () => {
+  let called = 0;
+  const run = () => { called += 1; return "[]"; };
+  assert.equal(hoursSincePreviousRun(run, new Date(), {}), null,
+    "a guessed workflow name is worse than no answer here -- watchdogSilenceLine EXPLAINS the number it "
+    + "is given, so a wrong number arrives with a confident and untrue cause attached to it");
+  assert.equal(called, 0, "nothing to ask about means nothing is asked");
+});
+
+test("#1154: the ref is split at the `@` first, because the git ref half contains slashes too", () => {
+  assert.equal(hostWorkflowFile({ GITHUB_WORKFLOW_REF: "o/r/.github/workflows/trunk.yml@refs/heads/main" }),
+    "trunk.yml", "taking the basename before cutting the `@` would yield `main`");
+  assert.equal(hostWorkflowFile({ GITHUB_WORKFLOW_REF: "o/r/.github/workflows/nightly.yaml@refs/tags/v1" }),
+    "nightly.yaml");
+  // worker-capture drove these two by hand in review. They are here so the claim is held rather than
+  // demonstrated once: a BRANCH NAME may contain `@`, and cutting at the LAST one takes `2` as the ref and
+  // leaves `ci.yml@refs/heads/feature` as the path -- which the pattern rejects, turning a valid run into
+  // UNKNOWN. That is the same 3-red mutation, reached from a realistic ref instead of a constructed one.
+  assert.equal(hostWorkflowFile({ GITHUB_WORKFLOW_REF: "o/r/.github/workflows/ci.yml@refs/heads/feature@2" }),
+    "ci.yml", "cut at the FIRST `@` -- a branch name may contain one");
+  // A REUSABLE WORKFLOW RESOLVES TO THE CALLED FILE. Correct for this guard, and pinned because the
+  // correct answer reads like a bug to anyone expecting the caller.
+  assert.equal(
+    hostWorkflowFile({ GITHUB_WORKFLOW_REF: "o/r/.github/workflows/reusable-build-test.yml@refs/heads/main" }),
+    "reusable-build-test.yml", "the run being reported on is the reusable one, not `ci.yml` that called it");
+  for (const ref of [undefined, "", "   ", "o/r/.github/workflows/trunk@refs/heads/main", "refs/heads/main"]) {
+    assert.equal(hostWorkflowFile({ GITHUB_WORKFLOW_REF: ref }), null,
+      `a ref that does not resolve to a workflow FILE must be null, not a guess: ${String(ref)}`);
+  }
 });
 
 test("#272 past the threshold the line is a warning ABOUT THE CHECK, not about the board -- a reader who "
