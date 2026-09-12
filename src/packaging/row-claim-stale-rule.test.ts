@@ -172,3 +172,52 @@ test("#1014: a BLINDED closure walker still refuses -- the one tree this guard i
       + "load-bearing rather than decoration");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("#1014: `staleRuleReason` WITHOUT `files` derives its own pathspec -- the call, not just the callee",
+  () => {
+    // worker-judge's blocker, and they were right: every test above supplies `files:`, so `rulePathspec`
+    // was driven and THE THING THAT CALLS IT WAS NOT. Replacing the `files ?? rulePathspec(...)` fallback
+    // with `[entry]` -- the exact collapse measured in a real stale tree -- turned nothing red. The union
+    // exists for the checkout whose walker is broken, and that is precisely the checkout no fixture
+    // supplies a file list for.
+    const { root, commit } = syntheticRepo();
+    try {
+      // A real entry with a real local import, so the derivation has something to walk.
+      commit("scripts/row-claim/own-pr-health-rule.mjs", "export const inBuildReason = () => null;\n");
+      const base = commit("scripts/row-claim.mjs",
+        'import { inBuildReason } from "./row-claim/own-pr-health-rule.mjs";\nexport { inBuildReason };\n');
+      setRef(root, "refs/remotes/origin/main", base);
+      const moved = commit("scripts/row-claim/own-pr-health-rule.mjs", "export const inBuildReason = () => 'B2';\n");
+      setRef(root, "refs/remotes/origin/main", moved);
+      detach(root, base);
+
+      const reason = staleRuleReason({ repoRoot: root });
+      assert.ok(reason,
+        "no `files`, no `entry` -- the default path must derive the pathspec and refuse, because this is "
+        + "how `row-claim.mjs` actually calls it and the only call that ever mattered");
+      assert.match(reason, /own-pr-health-rule\.mjs/, "and name the rule module that moved");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+test("#1014: the refusal names what ORIGIN/MAIN moved, never the author's own edit to a rule file", () => {
+  // worker-judge, reviewing #1044: a two-dot diff includes the author's commits, so a branch that
+  // legitimately edits a rule file would be told its own work had `Moved:`. A message that accuses the
+  // reader of their own change gets argued with rather than followed.
+  const { root, commit } = syntheticRepo();
+  try {
+    const base = commit("scripts/row-claim/runner-rule.mjs", "export const runnerReason = () => null;\n");
+    setRef(root, "refs/remotes/origin/main", base);
+    const moved = commit("scripts/row-claim/blocked-by-rule.mjs", "export const resolveBlockedByOverride = () => null;\n");
+    setRef(root, "refs/remotes/origin/main", moved);
+    detach(root, base);
+    // the author's own work, on top of a checkout that is behind: a rule file they are editing on purpose
+    commit("scripts/row-claim/template-fields-rule.mjs", "export const templateFieldsReason = () => 'mine';\n");
+
+    const reason = staleRuleReason({ repoRoot: root, files: SPEC });
+    assert.ok(reason, "still behind on origin/main's change, so it still refuses");
+    assert.match(reason, /blocked-by-rule\.mjs/, "and names what origin/main moved");
+    assert.doesNotMatch(reason, /template-fields-rule\.mjs/,
+      "and NOT the author's own commit -- three-dot diffs from the merge base, so the message is about "
+      + "the tree they are behind, not about them");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
