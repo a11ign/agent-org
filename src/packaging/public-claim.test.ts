@@ -546,18 +546,31 @@ const NOT_A_DURATION_CLAIM: Record<string, string> = {
     "'Spend the minutes' is idiomatic for wasted effort, not a duration figure, and the promise-verb match "
     + "in the same bullet ('takes us one capture to answer') counts CAPTURES, not time -- there is no "
     + "duration claim in this sentence for a gate to source.",
-  "Expect five to eight minutes for a real page":
-    "#396: a REAL, sourced duration promise -- 4 m 38 s / 4 m 50 s / 7 m 54 s across three dissimilar real "
-    + "pages, cited inline with the issue that recorded it (#311), replacing the honest 'under "
-    + "re-measurement' placeholder #313's own mechanism produced while nobody knew. It is a one-time "
-    + "orchestrator-run timing measurement, not a recurring board-gate metric `docs/board/reported.json` "
-    + "was built to hold, and #338 already found that verifying an inline citation against git history "
-    + "fails in CI's shallow checkout -- so this is disclosed the same way that row settled on, provenance "
-    + "stated in the prose itself rather than machine-verified.",
-  "Expect five to eight minutes**, per the measurement above":
-    "The second mention of the same #396 measurement, in the 'how long a large page takes' section -- same "
+  "Expect four to eight minutes for a real page":
+    "#1060, superseding #396's entry for the same sentence. A REAL, sourced duration promise -- 4 m 38 s / "
+    + "4 m 50 s / 5 m 48 s / 7 m 52 s / 7 m 54 s across five real-page runs that REACHED the page, cited "
+    + "inline with the issues that recorded them (#311, #915). Still a one-time orchestrator-run timing "
+    + "measurement rather than a recurring board-gate metric, and still disclosed in the prose rather than "
+    + "machine-verified, for the reason #338 settled on: verifying an inline citation against git history "
+    + "fails in CI's shallow checkout. WHAT CHANGED: #396's range was FIVE to eight, and two of the three "
+    + "figures it cited in the same sentence -- 4 m 38 s and 4 m 50 s -- fell below its own floor. This "
+    + "guard could not see that, because it asks whether a duration promise is SOURCED and not whether the "
+    + "source agrees with it. `try-it-runnable.test.ts` asks the second question.",
+  "Expect four to eight minutes**, per the measurement above":
+    "The second mention of the same measurement, in the 'how long a large page takes' section -- same "
     + "sourcing, same reasoning as the entry above; kept separate because #313's own history is that a "
-    + "figure fixed in one copy and left stale in a second is this repo's most expensive recurring shape.",
+    + "figure fixed in one copy and left stale in a second is this repo's most expensive recurring shape. "
+    + "#1060 now pins the two copies EQUAL as well as classifying them separately: the range stated "
+    + "anywhere on the page must match the one inside the timing block.",
+  "A sixth run took 3 m 45 s":
+    "#1060: a COUNTER-EXAMPLE, not a promise -- the sentence exists to say that a run finishing under four "
+    + "minutes has failed rather than been fast, because it opened on a consent overlay and read almost "
+    + "none of the page. It is deliberately quoted OUTSIDE the page's checked timing block, since a page "
+    + "that cannot cite a figure outside its own range cannot warn anyone about one.",
+  "| a Windows machine already |":
+    "#1060: one-time SETUP times in a routing table (about twenty minutes with a Windows machine, 1.5-2 "
+    + "hours to build a VM), the same class as 'Getting one takes ~20 minutes' above and for the same "
+    + "reason: no capture gate has ever measured, or should measure, a one-time Windows setup step.",
   "unreachable in a user's first ten minutes":
     "Newly discovered by #324's V1 rehearsal, which added examples/workflow.yml to CLAIM_FILES for the "
     + "first time -- this describes how quickly a PAST defect (probe-forms silently off) would have been "
