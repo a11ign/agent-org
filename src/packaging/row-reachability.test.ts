@@ -64,8 +64,23 @@ test("a clear row is STARTABLE and says what it examined", () => {
   const v = startability(clear);
   assert.equal(v.code, 0);
   assert.match(v.lines.join("\n"), /STARTABLE/);
-  assert.match(v.lines.join("\n"), /3 path\(s\), 2 symbol\(s\) examined/,
+  assert.match(v.lines.join("\n"), /3 path\(s\), 2 symbol\(s\), \d+ unmerged ref\(s\) examined/,
     "a count of what was looked at, or 'startable' is indistinguishable from 'nothing was checked'");
+});
+
+test("#772: ZERO unmerged refs is reported, because the search then had nothing to look at", () => {
+  // `unmergedRefs()` reads what this checkout has FETCHED, not what the remote holds. A fresh clone
+  // searches nothing, every symbol comes back carried by nobody, and the verdict is STARTABLE -- from an
+  // EMPTY POPULATION rather than from a search. worker-judge's finding on #1023: the empty list, not the
+  // 128, is what actually produced the symptom this row was filed for, and nothing counted it.
+  const noRefs = { ...clear, examined: { ...clear.examined, refs: 0 } };
+  const said = startability(noRefs).lines.join("\n");
+  assert.equal(startability(noRefs).code, 0, "zero refs is legitimate -- a fresh clone -- not a refusal");
+  assert.match(said, /fetched NO unmerged remote branches/,
+    "the narrowness must be visible: STARTABLE from an unsearched population reads exactly like STARTABLE "
+    + "from a clean one");
+  assert.doesNotMatch(startability({ ...clear, examined: { ...clear.examined, refs: 4 } }).lines.join("\n"),
+    /fetched NO unmerged/, "and it must not fire when there was a population to search");
 });
 
 test("EXAMINED NOTHING is inconclusive, never startable — the sharpest case here", () => {
