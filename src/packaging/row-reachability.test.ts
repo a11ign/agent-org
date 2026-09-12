@@ -331,6 +331,92 @@ function skipsWithoutOriginMain(): boolean {
   return true;
 }
 
+/**
+ * #1064: THE REF POPULATION, AND WHY ITS FLOOR NEEDS THE SAME TREATMENT `origin/main` GOT.
+ *
+ * The floor below asserts `examined.refs > 0`, and #772 added it for a reason that is still right: `const
+ * refs = []` keeps the spelling, keeps the count, and reports zero for every row for ever. **An empty
+ * population must not read as a clean result.**
+ *
+ * But it was asserting against an environment CI does not have. `actions/checkout` fetches the pull
+ * request's ref and its base -- not the other ~290 `origin/agent/*` -- so the count is legitimately zero
+ * and the test failed on the checkout rather than on the code. Measured: `docs` was red on #1057 (whose
+ * tree predates #1056) and on #1062, both `not ok 2078`, and #1057 MERGED through it.
+ *
+ * So: the sibling of `skipsWithoutOriginMain`, one population along. A ref population it cannot have is
+ * not a result it can assert on either.
+ *
+ * WHAT MAKES THE READ NON-CIRCULAR, AND MY FIRST ANSWER WAS WRONG. I wrote that this asks "a different
+ * question", and it did -- through a BYTE-IDENTICAL invocation and filter:
+ *
+ *     the subject   git for-each-ref --format=%(refname:short) refs/remotes/origin   (row-reachability.mjs)
+ *                     .filter(r => r && r !== "origin/main" && !r.startsWith("origin/HEAD"))
+ *     the guard     the same command, the same filter
+ *
+ * worker-capture reviewing #1070: **circular with an extra step, and the step is zero-width.** A defect in
+ * `unmergedRefs` -- a wrong refspec, a filter eating too much -- makes the subject see zero AND this
+ * report zero available, and the test then SKIPS BY NAME saying the checkout cannot hold a population,
+ * when the truth is the function under test cannot see the population that is there. **A skip nobody can
+ * second-guess reports as "not applicable".**
+ *
+ * So it takes a DIFFERENT ROUTE to the same store. `git branch -r` and `for-each-ref refs/remotes/origin`
+ * read the same refs and do not agree on how many there are -- measured here, 313 against 302, because
+ * `branch -r` renders the `origin/HEAD -> origin/main` symref as a line and formats differently. **The
+ * assertion is not that the counts match; it is that a route the subject does not use also finds refs
+ * here.** Two commands cannot both be wrong in the same way, which is the only property this needs.
+ *
+ * The class it protects against is a wrong invocation, not a corrupt ref database -- if the store itself
+ * is unreadable both routes return nothing and the skip is then correct.
+ *
+ * AND A NOTE ON THE NAME, because the message below inherits it. `unmergedRefs()` enumerates
+ * `refs/remotes/origin` minus `origin/main` and `origin/HEAD` -- it never asks whether anything is
+ * MERGED. A branch fully landed on main is in that list. The floor's own failure text says "this checkout
+ * has unmerged remote branches", which is a claim the function does not compute; this file cannot fix the
+ * name (out of #1064's Region) and will not repeat it.
+ */
+export function remoteRefsBesidesMain(
+  { run = defaultRemoteBranchListing }: { run?: () => string } = {},
+): number {
+  try {
+    return run().split("\n").map((r) => r.trim())
+      .filter((r) => r && r !== "origin/main" && !r.startsWith("origin/HEAD")).length;
+  } catch {
+    return 0;
+  }
+}
+
+/** DELIBERATELY NOT the subject's `for-each-ref` -- see the header above for why the difference is the
+ *  whole point. `branch -r` indents and renders the HEAD symref as `origin/HEAD -> origin/main`. */
+export const defaultRemoteBranchListing = (): string =>
+  execFileSync("git", ["branch", "-r"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+
+/**
+ * #1064: `"skip"` when the checkout cannot hold a population, `"held"` when the floor is satisfied,
+ * `"vacuous"` when there is a population to search and the search returned nothing.
+ *
+ * PURE, so both directions are drivable. A skip proved only by running in an environment that happens to
+ * lack refs is a skip proved to be quiet, which is the defect this row is about wearing a different hat.
+ */
+export function refPopulationVerdict(
+  { available, examined }: { available: number; examined: number | undefined },
+): "skip" | "held" | "vacuous" {
+  if (available === 0) return "skip";
+  return examined !== undefined && examined > 0 ? "held" : "vacuous";
+}
+
+/**
+ * Reported at RUN time and never as a `{ skip }` option, for `skipsWithoutOriginMain`'s reason: a skipped
+ * test is invisible in an ordinary run and reads as "not applicable", and this one is skipped for a reason
+ * a reader needs.
+ */
+export function refFloorSkipped(available: number, { warn = console.error } = {}): boolean {
+  if (available > 0) return false;
+  warn("SKIPPED, ref-population floor only (this checkout holds no remote-tracking branch under "
+    + "`origin/` besides main, as a CI checkout does not): a zero here is explained by the checkout, so "
+    + "the floor can tell nothing from it. The rest of this test still ran.");
+  return true;
+}
+
 test("#719 REGRESSION: #687's real body, whose Region misses environmentKey's actual file", () => {
   if (skipsWithoutOriginMain()) return;
   const body = readFileSync(
@@ -340,9 +426,12 @@ test("#719 REGRESSION: #687's real body, whose Region misses environmentKey's ac
   // #772: AND THE REF POPULATION, for the same reason one line up. `refs: refs.length` being spelled in the
   // source is not the same as `unmergedRefs()` being what fills it -- `const refs = []` keeps the spelling,
   // keeps the count, and reports zero for every row for ever, with the NOTE printing each time.
-  assert.ok(result.examined.refs !== undefined && result.examined.refs > 0,
-    "this checkout has unmerged remote branches, so a zero here means the search read no population -- "
-    + "the same 'proves nothing' the symbol floor beside it guards against");
+  const available = remoteRefsBesidesMain();
+  if (!refFloorSkipped(available)) {
+    assert.notEqual(refPopulationVerdict({ available, examined: result.examined.refs }), "vacuous",
+      `this checkout holds ${available} remote-tracking branch(es) besides main, so a zero here means the `
+      + "search read no population -- the same 'proves nothing' the symbol floor beside it guards against");
+  }
   const missing = result.subjectsMissing.map((s) => s.name);
   assert.ok(!missing.includes("environmentKey"),
     "environmentKey has been on main all along (packages/lab/src/training/capture-cache.mjs); reporting "
@@ -679,4 +768,91 @@ test("#1054: every OPEN pull request is named, the rest are counted -- and the c
   assert.deepEqual(heldRefsSummary([{ ref: "origin/z", state: "no PR" }]),
     ["1 branch(es) (1 with no PR) -- a merge cost, nobody to wait for"],
     "and with no OPEN holder there is no dangling 'and N more' after a list that was never printed");
+});
+
+test("#1064: the ref floor SKIPS where the checkout cannot hold a population, and HOLDS where it can", () => {
+  // Driven over injected counts, both directions, because a skip proved only by running somewhere that
+  // happens to lack refs is a skip proved to be quiet. CI is the "skip" row; this checkout is "held".
+  assert.equal(refPopulationVerdict({ available: 0, examined: 0 }), "skip",
+    "no remote-tracking branch besides main: a zero is explained by the checkout, not by the code");
+  assert.equal(refPopulationVerdict({ available: 0, examined: undefined }), "skip",
+    "and an absent count is the same situation, not a worse one");
+  assert.equal(refPopulationVerdict({ available: 290, examined: 290 }), "held",
+    "a checkout with branches, and a search that read them");
+  assert.equal(refPopulationVerdict({ available: 290, examined: 0 }), "vacuous",
+    "#772's case, which must still fail: `const refs = []` keeps the spelling and loses the population");
+  assert.equal(refPopulationVerdict({ available: 290, examined: undefined }), "vacuous",
+    "and a count that is not reported at all is not a pass");
+});
+
+test("#1064: the floor is the ONLY conditional part -- the row's own subject still runs without refs", () => {
+  // The cure must not kill the patient. #719's finding is that `environmentKey` is reported missing; that
+  // assertion does not depend on the ref population and must not become conditional on it. Asserted on the
+  // real body, with the ref question answered as CI answers it.
+  if (skipsWithoutOriginMain()) return;
+  const body = readFileSync(
+    fileURLToPath(new URL("./fixtures/issue-687-body.txt", import.meta.url)), "utf8");
+  const result = subjectAndRegionFacts(body);
+  assert.equal(refPopulationVerdict({ available: 0, examined: result.examined.refs }), "skip",
+    "the floor is skipped in a CI-shaped checkout");
+  assert.ok(!result.subjectsMissing.map((s) => s.name).includes("environmentKey"),
+    "and the subject assertion still runs and still holds -- losing it to an environment check would be "
+    + "the cure killing the patient");
+});
+
+
+test("#1064: the two impure halves are driven too -- the seam is not the call site", () => {
+  // Mutation found this gap and reading did not: `refPopulationVerdict` was covered while the two helpers
+  // that decide whether it is CONSULTED were not. `refFloorSkipped` returning true unconditionally, and
+  // `remoteRefsBesidesMain` returning 0 unconditionally, were both **0 red** -- the skip would have been
+  // permanent and every assertion here would still have passed.
+  const said: string[] = [];
+  assert.equal(refFloorSkipped(0, { warn: (m: string) => said.push(m) }), true);
+  assert.equal(said.length, 1, "and it SAYS so -- a silent skip reads as 'not applicable'");
+  assert.match(said[0], /SKIPPED, ref-population floor only/);
+  assert.match(said[0], /The rest of this test still ran/,
+    "the message must scope itself, or a reader takes the whole test as skipped");
+
+  said.length = 0;
+  assert.equal(refFloorSkipped(290, { warn: (m: string) => said.push(m) }), false,
+    "with a population available the floor is REACHED -- an unconditional skip is the mutation this catches");
+  assert.deepEqual(said, [], "and nothing is announced when nothing was skipped");
+
+  // THE FIXTURE IS `git branch -r`'s REAL OUTPUT, indentation and symref arrow included. It used to be
+  // `for-each-ref`'s shape, and after the route changed a fixture in the old shape would have tested a
+  // format the command no longer produces -- passing while proving nothing about the command it stands in
+  // for.
+  const refs = ["  origin/HEAD -> origin/main", "  origin/main", "  origin/agent/x", "  origin/agent/y", ""];
+  assert.equal(remoteRefsBesidesMain({ run: () => refs.join("\n") }), 2,
+    "main, HEAD and the blank line are excluded and the two branches counted -- an environment read that "
+    + "always answers zero makes the skip permanent and nothing else here would notice");
+  assert.equal(remoteRefsBesidesMain({ run: () => "  origin/HEAD -> origin/main\n  origin/main\n" }), 0,
+    "and a CI-shaped checkout -- the base ref and nothing else -- is zero");
+});
+
+
+test("#1064: the environment read takes a DIFFERENT ROUTE, held by the route's own signature", () => {
+  // Mutation found this unheld: switching `defaultRemoteBranchListing` back to the subject's own
+  // `for-each-ref --format=%(refname:short) refs/remotes/origin` was **0 red**. The fix for the
+  // circularity was real and nothing stopped anyone undoing it -- which is this row's shape, inside the
+  // fix for this row.
+  //
+  // HELD BY SIGNATURE RATHER THAN BY ARGV, and rather than by comparing the two counts. Comparing them
+  // would assert they DISAGREE (313 against 302 here, because `branch -r` renders the HEAD symref as a
+  // line) -- true in a developer checkout and false in CI, where both routes see only the base ref and
+  // agree at zero. A test that passes here and fails there is worse than no test.
+  //
+  // `git branch -r` INDENTS every line; `for-each-ref --format=%(refname:short)` never does. So a
+  // non-empty listing whose lines all start flush-left is the subject's command wearing the guard's name.
+  const listing = defaultRemoteBranchListing();
+  const lines = listing.split("\n").filter((l) => l.trim() !== "");
+  if (lines.length === 0) {
+    console.error("SKIPPED, route signature only (this checkout lists no remote branches at all): the "
+      + "signature cannot be read from an empty listing. The rest of this test still ran.");
+    return;
+  }
+  assert.ok(lines.every((l) => /^\s/.test(l)),
+    "every line of `git branch -r` is indented. A flush-left listing means this is `for-each-ref` again -- "
+    + "the subject's own command, which makes the skip circular: a defect in `unmergedRefs` would make "
+    + `both see zero and the floor would skip saying the checkout cannot hold a population. First line: ${JSON.stringify(lines[0])}`);
 });
