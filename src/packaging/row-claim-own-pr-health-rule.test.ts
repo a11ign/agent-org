@@ -232,7 +232,7 @@ test("#1161: the assertion is on the FLAG, so it cannot pass on a message that o
  */
 test("#1161: both TYPED spellings pass and both UNTYPED spellings fail, which is the property", () => {
   const message = String(inBuildReason([{ ...inBuild, number: 908, subIssues: 0 }]));
-  const spell = (/** @type {string} */ flag) => {
+  const spell = (flag: string) => {
     const spelled = message.replace(/sub_issues \S+ sub_issue_id=/, `sub_issues ${flag} sub_issue_id=`);
     // ASSERT THE REWRITE LANDED, on the result rather than on the input. Anchoring on one spelling is how
     // a mutation silently does not apply, and a rewrite that changed nothing returns the same green as one
