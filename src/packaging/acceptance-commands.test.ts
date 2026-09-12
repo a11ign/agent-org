@@ -607,7 +607,7 @@ test("#510 unmetCommandRequirements: a non-`tsx --test` command is never inspect
 test("#510 classifyCommand: the real history fixture is REFUSED, named, when the job has no history", () => {
   // #621: the CLOSURE-derived check runs first now, and its message names the file by BASENAME (matching
   // #621's own worked example, "board-document-chrome-resolver.test.ts requires token via
-  // resolveChromeBinary -> board-document.mjs:1190") -- never the full repo-relative path
+  // resolveChromeBinary -> board-document.mjs:1204") -- never the full repo-relative path
   // `unmetCommandRequirements`'s header-only message used. Both are correct; they answer different
   // questions ("what does the closure prove" vs. "what file declared it").
   const result = classifyCommand(`npx tsx --test ${HISTORY_FIXTURE}`, { capabilities: NO_HISTORY });
@@ -774,7 +774,7 @@ test("#621 deriveClosureRequirements: board-document-chrome-resolver.test.ts rea
   assert.equal(hits.length, 1);
   assert.equal(hits[0].requirement, "token");
   assert.equal(hits[0].file.endsWith("scripts/board-document.mjs"), true);
-  assert.equal(hits[0].line, 1190, "board-document.mjs's own execFileSync(\"gh\", ...) call site -- if "
+  assert.equal(hits[0].line, 1204, "board-document.mjs's own execFileSync(\"gh\", ...) call site -- if "
     + "this moves, the fixture line below must move with it");
 });
 
@@ -783,7 +783,7 @@ test("#621 closureRequirementMessage: the EXACT worked example from the issue, n
   + "them to the cause", () => {
   const [hit] = deriveClosureRequirements(BOARD_STYLE_FIXTURE);
   assert.equal(closureRequirementMessage(hit),
-    "board-document-chrome-resolver.test.ts requires token via resolveChromeBinary → board-document.mjs:1190");
+    "board-document-chrome-resolver.test.ts requires token via resolveChromeBinary → board-document.mjs:1204");
 });
 
 test("#621 unmetClosureRequirements: refused against a job with no token, satisfied against one that "
@@ -811,7 +811,7 @@ test("#621 ACCEPTANCE: classifyCommand REFUSES board-document-chrome-resolver.te
   const reason = (/** @type {{reason:string}} */ (result)).reason;
   assert.match(reason, /`token`/);
   assert.match(reason,
-    /board-document-chrome-resolver\.test\.ts requires token via resolveChromeBinary → board-document\.mjs:1190/);
+    /board-document-chrome-resolver\.test\.ts requires token via resolveChromeBinary → board-document\.mjs:1204/);
 });
 
 test("#621 MUTATION TARGET: the identical command RUNS once the job's capabilities carry a token -- "
