@@ -1,3 +1,16 @@
+// no-token: gh
+//
+// #1018: this file imports `update-branch-sweep.mjs`, whose `gh` helper (`:266`) spawns a real `gh`, and
+// the parser charges a command its whole import closure. True of the IMPORT and false of the CALL: every
+// test here is either pure (`updateBranchDecision`, `movedHeadRefusal`, `newestConclusion`) or injects its
+// own runner (`isBehind`'s `runGit`, `readHeadNow`'s `run`). The same over-charge #827 fixed for
+// board-markdown.test.ts -- a caller that REACHES a module which can spawn `gh` is not the same fact as
+// this file's own tests ever doing so.
+//
+// PROVED, NOT ASSERTED, since #827's check is deliberately shallow: `GH_TOKEN` and `GITHUB_TOKEN` unset, a
+// fake `gh` first on PATH that exits 97 and shouts -- 24 pass, 0 fail, and the fake is invoked ZERO times.
+// The refusal is pre-existing, not new: `origin/main`'s own copy of this file derives `token` at the same
+// `:266`, with none of this row's changes present.
 /**
  * C2 (#416's sibling): after a merge lands on `main`, push every armed, green-or-running PR up to its
  * current tip -- the fix half of `queue-stalled.mjs`'s report-only diagnosis. `updateBranchDecision` is the
