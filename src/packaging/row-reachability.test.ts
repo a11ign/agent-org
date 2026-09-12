@@ -28,12 +28,16 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { startability, subjectAndRegionFacts, symbolOnMain, refsCarryingSymbol, proveOriginMainReadable, onMain }
-  from "../../../../scripts/row-reachability.mjs";
+import { startability, subjectAndRegionFacts, symbolOnMain, refsCarryingSymbol, proveOriginMainReadable, onMain,
+  heldRefsSummary } from "../../../../scripts/row-reachability.mjs";
+import { declaredRegionFiles, regionPathsFromBody } from "../../../../scripts/region-paths.mjs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
+import { resolve, join } from "node:path";
+import { tmpdir } from "node:os";
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 import { ABSENT_FIXTURE_SYMBOLS } from "../../../../scripts/fixture-symbols.mjs";
 
-const examined = { paths: 3, symbols: 2 };
+const examined = { paths: 3, symbols: 2, region: 3 };
 const clear = { row: 189, subjectsMissing: [], heldRegions: [], examined };
 
 
@@ -66,8 +70,10 @@ test("a clear row is STARTABLE and says what it examined", () => {
   const v = startability(clear);
   assert.equal(v.code, 0);
   assert.match(v.lines.join("\n"), /STARTABLE/);
-  assert.match(v.lines.join("\n"), /3 path\(s\), 2 symbol\(s\), \d+ unmerged ref\(s\) examined/,
-    "a count of what was looked at, or 'startable' is indistinguishable from 'nothing was checked'");
+  assert.match(v.lines.join("\n"),
+    /3 path\(s\), 2 symbol\(s\), 3 declared region entr\(ies\), \d+ unmerged ref\(s\) examined/,
+    "a count of what was looked at, or 'startable' is indistinguishable from 'nothing was checked' -- and "
+    + "#1054: EACH population separately, because one symbol used to certify a region nothing had read");
 });
 
 test("#772: ZERO unmerged refs is reported, because the search then had nothing to look at", () => {
@@ -491,3 +497,186 @@ test("#772: proving `origin/main` is DRIVEN -- a `rev-parse` that fails must rea
     "and a readable one must not -- the guard is a refusal, not a wall");
 });
 
+
+// ---------------------------------------------------------------------------------------------------
+// #1054: THE CONTENTION HALF READS THE DECLARED REGION, AND A DIRECTORY PREFIX IS SEARCHED
+//
+// Measured on #907 at 2026-09-12T05:40Z, through these exact functions, from the row's real body:
+//
+//   examined: {"paths":0,"symbols":1,"prose":1,"refs":291}   heldRegions: 0
+//   "#907 is STARTABLE: ... no unmerged branch is in its region (0 path(s), ...)"
+//
+// #907's Region is `CLAUDE.md`, `docs/` and `packages/lab/src/packaging/`. `regionPathsFromBody` -- the
+// whole-body prose scan this file used for BOTH halves -- returned `["docs/backlog.md"]`, a path from the
+// row's PROSE, which the `.md` filter then moved to `prose`. So `paths` was empty, the walk ran over
+// nothing, and the verdict stated a positive fact about a population of zero. `row-claim claim` refused
+// the same row for overlapping an OPEN PR in `packages/lab/src/packaging/`.
+//
+// TWO SEPARATE DEFECTS, AND ONLY ONE IS THE EXTRACTOR. The other is that `examinedNothing`'s guard was a
+// DISJUNCTION across two populations: one backticked symbol certified a region nothing had read. A guard
+// whose whole header says "STARTABLE having examined nothing is the defect this repo records most"
+// cannot be satisfied by a different population being non-empty.
+
+/** A real git repository with a real `origin/main`, so the two-diff conjunction is exercised, not faked. */
+function syntheticRepo(): { repo: string; run: (args: string[]) => string; cleanup: () => void } {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "a11y-region-walk-")));
+  const run = (args: string[]) =>
+    execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", env: sandboxGitEnv(), stdio: "pipe" });
+  run(["init", "--quiet", "-b", "main"]);
+  run(["config", "user.email", "t@t"]);
+  run(["config", "user.name", "t"]);
+  mkdirSync(resolve(repo, "docs"));
+  writeFileSync(resolve(repo, "docs/guide.md"), "one\n");
+  writeFileSync(resolve(repo, "elsewhere.mjs"), "export const a = 1;\n");
+  run(["add", "-A"]);
+  run(["commit", "--quiet", "-m", "base"]);
+  run(["update-ref", "refs/remotes/origin/main", "HEAD"]);
+  return { repo, run, cleanup: () => rmSync(repo, { recursive: true, force: true }) };
+}
+
+/** A branch off `origin/main` that changes `path`, left unmerged. */
+function branchTouching(run: (args: string[]) => string, repo: string, name: string, path: string): void {
+  run(["checkout", "--quiet", "-b", name, "origin/main"]);
+  writeFileSync(resolve(repo, path), "changed\n");
+  run(["add", "-A"]);
+  run(["commit", "--quiet", "-m", `touch ${path}`]);
+  run(["checkout", "--quiet", "main"]);
+}
+
+const REGION_IS_A_DIRECTORY = "## Region\n\n```\ndocs/\n```\n";
+
+test("#1054 ACCEPTANCE: a directory-prefix Region is SEARCHED -- the walk FINDS contention under it", () => {
+  const { repo, run, cleanup } = syntheticRepo();
+  try {
+    branchTouching(run, repo, "feature", "docs/guide.md");
+    const facts = subjectAndRegionFacts(REGION_IS_A_DIRECTORY, {
+      run, refs: () => ["feature"], state: () => "no PR",
+      regionFiles: (body: string) => declaredRegionFiles(body, { rootFiles: new Set<string>() }),
+    });
+    assert.equal(facts.examined.region, 1, "the declared prefix must reach the walk as one entry");
+    assert.deepEqual(facts.heldRegions.map((h: { path: string }) => h.path), ["docs/"],
+      "a branch changing a file UNDER the declared directory holds that directory");
+  } finally { cleanup(); }
+});
+
+test("#1054 ACCEPTANCE, THE NEGATIVE CONTROL: the same walk says CLEAR when nothing is under the prefix", () => {
+  // Without this the test above is satisfied by a walk that reports every prefix held, which is the
+  // "eighty-five branches" report this file's own header records as the answer nobody reads.
+  const { repo, run, cleanup } = syntheticRepo();
+  try {
+    branchTouching(run, repo, "feature", "elsewhere.mjs");
+    const facts = subjectAndRegionFacts(REGION_IS_A_DIRECTORY, {
+      run, refs: () => ["feature"], state: () => "no PR",
+      regionFiles: (body: string) => declaredRegionFiles(body, { rootFiles: new Set<string>() }),
+    });
+    assert.equal(facts.examined.region, 1, "the prefix is still examined -- this is a clear answer, not an absent one");
+    assert.deepEqual(facts.heldRegions, [], "a branch outside the declared directory holds nothing in it");
+  } finally { cleanup(); }
+});
+
+test("#1054: the two extractors read one Region section, and the CONTENTION half takes the declared one", () => {
+  // The drift itself, asserted directly rather than through a verdict string. `regionPathsFromBody` is
+  // still right for the SUBJECT half -- #719 searches a symbol tree-wide on purpose -- so this pins the
+  // SPLIT, not a replacement.
+  assert.deepEqual(regionPathsFromBody(REGION_IS_A_DIRECTORY), [],
+    "the prose scan cannot see a directory prefix -- that is the fact, not the bug");
+  assert.deepEqual(declaredRegionFiles(REGION_IS_A_DIRECTORY, { rootFiles: new Set<string>() }), ["docs/"],
+    "the declared reader can, since #941");
+  const { run, cleanup } = syntheticRepo();
+  try {
+    const facts = subjectAndRegionFacts(REGION_IS_A_DIRECTORY, { run, refs: () => [], state: () => "no PR" });
+    assert.equal(facts.examined.paths, 0, "the subject half still reads the whole body and finds no source path");
+    assert.equal(facts.examined.region, 1,
+      "and the contention half reads the DECLARED section -- if these are ever equal again the copies have re-merged");
+  } finally { cleanup(); }
+});
+
+test("#1054: a path named ONLY in the row's prose is not contention", () => {
+  // #907's `docs/backlog.md` is the live example: named in a sentence about what a guard checks, never
+  // declared. A row that cites somebody else's file as an example does not hold it.
+  const body = `${REGION_IS_A_DIRECTORY}\n\nThe guard also reads \`elsewhere.mjs\`, which is not ours.\n`;
+  const { repo, run, cleanup } = syntheticRepo();
+  try {
+    branchTouching(run, repo, "feature", "elsewhere.mjs");
+    const asked: string[] = [];
+    const spy = (args: string[]) => { if (args[0] === "diff") asked.push(args[args.length - 1]); return run(args); };
+    const facts = subjectAndRegionFacts(body, {
+      run: spy, refs: () => ["feature"], state: () => "no PR",
+      regionFiles: (b: string) => declaredRegionFiles(b, { rootFiles: new Set<string>() }),
+    });
+    assert.deepEqual(facts.heldRegions, [], "the prose mention must not become a held region");
+    assert.ok(!asked.includes("elsewhere.mjs"),
+      "and it must never be ASKED about -- a clear answer about a path it queried would pass this by luck");
+  } finally { cleanup(); }
+});
+
+test("#1054 MUTATION TARGET: one symbol must not certify a region nothing examined", () => {
+  // #907's exact shape: paths 0, symbols 1, region 0. The old guard returned early on `symbols > 0` and
+  // the verdict then stated "no unmerged branch is in its region" over an empty set.
+  const v = startability({
+    row: 907, subjectsMissing: [], heldRegions: [], state: "OPEN",
+    examined: { paths: 0, symbols: 1, prose: 1, refs: 291, region: 0 },
+  });
+  const text = v.lines.join("\n");
+  assert.ok(!/no unmerged branch is in its region/.test(text),
+    "a positive claim about a population of zero is the defect this row exists to remove");
+  assert.match(text, /region was NOT examined/, "and the reader is told which half did not answer");
+  assert.match(text, /0 declared region entr\(ies\)/, "with the count that says so");
+});
+
+test("#1054: a Region of only directories is not CANNOT_ASK -- three entries and 291 refs is a real search", () => {
+  const v = startability({
+    row: 907, subjectsMissing: [], heldRegions: [], state: "OPEN",
+    examined: { paths: 0, symbols: 0, prose: 0, refs: 291, region: 3 },
+  });
+  assert.equal(v.code, 0, "the region population counts as something examined");
+  assert.match(v.lines.join("\n"), /3 declared region entr\(ies\)/);
+});
+
+test("#1054: the verdict NAMES the rule it did not run -- B4 lives on the claim path", () => {
+  const v = startability({
+    row: 189, subjectsMissing: [], heldRegions: [], state: "OPEN",
+    examined: { paths: 3, symbols: 2, refs: 40, region: 2 },
+  });
+  assert.match(v.lines.join("\n"), /IT DOES NOT RUN B4/,
+    "a pre-check that answers in the deciding rule's vocabulary must say which rule it skipped");
+  assert.match(v.lines.join("\n"), /can read STARTABLE where the claim is refused/);
+});
+
+test("#1054: an OPEN pull request in the region is not 'a merge cost' -- claim WILL refuse", () => {
+  const contested = startability({
+    row: 907, subjectsMissing: [], state: "OPEN",
+    heldRegions: [{ path: "packages/lab/src/packaging/", refs: ["origin/agent/x (PR #1052 OPEN)"],
+      openPrs: ["origin/agent/x"] }],
+    examined: { paths: 0, symbols: 1, refs: 291, region: 3 },
+  });
+  const text = contested.lines.join("\n");
+  assert.match(text, /EXPECT `row-claim claim` TO REFUSE THIS/);
+  assert.ok(!/merge cost, not a blocker/.test(text),
+    "telling a reader it is only a merge cost sends them to a refusal they were assured would not happen");
+  assert.match(text, /Narrowing the Region to route around it is not a remedy/);
+
+  const dead = startability({
+    row: 907, subjectsMissing: [], state: "OPEN",
+    heldRegions: [{ path: "docs/", refs: ["origin/agent/y (PR #181 CLOSED)"], openPrs: [] }],
+    examined: { paths: 0, symbols: 1, refs: 291, region: 3 },
+  });
+  assert.match(dead.lines.join("\n"), /merge cost, not a blocker/,
+    "and a dead branch genuinely IS only a merge cost -- the distinction is the point");
+});
+
+test("#1054: every OPEN pull request is named, the rest are counted -- and the count is stated, not cut", () => {
+  const summary = heldRefsSummary([
+    { ref: "origin/a", state: "PR #1052 OPEN" },
+    { ref: "origin/b", state: "no PR" },
+    { ref: "origin/c", state: "PR #181 CLOSED" },
+    { ref: "origin/d", state: "PR #172 CLOSED" },
+  ]);
+  assert.match(summary.join(" "), /origin\/a \(PR #1052 OPEN\)/, "the one B4 acts on is named");
+  assert.ok(!/origin\/c/.test(summary.join(" ")), "a closed PR is a number, not a line");
+  assert.match(summary.join(" "), /3 branch\(es\) \(1 with no PR, 2 whose PR is CLOSED\)/,
+    "the count and the states are stated -- a list cut to fit reads as a complete list");
+  assert.deepEqual(heldRefsSummary([{ ref: "origin/z", state: "no PR" }]),
+    ["1 branch(es) (1 with no PR) -- a merge cost, nobody to wait for"],
+    "and with no OPEN holder there is no dangling 'and N more' after a list that was never printed");
+});
