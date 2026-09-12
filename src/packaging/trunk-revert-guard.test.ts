@@ -81,6 +81,78 @@ const SCRIPT = `${REPO}/scripts/trunk-revert-guard.mjs`;
 const CLONE = realpathSync(mkdtempSync(join(tmpdir(), "a11y-revert-guard-")));
 execFileSync("git", ["clone", "--local", "--quiet", REPO, CLONE], { stdio: "pipe", env: sandboxGitEnv() });
 
+/**
+ * A clone of a SHALLOW checkout is shallow, and the two real merges below are then simply absent --
+ * `fatal: ambiguous argument 'fc9b89d2': unknown revision`, which the guard correctly reports as
+ * CANNOT_ASK (exit 2), which these tests then read as a wrong verdict (expected 1 or PASS). That is what
+ * turned main red for 27 hours from #895's merge (48aef3f2, 2026-09-09 19:11Z): trunk-guard's unscoped
+ * build took the shallow checkout, and every later push was declined as INHERITED. #901.
+ *
+ * So each spawning test asks first whether the fixture is present, and SKIPS BY NAME when it is not --
+ * the same shape `backlog-file-facts.test.ts` uses for a blob the checkout cannot see. A skip is honest
+ * where a pass would be a lie and a fail blames the wrong thing; the job that must actually run these is
+ * `trunk-guard`'s unscoped build, whose checkout is full-history since the same PR, and a PR body can
+ * deepen the acceptance job's with `History: full`.
+ */
+/**
+ * #1040: THE SKIP LINE STATES A CAUSE, AND `cat-file -e` CANNOT SUPPORT IT.
+ *
+ * `NO_FIXTURE` below says `(shallow clone)`. That is a diagnosis, and this catch was bare. Measured
+ * 2026-09-12 against this repository:
+ *
+ *     missing object in a real repo   -> 128
+ *     a directory that is NOT a repo  -> 128
+ *     present object (control)        ->   0
+ *
+ * **No status separates them**, so #1023's remedy -- exit 1 is a real no, anything else is a failure --
+ * does not transfer. It needs a POSITIVE CONTROL: prove the clone readable first, and then a 128 is
+ * genuinely about the object. The same shape `assertOriginMainReadable` uses one file over.
+ *
+ * `cloneReadable` is computed ONCE and memoised, because the answer cannot change inside a run and
+ * spawning git per fixture per test is the cost this file already avoids elsewhere.
+ * @returns {boolean} true when `CLONE` is a readable repository
+ */
+function cloneReadable(cwd: string = CLONE): boolean {
+  if (cwd !== CLONE) return objectPresent("HEAD", cwd);   // an injected clone is never memoised
+  if (cloneProved === null) cloneProved = objectPresent("HEAD", CLONE);
+  return cloneProved;
+}
+let cloneProved: boolean | null = null;
+
+/** Does `rev` resolve to a commit in `cwd`? The bare question, with no diagnosis attached. */
+function objectPresent(rev: string, cwd: string): boolean {
+  try {
+    execFileSync("git", ["cat-file", "-e", `${rev}^{commit}`], { cwd, stdio: "pipe", env: sandboxGitEnv() });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * INJECTABLE `cwd`, and that is not a convenience. The fix is a positive control, and a control can only
+ * be shown to work by pointing it at a clone that genuinely cannot be read -- which cannot be `CLONE`.
+ * Without the seam, dropping the control turned **0 red**: the measurement was tested and the wiring was
+ * not, which is the shape this whole night has been about.
+ */
+const fixturePresent = (sha: string, cwd: string = CLONE): boolean =>
+  // NO CONTROL HERE, DELIBERATELY, AND I HAD ONE UNTIL A MUTATION SAID IT WAS DOING NOTHING. Guarding this
+  // with `cloneReadable` returns `false` for an unreadable clone -- which `objectPresent` already does,
+  // since git errors either way. Dropping the guard turned **0 red**, and the honest reading is that it
+  // was never load-bearing: the two states are indistinguishable in the ANSWER and distinguishable only in
+  // the DIAGNOSIS. So the control lives in `NO_FIXTURE`, where the cause is stated, and this stays the
+  // bare question it always was. A line kept because it looks careful is a line nothing can hold.
+  objectPresent(sha, cwd);
+// #1040: TWO STATES, TWO LINES. The skip may name `(shallow clone)` only on the path where the clone was
+// proved readable; an unreadable clone is a different report with a different remedy, and saying the first
+// when the second is true sends a reader to deepen a checkout that is not the problem.
+const NO_FIXTURE = (sha: string, cwd: string = CLONE) => (cloneReadable(cwd)
+  ? `SKIPPED: fixture merge ${sha} is not in this checkout (shallow clone) -- the acceptance ran nowhere `
+    + "here. trunk-guard's full-history build runs it; a PR body can declare `History: full` to run it in "
+    + "acceptance."
+  : `SKIPPED: the test clone at ${cwd} could not be read at all, so whether ${sha} is present is `
+    + "UNKNOWN -- this is not a shallow checkout, it is an unreadable one, and deepening will not fix it.");
+
 after(() => rmSync(CLONE, { recursive: true, force: true }));
 
 // --- unexplainedDeletions: the pure decision ---
@@ -152,7 +224,8 @@ test("branchTouchedPaths: a path with an empty log is NOT touched", () => {
 // --- ACCEPTANCE: driven live against this repository's own two real fixtures ---
 
 test("ACCEPTANCE (#411, criterion 2): the real incident (f2cdfaf3) is REFUSED, naming the six deleted "
-  + "paths no branch commit ever touched", () => {
+  + "paths no branch commit ever touched", (t) => {
+  if (!fixturePresent("f2cdfaf3")) return t.skip(NO_FIXTURE("f2cdfaf3"));
   let out;
   try {
     execFileSync("node", [SCRIPT, "--merge=f2cdfaf3"], { cwd: CLONE, encoding: "utf8", stdio: "pipe" });
@@ -182,7 +255,8 @@ test("ACCEPTANCE (#411, criterion 2): the real incident (f2cdfaf3) is REFUSED, n
 });
 
 test("ACCEPTANCE (#411, criterion 3): a legitimate deletion (#354, fc9b89d2) is NOT refused -- the half "
-  + "that decides whether this survives a week", () => {
+  + "that decides whether this survives a week", (t) => {
+  if (!fixturePresent("fc9b89d2")) return t.skip(NO_FIXTURE("fc9b89d2"));
   const out = execFileSync("node", [SCRIPT, "--merge=fc9b89d2"], { cwd: CLONE, encoding: "utf8" });
   assert.match(out, /PASS/);
 });
@@ -298,11 +372,35 @@ test("C3 ACCEPTANCE: decideRevert fires on trunkGate's or trunkBuildTest's failu
  * the seam -- proving a REFUSE from the guard is not merely compatible with `revertVerdict`'s shape, but
  * genuinely produces a revert-worthy verdict once trunkGate's failure reaches it.
  */
-test("C3 ACCEPTANCE, COMPOSED: the real f2cdfaf3 REFUSAL, once trunkGate fails on it, IS revert-worthy", () => {
-  // The guard itself REFUSES f2cdfaf3 -- already proven above; re-asserted here so this composed test
-  // does not silently pass having examined a commit the guard would not have flagged at all.
-  assert.throws(() => execFileSync("node", [SCRIPT, "--merge=f2cdfaf3"], { cwd: CLONE, stdio: "pipe" }),
-    "the guard must still refuse f2cdfaf3, or this composed test is asserting nothing real");
+test("C3 ACCEPTANCE, COMPOSED: the real f2cdfaf3 REFUSAL, once trunkGate fails on it, IS revert-worthy", (t) => {
+  // #928: THIS TEST WAS THE FOURTH ONE, AND IT DID NOT FAIL IN THE INCIDENT -- IT PASSED.
+  //
+  // The three tests #928 names skipped correctly once #923 gave them `fixturePresent`. This one spawns the
+  // same fixture and was left unguarded, and its assertion was `assert.throws` with no code: **that accepts
+  // ANY non-zero exit.** Measured in a deliberately shallow checkout on 2026-09-12:
+  //
+  //     full history   --merge=f2cdfaf3  ->  exit 1   REFUSE
+  //     full history   --merge=fc9b89d2  ->  exit 0   PASS
+  //     depth 1        --merge=f2cdfaf3  ->  exit 2   CANNOT_ASK
+  //
+  // So on a shallow checkout this test PASSED, having asserted "the guard must still refuse f2cdfaf3, or
+  // this composed test is asserting nothing real" against a run that refused nothing. **A green test that
+  // examined a question it could not ask** is worse than the three red ones beside it, because nothing in
+  // the log says so. Both halves are fixed: the fixture is guarded like its siblings, AND the exit code is
+  // asserted as REFUSE rather than as merely non-zero -- the second half closes it in ANY checkout.
+  if (!fixturePresent("f2cdfaf3")) return t.skip(NO_FIXTURE("f2cdfaf3"));
+  // `assert.throws` returns undefined, so the error is caught by hand -- the exit CODE is the subject here
+  // and `throws` alone cannot see it. That is the whole defect in one line.
+  let status: number | undefined;
+  try {
+    execFileSync("node", [SCRIPT, "--merge=f2cdfaf3"], { cwd: CLONE, stdio: "pipe" });
+  } catch (cause) {
+    status = (cause as { status?: number }).status;
+  }
+  assert.equal(status, EXIT.REFUSE,
+    `expected REFUSE (${EXIT.REFUSE}); PASS (${EXIT.PASS}) would mean the guard did not flag it and `
+    + `CANNOT_ASK (${EXIT.CANNOT_ASK}) is an unanswerable question, not a refusal -- reading the second as `
+    + "the first is how this test passed while its three siblings failed for 27.8 hours");
 
   // trunkGate failing on f2cdfaf3 means `decideRevert` runs with `--push-sha=f2cdfaf3` and
   // `--before-sha=f2cdfaf3^1`. The two facts `revertVerdict` needs are asked of the REAL commit graph and
@@ -330,7 +428,8 @@ test("C3 ACCEPTANCE, COMPOSED: the real f2cdfaf3 REFUSAL, once trunkGate fails o
     `expected READY (revert-worthy), got code ${composed.code}: ${composed.reason}`);
 });
 
-test("C3 ACCEPTANCE, COMPOSED, POSITIVE CONTROL: an ordinary merge's PASS never even reaches decideRevert", () => {
+test("C3 ACCEPTANCE, COMPOSED, POSITIVE CONTROL: an ordinary merge's PASS never even reaches decideRevert", (t) => {
+  if (!fixturePresent("fc9b89d2")) return t.skip(NO_FIXTURE("fc9b89d2"));
   // fc9b89d2 (#354) is the guard's own documented legitimate-deletion case -- PASSES, so trunkGate's guard
   // step succeeds, the job does not fail on this step, and (assuming the rest of trunkGate is otherwise
   // green) `decideRevert`'s `if: needs.trunkGate.result == 'failure'` is false: it never runs at all. There
@@ -368,4 +467,64 @@ test("#890 every spawn runs against the CLONE, never the real checkout", () => {
     assert.doesNotMatch(options, /cwd:\s*REPO\b/,
       "cwd: REPO points at whichever checkout runs the suite, and this script FETCHES");
   }
+});
+
+test("#1040 ACCEPTANCE: an UNREADABLE clone is reported as unreadable, never as a shallow checkout", () => {
+  // The skip line used to state `(shallow clone)` as the cause, and `cat-file -e` cannot support it.
+  // Measured against this repository: a missing object is 128 and a directory that is not a repository is
+  // ALSO 128, so no status separates them and #1023's exit-code remedy does not transfer.
+  //
+  // Driven over a real directory rather than by stubbing git, for the reason this file already gives: a
+  // hand-written stub of git is a second copy of the predicate wearing git's name.
+  const notARepo = realpathSync(mkdtempSync(join(tmpdir(), "a11y-not-a-repo-")));
+  try {
+    const readable = (cwd: string) => {
+      try {
+        execFileSync("git", ["cat-file", "-e", "HEAD^{commit}"], { cwd, stdio: "pipe", env: sandboxGitEnv() });
+        return true;
+      } catch { return false; }
+    };
+    assert.equal(readable(notARepo), false, "a directory that is not a repository must not read as readable");
+    assert.equal(readable(CLONE), true, "AND the real clone must -- or this control proves only that git errors");
+
+    // The two 128s, side by side. This is the measurement the old skip line asserted without making.
+    const status = (args: string[], cwd: string) => {
+      try {
+        execFileSync("git", args, { cwd, stdio: "pipe", env: sandboxGitEnv() });
+        return 0;
+      } catch (cause) { return (cause as { status?: number }).status; }
+    };
+    assert.equal(status(["cat-file", "-e", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef^{commit}"], CLONE), 128,
+      "a missing OBJECT in a real repository");
+    assert.equal(status(["cat-file", "-e", "HEAD^{commit}"], notARepo), 128,
+      "and an unreadable REPOSITORY -- the same code, which is why a positive control is the only separator");
+  } finally {
+    rmSync(notARepo, { recursive: true, force: true });
+  }
+});
+
+test("#1040 ACCEPTANCE: against an UNREADABLE clone, fixturePresent says absent and the LINE says why -- "
+  + "driven through the shipped functions, not through a copy of them", () => {
+  const notARepo = realpathSync(mkdtempSync(join(tmpdir(), "a11y-not-a-repo-")));
+  try {
+    assert.equal(fixturePresent("f2cdfaf3", notARepo), false,
+      "it cannot claim the fixture is present, and it must not throw either");
+    const line = NO_FIXTURE("f2cdfaf3", notARepo);
+    assert.match(line, /could not be read at all/);
+    assert.match(line, /deepening will not fix it/,
+      "the remedy, which is the whole point -- `(shallow clone)` sends a reader to deepen a checkout that "
+      + "is not the problem");
+    assert.doesNotMatch(line, /shallow clone/, "and NOT the other cause");
+  } finally {
+    rmSync(notARepo, { recursive: true, force: true });
+  }
+});
+
+test("#1040: the skip line names the cause it actually established", () => {
+  // `CLONE` is readable here, so the line may say `(shallow clone)`. The other branch is exercised by the
+  // control above, which proves the predicate it depends on rather than the string it produces.
+  const line = NO_FIXTURE("f2cdfaf3");
+  assert.match(line, /shallow clone/);
+  assert.doesNotMatch(line, /could not be read at all/,
+    "and only one of the two -- a line offering both causes is a line that established neither");
 });

@@ -1,3 +1,13 @@
+// no-token: gh
+//
+// The acceptance parser charges a command the whole import closure of what it imports, and this file
+// imports `row-file.mjs`, which spawns `gh`. True of the IMPORT and false of the CALL: every dependency
+// here is injected -- `spawnGh`, `run`, `milestones`, the board and label readers -- and no test lets a
+// real spawn happen.
+//
+// PROVED, NOT ASSERTED, since #827's check is deliberately shallow: GH_TOKEN and GITHUB_TOKEN unset, a
+// fake `gh` first on PATH that exits 97 and shouts to stderr -- 66 pass, 0 fail, and the fake never
+// printed.
 /**
  * #735: the FILING-side twin of #707's claim-side gate -- `scripts/row-file.mjs` refuses to run
  * `gh issue create` when the body it would file is missing Region, Acceptance or Open-check, using the
@@ -19,6 +29,7 @@ import { fileURLToPath } from "node:url";
 import {
   bodyFromArgv, fileRefusalReason, createIssue, sessionFromArgv, appendFiledBy, withFiledBy,
   boardingFor, issueNumberFromUrl, unverifiedFilingFields, fetchIssueBoardStatus, laneLabelsFor,
+  milestoneRefusal,
 } from "../../../../scripts/row-file.mjs";
 import { filedByLine } from "../../../../scripts/row-claim.mjs";
 
@@ -173,6 +184,14 @@ test("laneLabelsFor: an EMPTY Region (a non-code row) also gets lane:any", () =>
   assert.deepEqual(laneLabelsFor([], { lanes: [PIPELINE_LANE] }), ["lane:any"]);
 });
 
+test("#941: a DIRECTORY entry touches a lane lying inside it, or around it -- never lane:any by omission", () => {
+  assert.deepEqual(laneLabelsFor([".github/"], { lanes: [PIPELINE_LANE] }), ["lane:dispatcher"], "the lane is inside it");
+  assert.deepEqual(laneLabelsFor([".github/workflows/"], { lanes: [PIPELINE_LANE] }), ["lane:dispatcher"]);
+  assert.deepEqual(laneLabelsFor([".github/workflows/nested/"], { lanes: [PIPELINE_LANE] }), ["lane:dispatcher"],
+    "it is inside the lane");
+  assert.deepEqual(laneLabelsFor(["scripts/", "docs/board/"], { lanes: [PIPELINE_LANE] }), ["lane:any"]);
+});
+
 test("#883 ACCEPTANCE, MUTATION TARGET: the label MOVES when lane-ownership.json's paths move -- a "
   + "row touching a path now assigned to a lane derives that lane; the identical row against the OLD "
   + "config (the path unassigned) derives lane:any instead. If the label does not move with the config, "
@@ -310,11 +329,28 @@ const FILED_URL = "https://github.com/DanBeckDev/a11y-witness/issues/900";
 
 /** A `run` fake for the calls createIssue makes AFTER spawnGh: `gh project item-add` and the body
  * read-back (`gh issue view ... --json body --jq .body`). Everything else answers "" harmlessly. */
-function afterRun(body: string) {
-  return (_cmd: string, args: string[]) => (args.includes("body") ? body : "");
+function afterRun(body: string, milestone = "CI reset") {
+  // #1011: the read-back now asks for the milestone as well as the body -- `gh` ACCEPTING `--milestone` is
+  // not evidence the field is set. A fixture that answers only the body would report the row unverified.
+  return (_cmd: string, args: string[]) => {
+    if (args.includes("milestone")) return milestone;
+    return args.includes("body") ? body : "";
+  };
 }
 
 /** The full set of happy-path dependencies, so each test overrides only what it means to test. */
+/**
+ * #1011: EVERY FILING NOW DECLARES A RELEASE, so every fixture below carries one. That is the row's whole
+ * subject reaching its own tests: `row-file` refuses a row with neither a milestone nor `out-of-release`,
+ * because the org's health check reads such a row as a finding within thirty minutes, and three rows
+ * landed that way on 2026-09-11 -- one of them (#1003) also reaching the tracker off Project 2 and
+ * blocking every Status move in the org until it was boarded by hand.
+ */
+const RELEASE = ["--milestone", "CI reset"];
+
+/** The milestone reader, injected everywhere so no test reaches GitHub for the suggestion list. */
+const MILESTONES = () => ["CI reset", "Road to version one"];
+
 function happyDeps(session: string, label: string, overrides: Record<string, unknown> = {}) {
   return {
     spawnGh: () => FILED_URL,
@@ -322,6 +358,7 @@ function happyDeps(session: string, label: string, overrides: Record<string, unk
     fetchBoardStatus: () => (label === "ready" ? "Ready" : "Backlog"),
     fetchLabels: () => ({ number: 900, title: "a real row", labels: [label, "lane:any"] }),
     moveStatus: () => ({ moved: true as const }),
+    milestones: MILESTONES,
     // #883: an EMPTY lane list -- no lane's `paths` can match anything, so `laneLabelsFor` always derives
     // `lane:any` regardless of COMPLETE_BODY's own Region content, keeping these tests independent of
     // docs/lane-ownership.json's real, changeable contents.
@@ -334,14 +371,19 @@ function happyDeps(session: string, label: string, overrides: Record<string, unk
 test("ACCEPTANCE: a complete body with --session= files -- spawnGh receives the body WITH Filed-by "
   + "appended and --session stripped, but NO --label at all: the board label is added later, never at "
   + "creation time (see #844's own header for why)", () => {
-  const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts"];
+  const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
   let called: string[] | null = null;
   const code = createIssue(argv, {
     ...happyDeps("worker-contracts", "backlog"),
     spawnGh: (a) => { called = a; return FILED_URL; },
   });
   assert.equal(code, 0);
-  assert.deepEqual(called, ["--title", "a real row", "--body",
+  // #1011: `--milestone` is PASSED THROUGH to `gh issue create` untouched -- this tool refuses a filing
+  // that declares no release, and forwards the one it was given rather than restating it.
+  // #1011: `--milestone` is PASSED THROUGH untouched -- this tool refuses a filing that declares no
+  // release and forwards the one it was given. `withFiledBy` rebuilds `--body` at the END, which is why
+  // the milestone precedes it here rather than trailing.
+  assert.deepEqual(called, ["--title", "a real row", ...RELEASE, "--body",
     appendFiledBy(COMPLETE_BODY, "worker-contracts")]);
 });
 
@@ -349,7 +391,7 @@ test("#844 ACCEPTANCE, MUTATION TARGET: the board label is added via a SEPARATE 
   + "AFTER the Status move succeeds, never before -- the exact ordering #867's own live dogfooding run "
   + "proved necessary: a `ready` label present before the item has a Status makes the row itself the "
   + "shape #747's board-safety floor refuses, on its own snapshot, every time", () => {
-  const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts", "--ready"];
+  const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE, "--ready"];
   const order: string[] = [];
   const code = createIssue(argv, {
     ...happyDeps("worker-contracts", "ready"),
@@ -367,7 +409,7 @@ test("#844 ACCEPTANCE, MUTATION TARGET: the board label is added via a SEPARATE 
 
 test("ACCEPTANCE: the issue is added to Project 2 and its Status is moved to match the label, both "
   + "AFTER a successful gh issue create", () => {
-  const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts"];
+  const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
   const projectCalls: string[][] = [];
   const moveCalls: [number, string][] = [];
   const code = createIssue(argv, {
@@ -386,7 +428,7 @@ test("ACCEPTANCE: the issue is added to Project 2 and its Status is moved to mat
 
 test("ACCEPTANCE, MUTATION TARGET: the issue number and https URL are read back and printed only after "
   + "every check confirms -- prints exactly the issue's own URL", () => {
-  const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts"];
+  const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
   let printed = "";
   const original = process.stdout.write;
   process.stdout.write = ((chunk: string) => { printed += chunk; return true; }) as typeof process.stdout.write;
@@ -402,7 +444,7 @@ test("ACCEPTANCE, MUTATION TARGET: the issue number and https URL are read back 
 test("#883 ACCEPTANCE: a MULTI-LANE Region derives and applies BOTH lane labels through the whole "
   + "createIssue flow -- ensureLabels is asked to create both, and both are added in the same edit call "
   + "as the board label", () => {
-  const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts"];
+  const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
   // Two synthetic lanes both genuinely covering COMPLETE_BODY's own Region path
   // (packages/lab/src/packaging/foo.ts) by prefix, so this exercises real matching end to end rather
   // than a config chosen to avoid matching anything.
@@ -432,7 +474,7 @@ test("#883 ACCEPTANCE: a MULTI-LANE Region derives and applies BOTH lane labels 
 
 test("#883 ACCEPTANCE, MUTATION TARGET: an unreadable/malformed docs/lane-ownership.json refuses BEFORE "
   + "gh issue create runs -- CANNOT_ASK, never \"nothing has a lane\"", () => {
-  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts"];
+  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
   let called = false;
   const code = createIssue(argv, {
     spawnGh: () => { called = true; return FILED_URL; },
@@ -451,7 +493,7 @@ test("ACCEPTANCE: no --session= at all refuses -- spawnGh is NEVER called, even 
 });
 
 test("ACCEPTANCE: an incomplete body still refuses even with --session= present -- spawnGh is NEVER called", () => {
-  const argv = ["--title", "a real row", "--body", "no sections at all", "--session=worker-contracts"];
+  const argv = ["--title", "a real row", "--body", "no sections at all", "--session=worker-contracts", ...RELEASE];
   let called = false;
   const code = createIssue(argv, { spawnGh: () => { called = true; return FILED_URL; } });
   assert.equal(code, 1);
@@ -459,7 +501,7 @@ test("ACCEPTANCE: an incomplete body still refuses even with --session= present 
 });
 
 test("a gh failure (non-zero exit) is surfaced as this tool's own exit code, not swallowed as success", () => {
-  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts"];
+  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
   const code = createIssue(argv, {
     spawnGh: () => { throw Object.assign(new Error("gh failed"), { status: 7 }); },
   });
@@ -468,14 +510,14 @@ test("a gh failure (non-zero exit) is surfaced as this tool's own exit code, not
 
 test("#844 ACCEPTANCE: gh issue create succeeding but printing something that is not a real issue URL "
   + "is refused distinctly -- filed, but unboardable and unverifiable", () => {
-  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts"];
+  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
   const code = createIssue(argv, { spawnGh: () => "not a url at all" });
   assert.equal(code, 2);
 });
 
 test("#844 ACCEPTANCE: a failure adding the issue to Project 2 is refused distinctly (exit 2), naming "
   + "the issue number and the hand-recovery command -- it is NOT reported as a plain success", () => {
-  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts"];
+  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
   let stderr = "";
   const original = process.stderr.write;
   process.stderr.write = ((chunk: string) => { stderr += chunk; return true; }) as typeof process.stderr.write;
@@ -498,7 +540,7 @@ test("#844 ACCEPTANCE: a failure adding the issue to Project 2 is refused distin
 
 test("#844 ACCEPTANCE, MUTATION TARGET: a Status move that does not succeed is refused distinctly "
   + "(exit 2), never reported as filed cleanly", () => {
-  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts"];
+  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
   const code = createIssue(argv, {
     ...happyDeps("worker-contracts", "backlog"),
     moveStatus: () => ({ moved: false, reason: "gh: rate limited", notOnBoard: false }),
@@ -508,7 +550,7 @@ test("#844 ACCEPTANCE, MUTATION TARGET: a Status move that does not succeed is r
 
 test("#844 ACCEPTANCE: a label-add failure AFTER a successful Status move is refused distinctly (exit "
   + "2), naming the issue number and the Status already set, never reported as filed cleanly", () => {
-  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts"];
+  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
   let stderr = "";
   const original = process.stderr.write;
   process.stderr.write = ((chunk: string) => { stderr += chunk; return true; }) as typeof process.stderr.write;
@@ -531,7 +573,7 @@ test("#844 ACCEPTANCE: a label-add failure AFTER a successful Status move is ref
 test("#844 ACCEPTANCE, MUTATION TARGET: everything succeeds but the READ-BACK disagrees (e.g. the label "
   + "did not actually stick) -- refused distinctly (exit 2), naming what is missing, never reported as "
   + "filed cleanly on the strength of the write calls alone", () => {
-  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts"];
+  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
   let stderr = "";
   const original = process.stderr.write;
   process.stderr.write = ((chunk: string) => { stderr += chunk; return true; }) as typeof process.stderr.write;
@@ -553,7 +595,7 @@ test("#844 ACCEPTANCE, MUTATION TARGET: everything succeeds but the READ-BACK di
 test("REAL CLI: an unrecognised flag is refused by name, before gh ever runs", () => {
   assert.throws(
     () => execFileSync("node",
-      [CLI, "--title", "x", "--body", "y", "--session=worker-contracts", "--bogus-flag"], { encoding: "utf8" }),
+      [CLI, "--title", "x", "--body", "y", "--session=worker-contracts", ...RELEASE, "--bogus-flag"], { encoding: "utf8" }),
     (error: unknown) => {
       const e = error as { status?: number; stderr?: string };
       assert.equal(e.status, 2, `expected exit 2 from refuseUnknownFlags, got: ${e.stderr}`);
@@ -566,7 +608,7 @@ test("REAL CLI: an unrecognised flag is refused by name, before gh ever runs", (
 test("REAL CLI: --session= itself is a KNOWN flag to the guard, never refused as unrecognised", () => {
   assert.throws(
     () => execFileSync("node",
-      [CLI, "--title", "x", "--body", "no sections", "--session=worker-contracts"], { encoding: "utf8" }),
+      [CLI, "--title", "x", "--body", "no sections", "--session=worker-contracts", ...RELEASE], { encoding: "utf8" }),
     (error: unknown) => {
       const e = error as { status?: number; stderr?: string };
       assert.equal(e.status, 1, `expected the section-check refusal, got: ${e.stderr}`);
@@ -580,7 +622,7 @@ test("REAL CLI: a genuinely known gh flag (e.g. -l/--label) is NOT refused by th
   + "refused by the SECTION check instead, proving the guard did not swallow it as unknown", () => {
   assert.throws(
     () => execFileSync("node",
-      [CLI, "--title", "x", "--body", "no sections", "--session=worker-contracts", "-l", "backlog"],
+      [CLI, "--title", "x", "--body", "no sections", "--session=worker-contracts", ...RELEASE, "-l", "backlog"],
       { encoding: "utf8" }),
     (error: unknown) => {
       const e = error as { status?: number; stderr?: string };
@@ -602,4 +644,91 @@ test("REAL CLI: no --session= at all refuses with its own message, distinct from
       return true;
     },
   );
+});
+
+// --- #1011: A ROW DECLARES A RELEASE, OR IT IS NOT FILED --------------------------------------------
+//
+// `--milestone` sat in the passthrough allowlist and nowhere else: this tool accepted one, never asked for
+// one, and never confirmed one -- while the org's health check reads a row with neither a milestone nor
+// `out-of-release` as a finding every thirty minutes. Two rules about the same row with nothing comparing
+// them. Three rows landed that way on 2026-09-11; #1003 also reached the tracker off Project 2 and blocked
+// every Status move in the org until it was boarded by hand.
+
+/** Files with `argv`, answering every lookup from fixtures -- nothing here reaches GitHub. */
+function fileWith(argv: string[], overrides: Record<string, unknown> = {}) {
+  let created: string[] | null = null;
+  const code = createIssue(argv, {
+    ...happyDeps("worker-contracts", "backlog"),
+    spawnGh: (a: string[]) => { created = a; return FILED_URL; },
+    ...overrides,
+  });
+  return { code, created };
+}
+
+test("#1011: neither a milestone nor `out-of-release` is REFUSED, and nothing is filed", () => {
+  const { code, created } = fileWith(
+    ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts"]);
+  assert.equal(code, 1);
+  assert.equal(created, null,
+    "the refusal must come BEFORE `gh issue create`, or it leaves a row the board then trips over");
+});
+
+test("#1011: the refusal names BOTH doors and the milestones that actually exist", () => {
+  const message = milestoneRefusal(["CI reset", "Road to version one"]);
+  assert.match(message, /--milestone <one of "CI reset", "Road to version one">/,
+    "a hard-coded list is a second copy of something GitHub holds; this is the live one");
+  assert.match(message, /--label out-of-release/);
+  assert.match(message, /nothing was sent to GitHub/);
+});
+
+test("#1011 FOLLOWABILITY: filing again with the refusal's OWN suggestion passes", () => {
+  // This repo's rule is that following a refusal exactly must pass. Read the milestone out of the message
+  // the tool printed, put it back on the command line, and file again.
+  const suggested = /--milestone <one of "([^"]+)"/.exec(milestoneRefusal(["CI reset", "Road to version one"]));
+  assert.ok(suggested, "the refusal must name a milestone a reader can copy");
+  const { code, created } = fileWith(["--title", "a real row", "--body", COMPLETE_BODY,
+    "--session=worker-contracts", "--milestone", suggested![1]]);
+  assert.equal(code, 0, "obeying the refusal must file the row");
+  assert.ok((created as unknown as string[]).includes(suggested![1]));
+});
+
+test("#1011: `--label out-of-release` with no milestone is ALLOWED -- the deliberate escape", () => {
+  const { code } = fileWith(["--title", "a real row", "--body", COMPLETE_BODY,
+    "--session=worker-contracts", "--label", "out-of-release"],
+  { fetchLabels: () => ({ number: 900, title: "a real row", labels: ["backlog", "lane:any"] }),
+    run: afterRun(appendFiledBy(COMPLETE_BODY, "worker-contracts"), "") });
+  assert.equal(code, 0);
+});
+
+test("#1011: a milestone GITHUB DID NOT APPLY is named by the read-back -- the #1003 half", () => {
+  // `gh` accepting a flag is not evidence the field is set: a flag nobody reads is this repo's own
+  // recorded defect (silently discarded, the default runs, success reported). Only a fresh read says.
+  const { code } = fileWith(["--title", "a real row", "--body", COMPLETE_BODY,
+    "--session=worker-contracts", ...RELEASE],
+  { run: afterRun(appendFiledBy(COMPLETE_BODY, "worker-contracts"), "") });
+  assert.equal(code, 2, "FILED but unverified is exit 2, never success");
+});
+
+test("#1011: a failed milestone LOOKUP does not turn the refusal into a pass", () => {
+  // CANNOT_ASK on the SUGGESTION, never on the RULE. The list degrades to a command the reader can run.
+  const { code, created } = fileWith(
+    ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts"],
+    { milestones: () => null });
+  assert.equal(code, 1);
+  assert.equal(created, null);
+  const unreadable = milestoneRefusal(null);
+  assert.match(unreadable, /gh api repos\/.+\/milestones/, "when it cannot name them it names how to ask");
+  // worker-capture's review of #1016: the fallback gets its OWN line rather than being interpolated where
+  // a list belongs -- `--milestone <one of the milestone list could not be read...>` reads as garbage
+  // inside angle brackets, in the one case where the reader cannot see the list either.
+  assert.doesNotMatch(unreadable, /<one of .*could not be read/);
+  assert.match(unreadable, /--milestone <a milestone>/);
+});
+
+test("#1011: nothing INFERS a milestone -- labels, a parent and a Region do not decide a release", () => {
+  // A milestone chosen by a tool looks decided, and a wrong one is worse than an absent one because the
+  // health check goes quiet. The tool refuses and names the options; a person picks.
+  const { code } = fileWith(["--title", "a real row", "--body", COMPLETE_BODY,
+    "--session=worker-contracts", "--label", "ready", "--parent", "908"]);
+  assert.equal(code, 1, "a row rich in signals is still refused -- none of them names a release");
 });

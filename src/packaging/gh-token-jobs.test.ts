@@ -2,12 +2,13 @@
 //
 // 2026-09-07: the `board` job failed with `gh: To use GitHub CLI in a GitHub Actions workflow, set the
 // GH_TOKEN environment variable`, blocking the morning board PDF. The `ts` job has carried that env for
-// months, with a comment naming `board-style.test.ts` as the reason; when the board tests were split into
-// their own job the env did not travel with them. Third instance of the #125 shape — a fact stated in one
-// place and relied on in another, with nothing comparing them.
+// months, with a comment naming `board-style.test.ts` (retired 2026-09-10, guard triage 4 of 6 -- see
+// docs/operational-lessons.md) as the reason; when the board tests were split into their own job the env
+// did not travel with them. Third instance of the #125 shape — a fact stated in one place and relied on
+// in another, with nothing comparing them.
 //
 // THE OBVIOUS TEST WOULD HAVE FOUND NOTHING. Neither board test contains the string `gh` as a command:
-// `board-style.test.ts` imports `scripts/board-data.mjs`, and it is `collect()` down there that shells
+// `board-style.test.ts` imported `scripts/board-data.mjs`, and it was `collect()` down there that shelled
 // out. So this walks each job's test glob AND every local import beneath it, to any depth, and asks
 // whether a `gh` spawn is reachable at all.
 // #621: `localImports` moved to `scripts/local-import-closure.mjs`, SHARED with `acceptance-commands.mjs`
@@ -74,14 +75,21 @@ test("ci.yml parses into real jobs — a scrape that finds nothing must FAIL, no
   assert.ok(parsed.some((j) => j.name === "ts"), "the `ts` job must be found by name");
 });
 
-test("board-style.test.ts reaches `gh` only TRANSITIVELY — the premise this guard rests on", () => {
-  const entry = join(REPO, "packages/lab/src/packaging/board-style.test.ts");
-  assert.ok(existsSync(entry), "board-style.test.ts must exist for this guard to mean anything");
+test("board-document-chrome-resolver.test.ts reaches `gh` only TRANSITIVELY — the premise this guard rests on", () => {
+  // board-style.test.ts (the original example, imported scripts/board-data.mjs's collect()) retired
+  // 2026-09-10 in guard triage 4 of 6. This file makes the identical claim through a different import:
+  // it takes `resolveChromeBinary` from `scripts/board-document.mjs`, which shells to `gh release`
+  // directly a few hundred lines further down the same module -- the same "no `gh` in the test file
+  // itself, only in what it transitively imports" shape.
+  const entry = join(REPO, "packages/lab/src/packaging/board-document-chrome-resolver.test.ts");
+  assert.ok(existsSync(entry),
+    "board-document-chrome-resolver.test.ts must exist for this guard to mean anything");
   assert.doesNotMatch(readFileSync(entry, "utf8"), SPAWNS_GH,
-    "board-style.test.ts names a `gh` spawn directly — if that is now true, a test grepping the test "
-    + "files alone would suffice and this walker's reason for existing has changed");
-  assert.ok(reachesGh(entry), "board-style.test.ts must reach a `gh` spawn through its local imports; "
-    + "if it no longer does, this guard is protecting nothing and should be re-scoped");
+    "board-document-chrome-resolver.test.ts names a `gh` spawn directly — if that is now true, a test "
+    + "grepping the test files alone would suffice and this walker's reason for existing has changed");
+  assert.ok(reachesGh(entry),
+    "board-document-chrome-resolver.test.ts must reach a `gh` spawn through its local imports; if it no "
+    + "longer does, this guard is protecting nothing and should be re-scoped");
 });
 
 test("every ci.yml job whose tests can reach a `gh` spawn declares GH_TOKEN", () => {

@@ -111,12 +111,15 @@ test("a failed required-contexts or check-runs lookup is CANNOT TELL, and names 
 test("the workflow that runs this has no schedule key -- it must fire on push, never on a cron", () => {
   // The exact reason `board-liveness.test.ts` and `npm-token-liveness.test.ts` pin the same thing: a
   // watchdog that is itself scheduled is disabled by the same 60-day inactivity rule it exists to catch.
-  const workflow = readFileSync(path.join(REPO_ROOT, ".github/workflows/workflow-run-liveness.yml"), "utf8");
+  // #901: a step in trunk-guard.yml's watchdogs job since 2026-09-10, not a workflow of its own.
+  const workflow = readFileSync(path.join(REPO_ROOT, ".github/workflows/trunk-guard.yml"), "utf8");
   assert.doesNotMatch(workflow, /^\s*schedule:/m,
-    "workflow-run-liveness.yml must never gain a `schedule:` trigger -- see board-liveness.yml's own "
-    + "header for why a watchdog cannot be a cron");
+    "trunk-guard.yml must never gain a `schedule:` trigger -- see its own header for why a watchdog "
+    + "cannot be a cron");
   assert.match(workflow, /^\s*push:/m, "it must trigger on push, which cannot be disabled by inactivity");
-  assert.match(workflow, /continue-on-error:\s*true/,
-    "this job's finding is about a commit that already merged -- it must never fail the push that "
+  const step = /- name: Was the pull request that produced this commit actually tested\?[^]*?run: node scripts\/workflow-run-liveness\.mjs --sha=/.exec(workflow);
+  assert.ok(step, "the workflow-run watchdog step must still be in trunk-guard.yml");
+  assert.match(step![0], /continue-on-error:\s*true/,
+    "this step's finding is about a commit that already merged -- it must never fail the push that "
     + "happens to trigger it, which would blame an unrelated author for a gap that opened earlier");
 });
