@@ -292,8 +292,8 @@ test("trunk-revert-guard.mjs refuses to run without --merge", () => {
 
 // --- the workflow wiring: an added STEP inside trunkGate, never a new job ---
 
-test("trunk-guard.yml runs trunk-revert-guard.mjs INSIDE trunkGate, not as a separate job", () => {
-  const doc = parseYaml(readFileSync(`${REPO}/.github/workflows/trunk-guard.yml`, "utf8")) as {
+test("trunk.yml runs trunk-revert-guard.mjs INSIDE trunkGate, not as a separate job", () => {
+  const doc = parseYaml(readFileSync(`${REPO}/.github/workflows/trunk.yml`, "utf8")) as {
     jobs: Record<string, { steps: Array<Record<string, unknown>> }>,
   };
   const trunkGateRuns = (doc.jobs.trunkGate.steps ?? []).map((s) => String(s.run ?? "")).join("\n");
@@ -315,7 +315,7 @@ test("trunk-guard.yml runs trunk-revert-guard.mjs INSIDE trunkGate, not as a sep
  * why that connection needs its own guard rather than an inference from reading the YAML once.
  */
 test("C3 ACCEPTANCE: trunk-revert-guard.mjs's step has no continue-on-error -- its failure must reach the job", () => {
-  const doc = parseYaml(readFileSync(`${REPO}/.github/workflows/trunk-guard.yml`, "utf8")) as {
+  const doc = parseYaml(readFileSync(`${REPO}/.github/workflows/trunk.yml`, "utf8")) as {
     jobs: Record<string, { steps: Array<Record<string, unknown>> }>,
   };
   const guardStep = doc.jobs.trunkGate.steps.find((s) =>
@@ -333,7 +333,7 @@ test("C3 ACCEPTANCE: decideRevert fires on trunkGate's or trunkBuildTest's failu
   // so decideRevert must watch both -- but `trunkBuildTest`'s own `needs: trunkGate` already means it
   // reads `skipped`, never `failure`, when trunkGate itself failed, so checking both here does not
   // double-fire on one real failure.
-  const doc = parseYaml(readFileSync(`${REPO}/.github/workflows/trunk-guard.yml`, "utf8")) as {
+  const doc = parseYaml(readFileSync(`${REPO}/.github/workflows/trunk.yml`, "utf8")) as {
     jobs: Record<string, { needs?: string | string[], if?: string, uses?: string }>,
   };
   const decideRevert = doc.jobs.decideRevert;
