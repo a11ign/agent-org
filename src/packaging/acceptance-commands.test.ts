@@ -1583,3 +1583,40 @@ test("#1036: the tolerance is for the WRAPPER, never for surrounding text -- a r
     ["node scripts/x.mjs --History: full-run"]);
   assert.equal(hasFullHistoryDeclaration(body), false);
 });
+
+// ---------------------------------------------------------------------------------------------------
+// #1116: THE REFUSAL NAMED THE FAULT AND NEVER THE REMEDY.
+//
+// `// no-token:` appeared in this file's messages exactly once — in the branch that fires when you get it
+// WRONG. So an author learned the mechanism existed only by misusing it. Measured on #1009: the author
+// spent the fix moving assertions between files, and the declaration that would have answered it was four
+// hundred lines from the message that refused them.
+//
+// A GUARD MESSAGE MUST BE FOLLOWABLE. This one said what was wrong without saying what to do.
+// ---------------------------------------------------------------------------------------------------
+
+test("#1116: a closure refusal names `// no-token:` when that declaration would actually hold", () => {
+  const hits = deriveClosureRequirements("packages/lab/src/packaging/merge-guard.test.ts");
+  const token = hits.find((h: { requirement: string }) => h.requirement === "token");
+  assert.ok(token, "merge-guard.test.ts reaches `gh` through mergeReadiness -- if this is empty the "
+    + "fixture has changed and the rest of this test proves nothing");
+  const message = closureRequirementMessage(token);
+
+  assert.match(message, /via mergeReadiness → gh →/, "the chain is still named -- the fault half is kept");
+  assert.match(message, /no-token: gh/,
+    "and the REMEDY is named, with the function to declare. Without this an author learns the mechanism "
+    + "exists only by getting it wrong, which is the one path that reports it");
+  assert.match(message, /every input it passes is injected/,
+    "and the CONDITION under which it applies, because the declaration is a claim about the test and not "
+    + "a way past the check");
+});
+
+test("#1116: the remedy is offered only when it would HOLD — advice a reader cannot follow is worse than none", () => {
+  // #1059's shape: `doctor`'s `next:` line once sent a reader to a script that had just refused them.
+  // The suggestion is checked against the entry's own comment-stripped code before it is made, so a file
+  // that really does call the function is never told to declare that it does not.
+  const already = deriveClosureRequirements("packages/lab/src/packaging/update-branch-sweep.test.ts");
+  assert.deepEqual(already, [],
+    "this file already declares `// no-token: gh`, so it has no token requirement to be advised about -- "
+    + "the control that the advice is not simply appended to everything");
+});
