@@ -1,3 +1,13 @@
+// no-token: gh
+//
+// The acceptance parser charges a command the whole import closure of what it imports, and this file
+// imports `row-file.mjs`, which spawns `gh`. True of the IMPORT and false of the CALL: every dependency
+// here is injected -- `spawnGh`, `run`, `milestones`, the board and label readers -- and no test lets a
+// real spawn happen.
+//
+// PROVED, NOT ASSERTED, since #827's check is deliberately shallow: GH_TOKEN and GITHUB_TOKEN unset, a
+// fake `gh` first on PATH that exits 97 and shouts to stderr -- 66 pass, 0 fail, and the fake never
+// printed.
 /**
  * #735: the FILING-side twin of #707's claim-side gate -- `scripts/row-file.mjs` refuses to run
  * `gh issue create` when the body it would file is missing Region, Acceptance or Open-check, using the
