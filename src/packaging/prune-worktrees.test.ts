@@ -567,7 +567,11 @@ test("#933: the report names worktrees with MODIFIED TRACKED files and no others
   const root = buildStrandedFixture();
   try {
     const { examined, stranded } = strandedWork(root);
-    assert.ok(examined >= 4, `expected the primary and its three worktrees, examined ${examined}`);
+    // THREE, NOT FOUR: `examined` counts what was examined, and the primary is skipped before the count.
+    // It said four until worker-judge mutated it to `entries.length + 99` and got 0 red — the count was
+    // held as PRINTED and never as COUNTING.
+    assert.equal(examined, 3,
+      `expected the three linked worktrees and NOT the primary, examined ${examined}`);
     const named = stranded.map((w) => w.branch).sort();
     assert.deepEqual(named, ["agent/live", "dispatcher/retired"],
       "the untracked-only worktree must NOT appear — it is the 31-of-58 noise this report exists to drop");
@@ -666,5 +670,29 @@ test("#933: a worktree that CANNOT BE READ is counted and named, never dropped a
     assert.ok(!read.stranded.some((w) => w.path === gone), "and not counted among the stranded");
     assert.match(formatStranded(read), /COULD NOT BE READ/,
       "and the head line says so, because 'M carry changes' out of N is false if one of the N was skipped");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#1058: a merge status nobody could read is NOT rendered as 'not an ancestor'", () => {
+  // worker-judge's blocker on #1058: `mergeStatus(...) === "merged"` made `"unknown" === "merged"` false,
+  // so "could not ask" and "asked, the answer is no" became one boolean — and the line then read
+  // "adds no commit origin/main lacks (and is not an ancestor of it) -- the uncommitted change is ALL the
+  // work there is", which is a positive claim built from an unanswerable question. Three lines from
+  // `trackedChanges`, where the same distinction was already right.
+  const root = buildStrandedFixture();
+  try {
+    const run = (cmd: string, args: string[], opts?: { cwd?: string }) => {
+      // the one question that cannot be answered; everything else is the real git
+      if (args[0] === "merge-base") { const e = new Error("cannot ask"); (e as { status?: number }).status = 128; throw e; }
+      return execFileSync(cmd, args, { ...opts, env: sandboxGitEnv(), encoding: "utf8" });
+    };
+    const read = strandedWork(root, { run });
+    assert.ok(read.stranded.length > 0, "this must not pass by having found nothing to report on");
+    for (const w of read.stranded.filter((x) => x.branch !== null)) {
+      assert.equal(w.onMain, "unknown",
+        "an unreadable merge status is `unknown`, never `false` — `=== \"merged\"` is the collapse");
+    }
+    assert.doesNotMatch(formatStranded(read), /is not an ancestor of it/,
+      "and the line must not make a positive claim about ancestry it could not establish");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
