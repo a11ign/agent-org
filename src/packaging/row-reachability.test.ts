@@ -28,14 +28,13 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
-
-import { startability, subjectAndRegionFacts, symbolOnMain, refsCarryingSymbol }
+import { startability, subjectAndRegionFacts, symbolOnMain, refsCarryingSymbol, proveOriginMainReadable }
   from "../../../../scripts/row-reachability.mjs";
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 
 const examined = { paths: 3, symbols: 2 };
 const clear = { row: 189, subjectsMissing: [], heldRegions: [], examined };
+
 
 test("THE #186 CASE: the subject does not exist on main, and no region check would see it", () => {
   const v = startability({
@@ -331,6 +330,12 @@ test("#719 REGRESSION: #687's real body, whose Region misses environmentKey's ac
     fileURLToPath(new URL("./fixtures/issue-687-body.txt", import.meta.url)), "utf8");
   const result = subjectAndRegionFacts(body);
   assert.ok(result.examined.symbols > 0, "the fixture must actually name a symbol, or this proves nothing");
+  // #772: AND THE REF POPULATION, for the same reason one line up. `refs: refs.length` being spelled in the
+  // source is not the same as `unmergedRefs()` being what fills it -- `const refs = []` keeps the spelling,
+  // keeps the count, and reports zero for every row for ever, with the NOTE printing each time.
+  assert.ok(result.examined.refs !== undefined && result.examined.refs > 0,
+    "this checkout has unmerged remote branches, so a zero here means the search read no population -- "
+    + "the same 'proves nothing' the symbol floor beside it guards against");
   const missing = result.subjectsMissing.map((s) => s.name);
   assert.ok(!missing.includes("environmentKey"),
     "environmentKey has been on main all along (packages/lab/src/training/capture-cache.mjs); reporting "
@@ -439,25 +444,18 @@ test("#772 CONTROL: a real ref that genuinely lacks the symbol is still a plain,
     "git grep's exit 1 is a genuine 'not present', and must stay a quiet empty result");
 });
 
-test("#772: `onMain` PROVES `origin/main` resolvable, so a 128 afterwards is about the PATH", () => {
-  // worker-judge's blocker: the fix was in the file and nothing held it. Dropping
-  // `assertOriginMainReadable()` turned NOTHING red, because `cat-file -e` gives 128 for a missing path
-  // and 128 for a missing revision alike -- so with the revision unproved, every declared path reads as
-  // absent and the row reports its whole Region unlanded. Asserted on the source, because the alternative
-  // is a checkout with no `origin/main` inside one that has it.
-  const source = readFileSync(`${REPO}scripts/row-reachability.mjs`, "utf8");
-  const onMain = source.slice(source.indexOf("const onMain ="), source.indexOf("let originMainProved"));
-  assert.match(onMain, /assertOriginMainReadable\(\);/,
-    "without proving the revision first, `catch { return false }` cannot tell a missing path from a "
-    + "missing origin/main -- git returns 128 for both");
+test("#772: proving `origin/main` is DRIVEN -- a `rev-parse` that fails must reach CANNOT_ASK", () => {
+  // The stub is the whole fixture, and it is here because the alternative -- a checkout with no
+  // `origin/main` inside one that has it -- is a sandbox this test does not need. `cat-file -e` returns
+  // 128 for a missing PATH and 128 for a missing REVISION alike, so without proving the revision first
+  // every declared path reads as absent and the row reports its whole Region unlanded.
+  //
+  // Driven rather than asserted on the source: a text check catches the call being DELETED and misses a
+  // swallowing `try` inside it -- still called, still named, unable to fail. worker-judge's finding, and
+  // it is the proof that proves nothing.
+  assert.throws(() => proveOriginMainReadable({ run: () => { throw new Error("fatal: bad revision"); } }),
+    /bad revision/, "an unreadable origin/main must throw out to main()'s CANNOT_ASK path");
+  assert.doesNotThrow(() => proveOriginMainReadable({ run: () => "abc123" }),
+    "and a readable one must not -- the guard is a refusal, not a wall");
 });
 
-test("#772: the REF COUNT is computed by the thing that walks the refs, not only carried by the verdict", () => {
-  // The sharper half of the same blocker. `startability` is handed a facts object here, so the zero-ref
-  // NOTE could stay green forever while `subjectAndRegionFacts` quietly stopped counting -- the pure
-  // function keeping its promise while the thing feeding it changes underneath.
-  const source = readFileSync(`${REPO}scripts/row-reachability.mjs`, "utf8");
-  assert.match(source, /examined: \{[^}]*refs: refs\.length/s,
-    "`subjectAndRegionFacts` must report how many unmerged refs it searched, or the NOTE is about a "
-    + "number nobody computes");
-});
