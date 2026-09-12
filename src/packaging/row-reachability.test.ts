@@ -28,6 +28,8 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
+
 import { startability, subjectAndRegionFacts, symbolOnMain, refsCarryingSymbol }
   from "../../../../scripts/row-reachability.mjs";
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
@@ -435,4 +437,27 @@ test("#772 CONTROL: a real ref that genuinely lacks the symbol is still a plain,
   // The other direction, and the one a fix aimed only at the throw would break: exit 1 is a real answer.
   assert.deepEqual(refsCarryingSymbol("a-symbol-no-tree-here-contains-zzz", ["origin/main"]), [],
     "git grep's exit 1 is a genuine 'not present', and must stay a quiet empty result");
+});
+
+test("#772: `onMain` PROVES `origin/main` resolvable, so a 128 afterwards is about the PATH", () => {
+  // worker-judge's blocker: the fix was in the file and nothing held it. Dropping
+  // `assertOriginMainReadable()` turned NOTHING red, because `cat-file -e` gives 128 for a missing path
+  // and 128 for a missing revision alike -- so with the revision unproved, every declared path reads as
+  // absent and the row reports its whole Region unlanded. Asserted on the source, because the alternative
+  // is a checkout with no `origin/main` inside one that has it.
+  const source = readFileSync(`${REPO}scripts/row-reachability.mjs`, "utf8");
+  const onMain = source.slice(source.indexOf("const onMain ="), source.indexOf("let originMainProved"));
+  assert.match(onMain, /assertOriginMainReadable\(\);/,
+    "without proving the revision first, `catch { return false }` cannot tell a missing path from a "
+    + "missing origin/main -- git returns 128 for both");
+});
+
+test("#772: the REF COUNT is computed by the thing that walks the refs, not only carried by the verdict", () => {
+  // The sharper half of the same blocker. `startability` is handed a facts object here, so the zero-ref
+  // NOTE could stay green forever while `subjectAndRegionFacts` quietly stopped counting -- the pure
+  // function keeping its promise while the thing feeding it changes underneath.
+  const source = readFileSync(`${REPO}scripts/row-reachability.mjs`, "utf8");
+  assert.match(source, /examined: \{[^}]*refs: refs\.length/s,
+    "`subjectAndRegionFacts` must report how many unmerged refs it searched, or the NOTE is about a "
+    + "number nobody computes");
 });
