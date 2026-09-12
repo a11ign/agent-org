@@ -1611,6 +1611,36 @@ test("#1116: a closure refusal names `// no-token:` when that declaration would 
     + "a way past the check");
 });
 
+test("#1116: the remedy is NOT offered on a declaration already judged wrong", () => {
+  // worker-judge's pin. `hit.wrongDeclaration` short-circuits, which is right -- telling somebody to add
+  // a declaration they have just been told is wrong is #1059 twice over -- but NOTHING HELD IT, so a
+  // future edit could start doing exactly that. Driven over the shape rather than a real file, because
+  // no tracked file carries a wrong declaration and one planted here would be a fixture of the defect.
+  const wrong = { requirement: "token" as const, file: "x.mjs", line: 1, wrongDeclaration: true,
+    chain: ["packages/lab/src/packaging/merge-guard.test.ts", "scripts/merge-guard.mjs"] };
+  const message = closureRequirementMessage(wrong);
+  assert.match(message, /DOES call/, "the wrong-declaration refusal itself is unchanged");
+  assert.doesNotMatch(message, /may declare/,
+    "and it must NOT then suggest declaring the same thing -- advice that contradicts the sentence it is "
+    + "attached to is worse than none");
+});
+
+test("#1116: the remedy names the DISCRIMINATING condition, not only the mechanical one", () => {
+  // worker-judge's should-fix, and #1009 is the counter-example with an author attached: every input was
+  // injected and `gh` never executed, so "if every input it passes is injected" was SATISFIED and the
+  // declaration would still have been wrong. The mechanical precondition does not discriminate the case
+  // it needs to discriminate.
+  const token = deriveClosureRequirements("packages/lab/src/packaging/merge-guard.test.ts")
+    .find((h: { requirement: string }) => h.requirement === "token");
+  assert.ok(token, "the fixture must still reach `gh`, or this proves nothing");
+  const message = closureRequirementMessage(token);
+  assert.match(message, /not part of what this file tests/,
+    "the question a checker cannot answer must be asked of the author");
+  assert.match(message, /unit test wearing a consumer test's name/,
+    "and the exception must be NAMED -- a remedy offered without it is how a verified-true flag gets "
+    + "taken by an author under a red CI");
+});
+
 test("#1116: the remedy is offered only when it would HOLD — advice a reader cannot follow is worse than none", () => {
   // #1059's shape: `doctor`'s `next:` line once sent a reader to a script that had just refused them.
   // The suggestion is checked against the entry's own comment-stripped code before it is made, so a file
