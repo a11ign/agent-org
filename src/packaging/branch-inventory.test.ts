@@ -223,7 +223,7 @@ const runWithDriftAfter = (firstCallsBeforeDrift: number) => {
 };
 
 test("#1278: a branch that lands BETWEEN the two sweeps is reported as drift", () => {
-  const { reconciliation } = inventory({ run: runWithDriftAfter(1) as never });
+  const { reconciliation, counts } = inventory({ run: runWithDriftAfter(1) as never });
   assert.notDeepEqual(reconciliation.drift, { candidates: 0, noOpenPR: 0, merged: 0, unmerged: 0 },
     "the second sweep saw one more branch, and a single-read report cannot say so");
   assert.equal(reconciliation.drift.candidates, 1);
@@ -238,6 +238,13 @@ test("#1278: a branch that lands BETWEEN the two sweeps is reported as drift", (
   // 2 and fails; so does deleting the facts sweep. Both are regressions worth failing on.
   assert.equal(forEachRefCalls(), 3,
     "`countsNow` at the start, the facts sweep, `countsNow` at the end -- three branch reads");
+  // #1288: AND `counts` IS THE SECOND SWEEP'S. `worker-capture` reviewing #1285: the assertions above
+  // pin that two reads happen and NOT which one is reported. `counts: end` -> `counts: start` passes
+  // both, because `drift` is computed from BOTH snapshots -- so the printed table would silently become
+  // the pre-sweep figures while the drift line correctly said something had landed. A report whose body
+  // and whose drift line describe different moments, with every test green.
+  assert.equal(counts.candidates, 2,
+    "the second sweep saw 2 branches and the first saw 1 -- the table reports the second");
 });
 
 test("#1278 POSITIVE CONTROL: identical reads report NO drift -- it must stay sayable when true", () => {
