@@ -1,3 +1,7 @@
+// no-token: defaultRun
+//
+// #1409: every `gh` the CLI calls reaches a stub this file writes first on PATH, and every in-process test injects
+// `run`. `stranded-branches.mjs`'s `defaultRun`, the function that spawns a real `gh`, is never reached here.
 /**
  * `scripts/stranded-branches.mjs` finds a pushed branch that has NEVER had a PR of any state and still
  * carries commits `origin/main` lacks -- see that file's own header for the incident
@@ -6,15 +10,16 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, execFileSync as rawExecFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, realpathSync, readFileSync } from "node:fs";
+import { execFileSync, execFileSync as rawExecFileSync, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdtempSync, writeFileSync, rmSync, realpathSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import {
   fetchPushedBranches, fetchAllPRHeadRefs, fetchOpenPRs, branchesWithNoPR, aheadCount, strandedCandidates,
   PR_LIST_LIMIT, PR_PAGE_SIZE, MAX_PR_PAGES, decideForPR, staleClosureComment, sweepPullRequests, prForDecision } from "../../../../scripts/stranded-branches.mjs";
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
+import { REPO } from "../../../../scripts/repo-identity.mjs";
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, env: sandboxGitEnv(), encoding: "utf8" });
 
@@ -297,18 +302,70 @@ test("THE TWO-STAGE FILTER: a squash-merged branch is excluded by stage 1, befor
   } finally { cleanup(root, bareRoot); }
 });
 
-// --- Live, read-only smoke test against the real repo and the real CLI ---
+// --- The real CLI, end to end, with NO road to GitHub (#1409) ---
+//
+// It ran `node scripts/stranded-branches.mjs` in this checkout and accepted ANY of its three exit codes, so its PR
+// listing paged the live pulls API on every local run (worker-capture's census on #1275) -- and with no token it
+// still passed, on exit 2. Now the CLI runs inside the fixture repo above, so its `git` reads that repo's own
+// refs, and every `gh` it calls reaches a stub first on PATH that logs its argv. Each documented exit code is
+// driven and asserted EXACTLY, which the live version could not do.
+//
+// WHAT THIS CANNOT CATCH: the real pulls API's answer -- its paging and its `head.ref` field. The page walk and
+// its refusals are driven through an injected `run` above; the live read is the audit itself,
+// `npm run branches:stranded`, which no local test runs.
 
-test("the real CLI runs against the real repo and exits with one of its own three documented codes", () => {
-  const scriptPath = new URL("../../../../scripts/stranded-branches.mjs", import.meta.url).pathname;
-  let exitCode = 0;
+const SCRIPT = fileURLToPath(new URL("../../../../scripts/stranded-branches.mjs", import.meta.url));
+const PAGE_ONE = `api repos/${REPO}/pulls?state=all&per_page=${PR_PAGE_SIZE}&sort=created&direction=asc&page=1 `
+  + "--jq [.[] | {ref: .head.ref}]";
+
+/** The real CLI in `cwd`, with a `gh` first on PATH that logs its argv and prints `json` or fails. */
+function runCliWithStubGh(cwd: string, answer: { json: string } | { fail: string }) {
+  const stubDir = realpathSync(mkdtempSync(join(tmpdir(), "a11y-stranded-gh-")));
+  const log = join(stubDir, "argv.log");
+  const reply = "json" in answer ? `printf '%s' '${answer.json}'` : `echo '${answer.fail}' >&2; exit 1`;
+  writeFileSync(join(stubDir, "gh"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\n${reply}\n`);
+  chmodSync(join(stubDir, "gh"), 0o755);
   try {
-    execFileSync("node", [scriptPath], { encoding: "utf8" });
-  } catch (error) {
-    exitCode = (error as { status?: number }).status ?? -1;
+    const result = spawnSync(process.execPath, [SCRIPT], { cwd, encoding: "utf8",
+      env: { ...process.env, PATH: `${stubDir}${delimiter}${process.env.PATH ?? ""}` } });
+    const calls = existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [];
+    return { status: result.status, stdout: result.stdout, stderr: result.stderr, calls };
+  } finally {
+    rmSync(stubDir, { recursive: true, force: true });
   }
-  assert.ok([0, 1, 2].includes(exitCode),
-    `expected exit 0 (OK), 1 (candidates found) or 2 (could not ask); got ${exitCode}`);
+}
+
+test("the real CLI exits 2, CANNOT ASK, when `gh` cannot list PRs -- never a clean sweep over an unread board", () => {
+  const { root, bareRoot } = buildFixtureRepo();
+  try {
+    const cli = runCliWithStubGh(root, { fail: "stub: no GitHub here" });
+    assert.deepEqual(cli.calls, [PAGE_ONE], "the positive control: the CLI's one `gh` call reached the stub, not GitHub");
+    assert.equal(cli.status, 2, cli.stderr);
+    assert.match(cli.stderr, /COULD NOT AUDIT: stranded-branches: could not list PRs .*\(page 1\)/);
+  } finally { cleanup(root, bareRoot); }
+});
+
+test("the real CLI exits 1 and NAMES the one branch that is ahead of main with no PR ever opened", () => {
+  const { root, bareRoot, strandedBranch, emptyBranch, squashBranch } = buildFixtureRepo();
+  try {
+    const cli = runCliWithStubGh(root, { json: `[{"ref":"${squashBranch}"}]` });
+    assert.deepEqual(cli.calls, [PAGE_ONE], "one short page is the end of the walk");
+    assert.equal(cli.status, 1, cli.stderr);
+    assert.match(cli.stdout, /PR listing: 1 PR\(s\), 1 distinct head ref\(s\), over 1 REST call\(s\)/);
+    assert.match(cli.stdout, new RegExp(`^CANDIDATE  ${strandedBranch}  \\+1 commit\\(s\\) ahead of main`, "m"));
+    assert.doesNotMatch(cli.stdout, new RegExp(`CANDIDATE  (${emptyBranch}|${squashBranch})`),
+      "the empty-tip branch and the branch with a PR are never candidates");
+  } finally { cleanup(root, bareRoot); }
+});
+
+test("the real CLI exits 0 when every pushed branch has a PR or nothing main lacks", () => {
+  const { root, bareRoot, strandedBranch, squashBranch } = buildFixtureRepo();
+  try {
+    const cli = runCliWithStubGh(root, { json: `[{"ref":"${squashBranch}"},{"ref":"${strandedBranch}"}]` });
+    assert.deepEqual(cli.calls, [PAGE_ONE]);
+    assert.equal(cli.status, 0, cli.stderr);
+    assert.match(cli.stdout, /^OK {2}3 pushed branch\(es\) examined, none are stranded-branch candidates/m);
+  } finally { cleanup(root, bareRoot); }
 });
 
 /**
