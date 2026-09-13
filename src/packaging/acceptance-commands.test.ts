@@ -1839,6 +1839,9 @@ test("#1449 CONTROL: `execFile` of a DIFFERENT command is not charged", () => {
 
 // --- #1458: the spawn is located by SHAPE, so an edit above it moves the expectation with it ---
 
+/** How many lines the moved control inserts above `publishToDraftRelease`. */
+const PADDING_LINES = 7;
+
 /** A temporary tree holding `board-document-chrome-resolver.test.ts` and a given `board-document.mjs`. */
 function withBoardDocumentTree<T>(boardDocument: string, body: (entry: string) => T): T {
   const dir = mkdtempSync(join(tmpdir(), "acceptance-1458-"));
@@ -1857,10 +1860,12 @@ function withBoardDocumentTree<T>(boardDocument: string, body: (entry: string) =
 test("#1458 CONTROL: lines inserted above publishToDraftRelease move the shape lookup, the derived hit and the "
   + "message together", () => {
   const real = readFileSync(BOARD_DOCUMENT, "utf8");
-  const moved = real.replace(/^function publishToDraftRelease\(/m, "// #1458 padding\n".repeat(7) + "function publishToDraftRelease(");
+  const moved = real.replace(/^function publishToDraftRelease\(/m, "// #1458 padding\n".repeat(PADDING_LINES) + "function publishToDraftRelease(");
   assert.notEqual(moved, real, "the insertion must land");
+  const realLine = spawnLineOf(real);
+  assert.ok(realLine !== null, "the real file must have the shape before a moved copy can");
   const expected = spawnLineOf(moved);
-  assert.equal(expected, (spawnLineOf(real) ?? -100) + 7, "the shape lookup moves by exactly the inserted lines");
+  assert.equal(expected, realLine + PADDING_LINES, "the shape lookup moves by exactly the inserted lines");
   withBoardDocumentTree(moved, (entry) => {
     const hits = deriveClosureRequirements(entry);
     assert.equal(hits.length, 1);
