@@ -32,6 +32,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendFiledBy, boardAndVerify, boardingFor, bodyFromArgv, createIssue, directoryRegionWarning, fetchIssueBoardStatus, fileRefusalReason, issueNumberFromUrl, laneLabelsFor, milestoneRefusal, openCheckTranscriptRefusal, sessionFromArgv, slashlessDirectoryWarning, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy } from "../../../../scripts/row-file.mjs";
 import { filedByLine } from "../../../../scripts/row-claim.mjs";
+import { REPO } from "../../../../scripts/repo-identity.mjs";
 
 const CLI = fileURLToPath(new URL("../../../../scripts/row-file.mjs", import.meta.url));
 
@@ -1085,13 +1086,29 @@ test("#1241: a clause below the first line is still read", () => {
 // label step never runs, and the message named only the Status — so an operator following the refusal
 // exactly fixes the Status and stops, leaving the row invisible to every label-keyed view.
 
-const boardDeps = (moved: boolean) => ({
-  run: () => "",
+// #1250: the `run` stub RECORDS, because the fact both halves of the pair need to measure is a CALL --
+// "were the labels applied" -- and a stub that returns "" for everything cannot answer it in either
+// direction. It dispatches on argv only where the success path reads back, so the verify actually passes
+// and `ok: true` is a real outcome rather than a refusal the control happens not to match.
+type Board = { ok: true } | { ok: false; message: string };
+const boardRun = (calls: string[][]) => (cmd: string, argv: string[]) => {
+  calls.push([cmd, ...argv]);
+  if (argv.includes("--json") && argv.includes("body")) return "prose\n\nFiled-by: worker-capture\n";
+  if (argv.includes("--json") && argv.includes("milestone")) return "Road to version one";
+  return "";
+};
+const boardDeps = (moved: boolean, calls: string[][] = [], addFails = false) => ({
+  run: (cmd: string, argv: string[]) => {
+    if (addFails && argv[0] === "project" && argv[1] === "item-add") throw new Error("HTTP 502");
+    return boardRun(calls)(cmd, argv);
+  },
   fetchBoardStatus: () => "Backlog",
   fetchLabels: () => ({ labels: ["backlog", "lane:any"], body: "", milestone: "Road to version one" }),
   moveStatus: () => (moved ? { moved: true } : { moved: false, reason: "GraphQL 500" }),
   ensureLabels: () => {},
 });
+const labelCall = (calls: string[][]) =>
+  calls.find((c) => c[1] === "issue" && c[2] === "edit" && c.includes("--add-label"));
 const boardArgs = {
   issueNumber: 1248, url: "https://github.com/x/y/issues/1248",
   boarding: { status: "Backlog", label: "backlog" },
@@ -1108,12 +1125,44 @@ test("#1249: a Status failure names the labels it skipped, and how to apply both
     "and be followable: the command that repairs BOTH halves, not a description of one");
 });
 
-test("#1249 POSITIVE CONTROL: a Status that SUCCEEDS does not mention unapplied labels", () => {
-  // A message that always lists the labels satisfies the clause above perfectly and says nothing. This
-  // is what makes the first test a measurement rather than a string that is always present.
-  const r = boardAndVerify(boardArgs, boardDeps(true) as never);
-  // NARROWED, not cast: on the success path the type has no `message` at all, which is the shape
-  // saying the two outcomes are different things rather than one with an optional field.
-  assert.doesNotMatch("message" in r ? r.message : "", /were NOT applied/,
-    "a successful Status must not claim the labels were skipped -- they were not");
+test("#1249 POSITIVE CONTROL: when the Status succeeds the labels are actually APPLIED", () => {
+  // #1250, worker-capture: the control this replaces was `doesNotMatch(message, /were NOT applied/)` on
+  // the success return -- which is `{ ok: true }` with NO `message` field, so it compared the empty
+  // string and passed by construction for every possible implementation of the failure message. A check
+  // whose reading cannot move with the variable is not a control; it is a second copy of the claim.
+  //
+  // The two halves now measure ONE fact from both sides: on failure the message says the labels did not
+  // land, and on success they DID -- asserted at the call, which is the only place that is observable.
+  const calls: string[][] = [];
+  const r = boardAndVerify(boardArgs, boardDeps(true, calls) as never) as Board;
+  assert.equal(r.ok, true,
+    "the success path must actually succeed -- the old control passed on a read-back refusal too");
+  assert.deepEqual(labelCall(calls),
+    ["gh", "issue", "edit", "1248", "--repo", REPO, "--add-label", "backlog", "--add-label", "lane:any"],
+    "the labels the failure message says were SKIPPED are the ones this path applies");
+});
+
+test("#1249 NEGATIVE CONTROL: when the Status fails the labels are not applied at all", () => {
+  // The other side of the same fact. Without this, "the message says they were skipped" and "they were
+  // skipped" are two claims with nothing comparing them.
+  const calls: string[][] = [];
+  boardAndVerify(boardArgs, boardDeps(false, calls) as never);
+  assert.equal(labelCall(calls), undefined,
+    "the early return is what the refusal is reporting -- if the labels landed anyway it is lying");
+});
+
+test("#1250: the item-add rung names BOTH steps it skips, and repairs all three", () => {
+  // The rung worker-capture's own filing hit, and the one the first fix did not reach: item-add is the
+  // first of three, so its failure skips the Status AND the labels. An operator who follows it exactly
+  // must not end with a boarded row that has neither.
+  const calls: string[][] = [];
+  const r = boardAndVerify(boardArgs, boardDeps(true, calls, true) as never) as Board;
+  assert.equal(r.ok, false);
+  const message = (r as { message: string }).message;
+  assert.match(message, /neither the Status "Backlog" nor/, "it must name the Status as skipped");
+  assert.match(message, /`backlog`\/`lane:any`/, "and WHICH labels, not 'the labels'");
+  assert.match(message, /item-edit 2 --owner \S+ --url \S+ --field Status --value "Backlog"/,
+    "and be followable for the Status, not only describe it");
+  assert.match(message, /--add-label backlog --add-label lane:any/, "and for the labels");
+  assert.equal(labelCall(calls), undefined, "neither later step ran, which is what the message reports");
 });
