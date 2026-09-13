@@ -1,3 +1,6 @@
+// no-token: REPO
+// This file imports board-report.mjs, whose closure reads REPO from board-data.mjs, which spawns `gh`. Every test here
+// renders from an injected fact set and, since #1442, an injected instant; nothing here calls or spawns it.
 /**
  * Guard triage 4 of 6 (#906): the board's content/style guards retire with the org shape they policed.
  * What survives is this — that the board report renders at all — because a render failure is a defect a
@@ -48,4 +51,18 @@ test("#906 MUTATION TARGET: render() must not silently swallow a throwing sectio
   const broken = { ...MINIMAL_FACTS, conflict: null } as unknown as typeof MINIMAL_FACTS;
   assert.throws(() => render(broken),
     "a fact set missing a section render() depends on must fail loudly, not render a gap silently");
+});
+
+// --- #1442: the title's day is LONDON's, from editionDay, at an injected instant ---
+
+test("#1442: the title names LONDON's day -- 23:30Z in BST is already the 14th", () => {
+  // 2026-09-13T23:30Z is 00:30 BST on 14 September. A UTC slice titled it the 13th: the split #1302 removed from every
+  // other edition script, one reader further on (board-schedule-liveness reads a day from this heading).
+  assert.match(render(MINIMAL_FACTS, new Date("2026-09-13T23:30:00Z")), /^# Board report — 2026-09-14\n/);
+});
+
+test("#1442 POSITIVE CONTROL: at 07:13Z both zones agree, and in GMT 23:30Z is still the same day", () => {
+  // A test asserting only these would pass for either zone; the BST case above is the one that decides.
+  assert.match(render(MINIMAL_FACTS, new Date("2026-09-13T07:13:00Z")), /^# Board report — 2026-09-13\n/);
+  assert.match(render(MINIMAL_FACTS, new Date("2026-12-13T23:30:00Z")), /^# Board report — 2026-12-13\n/);
 });
