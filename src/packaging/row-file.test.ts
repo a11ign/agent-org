@@ -1330,3 +1330,39 @@ test("#1393: labelsOutOfRelease reads every spelling, folds case, and is the one
     assert.equal(declaresRelease(argv), false, `declaresRelease agrees: ${argv.join(" ")}`);
   }
 });
+
+// --- #1316: a `$ ` prompt marks a command line whatever its first word; adjacency still decides ---
+
+/** An Open-check asserting an output, with one fenced transcript whose lines are `lines`. */
+const openCheckWith = (lines: string[]) =>
+  "## Open-check\n\n```\n" + lines.join("\n") + "\n```\n\nOpen while it prints the refusal and exits 1.\n";
+
+test("#1316 ACCEPTANCE: a pasted run whose prompted command begins with echo, touch or printf is accepted", () => {
+  for (const first of ["echo", "touch", "printf"]) {
+    const body = openCheckWith([`$ ${first} x >> f && git commit f; echo "exit=$?"`, "pre-commit: refusing", "exit=1"]);
+    assert.equal(openCheckTranscriptRefusal(body), null, `a real paste starting with \`$ ${first}\` must be recognised as a command`);
+  }
+});
+
+test("#1316 the MEASURED case: worker-judge's #1314 transcript shape, pasted from the run, is accepted", () => {
+  const body = openCheckWith(['$ echo "one line" >> docs/README.md && git add docs/README.md && git commit -m x docs/README.md', "pre-commit: refusing -- staged files nobody has touched in 30m+:", "exit=1"]);
+  assert.equal(openCheckTranscriptRefusal(body), null);
+});
+
+test("#1316 CONTROL: two PROMPTED commands in a row are two commands, not a command and its output -- still refused", () => {
+  const body = openCheckWith(["$ echo a", "$ touch b"]);
+  assert.match(String(openCheckTranscriptRefusal(body)), /directly underneath/);
+});
+
+test("#1316 CONTROL: a prompted command with nothing printed under it is still refused -- adjacency is the property", () => {
+  const body = openCheckWith(["$ printf x"]);
+  assert.match(String(openCheckTranscriptRefusal(body)), /directly underneath/);
+});
+
+test("#1316 an UNPROMPTED line is still judged by the allowlist alone -- the prompt is what widens it", () => {
+  const unprompted = openCheckWith(["echo x", "3"]);
+  assert.match(String(openCheckTranscriptRefusal(unprompted)), /directly underneath/,
+    "without a prompt, 'echo x' is not recognised, so the 3 beneath it is not an output of anything");
+  assert.equal(openCheckTranscriptRefusal(openCheckWith(["git rev-list --count HEAD", "3"])), null,
+    "an allowlisted unprompted command with its output is accepted, as before");
+});
