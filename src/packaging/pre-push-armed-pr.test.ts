@@ -18,6 +18,12 @@
  * half) is exercised only for its FAIL-OPEN contract, never against the network -- see its own comment
  * for why `null` must always mean allow.
  */
+// no-token: gh
+//
+// #1408. `lookupArmedPrStatus` is called here only with an injected `run`, `requiredContexts` and `checkRuns`, and
+// `racesAnArmedMerge` is pure, so nothing in this file calls `gh`. The closure walk reaches it through `merge-guard.mjs`'s
+// module graph (`lookups.mjs`) rather than through anything this file runs -- #1275's census shim shows that: 0 `gh`
+// calls from this file, against 1 before.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -138,13 +144,45 @@ test("WIRING: main is skipped -- the guard never even shells out for it", () => 
   assert.match(result.stdout, /A11Y_REACHED_END/);
 });
 
-test("lookupArmedPrStatus returns null rather than throwing when `gh` cannot answer at all", () => {
-  // A repo name `gh` cannot possibly resolve is the cheapest reliable way to force the underlying `gh`
-  // call to fail, without needing network access to be absent -- `lookup()`'s own contract (shared with
-  // every other lookup in this file) is that ANY failure inside the wrapped call becomes `null`, never a
-  // thrown error reaching this test.
-  const status = lookupArmedPrStatus("this-branch-cannot-exist-anywhere-zzz-386");
-  // Either genuinely null (gh itself failed) or the real "no PR" shape -- both are honest, non-throwing
-  // answers, and either is fine here: the point is that calling this never throws.
-  assert.ok(status === null || status.armed === false);
+test("lookupArmedPrStatus returns null rather than throwing when `gh` cannot answer -- through an injected run, never the live gh -- #1408", () => {
+  // #1408: this asked the LIVE `gh` for a head that cannot exist, on every local run -- one GraphQL-backed
+  // `gh pr list`, counted by #1275's census. The contract is unchanged: ANY failure inside the lookup is `null`,
+  // "could not ask", which `racesAnArmedMerge` allows. What reaches gh is now the injected `run`.
+  const asked: string[][] = [];
+  const status = lookupArmedPrStatus("agent/some-branch", {
+    run: (args: string[]) => { asked.push(args); throw new Error("gh: could not answer"); },
+  });
+  assert.equal(status, null, "a failed lookup is null, never an answer");
+  assert.equal(asked.length, 1, "the injected run is what was asked, once -- nothing went to the real gh");
+  assert.deepEqual(asked[0].slice(0, 2), ["pr", "list"]);
+  assert.equal(asked[0][asked[0].indexOf("--head") + 1], "agent/some-branch", "for the branch being pushed");
+});
+
+test("#1408: no open PR for the branch is the unarmed shape, read through the injected run", () => {
+  const status = lookupArmedPrStatus("agent/no-pr-yet", { run: () => "[]" });
+  assert.deepEqual(status, { number: null, armed: false, green: false, behindBy: null });
+});
+
+test("#1408: an ARMED PR whose required checks are green reads its behind-by through the injected run -- the compare call is driven, not assumed", () => {
+  const asked: string[][] = [];
+  const run = (args: string[]) => {
+    asked.push(args);
+    if (args[0] === "pr" && args[1] === "list") {
+      return JSON.stringify([{ number: 7, autoMergeRequest: { enabledAt: "2026-09-13T20:00:00Z" }, headRefOid: "abc1234def" }]);
+    }
+    if (args[0] === "api" && String(args[1]).endsWith("/compare/main...abc1234def")) return JSON.stringify({ behind_by: 3 });
+    throw new Error(`an unexpected call reached run: ${args.join(" ")}`);
+  };
+  const status = lookupArmedPrStatus("agent/armed", {
+    run,
+    requiredContexts: () => ["gate"],
+    checkRuns: (sha: string) => {
+      assert.equal(sha, "abc1234def", "the check runs are read for the PR's own head");
+      return [{ name: "gate", status: "completed", conclusion: "success", completedAt: "2026-09-13T20:00:30Z" }];
+    },
+  });
+  assert.deepEqual(status, { number: 7, armed: true, green: true, behindBy: 3 },
+    "armed, green by the real checkReasons, and behind by what the injected compare said");
+  assert.deepEqual(asked.map((args) => args[0] === "api" ? [args[0], args[1].replace(/^repos\/[^/]+\/[^/]+\//, "")] : args.slice(0, 2)),
+    [["pr", "list"], ["api", "compare/main...abc1234def"]], "the pr list, then the compare -- both through run");
 });
