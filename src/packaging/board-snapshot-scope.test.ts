@@ -354,3 +354,79 @@ test("#1360 a row NOT on the board reads as null and is moved as before, still o
   assert.equal(requests, 1);
   assert.equal(mutations, 1, "null is not Done: the move runs, and gh's own 'is not an item' answer settles it");
 });
+
+// --- #1425: a Project the token cannot read is refused ONCE per process, not once per row ---------------------------
+//
+// closeRows job 103788334114 (trunk run 34781170721): 7 rows settled against a Project CI's token cannot read (#546),
+// each with its own failed read. #1360 cut each row to one read, and nothing recorded the refusal, so the next row read
+// again. A project-unreadable refusal is a fact about the token and the Project rather than about an item, so it
+// answers every later read in the process. Counts, not floors.
+
+const SEVEN_ROWS = [1393, 1332, 1267, 1400, 1394, 1350, 1384];
+
+/** An answer failing exactly as CI's token does against the Project (#546): exit 1, GraphQL's NOT_FOUND on stdout. */
+const unreadableProject = (): string => {
+  throw Object.assign(new Error("Command failed: gh api graphql"), { status: 1, stdout: CAPTURED_NO_PROJECT });
+};
+
+/** The close path over `rows` in ONE process: one scoped context, and the lookup and move as the entry points build them. */
+function settleRows(rows: number[], answer: (issue: number) => string) {
+  forgetScopedSnapshots();
+  const { request, argv } = requestOf(answer);
+  const context = contextOf(request);
+  const counter = { mutations: 0 };
+  const outcomes = rows.map((n) => settleClosedStatus(n, { moveStatus: moveThroughScope(context, counter),
+    log: () => {}, currentStatus: (issue: number) => scopedStatusOf(issue, context) }));
+  return { requests: argv.length, mutations: counter.mutations, outcomes };
+}
+
+test("#1425 DONE-WHEN 2, measured: 7 rows against an unreadable Project make ONE request, and all 7 refuse project-unreadable", () => {
+  const { requests, mutations, outcomes } = settleRows(SEVEN_ROWS, unreadableProject);
+  assert.equal(requests, 1, "the first row's refused read is recorded, and the other six refuse from the record");
+  assert.equal(mutations, 0);
+  assert.deepEqual(outcomes.map((outcome) => outcome.refused.map((refusal) => refusal.cause)),
+    SEVEN_ROWS.map(() => [PROJECT_UNREADABLE]),
+    "every row still refuses with the cause #546's DEGRADED bridge reads; a record that lost it would fail the run");
+});
+
+test("#1425: the MOVE's own scoped read honours the record too -- 7 moves with no lookup make ONE request", () => {
+  forgetScopedSnapshots();
+  const { request, argv } = requestOf(unreadableProject);
+  const context = contextOf(request);
+  let mutations = 0;
+  const messages = SEVEN_ROWS.map((n) => {
+    try {
+      withScopedSnapshot(() => { mutations += 1; }, [n], context);
+      return "mutated";
+    } catch (error) {
+      return (error as Error).message;
+    }
+  });
+  assert.equal(argv.length, 1);
+  assert.equal(mutations, 0, "no snapshot, no mutation (#399), for a recorded refusal as for the first");
+  assert.deepEqual(messages.map((message) => refusalCause(message)), SEVEN_ROWS.map(() => PROJECT_UNREADABLE));
+  assert.match(messages[1], /not reading Project 2 again for #1332 -- an earlier read in this process was refused/,
+    "a refusal from the record says it made no request, so nobody reads it as a second failed read");
+});
+
+test("#1425 CONTROL: a failure that is NOT project-unreadable is not recorded -- 7 rows still make 7 requests", () => {
+  const { requests, outcomes } = settleRows(SEVEN_ROWS, () => {
+    throw Object.assign(new Error("Command failed: gh api graphql\nerror connecting to api.github.com"), { status: 1 });
+  });
+  assert.equal(requests, 7, "a transient failure on one item says nothing about the next, so each is read");
+  assert.deepEqual(outcomes.map((outcome) => outcome.refused.map((refusal) => refusal.cause)), SEVEN_ROWS.map(() => ["other"]));
+});
+
+test("#1425 POSITIVE CONTROL: a readable board still reads each row once and moves it -- 7 rows, 7 requests, 7 mutations", () => {
+  const { requests, mutations, outcomes } = settleRows(SEVEN_ROWS, (n) => touched(n, { status: "In progress" }));
+  assert.equal(requests, 7, "one scoped read per row, which that row's move reuses (#1360)");
+  assert.equal(mutations, 7);
+  assert.ok(outcomes.every((outcome) => outcome.settled));
+});
+
+test("#1425: forgetting the process's snapshots forgets the record, so the next read asks again", () => {
+  settleRows([1393], unreadableProject);
+  const { requests, outcomes } = settleRows([1393], (n) => touched(n, { status: "Done" }));
+  assert.equal(requests, 1, "a record that survived the reset would refuse a readable board without asking");
+  assert.deepEqual(outcomes, [{ settled: true, refused: [] }]);
+});

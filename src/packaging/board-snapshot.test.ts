@@ -570,3 +570,53 @@ test("#1275: `touches` that names no issue refuses in the wrapper before gh is a
   assert.equal(ran, false);
   assert.equal(gh.calls.length, 0);
 });
+
+// --- #1425: the FULL route honours the same once-per-process record ---------------------------------------------------
+//
+// A mutation that names no item takes the full sweep. Against a Project the token cannot read, that sweep's first
+// page is refused, and before #1425 every later mutation in the process asked again. The record lives in the scoped
+// module, so both routes share one answer.
+
+/** A run failing every call as CI's token does against Project 2 (#546), or with `stdout` when one is given. */
+function refusingRun(message: string, stdout?: string) {
+  const calls: string[][] = [];
+  const run = (cmd: string, args: string[]): string => {
+    calls.push([cmd, ...args]);
+    throw Object.assign(new Error(message), { status: 1, ...(stdout === undefined ? {} : { stdout }) });
+  };
+  return { run, calls };
+}
+
+const PROJECT_2_NOT_FOUND = JSON.stringify({ data: { user: { projectV2: null } }, errors: [{ type: "NOT_FOUND",
+  path: ["user", "projectV2"], message: `Could not resolve to a ProjectV2 with the number ${PROJECT_NUMBER}.` }] });
+
+test("#1425: 7 full-route mutations against an unreadable Project make ONE request, and none mutates", () => {
+  forgetProcessSnapshot();
+  const board = refusingRun("Command failed: gh api graphql", PROJECT_2_NOT_FOUND);
+  let mutations = 0;
+  const messages: string[] = [];
+  for (let i = 0; i < 7; i += 1) {
+    try {
+      withBoardSnapshot(() => { mutations += 1; }, { ...quiet, run: board.run });
+    } catch (error) {
+      messages.push((error as Error).message);
+    }
+  }
+  assert.equal(board.calls.length, 1, "the first sweep's refusal is recorded, and the other six refuse from it");
+  assert.equal(mutations, 0);
+  assert.equal(messages.length, 7);
+  for (const message of messages) {
+    assert.match(message, /NOT_FOUND \(user\.projectV2\): Could not resolve to a ProjectV2 with the number 2/);
+  }
+  forgetProcessSnapshot();
+});
+
+test("#1425 CONTROL: a full-route failure that is NOT project-unreadable is read again on every mutation", () => {
+  forgetProcessSnapshot();
+  const board = refusingRun("Command failed: gh api graphql\nerror connecting to api.github.com");
+  for (let i = 0; i < 3; i += 1) {
+    assert.throws(() => withBoardSnapshot(() => {}, { ...quiet, run: board.run }), /could not read Project/);
+  }
+  assert.equal(board.calls.length, 3);
+  forgetProcessSnapshot();
+});
