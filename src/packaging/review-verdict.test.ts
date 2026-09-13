@@ -59,3 +59,17 @@ test("#1245: a real corrected comment carrying BOTH verdicts reads as the first 
   assert.equal(reviewVerdict(corrected).verdict, "not-convinced",
     "first match wins, stated rather than discovered -- this is a limit of the parser, not of the record");
 });
+
+test("#1245: the adverb BEFORE `convinced` negates too -- the gap worker-capture found on review", () => {
+  // `not\s+convinced` required ADJACENCY. My own fixture put the adverb AFTER ("not convinced yet"),
+  // which is the phrasing that survives it; the adverb BEFORE is the one that broke, and it turned a
+  // refusal into an APPROVAL. Latent rather than live -- 0 occurrences across 64 recent comments --
+  // which is exactly what was true of `UNCONVINCED` until the day it was written.
+  for (const body of ["not yet convinced", "I am not entirely convinced", "not at all convinced"]) {
+    assert.equal(reviewVerdict(body).verdict, "not-convinced", `"${body}" is a refusal`);
+  }
+  // AND THE BOUND IS A CHOICE. Unbounded, this would swing the other way and read a long sentence
+  // mentioning `convinced` in passing as a refusal.
+  assert.equal(reviewVerdict("this does not mean the reviewer was convinced").verdict, "convinced",
+    "a distant `not` must not negate -- three words is the bound, and this is the case that sets it");
+});
