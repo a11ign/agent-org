@@ -264,3 +264,29 @@ test("noteCarryOnPr reports (never throws) when the PR lookup itself fails", () 
   assert.equal(result.commented, false);
   assert.match((result as { reason: string }).reason, /authentication required/);
 });
+
+test("#1128: the carry STAMPS the worktree it creates, because a failed cleanup leaves an unowned tree",
+  () => {
+    // worker-judge's finding on #1244: the stamp writer had no caller, so every tree answered UNSTAMPED
+    // and the feature was indistinguishable from its absence. This is the machine caller. The cleanup in
+    // `carryBranch`'s `finally` is best-effort BY DESIGN, so a carry tree can outlive its carry --
+    // `/private/tmp/carry-742` is one on this machine today -- and that is exactly the tree somebody
+    // finds later with no way to tell whose it is.
+    const { primary, branch } = topo;
+    const workDir = mkdtempSync(join(tmpdir(), "carry-branch-stamped-"));
+    const seen: { dir: string, session: string }[] = [];
+    try {
+      const result = carryBranch(primary, branch,
+        { workDir, stamp: (dir: string, session: string) => { seen.push({ dir, session }); } });
+      assert.equal(result.carried, true, `expected the carry to succeed; got: ${JSON.stringify(result)}`);
+      assert.deepEqual(seen.map((s) => s.dir), [workDir],
+        "the carry must stamp the tree it created, exactly once -- and the injected stamper is what "
+        + "makes this an assertion about the CALL rather than about a file this test wrote itself");
+      assert.ok(seen[0].session.length > 0,
+        "a stamp with an empty session would read as UNSTAMPED, which is the one answer the writer must "
+        + "never produce");
+    } finally {
+      try { git(primary, ["worktree", "remove", "--force", workDir]); } catch { /* best effort */ }
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  });
