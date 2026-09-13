@@ -1,3 +1,13 @@
+// no-token: gh
+//
+// #1278 added `import { inventory }`, which pulls `branch-inventory-report.mjs` into this file's closure
+// -- and that file spawns `gh` (`openPrHeads`) and `git`. Nothing here reaches either: every test passes
+// `run` injected, and `ownerOfBranch`/`groupByOwner`/`reconcile` are pure.
+//
+// DRIVEN, not asserted. A `gh` on PATH that exits 1 loudly, then a failing `git` beside it, run against
+// the whole suite: 13/0 both times, exit 0 -- with the shim confirmed reachable first, so a silent PATH
+// miss could not read as a clean run. A CONSUMER assertion that really spawns must NOT carry this line.
+
 /**
  * #623: the four-fact inventory of every branch on `origin` with no open PR and commits `main` lacks.
  *
