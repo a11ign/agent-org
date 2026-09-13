@@ -130,3 +130,18 @@ test("#1360 only the exact resting state skips: a Status merely CONTAINING 'Done
     assert.equal(move.calls.length, 1, `${JSON.stringify(near)} is not the resting state this function names`);
   }
 });
+
+test("#1360 a Status read that FAILS refuses with its classified cause, and the move is never attempted", () => {
+  const move = countingMove();
+  const unreadable = settleClosedStatus(1393, { moveStatus: move.moveStatus, log: () => {},
+    currentStatus: () => { throw new Error("board-snapshot: could not read Project 2's item for #1393 -- refusing to mutate "
+      + "without a snapshot. NOT_FOUND (user.projectV2): Could not resolve to a ProjectV2 with the number 2."); } });
+  assert.equal(move.calls.length, 0, "no second read by the move: CI's unreadable Project would fail twice per row");
+  assert.equal(unreadable.settled, false);
+  assert.equal(unreadable.refused[0].cause, PROJECT_UNREADABLE, "classified where the refusal is made, as #546's bridge reads it");
+  assert.match(unreadable.refused[0].message, /could not read #1393's Status before moving it/);
+  const other = settleClosedStatus(8, { moveStatus: move.moveStatus, log: () => {},
+    currentStatus: () => { throw new Error("HTTP 502"); } });
+  assert.equal(other.refused[0].cause, "other", "CONTROL: a failure that is not the unreadable Project stays other");
+  assert.equal(move.calls.length, 0);
+});
