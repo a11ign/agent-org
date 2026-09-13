@@ -1,3 +1,4 @@
+// no-token: gh
 /**
  * RULE: DOES THIS ROW'S OWN REGION OVERLAP AN OPEN PR'S ACTUAL FILES? -- B4, #462. See
  * `scripts/row-claim/file-overlap-rule.mjs` for the full account -- it found its first real collision
