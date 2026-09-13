@@ -1,3 +1,4 @@
+// no-token: gh
 /**
  * #466 (C5): conflict metrics, READ FROM THE REPOSITORY rather than reported by a session.
  *
@@ -9,15 +10,16 @@
  * fixtures, no network or git needed. `mergedPRNeededReconciliation` calls `git` directly and is tested
  * against REAL commits already in this repository's history — the same idiom `board-report.test.ts` uses
  * for `whatMerged`'s real `git(["rev-parse", ...])` call, rather than mocking a wrapper this file does not
- * make injectable. `conflictMetrics` itself calls `gh` and is exercised live, the same idiom
- * `board-style.test.ts` already uses for `collect()` — CI's `ts` job has network and a real token; only
- * the `acceptance` job (a different job, not this one) is deliberately tokenless.
+ * make injectable. #1407: `conflictMetrics` is the LIVE entry and
+ * no test here calls it. `composeConflictMetrics` is the same composition with the `gh` listing handed in, and it
+ * is driven with recorded listings, so a local run makes no `gh` call.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  mergeLifetimeMinutes, hotspotFiles, mergedPRNeededReconciliation, conflictMetrics,
+  mergeLifetimeMinutes, hotspotFiles, mergedPRNeededReconciliation, composeConflictMetrics, PR_SEARCH_LIMIT, REPO,
 } from "../../../../scripts/board-data.mjs";
+import { readFileSync } from "node:fs";
 
 // --- mergeLifetimeMinutes: pure ---
 
@@ -98,31 +100,6 @@ function assertOrSkipIfUnresolvable(actual: boolean | null, expected: boolean, t
   assert.equal(actual, expected);
 }
 
-/**
- * `conflictMetrics` calls `gh`, and `docs/pipeline.md`'s own record of the `acceptance` job is explicit:
- * its ONLY `env:` is `PR_BODY` -- no `GH_TOKEN`, so `gh` has no credentials there at all. Verified by
- * reproducing the exact failure this job would hit: `env -u GH_TOKEN -u GITHUB_TOKEN HOME=<empty> gh pr
- * list ...` prints "To get started with GitHub CLI, please run: gh auth login" and exits 4 -- a different
- * message from `skipIfShallow`'s shallow-clone case, because it is a different cause, and this repository's
- * own rule is that two different faults must not print (or be caught by) the same pattern.
- *
- * This is `skipIfShallow`'s own remedy given the SAME treatment on the SECOND path that needed it -- #518
- * itself was called out for applying the fix to `mergedPRNeededReconciliation`'s tests and missing the
- * live `conflictMetrics` test, the "remedy reaching one of several paths" shape this repository's CLAUDE.md
- * names as its most expensive recurring one.
- */
-function skipIfNoGhAuth(fn: () => void): void {
-  try {
-    fn();
-  } catch (error) {
-    const message = String((error as { stderr?: string; message?: string }).stderr ?? error);
-    if (!/gh auth login|GH_TOKEN environment variable/i.test(message)) throw error;
-    console.log("SKIPPED: no GitHub CLI credentials in this environment (the acceptance job's token is "
-      + "scoped to contents:read and never exposed as GH_TOKEN) -- an honest skip, not a pass. Proven for "
-      + "real in the `ts` job, which has network and a real token (see PR body).");
-  }
-}
-
 test("mergedPRNeededReconciliation: THE REAL RECONCILED CASE -- PR #503's merge commit synced main twice", () => {
   const result = mergedPRNeededReconciliation({ number: 503,
     mergeCommit: { oid: "5fd57e051db0784fe23d24bf91700d8ce681f69f" } });
@@ -143,32 +120,98 @@ test("mergedPRNeededReconciliation: a bogus sha is unresolvable (null), not thro
   assert.equal(mergedPRNeededReconciliation({ number: 1, mergeCommit: { oid: "0".repeat(40) } }), null);
 });
 
-// --- conflictMetrics: live, real -- THE COMPOSED FIGURE, exercised end to end ---
+// --- composeConflictMetrics: THE COMPOSED FIGURE, driven with recorded `gh pr list` answers (#1407) ---
+//
+// It was live. `conflictMetrics(since)` ran `gh pr list --limit 500 --json ...files` searches on every local run
+// (worker-capture's census on #1275), and with no credentials it FAILED rather than skipped, because a refusal that
+// is not `gh auth login` was rethrown. The composition is now driven with a `run` that answers each search from a
+// listing this test writes, and every argv the composition sent is asserted.
+//
+// WHAT THIS CANNOT CATCH: GitHub's real answer -- what a `created:>=` search returns, the field names `--json`
+// yields, paging behind `--limit`. That is still exercised where it always mattered: `board-report.mjs` calls the
+// live `conflictMetrics` for every board edition. No local test reaches it any more, and that is the point.
 
-test("conflictMetrics: THE COMPOSED SHAPE, live -- every figure states its window and its method", () => {
-  skipIfNoGhAuth(() => {
-    // ONE HOUR, NOT A DAY -- this repository merges fast enough that a 24h window once meant a
-    // hundred-plus merged PRs, each costing `mergedPRNeededReconciliation` two or three real git
-    // subprocesses. A live wiring test proves the plumbing reaches GitHub and git for real; it does not
-    // need the whole day's volume to do that, and a shrinking window keeps this test's cost from growing
-    // with the queue's.
-    const since = new Date(Date.now() - 3600_000).toISOString();
-    const result = conflictMetrics(since);
-    assert.equal(result.since, since);
-    assert.equal(typeof result.method, "string");
-    assert.ok(result.method.length > 20, "the method must be a real sentence, not a placeholder");
-    assert.equal(typeof result.opened, "number");
-    assert.equal(typeof result.merged, "number");
-    assert.equal(typeof result.closedUnmerged, "number");
-    assert.equal(typeof result.lifetimeMinutes.count, "number");
-    assert.equal(typeof result.reconciliation.of, "number");
-    assert.equal(typeof result.reconciliation.unresolvable, "number");
-    assert.ok(Array.isArray(result.hotspotFiles));
-    // THE REFUSE-RATHER-THAN-ZERO PROPERTY, live: an uninspectable merge is never folded into the clean
-    // count -- neededReconciliation + (merges that resolved to false) + unresolvable must account for `of`.
-    assert.ok(result.reconciliation.neededReconciliation + result.reconciliation.unresolvable
-      <= result.reconciliation.of);
+const SINCE = "2026-09-08T00:00:00.000Z";
+const FIELDS = "number,title,createdAt,mergedAt,closedAt,mergeCommit,files";
+
+/** A `run` answering each search from `byQualifier`, keeping every argv it was sent. */
+function listingRun(byQualifier: Record<string, unknown[]>) {
+  const calls: string[][] = [];
+  const run = (args: string[]) => {
+    calls.push(args);
+    const qualifier = (args[args.indexOf("--search") + 1] ?? "").split(":")[0];
+    const answer = byQualifier[qualifier];
+    if (!answer) throw new Error(`no recorded listing for: ${args.join(" ")}`);
+    return JSON.stringify(answer);
+  };
+  return { run, calls };
+}
+
+// #503 and #502 are the REAL merge commits the reconciliation tests above already use; the rest is fixture.
+const RECONCILED = { number: 503, title: "fixture", createdAt: "2026-09-08T00:00:00Z", mergedAt: "2026-09-08T00:30:00Z",
+  closedAt: "2026-09-08T00:30:00Z", mergeCommit: { oid: "5fd57e051db0784fe23d24bf91700d8ce681f69f" },
+  files: [{ path: "a.mjs" }] };
+const CLEAN = { number: 502, title: "fixture", createdAt: "2026-09-08T00:00:00Z", mergedAt: "2026-09-08T02:00:00Z",
+  closedAt: "2026-09-08T02:00:00Z", mergeCommit: { oid: "67e4022226c35629a319d3eade62a0d6460fd784" },
+  files: [{ path: "a.mjs" }, { path: "b.mjs" }] };
+const NO_COMMIT = { number: 9001, title: "fixture", createdAt: "2026-09-08T00:00:00Z", mergedAt: "2026-09-08T00:10:00Z",
+  closedAt: "2026-09-08T00:10:00Z", mergeCommit: null, files: [{ path: "a.mjs" }] };
+const CLOSED = { number: 9002, title: "fixture", createdAt: "2026-09-08T01:00:00Z", mergedAt: null,
+  closedAt: "2026-09-08T01:05:00Z", mergeCommit: null, files: [{ path: "c.mjs" }] };
+
+test("composeConflictMetrics: THE COMPOSED SHAPE over recorded listings -- every search's argv, and every figure", () => {
+  const { run, calls } = listingRun({
+    created: [RECONCILED, CLEAN, NO_COMMIT, CLOSED],
+    merged: [RECONCILED, CLEAN, NO_COMMIT],
+    closed: [RECONCILED, CLEAN, NO_COMMIT, CLOSED], // `closed:>=` returns merged PRs too
   });
+  const result = composeConflictMetrics(SINCE, { run });
+  const search = (qualifier: string) => ["pr", "list", "--repo", REPO, "--state", "all", "--search",
+    `${qualifier}:>=${SINCE}`, "--limit", String(PR_SEARCH_LIMIT), "--json", FIELDS];
+  assert.deepEqual(calls, [search("created"), search("merged"), search("closed")],
+    "the three searches the live call makes, in order, each with its window and its limit");
+  assert.equal(result.since, SINCE);
+  assert.ok(result.method.length > 20, "the method must be a real sentence, not a placeholder");
+  assert.equal(result.opened, 4);
+  assert.equal(result.merged, 3);
+  assert.equal(result.closedUnmerged, 1, "a merged PR in the `closed:` listing is not closed-unmerged");
+  assert.equal(result.lifetimeMinutes.count, 3);
+  assert.deepEqual(result.hotspotFiles, [{ path: "a.mjs", prCount: 3 }, { path: "b.mjs", prCount: 1 },
+    { path: "c.mjs", prCount: 1 }], "deduped by PR number across the three listings");
+  assert.equal(result.reconciliation.of, 3);
+  // THE REFUSE-RATHER-THAN-ZERO PROPERTY: the merge with no commit is `unresolvable`, never clean. #503 and #502
+  // resolve only with full history; a shallow checkout reads all three as unresolvable, never as clean.
+  if (result.reconciliation.unresolvable === 3) {
+    console.log("SKIPPED the resolved-count half: this checkout could not inspect #503/#502 (a shallow clone).");
+    assert.equal(result.reconciliation.neededReconciliation, 0);
+  } else {
+    assert.deepEqual(result.reconciliation, { neededReconciliation: 1, of: 3, unresolvable: 1 });
+  }
+});
+
+test("composeConflictMetrics with no run is REFUSED by name, before any search -- a defaulted run is a live gh", () => {
+  assert.throws(() => composeConflictMetrics(SINCE), /prsBy\("created"\) needs a run/);
+  assert.throws(() => composeConflictMetrics(SINCE, {}), /prsBy\("created"\) needs a run/);
+});
+
+test("a listing AT the search limit is refused as possibly truncated; one row under it is read", () => {
+  const rows = (n: number) => Array.from({ length: n }, (_, i) => ({ number: i + 1, files: [] }));
+  const at = listingRun({ created: rows(PR_SEARCH_LIMIT), merged: [], closed: [] });
+  assert.throws(() => composeConflictMetrics(SINCE, { run: at.run }), /MAY BE TRUNCATED/);
+  const under = listingRun({ created: rows(PR_SEARCH_LIMIT - 1), merged: [], closed: [] });
+  assert.equal(composeConflictMetrics(SINCE, { run: under.run }).opened, PR_SEARCH_LIMIT - 1,
+    "the positive control: the refusal is the limit's, not every large listing's");
+});
+
+test("wiring: conflictMetrics is the live entry and hands in gh; the composition calls no gh of its own", () => {
+  const source = readFileSync(new URL("../../../../scripts/board-data.mjs", import.meta.url), "utf8");
+  const body = (name: string) => {
+    const start = source.indexOf(`export function ${name}(`);
+    assert.ok(start >= 0, `${name} is exported from board-data.mjs`);
+    return source.slice(start, source.indexOf("\n}\n", start)).replace(/\/\/.*$/gm, "");
+  };
+  assert.match(body("conflictMetrics"), /^export function conflictMetrics\(since\) \{\s*return composeConflictMetrics\(since, \{ run: gh \}\);\s*$/);
+  assert.doesNotMatch(body("composeConflictMetrics"), /\bgh\(|execFileSync/);
 });
 
 // --- MUTATION TARGET ---
