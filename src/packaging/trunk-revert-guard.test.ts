@@ -66,8 +66,12 @@ const SCRIPT = `${REPO}/scripts/trunk-revert-guard.mjs`;
  * worktree may be doing the same. A test mutating the checkout that drives the fleet, with a lock in the
  * failure mode. #640's class, found by worker-audit from a real collision (#890).
  *
- * `git clone --local` hardlinks the object store, so this costs almost nothing and keeps the real
- * history the tests need: `f2cdfaf3` and `fc9b89d2` are documented merges on main, and a synthetic
+ * `git clone --local --no-hardlinks` COPIES the object store rather than hard-linking it, because a hard
+ * link cannot cross filesystems: on a host whose `/tmp` is tmpfs and whose checkout is not (the `agents`
+ * host), plain `--local` failed every run with `Invalid cross-device link` before one assertion ran
+ * (#1271). macOS and GitHub's runners keep `/tmp` on the root filesystem, which is why it never fired
+ * there. The copy is cheap -- 0.30 s and 29 M on `agents`, 2026-09-13 -- and keeps the real history the
+ * tests need: `f2cdfaf3` and `fc9b89d2` are documented merges on main, and a synthetic
  * fixture could not stand in for them without inventing the very shapes the guard is being proved
  * against.
  *
@@ -79,7 +83,8 @@ const SCRIPT = `${REPO}/scripts/trunk-revert-guard.mjs`;
  * none of these tests writes to it.
  */
 const CLONE = realpathSync(mkdtempSync(join(tmpdir(), "a11y-revert-guard-")));
-execFileSync("git", ["clone", "--local", "--quiet", REPO, CLONE], { stdio: "pipe", env: sandboxGitEnv() });
+execFileSync("git", ["clone", "--local", "--no-hardlinks", "--quiet", REPO, CLONE],
+  { stdio: "pipe", env: sandboxGitEnv() });
 
 /**
  * A clone of a SHALLOW checkout is shallow, and the two real merges below are then simply absent --
