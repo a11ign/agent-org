@@ -89,6 +89,23 @@ test("#623: rowState separates the three cases a reader would otherwise conflate
   assert.equal(facts("agent/no-number", null), "no row number in the name");
 });
 
+test("#623: a trailing number that names a PULL REQUEST is not read as a row", () => {
+  // THE REAL ONE, from the first sweep: `archive/gate-ages-rebased-137` reported `#137 MERGED` — a state
+  // no issue has. GitHub's REST `/issues/<n>` answers for pull requests too, so `gh issue view 137`
+  // returned the PR and the tool called it a row. One in 93, and under the disposition rules it decides
+  // whether a branch is KEPT, so a PR read as an open row would hold a branch nobody owns.
+  const pr = { number: 137, state: "CLOSED", labels: [], isPullRequest: true };
+  const facts = branchFacts({ branch: "archive/gate-ages-rebased-137", ahead: 2, lastCommit: tip, row: pr });
+  assert.equal(facts.rowState, "#137 is a PULL REQUEST, not a row");
+  assert.equal(facts.source, "retired-role",
+    "and a PR's labels are not a row claim -- the owner falls through to the prefix, not to the PR");
+
+  // CONTROL: the same shape with `isPullRequest` false is read as a row, so the assertion above is
+  // reading that flag rather than the number or the state.
+  assert.equal(branchFacts({ branch: "archive/gate-ages-rebased-137", ahead: 2, lastCommit: tip,
+    row: { ...pr, isPullRequest: false } }).rowState, "#137 CLOSED");
+});
+
 test("#623: UNKNOWN is never omitted and sorts LAST", () => {
   // The row's own acceptance: "a branch whose owner cannot be determined is listed as unknown, never
   // omitted and never guessed: an unattributed branch is exactly the one nobody will claim."
