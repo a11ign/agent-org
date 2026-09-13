@@ -15,6 +15,17 @@ import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { mergedPrsInWindow, DEFAULT_WINDOW_MINUTES, closeOnePr, sweepExit, EXIT } from "../../../../scripts/close-rows-sweep.mjs";
 import { closurePlan } from "../../../../scripts/close-rows-for-merged-pr.mjs";
+import { refusalCause } from "../../../../scripts/settle-closed-status.mjs";
+
+/** CAPTURED, not composed: the reason `moveProjectStatus` gave for #1299 in trunk run 34769927592 (`02ae7420`). */
+const CAPTURED_PROJECT_UNREADABLE = "could not move #1299's Status to \"Done\" -- board-snapshot: could not read "
+  + "Project 2 items -- refusing to snapshot a partial board. NOT_FOUND (user.projectV2): Could not resolve to a "
+  + "ProjectV2 with the number 2.";
+/** A refusal classified by the real `refusalCause`, never a hand-typed cause. */
+const refusal = (row: number, message: string) => ({ row, cause: refusalCause(message), message });
+/** A `settle` that refuses exactly one row, for `message`, and settles every other. */
+const refuseOnly = (row: number, message: string) => (n: number) =>
+  (n === row ? { settled: false, refused: [refusal(n, message)] } : { settled: true, refused: [] });
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const SCRIPT = `${REPO}/scripts/close-rows-sweep.mjs`;
@@ -147,26 +158,43 @@ function prDeclaringTwoRows() {
 test("#1299 ACCEPTANCE: a refused Status move is NAMED and exits STATUS_NOT_MOVED, on the already-closed path "
   + "AND the just-closed path", () => {
   const strip = () => {};
-  const alreadyRefused = closeOnePr(1, "o/r", { gh_: prDeclaringTwoRows(), strip, settle: (n: number) => n !== 20 });
-  assert.deepEqual(alreadyRefused, { failed: [], unsettled: [20] }, "the already-closed path");
-  const closedRefused = closeOnePr(1, "o/r", { gh_: prDeclaringTwoRows(), strip, settle: (n: number) => n !== 21 });
-  assert.deepEqual(closedRefused, { failed: [], unsettled: [21] }, "the just-closed path");
+  const alreadyRefused = closeOnePr(1, "o/r", { gh_: prDeclaringTwoRows(), strip, settle: refuseOnly(20, "HTTP 500") });
+  assert.deepEqual(alreadyRefused, { failed: [], unsettled: [refusal(20, "HTTP 500")] }, "the already-closed path");
+  const closedRefused = closeOnePr(1, "o/r", { gh_: prDeclaringTwoRows(), strip, settle: refuseOnly(21, "HTTP 500") });
+  assert.deepEqual(closedRefused, { failed: [], unsettled: [refusal(21, "HTTP 500")] }, "the just-closed path");
 
   const exit = sweepExit(closedRefused);
   assert.equal(exit.code, EXIT.STATUS_NOT_MOVED, "a sweep that moved no Status must not report the axis repaired");
   assert.match(exit.lines.join("\n"), /Status NOT moved for 1: #21\b/, "named by number, never counted");
 
   // POSITIVE CONTROL, same fixture: every move settling exits DONE, so this cannot be met by a sweep that always fails.
-  const allSettled = closeOnePr(1, "o/r", { gh_: prDeclaringTwoRows(), strip, settle: () => true });
+  const allSettled = closeOnePr(1, "o/r", { gh_: prDeclaringTwoRows(), strip, settle: () => ({ settled: true, refused: [] }) });
   assert.deepEqual(allSettled, { failed: [], unsettled: [] });
   assert.deepEqual(sweepExit(allSettled), { code: EXIT.DONE, lines: [] });
 });
 
 test("#1299: a row that could not be CLOSED outranks one whose Status did not move -- and both are still named", () => {
-  const exit = sweepExit({ failed: [5], unsettled: [21] });
+  const exit = sweepExit({ failed: [5], unsettled: [refusal(21, "HTTP 500")] });
   assert.equal(exit.code, EXIT.COULD_NOT_CLOSE);
   assert.match(exit.lines.join("\n"), /could not close 1: 5\b/);
   assert.match(exit.lines.join("\n"), /Status NOT moved for 1: #21\b/, "the second fact is not dropped because the first outranks it");
+});
+
+test("bridge: a sweep whose ONLY refusals are the captured project-unreadable exits DONE, DEGRADED and named; one other exits 3", () => {
+  const strip = () => {};
+  const degraded = closeOnePr(1, "o/r", { gh_: prDeclaringTwoRows(), strip,
+    settle: (n: number) => ({ settled: false, refused: [refusal(n, CAPTURED_PROJECT_UNREADABLE)] }) });
+  const exit = sweepExit(degraded);
+  assert.equal(exit.code, EXIT.DONE, "the CI run as captured: the code is green and the token cannot read the Project");
+  assert.match(exit.lines.join("\n"), /^SWEEP: DEGRADED -- closed, but Status NOT moved for 2: #20 #21 /m,
+    "degraded is SAID, with every row named -- a silent 0 would be #1299 again");
+
+  const mixed = closeOnePr(1, "o/r", { gh_: prDeclaringTwoRows(), strip,
+    settle: (n: number) => ({ settled: false, refused: [refusal(n, n === 21 ? "HTTP 500" : CAPTURED_PROJECT_UNREADABLE)] }) });
+  const mixedExit = sweepExit(mixed);
+  assert.equal(mixedExit.code, EXIT.STATUS_NOT_MOVED, "one refusal for another cause fails the sweep");
+  assert.doesNotMatch(mixedExit.lines.join("\n"), /DEGRADED/);
+  assert.match(mixedExit.lines.join("\n"), /not project-unreadable: #21\)/, "and names the refusal that did");
 });
 
 test("#1299: the exit codes are the contract, and STATUS_NOT_MOVED is distinct from every other", () => {
