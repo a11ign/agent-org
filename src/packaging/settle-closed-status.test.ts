@@ -13,9 +13,13 @@ import { settleClosedStatus } from "../../../../scripts/settle-closed-status.mjs
 test("#1227: the three outcomes are reported distinctly, never folded into one success", () => {
   const said: string[] = [];
   const log = (line: string) => { said.push(String(line)); };
-  settleClosedStatus(1, { moveStatus: () => ({ moved: true }), log });
-  settleClosedStatus(2, { moveStatus: () => ({ moved: false, notOnBoard: true, reason: "not an item" }), log });
-  settleClosedStatus(3, { moveStatus: () => ({ moved: false, notOnBoard: false, reason: "HTTP 500" }), log });
+  const settled = [
+    settleClosedStatus(1, { moveStatus: () => ({ moved: true }), log }),
+    settleClosedStatus(2, { moveStatus: () => ({ moved: false, notOnBoard: true, reason: "not an item" }), log }),
+    settleClosedStatus(3, { moveStatus: () => ({ moved: false, notOnBoard: false, reason: "HTTP 500" }), log }),
+  ];
+  // #1299: the outcome is RETURNED, not only logged -- a caller could not tell the refused move from the others.
+  assert.deepEqual(settled, [true, true, false], "moved and not-on-board are settled; a refused move is not");
   assert.match(said[0], /#1 Status -> Done/);
   assert.match(said[1], /#2 is not on the Project/,
     "a row not on the board is a real, common state and not a defect -- ceo's ruling");

@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
-import { mergedPrsInWindow, DEFAULT_WINDOW_MINUTES } from "../../../../scripts/close-rows-sweep.mjs";
+import { mergedPrsInWindow, DEFAULT_WINDOW_MINUTES, closeOnePr, sweepExit, EXIT } from "../../../../scripts/close-rows-sweep.mjs";
 import { closurePlan } from "../../../../scripts/close-rows-for-merged-pr.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
@@ -126,4 +126,50 @@ test("#909: close-rows-sweep.mjs IS wired to trunk.yml's push, as the closeRows 
   assert.match(run, /node scripts\/close-rows-sweep\.mjs --window=60/, "the push path sweeps the last hour, idempotently");
   assert.match(run, /node scripts\/close-rows-for-merged-pr\.mjs "\$DISPATCH_PR"/, "the dispatch path closes the named PR's rows");
   assert.match(run, /if \[ -n "\$DISPATCH_PR" \]/, "and the two are chosen by whether a pr was given");
+});
+
+// --- #1299: a closed row whose Status did not move is a failed repair -- named, and never EXIT.DONE ---
+
+/** A fake `gh` for one merged PR that declares an already-closed row (#20) and an open one (#21). */
+function prDeclaringTwoRows() {
+  return (args: string[]) => {
+    if (args[0] === "api" && args[1] === "graphql") {
+      return JSON.stringify({ mergeCommit: { oid: "abc1234" }, closingIssuesReferences: { nodes: [
+        { number: 20, state: "CLOSED", labels: { nodes: [] } },
+        { number: 21, state: "OPEN", labels: { nodes: [] } },
+      ] } });
+    }
+    if (args[0] === "issue" && args[1] === "close") return "";
+    throw new Error(`fake gh was asked something it does not know: ${args.join(" ")}`);
+  };
+}
+
+test("#1299 ACCEPTANCE: a refused Status move is NAMED and exits STATUS_NOT_MOVED, on the already-closed path "
+  + "AND the just-closed path", () => {
+  const strip = () => {};
+  const alreadyRefused = closeOnePr(1, "o/r", { gh_: prDeclaringTwoRows(), strip, settle: (n: number) => n !== 20 });
+  assert.deepEqual(alreadyRefused, { failed: [], unsettled: [20] }, "the already-closed path");
+  const closedRefused = closeOnePr(1, "o/r", { gh_: prDeclaringTwoRows(), strip, settle: (n: number) => n !== 21 });
+  assert.deepEqual(closedRefused, { failed: [], unsettled: [21] }, "the just-closed path");
+
+  const exit = sweepExit(closedRefused);
+  assert.equal(exit.code, EXIT.STATUS_NOT_MOVED, "a sweep that moved no Status must not report the axis repaired");
+  assert.match(exit.lines.join("\n"), /Status NOT moved for 1: #21\b/, "named by number, never counted");
+
+  // POSITIVE CONTROL, same fixture: every move settling exits DONE, so this cannot be met by a sweep that always fails.
+  const allSettled = closeOnePr(1, "o/r", { gh_: prDeclaringTwoRows(), strip, settle: () => true });
+  assert.deepEqual(allSettled, { failed: [], unsettled: [] });
+  assert.deepEqual(sweepExit(allSettled), { code: EXIT.DONE, lines: [] });
+});
+
+test("#1299: a row that could not be CLOSED outranks one whose Status did not move -- and both are still named", () => {
+  const exit = sweepExit({ failed: [5], unsettled: [21] });
+  assert.equal(exit.code, EXIT.COULD_NOT_CLOSE);
+  assert.match(exit.lines.join("\n"), /could not close 1: 5\b/);
+  assert.match(exit.lines.join("\n"), /Status NOT moved for 1: #21\b/, "the second fact is not dropped because the first outranks it");
+});
+
+test("#1299: the exit codes are the contract, and STATUS_NOT_MOVED is distinct from every other", () => {
+  assert.deepEqual(EXIT, { DONE: 0, COULD_NOT_CLOSE: 1, CANNOT_ASK: 2, STATUS_NOT_MOVED: 3 });
+  assert.equal(new Set(Object.values(EXIT)).size, Object.keys(EXIT).length);
 });
