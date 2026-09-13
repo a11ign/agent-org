@@ -24,7 +24,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { rowNumberFromBranch, sessionFromLabels, sessionFromTimeline, ownerOfBranch, branchFacts,
   reconcile, groupByOwner, renderInventory } from "../../../../scripts/branch-inventory.mjs";
-import { inventory } from "../../../../scripts/branch-inventory-report.mjs";
+import { branchesWithTips, inventory } from "../../../../scripts/branch-inventory-report.mjs";
 
 const tip = { sha: "abc1234", at: "2026-09-09T08:35:00Z" };
 
@@ -261,4 +261,46 @@ test("#1278: ownerOfBranch tolerates `row: undefined` rather than throwing", () 
   // so this is reachable only from a new one -- which is exactly when it would cost most.
   assert.deepEqual(ownerOfBranch({ branch: "agent/x", row: undefined }),
     { owner: null, source: "unknown" });
+});
+
+// --- #1282: every branch read is PRUNED first, pinned on the argv --------------------------------------
+//
+// worker-capture, 2026-09-13T12:40Z: this report read 208 remote-tracking refs where `git fetch --prune`
+// left 202; the six were branches already deleted on origin. The list `branchesWithTips` returns is
+// identical whether or not the fetch pruned, so no assertion on the answer can see the flag. Only the
+// argv can.
+
+/** A `run` that records every call, answering one unmerged branch for the ref read. */
+const recordingRun = () => {
+  const calls: string[][] = [];
+  const run = (cmd: string, args: string[]): string => {
+    calls.push([cmd, ...args]);
+    if (args[0] === "for-each-ref") return "agent/a\taaaaaaa\t2026-09-13T00:00:00Z";
+    if (args[0] === "rev-list") return "3";
+    return "";
+  };
+  return { calls, run };
+};
+
+test("#1282: branchesWithTips fetches with --prune from origin BEFORE it reads refs/remotes/origin", () => {
+  const { calls, run } = recordingRun();
+  const branches = branchesWithTips({ run: run as never });
+  assert.deepEqual(calls.map((c) => c.slice(0, 2)), [["git", "fetch"], ["git", "for-each-ref"]],
+    "one fetch, then the read, in that order: a fetch after the read prunes nothing this read counted");
+  assert.deepEqual(calls[0], ["git", "fetch", "--prune", "origin"]);
+  // POSITIVE CONTROL: the read after the fetch still returns its population, so the argv assertions above
+  // are not passing on a function that stopped reading.
+  assert.deepEqual(branches.map((b) => b.branch), ["agent/a"]);
+});
+
+test("#1282: in a whole inventory, EVERY branch read is immediately preceded by a pruning fetch", () => {
+  const { calls, run } = recordingRun();
+  inventory({ run: run as never });
+  const reads = calls.flatMap((c, i) => (c[1] === "for-each-ref" ? [i] : []));
+  // POSITIVE CONTROL for the loop below: the three branch reads #1278 pinned are all here, so the loop
+  // cannot pass by examining none.
+  assert.equal(reads.length, 3);
+  for (const i of reads) {
+    assert.deepEqual(calls[i - 1], ["git", "fetch", "--prune", "origin"], `the branch read at call ${i}`);
+  }
 });
