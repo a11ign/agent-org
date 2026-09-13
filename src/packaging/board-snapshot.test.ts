@@ -20,11 +20,8 @@ import {
   PROJECT_OWNER,
   PROJECT_NUMBER,
   SNAPSHOT_DIR,
-  fetchTouchedItems,
-  writeScopedSnapshot,
-  TOUCHED_ITEM_QUERY,
 } from "../../../../scripts/board-snapshot.mjs";
-import { refusalCause, PROJECT_UNREADABLE } from "../../../../scripts/settle-closed-status.mjs";
+import { touchedItemRequest } from "../../../../scripts/board-snapshot-scope.mjs";
 
 /** One page of a real `gh api graphql` response, shaped exactly like the live schema returns it. */
 function page({ nodes, hasNextPage = false, endCursor = null }: {
@@ -502,49 +499,22 @@ test("#852: #399's guarantee is untouched -- a failed write still means the muta
   assert.equal(ran, false, "mutate must never be reached when the snapshot could not be written");
 });
 
-// --- #1275: A MUTATION THAT NAMES THE ITEM IT TOUCHES SNAPSHOTS THAT ITEM, NOT THE BOARD ------------------------
+// --- #1275: THE WRAPPER'S ROUTE, WHICH ONLY THIS FILE CAN SHOW -------------------------------------------------
 //
-// Every board mutation in scripts/ is one item's Status, and each paid a full sweep first: 6 pages at 555 items,
-// plus #747's ready-issue list. The account's GraphQL budget ran out twice on 2026-09-13. The three CAPTURED
-// responses below are what `TOUCHED_ITEM_QUERY` itself returned live on 2026-09-13 (gh 2.100.0), verbatim.
-// THE ASSERTIONS ARE ON THE CALLS, as #852's are: the snapshot's contents cannot show what reading it cost.
+// The scoped snapshot itself -- its request, parsing, refusals, file and reuse -- is tested in
+// board-snapshot-scope.test.ts, which imports nothing from this file so CI's acceptance job can run it. What stays
+// here is the part that needs `gh`: which `gh` calls `withBoardSnapshot` actually makes.
 
-/** Captured: #1275, on Project 2 at "In progress". */
-const CAPTURED_ON_BOARD = "{\"data\":{\"user\":{\"projectV2\":{\"id\":\"PVT_kwHOAsR0u84BinDJ\"}},\"repository\":{\"issue\":{\"number\":1275,\"title\":\"GraphQL budget exhausted 2026-09-13 11:2xZ, consumer unknown — and gh api rate_limit reported 5000 remaining while every call was refused\",\"state\":\"OPEN\",\"projectItems\":{\"totalCount\":1,\"nodes\":[{\"id\":\"PVTI_lAHOAsR0u84BinDJzg6uCZo\",\"project\":{\"number\":2},\"fieldValueByName\":{\"name\":\"In progress\"}}]}}}}}";
-/** Captured: #393, closed and never added to Project 2 -- the row #400's not-on-board wording was measured on. */
-const CAPTURED_OFF_BOARD = "{\"data\":{\"user\":{\"projectV2\":{\"id\":\"PVT_kwHOAsR0u84BinDJ\"}},\"repository\":{\"issue\":{\"number\":393,\"title\":\"pre-push hook runs doc-references.test.ts without generating docs/coverage.md first, unlike CI's docs job\",\"state\":\"CLOSED\",\"projectItems\":{\"totalCount\":0,\"nodes\":[]}}}}}";
-/** Captured: the same query naming project 999. `gh` exited 1 and printed this on stdout. */
-const CAPTURED_NO_PROJECT = "{\"data\":{\"user\":{\"projectV2\":null},\"repository\":{\"issue\":{\"number\":1275,\"title\":\"GraphQL budget exhausted 2026-09-13 11:2xZ, consumer unknown — and gh api rate_limit reported 5000 remaining while every call was refused\",\"state\":\"OPEN\",\"projectItems\":{\"totalCount\":1,\"nodes\":[{\"id\":\"PVTI_lAHOAsR0u84BinDJzg6uCZo\",\"project\":{\"number\":2},\"fieldValueByName\":{\"name\":\"In progress\"}}]}}}},\"errors\":[{\"type\":\"NOT_FOUND\",\"path\":[\"user\",\"projectV2\"],\"locations\":[{\"line\":3,\"column\":27}],\"message\":\"Could not resolve to a ProjectV2 with the number 999.\"}]}";
-
-/** A response of the captured shape for any issue. The first test below pins that shape to the captures. */
-function touched(issue: number, { onBoard = true, status = "In progress", totalCount }:
-  { onBoard?: boolean; status?: string; totalCount?: number } = {}) {
-  const nodes = onBoard ? [{ id: `PVTI_${issue}`, project: { number: 2 }, fieldValueByName: { name: status } }] : [];
-  return JSON.stringify({ data: { user: { projectV2: { id: "PVT_kwHOAsR0u84BinDJ" } }, repository: { issue: {
-    number: issue, title: `row ${issue}`, state: "OPEN", projectItems: { totalCount: totalCount ?? nodes.length, nodes },
-  } } } });
-}
-
-/** Keys and value types, recursively -- what a fixture must share with the response it stands in for. */
-function shapeOf(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(shapeOf);
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, shapeOf((value as Record<string, unknown>)[key])]));
-  }
-  return value === null ? "null" : typeof value;
-}
-
-/** A `gh` serving a board of `pages` pages AND per-issue touched reads, recording every call by kind. */
-function ghOf(pages: number, answer: (issue: number) => string = (issue) => touched(issue)) {
-  const calls: string[][] = [];
+/** Every `gh` call by command and argv: board pages answered, the ready list empty, a touched read refused. */
+function recordingGh(pages: number) {
+  const calls: Array<{ cmd: string; args: string[] }> = [];
   let served = 0;
-  const issueOf = (args: string[]) => args.find((arg) => arg.startsWith("issue="));
-  const run = (_cmd: string, args: string[]) => {
-    calls.push(args);
+  const run = (cmd: string, args: string[]) => {
+    calls.push({ cmd, args });
     if (args[0] === "issue" && args[1] === "list") return "[]";
-    if (!args.join(" ").includes("graphql")) return "";
-    const issue = issueOf(args);
-    if (issue) return answer(Number(issue.slice("issue=".length)));
+    if (args.some((arg) => arg.startsWith("issue="))) {
+      throw new Error("the touched read is not served here -- board-snapshot-scope.test.ts drives it");
+    }
     const cursor = served; served += 1;
     return JSON.stringify({ data: { user: { projectV2: { items: {
       pageInfo: { hasNextPage: cursor < pages - 1, endCursor: `c${cursor + 1}` },
@@ -552,220 +522,51 @@ function ghOf(pages: number, answer: (issue: number) => string = (issue) => touc
         fieldValues: { nodes: [{ name: "Backlog", field: { name: "Status" } }] } }],
     } } } } });
   };
-  const graphqlCalls = () => calls.filter((call) => call.join(" ").includes("graphql"));
-  return {
-    run,
-    boardPages: () => graphqlCalls().filter((call) => !issueOf(call)).length,
-    touchedReads: () => graphqlCalls().filter((call) => issueOf(call)).length,
-    // `gh issue list --json` is GraphQL too; it is counted separately because its argv does not say so.
-    readyLists: () => calls.filter((call) => call[0] === "issue" && call[1] === "list").length,
-  };
+  const readyLists = () => calls.filter((call) => call.args[0] === "issue" && call.args[1] === "list").length;
+  const boardPages = () => calls.filter((call) => call.args.includes("graphql")
+    && !call.args.some((arg) => arg.startsWith("issue="))).length;
+  return { run, calls, boardPages, readyLists };
 }
 
 // `exists` is stubbed TRUE because `writeFile` is stubbed to drop the file -- see `quiet` above.
 const quietIO = { mkdir: () => {}, writeFile: () => {}, log: () => {}, exists: () => true };
 
-test("#1275: the fixture builder models the shape TOUCHED_ITEM_QUERY returned live, on and off the board", () => {
-  assert.deepEqual(shapeOf(JSON.parse(touched(1275))), shapeOf(JSON.parse(CAPTURED_ON_BOARD)));
-  assert.deepEqual(shapeOf(JSON.parse(touched(393, { onBoard: false }))), shapeOf(JSON.parse(CAPTURED_OFF_BOARD)));
-  // What the stubs cannot see, and the captures were read through: the request names the Project, whose refusal the
-  // close path classifies, and asks for the count a short list is checked against.
-  assert.match(TOUCHED_ITEM_QUERY, /user\(login: \$owner\) \{ projectV2\(number: \$project\) \{ id \} \}/);
-  assert.match(TOUCHED_ITEM_QUERY, /projectItems\(first: 10\) \{\s+totalCount/);
-});
-
-test("#1275 ACCEPTANCE: a mutation that names its item costs ONE GraphQL request -- no board page, no ready list", () => {
+test("#1275 WIRING: a mutation that names its item makes ONE gh call, the scoped request -- no board page, no ready list", () => {
   forgetProcessSnapshot();
-  const gh = ghOf(6); // 555 items today: six pages of 100
+  const gh = recordingGh(6);
   let ran = false;
-  withBoardSnapshot(() => { ran = true; }, { ...quietIO, run: gh.run, touches: 725 });
-  assert.equal(ran, true, "the mutation still runs -- this is a cost fix, not a skip");
-  assert.equal(gh.touchedReads(), 1, "one targeted read of #725's item");
-  assert.equal(gh.boardPages(), 0, "and no page of the board, whatever the board's size");
-  assert.equal(gh.readyLists(), 0, "and no ready-issue list: #747's floor guards a 100-item page, not one item");
+  assert.throws(() => withBoardSnapshot(() => { ran = true; }, { ...quietIO, run: gh.run, touches: 725 }),
+    /could not read Project 2's item for #725/);
+  assert.deepEqual(gh.calls, [{ cmd: "gh", args: touchedItemRequest(725) }],
+    "exactly the pure module's request, sent through gh by THIS file -- the gh call the pure half leaves here");
+  assert.equal(ran, false, "and a refused read still means no mutation (#399)");
 });
 
-test("#1275 CONTROL: a mutation that names its item still has a snapshot WRITTEN and PRINTED before it runs", () => {
-  // Holds for the scoped snapshot and for the full sweep alike, which is what makes it the row's control: restore the
-  // full sweep and the ACCEPTANCE count above goes back up while this stays green.
+test("#1275: the same wrapper with no `touches` still sweeps the board -- what every one-item move paid before", () => {
   forgetProcessSnapshot();
-  const gh = ghOf(6);
-  const order: string[] = [];
-  withBoardSnapshot(() => { order.push("mutate"); }, { ...quietIO, run: gh.run, touches: 725,
-    writeFile: () => { order.push("write"); }, log: (line: string) => { order.push(line); } });
-  assert.equal(order.filter((entry) => entry === "write").length, 1, "one snapshot written -- never #399's guarantee deleted");
-  assert.match(order[1] ?? "", /^board-snapshot: wrote runs\/board-snapshots\/\S+\.json before mutating/, "and printed");
-  assert.equal(order[2], "mutate", "and only then the mutation");
-});
-
-test("#1275: the scoped file is named for its item, and says it is not the board", () => {
-  forgetProcessSnapshot();
-  const gh = ghOf(6);
-  const written: Array<{ path: string; data: string }> = [];
-  const log: string[] = [];
-  withBoardSnapshot(() => {}, { ...quietIO, run: gh.run, touches: 725, now: () => new Date("2026-09-13T19:00:00.000Z"),
-    writeFile: (path: string, data: string) => { written.push({ path, data }); }, log: (line: string) => { log.push(line); } });
-  assert.equal(written[0].path, `${SNAPSHOT_DIR}/2026-09-13T19-00-00-000Z-issue-725.json`);
-  const parsed = JSON.parse(written[0].data);
-  assert.deepEqual(parsed.scope, { issues: [725] });
-  assert.deepEqual(parsed.items, [{ itemId: "PVTI_725", number: 725, title: "row 725", status: "In progress", state: "OPEN" }]);
-  assert.deepEqual(parsed.notOnBoard, []);
-  assert.match(parsed.takenBefore, /SCOPED to the item\(s\) that mutation touches, not the whole board/,
-    "and the file says so, so nobody takes it for the board");
-  assert.match(log.join("\n"), /wrote runs\/board-snapshots\/2026-09-13T19-00-00-000Z-issue-725\.json before mutating #725/);
-});
-
-test("#1275: the same counter on the UNSCOPED path -- what every one-item move paid before this row", () => {
-  forgetProcessSnapshot();
-  const gh = ghOf(6);
+  const gh = recordingGh(6);
   withBoardSnapshot(() => {}, { ...quietIO, run: gh.run });
   assert.equal(gh.boardPages(), 6, "six pages of 100 at today's 555 items -- and one more per hundred rows filed");
-  assert.equal(gh.readyLists(), 1, "plus #747's ready-issue list");
-  assert.equal(gh.touchedReads(), 0);
+  assert.equal(gh.readyLists(), 1, "plus #747's ready-issue list, which `gh issue list --json` reads over GraphQL too");
 });
 
-test("#1275: fetchTouchedItems asks gh for exactly the touched issues, and reads the captured responses", () => {
-  const argv: string[][] = [];
-  const run = (_cmd: string, args: string[]) => {
-    argv.push(args);
-    return args.includes("issue=1275") ? CAPTURED_ON_BOARD : CAPTURED_OFF_BOARD;
-  };
-  const result = fetchTouchedItems([1275, 393], { run });
-  assert.deepEqual(result, {
-    items: [{ itemId: "PVTI_lAHOAsR0u84BinDJzg6uCZo", number: 1275,
-      title: JSON.parse(CAPTURED_ON_BOARD).data.repository.issue.title, status: "In progress", state: "OPEN" }],
-    notOnBoard: [393],
-  });
-  assert.equal(argv.length, 2, "one request per touched issue");
-  for (const [args, issue] of [[argv[0], 1275], [argv[1], 393]] as const) {
-    assert.deepEqual(args.slice(0, 2), ["api", "graphql"]);
-    assert.ok(args.includes(`query=${TOUCHED_ITEM_QUERY}`), "the query the captures were read through");
-    for (const variable of ["owner=DanBeckDev", "name=a11y-witness", "project=2", `issue=${issue}`]) {
-      assert.ok(args.includes(variable), `${variable} must reach gh`);
-    }
-  }
-});
-
-test("#1275: an issue NOT on the board is recorded as such, and the mutation still runs so gh can say so", () => {
+test("#1275: a FULL snapshot this process already holds covers a scoped move, with no further gh call (#852)", () => {
   forgetProcessSnapshot();
-  const gh = ghOf(6, () => CAPTURED_OFF_BOARD);
-  const written: string[] = [];
-  let ran = false;
-  withBoardSnapshot(() => { ran = true; },
-    { ...quietIO, run: gh.run, touches: 393, writeFile: (_path: string, data: string) => { written.push(data); } });
-  assert.equal(ran, true, "`gh project item-edit` names a row that is not on the board, and moveProjectStatus reads "
-    + "that as notOnBoard (#400) -- refusing here would replace that wording with this file's");
-  const parsed = JSON.parse(written[0]);
-  assert.deepEqual(parsed.items, []);
-  assert.deepEqual(parsed.notOnBoard, [393]);
-});
-
-test("#1275: a token that cannot read the Project is REFUSED, and the close path still classifies it as project-unreadable", () => {
-  forgetProcessSnapshot();
-  const run = (_cmd: string, args: string[]): string => {
-    assert.ok(args.some((arg) => arg.startsWith("issue=")), "only the touched read may run");
-    const error = new Error("Command failed: gh api graphql ...") as Error & { stdout: string; status: number };
-    error.stdout = CAPTURED_NO_PROJECT;
-    error.status = 1;
-    throw error;
-  };
-  let ran = false;
-  let message = "";
-  try {
-    withBoardSnapshot(() => { ran = true; }, { ...quietIO, run, touches: 1275 });
-  } catch (error) {
-    message = (error as Error).message;
-  }
-  assert.equal(ran, false, "no snapshot, no mutation (#399)");
-  assert.match(message, /NOT_FOUND \(user\.projectV2\): Could not resolve to a ProjectV2 with the number 999/,
-    "GraphQL's own error, read off the failed process's stdout (#555)");
-  assert.equal(refusalCause(`could not move #1275's Status to "Done" -- ${message}`), PROJECT_UNREADABLE,
-    "settle-closed-status.mjs's own classifier: #546's bridge reads this cause, and a scoped read must still produce it");
-  assert.equal(refusalCause("could not move #1275's Status to \"Done\" -- board-snapshot: gh's response for #1275 "
-    + "did not have the shape"), "other", "CONTROL: the classifier is not satisfied by any board-snapshot refusal");
-});
-
-test("#1275: the SAME captured error on a zero exit -- errors beside data -- is refused before data is read", () => {
-  forgetProcessSnapshot();
-  let ran = false;
-  assert.throws(() => withBoardSnapshot(() => { ran = true; }, { ...quietIO, run: () => CAPTURED_NO_PROJECT, touches: 1275 }),
-    /GraphQL returned an error alongside its response.*NOT_FOUND \(user\.projectV2\)/s);
-  assert.equal(ran, false);
-});
-
-test("#1275: an answer about a different issue, or a list shorter than its own count, is refused -- never 'not on the board'", () => {
-  forgetProcessSnapshot();
-  assert.throws(() => withBoardSnapshot(() => {}, { ...quietIO, run: ghOf(1, () => touched(999)).run, touches: 725 }),
-    /did not have the shape .* for that issue/s);
-  forgetProcessSnapshot();
-  assert.throws(() => withBoardSnapshot(() => {}, { ...quietIO, run: ghOf(1, (n) => touched(n, { totalCount: 2 })).run,
-    touches: 725 }), /came back 1 of 2 -- refusing to read a partial list as "not on the board"/);
-  forgetProcessSnapshot();
-  assert.throws(() => withBoardSnapshot(() => {}, { ...quietIO, run: ghOf(1, () => "not json").run, touches: 725 }),
-    /response for #725 was not JSON/);
-});
-
-test("#1275: a second move of the SAME item reuses its scoped snapshot; a different item takes its own", () => {
-  forgetProcessSnapshot();
-  const gh = ghOf(6);
-  withBoardSnapshot(() => {}, { ...quietIO, run: gh.run, touches: 725 });
-  withBoardSnapshot(() => {}, { ...quietIO, run: gh.run, touches: 725 });
-  assert.equal(gh.touchedReads(), 1, "a claim then a decline of one row: one read");
-  withBoardSnapshot(() => {}, { ...quietIO, run: gh.run, touches: 726 });
-  assert.equal(gh.touchedReads(), 2, "a scoped file never licenses a mutation of a different item");
-  assert.equal(gh.boardPages(), 0);
-});
-
-test("#1275: a FULL snapshot this process already holds covers a scoped move, as #852's reuse did", () => {
-  forgetProcessSnapshot();
-  const gh = ghOf(2);
+  const gh = recordingGh(2);
   withBoardSnapshot(() => {}, { ...quietIO, run: gh.run, fetchReady: () => [] });
-  withBoardSnapshot(() => {}, { ...quietIO, run: gh.run, touches: 725 });
-  assert.equal(gh.boardPages(), 2, "the full sweep, once");
-  assert.equal(gh.touchedReads(), 0, "and the scoped move reads nothing more: the board already covers its item");
-});
-
-test("#1275: a scoped snapshot deleted from disk, or past the bound, is read again", () => {
-  forgetProcessSnapshot();
-  const gh = ghOf(1);
-  const onDisk = new Set<string>();
-  const start = new Date("2026-09-13T19:00:00.000Z");
-  const at = (ms: number) => ({ ...quietIO, run: gh.run, touches: 725, now: () => new Date(start.getTime() + ms),
-    writeFile: (path: string) => { onDisk.add(path); }, exists: (path: string) => onDisk.has(path) });
-  withBoardSnapshot(() => {}, at(0));
-  withBoardSnapshot(() => {}, at(1000));
-  assert.equal(gh.touchedReads(), 1, "still on disk and inside the bound: reused");
-  onDisk.clear(); // `rm -rf runs/`
-  withBoardSnapshot(() => {}, at(2000));
-  assert.equal(gh.touchedReads(), 2, "the file is gone, so the reuse is not taken -- #852's disk re-read, per item");
-  withBoardSnapshot(() => {}, at(2000 + SNAPSHOT_MAX_AGE_MS));
-  assert.equal(gh.touchedReads(), 3, "past the bound: a fresh read");
-});
-
-test("#1275: #399's guarantee holds on the scoped path -- a failed write means the mutation never runs", () => {
-  forgetProcessSnapshot();
+  const callsAfterTheSweep = gh.calls.length;
   let ran = false;
-  assert.throws(() => withBoardSnapshot(() => { ran = true; }, { ...quietIO, run: ghOf(1).run, touches: 725,
-    writeFile: () => { throw new Error("read-only filesystem"); } }), /could not write the snapshot .*refusing to proceed/s);
+  withBoardSnapshot(() => { ran = true; }, { ...quietIO, run: gh.run, touches: 725 });
+  assert.equal(gh.calls.length, callsAfterTheSweep, "the board already covers the item");
+  assert.equal(ran, true);
+});
+
+test("#1275: `touches` that names no issue refuses in the wrapper before gh is asked anything", () => {
+  forgetProcessSnapshot();
+  const gh = recordingGh(1);
+  let ran = false;
+  assert.throws(() => withBoardSnapshot(() => { ran = true; }, { ...quietIO, run: gh.run, touches: [] as number[] }),
+    /`touches` must name the issue\(s\) this mutation changes/);
   assert.equal(ran, false);
-});
-
-test("#1275: `touches` that names no issue refuses before gh is asked anything", () => {
-  for (const touches of [[], 7.5, [725, Number.NaN]]) {
-    forgetProcessSnapshot();
-    const gh = ghOf(1);
-    let ran = false;
-    assert.throws(() => withBoardSnapshot(() => { ran = true; }, { ...quietIO, run: gh.run, touches: touches as number[] }),
-      /`touches` must name the issue\(s\) this mutation changes/);
-    assert.equal(ran, false);
-    assert.equal(gh.touchedReads() + gh.boardPages() + gh.readyLists(), 0, `${JSON.stringify(touches)}: no call made`);
-  }
-});
-
-test("#1275: one scoped snapshot of several issues names them all, in the file and its name", () => {
-  const written: Array<{ path: string; data: string }> = [];
-  const path = writeScopedSnapshot([725, 726], { run: ghOf(1).run, mkdir: () => {},
-    writeFile: (p: string, data: string) => { written.push({ path: p, data }); }, now: () => new Date("2026-09-13T19:00:00.000Z") });
-  assert.equal(path, `${SNAPSHOT_DIR}/2026-09-13T19-00-00-000Z-issue-725-726.json`);
-  assert.deepEqual(JSON.parse(written[0].data).items.map((item: { number: number }) => item.number), [725, 726]);
+  assert.equal(gh.calls.length, 0);
 });
