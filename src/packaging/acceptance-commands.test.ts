@@ -264,7 +264,11 @@ test("testFileArgumentsResolve: THE #350 SHAPE -- a glob matching nothing is cau
   const result = testFileArgumentsResolve(
     'npx tsx --test "packages/lab/src/packaging/nothing-matches-this-*.test.ts"');
   assert.equal(result.ok, false);
-  assert.ok((/** @type {{missing:string[]}} */(result)).missing.length > 0);
+  // #728: NARROWED, not cast. This was `(/** @type {{missing:string[]}} */(result)).missing` -- a
+  // `.mjs`-style inline JSDoc cast in a `.ts` file, which TypeScript ignores entirely, so it was inert
+  // from the day it was written. Widening the return type surfaced it: `tsc` had nothing to disagree
+  // with while the union had one `ok: false` member.
+  assert.ok("missing" in result && result.missing.length > 0);
 });
 
 test("testFileArgumentsResolve: a literal missing path is caught the same way as a missing glob", () => {
@@ -279,8 +283,9 @@ test("testFileArgumentsResolve: MUTATION TARGET -- one real file mixed with one 
   const result = testFileArgumentsResolve(
     `npx tsx --test ${REAL_FILE} packages/lab/src/packaging/does-not-exist.test.ts`);
   assert.equal(result.ok, false);
-  assert.deepEqual((/** @type {{missing:string[]}} */(result)).missing,
-    ["packages/lab/src/packaging/does-not-exist.test.ts"]);
+  // #728: narrowed rather than cast -- see the note above; the cast here was inert for the same reason.
+  assert.ok("missing" in result, "a mixed real/missing line is a FILE failure, not an unparseable one");
+  assert.deepEqual(result.missing, ["packages/lab/src/packaging/does-not-exist.test.ts"]);
 });
 
 test("testFileArgumentsResolve: flags are never treated as file arguments", () => {
@@ -1649,4 +1654,57 @@ test("#1116: the remedy is offered only when it would HOLD — advice a reader c
   assert.deepEqual(already, [],
     "this file already declares `// no-token: gh`, so it has no token requirement to be advised about -- "
     + "the control that the advice is not simply appended to everything");
+});
+
+// --- #728: what this cannot parse, it must not make claims about ---------------------------------
+//
+// Measured on #727. The acceptance command was
+// `node scripts/tree-wide-guards.mjs | xargs npx tsx --test`, and the runner reported
+// `fail (matched no file: node, |, xargs)` -- a claim about the filesystem, and a false one. `|` is not
+// a filename at all, and a reader following that message goes looking for missing test files.
+//
+// #419 closed the BACKTICK form and the pipe form was never considered; #727 is the first acceptance
+// command in the repository to contain a pipe. The REFUSAL is correct -- a guard that cannot verify a
+// line must not pass it. What was wrong is what it said.
+
+test("#728: a piped line is REFUSED as unparseable, never reported as missing files", () => {
+  const result = testFileArgumentsResolve("node scripts/tree-wide-guards.mjs | xargs npx tsx --test");
+  assert.deepEqual(result, { ok: false, unparseable: "a pipe" },
+    "the pipe form must name the construct rather than assert about the filesystem: `node`, `|` and "
+    + "`xargs` are not files the author asked for, and one of them is not a filename at all");
+});
+
+test("#728: the constructs are NAMED, because a message has to be followable", () => {
+  // "it contains a pipe" sends the reader to the right character; "cannot parse" sends them to re-read
+  // the whole line. Each construct relocates the arguments in a different way and each says which.
+  const named = (command: string) => {
+    const r = testFileArgumentsResolve(command);
+    return "unparseable" in r ? r.unparseable : null;
+  };
+  assert.equal(named("a | xargs npx tsx --test"), "a pipe");
+  assert.equal(named("a && npx tsx --test x.test.ts"), "an `&&`");
+  assert.equal(named("a || npx tsx --test x.test.ts"), "a `||`");
+  assert.equal(named("npx tsx --test $(ls) "), "a subshell");
+  assert.equal(named("npx tsx --test x.test.ts > out.txt"), "a redirection");
+  assert.equal(named("a ; npx tsx --test x.test.ts"), "a `;`");
+});
+
+test("#728 THE CONTROL: the guard #419 built still discriminates -- this must not pass by refusing less", () => {
+  // A fix that stopped reporting shell words by reporting NOTHING would satisfy the row's first line
+  // and kill the check. These two are the row's own positive control, and they are why its open-check
+  // reads as a measurement rather than a guess.
+  const missing = testFileArgumentsResolve("npx tsx --test packages/lab/src/definitely-not-here.test.ts");
+  assert.deepEqual(missing, { ok: false, missing: ["packages/lab/src/definitely-not-here.test.ts"] },
+    "a genuinely missing file must still be named");
+  assert.deepEqual(testFileArgumentsResolve("npx tsx --test scripts/acceptance-commands.mjs"), { ok: true },
+    "and a real file must still pass");
+});
+
+test("#728: an ordinary command with no relocating construct is untouched", () => {
+  // The list is the constructs that RELOCATE the arguments, not everything unfamiliar. A guard that
+  // refused what it did not recognise would refuse every ordinary command the moment a flag was added.
+  assert.deepEqual(testFileArgumentsResolve("npx tsx --test --test-concurrency=4 scripts/acceptance-commands.mjs"),
+    { ok: true });
+  assert.deepEqual(testFileArgumentsResolve("npm run lint"), { ok: true },
+    "and a line with no `tsx --test` is never inspected at all");
 });
