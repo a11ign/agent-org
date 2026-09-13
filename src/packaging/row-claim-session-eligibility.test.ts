@@ -86,7 +86,7 @@ test("#476's own acceptance shape: the same session with that PR MERGED is allow
 test("#462's own acceptance shape: a CONSTRUCTED region overlap refuses, end to end", () => {
   const run = routedRun({
     issueViewBody: "Region: `scripts/merge-guard.mjs`.",
-    prList: JSON.stringify([{ number: 406, files: [{ path: "scripts/merge-guard.mjs" }] }]),
+    prList: JSON.stringify([{ number: 406, changedFiles: 1, files: [{ path: "scripts/merge-guard.mjs" }] }]),
   });
   const reason = sessionEligibilityReason(455, "worker-judge", { run });
   assert.ok(reason);
@@ -96,7 +96,7 @@ test("#462's own acceptance shape: a CONSTRUCTED region overlap refuses, end to 
 test("#462's own POSITIVE CONTROL: remove the overlap, end to end, and it goes quiet", () => {
   const run = routedRun({
     issueViewBody: "Region: `scripts/row-claim.mjs`.",
-    prList: JSON.stringify([{ number: 406, files: [{ path: "scripts/merge-guard.mjs" }] }]),
+    prList: JSON.stringify([{ number: 406, changedFiles: 1, files: [{ path: "scripts/merge-guard.mjs" }] }]),
   });
   assert.equal(sessionEligibilityReason(455, "worker-judge", { run }), null);
 });
@@ -127,7 +127,7 @@ test("#710 REGRESSION FIXTURE: #705's real body cites a fixture file in prose th
       + "(2026-09-06):\n\n"
       + "## Region\n\n`scripts/` for the helper, `packages/lab/src/packaging/` for its test, and "
       + "`docs/` wherever the stranded-branch procedure ends up being written down.\n",
-    prList: JSON.stringify([{ number: 698, files: [{ path: "packages/lab/scripts/audit-rule-coverage.ts" }] }]),
+    prList: JSON.stringify([{ number: 698, changedFiles: 1, files: [{ path: "packages/lab/scripts/audit-rule-coverage.ts" }] }]),
   });
   assert.equal(sessionEligibilityReason(455, "worker-judge", { run }), null,
     "a file cited as a worked example, outside the Region section, must never be read as an overlap");
@@ -302,7 +302,7 @@ test("MUTATION TARGET: --blocked-by given while the refusal is B4 (file overlap)
       return JSON.stringify({ number: 700, title: "A row", labels: [] });
     }
     if (args[0] === "pr" && args[1] === "list") {
-      return JSON.stringify([{ number: 406, files: [{ path: "scripts/merge-guard.mjs" }] }]);
+      return JSON.stringify([{ number: 406, changedFiles: 1, files: [{ path: "scripts/merge-guard.mjs" }] }]);
     }
     return "[]";
   };
