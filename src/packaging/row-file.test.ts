@@ -1044,3 +1044,37 @@ test("#1241: it reads the COMMANDS list, and a prose line IS one of those", () =
   assert.match(String(fleetOrLabAcceptance(prose)), /reaches the fleet/,
     "a prose line is in the commands list, so it routes -- deliberately, and in the safe direction");
 });
+
+/**
+ * #1241, ADDED AFTER REVIEW: THE TWO FOUNDING CASES, PINNED.
+ *
+ * My first version cited #1042 and #1234 as the rows this closes and **caught neither** — the header
+ * made a claim the code did not honour. Two causes, and the second was the real one:
+ *
+ * 1. The pattern list knew `fleet:`/`lab:` and not the control plane. Both rows are `orchestrator`'s
+ *    because *the control plane is theirs*, said in prose.
+ * 2. **`extractAcceptanceSection` returns the first COMMAND LINE, not the section.** For both rows that
+ *    line is prose, so the numbered clauses naming systemd and the corpus backup were never looked at.
+ *    Running a command and CLASSIFYING a row are different questions over the same text.
+ *
+ * **A lane deriver answering null for a row that is NOT lane:any looks exactly like one answering null
+ * for a row that is** — and it becomes the thing a reader trusts instead of the body.
+ */
+test("#1241: the two rows this was filed on are both routed", () => {
+  const systemdRow = "## Acceptance\n\n1. A systemd USER timer on `agents` at 07:10 London running "
+    + "`gh workflow run board-report.yml`.\n";
+  const labRow = "## Acceptance\n\n**Not a test.** This row closes when:\n\n1. A destination exists.\n"
+    + "2. `A11Y_CORPUS_REMOTE` is set on the lab.\n";
+  assert.match(String(fleetOrLabAcceptance(systemdRow)), /systemd unit on the control host/,
+    "#1234's shape: no `fleet:` or `lab:` command anywhere, and still orchestrator's");
+  assert.match(String(fleetOrLabAcceptance(labRow)), /corpus backup|on the lab/,
+    "#1042's shape: a destination somebody provisions and a verify only the lab can run");
+});
+
+test("#1241: a clause below the first line is still read", () => {
+  // The defect above in one assertion: the fleet command is in clause 3, and the first line is prose.
+  const body = "## Acceptance\n\n**Not a test.** It closes when:\n\n1. A thing exists.\n"
+    + "2. Another thing.\n3. `npm run fleet:status` reports every box green.\n";
+  assert.match(String(fleetOrLabAcceptance(body)), /reaches the fleet/,
+    "reading only the first line is what made both founding cases answer null");
+});
