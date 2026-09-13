@@ -1735,3 +1735,50 @@ test("#728: an ordinary command with no relocating construct is untouched", () =
   assert.deepEqual(testFileArgumentsResolve("npm run lint"), { ok: true },
     "and a line with no `tsx --test` is never inspected at all");
 });
+
+// --- #1140: a declaration naming a COMMAND is judged by whether the entry spawns it by string ---
+
+/** An entry declaring `// no-token: <name>` whose own code is `lines`, derived in a scratch directory. */
+function deriveDeclaredEntry(name: string, lines: string[]) {
+  const dir = mkdtempSync(join(tmpdir(), "acceptance-token-"));
+  try {
+    const entry = join(dir, "consumer.test.mjs");
+    writeFileSync(entry, [`// no-token: ${name}`, "import { execFileSync, execSync, execFile, spawnSync, spawn } from \"node:child_process\";", ...lines].join("\n"));
+    return deriveClosureRequirements(entry);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("#1140: `// no-token: gh` on an entry that SPAWNS gh by string is WRONG, in every spawn spelling this repo "
+  + "charges and every quote -- `execFileSync(\"gh\", ...)` contains no `gh(`, which is how it held", () => {
+  const gh = spell("g", "h");
+  const spellings = ["execFileSync", "execSync", "execFile", "spawnSync", "spawn", "run", "npmCliInvocation"];
+  const quotes = ["\"", "'", "`"];
+  let examined = 0;
+  for (const verb of spellings) {
+    for (const quote of quotes) {
+      const hits = deriveDeclaredEntry(gh, [`${verb}(${quote}${gh}${quote}, ["issue", "list"]);`]);
+      assert.equal(hits.length, 1, `${verb}(${quote}${gh}${quote}, ...) must refuse; got ${JSON.stringify(hits)}`);
+      assert.equal(hits[0].requirement, "token");
+      assert.equal(hits[0].wrongDeclaration, true, `${verb} spawning the declared command is a wrong declaration`);
+      assert.match(closureRequirementMessage(hits[0]), /declares `\/\/ no-token:` a function its own code DOES call or spawn/);
+      examined++;
+    }
+  }
+  assert.equal(examined, spellings.length * quotes.length, "every spelling and quote was driven");
+});
+
+test("#1140 CONTROL: `// no-token: gh` still HOLDS where gh is only MENTIONED -- prose in a string, an identifier "
+  + "containing it, and an argument to a spawn of a DIFFERENT command -- a mention is not a use", () => {
+  const gh = spell("g", "h");
+  const mentions: [string, string][] = [
+    ["prose", `const note = "run ${gh} issue list by hand";`],
+    ["identifier", `const ${gh}ost = 1; console.log(${gh}ost);`],
+    ["a later argument", `execFileSync("git", ["log", "--grep", "${gh}"]);`],
+    ["a bare string", `console.log("${gh}");`],
+  ];
+  for (const [shape, line] of mentions) {
+    assert.deepEqual(deriveDeclaredEntry(gh, [line]), [], `${shape}: \`${line}\` mentions ${gh} and never spawns it`);
+  }
+});
