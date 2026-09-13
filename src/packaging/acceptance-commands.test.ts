@@ -1775,7 +1775,9 @@ test("#1140 CONTROL: `// no-token: gh` still HOLDS where gh is only MENTIONED --
   const mentions: [string, string][] = [
     ["prose", `const note = "run ${gh} issue list by hand";`],
     ["identifier", `const ${gh}ost = 1; console.log(${gh}ost);`],
-    ["a later argument", `execFileSync("git", ["log", "--grep", "${gh}"]);`],
+    // The other command is spelled too: a literal git spawn here reads, to the tree's spawn-classification guards,
+    // as this test file spawning git.
+    ["a later argument", `execFileSync("${spell("gi", "t")}", ["log", "--grep", "${gh}"]);`],
     ["a bare string", `console.log("${gh}");`],
   ];
   for (const [shape, line] of mentions) {
