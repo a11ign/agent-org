@@ -10,7 +10,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -173,12 +173,34 @@ test("#1302: no edition script computes its own day -- each imports editionDay, 
   // Code only, comments stripped, so prose about the old UTC slice can neither satisfy nor fail this.
   const code = (file: string) => readFileSync(join(REPO, file), "utf8").split("\n")
     .filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line)).map((line) => line.replace(/\s\/\/.*$/, "")).join("\n");
-  const OWN_DAY = /toISOString\(\)\.slice\(0,\s*10\)|timeZone:\s*"Europe\/London",\s*year:/;
-  for (const file of ["scripts/board-document.mjs", "scripts/board-summary-check.mjs"]) {
-    assert.doesNotMatch(code(file), OWN_DAY, `${file} computes an edition day of its own instead of importing editionDay`);
-    assert.match(code(file), /\beditionDay\(/, `${file} must take its day from editionDay`);
+  // #1355: THE TWO SPELLINGS OF AN OWN DAY ARE ASKED SEPARATELY, because one file needs one exemption and no more.
+  const LONDON_DAY = /timeZone:\s*"Europe\/London",\s*year:/;
+  const UTC_DAY = /toISOString\(\)\.slice\(0,\s*10\)/;
+  // board-schedule-liveness.mjs's `missedDays` steps UTC midnights forward from a stored edition-date string and
+  // slices each back out: zone-free date arithmetic, examined on #1355 and not a copy. Only that function's body is
+  // removed, so a UTC slice anywhere else in the file -- the scheduled runs' days, today's day -- still goes red.
+  const MISSED_DAYS = /^export function missedDays\(.*\n(?:.*\n)*?\}\n/m;
+  const liveness = code("scripts/board-schedule-liveness.mjs");
+  assert.match(liveness, MISSED_DAYS, "missedDays is where #1355 examined it -- if it moved, re-examine the exemption");
+  const withoutMissedDays = liveness.replace(MISSED_DAYS, "");
+  assert.doesNotMatch(withoutMissedDays, /\bfunction missedDays\(/, "the exemption removed missedDays and only it");
+  const edition = (file: string) => file === "scripts/board-schedule-liveness.mjs" ? withoutMissedDays : code(file);
+  for (const file of ["scripts/board-document.mjs", "scripts/board-summary-check.mjs", "scripts/board-schedule-liveness.mjs"]) {
+    assert.doesNotMatch(edition(file), LONDON_DAY, `${file} computes a London day of its own instead of importing editionDay`);
+    assert.doesNotMatch(edition(file), UTC_DAY, `${file} computes a UTC day of its own instead of importing editionDay`);
+    assert.match(edition(file), /\beditionDay\(/, `${file} must take its day from editionDay`);
   }
-  // POSITIVE CONTROL for the pattern: the one definition matches it, so a regex that matches nothing cannot
-  // make the loop above pass.
-  assert.match(code("scripts/board-discussion.mjs"), OWN_DAY);
+  // A THIRD COPY ANYWHERE IN THE BOARD SCRIPTS: a London formatter with a year, in any `scripts/board-*.mjs` but the
+  // definition. Only the London half is globbed: board-report.mjs:290 titles the edition with a UTC slice, which is #1442,
+  // sequenced after this and not a day this test may silently accept or refuse from here.
+  const boardScripts = readdirSync(join(REPO, "scripts")).filter((f) => /^board-.*\.mjs$/.test(f) && f !== "board-discussion.mjs");
+  assert.ok(boardScripts.includes("board-schedule-liveness.mjs") && boardScripts.includes("board-summary-check.mjs"),
+    `POSITIVE CONTROL: the glob reaches the files named above -- it found ${boardScripts.join(", ")}`);
+  for (const file of boardScripts) {
+    assert.doesNotMatch(code(`scripts/${file}`), LONDON_DAY, `scripts/${file} computes a London day of its own`);
+  }
+  // POSITIVE CONTROLS for both patterns: the one definition matches the London half, and the UTC half matches the
+  // spelling it names, so a regex that matches nothing cannot make the loops above pass.
+  assert.match(code("scripts/board-discussion.mjs"), LONDON_DAY);
+  assert.match("const day = new Date(t).toISOString().slice(0, 10);", UTC_DAY);
 });
