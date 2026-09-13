@@ -20,10 +20,11 @@ import {
   snapshotRoute,
   touchedIssues,
   touchedItemRequest,
+  scopedStatusOf,
   withScopedSnapshot,
   writeScopedSnapshot,
 } from "../../../../scripts/board-snapshot-scope.mjs";
-import { refusalCause, PROJECT_UNREADABLE } from "../../../../scripts/settle-closed-status.mjs";
+import { refusalCause, PROJECT_UNREADABLE, settleClosedStatus } from "../../../../scripts/settle-closed-status.mjs";
 import { closureRequirementMessage, deriveClosureRequirements } from "../../../../scripts/acceptance-commands.mjs";
 
 const THIS_FILE = "packages/lab/src/packaging/board-snapshot-scope.test.ts";
@@ -286,4 +287,70 @@ test("#1275: one scoped snapshot of several issues names them all, in the file a
     writeFile: (p, data) => { written.push({ path: p, data }); }, now: () => AT });
   assert.equal(path, `${SNAPSHOT_DIR}/2026-09-13T19-00-00-000Z-issue-725-726.json`);
   assert.deepEqual(JSON.parse(written[0].data).items.map((item: { number: number }) => item.number), [725, 726]);
+});
+
+// --- #1360: settling a closed row reads its Status ONCE, and a row already at Done issues no mutation ---
+//
+// ceo's ruling: done-when 1 holds only as a measured count. Each case drives settleClosedStatus with the lookup and a
+// move built the way the entry points build them -- scopedStatusOf for the Status, and withScopedSnapshot around the
+// mutation as moveProjectStatus does (#1275) -- and counts every request and every mutation. Counts, not floors.
+
+/** A move shaped like moveProjectStatus: the mutation inside withScopedSnapshot, a throw reported as a refusal. */
+function moveThroughScope(context: ReturnType<typeof contextOf>, counter: { mutations: number }) {
+  return (n: number, status: string) => {
+    try {
+      withScopedSnapshot(() => { counter.mutations += 1; }, [n], context);
+      return { moved: true as const };
+    } catch (error) {
+      return { moved: false as const, notOnBoard: false, reason: `could not move #${n}'s Status to "${status}" -- ${(error as Error).message}` };
+    }
+  };
+}
+
+function settleCounted(n: number, answer: (issue: number) => string, { lookup = true } = {}) {
+  forgetScopedSnapshots();
+  const { request, argv } = requestOf(answer);
+  const context = contextOf(request);
+  const counter = { mutations: 0 };
+  const outcome = settleClosedStatus(n, { moveStatus: moveThroughScope(context, counter), log: () => {},
+    ...(lookup ? { currentStatus: (issue: number) => scopedStatusOf(issue, context) } : {}) });
+  return { requests: argv.length, mutations: counter.mutations, outcome };
+}
+
+test("#1360 DONE-WHEN 1, measured: a row already at Done costs exactly 1 request and 0 mutations", () => {
+  const { requests, mutations, outcome } = settleCounted(1298, (n) => touched(n, { status: "Done" }));
+  assert.equal(requests, 1);
+  assert.equal(mutations, 0);
+  assert.deepEqual(outcome, { settled: true, refused: [] });
+});
+
+test("#1360 DONE-WHEN 1, measured: a row at a live Status costs exactly 1 request and 1 mutation -- the move reuses the read", () => {
+  const { requests, mutations, outcome } = settleCounted(1393, (n) => touched(n, { status: "In progress" }));
+  assert.equal(requests, 1, "the move reused the read the lookup took; two here would be a second read per row");
+  assert.equal(mutations, 1);
+  assert.deepEqual(outcome, { settled: true, refused: [] });
+});
+
+test("#1360 DONE-WHEN 1, measured: an unreadable Project costs exactly 1 request, 0 mutations, and refuses project-unreadable", () => {
+  const { requests, mutations, outcome } = settleCounted(1332, () => {
+    const error = Object.assign(new Error("Command failed: gh api graphql"), { status: 1, stdout: CAPTURED_NO_PROJECT });
+    throw error;
+  });
+  assert.equal(requests, 1, "the move never read again after the lookup's read failed");
+  assert.equal(mutations, 0);
+  assert.equal(outcome.settled, false);
+  assert.equal(outcome.refused[0].cause, PROJECT_UNREADABLE);
+});
+
+test("#1360 CONTROL, today's cost: the same Done row settled WITHOUT the lookup costs 1 request and 1 mutation", () => {
+  // What the three counts above are measured against: the mutation the lookup saves is this one.
+  const { requests, mutations } = settleCounted(1298, (n) => touched(n, { status: "Done" }), { lookup: false });
+  assert.equal(requests, 1);
+  assert.equal(mutations, 1);
+});
+
+test("#1360 a row NOT on the board reads as null and is moved as before, still on the one read", () => {
+  const { requests, mutations } = settleCounted(393, (n) => touched(n, { onBoard: false }));
+  assert.equal(requests, 1);
+  assert.equal(mutations, 1, "null is not Done: the move runs, and gh's own 'is not an item' answer settles it");
 });
