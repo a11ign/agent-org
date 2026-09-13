@@ -1,3 +1,15 @@
+// no-token: REPO
+//
+// #827's mechanism, and the declaration is checked rather than asserted. This file imports exactly one
+// symbol -- `scheduleNeverFired` -- and calls exactly that; `REPO` arrives through the module's import
+// closure (`board-schedule-liveness.mjs` -> `board-data.mjs:82`), never through anything this file
+// invokes. Every input is injected: `events`, `createdAt`, `now` and `graceHours` are all arguments.
+// So reaching `REPO` is not part of what is tested here, which is the condition the declaration names.
+//
+// A CONSUMER assertion reaches `REPO` on purpose and must NOT carry this line -- declaring it there
+// would make a consumer test a unit test wearing its name. `livenessVerdict`'s own consumer coverage
+// lives in `board-liveness.test.ts`, which declares `// no-token: gh` for the same reason and not this
+// one.
 /**
  * `board-schedule-liveness.mjs`'s comment/summary inference (`livenessVerdict`, tested in
  * `board-liveness.test.ts`) is BLIND to a workflow that has never fired and is still young -- #272,
