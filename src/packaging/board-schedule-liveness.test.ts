@@ -82,7 +82,7 @@ test("a custom graceHours is honoured, for a caller that wants a tighter or loos
 // #1253 measured the shape: a workflow run GitHub creates and never schedules, `queued` forever with zero
 // jobs and `updated_at` frozen at `created_at`. It carries its trigger's `event`, so a reader asking only
 // "is there a schedule event in the history" answers `false` here -- "the schedule has fired" -- on the
-// strength of a run that did nothing. The two on #1253 were still stuck 116 minutes after creation.
+// strength of a run that did nothing. The two on #1253 were still stuck 90 minutes after creation.
 
 test("#1263: a GHOST scheduled run does NOT count as the schedule having fired", () => {
   const events = [{ event: "workflow_dispatch", status: "completed", conclusion: "success" },
