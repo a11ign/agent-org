@@ -26,6 +26,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { regionRefusalReason, declaresRelease, outOfReleaseArgv, OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE }
   from "../../../../scripts/row-file.mjs";
 import { declaredRegionFiles } from "../../../../scripts/region-paths.mjs";
+import { fleetOrLabAcceptance } from "../../../../scripts/acceptance-commands.mjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -998,4 +999,82 @@ test("#1193 clause 5: a top-level directory keeps producing exactly one warning"
   assert.ok(directoryRegionWarning(body), "docs/ reserves every file beneath it and must still say so");
   assert.equal(unrecognisedRegionWarning(body), null);
   assert.equal(slashlessDirectoryWarning(body), null);
+});
+
+/**
+ * #1241: THE ACCEPTANCE ANSWERS WHAT THE REGION CANNOT.
+ *
+ * `laneLabelsFor` derives a lane from the Region's PATHS, so **a pathless row can never carry a path
+ * lane**. #1042 (a destination the chairman provisions) and #1234 (a systemd timer on the control plane)
+ * both reached `ready`/`lane:any` with an acceptance naming a specific session, and an engineer had to
+ * read the body to discover the row was not theirs — twice, both found the same way.
+ *
+ * THE PATTERN LIST IS NOT RETYPED HERE EITHER. `fleetOrLabAcceptance` reuses `FLEET_LAB_PATTERNS`, which
+ * is the resource ban every role file below `ceo` and `orchestrator` already carries.
+ */
+test("#1241: a pathless row whose acceptance reaches the fleet gets lane:orchestrator", () => {
+  const body = "## Region\n\nits deliverable is not a commit\n\n## Acceptance\n\n```\n"
+    + "npm run fleet:provision -- --limit=a11y-worker-2\n```\n";
+  assert.match(String(fleetOrLabAcceptance(body)), /reaches the fleet/,
+    "a fleet command in the acceptance names the row's owner, where the Region names nobody");
+});
+
+test("#1241: the lab is its own reason, and an ordinary row gets neither", () => {
+  const lab = "## Acceptance\n\n```\nnpm run lab:job -- -e job=train\n```\n";
+  assert.match(String(fleetOrLabAcceptance(lab)), /reaches the lab/,
+    "the reason is the matched pattern's own, not a generic 'needs hardware'");
+  const plain = "## Acceptance\n\n```\nnpx tsx --test packages/lab/src/packaging/row-file.test.ts\n```\n";
+  assert.equal(fleetOrLabAcceptance(plain), null,
+    "an ordinary acceptance must not route a row away from the engineer who can run it");
+});
+
+test("#1241: it reads the COMMANDS list, and a prose line IS one of those", () => {
+  // `extractAcceptanceSection` returns `{kind, commands}`, not a string -- my first version tested the
+  // regexes against the object, which stringifies and matches nothing, so `npm run fleet:provision`
+  // returned null. Reading `commands` fixed that.
+  //
+  // AND A PROSE LINE LANDS IN `commands` TOO: the extractor does not judge whether a line is runnable --
+  // `pr-open` does, by refusing it. I expected a sentence to be excluded and asserted so; it is not, and
+  // the assertion was wrong about the system rather than the system being wrong.
+  //
+  // Routing on it is the SAFE direction: a row whose acceptance mentions a fleet command in prose is
+  // almost certainly a fleet row, and a spurious `lane:orchestrator` is read and corrected, where a
+  // missing one sends an engineer to a row they cannot build -- which is the harm #1042 and #1234 did.
+  const prose = "## Acceptance\n\nSomebody should run `npm run fleet:provision` at some point.\n";
+  assert.match(String(fleetOrLabAcceptance(prose)), /reaches the fleet/,
+    "a prose line is in the commands list, so it routes -- deliberately, and in the safe direction");
+});
+
+/**
+ * #1241, ADDED AFTER REVIEW: THE TWO FOUNDING CASES, PINNED.
+ *
+ * My first version cited #1042 and #1234 as the rows this closes and **caught neither** — the header
+ * made a claim the code did not honour. Two causes, and the second was the real one:
+ *
+ * 1. The pattern list knew `fleet:`/`lab:` and not the control plane. Both rows are `orchestrator`'s
+ *    because *the control plane is theirs*, said in prose.
+ * 2. **`extractAcceptanceSection` returns the first COMMAND LINE, not the section.** For both rows that
+ *    line is prose, so the numbered clauses naming systemd and the corpus backup were never looked at.
+ *    Running a command and CLASSIFYING a row are different questions over the same text.
+ *
+ * **A lane deriver answering null for a row that is NOT lane:any looks exactly like one answering null
+ * for a row that is** — and it becomes the thing a reader trusts instead of the body.
+ */
+test("#1241: the two rows this was filed on are both routed", () => {
+  const systemdRow = "## Acceptance\n\n1. A systemd USER timer on `agents` at 07:10 London running "
+    + "`gh workflow run board-report.yml`.\n";
+  const labRow = "## Acceptance\n\n**Not a test.** This row closes when:\n\n1. A destination exists.\n"
+    + "2. `A11Y_CORPUS_REMOTE` is set on the lab.\n";
+  assert.match(String(fleetOrLabAcceptance(systemdRow)), /systemd unit on the control host/,
+    "#1234's shape: no `fleet:` or `lab:` command anywhere, and still orchestrator's");
+  assert.match(String(fleetOrLabAcceptance(labRow)), /corpus backup|on the lab/,
+    "#1042's shape: a destination somebody provisions and a verify only the lab can run");
+});
+
+test("#1241: a clause below the first line is still read", () => {
+  // The defect above in one assertion: the fleet command is in clause 3, and the first line is prose.
+  const body = "## Acceptance\n\n**Not a test.** It closes when:\n\n1. A thing exists.\n"
+    + "2. Another thing.\n3. `npm run fleet:status` reports every box green.\n";
+  assert.match(String(fleetOrLabAcceptance(body)), /reaches the fleet/,
+    "reading only the first line is what made both founding cases answer null");
 });
