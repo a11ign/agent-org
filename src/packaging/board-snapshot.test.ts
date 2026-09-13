@@ -22,7 +22,7 @@ import {
 
 /** One page of a real `gh api graphql` response, shaped exactly like the live schema returns it. */
 function page({ nodes, hasNextPage = false, endCursor = null }: {
-  nodes: Array<{ id: string; number?: number; title?: string; status?: string }>;
+  nodes: Array<{ id: string; number?: number; title?: string; status?: string; state?: string }>;
   hasNextPage?: boolean;
   endCursor?: string | null;
 }) {
@@ -34,7 +34,12 @@ function page({ nodes, hasNextPage = false, endCursor = null }: {
             pageInfo: { hasNextPage, endCursor },
             nodes: nodes.map((n) => ({
               id: n.id,
-              content: n.number !== undefined ? { number: n.number, title: n.title ?? "" } : null,
+              // #1219: `state` is part of what the query asks for now, so the fixture emits it --
+              // a fixture that models a narrower shape than the producer tests a response that
+              // cannot occur. Defaults to OPEN so existing cases keep their meaning; a case that
+              // cares passes `state` explicitly.
+              content: n.number !== undefined
+                ? { number: n.number, title: n.title ?? "", state: n.state ?? "OPEN" } : null,
               fieldValues: {
                 nodes: n.status !== undefined
                   ? [{ name: n.status, field: { name: "Status" } }]
@@ -51,13 +56,15 @@ function page({ nodes, hasNextPage = false, endCursor = null }: {
 test("fetchBoardItems reads number, title and Status off a single page", () => {
   const run = () => page({ nodes: [{ id: "PVTI_1", number: 42, title: "the row", status: "Ready" }] });
   const items = fetchBoardItems({ run, fetchReady: () => [] });
-  assert.deepEqual(items, [{ itemId: "PVTI_1", number: 42, title: "the row", status: "Ready" }]);
+  assert.deepEqual(items, [{ itemId: "PVTI_1", number: 42, title: "the row", status: "Ready", state: "OPEN" }]);
 });
 
 test("a draft item (no linked issue) is recorded with number/title null, never dropped", () => {
   const run = () => page({ nodes: [{ id: "PVTI_draft" }] });
   const items = fetchBoardItems({ run, fetchReady: () => [] });
-  assert.deepEqual(items, [{ itemId: "PVTI_draft", number: null, title: null, status: null }]);
+  // #1219: `state` is null for a draft too -- a draft has no issue, so it has no state, and defaulting
+  // it to OPEN would make every draft an open row the contradiction check then reasons about.
+  assert.deepEqual(items, [{ itemId: "PVTI_draft", number: null, title: null, status: null, state: null }]);
 });
 
 test("fetchBoardItems follows pagination across multiple pages", () => {
@@ -136,7 +143,7 @@ test("#555 MUTATION TARGET: a 200 response carrying `data` AND `errors` together
 test("#555 CONTROL: an ordinary clean response (no errors array at all) is unaffected", () => {
   const run = () => page({ nodes: [{ id: "PVTI_1", number: 1, title: "fine", status: "Ready" }] });
   const items = fetchBoardItems({ run, fetchReady: () => [] });
-  assert.deepEqual(items, [{ itemId: "PVTI_1", number: 1, title: "fine", status: "Ready" }]);
+  assert.deepEqual(items, [{ itemId: "PVTI_1", number: 1, title: "fine", status: "Ready", state: "OPEN" }]);
 });
 
 test("#555: an `errors` array with data still present is refused BEFORE the shape check would even run "
@@ -178,7 +185,7 @@ test("writeBoardSnapshot fetches, then writes JSON to runs/board-snapshots/<stam
   const parsed = JSON.parse(written[0].data);
   assert.equal(parsed.project.owner, PROJECT_OWNER);
   assert.equal(parsed.project.number, PROJECT_NUMBER);
-  assert.deepEqual(parsed.items, [{ itemId: "PVTI_1", number: 42, title: "row", status: "Ready" }]);
+  assert.deepEqual(parsed.items, [{ itemId: "PVTI_1", number: 42, title: "row", status: "Ready", state: "OPEN" }]);
 });
 
 test("writeBoardSnapshot throws, never swallows, when the fetch fails", () => {
@@ -231,13 +238,13 @@ test("withBoardSnapshot calls the mutation, and only after logging the snapshot 
 // catches a narrowed read that every assertion available inside the response itself would pass. ---
 
 test("readyRowsMissingStatus: a ready row with a Status is not reported", () => {
-  const items = [{ itemId: "PVTI_1", number: 725, title: "row", status: "Ready" }];
+  const items = [{ itemId: "PVTI_1", number: 725, title: "row", status: "Ready", state: "OPEN" }];
   assert.deepEqual(readyRowsMissingStatus(items, [725]), []);
 });
 
 test("readyRowsMissingStatus: a ready row present but with a null Status IS reported -- the exact shape "
   + "a narrowed fieldValues read produces", () => {
-  const items = [{ itemId: "PVTI_1", number: 725, title: "row", status: null }];
+  const items = [{ itemId: "PVTI_1", number: 725, title: "row", status: null, state: "OPEN" }];
   assert.deepEqual(readyRowsMissingStatus(items, [725]), [725]);
 });
 
@@ -248,12 +255,14 @@ test("readyRowsMissingStatus: a ready row absent from the snapshot entirely IS r
 
 test("readyRowsMissingStatus: draft items (number null) never match a ready issue number and are "
   + "ignored rather than crashing the lookup", () => {
-  const items = [{ itemId: "PVTI_draft", number: null, title: null, status: null }];
+  // #1219: `state: null` -- a draft has no issue, so it has no state. `tsc` caught this, the same way
+  // it catches a partial fixture typechecking as the real thing.
+  const items = [{ itemId: "PVTI_draft", number: null, title: null, status: null, state: null }];
   assert.deepEqual(readyRowsMissingStatus(items, [725]), [725]);
 });
 
 test("readyRowsMissingStatus: an empty ready population always passes -- nothing to check", () => {
-  assert.deepEqual(readyRowsMissingStatus([{ itemId: "x", number: 1, title: "t", status: null }], []), []);
+  assert.deepEqual(readyRowsMissingStatus([{ itemId: "x", number: 1, title: "t", status: null, state: "OPEN" }], []), []);
 });
 
 test("fetchReadyIssueNumbers: reads --json number off gh issue list, filtered to open + ready", () => {
@@ -296,7 +305,7 @@ function dualRun(itemsPageJson: string, readyNumbers: number[]) {
 test("fetchBoardItems: every ready row carries a Status -- passes unchanged, same as today's 203 items", () => {
   const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 725, title: "row", status: "Ready" }] }), [725]);
   const items = fetchBoardItems({ run });
-  assert.deepEqual(items, [{ itemId: "PVTI_1", number: 725, title: "row", status: "Ready" }]);
+  assert.deepEqual(items, [{ itemId: "PVTI_1", number: 725, title: "row", status: "Ready", state: "OPEN" }]);
 });
 
 test("#747 ACCEPTANCE, MUTATION TARGET: a ready row's fieldValues dropped (the narrowed-connection "
@@ -342,7 +351,7 @@ test("readyRowsMissingStatus: excludeIssueNumber removes exactly that row from t
 
 test("readyRowsMissingStatus: excludeIssueNumber does not blind the floor to a DIFFERENT ready row "
   + "missing its Status -- only the named row is exempt", () => {
-  const items = [{ itemId: "PVTI_1", number: 717, title: "unrelated", status: null }];
+  const items = [{ itemId: "PVTI_1", number: 717, title: "unrelated", status: null, state: "OPEN" }];
   assert.deepEqual(readyRowsMissingStatus(items, [717, 891], 891), [717]);
 });
 
@@ -355,7 +364,7 @@ test("fetchBoardItems: excludeIssueNumber threaded through end-to-end reproduces
   + "freshly boarded, ready-labelled, Status-less row does NOT refuse when it is the excluded row", () => {
   const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 891, title: "row" }] }), [891]);
   const items = fetchBoardItems({ run, excludeIssueNumber: 891 });
-  assert.deepEqual(items, [{ itemId: "PVTI_1", number: 891, title: "row", status: null }]);
+  assert.deepEqual(items, [{ itemId: "PVTI_1", number: 891, title: "row", status: null, state: "OPEN" }]);
 });
 
 test("fetchBoardItems, MUTATION TARGET: excludeIssueNumber naming the WRONG row still refuses -- proving "
