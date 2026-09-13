@@ -9,6 +9,7 @@ import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { updatePrimary, lockfileMoved } from "../../../../scripts/update-primary.mjs";
+import { changedFiles } from "../../../../scripts/changed-files.mjs";
 import { withGitSandbox } from "../../../../scripts/test-support/git-sandbox.ts";
 import { UPDATE_PRIMARY_VERBS } from "./update-primary-argv.mjs";
 
@@ -171,13 +172,17 @@ test("neither argv assertion carries its own copy of the list -- the fact is sta
 // The expected file name is written as a literal throughout, never imported from the script: a constant
 // read from the source it checks would pass with the wrong name in both places.
 
+type Asked = { range: string[]; pathspec: string[] };
+
 /**
  * Drives `updatePrimary` across a MOVED head: HEAD reads `old111` before the checkout and `new222` after,
- * the shared `main` is already at `new222`, and `diff` answers `diffOutput`. Records every git argv and
- * every npm argv, and returns what was thrown rather than throwing it.
+ * and the shared `main` is already at `new222`. The changed-paths helper answers `changedAnswer`. Records
+ * every git argv, every question put to the helper and every npm argv, and returns what was thrown rather
+ * than throwing it.
  */
-function driveMove(diffOutput: string, npm: (args: string[]) => void = () => {}) {
+function driveMove(changedAnswer: string[], npm: (args: string[]) => void = () => {}) {
   const git: string[][] = [];
+  const asked: Asked[] = [];
   const npmCalls: string[][] = [];
   let headReads = 0;
   let thrown: unknown;
@@ -187,38 +192,39 @@ function driveMove(diffOutput: string, npm: (args: string[]) => void = () => {})
     const run = (args: string[]) => {
       git.push(args);
       if (args[0] === "rev-parse" && args[1] === "HEAD") return headReads++ === 0 ? "old111\n" : "new222\n";
-      if (args[0] === "rev-parse") return "new222\n";
-      return args[0] === "diff" ? diffOutput : "";
+      return args[0] === "rev-parse" ? "new222\n" : "";
     };
+    const changed = (range: string[], pathspec: string[]) => { asked.push({ range, pathspec }); return changedAnswer; };
     try {
-      updatePrimary(root, run, (_cwd, args) => { npmCalls.push(args); npm(args); });
+      updatePrimary(root, run, (_cwd, args) => { npmCalls.push(args); npm(args); }, changed);
     } catch (error) {
       thrown = error;
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
-  return { git, npmCalls, thrown };
+  return { git, asked, npmCalls, thrown };
 }
 
 test("#1384 ACCEPTANCE: a move that changed the lockfile runs npm install, BEFORE the build", () => {
-  const { git, npmCalls, thrown } = driveMove("package-lock.json\n");
+  const { git, asked, npmCalls, thrown } = driveMove(["package-lock.json"]);
   assert.equal(thrown, undefined);
-  assert.deepEqual(git.find((argv) => argv[0] === "diff"),
-    ["diff", "--name-only", "--no-renames", "old111", "new222", "--", "package-lock.json"],
+  assert.deepEqual(asked, [{ range: ["old111", "new222"], pathspec: ["package-lock.json"] }],
     "the question is asked of the commit the checkout LEFT and the one it ARRIVED at, for the root lockfile");
+  assert.equal(git.some((argv) => argv[0] === "diff"), false,
+    "#939: the paths come from scripts/changed-files.mjs, never from a second spelling of the diff");
   assert.deepEqual(npmCalls, [["install"], ["run", "build"]],
     "install first: a build before it compiles the new source against the old node_modules");
 });
 
 test("#1384 CONTROL: a move that did NOT change the lockfile asks the question and installs nothing", () => {
-  const { git, npmCalls, thrown } = driveMove("");
+  const { asked, npmCalls, thrown } = driveMove([]);
   assert.equal(thrown, undefined);
-  assert.equal(git.filter((argv) => argv[0] === "diff").length, 1,
+  assert.equal(asked.length, 1,
     "the positive control for the absence below: the lockfile question WAS asked, and answered no");
   assert.deepEqual(npmCalls, [["run", "build"]]);
 });
 
 test("#1384 the install is NEVER npm ci -- it would delete node_modules from under every worktree", () => {
-  const { npmCalls } = driveMove("package-lock.json\n");
+  const { npmCalls } = driveMove(["package-lock.json"]);
   const installs = npmCalls.filter((argv) => argv[0] !== "run");
   assert.deepEqual(installs, [["install"]], "exactly one install, and it is `npm install`");
   assert.equal(npmCalls.some((argv) => argv.includes("ci") || argv.includes("clean-install")), false,
@@ -227,23 +233,24 @@ test("#1384 the install is NEVER npm ci -- it would delete node_modules from und
 
 test("#1384 a HEAD that did not move asks no lockfile question at all", () => {
   const npmCalls: string[][] = [];
-  const git: string[][] = [];
+  const asked: Asked[] = [];
   const root = mkdtempSync(join(tmpdir(), "a11y-primary-unmoved-"));
   try {
     mkdirSync(join(root, ".git"));
-    updatePrimary(root, (args) => { git.push(args); return "same333\n"; }, (_cwd, args) => npmCalls.push(args));
+    updatePrimary(root, () => "same333\n", (_cwd, args) => npmCalls.push(args),
+      (range, pathspec) => { asked.push({ range, pathspec }); return ["package-lock.json"]; });
   } finally { rmSync(root, { recursive: true, force: true }); }
-  assert.equal(git.some((argv) => argv[0] === "diff"), false, "a diff of a commit against itself is empty by construction");
+  assert.deepEqual(asked, [], "a range from a commit to itself is empty by construction, so it is not asked");
   assert.deepEqual(npmCalls, [["run", "build"]]);
 });
 
 test("#1384 the lockfile is matched BY NAME: a nested package-lock.json in the answer does not install", () => {
-  const { npmCalls } = driveMove("packages/x/package-lock.json\n");
+  const { npmCalls } = driveMove(["packages/x/package-lock.json"]);
   assert.deepEqual(npmCalls, [["run", "build"]]);
 });
 
 test("#1384 a FAILED install throws naming the stale node_modules, skips the build, and rolls nothing back", () => {
-  const { git, npmCalls, thrown } = driveMove("package-lock.json\n", (args) => {
+  const { git, npmCalls, thrown } = driveMove(["package-lock.json"], (args) => {
     if (args[0] === "install") throw Object.assign(new Error("boom"), { status: 7 });
   });
   assert.ok(thrown instanceof Error, "reported, never swallowed");
@@ -258,7 +265,7 @@ test("#1384 a FAILED install throws naming the stale node_modules, skips the bui
     false, "a failed install must not revert a checkout somebody else may already be reading");
 });
 
-test("#1384 lockfileMoved against REAL git: the root lockfile, across one commit or several", () => {
+test("#1384 lockfileMoved through the REAL changed-files helper: the root lockfile, across one commit or several", () => {
   withGitSandbox((sandbox) => {
     const commitWith = (path: string, content: string) => {
       mkdirSync(join(sandbox.dir, path, ".."), { recursive: true });
@@ -267,14 +274,21 @@ test("#1384 lockfileMoved against REAL git: the root lockfile, across one commit
       sandbox.commit(`write ${path}`);
       return sandbox.run(["rev-parse", "HEAD"]).trim();
     };
-    const run = (args: string[]) => sandbox.run(args);
+    const changed = (range: string[], pathspec: string[]) => changedFiles(range, { repoRoot: sandbox.dir, pathspec });
     const first = commitWith("package-lock.json", '{"lockfileVersion":3}\n');
     const readmeOnly = commitWith("README.md", "docs\n");
     const nestedOnly = commitWith("packages/x/package-lock.json", "{}\n");
     const lockfile = commitWith("package-lock.json", '{"lockfileVersion":3,"packages":{}}\n');
-    assert.equal(lockfileMoved(run, first, readmeOnly), false, "a README-only move is not a lockfile move");
-    assert.equal(lockfileMoved(run, readmeOnly, nestedOnly), false, "a nested package-lock.json is not the root one");
-    assert.equal(lockfileMoved(run, nestedOnly, lockfile), true, "the root lockfile changed");
-    assert.equal(lockfileMoved(run, first, lockfile), true, "a fast-forward spanning several commits, the real shape");
+    sandbox.run(["mv", "package-lock.json", "moved-lock.json"]);
+    sandbox.commit("move the lockfile away");
+    const movedAway = sandbox.run(["rev-parse", "HEAD"]).trim();
+    assert.equal(lockfileMoved(changed, first, readmeOnly), false, "a README-only move is not a lockfile move");
+    assert.equal(lockfileMoved(changed, readmeOnly, nestedOnly), false, "a nested package-lock.json is not the root one");
+    assert.equal(lockfileMoved(changed, nestedOnly, lockfile), true, "the root lockfile changed");
+    assert.equal(lockfileMoved(changed, first, lockfile), true, "a fast-forward spanning several commits, the real shape");
+    assert.equal(lockfileMoved(changed, lockfile, movedAway), true,
+      "a lockfile moved AWAY is a lockfile move. NOT a pin on #939's --no-renames: measured, this stays true with "
+      + "the flag removed from changed-files.mjs, because the pathspec excludes the destination. What keeps this "
+      + "read on the helper is changed-files-renames.test.ts and the ACCEPTANCE test's no-diff-through-run line");
   });
 });
