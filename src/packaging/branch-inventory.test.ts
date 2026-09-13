@@ -14,6 +14,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { rowNumberFromBranch, sessionFromLabels, sessionFromTimeline, ownerOfBranch, branchFacts,
   reconcile, groupByOwner, renderInventory } from "../../../../scripts/branch-inventory.mjs";
+import { inventory } from "../../../../scripts/branch-inventory-report.mjs";
 
 const tip = { sha: "abc1234", at: "2026-09-09T08:35:00Z" };
 
@@ -181,4 +182,66 @@ test("#623: the rendered table carries all four facts AND the owner's source", (
     assert.ok(out.includes(fact), `the table must carry ${fact} -- a list missing one of the four facts `
       + "sends its reader back to the API for the branch they were meant to decide about");
   }
+});
+
+// --- #1278: the TWO reads are pinned, so a single-read regression cannot pass quietly ----------------
+//
+// worker-judge's note on #1273, after the verdict: `reconcile` was called with correctly-bracketed
+// arguments and nothing asserted there were two reads. Mutating `reconcile(start, end)` to
+// `reconcile(end, end)` passed 10/0 — a later "simplify this double fetch" would print
+// `reconcile (two reads...): no drift` from a single moment, and #1246 reads that line to decide 94
+// dispositions. A caller with no test is one refactor from a function with no caller.
+
+/** A `run` whose branch list GROWS between the two sweeps -- one branch lands mid-inventory. */
+let sweeps = 0;
+const forEachRefCalls = () => sweeps;
+const runWithDriftAfter = (firstCallsBeforeDrift: number) => {
+  sweeps = 0;
+  let forEachRefCalls = 0;
+  return (cmd: string, args: string[]): string => {
+    if (cmd === "gh") return "";                       // no open PRs, so every branch is a candidate
+    if (args[0] === "for-each-ref") {
+      forEachRefCalls += 1;
+      sweeps += 1;
+      const rows = ["agent/a\taaaaaaa\t2026-09-13T00:00:00Z"];
+      if (forEachRefCalls > firstCallsBeforeDrift) rows.push("agent/b\tbbbbbbb\t2026-09-13T00:01:00Z");
+      return rows.join("\n");
+    }
+    if (args[0] === "rev-list") return "3";            // every branch is unmerged, 3 commits
+    return "";
+  };
+};
+
+test("#1278: a branch that lands BETWEEN the two sweeps is reported as drift", () => {
+  const { reconciliation } = inventory({ run: runWithDriftAfter(1) as never });
+  assert.notDeepEqual(reconciliation.drift, { candidates: 0, noOpenPR: 0, merged: 0, unmerged: 0 },
+    "the second sweep saw one more branch, and a single-read report cannot say so");
+  assert.equal(reconciliation.drift.candidates, 1);
+  assert.equal(reconciliation.drift.unmerged, 1);
+  // AND THE TWO READS ARE COUNTED, not inferred from the drift: `inventory` must call `countsNow` twice,
+  // once before the sweep and once after. Asserting only the drift would pass a build that read once and
+  // fabricated a difference; asserting only the call count would pass one that read twice and ignored the
+  // second. The pair is what pins the two-read path.
+  // THREE, and the number is read off the call sites rather than off the answer: `countsNow` at the
+  // start, the facts sweep in the middle, `countsNow` at the end. I asserted 2 first, from the two reads
+  // this row is about, and the middle one is real. Collapsing the two `countsNow` calls to one makes it
+  // 2 and fails; so does deleting the facts sweep. Both are regressions worth failing on.
+  assert.equal(forEachRefCalls(), 3,
+    "`countsNow` at the start, the facts sweep, `countsNow` at the end -- three branch reads");
+});
+
+test("#1278 POSITIVE CONTROL: identical reads report NO drift -- it must stay sayable when true", () => {
+  // Without this, a build reporting drift unconditionally passes the test above perfectly, and every
+  // quiet sweep would claim the board moved under it.
+  const { reconciliation } = inventory({ run: runWithDriftAfter(99) as never });
+  assert.deepEqual(reconciliation.drift, { candidates: 0, noOpenPR: 0, merged: 0, unmerged: 0 });
+  assert.equal(reconciliation.endBalanced, true);
+});
+
+test("#1278: ownerOfBranch tolerates `row: undefined` rather than throwing", () => {
+  // `row === null` misses `undefined`, so a caller omitting the field got a TypeError out of a function
+  // whose whole job is to answer "unknown" when it cannot tell. Every call site passes `?? null` today,
+  // so this is reachable only from a new one -- which is exactly when it would cost most.
+  assert.deepEqual(ownerOfBranch({ branch: "agent/x", row: undefined }),
+    { owner: null, source: "unknown" });
 });
