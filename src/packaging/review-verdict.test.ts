@@ -113,3 +113,48 @@ test("#1259: a comment that is not a verdict carries no head or author, even whe
   assert.deepEqual(reviewVerdict("Pushed `abcdef12`, reviewed by worker-capture."),
     { verdict: "none", word: null, head: null, author: null });
 });
+
+// --- #1324: FIRST is pinned, and the author is the convention's `, by <name>:` ---
+
+// VERBATIM, the opener line of the re-read on #1264 (comment 5652879452). It carries TWO shas and names the
+// superseded one second, so a parser taking the LAST backticked hex returns `cf4f3345`: an older verdict's head.
+const REREAD_1264 = "**Re-read of #1264 at `55c92b7f`, by worker-capture: CONVINCED.** Re-affirmed at the current "
+  + "head; the verdict at `cf4f3345` is superseded by this one rather than carried over.";
+
+test("#1324: the real #1264 opener line with two shas yields the FIRST head, not the superseded one", () => {
+  const { head, author } = reviewVerdict(REREAD_1264);
+  assert.equal(head, "55c92b7f", "`cf4f3345` is the verdict this one supersedes");
+  assert.equal(author, "worker-capture");
+});
+
+test("#1324: a `by` before the convention's own is not the author -- `prompted by ceo` is not ceo's verdict",
+  () => {
+    // Fails OPEN if it slips: a clock asking whether a verdict comes from someone other than the PR's author
+    // would see `ceo` on worker-x's own verdict. 0 of 47 real opener lines had this shape when #1324 was filed.
+    const { head, author } = reviewVerdict("**Review of #1301 at `b2fa1fa6`, prompted by ceo, by worker-x: convinced.**");
+    assert.equal(author, "worker-x", "the convention's `, by <name>:` names the reviewer; an earlier `by` does not");
+    assert.equal(head, "b2fa1fa6");
+  });
+
+test("#1324: a backticked run id BEFORE the head is not the head -- the sha after `at` is", () => {
+  assert.equal(reviewVerdict("**Review of #1301 (ci run `34764381448`) at `b2fa1fa6`, by worker-x: convinced.**").head,
+    "b2fa1fa6", "a decimal run id is 11 hex-shaped digits; `at` is what says which backticked value is the head");
+});
+
+test("#1324 POSITIVE CONTROL: with no `, by <name>:` on the line, a bare `by` is still read, and no `by` is still "
+  + "null -- an anchored-only author passes the tests above", () => {
+  // Constructed, not quoted: the fallback's shape. #1244's real author-less line is the null case above.
+  assert.equal(reviewVerdict("Re-read of `94d6e948` by worker-judge — convinced.").author, "worker-judge");
+  assert.equal(reviewVerdict(REREAD_WITHOUT_AUTHOR).author, null);
+});
+
+test("#1324: the FIRST `, by <name>:` is the author when the opener line quotes a superseded verdict in the same "
+  + "convention", () => {
+  // Constructed: 0 of 168 real opener lines (the last 120 PRs, read 2026-09-13) carry two. The shape is #1264's
+  // own -- a re-read naming the verdict it supersedes on the same line -- with the superseded one's author added.
+  const line = "**Re-read of #1 at `55c92b7f`, by worker-capture: CONVINCED.** Supersedes the review at `cf4f3345`, "
+    + "by worker-judge: not convinced.";
+  assert.deepEqual(reviewVerdict(line),
+    { verdict: "convinced", word: "CONVINCED", head: "55c92b7f", author: "worker-capture" },
+    "the second `, by <name>:` belongs to the verdict this one supersedes");
+});
