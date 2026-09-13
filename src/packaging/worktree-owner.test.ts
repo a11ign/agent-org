@@ -11,8 +11,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -80,4 +80,72 @@ test("#1128: an empty stamp file is UNSTAMPED, not an owner named the empty stri
     assert.equal(worktreeOwner(base), null,
       "a truncated or half-written stamp must not name a session whose id is blank");
   } finally { rmSync(base, { recursive: true, force: true }); }
+});
+
+/** The CLI, run the way a session runs it -- argv and env, never the exported functions. */
+function cli(args: string[], env: Record<string, string | undefined>) {
+  const result = spawnSync(process.execPath, [join(REPO, "scripts/worktree-owner.mjs"), ...args],
+    { encoding: "utf8", env: { ...process.env, ...sandboxGitEnv(), ...env } });
+  return { status: result.status, out: result.stdout, err: result.stderr };
+}
+
+test("#1128 THE CALLER: `--stamp` writes the stamp, and the read then names the session that wrote it",
+  () => {
+    // worker-judge's finding on #1244: the writer was exported and unreached, so every tree answered
+    // UNSTAMPED forever and the feature was indistinguishable from its own absence. This drives the
+    // round trip through the COMMAND, because "a caller exists" is the claim under review.
+    const base = mkdtempSync(join(tmpdir(), "owner-cli-"));
+    const w = join(base, "tree");
+    try {
+      git("worktree", "add", "--detach", w, "HEAD");
+      const stamped = cli(["--stamp", w], { A11Y_SESSION: "worker-capture" });
+      assert.equal(stamped.status, 0, stamped.err);
+      assert.match(stamped.out, /stamped worker-capture/);
+
+      const asked = cli([w], { A11Y_SESSION: "worker-judge" });
+      assert.match(asked.out, /worker-capture's -- NOT yours/,
+        "the reader must see what the writer wrote, through the filesystem rather than through a shared "
+        + "variable -- two processes are the whole point");
+    } finally {
+      try { git("worktree", "remove", "--force", w); } catch { /* already gone */ }
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+test("#1128: `--stamp` with no A11Y_SESSION REFUSES and writes nothing", () => {
+  // A stamp naming nobody is worse than no stamp: it turns the honest UNSTAMPED answer into a confident
+  // wrong one, and the next reader cannot tell them apart. The refusal is the interesting half of the
+  // writer, so it is driven rather than read.
+  const base = mkdtempSync(join(tmpdir(), "owner-nosession-"));
+  try {
+    const refused = cli(["--stamp", base], { A11Y_SESSION: undefined });
+    assert.equal(refused.status, 2);
+    assert.match(refused.err, /A11Y_SESSION is not set/);
+    assert.equal(existsSync(join(base, OWNER_FILE)), false,
+      "refusing and then writing anyway is the failure this assertion exists for");
+    assert.equal(worktreeOwner(base), null);
+  } finally { rmSync(base, { recursive: true, force: true }); }
+});
+
+test("#1128: a stamped worktree still reads CLEAN to `git status --porcelain`", () => {
+  // NOT COSMETIC. `prune-worktrees.mjs`'s `isWorkingTreeClean` is exactly `git status --porcelain`, which
+  // counts untracked files -- so an unignored stamp would make every stamped tree read dirty and no tree
+  // would ever be reported safe to delete again. The remedy is the `.gitignore` entry, and this drives it
+  // rather than trusting that the entry is spelled right.
+  const base = mkdtempSync(join(tmpdir(), "owner-clean-"));
+  const w = join(base, "tree");
+  try {
+    git("worktree", "add", "--detach", w, "HEAD");
+    assert.equal(execFileSync("git", ["status", "--porcelain"],
+      { cwd: w, env: sandboxGitEnv(), encoding: "utf8" }).trim(), "",
+      "control: a fresh worktree is clean, so a dirty reading below is the stamp and not the checkout");
+    stampWorktree(w, "worker-capture");
+    assert.equal(execFileSync("git", ["status", "--porcelain"],
+      { cwd: w, env: sandboxGitEnv(), encoding: "utf8" }).trim(), "",
+      "the stamp must be invisible to the clean check -- if this fails, `.a11y-owner` is missing from "
+      + ".gitignore and every worktree prune now reports work that does not exist");
+  } finally {
+    try { git("worktree", "remove", "--force", w); } catch { /* already gone */ }
+    rmSync(base, { recursive: true, force: true });
+  }
 });
