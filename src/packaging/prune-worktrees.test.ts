@@ -19,13 +19,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, existsSync, realpathSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   parseWorktreeList, isPrimaryWorktree, classify, detachedMergeStatus, mergeStatus, isContentMerged,
   isWorkingTreeClean, pruneWorktrees, recentGitActivity, ACTIVITY_WINDOW_MS,
-  strandedWork, formatStranded, trackedChanges,
+  strandedWork, formatStranded, trackedChanges, unverifiedRecords, formatReport,
 } from "../../../../scripts/prune-worktrees.mjs";
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 
@@ -694,5 +694,114 @@ test("#1058: a merge status nobody could read is NOT rendered as 'not an ancesto
     }
     assert.doesNotMatch(formatStranded(read), /is not an ancestor of it/,
       "and the line must not make a positive claim about ancestry it could not establish");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// --- #1373: A WORKTREE'S GITIGNORED `runs/` RECORDS, AND A COMPARISON THAT MUST NOT PASS ON EMPTY READINGS. ---
+// `runs/` is ignored, so every tree below is merged AND clean by git's own reading -- the verdict that removed
+// it before #1373. What refuses now is only the records check, which is what each test isolates.
+
+const RECORDS = ["runs/board-snapshots/a.json", "runs/board-snapshots/b.json", "runs/c.json"];
+
+function plantRecord(checkout: string, file: string) {
+  mkdirSync(dirname(join(checkout, file)), { recursive: true });
+  writeFileSync(join(checkout, file), `{"record":"${file}"}\n`);
+}
+
+/** A primary that ignores `/runs`, ONE merged and clean linked worktree, and `files` planted in its `runs/`. */
+function buildRecordsFixture(files: string[]) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "a11y-prune-records-")));
+  git(root, "init", "--quiet", "-b", "main");
+  git(root, "config", "user.email", "t@example.invalid");
+  git(root, "config", "user.name", "Fixture");
+  writeFileSync(join(root, ".gitignore"), "/runs\n");
+  git(root, "add", ".gitignore");
+  git(root, "commit", "-q", "-m", "base");
+  git(root, "update-ref", "refs/remotes/origin/main", git(root, "rev-parse", "HEAD").trim());
+  const worktree = join(root, "wt-records");
+  git(root, "worktree", "add", "--quiet", "-b", "agent/records", worktree);
+  for (const file of files) plantRecord(worktree, file);
+  return { root, worktree };
+}
+
+test("#1373: three runs/ records ABSENT from the primary refuse the removal, naming 3 -- and all three survive", () => {
+  const { root, worktree } = buildRecordsFixture(RECORDS);
+  try {
+    const report = pruneWorktrees(root, { now: LONG_AFTER() });
+    assert.deepEqual(report.removed, [], "a worktree holding the only copies of three records must not be removed");
+    assert.deepEqual(report.records.map((r) => r.path), [worktree]);
+    assert.match(report.records[0].reason, /holds 3 of 3 runs\/ file\(s\)/);
+    for (const file of RECORDS) assert.ok(existsSync(join(worktree, file)), `${file} must still be on disk`);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#1373: the same three records PRESENT in the primary with matching sha256 -- removed", () => {
+  const { root, worktree } = buildRecordsFixture(RECORDS);
+  try {
+    for (const file of RECORDS) plantRecord(root, file);
+    const report = pruneWorktrees(root, { now: LONG_AFTER() });
+    assert.deepEqual(report.records, []);
+    assert.deepEqual(report.removed.map((r) => r.path), [worktree]);
+    assert.equal(existsSync(worktree), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#1373 THE INCIDENT'S SHAPE: an EMPTY reading on both sides never matches -- refused, never removed", () => {
+  // Present in the primary AND identical, so nothing but the reading can refuse: the operator's chain whose
+  // two failed `sha256sum` reads compared "" = "" and authorised the delete.
+  const { root, worktree } = buildRecordsFixture(RECORDS);
+  try {
+    for (const file of RECORDS) plantRecord(root, file);
+    const report = pruneWorktrees(root, { now: LONG_AFTER(), hash: () => "" });
+    assert.deepEqual(report.removed, [], "two EMPTY readings compared equal must never authorise a removal");
+    assert.deepEqual(report.records.map((r) => r.path), [worktree]);
+    assert.match(report.records[0].reason, /holds 3 of 3 runs\/ file\(s\) not present, with a matching NON-EMPTY sha256/);
+    for (const file of RECORDS) assert.ok(existsSync(join(worktree, file)), `${file} must still be on disk`);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#1373 CONTROL: a merged, clean worktree with NO runs/ records is removed as it always was", () => {
+  const { root, worktree } = buildRecordsFixture([]);
+  try {
+    const report = pruneWorktrees(root, { now: LONG_AFTER() });
+    assert.deepEqual(report.records, []);
+    assert.deepEqual(report.removed.map((r) => r.path), [worktree]);
+    assert.equal(existsSync(worktree), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#1373: a non-empty runs/ that lists ZERO files is an EMPTY reading too -- refused, never 'nothing to lose'", () => {
+  const { root, worktree } = buildRecordsFixture(RECORDS);
+  try {
+    const result = unverifiedRecords(worktree, root, { list: () => [] });
+    assert.equal(result.refused, true);
+    assert.match((result as { reason: string }).reason, /is not empty but ZERO files were listed/);
+    assert.deepEqual(unverifiedRecords(worktree, null), { refused: true,
+      reason: `${worktree} holds 3 runs/ file(s) and no primary checkout could be found to verify them against -- `
+        + "refusing to remove it" }, "no primary to compare against is a refusal, not a pass");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#1373: the report prints the refusal and its reason under its own heading, never under `removed`", () => {
+  // Not through argv: the CLI takes no `now`, and its own `git status` rewrites the index `recentGitActivity`
+  // dates a tree by (measured on #1373), so a fixture built moments ago always reads ACTIVE there. `main()`
+  // prints exactly `formatReport(report, dryRun)`.
+  const { root, worktree } = buildRecordsFixture(RECORDS);
+  try {
+    const text = formatReport(pruneWorktrees(root, { now: LONG_AFTER() }));
+    assert.match(text, /^removed 0 worktree\(s\):\nrefused 1 worktree\(s\) holding runs\/ records not verified in the primary checkout/);
+    assert.ok(text.includes(`  ${worktree}  (agent/records): ${worktree} holds 3 of 3 runs/ file(s)`));
+    assert.ok(existsSync(join(worktree, RECORDS[0])));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#1373: two of three records verified is NOT enough -- the verified count must equal the listed count, naming 1 of 3", () => {
+  const { root, worktree } = buildRecordsFixture(RECORDS);
+  try {
+    for (const file of RECORDS.slice(0, 2)) plantRecord(root, file);
+    const report = pruneWorktrees(root, { now: LONG_AFTER() });
+    assert.deepEqual(report.removed, []);
+    assert.match(report.records[0].reason, /holds 1 of 3 runs\/ file\(s\)[^:]*: runs\/c\.json$/);
+    assert.ok(existsSync(join(worktree, "runs/c.json")), "the one unverified record must still be on disk");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
