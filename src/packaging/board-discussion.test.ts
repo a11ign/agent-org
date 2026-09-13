@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  categoryIdFor, editionFor, editionTitle, publishEdition, todaysEditionExists, EDITION_CATEGORY_SLUG,
+  categoryIdFor, editionDay, editionFor, editionTitle, publishEdition, todaysEditionExists, EDITION_CATEGORY_SLUG,
 } from "../../../../scripts/board-discussion.mjs";
 
 const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -154,4 +154,31 @@ test("board-report.yml publishes the Discussion, and its token CANNOT create a r
 
 test("the republish precondition asks for today's DISCUSSION through the one lookup, not a release", () => {
   assert.match(workflowCode(), /node scripts\/board-discussion\.mjs --exists\b/);
+});
+
+// --- #1302: the edition's day is LONDON's, decided once ---
+
+test("#1302: editionDay is LONDON's date -- 23:30Z in BST files under the NEXT day, 23:30Z in GMT does not", () => {
+  // The reviewer's case on #1295: 00:30 London on 14 September is 23:30Z on the 13th. A UTC slice filed it
+  // under the 13th, so a republish found yesterday's Discussion and was permitted.
+  assert.equal(editionDay(new Date("2026-09-13T23:30:00Z")), "2026-09-14", "BST: London is already on the 14th");
+  assert.equal(editionDay(new Date("2026-12-13T23:30:00Z")), "2026-12-13", "GMT: London and UTC agree at 23:30Z");
+  // POSITIVE CONTROL: at 07:13Z, the scheduled run's hour, both zones give the same date. A test asserting only
+  // this would pass for either zone, which is why the BST case above is the one that decides.
+  assert.equal(editionDay(new Date("2026-09-13T07:13:00Z")), "2026-09-13");
+  assert.match(editionDay(), /^\d{4}-\d{2}-\d{2}$/, "the shape the Discussion title and the summary file name need");
+});
+
+test("#1302: no edition script computes its own day -- each imports editionDay, so the zone cannot split again", () => {
+  // Code only, comments stripped, so prose about the old UTC slice can neither satisfy nor fail this.
+  const code = (file: string) => readFileSync(join(REPO, file), "utf8").split("\n")
+    .filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line)).map((line) => line.replace(/\s\/\/.*$/, "")).join("\n");
+  const OWN_DAY = /toISOString\(\)\.slice\(0,\s*10\)|timeZone:\s*"Europe\/London",\s*year:/;
+  for (const file of ["scripts/board-document.mjs", "scripts/board-summary-check.mjs"]) {
+    assert.doesNotMatch(code(file), OWN_DAY, `${file} computes an edition day of its own instead of importing editionDay`);
+    assert.match(code(file), /\beditionDay\(/, `${file} must take its day from editionDay`);
+  }
+  // POSITIVE CONTROL for the pattern: the one definition matches it, so a regex that matches nothing cannot
+  // make the loop above pass.
+  assert.match(code("scripts/board-discussion.mjs"), OWN_DAY);
 });
