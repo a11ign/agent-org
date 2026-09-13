@@ -30,7 +30,7 @@ import { fleetOrLabAcceptance } from "../../../../scripts/acceptance-commands.mj
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendFiledBy, boardingFor, bodyFromArgv, createIssue, directoryRegionWarning, fetchIssueBoardStatus, fileRefusalReason, issueNumberFromUrl, laneLabelsFor, milestoneRefusal, openCheckTranscriptRefusal, sessionFromArgv, slashlessDirectoryWarning, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy } from "../../../../scripts/row-file.mjs";
+import { appendFiledBy, boardAndVerify, boardingFor, bodyFromArgv, createIssue, directoryRegionWarning, fetchIssueBoardStatus, fileRefusalReason, issueNumberFromUrl, laneLabelsFor, milestoneRefusal, openCheckTranscriptRefusal, sessionFromArgv, slashlessDirectoryWarning, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy } from "../../../../scripts/row-file.mjs";
 import { filedByLine } from "../../../../scripts/row-claim.mjs";
 
 const CLI = fileURLToPath(new URL("../../../../scripts/row-file.mjs", import.meta.url));
@@ -1077,4 +1077,43 @@ test("#1241: a clause below the first line is still read", () => {
     + "2. Another thing.\n3. `npm run fleet:status` reports every box green.\n";
   assert.match(String(fleetOrLabAcceptance(body)), /reaches the fleet/,
     "reading only the first line is what made both founding cases answer null");
+});
+
+// --- #1249: a Status failure must name the labels it skipped ------------------------------------
+//
+// #1248 was filed with NO LABELS AT ALL. `boardAndVerify` returns early on the Status failure so the
+// label step never runs, and the message named only the Status — so an operator following the refusal
+// exactly fixes the Status and stops, leaving the row invisible to every label-keyed view.
+
+const boardDeps = (moved: boolean) => ({
+  run: () => "",
+  fetchBoardStatus: () => "Backlog",
+  fetchLabels: () => ({ labels: ["backlog", "lane:any"], body: "", milestone: "Road to version one" }),
+  moveStatus: () => (moved ? { moved: true } : { moved: false, reason: "GraphQL 500" }),
+  ensureLabels: () => {},
+});
+const boardArgs = {
+  issueNumber: 1248, url: "https://github.com/x/y/issues/1248",
+  boarding: { status: "Backlog", label: "backlog" },
+  session: "worker-capture", laneLabels: ["lane:any"], milestone: "Road to version one",
+};
+
+test("#1249: a Status failure names the labels it skipped, and how to apply both", () => {
+  const r = boardAndVerify(boardArgs, boardDeps(false) as never);
+  assert.equal(r.ok, false);
+  assert.match(r.message, /were NOT applied/,
+    "the refusal must say the labels did not land -- following it exactly must leave the row boarded");
+  assert.match(r.message, /`backlog`\/`lane:any`/, "and name WHICH labels, not 'the labels'");
+  assert.match(r.message, /--add-label backlog --add-label lane:any/,
+    "and be followable: the command that repairs BOTH halves, not a description of one");
+});
+
+test("#1249 POSITIVE CONTROL: a Status that SUCCEEDS does not mention unapplied labels", () => {
+  // A message that always lists the labels satisfies the clause above perfectly and says nothing. This
+  // is what makes the first test a measurement rather than a string that is always present.
+  const r = boardAndVerify(boardArgs, boardDeps(true) as never);
+  // NARROWED, not cast: on the success path the type has no `message` at all, which is the shape
+  // saying the two outcomes are different things rather than one with an optional field.
+  assert.doesNotMatch("message" in r ? r.message : "", /were NOT applied/,
+    "a successful Status must not claim the labels were skipped -- they were not");
 });
