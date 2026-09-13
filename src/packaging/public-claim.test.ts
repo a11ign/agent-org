@@ -538,10 +538,6 @@ const NOT_A_DURATION_CLAIM: Record<string, string> = {
   "Was it worth the minutes it cost":
     "A question posed TO the reader in a self-assessment checklist, not a promise made BY this page -- "
     + "there is nothing here for a gate to source because nothing here asserts a duration.",
-  "expected to add 1-2 minutes":
-    "Already self-qualified as untested rather than asserted as measured fact -- the same sentence says "
-    + "outright 'it has not run on a Windows runner', which is the honest disclosure this guard exists to "
-    + "require elsewhere.",
   "checked before you spend the minutes":
     "'Spend the minutes' is idiomatic for wasted effort, not a duration figure, and the promise-verb match "
     + "in the same bullet ('takes us one capture to answer') counts CAPTURES, not time -- there is no "
