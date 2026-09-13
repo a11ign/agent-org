@@ -23,7 +23,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
-import { regionRefusalReason, declaresRelease, outOfReleaseArgv, OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE }
+import { regionRefusalReason, declaresRelease, outOfReleaseArgv, labelsOutOfRelease, OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE }
   from "../../../../scripts/row-file.mjs";
 import { declaredRegionFiles } from "../../../../scripts/region-paths.mjs";
 import { fleetOrLabAcceptance } from "../../../../scripts/acceptance-commands.mjs";
@@ -1275,4 +1275,58 @@ test("#1322: labelValuesFromArgv reads every spelling gh takes; withoutLabels dr
     ["--title", "x", "--label", "keep"]);
   assert.equal(labelRefusal(["--label", "lane:pm"], ["lane:pm", "lane:dispatcher"]), null,
     "a typed lane that is one of several derived lanes is not a contradiction");
+});
+
+// ---------------------------------------------------------------------------------------------------
+// #1393: `out-of-release` WAS READ BY EXACT SPELLING, IN TWO COPIES.
+//
+// `declaresRelease` made the refusal and `outOfReleaseArgv` added the milestone, and both matched only
+// `--label out-of-release`, `-l out-of-release` or `--label=out-of-release`. So a filer who wrote the label in
+// any other spelling `gh` accepts was refused as declaring "no release" -- untrue, and not followable. Fixing
+// one copy alone would file the row with no milestone, the state #1011 exists to end. Driven through
+// `createIssue`, asserting the argv that reaches `gh`.
+// ---------------------------------------------------------------------------------------------------
+
+const UNRELEASED = FILER.slice(0, FILER.length - RELEASE.length);
+const milestoneIn = (argv: readonly string[] | null) => {
+  const at = (argv ?? []).indexOf("--milestone");
+  return at < 0 ? null : (argv ?? [])[at + 1];
+};
+
+test("#1393 ACCEPTANCE: every spelling gh takes files with the Out of release milestone, the filer's label spelling unchanged", () => {
+  assert.deepEqual(UNRELEASED.includes("--milestone"), false, "the filer declares no milestone of its own");
+  // `-l=` is a real spelling: `gh issue list -l=ready` returns exactly `--label ready`'s rows (5655847590 on #1393).
+  for (const spelling of [["--label", "out-of-release,docs"], ["--label=Out-of-release"], ["-l=out-of-release"]]) {
+    const { code, created, said } = fileWatching([...UNRELEASED, ...spelling]);
+    assert.equal(code, 0, `${spelling.join(" ")} declares out-of-release and must file -- said: ${said.slice(0, 160)}`);
+    assert.equal(milestoneIn(created), OUT_OF_RELEASE_MILESTONE, `${spelling.join(" ")}: the milestone is added beside the label`);
+    const at = (created ?? []).indexOf(spelling[0]);
+    assert.deepEqual((created ?? []).slice(at, at + spelling.length), spelling,
+      "and the label reaches gh in the filer's own spelling -- gh folds case and reads `-l=`");
+  }
+});
+
+test("#1393 CONTROL: `--label out-of-release` still files with the milestone, and no label is still refused", () => {
+  const exact = fileWatching([...UNRELEASED, "--label", "out-of-release"]);
+  assert.equal(exact.code, 0);
+  assert.equal(milestoneIn(exact.created), OUT_OF_RELEASE_MILESTONE);
+  const none = fileWatching(UNRELEASED);
+  assert.equal(none.code, 1);
+  assert.equal(none.created, null, "refused before anything reaches gh");
+  assert.match(none.said, /REFUSING to file a row that declares no release/);
+  const other = fileWatching([...UNRELEASED, "--label", "docs"]);
+  assert.equal(other.code, 1, "a label that is not out-of-release declares nothing either");
+});
+
+test("#1393: labelsOutOfRelease reads every spelling, folds case, and is the one predicate both callers use", () => {
+  for (const argv of [["--label", "out-of-release"], ["-l", "docs,out-of-release"], ["--label=OUT-OF-RELEASE"],
+    ["-l=out-of-release"]]) {
+    assert.equal(labelsOutOfRelease(argv), true, argv.join(" "));
+    assert.equal(declaresRelease(argv), true, `declaresRelease agrees: ${argv.join(" ")}`);
+    assert.equal(milestoneIn(outOfReleaseArgv(argv)), OUT_OF_RELEASE_MILESTONE, `outOfReleaseArgv agrees: ${argv.join(" ")}`);
+  }
+  for (const argv of [["--label", "docs"], ["--title", "out-of-release"], ["-l"], ["--label=out-of-release-ish"]]) {
+    assert.equal(labelsOutOfRelease(argv), false, argv.join(" "));
+    assert.equal(declaresRelease(argv), false, `declaresRelease agrees: ${argv.join(" ")}`);
+  }
 });
