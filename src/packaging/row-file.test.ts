@@ -30,7 +30,7 @@ import { fleetOrLabAcceptance } from "../../../../scripts/acceptance-commands.mj
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendFiledBy, boardAndVerify, boardingFor, bodyFromArgv, createIssue, directoryRegionWarning, fetchIssueBoardStatus, fileRefusalReason, issueNumberFromUrl, laneLabelsFor, milestoneRefusal, openCheckTranscriptRefusal, sessionFromArgv, slashlessDirectoryWarning, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy } from "../../../../scripts/row-file.mjs";
+import { appendFiledBy, boardAndVerify, boardingFor, bodyFromArgv, createIssue, directoryRegionWarning, fetchIssueBoardStatus, fileRefusalReason, issueNumberFromUrl, labelRefusal, labelValuesFromArgv, laneLabelsFor, milestoneRefusal, openCheckTranscriptRefusal, sessionFromArgv, slashlessDirectoryWarning, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy, withoutLabels } from "../../../../scripts/row-file.mjs";
 import { filedByLine } from "../../../../scripts/row-claim.mjs";
 import { REPO } from "../../../../scripts/repo-identity.mjs";
 
@@ -1165,4 +1165,114 @@ test("#1250: the item-add rung names BOTH steps it skips, and repairs all three"
     "and be followable for the Status, not only describe it");
   assert.match(message, /--add-label backlog --add-label lane:any/, "and for the labels");
   assert.equal(labelCall(calls), undefined, "neither later step ran, which is what the message reports");
+});
+
+// ---------------------------------------------------------------------------------------------------
+// #1322: ROW-FILE COMPOSED ITS OWN LABELS BESIDE THE FILER'S WITHOUT READING THEM.
+//
+// Three rows on 2026-09-13, two sessions: #1313 `--label lane:orchestrator` came out `backlog, lane:any,
+// lane:orchestrator`; #1306 `--label=lane:any` came out `lane:any, lane:ceo`; #1315 `--label=ready
+// --label=lane:any` came out `backlog, ready, lane:any`. Every filer who said what they meant got both meanings.
+// Driven through `createIssue` with injected `spawnGh`/`run`, asserting what reaches `gh`.
+// ---------------------------------------------------------------------------------------------------
+
+/** `fileWith`, plus stderr and every label a `gh issue edit --add-label` call applied. */
+function fileWatching(argv: string[], overrides: Record<string, unknown> = {}) {
+  const added: string[] = [];
+  const moved: string[] = [];
+  let said = "";
+  const write = process.stderr.write.bind(process.stderr);
+  (process.stderr as { write: unknown }).write = (chunk: unknown) => { said += String(chunk); return true; };
+  try {
+    const base = afterRun(appendFiledBy(COMPLETE_BODY, "worker-contracts"));
+    const { code, created } = fileWith(argv, {
+      run: (cmd: string, args: string[]) => {
+        args.forEach((arg, i) => { if (arg === "--add-label") added.push(args[i + 1]); });
+        return base(cmd, args);
+      },
+      moveStatus: (_n: number, status: string) => { moved.push(status); return { moved: true as const }; },
+      ...overrides,
+    });
+    return { code, created: created as string[] | null, added, moved, said };
+  } finally {
+    (process.stderr as { write: unknown }).write = write;
+  }
+}
+
+const FILER = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
+const lanesIn = (labels: readonly string[]) => [...new Set(labels.filter((l) => l.startsWith("lane:")))];
+
+test("#1322 ACCEPTANCE (case 1): an explicit lane that DIFFERS from the derived one refuses before filing, naming both", () => {
+  // `happyDeps` derives `lane:any` for COMPLETE_BODY -- the #1313 shape: typed `lane:orchestrator`, derived `lane:any`.
+  for (const spelling of [["--label=lane:orchestrator"], ["--label", "lane:orchestrator"], ["-l", "lane:orchestrator"],
+    ["--label", "out-of-release,lane:orchestrator"], ["--label=Lane:Orchestrator"]]) {
+    const { code, created, said } = fileWatching([...FILER, ...spelling]);
+    assert.equal(code, 1, `${spelling.join(" ")} must refuse`);
+    assert.equal(created, null, "refused BEFORE `gh issue create`, so nothing is left for the board to trip over");
+    assert.match(said, /lane:orchestrator/i, "the lane the filer typed is named, in the filer's own spelling");
+    assert.match(said, /\(lane:any\)/, "and the lane the Region derives");
+  }
+});
+
+test("#1322 CONTROL (case 1): an explicit lane EQUAL to the derived one files, with exactly one lane label", () => {
+  const { code, created, added } = fileWatching([...FILER, "--label=lane:any"],
+    { fetchLabels: () => ({ number: 900, title: "a real row", labels: ["backlog", "lane:any"] }) });
+  assert.equal(code, 0);
+  assert.deepEqual(lanesIn([...(created ?? []), ...added]), ["lane:any"],
+    "one lane, the derived one -- a typed copy that agrees neither adds a second nor goes missing");
+  // #1322 review: gh folds case, so `LANE:ANY` IS the derived lane -- agreeing, and dropped from the create call.
+  const shouted = fileWatching([...FILER, "--label=LANE:ANY"],
+    { fetchLabels: () => ({ number: 900, title: "a real row", labels: ["backlog", "lane:any"] }) });
+  assert.equal(shouted.code, 0, "a case variant of the derived lane is not a contradiction");
+  assert.deepEqual(labelValuesFromArgv(shouted.created ?? []), [], "and it does not reach gh issue create beside the derived one");
+});
+
+test("#1322 ACCEPTANCE (case 2): `--label=ready` boards Ready and is never `backlog` too", () => {
+  for (const spelling of [["--label=ready"], ["--label", "ready"], ["-l", "ready,lane:any"], ["--label=Ready"]]) {
+    const { code, created, added, moved } = fileWatching([...FILER, ...spelling], {
+      fetchBoardStatus: () => "Ready",
+      fetchLabels: () => ({ number: 900, title: "a real row", labels: ["ready", "lane:any"] }),
+    });
+    assert.equal(code, 0, `${spelling.join(" ")} files`);
+    assert.deepEqual(moved, ["Ready"], "treated as --ready: the Status is Ready");
+    assert.ok(added.includes("ready") && !added.includes("backlog"), `ready, never backlog too -- added ${JSON.stringify(added)}`);
+    assert.ok(!labelValuesFromArgv(created ?? []).some((l) => l.toLowerCase() === "ready"),
+      "and `ready` does not reach `gh issue create`: a ready label before the Status is #867's own refusal");
+  }
+});
+
+test("#1322 CONTROL (case 2): no board flag at all still files `backlog`", () => {
+  const { code, added, moved } = fileWatching(FILER);
+  assert.equal(code, 0);
+  assert.deepEqual(moved, ["Backlog"]);
+  assert.ok(added.includes("backlog") && !added.includes("ready"));
+});
+
+test("#1322: `ready` and `backlog` together refuse, in any mix of --ready and --label", () => {
+  for (const both of [["--ready", "--label", "backlog"], ["--label=ready,backlog"], ["-l", "backlog", "--label=ready"],
+    ["--ready", "--label=Backlog"]]) {
+    const { code, created, said } = fileWatching([...FILER, ...both]);
+    assert.equal(code, 1, `${both.join(" ")} must refuse`);
+    assert.equal(created, null);
+    assert.match(said, /both `ready` and `backlog`/);
+  }
+});
+
+test("#1322: the board and lane labels never reach `gh issue create`; every other label does, in its own spelling", () => {
+  // The untouched occurrence is spelled `-l`, NOT `--label`: the rewrite itself emits `--label`, so a rewrite that
+  // rebuilt every occurrence would pass a `--label` assertion (worker-capture's review of #1381).
+  const { code, created } = fileWatching([...FILER, "-l", "out-of-release", "--label=backlog,lane:any,docs"]);
+  assert.equal(code, 0);
+  assert.deepEqual(labelValuesFromArgv(created ?? []), ["out-of-release", "docs"]);
+  const at = (created ?? []).indexOf("out-of-release");
+  assert.equal((created ?? [])[at - 1], "-l", "an occurrence nothing was dropped from keeps its original spelling");
+});
+
+test("#1322: labelValuesFromArgv reads every spelling gh takes; withoutLabels drops an emptied occurrence whole", () => {
+  assert.deepEqual(labelValuesFromArgv(["--label", "a,b", "--label=c", "-l", "d", "-l=e", "--title", "-l"]),
+    ["a", "b", "c", "d", "e"], "a trailing flag with no value is not a label");
+  assert.deepEqual(withoutLabels(["--title", "x", "--label", "ready", "-l=lane:any,keep"], ["ready", "lane:any"]),
+    ["--title", "x", "--label", "keep"]);
+  assert.equal(labelRefusal(["--label", "lane:pm"], ["lane:pm", "lane:dispatcher"]), null,
+    "a typed lane that is one of several derived lanes is not a contradiction");
 });
