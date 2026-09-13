@@ -291,7 +291,8 @@ test("updatePrimary in the primary calls fetch, then checkout --detach origin/ma
     // THE LIST IS OWNED BY `update-primary-argv.mjs`, not written here. It was written in two files, and
     // when `moveLocalMain` added a fourth call the other one was updated and this was found by CI.
     assert.deepEqual(calls, UPDATE_PRIMARY_ARGV.map((argv) => [...argv]),
-      "fetch, detach at origin/main, read the result, then ask where the shared `main` is -- nothing else");
+      "fetch, read HEAD, detach at origin/main, read the result, then ask where the shared `main` is -- "
+      + "nothing else (HEAD did not move, so no lockfile diff is asked)");
   });
 });
 

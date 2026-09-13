@@ -5,10 +5,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { updatePrimary } from "../../../../scripts/update-primary.mjs";
+import { updatePrimary, lockfileMoved } from "../../../../scripts/update-primary.mjs";
+import { withGitSandbox } from "../../../../scripts/test-support/git-sandbox.ts";
 import { UPDATE_PRIMARY_VERBS } from "./update-primary-argv.mjs";
 
 /**
@@ -156,4 +157,124 @@ test("neither argv assertion carries its own copy of the list -- the fact is sta
       `${name} carries its own copy of the argv list -- that is the fact stated twice, and the copy `
       + "that survives is the one nobody is looking at");
   }
+});
+
+
+// ---------------------------------------------------------------------------------------------------
+// #1384: A MERGE THAT MOVES THE LOCKFILE MUST INSTALL, OR EVERY WORKTREE'S PUSH FAILS.
+//
+// Every linked worktree resolves the primary's `node_modules`. Measured 2026-09-13: #1380 (`8fe2db08`)
+// added `@rstest/core` as a root devDependency, `primary:update` moved the primary to the new lockfile and
+// rebuilt, nothing installed, and every push from the host failed its pre-push typecheck with TS2307 from
+// 18:46Z until `ceo` installed by hand.
+//
+// The expected file name is written as a literal throughout, never imported from the script: a constant
+// read from the source it checks would pass with the wrong name in both places.
+
+/**
+ * Drives `updatePrimary` across a MOVED head: HEAD reads `old111` before the checkout and `new222` after,
+ * the shared `main` is already at `new222`, and `diff` answers `diffOutput`. Records every git argv and
+ * every npm argv, and returns what was thrown rather than throwing it.
+ */
+function driveMove(diffOutput: string, npm: (args: string[]) => void = () => {}) {
+  const git: string[][] = [];
+  const npmCalls: string[][] = [];
+  let headReads = 0;
+  let thrown: unknown;
+  const root = mkdtempSync(join(tmpdir(), "a11y-primary-lockfile-"));
+  try {
+    mkdirSync(join(root, ".git"));
+    const run = (args: string[]) => {
+      git.push(args);
+      if (args[0] === "rev-parse" && args[1] === "HEAD") return headReads++ === 0 ? "old111\n" : "new222\n";
+      if (args[0] === "rev-parse") return "new222\n";
+      return args[0] === "diff" ? diffOutput : "";
+    };
+    try {
+      updatePrimary(root, run, (_cwd, args) => { npmCalls.push(args); npm(args); });
+    } catch (error) {
+      thrown = error;
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+  return { git, npmCalls, thrown };
+}
+
+test("#1384 ACCEPTANCE: a move that changed the lockfile runs npm install, BEFORE the build", () => {
+  const { git, npmCalls, thrown } = driveMove("package-lock.json\n");
+  assert.equal(thrown, undefined);
+  assert.deepEqual(git.find((argv) => argv[0] === "diff"),
+    ["diff", "--name-only", "old111", "new222", "--", "package-lock.json"],
+    "the question is asked of the commit the checkout LEFT and the one it ARRIVED at, for the root lockfile");
+  assert.deepEqual(npmCalls, [["install"], ["run", "build"]],
+    "install first: a build before it compiles the new source against the old node_modules");
+});
+
+test("#1384 CONTROL: a move that did NOT change the lockfile asks the question and installs nothing", () => {
+  const { git, npmCalls, thrown } = driveMove("");
+  assert.equal(thrown, undefined);
+  assert.equal(git.filter((argv) => argv[0] === "diff").length, 1,
+    "the positive control for the absence below: the lockfile question WAS asked, and answered no");
+  assert.deepEqual(npmCalls, [["run", "build"]]);
+});
+
+test("#1384 the install is NEVER npm ci -- it would delete node_modules from under every worktree", () => {
+  const { npmCalls } = driveMove("package-lock.json\n");
+  const installs = npmCalls.filter((argv) => argv[0] !== "run");
+  assert.deepEqual(installs, [["install"]], "exactly one install, and it is `npm install`");
+  assert.equal(npmCalls.some((argv) => argv.includes("ci") || argv.includes("clean-install")), false,
+    "`npm ci` deletes node_modules before installing, which removes it from under every running worktree");
+});
+
+test("#1384 a HEAD that did not move asks no lockfile question at all", () => {
+  const npmCalls: string[][] = [];
+  const git: string[][] = [];
+  const root = mkdtempSync(join(tmpdir(), "a11y-primary-unmoved-"));
+  try {
+    mkdirSync(join(root, ".git"));
+    updatePrimary(root, (args) => { git.push(args); return "same333\n"; }, (_cwd, args) => npmCalls.push(args));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+  assert.equal(git.some((argv) => argv[0] === "diff"), false, "a diff of a commit against itself is empty by construction");
+  assert.deepEqual(npmCalls, [["run", "build"]]);
+});
+
+test("#1384 the lockfile is matched BY NAME: a nested package-lock.json in the answer does not install", () => {
+  const { npmCalls } = driveMove("packages/x/package-lock.json\n");
+  assert.deepEqual(npmCalls, [["run", "build"]]);
+});
+
+test("#1384 a FAILED install throws naming the stale node_modules, skips the build, and rolls nothing back", () => {
+  const { git, npmCalls, thrown } = driveMove("package-lock.json\n", (args) => {
+    if (args[0] === "install") throw Object.assign(new Error("boom"), { status: 7 });
+  });
+  assert.ok(thrown instanceof Error, "reported, never swallowed");
+  assert.match(thrown.message, /stale node_modules/, "the message says what a failed install DOES to every worktree");
+  assert.match(thrown.message, /exit 7/);
+  assert.match(thrown.message, /will NOT retry/, "a re-run finds HEAD at the target and asks nothing, so it must say so");
+  assert.match(thrown.message, /never `npm ci`/, "the by-hand remedy must not be the one that breaks every worktree");
+  assert.equal((thrown.cause as Error).message, "boom");
+  assert.deepEqual(npmCalls, [["install"]], "the build does not run against a node_modules known to be stale");
+  assert.ok(git.some((argv) => argv[0] === "checkout"), "the checkout already moved and is correct");
+  assert.equal(git.some((argv) => argv[0] === "reset" || argv[0] === "revert" || argv.includes("old111") && argv[0] === "checkout"),
+    false, "a failed install must not revert a checkout somebody else may already be reading");
+});
+
+test("#1384 lockfileMoved against REAL git: the root lockfile, across one commit or several", () => {
+  withGitSandbox((sandbox) => {
+    const commitWith = (path: string, content: string) => {
+      mkdirSync(join(sandbox.dir, path, ".."), { recursive: true });
+      writeFileSync(join(sandbox.dir, path), content);
+      sandbox.run(["add", path]);
+      sandbox.commit(`write ${path}`);
+      return sandbox.run(["rev-parse", "HEAD"]).trim();
+    };
+    const run = (args: string[]) => sandbox.run(args);
+    const first = commitWith("package-lock.json", '{"lockfileVersion":3}\n');
+    const readmeOnly = commitWith("README.md", "docs\n");
+    const nestedOnly = commitWith("packages/x/package-lock.json", "{}\n");
+    const lockfile = commitWith("package-lock.json", '{"lockfileVersion":3,"packages":{}}\n');
+    assert.equal(lockfileMoved(run, first, readmeOnly), false, "a README-only move is not a lockfile move");
+    assert.equal(lockfileMoved(run, readmeOnly, nestedOnly), false, "a nested package-lock.json is not the root one");
+    assert.equal(lockfileMoved(run, nestedOnly, lockfile), true, "the root lockfile changed");
+    assert.equal(lockfileMoved(run, first, lockfile), true, "a fast-forward spanning several commits, the real shape");
+  });
 });
