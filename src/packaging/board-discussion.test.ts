@@ -1,3 +1,4 @@
+// no-token: gh
 /**
  * #1290: the board edition publishes as a GitHub Discussion, not a PDF on a draft release.
  *
