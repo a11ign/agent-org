@@ -11,6 +11,13 @@
  * `pre-push-resolve-toward-main.test.ts` and `test-support/git-sandbox.ts` both state at length: `cwd`
  * is not isolation for a spawned git process, `GIT_DIR` is.
  */
+// no-token: gh
+//
+// #1477: carry-branch.mjs spawns `gh` in `noteCarryOnPr`, so the acceptance classifier charges this whole file
+// for a token -- measured, it refused this row's own acceptance command on origin/main as filed. No test here
+// reaches that spawn: every `noteCarryOnPr` and `carryMain` test injects its own `run`, and the real-git carry
+// tests call `carryBranch` with the default `run`, which only ever spawns `git`. Re-proved behind a `gh` shim
+// that logs and exits 1, with GH_TOKEN and GITHUB_TOKEN unset: 19 pass, and the shim is invoked ZERO times.
 import { test, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
