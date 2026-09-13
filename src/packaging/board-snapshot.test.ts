@@ -405,7 +405,11 @@ function boardOf(pages: number) {
   return { run, calls, boardPages };
 }
 
-const quiet = { fetchReady: () => [], mkdir: () => {}, writeFile: () => {}, log: () => {} };
+// `exists` is stubbed TRUE here because `writeFile` is stubbed to drop the file: with the real
+// `existsSync`, a snapshot these tests never actually wrote would read as deleted and every reuse would
+// fall through to a fresh sweep. The disk check has its own test below, with its own in-memory disk.
+const quiet = { fetchReady: () => [], mkdir: () => {}, writeFile: () => {}, log: () => {},
+  exists: () => true };
 
 test("#852: N board mutations in one process cost ONE sweep, not N", () => {
   forgetProcessSnapshot();
@@ -455,6 +459,31 @@ test("#852: the snapshot FILE says it describes the board before the FIRST mutat
   assert.match(parsed.takenBefore, /first board mutation of this process/);
   assert.match(parsed.takenBefore, /reuse this snapshot/,
     "and it must say WHY it is not per-mutation, not merely that it is not");
+});
+
+test("#852: a REUSED snapshot is re-read from disk, so a deleted one does not license a mutation", () => {
+  // worker-judge's blocker on #1281, driven there before it was fixed here: the snapshot was written,
+  // `rm -rf runs/` took it, and the NEXT mutation proceeded with nothing behind it. `runs/` is gitignored
+  // so `git clean -xdf` removes it too. Without the disk check, #399's guarantee holds at SWEEP time and
+  // not at MUTATION time -- true of a process's first mutation and false of every reused one.
+  forgetProcessSnapshot();
+  const board = boardOf(1);
+  const onDisk = new Set<string>();
+  const deps = { ...quiet, run: board.run,
+    writeFile: (p: string) => onDisk.add(p),
+    exists: (p: string) => onDisk.has(p) };
+
+  withBoardSnapshot(() => {}, deps);
+  assert.equal(board.boardPages(), 1, "the first mutation sweeps");
+  withBoardSnapshot(() => {}, deps);
+  assert.equal(board.boardPages(), 1, "the second reuses it, because it is still there");
+
+  onDisk.clear(); // `rm -rf runs/`
+  let ranWithNothingBehindIt = false;
+  withBoardSnapshot(() => { ranWithNothingBehindIt = true; }, deps);
+  assert.equal(board.boardPages(), 2,
+    "the snapshot is gone, so the next mutation takes a FRESH sweep rather than trusting a remembered path");
+  assert.equal(ranWithNothingBehindIt, true, "and it still runs -- with a real snapshot behind it again");
 });
 
 test("#852: #399's guarantee is untouched -- a failed write still means the mutation never runs", () => {
