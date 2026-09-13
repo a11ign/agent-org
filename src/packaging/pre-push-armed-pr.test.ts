@@ -138,13 +138,21 @@ test("WIRING: main is skipped -- the guard never even shells out for it", () => 
   assert.match(result.stdout, /A11Y_REACHED_END/);
 });
 
-test("lookupArmedPrStatus returns null rather than throwing when `gh` cannot answer at all", () => {
-  // A repo name `gh` cannot possibly resolve is the cheapest reliable way to force the underlying `gh`
-  // call to fail, without needing network access to be absent -- `lookup()`'s own contract (shared with
-  // every other lookup in this file) is that ANY failure inside the wrapped call becomes `null`, never a
-  // thrown error reaching this test.
-  const status = lookupArmedPrStatus("this-branch-cannot-exist-anywhere-zzz-386");
-  // Either genuinely null (gh itself failed) or the real "no PR" shape -- both are honest, non-throwing
-  // answers, and either is fine here: the point is that calling this never throws.
-  assert.ok(status === null || status.armed === false);
+test("lookupArmedPrStatus returns null rather than throwing when `gh` cannot answer -- through an injected run, never the live gh (#1408)", () => {
+  // #1408: this asked the LIVE `gh` for a head that cannot exist, on every local run -- one GraphQL-backed
+  // `gh pr list`, counted by #1275's census. The contract is unchanged: ANY failure inside the lookup is `null`,
+  // "could not ask", which `racesAnArmedMerge` allows. What reaches gh is now the injected `run`.
+  const asked: string[][] = [];
+  const status = lookupArmedPrStatus("agent/some-branch", {
+    run: (args: string[]) => { asked.push(args); throw new Error("gh: could not answer"); },
+  });
+  assert.equal(status, null, "a failed lookup is null, never an answer");
+  assert.equal(asked.length, 1, "the injected run is what was asked, once -- nothing went to the real gh");
+  assert.deepEqual(asked[0].slice(0, 2), ["pr", "list"]);
+  assert.equal(asked[0][asked[0].indexOf("--head") + 1], "agent/some-branch", "for the branch being pushed");
+});
+
+test("#1408: no open PR for the branch is the unarmed shape, read through the injected run", () => {
+  const status = lookupArmedPrStatus("agent/no-pr-yet", { run: () => "[]" });
+  assert.deepEqual(status, { number: null, armed: false, green: false, behindBy: null });
 });
