@@ -13,15 +13,16 @@
 // `branchPrefixCensus`, `renderBranchPrefixes`, ...) or passes its own injected `run` fixture to a
 // fetcher (`fetchRemoteBranchesChecked`) -- `queue-table.mjs`'s real `gh`/`git` wrappers are declared in
 // the same module these tests import from, which is why a closure walk reaches them, but nothing here
-// ever calls the real ones.
+// ever calls the real ones. #1405: that was not true of the budget line -- `render()` read it live through
+// `apiBudget()`, two `gh` calls per render and 24 per run. `collect()` reads it now, and `render()` is handed it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadavg, tmpdir } from "node:os";
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { prRow, nonSuccessByName, newestPerName, render, fetchRefs, renderStalled, windowOf,
   renderMergedChecks, STALL_MINUTES, EXIT, hostState, hostContention, reliefFor, topConsumers, isRed, renderBudget,
-  fetchRemoteBranchesChecked, branchPrefixCensus, renderBranchPrefixes }
+  fetchRemoteBranchesChecked, branchPrefixCensus, renderBranchPrefixes, apiBudget, ghHeaders }
   from "../../../../scripts/queue-table.mjs";
 
 const NOW = new Date("2026-09-09T08:00:00Z");
@@ -770,6 +771,74 @@ test("MUTATION: the words are not decoration -- swapping used and remaining chan
     { core: { remaining: 39, limit: 5000, used: 4961, resetInMinutes: 3 }, graphql: null }, 19);
   assert.match(out, /core 4961 used, 39 remaining of 5000/);
   assert.match(out, /under 10%/, "and 39 of 5000 remaining must still raise its own line");
+});
+
+// --- #1405: the budget is READ by `collect()` and HANDED to `render()`. Drawing a table calls no `gh`: it
+// used to make two live calls per render, 24 per run of this file, spending the pools the line reports. ---
+
+/** A `gh api ... -i` response: the rate-limit headers, a blank line, then the body. */
+const headers = (remaining: number, limit = 5000) =>
+  `HTTP/2.0 200 OK\nX-Ratelimit-Limit: ${limit}\nX-Ratelimit-Remaining: ${remaining}\n\n{}`;
+
+test("#1405 apiBudget reads both pools through the injected run, with the argv the live call used", () => {
+  const argv: string[][] = [];
+  const budget = apiBudget({ run: (args: string[]) => {
+    argv.push(args);
+    return headers(args[1] === "graphql" ? 4990 : 4000);
+  } });
+  assert.deepEqual(argv, [
+    ["api", "repos/DanBeckDev/a11y-witness", "-i", "--jq", ".name"],
+    ["api", "graphql", "-f", "query=query { viewer { login } }", "-i"],
+  ], "one call per pool, each of its own kind -- core through REST, graphql through GraphQL");
+  assert.deepEqual(budget, {
+    core: { remaining: 4000, limit: 5000, used: 1000, resetInMinutes: null },
+    graphql: { remaining: 4990, limit: 5000, used: 10, resetInMinutes: null },
+  });
+});
+
+test("#1405 an EXHAUSTED pool is read off the failed call's stdout -- gh exits non-zero on the 403, and the "
+  + "headers are still there", () => {
+  const budget = apiBudget({ run: (args: string[]) => {
+    if (args[1] !== "graphql") return headers(4000);
+    throw Object.assign(new Error("gh: HTTP 403"), { stdout: headers(0) });
+  } });
+  assert.equal(budget?.graphql?.remaining, 0, "0 remaining, not UNREADABLE: the outage this line exists to report");
+  assert.equal(budget?.graphql?.used, 5000);
+});
+
+test("#1405 a call that fails with no headers is UNREADABLE, and both failing is null -- never a zero", () => {
+  const fail = (): never => { throw Object.assign(new Error("gh: could not connect"), { stdout: "" }); };
+  assert.equal(apiBudget({ run: fail }), null);
+  const oneOnly = apiBudget({ run: (args: string[]) => (args[1] === "graphql" ? fail() : headers(4000)) });
+  assert.equal(oneOnly?.graphql, null);
+  assert.equal(oneOnly?.core?.remaining, 4000, "the positive control: the readable pool beside it is still read");
+});
+
+test("#1405 apiBudget with no run is REFUSED by name -- a defaulted run is two live gh calls", () => {
+  assert.throws(() => apiBudget(), /apiBudget: no run given/);
+  assert.throws(() => apiBudget({}), /apiBudget: no run given/);
+});
+
+test("#1405 render() draws the budget it is HANDED, and says it could not read one when handed none", () => {
+  const base = { trunk: { sha: "a", runId: "1", status: "completed", conclusion: "success" },
+    prs: [], merged: [], now: NOW, required: [], host: HOST_OK };
+  const pool = { remaining: 4961, limit: 5000, used: 39, resetInMinutes: 54 };
+  assert.match(render({ ...base, budget: { core: pool, graphql: pool }, spent: 7 }).text,
+    /core 39 used, 4961 remaining of 5000.*this table spent 7/);
+  assert.match(render(base).text, /api budget: could not read either pool \(this table spent 0 call/);
+});
+
+test("#1405 wiring: collect() reads the budget LAST through the live runner, and render() reads none", () => {
+  const source = readFileSync(new URL("../../../../scripts/queue-table.mjs", import.meta.url), "utf8");
+  const body = (name: string) => {
+    const start = source.indexOf(`function ${name}(`);
+    assert.ok(start >= 0, `function ${name} is in the script`);
+    return source.slice(start, source.indexOf("\n}\n", start)).replace(/\/\/.*$/gm, "");
+  };
+  assert.match(body("collect"), /return \{ \.\.\.data, budget: apiBudget\(\{ run: ghHeaders \}\), spent: ghCallsMade\(\) \};/);
+  assert.doesNotMatch(`${body("render")}${body("withBudget")}`, /apiBudget\(|ghCallsMade\(|ghHeaders|execFileSync/,
+    "drawing a table reads no budget");
+  assert.equal(typeof ghHeaders, "function");
 });
 
 // --- #790: branch prefixes -- a branch can exist with no owner prefix at all, and only naming it,
