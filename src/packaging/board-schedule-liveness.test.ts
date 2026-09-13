@@ -1,3 +1,15 @@
+// no-token: REPO
+//
+// #827's mechanism, and the declaration is checked rather than asserted. This file imports exactly one
+// symbol -- `scheduleNeverFired` -- and calls exactly that; `REPO` arrives through the module's import
+// closure (`board-schedule-liveness.mjs` -> `board-data.mjs:82`), never through anything this file
+// invokes. Every input is injected: `events`, `createdAt`, `now` and `graceHours` are all arguments.
+// So reaching `REPO` is not part of what is tested here, which is the condition the declaration names.
+//
+// A CONSUMER assertion reaches `REPO` on purpose and must NOT carry this line -- declaring it there
+// would make a consumer test a unit test wearing its name. `livenessVerdict`'s own consumer coverage
+// lives in `board-liveness.test.ts`, which declares `// no-token: gh` for the same reason and not this
+// one.
 /**
  * `board-schedule-liveness.mjs`'s comment/summary inference (`livenessVerdict`, tested in
  * `board-liveness.test.ts`) is BLIND to a workflow that has never fired and is still young -- #272,
@@ -63,4 +75,35 @@ test("a custom graceHours is honoured, for a caller that wants a tighter or loos
     "with a 1-hour grace, 2 hours old with zero schedule events is already a finding");
   assert.equal(scheduleNeverFired({ events: [], createdAt: twoHoursAgo, now: NOW, graceHours: 3 }), null,
     "with a 3-hour grace, the same age is still too new to judge");
+});
+
+// --- #1263: a GHOST scheduled run is registered, never runs, and must not read as "it has fired" ------
+//
+// #1253 measured the shape: a workflow run GitHub creates and never schedules, `queued` forever with zero
+// jobs and `updated_at` frozen at `created_at`. It carries its trigger's `event`, so a reader asking only
+// "is there a schedule event in the history" answers `false` here -- "the schedule has fired" -- on the
+// strength of a run that did nothing. The two on #1253 were still stuck 90 minutes after creation.
+
+test("#1263: a GHOST scheduled run does NOT count as the schedule having fired", () => {
+  const events = [{ event: "workflow_dispatch", status: "completed", conclusion: "success" },
+    { event: "schedule", status: "queued", conclusion: null }];
+  assert.equal(scheduleNeverFired({ events, createdAt: CREATED_YESTERDAY, now: NOW }), true,
+    "a run that never ran is not evidence the schedule fired");
+});
+
+test("#1263 POSITIVE CONTROL: a COMPLETED scheduled run still counts", () => {
+  // Without this, the change above is satisfied by a function that always says "never fired".
+  const events = [{ event: "workflow_dispatch", status: "completed", conclusion: "success" },
+    { event: "schedule", status: "completed", conclusion: "success" }];
+  assert.equal(scheduleNeverFired({ events, createdAt: CREATED_YESTERDAY, now: NOW }), false);
+});
+
+test("#1263: a completed scheduled run that FAILED still counts as fired -- the question is whether the "
+  + "schedule RUNS, not whether the workflow passed", () => {
+  const events = [{ event: "schedule", status: "completed", conclusion: "failure" }];
+  assert.equal(scheduleNeverFired({ events, createdAt: CREATED_YESTERDAY, now: NOW }), false);
+});
+
+test("#1263: the legacy string shape is still read as completed, so it cannot become a false alarm", () => {
+  assert.equal(scheduleNeverFired({ events: ["schedule"], createdAt: CREATED_YESTERDAY, now: NOW }), false);
 });
