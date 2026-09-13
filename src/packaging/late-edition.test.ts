@@ -17,14 +17,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  lateEditionRefusal, minutesOfDay, todaysReleaseExists, document,
+  lateEditionRefusal, minutesOfDay, document,
   LATE_EDITION_EARLIEST, LATE_EDITION_CUTOFF,
 } from "../../../../scripts/board-document.mjs";
 
 const ok = {
   summary: { text: "Written at 08:05 on 9 September.\n\nSomething happened." },
   stated: "08:05",
-  releaseExists: false,
+  editionExists: false,
   londonNow: "08:25",
 };
 
@@ -76,10 +76,10 @@ test("MUTATION 2c: 07:30 exactly is inside the normal window; 07:31 is not", () 
   assert.equal(minutesOfDay("07:30"), LATE_EDITION_EARLIEST);
 });
 
-// --- MUTATION 3: no release may exist yet ---
+// --- MUTATION 3: no edition may exist yet (#1290: the edition is a Discussion, not a release) ---
 
-test("MUTATION 3: with today's release present it refuses and NAMES republish", () => {
-  const refusal = lateEditionRefusal({ ...ok, releaseExists: true })!;
+test("MUTATION 3: with today's edition present it refuses and NAMES republish", () => {
+  const refusal = lateEditionRefusal({ ...ok, editionExists: true })!;
   assert.match(refusal, /already exists/);
   assert.match(refusal, /`republish`/,
     "the two paths are disjoint on purpose — one creates, one replaces — so the refusal must hand over");
@@ -104,7 +104,7 @@ test("an unreadable London time refuses rather than guessing", () => {
 test("the refusals are ordered so each sends the reader somewhere DIFFERENT", () => {
   // All four wrong at once. The one reported is the first the reader must fix, and reporting a later one
   // would send them to widen a window when the real problem is that nobody wrote the paragraph.
-  const refusal = lateEditionRefusal({ summary: null, stated: null, releaseExists: true,
+  const refusal = lateEditionRefusal({ summary: null, stated: null, editionExists: true,
     londonNow: "23:00" })!;
   assert.match(refusal, /no summary for today/);
 });
@@ -119,21 +119,4 @@ test("minutesOfDay parses HH:MM and refuses anything else", () => {
   }
 });
 
-// --- the release lookup fails CLOSED ---
-
-test("a release lookup that FAILS reads as 'a release exists' — the safe direction", () => {
-  // Against this file's other conventions, deliberately: this condition guards against a late edition
-  // CREATING a document beside one the board already has. Reading an outage as "no release" would let
-  // the one state this path must never reach through precisely when nothing can be verified.
-  const outage = () => { throw new Error("gh: server error"); };
-  assert.equal(todaysReleaseExists({ run: outage as never }), true);
-});
-
-test("a genuine 'release not found' reads as no release", () => {
-  const notFound = () => { throw new Error("release not found"); };
-  assert.equal(todaysReleaseExists({ run: notFound as never }), false);
-});
-
-test("an existing release reads as one", () => {
-  assert.equal(todaysReleaseExists({ run: (() => '{"isDraft":true}') as never }), true);
-});
+// --- the edition lookup fails CLOSED: see board-discussion.test.ts, where `todaysEditionExists` lives ---
