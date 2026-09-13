@@ -8,7 +8,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -19,7 +19,8 @@ import {
   deriveClosureRequirements, closureRequirementMessage, unmetClosureRequirements,
   unmetCommandClosureRequirements,
   runsTheWholeSuite,
-  suiteTestFiles
+  suiteTestFiles,
+  SPAWNS_GH,
 } from "../../../../scripts/acceptance-commands.mjs";
 
 // A file known to exist, relative to the repo root -- where every real invocation of this command runs
@@ -46,6 +47,31 @@ const WITH_HISTORY = { history: true, token: false, fleet: false };
 const BOARD_STYLE_FIXTURE = "packages/lab/src/packaging/board-document-chrome-resolver.test.ts";
 const NO_TOKEN = { history: true, token: false, fleet: true, corpus: true };
 const WITH_TOKEN = { history: true, token: true, fleet: true, corpus: true };
+
+/**
+ * #1458: WHERE `board-document.mjs` SPAWNS `gh`, BY SHAPE -- the first `SPAWNS_GH` line inside
+ * `function publishToDraftRelease(`, provided it is also the file's first. The #621 tests below used to write
+ * that line as a literal number, so any edit above the function failed all three, and #1345's builder had to
+ * hold the file's line count to keep them true. `null` when the shape is not there, which fails the tests
+ * rather than guessing a line.
+ */
+const BOARD_DOCUMENT = "scripts/board-document.mjs";
+function spawnLineOf(source: string): number | null {
+  const lines = source.split("\n");
+  const start = lines.findIndex((line) => /^function publishToDraftRelease\(/.test(line));
+  if (start < 0) return null;
+  const nextTop = lines.findIndex((line, i) => i > start && /^(?:export\s+)?(?:async\s+)?function\s/.test(line));
+  const end = nextTop < 0 ? lines.length : nextTop;
+  const inFunction = lines.findIndex((line, i) => i > start && i < end && SPAWNS_GH.test(line));
+  const inFile = lines.findIndex((line) => SPAWNS_GH.test(line));
+  return inFunction >= 0 && inFunction === inFile ? inFunction + 1 : null;
+}
+const boardDocumentSpawnLine = (): number => {
+  const line = spawnLineOf(readFileSync(BOARD_DOCUMENT, "utf8"));
+  assert.ok(line !== null, "board-document.mjs's first gh spawn is no longer inside publishToDraftRelease -- "
+    + "re-locate the #621 fixture rather than pin a line");
+  return line;
+};
 
 // --- classifyCommand ---
 
@@ -612,7 +638,7 @@ test("#510 unmetCommandRequirements: a non-`tsx --test` command is never inspect
 test("#510 classifyCommand: the real history fixture is REFUSED, named, when the job has no history", () => {
   // #621: the CLOSURE-derived check runs first now, and its message names the file by BASENAME (matching
   // #621's own worked example, "board-document-chrome-resolver.test.ts requires token via
-  // resolveChromeBinary -> board-document.mjs:1245") -- never the full repo-relative path
+  // resolveChromeBinary -> board-document.mjs:<its gh spawn's line>") -- never the full repo-relative path
   // `unmetCommandRequirements`'s header-only message used. Both are correct; they answer different
   // questions ("what does the closure prove" vs. "what file declared it").
   const result = classifyCommand(`npx tsx --test ${HISTORY_FIXTURE}`, { capabilities: NO_HISTORY });
@@ -779,8 +805,8 @@ test("#621 deriveClosureRequirements: board-document-chrome-resolver.test.ts rea
   assert.equal(hits.length, 1);
   assert.equal(hits[0].requirement, "token");
   assert.equal(hits[0].file.endsWith("scripts/board-document.mjs"), true);
-  assert.equal(hits[0].line, 1245, "board-document.mjs's own execFileSync(\"gh\", ...) call site -- if "
-    + "this moves, the fixture line below must move with it");
+  assert.equal(hits[0].line, boardDocumentSpawnLine(),
+    "board-document.mjs's own gh spawn inside publishToDraftRelease, located by shape (#1458)");
 });
 
 test("#621 closureRequirementMessage: the EXACT worked example from the issue, naming the hop -- "
@@ -788,7 +814,7 @@ test("#621 closureRequirementMessage: the EXACT worked example from the issue, n
   + "them to the cause", () => {
   const [hit] = deriveClosureRequirements(BOARD_STYLE_FIXTURE);
   assert.equal(closureRequirementMessage(hit),
-    "board-document-chrome-resolver.test.ts requires token via resolveChromeBinary → board-document.mjs:1245");
+    `board-document-chrome-resolver.test.ts requires token via resolveChromeBinary → board-document.mjs:${boardDocumentSpawnLine()}`);
 });
 
 test("#621 unmetClosureRequirements: refused against a job with no token, satisfied against one that "
@@ -816,7 +842,7 @@ test("#621 ACCEPTANCE: classifyCommand REFUSES board-document-chrome-resolver.te
   const reason = (/** @type {{reason:string}} */ (result)).reason;
   assert.match(reason, /`token`/);
   assert.match(reason,
-    /board-document-chrome-resolver\.test\.ts requires token via resolveChromeBinary → board-document\.mjs:1245/);
+    new RegExp(`board-document-chrome-resolver\\.test\\.ts requires token via resolveChromeBinary → board-document\\.mjs:${boardDocumentSpawnLine()}\\b`));
 });
 
 test("#621 MUTATION TARGET: the identical command RUNS once the job's capabilities carry a token -- "
@@ -1809,4 +1835,60 @@ test("#1449 CONTROL: `execFile` of a DIFFERENT command is not charged", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- #1458: the spawn is located by SHAPE, so an edit above it moves the expectation with it ---
+
+/** How many lines the moved control inserts above `publishToDraftRelease`. */
+const PADDING_LINES = 7;
+
+/** A temporary tree holding `board-document-chrome-resolver.test.ts` and a given `board-document.mjs`. */
+function withBoardDocumentTree<T>(boardDocument: string, body: (entry: string) => T): T {
+  const dir = mkdtempSync(join(tmpdir(), "acceptance-1458-"));
+  try {
+    mkdirSync(join(dir, "scripts"), { recursive: true });
+    mkdirSync(join(dir, "packages/lab/src/packaging"), { recursive: true });
+    writeFileSync(join(dir, BOARD_DOCUMENT), boardDocument);
+    const entry = join(dir, BOARD_STYLE_FIXTURE);
+    writeFileSync(entry, readFileSync(BOARD_STYLE_FIXTURE, "utf8"));
+    return body(entry);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("#1458 CONTROL: lines inserted above publishToDraftRelease move the shape lookup, the derived hit and the "
+  + "message together", () => {
+  const real = readFileSync(BOARD_DOCUMENT, "utf8");
+  const moved = real.replace(/^function publishToDraftRelease\(/m, "// #1458 padding\n".repeat(PADDING_LINES) + "function publishToDraftRelease(");
+  assert.notEqual(moved, real, "the insertion must land");
+  const realLine = spawnLineOf(real);
+  assert.ok(realLine !== null, "the real file must have the shape before a moved copy can");
+  const expected = spawnLineOf(moved);
+  assert.equal(expected, realLine + PADDING_LINES, "the shape lookup moves by exactly the inserted lines");
+  withBoardDocumentTree(moved, (entry) => {
+    const hits = deriveClosureRequirements(entry);
+    assert.equal(hits.length, 1);
+    const [hit] = hits;
+    assert.ok(hit);
+    assert.equal(hit.line, expected, "and the deriver's hit moves with it");
+    assert.equal(closureRequirementMessage(hit),
+      `board-document-chrome-resolver.test.ts requires token via resolveChromeBinary → board-document.mjs:${expected}`);
+  });
+});
+
+test("#1458 CONTROL: the shape lookup finds nothing when the function's spawns are gone, or when an earlier spawn "
+  + "precedes the function -- a location that cannot be followed refuses rather than guesses", () => {
+  const real = readFileSync(BOARD_DOCUMENT, "utf8");
+  const gh = spell("g", "h");
+  const spawnsGone = real.replace(new RegExp(SPAWNS_GH.source, "g"), `execFileSync("${spell("tr", "ue")}"`)
+    + `\nfunction laterSpawn() { return execFileSync("${gh}", []); }\n`;
+  assert.notEqual(spawnsGone, real, "the replacement must land");
+  assert.equal(spawnLineOf(spawnsGone), null,
+    "no gh spawn inside publishToDraftRelease; a spawn in a LATER function is not this one");
+  const earlier = real.replace(/^function publishToDraftRelease\(/m,
+    `const earlier = () => execFileSync("${gh}", []);\nfunction publishToDraftRelease(`);
+  assert.notEqual(earlier, real, "the insertion must land");
+  assert.equal(spawnLineOf(earlier), null,
+    "the deriver would report the earlier spawn, which is not publishToDraftRelease's");
 });
