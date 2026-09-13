@@ -1934,6 +1934,9 @@ test("#1465: a `// no-token:` line the declaration grammar cannot read is REFUSE
     assert.match(messages[0], /consumer\.test\.mjs:2 .*not a `\/\/ no-token:` declaration/,
       `the message names the file and line and says why; got ${messages[0]}`);
   }
+  const belowReadable = deriveWithHeaders(["// no-token: gitLike", "// no-token: checkRelease because the inputs are injected"]);
+  assert.equal(belowReadable.hits.length, 1, `refused even below a declaration that holds; got ${JSON.stringify(belowReadable.hits)}`);
+  assert.equal(belowReadable.hits[0].line, 2, "the refusal names the unreadable line, not the first header's");
 });
 
 test("#1465: EVERY header line is verified -- a wrong SECOND declaration is named at its own line", () => {
