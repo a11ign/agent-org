@@ -1784,3 +1784,29 @@ test("#1140 CONTROL: `// no-token: gh` still HOLDS where gh is only MENTIONED --
     assert.deepEqual(deriveDeclaredEntry(gh, [line]), [], `${shape}: \`${line}\` mentions ${gh} and never spawns it`);
   }
 });
+
+// --- #1449: the token CHARGE recognises `execFile`, and the spawns it reads are one list ---
+
+test("#1449 ACCEPTANCE: an undeclared entry that spawns gh through `execFile` is charged token", () => {
+  const gh = spell("g", "h");
+  const dir = mkdtempSync(join(tmpdir(), "acceptance-token-"));
+  try {
+    const entry = join(dir, "consumer.test.mjs");
+    writeFileSync(entry, ["import { execFile } from \"node:child_process\";", `execFile("${gh}", ["issue", "list"], () => {});`].join("\n"));
+    const hits = deriveClosureRequirements(entry);
+    assert.deepEqual(hits.map((h) => h.requirement), ["token"], `execFile("${gh}", ...) must be charged; got ${JSON.stringify(hits)}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#1449 CONTROL: `execFile` of a DIFFERENT command is not charged", () => {
+  const dir = mkdtempSync(join(tmpdir(), "acceptance-token-"));
+  try {
+    const entry = join(dir, "consumer.test.mjs");
+    writeFileSync(entry, ["import { execFile } from \"node:child_process\";", `execFile("${spell("gi", "t")}", ["status"], () => {});`].join("\n"));
+    assert.deepEqual(deriveClosureRequirements(entry), [], "only a gh spawn is a token requirement");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

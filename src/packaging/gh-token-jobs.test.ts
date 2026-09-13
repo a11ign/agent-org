@@ -1,3 +1,5 @@
+// no-token: GH_TOKEN
+// #1449: this file reads ci.yml's TEXT for the key `GH_TOKEN:` and never uses a token; that regex is what charged it.
 // A CI JOB THAT CAN REACH `gh` MUST CARRY GH_TOKEN — and reaching it is TRANSITIVE.
 //
 // 2026-09-07: the `board` job failed with `gh: To use GitHub CLI in a GitHub Actions workflow, set the
@@ -17,16 +19,17 @@
 // most-recorded shape; see that module's header for why `pre-install-import-graph.test.ts` keeps its own.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { localImports } from "../../../../scripts/local-import-closure.mjs";
+import { SPAWNS_GH } from "../../../../scripts/acceptance-commands.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const CI = join(REPO, ".github/workflows/ci.yml");
 
-/** A `gh` invocation, not the two letters. `execFileSync("gh", …)` and `run("gh", …)` both count. */
-const SPAWNS_GH = /(?:execFileSync|execSync|spawnSync|spawn|run)\s*\(\s*(['"`])gh\1/;
+/** A `gh` spawn, not the two letters: the token charge's own regex, imported rather than retyped (#1449). */
 
 /** Can a `gh` spawn be reached from this file, through any depth of local imports? */
 function reachesGh(entry: string, seen = new Set<string>()): boolean {
@@ -106,4 +109,29 @@ test("every ci.yml job whose tests can reach a `gh` spawn declares GH_TOKEN", ()
     "these ci.yml jobs run tests that can reach a `gh` spawn and declare no GH_TOKEN. `gh` fails in "
     + "Actions without it, and the failure names the env var rather than the test, so it reads as a "
     + "broken test. Add `env: { GH_TOKEN: ${{ github.token }} }` to the job.");
+});
+
+test("#1449: the walker reaches a gh spawn made through `execFile`, and not an `execFile` of another command", () => {
+  // The spawns this guard reads are the token charge's (acceptance-commands.mjs): a job whose tests spawn gh through a
+  // spelling only one of the two recognised would be missed by the other.
+  const dir = mkdtempSync(join(tmpdir(), "gh-token-jobs-"));
+  try {
+    const entry = join(dir, "spawns.mjs");
+    writeFileSync(entry, `import { execFile } from "node:child_process";\nexecFile("${["g", "h"].join("")}", ["issue", "list"], () => {});\n`);
+    assert.ok(reachesGh(entry), "an execFile spawn of gh must count, or a job running it is missed");
+    const control = join(dir, "other.mjs");
+    writeFileSync(control, `import { execFile } from "node:child_process";\nexecFile("${["gi", "t"].join("")}", ["status"], () => {});\n`);
+    assert.equal(reachesGh(control), false, "CONTROL: an execFile spawn of another command does not");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#1449: this guard reads the token charge's ONE spawn regex -- it imports SPAWNS_GH and declares none of its own", () => {
+  const source = readFileSync(fileURLToPath(import.meta.url), "utf8");
+  const code = source.split("\n").filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line)).join("\n");
+  assert.match(code, /import\s*\{\s*SPAWNS_GH\s*\}\s*from\s*"\.\.\/\.\.\/\.\.\/\.\.\/scripts\/acceptance-commands\.mjs"/,
+    "SPAWNS_GH must come from acceptance-commands.mjs, the regex the token charge itself uses");
+  assert.doesNotMatch(code, /\b(?:const|let|var)\s+SPAWNS_GH\b/,
+    "a local SPAWNS_GH is a second copy of the charge's list -- the drift #1449 was filed about");
 });
