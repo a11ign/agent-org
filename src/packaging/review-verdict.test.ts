@@ -147,3 +147,14 @@ test("#1324 POSITIVE CONTROL: with no `, by <name>:` on the line, a bare `by` is
   assert.equal(reviewVerdict("Re-read of `94d6e948` by worker-judge — convinced.").author, "worker-judge");
   assert.equal(reviewVerdict(REREAD_WITHOUT_AUTHOR).author, null);
 });
+
+test("#1324: the FIRST `, by <name>:` is the author when the opener line quotes a superseded verdict in the same "
+  + "convention", () => {
+  // Constructed: 0 of 168 real opener lines (the last 120 PRs, read 2026-09-13) carry two. The shape is #1264's
+  // own -- a re-read naming the verdict it supersedes on the same line -- with the superseded one's author added.
+  const line = "**Re-read of #1 at `55c92b7f`, by worker-capture: CONVINCED.** Supersedes the review at `cf4f3345`, "
+    + "by worker-judge: not convinced.";
+  assert.deepEqual(reviewVerdict(line),
+    { verdict: "convinced", word: "CONVINCED", head: "55c92b7f", author: "worker-capture" },
+    "the second `, by <name>:` belongs to the verdict this one supersedes");
+});
