@@ -1262,27 +1262,48 @@ test("CONTROL: a refusal of a NAMED file stays a pass -- the author did their pa
 // shape is generic to the closure walk, not to those three, which is why this is a rule rather than
 // three fixes.
 
+/**
+ * A SYNTHETIC file this job refuses, for the three tests below. #1406: they named the real
+ * `row-claim-live.test.ts`, which stopped needing a token when its calls became recorded -- and two of the three
+ * went on passing with nothing refused, the fixture fragility the CONTROL above already names (#790/#878).
+ */
+function refusedFixture(): { path: string; cleanup: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), "acceptance-refused-"));
+  const path = join(dir, "needs-token.test.ts");
+  writeFileSync(path, "// requires: token\n");
+  return { path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
 test("EXECUTED NOTHING FAILS: every command refused and none run is the absence of an answer, not a pass", () => {
   const caps = { history: false, token: false, fleet: false, corpus: false };
-  const report = acceptanceReport(
-    "Acceptance: npx tsx --test packages/lab/src/packaging/row-claim-live.test.ts", () => 0,
-    { capabilities: caps });
+  const fixture = refusedFixture();
+  try {
+  const report = acceptanceReport(`Acceptance: npx tsx --test ${fixture.path}`, () => 0, { capabilities: caps });
   assert.equal(report.ok, false);
   assert.ok(report.lines.some((l) => l.startsWith("ACCEPTANCE: EXECUTED NOTHING")),
     "the verdict must be its own line, not a modifier on the refusal -- a reader scanning for a failure "
     + "reads line starts");
   assert.match(report.lines.join("\n"), /no token, no fleet and no corpus/,
     "and it must say what this job cannot do, or the author reads it as the tool being broken");
+  } finally {
+    fixture.cleanup();
+  }
 });
 
 test("A REFUSED LINE PASSES ONLY BESIDE A RAN LINE -- refusing one named file while another actually "
   + "runs is a partial answer; refusing every one is no answer at all", () => {
   const caps = { history: false, token: false, fleet: false, corpus: false };
-  const mixed = acceptanceReport(
-    'Acceptance:\nnpx tsx --test packages/lab/src/packaging/row-claim-live.test.ts\n'
-    + 'node -e "process.exit(0)"\n', () => 0, { capabilities: caps });
-  assert.equal(mixed.ok, true, "one command ran, so the section examined something");
-  assert.ok(!mixed.lines.some((l) => l.startsWith("ACCEPTANCE: EXECUTED NOTHING")));
+  const fixture = refusedFixture();
+  try {
+    const mixed = acceptanceReport(
+      `Acceptance:\nnpx tsx --test ${fixture.path}\n`
+      + 'node -e "process.exit(0)"\n', () => 0, { capabilities: caps });
+    assert.ok(mixed.lines.some((l) => /REFUSED/.test(l)), "the positive control: one line really was refused");
+    assert.equal(mixed.ok, true, "one command ran, so the section examined something");
+    assert.ok(!mixed.lines.some((l) => l.startsWith("ACCEPTANCE: EXECUTED NOTHING")));
+  } finally {
+    fixture.cleanup();
+  }
 });
 
 test("CONTROL: a section with commands that all RUN is untouched, and an empty section is not this "
@@ -1312,12 +1333,18 @@ test("CONTROL: a section with commands that all RUN is untouched, and an empty s
 test("THE BOUNDARY: a REFUTATION section that executed nothing does NOT fail -- the tree tells authors "
   + "to declare a command it refuses by design there, and refusing their body for obeying it is worse", () => {
   const caps = { history: false, token: false, fleet: false, corpus: false };
-  const report = acceptanceReport(
-    'Acceptance:\nnode -e "process.exit(0)"\n'
-    + "Refutation:\nnpx tsx --test packages/lab/src/packaging/row-claim-live.test.ts\n", () => 0,
-    { capabilities: caps });
-  assert.equal(report.ok, true);
-  assert.ok(!report.lines.some((l) => /EXECUTED NOTHING/.test(l)));
+  const fixture = refusedFixture();
+  try {
+    const report = acceptanceReport(
+      'Acceptance:\nnode -e "process.exit(0)"\n'
+      + `Refutation:\nnpx tsx --test ${fixture.path}\n`, () => 0,
+      { capabilities: caps });
+    assert.ok(report.lines.some((l) => /REFUSED/.test(l)), "the positive control: the Refutation line really was refused");
+    assert.equal(report.ok, true);
+    assert.ok(!report.lines.some((l) => /EXECUTED NOTHING/.test(l)));
+  } finally {
+    fixture.cleanup();
+  }
 });
 
 /**
