@@ -1892,3 +1892,66 @@ test("#1458 CONTROL: the shape lookup finds nothing when the function's spawns a
   assert.equal(spawnLineOf(earlier), null,
     "the deriver would report the earlier spawn, which is not publishToDraftRelease's");
 });
+
+// --- #1465: a `// no-token:` line is read, or refused -- never silently ignored ---
+
+/** An entry in a scratch directory whose first lines are `headers`, importing the mixed module's SAFE export. */
+function deriveWithHeaders(headers: string[], extraCode: string[] = []) {
+  const dir = mkdtempSync(join(tmpdir(), "acceptance-1465-"));
+  try {
+    writeSyntheticMixedModule(dir, "checkRelease");
+    const entry = join(dir, "consumer.test.mjs");
+    writeFileSync(entry, [...headers, "import { safeRender } from \"./mixed-module.mjs\";", "safeRender(1);", ...extraCode].join("\n"));
+    const hits = deriveClosureRequirements(entry);
+    return { hits, messages: hits.map(closureRequirementMessage) };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("#1465 ACCEPTANCE: a declaration with its reason after ` -- ` on the same line is READ, and exempts", () => {
+  const { hits, messages } = deriveWithHeaders(["// no-token: checkRelease -- every input here is injected"]);
+  assert.deepEqual(hits, [], `a reason beside the name is the habit ceo wants; got ${messages.join("; ")}`);
+});
+
+test("#1465 CONTROL: the bare header still exempts, and an entry with NO header is still charged", () => {
+  assert.deepEqual(deriveWithHeaders(["// no-token: checkRelease"]).hits, []);
+  assert.deepEqual(deriveWithHeaders([]).hits.map((h) => h.requirement), ["token"],
+    "without a declaration the mixed module's spawn charges the entry -- so the two exemptions above are earned");
+});
+
+test("#1465: a `// no-token:` line the declaration grammar cannot read is REFUSED, naming the file and line", () => {
+  for (const malformed of [
+    "// no-token: checkRelease because the inputs are injected",
+    "// no-token:",
+    "// No-Token: checkRelease",
+    "  // no-token: checkRelease",
+  ]) {
+    const { hits, messages } = deriveWithHeaders(["// an ordinary first line", malformed]);
+    assert.equal(hits.length, 1, `${JSON.stringify(malformed)} must be refused, not ignored; got ${JSON.stringify(hits)}`);
+    assert.equal(hits[0].requirement, "token");
+    assert.equal(hits[0].line, 2, "the refusal names the line the unreadable declaration is on");
+    assert.match(messages[0], /consumer\.test\.mjs:2 .*not a `\/\/ no-token:` declaration/,
+      `the message names the file and line and says why; got ${messages[0]}`);
+  }
+  const belowReadable = deriveWithHeaders(["// no-token: gitLike", "// no-token: checkRelease because the inputs are injected"]);
+  assert.equal(belowReadable.hits.length, 1, `refused even below a declaration that holds; got ${JSON.stringify(belowReadable.hits)}`);
+  assert.equal(belowReadable.hits[0].line, 2, "the refusal names the unreadable line, not the first header's");
+});
+
+test("#1465: EVERY header line is verified -- a wrong SECOND declaration is named at its own line", () => {
+  const cmd = spell("chec", "kRelease");
+  const { hits } = deriveWithHeaders(["// no-token: safeRender2", "// no-token: checkRelease"],
+    ["import { checkRelease } from \"./mixed-module.mjs\";", `${cmd}();`]);
+  assert.equal(hits.length, 1, `the second declaration names a function the entry calls; got ${JSON.stringify(hits)}`);
+  assert.equal(hits[0].wrongDeclaration, true);
+  assert.equal(hits[0].line, 2, "flagged at the second header's own line, not the first's");
+  assert.deepEqual(deriveWithHeaders(["// no-token: safeRender2", "// no-token: gitLike"]).hits, [],
+    "CONTROL: two declarations that both hold exempt, as enumeration-completeness and queue-table rely on");
+});
+
+test("#1465: the one real header with a reason, row-claim-stale-rule.test.ts:1, derives no requirement and is not refused", () => {
+  const f = "packages/lab/src/packaging/row-claim-stale-rule.test.ts";
+  assert.match(readFileSync(f, "utf8").split("\n")[0], /^\/\/ no-token: gh -- /, "the fixture's premise: its header carries a reason");
+  assert.deepEqual(deriveClosureRequirements(f), []);
+});
