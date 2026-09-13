@@ -203,7 +203,7 @@ test("#1384 ACCEPTANCE: a move that changed the lockfile runs npm install, BEFOR
   const { git, npmCalls, thrown } = driveMove("package-lock.json\n");
   assert.equal(thrown, undefined);
   assert.deepEqual(git.find((argv) => argv[0] === "diff"),
-    ["diff", "--name-only", "old111", "new222", "--", "package-lock.json"],
+    ["diff", "--name-only", "--no-renames", "old111", "new222", "--", "package-lock.json"],
     "the question is asked of the commit the checkout LEFT and the one it ARRIVED at, for the root lockfile");
   assert.deepEqual(npmCalls, [["install"], ["run", "build"]],
     "install first: a build before it compiles the new source against the old node_modules");
