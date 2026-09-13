@@ -110,3 +110,33 @@ test("#1219: the board query REQUESTS state -- fixtures cannot witness what the 
     + "classifies nothing -- silently, because the fixtures in this file supply the field themselves and "
     + "would keep passing. That is the defect #1219 is about, in #1219's own guard");
 });
+
+/**
+ * #1228: A CLOSED ROW WITH NO STATUS IS A THIRD OUTCOME, not a widened filter.
+ *
+ * During #1224 this guard reported **41** and the truth was **44** — three closed rows carried no Status,
+ * and it compares a Status against `Done`, so it had none to compare. Two sessions predicted 44 and 41
+ * from the same board and **both were right about different questions**.
+ */
+test("#1228: an unboarded closed row is its own outcome, in neither existing list", () => {
+  const { closedButLive, openButDone, closedUnboarded } = statusContradictions([
+    { number: 1, state: "CLOSED", status: null },
+    { number: 2, state: "CLOSED", status: "Ready" },
+    { number: 3, state: "OPEN", status: null },
+  ]);
+  assert.deepEqual(closedUnboarded.map((i) => i.number), [1],
+    "a CLOSED row with no Status is reported -- it was invisible, and invisible is not clean");
+  assert.deepEqual(closedButLive.map((i) => i.number), [2],
+    "and it does NOT migrate into the live list: the remedies differ, so one list with two would tell a "
+    + "caller to correct a Status that does not exist");
+  assert.deepEqual(openButDone, [],
+    "an OPEN row with no Status is not any of the three -- nobody has said anything about it");
+});
+
+test("#1228: the third list is EMPTY rather than absent when there is nothing to report", () => {
+  // "none" and "not asked" must stay distinguishable -- the distinction this guard is itself about.
+  const r = statusContradictions([{ number: 4, state: "CLOSED", status: "Done" }]);
+  assert.deepEqual(r.closedUnboarded, [],
+    "an empty array, not undefined: a caller destructuring a missing key gets the same silence as a "
+    + "clean board, which is the failure mode this row exists to end");
+});
