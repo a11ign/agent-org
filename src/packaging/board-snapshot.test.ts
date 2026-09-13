@@ -14,6 +14,8 @@ import {
   readyRowsMissingStatus,
   writeBoardSnapshot,
   withBoardSnapshot,
+  forgetProcessSnapshot,
+  SNAPSHOT_MAX_AGE_MS,
   snapshotStamp,
   PROJECT_OWNER,
   PROJECT_NUMBER,
@@ -371,4 +373,98 @@ test("fetchBoardItems, MUTATION TARGET: excludeIssueNumber naming the WRONG row 
   + "the exclusion is by number, not a blanket bypass of the floor", () => {
   const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 891, title: "row" }] }), [891]);
   assert.throws(() => fetchBoardItems({ run, excludeIssueNumber: 1 }), /#891/);
+});
+
+// --- #852: ONE SWEEP PER PROCESS ----------------------------------------------------------------
+//
+// Every Status move swept the whole board first: `moveProjectStatus` wraps a single-field edit in
+// `withBoardSnapshot`, and the page count grows with the board, so every row added made every future
+// claim more expensive. Measured on this branch with an injected `run` against a 3-page board:
+//
+//   before   1 move -> 3 pages   3 moves -> 9 pages    20 moves -> 60 pages
+//   after    1 move -> 3 pages   3 moves -> 3 pages    20 moves -> 3 pages
+//
+// THE ASSERTIONS ARE ON THE CALLS, not on anything the result contains, because the result is identical
+// either way — which is the reason nobody noticed for four days.
+
+/** A board of `pages` pages, and a recorder of every `gh` invocation made against it. */
+function boardOf(pages: number) {
+  const calls: string[][] = [];
+  let served = 0;
+  const run = (cmd: string, args: string[]) => {
+    calls.push([cmd, ...args]);
+    if (!args.join(" ").includes("graphql")) return "";
+    const cursor = served; served += 1;
+    return JSON.stringify({ data: { user: { projectV2: { items: {
+      pageInfo: { hasNextPage: cursor < pages - 1, endCursor: `c${cursor + 1}` },
+      nodes: [{ id: `PVTI_${cursor}`, content: { number: cursor, title: "t", state: "OPEN" },
+        fieldValues: { nodes: [{ name: "Ready", field: { name: "Status" } }] } }],
+    } } } } });
+  };
+  const boardPages = () => calls.filter((c) => c.join(" ").includes("graphql")).length;
+  return { run, calls, boardPages };
+}
+
+const quiet = { fetchReady: () => [], mkdir: () => {}, writeFile: () => {}, log: () => {} };
+
+test("#852: N board mutations in one process cost ONE sweep, not N", () => {
+  forgetProcessSnapshot();
+  const board = boardOf(3);
+  let mutations = 0;
+  const N = 20;
+  for (let i = 0; i < N; i += 1) {
+    withBoardSnapshot(() => { mutations += 1; }, { ...quiet, run: board.run });
+  }
+  assert.equal(mutations, N, "every mutation must still run -- this is a cost fix, not a skip");
+  assert.equal(board.boardPages(), 3,
+    `${N} mutations must cost one 3-page sweep. Before #852 this was ${N * 3} pages, and the page count `
+    + "grows with the board, so the old cost rose every time a row was filed");
+});
+
+test("#852 POSITIVE CONTROL: a fresh process still sweeps, so the reuse is not a skip", () => {
+  // Without this, "0 pages" would satisfy the test above perfectly — including for an implementation
+  // that never snapshots at all, which is #399's guarantee deleted rather than made cheaper.
+  forgetProcessSnapshot();
+  const board = boardOf(3);
+  withBoardSnapshot(() => {}, { ...quiet, run: board.run });
+  assert.equal(board.boardPages(), 3, "the FIRST mutation of a process must pay for a real sweep");
+});
+
+test("#852: the reuse EXPIRES, so the record is never more than the bound older than the change", () => {
+  forgetProcessSnapshot();
+  const board = boardOf(1);
+  const start = new Date("2026-09-13T12:00:00.000Z");
+  const at = (ms: number) => new Date(start.getTime() + ms);
+  withBoardSnapshot(() => {}, { ...quiet, run: board.run, now: () => start });
+  withBoardSnapshot(() => {}, { ...quiet, run: board.run, now: () => at(SNAPSHOT_MAX_AGE_MS - 1000) });
+  assert.equal(board.boardPages(), 1, "inside the bound, the existing snapshot still describes the board");
+  withBoardSnapshot(() => {}, { ...quiet, run: board.run, now: () => at(SNAPSHOT_MAX_AGE_MS + 1000) });
+  assert.equal(board.boardPages(), 2,
+    "past the bound a fresh sweep is taken -- the trade is a snapshot slightly older than the mutation "
+    + "it covers, and the bound is what keeps that sayable rather than unbounded");
+});
+
+test("#852: the snapshot FILE says it describes the board before the FIRST mutation", () => {
+  // A reader who finds a snapshot next to a mutation will otherwise assume the stronger guarantee —
+  // "the board immediately before THIS change" — which is exactly what it no longer is.
+  forgetProcessSnapshot();
+  const board = boardOf(1);
+  const written: string[] = [];
+  withBoardSnapshot(() => {}, { ...quiet, run: board.run, writeFile: (_p, data) => written.push(data) });
+  const parsed = JSON.parse(written[0]);
+  assert.match(parsed.takenBefore, /first board mutation of this process/);
+  assert.match(parsed.takenBefore, /reuse this snapshot/,
+    "and it must say WHY it is not per-mutation, not merely that it is not");
+});
+
+test("#852: #399's guarantee is untouched -- a failed write still means the mutation never runs", () => {
+  // The cost fix must not weaken the reason the sweep exists. A snapshot that cannot be written is still
+  // a refusal, not a warning, on the first mutation of a process.
+  forgetProcessSnapshot();
+  const board = boardOf(1);
+  let ran = false;
+  assert.throws(() => withBoardSnapshot(() => { ran = true; },
+    { ...quiet, run: board.run, writeFile: () => { throw new Error("read-only filesystem"); } }),
+  /refusing to proceed/);
+  assert.equal(ran, false, "mutate must never be reached when the snapshot could not be written");
 });
