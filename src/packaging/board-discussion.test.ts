@@ -185,19 +185,23 @@ test("#1302: no edition script computes its own day -- each imports editionDay, 
   const withoutMissedDays = liveness.replace(MISSED_DAYS, "");
   assert.doesNotMatch(withoutMissedDays, /\bfunction missedDays\(/, "the exemption removed missedDays and only it");
   const edition = (file: string) => file === "scripts/board-schedule-liveness.mjs" ? withoutMissedDays : code(file);
-  for (const file of ["scripts/board-document.mjs", "scripts/board-summary-check.mjs", "scripts/board-schedule-liveness.mjs"]) {
+  const editionScripts = [
+    "scripts/board-document.mjs", "scripts/board-summary-check.mjs", "scripts/board-schedule-liveness.mjs", "scripts/board-report.mjs",
+  ];
+  for (const file of editionScripts) {
     assert.doesNotMatch(edition(file), LONDON_DAY, `${file} computes a London day of its own instead of importing editionDay`);
     assert.doesNotMatch(edition(file), UTC_DAY, `${file} computes a UTC day of its own instead of importing editionDay`);
     assert.match(edition(file), /\beditionDay\(/, `${file} must take its day from editionDay`);
   }
-  // A THIRD COPY ANYWHERE IN THE BOARD SCRIPTS: a London formatter with a year, in any `scripts/board-*.mjs` but the
-  // definition. Only the London half is globbed: board-report.mjs:290 titles the edition with a UTC slice, which is #1442,
-  // sequenced after this and not a day this test may silently accept or refuse from here.
+  // A THIRD COPY ANYWHERE IN THE BOARD SCRIPTS: a day of its own, in EITHER spelling, in any `scripts/board-*.mjs` but the
+  // definition. Until #1442 only the London half could be globbed, because board-report.mjs:290 titled the edition with a
+  // UTC slice; it takes editionDay now, so both halves are, and `missedDays` keeps its one exemption through `edition()`.
   const boardScripts = readdirSync(join(REPO, "scripts")).filter((f) => /^board-.*\.mjs$/.test(f) && f !== "board-discussion.mjs");
-  assert.ok(boardScripts.includes("board-schedule-liveness.mjs") && boardScripts.includes("board-summary-check.mjs"),
+  assert.ok(["board-schedule-liveness.mjs", "board-summary-check.mjs", "board-report.mjs"].every((f) => boardScripts.includes(f)),
     `POSITIVE CONTROL: the glob reaches the files named above -- it found ${boardScripts.join(", ")}`);
   for (const file of boardScripts) {
-    assert.doesNotMatch(code(`scripts/${file}`), LONDON_DAY, `scripts/${file} computes a London day of its own`);
+    assert.doesNotMatch(edition(`scripts/${file}`), LONDON_DAY, `scripts/${file} computes a London day of its own`);
+    assert.doesNotMatch(edition(`scripts/${file}`), UTC_DAY, `scripts/${file} computes a UTC day of its own`);
   }
   // POSITIVE CONTROLS for both patterns: the one definition matches the London half, and the UTC half matches the
   // spelling it names, so a regex that matches nothing cannot make the loops above pass.
