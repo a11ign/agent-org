@@ -79,3 +79,54 @@ test("bridge: DEGRADED only when every refusal is project-unreadable -- one othe
   assert.deepEqual(unsettledVerdict([other, unreadable(1299)]), { degraded: false, other: [other] }, "in either order");
   assert.deepEqual(unsettledVerdict([]), { degraded: false, other: [] }, "no refusals is neither degraded nor failed");
 });
+
+// --- #1360: a row already at Done issues no move; its Status comes from data the caller already holds ---
+
+/** A `moveStatus` that counts every call and records what it was asked for. */
+function countingMove(answer: { moved: true } | { moved: false, notOnBoard: boolean, reason: string } = { moved: true }) {
+  const calls: Array<[number, string]> = [];
+  return { calls, moveStatus: (n: number, s: string) => { calls.push([n, s]); return answer; } };
+}
+
+test("#1360 ACCEPTANCE: a row whose held Status is already Done issues NO move, and is settled", () => {
+  const move = countingMove();
+  const said: string[] = [];
+  const outcome = settleClosedStatus(1298, { moveStatus: move.moveStatus, currentStatus: () => "Done",
+    log: (line) => said.push(line) });
+  assert.equal(move.calls.length, 0, "no GraphQL mutation for a Status that is already where it rests");
+  assert.deepEqual(outcome, { settled: true, refused: [] }, "and it is settled, not refused -- nothing is wrong");
+  assert.match(said.join("\n"), /#1298 Status is already Done -- no move/, "the skip is said, never silent");
+});
+
+test("#1360 CONTROL: a row at a live Status is still moved, once, to Done", () => {
+  for (const live of ["In progress", "Ready", "Backlog", "Blocked", "Fleet-gated"]) {
+    const move = countingMove();
+    const outcome = settleClosedStatus(7, { moveStatus: move.moveStatus, currentStatus: () => live, log: () => {} });
+    assert.deepEqual(move.calls, [[7, "Done"]], `a closed row at ${live} must still be moved`);
+    assert.deepEqual(outcome, { settled: true, refused: [] });
+  }
+});
+
+test("#1360 CONTROL: a refused move at a live Status is still reported exactly as #1299 made it", () => {
+  const move = countingMove({ moved: false, notOnBoard: false, reason: "HTTP 500" });
+  const outcome = settleClosedStatus(3, { moveStatus: move.moveStatus, currentStatus: () => "In progress", log: () => {} });
+  assert.equal(move.calls.length, 1);
+  assert.deepEqual(outcome, { settled: false, refused: [{ row: 3, cause: "other", message: "HTTP 500" }] });
+});
+
+test("#1360 an UNKNOWN Status -- no held snapshot, or a row it does not carry -- is moved as before, never skipped on a guess", () => {
+  const unheld = countingMove();
+  settleClosedStatus(9, { moveStatus: unheld.moveStatus, currentStatus: () => null, log: () => {} });
+  assert.equal(unheld.calls.length, 1, "null is 'not known', and a closed row left at a live Status is #1227's defect");
+  const noLookup = countingMove();
+  settleClosedStatus(9, { moveStatus: noLookup.moveStatus, log: () => {} });
+  assert.equal(noLookup.calls.length, 1, "a caller that passes no lookup behaves exactly as before this row");
+});
+
+test("#1360 only the exact resting state skips: a Status merely CONTAINING 'Done' is still moved", () => {
+  for (const near of ["done", "Done ", "Not Done", ""]) {
+    const move = countingMove();
+    settleClosedStatus(11, { moveStatus: move.moveStatus, currentStatus: () => near, log: () => {} });
+    assert.equal(move.calls.length, 1, `${JSON.stringify(near)} is not the resting state this function names`);
+  }
+});
