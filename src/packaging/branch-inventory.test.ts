@@ -117,6 +117,8 @@ test("#623: UNKNOWN is never omitted and sorts LAST", () => {
   const groups = groupByOwner(facts);
   assert.equal(groups.length, 3);
   assert.match(groups[groups.length - 1][0], /^UNKNOWN/, "unknown last, so it is not buried mid-table");
+  assert.equal(groups[0][0], "worker-capture",
+    "an owner who can ANSWER comes first, whatever the group sizes are");
   assert.deepEqual(groups.map(([, rows]) => rows.length).reduce((a, b) => a + b, 0), facts.length,
     "every branch reaches exactly one group -- a branch dropped by the grouping is one nobody answers for");
 
@@ -127,10 +129,36 @@ test("#623: UNKNOWN is never omitted and sorts LAST", () => {
   assert.doesNotMatch(owned[0][0], /^UNKNOWN/);
 });
 
+test("#623: a RETIRED role ranks below every owner who can answer, however many branches it has", () => {
+  // worker-judge on #1273: keyed on the owner STRING, `lead (retired role)` sorted among the live
+  // sessions by size — so 14 branches nobody can answer for came above 9 that somebody can. The rank is
+  // the best evidence in the group, and only then the size. THE SIZES HERE ARE DELIBERATELY INVERTED:
+  // the retired group is larger, so a size-first ordering fails this and a rank-first ordering passes.
+  const tipAt = { sha: "a", at: "2026-09-01T00:00:00Z" };
+  const live = branchFacts({ branch: "agent/x-1", ahead: 1, lastCommit: tipAt,
+    row: { number: 1, state: "OPEN", labels: ["session:worker-judge"] } });
+  const retired = ["lead/a", "lead/b", "lead/c"].map((branch) =>
+    branchFacts({ branch, ahead: 5, lastCommit: tipAt, row: null }));
+  const unknown = branchFacts({ branch: "agent/no-row", ahead: 9, lastCommit: tipAt, row: null });
+
+  const order = groupByOwner([...retired, unknown, live]).map(([owner]) => owner);
+  assert.deepEqual(order, ["worker-judge", "lead (retired role)",
+    "UNKNOWN -- nobody is recorded as owning this"],
+  "live owner, then retired role, then unknown -- and the retired group is the BIGGEST of the three, "
+  + "so this fails under the ordering that shipped");
+});
+
 test("#623: the reconciliation is a returned value, not a sentence somebody checks", () => {
   // "The count at the end reconciles with the count at the start, or the difference is explained."
-  const start = { candidates: 204, noOpenPR: 202, merged: 109, unmerged: 93 };
+  // NOT A FIXTURE BUILT FROM THE ANSWER (worker-judge's note on #1273): `noOpenPR` is DERIVED from the
+  // two buckets here, so the balanced case cannot be balanced by a typo, and the unbalanced case below
+  // perturbs one bucket rather than restating a different total.
+  const buckets = { merged: 109, unmerged: 93 };
+  const start = { candidates: 204, noOpenPR: buckets.merged + buckets.unmerged, ...buckets };
   assert.equal(reconcile(start, start).startBalanced, true);
+  assert.equal(reconcile({ ...start, merged: start.merged + 1 }, start).startBalanced, false,
+    "one bucket moved and the total did not -- the arithmetic must refuse it, which is the direction "
+    + "that catches a bucket silently dropping a member");
   assert.deepEqual(reconcile(start, start).drift, { candidates: 0, noOpenPR: 0, merged: 0, unmerged: 0 });
 
   const later = { candidates: 206, noOpenPR: 203, merged: 111, unmerged: 92 };
