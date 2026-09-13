@@ -21,6 +21,7 @@ import {
   PROJECT_NUMBER,
   SNAPSHOT_DIR,
 } from "../../../../scripts/board-snapshot.mjs";
+import { touchedItemRequest } from "../../../../scripts/board-snapshot-scope.mjs";
 
 /** One page of a real `gh api graphql` response, shaped exactly like the live schema returns it. */
 function page({ nodes, hasNextPage = false, endCursor = null }: {
@@ -496,4 +497,76 @@ test("#852: #399's guarantee is untouched -- a failed write still means the muta
     { ...quiet, run: board.run, writeFile: () => { throw new Error("read-only filesystem"); } }),
   /refusing to proceed/);
   assert.equal(ran, false, "mutate must never be reached when the snapshot could not be written");
+});
+
+// --- #1275: THE WRAPPER'S ROUTE, WHICH ONLY THIS FILE CAN SHOW -------------------------------------------------
+//
+// The scoped snapshot itself -- its request, parsing, refusals, file and reuse -- is tested in
+// board-snapshot-scope.test.ts, which imports nothing from this file so CI's acceptance job can run it. What stays
+// here is the part that needs `gh`: which `gh` calls `withBoardSnapshot` actually makes.
+
+/** Every `gh` call by command and argv: board pages answered, the ready list empty, a touched read refused. */
+function recordingGh(pages: number) {
+  const calls: Array<{ cmd: string; args: string[] }> = [];
+  let served = 0;
+  const run = (cmd: string, args: string[]) => {
+    calls.push({ cmd, args });
+    if (args[0] === "issue" && args[1] === "list") return "[]";
+    if (args.some((arg) => arg.startsWith("issue="))) {
+      throw new Error("the touched read is not served here -- board-snapshot-scope.test.ts drives it");
+    }
+    const cursor = served; served += 1;
+    return JSON.stringify({ data: { user: { projectV2: { items: {
+      pageInfo: { hasNextPage: cursor < pages - 1, endCursor: `c${cursor + 1}` },
+      nodes: [{ id: `PVTI_page${cursor}`, content: { number: 10000 + cursor, title: "t", state: "OPEN" },
+        fieldValues: { nodes: [{ name: "Backlog", field: { name: "Status" } }] } }],
+    } } } } });
+  };
+  const readyLists = () => calls.filter((call) => call.args[0] === "issue" && call.args[1] === "list").length;
+  const boardPages = () => calls.filter((call) => call.args.includes("graphql")
+    && !call.args.some((arg) => arg.startsWith("issue="))).length;
+  return { run, calls, boardPages, readyLists };
+}
+
+// `exists` is stubbed TRUE because `writeFile` is stubbed to drop the file -- see `quiet` above.
+const quietIO = { mkdir: () => {}, writeFile: () => {}, log: () => {}, exists: () => true };
+
+test("#1275 WIRING: a mutation that names its item makes ONE gh call, the scoped request -- no board page, no ready list", () => {
+  forgetProcessSnapshot();
+  const gh = recordingGh(6);
+  let ran = false;
+  assert.throws(() => withBoardSnapshot(() => { ran = true; }, { ...quietIO, run: gh.run, touches: 725 }),
+    /could not read Project 2's item for #725/);
+  assert.deepEqual(gh.calls, [{ cmd: "gh", args: touchedItemRequest(725) }],
+    "exactly the pure module's request, sent through gh by THIS file -- the gh call the pure half leaves here");
+  assert.equal(ran, false, "and a refused read still means no mutation (#399)");
+});
+
+test("#1275: the same wrapper with no `touches` still sweeps the board -- what every one-item move paid before", () => {
+  forgetProcessSnapshot();
+  const gh = recordingGh(6);
+  withBoardSnapshot(() => {}, { ...quietIO, run: gh.run });
+  assert.equal(gh.boardPages(), 6, "six pages of 100 at today's 555 items -- and one more per hundred rows filed");
+  assert.equal(gh.readyLists(), 1, "plus #747's ready-issue list, which `gh issue list --json` reads over GraphQL too");
+});
+
+test("#1275: a FULL snapshot this process already holds covers a scoped move, with no further gh call (#852)", () => {
+  forgetProcessSnapshot();
+  const gh = recordingGh(2);
+  withBoardSnapshot(() => {}, { ...quietIO, run: gh.run, fetchReady: () => [] });
+  const callsAfterTheSweep = gh.calls.length;
+  let ran = false;
+  withBoardSnapshot(() => { ran = true; }, { ...quietIO, run: gh.run, touches: 725 });
+  assert.equal(gh.calls.length, callsAfterTheSweep, "the board already covers the item");
+  assert.equal(ran, true);
+});
+
+test("#1275: `touches` that names no issue refuses in the wrapper before gh is asked anything", () => {
+  forgetProcessSnapshot();
+  const gh = recordingGh(1);
+  let ran = false;
+  assert.throws(() => withBoardSnapshot(() => { ran = true; }, { ...quietIO, run: gh.run, touches: [] as number[] }),
+    /`touches` must name the issue\(s\) this mutation changes/);
+  assert.equal(ran, false);
+  assert.equal(gh.calls.length, 0);
 });
