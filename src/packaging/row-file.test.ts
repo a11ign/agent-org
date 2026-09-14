@@ -35,6 +35,11 @@ import { filedByLine } from "../../../../scripts/row-claim.mjs";
 import { REPO } from "../../../../scripts/repo-identity.mjs";
 
 const CLI = fileURLToPath(new URL("../../../../scripts/row-file.mjs", import.meta.url));
+/**
+ * #1352: row-file refuses when launched outside a linked worktree, and CI runs these tests in a plain clone. The REAL CLI
+ * tests below launch it with the printed override, so each still reaches the check it was written to test.
+ */
+const CLI_ENV = { ...process.env, A11Y_POLICY_LAUNCH_REASON: "a test driving the real CLI from CI's plain clone" };
 
 const COMPLETE_BODY = "## Region\n\npackages/lab/src/packaging/foo.ts\n\n"
   + "## Acceptance\n\n```\nnpx tsx --test x\n```\n\n"
@@ -596,7 +601,7 @@ test("#844 ACCEPTANCE, MUTATION TARGET: everything succeeds but the READ-BACK di
 test("REAL CLI: an unrecognised flag is refused by name, before gh ever runs", () => {
   assert.throws(
     () => execFileSync("node",
-      [CLI, "--title", "x", "--body", "y", "--session=worker-contracts", ...RELEASE, "--bogus-flag"], { encoding: "utf8" }),
+      [CLI, "--title", "x", "--body", "y", "--session=worker-contracts", ...RELEASE, "--bogus-flag"], { encoding: "utf8", env: CLI_ENV }),
     (error: unknown) => {
       const e = error as { status?: number; stderr?: string };
       assert.equal(e.status, 2, `expected exit 2 from refuseUnknownFlags, got: ${e.stderr}`);
@@ -609,7 +614,7 @@ test("REAL CLI: an unrecognised flag is refused by name, before gh ever runs", (
 test("REAL CLI: --session= itself is a KNOWN flag to the guard, never refused as unrecognised", () => {
   assert.throws(
     () => execFileSync("node",
-      [CLI, "--title", "x", "--body", "no sections", "--session=worker-contracts", ...RELEASE], { encoding: "utf8" }),
+      [CLI, "--title", "x", "--body", "no sections", "--session=worker-contracts", ...RELEASE], { encoding: "utf8", env: CLI_ENV }),
     (error: unknown) => {
       const e = error as { status?: number; stderr?: string };
       assert.equal(e.status, 1, `expected the section-check refusal, got: ${e.stderr}`);
@@ -624,7 +629,7 @@ test("REAL CLI: a genuinely known gh flag (e.g. -l/--label) is NOT refused by th
   assert.throws(
     () => execFileSync("node",
       [CLI, "--title", "x", "--body", "no sections", "--session=worker-contracts", ...RELEASE, "-l", "backlog"],
-      { encoding: "utf8" }),
+      { encoding: "utf8", env: CLI_ENV }),
     (error: unknown) => {
       const e = error as { status?: number; stderr?: string };
       assert.equal(e.status, 1, `expected the section-check refusal (exit 1), got: ${e.stderr}`);
@@ -637,7 +642,7 @@ test("REAL CLI: a genuinely known gh flag (e.g. -l/--label) is NOT refused by th
 
 test("REAL CLI: no --session= at all refuses with its own message, distinct from the section refusal", () => {
   assert.throws(
-    () => execFileSync("node", [CLI, "--title", "x", "--body", COMPLETE_BODY], { encoding: "utf8" }),
+    () => execFileSync("node", [CLI, "--title", "x", "--body", COMPLETE_BODY], { encoding: "utf8", env: CLI_ENV }),
     (error: unknown) => {
       const e = error as { status?: number; stderr?: string };
       assert.equal(e.status, 1);
