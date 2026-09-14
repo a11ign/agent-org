@@ -1,3 +1,4 @@
+// no-token: gh -- every board read and write here goes through an injected run, fetchReady, writeFile and exists; this file's own code never calls or spawns gh (#1352, route (a))
 /**
  * Every board mutation must snapshot before it writes -- issue #399. 2026-09-08: adding one Status option
  * with `updateProjectV2Field` and a full `singleSelectOptions` list REPLACED the whole option set and
