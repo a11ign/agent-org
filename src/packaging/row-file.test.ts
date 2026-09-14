@@ -26,11 +26,11 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { regionRefusalReason, declaresRelease, outOfReleaseArgv, labelsOutOfRelease, OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE }
   from "../../../../scripts/row-file.mjs";
 import { declaredRegionFiles } from "../../../../scripts/region-paths.mjs";
-import { fleetOrLabAcceptance } from "../../../../scripts/acceptance-commands.mjs";
+import { extractAcceptanceSection, fleetOrLabAcceptance } from "../../../../scripts/acceptance-commands.mjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendFiledBy, boardAndVerify, boardingFor, bodyFromArgv, createIssue, directoryRegionWarning, fetchIssueBoardStatus, fileRefusalReason, issueNumberFromUrl, labelRefusal, labelValuesFromArgv, laneLabelsFor, milestoneRefusal, openCheckTranscriptRefusal, sessionFromArgv, slashlessDirectoryWarning, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy, withoutLabels } from "../../../../scripts/row-file.mjs";
+import { appendFiledBy, boardAndVerify, boardingFor, bodyFromArgv, createIssue, directoryRegionWarning, fetchIssueBoardStatus, acceptanceShapeRefusal, fileRefusalReason, issueNumberFromUrl, labelRefusal, labelValuesFromArgv, laneLabelsFor, milestoneRefusal, openCheckTranscriptRefusal, sessionFromArgv, slashlessDirectoryWarning, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy, withoutLabels } from "../../../../scripts/row-file.mjs";
 import { filedByLine } from "../../../../scripts/row-claim.mjs";
 import { REPO } from "../../../../scripts/repo-identity.mjs";
 
@@ -1365,4 +1365,69 @@ test("#1316 an UNPROMPTED line is still judged by the allowlist alone -- the pro
     "without a prompt, 'echo x' is not recognised, so the 3 beneath it is not an output of anything");
   assert.equal(openCheckTranscriptRefusal(openCheckWith(["git rev-list --count HEAD", "3"])), null,
     "an allowlisted unprompted command with its output is accepted, as before");
+});
+
+// --- #1488: THE ACCEPTANCE MUST PARSE AS ONE SECTION. product-manager's floor checker found 22 open rows carrying
+// `## Acceptance` then an `Acceptance: none — …` line -- DUPLICATE to the parser CI's acceptance job uses -- and
+// row-file had filed every one. Reproduced at bb8a5168 on #1466's real body: duplicate, and fileRefusalReason null. ---
+
+const ROW_REGION = "## Region\n\npackages/lab/src/packaging/foo.ts\n\n";
+const ROW_OPEN_CHECK = "## Open-check\n\n```\ngh issue view 735 --json state\n```\n";
+const withAcceptance = (acceptance: string) => ROW_REGION + acceptance + ROW_OPEN_CHECK;
+const NONE_REASON = "a docs row with nothing to run";
+
+test("#1488 ACCEPTANCE: a heading followed by an `Acceptance: none` line (the 22-row shape) is REFUSED, naming both lines", () => {
+  const body = withAcceptance(`## Acceptance\n\nAcceptance: none — ${NONE_REASON}\n\n`);
+  assert.equal(extractAcceptanceSection(body).kind, "duplicate", "the fixture must be the parser's DUPLICATE case");
+  const reason = fileRefusalReason(body);
+  assert.ok(reason, "a body CI's acceptance parser reads as DUPLICATE must not be filed");
+  assert.match(reason as string, /^row-file: REFUSING to file -- the Acceptance section has 2 headers/);
+  assert.ok((reason as string).includes("line 5: `## Acceptance`"), reason as string);
+  assert.ok((reason as string).includes(`line 7: \`Acceptance: none — ${NONE_REASON}\``), reason as string);
+});
+
+test("#1488: an Acceptance section the parser reads as MISSING is refused, in both shapes the template check lets through", () => {
+  for (const acceptance of ["## Acceptance: none\n\n", "## Acceptance\n\n<!-- nothing yet -->\n\n"]) {
+    const body = withAcceptance(acceptance);
+    assert.equal(extractAcceptanceSection(body).kind, "missing", `fixture: ${JSON.stringify(acceptance)}`);
+    assert.match(fileRefusalReason(body) ?? "", /^row-file: REFUSING to file -- the Acceptance section is present, but .*\(MISSING\)/,
+      `fixture: ${JSON.stringify(acceptance)}`);
+  }
+});
+
+test("#1488 CONTROL: the one-header forms are accepted -- a heading with a command block, and `## Acceptance: none — <reason>`", () => {
+  assert.equal(extractAcceptanceSection(COMPLETE_BODY).kind, "commands");
+  assert.equal(fileRefusalReason(COMPLETE_BODY), null);
+  const inlineNone = withAcceptance(`## Acceptance: none — ${NONE_REASON}\n\n`);
+  assert.equal(extractAcceptanceSection(inlineNone).kind, "none");
+  assert.equal(fileRefusalReason(inlineNone), null);
+});
+
+test("#1488: the refusal is FOLLOWABLE -- the refused body, collapsed to the one header it names, files", () => {
+  const refused = withAcceptance(`## Acceptance\n\nAcceptance: none — ${NONE_REASON}\n\n`);
+  assert.ok(fileRefusalReason(refused));
+  const followed = refused.replace(`## Acceptance\n\nAcceptance: none — ${NONE_REASON}`, `## Acceptance: none — ${NONE_REASON}`);
+  assert.equal(fileRefusalReason(followed), null, "doing exactly what the refusal says must pass");
+});
+
+test("#1488: the check CALLS the parser and keeps no copy of its rule -- it refuses exactly the kinds the parser cannot read", () => {
+  const shapes = [
+    "## Acceptance\n\n```\nnpx tsx --test x\n```\n\n",
+    `## Acceptance: none — ${NONE_REASON}\n\n`,
+    `## Acceptance\n\nAcceptance: none — ${NONE_REASON}\n\n`,
+    "## Acceptance: none\n\n",
+    "## Acceptance\n\n<!-- nothing yet -->\n\n",
+    "## Acceptance\n\n",
+    "### Acceptance: npx tsx --test x\n\n",
+    "Acceptance: npx tsx --test x\n\n",
+  ];
+  const kinds = new Set<string>();
+  for (const acceptance of shapes) {
+    const body = withAcceptance(acceptance);
+    const kind = extractAcceptanceSection(body).kind;
+    kinds.add(kind);
+    assert.equal(acceptanceShapeRefusal(body) !== null, kind === "duplicate" || kind === "missing",
+      `shape ${JSON.stringify(acceptance)} parses as ${kind}`);
+  }
+  assert.deepEqual([...kinds].sort(), ["commands", "duplicate", "missing", "none"], "the shapes must cover every kind");
 });
