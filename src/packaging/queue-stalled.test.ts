@@ -466,3 +466,34 @@ test("#1623: the summary line is stated when nothing is found, and names every b
   assert.match(supersededLine([]), /^QUEUE: nothing blocked by a superseding gate/);
   assert.equal(supersededLine([1617, 1618]), "QUEUE: 2 blocked by a superseding gate: 1617 1618");
 });
+
+/**
+ * #1631's review: pairs that do NOT carry two distinct workflow run ids. In each, the CANCELLED gate is the newer one BY TIME
+ * (it completes at 14:52:00Z, after the success at 14:51:42Z), which is the only order `newestRun` can fall back to.
+ */
+const LATER_CANCELLED = { ...PR_1617_GATES[0], completedAt: "2026-09-14T14:52:00Z" };
+const UNORDERED_PAIRS: Record<string, object[]> = {
+  "both id-free": withoutRunIds([LATER_CANCELLED, PR_1617_GATES[1]]),
+  "the newest without a run id, the success with one": [...withoutRunIds([LATER_CANCELLED]), PR_1617_GATES[1]],
+  "the newest with a run id, the success without one": [LATER_CANCELLED, ...withoutRunIds([PR_1617_GATES[1]])],
+  "one workflow run holding both (a re-run job)": [{ ...LATER_CANCELLED, detailsUrl: PR_1617_GATES[1].detailsUrl }, PR_1617_GATES[1]],
+};
+
+test("#1623, #1631's review: WITHOUT two distinct run ids a later-cancelled pair is UNORDERED -- never superseded, and "
+  + "never a re-run naming no run", () => {
+  for (const [label, runs] of Object.entries(UNORDERED_PAIRS)) {
+    const verdict = supersedingGateVerdict({ armed: true, runs });
+    assert.equal(verdict.code, "UNORDERED", label);
+    assert.doesNotMatch(verdict.reason, /re-run|no run id|workflow run \d/, label);
+    assert.match(verdict.reason, /do not carry distinct workflow run ids/, label);
+  }
+});
+
+test("#1623, #1631's review: the report's per-PR examination does not name an unordered pair", () => {
+  for (const [label, runs] of Object.entries(UNORDERED_PAIRS)) {
+    const result = examinePr({ number: 1631, headRefOid: "43cf24ed238afc244b0def8cba0af0464a354da6",
+      autoMergeRequest: { enabledAt: "2026-09-14T15:00:00Z" }, statusCheckRollup: runs }, Date.parse("2026-09-14T15:30:00Z"));
+    assert.equal(result.superseded, undefined, label);
+    assert.equal(result.examined, false, label);
+  }
+});
