@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolveChromeBinary } from "../../../../scripts/board-document.mjs";
 
@@ -15,9 +15,32 @@ const SCRIPT = fileURLToPath(new URL("../../../../scripts/board-document.mjs", i
  * `spawnSync ... ENOENT` stack trace that names neither the missing browser nor what to do about it.
  */
 
-test("resolveChromeBinary finds the real Chrome on THIS machine, with no overrides", () => {
-  // Not mocked, deliberately: this repo's own capture fleet needs a real Chromium on this Mac, so this is
-  // the one assertion that exercises the actual default candidate list against actual disk state.
+/**
+ * #1551: THIS TEST ASSERTS THE MACHINE, so on a machine with no Chrome it has nothing real to find. The shared
+ * `agents` host has none, and every local lab-suite run there showed this one red, which was not the change under test.
+ *
+ * The probe is the real resolver against real disk state. Only `exists` is wrapped, to record which install
+ * locations it checked, so the skip names them; the resolver's own message names the PATH names it tried.
+ */
+function probeThisMachine(): { found: string } | { missing: string } {
+  const checked: string[] = [];
+  try {
+    return { found: resolveChromeBinary({ exists: (path: string) => { checked.push(path); return existsSync(path); } }) };
+  } catch (error) {
+    return { missing: `checked ${checked.join(", ")}; ${(error as Error).message}` };
+  }
+}
+
+test("resolveChromeBinary finds the real Chrome on THIS machine, with no overrides", (t) => {
+  // Not mocked, deliberately: this is the one assertion that exercises the actual default candidate list against actual
+  // disk state. A host with none SKIPS, naming what is missing; on CI (`CI=true`, GitHub's documented default on its
+  // runners) absence is a FAILURE, so a runner image that loses Chrome fails here rather than skipping. An override
+  // that points at nothing is a misconfiguration, never a missing browser, so it is never skipped either.
+  const probe = probeThisMachine();
+  if ("missing" in probe && process.env.CI !== "true" && !process.env.BOARD_DOCUMENT_CHROME) {
+    t.skip(`no Chrome on this machine -- ${probe.missing} Not run, and not a pass; with CI=true this absence fails.`);
+    return;
+  }
   const found = resolveChromeBinary();
   assert.ok(found.length > 0, "resolveChromeBinary() returned nothing on a machine known to have Chrome");
 });
