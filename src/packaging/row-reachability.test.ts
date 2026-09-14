@@ -460,68 +460,56 @@ function pathWithRecordingGh(): string {
   return `${dir}:${process.env.PATH ?? ""}`;
 }
 
-test("#1566: BOTH halves ask the injected PR state about a branch -- the held Region and the carried subject", () => {
-  if (skipsWithoutOriginMain()) return;
-  // From the registry (#1038): absent from every tree, so the subject half genuinely searches the refs for it.
+test("#1566: BOTH halves ask the injected PR state, and `gh` is spawned only when none is injected -- in ANY checkout", () => {
+  // #1566's first version walked THIS checkout's refs and began with `skipsWithoutOriginMain()`, so in a checkout
+  // with no `origin/main` it returned before building anything: ceo's spot-check on #1576 mutated both seams in a
+  // fresh shallow clone and read 34/0, with 2 refused `gh` calls at the held-region seam. So the fixture is a
+  // SYNTHETIC repository with its own `origin/main`, every git read goes through its `run`, and the assertion is on
+  // the SPAWN itself, with a control proving the recorder sees one.
   const SUBJECT = ABSENT_FIXTURE_SYMBOLS["row-reachability.test.ts #1566: the subject-half carrier's symbol"];
-  assert.equal(symbolOnMain(SUBJECT), false, "the carried subject must not be on main, or the subject half never runs");
-  const body = `${readFileSync(
-    fileURLToPath(new URL("./fixtures/issue-687-body.txt", import.meta.url)), "utf8")}\n\nAlso about \`${SUBJECT}\`.\n`;
-  const env = sandboxGitEnv();
-  const held = (declaredRegionFiles(body) ?? []).find((path) => onMain(path));
-  assert.ok(held, "the positive control needs a Region file of #687's that is on main to hold");
-  const REF = "refs/remotes/origin/row-reachability-fixture-1566";
-  const tmpIndex = execFileSync("mktemp", { encoding: "utf8" }).trim();
+  const { repo, run, cleanup } = syntheticRepo();
   const realPath = process.env.PATH;
-  rmSync(GH_MARKER, { force: true });
-  const asked: string[] = [];
+  const recorded = (): string => (existsSync(GH_MARKER) ? readFileSync(GH_MARKER, "utf8").trim() : "");
   try {
-    // A commit off `origin/main` that CHANGES the held file (the shape of #1513's and #1438's branches) and ADDS a
-    // file carrying the subject, which only the subject half's line reads.
-    const indexEnv = { ...env, GIT_INDEX_FILE: tmpIndex };
-    execFileSync("git", ["read-tree", "origin/main"], { encoding: "utf8", env: indexEnv });
-    const text = execFileSync("git", ["show", `origin/main:${held}`], { encoding: "utf8", env });
-    const blob = execFileSync("git", ["hash-object", "-w", "--stdin"],
-      { encoding: "utf8", env, input: `${text}\n// row-reachability #1566 fixture\n` }).trim();
-    execFileSync("git", ["update-index", "--cacheinfo", "100644", blob, held!], { encoding: "utf8", env: indexEnv });
-    const carrier = execFileSync("git", ["hash-object", "-w", "--stdin"],
-      { encoding: "utf8", env, input: `export const ${SUBJECT} = true;\n` }).trim();
-    execFileSync("git", ["update-index", "--add", "--cacheinfo", "100644", carrier,
-      "zz-row-reachability-fixture-1566.mjs"], { encoding: "utf8", env: indexEnv });
-    const tree = execFileSync("git", ["write-tree"], { encoding: "utf8", env: indexEnv }).trim();
-    const commit = execFileSync("git",
-      ["-c", "user.name=row-reachability-fixture", "-c", "user.email=fixture@example.invalid",
-        "commit-tree", tree, "-p", "origin/main", "-m",
-        "row-reachability #1566 fixture (throwaway, deleted at the end of this test)"],
-      { encoding: "utf8", env }).trim();
-    execFileSync("git", ["update-ref", REF, commit], { encoding: "utf8", env });
+    branchTouching(run, repo, "held", "docs/guide.md");
+    run(["checkout", "--quiet", "-b", "carrier", "origin/main"]);
+    writeFileSync(resolve(repo, "carrier.mjs"), `export const ${SUBJECT} = true;\n`);
+    run(["add", "-A"]);
+    run(["commit", "--quiet", "-m", "carry the subject"]);
+    run(["checkout", "--quiet", "main"]);
+    const body = `## Region\n\n\`\`\`\ndocs/guide.md\n\`\`\`\n\nAbout \`${SUBJECT}\`.\n`;
+    const deps = { run, refs: () => ["held", "carrier"],
+      regionFiles: (b: string) => declaredRegionFiles(b, { rootFiles: new Set<string>() }) };
+    assert.equal(symbolOnMain(SUBJECT, { run }), false, "the subject must be absent from this repo's main");
 
+    // THE RECORDER'S POSITIVE CONTROL: walked with NO state injected, the module's own lookup spawns `gh`. Without
+    // this, a recorder that never fires (a PATH the spawn does not read) would make the zero below mean nothing.
+    rmSync(GH_MARKER, { force: true });
     process.env.PATH = pathWithRecordingGh();
-    const facts = subjectAndRegionFacts(body, { state: (ref: string) => { asked.push(ref); return "no PR"; } });
+    const unstubbed = subjectAndRegionFacts(body, deps);
+    process.env.PATH = realPath;
+    assert.notEqual(recorded(), "", "with no state injected the walk must reach `gh` -- the recorder has to see it");
+    assert.deepEqual(unstubbed.subjectsMissing.map((m: { name: string }) => m.name), [SUBJECT],
+      "and the subject half ran: the fixture reaches line 533, not only the held Region");
+
+    rmSync(GH_MARKER, { force: true });
+    const asked: string[] = [];
+    process.env.PATH = pathWithRecordingGh();
+    const facts = subjectAndRegionFacts(body, { ...deps, state: (ref: string) => { asked.push(ref); return "no PR"; } });
     process.env.PATH = realPath;
 
-    // THE POSITIVE CONTROL: the walk reached the branch and asked the injected state about it. Without this, a
-    // walk that reached nothing would also never run `gh`, and the assertion below would pass for that reason.
-    assert.ok(asked.includes("origin/row-reachability-fixture-1566"),
-      `the injected PR state must be asked about the fixture branch; it was asked about ${JSON.stringify(asked)}`);
-    assert.ok(facts.heldRegions.some((h: { path: string }) => h.path === held),
-      `${held} must read as held by the fixture branch`);
-    // THE SUBJECT HALF: its carrier is named with the INJECTED state's answer. `(PR state unreadable)` here is a
-    // refused `gh`, which is the half #1566 found still spawning one after the region half was injected.
-    const subject = facts.subjectsMissing.find((s: { name: string }) => s.name === SUBJECT);
-    assert.deepEqual(subject?.refs, ["origin/row-reachability-fixture-1566 (no PR)"],
-      `the subject half must name its carrier with the injected state: ${JSON.stringify(facts.subjectsMissing)}`);
-    assert.equal(asked.filter((ref) => ref === "origin/row-reachability-fixture-1566").length, 2,
-      "asked twice about the fixture branch: once for the held Region, once for the carried subject");
+    assert.deepEqual([...asked].sort(), ["carrier", "held"],
+      `the injected state must be asked about both branches, once each: ${JSON.stringify(asked)}`);
+    assert.deepEqual(facts.subjectsMissing.find((m: { name: string }) => m.name === SUBJECT)?.refs, ["carrier (no PR)"],
+      "the subject half names its carrier with the injected state's answer");
+    assert.deepEqual(facts.heldRegions.map((h: { path: string }) => h.path), ["docs/guide.md"],
+      "the held Region reads as held");
+    assert.equal(recorded(), "", "with the state injected, neither half may spawn `gh` -- the census is 0");
   } finally {
     process.env.PATH = realPath;
-    try { execFileSync("git", ["update-ref", "-d", REF], { encoding: "utf8", env }); }
-    catch { /* never created -- nothing to remove */ }
-    try { execFileSync("rm", ["-f", tmpIndex]); } catch { /* already gone */ }
+    rmSync(GH_MARKER, { force: true });
+    cleanup();
   }
-  const ran = existsSync(GH_MARKER) ? readFileSync(GH_MARKER, "utf8").trim() : "";
-  rmSync(GH_MARKER, { force: true });
-  assert.equal(ran, "", `the walk spawned gh -- the census must be 0 whatever branches exist:\n${ran}`);
 });
 
 /**
