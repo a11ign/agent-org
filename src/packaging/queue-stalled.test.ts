@@ -1,3 +1,5 @@
+// no-token: gh -- the verdicts are pure and driven with recorded rollups; the script is only spawned to show it refuses
+// before any gh call (an unknown flag, no GITHUB_REPOSITORY). #1623's route (a), product-manager 15:05Z.
 /**
  * #361: AN ARMED, GREEN, CONFLICTING PR SITS FOREVER, AND NOTHING SAYS WHY.
  *
