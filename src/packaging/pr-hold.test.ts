@@ -16,7 +16,10 @@
 // is refused as its own state rather than trusted.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { holdDecision } from "../../../../scripts/pr-hold.mjs";
@@ -221,4 +224,102 @@ test("#822's two writes are verified the SAME WAY -- the source proves the marke
   assert.match(takeHold.slice(0, takeHold.indexOf("\n}")), /could not mark it/,
     "the refusal must say what will happen next -- `pr:release` leaving the PR unarmed is the "
     + "consequence, and a message naming only the failed write does not tell the operator that");
+});
+
+// --- #1481: THROUGH THE REAL CLI, with a stateful stub `gh` first on PATH. A --steal that removed another
+// session's hold and then failed to add its own exited 1 -- REFUSED, "nothing done" -- measured at 8244cf0f.
+// The stub keeps the PR's labels in a state file, so each test reads what actually LANDED, not what was said. ---
+
+const PR_HOLD_CLI = fileURLToPath(new URL("../../../../scripts/pr-hold.mjs", import.meta.url));
+const EXECUTABLE = 0o755;
+// The exit code pr-hold.mjs header documents for DISPLACED_NOT_HELD.
+const DISPLACED_NOT_HELD_EXIT = 3;
+const PR = "9001";
+
+/** The stub: `pr view --json labels` reads the state; `pr edit` writes it, or exits 1 where the state says to. */
+const STUB_GH = `#!/usr/bin/env node
+const fs = require("fs");
+const path = require("path");
+const statePath = path.join(__dirname, "state.json");
+const args = process.argv.slice(2);
+fs.appendFileSync(path.join(__dirname, "argv.log"), args.join(" ") + "\\n");
+const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+const flag = (name) => { const at = args.indexOf(name); return at < 0 ? null : args[at + 1]; };
+if (args[0] === "pr" && args[1] === "view") {
+  const fields = flag("--json");
+  if (fields === "labels") process.stdout.write(JSON.stringify({ labels: state.labels.map((name) => ({ name })) }));
+  else process.stdout.write(JSON.stringify({ autoMergeRequest: null, state: "OPEN" }));
+  process.exit(0);
+}
+if (args[0] === "pr" && args[1] === "edit") {
+  const remove = flag("--remove-label");
+  const add = flag("--add-label");
+  if (remove !== null && state.failRemoveOf === remove) { process.stderr.write("simulated: removing " + remove + " failed\\n"); process.exit(1); }
+  if (remove !== null) state.labels = state.labels.filter((label) => label !== remove);
+  if (add !== null && state.failAdd) { process.stderr.write("simulated: API rate limit already exceeded\\n"); process.exit(1); }
+  if (add !== null) state.labels.push(add);
+  fs.writeFileSync(statePath, JSON.stringify(state));
+  process.exit(0);
+}
+process.exit(1);
+`;
+
+/** Runs `pr-hold.mjs` for PR 9001 with the stub first on PATH and no token in the environment. */
+function withStubbedHold(state: { labels: string[], failAdd?: boolean, failRemoveOf?: string }, ...argv: string[]) {
+  const dir = mkdtempSync(join(tmpdir(), "pr-hold-1481-"));
+  try {
+    writeFileSync(join(dir, "state.json"), JSON.stringify(state));
+    writeFileSync(join(dir, "gh"), STUB_GH);
+    chmodSync(join(dir, "gh"), EXECUTABLE);
+    const r = spawnSync(process.execPath, [PR_HOLD_CLI, PR, ...argv],
+      { encoding: "utf8", env: { PATH: `${dir}:${process.env.PATH ?? ""}`, HOME: process.env.HOME ?? "" } });
+    const after = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as { labels: string[] };
+    const calls = readFileSync(join(dir, "argv.log"), "utf8").split("\n").filter(Boolean);
+    return { status: r.status, stdout: r.stdout, stderr: r.stderr, labels: after.labels, calls };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("#1481 ACCEPTANCE: a --steal removes the other hold, then the ADD fails -- exit 3 naming the removed label, never 1", () => {
+  const r = withStubbedHold({ labels: ["hold:dispatcher", "lane:any"], failAdd: true },
+    "--session=worker-judge", "--steal");
+  assert.equal(r.status, DISPLACED_NOT_HELD_EXIT, `a failure after a landed removal must be DISPLACED_NOT_HELD; got ${r.status}: ${r.stderr}`);
+  assert.match(r.stdout, /#9001: STEALING from dispatcher/);
+  assert.match(r.stderr, /^#9001: DISPLACED BUT NOT HELD \(exit 3\) -- removed hold:dispatcher; /m);
+  assert.match(r.stderr, /hold:worker-judge was NOT added: [\s\S]*simulated: API rate limit already exceeded/);
+  assert.deepEqual(r.labels, ["lane:any"], "the removal LANDED and the add did not -- read from the stub's state");
+  const removeAt = r.calls.findIndex((c) => c.includes("--remove-label hold:dispatcher"));
+  const addAt = r.calls.findIndex((c) => c.includes("--add-label hold:worker-judge"));
+  assert.ok(removeAt >= 0 && addAt > removeAt, `the removal must precede the failing add: ${JSON.stringify(r.calls)}`);
+});
+
+test("#1481: a steal from TWO holders whose second removal fails -- exit 3 naming only the removal that landed", () => {
+  const r = withStubbedHold({ labels: ["hold:dispatcher", "hold:worker-capture"], failRemoveOf: "hold:worker-capture" },
+    "--session=worker-judge", "--steal");
+  assert.equal(r.status, DISPLACED_NOT_HELD_EXIT, r.stderr);
+  assert.match(r.stderr, /-- removed hold:dispatcher; the next label write failed, so hold:worker-judge was NOT added/);
+  assert.doesNotMatch(r.stderr, /removed hold:dispatcher, hold:worker-capture/);
+  assert.deepEqual(r.labels, ["hold:worker-capture"]);
+});
+
+test("#1481 CONTROL: the FIRST removal fails -- nothing landed, so it exits 1 as before, with no DISPLACED report", () => {
+  const r = withStubbedHold({ labels: ["hold:dispatcher"], failRemoveOf: "hold:dispatcher" },
+    "--session=worker-judge", "--steal");
+  assert.equal(r.status, 1);
+  assert.doesNotMatch(r.stderr, /DISPLACED BUT NOT HELD/);
+  assert.deepEqual(r.labels, ["hold:dispatcher"], "nothing was written");
+  assert.ok(!r.calls.some((c) => c.includes("--add-label")), JSON.stringify(r.calls));
+});
+
+test("#1481 CONTROL: every write succeeds -- exit 0, and the PR is held by this session alone", () => {
+  const r = withStubbedHold({ labels: ["hold:dispatcher"] }, "--session=worker-judge", "--steal");
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(r.labels, ["hold:worker-judge"]);
+  assert.match(r.stdout, /#9001 is now held by worker-judge, and dispatcher no longer holds it/);
+});
+
+test("#1481: the header documents exit 3, DISPLACED_NOT_HELD", () => {
+  const header = readFileSync(PR_HOLD_CLI, "utf8").split("import ")[0];
+  assert.match(header, /^ \*\s+3\s+DISPLACED_NOT_HELD -- a --steal REMOVED another session's hold/m);
 });

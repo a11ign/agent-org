@@ -11,14 +11,22 @@
  * `pre-push-resolve-toward-main.test.ts` and `test-support/git-sandbox.ts` both state at length: `cwd`
  * is not isolation for a spawned git process, `GIT_DIR` is.
  */
+// no-token: gh
+//
+// #1477: carry-branch.mjs spawns `gh` in `noteCarryOnPr`, so the acceptance classifier charges this whole file
+// for a token -- measured, it refused this row's own acceptance command on origin/main as filed. No test here
+// reaches that spawn: every `noteCarryOnPr` and `carryMain` test injects its own `run`, and the real-git carry
+// tests call `carryBranch` with the default `run`, which only ever spawns `git`. Re-proved behind a `gh` shim
+// that logs and exits 1, with GH_TOKEN and GITHUB_TOKEN unset: 19 pass, and the shim is invoked ZERO times.
 import { test, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, realpathSync } from "node:fs";
+import { mkdtempSync, rmSync, realpathSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
-import { carryBranch, branchCheckedOutLocally, noteCarryOnPr } from "../../../../scripts/carry-branch.mjs";
+import { carryBranch, branchCheckedOutLocally, noteCarryOnPr, carryMain, EXIT } from "../../../../scripts/carry-branch.mjs";
+import { stripComments } from "@a11ign/evidence/source-text";
 import { declareTreeWideGuard } from "../../../../scripts/tree-wide-guard.mjs";
 
 // #716/#704: this file's own population is the whole tracked tree, not one file -- declared here
@@ -290,3 +298,101 @@ test("#1128: the carry STAMPS the worktree it creates, because a failed cleanup 
       rmSync(workDir, { recursive: true, force: true });
     }
   });
+
+// --- #1477: a failure AFTER the push landed exits 3, CARRIED NOT NOTED -- never 1, which this script's header
+// defines as NOT CARRIED. Measured at 0830dd0e through the real CLI with a stub gh: `gh pr comment` failed after
+// `git push` landed, escaped as an uncaught throw, and Node exited 1 under stdout's "CARRIED -- ... pushed." ---
+
+const CARRIED_BRANCH = "agent/x-1477";
+const FOUND_PR = JSON.stringify([{ number: 42 }]);
+
+/** An injected `run` for the whole carry, where `failAt` picks the one call that throws. No filesystem, no remote. */
+function carryRun(failAt: (cmd: string, args: string[]) => boolean) {
+  const calls: string[] = [];
+  const run = (cmd: string, args: string[]) => {
+    calls.push(`${cmd} ${args.join(" ")}`);
+    if (failAt(cmd, args)) throw new Error(`simulated: ${cmd} ${args.slice(0, 2).join(" ")} failed`);
+    if (cmd === "git" && args[0] === "rev-parse") return "1111111111111111111111111111111111111111\n";
+    if (cmd === "git" && args[0] === "diff") return " scripts/x.mjs | 1 +\n";
+    if (cmd === "gh" && args[1] === "list") return FOUND_PR;
+    return "";
+  };
+  return { run, calls };
+}
+
+/** Drives `carryMain` -- the CLI's entry path -- with that `run`, capturing both streams. */
+function driveCarry(run: (cmd: string, args: string[]) => string) {
+  let out = "";
+  let err = "";
+  const code = carryMain([CARRIED_BRANCH, "--carrier=worker-judge", "--reason=past the escalation window"], {
+    run, stamp: () => {}, workDir: "/nonexistent/carry-1477", cwd: "/nonexistent/repo-1477",
+    out: (text: string) => { out += text; }, err: (text: string) => { err += text; } });
+  return { code, out, err };
+}
+
+const isPush = (cmd: string, args: string[]) => cmd === "git" && args[0] === "push";
+const isComment = (cmd: string, args: string[]) => cmd === "gh" && args[0] === "pr" && args[1] === "comment";
+
+test("#1477 ACCEPTANCE: the push LANDED, then the PR note throws -- exit 3 naming the pushed branch and the PR, never 1", () => {
+  const { run, calls } = carryRun(isComment);
+  const { code, out, err } = driveCarry(run);
+  assert.equal(code, EXIT.CARRIED_NOT_NOTED, `a failure after the push must be CARRIED NOT NOTED; got exit ${code}, stderr: ${err}`);
+  assert.ok(out.includes(`CARRIED -- ${CARRIED_BRANCH} merged with origin/main and pushed.`));
+  assert.match(err, /^CARRIED, NOT NOTED \(exit 3\) -- agent\/x-1477 WAS pushed; /);
+  assert.match(err, /found PR #42 for agent\/x-1477, but could not post the note on it -- simulated/);
+  assert.doesNotMatch(err, /NOT CARRIED:/);
+  const pushAt = calls.findIndex((c) => c.startsWith("git push"));
+  const commentAt = calls.findIndex((c) => c.startsWith("gh pr comment"));
+  assert.ok(pushAt >= 0 && commentAt > pushAt, `the push must precede the failing note: ${JSON.stringify(calls)}`);
+});
+
+test("#1477 CONTROL: a failure BEFORE the push -- the fetch -- stays NOT CARRIED, exit 1, and nothing is pushed or noted", () => {
+  const { run, calls } = carryRun((cmd, args) => cmd === "git" && args[0] === "fetch");
+  const { code, out, err } = driveCarry(run);
+  assert.equal(code, EXIT.NOT_CARRIED);
+  assert.match(err, /^NOT CARRIED: could not fetch origin\/main -- simulated/);
+  assert.equal(out, "");
+  assert.ok(!calls.some((c) => c.startsWith("git push") || c.startsWith("gh ")), JSON.stringify(calls));
+});
+
+test("#1477 CONTROL: the push ITSELF refused stays NOT CARRIED, exit 1, and no note is attempted", () => {
+  const { run, calls } = carryRun(isPush);
+  const { code, err } = driveCarry(run);
+  assert.equal(code, EXIT.NOT_CARRIED);
+  assert.match(err, /^NOT CARRIED: push refused/);
+  assert.ok(!calls.some((c) => c.startsWith("gh ")), JSON.stringify(calls));
+});
+
+test("#1477 CONTROL: every call succeeds -- exit 0, CARRIED and noted on the PR, nothing on stderr", () => {
+  const { run } = carryRun(() => false);
+  const { code, out, err } = driveCarry(run);
+  assert.equal(code, EXIT.CARRIED);
+  assert.ok(out.includes("Noted on PR #42."));
+  assert.equal(err, "");
+});
+
+test("#1477: noteCarryOnPr reports (never throws) when the COMMENT itself fails, naming the PR it found", () => {
+  const run = (cmd: string, args: string[]) => {
+    if (args[1] === "comment") throw new Error("gh: GraphQL rate limit");
+    return FOUND_PR;
+  };
+  const result = noteCarryOnPr(CARRIED_BRANCH, "worker-judge", "why", { run });
+  assert.equal(result.commented, false);
+  assert.match((result as { reason: string }).reason, /found PR #42 .*could not post the note on it -- gh: GraphQL rate limit/);
+});
+
+test("#1477 WIRING: `main` applies carryMain's exit code and makes no carry decision of its own", () => {
+  const source = stripComments(readFileSync(new URL("../../../../scripts/carry-branch.mjs", import.meta.url), "utf8"));
+  const start = source.indexOf("function main(");
+  assert.ok(start >= 0, "main not found");
+  const end = source.indexOf("\n}\n", start);
+  const body = source.slice(start, end);
+  assert.match(body, /process\.exitCode = carryMain\(process\.argv\.slice\(2\)\)/);
+  assert.doesNotMatch(body, /noteCarryOnPr|carryBranch\(/, "main must not carry or note outside carryMain");
+});
+
+test("#1477: the exit codes are the ones this script's header documents -- 3 is CARRIED, NOT NOTED", () => {
+  assert.deepEqual({ ...EXIT }, { CARRIED: 0, NOT_CARRIED: 1, USAGE: 2, CARRIED_NOT_NOTED: 3 });
+  const header = readFileSync(new URL("../../../../scripts/carry-branch.mjs", import.meta.url), "utf8").split("import ")[0];
+  assert.match(header, /^\/\/ +3 +CARRIED, NOT NOTED -- the branch WAS pushed/m, "the header must document exit 3");
+});
