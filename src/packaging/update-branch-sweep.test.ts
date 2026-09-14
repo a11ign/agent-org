@@ -34,8 +34,9 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { updateBranchDecision, isBehind, newestConclusion, movedHeadRefusal, readHeadNow, updateOnePr, sweepPrs }
-  from "../../../../scripts/update-branch-sweep.mjs";
+import { updateBranchDecision, isBehind, newestConclusion, movedHeadRefusal, readHeadNow, updateOnePr, sweepPrs, newestRun } from "../../../../scripts/update-branch-sweep.mjs";
+import { refusalFor } from "../../../../scripts/merge-queue.mjs";
+import { newestPerName } from "../../../../scripts/newest-check-run.mjs";
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 
 const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../scripts/update-branch-sweep.mjs");
@@ -457,4 +458,88 @@ test("#1126: when git cannot answer, the sweep falls back to #1100's sentence ra
   );
   assert.match(result.lines[0], /CANNOT BE READ/);
   assert.match(result.lines[0], /if it CLEARS/);
+});
+
+// --- #1623: the newest run is the newest WORKFLOW RUN when both entries name one ---
+
+/**
+ * #1617's two `gate` entries at head `84f684dd`, as `statusCheckRollup` returned them (GraphQL, read 2026-09-14 by
+ * worker-tooling), in GitHub's order and with the fields `gh pr list --json statusCheckRollup` carries. The CANCELLED
+ * run is the NEWER workflow run (34858134371) and "completed" at 14:49:32Z, before it started and before the older
+ * run's gate (34858130620) succeeded at 14:51:42Z.
+ */
+const PR_1617_GATES = [
+  { __typename: "CheckRun", name: "gate", status: "COMPLETED", conclusion: "CANCELLED", startedAt: "2026-09-14T14:49:33Z",
+    completedAt: "2026-09-14T14:49:32Z", workflowName: "ci",
+    detailsUrl: "https://github.com/DanBeckDev/a11y-witness/actions/runs/34858134371/job/104022946741" },
+  { __typename: "CheckRun", name: "gate", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-09-14T14:51:37Z",
+    completedAt: "2026-09-14T14:51:42Z", workflowName: "ci",
+    detailsUrl: "https://github.com/DanBeckDev/a11y-witness/actions/runs/34858130620/job/104023707501" },
+];
+/**
+ * #1605's pair at its merged head `8c1ebc44` (REST check-runs, read 2026-09-14), in the rollup's field shape: the
+ * cancelled gate in the OLDER run 34855015256, the success in the LATER run 34855153052. Not blocked; merged.
+ */
+const PR_1605_GATES = [
+  { __typename: "CheckRun", name: "gate", status: "COMPLETED", conclusion: "CANCELLED", startedAt: "2026-09-14T14:22:34Z",
+    completedAt: "2026-09-14T14:22:33Z", workflowName: "ci",
+    detailsUrl: "https://github.com/DanBeckDev/a11y-witness/actions/runs/34855015256/job/104012833979" },
+  { __typename: "CheckRun", name: "gate", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-09-14T14:26:18Z",
+    completedAt: "2026-09-14T14:26:21Z", workflowName: "ci",
+    detailsUrl: "https://github.com/DanBeckDev/a11y-witness/actions/runs/34855153052/job/104014192412" },
+];
+/** The same entries with no run id -- what completion-time ordering alone sees. */
+const withoutRunIds = (runs: { detailsUrl?: string }[]) => runs.map(({ detailsUrl, ...rest }) => {
+  void detailsUrl; // dropped on purpose: what completion-time ordering alone sees
+  return rest;
+});
+
+test("#1623 newestConclusion: #1617's cancelled gate is newest -- its workflow run is newer, though it 'completed' "
+  + "first -- in either order", () => {
+  assert.equal(newestConclusion(PR_1617_GATES, "gate"), "cancelled");
+  assert.equal(newestConclusion([...PR_1617_GATES].reverse(), "gate"), "cancelled");
+});
+
+test("#1623 newestConclusion: #1605's success, in the later workflow run, stays newest", () => {
+  assert.equal(newestConclusion(PR_1605_GATES, "gate"), "success");
+  assert.equal(newestConclusion([...PR_1605_GATES].reverse(), "gate"), "success");
+});
+
+test("#1623 newestConclusion: #498's recorded entries carry no run id and read exactly as before", () => {
+  assert.equal(CANCELLED_THEN_SUCCESS.some((run) => "detailsUrl" in run), false, "this fixture must stay id-free");
+  assert.equal(newestConclusion(CANCELLED_THEN_SUCCESS, "gate"), "success");
+});
+
+test("#1623: a MIXED pair (one run id, one not) and a pair in the SAME run fall back to time", () => {
+  const withId = { ...PR_1617_GATES[0], completedAt: "2026-09-14T10:00:05Z" };
+  const noId = { ...withoutRunIds([PR_1617_GATES[1]])[0], completedAt: "2026-09-14T10:05:05Z" };
+  assert.equal(newestConclusion([withId, noId], "gate"), "success", "mixed: the later completion wins");
+  assert.equal(newestConclusion([noId, withId], "gate"), "success");
+  const sameRun = { ...PR_1617_GATES[1], detailsUrl: PR_1617_GATES[0].detailsUrl };
+  assert.equal(newestConclusion([PR_1617_GATES[0], sameRun], "gate"), "success", "same run: the later completion wins");
+  assert.equal(newestRun([sameRun, PR_1617_GATES[0]], "gate")?.completedAt, "2026-09-14T14:51:42Z");
+});
+
+test("#1623 DECISION STATED: on #1617's shape the sweep's update decision does not change -- behind still updates, "
+  + "current still does not", () => {
+  for (const behind of [true, false]) {
+    const after = updateBranchDecision({ armed: true, gateConclusion: newestConclusion(PR_1617_GATES, "gate"), behind,
+      quietSeconds: 600 });
+    const before = updateBranchDecision({ armed: true, gateConclusion: newestConclusion(withoutRunIds(PR_1617_GATES), "gate"),
+      behind, quietSeconds: 600 });
+    assert.equal(after.update, behind);
+    assert.equal(after.update, before.update, `behind=${behind}`);
+  }
+});
+
+test("#1623 DECISIONS STATED, from newest-check-run.mjs's other callers: merge-queue's refusalFor now refuses #1617's shape; queue-table's REST read carries no "
+  + "detailsUrl, so its answer is unchanged", () => {
+  const pr = (statusCheckRollup: object[]) => ({ number: 1617, mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED",
+    isDraft: false, statusCheckRollup });
+  assert.equal(refusalFor(pr(PR_1617_GATES)), "checks failing: gate", "after: the newest run's cancelled gate refuses");
+  assert.equal(refusalFor(pr(withoutRunIds(PR_1617_GATES))), null, "before: completion time alone read it as green");
+  // queue-table.mjs's `checksOnSha` selects `{name, conclusion, completedAt}` from REST check-runs, so no entry it
+  // builds can carry a run id.
+  const restShaped = PR_1617_GATES.map(({ name, conclusion, completedAt }) => ({ name, conclusion, completedAt }));
+  assert.equal(newestPerName(restShaped)[0]?.conclusion, "SUCCESS");
 });
