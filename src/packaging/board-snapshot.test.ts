@@ -22,7 +22,8 @@ import {
   PROJECT_NUMBER,
   SNAPSHOT_DIR,
 } from "../../../../scripts/board-snapshot.mjs";
-import { touchedItemRequest, commonGitDirOf, snapshotDirFor, launchCheckoutOf, primaryLaunchRefusal, PRIMARY_MARK_KEY }
+import { touchedItemRequest, commonGitDirOf, snapshotDirFor, launchCheckoutOf, primaryLaunchRefusal, PRIMARY_MARK_KEY,
+  primaryLaunchDecision, POLICY_LAUNCH_REASON_ENV }
   from "../../../../scripts/board-snapshot-scope.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, mkdirSync as mkdirOnDisk, rmSync, writeFileSync as writeOnDisk } from "node:fs";
@@ -696,6 +697,20 @@ test("#1352 POSITIVE CONTROL: a linked worktree proceeds, and so does a director
   assert.equal(launchCheckoutOf("/wts/wt-a/deep", fakeGitFs({ files: { "/wts/wt-a/.git": "gitdir: x" } })), "/wts/wt-a");
 });
 
+test("#1352: a non-empty A11Y_POLICY_LAUNCH_REASON turns the refusal into a PRINTED notice; an empty or blank one is no reason", () => {
+  const plain = fakeGitFs({ dirs: ["/clone/.git"] });
+  const overridden = primaryLaunchDecision("row-file", { cwd: "/clone", fs: plain, env: { [POLICY_LAUNCH_REASON_ENV]: "a test driving the CLI" } });
+  assert.deepEqual(overridden, { refusal: null,
+    notice: 'row-file: launched outside a linked worktree, proceeding anyway -- A11Y_POLICY_LAUNCH_REASON="a test driving the CLI"' });
+  for (const blank of ["", "   ", undefined]) {
+    const decision = primaryLaunchDecision("row-file", { cwd: "/clone", fs: plain, env: { [POLICY_LAUNCH_REASON_ENV]: blank } });
+    assert.match(decision.refusal ?? "", /REFUSED -- launched from \/clone/, `a reason of ${JSON.stringify(blank)} does not count`);
+    assert.equal(decision.notice, null);
+  }
+  const linked = primaryLaunchDecision("row-file", { cwd: "/wts/wt-a", fs: REPO_WITH_WORKTREES, env: { [POLICY_LAUNCH_REASON_ENV]: "unused" } });
+  assert.deepEqual(linked, { refusal: null, notice: null }, "a linked worktree needs no override, and prints none");
+});
+
 test("#1352 DONE-WHEN 1: each policy script, launched from a plain checkout, refuses before anything; from a linked worktree it does not", () => {
   const scripts = pathOf(new URL("../../../../scripts/", import.meta.url));
   const root = mkdtempSync(joinPath(tmpdir(), "policy-launch-"));
@@ -724,6 +739,11 @@ test("#1352 DONE-WHEN 1: each policy script, launched from a plain checkout, ref
       const fromLinked = spawnSync("node", [joinPath(scripts, script)], { cwd: linked, encoding: "utf8", env });
       assert.doesNotMatch(`${fromLinked.stdout}${fromLinked.stderr}`, /which is not a linked worktree/,
         `${script} from a linked worktree must not be refused for where it was launched`);
+      const overridden = spawnSync("node", [joinPath(scripts, script)], { cwd: plain, encoding: "utf8",
+        env: { ...env, [POLICY_LAUNCH_REASON_ENV]: "the override's own test" } });
+      assert.doesNotMatch(overridden.stderr, /which is not a linked worktree/, `${script} with a reason is not refused`);
+      assert.match(overridden.stderr, /proceeding anyway -- A11Y_POLICY_LAUNCH_REASON="the override's own test"/,
+        `${script} prints the reason it proceeded on`);
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
