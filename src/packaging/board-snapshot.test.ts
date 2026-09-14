@@ -23,7 +23,7 @@ import {
   SNAPSHOT_DIR,
 } from "../../../../scripts/board-snapshot.mjs";
 import { touchedItemRequest, commonGitDirOf, snapshotDirFor, launchCheckoutOf, primaryLaunchRefusal, PRIMARY_MARK_KEY,
-  primaryLaunchDecision, POLICY_LAUNCH_REASON_ENV }
+  primaryLaunchDecision, POLICY_LAUNCH_REASON_ENV, launchGate }
   from "../../../../scripts/board-snapshot-scope.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, mkdirSync as mkdirOnDisk, rmSync, writeFileSync as writeOnDisk } from "node:fs";
@@ -709,6 +709,20 @@ test("#1352: a non-empty A11Y_POLICY_LAUNCH_REASON turns the refusal into a PRIN
   }
   const linked = primaryLaunchDecision("row-file", { cwd: "/wts/wt-a", fs: REPO_WITH_WORKTREES, env: { [POLICY_LAUNCH_REASON_ENV]: "unused" } });
   assert.deepEqual(linked, { refusal: null, notice: null }, "a linked worktree needs no override, and prints none");
+});
+
+test("#1352: launchGate writes the notice or the refusal and says whether to stop -- the one call each entry point makes", () => {
+  const plain = fakeGitFs({ dirs: ["/clone/.git"] });
+  const written: string[] = [];
+  const write = (text: string) => { written.push(text); };
+  assert.equal(launchGate("row-claim", { write, cwd: "/clone", fs: plain, env: {} }), true);
+  assert.match(written.join(""), /^row-claim: REFUSED -- launched from \/clone, [^\n]*\n$/);
+  written.length = 0;
+  assert.equal(launchGate("row-claim", { write, cwd: "/clone", fs: plain, env: { [POLICY_LAUNCH_REASON_ENV]: "why" } }), false);
+  assert.deepEqual(written, ['row-claim: launched outside a linked worktree, proceeding anyway -- A11Y_POLICY_LAUNCH_REASON="why"\n']);
+  written.length = 0;
+  assert.equal(launchGate("row-claim", { write, cwd: "/wts/wt-a", fs: REPO_WITH_WORKTREES, env: {} }), false);
+  assert.deepEqual(written, [], "a linked worktree writes nothing");
 });
 
 test("#1352 DONE-WHEN 1: each policy script, launched from a plain checkout, refuses before anything; from a linked worktree it does not", () => {
