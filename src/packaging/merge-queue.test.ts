@@ -1,3 +1,4 @@
+// no-token: gh -- this file drives merge-queue.mjs only through its pure exports and an injected runner; its own code never calls or spawns gh (#1482, route (a))
 /**
  * THE MERGE ROUTINE MUST BE ABLE TO EXPRESS THE RULE IT ENFORCES.
  *
