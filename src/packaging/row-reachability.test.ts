@@ -31,7 +31,7 @@ import { fileURLToPath } from "node:url";
 import { startability, subjectAndRegionFacts, symbolOnMain, refsCarryingSymbol, proveOriginMainReadable, onMain,
   heldRefsSummary } from "../../../../scripts/row-reachability.mjs";
 import { declaredRegionFiles, regionPathsFromBody } from "../../../../scripts/region-paths.mjs";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync, chmodSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
@@ -421,7 +421,9 @@ test("#719 REGRESSION: #687's real body, whose Region misses environmentKey's ac
   if (skipsWithoutOriginMain()) return;
   const body = readFileSync(
     fileURLToPath(new URL("./fixtures/issue-687-body.txt", import.meta.url)), "utf8");
-  const result = subjectAndRegionFacts(body);
+  // #1566: the PR state is a STUB. This walks the checkout's real refs, and any unmerged branch holding one of
+  // #687's Region files (#1513's did) otherwise sends the walk to a live `gh pr list` per held branch.
+  const result = subjectAndRegionFacts(body, { state: () => "no PR" });
   assert.ok(result.examined.symbols > 0, "the fixture must actually name a symbol, or this proves nothing");
   // #772: AND THE REF POPULATION, for the same reason one line up. `refs: refs.length` being spelled in the
   // source is not the same as `unmergedRefs()` being what fills it -- `const refs = []` keeps the spelling,
@@ -436,6 +438,90 @@ test("#719 REGRESSION: #687's real body, whose Region misses environmentKey's ac
   assert.ok(!missing.includes("environmentKey"),
     "environmentKey has been on main all along (packages/lab/src/training/capture-cache.mjs); reporting "
     + `it missing is the exact bug this row fixes. Reported missing: ${JSON.stringify(missing)}`);
+});
+
+/**
+ * #1566: THE WALK OVER REAL REFS NEVER SPAWNS `gh` -- proved with a branch that makes it try.
+ *
+ * worker-capture's local CI selection on #1513 logged three `gh pr list` calls from this file under a refusing
+ * shim, and the suite still passed: `prState` turns a refused call into "PR state unreadable". Whether the calls
+ * happened depended on who had pushed what -- #1513's branch changed a file #687's Region declares. So the branch
+ * is BUILT here, under a disposable ref, and a `gh` that records being run is first on `PATH`.
+ */
+const GH_MARKER = join(tmpdir(), `a11y-1566-gh-ran.${process.pid}`);
+/** Owner read/write/execute, group and others read/execute: a script `PATH` can run. */
+const EXECUTABLE = 0o755;
+
+/** A `PATH` whose first entry holds a `gh` that records being run and fails, as the refusing shim does. */
+function pathWithRecordingGh(): string {
+  const dir = mkdtempSync(join(tmpdir(), "a11y-1566-"));
+  writeFileSync(join(dir, "gh"), `#!/bin/sh\necho "$*" >> ${GH_MARKER}\nexit 97\n`);
+  chmodSync(join(dir, "gh"), EXECUTABLE);
+  return `${dir}:${process.env.PATH ?? ""}`;
+}
+
+test("#1566: BOTH halves ask the injected PR state about a branch -- the held Region and the carried subject", () => {
+  if (skipsWithoutOriginMain()) return;
+  // From the registry (#1038): absent from every tree, so the subject half genuinely searches the refs for it.
+  const SUBJECT = ABSENT_FIXTURE_SYMBOLS["row-reachability.test.ts #1566: the subject-half carrier's symbol"];
+  assert.equal(symbolOnMain(SUBJECT), false, "the carried subject must not be on main, or the subject half never runs");
+  const body = `${readFileSync(
+    fileURLToPath(new URL("./fixtures/issue-687-body.txt", import.meta.url)), "utf8")}\n\nAlso about \`${SUBJECT}\`.\n`;
+  const env = sandboxGitEnv();
+  const held = (declaredRegionFiles(body) ?? []).find((path) => onMain(path));
+  assert.ok(held, "the positive control needs a Region file of #687's that is on main to hold");
+  const REF = "refs/remotes/origin/row-reachability-fixture-1566";
+  const tmpIndex = execFileSync("mktemp", { encoding: "utf8" }).trim();
+  const realPath = process.env.PATH;
+  rmSync(GH_MARKER, { force: true });
+  const asked: string[] = [];
+  try {
+    // A commit off `origin/main` that CHANGES the held file (the shape of #1513's and #1438's branches) and ADDS a
+    // file carrying the subject, which only the subject half's line reads.
+    const indexEnv = { ...env, GIT_INDEX_FILE: tmpIndex };
+    execFileSync("git", ["read-tree", "origin/main"], { encoding: "utf8", env: indexEnv });
+    const text = execFileSync("git", ["show", `origin/main:${held}`], { encoding: "utf8", env });
+    const blob = execFileSync("git", ["hash-object", "-w", "--stdin"],
+      { encoding: "utf8", env, input: `${text}\n// row-reachability #1566 fixture\n` }).trim();
+    execFileSync("git", ["update-index", "--cacheinfo", "100644", blob, held!], { encoding: "utf8", env: indexEnv });
+    const carrier = execFileSync("git", ["hash-object", "-w", "--stdin"],
+      { encoding: "utf8", env, input: `export const ${SUBJECT} = true;\n` }).trim();
+    execFileSync("git", ["update-index", "--add", "--cacheinfo", "100644", carrier,
+      "zz-row-reachability-fixture-1566.mjs"], { encoding: "utf8", env: indexEnv });
+    const tree = execFileSync("git", ["write-tree"], { encoding: "utf8", env: indexEnv }).trim();
+    const commit = execFileSync("git",
+      ["-c", "user.name=row-reachability-fixture", "-c", "user.email=fixture@example.invalid",
+        "commit-tree", tree, "-p", "origin/main", "-m",
+        "row-reachability #1566 fixture (throwaway, deleted at the end of this test)"],
+      { encoding: "utf8", env }).trim();
+    execFileSync("git", ["update-ref", REF, commit], { encoding: "utf8", env });
+
+    process.env.PATH = pathWithRecordingGh();
+    const facts = subjectAndRegionFacts(body, { state: (ref: string) => { asked.push(ref); return "no PR"; } });
+    process.env.PATH = realPath;
+
+    // THE POSITIVE CONTROL: the walk reached the branch and asked the injected state about it. Without this, a
+    // walk that reached nothing would also never run `gh`, and the assertion below would pass for that reason.
+    assert.ok(asked.includes("origin/row-reachability-fixture-1566"),
+      `the injected PR state must be asked about the fixture branch; it was asked about ${JSON.stringify(asked)}`);
+    assert.ok(facts.heldRegions.some((h: { path: string }) => h.path === held),
+      `${held} must read as held by the fixture branch`);
+    // THE SUBJECT HALF: its carrier is named with the INJECTED state's answer. `(PR state unreadable)` here is a
+    // refused `gh`, which is the half #1566 found still spawning one after the region half was injected.
+    const subject = facts.subjectsMissing.find((s: { name: string }) => s.name === SUBJECT);
+    assert.deepEqual(subject?.refs, ["origin/row-reachability-fixture-1566 (no PR)"],
+      `the subject half must name its carrier with the injected state: ${JSON.stringify(facts.subjectsMissing)}`);
+    assert.equal(asked.filter((ref) => ref === "origin/row-reachability-fixture-1566").length, 2,
+      "asked twice about the fixture branch: once for the held Region, once for the carried subject");
+  } finally {
+    process.env.PATH = realPath;
+    try { execFileSync("git", ["update-ref", "-d", REF], { encoding: "utf8", env }); }
+    catch { /* never created -- nothing to remove */ }
+    try { execFileSync("rm", ["-f", tmpIndex]); } catch { /* already gone */ }
+  }
+  const ran = existsSync(GH_MARKER) ? readFileSync(GH_MARKER, "utf8").trim() : "";
+  rmSync(GH_MARKER, { force: true });
+  assert.equal(ran, "", `the walk spawned gh -- the census must be 0 whatever branches exist:\n${ran}`);
 });
 
 /**
@@ -803,7 +889,9 @@ test("#1064: the floor is the ONLY conditional part -- the row's own subject sti
   if (skipsWithoutOriginMain()) return;
   const body = readFileSync(
     fileURLToPath(new URL("./fixtures/issue-687-body.txt", import.meta.url)), "utf8");
-  const result = subjectAndRegionFacts(body);
+  // #1566: a stub PR state, as in #719's test above -- this walk reads the real refs, and a branch holding one of
+  // #687's Region files (#1438's held conformance.ts on 2026-09-14) otherwise sends it to a live `gh pr list`.
+  const result = subjectAndRegionFacts(body, { state: () => "no PR" });
   assert.equal(refPopulationVerdict({ available: 0, examined: result.examined.refs }), "skip",
     "the floor is skipped in a CI-shaped checkout");
   assert.ok(!result.subjectsMissing.map((s) => s.name).includes("environmentKey"),
