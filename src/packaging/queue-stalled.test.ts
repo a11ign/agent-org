@@ -1,3 +1,5 @@
+// no-token: gh -- the verdicts are pure and driven with recorded rollups; the script is only spawned to show it refuses
+// before any gh call (an unknown flag, no GITHUB_REPOSITORY). #1623's route (a), product-manager 15:05Z.
 /**
  * #361: AN ARMED, GREEN, CONFLICTING PR SITS FOREVER, AND NOTHING SAYS WHY.
  *
@@ -13,8 +15,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import {
   stalledVerdict, mergeTreeConflict, DEFAULT_STALL_THRESHOLD_MS,
-  armedBehindVerdict, behindByCount, formatBehindWatchdogLine, DEFAULT_BEHIND_STALL_THRESHOLD_SECONDS,
-} from "../../../../scripts/queue-stalled.mjs";
+  armedBehindVerdict, behindByCount, formatBehindWatchdogLine, DEFAULT_BEHIND_STALL_THRESHOLD_SECONDS, supersedingGateVerdict, supersededLine, examinePr } from "../../../../scripts/queue-stalled.mjs";
 import { newestConclusion, headQuietSeconds } from "../../../../scripts/update-branch-sweep.mjs";
 
 // ---------------------------------------------------------------------------------------------------
@@ -378,4 +379,121 @@ test("queue-stalled.mjs refuses to run without GITHUB_REPOSITORY -- CANNOT ASK, 
     assert.match(String(err.stderr), /GITHUB_REPOSITORY is unset/);
   }
   assert.ok(threw, "with no repo to examine, the script must refuse rather than guess one");
+});
+
+// --- #1623: an armed PR held by a superseding gate that did not succeed ---
+
+/**
+ * #1617's two `gate` entries at head `84f684dd`, as `statusCheckRollup` returned them (GraphQL, read 2026-09-14 by
+ * worker-tooling), in GitHub's order and with the fields `gh pr list --json statusCheckRollup` carries. The CANCELLED
+ * run is the NEWER workflow run (34858134371) and "completed" at 14:49:32Z, before it started and before the older
+ * run's gate (34858130620) succeeded at 14:51:42Z.
+ */
+const PR_1617_GATES = [
+  { __typename: "CheckRun", name: "gate", status: "COMPLETED", conclusion: "CANCELLED", startedAt: "2026-09-14T14:49:33Z",
+    completedAt: "2026-09-14T14:49:32Z", workflowName: "ci",
+    detailsUrl: "https://github.com/DanBeckDev/a11y-witness/actions/runs/34858134371/job/104022946741" },
+  { __typename: "CheckRun", name: "gate", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-09-14T14:51:37Z",
+    completedAt: "2026-09-14T14:51:42Z", workflowName: "ci",
+    detailsUrl: "https://github.com/DanBeckDev/a11y-witness/actions/runs/34858130620/job/104023707501" },
+];
+/**
+ * #1605's pair at its merged head `8c1ebc44` (REST check-runs, read 2026-09-14), in the rollup's field shape: the
+ * cancelled gate in the OLDER run 34855015256, the success in the LATER run 34855153052. Not blocked; merged.
+ */
+const PR_1605_GATES = [
+  { __typename: "CheckRun", name: "gate", status: "COMPLETED", conclusion: "CANCELLED", startedAt: "2026-09-14T14:22:34Z",
+    completedAt: "2026-09-14T14:22:33Z", workflowName: "ci",
+    detailsUrl: "https://github.com/DanBeckDev/a11y-witness/actions/runs/34855015256/job/104012833979" },
+  { __typename: "CheckRun", name: "gate", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-09-14T14:26:18Z",
+    completedAt: "2026-09-14T14:26:21Z", workflowName: "ci",
+    detailsUrl: "https://github.com/DanBeckDev/a11y-witness/actions/runs/34855153052/job/104014192412" },
+];
+/** The same entries with no run id -- what completion-time ordering alone sees. */
+const withoutRunIds = (runs: { detailsUrl?: string }[]) => runs.map(({ detailsUrl, ...rest }) => {
+  void detailsUrl; // dropped on purpose: what completion-time ordering alone sees
+  return rest;
+});
+
+test("#1623 ACCEPTANCE: #1617's recorded shape is blocked by a superseding cancelled gate -- both runs and the re-run "
+  + "named, in either order", () => {
+  for (const runs of [PR_1617_GATES, [...PR_1617_GATES].reverse()]) {
+    const verdict = supersedingGateVerdict({ armed: true, runs });
+    assert.equal(verdict.code, "SUPERSEDED");
+    assert.equal(verdict.reason, "blocked by a superseding cancelled gate: workflow run 34858134371's gate cancelled "
+      + "after run 34858130620's gate succeeded at this head -- re-run workflow run 34858134371 to clear it");
+  }
+});
+
+test("#1623 WIRING: the report's per-PR examination names #1617 by number and never examines it as green", () => {
+  const result = examinePr({ number: 1617, headRefOid: "84f684dd57b246aab509855b309a7f3ddad9a97c",
+    autoMergeRequest: { enabledAt: "2026-09-14T14:49:11Z" }, statusCheckRollup: PR_1617_GATES },
+  Date.parse("2026-09-14T14:56:31Z"));
+  assert.equal(result.examined, false);
+  assert.equal(result.superseded?.number, 1617);
+  assert.match(result.superseded?.reason ?? "", /^blocked by a superseding cancelled gate/);
+});
+
+test("#1623 CONTROL: #1605's shape -- the cancelled gate in the OLDER run, the success in a later one -- is not reported", () => {
+  assert.equal(supersedingGateVerdict({ armed: true, runs: PR_1605_GATES }).code, "GREEN");
+  assert.equal(supersedingGateVerdict({ armed: true, runs: [...PR_1605_GATES].reverse() }).code, "GREEN");
+});
+
+test("#1623 CONTROL: a lone cancelled gate, with no success on the head, is an ordinary red and not this shape", () => {
+  const verdict = supersedingGateVerdict({ armed: true, runs: [PR_1617_GATES[0]] });
+  assert.equal(verdict.code, "RED");
+  assert.match(verdict.reason, /ordinary red, not a superseded one/);
+});
+
+test("#1623: a newest gate still RUNNING after an older success is not reported -- it may yet succeed", () => {
+  const running = { ...PR_1617_GATES[0], status: "IN_PROGRESS", conclusion: "", completedAt: "0001-01-01T00:00:00Z" };
+  assert.equal(supersedingGateVerdict({ armed: true, runs: [running, PR_1617_GATES[1]] }).code, "RUNNING");
+});
+
+test("#1623: an unarmed PR, and a head with no gate run, are never this check's concern", () => {
+  assert.equal(supersedingGateVerdict({ armed: false, runs: PR_1617_GATES }).code, "NOT_ARMED");
+  assert.equal(supersedingGateVerdict({ armed: true, runs: [] }).code, "NO_GATE");
+});
+
+test("#1623: without run ids -- completion time alone -- #1617 reads SUCCESS and is not reported, which is how it "
+  + "stayed invisible", () => {
+  const byTime = withoutRunIds(PR_1617_GATES);
+  assert.equal(newestConclusion(byTime, "gate"), "success");
+  assert.equal(supersedingGateVerdict({ armed: true, runs: byTime }).code, "GREEN");
+});
+
+test("#1623: the summary line is stated when nothing is found, and names every blocked PR when something is", () => {
+  assert.match(supersededLine([]), /^QUEUE: nothing blocked by a superseding gate/);
+  assert.equal(supersededLine([1617, 1618]), "QUEUE: 2 blocked by a superseding gate: 1617 1618");
+});
+
+/**
+ * #1631's review: pairs that do NOT carry two distinct workflow run ids. In each, the CANCELLED gate is the newer one BY TIME
+ * (it completes at 14:52:00Z, after the success at 14:51:42Z), which is the only order `newestRun` can fall back to.
+ */
+const LATER_CANCELLED = { ...PR_1617_GATES[0], completedAt: "2026-09-14T14:52:00Z" };
+const UNORDERED_PAIRS: Record<string, object[]> = {
+  "both id-free": withoutRunIds([LATER_CANCELLED, PR_1617_GATES[1]]),
+  "the newest without a run id, the success with one": [...withoutRunIds([LATER_CANCELLED]), PR_1617_GATES[1]],
+  "the newest with a run id, the success without one": [LATER_CANCELLED, ...withoutRunIds([PR_1617_GATES[1]])],
+  "one workflow run holding both (a re-run job)": [{ ...LATER_CANCELLED, detailsUrl: PR_1617_GATES[1].detailsUrl }, PR_1617_GATES[1]],
+};
+
+test("#1623, #1631's review: WITHOUT two distinct run ids a later-cancelled pair is UNORDERED -- never superseded, and "
+  + "never a re-run naming no run", () => {
+  for (const [label, runs] of Object.entries(UNORDERED_PAIRS)) {
+    const verdict = supersedingGateVerdict({ armed: true, runs });
+    assert.equal(verdict.code, "UNORDERED", label);
+    assert.doesNotMatch(verdict.reason, /re-run|no run id|workflow run \d/, label);
+    assert.match(verdict.reason, /do not carry distinct workflow run ids/, label);
+  }
+});
+
+test("#1623, #1631's review: the report's per-PR examination does not name an unordered pair", () => {
+  for (const [label, runs] of Object.entries(UNORDERED_PAIRS)) {
+    const result = examinePr({ number: 1631, headRefOid: "43cf24ed238afc244b0def8cba0af0464a354da6",
+      autoMergeRequest: { enabledAt: "2026-09-14T15:00:00Z" }, statusCheckRollup: runs }, Date.parse("2026-09-14T15:30:00Z"));
+    assert.equal(result.superseded, undefined, label);
+    assert.equal(result.examined, false, label);
+  }
 });
