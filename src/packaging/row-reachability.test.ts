@@ -505,6 +505,17 @@ test("#1566: BOTH halves ask the injected PR state, and `gh` is spawned only whe
     assert.deepEqual(facts.heldRegions.map((h: { path: string }) => h.path), ["docs/guide.md"],
       "the held Region reads as held");
     assert.equal(recorded(), "", "with the state injected, neither half may spawn `gh` -- the census is 0");
+
+    // THE SUBJECT HALF READS THIS REPOSITORY'S MAIN, not the checkout's: once the subject lands on the synthetic
+    // `origin/main` it is no longer missing. A walk that asked the checkout's `origin/main` instead (where the
+    // registry symbol is absent too) would still name the carrier here -- the case the census above cannot see.
+    run(["checkout", "--quiet", "main"]);
+    writeFileSync(resolve(repo, "landed.mjs"), `export const ${SUBJECT} = true;\n`);
+    run(["add", "-A"]);
+    run(["commit", "--quiet", "-m", "the subject lands"]);
+    run(["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    const landed = subjectAndRegionFacts(body, { ...deps, state: () => "no PR" });
+    assert.deepEqual(landed.subjectsMissing, [], "a subject on this repository's own main is not missing");
   } finally {
     process.env.PATH = realPath;
     rmSync(GH_MARKER, { force: true });
