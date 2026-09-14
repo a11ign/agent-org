@@ -17,7 +17,8 @@ import { fileURLToPath } from "node:url";
 import { delimiter, join } from "node:path";
 import {
   fetchPushedBranches, fetchAllPRHeadRefs, fetchOpenPRs, branchesWithNoPR, aheadCount, strandedCandidates,
-  PR_LIST_LIMIT, PR_PAGE_SIZE, MAX_PR_PAGES, decideForPR, staleClosureComment, sweepPullRequests, prForDecision } from "../../../../scripts/stranded-branches.mjs";
+  PR_LIST_LIMIT, PR_PAGE_SIZE, MAX_PR_PAGES, decideForPR, staleClosureComment, sweepPullRequests, prForDecision,
+  EXIT, main as strandedMain } from "../../../../scripts/stranded-branches.mjs";
 import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 import { REPO } from "../../../../scripts/repo-identity.mjs";
 
@@ -531,4 +532,89 @@ test("the fixture says which rows are RECORDED and which are CONSTRUCTED", () =>
   assert.ok(fixture.prs.some((pr: { _source: string }) => pr._source === "recorded"),
     "at least one row must be real recorded output, or this is a hand-written set wearing a fixture's name");
   assert.match(fixture._recordedAt, /^\d{4}-\d{2}-\d{2}T/, "a recording without a date cannot be aged");
+});
+
+// --- #1480: a --close that fails part-way exits with its own code, naming what had already landed ------------------
+//
+// The closure comment and the close were two unguarded calls in a loop, so a throw on either escaped `main` and Node
+// exited 1, this script's CANDIDATE(S), with PRs already commented on or closed. Driven through `main` in-process
+// with `run` injected: a PATH stub for `--close` would turn a missed stub into a real `gh pr close`.
+
+const FIRST_PR = 9;
+const SECOND_PR = 10;
+const stalePr = (number: number) => ({ number, headRefName: `agent/old-${number}`, createdAt: "2026-09-08T00:00:00Z",
+  isDraft: false, labels: [], mergeStateStatus: "DIRTY" });
+
+/** `main --close` over two stale PRs; the one `gh` call that throws is named `"<verb> <number>"`, or none. */
+function driveClose(failAt: string | null) {
+  const calls: string[] = [];
+  const errs: string[] = [];
+  let code: number | undefined;
+  let thrown: unknown = null;
+  const run = (cmd: string, args: string[]) => {
+    const call = args[1] === "list" ? "list" : `${args[1]} ${args[2]}`;
+    calls.push(call);
+    if (call === failAt) throw new Error(`Command failed: ${cmd} pr ${call}`);
+    return args[1] === "list" ? JSON.stringify([stalePr(FIRST_PR), stalePr(SECOND_PR)]) : "";
+  };
+  try {
+    code = strandedMain(["--close"], { run, out: () => {}, err: (l: string) => { errs.push(l); } });
+  } catch (error) {
+    thrown = error;
+  }
+  return { code, thrown, calls, errs };
+}
+
+test("#1480 ACCEPTANCE: a close that FAILS after its comment landed exits LANDED_THEN_FAILED, naming what closed and what is still open", () => {
+  const r = driveClose("close 10");
+  assert.equal(r.thrown, null, "the failure is caught, never left to Node's uncaught-throw exit");
+  assert.equal(r.code, EXIT.LANDED_THEN_FAILED);
+  assert.ok(![EXIT.OK, EXIT.CANDIDATES, EXIT.CANNOT_ASK].includes(EXIT.LANDED_THEN_FAILED), "a code no other outcome uses");
+  assert.deepEqual(r.calls, ["list", "comment 9", "close 9", "comment 10", "close 10"]);
+  assert.equal(r.errs.length, 1, "one report");
+  assert.match(r.errs[0], /^LANDED, THEN FAILED: `gh pr close 10` failed/);
+  assert.match(r.errs[0], /Closed with a comment, branch kept: #9\./, "it names the PR that closed");
+  assert.match(r.errs[0], /#10 has its closure comment but is still OPEN\. Run only `gh pr close 10`/,
+    "and the one command that finishes the job without a second comment");
+  assert.match(r.errs[0], /Command failed: gh pr close 10/, "with the spawn's own message");
+});
+
+test("#1480: a COMMENT that fails after an earlier close exits LANDED_THEN_FAILED and says re-running --close is safe", () => {
+  const r = driveClose("comment 10");
+  assert.equal(r.thrown, null);
+  assert.equal(r.code, EXIT.LANDED_THEN_FAILED);
+  assert.deepEqual(r.calls, ["list", "comment 9", "close 9", "comment 10"], "no PR is closed without its comment");
+  assert.match(r.errs[0], /branch kept: #9\. Nothing was written to #10\. Re-running --close once the cause below is gone is safe/);
+});
+
+test("#1480: the FIRST close failing exits LANDED_THEN_FAILED too -- its comment had landed", () => {
+  const r = driveClose("close 9");
+  assert.equal(r.code, EXIT.LANDED_THEN_FAILED);
+  assert.deepEqual(r.calls, ["list", "comment 9", "close 9"]);
+  assert.match(r.errs[0], /branch kept: none\. #9 has its closure comment but is still OPEN/);
+});
+
+test("#1480 CONTROL: a failure before anything landed exits CANNOT_ASK; a --close where every call succeeds exits OK", () => {
+  const list = driveClose("list");
+  assert.equal(list.thrown, null);
+  assert.equal(list.code, EXIT.CANNOT_ASK);
+  assert.deepEqual(list.calls, ["list"], "no comment and no close after a failed listing");
+  assert.match(list.errs[0], /^COULD NOT SWEEP: Command failed/);
+  const first = driveClose("comment 9");
+  assert.equal(first.code, EXIT.CANNOT_ASK);
+  assert.deepEqual(first.calls, ["list", "comment 9"]);
+  assert.match(first.errs[0], /^COULD NOT SWEEP: `gh pr comment 9` failed before any PR was commented on or closed -- nothing was changed/);
+  const clean = driveClose(null);
+  assert.equal(clean.thrown, null);
+  assert.equal(clean.code, EXIT.OK);
+  assert.deepEqual(clean.errs, []);
+  assert.deepEqual(clean.calls, ["list", "comment 9", "close 9", "comment 10", "close 10"]);
+});
+
+test("#1480: the script's header documents every exit code, each on its own line", () => {
+  const text = readFileSync(SCRIPT, "utf8");
+  const header = text.slice(0, text.indexOf("\nimport "));
+  for (const code of Object.values(EXIT)) {
+    assert.match(header, new RegExp(`^//\\s+${code}\\s+\\S`, "m"), `exit ${code} has its own line in the header`);
+  }
 });
