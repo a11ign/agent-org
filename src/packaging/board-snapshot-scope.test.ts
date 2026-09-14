@@ -148,7 +148,9 @@ test("#1275 CONTROL: a snapshot is still WRITTEN and PRINTED before the mutation
   withScopedSnapshot(() => { order.push("mutate"); }, [725], contextOf(requestOf().request, {
     writeFile: () => { order.push("write"); }, log: (line) => { order.push(line); } }));
   assert.equal(order[0], "write", "one snapshot written -- never #399's guarantee deleted");
-  assert.match(order[1] ?? "", /^board-snapshot: wrote runs\/board-snapshots\/\S+\.json before mutating/, "and printed");
+  // #1352: the logged path is absolute now (the git common dir's checkout), so it is matched against the exported directory.
+  assert.match(order[1] ?? "", new RegExp(`^board-snapshot: wrote ${SNAPSHOT_DIR.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/\\S+\\.json before mutating`),
+    "and printed");
   assert.equal(order[2], "mutate", "and only then the mutation");
   assert.equal(order.length, 3);
 });
@@ -174,7 +176,7 @@ test("#1275: the scoped file is named for its item, records it, and says it is n
   assert.deepEqual(parsed.notOnBoard, []);
   assert.match(parsed.takenBefore, /SCOPED to the item\(s\) that mutation touches, not the whole board \(#1275\).*within 300s/s,
     "and the file says so, so nobody takes it for the board");
-  assert.match(log.join("\n"), /wrote runs\/board-snapshots\/2026-09-13T19-00-00-000Z-issue-725\.json before mutating #725/);
+  assert.match(log.join("\n"), new RegExp(`wrote ${SNAPSHOT_DIR.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/2026-09-13T19-00-00-000Z-issue-725\\.json before mutating #725`));
 });
 
 test("#1275: an issue NOT on the board is recorded as such, and the mutation still runs so gh can say so", () => {
