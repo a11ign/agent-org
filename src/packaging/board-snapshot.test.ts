@@ -22,7 +22,14 @@ import {
   PROJECT_NUMBER,
   SNAPSHOT_DIR,
 } from "../../../../scripts/board-snapshot.mjs";
-import { touchedItemRequest } from "../../../../scripts/board-snapshot-scope.mjs";
+import { touchedItemRequest, commonGitDirOf, snapshotDirFor, launchCheckoutOf, primaryLaunchRefusal, PRIMARY_MARK_KEY }
+  from "../../../../scripts/board-snapshot-scope.mjs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, mkdirSync as mkdirOnDisk, rmSync, writeFileSync as writeOnDisk } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname as dirOf, join as joinPath } from "node:path";
+import { fileURLToPath as pathOf } from "node:url";
+import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
 
 /** One page of a real `gh api graphql` response, shaped exactly like the live schema returns it. */
 function page({ nodes, hasNextPage = false, endCursor = null }: {
@@ -234,7 +241,10 @@ test("withBoardSnapshot calls the mutation, and only after logging the snapshot 
   assert.equal(mutateCalled, true);
   assert.equal(result, "mutation result");
   assert.equal(log.length, 1);
-  assert.match(log[0], /wrote runs\/board-snapshots\/2026-09-08T00-00-00-000Z\.json before mutating/);
+  // #1352: the path is ABSOLUTE now -- the primary checkout's runs/board-snapshots, whatever tree ran this -- so the line
+  // is matched against the exported directory rather than a relative literal.
+  const escaped = SNAPSHOT_DIR.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  assert.match(log[0], new RegExp(`wrote ${escaped}/2026-09-08T00-00-00-000Z\\.json before mutating`));
 });
 
 // --- #747: fieldValues is nested inside items, the one shape with no totalCount to check itself. An
@@ -621,3 +631,102 @@ test("#1425 CONTROL: a full-route failure that is NOT project-unreadable is read
   assert.equal(board.calls.length, 3);
   forgetProcessSnapshot();
 });
+
+// --- #1352: ONE snapshot directory from every worktree, and policy scripts refuse outside a linked worktree -----------
+
+/** A filesystem of `dirs` and `files` (path -> text), in the shapes git writes, for `commonGitDirOf` and the refusal. */
+function fakeGitFs({ dirs = [] as string[], files = {} as Record<string, string> }) {
+  return {
+    exists: (path: string) => dirs.includes(path) || path in files,
+    isDirectory: (path: string) => dirs.includes(path),
+    read: (path: string) => { if (!(path in files)) throw new Error(`ENOENT ${path}`); return files[path]; },
+  };
+}
+
+/** The primary at /repo, and two linked worktrees made by `git worktree add`. */
+const REPO_WITH_WORKTREES = fakeGitFs({
+  dirs: ["/repo/.git"],
+  files: {
+    "/wts/wt-a/.git": "gitdir: /repo/.git/worktrees/wt-a\n", "/repo/.git/worktrees/wt-a/commondir": "../..\n",
+    "/wts/wt-b/.git": "gitdir: /repo/.git/worktrees/wt-b\n", "/repo/.git/worktrees/wt-b/commondir": "../..\n",
+  },
+});
+
+test("#1352 DONE-WHEN 2: the snapshot directory is IDENTICAL from two different worktrees, and it is the primary's", () => {
+  const fromA = snapshotDirFor("/wts/wt-a", REPO_WITH_WORKTREES);
+  const fromB = snapshotDirFor("/wts/wt-b", REPO_WITH_WORKTREES);
+  assert.equal(fromA, "/repo/runs/board-snapshots");
+  assert.equal(fromB, fromA);
+  assert.equal(snapshotDirFor("/repo", REPO_WITH_WORKTREES), fromA, "and the primary resolves to the same place");
+  assert.equal(commonGitDirOf("/wts/wt-a", REPO_WITH_WORKTREES), "/repo/.git");
+});
+
+test("#1352: a relative gitdir resolves against the worktree, a gitdir with no commondir is its own, and no .git is the root", () => {
+  const fs = fakeGitFs({ files: { "/wts/rel/.git": "gitdir: ../../repo/.git/worktrees/rel\n", "/repo/.git/worktrees/rel/commondir": "../..\n",
+    "/wts/lone/.git": "gitdir: /elsewhere/gitdir\n" } });
+  assert.equal(commonGitDirOf("/wts/rel", fs), "/repo/.git");
+  assert.equal(commonGitDirOf("/wts/lone", fs), "/elsewhere/gitdir");
+  assert.equal(commonGitDirOf("/nowhere", fs), null);
+  assert.equal(snapshotDirFor("/nowhere", fs), "/nowhere/runs/board-snapshots");
+});
+
+test("#1352: the REAL SNAPSHOT_DIR is the git common dir's checkout plus runs/board-snapshots -- asked of git itself", () => {
+  const repoRoot = pathOf(new URL("../../../../", import.meta.url));
+  const common = execFileSync("git", ["-C", repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+    { encoding: "utf8", env: sandboxGitEnv() }).trim();
+  assert.equal(SNAPSHOT_DIR, joinPath(dirOf(common), "runs", "board-snapshots"),
+    "a second derivation: git's own answer, not this module's reading of git's files");
+  assert.ok(SNAPSHOT_DIR.startsWith("/"), "absolute, so it cannot depend on where a script was launched");
+});
+
+test("#1352: the refusal fires in a checkout whose .git is a directory, and names the mark only when it is set", () => {
+  const unmarked = fakeGitFs({ dirs: ["/clone/.git", "/clone/sub"], files: { "/clone/.git/config": "[core]\n\tbare = false\n" } });
+  const refusal = primaryLaunchRefusal("row-claim", { cwd: "/clone/sub", fs: unmarked });
+  assert.match(refusal ?? "", /^row-claim: REFUSED -- launched from \/clone, which is not a linked worktree: its \.git is a directory\. /);
+  assert.match(refusal ?? "", /Nothing was read or written/);
+  assert.doesNotMatch(refusal ?? "", new RegExp(PRIMARY_MARK_KEY));
+  const marked = fakeGitFs({ dirs: ["/repo/.git"], files: { "/repo/.git/config": "[core]\n[A11y]\n\tprimaryCheckout = true\n" } });
+  assert.match(primaryLaunchRefusal("row-file", { cwd: "/repo", fs: marked }) ?? "",
+    /its \.git is a directory, and it carries a11y\.primaryCheckout=true, the fleet-driving primary checkout\./);
+});
+
+test("#1352 POSITIVE CONTROL: a linked worktree proceeds, and so does a directory outside any checkout", () => {
+  assert.equal(primaryLaunchRefusal("pr-open", { cwd: "/wts/wt-a", fs: REPO_WITH_WORKTREES }), null);
+  assert.equal(primaryLaunchRefusal("pr-open", { cwd: "/tmp/not-a-checkout", fs: fakeGitFs({}) }), null);
+  assert.equal(launchCheckoutOf("/wts/wt-a/deep", fakeGitFs({ files: { "/wts/wt-a/.git": "gitdir: x" } })), "/wts/wt-a");
+});
+
+test("#1352 DONE-WHEN 1: each policy script, launched from a plain checkout, refuses before anything; from a linked worktree it does not", () => {
+  const scripts = pathOf(new URL("../../../../scripts/", import.meta.url));
+  const root = mkdtempSync(joinPath(tmpdir(), "policy-launch-"));
+  try {
+    const plain = joinPath(root, "plain");
+    const linked = joinPath(root, "linked");
+    const bin = joinPath(root, "bin");
+    mkdirOnDisk(plain);
+    mkdirOnDisk(bin);
+    // A command named like the GitHub CLI that always fails, first on PATH: no run here can reach GitHub.
+    writeOnDisk(joinPath(bin, ["g", "h"].join("")), "#!/bin/sh\necho 'stub: no GitHub here' >&2\nexit 1\n");
+    chmodSync(joinPath(bin, ["g", "h"].join("")), 0o755);
+    const git = (cwd: string, args: string[]) => execFileSync("git", ["-c", "user.email=t@example.invalid", "-c", "user.name=t", ...args],
+      { cwd, encoding: "utf8", env: sandboxGitEnv(), stdio: "pipe" });
+    git(plain, ["init", "--quiet"]);
+    git(plain, ["commit", "--quiet", "--allow-empty", "-m", "base"]);
+    git(plain, ["worktree", "add", "--quiet", "--detach", linked]);
+    const env = { ...sandboxGitEnv(), PATH: `${bin}:${process.env.PATH ?? ""}` } as NodeJS.ProcessEnv;
+    delete env.GH_TOKEN;
+    delete env.GITHUB_TOKEN;
+    for (const [script, code] of [["row-claim.mjs", 2], ["row-file.mjs", 1], ["pr-open.mjs", 1]] as const) {
+      const fromPlain = spawnSync("node", [joinPath(scripts, script)], { cwd: plain, encoding: "utf8", env });
+      assert.equal(fromPlain.status, code, `${script} from a plain checkout: ${fromPlain.stderr}`);
+      assert.match(fromPlain.stderr, new RegExp(`REFUSED -- launched from ${plain.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}, which is not a linked worktree`),
+        `${script} names the checkout and the reason`);
+      const fromLinked = spawnSync("node", [joinPath(scripts, script)], { cwd: linked, encoding: "utf8", env });
+      assert.doesNotMatch(`${fromLinked.stdout}${fromLinked.stderr}`, /which is not a linked worktree/,
+        `${script} from a linked worktree must not be refused for where it was launched`);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
