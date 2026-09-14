@@ -14,7 +14,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { refusalFor, wantedPrNumber, orphanedCommitsFrom } from "../../../../scripts/merge-queue.mjs";
+import { readFileSync } from "node:fs";
+import { refusalFor, wantedPrNumber, orphanedCommitsFrom, runMergeQueue, EXIT } from "../../../../scripts/merge-queue.mjs";
 
 /** @param {object} over */
 const pr = (over: object) => ({
@@ -133,3 +134,99 @@ test("a missing commits array on a clean compare does not crash — ahead_by 0 n
   assert.ok(result);
   assert.deepEqual(result.commits, []);
 });
+
+// --- #1482: the ENTRY POINT, driven with an injected runner ----------------------------------------------------------
+//
+// worker-judge's #1399 sweep: the merge lands, then the local orphaned-branch log write throws, and Node exited 1 -- this
+// script's "NOT mergeable" -- for a PR that merged. These drive `runMergeQueue`, the path `--merge` runs. Every seam is
+// injected, and this file's own code never calls or spawns the real command, which is what its first-line
+// declaration says.
+
+const PR77 = { ...pr({ number: 77 }), title: "a row", headRefName: "agent/x-77" };
+
+/** The command runner for the whole entry point, recording every call. */
+function queueRun({ listFails = false, prs = [PR77] as object[], mergeFails = false,
+  compare = { ahead_by: 0, commits: [] } as object } = {}) {
+  const calls: string[][] = [];
+  const run = (args: string[]) => {
+    calls.push(args);
+    if (args[0] === "pr" && args[1] === "list") {
+      if (listFails) throw new Error("HTTP 502 on pr list");
+      return JSON.stringify(prs);
+    }
+    if (args[0] === "pr" && args[1] === "merge") {
+      if (mergeFails) throw new Error("GraphQL: Pull request is not mergeable");
+      return "merged #77\n";
+    }
+    if (args[0] === "api" && args.includes("DELETE")) return "";
+    if (args[0] === "api") return JSON.stringify(compare);
+    return "";
+  };
+  return { run, calls };
+}
+
+/** Runs `--merge 77` through the entry point, capturing its output, errors and log appends. */
+function queue(stub: ReturnType<typeof queueRun>, { appendFails = false } = {}) {
+  const out: string[] = [];
+  const err: string[] = [];
+  const appended: string[] = [];
+  const code = runMergeQueue({ argv: ["node", "merge-queue.mjs", "--merge", "77"], gh: stub.run,
+    logPath: () => "/tmp/orphaned-branch-log.jsonl",
+    append: (_path: string, data: string) => { if (appendFails) throw new Error("EROFS: read-only file system"); appended.push(data); },
+    out: (text: string) => { out.push(text); }, err: (text: string) => { err.push(text); } });
+  return { code, out: out.join(""), err: err.join(""), appended };
+}
+
+const mergeCall = (calls: string[][]) => calls.findIndex((c) => c[0] === "pr" && c[1] === "merge");
+const deleteCall = (calls: string[][]) => calls.findIndex((c) => c[0] === "api" && c.includes("DELETE"));
+
+test("#1482 ACCEPTANCE: the log write fails AFTER the merge landed -- exit 3, naming the merged PR and what was not done", () => {
+  const stub = queueRun();
+  const { code, out, err } = queue(stub, { appendFails: true });
+  assert.equal(code, EXIT.MERGED_THEN_STEP_FAILED, "not 1: that is NOT mergeable, and this PR merged");
+  assert.ok(mergeCall(stub.calls) >= 0, "the merge was made");
+  assert.equal(deleteCall(stub.calls), -1, "and the branch was not deleted on an unrecorded check");
+  assert.match(out, /merged #77/, "the merge's own output is still printed");
+  assert.match(err, /#77 MERGED/);
+  assert.match(err, /EROFS: read-only file system/, "the underlying error is quoted");
+  assert.match(err, /orphaned-branch record for `agent\/x-77` was NOT written/);
+  assert.match(err, /compare\/main\.\.\.agent\/x-77/, "and the check to run by hand is named");
+});
+
+test("#1482 CONTROL: a PR refused BEFORE the merge exits NOT_MERGEABLE, and nothing is merged", () => {
+  const stub = queueRun({ prs: [{ ...PR77, isDraft: true }] });
+  const { code, err } = queue(stub);
+  assert.equal(code, EXIT.NOT_MERGEABLE);
+  assert.match(err, /REFUSING to merge #77: draft/);
+  assert.equal(mergeCall(stub.calls), -1);
+});
+
+test("#1482 CONTROL: a queue that cannot be read exits CANNOT_TELL, and nothing is merged", () => {
+  const stub = queueRun({ listFails: true });
+  assert.equal(queue(stub).code, EXIT.CANNOT_TELL);
+  assert.equal(mergeCall(stub.calls), -1);
+});
+
+test("#1482 CONTROL: every call succeeds -- exit 0, the record written, the absorbed branch deleted", () => {
+  const stub = queueRun();
+  const { code, appended } = queue(stub);
+  assert.equal(code, EXIT.DONE);
+  assert.equal(appended.length, 1);
+  assert.equal(JSON.parse(appended[0]).prNumber, 77);
+  assert.equal(JSON.parse(appended[0]).orphanedCommitCount, 0);
+  assert.ok(deleteCall(stub.calls) > mergeCall(stub.calls), "deleted after the merge");
+});
+
+test("#1482 CONTROL: a merge that itself fails still throws -- nothing landed, and nothing is recorded", () => {
+  const stub = queueRun({ mergeFails: true });
+  let appended: string[] = [];
+  assert.throws(() => { appended = queue(stub).appended; }, /not mergeable/);
+  assert.deepEqual(appended, []);
+});
+
+test("#1482: the header documents every exit code, the merged-then-failed code included", () => {
+  assert.deepEqual(EXIT, { DONE: 0, NOT_MERGEABLE: 1, CANNOT_TELL: 2, MERGED_THEN_STEP_FAILED: 3 });
+  const header = readFileSync(new URL("../../../../scripts/merge-queue.mjs", import.meta.url), "utf8").split("*/")[0];
+  for (const code of Object.values(EXIT)) assert.match(header, new RegExp(`\\*\\s+${code}\\s{2}\\S`), `the header documents ${code}`);
+});
+
