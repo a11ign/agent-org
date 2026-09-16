@@ -13,7 +13,7 @@
 // `board-style.test.ts` imported `scripts/board-data.mjs`, and it was `collect()` down there that shelled
 // out. So this walks each job's test glob AND every local import beneath it, to any depth, and asks
 // whether a `gh` spawn is reachable at all.
-// #621: `localImports` moved to `scripts/local-import-closure.mjs`, SHARED with `acceptance-commands.mjs`
+// #621: `localImports` moved to `packages/guards/src/local-import-closure.mjs`, SHARED with `acceptance-commands.mjs`
 // -- which derives a test's requirements (token/corpus/history) from the identical closure walk. Two
 // independently-drifting copies of "what does this file import, one hop, locally" is this repo's own
 // most-recorded shape; see that module's header for why `pre-install-import-graph.test.ts` keeps its own.
@@ -23,7 +23,7 @@ import { readFileSync, existsSync, readdirSync, mkdtempSync, writeFileSync, rmSy
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { localImports } from "../../../../scripts/local-import-closure.mjs";
+import { localImports } from "../../../guards/src/local-import-closure.mjs";
 import { SPAWNS_GH } from "../../../../scripts/acceptance-commands.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");

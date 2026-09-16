@@ -11,7 +11,7 @@
  *
  * GIT_* SCRUBBED on every spawn, including this file's own fixture-building `git()` helper: if `GIT_DIR`
  * happened to be set (this hook exports it into a hook environment, which is exactly why
- * `scripts/git-env.mjs` exists), an unscrubbed git call in a fixture helper would redirect onto whatever
+ * `packages/guards/src/git-env.mjs` exists), an unscrubbed git call in a fixture helper would redirect onto whatever
  * `GIT_DIR` names instead of the intended disposable `/tmp` repo -- the identical class of defect closed
  * elsewhere today, caught here by `git-spawn-classification.test.ts`'s own discovery before this file
  * ever shipped.
@@ -27,7 +27,7 @@ import {
   isWorkingTreeClean, pruneWorktrees, recentGitActivity, ACTIVITY_WINDOW_MS,
   strandedWork, formatStranded, trackedChanges, unverifiedRecords, formatReport,
 } from "../../../../scripts/prune-worktrees.mjs";
-import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
+import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
 
 // The CLI is spawned as a real process below, so the argv path -- the only place `dryRun` is
 // decided -- is exercised rather than reasoned about.

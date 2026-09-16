@@ -233,7 +233,7 @@ test("#1419 THE LOOKUP PAGES A SHORT LIST through REST, once and only for that P
     if (args[0] === "pr") {
       return JSON.stringify([
         { number: 1412, changedFiles: 113, files: CHANGESETS_100.map((path) => ({ path })) },
-        { number: 1426, changedFiles: 2, files: [{ path: "scripts/walk-scope.mjs" }, { path: "packages/lab/src/packaging/declared-walk-scope.test.ts" }] },
+        { number: 1426, changedFiles: 2, files: [{ path: "packages/guards/src/walk-scope.mjs" }, { path: "packages/lab/src/packaging/declared-walk-scope.test.ts" }] },
       ]);
     }
     return [...CHANGESETS_100, ...REAL_13].join("\n") + "\n";

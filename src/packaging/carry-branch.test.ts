@@ -24,10 +24,10 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, realpathSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
+import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
 import { carryBranch, branchCheckedOutLocally, noteCarryOnPr, carryMain, EXIT } from "../../../../scripts/carry-branch.mjs";
 import { stripComments } from "@a11ign/evidence/source-text";
-import { declareTreeWideGuard } from "../../../../scripts/tree-wide-guard.mjs";
+import { declareTreeWideGuard } from "../../../guards/src/tree-wide-guard.mjs";
 
 // #716/#704: this file's own population is the whole tracked tree, not one file -- declared here
 // rather than inferred from its source, per ceo's ruling (2026-09-09) that the tree-wide-guard

@@ -889,7 +889,7 @@ test("#621 local-import-closure.mjs's own JSDoc example is not read as a real im
   + "as a genuine edge into board-data.mjs, adding a phantom \"token\" hit with a nonsensical chain "
   + "(\"classifyCommand -> localImports -> collect -> board-data.mjs\") to any file merely importing "
   + "`localImports` from it", () => {
-  const hits = deriveClosureRequirements("scripts/local-import-closure.mjs");
+  const hits = deriveClosureRequirements("packages/guards/src/local-import-closure.mjs");
   assert.deepEqual(hits, [], "the shared closure-walk module must derive nothing from its own docstring");
 });
 
@@ -1712,7 +1712,7 @@ test("#1116: the remedy is offered only when it would HOLD — advice a reader c
 // --- #728: what this cannot parse, it must not make claims about ---------------------------------
 //
 // Measured on #727. The acceptance command was
-// `node scripts/tree-wide-guards.mjs | xargs npx tsx --test`, and the runner reported
+// `node packages/guards/src/tree-wide-guards.mjs | xargs npx tsx --test`, and the runner reported
 // `fail (matched no file: node, |, xargs)` -- a claim about the filesystem, and a false one. `|` is not
 // a filename at all, and a reader following that message goes looking for missing test files.
 //
@@ -1721,7 +1721,7 @@ test("#1116: the remedy is offered only when it would HOLD — advice a reader c
 // line must not pass it. What was wrong is what it said.
 
 test("#728: a piped line is REFUSED as unparseable, never reported as missing files", () => {
-  const result = testFileArgumentsResolve("node scripts/tree-wide-guards.mjs | xargs npx tsx --test");
+  const result = testFileArgumentsResolve("node packages/guards/src/tree-wide-guards.mjs | xargs npx tsx --test");
   assert.deepEqual(result, { ok: false, unparseable: "a pipe" },
     "the pipe form must name the construct rather than assert about the filesystem: `node`, `|` and "
     + "`xargs` are not files the author asked for, and one of them is not a filename at all");

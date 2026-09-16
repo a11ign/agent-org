@@ -37,7 +37,7 @@ import { dirname, resolve } from "node:path";
 import { updateBranchDecision, isBehind, newestConclusion, movedHeadRefusal, readHeadNow, updateOnePr, sweepPrs, newestRun } from "../../../../scripts/update-branch-sweep.mjs";
 import { refusalFor } from "../../../../scripts/merge-queue.mjs";
 import { newestPerName } from "../../../../scripts/newest-check-run.mjs";
-import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
+import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
 
 const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../scripts/update-branch-sweep.mjs");
 

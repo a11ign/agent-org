@@ -30,7 +30,7 @@ import { newestConclusion, headQuietSeconds } from "../../../../scripts/update-b
 // recurring shape, and the fix for a vocabulary split walked straight into it.
 // ---------------------------------------------------------------------------------------------------
 
-import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
+import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
 
 const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../scripts/queue-stalled.mjs");
 
@@ -137,7 +137,7 @@ test("mergeTreeConflict: MUTATION TARGET -- real captured conflict output (PR #2
     "scripts/board-only-check.mjs",
     "scripts/board-report.mjs",
     "scripts/ci-changed.mjs",
-    "scripts/isolation-gate.mjs",
+    "packages/guards/src/isolation-gate.mjs",
     "",
     "Auto-merging scripts/board-data.mjs",
     "CONFLICT (content): Merge conflict in scripts/board-data.mjs",
@@ -149,7 +149,7 @@ test("mergeTreeConflict: MUTATION TARGET -- real captured conflict output (PR #2
   assert.equal(result.conflict, true);
   assert.deepEqual(result.files, [
     "scripts/board-data.mjs", "scripts/board-document.mjs", "scripts/board-only-check.mjs",
-    "scripts/board-report.mjs", "scripts/ci-changed.mjs", "scripts/isolation-gate.mjs",
+    "scripts/board-report.mjs", "scripts/ci-changed.mjs", "packages/guards/src/isolation-gate.mjs",
   ]);
 });
 

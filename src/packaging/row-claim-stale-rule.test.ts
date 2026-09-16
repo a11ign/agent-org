@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 
 import { staleRuleReason, ruleFiles, rulePathspec }
   from "../../../../scripts/row-claim/stale-rule-guard.mjs";
-import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
+import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 

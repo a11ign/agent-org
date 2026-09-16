@@ -9,7 +9,7 @@ import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { updatePrimary, lockfileMoved } from "../../../../scripts/update-primary.mjs";
-import { changedFiles } from "../../../../scripts/changed-files.mjs";
+import { changedFiles } from "../../../guards/src/changed-files.mjs";
 import { withGitSandbox } from "../../../../scripts/test-support/git-sandbox.ts";
 import { UPDATE_PRIMARY_VERBS } from "./update-primary-argv.mjs";
 
@@ -210,7 +210,7 @@ test("#1384 ACCEPTANCE: a move that changed the lockfile runs npm install, BEFOR
   assert.deepEqual(asked, [{ range: ["old111", "new222"], pathspec: ["package-lock.json"] }],
     "the question is asked of the commit the checkout LEFT and the one it ARRIVED at, for the root lockfile");
   assert.equal(git.some((argv) => argv[0] === "diff"), false,
-    "#939: the paths come from scripts/changed-files.mjs, never from a second spelling of the diff");
+    "#939: the paths come from packages/guards/src/changed-files.mjs, never from a second spelling of the diff");
   assert.deepEqual(npmCalls, [["install"], ["run", "build"]],
     "install first: a build before it compiles the new source against the old node_modules");
 });

@@ -175,9 +175,9 @@ test("classifyCommand: the identical `mutate` command is untouched on Acceptance
   assert.deepEqual(classifyCommand(command), { verdict: "runnable" });
 });
 
-test("classifyCommand: a bare invocation of scripts/mutation-check.mjs is caught the same way, "
+test("classifyCommand: a bare invocation of packages/guards/src/mutation-check.mjs is caught the same way, "
   + "not just the npm script alias", () => {
-  const result = classifyCommand("node scripts/mutation-check.mjs --file=x --mutate='...' --test='...'",
+  const result = classifyCommand("node packages/guards/src/mutation-check.mjs --file=x --mutate='...' --test='...'",
     { section: "REFUTATION" });
   assert.equal(result.verdict, "refused");
 });
