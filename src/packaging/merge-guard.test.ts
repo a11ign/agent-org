@@ -1,7 +1,7 @@
 /**
  * `mergeReadiness` AND `mergeSafetyVerdict` -- THE COMPOSITIONS, not the rules.
  *
- * #455 split each individual refusal rule into its own module under `scripts/merge-guard/`, each with its
+ * #455 split each individual refusal rule into its own module under `packages/agent-org/src/merge-guard/`, each with its
  * own direct test (`merge-guard-base-rule.test.ts`, `-head-tip-rule`, `-checks-rule`, `-staleness-rule`,
  * `-ancestry-rule`, `-claimed-row-rule`, `-pr-hold-rule`, plus the shared `-reason-kind`, `-lookups` and
  * `-reconciliation` modules). What belongs HERE is what a single rule's own test cannot show: that the
@@ -17,8 +17,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { mergeReadiness, mergeSafetyVerdict } from "../../../../scripts/merge-guard.mjs";
-import { reasonKind } from "../../../../scripts/merge-guard/reason-kind.mjs";
+import { mergeReadiness, mergeSafetyVerdict } from "../merge-guard.mjs";
+import { reasonKind } from "../merge-guard/reason-kind.mjs";
 import { LIVE_SHAPE } from "./check-run-fixtures.ts";
 
 const REQUIRED = ["changed", "ts", "python", "ansible", "docs", "changeset"];
@@ -251,17 +251,17 @@ test("mergeSafetyVerdict: THE #262 REGRESSION -- closing a row THIS PR's own aut
  */
 test("no file in the merge-guard tree reads mergeStateStatus, not even to cross-check", () => {
   const files = [
-    "../../../../scripts/merge-guard.mjs",
-    "../../../../scripts/merge-guard/base-rule.mjs",
-    "../../../../scripts/merge-guard/head-tip-rule.mjs",
-    "../../../../scripts/merge-guard/checks-rule.mjs",
-    "../../../../scripts/merge-guard/staleness-rule.mjs",
-    "../../../../scripts/merge-guard/ancestry-rule.mjs",
-    "../../../../scripts/merge-guard/claimed-row-rule.mjs",
-    "../../../../scripts/merge-guard/pr-hold-rule.mjs",
-    "../../../../scripts/merge-guard/armed-race-rule.mjs",
-    "../../../../scripts/merge-guard/lookups.mjs",
-    "../../../../scripts/merge-guard/reconciliation.mjs",
+    "../merge-guard.mjs",
+    "../merge-guard/base-rule.mjs",
+    "../merge-guard/head-tip-rule.mjs",
+    "../merge-guard/checks-rule.mjs",
+    "../merge-guard/staleness-rule.mjs",
+    "../merge-guard/ancestry-rule.mjs",
+    "../merge-guard/claimed-row-rule.mjs",
+    "../merge-guard/pr-hold-rule.mjs",
+    "../merge-guard/armed-race-rule.mjs",
+    "../merge-guard/lookups.mjs",
+    "../merge-guard/reconciliation.mjs",
   ];
   for (const file of files) {
     const src = readFileSync(new URL(file, import.meta.url), "utf8");
@@ -286,7 +286,7 @@ test("no file in the merge-guard tree reads mergeStateStatus, not even to cross-
  * both are scanned rather than trusting that fixing one fixes both.
  */
 test("both real behindBy fetches are oriented main...head, never the reverse (#188)", () => {
-  for (const file of ["../../../../scripts/merge-guard.mjs", "../../../../scripts/merge-guard/armed-race-rule.mjs"]) {
+  for (const file of ["../merge-guard.mjs", "../merge-guard/armed-race-rule.mjs"]) {
     const src = readFileSync(new URL(file, import.meta.url), "utf8");
     assert.match(src, /compare\/main\.\.\.\$\{pr\.headRefOid\}/,
       `${file}: must ask GitHub how far main is ahead of this head, not the reverse`);

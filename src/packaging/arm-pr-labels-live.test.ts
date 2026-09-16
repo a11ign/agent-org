@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { LIVE_SESSIONS, RETIRED_SESSIONS } from "../../../../scripts/arm-pr.mjs";
+import { LIVE_SESSIONS, RETIRED_SESSIONS } from "../arm-pr.mjs";
 
 test("#1000: every `session:*` label that EXISTS is classified -- asked of GitHub, skipped honestly", () => {
   // THE COVERAGE HALF, and it cannot be a literal: the question is "which labels exist", which only the

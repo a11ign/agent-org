@@ -15,7 +15,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { readFileSync } from "node:fs";
-import { refusalFor, wantedPrNumber, orphanedCommitsFrom, runMergeQueue, EXIT } from "../../../../scripts/merge-queue.mjs";
+import { refusalFor, wantedPrNumber, orphanedCommitsFrom, runMergeQueue, EXIT } from "../merge-queue.mjs";
 
 /** @param {object} over */
 const pr = (over: object) => ({
@@ -226,7 +226,7 @@ test("#1482 CONTROL: a merge that itself fails still throws -- nothing landed, a
 
 test("#1482: the header documents every exit code, the merged-then-failed code included", () => {
   assert.deepEqual(EXIT, { DONE: 0, NOT_MERGEABLE: 1, CANNOT_TELL: 2, MERGED_THEN_STEP_FAILED: 3 });
-  const header = readFileSync(new URL("../../../../scripts/merge-queue.mjs", import.meta.url), "utf8").split("*/")[0];
+  const header = readFileSync(new URL("../merge-queue.mjs", import.meta.url), "utf8").split("*/")[0];
   for (const code of Object.values(EXIT)) assert.match(header, new RegExp(`\\*\\s+${code}\\s{2}\\S`), `the header documents ${code}`);
 });
 

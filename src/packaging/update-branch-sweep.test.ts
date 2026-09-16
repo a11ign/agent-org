@@ -34,12 +34,12 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { updateBranchDecision, isBehind, newestConclusion, movedHeadRefusal, readHeadNow, updateOnePr, sweepPrs, newestRun } from "../../../../scripts/update-branch-sweep.mjs";
-import { refusalFor } from "../../../../scripts/merge-queue.mjs";
-import { newestPerName } from "../../../../scripts/newest-check-run.mjs";
+import { updateBranchDecision, isBehind, newestConclusion, movedHeadRefusal, readHeadNow, updateOnePr, sweepPrs, newestRun } from "../update-branch-sweep.mjs";
+import { refusalFor } from "../merge-queue.mjs";
+import { newestPerName } from "../newest-check-run.mjs";
 import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
 
-const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../scripts/update-branch-sweep.mjs");
+const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "../update-branch-sweep.mjs");
 
 // --- newestConclusion: #498, a superseded check run stays attached to the head for ever ---
 //
@@ -287,7 +287,7 @@ test("#1018: `queue-stalled.mjs` is UNTOUCHED, and is not silently assumed to sh
   // rather than acting, so it has the same shape and a cheaper consequence -- worth the same fix, not the
   // same commit. This asserts the pair have not been quietly merged into one claim.
   const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-  const queueStalled = readFileSync(resolve(repo, "scripts/queue-stalled.mjs"), "utf8");
+  const queueStalled = readFileSync(resolve(repo, "packages/agent-org/src/queue-stalled.mjs"), "utf8");
   assert.doesNotMatch(queueStalled, /movedHeadRefusal|readHeadNow/,
     "if queue-stalled starts importing these, the two files' guarantees have merged and this test should "
     + "be replaced by one asserting the shared behaviour -- not deleted");

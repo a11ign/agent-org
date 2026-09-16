@@ -9,7 +9,7 @@
 // fake `gh` first on PATH that exits 97 and shouts to stderr -- 66 pass, 0 fail, and the fake never
 // printed.
 /**
- * #735: the FILING-side twin of #707's claim-side gate -- `scripts/row-file.mjs` refuses to run
+ * #735: the FILING-side twin of #707's claim-side gate -- `packages/agent-org/src/row-file.mjs` refuses to run
  * `gh issue create` when the body it would file is missing Region, Acceptance or Open-check, using the
  * SAME rule `row-claim` already enforces at claim time (`missingTemplateFields`, imported unchanged from
  * `row-claim/template-fields-rule.mjs`), asked one step earlier so the cost lands on whoever holds the
@@ -24,17 +24,17 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { regionRefusalReason, declaresRelease, outOfReleaseArgv, labelsOutOfRelease, OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE }
-  from "../../../../scripts/row-file.mjs";
-import { declaredRegionFiles } from "../../../../scripts/region-paths.mjs";
-import { extractAcceptanceSection, fleetOrLabAcceptance } from "../../../../scripts/acceptance-commands.mjs";
+  from "../row-file.mjs";
+import { declaredRegionFiles } from "../region-paths.mjs";
+import { extractAcceptanceSection, fleetOrLabAcceptance } from "../acceptance-commands.mjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendFiledBy, boardAndVerify, boardingFor, bodyFromArgv, createIssue, directoryRegionWarning, fetchIssueBoardStatus, acceptanceShapeRefusal, fileRefusalReason, issueNumberFromUrl, labelRefusal, labelValuesFromArgv, laneLabelsFor, milestoneRefusal, openCheckTranscriptRefusal, sessionFromArgv, slashlessDirectoryWarning, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy, withoutLabels } from "../../../../scripts/row-file.mjs";
-import { filedByLine } from "../../../../scripts/row-claim.mjs";
+import { appendFiledBy, boardAndVerify, boardingFor, bodyFromArgv, createIssue, directoryRegionWarning, fetchIssueBoardStatus, acceptanceShapeRefusal, fileRefusalReason, issueNumberFromUrl, labelRefusal, labelValuesFromArgv, laneLabelsFor, milestoneRefusal, openCheckTranscriptRefusal, sessionFromArgv, slashlessDirectoryWarning, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy, withoutLabels } from "../row-file.mjs";
+import { filedByLine } from "../row-claim.mjs";
 import { REPO } from "../../../../scripts/repo-identity.mjs";
 
-const CLI = fileURLToPath(new URL("../../../../scripts/row-file.mjs", import.meta.url));
+const CLI = fileURLToPath(new URL("../row-file.mjs", import.meta.url));
 /**
  * #1352: row-file refuses when launched outside a linked worktree, and CI runs these tests in a plain clone. The REAL CLI
  * tests below launch it with the printed override, so each still reaches the check it was written to test.
@@ -182,7 +182,7 @@ test("#883 ACCEPTANCE: a Region touching TWO lanes names BOTH, never picks one s
 });
 
 test("laneLabelsFor: a Region touching NO lane's paths gets lane:any -- a real answer, not a fallback", () => {
-  const labels = laneLabelsFor(["scripts/row-file.mjs"], { lanes: [PIPELINE_LANE] });
+  const labels = laneLabelsFor(["packages/agent-org/src/row-file.mjs"], { lanes: [PIPELINE_LANE] });
   assert.deepEqual(labels, ["lane:any"]);
 });
 
@@ -786,7 +786,7 @@ test("#1117: the declaration's vocabulary is #989's, so the clock and the filer 
   // #989's in-build rule reads `declaresPaths: false` as "its deliverable is not a commit" — a settings
   // change, a ruling, a measurement posted on the row. Two tools reading one tracker must not describe
   // that category in two spellings; keyed on the sentence rather than on a keyword nobody would guess.
-  const source = readFileSync(new URL("../../../../scripts/row-file.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../row-file.mjs", import.meta.url), "utf8");
   const claimSide = readFileSync(
     new URL("./row-claim-own-pr-health-rule.test.ts", import.meta.url), "utf8");
   const PHRASE = "its deliverable is not a commit";

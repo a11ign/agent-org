@@ -13,9 +13,9 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
-import { mergedPrsInWindow, DEFAULT_WINDOW_MINUTES, closeOnePr, sweepExit, EXIT } from "../../../../scripts/close-rows-sweep.mjs";
-import { closurePlan } from "../../../../scripts/close-rows-for-merged-pr.mjs";
-import { refusalCause } from "../../../../scripts/settle-closed-status.mjs";
+import { mergedPrsInWindow, DEFAULT_WINDOW_MINUTES, closeOnePr, sweepExit, EXIT } from "../close-rows-sweep.mjs";
+import { closurePlan } from "../close-rows-for-merged-pr.mjs";
+import { refusalCause } from "../settle-closed-status.mjs";
 
 /** CAPTURED, not composed: the reason `moveProjectStatus` gave for #1299 in trunk run 34769927592 (`02ae7420`). */
 const CAPTURED_PROJECT_UNREADABLE = "could not move #1299's Status to \"Done\" -- board-snapshot: could not read "
@@ -134,8 +134,8 @@ test("#909: close-rows-sweep.mjs IS wired to trunk.yml's push, as the closeRows 
   assert.ok(job, "trunk.yml carries a closeRows job");
   assert.ok(!job.needs, "closeRows does not wait on the gate: a red push still closes the rows its PR declared");
   const run = job.steps.map((s) => s.run ?? "").join("\n");
-  assert.match(run, /node scripts\/close-rows-sweep\.mjs --window=60/, "the push path sweeps the last hour, idempotently");
-  assert.match(run, /node scripts\/close-rows-for-merged-pr\.mjs "\$DISPATCH_PR"/, "the dispatch path closes the named PR's rows");
+  assert.match(run, /node packages\/agent-org\/src\/close-rows-sweep\.mjs --window=60/, "the push path sweeps the last hour, idempotently");
+  assert.match(run, /node packages\/agent-org\/src\/close-rows-for-merged-pr\.mjs "\$DISPATCH_PR"/, "the dispatch path closes the named PR's rows");
   assert.match(run, /if \[ -n "\$DISPATCH_PR" \]/, "and the two are chosen by whether a pr was given");
 });
 

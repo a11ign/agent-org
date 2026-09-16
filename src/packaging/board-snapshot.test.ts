@@ -21,10 +21,10 @@ import {
   PROJECT_OWNER,
   PROJECT_NUMBER,
   SNAPSHOT_DIR,
-} from "../../../../scripts/board-snapshot.mjs";
+} from "../board-snapshot.mjs";
 import { touchedItemRequest, commonGitDirOf, snapshotDirFor, launchCheckoutOf, primaryLaunchRefusal, PRIMARY_MARK_KEY,
   primaryLaunchDecision, POLICY_LAUNCH_REASON_ENV, launchGate }
-  from "../../../../scripts/board-snapshot-scope.mjs";
+  from "../board-snapshot-scope.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, mkdirSync as mkdirOnDisk, rmSync, writeFileSync as writeOnDisk } from "node:fs";
 import { tmpdir } from "node:os";

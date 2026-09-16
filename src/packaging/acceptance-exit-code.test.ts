@@ -22,7 +22,7 @@ import assert from "node:assert/strict";
 
 import {
   extractAcceptanceSection, extractRefutationSection, acceptanceReport, classifyCommand,
-} from "../../../../scripts/acceptance-commands.mjs";
+} from "../acceptance-commands.mjs";
 
 // --- extractRefutationSection: same parser, a different field name ---
 
@@ -223,7 +223,7 @@ test("acceptanceReport: MUTATION TARGET -- a Refutation: line naming `npm run mu
  * This test exists because "by construction" is exactly the kind of claim that stops being true silently.
  */
 test("pr:open refuses a whole-suite acceptance line at open time, through the SAME report CI runs", async () => {
-  const { checkBody } = await import("../../../../scripts/pr-open.mjs");
+  const { checkBody } = await import("../pr-open.mjs");
   const refused = checkBody("Acceptance: npm test\n\nCloses: none — a reason", { run: () => 0 });
   assert.equal(refused.ok, false);
   assert.match(refused.lines.join("\n"), /Name the files this change is verified by/);

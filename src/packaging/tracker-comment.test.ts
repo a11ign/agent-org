@@ -15,7 +15,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   readComment, editComment, editRefusal, bodyOfCommentResponse, commentPath, digest,
-} from "../../../../scripts/tracker-comment.mjs";
+} from "../tracker-comment.mjs";
 
 const A_COMMENT = JSON.stringify({ id: 42, body: "the original text" });
 const A_404 = JSON.stringify({ message: "Not Found",

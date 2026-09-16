@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { ownerOf, stashLines } from "../../../../scripts/stash-whose.mjs";
+import { ownerOf, stashLines } from "../stash-whose.mjs";
 import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");

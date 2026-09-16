@@ -23,9 +23,9 @@ import {
   scopedStatusOf,
   withScopedSnapshot,
   writeScopedSnapshot,
-} from "../../../../scripts/board-snapshot-scope.mjs";
-import { refusalCause, PROJECT_UNREADABLE, settleClosedStatus } from "../../../../scripts/settle-closed-status.mjs";
-import { closureRequirementMessage, deriveClosureRequirements } from "../../../../scripts/acceptance-commands.mjs";
+} from "../board-snapshot-scope.mjs";
+import { refusalCause, PROJECT_UNREADABLE, settleClosedStatus } from "../settle-closed-status.mjs";
+import { closureRequirementMessage, deriveClosureRequirements } from "../acceptance-commands.mjs";
 
 const THIS_FILE = "packages/lab/src/packaging/board-snapshot-scope.test.ts";
 
@@ -88,7 +88,7 @@ test("#1275: this file imports NOTHING from board-snapshot.mjs -- the import tha
   // ceo's condition: not even a constant. Read from this file's own import statements, not from a list typed here.
   const source = readFileSync(new URL(import.meta.url), "utf8");
   const specifiers = [...source.matchAll(/^(?:import\s[^;]*?|\}\s*)from\s+"([^"]+)";/gm)].map((match) => match[1]);
-  assert.ok(specifiers.includes("../../../../scripts/board-snapshot-scope.mjs"),
+  assert.ok(specifiers.includes("../board-snapshot-scope.mjs"),
     "CONTROL: the reader finds this file's real imports, so an empty list cannot pass for a clean one");
   assert.deepEqual(specifiers.filter((specifier) => /(^|\/)board-snapshot\.mjs$/.test(specifier)), []);
 });
@@ -96,8 +96,8 @@ test("#1275: this file imports NOTHING from board-snapshot.mjs -- the import tha
 test("#1275: this file's closure needs no token -- POSITIVE CONTROL: the same walk still charges board-snapshot.mjs for its gh call", () => {
   assert.deepEqual(deriveClosureRequirements(THIS_FILE).map((hit) => closureRequirementMessage(hit)), [],
     "the acceptance job has no token, no fleet and no corpus");
-  const snapshotScript = deriveClosureRequirements("scripts/board-snapshot.mjs");
-  assert.ok(snapshotScript.some((hit) => hit.requirement === "token" && hit.file === "scripts/board-snapshot.mjs"),
+  const snapshotScript = deriveClosureRequirements("packages/agent-org/src/board-snapshot.mjs");
+  assert.ok(snapshotScript.some((hit) => hit.requirement === "token" && hit.file === "packages/agent-org/src/board-snapshot.mjs"),
     "the walk that passes this file must still see the gh call left in board-snapshot.mjs, or passing proves "
     + `nothing -- got ${JSON.stringify(snapshotScript)}`);
 });

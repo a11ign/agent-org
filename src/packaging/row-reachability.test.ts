@@ -29,8 +29,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { startability, subjectAndRegionFacts, symbolOnMain, refsCarryingSymbol, proveOriginMainReadable, onMain,
-  heldRefsSummary } from "../../../../scripts/row-reachability.mjs";
-import { declaredRegionFiles, regionPathsFromBody } from "../../../../scripts/region-paths.mjs";
+  heldRefsSummary } from "../row-reachability.mjs";
+import { declaredRegionFiles, regionPathsFromBody } from "../region-paths.mjs";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync, chmodSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -59,7 +59,7 @@ test("THE #186 CASE: the subject does not exist on main, and no region check wou
 test("a held region is reported but does NOT block — it is a merge cost, not a blocker", () => {
   // The half that stops this being deleted: a check that reports every row blocked is one nobody reads.
   const v = startability({
-    ...clear, heldRegions: [{ path: "scripts/row-claim.mjs", refs: ["origin/agent/x"] }],
+    ...clear, heldRegions: [{ path: "packages/agent-org/src/row-claim.mjs", refs: ["origin/agent/x"] }],
   });
   assert.equal(v.code, 0, "contention is worth knowing and is not a reason to refuse the row");
   assert.match(v.lines.join("\n"), /REGION HELD/);

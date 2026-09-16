@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   settleClosedStatus, refusalCause, unsettledVerdict, PROJECT_UNREADABLE,
-} from "../../../../scripts/settle-closed-status.mjs";
+} from "../settle-closed-status.mjs";
 
 /** CAPTURED, not composed: the reason `moveProjectStatus` gave for #1299 in trunk run 34769927592 (`02ae7420`). */
 const CAPTURED_PROJECT_UNREADABLE = "could not move #1299's Status to \"Done\" -- board-snapshot: could not read "

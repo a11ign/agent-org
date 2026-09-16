@@ -17,7 +17,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES }
-  from "../../../../scripts/work-gate.mjs";
+  from "../work-gate.mjs";
 
 const GREEN = [{ status: "COMPLETED", conclusion: "SUCCESS" }];
 const RED = [{ status: "COMPLETED", conclusion: "FAILURE" }];

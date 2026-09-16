@@ -78,7 +78,7 @@ test("no two recorded entries share an identity or an order", () => {
  * read, which is this project's oldest defect: unchecked is not clean.
  */
 test("every entry directory on disk is named in REPORTED_KINDS", async () => {
-  const { REPORTED_KINDS, reported } = await import("../../../../scripts/board-data.mjs");
+  const { REPORTED_KINDS, reported } = await import("../board-data.mjs");
   const root = path.join(REPO, "docs/board/reported");
   const onDisk = readdirSync(root, { withFileTypes: true })
     .filter((e) => e.isDirectory()).map((e) => e.name);

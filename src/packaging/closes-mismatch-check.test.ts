@@ -9,8 +9,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { closesMismatchReport, findClosingPhrase } from "../../../../scripts/closes-mismatch-check.mjs";
-import type { ClosesDeclaration } from "../../../../scripts/acceptance-commands.mjs";
+import { closesMismatchReport, findClosingPhrase } from "../closes-mismatch-check.mjs";
+import type { ClosesDeclaration } from "../acceptance-commands.mjs";
 
 const NONE: ClosesDeclaration = { kind: "none", reason: "docs-only change" };
 const CLOSES = (numbers: number[]): ClosesDeclaration => ({ kind: "closes", numbers });

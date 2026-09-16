@@ -10,7 +10,7 @@
 // in another, with nothing comparing them.
 //
 // THE OBVIOUS TEST WOULD HAVE FOUND NOTHING. Neither board test contains the string `gh` as a command:
-// `board-style.test.ts` imported `scripts/board-data.mjs`, and it was `collect()` down there that shelled
+// `board-style.test.ts` imported `packages/agent-org/src/board-data.mjs`, and it was `collect()` down there that shelled
 // out. So this walks each job's test glob AND every local import beneath it, to any depth, and asks
 // whether a `gh` spawn is reachable at all.
 // #621: `localImports` moved to `packages/guards/src/local-import-closure.mjs`, SHARED with `acceptance-commands.mjs`
@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { localImports } from "../../../guards/src/local-import-closure.mjs";
-import { SPAWNS_GH } from "../../../../scripts/acceptance-commands.mjs";
+import { SPAWNS_GH } from "../acceptance-commands.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const CI = join(REPO, ".github/workflows/ci.yml");
@@ -79,9 +79,9 @@ test("ci.yml parses into real jobs — a scrape that finds nothing must FAIL, no
 });
 
 test("board-document-chrome-resolver.test.ts reaches `gh` only TRANSITIVELY — the premise this guard rests on", () => {
-  // board-style.test.ts (the original example, imported scripts/board-data.mjs's collect()) retired
+  // board-style.test.ts (the original example, imported packages/agent-org/src/board-data.mjs's collect()) retired
   // 2026-09-10 in guard triage 4 of 6. This file makes the identical claim through a different import:
-  // it takes `resolveChromeBinary` from `scripts/board-document.mjs`, which shells to `gh release`
+  // it takes `resolveChromeBinary` from `packages/agent-org/src/board-document.mjs`, which shells to `gh release`
   // directly a few hundred lines further down the same module -- the same "no `gh` in the test file
   // itself, only in what it transitively imports" shape.
   const entry = join(REPO, "packages/lab/src/packaging/board-document-chrome-resolver.test.ts");
@@ -130,7 +130,7 @@ test("#1449: the walker reaches a gh spawn made through `execFile`, and not an `
 test("#1449: this guard reads the token charge's ONE spawn regex -- it imports SPAWNS_GH and declares none of its own", () => {
   const source = readFileSync(fileURLToPath(import.meta.url), "utf8");
   const code = source.split("\n").filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line)).join("\n");
-  assert.match(code, /import\s*\{\s*SPAWNS_GH\s*\}\s*from\s*"\.\.\/\.\.\/\.\.\/\.\.\/scripts\/acceptance-commands\.mjs"/,
+  assert.match(code, /import\s*\{\s*SPAWNS_GH\s*\}\s*from\s*"\.\.\/\.\.\/\.\.\/\.\.\/packages\/agent-org\/src\/acceptance-commands\.mjs"/,
     "SPAWNS_GH must come from acceptance-commands.mjs, the regex the token charge itself uses");
   assert.doesNotMatch(code, /\b(?:const|let|var)\s+SPAWNS_GH\b/,
     "a local SPAWNS_GH is a second copy of the charge's list -- the drift #1449 was filed about");
