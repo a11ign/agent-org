@@ -15,10 +15,21 @@ import assert from "node:assert/strict";
 import { route, undelivered, parseOrders, readLedger, deliver, readAgents, WAKEABLE, EXIT }
   from "../wake.mjs";
 import { afterGate, GATE, EXIT as TICK_EXIT } from "../work-tick.mjs";
+import { spawnInvocation } from "../wake.mjs";
 
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));
 const ROSTER = ["worker-capture", "worker-judge", "worker-tooling"];
+
+/** Narrowing that ASSERTS rather than casts -- a wrong shape fails here with the value, not at a cast. */
+function refusalText(got: unknown): string {
+  assert.ok(got && typeof got === "object" && "refusal" in got, `expected a refusal, got ${JSON.stringify(got)}`);
+  return (got as { refusal: string }).refusal;
+}
+function spawned(got: unknown): { args: string[]; profile: { kind: string; model: string; effort: string } } {
+  assert.ok(got && typeof got === "object" && "args" in got, `expected a spawn, got ${JSON.stringify(got)}`);
+  return got as { args: string[]; profile: { kind: string; model: string; effort: string } };
+}
 
 test("the exit codes match work-gate's polarity -- a refused read is never a quiet org", () => {
   assert.deepEqual({ ...EXIT }, { QUIET: 0, ATTENTION: 1, CANNOT_ASK: 2 });
@@ -29,7 +40,7 @@ test("only idle and done take an order -- working and blocked are not routed aro
   for (const status of ["working", "blocked", "unknown"]) {
     const got = route("reviewer", agents({ reviewer: status }), ROSTER);
     assert.ok("refusal" in got, `"${status}" must not receive a prompt, but it was routed one`);
-    assert.match((got as { refusal: string }).refusal, new RegExp(status),
+    assert.match(refusalText(got), new RegExp(status),
       "the refusal must name the state, or it cannot be acted on");
   }
 });
@@ -41,7 +52,7 @@ test("a named session routes to itself when idle", () => {
 
 test("a session herdr does not know is REFUSED, never silently dropped", () => {
   const got = route("reviewer-3", agents({ reviewer: "idle" }), ROSTER);
-  assert.match((got as { refusal: string }).refusal, /no workspace labelled "reviewer-3"/);
+  assert.match(refusalText(got), /no workspace labelled "reviewer-3"/);
 });
 
 /**
@@ -67,7 +78,7 @@ test("a fully busy pool is refused WITH the states that made it busy", () => {
 
 test("an engineer absent from herdr reads as absent, not as idle", () => {
   const got = route("engineers", agents({ "worker-capture": "working" }), ROSTER);
-  assert.match((got as { refusal: string }).refusal, /worker-judge=absent/);
+  assert.match(refusalText(got), /worker-judge=absent/);
 });
 
 /**
@@ -189,4 +200,36 @@ test("work-tick: an exit code nobody documented is treated as CANNOT_ASK, never 
     assert.equal(afterGate(code).deliver, false, `exit ${code} must not deliver`);
     assert.equal(afterGate(code).exit, TICK_EXIT.CANNOT_ASK);
   }
+});
+
+// --- spawnInvocation: a fresh worker per cause, at the tier that cause deserves ---
+
+test("spawnInvocation builds a herdr start command carrying the cause's model and effort", () => {
+  const got = spawnInvocation({ cause: "draft-awaiting-verdict" }, "reviewer-1630", "w7:t1");
+  assert.deepEqual(spawned(got).args, [
+    "--session", "org", "agent", "start", "reviewer-1630", "--kind", "codex", "--pane", "w7:t1",
+    "--", "-m", "gpt-5.6-luna", "-c", 'model_reasoning_effort="medium"',
+    "-c", 'approval_policy="never"', "-c", 'sandbox_mode="workspace-write"']);
+});
+
+test("spawnInvocation REFUSES a cause with no profile -- it never picks a tier on its own", () => {
+  const got = spawnInvocation({ cause: "something-new" }, "w", "p");
+  assert.match(refusalText(got), /cannot choose a worker for this order/);
+  assert.match(refusalText(got), /no profile for cause "something-new"/);
+});
+
+test("spawnInvocation passes an operator override through to the spawned worker", () => {
+  const got = spawnInvocation({ cause: "ready-row-unclaimed" }, "eng-1", "w3:t1", { effort: "max" });
+  assert.ok(spawned(got).args.join(" ").includes("--effort max"));
+  assert.ok(spawned(got).args.includes("claude"), "an engineer is a claude worker");
+  assert.equal(spawned(got).profile.effort, "max");
+});
+
+test("the `--` separator is present, or herdr eats the agent's flags as its own", () => {
+  const args: string[] = spawned(spawnInvocation({ cause: "ready-row-unclaimed" }, "e", "p")).args;
+  const sep = args.indexOf("--");
+  assert.ok(sep > 0, "no `--` separator");
+  assert.ok(args.slice(sep).includes("--model"), "the model flag must fall AFTER the separator");
+  assert.ok(!args.slice(0, sep).includes("--model"), "nothing agent-bound may precede the separator");
+  assert.equal(args[args.indexOf("--kind") + 1], "claude", "herdr must be told which product to start");
 });
