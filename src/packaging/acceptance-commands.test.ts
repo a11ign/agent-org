@@ -1847,6 +1847,9 @@ function withBoardDocumentTree<T>(boardDocument: string, body: (entry: string) =
   const dir = mkdtempSync(join(tmpdir(), "acceptance-1458-"));
   try {
     mkdirSync(join(dir, "scripts"), { recursive: true });
+    // board-document.mjs lives in @a11ign/agent-org now, so the sandbox needs that directory too --
+    // BOARD_DOCUMENT below is written into it.
+    mkdirSync(join(dir, "packages/agent-org/src"), { recursive: true });
     mkdirSync(join(dir, "packages/lab/src/packaging"), { recursive: true });
     writeFileSync(join(dir, BOARD_DOCUMENT), boardDocument);
     const entry = join(dir, BOARD_STYLE_FIXTURE);

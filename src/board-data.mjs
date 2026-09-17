@@ -62,7 +62,12 @@ export const P90 = 0.9;
  * `reported.json` nobody reviewed. "Uncommitted" and "committed on another branch" are different states
  * and both change what gets published, so both refuse.
  */
-export const READ_SET = ["docs/board/reported", "packages/agent-org/src/board-report.mjs"];
+// RESOLVED FROM `import.meta.url`, NOT SPELLED. `spawned-paths` refuses a repo-relative program path in a
+// file that spawns, and it is right to: this list is handed to git as a pathspec relative to ROOT, so a
+// literal would be wrong the moment the file moves -- which is exactly what just happened when the org
+// tooling became a package. Derived, it follows the file.
+export const READ_SET = ["docs/board/reported",
+  path.relative(ROOT, fileURLToPath(new URL("./board-report.mjs", import.meta.url)))];
 
 // EVERY SPAWN SCRUBS `GIT_*`, and this file is the one where getting it wrong is worst.
 //

@@ -19,9 +19,11 @@ import assert from "node:assert/strict";
 import { decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES }
   from "../work-gate.mjs";
 
-const GREEN = [{ status: "COMPLETED", conclusion: "SUCCESS" }];
-const RED = [{ status: "COMPLETED", conclusion: "FAILURE" }];
-const PENDING = [{ status: "IN_PROGRESS", conclusion: null }];
+// Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
+// without one is dropped, and the gate would read every PR as having no checks at all.
+const GREEN = [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }];
+const RED = [{ name: "ci", status: "COMPLETED", conclusion: "FAILURE" }];
+const PENDING = [{ name: "ci", status: "IN_PROGRESS", conclusion: null }];
 const HEAD = "abc12345deadbeefcafe000011112222";
 
 /** @param n PR number @param rollup its checks @param comments its comments */

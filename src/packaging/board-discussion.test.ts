@@ -196,12 +196,13 @@ test("#1302: no edition script computes its own day -- each imports editionDay, 
   // A THIRD COPY ANYWHERE IN THE BOARD SCRIPTS: a day of its own, in EITHER spelling, in any `scripts/board-*.mjs` but the
   // definition. Until #1442 only the London half could be globbed, because board-report.mjs:290 titled the edition with a
   // UTC slice; it takes editionDay now, so both halves are, and `missedDays` keeps its one exemption through `edition()`.
-  const boardScripts = readdirSync(join(REPO, "scripts")).filter((f) => /^board-.*\.mjs$/.test(f) && f !== "board-discussion.mjs");
+  const boardScripts = readdirSync(join(REPO, "packages/agent-org/src")).filter((f) => /^board-.*\.mjs$/.test(f) && f !== "board-discussion.mjs");
   assert.ok(["board-schedule-liveness.mjs", "board-summary-check.mjs", "board-report.mjs"].every((f) => boardScripts.includes(f)),
     `POSITIVE CONTROL: the glob reaches the files named above -- it found ${boardScripts.join(", ")}`);
   for (const file of boardScripts) {
-    assert.doesNotMatch(edition(`scripts/${file}`), LONDON_DAY, `scripts/${file} computes a London day of its own`);
-    assert.doesNotMatch(edition(`scripts/${file}`), UTC_DAY, `scripts/${file} computes a UTC day of its own`);
+    const path = `packages/agent-org/src/${file}`;
+    assert.doesNotMatch(edition(path), LONDON_DAY, `${path} computes a London day of its own`);
+    assert.doesNotMatch(edition(path), UTC_DAY, `${path} computes a UTC day of its own`);
   }
   // POSITIVE CONTROLS for both patterns: the one definition matches the London half, and the UTC half matches the
   // spelling it names, so a regex that matches nothing cannot make the loops above pass.
