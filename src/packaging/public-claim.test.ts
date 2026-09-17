@@ -558,6 +558,12 @@ const NOT_A_DURATION_CLAIM: Record<string, string> = {
     + "figure fixed in one copy and left stale in a second is this repo's most expensive recurring shape. "
     + "#1060 now pins the two copies EQUAL as well as classifying them separately: the range stated "
     + "anywhere on the page must match the one inside the timing block.",
+  "The snippets above set `timeout-minutes: 20` on the job":
+    "#1518: a designed CEILING, not a promise about how long a run takes -- its derivation (a bit over "
+    + "twice the slowest job measured, 9 m 20 s) is stated inline against figures the same paragraph "
+    + "already gives, not read from a recorded gate. The thing this guard exists to catch is a duration "
+    + "promised and never checked against reality; a deliberately generous safety margin is a different "
+    + "claim, and #1518's own account is that NO ceiling at all is the defect.",
   "| a Windows machine already |":
     "#1060: one-time SETUP times in a routing table (about twenty minutes with a Windows machine, 1.5-2 "
     + "hours to build a VM), the same class as 'Getting one takes ~20 minutes' above and for the same "
