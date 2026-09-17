@@ -76,16 +76,68 @@ function cleanup(root: string, bareRoot: string) {
   rmSync(bareRoot, { recursive: true, force: true });
 }
 
+
+// ---------------------------------------------------------------------------------------------------------
+// #1643: THE FIXTURE'S OUTPUT, RECORDED -- so a test of the PARSING does not pay to rebuild the repository.
+//
+// `buildFixtureRepo` is a real `git init` + bare remote + three pushed branches: 264ms measured, and eight
+// tests were each paying it. But what those tests assert is what this module DOES WITH the text git
+// returns -- strip `origin/`, drop `main`, count ahead -- and that logic never touches git. Injecting the
+// text exercises it identically, in microseconds.
+//
+// THE RECORDING IS NOT TRUSTED, IT IS PINNED. `CONTRACT` below builds the real repository once and asserts
+// that the real commands return exactly these strings. If git's output shape ever moves, that one test
+// fails and every fake here is known to be stale -- which is the difference between a fixture and a guess,
+// and the reason this is not simply "mock git and hope".
+const BRANCHES = { stranded: "agent/no-pr-stranded", empty: "agent/no-pr-empty", squash: "agent/squash-merged" };
+
+/** Exactly what the module's own `for-each-ref` prints for that topology. Its pattern is
+ * `refs/remotes/origin/agent` and `.../lead` -- NOT `origin/*` -- so `origin/HEAD` and `main` never
+ * appear, which is why the parsing has nothing to exclude them and does not try. */
+const RECORDED_FOR_EACH_REF = `origin/${BRANCHES.empty}\norigin/${BRANCHES.stranded}\n`
+  + `origin/${BRANCHES.squash}\n`;
+
+/** Exactly what `git rev-list --count origin/main..origin/<branch>` prints, per branch. */
+const RECORDED_AHEAD: Record<string, string> =
+  { [BRANCHES.stranded]: "1\n", [BRANCHES.empty]: "0\n", [BRANCHES.squash]: "1\n" };
+
+/** A `run` that answers from the recording instead of spawning git. Refuses anything unrecorded rather
+ * than returning "" -- an unknown command answering empty is how a mocked seam silently stops testing. */
+function recordedRun(cmd: string, args: string[]): string {
+  if (cmd === "git" && args[0] === "for-each-ref") return RECORDED_FOR_EACH_REF;
+  if (cmd === "git" && args[0] === "rev-list") {
+    const branch = String(args[args.length - 1]).replace("origin/main..origin/", "");
+    const out = RECORDED_AHEAD[branch];
+    if (out === undefined) throw new Error(`recordedRun: no recording for rev-list of ${branch}`);
+    return out;
+  }
+  throw new Error(`recordedRun: no recording for ${cmd} ${args.join(" ")}`);
+}
+
+test("CONTRACT: real git and the recording give this module the SAME answers", () => {
+  const { root, bareRoot } = buildFixtureRepo();
+  try {
+    const realRun = (cmd: string, args: string[]) =>
+      rawExecFileSync(cmd, args, { cwd: root, env: sandboxGitEnv(), encoding: "utf8" });
+    // THROUGH THE MODULE, not by re-typing its command: a contract test that spells the args itself proves
+    // only that MY spelling matches MY recording. Both sides go in the same front door, so if the module
+    // ever changes which refs it asks for, this fails instead of passing about a command nothing runs.
+    assert.deepEqual(fetchPushedBranches({ run: recordedRun }).sort(),
+      fetchPushedBranches({ run: realRun }).sort(),
+      "the recorded for-each-ref output has drifted from what git prints -- every fake below is now stale");
+    for (const branch of Object.keys(RECORDED_AHEAD)) {
+      assert.equal(aheadCount(branch, { run: recordedRun }), aheadCount(branch, { run: realRun }),
+        `the recorded ahead-count for ${branch} has drifted`);
+    }
+  } finally { cleanup(root, bareRoot); }
+});
+
 // --- fetchPushedBranches: real git, real remote-tracking refs ---
 
 test("fetchPushedBranches lists agent/* and lead/* branches, origin/ prefix stripped, main excluded", () => {
-  const { root, bareRoot, strandedBranch, emptyBranch, squashBranch } = buildFixtureRepo();
-  try {
-    const run = (cmd: string, args: string[]) => rawExecFileSync(cmd, args, { cwd: root, env: sandboxGitEnv(), encoding: "utf8" });
-    const branches = fetchPushedBranches({ run });
-    assert.deepEqual(branches.sort(), [emptyBranch, squashBranch, strandedBranch].sort());
-    assert.ok(!branches.includes("main"), "main itself must never be reported as a pushed feature branch");
-  } finally { cleanup(root, bareRoot); }
+  const branches = fetchPushedBranches({ run: recordedRun });
+  assert.deepEqual(branches.sort(), [BRANCHES.empty, BRANCHES.squash, BRANCHES.stranded].sort());
+  assert.ok(!branches.includes("main"), "main itself must never be reported as a pushed feature branch");
 });
 
 test("MUTATION: git itself failing is a thrown error, never an empty (= nothing-pushed-reading) list", () => {
@@ -246,20 +298,12 @@ test("branchesWithNoPR: a branch with ANY PR state (open, closed, merged) is exc
 
 // --- aheadCount: real git, and this is where the squash-merge trap would resurface if misused ---
 
-test("aheadCount reads real commits ahead of main for a genuinely stranded branch", () => {
-  const { root, bareRoot, strandedBranch } = buildFixtureRepo();
-  try {
-    const run = (cmd: string, args: string[]) => rawExecFileSync(cmd, args, { cwd: root, env: sandboxGitEnv(), encoding: "utf8" });
-    assert.equal(aheadCount(strandedBranch, { run }), 1);
-  } finally { cleanup(root, bareRoot); }
+test("aheadCount reads commits ahead of main for a genuinely stranded branch", () => {
+  assert.equal(aheadCount(BRANCHES.stranded, { run: recordedRun }), 1);
 });
 
 test("aheadCount reads ZERO for a pushed branch whose tip already equals main's", () => {
-  const { root, bareRoot, emptyBranch } = buildFixtureRepo();
-  try {
-    const run = (cmd: string, args: string[]) => rawExecFileSync(cmd, args, { cwd: root, env: sandboxGitEnv(), encoding: "utf8" });
-    assert.equal(aheadCount(emptyBranch, { run }), 0);
-  } finally { cleanup(root, bareRoot); }
+  assert.equal(aheadCount(BRANCHES.empty, { run: recordedRun }), 0);
 });
 
 test("MUTATION: aheadCount throws rather than guessing when git cannot answer", () => {
