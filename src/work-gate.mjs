@@ -121,6 +121,59 @@ export function checksSettledGreen(rollup) {
 }
 
 /**
+ * The session a pull request belongs to, from its own `session:` label, or `null`.
+ *
+ * THE PR CARRIES THE LABEL, which is what makes a red build routable at all. The author field cannot do
+ * it -- every PR here is opened by the shared `a11ign-ai-workers` account -- but `arm-pr` puts the
+ * claiming session's label on the PR, so the one thing a broken build needs to know is already there.
+ *
+ * @param {any} pr
+ */
+function sessionOf(pr) {
+  const label = labelsOf(pr).find((/** @type {string} */ n) => n.startsWith("session:"));
+  return label ? label.slice("session:".length) : null;
+}
+
+/**
+ * A pull request whose checks have SETTLED RED, and nobody is fixing it.
+ *
+ * THE THIRD BLIND SPOT, and the one where work actually dies. Found 2026-09-17 by the chairman looking at
+ * a queue the gate called quiet: #1650 sat `mergeStateStatus: BLOCKED` on a failing `changeset` check --
+ * a trivial, entirely fixable process failure -- while `worker-capture`, the session named on its own
+ * label, sat idle. The gate asked whether a draft needed a verdict and whether a row needed claiming, and
+ * both were honestly no. A red build is neither, so nothing asked about it and nothing ever would have.
+ *
+ * `checksSettledGreen` already answered this: `false` means SETTLED AND RED, distinct from `null` for
+ * still-running. Reading only `=== true` and discarding `false` threw the answer away, the same shape as
+ * the verdict bug one function below.
+ *
+ * DRAFTS COUNT TOO. A red draft is not "not ready yet" -- it is a branch whose author stopped, and it
+ * will never earn a verdict because the reviewer lane requires green.
+ *
+ * @param {any} pr
+ */
+function failingChecksOrder(pr) {
+  if (checksSettledGreen(newestPerName(pr.statusCheckRollup)) !== false) return null;
+  const head = String(pr.headRefOid ?? "");
+  if (!head) return null;
+  const head8 = head.slice(0, 8);
+  // ITS OWN SESSION FIRST. Falling back to `product-manager` rather than dropping the order: an unlabelled
+  // red PR is still a stalled PR, and the queue's first reader can find out whose it is.
+  const session = sessionOf(pr) ?? "product-manager";
+  return {
+    session,
+    cause: "pr-checks-failing",
+    subject: `pr-${pr.number}`,
+    discriminator: head8,
+    prompt: `#${pr.number} at \`${head8}\` has FAILING checks and is blocked. `
+      + `${sessionOf(pr) ? "It carries your session label, so it is yours to fix." : "It names no session."} `
+      + "Read the failing job, fix the cause on that branch and push. If the failure is not yours to fix "
+      + "or the PR should be closed, say so on the PR -- a red pull request nobody answers never lands.",
+    causeKey: `${session}/pr-checks-failing/pr-${pr.number}/${head8}`,
+  };
+}
+
+/**
  * The follow-up a SETTLED verdict deserves, or `null` when it deserves none.
  *
  * A VERDICT IS NOT THE END OF THE WORK, AND READING IT AS ONE LEFT PULL REQUESTS ABANDONED. The gate used
@@ -180,6 +233,10 @@ function settledVerdictOrder(pr, found, head8) {
  * @param {any} pr
  */
 function draftOrder(pr) {
+  // RED FIRST, and before the draft check: a red PR is work whether or not it is a draft, and it can
+  // never reach the reviewer lane below, which requires green.
+  const red = failingChecksOrder(pr);
+  if (red) return red;
   if (!pr?.isDraft) return null;
   if (checksSettledGreen(newestPerName(pr.statusCheckRollup)) !== true) return null;
   const head = String(pr.headRefOid ?? "");

@@ -40,9 +40,14 @@ test("#912: a settled green draft with no verdict wakes its parity reviewer -- a
   assert.equal(orders[0].cause, "draft-awaiting-verdict");
   assert.ok(CAUSES.includes(orders[0].cause), "every emitted cause is declared in CAUSES");
 
-  // A RED DRAFT IS THE AUTHOR'S WORK. Waking a reviewer spends the org's most expensive turn (worktree,
-  // acceptance command, re-derived numbers, mutation) on a head the author is still moving.
-  assert.equal(decide({ prs: [draft(3, RED)], readyRows: [] }).length, 0, "a red draft wakes nobody");
+  // A RED DRAFT IS THE AUTHOR'S WORK, and this file said so in this very comment while asserting that it
+  // woke NOBODY -- which is how #1650 sat BLOCKED on a failing changeset with its own session idle. What
+  // must not happen is waking a REVIEWER: that spends the org's most expensive turn (worktree, acceptance
+  // command, re-derived numbers, mutation) on a head the author is still moving. The author being woken
+  // is the comment's own conclusion, finally acted on.
+  const red = decide({ prs: [draft(3, RED)], readyRows: [] });
+  assert.deepEqual(red.map((o) => o.cause), ["pr-checks-failing"], "a red draft is its author's to fix");
+  assert.ok(!red.some((o) => o.session.startsWith("reviewer")), "and no reviewer is spent on a red head");
 
   // PENDING IS NOT GREEN AND NOT RED: unknowable yet, so ask again next tick rather than wake onto a
   // moving head.
@@ -129,4 +134,33 @@ test("#912: the exit contract keeps four states, and 0 is QUIET on purpose", () 
   assert.equal(EXIT.QUIET, 0, "flipping this makes a rate-limited gate look like a quiet queue");
   assert.notEqual(EXIT.CANNOT_ASK, EXIT.QUIET, "a refused read is never a quiet one");
   assert.notEqual(EXIT.PARTIAL, EXIT.QUIET, "a half-examined queue is never a quiet one");
+});
+
+// --- #1650: a red pull request is work, and nobody was asking about it (2026-09-17) ---
+
+test("a settled-RED pull request is an order, routed by its own session label", () => {
+  const pr = { ...draft(50, RED), isDraft: false, labels: [{ name: "session:worker-capture" }] };
+  const orders = decide({ prs: [pr], readyRows: [] });
+  assert.deepEqual(orders.map((o: { cause: string; session: string }) => [o.cause, o.session]),
+    [["pr-checks-failing", "worker-capture"]],
+    "#1650 sat BLOCKED on a failing changeset while the session named on its own label was idle, and the "
+    + "gate called the queue quiet -- `checksSettledGreen` returned false and nothing read it");
+});
+
+test("a RED DRAFT counts too -- it can never reach the reviewer lane, which requires green", () => {
+  const orders = decide({ prs: [draft(51, RED)], readyRows: [] });
+  assert.deepEqual(orders.map((o: { cause: string }) => o.cause), ["pr-checks-failing"],
+    "a red draft is not 'not ready yet', it is a branch whose author stopped");
+});
+
+test("an unlabelled red pull request falls back to product-manager rather than being dropped", () => {
+  const pr = { ...draft(52, RED), isDraft: false, labels: [] };
+  assert.deepEqual(decide({ prs: [pr], readyRows: [] })
+    .map((o: { session: string }) => o.session), ["product-manager"]);
+});
+
+test("checks still RUNNING are not red -- an unsettled build is nobody's job yet", () => {
+  const pr = { ...draft(53, PENDING), isDraft: false, labels: [{ name: "session:worker-judge" }] };
+  assert.deepEqual(decide({ prs: [pr], readyRows: [] }), [],
+    "waking someone to fix a build that has not finished is how a gate becomes noise");
 });
