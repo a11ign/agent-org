@@ -5,11 +5,20 @@
  * the web UI -- every row here is filed with `gh issue create --body`, which bypasses it entirely.
  * Measured 2026-09-09: 39 of ~65 open rows had no Open-check.
  */
+import { declareWalkScope } from "../../../guards/src/walk-scope.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   REQUIRED_FIELDS, missingTemplateFields, templateFieldsReason,
 } from "../row-claim/template-fields-rule.mjs";
+
+// #929: THIS GUARD READS ONLY `packages/agent-org`, so a diff that cannot reach it need not run this file.
+// Undeclared means unbounded, which is why the selector runs 173 always-run guards on every pull
+// request. The declaration is ENFORCED rather than trusted: `declareWalkScope` observes what this
+// file actually reads and fails it here if anything lands outside the scope -- so a scope that is
+// too narrow is loud, never a guard that silently stopped running.
+export const WALK_SCOPE = ["packages/agent-org"];
+await declareWalkScope(import.meta.url);
 
 // --- missingTemplateFields: THE VERDICT, PURE ---
 
