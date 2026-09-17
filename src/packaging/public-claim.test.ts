@@ -45,6 +45,27 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../.
  * So the list is the guard. Adding a public claim without adding it here is the only way back in. */
 const CLAIM_FILES = ["README.md", "docs/try-it.md", "docs/github-action.md", "examples/workflow.yml"] as const;
 
+/* #1599 done-when 2: CLAUDE.md IS DELIBERATELY NOT SCANNED, and this is the reason rather than an
+ * oversight. It carries its own copy of the "N conformant real pages ... asserted wrongly, N referred"
+ * figures (found unguarded by this row) and, unlike `CLAIM_FILES`, has no `<!-- CLAIM:BEGIN -->` marker
+ * and is not the surface `CLAIM_FILES`'s own comment above is about -- it is read by an agent working ON
+ * the repo, not a stranger deciding whether to trust the tool, and it is edited directly, same-day, by
+ * whoever is maintaining it (this file's own history has two such edits landing mid-session).
+ *
+ * Turning the scan on it (tried while building this row) immediately caught a REAL, pre-existing stale
+ * figure -- "0 false positives across 1,183 conformant records", copied from a corpus that has since grown
+ * to 1,405 -- that predates this row and sits outside its Region (`public-claim.test.ts` only; no doc
+ * file). The honest choices were: fix CLAUDE.md's prose (out of Region), hide the stale figure behind a
+ * NOT_A_MEASURED_CLAIM entry (that table's contract is "this reads like a claim and ISN'T one" -- this one
+ * IS a claim, just a wrong one, so classifying it would be the false statement, not a documentation of
+ * one), or leave the scan off with the defect named here. This is the third.
+ *
+ * WHAT ALREADY GUARDS CLAUDE.md: `asserting-subtypes.test.ts`'s own "CLAUDE.md's counts match the
+ * artefacts" test pins its RULE-OWNERSHIP figures (the "only N of the M rules-owned subtypes actually
+ * assert" count) against `rule-ownership.json` directly. The corpus/real-page figure family is not
+ * otherwise guarded and the stale 1,183 above is that gap made concrete -- a fix for CLAUDE.md's own text,
+ * not for this file. */
+
 function claimBlockIn(file: string): string {
   const text = readFileSync(path.join(REPO, file), "utf8");
   const begin = text.indexOf("<!-- CLAIM:BEGIN");
@@ -58,14 +79,24 @@ function claimText(): string {
   return CLAIM_FILES.map(claimBlockIn).join("\n");
 }
 
+/** Every recorded gate entry's own verbatim output, ONE STRING PER ENTRY -- never pre-joined. #1599: the
+ * in-block figure test below still wants one big string (a figure sourced anywhere is enough for the
+ * measured claim proper), but a figure sourced OUTSIDE the block also has to answer "beside what", and
+ * that question only makes sense per entry -- a joined string cannot say which entry a figure and an
+ * outcome word came from, so it cannot tell "422 came from the same table row 'referred' names" from "422
+ * happened to sit in some other entry's timestamp". */
+function recordedGateEntries(): string[] {
+  const dir = path.join(REPO, "docs/board/reported/gates");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).filter((f) => f.endsWith(".json"))
+    .map((f) => JSON.parse(readFileSync(path.join(dir, f), "utf8")).output ?? "");
+}
+
 function recordedGateOutput(): string {
   // ONE FILE PER GATE ENTRY since #159 -- the single JSON file conflicted whenever two agents recorded
   // into it. The QUESTION is unchanged: every figure in the claim must appear in some gate's verbatim
   // output, so this reads the directory and joins what it finds rather than trusting one file's shape.
-  const dir = path.join(REPO, "docs/board/reported/gates");
-  const raw = { gates: !existsSync(dir) ? [] : readdirSync(dir).filter((f) => f.endsWith(".json"))
-    .map((f) => JSON.parse(readFileSync(path.join(dir, f), "utf8"))) };
-  return (raw.gates ?? []).map((g: { output?: string }) => g.output ?? "").join("\n");
+  return recordedGateEntries().join("\n");
 }
 
 /** Figures a reader would act on. Years and version-like tokens are not claims about measurement. */
@@ -164,6 +195,21 @@ function assertDenominators(claim: string, file: string): void {
   ] as const;
   const withdrawn = /under\s+re-measurement\s+since\s+\d{4}-\d{2}-\d{2}/i.test(claim);
 
+  // #1599 M2: A FIGURE STATED BESIDE "UNDER RE-MEASUREMENT." IS STILL A WITHDRAWAL WITH THE DATE DROPPED,
+  // not a population that has "stated its figure". Without this, the loop below reads `figure.test(claim)`
+  // and `continue`s the moment ANY denominator-shaped phrase appears ANYWHERE in the block -- including a
+  // superseded figure quoted alongside its own withdrawal ("...is superseded: re-derived on the 17 of
+  // those pages still in the corpus...") -- so a dateless "under re-measurement." never gets asked for its
+  // date at all as long as some old number is still sitting in the same paragraph. Checked unconditionally,
+  // against the whole block, because a stale-date defect is a defect wherever it sits, not only in a
+  // paragraph a POPULATIONS regex happens to miss.
+  if (/under\s+re-measurement\b/i.test(claim)) {
+    assert.ok(withdrawn,
+      `${file} says a figure is "under re-measurement" with no "since <date>" beside it. A figure still `
+      + "quoted nearby (a superseded number, a historical reference) does not make this a stated claim -- "
+      + "it is a withdrawal, and an undated withdrawal is how a stale number becomes permanent furniture.");
+  }
+
   for (const { what, figure } of POPULATIONS) {
     if (figure.test(claim)) continue;
     assert.ok(withdrawn,
@@ -244,6 +290,26 @@ test("PROOF: a real-page figure with its as-of date renders normally, and one wi
     "84 of 84 conformant real pages examined and clean.", "synthetic"));
 });
 
+test("PROOF (#1599 M2): a stale figure quoted beside an undated withdrawal does not excuse the missing date", () => {
+  // The bug this closes: the POPULATIONS loop below `continue`s the moment its figure regex matches
+  // ANYWHERE in the block, so a historical number sitting near a dateless "under re-measurement." made the
+  // whole population read as "stated", and the missing date was never asked for.
+  assert.throws(() => assertDenominators(
+    "84 conformant records the tool asserted no failures on. The real-page figure is under re-measurement. "
+    + "The 2026-08-24 figure was 18 conformant real pages, 0 asserted wrongly, 4 referred.",
+    "synthetic"),
+    /under re-measurement/,
+    "a dateless 'under re-measurement.' must fail even with an old real-page figure quoted right beside it");
+
+  // The fix does not fire on a genuinely dated withdrawal, historical figure and all -- this is the shape
+  // README.md and docs/try-it.md actually use today.
+  assert.doesNotThrow(() => assertDenominators(
+    "84 conformant records the tool asserted no failures on. The real-page figure is under re-measurement "
+    + "since 2026-09-14. The 2026-08-24 figure was 18 conformant real pages, 0 asserted wrongly, 4 "
+    + "referred.",
+    "synthetic"));
+});
+
 test("the claim block is reachable from the README a stranger opens", () => {
   // A guard over a block nobody renders is a guard over nothing.
   const readme = readFileSync(path.join(REPO, "README.md"), "utf8");
@@ -292,6 +358,52 @@ const OUTCOME =
   /\b(false positives?|false negatives?|true positives?|asserted wrongly|conformant records?|conformant pages?)\b/i;
 const FIGURE = /\b(zero|no|\d[\d,]*)\b/i;
 const NUMERIC_TRANSITION = /\d[\d,]*\s*(?:→|->)\s*\d[\d,]*/;
+
+/**
+ * #1599: A FIGURE IS SOURCED BY ITS PHRASE, NOT BY ITS DIGITS. The bug this row fixes: `gates.includes(n)`
+ * asked only whether a figure's digits occur anywhere in the ENTIRE joined corpus of every gate ever
+ * recorded, so "41" was "sourced" by a diff hunk header (`41c41`) and "422" by a timestamp
+ * (`…30-422Z-…`) in some unrelated entry -- neither gate said anything about this claim at all.
+ *
+ * The fix asks a narrower, truthful question: does ONE recorded gate ENTRY contain this figure as its own
+ * token (not a fragment of a longer number, a hash, or a timestamp) AND, in that SAME entry, the outcome
+ * word the claim uses it beside ("referred", "asserted wrongly", "conformant records", ...)? A gate's own
+ * output is often a TABLE ("floor scored conformant asserted-wrongly ... referred" with the figures in a
+ * row below it) rather than the claim's own prose shape, so this does not require the exact phrase as a
+ * contiguous substring -- only that the figure and the word it is claimed beside came from the same run.
+ */
+const OUTCOME_HINTS: readonly RegExp[] = [
+  /\bfalse\s+positives?\b/i,
+  /\bfalse\s+negatives?\b/i,
+  /\btrue\s+positives?\b/i,
+  /\basserted\b/i,
+  /\bwrongly\b/i,
+  /\bconformant\b/i,
+  /\brecords?\b/i,
+  /\bpages?\b/i,
+  /\breferred\b/i,
+];
+
+/** Which of `OUTCOME_HINTS` a claim-like sentence actually uses -- only those are asked of a gate entry,
+ * so a figure is never sourced by a hint the sentence never made. */
+function outcomeHintsIn(text: string): RegExp[] {
+  return OUTCOME_HINTS.filter((hint) => hint.test(text));
+}
+
+/** A figure token, bounded so it cannot match as a FRAGMENT of a longer number, a hash, or a timestamp --
+ * `41` must not match inside `41c41` or `2026-09-08T17:17:14Z`'s digits either side of it. */
+function figureToken(digits: string): RegExp {
+  return new RegExp(`(?<![\\w.])${digits}(?![\\w.])`);
+}
+
+/** True if SOME recorded gate entry contains this figure as its own token AND, in that same entry, at
+ * least one of the sentence's own outcome words -- the two facts have to come from the same run, not
+ * merely from the same multi-megabyte pile of everything ever recorded. */
+function figureSourcedByPhrase(digits: string, hints: RegExp[], entries: string[]): boolean {
+  if (hints.length === 0) return false; // no outcome word at all -- nothing for this figure to sit beside
+  const token = figureToken(digits);
+  return entries.some((entry) => token.test(entry) && hints.some((hint) => hint.test(entry)));
+}
 
 /** Sentences outside every claim block that read as a measured result. */
 function claimLikeLinesOutsideBlocks(file: string): { line: number; text: string }[] {
@@ -358,6 +470,27 @@ const NOT_A_MEASURED_CLAIM: Record<string, string> = {
     + "object CI's shallow clone has, and a check that can never pass under real conditions is worse than "
     + "no check. Accepted here with its provenance stated in the prose itself (the hash), checkable by "
     + "hand, rather than machine-verified.",
+  // #1599: THREE NEW ENTRIES, found by switching the sourcing check from "digits anywhere" to "this "
+  // figure, beside this outcome word, in the same gate entry" -- none of these three ever had a gate to
+  // be sourced from; they passed only because their digits happened to occur somewhere in the corpus.
+  "true positives: the search box is announced as a bare `edit`":
+    "The three digits here (3.3.2, 4.1.2) are WCAG CRITERION NUMBERS in parentheses, not a count -- "
+    + "`news.ycombinator.com`'s '3 findings, all true positives' is the actual claim, but it sits on the "
+    + "PREVIOUS physical line (these files hard-wrap), which this LINE-scoped check never joins to this "
+    + "one. No gate has ever recorded 'true positive' as a word at all -- there is no board-gate metric "
+    + "for it, only this one demo run's own transcript, which is not machine-checkable here.",
+  "3 findings, all true positives, none from the trained scorer":
+    "A real, reproduced measurement (#1367: the V1 rehearsal's original run, its re-run, and a fresh "
+    + "capture at commit `a8894c27`, all found the same 3 axe-core violations) with its provenance stated "
+    + "inline, the same class as the 'Measured in `907ed704`' entry above -- but there is no board-gate "
+    + "metric named 'true positive' for ANY recorded gate to source this figure from (checked: the word "
+    + "never appears in `docs/board/reported/gates/`), so it is disclosed rather than machine-sourced.",
+  "headings went 5":
+    "Measured once on this project's own local test page, illustrating what a consent-overlay swallowing "
+    + "the whole run looks like -- the same class as the 'Measured in `907ed704`' entry above (a real, "
+    + "reproducible measurement predating the board-recording mechanism) but with no commit to cite: it "
+    + "describes the TOOL's behaviour on a fixture page anyone can reload, not a corpus/real-page metric "
+    + "`docs/board/reported/` was built to track.",
 };
 
 /**
@@ -367,17 +500,21 @@ const NOT_A_MEASURED_CLAIM: Record<string, string> = {
  * the exact "guarded file, unguarded line" shape #313 fixed for durations and left standing here.
  */
 function assertMeasuredClaimSourced(file: string): void {
-  const gates = recordedGateOutput();
+  const entries = recordedGateEntries();
   const discovered = claimLikeLinesOutsideBlocks(file);
   const offenders = discovered
     .filter(({ text }) => !Object.keys(NOT_A_MEASURED_CLAIM).some((key) => text.includes(key)))
-    .filter(({ text }) => figuresIn(text).some((n) =>
-      !gates.includes(n) && !gates.includes(n.replace(/,/g, ""))))
+    .filter(({ text }) => {
+      const hints = outcomeHintsIn(text);
+      return figuresIn(text).some((n) => !figureSourcedByPhrase(n.replace(/,/g, ""), hints, entries));
+    })
     .map(({ line, text }) => `  ${file}:${line}  ${text.slice(0, 90)}`);
 
   assert.deepEqual(offenders, [],
     "these sentences read as a measured result, sit OUTSIDE the claim block, and carry a figure no "
-    + "recorded gate has printed:\n" + offenders.join("\n")
+    + "recorded gate ENTRY prints beside the outcome word this sentence uses it for (a figure found only "
+    + "by coincidence -- a hash, a timestamp, an unrelated entry's own count -- no longer counts):\n"
+    + offenders.join("\n")
     + "\n\nThe claim block is not the boundary of what a reader acts on. Either source the figure from a "
     + "recorded gate in docs/board/reported/, move the sentence inside the block, or classify it in "
     + "NOT_A_MEASURED_CLAIM with a reason.");
@@ -409,6 +546,40 @@ test("every classification still matches a real sentence, so none excuses a prob
       `NOT_A_MEASURED_CLAIM["${key}"] no longer matches any discovered sentence -- the prose was edited `
       + "or the scan drifted. Delete the entry, or re-check the signature.");
   }
+});
+
+test("PROOF (#1599 M3/M4): a figure is sourced by co-occurring with its outcome word in ONE gate entry, "
+  + "not by digits found anywhere across every entry", () => {
+  // Two synthetic entries, standing in for `docs/board/reported/gates/*.json`. Entry A never mentions a
+  // measurement outcome at all; entry B is where the real 41/0/422 figures actually live, beside the
+  // words a reader would recognise them by.
+  const entryA = "run A: 18 commits on the PR, 4 recorded refusal(s), never captured";
+  const entryB = "run B: floor 0.6557  scored 44  conformant 41  asserted-wrongly 0  referred 422";
+  const entries = [entryA, entryB];
+  const sourced = (n: string, text: string) => figureSourcedByPhrase(n, outcomeHintsIn(text), entries);
+
+  const real = "Measured ... 41 conformant real pages ...: 0 criteria asserted wrongly, 422 referred.";
+  for (const n of ["41", "0", "422"]) {
+    assert.ok(sourced(n, real), `${n} sits beside its outcome word in entry B and must be sourced`);
+  }
+
+  // M3: restoring the old undated line reuses 18 and 4 -- both DO appear somewhere in the corpus (entry
+  // A), which is exactly the coincidence the old `gates.includes(n)` rule fell for (README.md:34's "18
+  // real pages ... 4 referred", #1599). Neither ever sits beside "real pages" or "referred" in any entry,
+  // so the phrase check must reject both, or the mutation this row exists to catch is back.
+  const restored = "Measured on 18 real pages … 0 criteria asserted wrongly, 4 referred.";
+  assert.equal(sourced("18", restored), false,
+    "18 sits only in entry A, never beside 'real pages' -- coincidence must not source it");
+  assert.equal(sourced("4", restored), false,
+    "4 sits only in entry A, never beside 'referred' -- coincidence must not source it");
+
+  // The mutation itself, stated rather than merely implied: the OLD rule this row replaces asked only
+  // whether the joined corpus CONTAINS the digits, with no entry or outcome-word requirement at all. If
+  // that rule comes back, this exact fixture reads sourced for 18 and 4 -- the failure this row is about.
+  const oldRuleJoinedCorpus = entries.join("\n");
+  assert.ok(["18", "4"].every((n) => oldRuleJoinedCorpus.includes(n)),
+    "this fixture only proves the row's point if 18 and 4 really are present by coincidence in the "
+    + "corpus -- if this stops being true the fixture needs new numbers, not a passing test");
 });
 
 test("PROOF: prose with a number and no outcome is NOT matched, or the guard gets switched off", () => {
