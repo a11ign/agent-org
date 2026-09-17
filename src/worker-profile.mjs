@@ -107,6 +107,17 @@ export const PROFILES = Object.freeze({
     why: "fixing a red build is debugging, and a wrong guess costs a full CI cycle on top of the tokens, "
       + "so the cheaper tier is not cheaper here",
   }),
+  "ready-queue-empty": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // HIGH, and it is the most consequential judgment in the table. Promotion decides what the whole
+    // engineering capacity does next, and the failure mode is not a wasted turn -- it is rows promoted
+    // without a Region or an Acceptance, which is the `ready:audit` incident and costs every engineer
+    // who then picks one up. Reading fifty rows to find the three that are genuinely ready is the work.
+    effort: "high",
+    why: "promotion decides what every engineer does next, and a row promoted without a Region or an "
+      + "Acceptance costs more than the reading that would have caught it",
+  }),
   "ready-row-unclaimed": Object.freeze({
     kind: "claude",
     model: "sonnet",
