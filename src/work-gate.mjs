@@ -121,6 +121,97 @@ export function checksSettledGreen(rollup) {
 }
 
 /**
+ * The follow-up a SETTLED verdict deserves, or `null` when it deserves none.
+ *
+ * A VERDICT IS NOT THE END OF THE WORK, AND READING IT AS ONE LEFT PULL REQUESTS ABANDONED. The gate used
+ * to say `if (found.verdict !== null) continue;` -- a verdict existed, so it moved on WITHOUT EVER ASKING
+ * WHAT IT SAID. Measured 2026-09-17, hours after the tick went live: #1640 and #1634 had been green,
+ * reviewed and CONVINCED AT HEAD since 2026-09-14 and were still drafts, and the gate called that a quiet
+ * org for three days. `agent-practices.md` says a product PR "is marked ready only when the reviewer
+ * writes convinced"; nothing asked whether that had been ACTED ON.
+ *
+ * BOTH GO TO `product-manager`, whose brief names exactly this work: first reader for "the queue and
+ * process ... promotions, claim reports, merge close-outs". The PR's author cannot route either one --
+ * every PR here is opened by the shared `a11ign-ai-workers` account, so there is no session in it to wake.
+ *
+ * @param {any} pr @param {{verdict: string | null, by: string | null}} found @param {string} head8
+ */
+function settledVerdictOrder(pr, found, head8) {
+  if (found.verdict === "convinced" && pr.isDraft) {
+    return {
+      session: "product-manager",
+      cause: "draft-convinced-not-ready",
+      subject: `pr-${pr.number}`,
+      discriminator: head8,
+      prompt: `Draft #${pr.number} at \`${head8}\` is green and carries a CONVINCED verdict`
+        + `${found.by ? ` from ${found.by}` : ""}, and is still a draft. Per agent-practices a product `
+        + "PR is marked ready once the reviewer is convinced. Mark it ready for review, or say on the PR "
+        + "why it must stay a draft -- an unexplained convinced draft is work nobody is finishing.",
+      causeKey: `product-manager/draft-convinced-not-ready/pr-${pr.number}/${head8}`,
+    };
+  }
+  if (found.verdict === "not-convinced") {
+    return {
+      session: "product-manager",
+      cause: "verdict-not-convinced",
+      subject: `pr-${pr.number}`,
+      discriminator: head8,
+      prompt: `#${pr.number} at \`${head8}\` carries a NOT CONVINCED verdict`
+        + `${found.by ? ` from ${found.by}` : ""} and nothing has moved since. Read the verdict, decide `
+        + "whether it stands, and route the rework to the session holding that row -- or close the PR if "
+        + "the row was wrong. A refused verdict nobody answers is a pull request that never lands.",
+      causeKey: `product-manager/verdict-not-convinced/pr-${pr.number}/${head8}`,
+    };
+  }
+  // Any other settled verdict -- `unrecognised`, or one the opener did not attribute -- is left alone:
+  // re-prompting a reviewer who has already answered costs more than waiting for a human to look.
+  return null;
+}
+
+/**
+ * The one order this pull request deserves right now, or `null`.
+ *
+ * SPLIT OUT OF `decide` when the two stalled-work causes took it past `complexity` 15 and
+ * `local/max-physical-lines-per-function` 90 and the pre-push gate refused it. The split is the honest
+ * one rather than a line-count trick: this asks "what does THIS pull request need" and `decide` asks
+ * "what does the whole queue need". AT MOST ONE order, because a pull request in two states at once
+ * would be a contradiction rather than two jobs.
+ *
+ * @param {any} pr
+ */
+function draftOrder(pr) {
+  if (!pr?.isDraft) return null;
+  if (checksSettledGreen(newestPerName(pr.statusCheckRollup)) !== true) return null;
+  const head = String(pr.headRefOid ?? "");
+  if (!head) return null;
+  const found = verdictAtHead({
+    comments: (pr.comments ?? []).map((/** @type {any} */ c) => ({ body: c?.body ?? "", id: c?.id })),
+    head,
+    prAuthor: pr.author?.login ?? null,
+  });
+  const head8 = head.slice(0, 8);
+  // A VERDICT THE OPENER DID NOT ATTRIBUTE COUNTS AS SETTLED, and that is the wake side's default rather
+  // than a reading of the comment: `verdictAtHead` returns `byIsAuthor: null` for it and refuses to guess
+  // (#1244). Waking anyway would re-prompt a reviewer who has already answered; the cost of being wrong
+  // the other way is one author-written verdict going unchallenged, which `ceo`'s spot-check of one
+  // verdict in five is the control for.
+  if (found.verdict !== null) return settledVerdictOrder(pr, found, head8);
+
+  // ODD/EVEN PARITY IS THE ORG'S OWN SPLIT (`.claude/rules/agent-practices.md`): odd PR numbers go to
+  // `reviewer`, even to `reviewer-2`. Stated there, applied here, spelled in neither twice.
+  const session = Number(pr.number) % 2 === 1 ? "reviewer" : "reviewer-2";
+  return {
+    session,
+    cause: "draft-awaiting-verdict",
+    subject: `pr-${pr.number}`,
+    discriminator: head8,
+    prompt: `Draft #${pr.number} at \`${head8}\` has settled green checks and no verdict at that head. `
+      + "Review it per packages/agent-org/docs/roles/reviewer.md and leave one comment carrying your verdict.",
+    causeKey: `${session}/draft-awaiting-verdict/pr-${pr.number}/${head8}`,
+  };
+}
+
+/**
  * PURE. The orders the state implies.
  *
  * Every order carries a `causeKey` derivable from GitHub state alone, so re-running this gate produces a
@@ -139,36 +230,9 @@ export function decide({ prs, readyRows }) {
   const orders = [];
 
   for (const pr of prs) {
-    if (!pr?.isDraft) continue;
-    if (checksSettledGreen(newestPerName(pr.statusCheckRollup)) !== true) continue;
-    const head = String(pr.headRefOid ?? "");
-    if (!head) continue;
-    const found = verdictAtHead({
-      comments: (pr.comments ?? []).map((/** @type {any} */ c) => ({ body: c?.body ?? "", id: c?.id })),
-      head,
-      prAuthor: pr.author?.login ?? null,
-    });
-    // A VERDICT THE OPENER DID NOT ATTRIBUTE COUNTS AS SETTLED HERE, and that is the wake side's default
-    // rather than a reading of the comment: `verdictAtHead` returns `byIsAuthor: null` for it and refuses
-    // to guess (#1244). Waking anyway would re-prompt a reviewer who has already answered; the cost of
-    // being wrong the other way is one author-written verdict going unchallenged, which `ceo`'s spot-check
-    // of one verdict in five is the control for.
-    if (found.verdict !== null) continue;
-    const head8 = head.slice(0, 8);
-    // ODD/EVEN PARITY IS THE ORG'S OWN SPLIT (`.claude/rules/agent-practices.md`): odd PR numbers go to
-    // `reviewer`, even to `reviewer-2`. Stated there, applied here, spelled in neither twice.
-    const session = Number(pr.number) % 2 === 1 ? "reviewer" : "reviewer-2";
-    orders.push({
-      session,
-      cause: "draft-awaiting-verdict",
-      subject: `pr-${pr.number}`,
-      discriminator: head8,
-      prompt: `Draft #${pr.number} at \`${head8}\` has settled green checks and no verdict at that head. `
-        + "Review it per packages/agent-org/docs/roles/reviewer.md and leave one comment carrying your verdict.",
-      causeKey: `${session}/draft-awaiting-verdict/pr-${pr.number}/${head8}`,
-    });
+    const order = draftOrder(pr);
+    if (order) orders.push(order);
   }
-
   // UNCLAIMED IS `ready` WITHOUT `in-progress`. This is a CANDIDATE, not a grant: `row-claim.mjs` is the
   // authority and the woken engineer runs it. A gate that claimed rows would be a second writer of the
   // claim state, which is the race #176 already cost this repo once.
@@ -183,7 +247,15 @@ export function decide({ prs, readyRows }) {
       subject: `rows-${unclaimed.map((r) => r.number).sort((a, b) => a - b).join("-")}`,
       discriminator: String(unclaimed.length),
       prompt: `${unclaimed.length} Ready row(s) unclaimed: ${rows}. Claim the oldest with `
-        + "`node packages/agent-org/src/row-claim.mjs claim <n> --session=<you> --branch=agent/<branch>` and build it.",
+        + "`node packages/agent-org/src/row-claim.mjs claim <n> --session=<you> --branch=agent/<slug>-<n> --worktree=../wt-<n>` and build it there.\n"
+        // BOTH FLAGS OR NEITHER, and the primary refuses the work entirely: `row-claim` creates the
+        // worktree from `--branch` AND `--worktree` together and refuses when given only one, and the
+        // tooling will not run from the primary checkout at all. The first engineer woken by this
+        // system (2026-09-17) stopped and asked a human for both facts, because the order named
+        // neither -- so they are named here rather than left to a role brief the session may not have
+        // read yet. `../wt-<n>` is the sibling convention every live worktree on the host follows.
+        + "The claim creates that worktree for you; run the command from the primary checkout, then do all "
+        + "the work inside the new worktree rather than the primary.",
       causeKey: `engineers/ready-row-unclaimed/${unclaimed.map((r) => r.number).sort((a, b) => a - b).join("-")}`,
     });
   }
