@@ -31,6 +31,7 @@
 //
 // The declaration is verified against the entry's own code, so if one of these functions ever starts
 // doing its own lookups this refuses rather than trusting the comment.
+import { declareWalkScope } from "../../../guards/src/walk-scope.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -150,6 +151,14 @@ test("the check does NOT run on a schedule, which is the property it exists for"
 import { GUARDED_WORKFLOWS, missedTodaysWindow } from "../board-schedule-liveness.mjs";
 import { hostWorkflowFile, hoursSincePreviousRun, watchdogSilenceLine }
   from "../board-schedule-liveness.mjs";
+
+// #929: THIS GUARD READS ONLY `docs`, `.github/workflows`, so a diff that cannot reach it need not run this file.
+// Undeclared means unbounded, which is why the selector runs 173 always-run guards on every pull
+// request. The declaration is ENFORCED rather than trusted: `declareWalkScope` observes what this
+// file actually reads and fails it here if anything lands outside the scope -- so a scope that is
+// too narrow is loud, never a guard that silently stopped running.
+export const WALK_SCOPE = ["docs",".github/workflows"];
+await declareWalkScope(import.meta.url);
 
 test("#590 every workflow the watchdog's HEADER names is one its code actually guards", () => {
   // DERIVED FROM THE HEADER, never a second hand-written list -- a second list is exactly what the first

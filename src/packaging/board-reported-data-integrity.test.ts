@@ -7,11 +7,20 @@
  * otherwise applies. See docs/operational-lessons.md, "Guard triage 4 of 6", for the rest of the file's
  * reasoning and what else it asserted.
  */
+import { declareWalkScope } from "../../../guards/src/walk-scope.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+
+// #929: THIS GUARD READS ONLY `docs`, so a diff that cannot reach it need not run this file.
+// Undeclared means unbounded, which is why the selector runs 173 always-run guards on every pull
+// request. The declaration is ENFORCED rather than trusted: `declareWalkScope` observes what this
+// file actually reads and fails it here if anything lands outside the scope -- so a scope that is
+// too narrow is loud, never a guard that silently stopped running.
+export const WALK_SCOPE = ["docs"];
+await declareWalkScope(import.meta.url);
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
 
