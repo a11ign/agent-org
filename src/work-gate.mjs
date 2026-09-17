@@ -74,12 +74,6 @@ export function readPrs(run = defaultRun) {
 }
 
 /**
- * Open rows carrying `ready`. FILTERED SERVER-SIDE by the label the API already indexes, so this stays
- * one call and this file never spells the literal -- `claim-labels.mjs` owns it (#804).
- * @param {(args: string[]) => string} run
- * @returns {any[] | null}
- */
-/**
  * Labels that already mean NOT PICKABLE, so a row carrying one is not promotable however it is counted.
  *
  * `fleet-gated` is the load-bearing one for parallelism: that work serialises behind physical hardware,
@@ -117,6 +111,12 @@ export function readPromotableCount(run = defaultRun) {
   }
 }
 
+/**
+ * Open rows carrying `ready`. FILTERED SERVER-SIDE by the label the API already indexes, so this stays
+ * one call and this file never spells the literal -- `claim-labels.mjs` owns it (#804).
+ * @param {(args: string[]) => string} run
+ * @returns {any[] | null}
+ */
 export function readReadyRows(run = defaultRun) {
   try {
     const out = run(["issue", "list", "--state", "open", "--label", READY_LABEL, "--limit", "100",
