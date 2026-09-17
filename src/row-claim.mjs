@@ -861,8 +861,9 @@ function completeClaim(issueNumber,
  *
  * @param {number} issueNumber
  * @returns {{ code: number | null, output: string }}
+ *
+ * @param {number} issueNumber
  */
-/** @param {number} issueNumber */
 function reportReachability(issueNumber) {
   try {
     // `fileURLToPath`, NOT `.pathname` -- a URL's pathname is percent-ENCODED, so a checkout under a

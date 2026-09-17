@@ -1196,18 +1196,6 @@ function renderPdfWithChrome(html, pdf) {
     `--print-to-pdf=${pdf}`, `file://${html}`], { stdio: "pipe" });
 }
 
-/** Deliver the PDF as an asset on a DRAFT GitHub Release, which is one click from the Releases tab.
- *
- * A draft release was chosen over attaching to the report issue because GitHub's API cannot attach a file
- * to an issue comment at all -- that is a web-UI drag-and-drop, so a daily automated attachment is
- * impossible, not merely awkward.
- *
- * THE TAG IS NAMESPACED `board/<date>` AND THE RELEASE STAYS A DRAFT, both deliberately. A draft creates
- * no git tag until it is published, so nothing here can be mistaken for a product version or picked up by
- * the changesets machinery -- which matters in a repo whose first npm publish has not happened yet and
- * whose release workflow reads tags.
- * @param {string} pdf
- */
 /**
  * THE LATE GATE RUNS BEFORE ANYTHING IS COLLECTED OR RENDERED (#607). Every one of its four conditions is
  * knowable without the document, and a refusal that arrives after a render has spent a minute reading
@@ -1233,7 +1221,21 @@ export function londonNowHHMM() {
     { timeZone: "Europe/London", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date());
 }
 
-/** @param {string} pdf */
+/**
+ * Deliver the PDF as an asset on a DRAFT GitHub Release, which is one click from the Releases tab.
+ *
+ * A draft release was chosen over attaching to the report issue because GitHub's API cannot attach a file
+ * to an issue comment at all -- that is a web-UI drag-and-drop, so a daily automated attachment is
+ * impossible, not merely awkward.
+ *
+ * THE TAG IS NAMESPACED `board/<date>` AND THE RELEASE STAYS A DRAFT, both deliberately. A draft creates
+ * no git tag until it is published, so nothing here can be mistaken for a product version or picked up by
+ * the changesets machinery -- which matters in a repo whose first npm publish has not happened yet and
+ * whose release workflow reads tags.
+ * @param {string} pdf
+ *
+ * @param {string} pdf
+ */
 function publishToDraftRelease(pdf) {
   const tag = `board/${editionDay()}`;
   const title = `Board report — ${editionDay()}`;

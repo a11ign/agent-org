@@ -91,8 +91,7 @@ export function sessionLabelsOf(rowLabels) {
  * a row with no session label is unclaimed whoever filed it).
  * @param {string[][]} rowLabelLists
  * @returns {string[]}
- */
-/**
+ *
  * #1000/#913, #1453: THE SESSIONS THAT EXIST, READ FROM `docs/roles/sessions.json` -- `ceo`'s file, never typed here.
  *
  * Four `session:*` labels are RETIRED BY DESCRIPTION rather than deleted -- `dispatcher`, `worker-audit`,

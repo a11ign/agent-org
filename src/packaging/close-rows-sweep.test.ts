@@ -28,7 +28,7 @@ const refuseOnly = (row: number, message: string) => (n: number) =>
   (n === row ? { settled: false, refused: [refusal(n, message)] } : { settled: true, refused: [] });
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-const SCRIPT = `${REPO}/scripts/close-rows-sweep.mjs`;
+const SCRIPT = `${REPO}/packages/agent-org/src/close-rows-sweep.mjs`;
 
 // --- mergedPrsInWindow: the query, driven with an injected gh ---
 

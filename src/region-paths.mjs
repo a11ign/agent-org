@@ -26,6 +26,8 @@ import { fileURLToPath } from "node:url";
 
 import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
 
+/** @type {string[] | null} */
+let topLevelCache = null;
 /**
  * The repository's own top-level directories, from git rather than from a list.
  *
@@ -41,8 +43,6 @@ import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
  * Memoised on first use -- one `ls-files` per process, and this module is imported by a dozen test files.
  * @returns {string[]}
  */
-/** @type {string[] | null} */
-let topLevelCache = null;
 export function trackedTopLevelDirs() {
   if (topLevelCache) return topLevelCache;
   const out = execFileSync("git", ["ls-files"], { encoding: "utf8", env: sandboxGitEnv() });

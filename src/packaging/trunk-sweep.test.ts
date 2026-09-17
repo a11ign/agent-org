@@ -15,7 +15,7 @@ import { parse as parseYaml } from "yaml";
 import { needsGateSweep, EXIT } from "../trunk-sweep.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-const SCRIPT = `${REPO}/scripts/trunk-sweep.mjs`;
+const SCRIPT = `${REPO}/packages/agent-org/src/trunk-sweep.mjs`;
 
 // --- needsGateSweep: the pure decision ---
 

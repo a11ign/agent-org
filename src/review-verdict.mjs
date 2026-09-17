@@ -120,6 +120,14 @@ export function reviewVerdict(body) {
     : { verdict: "none", word: null, head, author };
 }
 
+/** Whether this comment carries a real verdict at `head`. Extracted so `verdictAtHead` stays under the
+ * complexity ceiling -- the loop was doing the finding and the judging in one function. */
+function verdictHereAt(comment, head) {
+  const parsed = reviewVerdict(comment?.body ?? "");
+  if (parsed.verdict !== "convinced" && parsed.verdict !== "not-convinced") return null;
+  return headMatches(parsed.head, head) ? parsed : null;
+}
+
 /**
  * #912: THE VERDICT AT ONE HEAD, AND WHO WROTE IT -- the question a wake gate actually asks.
  *
@@ -151,14 +159,6 @@ export function reviewVerdict(body) {
  * @returns {{ verdict: "convinced" | "not-convinced" | null, by: string | null,
  *             byIsAuthor: boolean | null, id: number | string | null, examined: number }}
  */
-/** Whether this comment carries a real verdict at `head`. Extracted so `verdictAtHead` stays under the
- * complexity ceiling -- the loop was doing the finding and the judging in one function. */
-function verdictHereAt(comment, head) {
-  const parsed = reviewVerdict(comment?.body ?? "");
-  if (parsed.verdict !== "convinced" && parsed.verdict !== "not-convinced") return null;
-  return headMatches(parsed.head, head) ? parsed : null;
-}
-
 export function verdictAtHead({ comments, head, prAuthor = null }) {
   const examined = comments?.length ?? 0;
   const none = { verdict: /** @type {null} */ (null), by: null, byIsAuthor: /** @type {null} */ (null),

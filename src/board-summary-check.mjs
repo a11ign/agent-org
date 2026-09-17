@@ -99,25 +99,6 @@ function fetchOriginMain() {
   return fetchedOriginMain;
 }
 
-/**
- * ONE TRACKED FILE, AS `origin/main` HAS IT — the only copy the 08:00 edition will ever see.
- *
- * `board-report.yml` checks out `ref: main` on a GitHub runner, so anything in a working tree or on an
- * unmerged branch does not exist as far as the edition is concerned.
- *
- * FETCHES FIRST, and that is not belt-and-braces. A remote-tracking ref is only as fresh as the last
- * fetch, so reading `origin/main` without one reproduces the identical defect one layer along: a
- * confident answer about a copy that has moved. Failing to fetch is INCONCLUSIVE rather than absent —
- * "I could not ask" and "it is not there" demand opposite responses, and only one of them is somebody's
- * fault.
- *
- * ONE READER, TWO CALLERS, deliberately. The summary and the record ask the identical question of the
- * identical remote, and two hand-written copies of that question are this repository's most-recorded
- * shape -- the second copy is the one that forgets to fetch.
- *
- * @param {string} relPath
- * @returns {{ text: string | null, asked: boolean, why: string }}
- */
 /** The SAME question of a DIRECTORY, which `git show` cannot answer (#159).
  *
  * `reported.json` became `reported/`, one file per entry, because several agents record into it and
@@ -161,7 +142,27 @@ function dirOnOriginMain(relDir) {
   }
 }
 
-/** @param {string} relPath */
+/**
+ * ONE TRACKED FILE, AS `origin/main` HAS IT — the only copy the 08:00 edition will ever see.
+ *
+ * `board-report.yml` checks out `ref: main` on a GitHub runner, so anything in a working tree or on an
+ * unmerged branch does not exist as far as the edition is concerned.
+ *
+ * FETCHES FIRST, and that is not belt-and-braces. A remote-tracking ref is only as fresh as the last
+ * fetch, so reading `origin/main` without one reproduces the identical defect one layer along: a
+ * confident answer about a copy that has moved. Failing to fetch is INCONCLUSIVE rather than absent —
+ * "I could not ask" and "it is not there" demand opposite responses, and only one of them is somebody's
+ * fault.
+ *
+ * ONE READER, TWO CALLERS, deliberately. The summary and the record ask the identical question of the
+ * identical remote, and two hand-written copies of that question are this repository's most-recorded
+ * shape -- the second copy is the one that forgets to fetch.
+ *
+ * @param {string} relPath
+ * @returns {{ text: string | null, asked: boolean, why: string }}
+ *
+ * @param {string} relPath
+ */
 function fileOnOriginMain(relPath) {
   const ref = `origin/main:${relPath}`;
   const fetch = fetchOriginMain();

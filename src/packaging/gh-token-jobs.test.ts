@@ -130,7 +130,7 @@ test("#1449: the walker reaches a gh spawn made through `execFile`, and not an `
 test("#1449: this guard reads the token charge's ONE spawn regex -- it imports SPAWNS_GH and declares none of its own", () => {
   const source = readFileSync(fileURLToPath(import.meta.url), "utf8");
   const code = source.split("\n").filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line)).join("\n");
-  assert.match(code, /import\s*\{\s*SPAWNS_GH\s*\}\s*from\s*"\.\.\/\.\.\/\.\.\/\.\.\/packages\/agent-org\/src\/acceptance-commands\.mjs"/,
+  assert.match(code, /import\s*\{\s*SPAWNS_GH\s*\}\s*from\s*"[^"]*agent-org\/src\/acceptance-commands\.mjs"/,
     "SPAWNS_GH must come from acceptance-commands.mjs, the regex the token charge itself uses");
   assert.doesNotMatch(code, /\b(?:const|let|var)\s+SPAWNS_GH\b/,
     "a local SPAWNS_GH is a second copy of the charge's list -- the drift #1449 was filed about");

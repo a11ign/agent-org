@@ -53,7 +53,7 @@ import {
 import { revertVerdict, EXIT as REVERT_EXIT } from "../trunk-revert.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-const SCRIPT = `${REPO}/scripts/trunk-revert-guard.mjs`;
+const SCRIPT = `${REPO}/packages/agent-org/src/trunk-revert-guard.mjs`;
 
 /**
  * A LOCAL CLONE WITH ITS OWN `origin`, BECAUSE THIS SCRIPT REALLY FETCHES.

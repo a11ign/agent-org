@@ -499,8 +499,9 @@ const READY_FLAG = "--ready";
  * a filer states on purpose, never a default.
  * @param {string[]} argv
  * @returns {{ label: "backlog" | "ready", status: "Backlog" | "Ready" }}
+ *
+ * The label that says a row is deliberately outside the release, rather than missing its milestone.
  */
-/** The label that says a row is deliberately outside the release, rather than missing its milestone. */
 export const OUT_OF_RELEASE = "out-of-release";
 
 /**

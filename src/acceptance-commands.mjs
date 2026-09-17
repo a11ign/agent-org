@@ -402,37 +402,6 @@ function writeDeclarationHolds(codeOnly, writesPath) {
 const fingerprint = (a, b) => a + b;
 
 /**
- * #967: A MODULE'S TOP LEVEL IS WHAT AN IMPORT EXECUTES -- everything else runs only when called.
- *
- * The closure walk scanned every imported file's whole text, so `dataset-paths.mjs` was charged `corpus`
- * by any test that imported it, including one importing `REPO_ROOT` and nothing else. Measured before the
- * fix: the hit was its `export function runsRoot() {` DEFINITION at :93, and removing the definition from
- * the pattern only moved the hit to :116 -- the file calls `runsRoot()` five times (116, 178, 188, 203,
- * 246) and every one is inside a function body. Its top level is two constants, so importing it runs none
- * of them and reads nothing. **Three pull requests moved code into new corpus-free modules to get around
- * this** (#943, #955, #966), which is an import rule shaping the code's structure.
- *
- * PARSED, NOT BRACE-MATCHED. `typescript` is a declared devDependency and this script runs after `npm ci`
- * in `reusable-acceptance.yml`, so the module's own statements come from `ts.createSourceFile`. A
- * hand-rolled brace matcher would have to survive template literals and regex literals containing braces,
- * and a wrong one fails in the direction that looks like success -- the #731 trap, one layer over.
- *
- * OFFSETS ARE PRESERVED: a body is replaced by spaces of the same length, keeping newlines, exactly as
- * `stripComments` does. So `lineNumberOf` still reports the real line of whatever survives.
- *
- * WHAT THE IMPORTER ACTUALLY IMPORTED IS KEPT TOO, and leaving it out was a defect this file's own #731
- * boundary test caught: `corpus-settled.mjs` imports `datasetRoot` from `dataset-paths.mjs` and CALLS it,
- * so it genuinely needs the corpus — while its own text names `runsRoot` only in a comment. A rule of
- * "top level only" reported it as needing nothing. So the kept span is the module's top level PLUS the
- * bodies of the declarations whose names this importer names, which is the same question #827 asks for
- * tokens: charge for the export a caller actually imports, not for every spawn anywhere in the file.
- *
- * @param {string} codeOnly the file's text, comments already stripped
- * @param {string} fileName for the parser's diagnostics only
- * @param {Set<string>} imported the names the importing file took from this module
- * @returns {string} the same text with unreachable bodies blanked
- */
-/**
  * `typescript`, LOADED ONLY WHEN A CLOSURE IS ACTUALLY SCANNED -- and this is not a style choice.
  *
  * A STATIC import breaks two pre-install entries, and `pre-install-import-graph.test.ts` said so by name
@@ -464,8 +433,39 @@ function loadTypescript() {
   return typescriptModule;
 }
 
-function topLevelCode(/** @type {string} */ codeOnly, /** @type {string} */ fileName,
-  /** @type {Set<string>} */ imported = new Set()) {
+/**
+ * #967: A MODULE'S TOP LEVEL IS WHAT AN IMPORT EXECUTES -- everything else runs only when called.
+ *
+ * The closure walk scanned every imported file's whole text, so `dataset-paths.mjs` was charged `corpus`
+ * by any test that imported it, including one importing `REPO_ROOT` and nothing else. Measured before the
+ * fix: the hit was its `export function runsRoot() {` DEFINITION at :93, and removing the definition from
+ * the pattern only moved the hit to :116 -- the file calls `runsRoot()` five times (116, 178, 188, 203,
+ * 246) and every one is inside a function body. Its top level is two constants, so importing it runs none
+ * of them and reads nothing. **Three pull requests moved code into new corpus-free modules to get around
+ * this** (#943, #955, #966), which is an import rule shaping the code's structure.
+ *
+ * PARSED, NOT BRACE-MATCHED. `typescript` is a declared devDependency and this script runs after `npm ci`
+ * in `reusable-acceptance.yml`, so the module's own statements come from `ts.createSourceFile`. A
+ * hand-rolled brace matcher would have to survive template literals and regex literals containing braces,
+ * and a wrong one fails in the direction that looks like success -- the #731 trap, one layer over.
+ *
+ * OFFSETS ARE PRESERVED: a body is replaced by spaces of the same length, keeping newlines, exactly as
+ * `stripComments` does. So `lineNumberOf` still reports the real line of whatever survives.
+ *
+ * WHAT THE IMPORTER ACTUALLY IMPORTED IS KEPT TOO, and leaving it out was a defect this file's own #731
+ * boundary test caught: `corpus-settled.mjs` imports `datasetRoot` from `dataset-paths.mjs` and CALLS it,
+ * so it genuinely needs the corpus — while its own text names `runsRoot` only in a comment. A rule of
+ * "top level only" reported it as needing nothing. So the kept span is the module's top level PLUS the
+ * bodies of the declarations whose names this importer names, which is the same question #827 asks for
+ * tokens: charge for the export a caller actually imports, not for every spawn anywhere in the file.
+ *
+ * @param {string} codeOnly the file's text, comments already stripped
+ * @param {string} fileName for the parser's diagnostics only
+ * @param {Set<string>} imported the names the importing file took from this module
+ * @returns {string} the same text with unreachable bodies blanked
+ */
+function topLevelCode(codeOnly, fileName,
+  imported = new Set()) {
   const ts = loadTypescript();
   if (ts === null) return codeOnly; // no parser: scan everything, which refuses more, never less
   const source = ts.createSourceFile(fileName, codeOnly, ts.ScriptTarget.Latest, true);
@@ -850,6 +850,8 @@ export function runsTheWholeSuite(command) {
   return /(?:^|&&|\|\||;)\s*npm\s+(?:run\s+)?(?:test:ts|test)(?![:\w-])/.test(command.trim());
 }
 
+/** @type {string[] | null} */
+let suiteFilesCache = null;
 /**
  * Every test file `npm test` runs, FROM `test:ts`'s OWN GLOB rather than a second copy of it.
  *
@@ -861,8 +863,6 @@ export function runsTheWholeSuite(command) {
  *
  * @returns {string[]}
  */
-/** @type {string[] | null} */
-let suiteFilesCache = null;
 export function suiteTestFiles() {
   if (suiteFilesCache) return suiteFilesCache;
   let script;

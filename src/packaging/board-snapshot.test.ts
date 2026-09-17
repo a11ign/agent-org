@@ -726,7 +726,8 @@ test("#1352: launchGate writes the notice or the refusal and says whether to sto
 });
 
 test("#1352 DONE-WHEN 1: each policy script, launched from a plain checkout, refuses before anything; from a linked worktree it does not", () => {
-  const scripts = pathOf(new URL("../../../../scripts/", import.meta.url));
+  // The policy scripts (row-claim, board-snapshot, ...) moved into @a11ign/agent-org.
+  const scripts = pathOf(new URL("../", import.meta.url));
   const root = mkdtempSync(joinPath(tmpdir(), "policy-launch-"));
   try {
     const plain = joinPath(root, "plain");
