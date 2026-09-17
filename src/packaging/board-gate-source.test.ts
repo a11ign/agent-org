@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { gateVerdicts, isConformanceGate, latestVerdictGate, worstVerdict } from "../../../../scripts/board-gates.mjs";
+import { gateVerdicts, isConformanceGate, latestVerdictGate, worstVerdict } from "../board-gates.mjs";
 
 type Gate = { command: string; at: string; output: string; reportedBy?: string };
 const GATES = new URL("../../../../docs/board/reported/gates/", import.meta.url);

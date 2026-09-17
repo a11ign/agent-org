@@ -1,5 +1,5 @@
 /**
- * `scripts/prune-worktrees.mjs` removes a stale worktree only when it is BOTH merged into `origin/main`
+ * `packages/agent-org/src/prune-worktrees.mjs` removes a stale worktree only when it is BOTH merged into `origin/main`
  * and has a clean working tree, names everything else as DIRTY without touching it, and never touches the
  * PRIMARY checkout. See that file's own header for the incident (36 worktrees, 4.4 GB, a rule maintained
  * by hand).
@@ -11,7 +11,7 @@
  *
  * GIT_* SCRUBBED on every spawn, including this file's own fixture-building `git()` helper: if `GIT_DIR`
  * happened to be set (this hook exports it into a hook environment, which is exactly why
- * `scripts/git-env.mjs` exists), an unscrubbed git call in a fixture helper would redirect onto whatever
+ * `packages/guards/src/git-env.mjs` exists), an unscrubbed git call in a fixture helper would redirect onto whatever
  * `GIT_DIR` names instead of the intended disposable `/tmp` repo -- the identical class of defect closed
  * elsewhere today, caught here by `git-spawn-classification.test.ts`'s own discovery before this file
  * ever shipped.
@@ -26,12 +26,12 @@ import {
   parseWorktreeList, isPrimaryWorktree, classify, detachedMergeStatus, mergeStatus, isContentMerged,
   isWorkingTreeClean, pruneWorktrees, recentGitActivity, ACTIVITY_WINDOW_MS,
   strandedWork, formatStranded, trackedChanges, unverifiedRecords, formatReport,
-} from "../../../../scripts/prune-worktrees.mjs";
-import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
+} from "../prune-worktrees.mjs";
+import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
 
 // The CLI is spawned as a real process below, so the argv path -- the only place `dryRun` is
 // decided -- is exercised rather than reasoned about.
-const PRUNE_CLI = new URL("../../../../scripts/prune-worktrees.mjs", import.meta.url).pathname;
+const PRUNE_CLI = new URL("../prune-worktrees.mjs", import.meta.url).pathname;
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, env: sandboxGitEnv(), encoding: "utf8" });
 
@@ -474,7 +474,7 @@ test("the primary is NEVER passed to remove(), even if (hypothetically) it looke
  * dropped -- passes every test above and removes three sessions' worktrees on the next unattended run.
  *
  * THESE THREE REPLACE AN ACCEPTANCE COMMAND THAT COULD NOT EXIST. #669 first stated the refusal as
- * `node scripts/prune-worktrees.mjs --dry-run  # must be REFUSED` in its acceptance block, and the
+ * `node packages/agent-org/src/prune-worktrees.mjs --dry-run  # must be REFUSED` in its acceptance block, and the
  * acceptance runner ran it, got the exit 2 the refusal is FOR, and failed the job -- because an
  * acceptance command's verdict IS its exit code, so a command whose correct answer is nonzero cannot be
  * one. A negative case belongs where the expected exit code can be written down.

@@ -10,7 +10,7 @@
 
 /**
  * RULE: DOES THE CLAIMING SESSION ALREADY HOLD A ROW IN BUILD? -- B2, #476, rewritten by #989. See
- * `scripts/row-claim/own-pr-health-rule.mjs` for the full account.
+ * `packages/agent-org/src/row-claim/own-pr-health-rule.mjs` for the full account.
  *
  * The predicate it replaces asked whether the session's own PR was OPEN AT ALL, so a PR that was green and
  * waiting only on its reviewer blocked its author from starting anything -- #988 was green from 07:46Z and
@@ -23,7 +23,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   inBuildReason, isInBuild, lookupOtherHeldIssues, lookupClosingPrHealth, lookupRowShape,
-} from "../../../../scripts/row-claim/own-pr-health-rule.mjs";
+} from "../row-claim/own-pr-health-rule.mjs";
 
 /** A row owed a commit: held, declaring files, no sub-rows, no PR. Each test changes ONE fact from this. */
 const inBuild = { number: 989, declaresPaths: true, subIssues: 0, closingPr: undefined };

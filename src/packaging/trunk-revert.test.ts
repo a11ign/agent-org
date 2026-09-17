@@ -20,7 +20,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { revertVerdict, revertPrBody, revertTriggerJobs, newestRunFor, conclusionOf,
   prCreateArgs, pushedNoPrMessage, EXIT }
-  from "../../../../scripts/trunk-revert.mjs";
+  from "../trunk-revert.mjs";
 
 const PUSH = "a1b2c3d4e5f6789012345678901234567890abcd";
 
@@ -298,7 +298,7 @@ test("#616 MUTATION TARGET: nothing in the revert path arms the PR", () => {
   // and `auto-arm.yml` would therefore never see it. That fact is unchanged and is now load-bearing in
   // the other direction: un-drafting alone does not arm it either, so whoever confirms the attribution
   // must arm it by hand. That is the right amount of friction for an action that deletes merged work.
-  const source = readFileSync(path.join(REPO_ROOT, "scripts/trunk-revert.mjs"), "utf8");
+  const source = readFileSync(path.join(REPO_ROOT, "packages/agent-org/src/trunk-revert.mjs"), "utf8");
   const armCall = /gh\(\[\s*"pr",\s*"merge"[\s\S]{0,120}?"--auto"/.exec(source);
   assert.equal(armCall, null,
     "trunk-revert.mjs must not arm its own revert PR: a draft that arms itself is not a hold");

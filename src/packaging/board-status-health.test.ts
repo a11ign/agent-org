@@ -25,7 +25,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { statusContradictions, statusCensus } from "../../../../scripts/board-status-health.mjs";
+import { statusContradictions, statusCensus } from "../board-status-health.mjs";
 import { readFileSync } from "node:fs";
 
 /** The shape the real query returns, with the numbers this row measured. */
@@ -101,7 +101,7 @@ test("#1219: the Status vocabulary is INJECTED, so a renamed column fails loudly
  * tonight.
  */
 test("#1219: the board query REQUESTS state -- fixtures cannot witness what the query asks for", () => {
-  const source = readFileSync(new URL("../../../../scripts/board-snapshot.mjs", import.meta.url), "utf8")
+  const source = readFileSync(new URL("../board-snapshot.mjs", import.meta.url), "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   const selection = /content\s*\{[^}]*on Issue\s*\{([^}]*)\}/.exec(source);
   assert.ok(selection, "the Issue selection set moved or was renamed -- update this to find it, not to pass");

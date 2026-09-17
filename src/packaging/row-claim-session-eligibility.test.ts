@@ -10,7 +10,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sessionEligibilityReason, claimRow, CLAIM_LABEL } from "../../../../scripts/row-claim.mjs";
+import { sessionEligibilityReason, claimRow, CLAIM_LABEL } from "../row-claim.mjs";
 
 /**
  * ONE `run` MOCK ROUTING BY SUBCOMMAND SHAPE, since `sessionEligibilityReason` makes several distinct
@@ -85,8 +85,8 @@ test("#476's own acceptance shape: the same session with that PR MERGED is allow
 
 test("#462's own acceptance shape: a CONSTRUCTED region overlap refuses, end to end", () => {
   const run = routedRun({
-    issueViewBody: "Region: `scripts/merge-guard.mjs`.",
-    prList: JSON.stringify([{ number: 406, changedFiles: 1, files: [{ path: "scripts/merge-guard.mjs" }] }]),
+    issueViewBody: "Region: `packages/agent-org/src/merge-guard.mjs`.",
+    prList: JSON.stringify([{ number: 406, changedFiles: 1, files: [{ path: "packages/agent-org/src/merge-guard.mjs" }] }]),
   });
   const reason = sessionEligibilityReason(455, "worker-judge", { run });
   assert.ok(reason);
@@ -95,8 +95,8 @@ test("#462's own acceptance shape: a CONSTRUCTED region overlap refuses, end to 
 
 test("#462's own POSITIVE CONTROL: remove the overlap, end to end, and it goes quiet", () => {
   const run = routedRun({
-    issueViewBody: "Region: `scripts/row-claim.mjs`.",
-    prList: JSON.stringify([{ number: 406, changedFiles: 1, files: [{ path: "scripts/merge-guard.mjs" }] }]),
+    issueViewBody: "Region: `packages/agent-org/src/row-claim.mjs`.",
+    prList: JSON.stringify([{ number: 406, changedFiles: 1, files: [{ path: "packages/agent-org/src/merge-guard.mjs" }] }]),
   });
   assert.equal(sessionEligibilityReason(455, "worker-judge", { run }), null);
 });
@@ -290,7 +290,7 @@ test("#989: --blocked-by cannot excuse a row IN BUILD, and says why rather than 
 
 test("MUTATION TARGET: --blocked-by given while the refusal is B4 (file overlap), not B2, must not apply "
   + "-- the override is specific to the claimant's own PR being unhealthy", () => {
-  const body = "## Region\n\n`scripts/merge-guard.mjs`.\n\n## Acceptance\n\nSomething checkable.\n\n"
+  const body = "## Region\n\n`packages/agent-org/src/merge-guard.mjs`.\n\n## Acceptance\n\nSomething checkable.\n\n"
     + "## Open-check\n\nSomething runnable.\n";
   const run = (cmd: string, args: string[]): string => {
     // `issue view` is asked for two different `--json` shapes here (labels, then `body` for both #707's
@@ -302,7 +302,7 @@ test("MUTATION TARGET: --blocked-by given while the refusal is B4 (file overlap)
       return JSON.stringify({ number: 700, title: "A row", labels: [] });
     }
     if (args[0] === "pr" && args[1] === "list") {
-      return JSON.stringify([{ number: 406, changedFiles: 1, files: [{ path: "scripts/merge-guard.mjs" }] }]);
+      return JSON.stringify([{ number: 406, changedFiles: 1, files: [{ path: "packages/agent-org/src/merge-guard.mjs" }] }]);
     }
     return "[]";
   };

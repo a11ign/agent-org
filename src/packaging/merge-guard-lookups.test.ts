@@ -1,11 +1,11 @@
 /**
- * EVERY NETWORK/PROCESS LOOKUP THE RULES READ -- #455's split into `scripts/merge-guard/lookups.mjs`.
+ * EVERY NETWORK/PROCESS LOOKUP THE RULES READ -- #455's split into `packages/agent-org/src/merge-guard/lookups.mjs`.
  * `null` on failure, never an empty answer -- most of these need a live `gh`/`git` to exercise fully, so
  * only the offline-testable parsing is driven here; each rule's own test covers what the LOOKUP feeds it.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { lookupBranchTip, lookup } from "../../../../scripts/merge-guard/lookups.mjs";
+import { lookupBranchTip, lookup } from "../merge-guard/lookups.mjs";
 
 test("lookupBranchTip reads the real tip of a real branch in this repo", () => {
   const tip = lookupBranchTip("main");

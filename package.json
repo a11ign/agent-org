@@ -1,0 +1,11 @@
+{
+  "name": "@a11ign/agent-org",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "description": "The AI agent organisation that develops this repo: rows, claims, the board, the merge queue and the wake gate. Ships nothing; runs nowhere but this project.",
+  "files": [
+    "src"
+  ]
+}

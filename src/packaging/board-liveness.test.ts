@@ -31,6 +31,7 @@
 //
 // The declaration is verified against the entry's own code, so if one of these functions ever starts
 // doing its own lookups this refuses rather than trusting the comment.
+import { declareWalkScope } from "../../../guards/src/walk-scope.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -38,7 +39,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { EXIT, daysSince, livenessVerdict, newestEditionDay }
-  from "../../../../scripts/board-schedule-liveness.mjs";
+  from "../board-schedule-liveness.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
 const NOW = new Date("2026-09-20T09:00:00Z");
@@ -131,7 +132,7 @@ test("the check does NOT run on a schedule, which is the property it exists for"
     + "60 days of inactivity, so a scheduled watchdog dies in the same breath as the jobs it guards. It "
     + "runs on push, which cannot be disabled by inactivity because a push IS the activity");
   assert.match(workflow, /^\s*push:/m, "it must run on push -- the trigger that inactivity cannot silence");
-  assert.match(workflow, /run: node scripts\/board-schedule-liveness\.mjs --post --issue=20/,
+  assert.match(workflow, /run: node packages\/agent-org\/src\/board-schedule-liveness\.mjs --post --issue=20/,
     "the board watchdog step must still be in trunk.yml -- a watchdog in no workflow has silently stopped");
   const nightly = readFileSync(path.join(REPO_ROOT, ".github/workflows/nightly.yml"), "utf8");
   assert.doesNotMatch(nightly, /board-schedule-liveness\.mjs/,
@@ -147,9 +148,17 @@ test("the check does NOT run on a schedule, which is the property it exists for"
 // stopped running for nineteen hours, nothing said so, and the first anyone knew was the next morning,
 // when the missing summary turned main's own tip red and blocked every PR in the repository.
 // ---------------------------------------------------------------------------------------------------
-import { GUARDED_WORKFLOWS, missedTodaysWindow } from "../../../../scripts/board-schedule-liveness.mjs";
+import { GUARDED_WORKFLOWS, missedTodaysWindow } from "../board-schedule-liveness.mjs";
 import { hostWorkflowFile, hoursSincePreviousRun, watchdogSilenceLine }
-  from "../../../../scripts/board-schedule-liveness.mjs";
+  from "../board-schedule-liveness.mjs";
+
+// #929: THIS GUARD READS ONLY `docs`, `.github/workflows`, so a diff that cannot reach it need not run this file.
+// Undeclared means unbounded, which is why the selector runs 173 always-run guards on every pull
+// request. The declaration is ENFORCED rather than trusted: `declareWalkScope` observes what this
+// file actually reads and fails it here if anything lands outside the scope -- so a scope that is
+// too narrow is loud, never a guard that silently stopped running.
+export const WALK_SCOPE = ["docs",".github/workflows"];
+await declareWalkScope(import.meta.url);
 
 test("#590 every workflow the watchdog's HEADER names is one its code actually guards", () => {
   // DERIVED FROM THE HEADER, never a second hand-written list -- a second list is exactly what the first

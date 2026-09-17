@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import {
   lateEditionRefusal, minutesOfDay, document,
   LATE_EDITION_EARLIEST, LATE_EDITION_CUTOFF,
-} from "../../../../scripts/board-document.mjs";
+} from "../board-document.mjs";
 
 const ok = {
   summary: { text: "Written at 08:05 on 9 September.\n\nSomething happened." },

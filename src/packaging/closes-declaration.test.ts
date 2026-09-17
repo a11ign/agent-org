@@ -14,7 +14,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { extractClosesDeclaration, closesDeclarationReport } from "../../../../scripts/acceptance-commands.mjs";
+import { extractClosesDeclaration, closesDeclarationReport } from "../acceptance-commands.mjs";
 
 // --- the four fixtures the issue itself names ---
 

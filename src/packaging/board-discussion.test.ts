@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   categoryIdFor, editionDay, editionFor, editionTitle, publishEdition, todaysEditionExists, EDITION_CATEGORY_SLUG,
-} from "../../../../scripts/board-discussion.mjs";
+} from "../board-discussion.mjs";
 
 const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
 const DAY = "2026-09-14";
@@ -143,7 +143,7 @@ function workflowCode(): string {
 
 test("board-report.yml publishes the Discussion, and its token CANNOT create a release", () => {
   const code = workflowCode();
-  assert.match(code, /node scripts\/board-document\.mjs --discussion\b/);
+  assert.match(code, /node packages\/agent-org\/src\/board-document\.mjs --discussion\b/);
   assert.match(code, /^\s*discussions:\s*write\s*$/m);
   assert.match(code, /^\s*contents:\s*read\s*$/m,
     "contents: read is what a checkout needs; write is what a release draft needs, and this job makes none");
@@ -153,7 +153,7 @@ test("board-report.yml publishes the Discussion, and its token CANNOT create a r
 });
 
 test("the republish precondition asks for today's DISCUSSION through the one lookup, not a release", () => {
-  assert.match(workflowCode(), /node scripts\/board-discussion\.mjs --exists\b/);
+  assert.match(workflowCode(), /node packages\/agent-org\/src\/board-discussion\.mjs --exists\b/);
 });
 
 // --- #1302: the edition's day is LONDON's, decided once ---
@@ -180,13 +180,13 @@ test("#1302: no edition script computes its own day -- each imports editionDay, 
   // slices each back out: zone-free date arithmetic, examined on #1355 and not a copy. Only that function's body is
   // removed, so a UTC slice anywhere else in the file -- the scheduled runs' days, today's day -- still goes red.
   const MISSED_DAYS = /^export function missedDays\(.*\n(?:.*\n)*?\}\n/m;
-  const liveness = code("scripts/board-schedule-liveness.mjs");
+  const liveness = code("packages/agent-org/src/board-schedule-liveness.mjs");
   assert.match(liveness, MISSED_DAYS, "missedDays is where #1355 examined it -- if it moved, re-examine the exemption");
   const withoutMissedDays = liveness.replace(MISSED_DAYS, "");
   assert.doesNotMatch(withoutMissedDays, /\bfunction missedDays\(/, "the exemption removed missedDays and only it");
-  const edition = (file: string) => file === "scripts/board-schedule-liveness.mjs" ? withoutMissedDays : code(file);
+  const edition = (file: string) => file === "packages/agent-org/src/board-schedule-liveness.mjs" ? withoutMissedDays : code(file);
   const editionScripts = [
-    "scripts/board-document.mjs", "scripts/board-summary-check.mjs", "scripts/board-schedule-liveness.mjs", "scripts/board-report.mjs",
+    "packages/agent-org/src/board-document.mjs", "packages/agent-org/src/board-summary-check.mjs", "packages/agent-org/src/board-schedule-liveness.mjs", "packages/agent-org/src/board-report.mjs",
   ];
   for (const file of editionScripts) {
     assert.doesNotMatch(edition(file), LONDON_DAY, `${file} computes a London day of its own instead of importing editionDay`);
@@ -196,15 +196,16 @@ test("#1302: no edition script computes its own day -- each imports editionDay, 
   // A THIRD COPY ANYWHERE IN THE BOARD SCRIPTS: a day of its own, in EITHER spelling, in any `scripts/board-*.mjs` but the
   // definition. Until #1442 only the London half could be globbed, because board-report.mjs:290 titled the edition with a
   // UTC slice; it takes editionDay now, so both halves are, and `missedDays` keeps its one exemption through `edition()`.
-  const boardScripts = readdirSync(join(REPO, "scripts")).filter((f) => /^board-.*\.mjs$/.test(f) && f !== "board-discussion.mjs");
+  const boardScripts = readdirSync(join(REPO, "packages/agent-org/src")).filter((f) => /^board-.*\.mjs$/.test(f) && f !== "board-discussion.mjs");
   assert.ok(["board-schedule-liveness.mjs", "board-summary-check.mjs", "board-report.mjs"].every((f) => boardScripts.includes(f)),
     `POSITIVE CONTROL: the glob reaches the files named above -- it found ${boardScripts.join(", ")}`);
   for (const file of boardScripts) {
-    assert.doesNotMatch(edition(`scripts/${file}`), LONDON_DAY, `scripts/${file} computes a London day of its own`);
-    assert.doesNotMatch(edition(`scripts/${file}`), UTC_DAY, `scripts/${file} computes a UTC day of its own`);
+    const path = `packages/agent-org/src/${file}`;
+    assert.doesNotMatch(edition(path), LONDON_DAY, `${path} computes a London day of its own`);
+    assert.doesNotMatch(edition(path), UTC_DAY, `${path} computes a UTC day of its own`);
   }
   // POSITIVE CONTROLS for both patterns: the one definition matches the London half, and the UTC half matches the
   // spelling it names, so a regex that matches nothing cannot make the loops above pass.
-  assert.match(code("scripts/board-discussion.mjs"), LONDON_DAY);
+  assert.match(code("packages/agent-org/src/board-discussion.mjs"), LONDON_DAY);
   assert.match("const day = new Date(t).toISOString().slice(0, 10);", UTC_DAY);
 });

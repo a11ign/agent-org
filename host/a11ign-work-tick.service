@@ -1,0 +1,54 @@
+[Unit]
+# ONE TICK OF THE ORG -- #912. See packages/agent-org/src/work-tick.mjs for why this exists at all.
+#
+# The tick costs two `gh` calls and NO model turn. That is the whole point: the six sessions this
+# replaces each held a standing cron that woke a MODEL every 10-30 minutes to ask a question a script
+# answers in one API call -- about 672 turns a day, most finding nothing, a weekly allowance gone in
+# three days. The clock was never the defect; the clock being a model turn was.
+Description=a11ign: ask work-gate whether there is work, and wake only who can take it
+After=herdr.service
+Wants=herdr.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/agent/repos/a11y-witness
+
+# PATH IS DECLARED BECAUSE A SYSTEMD UNIT DOES NOT GET A LOGIN SHELL'S.
+#
+# `gh` and `herdr` both live in /home/agent/.local/bin, which is on the interactive PATH and on no
+# default one. Without this line `work-gate` cannot spawn `gh` and exits CANNOT_ASK on every tick, and
+# `wake` cannot spawn `herdr` and reports every order undeliverable -- both of them quietly, for ever,
+# while the timer looks like it is running fine. Verified on this host: gh at /home/agent/.local/bin/gh,
+# node and npm at /usr/bin.
+Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# `gh` reads its credentials from ~/.config/gh/hosts.yml, so HOME must be the agent's own. A user unit
+# sets this, and it is stated rather than assumed because the failure is the same silent CANNOT_ASK.
+Environment=HOME=/home/agent
+
+# THE CHECKOUT IS UPDATED FIRST, AND THIS IS THE `git pull` HALF OF THE LOOP.
+#
+# Without it the tick runs whatever code the box last pulled by hand, and so do the agents it wakes --
+# they read their role briefs and run their scripts out of this same checkout. A stale box does not
+# announce itself: it just keeps working from last week's rules.
+#
+# Cheap enough to run every tick because it is a NO-OP when main has not moved -- `update-primary.mjs`
+# returns early on `before === sha`, and only reinstalls when the lockfile actually changed. Measured on
+# this host: 2.07s when there is nothing to do.
+#
+# The `-` prefix makes a failed update NON-FATAL. A tick against a slightly stale checkout is worth far
+# more than no tick at all, and a network blip must not stop the org; the next tick tries again.
+ExecStartPre=-/usr/bin/npm run primary:update
+
+# `work-tick` exits 1 when an order had nowhere to go (nobody idle) and 2 when a read was refused.
+# Neither is a crash and neither should mark the unit failed -- both are ordinary states of a queue that
+# is waiting. The tick's own stderr says which, and that goes to the journal.
+ExecStart=/usr/bin/node packages/agent-org/src/work-tick.mjs
+SuccessExitStatus=0 1 2
+
+# A rebuild after a lockfile change can outlast the interval; systemd will not start a second copy while
+# this one runs, so ticks skip rather than pile up. The timeout bounds a hung `gh` or npm.
+TimeoutStartSec=600
+
+[Install]
+WantedBy=default.target

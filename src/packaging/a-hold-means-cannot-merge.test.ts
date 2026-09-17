@@ -57,13 +57,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { armabilityOf, holdersOf, disarmVerdict, HOLD_PREFIX } from "../../../../scripts/pr-hold-state.mjs";
-import { mergeSafetyVerdict } from "../../../../scripts/merge-guard.mjs";
+import { armabilityOf, holdersOf, disarmVerdict, HOLD_PREFIX } from "../pr-hold-state.mjs";
+import { mergeSafetyVerdict } from "../merge-guard.mjs";
 
 /** A head sha that matches its branch tip -- the clean #294 case, so these tests isolate the hold. */
 const HEAD = "1c81c2076c750203a1b49b152736e1fa57269b68";
-import { sweepDecision } from "../../../../scripts/auto-arm-sweep.mjs";
-import { armDecision } from "../../../../scripts/arm-pr.mjs";
+import { sweepDecision } from "../auto-arm-sweep.mjs";
+import { armDecision } from "../arm-pr.mjs";
 
 const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
 const read = (path: string) => readFileSync(`${REPO}${path}`, "utf8");
@@ -106,16 +106,16 @@ test("ONE PREDICATE, TWO CALLERS -- the hole opened because `is this PR held` wa
   // Both readers agree by construction, because there is only one of them.
   assert.equal(sweepDecision({ labels: ["hold:x"], checkRunCount: 9 }).arm,
     armabilityOf({ labels: ["hold:x"] }).arm);
-  assert.match(read("scripts/auto-arm-sweep.mjs"), /from "\.\/pr-hold-state\.mjs"/);
-  assert.match(read("scripts/arm-pr.mjs"), /from "\.\/pr-hold-state\.mjs"/);
-  assert.equal(/labels\.filter\(\(l\) => l\.startsWith\("session:"\)\)/.test(read("scripts/auto-arm-sweep.mjs")),
+  assert.match(read("packages/agent-org/src/auto-arm-sweep.mjs"), /from "\.\/pr-hold-state\.mjs"/);
+  assert.match(read("packages/agent-org/src/arm-pr.mjs"), /from "\.\/pr-hold-state\.mjs"/);
+  assert.equal(/labels\.filter\(\(l\) => l\.startsWith\("session:"\)\)/.test(read("packages/agent-org/src/auto-arm-sweep.mjs")),
     false, "the sweep must not carry its own copy of the predicate any more");
 });
 
 test("THE PER-PR ARM PATH GOES THROUGH THE PREDICATE -- it is the path that merged #625, and it ran "
   + "`gh pr merge --auto` from three lines of bash that read nothing", () => {
   const workflow = read(".github/workflows/auto-arm.yml");
-  assert.match(workflow, /node scripts\/arm-pr\.mjs/,
+  assert.match(workflow, /node packages\/agent-org\/src\/arm-pr\.mjs/,
     "the `arm` job must call the script that reads the hold");
   assert.equal(/gh pr merge --auto --merge "\$\{\{ github\.event\.pull_request\.number/.test(workflow), false,
     "the unconditional bash arm must be gone, not merely accompanied");

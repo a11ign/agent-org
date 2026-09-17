@@ -7,10 +7,19 @@
  * In its own file because it imports `board-data.mjs`, which spawns `gh`, and CI's acceptance job refuses
  * anything that does; it runs in the ordinary `ts` suite.
  */
+import { declareWalkScope } from "../../../guards/src/walk-scope.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { isConformanceGate, reported, worstVerdict } from "../../../../scripts/board-data.mjs";
+import { isConformanceGate, reported, worstVerdict } from "../board-data.mjs";
+
+// #929: THIS GUARD READS ONLY `docs`, so a diff that cannot reach it need not run this file.
+// Undeclared means unbounded, which is why the selector runs 173 always-run guards on every pull
+// request. The declaration is ENFORCED rather than trusted: `declareWalkScope` observes what this
+// file actually reads and fails it here if anything lands outside the scope -- so a scope that is
+// too narrow is loud, never a guard that silently stopped running.
+export const WALK_SCOPE = ["docs"];
+await declareWalkScope(import.meta.url);
 
 test("#429, ON THE TRACKED RECORD: the appendix slot holds a conformance gate that carries a verdict, or nothing", () => {
   // Not a fixture. On `origin/main` before this fix the slot read the newest entry of ANY kind, which on

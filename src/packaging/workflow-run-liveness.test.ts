@@ -23,7 +23,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-import { commitLiveness, EXIT } from "../../../../scripts/workflow-run-liveness.mjs";
+import { commitLiveness, EXIT } from "../workflow-run-liveness.mjs";
 import { LIVE_SHAPE } from "./check-run-fixtures.ts";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
@@ -118,7 +118,7 @@ test("the workflow that runs this has no schedule key -- it must fire on push, n
     "trunk.yml must never gain a `schedule:` trigger -- see its own header for why a watchdog "
     + "cannot be a cron");
   assert.match(workflow, /^\s*push:/m, "it must trigger on push, which cannot be disabled by inactivity");
-  const step = /- name: Was the pull request that produced this commit actually tested\?[^]*?run: node scripts\/workflow-run-liveness\.mjs --sha=/.exec(workflow);
+  const step = /- name: Was the pull request that produced this commit actually tested\?[^]*?run: node packages\/agent-org\/src\/workflow-run-liveness\.mjs --sha=/.exec(workflow);
   assert.ok(step, "the workflow-run watchdog step must still be in trunk.yml");
   assert.match(step![0], /continue-on-error:\s*true/,
     "this step's finding is about a commit that already merged -- it must never fail the push that "

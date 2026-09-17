@@ -1,12 +1,12 @@
 /**
  * RULE: IS THIS ROW RESERVED FOR A SPECIFIC SESSION? -- #444, wired into `decideClaim` one clause ahead
- * of the claim check. See `scripts/row-claim/runner-rule.mjs` for the full account (#324's own shape:
+ * of the claim check. See `packages/agent-org/src/row-claim/runner-rule.mjs` for the full account (#324's own shape:
  * a row needing a genuinely fresh agent, reserved by a comment nothing enforced).
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runnerReason } from "../../../../scripts/row-claim/runner-rule.mjs";
-import { decideClaim } from "../../../../scripts/row-claim.mjs";
+import { runnerReason } from "../row-claim/runner-rule.mjs";
+import { decideClaim } from "../row-claim.mjs";
 
 test("no runner: label at all raises nothing -- the common case", () => {
   assert.equal(runnerReason(["backlog", "ready"], "worker-judge"), null);

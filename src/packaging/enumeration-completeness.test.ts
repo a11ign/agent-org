@@ -49,9 +49,9 @@ import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { fetchOpenIssuesChecked, fetchReportedOpenIssueNumbers, labellessRows, openRowsAbsentFromBoard }
-  from "../../../../scripts/ready-label-audit.mjs";
+  from "../ready-label-audit.mjs";
 import { fetchRemoteBranchesChecked, branchPrefixCensus, renderBranchPrefixes }
-  from "../../../../scripts/queue-table.mjs";
+  from "../queue-table.mjs";
 
 const repoPath = (relative: string) => fileURLToPath(new URL(`../../../../${relative}`, import.meta.url));
 

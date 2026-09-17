@@ -1,0 +1,424 @@
+#!/usr/bin/env node
+// @ts-check
+// command: work-gate -- is there work for any session? One cheap read; a wake order per line when yes.
+//
+// #912's remaining half. `org-watch.mjs:713-717` states it in its own comment: "READS 2-4 ARE NOT WIRED
+// INTO THIS PATH YET ... the `gh` readers that feed them are the remaining half of #912". This is that
+// half, and `utilisation`/`queueReport` get their first caller here.
+//
+// WHY THIS FILE EXISTS AT ALL. Six sessions each held a standing cron and woke every 10-30 minutes to ask
+// a question `node` answers in one API call: 672 model turns a day, most of them finding nothing. That
+// exhausted a weekly allowance in three days, and the two Codex reviewers hit their own quota the same
+// way. THE CLOCK WAS NEVER THE DEFECT -- a tick that costs no tokens can run all day. The defect was that
+// the tick WAS a model turn. So this script is the tick, and a model is woken only with the answer
+// already in its prompt.
+//
+// IT COSTS TWO `gh` CALLS. `gh pr list --json number,isDraft,headRefOid,statusCheckRollup,author,comments`
+// answers the whole reviewer lane in one (comments included -- that is what makes the verdict question
+// free), and one `gh issue list --label ready` answers the engineers'. At two calls it can run every two
+// minutes all day inside the rate limit, which is the property the whole design rests on.
+//
+// THIS SCRIPT DECIDES NOTHING ABOUT WHO IS FREE. It answers "is there work", never "who should take it":
+// that needs `herdr agent list`'s `agent_status`, and putting it here would make the gate untestable
+// without a running org and unrunnable from CI. `wake.mjs` owns that half; `row-claim.mjs` remains the
+// authority on whether a row is actually yours.
+import { execFileSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
+// RELATIVE, not the package specifier -- this must run before any `npm ci`/build, the same constraint
+// `org-watch.mjs` and `build-packages.mjs` state at their own imports.
+import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
+import { READY_LABEL, CLAIM_LABEL } from "./claim-labels.mjs";
+import { verdictAtHead } from "./review-verdict.mjs";
+import { newestPerName } from "./newest-check-run.mjs";
+
+/**
+ * FOUR STATES, AND THE POLARITY IS DELIBERATE.
+ *
+ * `0` is QUIET, matching `org-watch`, `stranded-branches` and `merge-guard`. The reason is not symmetry.
+ * Under this polarity the predictable misuse -- `if work-gate.mjs; then wake; fi` -- wakes EVERY session
+ * on EVERY quiet tick, which is impossible to miss for more than one tick. Under the opposite polarity
+ * the same mistake sleeps silently through a rate limit and nobody finds out for ten hours, which is the
+ * 2026-09-08 outage this whole design exists to prevent. Choose the polarity whose misuse announces itself.
+ *
+ * `3` PARTIAL exists because this asks about several lanes at once (ADR 0037). One unreadable lane must
+ * not void the other's orders and must not be reported as quiet either: the orders on stdout are real and
+ * the lane that could not be read is NAMED on stderr.
+ */
+export const EXIT = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3 };
+
+/** The causes this gate can emit. `wake.mjs` and the matrix validate against this list, never a copy. */
+export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed"];
+
+/** @param {string[]} args */
+const defaultRun = (args) => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
+
+/**
+ * Open PRs with everything the draft lane needs, in ONE call.
+ *
+ * `null` MEANS REFUSED, NEVER EMPTY -- `queueReport`'s rule (#1286), and for its reason: a refused `gh`
+ * exits non-zero with empty stdout, so a reader that returns `[]` for it reports "nothing is queued" and
+ * the org acts on it. Every caller below must keep the two apart.
+ * @param {(args: string[]) => string} run
+ * @returns {any[] | null}
+ */
+export function readPrs(run = defaultRun) {
+  try {
+    const out = run(["pr", "list", "--state", "open", "--limit", "100", "--json",
+      "number,isDraft,headRefOid,statusCheckRollup,author,comments,labels"]);
+    const parsed = JSON.parse(out);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Labels that already mean NOT PICKABLE, so a row carrying one is not promotable however it is counted.
+ *
+ * `fleet-gated` is the load-bearing one for parallelism: that work serialises behind physical hardware,
+ * so counting it as available capacity would report a queue five engineers could share when one of them
+ * would be waiting on a worker box. The rest come from `ready:audit`'s own list of labels that mean a row
+ * cannot be started.
+ */
+export const NOT_PICKABLE = Object.freeze(["blocked", "fleet-gated", "epic", "disputed", "decision",
+  "awaiting-merge", "review-only", CLAIM_LABEL]);
+
+/**
+ * How many open `backlog` rows carry NO label that already means unpickable.
+ *
+ * A COUNT, AND DELIBERATELY NOT A TARGET. `product-manager`'s brief says Ready holds at least three
+ * product rows, and this does NOT enforce that number, because the org has already paid for enforcing it:
+ * `ready:audit` was filed 2026-09-06 after `dispatcher` labelled two rows `ready` TO HIT THE FLOOR -- one
+ * disputed, one with no Region or Acceptance -- and its own finding is the rule here, *"a floor met by a
+ * label I control is not a measurement"*. Promotion is a judgment about whether a row has a Region, an
+ * Acceptance and a done-when; a gate that demanded a number would buy relabelling instead of rows.
+ *
+ * So this reports how much there is to LOOK AT. What is genuinely promotable is the reader's call.
+ *
+ * @param {(args: string[]) => string} [run]
+ * @returns {number | null} `null` when the read was refused -- never 0, which would read as "nothing there"
+ */
+export function readPromotableCount(run = defaultRun) {
+  try {
+    const out = run(["issue", "list", "--state", "open", "--label", "backlog", "--limit", "200",
+      "--json", "number,labels"]);
+    const parsed = JSON.parse(out);
+    if (!Array.isArray(parsed)) return null;
+    return parsed.filter((r) => !labelsOf(r).some((n) => NOT_PICKABLE.includes(n))).length;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Open rows carrying `ready`. FILTERED SERVER-SIDE by the label the API already indexes, so this stays
+ * one call and this file never spells the literal -- `claim-labels.mjs` owns it (#804).
+ * @param {(args: string[]) => string} run
+ * @returns {any[] | null}
+ */
+export function readReadyRows(run = defaultRun) {
+  try {
+    const out = run(["issue", "list", "--state", "open", "--label", READY_LABEL, "--limit", "100",
+      "--json", "number,title,labels"]);
+    const parsed = JSON.parse(out);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** @param {any} x @returns {string[]} */
+const labelsOf = (x) => (x?.labels ?? []).map((/** @type {any} */ l) => String(l?.name ?? l));
+
+/**
+ * Is this PR's CI green enough to be worth a reviewer's turn?
+ *
+ * A DRAFT WITH A RED CHECK IS THE AUTHOR'S WORK, NOT THE REVIEWER'S -- `reviewer.md`'s lane is a SETTLED
+ * draft, and waking a reviewer for a PR whose own tests are failing spends the org's most expensive turn
+ * (worktree, acceptance command, re-derived numbers, mutation) on something the author is still moving.
+ *
+ * PENDING IS NOT GREEN AND NOT RED. A check still running means the answer is not knowable yet; this
+ * returns `null` and the caller emits no order, so the next tick asks again. Reading pending as green
+ * would wake the reviewer onto a moving head.
+ * CALLERS MUST NARROW FIRST with newestPerName: GitHub unions superseded runs into statusCheckRollup, so a
+ * raw read answers about every attempt ever made and one cancelled first try reads as a failure --
+ * merge-queue.mjs carried that defect until #634, and local/bounded-window-reads refuses it at the read.
+ * @param {any[] | null | undefined} rollup the checks, ALREADY narrowed to the newest run per name
+ * @returns {boolean | null}
+ */
+export function checksSettledGreen(rollup) {
+  if (!Array.isArray(rollup) || rollup.length === 0) return null;
+  const state = (/** @type {any} */ c) => String(c?.conclusion ?? c?.state ?? "").toUpperCase();
+  const status = (/** @type {any} */ c) => String(c?.status ?? "").toUpperCase();
+  if (rollup.some((c) => status(c) === "IN_PROGRESS" || status(c) === "QUEUED" || status(c) === "PENDING")) {
+    return null;
+  }
+  const bad = ["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"];
+  return !rollup.some((c) => bad.includes(state(c)));
+}
+
+/**
+ * The session a pull request belongs to, from its own `session:` label, or `null`.
+ *
+ * THE PR CARRIES THE LABEL, which is what makes a red build routable at all. The author field cannot do
+ * it -- every PR here is opened by the shared `a11ign-ai-workers` account -- but `arm-pr` puts the
+ * claiming session's label on the PR, so the one thing a broken build needs to know is already there.
+ *
+ * @param {any} pr
+ */
+function sessionOf(pr) {
+  const label = labelsOf(pr).find((/** @type {string} */ n) => n.startsWith("session:"));
+  return label ? label.slice("session:".length) : null;
+}
+
+/**
+ * A pull request whose checks have SETTLED RED, and nobody is fixing it.
+ *
+ * THE THIRD BLIND SPOT, and the one where work actually dies. Found 2026-09-17 by the chairman looking at
+ * a queue the gate called quiet: #1650 sat `mergeStateStatus: BLOCKED` on a failing `changeset` check --
+ * a trivial, entirely fixable process failure -- while `worker-capture`, the session named on its own
+ * label, sat idle. The gate asked whether a draft needed a verdict and whether a row needed claiming, and
+ * both were honestly no. A red build is neither, so nothing asked about it and nothing ever would have.
+ *
+ * `checksSettledGreen` already answered this: `false` means SETTLED AND RED, distinct from `null` for
+ * still-running. Reading only `=== true` and discarding `false` threw the answer away, the same shape as
+ * the verdict bug one function below.
+ *
+ * DRAFTS COUNT TOO. A red draft is not "not ready yet" -- it is a branch whose author stopped, and it
+ * will never earn a verdict because the reviewer lane requires green.
+ *
+ * @param {any} pr
+ */
+function failingChecksOrder(pr) {
+  if (checksSettledGreen(newestPerName(pr.statusCheckRollup)) !== false) return null;
+  const head = String(pr.headRefOid ?? "");
+  if (!head) return null;
+  const head8 = head.slice(0, 8);
+  // ITS OWN SESSION FIRST. Falling back to `product-manager` rather than dropping the order: an unlabelled
+  // red PR is still a stalled PR, and the queue's first reader can find out whose it is.
+  const session = sessionOf(pr) ?? "product-manager";
+  return {
+    session,
+    cause: "pr-checks-failing",
+    subject: `pr-${pr.number}`,
+    discriminator: head8,
+    prompt: `#${pr.number} at \`${head8}\` has FAILING checks and is blocked. `
+      + `${sessionOf(pr) ? "It carries your session label, so it is yours to fix." : "It names no session."} `
+      + "Read the failing job, fix the cause on that branch and push. If the failure is not yours to fix "
+      + "or the PR should be closed, say so on the PR -- a red pull request nobody answers never lands.",
+    causeKey: `${session}/pr-checks-failing/pr-${pr.number}/${head8}`,
+  };
+}
+
+/**
+ * The follow-up a SETTLED verdict deserves, or `null` when it deserves none.
+ *
+ * A VERDICT IS NOT THE END OF THE WORK, AND READING IT AS ONE LEFT PULL REQUESTS ABANDONED. The gate used
+ * to say `if (found.verdict !== null) continue;` -- a verdict existed, so it moved on WITHOUT EVER ASKING
+ * WHAT IT SAID. Measured 2026-09-17, hours after the tick went live: #1640 and #1634 had been green,
+ * reviewed and CONVINCED AT HEAD since 2026-09-14 and were still drafts, and the gate called that a quiet
+ * org for three days. `agent-practices.md` says a product PR "is marked ready only when the reviewer
+ * writes convinced"; nothing asked whether that had been ACTED ON.
+ *
+ * BOTH GO TO `product-manager`, whose brief names exactly this work: first reader for "the queue and
+ * process ... promotions, claim reports, merge close-outs". The PR's author cannot route either one --
+ * every PR here is opened by the shared `a11ign-ai-workers` account, so there is no session in it to wake.
+ *
+ * @param {any} pr @param {{verdict: string | null, by: string | null}} found @param {string} head8
+ */
+function settledVerdictOrder(pr, found, head8) {
+  if (found.verdict === "convinced" && pr.isDraft) {
+    return {
+      session: "product-manager",
+      cause: "draft-convinced-not-ready",
+      subject: `pr-${pr.number}`,
+      discriminator: head8,
+      prompt: `Draft #${pr.number} at \`${head8}\` is green and carries a CONVINCED verdict`
+        + `${found.by ? ` from ${found.by}` : ""}, and is still a draft. Per agent-practices a product `
+        + "PR is marked ready once the reviewer is convinced. Mark it ready for review, or say on the PR "
+        + "why it must stay a draft -- an unexplained convinced draft is work nobody is finishing.",
+      causeKey: `product-manager/draft-convinced-not-ready/pr-${pr.number}/${head8}`,
+    };
+  }
+  if (found.verdict === "not-convinced") {
+    return {
+      session: "product-manager",
+      cause: "verdict-not-convinced",
+      subject: `pr-${pr.number}`,
+      discriminator: head8,
+      prompt: `#${pr.number} at \`${head8}\` carries a NOT CONVINCED verdict`
+        + `${found.by ? ` from ${found.by}` : ""} and nothing has moved since. Read the verdict, decide `
+        + "whether it stands, and route the rework to the session holding that row -- or close the PR if "
+        + "the row was wrong. A refused verdict nobody answers is a pull request that never lands.",
+      causeKey: `product-manager/verdict-not-convinced/pr-${pr.number}/${head8}`,
+    };
+  }
+  // Any other settled verdict -- `unrecognised`, or one the opener did not attribute -- is left alone:
+  // re-prompting a reviewer who has already answered costs more than waiting for a human to look.
+  return null;
+}
+
+/**
+ * The one order this pull request deserves right now, or `null`.
+ *
+ * SPLIT OUT OF `decide` when the two stalled-work causes took it past `complexity` 15 and
+ * `local/max-physical-lines-per-function` 90 and the pre-push gate refused it. The split is the honest
+ * one rather than a line-count trick: this asks "what does THIS pull request need" and `decide` asks
+ * "what does the whole queue need". AT MOST ONE order, because a pull request in two states at once
+ * would be a contradiction rather than two jobs.
+ *
+ * @param {any} pr
+ */
+function draftOrder(pr) {
+  // RED FIRST, and before the draft check: a red PR is work whether or not it is a draft, and it can
+  // never reach the reviewer lane below, which requires green.
+  const red = failingChecksOrder(pr);
+  if (red) return red;
+  if (!pr?.isDraft) return null;
+  if (checksSettledGreen(newestPerName(pr.statusCheckRollup)) !== true) return null;
+  const head = String(pr.headRefOid ?? "");
+  if (!head) return null;
+  const found = verdictAtHead({
+    comments: (pr.comments ?? []).map((/** @type {any} */ c) => ({ body: c?.body ?? "", id: c?.id })),
+    head,
+    prAuthor: pr.author?.login ?? null,
+  });
+  const head8 = head.slice(0, 8);
+  // A VERDICT THE OPENER DID NOT ATTRIBUTE COUNTS AS SETTLED, and that is the wake side's default rather
+  // than a reading of the comment: `verdictAtHead` returns `byIsAuthor: null` for it and refuses to guess
+  // (#1244). Waking anyway would re-prompt a reviewer who has already answered; the cost of being wrong
+  // the other way is one author-written verdict going unchallenged, which `ceo`'s spot-check of one
+  // verdict in five is the control for.
+  if (found.verdict !== null) return settledVerdictOrder(pr, found, head8);
+
+  // ODD/EVEN PARITY IS THE ORG'S OWN SPLIT (`.claude/rules/agent-practices.md`): odd PR numbers go to
+  // `reviewer`, even to `reviewer-2`. Stated there, applied here, spelled in neither twice.
+  const session = Number(pr.number) % 2 === 1 ? "reviewer" : "reviewer-2";
+  return {
+    session,
+    cause: "draft-awaiting-verdict",
+    subject: `pr-${pr.number}`,
+    discriminator: head8,
+    prompt: `Draft #${pr.number} at \`${head8}\` has settled green checks and no verdict at that head. `
+      + "Review it per packages/agent-org/docs/roles/reviewer.md and leave one comment carrying your verdict.",
+    causeKey: `${session}/draft-awaiting-verdict/pr-${pr.number}/${head8}`,
+  };
+}
+
+/**
+ * PURE. The orders the state implies.
+ *
+ * Every order carries a `causeKey` derivable from GitHub state alone, so re-running this gate produces a
+ * BYTE-IDENTICAL order and the waker's ledger can deduplicate it. That is what lets the gate be stateless
+ * and run as often as it likes.
+ *
+ * THE PROMPT CARRIES THE ANSWER, NOT THE QUESTION. "Draft #N at `abc12345` has green checks and no verdict
+ * at that head" rather than "check whether there is work" -- a woken turn that has to survey the queue is
+ * a tick with extra steps, which is the cost this file exists to remove.
+ *
+ * @param {{ prs: any[], readyRows: any[], promotable?: number | null }} state `promotable` is the
+ *        count of backlog rows carrying no unpickable label, or `null` when that read was refused.
+ * @returns {{session: string, cause: string, subject: string, discriminator: string,
+ *            prompt: string, causeKey: string}[]}
+ */
+export function decide({ prs, readyRows, promotable = null }) {
+  const orders = [];
+
+  for (const pr of prs) {
+    const order = draftOrder(pr);
+    if (order) orders.push(order);
+  }
+  // UNCLAIMED IS `ready` WITHOUT `in-progress`. This is a CANDIDATE, not a grant: `row-claim.mjs` is the
+  // authority and the woken engineer runs it. A gate that claimed rows would be a second writer of the
+  // claim state, which is the race #176 already cost this repo once.
+  const unclaimed = readyRows.filter((r) => !labelsOf(r).includes(CLAIM_LABEL));
+  if (unclaimed.length > 0) {
+    const rows = unclaimed.map((r) => `#${r.number}`).join(", ");
+    // NO SESSION NAMED. Which engineer takes it depends on who is idle RIGHT NOW, which only
+    // `herdr agent list` knows -- so the order names the lane and `wake.mjs` picks the body.
+    orders.push({
+      session: "engineers",
+      cause: "ready-row-unclaimed",
+      subject: `rows-${unclaimed.map((r) => r.number).sort((a, b) => a - b).join("-")}`,
+      discriminator: String(unclaimed.length),
+      prompt: `${unclaimed.length} Ready row(s) unclaimed: ${rows}. Claim the oldest with `
+        + "`node packages/agent-org/src/row-claim.mjs claim <n> --session=<you> --branch=agent/<slug>-<n> --worktree=../wt-<n>` and build it there.\n"
+        // BOTH FLAGS OR NEITHER, and the primary refuses the work entirely: `row-claim` creates the
+        // worktree from `--branch` AND `--worktree` together and refuses when given only one, and the
+        // tooling will not run from the primary checkout at all. The first engineer woken by this
+        // system (2026-09-17) stopped and asked a human for both facts, because the order named
+        // neither -- so they are named here rather than left to a role brief the session may not have
+        // read yet. `../wt-<n>` is the sibling convention every live worktree on the host follows.
+        + "The claim creates that worktree for you; run the command from the primary checkout, then do all "
+        + "the work inside the new worktree rather than the primary.",
+      causeKey: `engineers/ready-row-unclaimed/${unclaimed.map((r) => r.number).sort((a, b) => a - b).join("-")}`,
+    });
+  }
+
+  // THE SHELF ITSELF IS WORK, and nothing asked about it until 2026-09-17. Measured that day: 92 open
+  // issues, 87 of them `backlog`, ZERO `ready`, and five engineers idle. The gate's engineer question is
+  // "a `ready` row without `in-progress`", which was honestly no -- so it reported a quiet org while every
+  // engineer waited behind an empty queue. `dispatcher` is retired and its brief's line survives it:
+  // "the Ready column. It pulls; THIS ROLE STOCKS." The stocker had no trigger.
+  //
+  // FACTS, NOT A TARGET, and that distinction is the whole design. `product-manager`'s brief says Ready
+  // holds at least three product rows; this does not ask for three. `ready:audit` exists because
+  // `dispatcher` once labelled two rows `ready` TO HIT THAT FLOOR -- one disputed, one with no Region or
+  // Acceptance -- and recorded the rule this obeys: *"a floor met by a label I control is not a
+  // measurement."* A number here would buy relabelling. The order reports what is on the shelf and what
+  // is behind it; which rows are genuinely promotable is a judgment and stays with the reader.
+  //
+  // ONLY WHEN THE SHELF IS EMPTY. A queue with anything in it is a queue the engineers can pull from, and
+  // re-prompting on a short-but-non-empty Ready would be the floor by another name.
+  const unclaimedCount = readyRows.filter((r) => !labelsOf(r).includes(CLAIM_LABEL)).length;
+  if (unclaimedCount === 0 && promotable !== null && promotable > 0) {
+    orders.push({
+      session: "product-manager",
+      cause: "ready-queue-empty",
+      subject: "ready-queue",
+      // THE COUNT IS THE DISCRIMINATOR, so the order stops repeating the moment a row is promoted and
+      // re-fires if the shelf empties again at a different depth. Keyed on anything constant it would
+      // nag every two minutes until someone acted, which is how a wake becomes noise to route around.
+      discriminator: String(promotable),
+      prompt: `The Ready queue is EMPTY and ${promotable} open backlog row(s) carry no label that means `
+        + "unpickable (not blocked, fleet-gated, epic, disputed, decision, awaiting-merge, review-only or "
+        + "already claimed). Every engineer is waiting on this queue rather than on work.\n"
+        + "Promote what is genuinely ready -- a row with a Region, an Acceptance and a done-when -- and "
+        + "leave the rest. This is deliberately NOT a request to reach a count: #ready:audit records "
+        + "`dispatcher` labelling two rows ready to hit a floor, one disputed and one with neither field, "
+        + "and a floor met by a label you control is not a measurement. Promoting nothing and saying why "
+        + "is a valid answer.",
+      causeKey: `product-manager/ready-queue-empty/${promotable}`,
+    });
+  }
+
+  return orders;
+}
+
+function main() {
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/work-gate.mjs" });
+  const prs = readPrs();
+  const readyRows = readReadyRows();
+
+  // BOTH LANES REFUSED IS `CANNOT_ASK`; ONE IS `PARTIAL`. Nothing here may report a refused read as quiet.
+  if (prs === null && readyRows === null) {
+    process.stderr.write("CANNOT ASK: neither the pull-request list nor the Ready rows could be read. "
+      + "Nothing was examined -- this is NOT a quiet queue, and no session has been woken.\n");
+    process.exit(EXIT.CANNOT_ASK);
+  }
+
+  // The third read is only needed to size the refill, and a refused one must not read as an empty shelf.
+  const promotable = readPromotableCount();
+  const orders = decide({ prs: prs ?? [], readyRows: readyRows ?? [], promotable });
+  for (const order of orders) process.stdout.write(`${JSON.stringify(order)}\n`);
+
+  if (prs === null || readyRows === null) {
+    process.stderr.write(`PARTIAL: could not read ${prs === null ? "the pull-request list" : "the Ready rows"}. `
+      + `The ${orders.length} order(s) above are real; that lane was NOT examined and may hold work.\n`);
+    process.exit(EXIT.PARTIAL);
+  }
+  process.exit(orders.length > 0 ? EXIT.WORK : EXIT.QUIET);
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();

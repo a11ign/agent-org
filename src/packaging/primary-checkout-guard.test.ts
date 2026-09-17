@@ -34,7 +34,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withGitSandbox, sandboxGitEnv } from "../../../../scripts/test-support/git-sandbox.ts";
 import type { GitSandbox } from "../../../../scripts/test-support/git-sandbox.ts";
-import { updatePrimary } from "../../../../scripts/update-primary.mjs";
+import { updatePrimary } from "../update-primary.mjs";
 import { UPDATE_PRIMARY_ARGV } from "./update-primary-argv.mjs";
 
 const PRE_COMMIT = fileURLToPath(new URL("../../../../scripts/git-hooks/pre-commit", import.meta.url));
@@ -251,7 +251,7 @@ test("post-checkout is silent before any fetch has ever populated origin/main", 
 });
 
 /**
- * `scripts/update-primary.mjs` — "the ONE npm script updates the primary: fetch, then detach at
+ * `packages/agent-org/src/update-primary.mjs` — "the ONE npm script updates the primary: fetch, then detach at
  * origin/main. Nothing else" (issue #126's acceptance, verbatim). Tested through its injectable `run`
  * seam, the same shape `install-git-hooks.mjs`'s `installHooks` already uses, so this never needs a real
  * network fetch to prove the two calls happen, in order, and nothing else does.

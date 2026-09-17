@@ -2,9 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { resolveChromeBinary } from "../../../../scripts/board-document.mjs";
+import { resolveChromeBinary } from "../board-document.mjs";
 
-const SCRIPT = fileURLToPath(new URL("../../../../scripts/board-document.mjs", import.meta.url));
+const SCRIPT = fileURLToPath(new URL("../board-document.mjs", import.meta.url));
 
 /**
  * #280: `board-report.yml` had never once succeeded, on any route -- the publish step hardcoded

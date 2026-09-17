@@ -18,7 +18,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   mergeLifetimeMinutes, hotspotFiles, mergedPRNeededReconciliation, composeConflictMetrics, PR_SEARCH_LIMIT, REPO,
-} from "../../../../scripts/board-data.mjs";
+} from "../board-data.mjs";
 import { readFileSync } from "node:fs";
 
 // --- mergeLifetimeMinutes: pure ---
@@ -204,7 +204,7 @@ test("a listing AT the search limit is refused as possibly truncated; one row un
 });
 
 test("wiring: conflictMetrics is the live entry and hands in gh; the composition calls no gh of its own", () => {
-  const source = readFileSync(new URL("../../../../scripts/board-data.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../board-data.mjs", import.meta.url), "utf8");
   const body = (name: string) => {
     const start = source.indexOf(`export function ${name}(`);
     assert.ok(start >= 0, `${name} is exported from board-data.mjs`);
