@@ -76,6 +76,26 @@ export const PROFILES = Object.freeze({
     why: "review is judgment over a bounded diff, on the model the chairman named; effort one notch "
       + "below the box's global `high` because a wrong `convinced` merges bad code",
   }),
+  "draft-convinced-not-ready": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // MEDIUM, and this is the cheapest thing the org does. The verdict has already been formed by
+    // somebody else; this reads one comment, checks it names the current head, and marks the PR ready or
+    // says why not. It is the smallest real decision in the pipeline and does not need more than that.
+    effort: "medium",
+    why: "promotion is a one-comment decision someone else already reasoned about -- the judgment was "
+      + "spent writing the verdict, not reading it",
+  }),
+  "verdict-not-convinced": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // HIGH, unlike its sibling above, and the asymmetry is the point: this one WEIGHS a refusal -- does
+    // the objection stand, does the row survive it, who holds the rework. Getting it wrong either
+    // abandons a good change or waves through one a reviewer refused.
+    effort: "high",
+    why: "weighing a refusal is judgment over the reviewer's argument, not a status flip -- getting it "
+      + "wrong abandons a good change or overrides a refusal",
+  }),
   "ready-row-unclaimed": Object.freeze({
     kind: "claude",
     model: "sonnet",

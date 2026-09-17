@@ -153,8 +153,52 @@ export function decide({ prs, readyRows }) {
     // to guess (#1244). Waking anyway would re-prompt a reviewer who has already answered; the cost of
     // being wrong the other way is one author-written verdict going unchallenged, which `ceo`'s spot-check
     // of one verdict in five is the control for.
-    if (found.verdict !== null) continue;
     const head8 = head.slice(0, 8);
+
+    // A VERDICT IS NOT THE END OF THE WORK, AND READING IT AS ONE LEFT PULL REQUESTS ABANDONED.
+    //
+    // This used to be `if (found.verdict !== null) continue;` -- a verdict existed, so the gate moved on
+    // without ever asking WHAT IT SAID. Measured 2026-09-17, hours after the tick went live: #1640 and
+    // #1634 had been green, reviewed and CONVINCED AT HEAD since 2026-09-14, and were still drafts; the
+    // gate reported a quiet org across all of it. `agent-practices.md` says a product PR "is marked ready
+    // only when the reviewer writes convinced" -- that condition had been met for three days and nothing
+    // in the org asks whether it has been ACTED ON.
+    //
+    // So a settled verdict is a state with its own next step, and both go to `product-manager`, whose
+    // brief names exactly this: first reader for "the queue and process ... promotions, claim reports,
+    // merge close-outs". The PR's author field cannot route either one -- every PR here is opened by the
+    // shared `a11ign-ai-workers` account, so there is no session in it to wake.
+    if (found.verdict === "convinced" && pr.isDraft) {
+      orders.push({
+        session: "product-manager",
+        cause: "draft-convinced-not-ready",
+        subject: `pr-${pr.number}`,
+        discriminator: head8,
+        prompt: `Draft #${pr.number} at \`${head8}\` is green and carries a CONVINCED verdict`
+          + `${found.by ? ` from ${found.by}` : ""}, and is still a draft. Per agent-practices a product `
+          + "PR is marked ready once the reviewer is convinced. Mark it ready for review, or say on the PR "
+          + "why it must stay a draft -- an unexplained convinced draft is work nobody is finishing.",
+        causeKey: `product-manager/draft-convinced-not-ready/pr-${pr.number}/${head8}`,
+      });
+      continue;
+    }
+    if (found.verdict === "not-convinced") {
+      orders.push({
+        session: "product-manager",
+        cause: "verdict-not-convinced",
+        subject: `pr-${pr.number}`,
+        discriminator: head8,
+        prompt: `#${pr.number} at \`${head8}\` carries a NOT CONVINCED verdict`
+          + `${found.by ? ` from ${found.by}` : ""} and nothing has moved since. Read the verdict, decide `
+          + "whether it stands, and route the rework to the session holding that row -- or close the PR if "
+          + "the row was wrong. A refused verdict nobody answers is a pull request that never lands.",
+        causeKey: `product-manager/verdict-not-convinced/pr-${pr.number}/${head8}`,
+      });
+      continue;
+    }
+    // Any other settled verdict (`unrecognised`, or one the opener did not attribute) is left alone, for
+    // the reason stated above: re-prompting a reviewer who has already answered costs more than waiting.
+    if (found.verdict !== null) continue;
     // ODD/EVEN PARITY IS THE ORG'S OWN SPLIT (`.claude/rules/agent-practices.md`): odd PR numbers go to
     // `reviewer`, even to `reviewer-2`. Stated there, applied here, spelled in neither twice.
     const session = Number(pr.number) % 2 === 1 ? "reviewer" : "reviewer-2";
@@ -190,7 +234,8 @@ export function decide({ prs, readyRows }) {
         // system (2026-09-17) stopped and asked a human for both facts, because the order named
         // neither -- so they are named here rather than left to a role brief the session may not have
         // read yet. `../wt-<n>` is the sibling convention every live worktree on the host follows.
-        + "The claim creates the worktree; run it from the primary checkout, then cd into it.",
+        + "The claim creates that worktree for you; run the command from the primary checkout, then do all "
+        + "the work inside the new worktree rather than the primary.",
       causeKey: `engineers/ready-row-unclaimed/${unclaimed.map((r) => r.number).sort((a, b) => a - b).join("-")}`,
     });
   }
