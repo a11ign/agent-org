@@ -96,6 +96,17 @@ export const PROFILES = Object.freeze({
     why: "weighing a refusal is judgment over the reviewer's argument, not a status flip -- getting it "
       + "wrong abandons a good change or overrides a refusal",
   }),
+  "pr-checks-failing": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // HIGH, because a red build is a debugging job and debugging is where a cheap tier wastes the most
+    // time: it guesses, pushes, waits for CI, guesses again, and each cycle costs minutes of runner time
+    // on top of the tokens. The failure that prompted this cause was a missing changeset -- trivial --
+    // but the cause covers every red build, and nothing in the order says which kind it is.
+    effort: "high",
+    why: "fixing a red build is debugging, and a wrong guess costs a full CI cycle on top of the tokens, "
+      + "so the cheaper tier is not cheaper here",
+  }),
   "ready-row-unclaimed": Object.freeze({
     kind: "claude",
     model: "sonnet",
