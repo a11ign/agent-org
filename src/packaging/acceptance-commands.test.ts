@@ -1522,30 +1522,6 @@ test("#967: a template literal full of braces does not confuse the scan -- why t
   }
 });
 
-test("#967 KNOWN LIMITATION, asserted so a future fix has something to flip: one hop through a local helper", () => {
-  // `syntactically at the module top level` and `executed by an import` are DIFFERENT properties, and this
-  // is where they part. A top-level call into a local helper whose BODY calls the corpus reader really is
-  // executed at import time, and a top-level scan cannot see it: the helper's body is blanked, and the
-  // top-level call names the helper rather than the function being looked for.
-  //
-  // Full reachability is a bigger question than this row (it is #827's unsolved half, one requirement
-  // over). This records the miss AS A FAILING CASE RATHER THAN A PARAGRAPH: when someone fixes it, this
-  // test tells them by going red — the opposite of a comment naming an ambiguity above code that resolves
-  // it by assumption.
-  const dir = tempFixture({
-    "indirect.mjs": `function helper() { return ${CORPUS_FN}(); }\n`
-      + `export function ${CORPUS_FN}() { return 1; }\nexport const ROOT = helper();\n`,
-    "entry.test.ts": 'import { ROOT } from "./indirect.mjs";\nvoid ROOT;\n',
-  });
-  try {
-    assert.deepEqual(deriveClosureRequirements(join(dir, "entry.test.ts")), [],
-      "IF THIS FAILS, the walk has learned to follow a top-level call into a local helper -- which is the "
-      + "fix, not a regression. Delete this test and say so in the row that did it.");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
 // --- #1035: `History: full` IS A DECLARATION, NOT A COMMAND, WHEREVER IT SITS ---
 //
 // Found 2026-09-12 while opening #1034. The line is documented as position-independent -- "a bare line,
@@ -1957,4 +1933,95 @@ test("#1465: the one real header with a reason, row-claim-stale-rule.test.ts:1, 
   const f = "packages/lab/src/packaging/row-claim-stale-rule.test.ts";
   assert.match(readFileSync(f, "utf8").split("\n")[0], /^\/\/ no-token: gh -- /, "the fixture's premise: its header carries a reason");
   assert.deepEqual(deriveClosureRequirements(f), []);
+});
+
+// --- #1636: the closure charge follows what the importer's code REACHES, not every name a module imports ---
+
+/**
+ * #1634's shape, SYNTHETIC. `calibrate.mjs` exports a pure function and imports a corpus reader that only its
+ * entry-guarded `main()` uses -- as `packages/lab/scripts/calibrate-abstention.mjs` imports `realCorpusRoot` for
+ * its own `main()` while `claim-excludes-recompute.test.ts` imports only `floorRows`. `extra` adds exports.
+ */
+const reader = () => `export function readCorpus() { return ${CORPUS_FN}(); }\n`;
+const calibrate = (extra = "") => 'import { readCorpus } from "./reader.mjs";\n'
+  + "export function pure(rows) { return rows.length; }\n" + extra
+  + "function main() { return readCorpus(); }\n"
+  + "if (import.meta.url === `file://${process.argv[1]}`) main();\n";
+const corpusHits = (entry: string) => deriveClosureRequirements(entry).filter((hit) => hit.requirement === "corpus");
+
+test("#1636 ACCEPTANCE: a test importing only a pure function is NOT charged, though its module imports a corpus "
+  + "reader that only an entry-guarded main() uses", () => {
+  const dir = tempFixture({
+    "reader.mjs": reader(),
+    "calibrate.mjs": calibrate(),
+    "entry.test.ts": 'import { pure } from "./calibrate.mjs";\nvoid pure([]);\n',
+  });
+  try {
+    assert.deepEqual(deriveClosureRequirements(join(dir, "entry.test.ts")), [],
+      "nothing the test runs reaches readCorpus: the import binds it, and only main() -- which an import never runs -- calls it");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#1636 CONTROL: importing a function whose body calls the reader IS charged, through one more import", () => {
+  const dir = tempFixture({
+    "reader.mjs": reader(),
+    "calibrate.mjs": calibrate("export function usesReader() { return readCorpus(); }\n"),
+    "entry.test.ts": 'import { usesReader } from "./calibrate.mjs";\nvoid usesReader;\n',
+  });
+  try {
+    const hits = corpusHits(join(dir, "entry.test.ts"));
+    assert.equal(hits.length, 1, `expected the reached reader to be charged: ${JSON.stringify(hits)}`);
+    assert.ok(hits[0].file.endsWith("reader.mjs"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#1636 CONTROL: a local helper that a reached body calls is followed too -- reachability never under-charges "
+  + "a read two calls down", () => {
+  const dir = tempFixture({
+    "reader.mjs": reader(),
+    "calibrate.mjs": calibrate("function helper() { return readCorpus(); }\nexport function viaHelper() { return helper(); }\n"),
+    "entry.test.ts": 'import { viaHelper } from "./calibrate.mjs";\nvoid viaHelper;\n',
+  });
+  try {
+    assert.equal(corpusHits(join(dir, "entry.test.ts")).length, 1, "viaHelper -> helper -> readCorpus reads the corpus");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#1636 CONTROL: a module whose TOP LEVEL reaches the reader -- through a local function -- is charged on any "
+  + "import, because an import runs the top level", () => {
+  const dir = tempFixture({
+    "reader.mjs": reader(),
+    "calibrate.mjs": 'import { readCorpus } from "./reader.mjs";\nexport function pure(rows) { return rows; }\n'
+      + "function warm() { return readCorpus(); }\nexport const WARM = warm();\n",
+    "entry.test.ts": 'import { pure } from "./calibrate.mjs";\nvoid pure;\n',
+  });
+  try {
+    assert.equal(corpusHits(join(dir, "entry.test.ts")).length, 1, "WARM = warm() runs at import and reaches readCorpus");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#1636: a module reached by two imports keeps the UNION of what each reaches -- the order they are met in "
+  + "cannot hide a read", () => {
+  for (const order of [["a", "b"], ["b", "a"]]) {
+    const imports = { a: 'import { pure } from "./a.mjs";\n', b: 'import { usesReader } from "./b.mjs";\n' };
+    const dir = tempFixture({
+      "reader.mjs": reader(),
+      "a.mjs": calibrate(),
+      "b.mjs": 'import { readCorpus } from "./reader.mjs";\nexport function usesReader() { return readCorpus(); }\n',
+      "entry.test.ts": order.map((key) => imports[key as "a" | "b"]).join("") + "void pure;\nvoid usesReader;\n",
+    });
+    try {
+      assert.equal(corpusHits(join(dir, "entry.test.ts")).length, 1, `imports met in order ${order.join(", ")}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
 });

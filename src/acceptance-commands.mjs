@@ -434,15 +434,26 @@ function loadTypescript() {
 }
 
 /**
- * #967: A MODULE'S TOP LEVEL IS WHAT AN IMPORT EXECUTES -- everything else runs only when called.
+ * #1636: WHAT AN IMPORT REACHES, NOT WHAT A MODULE'S IMPORT STATEMENTS NAME.
  *
- * The closure walk scanned every imported file's whole text, so `dataset-paths.mjs` was charged `corpus`
- * by any test that imported it, including one importing `REPO_ROOT` and nothing else. Measured before the
- * fix: the hit was its `export function runsRoot() {` DEFINITION at :93, and removing the definition from
- * the pattern only moved the hit to :116 -- the file calls `runsRoot()` five times (116, 178, 188, 203,
- * 246) and every one is inside a function body. Its top level is two constants, so importing it runs none
- * of them and reads nothing. **Three pull requests moved code into new corpus-free modules to get around
- * this** (#943, #955, #966), which is an import rule shaping the code's structure.
+ * #967 kept the bodies of the declarations an importer names, and the walk then followed EVERY import of that
+ * module carrying every name it binds. So a test importing one pure function (`floorRows`, #1634) was charged
+ * `corpus` because the same script imports `realCorpusRoot` for a `main()` the test never runs: the name was
+ * bound at file level, not reached by anything that executes. Measured on #1634's branch at `485a86f2`:
+ * `claim-excludes-recompute.test.ts` -> `calibrate-abstention.mjs` -> `dataset-paths.mjs:178`.
+ *
+ * So what is kept is what can RUN, grown to a fixpoint: the module's top level, the bodies of the declarations
+ * the importer names, and any function those reach by name -- a kept body calling a local helper keeps the
+ * helper, or a read two calls down would go uncharged. `referenced` is every identifier that kept code uses,
+ * and the walk follows an import's names only where they appear in it.
+ *
+ * TWO THINGS DO NOT COUNT AS REACHING: an import or export declaration (it binds or lists a name and runs
+ * nothing), and a top-level `if` on `import.meta.url` -- the entry guard this repo's scripts use, whose body
+ * runs only when the file IS the entry, never on import.
+ *
+ * The ENTRY is scanned whole, as #967 decided; its `referenced` is every identifier in it. With no parser there
+ * is no reachability to read, so `referenced` is `null` and the walk follows every bound name -- the old
+ * over-charge, the safe direction.
  *
  * PARSED, NOT BRACE-MATCHED. `typescript` is a declared devDependency and this script runs after `npm ci`
  * in `reusable-acceptance.yml`, so the module's own statements come from `ts.createSourceFile`. A
@@ -452,23 +463,69 @@ function loadTypescript() {
  * OFFSETS ARE PRESERVED: a body is replaced by spaces of the same length, keeping newlines, exactly as
  * `stripComments` does. So `lineNumberOf` still reports the real line of whatever survives.
  *
- * WHAT THE IMPORTER ACTUALLY IMPORTED IS KEPT TOO, and leaving it out was a defect this file's own #731
- * boundary test caught: `corpus-settled.mjs` imports `datasetRoot` from `dataset-paths.mjs` and CALLS it,
- * so it genuinely needs the corpus — while its own text names `runsRoot` only in a comment. A rule of
- * "top level only" reported it as needing nothing. So the kept span is the module's top level PLUS the
- * bodies of the declarations whose names this importer names, which is the same question #827 asks for
- * tokens: charge for the export a caller actually imports, not for every spawn anywhere in the file.
- *
  * @param {string} codeOnly the file's text, comments already stripped
  * @param {string} fileName for the parser's diagnostics only
- * @param {Set<string>} imported the names the importing file took from this module
- * @returns {string} the same text with unreachable bodies blanked
+ * @param {Set<string>} imported the names the importing file's reachable code uses from this module
+ * @param {boolean} isEntry
+ * @returns {{ scope: string, referenced: Set<string> | null }}
  */
-function topLevelCode(codeOnly, fileName,
-  imported = new Set()) {
+function reachableScope(codeOnly, fileName, imported, isEntry) {
   const ts = loadTypescript();
-  if (ts === null) return codeOnly; // no parser: scan everything, which refuses more, never less
+  if (ts === null) return { scope: codeOnly, referenced: null }; // no parser: scan everything, follow every name
   const source = ts.createSourceFile(fileName, codeOnly, ts.ScriptTarget.Latest, true);
+  if (isEntry) return { scope: codeOnly, referenced: referencedNames(ts, source, null) };
+  const kept = new Set(imported);
+  for (let size = -1; size !== kept.size;) {
+    size = kept.size;
+    for (const name of referencedNames(ts, source, kept)) kept.add(name);
+  }
+  return { scope: blankUnkept(ts, source, codeOnly, kept), referenced: referencedNames(ts, source, kept) };
+}
+
+/**
+ * Every identifier the code that can run uses -- skipping import and export declarations, and, when `kept` is
+ * given, a top-level function declaration nobody reaches and the entry guard. `kept === null` is the entry: all
+ * of it runs.
+ * @param {typeof import("typescript")} ts
+ * @param {import("typescript").SourceFile} source
+ * @param {Set<string> | null} kept
+ * @returns {Set<string>}
+ */
+function referencedNames(ts, source, kept) {
+  /** @type {Set<string>} */
+  const names = new Set();
+  /** @param {import("typescript").Node} node */
+  const visit = (node) => {
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) return;
+    if (kept !== null && ts.isSourceFile(node.parent) && isEntryGuard(ts, node, source)) return;
+    if (kept !== null && ts.isSourceFile(node.parent) && ts.isFunctionDeclaration(node)
+      && !(node.name && kept.has(node.name.text))) return;
+    if (ts.isIdentifier(node)) names.add(node.text);
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(source, visit);
+  return names;
+}
+
+/**
+ * A top-level `if` whose condition reads `import.meta.url` -- `if (import.meta.url === pathToFileURL(...).href)
+ * main();` -- runs its body only when the module is the entry, so nothing in it is reached by an import.
+ * @param {typeof import("typescript")} ts @param {import("typescript").Node} node
+ * @param {import("typescript").SourceFile} source
+ */
+function isEntryGuard(ts, node, source) {
+  return ts.isIfStatement(node) && node.expression.getText(source).includes("import.meta.url");
+}
+
+/**
+ * The module's text with every body `kept` does not reach blanked -- #967's rule, now keyed on reachability.
+ * @param {typeof import("typescript")} ts
+ * @param {import("typescript").SourceFile} source
+ * @param {string} codeOnly
+ * @param {Set<string>} kept
+ * @returns {string}
+ */
+function blankUnkept(ts, source, codeOnly, kept) {
   /** @type {[number, number][]} */
   const bodies = [];
   /** @param {import("typescript").Node} node */
@@ -481,10 +538,9 @@ function topLevelCode(codeOnly, fileName,
     if (body && (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)
       || ts.isConstructorDeclaration(node) || ts.isGetAccessorDeclaration(node)
       || ts.isSetAccessorDeclaration(node))) {
-      // KEPT when the importer named it: calling an imported function runs its body, so its requirements
-      // are the caller's. Blanked otherwise -- an import does not execute what nobody asked for.
-      const named = ts.isFunctionDeclaration(node) && node.name && imported.has(node.name.text);
-      if (!named) bodies.push([node.getStart(source), node.getEnd()]);
+      // KEPT when something that runs reaches it by name (#1636): the importer's names, and what those reach.
+      const reached = ts.isFunctionDeclaration(node) && node.name && kept.has(node.name.text);
+      if (!reached) bodies.push([node.getStart(source), node.getEnd()]);
       return;
     }
     // An expression's BODY only: what surrounds it may be top-level code that really does run, as in
@@ -612,6 +668,17 @@ function lineNumberOf(text, index) {
  *              wrongDeclaration?: boolean, malformedDeclaration?: boolean }} ClosureHit */
 
 /**
+ * #1636: the names `file` binds from `next` that its reachable code actually uses -- or every bound name when there
+ * was no parser to say (`referenced === null`), which over-charges.
+ * @param {string} file @param {string} next @param {Set<string> | null} referenced
+ * @returns {Set<string>}
+ */
+function reachedNames(file, next, referenced) {
+  const bound = importedNamesFor(file, next);
+  return new Set(referenced === null ? bound : bound.filter((name) => referenced.has(name)));
+}
+
+/**
  * Every requirement reachable from `entry`'s local-import closure, each named by the FIRST file (in walk
  * order) that proves it, the line it was found on, and the full chain of files from `entry` down to it --
  * #621's own stated acceptance is naming the HOP, not just the capability: "this test needs a token" sends
@@ -674,10 +741,14 @@ export function deriveClosureRequirements(entry) {
     if (writeDeclarationHolds(codeOnly, writesPath)) { exemptCorpus = true; return; }
     found.set(requirement, { ...hit, wrongDeclaration: true });
   };
-  /** @param {string} file @param {string[]} chain @param {Set<string>} seen */
-  const walk = (file, chain, seen) => {
-    if (seen.has(file) || !existsSync(file)) return;
-    seen.add(file);
+  // #1636: `seen` maps a file to the names already scanned for it. A second edge bringing a name the first did not
+  // is scanned again with the union, so the order imports are met in can never hide a reachable body.
+  /** @param {string} file @param {string[]} chain @param {Map<string, Set<string>>} seen @param {Set<string>} names */
+  const walk = (file, chain, seen, names) => {
+    const prior = seen.get(file);
+    if ((prior && [...names].every((name) => prior.has(name))) || !existsSync(file)) return;
+    const union = new Set([...(prior ?? []), ...names]);
+    seen.set(file, union);
     const text = readFileSync(file, "utf8");
     const codeOnly = stripComments(text);
     // #967: THE ENTRY IS SCANNED WHOLE; AN IMPORTED MODULE ONLY AT ITS TOP LEVEL.
@@ -693,9 +764,7 @@ export function deriveClosureRequirements(entry) {
     // declaration written to work around it -- two of them were added tonight. Widening this to `token`
     // would make those declarations no-ops and change two merged pull requests' behaviour, which is a
     // second row, not a quiet extra in this one.
-    const corpusScope = file === entry
-      ? codeOnly
-      : topLevelCode(codeOnly, file, new Set(importedNamesFor(chain[chain.length - 1], file)));
+    const { scope: corpusScope, referenced } = reachableScope(codeOnly, file, union, file === entry);
     const hereChain = [...chain, file];
     for (const [pattern, requirement] of CLOSURE_REQUIREMENT_PATTERNS) {
       if (found.has(requirement) || (requirement === "corpus" && exemptCorpus)
@@ -703,9 +772,9 @@ export function deriveClosureRequirements(entry) {
       const match = pattern.exec(requirement === "corpus" ? corpusScope : codeOnly);
       if (match) recordHit({ requirement, file, text, codeOnly, match, chain: hereChain });
     }
-    for (const next of localImports(file)) walk(next, hereChain, seen);
+    for (const next of localImports(file)) walk(next, hereChain, seen, reachedNames(file, next, referenced));
   };
-  walk(entry, [], new Set());
+  walk(entry, [], new Map(), new Set());
   return [...found.values()];
 }
 
