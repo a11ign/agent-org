@@ -1,0 +1,22 @@
+[Unit]
+Description=a11ign: run the org's work tick
+Requires=a11ign-work-tick.service
+
+[Timer]
+# TWO MINUTES IS CHOSEN FROM THE RATE LIMIT, NOT BY FEEL. `work-gate` costs two `gh` calls; at this
+# interval that is 1,440 calls a day against a 5,000/hour limit, so the tick can run all day and never
+# be the thing that runs out. `work-gate.mjs`'s own header states the same property: "at two calls it
+# can run every two minutes all day inside the rate limit, which is the property the whole design rests
+# on."
+#
+# The interval is NOT a latency target. Work is picked up within two minutes of appearing, which is far
+# faster than the 10-30 minute crons this replaces, and it costs nothing when the queue is quiet --
+# which is most of the time.
+OnBootSec=2min
+OnUnitActiveSec=2min
+# Without this a missed window (box asleep, unit still running) is simply skipped rather than caught up.
+Persistent=true
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target
