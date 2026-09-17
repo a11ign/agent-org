@@ -151,7 +151,7 @@ function verdictHereAt(comment, head) {
  * is safe to default that way only because its order ledger dedupes on the head sha, so "wake anyway"
  * costs one turn per head rather than one per tick.
  *
- * HEADS COMPARE BY PREFIX because the convention writes eight characters (`docs/roles/reviewer.md`: a
+ * HEADS COMPARE BY PREFIX because the convention writes eight characters (`packages/agent-org/docs/roles/reviewer.md`: a
  * comment matching ``at `<head8>` ``) while the API returns forty, and `reviewVerdict` accepts 7-40. The
  * shorter being a prefix of the longer is the whole test; equality would find nothing.
  *

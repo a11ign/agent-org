@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // @ts-check
 // command: run the contingency drill: clone, compose each agent's first message, from nothing but a checkout
-// THE CONTINGENCY DRILL, AS A COMMAND -- `docs/roles/README.md`'s own acceptance test for itself, until
+// THE CONTINGENCY DRILL, AS A COMMAND -- `packages/agent-org/docs/roles/README.md`'s own acceptance test for itself, until
 // now typed by hand: clone, `cat`, copy a message, run a test. Automating the composition step is the
 // part worth having as a script: it produces every agent's actual first message, WITH the accumulated
 // memory named alongside it, from nothing but a checkout -- so a real drill (--clone) or an offline check
-// against the current tree (the default) both prove the same thing docs/roles/README.md's own drill
+// against the current tree (the default) both prove the same thing packages/agent-org/docs/roles/README.md's own drill
 // section asks for, without a human re-typing the roster by hand each time.
 //
 // Usage:
@@ -17,18 +17,18 @@
 //
 // A found gap (a roster row with no message block, a missing role file, no memory index) is REPORTED, not
 // thrown past -- this script's whole purpose is to surface exactly that, which is what
-// docs/roles/README.md means by "if a step needs something only this machine has, the drill has found a
+// packages/agent-org/docs/roles/README.md means by "if a step needs something only this machine has, the drill has found a
 // real gap, and that is the result, not a failure of the drill."
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { refuseUnknownFlags } from "@a11ign/worker-fleet/cli-flags";
 import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
 
-const README_REL = "docs/roles/README.md";
-const MEMORY_INDEX_REL = "docs/roles/memory/MEMORY.md";
+const README_REL = "packages/agent-org/docs/roles/README.md";
+const MEMORY_INDEX_REL = "packages/agent-org/docs/roles/memory/MEMORY.md";
 
 /**
  * DUPLICATES `roster()` in `packages/lab/src/packaging/roles-readme.test.ts` rather than importing it --
@@ -45,7 +45,10 @@ function parseRoster(readmeSource) {
     if (!m) continue;
     const [, role, agent, , linkPath] = m;
     if (role === "role") continue;
-    rows.push({ agent, filePath: join("docs/roles", linkPath) });
+    // DERIVED from README_REL rather than spelled: the roster's links are relative to the README, so the
+    // directory is whatever directory that file is in. Spelling it is how this broke when docs/roles moved
+    // into the package -- a literal that agreed with the README until the day it did not.
+    rows.push({ agent, filePath: join(dirname(README_REL), linkPath) });
   }
   return rows;
 }

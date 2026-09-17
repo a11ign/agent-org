@@ -164,7 +164,7 @@ export function decide({ prs, readyRows }) {
       subject: `pr-${pr.number}`,
       discriminator: head8,
       prompt: `Draft #${pr.number} at \`${head8}\` has settled green checks and no verdict at that head. `
-        + "Review it per docs/roles/reviewer.md and leave one comment carrying your verdict.",
+        + "Review it per packages/agent-org/docs/roles/reviewer.md and leave one comment carrying your verdict.",
       causeKey: `${session}/draft-awaiting-verdict/pr-${pr.number}/${head8}`,
     });
   }

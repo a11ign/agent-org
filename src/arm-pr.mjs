@@ -92,12 +92,12 @@ export function sessionLabelsOf(rowLabels) {
  * @param {string[][]} rowLabelLists
  * @returns {string[]}
  *
- * #1000/#913, #1453: THE SESSIONS THAT EXIST, READ FROM `docs/roles/sessions.json` -- `ceo`'s file, never typed here.
+ * #1000/#913, #1453: THE SESSIONS THAT EXIST, READ FROM this package's own `docs/roles/sessions.json` -- `ceo`'s file, never typed here.
  *
  * Four `session:*` labels are RETIRED BY DESCRIPTION rather than deleted -- `dispatcher`, `worker-audit`,
  * `worker-contracts`, `worker-config` -- because deleting one strips it from the merged PRs that carry it as
  * attribution, which `attributionFor` (`claim-provenance.mjs`) reads. A record of the past is never renamed. So the
- * labels that exist are not the live set, and neither is `docs/roles/README.md`'s roster, which records every role this
+ * labels that exist are not the live set, and neither is `packages/agent-org/docs/roles/README.md`'s roster, which records every role this
  * org has had.
  *
  * #1453: THIS WAS A LITERAL, AND IT PREDATED THE THIRD ENGINEER. `worker-tooling` started at 19:13Z, and every PR whose
@@ -109,7 +109,7 @@ export function sessionLabelsOf(rowLabels) {
  * (#1020).
  */
 const SESSIONS = /** @type {{ live: { name: string }[], retired: { name: string }[] }} */ (
-  JSON.parse(readFileSync(new URL("../../../docs/roles/sessions.json", import.meta.url), "utf8")));
+  JSON.parse(readFileSync(new URL("../docs/roles/sessions.json", import.meta.url), "utf8")));
 export const LIVE_SESSIONS = SESSIONS.live.map((s) => s.name);
 
 /** Retired 2026-09-10 by the Org Reset (#913), kept as labels because merged PRs carry them. Read from the same file. */
@@ -186,7 +186,7 @@ export function labelArmedPr({ number, repo, prBody, run = defaultRun }) {
         + "PRs carry it as attribution, but nothing new may be given it"
       : `${label} is not a session this repository knows`)).join("; ");
     console.error(`arm-pr: REFUSING to label #${number} -- ${why}.\n`
-      + `  The ${LIVE_SESSIONS.length} live sessions (docs/roles/sessions.json) are ${LIVE_SESSIONS.join(", ")}.\n`
+      + `  The ${LIVE_SESSIONS.length} live sessions (packages/agent-org/docs/roles/sessions.json) are ${LIVE_SESSIONS.join(", ")}.\n`
       + `  Fix the ROW's own label first: \`gh issue edit <row> --remove-label ${notLive[0].label} `
       + "--add-label session:<a live session>`, then re-run this.");
     // RETURNED, NEVER `process.exitCode` FROM IN HERE: setting the exit code inside a library function

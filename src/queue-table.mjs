@@ -342,7 +342,7 @@ export function openPRs() {
     // THE DRAFT FLAG COMES BACK ON THE SAME PAYLOAD, so reading it costs nothing -- the same reason
     // `holders` is read below. It was dropped here until #912's gate needed it: "every open pull request
     // that is a draft and has no verdict at its current head" is the reviewer's whole lane
-    // (docs/roles/reviewer.md), and with this field absent NO script in the tree could answer it, so the
+    // (packages/agent-org/docs/roles/reviewer.md), and with this field absent NO script in the tree could answer it, so the
     // two reviewer sessions polled `gh pr list` on a clock to ask a question this payload already knew.
     // `?? null`, NOT `Boolean()`: absent must stay distinguishable from false, for the reason `prRow`
     // states where it carries this field on.

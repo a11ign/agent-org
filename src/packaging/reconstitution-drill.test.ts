@@ -1,6 +1,6 @@
 // THE CONTINGENCY DRILL'S ACCEPTANCE TEST, EXTENDING THE EXISTING ONE RATHER THAN REPLACING IT.
 //
-// `docs/roles/README.md`'s "contingency drill" section already names the acceptance test for the role
+// `packages/agent-org/docs/roles/README.md`'s "contingency drill" section already names the acceptance test for the role
 // system: a fresh clone producing every agent's first message from the repo alone. Until this unit that
 // was five lines of `cat`/`git clone` typed by a human. `packages/agent-org/src/reconstitution-drill.mjs` is the same
 // drill as a command, extended to also compose the accumulated memory into each message -- and this file
@@ -19,7 +19,7 @@ import { runDrill } from "../reconstitution-drill.mjs";
 
 test("the drill runs against this checkout and produces a message for every roster agent", () => {
   const report = runDrill(process.cwd());
-  assert.ok(report.ok, "the drill refused against the real checkout -- docs/roles/README.md must be unreadable");
+  assert.ok(report.ok, "the drill refused against the real checkout -- packages/agent-org/docs/roles/README.md must be unreadable");
   // A floor, not a target -- same reasoning as roles-readme.test.ts's own roster guard: the organisation
   // does not shrink to zero as a happy path.
   assert.ok(report.agents.length >= 6,
@@ -33,7 +33,7 @@ test("every agent's composed message includes the memory section, when memory ex
   const report = runDrill(process.cwd());
   assert.ok(report.ok, "the drill refused against the real checkout");
   assert.ok((report.memoryEntryCount ?? 0) > 0,
-    "docs/roles/memory/MEMORY.md produced zero entries against the real checkout -- the migration itself may be missing");
+    "packages/agent-org/docs/roles/memory/MEMORY.md produced zero entries against the real checkout -- the migration itself may be missing");
   for (const a of report.agents) {
     if (!a.message) continue; // a genuine gap (missing message block) is its own assertion below
     assert.match(a.message, /MEMORY\.md/,
@@ -52,7 +52,7 @@ test("a roster agent with no role file is reported as a gap, not silently droppe
 });
 
 /**
- * MUTATION HALF, against a synthetic checkout built under `os.tmpdir()` -- never the real `docs/roles/`
+ * MUTATION HALF, against a synthetic checkout built under `os.tmpdir()` -- never the real `packages/agent-org/docs/roles/`
  * tree, for the same reason `roles-readme.test.ts`'s own mutation test gives: a shared, git-hooked
  * checkout should not have a real agent's file deleted even temporarily mid-test-run.
  */
@@ -61,16 +61,16 @@ test("MUTATION: a missing README, a missing message block, and a missing memory 
 
   // 1. No README at all -- the drill must refuse cleanly, not throw.
   const emptyReport = runDrill(dir);
-  assert.equal(emptyReport.ok, false, "a checkout with no docs/roles/README.md must be reported as a gap, not silently pass");
+  assert.equal(emptyReport.ok, false, "a checkout with no packages/agent-org/docs/roles/README.md must be reported as a gap, not silently pass");
 
   // 2. A README with a roster row but no matching "first message" block, and no memory index.
-  mkdirSync(join(dir, "docs", "roles"), { recursive: true });
-  writeFileSync(join(dir, "docs", "roles", "README.md"),
+  mkdirSync(join(dir, "packages", "agent-org", "docs", "roles"), { recursive: true });
+  writeFileSync(join(dir, "packages", "agent-org", "docs", "roles", "README.md"),
     "# If this machine is lost\n\n## The roster\n\n"
     + "| role | agent name | file | reports to |\n|---|---|---|---|\n"
     + "| Example | `example-agent` | [example.md](./example.md) | `example-boss` |\n\n"
     + "## The first message for each agent, ready to paste\n\n(none written yet)\n");
-  writeFileSync(join(dir, "docs", "roles", "example.md"), "# Example\n");
+  writeFileSync(join(dir, "packages", "agent-org", "docs", "roles", "example.md"), "# Example\n");
 
   const noMessageReport = runDrill(dir);
   assert.equal(noMessageReport.ok, true);
@@ -81,14 +81,14 @@ test("MUTATION: a missing README, a missing message block, and a missing memory 
   assert.equal(noMessageReport.memoryEntryCount, 0, "a checkout with no memory index must report zero entries, not throw");
 
   // 3. Add the message block and a memory index -- both gaps must clear.
-  writeFileSync(join(dir, "docs", "roles", "README.md"),
+  writeFileSync(join(dir, "packages", "agent-org", "docs", "roles", "README.md"),
     "# If this machine is lost\n\n## The roster\n\n"
     + "| role | agent name | file | reports to |\n|---|---|---|---|\n"
     + "| Example | `example-agent` | [example.md](./example.md) | `example-boss` |\n\n"
     + "## The first message for each agent, ready to paste\n\n"
     + "**`example-agent`:**\n> You are `example-agent`. Read your file.\n");
-  mkdirSync(join(dir, "docs", "roles", "memory"), { recursive: true });
-  writeFileSync(join(dir, "docs", "roles", "memory", "MEMORY.md"), "- [A lesson](a-lesson.md) — a hook\n");
+  mkdirSync(join(dir, "packages", "agent-org", "docs", "roles", "memory"), { recursive: true });
+  writeFileSync(join(dir, "packages", "agent-org", "docs", "roles", "memory", "MEMORY.md"), "- [A lesson](a-lesson.md) — a hook\n");
 
   const completeReport = runDrill(dir);
   assert.deepEqual(completeReport.agents[0].gaps, [], "gaps did not clear once the message block and memory index were added");
@@ -103,19 +103,19 @@ test("MUTATION: a missing README, a missing message block, and a missing memory 
 
 test("the worker template block substitutes <name> per agent, not a literal placeholder", () => {
   const dir = mkdtempSync(join(tmpdir(), "reconstitution-drill-worker-template-"));
-  mkdirSync(join(dir, "docs", "roles"), { recursive: true });
-  writeFileSync(join(dir, "docs", "roles", "README.md"),
+  mkdirSync(join(dir, "packages", "agent-org", "docs", "roles"), { recursive: true });
+  writeFileSync(join(dir, "packages", "agent-org", "docs", "roles", "README.md"),
     "# If this machine is lost\n\n## The roster\n\n"
     + "| role | agent name | file | reports to |\n|---|---|---|---|\n"
     + "| Worker | `worker-x` | [worker-x.md](./worker-x.md) | `dispatcher` |\n\n"
     + "## The first message for each agent, ready to paste\n\n"
-    + "**Each worker** (`worker-x`):\n> You are `<name>`. Read `docs/roles/<name>.md`.\n");
-  writeFileSync(join(dir, "docs", "roles", "worker-x.md"), "# worker-x\n");
+    + "**Each worker** (`worker-x`):\n> You are `<name>`. Read `packages/agent-org/docs/roles/<name>.md`.\n");
+  writeFileSync(join(dir, "packages", "agent-org", "docs", "roles", "worker-x.md"), "# worker-x\n");
 
   const report = runDrill(dir);
   const worker = report.agents.find((a) => a.agent === "worker-x");
   assert.ok(worker?.message, "worker-x should have a composed message from the shared worker template");
-  assert.match(worker.message, /You are `worker-x`\. Read `docs\/roles\/worker-x\.md`\./);
+  assert.match(worker.message, /You are `worker-x`\. Read `packages\/agent-org\/docs\/roles\/worker-x\.md`\./);
   assert.doesNotMatch(worker.message, /<name>/, "the <name> placeholder must be fully substituted");
 
   rmSync(dir, { recursive: true, force: true });
