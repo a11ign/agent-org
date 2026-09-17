@@ -57,9 +57,16 @@ test("#912: a settled green draft with no verdict wakes its parity reviewer -- a
 });
 
 test("#912: a verdict settles its own head and no other", () => {
+  // WHAT A SETTLED VERDICT SETTLES IS THE *REVIEWER'S* QUESTION, and that is all it ever settled. This
+  // asserted `length === 0` until 2026-09-17, which read "verdict present, therefore nothing to do" --
+  // and #1640 and #1634 sat green, convinced and undrafted for three days while the gate agreed with it.
+  // The reviewer must not be re-woken; the PR still has a next step, and it belongs to someone else.
   const at = [{ body: "Review of #7 at `abc12345`, by `reviewer`: convinced." }];
-  assert.equal(decide({ prs: [draft(7, GREEN, at)], readyRows: [] }).length, 0,
-    "a verdict at THIS head settles the draft");
+  const settled = decide({ prs: [draft(7, GREEN, at)], readyRows: [] });
+  assert.deepEqual(settled.map((o: { cause: string }) => o.cause), ["draft-convinced-not-ready"],
+    "a verdict at THIS head settles the REVIEW, and hands the draft on to be promoted");
+  assert.ok(!settled.some((o: { session: string }) => o.session.startsWith("reviewer")),
+    "no reviewer may be re-woken for a head they have already answered");
 
   // THE STALE-HEAD CASE IS THE ONE THAT STALLS A PR. `reviewer.md`: "A PR you reviewed earlier whose head
   // has moved since is not done" -- the author answered, and the new head needs its own verdict.
@@ -70,7 +77,11 @@ test("#912: a verdict settles its own head and no other", () => {
   // UNCONVINCED IS A REFUSAL, and a refusal is still a verdict: the draft is the author's again, not the
   // reviewer's. Reading it as an approval was the #1245 failure; reading it as ABSENT re-wakes forever.
   const refused = [{ body: "Review of #13 at `abc12345`, by `reviewer`: UNCONVINCED" }];
-  assert.equal(decide({ prs: [draft(13, GREEN, refused)], readyRows: [] }).length, 0);
+  const answered = decide({ prs: [draft(13, GREEN, refused)], readyRows: [] });
+  assert.deepEqual(answered.map((o: { cause: string }) => o.cause), ["verdict-not-convinced"],
+    "a refusal is the author's to answer -- it is not nothing, which is how #1630 stalled");
+  assert.ok(!answered.some((o: { session: string }) => o.session.startsWith("reviewer")),
+    "and the reviewer who refused is not asked again");
 });
 
 test("#912: a claimed row is not work, and an unclaimed one names no session", () => {
