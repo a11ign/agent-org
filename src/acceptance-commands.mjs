@@ -853,9 +853,14 @@ export function runsTheWholeSuite(command) {
 /** @type {string[] | null} */
 let suiteFilesCache = null;
 /**
- * Every test file `npm test` runs, FROM `test:ts`'s OWN GLOB rather than a second copy of it.
+ * Every test file the WHOLE suite runs, FROM `test:all`'s OWN GLOB rather than a second copy of it.
  *
- * The glob is read out of `package.json`'s `test:ts` script, because a hand-written copy here would be
+ * `test:all`, not `test:ts`: since the org tooling became @a11ign/agent-org, `test:ts` is the PRODUCT
+ * suite a contributor runs and `test:all` is every package. The token charge is about what CI executes
+ * across the tree, so reading the narrower glob would under-charge -- it would stop seeing the org's own
+ * tests, which are the ones that spawn `gh`.
+ *
+ * The glob is read out of `package.json`'s `test:all` script, because a hand-written copy here would be
  * the same fact in two places -- and the copy that drifts is the one that decides whether a PR's check
  * goes red. If the script cannot be read or carries no glob this THROWS rather than returning `[]`: an
  * empty population would make every whole-suite command pass the capability gate, which is exactly the
@@ -867,7 +872,7 @@ export function suiteTestFiles() {
   if (suiteFilesCache) return suiteFilesCache;
   let script;
   try {
-    script = JSON.parse(readFileSync("package.json", "utf8")).scripts?.["test:ts"];
+    script = JSON.parse(readFileSync("package.json", "utf8")).scripts?.["test:all"];
   } catch (cause) {
     throw new Error("acceptance-commands: could not read package.json to find what `npm test` runs -- "
       + "refusing to report a whole-suite command as needing nothing.", { cause });
