@@ -35,6 +35,7 @@ import { dirname } from "node:path";
 // RELATIVE, not the package specifier -- this must run before any `npm ci`/build, the same constraint
 // `work-gate.mjs` and `org-watch.mjs` state at their own imports.
 import { refuseUnknownFlags, flagValue } from "../../worker-fleet/src/cli-flags.mjs";
+import { profileFor, agentArgs } from "./worker-profile.mjs";
 
 /**
  * `0` QUIET nothing to deliver; `1` ATTENTION an order had nowhere to go; `2` CANNOT_ASK herdr did not
@@ -105,6 +106,40 @@ export function route(session, agents, roster) {
   if (free) return { label: free };
   const seen = roster.map((label) => `${label}=${statusOf(label) ?? "absent"}`).join(", ");
   return { refusal: `no engineer is idle (${seen})` };
+}
+
+/**
+ * The herdr invocation that starts a FRESH worker for this order, or a refusal.
+ *
+ * WHY SPAWN RATHER THAN PROMPT A STANDING SESSION. A standing session is pinned to whatever model and
+ * effort it happened to be started with -- that is how six sessions ended up on Opus at xhigh with
+ * nobody able to say who chose it. A worker started per cause takes the profile the cause deserves, and
+ * its context is the prefix plus one task rather than hours of accumulated history it re-sends every
+ * turn. Measured in this repository, that prefix is about 6,400 tokens of repo context for a judge
+ * worker (CLAUDE.md + agent-practices + the role brief), it caches across workers sharing a role, and it
+ * is roughly one xhigh reasoning turn -- so the spawn pays for itself the first time it avoids one.
+ *
+ * STATELESSNESS IS THE FIT, NOT THE COST. `agent-practices.md` already rules that "the row is the state.
+ * Read the row, the PR and the API before acting" -- a session is not supposed to be carrying anything
+ * worth keeping. A fresh worker makes that true rather than aspirational.
+ *
+ * @param {{cause: string}} order
+ * @param {string} name the worker's herdr name
+ * @param {string} pane an existing pane at an interactive shell prompt
+ * @param {{model?: string, effort?: string}} [override]
+ * @returns {{args: string[], profile: {kind: string, model: string, effort: string}} | {refusal: string}}
+ */
+export function spawnInvocation(order, name, pane, override = {}) {
+  const profile = profileFor(order.cause, override);
+  if ("refusal" in profile) return { refusal: `cannot choose a worker for this order: ${profile.refusal}` };
+  return {
+    profile,
+    // `--` separates herdr's own flags from the agent's, so everything after it reaches `claude`.
+    // THE KIND COMES FROM THE PROFILE. The reviewers are codex and the engineers are claude; a
+    // hardcoded "claude" here would start the wrong product for half the org's causes.
+    args: ["--session", "org", "agent", "start", name, "--kind", profile.kind, "--pane", pane,
+      "--", ...agentArgs(profile)],
+  };
 }
 
 /**
