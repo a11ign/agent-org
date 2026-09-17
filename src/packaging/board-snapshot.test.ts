@@ -26,7 +26,7 @@ import { touchedItemRequest, commonGitDirOf, snapshotDirFor, launchCheckoutOf, p
   primaryLaunchDecision, POLICY_LAUNCH_REASON_ENV, launchGate }
   from "../board-snapshot-scope.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, mkdirSync as mkdirOnDisk, rmSync, writeFileSync as writeOnDisk } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync as mkdirOnDisk, realpathSync, rmSync, writeFileSync as writeOnDisk } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname as dirOf, join as joinPath } from "node:path";
 import { fileURLToPath as pathOf } from "node:url";
@@ -728,7 +728,10 @@ test("#1352: launchGate writes the notice or the refusal and says whether to sto
 test("#1352 DONE-WHEN 1: each policy script, launched from a plain checkout, refuses before anything; from a linked worktree it does not", () => {
   // The policy scripts (row-claim, board-snapshot, ...) moved into @a11ign/agent-org.
   const scripts = pathOf(new URL("../", import.meta.url));
-  const root = mkdtempSync(joinPath(tmpdir(), "policy-launch-"));
+  // REALPATH'D: on macOS `tmpdir()` is /var/..., a symlink to /private/var/..., and the scripts resolve
+  // the real path before naming the checkout they refused. Comparing against the unresolved path made this
+  // fail on a Mac and pass on Linux -- a platform artefact, not a policy one.
+  const root = realpathSync(mkdtempSync(joinPath(tmpdir(), "policy-launch-")));
   try {
     const plain = joinPath(root, "plain");
     const linked = joinPath(root, "linked");
