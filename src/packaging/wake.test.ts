@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { route, undelivered, parseOrders, readLedger, deliver, readAgents, WAKEABLE, EXIT }
   from "../wake.mjs";
 import { afterGate, GATE, EXIT as TICK_EXIT } from "../work-tick.mjs";
-import { spawnInvocation } from "../wake.mjs";
+import { spawnInvocation, addressed } from "../wake.mjs";
 
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));
@@ -132,7 +132,13 @@ test("deliver sends the prompt to the routed agent and records only what herdr a
   assert.deepEqual(refused, []);
   assert.deepEqual(sent, ["reviewer <- k1"]);
   assert.deepEqual(recorded, ["k1"]);
-  assert.deepEqual(calls, [["--session", "org", "agent", "prompt", "reviewer", "review pr 7"]]);
+  // The prompt herdr receives is the ADDRESSED one -- the order's text plus who the session is. Asserting
+  // the raw `order.prompt` here is what this test did until 2026-09-17, and it passed while the agent on
+  // the other end had no idea what to put in `--session=`.
+  assert.deepEqual(calls[0].slice(0, 5), ["--session", "org", "agent", "prompt", "reviewer"]);
+  assert.equal(calls[0][5], addressed({ session: "reviewer", prompt: "review pr 7" }, "reviewer"));
+  assert.match(calls[0][5], /You are `reviewer`/);
+  assert.ok(calls[0][5].includes("review pr 7"), "the order's own text must survive");
 });
 
 test("a prompt herdr REFUSES is not recorded, so the next tick retries it", () => {
@@ -232,4 +238,28 @@ test("the `--` separator is present, or herdr eats the agent's flags as its own"
   assert.ok(args.slice(sep).includes("--model"), "the model flag must fall AFTER the separator");
   assert.ok(!args.slice(0, sep).includes("--model"), "nothing agent-bound may precede the separator");
   assert.equal(args[args.indexOf("--kind") + 1], "claude", "herdr must be told which product to start");
+});
+
+// --- addressed: the woken session is told WHO IT IS, and that nobody is at the terminal (2026-09-17) ---
+
+test("the woken session is told its own name, because the order's command asks for it", () => {
+  const got = addressed({ session: "engineers", prompt: "claim it with --session=<you>" }, "worker-capture");
+  assert.match(got, /You are `worker-capture`/);
+  assert.match(got, /--session=worker-capture/,
+    "`<you>` must be SUBSTITUTED, not merely explained -- an agent handed a placeholder still has to "
+    + "edit the command, and the first engineer woken by this system stopped and asked a human instead");
+  assert.doesNotMatch(got, /<you>/, "no placeholder may survive into the prompt");
+});
+
+test("the woken session is told not to wait on a human, and who to ask instead", () => {
+  const got = addressed({ session: "engineers", prompt: "do the thing" }, "worker-judge");
+  assert.match(got, /nobody is at this terminal/);
+  assert.match(got, /product-manager/,
+    "agent-practices routes row questions to product-manager; an agent that blocks on a human it cannot "
+    + "reach has stopped, which is the failure this whole design exists to avoid");
+});
+
+test("the order's own text survives intact -- the prefix adds, never replaces", () => {
+  const got = addressed({ session: "reviewer", prompt: "Draft #1630 needs a verdict." }, "reviewer");
+  assert.ok(got.includes("Draft #1630 needs a verdict."));
 });

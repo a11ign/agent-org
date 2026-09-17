@@ -199,6 +199,39 @@ export function readLedger(path, read = readFileSync) {
 }
 
 /**
+ * The prompt as the woken session receives it: the order's text, prefixed with WHO IT IS.
+ *
+ * THE DEFECT THIS FIXES, seen in production 2026-09-17. `work-gate`'s row order says *"claim it with
+ * `row-claim.mjs claim <n> --session=<you> --branch=agent/<branch>`"*, and `<you>` is a placeholder no
+ * woken agent can resolve. A freshly spawned session has no memory and no assignment: it knows the work
+ * but not its own name. The first engineer woken by this system stopped and asked a human which session
+ * it was, rather than guess a name and mutate shared GitHub state under it -- which was the RIGHT call
+ * on its part and a hole in this one. `wake` has always known the answer: it just routed the order.
+ *
+ * AND WHO TO ASK, because "ask a human" is the other half of the same hole. `.claude/rules/agent-
+ * practices.md` already routes questions -- *"product-manager is the first reader for rows, the queue
+ * and process"* -- but a session woken with no context has not necessarily read that yet, and the whole
+ * point of this design is that nobody is sitting at that terminal. An agent that blocks on a human it
+ * cannot reach is an agent that has stopped.
+ *
+ * @param {{session: string, prompt: string}} order
+ * @param {string} label the concrete session this went to
+ */
+export function addressed(order, label) {
+  // `<you>` SUBSTITUTED, not merely explained: the order's own command text carries the placeholder, and
+  // an agent that has been told its name still has to edit the command it was handed. Handing it a
+  // command it can run is the difference between an instruction and a task.
+  const prompt = order.prompt.replaceAll("<you>", label);
+  return `You are \`${label}\`, an org session in this repository. Use that name wherever a command `
+    + `asks which session you are (\`--session=${label}\`).\n\n`
+    + `${prompt}\n\n`
+    + "Work autonomously to the end: nobody is at this terminal to answer you. If something genuinely "
+    + "blocks you, say so on the row and message `product-manager` -- never stop and wait on a human. "
+    + "If you cannot claim the row (already taken, or the claim refuses), that is an answer: report it "
+    + "and stop, rather than working outside a claim.";
+}
+
+/**
  * Deliver each order, and say what happened to every one of them.
  *
  * REPORTS BEFORE IT RECORDS. An order is written to the ledger only once herdr has accepted it, so a crash
@@ -222,7 +255,7 @@ export function deliver(orders, agents, roster, { run = defaultRun, record } = {
       continue;
     }
     try {
-      run(["--session", "org", "agent", "prompt", target.label, order.prompt]);
+      run(["--session", "org", "agent", "prompt", target.label, addressed(order, target.label)]);
     } catch (err) {
       refused.push(`${order.causeKey}: herdr refused the prompt to "${target.label}" `
         + `(${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, 120)})`);

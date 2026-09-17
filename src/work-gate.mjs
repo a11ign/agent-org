@@ -183,7 +183,14 @@ export function decide({ prs, readyRows }) {
       subject: `rows-${unclaimed.map((r) => r.number).sort((a, b) => a - b).join("-")}`,
       discriminator: String(unclaimed.length),
       prompt: `${unclaimed.length} Ready row(s) unclaimed: ${rows}. Claim the oldest with `
-        + "`node packages/agent-org/src/row-claim.mjs claim <n> --session=<you> --branch=agent/<branch>` and build it.",
+        + "`node packages/agent-org/src/row-claim.mjs claim <n> --session=<you> --branch=agent/<slug>-<n> --worktree=../wt-<n>` and build it there.\n"
+        // BOTH FLAGS OR NEITHER, and the primary refuses the work entirely: `row-claim` creates the
+        // worktree from `--branch` AND `--worktree` together and refuses when given only one, and the
+        // tooling will not run from the primary checkout at all. The first engineer woken by this
+        // system (2026-09-17) stopped and asked a human for both facts, because the order named
+        // neither -- so they are named here rather than left to a role brief the session may not have
+        // read yet. `../wt-<n>` is the sibling convention every live worktree on the host follows.
+        + "The claim creates the worktree; run it from the primary checkout, then cd into it.",
       causeKey: `engineers/ready-row-unclaimed/${unclaimed.map((r) => r.number).sort((a, b) => a - b).join("-")}`,
     });
   }
