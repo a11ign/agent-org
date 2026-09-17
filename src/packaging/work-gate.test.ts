@@ -16,7 +16,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES }
+import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES }
   from "../work-gate.mjs";
 
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
@@ -93,8 +93,8 @@ test("#912: a claimed row is not work, and an unclaimed one names no session", (
   const rows = [{ number: 20, labels: [{ name: "ready" }] },
     { number: 21, labels: [{ name: "ready" }, { name: "in-progress" }] }];
   const orders = decide({ prs: [], readyRows: rows });
-  assert.equal(orders.length, 1, "`ready` WITHOUT `in-progress` is the unclaimed set");
-  assert.equal(orders[0].subject, "rows-20", "the claimed row is excluded");
+  assert.deepEqual(orders.map((o) => o.subject), ["row-20"],
+    "`ready` WITHOUT `in-progress` is the unclaimed set, and the claimed row is excluded");
 
   // NO SESSION IS NAMED, deliberately: which engineer takes it depends on who is idle at that instant,
   // which only `herdr agent list`'s `agent_status` knows. A gate that picked would be guessing.
@@ -102,6 +102,47 @@ test("#912: a claimed row is not work, and an unclaimed one names no session", (
 
   // POSITIVE CONTROL for the emptiness assertion above: an empty Ready set is genuinely quiet.
   assert.deepEqual(decide({ prs: [], readyRows: [] }), []);
+});
+
+
+/**
+ * ONE ORDER PER ROW IS WHAT PUTS MORE THAN ONE ENGINEER TO WORK. A single order naming every unclaimed
+ * row wakes exactly ONE session, because `wake` routes one order to one agent -- so a deep queue
+ * recruited one engineer every two minutes while the rest sat idle. Measured 2026-09-17 with eight rows
+ * Ready: two engineers woken over six minutes and a third never.
+ */
+test("every unclaimed row is its OWN order, so one tick can fill every idle engineer", () => {
+  const rows = [30, 31, 32].map((n) => ({ number: n, labels: [{ name: "ready" }] }));
+  const orders = decide({ prs: [], readyRows: rows });
+  assert.deepEqual(orders.map((o) => o.subject), ["row-30", "row-31", "row-32"]);
+  assert.equal(new Set(orders.map((o) => o.causeKey)).size, 3,
+    "distinct keys, or the ledger would treat the queue as one already-delivered job");
+});
+
+test("rows go out OLDEST first -- a queue that hands out its newest starves its oldest", () => {
+  const rows = [90, 12, 45].map((n) => ({ number: n, labels: [{ name: "ready" }] }));
+  assert.deepEqual(decide({ prs: [], readyRows: rows }).map((o) => o.subject),
+    ["row-12", "row-45", "row-90"]);
+});
+
+test("the per-tick cap bounds the REPORT, not the parallelism", () => {
+  const many = Array.from({ length: 30 }, (_, i) => ({ number: 100 + i, labels: [{ name: "ready" }] }));
+  const orders = decide({ prs: [], readyRows: many });
+  assert.equal(orders.length, MAX_ROW_ORDERS_PER_TICK,
+    "uncapped, 30 rows would print ~30 UNDELIVERED lines every two minutes and bury the ones that matter");
+  assert.ok(MAX_ROW_ORDERS_PER_TICK > 5,
+    "the cap must exceed the engineer count or it would throttle real work rather than the log");
+});
+
+test("a row already woken for keeps its key, so the next tick does not recruit a second engineer", () => {
+  const rows = [{ number: 40, labels: [{ name: "ready" }] }, { number: 41, labels: [{ name: "ready" }] }];
+  const first = decide({ prs: [], readyRows: rows });
+  // #41 gets claimed; #40's key must be unchanged, or the ledger re-offers a row already being worked.
+  const after = decide({ prs: [], readyRows: [rows[0], { ...rows[1], labels: [{ name: "ready" },
+    { name: "in-progress" }] }] });
+  assert.equal(after.find((o) => o.subject === "row-40")?.causeKey,
+    first.find((o) => o.subject === "row-40")?.causeKey,
+    "keyed on the queue DEPTH, every claim rewrote every remaining key and re-woke someone");
 });
 
 test("#912: the same state produces byte-identical orders, so the ledger can deduplicate", () => {
