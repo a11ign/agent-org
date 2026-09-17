@@ -29,7 +29,7 @@
 // refuses the branch. A Region touching two lanes gets BOTH labels, never one picked silently (see
 // `laneLabelsFor`); a Region touching none gets `lane:any`, a real answer, not a fallback. A missing or
 // malformed lane file is CANNOT_ASK -- refused before `gh issue create` even runs, identically to the
-// merge guard's own `laneVerdict` refusing rather than reading silence as "no path has a lane". The
+// retired merge guard's own `laneVerdict` refusing rather than reading silence as "no path has a lane". The
 // lane label(s) travel through the same "label lands last" step as the board label above, for the
 // identical reason: the pre-write board snapshot must never see `ready` on a row with no Status, lane
 // label or not. Backfilling pre-existing rows is deliberately out of scope here (dispatcher's own
@@ -765,7 +765,7 @@ function directoryTouchesLane(directory, paths) {
  * merge it." A Region touching no lane's paths at all gets `lane:any`, a real answer (most tooling rows
  * are genuinely anybody's own), never a fallback standing in for "could not tell."
  *
- * `except` is subtracted the identical way `laneVerdict` subtracts it: a path excepted from a lane (a
+ * `except` is subtracted the way the retired `laneVerdict` subtracted it: a path excepted from a lane (a
  * generated file whose source lives elsewhere) must not pull that lane's label onto a row just because
  * the file happens to sit under the lane's directory.
  * @param {string[]} regionFiles
@@ -878,7 +878,7 @@ function spawnGhIssueCreate(argv) {
  * that function's own complexity under this repo's gate, same shape as `boardAndVerify`'s own extraction:
  * one concept (derive from the file the merge guard reads, or refuse rather than guess) written out
  * rather than a genuinely separate responsibility. A missing or malformed `docs/lane-ownership.json` is
- * CANNOT_ASK, never "nothing has a lane" (the identical rule `workflow-lane-check.mjs`'s own `laneVerdict`
+ * CANNOT_ASK, never "nothing has a lane" (the rule the retired `workflow-lane-check.mjs`'s `laneVerdict`
  * applies to the merge guard's side of the same file) -- refused BEFORE `gh issue create` runs, so
  * nothing is filed on a guess. `body` is assumed to already carry a `## Region` section: the only caller,
  * `createIssue`, checks that via `fileRefusalReason` first, so `declaredRegionFiles` cannot return `null`

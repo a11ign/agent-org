@@ -211,7 +211,7 @@ test("#883 ACCEPTANCE, MUTATION TARGET: the label MOVES when lane-ownership.json
 });
 
 test("laneLabelsFor: an EXCEPTED path inside a lane's own directory does not pull that lane's label -- "
-  + "the identical subtraction workflow-lane-check.mjs's own laneVerdict makes", () => {
+  + "the subtraction the retired workflow-lane-check.mjs's laneVerdict made", () => {
   const labels = laneLabelsFor([".github/workflows/consumer-gate.yml"], { lanes: [PIPELINE_LANE] });
   assert.deepEqual(labels, ["lane:any"],
     "consumer-gate.yml is generated from README.md and excepted from the pipeline lane -- touching only "
