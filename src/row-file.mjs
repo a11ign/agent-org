@@ -24,7 +24,7 @@
 // unlabelled row apart from one nobody had assigned -- `worker-config` held idle twice in one evening
 // rather than self-select from an unlabelled column (the row's own filing cites both). The part that is
 // the ruling rather than an implementation choice: the derivation reads `docs/lane-ownership.json`
-// through `loadLanes`/`inLane`, THE SAME FUNCTIONS the merge guard (`workflow-lane-check.mjs`) reads --
+// through `loadLanes`/`inLane`, THE SAME FUNCTIONS `lane-ownership.mjs` owns (the merge guard that also read them was retired) --
 // never a second, hand-typed spelling of the same rule that could drift from the guard that actually
 // refuses the branch. A Region touching two lanes gets BOTH labels, never one picked silently (see
 // `laneLabelsFor`); a Region touching none gets `lane:any`, a real answer, not a fallback. A missing or
@@ -102,7 +102,7 @@ import { PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapshot.mjs";
 import { launchGate } from "./board-snapshot-scope.mjs";
 import { REPO } from "../../../scripts/repo-identity.mjs";
 import { declaredRegionFiles, directoryReservations, extractLabeledSection, extractRegionSection, slashlessDirectoryEntries, unrecognisedRegionPaths } from "./region-paths.mjs";
-import { loadLanes, inLane } from "./workflow-lane-check.mjs";
+import { loadLanes, inLane } from "./lane-ownership.mjs";
 
 /** @type {(cmd: string, args: string[]) => string} */
 const defaultRun = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8" });
@@ -769,7 +769,7 @@ function directoryTouchesLane(directory, paths) {
  * generated file whose source lives elsewhere) must not pull that lane's label onto a row just because
  * the file happens to sit under the lane's directory.
  * @param {string[]} regionFiles
- * @param {{ lanes: import("./workflow-lane-check.mjs").Lane[] }} lanes
+ * @param {{ lanes: import("./lane-ownership.mjs").Lane[] }} lanes
  * @returns {string[]}
  */
 export function laneLabelsFor(regionFiles, lanes) {
