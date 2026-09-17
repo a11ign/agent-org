@@ -29,7 +29,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { racesAnArmedMerge, lookupArmedPrStatus } from "../../../../scripts/merge-guard.mjs";
+import { racesAnArmedMerge, lookupArmedPrStatus } from "../merge-guard.mjs";
 
 const HOOK_PATH = fileURLToPath(new URL("../../../../scripts/git-hooks/pre-push", import.meta.url));
 
@@ -47,7 +47,7 @@ type Verdict = { status: number; stdout: string; stderr: string };
  * Runs ONLY the extracted block, with a shell FUNCTION named `node` shadowing the real binary --
  * standard bash technique for stubbing a command a script calls by name, and the only way to drive the
  * bash-side wiring (the override env var, the message, the exit code) deterministically: the real
- * `node scripts/merge-guard.mjs --armed-check=` needs a live GitHub PR in the exact armed-and-green
+ * `node packages/agent-org/src/merge-guard.mjs --armed-check=` needs a live GitHub PR in the exact armed-and-green
  * state to exercise the refuse path for real, which this repository's own PRs were observed NOT to hold
  * for longer than the merge queue takes to drain it (#386's whole premise). `BRANCH` is exported so the
  * block's own `$BRANCH` reference resolves without re-deriving it from a real git repo.
@@ -111,7 +111,7 @@ test("`null` (could not ask) is ALLOWED -- a convenience guard against a race mu
 });
 
 // --- bash wiring: the override env var, the message, and the exit code, driven against a STUBBED
-// `node scripts/merge-guard.mjs --armed-check=` -- see runArmedGuardBlock's own comment for why a live
+// `node packages/agent-org/src/merge-guard.mjs --armed-check=` -- see runArmedGuardBlock's own comment for why a live
 // armed+green PR cannot be relied on to exist for the length of a test run. ---
 
 test("WIRING: the CLI refusing (non-zero) makes the hook exit non-zero, printing the CLI's own message", () => {

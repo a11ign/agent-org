@@ -16,8 +16,8 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
-import { stampWorktree, worktreeOwner, whoseWorktree, OWNER_FILE } from "../../../../scripts/worktree-owner.mjs";
+import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
+import { stampWorktree, worktreeOwner, whoseWorktree, OWNER_FILE } from "../worktree-owner.mjs";
 
 const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
 const git = (...args: string[]) =>
@@ -84,7 +84,7 @@ test("#1128: an empty stamp file is UNSTAMPED, not an owner named the empty stri
 
 /** The CLI, run the way a session runs it -- argv and env, never the exported functions. */
 function cli(args: string[], env: Record<string, string | undefined>) {
-  const result = spawnSync(process.execPath, [join(REPO, "scripts/worktree-owner.mjs"), ...args],
+  const result = spawnSync(process.execPath, [join(REPO, "packages/agent-org/src/worktree-owner.mjs"), ...args],
     { encoding: "utf8", env: { ...process.env, ...sandboxGitEnv(), ...env } });
   return { status: result.status, out: result.stdout, err: result.stderr };
 }

@@ -1,6 +1,6 @@
 // no-token: gh
 //
-// This file imports `fileRefusalReason` from `scripts/row-file.mjs`, and that module's `openMilestones`
+// This file imports `fileRefusalReason` from `packages/agent-org/src/row-file.mjs`, and that module's `openMilestones`
 // (`:303`) spawns `gh` for the milestone list -- a path none of these tests take: every one of them hands
 // the wrapper a body and an injected runner, and the runner this file injects THROWS if it is ever called
 // for a body the test expects refused.
@@ -40,9 +40,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { LEAK_PATTERNS, allLeaksIn, leakRefusalReason } from "./leak-patterns.mjs";
-import { fileRefusalReason, createIssue } from "../../../../scripts/row-file.mjs";
-import { checkBody } from "../../../../scripts/pr-open.mjs";
-import { editRefusal, editComment, digest } from "../../../../scripts/tracker-comment.mjs";
+import { fileRefusalReason, createIssue } from "../row-file.mjs";
+import { checkBody } from "../pr-open.mjs";
+import { editRefusal, editComment, digest } from "../tracker-comment.mjs";
 
 const NEVER_RUN = () => { throw new Error("must never RUN a command for a body this test expects refused"); };
 

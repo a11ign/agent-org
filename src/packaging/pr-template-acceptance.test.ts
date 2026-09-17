@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 // A plain `.mjs`, and `scripts/**` IS in the typecheck program (#189), so this resolves and is checked.
-import { extractAcceptanceSection, acceptanceReport } from "../../../../scripts/acceptance-commands.mjs";
+import { extractAcceptanceSection, acceptanceReport } from "../acceptance-commands.mjs";
 
 const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
 const TEMPLATE = `${REPO}.github/PULL_REQUEST_TEMPLATE.md`;

@@ -1,11 +1,11 @@
 /**
  * RULE: IS SOMEBODY ELSE HOLDING THIS PR? -- #266/#258, #455's split into
- * `scripts/merge-guard/pr-hold-rule.mjs`. Reads `session:*` off the PR's own labels -- distinct from
+ * `packages/agent-org/src/merge-guard/pr-hold-rule.mjs`. Reads `session:*` off the PR's own labels -- distinct from
  * `claimed-row-rule.mjs`, which reads the same label shape off a ROW this PR would CLOSE.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { prHoldReasons } from "../../../../scripts/merge-guard/pr-hold-rule.mjs";
+import { prHoldReasons } from "../merge-guard/pr-hold-rule.mjs";
 
 const pr = { number: 258 };
 

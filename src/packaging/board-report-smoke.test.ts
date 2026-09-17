@@ -14,7 +14,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { render } from "../../../../scripts/board-report.mjs";
+import { render } from "../board-report.mjs";
 
 const MINIMAL_FACTS = {
   since: "2026-09-05T00:00:00.000Z",

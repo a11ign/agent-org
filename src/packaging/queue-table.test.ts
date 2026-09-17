@@ -23,7 +23,7 @@ import { join } from "node:path";
 import { prRow, nonSuccessByName, newestPerName, render, fetchRefs, renderStalled, windowOf,
   renderMergedChecks, STALL_MINUTES, EXIT, hostState, hostContention, reliefFor, topConsumers, isRed, renderBudget,
   fetchRemoteBranchesChecked, branchPrefixCensus, renderBranchPrefixes, apiBudget, ghHeaders }
-  from "../../../../scripts/queue-table.mjs";
+  from "../queue-table.mjs";
 
 const NOW = new Date("2026-09-09T08:00:00Z");
 /** A host with room, so tests about OTHER sections are not decided by section 5. */
@@ -241,7 +241,7 @@ test("merged PRs whose times could not be read is INCOMPLETE; nothing merged at 
 // host holding 12 GB compressed.
 // ---------------------------------------------------------------------------------------------------
 import { renderHost, GIT_PROCESS_CEILING, LOAD_CEILING }
-  from "../../../../scripts/queue-table.mjs";
+  from "../queue-table.mjs";
 
 const HOST = { compressedMb: 2000, inactiveMb: 3000, freeMb: 180, pageouts: 1000,
   load: 2, gitProcesses: 3, worktrees: 12, topConsumers: null };
@@ -556,7 +556,7 @@ test("#681 gitProcessCount: pgrep's exit 1 is a real ZERO, and any other failure
  * sha, and every non-code event. **That is precisely the class of check that can be red on main while
  * blocking nothing, which is the class this section exists to surface.**
  */
-import { mergeCommitsOnMain } from "../../../../scripts/queue-table.mjs";
+import { mergeCommitsOnMain } from "../queue-table.mjs";
 
 test("#737 mergeCommitsOnMain reads the FIRST-PARENT chain and names the PR each merge carries", () => {
   const log = [
@@ -829,7 +829,7 @@ test("#1405 render() draws the budget it is HANDED, and says it could not read o
 });
 
 test("#1405 wiring: collect() reads the budget LAST through the live runner, and render() reads none", () => {
-  const source = readFileSync(new URL("../../../../scripts/queue-table.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../queue-table.mjs", import.meta.url), "utf8");
   const body = (name: string) => {
     const start = source.indexOf(`function ${name}(`);
     assert.ok(start >= 0, `function ${name} is in the script`);

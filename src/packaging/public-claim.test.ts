@@ -7,7 +7,7 @@ import path from "node:path";
 // the same one `board-data.mjs`'s own consumers (the daily report, the weekly document) treat as the
 // current status. A second re-implementation of "which entry is current" here would be the fact-stated-
 // twice shape this repo keeps paying for.
-import { reported } from "../../../../scripts/board-data.mjs";
+import { reported } from "../board-data.mjs";
 
 /* THE PUBLIC CLAIM CANNOT OUTLIVE ITS MEASUREMENT.
  *

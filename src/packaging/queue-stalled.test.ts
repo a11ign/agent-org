@@ -15,8 +15,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import {
   stalledVerdict, mergeTreeConflict, DEFAULT_STALL_THRESHOLD_MS,
-  armedBehindVerdict, behindByCount, formatBehindWatchdogLine, DEFAULT_BEHIND_STALL_THRESHOLD_SECONDS, supersedingGateVerdict, supersededLine, examinePr } from "../../../../scripts/queue-stalled.mjs";
-import { newestConclusion, headQuietSeconds } from "../../../../scripts/update-branch-sweep.mjs";
+  armedBehindVerdict, behindByCount, formatBehindWatchdogLine, DEFAULT_BEHIND_STALL_THRESHOLD_SECONDS, supersedingGateVerdict, supersededLine, examinePr } from "../queue-stalled.mjs";
+import { newestConclusion, headQuietSeconds } from "../update-branch-sweep.mjs";
 
 // ---------------------------------------------------------------------------------------------------
 // #1100: THIS FILE'S SUBJECT HAS A SECOND VOCABULARY, and it arrived through a shared function.
@@ -30,9 +30,9 @@ import { newestConclusion, headQuietSeconds } from "../../../../scripts/update-b
 // recurring shape, and the fix for a vocabulary split walked straight into it.
 // ---------------------------------------------------------------------------------------------------
 
-import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
+import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
 
-const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../scripts/queue-stalled.mjs");
+const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "../queue-stalled.mjs");
 
 // --- stalledVerdict: the pure decision ---
 
@@ -132,24 +132,24 @@ test("mergeTreeConflict: MUTATION TARGET -- real captured conflict output (PR #2
   // git actually emits.
   const stdout = [
     "43bb45c033083196df4059b2d6b668f60c140698",
-    "scripts/board-data.mjs",
-    "scripts/board-document.mjs",
+    "packages/agent-org/src/board-data.mjs",
+    "packages/agent-org/src/board-document.mjs",
     "scripts/board-only-check.mjs",
-    "scripts/board-report.mjs",
+    "packages/agent-org/src/board-report.mjs",
     "scripts/ci-changed.mjs",
-    "scripts/isolation-gate.mjs",
+    "packages/guards/src/isolation-gate.mjs",
     "",
-    "Auto-merging scripts/board-data.mjs",
-    "CONFLICT (content): Merge conflict in scripts/board-data.mjs",
-    "Auto-merging scripts/board-document.mjs",
-    "CONFLICT (content): Merge conflict in scripts/board-document.mjs",
+    "Auto-merging packages/agent-org/src/board-data.mjs",
+    "CONFLICT (content): Merge conflict in packages/agent-org/src/board-data.mjs",
+    "Auto-merging packages/agent-org/src/board-document.mjs",
+    "CONFLICT (content): Merge conflict in packages/agent-org/src/board-document.mjs",
     "",
   ].join("\n");
   const result = mergeTreeConflict("origin/main", "deadbeef", () => ({ status: 1, stdout }));
   assert.equal(result.conflict, true);
   assert.deepEqual(result.files, [
-    "scripts/board-data.mjs", "scripts/board-document.mjs", "scripts/board-only-check.mjs",
-    "scripts/board-report.mjs", "scripts/ci-changed.mjs", "scripts/isolation-gate.mjs",
+    "packages/agent-org/src/board-data.mjs", "packages/agent-org/src/board-document.mjs", "scripts/board-only-check.mjs",
+    "packages/agent-org/src/board-report.mjs", "scripts/ci-changed.mjs", "packages/guards/src/isolation-gate.mjs",
   ]);
 });
 

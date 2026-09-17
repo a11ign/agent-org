@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { declaredRegionFiles } from "../../../../scripts/region-paths.mjs";
+import { declaredRegionFiles } from "../region-paths.mjs";
 
 const GUIDANCE = fileURLToPath(new URL("../../../../docs/row-filing.md", import.meta.url));
 const guidance = () => readFileSync(GUIDANCE, "utf8");
@@ -34,7 +34,7 @@ const BODY_WITH_AN_EXCLUSION_IN_ITS_REGION = [
   "## Region",
   "",
   "```",
-  "scripts/ready-label-audit.mjs",
+  "packages/agent-org/src/ready-label-audit.mjs",
   "```",
   "",
   `**\`${EXCLUDED}\` is NOT in this region** -- the triggers are somebody else's half.`,
@@ -50,7 +50,7 @@ test("an exclusion sentence inside a Region DECLARES the path it denies", () => 
   // The mutation guard: the fixture's Region must carry a real declaration too, or this test would pass
   // for any text at all -- asserting about an empty Region proves nothing about the grammar.
   assert.ok(declared, "the fixture must have a Region section at all, not CANNOT_ASK");
-  assert.ok(declared.includes("scripts/ready-label-audit.mjs"),
+  assert.ok(declared.includes("packages/agent-org/src/ready-label-audit.mjs"),
     "the fixture's Region must genuinely declare its own path, or this assertion is vacuous");
 
   assert.ok(declared.includes(EXCLUDED),
@@ -64,7 +64,7 @@ test("moving the exclusion under its own heading is what actually removes the de
     "## Not in scope\n\n**The workflow file** -- the triggers are somebody else's half.");
 
   const declared = declaredRegionFiles(repaired) ?? [];
-  assert.deepEqual(declared, ["scripts/ready-label-audit.mjs"],
+  assert.deepEqual(declared, ["packages/agent-org/src/ready-label-audit.mjs"],
     "the Region declares only what the change touches once the exclusion is a section of its own");
 });
 

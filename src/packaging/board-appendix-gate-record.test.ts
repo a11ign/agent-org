@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { isConformanceGate, reported, worstVerdict } from "../../../../scripts/board-data.mjs";
+import { isConformanceGate, reported, worstVerdict } from "../board-data.mjs";
 
 test("#429, ON THE TRACKED RECORD: the appendix slot holds a conformance gate that carries a verdict, or nothing", () => {
   // Not a fixture. On `origin/main` before this fix the slot read the newest entry of ANY kind, which on

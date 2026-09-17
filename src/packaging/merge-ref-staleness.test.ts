@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   mergeRefIsStale, mergeRefStalenessReason, DEFAULT_STALE_THRESHOLD, fetchMergeRefBehindBy,
-} from "../../../../scripts/merge-guard/merge-ref-staleness-rule.mjs";
+} from "../merge-guard/merge-ref-staleness-rule.mjs";
 
 /**
  * #433: `refs/pull/N/merge` is computed at push time and never recomputed -- nine of nine open PRs were

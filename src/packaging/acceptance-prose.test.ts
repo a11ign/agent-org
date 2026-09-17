@@ -18,7 +18,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { classifyCommand, acceptanceReport } from "../../../../scripts/acceptance-commands.mjs";
+import { classifyCommand, acceptanceReport } from "../acceptance-commands.mjs";
 
 /** A fake `commandExists` that only ever finds the named tokens -- deterministic, independent of $PATH. */
 function onlyResolves(...names: string[]) {

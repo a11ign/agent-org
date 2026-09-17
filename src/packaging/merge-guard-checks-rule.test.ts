@@ -1,18 +1,18 @@
 /**
  * RULE: DID EVERY REQUIRED CONTEXT ACTUALLY RUN AND CONCLUDE? -- #148's other half, #455's split into
- * `scripts/merge-guard/checks-rule.mjs`. Four distinct states -- empty, missing, still running, failing --
+ * `packages/agent-org/src/row-claim/checks-rule.mjs`. Four distinct states -- empty, missing, still running, failing --
  * each needing a different sentence and a different fix.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { checkReasons, newestPerName, SATISFIED } from "../../../../scripts/merge-guard/checks-rule.mjs";
+import { checkReasons, newestPerName, SATISFIED } from "../merge-guard/checks-rule.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
-import { reasonKind } from "../../../../scripts/merge-guard/reason-kind.mjs";
+import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
+import { reasonKind } from "../merge-guard/reason-kind.mjs";
 
 const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
 
@@ -139,7 +139,7 @@ test("#902 MUTATION TARGET: the fix is in the RULE, and `lookupCheckRuns` must c
   // The ordering key has to arrive. `checkReasons` grouping by newest is inert if its caller drops `id`,
   // which is what this file's own subject did until #902 -- a rule that cannot apply, not a rule that is
   // wrong. Asserted against the source, because no unit test of `checkReasons` can see its caller.
-  const source = readFileSync(new URL("../../../../scripts/merge-guard/lookups.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../merge-guard/lookups.mjs", import.meta.url), "utf8");
   const mapper = /check-runs[\s\S]*?\.map\(([\s\S]*?)\)\);/.exec(source)?.[1] ?? "";
   assert.match(mapper, /\bid: run\.id\b/,
     "lookupCheckRuns no longer carries `id`, so newest-per-name has no ordering key and silently reverts");
@@ -211,7 +211,7 @@ test("#1007: an OLDER cancelled run beside a newer conclusion is still #902's ca
 /**
  * #1007: THE CONSUMER ASSERTION IS DELIBERATELY ABSENT, and worker-judge's review of #1008 is why.
  *
- * An earlier version drove `ownPrHealthReason` (`scripts/row-claim/own-pr-health-rule.mjs`) to prove that
+ * An earlier version drove `ownPrHealthReason` (`packages/agent-org/src/row-claim/own-pr-health-rule.mjs`) to prove that
  * `row-claim`'s own colour reads the sentence above as a wait rather than RED -- the exact verdict that
  * refused a claim. **#989 dissolves that relationship**: B2 stops reading check state at all, so
  * `colourFor` and its prefix-matching go with it. The assertion pinned a path about to stop existing, and

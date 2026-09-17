@@ -35,7 +35,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { latestVerdictGate } from "../../../../scripts/board-gates.mjs";
+import { latestVerdictGate } from "../board-gates.mjs";
 
 /** The row's own demonstrated population, reproduced verbatim (dates/commands as given on #429). */
 const CONFORMANCE_MAIN = {

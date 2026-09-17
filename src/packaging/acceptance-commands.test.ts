@@ -21,7 +21,7 @@ import {
   runsTheWholeSuite,
   suiteTestFiles,
   SPAWNS_GH,
-} from "../../../../scripts/acceptance-commands.mjs";
+} from "../acceptance-commands.mjs";
 
 // A file known to exist, relative to the repo root -- where every real invocation of this command runs
 // from. This test file names itself, so it cannot go stale independently of being renamed.
@@ -36,10 +36,10 @@ const NO_HISTORY = { history: false, token: false, fleet: false };
 const WITH_HISTORY = { history: true, token: false, fleet: false };
 
 // #621's own worked example: reaches `gh` with NO `// requires:` header at all -- `resolveChromeBinary()`,
-// imported from `scripts/board-document.mjs`, is what actually shells out. The header-only mechanism
+// imported from `packages/agent-org/src/board-document.mjs`, is what actually shells out. The header-only mechanism
 // (#510) cannot see this file; the closure-derived one is built specifically because it must.
 //
-// board-style.test.ts (the ORIGINAL worked example, via `collect()` in `scripts/board-data.mjs`) retired
+// board-style.test.ts (the ORIGINAL worked example, via `collect()` in `packages/agent-org/src/board-data.mjs`) retired
 // 2026-09-10 in guard triage 4 of 6 (#906) -- this file has the identical shape (no header, reaches `gh`
 // only through a local import) and survives that row. Values below re-derived directly from
 // `deriveClosureRequirements`/`closureRequirementMessage` against this fixture, not carried over from the
@@ -55,7 +55,7 @@ const WITH_TOKEN = { history: true, token: true, fleet: true, corpus: true };
  * hold the file's line count to keep them true. `null` when the shape is not there, which fails the tests
  * rather than guessing a line.
  */
-const BOARD_DOCUMENT = "scripts/board-document.mjs";
+const BOARD_DOCUMENT = "packages/agent-org/src/board-document.mjs";
 function spawnLineOf(source: string): number | null {
   const lines = source.split("\n");
   const start = lines.findIndex((line) => /^function publishToDraftRelease\(/.test(line));
@@ -794,7 +794,7 @@ test("#540 MUTATION TARGET -- restoring the old single-findIndex behaviour must 
 
 // --- #621: a test file's requirements are DERIVED from its import closure, not read off an opt-in
 // header. board-document-chrome-resolver.test.ts has no `// requires:` header at all and reaches `gh`
-// only transitively, through `resolveChromeBinary()` in scripts/board-document.mjs -- the fourth instance
+// only transitively, through `resolveChromeBinary()` in packages/agent-org/src/board-document.mjs -- the fourth instance
 // in two days of exactly this shape (#382), and the whole reason #510's header alone could never catch
 // it: an opt-in declaration cannot catch the file whose author did not know there was something to
 // declare. (Original worked example, board-style.test.ts via `collect()`, retired 2026-09-10 -- #906.) ---
@@ -804,7 +804,7 @@ test("#621 deriveClosureRequirements: board-document-chrome-resolver.test.ts rea
   const hits = deriveClosureRequirements(BOARD_STYLE_FIXTURE);
   assert.equal(hits.length, 1);
   assert.equal(hits[0].requirement, "token");
-  assert.equal(hits[0].file.endsWith("scripts/board-document.mjs"), true);
+  assert.equal(hits[0].file.endsWith("packages/agent-org/src/board-document.mjs"), true);
   assert.equal(hits[0].line, boardDocumentSpawnLine(),
     "board-document.mjs's own gh spawn inside publishToDraftRelease, located by shape (#1458)");
 });
@@ -889,7 +889,7 @@ test("#621 local-import-closure.mjs's own JSDoc example is not read as a real im
   + "as a genuine edge into board-data.mjs, adding a phantom \"token\" hit with a nonsensical chain "
   + "(\"classifyCommand -> localImports -> collect -> board-data.mjs\") to any file merely importing "
   + "`localImports` from it", () => {
-  const hits = deriveClosureRequirements("scripts/local-import-closure.mjs");
+  const hits = deriveClosureRequirements("packages/guards/src/local-import-closure.mjs");
   assert.deepEqual(hits, [], "the shared closure-walk module must derive nothing from its own docstring");
 });
 
@@ -1675,7 +1675,7 @@ test("#1116: the remedy is NOT offered on a declaration already judged wrong", (
   // future edit could start doing exactly that. Driven over the shape rather than a real file, because
   // no tracked file carries a wrong declaration and one planted here would be a fixture of the defect.
   const wrong = { requirement: "token" as const, file: "x.mjs", line: 1, wrongDeclaration: true,
-    chain: ["packages/lab/src/packaging/merge-guard.test.ts", "scripts/merge-guard.mjs"] };
+    chain: ["packages/lab/src/packaging/merge-guard.test.ts", "packages/agent-org/src/merge-guard.mjs"] };
   const message = closureRequirementMessage(wrong);
   assert.match(message, /DOES call/, "the wrong-declaration refusal itself is unchanged");
   assert.doesNotMatch(message, /may declare/,
@@ -1712,7 +1712,7 @@ test("#1116: the remedy is offered only when it would HOLD — advice a reader c
 // --- #728: what this cannot parse, it must not make claims about ---------------------------------
 //
 // Measured on #727. The acceptance command was
-// `node scripts/tree-wide-guards.mjs | xargs npx tsx --test`, and the runner reported
+// `node packages/guards/src/tree-wide-guards.mjs | xargs npx tsx --test`, and the runner reported
 // `fail (matched no file: node, |, xargs)` -- a claim about the filesystem, and a false one. `|` is not
 // a filename at all, and a reader following that message goes looking for missing test files.
 //
@@ -1721,7 +1721,7 @@ test("#1116: the remedy is offered only when it would HOLD — advice a reader c
 // line must not pass it. What was wrong is what it said.
 
 test("#728: a piped line is REFUSED as unparseable, never reported as missing files", () => {
-  const result = testFileArgumentsResolve("node scripts/tree-wide-guards.mjs | xargs npx tsx --test");
+  const result = testFileArgumentsResolve("node packages/guards/src/tree-wide-guards.mjs | xargs npx tsx --test");
   assert.deepEqual(result, { ok: false, unparseable: "a pipe" },
     "the pipe form must name the construct rather than assert about the filesystem: `node`, `|` and "
     + "`xargs` are not files the author asked for, and one of them is not a filename at all");
@@ -1749,14 +1749,14 @@ test("#728 THE CONTROL: the guard #419 built still discriminates -- this must no
   const missing = testFileArgumentsResolve("npx tsx --test packages/lab/src/definitely-not-here.test.ts");
   assert.deepEqual(missing, { ok: false, missing: ["packages/lab/src/definitely-not-here.test.ts"] },
     "a genuinely missing file must still be named");
-  assert.deepEqual(testFileArgumentsResolve("npx tsx --test scripts/acceptance-commands.mjs"), { ok: true },
+  assert.deepEqual(testFileArgumentsResolve("npx tsx --test packages/agent-org/src/acceptance-commands.mjs"), { ok: true },
     "and a real file must still pass");
 });
 
 test("#728: an ordinary command with no relocating construct is untouched", () => {
   // The list is the constructs that RELOCATE the arguments, not everything unfamiliar. A guard that
   // refused what it did not recognise would refuse every ordinary command the moment a flag was added.
-  assert.deepEqual(testFileArgumentsResolve("npx tsx --test --test-concurrency=4 scripts/acceptance-commands.mjs"),
+  assert.deepEqual(testFileArgumentsResolve("npx tsx --test --test-concurrency=4 packages/agent-org/src/acceptance-commands.mjs"),
     { ok: true });
   assert.deepEqual(testFileArgumentsResolve("npm run lint"), { ok: true },
     "and a line with no `tsx --test` is never inspected at all");
@@ -1847,6 +1847,9 @@ function withBoardDocumentTree<T>(boardDocument: string, body: (entry: string) =
   const dir = mkdtempSync(join(tmpdir(), "acceptance-1458-"));
   try {
     mkdirSync(join(dir, "scripts"), { recursive: true });
+    // board-document.mjs lives in @a11ign/agent-org now, so the sandbox needs that directory too --
+    // BOARD_DOCUMENT below is written into it.
+    mkdirSync(join(dir, "packages/agent-org/src"), { recursive: true });
     mkdirSync(join(dir, "packages/lab/src/packaging"), { recursive: true });
     writeFileSync(join(dir, BOARD_DOCUMENT), boardDocument);
     const entry = join(dir, BOARD_STYLE_FIXTURE);

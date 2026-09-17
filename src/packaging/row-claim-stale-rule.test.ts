@@ -10,8 +10,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { staleRuleReason, ruleFiles, rulePathspec }
-  from "../../../../scripts/row-claim/stale-rule-guard.mjs";
-import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
+  from "../row-claim/stale-rule-guard.mjs";
+import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 
@@ -44,22 +44,22 @@ const detach = (root: string, sha: string) =>
   execFileSync("git", ["checkout", "--quiet", "--detach", sha], { cwd: root, env: sandboxGitEnv(), stdio: "pipe" });
 
 /** The pathspec the real guard uses, spelled for the fixture rather than derived from it. */
-const SPEC = ["scripts/row-claim.mjs", "scripts/row-claim/"];
+const SPEC = ["packages/agent-org/src/row-claim.mjs", "packages/agent-org/src/row-claim/"];
 
 test("#1014: a checkout BEHIND on a rule file refuses, naming the count and the file that moved", () => {
   const { root, commit } = syntheticRepo();
   try {
-    const base = commit("scripts/row-claim/own-pr-health-rule.mjs", "export const inBuildReason = () => null;\n");
+    const base = commit("packages/agent-org/src/row-claim/own-pr-health-rule.mjs", "export const inBuildReason = () => null;\n");
     setRef(root, "refs/remotes/origin/main", base);
     detach(root, base);
-    const moved = commit("scripts/row-claim/own-pr-health-rule.mjs", "export const inBuildReason = () => 'B2';\n");
+    const moved = commit("packages/agent-org/src/row-claim/own-pr-health-rule.mjs", "export const inBuildReason = () => 'B2';\n");
     setRef(root, "refs/remotes/origin/main", moved);
     detach(root, base); // the checkout sits where it was; origin/main has moved on
 
     const reason = staleRuleReason({ repoRoot: root, files: SPEC });
     assert.ok(reason, "a checkout holding a superseded rule must not produce a verdict at all");
     assert.match(reason, /1 COMMIT\(S\) BEHIND/, "the COUNT, so the reader knows how far behind they are");
-    assert.match(reason, /scripts\/row-claim\/own-pr-health-rule\.mjs/,
+    assert.match(reason, /packages\/agent-org\/src\/row-claim\/own-pr-health-rule\.mjs/,
       "and the FILE, because a refusal naming only a number is not followable -- the reader cannot tell "
       + "whether the rule they are being refused by is the one that moved");
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -68,7 +68,7 @@ test("#1014: a checkout BEHIND on a rule file refuses, naming the count and the 
 test("#1014: a checkout behind on UNRELATED files answers normally -- this is not a staleness refusal", () => {
   const { root, commit } = syntheticRepo();
   try {
-    const base = commit("scripts/row-claim.mjs", "export const claim = () => null;\n");
+    const base = commit("packages/agent-org/src/row-claim.mjs", "export const claim = () => null;\n");
     setRef(root, "refs/remotes/origin/main", base);
     const ahead = commit("docs/operational-lessons.md", "a paragraph nobody's verdict is computed from\n");
     setRef(root, "refs/remotes/origin/main", ahead);
@@ -83,7 +83,7 @@ test("#1014: a checkout behind on UNRELATED files answers normally -- this is no
 test("#1014: a checkout LEVEL with origin/main answers normally", () => {
   const { root, commit } = syntheticRepo();
   try {
-    const base = commit("scripts/row-claim.mjs", "export const claim = () => null;\n");
+    const base = commit("packages/agent-org/src/row-claim.mjs", "export const claim = () => null;\n");
     setRef(root, "refs/remotes/origin/main", base);
     detach(root, base);
     assert.equal(staleRuleReason({ repoRoot: root, files: SPEC }), null);
@@ -94,7 +94,7 @@ test("#1014: NO origin/main is CANNOT ASK, never 'up to date' -- the answer this
   () => {
     const { root, commit } = syntheticRepo();
     try {
-      const base = commit("scripts/row-claim.mjs", "export const claim = () => null;\n");
+      const base = commit("packages/agent-org/src/row-claim.mjs", "export const claim = () => null;\n");
       detach(root, base); // no refs/remotes/origin/main at all
 
       const reason = staleRuleReason({ repoRoot: root, files: SPEC });
@@ -109,9 +109,9 @@ test("#1014: MUTATION TARGET -- comparing the checkout against ITSELF must stop 
   () => {
     const { root, commit } = syntheticRepo();
     try {
-      const base = commit("scripts/row-claim/runner-rule.mjs", "export const runnerReason = () => null;\n");
+      const base = commit("packages/agent-org/src/row-claim/runner-rule.mjs", "export const runnerReason = () => null;\n");
       setRef(root, "refs/remotes/origin/main", base);
-      const moved = commit("scripts/row-claim/runner-rule.mjs", "export const runnerReason = () => 'no';\n");
+      const moved = commit("packages/agent-org/src/row-claim/runner-rule.mjs", "export const runnerReason = () => 'no';\n");
       setRef(root, "refs/remotes/origin/main", moved);
       detach(root, base);
 
@@ -133,13 +133,13 @@ test("#1014: MUTATION TARGET -- comparing the checkout against ITSELF must stop 
 // --- the file list: derived from THIS repository, and what happens when the derivation fails ---
 
 test("#1014: the rule-file list is DERIVED from row-claim's own import closure, not typed", () => {
-  const derived = ruleFiles(resolve(REPO, "scripts/row-claim.mjs"), REPO);
-  assert.ok(derived.includes("scripts/row-claim.mjs"), "the entry itself");
-  assert.ok(derived.includes("scripts/row-claim/own-pr-health-rule.mjs"),
+  const derived = ruleFiles(resolve(REPO, "packages/agent-org/src/row-claim.mjs"), REPO);
+  assert.ok(derived.includes("packages/agent-org/src/row-claim.mjs"), "the entry itself");
+  assert.ok(derived.includes("packages/agent-org/src/row-claim/own-pr-health-rule.mjs"),
     "and the module whose replacement by #989/#1012 produced half the refusal this row was filed for");
   assert.ok(derived.length >= 5,
     `expected the rule modules beside row-claim.mjs, got ${derived.length}: ${derived.join(", ")}`);
-  assert.ok(derived.every((f) => f === "scripts/row-claim.mjs" || f.startsWith("scripts/row-claim/")),
+  assert.ok(derived.every((f) => f === "packages/agent-org/src/row-claim.mjs" || f.startsWith("packages/agent-org/src/row-claim/")),
     "and NOTHING else -- the closure reaches merge-guard.mjs and board-snapshot.mjs, real dependencies of "
     + "the TOOL whose movement says nothing about whether the RULE changed. Folding those in would make "
     + "this the blanket staleness refusal the row rules out");
@@ -148,18 +148,18 @@ test("#1014: the rule-file list is DERIVED from row-claim's own import closure, 
 test("#1014: a BLINDED closure walker still refuses -- the one tree this guard is for is the one whose "
   + "walker cannot be trusted", () => {
   // Not hypothetical. Measured 2026-09-12 in a worktree at `6dee44a4`, a main from before #1019 fixed
-  // `stripComments`: `localImports("scripts/row-claim.mjs")` returned 0 there, so the derivation produced
+  // `stripComments`: `localImports("packages/agent-org/src/row-claim.mjs")` returned 0 there, so the derivation produced
   // ONLY the entry and five rule modules were invisible. The error runs toward NOT refusing, which is this
   // row's own defect arriving inside this row's own fix.
-  const blinded = rulePathspec(resolve(REPO, "scripts/row-claim.mjs"), REPO, { imports: () => [] });
-  assert.deepEqual(blinded, ["scripts/row-claim.mjs", "scripts/row-claim/"],
+  const blinded = rulePathspec(resolve(REPO, "packages/agent-org/src/row-claim.mjs"), REPO, { imports: () => [] });
+  assert.deepEqual(blinded, ["packages/agent-org/src/row-claim.mjs", "packages/agent-org/src/row-claim/"],
     "the derivation collapses to the entry, and the RULE DIRECTORY is what is left holding it");
 
   const { root, commit } = syntheticRepo();
   try {
-    const base = commit("scripts/row-claim/template-fields-rule.mjs", "export const templateFieldsReason = () => null;\n");
+    const base = commit("packages/agent-org/src/row-claim/template-fields-rule.mjs", "export const templateFieldsReason = () => null;\n");
     setRef(root, "refs/remotes/origin/main", base);
-    const moved = commit("scripts/row-claim/template-fields-rule.mjs", "export const templateFieldsReason = () => 'x';\n");
+    const moved = commit("packages/agent-org/src/row-claim/template-fields-rule.mjs", "export const templateFieldsReason = () => 'x';\n");
     setRef(root, "refs/remotes/origin/main", moved);
     detach(root, base);
 
@@ -167,7 +167,7 @@ test("#1014: a BLINDED closure walker still refuses -- the one tree this guard i
     // go stale with the tree -- and it is the only reason this refuses.
     assert.ok(staleRuleReason({ repoRoot: root, files: blinded }),
       "a rule module the walker could not see still has to stop the verdict");
-    assert.equal(staleRuleReason({ repoRoot: root, files: ["scripts/row-claim.mjs"] }), null,
+    assert.equal(staleRuleReason({ repoRoot: root, files: ["packages/agent-org/src/row-claim.mjs"] }), null,
       "and WITHOUT the directory in the pathspec it does not -- which is what makes the union "
       + "load-bearing rather than decoration");
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -183,11 +183,11 @@ test("#1014: `staleRuleReason` WITHOUT `files` derives its own pathspec -- the c
     const { root, commit } = syntheticRepo();
     try {
       // A real entry with a real local import, so the derivation has something to walk.
-      commit("scripts/row-claim/own-pr-health-rule.mjs", "export const inBuildReason = () => null;\n");
-      const base = commit("scripts/row-claim.mjs",
+      commit("packages/agent-org/src/row-claim/own-pr-health-rule.mjs", "export const inBuildReason = () => null;\n");
+      const base = commit("packages/agent-org/src/row-claim.mjs",
         'import { inBuildReason } from "./row-claim/own-pr-health-rule.mjs";\nexport { inBuildReason };\n');
       setRef(root, "refs/remotes/origin/main", base);
-      const moved = commit("scripts/row-claim/own-pr-health-rule.mjs", "export const inBuildReason = () => 'B2';\n");
+      const moved = commit("packages/agent-org/src/row-claim/own-pr-health-rule.mjs", "export const inBuildReason = () => 'B2';\n");
       setRef(root, "refs/remotes/origin/main", moved);
       detach(root, base);
 
@@ -205,13 +205,13 @@ test("#1014: the refusal names what ORIGIN/MAIN moved, never the author's own ed
   // reader of their own change gets argued with rather than followed.
   const { root, commit } = syntheticRepo();
   try {
-    const base = commit("scripts/row-claim/runner-rule.mjs", "export const runnerReason = () => null;\n");
+    const base = commit("packages/agent-org/src/row-claim/runner-rule.mjs", "export const runnerReason = () => null;\n");
     setRef(root, "refs/remotes/origin/main", base);
-    const moved = commit("scripts/row-claim/blocked-by-rule.mjs", "export const resolveBlockedByOverride = () => null;\n");
+    const moved = commit("packages/agent-org/src/row-claim/blocked-by-rule.mjs", "export const resolveBlockedByOverride = () => null;\n");
     setRef(root, "refs/remotes/origin/main", moved);
     detach(root, base);
     // the author's own work, on top of a checkout that is behind: a rule file they are editing on purpose
-    commit("scripts/row-claim/template-fields-rule.mjs", "export const templateFieldsReason = () => 'mine';\n");
+    commit("packages/agent-org/src/row-claim/template-fields-rule.mjs", "export const templateFieldsReason = () => 'mine';\n");
 
     const reason = staleRuleReason({ repoRoot: root, files: SPEC });
     assert.ok(reason, "still behind on origin/main's change, so it still refuses");

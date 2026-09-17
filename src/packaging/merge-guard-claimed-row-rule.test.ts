@@ -1,14 +1,14 @@
 /**
  * RULE: WOULD ARMING THIS PR CLOSE A ROW SOMEBODY ELSE IS INSIDE? -- #249, #455's split into
- * `scripts/merge-guard/claimed-row-rule.mjs`. Reuses `row-claim.mjs`'s own `decideClaim` rather than
+ * `packages/agent-org/src/merge-guard/claimed-row-rule.mjs`. Reuses `row-claim.mjs`'s own `decideClaim` rather than
  * re-deriving "is this row somebody else's" a second time.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   closingClaimReasons, claimedCloseCoveredBy, applyAllowClaimedClose,
-} from "../../../../scripts/merge-guard/claimed-row-rule.mjs";
-import { reasonKind } from "../../../../scripts/merge-guard/reason-kind.mjs";
+} from "../merge-guard/claimed-row-rule.mjs";
+import { reasonKind } from "../merge-guard/reason-kind.mjs";
 
 const CLOSES_CLAIMED = [{ number: 237, title: "example row", labels: ["in-progress", "session:worker-judge", "started"] }];
 

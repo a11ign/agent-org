@@ -1,5 +1,5 @@
 /**
- * `scripts/carry-branch.mjs` — #656, ceo's own mechanism: a detached worktree merges `origin/main` into
+ * `packages/agent-org/src/carry-branch.mjs` — #656, ceo's own mechanism: a detached worktree merges `origin/main` into
  * a branch and pushes, without ever checking that branch NAME out locally, so it cannot collide with
  * wherever its owner already has it. See that file's own header for the incident (#614) and the
  * three limits ceo stated as the point rather than caveats.
@@ -24,10 +24,10 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, realpathSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
-import { carryBranch, branchCheckedOutLocally, noteCarryOnPr, carryMain, EXIT } from "../../../../scripts/carry-branch.mjs";
+import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
+import { carryBranch, branchCheckedOutLocally, noteCarryOnPr, carryMain, EXIT } from "../carry-branch.mjs";
 import { stripComments } from "@a11ign/evidence/source-text";
-import { declareTreeWideGuard } from "../../../../scripts/tree-wide-guard.mjs";
+import { declareTreeWideGuard } from "../../../guards/src/tree-wide-guard.mjs";
 
 // #716/#704: this file's own population is the whole tracked tree, not one file -- declared here
 // rather than inferred from its source, per ceo's ruling (2026-09-09) that the tree-wide-guard
@@ -382,7 +382,7 @@ test("#1477: noteCarryOnPr reports (never throws) when the COMMENT itself fails,
 });
 
 test("#1477 WIRING: `main` applies carryMain's exit code and makes no carry decision of its own", () => {
-  const source = stripComments(readFileSync(new URL("../../../../scripts/carry-branch.mjs", import.meta.url), "utf8"));
+  const source = stripComments(readFileSync(new URL("../carry-branch.mjs", import.meta.url), "utf8"));
   const start = source.indexOf("function main(");
   assert.ok(start >= 0, "main not found");
   const end = source.indexOf("\n}\n", start);
@@ -393,6 +393,6 @@ test("#1477 WIRING: `main` applies carryMain's exit code and makes no carry deci
 
 test("#1477: the exit codes are the ones this script's header documents -- 3 is CARRIED, NOT NOTED", () => {
   assert.deepEqual({ ...EXIT }, { CARRIED: 0, NOT_CARRIED: 1, USAGE: 2, CARRIED_NOT_NOTED: 3 });
-  const header = readFileSync(new URL("../../../../scripts/carry-branch.mjs", import.meta.url), "utf8").split("import ")[0];
+  const header = readFileSync(new URL("../carry-branch.mjs", import.meta.url), "utf8").split("import ")[0];
   assert.match(header, /^\/\/ +3 +CARRIED, NOT NOTED -- the branch WAS pushed/m, "the header must document exit 3");
 });

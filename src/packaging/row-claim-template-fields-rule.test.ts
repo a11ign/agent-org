@@ -1,6 +1,6 @@
 /**
  * RULE: DOES THIS ROW'S BODY STATE ALL THREE REQUIRED TEMPLATE FIELDS? -- #707. See
- * `scripts/row-claim/template-fields-rule.mjs` for the full account: `.github/ISSUE_TEMPLATE/backlog-row.yml`
+ * `packages/agent-org/src/row-claim/template-fields-rule.mjs` for the full account: `.github/ISSUE_TEMPLATE/backlog-row.yml`
  * marks Region, Acceptance and Open-check `required`, but that is a GitHub issue FORM and applies only in
  * the web UI -- every row here is filed with `gh issue create --body`, which bypasses it entirely.
  * Measured 2026-09-09: 39 of ~65 open rows had no Open-check.
@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   REQUIRED_FIELDS, missingTemplateFields, templateFieldsReason,
-} from "../../../../scripts/row-claim/template-fields-rule.mjs";
+} from "../row-claim/template-fields-rule.mjs";
 
 // --- missingTemplateFields: THE VERDICT, PURE ---
 

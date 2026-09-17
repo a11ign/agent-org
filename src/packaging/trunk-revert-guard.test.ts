@@ -45,15 +45,15 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { readFileSync, mkdtempSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { sandboxGitEnv } from "../../../../scripts/git-env.mjs";
+import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
 import { parse as parseYaml } from "yaml";
 import {
   unexplainedDeletions, mergeParents, deletedPaths, branchTouchedPaths, EXIT,
-} from "../../../../scripts/trunk-revert-guard.mjs";
-import { revertVerdict, EXIT as REVERT_EXIT } from "../../../../scripts/trunk-revert.mjs";
+} from "../trunk-revert-guard.mjs";
+import { revertVerdict, EXIT as REVERT_EXIT } from "../trunk-revert.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-const SCRIPT = `${REPO}/scripts/trunk-revert-guard.mjs`;
+const SCRIPT = `${REPO}/packages/agent-org/src/trunk-revert-guard.mjs`;
 
 /**
  * A LOCAL CLONE WITH ITS OWN `origin`, BECAUSE THIS SCRIPT REALLY FETCHES.
@@ -302,7 +302,7 @@ test("trunk.yml runs trunk-revert-guard.mjs INSIDE trunkGate, not as a separate 
     jobs: Record<string, { steps: Array<Record<string, unknown>> }>,
   };
   const trunkGateRuns = (doc.jobs.trunkGate.steps ?? []).map((s) => String(s.run ?? "")).join("\n");
-  assert.match(trunkGateRuns, /node scripts\/trunk-revert-guard\.mjs/,
+  assert.match(trunkGateRuns, /node packages\/agent-org\/src\/trunk-revert-guard\.mjs/,
     "the guard must run as a step inside trunkGate -- a refusal there is what makes decideRevert's own "
     + "`if: needs.trunkGate.result == 'failure'` fire and drive the EXISTING revert machinery. A separate "
     + "job would need its own revert wiring, which ceo's ruling says not to build.");
