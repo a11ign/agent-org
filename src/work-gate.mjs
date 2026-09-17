@@ -79,6 +79,44 @@ export function readPrs(run = defaultRun) {
  * @param {(args: string[]) => string} run
  * @returns {any[] | null}
  */
+/**
+ * Labels that already mean NOT PICKABLE, so a row carrying one is not promotable however it is counted.
+ *
+ * `fleet-gated` is the load-bearing one for parallelism: that work serialises behind physical hardware,
+ * so counting it as available capacity would report a queue five engineers could share when one of them
+ * would be waiting on a worker box. The rest come from `ready:audit`'s own list of labels that mean a row
+ * cannot be started.
+ */
+export const NOT_PICKABLE = Object.freeze(["blocked", "fleet-gated", "epic", "disputed", "decision",
+  "awaiting-merge", "review-only", CLAIM_LABEL]);
+
+/**
+ * How many open `backlog` rows carry NO label that already means unpickable.
+ *
+ * A COUNT, AND DELIBERATELY NOT A TARGET. `product-manager`'s brief says Ready holds at least three
+ * product rows, and this does NOT enforce that number, because the org has already paid for enforcing it:
+ * `ready:audit` was filed 2026-09-06 after `dispatcher` labelled two rows `ready` TO HIT THE FLOOR -- one
+ * disputed, one with no Region or Acceptance -- and its own finding is the rule here, *"a floor met by a
+ * label I control is not a measurement"*. Promotion is a judgment about whether a row has a Region, an
+ * Acceptance and a done-when; a gate that demanded a number would buy relabelling instead of rows.
+ *
+ * So this reports how much there is to LOOK AT. What is genuinely promotable is the reader's call.
+ *
+ * @param {(args: string[]) => string} [run]
+ * @returns {number | null} `null` when the read was refused -- never 0, which would read as "nothing there"
+ */
+export function readPromotableCount(run = defaultRun) {
+  try {
+    const out = run(["issue", "list", "--state", "open", "--label", "backlog", "--limit", "200",
+      "--json", "number,labels"]);
+    const parsed = JSON.parse(out);
+    if (!Array.isArray(parsed)) return null;
+    return parsed.filter((r) => !labelsOf(r).some((n) => NOT_PICKABLE.includes(n))).length;
+  } catch {
+    return null;
+  }
+}
+
 export function readReadyRows(run = defaultRun) {
   try {
     const out = run(["issue", "list", "--state", "open", "--label", READY_LABEL, "--limit", "100",
@@ -279,11 +317,12 @@ function draftOrder(pr) {
  * at that head" rather than "check whether there is work" -- a woken turn that has to survey the queue is
  * a tick with extra steps, which is the cost this file exists to remove.
  *
- * @param {{ prs: any[], readyRows: any[] }} state
+ * @param {{ prs: any[], readyRows: any[], promotable?: number | null }} state `promotable` is the
+ *        count of backlog rows carrying no unpickable label, or `null` when that read was refused.
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
  */
-export function decide({ prs, readyRows }) {
+export function decide({ prs, readyRows, promotable = null }) {
   const orders = [];
 
   for (const pr of prs) {
@@ -317,6 +356,43 @@ export function decide({ prs, readyRows }) {
     });
   }
 
+  // THE SHELF ITSELF IS WORK, and nothing asked about it until 2026-09-17. Measured that day: 92 open
+  // issues, 87 of them `backlog`, ZERO `ready`, and five engineers idle. The gate's engineer question is
+  // "a `ready` row without `in-progress`", which was honestly no -- so it reported a quiet org while every
+  // engineer waited behind an empty queue. `dispatcher` is retired and its brief's line survives it:
+  // "the Ready column. It pulls; THIS ROLE STOCKS." The stocker had no trigger.
+  //
+  // FACTS, NOT A TARGET, and that distinction is the whole design. `product-manager`'s brief says Ready
+  // holds at least three product rows; this does not ask for three. `ready:audit` exists because
+  // `dispatcher` once labelled two rows `ready` TO HIT THAT FLOOR -- one disputed, one with no Region or
+  // Acceptance -- and recorded the rule this obeys: *"a floor met by a label I control is not a
+  // measurement."* A number here would buy relabelling. The order reports what is on the shelf and what
+  // is behind it; which rows are genuinely promotable is a judgment and stays with the reader.
+  //
+  // ONLY WHEN THE SHELF IS EMPTY. A queue with anything in it is a queue the engineers can pull from, and
+  // re-prompting on a short-but-non-empty Ready would be the floor by another name.
+  const unclaimedCount = readyRows.filter((r) => !labelsOf(r).includes(CLAIM_LABEL)).length;
+  if (unclaimedCount === 0 && promotable !== null && promotable > 0) {
+    orders.push({
+      session: "product-manager",
+      cause: "ready-queue-empty",
+      subject: "ready-queue",
+      // THE COUNT IS THE DISCRIMINATOR, so the order stops repeating the moment a row is promoted and
+      // re-fires if the shelf empties again at a different depth. Keyed on anything constant it would
+      // nag every two minutes until someone acted, which is how a wake becomes noise to route around.
+      discriminator: String(promotable),
+      prompt: `The Ready queue is EMPTY and ${promotable} open backlog row(s) carry no label that means `
+        + "unpickable (not blocked, fleet-gated, epic, disputed, decision, awaiting-merge, review-only or "
+        + "already claimed). Every engineer is waiting on this queue rather than on work.\n"
+        + "Promote what is genuinely ready -- a row with a Region, an Acceptance and a done-when -- and "
+        + "leave the rest. This is deliberately NOT a request to reach a count: #ready:audit records "
+        + "`dispatcher` labelling two rows ready to hit a floor, one disputed and one with neither field, "
+        + "and a floor met by a label you control is not a measurement. Promoting nothing and saying why "
+        + "is a valid answer.",
+      causeKey: `product-manager/ready-queue-empty/${promotable}`,
+    });
+  }
+
   return orders;
 }
 
@@ -332,7 +408,9 @@ function main() {
     process.exit(EXIT.CANNOT_ASK);
   }
 
-  const orders = decide({ prs: prs ?? [], readyRows: readyRows ?? [] });
+  // The third read is only needed to size the refill, and a refused one must not read as an empty shelf.
+  const promotable = readPromotableCount();
+  const orders = decide({ prs: prs ?? [], readyRows: readyRows ?? [], promotable });
   for (const order of orders) process.stdout.write(`${JSON.stringify(order)}\n`);
 
   if (prs === null || readyRows === null) {

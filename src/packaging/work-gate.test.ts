@@ -164,3 +164,58 @@ test("checks still RUNNING are not red -- an unsettled build is nobody's job yet
   assert.deepEqual(decide({ prs: [pr], readyRows: [] }), [],
     "waking someone to fix a build that has not finished is how a gate becomes noise");
 });
+
+// --- the shelf itself is work: Ready empty with a backlog behind it (2026-09-17) ---
+
+test("an EMPTY ready queue with promotable backlog wakes product-manager", () => {
+  const orders = decide({ prs: [], readyRows: [], promotable: 52 });
+  assert.deepEqual(orders.map((o: { cause: string; session: string }) => [o.cause, o.session]),
+    [["ready-queue-empty", "product-manager"]],
+    "92 open issues, 87 backlog, ZERO ready and five engineers idle -- and the gate called it quiet");
+  assert.match(orders[0].prompt, /52 open backlog row/);
+});
+
+/**
+ * The `ready:audit` incident, pinned: `dispatcher` labelled two rows `ready` TO HIT A FLOOR -- one
+ * disputed, one with neither a Region nor an Acceptance. "A floor met by a label I control is not a
+ * measurement." So the order must report facts and must NOT ask for a number.
+ */
+test("the order asks for judgment, never for a count", () => {
+  const [order] = decide({ prs: [], readyRows: [], promotable: 52 });
+  assert.match(order.prompt, /NOT a request to reach a count/);
+  assert.match(order.prompt, /Promoting nothing and saying why\s+is a valid answer/);
+  assert.doesNotMatch(order.prompt, /at least three|promote three|reach (a )?floor of/i,
+    "a number here buys relabelling rather than rows -- that is what ready:audit was filed for");
+});
+
+test("a NON-empty ready queue wakes nobody to stock it -- a short queue is not an empty one", () => {
+  const ready = [{ number: 30, labels: [{ name: "ready" }] }];
+  const orders = decide({ prs: [], readyRows: ready, promotable: 52 });
+  assert.ok(!orders.some((o: { cause: string }) => o.cause === "ready-queue-empty"),
+    "re-prompting on a short queue is the floor by another name");
+});
+
+test("an empty ready queue with NOTHING promotable behind it wakes nobody", () => {
+  assert.deepEqual(decide({ prs: [], readyRows: [], promotable: 0 }), [],
+    "there is nothing to ask for; waking someone to stare at an empty backlog is noise");
+});
+
+test("a REFUSED backlog read is not an empty shelf -- null must never wake anyone", () => {
+  assert.deepEqual(decide({ prs: [], readyRows: [], promotable: null }), [],
+    "a refused read reported as 'nothing promotable' would be the quiet-org error one level down");
+});
+
+test("the discriminator is the count, so the order stops once a row is promoted", () => {
+  const a = decide({ prs: [], readyRows: [], promotable: 52 })[0];
+  const b = decide({ prs: [], readyRows: [], promotable: 51 })[0];
+  assert.notEqual(a.causeKey, b.causeKey, "a changed shelf is a new question");
+  const again = decide({ prs: [], readyRows: [], promotable: 52 })[0];
+  assert.equal(a.causeKey, again.causeKey, "an unchanged shelf is the same question, so the ledger stops it");
+});
+
+test("a ready row that is CLAIMED does not count as stock", () => {
+  const claimed = [{ number: 31, labels: [{ name: "ready" }, { name: "in-progress" }] }];
+  const orders = decide({ prs: [], readyRows: claimed, promotable: 52 });
+  assert.ok(orders.some((o: { cause: string }) => o.cause === "ready-queue-empty"),
+    "a shelf holding only claimed rows is an empty shelf to anyone looking for work");
+});
