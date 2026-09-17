@@ -558,11 +558,6 @@ const NOT_A_DURATION_CLAIM: Record<string, string> = {
     + "figure fixed in one copy and left stale in a second is this repo's most expensive recurring shape. "
     + "#1060 now pins the two copies EQUAL as well as classifying them separately: the range stated "
     + "anywhere on the page must match the one inside the timing block.",
-  "A sixth run took 3 m 45 s":
-    "#1060: a COUNTER-EXAMPLE, not a promise -- the sentence exists to say that a run finishing under four "
-    + "minutes has failed rather than been fast, because it opened on a consent overlay and read almost "
-    + "none of the page. It is deliberately quoted OUTSIDE the page's checked timing block, since a page "
-    + "that cannot cite a figure outside its own range cannot warn anyone about one.",
   "| a Windows machine already |":
     "#1060: one-time SETUP times in a routing table (about twenty minutes with a Windows machine, 1.5-2 "
     + "hours to build a VM), the same class as 'Getting one takes ~20 minutes' above and for the same "
