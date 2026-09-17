@@ -105,7 +105,7 @@ export function readPromotableCount(run = defaultRun) {
       "--json", "number,labels"]);
     const parsed = JSON.parse(out);
     if (!Array.isArray(parsed)) return null;
-    return parsed.filter((r) => !labelsOf(r).some((n) => NOT_PICKABLE.includes(n))).length;
+    return parsed.filter((r) => !labelsOf(r).some((/** @type {string} */ n) => NOT_PICKABLE.includes(n))).length;
   } catch {
     return null;
   }
@@ -127,6 +127,18 @@ export function readReadyRows(run = defaultRun) {
     return null;
   }
 }
+
+/**
+ * How many row orders one tick may emit.
+ *
+ * A CAP, NOT A TARGET, and it is here because the alternative is noise rather than danger. `wake` already
+ * refuses an order when nobody is free, so an uncapped gate with 52 Ready rows would print 50-odd
+ * UNDELIVERED lines every two minutes and bury the ones that matter. Eight is comfortably more than the
+ * org has engineers, so it never throttles real parallelism -- it bounds the REPORT.
+ *
+ * Raise it when there are more engineers than this, not before.
+ */
+export const MAX_ROW_ORDERS_PER_TICK = 8;
 
 /** @param {any} x @returns {string[]} */
 const labelsOf = (x) => (x?.labels ?? []).map((/** @type {any} */ l) => String(l?.name ?? l));
@@ -332,18 +344,34 @@ export function decide({ prs, readyRows, promotable = null }) {
   // UNCLAIMED IS `ready` WITHOUT `in-progress`. This is a CANDIDATE, not a grant: `row-claim.mjs` is the
   // authority and the woken engineer runs it. A gate that claimed rows would be a second writer of the
   // claim state, which is the race #176 already cost this repo once.
+  //
+  // ONE ORDER PER ROW, NOT ONE ORDER NAMING EVERY ROW -- and that is the difference between one engineer
+  // working and several. This emitted a SINGLE order listing all unclaimed rows, and `wake` routes one
+  // order to one session, so however deep the queue got, exactly one engineer was recruited per tick.
+  // Measured 2026-09-17 with eight rows Ready: worker-capture woken at 18:52, worker-judge at 18:56,
+  // worker-capture again at 18:58, and worker-tooling still idle throughout. The queue was not the
+  // constraint and neither were the engineers; the ORDER SHAPE was.
+  //
+  // Per-row orders also make the ledger do the right thing. `wake` marks an agent working the moment it
+  // prompts it, so several orders in one tick fan out across whoever is free, and a row already woken
+  // for is a `causeKey` already spent -- the same row cannot recruit a second engineer on the next tick.
   const unclaimed = readyRows.filter((r) => !labelsOf(r).includes(CLAIM_LABEL));
-  if (unclaimed.length > 0) {
-    const rows = unclaimed.map((r) => `#${r.number}`).join(", ");
+  // OLDEST FIRST, because a queue that hands out its newest rows first starves its oldest -- and the
+  // number is a row number, so ascending IS oldest.
+  const oldestFirst = [...unclaimed].sort((a, b) => Number(a.number) - Number(b.number));
+  for (const row of oldestFirst.slice(0, MAX_ROW_ORDERS_PER_TICK)) {
     // NO SESSION NAMED. Which engineer takes it depends on who is idle RIGHT NOW, which only
     // `herdr agent list` knows -- so the order names the lane and `wake.mjs` picks the body.
     orders.push({
       session: "engineers",
       cause: "ready-row-unclaimed",
-      subject: `rows-${unclaimed.map((r) => r.number).sort((a, b) => a - b).join("-")}`,
-      discriminator: String(unclaimed.length),
-      prompt: `${unclaimed.length} Ready row(s) unclaimed: ${rows}. Claim the oldest with `
-        + "`node packages/agent-org/src/row-claim.mjs claim <n> --session=<you> --branch=agent/<slug>-<n> --worktree=../wt-<n>` and build it there.\n"
+      subject: `row-${row.number}`,
+      // THE ROW IS THE DISCRIMINATOR NOW, not the queue depth. Keyed on the count, every claim rewrote
+      // every remaining order's key and re-woke someone for rows already being offered.
+      discriminator: String(row.number),
+      prompt: `Ready row #${row.number} is unclaimed${row.title ? `: ${row.title}` : ""}. Claim it with `
+        + `\`node packages/agent-org/src/row-claim.mjs claim ${row.number} --session=<you> `
+        + `--branch=agent/<slug>-${row.number} --worktree=../wt-${row.number}\` and build it there.\n`
         // BOTH FLAGS OR NEITHER, and the primary refuses the work entirely: `row-claim` creates the
         // worktree from `--branch` AND `--worktree` together and refuses when given only one, and the
         // tooling will not run from the primary checkout at all. The first engineer woken by this
@@ -351,8 +379,9 @@ export function decide({ prs, readyRows, promotable = null }) {
         // neither -- so they are named here rather than left to a role brief the session may not have
         // read yet. `../wt-<n>` is the sibling convention every live worktree on the host follows.
         + "The claim creates that worktree for you; run the command from the primary checkout, then do all "
-        + "the work inside the new worktree rather than the primary.",
-      causeKey: `engineers/ready-row-unclaimed/${unclaimed.map((r) => r.number).sort((a, b) => a - b).join("-")}`,
+        + "the work inside the new worktree rather than the primary.\n"
+        + "If the claim is refused because someone took it first, that is an answer: stop and say so.",
+      causeKey: `engineers/ready-row-unclaimed/${row.number}`,
     });
   }
 
