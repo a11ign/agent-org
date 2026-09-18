@@ -1719,7 +1719,12 @@ const ROW_FILING_DOC = "docs/row-filing.md";
 
 /** The live half: read both copies, compare them through `guidanceDrift`, print what drifted. */
 function reportGuidanceDrift() {
-  const doc = readFileSync(new URL(`../${ROW_FILING_DOC}`, import.meta.url), "utf8");
+  // THREE LEVELS, NOT ONE: this file lives at `packages/agent-org/src/`, so `../` reaches
+  // `packages/agent-org/` and the doc is at the REPOSITORY ROOT. It read `../docs/row-filing.md`
+  // until 2026-09-18 and had been failing since the package split moved this file (#1641) --
+  // `COULD NOT AUDIT filing guidance: ENOENT`, reported every night and read by nobody, because a
+  // partial audit still exits with its other twelve checks green.
+  const doc = readFileSync(new URL(`../../../${ROW_FILING_DOC}`, import.meta.url), "utf8");
   let description = null;
   try {
     const milestones = JSON.parse(defaultRun("gh",
