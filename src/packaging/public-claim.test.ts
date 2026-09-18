@@ -241,6 +241,22 @@ const REAL_PAGE_RESULT = /\b\d[\d,]*\s+of\s+\d[\d,]*\b[^\n]*\breal pages\b/i;
 const DATE_RANGE = /\b\d{4}-\d{2}-\d{2}T[\d:.]+Z?\s*\.\.\s*\d{4}-\d{2}-\d{2}T[\d:.]+Z?\b/;
 const AS_OF_DATE = /\bas of\s+\d{4}-\d{2}-\d{2}\b/i;
 
+// #1652: #1630's own sentence -- "Measured 2026-09-14 on the 41 conformant real pages of the calibration
+// set" -- carries no "N of M" pair at all, so REAL_PAGE_RESULT above never fired on it and its date could
+// be dropped with nothing catching it (all three of this row's Acceptance files stayed 40/40 green on the
+// reproduction). This is a SEPARATE shape, matched independently of REAL_PAGE_RESULT so a future edit to
+// one cannot silently stop covering the other.
+//
+// THE DATE MUST SIT BESIDE THIS FIGURE, NOT MERELY SOMEWHERE IN THE BLOCK -- #1599 M2's own lesson,
+// applied here rather than re-learned: README.md's block also carries the superseded product-path
+// figure's own date ("The 2026-08-24 18-page product-path figure is superseded...") in the same
+// paragraph, so a check that asked only "does AS_OF_DATE match anywhere in this claim" would read the
+// 41-page figure as dated by a date that belongs to a different figure entirely. So the date is required
+// immediately before "on the N conformant real pages of", the exact position #1630's real sentence
+// already uses it in, rather than as a bare co-occurrence.
+const ON_THE_N_REAL_PAGES = /\bon\s+the\s+\d[\d,]*\s+conformant\s+real\s+pages\s+of\b/i;
+const DATED_ON_THE_N_REAL_PAGES = /\b\d{4}-\d{2}-\d{2}\s+on\s+the\s+\d[\d,]*\s+conformant\s+real\s+pages\s+of\b/i;
+
 test("the most recently recorded gate entry keeps the capture spread it printed, if it states a real-page result", () => {
   // Scoped to the LATEST entry only, matching `reported()`'s own selection -- that is the one entry
   // anything downstream (the board document's risk line, this file's own figure-sourcing) ever treats as
@@ -272,11 +288,22 @@ test("the most recently recorded gate entry keeps the capture spread it printed,
 });
 
 function assertRealPageAsOfDate(claim: string, file: string): void {
-  if (!REAL_PAGE_RESULT.test(claim)) return; // withdrawn, or states no real-page figure at all -- covered above
-  assert.match(claim, AS_OF_DATE,
-    `${file} states a real-page figure with no "as of <date>" beside it, so a reader cannot tell how old `
-    + "the captures behind it are (#128). State the date the gate ran, the way the denominator and the "
-    + "withdrawal are already required above.");
+  if (REAL_PAGE_RESULT.test(claim)) {
+    assert.match(claim, AS_OF_DATE,
+      `${file} states a real-page figure with no "as of <date>" beside it, so a reader cannot tell how old `
+      + "the captures behind it are (#128). State the date the gate ran, the way the denominator and the "
+      + "withdrawal are already required above.");
+    return;
+  }
+  if (ON_THE_N_REAL_PAGES.test(claim)) {
+    assert.match(claim, DATED_ON_THE_N_REAL_PAGES,
+      `${file} states a real-page figure phrased "on the N conformant real pages of ..." with no date `
+      + "immediately beside it, so a reader cannot tell how old the captures behind it are (#128, #1652). "
+      + 'State the date right before "on the N conformant real pages of", the way #1630\'s own sentence '
+      + "does -- a date elsewhere in the same block belongs to a different figure and does not count.");
+    return;
+  }
+  // withdrawn, or states no real-page figure at all -- covered above
 }
 
 test("a public claim stating a real-page figure carries its as-of date beside it", () => {
@@ -288,6 +315,37 @@ test("PROOF: a real-page figure with its as-of date renders normally, and one wi
     "84 of 84 conformant real pages examined and clean, as of 2026-09-06.", "synthetic"));
   assert.throws(() => assertRealPageAsOfDate(
     "84 of 84 conformant real pages examined and clean.", "synthetic"));
+});
+
+test("PROOF (#1652): 'on the N conformant real pages of ...' renders normally dated, and not when the "
+  + "date is dropped -- #1630's own sentence, reproduced exactly", () => {
+  // CONTROL: #1630's actual, undamaged sentence.
+  assert.doesNotThrow(() => assertRealPageAsOfDate(
+    "Measured 2026-09-14 on the 41 conformant real pages of the calibration set at the shipped floor "
+    + "(run 2f9c51aa): 0 criteria asserted wrongly, 422 referred.", "synthetic"));
+
+  // MUTATION: the exact reproduction the row's Evidence/Open-check describe -- the date dropped, nothing
+  // else changed. Before this row, all three Acceptance files stayed green on this text.
+  assert.throws(() => assertRealPageAsOfDate(
+    "Measured on the 41 conformant real pages of the calibration set at the shipped floor (run 2f9c51aa): "
+    + "0 criteria asserted wrongly, 422 referred.", "synthetic"),
+    /on the N conformant real pages of/,
+    "#1630's sentence with its date dropped must be caught -- this is the exact regression #1652 exists "
+    + "to close");
+});
+
+test("PROOF (#1652): a date belonging to a DIFFERENT figure elsewhere in the block does not excuse this "
+  + "figure's own missing date", () => {
+  // Same shape as README.md's real block: the 41-page figure's date is dropped, but the paragraph still
+  // carries the SUPERSEDED product-path figure's own date a sentence later. A check that asked only
+  // "does some date appear anywhere in this claim" would read this as dated -- #1599 M2's lesson, applied
+  // to this new shape rather than re-learned by it.
+  assert.throws(() => assertRealPageAsOfDate(
+    "Measured on the 41 conformant real pages of the calibration set: 0 criteria asserted wrongly, 422 "
+    + "referred. The 2026-08-24 18-page product-path figure is superseded: re-derived on the 17 of those "
+    + "pages still in the corpus, 0 asserted wrongly, 180 referred.", "synthetic"),
+    /on the N conformant real pages of/,
+    "the 2026-08-24 date belongs to a different, superseded figure and must not source this one");
 });
 
 test("PROOF (#1599 M2): a stale figure quoted beside an undated withdrawal does not excuse the missing date", () => {
