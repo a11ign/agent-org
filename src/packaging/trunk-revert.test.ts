@@ -1,3 +1,6 @@
+// no-token: gh -- this file only imports and calls pure functions (revertVerdict, failingTestsFromJobLog,
+// testIdentity, etc.) with injected fixture data; the gh()-calling exports of trunk-revert.mjs (the
+// lookupX functions) are never called here.
 /**
  * A PUSH TO `main` THAT FAILS ITS OWN GATE IS REVERTED, UNATTENDED -- unless the failure is INHERITED, or
  * `main` has already moved on. #316 (pipeline unit 3).
