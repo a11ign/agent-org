@@ -330,6 +330,9 @@ export function deliveryCounts(path, read = readFileSync) {
  */
 export const MAX_DELIVERIES = 6;
 
+/** How long to wait for a `/clear` to settle before giving up and delivering on a stale context. */
+export const CLEAR_TIMEOUT_MS = 30_000;
+
 /**
  * WHY EVERY DELIVERY CLEARS FIRST, and it is the largest single saving this system has made.
  *
@@ -362,7 +365,19 @@ export const MAX_DELIVERIES = 6;
  */
 export function clearContext(run, label) {
   try {
-    run(["--session", "org", "agent", "prompt", label, "/clear"]);
+    // `--wait --until idle` IS LOAD-BEARING AND ITS ABSENCE BROKE THE LIVE ORG. `agent prompt` SUBMITS
+    // text and returns; it does not wait for the agent to consume it. Without this the order was typed
+    // into the same input the clear was still sitting in, and `ceo` received one concatenated line:
+    //
+    //     Unknown command: /clearYou are `ceo`, an org session in this repository...
+    //
+    // -- the clear refused as an unknown command AND the order mangled into its argument. Two turns
+    // wasted and the work not done, which is the opposite of what this function is for.
+    //
+    // The timeout bounds it: a clear that has not settled in 30s is reported rather than waited on for
+    // ever, and the caller delivers anyway on a stale context.
+    run(["--session", "org", "agent", "prompt", label, "/clear",
+      "--wait", "--until", "idle", "--timeout", String(CLEAR_TIMEOUT_MS)]);
     return null;
   } catch (err) {
     // A REFUSED CLEAR IS NOT A REFUSED WAKE. The order still goes, on a bloated context: expensive is
