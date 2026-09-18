@@ -568,7 +568,7 @@ export function readHeadNow({ number, repo, run = gh }) {
  *                                startedAt?: string | null }[] | null }[]} prs
  * @param {{ repo: string, run?: typeof gh, readHead?: typeof readHeadNow, runGit?: typeof runGitForReal,
  *           now?: Date }} deps
- * @returns {{ updated: number, failed: number[], lines: string[] }}
+ * @returns {{ updated: number, failed: number[], lines: string[], armedCount: number }}
  */
 export function sweepPrs(prs, { repo, run = gh, readHead = readHeadNow, runGit = runGitForReal, now = new Date() }) {
   const failed = [];
@@ -578,8 +578,11 @@ export function sweepPrs(prs, { repo, run = gh, readHead = readHeadNow, runGit =
   // identical gates could be classified differently by an accident of ordering.
   const mainTipAt = mainTipCommittedAt(runGit);
   let updated = 0;
+  // #1257: COUNTED SEPARATELY FROM `updated`/`failed`/`skipped` -- see `armingReading`'s own header for why.
+  let armedCount = 0;
   for (const pr of prs) {
     const armed = pr.autoMergeRequest != null;
+    if (armed) armedCount += 1;
     const gateConclusion = newestConclusion(pr.statusCheckRollup, "gate");
     const behind = isBehind("origin/main", pr.headRefOid, runGit);
     const quietSeconds = headQuietSeconds(pr.statusCheckRollup, now);
@@ -595,7 +598,37 @@ export function sweepPrs(prs, { repo, run = gh, readHead = readHeadNow, runGit =
     if (outcome.acted) updated += 1;
     if (outcome.failed) failed.push(pr.number);
   }
-  return { updated, failed, lines };
+  return { updated, failed, lines, armedCount };
+}
+
+/**
+ * #1257: DOES THIS RUN SAY WHETHER THE ARMING LAYER IS WORKING, OR ONLY WHETHER IT HAD WORK?
+ *
+ * `auto-arm.yml` reported SUCCESS 38 times in two hours while nothing could merge -- `A11IGN_BOT_TOKEN`
+ * had lost `mergePullRequest` and every arm attempt failed. The failures themselves went red where they
+ * happened (`arm`/`sweep`, five of five measured). What did NOT go red, and could not have, is this job's
+ * OWN summary line: `"0 updated, 0 failed, N skipped."` is printed identically whether those N PRs were
+ * skipped because NOTHING WAS EVER ARMED FOR THEM (the arming layer may be broken) or because everything
+ * that IS armed is already current (the queue is healthy). Two opposite readings, one sentence -- #1257's
+ * own framing, and the third instance of the shape that row's table names: *a field with two meanings,
+ * where the separating evidence lives somewhere other than the field itself.*
+ *
+ * THIS FUNCTION IS THE SEPARATING EVIDENCE, for this one field. It does not decide the arming layer IS
+ * broken -- that would be guessing from an absence, the mistake #1257 itself corrects (a quiet repository
+ * SHOULD have zero armed PRs and SHOULD read green). It states what the population supports: with open PRs
+ * and none of them armed, the honest answer is "cannot tell from here", named as such, rather than a
+ * silent "0 updated" that reads as fine either way.
+ *
+ * @param {{ openCount: number, armedCount: number }} counts
+ * @returns {string}
+ */
+export function armingReading({ openCount, armedCount }) {
+  if (openCount === 0) return "no open PRs against main -- quiet, nothing to arm";
+  if (armedCount === 0) {
+    return `0 of ${openCount} open PRs armed -- this does not say whether arming is broken or simply had `
+      + "nothing new to arm; that answer lives in the arm/sweep jobs' own conclusions, not here";
+  }
+  return `${armedCount} of ${openCount} open PRs armed -- arming is evidently working`;
 }
 
 /**
@@ -678,9 +711,12 @@ function main() {
     process.exit(EXIT.CANNOT_ASK);
   }
 
-  const { updated, failed, lines } = sweepPrs(prs, { repo });
+  const { updated, failed, lines, armedCount } = sweepPrs(prs, { repo });
   for (const line of lines) console.log(`UPDATE-BRANCH: ${line}`);
-  console.log(`UPDATE-BRANCH: ${updated} updated, ${failed.length} failed, ${prs.length - updated - failed.length} skipped.`);
+  // #1257: the arming-layer reading rides on the SAME line every run already prints, so a reader (or a
+  // future gate) sees it without correlating this job's log against `arm`/`sweep`'s conclusions by hand.
+  console.log(`UPDATE-BRANCH: ${updated} updated, ${failed.length} failed, ${prs.length - updated - failed.length} `
+    + `skipped -- ${armingReading({ openCount: prs.length, armedCount })}.`);
 
   if (failed.length > 0) {
     console.error(`UPDATE-BRANCH: could not update ${failed.length}: ${failed.join(" ")}`);
