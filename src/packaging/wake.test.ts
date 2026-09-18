@@ -16,7 +16,8 @@ import { route, undelivered, parseOrders, readLedger, deliver, readAgents, WAKEA
   WAKE_TTL_MS, MAX_DELIVERIES, deliveryCounts }
   from "../wake.mjs";
 import { afterGate, GATE, EXIT as TICK_EXIT } from "../work-tick.mjs";
-import { spawnInvocation, addressed, clearContext } from "../wake.mjs";
+import { spawnInvocation, addressed, clearContext, CLEAR_TIMEOUT_MS }
+  from "../wake.mjs";
 
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));
@@ -145,7 +146,8 @@ test("deliver sends the prompt to the routed agent and records only what herdr a
   // TWO calls now: the context is cleared, then the order is delivered. A session on its 500th turn
   // costs ~24x one on its 10th for identical output, so the clear pays for itself in one turn.
   assert.equal(calls.length, 2);
-  assert.deepEqual(calls[0], ["--session", "org", "agent", "prompt", "reviewer", "/clear"]);
+  assert.deepEqual(calls[0], ["--session", "org", "agent", "prompt", "reviewer", "/clear",
+    "--wait", "--until", "idle", "--timeout", String(CLEAR_TIMEOUT_MS)]);
   assert.deepEqual(calls[1].slice(0, 5), ["--session", "org", "agent", "prompt", "reviewer"]);
   assert.equal(calls[1][5], addressed({ session: "reviewer", prompt: "review pr 7" }, "reviewer"));
   assert.match(calls[1][5], /You are `reviewer`/);
@@ -369,4 +371,29 @@ test("clearContext reports a refusal rather than throwing, and null on success",
   assert.equal(clearContext(() => "", "reviewer"), null);
   assert.match(String(clearContext(() => { throw new Error("no socket"); }, "ceo")),
     /ceo: \/clear refused \(no socket/);
+});
+
+/**
+ * THE CLEAR MUST SETTLE BEFORE THE ORDER IS SENT, and its absence broke the live org within minutes.
+ * `agent prompt` SUBMITS text and returns; it does not wait for the agent to consume it. So the order was
+ * typed into the same input the clear was still sitting in, and `ceo` received one concatenated line:
+ *
+ *     Unknown command: /clearYou are `ceo`, an org session in this repository...
+ *
+ * The clear refused as an unknown command AND the order was mangled into its argument: two turns spent,
+ * no work done, which is the exact opposite of this function's purpose.
+ */
+test("the clear WAITS for the agent to settle, or it races the order that follows", () => {
+  const calls: string[][] = [];
+  clearContext((a: string[]) => { calls.push(a); return ""; }, "ceo");
+  assert.ok(calls[0].includes("--wait"), "without --wait the next prompt lands in the same input");
+  assert.deepEqual(calls[0].slice(calls[0].indexOf("--until"), calls[0].indexOf("--until") + 2),
+    ["--until", "idle"], "settled means idle: the agent has consumed the clear and is ready for the order");
+  assert.ok(calls[0].includes("--timeout"),
+    "an unbounded wait would hang the whole tick on one stuck agent");
+});
+
+test("the clear timeout is bounded and not absurd", () => {
+  assert.ok(CLEAR_TIMEOUT_MS >= 5_000, "a clear needs time to land; too short re-creates the race");
+  assert.ok(CLEAR_TIMEOUT_MS <= 120_000, "longer than two minutes and one stuck agent stalls every tick");
 });
