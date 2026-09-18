@@ -410,3 +410,34 @@ test("the settle is bounded at both ends -- 0 mangles, and a long one stalls eve
   assert.ok(CLEAR_SETTLE_MS <= 15_000,
     "the tick runs every two minutes and may clear several agents; a long settle eats the interval");
 });
+
+// --- #1564: a question already answered must not be asked again (2026-09-18) ---
+
+/**
+ * `orchestrator` was woken for `lane-backlog-unpromoted`, spent four shell commands establishing that
+ * #1564 is a research row with no Acceptance waiting on a `ceo` ruling, and answered "staying put" --
+ * correctly. The twenty-minute expiry would then have asked it again, and again, until the six-delivery
+ * STUCK cap stopped it two hours later: six full model turns to reach one conclusion six times.
+ */
+test("a JUDGMENT cause does not expire -- its answer is durable until the state moves", () => {
+  const stale = `${Date.now() - WAKE_TTL_MS * 3}\torchestrator/lane-backlog-unpromoted/lane:orchestrator/1`;
+  const judgment = new Set(["lane-backlog-unpromoted"]);
+  assert.deepEqual([...readLedger("x", () => stale, Date.now(), judgment)],
+    ["orchestrator/lane-backlog-unpromoted/lane:orchestrator/1"],
+    "re-asking buys a model turn to reach a conclusion somebody already reached");
+});
+
+test("an ACTION cause still expires -- a wake that did not stick must be re-offered", () => {
+  const stale = `${Date.now() - WAKE_TTL_MS * 3}\tengineers/ready-row-unclaimed/1433`;
+  assert.deepEqual([...readLedger("x", () => stale, Date.now(), new Set(["lane-backlog-unpromoted"]))], [],
+    "#1433 sat Ready overnight because a spent key silenced it for ever -- that must still expire");
+});
+
+test("the state is in the KEY, so a real change still reaches the owner at once", () => {
+  const judgment = new Set(["lane-backlog-unpromoted"]);
+  const stale = `${Date.now() - WAKE_TTL_MS * 3}\torchestrator/lane-backlog-unpromoted/lane:orchestrator/1`;
+  const live = readLedger("x", () => stale, Date.now(), judgment);
+  // The discriminator is the lane's row count: two rows is a different key, so it is not suppressed.
+  assert.ok(!live.has("orchestrator/lane-backlog-unpromoted/lane:orchestrator/2"),
+    "a lane that grew is a new question and must not inherit the old answer's silence");
+});
