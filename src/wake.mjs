@@ -210,6 +210,30 @@ export function parseOrders(text) {
 export const WAKE_TTL_MS = 20 * 60 * 1000;
 
 /**
+ * How long a JUDGMENT cause's answer stands before the question may be asked again.
+ *
+ * THIS REPLACES "NEVER", AND THE MEASUREMENT IS WHY (2026-09-18, four hours after #1699 shipped it).
+ * Six agents sat idle with 22 promotable backlog rows behind an EMPTY Ready queue, because
+ * `product-manager/ready-queue-empty/22` had last been delivered at 08:52 and a judgment cause that
+ * never expires is a cause that never fires again. The queue then drained, refilled and drained -- three
+ * different situations -- while the key stayed byte-identical, because its discriminator is the BACKLOG
+ * depth and that barely moves. #1699's claim was that "the causeKey carries the state, so an unchanged
+ * key is an unchanged question". For `lane-backlog-unpromoted` that is true. For `ready-queue-empty` it
+ * is FALSE: the key carries what is behind the shelf, not what is on it.
+ *
+ * DURABLE IS NOT ETERNAL, and that is the whole correction. A judgment made about a queue at 08:52 is
+ * not evidence about the same queue at 13:00; it is evidence about a morning that has since turned over.
+ * So the answer still stands -- for a window long enough that nobody is re-asked while their conclusion
+ * is fresh -- and then the question is live again.
+ *
+ * TWO HOURS, from #1699's own measurement rather than from taste. `orchestrator`'s six futile turns
+ * about #1564 spanned exactly two hours at the twenty-minute expiry; one re-ask in that span instead of
+ * six keeps all but a sixth of what #1699 bought, and the cost of being wrong is now a two-hour idle
+ * window rather than a permanent one. The failure this replaces had no upper bound at all.
+ */
+export const JUDGMENT_TTL_MS = 2 * 60 * 60 * 1000;
+
+/**
  * The causeKeys still counted as delivered, given the clock.
  *
  * A LINE IS `<epochMs>\t<causeKey>`. Lines without a tab are read as OLD -- the format before this
@@ -253,13 +277,15 @@ export function readLedger(path, read = readFileSync, now = Date.now(), judgment
     const at = Number(text.slice(0, tab));
     const key = text.slice(tab + 1);
     if (!Number.isFinite(at) || !key) continue;  // malformed: same reading as unknown age
-    // A JUDGMENT CAUSE NEVER EXPIRES. Its answer is durable: the causeKey carries the state, so an
-    // unchanged key means an unchanged question, and re-asking buys a full model turn to reach the
-    // conclusion somebody already reached. `orchestrator` spent one establishing that #1564 is a
-    // research row waiting on a ceo ruling; the expiry would have asked it again every twenty minutes
-    // until the STUCK cap stopped it two hours later.
+    // A JUDGMENT CAUSE GETS A LONGER WINDOW, NOT AN INFINITE ONE. Its answer is durable -- the
+    // causeKey carries the state, so re-asking inside the window buys a model turn to reach a
+    // conclusion somebody already reached; `orchestrator` spent one establishing that #1564 is a
+    // research row waiting on a ceo ruling. But "durable" is not "eternal": shipped as NEVER EXPIRES,
+    // this silenced `ready-queue-empty` for four hours with six agents idle and an empty shelf. See
+    // `JUDGMENT_TTL_MS` for that measurement and for why two hours is the number.
     const cause = key.split("/")[1] ?? "";
-    if (judgment.has(cause) || now - at < WAKE_TTL_MS) live.add(key);
+    const ttl = judgment.has(cause) ? JUDGMENT_TTL_MS : WAKE_TTL_MS;
+    if (now - at < ttl) live.add(key);
   }
   return live;
 }
