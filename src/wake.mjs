@@ -36,6 +36,7 @@ import { dirname } from "node:path";
 // `work-gate.mjs` and `org-watch.mjs` state at their own imports.
 import { refuseUnknownFlags, flagValue } from "../../worker-fleet/src/cli-flags.mjs";
 import { profileFor, agentArgs } from "./worker-profile.mjs";
+import { JUDGMENT_CAUSES } from "./work-gate.mjs";
 
 /**
  * `0` QUIET nothing to deliver; `1` ATTENTION an order had nowhere to go; `2` CANNOT_ASK herdr did not
@@ -235,7 +236,7 @@ export const WAKE_TTL_MS = 20 * 60 * 1000;
  * @param {number} [now]
  * @returns {Set<string>}
  */
-export function readLedger(path, read = readFileSync, now = Date.now()) {
+export function readLedger(path, read = readFileSync, now = Date.now(), judgment = new Set()) {
   let raw;
   try {
     raw = String(read(path, "utf8"));
@@ -252,7 +253,13 @@ export function readLedger(path, read = readFileSync, now = Date.now()) {
     const at = Number(text.slice(0, tab));
     const key = text.slice(tab + 1);
     if (!Number.isFinite(at) || !key) continue;  // malformed: same reading as unknown age
-    if (now - at < WAKE_TTL_MS) live.add(key);
+    // A JUDGMENT CAUSE NEVER EXPIRES. Its answer is durable: the causeKey carries the state, so an
+    // unchanged key means an unchanged question, and re-asking buys a full model turn to reach the
+    // conclusion somebody already reached. `orchestrator` spent one establishing that #1564 is a
+    // research row waiting on a ceo ruling; the expiry would have asked it again every twenty minutes
+    // until the STUCK cap stopped it two hours later.
+    const cause = key.split("/")[1] ?? "";
+    if (judgment.has(cause) || now - at < WAKE_TTL_MS) live.add(key);
   }
   return live;
 }
@@ -492,7 +499,7 @@ function main() {
     process.exit(EXIT.CANNOT_ASK);
   }
 
-  const delivered = readLedger(ledgerPath);
+  const delivered = readLedger(ledgerPath, readFileSync, Date.now(), new Set(JUDGMENT_CAUSES));
   const todo = undelivered(orders, delivered);
   mkdirSync(dirname(ledgerPath), { recursive: true });
   /** @param {string} key */
