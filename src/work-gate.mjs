@@ -472,9 +472,20 @@ export function decide({ prs, readyRows, promotableRows = [] }) {
   //
   // ONLY WHEN THE SHELF IS EMPTY. A queue with anything in it is a queue the engineers can pull from, and
   // re-prompting on a short-but-non-empty Ready would be the floor by another name.
-  const unclaimedCount = readyRows.filter((r) => !labelsOf(r).includes(CLAIM_LABEL)).length;
-  const promotable = promotableRows.length;
-  if (unclaimedCount === 0 && promotable > 0) {
+  // THE POOL'S SHELF, NOT THE WHOLE SHELF, and that distinction had three engineers idle. This counted
+  // every unclaimed Ready row, so 14 rows Ready read as a well-stocked queue -- while 11 of them were
+  // `lane:ceo` and 3 `lane:orchestrator` and NOT ONE was takeable by an engineer. Measured 2026-09-18,
+  // minutes after lane routing shipped: ceo and orchestrator woke, promoted their own lanes, and went to
+  // work, and the pool stayed starved because the shelf now looked full.
+  //
+  // It is the original empty-shelf defect one level down: a queue full of work nobody in that pool may
+  // take is an EMPTY QUEUE TO THEM. `laneOwnerOf` already says who a row belongs to; a row with an owner
+  // is somebody's, and the lane orders above are what ask them about it.
+  const poolRows = readyRows.filter((r) => !labelsOf(r).includes(CLAIM_LABEL) && laneOwnerOf(r) === null);
+  // The backlog is counted the same way, or the order would report rows the pool equally cannot take.
+  const poolPromotable = promotableRows.filter((r) => laneOwnerOf(r) === null);
+  const promotable = poolPromotable.length;
+  if (poolRows.length === 0 && promotable > 0) {
     orders.push({
       session: "product-manager",
       cause: "ready-queue-empty",
@@ -483,7 +494,8 @@ export function decide({ prs, readyRows, promotableRows = [] }) {
       // re-fires if the shelf empties again at a different depth. Keyed on anything constant it would
       // nag every two minutes until someone acted, which is how a wake becomes noise to route around.
       discriminator: String(promotable),
-      prompt: `The Ready queue is EMPTY and ${promotable} open backlog row(s) carry no label that means `
+      prompt: `The Ready queue has NOTHING an engineer may take -- every unclaimed row belongs to a `
+        + `lane -- and ${promotable} unlaned backlog row(s) carry no label that means `
         + "unpickable (not blocked, fleet-gated, epic, disputed, decision, awaiting-merge, review-only or "
         + "already claimed). Every engineer is waiting on this queue rather than on work.\n"
         + "Promote what is genuinely ready -- a row with a Region, an Acceptance and a done-when -- and "
