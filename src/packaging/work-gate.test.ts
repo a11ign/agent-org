@@ -17,7 +17,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES,
-  comparablePrFiles } from "../work-gate.mjs";
+  comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER }
+  from "../work-gate.mjs";
 
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
 // without one is dropped, and the gate would read every PR as having no checks at all.
@@ -492,4 +493,76 @@ test("the empty-shelf order says WHY the pool is empty, and BLOCKED is not the s
     "no row here is laned -- saying so sends product-manager to an owner who has nothing to answer");
   assert.match(shelf.prompt, /NOT rows to promote past/,
     "a blocked row is waiting on a pull request; promoting over the same files just moves the refusal");
+});
+
+// --- draining: finish what is in flight, take on nothing new (2026-09-18) ---
+
+/**
+ * WHY A WINDOW NEEDS MORE THAN AN OFF SWITCH. `ceo` announced a capture-free window for #63's history
+ * purge and told `orchestrator` to hold the fleet; thirty minutes later two fresh agent branches had been
+ * pushed, because the fleet has a hold and the work tick does not. Step 2 force-pushes a rewritten
+ * history, so any branch created after the rewrite is stranded.
+ *
+ * And stopping the timer would have stranded them just as surely: the two drafts already open still
+ * needed a reviewer verdict and a ready-marking to LAND. So the test that matters here is the pair --
+ * what a drain withholds, and what it must keep delivering.
+ */
+const inFlight = () => [draft(1705, GREEN), { number: 1706, isDraft: true, headRefOid: HEAD,
+  statusCheckRollup: GREEN, author: { login: "worker-tooling" }, labels: [],
+  comments: [{ body: `Review of #1706 at \`${HEAD}\`, by reviewer: convinced` }] }];
+
+test("a drain withholds every START cause, so nothing new is taken on", () => {
+  const orders = decide({ prs: [], readyRows: [{ number: 90, labels: [{ name: "ready" }] }],
+    promotableRows: [{ number: 91, labels: [{ name: "backlog" }] }], drain: true });
+  assert.deepEqual(orders.map((o: { cause: string }) => o.cause), [],
+    "a row claimed after the rewrite is a branch the force-push strands");
+});
+
+/**
+ * THE POSITIVE CONTROL, and the reason a drain is a partition rather than an off switch. A drain that
+ * withheld everything would pass the test above perfectly and would strand the very drafts the window is
+ * waiting on -- which is precisely what stopping the timer would have done.
+ */
+test("a drain still delivers the FINISH causes -- work in flight must be able to land", () => {
+  const causes = decide({ prs: inFlight(), readyRows: [], drain: true })
+    .map((o: { cause: string }) => o.cause).sort();
+  assert.deepEqual(causes, ["draft-awaiting-verdict", "draft-convinced-not-ready"],
+    "the two open drafts needed a verdict and a ready-marking; a stopped tick strands both");
+});
+
+test("chairman-blocked survives a drain -- it is the WINDOW'S OWN subject", () => {
+  const orders = decide({ prs: [], readyRows: [], chairmanBlocked: [blockedRow(63, 4)], drain: true });
+  assert.deepEqual(orders.map((o: { cause: string }) => o.cause), ["chairman-blocked"],
+    "during a transfer the chairman is the one doing the work; silencing their brief silences the "
+    + "thing the drain exists to serve");
+});
+
+test("drain OFF changes nothing, so the flag cannot cost anything when it is not set", () => {
+  const state = { prs: inFlight(), readyRows: [{ number: 90, labels: [{ name: "ready" }] }],
+    promotableRows: [{ number: 91, labels: [{ name: "backlog" }] }] };
+  assert.deepEqual(decide({ ...state }), decide({ ...state, drain: false }));
+});
+
+/**
+ * THE PARTITION MUST BE TOTAL, and this is the assertion that makes adding a cause a DECISION. A new
+ * cause that nobody classifies defaults to surviving a drain -- so a future `claim-abandoned-row` would
+ * quietly start new work inside a transfer window and nothing would say so. Spelling the other half out
+ * means this test fails the moment `CAUSES` grows, and the author has to answer which kind it is.
+ */
+test("every cause is classified as START or FINISH -- a new one cannot default into a window", () => {
+  const finish = CAUSES.filter((c: string) => !START_CAUSES.includes(c)).sort();
+  assert.deepEqual([...START_CAUSES].sort(),
+    ["lane-backlog-unpromoted", "ready-queue-empty", "ready-row-unclaimed"]);
+  assert.deepEqual(finish, ["chairman-blocked", "draft-awaiting-verdict", "draft-convinced-not-ready",
+    "pr-checks-failing", "verdict-not-convinced"]);
+  for (const cause of START_CAUSES) {
+    assert.ok(CAUSES.includes(cause), `${cause} is withheld by a drain but no longer exists`);
+  }
+});
+
+test("the drain switch is a FILE, because turning a window on and off is an ssh away", () => {
+  assert.match(DRAIN_MARKER, /\/\.cache\/a11ign\/drain$/,
+    "it sits beside the wake ledger: one directory holds the org's runtime state");
+  assert.equal(draining("/some/marker", () => true), true);
+  assert.equal(draining("/some/marker", () => false), false);
 });

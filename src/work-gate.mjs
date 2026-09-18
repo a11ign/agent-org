@@ -29,7 +29,7 @@
 // authority on whether a row is actually yours.
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { realpathSync } from "node:fs";
+import { realpathSync, existsSync } from "node:fs";
 // RELATIVE, not the package specifier -- this must run before any `npm ci`/build, the same constraint
 // `org-watch.mjs` and `build-packages.mjs` state at their own imports.
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
@@ -91,6 +91,47 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
  */
 export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog-unpromoted",
   "chairman-blocked"]);
+
+/**
+ * The causes that START new work, as opposed to finishing work already begun.
+ *
+ * WHY THE ORG NEEDS TO BE ABLE TO DRAIN, measured 2026-09-18. `ceo` announced a capture-free window
+ * for #63's history purge on two readings -- the fleet idle, and no open pull requests -- and told
+ * `orchestrator` to hold the fleet. Thirty minutes later two fresh agent branches had been pushed,
+ * because NOBODY HELD THE ORG: the fleet has a hold and the work tick does not. Step 2 of that runbook
+ * force-pushes a rewritten history, so every branch created after the rewrite is stranded.
+ *
+ * STOPPING THE TIMER IS NOT THE ANSWER, and that is the whole reason this is a partition rather than
+ * an off switch. The two drafts already open still needed a reviewer verdict and a ready-marking to
+ * land; a stopped tick strands them exactly as surely as the force-push would. What a window needs is
+ * to stop TAKING ON work while continuing to finish what is in flight -- so the causes split by which
+ * of those two things they do, and drain withholds only the first kind.
+ *
+ * `chairman-blocked` is deliberately NOT here. It is the only cause whose subject is the window
+ * itself: during a transfer the chairman is the one doing the work, and silencing their brief would
+ * silence the thing the drain exists to serve.
+ */
+export const START_CAUSES = Object.freeze(["ready-row-unclaimed", "ready-queue-empty",
+  "lane-backlog-unpromoted"]);
+
+/** Where the drain marker lives. `touch` it to open a window; `rm` it to close one. */
+export const DRAIN_MARKER = `${process.env.HOME}/.cache/a11ign/drain`;
+
+/**
+ * Is the org draining -- finishing what is in flight and taking on nothing new?
+ *
+ * A MARKER FILE, NOT A FLAG OR AN ENV VAR, because of who has to operate it. Turning a window on and
+ * off is `touch` and `rm` over ssh; a systemd `Environment=` line is an edit plus a `daemon-reload`,
+ * and a CLI flag would have to be threaded through the unit file to reach the tick at all. It also
+ * survives a restart and can be READ by anyone wondering why the queue went quiet, which an env var
+ * inside a transient unit cannot.
+ *
+ * It sits beside the wake ledger deliberately: one directory holds the org's runtime state.
+ * @param {string} [path] @param {(p: string) => boolean} [exists]
+ */
+export function draining(path = DRAIN_MARKER, exists = existsSync) {
+  return exists(path);
+}
 
 /** @param {string[]} args */
 const defaultRun = (args) => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
@@ -757,7 +798,8 @@ function emptyShelfOrder({ offerable, blocked, promotable }) {
  * a tick with extra steps, which is the cost this file exists to remove.
  *
  * @param {{ prs: any[], readyRows: any[], promotableRows?: any[], chairmanBlocked?: any[],
- *           prFiles?: { number: number, files: string[], changedFiles: number }[] }} state
+ *           prFiles?: { number: number, files: string[], changedFiles: number }[],
+ *           drain?: boolean }} state
  *        `promotableRows` are the backlog rows carrying no unpickable label; `chairmanBlocked` are
  *        the rows waiting on the chairman, oldest first. `[]` for either when refused or empty.
  *        `prFiles` is `comparablePrFiles(prs)` -- the open PRs B4 may be asked about. It DEFAULTS TO
@@ -766,7 +808,8 @@ function emptyShelfOrder({ offerable, blocked, promotable }) {
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
  */
-export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [] }) {
+export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
+  drain = false }) {
   const orders = [];
 
   for (const pr of prs) {
@@ -788,7 +831,33 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   orders.push(...chairmanOrders(chairmanBlocked));
 
 
-  return orders;
+  // DRAIN WITHHOLDS, IT DOES NOT STOP. Filtering here rather than at each producer keeps the partition
+  // in ONE place -- `START_CAUSES` is the whole statement of what "new work" means, and a cause added
+  // without classifying it is caught by `work-gate.test.ts` rather than silently surviving a window.
+  return drain ? orders.filter((o) => !START_CAUSES.includes(o.cause)) : orders;
+}
+
+/**
+ * Everything the gate decided NOT to say, said on stderr where the tick log already reads.
+ *
+ * TWO KINDS OF SILENCE, ONE PLACE TO READ THEM. A row shelved on B4 and a cause withheld by a drain
+ * are both work the gate can see and is deliberately not offering -- and both are invisible from the
+ * orders alone, which is exactly how a starved queue reads as a quiet one. Neither costs a model turn.
+ *
+ * THE DRAIN LINE NAMES THE FILE ON PURPOSE. A marker left behind after a transfer would starve the org
+ * for as long as nobody thought to look for it, so every tick says where it is and how to remove it.
+ *
+ * (Split out of `main`, which reached `complexity` 16 when the drain branch landed.)
+ * @param {{ drain: boolean, blocked: { number: number, reason: string }[] }} withheld
+ */
+function reportWithheld({ drain, blocked }) {
+  if (drain) {
+    process.stderr.write(`DRAINING (${DRAIN_MARKER} exists): finishing work in flight, starting none. `
+      + `Withheld: ${START_CAUSES.join(", ")}. Remove that file to reopen the queue.\n`);
+  }
+  for (const row of blocked) {
+    process.stderr.write(`SHELVED row #${row.number}: ${row.reason}\n`);
+  }
 }
 
 function main() {
@@ -807,18 +876,12 @@ function main() {
   const promotableRows = readPromotableRows();
   const chairmanBlocked = readChairmanBlocked();
   const prFiles = comparablePrFiles(prs ?? []);
+  const drain = draining();
   const orders = decide({ prs: prs ?? [], readyRows: readyRows ?? [],
-    promotableRows: promotableRows ?? [], chairmanBlocked: chairmanBlocked ?? [], prFiles });
+    promotableRows: promotableRows ?? [], chairmanBlocked: chairmanBlocked ?? [], prFiles, drain });
   for (const order of orders) process.stdout.write(`${JSON.stringify(order)}\n`);
 
-  // EVERY SHELVED ROW IS REPORTED, on stderr where the tick log already reads. Silence would make a
-  // B4-blocked queue indistinguishable from an empty one -- the defect `ready-queue-empty` was filed
-  // for -- and this costs no model turn, which is the whole point of putting the answer here.
-  // `partitionUnclaimed` is pure and `rootFilesOnMain` memoises its git read, so calling it a second
-  // time for the report is a few regexes, not a second implementation of the question.
-  for (const row of partitionUnclaimed(readyRows ?? [], prFiles).blocked) {
-    process.stderr.write(`SHELVED row #${row.number}: ${row.reason}\n`);
-  }
+  reportWithheld({ drain, blocked: partitionUnclaimed(readyRows ?? [], prFiles).blocked });
 
   if (prs === null || readyRows === null) {
     process.stderr.write(`PARTIAL: could not read ${prs === null ? "the pull-request list" : "the Ready rows"}. `
