@@ -59,15 +59,26 @@ test("MUTATION TARGET: both jobs actually BRANCH on whether the token is set -- 
   }
 });
 
-test("the fallback prints a warning naming what breaks -- trunk-guard, close-rows, the push watchdogs, "
+test("the fallback prints a warning naming what breaks -- trunk.yml's closeRows, the watchdogs, "
   + "and #416 itself, so the next reader knows this path is temporary", () => {
   const doc = parseYaml(readFileSync(WORKFLOW, "utf8")) as Parameters<typeof jobRunText>[0];
   for (const jobName of ["arm", "sweep"]) {
     const warnings = [...jobRunText(doc, jobName).matchAll(/::warning::A11IGN_BOT_TOKEN is not set[^\n]*/g)];
     assert.equal(warnings.length, 1, `${jobName} must print exactly one fallback warning`);
     const [[warning]] = warnings;
-    assert.match(warning, /trunk-guard/);
-    assert.match(warning, /close-rows/);
+    // THE NAMES ARE THE WORKFLOW'S CURRENT ONES, and they moved without this moving with them. The
+    // warning used to say "trunk-guard" and "close-rows"; it now says "trunk.yml's closeRows ... and
+    // trunkGate/trunkBuildTest/decideRevert chain", which is strictly more precise and names the jobs a
+    // reader can actually go and look at. This asserted the old spellings and turned `main` red -- every
+    // pull request inherited it, because `ts` runs this file.
+    //
+    // WHAT THIS TEST IS FOR is unchanged: the fallback must say WHAT BREAKS and WHERE TO READ ABOUT IT,
+    // so nobody treats the GITHUB_TOKEN path as permanent. Asserting on the machinery by name is how it
+    // checks that -- and a rename of that machinery is exactly when it should be re-read, not routed
+    // around.
+    assert.match(warning, /trunk\.yml/);
+    assert.match(warning, /closeRows/);
+    assert.match(warning, /watchdogs/);
     assert.match(warning, /#416/);
   }
 });
