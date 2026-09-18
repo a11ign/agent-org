@@ -118,6 +118,17 @@ export const PROFILES = Object.freeze({
     why: "promotion decides what every engineer does next, and a row promoted without a Region or an "
       + "Acceptance costs more than the reading that would have caught it",
   }),
+  "lane-backlog-unpromoted": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // HIGH, and for the same reason as `ready-queue-empty`: this decides what a whole lane does next, and
+    // a lane owner is the only person who can. Getting it wrong strands rows nobody else may touch --
+    // which is exactly the state this cause was written for, with five publish-gated rows behind one
+    // unanswered question.
+    effort: "high",
+    why: "a lane owner is the only session that may promote its own rows, so a wrong call here strands "
+      + "work nobody else can pick up",
+  }),
   "ready-row-unclaimed": Object.freeze({
     kind: "claude",
     model: "sonnet",

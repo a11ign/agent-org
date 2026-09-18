@@ -209,7 +209,7 @@ test("checks still RUNNING are not red -- an unsettled build is nobody's job yet
 // --- the shelf itself is work: Ready empty with a backlog behind it (2026-09-17) ---
 
 test("an EMPTY ready queue with promotable backlog wakes product-manager", () => {
-  const orders = decide({ prs: [], readyRows: [], promotable: 52 });
+  const orders = decide({ prs: [], readyRows: [], promotableRows: Array.from({ length: 52 }, (_, i) => ({ number: 900 + i, labels: [{ name: "backlog" }] })) });
   assert.deepEqual(orders.map((o: { cause: string; session: string }) => [o.cause, o.session]),
     [["ready-queue-empty", "product-manager"]],
     "92 open issues, 87 backlog, ZERO ready and five engineers idle -- and the gate called it quiet");
@@ -222,7 +222,7 @@ test("an EMPTY ready queue with promotable backlog wakes product-manager", () =>
  * measurement." So the order must report facts and must NOT ask for a number.
  */
 test("the order asks for judgment, never for a count", () => {
-  const [order] = decide({ prs: [], readyRows: [], promotable: 52 });
+  const [order] = decide({ prs: [], readyRows: [], promotableRows: Array.from({ length: 52 }, (_, i) => ({ number: 900 + i, labels: [{ name: "backlog" }] })) });
   assert.match(order.prompt, /NOT a request to reach a count/);
   assert.match(order.prompt, /Promoting nothing and saying why\s+is a valid answer/);
   assert.doesNotMatch(order.prompt, /at least three|promote three|reach (a )?floor of/i,
@@ -231,32 +231,89 @@ test("the order asks for judgment, never for a count", () => {
 
 test("a NON-empty ready queue wakes nobody to stock it -- a short queue is not an empty one", () => {
   const ready = [{ number: 30, labels: [{ name: "ready" }] }];
-  const orders = decide({ prs: [], readyRows: ready, promotable: 52 });
+  const orders = decide({ prs: [], readyRows: ready, promotableRows: Array.from({ length: 52 }, (_, i) => ({ number: 900 + i, labels: [{ name: "backlog" }] })) });
   assert.ok(!orders.some((o: { cause: string }) => o.cause === "ready-queue-empty"),
     "re-prompting on a short queue is the floor by another name");
 });
 
 test("an empty ready queue with NOTHING promotable behind it wakes nobody", () => {
-  assert.deepEqual(decide({ prs: [], readyRows: [], promotable: 0 }), [],
+  assert.deepEqual(decide({ prs: [], readyRows: [], promotableRows: Array.from({ length: 0 }, (_, i) => ({ number: 900 + i, labels: [{ name: "backlog" }] })) }), [],
     "there is nothing to ask for; waking someone to stare at an empty backlog is noise");
 });
 
 test("a REFUSED backlog read is not an empty shelf -- null must never wake anyone", () => {
-  assert.deepEqual(decide({ prs: [], readyRows: [], promotable: null }), [],
+  assert.deepEqual(decide({ prs: [], readyRows: [], promotableRows: [] }), [],
     "a refused read reported as 'nothing promotable' would be the quiet-org error one level down");
 });
 
 test("the discriminator is the count, so the order stops once a row is promoted", () => {
-  const a = decide({ prs: [], readyRows: [], promotable: 52 })[0];
-  const b = decide({ prs: [], readyRows: [], promotable: 51 })[0];
+  const a = decide({ prs: [], readyRows: [], promotableRows: Array.from({ length: 52 }, (_, i) => ({ number: 900 + i, labels: [{ name: "backlog" }] })) })[0];
+  const b = decide({ prs: [], readyRows: [], promotableRows: Array.from({ length: 51 }, (_, i) => ({ number: 900 + i, labels: [{ name: "backlog" }] })) })[0];
   assert.notEqual(a.causeKey, b.causeKey, "a changed shelf is a new question");
-  const again = decide({ prs: [], readyRows: [], promotable: 52 })[0];
+  const again = decide({ prs: [], readyRows: [], promotableRows: Array.from({ length: 52 }, (_, i) => ({ number: 900 + i, labels: [{ name: "backlog" }] })) })[0];
   assert.equal(a.causeKey, again.causeKey, "an unchanged shelf is the same question, so the ledger stops it");
 });
 
 test("a ready row that is CLAIMED does not count as stock", () => {
   const claimed = [{ number: 31, labels: [{ name: "ready" }, { name: "in-progress" }] }];
-  const orders = decide({ prs: [], readyRows: claimed, promotable: 52 });
+  const orders = decide({ prs: [], readyRows: claimed, promotableRows: Array.from({ length: 52 }, (_, i) => ({ number: 900 + i, labels: [{ name: "backlog" }] })) });
   assert.ok(orders.some((o: { cause: string }) => o.cause === "ready-queue-empty"),
     "a shelf holding only claimed rows is an empty shelf to anyone looking for work");
+});
+
+// --- #1320: a lane is a person, and nothing was asking them (2026-09-18) ---
+
+const laneRow = (n: number, lane: string, extra: string[] = []) =>
+  ({ number: n, labels: [{ name: "ready" }, { name: lane }, ...extra.map((e) => ({ name: e }))] });
+
+test("a ready row goes to its LANE OWNER, not to the engineer pool", () => {
+  const orders = decide({ prs: [], readyRows: [laneRow(60, "lane:ceo"), laneRow(61, "lane:orchestrator")] });
+  assert.deepEqual(orders.map((o: { session: string }) => o.session), ["ceo", "orchestrator"],
+    "every ready row went to `engineers` regardless of lane, and 18 of 49 open rows are lane:ceo -- "
+    + "an engineer may not act on those");
+});
+
+test("lane:any and no lane are the engineer pool", () => {
+  const orders = decide({ prs: [], readyRows: [laneRow(62, "lane:any"),
+    { number: 63, labels: [{ name: "ready" }] }] });
+  assert.deepEqual(orders.map((o: { session: string }) => o.session), ["engineers", "engineers"]);
+});
+
+test("the causeKey carries the owner, so a re-lane is a new question", () => {
+  const asCeo = decide({ prs: [], readyRows: [laneRow(64, "lane:ceo")] })[0];
+  const asPool = decide({ prs: [], readyRows: [laneRow(64, "lane:any")] })[0];
+  assert.notEqual(asCeo.causeKey, asPool.causeKey,
+    "the same row under a different owner is a different offer, and the ledger must not silence it");
+});
+
+/**
+ * #1320 exactly: 18 open `lane:ceo` rows, none Ready, and `product-manager` reporting it had asked `ceo`
+ * the day before with no answer -- because the only thing that ever woke `ceo` was the standing cron this
+ * system replaced. Five publish-gated rows sat behind that silence.
+ */
+test("a lane with backlog and nothing Ready wakes its OWNER, who alone may promote it", () => {
+  const backlog = [1320, 1346, 1531].map((n) => ({ number: n, labels: [{ name: "backlog" },
+    { name: "lane:ceo" }] }));
+  const orders = decide({ prs: [], readyRows: [], promotableRows: backlog });
+  const lane = orders.find((o: { cause: string }) => o.cause === "lane-backlog-unpromoted");
+  assert.ok(lane, "nobody was asking ceo about its own lane");
+  assert.equal(lane.session, "ceo");
+  assert.match(lane.prompt, /#1320/);
+  assert.match(lane.prompt, /Nobody else may promote these/);
+});
+
+test("a lane that HAS something Ready is not asked to stock it", () => {
+  const backlog = [{ number: 70, labels: [{ name: "backlog" }, { name: "lane:ceo" }] }];
+  const ready = [laneRow(71, "lane:ceo")];
+  const orders = decide({ prs: [], readyRows: ready, promotableRows: backlog });
+  assert.ok(!orders.some((o: { cause: string }) => o.cause === "lane-backlog-unpromoted"),
+    "a lane with work on the shelf does not need stocking -- that is the floor by another name");
+});
+
+test("the lane order asks for judgment, not a quota", () => {
+  const backlog = [{ number: 72, labels: [{ name: "backlog" }, { name: "lane:orchestrator" }] }];
+  const [order] = decide({ prs: [], readyRows: [], promotableRows: backlog })
+    .filter((o: { cause: string }) => o.cause === "lane-backlog-unpromoted");
+  assert.match(order.prompt, /not a quota/);
+  assert.match(order.prompt, /Promoting nothing and recording\s+why is a valid answer/);
 });
