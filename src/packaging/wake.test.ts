@@ -13,7 +13,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { route, undelivered, parseOrders, readLedger, deliver, readAgents, WAKEABLE, EXIT,
-  WAKE_TTL_MS, MAX_DELIVERIES, deliveryCounts }
+  WAKE_TTL_MS, JUDGMENT_TTL_MS, MAX_DELIVERIES, deliveryCounts }
   from "../wake.mjs";
 import { afterGate, GATE, EXIT as TICK_EXIT } from "../work-tick.mjs";
 import { spawnInvocation, addressed, clearContext, CLEAR_TIMEOUT_MS, CLEAR_SETTLE_MS }
@@ -419,12 +419,34 @@ test("the settle is bounded at both ends -- 0 mangles, and a long one stalls eve
  * correctly. The twenty-minute expiry would then have asked it again, and again, until the six-delivery
  * STUCK cap stopped it two hours later: six full model turns to reach one conclusion six times.
  */
-test("a JUDGMENT cause does not expire -- its answer is durable until the state moves", () => {
+test("a JUDGMENT cause outlives the action window -- its answer is durable while it is fresh", () => {
   const stale = `${Date.now() - WAKE_TTL_MS * 3}\torchestrator/lane-backlog-unpromoted/lane:orchestrator/1`;
   const judgment = new Set(["lane-backlog-unpromoted"]);
   assert.deepEqual([...readLedger("x", () => stale, Date.now(), judgment)],
     ["orchestrator/lane-backlog-unpromoted/lane:orchestrator/1"],
     "re-asking buys a model turn to reach a conclusion somebody already reached");
+});
+
+/**
+ * THE OTHER HALF, AND IT COST A MORNING. Shipped as NEVER EXPIRES, this latched
+ * `product-manager/ready-queue-empty/22` off at 08:52 and left six agents idle behind an empty Ready
+ * queue for over four hours -- the very defect `ready-queue-empty` exists to catch. The key could not see
+ * it: its discriminator is the BACKLOG depth, which barely moves, while the shelf it reports on drained,
+ * refilled and drained again underneath it.
+ *
+ * So both directions are pinned here. A judgment cause that expires too fast restores #1699's six futile
+ * turns; one that never expires restores this. Only the pair says the window is a window.
+ */
+test("a judgment cause DOES eventually expire -- durable is not eternal", () => {
+  const ancient = `${Date.now() - JUDGMENT_TTL_MS - 1}\tproduct-manager/ready-queue-empty/22`;
+  assert.deepEqual([...readLedger("x", () => ancient, Date.now(), new Set(["ready-queue-empty"]))], [],
+    "an empty shelf nobody may be asked about again is an org that stops, and it did");
+});
+
+test("the judgment window is LONGER than the action one, or the exemption means nothing", () => {
+  assert.ok(JUDGMENT_TTL_MS > WAKE_TTL_MS * 3,
+    "#1699 measured six futile turns over two hours at the action expiry; a judgment window that does "
+    + "not clear that span buys nothing and this file would be pinning a distinction with no difference");
 });
 
 test("an ACTION cause still expires -- a wake that did not stick must be re-offered", () => {
