@@ -14,7 +14,7 @@ import {
 
 /** CAPTURED, not composed: the reason `moveProjectStatus` gave for #1299 in trunk run 34769927592 (`02ae7420`). */
 const CAPTURED_PROJECT_UNREADABLE = "could not move #1299's Status to \"Done\" -- board-snapshot: could not read "
-  + "Project 2 items -- refusing to snapshot a partial board. NOT_FOUND (user.projectV2): Could not resolve to a "
+  + "Project 1 items -- refusing to snapshot a partial board. NOT_FOUND (organization.projectV2): Could not resolve to a "
   + "ProjectV2 with the number 2.";
 
 test("#1227: the three outcomes are reported distinctly, never folded into one success", () => {
@@ -59,13 +59,13 @@ test("bridge: only the Project's own NOT_FOUND is project-unreadable -- a neighb
   const neighbours = [
     "HTTP 500",
     "NOT_FOUND (repository): Could not resolve to a Repository with the name 'o/r'.",
-    "NOT_FOUND (user.projectV2.item): Could not resolve to a node with the global id of 'x'.",
+    "NOT_FOUND (organization.projectV2.item): Could not resolve to a node with the global id of 'x'.",
     "could not move #1's Status to \"Done\" -- HTTP 403: Resource not accessible by integration",
   ];
   assert.deepEqual(neighbours.map(refusalCause), ["other", "other", "other", "other"]);
   assert.equal(refusalCause(CAPTURED_PROJECT_UNREADABLE), PROJECT_UNREADABLE,
     "the positive control: the same classifier, on the captured message, does say project-unreadable");
-  assert.equal(refusalCause(CAPTURED_PROJECT_UNREADABLE.replace("user.projectV2", "organization.projectV2")),
+  assert.equal(refusalCause(CAPTURED_PROJECT_UNREADABLE.replace("organization.projectV2", "organization.projectV2")),
     PROJECT_UNREADABLE, "the owner kind is not part of the cause -- the transfer changes it");
 });
 
@@ -134,8 +134,8 @@ test("#1360 only the exact resting state skips: a Status merely CONTAINING 'Done
 test("#1360 a Status read that FAILS refuses with its classified cause, and the move is never attempted", () => {
   const move = countingMove();
   const unreadable = settleClosedStatus(1393, { moveStatus: move.moveStatus, log: () => {},
-    currentStatus: () => { throw new Error("board-snapshot: could not read Project 2's item for #1393 -- refusing to mutate "
-      + "without a snapshot. NOT_FOUND (user.projectV2): Could not resolve to a ProjectV2 with the number 2."); } });
+    currentStatus: () => { throw new Error("board-snapshot: could not read Project 1's item for #1393 -- refusing to mutate "
+      + "without a snapshot. NOT_FOUND (organization.projectV2): Could not resolve to a ProjectV2 with the number 2."); } });
   assert.equal(move.calls.length, 0, "no second read by the move: CI's unreadable Project would fail twice per row");
   assert.equal(unreadable.settled, false);
   assert.equal(unreadable.refused[0].cause, PROJECT_UNREADABLE, "classified where the refusal is made, as #546's bridge reads it");

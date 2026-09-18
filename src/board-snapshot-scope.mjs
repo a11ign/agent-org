@@ -20,12 +20,18 @@ import { REPO } from "../../../scripts/repo-identity.mjs";
 import { refusalCause, PROJECT_UNREADABLE } from "./settle-closed-status.mjs";
 
 export const PROJECT_OWNER = REPO.split("/")[0];
-// THE PROJECT DID NOT MOVE WITH THE REPOSITORY -- #63's first silent breakage, and it is NOT fixed by
-// this change. `PROJECT_OWNER` follows `REPO` and now reads `a11ign`, but the org's board is
-// `a11ign/projects/1` and `TOUCHED_ITEM_QUERY` still asks `user(login: $owner)`, which cannot resolve an
-// ORGANISATION at all. Migrating the number AND the query shape is its own change, filed separately;
-// until it lands every board read against the new owner fails, loudly, which is the correct reading.
-export const PROJECT_NUMBER = 2;
+// THE PROJECT DOES NOT MOVE WITH THE REPOSITORY, so this is the ORG's board rather than the user-level
+// Project 2 that stayed behind with the pre-transfer account.
+//
+// ORGANIZATION, NOT USER, SINCE 2026-09-18 -- #63's first silent breakage, and the one it warned about in
+// its own opening line: "a user-level Project is not owned by the repository and stays behind". The
+// repository moved to the `a11ign` ORG; its board is `a11ign/projects/1`, and the old user-level Project 2
+// stayed with the pre-transfer account. `user(login: "a11ign")` does not merely miss the project, it
+// cannot resolve the OWNER at all -- measured: `NOT_FOUND ... Could not resolve to a User with the login
+// of 'a11ign'`, while `organization(login: "a11ign") { projectV2(number: 1) }` returns
+// `PVT_kwDOExeOA84Bj5SX "a11ign"`. So both the accessor AND the number had to move; changing one without
+// the other reads as an empty board rather than a refused one.
+export const PROJECT_NUMBER = 1;
 /**
  * #1352: the filesystem reads `commonGitDirOf` and `primaryLaunchRefusal` make, injectable so a test drives them with
  * the shapes git writes. No spawn: git's worktree files are plain text, and reading them keeps this module free of
@@ -188,8 +194,8 @@ function launchCheckRefusal(command, { cwd, fs }) {
  *
  * `user.projectV2` is asked for although only its presence is read. CI's token cannot read the user-owned
  * Project (#546), and the close path classifies that refusal by GraphQL's own
- * `NOT_FOUND (user.projectV2): Could not resolve to a ProjectV2 with the number N` (`settle-closed-status.mjs`'s
- * `refusalCause`). Measured live 2026-09-13 with project 999: exit 1, `data.user.projectV2: null`, and exactly
+ * `NOT_FOUND (organization.projectV2): Could not resolve to a ProjectV2 with the number N` (`settle-closed-status.mjs`'s
+ * `refusalCause`). Measured live 2026-09-13 with project 999: exit 1, `data.organization.projectV2: null`, and exactly
  * that error, while `repository.issue` still answered. What a token that cannot see the Project gets back for
  * `projectItems` ALONE is not measured -- this host's token can read it -- so the Project is named in the request,
  * where its refusal is already classified, rather than inferred from an item list.
@@ -198,7 +204,7 @@ function launchCheckRefusal(command, { cwd, fs }) {
  */
 export const TOUCHED_ITEM_QUERY = `
   query($owner: String!, $name: String!, $project: Int!, $issue: Int!) {
-    user(login: $owner) { projectV2(number: $project) { id } }
+    organization(login: $owner) { projectV2(number: $project) { id } }
     repository(owner: $owner, name: $name) {
       issue(number: $issue) {
         number title state
@@ -317,10 +323,10 @@ function touchedIssue(raw, issueNumber) {
   const data = /** @type {any} */ (parsed)?.data;
   const issue = data?.repository?.issue;
   const itemsNode = issue?.projectItems;
-  if (typeof data?.user?.projectV2?.id !== "string" || issue?.number !== issueNumber
+  if (typeof data?.organization?.projectV2?.id !== "string" || issue?.number !== issueNumber
     || !Array.isArray(itemsNode?.nodes) || typeof itemsNode.totalCount !== "number") {
     throw new Error(`board-snapshot: gh's response for #${issueNumber} did not have the shape `
-      + "data.user.projectV2 + data.repository.issue.projectItems for that issue -- refusing to guess. "
+      + "data.organization.projectV2 + data.repository.issue.projectItems for that issue -- refusing to guess. "
       + `Got: ${JSON.stringify(parsed).slice(0, 300)}`);
   }
   if (itemsNode.nodes.length < itemsNode.totalCount) {

@@ -29,18 +29,27 @@ import { closureRequirementMessage, deriveClosureRequirements } from "../accepta
 
 const THIS_FILE = "packages/lab/src/packaging/board-snapshot-scope.test.ts";
 
-/** Captured: #1275, on Project 2 at "In progress". */
-const CAPTURED_ON_BOARD = "{\"data\":{\"user\":{\"projectV2\":{\"id\":\"PVT_kwHOAsR0u84BinDJ\"}},\"repository\":{\"issue\":{\"number\":1275,\"title\":\"GraphQL budget exhausted 2026-09-13 11:2xZ, consumer unknown — and gh api rate_limit reported 5000 remaining while every call was refused\",\"state\":\"OPEN\",\"projectItems\":{\"totalCount\":1,\"nodes\":[{\"id\":\"PVTI_lAHOAsR0u84BinDJzg6uCZo\",\"project\":{\"number\":2},\"fieldValueByName\":{\"name\":\"In progress\"}}]}}}}}";
+/**
+ * Captured LIVE 2026-09-18 against the ORG board: #1452, on `a11ign/projects/1` at "Ready".
+ *
+ * IT USED TO BE #1275 ON PROJECT 2, and it could not simply be re-pointed. #63 moved the repository
+ * to an organisation; the user-level Project 2 stayed behind, and on the org board #1275 has no item
+ * at all (`totalCount: 0`), so it cannot stand for an issue ON the board any more. Re-capturing the
+ * OLD fixture under the new accessor would have been writing a response the API never returned --
+ * which is the one thing a file of captures must not contain. So the subject moved to an issue that
+ * genuinely is on the org board, and the old capture went with the board it described.
+ */
+const CAPTURED_ON_BOARD = "{\"data\":{\"organization\":{\"projectV2\":{\"id\":\"PVT_kwDOExeOA84Bj5SX\"}},\"repository\":{\"issue\":{\"number\":1452,\"title\":\"release.yml's dry run cannot print versions when dispatched on a branch: changeset status needs main (Failed to find where HEAD diverged from main, run 34783509737) -- or the job must say so before the gate\",\"state\":\"OPEN\",\"projectItems\":{\"totalCount\":1,\"nodes\":[{\"id\":\"PVTI_lADOExeOA84Bj5SXzg7knyc\",\"project\":{\"number\":1},\"fieldValueByName\":{\"name\":\"Ready\"}}]}}}}}";
 /** Captured: #393, closed and never added to Project 2 -- the row #400's not-on-board wording was measured on. */
-const CAPTURED_OFF_BOARD = "{\"data\":{\"user\":{\"projectV2\":{\"id\":\"PVT_kwHOAsR0u84BinDJ\"}},\"repository\":{\"issue\":{\"number\":393,\"title\":\"pre-push hook runs doc-references.test.ts without generating docs/coverage.md first, unlike CI's docs job\",\"state\":\"CLOSED\",\"projectItems\":{\"totalCount\":0,\"nodes\":[]}}}}}";
+const CAPTURED_OFF_BOARD = "{\"data\":{\"organization\":{\"projectV2\":{\"id\":\"PVT_kwDOExeOA84Bj5SX\"}},\"repository\":{\"issue\":{\"number\":393,\"title\":\"pre-push hook runs doc-references.test.ts without generating docs/coverage.md first, unlike CI's docs job\",\"state\":\"CLOSED\",\"projectItems\":{\"totalCount\":0,\"nodes\":[]}}}}}";
 /** Captured: the same query naming project 999. `gh` exited 1 and printed this on stdout. */
-const CAPTURED_NO_PROJECT = "{\"data\":{\"user\":{\"projectV2\":null},\"repository\":{\"issue\":{\"number\":1275,\"title\":\"GraphQL budget exhausted 2026-09-13 11:2xZ, consumer unknown — and gh api rate_limit reported 5000 remaining while every call was refused\",\"state\":\"OPEN\",\"projectItems\":{\"totalCount\":1,\"nodes\":[{\"id\":\"PVTI_lAHOAsR0u84BinDJzg6uCZo\",\"project\":{\"number\":2},\"fieldValueByName\":{\"name\":\"In progress\"}}]}}}},\"errors\":[{\"type\":\"NOT_FOUND\",\"path\":[\"user\",\"projectV2\"],\"locations\":[{\"line\":3,\"column\":27}],\"message\":\"Could not resolve to a ProjectV2 with the number 999.\"}]}";
+const CAPTURED_NO_PROJECT = "{\"data\":{\"organization\":{\"projectV2\":null},\"repository\":{\"issue\":{\"number\":1275,\"title\":\"GraphQL budget exhausted 2026-09-13 11:2xZ, consumer unknown \u2014 and gh api rate_limit reported 5000 remaining while every call was refused\",\"state\":\"CLOSED\",\"projectItems\":{\"totalCount\":0,\"nodes\":[]}}}},\"errors\":[{\"type\":\"NOT_FOUND\",\"path\":[\"organization\",\"projectV2\"],\"locations\":[{\"line\":3,\"column\":27}],\"message\":\"Could not resolve to a ProjectV2 with the number 999.\"}]}";
 
 /** A response of the captured shape for any issue. The shape test below pins it to the captures. */
 function touched(issue: number, { onBoard = true, status = "In progress", totalCount }:
   { onBoard?: boolean; status?: string; totalCount?: number } = {}) {
-  const nodes = onBoard ? [{ id: `PVTI_${issue}`, project: { number: 2 }, fieldValueByName: { name: status } }] : [];
-  return JSON.stringify({ data: { user: { projectV2: { id: "PVT_kwHOAsR0u84BinDJ" } }, repository: { issue: {
+  const nodes = onBoard ? [{ id: `PVTI_${issue}`, project: { number: 1 }, fieldValueByName: { name: status } }] : [];
+  return JSON.stringify({ data: { organization: { projectV2: { id: "PVT_kwHOAsR0u84BinDJ" } }, repository: { issue: {
     number: issue, title: `row ${issue}`, state: "OPEN", projectItems: { totalCount: totalCount ?? nodes.length, nodes },
   } } } });
 }
@@ -103,30 +112,30 @@ test("#1275: this file's closure needs no token -- POSITIVE CONTROL: the same wa
 });
 
 test("#1275: the fixture builder models the shape TOUCHED_ITEM_QUERY returned live, on and off the board", () => {
-  assert.deepEqual(shapeOf(JSON.parse(touched(1275))), shapeOf(JSON.parse(CAPTURED_ON_BOARD)));
+  assert.deepEqual(shapeOf(JSON.parse(touched(1452))), shapeOf(JSON.parse(CAPTURED_ON_BOARD)));
   assert.deepEqual(shapeOf(JSON.parse(touched(393, { onBoard: false }))), shapeOf(JSON.parse(CAPTURED_OFF_BOARD)));
   // What no stub can see, and the captures were read through: the request names the Project, whose refusal the close
   // path classifies, and asks for the count a short list is checked against.
-  assert.match(TOUCHED_ITEM_QUERY, /user\(login: \$owner\) \{ projectV2\(number: \$project\) \{ id \} \}/);
+  assert.match(TOUCHED_ITEM_QUERY, /organization\(login: \$owner\) \{ projectV2\(number: \$project\) \{ id \} \}/);
   assert.match(TOUCHED_ITEM_QUERY, /projectItems\(first: 10\) \{\s+totalCount/);
 });
 
 test("#1275: the request for one touched issue is the query and its four variables -- and it never names gh", () => {
   assert.deepEqual(touchedItemRequest(1275), ["api", "graphql", "-f", `query=${TOUCHED_ITEM_QUERY}`,
-    "-f", "owner=a11ign", "-f", "name=a11ign", "-F", "project=2", "-F", "issue=1275"]);
+    "-f", "owner=a11ign", "-f", "name=a11ign", "-F", "project=1", "-F", "issue=1275"]);
   assert.equal(PROJECT_OWNER, "a11ign");
-  assert.equal(PROJECT_NUMBER, 2);
+  assert.equal(PROJECT_NUMBER, 1);
   assert.ok(!touchedItemRequest(1275).includes("gh"), "the caller adds gh -- board-snapshot.test.ts's #1275 WIRING");
 });
 
 test("#1275: readTouchedItems asks once per touched issue and reads the captured responses", () => {
-  const { request, argv } = requestOf((issue) => (issue === 1275 ? CAPTURED_ON_BOARD : CAPTURED_OFF_BOARD));
-  assert.deepEqual(readTouchedItems([1275, 393], { request }), {
-    items: [{ itemId: "PVTI_lAHOAsR0u84BinDJzg6uCZo", number: 1275,
-      title: JSON.parse(CAPTURED_ON_BOARD).data.repository.issue.title, status: "In progress", state: "OPEN" }],
+  const { request, argv } = requestOf((issue) => (issue === 1452 ? CAPTURED_ON_BOARD : CAPTURED_OFF_BOARD));
+  assert.deepEqual(readTouchedItems([1452, 393], { request }), {
+    items: [{ itemId: "PVTI_lADOExeOA84Bj5SXzg7knyc", number: 1452,
+      title: JSON.parse(CAPTURED_ON_BOARD).data.repository.issue.title, status: "Ready", state: "OPEN" }],
     notOnBoard: [393],
   });
-  assert.deepEqual(argv, [touchedItemRequest(1275), touchedItemRequest(393)]);
+  assert.deepEqual(argv, [touchedItemRequest(1452), touchedItemRequest(393)]);
 });
 
 test("#1275 ACCEPTANCE: a mutation that names its item is ROUTED to a scoped snapshot, and that snapshot costs ONE request", () => {
@@ -171,7 +180,7 @@ test("#1275: the scoped file is named for its item, records it, and says it is n
   assert.equal(written[0].path, `${SNAPSHOT_DIR}/2026-09-13T19-00-00-000Z-issue-725.json`);
   const parsed = JSON.parse(written[0].data);
   assert.deepEqual(parsed.scope, { issues: [725] });
-  assert.deepEqual(parsed.project, { owner: "a11ign", number: 2 });
+  assert.deepEqual(parsed.project, { owner: "a11ign", number: 1 });
   assert.deepEqual(parsed.items, [{ itemId: "PVTI_725", number: 725, title: "row 725", status: "In progress", state: "OPEN" }]);
   assert.deepEqual(parsed.notOnBoard, []);
   assert.match(parsed.takenBefore, /SCOPED to the item\(s\) that mutation touches, not the whole board \(#1275\).*within 300s/s,
@@ -207,7 +216,7 @@ test("#1275: a token that cannot read the Project is REFUSED, and the close path
     message = (error as Error).message;
   }
   assert.equal(ran, false, "no snapshot, no mutation (#399)");
-  assert.match(message, /NOT_FOUND \(user\.projectV2\): Could not resolve to a ProjectV2 with the number 999/,
+  assert.match(message, /NOT_FOUND \(organization\.projectV2\): Could not resolve to a ProjectV2 with the number 999/,
     "GraphQL's own error, read off the failed process's stdout (#555)");
   assert.equal(refusalCause(`could not move #1275's Status to "Done" -- ${message}`), PROJECT_UNREADABLE,
     "settle-closed-status.mjs's own classifier: #546's bridge reads this cause, and a scoped read must still produce it");
@@ -219,7 +228,7 @@ test("#1275: the SAME captured error on a zero exit -- errors beside data -- is 
   forgetScopedSnapshots();
   let ran = false;
   assert.throws(() => withScopedSnapshot(() => { ran = true; }, [1275], contextOf(() => CAPTURED_NO_PROJECT)),
-    /GraphQL returned an error alongside its response.*NOT_FOUND \(user\.projectV2\)/s);
+    /GraphQL returned an error alongside its response.*NOT_FOUND \(organization\.projectV2\)/s);
   assert.equal(ran, false);
 });
 
@@ -407,7 +416,7 @@ test("#1425: the MOVE's own scoped read honours the record too -- 7 moves with n
   assert.equal(argv.length, 1);
   assert.equal(mutations, 0, "no snapshot, no mutation (#399), for a recorded refusal as for the first");
   assert.deepEqual(messages.map((message) => refusalCause(message)), SEVEN_ROWS.map(() => PROJECT_UNREADABLE));
-  assert.match(messages[1], /not reading Project 2 again for #1332 -- an earlier read in this process was refused/,
+  assert.match(messages[1], /not reading Project 1 again for #1332 -- an earlier read in this process was refused/,
     "a refusal from the record says it made no request, so nobody reads it as a second failed read");
 });
 
