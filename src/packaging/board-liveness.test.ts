@@ -212,7 +212,7 @@ test("#590 MUTATION TARGET: the nineteen-hour silence a staleness threshold coul
 
 // #1154: every call below passes its own `env`. The third argument exists because the workflow file is
 // read from the RUN rather than written down, and `process.env` outside Actions has no `GITHUB_WORKFLOW_REF`.
-const IN_TRUNK = { GITHUB_WORKFLOW_REF: "DanBeckDev/a11y-witness/.github/workflows/trunk.yml@refs/heads/main" };
+const IN_TRUNK = { GITHUB_WORKFLOW_REF: "a11ign/a11ign/.github/workflows/trunk.yml@refs/heads/main" };
 
 test("#272 the previous run is read at INDEX 1, because index 0 is this run reporting on itself", () => {
   const now = new Date("2026-09-09T18:00:00Z");

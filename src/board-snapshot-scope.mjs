@@ -20,6 +20,11 @@ import { REPO } from "../../../scripts/repo-identity.mjs";
 import { refusalCause, PROJECT_UNREADABLE } from "./settle-closed-status.mjs";
 
 export const PROJECT_OWNER = REPO.split("/")[0];
+// THE PROJECT DID NOT MOVE WITH THE REPOSITORY -- #63's first silent breakage, and it is NOT fixed by
+// this change. `PROJECT_OWNER` follows `REPO` and now reads `a11ign`, but the org's board is
+// `a11ign/projects/1` and `TOUCHED_ITEM_QUERY` still asks `user(login: $owner)`, which cannot resolve an
+// ORGANISATION at all. Migrating the number AND the query shape is its own change, filed separately;
+// until it lands every board read against the new owner fails, loudly, which is the correct reading.
 export const PROJECT_NUMBER = 2;
 /**
  * #1352: the filesystem reads `commonGitDirOf` and `primaryLaunchRefusal` make, injectable so a test drives them with

@@ -168,7 +168,7 @@ test("#555: an `errors` array with data still present is refused BEFORE the shap
 });
 
 test("PROJECT_OWNER and PROJECT_NUMBER match the real board (a11y-witness -- what is open, Project 2)", () => {
-  assert.equal(PROJECT_OWNER, "DanBeckDev");
+  assert.equal(PROJECT_OWNER, "a11ign");
   assert.equal(PROJECT_NUMBER, 2);
 });
 

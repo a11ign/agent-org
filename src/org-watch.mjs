@@ -701,7 +701,7 @@ export function watchReport({ colour }) {
 
 function main() {
   const { weekly } = parseArgs();
-  const repo = process.env.GITHUB_REPOSITORY ?? "DanBeckDev/a11y-witness";
+  const repo = process.env.GITHUB_REPOSITORY ?? "a11ign/a11ign";
   const colour = mainColour({ repo });
   if (weekly) {
     process.stdout.write(`${renderTable({

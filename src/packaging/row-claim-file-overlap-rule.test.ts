@@ -157,7 +157,7 @@ test("lookupOpenPrFiles reads every open PR's files AND their count in one call,
     ]);
   };
   const files = lookupOpenPrFiles({ run, log: () => {} });
-  assert.deepEqual(calls, [["pr", "list", "--repo", "DanBeckDev/a11y-witness", "--state", "open",
+  assert.deepEqual(calls, [["pr", "list", "--repo", "a11ign/a11ign", "--state", "open",
     "--json", "number,changedFiles,files"]], "one bulk call, and no REST page for a complete list");
   assert.deepEqual(files, [
     pr(406, ["packages/agent-org/src/merge-guard.mjs", "CLAUDE.md"]),
@@ -240,7 +240,7 @@ test("#1419 THE LOOKUP PAGES A SHORT LIST through REST, once and only for that P
   };
   const others = lookupOpenPrFiles({ run, log: () => {} });
   const rest = calls.filter((args) => args[0] === "api");
-  assert.deepEqual(rest, [["api", "--paginate", "repos/DanBeckDev/a11y-witness/pulls/1412/files?per_page=100", "--jq", ".[].filename"]],
+  assert.deepEqual(rest, [["api", "--paginate", "repos/a11ign/a11ign/pulls/1412/files?per_page=100", "--jq", ".[].filename"]],
     "exactly one REST page-through, for the short PR only");
   assert.equal(others?.find((o) => o.number === 1412)?.files.length, 113);
   assert.match(fileOverlapReason(["package.json"], others ?? []).reason as string, /overlaps #1412, which already touches: package\.json/,

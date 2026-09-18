@@ -787,7 +787,7 @@ test("#1405 apiBudget reads both pools through the injected run, with the argv t
     return headers(args[1] === "graphql" ? 4990 : 4000);
   } });
   assert.deepEqual(argv, [
-    ["api", "repos/DanBeckDev/a11y-witness", "-i", "--jq", ".name"],
+    ["api", "repos/a11ign/a11ign", "-i", "--jq", ".name"],
     ["api", "graphql", "-f", "query=query { viewer { login } }", "-i"],
   ], "one call per pool, each of its own kind -- core through REST, graphql through GraphQL");
   assert.deepEqual(budget, {
