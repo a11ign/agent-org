@@ -129,6 +129,17 @@ export const PROFILES = Object.freeze({
     why: "a lane owner is the only session that may promote its own rows, so a wrong call here strands "
       + "work nobody else can pick up",
   }),
+  "chairman-blocked": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // HIGH, because the output is a BRIEF FOR A PERSON and it is the only one in this table that leaves
+    // the org. It must say what is waiting, what it blocks downstream, and the single next action in the
+    // chairman's hands -- a vague one costs another day of eight rows standing still, which is what the
+    // absence of any brief at all already cost.
+    effort: "high",
+    why: "the output is a brief for a person outside the org, and a vague one costs another day of "
+      + "everything downstream standing still",
+  }),
   "ready-row-unclaimed": Object.freeze({
     kind: "claude",
     model: "sonnet",

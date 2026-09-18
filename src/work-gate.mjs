@@ -103,6 +103,58 @@ export function laneOwnerOf(row) {
 }
 
 /**
+ * The label a session applies when a row can only move by the CHAIRMAN'S OWN HANDS.
+ *
+ * NO EXISTING LABEL MEANT THIS. `blocked`, `publish-blocker` and `decision` all say WHAT blocks a row and
+ * none says WHO must act, so a row waiting on org admin looked exactly like a row waiting on a capture.
+ */
+export const CHAIRMAN_LABEL = "needs:chairman";
+
+/**
+ * Rows waiting on the chairman, oldest first.
+ *
+ * WHY THIS EXISTS, MEASURED: #63 (the org transfer) sat four days with its last comment from the chairman
+ * on 2026-09-14, blocking eight publish-gated rows. `ceo` escalated correctly and `product-manager`
+ * reported it correctly in every sweep. THE ESCALATION PATH SIMPLY ENDS AT `ceo`, whose onward route is a
+ * sentence in a brief rather than a mechanism -- so it surfaced only because the chairman happened to read
+ * a sweep in a terminal. That is the same shape as the standing crons #912 retired: a rule written down
+ * with nothing behind it.
+ *
+ * THE GATE CANNOT WAKE A HUMAN, and this does not pretend to. It wakes `ceo`, which is the session whose
+ * brief says it briefs the chairman, and it makes the count and the staleness loud enough to be read.
+ *
+ * `updatedAt` IS LAST ACTIVITY, NOT TIME SPENT WAITING, and the difference matters enough to say in the
+ * prompt. Any edit bumps it -- a comment, a label, a milestone -- so a row genuinely stalled for four days
+ * reads as fresh the moment somebody labels it, which is exactly what happened to #63 the first time this
+ * ran. Measuring true waiting time would need the timeline API per row; last activity is what one cheap
+ * list call honestly supports, and it answers the question that matters here: has ANYTHING happened.
+ *
+ * @param {(args: string[]) => string} [run]
+ * @returns {any[] | null} `null` when refused -- never [], which would read as "nobody is waiting"
+ */
+export function readChairmanBlocked(run = defaultRun) {
+  try {
+    const out = run(["issue", "list", "--state", "open", "--label", CHAIRMAN_LABEL, "--limit", "100",
+      "--json", "number,title,updatedAt"]);
+    const parsed = JSON.parse(out);
+    if (!Array.isArray(parsed)) return null;
+    return parsed.sort((a, b) => String(a.updatedAt).localeCompare(String(b.updatedAt)));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whole days between an ISO timestamp and `now`. Floor, so "today" reads 0 rather than a fraction.
+ * @param {string} iso @param {number} [now]
+ */
+export function daysSince(iso, now = Date.now()) {
+  const at = Date.parse(String(iso));
+  if (!Number.isFinite(at)) return 0;
+  return Math.max(0, Math.floor((now - at) / 86_400_000));
+}
+
+/**
  * The open `backlog` rows carrying NO label that already means unpickable.
  *
  * RETURNS THE ROWS, NOT A COUNT, because the lane matters and re-reading to learn it would be a second
@@ -393,6 +445,7 @@ function rowOrders(readyRows) {
       causeKey: `${owner ?? "engineers"}/ready-row-unclaimed/${row.number}`,
     });
   }
+
   return orders;
 }
 
@@ -432,6 +485,43 @@ function laneBacklogOrders(promotableRows, readyRows) {
 }
 
 /**
+ * The one order for work only the chairman can do, or none.
+ *
+ * SPLIT OUT OF `decide` because it took that function past 90 physical lines and the pre-push gate
+ * refused it -- the fourth such split, and the seam is the same each time: `decide` asks what the
+ * queue needs, each helper asks one narrower question.
+ *
+ * @param {any[]} chairmanBlocked rows waiting on the chairman, oldest first
+ */
+function chairmanOrders(chairmanBlocked) {
+  // THE ORG CANNOT WAKE A HUMAN, so this wakes the session whose brief says it briefs one. `ceo` is the
+  // only onward route the escalation path has, and until now that route was a sentence rather than a
+  // mechanism -- #63 sat four days blocking eight publish-gated rows because nothing carried it.
+  //
+  // THE DISCRIMINATOR IS THE AGE IN DAYS, which is what makes this bearable. Keyed on the row set it
+  // would fire once and fall silent for ever -- the permanent-ledger bug again. Keyed on the age, `ceo`
+  // is reminded once a DAY and the reminder grows, which is the right cadence for a question only a
+  // person outside the org can answer and the wrong one to repeat every twenty minutes.
+  if (chairmanBlocked.length === 0) return [];
+  const oldest = daysSince(chairmanBlocked[0]?.updatedAt);
+  const rows = chairmanBlocked.slice(0, 6).map((/** @type {any} */ r) => `#${r.number}`).join(", ");
+  return [{
+    session: "ceo",
+    cause: "chairman-blocked",
+    subject: "chairman",
+    discriminator: String(oldest),
+    prompt: `${chairmanBlocked.length} row(s) are labelled \`${CHAIRMAN_LABEL}\` and can only move by the `
+      + `chairman's own hands: ${rows}${chairmanBlocked.length > 6 ? ", ..." : ""}. The quietest has had `
+      + `NO ACTIVITY OF ANY KIND for ${oldest} day(s) -- not time spent waiting, which is longer: any `
+      + "comment or label resets this, so read the row for when the chairman was last actually asked.\n"
+      + "Brief the chairman: what is waiting, what it blocks downstream, and the single next action in "
+      + "their hands. If a row no longer needs them, take the label off -- a stale one here makes the "
+      + "count meaningless, which is how the last escalation went four days unread.",
+    causeKey: `ceo/chairman-blocked/${oldest}`,
+  }];
+}
+
+/**
  * PURE. The orders the state implies.
  *
  * Every order carries a `causeKey` derivable from GitHub state alone, so re-running this gate produces a
@@ -442,12 +532,13 @@ function laneBacklogOrders(promotableRows, readyRows) {
  * at that head" rather than "check whether there is work" -- a woken turn that has to survey the queue is
  * a tick with extra steps, which is the cost this file exists to remove.
  *
- * @param {{ prs: any[], readyRows: any[], promotableRows?: any[] }} state `promotableRows` are the
- *        backlog rows carrying no unpickable label; `[]` when that read was refused or found none.
+ * @param {{ prs: any[], readyRows: any[], promotableRows?: any[], chairmanBlocked?: any[] }} state
+ *        `promotableRows` are the backlog rows carrying no unpickable label; `chairmanBlocked` are
+ *        the rows waiting on the chairman, oldest first. `[]` for either when refused or empty.
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
  */
-export function decide({ prs, readyRows, promotableRows = [] }) {
+export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [] }) {
   const orders = [];
 
   for (const pr of prs) {
@@ -510,6 +601,9 @@ export function decide({ prs, readyRows, promotableRows = [] }) {
   orders.push(...laneBacklogOrders(promotableRows, readyRows));
 
 
+  orders.push(...chairmanOrders(chairmanBlocked));
+
+
   return orders;
 }
 
@@ -527,8 +621,9 @@ function main() {
 
   // The third read is only needed to size the refill, and a refused one must not read as an empty shelf.
   const promotableRows = readPromotableRows();
+  const chairmanBlocked = readChairmanBlocked();
   const orders = decide({ prs: prs ?? [], readyRows: readyRows ?? [],
-    promotableRows: promotableRows ?? [] });
+    promotableRows: promotableRows ?? [], chairmanBlocked: chairmanBlocked ?? [] });
   for (const order of orders) process.stdout.write(`${JSON.stringify(order)}\n`);
 
   if (prs === null || readyRows === null) {
