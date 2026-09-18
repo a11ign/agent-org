@@ -85,27 +85,44 @@ export const NOT_PICKABLE = Object.freeze(["blocked", "fleet-gated", "epic", "di
   "awaiting-merge", "review-only", CLAIM_LABEL]);
 
 /**
- * How many open `backlog` rows carry NO label that already means unpickable.
+ * LANE OWNERS. A lane says who may act on a row, and these two are people rather than a pool.
  *
- * A COUNT, AND DELIBERATELY NOT A TARGET. `product-manager`'s brief says Ready holds at least three
- * product rows, and this does NOT enforce that number, because the org has already paid for enforcing it:
- * `ready:audit` was filed 2026-09-06 after `dispatcher` labelled two rows `ready` TO HIT THE FLOOR -- one
- * disputed, one with no Region or Acceptance -- and its own finding is the rule here, *"a floor met by a
- * label I control is not a measurement"*. Promotion is a judgment about whether a row has a Region, an
- * Acceptance and a done-when; a gate that demanded a number would buy relabelling instead of rows.
+ * `lane:any` and no lane are the engineer pool, which is why they are absent here: the pool already has a
+ * router (`wake.mjs` picks whoever is idle) and these do not -- a `lane:ceo` row belongs to `ceo` whether
+ * or not `ceo` is free, because nobody else may take it.
+ */
+export const LANE_OWNER = Object.freeze({ "lane:ceo": "ceo", "lane:orchestrator": "orchestrator" });
+
+/**
+ * The session a row's lane assigns it to, or `null` for the engineer pool.
+ * @param {any} row
+ */
+export function laneOwnerOf(row) {
+  const lane = labelsOf(row).find((/** @type {string} */ n) => n in LANE_OWNER);
+  return lane ? /** @type {Record<string,string>} */ (LANE_OWNER)[lane] : null;
+}
+
+/**
+ * The open `backlog` rows carrying NO label that already means unpickable.
  *
- * So this reports how much there is to LOOK AT. What is genuinely promotable is the reader's call.
+ * RETURNS THE ROWS, NOT A COUNT, because the lane matters and re-reading to learn it would be a second
+ * `gh` call for a fact the first one already fetched. Callers that only want a number take `.length`.
+ *
+ * A COUNT IS NOT A TARGET. `product-manager`'s brief says Ready holds at least three product rows, and
+ * nothing here enforces that number: `ready:audit` was filed 2026-09-06 after `dispatcher` labelled two
+ * rows `ready` TO HIT THE FLOOR -- one disputed, one with no Region or Acceptance -- and its finding is
+ * the rule here, *"a floor met by a label I control is not a measurement"*.
  *
  * @param {(args: string[]) => string} [run]
- * @returns {number | null} `null` when the read was refused -- never 0, which would read as "nothing there"
+ * @returns {any[] | null} `null` when the read was refused -- never [], which would read as "nothing there"
  */
-export function readPromotableCount(run = defaultRun) {
+export function readPromotableRows(run = defaultRun) {
   try {
     const out = run(["issue", "list", "--state", "open", "--label", "backlog", "--limit", "200",
       "--json", "number,labels"]);
     const parsed = JSON.parse(out);
     if (!Array.isArray(parsed)) return null;
-    return parsed.filter((r) => !labelsOf(r).some((/** @type {string} */ n) => NOT_PICKABLE.includes(n))).length;
+    return parsed.filter((r) => !labelsOf(r).some((/** @type {string} */ n) => NOT_PICKABLE.includes(n)));
   } catch {
     return null;
   }
@@ -319,28 +336,16 @@ function draftOrder(pr) {
 }
 
 /**
- * PURE. The orders the state implies.
+ * One order per unclaimed Ready row, oldest first, capped.
  *
- * Every order carries a `causeKey` derivable from GitHub state alone, so re-running this gate produces a
- * BYTE-IDENTICAL order and the waker's ledger can deduplicate it. That is what lets the gate be stateless
- * and run as often as it likes.
+ * SPLIT OUT OF `decide` for the same reason `laneBacklogOrders` was: adding lane routing took that
+ * function past `local/max-physical-lines-per-function` 90. `decide` asks what the queue needs;
+ * this asks which rows are on offer and to whom.
  *
- * THE PROMPT CARRIES THE ANSWER, NOT THE QUESTION. "Draft #N at `abc12345` has green checks and no verdict
- * at that head" rather than "check whether there is work" -- a woken turn that has to survey the queue is
- * a tick with extra steps, which is the cost this file exists to remove.
- *
- * @param {{ prs: any[], readyRows: any[], promotable?: number | null }} state `promotable` is the
- *        count of backlog rows carrying no unpickable label, or `null` when that read was refused.
- * @returns {{session: string, cause: string, subject: string, discriminator: string,
- *            prompt: string, causeKey: string}[]}
+ * @param {any[]} readyRows
  */
-export function decide({ prs, readyRows, promotable = null }) {
+function rowOrders(readyRows) {
   const orders = [];
-
-  for (const pr of prs) {
-    const order = draftOrder(pr);
-    if (order) orders.push(order);
-  }
   // UNCLAIMED IS `ready` WITHOUT `in-progress`. This is a CANDIDATE, not a grant: `row-claim.mjs` is the
   // authority and the woken engineer runs it. A gate that claimed rows would be a second writer of the
   // claim state, which is the race #176 already cost this repo once.
@@ -362,8 +367,12 @@ export function decide({ prs, readyRows, promotable = null }) {
   for (const row of oldestFirst.slice(0, MAX_ROW_ORDERS_PER_TICK)) {
     // NO SESSION NAMED. Which engineer takes it depends on who is idle RIGHT NOW, which only
     // `herdr agent list` knows -- so the order names the lane and `wake.mjs` picks the body.
+    // ROUTED BY LANE. Every ready row went to `engineers` regardless of its lane, so a `lane:ceo` row
+    // would have been offered to an engineer who may not act on it -- and 18 of the 49 open rows carry
+    // that lane. `lane:any` and no lane are the pool, which is what "engineers" means here.
+    const owner = laneOwnerOf(row);
     orders.push({
-      session: "engineers",
+      session: owner ?? "engineers",
       cause: "ready-row-unclaimed",
       subject: `row-${row.number}`,
       // THE ROW IS THE DISCRIMINATOR NOW, not the queue depth. Keyed on the count, every claim rewrote
@@ -381,9 +390,72 @@ export function decide({ prs, readyRows, promotable = null }) {
         + "The claim creates that worktree for you; run the command from the primary checkout, then do all "
         + "the work inside the new worktree rather than the primary.\n"
         + "If the claim is refused because someone took it first, that is an answer: stop and say so.",
-      causeKey: `engineers/ready-row-unclaimed/${row.number}`,
+      causeKey: `${owner ?? "engineers"}/ready-row-unclaimed/${row.number}`,
     });
   }
+  return orders;
+}
+
+/**
+ * One order per lane whose owner has backlog and nothing Ready.
+ *
+ * SPLIT OUT OF `decide` because adding it took that function past
+ * `local/max-physical-lines-per-function` 90 and the pre-push gate refused it. The seam is the real
+ * one: `decide` asks what the whole queue needs, this asks what each LANE OWNER is sitting on.
+ *
+ * @param {any[]} promotableRows @param {any[]} readyRows
+ */
+function laneBacklogOrders(promotableRows, readyRows) {
+  const orders = [];
+  for (const [lane, owner] of Object.entries(LANE_OWNER)) {
+    const mine = promotableRows.filter((r) => labelsOf(r).includes(lane));
+    const readyHere = readyRows.filter((r) => labelsOf(r).includes(lane)
+      && !labelsOf(r).includes(CLAIM_LABEL));
+    if (mine.length === 0 || readyHere.length > 0) continue;
+    orders.push({
+      session: owner,
+      cause: "lane-backlog-unpromoted",
+      subject: lane,
+      // The count is the discriminator, so the order stops once the owner promotes one and re-fires if
+      // the lane empties again at a different depth -- the same shape as `ready-queue-empty`.
+      discriminator: String(mine.length),
+      prompt: `Your lane \`${lane}\` has ${mine.length} open backlog row(s) and NOTHING Ready: `
+        + `${mine.slice(0, 8).map((/** @type {any} */ r) => `#${r.number}`).join(", ")}`
+        + `${mine.length > 8 ? ", ..." : ""}. Nobody else may promote these -- the lane is yours.\n`
+        + "Promote what is genuinely ready (a Region, an Acceptance, a done-when), answer what is waiting "
+        + "on a decision, and say so on anything that should stay put. Promoting nothing and recording "
+        + "why is a valid answer; this is a report of what is waiting on you, not a quota.",
+      causeKey: `${owner}/lane-backlog-unpromoted/${lane}/${mine.length}`,
+    });
+  }
+  return orders;
+}
+
+/**
+ * PURE. The orders the state implies.
+ *
+ * Every order carries a `causeKey` derivable from GitHub state alone, so re-running this gate produces a
+ * BYTE-IDENTICAL order and the waker's ledger can deduplicate it. That is what lets the gate be stateless
+ * and run as often as it likes.
+ *
+ * THE PROMPT CARRIES THE ANSWER, NOT THE QUESTION. "Draft #N at `abc12345` has green checks and no verdict
+ * at that head" rather than "check whether there is work" -- a woken turn that has to survey the queue is
+ * a tick with extra steps, which is the cost this file exists to remove.
+ *
+ * @param {{ prs: any[], readyRows: any[], promotableRows?: any[] }} state `promotableRows` are the
+ *        backlog rows carrying no unpickable label; `[]` when that read was refused or found none.
+ * @returns {{session: string, cause: string, subject: string, discriminator: string,
+ *            prompt: string, causeKey: string}[]}
+ */
+export function decide({ prs, readyRows, promotableRows = [] }) {
+  const orders = [];
+
+  for (const pr of prs) {
+    const order = draftOrder(pr);
+    if (order) orders.push(order);
+  }
+  orders.push(...rowOrders(readyRows));
+
 
   // THE SHELF ITSELF IS WORK, and nothing asked about it until 2026-09-17. Measured that day: 92 open
   // issues, 87 of them `backlog`, ZERO `ready`, and five engineers idle. The gate's engineer question is
@@ -401,7 +473,8 @@ export function decide({ prs, readyRows, promotable = null }) {
   // ONLY WHEN THE SHELF IS EMPTY. A queue with anything in it is a queue the engineers can pull from, and
   // re-prompting on a short-but-non-empty Ready would be the floor by another name.
   const unclaimedCount = readyRows.filter((r) => !labelsOf(r).includes(CLAIM_LABEL)).length;
-  if (unclaimedCount === 0 && promotable !== null && promotable > 0) {
+  const promotable = promotableRows.length;
+  if (unclaimedCount === 0 && promotable > 0) {
     orders.push({
       session: "product-manager",
       cause: "ready-queue-empty",
@@ -422,6 +495,9 @@ export function decide({ prs, readyRows, promotable = null }) {
     });
   }
 
+  orders.push(...laneBacklogOrders(promotableRows, readyRows));
+
+
   return orders;
 }
 
@@ -438,8 +514,9 @@ function main() {
   }
 
   // The third read is only needed to size the refill, and a refused one must not read as an empty shelf.
-  const promotable = readPromotableCount();
-  const orders = decide({ prs: prs ?? [], readyRows: readyRows ?? [], promotable });
+  const promotableRows = readPromotableRows();
+  const orders = decide({ prs: prs ?? [], readyRows: readyRows ?? [],
+    promotableRows: promotableRows ?? [] });
   for (const order of orders) process.stdout.write(`${JSON.stringify(order)}\n`);
 
   if (prs === null || readyRows === null) {
