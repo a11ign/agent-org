@@ -16,7 +16,7 @@ import { route, undelivered, parseOrders, readLedger, deliver, readAgents, WAKEA
   WAKE_TTL_MS, MAX_DELIVERIES, deliveryCounts }
   from "../wake.mjs";
 import { afterGate, GATE, EXIT as TICK_EXIT } from "../work-tick.mjs";
-import { spawnInvocation, addressed } from "../wake.mjs";
+import { spawnInvocation, addressed, clearContext } from "../wake.mjs";
 
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));
@@ -142,10 +142,14 @@ test("deliver sends the prompt to the routed agent and records only what herdr a
   // The prompt herdr receives is the ADDRESSED one -- the order's text plus who the session is. Asserting
   // the raw `order.prompt` here is what this test did until 2026-09-17, and it passed while the agent on
   // the other end had no idea what to put in `--session=`.
-  assert.deepEqual(calls[0].slice(0, 5), ["--session", "org", "agent", "prompt", "reviewer"]);
-  assert.equal(calls[0][5], addressed({ session: "reviewer", prompt: "review pr 7" }, "reviewer"));
-  assert.match(calls[0][5], /You are `reviewer`/);
-  assert.ok(calls[0][5].includes("review pr 7"), "the order's own text must survive");
+  // TWO calls now: the context is cleared, then the order is delivered. A session on its 500th turn
+  // costs ~24x one on its 10th for identical output, so the clear pays for itself in one turn.
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0], ["--session", "org", "agent", "prompt", "reviewer", "/clear"]);
+  assert.deepEqual(calls[1].slice(0, 5), ["--session", "org", "agent", "prompt", "reviewer"]);
+  assert.equal(calls[1][5], addressed({ session: "reviewer", prompt: "review pr 7" }, "reviewer"));
+  assert.match(calls[1][5], /You are `reviewer`/);
+  assert.ok(calls[1][5].includes("review pr 7"), "the order's own text must survive");
 });
 
 test("a prompt herdr REFUSES is not recorded, so the next tick retries it", () => {
@@ -156,7 +160,11 @@ test("a prompt herdr REFUSES is not recorded, so the next tick retries it", () =
     { run: () => { throw new Error("agent_blocked"); }, record: (k: string) => recorded.push(k) });
   assert.deepEqual(sent, []);
   assert.deepEqual(recorded, [], "recording a wake that never landed loses it for good");
-  assert.match(refused[0], /k1: herdr refused the prompt to "reviewer" \(agent_blocked/);
+  // This `run` refuses everything, so the /clear is refused too and reports first. The refusal that
+  // matters here is the PROMPT's -- found by name rather than by index, or adding a step ahead of it
+  // silently changes what this asserts.
+  assert.ok(refused.some((r: string) => /k1: herdr refused the prompt to "reviewer" \(agent_blocked/.test(r)),
+    `expected a prompt refusal, got ${JSON.stringify(refused)}`);
 });
 
 /**
@@ -327,4 +335,38 @@ test("a cause below the limit is still delivered", () => {
     agents({ reviewer: "idle" }), ROSTER, { run: () => "", record: () => {}, counts });
   assert.deepEqual(stuck, []);
   assert.deepEqual(sent, ["reviewer <- k1"]);
+});
+
+// --- the largest saving: a standing session's context only grows (2026-09-18) ---
+
+/**
+ * Measured on the live org within ONE session: turn 1 read 37k, turn 548 read 895k. Every turn re-reads
+ * the whole accumulated conversation, so turn 548 paid 24x turn 1 for the same few hundred output
+ * tokens. Across the org that day: 786M input against 782k output, and 7% of a weekly allowance for a
+ * day in which very little shipped. `/clear` on worker-capture took it 690k -> 37k.
+ */
+test("every delivery CLEARS the session's context before prompting it", () => {
+  const calls: string[][] = [];
+  deliver([{ session: "reviewer", causeKey: "k", prompt: "p" }], agents({ reviewer: "idle" }), ROSTER,
+    { run: (a: string[]) => { calls.push(a); return ""; }, record: () => {} });
+  assert.equal(calls[0][5], "/clear", "the clear must come FIRST, or the order pays the old context");
+});
+
+test("a REFUSED clear still delivers -- expensive beats undelivered", () => {
+  const calls: string[][] = [];
+  const run = (a: string[]) => {
+    calls.push(a);
+    if (a[5] === "/clear") throw new Error("agent_blocked");
+    return "";
+  };
+  const { sent, refused } = deliver([{ session: "reviewer", causeKey: "k", prompt: "p" }],
+    agents({ reviewer: "idle" }), ROSTER, { run, record: () => {} });
+  assert.deepEqual(sent, ["reviewer <- k"], "a bloated context is worse than a fresh one, not worse than none");
+  assert.match(refused[0], /\/clear refused.*delivered anyway/);
+});
+
+test("clearContext reports a refusal rather than throwing, and null on success", () => {
+  assert.equal(clearContext(() => "", "reviewer"), null);
+  assert.match(String(clearContext(() => { throw new Error("no socket"); }, "ceo")),
+    /ceo: \/clear refused \(no socket/);
 });
