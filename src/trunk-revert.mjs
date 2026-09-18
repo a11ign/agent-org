@@ -45,6 +45,7 @@ import { refuseUnknownFlags } from "@a11ign/worker-fleet/cli-flags";
 import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
 import { REPO } from "../../../scripts/repo-identity.mjs";
 import { gh, lookup, lookupCheckRuns } from "./merge-guard.mjs";
+import { summarizeTestLog, testIdentity } from "./parent-recheck-summary.mjs";
 
 // #578: `PUSHED_NO_PR` is its own code, never folded into a generic non-zero exit. "Could not revert"
 // (REFUSED/CANNOT_ASK, nothing touched) and "reverted but could not tell anyone" (the branch is on the
@@ -147,10 +148,44 @@ export function pushedNoPrMessage({ branch, pushSha, cause }) {
 }
 
 /**
+ * #1359: is a FAILING parent re-check attributable to THIS push, or a different, unrelated failure?
+ * Extracted out of `revertVerdict` to keep that function under this repo's function-size gate -- this is
+ * exactly the shape its other branches already have (a fact, judged, named), pulled into its own name.
+ *
+ * A FAILING RE-CHECK IS NOT PROOF OF "THE SAME CHECK" -- only a SHARED failing test identity is. On
+ * 2026-09-13 a live-data flake failed the parent on tests 3362/3363 (`fetchLabels against the real #55,
+ * live`; `#771 ACCEPTANCE, LIVE`) while the push's own failure was 722 (the README's quickstart guard) --
+ * disjoint sets, and the bare `parentRecheck === "fail"` flag this used to key on refused a genuine
+ * revert anyway, because it could not tell "the parent fails" from "the parent fails THIS".
+ *
+ * @param {{ pushFailingTests: string[] | null, parentFailingTests: string[] | null }} facts
+ * @returns {{code: number, reason: string} | null} a refusal/CANNOT_ASK verdict, or `null` to proceed --
+ *   the parent's failure is confirmed disjoint from this push's own, so it does not explain this gate
+ */
+function parentReCheckFailureVerdict({ pushFailingTests, parentFailingTests }) {
+  if (pushFailingTests === null || parentFailingTests === null) {
+    return { code: EXIT.CANNOT_ASK, reason: "the parent fails a check now, but the failing test names "
+      + "could not be read on one side or the other, so whether it is the SAME failure as this push's "
+      + "own cannot be told. Refusing to guess either direction: not a REFUSED (that would need a "
+      + "confirmed shared cause) and not READY (that would need a confirmed disjoint one)." };
+  }
+  const shared = pushFailingTests.filter((name) => parentFailingTests.includes(name));
+  if (shared.length === 0) return null;
+  return { code: EXIT.REFUSED, reason: "COULD NOT ATTRIBUTE: the parent was recorded green and FAILS "
+    + `THE SAME CHECK NOW (${shared.join("; ")}), on a tree this push did not touch. So the failure is `
+    + "the world's rather than this push's -- a wall-clock assertion, an outage, a dependency that "
+    + "moved, an expired credential. Reverting would remove innocent work and leave the real cause in "
+    + "place, and the next push would read red for the identical reason. This is NOT the "
+    + "inherited-failure refusal above: there the parent was already red when measured; here it was "
+    + "green when measured and is red now." };
+}
+
+/**
  * THE VERDICT, PURE -- so both refusal shapes and the ready shape can be driven without a network.
  *
  * @param {{ beforeConclusions: Record<string, string | null> | null, currentMainSha: string | null,
- *   pushSha: string, parentRecheck?: "pass" | "fail" | null }} facts
+ *   pushSha: string, parentRecheck?: "pass" | "fail" | null,
+ *   pushFailingTests?: string[] | null, parentFailingTests?: string[] | null }} facts
  *   `parentRecheck`: `"pass"` or `"fail"` from re-running the failing check AT THE PARENT, NOW -- or
  *   `null` if it was not run. This is the only input that is not a recorded historical value, and #616 is
  *   the row for why it has to exist.
@@ -158,9 +193,14 @@ export function pushedNoPrMessage({ branch, pushSha, cause }) {
  *   -- read from ITS check-runs, never re-derived by re-running the suite against it. `null` for the whole
  *   map when the lookup failed; `null` for one job when no completed record exists for it. `currentMainSha`:
  *   `main`'s real tip right now, or `null` on a failed lookup.
+ *   `pushFailingTests`/`parentFailingTests`: the failing test IDENTITIES (`testIdentity`'d `not ok` lines,
+ *   never raw numbers) named by this push's own gate and by the parent re-check, when `parentRecheck` is
+ *   `"fail"` -- #1359. `null` when a side's names could not be read. Only consulted when `parentRecheck`
+ *   is `"fail"`; a `"pass"` or `null` parent recheck never needs them.
  * @returns {{code: number, reason: string}}
  */
-export function revertVerdict({ beforeConclusions, currentMainSha, pushSha, parentRecheck = null }) {
+export function revertVerdict({ beforeConclusions, currentMainSha, pushSha, parentRecheck = null,
+  pushFailingTests = null, parentFailingTests = null }) {
   if (beforeConclusions === null) {
     return { code: EXIT.CANNOT_ASK, reason: "could not read the commit BEFORE this push's own trunk-guard "
       + "conclusions -- either the lookup failed, or (for the very first push this workflow has ever seen) "
@@ -221,12 +261,11 @@ export function revertVerdict({ beforeConclusions, currentMainSha, pushSha, pare
       + "was taken; this decision needs it to be true NOW. Not re-running is INCONCLUSIVE, never a green." };
   }
   if (parentRecheck === "fail") {
-    return { code: EXIT.REFUSED, reason: "COULD NOT ATTRIBUTE: the parent was recorded green and FAILS THE "
-      + "SAME CHECK NOW, on a tree this push did not touch. So the failure is the world's rather than this "
-      + "push's -- a wall-clock assertion, an outage, a dependency that moved, an expired credential. "
-      + "Reverting would remove innocent work and leave the real cause in place, and the next push would "
-      + "read red for the identical reason. This is NOT the inherited-failure refusal above: there the "
-      + "parent was already red when measured; here it was green when measured and is red now." };
+    const verdict = parentReCheckFailureVerdict({ pushFailingTests, parentFailingTests });
+    if (verdict) return verdict;
+    // DISJOINT (verdict === null): the parent's failure NOW and the push's own failure are two different
+    // tests, so the parent's red says nothing about this push's own gate. Proceeding, not refusing on
+    // this basis -- the reason at READY below names both sets so a reader can see they were checked.
   }
   if (currentMainSha === null) {
     return { code: EXIT.CANNOT_ASK, reason: "could not read main's current tip." };
@@ -239,7 +278,23 @@ export function revertVerdict({ beforeConclusions, currentMainSha, pushSha, pare
   }
   return { code: EXIT.READY, reason: `this push's own gate failed, the commit before it was green on every `
     + `trigger job (\`${jobs.join("`, `")}\`) AND still passes that check when re-run now, and nothing has `
-    + "landed on main since -- safe to revert." };
+    + `landed on main since -- safe to revert.`
+    + disjointParentNote({ parentRecheck, pushFailingTests, parentFailingTests }) };
+}
+
+/**
+ * #1359: at READY, name the parent's disjoint failure too, not just its absence -- a reader meeting a
+ * "safe to revert" verdict beside a parent that IS currently failing something should see that it was
+ * checked, not silently dropped. Empty string when the parent recheck was `"pass"` (nothing to add).
+ * @param {{ parentRecheck: "pass" | "fail" | null, pushFailingTests: string[] | null,
+ *   parentFailingTests: string[] | null }} facts
+ * @returns {string}
+ */
+function disjointParentNote({ parentRecheck, pushFailingTests, parentFailingTests }) {
+  if (parentRecheck !== "fail") return "";
+  return ` The parent DOES fail a check right now (\`${(parentFailingTests ?? []).join("; ")}\`), but that `
+    + `is disjoint from this push's own failure (\`${(pushFailingTests ?? []).join("; ")}\`) -- not the `
+    + "same check, so it does not explain this push's gate.";
 }
 
 /**
@@ -278,6 +333,67 @@ export function lookupCurrentMainSha() {
   return lookup(() => {
     const sha = gh(["api", `repos/${REPO}/commits/main`, "--jq", ".sha"]).trim();
     return sha || null;
+  });
+}
+
+/**
+ * `trunkBuildTest`'s own inner job name in GitHub's check-run naming -- it is a reusable-workflow call
+ * (`uses: ./.github/workflows/reusable-build-test.yml`, whose own job is named `run`), and GitHub renders
+ * a called job as `<caller-job> / <callee-job>`. Confirmed against a real run's `gh run view --log-failed`
+ * output, not assumed from the YAML alone.
+ */
+const PUSH_TEST_JOB = "trunkBuildTest / run";
+
+/**
+ * Pure: the failing test identities for ONE named job's lines inside a `gh run view --log-failed` dump.
+ * That command tab-separates every FAILED step across every job in a run as `job\tstep\tline`; this keeps
+ * only `jobName`'s lines and hands them to the SAME TAP parser (`summarizeTestLog`) the parent re-check
+ * already uses, so "the same check" means the same thing measured the same way on both sides. `null` when
+ * the named job has no lines here (it did not fail, or was not found) or names no real failing subtest.
+ * @param {string} logFailedOutput
+ * @param {string} jobName
+ * @returns {string[] | null}
+ */
+export function failingTestsFromJobLog(logFailedOutput, jobName) {
+  const prefix = `${jobName}\t`;
+  const jobLines = logFailedOutput.split("\n")
+    .filter((line) => line.startsWith(prefix))
+    // Each remaining column, after the job and step names, is `<ISO-8601 timestamp> <the real log
+    // line>` -- `gh run view --log-failed`'s own format. `summarizeTestLog`'s `not ok`/`# fail` patterns
+    // are anchored to the START of a line, so the timestamp has to come off first or every line here
+    // fails to match, silently, which is exactly what this function found empty-handed against a real
+    // run's log before this line existed: the "not ok 722" WAS present, timestamp-prefixed, unmatched.
+    .map((line) => line.split("\t").slice(2).join("\t").replace(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z /, ""));
+  if (jobLines.length === 0) return null;
+  const { verdict, notOkLines } = summarizeTestLog(jobLines.join("\n"));
+  return verdict === "fail" ? notOkLines.map(testIdentity) : null;
+}
+
+/**
+ * The push's OWN failing test identities, read from THIS SAME workflow run's `trunkBuildTest / run` job
+ * -- never a second suite run against a push already known to have failed. `null` on a failed lookup, or
+ * when no failing test can be named there: #1359's own `revertVerdict` treats that as CANNOT_ASK, never
+ * as license to assume the parent's failure is disjoint.
+ * @param {string} runId
+ * @returns {string[] | null}
+ */
+export function lookupPushFailingTests(runId) {
+  return lookup(() => failingTestsFromJobLog(
+    gh(["run", "view", runId, "--repo", REPO, "--log-failed"]), PUSH_TEST_JOB));
+}
+
+/**
+ * The parent re-check's own failing test identities, from the log file `trunk.yml`'s recheck step already
+ * wrote for its human-facing summary (`/tmp/parent-test.log`) -- read here rather than re-parsed from
+ * `parent-recheck-summary.mjs`'s own stdout, so there is one TAP parse of that log, not two that could
+ * read it differently. `null` on a failed read, or when the log names no real failing subtest.
+ * @param {string} logPath
+ * @returns {string[] | null}
+ */
+export function lookupParentFailingTests(logPath) {
+  return lookup(() => {
+    const { verdict, notOkLines } = summarizeTestLog(readFileSync(logPath, "utf8"));
+    return verdict === "fail" ? notOkLines.map(testIdentity) : null;
   });
 }
 
@@ -433,7 +549,8 @@ function performRevert({ pushSha, runUrl }) {
 }
 
 function main() {
-  refuseUnknownFlags(["--push-sha", "--before-sha", "--run-url", "--parent-recheck"],
+  refuseUnknownFlags(["--push-sha", "--before-sha", "--run-url", "--parent-recheck", "--run-id",
+    "--parent-log"],
     { entry: import.meta.url, command: "node packages/agent-org/src/trunk-revert.mjs" });
   const flag = (/** @type {string} */ name) => {
     const arg = process.argv.find((a) => a.startsWith(`--${name}=`));
@@ -462,11 +579,22 @@ function main() {
     console.error(`--parent-recheck=${recheck} is not \`pass\` or \`fail\`; treating it as UNKNOWN.`);
   }
 
+  // #1359: ONLY GATHERED WHEN THE PARENT RECHECK ACTUALLY FAILED -- a `pass` or unknown recheck never
+  // reaches the branch that reads these, and asking `gh` for a run's log on every ordinary revert (most
+  // of them never hit #616 at all) would be a needless network call on the common path.
+  const runId = flag("run-id");
+  const parentLog = flag("parent-log");
+  const pushFailingTests = parentRecheck === "fail" && runId ? lookupPushFailingTests(runId) : null;
+  const parentFailingTests = parentRecheck === "fail" && parentLog
+    ? lookupParentFailingTests(parentLog) : null;
+
   const verdict = revertVerdict({
     beforeConclusions: lookupPreviousConclusions(beforeSha, revertTriggerJobs(workflow)),
     currentMainSha: lookupCurrentMainSha(),
     pushSha,
     parentRecheck,
+    pushFailingTests,
+    parentFailingTests,
   });
   if (verdict.code !== EXIT.READY) {
     console.error(`NOT REVERTING ${pushSha.slice(0, 10)}: ${verdict.reason}`);

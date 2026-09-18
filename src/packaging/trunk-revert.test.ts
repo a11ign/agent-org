@@ -1,3 +1,6 @@
+// no-token: gh -- this file only imports and calls pure functions (revertVerdict, failingTestsFromJobLog,
+// testIdentity, etc.) with injected fixture data; the gh()-calling exports of trunk-revert.mjs (the
+// lookupX functions) are never called here.
 /**
  * A PUSH TO `main` THAT FAILS ITS OWN GATE IS REVERTED, UNATTENDED -- unless the failure is INHERITED, or
  * `main` has already moved on. #316 (pipeline unit 3).
@@ -19,8 +22,9 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { revertVerdict, revertPrBody, revertTriggerJobs, newestRunFor, conclusionOf,
-  prCreateArgs, pushedNoPrMessage, EXIT }
+  prCreateArgs, pushedNoPrMessage, failingTestsFromJobLog, EXIT }
   from "../trunk-revert.mjs";
+import { testIdentity } from "../parent-recheck-summary.mjs";
 
 const PUSH = "a1b2c3d4e5f6789012345678901234567890abcd";
 
@@ -316,7 +320,8 @@ test("#616 MUTATION TARGET: nothing in the revert path arms the PR", () => {
 
 test("#616 a parent that was recorded green and FAILS THE SAME CHECK NOW cannot be attributed", () => {
   const v = revertVerdict({ beforeConclusions: GREEN, currentMainSha: PUSH, pushSha: PUSH,
-    parentRecheck: "fail" });
+    parentRecheck: "fail", pushFailingTests: ["the README quickstart guard"],
+    parentFailingTests: ["the README quickstart guard"] });
   assert.equal(v.code, EXIT.REFUSED);
   assert.match(v.reason, /COULD NOT ATTRIBUTE/);
   assert.match(v.reason, /the world's rather than this push's/);
@@ -330,7 +335,7 @@ test("#616 THE TEST ceo NAMED: the two sentences never print the same words", ()
     beforeConclusions: { trunkGate: "success", trunkBuildTest: "failure" },
     currentMainSha: PUSH, pushSha: PUSH, parentRecheck: "pass" });
   const unattributable = revertVerdict({ beforeConclusions: GREEN, currentMainSha: PUSH, pushSha: PUSH,
-    parentRecheck: "fail" });
+    parentRecheck: "fail", pushFailingTests: ["shared test"], parentFailingTests: ["shared test"] });
   const ready = revertVerdict({ beforeConclusions: GREEN, currentMainSha: PUSH, pushSha: PUSH,
     parentRecheck: "pass" });
 
@@ -371,4 +376,125 @@ test("#616 READY now asserts BOTH facts, so the log says which question was aske
     parentRecheck: "pass" });
   assert.equal(v.code, EXIT.READY);
   assert.match(v.reason, /still passes that check when re-run now/);
+});
+
+// ---------------------------------------------------------------------------------------------------
+// #1359: A PARENT RE-CHECK FAILING IS NOT PROOF IT FAILS THE SAME CHECK.
+//
+// The real incident this closes: trunk run 34767797651 pushed 4435ae62, whose own failure was test 722
+// ("the README quickstart guard"). The parent re-check failed too -- but on a LIVE-DATA flake (tests
+// 3362/3363, "fetchLabels against the real #55, live" and "#771 ACCEPTANCE, LIVE") that 4435ae62 never
+// touched. The bare `parentRecheck === "fail"` flag this decision used to key on could not tell these
+// apart, and refused a genuine revert: "NOT REVERTING 4435ae6259: COULD NOT ATTRIBUTE: the parent was
+// recorded green and FAILS THE SAME CHECK NOW" -- when it was not, in fact, the same check.
+// ---------------------------------------------------------------------------------------------------
+
+test("#1359 ACCEPTANCE 1 (the real incident, disjoint failing tests): does NOT refuse as unattributable", () => {
+  const v = revertVerdict({ beforeConclusions: GREEN, currentMainSha: PUSH, pushSha: PUSH,
+    parentRecheck: "fail",
+    pushFailingTests: ["the README quickstart guard"],
+    parentFailingTests: ["fetchLabels against the real #55, live", "#771 ACCEPTANCE, LIVE"] });
+  assert.notEqual(v.code, EXIT.REFUSED, v.reason);
+  assert.doesNotMatch(v.reason, /COULD NOT ATTRIBUTE/);
+  assert.doesNotMatch(v.reason, /FAILS THE SAME CHECK/);
+});
+
+test("#1359 ACCEPTANCE 1, positive control: it actually proceeds to READY, not merely \"not refused\"", () => {
+  // The row's own words: "the run cases are the positive control, so the test cannot pass on a release
+  // job that never runs the suite" -- the equivalent guard here is that a stub always returning REFUSED
+  // for parentRecheck: "fail" must fail this test, not merely the negative assertion above.
+  const v = revertVerdict({ beforeConclusions: GREEN, currentMainSha: PUSH, pushSha: PUSH,
+    parentRecheck: "fail",
+    pushFailingTests: ["the README quickstart guard"],
+    parentFailingTests: ["fetchLabels against the real #55, live"] });
+  assert.equal(v.code, EXIT.READY, v.reason);
+  assert.match(v.reason, /disjoint/);
+  assert.match(v.reason, /the README quickstart guard/);
+  assert.match(v.reason, /fetchLabels against the real #55, live/);
+});
+
+test("#1359 ACCEPTANCE 2, CONTROL: a parent re-check failing the SAME test refuses exactly as today", () => {
+  const v = revertVerdict({ beforeConclusions: GREEN, currentMainSha: PUSH, pushSha: PUSH,
+    parentRecheck: "fail",
+    pushFailingTests: ["the README quickstart guard"],
+    parentFailingTests: ["the README quickstart guard"] });
+  assert.equal(v.code, EXIT.REFUSED);
+  assert.match(v.reason, /COULD NOT ATTRIBUTE/);
+});
+
+test("#1359 ACCEPTANCE 2 CONTROL, partial overlap: ONE shared test among several is still the same check", () => {
+  const v = revertVerdict({ beforeConclusions: GREEN, currentMainSha: PUSH, pushSha: PUSH,
+    parentRecheck: "fail",
+    pushFailingTests: ["the README quickstart guard", "an unrelated push-side failure"],
+    parentFailingTests: ["the README quickstart guard", "a different parent-side failure"] });
+  assert.equal(v.code, EXIT.REFUSED);
+  assert.match(v.reason, /COULD NOT ATTRIBUTE/);
+  assert.match(v.reason, /the README quickstart guard/);
+});
+
+test("#1359 ACCEPTANCE 3: a re-check whose failing names could not be read stays CANNOT_ASK, never READY", () => {
+  const v = revertVerdict({ beforeConclusions: GREEN, currentMainSha: PUSH, pushSha: PUSH,
+    parentRecheck: "fail", pushFailingTests: null, parentFailingTests: ["something"] });
+  assert.equal(v.code, EXIT.CANNOT_ASK);
+  assert.notEqual(v.code, EXIT.READY);
+  assert.doesNotMatch(v.reason, /COULD NOT ATTRIBUTE/);
+});
+
+test("#1359 ACCEPTANCE 3, the other side unreadable: also CANNOT_ASK, never READY", () => {
+  const v = revertVerdict({ beforeConclusions: GREEN, currentMainSha: PUSH, pushSha: PUSH,
+    parentRecheck: "fail", pushFailingTests: ["something"], parentFailingTests: null });
+  assert.equal(v.code, EXIT.CANNOT_ASK);
+});
+
+// A VERBATIM EXCERPT of `gh run view 34767797651 --log-failed`'s real output (the incident this row
+// closes), not a paraphrase -- `gh`'s own tab-separated `job\tstep\ttimestamp content` shape, confirmed
+// live before writing this fixture. `failingTestsFromJobLog`'s first version returned `null` against the
+// FULL real log: `summarizeTestLog`'s `not ok`/`# fail` patterns are anchored to line-START, and the
+// ISO-8601 timestamp `gh` prepends to every line was still there, so nothing ever matched.
+const REAL_LOG_EXCERPT = [
+  "trunkGate\tSome step\t2026-09-13T16:10:00.0000000Z ok 1 - unrelated",
+  "trunkBuildTest / run\tUNKNOWN STEP\t2026-09-13T16:11:51.3919318Z not ok 722 - the README's quickstart "
+    + "workflow is one a stranger can actually paste",
+  "trunkBuildTest / run\tUNKNOWN STEP\t2026-09-13T16:14:53.1610523Z # fail 1",
+].join("\n");
+
+test("#1359 failingTestsFromJobLog reads a REAL gh run view --log-failed excerpt, timestamp and all", () => {
+  const names = failingTestsFromJobLog(REAL_LOG_EXCERPT, "trunkBuildTest / run");
+  assert.deepEqual(names, ["the README's quickstart workflow is one a stranger can actually paste"]);
+});
+
+test("#1359 MUTATION TARGET: without the timestamp strip, the real excerpt reads as null again", () => {
+  // Demonstrated directly against the regex this fix added, rather than asserted from prose: the
+  // ORIGINAL failure mode was the timestamp defeating summarizeTestLog's line-anchored patterns.
+  const withoutStrip = REAL_LOG_EXCERPT.split("\n")
+    .filter((l) => l.startsWith("trunkBuildTest / run\t"))
+    .map((l) => l.split("\t").slice(2).join("\t"))
+    .join("\n");
+  const { verdict } = { verdict: /^not ok \d+/m.test(withoutStrip) ? "fail" : "unknown" };
+  assert.equal(verdict, "unknown", "the timestamp-prefixed line must NOT match the line-anchored pattern "
+    + "-- if it does, this fixture no longer reproduces the bug this fix closes");
+});
+
+test("#1359 failingTestsFromJobLog names no job as null, never an empty array read as \"no failure\"", () => {
+  assert.equal(failingTestsFromJobLog(REAL_LOG_EXCERPT, "someOtherJob"), null);
+});
+
+test("#1359 testIdentity strips the number but keeps a real, backslash-escaped test name intact", () => {
+  // node:test's OWN TAP reporter escapes `#` as `\#` in test names (confirmed directly: a local
+  // `node --test` run against a test named with a `#` produces `not ok 1 - ... \#55 ...`) -- this is not
+  // a `gh`-CLI artifact, so a name read via `gh run view --log-failed` (the push side) and a name read
+  // from a local file (the parent side, `/tmp/parent-test.log`) escape IDENTICALLY, and a straight string
+  // comparison between the two in `revertVerdict` is safe without any extra unescaping.
+  assert.equal(
+    testIdentity("not ok 3362 - fetchLabels against the real \\#55 succeeds structurally, live"),
+    "fetchLabels against the real \\#55 succeeds structurally, live");
+});
+
+test("#1359 MUTATION TARGET: collapsing back to the bare flag refuses the disjoint case again", () => {
+  // Demonstrated by calling revertVerdict with parentRecheck alone, the pre-#1359 call shape -- omitting
+  // pushFailingTests/parentFailingTests must NOT silently behave like the fixed version.
+  const v = revertVerdict({ beforeConclusions: GREEN, currentMainSha: PUSH, pushSha: PUSH,
+    parentRecheck: "fail" });
+  assert.notEqual(v.code, EXIT.READY, "a caller that forgets the new inputs must not get the new behaviour "
+    + "for free -- it must get CANNOT_ASK, the safe refusal, never a guessed READY");
 });

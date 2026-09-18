@@ -46,6 +46,19 @@ export function summarizeTestLog(text) {
       + "failure this function recognises, so the cause cannot be named" };
 }
 
+/**
+ * The identity a `not ok` line names, stripped of the number that can differ between two runs of the SAME
+ * test -- #1359. The parent and the push are different commits, potentially with tests added or removed
+ * between them, so raw `node:test` numbering is not a safe key for "is this the same test". `"not ok 722
+ * - the README's quickstart workflow is one a stranger can actually paste"` becomes `"the README's
+ * quickstart workflow is one a stranger can actually paste"`.
+ * @param {string} notOkLine
+ * @returns {string}
+ */
+export function testIdentity(notOkLine) {
+  return notOkLine.replace(/^not ok \d+\s*-?\s*/, "").trim();
+}
+
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/parent-recheck-summary.mjs <log-file>" });
   const path = process.argv[2];
