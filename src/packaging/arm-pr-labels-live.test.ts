@@ -28,7 +28,7 @@ test("#1000: every `session:*` label that EXISTS is classified -- asked of GitHu
   let labels: string[];
   try {
     labels = JSON.parse(execFileSync("gh",
-      ["label", "list", "--repo", "DanBeckDev/a11y-witness", "--limit", "200", "--json", "name"],
+      ["label", "list", "--repo", "a11ign/a11ign", "--limit", "200", "--json", "name"],
       { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }))
       .map((l: { name: string }) => l.name).filter((n: string) => n.startsWith("session:"));
   } catch {

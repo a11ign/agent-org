@@ -221,12 +221,12 @@ test("laneLabelsFor: an EXCEPTED path inside a lane's own directory does not pul
 // --- #844: issueNumberFromUrl ---
 
 test("issueNumberFromUrl reads the number off gh issue create's own bare-URL stdout", () => {
-  assert.equal(issueNumberFromUrl("https://github.com/DanBeckDev/a11y-witness/issues/900\n"), 900);
+  assert.equal(issueNumberFromUrl("https://github.com/a11ign/a11ign/issues/900\n"), 900);
 });
 
 test("issueNumberFromUrl is null on anything that does not end in /issues/<digits>", () => {
   assert.equal(issueNumberFromUrl("not a url"), null);
-  assert.equal(issueNumberFromUrl("https://github.com/DanBeckDev/a11y-witness/pull/900"), null);
+  assert.equal(issueNumberFromUrl("https://github.com/a11ign/a11ign/pull/900"), null);
 });
 
 // --- #844/#883: unverifiedFilingFields -- named, not a bare boolean ---
@@ -331,7 +331,7 @@ test("filedByLine is null on a body with no Filed-by line at all", () => {
 // --- createIssue: the CLI's own decision, with every gh-facing dependency injected so nothing reaches
 // the network. #844: files, labels, boards, sets Status, then reads all three back before reporting. ---
 
-const FILED_URL = "https://github.com/DanBeckDev/a11y-witness/issues/900";
+const FILED_URL = "https://github.com/a11ign/a11ign/issues/900";
 
 /** A `run` fake for the calls createIssue makes AFTER spawnGh: `gh project item-add` and the body
  * read-back (`gh issue view ... --json body --jq .body`). Everything else answers "" harmlessly. */
@@ -538,7 +538,7 @@ test("#844 ACCEPTANCE: a failure adding the issue to Project 2 is refused distin
     assert.equal(code, 2);
     assert.match(stderr, /FILED as #900/);
     assert.match(stderr, /could NOT add it to Project/);
-    assert.match(stderr, /gh project item-add 2 --owner DanBeckDev --url/);
+    assert.match(stderr, /gh project item-add 2 --owner a11ign --url/);
   } finally {
     process.stderr.write = original;
   }

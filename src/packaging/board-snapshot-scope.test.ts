@@ -113,8 +113,8 @@ test("#1275: the fixture builder models the shape TOUCHED_ITEM_QUERY returned li
 
 test("#1275: the request for one touched issue is the query and its four variables -- and it never names gh", () => {
   assert.deepEqual(touchedItemRequest(1275), ["api", "graphql", "-f", `query=${TOUCHED_ITEM_QUERY}`,
-    "-f", "owner=DanBeckDev", "-f", "name=a11y-witness", "-F", "project=2", "-F", "issue=1275"]);
-  assert.equal(PROJECT_OWNER, "DanBeckDev");
+    "-f", "owner=a11ign", "-f", "name=a11ign", "-F", "project=2", "-F", "issue=1275"]);
+  assert.equal(PROJECT_OWNER, "a11ign");
   assert.equal(PROJECT_NUMBER, 2);
   assert.ok(!touchedItemRequest(1275).includes("gh"), "the caller adds gh -- board-snapshot.test.ts's #1275 WIRING");
 });
@@ -171,7 +171,7 @@ test("#1275: the scoped file is named for its item, records it, and says it is n
   assert.equal(written[0].path, `${SNAPSHOT_DIR}/2026-09-13T19-00-00-000Z-issue-725.json`);
   const parsed = JSON.parse(written[0].data);
   assert.deepEqual(parsed.scope, { issues: [725] });
-  assert.deepEqual(parsed.project, { owner: "DanBeckDev", number: 2 });
+  assert.deepEqual(parsed.project, { owner: "a11ign", number: 2 });
   assert.deepEqual(parsed.items, [{ itemId: "PVTI_725", number: 725, title: "row 725", status: "In progress", state: "OPEN" }]);
   assert.deepEqual(parsed.notOnBoard, []);
   assert.match(parsed.takenBefore, /SCOPED to the item\(s\) that mutation touches, not the whole board \(#1275\).*within 300s/s,

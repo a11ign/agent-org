@@ -392,10 +392,10 @@ test("queue-stalled.mjs refuses to run without GITHUB_REPOSITORY -- CANNOT ASK, 
 const PR_1617_GATES = [
   { __typename: "CheckRun", name: "gate", status: "COMPLETED", conclusion: "CANCELLED", startedAt: "2026-09-14T14:49:33Z",
     completedAt: "2026-09-14T14:49:32Z", workflowName: "ci",
-    detailsUrl: "https://github.com/DanBeckDev/a11y-witness/actions/runs/34858134371/job/104022946741" },
+    detailsUrl: "https://github.com/a11ign/a11ign/actions/runs/34858134371/job/104022946741" },
   { __typename: "CheckRun", name: "gate", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-09-14T14:51:37Z",
     completedAt: "2026-09-14T14:51:42Z", workflowName: "ci",
-    detailsUrl: "https://github.com/DanBeckDev/a11y-witness/actions/runs/34858130620/job/104023707501" },
+    detailsUrl: "https://github.com/a11ign/a11ign/actions/runs/34858130620/job/104023707501" },
 ];
 /**
  * #1605's pair at its merged head `8c1ebc44` (REST check-runs, read 2026-09-14), in the rollup's field shape: the
@@ -404,10 +404,10 @@ const PR_1617_GATES = [
 const PR_1605_GATES = [
   { __typename: "CheckRun", name: "gate", status: "COMPLETED", conclusion: "CANCELLED", startedAt: "2026-09-14T14:22:34Z",
     completedAt: "2026-09-14T14:22:33Z", workflowName: "ci",
-    detailsUrl: "https://github.com/DanBeckDev/a11y-witness/actions/runs/34855015256/job/104012833979" },
+    detailsUrl: "https://github.com/a11ign/a11ign/actions/runs/34855015256/job/104012833979" },
   { __typename: "CheckRun", name: "gate", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-09-14T14:26:18Z",
     completedAt: "2026-09-14T14:26:21Z", workflowName: "ci",
-    detailsUrl: "https://github.com/DanBeckDev/a11y-witness/actions/runs/34855153052/job/104014192412" },
+    detailsUrl: "https://github.com/a11ign/a11ign/actions/runs/34855153052/job/104014192412" },
 ];
 /** The same entries with no run id -- what completion-time ordering alone sees. */
 const withoutRunIds = (runs: { detailsUrl?: string }[]) => runs.map(({ detailsUrl, ...rest }) => {

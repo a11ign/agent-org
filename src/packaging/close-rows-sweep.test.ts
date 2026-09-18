@@ -36,7 +36,7 @@ test("mergedPrsInWindow: queries `gh pr list` scoped to state=merged and base=ma
   + "list this repo would have to filter itself", () => {
   let capturedArgs: string[] = [];
   const fakeGh = (args: string[]) => { capturedArgs = args; return "[]"; };
-  mergedPrsInWindow("DanBeckDev/a11y-witness", 45, fakeGh);
+  mergedPrsInWindow("a11ign/a11ign", 45, fakeGh);
   assert.ok(capturedArgs.includes("--state"));
   assert.ok(capturedArgs.includes("merged"),
     "THE RISK THIS ROW NAMES: a PR that did not merge must never be in this list at all -- proven at the "
