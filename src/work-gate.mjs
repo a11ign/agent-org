@@ -48,7 +48,38 @@ import { newestPerName } from "./newest-check-run.mjs";
 export const EXIT = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3 };
 
 /** The causes this gate can emit. `wake.mjs` and the matrix validate against this list, never a copy. */
-export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed"];
+export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-convinced-not-ready",
+  "verdict-not-convinced", "pr-checks-failing", "ready-queue-empty", "lane-backlog-unpromoted",
+  "chairman-blocked"];
+
+/**
+ * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
+ *
+ * THE DISTINCTION EXISTS BECAUSE ONE OF THEM MUST NOT BE RE-ASKED AND THE OTHER MUST.
+ *
+ * An ACTION cause names a thing to do -- claim row #1320, fix #1650's red build. If the wake does not
+ * stick, nothing happens and nobody notices, so `wake`'s twenty-minute expiry re-offers it. That is the
+ * defect the expiry was built for: rows #1433 and #1435 sat Ready overnight because a spent causeKey
+ * silenced them for ever.
+ *
+ * A JUDGMENT cause asks somebody to LOOK and decide -- is anything here promotable? Its answer is
+ * durable: if the state has not changed, the answer has not changed either, and asking again buys a full
+ * model turn to reach the same conclusion. Measured 2026-09-18: `orchestrator` was woken for
+ * `lane-backlog-unpromoted`, spent four shell commands establishing that #1564 is a research row with no
+ * Acceptance waiting on a `ceo` ruling, answered "staying put" -- and the twenty-minute expiry would have
+ * asked it again, and again, until the six-delivery STUCK cap stopped it two hours later.
+ *
+ * SO THESE ARE KEYED ON STATE AND NOT RE-ASKED UNTIL THE STATE MOVES. `wake` reads this and skips the
+ * expiry for them; the causeKey already carries the state (a count, an age), so any real change is a new
+ * question and reaches the owner immediately.
+ *
+ * THE RISK, STATED: a judgment wake that never lands is never retried. That is a real cost and a smaller
+ * one than the alternative -- the STUCK counter still catches a cause that keeps being emitted, and any
+ * change to the underlying state produces a new key. An unasked question is cheaper than a question
+ * asked forty times.
+ */
+export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog-unpromoted",
+  "chairman-blocked"]);
 
 /** @param {string[]} args */
 const defaultRun = (args) => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
@@ -476,8 +507,16 @@ function laneBacklogOrders(promotableRows, readyRows) {
         + `${mine.slice(0, 8).map((/** @type {any} */ r) => `#${r.number}`).join(", ")}`
         + `${mine.length > 8 ? ", ..." : ""}. Nobody else may promote these -- the lane is yours.\n`
         + "Promote what is genuinely ready (a Region, an Acceptance, a done-when), answer what is waiting "
-        + "on a decision, and say so on anything that should stay put. Promoting nothing and recording "
-        + "why is a valid answer; this is a report of what is waiting on you, not a quota.",
+        + "on a decision, and say so on anything that should stay put. This is a report of what is "
+        + "waiting on you, not a quota: promoting nothing and recording why is a valid answer.\n"
+        // RECORDED ON THE ROW, NOT IN THE TERMINAL, and this sentence exists because that is exactly what
+        // went wrong: `orchestrator` reached a correct and well-argued answer on #1564 -- research row,
+        // no Acceptance, waiting on a ceo ruling -- and wrote it only to its own screen. The org cannot
+        // read a terminal. Nothing changed, so nothing downstream could tell the question had been
+        // answered rather than ignored.
+        + "RECORD THE ANSWER ON THE ROW, as a comment, whatever it is. A decision that exists only in "
+        + "your terminal is one the org cannot see: the next reader finds an untouched row and has to "
+        + "derive your conclusion again from scratch.",
       causeKey: `${owner}/lane-backlog-unpromoted/${lane}/${mine.length}`,
     });
   }

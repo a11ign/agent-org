@@ -316,7 +316,11 @@ test("the lane order asks for judgment, not a quota", () => {
   const [order] = decide({ prs: [], readyRows: [], promotableRows: backlog })
     .filter((o: { cause: string }) => o.cause === "lane-backlog-unpromoted");
   assert.match(order.prompt, /not a quota/);
-  assert.match(order.prompt, /Promoting nothing and recording\s+why is a valid answer/);
+  assert.match(order.prompt, /promoting nothing and recording\s+why is a valid answer/);
+  // AND IT MUST LAND ON THE ROW. `orchestrator` answered #1564 correctly and wrote it only to its own
+  // terminal, so nothing downstream could tell an answered question from an ignored one.
+  assert.match(order.prompt, /RECORD THE ANSWER ON THE ROW/);
+  assert.match(order.prompt, /only in\s+your terminal is one the org cannot see/);
 });
 
 // --- a shelf full of other people's rows is an empty shelf to the pool (2026-09-18) ---

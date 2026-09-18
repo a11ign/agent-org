@@ -16,7 +16,8 @@ import { route, undelivered, parseOrders, readLedger, deliver, readAgents, WAKEA
   WAKE_TTL_MS, MAX_DELIVERIES, deliveryCounts }
   from "../wake.mjs";
 import { afterGate, GATE, EXIT as TICK_EXIT } from "../work-tick.mjs";
-import { spawnInvocation, addressed, clearContext } from "../wake.mjs";
+import { spawnInvocation, addressed, clearContext, CLEAR_TIMEOUT_MS, CLEAR_SETTLE_MS }
+  from "../wake.mjs";
 
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));
@@ -144,12 +145,14 @@ test("deliver sends the prompt to the routed agent and records only what herdr a
   // the other end had no idea what to put in `--session=`.
   // TWO calls now: the context is cleared, then the order is delivered. A session on its 500th turn
   // costs ~24x one on its 10th for identical output, so the clear pays for itself in one turn.
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3, "clear, wait, then the order");
   assert.deepEqual(calls[0], ["--session", "org", "agent", "prompt", "reviewer", "/clear"]);
-  assert.deepEqual(calls[1].slice(0, 5), ["--session", "org", "agent", "prompt", "reviewer"]);
-  assert.equal(calls[1][5], addressed({ session: "reviewer", prompt: "review pr 7" }, "reviewer"));
-  assert.match(calls[1][5], /You are `reviewer`/);
-  assert.ok(calls[1][5].includes("review pr 7"), "the order's own text must survive");
+  assert.deepEqual(calls[1], ["--session", "org", "agent", "wait", "reviewer",
+    "--until", "idle", "--until", "done", "--timeout", String(CLEAR_TIMEOUT_MS)]);
+  assert.deepEqual(calls[2].slice(0, 5), ["--session", "org", "agent", "prompt", "reviewer"]);
+  assert.equal(calls[2][5], addressed({ session: "reviewer", prompt: "review pr 7" }, "reviewer"));
+  assert.match(calls[2][5], /You are `reviewer`/);
+  assert.ok(calls[2][5].includes("review pr 7"), "the order's own text must survive");
 });
 
 test("a prompt herdr REFUSES is not recorded, so the next tick retries it", () => {
@@ -369,4 +372,72 @@ test("clearContext reports a refusal rather than throwing, and null on success",
   assert.equal(clearContext(() => "", "reviewer"), null);
   assert.match(String(clearContext(() => { throw new Error("no socket"); }, "ceo")),
     /ceo: \/clear refused \(no socket/);
+});
+
+/**
+ * THE CLEAR MUST SETTLE BEFORE THE ORDER IS SENT, and its absence broke the live org within minutes.
+ * `agent prompt` SUBMITS text and returns; it does not wait for the agent to consume it. So the order was
+ * typed into the same input the clear was still sitting in, and `ceo` received one concatenated line:
+ *
+ *     Unknown command: /clearYou are `ceo`, an org session in this repository...
+ *
+ * The clear refused as an unknown command AND the order was mangled into its argument: two turns spent,
+ * no work done, which is the exact opposite of this function's purpose.
+ */
+test("the clear WAITS for the agent to settle, or it races the order that follows", () => {
+  const calls: string[][] = [];
+  clearContext((a: string[]) => { calls.push(a); return ""; }, "ceo");
+  // SUBMIT then WAIT, as two commands. `prompt --wait` requires an observed state CHANGE within 5000ms
+  // and a `/clear` to an already-`done` agent changes nothing observable -- two of three live wakes came
+  // back `agent_prompt_stalled`. `agent wait` matches a STATE, so an already-idle agent passes at once.
+  assert.equal(calls.length, 2, "one submit, one wait -- the settle is a delay, not a command");
+  assert.deepEqual(calls[0].slice(5), ["/clear"], "the submit carries no wait flags");
+  assert.equal(calls[1][3], "wait");
+  assert.ok(calls[1].includes("--timeout"),
+    "an unbounded wait would hang the whole tick on one stuck agent");
+});
+
+test("the clear timeout is bounded and not absurd", () => {
+  assert.ok(CLEAR_TIMEOUT_MS >= 5_000, "a clear needs time to land; too short re-creates the race");
+  assert.ok(CLEAR_TIMEOUT_MS <= 120_000, "longer than two minutes and one stuck agent stalls every tick");
+});
+
+test("the settle is bounded at both ends -- 0 mangles, and a long one stalls every tick", () => {
+  // MEASURED on the live org: 0s produced `Unknown command: /clearYou are...`; 2s and 5s both produced
+  // clean prompts. There is nothing to synchronise on -- `/clear` moves neither the agent's status nor
+  // its `state_change_seq` (it sat at 6221 across one) -- so this is a delay and is named as one.
+  assert.ok(CLEAR_SETTLE_MS >= 2_000, "2s was the shortest delay measured clean; below it is untested");
+  assert.ok(CLEAR_SETTLE_MS <= 15_000,
+    "the tick runs every two minutes and may clear several agents; a long settle eats the interval");
+});
+
+// --- #1564: a question already answered must not be asked again (2026-09-18) ---
+
+/**
+ * `orchestrator` was woken for `lane-backlog-unpromoted`, spent four shell commands establishing that
+ * #1564 is a research row with no Acceptance waiting on a `ceo` ruling, and answered "staying put" --
+ * correctly. The twenty-minute expiry would then have asked it again, and again, until the six-delivery
+ * STUCK cap stopped it two hours later: six full model turns to reach one conclusion six times.
+ */
+test("a JUDGMENT cause does not expire -- its answer is durable until the state moves", () => {
+  const stale = `${Date.now() - WAKE_TTL_MS * 3}\torchestrator/lane-backlog-unpromoted/lane:orchestrator/1`;
+  const judgment = new Set(["lane-backlog-unpromoted"]);
+  assert.deepEqual([...readLedger("x", () => stale, Date.now(), judgment)],
+    ["orchestrator/lane-backlog-unpromoted/lane:orchestrator/1"],
+    "re-asking buys a model turn to reach a conclusion somebody already reached");
+});
+
+test("an ACTION cause still expires -- a wake that did not stick must be re-offered", () => {
+  const stale = `${Date.now() - WAKE_TTL_MS * 3}\tengineers/ready-row-unclaimed/1433`;
+  assert.deepEqual([...readLedger("x", () => stale, Date.now(), new Set(["lane-backlog-unpromoted"]))], [],
+    "#1433 sat Ready overnight because a spent key silenced it for ever -- that must still expire");
+});
+
+test("the state is in the KEY, so a real change still reaches the owner at once", () => {
+  const judgment = new Set(["lane-backlog-unpromoted"]);
+  const stale = `${Date.now() - WAKE_TTL_MS * 3}\torchestrator/lane-backlog-unpromoted/lane:orchestrator/1`;
+  const live = readLedger("x", () => stale, Date.now(), judgment);
+  // The discriminator is the lane's row count: two rows is a different key, so it is not suppressed.
+  assert.ok(!live.has("orchestrator/lane-backlog-unpromoted/lane:orchestrator/2"),
+    "a lane that grew is a new question and must not inherit the old answer's silence");
 });

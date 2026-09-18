@@ -34,7 +34,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { updateBranchDecision, isBehind, newestConclusion, movedHeadRefusal, readHeadNow, updateOnePr, sweepPrs, newestRun } from "../update-branch-sweep.mjs";
+import { updateBranchDecision, isBehind, newestConclusion, movedHeadRefusal, readHeadNow, updateOnePr, sweepPrs, newestRun, armingReading } from "../update-branch-sweep.mjs";
 import { refusalFor } from "../merge-queue.mjs";
 import { newestPerName } from "../newest-check-run.mjs";
 import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
@@ -396,6 +396,73 @@ test("#1018: a PR the DECISION declines is reported too -- an unattended sweep's
   assert.deepEqual(calls, [], "an unarmed PR is not touched");
   assert.equal(result.lines.length, 1, "and it still produces a line");
   assert.match(result.lines[0], /#5 SKIPPED -- /, "naming the PR and the reason it was declined");
+});
+
+// --- #1257: a field with two meanings -- "0 updated" prints identically whether nothing was armed or
+// everything armed is already current, and the run's own output must not stay silent about which ---
+
+test("#1257 armingReading: MUTATION TARGET -- open PRs exist and NONE are armed reads as UNKNOWN, "
+  + "never as healthy", () => {
+  const reading = armingReading({ openCount: 3, armedCount: 0 });
+  assert.match(reading, /0 of 3 open PRs armed/);
+  assert.doesNotMatch(reading, /evidently working/,
+    "zero armed must never be spelled as evidence arming works -- that is the false-green shape #1257 "
+    + "names");
+  assert.match(reading, /does not say whether arming is broken/,
+    "the honest answer to '0 armed, PRs exist' is stated uncertainty, not silence");
+});
+
+test("#1257 armingReading: the POSITIVE CONTROL -- armed PRs exist, reads as arming working", () => {
+  const reading = armingReading({ openCount: 3, armedCount: 3 });
+  assert.match(reading, /3 of 3 open PRs armed/);
+  assert.match(reading, /evidently working/);
+});
+
+test("#1257 armingReading: a genuinely quiet repo (no open PRs at all) is its own, third reading -- "
+  + "not folded into the '0 armed' case", () => {
+  const reading = armingReading({ openCount: 0, armedCount: 0 });
+  assert.match(reading, /no open PRs against main/);
+  assert.doesNotMatch(reading, /0 of 0/, "must read as quiet, not as a suspicious zero");
+});
+
+test("#1257 ACCEPTANCE clause 2 -- 'update-branch-sweep' distinguishes '0 armed PRs exist' from '0 armed "
+  + "PRs were behind': same updated/failed/skipped counts, opposite armingReading", () => {
+  // Scenario A: the arming layer produced NOTHING for three open PRs -- the shape a no-op `arm` step
+  // leaves behind. Scenario B: all three ARE armed and already current -- the healthy queue. Both print
+  // identical "0 updated, 0 failed, 3 skipped" under the OLD line; that identity is the defect.
+  const unarmed = { autoMergeRequest: null, statusCheckRollup: [] };
+  const armedCurrent = { autoMergeRequest: {},
+    statusCheckRollup: [{ name: "gate", conclusion: "SUCCESS", completedAt: "2026-09-18T00:00:00Z" }] };
+  const deps = {
+    repo: "o/r",
+    run: () => "",
+    readHead: () => SHA("a"),
+    now: new Date("2026-09-18T01:00:00Z"),
+  };
+
+  const brokenArming = sweepPrs(
+    [1, 2, 3].map((number) => ({ number, headRefOid: SHA("a"), ...unarmed })),
+    { ...deps, runGit: () => ({ status: 1 }) },   // behind is irrelevant -- none are armed
+  );
+  const healthyQueue = sweepPrs(
+    [1, 2, 3].map((number) => ({ number, headRefOid: SHA("a"), ...armedCurrent })),
+    { ...deps, runGit: () => ({ status: 0 }) },   // already contains main's tip -- nothing to update
+  );
+
+  // THE OLD LINE, reproduced exactly as `main()` used to print it -- both scenarios agree on it.
+  const oldLine = (r: { updated: number, failed: number[], lines: string[] }, total: number) =>
+    `${r.updated} updated, ${r.failed.length} failed, ${total - r.updated - r.failed.length} skipped.`;
+  assert.equal(oldLine(brokenArming, 3), oldLine(healthyQueue, 3),
+    "the counts alone are indistinguishable -- this is #1257's own finding, reproduced as a fixture");
+
+  // THE NEW EVIDENCE distinguishes them.
+  assert.equal(brokenArming.armedCount, 0);
+  assert.equal(healthyQueue.armedCount, 3);
+  const readingFor = (r: { armedCount: number }) => armingReading({ openCount: 3, armedCount: r.armedCount });
+  assert.notEqual(readingFor(brokenArming), readingFor(healthyQueue),
+    "the two runs must be distinguishable from their own output, per #1257's Acceptance clause 1");
+  assert.doesNotMatch(readingFor(brokenArming), /evidently working/);
+  assert.match(readingFor(healthyQueue), /evidently working/);
 });
 
 /**

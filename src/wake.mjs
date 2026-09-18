@@ -36,6 +36,7 @@ import { dirname } from "node:path";
 // `work-gate.mjs` and `org-watch.mjs` state at their own imports.
 import { refuseUnknownFlags, flagValue } from "../../worker-fleet/src/cli-flags.mjs";
 import { profileFor, agentArgs } from "./worker-profile.mjs";
+import { JUDGMENT_CAUSES } from "./work-gate.mjs";
 
 /**
  * `0` QUIET nothing to deliver; `1` ATTENTION an order had nowhere to go; `2` CANNOT_ASK herdr did not
@@ -235,7 +236,7 @@ export const WAKE_TTL_MS = 20 * 60 * 1000;
  * @param {number} [now]
  * @returns {Set<string>}
  */
-export function readLedger(path, read = readFileSync, now = Date.now()) {
+export function readLedger(path, read = readFileSync, now = Date.now(), judgment = new Set()) {
   let raw;
   try {
     raw = String(read(path, "utf8"));
@@ -252,7 +253,13 @@ export function readLedger(path, read = readFileSync, now = Date.now()) {
     const at = Number(text.slice(0, tab));
     const key = text.slice(tab + 1);
     if (!Number.isFinite(at) || !key) continue;  // malformed: same reading as unknown age
-    if (now - at < WAKE_TTL_MS) live.add(key);
+    // A JUDGMENT CAUSE NEVER EXPIRES. Its answer is durable: the causeKey carries the state, so an
+    // unchanged key means an unchanged question, and re-asking buys a full model turn to reach the
+    // conclusion somebody already reached. `orchestrator` spent one establishing that #1564 is a
+    // research row waiting on a ceo ruling; the expiry would have asked it again every twenty minutes
+    // until the STUCK cap stopped it two hours later.
+    const cause = key.split("/")[1] ?? "";
+    if (judgment.has(cause) || now - at < WAKE_TTL_MS) live.add(key);
   }
   return live;
 }
@@ -330,6 +337,28 @@ export function deliveryCounts(path, read = readFileSync) {
  */
 export const MAX_DELIVERIES = 6;
 
+/** How long to wait for a busy agent to reach a settled state before giving up on the clear. */
+export const CLEAR_TIMEOUT_MS = 30_000;
+
+/**
+ * How long to let a `/clear` land before typing the order after it.
+ *
+ * A DELAY, NOT A SYNCHRONISATION PRIMITIVE, and named honestly because there is nothing to synchronise
+ * on: `/clear` moves neither the agent's status nor its `state_change_seq`. Measured on the live org,
+ * 2s and 5s both produced clean prompts where 0s produced `Unknown command: /clearYou are...`. Five is
+ * the one with margin, and it costs five seconds of a tick that runs every two minutes.
+ */
+export const CLEAR_SETTLE_MS = 5_000;
+
+/**
+ * Block for `ms`. Synchronous on purpose: `deliver` is synchronous, and making it async to hold a
+ * five-second pause would turn every caller and every test async for one `sleep`.
+ * @param {number} ms
+ */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /**
  * WHY EVERY DELIVERY CLEARS FIRST, and it is the largest single saving this system has made.
  *
@@ -362,7 +391,35 @@ export const MAX_DELIVERIES = 6;
  */
 export function clearContext(run, label) {
   try {
+    // SUBMIT, SETTLE, THEN THE ORDER -- AND THE SETTLE IS A DELAY BECAUSE THERE IS NO SIGNAL.
+    //
+    // `agent prompt` SUBMITS text and returns without waiting for the agent to consume it. Sending the
+    // order straight after typed it into the same input the clear was still sitting in, and `ceo`
+    // received one concatenated line:
+    //
+    //     Unknown command: /clearYou are `ceo`, an org session in this repository...
+    //
+    // TWO REPAIRS FAILED BEFORE THIS ONE, and each failed for its own reason:
+    //
+    //   `prompt --wait --until idle`   herdr's help: *"--wait first requires an observed state change
+    //                                  within 5000ms"*. A `/clear` to an already-`done` agent changes
+    //                                  nothing observable, so two of three live wakes returned
+    //                                  `agent_prompt_stalled`.
+    //   `agent wait --until idle`      an ALREADY-idle agent satisfies it instantly, before it has
+    //                                  consumed anything. Still mangled.
+    //
+    // `state_change_seq` does not move for a clear either -- measured, it sat at 6221 across one. Claude
+    // Code processes `/clear` without any transition herdr can see, so there is nothing to wait FOR. A
+    // bounded delay is the honest mechanism, and calling it a delay rather than dressing it as a
+    // synchronisation primitive is the point: 2s and 5s both produced clean prompts on the live org,
+    // and 5s is the one with margin.
+    //
+    // The `agent wait` first is still worth its cost: it catches an agent that was mid-turn when the
+    // clear arrived, where the delay alone would not be enough.
     run(["--session", "org", "agent", "prompt", label, "/clear"]);
+    run(["--session", "org", "agent", "wait", label, "--until", "idle", "--until", "done",
+      "--timeout", String(CLEAR_TIMEOUT_MS)]);
+    sleepSync(CLEAR_SETTLE_MS);
     return null;
   } catch (err) {
     // A REFUSED CLEAR IS NOT A REFUSED WAKE. The order still goes, on a bloated context: expensive is
@@ -442,7 +499,7 @@ function main() {
     process.exit(EXIT.CANNOT_ASK);
   }
 
-  const delivered = readLedger(ledgerPath);
+  const delivered = readLedger(ledgerPath, readFileSync, Date.now(), new Set(JUDGMENT_CAUSES));
   const todo = undelivered(orders, delivered);
   mkdirSync(dirname(ledgerPath), { recursive: true });
   /** @param {string} key */
