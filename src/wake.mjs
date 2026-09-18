@@ -183,11 +183,59 @@ export function parseOrders(text) {
 }
 
 /**
- * The ledger as a Set. A missing file is an empty ledger; an unreadable one is NOT.
+ * HOW LONG A WAKE COUNTS FOR. After this, a cause still true is asked again.
+ *
+ * THE LEDGER RECORDED "I SENT A PROMPT", NOT "THE WORK GOT DONE", AND THAT IS WHY THE ORG KEPT GOING
+ * QUIET WITH WORK IN FRONT OF IT. Every wake was one-shot and permanent: the moment an agent was prompted
+ * about a row, that key was spent for ever, so an agent that then failed, stalled, ran out of context or
+ * simply did not claim left the row stranded and nothing ever offered it again.
+ *
+ * Measured 2026-09-18: rows #1433 and #1435 Ready and unclaimed, zero open pull requests, all eight
+ * sessions idle, the gate emitting both orders correctly -- and the tick exiting QUIET, because
+ * `engineers/ready-row-unclaimed/1433` and `/1435` were already in the ledger from the night before.
+ *
+ * I built that deliberately and wrote the justification into this file -- *"a ledger keyed on anything
+ * this script chose would re-wake every tick"* -- which is true, and I solved it by never re-waking at
+ * all. The answer is a WINDOW, not a choice between spam and silence.
+ *
+ * TWENTY MINUTES, and the number comes from the org's own liveness rule rather than from taste.
+ * `product-manager.md` measures a claim as live "while its branch has a push or its row has a comment
+ * from the claimant in the last four hours"; four hours is the right patience for work already begun and
+ * far too long for work never begun -- a row nobody claimed sits idle for that whole window with
+ * engineers free. Twenty minutes is ten ticks: long enough that an agent reading a brief and claiming a
+ * row is never interrupted, short enough that a wake which did not stick costs one idle engineer twenty
+ * minutes rather than a night.
+ */
+export const WAKE_TTL_MS = 20 * 60 * 1000;
+
+/**
+ * The causeKeys still counted as delivered, given the clock.
+ *
+ * A LINE IS `<epochMs>\t<causeKey>`. Lines without a tab are read as OLD -- the format before this
+ * change, written by a version that recorded no time -- and they expire immediately rather than being
+ * discarded or kept for ever. Discarding them would re-wake every cause the moment this ships; keeping
+ * them for ever is the bug. Expiring them is the honest reading: a wake whose age cannot be known has no
+ * claim on the present.
+ *
+ * A missing file is an empty ledger; an unreadable one is NOT.
+ *
+ * WHAT THE LEDGER DELIBERATELY DOES NOT RECORD IS OUTCOME. Every `causeKey` is derived by `work-gate`
+ * from GitHub state alone, so "did the work get done" is already answered by GitHub: an engineer who
+ * claims a row gives it `in-progress`, the row leaves the unclaimed set, and the cause is never emitted
+ * again whatever this file believes. A status column here would be a SECOND COPY of that answer, and the
+ * two would disagree the first time a claim was made outside a wake. The ledger answers one question --
+ * *did I just ask?* -- which is a question about time.
+ *
+ * IT DOES COUNT REPEATS, because a cause that keeps coming back is not a timing problem. A row offered
+ * ten times and never claimed says something is wrong with the row, the prompt, or the engineer, and
+ * retrying it silently for ever is the same defect as never retrying at all, only noisier.
+ *
  * @param {string} path
  * @param {(p: any, enc: any) => any} [read]
+ * @param {number} [now]
+ * @returns {Set<string>}
  */
-export function readLedger(path, read = readFileSync) {
+export function readLedger(path, read = readFileSync, now = Date.now()) {
   let raw;
   try {
     raw = String(read(path, "utf8"));
@@ -195,7 +243,18 @@ export function readLedger(path, read = readFileSync) {
     if (/** @type {any} */ (err)?.code === "ENOENT") return new Set();
     throw err;
   }
-  return new Set(raw.split("\n").map((l) => l.trim()).filter(Boolean));
+  const live = new Set();
+  for (const line of raw.split("\n")) {
+    const text = line.trim();
+    if (!text) continue;
+    const tab = text.indexOf("\t");
+    if (tab < 0) continue;                       // pre-TTL line: unknown age, so not live
+    const at = Number(text.slice(0, tab));
+    const key = text.slice(tab + 1);
+    if (!Number.isFinite(at) || !key) continue;  // malformed: same reading as unknown age
+    if (now - at < WAKE_TTL_MS) live.add(key);
+  }
+  return live;
 }
 
 /**
@@ -232,6 +291,46 @@ export function addressed(order, label) {
 }
 
 /**
+ * How many times each causeKey has been delivered, over the WHOLE ledger rather than the live window.
+ *
+ * Deliberately not time-bounded: the question is "has this cause ever stuck", and a row re-offered every
+ * twenty minutes since yesterday is exactly the case worth seeing. Reading only the live window would
+ * report 1 for a cause on its fortieth attempt.
+ *
+ * @param {string} path
+ * @param {(p: any, enc: any) => any} [read]
+ * @returns {Map<string, number>}
+ */
+export function deliveryCounts(path, read = readFileSync) {
+  /** @type {Map<string, number>} */
+  const counts = new Map();
+  let raw;
+  try {
+    raw = String(read(path, "utf8"));
+  } catch (err) {
+    if (/** @type {any} */ (err)?.code === "ENOENT") return counts;
+    throw err;
+  }
+  for (const line of raw.split("\n")) {
+    const text = line.trim();
+    if (!text) continue;
+    const tab = text.indexOf("\t");
+    const key = tab < 0 ? text : text.slice(tab + 1);
+    if (key) counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/**
+ * After this many deliveries of the same cause, stop offering it and say so.
+ *
+ * Six is three attempts an hour at a twenty-minute window, so a cause reaches this after roughly two
+ * hours of being offered and ignored. That is long enough to survive an agent restart or a slow turn, and
+ * short enough that a genuinely stuck row is named while someone is still awake to read it.
+ */
+export const MAX_DELIVERIES = 6;
+
+/**
  * Deliver each order, and say what happened to every one of them.
  *
  * REPORTS BEFORE IT RECORDS. An order is written to the ledger only once herdr has accepted it, so a crash
@@ -241,14 +340,24 @@ export function addressed(order, label) {
  * @param {{session: string, causeKey: string, prompt: string}[]} orders
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster
- * @param {{run?: (args: string[]) => string, record?: (key: string) => void}} [deps]
- * @returns {{sent: string[], refused: string[]}}
+ * @param {{run?: (args: string[]) => string, record?: (key: string) => void,
+ *          counts?: Map<string, number>}} [deps]
+ * @returns {{sent: string[], refused: string[], stuck: string[]}}
  */
-export function deliver(orders, agents, roster, { run = defaultRun, record } = {}) {
+export function deliver(orders, agents, roster, { run = defaultRun, record, counts } = {}) {
   const sent = [];
   const refused = [];
+  const stuck = [];
   const live = agents.map((a) => ({ ...a }));
   for (const order of orders) {
+    // A CAUSE THAT KEEPS COMING BACK IS NOT A TIMING PROBLEM. Offering it a seventh time would be the
+    // silent-retry version of the bug this whole change fixes -- work going nowhere while the log looks
+    // busy. Naming it and stopping is the only answer that reaches a person.
+    const already = counts?.get(order.causeKey) ?? 0;
+    if (already >= MAX_DELIVERIES) {
+      stuck.push(`${order.causeKey}: delivered ${already} times and the cause is still true`);
+      continue;
+    }
     const target = route(order.session, live, roster);
     if ("refusal" in target) {
       refused.push(`${order.causeKey}: ${target.refusal}`);
@@ -267,7 +376,7 @@ export function deliver(orders, agents, roster, { run = defaultRun, record } = {
     if (record) record(order.causeKey);
     sent.push(`${target.label} <- ${order.causeKey}`);
   }
-  return { sent, refused };
+  return { sent, refused, stuck };
 }
 
 function main() {
@@ -292,10 +401,18 @@ function main() {
   const todo = undelivered(orders, delivered);
   mkdirSync(dirname(ledgerPath), { recursive: true });
   /** @param {string} key */
-  const record = (key) => writeFileSync(ledgerPath, `${key}\n`, { flag: "a" });
+  const record = (key) => writeFileSync(ledgerPath, `${Date.now()}\t${key}\n`, { flag: "a" });
 
-  const { sent, refused } = deliver(todo, agents, roster, { record });
+  const { sent, refused, stuck } = deliver(todo, agents, roster, { record,
+    counts: deliveryCounts(ledgerPath) });
   for (const line of sent) process.stdout.write(`WOKE ${line}\n`);
+  for (const line of stuck) process.stderr.write(`STUCK ${line}\n`);
+  if (stuck.length > 0) {
+    process.stderr.write(`${stuck.length} cause(s) have been offered ${MAX_DELIVERIES}+ times and are `
+      + "still true. They are NOT being retried: something about the row, the prompt or the session is "
+      + "wrong, and another delivery would only make the log busier.\n");
+    process.exit(EXIT.ATTENTION);
+  }
   if (refused.length > 0) {
     for (const line of refused) process.stderr.write(`UNDELIVERED ${line}\n`);
     process.stderr.write(`${refused.length} order(s) had nowhere to go. They are NOT in the ledger and `

@@ -12,7 +12,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { route, undelivered, parseOrders, readLedger, deliver, readAgents, WAKEABLE, EXIT }
+import { route, undelivered, parseOrders, readLedger, deliver, readAgents, WAKEABLE, EXIT,
+  WAKE_TTL_MS, MAX_DELIVERIES, deliveryCounts }
   from "../wake.mjs";
 import { afterGate, GATE, EXIT as TICK_EXIT } from "../work-tick.mjs";
 import { spawnInvocation, addressed } from "../wake.mjs";
@@ -105,7 +106,13 @@ test("a missing ledger is an empty ledger; an unreadable one is NOT", () => {
 });
 
 test("readLedger ignores blank lines rather than storing an empty causeKey", () => {
-  assert.deepEqual(readLedger("x", () => "a\n\n  \nb\n"), new Set(["a", "b"]));
+  // The line format is `<epochMs>\t<causeKey>` since wakes started expiring. Blank and whitespace-only
+  // lines are still skipped; what changed is that a line with no timestamp is unknown-age, not a key.
+  const now = Date.now();
+  const raw = `${now}\ta\n\n  \n${now}\tb\n`;
+  assert.deepEqual(readLedger("x", () => raw), new Set(["a", "b"]));
+  assert.deepEqual(readLedger("x", () => `${now}\t\n`), new Set(),
+    "a timestamp with no key is malformed, not an empty causeKey");
 });
 
 test("an order missing session, causeKey or prompt is REFUSED, never skipped", () => {
@@ -262,4 +269,62 @@ test("the woken session is told not to wait on a human, and who to ask instead",
 test("the order's own text survives intact -- the prefix adds, never replaces", () => {
   const got = addressed({ session: "reviewer", prompt: "Draft #1630 needs a verdict." }, "reviewer");
   assert.ok(got.includes("Draft #1630 needs a verdict."));
+});
+
+// --- #1433/#1435: a wake that did not stick must be asked again (2026-09-18) ---
+
+/**
+ * THE LEDGER RECORDED "I SENT A PROMPT", NOT "THE WORK GOT DONE". Every wake was one-shot and permanent,
+ * so an agent that failed, stalled or simply did not claim left the row stranded for ever. Measured
+ * 2026-09-18: rows #1433 and #1435 Ready and unclaimed, no open PRs, all eight sessions idle, the gate
+ * emitting both orders correctly, and the tick exiting QUIET because both keys were in the ledger from
+ * the night before.
+ */
+test("a wake older than the window is offered again", () => {
+  const old = `${Date.now() - WAKE_TTL_MS - 1}\tengineers/ready-row-unclaimed/1433`;
+  assert.deepEqual([...readLedger("x", () => old)], [],
+    "a stale wake must not keep a live cause silent -- that is how #1433 sat Ready overnight");
+});
+
+test("a wake inside the window still suppresses, so a tick does not spam", () => {
+  const fresh = `${Date.now() - 1000}\tengineers/ready-row-unclaimed/1433`;
+  assert.deepEqual([...readLedger("x", () => fresh)], ["engineers/ready-row-unclaimed/1433"]);
+});
+
+test("a PRE-TTL line has unknown age, so it expires rather than silencing a cause for ever", () => {
+  assert.deepEqual([...readLedger("x", () => "engineers/ready-row-unclaimed/1433")], [],
+    "the old format carried no time; keeping those live is the bug, discarding them re-wakes everything "
+    + "at once, and expiring them is the honest reading of a wake whose age cannot be known");
+});
+
+test("the window is long enough that an agent reading a brief is never interrupted", () => {
+  assert.ok(WAKE_TTL_MS >= 10 * 60 * 1000, "shorter than ten minutes re-prompts mid-turn");
+  assert.ok(WAKE_TTL_MS <= 60 * 60 * 1000,
+    "longer than an hour and a wake that did not stick costs a night, which is the bug being fixed");
+});
+
+test("deliveryCounts spans the WHOLE ledger, not the live window", () => {
+  const ancient = Date.now() - 10 * WAKE_TTL_MS;
+  const raw = [`${ancient}\tk`, `${ancient + 1}\tk`, `${Date.now()}\tk`].join("\n");
+  assert.equal(deliveryCounts("x", () => raw).get("k"), 3,
+    "reading only the live window would report 1 for a cause on its fortieth attempt");
+});
+
+test("a cause delivered MAX times is named and STOPPED, never offered again", () => {
+  const calls: string[][] = [];
+  const counts = new Map([["k1", MAX_DELIVERIES]]);
+  const { sent, stuck } = deliver([{ session: "reviewer", causeKey: "k1", prompt: "p" }],
+    agents({ reviewer: "idle" }), ROSTER,
+    { run: (a: string[]) => { calls.push(a); return ""; }, record: () => {}, counts });
+  assert.deepEqual(sent, []);
+  assert.deepEqual(calls, [], "an agent that has ignored this six times must not be prompted a seventh");
+  assert.match(stuck[0], /k1: delivered 6 times and the cause is still true/);
+});
+
+test("a cause below the limit is still delivered", () => {
+  const counts = new Map([["k1", MAX_DELIVERIES - 1]]);
+  const { sent, stuck } = deliver([{ session: "reviewer", causeKey: "k1", prompt: "p" }],
+    agents({ reviewer: "idle" }), ROSTER, { run: () => "", record: () => {}, counts });
+  assert.deepEqual(stuck, []);
+  assert.deepEqual(sent, ["reviewer <- k1"]);
 });
