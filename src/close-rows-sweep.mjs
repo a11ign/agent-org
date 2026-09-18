@@ -61,7 +61,8 @@ import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags, flagValue } from "../../worker-fleet/src/cli-flags.mjs";
 // #1227: `settleClosedStatus` is imported rather than re-derived, for the reason this file's own header
 // gives about `stripClaimLabels`: a second copy of that decision is the "fact stated twice" shape.
-import { closurePlan, stripClaimLabels, closeRowsExit, LIVE_SETTLE_DEPS } from "./close-rows-for-merged-pr.mjs";
+import { closurePlan, stripClaimLabels, closeRowsExit, LIVE_SETTLE_DEPS, logRateLimit }
+  from "./close-rows-for-merged-pr.mjs";
 import { settleClosedStatus } from "./settle-closed-status.mjs";
 
 /** @typedef {import("./settle-closed-status.mjs").Refusal} Refusal */
@@ -185,6 +186,18 @@ export function sweepExit(outcome) {
   return closeRowsExit(outcome, "SWEEP");
 }
 
+/**
+ * #1443: every exit AFTER "before sweep" pairs with an "after sweep" reading first -- see
+ * `close-rows-for-merged-pr.mjs`'s own `exitAfterSweep` for why this is a matching pair rather than a
+ * standalone log call at the end.
+ * @param {number} code
+ * @returns {never}
+ */
+function exitAfterSweep(code) {
+  logRateLimit("after sweep (push)");
+  process.exit(code);
+}
+
 function main() {
   refuseUnknownFlags(["--window"], { entry: import.meta.url, command: "node packages/agent-org/src/close-rows-sweep.mjs" });
 
@@ -195,17 +208,20 @@ function main() {
   }
   const windowMinutes = Number(flagValue(process.argv, "window") ?? DEFAULT_WINDOW_MINUTES);
 
+  // #1443: bracketing the whole sweep -- #1360's saving is a property of this row's TOTAL cost.
+  logRateLimit("before sweep (push)");
+
   let prs;
   try {
     prs = mergedPrsInWindow(repo, windowMinutes);
   } catch (cause) {
     console.error(`CANNOT ASK: listing merged PRs failed -- ${cause instanceof Error ? cause.message : cause}`);
-    process.exit(EXIT.CANNOT_ASK);
+    exitAfterSweep(EXIT.CANNOT_ASK);
   }
 
   if (prs.length === 0) {
     console.log(`SWEEP: no PRs merged into main in the last ${windowMinutes}m.`);
-    process.exit(EXIT.DONE);
+    exitAfterSweep(EXIT.DONE);
   }
   console.log(`SWEEP: ${prs.length} PR(s) merged into main in the last ${windowMinutes}m: `
     + `${prs.map((p) => p.number).join(" ")}`);
@@ -214,7 +230,7 @@ function main() {
   const { code, lines } = sweepExit({
     failed: outcomes.flatMap((o) => o.failed), unsettled: outcomes.flatMap((o) => o.unsettled) });
   for (const line of lines) console.error(line);
-  process.exit(code);
+  exitAfterSweep(code);
 }
 
 // The entry guard `merge-guard.mjs`/`close-rows-for-merged-pr.mjs` use.
