@@ -291,6 +291,23 @@ export function readLedger(path, read = readFileSync, now = Date.now(), judgment
 }
 
 /**
+ * Who a session escalates to when it is genuinely blocked.
+ *
+ * `product-manager` IS THE FIRST READER FOR ROWS, per the routing rule -- but this line was appended to
+ * every order regardless of who received it, so the order that woke `product-manager` told it to message
+ * ITSELF, and the chairman read that as the order having fired twice. `ceo` is `product-manager`'s own
+ * onward route in that same rule ("three things come up from product-manager to ceo"), and `ceo`'s is the
+ * chairman -- which no session can message, so it says so rather than naming a dead end.
+ *
+ * @param {string} label
+ */
+function escalationFor(label) {
+  if (label === "product-manager") return "ceo";
+  if (label === "ceo") return "the chairman on the row itself -- no session can message them";
+  return "product-manager";
+}
+
+/**
  * The prompt as the woken session receives it: the order's text, prefixed with WHO IT IS.
  *
  * THE DEFECT THIS FIXES, seen in production 2026-09-17. `work-gate`'s row order says *"claim it with
@@ -318,15 +335,17 @@ export function addressed(order, label) {
     + `asks which session you are (\`--session=${label}\`).\n\n`
     + `${prompt}\n\n`
     + "Work autonomously to the end: nobody is at this terminal to answer you. If something genuinely "
-    + "blocks you, say so on the row and message `product-manager` -- never stop and wait on a human. "
-    + "If you cannot claim the row (already taken, or the claim refuses), that is an answer: report it "
-    + "and stop, rather than working outside a claim.";
+    + `blocks you, say so on the row and message \`${escalationFor(label)}\` -- never stop and wait on a `
+    + "human. If you cannot claim the row (already taken, or the claim refuses), that is an answer: "
+    + "report it and stop, rather than working outside a claim.";
 }
 
 /**
- * How many times each causeKey has been delivered, over the WHOLE ledger rather than the live window.
+ * How many times each causeKey has been delivered IN ITS CURRENT RUN -- since the last `RESET`, which
+ * `endedRuns` writes when a cause stops being emitted. See that function for why a run, and not a time
+ * window, is the unit.
  *
- * Deliberately not time-bounded: the question is "has this cause ever stuck", and a row re-offered every
+ * Still not time-bounded WITHIN a run: the question is "is this cause stuck", and a row re-offered every
  * twenty minutes since yesterday is exactly the case worth seeing. Reading only the live window would
  * report 1 for a cause on its fortieth attempt.
  *
@@ -349,9 +368,57 @@ export function deliveryCounts(path, read = readFileSync) {
     if (!text) continue;
     const tab = text.indexOf("\t");
     const key = tab < 0 ? text : text.slice(tab + 1);
-    if (key) counts.set(key, (counts.get(key) ?? 0) + 1);
+    if (!key) continue;
+    // A RESET ENDS A RUN AND STARTS THE COUNT AGAIN AT ZERO, rather than removing anything. The ledger
+    // stays append-only, so what happened is still readable -- six deliveries, a reset, then two more
+    // says something a bare `2` cannot.
+    if (key.startsWith(`${RESET}\t`)) counts.set(key.slice(RESET.length + 1), 0);
+    else counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   return counts;
+}
+
+/**
+ * The marker that ends a run of deliveries. A ledger line is `<epochMs>\tRESET\t<causeKey>`.
+ *
+ * WHY A MARKER AND NOT A DELETION: this ledger is the only record of what the org was told and when, and
+ * the 2026-09-18 incident was diagnosed by reading it. Rewriting history to fix a counter would have
+ * removed the evidence for the next diagnosis.
+ */
+export const RESET = "RESET";
+
+/**
+ * The causeKeys whose RUN OF DELIVERIES HAS ENDED -- emitted on the previous tick, absent from this one.
+ *
+ * THE LEDGER RECORDS DELIVERIES, NOT EMISSIONS, AND THAT IS THE WHOLE DEFECT. `MAX_DELIVERIES` exists to
+ * stop a cause that keeps coming back and going nowhere, and it counted every delivery a key ever had.
+ * Measured 2026-09-18: `ceo/ready-row-unclaimed/1452` spent all six of its deliveries in the morning
+ * while B4 genuinely blocked the row behind an open PR. That PR merged, the row became claimable, and
+ * the cap kept it silent for NINE HOURS -- the queue's only actionable job, and nothing could offer it.
+ *
+ * A TIME WINDOW CANNOT FIX THIS, and that was the first thing tried. Those six deliveries span 2h10m,
+ * because each one has to wait out the 20-minute liveness TTL; any window long enough for the cap to
+ * trigger at all still contains them. The signal is not "how long ago" but "did the cause STOP being
+ * true and start again" -- and a gap in DELIVERY looks identical to a gap in EMISSION from the ledger
+ * alone. So the emitted set is written down each tick, and the difference is what ends a run.
+ *
+ * @param {string[]} emitted this tick's causeKeys
+ * @param {string} path where the previous tick's set is remembered
+ * @param {{ read?: typeof readFileSync, write?: typeof writeFileSync }} [io]
+ * @returns {string[]} the keys to mark RESET, in the order they were last seen
+ */
+export function endedRuns(emitted, path, { read = readFileSync, write = writeFileSync } = {}) {
+  /** @type {string[]} */
+  let previous = [];
+  try {
+    previous = String(read(path, "utf8")).split("\n").map((l) => l.trim()).filter(Boolean);
+  } catch (err) {
+    if (/** @type {any} */ (err)?.code !== "ENOENT") throw err;
+  }
+  const now = new Set(emitted);
+  mkdirSync(dirname(path), { recursive: true });
+  write(path, `${emitted.join("\n")}\n`);
+  return previous.filter((key) => !now.has(key));
 }
 
 /**
@@ -512,6 +579,8 @@ function main() {
     entry: import.meta.url, command: "node packages/agent-org/src/wake.mjs",
   });
   const ledgerPath = flagValue(process.argv, "ledger") ?? `${process.env.HOME}/.cache/a11ign/wake-ledger`;
+  // Beside the ledger: one directory holds the org's runtime state.
+  const emittedPath = `${dirname(ledgerPath)}/wake-emitted`;
   const roster = (flagValue(process.argv, "roster") ?? "worker-capture,worker-judge,worker-tooling")
     .split(",").map((s) => s.trim()).filter(Boolean);
 
@@ -530,6 +599,12 @@ function main() {
   mkdirSync(dirname(ledgerPath), { recursive: true });
   /** @param {string} key */
   const record = (key) => writeFileSync(ledgerPath, `${Date.now()}\t${key}\n`, { flag: "a" });
+
+  // A RUN THAT ENDED IS MARKED BEFORE THE COUNTS ARE READ, so a cause that went away and came back is
+  // offered again rather than being held at a cap it earned under conditions that no longer hold.
+  for (const key of endedRuns(orders.map((o) => o.causeKey), emittedPath)) {
+    writeFileSync(ledgerPath, `${Date.now()}\t${RESET}\t${key}\n`, { flag: "a" });
+  }
 
   const { sent, refused, stuck } = deliver(todo, agents, roster, { record,
     counts: deliveryCounts(ledgerPath) });

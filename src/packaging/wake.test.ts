@@ -13,7 +13,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { route, undelivered, parseOrders, readLedger, deliver, readAgents, WAKEABLE, EXIT,
-  WAKE_TTL_MS, JUDGMENT_TTL_MS, MAX_DELIVERIES, deliveryCounts }
+  WAKE_TTL_MS, JUDGMENT_TTL_MS, MAX_DELIVERIES, deliveryCounts, endedRuns, RESET }
   from "../wake.mjs";
 import { afterGate, GATE, EXIT as TICK_EXIT } from "../work-tick.mjs";
 import { spawnInvocation, addressed, clearContext, CLEAR_TIMEOUT_MS, CLEAR_SETTLE_MS }
@@ -462,4 +462,107 @@ test("the state is in the KEY, so a real change still reaches the owner at once"
   // The discriminator is the lane's row count: two rows is a different key, so it is not suppressed.
   assert.ok(!live.has("orchestrator/lane-backlog-unpromoted/lane:orchestrator/2"),
     "a lane that grew is a new question and must not inherit the old answer's silence");
+});
+
+// --- the delivery cap resets when the CAUSE stops, not when the clock moves (2026-09-18) ---
+
+/**
+ * THE NINE HOURS THIS COST. `MAX_DELIVERIES` exists to stop a cause that keeps coming back and going
+ * nowhere. It counted every delivery a key had ever had -- so when `ceo/ready-row-unclaimed/1452` spent
+ * all six of its deliveries in the morning while B4 genuinely blocked the row behind an open PR, and that
+ * PR then merged, the row became claimable and the cap kept it silent for the rest of the day. It was the
+ * queue's ONLY actionable job; eight agents sat idle behind it.
+ *
+ * A TIME WINDOW WAS TRIED FIRST AND CANNOT WORK: those six deliveries span 2h10m, because each waits out
+ * the 20-minute liveness TTL, so any window wide enough for the cap to trigger still contains them. The
+ * signal is not age. It is whether the cause STOPPED being true and started again -- and from the ledger
+ * alone, a gap in DELIVERY is indistinguishable from a gap in EMISSION. So emission is written down.
+ */
+const ledgerOf = (lines: string[]) => lines.join("\n") + "\n";
+
+test("a RESET marker ends the run and the count starts again at zero", () => {
+  const key = "ceo/ready-row-unclaimed/1452";
+  const six = ledgerOf(Array.from({ length: MAX_DELIVERIES }, (_, i) => `${1000 + i}\t${key}`));
+  assert.equal(deliveryCounts("x", (() => six) as never).get(key), MAX_DELIVERIES,
+    "the control: six deliveries read as six, which is what silenced #1452 all day");
+  const afterReset = deliveryCounts("x", (() => six + `9000\t${RESET}\t${key}\n`) as never);
+  assert.equal(afterReset.get(key), 0, "the cause went away; the run it earned that cap in is over");
+});
+
+test("deliveries AFTER a reset count again, so a genuinely stuck cause is still caught", () => {
+  const key = "engineers/ready-row-unclaimed/77";
+  const raw = ledgerOf([`1\t${key}`, `2\t${key}`, `3\t${RESET}\t${key}`, `4\t${key}`, `5\t${key}`]);
+  assert.equal(deliveryCounts("x", (() => raw) as never).get(key), 2,
+    "a reset is not an amnesty -- the new run counts from zero and can reach the cap on its own");
+});
+
+/**
+ * THE OTHER DIRECTION, and the one that matters more: a reset that fires while the cause is STILL being
+ * emitted would restore the nagging `MAX_DELIVERIES` exists to stop. `endedRuns` may only name keys that
+ * were emitted last tick and are absent now.
+ */
+test("endedRuns names only causes that STOPPED being emitted -- never one still on offer", () => {
+  const io = { store: "a\nb\nc\n" };
+  const read = (() => io.store) as never;
+  const write = ((_p: string, data: string) => { io.store = data; }) as never;
+  assert.deepEqual(endedRuns(["a", "b", "c"], "x", { read, write }), [],
+    "every key still emitted: nothing has ended, and resetting here would un-cap a live nag");
+  assert.deepEqual(endedRuns(["a"], "x", { read, write }), ["b", "c"],
+    "b and c were emitted last tick and are gone now -- their runs are over");
+  assert.deepEqual(endedRuns(["a"], "x", { read, write }), [],
+    "and they are not reported twice: the store now says only `a` was emitted");
+});
+
+test("a first run with no remembered set ends nothing", () => {
+  const missing = (() => { const e = new Error("nope") as NodeJS.ErrnoException; e.code = "ENOENT"; throw e; }) as never;
+  assert.deepEqual(endedRuns(["a"], "x", { read: missing, write: (() => {}) as never }), [],
+    "an absent store is a first tick, not a claim that every cause just ended");
+});
+
+test("the #1452 sequence end to end: capped, cause clears, offered again", () => {
+  const key = "ceo/ready-row-unclaimed/1452";
+  let ledger = ledgerOf(Array.from({ length: MAX_DELIVERIES }, (_, i) => `${1000 + i}\t${key}`));
+  const order = { session: "ceo", cause: "ready-row-unclaimed", subject: "row-1452",
+    discriminator: "1452", prompt: "claim it", causeKey: key };
+  const agents = [{ label: "ceo", name: "ceo", status: "idle" }];
+
+  // while B4 blocks the row the gate emits nothing for it, so the run ends
+  const store = { s: `${key}\n` };
+  for (const ended of endedRuns([], "x",
+    { read: (() => store.s) as never, write: ((_p: string, d: string) => { store.s = d; }) as never })) {
+    ledger += `9000\t${RESET}\t${ended}\n`;
+  }
+  assert.equal(deliveryCounts("x", (() => ledger) as never).get(key), 0);
+
+  // the blocking PR merges, the gate emits it again, and it is DELIVERED rather than reported STUCK
+  const { sent, stuck } = deliver([order], agents, ["ceo"],
+    { run: (() => "") as never, record: () => {}, counts: deliveryCounts("x", (() => ledger) as never) });
+  assert.deepEqual(stuck, [], "this is the nine hours: it was reported STUCK instead of woken");
+  assert.equal(sent.length, 1);
+});
+
+/**
+ * THE ORDER THAT TOLD `product-manager` TO MESSAGE ITSELF. This line is appended to every order
+ * regardless of recipient, so the wake that reached `product-manager` about #1717's refused verdict
+ * ended "message `product-manager`" -- which the chairman read, reasonably, as the order having fired
+ * twice. It had fired once; it just named a dead end.
+ *
+ * The routing rule already has the answer: `product-manager` is the first reader for rows, its own onward
+ * route is `ceo`, and `ceo`'s is the chairman -- whom no session can message, so the line says so instead
+ * of naming something unreachable.
+ */
+test("the escalation line names someone OTHER than the recipient, for every session", () => {
+  const order = { session: "x", cause: "c", subject: "s", discriminator: "d",
+    prompt: "do the thing", causeKey: "k" };
+  for (const label of ["product-manager", "ceo", "worker-judge", "orchestrator", "reviewer"]) {
+    const text = addressed(order, label);
+    const named = text.match(/message `([^`]+)`/)?.[1];
+    assert.notEqual(named, label, `${label} is told to message itself, which is a dead end`);
+  }
+  assert.match(addressed(order, "product-manager"), /message `ceo`/,
+    "product-manager's own onward route in the routing rule");
+  assert.match(addressed(order, "ceo"), /the chairman on the row itself -- no session can message them/,
+    "ceo's route is the chairman, who has no session -- say that rather than name something unreachable");
+  assert.match(addressed(order, "worker-judge"), /message `product-manager`/,
+    "and everyone else still goes to the first reader for rows");
 });
