@@ -81,7 +81,7 @@ const defaultRun = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8" });
 
 const ITEMS_QUERY = `
   query($owner: String!, $number: Int!, $cursor: String) {
-    user(login: $owner) {
+    organization(login: $owner) {
       projectV2(number: $number) {
         items(first: 100, after: $cursor) {
           pageInfo { hasNextPage endCursor }
@@ -135,9 +135,9 @@ function parsePage(raw) {
       + `treat a partial answer as complete, even though the request otherwise succeeded. `
       + `${describeGraphqlErrors(errors)}`);
   }
-  const itemsNode = /** @type {any} */ (parsed)?.data?.user?.projectV2?.items;
+  const itemsNode = /** @type {any} */ (parsed)?.data?.organization?.projectV2?.items;
   if (!itemsNode || !Array.isArray(itemsNode.nodes) || !itemsNode.pageInfo) {
-    throw new Error(`board-snapshot: gh's response did not have the shape data.user.projectV2.items -- `
+    throw new Error(`board-snapshot: gh's response did not have the shape data.organization.projectV2.items -- `
       + `refusing to guess. Got: ${JSON.stringify(parsed).slice(0, 300)}`);
   }
   const items = itemsNode.nodes.map((/** @type {unknown} */ node, /** @type {number} */ i) => {

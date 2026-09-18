@@ -270,11 +270,11 @@ test("unverifiedFilingFields: never on the board at all vs. on it with the WRONG
   const notBoarded = { labels: ["backlog", "lane:any"], body: "Filed-by: worker-contracts\n", boardStatus: null };
   assert.deepEqual(unverifiedFilingFields(notBoarded,
     { session: "worker-contracts", label: "backlog", status: "Backlog", laneLabels: ["lane:any"] }),
-    ["Project 2 membership"]);
+    ["Project 1 membership"]);
   const wrongStatus = { labels: ["backlog", "lane:any"], body: "Filed-by: worker-contracts\n", boardStatus: "Ready" };
   assert.deepEqual(unverifiedFilingFields(wrongStatus,
     { session: "worker-contracts", label: "backlog", status: "Backlog", laneLabels: ["lane:any"] }),
-    ['Project 2 Status (reads "Ready", not "Backlog")']);
+    ['Project 1 Status (reads "Ready", not "Backlog")']);
 });
 
 test("unverifiedFilingFields: everything missing at once is all named, not just the first", () => {
@@ -288,7 +288,7 @@ test("unverifiedFilingFields: everything missing at once is all named, not just 
 
 test("fetchIssueBoardStatus reads the Status option name off the one matching project", () => {
   const run = () => JSON.stringify({ data: { repository: { issue: { projectItems: { nodes: [
-    { project: { number: 2 }, fieldValueByName: { name: "Backlog" } },
+    { project: { number: 1 }, fieldValueByName: { name: "Backlog" } },
   ] } } } } });
   assert.equal(fetchIssueBoardStatus(900, { run }), "Backlog");
 });
@@ -538,7 +538,7 @@ test("#844 ACCEPTANCE: a failure adding the issue to Project 2 is refused distin
     assert.equal(code, 2);
     assert.match(stderr, /FILED as #900/);
     assert.match(stderr, /could NOT add it to Project/);
-    assert.match(stderr, /gh project item-add 2 --owner a11ign --url/);
+    assert.match(stderr, /gh project item-add 1 --owner a11ign --url/);
   } finally {
     process.stderr.write = original;
   }
@@ -1166,7 +1166,7 @@ test("#1250: the item-add rung names BOTH steps it skips, and repairs all three"
   const message = (r as { message: string }).message;
   assert.match(message, /neither the Status "Backlog" nor/, "it must name the Status as skipped");
   assert.match(message, /`backlog`\/`lane:any`/, "and WHICH labels, not 'the labels'");
-  assert.match(message, /item-edit 2 --owner \S+ --url \S+ --field Status --value "Backlog"/,
+  assert.match(message, /item-edit 1 --owner \S+ --url \S+ --field Status --value "Backlog"/,
     "and be followable for the Status, not only describe it");
   assert.match(message, /--add-label backlog --add-label lane:any/, "and for the labels");
   assert.equal(labelCall(calls), undefined, "neither later step ran, which is what the message reports");

@@ -40,7 +40,7 @@ function page({ nodes, hasNextPage = false, endCursor = null }: {
 }) {
   return JSON.stringify({
     data: {
-      user: {
+      organization: {
         projectV2: {
           items: {
             pageInfo: { hasNextPage, endCursor },
@@ -103,7 +103,7 @@ test("fetchBoardItems throws rather than returning a partial list when gh fails"
 });
 
 test("fetchBoardItems throws on a response missing the expected shape, rather than guessing", () => {
-  const run = () => JSON.stringify({ data: { user: { projectV2: null } } });
+  const run = () => JSON.stringify({ data: { organization: { projectV2: null } } });
   assert.throws(() => fetchBoardItems({ run, fetchReady: () => [] }), /did not have the shape/);
 });
 
@@ -113,7 +113,7 @@ test("#555: a non-zero exit whose stdout carries a GraphQL error quotes its type
   // The exact shape measured on the real FORBIDDEN failure that cost #546 three hours: `gh` exits 1, but
   // the response body it printed before exiting still carries the API's own diagnosis.
   const stdout = JSON.stringify({
-    errors: [{ type: "FORBIDDEN", path: ["user", "projectV2"],
+    errors: [{ type: "FORBIDDEN", path: ["organization", "projectV2"],
       message: "Resource not accessible by personal access token" }],
   });
   const run = () => {
@@ -123,7 +123,7 @@ test("#555: a non-zero exit whose stdout carries a GraphQL error quotes its type
     throw err;
   };
   assert.throws(() => fetchBoardItems({ run, fetchReady: () => [] }),
-    /FORBIDDEN \(user\.projectV2\): Resource not accessible by personal access token/);
+    /FORBIDDEN \(organization\.projectV2\): Resource not accessible by personal access token/);
 });
 
 test("#555: a non-zero exit with no parseable GraphQL error falls back to the plain exit message, "
@@ -138,14 +138,14 @@ test("#555 MUTATION TARGET: a 200 response carrying `data` AND `errors` together
   // succeeds (exit 0, `data` present, `pageInfo` well-formed), but the `nodes` list is null exactly
   // where an item should be, and the `errors` array is the only place that says why.
   const run = () => JSON.stringify({
-    data: { user: { projectV2: { items: {
+    data: { organization: { projectV2: { items: {
       pageInfo: { hasNextPage: false, endCursor: null },
       nodes: [null, null, null],
     } } } },
     errors: [
-      { type: "FORBIDDEN", path: ["user", "projectV2", "items", "nodes", 0], message: "Resource not accessible by personal access token" },
-      { type: "FORBIDDEN", path: ["user", "projectV2", "items", "nodes", 1], message: "Resource not accessible by personal access token" },
-      { type: "FORBIDDEN", path: ["user", "projectV2", "items", "nodes", 2], message: "Resource not accessible by personal access token" },
+      { type: "FORBIDDEN", path: ["organization", "projectV2", "items", "nodes", 0], message: "Resource not accessible by personal access token" },
+      { type: "FORBIDDEN", path: ["organization", "projectV2", "items", "nodes", 1], message: "Resource not accessible by personal access token" },
+      { type: "FORBIDDEN", path: ["organization", "projectV2", "items", "nodes", 2], message: "Resource not accessible by personal access token" },
     ],
   });
   assert.throws(() => fetchBoardItems({ run, fetchReady: () => [] }), /FORBIDDEN/);
@@ -161,7 +161,7 @@ test("#555 CONTROL: an ordinary clean response (no errors array at all) is unaff
 test("#555: an `errors` array with data still present is refused BEFORE the shape check would even run "
   + "-- so a caller never sees \"did not have the shape\" for a response that actually named its own cause", () => {
   const run = () => JSON.stringify({
-    data: { user: { projectV2: { items: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } } },
+    data: { organization: { projectV2: { items: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } } },
     errors: [{ type: "SOME_OTHER_TYPE", message: "a different failure entirely" }],
   });
   assert.throws(() => fetchBoardItems({ run, fetchReady: () => [] }), /SOME_OTHER_TYPE: a different failure entirely/);
@@ -169,7 +169,7 @@ test("#555: an `errors` array with data still present is refused BEFORE the shap
 
 test("PROJECT_OWNER and PROJECT_NUMBER match the real board (a11y-witness -- what is open, Project 2)", () => {
   assert.equal(PROJECT_OWNER, "a11ign");
-  assert.equal(PROJECT_NUMBER, 2);
+  assert.equal(PROJECT_NUMBER, 1);
 });
 
 test("snapshotStamp is filesystem-safe -- no colons, and two calls a second apart differ", () => {
@@ -408,7 +408,7 @@ function boardOf(pages: number) {
     calls.push([cmd, ...args]);
     if (!args.join(" ").includes("graphql")) return "";
     const cursor = served; served += 1;
-    return JSON.stringify({ data: { user: { projectV2: { items: {
+    return JSON.stringify({ data: { organization: { projectV2: { items: {
       pageInfo: { hasNextPage: cursor < pages - 1, endCursor: `c${cursor + 1}` },
       nodes: [{ id: `PVTI_${cursor}`, content: { number: cursor, title: "t", state: "OPEN" },
         fieldValues: { nodes: [{ name: "Ready", field: { name: "Status" } }] } }],
@@ -528,7 +528,7 @@ function recordingGh(pages: number) {
       throw new Error("the touched read is not served here -- board-snapshot-scope.test.ts drives it");
     }
     const cursor = served; served += 1;
-    return JSON.stringify({ data: { user: { projectV2: { items: {
+    return JSON.stringify({ data: { organization: { projectV2: { items: {
       pageInfo: { hasNextPage: cursor < pages - 1, endCursor: `c${cursor + 1}` },
       nodes: [{ id: `PVTI_page${cursor}`, content: { number: 10000 + cursor, title: "t", state: "OPEN" },
         fieldValues: { nodes: [{ name: "Backlog", field: { name: "Status" } }] } }],
@@ -548,7 +548,7 @@ test("#1275 WIRING: a mutation that names its item makes ONE gh call, the scoped
   const gh = recordingGh(6);
   let ran = false;
   assert.throws(() => withBoardSnapshot(() => { ran = true; }, { ...quietIO, run: gh.run, touches: 725 }),
-    /could not read Project 2's item for #725/);
+    /could not read Project 1's item for #725/);
   assert.deepEqual(gh.calls, [{ cmd: "gh", args: touchedItemRequest(725) }],
     "exactly the pure module's request, sent through gh by THIS file -- the gh call the pure half leaves here");
   assert.equal(ran, false, "and a refused read still means no mutation (#399)");
@@ -599,8 +599,8 @@ function refusingRun(message: string, stdout?: string) {
   return { run, calls };
 }
 
-const PROJECT_2_NOT_FOUND = JSON.stringify({ data: { user: { projectV2: null } }, errors: [{ type: "NOT_FOUND",
-  path: ["user", "projectV2"], message: `Could not resolve to a ProjectV2 with the number ${PROJECT_NUMBER}.` }] });
+const PROJECT_2_NOT_FOUND = JSON.stringify({ data: { organization: { projectV2: null } }, errors: [{ type: "NOT_FOUND",
+  path: ["organization", "projectV2"], message: `Could not resolve to a ProjectV2 with the number ${PROJECT_NUMBER}.` }] });
 
 test("#1425: 7 full-route mutations against an unreadable Project make ONE request, and none mutates", () => {
   forgetProcessSnapshot();
@@ -618,7 +618,7 @@ test("#1425: 7 full-route mutations against an unreadable Project make ONE reque
   assert.equal(mutations, 0);
   assert.equal(messages.length, 7);
   for (const message of messages) {
-    assert.match(message, /NOT_FOUND \(user\.projectV2\): Could not resolve to a ProjectV2 with the number 2/);
+    assert.match(message, /NOT_FOUND \(organization\.projectV2\): Could not resolve to a ProjectV2 with the number 1/);
   }
   forgetProcessSnapshot();
 });

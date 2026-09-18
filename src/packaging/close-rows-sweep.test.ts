@@ -19,7 +19,7 @@ import { refusalCause } from "../settle-closed-status.mjs";
 
 /** CAPTURED, not composed: the reason `moveProjectStatus` gave for #1299 in trunk run 34769927592 (`02ae7420`). */
 const CAPTURED_PROJECT_UNREADABLE = "could not move #1299's Status to \"Done\" -- board-snapshot: could not read "
-  + "Project 2 items -- refusing to snapshot a partial board. NOT_FOUND (user.projectV2): Could not resolve to a "
+  + "Project 1 items -- refusing to snapshot a partial board. NOT_FOUND (organization.projectV2): Could not resolve to a "
   + "ProjectV2 with the number 2.";
 /** A refusal classified by the real `refusalCause`, never a hand-typed cause. */
 const refusal = (row: number, message: string) => ({ row, cause: refusalCause(message), message });
