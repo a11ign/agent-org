@@ -16,8 +16,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES }
-  from "../work-gate.mjs";
+import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES,
+  comparablePrFiles } from "../work-gate.mjs";
 
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
 // without one is dropped, and the gate would read every PR as having no checks at all.
@@ -406,4 +406,90 @@ test("the order tells ceo to CLEAR a stale label, or the count stops meaning any
   const [order] = decide({ prs: [], readyRows: [], chairmanBlocked: [blockedRow(63, 4)] });
   assert.match(order.prompt, /take the label off/);
   assert.match(order.prompt, /four days unread/);
+});
+
+// --- B4 asked EARLY: a row nobody can claim is not a row to offer (2026-09-18) ---
+
+/**
+ * THE TURN THIS REMOVES, MEASURED. All three unclaimed Ready rows (#1452, #1397, #1320) declared
+ * `.github/workflows/release.yml`, which open draft #1695 already touched, so `row-claim.mjs` refused
+ * every one of them on B4. The gate offered all three every two minutes anyway. `ceo` was woken for
+ * #1452, ran sixteen shell commands, rediscovered the refusal, posted it on the row, messaged
+ * `product-manager` and stopped -- re-deriving a hold a PRIOR `ceo` session had already recorded.
+ *
+ * The refusal was an intersection of two `--json` field lists the gate's own two calls already pay for.
+ * So these tests pin BOTH directions, because both hide: a gate that never shelves restores the wasted
+ * turn, and a gate that shelves when it cannot actually tell would starve a queue in silence.
+ */
+const regionRow = (n: number, region: string, extra: string[] = []) =>
+  ({ number: n, body: `## Region\n\n- \`${region}\`\n\n## Acceptance\n\nnone\n`,
+    labels: [{ name: "ready" }, ...extra.map((e) => ({ name: e }))] });
+
+const prTouching = (n: number, ...files: string[]) => ({ number: n, files, changedFiles: files.length });
+
+test("a row whose Region overlaps an open PR is NOT offered -- B4 would only refuse the claim", () => {
+  const orders = decide({ prs: [], readyRows: [regionRow(1452, ".github/workflows/release.yml")],
+    prFiles: [prTouching(1695, ".github/workflows/release.yml")] });
+  assert.deepEqual(orders.filter((o: { cause: string }) => o.cause === "ready-row-unclaimed"), [],
+    "offering it costs a whole session turn to reach the answer this comparison already has");
+});
+
+/**
+ * THE POSITIVE CONTROL for every assertion above. A `partitionUnclaimed` that shelved everything would
+ * satisfy each "not offered" case perfectly and would recruit nobody, ever -- this file's own header
+ * names that shape one level up.
+ */
+test("the SAME row IS offered when no open PR touches its Region", () => {
+  const orders = decide({ prs: [], readyRows: [regionRow(1452, ".github/workflows/release.yml")],
+    prFiles: [prTouching(1695, "packages/lab/src/packaging/something.test.ts")] });
+  assert.deepEqual(orders.map((o: { subject: string }) => o.subject), ["row-1452"]);
+});
+
+test("NO REGION is cannot-ask, not no-overlap -- the row is still offered, as row-claim would grant it", () => {
+  const row = { number: 77, labels: [{ name: "ready" }], body: "a row with no template fields at all" };
+  const orders = decide({ prs: [], readyRows: [row],
+    prFiles: [prTouching(1695, ".github/workflows/release.yml")] });
+  assert.deepEqual(orders.map((o: { subject: string }) => o.subject), ["row-77"],
+    "row-claim skips B4 on a Region-less row rather than refusing it; disagreeing here would shelve "
+    + "rows the claim would grant, and nothing would ever say so");
+});
+
+/**
+ * #1419: `gh pr list --json files` returns each PR's first 100 files and never says so. At claim time a
+ * list shorter than its own count is a REFUSAL, which is right when the cost of guessing is two sessions
+ * in one file. Here it must FAIL OPEN -- one paginated PR would otherwise shelve the entire queue, and
+ * the gate would report a starved queue as a quiet one.
+ */
+test("a TRUNCATED pull-request file list is dropped from the comparison, never read as an overlap", () => {
+  const raw = [{ number: 1695, changedFiles: 113, files: [{ path: ".github/workflows/release.yml" }] }];
+  assert.deepEqual(comparablePrFiles(raw), [], "113 changed files, 1 listed -- not comparable");
+  const orders = decide({ prs: [], readyRows: [regionRow(1452, ".github/workflows/release.yml")],
+    prFiles: comparablePrFiles(raw) });
+  assert.deepEqual(orders.map((o: { subject: string }) => o.subject), ["row-1452"],
+    "the gate fails open and row-claim still refuses at claim time -- shelving can only ever REMOVE a "
+    + "wake that would have ended in a refusal");
+});
+
+test("comparablePrFiles reads gh's own shape: a file list is objects carrying a path", () => {
+  assert.deepEqual(comparablePrFiles([{ number: 9, changedFiles: 2,
+    files: [{ path: "a.ts" }, { path: "b.ts" }] }]),
+  [{ number: 9, changedFiles: 2, files: ["a.ts", "b.ts"] }]);
+});
+
+test("prFiles omitted means no overlap is KNOWABLE, so every row is offered exactly as before", () => {
+  const orders = decide({ prs: [], readyRows: [regionRow(1452, ".github/workflows/release.yml")] });
+  assert.deepEqual(orders.map((o: { subject: string }) => o.subject), ["row-1452"],
+    "a caller that cannot read files must never be worse off than one that never asked");
+});
+
+test("the empty-shelf order says WHY the pool is empty, and BLOCKED is not the same as LANED", () => {
+  const orders = decide({ prs: [], readyRows: [regionRow(1320, ".github/workflows/release.yml")],
+    promotableRows: [{ number: 800, labels: [{ name: "backlog" }] }],
+    prFiles: [prTouching(1695, ".github/workflows/release.yml")] });
+  const [shelf] = orders.filter((o: { cause: string }) => o.cause === "ready-queue-empty");
+  assert.match(shelf.prompt, /1 unlaned row\(s\) \(#1320\) are B4-blocked/);
+  assert.doesNotMatch(shelf.prompt, /belong to a lane/,
+    "no row here is laned -- saying so sends product-manager to an owner who has nothing to answer");
+  assert.match(shelf.prompt, /NOT rows to promote past/,
+    "a blocked row is waiting on a pull request; promoting over the same files just moves the refusal");
 });

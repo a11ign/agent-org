@@ -13,10 +13,15 @@
 // the tick WAS a model turn. So this script is the tick, and a model is woken only with the answer
 // already in its prompt.
 //
-// IT COSTS TWO `gh` CALLS. `gh pr list --json number,isDraft,headRefOid,statusCheckRollup,author,comments`
-// answers the whole reviewer lane in one (comments included -- that is what makes the verdict question
-// free), and one `gh issue list --label ready` answers the engineers'. At two calls it can run every two
+// IT COSTS TWO `gh` CALLS. `gh pr list --json ...,comments,files,changedFiles` answers the whole reviewer
+// lane in one (comments included -- that is what makes the verdict question free), and one
+// `gh issue list --label ready --json ...,body` answers the engineers'. At two calls it can run every two
 // minutes all day inside the rate limit, which is the property the whole design rests on.
+//
+// `files`/`changedFiles` and `body` were added 2026-09-18 and added NO call: they are extra fields on the
+// two reads already being made, and together they let the gate answer B4 -- does this row's declared
+// Region overlap a file an open PR already touches -- before it offers the row to anyone. See
+// `partitionUnclaimed` for what that was costing.
 //
 // THIS SCRIPT DECIDES NOTHING ABOUT WHO IS FREE. It answers "is there work", never "who should take it":
 // that needs `herdr agent list`'s `agent_status`, and putting it here would make the gate untestable
@@ -31,6 +36,12 @@ import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
 import { READY_LABEL, CLAIM_LABEL } from "./claim-labels.mjs";
 import { verdictAtHead } from "./review-verdict.mjs";
 import { newestPerName } from "./newest-check-run.mjs";
+// B4, ASKED EARLY. These are the SAME two functions `row-claim.mjs` runs at claim time, imported
+// rather than reimplemented: `region-paths.mjs`'s own header records why a second copy of "what
+// counts as a path" is not allowed to exist. Both are leaf-shaped and relative, so the gate keeps the
+// property its own header states -- it runs before any `npm ci` or build.
+import { declaredRegionFiles } from "./region-paths.mjs";
+import { fileOverlapReason } from "./row-claim/file-overlap-rule.mjs";
 
 /**
  * FOUR STATES, AND THE POLARITY IS DELIBERATE.
@@ -96,7 +107,7 @@ const defaultRun = (args) => execFileSync("gh", args, { encoding: "utf8", maxBuf
 export function readPrs(run = defaultRun) {
   try {
     const out = run(["pr", "list", "--state", "open", "--limit", "100", "--json",
-      "number,isDraft,headRefOid,statusCheckRollup,author,comments,labels"]);
+      "number,isDraft,headRefOid,statusCheckRollup,author,comments,labels,files,changedFiles"]);
     const parsed = JSON.parse(out);
     return Array.isArray(parsed) ? parsed : null;
   } catch {
@@ -220,7 +231,7 @@ export function readPromotableRows(run = defaultRun) {
 export function readReadyRows(run = defaultRun) {
   try {
     const out = run(["issue", "list", "--state", "open", "--label", READY_LABEL, "--limit", "100",
-      "--json", "number,title,labels"]);
+      "--json", "number,title,labels,body"]);
     const parsed = JSON.parse(out);
     return Array.isArray(parsed) ? parsed : null;
   } catch {
@@ -242,6 +253,94 @@ export const MAX_ROW_ORDERS_PER_TICK = 8;
 
 /** @param {any} x @returns {string[]} */
 const labelsOf = (x) => (x?.labels ?? []).map((/** @type {any} */ l) => String(l?.name ?? l));
+
+/**
+ * Every open PR the gate is ALLOWED TO COMPARE AGAINST, in `fileOverlapReason`'s shape.
+ *
+ * #1419's cap is why this FILTERS rather than passing everything through. `gh pr list --json files`
+ * returns each PR's first 100 files and never says so, and `fileOverlapReason` answers a list shorter
+ * than its own count with a REFUSAL rather than "no overlap". That refusal is right at claim time, where
+ * the cost of guessing is two sessions editing one file. It is wrong HERE: the gate's B4 read is a
+ * pre-filter, so one truncated list would shelve the entire queue over a pagination artefact.
+ *
+ * So a PR whose list does not match its count is dropped from the comparison. The gate then cannot see an
+ * overlap against it, offers the row, and `row-claim.mjs` refuses at claim time exactly as it does today.
+ * **THE GATE FAILS OPEN AND THE AUTHORITY DOES NOT MOVE** -- every shelving decision here can only ever
+ * remove a wake that would have ended in a refusal.
+ *
+ * @param {any[]} prs
+ * @returns {{ number: number, files: string[], changedFiles: number }[]}
+ */
+export function comparablePrFiles(prs) {
+  return prs
+    .map((p) => ({
+      number: Number(p?.number),
+      changedFiles: Number(p?.changedFiles),
+      files: (p?.files ?? []).map((/** @type {any} */ f) => String(f?.path ?? f)),
+    }))
+    .filter((p) => Number.isInteger(p.changedFiles) && p.files.length === p.changedFiles);
+}
+
+/**
+ * Why B4 would refuse this row RIGHT NOW, or `null` when it would not -- and `null` whenever the question
+ * cannot be answered from what the gate has already read.
+ *
+ * NO REGION IS NOT NO OVERLAP, and this must agree with `row-claim.mjs` about that or the gate would
+ * shelve rows the claim would grant. `declaredRegionFiles` returns `null` for a body with no Region
+ * section at all; `sessionEligibilityReason` treats that as CANNOT ASK and skips B4 rather than refusing,
+ * so this returns `null` too. A Region naming no path is `[]`, which `fileOverlapReason` itself answers
+ * with "no overlap" -- a real comparison, and not this function's to second-guess.
+ *
+ * @param {any} row @param {{ number: number, files: string[], changedFiles: number }[]} prFiles
+ * @param {{ rootFiles?: Set<string> }} [options] passed to `declaredRegionFiles` so a test can name its
+ *   own tree rather than needing this repository's
+ * @returns {string | null}
+ */
+export function blockedOnOpenPr(row, prFiles, options) {
+  // NOTHING TO OVERLAP. With no comparable open PR no refusal is possible, and reading the row's Region
+  // to discover that would spawn `git ls-tree` for an answer already known.
+  if (prFiles.length === 0) return null;
+  const mine = declaredRegionFiles(String(row?.body ?? ""), options);
+  if (mine === null) return null;
+  return fileOverlapReason(mine, prFiles).reason;
+}
+
+/**
+ * The unclaimed Ready rows, split into what a session could actually claim right now and what B4 would
+ * refuse, with the reason and the row's lane owner.
+ *
+ * WHY THE GATE ASKS B4 AT ALL, MEASURED 2026-09-18 -- and this is the whole of the change. ALL THREE
+ * unclaimed Ready rows (#1452, #1397, #1320) declare `.github/workflows/release.yml`, which open draft
+ * #1695 already touches. The gate offered all three every two minutes. `ceo` was woken for #1452, ran
+ * sixteen shell commands, rediscovered the refusal, posted it on the row, messaged `product-manager` and
+ * stopped -- having re-derived a hold a PRIOR `ceo` session had already recorded. Nothing was wrong with
+ * that turn except that it was spent: the refusal is an intersection of two `--json` field lists the
+ * gate's own two calls already pay for, knowable before the wake.
+ *
+ * IT ALSO CORRECTS THE DIAGNOSIS ABOVE. The lane comment in `decide` reads three idle engineers behind
+ * laned rows as a LANE problem; re-laning those three rows to `lane:any` would have changed nothing,
+ * because an engineer hits the identical B4 refusal. The queue's throughput was one draft's verdict.
+ *
+ * A BLOCKED ROW IS NOT A DROPPED ROW. The work that frees it is the blocking PR's, and the gate already
+ * asks about that PR by its own causes -- so shelving here removes a wake without removing a question.
+ * `main` reports every shelving on stderr, and `emptyShelfOrder` names the pool's blocked rows, because a
+ * row that vanishes silently is the exact shape of the empty-shelf defect these orders exist to catch.
+ *
+ * @param {any[]} readyRows @param {{ number: number, files: string[], changedFiles: number }[]} prFiles
+ * @param {{ rootFiles?: Set<string> }} [options]
+ * @returns {{ offerable: any[], blocked: { number: number, owner: string | null, reason: string }[] }}
+ */
+export function partitionUnclaimed(readyRows, prFiles, options) {
+  const offerable = [];
+  const blocked = [];
+  for (const row of readyRows) {
+    if (labelsOf(row).includes(CLAIM_LABEL)) continue;
+    const reason = blockedOnOpenPr(row, prFiles, options);
+    if (reason) blocked.push({ number: Number(row.number), owner: laneOwnerOf(row), reason });
+    else offerable.push(row);
+  }
+  return { offerable, blocked };
+}
 
 /**
  * Is this PR's CI green enough to be worth a reviewer's turn?
@@ -425,13 +524,16 @@ function draftOrder(pr) {
  * function past `local/max-physical-lines-per-function` 90. `decide` asks what the queue needs;
  * this asks which rows are on offer and to whom.
  *
- * @param {any[]} readyRows
+ * @param {any[]} unclaimed the unclaimed Ready rows `partitionUnclaimed` judged actually claimable --
+ *   the CLAIM_LABEL filter and the B4 filter both live there now, because the caller needs the rows
+ *   this one discards (a shelved row is reported, not forgotten)
  */
-function rowOrders(readyRows) {
+function rowOrders(unclaimed) {
   const orders = [];
-  // UNCLAIMED IS `ready` WITHOUT `in-progress`. This is a CANDIDATE, not a grant: `row-claim.mjs` is the
-  // authority and the woken engineer runs it. A gate that claimed rows would be a second writer of the
-  // claim state, which is the race #176 already cost this repo once.
+  // UNCLAIMED IS `ready` WITHOUT `in-progress`, and since 2026-09-18 also WITHOUT a B4 overlap against an
+  // open PR -- both decided by `partitionUnclaimed`. This is still a CANDIDATE, not a grant:
+  // `row-claim.mjs` is the authority and the woken engineer runs it. A gate that claimed rows would be a
+  // second writer of the claim state, which is the race #176 already cost this repo once.
   //
   // ONE ORDER PER ROW, NOT ONE ORDER NAMING EVERY ROW -- and that is the difference between one engineer
   // working and several. This emitted a SINGLE order listing all unclaimed rows, and `wake` routes one
@@ -443,7 +545,6 @@ function rowOrders(readyRows) {
   // Per-row orders also make the ledger do the right thing. `wake` marks an agent working the moment it
   // prompts it, so several orders in one tick fan out across whoever is free, and a row already woken
   // for is a `causeKey` already spent -- the same row cannot recruit a second engineer on the next tick.
-  const unclaimed = readyRows.filter((r) => !labelsOf(r).includes(CLAIM_LABEL));
   // OLDEST FIRST, because a queue that hands out its newest rows first starves its oldest -- and the
   // number is a row number, so ascending IS oldest.
   const oldestFirst = [...unclaimed].sort((a, b) => Number(a.number) - Number(b.number));
@@ -561,6 +662,90 @@ function chairmanOrders(chairmanBlocked) {
 }
 
 /**
+ * The order asking `product-manager` to stock an empty POOL shelf, or `null` when it is not empty.
+ *
+ * SPLIT OUT OF `decide` when B4 shelving landed. The prompt now has to say WHICH of two things emptied
+ * the shelf, and `decide` was already at `local/max-physical-lines-per-function` 90.
+ *
+ * IT NAMES THE BLOCKED ROWS RATHER THAN HIDING THEM, and that is not decoration. Shelving a B4-blocked
+ * row means nobody is woken for it -- which is how a queue starves in silence, the same shape this order
+ * already exists to catch one level up. And a blocked row is NOT one to promote past: it is waiting on a
+ * pull request, so promoting another row over the same files just moves the refusal. The counts are
+ * reported; which rows are genuinely promotable stays a judgment, for the reason below.
+ *
+ * THE SHELF ITSELF IS WORK, and nothing asked about it until 2026-09-17. Measured that day: 92 open
+ * issues, 87 of them `backlog`, ZERO `ready`, and five engineers idle. The gate's engineer question is
+ * "a `ready` row without `in-progress`", which was honestly no -- so it reported a quiet org while every
+ * engineer waited behind an empty queue. `dispatcher` is retired and its brief's line survives it:
+ * "the Ready column. It pulls; THIS ROLE STOCKS." The stocker had no trigger.
+ *
+ * FACTS, NOT A TARGET, and that distinction is the whole design. `product-manager`'s brief says Ready
+ * holds at least three product rows; this does not ask for three. `ready:audit` exists because
+ * `dispatcher` once labelled two rows `ready` TO HIT THAT FLOOR -- one disputed, one with no Region or
+ * Acceptance -- and recorded the rule this obeys: *"a floor met by a label I control is not a
+ * measurement."* A number here would buy relabelling. The order reports what is on the shelf and what
+ * is behind it; which rows are genuinely promotable is a judgment and stays with the reader.
+ *
+ * ONLY WHEN THE SHELF IS EMPTY. A queue with anything in it is a queue the engineers can pull from, and
+ * re-prompting on a short-but-non-empty Ready would be the floor by another name.
+ * THE POOL'S SHELF, NOT THE WHOLE SHELF, and that distinction had three engineers idle. This counted
+ * every unclaimed Ready row, so 14 rows Ready read as a well-stocked queue -- while 11 of them were
+ * `lane:ceo` and 3 `lane:orchestrator` and NOT ONE was takeable by an engineer. Measured 2026-09-18,
+ * minutes after lane routing shipped: ceo and orchestrator woke, promoted their own lanes, and went to
+ * work, and the pool stayed starved because the shelf now looked full.
+ *
+ * It is the original empty-shelf defect one level down: a queue full of work nobody in that pool may
+ * take is an EMPTY QUEUE TO THEM. `laneOwnerOf` already says who a row belongs to; a row with an owner
+ * is somebody's, and the lane orders above are what ask them about it.
+ *
+ * AND B4-BLOCKED IS THE THIRD READING OF THAT SAME SHAPE (2026-09-18). A row an engineer may take but
+ * cannot CLAIM is as empty to them as one that belongs to somebody else -- measured the same day the
+ * lane reading above was, on the same three rows. The lane was never the whole answer there: #1452,
+ * #1397 and #1320 all declare `.github/workflows/release.yml` and all sat behind draft #1695, so
+ * re-laning them to `lane:any` would have handed an engineer the identical refusal.
+ *
+ * @param {{ offerable: any[], blocked: { number: number, owner: string | null, reason: string }[],
+ *           promotable: number }} state
+ */
+function emptyShelfOrder({ offerable, blocked, promotable }) {
+  const pool = offerable.filter((r) => laneOwnerOf(r) === null);
+  if (pool.length > 0 || promotable === 0) return null;
+  const poolBlocked = blocked.filter((b) => b.owner === null);
+  const laned = offerable.length - pool.length;
+  const why = [
+    laned > 0 ? `${laned} unclaimed row(s) belong to a lane` : "",
+    poolBlocked.length > 0
+      ? `${poolBlocked.length} unlaned row(s) (${poolBlocked.map((b) => `#${b.number}`).join(", ")}) are `
+        + "B4-blocked behind an open pull request that already touches their Region"
+      : "",
+  ].filter(Boolean).join(", and ");
+  return {
+    session: "product-manager",
+    cause: "ready-queue-empty",
+    subject: "ready-queue",
+    // THE COUNT IS THE DISCRIMINATOR, so the order stops repeating the moment a row is promoted and
+    // re-fires if the shelf empties again at a different depth. Keyed on anything constant it would
+    // nag every two minutes until someone acted, which is how a wake becomes noise to route around.
+    discriminator: String(promotable),
+    prompt: `The Ready queue has NOTHING an engineer may take${why ? ` -- ${why}` : ""} -- and `
+      + `${promotable} unlaned backlog row(s) carry no label that means unpickable (not blocked, `
+      + "fleet-gated, epic, disputed, decision, awaiting-merge, review-only or already claimed). Every "
+      + "engineer is waiting on this queue rather than on work.\n"
+      + (poolBlocked.length > 0
+        ? "The B4-blocked rows are NOT rows to promote past: each is waiting on a pull request, and the "
+          + "work that frees it is that PR's. Promoting a row whose Region overlaps the same files only "
+          + "moves the refusal.\n"
+        : "")
+      + "Promote what is genuinely ready -- a row with a Region, an Acceptance and a done-when -- and "
+      + "leave the rest. This is deliberately NOT a request to reach a count: #ready:audit records "
+      + "`dispatcher` labelling two rows ready to hit a floor, one disputed and one with neither field, "
+      + "and a floor met by a label you control is not a measurement. Promoting nothing and saying why "
+      + "is a valid answer.",
+    causeKey: `product-manager/ready-queue-empty/${promotable}`,
+  };
+}
+
+/**
  * PURE. The orders the state implies.
  *
  * Every order carries a `causeKey` derivable from GitHub state alone, so re-running this gate produces a
@@ -571,71 +756,31 @@ function chairmanOrders(chairmanBlocked) {
  * at that head" rather than "check whether there is work" -- a woken turn that has to survey the queue is
  * a tick with extra steps, which is the cost this file exists to remove.
  *
- * @param {{ prs: any[], readyRows: any[], promotableRows?: any[], chairmanBlocked?: any[] }} state
+ * @param {{ prs: any[], readyRows: any[], promotableRows?: any[], chairmanBlocked?: any[],
+ *           prFiles?: { number: number, files: string[], changedFiles: number }[] }} state
  *        `promotableRows` are the backlog rows carrying no unpickable label; `chairmanBlocked` are
  *        the rows waiting on the chairman, oldest first. `[]` for either when refused or empty.
+ *        `prFiles` is `comparablePrFiles(prs)` -- the open PRs B4 may be asked about. It DEFAULTS TO
+ *        `[]`, which means "no overlap is knowable", so every row is offered: the same behaviour as
+ *        before B4 shelving existed, and the reason a caller that cannot read files is never worse off.
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
  */
-export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [] }) {
+export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [] }) {
   const orders = [];
 
   for (const pr of prs) {
     const order = draftOrder(pr);
     if (order) orders.push(order);
   }
-  orders.push(...rowOrders(readyRows));
+  const { offerable, blocked } = partitionUnclaimed(readyRows, prFiles);
+  orders.push(...rowOrders(offerable));
 
 
-  // THE SHELF ITSELF IS WORK, and nothing asked about it until 2026-09-17. Measured that day: 92 open
-  // issues, 87 of them `backlog`, ZERO `ready`, and five engineers idle. The gate's engineer question is
-  // "a `ready` row without `in-progress`", which was honestly no -- so it reported a quiet org while every
-  // engineer waited behind an empty queue. `dispatcher` is retired and its brief's line survives it:
-  // "the Ready column. It pulls; THIS ROLE STOCKS." The stocker had no trigger.
-  //
-  // FACTS, NOT A TARGET, and that distinction is the whole design. `product-manager`'s brief says Ready
-  // holds at least three product rows; this does not ask for three. `ready:audit` exists because
-  // `dispatcher` once labelled two rows `ready` TO HIT THAT FLOOR -- one disputed, one with no Region or
-  // Acceptance -- and recorded the rule this obeys: *"a floor met by a label I control is not a
-  // measurement."* A number here would buy relabelling. The order reports what is on the shelf and what
-  // is behind it; which rows are genuinely promotable is a judgment and stays with the reader.
-  //
-  // ONLY WHEN THE SHELF IS EMPTY. A queue with anything in it is a queue the engineers can pull from, and
-  // re-prompting on a short-but-non-empty Ready would be the floor by another name.
-  // THE POOL'S SHELF, NOT THE WHOLE SHELF, and that distinction had three engineers idle. This counted
-  // every unclaimed Ready row, so 14 rows Ready read as a well-stocked queue -- while 11 of them were
-  // `lane:ceo` and 3 `lane:orchestrator` and NOT ONE was takeable by an engineer. Measured 2026-09-18,
-  // minutes after lane routing shipped: ceo and orchestrator woke, promoted their own lanes, and went to
-  // work, and the pool stayed starved because the shelf now looked full.
-  //
-  // It is the original empty-shelf defect one level down: a queue full of work nobody in that pool may
-  // take is an EMPTY QUEUE TO THEM. `laneOwnerOf` already says who a row belongs to; a row with an owner
-  // is somebody's, and the lane orders above are what ask them about it.
-  const poolRows = readyRows.filter((r) => !labelsOf(r).includes(CLAIM_LABEL) && laneOwnerOf(r) === null);
   // The backlog is counted the same way, or the order would report rows the pool equally cannot take.
   const poolPromotable = promotableRows.filter((r) => laneOwnerOf(r) === null);
-  const promotable = poolPromotable.length;
-  if (poolRows.length === 0 && promotable > 0) {
-    orders.push({
-      session: "product-manager",
-      cause: "ready-queue-empty",
-      subject: "ready-queue",
-      // THE COUNT IS THE DISCRIMINATOR, so the order stops repeating the moment a row is promoted and
-      // re-fires if the shelf empties again at a different depth. Keyed on anything constant it would
-      // nag every two minutes until someone acted, which is how a wake becomes noise to route around.
-      discriminator: String(promotable),
-      prompt: `The Ready queue has NOTHING an engineer may take -- every unclaimed row belongs to a `
-        + `lane -- and ${promotable} unlaned backlog row(s) carry no label that means `
-        + "unpickable (not blocked, fleet-gated, epic, disputed, decision, awaiting-merge, review-only or "
-        + "already claimed). Every engineer is waiting on this queue rather than on work.\n"
-        + "Promote what is genuinely ready -- a row with a Region, an Acceptance and a done-when -- and "
-        + "leave the rest. This is deliberately NOT a request to reach a count: #ready:audit records "
-        + "`dispatcher` labelling two rows ready to hit a floor, one disputed and one with neither field, "
-        + "and a floor met by a label you control is not a measurement. Promoting nothing and saying why "
-        + "is a valid answer.",
-      causeKey: `product-manager/ready-queue-empty/${promotable}`,
-    });
-  }
+  const shelf = emptyShelfOrder({ offerable, blocked, promotable: poolPromotable.length });
+  if (shelf) orders.push(shelf);
 
   orders.push(...laneBacklogOrders(promotableRows, readyRows));
 
@@ -661,9 +806,19 @@ function main() {
   // The third read is only needed to size the refill, and a refused one must not read as an empty shelf.
   const promotableRows = readPromotableRows();
   const chairmanBlocked = readChairmanBlocked();
+  const prFiles = comparablePrFiles(prs ?? []);
   const orders = decide({ prs: prs ?? [], readyRows: readyRows ?? [],
-    promotableRows: promotableRows ?? [], chairmanBlocked: chairmanBlocked ?? [] });
+    promotableRows: promotableRows ?? [], chairmanBlocked: chairmanBlocked ?? [], prFiles });
   for (const order of orders) process.stdout.write(`${JSON.stringify(order)}\n`);
+
+  // EVERY SHELVED ROW IS REPORTED, on stderr where the tick log already reads. Silence would make a
+  // B4-blocked queue indistinguishable from an empty one -- the defect `ready-queue-empty` was filed
+  // for -- and this costs no model turn, which is the whole point of putting the answer here.
+  // `partitionUnclaimed` is pure and `rootFilesOnMain` memoises its git read, so calling it a second
+  // time for the report is a few regexes, not a second implementation of the question.
+  for (const row of partitionUnclaimed(readyRows ?? [], prFiles).blocked) {
+    process.stderr.write(`SHELVED row #${row.number}: ${row.reason}\n`);
+  }
 
   if (prs === null || readyRows === null) {
     process.stderr.write(`PARTIAL: could not read ${prs === null ? "the pull-request list" : "the Ready rows"}. `
