@@ -213,7 +213,8 @@ test("an EMPTY ready queue with promotable backlog wakes product-manager", () =>
   assert.deepEqual(orders.map((o: { cause: string; session: string }) => [o.cause, o.session]),
     [["ready-queue-empty", "product-manager"]],
     "92 open issues, 87 backlog, ZERO ready and five engineers idle -- and the gate called it quiet");
-  assert.match(orders[0].prompt, /52 open backlog row/);
+  // "unlaned" since the pool shelf became pool-aware: a laned row is somebody else's to promote.
+  assert.match(orders[0].prompt, /52 unlaned backlog row/);
 });
 
 /**
@@ -316,4 +317,42 @@ test("the lane order asks for judgment, not a quota", () => {
     .filter((o: { cause: string }) => o.cause === "lane-backlog-unpromoted");
   assert.match(order.prompt, /not a quota/);
   assert.match(order.prompt, /Promoting nothing and recording\s+why is a valid answer/);
+});
+
+// --- a shelf full of other people's rows is an empty shelf to the pool (2026-09-18) ---
+
+/**
+ * Measured minutes after lane routing shipped: `ceo` and `orchestrator` were woken, promoted their own
+ * lanes, and went to work -- 14 rows Ready, 11 `lane:ceo` and 3 `lane:orchestrator`, NOT ONE takeable by
+ * an engineer. `ready-queue-empty` counted all 14 and stayed silent while three engineers sat idle.
+ */
+test("a Ready queue holding only LANED rows still wakes product-manager for the pool", () => {
+  const ready = [laneRow(80, "lane:ceo"), laneRow(81, "lane:orchestrator")];
+  const backlog = [{ number: 82, labels: [{ name: "backlog" }] }];
+  const orders = decide({ prs: [], readyRows: ready, promotableRows: backlog });
+  assert.ok(orders.some((o: { cause: string }) => o.cause === "ready-queue-empty"),
+    "14 rows Ready read as a stocked shelf while not one was takeable by an engineer");
+});
+
+test("one unlaned row on the shelf is enough -- the pool has something to pull", () => {
+  const ready = [laneRow(83, "lane:ceo"), { number: 84, labels: [{ name: "ready" }] }];
+  const backlog = [{ number: 85, labels: [{ name: "backlog" }] }];
+  assert.ok(!decide({ prs: [], readyRows: ready, promotableRows: backlog })
+    .some((o: { cause: string }) => o.cause === "ready-queue-empty"));
+});
+
+test("the backlog it reports is the pool's too, not rows a lane owner must promote", () => {
+  const backlog = [{ number: 86, labels: [{ name: "backlog" }, { name: "lane:ceo" }] },
+    { number: 87, labels: [{ name: "backlog" }] }];
+  const [order] = decide({ prs: [], readyRows: [], promotableRows: backlog })
+    .filter((o: { cause: string }) => o.cause === "ready-queue-empty");
+  assert.match(order.prompt, /1 unlaned backlog row/,
+    "reporting the lane:ceo row here would ask product-manager for something only ceo may do");
+});
+
+test("a pool shelf that is empty with NO unlaned backlog wakes nobody", () => {
+  const backlog = [{ number: 88, labels: [{ name: "backlog" }, { name: "lane:ceo" }] }];
+  assert.ok(!decide({ prs: [], readyRows: [], promotableRows: backlog })
+    .some((o: { cause: string }) => o.cause === "ready-queue-empty"),
+    "there is nothing product-manager can promote; the lane order is what carries that work");
 });
