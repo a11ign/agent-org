@@ -171,14 +171,29 @@ export function sweepDecision({ labels, checkRunCount, holdReason = null }) {
  * @returns {boolean}
  */
 export function mergedMeanwhile(number, repo, { read = readMerged, sleep = sleepSync, log = console.log } = {}) {
-  for (let attempt = 1; attempt <= MERGED_MEANWHILE_READS; attempt += 1) {
+  return retryRead({ number, repo, label: "merged-meanwhile", reads: MERGED_MEANWHILE_READS,
+    waitMs: MERGED_MEANWHILE_WAIT_MS, read, sleep, log });
+}
+
+/**
+ * THE BOUNDED, WAITED RE-READ ITSELF, shared by `mergedMeanwhile` (#1306) and `confirmArmed` (#1729) --
+ * same race, asked of a different field. Believes the first `true`; a throw is logged WITH ITS CAUSE and
+ * counts as `false` for that attempt, never short-circuiting the loop, because not knowing why a read
+ * failed is not the same as knowing the thing it was asking about is false.
+ * @param {{ number: string, repo: string, label: string, reads: number, waitMs: number,
+ *           read: (number: string, repo: string) => boolean, sleep: (ms: number) => void,
+ *           log: (line: string) => void }} args
+ * @returns {boolean}
+ */
+function retryRead({ number, repo, label, reads, waitMs, read, sleep, log }) {
+  for (let attempt = 1; attempt <= reads; attempt += 1) {
     try {
       if (read(number, repo)) return true;
     } catch (cause) {
-      log(`SWEEP: #${number} merged-meanwhile read ${attempt}/${MERGED_MEANWHILE_READS} FAILED -- `
+      log(`SWEEP: #${number} ${label} read ${attempt}/${reads} FAILED -- `
         + `${cause instanceof Error ? cause.message : cause}`);
     }
-    if (attempt < MERGED_MEANWHILE_READS) sleep(MERGED_MEANWHILE_WAIT_MS);
+    if (attempt < reads) sleep(waitMs);
   }
   return false;
 }
@@ -195,6 +210,37 @@ export const MERGED_MEANWHILE_WAIT_MS = 2_000;
 function readMerged(number, repo) {
   const pr = JSON.parse(gh(["api", `repos/${repo}/pulls/${number}`, "--jq", "{merged: .merged}"]));
   return pr?.merged === true;
+}
+
+/**
+ * DID THE ARM ACTUALLY TAKE? Asked of the API, never inferred from `gh pr merge --auto` not throwing
+ * (#1729). `gh` printed "already queued to merge" to STDERR while exiting 0 for #1727 -- the success
+ * path ran, `ARMED` was logged, and `autoMergeRequest` stayed `null` for 6+ minutes across two sweeps.
+ * The shell call not throwing is evidence the command was accepted, not evidence the mutation landed.
+ *
+ * Read as `auto_merge != null` OR already merged -- a fast main can land the PR between the arm call
+ * and this read, same race `mergedMeanwhile` answers for the mirror case, so a landed PR counts as
+ * confirmed rather than forcing a read of a field that a merged PR may no longer carry.
+ *
+ * @param {string} number @param {string} repo
+ * @param {{ read?: (number: string, repo: string) => boolean, sleep?: (ms: number) => void,
+ *           log?: (line: string) => void }} [deps]
+ * @returns {boolean}
+ */
+export function confirmArmed(number, repo, { read = readArmed, sleep = sleepSync, log = console.log } = {}) {
+  return retryRead({ number, repo, label: "confirm-armed", reads: CONFIRM_ARMED_READS,
+    waitMs: CONFIRM_ARMED_WAIT_MS, read, sleep, log });
+}
+
+/** Same bound as `MERGED_MEANWHILE_READS`/`_WAIT_MS` (#1306) -- the race is the same shape either direction. */
+export const CONFIRM_ARMED_READS = 4;
+export const CONFIRM_ARMED_WAIT_MS = 2_000;
+
+/** One read of whether the arm took, from the API. @param {string} number @param {string} repo */
+function readArmed(number, repo) {
+  const pr = JSON.parse(gh(["api", `repos/${repo}/pulls/${number}`,
+    "--jq", "{armed: (.auto_merge != null), merged: .merged}"]));
+  return pr?.armed === true || pr?.merged === true;
 }
 
 /** Blocks for `ms`. `main()` is synchronous end to end, like every `gh` call it makes. @param {number} ms */
@@ -253,7 +299,15 @@ function main() {
 
     try {
       gh(["pr", "merge", "--auto", "--merge", number, "--repo", repo]);
-      console.log(`SWEEP: #${number} ARMED -- ${reason}`);
+      // NOT THROWING IS NOT ARMED (#1729). `gh` can print "already queued to merge" to stderr and still
+      // exit 0 without the mutation landing -- read `autoMergeRequest` back before believing it.
+      if (confirmArmed(number, repo)) {
+        console.log(`SWEEP: #${number} ARMED -- ${reason}`);
+      } else {
+        console.log(`SWEEP: #${number} ARM CLAIMED BUT NOT CONFIRMED -- gh pr merge --auto did not throw, `
+          + `but autoMergeRequest is still null and the PR is not merged after ${CONFIRM_ARMED_READS} reads`);
+        failed.push(number);
+      }
     } catch (cause) {
       // MERGED MEANWHILE IS THE ORDINARY CASE ON A FAST MAIN, NOT A FAILURE. The candidate list is read
       // at the top of this run; on a main taking eight merges in half an hour, a PR can go green, arm
