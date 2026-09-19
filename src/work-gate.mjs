@@ -425,6 +425,83 @@ function sessionOf(pr) {
 }
 
 /**
+ * THE FOURTH CALL IS PAID ONLY BY A RED TICK. A healthy queue never asks what is required, so the
+ * two-call steady state this file's whole design rests on is unchanged.
+ *
+ * (Extracted from `main`, which reached `complexity` 17 with the ternary inline -- the same seam the
+ * dead man's switch took, and for the same reason: `main` is about delivering what the gate found.)
+ *
+ * @param {any[]} prs
+ */
+function requiredWhenRed(prs) {
+  return anyChecksRed(prs) ? requiredCheckNames() : null;
+}
+
+/**
+ * PURE. Does any open pull request have a settled-red check at all?
+ *
+ * The cheap question that decides whether the expensive one is worth asking. It deliberately looks at
+ * EVERY check rather than the required ones -- it cannot know which those are yet, and asking is the
+ * thing it is gating.
+ *
+ * @param {any[]} prs
+ */
+export function anyChecksRed(prs) {
+  return prs.some((pr) => checksSettledGreen(newestPerName(pr?.statusCheckRollup ?? [])) === false);
+}
+
+/**
+ * The checks that can actually BLOCK A MERGE, or `null` when that could not be read.
+ *
+ * MEASURED 2026-09-19: `main`'s branch protection requires exactly one check --
+ *
+ *   required_status_checks: ["gate"]
+ *
+ * -- and `gate` is an aggregator whose `needs` names the nine jobs that matter. EVERY OTHER JOB IS RED
+ * WITHOUT BLOCKING ANYTHING, and the gate woke a session for all of them equally.
+ *
+ * THE WASTED PROMPT THAT FOUND THIS. `sweep` (in `auto-arm.yml`, not in `gate`'s `needs`) went red on
+ * #1750 at 14:34Z. The gate woke `worker-capture` with "#1750 at 7a9d8340 has FAILING checks and is
+ * blocked... it is yours to fix". #1750 MERGED FOUR MINUTES LATER, at 14:38:46Z. The check was genuinely
+ * red and the wake was genuinely useless, because that job could never have held the PR.
+ *
+ * FAILS OPEN, DELIBERATELY. A refused or malformed read returns `null` and the caller then behaves
+ * EXACTLY as it did before this function existed -- every red check counts. The failure this guards is a
+ * wasted turn; the failure it must not introduce is a red PR nobody is told about, which is the one
+ * `failingChecksOrder` was written for in the first place (#1650, a `changeset` failure that sat while
+ * its own session was idle).
+ *
+ * PAID ONLY WHEN SOMETHING IS RED. `main` calls this only if some open PR has a settled-red check, so a
+ * healthy tick still costs the two calls this file's whole design rests on.
+ *
+ * @param {(args: string[]) => string} [run]
+ * @returns {string[] | null}
+ */
+export function requiredCheckNames(run = defaultRun) {
+  try {
+    const contexts = JSON.parse(run(["api", "repos/{owner}/{repo}/branches/main/protection",
+      "--jq", ".required_status_checks.contexts"]));
+    return Array.isArray(contexts) && contexts.length > 0 ? contexts : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * PURE. The rollup entries that can hold this pull request, given what is required.
+ *
+ * `null` required means "unreadable", and that is not the same as "nothing is required" -- the first must
+ * consider every check (fail open), the second would consider none and go permanently silent. Keeping
+ * them distinct is the whole reason `requiredCheckNames` returns `null` rather than `[]`.
+ *
+ * @param {any[]} rollup @param {string[] | null} required
+ */
+export function blockingChecks(rollup, required) {
+  if (required === null) return rollup;
+  return (rollup ?? []).filter((c) => required.includes(c?.name ?? c?.context));
+}
+
+/**
  * A pull request whose checks have SETTLED RED, and nobody is fixing it.
  *
  * THE THIRD BLIND SPOT, and the one where work actually dies. Found 2026-09-17 by the chairman looking at
@@ -440,10 +517,14 @@ function sessionOf(pr) {
  * DRAFTS COUNT TOO. A red draft is not "not ready yet" -- it is a branch whose author stopped, and it
  * will never earn a verdict because the reviewer lane requires green.
  *
- * @param {any} pr
+ * @param {any} pr @param {string[] | null} [required]
  */
-function failingChecksOrder(pr) {
-  if (checksSettledGreen(newestPerName(pr.statusCheckRollup)) !== false) return null;
+function failingChecksOrder(pr, required = null) {
+  // ONLY A CHECK THAT CAN HOLD THE PULL REQUEST COUNTS AS RED. A settled-red job outside the required
+  // set is a real failure and somebody's problem -- it is not THIS pull request being blocked, and
+  // waking its session to "fix the cause on that branch" is a prompt spent on a PR that merges anyway.
+  const blocking = blockingChecks(newestPerName(pr.statusCheckRollup ?? []), required);
+  if (checksSettledGreen(blocking) !== false) return null;
   const head = String(pr.headRefOid ?? "");
   if (!head) return null;
   const head8 = head.slice(0, 8);
@@ -531,12 +612,12 @@ function settledVerdictOrder(pr, found, head8) {
  * "what does the whole queue need". AT MOST ONE order, because a pull request in two states at once
  * would be a contradiction rather than two jobs.
  *
- * @param {any} pr
+ * @param {any} pr @param {string[] | null} [required]
  */
-function draftOrder(pr) {
+function draftOrder(pr, required = null) {
   // RED FIRST, and before the draft check: a red PR is work whether or not it is a draft, and it can
   // never reach the reviewer lane below, which requires green.
-  const red = failingChecksOrder(pr);
+  const red = failingChecksOrder(pr, required);
   if (red) return red;
   if (!pr?.isDraft) return null;
   if (checksSettledGreen(newestPerName(pr.statusCheckRollup)) !== true) return null;
@@ -930,7 +1011,9 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *
  * @param {{ prs: any[], readyRows: any[], promotableRows?: any[], chairmanBlocked?: any[],
  *           prFiles?: { number: number, files: string[], changedFiles: number }[],
- *           drain?: boolean }} state
+ *           drain?: boolean, required?: string[] | null }} state
+ *        `required` is the checks that can block a merge (`requiredCheckNames`), or `null` for
+ *        "could not be read", which counts EVERY check as before this existed.
  *        `promotableRows` are the backlog rows carrying no unpickable label; `chairmanBlocked` are
  *        the rows waiting on the chairman, oldest first. `[]` for either when refused or empty.
  *        `prFiles` is `comparablePrFiles(prs)` -- the open PRs B4 may be asked about. It DEFAULTS TO
@@ -940,11 +1023,11 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *            prompt: string, causeKey: string}[]}
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
-  drain = false }) {
+  drain = false, required = null }) {
   const orders = [];
 
   for (const pr of prs) {
-    const order = draftOrder(pr);
+    const order = draftOrder(pr, required);
     if (order) orders.push(order);
   }
   const { offerable, blocked } = partitionUnclaimed(readyRows, prFiles);
@@ -1027,15 +1110,20 @@ function main() {
   // The third read is only needed to size the refill, and a refused one must not read as an empty shelf.
   const promotableRows = readPromotableRows();
   const chairmanBlocked = readChairmanBlocked();
-  const prFiles = comparablePrFiles(prs ?? []);
+  // ONE COALESCE PER REFUSED LANE, NAMED. `prs ?? []` was written three times and `readyRows ?? []` twice;
+  // each repetition is a branch `complexity` counts, and the names say what an empty list MEANS here --
+  // a lane that could not be read, already reported as PARTIAL below, never a lane that is empty.
+  const openPrs = prs ?? [];
+  const rows = readyRows ?? [];
+  const prFiles = comparablePrFiles(openPrs);
   const drain = draining();
-  const decided = decide({ prs: prs ?? [], readyRows: readyRows ?? [],
-    promotableRows: promotableRows ?? [], chairmanBlocked: chairmanBlocked ?? [], prFiles, drain });
+  const decided = decide({ prs: openPrs, readyRows: rows, promotableRows: promotableRows ?? [],
+    chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required: requiredWhenRed(openPrs) });
   const { delivered: orders, performed } = performActions(decided);
   orders.push(...deadMansSwitch(orders, drain, performed));
   for (const order of orders) process.stdout.write(`${JSON.stringify(order)}\n`);
 
-  reportWithheld({ drain, blocked: partitionUnclaimed(readyRows ?? [], prFiles).blocked });
+  reportWithheld({ drain, blocked: partitionUnclaimed(rows, prFiles).blocked });
 
   if (prs === null || readyRows === null) {
     process.stderr.write(`PARTIAL: could not read ${prs === null ? "the pull-request list" : "the Ready rows"}. `
