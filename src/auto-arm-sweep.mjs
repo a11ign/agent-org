@@ -236,11 +236,49 @@ export function confirmArmed(number, repo, { read = readArmed, sleep = sleepSync
 export const CONFIRM_ARMED_READS = 4;
 export const CONFIRM_ARMED_WAIT_MS = 2_000;
 
+/**
+ * THE THREE STATES OF A PULL REQUEST THAT IS ARMED, and #1729 enumerated two of them.
+ *
+ * `auto_merge != null` is a pending auto-merge and `merged` is a landed one -- but between those two
+ * lies a third, and it is the state a BUSY queue spends most of its time in: the PR has left auto-merge
+ * and is SITTING IN THE MERGE QUEUE. `auto_merge` is cleared on entry, `merged` is not yet true, and the
+ * old predicate read that as "the arm did not take" on a pull request that was position 1 of 1.
+ *
+ * OBSERVED, not inferred -- #1762 at 2026-09-19T14:36Z, read straight from the API:
+ *
+ *   {"autoMergeRequest": null, "merged": false,
+ *    "mergeQueueEntry": {"state": "AWAITING_CHECKS", "position": 1}}
+ *
+ * `gh` had said so in words on the arm call -- `! Pull request #1750 is already queued to merge` -- and
+ * that message is the arm HAVING TAKEN, not a warning. The sweep exited 1 on three such PRs at 14:34Z
+ * and all three merged within five minutes.
+ *
+ * GRAPHQL RATHER THAN REST, because `mergeQueueEntry` exists on neither `repos/:o/:r/pulls/:n` nor
+ * `gh pr view --json` -- the queue is a GraphQL-only object, and a REST read structurally cannot see the
+ * state this function exists to recognise.
+ */
+const ARMED_QUERY = "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r)"
+  + "{pullRequest(number:$n){merged autoMergeRequest{enabledAt} mergeQueueEntry{state}}}}";
+
+/**
+ * PURE. Is this pull request armed, given what the API said about it?
+ *
+ * Split from the read so the three-state rule is testable without a network, and so a future fourth
+ * state is added HERE rather than to a `--jq` string inside a shell argument.
+ *
+ * @param {{ merged?: boolean, autoMergeRequest?: unknown, mergeQueueEntry?: unknown } | null} pr
+ */
+export function armedFromApi(pr) {
+  if (!pr) return false;
+  return pr.merged === true || pr.autoMergeRequest != null || pr.mergeQueueEntry != null;
+}
+
 /** One read of whether the arm took, from the API. @param {string} number @param {string} repo */
 function readArmed(number, repo) {
-  const pr = JSON.parse(gh(["api", `repos/${repo}/pulls/${number}`,
-    "--jq", "{armed: (.auto_merge != null), merged: .merged}"]));
-  return pr?.armed === true || pr?.merged === true;
+  const [owner, name] = String(repo).split("/");
+  return armedFromApi(JSON.parse(gh(["api", "graphql", "-f", `query=${ARMED_QUERY}`,
+    "-f", `o=${owner}`, "-f", `r=${name}`, "-F", `n=${number}`,
+    "--jq", ".data.repository.pullRequest"])));
 }
 
 /** Blocks for `ms`. `main()` is synchronous end to end, like every `gh` call it makes. @param {number} ms */
