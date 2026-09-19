@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES,
   comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
   blockingChecks, anyChecksRed, requiredCheckNames, ownerOf, NOT_PICKABLE, NOT_STARTABLE,
-  ROUTED_TO, readPromotableRows }
+  ROUTED_TO, readPromotableRows, GH_READS }
   from "../work-gate.mjs";
 
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
@@ -825,4 +825,60 @@ test("NOT_PICKABLE is unchanged, and NOT_STARTABLE is derived from it", () => {
   assert.deepEqual(NOT_STARTABLE, NOT_PICKABLE.filter((n: string) => !(n in ROUTED_TO)));
   assert.ok(!NOT_STARTABLE.includes("fleet-gated"));
   assert.ok(NOT_STARTABLE.includes("blocked"), "routing subtracts only what it routes");
+});
+
+/**
+ * THE BOUNDED-WINDOW INVARIANT, GUARDED -- the hole `reviewer` found in #1769 and could not post.
+ *
+ * #1769 narrowed "red" to the required checks and called `newestPerName` at the read site to satisfy
+ * `local/bounded-window-reads`. `reviewer` then MUTATED that call away -- passing the raw rollup -- and
+ * ALL 65 TESTS STAYED GREEN. The lint rule caught it at authoring time; nothing caught it at test time,
+ * so a future edit that dropped the narrowing would ship silently.
+ *
+ * WHAT THE REGRESSION WOULD DO: `statusCheckRollup` UNIONS superseded runs, so a check that failed at
+ * 10:00 and succeeded at 11:00 appears TWICE. Read raw, the old FAILURE makes a green pull request look
+ * red and the gate wakes its session to "fix the cause on that branch" -- exactly the wasted prompt
+ * #1769 exists to stop, arriving through the fix for it. `merge-queue.mjs` had this defect until #634.
+ *
+ * The verdict never reached the PR: #1769 merged while the review was running, and `reviewer` correctly
+ * refused to comment on a closed pull request. It was relayed by the chairman instead.
+ */
+test("a SUPERSEDED red run does not wake anyone -- the newest run per name is what counts", () => {
+  const twice = { number: 1, isDraft: false, headRefOid: "head1234aaaaaaaa", author: { login: "x" },
+    labels: [{ name: "session:worker-capture" }], comments: [],
+    statusCheckRollup: [
+      { __typename: "CheckRun", name: "gate", status: "COMPLETED", conclusion: "FAILURE",
+        completedAt: "2026-09-19T10:00:00Z" },
+      { __typename: "CheckRun", name: "gate", status: "COMPLETED", conclusion: "SUCCESS",
+        completedAt: "2026-09-19T11:00:00Z" },
+    ] };
+  assert.deepEqual(decide({ prs: [twice], readyRows: [], required: ["gate"] }), [],
+    "the 11:00 SUCCESS supersedes the 10:00 FAILURE -- reading the union reports a green PR as red");
+
+  // AND THE POSITIVE CONTROL, or the assertion above passes for a version that reports nothing at all:
+  // reverse the times and the newest run IS the failure, which must still wake its session.
+  const newestIsRed = { ...twice, statusCheckRollup: [
+    { __typename: "CheckRun", name: "gate", status: "COMPLETED", conclusion: "SUCCESS",
+      completedAt: "2026-09-19T10:00:00Z" },
+    { __typename: "CheckRun", name: "gate", status: "COMPLETED", conclusion: "FAILURE",
+      completedAt: "2026-09-19T11:00:00Z" },
+  ] };
+  const [order] = decide({ prs: [newestIsRed], readyRows: [], required: ["gate"] }) as
+    { cause: string }[];
+  assert.equal(order?.cause, "pr-checks-failing", "a genuinely red newest run must still be reported");
+});
+
+/**
+ * "TWO `GH` CALLS, NO MODEL" IS THIS ORG'S SHORTHAND FOR THE GATE, AND IT WAS WRONG.
+ *
+ * `main` has made FOUR unconditional reads since long before the recent causes. The number was true when
+ * the file was written and nobody re-counted it while three readers were added -- then #1769's own
+ * comment repeated it, and `reviewer` caught it by counting the call sites rather than trusting the
+ * sentence. This test is why the next person inherits a checked number.
+ */
+test("the gate's read count is counted, not remembered", () => {
+  assert.equal(GH_READS.unconditional.length, 4,
+    "if you add or remove an unconditional read, this number and every comment quoting it move together");
+  assert.ok(GH_READS.conditionalOnSilence.includes("readOpenRowCount"));
+  assert.ok(GH_READS.conditionalOnRed.includes("requiredCheckNames"));
 });

@@ -157,6 +157,31 @@ export function readPrs(run = defaultRun) {
 }
 
 /**
+ * WHAT A TICK ACTUALLY COSTS, COUNTED RATHER THAN REMEMBERED.
+ *
+ * "Two `gh` calls, no model" is this org's shorthand for the gate -- it is in `agent-practices.md`, it was
+ * in two comments in this file, and IT WAS WRONG. `main` has made four unconditional reads since long
+ * before the recent causes: the pull-request list, the Ready rows, the promotable backlog and the
+ * chairman-blocked rows. The number was true when the file was written and nobody re-counted it while
+ * three readers were added.
+ *
+ * FOUND BY A REVIEWER, ON A CHANGE THAT REPEATED IT. #1769's own comment claimed "the two-call steady
+ * state is unchanged"; `reviewer` measured the call sites and reported it as a should-fix. The claim that
+ * mattered -- that the new read is CONDITIONAL and a healthy tick does not pay it -- was true. The number
+ * it was attached to was inherited, and this constant exists so the next person inherits a count that is
+ * checked instead.
+ *
+ * The two conditional reads are deliberately NOT in this number: `readOpenRowCount` is paid only by a
+ * tick that produced no orders, and `requiredCheckNames` only by one that saw a settled-red check.
+ */
+export const GH_READS = Object.freeze({
+  unconditional: ["pr list", "issue list --label ready", "issue list --label backlog",
+    "issue list --label chairman-blocked"],
+  conditionalOnSilence: "issue list --state open (readOpenRowCount)",
+  conditionalOnRed: "api branches/main/protection (requiredCheckNames)",
+});
+
+/**
  * Labels that already mean NOT PICKABLE, so a row carrying one is not promotable however it is counted.
  *
  * `fleet-gated` is the load-bearing one for parallelism: that work serialises behind physical hardware,
@@ -473,8 +498,9 @@ function sessionOf(pr) {
 }
 
 /**
- * THE FOURTH CALL IS PAID ONLY BY A RED TICK. A healthy queue never asks what is required, so the
- * two-call steady state this file's whole design rests on is unchanged.
+ * PAID ONLY BY A RED TICK. A healthy queue never asks what is required, so the UNCONDITIONAL read count
+ * is unchanged -- see `GH_READS` for what that count actually is, and for the correction that had to be
+ * made to this very comment.
  *
  * (Extracted from `main`, which reached `complexity` 17 with the ternary inline -- the same seam the
  * dead man's switch took, and for the same reason: `main` is about delivering what the gate found.)
@@ -951,10 +977,9 @@ function emptyShelfOrder({ offerable, blocked, promotable }) {
 /**
  * Every open row, counted -- ONLY asked when the gate would otherwise say nothing.
  *
- * THE THIRD CALL, AND WHY IT DOES NOT BREAK THE TWO-CALL PROPERTY. This file's header rests on costing
- * two `gh` calls so it can run every two minutes all day. This read happens only when the other two
- * produced NO ORDERS -- a busy org never pays it, and a silent one pays it once to answer the question
- * its own silence raises. The steady state is unchanged.
+ * CONDITIONAL, AND THAT IS WHY IT IS AFFORDABLE. This read happens only when the tick produced NO ORDERS
+ * -- a busy org never pays it, and a silent one pays it once to answer the question its own silence
+ * raises. The unconditional count is unchanged; `GH_READS` says what that count is.
  *
  * @param {(args: string[]) => string} [run]
  * @returns {number | null} `null` when refused -- never 0, which would read as "the tracker is empty"
