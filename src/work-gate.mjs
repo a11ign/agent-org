@@ -477,7 +477,8 @@ function failingChecksOrder(pr) {
  * process ... promotions, claim reports, merge close-outs". The PR's author cannot route either one --
  * every PR here is opened by the shared `a11ign-ai-workers` account, so there is no session in it to wake.
  *
- * @param {any} pr @param {{verdict: string | null, by: string | null}} found @param {string} head8
+ * @param {any} pr @param {{verdict: string | null, by: string | null,
+ *        byIsAuthor: boolean | null}} found @param {string} head8
  */
 function settledVerdictOrder(pr, found, head8) {
   if (found.verdict === "convinced" && pr.isDraft) {
@@ -491,6 +492,16 @@ function settledVerdictOrder(pr, found, head8) {
         + "PR is marked ready once the reviewer is convinced. Mark it ready for review, or say on the PR "
         + "why it must stay a draft -- an unexplained convinced draft is work nobody is finishing.",
       causeKey: `product-manager/draft-convinced-not-ready/pr-${pr.number}/${head8}`,
+      // THE GATE ALREADY KNOWS THE ANSWER, SO IT DOES THIS ONE ITSELF (see `performActions`). Every
+      // condition for a safe ready-flip has been checked by the time we are here: not red, still a
+      // draft, checks SETTLED green, and a convinced verdict AT THIS HEAD. The order stays attached as
+      // the FALLBACK -- if `gh pr ready` fails, `product-manager` is woken exactly as before.
+      //
+      // `byIsAuthor === false` AND NOT `!== true`, deliberately. `verdictAtHead` returns `null` when the
+      // opener named nobody (#1244) and refuses to guess, and a self-signed or unattributed verdict is
+      // the one case where a human should look. Automating the attributed case and waking on the rest
+      // keeps `ceo`'s one-in-five spot-check pointed at the verdicts that can actually be wrong.
+      ...(found.byIsAuthor === false ? { action: { kind: "ready", pr: Number(pr.number) } } : {}),
     };
   }
   if (found.verdict === "not-convinced") {
@@ -862,6 +873,51 @@ export function stalledOrder({ orders, openRows }) {
 }
 
 /**
+ * Do the work the gate is allowed to do itself, and return only what still needs a session.
+ *
+ * THE RELAY TURN THIS REMOVES, MEASURED ON MERGED PULL REQUESTS. #1730 and #1748 both carried a
+ * `convinced` verdict from a reviewer, and on both a session then woke, read the verdict the gate had
+ * ALREADY PARSED, ran one `gh pr ready`, and wrote a comment restating it: *"Marked ready by
+ * product-manager. reviewer-2's verdict at f47c2ee6 says convinced"*. Across the last 25 merged PRs the
+ * median open-to-merge was SIX MINUTES, so this was never a queue problem -- it was a model turn spent
+ * relaying a machine-readable fact between two machines.
+ *
+ * AND THE ROLE DOC ALREADY SAID SO. `packages/agent-org/docs/roles/reviewer.md` line 129: "a provisional
+ * `convinced` IS the verdict: **the author marks ready on it**". `product-manager` was never supposed to
+ * be in this path; the gate put them there by having no way to act, only to wake.
+ *
+ * FAILURE FALLS BACK RATHER THAN DISAPPEARING. A refused or errored `gh` call re-delivers the original
+ * order, so the worst case is exactly today's behaviour and a line on stderr saying why. An action that
+ * silently swallowed its failure would turn a visible wake into an invisible nothing, which is the
+ * direction this repository has paid for before.
+ *
+ * A DRAIN DOES NOT WITHHOLD IT, and that is not an oversight: `draft-convinced-not-ready` is not in
+ * `START_CAUSES` because marking a reviewed draft ready FINISHES work in flight rather than starting
+ * any. A drain wants exactly this to happen.
+ *
+ * @param {any[]} orders @param {(args: string[]) => string} run @param {(line: string) => void} log
+ * @returns {{ delivered: any[], performed: number }}
+ */
+export function performActions(orders, run = defaultRun, log = (line) => process.stderr.write(line)) {
+  const delivered = [];
+  let performed = 0;
+  for (const order of orders) {
+    const { action, ...rest } = order;
+    if (!action) { delivered.push(order); continue; }
+    try {
+      run(["pr", "ready", String(action.pr)]);
+      performed += 1;
+      log(`DID ${action.kind} pr-${action.pr} (${order.cause}) -- no session woken\n`);
+    } catch (/** @type {any} */ error) {
+      log(`COULD NOT ${action.kind} pr-${action.pr}: ${error?.message ?? error} `
+        + `-- delivering to ${rest.session} instead\n`);
+      delivered.push(rest);
+    }
+  }
+  return { delivered, performed };
+}
+
+/**
  * PURE. The orders the state implies.
  *
  * Every order carries a `causeKey` derivable from GitHub state alone, so re-running this gate produces a
@@ -948,8 +1004,10 @@ function reportWithheld({ drain, blocked }) {
  *
  * @param {unknown[]} orders @param {boolean} drain
  */
-function deadMansSwitch(orders, drain) {
-  if (drain || orders.length > 0) return [];
+function deadMansSwitch(orders, drain, performed = 0) {
+  // A PERFORMED ACTION IS ACTIVITY. Without this the gate could mark a draft ready, emit no order, and
+  // then announce the org as stalled in the same tick -- reporting the one thing it just did as nothing.
+  if (drain || orders.length > 0 || performed > 0) return [];
   const stalled = stalledOrder({ orders, openRows: readOpenRowCount() });
   return stalled ? [stalled] : [];
 }
@@ -971,9 +1029,10 @@ function main() {
   const chairmanBlocked = readChairmanBlocked();
   const prFiles = comparablePrFiles(prs ?? []);
   const drain = draining();
-  const orders = decide({ prs: prs ?? [], readyRows: readyRows ?? [],
+  const decided = decide({ prs: prs ?? [], readyRows: readyRows ?? [],
     promotableRows: promotableRows ?? [], chairmanBlocked: chairmanBlocked ?? [], prFiles, drain });
-  orders.push(...deadMansSwitch(orders, drain));
+  const { delivered: orders, performed } = performActions(decided);
+  orders.push(...deadMansSwitch(orders, drain, performed));
   for (const order of orders) process.stdout.write(`${JSON.stringify(order)}\n`);
 
   reportWithheld({ drain, blocked: partitionUnclaimed(readyRows ?? [], prFiles).blocked });
@@ -983,7 +1042,9 @@ function main() {
       + `The ${orders.length} order(s) above are real; that lane was NOT examined and may hold work.\n`);
     process.exit(EXIT.PARTIAL);
   }
-  process.exit(orders.length > 0 ? EXIT.WORK : EXIT.QUIET);
+  // PERFORMED COUNTS AS WORK. A tick that marked a draft ready did something, and exiting QUIET would
+  // report it as an idle org to every reader of this exit code.
+  process.exit(orders.length > 0 || performed > 0 ? EXIT.WORK : EXIT.QUIET);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();

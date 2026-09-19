@@ -17,7 +17,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES,
-  comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder }
+  comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions }
   from "../work-gate.mjs";
 
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
@@ -614,4 +614,71 @@ test("org-stalled is a JUDGMENT cause and a START cause, and both matter", () =>
   assert.ok(START_CAUSES.includes("org-stalled"),
     "a drain makes the org idle ON PURPOSE -- a switch that fires during a transfer window is one people "
     + "learn to ignore");
+});
+
+/**
+ * THE GATE ACTS ON THE ONE THING IT ALREADY KNOWS.
+ *
+ * `draft-convinced-not-ready` woke `product-manager` to run one `gh pr ready` on a fact the gate had
+ * already parsed -- measured on #1730 and #1748, where the woken session's whole contribution was a
+ * comment restating the reviewer's verdict. `reviewer.md` line 129 never asked for that step: "a
+ * provisional `convinced` IS the verdict: the author marks ready on it".
+ */
+test("a convinced verdict from a REVIEWER carries the ready-flip as an action", () => {
+  const at = [{ body: "Review of #7 at `abc12345`, by `reviewer`: convinced." }];
+  const [order] = decide({ prs: [draft(7, GREEN, at)], readyRows: [] }) as { cause: string,
+    action?: { kind: string, pr: number } }[];
+  assert.equal(order.cause, "draft-convinced-not-ready");
+  assert.deepEqual(order.action, { kind: "ready", pr: 7 },
+    "the gate parsed this verdict already -- waking a session to re-read it is the turn being removed");
+});
+
+test("a verdict the opener did not attribute, or one the AUTHOR signed, still wakes a human", () => {
+  // `verdictAtHead` returns `byIsAuthor: null` when the opener named nobody (#1244) and refuses to
+  // guess. Automating THAT case would arm a draft on a verdict nobody is accountable for, which is the
+  // one shape `ceo`'s one-in-five spot-check exists to catch. `=== false` and not `!== true`.
+  const unattributed = [{ body: "Review of #7 at `abc12345`: convinced." }];
+  const [anon] = decide({ prs: [draft(7, GREEN, unattributed)], readyRows: [] }) as { cause: string,
+    action?: unknown }[];
+  assert.equal(anon.cause, "draft-convinced-not-ready", "it is still the same cause");
+  assert.equal(anon.action, undefined, "but the gate does not arm a draft on an unsigned verdict");
+
+  // And a verdict the PR's own author wrote is the other half of the same rule.
+  const selfSigned = [{ body: "Review of #7 at `abc12345`, by `worker-judge`: convinced." }];
+  const [own] = decide({ prs: [draft(7, GREEN, selfSigned)], readyRows: [] }) as { action?: unknown }[];
+  assert.equal(own.action, undefined, "an author cannot mark their own draft ready by reviewing it");
+});
+
+test("performActions does the work and wakes nobody", () => {
+  const calls: string[][] = [];
+  const lines: string[] = [];
+  const orders = [{ session: "product-manager", cause: "draft-convinced-not-ready",
+    action: { kind: "ready", pr: 7 } }];
+  const { delivered, performed } = performActions(orders, (args: string[]) => { calls.push(args); return ""; },
+    (line: string) => lines.push(line));
+  assert.deepEqual(calls, [["pr", "ready", "7"]], "one gh call, and it is the one the session would have run");
+  assert.equal(performed, 1);
+  assert.deepEqual(delivered, [], "nothing left to deliver, so no session is woken for it");
+  assert.match(lines.join(""), /DID ready pr-7/, "and the tick log says what the gate did on its own");
+});
+
+test("a FAILED action falls back to the session, and says why", () => {
+  // The worst case must be exactly today's behaviour. An action that swallowed its own failure would
+  // turn a visible wake into an invisible nothing -- the direction this repository has paid for before.
+  const lines: string[] = [];
+  const orders = [{ session: "product-manager", cause: "draft-convinced-not-ready", prompt: "...",
+    action: { kind: "ready", pr: 7 } }];
+  const { delivered, performed } = performActions(orders, () => { throw new Error("gh: not authorised"); },
+    (line: string) => lines.push(line));
+  assert.equal(performed, 0);
+  assert.deepEqual(delivered, [{ session: "product-manager", cause: "draft-convinced-not-ready",
+    prompt: "..." }], "the original order is delivered, with the spent action stripped off it");
+  assert.match(lines.join(""), /COULD NOT ready pr-7: .*not authorised.*delivering to product-manager/);
+});
+
+test("an order with no action passes through untouched", () => {
+  const orders = [{ session: "reviewer", cause: "draft-awaiting-verdict", causeKey: "k" }];
+  const { delivered, performed } = performActions(orders, () => { throw new Error("must not be called"); });
+  assert.equal(performed, 0);
+  assert.deepEqual(delivered, orders, "every other cause still reaches its session exactly as before");
 });
