@@ -1840,6 +1840,50 @@ export function closesDeclarationReport(body) {
   return { ok: true, line: `CLOSES: #${declaration.numbers.join(", #")}` };
 }
 
+/**
+ * Does this command re-run a suite that `ci.yml`'s `ts` job is already running?
+ *
+ * NOT `runsTheWholeSuite`, AND THE DIFFERENCE IS THE POINT -- the first version of this reused it and
+ * silently missed the case it was written for. That predicate asks "what population does this command
+ * execute", to decide which CAPABILITIES it needs, and its own comment explains why it deliberately
+ * excludes `test:python`: a pytest tree is not the `.test.ts` glob its callers walk. This asks a
+ * different question -- "is this work `ts` has already done" -- and `test:org` and `test:all` answer yes
+ * to it while answering no to the other. Two questions, two predicates; widening the capability one to
+ * serve this would break the gate it exists for.
+ *
+ * @param {string} command
+ */
+function duplicatesTheTsJob(command) {
+  return /(?:^|&&|\|\||;)\s*npm\s+(?:run\s+)?(?:test|test:ts|test:org|test:all)(?![:\w-])/
+    .test(command.trim());
+}
+
+/**
+ * A NOTE, NEVER A REFUSAL, when a PR's Acceptance re-runs what `ts` is already running.
+ *
+ * `ci.yml`'s `ts` job runs every test the diff reaches, IN PARALLEL WITH THIS JOB, on the same tree. So a
+ * suite-wide command here runs tests that are already running. Measured 2026-09-19 over four runs: `ts`
+ * 154-176 s beside `acceptance` 186-193 s for one change -- roughly half the wall clock of landing
+ * anything, and it was the chairman's own habit in every PR written that day.
+ *
+ * IT IS A NOTE AND NOT A REFUSAL ON PURPOSE. A suite-wide command is genuinely right for a runner
+ * upgrade, a dependency bump, or a config change with no single owner, and nothing here can tell those
+ * from a habit. Guessing at intent is the defect this file warns about elsewhere, so it states the cost
+ * and leaves the judgment with the author -- the way `no-magic-numbers` is a warning in this repo rather
+ * than an error.
+ *
+ * @param {string[]} commands the Acceptance commands as declared
+ * @returns {string[]} zero or one note line
+ */
+export function wholeSuiteNote(commands) {
+  const offenders = commands.filter((command) => duplicatesTheTsJob(command));
+  if (offenders.length === 0) return [];
+  return [`NOTE: Acceptance re-runs a suite ci.yml's \`ts\` job is already running in parallel on this `
+    + `same tree (${offenders.join("; ")}) -- about 190s paid twice. Name what proves THIS row instead, `
+    + "unless the row's claim really is \"the whole suite still passes\" (a runner or dependency "
+    + "change), in which case say so on the row."];
+}
+
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/acceptance-commands.mjs" });
   // FROM AN ENV VAR, NEVER ARGV -- a PR body is adversarial input (anyone can open a PR), and passing it
@@ -1848,6 +1892,10 @@ function main() {
   const body = process.env.PR_BODY ?? "";
   const report = acceptanceReport(body, runForReal);
   for (const line of report.lines) console.log(line);
+  const declared = extractAcceptanceSection(body);
+  if (declared.kind === "commands") {
+    for (const line of wholeSuiteNote(declared.commands)) console.log(line);
+  }
   const closes = closesDeclarationReport(body);
   console.log(closes.line);
   process.exit(report.ok && closes.ok ? 0 : 1);
