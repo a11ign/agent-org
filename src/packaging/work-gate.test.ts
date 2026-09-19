@@ -18,7 +18,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES,
   comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
-  blockingChecks, anyChecksRed, requiredCheckNames }
+  blockingChecks, anyChecksRed, requiredCheckNames, ownerOf, NOT_PICKABLE, NOT_STARTABLE,
+  ROUTED_TO, readPromotableRows }
   from "../work-gate.mjs";
 
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
@@ -302,7 +303,7 @@ test("a lane with backlog and nothing Ready wakes its OWNER, who alone may promo
   assert.ok(lane, "nobody was asking ceo about its own lane");
   assert.equal(lane.session, "ceo");
   assert.match(lane.prompt, /#1320/);
-  assert.match(lane.prompt, /Nobody else may promote these/);
+  assert.match(lane.prompt, /nobody else may promote these -- the lane is yours/);
 });
 
 test("a lane that HAS something Ready is not asked to stock it", () => {
@@ -754,4 +755,74 @@ test("requiredCheckNames fails OPEN on every unusable answer", () => {
     "a repo with no branch protection must not read as 'nothing blocks a merge'");
   assert.equal(requiredCheckNames(() => "[]"), null, "an EMPTY required set is treated as unreadable");
   assert.equal(requiredCheckNames(() => "not json"), null);
+});
+
+/**
+ * `fleet-gated` ROUTES WORK; IT DOES NOT HIDE IT.
+ *
+ * The label's own definition on GitHub is "Acceptance needs the fleet or the lab; ORCHESTRATOR RUNS IT".
+ * `NOT_PICKABLE` was read as a property of the ROW, so the label that says whose work it is also hid the
+ * row from that session -- and `laneBacklogOrders` iterated lanes, which routed rows do not have.
+ *
+ * MEASURED 2026-09-19 with the fleet 10/10 ready, consistent, zero recoveries: `orchestrator` idle,
+ * seven `lane:orchestrator` rows open, ZERO visible to the cause. Twelve `fleet-gated` rows in total.
+ * And the deadlock that keeps it that way: #914 -- "a nightly fleet capture batch for every fleet-gated
+ * row" -- is itself `fleet-gated`.
+ */
+const gated = (n: number, ...extra: string[]) => ({ number: n,
+  labels: [{ name: "backlog" }, { name: "fleet-gated" }, ...extra.map((name) => ({ name }))] });
+
+test("a fleet-gated row belongs to orchestrator, and now reaches them", () => {
+  const orders = decide({ prs: [], readyRows: [], promotableRows: [gated(914), gated(1296)] });
+  const [order] = orders.filter((o: { cause: string }) => o.cause === "lane-backlog-unpromoted");
+  assert.ok(order, "#914 -- the row that would AUTOMATE draining the pile -- was itself unreachable");
+  assert.equal(order.session, "orchestrator");
+  assert.match(order.prompt, /#914/);
+  assert.match(order.prompt, /ROUTES rather than blocks/);
+  assert.match(order.prompt, /fleet:status/, "and it must not read as the fleet being broken");
+});
+
+test("THE POOL'S VIEW IS UNCHANGED: no engineer is offered a fleet-gated row", () => {
+  // The old reasoning stays correct and load-bearing: that work serialises behind physical hardware, so
+  // counting it as capacity would report a queue five engineers could share when one would be waiting on
+  // a worker box. Routing must not widen the pool by a single row.
+  assert.equal(ownerOf(gated(914)), "orchestrator");
+  assert.equal(ownerOf({ number: 1, labels: [{ name: "backlog" }] }), null, "unlaned is the pool");
+  const orders = decide({ prs: [], readyRows: [], promotableRows: [gated(914)] });
+  assert.ok(!orders.some((o: { session: string }) => o.session === "product-manager"),
+    "a routed row is not an empty shelf being refilled -- the pool's count must not see it");
+});
+
+test("a LANE beats a routing label, because only one of them is access control", () => {
+  // `lane:ceo` refuses every other session unconditionally at claim time. A routing label only says whose
+  // hands the acceptance needs. Telling orchestrator about a lane:ceo row would name a row they cannot take.
+  assert.equal(ownerOf(gated(1, "lane:ceo")), "ceo");
+  assert.equal(ownerOf(gated(2, "lane:orchestrator")), "orchestrator");
+});
+
+test("routing says WHOSE the work is, never that it can start", () => {
+  // `blocked`, `epic` and a claim still hide a row from everybody, including the session it routes to --
+  // NOT_STARTABLE is strictly smaller than NOT_PICKABLE, and this is the difference that matters.
+  // `readPromotableRows` returns `null` for a REFUSED read, which is a different answer from "none
+  // promotable" -- so the helper asserts it got a list before asking what is in it, rather than letting
+  // a null slide through as an empty one. That distinction is the whole point of the return type.
+  const read = (rows: unknown[]) => {
+    const got = readPromotableRows(() => JSON.stringify(rows));
+    assert.ok(got !== null, "the fixture read must not be refused");
+    return got;
+  };
+  assert.deepEqual(read([gated(914)]).map((r: { number: number }) => r.number), [914]);
+  assert.deepEqual(read([gated(1042, "blocked")]), [], "blocked hides it from its owner too");
+  assert.deepEqual(read([gated(44, "epic")]), [], "an epic is a container, not work, for anyone");
+  assert.deepEqual(read([gated(1567, "in-progress")]), [], "and a claimed row is somebody's already");
+});
+
+test("NOT_PICKABLE is unchanged, and NOT_STARTABLE is derived from it", () => {
+  // DERIVED, NEVER RETYPED. Two hand-maintained lists that must stay in step is the defect this repo
+  // names as its most expensive; the pool's list is the source and the owner's is subtraction.
+  assert.deepEqual(NOT_PICKABLE, ["blocked", "fleet-gated", "epic", "disputed", "decision",
+    "awaiting-merge", "review-only", "in-progress"], "the POOL's view must not have moved");
+  assert.deepEqual(NOT_STARTABLE, NOT_PICKABLE.filter((n: string) => !(n in ROUTED_TO)));
+  assert.ok(!NOT_STARTABLE.includes("fleet-gated"));
+  assert.ok(NOT_STARTABLE.includes("blocked"), "routing subtracts only what it routes");
 });

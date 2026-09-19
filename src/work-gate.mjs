@@ -168,6 +168,35 @@ export const NOT_PICKABLE = Object.freeze(["blocked", "fleet-gated", "epic", "di
   "awaiting-merge", "review-only", CLAIM_LABEL]);
 
 /**
+ * LABELS THAT ROUTE WORK RATHER THAN STOPPING IT -- the distinction this file did not draw.
+ *
+ * `fleet-gated`'s own definition on GitHub is "Acceptance needs the fleet or the lab; ORCHESTRATOR RUNS
+ * IT". It is a routing label. `NOT_PICKABLE` above is right that it is not available capacity FOR THE
+ * ENGINEER POOL -- that work serialises behind physical hardware -- but the list was read as a property
+ * of the ROW, so the label also hid the row from the one session it routes the row TO.
+ *
+ * MEASURED 2026-09-19, with the fleet 10/10 ready, consistent, zero recoveries: `orchestrator` idle,
+ * seven `lane:orchestrator` rows open, and ZERO of them visible to `lane-backlog-unpromoted` because
+ * every one carried a label in `NOT_PICKABLE`. Twelve `fleet-gated` rows in total, waiting on a fleet
+ * that was fully available, and no cause in this file could say so.
+ *
+ * THE DEADLOCK THAT MAKES IT SELF-SUSTAINING: #914 -- "a nightly fleet capture batch for every
+ * fleet-gated row on the milestone" -- is ITSELF `fleet-gated`. The row that would automate draining the
+ * pile is hidden by the same rule that hides the pile.
+ */
+export const ROUTED_TO = Object.freeze({ "fleet-gated": "orchestrator" });
+
+/**
+ * Labels meaning the row is not startable work FOR ANYONE -- `NOT_PICKABLE` minus what is merely routed.
+ *
+ * DERIVED, never retyped, so the pool's view and this one cannot drift: `NOT_PICKABLE` stays exactly
+ * what it was (every existing pool behaviour is byte-identical) and this is the strictly smaller set an
+ * OWNER is asked about. `blocked`, `epic` and a claim still hide a row from everybody, including the
+ * session it is routed to -- routing says whose work it is, not that the work can start.
+ */
+export const NOT_STARTABLE = Object.freeze(NOT_PICKABLE.filter((n) => !(n in ROUTED_TO)));
+
+/**
  * LANE OWNERS. A lane says who may act on a row, and these two are people rather than a pool.
  *
  * `lane:any` and no lane are the engineer pool, which is why they are absent here: the pool already has a
@@ -183,6 +212,23 @@ export const LANE_OWNER = Object.freeze({ "lane:ceo": "ceo", "lane:orchestrator"
 export function laneOwnerOf(row) {
   const lane = labelsOf(row).find((/** @type {string} */ n) => n in LANE_OWNER);
   return lane ? /** @type {Record<string,string>} */ (LANE_OWNER)[lane] : null;
+}
+
+/**
+ * The session a row belongs to -- BY LANE FIRST, THEN BY ROUTING -- or `null` for the engineer pool.
+ *
+ * LANE WINS, and the precedence is not arbitrary: a `lane:` label REFUSES every other session
+ * unconditionally at claim time (`row-claim/runner-rule.mjs`), so it is access control. A routing label
+ * only says whose hands the acceptance needs. A `fleet-gated` row carrying `lane:ceo` is `ceo`'s, and
+ * telling `orchestrator` about it would be telling them about a row they cannot take.
+ *
+ * @param {any} row
+ */
+export function ownerOf(row) {
+  const byLane = laneOwnerOf(row);
+  if (byLane) return byLane;
+  const routed = labelsOf(row).find((/** @type {string} */ n) => n in ROUTED_TO);
+  return routed ? /** @type {Record<string,string>} */ (ROUTED_TO)[routed] : null;
 }
 
 /**
@@ -257,7 +303,9 @@ export function readPromotableRows(run = defaultRun) {
       "--json", "number,labels"]);
     const parsed = JSON.parse(out);
     if (!Array.isArray(parsed)) return null;
-    return parsed.filter((r) => !labelsOf(r).some((/** @type {string} */ n) => NOT_PICKABLE.includes(n)));
+    // `NOT_STARTABLE`, NOT `NOT_PICKABLE`: a routed row is kept here and removed again by `ownerOf` for
+    // the pool, so the one session it belongs to can still be told about it.
+    return parsed.filter((r) => !labelsOf(r).some((/** @type {string} */ n) => NOT_STARTABLE.includes(n)));
   } catch {
     return null;
   }
@@ -725,36 +773,58 @@ function rowOrders(unclaimed) {
  */
 function laneBacklogOrders(promotableRows, readyRows) {
   const orders = [];
-  for (const [lane, owner] of Object.entries(LANE_OWNER)) {
-    const mine = promotableRows.filter((r) => labelsOf(r).includes(lane));
-    const readyHere = readyRows.filter((r) => labelsOf(r).includes(lane)
+  // OWNERS, NOT LANES. A row reaches its owner by a `lane:` label OR by a routing label, and iterating
+  // lanes could only ever find the first -- which is why `orchestrator`, whose work is routed by
+  // `fleet-gated` rather than laned, was never told about any of it.
+  for (const owner of new Set([...Object.values(LANE_OWNER), ...Object.values(ROUTED_TO)])) {
+    const mine = promotableRows.filter((r) => ownerOf(r) === owner);
+    const readyHere = readyRows.filter((r) => ownerOf(r) === owner
       && !labelsOf(r).includes(CLAIM_LABEL));
     if (mine.length === 0 || readyHere.length > 0) continue;
-    orders.push({
-      session: owner,
-      cause: "lane-backlog-unpromoted",
-      subject: lane,
-      // The count is the discriminator, so the order stops once the owner promotes one and re-fires if
-      // the lane empties again at a different depth -- the same shape as `ready-queue-empty`.
-      discriminator: String(mine.length),
-      prompt: `Your lane \`${lane}\` has ${mine.length} open backlog row(s) and NOTHING Ready: `
-        + `${mine.slice(0, 8).map((/** @type {any} */ r) => `#${r.number}`).join(", ")}`
-        + `${mine.length > 8 ? ", ..." : ""}. Nobody else may promote these -- the lane is yours.\n`
-        + "Promote what is genuinely ready (a Region, an Acceptance, a done-when), answer what is waiting "
-        + "on a decision, and say so on anything that should stay put. This is a report of what is "
-        + "waiting on you, not a quota: promoting nothing and recording why is a valid answer.\n"
-        // RECORDED ON THE ROW, NOT IN THE TERMINAL, and this sentence exists because that is exactly what
-        // went wrong: `orchestrator` reached a correct and well-argued answer on #1564 -- research row,
-        // no Acceptance, waiting on a ceo ruling -- and wrote it only to its own screen. The org cannot
-        // read a terminal. Nothing changed, so nothing downstream could tell the question had been
-        // answered rather than ignored.
-        + "RECORD THE ANSWER ON THE ROW, as a comment, whatever it is. A decision that exists only in "
-        + "your terminal is one the org cannot see: the next reader finds an untouched row and has to "
-        + "derive your conclusion again from scratch.",
-      causeKey: `${owner}/lane-backlog-unpromoted/${lane}/${mine.length}`,
-    });
+    orders.push(backlogOrder(owner, mine));
   }
   return orders;
+}
+
+/**
+ * The order itself. Split out so `laneBacklogOrders` stays a loop and this stays a sentence.
+ *
+ * THE OWNERSHIP SENTENCE IS EARNED PER SET, not asserted. "Nobody else may promote these" is TRUE of a
+ * lane and FALSE of a routed row -- anyone may promote a `fleet-gated` row; only `orchestrator` can run
+ * its acceptance. Saying the stronger thing about both would be the same conflation, one level up.
+ *
+ * @param {string} owner @param {any[]} mine
+ */
+function backlogOrder(owner, mine) {
+  const laned = mine.filter((/** @type {any} */ r) => laneOwnerOf(r) === owner).length;
+  const routed = mine.length - laned;
+  return {
+    session: owner,
+    cause: "lane-backlog-unpromoted",
+    subject: owner,
+    // The count is the discriminator, so the order stops once the owner promotes one and re-fires if
+    // the set empties again at a different depth -- the same shape as `ready-queue-empty`.
+    discriminator: String(mine.length),
+    prompt: `You own ${mine.length} open backlog row(s) and NOTHING Ready among them: `
+      + `${mine.slice(0, 8).map((/** @type {any} */ r) => `#${r.number}`).join(", ")}`
+      + `${mine.length > 8 ? ", ..." : ""}.`
+      + (laned ? ` ${laned} carry your lane: nobody else may promote these -- the lane is yours.` : "")
+      + (routed ? ` ${routed} carry \`fleet-gated\`, which ROUTES rather than blocks: the acceptance `
+        + "needs the fleet or the lab, which you run. Check the fleet is up (`npm run fleet:status`) "
+        + "before deciding -- these rows are not waiting on hardware being broken." : "")
+      + "\nPromote what is genuinely ready (a Region, an Acceptance, a done-when), answer what is waiting "
+      + "on a decision, and say so on anything that should stay put. This is a report of what is "
+      + "waiting on you, not a quota: promoting nothing and recording why is a valid answer.\n"
+      // RECORDED ON THE ROW, NOT IN THE TERMINAL, and this sentence exists because that is exactly what
+      // went wrong: `orchestrator` reached a correct and well-argued answer on #1564 -- research row,
+      // no Acceptance, waiting on a ceo ruling -- and wrote it only to its own screen. The org cannot
+      // read a terminal. Nothing changed, so nothing downstream could tell the question had been
+      // answered rather than ignored.
+      + "RECORD THE ANSWER ON THE ROW, as a comment, whatever it is. A decision that exists only in "
+      + "your terminal is one the org cannot see: the next reader finds an untouched row and has to "
+      + "derive your conclusion again from scratch.",
+    causeKey: `${owner}/lane-backlog-unpromoted/${owner}/${mine.length}`,
+  };
 }
 
 /**
@@ -1035,7 +1105,9 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
 
 
   // The backlog is counted the same way, or the order would report rows the pool equally cannot take.
-  const poolPromotable = promotableRows.filter((r) => laneOwnerOf(r) === null);
+  // `ownerOf`, not `laneOwnerOf`: routed rows reach `decide` now, and the POOL's count must be exactly
+  // what it was -- an engineer offered a `fleet-gated` row would be queueing for a worker box.
+  const poolPromotable = promotableRows.filter((r) => ownerOf(r) === null);
   const shelf = emptyShelfOrder({ offerable, blocked, promotable: poolPromotable.length });
   if (shelf) orders.push(shelf);
 
