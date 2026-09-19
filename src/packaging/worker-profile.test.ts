@@ -132,7 +132,8 @@ test("a FULL model id is allowed through, since the CLI takes those too", () => 
 
 test("agentArgs spells each product's flags its own way", () => {
   assert.deepEqual(agentArgs({ kind: "claude", model: "sonnet", effort: "high" }),
-    ["--model", "sonnet", "--effort", "high", "--dangerously-skip-permissions"]);
+    ["--model", "sonnet", "--effort", "high", "--dangerously-skip-permissions",
+      "--disallowedTools", "AskUserQuestion"]);
   assert.deepEqual(agentArgs({ kind: "codex", model: "gpt-5.6-luna", effort: "medium" }),
     ["-m", "gpt-5.6-luna", "-c", 'model_reasoning_effort="medium"',
      "-c", 'approval_policy="never"', "-c", 'sandbox_mode="workspace-write"']);
@@ -143,4 +144,33 @@ test("an effort valid for one product is REFUSED for the other", () => {
     /not one of minimal, low, medium, high for a codex worker/);
   assert.match(refusalOf(profileFor("ready-row-unclaimed", { effort: "minimal" })).refusal,
     /not one of low, medium, high, xhigh, max for a claude worker/);
+});
+
+/**
+ * NEITHER PRODUCT MAY STOP AND ASK A HUMAN, and until 2026-09-19 only one of them was configured that way.
+ *
+ * A codex worker carries `approval_policy="never"`. A Claude worker carried no equivalent, so it could
+ * raise a menu and WAIT -- a state herdr reports as `blocked`: not wakeable, taking no further cause,
+ * until a human clears it by hand.
+ *
+ * MEASURED TWICE. `worker-capture` behind a menu, found from a screenshot; and `orchestrator`, which
+ * correctly worked out that deploying protocol 19 costs ~2,122 recaptures and ~4h of fleet time,
+ * correctly listed "Hold and escalate to ceo first" among its options, AND THEN ASKED A HUMAN TO PICK
+ * IT. The escalation was the autonomous path -- `ceo` owns fleet-time decisions -- so the session had
+ * the right answer and used the wrong channel.
+ *
+ * #1744 made it visible; this makes it impossible. A rule in a prompt is a sentence, and this org has
+ * repeatedly proved it cannot keep one by habit.
+ */
+test("no spawned worker of EITHER product can stop and ask a human", () => {
+  const claude = agentArgs({ kind: "claude", model: "sonnet", effort: "high" });
+  assert.ok(claude.includes("--disallowedTools") && claude.includes("AskUserQuestion"),
+    "a Claude worker that can raise a menu can block the whole session on a human");
+
+  const codex = agentArgs({ kind: "codex", model: "gpt-5.6-luna", effort: "medium" }).join(" ");
+  assert.match(codex, /approval_policy="never"/, "codex's half of the same rule, already in place");
+
+  // AND THE SANDBOX MUST SURVIVE IT. Codex's comment above records that the first spelling here dropped
+  // the sandbox along with the prompts; removing a question must never widen what a worker may do.
+  assert.match(codex, /sandbox_mode="workspace-write"/);
 });

@@ -94,3 +94,34 @@ export function describeWaiting(waiting) {
   if (waiting.kind === "row") return `blocked by ${(waiting.numbers ?? []).map((n) => `#${n}`).join(", ")}`;
   return `not before ${waiting.date}`;
 }
+
+/**
+ * THE GUARD ON THE RULE ITSELF -- rows that state a wait in PROSE and nowhere a machine can read it.
+ *
+ * WITHOUT THIS, THE FIX IS THE DEFECT. `agent-practices.md` now says a waiting condition goes in a field
+ * rather than a sentence -- and that instruction is itself a sentence, in a document nothing checks. This
+ * repository has proved twice over that it cannot keep such a rule by habit: `/clear` was one until
+ * `wake.mjs` mechanised it, and the author-prompt path bypassed even that. A rule with no witness decays
+ * to exactly the state it was written to fix.
+ *
+ * A SMELL, NOT A VERDICT, and reported as one. A row may legitimately DISCUSS blocking -- this very
+ * paragraph would match. So it names rows for a human to look at and never refuses anything; the
+ * remedy is one `gh issue edit --add-blocked-by` or one `Not-before:` line, and "this row is only
+ * talking about blockers" is a valid answer that costs a reader ten seconds.
+ *
+ * NIGHTLY RATHER THAN PER-TICK, deliberately: it is a hygiene question about the whole tracker, not a
+ * question about whether there is work right now, and the gate's per-tick reads must stay small.
+ *
+ * @param {{number?: number, body?: string, blockedBy?: {totalCount?: number}}[]} issues
+ * @returns {{number: number, quote: string}[]}
+ */
+export function proseBlockers(issues) {
+  const found = [];
+  for (const issue of issues ?? []) {
+    if ((issue?.blockedBy?.totalCount ?? 0) > 0) continue;
+    if (notBeforeDate(issue?.body) !== null) continue;
+    const m = /(?:blocked (?:by|on)|waiting (?:on|for))[^.\n]{0,80}/i.exec(String(issue?.body ?? ""));
+    if (m) found.push({ number: Number(issue.number), quote: m[0].trim() });
+  }
+  return found;
+}

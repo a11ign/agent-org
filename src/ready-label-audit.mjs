@@ -41,6 +41,7 @@ import { realpathSync, readFileSync } from "node:fs";
 // points at `dist/`, so it needs both `node_modules` AND a completed build. This file is reachable
 // from a pre-install entry (see `pre-install-import-graph.test.ts`, which derives that population
 // rather than naming it), and there it dies on startup with ERR_MODULE_NOT_FOUND.
+import { proseBlockers } from "./waiting-condition.mjs";
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
 import { REPO } from "../../../scripts/repo-identity.mjs";
 import { fetchBoardItems, PROJECT_NUMBER } from "./board-snapshot.mjs";
@@ -1751,6 +1752,47 @@ function reportGuidanceDrift() {
 }
 
 /**
+ * Rows that state a wait in PROSE and nowhere a machine can read it.
+ *
+ * THE WITNESS FOR THE RULE `agent-practices.md` NOW CARRIES. Measured 2026-09-19: 0 open rows had a
+ * machine-readable blocker and 5 stated one in prose, and three separate hours of that day were lost to
+ * exactly that -- `orchestrator` idle for 64 minutes after #1772 closed, `ceo` re-woken every 2h about a
+ * row gated on the calendar. A rule with no witness decays back to that.
+ *
+ * NAMES, NEVER REFUSES. A row may legitimately discuss blocking; the reader decides. The remedy is one
+ * `gh issue edit --add-blocked-by <n>` or one `Not-before: YYYY-MM-DD` line.
+ */
+function reportProseBlockers() {
+  const issues = fetchIssuesWithWaits();
+  const found = proseBlockers(issues);
+  for (const { number, quote } of found) {
+    process.stdout.write(`  #${number}: "${quote}" -- stated in prose, invisible to the gate\n`);
+  }
+  process.stdout.write(`waits stated in prose: ${found.length} of ${issues.length} open row(s)`
+    + `${found.length > 0 ? " -- record each as `--add-blocked-by` or `Not-before:`, or say it is only discussion" : ""}\n`);
+  return found.length;
+}
+
+/**
+ * Open rows with the two fields a wait can live in -- `fetchIssues` carries neither.
+ *
+ * THROUGH `listUntilShort`, NOT A HAND-SET `--limit`. My first version wrote `--limit 500` and #1090's
+ * guard caught it in the suite: a hand-set cap goes dark SILENTLY the day the population passes it, and
+ * this file has already paid for that once (472 + 59 = 531 against a 500 cap). A walk that ends on a
+ * SHORT PAGE is a positive statement of having reached the end; a literal is a promise about a number
+ * nobody will re-check. One walk, not four.
+ */
+function fetchIssuesWithWaits({ run = defaultRun } = {}) {
+  // `listUntilShort` is shared by four callers with four different `--json` field sets, so it returns
+  // `unknown[]` and each caller states the shape IT asked for. Narrowed here, once, at the call that
+  // knows the fields.
+  return /** @type {{number?: number, body?: string, blockedBy?: {totalCount?: number}}[]} */ (
+    listUntilShort({ run, what: "open issues with waits",
+    argv: (/** @type {number} */ ask) => ["issue", "list", "--repo", REPO, "--state", "open",
+      "--limit", String(ask), "--json", "number,body,blockedBy"] }));
+}
+
+/**
  * @type {[string, () => number][]}  annotated rather than inferred: adding the twelfth entry
  * changed the inferred element type and the destructure at the call site stopped narrowing.
  */
@@ -1768,6 +1810,7 @@ export const CHECKS = [
   ["coverage vs tracker", reportCoverageTrackerDisagreement],
   ["release declaration", reportReleaseDrift],
   ["filing guidance", reportGuidanceDrift],
+  ["waits stated in prose", reportProseBlockers],
 ];
 
 /**
