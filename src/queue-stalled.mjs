@@ -35,7 +35,9 @@
 //    `gate` has actually concluded SUCCESS.
 // 3. REACHABLE WITHOUT A SCHEDULE. GitHub disables scheduled workflows after 60 days of inactivity
 //    (`board-liveness.test.ts`), and a stall reporter that fails by going quiet has the disease it
-//    watches for. Rides the same `pull_request` trigger `auto-arm-sweep.mjs` does.
+//    watches for. Rides the same `pull_request` trigger `auto-arm-sweep.mjs` does, plus (#1633) the
+//    `workflow_run` (`ci` completed) event, so a PR only revealed as stalled by a gate concluding is
+//    named without waiting for the queue's next unrelated `pull_request` or `push`.
 //
 // A THRESHOLD, NOT AN INSTANT REPORT, on the conflict itself too: a PR whose `gate` concluded seconds ago
 // may not yet reflect a `main` that just moved underneath it, and a conflict computed against a stale
