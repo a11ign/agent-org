@@ -61,7 +61,7 @@ export const EXIT = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3 };
 /** The causes this gate can emit. `wake.mjs` and the matrix validate against this list, never a copy. */
 export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-convinced-not-ready",
   "verdict-not-convinced", "pr-checks-failing", "ready-queue-empty", "lane-backlog-unpromoted",
-  "chairman-blocked"];
+  "chairman-blocked", "org-stalled"];
 
 /**
  * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
@@ -90,7 +90,7 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
  * asked forty times.
  */
 export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog-unpromoted",
-  "chairman-blocked"]);
+  "chairman-blocked", "org-stalled"]);
 
 /**
  * The causes that START new work, as opposed to finishing work already begun.
@@ -112,7 +112,7 @@ export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog
  * silence the thing the drain exists to serve.
  */
 export const START_CAUSES = Object.freeze(["ready-row-unclaimed", "ready-queue-empty",
-  "lane-backlog-unpromoted"]);
+  "lane-backlog-unpromoted", "org-stalled"]);
 
 /** Where the drain marker lives. `touch` it to open a window; `rm` it to close one. */
 export const DRAIN_MARKER = `${process.env.HOME}/.cache/a11ign/drain`;
@@ -787,6 +787,81 @@ function emptyShelfOrder({ offerable, blocked, promotable }) {
 }
 
 /**
+ * Every open row, counted -- ONLY asked when the gate would otherwise say nothing.
+ *
+ * THE THIRD CALL, AND WHY IT DOES NOT BREAK THE TWO-CALL PROPERTY. This file's header rests on costing
+ * two `gh` calls so it can run every two minutes all day. This read happens only when the other two
+ * produced NO ORDERS -- a busy org never pays it, and a silent one pays it once to answer the question
+ * its own silence raises. The steady state is unchanged.
+ *
+ * @param {(args: string[]) => string} [run]
+ * @returns {number | null} `null` when refused -- never 0, which would read as "the tracker is empty"
+ */
+export function readOpenRowCount(run = defaultRun) {
+  try {
+    const parsed = JSON.parse(run(["issue", "list", "--state", "open", "--limit", "500", "--json", "number"]));
+    return Array.isArray(parsed) ? parsed.length : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * THE CAUSE THAT FIRES ON THE ABSENCE OF CAUSES -- a dead man's switch for the org.
+ *
+ * EVERY OTHER CAUSE FIRES ON A POSITIVE STATE: a draft exists, a row is unclaimed, a check is red. None
+ * can fire on NOTHING HAPPENING, and nothing happening is the failure mode this org actually has. The
+ * gate exits QUIET when no known cause matched, and that one exit covers two different worlds -- "there
+ * is genuinely nothing to do" and "there is plenty to do and no cause can see it". Indistinguishable, so
+ * the ABSENCE OF A SIGNAL was reported as health.
+ *
+ * MEASURED REPEATEDLY OVER 48 HOURS: a worker unable to capture for 4.9 days; #63's step 9 unstarted for
+ * 18 hours with the publish blocked behind it; ten rows gated on a condition that had become true;
+ * twenty-four rows waiting on a fleet healthy for two hours; a session stopped behind a menu. In every
+ * case the gate was honestly QUIET, every session honestly idle, and the only thing that noticed was a
+ * human reading a terminal. #928's own title records the shape from before this file existed: "main's
+ * trunk-guard red for 27.8 hours unattended -- both sets of eyes were retired the same day."
+ *
+ * THE DISCRIMINATOR IS THE COUNT, so a stall of the same shape is one question and a tracker that moved
+ * is a new one. As a JUDGMENT cause it holds for two hours rather than re-asking every twenty minutes:
+ * the canonical write-up of this pattern is titled "A Dead-Man's Switch That Pages Once and Goes Quiet Is
+ * Worse Than None", and the opposite failure is one that pages until nobody reads it.
+ *
+ * WHY `ceo` AND NOT `product-manager`: this is not a queue question. `product-manager` already answers
+ * "is anything promotable" through `ready-queue-empty`, and has answered it correctly every time. This
+ * asks "the org has open work and no way to reach any of it" -- a management question, and #912 deleted
+ * the standing crons that made it somebody's job without replacing that half.
+ *
+ * @param {{ orders: unknown[], openRows: number | null }} state
+ */
+export function stalledOrder({ orders, openRows }) {
+  // ONLY WHEN NOTHING ELSE FIRED. One order anywhere means some cause can still reach the org.
+  if (orders.length > 0) return null;
+  // A REFUSED READ IS NOT AN EMPTY TRACKER (#1286), and an empty one is not a stall: an org with no open
+  // rows has finished, which is the one silence that is genuinely healthy.
+  if (openRows === null || openRows === 0) return null;
+  return {
+    session: "ceo",
+    cause: "org-stalled",
+    subject: "org",
+    discriminator: String(openRows),
+    prompt: `NOTHING IS REACHABLE. The work gate found no cause of any kind this tick and ${openRows} `
+      + "row(s) are open, so every session is idle and will stay idle: no draft needs a verdict, no row "
+      + "is claimable, no check is red, nothing is promotable.\n"
+      + "That is NOT the org being finished. It means every open row carries something that stops it -- "
+      + "`blocked`, `fleet-gated`, `epic`, a lane, a claim -- and no cause can see past any of it.\n"
+      + "READ THE BACKLOG AND SAY WHY, then act. Shapes measured here in the last two days: a gate whose "
+      + "condition became TRUE and nobody lifted the label; a row waiting on a capability that has since "
+      + "recovered; a runbook step that exists only as prose, so no cause can name it; a session stopped "
+      + "on a question, which `herdr --session org agent list` shows as `blocked` and which no wake will "
+      + "ever reach.\n"
+      + "You are the only session asked this. Every minute the org is stalled is capacity nobody is "
+      + "using, and until now the only thing that noticed was the chairman reading a terminal.",
+    causeKey: `ceo/org-stalled/${openRows}`,
+  };
+}
+
+/**
  * PURE. The orders the state implies.
  *
  * Every order carries a `causeKey` derivable from GitHub state alone, so re-running this gate produces a
@@ -860,6 +935,25 @@ function reportWithheld({ drain, blocked }) {
   }
 }
 
+/**
+ * The dead man's switch, wired: asked ONLY when everything else said nothing.
+ *
+ * Split out of `main`, which reached `complexity` 17 with it inline -- and the seam is real rather than
+ * cosmetic: every other line in `main` is about delivering what the gate found, and this one is about
+ * what it did NOT find.
+ *
+ * A DRAIN WITHHOLDS IT like any other START cause. During a transfer window the org is SUPPOSED to be
+ * idle, and a switch that fires then is one people learn to ignore -- which is the failure mode the
+ * pattern's own literature warns about more loudly than the missing-switch one.
+ *
+ * @param {unknown[]} orders @param {boolean} drain
+ */
+function deadMansSwitch(orders, drain) {
+  if (drain || orders.length > 0) return [];
+  const stalled = stalledOrder({ orders, openRows: readOpenRowCount() });
+  return stalled ? [stalled] : [];
+}
+
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/work-gate.mjs" });
   const prs = readPrs();
@@ -879,6 +973,7 @@ function main() {
   const drain = draining();
   const orders = decide({ prs: prs ?? [], readyRows: readyRows ?? [],
     promotableRows: promotableRows ?? [], chairmanBlocked: chairmanBlocked ?? [], prFiles, drain });
+  orders.push(...deadMansSwitch(orders, drain));
   for (const order of orders) process.stdout.write(`${JSON.stringify(order)}\n`);
 
   reportWithheld({ drain, blocked: partitionUnclaimed(readyRows ?? [], prFiles).blocked });
