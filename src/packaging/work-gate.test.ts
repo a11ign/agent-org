@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES,
   comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
   blockingChecks, anyChecksRed, requiredCheckNames, ownerOf, NOT_PICKABLE, NOT_STARTABLE,
-  ROUTED_TO, readPromotableRows, GH_READS }
+  ROUTED_TO, readPromotableRows, GH_READS, partitionUnclaimed, readOpenRowCount }
   from "../work-gate.mjs";
 
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
@@ -881,4 +881,94 @@ test("the gate's read count is counted, not remembered", () => {
     "if you add or remove an unconditional read, this number and every comment quoting it move together");
   assert.ok(GH_READS.conditionalOnSilence.includes("readOpenRowCount"));
   assert.ok(GH_READS.conditionalOnRed.includes("requiredCheckNames"));
+});
+
+/**
+ * A DECLARED WAIT DROPS OUT, AND COMES BACK BY ITSELF.
+ *
+ * THE PROPERTY THAT MATTERS IS NOT THE HIDING -- `blocked` already hides. It is that nobody has to
+ * REMEMBER to un-hide. `blocked` is a claim with no referent, so only a human re-reading the row can
+ * clear it, which is why 11 rows carried it on 2026-09-19 with several waiting on conditions that had
+ * long since become true.
+ *
+ * AND NO NEW CAUSE IS NEEDED, which is the strongest evidence this is the right seam: when the condition
+ * clears, the row re-enters the population, the owner's COUNT changes, the causeKey changes, the wake
+ * ledger's dedupe no longer matches, and the EXISTING cause fires. It composes with what is there
+ * instead of adding a parallel mechanism beside it.
+ */
+const waitingRow = (n: number, extra: Record<string, unknown>) => ({ number: n,
+  labels: [{ name: "backlog" }, { name: "lane:ceo" }], ...extra });
+
+test("a row waiting on an OPEN blocker leaves its owner's backlog, and returns when it closes", () => {
+  const open = [waitingRow(5, { blockedBy: { nodes: [{ number: 1772, state: "OPEN" }] } })];
+  const closed = [waitingRow(5, { blockedBy: { nodes: [{ number: 1772, state: "CLOSED" }] } })];
+  const read = (rows: unknown[]) => {
+    const got = readPromotableRows(() => JSON.stringify(rows));
+    assert.ok(got !== null, "a fixture read is never refused -- `?? []` here would hide a real refusal");
+    return got;
+  };
+
+  assert.deepEqual(read(open), [], "while #1772 is open the row is not startable");
+  assert.equal(read(closed)?.length, 1, "and the moment it closes the row is back -- nobody un-hid it");
+
+  // THE RE-ENGAGEMENT, end to end: no order while blocked, and a real order once cleared.
+  assert.deepEqual(decide({ prs: [], readyRows: [], promotableRows: read(open) }), []);
+  const [order] = decide({ prs: [], readyRows: [], promotableRows: read(closed) }) as
+    { session: string, causeKey: string }[];
+  assert.equal(order.session, "ceo");
+  assert.match(order.causeKey, /lane-backlog-unpromoted\/ceo\/1/,
+    "the count is in the key, so the dedupe that held it silent no longer matches");
+});
+
+test("a row waiting on a DATE stops re-prompting its owner until that date", () => {
+  // #1234 exactly: gated on wall-clock time, its owner woken every 2h to give the same answer, about 18
+  // more times before the date it waits for.
+  const row = [waitingRow(1234, { body: "Not-before: 2026-09-21" })];
+  const read = (today: string) => {
+    const orig = Date.now;
+    Date.now = () => new Date(`${today}T12:00:00Z`).getTime();
+    try {
+      const got = readPromotableRows(() => JSON.stringify(row));
+      assert.ok(got !== null, "a fixture read is never refused");
+      return got;
+    } finally { Date.now = orig; }
+  };
+  assert.deepEqual(read("2026-09-19"), [], "silent on the 19th and the 20th");
+  assert.equal(read("2026-09-21")?.length, 1, "and back on the day itself, with no human involved");
+});
+
+test("a waiting READY row is SHELVED with its reason, never silently dropped", () => {
+  // A row that vanishes without a line in the log is the failure `blocked` already is. `reportWithheld`
+  // prints these, so a reader can see what the gate is deliberately not offering and why.
+  const ready = [{ number: 7, labels: [{ name: "ready" }],
+    blockedBy: { nodes: [{ number: 1772, state: "OPEN" }] } }];
+  const { offerable, blocked } = partitionUnclaimed(ready, []);
+  assert.deepEqual(offerable, []);
+  assert.equal(blocked.length, 1);
+  assert.match(blocked[0].reason, /blocked by #1772 .*clears itself/,
+    "the shelf line must name the blocker, or it is the referent-less claim again");
+});
+
+test("A CORRECTLY WAITING QUEUE IS NOT A STALL -- the dead man's switch must not cry wolf", () => {
+  // #1749's own comment says an alarm that fires when the org is SUPPOSED to be idle is the failure the
+  // pattern's literature warns about more loudly than the missing-switch one. A queue where every row
+  // declares what it waits on is working, not stuck.
+  const allWaiting = [{ number: 1, blockedBy: { nodes: [{ number: 9, state: "OPEN" }] } },
+    { number: 2, body: "Not-before: 2099-01-01" }];
+  assert.equal(readOpenRowCount(() => JSON.stringify(allWaiting)), 0,
+    "zero REACHABLE rows, so nothing to be stalled about");
+  assert.equal(stalledOrder({ orders: [], openRows: 0 }), null);
+
+  // AND THE POSITIVE CONTROL: one row that could move and is not moving still fires the switch.
+  const oneReachable = [...allWaiting, { number: 3 }];
+  assert.equal(readOpenRowCount(() => JSON.stringify(oneReachable)), 1);
+  assert.equal(stalledOrder({ orders: [], openRows: 1 })?.cause, "org-stalled");
+});
+
+test("a REFUSED read is still refused, not read as a queue with nothing reachable", () => {
+  // `null` means "could not ask" and must never collapse into 0, which would silence the switch on the
+  // first API hiccup -- #1286's rule, and the filter added above must not have broken it.
+  assert.equal(readOpenRowCount(() => { throw new Error("HTTP 502"); }), null);
+  assert.equal(readOpenRowCount(() => "not json"), null);
+  assert.equal(stalledOrder({ orders: [], openRows: null }), null);
 });
