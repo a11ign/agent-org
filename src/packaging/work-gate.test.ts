@@ -17,7 +17,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES,
-  comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions }
+  comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
+  blockingChecks, anyChecksRed, requiredCheckNames }
   from "../work-gate.mjs";
 
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
@@ -681,4 +682,76 @@ test("an order with no action passes through untouched", () => {
   const { delivered, performed } = performActions(orders, () => { throw new Error("must not be called"); });
   assert.equal(performed, 0);
   assert.deepEqual(delivered, orders, "every other cause still reaches its session exactly as before");
+});
+
+/**
+ * ONLY A CHECK THAT CAN HOLD THE PULL REQUEST COUNTS AS RED.
+ *
+ * MEASURED 2026-09-19: `main`'s branch protection requires exactly one check, `required_status_checks:
+ * ["gate"]`, and `gate` is an aggregator whose `needs` names the nine jobs that matter. `sweep` lives in
+ * `auto-arm.yml` and is in nobody's `needs` -- it went red on #1750 at 14:34Z, the gate woke
+ * `worker-capture` to "fix the cause on that branch", and #1750 MERGED FOUR MINUTES LATER at 14:38:46Z.
+ * The check was genuinely red; the wake could never have been useful.
+ */
+const rollupOf = (entries: [string, string][]) => entries.map(([name, conclusion]) => ({
+  __typename: "CheckRun", name, status: "COMPLETED", conclusion,
+}));
+
+test("a red check that cannot block the merge wakes nobody", () => {
+  const pr = { number: 1750, isDraft: false, headRefOid: "7a9d8340aaaaaaaa", author: { login: "x" },
+    labels: [{ name: "session:worker-capture" }], comments: [],
+    statusCheckRollup: rollupOf([["gate", "SUCCESS"], ["ts / run", "SUCCESS"], ["sweep", "FAILURE"]]) };
+  assert.deepEqual(decide({ prs: [pr], readyRows: [], required: ["gate"] }), [],
+    "sweep is in nobody's needs -- #1750 merged four minutes after this exact wake was sent");
+});
+
+test("a red check that CAN block the merge still wakes its session", () => {
+  // THE POSITIVE CONTROL. #1650 is why `failingChecksOrder` exists: a `changeset` failure sat unattended
+  // while its own session was idle. Narrowing what counts as red must not reopen that.
+  const pr = { number: 1650, isDraft: false, headRefOid: "deadbeefcafe0000", author: { login: "x" },
+    labels: [{ name: "session:worker-capture" }], comments: [],
+    statusCheckRollup: rollupOf([["gate", "FAILURE"], ["sweep", "SUCCESS"]]) };
+  const [order] = decide({ prs: [pr], readyRows: [], required: ["gate"] }) as { cause: string,
+    session: string }[];
+  assert.equal(order.cause, "pr-checks-failing");
+  assert.equal(order.session, "worker-capture", "and it goes to the session named on the PR");
+});
+
+test("an UNREADABLE required set counts every check, exactly as before it existed", () => {
+  // `null` is "could not be read", NOT "nothing is required". Conflating them would make the gate go
+  // permanently silent on red PRs the first time an API read failed -- trading a wasted turn for the
+  // failure this whole function was written to stop.
+  const pr = { number: 1750, isDraft: false, headRefOid: "7a9d8340aaaaaaaa", author: { login: "x" },
+    labels: [{ name: "session:worker-capture" }], comments: [],
+    statusCheckRollup: rollupOf([["gate", "SUCCESS"], ["sweep", "FAILURE"]]) };
+  const orders = decide({ prs: [pr], readyRows: [], required: null });
+  assert.equal(orders.length, 1, "fail OPEN: an unreadable required set must never silence a red PR");
+  assert.deepEqual(blockingChecks([{ name: "sweep" }], null), [{ name: "sweep" }],
+    "null considers everything");
+  assert.deepEqual(blockingChecks([{ name: "sweep" }, { name: "gate" }], ["gate"]), [{ name: "gate" }]);
+});
+
+test("a PR carrying none of the required checks is not reported as red", () => {
+  // If `gate` never ran, there is no required check to be red about. The rollup is not empty, but the
+  // BLOCKING rollup is -- and `checksSettledGreen([])` is `null` (unknowable), never `false`.
+  const pr = { number: 99, isDraft: false, headRefOid: "aaaaaaaabbbbbbbb", author: { login: "x" },
+    labels: [], comments: [], statusCheckRollup: rollupOf([["sweep", "FAILURE"]]) };
+  assert.deepEqual(decide({ prs: [pr], readyRows: [], required: ["gate"] }), []);
+});
+
+test("the expensive question is asked only when something is red", () => {
+  const green = { statusCheckRollup: rollupOf([["gate", "SUCCESS"]]) };
+  const red = { statusCheckRollup: rollupOf([["gate", "FAILURE"]]) };
+  const pending = { statusCheckRollup: [{ __typename: "CheckRun", name: "gate", status: "IN_PROGRESS" }] };
+  assert.equal(anyChecksRed([green, pending]), false, "a healthy tick never pays the fourth call");
+  assert.equal(anyChecksRed([green, red]), true);
+  assert.equal(anyChecksRed([]), false);
+});
+
+test("requiredCheckNames fails OPEN on every unusable answer", () => {
+  assert.deepEqual(requiredCheckNames(() => JSON.stringify(["gate"])), ["gate"]);
+  assert.equal(requiredCheckNames(() => { throw new Error("HTTP 404"); }), null,
+    "a repo with no branch protection must not read as 'nothing blocks a merge'");
+  assert.equal(requiredCheckNames(() => "[]"), null, "an EMPTY required set is treated as unreadable");
+  assert.equal(requiredCheckNames(() => "not json"), null);
 });
