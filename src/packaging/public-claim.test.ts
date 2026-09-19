@@ -771,22 +771,26 @@ const NOT_A_DURATION_CLAIM: Record<string, string> = {
     "'Spend the minutes' is idiomatic for wasted effort, not a duration figure, and the promise-verb match "
     + "in the same bullet ('takes us one capture to answer') counts CAPTURES, not time -- there is no "
     + "duration claim in this sentence for a gate to source.",
-  "Expect four to eight minutes for a real page":
-    "#1060, superseding #396's entry for the same sentence. A REAL, sourced duration promise -- 4 m 38 s / "
-    + "4 m 50 s / 5 m 48 s / 7 m 52 s / 7 m 54 s across five real-page runs that REACHED the page, cited "
-    + "inline with the issues that recorded them (#311, #915). Still a one-time orchestrator-run timing "
-    + "measurement rather than a recurring board-gate metric, and still disclosed in the prose rather than "
-    + "machine-verified, for the reason #338 settled on: verifying an inline citation against git history "
-    + "fails in CI's shallow checkout. WHAT CHANGED: #396's range was FIVE to eight, and two of the three "
-    + "figures it cited in the same sentence -- 4 m 38 s and 4 m 50 s -- fell below its own floor. This "
-    + "guard could not see that, because it asks whether a duration promise is SOURCED and not whether the "
-    + "source agrees with it. `try-it-runnable.test.ts` asks the second question.",
-  "Expect four to eight minutes**, per the measurement above":
+  "Expect three to eight minutes for a real page":
+    "#1060, superseding #396's entry for the same sentence, itself superseded 2026-09-19 by #311's "
+    + "reconciliation with #915. A REAL, sourced duration promise -- 3 m 14 s / 3 m 45 s / 4 m 14 s / "
+    + "4 m 32 s / 4 m 38 s / 4 m 50 s / 5 m 48 s / 5 m 52 s / 6 m 35 s / 7 m 52 s / 7 m 54 s across eleven "
+    + "real-page runs, cited inline with the issues that recorded them (#311, #915). Still a one-time "
+    + "orchestrator-run timing measurement rather than a recurring board-gate metric, and still disclosed "
+    + "in the prose rather than machine-verified, for the reason #338 settled on: verifying an inline "
+    + "citation against git history fails in CI's shallow checkout. WHAT CHANGED (2026-09-19): #915's own "
+    + "edit narrowed the population to five runs and a FOUR-to-eight range, silently dropping #311's other "
+    + "six measured runs -- including 3 m 14 s, the genuine fastest of the eleven, which sits below that "
+    + "floor. product-manager's 2026-09-11 ruling on #311 had already decided THREE-to-eight for exactly "
+    + "this reason; the reconciliation restores it with the fuller n. This guard could not see the earlier "
+    + "drift, because it asks whether a duration promise is SOURCED and not whether the source agrees with "
+    + "it. `try-it-runnable.test.ts` asks the second question.",
+  "Expect three to eight minutes**, per the measurement above":
     "The second mention of the same measurement, in the 'how long a large page takes' section -- same "
     + "sourcing, same reasoning as the entry above; kept separate because #313's own history is that a "
     + "figure fixed in one copy and left stale in a second is this repo's most expensive recurring shape. "
-    + "#1060 now pins the two copies EQUAL as well as classifying them separately: the range stated "
-    + "anywhere on the page must match the one inside the timing block.",
+    + "#1060 pins the two copies EQUAL as well as classifying them separately: the range stated anywhere "
+    + "on the page must match the one inside the timing block.",
   "The snippets above set `timeout-minutes: 20` on the job":
     "#1518: a designed CEILING, not a promise about how long a run takes -- its derivation (a bit over "
     + "twice the slowest job measured, 9 m 20 s) is stated inline against figures the same paragraph "
