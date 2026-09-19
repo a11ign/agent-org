@@ -5,7 +5,7 @@
 // org can act on what it is told and cannot act on anything it learns.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { waitingOn, notBeforeDate, todayIso, describeWaiting }
+import { waitingOn, notBeforeDate, todayIso, describeWaiting, proseBlockers }
   from "../waiting-condition.mjs";
 
 test("an OPEN blocker is a wait; a CLOSED one is a wait that has cleared", () => {
@@ -66,4 +66,45 @@ test("every wait says what it waits on, in words a person can check", () => {
 test("today is the alphabet the field is written in", () => {
   assert.match(todayIso(new Date("2026-09-19T23:59:00Z")), /^2026-09-19$/);
   assert.match(todayIso(), /^\d{4}-\d{2}-\d{2}$/);
+});
+
+/**
+ * THE WITNESS FOR THE RULE, without which the fix IS the defect.
+ *
+ * `agent-practices.md` now says a waiting condition goes in a field rather than a sentence -- and that
+ * instruction is itself a sentence, in a document nothing checks. This repository has proved twice that
+ * it cannot keep such a rule by habit: `/clear` was one until `wake.mjs` mechanised it, and the
+ * author-prompt path then bypassed even that. A rule with no witness decays to the state it was written
+ * to fix.
+ */
+test("a row stating a wait only in prose is named", () => {
+  const rows = [{ number: 72, body: "Blocked on npmjs granting the scope.", blockedBy: { totalCount: 0 } }];
+  assert.deepEqual(proseBlockers(rows), [{ number: 72, quote: "Blocked on npmjs granting the scope" }]);
+});
+
+test("a row that records it as DATA is not named -- either mechanism satisfies the rule", () => {
+  // Both must count, or the check would nag rows that have already done the right thing -- which is how
+  // a witness stops being read.
+  const byEdge = [{ number: 68, body: "Blocked on ADR 0036 (#67)", blockedBy: { totalCount: 1 } }];
+  const byDate = [{ number: 1234, body: "Not-before: 2026-09-21\nblocked by this until then",
+    blockedBy: { totalCount: 0 } }];
+  assert.deepEqual(proseBlockers(byEdge), []);
+  assert.deepEqual(proseBlockers(byDate), []);
+});
+
+test("a row that says nothing about waiting is not named", () => {
+  assert.deepEqual(proseBlockers([{ number: 1, body: "Ordinary row.", blockedBy: { totalCount: 0 } }]), []);
+  assert.deepEqual(proseBlockers([]), []);
+  assert.deepEqual(proseBlockers(undefined as never), []);
+});
+
+test("it is a SMELL, not a verdict, and the quote is what makes that usable", () => {
+  // A row may legitimately DISCUSS blocking -- this very test does. So the check hands a reader the
+  // sentence and lets them decide in ten seconds, rather than refusing anything.
+  const discussing = [{ number: 2, blockedBy: { totalCount: 0 },
+    body: "This row is about rows that are blocked by other rows and how we record that." }];
+  const [found] = proseBlockers(discussing);
+  assert.equal(found.number, 2);
+  assert.match(found.quote, /blocked by other rows/,
+    "the quote must carry enough for the reader to dismiss it without opening the row");
 });

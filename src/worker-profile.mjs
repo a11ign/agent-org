@@ -228,7 +228,26 @@ export function agentArgs(profile) {
       "-c", 'approval_policy="never"',
       "-c", 'sandbox_mode="workspace-write"'];
   }
-  return ["--model", profile.model, "--effort", profile.effort, "--dangerously-skip-permissions"];
+  // `--disallowedTools AskUserQuestion` IS THE CLAUDE HALF OF WHAT CODEX ALREADY HAS ABOVE.
+  //
+  // A codex worker carries `approval_policy="never"` -- "never stop to ask" -- and a Claude worker
+  // carried NO equivalent. So a Claude session could raise a menu and WAIT, and herdr reports that
+  // state as `blocked`: not wakeable, taking no further cause, until a human clears it by hand.
+  //
+  // MEASURED TWICE. `worker-capture` behind a menu, found by the chairman from a screenshot; and
+  // `orchestrator` on 2026-09-19, which correctly worked out that deploying protocol 19 would cost
+  // ~2,122 recaptures and ~4h of fleet time, correctly listed "Hold and escalate to ceo first" as one
+  // of its options -- AND THEN ASKED A HUMAN TO PICK IT. `ceo` owns fleet-time decisions under the
+  // routing rule, so the escalation WAS the autonomous path; the session had the right answer and used
+  // the wrong channel to deliver it.
+  //
+  // #1744 made this VISIBLE (`work-tick` prints `BLOCKED <name>`); it never made it impossible, and a
+  // rule in a prompt saying "never stop and wait on a human" is a sentence -- the exact class of
+  // instruction this org has repeatedly proved it cannot keep by habit. Removing the tool is the
+  // mechanical version: a session that cannot ask must escalate, which is what the routing rule
+  // already tells it to do.
+  return ["--model", profile.model, "--effort", profile.effort, "--dangerously-skip-permissions",
+    "--disallowedTools", "AskUserQuestion"];
 }
 
 function main() {
