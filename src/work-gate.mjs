@@ -35,6 +35,7 @@ import { realpathSync, existsSync } from "node:fs";
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
 import { READY_LABEL, CLAIM_LABEL } from "./claim-labels.mjs";
 import { verdictAtHead } from "./review-verdict.mjs";
+import { waitingOn, todayIso, describeWaiting } from "./waiting-condition.mjs";
 import { newestPerName } from "./newest-check-run.mjs";
 // B4, ASKED EARLY. These are the SAME two functions `row-claim.mjs` runs at claim time, imported
 // rather than reimplemented: `region-paths.mjs`'s own header records why a second copy of "what
@@ -324,13 +325,18 @@ export function daysSince(iso, now = Date.now()) {
  */
 export function readPromotableRows(run = defaultRun) {
   try {
+    // `blockedBy` AND `body` RIDE THE CALL THAT WAS ALREADY BEING MADE. `blockedBy` is GitHub's own
+    // dependency edge -- `gh issue create --blocked-by` writes it, the UI renders it, and this `--json`
+    // returns it -- so reading a waiting condition costs nothing this tick did not already spend.
     const out = run(["issue", "list", "--state", "open", "--label", "backlog", "--limit", "200",
-      "--json", "number,labels"]);
+      "--json", "number,labels,body,blockedBy"]);
     const parsed = JSON.parse(out);
     if (!Array.isArray(parsed)) return null;
     // `NOT_STARTABLE`, NOT `NOT_PICKABLE`: a routed row is kept here and removed again by `ownerOf` for
     // the pool, so the one session it belongs to can still be told about it.
-    return parsed.filter((r) => !labelsOf(r).some((/** @type {string} */ n) => NOT_STARTABLE.includes(n)));
+    const today = todayIso();
+    return parsed.filter((r) => !labelsOf(r).some((/** @type {string} */ n) => NOT_STARTABLE.includes(n)))
+      .filter((r) => waitingOn(r, today) === null);
   } catch {
     return null;
   }
@@ -345,7 +351,7 @@ export function readPromotableRows(run = defaultRun) {
 export function readReadyRows(run = defaultRun) {
   try {
     const out = run(["issue", "list", "--state", "open", "--label", READY_LABEL, "--limit", "100",
-      "--json", "number,title,labels,body"]);
+      "--json", "number,title,labels,body,blockedBy"]);
     const parsed = JSON.parse(out);
     return Array.isArray(parsed) ? parsed : null;
   } catch {
@@ -447,8 +453,17 @@ export function blockedOnOpenPr(row, prFiles, options) {
 export function partitionUnclaimed(readyRows, prFiles, options) {
   const offerable = [];
   const blocked = [];
+  const today = todayIso();
   for (const row of readyRows) {
     if (labelsOf(row).includes(CLAIM_LABEL)) continue;
+    // A DECLARED WAIT SHELVES THE ROW RATHER THAN HIDING IT. It goes to `blocked` with its reason, so
+    // the tick log says why -- a row that vanishes silently is the failure `blocked` already is.
+    const waiting = waitingOn(row, today);
+    if (waiting) {
+      blocked.push({ number: Number(row.number), owner: laneOwnerOf(row),
+        reason: `${describeWaiting(waiting)} -- declared on the row, and it clears itself` });
+      continue;
+    }
     const reason = blockedOnOpenPr(row, prFiles, options);
     if (reason) blocked.push({ number: Number(row.number), owner: laneOwnerOf(row), reason });
     else offerable.push(row);
@@ -986,8 +1001,15 @@ function emptyShelfOrder({ offerable, blocked, promotable }) {
  */
 export function readOpenRowCount(run = defaultRun) {
   try {
-    const parsed = JSON.parse(run(["issue", "list", "--state", "open", "--limit", "500", "--json", "number"]));
-    return Array.isArray(parsed) ? parsed.length : null;
+    const parsed = JSON.parse(run(["issue", "list", "--state", "open", "--limit", "500",
+      "--json", "number,body,blockedBy"]));
+    if (!Array.isArray(parsed)) return null;
+    // ROWS THAT ARE CORRECTLY WAITING ARE NOT A STALL, and counting them as one would be this switch
+    // crying wolf -- the exact failure its own comment says matters more than the missing-switch one.
+    // A queue where every row declares what it waits on is WORKING; the switch must fire on rows that
+    // COULD move and are not moving.
+    const today = todayIso();
+    return parsed.filter((r) => waitingOn(r, today) === null).length;
   } catch {
     return null;
   }
