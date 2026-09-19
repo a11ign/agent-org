@@ -21,6 +21,13 @@ import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
+// THE ONE THING THIS FILE ASKS THAT IS NOT ABOUT DELIVERY. A session herdr reports as `blocked` is
+// stopped on a question nobody will answer, and `wake.mjs`'s `WAKEABLE` is `idle`/`done` -- so it is
+// never offered another cause and never mentioned anywhere. It has to be reported from HERE rather than
+// from `wake`, because `afterGate` returns `deliver: false` on a QUIET gate and `wake` is then never
+// run at all -- which is exactly the state it was found in: a quiet queue and a session stuck behind a
+// menu since nobody knows when.
+import { readAgents, blockedSessions } from "./wake.mjs";
 
 /** `0` the tick completed (quiet or delivered); `1` orders had nowhere to go; `2` a read was refused. */
 export const EXIT = { QUIET: 0, ATTENTION: 1, CANNOT_ASK: 2 };
@@ -61,6 +68,18 @@ function main() {
     process.exit(EXIT.CANNOT_ASK);
   }
   if (gate.stderr) process.stderr.write(gate.stderr);
+
+  // BEFORE THE QUIET EXIT, DELIBERATELY. A blocked session is most invisible precisely when the queue is
+  // quiet -- there is no other output that tick, and nothing else looks at the roster.
+  const roster = readAgents();
+  if (roster !== null) {
+    const blocked = blockedSessions(roster);
+    if (blocked.length > 0) {
+      process.stderr.write(`BLOCKED ${blocked.join(", ")} -- stopped on a question nobody is going to `
+        + "answer. A blocked session is NOT wakeable, so it takes no further cause until a human clears "
+        + "it: read its pane (`herdr --session org agent read <name>`) and answer, or restart it.\n");
+    }
+  }
 
   const next = afterGate(gate.status ?? EXIT.CANNOT_ASK);
   if (next.why) process.stderr.write(`${next.why}\n`);

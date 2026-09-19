@@ -13,7 +13,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { route, undelivered, parseOrders, readLedger, deliver, readAgents, WAKEABLE, EXIT,
-  WAKE_TTL_MS, JUDGMENT_TTL_MS, MAX_DELIVERIES, deliveryCounts, endedRuns, RESET }
+  WAKE_TTL_MS, JUDGMENT_TTL_MS, MAX_DELIVERIES, deliveryCounts, endedRuns, RESET,
+  blockedSessions }
   from "../wake.mjs";
 import { afterGate, GATE, EXIT as TICK_EXIT } from "../work-tick.mjs";
 import { spawnInvocation, addressed, clearContext, CLEAR_TIMEOUT_MS, CLEAR_SETTLE_MS }
@@ -565,4 +566,52 @@ test("the escalation line names someone OTHER than the recipient, for every sess
     "ceo's route is the chairman, who has no session -- say that rather than name something unreachable");
   assert.match(addressed(order, "worker-judge"), /message `product-manager`/,
     "and everyone else still goes to the first reader for rows");
+});
+
+// --- a blocked session says so, because nothing else will (2026-09-19) ---
+
+/**
+ * THE WORKER THAT REMOVED ITSELF FROM THE POOL IN SILENCE. `WAKEABLE` is `idle`/`done`, so a session
+ * herdr reports as `blocked` -- stopped mid-turn on a question nobody is going to answer -- is never
+ * offered another cause. It writes nothing to any row, and to every check the org has it looks exactly
+ * like an idle agent.
+ *
+ * Measured: `worker-capture` sat `blocked` on row #1335 behind an "How should I proceed?" menu, and the
+ * only thing that found it was the chairman reading the terminal. The wake prompt already forbids asking
+ * ("nobody is at this terminal to answer you"), so this does not try to prevent it -- an instruction
+ * cannot stop a model reaching for a tool it has, and a session can meet a question genuinely worth
+ * asking. What was missing is that asking made it disappear.
+ *
+ * `work-tick.mjs` calls this BEFORE its quiet exit, because a blocked session is most invisible exactly
+ * when the queue is quiet: `afterGate` returns `deliver: false` on QUIET and `wake` never runs at all.
+ */
+test("a session herdr calls `blocked` is named, so asking a human cannot be silent", () => {
+  assert.deepEqual(blockedSessions([
+    { label: "worker-capture", status: "blocked" },
+    { label: "ceo", status: "idle" },
+    { label: "worker-judge", status: "working" },
+  ]), ["worker-capture"]);
+});
+
+/**
+ * THE POSITIVE CONTROL. A predicate that named every session would make the tick shout on every quiet
+ * minute, which is how a real signal becomes something people filter out -- the failure this whole file
+ * is written against one level up.
+ */
+test("no session is named when none is blocked, including a full and busy roster", () => {
+  assert.deepEqual(blockedSessions([]), [], "an empty roster names nobody");
+  assert.deepEqual(blockedSessions(WAKEABLE.map((status, i) => ({ label: `s${i}`, status }))), [],
+    "every WAKEABLE status is the ordinary state and must never be reported");
+  assert.deepEqual(blockedSessions([{ label: "a", status: "working" }, { label: "b", status: "unknown" }]), [],
+    "`working` is the org doing its job; `unknown` is herdr not knowing, which is not the same claim as "
+    + "a session stopped on a question and must not be reported as one");
+});
+
+test("several blocked sessions are all named, in the order herdr gave them", () => {
+  assert.deepEqual(blockedSessions([
+    { label: "reviewer", status: "blocked" },
+    { label: "ceo", status: "idle" },
+    { label: "worker-tooling", status: "blocked" },
+  ]), ["reviewer", "worker-tooling"],
+  "reporting only the first would leave the second exactly as invisible as before");
 });

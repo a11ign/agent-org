@@ -48,6 +48,27 @@ export const EXIT = { QUIET: 0, ATTENTION: 1, CANNOT_ASK: 2 };
 /** The only states that may receive a prompt. `blocked` is herdr's own refusal; `unknown` is no agent. */
 export const WAKEABLE = Object.freeze(["idle", "done"]);
 
+/**
+ * The sessions herdr reports as `blocked` -- stopped mid-turn on a question nobody is going to answer.
+ *
+ * A BLOCKED SESSION IS NOT WAKEABLE AND REPORTS NOTHING, which is the whole reason this exists. `WAKEABLE`
+ * is `idle`/`done`, so a session that asks a human is never offered another cause -- it removes itself
+ * from the pool permanently, writes nothing to any row, and looks exactly like an idle agent to every
+ * check the org has. Measured 2026-09-19: `worker-capture` sat `blocked` on row #1335 behind an
+ * "How should I proceed?" menu, and the only thing that found it was the chairman reading the terminal.
+ *
+ * THE WAKE PROMPT ALREADY FORBIDS THIS -- "nobody is at this terminal to answer you ... never stop and
+ * wait on a human" -- so this does not try to prevent it. An instruction cannot stop a model reaching for
+ * a tool it has, and a session CAN meet a question worth asking. What was missing is that asking made it
+ * disappear silently. This makes it loud.
+ *
+ * @param {{ label: string, status: string }[]} agents
+ * @returns {string[]} the labels, in the order herdr gave them
+ */
+export function blockedSessions(agents) {
+  return agents.filter((a) => a.status === "blocked").map((a) => a.label);
+}
+
 /** @param {string[]} args */
 const defaultRun = (args) => execFileSync("herdr", args, { encoding: "utf8", timeout: 30_000 });
 
