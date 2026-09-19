@@ -17,7 +17,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES,
-  comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER }
+  comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder }
   from "../work-gate.mjs";
 
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
@@ -552,7 +552,7 @@ test("drain OFF changes nothing, so the flag cannot cost anything when it is not
 test("every cause is classified as START or FINISH -- a new one cannot default into a window", () => {
   const finish = CAUSES.filter((c: string) => !START_CAUSES.includes(c)).sort();
   assert.deepEqual([...START_CAUSES].sort(),
-    ["lane-backlog-unpromoted", "ready-queue-empty", "ready-row-unclaimed"]);
+    ["lane-backlog-unpromoted", "org-stalled", "ready-queue-empty", "ready-row-unclaimed"]);
   assert.deepEqual(finish, ["chairman-blocked", "draft-awaiting-verdict", "draft-convinced-not-ready",
     "pr-checks-failing", "verdict-not-convinced"]);
   for (const cause of START_CAUSES) {
@@ -565,4 +565,53 @@ test("the drain switch is a FILE, because turning a window on and off is an ssh 
     "it sits beside the wake ledger: one directory holds the org's runtime state");
   assert.equal(draining("/some/marker", () => true), true);
   assert.equal(draining("/some/marker", () => false), false);
+});
+
+// --- the dead man's switch: a cause that fires on the ABSENCE of causes (2026-09-19) ---
+
+/**
+ * EVERY OTHER CAUSE FIRES ON A POSITIVE STATE -- a draft exists, a row is unclaimed, a check is red. None
+ * can fire on NOTHING HAPPENING, and that is the failure mode this org actually has. `work-gate` exits
+ * QUIET when no known cause matched, and that single exit covers two different worlds: "there is
+ * genuinely nothing to do" and "there is plenty to do and no cause can see it". They were
+ * indistinguishable, so the absence of a signal was reported as health.
+ *
+ * Measured over 48 hours: a worker unable to capture for 4.9 days; #63 step 9 unstarted for 18 hours with
+ * the publish blocked behind it; ten rows gated on a condition that had become true; a session stopped
+ * behind a menu. Every time the gate was honestly QUIET and every session honestly idle.
+ */
+test("nothing fired and rows are open -- the org is stalled and ceo is told", () => {
+  const order = stalledOrder({ orders: [], openRows: 56 });
+  assert.equal(order?.session, "ceo", "a management question, not a queue one");
+  assert.equal(order?.cause, "org-stalled");
+  assert.equal(order?.discriminator, "56", "the count, so a tracker that moved is a new question");
+  assert.match(order?.prompt ?? "", /NOT the org being finished/,
+    "the whole point is distinguishing an empty queue from an unreachable one");
+});
+
+/**
+ * THE POSITIVE CONTROL, and the one that matters most: a switch that fires beside real work is noise, and
+ * noise is how a real signal gets filtered out. The pattern's own literature is blunter about this
+ * failure than about the missing-switch one.
+ */
+test("it stays silent whenever ANY other cause fired", () => {
+  assert.equal(stalledOrder({ orders: [{ cause: "ready-row-unclaimed" }], openRows: 56 }), null,
+    "one order anywhere means some cause can still reach the org");
+});
+
+test("an EMPTY tracker is not a stall -- it is the one silence that is healthy", () => {
+  assert.equal(stalledOrder({ orders: [], openRows: 0 }), null,
+    "an org with no open rows has finished; paging for that teaches people to ignore the page");
+});
+
+test("a REFUSED read is not an empty tracker, and must not be read as either state", () => {
+  assert.equal(stalledOrder({ orders: [], openRows: null }), null,
+    "#1286's rule: null is 'could not ask', and guessing a stall from it would page on a gh outage");
+});
+
+test("org-stalled is a JUDGMENT cause and a START cause, and both matter", () => {
+  assert.ok(CAUSES.includes("org-stalled"), "it must be in CAUSES or worker-profile refuses it at run time");
+  assert.ok(START_CAUSES.includes("org-stalled"),
+    "a drain makes the org idle ON PURPOSE -- a switch that fires during a transfer window is one people "
+    + "learn to ignore");
 });

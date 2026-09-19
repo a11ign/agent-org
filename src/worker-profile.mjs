@@ -129,6 +129,20 @@ export const PROFILES = Object.freeze({
     why: "a lane owner is the only session that may promote its own rows, so a wrong call here strands "
       + "work nobody else can pick up",
   }),
+  "org-stalled": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // HIGH, and this is the one cause whose input is an ABSENCE. Every other profile here reasons over
+    // something the gate handed it -- a diff, a verdict, a failing check. This one is handed the fact
+    // that nothing fired, and has to work out which of a dozen possible reasons is true THIS time: a
+    // label whose condition became true, a capability that recovered, a step that exists only as prose,
+    // a session stopped behind a menu. Diagnosis from silence is the hardest reasoning in the table, and
+    // getting it wrong means the org stands still for another two hours with everyone idle.
+    effort: "high",
+    why: "diagnosis from an absence: the gate found nothing and the answer is whichever of a dozen gates "
+      + "silently stopped being true. Measured over 48 hours, every instance was a different shape, and "
+      + "the only thing that ever noticed was a human reading a terminal.",
+  }),
   "chairman-blocked": Object.freeze({
     kind: "claude",
     model: "sonnet",
