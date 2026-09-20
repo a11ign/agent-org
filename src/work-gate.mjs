@@ -633,37 +633,41 @@ export function answersOwed(rows) {
 }
 
 /**
- * One order per session that owes an answer.
+ * One order PER ROW that owes an answer, keyed on the row.
  *
- * NOT A JUDGMENT CAUSE, deliberately, and it is the only one of the four that is not. The others ask
- * "what should happen next", which is a standing question that deserves a two-hour TTL. This one names a
- * question SOMEONE ELSE IS BLOCKED ON, and the 20-minute wake TTL is the right cadence for it -- six and
- * a half hours is what the absence of any cadence already cost.
+ * PER ROW FOR #1799's REASON, applied before it could bite: each row carries a DIFFERENT question, so a
+ * count-keyed order would re-ask about every outstanding question each time any one of them was
+ * answered. It also makes the prompt name ONE question rather than hand over a list.
  *
- * NOT a START cause either: answering a question that is already being waited on FINISHES work in
- * flight, so a drain wants it to happen.
+ * This cause had never fired when it was re-keyed -- zero ledger entries -- so unlike
+ * `lane-backlog-unpromoted` there is no measured waste here, only the identical shape.
+ *
+ * NOT A JUDGMENT CAUSE, and the only one of the four that is not. The others ask "what should happen
+ * next", a standing question deserving the 2h TTL. This names a question SOMEONE ELSE IS BLOCKED ON, so
+ * it takes the 20-minute wake cadence -- 6.5 hours is what the absence of any cadence already cost.
  *
  * @param {any[]} rows
  */
 export function answerOrders(rows) {
   const orders = [];
   for (const [session, owed] of answersOwed(rows)) {
-    const named = owed.slice(0, 8).map((/** @type {any} */ r) => `#${r.number}`).join(", ");
-    orders.push({
-      session,
-      cause: "answer-owed",
-      subject: session,
-      discriminator: String(owed.length),
-      prompt: `${owed.length} row(s) are WAITING ON AN ANSWER FROM YOU: ${named}`
-        + `${owed.length > 8 ? ", ..." : ""}. Another session asked you something and cannot move until `
-        + "you reply -- read the row's most recent comments for the question.\n"
-        + "ANSWER ON THE ROW, then remove the `" + ANSWER_PREFIX + session + "` label: taking the label "
-        + "off IS the act of answering, and it is the only thing that stops this being asked again.\n"
-        + "\"I cannot answer this\" is an answer -- say so, say who can, and re-label it to them. "
-        + "What is not an answer is silence: on 2026-09-20 a question sat unread for 6.5 hours while the "
-        + "session that asked it re-posted five times, because nothing in this org reads comments.",
-      causeKey: `${session}/answer-owed/${session}/${owed.length}`,
-    });
+    for (const row of owed.slice(0, MAX_ROW_ORDERS_PER_TICK)) {
+      orders.push({
+        session,
+        cause: "answer-owed",
+        subject: `row-${row.number}`,
+        discriminator: String(row.number),
+        prompt: `#${row.number} IS WAITING ON AN ANSWER FROM YOU. Another session asked you something `
+          + "there and cannot move until you reply -- read that row's most recent comments for the "
+          + "question.\n"
+          + `ANSWER ON THE ROW, then remove its \`${ANSWER_PREFIX}${session}\` label: taking the label `
+          + "off IS the act of answering, and it is the only thing that stops this being asked again.\n"
+          + "\"I cannot answer this\" is an answer -- say so, say who can, and re-label it to them. "
+          + "What is not an answer is silence: on 2026-09-20 a question sat unread for 6.5 hours while "
+          + "the session that asked it re-posted five times, because nothing in this org reads comments.",
+        causeKey: `${session}/answer-owed/row-${row.number}`,
+      });
+    }
   }
   return orders;
 }
@@ -1066,50 +1070,56 @@ function laneBacklogOrders(promotableRows, readyRows) {
     const readyHere = readyRows.filter((r) => ownerOf(r) === owner
       && !labelsOf(r).includes(CLAIM_LABEL));
     if (mine.length === 0 || readyHere.length > 0) continue;
-    orders.push(backlogOrder(owner, mine));
+    orders.push(...backlogOrders(owner, mine));
   }
   return orders;
 }
 
 /**
- * The order itself. Split out so `laneBacklogOrders` stays a loop and this stays a sentence.
+ * The orders a lane owner's backlog deserves -- ONE PER ROW, keyed on the row.
  *
- * THE OWNERSHIP SENTENCE IS EARNED PER SET, not asserted. "Nobody else may promote these" is TRUE of a
- * lane and FALSE of a routed row -- anyone may promote a `fleet-gated` row; only `orchestrator` can run
- * its acceptance. Saying the stronger thing about both would be the same conflation, one level up.
+ * KEYED PER ROW BECAUSE A STANDING JUDGMENT IS ABOUT A ROW, NOT ABOUT A COUNT. This used to emit one
+ * order keyed `.../<count>`, and #1799 showed why that is wrong for `epic-unfiled`: the count conflates
+ * *did the population I still need to judge change* with *did something unrelated get filed*. Every time
+ * ANY row entered or left the lane the count moved, the causeKey changed, and `JUDGMENT_TTL_MS` could no
+ * longer protect the rows whose answer had not changed. #1806 fixed `epic-unfiled` that way; this is the
+ * same fix, applied to the cause the SAME LEDGER shows the SAME defect in.
+ *
+ * MEASURED 2026-09-20 on the live ledger -- twelve deliveries to `orchestrator` over 10.4 hours:
+ *
+ *   /3 /3 /2 /2 /3 /4 /7 /6 /5 /3 /3 /3
+ *
+ * SEVEN OF THE TWELVE fired INSIDE the two-hour TTL, at gaps of 4, 18, 4, 22, 27, 10 and 57 minutes --
+ * each one a `sonnet`/`high` turn re-asking about rows already judged. The five that behaved are the
+ * ones where the count happened not to move.
+ *
+ * THE PROMPT IMPROVES BY THE SAME CHANGE. "You own 7 rows, promote what is ready" is a survey; "#1663 is
+ * in your lane and nothing is Ready" is a question with an answer, which is what this file's own header
+ * asks of every prompt.
  *
  * @param {string} owner @param {any[]} mine
  */
-function backlogOrder(owner, mine) {
-  const laned = mine.filter((/** @type {any} */ r) => laneOwnerOf(r) === owner).length;
-  const routed = mine.length - laned;
-  return {
+function backlogOrders(owner, mine) {
+  return mine.slice(0, MAX_ROW_ORDERS_PER_TICK).map((/** @type {any} */ r) => ({
     session: owner,
     cause: "lane-backlog-unpromoted",
-    subject: owner,
-    // The count is the discriminator, so the order stops once the owner promotes one and re-fires if
-    // the set empties again at a different depth -- the same shape as `ready-queue-empty`.
-    discriminator: String(mine.length),
-    prompt: `You own ${mine.length} open backlog row(s) and NOTHING Ready among them: `
-      + `${mine.slice(0, 8).map((/** @type {any} */ r) => `#${r.number}`).join(", ")}`
-      + `${mine.length > 8 ? ", ..." : ""}.`
-      + (laned ? ` ${laned} carry your lane: nobody else may promote these -- the lane is yours.` : "")
-      + (routed ? ` ${routed} carry \`fleet-gated\`, which ROUTES rather than blocks: the acceptance `
-        + "needs the fleet or the lab, which you run. Check the fleet is up (`npm run fleet:status`) "
-        + "before deciding -- these rows are not waiting on hardware being broken." : "")
-      + "\nPromote what is genuinely ready (a Region, an Acceptance, a done-when), answer what is waiting "
-      + "on a decision, and say so on anything that should stay put. This is a report of what is "
-      + "waiting on you, not a quota: promoting nothing and recording why is a valid answer.\n"
-      // RECORDED ON THE ROW, NOT IN THE TERMINAL, and this sentence exists because that is exactly what
-      // went wrong: `orchestrator` reached a correct and well-argued answer on #1564 -- research row,
-      // no Acceptance, waiting on a ceo ruling -- and wrote it only to its own screen. The org cannot
-      // read a terminal. Nothing changed, so nothing downstream could tell the question had been
-      // answered rather than ignored.
-      + "RECORD THE ANSWER ON THE ROW, as a comment, whatever it is. A decision that exists only in "
-      + "your terminal is one the org cannot see: the next reader finds an untouched row and has to "
-      + "derive your conclusion again from scratch.",
-    causeKey: `${owner}/lane-backlog-unpromoted/${owner}/${mine.length}`,
-  };
+    subject: `row-${r.number}`,
+    discriminator: String(r.number),
+    prompt: `#${r.number} is an open backlog row you own and there is NOTHING Ready among your rows.`
+      + (laneOwnerOf(r) === owner
+        ? " It carries your lane: nobody else may promote it."
+        : " It carries `fleet-gated`, which ROUTES rather than blocks -- the acceptance needs the fleet"
+          + " or the lab, which you run. Check the fleet is up (`npm run fleet:status`) first; this row"
+          + " is not waiting on hardware being broken.")
+      + "\nPromote it if it is genuinely ready (a Region, an Acceptance, a done-when), answer it if it "
+      + "waits on a decision, or say on the row why it should stay put -- leaving it and recording why "
+      + "is a valid answer.\n"
+      + "READ ITS OWN RECENT COMMENTS FIRST: a durable reason recorded there stands until something "
+      + "about THIS row changes, not until an unrelated row moves (#1799).\n"
+      + "RECORD THE ANSWER ON THE ROW, whatever it is. A decision that exists only in your terminal is "
+      + "one the org cannot see: the next reader finds an untouched row and re-derives it from scratch.",
+    causeKey: `${owner}/lane-backlog-unpromoted/row-${r.number}`,
+  }));
 }
 
 /**
