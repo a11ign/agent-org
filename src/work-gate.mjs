@@ -189,9 +189,15 @@ export const GH_READS = Object.freeze({
  * so counting it as available capacity would report a queue five engineers could share when one of them
  * would be waiting on a worker box. The rest come from `ready:audit`'s own list of labels that mean a row
  * cannot be started.
+ *
+ * `meta` joined 2026-09-20 (#1804): a `backlog`+`meta` row ("Not work: a container or process row") has
+ * no Region/Acceptance/done-when shape to promote and, unlike `fleet-gated`, is not routed to anyone
+ * either -- so it belongs in the POOL's list, not just the owner's subtraction. #20 (the daily board
+ * report thread) carried `backlog`+`meta` with no other `NOT_STARTABLE` label and kept re-triggering
+ * `ready-queue-empty` on a judgment already settled five times that day.
  */
 export const NOT_PICKABLE = Object.freeze(["blocked", "fleet-gated", "epic", "disputed", "decision",
-  "awaiting-merge", "review-only", CLAIM_LABEL]);
+  "awaiting-merge", "review-only", "meta", CLAIM_LABEL]);
 
 /**
  * LABELS THAT ROUTE WORK RATHER THAN STOPPING IT -- the distinction this file did not draw.

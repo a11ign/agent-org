@@ -820,14 +820,32 @@ test("routing says WHOSE the work is, never that it can start", () => {
   assert.deepEqual(read([gated(1567, "in-progress")]), [], "and a claimed row is somebody's already");
 });
 
-test("NOT_PICKABLE is unchanged, and NOT_STARTABLE is derived from it", () => {
+test("NOT_PICKABLE now names meta too (#1804), and NOT_STARTABLE is still derived from it", () => {
   // DERIVED, NEVER RETYPED. Two hand-maintained lists that must stay in step is the defect this repo
   // names as its most expensive; the pool's list is the source and the owner's is subtraction.
+  //
+  // `meta` joined the pin deliberately on 2026-09-20 (#1804): a container/process row is not routed to
+  // anyone, so it belongs in the POOL's list rather than only in the owner's subtraction -- unlike
+  // `fleet-gated`, there is no session `meta` should still reach.
   assert.deepEqual(NOT_PICKABLE, ["blocked", "fleet-gated", "epic", "disputed", "decision",
-    "awaiting-merge", "review-only", "in-progress"], "the POOL's view must not have moved");
+    "awaiting-merge", "review-only", "meta", "in-progress"], "the POOL's view moved once, on purpose");
   assert.deepEqual(NOT_STARTABLE, NOT_PICKABLE.filter((n: string) => !(n in ROUTED_TO)));
   assert.ok(!NOT_STARTABLE.includes("fleet-gated"));
   assert.ok(NOT_STARTABLE.includes("blocked"), "routing subtracts only what it routes");
+  assert.ok(NOT_STARTABLE.includes("meta"), "a meta row is not routed, so it stays excluded for everyone");
+});
+
+test("a backlog+meta row is not promotable (#1804): #20 stopped re-asking a settled judgment", () => {
+  // #20 ("Daily board report") is a permanent thread carrying exactly `backlog`+`meta`, with `epic`
+  // correctly removed on 2026-09-20 -- and `meta` alone did not exclude it, so `ready-queue-empty` fired
+  // on the same settled judgment every time the shelf emptied.
+  const read = (rows: unknown[]) => {
+    const got = readPromotableRows(() => JSON.stringify(rows));
+    assert.ok(got !== null, "the fixture read must not be refused");
+    return got;
+  };
+  const dailyReport = { number: 20, labels: [{ name: "backlog" }, { name: "meta" }] };
+  assert.deepEqual(read([dailyReport]), [], "a container/process row has no Region/Acceptance to promote");
 });
 
 /**
