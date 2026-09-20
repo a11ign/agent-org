@@ -704,37 +704,57 @@ export function unfiledEpics(epics) {
 }
 
 /**
- * The order an unfiled backlog deserves, or `null`.
+ * One order per unfiled epic, oldest first, capped -- the orders an unfiled backlog deserves.
  *
- * THE COUNT IS THE DISCRIMINATOR, so it stops once `product-manager` splits one and re-fires at a new
- * depth -- the same shape as `ready-queue-empty` and `lane-backlog-unpromoted`, and the reason no new
- * "it got better" mechanism is needed.
+ * ONE ORDER PER EPIC, NOT ONE ORDER NAMING EVERY EPIC, for the reason `rowOrders` already settled: a
+ * causeKey built from the COUNT conflates two different questions -- did the epic I judged change, and
+ * did an unrelated epic get filed by someone else. #1799 measured this against the live ledger: the same
+ * three epics (#69, #57, #20) were re-litigated from scratch four times in under an hour, each time a
+ * DIFFERENT epic elsewhere was filed and dropped the count by one, minting a causeKey `product-manager`
+ * had never seen and so never protected by `JUDGMENT_TTL_MS` --
+ *
+ *   10:25:37Z  product-manager/epic-unfiled/epics/16
+ *   10:41:54Z  product-manager/epic-unfiled/epics/9
+ *   11:08:07Z  product-manager/epic-unfiled/epics/5
+ *   11:20:30Z  product-manager/epic-unfiled/epics/3
+ *
+ * Every verdict was independently correct -- "reviewed, not split... blocked-by #5", three times over --
+ * the defect was that the judgment had to be redone at all. Keying on the remaining SET instead of the
+ * count has the same defect spelled differently: the population still changes on every delivery, because
+ * a different epic drops out each time.
+ *
+ * PER-EPIC KEYING FIXES IT BECAUSE AN UNCHANGED EPIC IS AN UNCHANGED QUESTION. `causeKey` now names the
+ * epic, not the shelf: filing #16 elsewhere removes #16's own order and leaves #69's, #57's and #20's
+ * causeKeys byte-identical, so `JUDGMENT_TTL_MS` protects each one exactly as long as that epic's own
+ * answer has not moved -- the same property `ready-row-unclaimed` already has over `ready-queue-empty`.
  *
  * @param {any[]} epics @param {any[]} readyRows
+ * @returns {{session: string, cause: string, subject: string, discriminator: string,
+ *            prompt: string, causeKey: string}[]}
  */
-export function epicOrder(epics, readyRows) {
+export function epicOrders(epics, readyRows) {
   // ONLY WHEN THE SHELF IS EMPTY. An epic left whole while there is claimable work is a priority call,
   // not a defect; it becomes the org's most urgent question only when there is nothing else to pick up.
-  if (readyRows.length > 0) return null;
+  if (readyRows.length > 0) return [];
   const unfiled = unfiledEpics(epics);
-  if (unfiled.length === 0) return null;
-  const named = unfiled.slice(0, 8).map((/** @type {any} */ e) => `#${e.number}`).join(", ");
-  return {
+  return unfiled.slice(0, MAX_ROW_ORDERS_PER_TICK).map((/** @type {any} */ e) => ({
     session: "product-manager",
     cause: "epic-unfiled",
-    subject: "epics",
-    discriminator: String(unfiled.length),
-    prompt: `NOTHING IS READY AND ${unfiled.length} OPEN EPIC(S) HAVE NO SUB-ISSUES: ${named}`
-      + `${unfiled.length > 8 ? ", ..." : ""}. An epic with no children is not a container -- it is work `
-      + "nobody has filed, and it is invisible to every other cause because `epic` means NOT PICKABLE.\n"
-      + "Split what is genuinely splittable into rows an engineer can claim (a Region, an Acceptance, a "
-      + "done-when), using `gh issue edit <child> --parent <epic>` so the link is DATA rather than prose. "
-      + "An epic waiting on a decision or a release is correctly whole: say so on it and move on -- "
-      + "splitting none and recording why is a valid answer.\n"
+    subject: `epic-${e.number}`,
+    discriminator: String(e.number),
+    prompt: `NOTHING IS READY AND #${e.number}${e.title ? ` (${e.title})` : ""} IS AN OPEN EPIC WITH NO `
+      + "SUB-ISSUES. An epic with no children is not a container -- it is work nobody has filed, and it "
+      + "is invisible to every other cause because `epic` means NOT PICKABLE.\n"
+      + "Split it into rows an engineer can claim (a Region, an Acceptance, a done-when), using "
+      + `\`gh issue edit <child> --parent ${e.number}\` so the link is DATA rather than prose. An epic `
+      + "waiting on a decision or a release is correctly whole: say so on it and move on -- leaving it "
+      + "whole and recording why is a valid answer, and READ ITS OWN RECENT COMMENTS FIRST -- a durable "
+      + "reason recorded there stands until something about this epic itself changes, not just until the "
+      + "next unrelated epic gets filed.\n"
       + "PREFER THE ONES THE FLEET CAN ALREADY SERVE. The fleet is the org's scarcest resource and it "
-      + "sits idle when capture work is unfiled; `fleet-gated` epics are where the idle capacity is.",
-    causeKey: `product-manager/epic-unfiled/epics/${unfiled.length}`,
-  };
+      + "sits idle when capture work is unfiled; a `fleet-gated` epic is where the idle capacity is.",
+    causeKey: `product-manager/epic-unfiled/epic-${e.number}`,
+  }));
 }
 
 /**
@@ -1391,8 +1411,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
 
   // AFTER the lane orders and BEFORE the chairman's: an unfiled epic is a supply problem, which only
   // matters once the queue and the lanes have nothing left to offer.
-  const epic = epicOrder(epics, readyRows);
-  if (epic) orders.push(epic);
+  orders.push(...epicOrders(epics, readyRows));
 
   orders.push(...chairmanOrders(chairmanBlocked));
 
