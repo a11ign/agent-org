@@ -20,7 +20,8 @@ import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReady
   comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
   blockingChecks, anyChecksRed, requiredCheckNames, ownerOf, NOT_PICKABLE, NOT_STARTABLE,
   ROUTED_TO, readPromotableRows, GH_READS, partitionUnclaimed, readOpenRowCount,
-  unfiledEpics, epicOrder, readEpics }
+  unfiledEpics, epicOrder, readEpics, answersOwed, answerOrders, readAnswerOwed,
+  ANSWER_PREFIX }
   from "../work-gate.mjs";
 
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
@@ -557,8 +558,8 @@ test("every cause is classified as START or FINISH -- a new one cannot default i
   assert.deepEqual([...START_CAUSES].sort(),
     ["epic-unfiled", "lane-backlog-unpromoted", "org-stalled", "ready-queue-empty",
       "ready-row-unclaimed"]);
-  assert.deepEqual(finish, ["chairman-blocked", "draft-awaiting-verdict", "draft-convinced-not-ready",
-    "pr-checks-failing", "verdict-not-convinced"]);
+  assert.deepEqual(finish, ["answer-owed", "chairman-blocked", "draft-awaiting-verdict",
+    "draft-convinced-not-ready", "pr-checks-failing", "verdict-not-convinced"]);
   for (const cause of START_CAUSES) {
     assert.ok(CAUSES.includes(cause), `${cause} is withheld by a drain but no longer exists`);
   }
@@ -879,7 +880,10 @@ test("a SUPERSEDED red run does not wake anyone -- the newest run per name is wh
  * sentence. This test is why the next person inherits a checked number.
  */
 test("the gate's read count is counted, not remembered", () => {
-  assert.equal(GH_READS.unconditional.length, 4,
+  // FIVE since `answer-owed` landed. This pin caught that read within a minute of it being added, which
+  // is exactly why it exists: the number it replaced ("two `gh` calls") had been wrong for months
+  // because three readers arrived and nobody re-counted.
+  assert.equal(GH_READS.unconditional.length, 5,
     "if you add or remove an unconditional read, this number and every comment quoting it move together");
   assert.ok(GH_READS.conditionalOnSilence.includes("readOpenRowCount"));
   assert.ok(GH_READS.conditionalOnRed.includes("requiredCheckNames"));
@@ -1045,4 +1049,81 @@ test("epic-unfiled is classified in all three registries", () => {
   assert.ok(CAUSES.includes("epic-unfiled"));
   assert.ok(START_CAUSES.includes("epic-unfiled"),
     "splitting an epic MANUFACTURES work, which is what a drain window exists to stop");
+});
+
+/**
+ * A QUESTION ONE SESSION OWES ANOTHER, SAID IN A FIELD RATHER THAN A SENTENCE.
+ *
+ * MEASURED OVERNIGHT 2026-09-20: `orchestrator` needed a ruling from `product-manager`, wrote the
+ * question as a COMMENT on #914, and nothing in this org reads comments. It asked FIVE TIMES over 6.5
+ * hours. `product-manager`'s own reply: "I should have confirmed sooner rather than let five asks go
+ * unanswered since 01:55Z." Both behaved correctly; the escalation path simply had no mechanism behind
+ * it, so it ran at the speed of someone happening to look.
+ *
+ * A LABEL AND NOT AN ASSIGNEE, decided by data: `repos/:o/:r/assignees` returns FOUR accounts which the
+ * EIGHT sessions share, so an assignee structurally cannot say WHICH session owes the answer.
+ */
+const owedRow = (n: number, session: string) => ({ number: n,
+  labels: [{ name: "backlog" }, { name: `${ANSWER_PREFIX}${session}` }] });
+
+test("a row labelled answer:<session> wakes THAT session, not the pool", () => {
+  const [order] = answerOrders([owedRow(914, "product-manager")]) as
+    { session: string, cause: string, prompt: string }[];
+  assert.equal(order.session, "product-manager");
+  assert.equal(order.cause, "answer-owed");
+  assert.match(order.prompt, /#914/);
+  assert.match(order.prompt, /remove the `answer:product-manager` label/,
+    "removing the label IS the act of answering -- there must be no second state to maintain");
+});
+
+test("two sessions owing answers get one order each, never one combined", () => {
+  const owed = answersOwed([owedRow(1, "ceo"), owedRow(2, "product-manager"), owedRow(3, "ceo")]);
+  assert.deepEqual([...owed.keys()].sort(), ["ceo", "product-manager"]);
+  assert.deepEqual(owed.get("ceo")?.map((r: { number: number }) => r.number), [1, 3]);
+  assert.equal(answerOrders([owedRow(1, "ceo"), owedRow(2, "product-manager")]).length, 2);
+});
+
+test("the count is the discriminator, so answering one re-fires at the new depth", () => {
+  const [before] = answerOrders([owedRow(1, "ceo"), owedRow(2, "ceo")]) as { causeKey: string }[];
+  const [after] = answerOrders([owedRow(1, "ceo")]) as { causeKey: string }[];
+  assert.notEqual(before.causeKey, after.causeKey, "or the ledger would hold the reminder silent");
+  assert.match(after.causeKey, /ceo\/answer-owed\/ceo\/1$/);
+});
+
+test("a bare `answer:` names no session and is ignored", () => {
+  // It would otherwise wake a session called "", which herdr reports as unknown and `wake` then counts
+  // as an order with nowhere to go -- noise that looks like a real undelivered order.
+  assert.equal(answersOwed([{ number: 1, labels: [{ name: "answer:" }] }]).size, 0);
+  assert.equal(answersOwed([{ number: 1, labels: [{ name: "answer: " }] }]).size, 0);
+});
+
+test("rows owing nobody an answer produce nothing", () => {
+  // THE POSITIVE CONTROL: this cause must be able to find nothing, or it fires forever and is muted.
+  assert.deepEqual(answerOrders([{ number: 1, labels: [{ name: "backlog" }] }]), []);
+  assert.deepEqual(answerOrders([]), []);
+  assert.deepEqual(answerOrders(undefined as never), []);
+});
+
+test("it is delivered BEFORE every other cause", () => {
+  // Every other order asks a session what should happen next. This one says another session is ALREADY
+  // STOPPED waiting on them, which outranks any standing question.
+  const orders = decide({ prs: [], readyRows: [], promotableRows: [],
+    answerOwed: [owedRow(914, "product-manager")] }) as { cause: string }[];
+  assert.equal(orders[0].cause, "answer-owed");
+});
+
+test("answer-owed is a WAKE cause and a FINISH cause, unlike the other three", () => {
+  // 20-minute TTL, not the judgment two hours: this names a question someone is blocked on, and 6.5
+  // hours is what the absence of any cadence already cost. And answering FINISHES work in flight, so a
+  // drain wants it to happen rather than withholding it.
+  assert.ok(CAUSES.includes("answer-owed"));
+  assert.ok(!START_CAUSES.includes("answer-owed"), "a drain must not withhold an answer someone waits on");
+});
+
+test("readAnswerOwed refuses rather than reporting nobody is waiting", () => {
+  assert.equal(readAnswerOwed(() => { throw new Error("HTTP 502"); }), null);
+  assert.equal(readAnswerOwed(() => "not json"), null);
+  const rows = [owedRow(914, "ceo"), { number: 2, labels: [{ name: "backlog" }] }];
+  assert.deepEqual(readAnswerOwed(() => JSON.stringify(rows))?.map((r: { number: number }) => r.number),
+    [914], "and it filters to only the rows that owe, so the caller never scans the whole tracker");
 });

@@ -62,7 +62,7 @@ export const EXIT = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3 };
 /** The causes this gate can emit. `wake.mjs` and the matrix validate against this list, never a copy. */
 export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-convinced-not-ready",
   "verdict-not-convinced", "pr-checks-failing", "ready-queue-empty", "lane-backlog-unpromoted",
-  "chairman-blocked", "org-stalled", "epic-unfiled"];
+  "chairman-blocked", "org-stalled", "epic-unfiled", "answer-owed"];
 
 /**
  * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
@@ -91,7 +91,7 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
  * asked forty times.
  */
 export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog-unpromoted",
-  "chairman-blocked", "org-stalled", "epic-unfiled"]);
+  "chairman-blocked", "org-stalled", "epic-unfiled", "answer-owed"]);
 
 /**
  * The causes that START new work, as opposed to finishing work already begun.
@@ -177,7 +177,7 @@ export function readPrs(run = defaultRun) {
  */
 export const GH_READS = Object.freeze({
   unconditional: ["pr list", "issue list --label ready", "issue list --label backlog",
-    "issue list --label chairman-blocked"],
+    "issue list --label chairman-blocked", "issue list (answer: labels)"],
   conditionalOnSilence: "issue list --state open (readOpenRowCount)",
   conditionalOnRed: "api branches/main/protection (requiredCheckNames)",
 });
@@ -551,6 +551,118 @@ export function readEpics(run = defaultRun) {
 }
 
 /**
+ * Every open row that carries an `answer:` label, and nothing else.
+ *
+ * SERVER-SIDE IS NOT AVAILABLE HERE. `gh issue list --label` matches one exact label, and this is a
+ * PREFIX over eight possible names, so the filter is local. The read is still one call and asks only for
+ * `number,labels` -- no bodies, which is what keeps a 500-row page cheap.
+ *
+ * EVERY OPEN ROW, not just the promotable ones. A question can sit on a `blocked` or `epic` row -- #914,
+ * the row that cost 6.5 hours, is `fleet-gated` and would have been outside a promotable-only read. A
+ * cause that could not see the row it was written for would be the same defect one level up.
+ *
+ * @param {(args: string[]) => string} [run]
+ * @returns {any[] | null} `null` when refused, never `[]`
+ */
+export function readAnswerOwed(run = defaultRun) {
+  try {
+    const parsed = JSON.parse(run(["issue", "list", "--state", "open", "--limit", "500",
+      "--json", "number,labels"]));
+    if (!Array.isArray(parsed)) return null;
+    return parsed.filter((r) => labelsOf(r).some((/** @type {string} */ n) => n.startsWith(ANSWER_PREFIX)));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A QUESTION ONE SESSION OWES ANOTHER, SAID IN A FIELD RATHER THAN A SENTENCE.
+ *
+ * MEASURED OVERNIGHT 2026-09-20. `orchestrator` needed a ruling from `product-manager` and wrote the
+ * question as a COMMENT on #914. Nothing in this org reads comments, so it went unseen -- it asked FIVE
+ * TIMES over 6.5 hours, and `product-manager`'s own reply says it plainly:
+ *
+ *     "I should have confirmed sooner rather than let five asks go unanswered since 01:55Z."
+ *
+ * Both sessions behaved correctly. The escalation path is the one `agent-practices.md` prescribes. It
+ * simply had no mechanism behind it, so it ran at the speed of someone happening to look.
+ *
+ * THE FOURTH INSTANCE OF ONE DEFECT, and the last of the set: `fleet-gated` (#1770), `blocked` (#1780),
+ * `epic` (#1784), and now a question owed. Each time a session knew something that changed what should
+ * happen next, and could only say it in prose.
+ *
+ * A LABEL AND NOT AN ASSIGNEE, and the data decided that rather than taste. Assignee was the obvious
+ * choice -- GitHub's own field, unused on every open row -- until `repos/:o/:r/assignees` answered with
+ * FOUR accounts (`a11ign-ai-workers`, `a11ign-bot`, `Cemmaw`, `DanBeckDev`) which the EIGHT sessions
+ * share. An assignee structurally cannot say WHICH session owes the answer, which is the only thing this
+ * needs to express. `answer:<session>` joins `session:*` and `hold:*`, an established and BOUNDED family
+ * -- one label per session, not one per instance, so it cannot rot the vocabulary the way
+ * `branch:agent/...` and `worktree:/private/tmp/...` already have.
+ *
+ * IT CLEARS ITSELF BY BEING ANSWERED: removing the label IS the act of answering, so there is no second
+ * state to maintain and nothing to remember. Same property as `blockedBy` and `Not-before:`.
+ */
+export const ANSWER_PREFIX = "answer:";
+
+/**
+ * PURE. Who owes an answer on which rows -- `{ session: rows }`, oldest row first within each session.
+ *
+ * @param {any[]} rows
+ * @returns {Map<string, any[]>}
+ */
+export function answersOwed(rows) {
+  /** @type {Map<string, any[]>} */
+  const owed = new Map();
+  for (const row of rows ?? []) {
+    for (const name of labelsOf(row)) {
+      if (!name.startsWith(ANSWER_PREFIX)) continue;
+      const session = name.slice(ANSWER_PREFIX.length).trim();
+      // AN EMPTY SESSION NAME IS NOT A SESSION. A bare `answer:` would otherwise wake a session called
+      // "", which herdr reports as unknown and `wake` then counts as an order with nowhere to go.
+      if (!session) continue;
+      owed.set(session, [...(owed.get(session) ?? []), row]);
+    }
+  }
+  return owed;
+}
+
+/**
+ * One order per session that owes an answer.
+ *
+ * NOT A JUDGMENT CAUSE, deliberately, and it is the only one of the four that is not. The others ask
+ * "what should happen next", which is a standing question that deserves a two-hour TTL. This one names a
+ * question SOMEONE ELSE IS BLOCKED ON, and the 20-minute wake TTL is the right cadence for it -- six and
+ * a half hours is what the absence of any cadence already cost.
+ *
+ * NOT a START cause either: answering a question that is already being waited on FINISHES work in
+ * flight, so a drain wants it to happen.
+ *
+ * @param {any[]} rows
+ */
+export function answerOrders(rows) {
+  const orders = [];
+  for (const [session, owed] of answersOwed(rows)) {
+    const named = owed.slice(0, 8).map((/** @type {any} */ r) => `#${r.number}`).join(", ");
+    orders.push({
+      session,
+      cause: "answer-owed",
+      subject: session,
+      discriminator: String(owed.length),
+      prompt: `${owed.length} row(s) are WAITING ON AN ANSWER FROM YOU: ${named}`
+        + `${owed.length > 8 ? ", ..." : ""}. Another session asked you something and cannot move until `
+        + "you reply -- read the row's most recent comments for the question.\n"
+        + "ANSWER ON THE ROW, then remove the `" + ANSWER_PREFIX + session + "` label: taking the label "
+        + "off IS the act of answering, and it is the only thing that stops this being asked again.\n"
+        + "\"I cannot answer this\" is an answer -- say so, say who can, and re-label it to them. "
+        + "What is not an answer is silence: on 2026-09-20 a question sat unread for 6.5 hours while the "
+        + "session that asked it re-posted five times, because nothing in this org reads comments.",
+      causeKey: `${session}/answer-owed/${session}/${owed.length}`,
+    });
+  }
+  return orders;
+}
+
+/**
  * AN EPIC WITH NO CHILDREN IS NOT A CONTAINER -- IT IS WORK NOBODY HAS FILED.
  *
  * THE THIRD INSTANCE OF ONE DEFECT. `epic` is in `NOT_PICKABLE`, and rightly: an engineer cannot claim a
@@ -617,6 +729,19 @@ export function epicOrder(epics, readyRows) {
       + "sits idle when capture work is unfiled; `fleet-gated` epics are where the idle capacity is.",
     causeKey: `product-manager/epic-unfiled/epics/${unfiled.length}`,
   };
+}
+
+/**
+ * The epics, but only when there is nothing on the shelf -- an unfiled epic is the org's most urgent
+ * fact only in that state, and a busy tick must not pay to ask.
+ *
+ * (Extracted from `main`, which reached `complexity` 16 with the ternary inline -- the same seam the
+ * dead man's switch and the required-check read each took, and for the same reason.)
+ *
+ * @param {any[]} readyRows
+ */
+function epicsWhenShelfEmpty(readyRows) {
+  return readyRows.length === 0 ? readEpics() ?? [] : [];
 }
 
 /**
@@ -1221,7 +1346,7 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *
  * @param {{ prs: any[], readyRows: any[], promotableRows?: any[], chairmanBlocked?: any[],
  *           prFiles?: { number: number, files: string[], changedFiles: number }[],
- *           drain?: boolean, required?: string[] | null, epics?: any[] }} state
+ *           drain?: boolean, required?: string[] | null, epics?: any[], answerOwed?: any[] }} state
  *        `required` is the checks that can block a merge (`requiredCheckNames`), or `null` for
  *        "could not be read", which counts EVERY check as before this existed.
  *        `epics` are the open `epic` rows with their `subIssuesSummary` (`readEpics`); `[]` when
@@ -1235,8 +1360,10 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *            prompt: string, causeKey: string}[]}
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
-  drain = false, required = null, epics = [] }) {
-  const orders = [];
+  drain = false, required = null, epics = [], answerOwed = [] }) {
+  // FIRST, BEFORE EVERY OTHER CAUSE. Every other order asks a session what should happen next; this one
+  // says another session is ALREADY STOPPED waiting on them. That outranks any standing question.
+  const orders = [...answerOrders(answerOwed)];
 
   for (const pr of prs) {
     const order = draftOrder(pr, required);
@@ -1338,7 +1465,7 @@ function main() {
   const drain = draining();
   const decided = decide({ prs: openPrs, readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required: requiredWhenRed(openPrs),
-    epics: rows.length === 0 ? readEpics() ?? [] : [] });
+    epics: epicsWhenShelfEmpty(rows), answerOwed: readAnswerOwed() ?? [] });
   const { delivered: orders, performed } = performActions(decided);
   orders.push(...deadMansSwitch(orders, drain, performed));
   for (const order of orders) process.stdout.write(`${JSON.stringify(order)}\n`);

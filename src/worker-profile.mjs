@@ -118,6 +118,16 @@ export const PROFILES = Object.freeze({
     why: "promotion decides what every engineer does next, and a row promoted without a Region or an "
       + "Acceptance costs more than the reading that would have caught it",
   }),
+  "answer-owed": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // HIGH, because the question is by definition one the asker could not resolve themselves -- it
+    // reached another session precisely because it needed judgment. And someone is STOPPED waiting on
+    // it: on 2026-09-20 a ruling sat unread for 6.5 hours while the asker re-posted five times.
+    effort: "high",
+    why: "a question that reached another session is one the asker could not answer, with someone "
+      + "already stopped waiting on the reply",
+  }),
   "epic-unfiled": Object.freeze({
     kind: "claude",
     model: "sonnet",
