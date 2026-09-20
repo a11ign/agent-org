@@ -15,7 +15,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import {
   stalledVerdict, mergeTreeConflict, DEFAULT_STALL_THRESHOLD_MS,
-  armedBehindVerdict, behindByCount, formatBehindWatchdogLine, DEFAULT_BEHIND_STALL_THRESHOLD_SECONDS, supersedingGateVerdict, supersededLine, examinePr } from "../queue-stalled.mjs";
+  armedBehindVerdict, behindByCount, formatBehindWatchdogLine, DEFAULT_BEHIND_STALL_THRESHOLD_SECONDS, supersedingGateVerdict, supersededLine, examinePr,
+  neverScheduledVerdict, neverScheduledLine, DEFAULT_NEVER_SCHEDULED_THRESHOLD_MS } from "../queue-stalled.mjs";
 import { newestConclusion, headQuietSeconds } from "../update-branch-sweep.mjs";
 
 // ---------------------------------------------------------------------------------------------------
@@ -349,6 +350,101 @@ test("MUTATION: dropping the 'latest gate' read for the rollup's FIRST entry mak
   assert.equal(v.stalled, false, "the buggy 'first entry' read must miss the stall (WAITING on the "
     + "stale failure), which is exactly what made #485/#490 invisible for hours");
   assert.equal(v.code, "WAITING");
+});
+
+// --- neverScheduledVerdict: #1810, a PR GitHub never scheduled a run for ---
+
+test("neverScheduledVerdict: ACCEPTANCE -- open, not draft, past the threshold, zero check runs -- flagged", () => {
+  const v = neverScheduledVerdict({
+    isDraft: false, ageMs: DEFAULT_NEVER_SCHEDULED_THRESHOLD_MS + 1, checkRunCount: 0,
+  });
+  assert.equal(v.stalled, true);
+  assert.equal(v.code, "NEVER_SCHEDULED");
+});
+
+test("neverScheduledVerdict: exactly at the threshold counts as past it, same as every other floor in "
+  + "this file", () => {
+  const v = neverScheduledVerdict({ isDraft: false, ageMs: DEFAULT_NEVER_SCHEDULED_THRESHOLD_MS, checkRunCount: 0 });
+  assert.equal(v.stalled, true);
+});
+
+test("neverScheduledVerdict: POSITIVE CONTROL -- a PR seconds old with no runs is TOO_RECENT, never "
+  + "flagged -- ordinary Actions scheduling jitter is not this defect", () => {
+  const v = neverScheduledVerdict({ isDraft: false, ageMs: 5000, checkRunCount: 0 });
+  assert.equal(v.stalled, false);
+  assert.equal(v.code, "TOO_RECENT");
+});
+
+test("neverScheduledVerdict: any check run at all -- whatever it concluded -- clears it, old or not", () => {
+  for (const checkRunCount of [1, 3]) {
+    const v = neverScheduledVerdict({
+      isDraft: false, ageMs: DEFAULT_NEVER_SCHEDULED_THRESHOLD_MS * 10, checkRunCount,
+    });
+    assert.equal(v.stalled, false, `checkRunCount=${checkRunCount}`);
+    assert.equal(v.code, "HAS_RUNS", `checkRunCount=${checkRunCount}`);
+  }
+});
+
+test("neverScheduledVerdict: a draft is never flagged, however old and however empty its check runs", () => {
+  const v = neverScheduledVerdict({ isDraft: true, ageMs: DEFAULT_NEVER_SCHEDULED_THRESHOLD_MS * 100, checkRunCount: 0 });
+  assert.equal(v.stalled, false);
+  assert.equal(v.code, "DRAFT");
+});
+
+test("neverScheduledVerdict: a custom thresholdMs is honoured, not the default silently", () => {
+  const v = neverScheduledVerdict({ isDraft: false, ageMs: 2000, checkRunCount: 0, thresholdMs: 1000 });
+  assert.equal(v.stalled, true);
+});
+
+test("neverScheduledLine: zero flagged still states the claim, not silence", () => {
+  const line = neverScheduledLine([]);
+  assert.match(line, /^QUEUE:/);
+  assert.match(line, /nothing open with zero scheduled runs/);
+});
+
+test("neverScheduledLine: names every flagged PR", () => {
+  const line = neverScheduledLine([1808, 1810]);
+  assert.match(line, /#1808|1808/);
+  assert.match(line, /1810/);
+});
+
+test("examinePr: #1810's own shape -- open, not armed, not draft, old, zero check runs -- named by number, "
+  + "independent of the armed/green precondition every other check in this file requires", () => {
+  const now = Date.parse("2026-09-20T19:36:00Z");
+  const result = examinePr({
+    number: 1810, headRefOid: "9e315e06e39f64f0d4d32bd7d1c98a46b10c04a2", autoMergeRequest: null,
+    statusCheckRollup: [], isDraft: false, createdAt: "2026-09-20T18:44:28Z",
+  }, now);
+  assert.equal(result.examined, false, "never armed/green -- the other checks correctly skip it");
+  assert.equal(result.neverScheduled?.number, 1810);
+  assert.match(result.neverScheduled?.reason ?? "", /GitHub did not schedule anything for this commit/);
+});
+
+test("examinePr: a fresh PR (seconds old, no runs yet) is not flagged by the never-scheduled check", () => {
+  const now = Date.parse("2026-09-20T18:44:33Z");
+  const result = examinePr({
+    number: 1900, headRefOid: "deadbeef", autoMergeRequest: null,
+    statusCheckRollup: [], isDraft: false, createdAt: "2026-09-20T18:44:28Z",
+  }, now);
+  assert.equal(result.neverScheduled, undefined);
+});
+
+test("examinePr: an old PR with at least one check run, whatever its conclusion, is not flagged", () => {
+  const now = Date.parse("2026-09-20T20:00:00Z");
+  const result = examinePr({
+    number: 1901, headRefOid: "deadbeef", autoMergeRequest: null,
+    statusCheckRollup: [{ name: "gate", conclusion: "FAILURE" }], isDraft: false, createdAt: "2026-09-20T18:44:28Z",
+  }, now);
+  assert.equal(result.neverScheduled, undefined);
+});
+
+test("examinePr: an old, empty-rollup draft is never flagged", () => {
+  const now = Date.parse("2026-09-20T20:00:00Z");
+  const result = examinePr({
+    number: 1902, headRefOid: "deadbeef", autoMergeRequest: null,
+    statusCheckRollup: [], isDraft: true, createdAt: "2026-09-20T18:44:28Z",
+  }, now);
+  assert.equal(result.neverScheduled, undefined);
 });
 
 // --- the CLI, guarded like every other argv-reading script here ---

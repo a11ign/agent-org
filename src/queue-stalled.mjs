@@ -66,6 +66,20 @@ import { workflowRunIdOf } from "./newest-check-run.mjs";
 export const EXIT = { EXAMINED: 0, CANNOT_ASK: 2 };
 export const DEFAULT_STALL_THRESHOLD_MS = 30 * 60 * 1000;
 
+// #1810: A PULL REQUEST GITHUB NEVER SCHEDULED A RUN FOR IS INVISIBLE TO EVERY OTHER WATCHER -- no red
+// check, no pending check, nothing. #1808 sat 51 minutes with `gh api .../actions/runs?head_sha=...`
+// returning a flat 0, found only by the chairman asking why it was still open; #1809, opened 18 minutes
+// later, ran normally. Every existing watcher keys on something HAVING HAPPENED (an armed PR, a
+// settled-red or settled-green rollup), so an empty rollup reads as "not yet", forever.
+//
+// **THE THRESHOLD IS BOUNDED BY A SAMPLE, NOT GUESSED.** Measured 2026-09-20 over the 25 most recently
+// closed PRs, each one's actual push (the head commit's own committer date) against the `created_at` of
+// the first workflow run GitHub scheduled for that exact sha: 5s to 128s, most in the 20-50s band. Five
+// minutes is roughly double the observed maximum and three orders of magnitude below #1808's real 51
+// minutes -- the same "headroom over a measured sample, not tuned against a queue" reasoning
+// `STOPPED_AFTER_LAG_HOURS` in `org-watch.mjs` uses for its own bound.
+export const DEFAULT_NEVER_SCHEDULED_THRESHOLD_MS = 5 * 60 * 1000;
+
 // C5a, #509 -- FILED AFTER #500 AND #517, WHICH FIXED THE MECHANISM THAT KEEPS AN ARMED PR CURRENT.
 // THIS IS THE WATCHDOG THAT WOULD HAVE SAID SO WHILE THE MECHANISM WAS STILL BROKEN.
 //
@@ -266,7 +280,7 @@ const gh = (args) => execFileSync("gh", args, { encoding: "utf8" }).trim();
  * @typedef {{ name?: string, conclusion?: string | null, completedAt?: string | null,
  *   startedAt?: string | null, detailsUrl?: string | null }} CheckRun
  * @typedef {{ number: number, headRefOid: string, autoMergeRequest?: { enabledAt: string } | null,
- *   statusCheckRollup?: CheckRun[] }} QueuedPr
+ *   statusCheckRollup?: CheckRun[], isDraft?: boolean, createdAt?: string }} QueuedPr
  */
 
 /**
@@ -325,6 +339,69 @@ export function supersededLine(blocked) {
 }
 
 /**
+ * PURE. #1810: is this PR one GitHub never scheduled a run for -- a check-runs population of zero, not a
+ * check-runs population that has not settled yet?
+ *
+ * UNLIKE every other predicate in this file, this one does not require `armed` -- #1808 was never armed
+ * (nothing arms a PR with no green gate), and the whole point is to name a PR before it gets anywhere
+ * near arming. It looks at the open PR itself: is it a draft, how old is it, and does its head carry even
+ * one check run of any kind.
+ *
+ * A DRAFT IS NEVER FLAGGED, REGARDLESS OF AGE. Not because CI skips drafts (`ci.yml`'s `pull_request`
+ * trigger carries no draft filter, so one ordinarily still runs) but because a draft is a PR its own
+ * author has not yet asked anyone -- human or workflow -- to look at; `merge-queue.mjs`'s own
+ * `pr.isDraft` short-circuit reads the same population the same way.
+ *
+ * `checkRunCount > 0` clears this predicate NO MATTER THE CONCLUSION -- a run that failed, is still
+ * running, or even one that was cancelled is proof GitHub scheduled *something* for this commit, which is
+ * the one fact this predicate exists to test for. Whether that run is healthy is every other predicate's
+ * question, not this one's.
+ *
+ * @param {{ isDraft: boolean, ageMs: number, checkRunCount: number, thresholdMs?: number }} input
+ * @returns {{ stalled: boolean, code: string, reason: string }}
+ */
+export function neverScheduledVerdict({
+  isDraft, ageMs, checkRunCount, thresholdMs = DEFAULT_NEVER_SCHEDULED_THRESHOLD_MS,
+}) {
+  if (isDraft) {
+    return { stalled: false, code: "DRAFT", reason: "draft -- not yet asking for a run" };
+  }
+  if (checkRunCount > 0) {
+    return {
+      stalled: false, code: "HAS_RUNS",
+      reason: `${checkRunCount} check run(s) on this head -- GitHub scheduled something, whatever it concluded`,
+    };
+  }
+  if (ageMs < thresholdMs) {
+    return {
+      stalled: false, code: "TOO_RECENT",
+      reason: `no check runs yet, but only ${Math.round(ageMs / 1000)}s old -- below the `
+        + `${Math.round(thresholdMs / 60000)}m floor for ordinary Actions scheduling latency`,
+    };
+  }
+  return {
+    stalled: true, code: "NEVER_SCHEDULED",
+    reason: `open, not draft, ${Math.round(ageMs / 60000)}m old with zero check runs on its head -- `
+      + "GitHub did not schedule anything for this commit",
+  };
+}
+
+/**
+ * The one summary line for #1810's check, stated whether or not anything was found -- the same "an empty
+ * rollup is indistinguishable from a rollup that has not filled yet" gap this predicate exists to close
+ * must not reappear in its own silence.
+ *
+ * @param {number[]} flagged PR numbers
+ * @returns {string}
+ */
+export function neverScheduledLine(flagged) {
+  return flagged.length === 0
+    ? "QUEUE: nothing open with zero scheduled runs -- every open, non-draft PR past the scheduling-jitter "
+      + "floor has at least one check run."
+    : `QUEUE: ${flagged.length} GitHub never scheduled a run for: ${flagged.join(" ")}`;
+}
+
+/**
  * C5a, #509's per-PR behind check, pulled out of `main()`'s loop to keep complexity within this repo's
  * own ESLint ceiling.
  *
@@ -352,6 +429,7 @@ function checkArmedBehind(pr, gateConclusion, now) {
  * @param {number} now
  * @returns {{ conflicting?: { number: number, reason: string, files: string[] },
  *   superseded?: { number: number, reason: string },
+ *   neverScheduled?: { number: number, reason: string },
  *   behind?: { stalled?: { number: number, behindBy: number, reason: string },
  *     unresolvable?: { number: number, reason: string } }, examined: boolean }}
  */
@@ -368,7 +446,18 @@ export function examinePr(pr, now) {
   const blocking = supersedingGateVerdict({ armed, runs: pr.statusCheckRollup });
   const superseded = blocking.code === "SUPERSEDED" ? { number: pr.number, reason: blocking.reason } : undefined;
 
-  if (!green) return { superseded, examined: false };
+  // #1810: NOT gated on `armed`/`green` -- #1808 was never armed, so a check that only ran once a PR
+  // reached the same precondition as the conflict/behind checks below would never have found it.
+  const prAgeMs = pr.createdAt ? now - Date.parse(pr.createdAt) : 0;
+  // #1810: the RAW population, not the newest-per-name reading `newestConclusion`/`newestRun` give the
+  // checks above -- even a superseded or duplicate run proves GitHub scheduled SOMETHING at this head,
+  // which is exactly what this predicate asks, unlike those checks' question of what the newest one says.
+  // eslint-disable-next-line local/bounded-window-reads -- #1810: the count itself is the signal; see above
+  const checkRunCount = (pr.statusCheckRollup ?? []).length;
+  const scheduleVerdict = neverScheduledVerdict({ isDraft: Boolean(pr.isDraft), ageMs: prAgeMs, checkRunCount });
+  const neverScheduled = scheduleVerdict.stalled ? { number: pr.number, reason: scheduleVerdict.reason } : undefined;
+
+  if (!green) return { superseded, neverScheduled, examined: false };
 
   const { conflict, files } = mergeTreeConflict("origin/main", pr.headRefOid, runGitForReal);
   const verdict = stalledVerdict({ armed, gateConclusion, conflict, ageMs });
@@ -378,7 +467,36 @@ export function examinePr(pr, now) {
   // independently so a regression in THAT mechanism is visible here rather than found by hand again.
   const behind = checkArmedBehind(pr, gateConclusion, new Date(now));
 
-  return { conflicting, behind, examined: true };
+  return { conflicting, behind, neverScheduled, examined: true };
+}
+
+/**
+ * The per-PR console lines and array pushes `main()`'s loop used to inline -- pulled out for the same
+ * reason `checkArmedBehind`/`examinePr` were: this file keeps adding one more independent check per PR
+ * (#1810 is the fourth), and inlining each one's report step in the loop is what pushes `main()` back over
+ * this repo's own complexity ceiling.
+ *
+ * @param {ReturnType<typeof examinePr>} result
+ * @param {{ stalled: number[], superseded: number[], neverScheduled: number[],
+ *   behindStalled: { number: number, behindBy: number, reason: string }[],
+ *   behindUnresolvable: { number: number, reason: string }[] }} sinks
+ */
+function reportExaminedPr(result, sinks) {
+  if (result.superseded) {
+    console.log(`#${result.superseded.number} BLOCKED -- ${result.superseded.reason}`);
+    sinks.superseded.push(result.superseded.number);
+  }
+  if (result.neverScheduled) {
+    console.log(`#${result.neverScheduled.number} NEVER_SCHEDULED -- ${result.neverScheduled.reason}`);
+    sinks.neverScheduled.push(result.neverScheduled.number);
+  }
+  if (result.conflicting) {
+    console.log(`#${result.conflicting.number} STALLED -- ${result.conflicting.reason}`);
+    console.log(`  conflicting: ${result.conflicting.files.join(", ")}`);
+    sinks.stalled.push(result.conflicting.number);
+  }
+  if (result.behind?.stalled) sinks.behindStalled.push(result.behind.stalled);
+  if (result.behind?.unresolvable) sinks.behindUnresolvable.push(result.behind.unresolvable);
 }
 
 function main() {
@@ -393,7 +511,7 @@ function main() {
   let prs;
   try {
     prs = JSON.parse(gh(["pr", "list", "--repo", repo, "--state", "open", "--base", "main", "--limit", "100",
-      "--json", "number,headRefOid,autoMergeRequest,statusCheckRollup"]));
+      "--json", "number,headRefOid,autoMergeRequest,statusCheckRollup,isDraft,createdAt"]));
   } catch (cause) {
     console.error(`CANNOT ASK: listing open PRs failed -- ${cause instanceof Error ? cause.message : cause}`);
     process.exit(EXIT.CANNOT_ASK);
@@ -410,34 +528,22 @@ function main() {
   }
 
   const now = Date.now();
-  const stalled = [];
-  const superseded = [];
-  const behindStalled = [];
-  const behindUnresolvable = [];
+  const sinks = { stalled: [], superseded: [], neverScheduled: [], behindStalled: [], behindUnresolvable: [] };
   let behindExamined = 0;
   for (const pr of prs) {
     const result = examinePr(pr, now);
-    if (result.superseded) {
-      console.log(`#${result.superseded.number} BLOCKED -- ${result.superseded.reason}`);
-      superseded.push(result.superseded.number);
-    }
-    if (result.conflicting) {
-      console.log(`#${result.conflicting.number} STALLED -- ${result.conflicting.reason}`);
-      console.log(`  conflicting: ${result.conflicting.files.join(", ")}`);
-      stalled.push(result.conflicting.number);
-    }
+    reportExaminedPr(result, sinks);
     if (result.examined) behindExamined += 1;
-    if (result.behind?.stalled) behindStalled.push(result.behind.stalled);
-    if (result.behind?.unresolvable) behindUnresolvable.push(result.behind.unresolvable);
   }
 
-  if (stalled.length === 0) {
+  if (sinks.stalled.length === 0) {
     console.log("QUEUE: nothing stalled -- every armed, green PR merges cleanly against origin/main.");
   } else {
-    console.log(`QUEUE: ${stalled.length} stalled: ${stalled.join(" ")}`);
+    console.log(`QUEUE: ${sinks.stalled.length} stalled: ${sinks.stalled.join(" ")}`);
   }
-  console.log(supersededLine(superseded));
-  console.log(formatBehindWatchdogLine(behindStalled, behindUnresolvable, behindExamined,
+  console.log(supersededLine(sinks.superseded));
+  console.log(neverScheduledLine(sinks.neverScheduled));
+  console.log(formatBehindWatchdogLine(sinks.behindStalled, sinks.behindUnresolvable, behindExamined,
     DEFAULT_BEHIND_STALL_THRESHOLD_SECONDS));
   process.exit(EXIT.EXAMINED);
 }
