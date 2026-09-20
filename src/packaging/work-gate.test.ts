@@ -21,7 +21,7 @@ import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReady
   blockingChecks, anyChecksRed, requiredCheckNames, ownerOf, NOT_PICKABLE, NOT_STARTABLE,
   ROUTED_TO, readPromotableRows, GH_READS, partitionUnclaimed, readOpenRowCount,
   unfiledEpics, epicOrders, readEpics, answersOwed, answerOrders, readOpenRows, withAnswerLabel,
-  blockedWithoutReferent, blockedReferentOrders,
+  blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL,
   ANSWER_PREFIX }
   from "../work-gate.mjs";
 
@@ -1243,7 +1243,7 @@ test("`blocked` is NOT banned -- a wait neither mechanism can express is real", 
   // #1520 waits on a hosted-runner behaviour: not a row, not a date. What is refused is a `blocked` that
   // says NOTHING, not the label itself -- so the prompt offers a third answer.
   const [order] = blockedReferentOrders([staleBlocked(1520)], [], "2026-09-20") as { prompt: string }[];
-  assert.match(order.prompt, /if the wait is real and neither mechanism can express it/);
+  assert.match(order.prompt, /if the wait is real and none of those three can express it/);
   assert.match(order.prompt, /what\s+would clear it and who would notice/);
 });
 
@@ -1299,4 +1299,39 @@ test("readEpics fetches the fields a waiting condition lives in", () => {
   assert.match(json, /body/);
   assert.match(json, /blockedBy/);
   assert.match(json, /subIssuesSummary/);
+});
+
+/**
+ * `needs:chairman` IS A REFERENT, AND OMITTING IT MADE `blocked-unexaminable` LOOP.
+ *
+ * MEASURED 2026-09-20 on #72 ("configure npm trusted publishing, then revoke the token"), which waits on
+ * an npm org-owner logging into npmjs.com -- a chairman action. `product-manager` read the prompt's three
+ * options, correctly found that neither `--add-blocked-by` nor `Not-before:` fits, took the third (name
+ * in one line what would clear it) and wrote a complete, accurate comment. THE ROW STILL CARRIED
+ * `blocked` AND STILL NAMED NOTHING CHECKABLE, SO THE CAUSE FIRED AGAIN -- and would have every two
+ * hours forever. It cost one turn rather than many only because `product-manager` recognised its own
+ * prior comment and declined to re-post.
+ *
+ * The label existed before the cause did: `readChairmanBlocked` reads it and `chairman-blocked` routes
+ * it. It has every property the other two mechanisms have -- names a referent, machine-checkable, and
+ * removing it IS the act of clearing. The three options were simply the wrong three.
+ */
+test("`needs:chairman` satisfies the cause, because it names a person a machine can check", () => {
+  const bare = { number: 72, title: "npm", labels: [{ name: "backlog" }, { name: "blocked" }] };
+  const named = { number: 72, title: "npm",
+    labels: [{ name: "backlog" }, { name: "blocked" }, { name: CHAIRMAN_LABEL }] };
+  assert.equal(blockedWithoutReferent([bare], "2026-09-20").length, 1);
+  assert.deepEqual(blockedWithoutReferent([named], "2026-09-20"), [],
+    "a wait on a person is named, routed by `chairman-blocked`, and cleared by removing the label");
+});
+
+test("the prompt offers the person-shaped answer, and admits the comment-only one does not silence it", () => {
+  // A prompt that offers an escape without saying it does not work teaches a session to take it and be
+  // asked again -- which is what happened on #72.
+  const [order] = blockedReferentOrders([{ number: 72, title: "npm",
+    labels: [{ name: "blocked" }] }], [], "2026-09-20") as { prompt: string }[];
+  assert.match(order.prompt, /ONE of four things/);
+  assert.match(order.prompt, /IF IT WAITS ON A PERSON, label it `needs:chairman`/);
+  assert.match(order.prompt, /DOES NOT STOP THIS BEING ASKED AGAIN/,
+    "the comment-only option must say so, or it reads as a way to make the question go quiet");
 });

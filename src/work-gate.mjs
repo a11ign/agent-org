@@ -613,7 +613,22 @@ export function withAnswerLabel(rows) {
  * @param {any[]} rows @param {string} [today]
  */
 export function blockedWithoutReferent(rows, today = todayIso()) {
-  return (rows ?? []).filter((r) => labelsOf(r).includes("blocked") && waitingOn(r, today) === null);
+  return (rows ?? []).filter((r) => labelsOf(r).includes("blocked")
+    && waitingOn(r, today) === null
+    // `needs:chairman` IS A REFERENT, AND OMITTING IT MADE THIS CAUSE LOOP.
+    //
+    // It names a person, it is machine-readable, `chairman-blocked` already routes it, and removing it
+    // is the act of clearing -- every property `blockedBy` and `Not-before:` have. It existed before
+    // this cause did, and the prompt's three options were therefore the wrong three.
+    //
+    // MEASURED 2026-09-20 on #72 ("configure npm trusted publishing, then revoke the token"), which
+    // waits on an npm org-owner logging into npmjs.com -- a chairman action. `product-manager` read the
+    // three options, correctly found that neither `--add-blocked-by` nor `Not-before:` fits, took the
+    // third (name in one line what would clear it) and wrote a complete, accurate comment. The row then
+    // still carried `blocked` and still named nothing checkable, SO THE CAUSE FIRED AGAIN -- and would
+    // have forever. It cost one turn rather than one every two hours only because `product-manager`
+    // recognised its own prior comment and declined to re-post.
+    && !labelsOf(r).includes(CHAIRMAN_LABEL));
 }
 
 /**
@@ -639,11 +654,17 @@ export function blockedReferentOrders(rows, readyRows, today = todayIso()) {
         + "machine can check -- no `blockedBy` edge, no `Not-before:` line. NOTHING IN THIS ORG CAN SEE "
         + "IT: `blocked` is filtered out before any cause runs, so only a person re-reading the row can "
         + "ever lift it.\n"
-        + "Read it and do ONE of three things: record the real blocker as data "
+        + "Read it and do ONE of four things: record the real blocker as data "
         + "(`gh issue edit " + `${r.number}` + " --add-blocked-by <n>`, or a `Not-before: YYYY-MM-DD` "
         + "line in the body); or REMOVE the `blocked` label if the condition has already become true; "
-        + "or, if the wait is real and neither mechanism can express it, say on the row IN ONE LINE what "
-        + "would clear it and who would notice -- then it is still unexaminable, but not unaccountable.\n"
+        + `or, IF IT WAITS ON A PERSON, label it \`${CHAIRMAN_LABEL}\` -- that names a referent, `
+        + "`chairman-blocked` already routes it, and taking the label off is the act of clearing it; "
+        + "or, if the wait is real and none of those three can express it, say on the row IN ONE LINE "
+        + "what would clear it and who would notice.\n"
+        + "THE LAST OPTION DOES NOT STOP THIS BEING ASKED AGAIN, and that is deliberate rather than an "
+        + "oversight: a bare `blocked` naming nothing is what this cause exists to find, so a comment "
+        + "cannot satisfy it. Before reaching for it, ask whether the wait is really on a person -- most "
+        + `are, and \`${CHAIRMAN_LABEL}\` is then the honest answer.\n`
         + "THE CONDITION HAS OFTEN ALREADY CLEARED. On 2026-09-20 eleven rows carried this label with the "
         + "queue empty behind them, one of them (#1731) about code that had been fixed the day before.",
       causeKey: `product-manager/blocked-unexaminable/row-${r.number}`,
