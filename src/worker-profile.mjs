@@ -118,6 +118,15 @@ export const PROFILES = Object.freeze({
     why: "promotion decides what every engineer does next, and a row promoted without a Region or an "
       + "Acceptance costs more than the reading that would have caught it",
   }),
+  "blocked-unexaminable": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // HIGH. Deciding whether a stale `blocked` label still holds means reading the row, finding what it
+    // was waiting for, and judging whether that has happened -- measured 2026-09-20, eleven such rows
+    // stood between the org and a full queue, one of them about code fixed the day before.
+    effort: "high",
+    why: "judging whether a claim nobody can evaluate still holds is exactly the work a machine cannot do",
+  }),
   "answer-owed": Object.freeze({
     kind: "claude",
     model: "sonnet",

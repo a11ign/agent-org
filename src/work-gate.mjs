@@ -62,7 +62,7 @@ export const EXIT = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3 };
 /** The causes this gate can emit. `wake.mjs` and the matrix validate against this list, never a copy. */
 export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-convinced-not-ready",
   "verdict-not-convinced", "pr-checks-failing", "ready-queue-empty", "lane-backlog-unpromoted",
-  "chairman-blocked", "org-stalled", "epic-unfiled", "answer-owed"];
+  "chairman-blocked", "org-stalled", "epic-unfiled", "answer-owed", "blocked-unexaminable"];
 
 /**
  * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
@@ -91,7 +91,7 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
  * asked forty times.
  */
 export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog-unpromoted",
-  "chairman-blocked", "org-stalled", "epic-unfiled", "answer-owed"]);
+  "chairman-blocked", "org-stalled", "epic-unfiled", "answer-owed", "blocked-unexaminable"]);
 
 /**
  * The causes that START new work, as opposed to finishing work already begun.
@@ -113,7 +113,7 @@ export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog
  * silence the thing the drain exists to serve.
  */
 export const START_CAUSES = Object.freeze(["ready-row-unclaimed", "ready-queue-empty",
-  "lane-backlog-unpromoted", "org-stalled", "epic-unfiled"]);
+  "lane-backlog-unpromoted", "org-stalled", "epic-unfiled", "blocked-unexaminable"]);
 
 /** Where the drain marker lives. `touch` it to open a window; `rm` it to close one. */
 export const DRAIN_MARKER = `${process.env.HOME}/.cache/a11ign/drain`;
@@ -177,7 +177,7 @@ export function readPrs(run = defaultRun) {
  */
 export const GH_READS = Object.freeze({
   unconditional: ["pr list", "issue list --label ready", "issue list --label backlog",
-    "issue list --label chairman-blocked", "issue list (answer: labels)"],
+    "issue list --label chairman-blocked", "issue list (all open: answer/blocked labels)"],
   conditionalOnSilence: "issue list --state open (readOpenRowCount)",
   conditionalOnRed: "api branches/main/protection (requiredCheckNames)",
 });
@@ -570,15 +570,83 @@ export function readEpics(run = defaultRun) {
  * @param {(args: string[]) => string} [run]
  * @returns {any[] | null} `null` when refused, never `[]`
  */
-export function readAnswerOwed(run = defaultRun) {
+export function readOpenRows(run = defaultRun) {
   try {
+    // ONE READ, TWO CAUSES. `answer-owed` needs the labels and `blocked-without-a-referent` needs
+    // `body` and `blockedBy` as well; asking once and filtering twice keeps the unconditional call
+    // count where `GH_READS` says it is.
     const parsed = JSON.parse(run(["issue", "list", "--state", "open", "--limit", "500",
-      "--json", "number,labels"]));
-    if (!Array.isArray(parsed)) return null;
-    return parsed.filter((r) => labelsOf(r).some((/** @type {string} */ n) => n.startsWith(ANSWER_PREFIX)));
+      "--json", "number,title,labels,body,blockedBy"]));
+    return Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
   }
+}
+
+/** The rows that owe someone an answer. @param {any[]} rows */
+export function withAnswerLabel(rows) {
+  return (rows ?? []).filter((r) => labelsOf(r).some((/** @type {string} */ n) => n.startsWith(ANSWER_PREFIX)));
+}
+
+/**
+ * `blocked` ROWS THAT NAME NOTHING A MACHINE CAN CHECK -- the root cause, not the pile.
+ *
+ * THE THREE WHYS, run 2026-09-20 when the chairman asked why nobody was working:
+ *
+ *   1. The engineer pool had ZERO claimable rows -- 1 of 38 was free and it was lane-owned.
+ *   2. The whole remaining supply was ELEVEN rows labelled `blocked`, untouched since 19 Sep.
+ *   3. Nothing re-examines them: `blocked` is in `NOT_STARTABLE` and filtered out AT READ TIME, so no
+ *      cause can see one; and the nightly prose check caught 1 of the 11 (#72, whose body happens to
+ *      say "Blocked on npmjs"). TEN WERE INVISIBLE TO EVERY CHECK IN THE SYSTEM.
+ *
+ * AND THE FOURTH WHY, which is where the fix belongs: #1780 added `blockedBy` and `Not-before:` as
+ * PREFERRED alternatives and left `blocked` legal, unexaminable and unmigrated. So the pile both
+ * persisted AND regenerated. A cause that drained today's eleven would fix the symptom; this one fires
+ * on the PROPERTY -- a `blocked` label naming nothing -- so it also catches every new one.
+ *
+ * `blocked` IS NOT BANNED, and should not be: a wait neither mechanism can express is real (#1520 waits
+ * on a hosted-runner behaviour, not a row or a date). What is refused is a `blocked` that says nothing
+ * at all, because a claim nobody can evaluate is one only a human re-reading the row can ever lift --
+ * which is exactly how these eleven got to be a day stale with the queue empty behind them.
+ *
+ * @param {any[]} rows @param {string} [today]
+ */
+export function blockedWithoutReferent(rows, today = todayIso()) {
+  return (rows ?? []).filter((r) => labelsOf(r).includes("blocked") && waitingOn(r, today) === null);
+}
+
+/**
+ * One order per `blocked` row that names nothing, keyed on the row (#1799).
+ *
+ * TO `product-manager`: the label is process, and `agent-practices.md` names them first reader for
+ * "filing and amendments ... holds, lane labels".
+ *
+ * ONLY WHEN THE SHELF IS EMPTY, like `epic-unfiled`: a stale `blocked` label while claimable work exists
+ * is untidy; with the queue empty it is the only thing between the org and a full shelf.
+ *
+ * @param {any[]} rows @param {any[]} readyRows @param {string} [today]
+ */
+export function blockedReferentOrders(rows, readyRows, today = todayIso()) {
+  if (readyRows.length > 0) return [];
+  return blockedWithoutReferent(rows, today).slice(0, MAX_ROW_ORDERS_PER_TICK)
+    .map((/** @type {any} */ r) => ({
+      session: "product-manager",
+      cause: "blocked-unexaminable",
+      subject: `row-${r.number}`,
+      discriminator: String(r.number),
+      prompt: `#${r.number}${r.title ? ` (${r.title})` : ""} is labelled \`blocked\` and names NOTHING a `
+        + "machine can check -- no `blockedBy` edge, no `Not-before:` line. NOTHING IN THIS ORG CAN SEE "
+        + "IT: `blocked` is filtered out before any cause runs, so only a person re-reading the row can "
+        + "ever lift it.\n"
+        + "Read it and do ONE of three things: record the real blocker as data "
+        + "(`gh issue edit " + `${r.number}` + " --add-blocked-by <n>`, or a `Not-before: YYYY-MM-DD` "
+        + "line in the body); or REMOVE the `blocked` label if the condition has already become true; "
+        + "or, if the wait is real and neither mechanism can express it, say on the row IN ONE LINE what "
+        + "would clear it and who would notice -- then it is still unexaminable, but not unaccountable.\n"
+        + "THE CONDITION HAS OFTEN ALREADY CLEARED. On 2026-09-20 eleven rows carried this label with the "
+        + "queue empty behind them, one of them (#1731) about code that had been fixed the day before.",
+      causeKey: `product-manager/blocked-unexaminable/row-${r.number}`,
+    }));
 }
 
 /**
@@ -1382,7 +1450,8 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *
  * @param {{ prs: any[], readyRows: any[], promotableRows?: any[], chairmanBlocked?: any[],
  *           prFiles?: { number: number, files: string[], changedFiles: number }[],
- *           drain?: boolean, required?: string[] | null, epics?: any[], answerOwed?: any[] }} state
+ *           drain?: boolean, required?: string[] | null, epics?: any[], answerOwed?: any[],
+ *           openRows?: any[] }} state
  *        `required` is the checks that can block a merge (`requiredCheckNames`), or `null` for
  *        "could not be read", which counts EVERY check as before this existed.
  *        `epics` are the open `epic` rows with their `subIssuesSummary` (`readEpics`); `[]` when
@@ -1396,7 +1465,7 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *            prompt: string, causeKey: string}[]}
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
-  drain = false, required = null, epics = [], answerOwed = [] }) {
+  drain = false, required = null, epics = [], answerOwed = [], openRows = [] }) {
   // FIRST, BEFORE EVERY OTHER CAUSE. Every other order asks a session what should happen next; this one
   // says another session is ALREADY STOPPED waiting on them. That outranks any standing question.
   const orders = [...answerOrders(answerOwed)];
@@ -1422,6 +1491,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // AFTER the lane orders and BEFORE the chairman's: an unfiled epic is a supply problem, which only
   // matters once the queue and the lanes have nothing left to offer.
   orders.push(...epicOrders(epics, readyRows));
+  orders.push(...blockedReferentOrders(openRows, readyRows));
 
   orders.push(...chairmanOrders(chairmanBlocked));
 
@@ -1498,9 +1568,12 @@ function main() {
   const rows = readyRows ?? [];
   const prFiles = comparablePrFiles(openPrs);
   const drain = draining();
+  // ONE READ, BOTH LABEL-DERIVED CAUSES.
+  const allOpen = readOpenRows() ?? [];
   const decided = decide({ prs: openPrs, readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required: requiredWhenRed(openPrs),
-    epics: epicsWhenShelfEmpty(rows), answerOwed: readAnswerOwed() ?? [] });
+    epics: epicsWhenShelfEmpty(rows),
+    answerOwed: withAnswerLabel(allOpen), openRows: allOpen });
   const { delivered: orders, performed } = performActions(decided);
   orders.push(...deadMansSwitch(orders, drain, performed));
   for (const order of orders) process.stdout.write(`${JSON.stringify(order)}\n`);
