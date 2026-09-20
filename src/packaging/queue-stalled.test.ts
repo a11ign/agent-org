@@ -408,12 +408,26 @@ test("neverScheduledLine: names every flagged PR", () => {
   assert.match(line, /1810/);
 });
 
-// Real, locally-fetched commits (this repo's own recent merges), used as `headRefOid` below so
-// `headCommittedAt`'s real `git log` read inside `examinePr` has an actual object to answer about --
-// the same reason #1623's tests above use real shas (84f684dd.../43cf24ed...) rather than invented ones.
-const OLD_HEAD = "6e7e023e026d19f69abaccd3f23a63511dec9621"; // committer date 2026-09-20T19:01:50Z
-const FRESH_HEAD = "1710fae3f8db401032f3c755cd0865b8032ffa4a"; // committer date 2026-09-20T19:31:00Z
-const FORCE_PUSHED_HEAD = "80fee938338bed3ab4caaf114fe2d5826430e5ac"; // committer date 2026-09-20T20:05:57Z
+// Fake shas with an injected `runGit` (examinePr's third, optional argument -- same DI pattern
+// `update-branch-sweep.mjs`'s `sweepPrs` already uses), never real commit objects. The acceptance job's
+// own `fetch-depth: 1` checkout is exactly ONE commit: a real, historical sha picked for its committer
+// date (as this suite used to) is unreachable there even though it is present in any full clone, so it
+// passed under a reviewer's or an author's own full checkout and failed in CI (#1814's own red run) the
+// moment `headCommittedAt`'s `git log` came back empty and `examinePr` silently read the unfetched head as
+// age zero. Injecting the date removes the dependency on checkout depth entirely.
+const OLD_HEAD = "a".repeat(40); // fake sha -- see HEAD_COMMITTED_AT below for its committer date
+const FRESH_HEAD = "b".repeat(40);
+const FORCE_PUSHED_HEAD = "c".repeat(40);
+const HEAD_COMMITTED_AT = {
+  [OLD_HEAD]: "2026-09-20T19:01:50Z",
+  [FRESH_HEAD]: "2026-09-20T19:31:00Z",
+  [FORCE_PUSHED_HEAD]: "2026-09-20T20:05:57Z",
+};
+const fakeHeadGit = (args: string[]) => {
+  const sha = args.at(-1);
+  const date = sha === undefined ? undefined : HEAD_COMMITTED_AT[sha as keyof typeof HEAD_COMMITTED_AT];
+  return date === undefined ? { status: 1, stdout: "" } : { status: 0, stdout: `${date}\n` };
+};
 
 test("examinePr: #1810's own shape -- open, not armed, not draft, old head, zero check runs -- named by "
   + "number, independent of the armed/green precondition every other check in this file requires", () => {
@@ -421,7 +435,7 @@ test("examinePr: #1810's own shape -- open, not armed, not draft, old head, zero
   const result = examinePr({
     number: 1810, headRefOid: OLD_HEAD, autoMergeRequest: null,
     statusCheckRollup: [], isDraft: false,
-  }, now);
+  }, now, fakeHeadGit);
   assert.equal(result.examined, false, "never armed/green -- the other checks correctly skip it");
   assert.equal(result.neverScheduled?.number, 1810);
   assert.match(result.neverScheduled?.reason ?? "", /GitHub did not schedule anything for this commit/);
@@ -432,7 +446,7 @@ test("examinePr: a fresh head (seconds old, no runs yet) is not flagged by the n
   const result = examinePr({
     number: 1900, headRefOid: FRESH_HEAD, autoMergeRequest: null,
     statusCheckRollup: [], isDraft: false,
-  }, now);
+  }, now, fakeHeadGit);
   assert.equal(result.neverScheduled, undefined);
 });
 
@@ -447,7 +461,7 @@ test("#1814 REGRESSION: an old pull request whose head was just force-pushed -- 
   const result = examinePr({
     number: 1814, headRefOid: FORCE_PUSHED_HEAD, autoMergeRequest: null,
     statusCheckRollup: [], isDraft: false,
-  }, now);
+  }, now, fakeHeadGit);
   assert.equal(result.neverScheduled, undefined);
 });
 
@@ -456,7 +470,7 @@ test("examinePr: an old head with at least one check run, whatever its conclusio
   const result = examinePr({
     number: 1901, headRefOid: OLD_HEAD, autoMergeRequest: null,
     statusCheckRollup: [{ name: "gate", conclusion: "FAILURE" }], isDraft: false,
-  }, now);
+  }, now, fakeHeadGit);
   assert.equal(result.neverScheduled, undefined);
 });
 
@@ -465,7 +479,7 @@ test("examinePr: an old, empty-rollup draft is never flagged", () => {
   const result = examinePr({
     number: 1902, headRefOid: OLD_HEAD, autoMergeRequest: null,
     statusCheckRollup: [], isDraft: true,
-  }, now);
+  }, now, fakeHeadGit);
   assert.equal(result.neverScheduled, undefined);
 });
 

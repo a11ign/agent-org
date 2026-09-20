@@ -431,11 +431,12 @@ export function neverScheduledLine(flagged) {
  * @param {QueuedPr} pr
  * @param {string | null} gateConclusion
  * @param {Date} now
+ * @param {(args: string[]) => { status: number, stdout: string }} runGit
  * @returns {{ stalled?: { number: number, behindBy: number, reason: string },
  *   unresolvable?: { number: number, reason: string } }}
  */
-function checkArmedBehind(pr, gateConclusion, now) {
-  const behindBy = behindByCount("origin/main", pr.headRefOid, runGitForReal);
+function checkArmedBehind(pr, gateConclusion, now, runGit) {
+  const behindBy = behindByCount("origin/main", pr.headRefOid, runGit);
   const quietSeconds = headQuietSeconds(pr.statusCheckRollup, now);
   const verdict = armedBehindVerdict({ armed: true, gateConclusion, behindBy, quietSeconds });
   if (verdict.stalled) return { stalled: { number: pr.number, behindBy, reason: verdict.reason } };
@@ -450,13 +451,16 @@ function checkArmedBehind(pr, gateConclusion, now) {
  *
  * @param {QueuedPr} pr
  * @param {number} now
+ * @param {(args: string[]) => { status: number, stdout: string }} runGit injectable so tests can supply a
+ *   fake git reader instead of depending on real commit objects being present in the checkout -- the same
+ *   pattern `update-branch-sweep.mjs`'s `sweepPrs` already uses. Defaults to the real git binary.
  * @returns {{ conflicting?: { number: number, reason: string, files: string[] },
  *   superseded?: { number: number, reason: string },
  *   neverScheduled?: { number: number, reason: string },
  *   behind?: { stalled?: { number: number, behindBy: number, reason: string },
  *     unresolvable?: { number: number, reason: string } }, examined: boolean }}
  */
-export function examinePr(pr, now) {
+export function examinePr(pr, now, runGit = runGitForReal) {
   const armed = pr.autoMergeRequest != null;
   // #498's own bug: the FIRST matching run in the rollup, not the newest by timestamp. Fixed here the
   // same way `update-branch-sweep.mjs` fixed it for its own read of the identical field -- one function,
@@ -475,7 +479,7 @@ export function examinePr(pr, now) {
   // (not fetched, or some other git failure) falls back to 0, the same "unknown reads as too recent, not
   // as stalled" choice `pr.createdAt` missing used to make, so a read failure here can never manufacture
   // a false NEVER_SCHEDULED.
-  const headCommitAt = headCommittedAt(pr.headRefOid, runGitForReal);
+  const headCommitAt = headCommittedAt(pr.headRefOid, runGit);
   const prAgeMs = headCommitAt ? now - Date.parse(headCommitAt) : 0;
   // #1810: the RAW population, not the newest-per-name reading `newestConclusion`/`newestRun` give the
   // checks above -- even a superseded or duplicate run proves GitHub scheduled SOMETHING at this head,
@@ -487,13 +491,13 @@ export function examinePr(pr, now) {
 
   if (!green) return { superseded, neverScheduled, examined: false };
 
-  const { conflict, files } = mergeTreeConflict("origin/main", pr.headRefOid, runGitForReal);
+  const { conflict, files } = mergeTreeConflict("origin/main", pr.headRefOid, runGit);
   const verdict = stalledVerdict({ armed, gateConclusion, conflict, ageMs });
   const conflicting = verdict.stalled ? { number: pr.number, reason: verdict.reason, files } : undefined;
 
   // C5a, #509: armed, green, and stuck behind main -- the signal #500/#517's fix protects, watched
   // independently so a regression in THAT mechanism is visible here rather than found by hand again.
-  const behind = checkArmedBehind(pr, gateConclusion, new Date(now));
+  const behind = checkArmedBehind(pr, gateConclusion, new Date(now), runGit);
 
   return { conflicting, behind, neverScheduled, examined: true };
 }
