@@ -305,7 +305,7 @@ test("a lane with backlog and nothing Ready wakes its OWNER, who alone may promo
   assert.ok(lane, "nobody was asking ceo about its own lane");
   assert.equal(lane.session, "ceo");
   assert.match(lane.prompt, /#1320/);
-  assert.match(lane.prompt, /nobody else may promote these -- the lane is yours/);
+  assert.match(lane.prompt, /nobody else may promote it/);
 });
 
 test("a lane that HAS something Ready is not asked to stock it", () => {
@@ -320,8 +320,11 @@ test("the lane order asks for judgment, not a quota", () => {
   const backlog = [{ number: 72, labels: [{ name: "backlog" }, { name: "lane:orchestrator" }] }];
   const [order] = decide({ prs: [], readyRows: [], promotableRows: backlog })
     .filter((o: { cause: string }) => o.cause === "lane-backlog-unpromoted");
-  assert.match(order.prompt, /not a quota/);
-  assert.match(order.prompt, /promoting nothing and recording\s+why is a valid answer/);
+  // THE PHRASE "not a quota" IS GONE BECAUSE THE SHAPE THAT NEEDED IT IS. It guarded a SURVEY -- "you
+  // own 7 rows" reads as "promote 7". A per-row order (#1799) cannot be read as a quota at all. What
+  // must survive is the GUARANTEE underneath it: doing nothing is a legitimate answer.
+  assert.match(order.prompt, /leaving it and recording why is a valid answer/);
+  assert.match(order.prompt, /leaving it and recording why\s+is a valid answer/);
   // AND IT MUST LAND ON THE ROW. `orchestrator` answered #1564 correctly and wrote it only to its own
   // terminal, so nothing downstream could tell an answered question from an ignored one.
   assert.match(order.prompt, /RECORD THE ANSWER ON THE ROW/);
@@ -940,8 +943,8 @@ test("a row waiting on an OPEN blocker leaves its owner's backlog, and returns w
   const [order] = decide({ prs: [], readyRows: [], promotableRows: read(closed) }) as
     { session: string, causeKey: string }[];
   assert.equal(order.session, "ceo");
-  assert.match(order.causeKey, /lane-backlog-unpromoted\/ceo\/1/,
-    "the count is in the key, so the dedupe that held it silent no longer matches");
+  assert.match(order.causeKey, /lane-backlog-unpromoted\/row-5/,
+    "keyed on the ROW (#1799), so one row's judgment is not reopened when another row moves");
 });
 
 test("a row waiting on a DATE stops re-prompting its owner until that date", () => {
@@ -1105,7 +1108,7 @@ test("a row labelled answer:<session> wakes THAT session, not the pool", () => {
   assert.equal(order.session, "product-manager");
   assert.equal(order.cause, "answer-owed");
   assert.match(order.prompt, /#914/);
-  assert.match(order.prompt, /remove the `answer:product-manager` label/,
+  assert.match(order.prompt, /remove its `answer:product-manager` label/,
     "removing the label IS the act of answering -- there must be no second state to maintain");
 });
 
@@ -1116,11 +1119,15 @@ test("two sessions owing answers get one order each, never one combined", () => 
   assert.equal(answerOrders([owedRow(1, "ceo"), owedRow(2, "product-manager")]).length, 2);
 });
 
-test("the count is the discriminator, so answering one re-fires at the new depth", () => {
-  const [before] = answerOrders([owedRow(1, "ceo"), owedRow(2, "ceo")]) as { causeKey: string }[];
-  const [after] = answerOrders([owedRow(1, "ceo")]) as { causeKey: string }[];
-  assert.notEqual(before.causeKey, after.causeKey, "or the ledger would hold the reminder silent");
-  assert.match(after.causeKey, /ceo\/answer-owed\/ceo\/1$/);
+test("EACH ROW IS ITS OWN QUESTION, so answering one does not re-ask the others", () => {
+  // #1799's rule, applied before it could bite here: a count-keyed order re-asks about every
+  // outstanding question each time any ONE of them is answered.
+  const both = answerOrders([owedRow(1, "ceo"), owedRow(2, "ceo")]) as { causeKey: string }[];
+  assert.deepEqual(both.map((o) => o.causeKey),
+    ["ceo/answer-owed/row-1", "ceo/answer-owed/row-2"]);
+  const after = answerOrders([owedRow(1, "ceo")]) as { causeKey: string }[];
+  assert.equal(after[0].causeKey, both[0].causeKey,
+    "row 1's key is UNCHANGED by row 2 being answered -- that is the whole point");
 });
 
 test("a bare `answer:` names no session and is ignored", () => {
@@ -1159,4 +1166,37 @@ test("readAnswerOwed refuses rather than reporting nobody is waiting", () => {
   const rows = [owedRow(914, "ceo"), { number: 2, labels: [{ name: "backlog" }] }];
   assert.deepEqual(readAnswerOwed(() => JSON.stringify(rows))?.map((r: { number: number }) => r.number),
     [914], "and it filters to only the rows that owe, so the caller never scans the whole tracker");
+});
+
+/**
+ * A STANDING JUDGMENT IS KEYED ON THE THING JUDGED, NEVER ON A COUNT -- #1799, measured twice.
+ *
+ * `worker-judge` proved it for `epic-unfiled` and #1806 fixed that one. The SAME ledger showed the SAME
+ * defect in `lane-backlog-unpromoted`: twelve deliveries to `orchestrator` over 10.4 hours --
+ * /3 /3 /2 /2 /3 /4 /7 /6 /5 /3 /3 /3 -- of which SEVEN fired INSIDE the two-hour TTL, at gaps of 4, 18,
+ * 4, 22, 27, 10 and 57 minutes. Each was a `sonnet`/`high` turn re-asking about rows already judged.
+ */
+test("one row leaving a lane does not reopen judgment on the rows that stayed", () => {
+  const row = (n: number) => ({ number: n, labels: [{ name: "backlog" }, { name: "lane:ceo" }] });
+  const five = decide({ prs: [], readyRows: [], promotableRows: [row(1), row(2), row(3)] })
+    .filter((o: { cause: string }) => o.cause === "lane-backlog-unpromoted");
+  const four = decide({ prs: [], readyRows: [], promotableRows: [row(1), row(2)] })
+    .filter((o: { cause: string }) => o.cause === "lane-backlog-unpromoted");
+
+  assert.deepEqual(five.map((o: { causeKey: string }) => o.causeKey),
+    ["ceo/lane-backlog-unpromoted/row-1", "ceo/lane-backlog-unpromoted/row-2",
+      "ceo/lane-backlog-unpromoted/row-3"]);
+  assert.deepEqual(four.map((o: { causeKey: string }) => o.causeKey), five.slice(0, 2)
+    .map((o: { causeKey: string }) => o.causeKey),
+    "#3 leaving changes NOTHING about #1 and #2 -- under the old count key every one of them moved");
+});
+
+test("a lane's orders are capped like every other row order", () => {
+  // Without the cap a lane of forty rows would emit forty orders in one tick, which is the noise
+  // `MAX_ROW_ORDERS_PER_TICK` exists to bound.
+  const many = Array.from({ length: 40 }, (_, i) => ({ number: i + 1,
+    labels: [{ name: "backlog" }, { name: "lane:ceo" }] }));
+  const orders = decide({ prs: [], readyRows: [], promotableRows: many })
+    .filter((o: { cause: string }) => o.cause === "lane-backlog-unpromoted");
+  assert.equal(orders.length, MAX_ROW_ORDERS_PER_TICK);
 });
