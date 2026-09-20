@@ -548,8 +548,9 @@ function requiredWhenRed(prs) {
  */
 export function readEpics(run = defaultRun) {
   try {
+    // `body` AND `blockedBy` RIDE THE SAME CALL so `waitingOn` can be asked -- see `unfiledEpics`.
     const parsed = JSON.parse(run(["issue", "list", "--state", "open", "--label", "epic",
-      "--limit", "200", "--json", "number,title,labels,subIssuesSummary"]));
+      "--limit", "200", "--json", "number,title,labels,subIssuesSummary,body,blockedBy"]));
     return Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
@@ -769,10 +770,21 @@ export function answerOrders(rows) {
  * A START CAUSE, so a drain withholds it: splitting an epic MANUFACTURES new work, which is exactly what
  * a drain window exists to stop.
  *
- * @param {{number?: number, title?: string, subIssuesSummary?: {total?: number}}[]} epics
+ * @param {{number?: number, title?: string, subIssuesSummary?: {total?: number},
+ *          body?: string, blockedBy?: {nodes?: {number?: number, state?: string}[]}}[]} epics
+ * @param {string} [today]
  */
-export function unfiledEpics(epics) {
-  return (epics ?? []).filter((e) => (e?.subIssuesSummary?.total ?? 0) === 0);
+export function unfiledEpics(epics, today = todayIso()) {
+  return (epics ?? [])
+    .filter((e) => (e?.subIssuesSummary?.total ?? 0) === 0)
+    // AN EPIC THAT IS WAITING IS NOT UNFILED, IT IS WAITING -- and #1780 already built the mechanism
+    // for saying so. This cause shipped without asking, so a correctly-recorded blocker was ignored.
+    //
+    // MEASURED 2026-09-20: `product-manager` was asked to split #57, judged it "still correctly blocked
+    // on the open release milestone", RECORDED THAT AS A REAL `blockedBy` EDGE -- doing exactly what the
+    // rule asks -- and was asked again anyway, because `unfiledEpics` only ever looked at sub-issues.
+    // From outside, a session correctly declining and a session ignoring its orders look identical.
+    .filter((e) => waitingOn(e, today) === null);
 }
 
 /**

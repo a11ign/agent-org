@@ -1257,3 +1257,46 @@ test("a row whose blocker has CLOSED is reported, because the label outlived the
   const cleared = staleBlocked(1731, { blockedBy: { nodes: [{ number: 9, state: "CLOSED" }] } });
   assert.deepEqual(blockedWithoutReferent([cleared], "2026-09-20").map((r) => r.number), [1731]);
 });
+
+/**
+ * AN EPIC THAT IS WAITING IS NOT UNFILED -- IT IS WAITING.
+ *
+ * #1780 built `blockedBy`/`Not-before:` so a session could record a waiting condition as DATA. #1784
+ * shipped `epic-unfiled` without asking, so a correctly-recorded blocker was ignored.
+ *
+ * MEASURED 2026-09-20: `product-manager` was asked to split #57, judged it "still correctly blocked on
+ * the open release milestone", RECORDED THAT AS A REAL `blockedBy` EDGE -- doing exactly what the rule
+ * asks -- and was asked again anyway. Live at the time of the fix: 2 epics reported unfiled, BOTH of
+ * them carrying a real edge, so the true count was 0. From outside, a session correctly declining and a
+ * session ignoring its orders look identical, which is the whole reason this matters.
+ */
+test("an epic with a recorded blocker is not reported as unfiled", () => {
+  const blocked = { number: 57, title: "pnpm", subIssuesSummary: { total: 0 },
+    blockedBy: { nodes: [{ number: 9, state: "OPEN" }] } };
+  const dated = { number: 69, title: "split", subIssuesSummary: { total: 0 },
+    body: "Not-before: 2099-01-01" };
+  const plain = { number: 34, title: "captures", subIssuesSummary: { total: 0 } };
+
+  assert.deepEqual(unfiledEpics([blocked, dated, plain], "2026-09-20").map((e) => e.number), [34],
+    "only the epic that is genuinely unfiled AND not waiting");
+  assert.deepEqual(epicOrders([blocked, dated], []), [],
+    "and an epic waiting on a recorded condition produces no order at all");
+});
+
+test("a CLEARED blocker makes the epic unfiled again, with no human involved", () => {
+  // The self-clearing property #1780 was built for, now reaching this cause too.
+  const cleared = { number: 57, subIssuesSummary: { total: 0 },
+    blockedBy: { nodes: [{ number: 9, state: "CLOSED" }] } };
+  assert.deepEqual(unfiledEpics([cleared], "2026-09-20").map((e) => e.number), [57]);
+});
+
+test("readEpics fetches the fields a waiting condition lives in", () => {
+  // Without `body` and `blockedBy` on the read, `waitingOn` can only ever answer null -- the filter
+  // would look correct and do nothing, which is the worst kind of wrong.
+  const calls: string[][] = [];
+  readEpics((args: string[]) => { calls.push(args); return "[]"; });
+  const json = calls[0][calls[0].indexOf("--json") + 1];
+  assert.match(json, /body/);
+  assert.match(json, /blockedBy/);
+  assert.match(json, /subIssuesSummary/);
+});
