@@ -15,7 +15,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import {
   stalledVerdict, mergeTreeConflict, DEFAULT_STALL_THRESHOLD_MS,
-  armedBehindVerdict, behindByCount, formatBehindWatchdogLine, DEFAULT_BEHIND_STALL_THRESHOLD_SECONDS, supersedingGateVerdict, supersededLine, examinePr } from "../queue-stalled.mjs";
+  armedBehindVerdict, behindByCount, formatBehindWatchdogLine, DEFAULT_BEHIND_STALL_THRESHOLD_SECONDS, supersedingGateVerdict, supersededLine, examinePr,
+  neverScheduledVerdict, neverScheduledLine, DEFAULT_NEVER_SCHEDULED_THRESHOLD_MS, headCommittedAt } from "../queue-stalled.mjs";
 import { newestConclusion, headQuietSeconds } from "../update-branch-sweep.mjs";
 
 // ---------------------------------------------------------------------------------------------------
@@ -349,6 +350,154 @@ test("MUTATION: dropping the 'latest gate' read for the rollup's FIRST entry mak
   assert.equal(v.stalled, false, "the buggy 'first entry' read must miss the stall (WAITING on the "
     + "stale failure), which is exactly what made #485/#490 invisible for hours");
   assert.equal(v.code, "WAITING");
+});
+
+// --- neverScheduledVerdict: #1810, a PR GitHub never scheduled a run for ---
+
+test("neverScheduledVerdict: ACCEPTANCE -- open, not draft, past the threshold, zero check runs -- flagged", () => {
+  const v = neverScheduledVerdict({
+    isDraft: false, ageMs: DEFAULT_NEVER_SCHEDULED_THRESHOLD_MS + 1, checkRunCount: 0,
+  });
+  assert.equal(v.stalled, true);
+  assert.equal(v.code, "NEVER_SCHEDULED");
+});
+
+test("neverScheduledVerdict: exactly at the threshold counts as past it, same as every other floor in "
+  + "this file", () => {
+  const v = neverScheduledVerdict({ isDraft: false, ageMs: DEFAULT_NEVER_SCHEDULED_THRESHOLD_MS, checkRunCount: 0 });
+  assert.equal(v.stalled, true);
+});
+
+test("neverScheduledVerdict: POSITIVE CONTROL -- a PR seconds old with no runs is TOO_RECENT, never "
+  + "flagged -- ordinary Actions scheduling jitter is not this defect", () => {
+  const v = neverScheduledVerdict({ isDraft: false, ageMs: 5000, checkRunCount: 0 });
+  assert.equal(v.stalled, false);
+  assert.equal(v.code, "TOO_RECENT");
+});
+
+test("neverScheduledVerdict: any check run at all -- whatever it concluded -- clears it, old or not", () => {
+  for (const checkRunCount of [1, 3]) {
+    const v = neverScheduledVerdict({
+      isDraft: false, ageMs: DEFAULT_NEVER_SCHEDULED_THRESHOLD_MS * 10, checkRunCount,
+    });
+    assert.equal(v.stalled, false, `checkRunCount=${checkRunCount}`);
+    assert.equal(v.code, "HAS_RUNS", `checkRunCount=${checkRunCount}`);
+  }
+});
+
+test("neverScheduledVerdict: a draft is never flagged, however old and however empty its check runs", () => {
+  const v = neverScheduledVerdict({ isDraft: true, ageMs: DEFAULT_NEVER_SCHEDULED_THRESHOLD_MS * 100, checkRunCount: 0 });
+  assert.equal(v.stalled, false);
+  assert.equal(v.code, "DRAFT");
+});
+
+test("neverScheduledVerdict: a custom thresholdMs is honoured, not the default silently", () => {
+  const v = neverScheduledVerdict({ isDraft: false, ageMs: 2000, checkRunCount: 0, thresholdMs: 1000 });
+  assert.equal(v.stalled, true);
+});
+
+test("neverScheduledLine: zero flagged still states the claim, not silence", () => {
+  const line = neverScheduledLine([]);
+  assert.match(line, /^QUEUE:/);
+  assert.match(line, /nothing open with zero scheduled runs/);
+});
+
+test("neverScheduledLine: names every flagged PR", () => {
+  const line = neverScheduledLine([1808, 1810]);
+  assert.match(line, /#1808|1808/);
+  assert.match(line, /1810/);
+});
+
+// Fake shas with an injected `runGit` (examinePr's third, optional argument -- same DI pattern
+// `update-branch-sweep.mjs`'s `sweepPrs` already uses), never real commit objects. The acceptance job's
+// own `fetch-depth: 1` checkout is exactly ONE commit: a real, historical sha picked for its committer
+// date (as this suite used to) is unreachable there even though it is present in any full clone, so it
+// passed under a reviewer's or an author's own full checkout and failed in CI (#1814's own red run) the
+// moment `headCommittedAt`'s `git log` came back empty and `examinePr` silently read the unfetched head as
+// age zero. Injecting the date removes the dependency on checkout depth entirely.
+const OLD_HEAD = "a".repeat(40); // fake sha -- see HEAD_COMMITTED_AT below for its committer date
+const FRESH_HEAD = "b".repeat(40);
+const FORCE_PUSHED_HEAD = "c".repeat(40);
+const HEAD_COMMITTED_AT = {
+  [OLD_HEAD]: "2026-09-20T19:01:50Z",
+  [FRESH_HEAD]: "2026-09-20T19:31:00Z",
+  [FORCE_PUSHED_HEAD]: "2026-09-20T20:05:57Z",
+};
+const fakeHeadGit = (args: string[]) => {
+  const sha = args.at(-1);
+  const date = sha === undefined ? undefined : HEAD_COMMITTED_AT[sha as keyof typeof HEAD_COMMITTED_AT];
+  return date === undefined ? { status: 1, stdout: "" } : { status: 0, stdout: `${date}\n` };
+};
+
+test("examinePr: #1810's own shape -- open, not armed, not draft, old head, zero check runs -- named by "
+  + "number, independent of the armed/green precondition every other check in this file requires", () => {
+  const now = Date.parse("2026-09-20T19:10:00Z"); // 8m10s after OLD_HEAD's own commit -- past the 5m floor
+  const result = examinePr({
+    number: 1810, headRefOid: OLD_HEAD, autoMergeRequest: null,
+    statusCheckRollup: [], isDraft: false,
+  }, now, fakeHeadGit);
+  assert.equal(result.examined, false, "never armed/green -- the other checks correctly skip it");
+  assert.equal(result.neverScheduled?.number, 1810);
+  assert.match(result.neverScheduled?.reason ?? "", /GitHub did not schedule anything for this commit/);
+});
+
+test("examinePr: a fresh head (seconds old, no runs yet) is not flagged by the never-scheduled check", () => {
+  const now = Date.parse("2026-09-20T19:31:05Z"); // 5s after FRESH_HEAD's own commit
+  const result = examinePr({
+    number: 1900, headRefOid: FRESH_HEAD, autoMergeRequest: null,
+    statusCheckRollup: [], isDraft: false,
+  }, now, fakeHeadGit);
+  assert.equal(result.neverScheduled, undefined);
+});
+
+test("#1814 REGRESSION: an old pull request whose head was just force-pushed -- a brand-new headRefOid, "
+  + "zero check runs, and the head itself only seconds old -- must NOT be flagged, even though the pull "
+  + "request as a whole may have been open for a long time. `examinePr` no longer reads `pr.createdAt` at "
+  + "all -- there is no such field on `QueuedPr` any more -- specifically because GitHub zeroes "
+  + "`statusCheckRollup` on a force-push/synchronize while `createdAt` never moves, so the old code's "
+  + "`prAgeMs` (from `createdAt`) could already be past the 5-minute floor before GitHub had scheduled "
+  + "anything for the fresh head. Only the head commit's own committer date may drive this verdict.", () => {
+  const now = Date.parse("2026-09-20T20:06:05Z"); // 8s after FORCE_PUSHED_HEAD's own commit
+  const result = examinePr({
+    number: 1814, headRefOid: FORCE_PUSHED_HEAD, autoMergeRequest: null,
+    statusCheckRollup: [], isDraft: false,
+  }, now, fakeHeadGit);
+  assert.equal(result.neverScheduled, undefined);
+});
+
+test("examinePr: an old head with at least one check run, whatever its conclusion, is not flagged", () => {
+  const now = Date.parse("2026-09-20T19:10:00Z");
+  const result = examinePr({
+    number: 1901, headRefOid: OLD_HEAD, autoMergeRequest: null,
+    statusCheckRollup: [{ name: "gate", conclusion: "FAILURE" }], isDraft: false,
+  }, now, fakeHeadGit);
+  assert.equal(result.neverScheduled, undefined);
+});
+
+test("examinePr: an old, empty-rollup draft is never flagged", () => {
+  const now = Date.parse("2026-09-20T19:10:00Z");
+  const result = examinePr({
+    number: 1902, headRefOid: OLD_HEAD, autoMergeRequest: null,
+    statusCheckRollup: [], isDraft: true,
+  }, now, fakeHeadGit);
+  assert.equal(result.neverScheduled, undefined);
+});
+
+// --- headCommittedAt: #1814, the head commit's own committer date, never `pr.createdAt` ---
+
+test("headCommittedAt: reads the committer date from a real, injected git log", () => {
+  assert.equal(headCommittedAt("deadbeef", () => ({ status: 0, stdout: "2026-09-20T20:05:57+01:00\n" })),
+    "2026-09-20T20:05:57+01:00");
+});
+
+test("headCommittedAt: a failed git (sha not fetched locally, or any other git failure) is `null`, never "
+  + "coerced into an age of zero silently inside this function -- that choice belongs to the caller", () => {
+  assert.equal(headCommittedAt("deadbeef", () => ({ status: 1, stdout: "" })), null);
+  assert.equal(headCommittedAt("deadbeef", () => ({ status: 128 })), null);
+});
+
+test("headCommittedAt: empty stdout on a successful exit is also `null`, not an empty-string date", () => {
+  assert.equal(headCommittedAt("deadbeef", () => ({ status: 0, stdout: "" })), null);
 });
 
 // --- the CLI, guarded like every other argv-reading script here ---
