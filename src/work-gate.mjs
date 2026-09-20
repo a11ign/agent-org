@@ -62,7 +62,7 @@ export const EXIT = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3 };
 /** The causes this gate can emit. `wake.mjs` and the matrix validate against this list, never a copy. */
 export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-convinced-not-ready",
   "verdict-not-convinced", "pr-checks-failing", "ready-queue-empty", "lane-backlog-unpromoted",
-  "chairman-blocked", "org-stalled"];
+  "chairman-blocked", "org-stalled", "epic-unfiled"];
 
 /**
  * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
@@ -91,7 +91,7 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
  * asked forty times.
  */
 export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog-unpromoted",
-  "chairman-blocked", "org-stalled"]);
+  "chairman-blocked", "org-stalled", "epic-unfiled"]);
 
 /**
  * The causes that START new work, as opposed to finishing work already begun.
@@ -113,7 +113,7 @@ export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog
  * silence the thing the drain exists to serve.
  */
 export const START_CAUSES = Object.freeze(["ready-row-unclaimed", "ready-queue-empty",
-  "lane-backlog-unpromoted", "org-stalled"]);
+  "lane-backlog-unpromoted", "org-stalled", "epic-unfiled"]);
 
 /** Where the drain marker lives. `touch` it to open a window; `rm` it to close one. */
 export const DRAIN_MARKER = `${process.env.HOME}/.cache/a11ign/drain`;
@@ -524,6 +524,99 @@ function sessionOf(pr) {
  */
 function requiredWhenRed(prs) {
   return anyChecksRed(prs) ? requiredCheckNames() : null;
+}
+
+/**
+ * The open epics, with the one field that says whether anyone has filed them.
+ *
+ * PAID ONLY BY AN EMPTY SHELF. `main` asks this only when there are no Ready rows -- the single state in
+ * which an unfiled epic is the org's most urgent fact. A busy org never pays it, the same bargain
+ * `readOpenRowCount` and `requiredCheckNames` already make.
+ *
+ * `subIssuesSummary` AND NOT `blocking`: GitHub has both, and they mean different things. `blocking` is a
+ * dependency edge; sub-issues are PARENTHOOD, which is what "has this epic been broken down" asks. Using
+ * the wrong one would have read #68 -- which blocks nothing and parents nothing -- as filed.
+ *
+ * @param {(args: string[]) => string} [run]
+ * @returns {any[] | null} `null` when refused, never `[]`
+ */
+export function readEpics(run = defaultRun) {
+  try {
+    const parsed = JSON.parse(run(["issue", "list", "--state", "open", "--label", "epic",
+      "--limit", "200", "--json", "number,title,labels,subIssuesSummary"]));
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * AN EPIC WITH NO CHILDREN IS NOT A CONTAINER -- IT IS WORK NOBODY HAS FILED.
+ *
+ * THE THIRD INSTANCE OF ONE DEFECT. `epic` is in `NOT_PICKABLE`, and rightly: an engineer cannot claim a
+ * container. But a label that says "not the pool's work" was again read as "not work", and nothing asked
+ * the one question that matters about an epic -- HAS ANYONE TURNED IT INTO ROWS?
+ *
+ *   `fleet-gated`  not the pool's | IS `orchestrator`'s        -- fixed, `ROUTED_TO`
+ *   `blocked`      not startable  | a claim with no referent   -- fixed, `blockedBy`/`Not-before:`
+ *   `epic`         not pickable   | NOBODY HAS FILED THIS YET  -- this
+ *
+ * MEASURED 2026-09-20, and it is why the chairman found six engineers idle on a healthy fleet: 40 open
+ * rows, 0 ready, 0 open pull requests, ONE row an engineer could pick up -- and that one titled "Human:"
+ * because it needs the chairman. Meanwhile SEVENTEEN open epics, SIXTEEN of them with zero sub-issues,
+ * nine of those also `fleet-gated`. #34 is the plainest: "Sixteen built cases have never been captured."
+ * That is capture work, ready to do, inside a container nobody had opened.
+ *
+ * THE ORG HAD NOT RUN OUT OF WORK. It had run out of FILED work, and no cause could tell the difference.
+ *
+ * `product-manager`, because filing is their lane: `agent-practices.md` names them first reader for
+ * "filing and amendments, Region and done-when wording". Breaking an epic down IS filing.
+ *
+ * A JUDGMENT CAUSE, and the prompt says so: some epics genuinely should not be split yet -- one waiting
+ * on a decision, or on a release, is correctly whole. "Split none and record why" is a valid answer, the
+ * same contract `lane-backlog-unpromoted` already carries.
+ *
+ * A START CAUSE, so a drain withholds it: splitting an epic MANUFACTURES new work, which is exactly what
+ * a drain window exists to stop.
+ *
+ * @param {{number?: number, title?: string, subIssuesSummary?: {total?: number}}[]} epics
+ */
+export function unfiledEpics(epics) {
+  return (epics ?? []).filter((e) => (e?.subIssuesSummary?.total ?? 0) === 0);
+}
+
+/**
+ * The order an unfiled backlog deserves, or `null`.
+ *
+ * THE COUNT IS THE DISCRIMINATOR, so it stops once `product-manager` splits one and re-fires at a new
+ * depth -- the same shape as `ready-queue-empty` and `lane-backlog-unpromoted`, and the reason no new
+ * "it got better" mechanism is needed.
+ *
+ * @param {any[]} epics @param {any[]} readyRows
+ */
+export function epicOrder(epics, readyRows) {
+  // ONLY WHEN THE SHELF IS EMPTY. An epic left whole while there is claimable work is a priority call,
+  // not a defect; it becomes the org's most urgent question only when there is nothing else to pick up.
+  if (readyRows.length > 0) return null;
+  const unfiled = unfiledEpics(epics);
+  if (unfiled.length === 0) return null;
+  const named = unfiled.slice(0, 8).map((/** @type {any} */ e) => `#${e.number}`).join(", ");
+  return {
+    session: "product-manager",
+    cause: "epic-unfiled",
+    subject: "epics",
+    discriminator: String(unfiled.length),
+    prompt: `NOTHING IS READY AND ${unfiled.length} OPEN EPIC(S) HAVE NO SUB-ISSUES: ${named}`
+      + `${unfiled.length > 8 ? ", ..." : ""}. An epic with no children is not a container -- it is work `
+      + "nobody has filed, and it is invisible to every other cause because `epic` means NOT PICKABLE.\n"
+      + "Split what is genuinely splittable into rows an engineer can claim (a Region, an Acceptance, a "
+      + "done-when), using `gh issue edit <child> --parent <epic>` so the link is DATA rather than prose. "
+      + "An epic waiting on a decision or a release is correctly whole: say so on it and move on -- "
+      + "splitting none and recording why is a valid answer.\n"
+      + "PREFER THE ONES THE FLEET CAN ALREADY SERVE. The fleet is the org's scarcest resource and it "
+      + "sits idle when capture work is unfiled; `fleet-gated` epics are where the idle capacity is.",
+    causeKey: `product-manager/epic-unfiled/epics/${unfiled.length}`,
+  };
 }
 
 /**
@@ -1128,9 +1221,11 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *
  * @param {{ prs: any[], readyRows: any[], promotableRows?: any[], chairmanBlocked?: any[],
  *           prFiles?: { number: number, files: string[], changedFiles: number }[],
- *           drain?: boolean, required?: string[] | null }} state
+ *           drain?: boolean, required?: string[] | null, epics?: any[] }} state
  *        `required` is the checks that can block a merge (`requiredCheckNames`), or `null` for
  *        "could not be read", which counts EVERY check as before this existed.
+ *        `epics` are the open `epic` rows with their `subIssuesSummary` (`readEpics`); `[]` when
+ *        refused or when the shelf was not empty enough to ask.
  *        `promotableRows` are the backlog rows carrying no unpickable label; `chairmanBlocked` are
  *        the rows waiting on the chairman, oldest first. `[]` for either when refused or empty.
  *        `prFiles` is `comparablePrFiles(prs)` -- the open PRs B4 may be asked about. It DEFAULTS TO
@@ -1140,7 +1235,7 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *            prompt: string, causeKey: string}[]}
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
-  drain = false, required = null }) {
+  drain = false, required = null, epics = [] }) {
   const orders = [];
 
   for (const pr of prs) {
@@ -1160,6 +1255,11 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
 
   orders.push(...laneBacklogOrders(promotableRows, readyRows));
 
+
+  // AFTER the lane orders and BEFORE the chairman's: an unfiled epic is a supply problem, which only
+  // matters once the queue and the lanes have nothing left to offer.
+  const epic = epicOrder(epics, readyRows);
+  if (epic) orders.push(epic);
 
   orders.push(...chairmanOrders(chairmanBlocked));
 
@@ -1237,7 +1337,8 @@ function main() {
   const prFiles = comparablePrFiles(openPrs);
   const drain = draining();
   const decided = decide({ prs: openPrs, readyRows: rows, promotableRows: promotableRows ?? [],
-    chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required: requiredWhenRed(openPrs) });
+    chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required: requiredWhenRed(openPrs),
+    epics: rows.length === 0 ? readEpics() ?? [] : [] });
   const { delivered: orders, performed } = performActions(decided);
   orders.push(...deadMansSwitch(orders, drain, performed));
   for (const order of orders) process.stdout.write(`${JSON.stringify(order)}\n`);
