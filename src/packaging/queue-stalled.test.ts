@@ -16,7 +16,7 @@ import { dirname, resolve } from "node:path";
 import {
   stalledVerdict, mergeTreeConflict, DEFAULT_STALL_THRESHOLD_MS,
   armedBehindVerdict, behindByCount, formatBehindWatchdogLine, DEFAULT_BEHIND_STALL_THRESHOLD_SECONDS, supersedingGateVerdict, supersededLine, examinePr,
-  neverScheduledVerdict, neverScheduledLine, DEFAULT_NEVER_SCHEDULED_THRESHOLD_MS } from "../queue-stalled.mjs";
+  neverScheduledVerdict, neverScheduledLine, DEFAULT_NEVER_SCHEDULED_THRESHOLD_MS, headCommittedAt } from "../queue-stalled.mjs";
 import { newestConclusion, headQuietSeconds } from "../update-branch-sweep.mjs";
 
 // ---------------------------------------------------------------------------------------------------
@@ -408,43 +408,82 @@ test("neverScheduledLine: names every flagged PR", () => {
   assert.match(line, /1810/);
 });
 
-test("examinePr: #1810's own shape -- open, not armed, not draft, old, zero check runs -- named by number, "
-  + "independent of the armed/green precondition every other check in this file requires", () => {
-  const now = Date.parse("2026-09-20T19:36:00Z");
+// Real, locally-fetched commits (this repo's own recent merges), used as `headRefOid` below so
+// `headCommittedAt`'s real `git log` read inside `examinePr` has an actual object to answer about --
+// the same reason #1623's tests above use real shas (84f684dd.../43cf24ed...) rather than invented ones.
+const OLD_HEAD = "6e7e023e026d19f69abaccd3f23a63511dec9621"; // committer date 2026-09-20T19:01:50Z
+const FRESH_HEAD = "1710fae3f8db401032f3c755cd0865b8032ffa4a"; // committer date 2026-09-20T19:31:00Z
+const FORCE_PUSHED_HEAD = "80fee938338bed3ab4caaf114fe2d5826430e5ac"; // committer date 2026-09-20T20:05:57Z
+
+test("examinePr: #1810's own shape -- open, not armed, not draft, old head, zero check runs -- named by "
+  + "number, independent of the armed/green precondition every other check in this file requires", () => {
+  const now = Date.parse("2026-09-20T19:10:00Z"); // 8m10s after OLD_HEAD's own commit -- past the 5m floor
   const result = examinePr({
-    number: 1810, headRefOid: "9e315e06e39f64f0d4d32bd7d1c98a46b10c04a2", autoMergeRequest: null,
-    statusCheckRollup: [], isDraft: false, createdAt: "2026-09-20T18:44:28Z",
+    number: 1810, headRefOid: OLD_HEAD, autoMergeRequest: null,
+    statusCheckRollup: [], isDraft: false,
   }, now);
   assert.equal(result.examined, false, "never armed/green -- the other checks correctly skip it");
   assert.equal(result.neverScheduled?.number, 1810);
   assert.match(result.neverScheduled?.reason ?? "", /GitHub did not schedule anything for this commit/);
 });
 
-test("examinePr: a fresh PR (seconds old, no runs yet) is not flagged by the never-scheduled check", () => {
-  const now = Date.parse("2026-09-20T18:44:33Z");
+test("examinePr: a fresh head (seconds old, no runs yet) is not flagged by the never-scheduled check", () => {
+  const now = Date.parse("2026-09-20T19:31:05Z"); // 5s after FRESH_HEAD's own commit
   const result = examinePr({
-    number: 1900, headRefOid: "deadbeef", autoMergeRequest: null,
-    statusCheckRollup: [], isDraft: false, createdAt: "2026-09-20T18:44:28Z",
+    number: 1900, headRefOid: FRESH_HEAD, autoMergeRequest: null,
+    statusCheckRollup: [], isDraft: false,
   }, now);
   assert.equal(result.neverScheduled, undefined);
 });
 
-test("examinePr: an old PR with at least one check run, whatever its conclusion, is not flagged", () => {
-  const now = Date.parse("2026-09-20T20:00:00Z");
+test("#1814 REGRESSION: an old pull request whose head was just force-pushed -- a brand-new headRefOid, "
+  + "zero check runs, and the head itself only seconds old -- must NOT be flagged, even though the pull "
+  + "request as a whole may have been open for a long time. `examinePr` no longer reads `pr.createdAt` at "
+  + "all -- there is no such field on `QueuedPr` any more -- specifically because GitHub zeroes "
+  + "`statusCheckRollup` on a force-push/synchronize while `createdAt` never moves, so the old code's "
+  + "`prAgeMs` (from `createdAt`) could already be past the 5-minute floor before GitHub had scheduled "
+  + "anything for the fresh head. Only the head commit's own committer date may drive this verdict.", () => {
+  const now = Date.parse("2026-09-20T20:06:05Z"); // 8s after FORCE_PUSHED_HEAD's own commit
   const result = examinePr({
-    number: 1901, headRefOid: "deadbeef", autoMergeRequest: null,
-    statusCheckRollup: [{ name: "gate", conclusion: "FAILURE" }], isDraft: false, createdAt: "2026-09-20T18:44:28Z",
+    number: 1814, headRefOid: FORCE_PUSHED_HEAD, autoMergeRequest: null,
+    statusCheckRollup: [], isDraft: false,
+  }, now);
+  assert.equal(result.neverScheduled, undefined);
+});
+
+test("examinePr: an old head with at least one check run, whatever its conclusion, is not flagged", () => {
+  const now = Date.parse("2026-09-20T19:10:00Z");
+  const result = examinePr({
+    number: 1901, headRefOid: OLD_HEAD, autoMergeRequest: null,
+    statusCheckRollup: [{ name: "gate", conclusion: "FAILURE" }], isDraft: false,
   }, now);
   assert.equal(result.neverScheduled, undefined);
 });
 
 test("examinePr: an old, empty-rollup draft is never flagged", () => {
-  const now = Date.parse("2026-09-20T20:00:00Z");
+  const now = Date.parse("2026-09-20T19:10:00Z");
   const result = examinePr({
-    number: 1902, headRefOid: "deadbeef", autoMergeRequest: null,
-    statusCheckRollup: [], isDraft: true, createdAt: "2026-09-20T18:44:28Z",
+    number: 1902, headRefOid: OLD_HEAD, autoMergeRequest: null,
+    statusCheckRollup: [], isDraft: true,
   }, now);
   assert.equal(result.neverScheduled, undefined);
+});
+
+// --- headCommittedAt: #1814, the head commit's own committer date, never `pr.createdAt` ---
+
+test("headCommittedAt: reads the committer date from a real, injected git log", () => {
+  assert.equal(headCommittedAt("deadbeef", () => ({ status: 0, stdout: "2026-09-20T20:05:57+01:00\n" })),
+    "2026-09-20T20:05:57+01:00");
+});
+
+test("headCommittedAt: a failed git (sha not fetched locally, or any other git failure) is `null`, never "
+  + "coerced into an age of zero silently inside this function -- that choice belongs to the caller", () => {
+  assert.equal(headCommittedAt("deadbeef", () => ({ status: 1, stdout: "" })), null);
+  assert.equal(headCommittedAt("deadbeef", () => ({ status: 128 })), null);
+});
+
+test("headCommittedAt: empty stdout on a successful exit is also `null`, not an empty-string date", () => {
+  assert.equal(headCommittedAt("deadbeef", () => ({ status: 0, stdout: "" })), null);
 });
 
 // --- the CLI, guarded like every other argv-reading script here ---

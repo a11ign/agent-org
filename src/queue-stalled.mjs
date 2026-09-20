@@ -261,6 +261,29 @@ export function mergeTreeConflict(base, headSha, runGit) {
   return { conflict: true, files };
 }
 
+/**
+ * When THIS COMMIT landed, read from git -- or `null` when git could not answer (the sha not fetched
+ * locally, or `git log` failed some other way). Same field, same reasoning as `update-branch-sweep.mjs`'s
+ * `mainTipCommittedAt`: the COMMITTER date (`%cI`), not GitHub's `pr.createdAt`.
+ *
+ * #1814: `examinePr` used to read `pr.createdAt` for `prAgeMs` -- when GitHub OPENED the pull request,
+ * which never moves. A PR force-pushed to a fresh head keeps its old `createdAt` but lands with
+ * `checkRunCount: 0` (GitHub zeroes `statusCheckRollup` on synchronize), so an old PR with a brand-new
+ * head was flagged `NEVER_SCHEDULED` before GitHub had any chance to schedule a run for that head -- the
+ * PR's age, not the head's. Reading `headRefOid`'s own committer date instead answers the question this
+ * check actually asks: how long has GITHUB HAD THIS COMMIT, not how long has the pull request existed.
+ *
+ * @param {string} headSha
+ * @param {(args: string[]) => { status: number, stdout?: string }} runGit
+ * @returns {string | null}
+ */
+export function headCommittedAt(headSha, runGit) {
+  const result = runGit(["log", "-1", "--format=%cI", headSha]);
+  if (result.status !== 0) return null;
+  const value = (result.stdout ?? "").trim();
+  return value === "" ? null : value;
+}
+
 /** @param {string[]} args */
 function runGitForReal(args) {
   try {
@@ -280,7 +303,7 @@ const gh = (args) => execFileSync("gh", args, { encoding: "utf8" }).trim();
  * @typedef {{ name?: string, conclusion?: string | null, completedAt?: string | null,
  *   startedAt?: string | null, detailsUrl?: string | null }} CheckRun
  * @typedef {{ number: number, headRefOid: string, autoMergeRequest?: { enabledAt: string } | null,
- *   statusCheckRollup?: CheckRun[], isDraft?: boolean, createdAt?: string }} QueuedPr
+ *   statusCheckRollup?: CheckRun[], isDraft?: boolean }} QueuedPr
  */
 
 /**
@@ -448,7 +471,12 @@ export function examinePr(pr, now) {
 
   // #1810: NOT gated on `armed`/`green` -- #1808 was never armed, so a check that only ran once a PR
   // reached the same precondition as the conflict/behind checks below would never have found it.
-  const prAgeMs = pr.createdAt ? now - Date.parse(pr.createdAt) : 0;
+  // #1814: the HEAD COMMIT's own age, not `pr.createdAt` -- see `headCommittedAt`. An unreadable head
+  // (not fetched, or some other git failure) falls back to 0, the same "unknown reads as too recent, not
+  // as stalled" choice `pr.createdAt` missing used to make, so a read failure here can never manufacture
+  // a false NEVER_SCHEDULED.
+  const headCommitAt = headCommittedAt(pr.headRefOid, runGitForReal);
+  const prAgeMs = headCommitAt ? now - Date.parse(headCommitAt) : 0;
   // #1810: the RAW population, not the newest-per-name reading `newestConclusion`/`newestRun` give the
   // checks above -- even a superseded or duplicate run proves GitHub scheduled SOMETHING at this head,
   // which is exactly what this predicate asks, unlike those checks' question of what the newest one says.
@@ -511,7 +539,7 @@ function main() {
   let prs;
   try {
     prs = JSON.parse(gh(["pr", "list", "--repo", repo, "--state", "open", "--base", "main", "--limit", "100",
-      "--json", "number,headRefOid,autoMergeRequest,statusCheckRollup,isDraft,createdAt"]));
+      "--json", "number,headRefOid,autoMergeRequest,statusCheckRollup,isDraft"]));
   } catch (cause) {
     console.error(`CANNOT ASK: listing open PRs failed -- ${cause instanceof Error ? cause.message : cause}`);
     process.exit(EXIT.CANNOT_ASK);
