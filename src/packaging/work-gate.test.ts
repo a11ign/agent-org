@@ -20,7 +20,8 @@ import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReady
   comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
   blockingChecks, anyChecksRed, requiredCheckNames, ownerOf, NOT_PICKABLE, NOT_STARTABLE,
   ROUTED_TO, readPromotableRows, GH_READS, partitionUnclaimed, readOpenRowCount,
-  unfiledEpics, epicOrders, readEpics, answersOwed, answerOrders, readAnswerOwed,
+  unfiledEpics, epicOrders, readEpics, answersOwed, answerOrders, readOpenRows, withAnswerLabel,
+  blockedWithoutReferent, blockedReferentOrders,
   ANSWER_PREFIX }
   from "../work-gate.mjs";
 
@@ -559,8 +560,8 @@ test("drain OFF changes nothing, so the flag cannot cost anything when it is not
 test("every cause is classified as START or FINISH -- a new one cannot default into a window", () => {
   const finish = CAUSES.filter((c: string) => !START_CAUSES.includes(c)).sort();
   assert.deepEqual([...START_CAUSES].sort(),
-    ["epic-unfiled", "lane-backlog-unpromoted", "org-stalled", "ready-queue-empty",
-      "ready-row-unclaimed"]);
+    ["blocked-unexaminable", "epic-unfiled", "lane-backlog-unpromoted", "org-stalled",
+      "ready-queue-empty", "ready-row-unclaimed"]);
   assert.deepEqual(finish, ["answer-owed", "chairman-blocked", "draft-awaiting-verdict",
     "draft-convinced-not-ready", "pr-checks-failing", "verdict-not-convinced"]);
   for (const cause of START_CAUSES) {
@@ -1160,12 +1161,13 @@ test("answer-owed is a WAKE cause and a FINISH cause, unlike the other three", (
   assert.ok(!START_CAUSES.includes("answer-owed"), "a drain must not withhold an answer someone waits on");
 });
 
-test("readAnswerOwed refuses rather than reporting nobody is waiting", () => {
-  assert.equal(readAnswerOwed(() => { throw new Error("HTTP 502"); }), null);
-  assert.equal(readAnswerOwed(() => "not json"), null);
+test("readOpenRows refuses rather than reporting an empty tracker", () => {
+  assert.equal(readOpenRows(() => { throw new Error("HTTP 502"); }), null);
+  assert.equal(readOpenRows(() => "not json"), null);
   const rows = [owedRow(914, "ceo"), { number: 2, labels: [{ name: "backlog" }] }];
-  assert.deepEqual(readAnswerOwed(() => JSON.stringify(rows))?.map((r: { number: number }) => r.number),
-    [914], "and it filters to only the rows that owe, so the caller never scans the whole tracker");
+  assert.equal(readOpenRows(() => JSON.stringify(rows))?.length, 2, "it returns EVERY open row...");
+  assert.deepEqual(withAnswerLabel(rows).map((r: { number: number }) => r.number), [914],
+    "...and each cause filters it, so one read serves both");
 });
 
 /**
@@ -1199,4 +1201,59 @@ test("a lane's orders are capped like every other row order", () => {
   const orders = decide({ prs: [], readyRows: [], promotableRows: many })
     .filter((o: { cause: string }) => o.cause === "lane-backlog-unpromoted");
   assert.equal(orders.length, MAX_ROW_ORDERS_PER_TICK);
+});
+
+/**
+ * `blocked` MUST NAME WHAT IT WAITS ON -- the root cause behind an empty queue, not the pile.
+ *
+ * THE THREE WHYS, run 2026-09-20 when the chairman asked why nobody was working:
+ *   1. the engineer pool had ZERO claimable rows -- 1 of 38 free, and lane-owned
+ *   2. the entire remaining supply was ELEVEN rows labelled `blocked`, untouched since 19 Sep
+ *   3. nothing re-examines them: `blocked` is filtered out AT READ TIME by `NOT_STARTABLE`, and the
+ *      nightly prose check caught 1 of 11 -- TEN WERE INVISIBLE TO EVERY CHECK IN THE SYSTEM
+ *
+ * The fourth why is where this fix belongs: #1780 added `blockedBy`/`Not-before:` as PREFERRED and left
+ * `blocked` legal, unexaminable and unmigrated, so the pile both persisted and regenerated.
+ */
+const staleBlocked = (n: number, extra: Record<string, unknown> = {}) => ({ number: n, title: `row ${n}`,
+  labels: [{ name: "backlog" }, { name: "blocked" }], ...extra });
+
+test("a `blocked` row naming nothing is reported; one naming something is not", () => {
+  const bare = staleBlocked(1731);
+  const edge = staleBlocked(72, { blockedBy: { nodes: [{ number: 9, state: "OPEN" }] } });
+  const dated = staleBlocked(1234, { body: "Not-before: 2099-01-01" });
+  assert.deepEqual(blockedWithoutReferent([bare, edge, dated], "2026-09-20").map((r) => r.number),
+    [1731], "a recorded blocker is examinable; a bare label is not");
+});
+
+test("it fires on the PROPERTY, so it catches new rows as well as today's pile", () => {
+  // A cause that drained the existing eleven would fix the symptom. This one refuses any `blocked` that
+  // says nothing, whenever it appears.
+  const [order] = blockedReferentOrders([staleBlocked(1731)], [], "2026-09-20") as
+    { session: string, cause: string, causeKey: string, prompt: string }[];
+  assert.equal(order.session, "product-manager");
+  assert.equal(order.cause, "blocked-unexaminable");
+  assert.equal(order.causeKey, "product-manager/blocked-unexaminable/row-1731");
+  assert.match(order.prompt, /--add-blocked-by/);
+  assert.match(order.prompt, /Not-before: YYYY-MM-DD/);
+  assert.match(order.prompt, /REMOVE the `blocked` label/);
+});
+
+test("`blocked` is NOT banned -- a wait neither mechanism can express is real", () => {
+  // #1520 waits on a hosted-runner behaviour: not a row, not a date. What is refused is a `blocked` that
+  // says NOTHING, not the label itself -- so the prompt offers a third answer.
+  const [order] = blockedReferentOrders([staleBlocked(1520)], [], "2026-09-20") as { prompt: string }[];
+  assert.match(order.prompt, /if the wait is real and neither mechanism can express it/);
+  assert.match(order.prompt, /what\s+would clear it and who would notice/);
+});
+
+test("it waits for an empty shelf, like epic-unfiled", () => {
+  assert.deepEqual(blockedReferentOrders([staleBlocked(1)], [{ number: 9 }], "2026-09-20"), [],
+    "a stale label while claimable work exists is untidy, not urgent");
+});
+
+test("a row whose blocker has CLOSED is reported, because the label outlived the condition", () => {
+  // The exact case that cost the day: #1731's blocker was fixed the day before and the label stayed on.
+  const cleared = staleBlocked(1731, { blockedBy: { nodes: [{ number: 9, state: "CLOSED" }] } });
+  assert.deepEqual(blockedWithoutReferent([cleared], "2026-09-20").map((r) => r.number), [1731]);
 });
