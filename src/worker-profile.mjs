@@ -118,6 +118,17 @@ export const PROFILES = Object.freeze({
     why: "promotion decides what every engineer does next, and a row promoted without a Region or an "
       + "Acceptance costs more than the reading that would have caught it",
   }),
+  "epic-unfiled": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // HIGH. Reading an epic and deciding what rows it becomes is the judgment the whole queue rests on:
+    // measured 2026-09-20, 16 of 17 open epics had zero sub-issues and the pool had ONE claimable row,
+    // so the org read as out of work while nine fleet-gated epics sat unfiled. Splitting one wrongly
+    // strands the work again in smaller pieces; splitting one well is what puts six engineers back to
+    // work. Cheap is the wrong saving here.
+    effort: "high",
+    why: "splitting an epic into claimable rows is the judgment the whole queue's supply rests on",
+  }),
   "lane-backlog-unpromoted": Object.freeze({
     kind: "claude",
     model: "sonnet",

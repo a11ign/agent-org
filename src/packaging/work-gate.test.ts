@@ -19,7 +19,8 @@ import assert from "node:assert/strict";
 import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES,
   comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
   blockingChecks, anyChecksRed, requiredCheckNames, ownerOf, NOT_PICKABLE, NOT_STARTABLE,
-  ROUTED_TO, readPromotableRows, GH_READS, partitionUnclaimed, readOpenRowCount }
+  ROUTED_TO, readPromotableRows, GH_READS, partitionUnclaimed, readOpenRowCount,
+  unfiledEpics, epicOrder, readEpics }
   from "../work-gate.mjs";
 
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
@@ -554,7 +555,8 @@ test("drain OFF changes nothing, so the flag cannot cost anything when it is not
 test("every cause is classified as START or FINISH -- a new one cannot default into a window", () => {
   const finish = CAUSES.filter((c: string) => !START_CAUSES.includes(c)).sort();
   assert.deepEqual([...START_CAUSES].sort(),
-    ["lane-backlog-unpromoted", "org-stalled", "ready-queue-empty", "ready-row-unclaimed"]);
+    ["epic-unfiled", "lane-backlog-unpromoted", "org-stalled", "ready-queue-empty",
+      "ready-row-unclaimed"]);
   assert.deepEqual(finish, ["chairman-blocked", "draft-awaiting-verdict", "draft-convinced-not-ready",
     "pr-checks-failing", "verdict-not-convinced"]);
   for (const cause of START_CAUSES) {
@@ -971,4 +973,76 @@ test("a REFUSED read is still refused, not read as a queue with nothing reachabl
   assert.equal(readOpenRowCount(() => { throw new Error("HTTP 502"); }), null);
   assert.equal(readOpenRowCount(() => "not json"), null);
   assert.equal(stalledOrder({ orders: [], openRows: null }), null);
+});
+
+/**
+ * AN EPIC WITH NO CHILDREN IS WORK NOBODY HAS FILED -- the third instance of one defect.
+ *
+ *   `fleet-gated`  not the pool's | IS orchestrator's         -- fixed, ROUTED_TO
+ *   `blocked`      not startable  | a claim with no referent  -- fixed, blockedBy/Not-before
+ *   `epic`         not pickable   | NOBODY HAS FILED THIS YET -- this
+ *
+ * MEASURED 2026-09-20, and it is why the chairman found six engineers idle on a healthy fleet: 40 open
+ * rows, 0 ready, 0 open PRs, ONE claimable row -- and that one titled "Human:" because it needs the
+ * chairman. Meanwhile 17 open epics, 16 with zero sub-issues, nine also `fleet-gated`. #34 is the
+ * plainest: "Sixteen built cases have never been captured." The org had not run out of work; it had run
+ * out of FILED work, and no cause could tell the difference.
+ */
+const epic = (n: number, total = 0) => ({ number: n, title: `epic ${n}`,
+  labels: [{ name: "backlog" }, { name: "epic" }], subIssuesSummary: { total, completed: 0 } });
+
+test("an epic with no sub-issues is unfiled work; one with children is a real container", () => {
+  assert.deepEqual(unfiledEpics([epic(34), epic(1317, 10)]).map((e) => e.number), [34],
+    "#1317 has ten children and is doing its job; #34 has none and is hiding capture work");
+  assert.deepEqual(unfiledEpics([]), []);
+  assert.deepEqual(unfiledEpics(undefined as never), []);
+});
+
+test("it fires only when the shelf is EMPTY", () => {
+  // An epic left whole while claimable work exists is a PRIORITY CALL, not a defect. It becomes the
+  // org's most urgent question only when there is nothing else to pick up.
+  assert.equal(epicOrder([epic(34)], [{ number: 9 }]), null, "work on the shelf outranks filing more");
+  const order = epicOrder([epic(34)], []) as { session: string, cause: string, discriminator: string };
+  assert.equal(order.cause, "epic-unfiled");
+  assert.equal(order.session, "product-manager", "filing is product-manager's lane");
+  assert.equal(order.discriminator, "1");
+});
+
+test("the count is the discriminator, so splitting one re-fires at the new depth", () => {
+  // The same shape as `ready-queue-empty` and `lane-backlog-unpromoted`, and the reason no separate
+  // "it got better" mechanism is needed: the causeKey moves when the state does.
+  const before = epicOrder([epic(34), epic(29), epic(31)], []) as { causeKey: string };
+  const after = epicOrder([epic(34), epic(29)], []) as { causeKey: string };
+  assert.match(before.causeKey, /epic-unfiled\/epics\/3$/);
+  assert.match(after.causeKey, /epic-unfiled\/epics\/2$/);
+  assert.notEqual(before.causeKey, after.causeKey, "or the wake ledger would hold it silent");
+});
+
+test("a fully-filed backlog of epics says nothing at all", () => {
+  // THE POSITIVE CONTROL FOR THE THREE ABOVE: this cause must be capable of finding nothing, or it is a
+  // function that always fires and `product-manager` learns to ignore it.
+  assert.equal(epicOrder([epic(1317, 10), epic(2, 3)], []), null);
+  assert.equal(epicOrder([], []), null, "and no epics at all is not a finding either");
+});
+
+test("the prompt points at the fleet, because that is where the idle capacity is", () => {
+  const order = epicOrder([epic(34)], []) as { prompt: string };
+  assert.match(order.prompt, /fleet-gated` epics are where the idle capacity is/);
+  assert.match(order.prompt, /--parent/, "the epic->child link must be DATA, not prose");
+  assert.match(order.prompt, /splitting none and recording why is a valid answer/,
+    "some epics are correctly whole; a cause that demands splits would manufacture bad rows");
+});
+
+test("readEpics refuses rather than reporting an empty backlog", () => {
+  assert.equal(readEpics(() => { throw new Error("HTTP 502"); }), null);
+  assert.equal(readEpics(() => "not json"), null);
+  assert.deepEqual(readEpics(() => JSON.stringify([epic(34)]))?.map((e: { number: number }) => e.number),
+    [34]);
+});
+
+test("epic-unfiled is classified in all three registries", () => {
+  // `work-gate.test.ts`'s own partition test fails the moment CAUSES grows, which is what forces this.
+  assert.ok(CAUSES.includes("epic-unfiled"));
+  assert.ok(START_CAUSES.includes("epic-unfiled"),
+    "splitting an epic MANUFACTURES work, which is what a drain window exists to stop");
 });
