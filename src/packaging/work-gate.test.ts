@@ -1350,8 +1350,14 @@ test("the prompt offers the person-shaped answer, and admits the comment-only on
     labels: [{ name: "blocked" }] }], [], "2026-09-20") as { prompt: string }[];
   assert.match(order.prompt, /ONE of four things/);
   assert.match(order.prompt, /IF IT WAITS ON A PERSON, label it `needs:chairman`/);
-  assert.match(order.prompt, /DOES NOT STOP THIS BEING ASKED AGAIN/,
-    "the comment-only option must say so, or it reads as a way to make the question go quiet");
+  // SUPERSEDED 2026-09-21, and the replacement is the opposite instruction. This asserted that the
+  // comment-only option must WARN it does not silence the question. That warning was honest about the
+  // behaviour and the behaviour was wrong: #1520 was correctly re-answered four times in nine hours
+  // because an explanation had no way to settle. The option now REQUIRES a `Not-before:` horizon, so
+  // it does go quiet -- for a bounded time, then asks once more, which is the right treatment for a
+  // wait nothing can examine.
+  assert.match(order.prompt, /AND ADD A `Not-before:` FOR WHEN IT SHOULD NEXT BE\s+RE-CHECKED/,
+    "an explained wait must carry a horizon, or it is a loop rather than an answer");
 });
 
 /**
@@ -1407,4 +1413,38 @@ test("the empty-shelf prompt asks whether a row is STILL TRUE, and to record wha
   assert.match(shelf.prompt, /RECORD WHAT YOU FOUND, ON THE ROWS YOU EXAMINED/);
   assert.match(shelf.prompt, /Promoting nothing and saying why\s+is a valid answer/,
     "the guarantee that doing nothing is legitimate must survive both additions");
+});
+
+/**
+ * AN EXPLAINED WAIT MUST SET ITS OWN RE-CHECK DATE, OR IT IS A LOOP THE ORG WAS TOLD TO RUN.
+ *
+ * Until 2026-09-21 this prompt's fourth option said a one-line comment was enough and that being
+ * re-asked was DELIBERATE. That instruction was followed exactly: #1520 -- a measurement waiting for a
+ * rehearsal-run count to reach 20, which is neither a row, a date nor a person -- was correctly
+ * re-answered FOUR TIMES IN NINE HOURS (23:43, 01:44, 05:45, 08:21), each a full `sonnet`/`high` turn
+ * reaching the identical conclusion, because nothing could record that the question had been answered.
+ *
+ * `product-manager` did nothing wrong at any point; the prompt ratified the loop. An explanation with
+ * no horizon is not a terminal state.
+ *
+ * THE HORIZON IS ALSO THE ANSWER TO ROT, which is why it is a `Not-before:` and not a silence flag: an
+ * unexaminable wait is exactly the kind that quietly becomes true, so it should go quiet for a while
+ * and then be asked ONCE more -- never forever, never every two hours.
+ */
+test("the comment-only option requires a `Not-before:` horizon", () => {
+  const [order] = blockedReferentOrders([{ number: 1520, title: "rehearsal count",
+    labels: [{ name: "blocked" }] }], [], "2026-09-21") as { prompt: string }[];
+  assert.match(order.prompt, /AND ADD A `Not-before:` FOR WHEN IT SHOULD NEXT BE\s+RE-CHECKED/);
+  assert.match(order.prompt, /NOT OPTIONAL/);
+  assert.doesNotMatch(order.prompt, /DOES NOT STOP THIS BEING ASKED AGAIN/,
+    "the old instruction told the org the loop was deliberate -- it must not survive");
+});
+
+test("an explained wait WITH a horizon goes quiet, and comes back once", () => {
+  const explained = { number: 1520, labels: [{ name: "blocked" }],
+    body: "Not-before: 2026-09-28\n\nwaits on the run count reaching 20" };
+  assert.deepEqual(blockedWithoutReferent([explained], "2026-09-21"), [],
+    "quiet while the horizon stands");
+  assert.equal(blockedWithoutReferent([explained], "2026-09-28").length, 1,
+    "and asked ONCE more when it passes -- an unexaminable wait is the kind that quietly becomes true");
 });
