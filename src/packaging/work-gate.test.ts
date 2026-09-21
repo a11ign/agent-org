@@ -779,25 +779,35 @@ test("requiredCheckNames fails OPEN on every unusable answer", () => {
 const gated = (n: number, ...extra: string[]) => ({ number: n,
   labels: [{ name: "backlog" }, { name: "fleet-gated" }, ...extra.map((name) => ({ name }))] });
 
-test("a fleet-gated row belongs to orchestrator, and now reaches them", () => {
+test("a fleet-gated row belongs to a pool of two now, and reaches BOTH of them -- #1828", () => {
+  // ceo's ruling on #1817: `fleet-gated` routes to `orchestrator` AND `worker-capture`, not one name.
+  // ONE ORDER PER NAME, not one order naming the pair -- `wake.mjs` routes an order to one session, so
+  // a shared order would reach neither reliably.
   const orders = decide({ prs: [], readyRows: [], promotableRows: [gated(914), gated(1296)] });
-  const [order] = orders.filter((o: { cause: string }) => o.cause === "lane-backlog-unpromoted");
-  assert.ok(order, "#914 -- the row that would AUTOMATE draining the pile -- was itself unreachable");
-  assert.equal(order.session, "orchestrator");
-  assert.match(order.prompt, /#914/);
-  assert.match(order.prompt, /ROUTES rather than blocks/);
-  assert.match(order.prompt, /fleet:status/, "and it must not read as the fleet being broken");
+  const forRow914 = orders.filter((o: { cause: string, subject: string }) =>
+    o.cause === "lane-backlog-unpromoted" && o.subject === "row-914");
+  assert.deepEqual(forRow914.map((o: { session: string }) => o.session).sort(),
+    ["orchestrator", "worker-capture"],
+    "#914 -- the row that would AUTOMATE draining the pile -- must reach both pool members");
+  for (const order of forRow914 as { prompt: string }[]) {
+    assert.match(order.prompt, /#914/);
+    assert.match(order.prompt, /ROUTES rather than blocks/);
+    assert.match(order.prompt, /fleet:status/, "and it must not read as the fleet being broken");
+  }
 });
 
 test("THE POOL'S VIEW IS UNCHANGED: no engineer is offered a fleet-gated row", () => {
   // The old reasoning stays correct and load-bearing: that work serialises behind physical hardware, so
   // counting it as capacity would report a queue five engineers could share when one would be waiting on
-  // a worker box. Routing must not widen the pool by a single row.
-  assert.equal(ownerOf(gated(914)), "orchestrator");
+  // a worker box. Routing must not widen the pool by a single row -- widening WHO the pool routes to is
+  // #1828's whole point, and this test is what proves the two are different claims.
+  assert.deepEqual(ownerOf(gated(914)), ["orchestrator", "worker-capture"]);
   assert.equal(ownerOf({ number: 1, labels: [{ name: "backlog" }] }), null, "unlaned is the pool");
   const orders = decide({ prs: [], readyRows: [], promotableRows: [gated(914)] });
   assert.ok(!orders.some((o: { session: string }) => o.session === "product-manager"),
     "a routed row is not an empty shelf being refilled -- the pool's count must not see it");
+  assert.ok(!orders.some((o: { session: string }) => !["orchestrator", "worker-capture"].includes(o.session)),
+    "and a fleet-gated row's orders never name anyone outside its own two-name pool");
 });
 
 test("a LANE beats a routing label, because only one of them is access control", () => {

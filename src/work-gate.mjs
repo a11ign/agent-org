@@ -215,8 +215,14 @@ export const NOT_PICKABLE = Object.freeze(["blocked", "fleet-gated", "epic", "di
  * THE DEADLOCK THAT MAKES IT SELF-SUSTAINING: #914 -- "a nightly fleet capture batch for every
  * fleet-gated row on the milestone" -- is ITSELF `fleet-gated`. The row that would automate draining the
  * pile is hidden by the same rule that hides the pile.
+ *
+ * A VALUE IS NOW A POOL, NOT A NAME -- #1828, ceo's ruling on #1817 (2026-09-21): "`fleet-gated` routes
+ * to a pool of two for now: `orchestrator` and `worker-capture`. Not wider." Every reader of this map
+ * (`ownerOf`, `laneBacklogOrders`, `decide`'s pool-count math) must treat the value as a list of names,
+ * never assume it is exactly one -- that assumption is what would have silently dropped the second name
+ * or thrown reading past index 0.
  */
-export const ROUTED_TO = Object.freeze({ "fleet-gated": "orchestrator" });
+export const ROUTED_TO = Object.freeze({ "fleet-gated": Object.freeze(["orchestrator", "worker-capture"]) });
 
 /**
  * Labels meaning the row is not startable work FOR ANYONE -- `NOT_PICKABLE` minus what is merely routed.
@@ -248,14 +254,20 @@ export function laneOwnerOf(row) {
 }
 
 /**
- * The session a row belongs to -- BY LANE FIRST, THEN BY ROUTING -- or `null` for the engineer pool.
+ * The session (or, for a routed row, the POOL of sessions) a row belongs to -- BY LANE FIRST, THEN BY
+ * ROUTING -- or `null` for the engineer pool.
  *
  * LANE WINS, and the precedence is not arbitrary: a `lane:` label REFUSES every other session
  * unconditionally at claim time (`row-claim/runner-rule.mjs`), so it is access control. A routing label
  * only says whose hands the acceptance needs. A `fleet-gated` row carrying `lane:ceo` is `ceo`'s, and
  * telling `orchestrator` about it would be telling them about a row they cannot take.
  *
+ * A ROUTED ROW CAN NOW RETURN AN ARRAY -- #1828. `ROUTED_TO`'s value is a pool, not a name, and this
+ * function hands that value straight back rather than picking one: every caller (`laneBacklogOrders`,
+ * `decide`'s pool-count math) must read a two-name owner as "reaches both", not "reaches the first".
+ *
  * @param {any} row
+ * @returns {string | readonly string[] | null}
  */
 export function ownerOf(row) {
   const byLane = laneOwnerOf(row);
@@ -273,7 +285,7 @@ export function ownerOf(row) {
   // decision is that job, not a decision in itself.
   if (labelsOf(row).includes("decision")) return "product-manager";
   const routed = labelsOf(row).find((/** @type {string} */ n) => n in ROUTED_TO);
-  return routed ? /** @type {Record<string,string>} */ (ROUTED_TO)[routed] : null;
+  return routed ? /** @type {Record<string, string | readonly string[]>} */ (ROUTED_TO)[routed] : null;
 }
 
 /**
@@ -1184,10 +1196,13 @@ function laneBacklogOrders(promotableRows, readyRows) {
   // `decision` routes to `product-manager`, which appears in neither map, so two rows (#1798, #1734)
   // resolved to an owner and then produced no order at all. A list that must be updated whenever
   // `ownerOf` gains a case is a list that will not be.
-  /** @type {Set<string>} */
+  /** @type {Set<string | readonly string[]>} */
   const owners = new Set(promotableRows.map((/** @type {any} */ r) => ownerOf(r))
-    .filter((/** @type {string | null} */ o) => o !== null));
+    .filter((/** @type {string | readonly string[] | null} */ o) => o !== null));
   for (const owner of owners) {
+    // REFERENCE EQUALITY, DELIBERATELY, for a pool owner: `ROUTED_TO`'s value is one frozen array
+    // shared by every row it routes, never rebuilt per row, so grouping and re-filtering by `===` finds
+    // every row in the pool exactly as it did when every owner was a string.
     const mine = promotableRows.filter((r) => ownerOf(r) === owner);
     const readyHere = readyRows.filter((r) => ownerOf(r) === owner
       && !labelsOf(r).includes(CLAIM_LABEL));
@@ -1219,16 +1234,22 @@ function laneBacklogOrders(promotableRows, readyRows) {
  * in your lane and nothing is Ready" is a question with an answer, which is what this file's own header
  * asks of every prompt.
  *
- * @param {string} owner @param {any[]} mine
+ * A POOL OWNER GETS ONE ORDER PER NAME, NOT ONE ORDER FOR THE PAIR -- #1828. `wake.mjs` routes one order
+ * to one session, so a single order naming both `orchestrator` and `worker-capture` would reach neither
+ * reliably; the row must recruit whichever of the two is free, exactly as an unlaned Ready row already
+ * does for the engineer pool.
+ *
+ * @param {string | readonly string[]} owner @param {any[]} mine
  */
 function backlogOrders(owner, mine) {
-  return mine.slice(0, MAX_ROW_ORDERS_PER_TICK).map((/** @type {any} */ r) => ({
-    session: owner,
+  const names = Array.isArray(owner) ? owner : [/** @type {string} */ (owner)];
+  return names.flatMap((name) => mine.slice(0, MAX_ROW_ORDERS_PER_TICK).map((/** @type {any} */ r) => ({
+    session: name,
     cause: "lane-backlog-unpromoted",
     subject: `row-${r.number}`,
     discriminator: String(r.number),
     prompt: `#${r.number} is an open backlog row you own and there is NOTHING Ready among your rows.`
-      + (laneOwnerOf(r) === owner
+      + (laneOwnerOf(r) === name
         ? " It carries your lane: nobody else may promote it."
         : " It carries `fleet-gated`, which ROUTES rather than blocks -- the acceptance needs the fleet"
           + " or the lab, which you run. Check the fleet is up (`npm run fleet:status`) first; this row"
@@ -1240,8 +1261,8 @@ function backlogOrders(owner, mine) {
       + "about THIS row changes, not until an unrelated row moves (#1799).\n"
       + "RECORD THE ANSWER ON THE ROW, whatever it is. A decision that exists only in your terminal is "
       + "one the org cannot see: the next reader finds an untouched row and re-derives it from scratch.",
-    causeKey: `${owner}/lane-backlog-unpromoted/row-${r.number}`,
-  }));
+    causeKey: `${name}/lane-backlog-unpromoted/row-${r.number}`,
+  })));
 }
 
 /**
