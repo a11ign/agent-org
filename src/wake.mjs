@@ -358,7 +358,18 @@ export function addressed(order, label) {
     + "Work autonomously to the end: nobody is at this terminal to answer you. If something genuinely "
     + `blocks you, say so on the row and message \`${escalationFor(label)}\` -- never stop and wait on a `
     + "human. If you cannot claim the row (already taken, or the claim refuses), that is an answer: "
-    + "report it and stop, rather than working outside a claim.";
+    + "report it and stop, rather than working outside a claim.\n\n"
+    + "ENDING YOUR TURN WITH A QUESTION IS THE SAME AS STOPPING. Nobody reads this terminal, so "
+    + "\"want me to file it?\" and not filing it are the same outcome -- except the first also looks "
+    + "like progress. IF THE ACTION IS IN YOUR LANE, TAKE IT AND REPORT WHAT YOU DID. Measured "
+    + "2026-09-21: `product-manager` ended two consecutive turns this way, the second holding a "
+    + "COMPLETE, EVIDENCED ROW DRAFT (two incidents, commit hashes, timestamps) and asking permission "
+    + "to file it -- when filing is the first line of its own brief. The row did not get filed.\n"
+    + "IF IT IS GENUINELY NOT YOURS, that is not a question either: say what you would do, name who "
+    + "owns it, and route it -- `answer:<session>` on the row for a ruling, or the row itself for work. "
+    + "Then end your turn. The gate will bring you back when something changes; waiting is never your "
+    + "job, and polling a pull request for a verdict that has its own cause is a turn spent on a "
+    + "question the tick already answers.";
 }
 
 /**

@@ -615,3 +615,36 @@ test("several blocked sessions are all named, in the order herdr gave them", () 
   ]), ["reviewer", "worker-tooling"],
   "reporting only the first would leave the second exactly as invisible as before");
 });
+
+/**
+ * ENDING A TURN WITH A QUESTION IS THE SAME AS STOPPING.
+ *
+ * `--disallowedTools AskUserQuestion` stopped a session raising a MENU and waiting. It did not stop a
+ * session ending its turn with a question in prose, which has the same outcome: nobody reads the
+ * terminal, so the work does not happen -- except this way it also looks like progress.
+ *
+ * MEASURED 2026-09-21: `product-manager` ended two consecutive turns this way. The second held a
+ * COMPLETE, EVIDENCED ROW DRAFT -- two incidents, commit hashes, timestamps -- and asked permission to
+ * file it, when filing is the first line of its own brief (`agent-practices.md`: "first reader for rows,
+ * the queue and process ... filing and amendments"). The row did not get filed; the chairman filed it.
+ *
+ * The preamble already said "never stop and wait on a human", and that was satisfied LITERALLY: the
+ * turn ended, nothing blocked. The instruction was about blocking; the failure was about the work.
+ */
+test("the preamble refuses a question as an ending, and says what to do instead", () => {
+  const out = addressed({ prompt: "Do the thing." } as never, "product-manager");
+  assert.match(out, /ENDING YOUR TURN WITH A QUESTION IS THE SAME AS STOPPING/);
+  assert.match(out, /IF THE ACTION IS IN YOUR LANE, TAKE IT AND REPORT WHAT YOU DID/,
+    "refusing the question is half an instruction -- it must name the alternative");
+  assert.match(out, /answer:<session>/,
+    "and for work that is genuinely not yours, route it rather than ask about it");
+});
+
+test("it names polling as the specific waste it is", () => {
+  // The first of the two turns polled a PR for a verdict that `draft-awaiting-verdict` already has a
+  // cause for -- a turn spent on a question the tick answers by itself.
+  const out = addressed({ prompt: "Do the thing." } as never, "product-manager");
+  assert.match(out, /polling a pull request for a verdict that has its own cause/);
+  assert.match(out, /The gate will bring you back when something changes/,
+    "a session must know that ending its turn is safe, or refusing to ask just becomes refusing to stop");
+});
