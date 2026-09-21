@@ -103,7 +103,16 @@ const FLEET_LAB_PATTERNS = /** @type {[RegExp, string][]} */ ([
   [/\bgh workflow run\b/, "dispatches a workflow from the control plane, not from a checkout"],
   [/\bfleet:provision\b/, "provisions a real box"],
   [/\bA11Y_PVE_KEY\b|\ba11y-pve\b/, "uses the Proxmox key, which lives on the control plane"],
-  [/\bcorpus-backup\b|\bA11Y_CORPUS_REMOTE\b/, "writes or verifies the corpus backup, which runs on the lab"],
+  // #1860: BARE `\bcorpus-backup\b` WAS WRONG -- it matched the SUBSTRING, so
+  // `packages/lab/src/packaging/corpus-backup.test.ts` (a unit test that only reads source text) refused
+  // itself the moment #1042's own fix added a file named after the thing it fixed. Every sibling pattern
+  // above matches an INVOCATION SHAPE (a colon-suffixed script name), never a bare word a filename could
+  // just as easily contain -- this is the one that didn't, and #1860 is the proof. `corpus-backup\.mjs`
+  // is the real script's filename (as actually spawned: `node packages/lab/scripts/corpus-backup.mjs`);
+  // `corpus:backup` is the npm script name (`npm run corpus:backup`, per package.json). Neither matches a
+  // `.test.ts` path.
+  [/\bcorpus-backup\.mjs\b|\bcorpus:backup\b|\bA11Y_CORPUS_REMOTE\b/,
+    "writes or verifies the corpus backup, which runs on the lab"],
   [/\bon the lab\b/, "names work done ON the lab, which only `orchestrator` reaches"],
 ]);
 
