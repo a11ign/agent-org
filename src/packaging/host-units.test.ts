@@ -19,7 +19,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, systemdUserAvailable,
-  hostUnitDrift, SHIPPED_DIR } from "../host-units.mjs";
+  hostUnitDrift, permissionModeDrift, SHIPPED_DIR } from "../host-units.mjs";
 
 const SYSTEMD_OK = () => "LANG=C\n";
 const NO_SYSTEMD = () => { throw new Error("systemctl: command not found"); };
@@ -153,4 +153,65 @@ test("#1858: every unit this repository ships is discovered -- against the real 
   assert.deepEqual(units, [...units].sort(), "sorted, so a report reads the same way twice");
   assert.ok(units.every((u) => u.endsWith(".timer") || u.endsWith(".service")),
     "nothing but units -- a README dropped in that directory must not become a finding");
+});
+
+// --- #1863: the org silently reverts to auto mode every time herdr restarts ---------------------------
+//
+// Measured 2026-09-21. `orchestrator` did every step of the corpus backup, reached the upload, and
+// stopped: its permission classifier refused the publish as "Modify Shared Resources". It could not ask
+// either -- `agentArgs` removes `AskUserQuestion` (#1744) because a session that stops to ask is one
+// herdr reports as `blocked`. Unable to act AND unable to ask, on the operations that matter.
+//
+// `agentArgs` DOES pass --dangerously-skip-permissions, but only on `herdr agent start`. herdr resumes an
+// existing session as a bare `claude --resume <uuid>`, and re-resumes all of them when it restarts: six
+// came back at 18:47:27 in one instant, in auto mode. A launch flag cannot hold a posture across a resume.
+
+const settings = (json: string) => ({
+  settingsPath: "/home/agent/.claude/settings.json",
+  exists: (() => true) as never,
+  read: (() => json) as never,
+});
+
+test("#1863: bypassPermissions is the only posture that is NOT a finding", () => {
+  assert.deepEqual(permissionModeDrift(settings('{"permissions":{"defaultMode":"bypassPermissions"}}')), [],
+    "the positive control -- this check must be capable of passing");
+});
+
+test("#1863: auto mode is the finding, and the message says WHY it strands a session", () => {
+  const [f] = permissionModeDrift(settings('{"permissions":{"defaultMode":"acceptEdits"}}'));
+  assert.equal(f.problem, "ORG IS IN AUTO MODE");
+  assert.match(f.detail, /acceptEdits/, "it names the mode it found rather than only the one it wants");
+  assert.match(f.detail, /cannot ask either/,
+    "the compounding half: AskUserQuestion is removed, so the session stops with NO signal at all");
+  assert.match(f.detail, /does not survive herdr resuming/,
+    "and it says why the launch flag is not the remedy, or the next reader adds the flag again");
+});
+
+test("#1863: an ABSENT key and an absent FILE are both findings, neither silently fine", () => {
+  const [unset] = permissionModeDrift(settings('{"model":"opus[1m]"}'));
+  assert.equal(unset.problem, "ORG IS IN AUTO MODE");
+  assert.match(unset.detail, /unset/, "an absent key is auto mode -- that is exactly how this happened");
+  const [absent] = permissionModeDrift({ settingsPath: "/nope", exists: (() => false) as never });
+  assert.equal(absent.problem, "NO SETTINGS FILE");
+});
+
+test("#1863: UNREADABLE is its own verdict -- unknown is not the same as wrong", () => {
+  // Reporting broken JSON as "auto mode" would send a reader to change a key in a file that will not
+  // load whatever they put in it.
+  const [f] = permissionModeDrift(settings("{ this is not json"));
+  assert.equal(f.problem, "UNREADABLE");
+  assert.match(f.detail, /UNKNOWN rather than wrong/);
+  // AND THE PARSER'S OWN MESSAGE SURVIVES. Without this a mutant that drops the cause passed: "the file
+  // is unparseable" sends a reader to look at 40 lines of JSON, where the position the parser names
+  // sends them to the character. Losing a cause is this repository's most-repaid mistake.
+  assert.match(f.detail, /at position \d+/,
+    "the JSON parser's own complaint reaches the reader, not just the verdict that it failed. Matched on "
+    + "`at position <n>`, which ONLY the parser produces -- my first attempt matched /JSON/ and passed "
+    + "against the static words \"Fix the JSON first\", so the mutant that dropped the cause survived");
+});
+
+test("#1863: a machine with no user systemd is not told its permissions are wrong", () => {
+  // Same gate as the timers, and for the same reason: a laptop told "ORG IS IN AUTO MODE" teaches its
+  // owner to ignore this command, which loses the timer finding along with it.
+  assert.deepEqual(hostUnitDrift({ systemctl: NO_SYSTEMD as never }), []);
 });

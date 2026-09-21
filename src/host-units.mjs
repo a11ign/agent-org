@@ -182,7 +182,10 @@ export function systemdUserAvailable(systemctl = defaultSystemctl) {
 export function hostUnitDrift(deps = {}) {
   if (!systemdUserAvailable(deps.systemctl ?? defaultSystemctl)) return [];
   const dir = deps.shippedDir ?? SHIPPED_DIR;
-  return unitDrift(shippedUnits(dir, {}).map((u) => unitState(u, deps)));
+  // THE SAME GATE COVERS BOTH. A machine with no user systemd is not an agent host, so its `~/.claude`
+  // posture is nobody's business either -- and a laptop told "ORG IS IN AUTO MODE" teaches its owner to
+  // ignore this command, which would lose the timer finding along with it.
+  return [...unitDrift(shippedUnits(dir, {}).map((u) => unitState(u, deps))), ...permissionModeDrift(deps)];
 }
 
 /** @param {string[]} args */
@@ -215,6 +218,58 @@ export function hostUnitsInstall({ shippedDir = SHIPPED_DIR, installedDir = INST
     out(`enabled --now ${timer}\n`);
   }
   return units;
+}
+
+/**
+ * THE PERMISSION POSTURE, which is a host fact exactly as much as an installed timer is.
+ *
+ * MEASURED 2026-09-21. `orchestrator` did every step of the corpus backup, reached the upload, and
+ * STOPPED: its own permission classifier refused the publish as "Modify Shared Resources". It could not
+ * ask a human either -- `agentArgs` removes `AskUserQuestion` on purpose (#1744), because a session that
+ * stops to ask is one herdr reports as `blocked` and nothing can wake. So the org was configured to be
+ * UNABLE TO ACT AND UNABLE TO ASK, on exactly the class of operation that matters.
+ *
+ * WHY THE FLAG DID NOT COVER IT. `agentArgs` passes `--dangerously-skip-permissions`, but only on
+ * `herdr agent start` -- when a session does not yet exist. herdr RESUMES one that does, as a bare
+ * `claude --resume <uuid>` with no flags, and it re-resumes every session when it restarts itself: all
+ * six came back at 18:47:27 that day in one instant, in auto mode. A LAUNCH FLAG CANNOT HOLD A POSTURE
+ * ACROSS A RESUME, so the org silently reverted every time herdr bounced.
+ *
+ * USER-LEVEL SETTINGS ARE THE FIX AND PROJECT-LEVEL CANNOT SUBSTITUTE. `permissions.defaultMode` in
+ * `~/.claude/settings.json` is read at process start, so a resume picks it up. The same key in the
+ * repository's own `.claude/settings.json` does NOTHING -- verified twice here before the user-level one
+ * was tried -- and that is correct design rather than a gap: a project file that could grant itself
+ * bypass would make cloning a repository an escalation.
+ *
+ * SO THIS CHECKS AND CANNOT FIX. The file is outside the repository, which is exactly why it needs a
+ * check: nothing here can enforce it, and nothing here would have noticed it revert.
+ * @param {{ settingsPath?: string, read?: typeof readFileSync, exists?: typeof existsSync }} [deps]
+ * @returns {{unit: string, problem: string, detail: string}[]}
+ */
+export function permissionModeDrift({ settingsPath = `${process.env.HOME ?? ""}/.claude/settings.json`,
+  read = readFileSync, exists = existsSync } = {}) {
+  const name = "~/.claude/settings.json";
+  const remedy = "Set `permissions.defaultMode` to \"bypassPermissions\". A launch flag does not survive "
+    + "herdr resuming the session, so this file is the only thing that holds.";
+  if (!exists(settingsPath)) {
+    return [{ unit: name, problem: "NO SETTINGS FILE",
+      detail: `absent, so every session runs under the default classifier. ${remedy}` }];
+  }
+  let mode;
+  try {
+    mode = JSON.parse(String(read(settingsPath)))?.permissions?.defaultMode ?? null;
+  } catch (cause) {
+    // A FILE THAT CANNOT BE PARSED IS NOT A FILE THAT SAYS "default". Reporting it as the wrong mode
+    // would send a reader to change a key in a file that will not load whatever they put in it.
+    return [{ unit: name, problem: "UNREADABLE",
+      detail: `could not be parsed (${/** @type {Error} */ (cause).message}), so the permission posture `
+        + "is UNKNOWN rather than wrong. Fix the JSON first." }];
+  }
+  if (mode === "bypassPermissions") return [];
+  return [{ unit: name, problem: "ORG IS IN AUTO MODE",
+    detail: `permissions.defaultMode is ${mode === null ? "unset" : `\`${mode}\``}. Sessions cannot act `
+      + "on shared resources and cannot ask either (AskUserQuestion is removed by agentArgs, #1744), so "
+      + `they stop mid-task with no signal. ${remedy}` }];
 }
 
 /**
