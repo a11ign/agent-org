@@ -97,6 +97,7 @@ import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
 import { leakRefusalReason } from "../../lab/src/packaging/leak-patterns.mjs";
 import { missingTemplateFields, wholeSuiteAcceptanceReason } from "./row-claim/template-fields-rule.mjs";
+import { waitingLanguageWarning } from "./row-claim/waiting-language-rule.mjs";
 import { moveProjectStatus, filedByLine, fetchLabels as fetchIssueLabels, ensureLabelsExist } from "./row-claim.mjs";
 import { PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapshot.mjs";
 import { launchGate } from "./board-snapshot-scope.mjs";
@@ -967,6 +968,10 @@ export function createIssue(argv, deps = {}) {
   // chosen between.
   const slashless = slashlessDirectoryWarning(/** @type {string} */ (body));
   if (slashless) process.stderr.write(`row-file: ${slashless}\n`);
+  // #1832: beside the other three, for the same reason and at the same moment -- a body that waits in
+  // prose but declares no native `--blocked-by=`/`--blocking=` link is printed, never refused.
+  const waitingLanguage = waitingLanguageWarning(/** @type {string} */ (body), argv);
+  if (waitingLanguage) process.stderr.write(`row-file: ${waitingLanguage}\n`);
   // #883: THE LANE(S), DERIVED BEFORE ANYTHING IS FILED -- see `laneLabelsOrRefusal`'s own header for why
   // a missing/malformed `docs/lane-ownership.json` refuses here rather than guessing.
   const laneResult = laneLabelsOrRefusal(/** @type {string} */ (body), loadLanesConfig, argv);
