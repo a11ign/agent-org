@@ -19,6 +19,7 @@ import assert from "node:assert/strict";
 
 import { fleetGatedRows, examinedComment, wakeText, performFiring, MILESTONE, STANDING_ROW, SESSION }
   from "../fleet-gated-nightly.mjs";
+import { PROMPT_REFUSED_PREFIX } from "../prompt-session.mjs";
 
 const FIRED_AT = "2026-09-22T01:00:03.412Z";
 
@@ -72,6 +73,35 @@ test("MUTATION target: a refused read THROWS -- it must never be swallowed into 
   + "which this firing's own comment would then report as `examined 0` for a read that never happened", () => {
   const run = () => { throw new Error("gh: authentication required"); };
   assert.throws(() => fleetGatedRows(run), /authentication required/);
+});
+
+test("fleetGatedRows asks gh for more than its own default page", () => {
+  const GH_DEFAULT_PAGE_SIZE = 30;
+  const run = (args: string[]) => {
+    const limitIndex = args.indexOf("--limit");
+    assert.ok(limitIndex >= 0, "must pass an explicit --limit, not gh's own default");
+    assert.ok(Number(args[limitIndex + 1]) > GH_DEFAULT_PAGE_SIZE,
+      "the explicit limit must exceed gh's own default page size");
+    return JSON.stringify([]);
+  };
+  fleetGatedRows(run);
+});
+
+test("MUTATION target: a listing that SATURATES the limit THROWS -- it may be truncated, and reading it "
+  + "as the whole set would silently under-report what this firing examined", () => {
+  const run = (args: string[]) => {
+    const limit = Number(args[args.indexOf("--limit") + 1]);
+    return JSON.stringify(Array.from({ length: limit }, (_, i) => ({ number: i + 1, comments: [] })));
+  };
+  assert.throws(() => fleetGatedRows(run), /may be truncated/i);
+});
+
+test("a listing one row under the limit is trusted as complete, at the boundary", () => {
+  const run = (args: string[]) => {
+    const limit = Number(args[args.indexOf("--limit") + 1]);
+    return JSON.stringify(Array.from({ length: limit - 1 }, (_, i) => ({ number: i + 1, comments: [] })));
+  };
+  assert.doesNotThrow(() => fleetGatedRows(run));
 });
 
 /** A `herdrRun` stub that reports `SESSION` at `status` to `readAgents`, and records every call it sees. */
@@ -173,4 +203,31 @@ test("performFiring reports not-woken, without retracting the comment already po
   assert.ok(ghCalls.some((c) => c[0] === "issue" && c[1] === "comment"), "the comment already landed");
   assert.ok(!herdrCalls.some((c) => c.includes("/clear") || c.includes("prompt")),
     "a session that cannot be prompted is never sent a clear or a prompt");
+});
+
+test("MUTATION target: performFiring reports not-woken, not woke, when the context clears but the order "
+  + "itself is refused -- before this fix a `journalctl` read of `main` could show `WOKE orchestrator` "
+  + "for a wake that never landed (reviewer-2 on PR #1844)", () => {
+  const ghCalls: string[][] = [];
+  const herdrCalls: string[][] = [];
+  const ghRun = (args: string[]) => {
+    ghCalls.push(args);
+    if (args[0] === "issue" && args[1] === "list") return JSON.stringify([{ number: 1768, comments: [] }]);
+    return "";
+  };
+  const herdrRun = (args: string[]) => {
+    herdrCalls.push(args);
+    if (args.join(" ") === "--session org workspace list") {
+      return JSON.stringify({ result: { workspaces: [{ label: SESSION, agent_status: "idle" }] } });
+    }
+    // The clear (`/clear`, then `agent wait`) lands fine -- only the real order is refused below.
+    if (args.includes("/clear") || args.includes("wait")) return "";
+    if (args.includes("prompt")) throw new Error("herdr: agent unreachable");
+    return "";
+  };
+  const result = performFiring({ ghRun, herdrRun, now: () => FIRED_AT });
+  if (result.kind !== "not-woken") throw new Error(`expected "not-woken", got "${result.kind}"`);
+
+  assert.match(result.why, new RegExp(PROMPT_REFUSED_PREFIX));
+  assert.ok(ghCalls.some((c) => c[0] === "issue" && c[1] === "comment"), "the comment already landed");
 });

@@ -28,7 +28,7 @@ import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
 import { gh, REPO } from "./board-data.mjs";
-import { promptable, clearThenPrompt } from "./prompt-session.mjs";
+import { promptable, clearThenPrompt, PROMPT_REFUSED_PREFIX } from "./prompt-session.mjs";
 import { readAgents } from "./wake.mjs";
 
 export const MILESTONE = "Road to version one";
@@ -46,17 +46,31 @@ const defaultGhRun = (args) => gh(args);
 /** @param {string[]} args */
 const defaultHerdrRun = (args) => execFileSync("herdr", args, { encoding: "utf8", timeout: 30_000 });
 
+// `gh issue list` defaults to 30 -- fine for a milestone-scoped, label-scoped slice today, silent
+// truncation the day it is not. `board-data.mjs`'s own `issues()` already met this: a higher number alone
+// just moves the cliff (`length === LIMIT` reads the same as "there were exactly LIMIT"), so the read
+// asks for more than this query should ever return AND refuses to report on a listing that might be
+// partial, the same as that read does.
+const LIMIT = 500;
+
 /**
  * The fleet-gated rows open on the milestone right now -- the exact query #1830's own Acceptance names.
- * Throws on a refused read; never returns `[]` for one. See this file's header for why that distinction
- * is the whole point.
+ * Throws on a refused read, and on a listing that saturated `LIMIT` and so MAY BE TRUNCATED; never
+ * returns `[]` or a partial list for either. See this file's header for why that distinction is the
+ * whole point.
  * @param {(args: string[]) => string} run
  * @returns {{ number: number, comments: unknown[] }[]}
  */
 export function fleetGatedRows(run = defaultGhRun) {
   const out = run(["issue", "list", "--repo", REPO, "--state", "open", "--milestone", MILESTONE,
-    "--label", "fleet-gated", "--json", "number,comments"]);
-  return JSON.parse(out);
+    "--label", "fleet-gated", "--json", "number,comments", "--limit", String(LIMIT)]);
+  const issues = JSON.parse(out);
+  if (issues.length >= LIMIT) {
+    throw new Error(`fleetGatedRows: the listing returned ${issues.length} row(s) against a limit of `
+      + `${LIMIT}, so it MAY BE TRUNCATED and this firing would examine only part of the fleet-gated `
+      + "set. Raise the limit or page the query -- do not read a partial listing as the whole.");
+  }
+  return issues;
 }
 
 /**
@@ -139,6 +153,13 @@ export function performFiring({ ghRun = defaultGhRun, herdrRun = defaultHerdrRun
     return { kind: "not-woken", comment, why };
   }
   const wakeReport = clearThenPrompt(herdrRun, SESSION, wakeText(issues));
+  // A FAILED PROMPT IS NOT A LANDED WAKE. `clearThenPrompt` returns `PROMPT_REFUSED_PREFIX`-prefixed text
+  // when the order itself never reached the session (as opposed to a refused clear, where the text still
+  // went) -- reported as `woke` before this, a `journalctl` read could show `WOKE orchestrator` for a
+  // wake that never landed.
+  if (wakeReport?.startsWith(PROMPT_REFUSED_PREFIX)) {
+    return { kind: "not-woken", comment, why: wakeReport };
+  }
   return { kind: "woke", comment, wakeReport };
 }
 
