@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // @ts-check
 import { LIVE_SESSIONS } from "../arm-pr.mjs";
+import { ROUTED_TO } from "../work-gate.mjs";
 
 // RULE: IS THIS ROW RESERVED FOR A SPECIFIC SESSION? -- #444.
 //
@@ -61,6 +62,18 @@ export function runnerReason(labels, mySession) {
  *     #913 and six closed rows still carry it; a reservation for a session that cannot claim is a row
  *     nobody can ever take.
  *
+ * A FOURTH THING IT MUST NOT DO NOW -- #1828, ceo's ruling on #1817: refuse a member of a `fleet-gated`
+ * row's ROUTED POOL for not being the exact name a `lane:` label spells. `row-file.mjs`'s
+ * `fleetOrLabAcceptance` force-adds `lane:orchestrator` to any row whose Acceptance reaches the fleet or
+ * the lab, which is what refused every session but `orchestrator` here before this row -- correctly, for
+ * everyone outside the pool, and wrongly for `worker-capture` once the ruling put it in the pool too.
+ *
+ * `lane:` stays an AND everywhere else on purpose (`docs/lane-ownership.json`'s own multi-lane rows mean
+ * "every named owner", not "any one of them"), so this is NOT genuine OR semantics for `lane:` in
+ * general -- only a `lane:<name>` label whose name is ALSO a member of `ROUTED_TO["fleet-gated"]` is
+ * satisfied by any OTHER member of that same pool, and only when the asking session is itself in the
+ * pool. A `lane:ceo` row is untouched: `ceo` is not in the pool, so nothing here ever fires for it.
+ *
  * @param {string[]} labels
  * @param {string} mySession
  * @param {{ liveSessions?: readonly string[] }} [deps] injected so a test can state the roster it means
@@ -69,10 +82,12 @@ export function runnerReason(labels, mySession) {
  */
 export function laneReason(labels, mySession, deps) {
   const live = deps?.liveSessions ?? LIVE_SESSIONS;
+  const pool = labels.includes("fleet-gated") ? ROUTED_TO["fleet-gated"] : [];
   const owners = labels
     .filter((l) => l.startsWith("lane:"))
     .map((l) => l.slice("lane:".length))
-    .filter((owner) => owner !== "any" && owner !== mySession && live.includes(owner));
+    .filter((owner) => owner !== "any" && owner !== mySession && live.includes(owner))
+    .filter((owner) => !(pool.includes(owner) && pool.includes(mySession)));
   if (owners.length === 0) return null;
   return `this row is in ${owners.join(", ")}'s lane (a \`lane:\` label), and a lane is not a wall: ask `
     + `${owners.join(" or ")} to assign it, and record the crossing as a \`Lane-exception:\` line in the `
