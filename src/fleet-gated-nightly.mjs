@@ -86,52 +86,82 @@ export function wakeText(issues) {
     + "named not covered and why. State the examined count against this list when you report on #914.";
 }
 
-function main() {
-  refuseUnknownFlags([], { entry: import.meta.url,
-    command: "node packages/agent-org/src/fleet-gated-nightly.mjs" });
+/**
+ * @typedef {{ kind: "cannot-ask", message: string }
+ *         | { kind: "quiet", comment: string }
+ *         | { kind: "not-woken", comment: string, why: string }
+ *         | { kind: "woke", comment: string, wakeReport: string | null }} FiringResult
+ */
 
+/**
+ * THE WHOLE ORCHESTRATION, injectable, so a test can inject stubs for `ghRun`/`herdrRun` and assert what
+ * this firing actually DOES rather than only its pure text helpers -- the same seam `work-gate.mjs`'s
+ * `performActions` uses (`@param run`, defaulted to the real spawn). Before this, only `fleetGatedRows`,
+ * `examinedComment` and `wakeText` were under test; `main`'s own two side effects -- the comment on #914
+ * and the wake to `orchestrator` -- were not (reviewer-2 proved it on PR #1844 by swapping the real #914
+ * comment for a print and showing the acceptance command still passed).
+ *
+ * Returns a tagged result rather than performing any I/O itself beyond `ghRun`/`herdrRun`, so `main` is a
+ * thin projection onto stdout/stderr/exit code and every branch below is assertable without a real `gh`
+ * or `herdr` in the loop.
+ *
+ * @param {{ ghRun?: (args: string[]) => string, herdrRun?: (args: string[]) => string,
+ *           now?: () => string }} [deps]
+ * @returns {FiringResult}
+ */
+export function performFiring({ ghRun = defaultGhRun, herdrRun = defaultHerdrRun,
+  now = () => new Date().toISOString() } = {}) {
   /** @type {{ number: number, comments: unknown[] }[]} */
   let issues;
   try {
-    issues = fleetGatedRows();
+    issues = fleetGatedRows(ghRun);
   } catch (/** @type {any} */ error) {
-    process.stderr.write(`CANNOT ASK: could not list fleet-gated rows on "${MILESTONE}" `
-      + `(${error?.message ?? error}). Nothing was examined and nothing was posted.\n`);
-    process.exit(EXIT.CANNOT_ASK);
-    return;
+    return { kind: "cannot-ask", message: `CANNOT ASK: could not list fleet-gated rows on `
+      + `"${MILESTONE}" (${error?.message ?? error}). Nothing was examined and nothing was posted.` };
   }
 
-  const firedAt = new Date().toISOString();
-  const comment = examinedComment(issues, firedAt);
+  const comment = examinedComment(issues, now());
   try {
-    gh(["issue", "comment", STANDING_ROW, "--repo", REPO, "--body", comment]);
+    ghRun(["issue", "comment", STANDING_ROW, "--repo", REPO, "--body", comment]);
   } catch (/** @type {any} */ error) {
-    process.stderr.write(`CANNOT ASK: could not post the examined-count comment on #${STANDING_ROW} `
-      + `(${error?.message ?? error}).\n`);
-    process.exit(EXIT.CANNOT_ASK);
-    return;
-  }
-  process.stdout.write(`${comment}\n`);
-
-  if (issues.length === 0) {
-    process.stdout.write("QUIET -- no fleet-gated row open right now; nobody woken.\n");
-    process.exit(EXIT.OK);
-    return;
+    return { kind: "cannot-ask", message: `CANNOT ASK: could not post the examined-count comment on `
+      + `#${STANDING_ROW} (${error?.message ?? error}).` };
   }
 
-  const why = promptable(SESSION, readAgents());
+  if (issues.length === 0) return { kind: "quiet", comment };
+
+  const why = promptable(SESSION, readAgents(herdrRun));
   if (why) {
     // NOT FATAL: the examined-count comment already landed, which is this firing's own contract with
     // #914. A session that cannot be prompted right now (busy, or `herdr` unreachable) is reported to the
     // journal for a human to notice, the same as `work-tick.mjs`'s own BLOCKED report -- not escalated
     // into "the firing failed", because it did not.
-    process.stderr.write(`NOT WOKEN: ${why}\n`);
-    process.exit(EXIT.OK);
+    return { kind: "not-woken", comment, why };
+  }
+  const wakeReport = clearThenPrompt(herdrRun, SESSION, wakeText(issues));
+  return { kind: "woke", comment, wakeReport };
+}
+
+function main() {
+  refuseUnknownFlags([], { entry: import.meta.url,
+    command: "node packages/agent-org/src/fleet-gated-nightly.mjs" });
+
+  const result = performFiring();
+  if (result.kind === "cannot-ask") {
+    process.stderr.write(`${result.message}\n`);
+    process.exit(EXIT.CANNOT_ASK);
     return;
   }
-  const report = clearThenPrompt(defaultHerdrRun, SESSION, wakeText(issues));
-  if (report) process.stderr.write(`${report}\n`);
-  process.stdout.write(`WOKE ${SESSION}\n`);
+
+  process.stdout.write(`${result.comment}\n`);
+  if (result.kind === "quiet") {
+    process.stdout.write("QUIET -- no fleet-gated row open right now; nobody woken.\n");
+  } else if (result.kind === "not-woken") {
+    process.stderr.write(`NOT WOKEN: ${result.why}\n`);
+  } else {
+    if (result.wakeReport) process.stderr.write(`${result.wakeReport}\n`);
+    process.stdout.write(`WOKE ${SESSION}\n`);
+  }
   process.exit(EXIT.OK);
 }
 
