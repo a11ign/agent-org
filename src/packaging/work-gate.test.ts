@@ -1448,3 +1448,53 @@ test("an explained wait WITH a horizon goes quiet, and comes back once", () => {
   assert.equal(blockedWithoutReferent([explained], "2026-09-28").length, 1,
     "and asked ONCE more when it passes -- an unexaminable wait is the kind that quietly becomes true");
 });
+
+/**
+ * A SESSION GETS ONE ORDER PER TICK, SO EVERY ORDER MUST NAME THE REST OF ITS QUEUE.
+ *
+ * `wake.mjs`'s `deliver` marks a session `working` the moment it is prompted, so a second order in the
+ * same tick is refused -- correct, since two prompts cannot be typed into one live terminal. Before
+ * 2026-09-20 that cost nothing: this cause emitted ONE order per owner naming up to eight rows, and a
+ * session got its whole queue in one prompt.
+ *
+ * #1799's fix re-keyed per row so a standing judgment stopped being re-litigated when an unrelated row
+ * moved. That was right. THE IMPLEMENTATION SERIALISED THE QUEUE: one order per row, one delivered per
+ * tick, the rest deduped for two hours each.
+ *
+ * MEASURED 2026-09-21: `orchestrator` spent the day reasoning correctly about #1768 -- a row that cannot
+ * move for TWELVE HOURS -- while #1663, #1042, #914 and #1830 sat with nothing stopping them and ten
+ * workers idle. Every answer it gave was sound. It was never told the others existed in the same breath.
+ */
+const owned = (n: number) => ({ number: n, title: `row ${n}`,
+  labels: [{ name: "backlog" }, { name: "lane:ceo" }] });
+
+test("every order names the owner's OTHER actionable rows", () => {
+  const [first] = decide({ prs: [], readyRows: [],
+    promotableRows: [owned(1768), owned(1663), owned(914)] }) as { prompt: string }[];
+  assert.match(first.prompt, /YOU ALSO OWN 2 OTHER ACTIONABLE ROW\(S\): #1663, #914/);
+  assert.match(first.prompt, /DO NOT END YOUR TURN THERE/);
+  assert.match(first.prompt, /ONE ORDER PER TICK/,
+    "a session must know the others are not arriving in a minute, or waiting looks reasonable");
+});
+
+test("the row itself is never listed among its own others", () => {
+  const orders = decide({ prs: [], readyRows: [],
+    promotableRows: [owned(1), owned(2)] }) as { prompt: string }[];
+  assert.doesNotMatch(orders[0].prompt, /ROW\(S\): #1\b/, "#1's order must not tell it to also do #1");
+  assert.match(orders[0].prompt, /ROW\(S\): #2/);
+  assert.match(orders[1].prompt, /ROW\(S\): #1/);
+});
+
+test("a lone row says nothing about others, rather than an empty list", () => {
+  const [only] = decide({ prs: [], readyRows: [], promotableRows: [owned(914)] }) as { prompt: string }[];
+  assert.doesNotMatch(only.prompt, /YOU ALSO OWN/,
+    "an owner with one row must not be told to go and do the rest of nothing");
+});
+
+test("the causeKey is STILL per row -- both properties, neither traded", () => {
+  // #1799's requirement survives: one row's judgment is deduped without touching another's.
+  const orders = decide({ prs: [], readyRows: [],
+    promotableRows: [owned(1768), owned(1663)] }) as { causeKey: string }[];
+  assert.deepEqual(orders.map((o) => o.causeKey),
+    ["ceo/lane-backlog-unpromoted/row-1768", "ceo/lane-backlog-unpromoted/row-1663"]);
+});
