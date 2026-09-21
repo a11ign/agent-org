@@ -226,7 +226,8 @@ export const ROUTED_TO = Object.freeze({ "fleet-gated": "orchestrator" });
  * OWNER is asked about. `blocked`, `epic` and a claim still hide a row from everybody, including the
  * session it is routed to -- routing says whose work it is, not that the work can start.
  */
-export const NOT_STARTABLE = Object.freeze(NOT_PICKABLE.filter((n) => !(n in ROUTED_TO)));
+export const NOT_STARTABLE = Object.freeze(
+  NOT_PICKABLE.filter((n) => !(n in ROUTED_TO) && n !== "decision"));
 
 /**
  * LANE OWNERS. A lane says who may act on a row, and these two are people rather than a pool.
@@ -259,6 +260,18 @@ export function laneOwnerOf(row) {
 export function ownerOf(row) {
   const byLane = laneOwnerOf(row);
   if (byLane) return byLane;
+  // A `decision` ROW WITH NO LANE IS AN UNOWNED DECISION, AND THAT IS A FILING GAP.
+  //
+  // `decision` is in `NOT_PICKABLE` and rightly -- an engineer cannot decide a thing the org has not
+  // assigned. But it was read as "not work" again, so a `decision` row reached NOBODY: measured
+  // 2026-09-21, FOUR were open and not one was visible to any cause. #1734 -- "the gate can only see
+  // GitHub objects" -- had sat unreachable for days while being cited repeatedly as awaiting a ruling,
+  // and #1817 was filed BY THIS SESSION for `ceo` with a label that guaranteed `ceo` would never see it.
+  //
+  // A laned decision reaches its lane owner by the line above. An UNLANED one reaches
+  // `product-manager`, whose brief names "lane labels" and filing: assigning an owner to an unowned
+  // decision is that job, not a decision in itself.
+  if (labelsOf(row).includes("decision")) return "product-manager";
   const routed = labelsOf(row).find((/** @type {string} */ n) => n in ROUTED_TO);
   return routed ? /** @type {Record<string,string>} */ (ROUTED_TO)[routed] : null;
 }
@@ -1166,7 +1179,15 @@ function laneBacklogOrders(promotableRows, readyRows) {
   // OWNERS, NOT LANES. A row reaches its owner by a `lane:` label OR by a routing label, and iterating
   // lanes could only ever find the first -- which is why `orchestrator`, whose work is routed by
   // `fleet-gated` rather than laned, was never told about any of it.
-  for (const owner of new Set([...Object.values(LANE_OWNER), ...Object.values(ROUTED_TO)])) {
+  // THE OWNERS ARE DERIVED FROM THE ROWS, NOT FROM A STATIC LIST. A static
+  // `[...LANE_OWNER, ...ROUTED_TO]` was correct until `ownerOf` gained a third source -- an unlaned
+  // `decision` routes to `product-manager`, which appears in neither map, so two rows (#1798, #1734)
+  // resolved to an owner and then produced no order at all. A list that must be updated whenever
+  // `ownerOf` gains a case is a list that will not be.
+  /** @type {Set<string>} */
+  const owners = new Set(promotableRows.map((/** @type {any} */ r) => ownerOf(r))
+    .filter((/** @type {string | null} */ o) => o !== null));
+  for (const owner of owners) {
     const mine = promotableRows.filter((r) => ownerOf(r) === owner);
     const readyHere = readyRows.filter((r) => ownerOf(r) === owner
       && !labelsOf(r).includes(CLAIM_LABEL));
@@ -1335,11 +1356,21 @@ function emptyShelfOrder({ offerable, blocked, promotable }) {
           + "work that frees it is that PR's. Promoting a row whose Region overlaps the same files only "
           + "moves the refusal.\n"
         : "")
+      + "ASK OF EACH ROW: IS IT STILL TRUE? -- before asking whether it is promotable. A row can fail "
+      + "every promotion test and still be FINISHED, and nothing else in this org checks. Measured "
+      + "2026-09-21: this cause's own audit examined #1731 carefully, concluded correctly that it had "
+      + "no Region, no Acceptance and no done-when, and declined to promote it -- while the defect it "
+      + "describes had been fixed 17 HOURS EARLIER by #1764, with 30 sweep runs since and zero "
+      + "failures. It was the only row between the queue and empty, and it was already done.\n"
       + "Promote what is genuinely ready -- a row with a Region, an Acceptance and a done-when -- and "
       + "leave the rest. This is deliberately NOT a request to reach a count: #ready:audit records "
       + "`dispatcher` labelling two rows ready to hit a floor, one disputed and one with neither field, "
       + "and a floor met by a label you control is not a measurement. Promoting nothing and saying why "
-      + "is a valid answer.",
+      + "is a valid answer.\n"
+      + "RECORD WHAT YOU FOUND, ON THE ROWS YOU EXAMINED. An audit whose conclusion exists only in your "
+      + "terminal is one the next audit must derive again from scratch -- and this one did: the 07:19Z "
+      + "sweep reached a complete, well-argued verdict on #1731 and left no trace on it, so the same "
+      + "reasoning was due to be repeated every two hours indefinitely.",
     causeKey: `product-manager/ready-queue-empty/${promotable}`,
   };
 }

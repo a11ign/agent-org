@@ -833,8 +833,16 @@ test("NOT_PICKABLE now names meta too (#1804), and NOT_STARTABLE is still derive
   // `fleet-gated`, there is no session `meta` should still reach.
   assert.deepEqual(NOT_PICKABLE, ["blocked", "fleet-gated", "epic", "disputed", "decision",
     "awaiting-merge", "review-only", "meta", "in-progress"], "the POOL's view moved once, on purpose");
-  assert.deepEqual(NOT_STARTABLE, NOT_PICKABLE.filter((n: string) => !(n in ROUTED_TO)));
+  // TWO SUBTRACTIONS NOW, NOT ONE. `fleet-gated` comes out because `ROUTED_TO` sends it to a fixed
+  // session; `decision` comes out because `ownerOf` sends it to its LANE OWNER, or to
+  // `product-manager` when it has no lane. Measured 2026-09-21: four `decision` rows were open and not
+  // one was visible to any cause -- #1734 ("the gate can only see GitHub objects") had sat unreachable
+  // for days while being cited as awaiting a ruling, and #1817 was filed for `ceo` with a label that
+  // guaranteed `ceo` would never see it.
+  assert.deepEqual(NOT_STARTABLE,
+    NOT_PICKABLE.filter((n: string) => !(n in ROUTED_TO) && n !== "decision"));
   assert.ok(!NOT_STARTABLE.includes("fleet-gated"));
+  assert.ok(!NOT_STARTABLE.includes("decision"), "a decision must still reach whoever owns it");
   assert.ok(NOT_STARTABLE.includes("blocked"), "routing subtracts only what it routes");
   assert.ok(NOT_STARTABLE.includes("meta"), "a meta row is not routed, so it stays excluded for everyone");
 });
@@ -1334,4 +1342,59 @@ test("the prompt offers the person-shaped answer, and admits the comment-only on
   assert.match(order.prompt, /IF IT WAITS ON A PERSON, label it `needs:chairman`/);
   assert.match(order.prompt, /DOES NOT STOP THIS BEING ASKED AGAIN/,
     "the comment-only option must say so, or it reads as a way to make the question go quiet");
+});
+
+/**
+ * A DECISION NOBODY CAN SEE IS NOT A DECISION -- the fourth instance of one defect.
+ *
+ *   `fleet-gated`  not the pool's | IS orchestrator's         -- #1770
+ *   `blocked`      not startable  | a claim with no referent  -- #1780
+ *   `epic`         not pickable   | nobody has FILED it       -- #1784
+ *   `decision`     not startable  | SOMEONE OWES A DECISION   -- this
+ *
+ * MEASURED 2026-09-21: four `decision` rows open, NOT ONE visible to any cause. #1734 ("the gate can
+ * only see GitHub objects") had sat unreachable for days while being cited repeatedly as awaiting a
+ * ruling. #1817 was filed BY THIS SESSION for `ceo`, carrying `decision` + `lane:ceo` -- a label pair
+ * that guaranteed `ceo` would never be told about it.
+ */
+const decisionRow = (n: number, ...extra: string[]) => ({ number: n, title: `row ${n}`,
+  labels: [{ name: "backlog" }, { name: "decision" }, ...extra.map((name) => ({ name }))] });
+
+test("a laned decision reaches its lane owner; an unlaned one reaches product-manager", () => {
+  assert.equal(ownerOf(decisionRow(1817, "lane:ceo")), "ceo");
+  assert.equal(ownerOf(decisionRow(1734)), "product-manager",
+    "an UNOWNED decision is a filing gap, and lane labels are product-manager's brief");
+  assert.equal(ownerOf({ number: 1, labels: [{ name: "backlog" }] }), null,
+    "and an ordinary backlog row is still the pool's");
+});
+
+test("every decision row produces an order for its owner", () => {
+  // The bug this caught: `laneBacklogOrders` iterated a STATIC `[...LANE_OWNER, ...ROUTED_TO]`, so
+  // rows resolving to `product-manager` found an owner and then produced nothing at all.
+  const orders = decide({ prs: [], readyRows: [],
+    promotableRows: [decisionRow(1817, "lane:ceo"), decisionRow(1734)] }) as
+    { session: string, causeKey: string }[];
+  assert.deepEqual(orders.map((o) => o.session).sort(), ["ceo", "product-manager"]);
+  assert.ok(orders.some((o) => o.causeKey.endsWith("row-1734")));
+});
+
+test("the owner set is DERIVED from the rows, so a new ownerOf case cannot go unrouted", () => {
+  // A list that must be updated whenever `ownerOf` gains a case is a list that will not be.
+  const orders = decide({ prs: [], readyRows: [], promotableRows: [decisionRow(9)] }) as
+    { session: string }[];
+  assert.deepEqual(orders.map((o) => o.session), ["product-manager"]);
+});
+
+test("the empty-shelf prompt asks whether a row is STILL TRUE, and to record what it found", () => {
+  // MEASURED 2026-09-21: this cause's own audit examined #1731 carefully, concluded correctly that it
+  // was not promotable, and left no trace on it -- while the defect it describes had been fixed 17
+  // hours earlier by #1764 (30 sweep runs since, zero failures). It was the only row between the queue
+  // and empty, and it was already done.
+  const shelf = decide({ prs: [], readyRows: [],
+    promotableRows: [{ number: 1731, labels: [{ name: "backlog" }] }] })
+    .find((o: { cause: string }) => o.cause === "ready-queue-empty") as { prompt: string };
+  assert.match(shelf.prompt, /IS IT STILL TRUE\?/);
+  assert.match(shelf.prompt, /RECORD WHAT YOU FOUND, ON THE ROWS YOU EXAMINED/);
+  assert.match(shelf.prompt, /Promoting nothing and saying why\s+is a valid answer/,
+    "the guarantee that doing nothing is legitimate must survive both additions");
 });
