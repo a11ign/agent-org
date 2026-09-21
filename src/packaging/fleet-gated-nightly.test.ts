@@ -1,4 +1,6 @@
-// no-token: REPO, STANDING_ROW, SESSION
+// no-token: REPO -- reached only through this file's own import closure, never called here
+// no-token: STANDING_ROW -- same
+// no-token: SESSION -- same
 //
 // `examinedComment` and `wakeText` are pure and every input (`issues`, `firedAtIso`) is a fixture this
 // file constructs -- neither reaches `REPO`, `STANDING_ROW` or `SESSION` through anything called here,
