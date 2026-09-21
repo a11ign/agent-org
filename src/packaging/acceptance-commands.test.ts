@@ -117,6 +117,26 @@ test("classifyCommand: a command that merely MENTIONS a banned word without the 
     { verdict: "runnable" });
 });
 
+test("classifyCommand: #1860 a genuine corpus-backup invocation is still refused, named", () => {
+  for (const command of [
+    "node packages/lab/scripts/corpus-backup.mjs",
+    "npm run corpus:backup",
+    "A11Y_CORPUS_REMOTE=/mnt/pve/backup/a11y npm run corpus:backup",
+  ]) {
+    const result = classifyCommand(command);
+    assert.equal(result.verdict, "refused", `expected ${command} to be refused`);
+    assert.match((/** @type {{reason:string}} */(result)).reason, /corpus backup/);
+  }
+});
+
+test("classifyCommand: #1860 a test file merely NAMED after corpus-backup is still runnable -- the exact "
+  + "false positive that refused #1860's own acceptance command on `corpus-backup.test.ts`", () => {
+  assert.deepEqual(
+    classifyCommand("npx rstest run --config scripts/rstest/rstest.config.mjs "
+      + "--include packages/lab/src/packaging/corpus-backup.test.ts"),
+    { verdict: "runnable" });
+});
+
 // --- extractAcceptanceSection ---
 
 test("extractAcceptanceSection: no Acceptance: line anywhere is MISSING", () => {
