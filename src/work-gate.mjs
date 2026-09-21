@@ -1223,6 +1223,42 @@ function laneBacklogOrders(promotableRows, readyRows) {
 }
 
 /**
+ * THE REST OF THIS OWNER'S QUEUE, NAMED IN EVERY ORDER -- because a session gets ONE ORDER PER TICK.
+ *
+ * `wake.mjs`'s `deliver` marks a session `working` the moment it is prompted, so a second order in the
+ * same tick is refused -- "you cannot type two prompts into a live terminal" is correct and is not going
+ * to change. Before 2026-09-20 that cost nothing, because this cause emitted ONE order per owner naming
+ * up to eight rows: a session got its whole queue in one prompt and could work several in one turn.
+ *
+ * #1799's fix re-keyed the cause PER ROW so a standing judgment stopped being re-litigated whenever an
+ * unrelated row moved. That was right. THE IMPLEMENTATION SERIALISED THE OWNER'S QUEUE: one order per
+ * row, one delivered per tick, and each of the others then deduped for the two-hour judgment TTL.
+ *
+ * MEASURED 2026-09-21, and the chairman is the one who noticed: `orchestrator` spent the day reasoning
+ * correctly about #1768's capture window -- a row that cannot move for TWELVE HOURS -- while #1663,
+ * #1042, #914 and #1830 sat with nothing stopping them and ten workers idle. Its answers were sound
+ * every time; it was never told the others existed in the same breath.
+ *
+ * SO THE KEY STAYS PER ROW AND THE PROMPT CARRIES THE SET. Both properties, neither traded: the ledger
+ * still dedupes one row's judgment without touching another's, and one turn can still clear several.
+ *
+ * @param {any[]} mine @param {any} current
+ */
+function alsoOwned(mine, current) {
+  const others = mine.filter((/** @type {any} */ r) => r.number !== current.number);
+  if (others.length === 0) return "";
+  const named = others.slice(0, MAX_ROW_ORDERS_PER_TICK)
+    .map((/** @type {any} */ r) => `#${r.number}`).join(", ");
+  return `YOU ALSO OWN ${others.length} OTHER ACTIONABLE ROW(S): ${named}`
+    + `${others.length > MAX_ROW_ORDERS_PER_TICK ? ", ..." : ""}.\n`
+    + `IF #${current.number} CANNOT MOVE RIGHT NOW -- it waits on a clock, a capture window, or a `
+    + "decision you do not own -- DO NOT END YOUR TURN THERE. Record why on it, then take the next row "
+    + "on that list and work that instead. YOU GET ONE ORDER PER TICK, so the others are not coming in a "
+    + "minute: each is deduped for two hours once offered, and the fleet or the queue sits idle "
+    + "meanwhile. Working several of them in one turn is the intended use, not an overreach.";
+}
+
+/**
  * The orders a lane owner's backlog deserves -- ONE PER ROW, keyed on the row.
  *
  * KEYED PER ROW BECAUSE A STANDING JUDGMENT IS ABOUT A ROW, NOT ABOUT A COUNT. This used to emit one
@@ -1270,7 +1306,8 @@ function backlogOrders(owner, mine) {
       + "READ ITS OWN RECENT COMMENTS FIRST: a durable reason recorded there stands until something "
       + "about THIS row changes, not until an unrelated row moves (#1799).\n"
       + "RECORD THE ANSWER ON THE ROW, whatever it is. A decision that exists only in your terminal is "
-      + "one the org cannot see: the next reader finds an untouched row and re-derives it from scratch.",
+      + "one the org cannot see: the next reader finds an untouched row and re-derives it from scratch.\n"
+      + alsoOwned(mine, r),
     causeKey: `${name}/lane-backlog-unpromoted/row-${r.number}`,
   })));
 }
