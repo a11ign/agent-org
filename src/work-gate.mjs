@@ -62,7 +62,8 @@ export const EXIT = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3 };
 /** The causes this gate can emit. `wake.mjs` and the matrix validate against this list, never a copy. */
 export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-convinced-not-ready",
   "verdict-not-convinced", "pr-checks-failing", "ready-queue-empty", "lane-backlog-unpromoted",
-  "chairman-blocked", "org-stalled", "epic-unfiled", "answer-owed", "blocked-unexaminable"];
+  "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
+  "blocked-unexaminable"];
 
 /**
  * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
@@ -91,7 +92,8 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
  * asked forty times.
  */
 export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog-unpromoted",
-  "chairman-blocked", "org-stalled", "epic-unfiled", "answer-owed", "blocked-unexaminable"]);
+  "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
+  "blocked-unexaminable"]);
 
 /**
  * The causes that START new work, as opposed to finishing work already begun.
@@ -113,7 +115,8 @@ export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog
  * silence the thing the drain exists to serve.
  */
 export const START_CAUSES = Object.freeze(["ready-row-unclaimed", "ready-queue-empty",
-  "lane-backlog-unpromoted", "org-stalled", "epic-unfiled", "blocked-unexaminable"]);
+  "lane-backlog-unpromoted", "org-stalled", "epic-unfiled", "epic-finished",
+  "blocked-unexaminable"]);
 
 /** Where the drain marker lives. `touch` it to open a window; `rm` it to close one. */
 export const DRAIN_MARKER = `${process.env.HOME}/.cache/a11ign/drain`;
@@ -898,6 +901,81 @@ export function epicOrders(epics, readyRows) {
 }
 
 /**
+ * EPICS WHOSE EVERY CHILD IS CLOSED -- finished work still sitting in the backlog.
+ *
+ * `unfiledEpics` asks `total === 0`. NOTHING ASKED THE OPPOSITE QUESTION, and `subIssuesSummary` was
+ * already on the read: the gate has been fetching `completed` since #1784 and discarding it.
+ *
+ * MEASURED 2026-09-21, when the chairman asked why nothing was running. 30 open rows, 0 Ready, and
+ * exactly ONE row in the whole org an engineer could take. Of the 27 backlog rows, 13 were `epic` --
+ * and NINE of those thirteen had every child closed:
+ *
+ *   #1317 10/10   #142 1/1   #65 1/1   #40 1/1   #37 1/1   #36 1/1   #35 2/2   #34 2/2   #31 1/1
+ *
+ * #1317 is "Adopt rstest as the test runner", ten children, all ten merged. It is not work. None of them
+ * are. The backlog read as 27 rows deep when it held about four real ones, and THAT is why the org
+ * running out of work went unnoticed -- every count that matters, `ready-queue-empty`'s own included, is
+ * taken over a population padded with finished epics.
+ *
+ * THE ORDER ASKS, IT DOES NOT ASSERT. Every child closed does NOT prove the epic is done: it equally
+ * means the next tranche has not been filed yet, which is the more valuable of the two answers and the
+ * one a "close this" order would talk the reader out of. Both outcomes are recorded on the epic, so the
+ * next reader inherits the judgment rather than re-deriving it.
+ *
+ * A WAITING EPIC IS WAITING, not finished -- the same filter `unfiledEpics` carries, for #1780's reason.
+ *
+ * @param {any[]} epics @param {string} [today]
+ */
+export function finishedEpics(epics, today = todayIso()) {
+  return (epics ?? [])
+    .filter((e) => {
+      const total = e?.subIssuesSummary?.total ?? 0;
+      return total > 0 && (e?.subIssuesSummary?.completed ?? 0) === total;
+    })
+    .filter((e) => waitingOn(e, today) === null);
+}
+
+/**
+ * One order per finished epic, capped and keyed per epic -- #1799's ruling, for its reason: a causeKey
+ * built from the COUNT is re-minted every time an unrelated epic closes, so a judgment already made gets
+ * re-litigated on someone else's progress.
+ *
+ * SHELF-EMPTY, LIKE `epicOrders`, AND THAT IS A REAL BOUND RATHER THAN A CONVENIENCE. Epics are read at
+ * all only when the shelf is empty (`epicsWhenShelfEmpty`), so firing this unconditionally would add an
+ * unconditional `gh` read to every tick and `GH_READS` would have to grow. It costs nothing here because
+ * the moment the padding actually does harm -- somebody asking why nothing is running -- is exactly the
+ * moment the shelf is empty. A padded backlog misleads all the time; it only MISLEADS ABOUT ANYTHING
+ * THAT MATTERS when the queue has run dry.
+ *
+ * @param {any[]} epics @param {any[]} readyRows
+ * @returns {{session: string, cause: string, subject: string, discriminator: string,
+ *            prompt: string, causeKey: string}[]}
+ */
+export function finishedEpicOrders(epics, readyRows) {
+  if (readyRows.length > 0) return [];
+  return finishedEpics(epics).slice(0, MAX_ROW_ORDERS_PER_TICK).map((/** @type {any} */ e) => ({
+    session: "product-manager",
+    cause: "epic-finished",
+    subject: `epic-${e.number}`,
+    discriminator: String(e.number),
+    prompt: `#${e.number}${e.title ? ` (${e.title})` : ""} IS AN OPEN EPIC WHOSE EVERY CHILD IS CLOSED `
+      + `(${e?.subIssuesSummary?.completed ?? 0} of ${e?.subIssuesSummary?.total ?? 0}).\n`
+      + "TWO ANSWERS, AND THE ORDER DOES NOT PRESUME WHICH. Either the line of work is FINISHED -- close "
+      + "the epic -- or the next tranche of children has simply never been filed, which is the more "
+      + "valuable answer because it is unfiled WORK, invisible to every other cause since `epic` means "
+      + "NOT PICKABLE. File those rows (a Region, an Acceptance, a done-when) with "
+      + `\`gh issue edit <child> --parent ${e.number}\`.\n`
+      + "WHY THIS IS NOT BOOKKEEPING: a finished epic left open is counted as backlog by everything that "
+      + "counts backlog. Measured 2026-09-21, nine of the org's thirteen open epics were in this state "
+      + "and the backlog read three times deeper than it was -- which is how the org ran out of work "
+      + "without anyone noticing.\n"
+      + "RECORD THE ANSWER ON THE EPIC either way, and READ ITS OWN RECENT COMMENTS FIRST: a durable "
+      + "reason recorded there stands until something about THIS epic changes.",
+    causeKey: `product-manager/epic-finished/epic-${e.number}`,
+  }));
+}
+
+/**
  * The epics, but only when there is nothing on the shelf -- an unfiled epic is the org's most urgent
  * fact only in that state, and a busy tick must not pay to ask.
  *
@@ -1623,6 +1701,9 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // AFTER the lane orders and BEFORE the chairman's: an unfiled epic is a supply problem, which only
   // matters once the queue and the lanes have nothing left to offer.
   orders.push(...epicOrders(epics, readyRows));
+  // AFTER the unfiled epics. An epic with NO children is work nobody has filed at all; one whose children
+  // are all closed may only need closing. The more likely supply of real work goes first.
+  orders.push(...finishedEpicOrders(epics, readyRows));
   orders.push(...blockedReferentOrders(openRows, readyRows));
 
   orders.push(...chairmanOrders(chairmanBlocked));

@@ -148,6 +148,18 @@ export const PROFILES = Object.freeze({
     effort: "high",
     why: "splitting an epic into claimable rows is the judgment the whole queue's supply rests on",
   }),
+  "epic-finished": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // HIGH, and the reason is the same one `epic-unfiled` gives rather than a weaker version of it. The
+    // cheap reading of "every child is closed" is "so close it", and the cheap reading is the WRONG one
+    // half the time: the other answer is that the next tranche of rows has never been filed, which is
+    // unfiled supply and worth more than the tidy-up. Telling those two apart means reading the epic's
+    // scope against what its children actually delivered. A low-effort pass would close them all.
+    effort: "high",
+    why: "deciding whether a fully-closed epic is finished or merely unfiled is the same supply "
+      + "judgment as splitting one, and the cheap answer is wrong half the time",
+  }),
   "lane-backlog-unpromoted": Object.freeze({
     kind: "claude",
     model: "sonnet",

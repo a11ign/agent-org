@@ -20,7 +20,8 @@ import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReady
   comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
   blockingChecks, anyChecksRed, requiredCheckNames, ownerOf, NOT_PICKABLE, NOT_STARTABLE,
   ROUTED_TO, readPromotableRows, GH_READS, partitionUnclaimed, readOpenRowCount,
-  unfiledEpics, epicOrders, readEpics, answersOwed, answerOrders, readOpenRows, withAnswerLabel,
+  unfiledEpics, epicOrders, finishedEpics, finishedEpicOrders, readEpics, answersOwed, answerOrders,
+  readOpenRows, withAnswerLabel,
   blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL,
   ANSWER_PREFIX }
   from "../work-gate.mjs";
@@ -560,7 +561,7 @@ test("drain OFF changes nothing, so the flag cannot cost anything when it is not
 test("every cause is classified as START or FINISH -- a new one cannot default into a window", () => {
   const finish = CAUSES.filter((c: string) => !START_CAUSES.includes(c)).sort();
   assert.deepEqual([...START_CAUSES].sort(),
-    ["blocked-unexaminable", "epic-unfiled", "lane-backlog-unpromoted", "org-stalled",
+    ["blocked-unexaminable", "epic-finished", "epic-unfiled", "lane-backlog-unpromoted", "org-stalled",
       "ready-queue-empty", "ready-row-unclaimed"]);
   assert.deepEqual(finish, ["answer-owed", "chairman-blocked", "draft-awaiting-verdict",
     "draft-convinced-not-ready", "pr-checks-failing", "verdict-not-convinced"]);
@@ -1497,4 +1498,90 @@ test("the causeKey is STILL per row -- both properties, neither traded", () => {
     promotableRows: [owned(1768), owned(1663)] }) as { causeKey: string }[];
   assert.deepEqual(orders.map((o) => o.causeKey),
     ["ceo/lane-backlog-unpromoted/row-1768", "ceo/lane-backlog-unpromoted/row-1663"]);
+});
+
+// --- #1848: an epic whose every child is closed is FINISHED WORK STILL IN THE BACKLOG ------------------
+//
+// `unfiledEpics` asks `total === 0`. Nothing asked the opposite question, though `subIssuesSummary`
+// carries `completed` and the gate has been fetching it since #1784.
+//
+// MEASURED 2026-09-21, when the chairman asked why nothing was running: 30 open rows, 0 Ready, and
+// exactly ONE row an engineer could take. Of 27 backlog rows, 13 were `epic` -- and NINE had every child
+// closed (#1317 10/10, #142, #65, #40, #37, #36, #35, #34, #31). #1317 is "Adopt rstest as the test
+// runner": ten children, all ten merged. The backlog read 27 deep when it held about four real rows,
+// which is how the org ran out of work without anyone noticing.
+
+const doneEpic = (n: number, total = 1) => ({ number: n, title: `epic ${n}`,
+  labels: [{ name: "backlog" }, { name: "epic" }], subIssuesSummary: { total, completed: total } });
+
+test("#1848: every child closed is FINISHED; part-done and never-filed are not", () => {
+  assert.deepEqual(finishedEpics([doneEpic(1317, 10), epic(149, 6), epic(69)]).map((e) => e.number), [1317],
+    "#1317 is 10/10 -- done. #149 is 6 children with none closed. #69 has none at all, which is "
+    + "unfiledEpics' finding, not this one");
+  assert.deepEqual(finishedEpics([]), []);
+  assert.deepEqual(finishedEpics(undefined as never), []);
+});
+
+test("#1848: THE TWO CAUSES ARE DISJOINT -- no epic is ever both unfiled and finished", () => {
+  // `total === 0` and `total > 0 && completed === total` cannot both hold. Stated as a test because an
+  // epic reported twice would put product-manager in front of two contradictory orders about one row,
+  // and `0 === 0` is exactly the kind of boundary a later edit gets wrong.
+  const population = [epic(69), epic(149, 6), doneEpic(1317, 10), doneEpic(31)];
+  const unfiled = unfiledEpics(population).map((e) => e.number);
+  const finished = finishedEpics(population).map((e) => e.number);
+  assert.deepEqual(unfiled, [69]);
+  assert.deepEqual(finished, [1317, 31]);
+  assert.deepEqual(unfiled.filter((n) => finished.includes(n)), [],
+    "an epic with zero children must never also count as finished");
+});
+
+test("#1848: a WAITING epic is waiting, not finished -- #1780's filter, same as unfiledEpics", () => {
+  const held = { ...doneEpic(57, 3), body: "Not-before: 2099-01-01\n" };
+  assert.deepEqual(finishedEpics([held]), [],
+    "a recorded waiting condition means the answer is already known; asking again is how #57 got "
+    + "re-litigated after correctly declining");
+  assert.deepEqual(finishedEpics([{ ...doneEpic(58, 3), blockedBy: { nodes: [{ number: 5, state: "OPEN" }] } }]), [],
+    "a real blockedBy edge counts too, not only the date field -- and the shape is GraphQL's "
+    + "`{ nodes: [...] }`, which my first fixture got wrong and the test caught");
+  assert.deepEqual(finishedEpics([{ ...doneEpic(59, 3), blockedBy: { nodes: [{ number: 5, state: "CLOSED" }] } }])
+    .map((e) => e.number), [59],
+    "POSITIVE CONTROL: a CLOSED blocker is not a wait, or a finished epic would be hidden for ever "
+    + "by an edge that resolved months ago");
+});
+
+test("#1848: it fires only when the shelf is EMPTY, and goes to product-manager keyed per epic", () => {
+  assert.deepEqual(finishedEpicOrders([doneEpic(1317, 10)], [{ number: 9 }]), [],
+    "claimable work outranks tidying the epic list");
+  const [order] = finishedEpicOrders([doneEpic(1317, 10)], []) as
+    { session: string, cause: string, discriminator: string, causeKey: string }[];
+  assert.equal(order.cause, "epic-finished");
+  assert.equal(order.session, "product-manager", "filing is product-manager's lane");
+  assert.equal(order.discriminator, "1317");
+  assert.equal(order.causeKey, "product-manager/epic-finished/epic-1317",
+    "#1799: keyed on the epic, so closing an unrelated one does not re-litigate this judgment");
+});
+
+test("#1848: THE ORDER ASKS, IT DOES NOT ASSERT -- 'file the next tranche' must survive as an answer", () => {
+  // Every child closed does NOT prove the epic is done; it equally means the next rows were never
+  // filed, which is the more valuable answer and the one a "close this" order would talk the reader
+  // out of. If this prompt ever reads as an instruction to close, the cause becomes a tidy-up that
+  // destroys supply.
+  const [order] = finishedEpicOrders([doneEpic(34, 2)], []) as { prompt: string }[];
+  assert.match(order.prompt, /never been filed/, "the unfiled-supply reading must be offered explicitly");
+  assert.match(order.prompt, /--parent 34/, "and the epic->child link stays DATA, not prose");
+  assert.match(order.prompt, /2 of 2/, "the counts it judged on are in the prompt, not left to be re-read");
+  assert.match(order.prompt, /RECORD THE ANSWER ON THE EPIC/,
+    "or the next reader re-derives a judgment already made -- #1799's whole finding");
+});
+
+test("#1848 POSITIVE CONTROL: a backlog with nothing finished says nothing at all", () => {
+  assert.deepEqual(finishedEpicOrders([epic(69), epic(149, 6)], []), [],
+    "this cause must be capable of finding nothing, or product-manager learns to ignore it");
+  assert.deepEqual(finishedEpicOrders([], []), []);
+});
+
+test("#1848: one order per finished epic, capped like every other row cause", () => {
+  const many = Array.from({ length: MAX_ROW_ORDERS_PER_TICK + 3 }, (_, i) => doneEpic(i + 1));
+  assert.equal(finishedEpicOrders(many, []).length, MAX_ROW_ORDERS_PER_TICK,
+    "nine finished epics in one tick must not become nine orders");
 });
