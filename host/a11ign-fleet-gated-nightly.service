@@ -1,0 +1,39 @@
+[Unit]
+# #1830: THE NIGHTLY FIRING #914 USED TO DEPEND ON A SESSION REMEMBERING. See
+# packages/agent-org/src/fleet-gated-nightly.mjs for what this does and does not decide -- it gathers the
+# fleet-gated rows and wakes `orchestrator` to run the by-row batch; it does not perform the batch itself,
+# the same split `a11ign-work-tick.service` already draws between a no-model tick and the model turn it
+# wakes.
+Description=a11ign: fire the nightly fleet-gated batch and wake orchestrator to run it
+After=herdr.service
+Wants=herdr.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/agent/repos/a11y-witness
+
+# SAME REASON a11ign-work-tick.service STATES ITS OWN: a systemd unit gets no login shell's PATH, and this
+# job spawns both `gh` (list the rows, post the examined-count comment) and `herdr` (the wake) -- both at
+# /home/agent/.local/bin, on the interactive PATH and on no default one.
+Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# `gh` reads its credentials from ~/.config/gh/hosts.yml and `herdr` its own session state from the
+# agent's home -- a user unit sets this, and it is stated rather than assumed for the same reason
+# a11ign-work-tick.service states it: the failure otherwise is silent, forever.
+Environment=HOME=/home/agent
+
+# UPDATED FIRST, same as a11ign-work-tick.service's own ExecStartPre -- a firing against a stale checkout
+# examines rows against yesterday's milestone state and wakes `orchestrator` with instructions that no
+# longer match `main`. The `-` prefix makes a failed update non-fatal: a firing against a slightly stale
+# checkout is worth far more than no firing at all.
+ExecStartPre=-/usr/bin/npm run primary:update
+
+ExecStart=/usr/bin/node packages/agent-org/src/fleet-gated-nightly.mjs
+
+# Bounded well under the timer's own interval (a day) -- this job is two `gh` calls, a comment, and one
+# `herdr` prompt with its own 30s timeout; it should never run long, and a hang here must not survive to
+# collide with tomorrow's firing.
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target
