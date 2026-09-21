@@ -40,6 +40,8 @@ import { leakRefusalReason } from "../../lab/src/packaging/leak-patterns.mjs";
 import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
 import { REPO } from "../../../scripts/repo-identity.mjs";
 import { launchGate } from "./board-snapshot-scope.mjs";
+import { worktreeOwner } from "./worktree-owner.mjs";
+import { LIVE_SESSIONS } from "./arm-pr.mjs";
 
 // The header's EXIT CODES, named because 1 and 3 ask a caller for opposite next steps.
 export const EXIT_NOTHING_SENT = 1;
@@ -198,10 +200,11 @@ function branchName(fact) {
  * @param {string} mode
  * @param {string[]} rest
  * @param {{ run?: (args: string[]) => void, git?: (args: string[]) => string,
- *           err?: (line: string) => void }} [deps]
+ *           err?: (line: string) => void, owner?: () => string | null }} [deps]
  * @returns {number} the header's exit code: 0, EXIT_NOTHING_SENT, or EXIT_LANDED_THEN_FAILED
  */
-export function sendToGitHub(mode, rest, { run = defaultGh, git = defaultGit, err = writeErr } = {}) {
+export function sendToGitHub(mode, rest,
+  { run = defaultGh, git = defaultGit, err = writeErr, owner = ownerOfTree } = {}) {
   // AN ERROR HANDLER THAT CAN ITSELF ERROR IS THE ONE PLACE A THROW COSTS THE MOST (worker-capture,
   // #1283). Both reads sat here unguarded, so a failing `git` -- a GIT_DIR pointing elsewhere, a stale
   // gitdir file, the CLI run from outside the checkout -- replaced this message with a raw throw that
@@ -229,7 +232,34 @@ export function sendToGitHub(mode, rest, { run = defaultGh, git = defaultGit, er
       return EXIT_LANDED_THEN_FAILED;
     }
   }
+  // WARNED, NEVER EXIT 3, AND THAT ASYMMETRY IS THE POINT. An arm that fails leaves a PR that will not
+  // merge -- a caller must know. A label that fails leaves a PR that is merely unroutable, which is the
+  // state every PR was in before this existed; turning that into EXIT_LANDED_THEN_FAILED would make an
+  // author retry, or worse hand-fix, a create that entirely succeeded. The line still prints, because a
+  // silently unlabelled PR is how this defect survived 20 merges unnoticed.
+  for (const args of labelAfterCreate(mode, rest, owner())) {
+    try {
+      run(args);
+    } catch (error) {
+      err(`pr-open: the PR was created but labelling it failed -- ${messageOf(error)}\n`
+        + `  It carries no \`session:*\` label, so a red check on it wakes product-manager rather than its `
+        + `author. Apply it by hand: \`gh pr edit <n> --add-label ${args[args.length - 1]}\`.\n`);
+    }
+  }
   return 0;
+}
+
+/**
+ * The session that stamped the tree this is running in, or null. Separated from `labelAfterCreate` so that
+ * function stays pure and testable without a filesystem -- the same split `armAfterCreate` has.
+ * @returns {string | null}
+ */
+function ownerOfTree() {
+  try {
+    return worktreeOwner(process.cwd());
+  } catch {
+    return null;
+  }
 }
 
 /** `err` returns nothing, so a caller collecting lines cannot accidentally satisfy it with a length.
@@ -258,11 +288,12 @@ const defaultGit = (args) =>
  * @param {string[]} [argv]
  * @param {{ run?: (args: string[]) => void, git?: (args: string[]) => string,
  *           prHead?: (repo: string, number: string) => { ref: string, oid: string } | null,
- *           runAcceptance?: (command: string) => number, out?: (line: string) => void,
- *           err?: (line: string) => void }} [deps]
+ *           runAcceptance?: (command: string) => number, owner?: () => string | null,
+ *           out?: (line: string) => void, err?: (line: string) => void }} [deps]
  * @returns {number}
  */
-export function main(argv = process.argv.slice(2), { run, git, prHead, runAcceptance, out = writeOut, err = writeErr } = {}) {
+export function main(argv = process.argv.slice(2),
+  { run, git, prHead, runAcceptance, owner, out = writeOut, err = writeErr } = {}) {
   const [mode, ...rest] = argv;
   if (mode !== "create" && mode !== "edit") {
     err(usage());
@@ -288,7 +319,7 @@ export function main(argv = process.argv.slice(2), { run, git, prHead, runAccept
       + `gh pr ${mode} runs (nothing was sent to GitHub).\n`);
     return EXIT_NOTHING_SENT;
   }
-  return sendToGitHub(mode, rest, { run, git, err });
+  return sendToGitHub(mode, rest, { run, git, err, owner });
 }
 
 /**
@@ -420,6 +451,46 @@ export function armAfterCreate(mode, rest) {
   if (mode !== "create" || rest.includes("--draft")) return [];
   const head = flagAfter(rest, "--head");
   return [["pr", "merge", "--auto", "--merge", ...(head ? [head] : [])]];
+}
+
+/**
+ * THE SESSION LABEL BELONGS ON THE PR AT CREATION, NOT AT ARM -- and arming is the LAST thing that happens.
+ *
+ * `arm-pr.mjs`'s `labelArmedPr` already copies a row's `session:*` onto the PR, but only when the PR is
+ * armed (green AND convinced) and only via `closedRowNumbers(prBody)`. Both conditions fail on exactly the
+ * population that needs routing:
+ *
+ *   - A PR that goes RED BEFORE IT IS EVER ARMED is unlabelled BY CONSTRUCTION. The label lands when the PR
+ *     is about to merge -- when nobody needs to be told whose it is -- and is missing while it is stuck.
+ *   - A PR declaring `Closes: none -- <reason>` (an accepted, merge-blocking-compliant declaration) names no
+ *     row at all, so `closedRowNumbers` returns `[]` and `labelArmedPr` returns early. Such a PR is
+ *     PERMANENTLY unroutable.
+ *
+ * Measured 2026-09-21: 11 of the last 20 merged PRs carried no `session:*` label. #1844 -- `orchestrator`'s
+ * own nightly-batch scheduler -- went red with no label, so `work-gate.mjs`'s `failingChecksOrder` fell back
+ * to `product-manager`, whose entire job on that order is to find out whose PR it is and hand it back: an
+ * extra session, an extra turn and an extra tick of latency, for a fact that was on disk the whole time.
+ *
+ * THE FACT IS ALREADY WRITTEN DOWN. `.a11y-owner` in the worktree root names the session that owns this
+ * tree (#1128), `pr:open` runs from that tree, and 84 of the 93 worktrees on the agent host carry one. This
+ * reads it -- it does not ask anyone to remember anything, which is the only kind of fix that has held in
+ * this repository.
+ *
+ * NOTHING IS INVENTED. An unstamped tree yields no label rather than a guessed one -- `worktree-owner.mjs`'s
+ * own ruling, that a stamp naming nobody is worse than no stamp, applies with more force here because the
+ * wrong session would then be woken for every red check. A retired or unknown owner is likewise refused,
+ * for #1000's reason: a claim on the attribution record that no live session can answer for.
+ *
+ * @param {string} mode
+ * @param {string[]} rest the args handed to `gh pr <mode>`
+ * @param {string | null} owner the worktree's stamped session, or null when nobody stamped it
+ * @returns {string[][]}
+ */
+export function labelAfterCreate(mode, rest, owner) {
+  if (mode !== "create" || owner === null) return [];
+  if (!LIVE_SESSIONS.includes(owner)) return [];
+  const head = flagAfter(rest, "--head");
+  return [["pr", "edit", ...(head ? [head] : []), "--add-label", `session:${owner}`]];
 }
 
 /**
