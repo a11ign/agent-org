@@ -828,6 +828,62 @@ function reportHandClaims() {
 }
 
 /**
+ * OPEN ROWS THAT CARRY NEITHER `backlog` NOR `ready` -- INVISIBLE TO THE GATE, NOT MERELY UNTIDY.
+ *
+ * `reportLabelless` above catches a row with ZERO labels. This catches the commoner and quieter case: a
+ * row that is carefully labelled and still cannot be reached, because `work-gate.mjs`'s
+ * `readPromotableRows` filters SERVER-SIDE on `--label backlog` and `readReadyRows` on `--label ready`.
+ * A row in neither set is read by no cause, so no session is ever ordered to touch it.
+ *
+ * MEASURED 2026-09-21, and it was the most expensive row on the board. #1830 -- "#914's nightly capture
+ * batch can only be dispatched by a session remembering", i.e. THE SCHEDULER THAT WOULD MAKE THE FLEET
+ * RUN -- carried `fleet-gated` and `lane:any` and no `backlog`. `orchestrator` could see it (it reads the
+ * tracker directly) and reported it as "open/unclaimed and pickable" in the same turn it moved past it;
+ * the gate could not see it at all, so nobody was ever ordered to build it. Adding one label made it
+ * route to two sessions immediately. Five open rows were in that state.
+ *
+ * EPICS AND CLOSED-DEBRIS ARE NOT FINDINGS. An `epic` is read by `readEpics` on its own label, and a row
+ * carrying only `meta` is a process thread that was never meant to be promoted -- both are reached by
+ * something. What is refused is a row reached by nothing.
+ */
+function reportInvisibleRows() {
+  const { issues, reportedCount } = fetchOpenIssuesChecked();
+  const rows = invisibleRows(issues);
+  if (rows.length === 0) {
+    process.stdout.write(`OK  ${issues.length} of ${reportedCount} open issue(s) checked, every one `
+      + "carries `backlog`, `ready`, `epic` or `meta` and is therefore reachable by some cause\n");
+    return 0;
+  }
+  for (const { number, title, labels } of rows) {
+    process.stdout.write(`UNREACHABLE  #${number} "${title}" -- [${labels.join(", ")}] -- carries `
+      + "neither `backlog` nor `ready`, and `work-gate` reads both SERVER-SIDE by label, so no cause can "
+      + "see this row and no session will ever be ordered to touch it. Add `backlog` (or `ready` if it "
+      + "is genuinely startable), or close it\n");
+  }
+  process.stdout.write(`invisible rows: ${rows.length} of ${issues.length} open issue(s)\n`);
+  return rows.length;
+}
+
+/**
+ * PURE. The open rows no cause can reach.
+ *
+ * Takes `LabelledIssue[]` -- `fetchOpenIssuesChecked` has already normalised `labels` to strings, so a
+ * caller reading raw `gh` output must normalise first rather than this function guessing at two shapes.
+ *
+ * @param {LabelledIssue[]} issues
+ */
+export function invisibleRows(issues) {
+  const REACHED_BY_SOMETHING = ["backlog", "ready", "epic", "meta"];
+  return (issues ?? [])
+    .map((i) => ({ number: Number(i.number), title: String(i.title ?? ""),
+      labels: (i.labels ?? []).map((l) => String(l)) }))
+    // A row with NO labels at all is `reportLabelless`'s finding, not this one -- reporting it twice
+    // would make two checks disagree about whose it is the first time one of them changes.
+    .filter((r) => r.labels.length > 0)
+    .filter((r) => !r.labels.some((n) => REACHED_BY_SOMETHING.includes(n)));
+}
+
+/**
  * #788: Report open rows carrying NO labels at all -- distinct from every other check here, because
  * those all enumerate BY label and a labelless row has nothing for any of them to key on. Named
  * separately, with wording that says what absence MEANS: not merely unlabelled, but invisible to the
@@ -1811,6 +1867,7 @@ export const CHECKS = [
   ["release declaration", reportReleaseDrift],
   ["filing guidance", reportGuidanceDrift],
   ["waits stated in prose", reportProseBlockers],
+  ["rows no cause can reach", reportInvisibleRows],
 ];
 
 /**
