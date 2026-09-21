@@ -42,11 +42,15 @@
  * A malformed date is NOT a wait -- it fails OPEN, so a typo leaves the row visible and someone finds
  * it, rather than hiding it silently until a human happens to read the body.
  *
+ * AN OPTIONAL `#{0,6}` HEADING PREFIX, because `Region`, `Done-when` and `Acceptance` are all written as
+ * `## <Field>` in this repo's own row convention and `Not-before:` was written the same way on #1663 --
+ * a bare-line-only regex silently read that row as having nothing stopping it (#1822).
+ *
  * @param {string | null | undefined} body
  * @returns {string | null}
  */
 export function notBeforeDate(body) {
-  const m = /^[ \t]*Not-before:[ \t]*(\d{4}-\d{2}-\d{2})[ \t]*$/im.exec(String(body ?? ""));
+  const m = /^[ \t]*#{0,6}[ \t]*Not-before:[ \t]*(\d{4}-\d{2}-\d{2})[ \t]*$/im.exec(String(body ?? ""));
   return m ? m[1] : null;
 }
 

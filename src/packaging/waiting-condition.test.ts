@@ -46,6 +46,16 @@ test("the field is anchored to its own line, so prose ABOUT it is not a declarat
   assert.equal(notBeforeDate("not-before: 2026-09-21"), "2026-09-21", "case-insensitive on the key");
 });
 
+test("a heading-style Not-before is read the same as a bare line (#1822)", () => {
+  // `Region`, `Done-when` and `Acceptance` are all written as `## <Field>` in this repo's own row
+  // convention, and #1663 wrote `Not-before:` the same way -- the bare-line-only regex silently read
+  // that row as having nothing stopping it, so `waitingOn` returned `null` while the field said otherwise.
+  assert.equal(notBeforeDate("## Not-before: 2026-09-23"), "2026-09-23");
+  assert.equal(notBeforeDate("### Not-before: 2026-09-23"), "2026-09-23", "any heading level, not just h2");
+  const row = { body: "## Not-before: 2026-09-23" };
+  assert.deepEqual(waitingOn(row, "2026-09-20"), { kind: "date", date: "2026-09-23" });
+});
+
 test("a row with NEITHER waits on nothing", () => {
   assert.equal(waitingOn({}, "2026-09-19"), null);
   assert.equal(waitingOn({ blockedBy: { nodes: [] }, body: "no field here" }, "2026-09-19"), null);
