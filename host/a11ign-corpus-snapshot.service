@@ -1,0 +1,27 @@
+[Unit]
+# THE CORPUS'S DEFENCE ON THE AGENT HOST -- #1798. `corpus-snapshot.mjs`'s own comment calls
+# `runs/board-snapshots` "the only evidence" behind the daily board document's published numbers, and
+# ceo's ruling on this row (#1798, comment 2026-09-21T07:50:36Z) found it protects ZERO of that on the
+# lab: `runs/board-snapshots` accumulates only on THIS host, via `board-snapshot.mjs`'s
+# `withBoardSnapshot`, called from `row-claim.mjs`/`row-file.mjs`/`close-rows-for-merged-pr.mjs`/
+# `ready-label-audit.mjs` -- every org session, since the 2026-09-13 cutover. The lab's own
+# `a11y-corpus-snapshot.timer` (`packages/control/ansible/files/`) stays unchanged and keeps protecting
+# `captures`/`real-page-corpus`/`screenreader-acceptance` there; this pair is the agent-host half, not a
+# replacement for it.
+Description=a11ign: snapshot the corpus roots this host actually holds (runs/board-snapshots)
+After=herdr.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/agent/repos/a11y-witness
+
+# SAME REASON a11ign-work-tick.service STATES ITS OWN: a systemd unit gets no login shell's PATH, and
+# `corpus-snapshot.mjs` spawns `tar` via `execFile` -- without this it cannot find it and fails silently
+# under a oneshot unit's default empty PATH.
+Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=/home/agent
+
+ExecStart=/usr/bin/npm run corpus:snapshot
+
+[Install]
+WantedBy=default.target

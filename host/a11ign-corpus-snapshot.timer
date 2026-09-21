@@ -1,0 +1,16 @@
+[Unit]
+Description=a11ign: run the agent-host corpus snapshot daily
+Requires=a11ign-corpus-snapshot.service
+
+[Timer]
+# MIRRORS THE LAB'S OWN a11y-corpus-snapshot.timer AT 03:00 UTC (packages/control/ansible/files/) --
+# off-peak, and a shared hour makes the two units' history easy to reason about together even though they
+# protect different roots on different hosts.
+OnCalendar=*-*-* 03:00:00 UTC
+# A missed window (host asleep, unit still running) fires at next boot instead of being silently skipped
+# for the day -- same property a11ign-work-tick.timer and the lab's own timer both rely on.
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
