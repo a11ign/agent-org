@@ -58,6 +58,11 @@ export function promptable(label, agents) {
   return null;
 }
 
+/** Prefix on {@link clearThenPrompt}'s return value when the PROMPT ITSELF failed -- the order never
+ * reached the session, unlike a refused clear (text still went, just on a bloated context). A caller that
+ * needs to tell "delivered anyway" apart from "never delivered" matches this rather than re-deriving it. */
+export const PROMPT_REFUSED_PREFIX = "prompt refused: ";
+
 /**
  * Clear, then prompt. Returns what to report, or `null` when the prompt landed.
  * @param {(args: string[]) => string} run @param {string} label @param {string} text
@@ -67,7 +72,7 @@ export function clearThenPrompt(run, label, text) {
   try {
     run(["--session", "org", "agent", "prompt", label, text]);
   } catch (/** @type {any} */ err) {
-    return `prompt refused: ${String(err?.message ?? err).split("\n")[0].slice(0, 120)}`;
+    return `${PROMPT_REFUSED_PREFIX}${String(err?.message ?? err).split("\n")[0].slice(0, 120)}`;
   }
   // A REFUSED CLEAR IS NOT A REFUSED PROMPT (`clearContext`'s own rule): the text went, on a context that
   // is more expensive than it should be, and saying so is strictly better than silence.
