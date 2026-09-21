@@ -36,7 +36,7 @@ import { dirname } from "node:path";
 // `work-gate.mjs` and `org-watch.mjs` state at their own imports.
 import { refuseUnknownFlags, flagValue } from "../../worker-fleet/src/cli-flags.mjs";
 import { profileFor, agentArgs } from "./worker-profile.mjs";
-import { JUDGMENT_CAUSES } from "./work-gate.mjs";
+import { JUDGMENT_CAUSES, CHAIRMAN_LABEL } from "./work-gate.mjs";
 
 /**
  * `0` QUIET nothing to deliver; `1` ATTENTION an order had nowhere to go; `2` CANNOT_ASK herdr did not
@@ -71,6 +71,10 @@ export function blockedSessions(agents) {
 
 /** @param {string[]} args */
 const defaultRun = (args) => execFileSync("herdr", args, { encoding: "utf8", timeout: 30_000 });
+
+/** `gh`, for the escalation half -- a different binary from `herdr`, so a different runner. */
+const defaultGh = (/** @type {string[]} */ args) =>
+  execFileSync("gh", args, { encoding: "utf8", timeout: 30_000 });
 
 /**
  * Every workspace herdr knows, as `{ label, status }`, or `null` when herdr could not be asked.
@@ -373,6 +377,19 @@ export function addressed(order, label) {
 }
 
 /**
+ * Does this delivery begin a new run -- i.e. was nobody told for longer than `RUN_IDLE_RESET_MS`?
+ *
+ * Extracted from `deliveryCounts`, which reached `complexity` 16 with it inline. An undated line (no
+ * timestamp) can never start a run: unknown age is not evidence of silence.
+ *
+ * @param {number} at @param {number | undefined} previous
+ */
+function startsNewRun(at, previous) {
+  if (!Number.isFinite(at) || previous === undefined) return false;
+  return at - previous > RUN_IDLE_RESET_MS;
+}
+
+/**
  * How many times each causeKey has been delivered IN ITS CURRENT RUN -- since the last `RESET`, which
  * `endedRuns` writes when a cause stops being emitted. See that function for why a run, and not a time
  * window, is the unit.
@@ -388,6 +405,8 @@ export function addressed(order, label) {
 export function deliveryCounts(path, read = readFileSync) {
   /** @type {Map<string, number>} */
   const counts = new Map();
+  /** When each key was last delivered, so a quiet spell can end its run. @type {Map<string, number>} */
+  const lastAt = new Map();
   let raw;
   try {
     raw = String(read(path, "utf8"));
@@ -404,8 +423,11 @@ export function deliveryCounts(path, read = readFileSync) {
     // A RESET ENDS A RUN AND STARTS THE COUNT AGAIN AT ZERO, rather than removing anything. The ledger
     // stays append-only, so what happened is still readable -- six deliveries, a reset, then two more
     // says something a bare `2` cannot.
-    if (key.startsWith(`${RESET}\t`)) counts.set(key.slice(RESET.length + 1), 0);
-    else counts.set(key, (counts.get(key) ?? 0) + 1);
+    if (key.startsWith(`${RESET}\t`)) { counts.set(key.slice(RESET.length + 1), 0); continue; }
+    // A QUIET SPELL ALSO ENDS A RUN -- see `RUN_IDLE_RESET_MS`.
+    const at = tab < 0 ? NaN : Number(text.slice(0, tab));
+    counts.set(key, startsNewRun(at, lastAt.get(key)) ? 1 : (counts.get(key) ?? 0) + 1);
+    if (Number.isFinite(at)) lastAt.set(key, at);
   }
   return counts;
 }
@@ -451,6 +473,89 @@ export function endedRuns(emitted, path, { read = readFileSync, write = writeFil
   mkdirSync(dirname(path), { recursive: true });
   write(path, `${emitted.join("\n")}\n`);
   return previous.filter((key) => !now.has(key));
+}
+
+/**
+ * How long a run of deliveries may stand before a quiet spell ends it by itself.
+ *
+ * THE RESET THAT `endedRuns` CANNOT GIVE A STANDING ROW. A run ends when a cause STOPS BEING EMITTED --
+ * which worked while `lane-backlog-unpromoted` was keyed on a COUNT (`.../ceo/3`), because any row
+ * entering or leaving the lane changed the key, ended that run and reset the counter as a side effect.
+ *
+ * #1799 was right that the count key re-litigated a judgment every time an unrelated row moved, and
+ * 2026-09-20's fix re-keyed it per row (`.../row-1234`). THE CHURN THAT WAS REMOVED WAS ALSO THE THING
+ * KEEPING THE COUNTER FRESH. A per-row key is stable for as long as the row exists, so the run never
+ * ends, `MAX_DELIVERIES` is reached once and the cause is silent FOREVER.
+ *
+ * Measured 2026-09-21: `ceo/lane-backlog-unpromoted/row-1234` -- 6 deliveries, ZERO resets, capped and
+ * unreachable, while the old count-keyed entries in the same ledger carry RESETs throughout. One fix
+ * created the other's failure, in the same file, one day apart.
+ *
+ * SO A RUN ALSO ENDS ON TIME. Not on the cause going away -- on nobody having been told for this long.
+ * Two hours is deliberately longer than `JUDGMENT_TTL_MS`, so it can only fire after the cause has had
+ * a full chance to be re-offered and was not: it measures DELIVERY silence, not cause silence.
+ *
+ * This does not weaken the breaker. A cause that is genuinely stuck still trips after six, still
+ * escalates to the chairman, and still costs at most three deliveries an hour.
+ */
+export const RUN_IDLE_RESET_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * A TRIPPED BREAKER MUST REACH A PERSON, NOT A JOURNAL.
+ *
+ * `MAX_DELIVERIES` is a circuit breaker and the reasoning behind it is sound -- an unresolvable cause
+ * would otherwise burn a `sonnet`/`high` turn every twenty minutes forever. What was missing is the half
+ * every real breaker has: TRIPPING RAISES AN ALARM. This one wrote `STUCK <key>` to stderr in a systemd
+ * journal and stopped.
+ *
+ * MEASURED 2026-09-21: `ceo/lane-backlog-unpromoted/row-1234` and `ceo/chairman-blocked/0` both tripped.
+ * The tick printed `STUCK` every two minutes for over half an hour. `ceo` had two live questions it
+ * could no longer be asked, every session read idle, and THE ONLY THING THAT NOTICED WAS THE CHAIRMAN
+ * SAYING "the AI agents have all stopped completely".
+ *
+ * `needs:chairman` IS THE RIGHT DESTINATION, not a new mechanism. The breaker's own comment says the cap
+ * is "short enough that a genuinely stuck row is named while someone is still awake to read it" -- that
+ * is exactly what `needs:chairman` means, it is already read by `readChairmanBlocked`, already routed by
+ * the `chairman-blocked` cause, and removing it is the act of clearing. A cause that six deliveries did
+ * not resolve is, by definition, not resolvable by another delivery.
+ *
+ * SUBJECT-DERIVED, because a causeKey is not a row. `row-1234` and `pr-1837` carry their number; a
+ * subject like `chairman` or `ready-queue` names no row and cannot be labelled, so it is reported and
+ * skipped rather than guessed at -- labelling the wrong row would be worse than labelling none.
+ *
+ * @param {string} causeKey @returns {number | null} the row to label, or `null` when the key names none
+ */
+export function stuckRowOf(causeKey) {
+  const m = /\/(?:row|pr)-(\d+)(?:\/|$)/.exec(String(causeKey ?? ""));
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * Label every stuck cause's row `needs:chairman`, and say which could not be.
+ *
+ * FAILS OPEN AND LOUD: a `gh` refusal is reported, never swallowed. The alternative -- a breaker whose
+ * alarm silently fails -- is the exact shape being fixed.
+ *
+ * @param {string[]} stuck @param {(args: string[]) => string} run @param {(line: string) => void} log
+ */
+export function escalateStuck(stuck, run = defaultGh, log = (l) => process.stderr.write(l)) {
+  const labelled = [];
+  for (const line of stuck ?? []) {
+    const key = String(line).split(":")[0];
+    const row = stuckRowOf(key);
+    if (row === null) {
+      log(`STUCK ${line} -- names no row, so it cannot be escalated by label; read the key\n`);
+      continue;
+    }
+    try {
+      run(["issue", "edit", String(row), "--add-label", CHAIRMAN_LABEL]);
+      labelled.push(row);
+      log(`ESCALATED #${row} -> ${CHAIRMAN_LABEL} (cause offered ${MAX_DELIVERIES}+ times, still true)\n`);
+    } catch (/** @type {any} */ err) {
+      log(`COULD NOT ESCALATE #${row}: ${String(err?.message ?? err).split("\n")[0].slice(0, 90)}\n`);
+    }
+  }
+  return labelled;
 }
 
 /**
@@ -642,6 +747,9 @@ function main() {
     counts: deliveryCounts(ledgerPath) });
   for (const line of sent) process.stdout.write(`WOKE ${line}\n`);
   for (const line of stuck) process.stderr.write(`STUCK ${line}\n`);
+  // THE BREAKER'S ALARM. Printing `STUCK` and stopping is what let two of `ceo`'s causes go silent for
+  // over half an hour with every session idle -- see `escalateStuck`.
+  escalateStuck(stuck);
   if (stuck.length > 0) {
     process.stderr.write(`${stuck.length} cause(s) have been offered ${MAX_DELIVERIES}+ times and are `
       + "still true. They are NOT being retried: something about the row, the prompt or the session is "

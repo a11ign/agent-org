@@ -17,7 +17,8 @@ import { route, undelivered, parseOrders, readLedger, deliver, readAgents, WAKEA
   blockedSessions }
   from "../wake.mjs";
 import { afterGate, GATE, EXIT as TICK_EXIT } from "../work-tick.mjs";
-import { spawnInvocation, addressed, clearContext, CLEAR_TIMEOUT_MS, CLEAR_SETTLE_MS }
+import { spawnInvocation, addressed, clearContext, CLEAR_TIMEOUT_MS, CLEAR_SETTLE_MS,
+  RUN_IDLE_RESET_MS, stuckRowOf, escalateStuck }
   from "../wake.mjs";
 
 const agents = (spec: Record<string, string>) =>
@@ -316,10 +317,46 @@ test("the window is long enough that an agent reading a brief is never interrupt
 });
 
 test("deliveryCounts spans the WHOLE ledger, not the live window", () => {
+  // CONTIGUOUS DELIVERIES STILL ALL COUNT, however old. The original fixture here put a 3.3-hour gap
+  // between its second and third entries, which `RUN_IDLE_RESET_MS` now correctly reads as a NEW RUN --
+  // so the gaps are inside the window and the assertion tests what it meant to: age does not forgive a
+  // delivery, silence does.
   const ancient = Date.now() - 10 * WAKE_TTL_MS;
-  const raw = [`${ancient}\tk`, `${ancient + 1}\tk`, `${Date.now()}\tk`].join("\n");
+  const raw = [`${ancient}\tk`, `${ancient + 1000}\tk`, `${ancient + 2000}\tk`].join("\n");
   assert.equal(deliveryCounts("x", () => raw).get("k"), 3,
     "reading only the live window would report 1 for a cause on its fortieth attempt");
+});
+
+/**
+ * A QUIET SPELL ENDS A RUN, BECAUSE `endedRuns` CANNOT END ONE FOR A STANDING ROW.
+ *
+ * A run ends when a cause STOPS BEING EMITTED. That worked while `lane-backlog-unpromoted` was keyed on
+ * a COUNT (`.../ceo/3`): any row entering or leaving the lane changed the key and reset the counter as a
+ * side effect. #1799 was right that the count key re-litigated a judgment whenever an unrelated row
+ * moved, and 2026-09-20's fix re-keyed it per row -- but THE CHURN THAT WAS REMOVED WAS ALSO THE THING
+ * KEEPING THE COUNTER FRESH.
+ *
+ * MEASURED 2026-09-21: `ceo/lane-backlog-unpromoted/row-1234` -- 6 deliveries, ZERO resets, capped and
+ * permanently unreachable, while the old count-keyed entries in the SAME ledger carry RESETs throughout.
+ * One fix created the other's failure, in the same file, one day apart. `ceo` had two live questions it
+ * could no longer be asked and every session read idle.
+ */
+test("a gap longer than RUN_IDLE_RESET_MS starts the count again", () => {
+  const first = Date.now() - 5 * RUN_IDLE_RESET_MS;
+  const raw = [`${first}\tk`, `${first + 1000}\tk`,
+    `${first + 1000 + RUN_IDLE_RESET_MS + 1}\tk`].join("\n");
+  assert.equal(deliveryCounts("x", () => raw).get("k"), 1,
+    "nobody was told for over two hours -- that is a new run, not the third attempt of an old one");
+});
+
+test("the idle reset measures DELIVERY silence, not cause silence", () => {
+  // Deliberately longer than `JUDGMENT_TTL_MS`, so it can only fire after the cause has had a full
+  // chance to be re-offered and was not. A shorter window would forgive an ignored cause every two
+  // hours and the breaker would never trip at all.
+  assert.ok(RUN_IDLE_RESET_MS >= JUDGMENT_TTL_MS,
+    "shorter than the judgment TTL and the cap could never be reached by a judgment cause");
+  assert.ok(RUN_IDLE_RESET_MS >= 6 * WAKE_TTL_MS,
+    "and it must exceed a full run of wake-TTL deliveries, or a stuck cause resets mid-run");
 });
 
 test("a cause delivered MAX times is named and STOPPED, never offered again", () => {
@@ -647,4 +684,49 @@ test("it names polling as the specific waste it is", () => {
   assert.match(out, /polling a pull request for a verdict that has its own cause/);
   assert.match(out, /The gate will bring you back when something changes/,
     "a session must know that ending its turn is safe, or refusing to ask just becomes refusing to stop");
+});
+
+/**
+ * A TRIPPED BREAKER MUST REACH A PERSON, NOT A JOURNAL.
+ *
+ * `MAX_DELIVERIES` is a circuit breaker and its reasoning is sound. What was missing is the half every
+ * real breaker has: TRIPPING RAISES AN ALARM. This one wrote `STUCK <key>` to stderr and stopped.
+ *
+ * MEASURED 2026-09-21: two of `ceo`'s causes tripped, the tick printed `STUCK` every two minutes for
+ * over half an hour, every session read idle, and the only thing that noticed was the chairman saying
+ * "the AI agents have all stopped completely".
+ */
+test("a stuck cause labels its row needs:chairman", () => {
+  const calls: string[][] = [];
+  const out: string[] = [];
+  const labelled = escalateStuck(["ceo/lane-backlog-unpromoted/row-1234: delivered 6 times"],
+    (a: string[]) => { calls.push(a); return ""; }, (l: string) => out.push(l));
+  assert.deepEqual(labelled, [1234]);
+  assert.deepEqual(calls, [["issue", "edit", "1234", "--add-label", "needs:chairman"]]);
+  assert.match(out.join(""), /ESCALATED #1234/);
+});
+
+test("a causeKey naming no row is reported, never guessed at", () => {
+  // `chairman` and `ready-queue` are subjects, not rows. Labelling the wrong row would be worse than
+  // labelling none, so it says so and moves on.
+  const out: string[] = [];
+  const labelled = escalateStuck(["ceo/chairman-blocked/0: delivered 6 times"],
+    () => { throw new Error("must not be called"); }, (l: string) => out.push(l));
+  assert.deepEqual(labelled, []);
+  assert.match(out.join(""), /names no row/);
+});
+
+test("stuckRowOf reads row- and pr- keys and nothing else", () => {
+  assert.equal(stuckRowOf("ceo/lane-backlog-unpromoted/row-1234"), 1234);
+  assert.equal(stuckRowOf("reviewer/draft-awaiting-verdict/pr-1837/abc12345"), 1837);
+  assert.equal(stuckRowOf("product-manager/ready-queue-empty/3"), null);
+  assert.equal(stuckRowOf("ceo/org-stalled/55"), null);
+});
+
+test("a gh refusal is reported, never swallowed", () => {
+  // A breaker whose alarm silently fails is the exact shape being fixed.
+  const out: string[] = [];
+  escalateStuck(["x/y/row-9: delivered 6 times"],
+    () => { throw new Error("HTTP 403: forbidden"); }, (l: string) => out.push(l));
+  assert.match(out.join(""), /COULD NOT ESCALATE #9: HTTP 403/);
 });
