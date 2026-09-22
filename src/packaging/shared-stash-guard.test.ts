@@ -126,14 +126,57 @@ test("pop, drop and clear are NOT refused — the first version broke all three"
   } finally { cleanup(); }
 });
 
-test("a pop across a MISMATCHED branch warns, but still succeeds -- #1872 repeating #290's shape", () => {
+test("a pop whose named branch is checked out LIVE in another worktree right now is REFUSED -- #1896", () => {
+  // `main` never leaves its branch, so at the moment `second` pops, git worktree list --porcelain says
+  // unambiguously that 'main' is checked out elsewhere -- exactly #1866's and #1896's own incident shape.
+  //
+  // WHAT THIS CANNOT PROTECT, VERIFIED RATHER THAN ASSUMED: `git stash pop` applies the entry to the
+  // working tree BEFORE it ever touches `refs/stash` -- applying is a working-tree/index write, not a ref
+  // update, so no hook sees it and refusing the drop that follows cannot undo it. And `git stash drop`'s
+  // own reflog rewrite (what makes an entry disappear from `git stash list`) happens as a side effect
+  // that reference-transaction never observes either -- the ONLY refs/stash transaction this hook is
+  // asked about is the final pointer delete, confirmed by instrumenting the hook to log every phase it
+  // received. Refusing THAT still leaves the pointer itself intact (the commit is not orphaned), which is
+  // the one thing this hook can actually hold the line on.
   const { main, second, cleanup } = twoWorktrees();
   try {
     writeFileSync(join(main, "a.txt"), "mine on main\n");
     assert.equal(git(main, ["stash", "push", "-m", "quick fix"]).code, 0);
+    writeFileSync(join(second, "b.txt"), "second's own unrelated work\n");
+
     const result = git(second, ["stash", "pop"]);
-    assert.equal(result.code, 0, "the pop still succeeds -- #305 already ruled out refusing it");
+    assert.notEqual(result.code, 0, "a pop taking a LIVE worktree's own branch must not succeed silently");
+    assert.match(result.stderr, /REFUSED/);
+    assert.match(result.stderr, /'main'/, "names the branch the stash was actually made on");
+    assert.match(result.stderr, new RegExp(main.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      "names A's worktree path, not just its branch");
+    assert.match(result.stderr, /stash:whose/);
+
+    // The pointer this hook actually protects: refs/stash still resolves to the stash commit, so the
+    // data is recoverable (`git stash apply <that sha>`) even though `git stash list` no longer shows it.
+    assert.doesNotThrow(() => execFileSync("git", ["rev-parse", "-q", "--verify", "refs/stash"],
+      { cwd: main, encoding: "utf8", env: sandboxGitEnv() }),
+      "the stash commit itself survives the refused delete -- nothing was garbage-collected");
+
+    // Unrelated, untracked files in B are untouched -- the apply only ever touches paths the stash itself
+    // named.
+    assert.equal(execFileSync("cat", [join(second, "b.txt")], { encoding: "utf8" }), "second's own unrelated work\n",
+      "an unrelated file in B's working tree is untouched by the refused pop");
+  } finally { cleanup(); }
+});
+
+test("the identical pop, once A has switched off that branch, warns but still succeeds -- unchanged from #1872", () => {
+  const { main, second, cleanup } = twoWorktrees();
+  try {
+    writeFileSync(join(main, "a.txt"), "mine on main\n");
+    assert.equal(git(main, ["stash", "push", "-m", "quick fix"]).code, 0);
+    assert.equal(git(main, ["checkout", "-q", "--detach", "HEAD"]).code, 0,
+      "main releases the branch -- 'main' is no longer checked out anywhere");
+
+    const result = git(second, ["stash", "pop"]);
+    assert.equal(result.code, 0, "the pop still succeeds -- #305 already ruled out refusing the general case");
     assert.match(result.stderr, /WARNING/);
+    assert.doesNotMatch(result.stderr, /REFUSED/);
     assert.match(result.stderr, /'main'/, "names the branch the stash was actually made on");
     assert.match(result.stderr, /'other'/, "names the branch popping it now");
     assert.match(result.stderr, /stash:whose/, "points at the manual check #305 already named");
