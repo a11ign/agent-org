@@ -73,6 +73,7 @@ import { withBoardSnapshot, PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapsh
 import { runnerReason, laneReason } from "./row-claim/runner-rule.mjs";
 import { inBuildReason, lookupHeldRows } from "./row-claim/own-pr-health-rule.mjs";
 import { resolveBlockedByOverride, blockedByExceptionNote } from "./row-claim/blocked-by-rule.mjs";
+import { blockedByEdgeReason, lookupBlockedByEdge } from "./row-claim/blocked-by-edge-rule.mjs";
 import { fileOverlapReason, lookupMyRegionFiles, lookupOpenPrFiles } from "./row-claim/file-overlap-rule.mjs";
 import { templateFieldsReason, lookupIssueBody } from "./row-claim/template-fields-rule.mjs";
 import { staleRuleReason } from "./row-claim/stale-rule-guard.mjs";
@@ -519,12 +520,13 @@ export function moveProjectStatus(issueNumber, statusName,
  */
 
 /**
- * B2 (#476) + B4 (#462), COMPOSED: should `mySession` start a NEW row right now, independent of whether
- * this particular row is claimed by someone else? `null` means proceed; a string is the refusal reason.
+ * B2 (#476) + B4 (#462) + the row's own `blockedBy` edge (#1886), COMPOSED: should `mySession` start a
+ * NEW row right now, independent of whether this particular row is claimed by someone else? `null` means
+ * proceed; a string is the refusal reason.
  *
- * BOTH FAIL OPEN ON A LOOKUP FAILURE, deliberately -- the opposite of `decideClaim`'s own "unclaimed must
- * be EARNED, not defaulted to" rule a few functions up. That rule protects a VERDICT about who holds a
- * row; this protects a session's ability to claim ANYTHING at all when the network is down or `gh` is
+ * ALL THREE FAIL OPEN ON A LOOKUP FAILURE, deliberately -- the opposite of `decideClaim`'s own "unclaimed
+ * must be EARNED, not defaulted to" rule a few functions up. That rule protects a VERDICT about who holds
+ * a row; this protects a session's ability to claim ANYTHING at all when the network is down or `gh` is
  * unauthenticated -- the identical reasoning `merge-guard.mjs`'s `racesAnArmedMerge` states for the same
  * choice made the other way: a convenience guard that blocks all work on a lookup failure gets bypassed
  * and then never consulted again, which is worse than the rare miss it would have caught.
@@ -550,6 +552,14 @@ export function sessionEligibilityReason(issueNumber, mySession, { run = default
   const inBuild = heldRows === null ? null : inBuildReason(heldRows);
   if (inBuild) return inBuild;
 
+  // #1886: THE ROW BEING CLAIMED may itself carry an open `blockedBy` edge -- a declared wait GitHub
+  // already records, and the gate's own wake computation already reads before ever offering this row.
+  // Checked before B4's file-overlap round trip: a row that should not be claimed AT ALL right now needs
+  // no comparison against anyone else's open PR.
+  const blockedRow = lookupBlockedByEdge(issueNumber, { run: ghRun });
+  const blocked = blockedByEdgeReason(blockedRow);
+  if (blocked) return blocked;
+
   const myFiles = lookupMyRegionFiles(issueNumber, { run: ghRun });
   const otherPrFiles = lookupOpenPrFiles({ run: ghRun });
   if (myFiles !== null && otherPrFiles !== null) {
@@ -571,10 +581,14 @@ export function sessionEligibilityReason(issueNumber, mySession, { run = default
  * reason.
  *
  * This re-runs `lookupOwnPrHealth`/`ownPrHealthReason` itself, rather than reading `sessionEligibilityReason`'s
- * `ineligible` string apart -- that function returns one string for B2 and B4 alike, and the override must
- * never apply to B4 (a file-overlap refusal has nothing to do with the claimant's own PR being unhealthy).
- * A `blockedBy` value present while the refusal is NOT a B2 one, or absent entirely, is a plain pass-through
- * of `ineligible`.
+ * `ineligible` string apart -- that function returns one string for B2, B4 and #1886's `blockedBy`-edge
+ * check alike, and the override must never apply to the other two (a file-overlap refusal, or a refusal
+ * from the ROW'S OWN `blockedBy` edge, has nothing to do with the claimant's own PR being unhealthy -- see
+ * `blocked-by-edge-rule.mjs`'s own header for why that one gets no override at all). The `blockedBy`
+ * PARAMETER here is the raw `--blocked-by=#N` FLAG VALUE, unrelated to the row's own GitHub `blockedBy`
+ * edge despite the shared name -- one is an override argument a session types, the other is state GitHub
+ * records on the issue. A flag value present while the refusal is NOT a B2 one, or absent entirely, is a
+ * plain pass-through of `ineligible`.
  *
  * @param {{ issueNumber: number, mySession: string, ineligible: string, blockedBy: string | undefined }} attempt
  * @param {{ ghRun: (args: string[]) => string }} deps
@@ -757,8 +771,9 @@ function writeRowLabels(issueNumber, mySession, extraLabels,
     if (templateReason) return { claimed: false, reason: templateReason };
   }
 
-  // B2 (#476) + B4 (#462): SESSION ELIGIBILITY, not row ownership -- `decideClaim` above already answered
-  // "is this row somebody else's"; these ask "should THIS session start ANY new row right now", which is
+  // B2 (#476) + B4 (#462) + #1886's `blockedBy`-edge check: SESSION ELIGIBILITY, not row ownership --
+  // `decideClaim` above already answered "is this row somebody else's"; these ask "should THIS session
+  // start ANY new row right now" (B2/B4) or "is THIS row startable at all right now" (#1886), which is
   // why they are skipped entirely when resuming a row this session already holds (the `dispatched -> started`
   // transition is not a NEW front, and re-running these lookups on every resume would be pure cost for a
   // question already answered the first time this row was claimed).
