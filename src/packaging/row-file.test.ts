@@ -1126,6 +1126,33 @@ test("#1912: an INVOCATION in a bullet still routes -- only named things are rea
     "`fleet:status` in any sentence is somebody running it; the bullet rule is for the five named patterns");
 });
 
+// #1914's review: the WHOLE list item is a bullet, not its marker line. reviewer-2 and product-manager both
+// reproduced a wrapped bullet whose `A11Y_PVE_KEY` sat on the continuation line routing silently.
+const WRAPPED_1911 = "## Acceptance\n\n```bash\nnpx rstest run\n```\n\nThe run passes, and it includes:\n"
+  + "- One asserts that the script exits 2 with the `fleet.env` refusal when\n"
+  + "  `A11Y_PVE_KEY` is absent.\n";
+
+test("#1914: a WRAPPED bullet is prose on every line -- its continuation does not route", () => {
+  const lazy = WRAPPED_1911.replace("\n  `A11Y_PVE_KEY`", "\n`A11Y_PVE_KEY`");
+  const secondParagraph = WRAPPED_1911.replace("\n  `A11Y_PVE_KEY`", "\n\n  `A11Y_PVE_KEY`");
+  assert.notEqual(lazy, WRAPPED_1911, "the lazy-continuation replacement landed");
+  assert.notEqual(secondParagraph, WRAPPED_1911, "the second-paragraph replacement landed");
+  for (const body of [WRAPPED_1911, lazy, secondParagraph]) {
+    assert.equal(fleetOrLabAcceptance(body), null, body);
+    assert.match(String(bulletOnlyFleetMention(body)), /Proxmox key/, "and the warning still fires");
+  }
+});
+
+test("#1914: a bullet item ENDS at a numbered clause, a heading, or a blank line then unindented text", () => {
+  const bullet = "## Acceptance\n\n- One asserts the refusal.\n";
+  const numbered = bullet + "1. `A11Y_PVE_KEY` opens a shell on the Proxmox host.\n";
+  const paragraph = bullet + "\n`A11Y_PVE_KEY` opens a shell on the Proxmox host.\n";
+  const fence = bullet + "```bash\nssh -i \"$A11Y_PVE_KEY\" root@pve true\n```\n";
+  for (const body of [numbered, paragraph, fence]) {
+    assert.match(String(fleetOrLabAcceptance(body)), /Proxmox key/, body);
+  }
+});
+
 test("#1912: row-file never emits lane:any together with another lane: label", () => {
   assert.deepEqual(withAcceptanceLane(["lane:any"], "reaches the fleet"), ["lane:orchestrator"],
     "#1911 came out `lane:any, lane:orchestrator` -- an answer and its negation");
@@ -1135,21 +1162,49 @@ test("#1912: row-file never emits lane:any together with another lane: label", (
   assert.deepEqual(withAcceptanceLane(["lane:any"], null), ["lane:any"], "no fleet reason, nothing changes");
 });
 
-test("#1912: createIssue files a fleet-Acceptance row with lane:orchestrator and without lane:any", () => {
-  const body = COMPLETE_BODY.replace("npx tsx --test x", "npm run fleet:status");
-  assert.notEqual(body, COMPLETE_BODY, "the Acceptance replacement landed");
+/** `createIssue` on `body`, with everything it wrote to stderr and the labels it ensured. */
+function fileCapturingStderr(body: string, labels: string[]) {
   const argv = ["--title", "a real row", "--body", body, "--session=worker-contracts", ...RELEASE];
   const ensured: string[][] = [];
-  const code = createIssue(argv, {
-    ...happyDeps("worker-contracts", "backlog", {
-      fetchLabels: () => ({ number: 900, title: "a real row", labels: ["backlog", "lane:orchestrator"] }),
-    }),
-    run: afterRun(appendFiledBy(body, "worker-contracts")),
-    ensureLabels: (labels: string[]) => { ensured.push(labels); },
-  });
+  let stderr = "";
+  const original = process.stderr.write;
+  process.stderr.write = ((chunk: string) => { stderr += chunk; return true; }) as typeof process.stderr.write;
+  try {
+    const code = createIssue(argv, {
+      ...happyDeps("worker-contracts", "backlog", {
+        fetchLabels: () => ({ number: 900, title: "a real row", labels }),
+      }),
+      run: afterRun(appendFiledBy(body, "worker-contracts")),
+      ensureLabels: (l: string[]) => { ensured.push(l); },
+    });
+    return { code, stderr, ensured: ensured[0]?.sort() };
+  } finally {
+    process.stderr.write = original;
+  }
+}
+
+test("#1912: createIssue files a fleet-Acceptance row with lane:orchestrator and without lane:any, and says why", () => {
+  const body = COMPLETE_BODY.replace("npx tsx --test x", "npm run fleet:status");
+  assert.notEqual(body, COMPLETE_BODY, "the Acceptance replacement landed");
+  const { code, stderr, ensured } = fileCapturingStderr(body, ["backlog", "lane:orchestrator"]);
   assert.equal(code, 0);
-  assert.deepEqual(ensured[0]?.sort(), ["backlog", "lane:orchestrator"],
+  assert.deepEqual(ensured, ["backlog", "lane:orchestrator"],
     "`happyDeps` derives lane:any from the Region; the fleet Acceptance must REPLACE it, not sit beside it");
+  assert.match(stderr, /lane:orchestrator added -- the Acceptance reaches the fleet/,
+    "#1911 was routed with nothing saying why; the filer must see the pattern that did it");
+  assert.doesNotMatch(stderr, /NOT routed/);
+});
+
+test("#1914: createIssue on a bullet-only Proxmox mention files lane:any and WARNS on stderr", () => {
+  const body = COMPLETE_BODY.replace("## Acceptance\n\n```\nnpx tsx --test x\n```\n", WRAPPED_1911);
+  assert.notEqual(body, COMPLETE_BODY, "the Acceptance replacement landed");
+  const { code, stderr, ensured } = fileCapturingStderr(body, ["backlog", "lane:any"]);
+  assert.equal(code, 0);
+  assert.deepEqual(ensured, ["backlog", "lane:any"], "a bullet describing a test does not route the row");
+  assert.match(stderr, /NOT routed to orchestrator -- a bullet in the Acceptance names something that uses the Proxmox key/,
+    "the one case the bullet rule can get wrong is said out loud, through the real filing path");
+  assert.match(stderr, /write that step as a numbered clause/, "and the refusal-shaped message is followable");
+  assert.doesNotMatch(stderr, /lane:orchestrator added/);
 });
 
 // --- #1249: a Status failure must name the labels it skipped ------------------------------------

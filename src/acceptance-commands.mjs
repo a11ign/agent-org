@@ -177,8 +177,9 @@ export function bulletOnlyFleetMention(body) {
 }
 
 /**
- * #1912: the Acceptance section minus its BULLET lines outside a code fence -- the text a NAMED pattern
- * (a variable, a unit, a place) is read against. Invocation patterns still read the whole section.
+ * #1912: the Acceptance section minus its BULLET ITEMS -- marker line and continuations -- outside a code
+ * fence: the text a NAMED pattern (a variable, a unit, a place) is read against. Invocation patterns still
+ * read the whole section.
  *
  * WHY BULLETS AND ONLY BULLETS. This repo's Acceptance shape is a fenced command followed by "the run
  * passes and includes:" and a bullet per thing the tests assert -- a bullet there DESCRIBES a test. What
@@ -195,10 +196,30 @@ export function bulletOnlyFleetMention(body) {
  */
 function withoutBulletProse(section) {
   let inFence = false;
+  let inItem = false;
+  let afterBlank = false;
   return section.split(/\r\n|\r|\n/).filter((line) => {
     if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
-    return inFence || !/^\s*[-*+]\s/.test(line);
+    if (inFence || /^\s*(```|~~~)/.test(line)) return true;
+    if (/^\s*[-*+]\s/.test(line)) { inItem = true; afterBlank = false; return false; }
+    if (line.trim() === "") { afterBlank = inItem; return true; }
+    if (inItem && !endsListItem(line, afterBlank)) return false;
+    inItem = false;
+    return true;
   }).join("\n");
+}
+
+/**
+ * Does `line` end the bullet item above it? The WHOLE item is prose, not its marker line (#1914's review:
+ * a wrapped bullet's `A11Y_PVE_KEY` on an indented continuation still routed, silently). An indented line
+ * continues the item, and so does an unindented one straight after it -- Markdown's lazy continuation --
+ * unless it opens a block of its own: a numbered clause, a heading or a fence is the work, and is read.
+ * After a blank line only indentation keeps a line inside the item.
+ * @param {string} line a non-blank line outside any fence @param {boolean} afterBlank
+ */
+function endsListItem(line, afterBlank) {
+  if (/^\s/.test(line)) return false;
+  return afterBlank || /^(\d+[.)]\s|#)/.test(line);
 }
 
 // `runs/` is gitignored -- a GitHub runner never has a corpus, so these read nothing and report cleanly.
