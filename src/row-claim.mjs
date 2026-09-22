@@ -1033,6 +1033,8 @@ function branchOwnerText(branch, run) {
  * #2014: Every branch `origin` holds whose name ends `-<issueNumber>` -- the ROW's branches, whatever the claimer chose
  * to call theirs. `ls-remote` spends no GraphQL, which is the point: the board goes stale exactly when the pool is
  * exhausted and no PR could be opened, so a detector that spent the pool would be blind in that same outage.
+ * That has to hold for the REFUSAL as well as the detection, or the guard spends the pool it says it does not --
+ * see `rowBranchRefusal`, which is why it takes no `run`.
  * A listing that FAILS throws; "could not ask origin" is not "the row has no branch".
  * @param {number} issueNumber @param {typeof defaultRun} run
  * @returns {{ branch: string, head: string }[]}
@@ -1057,16 +1059,26 @@ function rowBranchesOnOrigin(issueNumber, run) {
  * #2014: The refusal for a row whose work may already be on `origin` under a branch nobody here named. It must be
  * FOLLOWABLE, and "claim it again with --branch=<that branch>" is not -- the check one line up would refuse that too.
  * So it names the three real exits, including the one for a trailing number that is a coincidence.
- * @param {number} issueNumber @param {{ branch: string, head: string }[]} found @param {typeof defaultRun} run
+ *
+ * IT DOES NOT NAME AN OWNER, and that is the correction reviewer-2 found at `47d9c128`. It called `branchOwnerText`,
+ * which is `gh issue view --json comments` -- GraphQL -- so the guard advertised as pool-free spent the pool in the
+ * one outage it exists for. Two reasons it is dropped rather than made conditional: every branch here has THIS row's
+ * trailing number by construction, so the only record it could read is the record of the row the reader is already
+ * looking at; and it is unreadable exactly when it would matter, because a stale row means the pool that would
+ * answer is gone. `git log origin/<branch>` is in the message below and says whose work it is without spending
+ * anything. Taking no `run` is what HOLDS that -- the constraint is held by construction, not by assertion, the same
+ * way `reportB4` holds read-only one screen down.
+ * @param {number} issueNumber @param {{ branch: string, head: string }[]} found
  * @returns {string}
  */
-function rowBranchRefusal(issueNumber, found, run) {
-  const named = found.map(({ branch, head }) => `\`${branch}\` at ${head} (${branchOwnerText(branch, run)})`).join("; ");
+function rowBranchRefusal(issueNumber, found) {
+  const named = found.map(({ branch, head }) => `\`${branch}\` at ${head}`).join("; ");
   return `origin ALREADY HOLDS ${found.length === 1 ? "a branch" : `${found.length} branches`} for row #${issueNumber}: `
     + `${named}. Refusing before any write: this row's work may already be pushed, and the board cannot show it -- `
     + "opening the PR that would is the one act that spends GraphQL, so a row goes stale precisely when the pool is "
-    + "gone (#2014). What to do next, after reading it with "
-    + `\`git fetch origin && git log origin/${found[0].branch}\` and \`git diff origin/main...origin/${found[0].branch}\`: `
+    + "gone (#2014). This refusal therefore reads no claim record and asks no API; what to do next, after reading the "
+    + `work with \`git fetch origin && git log origin/${found[0].branch}\` and `
+    + `\`git diff origin/main...origin/${found[0].branch}\`: `
     + "if it is YOUR OWN earlier work, finish it on that branch and open its PR -- you do not need a fresh claim; "
     + "if it is another session's, leave this row alone, say on the row that the branch exists, and take another row; "
     + `if its trailing -${issueNumber} is a coincidence rather than this row's work, delete that branch on origin and `
@@ -1075,9 +1087,12 @@ function rowBranchRefusal(issueNumber, found, run) {
 
 /**
  * #1432: THE REFUSAL, BEFORE ANY WRITE: the target PATH exists, or the target BRANCH exists locally or on origin. Each
- * names its owner where one is recorded -- the path's `.a11y-owner` stamp (#1128), the branch's claim record.
+ * of those three names its owner where one is recorded -- the path's `.a11y-owner` stamp (#1128), the branch's claim
+ * record (one `gh issue view`).
  * #2014 adds a fourth, asked of the ROW rather than of the name the claimer typed: all three above interrogate
  * `branch`, which is the author's free choice, so two sessions picking different slugs collided with nothing.
+ * The fourth NAMES NO OWNER, deliberately, so that it spends nothing: a `gh` read here would be a GraphQL call on
+ * the one path whose whole premise is an exhausted GraphQL pool. `rowBranchRefusal` carries the full reasoning.
  * @param {{ branch: string, worktree: string, issueNumber: number }} target
  * @param {{ run?: typeof defaultRun, exists?: (path: string) => boolean, owner?: (worktree: string) => string | null }} [deps]
  * @returns {string | null} the refusal, or null to go ahead
@@ -1095,7 +1110,7 @@ export function worktreeTargetReason({ branch, worktree, issueNumber }, { run = 
     return `--branch=${branch} ALREADY EXISTS on origin (${branchOwnerText(branch, run)}). Refusing before any write.`;
   }
   const rowBranches = rowBranchesOnOrigin(issueNumber, run);
-  if (rowBranches.length > 0) return rowBranchRefusal(issueNumber, rowBranches, run);
+  if (rowBranches.length > 0) return rowBranchRefusal(issueNumber, rowBranches);
   return null;
 }
 
