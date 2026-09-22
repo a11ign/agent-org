@@ -116,42 +116,55 @@ function settleAlreadyClosed(already, repo, { strip, settle }) {
  * @param {string} repo
  * @param {{ gh_?: (args: string[]) => string, strip?: typeof stripClaimLabels,
  *   settle?: (n: number) => SettleOutcome }} [deps]
- * @returns {{ failed: number[], unsettled: Refusal[] }} rows that could not be closed, and the refusal for each
- *   closed row whose Status did not move -- both empty on success
+ * @returns {{ failed: number[], unsettled: Refusal[], skipped: number[] }} rows that could not be closed, the
+ *   refusal for each closed row whose Status did not move, and rows left alone because they were reopened
+ *   after this PR merged (#1877) -- all empty on success
  */
 export function closeOnePr(number, repo, { gh_ = gh, strip = stripClaimLabels,
   settle = (/** @type {number} */ n) => settleClosedStatus(n, LIVE_SETTLE_DEPS) } = {}) {
   const [owner, name] = repo.split("/");
-  let issues, sha;
+  let issues, sha, prMergedAt;
   try {
     // `labels(first:20){nodes{name}}` added for #754, same reason as the immediate path's identical
     // change in close-rows-for-merged-pr.mjs: one lookup carries both what to close and what to strip.
+    // #1877: `mergedAt` and each issue's last `ReopenedEvent` -- see close-rows-for-merged-pr.mjs's
+    // `closurePlan` for what this backs (the sweep drives the identical, imported decision).
     const query = `{repository(owner:"${owner}",name:"${name}"){pullRequest(number:${number}){`
-      + `mergeCommit{oid} closingIssuesReferences(first:20){nodes{number state `
-      + `labels(first:20){nodes{name}}}}}}}`;
+      + `mergedAt mergeCommit{oid} closingIssuesReferences(first:20){nodes{number state `
+      + `labels(first:20){nodes{name}} timelineItems(itemTypes:[REOPENED_EVENT],last:1){nodes{`
+      + `... on ReopenedEvent{createdAt}}}}}}}}`;
     const pr = JSON.parse(gh_(["api", "graphql", "-f", `query=${query}`,
       "--jq", ".data.repository.pullRequest"]));
-    /** @type {{ number: number, state: string, labels: { nodes: { name: string }[] } }[]} */
+    /** @type {{ number: number, state: string, labels: { nodes: { name: string }[] },
+     *   timelineItems: { nodes: { createdAt: string }[] } }[]} */
     const nodes = pr.closingIssuesReferences.nodes;
     issues = nodes.map((i) => ({
       number: i.number, state: i.state, labels: (i.labels?.nodes ?? []).map((l) => l.name),
+      reopenedAt: i.timelineItems?.nodes?.[0]?.createdAt ?? null,
     }));
     sha = pr.mergeCommit?.oid ?? "unknown";
+    prMergedAt = pr.mergedAt ?? null;
   } catch (cause) {
     console.log(`SWEEP: #${number} CANNOT ASK -- ${cause instanceof Error ? cause.message : cause}`);
-    return { failed: [number], unsettled: [] };
+    return { failed: [number], unsettled: [], skipped: [] };
   }
 
-  const { close, already, none } = closurePlan(issues);
+  const { close, already, skip, none } = closurePlan(issues, { prMergedAt });
   if (none) {
     console.log(`SWEEP: #${number} declared NO closing references.`);
-    return { failed: [], unsettled: [] };
+    return { failed: [], unsettled: [], skipped: [] };
   }
   // #776/#791: the identical fix as close-rows-for-merged-pr.mjs's own already loop -- GitHub can close a
   // row NATIVELY, before either path runs, and its claim is exactly as stale as one this script closes.
   // #1299: SETTLE'S ANSWER IS READ, on both paths. It was a bare statement, so a sweep that moved no Status
   // still reached EXIT.DONE -- the prescribed repair for tracker-health axis 4, reported done while nothing moved.
   const unsettled = settleAlreadyClosed(already, repo, { strip, settle });
+
+  // #1877: reported, never silently dropped -- same reason `already`/`none` are their own outcomes.
+  const skipped = skip.map(({ number: n }) => {
+    console.log(`SWEEP: #${n} SKIPPED -- reopened after PR #${number} merged; left alone (#1877).`);
+    return n;
+  });
 
   const failed = [];
   for (const { number: n, labels } of close) {
@@ -173,7 +186,7 @@ export function closeOnePr(number, repo, { gh_ = gh, strip = stripClaimLabels,
     strip(n, labels, repo, "SWEEP");
     unsettled.push(...settle(n).refused);
   }
-  return { failed, unsettled };
+  return { failed, unsettled, skipped };
 }
 
 /**
