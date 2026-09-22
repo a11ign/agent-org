@@ -17,7 +17,10 @@ Description=a11ign: run the worktree prune hourly
 # AND THE SHIPPED UNITS SAY THE SAME WITHOUT A PROBE, from the 21:03Z `host:install`: all four timers
 # declaring `Requires=` started their service in that second (work-tick, corpus-snapshot,
 # corpus-release-nightly and this one), while `a11ign-board-report.timer` -- the only shipped timer with no
-# `Requires=` -- did not, though the same run reinstalled it. `host-units.test.ts` pins that partition.
+# `Requires=` -- did not, though the same run reinstalled it. Reproduced at 22:27Z on a reinstall where
+# NO timer was newly started -- all five were already active, so `enable --now` was a no-op for the timer
+# units themselves -- and the same four services ran anyway. That is the dependency start job and nothing
+# else: not a fresh timer, not a missing stamp. `host-units.test.ts` pins the partition.
 #
 # `Requires=` IS KEPT, AND THAT IS A DECISION RATHER THAN THE DEFAULT. Three of the four other shipped
 # timers declare it; an install-time prune is wanted here rather than merely tolerated, since the backlog
