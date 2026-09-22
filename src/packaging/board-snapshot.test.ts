@@ -33,15 +33,23 @@ import { fileURLToPath as pathOf } from "node:url";
 import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
 
 /** One page of a real `gh api graphql` response, shaped exactly like the live schema returns it. */
-function page({ nodes, hasNextPage = false, endCursor = null }: {
+function page({ nodes, hasNextPage = false, endCursor = null, statusOptions }: {
   nodes: Array<{ id: string; number?: number; title?: string; status?: string; state?: string }>;
   hasNextPage?: boolean;
   endCursor?: string | null;
+  statusOptions?: string[];
 }) {
   return JSON.stringify({
     data: {
       organization: {
         projectV2: {
+          // #1996/#2010: THE FIELD THE DRIFT CHECK READS. Omitted by default, which preserves every
+          // existing case's meaning -- and which is exactly why a fixture set without it could never
+          // witness the call: `statusOptions` stays null and the implementation reports a SHORT READ
+          // rather than a drift. A case that cares passes `statusOptions` explicitly.
+          ...(statusOptions === undefined
+            ? {}
+            : { field: { options: statusOptions.map((name) => ({ name })) } }),
           items: {
             pageInfo: { hasNextPage, endCursor },
             nodes: nodes.map((n) => ({
@@ -768,3 +776,78 @@ test("#1352 DONE-WHEN 1: each policy script, launched from a plain checkout, ref
   }
 });
 
+
+// --- #1996/#2010: THE CALL, NOT THE HELPER -------------------------------------------------------------
+//
+// `reviewer-2` on #2010, upheld by `product-manager`: clause 2's deliverable is a CALL --
+// `fetchBoardItems` parsing `field.options` and handing them to `reportVocabularyDrift`. The reviewer
+// commented that call out and the stated 25-test Acceptance stayed green, because
+// `board-status-health.test.ts` imports only the pure module and never `board-snapshot.mjs`.
+//
+// **And the fixtures could not have caught it either.** Every existing `page()` omitted `field` entirely,
+// so `statusOptions` stayed `null` and the implementation took its SHORT-READ branch -- printing
+// "the vocabulary drift check DID NOT RUN" -- which looks nothing like a drift and fails no assertion. A
+// fixture set that never supplies the input cannot witness the code that consumes it: the same
+// empty-population defect one level up, inside the fix for a vocabulary nothing live ever read.
+//
+// So both directions are pinned here, against an INJECTED `run` (no token, no network): a board missing
+// `Done` must REPORT, and a board offering it must NOT. Either one alone would pass with the call deleted
+// -- the negative control is what kills that mutant, and the positive control is what stops the check
+// being satisfied by a function that always complains.
+
+/** Captures `process.stderr` for the duration of `fn`, restoring it even when `fn` throws. */
+function stderrDuring(fn: () => void): string {
+  const original = process.stderr.write.bind(process.stderr);
+  let captured = "";
+  process.stderr.write = ((chunk: string | Uint8Array) => { captured += String(chunk); return true; }) as never;
+  try {
+    fn();
+  } finally {
+    process.stderr.write = original as never;
+  }
+  return captured;
+}
+
+test("#1996: a board that does not offer `Done` is REPORTED as drift -- by fetchBoardItems, not the helper", () => {
+  // THE MUTANT THIS KILLS is the one the review actually applied: deleting
+  // `reportVocabularyDrift(statusOptions)` from `fetchBoardItems`. With the call gone this stderr is
+  // silent and the assertion fails, which is precisely what the old Acceptance could not do.
+  const run = () => page({
+    nodes: [{ id: "PVTI_1", number: 42, title: "the row", status: "Ready" }],
+    statusOptions: ["Backlog", "Ready", "In progress", "Blocked", "Fleet-gated"],
+  });
+  const noted = stderrDuring(() => { fetchBoardItems({ run, fetchReady: () => [] }); });
+  assert.match(noted, /does NOT offer "Done"/,
+    "the live option list came back WITHOUT `Done` -- the exact state measured on the board 2026-09-22, "
+    + "with 121 closed rows stranded because every settle was refused");
+  assert.match(noted, /Repair is on the BOARD/,
+    "and it names where the repair goes: the code is writing a correct name the field cannot accept");
+  assert.doesNotMatch(noted, /DID NOT RUN/,
+    "and it is the DRIFT branch, not the short-read branch -- `field` was supplied, so 'we could not ask' "
+    + "would be a different and wrong answer");
+});
+
+test("#1996: a board that DOES offer `Done` reports nothing -- the control that stops a check crying wolf", () => {
+  const run = () => page({
+    nodes: [{ id: "PVTI_1", number: 42, title: "the row", status: "Ready" }],
+    statusOptions: ["Backlog", "Ready", "In progress", "Blocked", "Fleet-gated", "Done"],
+  });
+  const noted = stderrDuring(() => { fetchBoardItems({ run, fetchReady: () => [] }); });
+  assert.doesNotMatch(noted, /does NOT offer/,
+    "every name this code writes is on the board -- this is the state the row repaired the board INTO, "
+    + "and a check that still complained here would be turned off within a day");
+  assert.doesNotMatch(noted, /DID NOT RUN/, "and the check did run: `field` was supplied");
+});
+
+test("#1996: a page carrying NO `field` is a SHORT READ, never a clean board", () => {
+  // The third answer, and the reason `statusOptions` is `null` rather than `[]`. An empty array would
+  // make `vocabularyDrift` report every written name as missing -- "the board lost its whole vocabulary"
+  // when it means "nobody asked it". This is the branch every pre-existing fixture in this file takes.
+  const run = () => page({ nodes: [{ id: "PVTI_1", number: 42, title: "the row", status: "Ready" }] });
+  const noted = stderrDuring(() => { fetchBoardItems({ run, fetchReady: () => [] }); });
+  assert.match(noted, /DID NOT RUN/,
+    "a read that came back short must say so rather than pass as a board with no drift");
+  assert.doesNotMatch(noted, /does NOT offer/,
+    "and it must NOT wear the drift's clothes -- that is the failure `vocabularyDrift`'s own TypeError "
+    + "guard refuses one level down");
+});
