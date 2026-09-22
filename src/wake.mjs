@@ -236,9 +236,15 @@ export function parseOrders(text) {
 //
 // SO THE ANSWER IS THE ONE `deliver` ALREADY GIVES ONE CALLER OVER: *"an order is written to the ledger
 // only once herdr has accepted it, so a crash between the two re-wakes rather than losing the wake."*
-// Here the queue IS the record and REMOVAL IS THE RECEIPT, which is the same rule read backwards -- an
-// order stays queued until herdr has accepted it, so a crash between delivering and dropping re-delivers
-// rather than loses.
+// Here the queue IS the record and THE DELIVERED LINE IS THE RECEIPT, which is the same rule read
+// backwards -- an order stays queued until herdr has accepted it, so a crash between delivering and
+// retiring re-delivers rather than loses.
+//
+// AND THE QUEUE IS APPEND-ONLY ON BOTH SIDES (#2009). The author appends an order and the tick appends
+// that it delivered one; nothing ever rewrites the file, so no writer can drop a line another writer put
+// there. The first cut of this section retired an order by rewriting the file without it, and a reviewer
+// reproduced the obvious consequence: an author appending between that read and that write lost the
+// append, having already been told `QUEUED` and told not to retry. See {@link dropHandoffs}.
 
 /**
  * The file `prompt-session.mjs` leaves an undelivered order in, beside the ledger.
@@ -284,7 +290,23 @@ export function handoffId(session, prompt) {
 }
 
 /**
- * Every order waiting in the queue, newest duplicate discarded.
+ * A DELIVERY IS A LINE OF ITS OWN, NEVER THE ABSENCE OF ONE. See {@link dropHandoffs}.
+ * @param {unknown} entry @returns {string | null} the id this line retires, or `null` if it queues one
+ */
+function deliveredId(entry) {
+  const id = /** @type {any} */ (entry)?.delivered;
+  return typeof id === "string" ? id : null;
+}
+
+/**
+ * Every order still waiting in the queue: the file REPLAYED IN ORDER, not filtered.
+ *
+ * THE FILE IS A LOG AND THIS IS ITS FOLD, which is what lets {@link dropHandoffs} append instead of
+ * rewrite. A `{delivered: id}` line retires the orders seen BEFORE it and nothing after it -- so the same
+ * order queued again after it was delivered is live again, which it must be: `handoffId` is a hash of the
+ * target and the text, so an author who sends the same words twice a day apart sends the same id twice,
+ * and a set of retired ids consulted out of order would swallow the second one in silence. That is this
+ * row's own defect wearing a different hat, which is why the fold is ordered rather than two passes.
  *
  * A MALFORMED LINE THROWS, exactly as `parseOrders` does for the gate's own orders and for its reason: a
  * skipped order is the defect this whole file exists to remove, and an order this script cannot read is
@@ -311,6 +333,8 @@ export function readHandoffs(path, read = readFileSync) {
     const text = line.trim();
     if (!text) continue;
     const entry = JSON.parse(text);
+    const delivered = deliveredId(entry);
+    if (delivered !== null) { byId.delete(delivered); continue; }
     if (typeof entry.id !== "string" || typeof entry.session !== "string"
       || typeof entry.prompt !== "string") {
       throw new Error(`wake: queued order is missing id/session/prompt: ${text.slice(0, 120)}`);
@@ -342,22 +366,36 @@ export function queueHandoff(path, { session, prompt, now = Date.now(),
 }
 
 /**
- * Drop the orders that landed, keeping every other line.
+ * Retire the orders that landed, by APPENDING that they landed.
  *
- * RE-READS FIRST rather than filtering a list the caller already held, so an order queued while this tick
- * was delivering survives the rewrite. The window between this read and its write is microseconds and it
- * is not zero -- an author appending inside it loses that append. Naming the gap rather than claiming a
- * lock: the loser prints `QUEUED`, so the cost is one order the author can see was taken and re-send,
- * which is the visible failure this file trades for everywhere else.
+ * NO WRITER IN THIS FILE EVER REMOVES A LINE ANOTHER WRITER WROTE, and that is the whole rule. This used
+ * to re-read the queue and rewrite it without the delivered ids, which is a read-then-write with no lock
+ * against `queueHandoff`'s append: an author appending between the read and the write lost that append
+ * outright. #2009's reviewer reproduced it against the committed function -- injecting an append into the
+ * write callback left the final queue EMPTY and the concurrent order gone. The comment there conceded the
+ * window and argued the loss was visible and re-sendable; IT IS NEITHER. `prompt-session.mjs` has by then
+ * printed `QUEUED <id>` and `DO NOT RETRY` to the only process that holds a copy, so the author believes
+ * the order is held, does not re-send by design, and nothing anywhere ever says otherwise. A queue whose
+ * whole purpose is that an order survives to the next tick cannot have a path that silently deletes one.
+ *
+ * SO THE DELIVERY IS A LINE, NOT AN ERASURE. Both writers now only ever `O_APPEND`, which is atomic for a
+ * short write, so the race has no losing side left to have -- not a smaller window, no window. {@link
+ * readHandoffs} folds the log in order and a `{delivered: id}` line retires what precedes it.
+ *
+ * THE FILE THEREFORE GROWS AND IS NEVER COMPACTED, deliberately, and that is the trade this makes in the
+ * open: compaction is a rewrite, and a rewrite is the very window just removed. It is also the ledger's
+ * own bargain ten screens down -- `record` appends forever and `readLedger` ages lines out on read,
+ * without this file ever having wanted a compactor. A queued order is written only when `prompt:session`
+ * is refused, which happens a handful of times a day at a few KB each; losing an order is silent and
+ * unrecoverable, while a file that is larger than it needs to be is neither.
  *
  * @param {string} path @param {readonly string[]} ids
- * @param {{read?: typeof readFileSync, write?: typeof writeFileSync}} [io]
+ * @param {{write?: typeof writeFileSync, now?: number}} [io]
  */
-export function dropHandoffs(path, ids, { read = readFileSync, write = writeFileSync } = {}) {
+export function dropHandoffs(path, ids, { write = writeFileSync, now = Date.now() } = {}) {
   if (ids.length === 0) return;
-  const drop = new Set(ids);
-  const keep = readHandoffs(path, read).filter((h) => !drop.has(h.id));
-  write(path, keep.map((h) => `${JSON.stringify(h)}\n`).join(""));
+  const lines = [...new Set(ids)].map((id) => `${JSON.stringify({ delivered: id, at: now })}\n`).join("");
+  write(path, lines, { flag: "a" });
 }
 
 /**

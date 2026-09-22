@@ -12,6 +12,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { route, undelivered, parseOrders, readLedger, deliver, readAgents, WAKEABLE, EXIT,
   WAKE_TTL_MS, JUDGMENT_TTL_MS, MAX_DELIVERIES, deliveryCounts, endedRuns, RESET,
   blockedSessions }
@@ -855,25 +858,78 @@ test("a delivered order tells its reader HOW LONG it waited", () => {
   assert.match(order.prompt, /a head may have moved since/);
 });
 
-test("dropping RE-READS, so an order queued during the tick survives the rewrite", () => {
-  const written: string[] = [];
-  const onDisk = [JSON.stringify(HANDOFF),
-    JSON.stringify({ id: "handoff/ceo/deadbeef", session: "ceo", prompt: "later", queuedAt: 2_000 })];
-  dropHandoffs("/q", [HANDOFF.id], {
-    read: (() => onDisk.join("\n")) as never,
-    write: ((_p: string, d: string) => written.push(d)) as never,
-  });
-  const kept = written.join("").trim().split("\n").map((l) => JSON.parse(l));
-  assert.deepEqual(kept.map((k) => k.id), ["handoff/ceo/deadbeef"],
-    "the second author's order was not collateral of the first's delivery");
+test("DELIVERY APPENDS, so nothing a concurrent author wrote can be collateral of it", () => {
+  // #2009's blocker, pinned at its cause rather than at its symptom. The first cut re-read the queue and
+  // rewrote it without the delivered ids, and an author appending between that read and that write lost
+  // the append -- after `prompt-session.mjs` had already printed `QUEUED` and `DO NOT RETRY` to the only
+  // process holding a copy. A writer that only ever appends has no such window to lose anything in.
+  const writes: { data: string; opts: unknown }[] = [];
+  dropHandoffs("/q", [HANDOFF.id], { now: 5_000,
+    write: ((_p: string, d: string, o: unknown) => writes.push({ data: d, opts: o })) as never });
+
+  assert.equal(writes.length, 1, "one short write, which is what makes O_APPEND atomic");
+  assert.deepEqual(writes[0].opts, { flag: "a" },
+    "THE ASSERTION THE FIX IS: no truncating write exists on this path at all");
+  assert.deepEqual(JSON.parse(writes[0].data.trim()), { delivered: HANDOFF.id, at: 5_000 });
 });
 
-test("dropping nothing writes nothing -- an empty delivery never rewrites the queue", () => {
-  // Rewriting on every tick is a window a concurrent append can be lost in, for no gain.
-  dropHandoffs("/q", [], {
-    read: (() => { throw new Error("must not read"); }) as never,
-    write: (() => { throw new Error("must not write"); }) as never,
+test("the reviewer's own reproduction: an append DURING the drop survives it", () => {
+  // Reproduced against the committed function by injecting an append into the write callback -- which
+  // left the queue empty and the concurrent order gone. The same injection, run against this one.
+  const onDisk: string[] = [JSON.stringify(HANDOFF)];
+  const racer = { id: "handoff/ceo/deadbeef", session: "ceo", prompt: "later", queuedAt: 2_000 };
+  dropHandoffs("/q", [HANDOFF.id], {
+    write: ((_p: string, d: string) => {
+      onDisk.push(JSON.stringify(racer));   // the author's append, landing mid-drop
+      onDisk.push(d.trim());
+    }) as never,
   });
+
+  const left = readHandoffs("/q", (() => onDisk.join("\n")) as never);
+  assert.deepEqual(left.map((h) => h.id), [racer.id],
+    "the delivered order is retired and the order queued during the tick is still there");
+});
+
+test("a delivered line retires only what PRECEDES it -- the same order sent again is live", () => {
+  // `handoffId` is a hash of the target and the text, so an author who sends the same words to the same
+  // session twice a day apart sends the same id twice. A set of retired ids consulted out of order would
+  // swallow the second one in silence, which is this row's own defect one layer down.
+  const again = { ...HANDOFF, queuedAt: 9_000 };
+  const raw = [JSON.stringify(HANDOFF), JSON.stringify({ delivered: HANDOFF.id, at: 5_000 }),
+    JSON.stringify(again)].join("\n");
+  assert.deepEqual(readHandoffs("q", (() => raw) as never), [again],
+    "and it carries the SECOND queuedAt -- this is a new wait, not a resumed one");
+
+  const done = [JSON.stringify(HANDOFF), JSON.stringify({ delivered: HANDOFF.id, at: 5_000 })].join("\n");
+  assert.deepEqual(readHandoffs("q", (() => done) as never), [],
+    "the control: delivered and not re-sent reads as an empty queue");
+});
+
+test("dropping nothing writes nothing -- an empty delivery never touches the queue", () => {
+  // A tick that delivered nothing has nothing to say, and a line per tick would grow the file for no
+  // information at all.
+  dropHandoffs("/q", [], { write: (() => { throw new Error("must not write"); }) as never });
+});
+
+test("ON A REAL FILE: queue, queue again mid-tick, deliver one -- and the other is still there", () => {
+  // The seams above prove the SHAPE of every write; this proves the two halves agree about a real file
+  // with real `O_APPEND` semantics. The order is deliberately the losing one under the old code: the
+  // second author's append lands after this tick would have read the queue, and before it writes.
+  const dir = mkdtempSync(join(tmpdir(), "wake-handoffs-"));
+  try {
+    const path = join(dir, HANDOFF_QUEUE_FILE);
+    const first = queueHandoff(path, { session: "reviewer", prompt: "Draft #1963", now: 1_000 });
+    const beingDelivered = readHandoffs(path);          // the tick reads
+    const second = queueHandoff(path, { session: "ceo", prompt: "later", now: 2_000 });
+    dropHandoffs(path, beingDelivered.map((h) => h.id));  // ... and only then writes
+
+    assert.deepEqual(readHandoffs(path).map((h) => h.id), [second.id],
+      "the delivered order is gone and the one queued during the tick survived it");
+    assert.match(readFileSync(path, "utf8"), new RegExp(`"delivered":"${first.id.replace(/\//g, "\\/")}"`),
+      "and the delivery is recorded as a line of its own, never as a line removed");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("an order nobody ever takes is NAMED, never silently held", () => {
