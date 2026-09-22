@@ -27,7 +27,7 @@ import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
 // from `wake`, because `afterGate` returns `deliver: false` on a QUIET gate and `wake` is then never
 // run at all -- which is exactly the state it was found in: a quiet queue and a session stuck behind a
 // menu since nobody knows when.
-import { readAgents, blockedSessions } from "./wake.mjs";
+import { readAgents, blockedSessions, readHandoffs, handoffQueuePath, ledgerPathFrom } from "./wake.mjs";
 
 /** `0` the tick completed (quiet or delivered); `1` orders had nowhere to go; `2` a read was refused. */
 export const EXIT = { QUIET: 0, ATTENTION: 1, CANNOT_ASK: 2 };
@@ -43,15 +43,48 @@ export const GATE = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3 };
  * reported rather than waited for. Holding real work back because a different queue was unreachable would
  * be the quiet-org reading in the other direction.
  *
+ * A QUIET GATE IS NOT AN IDLE TICK WHEN SOMEBODY HAS QUEUED AN ORDER (#1966). `prompt-session.mjs` leaves
+ * an order it could not deliver in a queue `wake.mjs` delivers from -- and the case that queue exists for
+ * is a reviewer who is busy REVIEWING, which is very often a tick with nothing else outstanding. Exiting
+ * here on the gate's code alone would have held that order back exactly when it was the only work there
+ * was, and the author would have been told it was queued by something that then never ran.
+ *
  * @param {number} code
+ * @param {{ queued?: number }} [waiting] how many authored orders are waiting in the handoff queue
  * @returns {{ deliver: boolean, exit?: number, why?: string }}
  */
-export function afterGate(code) {
-  if (code === GATE.QUIET) return { deliver: false, exit: EXIT.QUIET };
+export function afterGate(code, { queued = 0 } = {}) {
+  if (code === GATE.QUIET) {
+    if (queued === 0) return { deliver: false, exit: EXIT.QUIET };
+    return { deliver: true,
+      why: `the gate is quiet, but ${queued} authored order(s) are queued for delivery` };
+  }
   if (code === GATE.WORK) return { deliver: true };
   if (code === GATE.PARTIAL) return { deliver: true, why: "one lane could not be read; see the gate's stderr" };
   return { deliver: false, exit: EXIT.CANNOT_ASK,
     why: `work-gate exited ${code} -- nothing was examined, so NOTHING was woken. This is not a quiet org.` };
+}
+
+/**
+ * How many authored orders are waiting -- `0`, WITH A DIAGNOSTIC, when the queue cannot be read.
+ *
+ * THIS IS ASKED BEFORE THE GATE'S OWN ORDERS ARE DELIVERED, so a corrupt queue must not take the tick
+ * down with it: `readHandoffs` throws on a malformed line (deliberately -- a skipped order is the defect
+ * that queue exists to remove), and letting that throw here would stop real work over a bad line in a
+ * file that has nothing to do with it. `wake` reads the same queue a moment later and reports the same
+ * failure with the same throw, where it costs only the orders it is about.
+ *
+ * @param {string} path @returns {number}
+ */
+function queuedOrderCount(path) {
+  try {
+    return readHandoffs(path).length;
+  } catch (err) {
+    process.stderr.write(`QUEUE UNREADABLE at ${path} `
+      + `(${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, 120)}). Any authored `
+      + "order in it is NOT being counted; a quiet gate will not deliver it until this file is fixed.\n");
+    return 0;
+  }
 }
 
 function main() {
@@ -81,7 +114,8 @@ function main() {
     }
   }
 
-  const next = afterGate(gate.status ?? EXIT.CANNOT_ASK);
+  const next = afterGate(gate.status ?? EXIT.CANNOT_ASK,
+    { queued: queuedOrderCount(handoffQueuePath(ledgerPathFrom(passthrough))) });
   if (next.why) process.stderr.write(`${next.why}\n`);
   if (!next.deliver) process.exit(next.exit ?? EXIT.CANNOT_ASK);
 

@@ -12,6 +12,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { route, undelivered, parseOrders, readLedger, deliver, readAgents, WAKEABLE, EXIT,
   WAKE_TTL_MS, JUDGMENT_TTL_MS, MAX_DELIVERIES, deliveryCounts, endedRuns, RESET,
   blockedSessions }
@@ -19,6 +22,9 @@ import { route, undelivered, parseOrders, readLedger, deliver, readAgents, WAKEA
 import { afterGate, GATE, EXIT as TICK_EXIT } from "../work-tick.mjs";
 import { spawnInvocation, addressed, clearContext, CLEAR_TIMEOUT_MS, CLEAR_SETTLE_MS,
   RUN_IDLE_RESET_MS, stuckRowOf, escalateStuck }
+  from "../wake.mjs";
+import { handoffId, handoffQueuePath, ledgerPathFrom, readHandoffs, queueHandoff, dropHandoffs,
+  deliverHandoffs, handoffOrder, staleHandoffs, nothingToDeliver, HANDOFF_STALE_MS, HANDOFF_QUEUE_FILE }
   from "../wake.mjs";
 
 const agents = (spec: Record<string, string>) =>
@@ -729,4 +735,233 @@ test("a gh refusal is reported, never swallowed", () => {
   escalateStuck(["x/y/row-9: delivered 6 times"],
     () => { throw new Error("HTTP 403: forbidden"); }, (l: string) => out.push(l));
   assert.match(out.join(""), /COULD NOT ESCALATE #9: HTTP 403/);
+});
+
+// ---------------------------------------------------------------------------------------------------
+// HANDOFFS -- THE AUTHORED ORDERS `prompt-session.mjs` COULD NOT DELIVER (#1966).
+//
+// `deliver` above has handled a busy target since #912: the order is simply not recorded, and the next
+// tick offers it again. `prompt-session.mjs` had no equivalent -- it printed `NOT PROMPTED` and exited,
+// and that was the end of the order. Measured 2026-09-22 on draft #1963: three refusals in 4m37s, no
+// trace on the row, the PR, the ledger or any log.
+//
+// The half tested here is the delivery: what the queue holds, when it is dropped, and -- the case the
+// whole thing turns on -- that an order NOT delivered is still there afterwards.
+
+const HANDOFF = { id: handoffId("reviewer", "Draft #1963"), session: "reviewer",
+  prompt: "Draft #1963", queuedAt: 1_000 };
+
+/** A `run` that records every herdr invocation and never refuses. */
+function recorder(): { run: (a: string[]) => string; calls: string[][] } {
+  const calls: string[][] = [];
+  return { run: (a: string[]) => { calls.push(a); return ""; }, calls };
+}
+
+test("an authored order's identity is its TARGET and its TEXT, and nothing else", () => {
+  // Not a causeKey: there is no GitHub state to derive one from. Two calls that would send the same
+  // words to the same session are the same order -- which is what makes an author's second, hopeful
+  // attempt collapse into the first instead of clearing the reviewer twice.
+  assert.equal(handoffId("reviewer", "Draft #1963"), handoffId("reviewer", "Draft #1963"));
+  assert.notEqual(handoffId("reviewer", "Draft #1963"), handoffId("reviewer", "Draft #1965"));
+  assert.notEqual(handoffId("reviewer", "Draft #1963"), handoffId("reviewer-2", "Draft #1963"));
+  assert.match(handoffId("reviewer", "x"), /^handoff\/reviewer\/[0-9a-f]{8}$/,
+    "and it names the target in the clear, so a queue is readable by eye");
+});
+
+test("the queue sits beside the ledger, under the SAME --ledger both halves are given", () => {
+  // The author's command and the tick have to agree on one path or the order is written where nothing
+  // looks. One definition, used by `prompt-session.mjs`, `wake.mjs` and `work-tick.mjs`.
+  assert.equal(handoffQueuePath("/var/x/wake-ledger"), `/var/x/${HANDOFF_QUEUE_FILE}`);
+  assert.equal(ledgerPathFrom(["--ledger=/tmp/l"]), "/tmp/l");
+  assert.match(String(ledgerPathFrom([])), /\/\.cache\/a11ign\/wake-ledger$/);
+});
+
+test("queueing APPENDS -- two authors at once both land, with no lock between them", () => {
+  const writes: { path: string; data: string; opts: unknown }[] = [];
+  const entry = queueHandoff("/q/handoffs", {
+    session: "reviewer", prompt: "Draft #1963", now: 1_000,
+    write: ((p: string, d: string, o: unknown) => { writes.push({ path: p, data: d, opts: o }); }) as never,
+    mkdir: (() => undefined) as never,
+  });
+  assert.equal(writes.length, 1);
+  assert.deepEqual(writes[0].opts, { flag: "a" }, "O_APPEND, not read-modify-write: there is no lock");
+  assert.equal(JSON.parse(writes[0].data).id, entry.id);
+  assert.equal(entry.queuedAt, 1_000, "and the entry carries when it started waiting");
+});
+
+test("a duplicate collapses on READ, and the FIRST queuedAt survives", () => {
+  // The age that matters is how long the order has been waiting, not when a hopeful second call
+  // restated it. A later `queuedAt` winning would reset the staleness clock on every retry.
+  const raw = [JSON.stringify({ ...HANDOFF, queuedAt: 1_000 }),
+    JSON.stringify({ ...HANDOFF, queuedAt: 9_000 })].join("\n");
+  const got = readHandoffs("q", (() => raw) as never);
+  assert.equal(got.length, 1);
+  assert.equal(got[0].queuedAt, 1_000);
+});
+
+test("a missing queue is empty; an unreadable one is NOT, and a malformed line THROWS", () => {
+  const enoent = Object.assign(new Error("no such file"), { code: "ENOENT" });
+  assert.deepEqual(readHandoffs("/nonexistent", (() => { throw enoent; }) as never), [],
+    "nobody has queued anything yet -- the ordinary case");
+  assert.throws(() => readHandoffs("/unreadable",
+    (() => { throw Object.assign(new Error("denied"), { code: "EACCES" }); }) as never), /denied/);
+  // `parseOrders`' rule, for its reason: a SKIPPED order is the defect this queue exists to remove, and
+  // an order this script cannot read is still an order somebody is waiting on. The throw reaches
+  // `work-tick`, which prints it -- loud within one tick beats quietly one prompt short.
+  assert.throws(() => readHandoffs("q", (() => '{"session":"reviewer"}') as never),
+    /missing id\/session\/prompt/);
+});
+
+test("A REFUSED HANDOFF STAYS QUEUED -- the assertion the whole row is about", () => {
+  // The author is gone. If this tick drops the order because the reviewer is still busy, nothing else
+  // in the world has a copy, and the draft is one nobody has been told about.
+  const { run, calls } = recorder();
+  const dropped: string[][] = [];
+  const out = deliverHandoffs([HANDOFF], agents({ reviewer: "working" }), ROSTER,
+    { run, queuePath: "/q", drop: ((_p: string, ids: string[]) => dropped.push(ids)) as never });
+
+  assert.deepEqual(out.sent, []);
+  assert.deepEqual(out.refused, [`${HANDOFF.id}: "reviewer" is working`]);
+  assert.deepEqual(dropped.flat(), [], "NOTHING was removed from the queue");
+  assert.deepEqual(calls, [], "and the busy session was not typed at -- the refusal is load-bearing");
+  assert.deepEqual([...out.busied], []);
+});
+
+test("a delivered handoff is CLEARED first, then prompted, then and only then dropped", () => {
+  const { run, calls } = recorder();
+  const dropped: string[][] = [];
+  const out = deliverHandoffs([HANDOFF], agents({ reviewer: "idle" }), ROSTER,
+    { run, queuePath: "/q", now: 1_000,
+      drop: ((_p: string, ids: string[]) => dropped.push(ids)) as never });
+
+  assert.deepEqual(out.sent, [`reviewer <- ${HANDOFF.id}`]);
+  assert.deepEqual(out.refused, []);
+  const verbs = calls.map((a) => a.slice(2).join(" "));
+  assert.equal(verbs[0], "agent prompt reviewer /clear", "the clear is why this command exists at all");
+  assert.match(String(verbs.at(-1)), /^agent prompt reviewer You are `reviewer`/,
+    "and the order arrives addressed, exactly as one the gate derived would");
+  // REPORT BEFORE RECORD, read backwards: the queue IS the record, so removal is the receipt. A crash
+  // between the prompt and this drop re-delivers -- visible -- rather than losing the order.
+  assert.deepEqual(dropped, [[HANDOFF.id]]);
+  assert.deepEqual([...out.busied], ["reviewer"],
+    "and the session is marked busy, so the gate's own orders this tick go elsewhere");
+});
+
+test("a delivered order tells its reader HOW LONG it waited", () => {
+  // A prompt written 40 minutes ago may name a head that has since moved, and `update-branch`
+  // invalidates a verdict sha. Handing it over silently trades one invisible failure for another.
+  const order = handoffOrder(HANDOFF, HANDOFF.queuedAt + 40 * 60_000);
+  assert.equal(order.session, "reviewer");
+  assert.equal(order.causeKey, HANDOFF.id);
+  assert.ok(order.prompt.startsWith("Draft #1963"), "the author's own words come first, unaltered");
+  assert.match(order.prompt, /Queued 40 minute\(s\) ago/);
+  assert.match(order.prompt, /a head may have moved since/);
+});
+
+test("DELIVERY APPENDS, so nothing a concurrent author wrote can be collateral of it", () => {
+  // #2009's blocker, pinned at its cause rather than at its symptom. The first cut re-read the queue and
+  // rewrote it without the delivered ids, and an author appending between that read and that write lost
+  // the append -- after `prompt-session.mjs` had already printed `QUEUED` and `DO NOT RETRY` to the only
+  // process holding a copy. A writer that only ever appends has no such window to lose anything in.
+  const writes: { data: string; opts: unknown }[] = [];
+  dropHandoffs("/q", [HANDOFF.id], { now: 5_000,
+    write: ((_p: string, d: string, o: unknown) => writes.push({ data: d, opts: o })) as never });
+
+  assert.equal(writes.length, 1, "one short write, which is what makes O_APPEND atomic");
+  assert.deepEqual(writes[0].opts, { flag: "a" },
+    "THE ASSERTION THE FIX IS: no truncating write exists on this path at all");
+  assert.deepEqual(JSON.parse(writes[0].data.trim()), { delivered: HANDOFF.id, at: 5_000 });
+});
+
+test("the reviewer's own reproduction: an append DURING the drop survives it", () => {
+  // Reproduced against the committed function by injecting an append into the write callback -- which
+  // left the queue empty and the concurrent order gone. The same injection, run against this one.
+  const onDisk: string[] = [JSON.stringify(HANDOFF)];
+  const racer = { id: "handoff/ceo/deadbeef", session: "ceo", prompt: "later", queuedAt: 2_000 };
+  dropHandoffs("/q", [HANDOFF.id], {
+    write: ((_p: string, d: string) => {
+      onDisk.push(JSON.stringify(racer));   // the author's append, landing mid-drop
+      onDisk.push(d.trim());
+    }) as never,
+  });
+
+  const left = readHandoffs("/q", (() => onDisk.join("\n")) as never);
+  assert.deepEqual(left.map((h) => h.id), [racer.id],
+    "the delivered order is retired and the order queued during the tick is still there");
+});
+
+test("a delivered line retires only what PRECEDES it -- the same order sent again is live", () => {
+  // `handoffId` is a hash of the target and the text, so an author who sends the same words to the same
+  // session twice a day apart sends the same id twice. A set of retired ids consulted out of order would
+  // swallow the second one in silence, which is this row's own defect one layer down.
+  const again = { ...HANDOFF, queuedAt: 9_000 };
+  const raw = [JSON.stringify(HANDOFF), JSON.stringify({ delivered: HANDOFF.id, at: 5_000 }),
+    JSON.stringify(again)].join("\n");
+  assert.deepEqual(readHandoffs("q", (() => raw) as never), [again],
+    "and it carries the SECOND queuedAt -- this is a new wait, not a resumed one");
+
+  const done = [JSON.stringify(HANDOFF), JSON.stringify({ delivered: HANDOFF.id, at: 5_000 })].join("\n");
+  assert.deepEqual(readHandoffs("q", (() => done) as never), [],
+    "the control: delivered and not re-sent reads as an empty queue");
+});
+
+test("dropping nothing writes nothing -- an empty delivery never touches the queue", () => {
+  // A tick that delivered nothing has nothing to say, and a line per tick would grow the file for no
+  // information at all.
+  dropHandoffs("/q", [], { write: (() => { throw new Error("must not write"); }) as never });
+});
+
+test("ON A REAL FILE: queue, queue again mid-tick, deliver one -- and the other is still there", () => {
+  // The seams above prove the SHAPE of every write; this proves the two halves agree about a real file
+  // with real `O_APPEND` semantics. The order is deliberately the losing one under the old code: the
+  // second author's append lands after this tick would have read the queue, and before it writes.
+  const dir = mkdtempSync(join(tmpdir(), "wake-handoffs-"));
+  try {
+    const path = join(dir, HANDOFF_QUEUE_FILE);
+    const first = queueHandoff(path, { session: "reviewer", prompt: "Draft #1963", now: 1_000 });
+    const beingDelivered = readHandoffs(path);          // the tick reads
+    const second = queueHandoff(path, { session: "ceo", prompt: "later", now: 2_000 });
+    dropHandoffs(path, beingDelivered.map((h) => h.id));  // ... and only then writes
+
+    assert.deepEqual(readHandoffs(path).map((h) => h.id), [second.id],
+      "the delivered order is gone and the one queued during the tick survived it");
+    assert.match(readFileSync(path, "utf8"), new RegExp(`"delivered":"${first.id.replace(/\//g, "\\/")}"`),
+      "and the delivery is recorded as a line of its own, never as a line removed");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an order nobody ever takes is NAMED, never silently held", () => {
+  // A target that never becomes free -- a session herdr reports `unknown`, a label never started --
+  // would otherwise hold an order in silence, which is this row's own defect moved one file over.
+  const now = 10 * 60 * 60 * 1000;
+  const fresh = { ...HANDOFF, queuedAt: now - 60_000 };
+  const old = { ...HANDOFF, id: "handoff/ceo/1", queuedAt: now - HANDOFF_STALE_MS - 1 };
+  assert.deepEqual(staleHandoffs([fresh], now).map((h) => h.id), [],
+    "a minute old is the ordinary case, and must not be shouted about");
+  assert.deepEqual(staleHandoffs([fresh, old], now).map((h) => h.id), ["handoff/ceo/1"]);
+});
+
+test("A QUIET GATE STILL RUNS wake WHEN AN ORDER IS QUEUED", () => {
+  // The case the queue exists for is a reviewer who is busy REVIEWING -- which is very often a tick with
+  // nothing else outstanding. Exiting on the gate's code alone would hold the order back exactly when it
+  // is the only work there is, and the author was told something would deliver it.
+  assert.deepEqual(afterGate(GATE.QUIET), { deliver: false, exit: TICK_EXIT.QUIET },
+    "an empty queue is still a quiet tick");
+  assert.deepEqual(afterGate(GATE.QUIET, { queued: 0 }), { deliver: false, exit: TICK_EXIT.QUIET });
+  const queued = afterGate(GATE.QUIET, { queued: 2 });
+  assert.equal(queued.deliver, true);
+  assert.match(String(queued.why), /2 authored order\(s\) are queued/);
+  assert.equal(afterGate(GATE.CANNOT_ASK, { queued: 2 }).deliver, false,
+    "a gate that could not ask still stops the tick -- a queued order is not a reason to guess");
+});
+
+test("an empty stdin is NOT a quiet tick while an order is queued", () => {
+  // `main` exits QUIET on this, and the case a queued order exists for is a reviewer busy REVIEWING --
+  // very often a tick with nothing else outstanding. Reading an empty stdin as an empty org would hold
+  // the order back exactly when it is the only work there is.
+  assert.equal(nothingToDeliver([], []), true, "no orders and no queue really is a quiet tick");
+  assert.equal(nothingToDeliver([], [HANDOFF]), false, "a queued order is work with no gate order behind it");
+  assert.equal(nothingToDeliver([{ causeKey: "k" }], []), false);
 });
