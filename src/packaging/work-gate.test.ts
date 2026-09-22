@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES,
   comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
   blockingChecks, anyChecksRed, requiredCheckNames, ownerOf, NOT_PICKABLE, NOT_STARTABLE,
-  ROUTED_TO, readPromotableRows, GH_READS, partitionUnclaimed, readOpenRowCount,
+  ROUTED_TO, readPromotableRows, GH_READS, partitionUnclaimed, readOpenRowState, waitingBreakdown,
   unfiledEpics, epicOrders, finishedEpics, finishedEpicOrders, readEpics, answersOwed, answerOrders,
   readOpenRows, withAnswerLabel,
   blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL,
@@ -1017,7 +1017,7 @@ test("the gate's read count is counted, not remembered", () => {
   // because three readers arrived and nobody re-counted.
   assert.equal(GH_READS.unconditional.length, 5,
     "if you add or remove an unconditional read, this number and every comment quoting it move together");
-  assert.ok(GH_READS.conditionalOnSilence.includes("readOpenRowCount"));
+  assert.ok(GH_READS.conditionalOnSilence.includes("readOpenRowState"));
   assert.ok(GH_READS.conditionalOnRed.includes("requiredCheckNames"));
 });
 
@@ -1093,22 +1093,100 @@ test("A CORRECTLY WAITING QUEUE IS NOT A STALL -- the dead man's switch must not
   // declares what it waits on is working, not stuck.
   const allWaiting = [{ number: 1, blockedBy: { nodes: [{ number: 9, state: "OPEN" }] } },
     { number: 2, body: "Not-before: 2099-01-01" }];
-  assert.equal(readOpenRowCount(() => JSON.stringify(allWaiting)), 0,
+  assert.equal(readOpenRowState(() => JSON.stringify(allWaiting))?.reachable, 0,
     "zero REACHABLE rows, so nothing to be stalled about");
   assert.equal(stalledOrder({ orders: [], openRows: 0 }), null);
 
   // AND THE POSITIVE CONTROL: one row that could move and is not moving still fires the switch.
   const oneReachable = [...allWaiting, { number: 3 }];
-  assert.equal(readOpenRowCount(() => JSON.stringify(oneReachable)), 1);
+  assert.equal(readOpenRowState(() => JSON.stringify(oneReachable))?.reachable, 1);
   assert.equal(stalledOrder({ orders: [], openRows: 1 })?.cause, "org-stalled");
 });
 
 test("a REFUSED read is still refused, not read as a queue with nothing reachable", () => {
   // `null` means "could not ask" and must never collapse into 0, which would silence the switch on the
   // first API hiccup -- #1286's rule, and the filter added above must not have broken it.
-  assert.equal(readOpenRowCount(() => { throw new Error("HTTP 502"); }), null);
-  assert.equal(readOpenRowCount(() => "not json"), null);
+  assert.equal(readOpenRowState(() => { throw new Error("HTTP 502"); }), null);
+  assert.equal(readOpenRowState(() => "not json"), null);
   assert.equal(stalledOrder({ orders: [], openRows: null }), null);
+});
+
+/**
+ * THE CONDITION THE GATE ALREADY COMPUTED AND THREW AWAY (#1935).
+ *
+ * `readOpenRowState` has always called `waitingOn` on every open row and kept only `.length`. The answer
+ * -- date or row, WHICH date, WHICH row -- was discarded in the same expression that produced it, and
+ * `org-stalled` then paged `ceo` with a bare count. The 2026-09-22T18:30Z wake that found this cost an
+ * hour of hand-reading twenty rows to recover what the gate had read that same tick.
+ */
+test("the one read returns BOTH halves: what could move, and what is stopping the rest", () => {
+  const rows = [{ number: 1931, body: "Not-before: 2099-01-01" }, { number: 3 },
+    { number: 1926, blockedBy: { nodes: [{ number: 1918, state: "OPEN" }] } }];
+  const state = readOpenRowState(() => JSON.stringify(rows));
+  assert.equal(state?.reachable, 1, "the count is unchanged -- a waiting row is still not startable");
+  assert.equal(state?.waiting.total, 2, "and now the gate can also SAY what the other two are waiting on");
+});
+
+test("waitingBreakdown groups by date, sorts earliest first, and ignores CLOSED blockers", () => {
+  const breakdown = waitingBreakdown([
+    { number: 600, body: "Not-before: 2026-09-28" },
+    { number: 1889, body: "## Not-before: 2026-09-23" },
+    { number: 1931, body: "Not-before: 2026-09-23" },
+    // A CLOSED BLOCKER IS A CONDITION THAT HAS CLEARED -- `waitingOn` drops it, and this row is neither
+    // waiting nor counted. Without this case the breakdown could re-report the rot it exists to remove.
+    { number: 42, blockedBy: { nodes: [{ number: 9, state: "CLOSED" }] } },
+    { number: 1926, blockedBy: { nodes: [{ number: 1918, state: "OPEN" }] } },
+  ], "2026-09-22");
+  assert.deepEqual(breakdown.dates, [{ date: "2026-09-23", numbers: [1889, 1931] },
+    { date: "2026-09-28", numbers: [600] }], "ISO dates sort lexically, so [0] is the earliest");
+  assert.deepEqual(breakdown.blocked, [{ number: 1926, on: [1918] }]);
+  assert.equal(breakdown.total, 4, "four of the five rows wait -- the closed blocker's does not");
+});
+
+test("org-stalled NAMES the waiting conditions, grouped, with the earliest date called out", () => {
+  // The state measured on the wake that filed #1935: 12 of 20 open rows waiting, 6 date and 6 row, four
+  // of the dates clearing the next day. "The org is stalled" and "the org is waiting until tomorrow" are
+  // different facts and used to produce the identical page.
+  const waiting = waitingBreakdown([
+    { number: 1931, body: "Not-before: 2026-09-23" }, { number: 1889, body: "Not-before: 2026-09-23" },
+    { number: 1663, body: "Not-before: 2026-09-23" }, { number: 1042, body: "Not-before: 2026-09-23" },
+    { number: 1520, body: "Not-before: 2026-09-28" }, { number: 600, body: "Not-before: 2026-09-28" },
+    { number: 1926, blockedBy: { nodes: [{ number: 1918, state: "OPEN" }] } },
+    { number: 1756, blockedBy: { nodes: [{ number: 1931, state: "OPEN" }] } },
+  ], "2026-09-22");
+  const prompt = stalledOrder({ orders: [], openRows: 8, waiting })?.prompt ?? "";
+  assert.match(prompt, /8 of the 16 open row\(s\) carry a machine-readable waiting condition/,
+    "the totals a reader needs before opening the tracker at all");
+  assert.match(prompt, /4 not before 2026-09-23 \(#1931 #1889 #1663 #1042\)/,
+    "grouped by date and naming the rows -- `describeWaiting`'s wording, not a second copy of it");
+  assert.match(prompt, /2 not before 2026-09-28 \(#1520 #600\)/);
+  assert.match(prompt, /THE EARLIEST IS 2026-09-23/,
+    "the date the org un-stalls by itself is the one fact that decides whether this is an incident");
+  assert.match(prompt, /#1926 blocked by #1918; #1756 blocked by #1931/,
+    "`blockedBy` is GitHub's own edge and the prompt never mentioned it before #1935");
+  assert.match(prompt, /sustain itself across a date boundary/,
+    "self-clearing is weaker than it reads: #1931's done-when needed a merge that could not happen");
+  assert.equal(stalledOrder({ orders: [], openRows: 8, waiting })?.causeKey, "ceo/org-stalled/8",
+    "the key stays the REACHABLE count: a date clearing moves a row into it, so it re-fires already");
+});
+
+/**
+ * THE POSITIVE CONTROL FOR THE EMPTINESS THE case above ASSERTS AGAINST. A stall where NO row declares a
+ * wait is the original defect -- every row stopped by a label, a lane or a claim -- and the wording that
+ * says so must still be exactly what `ceo` reads. Without this, a bug that emitted the waiting paragraph
+ * unconditionally, or dropped the old text, would pass every assertion above.
+ */
+test("no row carries a waiting condition -- the unexplained-stall wording survives untouched", () => {
+  for (const order of [stalledOrder({ orders: [], openRows: 20 }),
+    stalledOrder({ orders: [], openRows: 20, waiting: waitingBreakdown([{ number: 3 }], "2026-09-22") })]) {
+    const prompt = order?.prompt ?? "";
+    assert.match(prompt, /NOTHING IS REACHABLE/);
+    assert.match(prompt, /`blocked`, `fleet-gated`, `epic`, a lane, a claim/,
+      "the labels-and-lanes enumeration is still the right answer when nothing declares a wait");
+    assert.match(prompt, /READ THE BACKLOG AND SAY WHY/);
+    assert.doesNotMatch(prompt, /waiting condition|not before|blocked by #/,
+      "a paragraph saying '0 rows are waiting' is noise on the page that matters most");
+  }
 });
 
 /**
