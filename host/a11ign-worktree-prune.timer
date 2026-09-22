@@ -1,0 +1,74 @@
+[Unit]
+Description=a11ign: run the worktree prune hourly
+
+# THE ACTIVATION CONTRACT, STATED HERE BECAUSE THIS FILE NAMED THE WRONG CAUSE FOR IT TWICE (#2011's
+# review, both rounds): `enable --now` RUNS ONE PRUNE AT INSTALL TIME, AND THE CALENDAR GOVERNS EVERY RUN
+# AFTER IT. `Requires=` in a timer's [Unit] is an ordinary start dependency, so the start job
+# `hostUnitsInstall` issues for this timer -- `enable --now` over every shipped `.timer`, host-units.mjs --
+# enqueues one for the service as well, whether or not the timer was already running. It is not a settling
+# delay expiring, and it is not `Persistent=` performing a catch-up.
+#
+# MEASURED 2026-09-22 22:23Z. Two fresh throwaway units, identical calendar expression and
+# `Persistent=true`, neither carrying a stamp file, differing ONLY in this directive: the one WITH
+# `Requires=` ran its service in the same second `enable --now` was issued; the one WITHOUT never ran its
+# service at all. That is the experiment the earlier pair of probes could not perform -- both of those
+# carried an expired `OnBootSec=`, which fires on activation by itself and masks whatever else would have.
+#
+# AND THE SHIPPED UNITS SAY THE SAME WITHOUT A PROBE, from the 21:03Z `host:install`: all four timers
+# declaring `Requires=` started their service in that second (work-tick, corpus-snapshot,
+# corpus-release-nightly and this one), while `a11ign-board-report.timer` -- the only shipped timer with no
+# `Requires=` -- did not, though the same run reinstalled it. Reproduced at 22:27Z on a reinstall where
+# NO timer was newly started -- all five were already active, so `enable --now` was a no-op for the timer
+# units themselves -- and the same four services ran anyway. That is the dependency start job and nothing
+# else: not a fresh timer, not a missing stamp. `host-units.test.ts` pins the partition.
+#
+# `Requires=` IS KEPT, AND THAT IS A DECISION RATHER THAN THE DEFAULT. Three of the four other shipped
+# timers declare it; an install-time prune is wanted here rather than merely tolerated, since the backlog
+# #2000 measured is the reason the unit exists and the tool's refusals do not depend on what started it;
+# and the line makes the timer fail to start if its service is missing instead of quietly scheduling
+# nothing. What was never defensible was this file asserting a cause it had not distinguished.
+Requires=a11ign-worktree-prune.service
+
+[Timer]
+# HOURLY, CHOSEN FROM THE LEAK RATE AND THE RUN COST RATHER THAN BY FEEL.
+#
+# Measured 2026-09-22: 133 row-numbered worktrees accumulated over 9 days -- about 15 a day, one per claim
+# (`row-claim claim` creates a worktree, #1432, and about 7% were ever removed). A full pass costs 88s of
+# git I/O on a host that runs eight sessions, so hourly is a ~2% duty cycle now and less as the backlog
+# clears. Daily would leave a day's claims standing and put the box back on the same curve that reached 16G;
+# anything finer buys nothing, because a tree cannot become removable for at least the 10 minutes
+# `ACTIVITY_WINDOW_MS` makes it wait anyway.
+#
+# :07 AND NOT THE TOP OF THE HOUR, for the reason #965 moved the board workflow's schedule off it: the top
+# of the hour is where every other clock fires.
+OnCalendar=*-*-* *:07:00
+
+# `OnCalendar` AND NOT `OnBootSec`/`OnUnitActiveSec`, AND THE TWO ARE NOT INTERCHANGEABLE HERE -- #2011's
+# review found this, and the measurement corrected the mechanism rather than the verdict.
+#
+# `Persistent=` IS DOCUMENTED AS HAVING EFFECT ONLY ON A TIMER CONFIGURED WITH `OnCalendar=`
+# (systemd.timer(5)). This timer's first version paired `Persistent=true` with `OnBootSec=`/
+# `OnUnitActiveSec=` only, so the directive was INERT: it claimed a catch-up after a missed window that
+# systemd was never going to perform, and a test that asserted the directive's text passed while the
+# behaviour was absent. `a11ign-work-tick.timer` carried the identical inert pairing, which is why the
+# check that now enforces this reads every shipped timer rather than this one.
+#
+# THE OTHER HALF -- why `OnBootSec=15min` is GONE rather than rearranged -- is that it never bought the
+# settling delay its comment promised. It counts from BOOT, and on a host up 9 days "15 minutes after boot"
+# is long expired, so it was expired at every install this unit will ever see. A monotonic delay that
+# cannot be relied on is worse than none.
+#
+# IT IS NOT WHAT RAN A PRUNE AT INSTALL TIME, AND NEITHER IS THIS LINE. The unit ran one immediately again
+# at 22:37 BST with no `OnBootSec` anywhere in it; `Requires=` above is the directive that does that, and
+# carries the measurement that separates the three candidates. Recorded here because the first answer to
+# #2011 put the claim in this paragraph, where it was falsified forty minutes later.
+Persistent=true
+
+# A missed window fires at the next opportunity instead of being silently skipped -- the property
+# a11ign-corpus-snapshot.timer and a11ign-board-report.timer both rely on, and which this timer only
+# genuinely has now that it is a calendar timer. A skipped prune is invisible: the backlog it leaves looks
+# exactly like the backlog a working prune refused.
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
