@@ -1,0 +1,39 @@
+[Unit]
+# #1042 ITEM 3: the lab's own `a11y-corpus-snapshot.timer` fires daily and produces an archive nobody
+# publishes -- a snapshot on the lab is not a backup, which is this row's whole subject. See
+# packages/lab/scripts/corpus-release-nightly.mjs for what this does and does not decide -- it fetches the
+# newest snapshot and hands it to `corpus:release`, which is already idempotent and self-verifying; this
+# unit adds no judgment of its own, the same reason it needs no wake the way #1830's nightly batch does.
+Description=a11ign: fetch the lab's newest corpus snapshot and release it
+After=herdr.service
+Wants=herdr.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/agent/repos/a11y-witness
+
+# SAME REASON a11ign-fleet-gated-nightly.service AND a11ign-work-tick.service BOTH STATE THEIR OWN: a
+# systemd unit gets no login shell's PATH, and this job spawns `ansible-playbook`, `npm` and (through
+# `corpus:release`) `gh` and `tar` -- none of them on a unit's default PATH.
+Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# `gh` reads its credentials from ~/.config/gh/hosts.yml and Ansible its own inventory/vault state from the
+# agent's home -- stated rather than assumed, for the identical reason the other two host units state it:
+# the failure otherwise is silent, forever.
+Environment=HOME=/home/agent
+
+# UPDATED FIRST, same as a11ign-fleet-gated-nightly.service's own ExecStartPre -- a firing against a stale
+# checkout could release a snapshot fetched by yesterday's `lab-fetch.yml`. The `-` prefix makes a failed
+# update non-fatal: a firing against a slightly stale checkout is worth far more than no firing at all.
+ExecStartPre=-/usr/bin/npm run primary:update
+
+ExecStart=/usr/bin/node packages/lab/scripts/corpus-release-nightly.mjs
+
+# Generous relative to a11ign-fleet-gated-nightly.service's 120s: this job moves an archive of real bytes
+# over the network twice (fetch, then corpus:release's own upload-and-download verify), not just two `gh`
+# calls. Bounded well under the timer's own daily interval so a hang here cannot survive to collide with
+# tomorrow's firing.
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=default.target
