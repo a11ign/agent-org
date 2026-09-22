@@ -6,6 +6,11 @@
 // commands. #1009 records the rule: the fix is PLACEMENT, not weakening. `moveStatus` is injected and
 // the entry points supply it.
 
+// #1996: the resting state's name comes from ONE place, and that place is pure -- so importing it here
+// adds no `gh` to this file's closure and keeps the header's rule intact. The literal used to be spelled
+// here AND defaulted in `statusContradictions`, and the two agreed about a name the board did not offer.
+import { RESTING_STATUS } from "./board-status-health.mjs";
+
 export const PROJECT_UNREADABLE = "project-unreadable";
 
 /** @typedef {{ row: number, cause: "project-unreadable" | "other", message: string }} Refusal */
@@ -77,17 +82,18 @@ export function settleClosedStatus(n, { moveStatus, currentStatus = () => null, 
   } catch (error) {
     // #1360, `ceo`'s ruling: a Status read that fails REFUSES with its cause, and the move never reads again. In CI
     // the Project is unreadable until #546, so letting the move try would spend a second failed read per row.
-    const reason = `could not read #${n}'s Status before moving it to "Done" -- ${/** @type {Error} */ (error).message}`;
+    const reason = `could not read #${n}'s Status before moving it to "${RESTING_STATUS}" -- `
+      + `${/** @type {Error} */ (error).message}`;
     log(`CLOSE-ROWS: #${n} CLOSED but Status NOT moved -- ${reason}`);
     return { settled: false, refused: [{ row: n, cause: refusalCause(reason), message: reason }] };
   }
-  if (status === "Done") {
-    log(`CLOSE-ROWS: #${n} Status is already Done -- no move.`);
+  if (status === RESTING_STATUS) {
+    log(`CLOSE-ROWS: #${n} Status is already ${RESTING_STATUS} -- no move.`);
     return { settled: true, refused: [] };
   }
-  const result = moveStatus(n, "Done");
+  const result = moveStatus(n, RESTING_STATUS);
   if (result.moved) {
-    log(`CLOSE-ROWS: #${n} Status -> Done.`);
+    log(`CLOSE-ROWS: #${n} Status -> ${RESTING_STATUS}.`);
     return { settled: true, refused: [] };
   }
   if (result.notOnBoard) {

@@ -11,6 +11,9 @@ import assert from "node:assert/strict";
 import {
   settleClosedStatus, refusalCause, unsettledVerdict, PROJECT_UNREADABLE,
 } from "../settle-closed-status.mjs";
+// #1996: the resting state's single copy. Imported from the pure module that owns it, so this file's
+// closure still needs no token and the row's Acceptance stays runnable where Acceptance runs.
+import { RESTING_STATUS } from "../board-status-health.mjs";
 
 /** CAPTURED, not composed: the reason `moveProjectStatus` gave for #1299 in trunk run 34769927592 (`02ae7420`). */
 const CAPTURED_PROJECT_UNREADABLE = "could not move #1299's Status to \"Done\" -- board-snapshot: could not read "
@@ -144,4 +147,40 @@ test("#1360 a Status read that FAILS refuses with its classified cause, and the 
     currentStatus: () => { throw new Error("HTTP 502"); } });
   assert.equal(other.refused[0].cause, "other", "CONTROL: a failure that is not the unreadable Project stays other");
   assert.equal(move.calls.length, 0);
+});
+
+/**
+ * #1996: THE NAME IT ASKS FOR IS NOW IMPORTED, AND THE TEST ABOVE STILL PINS THE LITERAL.
+ *
+ * Measured 2026-09-22: the live board's `Status` field offered `Backlog, Ready, In progress, Blocked,
+ * Fleet-gated` and no `Done`, so every move this function made had been refused since the board moved to
+ * the org -- 121 closed rows stranded at a live Status, under a green suite. The suite was green because
+ * `"Done"` was a string this repository handed itself in every direction: written here, defaulted in
+ * `statusContradictions`, supplied by the fixtures.
+ *
+ * The remedy has two halves and neither is a test: the name has ONE copy (`RESTING_STATUS`), and
+ * `board-snapshot.mjs` reads the live option list and reports what this code writes that the board will
+ * not take. What a test CAN hold is that the copy really is one -- which is
+ * `board-status-health.test.ts`'s `one copy` case -- and that consolidating it did not change the name
+ * actually sent, which is the existing `it asks for \`Done\` by name` case above, deliberately left
+ * spelling the literal.
+ */
+test("#1996: the imported constant is the same name the move was always sent, spelled independently", () => {
+  const asked: string[] = [];
+  settleClosedStatus(12, { moveStatus: (_n, s) => { asked.push(s); return { moved: true }; }, log: () => {} });
+  assert.deepEqual(asked, ["Done"],
+    "the literal, NOT `RESTING_STATUS` -- asserting the constant equals the constant is the shape that "
+    + "let this defect live, and a rename that silently changed what is sent must fail here");
+  assert.equal(RESTING_STATUS, "Done", "and the constant is that same name, checked once, in one place");
+});
+
+test("#1996: the skip and the log line follow the constant rather than a second literal", () => {
+  const calls: string[] = [];
+  const said: string[] = [];
+  const outcome = settleClosedStatus(13, { currentStatus: () => RESTING_STATUS, log: (l) => said.push(l),
+    moveStatus: (_n, s) => { calls.push(s); return { moved: true }; } });
+  assert.equal(calls.length, 0, "#1360's skip still fires, now keyed on the imported name");
+  assert.deepEqual(outcome, { settled: true, refused: [] });
+  assert.match(said.join("\n"), /#13 Status is already Done -- no move/,
+    "and the line an operator reads still names the real status, not a variable name");
 });

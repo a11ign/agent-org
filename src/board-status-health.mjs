@@ -23,6 +23,63 @@
  */
 
 /**
+ * #1996: THE RESTING STATUS, NAMED ONCE.
+ *
+ * `settleClosedStatus` wrote the literal `"Done"` and `statusContradictions` defaulted to the same
+ * literal, so the two AGREED WITH EACH OTHER about a name the board did not have. Measured 2026-09-22 on
+ * the org Project: the `Status` field offered Backlog / Ready / In progress / Blocked / Fleet-gated and
+ * no `Done`, so every closed row's Status move had been refused since the board moved to the org, and
+ * 121 closed rows sat at a live Status. The suite was green throughout, because every `"Done"` in it was
+ * the code agreeing with itself.
+ *
+ * One copy is what makes `vocabularyDrift` able to check it: a name spelled in two files is a name no
+ * check can hold.
+ */
+export const RESTING_STATUS = "Done";
+
+/**
+ * EVERY STATUS NAME THIS CODEBASE WRITES -- the population `vocabularyDrift` checks the live board against.
+ *
+ * NOT "every name the board offers". `Blocked` and `Fleet-gated` are set by hand, and a board that
+ * stopped offering them would break no code path here. A name in THIS list is one some writer will try to
+ * send, so a board that does not offer it turns that write into a refusal -- which is exactly how #1996
+ * went unnoticed.
+ *
+ * `board-status-health.test.ts` DERIVES the same set from the writers' own source and fails if the two
+ * disagree, so a fifth writer cannot appear without this list learning about it.
+ */
+export const WRITTEN_STATUSES = Object.freeze([
+  "Backlog", // row-file.mjs `boardingFor` -- a row filed without `--ready`
+  "Ready", // row-file.mjs `boardingFor`, and row-claim.mjs's promotion
+  "In progress", // row-claim.mjs, on claim
+  RESTING_STATUS, // settle-closed-status.mjs, on close
+]);
+
+/**
+ * #1996: WHICH NAMES THIS CODE WRITES THAT THE LIVE BOARD DOES NOT OFFER.
+ *
+ * PURE, and handed the option names rather than reading them, for this file's stated reason: a `gh` call
+ * here would put a token requirement into every test that imports the classifier. `board-snapshot.mjs`
+ * makes the read -- in the query it already sends, so the check costs no extra call -- and calls this.
+ *
+ * ONE DIRECTION ONLY, deliberately. A name the board offers and nothing writes (`Blocked`,
+ * `Fleet-gated`) is not a defect and reporting it would bury the one that is under permanent noise.
+ *
+ * @param {string[]} offered the live `Status` option names, in the board's own order
+ * @param {{ written?: readonly string[] }} [vocabulary]
+ * @returns {{ missing: string[] }} the written names the board cannot accept, in `written` order
+ */
+export function vocabularyDrift(offered, { written = WRITTEN_STATUSES } = {}) {
+  if (!Array.isArray(offered)) {
+    // A failed read must not wear the drift's clothes: `null` here would report every written name as
+    // missing, which reads as "the board lost its whole vocabulary" when it means "nobody asked it".
+    throw new TypeError("board-status-health: vocabularyDrift needs the live option names as an array -- "
+      + `got ${offered === null ? "null" : typeof offered}. A read that failed is not a board that drifted (#1996).`);
+  }
+  return { missing: written.filter((name) => !offered.includes(name)) };
+}
+
+/**
  * #1219: A CLOSED ROW MUST NOT ADVERTISE LIVE WORK, AND AN OPEN ROW MUST NOT ADVERTISE DONE.
  *
  * Measured 2026-09-13 across 444 items: **220 closed rows at `In progress`, 45 at `Ready`, 69 at
@@ -38,10 +95,12 @@
  * @param {BoardItem[]} items
  * @param {{ done?: string, live?: string[] }} [vocabulary] the Status names, injected so this file
  *   states no board's column names as fact -- a renamed column must fail LOUDLY at the caller, not
- *   silently reclassify every row here.
+ *   silently reclassify every row here. #1996: the default is `RESTING_STATUS` rather than a second
+ *   `"Done"` literal, so the name this classifies by and the name the settle path WRITES cannot drift
+ *   apart -- which is what let both agree on a name the board did not offer.
  * @returns {{ closedButLive: BoardItem[], openButDone: BoardItem[], closedUnboarded: BoardItem[] }}
  */
-export function statusContradictions(items, { done = "Done", live = undefined } = {}) {
+export function statusContradictions(items, { done = RESTING_STATUS, live = undefined } = {}) {
   const closedButLive = items.filter((i) =>
     i.state === "CLOSED" && i.status !== null && i.status !== done
     && (live === undefined || live.includes(i.status)));

@@ -16,6 +16,21 @@
 // silently rewrites its siblings is this repo's own class of defect: reading an API's surface rather than
 // its behaviour.
 //
+// #1996, 2026-09-22 -- THE ACCOUNT ABOVE STANDS AND ITS CAUSE IS NOW NAMED: the input carried no option
+// ids. `ProjectV2SingleSelectFieldOptionInput` today has an OPTIONAL `id`, and passing each existing
+// option's id preserves it. Measured before touching the real field, on a throwaway single-select field
+// created for the purpose and deleted after -- because the only safe subject for this experiment is one
+// nothing depends on:
+//
+//   created  Alpha=c32de830 Beta=b69028f5
+//   updated  [Alpha(id), Beta(id), Gamma(new)] -> Alpha=c32de830 Beta=b69028f5 Gamma=05805eeb
+//   an item assigned Alpha before the update still read Alpha/c32de830 after it
+//
+// Then on the real `Status` field, adding `Done`: all five existing option ids unchanged, and a
+// before/after census of all 172 items found 0 whose Status changed. **This does NOT make the mutation
+// safe to send casually** -- omit one id and #399 happens again, to every item at once. It makes it
+// survivable when the ids are passed and a snapshot exists, which is the only way it should ever be sent.
+//
 // So: `withBoardSnapshot(mutate)` snapshots every item's number/title/Status to
 // `runs/board-snapshots/<stamp>.json` -- printing the path, since an unprinted backup is one nobody can
 // find under pressure -- and REFUSES to call `mutate` at all if the snapshot did not write. `runs/` is
@@ -33,7 +48,7 @@
 import { execFileSync } from "node:child_process";
 // #1219: PURE, and deliberately in its own module -- see that file's header. Importing it here costs
 // nothing; importing THIS file from a test costs a `token` requirement the acceptance job cannot meet.
-import { statusContradictions, statusCensus } from "./board-status-health.mjs";
+import { statusContradictions, statusCensus, vocabularyDrift } from "./board-status-health.mjs";
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -83,6 +98,13 @@ const ITEMS_QUERY = `
   query($owner: String!, $number: Int!, $cursor: String) {
     organization(login: $owner) {
       projectV2(number: $number) {
+        # #1996: THE LIVE VOCABULARY, IN THE QUERY THAT WAS ALREADY BEING SENT -- so the drift check
+        # below costs no extra call and cannot be skipped for budget. Nothing read the option list until
+        # this row, which is how the board came to offer no "Done" at all while the code wrote it on
+        # every close.
+        field(name: "Status") {
+          ... on ProjectV2SingleSelectField { options { name } }
+        }
         items(first: 100, after: $cursor) {
           pageInfo { hasNextPage endCursor }
           nodes {
@@ -106,6 +128,26 @@ const ITEMS_QUERY = `
 /** @typedef {import("./board-snapshot-scope.mjs").BoardItem} BoardItem */
 
 /**
+ * #1996: THE LIVE `Status` OPTION NAMES OFF ONE PAGE, or `null` when the page did not carry the field.
+ *
+ * `null` RATHER THAN `[]`, and that is the whole care in this function: a field offering no options and a
+ * response that never contained one must stay distinguishable, or a read that came back short is reported
+ * as a board that lost its entire vocabulary -- the loudest possible finding, sourced from the absence of
+ * a measurement.
+ *
+ * Its own function rather than four lines inside `parsePage`, which the complexity gate already holds at
+ * the limit: one thing, at one level of abstraction.
+ *
+ * @param {unknown} parsed the whole parsed GraphQL response
+ * @returns {string[] | null}
+ */
+function statusOptionNames(parsed) {
+  const options = /** @type {any} */ (parsed)?.data?.organization?.projectV2?.field?.options;
+  if (!Array.isArray(options)) return null;
+  return options.map((/** @type {any} */ o) => o?.name).filter((/** @type {unknown} */ n) => typeof n === "string");
+}
+
+/**
  * One page of `gh api graphql`'s response, parsed into `BoardItem[]` plus pagination state. THROWS on any
  * shape it does not recognise -- same discipline as `ready-label-audit.mjs`'s `fetchIssues`: a snapshot
  * that silently records fewer items than the board actually holds is worse than one that refuses outright,
@@ -118,7 +160,9 @@ const ITEMS_QUERY = `
  * clothes shape this whole file exists to prevent, arriving through the `errors` array instead of a
  * non-zero exit -- so this is checked whether or not `run()` itself threw.
  * @param {string} raw
- * @returns {{ items: BoardItem[], hasNextPage: boolean, endCursor: string | null }}
+ * @returns {{ items: BoardItem[], statusOptions: string[] | null, hasNextPage: boolean,
+ *   endCursor: string | null }} `statusOptions` is #1996's live vocabulary, `null` when the page
+ *   did not carry the field at all.
  */
 function parsePage(raw) {
   /** @type {unknown} */
@@ -165,6 +209,7 @@ function parsePage(raw) {
   });
   return {
     items,
+    statusOptions: statusOptionNames(parsed),
     hasNextPage: itemsNode.pageInfo.hasNextPage === true,
     endCursor: typeof itemsNode.pageInfo.endCursor === "string" ? itemsNode.pageInfo.endCursor : null,
   };
@@ -255,6 +300,36 @@ export function readyRowsMissingStatus(items, readyIssueNumbers, excludeIssueNum
 }
 
 /**
+ * #1996: SAYS SO WHEN THE BOARD CANNOT ACCEPT A NAME THIS CODE WRITES.
+ *
+ * This is the host-side half the row asked for, and it is here rather than in the suite because CI's
+ * token cannot read the Project (#546) -- a check that cannot see its subject reports clean forever. It
+ * rides the read `fetchBoardItems` already makes, so it costs no call and no budget.
+ *
+ * REPORTS, NEVER REFUSES -- the same trade `statusContradictions` is reported under twelve lines below,
+ * and for the same reason. A missing option is repaired on the BOARD, by a human with Project write
+ * access; throwing here would brick every claim and every filing until that happened, so the guard would
+ * be removed within the hour rather than obeyed.
+ *
+ * @param {string[] | null} offered `null` when no page carried the field -- reported as its own line,
+ *   because a read that came back short is not a board that drifted.
+ */
+function reportVocabularyDrift(offered) {
+  if (offered === null) {
+    process.stderr.write("board-snapshot: the Status field's option list did not come back on any page, "
+      + "so the vocabulary drift check DID NOT RUN (#1996). This is a short read, not a clean board.\n");
+    return;
+  }
+  const { missing } = vocabularyDrift(offered);
+  if (missing.length === 0) return;
+  process.stderr.write(`board-snapshot: the Project's Status field does NOT offer `
+    + `${missing.map((m) => `"${m}"`).join(", ")}, which this code WRITES -- every such move is refused and `
+    + `the row is left at whatever Status it had (#1996: measured 2026-09-22 with no "Done" on the board at `
+    + `all, and 121 closed rows stranded at a live Status). The board offers: ${offered.join(", ")}. `
+    + `Repair is on the BOARD -- add the option to the Status field -- not here.\n`);
+}
+
+/**
  * Every item currently on the board. Paginated -- #399 measured 117 items on Project 2, comfortably past
  * one page of 100. `gh` failing, or answering with a shape this function does not recognise, THROWS: it
  * never falls through to a partial or empty list, which would let a snapshot claim completeness having
@@ -274,10 +349,13 @@ export function readyRowsMissingStatus(items, readyIssueNumbers, excludeIssueNum
  *   excludeIssueNumber?: number | null }} [deps]
  * @returns {BoardItem[]}
  */
+
 export function fetchBoardItems({ run = defaultRun, fetchReady = fetchReadyIssueNumbers,
   excludeIssueNumber = null } = {}) {
   /** @type {BoardItem[]} */
   const items = [];
+  /** @type {string[] | null} */
+  let statusOptions = null;
   /** @type {string | null} */
   let cursor = null;
   for (;;) {
@@ -298,9 +376,12 @@ export function fetchBoardItems({ run = defaultRun, fetchReady = fetchReadyIssue
     }
     const page = parsePage(raw);
     items.push(...page.items);
+    // Every page carries the same field, so the first one that answers is the answer.
+    statusOptions ??= page.statusOptions;
     if (!page.hasNextPage) break;
     cursor = page.endCursor;
   }
+  reportVocabularyDrift(statusOptions);
   const readyNumbers = fetchReady({ run });
   const missing = readyRowsMissingStatus(items, readyNumbers, excludeIssueNumber);
   if (missing.length > 0) {
