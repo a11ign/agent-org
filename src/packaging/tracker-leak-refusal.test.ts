@@ -57,10 +57,11 @@ const COMPLETE_ROW_BODY = "## Region\n\npackages/lab/src/packaging/foo.ts\n\n"
 const SAMPLE_LINE: Record<string, string> = {
   "private LAN IPv4 address": `reach the page server at ${ipv4(10, 20, 30, 40)}`,
   "a named SSH private key file": "load ~/.ssh/a11y-fixture_ed25519 first",
+  "a named credential file on a fleet host": "write it to ~/.config/a11y-witness/fixture-token first",
   "a live pct exec container-hop command": "run pct exec 121 -- bash -lc 'echo hi'",
 };
 
-// --- leakRefusalReason: all three patterns, named line and value, documentation ranges silent ---
+// --- leakRefusalReason: every pattern, named line and value, documentation ranges silent ---
 
 test("#891 MUTATION: each of LEAK_PATTERNS fires through leakRefusalReason on a synthetic leak of its "
   + "own shape -- not just the address anybody's hand-rolled sweep greps for", () => {
