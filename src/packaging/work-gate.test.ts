@@ -888,6 +888,38 @@ test("a backlog+meta row is not promotable (#1804): #20 stopped re-asking a sett
 });
 
 /**
+ * #1899, measured live at the 2026-09-22 ~06:41Z `ready-queue-empty` tick: #1889 (`backlog`,
+ * `answer:ceo`) and #1878 (`backlog`, `lane:any`, `answer:orchestrator`) both already carry the correct
+ * `answer:<session>` label -- established by the 2026-09-19 chairman's direction as "waiting on another
+ * session to answer" -- and `answerOrders` is already independently waking that session about each. Ei
+ * ther counted as promotable anyway, because `NOT_STARTABLE` is a literal list and `answer:<session>` is
+ * a prefix over one name per session, never a member of it.
+ */
+test("a row carrying answer:<session> is not promotable (#1899): it is already routed to whoever owes "
+  + "the answer, not unpickable and not unlaned", () => {
+  const read = (rows: unknown[]) => {
+    const got = readPromotableRows(() => JSON.stringify(rows));
+    assert.ok(got !== null, "the fixture read must not be refused");
+    return got;
+  };
+  const answerCeo = { number: 1889, labels: [{ name: "backlog" }, { name: `${ANSWER_PREFIX}ceo` }] };
+  const answerOrchestrator = { number: 1878,
+    labels: [{ name: "backlog" }, { name: "lane:any" }, { name: `${ANSWER_PREFIX}orchestrator` }] };
+  assert.deepEqual(read([answerCeo]), [], "routed to ceo for the answer -- not the pool's to promote");
+  assert.deepEqual(read([answerOrchestrator]), [],
+    "answer: excludes it even alongside lane:any, which alone would not");
+
+  // THE POSITIVE CONTROL: a row with no `answer:` label at all is unaffected.
+  const plain = { number: 1900, labels: [{ name: "backlog" }] };
+  assert.deepEqual(read([plain]).map((r: { number: number }) => r.number), [1900],
+    "a row with no answer: label must still promote exactly as before");
+
+  // END TO END: `ready-queue-empty` no longer re-asks a shelf that is only these two rows.
+  const orders = decide({ prs: [], readyRows: [], promotableRows: read([answerCeo, answerOrchestrator]) });
+  assert.deepEqual(orders, [], "both rows are already correctly parked -- the shelf is genuinely empty");
+});
+
+/**
  * THE BOUNDED-WINDOW INVARIANT, GUARDED -- the hole `reviewer` found in #1769 and could not post.
  *
  * #1769 narrowed "red" to the required checks and called `newestPerName` at the read site to satisfy

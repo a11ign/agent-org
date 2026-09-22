@@ -369,7 +369,15 @@ export function readPromotableRows(run = defaultRun) {
     // `NOT_STARTABLE`, NOT `NOT_PICKABLE`: a routed row is kept here and removed again by `ownerOf` for
     // the pool, so the one session it belongs to can still be told about it.
     const today = todayIso();
+    // `answer:<session>` IS NOT IN `NOT_STARTABLE` AND NEVER CAN BE -- it is a PREFIX over one name per
+    // session, not a literal in the frozen list, and `withAnswerLabel` is the one existing reader of
+    // that prefix (`answersOwed`'s own source). A row carrying it is routed to whoever owes the answer
+    // and is already independently waking that session (`answerOrders`); it is neither unlaned nor
+    // unpickable, so counting it as promotable stock is what made `ready-queue-empty` re-ask a judgment
+    // already settled (#1899: #1889 and #1878, both correctly parked, both still counted).
+    const answered = new Set(withAnswerLabel(parsed).map((r) => r.number));
     return parsed.filter((r) => !labelsOf(r).some((/** @type {string} */ n) => NOT_STARTABLE.includes(n)))
+      .filter((r) => !answered.has(r.number))
       .filter((r) => waitingOn(r, today) === null);
   } catch {
     return null;
