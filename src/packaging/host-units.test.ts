@@ -804,14 +804,61 @@ test("#2000: the prune spends no API budget, and that is READ rather than assume
     + "unnecessary");
 });
 
-test("#2000: the timer recurs and survives a missed window", () => {
+test("#2000: the prune timer is a CALENDAR timer, so `Persistent=` is not inert", () => {
   const timer = readFileSync(join(SHIPPED_DIR, "a11ign-worktree-prune.timer"), "utf8");
-  assert.match(timer, /^OnUnitActiveSec=1h$/m,
-    "hourly: about 15 trees a day accumulate, one per claim, and a full pass measured 88s over 143 of "
-    + "them -- and a tree cannot become removable for the 10 minutes ACTIVITY_WINDOW_MS makes it wait "
-    + "anyway, so anything finer buys nothing");
-  assert.match(timer, /^OnBootSec=15min$/m, "not at boot itself -- see the service's missing [Install]");
+  assert.match(timer, /^OnCalendar=\*-\*-\* \*:07:00$/m,
+    "hourly: ~15 trees a day accumulate, one per claim, and a full pass measured 88s over 143 of them -- "
+    + "and a tree cannot become removable for the 10 minutes ACTIVITY_WINDOW_MS makes it wait anyway, so "
+    + "anything finer buys nothing. :07 rather than :00 for #965's reason -- the top of the hour is where "
+    + "every other clock fires");
+  assert.doesNotMatch(timer, /^OnBootSec=/m,
+    "and NOT a boot-relative delay. The first version paired OnBootSec=15min with a comment promising the "
+    + "box would settle first; measured on this host (up 9 days), a monotonic boot delay is long expired, "
+    + "so the timer fired the instant `enable --now` ran. A settling claim that cannot hold is worse than "
+    + "no claim");
+  // PINNED SEPARATELY from the no-inert-`Persistent=` check below, because that one is satisfied by
+  // DELETING the line and this one is not: an hour missed while the box was down should prune at the next
+  // opportunity rather than wait for the following :07. A skipped prune is invisible -- the backlog it
+  // leaves looks exactly like the backlog a working prune refused.
   assert.match(timer, /^Persistent=true$/m,
-    "a skipped prune is invisible: the backlog it leaves looks exactly like the backlog a working prune "
-    + "refused, which is `a11ign-corpus-snapshot.timer`'s nine dead days in a different costume");
+    "and the catch-up the comment claims, which only a calendar timer can actually perform");
+});
+
+// --- #2011's review, generalised: THE DIRECTIVE WAS INERT AND THE TEST ASSERTED ITS TEXT ----------------
+//
+// `reviewer` on #2011: "`Persistent=true` has effect for `OnCalendar` timers, not these monotonic
+// triggers ... The new test only checks the directive's text and therefore passes while the behavior is
+// absent." Correct, and `systemd.timer(5)` says it outright: Persistent= "only has an effect on timers
+// configured with OnCalendar=".
+//
+// THE CHECK READS THE DIRECTORY RATHER THAN THE ONE UNIT THE REVIEW NAMED, and that is how it earns its
+// place: asked of every shipped timer it immediately found `a11ign-work-tick.timer` carrying the identical
+// pairing, with a comment claiming a catch-up systemd was never going to perform. A test written only
+// against the prune timer would have fixed the instance and left the class.
+test("#2000: no shipped timer pairs `Persistent=` with monotonic-only triggers", () => {
+  const timers = shippedUnits().filter((u) => u.endsWith(".timer"));
+  // THE POSITIVE CONTROL. `shippedUnits` reads a real directory, so a wrong path yields an empty list and
+  // an empty list has no offenders -- the assertion below would pass over a check that had stopped working.
+  assert.ok(timers.length >= 5,
+    `the population must not be empty or this passes vacuously; found ${JSON.stringify(timers)}`);
+  const offenders = timers
+    .map((unit) => ({ unit, text: readFileSync(join(SHIPPED_DIR, unit), "utf8") }))
+    .filter(({ text }) => /^Persistent=/m.test(text) && !/^OnCalendar=/m.test(text))
+    .map(({ unit }) => unit);
+  assert.deepEqual(offenders, [],
+    "`Persistent=` has effect only on a timer configured with `OnCalendar=` (systemd.timer(5)). On a "
+    + "monotonic-only timer the line is inert, and it is worse than absent: it states a catch-up the unit "
+    + "does not perform, which is exactly what a reader checking whether a missed window is covered will "
+    + "believe. Either give the timer an OnCalendar= expression or drop the line");
+  // AND THE CONTROL IN THE OTHER DIRECTION: the rule must be capable of firing. A monotonic timer that
+  // carries the line IS an offender -- asserted against a fixture, so the repository's own compliance is
+  // not what makes this pass.
+  const monotonicWithPersistent = "[Timer]\nOnBootSec=2min\nOnUnitActiveSec=2min\nPersistent=true\n";
+  assert.equal(/^Persistent=/m.test(monotonicWithPersistent)
+    && !/^OnCalendar=/m.test(monotonicWithPersistent), true,
+    "NEGATIVE CONTROL: the predicate flags the exact shape a11ign-work-tick.timer carried before #2000");
+  const calendarWithPersistent = "[Timer]\nOnCalendar=*-*-* 03:00:00\nPersistent=true\n";
+  assert.equal(/^Persistent=/m.test(calendarWithPersistent)
+    && !/^OnCalendar=/m.test(calendarWithPersistent), false,
+    "and does NOT flag a calendar timer, or every nightly in this directory would be a finding");
 });

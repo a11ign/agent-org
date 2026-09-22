@@ -63,7 +63,12 @@ TimeoutStartSec=900
 
 # NO `[Install]` SECTION, UNLIKE a11ign-work-tick.service AND a11ign-corpus-snapshot.service -- #1993's
 # shape, for a reason of this unit's own. `WantedBy=default.target` on a oneshot means "also run at boot",
-# and boot is the single worst moment for this one: the sessions are coming back up, `herdr` is restoring
-# them, and a tree a session is about to resume in has by definition had no git activity for far longer
-# than `ACTIVITY_WINDOW_MS`. The timer's own `OnBootSec=15min` is the deliberate version of the same idea
-# -- prune early, but after the box has settled -- so the timer is the only thing that may start this.
+# and boot is the worst moment for this one: the sessions are coming back up, `herdr` is restoring them,
+# and a tree a session is about to resume in has by definition had no git activity for far longer than
+# `ACTIVITY_WINDOW_MS`. The timer is the only thing that may start this, and it is a calendar timer, so
+# what starts a prune is always a stated wall-clock minute rather than the act of booting.
+#
+# WHAT THIS DOES NOT BUY, stated because the first version of this unit claimed it and was wrong (#2011's
+# review): the schedule is not what makes a removal safe. The tool's own five-population classification is
+# -- dirty, unmerged, cherry-picked, inconclusive, active within `ACTIVITY_WINDOW_MS`, plus `runs/` records
+# the primary cannot verify -- and no arrangement of the clock adds to or subtracts from it.

@@ -12,17 +12,33 @@ Requires=a11ign-worktree-prune.service
 # anything finer buys nothing, because a tree cannot become removable for at least the 10 minutes
 # `ACTIVITY_WINDOW_MS` makes it wait anyway.
 #
-# THE INTERVAL IS NOT A SAFETY PARAMETER AND MUST NOT BE READ AS ONE. What makes a removal safe is the
-# tool's own five-population classification, not how often it runs; a wrong prune once an hour and a wrong
-# prune once a day are the same defect. Tightening this to protect something would be treating the clock as
-# the guard -- the substitution `agent-practices.md`'s own no-standing-cron rule is about, one layer down.
-OnBootSec=15min
-OnUnitActiveSec=1h
+# :07 AND NOT THE TOP OF THE HOUR, for the reason #965 moved the board workflow's schedule off it: the top
+# of the hour is where every other clock fires.
+OnCalendar=*-*-* *:07:00
 
-# A missed window (host asleep, previous pass still running) fires at the next opportunity instead of being
-# silently skipped -- the property a11ign-work-tick.timer and a11ign-corpus-snapshot.timer both rely on. A
-# skipped prune is invisible: the backlog it leaves looks exactly like the backlog a working prune refused.
+# `OnCalendar` AND NOT `OnBootSec`/`OnUnitActiveSec`, AND THE TWO ARE NOT INTERCHANGEABLE HERE -- #2011's
+# review found this, and the measurement corrected the mechanism rather than the verdict.
+#
+# `Persistent=` IS DOCUMENTED AS HAVING EFFECT ONLY ON A TIMER CONFIGURED WITH `OnCalendar=`
+# (systemd.timer(5)). This timer's first version paired `Persistent=true` with `OnBootSec=`/
+# `OnUnitActiveSec=` only, so the directive was INERT: it claimed a catch-up after a missed window that
+# systemd was never going to perform, and a test that asserted the directive's text passed while the
+# behaviour was absent. `a11ign-work-tick.timer` carried the identical inert pairing, which is why the
+# check that now enforces this reads every shipped timer rather than this one.
+#
+# THE OTHER HALF WAS MEASURED, because the review's stated mechanism was not the one operating. The claim
+# was that the timer's `Requires=` on its service is what defeats a settling delay. Two throwaway units on
+# this host, 2026-09-22 -- one WITH `Requires=`, one WITHOUT, otherwise identical -- both ran their service
+# the instant `enable --now` was issued. The cause is `OnBootSec=`: it counts from BOOT, and this host has
+# been up 9 days, so "15 minutes after boot" was long past and the timer fired on activation. The
+# conclusion stood, the mechanism did not, and a monotonic delay that cannot be relied on is worse than
+# none -- `OnCalendar` simply has no such claim to get wrong.
 Persistent=true
+
+# A missed window fires at the next opportunity instead of being silently skipped -- the property
+# a11ign-corpus-snapshot.timer and a11ign-board-report.timer both rely on, and which this timer only
+# genuinely has now that it is a calendar timer. A skipped prune is invisible: the backlog it leaves looks
+# exactly like the backlog a working prune refused.
 AccuracySec=1min
 
 [Install]
