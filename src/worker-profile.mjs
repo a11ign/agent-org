@@ -160,6 +160,17 @@ export const PROFILES = Object.freeze({
     why: "deciding whether a fully-closed epic is finished or merely unfiled is the same supply "
       + "judgment as splitting one, and the cheap answer is wrong half the time",
   }),
+  "fleet-batch-due": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // HIGH. Each row in the batch needs a capture chosen, a reading interpreted, and a verdict on whether
+    // the row can now move without the fleet -- judgement per row, over the org's scarcest resource, with
+    // a wrong call costing hours of ten-worker time. This is the order that replaced a nightly timer, so
+    // it now arrives whenever the gated set changes rather than once a day; that makes it more frequent,
+    // not cheaper to get wrong.
+    effort: "high",
+    why: "a by-row reading of the fleet-gated batch decides how the org's scarcest resource is spent",
+  }),
   "lane-backlog-unpromoted": Object.freeze({
     kind: "claude",
     model: "sonnet",

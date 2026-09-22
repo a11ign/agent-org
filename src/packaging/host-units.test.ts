@@ -151,7 +151,15 @@ test("#1858: the installer uses `enable --now`, never a bare `enable`", () => {
 test("#1858: every unit this repository ships is discovered -- against the real directory", () => {
   const units = shippedUnits();
   assert.ok(units.includes("a11ign-work-tick.timer"), "the tick timer is the one known-good unit");
-  assert.ok(units.includes("a11ign-fleet-gated-nightly.timer"), "and #1844's scheduler, the row's own case");
+  assert.ok(units.includes("a11ign-corpus-release-nightly.timer"),
+    "and the corpus release nightly, which this check caught shipped-but-uninstalled on its first day");
+  // #1941 RETIRED `a11ign-fleet-gated-nightly.*`, which this test originally named as its second example
+  // (it was #1858's own case: shipped by #1844 and never installed). Its question -- are there
+  // fleet-gated rows to dispatch? -- moved into `work-gate.mjs` as `fleet-batch-due`, because it is a
+  // STATE question and `agent-practices.md` forbids putting those on a clock. The units are gone so
+  // `host:install` cannot put the timer back beside the gate cause and fire the same batch twice.
+  assert.ok(!units.some((u) => u.startsWith("a11ign-fleet-gated-nightly")),
+    "the retired nightly must not ship");
   assert.deepEqual(units, [...units].sort(), "sorted, so a report reads the same way twice");
   assert.ok(units.every((u) => u.endsWith(".timer") || u.endsWith(".service")),
     "nothing but units -- a README dropped in that directory must not become a finding");

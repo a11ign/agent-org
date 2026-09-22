@@ -16,11 +16,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { shippedUnits } from "../host-units.mjs";
 import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES,
   comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
   blockingChecks, anyChecksRed, requiredCheckNames, ownerOf, NOT_PICKABLE, NOT_STARTABLE,
   ROUTED_TO, readPromotableRows, GH_READS, partitionUnclaimed, readOpenRowState, waitingBreakdown,
-  unfiledEpics, epicOrders, finishedEpics, finishedEpicOrders, readEpics, answersOwed, answerOrders,
+  unfiledEpics, epicOrders, finishedEpics, finishedEpicOrders, fleetBatchRows, fleetBatchOrders,
+  FLEET_MILESTONE, readEpics, answersOwed, answerOrders,
   readOpenRows, withAnswerLabel,
   blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL,
   ANSWER_PREFIX, redOnlyBySupersededRun }
@@ -577,8 +579,8 @@ test("drain OFF changes nothing, so the flag cannot cost anything when it is not
 test("every cause is classified as START or FINISH -- a new one cannot default into a window", () => {
   const finish = CAUSES.filter((c: string) => !START_CAUSES.includes(c)).sort();
   assert.deepEqual([...START_CAUSES].sort(),
-    ["blocked-unexaminable", "epic-finished", "epic-unfiled", "lane-backlog-unpromoted", "org-stalled",
-      "ready-queue-empty", "ready-row-unclaimed"]);
+    ["blocked-unexaminable", "epic-finished", "epic-unfiled", "fleet-batch-due",
+      "lane-backlog-unpromoted", "org-stalled", "ready-queue-empty", "ready-row-unclaimed"]);
   assert.deepEqual(finish, ["answer-owed", "chairman-blocked", "draft-awaiting-verdict",
     "draft-convinced-not-ready", "pr-checks-failing", "verdict-not-convinced"]);
   for (const cause of START_CAUSES) {
@@ -1753,4 +1755,80 @@ test("#1848: one order per finished epic, capped like every other row cause", ()
   const many = Array.from({ length: MAX_ROW_ORDERS_PER_TICK + 3 }, (_, i) => doneEpic(i + 1));
   assert.equal(finishedEpicOrders(many, []).length, MAX_ROW_ORDERS_PER_TICK,
     "nine finished epics in one tick must not become nine orders");
+});
+
+// --- #1941: the fleet batch was a state question wearing a clock ------------------------------------
+//
+// #1830 built a 01:00 UTC timer for the nightly fleet-gated batch. The cadence was inherited, not
+// chosen: #914 recorded what a PERSON did late at night, and automating the remembering automated the
+// hour with it. Measured 2026-09-22 when the chairman asked why everything waited for 1am -- the firing
+// costs 2.2s of CPU and 5s of wall clock, performs no capture, and made the fleet wait up to
+// twenty-three hours for a question worth asking the moment a row became gated.
+//
+// `agent-practices.md` already forbade it: "a cron is right for something that must happen at a
+// WALL-CLOCK time regardless of state; it is never right for 'has anything changed yet'."
+
+const batchRow = (n: number, milestone: string | null = FLEET_MILESTONE) => ({
+  number: n,
+  labels: [{ name: "fleet-gated" }],
+  milestone: milestone === null ? null : { title: milestone },
+});
+
+test("#1941: the batch is every open fleet-gated row ON THE MILESTONE, in row order", () => {
+  const rows = [batchRow(1768), batchRow(1042), batchRow(99, "Some other milestone"),
+    { number: 5, labels: [{ name: "backlog" }], milestone: { title: FLEET_MILESTONE } }];
+  assert.deepEqual(fleetBatchRows(rows).map((r) => r.number), [1042, 1768],
+    "milestone-scoped and label-scoped, and SORTED -- an unsorted set would mint a different causeKey "
+    + "for the same batch depending on what order GitHub happened to return it in");
+  assert.deepEqual(fleetBatchRows([batchRow(1, null)]), [],
+    "a row with no milestone is not on this one");
+});
+
+test("#1941: THE CAUSEKEY IS THE SET, so it fires when the set changes and never on a clock", () => {
+  const [before] = fleetBatchOrders([batchRow(1042), batchRow(1768)]);
+  const [same] = fleetBatchOrders([batchRow(1768), batchRow(1042)]);
+  assert.equal(before.causeKey, same.causeKey,
+    "the same batch in a different order is the same question -- or every tick would re-ask it");
+  const [changed] = fleetBatchOrders([batchRow(1042)]);
+  assert.notEqual(before.causeKey, changed.causeKey,
+    "a row leaving the set IS a change, and must reach orchestrator rather than wait for tonight");
+  assert.equal(before.causeKey, "orchestrator/fleet-batch-due/1042.1768");
+});
+
+test("#1941: a COUNT would not do, which is the whole of #1799's finding", () => {
+  // Two different two-row batches must not share a key. A count-based discriminator collides them, and
+  // the second batch is then silently protected by the first's JUDGMENT_TTL -- the exact shape that
+  // re-litigated three epics four times in an hour.
+  const [a] = fleetBatchOrders([batchRow(1), batchRow(2)]);
+  const [b] = fleetBatchOrders([batchRow(3), batchRow(4)]);
+  assert.notEqual(a.causeKey, b.causeKey, "same size, different rows, different question");
+});
+
+test("#1941: an empty gated set says nothing at all -- the positive control", () => {
+  assert.deepEqual(fleetBatchOrders([]), []);
+  assert.deepEqual(fleetBatchOrders([{ number: 5, labels: [{ name: "backlog" }] }]), [],
+    "this cause must be capable of finding nothing, or orchestrator learns to ignore it");
+});
+
+test("#1941: the order tells orchestrator how to LEAVE the set, not just to work it", () => {
+  // A row that is skipped stays in the set and re-fires the identical causeKey for ever. The way out is
+  // a machine-readable condition -- the same waiting-condition rule the rest of the gate already reads.
+  const [order] = fleetBatchOrders([batchRow(1768)]);
+  assert.equal(order.session, "orchestrator");
+  assert.equal(order.cause, "fleet-batch-due");
+  assert.match(order.prompt, /Fleet-hold-until:/);
+  assert.match(order.prompt, /--add-blocked-by/);
+  assert.match(order.prompt, /Not-before:/);
+  assert.match(order.prompt, /NOT ON A CLOCK/,
+    "the prompt says why it arrived now, so the reader does not defer it to tonight out of habit");
+});
+
+test("#1941: the retired timer's units are gone from the shipped host set", () => {
+  // The clock is the thing being removed; leaving the unit in `packages/agent-org/host/` would let
+  // `host:install` put it straight back, and the org would have both a timer and a gate cause firing the
+  // same batch at two different cadences.
+  const units = shippedUnits();
+  assert.ok(!units.some((u: string) => u.startsWith("a11ign-fleet-gated-nightly")),
+    `a11ign-fleet-gated-nightly.* must not ship any more -- found ${units.join(", ")}`);
+  assert.ok(units.includes("a11ign-work-tick.timer"), "POSITIVE CONTROL: the tick's own units still ship");
 });

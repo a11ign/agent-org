@@ -1,8 +1,21 @@
 #!/usr/bin/env node
 // @ts-check
-// command: fleet-gated-nightly -- the firing #1830 files: gather the fleet-gated rows on the milestone
-// (no model), post the examined count as a fact on #914, then wake `orchestrator` to run the by-row
-// batch #914's own bar requires. Runs on a timer (a11ign-fleet-gated-nightly.timer).
+// command: fleet-gated-nightly -- gather the fleet-gated rows on the milestone (no model), post the
+// examined count as a fact on #914, then wake `orchestrator` to run the by-row batch #914's bar requires.
+//
+// #1941: THE TIMER IS GONE AND THIS IS NOW A MANUAL COMMAND. The scheduled path is
+// `work-gate.mjs`'s `fleet-batch-due` cause, which asks the same question every two minutes off a read
+// the tick already makes, and fires when the GATED SET CHANGES rather than at 01:00 UTC.
+//
+// The cadence was never chosen. #914 recorded what a PERSON did late at night, #1830 automated the
+// remembering, and the hour came along with it. Measured 2026-09-22 when the chairman asked why
+// everything waited for 1am: this firing costs 2.2s of CPU and 5s of wall clock, performs no capture,
+// and made the fleet wait up to twenty-three hours for a question worth asking the moment a row became
+// gated. `agent-practices.md` already forbade it -- "a cron is right for something that must happen at a
+// WALL-CLOCK time regardless of state; it is never right for 'has anything changed yet'".
+//
+// KEPT, NOT DELETED, because "fire the batch now" is a real thing to want at a terminal -- after a fleet
+// recovery, or to re-post the #914 record. It simply no longer owns the schedule.
 //
 // #914 ITSELF SAYS WHY THIS EXISTS: "the responsibility is currently discharged by a session remembering
 // to perform it" -- and the chairman's own measurement on #1830 is what that costs: the fleet sat 10/10
