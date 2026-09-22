@@ -721,3 +721,201 @@ test("#1993: the board dispatch declares the PATH that reaches this host's `gh`,
     + "workflow_dispatch runs there, and `board-report.yml` runs on `github.token` under its own "
     + "permissions block, so the edition does not depend on who dispatched it");
 });
+
+// --- #2000: the prune existed for 13 days and no clock ever called it --------------------------------
+//
+// MEASURED ON THE AGENT HOST 2026-09-22. `prune-worktrees.mjs` shipped 2026-09-09 with 45k of measured
+// refusals, and `crontab -l`, `systemctl --user list-timers` and a grep of `.github/` and `work-gate.mjs`
+// all came back with nothing that runs it. What that cost: 143 worktrees, 133 carrying a trailing row
+// number, 124 of those belonging to CLOSED rows, `~/repos` at 16G, and the oldest leaked tree 9 days old
+// rather than ancient debris. `row-claim claim` makes a worktree per claim (#1432) and about 7% were ever
+// removed.
+//
+// The third instance of one shape in a day, after the fleet scheduler (#1858) and the corpus release
+// nightly: built, tested, shipped, never wired. These tests are the wiring's own check -- `shippedUnits`
+// reads the directory rather than a list, so a file in `packages/agent-org/host/` IS the installable unit.
+
+test("#2000: the worktree prune ships as a pair, so `host:install` has something to install", () => {
+  const units = shippedUnits();
+  assert.ok(units.includes("a11ign-worktree-prune.service"),
+    "the service, or `host:install` copies nothing and the 16G stands");
+  assert.ok(units.includes("a11ign-worktree-prune.timer"),
+    "and the timer, which is the only half that makes it recur -- `hostUnitsInstall` enables `.timer` "
+    + "units and nothing else, so a service shipped alone is installed, inert and reported as fine");
+});
+
+test("#2000: the unit passes `--apply`, or the clock runs a REPORT and the backlog stands", () => {
+  // THE HIGHEST-VALUE ASSERTION IN THIS FILE'S #2000 SET, because its failure is invisible everywhere
+  // else: a unit running the bare script is installed, enabled, active, current, exits 0, writes a full
+  // breakdown to the journal every hour and removes nothing. Every other check here would be green.
+  //
+  // The dry run is the DEFAULT deliberately (2026-09-09: a session ran `npm run worktrees:prune` to read
+  // the breakdown before writing a row about worktree accounting, and removed three other sessions'
+  // trees), so the flag has to be in the unit, and something has to say that it is.
+  const service = readFileSync(join(SHIPPED_DIR, "a11ign-worktree-prune.service"), "utf8");
+  assert.match(service, /^ExecStart=\/usr\/bin\/npm run worktrees:prune -- --apply$/m);
+  assert.deepEqual(entriesFromCommand(execCommands(service)[0]),
+    [join(REPO_ROOT, "packages/agent-org/src/prune-worktrees.mjs")],
+    "and the command resolves through package.json to the script itself -- a renamed npm script leaves "
+    + "the unit syntactically perfect and starting nothing");
+  assert.match(service, /^WorkingDirectory=\/home\/agent\/repos\/a11y-witness$/m,
+    "the PRIMARY checkout: `pruneWorktrees` identifies the tree it must never remove structurally, as "
+    + "the one whose `.git` is a directory, so pointed at a linked worktree it would protect that one "
+    + "and offer the fleet-driving checkout up instead");
+  assert.doesNotMatch(service, /^\[Install\]$/m,
+    "and the service has NO [Install]: `WantedBy=default.target` would also prune at boot, while `herdr` "
+    + "is restoring sessions into trees that have by definition been git-quiet for longer than "
+    + "ACTIVITY_WINDOW_MS. Install and the calendar are the two entry points; boot is not one of them");
+});
+
+test("#2000: the prune spends no API budget, and that is READ rather than assumed", () => {
+  // ceo's 2026-09-22 ruling on #1950 refused a `work-gate.mjs` cause for this chore BECAUSE it costs no
+  // API budget and needs no judgment -- a gate cause exists to WAKE somebody. So "it makes zero `gh`
+  // calls" is not a remark about this unit, it is the premise that lets it run on a clock at all, and it
+  // has to be checked rather than restated.
+  const entry = join(REPO_ROOT, "packages/agent-org/src/prune-worktrees.mjs");
+  // THE POSITIVE CONTROL, and it is the whole reason the null below means anything. `ghSpawnReachedFrom`
+  // returns null for a file it cannot read exactly as it does for a file whose closure is clean, so the
+  // assertion that follows would pass against a wrong path, a broken import walk, or a typo. This names
+  // where the control lives: the same function, the same checkout, on a file that does reach `gh`.
+  assert.equal(ghSpawnReachedFrom(join(REPO_ROOT, "packages/agent-org/src/work-tick.mjs")) !== null, true,
+    "control: the import walk can find a `gh` spawn in this checkout, so a null is a reading");
+  assert.equal(ghSpawnReachedFrom(entry), null,
+    "the predicate is `git merge-base --is-ancestor` against origin/main; the closure is `git-env.mjs` "
+    + "and `cli-flags.mjs` and reaches no `gh`");
+  const spending = unitsSpendingGh();
+  assert.ok(spending.length >= 3,
+    `control: the population must not be empty, or absence from it is vacuous; got ${JSON.stringify(spending)}`);
+  assert.ok(!spending.some((u) => u.unit === "a11ign-worktree-prune.service"),
+    "so it must not appear among the units charged for an identity");
+  // AND THE UNIT MUST NOT CARRY THE LINE ANYWAY. `identityDrift` only ever ASKS for a `GH_CONFIG_DIR`
+  // line; nothing anywhere objects to a spurious one, so three units having it makes copying it into a
+  // fourth the obvious edit -- and that line would assert this unit spends an API pool, which is the exact
+  // opposite of the fact that got it scheduled.
+  //
+  // THIS ASSERTION IS MEANT TO COLLIDE. The day a `gh` call appears under this entry point, `identityDrift`
+  // will demand the line and this will refuse it, and the collision is the point: it forces whoever made
+  // that change back to #1950's ruling, which put this chore on a clock instead of a wake-cause precisely
+  // because it spends nothing. A unit that quietly grew an API identity would keep the clock and lose the
+  // argument for it.
+  const service = readFileSync(join(SHIPPED_DIR, "a11ign-worktree-prune.service"), "utf8");
+  assert.doesNotMatch(service, /^Environment=GH_CONFIG_DIR=/m,
+    "no identity line: this unit spends no pool, and saying it spends one would be false as well as "
+    + "unnecessary");
+});
+
+test("#2000: the prune timer is a CALENDAR timer, so `Persistent=` is not inert", () => {
+  const timer = readFileSync(join(SHIPPED_DIR, "a11ign-worktree-prune.timer"), "utf8");
+  assert.match(timer, /^OnCalendar=\*-\*-\* \*:07:00$/m,
+    "hourly: ~15 trees a day accumulate, one per claim, and a full pass measured 88s over 143 of them -- "
+    + "and a tree cannot become removable for the 10 minutes ACTIVITY_WINDOW_MS makes it wait anyway, so "
+    + "anything finer buys nothing. :07 rather than :00 for #965's reason -- the top of the hour is where "
+    + "every other clock fires");
+  assert.doesNotMatch(timer, /^OnBootSec=/m,
+    "and NOT a boot-relative delay. The first version paired OnBootSec=15min with a comment promising the "
+    + "box would settle first; measured on this host (up 9 days), a monotonic boot delay is long expired, "
+    + "so the timer fired the instant `enable --now` ran. A settling claim that cannot hold is worse than "
+    + "no claim");
+  // PINNED SEPARATELY from the no-inert-`Persistent=` check below, because that one is satisfied by
+  // DELETING the line and this one is not: an hour missed while the box was down should prune at the next
+  // opportunity rather than wait for the following :07. A skipped prune is invisible -- the backlog it
+  // leaves looks exactly like the backlog a working prune refused.
+  assert.match(timer, /^Persistent=true$/m,
+    "and the catch-up the comment claims, which only a calendar timer can actually perform");
+});
+
+// --- #2011's review, generalised: THE DIRECTIVE WAS INERT AND THE TEST ASSERTED ITS TEXT ----------------
+//
+// `reviewer` on #2011: "`Persistent=true` has effect for `OnCalendar` timers, not these monotonic
+// triggers ... The new test only checks the directive's text and therefore passes while the behavior is
+// absent." Correct, and `systemd.timer(5)` says it outright: Persistent= "only has an effect on timers
+// configured with OnCalendar=".
+//
+// THE CHECK READS THE DIRECTORY RATHER THAN THE ONE UNIT THE REVIEW NAMED, and that is how it earns its
+// place: asked of every shipped timer it immediately found `a11ign-work-tick.timer` carrying the identical
+// pairing, with a comment claiming a catch-up systemd was never going to perform. A test written only
+// against the prune timer would have fixed the instance and left the class.
+test("#2000: no shipped timer pairs `Persistent=` with monotonic-only triggers", () => {
+  const timers = shippedUnits().filter((u) => u.endsWith(".timer"));
+  // THE POSITIVE CONTROL. `shippedUnits` reads a real directory, so a wrong path yields an empty list and
+  // an empty list has no offenders -- the assertion below would pass over a check that had stopped working.
+  assert.ok(timers.length >= 5,
+    `the population must not be empty or this passes vacuously; found ${JSON.stringify(timers)}`);
+  const offenders = timers
+    .map((unit) => ({ unit, text: readFileSync(join(SHIPPED_DIR, unit), "utf8") }))
+    .filter(({ text }) => /^Persistent=/m.test(text) && !/^OnCalendar=/m.test(text))
+    .map(({ unit }) => unit);
+  assert.deepEqual(offenders, [],
+    "`Persistent=` has effect only on a timer configured with `OnCalendar=` (systemd.timer(5)). On a "
+    + "monotonic-only timer the line is inert, and it is worse than absent: it states a catch-up the unit "
+    + "does not perform, which is exactly what a reader checking whether a missed window is covered will "
+    + "believe. Either give the timer an OnCalendar= expression or drop the line");
+  // AND THE CONTROL IN THE OTHER DIRECTION: the rule must be capable of firing. A monotonic timer that
+  // carries the line IS an offender -- asserted against a fixture, so the repository's own compliance is
+  // not what makes this pass.
+  const monotonicWithPersistent = "[Timer]\nOnBootSec=2min\nOnUnitActiveSec=2min\nPersistent=true\n";
+  assert.equal(/^Persistent=/m.test(monotonicWithPersistent)
+    && !/^OnCalendar=/m.test(monotonicWithPersistent), true,
+    "NEGATIVE CONTROL: the predicate flags the exact shape a11ign-work-tick.timer carried before #2000");
+  const calendarWithPersistent = "[Timer]\nOnCalendar=*-*-* 03:00:00\nPersistent=true\n";
+  assert.equal(/^Persistent=/m.test(calendarWithPersistent)
+    && !/^OnCalendar=/m.test(calendarWithPersistent), false,
+    "and does NOT flag a calendar timer, or every nightly in this directory would be a finding");
+});
+
+// --- #2011's review, round two: THE UNIT NAMED A CAUSE IT HAD NOT DISTINGUISHED -----------------------
+//
+// The first answer to this blocker said the prune that ran the instant `enable --now` was issued was
+// `OnBootSec=` counting from a boot 9 days earlier. Forty minutes later the same unit -- now a calendar
+// timer with no `OnBootSec` anywhere in it -- ran a prune the instant it was installed again, so the
+// sentence the PR shipped was known-false in the file it shipped. `product-manager`, 2026-09-22: "a
+// why-comment carrying a superseded mechanism is a defect in the artefact, not prose around it."
+//
+// WHAT DISTINGUISHES IT, measured 22:23Z: two fresh throwaway units, identical calendar expression and
+// `Persistent=true`, neither carrying a stamp file, differing ONLY in `Requires=`. The one with it ran its
+// service in the same second as `enable --now`; the one without never ran its service. The two earlier
+// probes could not perform that experiment, because both of them carried an expired `OnBootSec=`, which
+// fires on activation by itself and masks whatever else would have.
+//
+// AND IT IS A CLASS RATHER THAN THIS UNIT'S QUIRK. `hostUnitsInstall` runs `enable --now` over EVERY
+// shipped `.timer`, so `Requires=` in a timer silently appends "and runs once at every `host:install`" to
+// its service's contract -- true today of the corpus snapshot and the corpus release nightly as much as of
+// the prune. This test is what makes adding it to a fifth timer a decision somebody makes rather than a
+// consequence nobody reads.
+test("#2000: which shipped timers run their service at `host:install`, and which do not", () => {
+  const timers = shippedUnits().filter((u) => u.endsWith(".timer"));
+  const requiring = timers
+    .filter((unit) => /^Requires=/m.test(readFileSync(join(SHIPPED_DIR, unit), "utf8"))).sort();
+  // NEITHER SIDE OF THIS PARTITION IS AN EMPTINESS ASSERTION, which is why it needs no fixture control:
+  // both lists are non-empty populations read from the real directory, so a `shippedUnits` that stopped
+  // working fails both halves rather than passing vacuously.
+  assert.deepEqual(requiring, [
+    "a11ign-corpus-release-nightly.timer",
+    "a11ign-corpus-snapshot.timer",
+    "a11ign-work-tick.timer",
+    "a11ign-worktree-prune.timer",
+  ], "`Requires=` in a timer's [Unit] is an ordinary start dependency, so `enable --now` on the timer "
+    + "starts the service too -- once, at install time, whether or not the timer was already running. "
+    + "Adding a fifth entry here means that service now runs during `host:install`: say so in the unit, "
+    + "and check it is a run you want unattended at an operator's keystroke");
+  assert.deepEqual(timers.filter((u) => !requiring.includes(u)), ["a11ign-board-report.timer"],
+    "THE CONTROL, and a measured one rather than a fixture: at the 2026-09-22 21:03Z `host:install` the "
+    + "four above each started their service in that second and this one did not, though the same run "
+    + "reinstalled it. It is the only shipped timer that activates its service by name alone");
+  // AND THE INSTALL-TIME START IS NOT HYPOTHETICAL. The partition above only matters because the installer
+  // really does issue that start job for every shipped timer; asserted through the same injected
+  // `systemctl` the #1858 test uses, against the REAL shipped directory.
+  const calls: string[][] = [];
+  hostUnitsInstall({
+    installedDir: "/installed",
+    systemctl: ((args: string[]) => { calls.push(args); return ""; }) as never,
+    copy: (() => undefined) as never,
+    mkdir: (() => undefined) as never,
+    out: () => undefined,
+  });
+  const enabled = calls.filter((c) => c[0] === "enable").map((c) => c[2]);
+  for (const unit of requiring) {
+    assert.ok(enabled.includes(unit),
+      `${unit} declares Requires= but the installer never starts it, so the partition above means nothing`);
+  }
+});

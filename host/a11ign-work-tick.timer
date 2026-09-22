@@ -14,8 +14,21 @@ Requires=a11ign-work-tick.service
 # which is most of the time.
 OnBootSec=2min
 OnUnitActiveSec=2min
-# Without this a missed window (box asleep, unit still running) is simply skipped rather than caught up.
-Persistent=true
+
+# `Persistent=true` WAS HERE AND DID NOTHING -- removed by #2000, and the removal changes no behaviour.
+#
+# The comment it carried said "without this a missed window is simply skipped rather than caught up".
+# `Persistent=` is documented as having effect only on a timer configured with `OnCalendar=`
+# (systemd.timer(5)); this timer is monotonic-only, so systemd was never going to perform that catch-up
+# and the line asserted a property the unit did not have. Found by #2011's review on the prune timer,
+# which had copied the identical pairing; the check that now enforces it reads every shipped timer rather
+# than just that one, which is how this instance was found at all.
+#
+# AND NOTHING IS LOST BY ITS ABSENCE, which is why this is a deletion rather than a conversion to
+# `OnCalendar=`. A catch-up is worth having when a missed window means a missed DAY (the corpus snapshot
+# at 03:00, the board edition at 07:10, both genuine `OnCalendar` timers). Here the window is two minutes:
+# `OnBootSec=2min` already brings the tick back within two minutes of boot, and a tick missed while the
+# box was asleep is a tick whose question -- is there work? -- the very next tick asks again.
 AccuracySec=10s
 
 [Install]
