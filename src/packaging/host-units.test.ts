@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, systemdUserAvailable,
-  hostUnitDrift, permissionModeDrift, SHIPPED_DIR } from "../host-units.mjs";
+  hostUnitDrift, permissionModeDrift, orphanedUnits, SHIPPED_DIR } from "../host-units.mjs";
 
 const SYSTEMD_OK = () => "LANG=C\n";
 const NO_SYSTEMD = () => { throw new Error("systemctl: command not found"); };
@@ -231,4 +231,100 @@ test("#1911: the corpus-release unit reads fleet.env, the only place a unit can 
   // leaves a missing file to corpus-release-nightly.mjs's own refusal, which names it.
   const unit = readFileSync(join(SHIPPED_DIR, "a11ign-corpus-release-nightly.service"), "utf8");
   assert.match(unit, /^EnvironmentFile=-%h\/\.config\/a11ign\/fleet\.env$/m);
+});
+
+// --- #1951: a unit the repo stopped shipping keeps firing, and nothing said so ------------------------
+//
+// MEASURED 2026-09-22. #1941 retired `a11ign-fleet-gated-nightly.{service,timer}` -- the 01:00 batch
+// became work-gate's `fleet-batch-due` cause, and the unit files were DELETED precisely so `host:install`
+// could not put the clock back beside the gate cause. The PR merged. And the timer was still installed,
+// still enabled, still active, still scheduled:
+//
+//     Wed 2026-09-23 01:00:00 UTC   a11ign-fleet-gated-nightly.timer
+//
+// One night from dispatching the same batch twice, from two mechanisms at two cadences. `host:check`
+// printed "every shipped unit is installed, current and running" over it, because every check it had
+// asked "is what we ship installed?" and none asked "is what is installed still ours?".
+
+const dirs = (shipped: string[], installed: string[]) => ({
+  shippedDir: "/shipped",
+  installedDir: "/installed",
+  readDir: ((d: string) => (String(d) === "/shipped" ? shipped : installed)) as never,
+});
+
+test("#1951: a unit the repository no longer ships is ORPHANED, and the message says why it matters", () => {
+  const [f] = orphanedUnits(dirs(["a11ign-work-tick.timer"],
+    ["a11ign-work-tick.timer", "a11ign-fleet-gated-nightly.timer"]));
+  assert.equal(f.unit, "a11ign-fleet-gated-nightly.timer");
+  assert.equal(f.problem, "ORPHANED");
+  assert.match(f.detail, /does\s+not uninstall itself/,
+    "the reader must learn that deleting the file was not enough -- that is the whole misconception");
+  assert.match(f.detail, /both are now firing/,
+    "and the consequence, which is worse than an idle leftover: a replacement running beside it");
+});
+
+test("#1951: ONLY this org's units -- the host runs others and they are not ours to judge", () => {
+  // The agent host runs `launchpadlib-cache-clean.timer` and whatever else the distribution ships.
+  // Reporting those would be wrong and would train an operator to ignore this command, taking the real
+  // finding with it.
+  assert.deepEqual(orphanedUnits(dirs([], ["launchpadlib-cache-clean.timer", "systemd-tmpfiles.service"])), []);
+  assert.deepEqual(orphanedUnits(dirs([], ["a11ign-gone.timer"])).map((o) => o.unit), ["a11ign-gone.timer"],
+    "POSITIVE CONTROL: an a11ign unit in the same position IS reported, so the filter is not just silent");
+});
+
+test("#1951: non-unit files in the install directory are not orphans", () => {
+  assert.deepEqual(orphanedUnits(dirs([], ["a11ign-notes.md", "a11ign-backup.timer.bak"])), [],
+    "only .service and .timer are units; a stray file is not something to disable");
+});
+
+test("#1951 POSITIVE CONTROL: a host matching the repository has no orphans", () => {
+  const units = ["a11ign-work-tick.service", "a11ign-work-tick.timer"];
+  assert.deepEqual(orphanedUnits(dirs(units, units)), [],
+    "this check must be capable of finding nothing, or every run is noise");
+});
+
+test("#1951: a missing install directory is not a pile of orphans", () => {
+  assert.deepEqual(orphanedUnits({
+    shippedDir: "/shipped", installedDir: "/nope",
+    readDir: ((d: string) => { if (String(d) === "/nope") throw new Error("ENOENT"); return ["a11ign-x.timer"]; }) as never,
+  }), [], "nothing installed means nothing orphaned -- the missing-unit half already reports the absence");
+});
+
+test("#1951: the installer REMOVES an orphan, disabling the timer before deleting the file", () => {
+  // MUTATION TARGET, and the first version of this test could not reach the code it claimed to check:
+  // `hostUnitsInstall` hard-wired the real `readdirSync` into its orphan lookup, so with stub directories
+  // it found nothing and deleting the ENTIRE removal loop killed zero tests. `read` is injected now.
+  //
+  // `disable --now` BEFORE the delete is the load-bearing order: removing the file while its
+  // `timers.target.wants` symlink stands leaves a dangling want, and systemd warns on every later
+  // daemon-reload -- noise that trains an operator to ignore this command's output.
+  const calls: string[][] = [];
+  const removed: string[] = [];
+  hostUnitsInstall({
+    shippedDir: "/shipped",
+    installedDir: "/installed",
+    readDir: ((d: string) => (String(d) === "/shipped"
+      ? ["a11ign-work-tick.timer"]
+      : ["a11ign-work-tick.timer", "a11ign-fleet-gated-nightly.timer", "a11ign-old.service"])) as never,
+    systemctl: ((a: string[]) => { calls.push(a); return ""; }) as never,
+    copy: (() => undefined) as never,
+    mkdir: (() => undefined) as never,
+    rm: ((path: string) => { removed.push(String(path)); }) as never,
+    out: () => undefined,
+  });
+
+  assert.deepEqual(removed,
+    ["/installed/a11ign-fleet-gated-nightly.timer", "/installed/a11ign-old.service"],
+    "both orphans are deleted, and the still-shipped unit is NOT");
+  assert.deepEqual(calls.filter((c) => c[0] === "disable"),
+    [["disable", "--now", "a11ign-fleet-gated-nightly.timer"]],
+    "the orphaned TIMER is disabled --now; the orphaned .service has no timer to disable");
+
+  const reloadAt = calls.findIndex((c) => c[0] === "daemon-reload");
+  const disableAt = calls.findIndex((c) => c[0] === "disable");
+  assert.ok(disableAt >= 0 && disableAt < reloadAt,
+    "removal happens BEFORE daemon-reload, so systemd never re-reads a unit on its way out");
+  assert.deepEqual(calls.filter((c) => c[0] === "enable"),
+    [["enable", "--now", "a11ign-work-tick.timer"]],
+    "and the shipped timer is still enabled afterwards -- removal must not skip the install");
 });
