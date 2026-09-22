@@ -91,7 +91,7 @@
 // one `gh issue create` actually reads, which is `refuseUnknownFlags`'s whole job everywhere else in this
 // tree, applied to a wrapped external tool instead of to this file's own flags.
 import { execFileSync } from "node:child_process";
-import { extractAcceptanceSection, fleetOrLabAcceptance } from "./acceptance-commands.mjs";
+import { bulletOnlyFleetMention, extractAcceptanceSection, fleetOrLabAcceptance } from "./acceptance-commands.mjs";
 import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
@@ -906,9 +906,39 @@ function laneLabelsOrRefusal(body, loadLanesConfig, argv) {
   // against real boxes), and dropping the path lane would route it away from the engineer who must write
   // the code. The two lanes answer different questions and a row may need both answers.
   const fleetReason = fleetOrLabAcceptance(body);
-  if (fleetReason && !laneLabels.includes("lane:orchestrator")) laneLabels.push("lane:orchestrator");
-  const labelProblem = labelRefusal(argv, laneLabels);
-  return labelProblem ? { ok: false, message: labelProblem } : { ok: true, laneLabels };
+  reportAcceptanceRouting(fleetReason, bulletOnlyFleetMention(body));
+  const routed = withAcceptanceLane(laneLabels, fleetReason);
+  const labelProblem = labelRefusal(argv, routed);
+  return labelProblem ? { ok: false, message: labelProblem } : { ok: true, laneLabels: routed };
+}
+
+/**
+ * #1912: the derived lanes plus `lane:orchestrator` when the Acceptance reaches the fleet or lab -- and
+ * `lane:any` DROPPED when it does. `lane:any` means "no lane owns this"; beside `lane:orchestrator` it
+ * contradicts it, and #1911 was filed carrying both. A path lane (`lane:ceo`) is kept: that pair is two
+ * real answers (#1241), this one was an answer and its negation.
+ * @param {readonly string[]} laneLabels from `laneLabelsFor` @param {string | null} fleetReason
+ * @returns {string[]}
+ */
+export function withAcceptanceLane(laneLabels, fleetReason) {
+  if (!fleetReason) return [...laneLabels];
+  const owned = laneLabels.filter((label) => label !== "lane:any");
+  return owned.includes("lane:orchestrator") ? owned : [...owned, "lane:orchestrator"];
+}
+
+/**
+ * #1912: SAY WHICH PATTERN ROUTED THE ROW, or which one a bullet named without routing it. #1911 came out
+ * `lane:orchestrator` with nothing saying why, and the filer found the cause by reading this module.
+ * @param {string | null} fleetReason @param {string | null} bulletReason
+ */
+function reportAcceptanceRouting(fleetReason, bulletReason) {
+  if (fleetReason) {
+    process.stderr.write(`row-file: lane:orchestrator added -- the Acceptance ${fleetReason}.\n`);
+  } else if (bulletReason) {
+    process.stderr.write(`row-file: NOT routed to orchestrator -- a bullet in the Acceptance names something that `
+      + `${bulletReason}, and bullets are read as describing a test (#1912). If the row DOES it, write that step `
+      + "as a numbered clause.\n");
+  }
 }
 
 /**
