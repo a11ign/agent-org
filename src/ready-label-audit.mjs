@@ -1312,21 +1312,32 @@ export function provenanceRemedySummary(verdicts) {
  * calling those UNATTRIBUTABLE put work that shipped correctly beside a row whose history cannot be
  * reconstructed at all. Only `undeclared` is returned as a finding.
  *
+ * EXPORTED, AND ITS WRITERS INJECTED, BECAUSE THE HELPER BEING RIGHT IS NOT THE CLAIM. #1960's first
+ * version tested `provenanceRemedySummary` and left this -- its ONLY caller, and the function the row
+ * names -- unexported and untested. Reverting this one line to print the old unfollowable sentence
+ * directly left all 151 tests green: the audit said the wrong thing and the suite agreed. Proving a
+ * string is correct proves nothing about whether anything emits it, which is this repository's
+ * "second derivation that shares a source" shape one level down. The seam matches `provenanceVerdicts`'
+ * `closingPrFor`: a default that reaches the network, overridden in the test.
+ *
  * @param {ReturnType<typeof reportableUnattributable>} gated
+ * @param {{ closingPrFor?: (number: number) => ReturnType<typeof fetchClosingPullRequest>,
+ *          out?: (text: string) => void, err?: (text: string) => void }} [deps]
  * @returns {number}
  */
-function reportProvenanceOf(gated) {
-  const verdicts = provenanceVerdicts(gated, fetchClosingPullRequest);
+export function reportProvenanceOf(gated, { closingPrFor = fetchClosingPullRequest,
+  out = (text) => process.stdout.write(text), err = (text) => process.stderr.write(text) } = {}) {
+  const verdicts = provenanceVerdicts(gated, closingPrFor);
   for (const { number, title, closedAt, verdict, line } of verdicts) {
-    process.stdout.write(`${PROVENANCE_MARK[verdict]}  #${number} "${title}" -- closed ${closedAt}, ${line}\n`);
+    out(`${PROVENANCE_MARK[verdict]}  #${number} "${title}" -- closed ${closedAt}, ${line}\n`);
   }
   const undeclared = provenanceFindings(verdicts);
   if (undeclared.length === 0) {
-    process.stdout.write(`OK  every row closed since ${PROVENANCE_REQUIRED_FROM} that was actually `
+    out(`OK  every row closed since ${PROVENANCE_REQUIRED_FROM} that was actually `
       + `worked names its claimant or the pull request that declared it\n`);
     return 0;
   }
-  process.stderr.write(provenanceRemedySummary(verdicts));
+  err(provenanceRemedySummary(verdicts));
   return undeclared.length;
 }
 
