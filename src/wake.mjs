@@ -32,6 +32,7 @@ import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { readFileSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
+import { createHash } from "node:crypto";
 // RELATIVE, not the package specifier -- this must run before any `npm ci`/build, the same constraint
 // `work-gate.mjs` and `org-watch.mjs` state at their own imports.
 import { refuseUnknownFlags, flagValue } from "../../worker-fleet/src/cli-flags.mjs";
@@ -206,6 +207,241 @@ export function parseOrders(text) {
     }
     return order;
   });
+}
+
+// ---------------------------------------------------------------------------------------------------
+// HANDOFFS -- THE ORDERS AN AUTHOR WROTE AND `prompt-session.mjs` COULD NOT DELIVER.
+//
+// EVERY ORDER ABOVE THIS LINE IS DERIVED; EVERY ORDER BELOW IT IS AUTHORED, AND THE DIFFERENCE DECIDES
+// EVERY DESIGN CHOICE HERE. A `causeKey` is a function of GitHub state, so an undelivered cause costs
+// nothing to lose -- the next tick re-derives it from the same unreviewed PR and offers it again. An
+// author's prompt is a function of nothing but the author: lose it and there is no second copy anywhere,
+// which is why `deliver`'s refusal path can afford to drop a cause on the floor and `prompt-session.mjs`'s
+// could not.
+//
+// MEASURED 2026-09-22, `worker-tooling`, filing draft #1963 (#1966). `npm run prompt:session -- reviewer`
+// refused at 18:47:48Z, 18:49:19Z and 18:50:49Z -- `"reviewer" is working` -- and landed at 18:52:25Z only
+// because the author held a retry loop open inside its own turn. The three refusals left no trace on the
+// row, the PR, this ledger or any log. An author who calls the command ONCE, which is all
+// `.claude/rules/agent-practices.md` says to do, had a draft nobody had been told about while believing
+// they had told someone.
+//
+// THE RETRY LOOP IS NOT THE FIX, AND THE REFUSAL IT RACED IS LOAD-BEARING. `prompt-session` CLEARS its
+// target before delivering, so a retry that lands the instant a busy session goes idle does not merely
+// interleave -- it WIPES A REVIEW IN PROGRESS. `reviewer` was mid-review of #1963 in `/tmp/rv-1963`
+// during that exact window, so the three refusals protected it and a fourth success would have destroyed
+// it. A queued order is therefore delivered when the GATE judges the target free, never by a caller
+// racing the same window; and a poll inside an author's session is the model turn the 2026-09-17 cron
+// ruling retired, wearing a different hat.
+//
+// SO THE ANSWER IS THE ONE `deliver` ALREADY GIVES ONE CALLER OVER: *"an order is written to the ledger
+// only once herdr has accepted it, so a crash between the two re-wakes rather than losing the wake."*
+// Here the queue IS the record and REMOVAL IS THE RECEIPT, which is the same rule read backwards -- an
+// order stays queued until herdr has accepted it, so a crash between delivering and dropping re-delivers
+// rather than loses.
+
+/**
+ * The file `prompt-session.mjs` leaves an undelivered order in, beside the ledger.
+ *
+ * THE NAME IS THE JOIN. `work-gate.mjs` and this file knew nothing of `prompt-session.mjs` until this
+ * constant, which is what #1966's open-check greps for -- so the string is in code that runs rather than
+ * in a comment that could rot away from it.
+ */
+export const HANDOFF_QUEUE_FILE = "prompt-session-handoffs";
+
+/** @param {string} ledgerPath @returns {string} */
+export function handoffQueuePath(ledgerPath) {
+  return `${dirname(ledgerPath)}/${HANDOFF_QUEUE_FILE}`;
+}
+
+/**
+ * Where the ledger lives for this invocation -- one definition, because `work-tick.mjs` has to resolve
+ * the same queue from the same `--ledger` it passes through to this script.
+ * @param {string[]} argv @returns {string}
+ */
+export function ledgerPathFrom(argv) {
+  return flagValue(argv, "ledger") ?? `${process.env.HOME}/.cache/a11ign/wake-ledger`;
+}
+
+/**
+ * THE IDENTITY OF AN AUTHORED ORDER, and it is deliberately NOT a `causeKey`.
+ *
+ * A causeKey is derived from GitHub so that an unchanged world produces an unchanged key and the ledger
+ * can stay quiet. Nothing about an author's prompt is in GitHub, so there is nothing to derive it from
+ * but the order itself: the TARGET and the TEXT. Two calls that would send the same words to the same
+ * session are the same order -- an author who ran the command twice because the first printed a refusal
+ * leaves one queued order, not two -- and anything else about it differs.
+ *
+ * DELIVERY IS THE END OF IT, WHICH IS WHY THIS NEEDS NO TTL, NO RUN AND NO `MAX_DELIVERIES`. Those exist
+ * because a derived cause stays true after it has been answered and must be re-offered, then eventually
+ * capped. An authored order is answered by being delivered once; the queue drops it, and no mechanism has
+ * to decide when it stopped being true.
+ *
+ * @param {string} session @param {string} prompt @returns {string}
+ */
+export function handoffId(session, prompt) {
+  return `handoff/${session}/${createHash("sha256").update(prompt).digest("hex").slice(0, 8)}`;
+}
+
+/**
+ * Every order waiting in the queue, newest duplicate discarded.
+ *
+ * A MALFORMED LINE THROWS, exactly as `parseOrders` does for the gate's own orders and for its reason: a
+ * skipped order is the defect this whole file exists to remove, and an order this script cannot read is
+ * still an order somebody is waiting on. The throw reaches `work-tick`, which prints it and exits
+ * non-zero, so a corrupt queue is loud within one tick rather than quietly short a prompt.
+ *
+ * A missing file is an empty queue; an unreadable one is NOT (`readLedger`'s rule, same reason).
+ *
+ * @param {string} path
+ * @param {(p: any, enc: any) => any} [read]
+ * @returns {{id: string, session: string, prompt: string, queuedAt: number}[]}
+ */
+export function readHandoffs(path, read = readFileSync) {
+  let raw;
+  try {
+    raw = String(read(path, "utf8"));
+  } catch (err) {
+    if (/** @type {any} */ (err)?.code === "ENOENT") return [];
+    throw err;
+  }
+  /** @type {Map<string, any>} */
+  const byId = new Map();
+  for (const line of raw.split("\n")) {
+    const text = line.trim();
+    if (!text) continue;
+    const entry = JSON.parse(text);
+    if (typeof entry.id !== "string" || typeof entry.session !== "string"
+      || typeof entry.prompt !== "string") {
+      throw new Error(`wake: queued order is missing id/session/prompt: ${text.slice(0, 120)}`);
+    }
+    // FIRST WINS, so `queuedAt` is when the author FIRST asked -- the age that matters is how long the
+    // order has been waiting, not when a duplicate call restated it.
+    if (!byId.has(entry.id)) byId.set(entry.id, entry);
+  }
+  return [...byId.values()];
+}
+
+/**
+ * Leave an order for the next tick to deliver. Returns the entry, so the caller can name it to its user.
+ *
+ * APPEND, NEVER READ-MODIFY-WRITE, because the writers are authors' terminals and there is no lock: a
+ * short `O_APPEND` write is atomic, and two authors queueing at once both land. Duplicates are collapsed
+ * on READ by `handoffId`, which is the same answer without the race.
+ *
+ * @param {string} path
+ * @param {{session: string, prompt: string, now?: number,
+ *          write?: typeof writeFileSync, mkdir?: typeof mkdirSync}} order
+ */
+export function queueHandoff(path, { session, prompt, now = Date.now(),
+  write = writeFileSync, mkdir = mkdirSync }) {
+  const entry = { id: handoffId(session, prompt), session, prompt, queuedAt: now };
+  mkdir(dirname(path), { recursive: true });
+  write(path, `${JSON.stringify(entry)}\n`, { flag: "a" });
+  return entry;
+}
+
+/**
+ * Drop the orders that landed, keeping every other line.
+ *
+ * RE-READS FIRST rather than filtering a list the caller already held, so an order queued while this tick
+ * was delivering survives the rewrite. The window between this read and its write is microseconds and it
+ * is not zero -- an author appending inside it loses that append. Naming the gap rather than claiming a
+ * lock: the loser prints `QUEUED`, so the cost is one order the author can see was taken and re-send,
+ * which is the visible failure this file trades for everywhere else.
+ *
+ * @param {string} path @param {readonly string[]} ids
+ * @param {{read?: typeof readFileSync, write?: typeof writeFileSync}} [io]
+ */
+export function dropHandoffs(path, ids, { read = readFileSync, write = writeFileSync } = {}) {
+  if (ids.length === 0) return;
+  const drop = new Set(ids);
+  const keep = readHandoffs(path, read).filter((h) => !drop.has(h.id));
+  write(path, keep.map((h) => `${JSON.stringify(h)}\n`).join(""));
+}
+
+/**
+ * After this long unclaimed, a queued order is named on every tick.
+ *
+ * NOT A DEADLINE AND NOT A DROP. A target that never becomes free -- a session herdr reports `unknown`,
+ * a label that exists and is never started -- would otherwise hold an order in silence, which is exactly
+ * the failure this queue removes, only moved. Two hours matches `JUDGMENT_TTL_MS` and `MAX_DELIVERIES`'s
+ * own reasoning: long enough to survive a restart or a slow review, short enough to reach somebody still
+ * awake.
+ */
+export const HANDOFF_STALE_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * Is there nothing for this tick to deliver?
+ *
+ * EXTRACTED SO IT CAN BE PINNED, because getting it wrong is silent in exactly the way this whole change
+ * is about. `main` used to exit QUIET on an empty stdin alone -- and the case a queued order exists for is
+ * a reviewer busy REVIEWING, which is very often a tick with nothing else outstanding. Reading an empty
+ * stdin as an empty org would have held the order back precisely when it was the only work there was,
+ * after `prompt-session` had already told its author that something would deliver it.
+ *
+ * @param {readonly unknown[]} orders @param {readonly unknown[]} handoffs @returns {boolean}
+ */
+export function nothingToDeliver(orders, handoffs) {
+  return orders.length === 0 && handoffs.length === 0;
+}
+
+/**
+ * @template {{queuedAt?: number}} T
+ * @param {readonly T[]} handoffs @param {number} [now] @returns {T[]}
+ */
+export function staleHandoffs(handoffs, now = Date.now()) {
+  return handoffs.filter((h) => now - Number(h.queuedAt ?? 0) >= HANDOFF_STALE_MS);
+}
+
+/**
+ * A queued order as `deliver` takes one -- AND THE TEXT SAYS IT WAITED.
+ *
+ * A reviewer woken with a prompt written 40 minutes ago must be able to tell that from a fresh one: the
+ * head it names may have moved, and `update-branch` invalidates a verdict sha. Silently handing over a
+ * stale order would trade one invisible failure for another.
+ *
+ * @param {{id: string, session: string, prompt: string, queuedAt?: number}} handoff @param {number} [now]
+ */
+export function handoffOrder(handoff, now = Date.now()) {
+  const waited = Math.max(0, Math.round((now - Number(handoff.queuedAt ?? now)) / 60_000));
+  return {
+    session: handoff.session,
+    causeKey: handoff.id,
+    prompt: `${handoff.prompt}\n\n(Queued ${waited} minute(s) ago: \`prompt:session\` could not deliver `
+      + "this when it was written, because you were mid-turn, so the gate held it until you were between "
+      + "tasks. Re-read anything it names -- a head may have moved since.)",
+  };
+}
+
+/**
+ * Deliver what is queued, drop what landed, and say which sessions are now busy.
+ *
+ * REUSES `deliver` WHOLE, AND `record` IS THE SEAM THAT MAKES THAT HONEST. `deliver` calls `record` only
+ * after herdr has accepted the prompt -- it is the ledger hook -- so passing a collector instead of the
+ * ledger writer gets exactly the ids that landed, with the report-before-record rule already applied and
+ * no second copy of the route/clear/prompt loop to drift from the first.
+ *
+ * NO LEDGER AND NO `counts`: an authored order has no causeKey to dedupe on and no cause that can stay
+ * true after it is answered, so `undelivered` and `MAX_DELIVERIES` would both be answering a question
+ * nobody is asking here. See {@link handoffId}.
+ *
+ * @param {{id: string, session: string, prompt: string, queuedAt?: number}[]} handoffs
+ * @param {{label: string, status: string}[]} agents
+ * @param {string[]} roster
+ * @param {{run?: (args: string[]) => string, queuePath?: string, drop?: typeof dropHandoffs,
+ *          now?: number}} [deps]
+ * @returns {{sent: string[], refused: string[], busied: Set<string>}}
+ */
+export function deliverHandoffs(handoffs, agents, roster,
+  { run = defaultRun, queuePath, drop = dropHandoffs, now = Date.now() } = {}) {
+  /** @type {string[]} */
+  const landed = [];
+  const { sent, refused } = deliver(handoffs.map((h) => handoffOrder(h, now)), agents, roster,
+    { run, record: (id) => landed.push(id) });
+  if (queuePath) drop(queuePath, landed);
+  const done = new Set(landed);
+  return { sent, refused, busied: new Set(handoffs.filter((h) => done.has(h.id)).map((h) => h.session)) };
 }
 
 /**
@@ -715,21 +951,39 @@ function main() {
   refuseUnknownFlags(["--ledger", "--roster"], {
     entry: import.meta.url, command: "node packages/agent-org/src/wake.mjs",
   });
-  const ledgerPath = flagValue(process.argv, "ledger") ?? `${process.env.HOME}/.cache/a11ign/wake-ledger`;
+  const ledgerPath = ledgerPathFrom(process.argv);
   // Beside the ledger: one directory holds the org's runtime state.
   const emittedPath = `${dirname(ledgerPath)}/wake-emitted`;
+  const queuePath = handoffQueuePath(ledgerPath);
   const roster = (flagValue(process.argv, "roster") ?? "worker-capture,worker-judge,worker-tooling")
     .split(",").map((s) => s.trim()).filter(Boolean);
 
   const orders = parseOrders(readFileSync(0, "utf8"));
-  if (orders.length === 0) process.exit(EXIT.QUIET);
+  // A QUEUED ORDER IS WORK EVEN WHEN THE GATE FOUND NONE, and this is the line that makes it so. The
+  // common case for a handoff is precisely a quiet gate -- the reviewer is busy reviewing, nothing else
+  // is outstanding -- so exiting QUIET on an empty stdin would have left the queue undelivered exactly
+  // when it mattered most.
+  const handoffs = readHandoffs(queuePath);
+  if (nothingToDeliver(orders, handoffs)) process.exit(EXIT.QUIET);
 
   const agents = readAgents();
   if (agents === null) {
-    process.stderr.write(`CANNOT ASK: herdr did not answer, so the ${orders.length} order(s) on stdin were `
-      + "NOT delivered and NOTHING was woken. This is not a quiet org.\n");
+    process.stderr.write(`CANNOT ASK: herdr did not answer, so the ${orders.length} order(s) on stdin and `
+      + `${handoffs.length} queued order(s) were NOT delivered and NOTHING was woken. This is not a quiet `
+      + "org.\n");
     process.exit(EXIT.CANNOT_ASK);
   }
+
+  // AUTHORED ORDERS FIRST. One has already been refused once and has been waiting since; a derived cause
+  // has not, and will be re-derived unchanged by the next tick if it loses the session to this one.
+  const handed = deliverHandoffs(handoffs, agents, roster, { queuePath });
+  for (const line of staleHandoffs(handoffs)) {
+    process.stderr.write(`STALE QUEUED ORDER ${line.id} -- written for "${line.session}" over `
+      + `${Math.round(HANDOFF_STALE_MS / 3_600_000)}h ago and still not delivered. Nothing drops it; `
+      + "check that session exists and is reachable.\n");
+  }
+  // A session this tick just woke is working NOW, so the gate's own orders must not be routed to it.
+  const free = agents.map((a) => (handed.busied.has(a.label) ? { ...a, status: "working" } : a));
 
   const delivered = readLedger(ledgerPath, readFileSync, Date.now(), new Set(JUDGMENT_CAUSES));
   const todo = undelivered(orders, delivered);
@@ -743,9 +997,10 @@ function main() {
     writeFileSync(ledgerPath, `${Date.now()}\t${RESET}\t${key}\n`, { flag: "a" });
   }
 
-  const { sent, refused, stuck } = deliver(todo, agents, roster, { record,
+  const { sent, refused: gateRefused, stuck } = deliver(todo, free, roster, { record,
     counts: deliveryCounts(ledgerPath) });
-  for (const line of sent) process.stdout.write(`WOKE ${line}\n`);
+  const refused = [...handed.refused, ...gateRefused];
+  for (const line of [...handed.sent, ...sent]) process.stdout.write(`WOKE ${line}\n`);
   for (const line of stuck) process.stderr.write(`STUCK ${line}\n`);
   // THE BREAKER'S ALARM. Printing `STUCK` and stopping is what let two of `ceo`'s causes go silent for
   // over half an hour with every session idle -- see `escalateStuck`.
@@ -758,8 +1013,9 @@ function main() {
   }
   if (refused.length > 0) {
     for (const line of refused) process.stderr.write(`UNDELIVERED ${line}\n`);
-    process.stderr.write(`${refused.length} order(s) had nowhere to go. They are NOT in the ledger and `
-      + "will be retried on the next tick; if this repeats, no session is taking this work.\n");
+    process.stderr.write(`${refused.length} order(s) had nowhere to go. A derived cause is NOT in the `
+      + "ledger and an authored one is still in the queue, so both are retried on the next tick; if this "
+      + "repeats, no session is taking this work.\n");
     process.exit(EXIT.ATTENTION);
   }
   process.exit(EXIT.QUIET);
