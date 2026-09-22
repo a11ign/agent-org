@@ -107,6 +107,11 @@ export function sessionLabelsOf(rowLabels) {
  *
  * A label is refused when its session is absent from `live`; `retired` only chooses the sentence the refusal uses
  * (#1020).
+ *
+ * #1951: `live` LISTS ROLES, AND A NAME HERE IS A ROUTING ADDRESS RATHER THAN A PROCESS HANDLE. Each entry used to
+ * carry a `workspace` naming a herdr pane; nothing read it, so the roster lied whenever a pane moved, and it is gone.
+ * The pane a session currently holds is herdr's answer at runtime (`wake.mjs` asks for the workspace list and matches
+ * by LABEL), never this file's to remember -- which is why the type below names `name` and nothing else.
  */
 const SESSIONS = /** @type {{ live: { name: string }[], retired: { name: string }[] }} */ (
   JSON.parse(readFileSync(new URL("../docs/roles/sessions.json", import.meta.url), "utf8")));
