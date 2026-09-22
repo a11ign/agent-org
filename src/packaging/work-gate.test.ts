@@ -16,11 +16,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { shippedUnits } from "../host-units.mjs";
 import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES,
   comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
   blockingChecks, anyChecksRed, requiredCheckNames, ownerOf, NOT_PICKABLE, NOT_STARTABLE,
-  ROUTED_TO, readPromotableRows, GH_READS, partitionUnclaimed, readOpenRowState, waitingBreakdown,
+  ROUTED_TO, readPromotableRows, GH_READS, partitionUnclaimed, openRowState, waitingBreakdown,
+  deadMansSwitch,
   unfiledEpics, epicOrders, finishedEpics, finishedEpicOrders, fleetBatchRows, fleetBatchOrders,
   FLEET_MILESTONE, readEpics, answersOwed, answerOrders,
   readOpenRows, withAnswerLabel,
@@ -1019,7 +1021,12 @@ test("the gate's read count is counted, not remembered", () => {
   // because three readers arrived and nobody re-counted.
   assert.equal(GH_READS.unconditional.length, 5,
     "if you add or remove an unconditional read, this number and every comment quoting it move together");
-  assert.ok(GH_READS.conditionalOnSilence.includes("readOpenRowState"));
+  // #1938 REMOVED THE SILENCE-CONDITIONAL READ ENTIRELY: the dead man's switch now derives its
+  // answer from the rows the unconditional read already fetched. The key is GONE rather than empty,
+  // so a reader cannot quote a name that no longer exists.
+  assert.ok(!("conditionalOnSilence" in GH_READS),
+    "nothing is conditional on silence any more -- the second open-rows read was deleted");
+  assert.ok(GH_READS.conditionalOnEmptyShelf.includes("readEpics"));
   assert.ok(GH_READS.conditionalOnRed.includes("requiredCheckNames"));
 });
 
@@ -1095,28 +1102,90 @@ test("A CORRECTLY WAITING QUEUE IS NOT A STALL -- the dead man's switch must not
   // declares what it waits on is working, not stuck.
   const allWaiting = [{ number: 1, blockedBy: { nodes: [{ number: 9, state: "OPEN" }] } },
     { number: 2, body: "Not-before: 2099-01-01" }];
-  assert.equal(readOpenRowState(() => JSON.stringify(allWaiting))?.reachable, 0,
+  assert.equal(openRowState(allWaiting)?.reachable, 0,
     "zero REACHABLE rows, so nothing to be stalled about");
   assert.equal(stalledOrder({ orders: [], openRows: 0 }), null);
 
   // AND THE POSITIVE CONTROL: one row that could move and is not moving still fires the switch.
   const oneReachable = [...allWaiting, { number: 3 }];
-  assert.equal(readOpenRowState(() => JSON.stringify(oneReachable))?.reachable, 1);
+  assert.equal(openRowState(oneReachable)?.reachable, 1);
   assert.equal(stalledOrder({ orders: [], openRows: 1 })?.cause, "org-stalled");
 });
 
 test("a REFUSED read is still refused, not read as a queue with nothing reachable", () => {
   // `null` means "could not ask" and must never collapse into 0, which would silence the switch on the
-  // first API hiccup -- #1286's rule, and the filter added above must not have broken it.
-  assert.equal(readOpenRowState(() => { throw new Error("HTTP 502"); }), null);
-  assert.equal(readOpenRowState(() => "not json"), null);
+  // first API hiccup -- #1286's rule, and the filter added above must not have broken it. Since #1938
+  // the refusal arrives as the un-coalesced `readOpenRows()` result rather than being re-read here, so
+  // what `null` means is decided at the ONE place that knows: `readOpenRows`'s own catch.
+  assert.equal(openRowState(null), null);
+  assert.equal(openRowState(undefined), null, "a missing read is refused, not an empty tracker");
+  assert.equal(openRowState("not an array" as unknown as unknown[]), null);
   assert.equal(stalledOrder({ orders: [], openRows: null }), null);
+  // AND THE POSITIVE CONTROL for the whole family: an ARRAY is read, never refused -- including the
+  // empty one, which genuinely means the tracker is empty and must not come back as `null`.
+  assert.deepEqual(openRowState([]), { reachable: 0, waiting: { dates: [], blocked: [], total: 0 } });
+});
+
+/**
+ * THE ASSERTION #1938 EXISTS TO PROTECT.
+ *
+ * Deleting the second open-rows read is a one-line change; keeping the REFUSAL is not. `main` holds the
+ * open rows as `readOpenRows() ?? []`, and feeding that to the switch would read a `gh` outage as a
+ * healthy silent org -- silencing the dead man's switch on exactly the tick it matters most (#1286).
+ *
+ * THE OUTCOME ALONE CANNOT TELL THEM APART, which is why the refusal must SAY so. `stalledOrder` returns
+ * no order for `null` (could not ask) and for `0` (nothing reachable) alike, so a coalesced refusal would
+ * be invisible from outside: no order, no line, no difference. The stderr line is the observable, and it
+ * is what fails if the `?? []` is threaded through by mistake.
+ */
+test("a REFUSED open-rows read reaches the switch as null, and the switch says it could not ask", () => {
+  const lines: string[] = [];
+  const log = (line: string) => { lines.push(line); };
+  assert.deepEqual(deadMansSwitch({ orders: [], drain: false, openRows: null, log }), [],
+    "a refused read produces no order -- it is not evidence of a stall either way");
+  assert.match(lines.join(""), /CANNOT ASK whether the org is stalled/,
+    "a refused read must not be reported as a quiet queue, the same rule `main` applies to the other lanes");
+
+  // THE POSITIVE CONTROL, AND IT IS THE `?? []` ITSELF: an empty tracker is a real, healthy silence and
+  // says nothing. If a refusal were coalesced to `[]` upstream, the line above would be missing here.
+  const empty: string[] = [];
+  assert.deepEqual(deadMansSwitch({ orders: [], drain: false, openRows: [],
+    log: (line: string) => { empty.push(line); } }), []);
+  assert.deepEqual(empty, [], "an empty tracker is the org being finished, not the gate being blind");
+
+  // AND THE SWITCH STILL FIRES on rows it CAN see, or none of the above proves anything.
+  const [order] = deadMansSwitch({ orders: [], drain: false, openRows: [{ number: 3 }], log }) as
+    { cause: string, discriminator: string }[];
+  assert.equal(order?.cause, "org-stalled");
+  assert.equal(order?.discriminator, "1", "the reachable count is the discriminator, derived not re-read");
+});
+
+/**
+ * THE WIRING, PINNED -- because the test above cannot see `main`.
+ *
+ * `deadMansSwitch` can be handed the right value and still be given the wrong one by its only caller.
+ * `main` is not exported and exits the process, so this reads the source instead: whatever identifier it
+ * passes as `openRows` must be assigned a BARE `readOpenRows()`. `const allOpen = readOpenRows() ?? []`
+ * would not match, which is the mistake this row was filed to prevent.
+ */
+test("main hands the switch the UN-COALESCED read, not the `?? []` one", () => {
+  const source = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  // EVERY `deadMansSwitch({...})` IN THE FILE, then the one that names `openRows` -- the declaration
+  // spells the same parameter and would otherwise match first and report nothing.
+  const calls = [...source.matchAll(/deadMansSwitch\(\{[^}]*\}\)/g)].map(([text]) => text);
+  const name = calls.map((c) => c.match(/openRows:\s*(\w+)/)?.[1]).find(Boolean) ?? "";
+  assert.ok(name, `main must pass openRows into the switch; found ${JSON.stringify(calls)}`);
+  assert.match(source, new RegExp(`const ${name} = readOpenRows\\(\\);`),
+    `${name} must be the raw read -- a \`?? []\` here reads a gh outage as a healthy silent org (#1286)`);
+  // AND THE READ ITSELF IS NOW ONE CALL, which is the other half of #1938's done-when.
+  assert.equal(source.match(/"issue", "list", "--state", "open", "--limit", "500"/g)?.length, 1,
+    "the gate asked for the same 500 open rows twice; the second was a strict subset of the first");
 });
 
 /**
  * THE CONDITION THE GATE ALREADY COMPUTED AND THREW AWAY (#1935).
  *
- * `readOpenRowState` has always called `waitingOn` on every open row and kept only `.length`. The answer
+ * The gate has always called `waitingOn` on every open row and kept only `.length`. The answer
  * -- date or row, WHICH date, WHICH row -- was discarded in the same expression that produced it, and
  * `org-stalled` then paged `ceo` with a bare count. The 2026-09-22T18:30Z wake that found this cost an
  * hour of hand-reading twenty rows to recover what the gate had read that same tick.
@@ -1124,7 +1193,7 @@ test("a REFUSED read is still refused, not read as a queue with nothing reachabl
 test("the one read returns BOTH halves: what could move, and what is stopping the rest", () => {
   const rows = [{ number: 1931, body: "Not-before: 2099-01-01" }, { number: 3 },
     { number: 1926, blockedBy: { nodes: [{ number: 1918, state: "OPEN" }] } }];
-  const state = readOpenRowState(() => JSON.stringify(rows));
+  const state = openRowState(rows);
   assert.equal(state?.reachable, 1, "the count is unchanged -- a waiting row is still not startable");
   assert.equal(state?.waiting.total, 2, "and now the gate can also SAY what the other two are waiting on");
 });
