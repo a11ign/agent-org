@@ -22,6 +22,12 @@ Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin
 # the failure otherwise is silent, forever.
 Environment=HOME=/home/agent
 
+# #1911: `lab:fetch` needs A11Y_PVE_KEY (and A11Y_CONTROL_HOST_FILE), which a shell gets from ~/.zshenv and a
+# unit never does -- the unit failed every firing without them. The `-` is deliberate: a missing file is
+# left to corpus-release-nightly.mjs's own refusal, which names this file and says why, rather than to
+# systemd's generic "Failed to load environment files".
+EnvironmentFile=-%h/.config/a11ign/fleet.env
+
 # UPDATED FIRST, same as a11ign-fleet-gated-nightly.service's own ExecStartPre -- a firing against a stale
 # checkout could release a snapshot fetched by yesterday's `lab-fetch.yml`. The `-` prefix makes a failed
 # update non-fatal: a firing against a slightly stale checkout is worth far more than no firing at all.
