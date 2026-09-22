@@ -1,0 +1,23 @@
+[Unit]
+# THE CLOCK BEHIND THE DAILY BOARD EDITION -- #1234, shipped here by #1993. See
+# a11ign-board-report.service for why the dispatch lives on this host rather than on GitHub's own
+# `schedule` trigger, and for what `host:check` was about to do to this pair while it was un-shipped.
+Description=Daily 07:10 London dispatch of the a11y-witness board edition (#1234)
+
+[Timer]
+# LONDON, NOT UTC, and the timezone is in the expression rather than resolved once into a UTC hour: the
+# edition is read against a London working morning, so it must not drift an hour at each BST boundary.
+# `board-report.yml`'s own schedule keeps BOTH 07:00 and 08:00 UTC for exactly that reason and gates on
+# London's actual hour; this unit says the hour it means and lets systemd do the conversion.
+#
+# :10 rather than :00 for the same reason #965 moved the workflow's schedule off the hour -- the top of
+# the hour is where every other clock fires.
+OnCalendar=*-*-* 07:10:00 Europe/London
+
+# A HOST THAT WAS ASLEEP OR REBOOTING AT 07:10 STILL PUBLISHES. Without this a missed firing is simply
+# lost, and a missing edition looks exactly like a quiet day. The workflow's own `concurrency` group is
+# one edition per day, so a late catch-up updates the same Discussion rather than racing it.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

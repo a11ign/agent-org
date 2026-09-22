@@ -37,6 +37,7 @@ import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
 import { localImports, stripComments } from "../../guards/src/local-import-closure.mjs";
+import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
 import { SPAWNS_GH } from "./acceptance-commands.mjs";
 
 /** Where the repository keeps the units it ships. */
@@ -147,6 +148,28 @@ export function unitEntryPoints(unitText, deps = {}) {
   return [...new Set(execCommands(unitText).flatMap((command) => entriesFromCommand(command, deps)))];
 }
 
+/** The only three tools `entriesFromCommand` can follow into a repository file. */
+const ANALYSABLE_TOOLS = new Set(["node", "npm", "npx"]);
+
+/**
+ * AN `Exec*=` COMMAND THIS REPOSITORY CANNOT READ -- and NOT ASKED must not report as CLEAN (#1993).
+ *
+ * MEASURED 2026-09-22. `a11ign-board-report.service` starts `/home/agent/.local/bin/board-report-dispatch.sh`,
+ * a host script this tree does not ship. `unitEntryPoints` follows `node <file>` and `npm run <script>`
+ * and nothing else, so for this unit it returned the empty list -- and an empty list of entry points
+ * reached no `gh` spawn, which `unitsSpendingGh` scored exactly as it scores a unit that genuinely
+ * spawns nothing. The unit spends a human's REST pool daily on two `gh` subcommands.
+ *
+ * So the question a bare path answers is UNKNOWN, not NO, and the conservative reading is the only safe
+ * one: a unit that starts something this repository cannot read must SAY which account it acts as,
+ * because nothing here can ever work out whether it needs to.
+ * @param {string} unitText @returns {string[]}
+ */
+export function opaqueCommands(unitText) {
+  return execCommands(unitText)
+    .filter((command) => !ANALYSABLE_TOOLS.has(basename(command.split(/\s+/).filter(Boolean)[0] ?? "")));
+}
+
 /**
  * `npm run <script>` SPAWNED FROM CODE, which no import edge carries.
  * `corpus-release-nightly.mjs` reaches `gh` only through `npmCliInvocation("npm", ["run",
@@ -194,7 +217,10 @@ export function ghSpawnReachedFrom(entry, { read = readFileSync, exists = exists
  * @param {{ shippedDir?: string, readDir?: typeof readdirSync, read?: typeof readFileSync,
  *           exists?: typeof existsSync, imports?: typeof localImports, repoRoot?: string,
  *           scripts?: Record<string, string> }} [deps]
- * @returns {{unit: string, via: string, declared: boolean}[]}
+ * TWO WAYS IN, and the second is #1993's: `opaque` says whether the `gh` spawn was READ or merely
+ * NOT RULED OUT. A unit whose `ExecStart` this repository cannot follow is charged for an identity on
+ * the second footing, which is the only reading that does not score "we did not look" as "it is fine".
+ * @returns {{unit: string, via: string, opaque: boolean, declared: boolean}[]}
  */
 export function unitsSpendingGh({ shippedDir = SHIPPED_DIR, readDir = readdirSync,
   read = readFileSync, ...rest } = {}) {
@@ -202,11 +228,15 @@ export function unitsSpendingGh({ shippedDir = SHIPPED_DIR, readDir = readdirSyn
     .filter((unit) => unit.endsWith(".service"))
     .flatMap((unit) => {
       const text = String(read(join(shippedDir, unit)));
-      const via = unitEntryPoints(text, rest)
+      const declared = text.split("\n").some((l) => IDENTITY_LINE.test(l.trim()));
+      const reached = unitEntryPoints(text, rest)
         .map((entry) => ghSpawnReachedFrom(entry, { read, ...rest }))
         .find((hit) => hit !== null);
+      // READ FIRST, AND ONLY THEN NOT-RULED-OUT: a unit this repository can follow is reported by what
+      // it actually reaches, and the opaque command is the fallback rather than a second finding.
+      const via = reached ?? opaqueCommands(text)[0];
       if (!via) return [];
-      return [{ unit, via, declared: text.split("\n").some((l) => IDENTITY_LINE.test(l.trim())) }];
+      return [{ unit, via, opaque: !reached, declared }];
     });
 }
 
@@ -218,15 +248,23 @@ export function unitsSpendingGh({ shippedDir = SHIPPED_DIR, readDir = readdirSyn
 export function identityDrift(deps = {}) {
   return unitsSpendingGh(deps)
     .filter((u) => !u.declared)
-    .map(({ unit, via }) => ({ unit, problem: "NO IDENTITY DECLARED",
-      detail: `it reaches a \`gh\` spawn (via ${via.replace(REPO_ROOT, "")}) and carries no `
-        + "`Environment=GH_CONFIG_DIR=...` line. A systemd unit has no `HERDR_WORKSPACE_ID`, so the "
-        + "`gh` wrapper falls back to `~/.config/gh` -- a person's account -- and the unit spends a "
-        + "human's rate limit until it runs out, then refuses silently (#1974). Add "
-        + "`Environment=GH_CONFIG_DIR=/home/agent/workers/gh` to the unit." }));
+    .map(({ unit, via, opaque }) => ({ unit, problem: "NO IDENTITY DECLARED",
+      detail: `${opaque
+        ? `it starts \`${via}\`, which this repository does not ship and cannot read, so whether it `
+          + "spawns `gh` is UNKNOWN rather than no (#1993)"
+        : `it reaches a \`gh\` spawn (via ${via.replace(REPO_ROOT, "")})`}`
+        + " and carries no `Environment=GH_CONFIG_DIR=...` line. A systemd unit has no "
+        + "`HERDR_WORKSPACE_ID`, so the `gh` wrapper falls back to `~/.config/gh` -- a person's "
+        + "account -- and the unit spends a human's rate limit until it runs out, then refuses "
+        + "silently (#1974). Add `Environment=GH_CONFIG_DIR=/home/agent/workers/gh` to the unit, or "
+        + "`/home/agent/.config/gh` where the human account is the one that can do the job (the "
+        + "corpus backup's own comment is the worked example)." }));
 }
 
-/** @typedef {{unit: string, problem: string, detail: string, revertsIdentity?: boolean}} Finding */
+/**
+ * @typedef {{unit: string, problem: string, detail: string, revertsIdentity?: boolean,
+ *            removesUnit?: boolean}} Finding
+ */
 
 /**
  * ONE UNIT'S THREE ANSWERS, as data rather than as a sentence.
@@ -408,11 +446,19 @@ export function systemdUserAvailable(systemctl = defaultSystemctl) {
  * `readDir` RATHER THAN `read`, and the name is load-bearing: `hostUnitDrift` hands ONE deps bag to
  * `unitState` (whose `read` is `readFileSync`) and to this (whose read is `readdirSync`). Sharing the
  * name makes the bag's type unsatisfiable -- tsc's own words, "Type 'utf8' has no properties in common".
- * @param {{ shippedDir?: string, installedDir?: string, readDir?: typeof readdirSync }} [deps]
+ * NOT SHIPPED HAS TWO CAUSES AND ONLY ONE OF THEM IS RETIREMENT (#1993). Until this row the check had
+ * ONE BIT -- "installed and not in the tree" -- and spelled it *NO LONGER SHIPPED*, which is an
+ * inference about the past and not something the bit can carry. On 2026-09-22 it printed that over
+ * `a11ign-board-report.{service,timer}`, hand-installed on 2026-09-18 and never committed: the LIVE
+ * daily board dispatch, firing at 07:10 every morning. The remedy it named deletes them, and nothing
+ * would have reported the loss except an edition that never arrived. `git log --diff-filter=D` is what
+ * separates the two, so the report says which it found rather than assuming the safe-looking one.
+ * @param {{ shippedDir?: string, installedDir?: string, readDir?: typeof readdirSync,
+ *           git?: (args: string[]) => string }} [deps]
  * @returns {Finding[]}
  */
 export function orphanedUnits({ shippedDir = SHIPPED_DIR, installedDir = INSTALLED_DIR,
-  readDir = readdirSync } = {}) {
+  readDir = readdirSync, git = defaultGit } = {}) {
   const shipped = new Set(shippedUnits(shippedDir, { read: readDir }));
   /** @type {string[]} */
   let installed;
@@ -428,11 +474,70 @@ export function orphanedUnits({ shippedDir = SHIPPED_DIR, installedDir = INSTALL
     .filter((n) => n.endsWith(".service") || n.endsWith(".timer"))
     .filter((n) => !shipped.has(n))
     .sort()
-    .map((unit) => ({ unit, problem: "ORPHANED",
-      detail: "installed on this host and NO LONGER SHIPPED by this repository. A deleted unit file does "
-        + "not uninstall itself, so this is still running on whatever schedule it had -- and if something "
-        + "replaced it, both are now firing. `npm run host:install` removes it." }));
+    .map((unit) => orphanFinding(unit, retiredHere(unit, { shippedDir, git })));
 }
+
+/**
+ * DID A COMMIT HERE EVER DELETE THIS UNIT FILE? `true` retired, `false` never ours, `null` unanswerable.
+ *
+ * THREE VALUES AND NOT TWO, because a `git` that cannot answer (no history, a stub path in a test, a
+ * checkout without the pack) would otherwise fall into whichever of the two branches the `catch` picked
+ * -- and if it picked `retired` the check would recommend deleting a live unit for a second reason.
+ * @param {string} unit
+ * @param {{ shippedDir?: string, git?: (args: string[]) => string }} [deps]
+ * @returns {boolean | null}
+ */
+export function retiredHere(unit, { shippedDir = SHIPPED_DIR, git = defaultGit } = {}) {
+  try {
+    if (git(["log", "--diff-filter=D", "--format=%H", "-1", "--", join(shippedDir, unit)]).trim() !== "") {
+      return true;
+    }
+    // A SHALLOW CHECKOUT CANNOT SAY "NEVER", and it answers the question as if it could.
+    //
+    // MEASURED 2026-09-22 in CI, on the first run of this code: `reusable-acceptance.yml` checks out at
+    // the default depth ON PURPOSE ("NO `fetch-depth: 0` HERE, DELIBERATELY -- this job never runs `git
+    // diff`"), so `--diff-filter=D` saw no commits at all and reported `a11ign-fleet-gated-nightly.timer`
+    // -- deleted by #1941, which this function answers `true` for on a full clone -- as NEVER SHIPPED.
+    // An empty log means "no deletion IN WHAT I CAN SEE", and how much that is was chosen by whoever
+    // cloned, not by this question. So the absence is only evidence when the history is whole.
+    return git(["rev-parse", "--is-shallow-repository"]).trim() === "true" ? null : false;
+  } catch {
+    return null;
+  }
+}
+
+/** @param {string} unit @param {boolean | null} retired @returns {Finding} */
+function orphanFinding(unit, retired) {
+  const stillRunning = "A unit file is not a schedule: removing one from the repository does not "
+    + "uninstall it, so this is still running on whatever schedule it had -- and if something replaced "
+    + "it, both are now firing.";
+  if (retired === true) {
+    return { unit, problem: "ORPHANED -- RETIRED HERE",
+      detail: `installed on this host and NO LONGER SHIPPED by this repository: a commit deleted its `
+        + `unit file, so retiring it was the intent. ${stillRunning} \`npm run host:install\` removes it.` };
+  }
+  return { unit, removesUnit: true,
+    problem: retired === false ? "ORPHANED -- NEVER SHIPPED HERE" : "ORPHANED -- HISTORY UNREADABLE",
+    detail: `installed on this host and NOT SHIPPED by this repository -- and ${retired === false
+      ? "NO COMMIT HERE EVER SHIPPED IT, so it was installed by hand and this tree has never been able "
+        + "to see what it does"
+      : "this checkout's history could not be read, so whether it was ever ours is UNKNOWN"}. `
+      + `${stillRunning} DO NOT reach for \`npm run host:install\`: that command DELETES it, and a unit `
+      + "the repository never had is exactly the kind that is still doing something nobody here knows "
+      + "about (#1993 -- this is how the live daily board dispatch came to be offered for deletion). "
+      + "Read the unit and its journal first; then either ship it under packages/agent-org/host/ or "
+      + "confirm it is dead." };
+}
+
+/**
+ * `git`, ASKED ABOUT THIS REPOSITORY AND NOT THE CALLER'S. `sandboxGitEnv()` drops every inherited
+ * `GIT_*`, because `git` exports `GIT_DIR` into every hook environment -- and `host:check` is exactly
+ * the kind of command a hook or a merge worktree runs, where an inherited `GIT_DIR` would answer the
+ * "was this unit ever shipped?" question about a different repository entirely.
+ * @param {string[]} args
+ */
+const defaultGit = (args) =>
+  execFileSync("git", ["-C", REPO_ROOT, ...args], { encoding: "utf8", env: sandboxGitEnv() });
 
 /** Units this repository owns. The host runs others; those are not ours to have an opinion about. */
 export const ORG_UNIT_PREFIX = "a11ign-";
@@ -470,12 +575,13 @@ const defaultSystemctl = (args) =>
  * an installer.
  * @param {{ shippedDir?: string, installedDir?: string, systemctl?: (args: string[]) => string,
  *           copy?: typeof copyFileSync, mkdir?: typeof mkdirSync, rm?: typeof rmSync,
- *           readDir?: typeof readdirSync, out?: (line: string) => void }} [deps]
+ *           readDir?: typeof readdirSync, git?: (args: string[]) => string,
+ *           out?: (line: string) => void }} [deps]
  * @returns {string[]} the units it installed
  */
 export function hostUnitsInstall({ shippedDir = SHIPPED_DIR, installedDir = INSTALLED_DIR,
   systemctl = defaultSystemctl, copy = copyFileSync, mkdir = mkdirSync, rm = rmSync,
-  readDir = readdirSync, out = (l) => process.stdout.write(l) } = {}) {
+  readDir = readdirSync, git = defaultGit, out = (l) => process.stdout.write(l) } = {}) {
   // `readDir` IS INJECTED THROUGH TO BOTH DISCOVERIES, and the first version of this hard-wired
   // `readdirSync` into the `orphanedUnits` call below. A test could not reach the removal path at all,
   // so deleting the ENTIRE removal loop killed zero tests -- it passed vacuously, which is the same
@@ -490,7 +596,7 @@ export function hostUnitsInstall({ shippedDir = SHIPPED_DIR, installedDir = INST
   // first because deleting the file leaves an enabled symlink in `timers.target.wants` behind, and a
   // dangling want is a warning on every subsequent `daemon-reload` -- noise that trains an operator to
   // ignore this command's output.
-  for (const { unit } of orphanedUnits({ shippedDir, installedDir, readDir })) {
+  for (const { unit } of orphanedUnits({ shippedDir, installedDir, readDir, git })) {
     if (unit.endsWith(".timer")) systemctl(["disable", "--now", unit]);
     rm(join(installedDir, unit), { force: true });
     out(`REMOVED ${unit} -- no longer shipped by this repository\n`);
@@ -587,12 +693,17 @@ export function driftReport(drift, asked = true) {
 function remedy(drift) {
   const line = "  Remedy for all of them: npm run host:install\n";
   const reverts = drift.filter((d) => d.revertsIdentity);
-  if (reverts.length === 0) return line;
-  return "  !! DO NOT RUN THE REMEDY YET -- it would revert an identity on this host.\n"
+  const removes = drift.filter((d) => d.removesUnit);
+  if (reverts.length === 0 && removes.length === 0) return line;
+  return "  !! DO NOT RUN THE REMEDY YET -- it would change this host in a way nothing here would\n"
+    + "     report afterwards.\n"
     + reverts.map((d) => `     ${d.unit} is installed with a \`GH_CONFIG_DIR\` the repository does not `
-      + "ship,\n     and `host:install` copies the repository over the host.\n").join("")
-    + "     Land that line in packages/agent-org/host/ first; then this command is safe and fixes\n"
-    + "     everything above.\n"
+      + "ship,\n     and `host:install` copies the repository over the host. Land that line in\n"
+      + "     packages/agent-org/host/ first.\n").join("")
+    + removes.map((d) => `     ${d.unit} would be DELETED, and this repository has no record of ever\n`
+      + "     shipping it -- so nothing here knows what stops when it goes. Read it and its journal\n"
+      + "     first, then ship it under packages/agent-org/host/ or confirm it is dead.\n").join("")
+    + "     Once the lines above are settled this command is safe and fixes everything above.\n"
     + line;
 }
 
