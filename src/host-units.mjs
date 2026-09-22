@@ -33,12 +33,17 @@
 // command either way.
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, copyFileSync, mkdirSync, rmSync, existsSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
+import { localImports, stripComments } from "../../guards/src/local-import-closure.mjs";
+import { SPAWNS_GH } from "./acceptance-commands.mjs";
 
 /** Where the repository keeps the units it ships. */
 export const SHIPPED_DIR = fileURLToPath(new URL("../host/", import.meta.url));
+
+/** The checkout every shipped unit names as its `WorkingDirectory`, so an `ExecStart` path resolves. */
+export const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 
 /** Where a systemd USER unit has to live to be run. */
 export const INSTALLED_DIR = `${process.env.HOME ?? ""}/.config/systemd/user`;
@@ -59,6 +64,170 @@ export function shippedUnits(dir = SHIPPED_DIR, { read = readdirSync } = {}) {
   }
 }
 
+// --- #1974: WHICH ACCOUNT A UNIT SPENDS, DECLARED RATHER THAN INHERITED ------------------------------
+//
+// MEASURED 2026-09-22. `a11ign-work-tick.service` ran with no `GH_CONFIG_DIR`, so the work gate
+// authenticated as `DanBeckDev` -- a PERSON -- and spent that human account's 5,000 GraphQL requests.
+// The gate then refused correctly and silently ("CANNOT ASK: neither the pull-request list nor the Ready
+// rows could be read"), which from inside the org is indistinguishable from a quiet queue.
+//
+// IDENTITY HERE IS INHERITED FROM A DOTFILE AND NEVER DECLARED. `/home/agent/.local/bin/gh` routes by
+// `HERDR_WORKSPACE_ID` -- present in every org session, absent from every systemd unit -- and falls back
+// to `~/.config/gh`, the human account. So a unit that does not SAY which account it is cannot get the
+// right one, and nothing in this repository could see the choice being made.
+//
+// ASSERTED OVER THE UNITS ON DISK, never a hand-typed list of three. A fourth unit that spawns `gh`
+// inherits the check the day it is added, which is the only version of this that survives the next row.
+
+/** A `GH_CONFIG_DIR` declaration -- which `gh` config, and so which account, a unit acts as. */
+const IDENTITY_LINE = /^Environment=GH_CONFIG_DIR=/;
+
+/**
+ * Every `Exec*=` command a unit runs, with systemd's own prefixes stripped (`-` ignore failure,
+ * `@` argv[0] override, `+`/`!` privilege). Every `Exec` directive rather than the two this row found,
+ * so an `ExecStopPost` that spends the pool is not a second incident.
+ * @param {string} unitText @returns {string[]}
+ */
+export function execCommands(unitText) {
+  return [...String(unitText ?? "").matchAll(/^Exec[A-Za-z]*=(.*)$/gm)]
+    .map((m) => m[1].trim().replace(/^[-@+!:]+/, "").trim())
+    .filter((command) => command !== "");
+}
+
+/** The repository's own npm scripts, which is how a unit's `npm run <name>` becomes a file path. */
+export function packageScripts(repoRoot = REPO_ROOT, read = readFileSync) {
+  try {
+    return /** @type {Record<string, string>} */ (JSON.parse(String(read(join(repoRoot, "package.json")))).scripts ?? {});
+  } catch {
+    // NO SCRIPTS RESOLVE, so every `npm run` command yields no entry point and `unitsSpendingGh` comes
+    // back empty. That is a SILENT PASS, and the only thing standing between it and a green suite is
+    // the non-emptiness assertion on that population -- which is why that assertion is the control and
+    // not a nicety.
+    return {};
+  }
+}
+
+/**
+ * THE FILES A SHELL COMMAND WOULD ACTUALLY RUN, following `npm run` through package.json.
+ * `ExecStart=/usr/bin/npm run corpus:snapshot` is a path to `corpus-snapshot.mjs` with one hop in
+ * between, and a check that stopped at the word `npm` would see no entry point at all and pass.
+ * @param {string} command
+ * @param {{ repoRoot?: string, scripts?: Record<string, string>, exists?: typeof existsSync }} [deps]
+ * @returns {string[]} absolute paths, deduplicated, that exist
+ */
+export function entriesFromCommand(command, { repoRoot = REPO_ROOT, scripts = packageScripts(repoRoot),
+  exists = existsSync } = {}) {
+  /** @type {string[]} */
+  const entries = [];
+  const seen = new Set();
+  /** @param {string} text */
+  const follow = (text) => {
+    for (const stage of String(text).split(/\|\||&&|[|;]/)) {
+      const argv = stage.trim().split(/\s+/).filter(Boolean);
+      const tool = basename(argv[0] ?? "");
+      if (tool === "node" && argv[1]) entries.push(resolve(repoRoot, argv[1]));
+      else if ((tool === "npm" || tool === "npx") && argv[1] === "run" && argv[2]) followScript(argv[2]);
+    }
+  };
+  /** @param {string} name */
+  const followScript = (name) => {
+    if (seen.has(name) || typeof scripts[name] !== "string") return;
+    seen.add(name);
+    follow(scripts[name]);
+  };
+  follow(command);
+  return [...new Set(entries)].filter((entry) => exists(entry));
+}
+
+/**
+ * Every repository file a unit starts, across all of its `Exec*` directives.
+ * @param {string} unitText @param {Parameters<typeof entriesFromCommand>[1]} [deps] @returns {string[]}
+ */
+export function unitEntryPoints(unitText, deps = {}) {
+  return [...new Set(execCommands(unitText).flatMap((command) => entriesFromCommand(command, deps)))];
+}
+
+/**
+ * `npm run <script>` SPAWNED FROM CODE, which no import edge carries.
+ * `corpus-release-nightly.mjs` reaches `gh` only through `npmCliInvocation("npm", ["run",
+ * "corpus:release"])` -- an import-closure walk alone reports it clean, and it is not.
+ */
+const RUNS_NPM_SCRIPT = /["'`]npm["'`]\s*,\s*\[\s*["'`]run["'`]\s*,\s*["'`]([^"'`]+)["'`]/g;
+
+/**
+ * DOES STARTING THIS FILE REACH A `gh` SPAWN? Two edge kinds, because the repository uses both: local
+ * imports, and an `npm run` of another script. `SPAWNS_GH` is IMPORTED rather than retyped -- it is the
+ * one copy `acceptance-commands.mjs` and `gh-token-jobs.test.ts` already share, so the spawns that make
+ * a CI job need a token and the spawns that make a unit need an identity cannot drift apart.
+ *
+ * A `GH_TOKEN` read is deliberately NOT this question. A token is a credential; `GH_CONFIG_DIR` picks
+ * which stored credential `gh` loads, so only an actual `gh` spawn can get the account wrong.
+ * @param {string} entry
+ * @param {{ read?: typeof readFileSync, exists?: typeof existsSync, imports?: typeof localImports,
+ *           repoRoot?: string, scripts?: Record<string, string> }} [deps]
+ * @returns {string | null} the file whose `gh` spawn it reaches, or null
+ */
+export function ghSpawnReachedFrom(entry, { read = readFileSync, exists = existsSync,
+  imports = localImports, repoRoot = REPO_ROOT, scripts = packageScripts(repoRoot) } = {}) {
+  const seen = new Set();
+  const pending = [entry];
+  while (pending.length > 0) {
+    const file = /** @type {string} */ (pending.pop());
+    if (seen.has(file) || !exists(file)) continue;
+    seen.add(file);
+    const code = stripComments(String(read(file)));
+    if (SPAWNS_GH.test(code)) return file;
+    pending.push(...imports(file));
+    for (const [, name] of code.matchAll(RUNS_NPM_SCRIPT)) {
+      pending.push(...entriesFromCommand(`npm run ${name}`, { repoRoot, scripts, exists }));
+    }
+  }
+  return null;
+}
+
+/**
+ * EVERY SHIPPED `.service` THAT SPENDS SOMEBODY'S RATE LIMIT, and whether it says whose.
+ *
+ * The population, exported separately from the finding, because an emptiness assertion over it passes
+ * when a glob matches nothing -- so the test asserts this is non-empty and `identityDrift` is empty, and
+ * a `shippedDir` typo can no longer read as compliance.
+ * @param {{ shippedDir?: string, readDir?: typeof readdirSync, read?: typeof readFileSync,
+ *           exists?: typeof existsSync, imports?: typeof localImports, repoRoot?: string,
+ *           scripts?: Record<string, string> }} [deps]
+ * @returns {{unit: string, via: string, declared: boolean}[]}
+ */
+export function unitsSpendingGh({ shippedDir = SHIPPED_DIR, readDir = readdirSync,
+  read = readFileSync, ...rest } = {}) {
+  return shippedUnits(shippedDir, { read: readDir })
+    .filter((unit) => unit.endsWith(".service"))
+    .flatMap((unit) => {
+      const text = String(read(join(shippedDir, unit)));
+      const via = unitEntryPoints(text, rest)
+        .map((entry) => ghSpawnReachedFrom(entry, { read, ...rest }))
+        .find((hit) => hit !== null);
+      if (!via) return [];
+      return [{ unit, via, declared: text.split("\n").some((l) => IDENTITY_LINE.test(l.trim())) }];
+    });
+}
+
+/**
+ * The finding: a unit that spawns `gh` and never says as whom, so it gets the fallback account.
+ * @param {Parameters<typeof unitsSpendingGh>[0]} [deps]
+ * @returns {Finding[]}
+ */
+export function identityDrift(deps = {}) {
+  return unitsSpendingGh(deps)
+    .filter((u) => !u.declared)
+    .map(({ unit, via }) => ({ unit, problem: "NO IDENTITY DECLARED",
+      detail: `it reaches a \`gh\` spawn (via ${via.replace(REPO_ROOT, "")}) and carries no `
+        + "`Environment=GH_CONFIG_DIR=...` line. A systemd unit has no `HERDR_WORKSPACE_ID`, so the "
+        + "`gh` wrapper falls back to `~/.config/gh` -- a person's account -- and the unit spends a "
+        + "human's rate limit until it runs out, then refuses silently (#1974). Add "
+        + "`Environment=GH_CONFIG_DIR=/home/agent/workers/gh` to the unit." }));
+}
+
+/** @typedef {{unit: string, problem: string, detail: string, revertsIdentity?: boolean}} Finding */
+
 /**
  * ONE UNIT'S THREE ANSWERS, as data rather than as a sentence.
  *
@@ -70,18 +239,23 @@ export function shippedUnits(dir = SHIPPED_DIR, { read = readdirSync } = {}) {
  * @param {{ shippedDir?: string, installedDir?: string,
  *           read?: typeof readFileSync, exists?: typeof existsSync,
  *           systemctl?: (args: string[]) => string }} [deps]
- * @returns {{ unit: string, present: boolean, current: boolean | null,
+ * @returns {{ unit: string, present: boolean, current: boolean | null, identityRevert: string[],
  *             enabled: string | null, active: string | null }}
  */
 export function unitState(unit, { shippedDir = SHIPPED_DIR, installedDir = INSTALLED_DIR,
   read = readFileSync, exists = existsSync, systemctl = defaultSystemctl } = {}) {
   const installedPath = join(installedDir, unit);
   const present = exists(installedPath);
+  const shippedText = textOf(join(shippedDir, unit), read);
+  const installedText = present ? textOf(installedPath, read) : null;
   // NULL, NOT FALSE, when it is not installed. "the copy differs" and "there is no copy" are different
   // findings with different remedies, and collapsing them would report the missing unit twice.
-  const current = present ? sameBytes(join(shippedDir, unit), installedPath, read) : null;
-  if (!unit.endsWith(".timer")) return { unit, present, current, enabled: null, active: null };
-  return { unit, present, current, enabled: ask(systemctl, "is-enabled", unit),
+  const current = present ? shippedText !== null && shippedText === installedText : null;
+  const identityRevert = installedOnlyIdentity(shippedText, installedText);
+  if (!unit.endsWith(".timer")) {
+    return { unit, present, current, identityRevert, enabled: null, active: null };
+  }
+  return { unit, present, current, identityRevert, enabled: ask(systemctl, "is-enabled", unit),
     active: ask(systemctl, "is-active", unit) };
 }
 
@@ -101,13 +275,33 @@ function ask(systemctl, verb, unit) {
   }
 }
 
-/** @param {string} a @param {string} b @param {typeof readFileSync} read */
-function sameBytes(a, b, read) {
+/**
+ * A file's text, or null when it cannot be read -- which is NOT the empty string. Two unreadable files
+ * would otherwise compare equal and report a drifted host as current.
+ * @param {string} path @param {typeof readFileSync} read @returns {string | null}
+ */
+function textOf(path, read) {
   try {
-    return String(read(a)) === String(read(b));
+    return String(read(path));
   } catch {
-    return false;
+    return null;
   }
+}
+
+/**
+ * THE `GH_CONFIG_DIR` LINES `host:install` WOULD DELETE -- installed on the host, absent from the
+ * repository. This direction and not the other: the reverse (shipped, not installed) is a drift the
+ * remedy FIXES, and only this one is a drift the remedy CAUSES.
+ * @param {string | null} shippedText @param {string | null} installedText @returns {string[]}
+ */
+function installedOnlyIdentity(shippedText, installedText) {
+  const shipped = new Set(identityLines(shippedText));
+  return identityLines(installedText).filter((line) => !shipped.has(line));
+}
+
+/** @param {string | null} text @returns {string[]} */
+function identityLines(text) {
+  return String(text ?? "").split("\n").map((line) => line.trim()).filter((line) => IDENTITY_LINE.test(line));
 }
 
 /**
@@ -119,9 +313,8 @@ function sameBytes(a, b, read) {
  * a day, taking the real finding with it. The signal is a unit that IS shipped on a host that DOES run
  * systemd; everywhere else this is silent by construction.
  *
- * @param {{unit: string, present: boolean, current: boolean | null,
- *          enabled: string | null, active: string | null}[]} states
- * @returns {{unit: string, problem: string, detail: string}[]}
+ * @param {ReturnType<typeof unitState>[]} states
+ * @returns {Finding[]}
  */
 export function unitDrift(states) {
   return (states ?? []).flatMap((s) => {
@@ -130,6 +323,20 @@ export function unitDrift(states) {
         detail: `shipped in packages/agent-org/host/ and absent from ${INSTALLED_DIR}. It cannot run.` }];
     }
     if (s.current === false) {
+      // #1974: THE ONE STALE THAT MUST NOT BE FIXED BY THE REMEDY. `host:install` copies the repository
+      // OVER the host, so when the only thing the host has that the repository lacks is the line saying
+      // which account the unit spends, the remedy deletes it -- and the failure it re-creates is the
+      // silent one. Reported as its own problem rather than as detail on a STALE, because a reader
+      // scanning problem words for "is this urgent" must not read it as the ordinary case.
+      if (s.identityRevert?.length) {
+        return [{ unit: s.unit, problem: "STALE -- REINSTALLING WOULD REVERT AN IDENTITY",
+          revertsIdentity: true,
+          detail: `the installed copy carries \`${s.identityRevert.join("`, `")}\` and the repository's `
+            + "does not, so `npm run host:install` would DELETE that line. The unit would then inherit "
+            + "whatever account `gh` falls back to -- on this host a person's -- and spend a human's "
+            + "rate limit until it ran out, then refuse silently (#1974). Land the line in "
+            + "packages/agent-org/host/ FIRST, then reinstall." }];
+      }
       return [{ unit: s.unit, problem: "STALE",
         detail: "the installed copy differs from the one in the repository -- these are copies, not "
           + "symlinks, so a merged edit does NOT reach the host until it is reinstalled." }];
@@ -202,7 +409,7 @@ export function systemdUserAvailable(systemctl = defaultSystemctl) {
  * `unitState` (whose `read` is `readFileSync`) and to this (whose read is `readdirSync`). Sharing the
  * name makes the bag's type unsatisfiable -- tsc's own words, "Type 'utf8' has no properties in common".
  * @param {{ shippedDir?: string, installedDir?: string, readDir?: typeof readdirSync }} [deps]
- * @returns {{unit: string, problem: string, detail: string}[]}
+ * @returns {Finding[]}
  */
 export function orphanedUnits({ shippedDir = SHIPPED_DIR, installedDir = INSTALLED_DIR,
   readDir = readdirSync } = {}) {
@@ -320,7 +527,7 @@ export function hostUnitsInstall({ shippedDir = SHIPPED_DIR, installedDir = INST
  * SO THIS CHECKS AND CANNOT FIX. The file is outside the repository, which is exactly why it needs a
  * check: nothing here can enforce it, and nothing here would have noticed it revert.
  * @param {{ settingsPath?: string, read?: typeof readFileSync, exists?: typeof existsSync }} [deps]
- * @returns {{unit: string, problem: string, detail: string}[]}
+ * @returns {Finding[]}
  */
 export function permissionModeDrift({ settingsPath = `${process.env.HOME ?? ""}/.claude/settings.json`,
   read = readFileSync, exists = existsSync } = {}) {
@@ -351,7 +558,7 @@ export function permissionModeDrift({ settingsPath = `${process.env.HOME ?? ""}/
 /**
  * NOT ASKED and ALL CORRECT read identically as an empty list, so the report must not say the second
  * when it means the first -- that substitution is this repository's most-repeated defect.
- * @param {{unit: string, problem: string, detail: string}[]} drift
+ * @param {Finding[]} drift
  * @param {boolean} [asked] whether systemd could be asked at all
  */
 export function driftReport(drift, asked = true) {
@@ -362,7 +569,31 @@ export function driftReport(drift, asked = true) {
   if (drift.length === 0) return "host units: every shipped unit is installed, current and running.\n";
   return `host units: ${drift.length} problem(s).\n`
     + drift.map((d) => `  ${d.unit}: ${d.problem}\n    ${d.detail}\n`).join("")
-    + "  Remedy for all of them: npm run host:install\n";
+    + remedy(drift);
+}
+
+/**
+ * THE REMEDY IS SHARED, AND THAT IS THE TRAP (#1974).
+ *
+ * Every finding here names one command, which is what makes the report actionable -- and it means a
+ * session clearing two harmless ORPHANED units runs the same `host:install` that reverts an identity on
+ * a third. The trap is not that the remedy is wrong for the orphans; it is right for them. It is that
+ * nothing in between says the command is no longer safe to run blind.
+ *
+ * So the warning goes on the REMEDY LINE, not only on the finding, because the reader who gets hurt is
+ * the one who scrolled past the finding that was not theirs.
+ * @param {Finding[]} drift @returns {string}
+ */
+function remedy(drift) {
+  const line = "  Remedy for all of them: npm run host:install\n";
+  const reverts = drift.filter((d) => d.revertsIdentity);
+  if (reverts.length === 0) return line;
+  return "  !! DO NOT RUN THE REMEDY YET -- it would revert an identity on this host.\n"
+    + reverts.map((d) => `     ${d.unit} is installed with a \`GH_CONFIG_DIR\` the repository does not `
+      + "ship,\n     and `host:install` copies the repository over the host.\n").join("")
+    + "     Land that line in packages/agent-org/host/ first; then this command is safe and fixes\n"
+    + "     everything above.\n"
+    + line;
 }
 
 function main() {

@@ -22,9 +22,20 @@ WorkingDirectory=/home/agent/repos/a11y-witness
 # node and npm at /usr/bin.
 Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# `gh` reads its credentials from ~/.config/gh/hosts.yml, so HOME must be the agent's own. A user unit
-# sets this, and it is stated rather than assumed because the failure is the same silent CANNOT_ASK.
+# `gh` needs a home to find credentials under, so HOME must be the agent's own. A user unit sets this,
+# and it is stated rather than assumed because the failure is the same silent CANNOT_ASK.
 Environment=HOME=/home/agent
+
+# WHICH ACCOUNT THIS TICK SPENDS, DECLARED -- #1974. Without this line the tick authenticated as
+# `DanBeckDev`, a PERSON, and spent that human account's 5,000 GraphQL requests on 2026-09-22. The gate
+# then refused correctly and silently -- `CANNOT ASK: neither the pull-request list nor the Ready rows
+# could be read` -- which from inside the org is indistinguishable from a quiet queue.
+#
+# THE ROUTING IS IN A DOTFILE AND CANNOT REACH A UNIT. `/home/agent/.local/bin/gh` picks the workers
+# account by `HERDR_WORKSPACE_ID`, which every org session has and no systemd unit does; the wrapper's
+# fallback is `~/.config/gh`, the human. So a unit that does not say which account it is must get the
+# wrong one. Declaring it here also makes the choice visible to the repository, where the wrapper is not.
+Environment=GH_CONFIG_DIR=/home/agent/workers/gh
 
 # THE CHECKOUT IS UPDATED FIRST, AND THIS IS THE `git pull` HALF OF THE LOOP.
 #

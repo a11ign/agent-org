@@ -21,7 +21,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, systemdUserAvailable,
-  hostUnitDrift, permissionModeDrift, orphanedUnits, SHIPPED_DIR } from "../host-units.mjs";
+  hostUnitDrift, permissionModeDrift, orphanedUnits, SHIPPED_DIR, REPO_ROOT, execCommands,
+  entriesFromCommand, ghSpawnReachedFrom, identityDrift, unitsSpendingGh } from "../host-units.mjs";
 
 const SYSTEMD_OK = () => "LANG=C\n";
 const NO_SYSTEMD = () => { throw new Error("systemctl: command not found"); };
@@ -327,4 +328,162 @@ test("#1951: the installer REMOVES an orphan, disabling the timer before deletin
   assert.deepEqual(calls.filter((c) => c[0] === "enable"),
     [["enable", "--now", "a11ign-work-tick.timer"]],
     "and the shipped timer is still enabled afterwards -- removal must not skip the install");
+});
+
+// --- #1974: a unit that spawns `gh` and never says as whom gets a person's account -------------------
+//
+// MEASURED 2026-09-22. `a11ign-work-tick.service` ran with no `GH_CONFIG_DIR`, so the work gate
+// authenticated as `DanBeckDev` -- a PERSON -- and spent that human account's 5,000 GraphQL requests.
+// The gate then refused correctly and SILENTLY ("CANNOT ASK: neither the pull-request list nor the Ready
+// rows could be read"), which from inside the org is indistinguishable from a quiet queue.
+//
+// The routing lives in `~/.local/bin/gh` and keys on `HERDR_WORKSPACE_ID` -- which every org session has
+// and no systemd unit does. A unit that does not DECLARE its account cannot get the right one, and the
+// repository could not see the choice being made at all: `GH_CONFIG_DIR` appeared nowhere in this tree.
+
+test("#1974: every shipped unit that spawns `gh` declares which account -- over the units on disk", () => {
+  // THE POSITIVE CONTROL COMES FIRST, and it is load-bearing rather than decorative. `identityDrift()`
+  // derives its population from a real directory walk and a real import closure: a wrong `shippedDir`, a
+  // package.json whose scripts do not resolve, or a glob that matches nothing all yield an EMPTY
+  // population, and an empty population has no undeclared members. The assertion below would pass over a
+  // check that had stopped working, which is the failure this repository keeps re-learning.
+  const spending = unitsSpendingGh();
+  assert.ok(spending.length >= 2,
+    `the population must not be empty or this check passes vacuously; found ${JSON.stringify(spending)}`);
+  assert.deepEqual(identityDrift(), [],
+    "a unit reaching a `gh` spawn with no Environment=GH_CONFIG_DIR= line inherits `~/.config/gh` -- a "
+    + "person's account -- and spends a human's rate limit until it runs out");
+});
+
+test("#1974 NEGATIVE CONTROL: an undeclared gh-spawning unit IS a finding, and names its entry point", () => {
+  // The assertion above is an emptiness assertion, so this is where it is shown capable of failing.
+  // Stub directories, so the finding is produced by the rule rather than by the repository's own state.
+  const unit = "[Service]\nExecStart=/usr/bin/node packages/agent-org/src/work-tick.mjs\n";
+  const [f] = identityDrift({
+    shippedDir: "/shipped",
+    readDir: (() => ["a11ign-spends.service"]) as never,
+    read: ((p: string) => (String(p).startsWith("/shipped") ? unit : "execFileSync(\"gh\", [])")) as never,
+  });
+  assert.equal(f.unit, "a11ign-spends.service");
+  assert.equal(f.problem, "NO IDENTITY DECLARED");
+  assert.match(f.detail, /work-tick\.mjs/, "it names the entry point, not just the unit");
+  assert.match(f.detail, /Environment=GH_CONFIG_DIR=/,
+    "and the line to add -- a refusal nobody can follow is a refusal nobody acts on");
+  assert.deepEqual(identityDrift({
+    shippedDir: "/shipped",
+    readDir: (() => ["a11ign-spends.service"]) as never,
+    read: ((p: string) => (String(p).startsWith("/shipped")
+      ? `${unit}Environment=GH_CONFIG_DIR=/home/agent/workers/gh\n`
+      : "execFileSync(\"gh\", [])")) as never,
+  }), [], "and the SAME unit with the line is not a finding -- the rule reads the declaration");
+});
+
+test("#1974: a `.timer` is not asked for an identity -- it starts a service, it spawns nothing", () => {
+  assert.deepEqual(identityDrift({
+    shippedDir: "/shipped",
+    readDir: (() => ["a11ign-x.timer"]) as never,
+    read: (() => "[Timer]\nOnUnitActiveSec=2min\n") as never,
+  }), [], "charging a timer for its service's spawns would demand the line in two places");
+});
+
+test("#1974: systemd's Exec prefixes are stripped, or `-npm` resolves to nothing and the unit reads clean", () => {
+  // `ExecStartPre=-/usr/bin/npm run primary:update` -- the `-` means "ignore failure", not a program
+  // called `-/usr/bin/npm`. A parser that kept it finds no entry point, and a unit whose only gh-spawning
+  // command carried a prefix would pass while spending a person's pool.
+  assert.deepEqual(execCommands("[Service]\nExecStartPre=-/usr/bin/npm run primary:update\n"
+    + "ExecStart=/usr/bin/node a.mjs\nEnvironment=HOME=/home/agent\n"),
+  ["/usr/bin/npm run primary:update", "/usr/bin/node a.mjs"]);
+  assert.deepEqual(execCommands("[Service]\nExecStop=@/bin/true stop\n"), ["/bin/true stop"],
+    "`@` (argv[0] override) too, and ExecStop -- every Exec directive, so a fourth kind is not a fourth incident");
+});
+
+test("#1974: `npm run <script>` is followed through package.json to the file it actually starts", () => {
+  // `ExecStart=/usr/bin/npm run corpus:snapshot` is a path to a .mjs with one hop in between. A check
+  // that stopped at the word `npm` would find no entry point in two of this repo's three units.
+  const entries = entriesFromCommand("/usr/bin/npm run work:tick", {
+    repoRoot: "/repo",
+    scripts: { "work:tick": "node packages/agent-org/src/work-gate.mjs | node packages/agent-org/src/wake.mjs" },
+    exists: (() => true) as never,
+  });
+  assert.deepEqual(entries,
+    ["/repo/packages/agent-org/src/work-gate.mjs", "/repo/packages/agent-org/src/wake.mjs"],
+    "and BOTH sides of the pipeline -- `work:tick` is two programs and either of them can spend the pool");
+  assert.deepEqual(entriesFromCommand("/usr/bin/npm run nope",
+    { repoRoot: "/repo", scripts: {}, exists: (() => true) as never }), [],
+  "an unknown script resolves to nothing rather than to a guess");
+});
+
+test("#1974: the `npm run` edge inside CODE is followed -- an import walk alone reports this unit clean", () => {
+  // corpus-release-nightly.mjs reaches `gh` ONLY through `npmCliInvocation("npm", ["run",
+  // "corpus:release"])`. There is no import edge to follow, so a closure walk that knew only about
+  // imports returned NO gh for it -- measured, before this edge existed -- and the nightly would have
+  // shipped undeclared while the check said it was fine.
+  const nightly = join(REPO_ROOT, "packages/lab/scripts/corpus-release-nightly.mjs");
+  const hit = ghSpawnReachedFrom(nightly);
+  assert.ok(hit, "the nightly reaches a `gh` spawn");
+  assert.match(String(hit), /corpus-release\.mjs$/,
+    "through the script it SPAWNS, which no import of its own names");
+  assert.equal(ghSpawnReachedFrom(join(REPO_ROOT, "packages/agent-org/src/update-primary.mjs")), null,
+    "POSITIVE CONTROL: a unit entry point that does NOT touch `gh` is not charged for one");
+});
+
+// --- #1974, the trap: the remedy every finding names is the thing that re-breaks it ------------------
+//
+// The units are COPIES, so `host:install` writes the repository over the host. On 2026-09-22 the host
+// carried the identity fix and the repository did not, while two unrelated ORPHANED units sat in the
+// same report under the same one-line remedy. The next session to clear the orphans would have run the
+// recommended command and silently reverted the work gate's account in the same breath.
+
+const staleWithIdentity = () => unitState("a11ign-work-tick.service", {
+  exists: (() => true) as never,
+  read: ((p: string) => (String(p).startsWith(SHIPPED_DIR)
+    ? "[Service]\nEnvironment=HOME=/home/agent\n"
+    : "[Service]\nEnvironment=HOME=/home/agent\nEnvironment=GH_CONFIG_DIR=/home/agent/workers/gh\n")) as never,
+});
+
+test("#1974: a STALE whose diff is an identity the HOST has and the repo lacks is its own problem", () => {
+  const state = staleWithIdentity();
+  assert.deepEqual(state.identityRevert, ["Environment=GH_CONFIG_DIR=/home/agent/workers/gh"],
+    "the line itself survives to the message -- a reader has to be able to paste it back");
+  const [f] = unitDrift([state]);
+  assert.equal(f.problem, "STALE -- REINSTALLING WOULD REVERT AN IDENTITY",
+    "its own problem word, not a detail on the ordinary STALE: a reader scanning for urgency reads these");
+  assert.equal(f.revertsIdentity, true);
+  assert.match(f.detail, /would DELETE that line/);
+  assert.match(f.detail, /host\/ FIRST/, "and says what to do instead of the remedy");
+});
+
+test("#1974: the DIRECTION matters -- repo-has/host-lacks is the drift the remedy FIXES", () => {
+  const state = unitState("a11ign-work-tick.service", {
+    exists: (() => true) as never,
+    read: ((p: string) => (String(p).startsWith(SHIPPED_DIR)
+      ? "[Service]\nEnvironment=GH_CONFIG_DIR=/home/agent/workers/gh\n"
+      : "[Service]\n")) as never,
+  });
+  assert.deepEqual(state.identityRevert, []);
+  const [f] = unitDrift([state]);
+  assert.equal(f.problem, "STALE",
+    "this is exactly what `host:install` is for; shouting here would train a reader to ignore the shout");
+});
+
+test("#1974: the REMEDY LINE carries the warning, because the reader is there for the orphans", () => {
+  // The trap is not that `host:install` is wrong for the orphans -- it is right for them. It is that a
+  // session clearing two harmless ORPHANED units runs the same command, having scrolled past a finding
+  // that was not theirs. So the stop has to be where every reader ends up.
+  const report = driftReport([
+    ...unitDrift([staleWithIdentity()]),
+    { unit: "a11ign-board-report.timer", problem: "ORPHANED", detail: "no longer shipped." },
+  ]);
+  assert.match(report, /DO NOT RUN THE REMEDY YET/);
+  assert.match(report, /a11ign-work-tick\.service is installed with a `GH_CONFIG_DIR`/,
+    "and names WHICH unit, so a reader with three findings knows which one is the live wire");
+  assert.ok(report.indexOf("DO NOT RUN") < report.indexOf("npm run host:install\n"),
+    "ABOVE the command, not below it -- a warning under the thing it warns about is read afterwards");
+});
+
+test("#1974 POSITIVE CONTROL: ordinary findings still get the plain one-line remedy", () => {
+  const report = driftReport([{ unit: "a11ign-x.timer", problem: "ORPHANED", detail: "no longer shipped." }]);
+  assert.match(report, /Remedy for all of them: npm run host:install/);
+  assert.doesNotMatch(report, /DO NOT RUN/,
+    "a warning on every report is a warning on no report");
 });

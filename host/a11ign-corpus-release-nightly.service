@@ -17,10 +17,23 @@ WorkingDirectory=/home/agent/repos/a11y-witness
 # `corpus:release`) `gh` and `tar` -- none of them on a unit's default PATH.
 Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# `gh` reads its credentials from ~/.config/gh/hosts.yml and Ansible its own inventory/vault state from the
-# agent's home -- stated rather than assumed, for the identical reason the other two host units state it:
-# the failure otherwise is silent, forever.
+# `gh` needs a home to find credentials under, and Ansible its own inventory/vault state from the agent's
+# home -- stated rather than assumed, for the identical reason the other two host units state it: the
+# failure otherwise is silent, forever.
 Environment=HOME=/home/agent
+
+# WHICH ACCOUNT THIS NIGHTLY SPENDS, DECLARED -- #1974. THE HUMAN ONE, AND THAT IS THE RIGHT ANSWER HERE
+# rather than the exception to it. `corpus:release` writes releases to `a11ign/corpus-backups`, the
+# owner's own private repository; measured 2026-09-22, `a11ign-ai-workers` has `pull` there and NOT
+# `push`, and every release on it since 2026-09-06 was created by `DanBeckDev`. Pointing this unit at the
+# workers config would 403 on `gh release create` and take the offsite backup down.
+#
+# So the line does not change who this runs as. It changes the fact from INHERITED to DECLARED: without
+# it the account comes from `~/.local/bin/gh`'s fallback -- a dotfile outside this tree, invisible to the
+# repository -- and the identity the backup depends on is one `chmod` away from being nobody's decision.
+# a11ign-work-tick.service's own #1974 comment is the case where the fallback was WRONG; this is the case
+# where it was right and still unstated. Both are the same defect.
+Environment=GH_CONFIG_DIR=/home/agent/.config/gh
 
 # #1911: `lab:fetch` needs A11Y_PVE_KEY (and A11Y_CONTROL_HOST_FILE), which a shell gets from its .zshenv and a
 # unit never does -- the unit failed every firing without them. The `-` is deliberate: a missing file is
