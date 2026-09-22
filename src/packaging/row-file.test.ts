@@ -26,11 +26,11 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { regionRefusalReason, declaresRelease, outOfReleaseArgv, labelsOutOfRelease, OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE }
   from "../row-file.mjs";
 import { declaredRegionFiles } from "../region-paths.mjs";
-import { extractAcceptanceSection, fleetOrLabAcceptance } from "../acceptance-commands.mjs";
+import { bulletOnlyFleetMention, extractAcceptanceSection, fleetOrLabAcceptance } from "../acceptance-commands.mjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendFiledBy, boardAndVerify, boardingFor, bodyFromArgv, createIssue, directoryRegionWarning, fetchIssueBoardStatus, acceptanceShapeRefusal, fileRefusalReason, issueNumberFromUrl, labelRefusal, labelValuesFromArgv, laneLabelsFor, milestoneRefusal, openCheckTranscriptRefusal, sessionFromArgv, slashlessDirectoryWarning, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy, withoutLabels } from "../row-file.mjs";
+import { appendFiledBy, boardAndVerify, boardingFor, bodyFromArgv, createIssue, directoryRegionWarning, fetchIssueBoardStatus, acceptanceShapeRefusal, fileRefusalReason, issueNumberFromUrl, labelRefusal, labelValuesFromArgv, laneLabelsFor, milestoneRefusal, withAcceptanceLane, openCheckTranscriptRefusal, sessionFromArgv, slashlessDirectoryWarning, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy, withoutLabels } from "../row-file.mjs";
 import { filedByLine } from "../row-claim.mjs";
 import { REPO } from "../../../../scripts/repo-identity.mjs";
 
@@ -1083,6 +1083,134 @@ test("#1241: a clause below the first line is still read", () => {
     + "2. Another thing.\n3. `npm run fleet:status` reports every box green.\n";
   assert.match(String(fleetOrLabAcceptance(body)), /reaches the fleet/,
     "reading only the first line is what made both founding cases answer null");
+});
+
+/**
+ * #1912: A NAMED PATTERN IN A BULLET DESCRIBES A TEST; IN A FENCE OR A NUMBERED CLAUSE IT IS THE WORK.
+ *
+ * #1911 was filed with a plain rstest Acceptance whose bullet said the test asserts a refusal "when
+ * `A11Y_PVE_KEY` is absent", and came out `lane:any` AND `lane:orchestrator` -- refusing every engineer
+ * a row that existed so `orchestrator` need not build it.
+ */
+// #1911's Acceptance as filed, verbatim (`gh issue view 1911`, 2026-09-22).
+const ROW_1911_ACCEPTANCE = "## Acceptance\n\n```bash\n"
+  + "npx rstest run --config scripts/rstest/rstest.config.mjs \\\n"
+  + "  --include packages/lab/src/gates/corpus-release-nightly.test.ts \\\n"
+  + "  --include packages/lab/src/packaging/host-units.test.ts\n```\n\n"
+  + "The run passes, and it includes at least two new tests:\n"
+  + "- One asserts that the script exits 2 with the `fleet.env` refusal when `A11Y_PVE_KEY` is absent.\n"
+  + "- One asserts that the fetch-failure refusal carries text that the failing command wrote only to stdout.\n";
+
+test("#1912: #1911's Acceptance -- the Proxmox key named only in a bullet -- derives no fleet/lab reason", () => {
+  assert.equal(fleetOrLabAcceptance(ROW_1911_ACCEPTANCE), null,
+    "a bullet saying what a unit test asserts about the key is not the row using the key");
+  assert.match(String(bulletOnlyFleetMention(ROW_1911_ACCEPTANCE)), /Proxmox key/,
+    "the one case the bullet rule can get wrong is reported, never silent");
+});
+
+test("#1912: the same name in a fence or a numbered clause still routes", () => {
+  const fenced = "## Acceptance\n\n```bash\nssh -i \"$A11Y_PVE_KEY\" root@pve true\n```\n";
+  const numbered = "## Acceptance\n\n1. `A11Y_PVE_KEY` opens a shell on the Proxmox host.\n";
+  const fencedBullet = "## Acceptance\n\n```yaml\n- systemctl --user enable board.timer\n```\n";
+  for (const body of [fenced, numbered]) {
+    assert.match(String(fleetOrLabAcceptance(body)), /Proxmox key/, body);
+    assert.equal(bulletOnlyFleetMention(body), null, "a routed row has nothing to warn about");
+  }
+  assert.match(String(fleetOrLabAcceptance(fencedBullet)), /systemd/,
+    "a dash inside a code fence is YAML, not a bullet");
+});
+
+test("#1912: an INVOCATION in a bullet still routes -- only named things are read as a test's subject", () => {
+  const body = "## Acceptance\n\nThe run passes and includes:\n- `npm run fleet:status` reports every box green\n";
+  assert.match(String(fleetOrLabAcceptance(body)), /reaches the fleet/,
+    "`fleet:status` in any sentence is somebody running it; the bullet rule is for the five named patterns");
+});
+
+// #1914's review: the WHOLE list item is a bullet, not its marker line. reviewer-2 and product-manager both
+// reproduced a wrapped bullet whose `A11Y_PVE_KEY` sat on the continuation line routing silently.
+const WRAPPED_1911 = "## Acceptance\n\n```bash\nnpx rstest run\n```\n\nThe run passes, and it includes:\n"
+  + "- One asserts that the script exits 2 with the `fleet.env` refusal when\n"
+  + "  `A11Y_PVE_KEY` is absent.\n";
+
+test("#1914: a WRAPPED bullet is prose on every line -- its continuation does not route", () => {
+  const lazy = WRAPPED_1911.replace("\n  `A11Y_PVE_KEY`", "\n`A11Y_PVE_KEY`");
+  const secondParagraph = WRAPPED_1911.replace("\n  `A11Y_PVE_KEY`", "\n\n  `A11Y_PVE_KEY`");
+  assert.notEqual(lazy, WRAPPED_1911, "the lazy-continuation replacement landed");
+  assert.notEqual(secondParagraph, WRAPPED_1911, "the second-paragraph replacement landed");
+  for (const body of [WRAPPED_1911, lazy, secondParagraph]) {
+    assert.equal(fleetOrLabAcceptance(body), null, body);
+    assert.match(String(bulletOnlyFleetMention(body)), /Proxmox key/, "and the warning still fires");
+  }
+});
+
+test("#1914: a bullet item ENDS at a numbered clause, a heading, or a blank line then unindented text", () => {
+  const bullet = "## Acceptance\n\n- One asserts the refusal.\n";
+  const numbered = bullet + "1. `A11Y_PVE_KEY` opens a shell on the Proxmox host.\n";
+  const paragraph = bullet + "\n`A11Y_PVE_KEY` opens a shell on the Proxmox host.\n";
+  const fence = bullet + "```bash\nssh -i \"$A11Y_PVE_KEY\" root@pve true\n```\n";
+  for (const body of [numbered, paragraph, fence]) {
+    assert.match(String(fleetOrLabAcceptance(body)), /Proxmox key/, body);
+  }
+});
+
+test("#1914: a fence ENDS the bullet item -- an unindented sentence after the closing fence is read", () => {
+  const body = "## Acceptance\n\n- the run passes\n```bash\nnpm test\n```\n`A11Y_PVE_KEY` is set on the lab host.\n";
+  assert.match(String(fleetOrLabAcceptance(body)), /Proxmox key/, body);
+  assert.equal(bulletOnlyFleetMention(body), null, "and no bullet warning: that sentence was never a bullet");
+});
+
+test("#1912: row-file never emits lane:any together with another lane: label", () => {
+  assert.deepEqual(withAcceptanceLane(["lane:any"], "reaches the fleet"), ["lane:orchestrator"],
+    "#1911 came out `lane:any, lane:orchestrator` -- an answer and its negation");
+  assert.deepEqual(withAcceptanceLane(["lane:ceo"], "reaches the fleet"), ["lane:ceo", "lane:orchestrator"],
+    "a path lane is a second real answer (#1241) and is kept");
+  assert.deepEqual(withAcceptanceLane(["lane:orchestrator"], "reaches the fleet"), ["lane:orchestrator"]);
+  assert.deepEqual(withAcceptanceLane(["lane:any"], null), ["lane:any"], "no fleet reason, nothing changes");
+});
+
+/** `createIssue` on `body`, with everything it wrote to stderr and the labels it ensured. */
+function fileCapturingStderr(body: string, labels: string[]) {
+  const argv = ["--title", "a real row", "--body", body, "--session=worker-contracts", ...RELEASE];
+  const ensured: string[][] = [];
+  let stderr = "";
+  const original = process.stderr.write;
+  process.stderr.write = ((chunk: string) => { stderr += chunk; return true; }) as typeof process.stderr.write;
+  try {
+    const code = createIssue(argv, {
+      ...happyDeps("worker-contracts", "backlog", {
+        fetchLabels: () => ({ number: 900, title: "a real row", labels }),
+      }),
+      run: afterRun(appendFiledBy(body, "worker-contracts")),
+      ensureLabels: (l: string[]) => { ensured.push(l); },
+    });
+    return { code, stderr, ensured: ensured[0]?.sort() };
+  } finally {
+    process.stderr.write = original;
+  }
+}
+
+test("#1912: createIssue files a fleet-Acceptance row with lane:orchestrator and without lane:any, and says why", () => {
+  const body = COMPLETE_BODY.replace("npx tsx --test x", "npm run fleet:status");
+  assert.notEqual(body, COMPLETE_BODY, "the Acceptance replacement landed");
+  const { code, stderr, ensured } = fileCapturingStderr(body, ["backlog", "lane:orchestrator"]);
+  assert.equal(code, 0);
+  assert.deepEqual(ensured, ["backlog", "lane:orchestrator"],
+    "`happyDeps` derives lane:any from the Region; the fleet Acceptance must REPLACE it, not sit beside it");
+  assert.match(stderr, /lane:orchestrator added -- the Acceptance reaches the fleet/,
+    "#1911 was routed with nothing saying why; the filer must see the pattern that did it");
+  assert.doesNotMatch(stderr, /NOT routed/);
+});
+
+test("#1914: createIssue on a bullet-only Proxmox mention files lane:any and WARNS on stderr", () => {
+  const body = COMPLETE_BODY.replace("## Acceptance\n\n```\nnpx tsx --test x\n```\n", WRAPPED_1911);
+  assert.notEqual(body, COMPLETE_BODY, "the Acceptance replacement landed");
+  const { code, stderr, ensured } = fileCapturingStderr(body, ["backlog", "lane:any"]);
+  assert.equal(code, 0);
+  assert.deepEqual(ensured, ["backlog", "lane:any"], "a bullet describing a test does not route the row");
+  assert.match(stderr, /NOT routed to orchestrator -- a bullet in the Acceptance names something that uses the Proxmox key/,
+    "the one case the bullet rule can get wrong is said out loud, through the real filing path");
+  assert.match(stderr, /write that step as a numbered clause/, "and the refusal-shaped message is followable");
+  assert.doesNotMatch(stderr, /lane:orchestrator added/);
 });
 
 // --- #1249: a Status failure must name the labels it skipped ------------------------------------

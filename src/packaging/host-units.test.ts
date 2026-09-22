@@ -18,6 +18,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, systemdUserAvailable,
   hostUnitDrift, permissionModeDrift, SHIPPED_DIR } from "../host-units.mjs";
 
@@ -214,4 +216,11 @@ test("#1863: a machine with no user systemd is not told its permissions are wron
   // Same gate as the timers, and for the same reason: a laptop told "ORG IS IN AUTO MODE" teaches its
   // owner to ignore this command, which loses the timer finding along with it.
   assert.deepEqual(hostUnitDrift({ systemctl: NO_SYSTEMD as never }), []);
+});
+
+test("#1911: the corpus-release unit reads fleet.env, the only place a unit can get A11Y_PVE_KEY", () => {
+  // `~/.zshenv` exported it for every shell and for no unit, so the nightly failed every firing. The `-`
+  // leaves a missing file to corpus-release-nightly.mjs's own refusal, which names it.
+  const unit = readFileSync(join(SHIPPED_DIR, "a11ign-corpus-release-nightly.service"), "utf8");
+  assert.match(unit, /^EnvironmentFile=-%h\/\.config\/a11ign\/fleet\.env$/m);
 });
