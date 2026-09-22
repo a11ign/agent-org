@@ -93,6 +93,7 @@
 import { execFileSync } from "node:child_process";
 import {
   acceptancePathsReason, bulletOnlyFleetMention, extractAcceptanceSection, fleetOrLabAcceptance,
+  labFetchPathReason,
 } from "./acceptance-commands.mjs";
 import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -451,7 +452,14 @@ export function fileRefusalReason(body) {
   // standing in, available here for the cost of a `stat`, and measured twice in one day (#1939, #1936)
   // as the thing nothing asked. Last, because a whole-suite command names no path and must be refused
   // for what it is rather than for naming nothing.
-  return acceptancePathsReason(body, "row-file");
+  const paths = acceptancePathsReason(body, "row-file");
+  if (paths) return paths;
+  // #1973: AND THE PATHS THAT EXIST BUT ARE THE WRONG ONES. The check above asks whether a named file is
+  // there; this asks whether a row that fetches an artifact then reads it named the LAB's copy instead of
+  // the one the fetch writes here. Last, and after the existence check, because the two answer different
+  // questions about the same token and the existence check's `runs/` exemption is what leaves this one
+  // anything to say -- a `runs/` path is never refused as absent, so nothing else would ever look at it.
+  return labFetchPathReason(body, "row-file");
 }
 
 /**
