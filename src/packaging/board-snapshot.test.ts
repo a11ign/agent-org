@@ -795,6 +795,63 @@ test("#1352 DONE-WHEN 1: each policy script, launched from a plain checkout, ref
 // -- the negative control is what kills that mutant, and the positive control is what stops the check
 // being satisfied by a function that always complains.
 
+// **AND THE THIRD TIME, ONE LAYER BELOW AGAIN.** `product-manager`, upholding `reviewer-2` at `bd398c5f`:
+// the two controls below prove `fetchBoardItems` CONSUMES an injected `field.options`, and nothing proved
+// the live query ASKS for them. Measured from a worktree at that head -- with `field(name: "Status")`
+// deleted from `ITEMS_QUERY` the three-file Acceptance was 83/83 GREEN, because each injected `run` was
+// `() => page(...)`, ignored its `args`, and handed back `field` whenever `statusOptions` was passed. The
+// fake answered a question production need never have asked; on the real board `statusOptions` would stay
+// `null`, `fetchBoardItems` would take its SHORT-READ branch forever, and clause 2's drift would never be
+// reported anywhere.
+//
+// So the fixture now answers THE QUERY IT IS HANDED, the way GraphQL does: `field` comes back only when
+// the request selects it. That is a pin on the REQUEST rather than only the response, and it reads the
+// query `run` actually received rather than the source text the file happens to contain (#1219's
+// `readFileSync` guard is the weaker form, and has its own reason to exist).
+
+/** The `query=` argument production actually sent, pulled off the argv `run` was handed. */
+function sentQuery(args: string[]): string {
+  return args.find((arg) => arg.startsWith("query="))?.slice("query=".length) ?? "";
+}
+
+/**
+ * Does that query SELECT the Status field's option names? Lazy spans rather than a literal, so
+ * reformatting the query does not fail this -- but deleting the `field(name: "Status")` selection, which
+ * is the mutation that survived at `bd398c5f`, leaves nothing for it to match.
+ */
+function asksForStatusOptions(query: string): boolean {
+  return /field\s*\(\s*name:\s*"Status"\s*\)[\s\S]*?options\s*\{[\s\S]*?\bname\b/.test(query);
+}
+
+/**
+ * A `run` that answers only what the query asked for: `statusOptions` reach the response when the request
+ * selects them, and are withheld when it does not. Every case written through this is honest about which
+ * of its inputs production had to ask for.
+ */
+function boardRun(opts: { nodes: Array<{ id: string; number?: number; title?: string; status?: string }>;
+  statusOptions?: string[] }) {
+  return (_cmd: string, args: string[]) => page({
+    ...opts,
+    statusOptions: asksForStatusOptions(sentQuery(args)) ? opts.statusOptions : undefined,
+  });
+}
+
+test("#1996: the LIVE query asks the board for the Status field's options -- the request, not the response", () => {
+  // THE MUTANT THIS KILLS: deleting the `field(name: "Status")` selection from `ITEMS_QUERY`. The two
+  // controls below kill it too, now that they answer the query they are handed -- this one says WHY they
+  // went red, because "drift was not reported" points at the consumer and the defect is in the request.
+  let seenArgs: string[] = [];
+  const run = (_cmd: string, args: string[]) => {
+    seenArgs = args;
+    return page({ nodes: [{ id: "PVTI_1", number: 42, title: "the row", status: "Ready" }] });
+  };
+  stderrDuring(() => { fetchBoardItems({ run, fetchReady: () => [] }); });
+  assert.ok(asksForStatusOptions(sentQuery(seenArgs)),
+    "the drift check can only ever run on a board whose option list was REQUESTED -- a query that stops "
+    + "selecting `field(name: \"Status\") { ... options { name } }` takes the short-read branch on every "
+    + "real board, silently, which is the silence this row exists to end");
+});
+
 /** Captures `process.stderr` for the duration of `fn`, restoring it even when `fn` throws. */
 function stderrDuring(fn: () => void): string {
   const original = process.stderr.write.bind(process.stderr);
@@ -811,8 +868,10 @@ function stderrDuring(fn: () => void): string {
 test("#1996: a board that does not offer `Done` is REPORTED as drift -- by fetchBoardItems, not the helper", () => {
   // THE MUTANT THIS KILLS is the one the review actually applied: deleting
   // `reportVocabularyDrift(statusOptions)` from `fetchBoardItems`. With the call gone this stderr is
-  // silent and the assertion fails, which is precisely what the old Acceptance could not do.
-  const run = () => page({
+  // silent and the assertion fails, which is precisely what the old Acceptance could not do. Through
+  // `boardRun`, it also kills the second mutant: a query that stops asking for the options gets none
+  // back, so this goes red rather than passing on an answer production never requested.
+  const run = boardRun({
     nodes: [{ id: "PVTI_1", number: 42, title: "the row", status: "Ready" }],
     statusOptions: ["Backlog", "Ready", "In progress", "Blocked", "Fleet-gated"],
   });
@@ -828,7 +887,7 @@ test("#1996: a board that does not offer `Done` is REPORTED as drift -- by fetch
 });
 
 test("#1996: a board that DOES offer `Done` reports nothing -- the control that stops a check crying wolf", () => {
-  const run = () => page({
+  const run = boardRun({
     nodes: [{ id: "PVTI_1", number: 42, title: "the row", status: "Ready" }],
     statusOptions: ["Backlog", "Ready", "In progress", "Blocked", "Fleet-gated", "Done"],
   });
@@ -842,8 +901,9 @@ test("#1996: a board that DOES offer `Done` reports nothing -- the control that 
 test("#1996: a page carrying NO `field` is a SHORT READ, never a clean board", () => {
   // The third answer, and the reason `statusOptions` is `null` rather than `[]`. An empty array would
   // make `vocabularyDrift` report every written name as missing -- "the board lost its whole vocabulary"
-  // when it means "nobody asked it". This is the branch every pre-existing fixture in this file takes.
-  const run = () => page({ nodes: [{ id: "PVTI_1", number: 42, title: "the row", status: "Ready" }] });
+  // when it means "nobody asked it". This is the branch every pre-existing fixture in this file takes --
+  // and the branch a query that stopped selecting `field` would take on the REAL board, forever.
+  const run = boardRun({ nodes: [{ id: "PVTI_1", number: 42, title: "the row", status: "Ready" }] });
   const noted = stderrDuring(() => { fetchBoardItems({ run, fetchReady: () => [] }); });
   assert.match(noted, /DID NOT RUN/,
     "a read that came back short must say so rather than pass as a board with no drift");
