@@ -721,3 +721,97 @@ test("#1993: the board dispatch declares the PATH that reaches this host's `gh`,
     + "workflow_dispatch runs there, and `board-report.yml` runs on `github.token` under its own "
     + "permissions block, so the edition does not depend on who dispatched it");
 });
+
+// --- #2000: the prune existed for 13 days and no clock ever called it --------------------------------
+//
+// MEASURED ON THE AGENT HOST 2026-09-22. `prune-worktrees.mjs` shipped 2026-09-09 with 45k of measured
+// refusals, and `crontab -l`, `systemctl --user list-timers` and a grep of `.github/` and `work-gate.mjs`
+// all came back with nothing that runs it. What that cost: 143 worktrees, 133 carrying a trailing row
+// number, 124 of those belonging to CLOSED rows, `~/repos` at 16G, and the oldest leaked tree 9 days old
+// rather than ancient debris. `row-claim claim` makes a worktree per claim (#1432) and about 7% were ever
+// removed.
+//
+// The third instance of one shape in a day, after the fleet scheduler (#1858) and the corpus release
+// nightly: built, tested, shipped, never wired. These tests are the wiring's own check -- `shippedUnits`
+// reads the directory rather than a list, so a file in `packages/agent-org/host/` IS the installable unit.
+
+test("#2000: the worktree prune ships as a pair, so `host:install` has something to install", () => {
+  const units = shippedUnits();
+  assert.ok(units.includes("a11ign-worktree-prune.service"),
+    "the service, or `host:install` copies nothing and the 16G stands");
+  assert.ok(units.includes("a11ign-worktree-prune.timer"),
+    "and the timer, which is the only half that makes it recur -- `hostUnitsInstall` enables `.timer` "
+    + "units and nothing else, so a service shipped alone is installed, inert and reported as fine");
+});
+
+test("#2000: the unit passes `--apply`, or the clock runs a REPORT and the backlog stands", () => {
+  // THE HIGHEST-VALUE ASSERTION IN THIS FILE'S #2000 SET, because its failure is invisible everywhere
+  // else: a unit running the bare script is installed, enabled, active, current, exits 0, writes a full
+  // breakdown to the journal every hour and removes nothing. Every other check here would be green.
+  //
+  // The dry run is the DEFAULT deliberately (2026-09-09: a session ran `npm run worktrees:prune` to read
+  // the breakdown before writing a row about worktree accounting, and removed three other sessions'
+  // trees), so the flag has to be in the unit, and something has to say that it is.
+  const service = readFileSync(join(SHIPPED_DIR, "a11ign-worktree-prune.service"), "utf8");
+  assert.match(service, /^ExecStart=\/usr\/bin\/npm run worktrees:prune -- --apply$/m);
+  assert.deepEqual(entriesFromCommand(execCommands(service)[0]),
+    [join(REPO_ROOT, "packages/agent-org/src/prune-worktrees.mjs")],
+    "and the command resolves through package.json to the script itself -- a renamed npm script leaves "
+    + "the unit syntactically perfect and starting nothing");
+  assert.match(service, /^WorkingDirectory=\/home\/agent\/repos\/a11y-witness$/m,
+    "the PRIMARY checkout: `pruneWorktrees` identifies the tree it must never remove structurally, as "
+    + "the one whose `.git` is a directory, so pointed at a linked worktree it would protect that one "
+    + "and offer the fleet-driving checkout up instead");
+  assert.doesNotMatch(service, /^\[Install\]$/m,
+    "and the service has NO [Install]: `WantedBy=default.target` would also prune at boot, while `herdr` "
+    + "is restoring sessions into trees that have by definition been git-quiet for longer than "
+    + "ACTIVITY_WINDOW_MS. The timer's OnBootSec=15min is the deliberate version of the same idea");
+});
+
+test("#2000: the prune spends no API budget, and that is READ rather than assumed", () => {
+  // ceo's 2026-09-22 ruling on #1950 refused a `work-gate.mjs` cause for this chore BECAUSE it costs no
+  // API budget and needs no judgment -- a gate cause exists to WAKE somebody. So "it makes zero `gh`
+  // calls" is not a remark about this unit, it is the premise that lets it run on a clock at all, and it
+  // has to be checked rather than restated.
+  const entry = join(REPO_ROOT, "packages/agent-org/src/prune-worktrees.mjs");
+  // THE POSITIVE CONTROL, and it is the whole reason the null below means anything. `ghSpawnReachedFrom`
+  // returns null for a file it cannot read exactly as it does for a file whose closure is clean, so the
+  // assertion that follows would pass against a wrong path, a broken import walk, or a typo. This names
+  // where the control lives: the same function, the same checkout, on a file that does reach `gh`.
+  assert.equal(ghSpawnReachedFrom(join(REPO_ROOT, "packages/agent-org/src/work-tick.mjs")) !== null, true,
+    "control: the import walk can find a `gh` spawn in this checkout, so a null is a reading");
+  assert.equal(ghSpawnReachedFrom(entry), null,
+    "the predicate is `git merge-base --is-ancestor` against origin/main; the closure is `git-env.mjs` "
+    + "and `cli-flags.mjs` and reaches no `gh`");
+  const spending = unitsSpendingGh();
+  assert.ok(spending.length >= 3,
+    `control: the population must not be empty, or absence from it is vacuous; got ${JSON.stringify(spending)}`);
+  assert.ok(!spending.some((u) => u.unit === "a11ign-worktree-prune.service"),
+    "so it must not appear among the units charged for an identity");
+  // AND THE UNIT MUST NOT CARRY THE LINE ANYWAY. `identityDrift` only ever ASKS for a `GH_CONFIG_DIR`
+  // line; nothing anywhere objects to a spurious one, so three units having it makes copying it into a
+  // fourth the obvious edit -- and that line would assert this unit spends an API pool, which is the exact
+  // opposite of the fact that got it scheduled.
+  //
+  // THIS ASSERTION IS MEANT TO COLLIDE. The day a `gh` call appears under this entry point, `identityDrift`
+  // will demand the line and this will refuse it, and the collision is the point: it forces whoever made
+  // that change back to #1950's ruling, which put this chore on a clock instead of a wake-cause precisely
+  // because it spends nothing. A unit that quietly grew an API identity would keep the clock and lose the
+  // argument for it.
+  const service = readFileSync(join(SHIPPED_DIR, "a11ign-worktree-prune.service"), "utf8");
+  assert.doesNotMatch(service, /^Environment=GH_CONFIG_DIR=/m,
+    "no identity line: this unit spends no pool, and saying it spends one would be false as well as "
+    + "unnecessary");
+});
+
+test("#2000: the timer recurs and survives a missed window", () => {
+  const timer = readFileSync(join(SHIPPED_DIR, "a11ign-worktree-prune.timer"), "utf8");
+  assert.match(timer, /^OnUnitActiveSec=1h$/m,
+    "hourly: about 15 trees a day accumulate, one per claim, and a full pass measured 88s over 143 of "
+    + "them -- and a tree cannot become removable for the 10 minutes ACTIVITY_WINDOW_MS makes it wait "
+    + "anyway, so anything finer buys nothing");
+  assert.match(timer, /^OnBootSec=15min$/m, "not at boot itself -- see the service's missing [Install]");
+  assert.match(timer, /^Persistent=true$/m,
+    "a skipped prune is invisible: the backlog it leaves looks exactly like the backlog a working prune "
+    + "refused, which is `a11ign-corpus-snapshot.timer`'s nine dead days in a different costume");
+});

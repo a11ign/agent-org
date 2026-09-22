@@ -1,0 +1,29 @@
+[Unit]
+Description=a11ign: run the worktree prune hourly
+Requires=a11ign-worktree-prune.service
+
+[Timer]
+# HOURLY, CHOSEN FROM THE LEAK RATE AND THE RUN COST RATHER THAN BY FEEL.
+#
+# Measured 2026-09-22: 133 row-numbered worktrees accumulated over 9 days -- about 15 a day, one per claim
+# (`row-claim claim` creates a worktree, #1432, and about 7% were ever removed). A full pass costs 88s of
+# git I/O on a host that runs eight sessions, so hourly is a ~2% duty cycle now and less as the backlog
+# clears. Daily would leave a day's claims standing and put the box back on the same curve that reached 16G;
+# anything finer buys nothing, because a tree cannot become removable for at least the 10 minutes
+# `ACTIVITY_WINDOW_MS` makes it wait anyway.
+#
+# THE INTERVAL IS NOT A SAFETY PARAMETER AND MUST NOT BE READ AS ONE. What makes a removal safe is the
+# tool's own five-population classification, not how often it runs; a wrong prune once an hour and a wrong
+# prune once a day are the same defect. Tightening this to protect something would be treating the clock as
+# the guard -- the substitution `agent-practices.md`'s own no-standing-cron rule is about, one layer down.
+OnBootSec=15min
+OnUnitActiveSec=1h
+
+# A missed window (host asleep, previous pass still running) fires at the next opportunity instead of being
+# silently skipped -- the property a11ign-work-tick.timer and a11ign-corpus-snapshot.timer both rely on. A
+# skipped prune is invisible: the backlog it leaves looks exactly like the backlog a working prune refused.
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

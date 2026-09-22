@@ -1,0 +1,69 @@
+[Unit]
+# THE WORKTREE LIFECYCLE'S CLOCK -- #2000. `prune-worktrees.mjs` has existed since 2026-09-09, carries 45k
+# of measured refusals, and NOTHING EVER RAN IT. Measured on this host 2026-09-22: 143 worktrees, 133
+# carrying a trailing row number, 124 of those belonging to CLOSED rows, `~/repos` at 16G, oldest leaked
+# tree 9 days old. The tool's own header already records what the prose rule cost -- `dispatcher` pruned 28
+# trees by hand and 36 were back the next day -- and this is that rule's missing half.
+#
+# THE THIRD INSTANCE OF ONE SHAPE IN A DAY, after the fleet scheduler (#1858) and the corpus release
+# nightly: the mechanism was built, tested and shipped, and never wired to a caller. `host-units.mjs`
+# reports shipped-but-uninstalled units precisely because shipping the file is not the wiring.
+Description=a11ign: remove fully-merged, clean, inactive worktrees (worktrees:prune --apply)
+After=herdr.service
+
+[Service]
+Type=oneshot
+
+# THE PRIMARY CHECKOUT, AND IT HAS TO BE THIS ONE. `pruneWorktrees` enumerates from `git worktree list`
+# in its cwd and identifies the primary STRUCTURALLY -- the primary's `.git` is a real directory, every
+# linked worktree's is a text file -- so that it can skip it. Every tree in the list is a removal
+# candidate except the one it is standing in, so pointed at a linked worktree it would protect the wrong
+# tree and offer the fleet-driving checkout up for removal.
+WorkingDirectory=/home/agent/repos/a11y-witness
+
+# SAME REASON a11ign-work-tick.service AND a11ign-corpus-snapshot.service BOTH DECLARE THEIRS: a systemd
+# unit gets no login shell's PATH, and this one reaches `git` through `execFileSync` once per worktree.
+# Without this line every firing dies before it reads anything, quietly, while the timer looks healthy.
+# Verified on this host: node and npm at /usr/bin, git at /usr/bin.
+Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=/home/agent
+
+# THERE IS NO `Environment=GH_CONFIG_DIR=` LINE, AND ITS ABSENCE IS DELIBERATE RATHER THAN FORGOTTEN.
+#
+# #1974 added that line to every unit that can reach a `gh` spawn, because a unit has no
+# `HERDR_WORKSPACE_ID` and so falls back to a PERSON's stored credentials. This unit reaches no `gh`
+# spawn: `prune-worktrees.mjs` imports only `guards/src/git-env.mjs` and `worker-fleet/src/cli-flags.mjs`,
+# and its whole predicate is `git merge-base --is-ancestor` against `origin/main`. `unitsSpendingGh` is
+# the check that keeps that true -- it walks this unit's real import closure, and
+# `host-units.test.ts` pins the exact list of services it returns, so the day a `gh` call appears
+# anywhere under this entry point the suite names this unit rather than discovering it on a spent pool.
+#
+# Copying the line in anyway would claim an API identity for a unit that spends none, and would quietly
+# break the only argument that lets this run on a clock at all: `ceo`'s 2026-09-22 ruling on #1950 refused
+# a `work-gate.mjs` cause for this chore BECAUSE it costs no API budget and needs no judgment. A unit that
+# declared an account would be asserting the opposite of the thing that got it scheduled.
+
+# `--apply` OR THIS UNIT IS A REPORT NOBODY READS. The bare script is deliberately a DRY RUN, and for a
+# measured reason: on 2026-09-09 a session ran `npm run worktrees:prune` to READ the breakdown before
+# writing a row about worktree accounting, and removed three other sessions' trees. So the flag that makes
+# it act lives here, in the file, where the repository can see that something does pass it.
+#
+# UNATTENDED IS THE CASE THIS TOOL WAS WRITTEN FOR, not a use it is being stretched to cover. It refuses
+# anything dirty, anything with commits `origin/main` lacks, anything cherry-picked, anything it could not
+# read conclusively, anything holding a `runs/` record the primary cannot verify (#1373), and anything with
+# git activity in the last 10 minutes (#220, a tree deleted mid-`git stash`). It never passes `--force`, so
+# `git worktree remove`'s own refusal is a second guard behind its own. Nothing here needs a human's eye,
+# which is exactly why it must not need a model turn.
+ExecStart=/usr/bin/npm run worktrees:prune -- --apply
+
+# MEASURED 2026-09-22 ON THIS HOST: 88s for a full pass over 143 worktrees, most of it `git status` in each
+# one. The bound is generous against that because the cost falls as the backlog clears (fewer trees, less
+# I/O) and because what this timeout is really for is a hung `git`, not a slow one.
+TimeoutStartSec=900
+
+# NO `[Install]` SECTION, UNLIKE a11ign-work-tick.service AND a11ign-corpus-snapshot.service -- #1993's
+# shape, for a reason of this unit's own. `WantedBy=default.target` on a oneshot means "also run at boot",
+# and boot is the single worst moment for this one: the sessions are coming back up, `herdr` is restoring
+# them, and a tree a session is about to resume in has by definition had no git activity for far longer
+# than `ACTIVITY_WINDOW_MS`. The timer's own `OnBootSec=15min` is the deliberate version of the same idea
+# -- prune early, but after the box has settled -- so the timer is the only thing that may start this.
