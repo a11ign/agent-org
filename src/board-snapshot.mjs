@@ -313,8 +313,8 @@ export function readyRowsMissingStatus(items, readyIssueNumbers, excludeIssueNum
  * token cannot read the Project (#546) -- a check that cannot see its subject reports clean forever. It
  * rides the read `fetchBoardItems` already makes, so it costs no call and no budget.
  *
- * REPORTS, NEVER REFUSES -- the same trade `statusContradictions` is reported under twelve lines below,
- * and for the same reason. A missing option is repaired on the BOARD, by a human with Project write
+ * REPORTS, NEVER REFUSES -- the same trade the contradictions report inside `fetchBoardItems` makes, and
+ * for the same reason. A missing option is repaired on the BOARD, by a human with Project write
  * access; throwing here would brick every claim and every filing until that happened, so the guard would
  * be removed within the hour rather than obeyed.
  *
