@@ -176,13 +176,20 @@ export function readPrs(run = defaultRun) {
  * it was attached to was inherited, and this constant exists so the next person inherits a count that is
  * checked instead.
  *
- * The two conditional reads are deliberately NOT in this number: `readOpenRowState` is paid only by a
- * tick that produced no orders, and `requiredCheckNames` only by one that saw a settled-red check.
+ * The conditional reads are deliberately NOT in this number: `readEpics` is paid only by a tick that
+ * found an empty Ready shelf, and `requiredCheckNames` only by one that saw a settled-red check.
+ *
+ * THERE IS NO LONGER A SILENCE-CONDITIONAL READ, and its removal is #1938. `readOpenRowState` used to
+ * ask for `number,body,blockedBy` over the same 500 open rows the UNCONDITIONAL `readOpenRows` had
+ * already fetched in the same process, one tick earlier -- a strict subset of a list the gate held in
+ * hand. `openRowState` now derives the same answer from those rows without asking again. The key that
+ * named it is gone rather than emptied, so nothing reads a stale name; `readEpics` takes its place here
+ * because it was the third conditional read all along and this constant had never said so.
  */
 export const GH_READS = Object.freeze({
   unconditional: ["pr list", "issue list --label ready", "issue list --label backlog",
     "issue list --label chairman-blocked", "issue list (all open: answer/blocked labels)"],
-  conditionalOnSilence: "issue list --state open (readOpenRowState)",
+  conditionalOnEmptyShelf: "issue list --label epic (readEpics)",
   conditionalOnRed: "api branches/main/protection (requiredCheckNames)",
 });
 
@@ -600,7 +607,7 @@ function requiredWhenRed(prs) {
  *
  * PAID ONLY BY AN EMPTY SHELF. `main` asks this only when there are no Ready rows -- the single state in
  * which an unfiled epic is the org's most urgent fact. A busy org never pays it, the same bargain
- * `readOpenRowState` and `requiredCheckNames` already make.
+ * `requiredCheckNames` already makes.
  *
  * `subIssuesSummary` AND NOT `blocking`: GitHub has both, and they mean different things. `blocking` is a
  * dependency edge; sub-issues are PARENTHOOD, which is what "has this epic been broken down" asks. Using
@@ -1641,37 +1648,37 @@ function emptyShelfOrder({ offerable, blocked, promotable }) {
 }
 
 /**
- * How many open rows COULD move, and what is stopping the rest -- ONLY asked when the gate would
- * otherwise say nothing.
+ * How many open rows COULD move, and what is stopping the rest -- derived from the rows THE TICK ALREADY
+ * HAS, never asked for again.
  *
- * CONDITIONAL, AND THAT IS WHY IT IS AFFORDABLE. This read happens only when the tick produced NO ORDERS
- * -- a busy org never pays it, and a silent one pays it once to answer the question its own silence
- * raises. The unconditional count is unchanged; `GH_READS` says what that count is.
+ * FREE, AND THAT IS #1938. This used to be `readOpenRowState`, a second `gh issue list --state open
+ * --limit 500` asking for `number,body,blockedBy` -- a strict subset of the fields `readOpenRows` had
+ * already fetched over the identical population, in the same process, earlier in the same tick. It was
+ * conditional, so it was cheap, but the cheapest read is the one already in hand.
  *
- * IT RETURNS THE BREAKDOWN AS WELL AS THE COUNT, and that is the whole of #1935: this function has always
- * called `waitingOn` on every open row and then thrown the answer away, keeping only `.length`. The
- * condition -- date or row, WHICH date, WHICH row -- was computed and discarded at the same expression,
- * and `ceo` then spent an hour hand-reading twenty rows to recover it.
+ * `null` IN, `null` OUT, AND THAT IS THE POINT. A REFUSED read is not an empty tracker (#1286): the
+ * caller passes the UN-COALESCED `readOpenRows()` result, and a refusal stays `null` the whole way into
+ * `stalledOrder`. Deriving this from `main`'s `readOpenRows() ?? []` instead would read a `gh` outage as
+ * a healthy silent org and silence the dead man's switch on exactly the tick it matters most.
  *
- * @param {(args: string[]) => string} [run]
- * @returns {{reachable: number, waiting: ReturnType<typeof waitingBreakdown>} | null} `null` when
- *   refused -- never a zero count, which would read as "the tracker is empty"
+ * IT RETURNS THE BREAKDOWN AS WELL AS THE COUNT, and that is the whole of #1935: this has always called
+ * `waitingOn` on every open row and then thrown the answer away, keeping only `.length`. The condition --
+ * date or row, WHICH date, WHICH row -- was computed and discarded at the same expression, and `ceo` then
+ * spent an hour hand-reading twenty rows to recover it.
+ *
+ * @param {any[] | null | undefined} rows the un-coalesced `readOpenRows` result
+ * @param {string} [today] an ISO `YYYY-MM-DD`
+ * @returns {{reachable: number, waiting: ReturnType<typeof waitingBreakdown>} | null} `null` when the
+ *   read was refused -- never a zero count, which would read as "the tracker is empty"
  */
-export function readOpenRowState(run = defaultRun) {
-  try {
-    const parsed = JSON.parse(run(["issue", "list", "--state", "open", "--limit", "500",
-      "--json", "number,body,blockedBy"]));
-    if (!Array.isArray(parsed)) return null;
-    // ROWS THAT ARE CORRECTLY WAITING ARE NOT A STALL, and counting them as one would be this switch
-    // crying wolf -- the exact failure its own comment says matters more than the missing-switch one.
-    // A queue where every row declares what it waits on is WORKING; the switch must fire on rows that
-    // COULD move and are not moving.
-    const today = todayIso();
-    return { reachable: parsed.filter((r) => waitingOn(r, today) === null).length,
-      waiting: waitingBreakdown(parsed, today) };
-  } catch {
-    return null;
-  }
+export function openRowState(rows, today = todayIso()) {
+  if (!Array.isArray(rows)) return null;
+  // ROWS THAT ARE CORRECTLY WAITING ARE NOT A STALL, and counting them as one would be this switch
+  // crying wolf -- the exact failure its own comment says matters more than the missing-switch one.
+  // A queue where every row declares what it waits on is WORKING; the switch must fire on rows that
+  // COULD move and are not moving.
+  return { reachable: rows.filter((r) => waitingOn(r, today) === null).length,
+    waiting: waitingBreakdown(rows, today) };
 }
 
 /**
@@ -1985,16 +1992,34 @@ function reportWithheld({ drain, blocked }) {
  * idle, and a switch that fires then is one people learn to ignore -- which is the failure mode the
  * pattern's own literature warns about more loudly than the missing-switch one.
  *
- * @param {unknown[]} orders @param {boolean} drain
+ * IT TAKES THE ROWS RATHER THAN READING THEM (#1938). `main` has the whole open-row list in hand by the
+ * time this is reached, so asking again was a second `gh` call for a subset of a list already fetched.
+ * What it must be handed is the UN-COALESCED result -- `readOpenRows()`, not `readOpenRows() ?? []` --
+ * because those two spell "the API refused" and "the tracker is empty" identically, and only one of them
+ * is a state where silence is honest.
+ *
+ * A REFUSAL SAYS SO OUT LOUD, and that line is how the difference is OBSERVABLE rather than ceremonial.
+ * `stalledOrder` returns no order for either `null` or `0`, so without this the two states would be
+ * indistinguishable from outside -- a silent tick that could not ask would look exactly like a silent
+ * tick that asked and found a finished org. `main` already refuses to report a refused read as quiet for
+ * the pull-request and Ready lanes (`CANNOT ASK` / `PARTIAL`); this is the same rule for this lane.
+ *
+ * @param {{ orders: unknown[], drain: boolean, performed?: number, openRows: any[] | null,
+ *           log?: (line: string) => void }} state
  */
-function deadMansSwitch(orders, drain, performed = 0) {
+export function deadMansSwitch({ orders, drain, performed = 0, openRows,
+  log = (line) => process.stderr.write(line) }) {
   // A PERFORMED ACTION IS ACTIVITY. Without this the gate could mark a draft ready, emit no order, and
   // then announce the org as stalled in the same tick -- reporting the one thing it just did as nothing.
   if (drain || orders.length > 0 || performed > 0) return [];
-  // ONE READ, BOTH HALVES OF THE ANSWER: how many rows could move, and what is stopping the ones that
-  // cannot. A refused read stays `null` all the way into `stalledOrder`, which is the #1286 rule -- it
-  // must not collapse to a zero count, which would silence the switch on the first API hiccup.
-  const state = readOpenRowState();
+  // BOTH HALVES OF THE ANSWER FROM THE ROWS ALREADY READ: how many rows could move, and what is stopping
+  // the ones that cannot. A refused read stays `null` all the way into `stalledOrder`, which is the
+  // #1286 rule -- it must not collapse to a zero count, which would silence the switch on an API hiccup.
+  const state = openRowState(openRows);
+  if (state === null) {
+    log("CANNOT ASK whether the org is stalled: the open-rows read was refused this tick. "
+      + "This silence is NOT a quiet queue, and the dead man's switch did NOT examine anything.\n");
+  }
   const stalled = stalledOrder({ orders, openRows: state?.reachable ?? null, waiting: state?.waiting });
   return stalled ? [stalled] : [];
 }
@@ -2021,14 +2046,18 @@ function main() {
   const rows = readyRows ?? [];
   const prFiles = comparablePrFiles(openPrs);
   const drain = draining();
-  // ONE READ, BOTH LABEL-DERIVED CAUSES.
-  const allOpen = readOpenRows() ?? [];
+  // ONE READ, THREE CAUSES -- and the refusal is kept BESIDE the coalesced list rather than instead of
+  // it. `decide`'s label-derived causes want a list to filter, and an empty one is the right degradation
+  // there; the dead man's switch needs to tell "refused" from "empty", so it is handed the raw result.
+  // Both names exist so neither reader has to infer which of the two it was given (#1938).
+  const openRowsRead = readOpenRows();
+  const allOpen = openRowsRead ?? [];
   const decided = decide({ prs: openPrs, readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required: requiredWhenRed(openPrs),
     epics: epicsWhenShelfEmpty(rows),
     answerOwed: withAnswerLabel(allOpen), openRows: allOpen });
   const { delivered: orders, performed } = performActions(decided);
-  orders.push(...deadMansSwitch(orders, drain, performed));
+  orders.push(...deadMansSwitch({ orders, drain, performed, openRows: openRowsRead }));
   for (const order of orders) process.stdout.write(`${JSON.stringify(order)}\n`);
 
   reportWithheld({ drain, blocked: partitionUnclaimed(rows, prFiles).blocked });
