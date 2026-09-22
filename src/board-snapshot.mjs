@@ -102,6 +102,13 @@ const ITEMS_QUERY = `
         # below costs no extra call and cannot be skipped for budget. Nothing read the option list until
         # this row, which is how the board came to offer no "Done" at all while the code wrote it on
         # every close.
+        #
+        # CHECKED AGAINST #747's WARNING rather than assumed past it: that header is about a CONNECTION
+        # nested inside items(first: 100) being narrowed to a shared budget without saying so. This is a
+        # single node with a plain list, not a connection, and it sits beside items rather than inside
+        # it -- but the empirical check is the one that counts, and it is free: readyRowsMissingStatus
+        # refuses the whole snapshot if any open ready row comes back without a Status, and a full run
+        # against the live board after this landed did not refuse.
         field(name: "Status") {
           ... on ProjectV2SingleSelectField { options { name } }
         }
