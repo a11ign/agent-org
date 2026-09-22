@@ -45,6 +45,11 @@ import { REPO } from "../../../scripts/repo-identity.mjs";
 import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
 import { newestPerName } from "./newest-check-run.mjs";
 import { holdersOf } from "./pr-hold-state.mjs";
+// `poolFromHeaders` WAS DEFINED HERE until #2003, and its `Pool` shape with it. `work-gate.mjs` needs the
+// same reading on its refusal path and may not import this file, so the reader is a leaf now.
+import { poolFromHeaders } from "./api-pool.mjs";
+
+/** @typedef {import("./api-pool.mjs").Pool} Pool */
 
 export const EXIT = { EXAMINED: 0, INCOMPLETE: 2 };
 
@@ -666,48 +671,14 @@ export function apiBudget({ run } = {}) {
 export const ghHeaders = (args) => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
 /**
- * One pool, read from the `X-Ratelimit-*` headers of a real call. `null` when the call or the parse fails
- * -- never a zero, because "I could not ask" and "nothing is left" are the two states this whole line
- * exists to keep apart.
- *
- * @param {string[]} args
- * @param {(args: string[]) => string} run
- * @returns {Pool | null}
- */
-function poolFromHeaders(args, run) {
-  // THE HEADERS COME BACK ON THE 403, AND THE CALL FAILS EXACTLY WHEN THE POOL IS EXHAUSTED. Measured
-  // 2026-09-09: with graphql at 0 of 5000, `gh api graphql -i` exits non-zero -- so a plain `ask()` here
-  // returned null and the line read `graphql UNREADABLE` during the one outage it exists to report.
-  //
-  // An instrument that fails precisely when its subject fails reports the alarming state as no state.
-  // `execFileSync` puts the response on the thrown error's `stdout`, and GitHub sends `X-Ratelimit-*` on
-  // a rate-limited response like any other, so the answer is there either way.
-  let raw;
-  try {
-    raw = run(args);
-  } catch (error) {
-    raw = /** @type {{stdout?: string}} */ (error).stdout ?? "";
-  }
-  if (!raw) return null;
-  const read = (/** @type {string} */ name) => {
-    const m = new RegExp(`^${name}:\\s*(\\d+)`, "im").exec(raw);
-    return m ? Number(m[1]) : null;
-  };
-  const remaining = read("X-Ratelimit-Remaining");
-  const limit = read("X-Ratelimit-Limit");
-  const reset = read("X-Ratelimit-Reset");
-  if (remaining === null || limit === null) return null;
-  return {
-    remaining, limit, used: limit - remaining,
-    resetInMinutes: reset === null ? null : Math.max(0, Math.round((reset * 1000 - Date.now()) / 60000)),
-  };
-}
-
-/**
  * How the budget line reads. A remaining count with no window is not a measurement -- 4000 left with
  * fifty minutes to go and 4000 left with two are different states -- so the reset is always beside it.
  *
- * @typedef {{remaining: number, limit: number, used: number, resetInMinutes: number | null}} Pool
+ * `poolFromHeaders` AND THIS TYPEDEF NOW LIVE IN `api-pool.mjs` (#2003). `work-gate.mjs`'s refusal path
+ * needs the identical reading and cannot import this file -- it runs before any `npm ci`, and this one
+ * reaches five other modules -- so the reader moved to a leaf and both callers import it. The move is why
+ * there is still only one place that knows what "exhausted" looks like.
+ *
  * @param {{core: Pool | null, graphql: Pool | null} | null} budget
  * @param {number} spent how many `gh` calls this table itself made
  * @returns {string}

@@ -68,7 +68,11 @@ export function shippedUnits(dir = SHIPPED_DIR, { read = readdirSync } = {}) {
 // --- #1974: WHICH ACCOUNT A UNIT SPENDS, DECLARED RATHER THAN INHERITED ------------------------------
 //
 // MEASURED 2026-09-22. `a11ign-work-tick.service` ran with no `GH_CONFIG_DIR`, so the work gate
-// authenticated as `DanBeckDev` -- a PERSON -- and spent that human account's 5,000 GraphQL requests.
+// authenticated as `DanBeckDev` -- a PERSON -- and spent that human account's 5,000-POINT-PER-HOUR GraphQL
+// budget. A POINT IS NOT A REQUEST, and this line said "requests" until #2003: the gate's five reads cost
+// TWELVE points between them (measured by differencing `X-Ratelimit-Used`: `pr list` 5, ready 2, backlog 2,
+// chairman-blocked 1, all-open 2), so a reader counting calls against 5,000 concludes the tick could run
+// for a year. At 30 ticks an hour the gate spends 360 of the 5,000 -- 7.2%, and never the whole pool.
 // The gate then refused correctly and silently ("CANNOT ASK: neither the pull-request list nor the Ready
 // rows could be read"), which from inside the org is indistinguishable from a quiet queue.
 //
