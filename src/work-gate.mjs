@@ -64,7 +64,7 @@ export const EXIT = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3 };
 export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-convinced-not-ready",
   "verdict-not-convinced", "pr-checks-failing", "ready-queue-empty", "lane-backlog-unpromoted",
   "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
-  "blocked-unexaminable"];
+  "blocked-unexaminable", "fleet-batch-due"];
 
 /**
  * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
@@ -94,7 +94,7 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
  */
 export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog-unpromoted",
   "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
-  "blocked-unexaminable"]);
+  "blocked-unexaminable", "fleet-batch-due"]);
 
 /**
  * The causes that START new work, as opposed to finishing work already begun.
@@ -117,7 +117,7 @@ export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog
  */
 export const START_CAUSES = Object.freeze(["ready-row-unclaimed", "ready-queue-empty",
   "lane-backlog-unpromoted", "org-stalled", "epic-unfiled", "epic-finished",
-  "blocked-unexaminable"]);
+  "blocked-unexaminable", "fleet-batch-due"]);
 
 /** Where the drain marker lives. `touch` it to open a window; `rm` it to close one. */
 export const DRAIN_MARKER = `${process.env.HOME}/.cache/a11ign/drain`;
@@ -640,11 +640,88 @@ export function readOpenRows(run = defaultRun) {
     // `body` and `blockedBy` as well; asking once and filtering twice keeps the unconditional call
     // count where `GH_READS` says it is.
     const parsed = JSON.parse(run(["issue", "list", "--state", "open", "--limit", "500",
-      "--json", "number,title,labels,body,blockedBy"]));
+      "--json", "number,title,labels,body,blockedBy,milestone"]));
     return Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * The milestone the fleet batch is scoped to. Matches `fleet-gated-nightly.mjs`'s own constant, which is
+ * where #914's bar is written down.
+ */
+export const FLEET_MILESTONE = "Road to version one";
+
+/**
+ * The open `fleet-gated` rows on the milestone -- the batch #914 describes.
+ *
+ * FREE. `readOpenRows` already reads every open row unconditionally for `answer-owed` and
+ * `blocked-unexaminable`; this adds `milestone` to that same `--json` and filters locally, so `GH_READS`
+ * is unchanged. A separate milestone-scoped query would have been a third unconditional call for rows
+ * the tick already had in hand.
+ *
+ * @param {any[]} rows @param {string} [milestone]
+ */
+export function fleetBatchRows(rows, milestone = FLEET_MILESTONE) {
+  return (rows ?? [])
+    .filter((r) => labelsOf(r).includes("fleet-gated"))
+    .filter((r) => String(r?.milestone?.title ?? "") === milestone)
+    .sort((a, b) => Number(a.number) - Number(b.number));
+}
+
+/**
+ * THE FLEET BATCH IS A STATE QUESTION, AND IT SPENT ITS LIFE ON A CLOCK.
+ *
+ * #1830 built `a11ign-fleet-gated-nightly.timer` to fire at 01:00 UTC, and the cadence was inherited
+ * rather than chosen: #914 recorded what a PERSON used to do late at night ("batches starting once the
+ * day's last capture job has cleared"), and automating the remembering automated the hour with it.
+ *
+ * MEASURED 2026-09-22, when the chairman asked why everything waited for 1am: the firing costs
+ * **2.2s of CPU and 5s of wall clock**. Two `gh` calls, one comment, one prompt. It performs no capture.
+ * There was never a resource argument for daily -- only the habit.
+ *
+ * AND `agent-practices.md` ALREADY FORBIDS IT, in this repository's own words:
+ *
+ *   "do not create a cron to check for work. If you think you need one, the gate is missing a question
+ *    rather than you needing a timer ... A cron is still right for something that must happen at a
+ *    WALL-CLOCK time regardless of state; it is never right for 'has anything changed yet'."
+ *
+ * "Are there fleet-gated rows to dispatch?" is the second kind. So it moves here, and the timer goes.
+ *
+ * KEYED ON THE SET, NOT A COUNT AND NOT A CLOCK. The causeKey names every row in the batch, so it fires
+ * the moment the set CHANGES -- a row gated, a row cleared -- and stays quiet while it does not. A count
+ * would collide two different batches of the same size (#1799's finding, which cost four re-litigations
+ * of the same three epics in an hour); a clock fires when nothing has changed and stays silent for
+ * twenty-three hours when everything has.
+ *
+ * @param {any[]} rows every open row
+ * @param {string} [milestone]
+ * @returns {{session: string, cause: string, subject: string, discriminator: string,
+ *            prompt: string, causeKey: string}[]}
+ */
+export function fleetBatchOrders(rows, milestone = FLEET_MILESTONE) {
+  const batch = fleetBatchRows(rows, milestone);
+  if (batch.length === 0) return [];
+  const numbers = batch.map((r) => `#${r.number}`).join(", ");
+  const key = batch.map((r) => r.number).join(".");
+  return [{
+    session: "orchestrator",
+    cause: "fleet-batch-due",
+    subject: "fleet-batch",
+    discriminator: key,
+    prompt: `${batch.length} row(s) carry \`fleet-gated\` and are open on "${milestone}": ${numbers}.\n`
+      + "Run the by-row batch per #914's own bar: each row gets a comment naming the capture, the "
+      + "reading, and whether it is now workable without the fleet -- or is named not covered and why.\n"
+      + "THIS ARRIVES WHEN THE SET CHANGES, NOT ON A CLOCK. It replaced a 01:00 timer that cost 5 "
+      + "seconds to run and made the fleet wait up to twenty-three hours for a question worth asking the "
+      + "moment a row became gated. So a row that entered this set a minute ago is as real as one that "
+      + "has been in it all week -- do not wait for tonight.\n"
+      + "A ROW THAT CANNOT MOVE YET IS AN ANSWER: say so on it with a machine-readable condition "
+      + "(`Fleet-hold-until:`, `--add-blocked-by`, or `Not-before:`) and it leaves this set until the "
+      + "condition clears. A row you merely skip stays in the set and this order returns unchanged.",
+    causeKey: `orchestrator/fleet-batch-due/${key}`,
+  }];
 }
 
 /** The rows that owe someone an answer. @param {any[]} rows */
@@ -1861,6 +1938,9 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // are all closed may only need closing. The more likely supply of real work goes first.
   orders.push(...finishedEpicOrders(epics, readyRows));
   orders.push(...blockedReferentOrders(openRows, readyRows));
+  // THE BATCH THAT USED TO BE A 01:00 TIMER. Placed here rather than first: a named row to fix
+  // outranks a standing sweep, and `orchestrator` gets one order per tick either way.
+  orders.push(...fleetBatchOrders(openRows));
 
   orders.push(...chairmanOrders(chairmanBlocked));
 
