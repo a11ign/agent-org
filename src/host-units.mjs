@@ -489,7 +489,18 @@ export function orphanedUnits({ shippedDir = SHIPPED_DIR, installedDir = INSTALL
  */
 export function retiredHere(unit, { shippedDir = SHIPPED_DIR, git = defaultGit } = {}) {
   try {
-    return git(["log", "--diff-filter=D", "--format=%H", "-1", "--", join(shippedDir, unit)]).trim() !== "";
+    if (git(["log", "--diff-filter=D", "--format=%H", "-1", "--", join(shippedDir, unit)]).trim() !== "") {
+      return true;
+    }
+    // A SHALLOW CHECKOUT CANNOT SAY "NEVER", and it answers the question as if it could.
+    //
+    // MEASURED 2026-09-22 in CI, on the first run of this code: `reusable-acceptance.yml` checks out at
+    // the default depth ON PURPOSE ("NO `fetch-depth: 0` HERE, DELIBERATELY -- this job never runs `git
+    // diff`"), so `--diff-filter=D` saw no commits at all and reported `a11ign-fleet-gated-nightly.timer`
+    // -- deleted by #1941, which this function answers `true` for on a full clone -- as NEVER SHIPPED.
+    // An empty log means "no deletion IN WHAT I CAN SEE", and how much that is was chosen by whoever
+    // cloned, not by this question. So the absence is only evidence when the history is whole.
+    return git(["rev-parse", "--is-shallow-repository"]).trim() === "true" ? null : false;
   } catch {
     return null;
   }

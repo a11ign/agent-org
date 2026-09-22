@@ -4,8 +4,9 @@
 // `unitDrift` and `driftReport` all take their filesystem and their `systemctl` injected;
 // `hostUnitsInstall` takes its copier; `orphanedUnits` takes its `git` (#1993), so a stub directory
 // never reaches a real `git` and is never answered about a path outside the repository. The real reads
-// are of `packages/agent-org/host/`, this repository's own directory, and ONE `git log` over this
-// repository's own history -- the `retiredHere` test, where the two answers ARE the facts under test.
+// are of `packages/agent-org/host/`, this repository's own directory, and of a two-commit git
+// repository this file BUILDS in a temp directory and deletes -- never of this checkout's own history,
+// which is as deep as whoever cloned chose to make it.
 
 /**
  * #1858: A UNIT FILE IN THE REPOSITORY IS NOT A RUNNING TIMER.
@@ -21,8 +22,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
 import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, systemdUserAvailable,
   hostUnitDrift, permissionModeDrift, orphanedUnits, SHIPPED_DIR, REPO_ROOT, execCommands,
   entriesFromCommand, ghSpawnReachedFrom, identityDrift, unitsSpendingGh, opaqueCommands,
@@ -252,6 +256,36 @@ test("#1911: the corpus-release unit reads fleet.env, the only place a unit can 
 // asked "is what we ship installed?" and none asked "is what is installed still ours?".
 
 /**
+ * A REAL TWO-COMMIT REPOSITORY, built here: one commit ships two units, the next deletes one of them.
+ *
+ * A FIXTURE AND NOT THIS CHECKOUT, which is the whole lesson of the first CI run. `retiredHere` was
+ * asserted against this repository's own history ("#1941 deleted the fleet-gated nightly's units") --
+ * true on the agent host, FALSE in the acceptance job, which checks out at the default depth on purpose.
+ * A history bounded by whoever cloned cannot be a fixture; two commits made here can.
+ * @returns {{ dir: string, git: (args: string[]) => string }}
+ */
+const repoWithARetirement = () => {
+  const dir = mkdtempSync(join(tmpdir(), "host-units-retirement-"));
+  const git = (args: string[]) =>
+    // `sandboxGitEnv()` for the same reason the production spawn uses it: an inherited `GIT_DIR` from a
+    // hook or a merge worktree would aim every one of these at somebody else's repository.
+    String(execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", env: sandboxGitEnv() }));
+  const host = join(dir, "packages/agent-org/host");
+  mkdirSync(host, { recursive: true });
+  git(["init", "-q", "-b", "main"]);
+  git(["config", "user.email", "fixture@example.invalid"]);
+  git(["config", "user.name", "fixture"]);
+  writeFileSync(join(host, "a11ign-gone.timer"), "[Timer]\nOnCalendar=daily\n");
+  writeFileSync(join(host, "a11ign-stays.timer"), "[Timer]\nOnCalendar=daily\n");
+  git(["add", "-A"]);
+  git(["commit", "-qm", "ship both units"]);
+  rmSync(join(host, "a11ign-gone.timer"));
+  git(["add", "-A"]);
+  git(["commit", "-qm", "retire one of them"]);
+  return { dir, git };
+};
+
+/**
  * `git log --diff-filter=D` as a stub, in the two answers that mean different things (#1993). INJECTED
  * IN EVERY CASE below, so this file still spawns nothing and a stub directory never reaches a real
  * `git` that would answer about a path outside the repository.
@@ -311,14 +345,42 @@ test("#1993: a history it CANNOT read is UNKNOWN, and falls to the careful branc
     "NOT ASKED and ALL CLEAR must not read the same, which is this repository's most-repeated defect");
 });
 
-test("#1993: `retiredHere` reads the deletion out of THIS repository's own history", () => {
-  // Against the real `git`, not a stub -- the two answers are facts about this tree. #1941 deleted the
-  // fleet-gated nightly's units; nothing has ever committed the board dispatch's.
-  assert.equal(retiredHere("a11ign-fleet-gated-nightly.timer"), true,
-    "#1941 deleted it from packages/agent-org/host/, so `--diff-filter=D` finds the commit");
-  assert.equal(retiredHere("a11ign-never-existed.timer"), false,
-    "POSITIVE CONTROL: a name no commit here ever carried answers false, not null -- the question was "
-    + "asked and answered, which is a different thing from being unanswerable");
+test("#1993: `retiredHere` reads a real deletion out of a real history, through the real argv", () => {
+  // AGAINST REAL `git`, and against a repository built here rather than against this checkout.
+  //
+  // The first version asserted on THIS tree ("#1941 deleted the fleet-gated nightly's units"), which is
+  // true on the agent host and FALSE IN CI: `reusable-acceptance.yml` checks out at the default depth on
+  // purpose, so `--diff-filter=D` saw no commits and the assertion failed on the first CI run. A history
+  // bounded by whoever cloned is not a fixture. This one is: two commits, one of which deletes a file.
+  const { dir, git } = repoWithARetirement();
+  try {
+    const deps = { shippedDir: join(dir, "packages/agent-org/host"), git };
+    assert.equal(retiredHere("a11ign-gone.timer", deps), true,
+      "a commit deleted it, so `--diff-filter=D` finds that commit -- and a stub could not have caught a "
+      + "wrong flag or a path form git rejects, which is why this one runs the real thing");
+    assert.equal(retiredHere("a11ign-stays.timer", deps), false,
+      "POSITIVE CONTROL: a file still in the tree answers false, not true -- the filter is not matching "
+      + "every commit that touched the path");
+    assert.equal(retiredHere("a11ign-never-existed.timer", deps), false,
+      "and a name no commit ever carried answers false, not null: the question was asked and answered, "
+      + "which is a different thing from being unanswerable");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#1993: a SHALLOW clone cannot say `never`, and must not answer as though it could", () => {
+  // THE DEFECT CI FOUND, pinned. An empty `git log` means "no deletion IN WHAT I CAN SEE", and how much
+  // that is was chosen by whoever cloned. Answering `false` there reports a RETIRED unit as one this
+  // repository never shipped -- the careful branch, so the direction is safe, but wrong and silent.
+  const shallow = (args: string[]) => (args[0] === "rev-parse" ? "true\n" : "");
+  assert.equal(retiredHere("a11ign-gone.timer", { git: shallow }), null,
+    "UNKNOWN, not `false` -- NOT ASKED and ANSWERED NO are the substitution this repository keeps "
+    + "re-learning");
+  const whole = (args: string[]) => (args[0] === "rev-parse" ? "false\n" : "");
+  assert.equal(retiredHere("a11ign-gone.timer", { git: whole }), false,
+    "POSITIVE CONTROL: on a complete history the same empty log IS evidence, or this branch would make "
+    + "the answer `null` for everything and the RETIRED finding unreachable");
 });
 
 test("#1951: ONLY this org's units -- the host runs others and they are not ours to judge", () => {
