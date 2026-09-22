@@ -83,6 +83,18 @@ import { localImports, importedNamesFor, stripComments } from "../../guards/src/
 // `npm run fleet:*` and its siblings -- the resource ban every worker/agent role file below `ceo` and
 // `orchestrator` carries, verbatim, elsewhere in this repo. A GitHub-hosted runner is not one of the
 // exceptions to it.
+// #1912: THESE NAME A THING, where every other pattern below names an INVOCATION. `fleet:status` in a
+// sentence is still somebody running `fleet:status`; `A11Y_PVE_KEY` in a sentence may be a unit test
+// asserting what happens when the key is ABSENT -- #1911's Acceptance was a plain rstest run whose bullet
+// said exactly that, and `row-file` routed it to `orchestrator`, the one session the row existed to spare.
+// `fleetOrLabAcceptance` reads these outside bullet prose only; see `withoutBulletProse`.
+const SYSTEMCTL = /\bsystemctl\b/;
+const SYSTEMD = /\bsystemd\b/;
+const PVE_KEY = /\bA11Y_PVE_KEY\b|\ba11y-pve\b/;
+const CORPUS_REMOTE = /\bA11Y_CORPUS_REMOTE\b/;
+const ON_THE_LAB = /\bon the lab\b/;
+const NAMED_NOT_INVOKED = new Set([SYSTEMCTL, SYSTEMD, PVE_KEY, CORPUS_REMOTE, ON_THE_LAB]);
+
 const FLEET_LAB_PATTERNS = /** @type {[RegExp, string][]} */ ([
   [/\bfleet:/, "reaches the fleet -- a GitHub runner has no Windows worker"],
   [/\blab:/, "reaches the lab -- a GitHub runner has no Proxmox"],
@@ -98,11 +110,11 @@ const FLEET_LAB_PATTERNS = /** @type {[RegExp, string][]} */ ([
   // for a row that is, and it becomes the thing a reader trusts INSTEAD of the body.
   //
   // NAMED, never a glob: a list somebody chose is what makes routing on it safe.
-  [/\bsystemctl\b/, "drives systemd on the control host, which only `orchestrator` reaches"],
-  [/\bsystemd\b/, "installs or reads a systemd unit on the control host"],
+  [SYSTEMCTL, "drives systemd on the control host, which only `orchestrator` reaches"],
+  [SYSTEMD, "installs or reads a systemd unit on the control host"],
   [/\bgh workflow run\b/, "dispatches a workflow from the control plane, not from a checkout"],
   [/\bfleet:provision\b/, "provisions a real box"],
-  [/\bA11Y_PVE_KEY\b|\ba11y-pve\b/, "uses the Proxmox key, which lives on the control plane"],
+  [PVE_KEY, "uses the Proxmox key, which lives on the control plane"],
   // #1860: BARE `\bcorpus-backup\b` WAS WRONG -- it matched the SUBSTRING, so
   // `packages/lab/src/packaging/corpus-backup.test.ts` (a unit test that only reads source text) refused
   // itself the moment #1042's own fix added a file named after the thing it fixed. Every sibling pattern
@@ -111,9 +123,9 @@ const FLEET_LAB_PATTERNS = /** @type {[RegExp, string][]} */ ([
   // is the real script's filename (as actually spawned: `node packages/lab/scripts/corpus-backup.mjs`);
   // `corpus:backup` is the npm script name (`npm run corpus:backup`, per package.json). Neither matches a
   // `.test.ts` path.
-  [/\bcorpus-backup\.mjs\b|\bcorpus:backup\b|\bA11Y_CORPUS_REMOTE\b/,
-    "writes or verifies the corpus backup, which runs on the lab"],
-  [/\bon the lab\b/, "names work done ON the lab, which only `orchestrator` reaches"],
+  [/\bcorpus-backup\.mjs\b|\bcorpus:backup\b/, "writes or verifies the corpus backup, which runs on the lab"],
+  [CORPUS_REMOTE, "writes or verifies the corpus backup, which runs on the lab"],
+  [ON_THE_LAB, "names work done ON the lab, which only `orchestrator` reaches"],
 ]);
 
 /**
@@ -144,8 +156,74 @@ export function fleetOrLabAcceptance(body) {
   // the runnable lines, this needs everything the section says it will take.
   const section = extractLabeledSection(body, "Acceptance");
   if (section === null) return null;
-  for (const [pattern, reason] of FLEET_LAB_PATTERNS) if (pattern.test(section)) return reason;
+  const withoutBullets = withoutBulletProse(section);
+  for (const [pattern, reason] of FLEET_LAB_PATTERNS) {
+    if (pattern.test(NAMED_NOT_INVOKED.has(pattern) ? withoutBullets : section)) return reason;
+  }
   return null;
+}
+
+/**
+ * #1912: the reason a NAMED pattern would have given, when it appears ONLY in bullet prose and so did not
+ * route the row -- `row-file` prints it, so the one case the bullet rule can get wrong is never silent.
+ * @param {string} body a row body
+ * @returns {string | null}
+ */
+export function bulletOnlyFleetMention(body) {
+  const section = extractLabeledSection(body, "Acceptance");
+  if (section === null || fleetOrLabAcceptance(body) !== null) return null;
+  const hit = FLEET_LAB_PATTERNS.find(([pattern]) => NAMED_NOT_INVOKED.has(pattern) && pattern.test(section));
+  return hit ? hit[1] : null;
+}
+
+/**
+ * #1912: the Acceptance section minus its BULLET ITEMS -- marker line and continuations -- outside a code
+ * fence: the text a NAMED pattern (a variable, a unit, a place) is read against. Invocation patterns still
+ * read the whole section.
+ *
+ * WHY BULLETS AND ONLY BULLETS. This repo's Acceptance shape is a fenced command followed by "the run
+ * passes and includes:" and a bullet per thing the tests assert -- a bullet there DESCRIBES a test. What
+ * the Acceptance DOES lives in the fence, in a numbered clause (#1234's "1. A systemd USER timer...",
+ * #1042's "2. `A11Y_CORPUS_REMOTE` is set on the lab.") or in a plain sentence, and all three are still
+ * read. The raw section stays the input (#1241): going back to the runnable lines alone is what made
+ * #1042 and #1234 answer null.
+ *
+ * NOT A PROOF, A CONVENTION. A bullet that genuinely does the thing (`- run systemctl ...`) now answers
+ * null -- the direction #1241 called unsafe -- so `row-file` says so when it happens (see
+ * `bulletOnlyFleetMention`), and the fix is to write that step as a numbered clause, which is read.
+ * @param {string} section
+ * @returns {string}
+ */
+function withoutBulletProse(section) {
+  let inFence = false;
+  let inItem = false;
+  let afterBlank = false;
+  return section.split(/\r\n|\r|\n/).filter((line) => {
+    const isFence = /^\s*(```|~~~)/.test(line);
+    if (isFence) inFence = !inFence;
+    // #1914's review: a fence, opening or closing, ENDS the item -- else the line after a closing fence
+    // reads as the bullet's lazy continuation and a real step is dropped.
+    if (isFence) inItem = false;
+    if (inFence || isFence) return true;
+    if (/^\s*[-*+]\s/.test(line)) { inItem = true; afterBlank = false; return false; }
+    if (line.trim() === "") { afterBlank = inItem; return true; }
+    if (inItem && !endsListItem(line, afterBlank)) return false;
+    inItem = false;
+    return true;
+  }).join("\n");
+}
+
+/**
+ * Does `line` end the bullet item above it? The WHOLE item is prose, not its marker line (#1914's review:
+ * a wrapped bullet's `A11Y_PVE_KEY` on an indented continuation still routed, silently). An indented line
+ * continues the item, and so does an unindented one straight after it -- Markdown's lazy continuation --
+ * unless it opens a block of its own: a numbered clause, a heading or a fence is the work, and is read.
+ * After a blank line only indentation keeps a line inside the item.
+ * @param {string} line a non-blank line outside any fence @param {boolean} afterBlank
+ */
+function endsListItem(line, afterBlank) {
+  if (/^\s/.test(line)) return false;
+  return afterBlank || /^(\d+[.)]\s|#)/.test(line);
 }
 
 // `runs/` is gitignored -- a GitHub runner never has a corpus, so these read nothing and report cleanly.
