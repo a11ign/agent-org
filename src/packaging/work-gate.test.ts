@@ -23,7 +23,7 @@ import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReady
   unfiledEpics, epicOrders, finishedEpics, finishedEpicOrders, readEpics, answersOwed, answerOrders,
   readOpenRows, withAnswerLabel,
   blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL,
-  ANSWER_PREFIX }
+  ANSWER_PREFIX, redOnlyBySupersededRun }
   from "../work-gate.mjs";
 
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
@@ -762,6 +762,49 @@ test("a PR carrying none of the required checks is not reported as red", () => {
   const pr = { number: 99, isDraft: false, headRefOid: "aaaaaaaabbbbbbbb", author: { login: "x" },
     labels: [], comments: [], statusCheckRollup: rollupOf([["sweep", "FAILURE"]]) };
   assert.deepEqual(decide({ prs: [pr], readyRows: [], required: ["gate"] }), []);
+});
+
+/**
+ * #1916: a superseded run's CANCELLED check is NO VERDICT while the replacement still runs (#1007's ruling).
+ * The fixture is #1924's head `c0864658`, 2026-09-22: the required `gate` exists ONLY in the cancelled run
+ * 35717172571, and the live run 35717174536's `ts / run` is still in progress.
+ */
+const cancelledGateWhile = (live: Record<string, unknown>) => ({ number: 1924, isDraft: false,
+  headRefOid: "c0864658aaaaaaaa", author: { login: "x" }, labels: [{ name: "session:worker-capture" }],
+  comments: [], statusCheckRollup: [
+    { __typename: "CheckRun", name: "gate", status: "COMPLETED", conclusion: "CANCELLED",
+      detailsUrl: "https://github.com/a11ign/a11ign/actions/runs/35717172571/job/1" },
+    { __typename: "CheckRun", name: "ts / run", detailsUrl: "https://github.com/a11ign/a11ign/actions/runs/35717174536/job/2",
+      ...live },
+  ] });
+
+test("a CANCELLED required check wakes nobody while another run on the head is still going -- #1916", () => {
+  const pr = cancelledGateWhile({ status: "IN_PROGRESS", conclusion: null });
+  assert.deepEqual(decide({ prs: [pr], readyRows: [], required: ["gate"] }), [],
+    "#1914 and #1924 both went CLEAN minutes after this exact wake was sent");
+  assert.deepEqual(decide({ prs: [pr], readyRows: [], required: null }), [],
+    "and the unreadable-required path agrees");
+});
+
+test("a CANCELLED required check with nothing else running is still red and still reaches its author", () => {
+  // THE POSITIVE CONTROL, and #1605's caveat: a cancelled `gate` that is genuinely the last word held a PR
+  // BLOCKED. Without this, a predicate that ignored CANCELLED altogether would pass the test above.
+  const settled = cancelledGateWhile({ status: "COMPLETED", conclusion: "SUCCESS" });
+  const [order] = decide({ prs: [settled], readyRows: [], required: ["gate"] }) as { cause: string,
+    session: string }[];
+  assert.equal(order?.cause, "pr-checks-failing", "nothing is in flight, so nobody else will ever answer it");
+  assert.equal(order.session, "worker-capture");
+});
+
+test("a real FAILURE beside a CANCELLED one is red even while something runs -- #1916", () => {
+  const running = [{ name: "ts / run", status: "IN_PROGRESS" }];
+  const cancelled = { name: "gate", status: "COMPLETED", conclusion: "CANCELLED" };
+  const failed = { name: "changeset", status: "COMPLETED", conclusion: "FAILURE" };
+  assert.equal(redOnlyBySupersededRun([cancelled], [cancelled, ...running]), true);
+  assert.equal(redOnlyBySupersededRun([cancelled, failed], [cancelled, failed, ...running]), false,
+    "only a cancellation is no-verdict; a failure has answered");
+  assert.equal(redOnlyBySupersededRun([cancelled], [cancelled]), false, "nothing running: the last word");
+  assert.equal(redOnlyBySupersededRun([], running), false, "no red at all is not this function's case");
 });
 
 test("the expensive question is asked only when something is red", () => {

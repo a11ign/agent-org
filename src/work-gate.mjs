@@ -37,6 +37,7 @@ import { READY_LABEL, CLAIM_LABEL } from "./claim-labels.mjs";
 import { verdictAtHead } from "./review-verdict.mjs";
 import { waitingOn, todayIso, describeWaiting } from "./waiting-condition.mjs";
 import { newestPerName } from "./newest-check-run.mjs";
+import { NO_VERDICT } from "./merge-guard/checks-rule.mjs";
 // B4, ASKED EARLY. These are the SAME two functions `row-claim.mjs` runs at claim time, imported
 // rather than reimplemented: `region-paths.mjs`'s own header records why a second copy of "what
 // counts as a path" is not allowed to exist. Both are leaf-shaped and relative, so the gate keeps the
@@ -531,13 +532,39 @@ export function partitionUnclaimed(readyRows, prFiles, options) {
  */
 export function checksSettledGreen(rollup) {
   if (!Array.isArray(rollup) || rollup.length === 0) return null;
-  const state = (/** @type {any} */ c) => String(c?.conclusion ?? c?.state ?? "").toUpperCase();
-  const status = (/** @type {any} */ c) => String(c?.status ?? "").toUpperCase();
-  if (rollup.some((c) => status(c) === "IN_PROGRESS" || status(c) === "QUEUED" || status(c) === "PENDING")) {
-    return null;
-  }
+  if (rollup.some(stillRunning)) return null;
   const bad = ["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"];
-  return !rollup.some((c) => bad.includes(state(c)));
+  return !rollup.some((c) => bad.includes(conclusionOf(c)));
+}
+
+const conclusionOf = (/** @type {any} */ c) => String(c?.conclusion ?? c?.state ?? "").toUpperCase();
+
+/** @param {any} c */
+function stillRunning(c) {
+  const status = String(c?.status ?? "").toUpperCase();
+  return status === "IN_PROGRESS" || status === "QUEUED" || status === "PENDING";
+}
+
+/**
+ * PURE. Is every red among these blocking checks a CANCELLED one, while something else on the head still runs?
+ *
+ * #1916, #1007's shape a second time. `checks-rule.mjs` ruled in #1007 that a cancelled run is NO VERDICT -- the
+ * replacement is already going -- and this file kept its own copy of the predicate without that ruling. Measured
+ * on #1914 at `63b11ecc` and #1924 at `c0864658`, 2026-09-22: two `ci` runs fired on one head a second apart,
+ * `cancel-in-progress` killed the first, and the required `gate` existed ONLY in the cancelled run while the live
+ * run's `ts / run` was still going. `newestPerName` had nothing newer to choose, so the gate sent
+ * `pr-checks-failing` to an author whose PR went `CLEAN` minutes later.
+ *
+ * ONLY WHILE SOMETHING ELSE STILL RUNS. A cancelled check that is genuinely the last word held #1605 BLOCKED;
+ * with nothing in flight on the head it is still settled red and still reaches its author, never silence.
+ * `NO_VERDICT` is IMPORTED: the rollup spells it in upper case, the REST read in lower (`update-branch-sweep.mjs`
+ * #1100), and the concept is one ruling either way.
+ *
+ * @param {any[]} blocking the blocking checks, narrowed @param {any[]} head every check on the head, narrowed
+ */
+export function redOnlyBySupersededRun(blocking, head) {
+  const red = blocking.filter((c) => checksSettledGreen([c]) === false);
+  return red.length > 0 && red.every((c) => conclusionOf(c) === NO_VERDICT.toUpperCase()) && head.some(stillRunning);
 }
 
 /**
@@ -1082,8 +1109,10 @@ function failingChecksOrder(pr, required = null) {
   // ONLY A CHECK THAT CAN HOLD THE PULL REQUEST COUNTS AS RED. A settled-red job outside the required
   // set is a real failure and somebody's problem -- it is not THIS pull request being blocked, and
   // waking its session to "fix the cause on that branch" is a prompt spent on a PR that merges anyway.
-  const blocking = blockingChecks(newestPerName(pr.statusCheckRollup ?? []), required);
+  const onHead = newestPerName(pr.statusCheckRollup ?? []);
+  const blocking = blockingChecks(onHead, required);
   if (checksSettledGreen(blocking) !== false) return null;
+  if (redOnlyBySupersededRun(blocking, onHead)) return null;
   const head = String(pr.headRefOid ?? "");
   if (!head) return null;
   const head8 = head.slice(0, 8);
