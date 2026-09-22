@@ -1236,7 +1236,12 @@ const PROVENANCE_MARK = { worker: "ATTRIBUTED", work: "WORK, NOT WORKER", undecl
  * @param {(number: number) => ReturnType<typeof fetchClosingPullRequest>} closingPrFor
  */
 export function provenanceVerdicts(gated, closingPrFor) {
-  return gated.map(({ number, title, closedAt }) => ({ number, title, closedAt, ...attributionFor(closingPrFor(number)) }));
+  return gated.map(({ number, title, closedAt }) => {
+    // #1960: the closing PR is kept, not only the verdict read off it, because the REMEDY differs between
+    // the two `undeclared` sub-cases and one of them has to name the pull request's own number.
+    const closingPr = closingPrFor(number);
+    return { number, title, closedAt, closingPr, ...attributionFor(closingPr) };
+  });
 }
 
 /**
@@ -1247,6 +1252,58 @@ export function provenanceVerdicts(gated, closingPrFor) {
  */
 export function provenanceFindings(verdicts) {
   return verdicts.filter((v) => v.verdict === "undeclared").map((v) => v.number);
+}
+
+/**
+ * The closing pull request that COULD carry the label this check reads, or `null` when there is none.
+ *
+ * This asks `attributionFor`'s own first clause (`claim-provenance.mjs`) a second time, and the second
+ * copy is deliberate: the verdict it returns spells both `undeclared` sub-cases with one word, and the
+ * repair differs between them. `ready-label-audit.test.ts` runs the two over the same fixtures and
+ * asserts they agree, so the copy cannot drift in silence.
+ *
+ * @param {import("./claim-provenance.mjs").ClosingPr | null} [pr]
+ */
+function labellablePr(pr) {
+  return pr && pr.merged ? pr : null;
+}
+
+/**
+ * The paragraph the provenance check exits with: ONE FOLLOWABLE COMMAND PER `undeclared` SUB-CASE.
+ *
+ * #1960: this used to tell the reader to get `row-claim.mjs claim` re-run, over a list 68 rows long --
+ * and the wording is not quoted here because the row's own Open-check greps for it. That command
+ * writes the ROW's labels (`gh issue edit --add-label`) while `attributionFor` decides this verdict
+ * from the merged PULL REQUEST's labels, which only `arm-pr` ever writes -- so following that sentence
+ * exactly left the next run reading precisely what the last one read, on every row, forever.
+ * A guard message must be followable: following the refusal has to fix what it refused
+ * (`.claude/rules/agent-practices.md`, #1157's family). Naming no command at all would be better than
+ * naming that one, and naming the pull request the check already holds is better than both.
+ *
+ * The two sub-cases are already apart in the per-row output above; only this summary collapsed them.
+ *
+ * @param {ReturnType<typeof provenanceVerdicts>} verdicts @returns {string}
+ */
+export function provenanceRemedySummary(verdicts) {
+  const undeclared = verdicts.filter((v) => v.verdict === "undeclared");
+  const remedies = undeclared.flatMap((v) => {
+    const pr = labellablePr(v.closingPr);
+    return pr === null ? [] : [`    #${v.number}:  gh pr edit ${pr.number} --add-label session:<who ran it>\n`];
+  });
+  const unrecoverable = undeclared.filter((v) => labellablePr(v.closingPr) === null);
+  const parts = [`\n${undeclared.length} row(s) closed since ${PROVENANCE_REQUIRED_FROM} cannot name `
+    + `their worker. A branch name identifies the WORK, never the worker.\n`];
+  if (remedies.length > 0) {
+    parts.push(`\n  ${remedies.length} closed by a merged pull request carrying no session label. This `
+      + `verdict is read off the PULL REQUEST's labels, so labelling the pull request -- and nothing `
+      + `done to the row -- is what the next audit will read:\n`, ...remedies);
+  }
+  if (unrecoverable.length > 0) {
+    parts.push(`\n  ${unrecoverable.length} closed with no merged pull request declaring them at all, so `
+      + `there is nothing to label and no command recovers this: ${unrecoverable.map((v) => `#${v.number}`).join(", ")} `
+      + `need somebody who knows who did the work to record it on the row.\n`);
+  }
+  return parts.join("");
 }
 
 /**
@@ -1269,10 +1326,7 @@ function reportProvenanceOf(gated) {
       + `worked names its claimant or the pull request that declared it\n`);
     return 0;
   }
-  process.stderr.write(`\n${undeclared.length} row(s) closed since ${PROVENANCE_REQUIRED_FROM} cannot `
-    + `name their worker: ${undeclared.map((n) => `#${n}`).join(", ")}. A branch name identifies the `
-    + `WORK, never the worker -- have whoever pushed it re-run \`row-claim.mjs claim\`, so the next `
-    + `audit reads what this one could not.\n`);
+  process.stderr.write(provenanceRemedySummary(verdicts));
   return undeclared.length;
 }
 
