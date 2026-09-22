@@ -26,7 +26,9 @@ import {
   parseWorktreeList, isPrimaryWorktree, classify, detachedMergeStatus, mergeStatus, isContentMerged,
   isWorkingTreeClean, pruneWorktrees, recentGitActivity, ACTIVITY_WINDOW_MS,
   strandedWork, formatStranded, trackedChanges, unverifiedRecords, formatReport,
+  heldByOwner, deliveredOwnCommit, mainLineCommits,
 } from "../prune-worktrees.mjs";
+import { stampWorktree } from "../worktree-owner.mjs";
 import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
 
 // The CLI is spawned as a real process below, so the argv path -- the only place `dryRun` is
@@ -803,5 +805,142 @@ test("#1373: two of three records verified is NOT enough -- the verified count m
     assert.deepEqual(report.removed, []);
     assert.match(report.records[0].reason, /holds 1 of 3 runs\/ file\(s\)[^:]*: runs\/c\.json$/);
     assert.ok(existsSync(join(worktree, "runs/c.json")), "the one unverified record must still be on disk");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// --- #2020: A TREE A SESSION STILL HOLDS, WHICH MERGED + CLEAN + INACTIVE CANNOT SEE. ---
+//
+// Every tree below is merged, clean and far outside the activity window -- the verdict that removed it
+// before #2020, and the verdict the live host reached on 2026-09-22 for two RUNNING sessions' role trees.
+// What refuses now is only the held check, so each test isolates the one fact it adds: whether the tree
+// has DELIVERED a commit of its own, or was claimed and has not.
+//
+// The two shapes are the row's own, built from real git rather than described:
+//   - HELD (`wt-1908`'s shape): stamped, branched from origin/main and never committed, its only untracked
+//     entry one the primary ignores, no git activity for hours.
+//   - DELIVERED (`wt-1948`'s shape): a branch whose own commits reached origin/main through a merge, so
+//     its tip is a SECOND PARENT and never a point on main's first-parent line.
+// Both halves are asserted in every test that asserts either: an emptiness assertion about `held` is only
+// worth reading beside a tree that is still removed.
+
+/**
+ * A primary ignoring what the real one ignores, with three linked worktrees that are all merged, clean
+ * and inactive, and differ only in what #2020 asks about:
+ *   - `delivered` -- STAMPED, its own commit merged into origin/main by a real merge commit: REMOVE
+ *   - `held`      -- STAMPED, branched at origin/main's tip and never committed: REFUSED
+ *   - `unstamped` -- the held shape with NO stamp: REMOVE, which is the named gap rather than an oversight
+ */
+function buildHeldFixture() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "a11y-prune-held-")));
+  git(root, "init", "--quiet", "-b", "main");
+  git(root, "config", "user.email", "t@example.invalid");
+  git(root, "config", "user.name", "Fixture");
+  // The real `.gitignore`'s own entries, for the reason each is there: `.a11y-owner` (#1128) must be
+  // invisible to `git status` or every stamped tree reads DIRTY and never reaches this gate at all, and
+  // `node_modules` is the one untracked entry the row measured on all 82 trees.
+  writeFileSync(join(root, ".gitignore"), "node_modules\n.a11y-owner\n");
+  git(root, "add", ".gitignore");
+  git(root, "commit", "-q", "-m", "base");
+  git(root, "update-ref", "refs/remotes/origin/main", git(root, "rev-parse", "HEAD").trim());
+
+  // DELIVERED: commit on the branch, then merge it with --no-ff, exactly as every PR here lands. The
+  // branch tip becomes the merge's SECOND parent -- reachable from origin/main, never on its own line.
+  const delivered = join(root, "wt-delivered");
+  git(root, "worktree", "add", "--quiet", "-b", "agent/delivered-1948", delivered);
+  writeFileSync(join(delivered, "shipped.txt"), "the work\n");
+  git(delivered, "add", "shipped.txt");
+  git(delivered, "commit", "-q", "-m", "work that lands");
+  git(root, "merge", "--no-ff", "--quiet", "-m", "Merge pull request #1948", "agent/delivered-1948");
+  const mainTip = git(root, "rev-parse", "HEAD").trim();
+  git(root, "update-ref", "refs/remotes/origin/main", mainTip);
+  assert.notEqual(git(delivered, "rev-parse", "HEAD").trim(), mainTip,
+    "the fixture is broken if the branch fast-forwarded: a delivered tip must be a second parent, or this "
+    + "fixture proves nothing about the line it is meant to be off");
+  stampWorktree(delivered, "worker-capture");
+
+  // HELD: branched at the tip main already had. No commit of its own, so `origin/main..HEAD` is 0 -- the
+  // same 0 the delivered tree reads, which is the whole reason that count cannot be the question.
+  const held = join(root, "wt-held");
+  git(root, "worktree", "add", "--quiet", "-b", "agent/held-1908", held, mainTip);
+  mkdirSync(join(held, "node_modules"), { recursive: true });
+  writeFileSync(join(held, "node_modules", "installed.txt"), "ignored by the primary\n");
+  stampWorktree(held, "worker-capture");
+
+  const unstamped = join(root, "wt-unstamped");
+  git(root, "worktree", "add", "--quiet", "-b", "agent/unstamped-1908", unstamped, mainTip);
+  return { root, delivered, held, unstamped, mainTip };
+}
+
+test("#2020: a STAMPED tree with no commit of its own is refused -- while a STAMPED delivered tree is still removed", () => {
+  const { root, delivered, held } = buildHeldFixture();
+  try {
+    const report = pruneWorktrees(root, { now: LONG_AFTER() });
+    assert.deepEqual(report.held.map((r) => r.path), [held],
+      "the claimed tree must be the only one refused: it is merged, clean and hours idle, and every one of "
+      + "those facts is also true of the delivered tree beside it");
+    assert.ok(existsSync(held), "and it must still be on disk");
+    // THE OTHER HALF, and the reason the assertion above is worth reading: without it, "refuse everything"
+    // passes. #2020's own Done-when names this as the failure the fix must not become.
+    assert.ok(report.removed.some((r) => r.path === delivered),
+      "a branch whose own commits are merged into origin/main holds nothing anyone is waiting on -- it must "
+      + "still be removed, or this is `stop pruning` wearing a better name");
+    assert.equal(existsSync(delivered), false);
+    assert.match(report.held[0].reason, /is stamped worker-capture and its HEAD is a commit on origin\/main's own first-parent line/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2020: `origin/main..HEAD` reads 0 on BOTH trees -- the count cannot tell them apart, first-parent membership can", () => {
+  const { root, delivered, held, mainTip } = buildHeldFixture();
+  try {
+    for (const tree of [delivered, held]) {
+      assert.equal(git(tree, "rev-list", "--count", "origin/main..HEAD").trim(), "0",
+        "the measurement this fix rests on: 'no commits ahead' is true of a finished branch AND of one that "
+        + "never committed, so a remedy written on that count would refuse or remove both together");
+    }
+    const mainLine = mainLineCommits(root);
+    assert.equal(deliveredOwnCommit(held, mainLine), false);
+    assert.equal(deliveredOwnCommit(delivered, mainLine), true);
+    assert.ok(mainLine?.has(mainTip), "the merge commit is on main's own line; the branch tip it merged is not");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2020: an UNSTAMPED tree of the same shape is still removed -- the named gap, pinned rather than discovered", () => {
+  // `worktree-owner.mjs` refuses to invent a stamp for a tree whose owner nobody recorded, and inventing
+  // one here would name whoever ran the prune. Measured on the host 2026-09-22: 6 of 97 merged linked
+  // worktrees are unstamped, one of them a live session's role tree. The remedy is `worktree:stamp`, and
+  // this test exists so the exposure is a decision on the record rather than a surprise.
+  const { root, held, unstamped } = buildHeldFixture();
+  try {
+    const report = pruneWorktrees(root, { now: LONG_AFTER() });
+    assert.ok(report.removed.some((r) => r.path === unstamped));
+    assert.equal(existsSync(unstamped), false);
+    assert.deepEqual(report.held.map((r) => r.path), [held], "and the stamped tree beside it is still refused");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2020: a stamped tree whose delivery could not be determined is REFUSED, never guessed finished", () => {
+  const { root, held } = buildHeldFixture();
+  try {
+    assert.equal(deliveredOwnCommit(held, null), "unknown", "no readable main line is not 'it delivered'");
+    const refusal = heldByOwner(held, null);
+    assert.equal(refusal.refused, true);
+    assert.match((refusal as { reason: string }).reason, /could not be determined/);
+    // The same collapse one step out: a `git rev-parse` that cannot answer.
+    assert.equal(deliveredOwnCommit(held, new Set(["deadbeef"]), { run: () => { throw new Error("no"); } }), "unknown");
+    assert.equal(mainLineCommits(realpathSync(mkdtempSync(join(tmpdir(), "a11y-no-main-")))), null,
+      "a repository with no origin/main answers null -- never an empty Set, which would read as 'nothing is "
+      + "on main's line' and make every stamped tree look delivered");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2020: the report prints the refusal and its owner under its own heading, never under `removed`", () => {
+  const { root, held, delivered } = buildHeldFixture();
+  try {
+    const text = formatReport(pruneWorktrees(root, { now: LONG_AFTER() }));
+    assert.match(text, /refused 1 HELD worktree\(s\) \(#2020\) -- stamped by a session and carrying no commit of their own/);
+    assert.ok(text.includes(`  ${held}  (agent/held-1908): ${held} is stamped worker-capture`));
+    assert.ok(text.includes(`  ${delivered}  (agent/delivered-1948)`), "and the delivered tree is named under `removed`");
+    assert.doesNotMatch(text.split("refused 1 HELD")[0], new RegExp(held.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      "the held tree must not appear in the removed list above the heading");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
