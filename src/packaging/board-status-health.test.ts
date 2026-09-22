@@ -25,7 +25,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { statusContradictions, statusCensus } from "../board-status-health.mjs";
+import { statusContradictions, statusCensus, vocabularyDrift, RESTING_STATUS, WRITTEN_STATUSES }
+  from "../board-status-health.mjs";
 import { readFileSync } from "node:fs";
 
 /** The shape the real query returns, with the numbers this row measured. */
@@ -139,4 +140,81 @@ test("#1228: the third list is EMPTY rather than absent when there is nothing to
   assert.deepEqual(r.closedUnboarded, [],
     "an empty array, not undefined: a caller destructuring a missing key gets the same silence as a "
     + "clean board, which is the failure mode this row exists to end");
+});
+
+/**
+ * #1996: THE BOARD OFFERED NO `Done` AT ALL, AND EVERY TEST ABOVE AGREED IT DID.
+ *
+ * Measured 2026-09-22 on the org Project's live `Status` field: `Backlog, Ready, In progress, Blocked,
+ * Fleet-gated` -- and no `Done`. So `settleClosedStatus`'s move had been refused on EVERY closed row
+ * since the board moved to the org, and 121 closed rows sat at a live Status while `gh project
+ * item-edit` answered `option "Done" not found on field "Status"`.
+ *
+ * **NOTHING IN THE SUITE COULD SEE IT, INCLUDING THIS FILE.** Every `"Done"` above is a string this
+ * repository hands itself: the fixtures supply it, the classifier compares against it, and the settle
+ * path wrote it. The live option set was read by no code at all, so the vocabulary could be renamed,
+ * dropped, or never exist, with a green suite throughout. These tests pin the two halves of the remedy:
+ * the name has ONE copy, and something that reads the live field reports when the board cannot take it.
+ */
+test("#1996: the resting status has exactly one copy, and the settle path spells no second one", () => {
+  const src = (p: string) => readFileSync(new URL(p, import.meta.url), "utf8");
+  const health = src("../board-status-health.mjs");
+  const settle = src("../settle-closed-status.mjs");
+  // DERIVED, not asserted from a list I typed: count the literal in the code rather than in the prose.
+  const codeLines = (s: string) => s.split("\n").filter((l) => !/^\s*(\*|\/\/)/.test(l));
+  assert.equal(codeLines(health).filter((l) => l.includes('"Done"')).length, 1,
+    'board-status-health.mjs must spell "Done" exactly once -- the RESTING_STATUS declaration. A second '
+    + "copy is how the settle path and the classifier came to agree about a name the board did not have");
+  assert.deepEqual(codeLines(settle).filter((l) => l.includes('"Done"')), [],
+    "and settle-closed-status.mjs must spell it NONE: it imports the name instead");
+  // The POSITIVE CONTROL for both counts above: the literal really is the one under test.
+  assert.equal(RESTING_STATUS, "Done",
+    "pinned as a literal on purpose -- asserting it equals itself would be the defect this row is about");
+});
+
+test("#1996: WRITTEN_STATUSES is the set the writers actually send, derived from their source", () => {
+  // The population comes from the writers, never from a list typed here: a fifth writer must fail this
+  // rather than be silently uncovered by the drift check (#1157's habit, made mechanical where it can be).
+  const writers = ["row-claim.mjs", "row-file.mjs", "settle-closed-status.mjs"];
+  const sent = new Set<string>();
+  for (const w of writers) {
+    const src = readFileSync(new URL(`../${w}`, import.meta.url), "utf8");
+    for (const m of src.matchAll(/moveStatus\(\s*\w+\s*,\s*"([^"]+)"/g)) sent.add(m[1]);
+  }
+  // `row-file.mjs` sends `boarding.status`, a variable, so its two names come from `boardingFor`'s own
+  // return type -- the one place they are written down.
+  const rowFile = readFileSync(new URL("../row-file.mjs", import.meta.url), "utf8");
+  for (const m of rowFile.matchAll(/status:\s*"(Backlog|Ready)"/g)) sent.add(m[1]);
+  sent.add(RESTING_STATUS); // settle-closed-status sends the imported constant, not a literal.
+  assert.deepEqual([...sent].sort(), [...WRITTEN_STATUSES].sort(),
+    "every Status name some writer sends must be in WRITTEN_STATUSES, and nothing else -- the drift "
+    + "check is only as wide as this list, so a name missing here is a write nobody is watching");
+  assert.ok(sent.size >= 4, "POSITIVE CONTROL: the derivation found writers, rather than matching nothing");
+});
+
+test("#1996: vocabularyDrift names what the code writes and the board will not take", () => {
+  // The board AS MEASURED on 2026-09-22, before this row moved anything.
+  const asMeasured = ["Backlog", "Ready", "In progress", "Blocked", "Fleet-gated"];
+  assert.deepEqual(vocabularyDrift(asMeasured).missing, ["Done"],
+    "the whole defect, in one call: the one name the settle path writes is the one the board lacked");
+  const repaired = [...asMeasured, "Done"];
+  assert.deepEqual(vocabularyDrift(repaired).missing, [],
+    "and the board as this row left it drifts in no direction");
+  assert.deepEqual(vocabularyDrift([]).missing, [...WRITTEN_STATUSES],
+    "a field offering nothing is total drift -- a real answer, and distinct from the read that failed");
+});
+
+test("#1996: a name the board offers and nobody writes is NOT drift", () => {
+  // `Blocked` and `Fleet-gated` are set by hand. Reporting them would put permanent noise over the one
+  // line that matters, which is how a report stops being read.
+  assert.deepEqual(vocabularyDrift([...WRITTEN_STATUSES, "Blocked", "Fleet-gated", "Icebox"]).missing, [],
+    "only the direction that breaks a write is reported");
+});
+
+test("#1996: a read that FAILED is refused, never reported as a board that lost its vocabulary", () => {
+  for (const notRead of [null, undefined]) {
+    assert.throws(() => vocabularyDrift(notRead as unknown as string[]), /not a board that drifted/,
+      `${notRead} means nobody asked; returning every written name as missing would read as the loudest `
+      + "possible finding, sourced from the absence of a measurement");
+  }
 });
