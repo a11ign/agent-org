@@ -95,6 +95,14 @@ import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
 // shape this repo names as its own most expensive recurring defect -- three copies of four literals is
 // worse than the cycle either duplicate was solving. See claim-labels.mjs's own header for the full story.
 import { READY_LABEL, CLAIM_LABEL, STARTED_LABEL } from "./claim-labels.mjs";
+// #2036/#1053: THE LEAK GUARD, IN THE SPAWN HELPER. This file now sends a `--body` -- the orphaned-row
+// report -- and `tracker-writer-population.test.ts` refuses a body-sending script that does not reach this
+// module through its import closure. Guarded in `gh` rather than at the one call site, the way
+// `row-claim.mjs`, `carry-branch.mjs` and `stranded-branches.mjs` do it, so every call added tomorrow is
+// covered too. IMPORT-SAFE under this header's no-`npm ci`/no-build constraint: `leak-patterns.mjs`
+// imports nothing at all, so it cannot be part of a cycle -- the identical argument `claim-labels.mjs`
+// carries above.
+import { assertNoLeakInArgv } from "../../lab/src/packaging/leak-patterns.mjs";
 
 export const EXIT = { DONE: 0, COULD_NOT_CLOSE: 1, CANNOT_ASK: 2, STATUS_NOT_MOVED: 3 };
 
@@ -190,8 +198,122 @@ export function labelsToStrip(currentLabels) {
     || label === STARTED_LABEL || label.startsWith("session:"));
 }
 
+/**
+ * #2036: THE ROW A MERGED PR WAS BUILT FOR, READ OFF ITS BRANCH NAME. `agent/worktree-prune-unit-2000`
+ * names row #2000; `agent/rstest-spike` names none. A trailing `-<digits>` is this repo's own branch
+ * convention (`row-claim.mjs` writes it), and the number is a HINT, never a closing reference -- the
+ * caller confirms the row is real, open and claimed before it says anything.
+ * @param {string | null | undefined} headRefName
+ * @returns {number | null}
+ */
+export function rowNumberFromBranch(headRefName) {
+  const match = /-(\d+)$/.exec((headRefName ?? "").trim());
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * #2036: A MERGED PR THAT CLOSED NO ROW, WHOSE BRANCH NAMES ONE THAT IS STILL OPEN AND STILL CLAIMED.
+ *
+ * ## Why this exists at all
+ *
+ * Every component behaves as designed and the row stays open. The declaration is well-formed, so `gate`
+ * passes it; GitHub resolves no issue, so `closes-mismatch-check.mjs` -- which compares DECLARED against
+ * RESOLVED -- sees the two sides AGREE and reads that as healthy; and `applyClosurePlan` correctly closes
+ * nothing. Measured 2026-09-22 on #2011 (branch `agent/worktree-prune-unit-2000`), which merged at
+ * 22:43:48Z carrying #2000's own body text as its `Closes: none` reason. #2000 sat `in-progress` with its
+ * work on `main` until a session came back and closed it by hand fifteen minutes later. NOTHING WOULD
+ * HAVE CLOSED IT: no cause fires for a row whose PR has already merged.
+ *
+ * ## Why a REPORT and not a close, stated before anyone asks
+ *
+ * `Closes: none` on a row-numbered branch is LEGITIMATE AND COMMON -- a row that takes several PRs
+ * declares it on every PR but the last. Scanned over the last 120 merged PRs whose branch ends in a row
+ * number: 18 did not close that row, all declaring `Closes: none`, and most of them correctly. So a check
+ * that REFUSED this shape would refuse the normal case, which is the failure mode this repo has measured
+ * repeatedly. `close-merged-rows.mjs`'s own ruling holds -- "closing needs the sha and a sentence" -- and
+ * this says the one thing nothing currently says: this PR was built for you and it has merged.
+ *
+ * PURE, so the negative half is testable without a live `gh`: THE NEGATIVE HALF IS THE HALF THAT MATTERS.
+ *
+ * @param {{ row: { number: number, state: string, labels: string[] } | null, prNumber: string,
+ *   sha: string, branch: string, declaration: string }} found
+ * @returns {{ number: number, comment: string } | null} what to post, or `null` to stay silent
+ */
+export function orphanedRowReport({ row, prNumber, sha, branch, declaration }) {
+  // A row the lookup could not read is NOT a row that needs a report -- "could not ask" and "asked and
+  // got nothing" are different states, and this path may only ever be silent about the second.
+  if (row === null) return null;
+  if (row.state !== "OPEN") return null;
+  // Open but UNCLAIMED is a row nobody is holding: the PR was built for it by somebody who has since let
+  // it go, or the number is a coincidence. Reporting there would speak into an empty room.
+  if (!row.labels.includes(CLAIM_LABEL)) return null;
+  return { number: row.number, comment: `**PR #${prNumber} was built for this row and has merged, but it `
+    + `closed no row -- so this row is still open and still \`${CLAIM_LABEL}\`.**\n\n`
+    + `- PR: #${prNumber}, merged as \`${sha}\`\n`
+    + `- Branch: \`${branch}\`, which names this row\n`
+    + `- Its declaration: ${declaration}\n\n`
+    + "`Closes: none` is legitimate and common -- a row that takes several PRs declares it on every PR "
+    + "but the last -- so this is a REPORT, not a refusal and not a close. But nothing else will say it: "
+    + "the declaration is well-formed so `gate` passes it, GitHub resolves no issue so the "
+    + "declared-vs-resolved check sees both sides agree, and no cause fires for a row whose PR has "
+    + "already merged (#2036, measured on #2000/#2011).\n\n"
+    + `**If the work has landed, close this row with the sha and a sentence** -- \`git show ${sha}\` is `
+    + "what merged. **If it stays open, say why here**, so the next reader does not have to work it out." };
+}
+
+/**
+ * #2036: THE `Closes:` LINE, FOR QUOTING BACK -- and deliberately NOT `extractClosesDeclaration`.
+ *
+ * This decides NOTHING. What this PR closed is already GitHub's own answer (`closingIssuesReferences`,
+ * read above); this only puts the author's own sentence in front of the person who has to act, so they
+ * can see at a glance whether the reason still holds. `closes-mismatch-check.mjs`'s `findClosingPhrase`
+ * draws exactly this line for exactly this reason -- "used only to LOCATE the phrase in the body for a
+ * refusal message, never to decide the verdict" -- and a parser that decides nothing is not a second copy
+ * of one that does.
+ *
+ * The real parser is also a heavier import than this path should carry: `acceptance-commands.mjs` pulls
+ * `region-paths.mjs`, `local-import-closure.mjs` and `cli-flags.mjs` behind it, and this job runs with
+ * `actions/checkout` and nothing else (see this file's own header on why that matters).
+ *
+ * @param {string} body @returns {string} the declaration as written, or a stated absence -- never a guess
+ */
+function declarationLine(body) {
+  const line = (body ?? "").split(/\r?\n/).map((l) => l.trim()).find((l) => /^closes:/i.test(l));
+  return line ? `\`${line}\`` : "_(no `Closes:` line found in the PR body)_";
+}
+
+/**
+ * #2036: the report's one lookup and its one comment, wired. Split from `main` for the same reason
+ * `applyClosurePlan` is -- so the WIRING is unit-testable without a live `gh` -- and the effects are
+ * injected for the same reason: a defaulted effect is a live GitHub call that a test reaches through the
+ * one it omitted (#1400).
+ *
+ * IT NEVER FAILS THE RUN. The rows this job actually closes are the point; a report that could not be
+ * posted must not turn a clean merge into a red job, so every outcome here is a log line and a return.
+ * @param {{ branch: string | null, prNumber: string, sha: string, declaration: string }} pr
+ * @param {{ lookupRow: (n: number) => { number: number, state: string, labels: string[] } | null,
+ *   comment: (n: number, text: string) => void }} effects
+ * @returns {number | null} the row reported on, or `null` when nothing was said
+ */
+export function reportOrphanedRow({ branch, prNumber, sha, declaration }, { lookupRow, comment }) {
+  const rowNumber = rowNumberFromBranch(branch);
+  if (rowNumber === null) return null;
+  const report = orphanedRowReport({ row: lookupRow(rowNumber), prNumber, sha,
+    branch: /** @type {string} */ (branch), declaration });
+  if (report === null) {
+    console.log(`CLOSE-ROWS: branch \`${branch}\` names #${rowNumber}, which is not an open claimed row `
+      + "-- nothing to report (#2036).");
+    return null;
+  }
+  comment(report.number, report.comment);
+  return report.number;
+}
+
 /** @param {string[]} args */
-const gh = (args) => execFileSync("gh", args, { encoding: "utf8" }).trim();
+const gh = (args) => {
+  assertNoLeakInArgv("gh", args); // #1053: guarded in the SPAWN HELPER, not per call site
+  return execFileSync("gh", args, { encoding: "utf8" }).trim();
+};
 
 /**
  * #1443: was #1360's saving (no Status move for a row already Done) worth anything, MEASURED, on a real
@@ -327,6 +449,37 @@ export function liveClosureEffects() {
 }
 
 /**
+ * #2036: THE LIVE EFFECTS OF THE ORPHANED-ROW REPORT, named here for the reason `liveClosureEffects`
+ * gives. `lookupRow` reads `null` for a row that could not be read AT ALL -- a number the branch happened
+ * to end in that is no issue here, a lookup that failed -- which `orphanedRowReport` then stays silent
+ * about, because "could not ask" is never "nothing to say".
+ * @param {string} repo
+ * @returns {{ lookupRow: (n: number) => { number: number, state: string, labels: string[] } | null,
+ *   comment: (n: number, text: string) => void }}
+ */
+export function liveOrphanEffects(repo) {
+  return {
+    lookupRow: (n) => {
+      try {
+        const row = JSON.parse(gh(["issue", "view", String(n), "--repo", repo, "--json", "number,state,labels"]));
+        return { number: row.number, state: row.state, labels: (row.labels ?? []).map((/** @type {{name:string}} */ l) => l.name) };
+      } catch (cause) {
+        console.log(`CLOSE-ROWS: could not read #${n} to report on it -- ${cause instanceof Error ? cause.message : cause}`);
+        return null;
+      }
+    },
+    comment: (n, text) => {
+      try {
+        gh(["issue", "comment", String(n), "--repo", repo, "--body", text]);
+        console.log(`CLOSE-ROWS: #${n} REPORTED -- its PR merged closing no row (#2036).`);
+      } catch (cause) {
+        console.log(`CLOSE-ROWS: #${n} could not be reported on -- ${cause instanceof Error ? cause.message : cause}`);
+      }
+    },
+  };
+}
+
+/**
  * Applies a resolved `closurePlan`: strips every already-closed row's claim labels (#776/#791 -- GitHub
  * can close a row NATIVELY, before this script ever runs, so `already` needs the identical strip `close`
  * gets), then closes each still-open row and strips its labels too. Split out of `main` so the WIRING --
@@ -421,15 +574,18 @@ function main() {
   logRateLimit("before sweep (dispatch)");
 
   const [owner, name] = repo.split("/");
-  let issues, sha, prMergedAt;
+  let issues, sha, prMergedAt, headRefName, prBody;
   try {
     // `labels(first:20){nodes{name}}` added for #754 -- the same lookup that already resolves WHICH rows
     // to close also carries WHAT each one is still labelled, so stripping the claim needs no second
     // round trip and reads the row's state at the same instant the close decision was made.
     // #1877: `mergedAt` on the PR and each issue's last `ReopenedEvent` -- the one read that tells a row
     // reopened after THIS merge apart from a row nobody has looked at yet, both off GitHub's own timeline.
+    // #2036: `headRefName` and `body` -- read ONLY on the path where nothing was closed, to name the row
+    // the branch was built for and quote the declaration that closed nothing. No extra round trip: this
+    // is the lookup that already runs on every merge.
     const query = `{repository(owner:"${owner}",name:"${name}"){pullRequest(number:${number}){`
-      + `merged baseRefName mergedAt mergeCommit{oid} closingIssuesReferences(first:20){nodes{number state `
+      + `merged baseRefName mergedAt headRefName body mergeCommit{oid} closingIssuesReferences(first:20){nodes{number state `
       + `labels(first:20){nodes{name}} timelineItems(itemTypes:[REOPENED_EVENT],last:1){nodes{`
       + `... on ReopenedEvent{createdAt}}}}}}}}`;
     const pr = JSON.parse(gh(["api", "graphql", "-f", `query=${query}`,
@@ -457,6 +613,8 @@ function main() {
     }));
     sha = pr.mergeCommit?.oid ?? "unknown";
     prMergedAt = pr.mergedAt ?? null;
+    headRefName = pr.headRefName ?? null;
+    prBody = pr.body ?? "";
   } catch (cause) {
     console.error(`CANNOT ASK: resolving #${number}'s closing references failed -- `
       + `${cause instanceof Error ? cause.message : cause}`);
@@ -468,6 +626,10 @@ function main() {
   if (plan.none) {
     // NOT a failure, and not silence either. Most PRs declare nothing.
     console.log(`CLOSE-ROWS: #${number} declared NO closing references. Nothing to close.`);
+    // #2036: ...but if the BRANCH names a row that is still open and still claimed, say so on it. This is
+    // the one place that can: everything else in the pipeline reads this PR as healthy, correctly.
+    reportOrphanedRow({ branch: headRefName, prNumber: number, sha,
+      declaration: declarationLine(prBody) }, liveOrphanEffects(repo));
     exitAfterSweep(EXIT.DONE);
   }
 
