@@ -144,3 +144,75 @@ test("#1163: the guidance says the milestone description is COMPARED, not merely
   assert.match(text, /two copies of one rule with nothing comparing them/i,
     "and says WHY, which is the defect this page would otherwise be a second instance of");
 });
+
+/**
+ * #2037: WHAT MAKES AN OPEN-CHECK RE-CHECKABLE LATER -- two rules, one defect wearing two costumes: a
+ * green read off a PROXY and reported as a statement about BEHAVIOUR. A grep for an implementation shape
+ * and a command against a ref that has since moved both return a number that is honest about the wrong
+ * thing, and both were paid for twice before the page said so.
+ *
+ * NOTHING BELOW NAMES AN INCIDENT NUMBER, A BRANCH NAME OR A COUNT. Pinning "#2030" or the branch the
+ * stale measurement used would be this row's own defect re-shipped with a guard on it: an assertion whose
+ * subject can vanish while the assertion stays green. The RULE is the property under test; the prose is
+ * free to carry the incident, and should.
+ */
+const RULE_A_FLIPS = /an open-check names a behaviour that flips/i;
+const RULE_A_NOT_A_SHAPE = /never a grep for an implementation shape/i;
+const RULE_B_SHELF_LIFE = /a measurement taken against live `origin` has a shelf life/i;
+const RULE_B_NAMES_THE_REF = /names the ref it used and states whether that ref is expected to survive/i;
+
+test("#2037: an open-check is a behaviour that flips, with why a shape's green proves nothing", () => {
+  const text = flat();
+
+  assert.match(text, RULE_A_FLIPS, "the instruction itself -- what the filer is being asked to write down");
+  assert.match(text, RULE_A_NOT_A_SHAPE,
+    "and what it is being written INSTEAD of: without the prohibition the rule reads as advice about "
+    + "phrasing, and a grep still looks like a check");
+  assert.match(text, /it passed while the call went out/i,
+    "THE MECHANISM, and the half a filer actually reasons from -- a shape's green is compatible with the "
+    + "behaviour being exactly what the check existed to forbid");
+  assert.match(text, /c\[0\] === "gh"/,
+    "with the shape-free repair spelled out, or 'do not check a shape' leaves nothing to write instead");
+  assert.match(text, /any green read off a shape is a statement about the shape/i,
+    "and that this generalises past row bodies -- it is the same error in a test assertion");
+});
+
+test("#2037: a reading against live origin names its ref, and says whether the ref should survive", () => {
+  const text = flat();
+
+  assert.match(text, RULE_B_SHELF_LIFE, "the property of the measurement, not a complaint about staleness");
+  assert.match(text, /cannot tell WHICH THING MOVED/i,
+    "THE MECHANISM: the code under test and the fixture produce the same output, so the re-check cannot "
+    + "distinguish 'this was fixed' from 'this was never true'");
+  assert.match(text, /unfalsifiable/i,
+    "which is what makes it a defect rather than an inconvenience -- a weaker measurement would still be "
+    + "a measurement");
+  assert.match(text, RULE_B_NAMES_THE_REF,
+    "and the buildable instruction, or the rule diagnoses without telling a filer what to write");
+  assert.match(text, /git ls-remote --heads origin/,
+    "with the command that answers it while the row is being written -- the same standard the Region and "
+    + "Acceptance rules above are held to, each of which carries its own check");
+});
+
+test("#2037 MUTATION: removing OR inverting either rule must go red", () => {
+  const text = flat();
+
+  // The inversion direction is the one that matters. A guard that merely checks the words "open-check" or
+  // "origin" appear survives a page that recommends the defect, and each inversion below keeps every
+  // distinctive noun in place while reversing what the sentence says to do.
+  const mutations = [
+    ["Rule A removed", RULE_A_NOT_A_SHAPE, "and that is all the guidance says"],
+    ["Rule A inverted", RULE_A_NOT_A_SHAPE, "or a grep for an implementation shape, whichever is quicker"],
+    ["Rule B removed", RULE_B_SHELF_LIFE, "a measurement taken against live `origin` is worth recording"],
+    ["Rule B inverted", RULE_B_SHELF_LIFE, "a measurement taken against live `origin` stays true"],
+    ["Rule B's instruction dropped", RULE_B_NAMES_THE_REF, "is reported however the filer prefers"],
+  ] as const;
+
+  for (const [name, pattern, replacement] of mutations) {
+    const mutated = text.replace(pattern, replacement);
+    assert.notEqual(mutated, text, `the ${name} mutation must LAND, or it proves nothing`);
+    assert.doesNotMatch(mutated, pattern,
+      `${name}: the assertions above must fail on this page, because what is under test is what the page `
+      + "TELLS A FILER TO DO, never which nouns it happens to contain");
+  }
+});
