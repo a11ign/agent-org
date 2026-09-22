@@ -62,7 +62,9 @@
 // only ever run under the fork's read-only token and the fork's own checked-out code. Nothing in this
 // file grants itself write access; it doesn't need to.
 import { execSync } from "node:child_process";
-import { extractLabeledSection } from "./region-paths.mjs";
+import {
+  declaredRegionFiles, extractLabeledSection, regionCovers, trackedTopLevelDirs,
+} from "./region-paths.mjs";
 import { pathToFileURL } from "node:url";
 import { existsSync, globSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -1004,6 +1006,142 @@ export function runsTheWholeSuite(command) {
   // pytest tree rather than the `.test.ts` glob this function's callers walk. Refusing that command for a
   // requirement declared by a TypeScript file would be a refusal about a population it never runs.
   return /(?:^|&&|\|\||;)\s*npm\s+(?:run\s+)?(?:test:ts|test)(?![:\w-])/.test(command.trim());
+}
+
+/**
+ * A whole TOKEN that is shaped like a repo-relative path -- glob metacharacters INCLUDED, deliberately.
+ *
+ * `*`, `?`, `[`, `]`, `{` and `}` are in the class so that `packages/**\/*.test.ts` MATCHES here and is
+ * then exempted by name below. Leaving them out would exempt globs by accident, which reads identically
+ * in the output and cannot be shown to be doing anything -- the exemption has to be a decision a mutation
+ * can remove.
+ *
+ * ANCHORED WHOLE-TOKEN, never scanned out of the middle of one. `node -e "import('./packages/x/y.mjs')"`
+ * carries a path inside a quoted argument this does not see, and that is the intended limit: a path this
+ * cannot isolate is a path it must not make claims about (#728's rule, one function down).
+ */
+const ACCEPTANCE_PATH_TOKEN = /^[A-Za-z0-9_.@,+{}[\]*?-]+(?:\/[A-Za-z0-9_.@,+{}[\]*?-]+)+$/;
+/** The metacharacters that make a token a pattern a RUNNER expands, rather than a file anyone can open. */
+const GLOB_METACHARACTERS = /[*?[\]{}]/;
+/** A trailing extension -- what separates `packages/lab/x.test.ts` from a ref like `origin/main`. */
+const FILE_EXTENSION = /\.[A-Za-z0-9]{1,10}$/;
+
+/**
+ * One raw whitespace-delimited token, reduced to the repo-relative path it names, or `null`.
+ * @param {string} rawToken
+ * @returns {string | null}
+ */
+function acceptancePathToken(rawToken) {
+  const unquoted = rawToken.replace(/^['"`]+/, "").replace(/['"`]+$/, "");
+  // `--config=packages/x.ts` and `A11Y_PYTHON=.venv/bin/python` both carry their path after the LAST `=`.
+  const assigned = unquoted.includes("=") ? unquoted.slice(unquoted.lastIndexOf("=") + 1) : unquoted;
+  const token = assigned.replace(/^['"`]+/, "").replace(/^\.\//, "");
+  if (token.startsWith("-") || !ACCEPTANCE_PATH_TOKEN.test(token)) return null;
+  if (GLOB_METACHARACTERS.test(token)) return null;
+  if (!FILE_EXTENSION.test(token)) return null;
+  return token;
+}
+
+/**
+ * THE REPO-RELATIVE FILES A COMMAND NAMES -- #1943, and NARROWER THAN "every path-shaped argument".
+ *
+ * `testFileArgumentsResolve` below refuses to generalise past `tsx --test`, and its stated reason is the
+ * right one: *"treating every argument to every command as a file path would produce false refusals on
+ * the many acceptance commands that take URLs, flags, or option values that merely look like paths."*
+ * This does not overturn that; it narrows what counts as a path until the false refusals are gone, and
+ * then MEASURES the result rather than asserting it.
+ *
+ * Three filters, each earning its place against a real token measured over the 28 open rows carrying an
+ * Acceptance section on 2026-09-22:
+ *
+ *   a GLOB          `packages/lab/src/**\/*.test.ts` is expanded by a runner. Nothing can `stat` it, and
+ *                   neither of the two remedies a refusal would offer applies to it.
+ *   NO EXTENSION    `origin/main`, `a11ign/a11y-witness`, `.venv/bin/python` are path-SHAPED and name no
+ *                   file in this tree. The same `\.[A-Za-z]{2,4}` discipline `pathInProse` already uses.
+ *   AN UNTRACKED    `runs/model-candidate/acceptance-report.json` (#1929's own Acceptance) is PRODUCED by
+ *   TOP-LEVEL DIR   the two commands above it, and `runs/` is gitignored -- so it can never exist in a
+ *                   fresh checkout and can never be declared in a `## Region`, which declares tracked
+ *                   files a PR will touch. A refusal whose two remedies are both unavailable is the shape
+ *                   #741 ruled against. `trackedTopLevelDirs()` is the repo's own derived answer to which
+ *                   roots are real (#1158), not a second hand-written list.
+ *
+ * WHAT THIS THEREFORE DOES NOT CATCH, and it is a silent miss rather than a wrong answer: a typo in the
+ * FIRST segment (`package/lab/x.ts`), a path inside a quoted argument, and an extensionless script like
+ * `scripts/git-hooks/pre-push`. Each is a real file this cannot speak about; none of them is refused
+ * wrongly.
+ *
+ * @param {string} command
+ * @param {{ trackedDirs?: string[] }} [options] the tree's top-level directories; a test passes its own
+ *   so the rule can be checked without reading the repository it runs in
+ * @returns {string[]} deduplicated, in the order the command names them
+ */
+export function acceptancePathTokens(command, { trackedDirs = trackedTopLevelDirs() } = {}) {
+  // #419's rule, unchanged: bash ignores an unquoted `#` and everything after it, so token extraction
+  // must too, or a prose tail becomes a list of files nothing on disk could ever match.
+  const withoutTrailingComment = command.replace(/(?:^|\s)#.*$/, "");
+  const tracked = new Set(trackedDirs);
+  const named = withoutTrailingComment.split(/\s+/).filter(Boolean)
+    .map((raw) => acceptancePathToken(raw))
+    .filter((token) => token !== null && tracked.has(token.slice(0, token.indexOf("/"))));
+  return [...new Set(/** @type {string[]} */ (named))];
+}
+
+/**
+ * EVERY PATH A ROW'S ACCEPTANCE NAMES THAT NEITHER EXISTS ON DISK NOR IS DECLARED IN ITS OWN `## Region`
+ * -- #1943, and the Region half is what makes this a guard rather than a wall.
+ *
+ * A row legitimately names files it will CREATE; that is most rows. What separates those from a typo is
+ * already this repository's own discipline, so this asks it rather than inventing a second one: a file
+ * the row will write is declared in the Region, where B4 reserves it and the lane labels can see it. A
+ * stale name is in neither place. Measured 2026-09-22 over the 28 open rows carrying an Acceptance
+ * section, this refuses ONE (#20, `board-summary-origin.test.ts`, against the real
+ * `board-summary-check.test.ts`) -- a guard, not a wall.
+ *
+ * THE REGION IS READ ONLY WHEN SOMETHING IS ABSENT, and that ordering is deliberate rather than an
+ * optimisation: `declaredRegionFiles` spawns git for the tree's root files, and the overwhelmingly common
+ * case (every path exists) must not pay for it or depend on it.
+ *
+ * @param {string} body a row body
+ * @param {{ exists?: (path: string) => boolean, trackedDirs?: string[], regionEntries?: string[] }} [deps]
+ * @returns {{ path: string, command: string }[]} each absent path with the command that named it
+ */
+export function unresolvedAcceptancePaths(body, deps = {}) {
+  const { exists = existsSync, trackedDirs, regionEntries } = deps;
+  const section = extractAcceptanceSection(body);
+  if (section.kind !== "commands") return [];
+  /** @type {{ path: string, command: string }[]} */
+  const absent = [];
+  for (const command of section.commands) {
+    for (const path of acceptancePathTokens(command, trackedDirs ? { trackedDirs } : {})) {
+      if (!exists(path) && !absent.some((seen) => seen.path === path)) absent.push({ path, command });
+    }
+  }
+  if (absent.length === 0) return [];
+  const region = regionEntries ?? declaredRegionFiles(body) ?? [];
+  return absent.filter(({ path }) => !region.some((entry) => regionCovers(entry, path)));
+}
+
+/**
+ * The refusal `row-file` prints, or `null` when every path resolves. NAMES THE PATH AND BOTH WAYS OUT:
+ * #741's ruling is that a refusal stating no way forward is not a refusal a filer can follow, and here
+ * there are exactly two, because the rule itself has exactly two arms.
+ * @param {string} body @param {string} tool the CLI to name in the refusal
+ * @param {{ exists?: (path: string) => boolean, trackedDirs?: string[], regionEntries?: string[] }} [deps]
+ * @returns {string | null}
+ */
+export function acceptancePathsReason(body, tool, deps = {}) {
+  const unresolved = unresolvedAcceptancePaths(body, deps);
+  if (unresolved.length === 0) return null;
+  const named = unresolved.map(({ path, command }) => `\`${path}\` (named by \`${command}\`)`).join("; ");
+  return `${tool}: REFUSING -- the Acceptance names ${unresolved.length} path(s) that neither exist in `
+    + `this checkout nor appear in this row's \`## Region\`: ${named}. There are two ways to satisfy `
+    + "this and one of them is right: FIX THE SPELLING, if the file already exists under another name -- "
+    + "or DECLARE IT IN THE `## Region`, if this row is going to create it, which is how a row reserves a "
+    + "file it has not written yet and what B4 reads to keep two rows off it. `Acceptance:` has been "
+    + "merge-blocking since 2026-09-17, so a command naming a path that is neither does not merge red, it "
+    + "does not merge -- and by then the fix costs a rewrite by somebody with less context than you have "
+    + "now. Globs, paths outside the tree's tracked top-level directories, and names with no file "
+    + "extension are not checked here, so a path missing from this list was not confirmed to exist.";
 }
 
 /** @type {string[] | null} */
