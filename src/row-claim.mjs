@@ -1030,13 +1030,59 @@ function branchOwnerText(branch, run) {
 }
 
 /**
+ * #2014: Every branch `origin` holds whose name ends `-<issueNumber>` -- the ROW's branches, whatever the claimer chose
+ * to call theirs. `ls-remote` spends no GraphQL, which is the point: the board goes stale exactly when the pool is
+ * exhausted and no PR could be opened, so a detector that spent the pool would be blind in that same outage.
+ * A listing that FAILS throws; "could not ask origin" is not "the row has no branch".
+ * @param {number} issueNumber @param {typeof defaultRun} run
+ * @returns {{ branch: string, head: string }[]}
+ */
+function rowBranchesOnOrigin(issueNumber, run) {
+  /** @type {string} */
+  let listing;
+  try {
+    listing = run("git", ["ls-remote", "--heads", "origin"]);
+  } catch (cause) {
+    throw new Error(`row-claim: could not ask origin which branches it holds for row #${issueNumber} -- refusing to `
+      + `claim on a guess. ${/** @type {Error} */ (cause).message}`, { cause });
+  }
+  return listing.split("\n").flatMap((line) => {
+    const match = /^(\S+)\s+refs\/heads\/(\S+)$/.exec(line.trim());
+    const trailing = match && /-(\d+)$/.exec(match[2]);
+    return trailing && Number(trailing[1]) === issueNumber ? [{ branch: match[2], head: match[1] }] : [];
+  });
+}
+
+/**
+ * #2014: The refusal for a row whose work may already be on `origin` under a branch nobody here named. It must be
+ * FOLLOWABLE, and "claim it again with --branch=<that branch>" is not -- the check one line up would refuse that too.
+ * So it names the three real exits, including the one for a trailing number that is a coincidence.
+ * @param {number} issueNumber @param {{ branch: string, head: string }[]} found @param {typeof defaultRun} run
+ * @returns {string}
+ */
+function rowBranchRefusal(issueNumber, found, run) {
+  const named = found.map(({ branch, head }) => `\`${branch}\` at ${head} (${branchOwnerText(branch, run)})`).join("; ");
+  return `origin ALREADY HOLDS ${found.length === 1 ? "a branch" : `${found.length} branches`} for row #${issueNumber}: `
+    + `${named}. Refusing before any write: this row's work may already be pushed, and the board cannot show it -- `
+    + "opening the PR that would is the one act that spends GraphQL, so a row goes stale precisely when the pool is "
+    + "gone (#2014). What to do next, after reading it with "
+    + `\`git fetch origin && git log origin/${found[0].branch}\` and \`git diff origin/main...origin/${found[0].branch}\`: `
+    + "if it is YOUR OWN earlier work, finish it on that branch and open its PR -- you do not need a fresh claim; "
+    + "if it is another session's, leave this row alone, say on the row that the branch exists, and take another row; "
+    + `if its trailing -${issueNumber} is a coincidence rather than this row's work, delete that branch on origin and `
+    + "claim again.";
+}
+
+/**
  * #1432: THE REFUSAL, BEFORE ANY WRITE: the target PATH exists, or the target BRANCH exists locally or on origin. Each
  * names its owner where one is recorded -- the path's `.a11y-owner` stamp (#1128), the branch's claim record.
- * @param {{ branch: string, worktree: string }} target
+ * #2014 adds a fourth, asked of the ROW rather than of the name the claimer typed: all three above interrogate
+ * `branch`, which is the author's free choice, so two sessions picking different slugs collided with nothing.
+ * @param {{ branch: string, worktree: string, issueNumber: number }} target
  * @param {{ run?: typeof defaultRun, exists?: (path: string) => boolean, owner?: (worktree: string) => string | null }} [deps]
  * @returns {string | null} the refusal, or null to go ahead
  */
-export function worktreeTargetReason({ branch, worktree }, { run = defaultRun, exists = existsSync, owner = worktreeOwner } = {}) {
+export function worktreeTargetReason({ branch, worktree, issueNumber }, { run = defaultRun, exists = existsSync, owner = worktreeOwner } = {}) {
   if (exists(worktree)) {
     const who = owner(worktree);
     return `--worktree=${worktree} ALREADY EXISTS, ${who ? `stamped by \`${who}\`` : "UNSTAMPED (nobody recorded an owner, which is not the same as free)"}. `
@@ -1048,6 +1094,8 @@ export function worktreeTargetReason({ branch, worktree }, { run = defaultRun, e
   if (gitRefExists(["ls-remote", "--exit-code", "--heads", "origin", branch], 2, `branch ${branch} on origin`, run)) {
     return `--branch=${branch} ALREADY EXISTS on origin (${branchOwnerText(branch, run)}). Refusing before any write.`;
   }
+  const rowBranches = rowBranchesOnOrigin(issueNumber, run);
+  if (rowBranches.length > 0) return rowBranchRefusal(issueNumber, rowBranches, run);
   return null;
 }
 
@@ -1070,7 +1118,8 @@ function undoCreatedWorktree({ branch, worktree }, run) {
 
 /**
  * #1432: CLAIM, CREATING THE WORKTREE -- `row-claim claim --branch=<b> --worktree=<p>`. In order: refuse if the path or
- * branch exists; fetch; `git worktree add -b <b> <p> origin/main`; stamp it; claim. A claim that is refused or loses
+ * branch exists, or (#2014) if origin already holds a branch for THIS ROW; fetch; `git worktree add -b <b> <p>
+ * origin/main`; stamp it; claim. A claim that is refused or loses
  * its race removes what this created. A failure after the worktree landed carries it in #1399's landed list.
  * @param {number} issueNumber
  * @param {string} mySession
@@ -1081,7 +1130,7 @@ function undoCreatedWorktree({ branch, worktree }, run) {
  */
 export function claimWithWorktree(issueNumber, mySession, { branch, worktree, run = defaultRun, exists = existsSync,
   owner = worktreeOwner, stamp = stampWorktree, claim = claimRow, claimDeps = {} }) {
-  const refusal = worktreeTargetReason({ branch, worktree }, { run, exists, owner });
+  const refusal = worktreeTargetReason({ branch, worktree, issueNumber }, { run, exists, owner });
   if (refusal) return { claimed: false, reason: refusal };
   /** @type {string[]} */
   const landed = [];
