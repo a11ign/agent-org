@@ -176,13 +176,13 @@ export function readPrs(run = defaultRun) {
  * it was attached to was inherited, and this constant exists so the next person inherits a count that is
  * checked instead.
  *
- * The two conditional reads are deliberately NOT in this number: `readOpenRowCount` is paid only by a
+ * The two conditional reads are deliberately NOT in this number: `readOpenRowState` is paid only by a
  * tick that produced no orders, and `requiredCheckNames` only by one that saw a settled-red check.
  */
 export const GH_READS = Object.freeze({
   unconditional: ["pr list", "issue list --label ready", "issue list --label backlog",
     "issue list --label chairman-blocked", "issue list (all open: answer/blocked labels)"],
-  conditionalOnSilence: "issue list --state open (readOpenRowCount)",
+  conditionalOnSilence: "issue list --state open (readOpenRowState)",
   conditionalOnRed: "api branches/main/protection (requiredCheckNames)",
 });
 
@@ -600,7 +600,7 @@ function requiredWhenRed(prs) {
  *
  * PAID ONLY BY AN EMPTY SHELF. `main` asks this only when there are no Ready rows -- the single state in
  * which an unfiled epic is the org's most urgent fact. A busy org never pays it, the same bargain
- * `readOpenRowCount` and `requiredCheckNames` already make.
+ * `readOpenRowState` and `requiredCheckNames` already make.
  *
  * `subIssuesSummary` AND NOT `blocking`: GitHub has both, and they mean different things. `blocking` is a
  * dependency edge; sub-issues are PARENTHOOD, which is what "has this epic been broken down" asks. Using
@@ -1564,16 +1564,23 @@ function emptyShelfOrder({ offerable, blocked, promotable }) {
 }
 
 /**
- * Every open row, counted -- ONLY asked when the gate would otherwise say nothing.
+ * How many open rows COULD move, and what is stopping the rest -- ONLY asked when the gate would
+ * otherwise say nothing.
  *
  * CONDITIONAL, AND THAT IS WHY IT IS AFFORDABLE. This read happens only when the tick produced NO ORDERS
  * -- a busy org never pays it, and a silent one pays it once to answer the question its own silence
  * raises. The unconditional count is unchanged; `GH_READS` says what that count is.
  *
+ * IT RETURNS THE BREAKDOWN AS WELL AS THE COUNT, and that is the whole of #1935: this function has always
+ * called `waitingOn` on every open row and then thrown the answer away, keeping only `.length`. The
+ * condition -- date or row, WHICH date, WHICH row -- was computed and discarded at the same expression,
+ * and `ceo` then spent an hour hand-reading twenty rows to recover it.
+ *
  * @param {(args: string[]) => string} [run]
- * @returns {number | null} `null` when refused -- never 0, which would read as "the tracker is empty"
+ * @returns {{reachable: number, waiting: ReturnType<typeof waitingBreakdown>} | null} `null` when
+ *   refused -- never a zero count, which would read as "the tracker is empty"
  */
-export function readOpenRowCount(run = defaultRun) {
+export function readOpenRowState(run = defaultRun) {
   try {
     const parsed = JSON.parse(run(["issue", "list", "--state", "open", "--limit", "500",
       "--json", "number,body,blockedBy"]));
@@ -1583,10 +1590,102 @@ export function readOpenRowCount(run = defaultRun) {
     // A queue where every row declares what it waits on is WORKING; the switch must fire on rows that
     // COULD move and are not moving.
     const today = todayIso();
-    return parsed.filter((r) => waitingOn(r, today) === null).length;
+    return { reachable: parsed.filter((r) => waitingOn(r, today) === null).length,
+      waiting: waitingBreakdown(parsed, today) };
   } catch {
     return null;
   }
+}
+
+/**
+ * The open rows that ARE waiting, grouped by what they wait on.
+ *
+ * GROUPED BY DATE RATHER THAN LISTED PER ROW, because the aggregate is the fact nobody could see. Every
+ * one of the four rows parked to 2026-09-23 on 2026-09-22 was individually correct and recorded its
+ * reasoning on its own row; what no reader had was "the pool's promotable stock went to zero at 11:45Z
+ * and four sessions idled for seven hours". A per-row list says it in twelve lines and buries the date
+ * the org un-stalls by itself.
+ *
+ * DATES SORT LEXICALLY, which is why `Not-before:` is ISO-only, so `[0]` is the earliest with no
+ * comparator and no `Date` parsing.
+ *
+ * @param {any[]} rows @param {string} today an ISO `YYYY-MM-DD`
+ * @returns {{dates: {date: string, numbers: number[]}[], blocked: {number: number, on: number[]}[],
+ *   total: number}}
+ */
+export function waitingBreakdown(rows, today = todayIso()) {
+  const byDate = new Map();
+  const blocked = [];
+  for (const row of rows ?? []) {
+    const waiting = waitingOn(row, today);
+    if (waiting === null) continue;
+    if (waiting.kind === "date") byDate.set(waiting.date, [...(byDate.get(waiting.date) ?? []), Number(row.number)]);
+    else blocked.push({ number: Number(row.number), on: waiting.numbers });
+  }
+  const dates = [...byDate.entries()].sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, numbers]) => ({ date, numbers }));
+  return { dates, blocked, total: dates.reduce((n, d) => n + d.numbers.length, 0) + blocked.length };
+}
+
+/**
+ * At most this many row numbers are spelled out per group; the rest are counted.
+ *
+ * A PROMPT IS READ BY A SESSION WITH A CONTEXT BUDGET. Five hundred open rows could all be waiting, and a
+ * paragraph naming every one of them is a page nobody finishes reading -- the same failure as a switch
+ * that pages until it is ignored. The counts stay exact either way; only the enumeration is capped.
+ */
+const WAITING_ROWS_NAMED = 12;
+
+/** `#1 #2 #3 +4 more` -- exact count, capped enumeration. @param {number[]} numbers */
+function nameRows(numbers) {
+  const shown = numbers.slice(0, WAITING_ROWS_NAMED).map((n) => `#${n}`).join(" ");
+  const rest = numbers.length - WAITING_ROWS_NAMED;
+  return rest > 0 ? `${shown} +${rest} more` : shown;
+}
+
+/**
+ * The waiting conditions, as a paragraph, or `""` when no row carries one.
+ *
+ * `describeWaiting` RATHER THAN A SECOND COPY OF THE WORDING. `waiting-condition.mjs` is the one reader
+ * of "this row is waiting on something" and it already owns how a wait is said out loud -- re-typing
+ * "not before <date>" here is exactly the second-copy-of-a-predicate shape that module's own header
+ * refuses.
+ *
+ * EMPTY IS A REAL ANSWER AND MUST STAY ONE. A stall where nothing declares a wait is the original
+ * defect -- every row stopped by a label, a lane or a claim -- and the existing wording below is what
+ * says so. This returns "" for that state rather than a paragraph saying "0 rows are waiting", so the
+ * unexplained stall reads exactly as it did before #1935.
+ *
+ * @param {ReturnType<typeof waitingBreakdown> | null | undefined} waiting
+ * @param {number} reachable the rows that could move, which is what `openRows` counts
+ */
+function waitingParagraph(waiting, reachable) {
+  if (!waiting || waiting.total === 0) return "";
+  const lines = [`SEPARATELY, AND NOT IN THAT ${reachable}: ${waiting.total} of the `
+    + `${reachable + waiting.total} open row(s) carry a machine-readable waiting condition, which this `
+    + "gate read on this tick. They are filtered out of the count above because they genuinely are not "
+    + "startable -- but they are why the pool is empty, and nothing has ever said so.\n"];
+  if (waiting.dates.length > 0) {
+    lines.push(`  ${waiting.dates.reduce((n, d) => n + d.numbers.length, 0)} on a date: `
+      + `${waiting.dates.map((d) => `${d.numbers.length} ${describeWaiting({ kind: "date", date: d.date })} `
+        + `(${nameRows(d.numbers)})`).join("; ")}. THE EARLIEST IS ${waiting.dates[0].date}.\n`);
+  }
+  if (waiting.blocked.length > 0) {
+    lines.push(`  ${waiting.blocked.length} on another row: ${waiting.blocked
+      .slice(0, WAITING_ROWS_NAMED)
+      .map((b) => `#${b.number} ${describeWaiting({ kind: "row", numbers: b.on })}`).join("; ")}`
+      + `${waiting.blocked.length > WAITING_ROWS_NAMED ? ` +${waiting.blocked.length - WAITING_ROWS_NAMED} more` : ""}.\n`);
+  }
+  // THE SELF-CLEARING PROPERTY IS WEAKER THAN IT READS, and this is the line that stops the reader
+  // filing the whole paragraph under "fine, it clears tomorrow". A date-parked row can be waiting on
+  // something that cannot happen WHILE it is parked: #1931 was `Not-before: 2026-09-23` with a done-when
+  // of "the next merged PR carrying a `convinced` verdict", and no PR could merge because no row was
+  // claimable -- so #1756, blocked by #1931, could not move either side of the date.
+  lines.push("\"The org is waiting until <date>\" is a SCHEDULE and a valid answer -- say it and stop, "
+    + "rather than reading twenty rows to re-derive it. But check the earliest date actually clears "
+    + "something: a date-parked row whose done-when needs a merge cannot close while nothing is "
+    + "claimable, so a stall can sustain itself across a date boundary.\n");
+  return lines.join("");
 }
 
 /**
@@ -1615,9 +1714,23 @@ export function readOpenRowCount(run = defaultRun) {
  * asks "the org has open work and no way to reach any of it" -- a management question, and #912 deleted
  * the standing crons that made it somebody's job without replacing that half.
  *
- * @param {{ orders: unknown[], openRows: number | null }} state
+ * WHAT IT NOW HANDS OVER, AND WHY THAT IS THE WHOLE ROW (#1935). Its prompt used to enumerate the things
+ * that stop a row as "`blocked`, `fleet-gated`, `epic`, a lane, a claim" and never mention `Not-before:`
+ * or `blockedBy` -- THE TWO FORMS THE 2026-09-19 CHAIRMAN DIRECTION MADE THE PREFERRED ONES over
+ * `blocked`. So the one cause built to answer "the org has open work and no way to reach any of it"
+ * could not name the most common modern reason a row is unreachable. Measured on the 2026-09-22T18:30Z
+ * wake that found this: 12 of 20 open backlog rows carried one, four of them clearing the next day, and
+ * `ceo` spent an hour hand-reading rows the gate had already read that same tick.
+ *
+ * THE DISCRIMINATOR STAYS THE REACHABLE COUNT, deliberately. A date clearing MOVES a row from waiting to
+ * reachable, so the count changes, so the causeKey changes and the dedupe stops matching -- the existing
+ * key already re-fires on exactly the event that matters, and folding the breakdown into it would page
+ * again whenever any blocker anywhere changed shape without the org becoming any more reachable.
+ *
+ * @param {{ orders: unknown[], openRows: number | null,
+ *           waiting?: ReturnType<typeof waitingBreakdown> | null }} state
  */
-export function stalledOrder({ orders, openRows }) {
+export function stalledOrder({ orders, openRows, waiting = null }) {
   // ONLY WHEN NOTHING ELSE FIRED. One order anywhere means some cause can still reach the org.
   if (orders.length > 0) return null;
   // A REFUSED READ IS NOT AN EMPTY TRACKER (#1286), and an empty one is not a stall: an org with no open
@@ -1629,10 +1742,11 @@ export function stalledOrder({ orders, openRows }) {
     subject: "org",
     discriminator: String(openRows),
     prompt: `NOTHING IS REACHABLE. The work gate found no cause of any kind this tick and ${openRows} `
-      + "row(s) are open, so every session is idle and will stay idle: no draft needs a verdict, no row "
-      + "is claimable, no check is red, nothing is promotable.\n"
-      + "That is NOT the org being finished. It means every open row carries something that stops it -- "
-      + "`blocked`, `fleet-gated`, `epic`, a lane, a claim -- and no cause can see past any of it.\n"
+      + "row(s) are open and could move, so every session is idle and will stay idle: no draft needs a "
+      + "verdict, no row is claimable, no check is red, nothing is promotable.\n"
+      + "That is NOT the org being finished. It means every one of those rows carries something that "
+      + "stops it -- `blocked`, `fleet-gated`, `epic`, a lane, a claim -- and no cause can see past it.\n"
+      + waitingParagraph(waiting, openRows)
       + "READ THE BACKLOG AND SAY WHY, then act. Shapes measured here in the last two days: a gate whose "
       + "condition became TRUE and nobody lifted the label; a row waiting on a capability that has since "
       + "recovered; a runbook step that exists only as prose, so no cause can name it; a session stopped "
@@ -1797,7 +1911,11 @@ function deadMansSwitch(orders, drain, performed = 0) {
   // A PERFORMED ACTION IS ACTIVITY. Without this the gate could mark a draft ready, emit no order, and
   // then announce the org as stalled in the same tick -- reporting the one thing it just did as nothing.
   if (drain || orders.length > 0 || performed > 0) return [];
-  const stalled = stalledOrder({ orders, openRows: readOpenRowCount() });
+  // ONE READ, BOTH HALVES OF THE ANSWER: how many rows could move, and what is stopping the ones that
+  // cannot. A refused read stays `null` all the way into `stalledOrder`, which is the #1286 rule -- it
+  // must not collapse to a zero count, which would silence the switch on the first API hiccup.
+  const state = readOpenRowState();
+  const stalled = stalledOrder({ orders, openRows: state?.reachable ?? null, waiting: state?.waiting });
   return stalled ? [stalled] : [];
 }
 
