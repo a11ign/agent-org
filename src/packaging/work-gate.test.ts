@@ -100,6 +100,53 @@ test("#912: a verdict settles its own head and no other", () => {
     "and the reviewer who refused is not asked again");
 });
 
+/**
+ * A REFUSED VERDICT GOES TO THE SESSION THE PULL REQUEST NAMES.
+ *
+ * Measured 2026-09-22 (#2001): 108 undelivered `product-manager` orders in 90 minutes, while the two
+ * stalled PRs in the queue were one of each shape -- #1968 carried no `session:` label and #1957 carried
+ * `session:worker-tooling`, whose refusal named a surviving mutant at a `file:line`. There was nothing in
+ * the second to adjudicate, and it was hand-routed to its owner on the PR.
+ *
+ * BOTH HALVES ARE LOAD-BEARING. Changing the `session` and leaving the `causeKey` prefixed
+ * `product-manager/` keys two sessions' orders to one dedupe string, so the second is swallowed as a
+ * repeat -- the failure this file's whole design (the wake ledger) is built around, and one that no
+ * assertion on `session` alone can see.
+ */
+test("#2001: a NOT CONVINCED verdict is routed by the PR's own session label, causeKey included", () => {
+  const refused = [{ body: "Review of #13 at `abc12345`, by `reviewer`: not convinced." }];
+  const owned = { ...draft(13, GREEN, refused), labels: [{ name: "session:worker-tooling" }] };
+  const [order] = decide({ prs: [owned], readyRows: [] }) as { cause: string, session: string,
+    causeKey: string, prompt: string }[];
+  assert.equal(order.cause, "verdict-not-convinced");
+  assert.equal(order.session, "worker-tooling", "the gate holds the label already -- it does not send "
+    + "product-manager to go and read it");
+  assert.equal(order.causeKey, "worker-tooling/verdict-not-convinced/pr-13/abc12345",
+    "the dedupe key names the session it is delivered to, or the ledger swallows the next one");
+
+  // THE DECISION SEAM SURVIVES THE ROUTING. Asking an author to "decide whether it stands" is asking
+  // them to adjudicate a refusal of their own work; the escalation is what goes to product-manager.
+  assert.doesNotMatch(order.prompt, /decide whether it stands/,
+    "the owner reworks by default -- adjudicating their own refusal is not their call");
+  assert.match(order.prompt, /DISPUTE/, "and disputing it is the named escalation");
+  assert.match(order.prompt, /product-manager decides/, "which still lands on the queue's first reader");
+});
+
+test("#2001: a NOT CONVINCED verdict on a PR naming no session is unchanged", () => {
+  // THE NEGATIVE CONTROL, and not a formality: with no label there is nobody to route to, and both the
+  // lookup and the decision are genuinely product-manager's. The prompt is pinned WORD FOR WORD because
+  // "unchanged" is the claim -- a branch that quietly rewrote this one would pass a looser assertion.
+  const refused = [{ body: "Review of #13 at `abc12345`, by `reviewer`: not convinced." }];
+  const [order] = decide({ prs: [draft(13, GREEN, refused)], readyRows: [] }) as { session: string,
+    causeKey: string, prompt: string }[];
+  assert.equal(order.session, "product-manager");
+  assert.equal(order.causeKey, "product-manager/verdict-not-convinced/pr-13/abc12345");
+  assert.equal(order.prompt, "#13 at `abc12345` carries a NOT CONVINCED verdict from reviewer and "
+    + "nothing has moved since. Read the verdict, decide whether it stands, and route the rework to the "
+    + "session holding that row -- or close the PR if the row was wrong. A refused verdict nobody "
+    + "answers is a pull request that never lands.");
+});
+
 test("#912: a claimed row is not work, and an unclaimed one names no session", () => {
   const rows = [{ number: 20, labels: [{ name: "ready" }] },
     { number: 21, labels: [{ name: "ready" }, { name: "in-progress" }] }];

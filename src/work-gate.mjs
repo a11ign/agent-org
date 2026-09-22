@@ -1217,6 +1217,53 @@ function failingChecksOrder(pr, required = null) {
 }
 
 /**
+ * The rework a REFUSED verdict deserves, addressed to whoever holds the pull request.
+ *
+ * THE GATE ALREADY HOLDS THE LABEL IT WAS ASKING SOMEBODY ELSE TO GO AND READ. This order used to name
+ * `product-manager` unconditionally and then tell it to "route the rework to the session holding that
+ * row" -- a lookup `sessionOf` performs here, for free, at the moment the order is built, with the whole
+ * latency of a second session's turn spent on it. `failingChecksOrder` forty lines up has always done it
+ * the other way, and for the same reason. Measured 2026-09-22: 108 UNDELIVERED `product-manager` orders
+ * in 90 minutes, and the refusal on #1957 named a surviving mutant at a `file:line` -- there was nothing
+ * in it to adjudicate (#2001).
+ *
+ * THE CAUSEKEY MOVES WITH THE SESSION, and that is the half of this worth a test. `causeKey` is the wake
+ * ledger's dedupe key; a hard-coded `product-manager/` prefix in front of a session that now varies keys
+ * two different sessions' orders to the same string, so the second one is swallowed as a repeat.
+ *
+ * THE DECISION SEAM IS KEPT RATHER THAN REMOVED, which is why the prompt branches instead of only the
+ * address. Asking an author to "decide whether it stands" is asking them to adjudicate a refusal of their
+ * own work; so with an owner, REWORK is the default and a DISPUTE is the escalation, and the escalation
+ * goes back to `product-manager` exactly as before. With no `session:` label both the lookup and the
+ * decision are genuinely `product-manager`'s, and that prompt is unchanged.
+ *
+ * @param {any} pr @param {{verdict: string | null, by: string | null,
+ *        byIsAuthor: boolean | null}} found @param {string} head8
+ */
+function notConvincedOrder(pr, found, head8) {
+  const owner = sessionOf(pr);
+  const session = owner ?? "product-manager";
+  const from = found.by ? ` from ${found.by}` : "";
+  const prompt = owner
+    ? `#${pr.number} at \`${head8}\` carries a NOT CONVINCED verdict${from} and it carries your session `
+      + "label, so the rework is yours. Read the verdict, fix what it names on that branch and push. If "
+      + "you believe the verdict is wrong, that is a DISPUTE rather than rework: say so on the PR and "
+      + "product-manager decides. A refused verdict nobody answers is a pull request that never lands."
+    : `#${pr.number} at \`${head8}\` carries a NOT CONVINCED verdict${from} and nothing has moved since. `
+      + "Read the verdict, decide whether it stands, and route the rework to the session holding that "
+      + "row -- or close the PR if the row was wrong. A refused verdict nobody answers is a pull request "
+      + "that never lands.";
+  return {
+    session,
+    cause: "verdict-not-convinced",
+    subject: `pr-${pr.number}`,
+    discriminator: head8,
+    prompt,
+    causeKey: `${session}/verdict-not-convinced/pr-${pr.number}/${head8}`,
+  };
+}
+
+/**
  * The follow-up a SETTLED verdict deserves, or `null` when it deserves none.
  *
  * A VERDICT IS NOT THE END OF THE WORK, AND READING IT AS ONE LEFT PULL REQUESTS ABANDONED. The gate used
@@ -1226,9 +1273,12 @@ function failingChecksOrder(pr, required = null) {
  * org for three days. `agent-practices.md` says a product PR "is marked ready only when the reviewer
  * writes convinced"; nothing asked whether that had been ACTED ON.
  *
- * BOTH GO TO `product-manager`, whose brief names exactly this work: first reader for "the queue and
- * process ... promotions, claim reports, merge close-outs". The PR's author cannot route either one --
- * every PR here is opened by the shared `a11ign-ai-workers` account, so there is no session in it to wake.
+ * `draft-convinced-not-ready` GOES TO `product-manager`, whose brief names exactly this work: first
+ * reader for "the queue and process ... promotions, claim reports, merge close-outs". The PR's author
+ * cannot be read off the author field -- every PR here is opened by the shared `a11ign-ai-workers`
+ * account -- and the gate performs that flip itself anyway, so its order is a fallback and a fallback
+ * landing on the queue's first reader is defensible (#2001 deliberately left this one alone).
+ * `verdict-not-convinced` no longer does: see `notConvincedOrder`.
  *
  * @param {any} pr @param {{verdict: string | null, by: string | null,
  *        byIsAuthor: boolean | null}} found @param {string} head8
@@ -1257,19 +1307,7 @@ function settledVerdictOrder(pr, found, head8) {
       ...(found.byIsAuthor === false ? { action: { kind: "ready", pr: Number(pr.number) } } : {}),
     };
   }
-  if (found.verdict === "not-convinced") {
-    return {
-      session: "product-manager",
-      cause: "verdict-not-convinced",
-      subject: `pr-${pr.number}`,
-      discriminator: head8,
-      prompt: `#${pr.number} at \`${head8}\` carries a NOT CONVINCED verdict`
-        + `${found.by ? ` from ${found.by}` : ""} and nothing has moved since. Read the verdict, decide `
-        + "whether it stands, and route the rework to the session holding that row -- or close the PR if "
-        + "the row was wrong. A refused verdict nobody answers is a pull request that never lands.",
-      causeKey: `product-manager/verdict-not-convinced/pr-${pr.number}/${head8}`,
-    };
-  }
+  if (found.verdict === "not-convinced") return notConvincedOrder(pr, found, head8);
   // Any other settled verdict -- `unrecognised`, or one the opener did not attribute -- is left alone:
   // re-prompting a reviewer who has already answered costs more than waiting for a human to look.
   return null;
