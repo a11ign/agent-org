@@ -539,19 +539,51 @@ export const OUT_OF_RELEASE = "out-of-release";
 export const OUT_OF_RELEASE_MILESTONE = "Out of release";
 
 /**
- * The argv to file with: unchanged, unless this row declares itself out of release by LABEL alone, in
- * which case the milestone is added beside it.
+ * Is this the milestone that says "outside every release"? Case is folded for the same reason
+ * `labelsOutOfRelease` folds it -- one fact, and a filer's capitalisation is not a second one.
+ * @param {string | null} milestone @returns {boolean}
+ */
+const saysOutOfRelease = (milestone) => milestone !== null && sameLabel(milestone, OUT_OF_RELEASE_MILESTONE);
+
+/**
+ * The argv to file with: unchanged, unless this row declares itself out of release by ONE of the two
+ * facts that say so, in which case the other is added beside it. Either door, both fields.
  *
- * NOT the reverse. A row given the milestone and no label is left alone here, because the label is what
- * `board-data.mjs`'s `outOfRelease()` reads and adding labels a caller did not ask for is a wider change
- * than this row's. The tracker-level assertion is what catches that direction.
+ * #1962: THE REVERSE DIRECTION, WHICH #1130 LEFT OPEN ON PURPOSE AND WHICH FILED ITS OWN FINDING.
+ * #1130 added the milestone to the label path and stopped, reasoning that "adding labels a caller did not
+ * ask for is a wider change" and that the tracker-level assertion would catch the other side. It did catch
+ * it -- as RELEASE DRIFT, minted by this tool. Measured 2026-09-22: `row-file --milestone "Out of release"`
+ * filed #1960 with no `out-of-release` label, and `ready-label-audit.mjs` reads the LABEL, so that row was
+ * about to be counted out of the board's own out-of-release figure by the next run. The mirror case (#1740)
+ * came from the same audit. Both were repaired by hand, which is what a tool writing one of two fields
+ * costs every time.
+ *
+ * So the label is no longer "a label the caller did not ask for": a caller who names this milestone HAS
+ * asked to be outside every release, and the label is the other spelling of that same answer. A caller who
+ * names a REAL milestone still gets no label -- only this one is two-faced.
  *
  * @param {string[]} argv @returns {string[]}
  */
 export function outOfReleaseArgv(argv) {
   const byLabel = labelsOutOfRelease(argv);
-  if (!byLabel || milestoneFromArgv(argv) !== null) return argv;
-  return [...argv, "--milestone", OUT_OF_RELEASE_MILESTONE];
+  const milestone = milestoneFromArgv(argv);
+  if (byLabel && milestone === null) return [...argv, "--milestone", OUT_OF_RELEASE_MILESTONE];
+  if (!byLabel && saysOutOfRelease(milestone)) return [...argv, "--label", OUT_OF_RELEASE];
+  return argv;
+}
+
+/**
+ * #1962: WHAT THE READ-BACK EXPECTS OF THE RELEASE PAIR -- taken from what was FILED, never from what was
+ * TYPED. Read from the caller's own `argv`, the half this tool ADDS beside the filer's is the one field
+ * nothing confirms: a `--label out-of-release` filing expects no milestone and so never checks the
+ * milestone `outOfReleaseArgv` just asked for. That leaves the remedy for the drift unverified, which is
+ * the drift wearing the remedy's clothes.
+ * @param {string[]} filedArgv the argv that reached `gh issue create`
+ * @returns {{ milestone: string | null, releaseLabel: string | null }}
+ */
+function releaseExpectation(filedArgv) {
+  return { milestone: milestoneFromArgv(filedArgv),
+    releaseLabel: labelsOutOfRelease(filedArgv) ? OUT_OF_RELEASE : null };
 }
 
 /**
@@ -817,12 +849,18 @@ export function issueNumberFromUrl(output) {
  * @param {{ labels: string[], body: string | null, boardStatus: string | null,
  *           milestone?: string | null }} after
  * @param {{ session: string, label: string, status: string, laneLabels: string[],
- *           milestone?: string | null }} expected
+ *           milestone?: string | null, releaseLabel?: string | null }} expected
  * @returns {string[]} empty when everything is confirmed
  */
 export function unverifiedFilingFields(after, expected) {
   const missing = [];
   if (!after.labels.includes(expected.label)) missing.push(`the \`${expected.label}\` label`);
+  // #1962: the out-of-release LABEL is read back for the same reason #1011 reads the milestone back --
+  // `gh` accepting `--label` is not evidence the label is on the row, and this pair is exactly the pair
+  // the tracker compares. Half of it landing silently is the drift, not a smaller version of it.
+  if (expected.releaseLabel != null && !after.labels.some((l) => sameLabel(l, expected.releaseLabel ?? ""))) {
+    missing.push(`the \`${expected.releaseLabel}\` label`);
+  }
   const missingLanes = expected.laneLabels.filter((l) => !after.labels.includes(l));
   if (missingLanes.length > 0) missing.push(`${missingLanes.map((l) => `\`${l}\``).join("/")} label(s)`);
   if (after.body === null || filedByLine(after.body) !== expected.session) missing.push("the Filed-by line");
@@ -1059,8 +1097,7 @@ export function createIssue(argv, deps = {}) {
   }
 
   const result = boardAndVerify({ issueNumber, url, boarding, session, laneLabels,
-    milestone: milestoneFromArgv(argv) },
-    { run, fetchBoardStatus, fetchLabels, moveStatus, ensureLabels });
+    ...releaseExpectation(filedArgv) }, { run, fetchBoardStatus, fetchLabels, moveStatus, ensureLabels });
   if (!result.ok) {
     process.stderr.write(`row-file: ${result.message}\n`);
     return 2;
@@ -1108,14 +1145,15 @@ function boardAddRefusal({ issueNumber, url, boarding, allLabels, repairLabels }
  * either not yet labelled `ready` at all (invisible to that floor, same as an ordinary unlabelled issue)
  * or fully consistent (labelled AND Statused) by the time anything could ask.
  * @param {{ issueNumber: number, url: string, boarding: { label: string, status: string },
- *   session: string, laneLabels: string[], milestone: string | null }} filed
+ *   session: string, laneLabels: string[], milestone: string | null,
+ *   releaseLabel?: string | null }} filed
  * @param {{ run: typeof defaultRun, fetchBoardStatus: typeof fetchIssueBoardStatus,
  *   fetchLabels: typeof fetchIssueLabels, moveStatus: typeof moveProjectStatus,
  *   ensureLabels: typeof ensureLabelsExist }} deps
  * @returns {{ ok: true } | { ok: false, message: string }}
  */
-export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels, milestone },
-  { run, fetchBoardStatus, fetchLabels, moveStatus, ensureLabels }) {
+export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels, milestone,
+  releaseLabel = null }, { run, fetchBoardStatus, fetchLabels, moveStatus, ensureLabels }) {
   // #1249: `allLabels` is derived HERE, above the first step that can fail, so every refusal below can
   // name the labels it skipped. An operator cannot derive them -- they come from the Region -- so a
   // message that says "the labels" instead of `backlog`/`lane:any` is one they have to reconstruct.
@@ -1189,7 +1227,7 @@ export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels
     milestone: milestoneAfter,
   };
   const missing = unverifiedFilingFields(after,
-    { session, label: boarding.label, status: boarding.status, laneLabels, milestone });
+    { session, label: boarding.label, status: boarding.status, laneLabels, milestone, releaseLabel });
   if (missing.length > 0) {
     return { ok: false, message: `FILED as #${issueNumber}, but the read-back does not confirm it -- `
       + `missing: ${missing.join(", ")}. Refusing to report success for a row it could not fully board.` };
