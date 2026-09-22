@@ -497,11 +497,27 @@ test("the empty-shelf order says WHY the pool is empty, and BLOCKED is not the s
     promotableRows: [{ number: 800, labels: [{ name: "backlog" }] }],
     prFiles: [prTouching(1695, ".github/workflows/release.yml")] });
   const [shelf] = orders.filter((o: { cause: string }) => o.cause === "ready-queue-empty");
-  assert.match(shelf.prompt, /1 unlaned row\(s\) \(#1320\) are B4-blocked/);
+  assert.match(shelf.prompt, /1 unlaned row\(s\) blocked \(#1320: overlaps #1695/);
   assert.doesNotMatch(shelf.prompt, /belong to a lane/,
     "no row here is laned -- saying so sends product-manager to an owner who has nothing to answer");
   assert.match(shelf.prompt, /NOT rows to promote past/,
     "a blocked row is waiting on a pull request; promoting over the same files just moves the refusal");
+});
+
+/**
+ * #1885: `emptyShelfOrder` used to hardcode the PR-overlap sentence for every `poolBlocked` entry, even
+ * one `partitionUnclaimed` shelved for a declared `blockedBy` wait -- a row with no comparable open PR
+ * at all still read as "B4-blocked behind an open pull request". It must state that row's own reason.
+ */
+test("a row shelved on a declared blockedBy wait is named by ITS OWN reason, not a PR-overlap claim", () => {
+  const waiting = { number: 1852, labels: [{ name: "ready" }],
+    blockedBy: { nodes: [{ number: 1883, state: "OPEN" }, { number: 1878, state: "OPEN" }] } };
+  const orders = decide({ prs: [], readyRows: [waiting],
+    promotableRows: [{ number: 800, labels: [{ name: "backlog" }] }], prFiles: [] });
+  const [shelf] = orders.filter((o: { cause: string }) => o.cause === "ready-queue-empty");
+  assert.match(shelf.prompt, /1 unlaned row\(s\) blocked \(#1852: blocked by #1883, #1878 -- declared on the row/);
+  assert.doesNotMatch(shelf.prompt, /B4-blocked behind an open pull request/,
+    "prFiles is empty -- there is no PR to overlap with, so nothing may claim one blocked it");
 });
 
 // --- draining: finish what is in flight, take on nothing new (2026-09-18) ---

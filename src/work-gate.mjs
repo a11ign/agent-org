@@ -1481,8 +1481,9 @@ function emptyShelfOrder({ offerable, blocked, promotable }) {
   const why = [
     laned > 0 ? `${laned} unclaimed row(s) belong to a lane` : "",
     poolBlocked.length > 0
-      ? `${poolBlocked.length} unlaned row(s) (${poolBlocked.map((b) => `#${b.number}`).join(", ")}) are `
-        + "B4-blocked behind an open pull request that already touches their Region"
+      ? `${poolBlocked.length} unlaned row(s) blocked (`
+        + poolBlocked.map((b) => `#${b.number}: ${b.reason}`).join("; ")
+        + ")"
       : "",
   ].filter(Boolean).join(", and ");
   return {
@@ -1498,9 +1499,13 @@ function emptyShelfOrder({ offerable, blocked, promotable }) {
       + "fleet-gated, epic, disputed, decision, awaiting-merge, review-only or already claimed). Every "
       + "engineer is waiting on this queue rather than on work.\n"
       + (poolBlocked.length > 0
-        ? "The B4-blocked rows are NOT rows to promote past: each is waiting on a pull request, and the "
-          + "work that frees it is that PR's. Promoting a row whose Region overlaps the same files only "
-          + "moves the refusal.\n"
+        // EACH ROW NAMES ITS OWN REASON ABOVE -- a B4 pull-request overlap and a declared `blockedBy`/
+        // `Not-before:` wait clear by entirely different mechanisms (#1885), so this can promise only
+        // what is true of every blocked row: promoting past it does not remove what is actually stopping it.
+        ? "The blocked rows above are NOT rows to promote past: each names its own reason, and the work "
+          + "that frees it belongs to whatever that reason names -- a pull request, a blocking issue, a "
+          + "date -- not necessarily a pull request. Promoting a row whose Region overlaps another open "
+          + "PR only moves that particular refusal.\n"
         : "")
       + "ASK OF EACH ROW: IS IT STILL TRUE? -- before asking whether it is promotable. A row can fail "
       + "every promotion test and still be FINISHED, and nothing else in this org checks. Measured "
