@@ -276,6 +276,37 @@ test("RESUMING a row this session already holds skips eligibility entirely -- no
     + "eligibility for a front that was never new");
 });
 
+test("RESUMING a row this session already holds still refuses on the row's own open blockedBy edge", () => {
+  // PR #1891 NOT CONVINCED (reviewer, 576a678b): the fix that shipped put the row-owned `blockedBy` read
+  // inside `sessionEligibilityReason`, called only from the `!alreadyMine` branch -- so this exact
+  // resumed-claim path (the one the test just above proves skips B2/B4) never read the edge at all, and
+  // `claimRow` returned `claimed: true` against a still-open blocker. This is the same reproduction
+  // reviewer gave against #1883, replayed here as a positive assertion rather than a manual repro.
+  let listAsked = false;
+  let editCalled = false;
+  const run = (cmd: string, args: string[]) => {
+    if (args[0] === "issue" && args[1] === "list") { listAsked = true; return "[]"; }
+    if (args[0] === "issue" && args[1] === "edit") { editCalled = true; return ""; }
+    if (args[0] === "issue" && args[1] === "view") {
+      const fields = args[args.indexOf("--json") + 1];
+      if (fields === "blockedBy") {
+        return JSON.stringify({ blockedBy: { nodes: [{ number: 999, state: "OPEN" }] } });
+      }
+      return JSON.stringify({ number: 461, title: "A row",
+        labels: [{ name: CLAIM_LABEL }, { name: "session:worker-judge" }] });
+    }
+    return "";
+  };
+  const result = claimRow(461, "worker-judge", { run, moveStatus: () => ({ moved: true }) });
+  assert.equal(result.claimed, false);
+  assert.match((result as { reason: string }).reason, /#999/,
+    "the row's own open blockedBy edge must refuse a resumed claim exactly as it refuses a new one -- "
+    + "it is a property of the row, not of whether this session already holds it");
+  assert.equal(editCalled, false, "must never write a claim it has already decided to refuse");
+  assert.equal(listAsked, false, "the row-owned blockedBy check costs no B2 round trip -- B2/B4's own "
+    + "alreadyMine skip is unaffected by this fix");
+});
+
 /**
  * #741: `--blocked-by=#N` END TO END THROUGH `claimRow` -- releases B2 only with a measurement comment
  * already on the claimant's own open PR, and only while `#N` is confirmed open. See
