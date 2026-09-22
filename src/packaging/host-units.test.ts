@@ -765,7 +765,7 @@ test("#2000: the unit passes `--apply`, or the clock runs a REPORT and the backl
   assert.doesNotMatch(service, /^\[Install\]$/m,
     "and the service has NO [Install]: `WantedBy=default.target` would also prune at boot, while `herdr` "
     + "is restoring sessions into trees that have by definition been git-quiet for longer than "
-    + "ACTIVITY_WINDOW_MS. The timer's OnBootSec=15min is the deliberate version of the same idea");
+    + "ACTIVITY_WINDOW_MS. Install and the calendar are the two entry points; boot is not one of them");
 });
 
 test("#2000: the prune spends no API budget, and that is READ rather than assumed", () => {
@@ -861,4 +861,61 @@ test("#2000: no shipped timer pairs `Persistent=` with monotonic-only triggers",
   assert.equal(/^Persistent=/m.test(calendarWithPersistent)
     && !/^OnCalendar=/m.test(calendarWithPersistent), false,
     "and does NOT flag a calendar timer, or every nightly in this directory would be a finding");
+});
+
+// --- #2011's review, round two: THE UNIT NAMED A CAUSE IT HAD NOT DISTINGUISHED -----------------------
+//
+// The first answer to this blocker said the prune that ran the instant `enable --now` was issued was
+// `OnBootSec=` counting from a boot 9 days earlier. Forty minutes later the same unit -- now a calendar
+// timer with no `OnBootSec` anywhere in it -- ran a prune the instant it was installed again, so the
+// sentence the PR shipped was known-false in the file it shipped. `product-manager`, 2026-09-22: "a
+// why-comment carrying a superseded mechanism is a defect in the artefact, not prose around it."
+//
+// WHAT DISTINGUISHES IT, measured 22:23Z: two fresh throwaway units, identical calendar expression and
+// `Persistent=true`, neither carrying a stamp file, differing ONLY in `Requires=`. The one with it ran its
+// service in the same second as `enable --now`; the one without never ran its service. The two earlier
+// probes could not perform that experiment, because both of them carried an expired `OnBootSec=`, which
+// fires on activation by itself and masks whatever else would have.
+//
+// AND IT IS A CLASS RATHER THAN THIS UNIT'S QUIRK. `hostUnitsInstall` runs `enable --now` over EVERY
+// shipped `.timer`, so `Requires=` in a timer silently appends "and runs once at every `host:install`" to
+// its service's contract -- true today of the corpus snapshot and the corpus release nightly as much as of
+// the prune. This test is what makes adding it to a fifth timer a decision somebody makes rather than a
+// consequence nobody reads.
+test("#2000: which shipped timers run their service at `host:install`, and which do not", () => {
+  const timers = shippedUnits().filter((u) => u.endsWith(".timer"));
+  const requiring = timers
+    .filter((unit) => /^Requires=/m.test(readFileSync(join(SHIPPED_DIR, unit), "utf8"))).sort();
+  // NEITHER SIDE OF THIS PARTITION IS AN EMPTINESS ASSERTION, which is why it needs no fixture control:
+  // both lists are non-empty populations read from the real directory, so a `shippedUnits` that stopped
+  // working fails both halves rather than passing vacuously.
+  assert.deepEqual(requiring, [
+    "a11ign-corpus-release-nightly.timer",
+    "a11ign-corpus-snapshot.timer",
+    "a11ign-work-tick.timer",
+    "a11ign-worktree-prune.timer",
+  ], "`Requires=` in a timer's [Unit] is an ordinary start dependency, so `enable --now` on the timer "
+    + "starts the service too -- once, at install time, whether or not the timer was already running. "
+    + "Adding a fifth entry here means that service now runs during `host:install`: say so in the unit, "
+    + "and check it is a run you want unattended at an operator's keystroke");
+  assert.deepEqual(timers.filter((u) => !requiring.includes(u)), ["a11ign-board-report.timer"],
+    "THE CONTROL, and a measured one rather than a fixture: at the 2026-09-22 21:03Z `host:install` the "
+    + "four above each started their service in that second and this one did not, though the same run "
+    + "reinstalled it. It is the only shipped timer that activates its service by name alone");
+  // AND THE INSTALL-TIME START IS NOT HYPOTHETICAL. The partition above only matters because the installer
+  // really does issue that start job for every shipped timer; asserted through the same injected
+  // `systemctl` the #1858 test uses, against the REAL shipped directory.
+  const calls: string[][] = [];
+  hostUnitsInstall({
+    installedDir: "/installed",
+    systemctl: ((args: string[]) => { calls.push(args); return ""; }) as never,
+    copy: (() => undefined) as never,
+    mkdir: (() => undefined) as never,
+    out: () => undefined,
+  });
+  const enabled = calls.filter((c) => c[0] === "enable").map((c) => c[2]);
+  for (const unit of requiring) {
+    assert.ok(enabled.includes(unit),
+      `${unit} declares Requires= but the installer never starts it, so the partition above means nothing`);
+  }
 });

@@ -1,5 +1,29 @@
 [Unit]
 Description=a11ign: run the worktree prune hourly
+
+# THE ACTIVATION CONTRACT, STATED HERE BECAUSE THIS FILE NAMED THE WRONG CAUSE FOR IT TWICE (#2011's
+# review, both rounds): `enable --now` RUNS ONE PRUNE AT INSTALL TIME, AND THE CALENDAR GOVERNS EVERY RUN
+# AFTER IT. `Requires=` in a timer's [Unit] is an ordinary start dependency, so the start job
+# `hostUnitsInstall` issues for this timer -- `enable --now` over every shipped `.timer`, host-units.mjs --
+# enqueues one for the service as well, whether or not the timer was already running. It is not a settling
+# delay expiring, and it is not `Persistent=` performing a catch-up.
+#
+# MEASURED 2026-09-22 22:23Z. Two fresh throwaway units, identical calendar expression and
+# `Persistent=true`, neither carrying a stamp file, differing ONLY in this directive: the one WITH
+# `Requires=` ran its service in the same second `enable --now` was issued; the one WITHOUT never ran its
+# service at all. That is the experiment the earlier pair of probes could not perform -- both of those
+# carried an expired `OnBootSec=`, which fires on activation by itself and masks whatever else would have.
+#
+# AND THE SHIPPED UNITS SAY THE SAME WITHOUT A PROBE, from the 21:03Z `host:install`: all four timers
+# declaring `Requires=` started their service in that second (work-tick, corpus-snapshot,
+# corpus-release-nightly and this one), while `a11ign-board-report.timer` -- the only shipped timer with no
+# `Requires=` -- did not, though the same run reinstalled it. `host-units.test.ts` pins that partition.
+#
+# `Requires=` IS KEPT, AND THAT IS A DECISION RATHER THAN THE DEFAULT. Three of the four other shipped
+# timers declare it; an install-time prune is wanted here rather than merely tolerated, since the backlog
+# #2000 measured is the reason the unit exists and the tool's refusals do not depend on what started it;
+# and the line makes the timer fail to start if its service is missing instead of quietly scheduling
+# nothing. What was never defensible was this file asserting a cause it had not distinguished.
 Requires=a11ign-worktree-prune.service
 
 [Timer]
@@ -26,13 +50,15 @@ OnCalendar=*-*-* *:07:00
 # behaviour was absent. `a11ign-work-tick.timer` carried the identical inert pairing, which is why the
 # check that now enforces this reads every shipped timer rather than this one.
 #
-# THE OTHER HALF WAS MEASURED, because the review's stated mechanism was not the one operating. The claim
-# was that the timer's `Requires=` on its service is what defeats a settling delay. Two throwaway units on
-# this host, 2026-09-22 -- one WITH `Requires=`, one WITHOUT, otherwise identical -- both ran their service
-# the instant `enable --now` was issued. The cause is `OnBootSec=`: it counts from BOOT, and this host has
-# been up 9 days, so "15 minutes after boot" was long past and the timer fired on activation. The
-# conclusion stood, the mechanism did not, and a monotonic delay that cannot be relied on is worse than
-# none -- `OnCalendar` simply has no such claim to get wrong.
+# THE OTHER HALF -- why `OnBootSec=15min` is GONE rather than rearranged -- is that it never bought the
+# settling delay its comment promised. It counts from BOOT, and on a host up 9 days "15 minutes after boot"
+# is long expired, so it was expired at every install this unit will ever see. A monotonic delay that
+# cannot be relied on is worse than none.
+#
+# IT IS NOT WHAT RAN A PRUNE AT INSTALL TIME, AND NEITHER IS THIS LINE. The unit ran one immediately again
+# at 22:37 BST with no `OnBootSec` anywhere in it; `Requires=` above is the directive that does that, and
+# carries the measurement that separates the three candidates. Recorded here because the first answer to
+# #2011 put the claim in this paragraph, where it was falsified forty minutes later.
 Persistent=true
 
 # A missed window fires at the next opportunity instead of being silently skipped -- the property

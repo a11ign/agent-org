@@ -65,8 +65,13 @@ TimeoutStartSec=900
 # shape, for a reason of this unit's own. `WantedBy=default.target` on a oneshot means "also run at boot",
 # and boot is the worst moment for this one: the sessions are coming back up, `herdr` is restoring them,
 # and a tree a session is about to resume in has by definition had no git activity for far longer than
-# `ACTIVITY_WINDOW_MS`. The timer is the only thing that may start this, and it is a calendar timer, so
-# what starts a prune is always a stated wall-clock minute rather than the act of booting.
+# `ACTIVITY_WINDOW_MS`. The timer is the only thing that may start this.
+#
+# WHICH IS NOT THE SAME AS SAYING EVERY PRUNE HAPPENS AT :07, and the difference is what #2011's review
+# caught twice. The timer declares `Requires=` on this service, so `host:install`'s own `enable --now`
+# starts one run there and then -- measured, and separated from the other two candidate directives, in
+# a11ign-worktree-prune.timer. Install and the calendar are the two entry points; boot is not one of them,
+# which is the whole of what leaving out `[Install]` buys.
 #
 # WHAT THIS DOES NOT BUY, stated because the first version of this unit claimed it and was wrong (#2011's
 # review): the schedule is not what makes a removal safe. The tool's own five-population classification is
