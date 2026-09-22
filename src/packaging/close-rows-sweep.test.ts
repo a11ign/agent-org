@@ -73,7 +73,8 @@ test("close-rows-sweep imports the SAME closurePlan close-rows-for-merged-pr.mjs
   // unchanged -- the exact "fact stated twice" shape #394's own header names. Proven by behavioural
   // identity on a case closurePlan's own tests already cover: a mix of OPEN and already-closed issues.
   const result = closurePlan([{ number: 1, state: "OPEN" }, { number: 2, state: "CLOSED" }]);
-  assert.deepEqual(result, { close: [{ number: 1, labels: [] }], already: [{ number: 2, labels: [] }], none: false });
+  assert.deepEqual(result,
+    { close: [{ number: 1, labels: [] }], already: [{ number: 2, labels: [] }], skip: [], none: false });
 });
 
 // --- IDEMPOTENCY: running against the same issues twice closes nothing the second time ---
@@ -81,10 +82,10 @@ test("close-rows-sweep imports the SAME closurePlan close-rows-for-merged-pr.mjs
 test("ACCEPTANCE (#394, criterion 2): the sweep is idempotent -- a second closurePlan call against "
   + "issues already closed reports ALREADY CLOSED for all of them, closes nothing new", () => {
   const firstPass = closurePlan([{ number: 10, state: "OPEN" }]);
-  assert.deepEqual(firstPass, { close: [{ number: 10, labels: [] }], already: [], none: false });
+  assert.deepEqual(firstPass, { close: [{ number: 10, labels: [] }], already: [], skip: [], none: false });
   // After #10 is closed (simulated: its state is now CLOSED, as it would be on GitHub after the first run)
   const secondPass = closurePlan([{ number: 10, state: "CLOSED" }]);
-  assert.deepEqual(secondPass, { close: [], already: [{ number: 10, labels: [] }], none: false });
+  assert.deepEqual(secondPass, { close: [], already: [{ number: 10, labels: [] }], skip: [], none: false });
 });
 
 // --- the CLI, guarded like every other argv-reading script here ---
@@ -155,13 +156,45 @@ function prDeclaringTwoRows() {
   };
 }
 
+// --- #1877: the sweep's own path to the identical `skip` bucket -- proven end to end through closeOnePr,
+// never re-deriving the decision closurePlan already makes (this file's own header rule).
+
+/** A fake `gh` for a merged PR whose one declared row is OPEN but was reopened after this PR's own mergedAt. */
+function prDeclaringReopenedRow() {
+  return (args: string[]) => {
+    if (args[0] === "api" && args[1] === "graphql") {
+      return JSON.stringify({ mergedAt: "2026-09-22T01:00:24Z", mergeCommit: { oid: "abc1234" },
+        closingIssuesReferences: { nodes: [
+          { number: 1865, state: "OPEN", labels: { nodes: ["was-ready"] },
+            timelineItems: { nodes: [{ createdAt: "2026-09-22T01:12:43Z" }] } },
+        ] } });
+    }
+    throw new Error(`fake gh was asked something it does not know: ${args.join(" ")}`
+      + " -- a skipped row must never reach issue close, edit or any other write");
+  };
+}
+
+test("#1877 ACCEPTANCE: closeOnePr leaves a row reopened after the PR's own merge alone -- no close call, "
+  + "no strip, reported in `skipped`", () => {
+  const stripped: number[] = [];
+  const settled: number[] = [];
+  const result = closeOnePr(1868, "a11ign/a11ign", {
+    gh_: prDeclaringReopenedRow(),
+    strip: (n: number) => { stripped.push(n); },
+    settle: (n: number) => { settled.push(n); return { settled: true, refused: [] }; },
+  });
+  assert.deepEqual(result, { failed: [], unsettled: [], skipped: [1865] });
+  assert.deepEqual(stripped, []);
+  assert.deepEqual(settled, []);
+});
+
 test("#1299 ACCEPTANCE: a refused Status move is NAMED and exits STATUS_NOT_MOVED, on the already-closed path "
   + "AND the just-closed path", () => {
   const strip = () => {};
   const alreadyRefused = closeOnePr(1, "o/r", { gh_: prDeclaringTwoRows(), strip, settle: refuseOnly(20, "HTTP 500") });
-  assert.deepEqual(alreadyRefused, { failed: [], unsettled: [refusal(20, "HTTP 500")] }, "the already-closed path");
+  assert.deepEqual(alreadyRefused, { failed: [], unsettled: [refusal(20, "HTTP 500")], skipped: [] }, "the already-closed path");
   const closedRefused = closeOnePr(1, "o/r", { gh_: prDeclaringTwoRows(), strip, settle: refuseOnly(21, "HTTP 500") });
-  assert.deepEqual(closedRefused, { failed: [], unsettled: [refusal(21, "HTTP 500")] }, "the just-closed path");
+  assert.deepEqual(closedRefused, { failed: [], unsettled: [refusal(21, "HTTP 500")], skipped: [] }, "the just-closed path");
 
   const exit = sweepExit(closedRefused);
   assert.equal(exit.code, EXIT.STATUS_NOT_MOVED, "a sweep that moved no Status must not report the axis repaired");
@@ -169,7 +202,7 @@ test("#1299 ACCEPTANCE: a refused Status move is NAMED and exits STATUS_NOT_MOVE
 
   // POSITIVE CONTROL, same fixture: every move settling exits DONE, so this cannot be met by a sweep that always fails.
   const allSettled = closeOnePr(1, "o/r", { gh_: prDeclaringTwoRows(), strip, settle: () => ({ settled: true, refused: [] }) });
-  assert.deepEqual(allSettled, { failed: [], unsettled: [] });
+  assert.deepEqual(allSettled, { failed: [], unsettled: [], skipped: [] });
   assert.deepEqual(sweepExit(allSettled), { code: EXIT.DONE, lines: [] });
 });
 

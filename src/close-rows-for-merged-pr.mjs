@@ -143,15 +143,30 @@ export function closeRowsExit({ failed, unsettled }, prefix) {
  * header ("GitHub can close a row NATIVELY, before this script ever runs") for why a row here still needs
  * its claim stripped.
  *
- * @param {{ number: number, state: string, labels?: string[] }[]} issues  as GitHub resolved them
- * @returns {{ close: { number: number, labels: string[] }[], already: { number: number, labels: string[] }[], none: boolean }}
+ * #1877: `skip` IS THE FOURTH BUCKET, next to `close`/`already`/`none`. `state === "OPEN"` alone cannot
+ * tell a row nobody has looked at since the merge from one a session read and reopened for a reason
+ * written on the row -- measured on #1865: `orchestrator` reopened it at 01:12:43Z with that reasoning,
+ * and the sweep re-closed it at 01:32:26Z citing only the same merged-PR fact the reopen had already
+ * answered. `reopenedAt` (the issue's own last `ReopenedEvent`, off the timeline GitHub itself keeps)
+ * compared against `prMergedAt` answers, mechanically, "was this reopen AFTER the PR that would otherwise
+ * close it" -- the read `close-rows-sweep re-closes a row reopened for a documented reason` (#1877) says
+ * `closurePlan` never took. A row with no `ReopenedEvent`, or one that predates the merge (the ordinary
+ * never-closed-yet row this function has always handled), is unaffected and still closes exactly as before.
+ *
+ * @param {{ number: number, state: string, labels?: string[], reopenedAt?: string | null }[]} issues  as GitHub resolved them
+ * @param {{ prMergedAt?: string | null }} [ctx] the PR's own merge time, to weigh a reopen against
+ * @returns {{ close: { number: number, labels: string[] }[], already: { number: number, labels: string[] }[],
+ *   skip: { number: number, labels: string[] }[], none: boolean }}
  */
-export function closurePlan(issues) {
-  const close = issues.filter((i) => i.state === "OPEN")
-    .map((i) => ({ number: i.number, labels: i.labels ?? [] }));
+export function closurePlan(issues, { prMergedAt = null } = {}) {
+  const reopenedAfterMerge = (/** @type {{ reopenedAt?: string | null }} */ i) => prMergedAt != null
+    && i.reopenedAt != null && Date.parse(i.reopenedAt) > Date.parse(prMergedAt);
+  const open = issues.filter((i) => i.state === "OPEN");
+  const skip = open.filter(reopenedAfterMerge).map((i) => ({ number: i.number, labels: i.labels ?? [] }));
+  const close = open.filter((i) => !reopenedAfterMerge(i)).map((i) => ({ number: i.number, labels: i.labels ?? [] }));
   const already = issues.filter((i) => i.state !== "OPEN")
     .map((i) => ({ number: i.number, labels: i.labels ?? [] }));
-  return { close, already, none: issues.length === 0 };
+  return { close, already, skip, none: issues.length === 0 };
 }
 
 /**
@@ -325,13 +340,19 @@ export function liveClosureEffects() {
  * lines, with the file still 28 / 0, because `settleClosedStatus` never throws -- so pass/fail could not show it.
  * A missing effect is now refused by name before any effect runs, and `main()` passes `liveClosureEffects()`.
  *
- * @param {{ close: {number:number, labels:string[]}[], already: {number:number, labels:string[]}[] }} plan
+ * #1877: `skip` is applied BEFORE the close loop and touches nothing -- no close, no strip, no Status
+ * move. A row reopened after this exact PR merged already has a session's own reasoning on it; this
+ * function's job is to leave that reasoning standing, not to weigh in under it.
+ *
+ * @param {{ close: {number:number, labels:string[]}[], already: {number:number, labels:string[]}[],
+ *   skip?: {number:number, labels:string[]}[] }} plan
  * @param {{ prNumber: string, sha: string, repo: string }} ctx
  * @param {ClosureEffects} effects
- * @returns {{ failed: number[], unsettled: import("./settle-closed-status.mjs").Refusal[] }} rows that could not
- *   be closed, and the refusal for each closed row whose Status did not move (#1299) -- both empty on success
+ * @returns {{ failed: number[], unsettled: import("./settle-closed-status.mjs").Refusal[], skipped: number[] }}
+ *   rows that could not be closed, the refusal for each closed row whose Status did not move (#1299), and
+ *   rows left alone because they were reopened after this PR merged (#1877) -- all empty on a clean run
  */
-export function applyClosurePlan({ close, already }, ctx, effects) {
+export function applyClosurePlan({ close, already, skip = [] }, ctx, effects) {
   const missing = CLOSURE_EFFECTS.filter((name) => typeof effects?.[name] !== "function");
   if (missing.length > 0) {
     throw new Error(`applyClosurePlan: no ${missing.join(", ")} given -- every effect is required, because a `
@@ -352,6 +373,12 @@ export function applyClosurePlan({ close, already }, ctx, effects) {
     record(n);
   }
 
+  // #1877: reported, never silently dropped -- the same reason `already`/`none` are their own outcomes.
+  const skipped = skip.map(({ number: n }) => {
+    console.log(`CLOSE-ROWS: #${n} SKIPPED -- reopened after PR #${ctx.prNumber} merged; left alone (#1877).`);
+    return n;
+  });
+
   const failed = [];
   for (const { number: n, labels } of close) {
     const closed = closeOne(n, ctx);
@@ -359,7 +386,7 @@ export function applyClosurePlan({ close, already }, ctx, effects) {
     strip(n, labels, ctx.repo);
     record(n);
   }
-  return { failed, unsettled };
+  return { failed, unsettled, skipped };
 }
 
 /**
@@ -394,14 +421,17 @@ function main() {
   logRateLimit("before sweep (dispatch)");
 
   const [owner, name] = repo.split("/");
-  let issues, sha;
+  let issues, sha, prMergedAt;
   try {
     // `labels(first:20){nodes{name}}` added for #754 -- the same lookup that already resolves WHICH rows
     // to close also carries WHAT each one is still labelled, so stripping the claim needs no second
     // round trip and reads the row's state at the same instant the close decision was made.
+    // #1877: `mergedAt` on the PR and each issue's last `ReopenedEvent` -- the one read that tells a row
+    // reopened after THIS merge apart from a row nobody has looked at yet, both off GitHub's own timeline.
     const query = `{repository(owner:"${owner}",name:"${name}"){pullRequest(number:${number}){`
-      + `merged baseRefName mergeCommit{oid} closingIssuesReferences(first:20){nodes{number state `
-      + `labels(first:20){nodes{name}}}}}}}`;
+      + `merged baseRefName mergedAt mergeCommit{oid} closingIssuesReferences(first:20){nodes{number state `
+      + `labels(first:20){nodes{name}} timelineItems(itemTypes:[REOPENED_EVENT],last:1){nodes{`
+      + `... on ReopenedEvent{createdAt}}}}}}}}`;
     const pr = JSON.parse(gh(["api", "graphql", "-f", `query=${query}`,
       "--jq", ".data.repository.pullRequest"]));
     // Enforced HERE, not only in the workflow's `if:` -- `workflow_dispatch` (#394) takes an arbitrary
@@ -418,19 +448,22 @@ function main() {
       console.error(`CANNOT ASK: #${number} merged into \`${pr.baseRefName}\`, not \`main\` -- refusing.`);
       exitAfterSweep(EXIT.CANNOT_ASK);
     }
-    /** @type {{ number: number, state: string, labels: { nodes: { name: string }[] } }[]} */
+    /** @type {{ number: number, state: string, labels: { nodes: { name: string }[] },
+     *   timelineItems: { nodes: { createdAt: string }[] } }[]} */
     const nodes = pr.closingIssuesReferences.nodes;
     issues = nodes.map((i) => ({
       number: i.number, state: i.state, labels: (i.labels?.nodes ?? []).map((l) => l.name),
+      reopenedAt: i.timelineItems?.nodes?.[0]?.createdAt ?? null,
     }));
     sha = pr.mergeCommit?.oid ?? "unknown";
+    prMergedAt = pr.mergedAt ?? null;
   } catch (cause) {
     console.error(`CANNOT ASK: resolving #${number}'s closing references failed -- `
       + `${cause instanceof Error ? cause.message : cause}`);
     exitAfterSweep(EXIT.CANNOT_ASK);
   }
 
-  const plan = closurePlan(issues);
+  const plan = closurePlan(issues, { prMergedAt });
 
   if (plan.none) {
     // NOT a failure, and not silence either. Most PRs declare nothing.
