@@ -49,22 +49,42 @@ const WAITING_LANGUAGE_PATTERNS = [
   /\bafter\b[^.\n]{0,60}\b(?:publish(?:es|ed|ing)?|lands?|landing|merges?|merging|merged)\b/i,
 ];
 
+/** The two flags `gh issue create` and `gh issue edit` read for a native dependency edge. */
+const NATIVE_BLOCKER_FLAGS = ["--blocked-by", "--blocking"];
+
 /**
- * Does `argv` declare a native blocking relationship for THIS filing -- `--blocked-by=` or
- * `--blocking=`, the two flags `gh issue create` and `gh issue edit` already read? A body that waits in
- * prose but whose filing also carries one of these is not the gap this row is about: the wait is already
- * recorded in a form a machine can evaluate, alongside the sentence that explains it.
+ * Does `argv` declare a native blocking relationship for THIS filing? A body that waits in prose but
+ * whose filing also carries one of these is not the gap this row is about: the wait is already recorded
+ * in a form a machine can evaluate, alongside the sentence that explains it.
+ *
+ * #1977: BOTH SPELLINGS, BECAUSE `gh` TAKES BOTH. This read only `--blocked-by=N`, so filing #1976 with
+ * `--blocked-by 1953` -- the form `gh issue create --help`'s own example uses -- wrote the edge and was
+ * then told it had declared none, with a remedy naming a flag it had just used. That is how a check earns
+ * its own dismissal: the next filer sees the warning, sees the edge on the row, and learns to skip the
+ * line, including the times it is true.
+ *
+ * NOT AN OBVIOUS COMPLETENESS FIX -- the repeat of a defect this file's siblings were already treated
+ * for. `milestoneFromArgv`/`declaresRelease` read `--milestone=X`, `--milestone X` and `-m X` (#1011,
+ * #1130), and the label half reads four spellings plus comma lists (#1393), whose own comment names the
+ * cause: "each carried its own exact-spelling copy". This was the copy that did not get the treatment.
+ *
+ * THE VALUE IS WHAT IS CHECKED, not the flag's presence, for the same reason `declaresRelease` checks it:
+ * a trailing bare `--blocked-by`, or an empty `--blocked-by=`, declares nothing and still warns. There is
+ * no short form to add -- unlike `--label`/`-l` and `--milestone`/`-m`, neither flag has an alias.
  * @param {string[]} argv
  * @returns {boolean}
  */
 function declaresNativeBlocker(argv) {
-  return (argv ?? []).some((arg) => arg.startsWith("--blocked-by=") || arg.startsWith("--blocking="));
+  const args = argv ?? [];
+  return args.some((arg, index) => NATIVE_BLOCKER_FLAGS.some((flag) =>
+    (arg.startsWith(`${flag}=`) && arg.length > `${flag}=`.length)
+    || (arg === flag && (args[index + 1] ?? "").length > 0)));
 }
 
 /**
  * THE VERDICT, PURE -- a warning string when `body` reads as waiting on something in prose and neither a
- * `## Not-before:` field nor a `--blocked-by=`/`--blocking=` flag in `argv` gives that wait a
- * machine-readable form; `null` otherwise.
+ * `## Not-before:` field nor a valued `--blocked-by`/`--blocking` flag in `argv` (either spelling) gives
+ * that wait a machine-readable form; `null` otherwise.
  * @param {string} body
  * @param {string[]} argv
  * @returns {string | null}
