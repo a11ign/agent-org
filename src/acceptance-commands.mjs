@@ -199,8 +199,12 @@ function withoutBulletProse(section) {
   let inItem = false;
   let afterBlank = false;
   return section.split(/\r\n|\r|\n/).filter((line) => {
-    if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
-    if (inFence || /^\s*(```|~~~)/.test(line)) return true;
+    const isFence = /^\s*(```|~~~)/.test(line);
+    if (isFence) inFence = !inFence;
+    // #1914's review: a fence, opening or closing, ENDS the item -- else the line after a closing fence
+    // reads as the bullet's lazy continuation and a real step is dropped.
+    if (isFence) inItem = false;
+    if (inFence || isFence) return true;
     if (/^\s*[-*+]\s/.test(line)) { inItem = true; afterBlank = false; return false; }
     if (line.trim() === "") { afterBlank = inItem; return true; }
     if (inItem && !endsListItem(line, afterBlank)) return false;

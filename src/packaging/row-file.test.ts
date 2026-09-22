@@ -1153,6 +1153,12 @@ test("#1914: a bullet item ENDS at a numbered clause, a heading, or a blank line
   }
 });
 
+test("#1914: a fence ENDS the bullet item -- an unindented sentence after the closing fence is read", () => {
+  const body = "## Acceptance\n\n- the run passes\n```bash\nnpm test\n```\n`A11Y_PVE_KEY` is set on the lab host.\n";
+  assert.match(String(fleetOrLabAcceptance(body)), /Proxmox key/, body);
+  assert.equal(bulletOnlyFleetMention(body), null, "and no bullet warning: that sentence was never a bullet");
+});
+
 test("#1912: row-file never emits lane:any together with another lane: label", () => {
   assert.deepEqual(withAcceptanceLane(["lane:any"], "reaches the fleet"), ["lane:orchestrator"],
     "#1911 came out `lane:any, lane:orchestrator` -- an answer and its negation");
