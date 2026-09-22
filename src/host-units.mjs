@@ -32,7 +32,7 @@
 // adopting a different install strategy -- and `hostUnitsInstall` below re-copies, so the remedy is one
 // command either way.
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, copyFileSync, mkdirSync, existsSync, realpathSync } from "node:fs";
+import { readdirSync, readFileSync, copyFileSync, mkdirSync, rmSync, existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
@@ -174,9 +174,70 @@ export function systemdUserAvailable(systemctl = defaultSystemctl) {
 }
 
 /**
+ * UNITS THE HOST STILL RUNS THAT THIS REPOSITORY NO LONGER SHIPS -- the inverse of every other check
+ * here, and the one that was missing on the day it mattered.
+ *
+ * MEASURED 2026-09-22. #1941 retired `a11ign-fleet-gated-nightly.{service,timer}`: the 01:00 batch
+ * became `work-gate.mjs`'s `fleet-batch-due` cause, and the unit files were DELETED from
+ * `packages/agent-org/host/` precisely so `host:install` could not put the clock back beside the gate
+ * cause. The PR merged. And the timer was still installed, still `enabled`, still `active`, and still
+ * scheduled for 01:00 the next morning:
+ *
+ *     Wed 2026-09-23 01:00:00 UTC   a11ign-fleet-gated-nightly.timer
+ *
+ * **Deleting a unit from the repository does not remove it from the host.** So the org was one night
+ * away from dispatching the same fleet batch twice, from two mechanisms at two cadences -- the exact
+ * outcome the deletion was written to prevent.
+ *
+ * AND `host:check` SAID EVERYTHING WAS FINE, because every check it had asked "is what we ship
+ * installed?" and none asked "is what is installed still ours?". It printed
+ * "every shipped unit is installed, current and running" over a live orphan. It was caught by hand, by
+ * going to look -- which is the one way of finding things this file exists to replace.
+ *
+ * SCOPED TO THIS ORG'S OWN PREFIX. The host runs units nobody here wrote (`launchpadlib-cache-clean`,
+ * anything the distribution ships), and reporting those would be both wrong and the fastest possible
+ * route to somebody ignoring this command. Only `a11ign-*` is ours to have an opinion about.
+ *
+ * `readDir` RATHER THAN `read`, and the name is load-bearing: `hostUnitDrift` hands ONE deps bag to
+ * `unitState` (whose `read` is `readFileSync`) and to this (whose read is `readdirSync`). Sharing the
+ * name makes the bag's type unsatisfiable -- tsc's own words, "Type 'utf8' has no properties in common".
+ * @param {{ shippedDir?: string, installedDir?: string, readDir?: typeof readdirSync }} [deps]
+ * @returns {{unit: string, problem: string, detail: string}[]}
+ */
+export function orphanedUnits({ shippedDir = SHIPPED_DIR, installedDir = INSTALLED_DIR,
+  readDir = readdirSync } = {}) {
+  const shipped = new Set(shippedUnits(shippedDir, { read: readDir }));
+  /** @type {string[]} */
+  let installed;
+  try {
+    installed = readDir(installedDir).map(String);
+  } catch {
+    // NO DIRECTORY IS NOT AN EMPTY DIRECTORY, but for this question they coincide: nothing is installed,
+    // so nothing is orphaned. The missing-unit half of the check already reports the absence.
+    return [];
+  }
+  return installed
+    .filter((n) => n.startsWith(ORG_UNIT_PREFIX))
+    .filter((n) => n.endsWith(".service") || n.endsWith(".timer"))
+    .filter((n) => !shipped.has(n))
+    .sort()
+    .map((unit) => ({ unit, problem: "ORPHANED",
+      detail: "installed on this host and NO LONGER SHIPPED by this repository. A deleted unit file does "
+        + "not uninstall itself, so this is still running on whatever schedule it had -- and if something "
+        + "replaced it, both are now firing. `npm run host:install` removes it." }));
+}
+
+/** Units this repository owns. The host runs others; those are not ours to have an opinion about. */
+export const ORG_UNIT_PREFIX = "a11ign-";
+
+/**
  * Every shipped unit's drift, in one call -- what both the CLI and the gate ask for. An empty list on a
  * machine with no user systemd, which is not the same claim as "this host is correct" and is why
  * `driftReport` says which of the two it is.
+ *
+ * THREE QUESTIONS NOW, and the third is the inverse of the first two: is what we ship installed
+ * (`unitDrift`), is what is installed still ours (`orphanedUnits`), and can a session act at all
+ * (`permissionModeDrift`).
  * @param {Parameters<typeof unitState>[1]} [deps]
  */
 export function hostUnitDrift(deps = {}) {
@@ -185,7 +246,8 @@ export function hostUnitDrift(deps = {}) {
   // THE SAME GATE COVERS BOTH. A machine with no user systemd is not an agent host, so its `~/.claude`
   // posture is nobody's business either -- and a laptop told "ORG IS IN AUTO MODE" teaches its owner to
   // ignore this command, which would lose the timer finding along with it.
-  return [...unitDrift(shippedUnits(dir, {}).map((u) => unitState(u, deps))), ...permissionModeDrift(deps)];
+  return [...unitDrift(shippedUnits(dir, {}).map((u) => unitState(u, deps))),
+    ...orphanedUnits(deps), ...permissionModeDrift(deps)];
 }
 
 /** @param {string[]} args */
@@ -200,17 +262,31 @@ const defaultSystemctl = (args) =>
  * enabled and dead for nine days, and an installer that can reproduce the bug it exists to fix is not
  * an installer.
  * @param {{ shippedDir?: string, installedDir?: string, systemctl?: (args: string[]) => string,
- *           copy?: typeof copyFileSync, mkdir?: typeof mkdirSync, out?: (line: string) => void }} [deps]
+ *           copy?: typeof copyFileSync, mkdir?: typeof mkdirSync, rm?: typeof rmSync,
+ *           readDir?: typeof readdirSync, out?: (line: string) => void }} [deps]
  * @returns {string[]} the units it installed
  */
 export function hostUnitsInstall({ shippedDir = SHIPPED_DIR, installedDir = INSTALLED_DIR,
-  systemctl = defaultSystemctl, copy = copyFileSync, mkdir = mkdirSync,
-  out = (l) => process.stdout.write(l) } = {}) {
-  const units = shippedUnits(shippedDir, {});
+  systemctl = defaultSystemctl, copy = copyFileSync, mkdir = mkdirSync, rm = rmSync,
+  readDir = readdirSync, out = (l) => process.stdout.write(l) } = {}) {
+  // `readDir` IS INJECTED THROUGH TO BOTH DISCOVERIES, and the first version of this hard-wired
+  // `readdirSync` into the `orphanedUnits` call below. A test could not reach the removal path at all,
+  // so deleting the ENTIRE removal loop killed zero tests -- it passed vacuously, which is the same
+  // defect this file's own `no-token` header was written to catch one level up. Found by mutating it.
+  const units = shippedUnits(shippedDir, { read: readDir });
   mkdir(installedDir, { recursive: true });
   for (const unit of units) {
     copy(join(shippedDir, unit), join(installedDir, unit));
     out(`installed ${unit}\n`);
+  }
+  // REMOVED BEFORE THE RELOAD, so systemd never re-reads a unit that is on its way out. `disable --now`
+  // first because deleting the file leaves an enabled symlink in `timers.target.wants` behind, and a
+  // dangling want is a warning on every subsequent `daemon-reload` -- noise that trains an operator to
+  // ignore this command's output.
+  for (const { unit } of orphanedUnits({ shippedDir, installedDir, readDir })) {
+    if (unit.endsWith(".timer")) systemctl(["disable", "--now", unit]);
+    rm(join(installedDir, unit), { force: true });
+    out(`REMOVED ${unit} -- no longer shipped by this repository\n`);
   }
   systemctl(["daemon-reload"]);
   for (const timer of units.filter((u) => u.endsWith(".timer"))) {
