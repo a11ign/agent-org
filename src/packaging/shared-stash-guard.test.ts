@@ -18,7 +18,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, copyFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
@@ -30,16 +30,15 @@ import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const HOOK = join(REPO, "scripts/git-hooks/reference-transaction");
 
-/** Run git in `cwd`, returning `{code, stderr}` rather than throwing — the refusal IS the result here. */
+/**
+ * Run git in `cwd`, returning `{code, stderr}` rather than throwing — the refusal IS the result here.
+ * `spawnSync`, not `execFileSync`: the latter only hands back stderr when the process THREW (a nonzero
+ * exit), so a warning the hook prints on a SUCCESSFUL pop/drop (#1872's whole point — it warns without
+ * refusing) would be silently dropped by the exec-and-catch shape this helper used before.
+ */
 function git(cwd: string, args: string[]): { code: number; stderr: string } {
-  try {
-    execFileSync("git", args,
-      { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: sandboxGitEnv() });
-    return { code: 0, stderr: "" };
-  } catch (error) {
-    const e = error as { status?: number; stderr?: string };
-    return { code: e.status ?? 1, stderr: String(e.stderr ?? "") };
-  }
+  const result = spawnSync("git", args, { cwd, encoding: "utf8", env: sandboxGitEnv() });
+  return { code: result.status ?? 1, stderr: result.stderr ?? "" };
 }
 
 /**
@@ -124,6 +123,47 @@ test("pop, drop and clear are NOT refused — the first version broke all three"
     writeFileSync(join(main, "a.txt"), "work again\n");
     git(main, ["stash", "push", "-m", "agent/x: three"]);
     assert.equal(git(main, ["stash", "clear"]).code, 0, "clear must work");
+  } finally { cleanup(); }
+});
+
+test("a pop across a MISMATCHED branch warns, but still succeeds -- #1872 repeating #290's shape", () => {
+  const { main, second, cleanup } = twoWorktrees();
+  try {
+    writeFileSync(join(main, "a.txt"), "mine on main\n");
+    assert.equal(git(main, ["stash", "push", "-m", "quick fix"]).code, 0);
+    const result = git(second, ["stash", "pop"]);
+    assert.equal(result.code, 0, "the pop still succeeds -- #305 already ruled out refusing it");
+    assert.match(result.stderr, /WARNING/);
+    assert.match(result.stderr, /'main'/, "names the branch the stash was actually made on");
+    assert.match(result.stderr, /'other'/, "names the branch popping it now");
+    assert.match(result.stderr, /stash:whose/, "points at the manual check #305 already named");
+  } finally { cleanup(); }
+});
+
+test("a SAME-branch pop stays quiet -- nothing new to say", () => {
+  const { main, cleanup } = twoWorktrees();
+  try {
+    writeFileSync(join(main, "a.txt"), "mine\n");
+    assert.equal(git(main, ["stash", "push", "-m", "quick fix"]).code, 0);
+    const result = git(main, ["stash", "pop"]);
+    assert.equal(result.code, 0);
+    assert.doesNotMatch(result.stderr, /WARNING/);
+  } finally { cleanup(); }
+});
+
+test("a subject the #290 parser cannot read warns about nothing -- 'cannot tell' isn't 'mismatch'", () => {
+  const { main, cleanup } = twoWorktrees();
+  try {
+    // Neither `WIP on <branch>: ` nor `On <branch>: ` -- the shape #290 never produced and #1872's own
+    // parser must therefore refuse to guess at, the same as `ownerOf` does for `stashLines`.
+    const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    const sha = execFileSync("git", ["commit-tree", "-m", "not a stash-shaped subject at all", EMPTY_TREE],
+      { cwd: main, encoding: "utf8", env: sandboxGitEnv() }).trim();
+    assert.equal(git(main, ["update-ref", "refs/stash", sha]).code, 0,
+      "creation is refused only for the default 'WIP on' subject, not any other text");
+    const result = git(main, ["update-ref", "-d", "refs/stash"]);
+    assert.equal(result.code, 0);
+    assert.doesNotMatch(result.stderr, /WARNING/);
   } finally { cleanup(); }
 });
 
