@@ -63,6 +63,15 @@
 // incident happened before one did). A genuinely abandoned tree still gets removed once the window
 // passes, which is `ACCEPTANCE step 3`'s own requirement -- this narrows the remove window, it does not
 // disable it.
+//
+// #2020: THE WINDOW TIMES A COMMAND, AND A CLAIM IS NOT A COMMAND. An org session is IDLE BETWEEN WAKES
+// by design -- woken by the gate, it works, and then waits hours. Ten minutes does not span that, and the
+// unit fires hourly, so a tree somebody still holds gets eight attempts a night. Measured on this host
+// 2026-09-22 from the tool's own dry run: `wt-capture-policy` and `wt-tooling-rows` -- the live role trees
+// of two running sessions -- were merged, clean, and inside the window by luck alone; nothing else stood
+// between them and removal. `heldByOwner` below adds the fact the window cannot carry: whether the tree
+// has DELIVERED anything yet. It is not a wider window (see that predicate's header for why widening was
+// refused) and it does not touch the window at all.
 export const ACTIVITY_WINDOW_MS = 10 * 60 * 1000; // 10 minutes: survives a stash-then-checkout gap; still sweeps
                                             // a truly abandoned tree well within an hour of prune runs
 import { execFileSync } from "node:child_process";
@@ -70,6 +79,9 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
+// RELATIVE for the same reason as `cli-flags.mjs` below (#1373): `row-claim.mjs` imports this file before
+// `npm ci`, where a package specifier dies.
+import { worktreeOwner } from "./worktree-owner.mjs";
 
 /** @type {(cmd: string, args: string[], opts: { cwd: string }) => string} */
 const defaultRun = (cmd, args, opts) =>
@@ -455,10 +467,117 @@ export function unverifiedRecords(worktreePath, primaryPath, { hash = sha256OfFi
 }
 
 /**
+ * #2020: A TREE A SESSION STILL HOLDS, WHICH MERGED+CLEAN+INACTIVE CANNOT SEE.
+ *
+ * A claim (`row-claim.mjs`) makes a worktree and stamps it (`.a11y-owner`, #1128) BEFORE any work
+ * happens in it. Until that session's first commit, the tree's HEAD is still a commit on `origin/main`,
+ * so `merge-base --is-ancestor` answers MERGED, `git status` answers CLEAN once the ignored entries are
+ * discounted, and the only thing left is the activity window -- which times a COMMAND, while a claim is
+ * measured in hours. That is not a hypothetical: the two trees the 2026-09-22 dry run named ACTIVE were
+ * the role trees of two running sessions, and the ten minutes was luck.
+ *
+ * THE FACT THAT SEPARATES A HELD TREE FROM A FINISHED ONE IS WHETHER IT HAS DELIVERED ANYTHING, and both
+ * halves are on disk, so this spends NO API budget (#1950: `a11ign-worktree-prune.service` reaches no
+ * `gh` spawn, and asking GitHub whether a row is open would break that argument):
+ *   - it is STAMPED -- some session said this tree is theirs;
+ *   - and its HEAD is a commit on `origin/main`'s OWN FIRST-PARENT LINE, so the branch has produced no
+ *     commit of its own. A branch whose work landed is reached by main only THROUGH the merge that
+ *     brought it, which makes its tip a second parent and never a point on that line.
+ *
+ * `commitsNotOnMain` cannot tell these apart and that is why it is not used here: a branch that never
+ * committed and a branch whose commits merged both read 0 ahead. First-parent membership is the question
+ * that separates "main already contained this commit" from "main had to merge this commit".
+ *
+ * WHAT THIS DOES NOT PROTECT, said plainly rather than left to be discovered:
+ *   - an UNSTAMPED tree, which is every tree made before #1128 and any made without the stamp. Measured
+ *     here 2026-09-22: 6 of the 97 merged linked worktrees, one of them a live session's role tree.
+ *     `worktree-owner.mjs` refuses to invent a stamp for a tree whose owner nobody recorded, and
+ *     inventing one here would name whoever ran the prune; the remedy is `npm run worktree:stamp`.
+ *   - a stamped tree whose owner finished and never released it, which is now refused for ever. That is
+ *     the cost, and it is bounded by measurement rather than by hope: on this host 8 of 129 linked trees
+ *     are held, 83 of the 91 stamped-and-merged ones still remove. This is not "stop pruning" wearing a
+ *     better name, which is the failure the row's own Done-when guards against.
+ *   - a repository that merges by FAST-FORWARD or rebase, where a delivered branch's own commits DO land
+ *     on the first-parent line, so a finished tree would read as held. The error is a leaked directory
+ *     rather than a deleted one, which is the direction this file chooses everywhere else. Every PR here
+ *     merges as a merge commit.
+ *
+ * WIDENING `ACTIVITY_WINDOW_MS` INSTEAD WAS REFUSED, and by the row rather than by preference: a window
+ * wide enough for an overnight idle is wide enough to stop the prune doing anything, against a measured
+ * leak of about 15 trees a day (#2000). This adds a fact; it does not blunt the clock.
+ */
+
+/**
+ * Every commit on `origin/main`'s own first-parent line, as a Set -- the commits main HAS rather than the
+ * commits main has MERGED. `null` when the walk could not be made at all, which `heldByOwner` treats as a
+ * refusal for a stamped tree and never as "it has delivered": the tristate this file keeps everywhere.
+ *
+ * Asked ONCE per prune run rather than once per worktree, because it is the same answer for all of them.
+ *
+ * @param {string} repoRoot
+ * @param {{ run?: typeof defaultRun }} [deps]
+ * @returns {Set<string> | null}
+ */
+export function mainLineCommits(repoRoot, { run = defaultRun } = {}) {
+  try {
+    const out = run("git", ["rev-list", "--first-parent", "origin/main"], { cwd: repoRoot });
+    return new Set(out.split("\n").map((line) => line.trim()).filter((line) => line !== ""));
+  } catch {
+    return null; // could not ask -- never "yes, it delivered"
+  }
+}
+
+/**
+ * Whether this worktree's HEAD is a commit its own branch produced (one main reached by MERGING it),
+ * rather than a commit that was already on main's line when the tree was made.
+ *
+ * @param {string} worktreePath
+ * @param {Set<string> | null} mainLine
+ * @param {{ run?: typeof defaultRun }} [deps]
+ * @returns {boolean | "unknown"}
+ */
+export function deliveredOwnCommit(worktreePath, mainLine, { run = defaultRun } = {}) {
+  if (mainLine === null) return "unknown";
+  try {
+    const head = run("git", ["rev-parse", "HEAD"], { cwd: worktreePath }).trim();
+    return head === "" ? "unknown" : !mainLine.has(head);
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * #2020: whether `worktreePath` is a tree a session still holds -- see the block header above.
+ *
+ * @param {string} worktreePath
+ * @param {Set<string> | null} mainLine
+ * @param {{ run?: typeof defaultRun, owner?: typeof worktreeOwner }} [deps]
+ * @returns {{ refused: false } | { refused: true, reason: string }}
+ */
+export function heldByOwner(worktreePath, mainLine, { run = defaultRun, owner = worktreeOwner } = {}) {
+  const who = owner(worktreePath);
+  // UNSTAMPED IS "NOBODY SAID", NOT "NOBODY IS THERE" (#1128) -- and it is not a hold either. This gate
+  // speaks only about trees whose owner is recorded; the honest gap is named in the header, not papered
+  // over by treating an absent stamp as an owner.
+  if (who === null) return { refused: false };
+  const delivered = deliveredOwnCommit(worktreePath, mainLine, { run });
+  if (delivered === true) return { refused: false };
+  if (delivered === "unknown") {
+    return { refused: true, reason: `${worktreePath} is stamped ${who} and whether its branch has delivered a `
+      + "commit of its own could not be determined -- refusing to remove a stamped tree on an unanswered "
+      + "question, never guessing that it is finished" };
+  }
+  return { refused: true, reason: `${worktreePath} is stamped ${who} and its HEAD is a commit on origin/main's own `
+    + "first-parent line -- the branch has delivered no commit of its own, so this is a tree a session "
+    + "CLAIMED and has not finished with, not one whose work has landed. Refusing to remove it" };
+}
+
+/**
  * @typedef {{ path: string, branch: string | null }} ReportedWorktree
  * @typedef {{
  *   removed: ReportedWorktree[],
  *   records: (ReportedWorktree & { reason: string })[],
+ *   held: (ReportedWorktree & { reason: string })[],
  *   dirty: ReportedWorktree[],
  *   cherryPicked: ReportedWorktree[],
  *   inconclusive: ReportedWorktree[],
@@ -668,8 +787,11 @@ export function pruneWorktrees(repoRoot, { run = defaultRun, remove, now = Date.
   const primaryPath = entries.find((entry) => isPrimaryWorktree(entry.path))?.path ?? null;
   /** @type {PruneReport} */
   const report = {
-    removed: [], records: [], dirty: [], cherryPicked: [], inconclusive: [], active: [], skippedPrimary: null,
+    removed: [], records: [], held: [], dirty: [], cherryPicked: [], inconclusive: [], active: [],
+    skippedPrimary: null,
   };
+  // #2020: one walk for the whole run, not one per worktree -- it is the same answer for every tree.
+  const mainLine = mainLineCommits(repoRoot, { run });
   const doRemove = remove ?? ((path, { run: r }) => {
     r("git", ["worktree", "remove", path], { cwd: repoRoot });
   });
@@ -683,6 +805,14 @@ export function pruneWorktrees(repoRoot, { run = defaultRun, remove, now = Date.
     const assessment = assessWorktree(repoRoot, entry, { run, now });
     const verdict = classify(assessment);
     if (verdict === "remove") {
+      // #2020 BEFORE #1373, and only because it is the cheaper question and the more actionable answer --
+      // a tree that is both held and holding records reports the owner who is standing in it. Either
+      // refusal removes nothing, so the order decides which reason is printed and nothing else.
+      const stillHeld = heldByOwner(entry.path, mainLine, { run });
+      if (stillHeld.refused) {
+        report.held.push({ ...reported, reason: stillHeld.reason });
+        continue;
+      }
       // #1373: merged and clean is a fact about what GIT tracks; the gitignored records go with the directory.
       const held = unverifiedRecords(entry.path, primaryPath, { hash });
       if (held.refused) {
@@ -732,6 +862,11 @@ export function formatReport(report, dryRun = false) {
       + "remove them, and announce the list one cycle first so no session loses its working directory:"
     : `removed ${report.removed.length} worktree(s):`];
   for (const r of report.removed) lines.push(`  ${r.path}  (${r.branch ?? "detached"})`);
+  if (report.held.length > 0) {
+    lines.push(`refused ${report.held.length} HELD worktree(s) (#2020) -- stamped by a session and carrying no `
+      + "commit of their own, so the claim is open rather than finished; nothing removed:");
+    for (const r of report.held) lines.push(`  ${r.path}  (${r.branch ?? "detached"}): ${r.reason}`);
+  }
   if (report.records.length > 0) {
     lines.push(`refused ${report.records.length} worktree(s) holding ${RECORDS_DIR}/ records not verified in the `
       + "primary checkout (#1373) -- nothing removed:");
