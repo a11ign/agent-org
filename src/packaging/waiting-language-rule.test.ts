@@ -64,6 +64,50 @@ test("waiting language plus --blocking= in argv does not warn", () => {
   assert.equal(waitingLanguageWarning(body, ["--blocking=900"]), null);
 });
 
+/**
+ * #1977: THE SPACE FORM IS THE SAME DECLARATION. `gh issue create --help`'s own example is
+ * `--blocked-by 200,201 --blocking 300`, and filing #1976 with `--blocked-by 1953` wrote the edge
+ * (`gh issue view 1976 --json blockedBy` -> `{"blockedBy":[1953]}`) while this warning fired anyway. The
+ * two cases below are the positive control for the fix: before it, both warned.
+ */
+test("#1977: waiting language plus `--blocked-by N` (space form) does not warn", () => {
+  const body = "This row waits: it is blocked by #1953.";
+  assert.equal(waitingLanguageWarning(body, ["--blocked-by", "1953"]), null);
+});
+
+test("#1977: waiting language plus `--blocking N` (space form) does not warn", () => {
+  const body = "This row waits for #900 to close.";
+  assert.equal(waitingLanguageWarning(body, ["--blocking", "900"]), null);
+});
+
+test("#1977: the space form is read mid-argv, not only as the last flag", () => {
+  const body = "This row is blocked by the migration finishing first.";
+  assert.equal(
+    waitingLanguageWarning(body, ["--title", "t", "--blocked-by", "1953", "--label", "ready"]), null);
+});
+
+// --- a flag with no VALUE declares nothing, and still warns (`declaresRelease`'s own rule) ---
+
+test("#1977: a trailing bare `--blocked-by` with no value still warns", () => {
+  const body = "This row is blocked by the migration finishing first.";
+  assert.ok(waitingLanguageWarning(body, ["--blocked-by"]));
+});
+
+test("#1977: an empty `--blocked-by=` declares nothing and still warns", () => {
+  const body = "This row is blocked by the migration finishing first.";
+  assert.ok(waitingLanguageWarning(body, ["--blocked-by="]));
+});
+
+test("#1977: an empty `--blocking=` declares nothing and still warns", () => {
+  const body = "This row waits for #900 to close.";
+  assert.ok(waitingLanguageWarning(body, ["--blocking="]));
+});
+
+test("#1977: a flag whose NAME merely starts with the blocker flag is not one -- `--blocking-only=x`", () => {
+  const body = "This row waits for #900 to close.";
+  assert.ok(waitingLanguageWarning(body, ["--blocking-only=x"]));
+});
+
 // --- negative cases: "after" or "waits" (or "blocked") in ordinary prose, no blocking sense ---
 
 test("\"waits\" with no blocking sense does not warn", () => {
