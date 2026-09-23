@@ -200,14 +200,19 @@ export function readPrs(run = defaultRun) {
   try {
     const out = run(["pr", "list", "--state", "open", "--limit", "100", "--json",
       "number,isDraft,headRefOid,statusCheckRollup,author,comments,labels,files,changedFiles,body,"
-      // #2084: `reviewDecision` IS WHAT GITHUB ITSELF MERGES ON, AND IT COST NOTHING TO ADD HERE.
-      // Measured 2026-09-23 at `468a74f1b`: `grep -rl reviewDecision --include='*.mjs'` over this tree
-      // returned ZERO. The field that decides whether any pull request here may merge was read by no line
-      // of this repository, so #2049 sat green, armed and unmergeable for over seven hours with every org
-      // read calling it healthy. It arrives on the `pr list` call this function already makes -- one more
-      // name in the `--json` list, no extra request and no extra pool -- which is the whole reason the
-      // blind spot is worth closing HERE rather than in `queue-table.mjs`, whose own header records
-      // dropping `mergeStateStatus` precisely because a GraphQL-only field meant a second, refusable call.
+      // #2084: `reviewDecision` IS WHAT GITHUB ITSELF MERGES ON, AND NO QUEUE READ HERE TOUCHED IT.
+      // Measured at `468a74f1b`: `git grep -l reviewDecision -- '*.mjs'` returns exactly ONE file, and it
+      // is not a queue read -- `row-claim/own-pr-health-rule.mjs` (#2126, merged the same day #2084 was
+      // filed) reads it to answer "may this session claim ANOTHER ROW". That refusal emits no order, wakes
+      // nobody, fires only on `CHANGES_REQUESTED`, and only for the session holding that row. Nothing that
+      // reads the QUEUE touched the field: not this file, not `queue-table.mjs`, not `merge-guard.mjs`,
+      // not `auto-arm-sweep.mjs` -- so #2049 sat green, armed and unmergeable for over seven hours with
+      // every org read calling it healthy. (#2084's own body says the grep returned zero; that was true
+      // when it was filed at 08:5xZ and #2126 landed the same day. The list of readers it names is right.)
+      // It arrives on the `pr list` call this function already makes -- one more name in the `--json`
+      // list, no extra request and no extra pool -- which is the whole reason the blind spot is worth
+      // closing HERE rather than in `queue-table.mjs`, whose own header records dropping
+      // `mergeStateStatus` precisely because a GraphQL-only field meant a second, refusable call.
       + "reviewDecision"]);
     const parsed = JSON.parse(out);
     return Array.isArray(parsed) ? parsed : null;
@@ -2309,9 +2314,9 @@ export function reviewBlockedOrders(blocked) {
     prompt: `${blocked.length} pull request(s) are green on every required check and NOT held, and `
       + "GitHub's own `reviewDecision` is holding them:\n"
       + blocked.map((b) => `  #${b.number}  ${b.code} -- ${b.why}`).join("\n") + "\n"
-      + "NOTHING IN THIS REPOSITORY READ THIS FIELD BEFORE #2084, which is why a pull request in this "
-      + "state read as healthy everywhere: #2049 was green and armed and unmergeable for over seven "
-      + "hours, and no org read could say why.\n"
+      + "NO QUEUE READ IN THIS REPOSITORY TOUCHED THIS FIELD BEFORE #2084 -- only `row-claim`'s own "
+      + "claim refusal -- which is why a pull request in this state read as healthy everywhere: #2049 "
+      + "was green and armed and unmergeable for over seven hours, and no org read could say why.\n"
       + "AWAITING_REVIEW is a PR that opened READY and so never entered the reviewer lane -- "
       + "`draft-awaiting-verdict` only covers DRAFTS. Prompt its parity reviewer yourself: "
       + "`npm run prompt:session -- reviewer \"#<n> ...\"` for an odd number, `reviewer-2` for an even "
