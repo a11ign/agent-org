@@ -1675,3 +1675,28 @@ test("#1488: the check CALLS the parser and keeps no copy of its rule -- it refu
   }
   assert.deepEqual([...kinds].sort(), ["commands", "duplicate", "missing", "none"], "the shapes must cover every kind");
 });
+
+// --- #2099: AN UNDECLARED `gh` ACCEPTANCE IS REFUSED AT FILING. The `acceptance` job is given no
+// credential at all -- it alone executes commands taken from an untrusted PR body -- so a `gh` line run
+// there dies on the missing credential, and nothing said so until `pr-open`, after a builder had claimed
+// the row and built the change. The rule itself lives in `acceptance-commands.mjs` beside the classifier
+// whose verdict it moves earlier, and is pinned in full there; these two pin that `fileRefusalReason`
+// ACTUALLY CALLS IT, which is the half a unit test of the rule cannot see. ---
+
+const HAND_RUN_GH_ROW = "gh api repos/a11ign/a11ign/branches/main/protection --jq '.enforce_admins.enabled'";
+
+test("#2099: a row whose Acceptance is an UNDECLARED `gh` command is refused by `fileRefusalReason`, quoting it", () => {
+  const reason = String(fileRefusalReason(withAcceptance(`## Acceptance\n\n\`\`\`\n${HAND_RUN_GH_ROW}\n\`\`\`\n\n`)));
+  assert.match(reason, /^row-file: REFUSING to file --/);
+  assert.ok(reason.includes(HAND_RUN_GH_ROW), `the refusal quotes the command: ${reason}`);
+  assert.match(reason, /Hand-run: <who runs it and why>/);
+});
+
+test("#2099 CONTROL: the SAME row carrying the declaration files clean -- the ruling is DECLARE, not refuse, "
+  + "because a blanket refusal refuses a CORRECT row (#2084 is the live one)", () => {
+  const body = withAcceptance("## Acceptance\n\nHand-run: whoever holds the admin credential, which CI has not\n\n"
+    + `\`\`\`\n${HAND_RUN_GH_ROW}\n\`\`\`\n\n`);
+  assert.equal(fileRefusalReason(body), null,
+    "and `null` is this rule's answer rather than another check's silence: the undeclared twin above differs "
+    + "in exactly the declaration line");
+});

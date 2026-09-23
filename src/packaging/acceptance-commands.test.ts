@@ -22,6 +22,7 @@ import {
   suiteTestFiles,
   SPAWNS_GH,
   endsInsideQuote,
+  handRunDeclaration, handRunAcceptanceReason,
 } from "../acceptance-commands.mjs";
 
 // A file known to exist, relative to the repo root -- where every real invocation of this command runs
@@ -2189,4 +2190,299 @@ test("#1636: a module reached by two imports keeps the UNION of what each reache
       rmSync(dir, { recursive: true, force: true });
     }
   }
+});
+
+// --- #2099: `token` IS THE FOURTH CAPABILITY AND A ROW CAN NOW DECLARE IT ---
+//
+// `jobCapabilities()` names four capabilities the acceptance job can lack. A row could declare three:
+// `history` in the body, `fleet` by the template's required dropdown, `corpus` by the template's prose
+// rule. `token` had nothing, so a `gh` Acceptance was either RUN WITHOUT A CREDENTIAL (the bare spelling,
+// classified `runnable`, dying on `set the GH_TOKEN environment variable`) or NEVER RUN AT ALL (the `$ `
+// spelling, classified prose), and nothing said so until `pr-open` -- after a builder had claimed the row
+// and built the change.
+//
+// The tests below pin BOTH DIRECTIONS of each half: the declared spelling and the undeclared one.
+
+// #2084's real Acceptance command, the live correct-row case this row's ruling turned on: a deliberate
+// hand-run `gh` read of branch protection, named per the template's own rule for a command a runner
+// cannot make. Copied from the row's body at 2026-09-23, with the `$ ` prompt removed -- as filed it
+// carries the prompt, which classifies prose and is NOT what this row changes (see the `$ ` test below).
+const HAND_RUN_GH = "gh api repos/a11ign/a11ign/branches/main/protection --jq "
+  + "'if .required_pull_request_reviews.dismiss_stale_reviews == true then \"ok\" else error(\"no\") end'";
+
+const HAND_RUN_REASON = "whoever holds the admin credential; the acceptance job has none";
+
+function acceptanceBody(command: string, declaration?: string): string {
+  return `## Acceptance\n\n${declaration ? `Hand-run: ${declaration}\n\n` : ""}\`\`\`\n${command}\n\`\`\`\n`;
+}
+
+const NO_CAPABILITIES = { history: false, token: false, fleet: false, corpus: false };
+
+test("#2099: a bare `gh` command is REFUSED for `token`, not classified runnable -- the job knows it has no "
+  + "credential and the classifier now asks", () => {
+  const verdict = classifyCommand(HAND_RUN_GH, { capabilities: NO_CAPABILITIES });
+  assert.equal(verdict.verdict, "refused");
+  assert.match(String(verdict.reason), /needs `token`/);
+  // FOLLOWABLE: the refusal names the way out, per #1116. A message that states the fault without the
+  // remedy is the shape that made an author learn `// no-token:` existed only by misusing it.
+  assert.match(String(verdict.reason), /Hand-run:/);
+});
+
+test("#2099 CONTROL: the SAME command against a job that HAS a token is runnable -- the refusal is about this "
+  + "job's credential, never about `gh` being unwelcome", () => {
+  assert.deepEqual(classifyCommand(HAND_RUN_GH, { capabilities: WITH_TOKEN }), { verdict: "runnable" });
+  // And the default (`FULL_CAPABILITIES`, #510's back-compatibility rule) is unchanged for every caller
+  // that never mentions capabilities.
+  assert.deepEqual(classifyCommand(HAND_RUN_GH), { verdict: "runnable" });
+});
+
+test("#2099 CONTROL: a command that merely CONTAINS `gh` is not a `gh` command -- the check reads the first "
+  + "real token, never a substring (#1860's own lesson)", () => {
+  for (const command of [
+    "node packages/agent-org/src/high-water.mjs",
+    "npx tsx --test packages/lab/src/packaging/gh-something.test.ts",
+    "npm run lint -- --rule gh",
+  ]) {
+    // `runnable` rather than merely "not refused for token": a weaker assertion would pass if the
+    // command were refused for some OTHER reason, which is the same green for the opposite fact.
+    assert.deepEqual(classifyCommand(command, { capabilities: NO_CAPABILITIES }), { verdict: "runnable" },
+      `${command} is not a gh invocation`);
+  }
+});
+
+test("#2099: a LEADING ENVIRONMENT ASSIGNMENT does not hide the `gh` behind it -- `firstRealToken`'s own rule, "
+  + "and the token variable is the spelling an author reaches for when they know about the credential", () => {
+  // SPELT IN PIECES, for the reason this file's own subject enforces: `CLOSURE_REQUIREMENT_PATTERNS`
+  // charges any file whose text carries the variable's name with requiring `token`, so writing it whole
+  // here would make THIS file undeclarable and refuse the Acceptance command that runs it. Measured: it
+  // did, and took four other tests red with it.
+  const verdict = classifyCommand(`${["GH_TO", "KEN"].join("")}=x ${HAND_RUN_GH}`,
+    { capabilities: NO_CAPABILITIES });
+  assert.equal(verdict.verdict, "refused");
+  assert.match(String(verdict.reason), /needs `token`/);
+});
+
+test("#2099: the `$ `-prefixed spelling keeps its EXISTING prose verdict -- that fault is the line never having "
+  + "been written as a command, it needs a different fix, and this row does not change it", () => {
+  const verdict = classifyCommand(`$ ${HAND_RUN_GH}`, { capabilities: NO_CAPABILITIES });
+  assert.deepEqual(verdict, { verdict: "prose", reason: 'is not a command (no executable "$")' });
+  // ... and at pr-open it still reaches EXECUTED NOTHING, which is correct: nothing verified anything.
+  const report = acceptanceReport(acceptanceBody(`$ ${HAND_RUN_GH}`), () => 0);
+  assert.equal(report.ok, false);
+  assert.ok(report.lines.some((line) => line.includes("EXECUTED NOTHING")), report.lines.join("\n"));
+});
+
+test("#2099: an UNDECLARED `gh` Acceptance is refused AT FILING, quoting the command, in the wording pr-open "
+  + "would later use -- #879's cost, paid at the moment the filer still has the context", () => {
+  const reason = String(handRunAcceptanceReason(acceptanceBody(HAND_RUN_GH), "row-file"));
+  assert.match(reason, /^row-file: REFUSING to file --/);
+  assert.ok(reason.includes(HAND_RUN_GH), `the refusal quotes the command: ${reason}`);
+  assert.match(reason, /Hand-run: <who runs it and why>/);
+  assert.match(reason, /pr-open/);
+});
+
+test("#2099: a DECLARED hand-run Acceptance files clean -- the ruling is DECLARE, not refuse, because a blanket "
+  + "refusal refuses a CORRECT row", () => {
+  assert.equal(handRunAcceptanceReason(acceptanceBody(HAND_RUN_GH, HAND_RUN_REASON), "row-file"), null);
+});
+
+// The `row-file` WIRING -- that `fileRefusalReason` actually calls this rule -- is pinned in
+// `row-file.test.ts` instead, and the reason is this file's own subject: importing `row-file.mjs` here
+// puts a `gh` spawn in THIS file's import closure, which charges it `token` and makes the Acceptance
+// command that runs it unrunnable in the acceptance job. Measured: it did, and took four other tests red
+// with it. `row-file.test.ts` carries the `// no-token: gh` declaration that answers it, proved rather
+// than asserted, and is where every other `fileRefusalReason` verdict already lives.
+
+test("#2099: a declared hand-run reports NOT RUN NAMING THE DECLARATION -- never a pass, and never "
+  + "EXECUTED NOTHING", () => {
+  const report = acceptanceReport(acceptanceBody(HAND_RUN_GH, HAND_RUN_REASON), () => 0);
+  const joined = report.lines.join("\n");
+  assert.match(joined, /ACCEPTANCE: NOT RUN/);
+  assert.ok(joined.includes(HAND_RUN_REASON), `the reason is quoted, not merely counted: ${joined}`);
+  assert.doesNotMatch(joined, /EXECUTED NOTHING/);
+  // NEVER A PASS: the report says in its own words that it verified nothing.
+  assert.doesNotMatch(joined, /-> pass/);
+  assert.match(joined, /verified NOTHING/);
+  assert.equal(report.ok, true,
+    "green and loud, because the alternative is a row whose only honest acceptance makes it unmergeable");
+});
+
+test("#2099 CONTROL: the SAME body without the declaration is the failure this row starts from -- REFUSED for "
+  + "`token`, then EXECUTED NOTHING, `ok: false`", () => {
+  const report = acceptanceReport(acceptanceBody(HAND_RUN_GH), () => 0);
+  assert.equal(report.ok, false);
+  const joined = report.lines.join("\n");
+  assert.match(joined, /ACCEPTANCE: REFUSED/);
+  assert.match(joined, /needs `token`/);
+  assert.match(joined, /EXECUTED NOTHING/);
+});
+
+test("#2099: the declaration silences EXECUTED NOTHING only when EVERY command is a declared hand-run -- a fleet "
+  + "refusal beside it keeps the section red, or the declaration becomes the line people add to turn a check "
+  + "green", () => {
+  const body = `## Acceptance\n\nHand-run: ${HAND_RUN_REASON}\n\n\`\`\`\n${HAND_RUN_GH}\nnpm run fleet:status\n\`\`\`\n`;
+  const report = acceptanceReport(body, () => 0);
+  const joined = report.lines.join("\n");
+  assert.match(joined, /ACCEPTANCE: NOT RUN/, "the gh line is still reported as the declaration says");
+  assert.match(joined, /reaches the fleet/, "the fleet line is still refused on its own facts");
+  assert.match(joined, /EXECUTED NOTHING/, "and the section still executed nothing");
+  assert.equal(report.ok, false);
+});
+
+test("#2099: a declared hand-run BESIDE a command that really runs reports both -- a partial answer is what "
+  + "#2084's amended Acceptance actually is", () => {
+  const body = `## Acceptance\n\nHand-run: ${HAND_RUN_REASON}\n\n\`\`\`\nnpx tsx --test ${REAL_FILE}\n${HAND_RUN_GH}\n\`\`\`\n`;
+  const report = acceptanceReport(body, () => 0);
+  const joined = report.lines.join("\n");
+  assert.match(joined, /ACCEPTANCE: RAN/);
+  assert.match(joined, /ACCEPTANCE: NOT RUN/);
+  assert.doesNotMatch(joined, /EXECUTED NOTHING|NOTHING RAN HERE/);
+  assert.equal(report.ok, true);
+});
+
+/**
+ * REVIEWER-2'S BLOCKER ON #2105, and it is a scope fault rather than a wiring one: `handRun` is read once
+ * from the whole body and handed to BOTH sections, so `runOneCommand` honouring it without asking which
+ * section it was in let one line convert an unrelated `Refutation:` `gh` command into
+ * `NOT RUN ... declared hand-run` -- a POSITIVE claim that a human ran something, attributed to a filer
+ * who was never asked about that command. `handRunAcceptanceReason` reads `extractAcceptanceSection`
+ * alone, so the declaration only ever spoke for the Acceptance commands.
+ *
+ * THE MATCHED PAIR IS THE POINT: the same command string, in the same body, under the two headers --
+ * honoured under `Acceptance:`, refused for `token` under `Refutation:`.
+ */
+test("#2099: a `Refutation:` `gh` line does NOT inherit the Acceptance's `Hand-run:` declaration -- it keeps "
+  + "its own REFUSED-for-`token` verdict, and nothing claims a human ran it", () => {
+  const body = `Hand-run: ${HAND_RUN_REASON}\n`
+    + `Acceptance:\nnpx tsx --test ${REAL_FILE}\n`
+    + `Refutation:\n${HAND_RUN_GH}\n`;
+  const report = acceptanceReport(body, () => 0);
+  const refutation = report.lines.filter((line) => line.startsWith("REFUTATION:")).join("\n");
+  assert.match(refutation, /REFUTATION: REFUSED/, `the refutation keeps its own verdict: ${refutation}`);
+  assert.match(refutation, /needs `token`/);
+  assert.doesNotMatch(refutation, /REFUTATION: NOT RUN/);
+  // NOT MERELY THE WORD: the reason a reader acts on must not name a declaration nobody made about this
+  // command, which is the whole content of the fault.
+  assert.ok(!refutation.includes(HAND_RUN_REASON), `the declaration is not quoted at it: ${refutation}`);
+  // AND THE REMEDY IS FOLLOWABLE HERE (#1116): the message must not send the author to add a `Hand-run:`
+  // line that this section will ignore -- it says so, and names what does work instead.
+  assert.match(refutation, /does NOT cover this line/);
+  assert.match(refutation, /move the line to `Acceptance:`/);
+  // The Acceptance half is untouched by the scoping -- it ran, so the section is a real answer.
+  assert.match(report.lines.join("\n"), /ACCEPTANCE: RAN/);
+  assert.equal(report.ok, true);
+});
+
+test("#2099 CONTROL for the pair above: the SAME command under `Acceptance:` IS honoured -- the difference is "
+  + "the header it sits under, never the command", () => {
+  const body = `Hand-run: ${HAND_RUN_REASON}\nAcceptance:\n${HAND_RUN_GH}\n`;
+  const report = acceptanceReport(body, () => 0);
+  const joined = report.lines.join("\n");
+  assert.match(joined, /ACCEPTANCE: NOT RUN/, joined);
+  assert.ok(joined.includes(HAND_RUN_REASON), `the declaration IS quoted here: ${joined}`);
+  assert.equal(report.ok, true);
+  // The other half of the same pair: UNDECLARED under `Acceptance:`, the remedy offered IS the
+  // declaration, because there it really works.
+  const undeclared = acceptanceReport(`Acceptance:\n${HAND_RUN_GH}\n`, () => 0).lines.join("\n");
+  assert.match(undeclared, /ACCEPTANCE: REFUSED/);
+  assert.match(undeclared, /Run it by hand and declare it/);
+  assert.doesNotMatch(undeclared, /does NOT cover this line/);
+});
+
+test("#2099: the `Hand-run:` line is a DECLARATION wherever it lands, never a command -- #1036's measured "
+  + "failure on `History: full`, which was taken as a command and terminated the scan before the real one", () => {
+  const inside = `## Acceptance\n\nHand-run: ${HAND_RUN_REASON}\n\n\`\`\`\nnpx tsx --test ${REAL_FILE}\n\`\`\`\n`;
+  const section = extractAcceptanceSection(inside);
+  assert.equal(section.kind, "commands");
+  assert.deepEqual(section.kind === "commands" ? section.commands : [], [`npx tsx --test ${REAL_FILE}`],
+    "the declaration is not in the command list, and the real command below it still is");
+});
+
+test("#2099: `Hand-run:` WITH NO REASON is not a declaration -- a bare flag would be the thing people add to make "
+  + "a red check green, which is why `Closes: none -- <reason>` requires one too", () => {
+  assert.equal(handRunDeclaration("Hand-run:"), null);
+  assert.equal(handRunDeclaration("Hand-run:   "), null);
+  // ... and it is still not taken as a command (the near-miss rule, #1036): the row gets ONE refusal, and
+  // it is the one that names the actual problem.
+  const body = `## Acceptance\n\nHand-run:\n\n\`\`\`\n${HAND_RUN_GH}\n\`\`\`\n`;
+  const section = extractAcceptanceSection(body);
+  assert.deepEqual(section.kind === "commands" ? section.commands : [], [HAND_RUN_GH]);
+  assert.match(String(handRunAcceptanceReason(body, "row-file")), /REFUSING to file/);
+});
+
+test("#2105: an EMPTY BOLD declaration is no declaration -- `**Hand-run: **` captured its own closing marker "
+  + "as the reason, and the two readers of that body then disagreed about it", () => {
+  // reviewer's blocker on #2105, and the bare spellings above are NOT its control: those never match the
+  // pattern at all, while these DO -- the capture takes the closing `**` and the trailing-marker strip
+  // empties it, so the emptiness has to be tested after normalization rather than inferred from the match.
+  for (const spelling of ["**Hand-run: **", "__Hand-run: ____", "**Hand-run:**", "**Hand-run:   **"]) {
+    assert.equal(handRunDeclaration(spelling), null, `${spelling} declares nothing and names no one`);
+  }
+  // THE CONTROL THAT MUST STILL PASS, differing from the first spelling above in exactly the reason:
+  // the fix must not cost the bold-wrapped declaration the row actually ships.
+  assert.equal(handRunDeclaration("**Hand-run: the admin holder**"), "the admin holder");
+
+  // AND THE PROPERTY THAT BROKE IS THE TWO READERS AGREEING, not either verdict alone. Before the fix
+  // `handRunAcceptanceReason` asked `!== null` and filed this body CLEAN while `acceptanceReport` read
+  // the same `""` for truthiness and returned `ok: false` -- the row passed the filing gate that exists
+  // to catch it early and failed the job that costs a rewrite, the exact #879 sequence #2099 ends.
+  const empty = `## Acceptance\n\n**Hand-run: **\n\n\`\`\`\n${HAND_RUN_GH}\n\`\`\`\n`;
+  assert.match(String(handRunAcceptanceReason(empty, "row-file")), /REFUSING to file/,
+    "filing refuses it, because nothing was declared");
+  // The runner RECORDS rather than returning a bare 0: a refusal that spawned the `gh` anyway would
+  // report the same verdict while having made the live call the whole capability gate exists to prevent.
+  const spawned: string[] = [];
+  const report = acceptanceReport(empty, (cmd) => { spawned.push(cmd); return 0; });
+  assert.equal(report.ok, false, "and the job refuses it too -- one story about one body");
+  assert.deepEqual(spawned, [], "and it refused BEFORE spawning -- no credential-less `gh` call was made");
+  // THE VERDICT IS THE LINE'S OWN PREFIX, NEVER A SUBSTRING OF THE REPORT. A `doesNotMatch(/NOT RUN/)`
+  // over the joined lines fails here on the REFUSAL'S OWN REMEDY -- which offers "a `Hand-run:` line
+  // makes this line report `NOT RUN` naming your reason" -- so it would read a correct refusal as the
+  // bug. That is the same false read reviewer-2's blocker produced one round earlier in this file, and
+  // it is worth the extra line: what is being asserted is which verdict this command GOT, and only the
+  // prefix says that.
+  const verdicts = report.lines.filter((line) => line.startsWith("ACCEPTANCE: "));
+  assert.equal(verdicts.some((line) => line.startsWith("ACCEPTANCE: NOT RUN")), false,
+    "never NOT RUN: there is no reason to name, which is why it is not a declaration");
+  assert.equal(verdicts.some((line) => line.startsWith("ACCEPTANCE: REFUSED")), true);
+
+  // ... and the declared twin, differing in exactly the reason inside the same bold wrapper, is honoured
+  // by BOTH readers -- the positive control for the emptiness assertions above.
+  const declared = `## Acceptance\n\n**Hand-run: ${HAND_RUN_REASON}**\n\n\`\`\`\n${HAND_RUN_GH}\n\`\`\`\n`;
+  assert.equal(handRunAcceptanceReason(declared, "row-file"), null);
+  const declaredSpawned: string[] = [];
+  const declaredReport = acceptanceReport(declared, (cmd) => { declaredSpawned.push(cmd); return 0; });
+  assert.equal(declaredReport.ok, true);
+  assert.deepEqual(declaredSpawned, [],
+    "a declared hand-run is not run either -- that is exactly what the declaration says");
+  assert.match(declaredReport.lines.join("\n"), new RegExp(`NOT RUN.*${HAND_RUN_REASON}`));
+});
+
+test("#2099: the declaration is read BOLD-TOLERANTLY and keeps an interior emphasis -- `**Hand-run: ...**` is a "
+  + "spelling these bodies reach for constantly, and #1036 is the record of it being recognised nowhere", () => {
+  assert.equal(handRunDeclaration("**Hand-run: the admin holder**"), "the admin holder");
+  assert.equal(handRunDeclaration("Hand-run: the **admin** holder"), "the **admin** holder");
+});
+
+test("#2099: a declaration does NOT invent a credential -- `jobCapabilities` still reports `token: false`, "
+  + "because the job's environment is not a thing a body can change", () => {
+  assert.equal(jobCapabilities(`Hand-run: ${HAND_RUN_REASON}`).token, false);
+});
+
+test("#2099: #2084's REAL Acceptance -- the live correct-row case -- files clean, declared or not, because its "
+  + "amended command is one this job can actually run", () => {
+  // The row as it stands at 2026-09-23: an rstest command the job runs, plus the `$ `-prefixed hand-run
+  // read named as what remains. A blanket refusal of every `gh` Acceptance would have broken this row.
+  const real = "## Acceptance\n\n```\nnpx rstest run --config scripts/rstest/rstest.config.mjs "
+    + "--include packages/lab/src/packaging/branch-protection.test.ts\n```\n\n"
+    + "**What remains, run by hand and quoted into the PR body:**\n\n```\n$ " + HAND_RUN_GH + "\n```\n";
+  assert.equal(handRunAcceptanceReason(real, "row-file"), null);
+  assert.equal(handRunAcceptanceReason(`${real}\nHand-run: ${HAND_RUN_REASON}\n`, "row-file"), null);
+});
+
+test("#2099: the row template DECLARES the field -- the open-check that opened this row read `grep -ci token "
+  + "backlog-row.yml` as 0, and a mechanism no filer is told about is the prose it replaced", () => {
+  const template = readFileSync(".github/ISSUE_TEMPLATE/backlog-row.yml", "utf8");
+  assert.match(template, /Hand-run: <who runs it and why>/);
+  assert.match(template, /acceptance job/i);
 });
