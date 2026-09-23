@@ -26,7 +26,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { regionRefusalReason, declaresRelease, outOfReleaseArgv, labelsOutOfRelease, OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE }
   from "../row-file.mjs";
 import { declaredRegionFiles } from "../region-paths.mjs";
-import { bulletOnlyFleetMention, extractAcceptanceSection, fleetOrLabAcceptance } from "../acceptance-commands.mjs";
+import { extractAcceptanceSection, fleetOrLabAcceptance, untrimmedFleetMention } from "../acceptance-commands.mjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1157,7 +1157,7 @@ const ROW_1911_ACCEPTANCE = "## Acceptance\n\n```bash\n"
 test("#1912: #1911's Acceptance -- the Proxmox key named only in a bullet -- derives no fleet/lab reason", () => {
   assert.equal(fleetOrLabAcceptance(ROW_1911_ACCEPTANCE), null,
     "a bullet saying what a unit test asserts about the key is not the row using the key");
-  assert.match(String(bulletOnlyFleetMention(ROW_1911_ACCEPTANCE)), /Proxmox key/,
+  assert.match(String(untrimmedFleetMention(ROW_1911_ACCEPTANCE)?.reason), /Proxmox key/,
     "the one case the bullet rule can get wrong is reported, never silent");
 });
 
@@ -1167,7 +1167,7 @@ test("#1912: the same name in a fence or a numbered clause still routes", () => 
   const fencedBullet = "## Acceptance\n\n```yaml\n- systemctl --user enable board.timer\n```\n";
   for (const body of [fenced, numbered]) {
     assert.match(String(fleetOrLabAcceptance(body)), /Proxmox key/, body);
-    assert.equal(bulletOnlyFleetMention(body), null, "a routed row has nothing to warn about");
+    assert.equal(untrimmedFleetMention(body), null, "a routed row has nothing to warn about");
   }
   assert.match(String(fleetOrLabAcceptance(fencedBullet)), /systemd/,
     "a dash inside a code fence is YAML, not a bullet");
@@ -1192,7 +1192,7 @@ test("#1914: a WRAPPED bullet is prose on every line -- its continuation does no
   assert.notEqual(secondParagraph, WRAPPED_1911, "the second-paragraph replacement landed");
   for (const body of [WRAPPED_1911, lazy, secondParagraph]) {
     assert.equal(fleetOrLabAcceptance(body), null, body);
-    assert.match(String(bulletOnlyFleetMention(body)), /Proxmox key/, "and the warning still fires");
+    assert.match(String(untrimmedFleetMention(body)?.reason), /Proxmox key/, "and the warning still fires");
   }
 });
 
@@ -1209,7 +1209,7 @@ test("#1914: a bullet item ENDS at a numbered clause, a heading, or a blank line
 test("#1914: a fence ENDS the bullet item -- an unindented sentence after the closing fence is read", () => {
   const body = "## Acceptance\n\n- the run passes\n```bash\nnpm test\n```\n`A11Y_PVE_KEY` is set on the lab host.\n";
   assert.match(String(fleetOrLabAcceptance(body)), /Proxmox key/, body);
-  assert.equal(bulletOnlyFleetMention(body), null, "and no bullet warning: that sentence was never a bullet");
+  assert.equal(untrimmedFleetMention(body), null, "and no bullet warning: that sentence was never a bullet");
 });
 
 test("#1912: row-file never emits lane:any together with another lane: label", () => {
@@ -1252,6 +1252,86 @@ test("#1912: createIssue files a fleet-Acceptance row with lane:orchestrator and
   assert.match(stderr, /lane:orchestrator added -- the Acceptance reaches the fleet/,
     "#1911 was routed with nothing saying why; the filer must see the pattern that did it");
   assert.doesNotMatch(stderr, /NOT routed/);
+});
+
+/**
+ * #1988: A SENTENCE DECLARING THE WORK **OUT** ROUTED THE ROW TO THE SESSION THAT OWNS IT.
+ *
+ * `extractLabeledSection` runs to the next `##` heading, so the Acceptance span swallows `Done when` and
+ * `Not in scope` -- both bold labels, not headings. #1984's `Not in scope` read *"and the three systemd
+ * units, done in #1982"*, and that one sentence replaced the `lane:any` its Region had correctly derived
+ * (`withAcceptanceLane` drops `lane:any` beside a fleet reason by design, #1912). Its Acceptance is a
+ * single rstest run over a checkout; it reaches no host. `product-manager` re-laned it by hand.
+ *
+ * #1912 found this family one prose form earlier and fixed the form it saw -- a bullet. #1984's sentence
+ * is a bold-led paragraph, which `withoutBulletProse` never touches.
+ */
+// #1984's Acceptance span as filed, cut to the shape that routed it: a checkout-only command, then the
+// disclaiming paragraph, wrapped exactly as the filer wrapped it.
+const ROW_1984_SPAN = "## Acceptance\n\n```\nnpx rstest run --include packages/lab/src/packaging/foo.ts\n```\n\n"
+  + "**Not in scope:** the `A11IGN_BOT_TOKEN` secret and whether it should be a machine user; what the\n"
+  + "check *works* as opposed to which token it is; and the three systemd units, done in #1982.\n";
+
+test("#1988: a NAMED pattern only in the scope-disclaiming paragraph does not route the row", () => {
+  const body = COMPLETE_BODY.replace("## Acceptance\n\n```\nnpx tsx --test x\n```\n", ROW_1984_SPAN);
+  assert.notEqual(body, COMPLETE_BODY, "the Acceptance replacement landed");
+  assert.equal(fleetOrLabAcceptance(body), null,
+    "the row says the systemd units are somebody else's and already done; that is not the row doing them");
+  assert.deepEqual(untrimmedFleetMention(body),
+    { reason: "installs or reads a systemd unit on the control host", form: "scope disclaimer" },
+    "and the trim that swallowed it is named, because a silent trim is the defect #1912 closed");
+});
+
+/**
+ * #1988: THE BOUND, ASSERTED IN BOTH DIRECTIONS OVER ONE BODY.
+ *
+ * A trim that swallowed `Done when` would be the same defect facing the other way: #1241's two founding
+ * rows (#1042, #1234) state a real hardware dependency in a numbered clause and MUST still route. The
+ * two bodies below differ by exactly that clause, so the assertion pair is about the clause and not
+ * about two unrelated fixtures.
+ */
+test("#1988: a Done-when clause naming hardware still routes, before or after the same disclaimer", () => {
+  const disclaimer = "**Not in scope:** the three systemd units, done in #1982.\n";
+  const clause = "**Done when** it holds:\n\n1. A systemd USER timer on `agents` runs the report.\n";
+  const span = (middle: string) => `## Acceptance\n\n\`\`\`\nnpx rstest run\n\`\`\`\n\n${middle}`;
+  // BOTH ORDERS, because one order pins nothing. With the clause FIRST, a trim that swallowed everything
+  // from the disclaimer label to the end of the section behaves identically to one that stops at the
+  // paragraph -- measured: that mutant passed this test until the second order was added. The clause
+  // AFTER the disclaimer is the case that tells the two apart, and it is the ordinary shape of a row that
+  // states its exclusions before its conditions.
+  for (const order of [`${clause}\n${disclaimer}`, `${disclaimer}\n${clause}`]) {
+    assert.match(String(fleetOrLabAcceptance(span(order))), /systemd unit on the control host/,
+      `a row stating a real dependency is orchestrator's, whichever side of the disclaimer it sits:\n${order}`);
+    assert.equal(untrimmedFleetMention(span(order)), null, "a routed row has nothing to warn about");
+  }
+  assert.equal(fleetOrLabAcceptance(span(disclaimer)), null,
+    "and with the clause gone the only mention left is the row disclaiming the work -- this is the "
+    + "positive control for that null, in the same run and over the same disclaimer");
+});
+
+test("#1988: an INVOCATION in the disclaimer still routes -- only NAMED things are trimmed", () => {
+  // The bound in the other direction, and it is a judgement this row makes rather than inherits. #1912
+  // settled it for bullets on the same ground: `fleet:status` in a sentence is still somebody running
+  // `fleet:status`, while a NAMED thing -- a unit, a variable, a place -- may be a test's subject or the
+  // work a row says it will not do. Over-routing an invocation is visible to a reader and correctable;
+  // under-routing one is the silence #1241 was filed on. If this ever changes it should be a decision,
+  // not a side effect of the trim widening.
+  const body = "## Acceptance\n\n```\nnpx rstest run\n```\n\n**Not in scope:** `npm run fleet:status`, which #1982 covers.\n";
+  assert.match(String(fleetOrLabAcceptance(body)), /reaches the fleet/,
+    "a colon-suffixed script name is an invocation wherever it appears; the trim is for the five named patterns");
+});
+
+test("#1988: createIssue on a disclaimer-only systemd mention files lane:any and NAMES the trim", () => {
+  const body = COMPLETE_BODY.replace("## Acceptance\n\n```\nnpx tsx --test x\n```\n", ROW_1984_SPAN);
+  const { code, stderr, ensured } = fileCapturingStderr(body, ["backlog", "lane:any"]);
+  assert.equal(code, 0, stderr);
+  assert.deepEqual(ensured, ["backlog", "lane:any"],
+    "#1984 lost its lane:any to this sentence and had to be re-laned by hand");
+  assert.match(stderr, /NOT routed to orchestrator -- a scope disclaimer in the Acceptance names something that installs or reads a systemd unit/,
+    "the second trim is reported through the real filing path, and says WHICH trim it was");
+  assert.match(stderr, /say so outside that paragraph/, "and the message is followable, like the bullet one");
+  assert.doesNotMatch(stderr, /a bullet in the Acceptance/, "naming the wrong trim sends the filer to the wrong fix");
+  assert.doesNotMatch(stderr, /lane:orchestrator added/);
 });
 
 test("#1914: createIssue on a bullet-only Proxmox mention files lane:any and WARNS on stderr", () => {
