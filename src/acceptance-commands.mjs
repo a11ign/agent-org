@@ -453,6 +453,7 @@ function needsToken(command) {
  * branches are not the caller's, the same reason `isHistoryDeclarationLine` exists next door.
  * @param {string} command
  * @param {JobCapabilities} capabilities
+ * @param {"ACCEPTANCE" | "REFUTATION"} [section]
  * @returns {Classification | null}
  */
 function tokenRefusal(command, capabilities, section) {
