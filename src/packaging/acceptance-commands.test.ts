@@ -613,6 +613,67 @@ test("#2068: the quote scanner itself, on the shapes that decide the two halves 
   }
 });
 
+test("#2088: a word starts after any bash METACHARACTER, not after whitespace alone -- `;# don't` is a "
+  + "comment to bash, and reading it as an open quote swallowed the NEXT Acceptance command", () => {
+  // Every row here returned `true` before the fix: the scanner walked into the comment text and the
+  // apostrophe in `don't` opened a quote that never closed. Each was RUN through real bash as
+  // `<row>\necho second`, and what settles each one is that bash never complained about an unmatched
+  // quote -- the first five run clean and print `second`, and the last four are syntax errors about
+  // something ELSE (a `(` with no `)`, a redirect with no target), which is only possible if bash had
+  // already eaten the `#` and the apostrophe after it as comment text.
+  const cases: [string, boolean][] = [
+    ["echo first;# don't", false],
+    ["echo first |# don't", false],
+    ["echo first &&# don't", false],
+    ["echo first &# don't", false],
+    ["(echo first)# don't", false],
+    ["echo first\t# don't", false],
+    ["(echo first;# don't", false],
+    ["echo first >#don't", false],
+    ["echo first <#don't", false],
+  ];
+  for (const [text, expected] of cases) {
+    assert.equal(endsInsideQuote(text), expected, `endsInsideQuote(${JSON.stringify(text)})`);
+  }
+});
+
+test("#2088 THE CONTROLS, which are not optional: a fix that returns `false` more often passes the rows "
+  + "above and breaks the repo -- these are the shapes where `#` is NOT a comment, or where there is no "
+  + "comment at all and the quote is genuinely open", () => {
+  const cases: [string, boolean][] = [
+    // The green side must stay reachable: these already held before the fix and must still hold.
+    ["echo first # don't", false],
+    ["# don't", false],
+    ["curl http://example.test/page#anchor", false],
+    // A genuinely unclosed quote still JOINS -- the whole reason `endsInsideQuote` exists.
+    ["node -e 'const a = 1;", true],
+    // An apostrophe INSIDE a comment is comment text even when the comment opens at a metacharacter:
+    // real bash runs this clean and prints `first`, so widening where a comment may start must not be
+    // hedged into "join anyway when the comment looks unbalanced".
+    ["echo first;# oops 'still open", false],
+    // A quote does NOT end a word, so the `#` after one stays inside that word and is not a comment --
+    // which leaves the `'` in `don't` a real opening quote. Real bash agrees: `unexpected EOF while
+    // looking for matching '`.
+    ["echo 'a'# don't", true],
+    ["echo \"a\"# don't", true],
+    // An ESCAPED metacharacter does not end a word either, so this `#` is text and the `'` opens for
+    // real -- bash says `unexpected EOF` here too. THIS IS THE ROW THAT KILLS THE NEAR-MISS FIX: the
+    // same metacharacter set, looked up against `text[i - 1]` instead of carried, sees a bare `;` here
+    // and calls a comment where bash has none. Measured -- that mutant fails on this row alone.
+    ["echo a\\;# don't", true],
+  ];
+  for (const [text, expected] of cases) {
+    assert.equal(endsInsideQuote(text), expected, `endsInsideQuote(${JSON.stringify(text)})`);
+  }
+});
+
+test("#2088 END TO END: the swallowed command is the cost -- `;# don't` must leave the next Acceptance "
+  + "line as its own command, not appended into a quote nobody opened", () => {
+  const body = "## Acceptance\n\n```bash\nnpm run lint;# don't skip this\nnpm run typecheck\n```\n";
+  assert.deepEqual(extractAcceptanceSection(body),
+    { kind: "commands", commands: ["npm run lint;# don't skip this", "npm run typecheck"] });
+});
+
 // Form 4: a trailing `# comment` on a `tsx --test` line is not a file argument.
 
 test("#419 form 4: a trailing comment on a tsx --test line does not fail the file check", () => {
