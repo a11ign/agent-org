@@ -46,6 +46,15 @@ import { NO_VERDICT } from "./merge-guard/checks-rule.mjs";
 // property its own header states -- it runs before any `npm ci` or build.
 import { declaredRegionFiles } from "./region-paths.mjs";
 import { declaredClosedRows, fileOverlapReason } from "./row-claim/file-overlap-rule.mjs";
+// #2031, AND IMPORTED FOR THE SAME REASON THE TWO LINES ABOVE ARE. The trailing-`-<n>` rule is #2014's,
+// already exercised through `row-claim.mjs`'s own refusal; a second copy here is the drift that row's
+// filing named in so many words. `row-branch-rule.mjs` imports NOTHING, and `git-env.mjs` imports nothing
+// either, so the gate keeps the property its own header states -- it runs before any `npm ci` or build.
+import { LS_REMOTE_ARGS, rowBranchesInListing } from "./row-claim/row-branch-rule.mjs";
+// EVERY `git` SPAWN IN THIS REPO STRIPS `GIT_*` THROUGH ONE FUNCTION (`git-env.mjs`'s own header records
+// the 2026-09-06 incident where an inherited `GIT_DIR` landed fifteen commits in the wrong checkout).
+// This tick runs under systemd, where the environment is not the one a person typed.
+import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
 // THE REFUSAL PATH ONLY, and a LEAF import so this file keeps the property its own header states. The
 // reader lived in `queue-table.mjs` until #2003; importing THAT would have pulled five modules into the
 // graph of a script that runs 720 times a day, to use a function it calls only when already refusing.
@@ -81,7 +90,7 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
   "verdict-not-convinced", "pr-checks-failing", "ready-queue-empty", "lane-backlog-unpromoted",
   "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
   "blocked-unexaminable", "fleet-batch-due", "blocker-cleared", "pr-green-unarmed",
-  "claimed-row-amended"];
+  "claimed-row-amended", "row-branch-unshipped"];
 
 /**
  * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
@@ -111,7 +120,7 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
  */
 export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog-unpromoted",
   "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
-  "blocked-unexaminable", "fleet-batch-due"]);
+  "blocked-unexaminable", "fleet-batch-due", "row-branch-unshipped"]);
 
 /**
  * The causes that START new work, as opposed to finishing work already begun.
@@ -144,6 +153,13 @@ export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog
  * arrives unread during one is a build finished against a rule nobody applied, which is the single thing
  * a landing window cannot afford. Measured on #2099: the ruling reached the row 6 minutes after the work
  * was done, and only a human reading the thread caused it to be honoured.
+ *
+ * `row-branch-unshipped` is deliberately NOT here either (#2031), and a drain is the window where it
+ * matters MOST rather than least. Step 2 of #63's history-purge runbook force-pushes a rewritten history,
+ * and every branch on `origin` at that moment that nobody has landed is stranded by it -- a drain exists
+ * precisely so the org can find out what is still in flight before that happens. Withholding this cause
+ * during one would hide, from the only person who can act on it, the exact population the window is for.
+ * It also starts no work: its subject is work that ALREADY EXISTS on origin.
  */
 export const START_CAUSES = Object.freeze(["ready-row-unclaimed", "ready-queue-empty",
   "lane-backlog-unpromoted", "org-stalled", "epic-unfiled", "epic-finished",
@@ -247,6 +263,65 @@ export const GH_READS = Object.freeze({
   conditionalOnClaimedRows: "issue list --label in-progress --json number,comments"
     + " (readClaimedRowComments -- claimed-row-amended)",
 });
+
+/**
+ * THE READS THAT SPEND NO API POOL AT ALL, counted separately BECAUSE they are free rather than left out
+ * because they are.
+ *
+ * `GH_READS` above exists because "two `gh` calls" was repeated for weeks while three readers were added,
+ * and a reviewer had to measure the call sites to find it. A read that costs no pool is even easier to
+ * add uncounted, and this one is load-bearing in a way that makes its cost worth writing down: #2031's
+ * detection MUST NOT spend GraphQL, because the board goes stale precisely when the pool is exhausted
+ * and a detector that spent it would be blind in the same outage that produces the defect. That is a
+ * property of the implementation, so it is stated where the next person adding a read will read it, and
+ * pinned behaviourally in `work-gate.test.ts` (the seam is handed a spy and the binary it spawns is
+ * asserted to be `git`, never `gh`).
+ */
+export const GIT_READS = Object.freeze({
+  unconditional: ["git ls-remote --heads origin (readRowBranches -- row-branch-unshipped)"],
+});
+
+/**
+ * Every `git` spawn in this file, stripped of the `GIT_*` redirects git exports into a hook environment.
+ * `git-env.mjs`'s header records the incident: fifteen commits landed in the wrong checkout because an
+ * inherited `GIT_DIR` beat `cwd`. This tick runs under systemd, where the environment is not one a
+ * person typed and is therefore not one anybody has looked at.
+ * @param {string} cmd @param {string[]} args
+ */
+const defaultSpawn = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", env: sandboxGitEnv() });
+
+/**
+ * WHAT ORIGIN ACTUALLY HOLDS -- every branch whose name ends `-<digits>`, with that row number.
+ *
+ * #2031: THE GATE HAD NO WAY TO SEE PUSHED WORK, and `ready` with no `session:` label was the entire
+ * question it asked before offering a row as a fresh start. Measured 2026-09-22 on #2000: the branch
+ * `agent/worktree-prune-unit-2000` was pushed at 21:02:36Z and the row read `ready` and unclaimed until
+ * 21:22Z, with `gh pr list --head <branch> --state all` returning `[]` for that whole window. The gate
+ * offered it throughout and routed a second session into the same three Region paths at 21:06Z; what
+ * stopped that session was a worktree-PATH collision, which is not a guard aimed at this.
+ *
+ * `ls-remote` RATHER THAN A `gh` CALL, AND THAT IS THE DESIGN RATHER THAN A SAVING. Opening the pull
+ * request is the act that makes a row look claimed, and that act spends GraphQL -- #1996's PR was never
+ * opened because the shared 5,000-point pool was exhausted until 21:20:11Z. So the board goes stale
+ * exactly when the pool is gone, and a detector that spent the pool would be blind in the one outage it
+ * exists for. This is a LOCAL git call: it fits inside the tick's budget without widening `GH_READS`.
+ *
+ * `null` FOR A REFUSAL, NEVER `[]` -- #1286's rule, and here it means the cause is not evaluated this
+ * tick and NOTHING is shelved. "Could not ask origin" is not "no row has a branch", and it is not
+ * "every row has one" either: a tick that cannot reach the remote must go on offering rows exactly as it
+ * did before this existed. `row-claim.mjs` THROWS on the same failure and that difference is deliberate
+ * -- a claim is about to write and must refuse on a guess; a tick is about to say nothing new.
+ *
+ * @param {(cmd: string, args: string[]) => string} [run]
+ * @returns {{ branch: string, head: string, row: number }[] | null} `null` when refused, never `[]`
+ */
+export function readRowBranches(run = defaultSpawn) {
+  try {
+    return rowBranchesInListing(run("git", [...LS_REMOTE_ARGS]));
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Labels that already mean NOT PICKABLE, so a row carrying one is not promotable however it is counted.
@@ -544,6 +619,43 @@ export function blockedOnOpenPr(row, prFiles, options) {
 }
 
 /**
+ * PURE. `readRowBranches`'s flat listing, indexed by row number.
+ *
+ * An ABSENT or `null` listing yields an EMPTY index, and every caller then behaves exactly as it did
+ * before #2031 -- that is the degradation `readRowBranches`'s `null` is for, expressed once here rather
+ * than as a branch at each of the two call sites.
+ * @param {{ branch: string, head: string, row: number }[] | null | undefined} rowBranches
+ * @returns {Map<number, { branch: string, head: string }[]>}
+ */
+function branchIndex(rowBranches) {
+  /** @type {Map<number, { branch: string, head: string }[]>} */
+  const byRow = new Map();
+  for (const found of rowBranches ?? []) {
+    const list = byRow.get(found.row) ?? [];
+    list.push({ branch: found.branch, head: found.head });
+    byRow.set(found.row, list);
+  }
+  return byRow;
+}
+
+/**
+ * PURE. What the tick log says about a row whose branches `origin` already holds.
+ *
+ * IT STATES THE BRANCH AND ITS SHA AND CONCLUDES NOTHING, which is #2031's own "what this will NOT fix":
+ * a branch on `origin` for a `ready` row means only that a branch exists. Whether it is finished work
+ * awaiting a pull request, or abandoned work, is a reading of the branch -- so this must not assert the
+ * row is done, and the wording is the guard against a reader inferring it from a cause that fired.
+ * @param {{ branch: string, head: string }[] } pushed
+ * @returns {string}
+ */
+function branchesText(pushed) {
+  const named = pushed.map(({ branch, head }) => `\`${branch}\` at ${head.slice(0, 12)}`).join("; ");
+  return `origin already holds ${pushed.length === 1 ? "a branch" : `${pushed.length} branches`} carrying `
+    + `this row's number: ${named}. That is NOT a claim that the work is finished -- only that it EXISTS `
+    + "and nothing on the board says so";
+}
+
+/**
  * The unclaimed Ready rows, split into what a session could actually claim right now and what B4 would
  * refuse, with the reason and the row's lane owner.
  *
@@ -565,13 +677,18 @@ export function blockedOnOpenPr(row, prFiles, options) {
  * row that vanishes silently is the exact shape of the empty-shelf defect these orders exist to catch.
  *
  * @param {any[]} readyRows @param {{ number: number, files: string[], changedFiles: number }[]} prFiles
- * @param {{ rootFiles?: Set<string> }} [options]
+ * @param {{ rootFiles?: Set<string>,
+ *           rowBranches?: { branch: string, head: string, row: number }[] | null }} [options]
+ *        `rowBranches` is `readRowBranches()`. It DEFAULTS TO ABSENT, which is "not asked or refused":
+ *        nothing is shelved for it and every row is offered exactly as it was before #2031, so a tick
+ *        that cannot reach `origin` is never worse off than one from before this existed.
  * @returns {{ offerable: any[], blocked: { number: number, owner: string | null, reason: string }[] }}
  */
 export function partitionUnclaimed(readyRows, prFiles, options) {
   const offerable = [];
   const blocked = [];
   const today = todayIso();
+  const onOrigin = branchIndex(options?.rowBranches);
   for (const row of readyRows) {
     // #2005's OPEN-CHECK, ANSWERED BY THIS LINE AND NOT BY A NEW RULE. The filer asked whether
     // `answer:<session>` should hold a row against its OWN HOLDER -- #1948 was `in-progress` +
@@ -581,6 +698,18 @@ export function partitionUnclaimed(readyRows, prFiles, options) {
     // to a session other than the one already holding it" needed no expression -- a held row is not
     // offered to anybody, which is strictly stronger and was already true.
     if (labelsOf(row).includes(CLAIM_LABEL)) continue;
+    // #2031, AND AHEAD OF EVERY OTHER SHELVING REASON. The others say this row cannot be STARTED yet;
+    // this one says it may already be FINISHED, and offering it as a fresh start is the one outcome
+    // measured to cost a whole session's turn -- #2000 was offered throughout the 20 minutes its branch
+    // sat unshipped on `origin`, and a second session was routed into its three Region paths.
+    // SHELVED RATHER THAN DROPPED, like every other reason here: the `SHELVED row #N:` line names the
+    // branch and its sha, and `rowBranchOrders` sends somebody to read it. A row that vanishes silently
+    // is the failure `blocked` already is.
+    const pushed = onOrigin.get(Number(row.number)) ?? [];
+    if (pushed.length > 0) {
+      blocked.push({ number: Number(row.number), owner: laneOwnerOf(row), reason: branchesText(pushed) });
+      continue;
+    }
     // A DECLARED WAIT SHELVES THE ROW RATHER THAN HIDING IT. It goes to `blocked` with its reason, so
     // the tick log says why -- a row that vanishes silently is the failure `blocked` already is.
     //
@@ -2155,6 +2284,96 @@ function rowOrders(unclaimed) {
 }
 
 /**
+ * A READY ROW WHOSE WORK IS ALREADY ON `origin`, SAID OUT LOUD -- #2031.
+ *
+ * #2014 bought the interception at CLAIM time: a session that tries to claim such a row is refused and
+ * told where the work is. IT SAYS NOTHING TO ANYONE WHO NEVER ATTEMPTS A CLAIM, and this gate -- which is
+ * what actually offers rows to the org -- was one of those readers. Measured 2026-09-22 on #2000: the
+ * branch was pushed at 21:02:36Z, the row read `ready` with no `session:` label until 21:22Z, and
+ * `gh pr list --head <branch> --state all` returned `[]` throughout. The gate offered it as
+ * `ready-row-unclaimed` every two minutes, because `ready` with no `session:` label was the entire
+ * question it asked.
+ *
+ * IT NAMES THE BRANCH AND ITS SHA AND CONCLUDES NOTHING ELSE. A branch on `origin` whose name ends in
+ * this row's number means the work EXISTS; it cannot tell finished work from abandoned work, and #2031's
+ * own "what this will NOT fix" says so rather than leaving it implied. So the prompt sends the reader to
+ * the branch with two commands that spend no pool, and names the three exits rather than asserting one.
+ *
+ * ROUTED TO THE LANE OWNER, ELSE `product-manager`. This is a QUEUE-STATE fact -- a row the board
+ * advertises as startable that is not -- and `product-manager` is this org's first reader for rows, the
+ * queue and holds (the chairman's 2026-09-14 routing direction). It is deliberately NOT routed to
+ * `engineers`: the pool's answer to a row is to CLAIM it, which is the one action #2014 already refuses.
+ *
+ * A JUDGMENT CAUSE (`JUDGMENT_CAUSES`), because its answer is durable. "This branch is abandoned, leave
+ * it" does not change the row, the branch or the sha, so an ACTION cause's twenty-minute expiry would
+ * re-offer the identical question until the STUCK cap stopped it -- the cost `lane-backlog-unpromoted`
+ * paid on #1564. The key carries the sha, so a PUSH to that branch is a new question and reaches the
+ * owner immediately.
+ *
+ * @param {any[]} readyRows the `ready` rows (`readReadyRows`)
+ * @param {{ branch: string, head: string, row: number }[] | null} [rowBranches]
+ *        `readRowBranches`'s answer. `null` (the default) is "not asked or refused" and emits NOTHING:
+ *        a tick that could not reach `origin` must not invent this condition, and must not report a
+ *        false all-clear either -- it simply says nothing new, which is what it did before #2031.
+ * @returns {{session: string, cause: string, subject: string, discriminator: string,
+ *            prompt: string, causeKey: string}[]}
+ */
+export function rowBranchOrders(readyRows, rowBranches = null) {
+  if (!Array.isArray(rowBranches)) return [];
+  const byRow = branchIndex(rowBranches);
+  const orders = [];
+  // OLDEST FIRST AND CAPPED, `rowOrders`'s shape: a queue that hands out its newest rows first starves
+  // its oldest, and the number is a row number, so ascending IS oldest.
+  const oldestFirst = [...readyRows].sort((a, b) => Number(a.number) - Number(b.number));
+  for (const row of oldestFirst) {
+    // UNCLAIMED IS THE POPULATION, and `session:` is the label the done-when names. A claimed row
+    // already has a session that knows about its own branch, and `claimed-row-amended` is the cause
+    // that speaks to a holder. `CLAIM_LABEL` goes with it because the two are written together by
+    // `row-claim.mjs` and a row carrying either is not a fresh start.
+    if (sessionOf(row) || labelsOf(row).includes(CLAIM_LABEL)) continue;
+    const pushed = byRow.get(Number(row.number)) ?? [];
+    if (pushed.length === 0) continue;
+    orders.push(unshippedOrder({ row, pushed }));
+    if (orders.length >= MAX_ROW_ORDERS_PER_TICK) break;
+  }
+  return orders;
+}
+
+/**
+ * The order itself, split out so `rowBranchOrders` stays a walk over rows (the Stepdown Rule, and the
+ * same seam `claimedRowAmendedOrders`/`amendedOrder` already use).
+ * @param {{ row: any, pushed: { branch: string, head: string }[] }} found
+ */
+function unshippedOrder({ row, pushed }) {
+  const owner = laneOwnerOf(row) ?? "product-manager";
+  const key = pushed.map(({ branch, head }) => `${branch}@${head}`).sort().join("+");
+  const first = pushed[0].branch;
+  return {
+    session: owner,
+    cause: "row-branch-unshipped",
+    subject: `row-${row.number}`,
+    discriminator: key,
+    prompt: `Row #${row.number} reads \`ready\` and unclaimed, but ${branchesText(pushed)}.\n`
+      + "THE BOARD IS SAYING SOMETHING THAT IS NOT TRUE, and until this is settled the gate has STOPPED "
+      + `offering #${row.number} as a fresh start -- so nobody will be routed into work that may already `
+      + "exist. Measured 2026-09-22 on #2000: its branch sat pushed for 20 minutes while the row read "
+      + "`ready`, and a second session was routed into the same three Region paths.\n"
+      + "READ THE BRANCH FIRST. Both of these spend NO API pool: "
+      + `\`git fetch origin && git log --oneline origin/main..origin/${first}\` and `
+      + `\`git diff origin/main...origin/${first}\`.\n`
+      + "THEN ONE OF THREE, and this gate deliberately does not guess which: if the work is FINISHED, "
+      + "open its pull request (that is the act that makes the row look claimed, and it is what was "
+      + "missing); if it is ABANDONED, delete the branch on `origin` and the row goes back on offer "
+      + "unchanged; if the trailing number is a COINCIDENCE rather than this row's work, rename or "
+      + "delete that branch -- the match is on the name, which is all `ls-remote` can see.\n"
+      + "IF IT NEEDS A WAIT INSTEAD, that goes in a FIELD and not a comment: `Not-before: YYYY-MM-DD` in "
+      + `the body, \`gh issue edit ${row.number} --add-blocked-by <n>\`, or \`${ANSWER_PREFIX}<session>\`. `
+      + "Each clears itself.",
+    causeKey: `${owner}/row-branch-unshipped/row-${row.number}/${key}`,
+  };
+}
+
+/**
  * One order per lane whose owner has backlog and nothing Ready.
  *
  * SPLIT OUT OF `decide` because adding it took that function past
@@ -2699,7 +2918,8 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *           prFiles?: { number: number, files: string[], changedFiles: number }[],
  *           drain?: boolean, required?: string[] | null, epics?: any[], answerOwed?: any[],
  *           openRows?: any[], unarmed?: number[] | null,
- *           claimedComments?: {number?: number, comments?: {body?: string, id?: string}[]}[] }} state
+ *           claimedComments?: {number?: number, comments?: {body?: string, id?: string}[]}[],
+ *           rowBranches?: {branch: string, head: string, row: number}[] | null }} state
  *        `required` is the checks that can block a merge (`requiredCheckNames`), or `null` for
  *        "could not be read", which counts EVERY check as before this existed.
  *        `epics` are the open `epic` rows with their `subIssuesSummary` (`readEpics`); `[]` when
@@ -2713,6 +2933,14 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *        DEFAULTS TO `[]`, which is "not asked or refused": the comment marker is not evaluated and the
  *        body/`blockedBy` markers still are, so a caller that cannot make that read is never worse off
  *        than before this cause existed and never invents a constraint it did not see.
+ *        `rowBranches` is `readRowBranches()` -- every branch on `origin` whose name ends `-<digits>`.
+ *        OMITTED AND `null` MEAN THE SAME THING -- "not asked or refused": no row is shelved for it and
+ *        no order is emitted, so a caller that cannot reach `origin` behaves exactly as it did before
+ *        #2031. It carries no `= null` default deliberately: a default parameter is a branch `complexity`
+ *        counts, and `decide` sits exactly on its limit of 15. Both readers below already treat a missing
+ *        listing and a `null` one identically (`Array.isArray`, `?? []`), so the default would buy
+ *        nothing but the sixteenth branch.
+ *        Spending no API pool is the POINT rather than a saving -- see `readRowBranches`.
  *        `unarmed` is `readUnarmed(shouldBeMerging(prs, required))` -- the green, unheld pull requests
  *        the API says nothing has armed. It DEFAULTS TO `null`, which is "not asked or refused" and
  *        emits no order: a caller that cannot make that read must never produce a false all-clear, and
@@ -2722,7 +2950,7 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
-  claimedComments = [] }) {
+  claimedComments = [], rowBranches }) {
   // FIRST, BEFORE EVERY OTHER CAUSE. Every other order asks a session what should happen next; this one
   // says another session is ALREADY STOPPED waiting on them. That outranks any standing question.
   const orders = [...answerOrders(answerOwed)];
@@ -2743,7 +2971,12 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
     const order = draftOrder(pr, required);
     if (order) orders.push(order);
   }
-  const { offerable, blocked } = partitionUnclaimed(readyRows, prFiles);
+  // #2031: AHEAD OF THE OFFER, AND IT IS THE SAME READING THAT WITHHELD IT. `partitionUnclaimed` shelves
+  // the row on `rowBranches` and this emits the cause that names the branch -- one condition, one read,
+  // said once as a withholding and once as a question. Ahead of `rowOrders` for the ordering reason the
+  // causes above use: work that already EXISTS outranks work nobody has started.
+  const { offerable, blocked } = partitionUnclaimed(readyRows, prFiles, { rowBranches });
+  orders.push(...rowBranchOrders(readyRows, rowBranches));
   orders.push(...rowOrders(offerable));
 
 
@@ -2903,6 +3136,9 @@ function main() {
   // Both names exist so neither reader has to infer which of the two it was given (#1938).
   const openRowsRead = readOpenRows();
   const allOpen = openRowsRead ?? [];
+  // #2031: A LOCAL git CALL, NOT AN API ONE -- it adds nothing to `GH_READS` and cannot be refused by an
+  // exhausted pool, which is the whole reason the detection can exist. `GIT_READS` counts it.
+  const rowBranches = readRowBranches();
   // #1969: NAMED RATHER THAN CALLED TWICE. `shouldBeMerging` needs the same answer `decide` does, and
   // `requiredWhenRed` makes a `gh` call when anything is red -- calling it inline in both places would
   // pay for it twice on exactly the red tick this row is about.
@@ -2918,7 +3154,7 @@ function main() {
     // #1969: CONDITIONAL, and the condition is answered for free from the list already in hand.
     // `shouldBeMerging` reads `openPrs`; only if it finds a green, unheld, non-draft PR is the
     // merge-queue call made at all.
-    unarmed: readUnarmed(shouldBeMerging(openPrs, required)) });
+    unarmed: readUnarmed(shouldBeMerging(openPrs, required)), rowBranches });
   const { delivered: orders, performed } = performActions(decided);
   orders.push(...deadMansSwitch({ orders, drain, performed, openRows: openRowsRead }));
   for (const order of orders) process.stdout.write(`${JSON.stringify(order)}\n`);
@@ -2926,7 +3162,7 @@ function main() {
   // BOTH SHELVES ON ONE LINE-SHAPE. The engineer pool's B4/declared-wait shelvings and the fleet batch's
   // (#2027) are the same fact -- work the gate can see and is deliberately not offering -- and a row that
   // leaves a set silently is the defect both filters exist to fix.
-  reportWithheld({ drain, blocked: [...partitionUnclaimed(rows, prFiles).blocked,
+  reportWithheld({ drain, blocked: [...partitionUnclaimed(rows, prFiles, { rowBranches }).blocked,
     ...partitionFleetBatch(allOpen).waiting] });
 
   if (prs === null || readyRows === null) {
