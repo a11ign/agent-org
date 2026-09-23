@@ -1149,8 +1149,11 @@ test("MANY TINY ORDERS OVERFLOW TOO, AND THE AUTHORED TEXT IS NOT WHAT THE KERNE
   const tiny = backlogOf("product-manager", 3_000, now, 1).map((h) => ({ ...h, prompt: "x" }));
   const [batch] = handoffBatches(tiny, { now, budget: HANDOFF_BATCH_BYTES });
 
-  assert.ok(batch.ids.length < 3_000,
-    "the batch is bounded by what it RENDERS, not by the 3,000 bytes its senders typed");
+  assert.equal(batch.ids.length, 1_280,
+    "the batch is bounded by what it RENDERS, not by the 3,000 bytes its senders typed -- and the "
+    + "EXACT count is pinned because the reserve is deliberately generous: an uncharged TERM (the "
+    + "blank line between orders, the widest `of N` the batch can print) is absorbed by that slack "
+    + "and hides, until the day somebody spends the slack on a longer header");
   const argv = Buffer.byteLength(addressed(batch, "product-manager"), "utf8");
   assert.ok(argv < PROMPT_ARG_MAX,
     `THE ASSERTION: ${argv} bytes reach execFileSync, under the kernel's ${PROMPT_ARG_MAX}`);
