@@ -73,9 +73,13 @@
 // FOUND VIA GITHUB'S OWN CROSS-REFERENCE EVENTS, not a search over PR bodies: writing `#2000` anywhere in
 // a PR body makes GitHub record a `CROSS_REFERENCED_EVENT` on that issue, server-side, with no search
 // index to lag behind a body edit. **A cross-reference alone is far too loose** and the live data says so:
-// probed 2026-09-23 on #2000, its last 20 cross-references were 13 issues and FOUR pull requests --
+// probed 2026-09-23 on #2000, twenty of its cross-references were 13 issues and FOUR pull requests --
 // #2011, which delivered it, and #2030, #2038 and #2044, which merely mention it. The `Delivers:`
 // declaration is what separates the one from the three.
+//
+// BOTH READS GO TO THE END OF THEIR CONNECTION, and neither takes a window. `PAGE_SIZE` carries the
+// window this replaced and why it was a silent wrong answer; `MAX_PAGES`, the one bound that remains and
+// why exceeding it is a FAILED lookup rather than a short one. Said once, there, rather than twice.
 //
 // WHAT THIS READING CAN AND CANNOT SEE, stated the way `owed` above states its own gap, because #2026
 // asked for exactly that:
@@ -272,13 +276,29 @@ export function lookupClosingPrHealth(issueNumber, { run = gh } = {}) {
 }
 
 /**
- * #2026: HOW MANY CROSS-REFERENCES BACK TO READ, and how many files to read off a pull request that
- * declares one. A row accumulates cross-references from every sibling row that cites it -- #2000 had 13
- * issues among its last 20 on 2026-09-23 -- so the window is the recent history rather than all of it,
- * and a delivery declared long enough ago to fall out of it is a row nobody is still blocked behind.
+ * #2026: HOW MUCH OF EACH CONNECTION ONE REQUEST CARRIES -- a PAGE SIZE, not a window. GitHub caps a
+ * connection page at 100, and both reads below page to the END rather than stopping at the first page.
+ *
+ * THE WINDOW THIS REPLACED WAS A SILENT WRONG ANSWER IN BOTH DIRECTIONS (reviewer-2 on #2048, and the
+ * verdict is right): `timelineItems(last:20)` drops a real delivery the moment twenty cross-references
+ * accumulate after it -- and a row that is BLOCKING ITS AUTHOR collects them, because every sibling row
+ * and pull request that cites the refusal adds one -- while `files(first:100)` misses a Region path that
+ * falls after the hundredth changed file of a wide rename. Each truncation reads as "nobody declared a
+ * delivery", which leaves the author in build with no way to tell a missing line from an unread one.
+ * A cap NOBODY CAN SEE is the defect; a page size everything pages past is not.
  */
-const CROSS_REFERENCES_READ = 20;
-const FILES_READ = 100;
+const PAGE_SIZE = 100;
+
+/**
+ * #2026: THE MOST PAGES EITHER READ WILL TAKE, and it exists to bound a SERVER that never says it has
+ * finished -- a `hasNextPage` that stays true against a cursor that stops moving would otherwise spin
+ * forever inside a claim. It is not a window: exceeding it THROWS, so `lookup` reads `null` and the row
+ * stays IN BUILD, which is this clause's own safe direction (see `rowFactsFor`). `MAX_PAGES * PAGE_SIZE`
+ * cross-references or changed files is orders past anything this repository has produced -- deliberately
+ * not written out as a number here, which would go stale the first time either constant moved -- so
+ * reaching it means the connection is misbehaving rather than that the row is busy.
+ */
+const MAX_PAGES = 50;
 
 /** A `Delivers:` line of its own, the way `Acceptance:` and `Closes:` are lines of their own. */
 const DELIVERS_LINE = /^[ \t]*(?:\*\*)?Delivers:(?:\*\*)?[ \t]*(.*)$/gim;
@@ -324,28 +344,109 @@ export function deliveredRowsDeclaredBy(body) {
  */
 export function lookupDeliveringPr(issueNumber, { run = gh } = {}) {
   return lookup(() => {
-    const [owner, name] = REPO.split("/");
-    const query = "query($owner:String!,$name:String!,$number:Int!){"
-      + "repository(owner:$owner,name:$name){issue(number:$number){"
-      + `timelineItems(last:${CROSS_REFERENCES_READ},itemTypes:[CROSS_REFERENCED_EVENT]){nodes{`
-      + "... on CrossReferencedEvent{source{... on PullRequest{number state body "
-      + `files(first:${FILES_READ}){nodes{path}}}}}}}}}}`;
-    const data = JSON.parse(run(["api", "graphql", "-f", `query=${query}`,
-      "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `number=${issueNumber}`]));
-    /** @type {{ source?: { number?: number, state?: string, body?: string, files?: { nodes: { path: string }[] } } }[]} */
-    const nodes = data.data.repository.issue.timelineItems.nodes;
     // A cross-reference whose source is an ISSUE matches no inline fragment and arrives as `{}`, so the
     // number is what separates a pull request from one -- not a `__typename` this query need not ask for.
-    const declaring = nodes.map((node) => node.source ?? {})
+    const declaring = crossReferencingPrs(issueNumber, run)
       .filter((source) => source.number !== undefined
         && deliveredRowsDeclaredBy(source.body ?? "").includes(issueNumber));
     if (declaring.length === 0) return undefined;
     // MOST RECENT (last) wins, the same reading `lookupClosingPrHealth` takes: a redone delivery declares
     // itself on a second pull request and the newest is the one that describes the tree now.
     const pr = declaring[declaring.length - 1];
-    return { number: /** @type {number} */ (pr.number), state: /** @type {any} */ (pr.state),
-      changedPaths: (pr.files?.nodes ?? []).map((file) => file.path) };
+    const number = /** @type {number} */ (pr.number);
+    return { number, state: /** @type {any} */ (pr.state), changedPaths: changedPathsOf(number, run) };
   });
+}
+
+/** The cross-reference timeline, to its end. */
+const CROSS_REFERENCE_QUERY = "query($owner:String!,$name:String!,$number:Int!,$after:String){"
+  + "repository(owner:$owner,name:$name){issue(number:$number){"
+  + `timelineItems(first:${PAGE_SIZE},after:$after,itemTypes:[CROSS_REFERENCED_EVENT]){`
+  + "pageInfo{hasNextPage endCursor}nodes{"
+  + "... on CrossReferencedEvent{source{... on PullRequest{number state body}}}}}}}}";
+
+/** ONE pull request's changed paths, to their end. */
+const CHANGED_FILES_QUERY = "query($owner:String!,$name:String!,$number:Int!,$after:String){"
+  + "repository(owner:$owner,name:$name){pullRequest(number:$number){"
+  + `files(first:${PAGE_SIZE},after:$after){pageInfo{hasNextPage endCursor}nodes{path}}}}}`;
+
+/**
+ * #2026: EVERY PULL REQUEST THAT CROSS-REFERENCES THIS ROW, read to the end of the timeline.
+ *
+ * THE TIMELINE ASKS FOR NO FILE LISTS, and that is the change reviewer-2's blocker forced rather than a
+ * tidy-up alongside it: the files are needed for exactly ONE pull request -- the one that declared the
+ * delivery -- so fetching a hundred paths for every unrelated cross-reference both cost more and made the
+ * file list impossible to page (there is no single cursor across a hundred nested connections). Reading
+ * the declaration first and the files second is what makes both reads complete.
+ *
+ * @param {number} issueNumber
+ * @param {(args: string[]) => string} run
+ * @returns {{ number?: number, state?: string, body?: string }[]}
+ */
+function crossReferencingPrs(issueNumber, run) {
+  return everyNodeOf((cursor) => graphqlPage(run, CROSS_REFERENCE_QUERY, issueNumber, cursor)
+    .data.repository.issue.timelineItems)
+    .map((/** @type {{ source?: object }} */ node) => node.source ?? {});
+}
+
+/**
+ * #2026: EVERY PATH ONE PULL REQUEST CHANGES, read to the end of the file list -- never the first page.
+ * A wide rename is exactly the shape that both moves a row's declared paths and runs past a hundred
+ * files, so a truncated list would refuse the delivery that proves the point.
+ *
+ * @param {number} prNumber
+ * @param {(args: string[]) => string} run
+ * @returns {string[]}
+ */
+function changedPathsOf(prNumber, run) {
+  return everyNodeOf((cursor) => graphqlPage(run, CHANGED_FILES_QUERY, prNumber, cursor)
+    .data.repository.pullRequest.files)
+    .map((/** @type {{ path: string }} */ file) => file.path);
+}
+
+/**
+ * ONE PAGE of a GraphQL connection. `$after` is DECLARED by both queries but only SENT once there is a
+ * cursor: an unsupplied nullable variable is `null`, which is where a connection starts -- and `-f after=`
+ * would send the empty STRING instead, which is a cursor GitHub rejects.
+ *
+ * @param {(args: string[]) => string} run
+ * @param {string} query
+ * @param {number} number the issue or pull request the query is about
+ * @param {string | null} cursor
+ * @returns {any}
+ */
+function graphqlPage(run, query, number, cursor) {
+  const [owner, name] = REPO.split("/");
+  const args = ["api", "graphql", "-f", `query=${query}`,
+    "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `number=${number}`];
+  if (cursor) args.push("-f", `after=${cursor}`);
+  return JSON.parse(run(args));
+}
+
+/**
+ * EVERY node of a paged connection, in page order -- so the LAST node is still the most recent one, the
+ * reading both callers above take.
+ *
+ * A PAGE WITHOUT `pageInfo` THROWS rather than reading as the last one. Both queries ask for it, so its
+ * absence means the response is not the shape this code believes it is -- and the one thing this read
+ * must never do quietly is stop early, which is the defect it was written to fix.
+ *
+ * @param {(cursor: string | null) => { nodes?: any[], pageInfo?: { hasNextPage?: boolean, endCursor?: string | null } }} page
+ * @returns {any[]}
+ */
+function everyNodeOf(page) {
+  /** @type {any[]} */
+  const all = [];
+  /** @type {string | null} */
+  let cursor = null;
+  for (let read = 0; read < MAX_PAGES; read += 1) {
+    const { nodes, pageInfo } = page(cursor);
+    all.push(...(nodes ?? []));
+    if (!pageInfo) throw new Error("a connection page carried no `pageInfo`, so its end cannot be read");
+    if (!pageInfo.hasNextPage) return all;
+    cursor = pageInfo.endCursor ?? null;
+  }
+  throw new Error(`a connection did not end within ${MAX_PAGES} pages`);
 }
 
 /**

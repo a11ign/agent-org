@@ -337,33 +337,74 @@ test("#2026: one pull request may declare more than one row, and `none` declares
 
 // --- #2026: what the declaration is READ from ----------------------------------------------------------
 
+/**
+ * A FULL PAGE, the size the rule asks GitHub for — 100, the largest a connection page can be. The
+ * fixtures below decide their own page boundaries, so the paging TESTS would pass against any value;
+ * the test directly below is what makes this number a pin rather than a description.
+ */
+const PAGE = 100;
+
+/**
+ * ONE PAGE of a GraphQL connection, `pageInfo` and all, as GitHub sends it — the cursor is the index of
+ * the page that follows, so a fixture says where a page boundary falls by where it splits its array.
+ */
+const connectionPage = (pages: unknown[][], index: number) => ({
+  nodes: pages[index] ?? [],
+  pageInfo: { hasNextPage: index + 1 < pages.length, endCursor: String(index + 1) },
+});
+
 /** The live shape of #2000's timeline on 2026-09-23, with #2011's body carrying the line it would need. */
-const timeline = (nodes: unknown[]) => JSON.stringify(
-  { data: { repository: { issue: { timelineItems: { nodes } } } } });
-const crossRef = (pr: { number: number; state: string; body: string; paths: string[] }) => (
-  { source: { number: pr.number, state: pr.state, body: pr.body,
-    files: { nodes: pr.paths.map((path) => ({ path })) } } });
+const crossRef = (pr: { number: number; state: string; body: string }) => (
+  { source: { number: pr.number, state: pr.state, body: pr.body } });
+
+/**
+ * BOTH READS THE DELIVERY LOOKUP MAKES, each served as PAGES: the cross-reference timeline, which carries
+ * no file lists at all, and then the changed files of whichever pull request declared. A fixture that
+ * could only ever answer one page is a fixture that cannot tell paging from truncation, which is the
+ * defect reviewer-2 found in the first cut of this Region.
+ */
+const deliveryApi = (timelinePages: unknown[][], filePages: Record<number, string[][]> = {}) => {
+  const calls: string[][] = [];
+  const cursor = (args: string[]) => Number(args.find((a) => a.startsWith("after="))?.slice("after=".length) ?? 0);
+  const run = (args: string[]) => {
+    calls.push(args);
+    if (args.join(" ").includes("timelineItems")) {
+      return JSON.stringify({ data: { repository: { issue: {
+        timelineItems: connectionPage(timelinePages, cursor(args)) } } } });
+    }
+    const pr = Number(args.find((a) => a.startsWith("number="))?.slice("number=".length));
+    const pages = (filePages[pr] ?? [[]]).map((paths) => paths.map((path) => ({ path })));
+    return JSON.stringify({ data: { repository: { pullRequest: {
+      files: connectionPage(pages, cursor(args)) } } } });
+  };
+  return { run, calls };
+};
+
+/** One timeline page and one file page — the shape of almost every row, and the default to read against. */
+const oneDelivery = (nodes: unknown[], paths: Record<number, string[]> = {}) => deliveryApi([nodes],
+  Object.fromEntries(Object.entries(paths).map(([pr, list]) => [pr, [list]])));
 
 test("#2026: the timeline is the CANDIDATE set and the declaration is the filter", () => {
   const nodes = [
     {}, {}, // an ISSUE cross-reference matches no inline fragment and arrives as `{}` — measured, not assumed
-    crossRef({ number: 2011, state: "MERGED", body: "Delivers: #2000\n", paths: ["packages/agent-org/host/x"] }),
-    crossRef({ number: 2030, state: "MERGED", body: "mentions #2000 in prose", paths: ["docs/a.md"] }),
-    crossRef({ number: 2044, state: "MERGED", body: "also mentions #2000", paths: ["docs/b.md"] }),
+    crossRef({ number: 2011, state: "MERGED", body: "Delivers: #2000\n" }),
+    crossRef({ number: 2030, state: "MERGED", body: "mentions #2000 in prose" }),
+    crossRef({ number: 2044, state: "MERGED", body: "also mentions #2000" }),
   ];
-  assert.deepEqual(lookupDeliveringPr(2000, { run: () => timeline(nodes) }),
+  const { run } = oneDelivery(nodes, { 2011: ["packages/agent-org/host/x"], 2044: ["docs/b.md"] });
+  assert.deepEqual(lookupDeliveringPr(2000, { run }),
     { number: 2011, state: "MERGED", changedPaths: ["packages/agent-org/host/x"] },
     "#2030 and #2044 are real cross-references of #2000 that delivered nothing — reading the timeline "
     + "alone would have picked the last of the three");
 });
 
 test("#2026: a declaration naming ANOTHER row is not a declaration of this one", () => {
-  const nodes = [crossRef({ number: 9, state: "OPEN", body: "Delivers: #2002", paths: ["a.ts"] })];
-  assert.equal(lookupDeliveringPr(2000, { run: () => timeline(nodes) }), undefined);
+  const { run } = oneDelivery([crossRef({ number: 9, state: "OPEN", body: "Delivers: #2002" })], { 9: ["a.ts"] });
+  assert.equal(lookupDeliveringPr(2000, { run }), undefined);
 });
 
 test("#2026: nothing declaring is `undefined` and a failed lookup is `null` — different states", () => {
-  assert.equal(lookupDeliveringPr(2000, { run: () => timeline([]) }), undefined);
+  assert.equal(lookupDeliveringPr(2000, { run: oneDelivery([]).run }), undefined);
   assert.equal(lookupDeliveringPr(2000, { run: () => { throw new Error("gh: network"); } }), null,
     "an inconclusive answer must never read as 'nothing in build', which would defeat the rule");
 });
@@ -371,18 +412,112 @@ test("#2026: nothing declaring is `undefined` and a failed lookup is `null` — 
 test("#2026: the lookup asks GitHub's own cross-reference events, not a search over bodies", () => {
   // A search index lags the body edit the refusal has just told somebody to make; the timeline is computed
   // server-side the moment the body is written. This pins the mechanism, which is the finding.
-  const calls: string[][] = [];
-  lookupDeliveringPr(2000, { run: (args) => { calls.push(args); return timeline([]); } });
+  const { run, calls } = oneDelivery([]);
+  lookupDeliveringPr(2000, { run });
   const query = calls[0].join(" ");
   assert.match(query, /CROSS_REFERENCED_EVENT/);
   assert.doesNotMatch(query, /\bsearch\(/, "a search query would be indexed minutes after the edit");
 });
 
+// --- #2026: BOTH CONNECTIONS ARE READ TO THEIR END — reviewer-2's blocker on #2048 ----------------------
+
+/**
+ * THE ROW THAT IS BLOCKING ITS AUTHOR IS THE ROW THAT COLLECTS CROSS-REFERENCES — every sibling row and
+ * pull request that cites the refusal adds one — so the delivery is the OLDEST interesting event on the
+ * timeline and a window reads past it. The first cut of this Region took `timelineItems(last:20)`, which
+ * answered "nobody declared a delivery" the moment twenty events piled up after the one that mattered,
+ * and left the author in build with nothing to distinguish a missing line from an unread one.
+ */
+/**
+ * THE PAGING TESTS BELOW CANNOT SEE THE PAGE SIZE — every fixture decides its own boundaries, so a
+ * `PAGE_SIZE` of 1 would page correctly and survive all of them while making a claim cost fifty requests.
+ * Both queries ask for the largest page GitHub will give, and this is the assertion that notices.
+ */
+test("#2026: both queries ask for a FULL page, so paging is not paid for one node at a time", () => {
+  const { run, calls } = oneDelivery([crossRef({ number: 2011, state: "OPEN", body: "Delivers: #2000" })],
+    { 2011: ["a.ts"] });
+  lookupDeliveringPr(2000, { run });
+  assert.match(calls[0].join(" "), new RegExp(`timelineItems\\(first:${PAGE},`));
+  assert.match(calls[1].join(" "), new RegExp(`files\\(first:${PAGE},`));
+});
+
+test("#2026: a delivery declared before a hundred more cross-references is still found", () => {
+  const noise = (from: number) => Array.from({ length: PAGE }, (_, i) => crossRef(
+    { number: from + i, state: "MERGED", body: `mentions #2000 in passing (${from + i})` }));
+  const { run, calls } = deliveryApi(
+    [[crossRef({ number: 2011, state: "OPEN", body: "Delivers: #2000" }), ...noise(3000).slice(1)],
+      noise(4000), noise(5000)],
+    { 2011: [["packages/agent-org/host/units.mjs"]] });
+  assert.deepEqual(lookupDeliveringPr(2000, { run }),
+    { number: 2011, state: "OPEN", changedPaths: ["packages/agent-org/host/units.mjs"] },
+    "the declaration is 200 cross-references back; a single page of the timeline cannot see it");
+  assert.equal(calls.filter((args) => args.join(" ").includes("timelineItems")).length, 3,
+    "three pages, so the read genuinely continued rather than the fixture flattening them");
+});
+
+/**
+ * AND THE SAME TRUNCATION ON THE OTHER CONNECTION. `files(first:100)` misses a Region path that falls
+ * after the hundredth changed file — and a wide rename is exactly the shape that both moves a row's
+ * declared paths and runs past a hundred files, so the truncated read would refuse the delivery that
+ * proves the point.
+ */
+test("#2026: a Region path after the hundredth changed file is still read", () => {
+  const filler = (from: number) => Array.from({ length: PAGE }, (_, i) => `docs/note-${from + i}.md`);
+  const { run, calls } = deliveryApi([[crossRef({ number: 2011, state: "OPEN", body: "Delivers: #2000" })]],
+    { 2011: [filler(0), [...filler(100).slice(1), "packages/agent-org/host/units.mjs"]] });
+  const delivery = lookupDeliveringPr(2000, { run });
+  assert.ok(delivery?.changedPaths.includes("packages/agent-org/host/units.mjs"),
+    "the only path the Region covers is on the second page of the file list");
+  assert.equal(delivery?.changedPaths.length, PAGE * 2, "both pages, whole");
+  assert.equal(calls.filter((args) => args.join(" ").includes("pullRequest")).length, 2);
+});
+
+test("#2026: each page is asked with the cursor the one before it gave", () => {
+  // Without this the loop re-reads page one until the bound trips: `hasNextPage` alone is not paging.
+  const { run, calls } = deliveryApi([[], [], []]);
+  lookupDeliveringPr(2000, { run });
+  assert.deepEqual(calls.map((args) => args.find((a) => a.startsWith("after=")) ?? "after=<unsent>"),
+    ["after=<unsent>", "after=1", "after=2"],
+    "the first page sends no cursor at all — `-f after=` would send the empty STRING, which GitHub rejects");
+});
+
+test("#2026: the timeline asks for no file lists; the files are read off the ONE pull request that declared", () => {
+  // Not a tidy-up: a hundred nested file connections have no single cursor between them, so asking for
+  // the files inline is what made the file list impossible to page in the first place.
+  const { run, calls } = oneDelivery([crossRef({ number: 2011, state: "OPEN", body: "Delivers: #2000" })],
+    { 2011: ["a.ts"] });
+  lookupDeliveringPr(2000, { run });
+  assert.doesNotMatch(calls[0].join(" "), /files\(/, "the candidate set costs one page of numbers and bodies");
+  assert.match(calls[1].join(" "), /pullRequest\(number:\$number\)\{files\(/);
+  assert.ok(calls[1].includes("number=2011"),
+    `the SECOND read is about the declaring PR, not the row — ${calls[1].join(" ")}`);
+});
+
+/**
+ * THE ONE BOUND THAT REMAINS, AND IT IS A FAILED LOOKUP RATHER THAN A SHORT ANSWER. A `hasNextPage` that
+ * stays true against a cursor that stops moving would spin forever inside a claim, so the read gives up —
+ * and gives up by THROWING, which `lookup` reads as `null` and `rowFactsFor` leaves IN BUILD. A bound that
+ * returned what it had would be the truncation this test exists to forbid, wearing a larger number.
+ */
+test("#2026: a connection that never ends is a FAILED lookup, not a short answer", () => {
+  const endless = () => JSON.stringify({ data: { repository: { issue: { timelineItems: {
+    nodes: [], pageInfo: { hasNextPage: true, endCursor: "always-more" } } } } } });
+  assert.equal(lookupDeliveringPr(2000, { run: endless }), null);
+});
+
+test("#2026: a page carrying no `pageInfo` is a failed lookup, not the last page", () => {
+  const shapeless = () => JSON.stringify({ data: { repository: { issue: { timelineItems: { nodes: [] } } } } });
+  assert.equal(lookupDeliveringPr(2000, { run: shapeless }), null,
+    "both queries ask for `pageInfo`, so its absence means the response is not the shape this code reads");
+});
+
 // --- #2026: the composition, and the call it does NOT make ---------------------------------------------
 
 /** Answers each `gh` shape `lookupHeldRows` drives, so one test can pin which calls are made at all. */
-const fleet = (opts: { closingPr?: string; region: string; timelineNodes?: unknown[] }) => {
+const fleet = (opts: { closingPr?: string; region: string;
+  timelineNodes?: unknown[]; filePaths?: Record<number, string[]> }) => {
   const seen: string[] = [];
+  const delivery = oneDelivery(opts.timelineNodes ?? [], opts.filePaths ?? {});
   const run = (args: string[]) => {
     const joined = args.join(" ");
     if (args[0] === "issue" && args[1] === "list") { seen.push("held"); return JSON.stringify([{ number: 2000 }]); }
@@ -391,7 +526,8 @@ const fleet = (opts: { closingPr?: string; region: string; timelineNodes?: unkno
       const nodes = opts.closingPr ? [{ number: 2011, state: opts.closingPr, headRefOid: "abc" }] : [];
       return JSON.stringify({ data: { repository: { issue: { closedByPullRequestsReferences: { nodes } } } } });
     }
-    if (joined.includes("timelineItems")) { seen.push("delivery"); return timeline(opts.timelineNodes ?? []); }
+    if (joined.includes("timelineItems")) { seen.push("delivery"); return delivery.run(args); }
+    if (joined.includes("pullRequest(")) { seen.push("files"); return delivery.run(args); }
     if (args[0] === "issue") { seen.push("shape"); return JSON.stringify({ body: `## Region\n\n${opts.region}\n` }); }
     seen.push("subs"); return "[]";
   };
@@ -412,7 +548,7 @@ test("#2026: a row already cleared by `Closes:` costs NO delivery lookup", () =>
 test("#2026: a row in build IS asked, and the Region overlap is the tree's own `regionCovers`", () => {
   const { seen, rows } = fleet({ region: REGION, timelineNodes: [
     crossRef({ number: 2011, state: "OPEN", body: "Closes: none -- the host install finishes it\n"
-      + "Delivers: #2000\n", paths: ["packages/agent-org/host/units.mjs"] })] });
+      + "Delivers: #2000\n" })], filePaths: { 2011: ["packages/agent-org/host/units.mjs"] } });
   assert.ok(seen.includes("delivery"));
   assert.deepEqual(rows?.[0].deliveringPr, { state: "OPEN", proposesRegionPath: true });
   assert.equal(inBuildReason(rows ?? []), null, "#2026's own open-check, end to end");
@@ -420,7 +556,8 @@ test("#2026: a row in build IS asked, and the Region overlap is the tree's own `
 
 test("#2026: a declaring PR that touches none of the Region's files still leaves the row in build", () => {
   const { rows } = fleet({ region: REGION, timelineNodes: [
-    crossRef({ number: 2011, state: "OPEN", body: "Delivers: #2000", paths: ["docs/unrelated.md"] })] });
+    crossRef({ number: 2011, state: "OPEN", body: "Delivers: #2000" })],
+  filePaths: { 2011: ["docs/unrelated.md"] } });
   assert.deepEqual(rows?.[0].deliveringPr, { state: "OPEN", proposesRegionPath: false });
   assert.ok(inBuildReason(rows ?? []), "the row's own bar: a PR that never proposed its commits clears nothing");
 });
@@ -429,7 +566,8 @@ test("#2026: a DIRECTORY Region entry covers the file beneath it, because `regio
   // Delegated, not re-implemented: #941 taught the tree one answer for directory prefixes and this rule
   // asks it. Re-parsing the Region a second way is how two readings of one section drift apart.
   const { rows } = fleet({ region: "packages/agent-org/host/", timelineNodes: [
-    crossRef({ number: 2011, state: "OPEN", body: "Delivers: #2000", paths: ["packages/agent-org/host/x.mjs"] })] });
+    crossRef({ number: 2011, state: "OPEN", body: "Delivers: #2000" })],
+  filePaths: { 2011: ["packages/agent-org/host/x.mjs"] } });
   assert.equal(rows?.[0].deliveringPr?.proposesRegionPath, true);
 });
 
