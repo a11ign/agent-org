@@ -1291,14 +1291,14 @@ export function unmetRequirements(requirements, capabilities) {
  * ones, `test:all` every package. Reading the wide glob for the narrow command charged `npm test` 419
  * files it cannot load and refused it for one of them; not knowing `test:org`/`test:all` by name let the
  * command that DOES run all of them through the gate having been charged nothing, which is the
- * 2026-09-09 failure above in the other direction. So this is no longer a bare yes/no: `suiteScriptFor`
- * names the script, and `testFilesRunBy` charges that script's own glob.
+ * 2026-09-09 failure above in the other direction. So this is no longer a bare yes/no: `suiteScriptsFor`
+ * names the scripts, and `testFilesRunBy` charges the union of their own globs.
  *
  * @param {string} command
  * @returns {boolean}
  */
 export function runsTheWholeSuite(command) {
-  return suiteScriptFor(command) !== null;
+  return suiteScriptsFor(command).length > 0;
 }
 
 /**
@@ -1316,11 +1316,15 @@ export const SUITE_SCRIPTS = ["test:ts", "test:org", "test:all", "test"];
 // `(?![:\w-])` AND NOT `\b`: `\b` after `test` matches `npm run test:python`, whose population is the
 // pytest tree rather than the `.test.ts` glob this function's callers walk. Refusing that command for a
 // requirement declared by a TypeScript file would be a refusal about a population it never runs.
+// `g` AND `matchAll` ONLY, NEVER `exec`/`test` (#2207): a chained command names more than one script,
+// and a global regex driven by `exec` carries `lastIndex` between calls, so the second caller would start
+// reading in the middle of a different command. `matchAll` works on a copy and leaves this one alone.
 const SUITE_COMMAND = new RegExp(
-  `(?:^|&&|\\|\\||;)\\s*npm\\s+(?:run\\s+)?(${SUITE_SCRIPTS.join("|")})(?![:\\w-])`);
+  `(?:^|&&|\\|\\||;)\\s*npm\\s+(?:run\\s+)?(${SUITE_SCRIPTS.join("|")})(?![:\\w-])`, "g");
 
 /**
- * The `package.json` script a command invokes, or `null` when it is not a whole-suite command at all.
+ * EVERY `package.json` script a command invokes, in the order it invokes them -- empty when it is not a
+ * whole-suite command at all.
  *
  * THE RESOLUTION IS THE POINT (#2153). `npm test` and `npm run test:all` are not the same population and
  * must not be charged the same one; naming the script is what lets `suiteTestFiles` read that script's
@@ -1328,11 +1332,21 @@ const SUITE_COMMAND = new RegExp(
  * `suiteTestFiles` follows its `npm run` delegation from there -- this function does not decide that
  * `test` means `test:ts`, because `package.json` already says so.
  *
+ * PLURAL, AND #2207 IS WHY. This returned the FIRST match, from one non-global `exec`. The pattern's own
+ * `(?:^|&&|\|\||;)` alternation exists to recognise a whole-suite call anywhere in a CHAIN, so
+ * `npm run test:ts && npm run test:org` is a command this grammar accepts -- and it was charged
+ * `test:ts`'s 220 files while the shell ran both scripts' 641. The org half's token requirement went
+ * unread and the chain classified `runnable` in a job with no token: the 2026-09-09 failure again, from
+ * the direction #2153 left open. A command runs every script it names, so it is charged every script it
+ * names, and the union is `testFilesRunBy`'s to take.
+ *
+ * Deduplicated, because `npm test && npm test` runs one population twice and requires it once.
+ *
  * @param {string} command
- * @returns {string | null}
+ * @returns {string[]}
  */
-export function suiteScriptFor(command) {
-  return SUITE_COMMAND.exec(command.trim())?.[1] ?? null;
+export function suiteScriptsFor(command) {
+  return [...new Set([...command.trim().matchAll(SUITE_COMMAND)].map((match) => match[1]))];
 }
 
 /**
@@ -1762,15 +1776,17 @@ export function suiteTestFiles(script) {
 }
 
 /**
- * The files a command runs: the ones it NAMES, or -- for a whole-suite command -- every file the script
- * it invokes runs. NOT `runsTheWholeSuite` + a fixed population (#2153): the same command string decides
- * both halves, so they cannot answer about different suites.
+ * The files a command runs: the ones it NAMES, or -- for a whole-suite command -- the UNION over every
+ * script it invokes. NOT `runsTheWholeSuite` + a fixed population (#2153): the same command string decides
+ * both halves, so they cannot answer about different suites. The union rather than the first script
+ * (#2207): a chain runs each of them, and charging it one leaves the rest's requirements unread.
  * @param {string} command
  * @returns {string[]}
  */
 function testFilesRunBy(command) {
-  const script = suiteScriptFor(command);
-  return script === null ? tsxTestFileArgs(command) : suiteTestFiles(script);
+  const scripts = suiteScriptsFor(command);
+  if (scripts.length === 0) return tsxTestFileArgs(command);
+  return [...new Set(scripts.flatMap((script) => suiteTestFiles(script)))];
 }
 
 /**
