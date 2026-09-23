@@ -433,6 +433,109 @@ export function staleHandoffs(handoffs, now = Date.now()) {
 }
 
 /**
+ * The stale-order lines a tick prints -- OVER WHAT IS STILL WAITING, not over what it read.
+ *
+ * `retired` is what this tick's deliveries carried, and subtracting it is the whole function. `main` used
+ * to build these lines from the PRE-delivery list, so an order handed over seconds earlier was announced
+ * as *"still not delivered"* -- and with a batch retiring dozens of ids at once that is dozens of false
+ * statements per tick, in the one output an operator is meant to trust. Extracted so the subtraction is
+ * pinned rather than living in a `main` no test can call.
+ *
+ * @param {readonly {id: string, session: string, queuedAt?: number}[]} handoffs
+ * @param {readonly string[]} retired @param {number} [now] @returns {string[]}
+ */
+export function staleReport(handoffs, retired, now = Date.now()) {
+  const gone = new Set(retired);
+  return staleHandoffs(handoffs.filter((h) => !gone.has(h.id)), now)
+    .map((h) => `STALE QUEUED ORDER ${h.id} -- written for "${h.session}" over `
+      + `${Math.round(HANDOFF_STALE_MS / 3_600_000)}h ago and still not delivered. Nothing drops it; `
+      + "check that session exists and is reachable.\n");
+}
+
+/**
+ * HOW LONG SOMETHING HAS WAITED, in one dialect, because two would be read side by side.
+ *
+ * Minutes under the hour and hours with one decimal above it -- and the minutes branch is the wording
+ * {@link handoffOrder} has always used, kept to the letter so the two are the same sentence rather than
+ * two sentences that happen to agree. A queue measured in minutes was the case #1966 designed for; one
+ * measured in hours is the case this row was filed on, and "587 minute(s)" is a number a reader has to
+ * do arithmetic on before it means anything.
+ *
+ * @param {number} ms @returns {string}
+ */
+export function waitedFor(ms) {
+  const safe = Math.max(0, ms);
+  if (safe < 60 * 60_000) return `${Math.round(safe / 60_000)} minute(s)`;
+  return `${(safe / 3_600_000).toFixed(1)}h`;
+}
+
+/**
+ * WHAT IS ALREADY WAITING, PER TARGET -- the reading this row was filed for.
+ *
+ * `staleHandoffs` above names individual orders once they pass two hours, and that is the wrong shape for
+ * the failure that actually happened: 57 orders for ONE session print 57 lines that say nothing about the
+ * one fact worth knowing, which is that a single inbox has stalled and how long ago it stalled. An
+ * aggregate per target is a sentence a reader can act on; a list of ids is a list of ids.
+ *
+ * WORST FIRST, then by name. A tick's output is read by whoever is passing, and the session whose oldest
+ * order has waited longest is the one to look at; ordering by name would bury a 10-hour backlog under a
+ * two-minute one. The name tie-break is there so the same queue prints the same way twice -- a report
+ * that reorders itself between ticks cannot be diffed, and `route`'s own comment makes the same argument
+ * about picks that cannot be reproduced.
+ *
+ * @param {readonly {session: string, queuedAt?: number}[]} handoffs @param {number} [now]
+ * @returns {{session: string, waiting: number, oldestMs: number, stale: number}[]}
+ */
+export function handoffBacklog(handoffs, now = Date.now()) {
+  /** @type {Map<string, {session: string, waiting: number, oldestMs: number, stale: number}>} */
+  const bySession = new Map();
+  for (const h of handoffs) {
+    const waited = Math.max(0, now - Number(h.queuedAt ?? now));
+    const row = bySession.get(h.session)
+      ?? { session: h.session, waiting: 0, oldestMs: 0, stale: 0 };
+    row.waiting += 1;
+    row.oldestMs = Math.max(row.oldestMs, waited);
+    if (waited >= HANDOFF_STALE_MS) row.stale += 1;
+    bySession.set(h.session, row);
+  }
+  return [...bySession.values()]
+    .sort((a, b) => b.oldestMs - a.oldestMs || a.session.localeCompare(b.session));
+}
+
+/**
+ * The backlog as the tick says it. EMPTY FOR AN EMPTY QUEUE, which is half of what this is for.
+ *
+ * A REPORTER THAT ALWAYS PRINTS IS A REPORTER NOBODY READS, and it is also unfalsifiable: the row's own
+ * Acceptance asks for the count and the oldest age AND for the control that a quiet queue says nothing,
+ * because an emptiness assertion on its own passes against a function that never reports at all (this
+ * repo's Assertions rule -- the positive control is `handoffBacklog`'s own non-empty case, pinned beside
+ * it).
+ *
+ * @param {readonly {session: string, waiting: number, oldestMs: number, stale: number}[]} backlog
+ * @returns {string[]}
+ */
+export function backlogReport(backlog) {
+  if (backlog.length === 0) return [];
+  const lines = backlog.map((b) => `QUEUE BACKLOG ${b.session}: ${b.waiting} authored order(s) waiting, `
+    + `oldest ${waitedFor(b.oldestMs)}`
+    + (b.stale > 0 ? `, ${b.stale} over ${Math.round(HANDOFF_STALE_MS / 3_600_000)}h` : "")
+    + "\n");
+  const worst = backlog[0];
+  if (worst.stale === 0) return lines;
+  // THE ONE THING A COUNT DOES NOT SAY. Delivery is gated on the TARGET being between tasks, so a target
+  // that is never between tasks holds its inbox for ever and no amount of ticking changes that. Nothing
+  // here is dropped and nothing here is forced -- #1966's measurement is that forcing a delivery into a
+  // working session wipes what it was doing -- so the only thing that clears a stalled inbox is that
+  // session finishing a turn, or somebody noticing it never does.
+  lines.push(`QUEUE BACKLOG: "${worst.session}" has held an order for ${waitedFor(worst.oldestMs)}. `
+    + "An authored order is delivered only when the gate judges its target BETWEEN TASKS, so a session "
+    + "that is never idle never receives one, and nothing here overrides that -- forcing a delivery into "
+    + "a working session wipes what it was mid-way through (#1966). If this repeats, that session's "
+    + "inbox is not being read: route around it, or stop sending it reports it does not need.\n");
+  return lines;
+}
+
+/**
  * A queued order as `deliver` takes one -- AND THE TEXT SAYS IT WAITED.
  *
  * A reviewer woken with a prompt written 40 minutes ago must be able to tell that from a fresh one: the
@@ -442,13 +545,264 @@ export function staleHandoffs(handoffs, now = Date.now()) {
  * @param {{id: string, session: string, prompt: string, queuedAt?: number}} handoff @param {number} [now]
  */
 export function handoffOrder(handoff, now = Date.now()) {
-  const waited = Math.max(0, Math.round((now - Number(handoff.queuedAt ?? now)) / 60_000));
+  const waited = waitedFor(now - Number(handoff.queuedAt ?? now));
   return {
     session: handoff.session,
     causeKey: handoff.id,
-    prompt: `${handoff.prompt}\n\n(Queued ${waited} minute(s) ago: \`prompt:session\` could not deliver `
+    prompt: `${handoff.prompt}\n\n(Queued ${waited} ago: \`prompt:session\` could not deliver `
       + "this when it was written, because you were mid-turn, so the gate held it until you were between "
       + "tasks. Re-read anything it names -- a head may have moved since.)",
+  };
+}
+
+/**
+ * THE KERNEL'S CEILING ON ONE ARGUMENT, and the reason a batch is bounded rather than unbounded.
+ *
+ * `deliver` hands the prompt to `execFileSync` as a single argv entry, and Linux caps one entry at
+ * `MAX_ARG_STRLEN` -- 32 pages. MEASURED ON THIS HOST 2026-09-23 by spawning `/bin/true` with arguments
+ * of increasing length: 131,071 bytes is accepted and 131,072 is `E2BIG`. The queue that produced this
+ * row held 136,919 characters for one session, SO AN UNBOUNDED "ONE DELIVERY WHOSE BODY IS ALL 57
+ * REPORTS" WOULD HAVE FAILED OUTRIGHT on the very backlog it was written for -- and failed as a herdr
+ * refusal, which `deliver` reports and leaves queued, i.e. a stall with an error message on it.
+ */
+export const PROMPT_ARG_MAX = 131_072;
+
+/**
+ * How many bytes one delivery carries -- MEASURED ON WHAT REACHES `execFileSync`, not on what the
+ * senders wrote.
+ *
+ * HALF THE MEASURED CEILING, ON PURPOSE, and the margin is not superstition: a batch of one order that
+ * happens to be enormous is taken anyway (see {@link fitBatch}), so the budget has to leave the kernel's
+ * ceiling somewhere above it rather than exactly at it. The ceiling also counts BYTES while a prompt
+ * full of em dashes counts fewer characters than bytes, which is why `Buffer.byteLength` is the measure
+ * everywhere below.
+ *
+ * It is also as much as a reader can use. 64 KiB is roughly 16k tokens of somebody else's reports in one
+ * turn; the remainder is not lost, it is the next tick's delivery, and the backlog report says how much
+ * of it there is.
+ */
+export const HANDOFF_BATCH_BYTES = 64 * 1024;
+
+/**
+ * WHAT RIDES ON TOP OF THE ORDERS, reserved before the first one is charged: `batchedOrder`'s header
+ * plus `addressed`'s prefix and autonomy footer.
+ *
+ * MEASURED 2026-09-23 on a rendered batch: 647 bytes of header and 1,429 of wrapper, 2,076 together.
+ * The reserve is roughly double that because both are prose somebody will edit, and prose that grows
+ * past its reserve must fail a test rather than an `execFileSync`. `a batch reserves more than the
+ * wrapper it actually renders` is that test; this comment is not the guarantee, it is.
+ */
+export const BATCH_WRAPPER_BYTES = 4 * 1024;
+
+/** @param {{queuedAt?: number}} a @param {{queuedAt?: number}} b */
+const oldestFirst = (a, b) => Number(a.queuedAt ?? 0) - Number(b.queuedAt ?? 0);
+
+/**
+ * ONE ORDER'S HEADING INSIDE A BATCH -- written by {@link batchedOrder} AND CHARGED BY {@link fitBatch},
+ * from this one function so that the two can never disagree about what an order costs.
+ *
+ * THE DEFECT THIS CLOSES (review of #2125, reproduced before fixing): the budget counted only the
+ * AUTHORED prompt, and the heading, the batch header and `addressed`'s wrapper all rode on top of it
+ * uncharged. 3,000 valid one-byte orders therefore "fitted" in 64 KiB of authored text and rendered a
+ * 165,408-byte argv -- `E2BIG` from the kernel, a herdr refusal, and `deliverHandoffs` retaining every
+ * one of them. That is this row's own stall reached from the other side: a queue that cannot drain.
+ * The authored text is not what `execFileSync` is handed; the rendered argv is, so the rendered argv is
+ * what a budget has to be about.
+ *
+ * @param {{prompt: string, queuedAt?: number}} h
+ * @param {number} index @param {number} total @param {number} now
+ */
+function orderHeading(h, index, total, now) {
+  return `--- ORDER ${index + 1} of ${total}, queued `
+    + `${waitedFor(now - Number(h.queuedAt ?? now))} ago ---\n`;
+}
+
+/** The blank line `batchedOrder` joins consecutive orders with -- charged like everything else. */
+const ORDER_SEPARATOR_BYTES = 2;
+
+/**
+ * THE PLACEHOLDER `addressed` EXPANDS, and the reason the authored text is still not the rendered argv.
+ *
+ * THE DEFECT THIS CLOSES (second review of #2125, reproduced before fixing). `orderHeading` above had
+ * already moved the budget off the authored prompt and onto the heading and the wrapper -- but
+ * {@link addressed} does one more thing to the body on its way to `execFileSync`: it substitutes the
+ * target's name for every `<you>`, and `work-gate.mjs` writes that placeholder into the row orders it
+ * queues. `<you>` is five bytes and `worker-capture` is fourteen, so an order that mentions the
+ * placeholder a hundred times is charged 900 bytes less than it renders. Reproduced: 3,000 queued
+ * `engineers` orders each repeating `<you>` 100 times were charged as fitting and rendered 163,952
+ * bytes -- past the 65,536-byte budget AND past the kernel's 131,072-byte ceiling, which is `E2BIG`
+ * again from the one direction the first fix did not close.
+ */
+const YOU_PLACEHOLDER = "<you>";
+const YOU_PLACEHOLDER_BYTES = Buffer.byteLength(YOU_PLACEHOLDER, "utf8");
+
+/**
+ * What this order GAINS when `addressed` substitutes a name of `labelBytes` for each `<you>`.
+ *
+ * ZERO WHEN THE NAME IS NO WIDER THAN THE PLACEHOLDER, never negative: a shorter name renders a shorter
+ * argv than the charge, and under-spending a budget is safe in the direction that matters. Only growth
+ * can reach the kernel.
+ *
+ * @param {string} prompt @param {number} labelBytes @returns {number}
+ */
+function expansionBytes(prompt, labelBytes) {
+  const grown = labelBytes - YOU_PLACEHOLDER_BYTES;
+  if (grown <= 0) return 0;
+  return (prompt.split(YOU_PLACEHOLDER).length - 1) * grown;
+}
+
+/**
+ * The WIDEST name {@link route} could substitute into this target's batch.
+ *
+ * EXACT FOR A NAMED SESSION AND WORST-CASE FOR THE POOL, because those are the two things `route` can
+ * do. An order addressed to `reviewer-2` renders `reviewer-2` and nothing else; an order addressed to
+ * `engineers` renders whichever roster member is free at delivery time, which this cannot know and must
+ * not guess low -- the batch is built before the routing decision, so the charge has to hold for every
+ * label the decision could produce.
+ *
+ * AN EMPTY ROSTER CHARGES THE PLACEHOLDER, i.e. nothing: with no engineer to route to, `deliver` refuses
+ * the batch and no argv is ever built, so there is nothing to over-charge for.
+ *
+ * @param {string} session @param {readonly string[]} [roster] @returns {number}
+ */
+export function targetLabelBytes(session, roster = []) {
+  if (session !== "engineers") return Buffer.byteLength(session, "utf8");
+  const widths = roster.map((label) => Buffer.byteLength(label, "utf8"));
+  return widths.length === 0 ? YOU_PLACEHOLDER_BYTES : Math.max(...widths);
+}
+
+/**
+ * What one order adds to the rendered delivery: its own bytes AS RENDERED, its heading and its separator.
+ *
+ * THE HEADING IS CHARGED AT ITS WORST CASE, which is the last position in the longest batch this queue
+ * could produce -- `ORDER 1000 of 1000` is four bytes wider than `ORDER 1 of 9`, and the batch's own
+ * size is what decides which is written. Over-charging by a few bytes an order costs a long batch its
+ * last entry at worst; under-charging costs the delivery, which is the failure above.
+ *
+ * `labelBytes` IS REQUIRED HERE AND HAS A DEFAULT ON {@link fitBatch}, and the asymmetry is deliberate:
+ * a default that charges no expansion is the defect {@link YOU_PLACEHOLDER} records, so the function
+ * doing the arithmetic may not have one. `fitBatch`'s default serves a caller with no target to name,
+ * and it is safe only because the path that reaches `execFileSync` -- `deliverHandoffs` ->
+ * `handoffBatches` -> `fitBatch` -- always supplies the real width, which is itself pinned by a test
+ * against the delivered argv rather than by this sentence.
+ *
+ * @param {{prompt: string, queuedAt?: number}} h @param {number} queued @param {number} now
+ * @param {number} labelBytes
+ */
+function chargeFor(h, queued, now, labelBytes) {
+  return Buffer.byteLength(h.prompt, "utf8")
+    + expansionBytes(h.prompt, labelBytes)
+    + Buffer.byteLength(orderHeading(h, queued - 1, queued, now), "utf8")
+    + ORDER_SEPARATOR_BYTES;
+}
+
+/**
+ * The orders for one target that fit in one delivery, OLDEST FIRST.
+ *
+ * FIFO IS THE WHOLE POINT. The failure being fixed is an order that waited ten hours; filling a batch
+ * with whatever is newest would starve exactly that order for ever while the queue looked like it was
+ * draining. The first order is taken WHATEVER ITS SIZE -- a single order bigger than the budget must
+ * still be attempted, because skipping it is the starvation this row is about, and if it is bigger than
+ * the kernel's ceiling too then herdr refuses it and the refusal is printed, which is a loud failure
+ * rather than a silent one.
+ *
+ * THE BUDGET IS SPENT BEFORE THE LOOP STARTS, by {@link BATCH_WRAPPER_BYTES}, and each order is charged
+ * by {@link chargeFor} rather than by its own length. Both exist because budgeting the authored text
+ * alone let many small orders render an argv the kernel refuses; see {@link orderHeading}.
+ *
+ * @template {{prompt: string, queuedAt?: number}} T
+ * @param {readonly T[]} handoffs @param {number} budget @param {number} [now]
+ * @param {number} [labelBytes] the width of the name `addressed` will put in this batch's `<you>`;
+ *   the default charges no expansion and is for a caller with no target -- see {@link chargeFor}
+ * @returns {{take: T[], held: T[]}}
+ */
+export function fitBatch(handoffs, budget, now = Date.now(), labelBytes = YOU_PLACEHOLDER_BYTES) {
+  const queue = [...handoffs].sort(oldestFirst);
+  /** @type {T[]} */
+  const take = [];
+  let used = BATCH_WRAPPER_BYTES;
+  for (const h of queue) {
+    const size = chargeFor(h, queue.length, now, labelBytes);
+    if (take.length > 0 && used + size > budget) break;
+    take.push(h);
+    used += size;
+  }
+  return { take, held: queue.slice(take.length) };
+}
+
+/**
+ * ONE DELIVERY PER TARGET, whose body is every order that fits.
+ *
+ * 57 ORDERS FOR ONE SESSION ARE NOT 57 WAKE-UPS, AND DELIVERING THEM AS 57 IS WORSE THAN NOT DELIVERING
+ * THEM. `deliver` marks a session `working` the moment it accepts a prompt, so a per-order loop reached
+ * exactly ONE of them per tick and refused the other 56 -- the queue's throughput was one order every two
+ * minutes against an inbox filling faster than that, which is the arithmetic behind a ten-hour wait. And
+ * the throughput was the kinder half: every delivery CLEARS its target first, so a mechanism that did
+ * manage to send two in a row would erase the context the first one created before the session had
+ * answered it.
+ *
+ * SO THE BATCH IS THE UNIT, and `held` is what did not fit rather than what was dropped. Nothing leaves
+ * the queue until herdr has accepted the batch carrying it ({@link deliverHandoffs}), and the ids a batch
+ * covers travel with it because the drop is keyed on them.
+ *
+ * THE ROSTER IS HERE FOR THE BUDGET, not for the routing -- `deliver` still decides which engineer takes
+ * an `engineers` batch. {@link targetLabelBytes} needs it to know how wide that name could be, because
+ * the batch is built before the decision and the charge has to hold for whichever way it goes.
+ *
+ * @param {readonly {id: string, session: string, prompt: string, queuedAt?: number}[]} handoffs
+ * @param {{now?: number, budget?: number, roster?: readonly string[]}} [opts]
+ * @returns {{session: string, causeKey: string, prompt: string, ids: string[]}[]}
+ */
+export function handoffBatches(handoffs,
+  { now = Date.now(), budget = HANDOFF_BATCH_BYTES, roster = [] } = {}) {
+  /** @type {Map<string, {id: string, session: string, prompt: string, queuedAt?: number}[]>} */
+  const bySession = new Map();
+  for (const h of handoffs) bySession.set(h.session, [...(bySession.get(h.session) ?? []), h]);
+  return [...bySession.values()].map((forSession) => {
+    const { take, held } = fitBatch(forSession, budget, now,
+      targetLabelBytes(forSession[0].session, roster));
+    // ONE ORDER IS STILL ONE ORDER, and it keeps `handoffOrder`'s exact wording and its own id as the
+    // causeKey. The common case -- an author prompting one reviewer about one draft -- must not start
+    // reading like a digest of itself, and `WOKE reviewer <- handoff/reviewer/1a2b3c4d` stays the line
+    // an operator can grep back to the queue.
+    if (take.length === 1 && held.length === 0) {
+      return { ...handoffOrder(take[0], now), ids: [take[0].id] };
+    }
+    return { ...batchedOrder(take, held, now), ids: take.map((h) => h.id) };
+  });
+}
+
+/**
+ * The batch body: the header that explains why it is a batch, then every order, oldest first.
+ *
+ * THE HEADER IS NOT DECORATION. A session handed 30 reports in one turn will otherwise read them as one
+ * message from one sender, and they are 30 messages from six senders written over ten hours, several of
+ * which have since been answered. Saying so is the same duty `handoffOrder` already discharges for a
+ * single stale order -- *"re-read anything it names, a head may have moved"* -- at the scale that
+ * actually occurred.
+ *
+ * @param {readonly {session: string, prompt: string, queuedAt?: number}[]} take
+ * @param {readonly unknown[]} held @param {number} now
+ */
+function batchedOrder(take, held, now) {
+  const oldest = waitedFor(Math.max(...take.map((h) => now - Number(h.queuedAt ?? now)), 0));
+  const body = take.map((h, i) => `${orderHeading(h, i, take.length, now)}${h.prompt}`).join("\n\n");
+  return {
+    session: take[0].session,
+    // NOT ANY ONE ORDER'S ID. This wake answers all of them, and naming one of them in the log would
+    // read as the other N-1 having gone somewhere else.
+    causeKey: `handoff/${take[0].session}/batch-of-${take.length}`,
+    prompt: `${take.length} ORDERS WERE QUEUED FOR YOU AND ARRIVE TOGETHER, oldest first; the oldest has `
+      + `waited ${oldest}. \`prompt:session\` could not deliver any of them when they were written, `
+      + "because you were mid-turn each time, so the gate held them until you were between tasks.\n"
+      + "THIS IS ONE WAKE CARRYING MANY REPORTS, NOT MANY WAKES: each delivery clears your context "
+      + "first, so sending them one at a time would erase what the previous one built (#1966, #2102).\n"
+      + "They are from several senders and were written over the whole period above. RE-READ WHAT THEY "
+      + "NAME BEFORE ACTING: some will already be settled, and the row, the PR and the API are the "
+      + "state -- not this message."
+      + (held.length > 0 ? `\n${held.length} further order(s) for you did not fit in one delivery and `
+        + "are STILL QUEUED; the next tick brings them. Nothing has been dropped." : "")
+      + `\n\n${body}`,
   };
 }
 
@@ -468,18 +822,25 @@ export function handoffOrder(handoff, now = Date.now()) {
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster
  * @param {{run?: (args: string[]) => string, queuePath?: string, drop?: typeof dropHandoffs,
- *          now?: number}} [deps]
- * @returns {{sent: string[], refused: string[], busied: Set<string>}}
+ *          now?: number, budget?: number}} [deps]
+ * @returns {{sent: string[], refused: string[], ids: string[], busied: Set<string>}} `ids` is every
+ *   order a delivery CARRIED, which is what the caller subtracts before calling anything still stale.
  */
 export function deliverHandoffs(handoffs, agents, roster,
-  { run = defaultRun, queuePath, drop = dropHandoffs, now = Date.now() } = {}) {
+  { run = defaultRun, queuePath, drop = dropHandoffs, now = Date.now(),
+    budget = HANDOFF_BATCH_BYTES } = {}) {
+  const batches = handoffBatches(handoffs, { now, budget, roster });
   /** @type {string[]} */
   const landed = [];
-  const { sent, refused } = deliver(handoffs.map((h) => handoffOrder(h, now)), agents, roster,
-    { run, record: (id) => landed.push(id) });
-  if (queuePath) drop(queuePath, landed);
+  const { sent, refused } = deliver(batches, agents, roster, { run, record: (key) => landed.push(key) });
+  // THE BATCH IS WHAT WAS ACCEPTED; THE IDS ARE WHAT IT COVERED. `record` fires on the causeKey, because
+  // that is the seam `deliver` offers, so the ids to retire come back through the batch that carried
+  // them -- and a batch nobody accepted retires nothing, which is the assertion this whole queue is for.
   const done = new Set(landed);
-  return { sent, refused, busied: new Set(handoffs.filter((h) => done.has(h.id)).map((h) => h.session)) };
+  const delivered = batches.filter((b) => done.has(b.causeKey));
+  const ids = delivered.flatMap((b) => b.ids);
+  if (queuePath) drop(queuePath, ids);
+  return { sent, refused, ids, busied: new Set(delivered.map((b) => b.session)) };
 }
 
 /**
@@ -1004,6 +1365,16 @@ function main() {
   const handoffs = readHandoffs(queuePath);
   if (nothingToDeliver(orders, handoffs)) process.exit(EXIT.QUIET);
 
+  // WHAT WAS ALREADY WAITING, BEFORE THIS TICK TOUCHES IT (#2102). Reported first and reported whatever
+  // happens next, because the backlog is a fact about the org that every session running a tick should
+  // see, not a consequence of this tick's delivery: 57 orders for one session were discoverable in
+  // 2026-09-23 only by replaying a cache file by hand, and the tick that could have said so said nothing.
+  //
+  // ABOVE `readAgents`, AND THE ORDER IS THE POINT. A tick that cannot reach herdr delivers NOTHING and
+  // exits, so it is the one tick where a ten-hour backlog most needs saying -- reporting it after that
+  // exit would have made "reported whatever happens next" false for the worst case it claims to cover.
+  for (const line of backlogReport(handoffBacklog(handoffs))) process.stderr.write(line);
+
   const agents = readAgents();
   if (agents === null) {
     process.stderr.write(`CANNOT ASK: herdr did not answer, so the ${orders.length} order(s) on stdin and `
@@ -1015,11 +1386,8 @@ function main() {
   // AUTHORED ORDERS FIRST. One has already been refused once and has been waiting since; a derived cause
   // has not, and will be re-derived unchanged by the next tick if it loses the session to this one.
   const handed = deliverHandoffs(handoffs, agents, roster, { queuePath });
-  for (const line of staleHandoffs(handoffs)) {
-    process.stderr.write(`STALE QUEUED ORDER ${line.id} -- written for "${line.session}" over `
-      + `${Math.round(HANDOFF_STALE_MS / 3_600_000)}h ago and still not delivered. Nothing drops it; `
-      + "check that session exists and is reachable.\n");
-  }
+  // STALE MEANS STILL WAITING, so it is asked AFTER the delivery and against what the delivery carried.
+  for (const line of staleReport(handoffs, handed.ids)) process.stderr.write(line);
   // A session this tick just woke is working NOW, so the gate's own orders must not be routed to it.
   const free = agents.map((a) => (handed.busied.has(a.label) ? { ...a, status: "working" } : a));
 
