@@ -73,6 +73,23 @@ export function blockedSessions(agents) {
 /** @param {string[]} args */
 const defaultRun = (args) => execFileSync("herdr", args, { encoding: "utf8", timeout: 30_000 });
 
+/** How much of a thrown thing's first line a refusal quotes -- enough to name the failure, not a stack. */
+const REFUSAL_EXCERPT = 120;
+
+/**
+ * The first line of whatever was thrown, bounded.
+ *
+ * herdr's failures arrive as a multi-line `execFileSync` error whose first line is the only part that says
+ * what went wrong; the rest is a stack and the command's own stderr. Extracted because three refusal paths
+ * quoted it with the same expression written out three times, and a fourth would have been written the
+ * same way.
+ *
+ * @param {unknown} err @param {number} [max]
+ */
+function firstLine(err, max = REFUSAL_EXCERPT) {
+  return String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, max);
+}
+
 /** `gh`, for the escalation half -- a different binary from `herdr`, so a different runner. */
 const defaultGh = (/** @type {string[]} */ args) =>
   execFileSync("gh", args, { encoding: "utf8", timeout: 30_000 });
@@ -167,6 +184,214 @@ export function spawnInvocation(order, name, pane, override = {}) {
     args: ["--session", "org", "agent", "start", name, "--kind", profile.kind, "--pane", pane,
       "--", ...agentArgs(profile)],
   };
+}
+
+/**
+ * THE CAUSES A TICK MAY START A PROCESS FOR -- the pilot `ceo` ruled on #1950, 2026-09-22.
+ *
+ * ONE CAUSE, AND THE NUMBER IS THE PILOT RATHER THAN A LIMIT OF THE MECHANISM. Until this, `spawnInvocation`
+ * had NO CALLER: measured at `f34e5d817` while ruling #1950, the only reference to it outside a test was
+ * its own `export function` line. `deliver` prompts a session that already exists and `/clear`s it first;
+ * nothing in the tree started one. The spawn machinery was a library with a test suite and no production
+ * path, and a tested function nobody calls is an assertion about code that never runs.
+ *
+ * WHY THIS CAUSE. `ready-row-unclaimed` for one engineer: the worktree already exists per row (`row-claim
+ * claim` creates it, #1432), `.a11y-owner` already stamps its owner (#1128), the profile already exists
+ * (`sonnet`/`high`), and an engineer holds no lane and no decision -- so a failed instance costs one row
+ * rather than a ruling.
+ *
+ * BESIDE THE STANDING PATH, NEVER IN PLACE OF IT. The same ruling keeps every standing pane and states the
+ * retirement condition in advance: one week with no stranded row and no orphaned worktree before any
+ * retirement row may be filed. Nothing here retires anything.
+ */
+export const SPAWN_CAUSES = Object.freeze(["ready-row-unclaimed"]);
+
+/**
+ * At most this many processes started per tick.
+ *
+ * ONE, because a pilot that can start three processes on a bad tick is not a pilot -- and the bad tick is
+ * the cheap one to imagine: `readAgents` answers with a partial workspace list, every engineer reads as
+ * absent, and a tick carrying several `ready-row-unclaimed` orders starts a process for each. The cap
+ * makes that cost one process and one line of output instead of the roster.
+ *
+ * NOT A CAP ON CAPACITY, and the distinction is `ceo`'s own: *"the cap is CLAIMABLE ROWS, never capacity"*.
+ * This is a cap on how fast the pilot may act, not on how many engineers the org may have.
+ */
+export const MAX_SPAWNS_PER_TICK = 1;
+
+/**
+ * Is this order one the pilot may start a process for at all?
+ *
+ * ASKED SEPARATELY FROM `spawnableRole`, AND THE REASON IS THE REFUSAL TEXT RATHER THAN THE LOGIC. Every
+ * order `route` cannot place reaches the spawn path, and most of them never could be spawned for: an
+ * authored handoff addressed to `product-manager`, a reviewer's draft, a `lane:ceo` row. Appending *"no
+ * spawn: the pilot covers the engineer pool"* to those refusals would add a sentence about a mechanism that
+ * was never a candidate to the one line an operator reads when a real delivery failed -- measured while
+ * building this: two existing assertions about a stalled inbox broke on exactly that noise, and they were
+ * right to. So a non-candidate order reports what `route` said and nothing more, and the pilot's own
+ * refusals are reserved for orders it could genuinely have taken.
+ *
+ * @param {{session: string, cause?: string}} order
+ */
+export function isPilotOrder(order) {
+  return order.session === "engineers" && SPAWN_CAUSES.includes(String(order.cause));
+}
+
+/**
+ * Which engineer ROLE a refused order may be given a fresh process for, or why none may.
+ *
+ * A ROLE, NOT AN INSTANCE NAME, AND THAT IS #1951's RULING RATHER THAN A SHORTCUT HERE. `session:<name>` is
+ * a ROUTING ADDRESS: `arm-pr`'s `LIVE_SESSIONS` is `sessions.json`'s `live` names and refuses a label
+ * outside it, `row-claim`'s B2 caps ONE ROW IN BUILD PER SESSION, and `laneReason`/`runnerReason` compare a
+ * label suffix to that same string. So a process named `eng-1783` starts fine and can do NOTHING: every
+ * write it would make is refused for a name the roster does not carry. The process is disposable; the
+ * address is not. That is why this returns a roster name and never mints one.
+ *
+ * ONLY AN ABSENT ROLE IS SPAWNABLE, and the other states are refused each for its own reason rather than by
+ * omission:
+ *
+ *   idle/done  `route` already took it. This is only reached on a refusal.
+ *   working    a process is mid-task under that address, and B2 counts ROWS per address -- a second
+ *              process sharing it could not claim anything, and would write `session:<role>` comments
+ *              beside the one that is working. Lending a busy address buys a refusal and an ambiguity.
+ *   blocked    the process is stopped behind a question nobody will answer (`blockedSessions`; measured on
+ *              `worker-capture` and row #1335, found only by the chairman reading a terminal). Its address
+ *              is probably free, but closing its pane to reuse the label would destroy the only record of
+ *              what it asked -- which is exactly what `work-tick` prints `BLOCKED <name>` for a human to
+ *              read.
+ *   unknown    herdr's own word for a pane with NO agent. Starting one THERE is the right repair and is not
+ *              this: `readAgents` returns labels and statuses, never pane ids, so reaching that pane needs
+ *              a call this function does not make -- and creating a SECOND workspace under the same label
+ *              would make `route`'s `agents.find((a) => a.label === label)` ambiguous, leaving the roster
+ *              holding two rows for one address and picking whichever herdr listed first.
+ *
+ * DETERMINISTIC among equals -- the first absent role in `roster` order, never a random pick, for `route`'s
+ * own stated reason: a wake that cannot be reproduced from the same two inputs cannot be explained after
+ * the fact.
+ *
+ * @param {{session: string, cause?: string}} order
+ * @param {{label: string, status: string}[]} agents
+ * @param {string[]} roster engineer labels, in the order they should be offered work
+ * @returns {{role: string} | {refusal: string}}
+ */
+export function spawnableRole(order, agents, roster) {
+  if (order.session !== "engineers") {
+    return { refusal: `no spawn: the pilot covers the engineer pool, and this order is addressed to `
+      + `"${order.session}"` };
+  }
+  if (!SPAWN_CAUSES.includes(String(order.cause))) {
+    return { refusal: `no spawn: "${order.cause ?? "an order carrying no cause"}" is not a pilot cause `
+      + `(${SPAWN_CAUSES.join(", ")})` };
+  }
+  const role = roster.find((label) => !agents.some((a) => a.label === label));
+  if (!role) {
+    const seen = roster.map((label) => `${label}=${agents.find((a) => a.label === label)?.status}`).join(", ");
+    return { refusal: `no spawn: every engineer role already has a process (${seen}) -- a busy, blocked or `
+      + "agentless one is not reused, and `spawnableRole` says why for each" };
+  }
+  return { role };
+}
+
+/**
+ * A new workspace for `label`, and the pane to start an agent in -- or a refusal.
+ *
+ * MEASURED AGAINST THE LIVE ORG, 2026-09-23: `herdr --session org workspace create --label X --no-focus`
+ * answers with `result.root_pane.pane_id` and `result.workspace.workspace_id`, and `workspace close <id>`
+ * answers `{"type":"ok"}`.
+ *
+ * NO `--cwd`, DELIBERATELY. The default is `/home/agent/repos/a11y-witness`, the primary checkout, which is
+ * where all six standing sessions already run -- so passing one would invent a convention rather than
+ * follow it. The obvious candidate, a `role-<name>` worktree, is NOT a convention: four of the six roles
+ * have one. The order's own text tells the woken session that `row-claim` creates its worktree.
+ *
+ * `--no-focus` because a tick must not steal the display from whoever is watching it.
+ *
+ * @param {(args: string[]) => string} run
+ * @param {string} label
+ * @returns {{pane: string, workspace: string} | {refusal: string}}
+ */
+function openPane(run, label) {
+  let created;
+  try {
+    created = JSON.parse(run(["--session", "org", "workspace", "create", "--label", label, "--no-focus"]));
+  } catch (err) {
+    return { refusal: `herdr could not open a pane for "${label}" (${firstLine(err)})` };
+  }
+  const pane = created?.result?.root_pane?.pane_id;
+  const workspace = created?.result?.workspace?.workspace_id;
+  // A WORKSPACE WITH NO PANE ID IS STILL A WORKSPACE, so it is closed rather than left behind: an
+  // unreadable answer is the one case where the thing to clean up is the thing we cannot describe.
+  if (typeof pane !== "string" || typeof workspace !== "string") {
+    return { refusal: `herdr's workspace for "${label}" named no pane`
+      + `${workspace ? closedNote(run, String(workspace)) : ""}` };
+  }
+  return { pane, workspace };
+}
+
+/**
+ * Close a workspace this tick opened, and say so in the same breath as whatever failed.
+ *
+ * THE TEARDOWN IS ONLY FOR A HALF-STARTED SPAWN, and that bound is the design rather than a gap. A
+ * workspace whose agent started IS the role's workspace from then on -- its label is the role's own name,
+ * so `route` finds it, follow-up causes reach it, and there is nothing orphaned to collect. Only the window
+ * between `workspace create` and a successful `agent start` can leave a pane nobody will ever use.
+ *
+ * AND LEAVING ONE IS NOT A TIDINESS PROBLEM. A workspace with no agent reports `agent_status: "unknown"`,
+ * which `WAKEABLE` excludes and `spawnableRole` refuses -- so an abandoned pane carrying a role's label
+ * makes that role permanently unwakeable and unspawnable. It would silently remove an engineer from the
+ * org, which is the 2026-09-08 shape this whole file exists to prevent.
+ *
+ * NEVER THROWS: it is called from the failure path, and a teardown that can fail the way its caller just
+ * did would replace a reported refusal with an unreported one.
+ *
+ * @param {(args: string[]) => string} run @param {string} workspace
+ * @returns {string} a clause to append to the refusal being reported
+ */
+function closedNote(run, workspace) {
+  try {
+    run(["--session", "org", "workspace", "close", workspace]);
+    return ` -- the workspace it opened (${workspace}) was closed`;
+  } catch (err) {
+    return ` -- AND the workspace it opened (${workspace}) could NOT be closed (${firstLine(err)}): close `
+      + "it by hand, or that role reads `unknown` to every tick and is never woken again";
+  }
+}
+
+/**
+ * Start a fresh process for an engineer role that has none, and return the address it answers to.
+ *
+ * THE CALLER `spawnInvocation` NEVER HAD. Everything it needs beyond the invocation itself is here: the
+ * name (a roster role, per `spawnableRole`), the pane (`openPane`), and the teardown (`closedNote`).
+ *
+ * IT DOES NOT PROMPT. `deliver` does, through the same `addressed(...)` call every other delivery uses, so
+ * a spawned session is told who it is by the same line that tells a standing one -- and a spawn whose
+ * prompt is refused leaves a live, idle session the next tick routes to normally.
+ *
+ * @param {{session: string, cause?: string}} order
+ * @param {{label: string, status: string}[]} agents
+ * @param {string[]} roster
+ * @param {{run?: (args: string[]) => string}} [deps]
+ * @returns {{label: string, workspace: string, profile: {kind: string, model: string, effort: string}}
+ *   | {refusal: string}}
+ */
+function spawnWorker(order, agents, roster, { run = defaultRun } = {}) {
+  const role = spawnableRole(order, agents, roster);
+  if ("refusal" in role) return role;
+  const pane = openPane(run, role.role);
+  if ("refusal" in pane) return pane;
+  // `spawnableRole` has already refused anything whose cause is not in `SPAWN_CAUSES`, so by here the
+  // cause is one of those strings -- narrowed for the type rather than re-checked.
+  const invocation = spawnInvocation({ ...order, cause: String(order.cause) }, role.role, pane.pane);
+  if ("refusal" in invocation) {
+    return { refusal: `${invocation.refusal}${closedNote(run, pane.workspace)}` };
+  }
+  try {
+    run(invocation.args);
+  } catch (err) {
+    return { refusal: `herdr refused to start "${role.role}" (${firstLine(err)})`
+      + `${closedNote(run, pane.workspace)}` };
+  }
+  return { label: role.role, workspace: pane.workspace, profile: invocation.profile };
 }
 
 /**
@@ -1224,6 +1449,9 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+/** `/clear`'s refusal is reported inside a longer sentence, so it quotes less of the failure. */
+const CLEAR_REFUSAL_EXCERPT = 80;
+
 /**
  * WHY EVERY DELIVERY CLEARS FIRST, and it is the largest single saving this system has made.
  *
@@ -1289,8 +1517,39 @@ export function clearContext(run, label) {
   } catch (err) {
     // A REFUSED CLEAR IS NOT A REFUSED WAKE. The order still goes, on a bloated context: expensive is
     // strictly better than undelivered, and the refusal is reported rather than swallowed.
-    return `${label}: /clear refused (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, 80)})`;
+    return `${label}: /clear refused (${firstLine(err, CLEAR_REFUSAL_EXCERPT)})`;
   }
+}
+
+/**
+ * Who takes this order: a session that is already free, or a process started for a role that has none.
+ *
+ * THE SPAWN IS THE REFUSAL PATH AND NOTHING ELSE. `route` is asked first and unchanged, so every order
+ * that a standing session can take still goes to one -- this only runs where `deliver` used to write
+ * `UNDELIVERED` and move on. That is what "beside the standing path, never in place of it" means in code.
+ *
+ * BOTH REASONS ARE REPORTED WHEN BOTH FAIL. A refusal that said only "no engineer is idle" would hide the
+ * fact that a spawn was attempted and why it did not happen, which is precisely the question a pilot exists
+ * to answer.
+ *
+ * @param {{session: string, causeKey: string, prompt: string, cause?: string}} order
+ * @param {{label: string, status: string}[]} live
+ * @param {string[]} roster
+ * @param {{run: (args: string[]) => string, spawned: number}} deps `spawned` is how many processes this
+ *   tick has already started -- see `MAX_SPAWNS_PER_TICK`
+ * @returns {{label: string, profile?: {kind: string, model: string, effort: string}} | {refusal: string}}
+ */
+function targetFor(order, live, roster, deps) {
+  const routed = route(order.session, live, roster);
+  if (!("refusal" in routed)) return { label: routed.label };
+  if (!isPilotOrder(order)) return { refusal: routed.refusal };
+  if (deps.spawned >= MAX_SPAWNS_PER_TICK) {
+    return { refusal: `${routed.refusal}, and this tick has already started ${deps.spawned} `
+      + `(MAX_SPAWNS_PER_TICK is ${MAX_SPAWNS_PER_TICK})` };
+  }
+  const spawn = spawnWorker(order, live, roster, { run: deps.run });
+  if ("refusal" in spawn) return { refusal: `${routed.refusal}; ${spawn.refusal}` };
+  return { label: spawn.label, profile: spawn.profile };
 }
 
 /**
@@ -1300,7 +1559,7 @@ export function clearContext(run, label) {
  * between the two re-wakes rather than losing the wake. Re-waking is visible and costs one turn; losing one
  * is invisible and costs however long until someone notices -- the 2026-09-08 shape.
  *
- * @param {{session: string, causeKey: string, prompt: string}[]} orders
+ * @param {{session: string, causeKey: string, prompt: string, cause?: string}[]} orders
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster
  * @param {{run?: (args: string[]) => string, record?: (key: string) => void,
@@ -1312,6 +1571,7 @@ export function deliver(orders, agents, roster, { run = defaultRun, record, coun
   const refused = [];
   const stuck = [];
   const live = agents.map((a) => ({ ...a }));
+  let spawned = 0;
   for (const order of orders) {
     // A CAUSE THAT KEEPS COMING BACK IS NOT A TIMING PROBLEM. Offering it a seventh time would be the
     // silent-retry version of the bug this whole change fixes -- work going nowhere while the log looks
@@ -1321,27 +1581,43 @@ export function deliver(orders, agents, roster, { run = defaultRun, record, coun
       stuck.push(`${order.causeKey}: delivered ${already} times and the cause is still true`);
       continue;
     }
-    const target = route(order.session, live, roster);
+    const target = targetFor(order, live, roster, { run, spawned });
     if ("refusal" in target) {
       refused.push(`${order.causeKey}: ${target.refusal}`);
       continue;
     }
-    // CLEARED BEFORE PROMPTED, always. See `clearContext` for the measurement; in short, a session on its
-    // 500th turn costs ~24x one on its 10th for identical output, and the clear costs one cheap turn.
-    const clearRefusal = clearContext(run, target.label);
-    if (clearRefusal) refused.push(`${order.causeKey}: ${clearRefusal} -- delivered anyway`);
+    // A PROCESS THAT HAS EXISTED FOR TWO SECONDS HAS NOTHING TO CLEAR, and `/clear` is not free: it is a
+    // prompt, a bounded wait and a five-second settle (`CLEAR_SETTLE_MS`) before the order can be typed.
+    // Spending that on a session whose context is its own prefix would be paying the standing path's cost
+    // to reach a floor the spawn already started at -- which is the whole argument for spawning.
+    if (target.profile) spawned += 1;
+    else {
+      // CLEARED BEFORE PROMPTED, always. See `clearContext` for the measurement; in short, a session on its
+      // 500th turn costs ~24x one on its 10th for identical output, and the clear costs one cheap turn.
+      const clearRefusal = clearContext(run, target.label);
+      if (clearRefusal) refused.push(`${order.causeKey}: ${clearRefusal} -- delivered anyway`);
+    }
     try {
       run(["--session", "org", "agent", "prompt", target.label, addressed(order, target.label)]);
     } catch (err) {
+      // A STARTED PROCESS IS LEFT RUNNING HERE, and the causeKey is NOT recorded. It is a healthy, idle
+      // session under a roster label, so the next tick's `route` offers it this same order by the ordinary
+      // path; closing it would throw away a working engineer to tidy up a failed prompt.
       refused.push(`${order.causeKey}: herdr refused the prompt to "${target.label}" `
-        + `(${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, 120)})`);
+        + `(${firstLine(err)})`);
       continue;
     }
-    // Woken agents are working NOW, so a second order in this same tick must not go to the same one.
+    // Woken agents are working NOW, so a second order in this same tick must not go to the same one. A
+    // session this tick STARTED is not in `live` at all, so it is added rather than updated -- without
+    // this, the next refused order in the same tick would find that role absent and start a second
+    // process under a label herdr has just taken.
     const entry = live.find((a) => a.label === target.label);
     if (entry) entry.status = "working";
+    else live.push({ label: target.label, status: "working" });
     if (record) record(order.causeKey);
-    sent.push(`${target.label} <- ${order.causeKey}`);
+    sent.push(target.profile
+      ? `${target.label} <- ${order.causeKey} (STARTED ${target.profile.model}/${target.profile.effort})`
+      : `${target.label} <- ${order.causeKey}`);
   }
   return { sent, refused, stuck };
 }
