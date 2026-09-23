@@ -89,12 +89,30 @@ export const PROFILES = Object.freeze({
   "verdict-not-convinced": Object.freeze({
     kind: "claude",
     model: "sonnet",
-    // HIGH, unlike its sibling above, and the asymmetry is the point: this one WEIGHS a refusal -- does
-    // the objection stand, does the row survive it, who holds the rework. Getting it wrong either
-    // abandons a good change or waves through one a reviewer refused.
+    // HIGH, unlike its sibling above, and the asymmetry is the point -- but the asymmetry now has TWO
+    // arguments behind it, because `notConvincedOrder` has two recipients and this rationale named only
+    // the rarer one until #2017.
+    //
+    // THE COMMON CASE IS THE OWNER REWORKING. Since #2001 the order is addressed to the session the PR's
+    // `session:` label names, and its prompt tells that session the rework is theirs -- adjudicating is
+    // explicitly NOT its call, since disputing the verdict is the escalation back to `product-manager`.
+    // So for most instances the argument is `pr-checks-failing`'s, not a weighing one: reading a refusal
+    // and fixing what it names is debugging against an argument, a cheap tier guesses, pushes, and
+    // spends a full CI cycle per guess. The refusal on #1957 named a surviving mutant at a `file:line`;
+    // there was nothing there to weigh and everything to fix correctly the first time.
+    //
+    // THE UNLABELLED CASE IS THE ONE THAT WEIGHS. With no `session:` label the order goes to
+    // `product-manager` and asks it to decide whether the objection stands, whether the row survives it,
+    // and who holds the rework. Getting that wrong either abandons a good change or waves through one a
+    // reviewer refused.
+    //
+    // Both land on `high`, which is why the recipient split changed nothing here. It is recorded anyway:
+    // a rationale that names one of two recipients is how a correct setting gets changed for a wrong
+    // reason by the next person reading this table.
     effort: "high",
-    why: "weighing a refusal is judgment over the reviewer's argument, not a status flip -- getting it "
-      + "wrong abandons a good change or overrides a refusal",
+    why: "two recipients, both high -- the PR's own session reworking a refusal is debugging against an "
+      + "argument, where a wrong guess costs a CI cycle; and on an unlabelled PR product-manager weighs "
+      + "whether the objection stands, where a wrong call abandons a good change or overrides a refusal",
   }),
   "pr-checks-failing": Object.freeze({
     kind: "claude",

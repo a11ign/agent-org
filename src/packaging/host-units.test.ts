@@ -30,7 +30,7 @@ import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
 import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, systemdUserAvailable,
   hostUnitDrift, permissionModeDrift, orphanedUnits, SHIPPED_DIR, REPO_ROOT, execCommands,
   entriesFromCommand, ghSpawnReachedFrom, identityDrift, unitsSpendingGh, opaqueCommands,
-  retiredHere } from "../host-units.mjs";
+  retiredHere, addedOnSomeRef, orphanOrigin } from "../host-units.mjs";
 
 const SYSTEMD_OK = () => "LANG=C\n";
 const NO_SYSTEMD = () => { throw new Error("systemctl: command not found"); };
@@ -256,13 +256,19 @@ test("#1911: the corpus-release unit reads fleet.env, the only place a unit can 
 // asked "is what we ship installed?" and none asked "is what is installed still ours?".
 
 /**
- * A REAL TWO-COMMIT REPOSITORY, built here: one commit ships two units, the next deletes one of them.
+ * A REAL THREE-COMMIT REPOSITORY, built here: one commit ships two units, the next deletes one of them,
+ * and a third -- on a branch `main` has NOT merged -- adds one more.
  *
  * A FIXTURE AND NOT THIS CHECKOUT, which is the whole lesson of the first CI run. `retiredHere` was
  * asserted against this repository's own history ("#1941 deleted the fleet-gated nightly's units") --
  * true on the agent host, FALSE in the acceptance job, which checks out at the default depth on purpose.
- * A history bounded by whoever cloned cannot be a fixture; two commits made here can.
- * @returns {{ dir: string, git: (args: string[]) => string }}
+ * A history bounded by whoever cloned cannot be a fixture; commits made here can.
+ *
+ * THE UNMERGED BRANCH IS ON THE SAME HISTORY AS THE RETIREMENT ON PURPOSE (#2013). The two questions --
+ * "did a commit delete this" and "does any ref add this" -- are both TRUE of `a11ign-gone.timer`, so the
+ * precedence between them can only be tested where both answers exist at once. A second fixture holding
+ * one shape each could not have caught the ordering.
+ * @returns {{ dir: string, git: (args: string[]) => string, pendingSha: string }}
  */
 const repoWithARetirement = () => {
   const dir = mkdtempSync(join(tmpdir(), "host-units-retirement-"));
@@ -282,7 +288,16 @@ const repoWithARetirement = () => {
   rmSync(join(host, "a11ign-gone.timer"));
   git(["add", "-A"]);
   git(["commit", "-qm", "retire one of them"]);
-  return { dir, git };
+  // AND A BRANCH THIS `main` HAS NOT MERGED, which is the state every host-unit row passes through
+  // between installing a unit and merging the PR that ships it. `switch` back at the end, so the
+  // working tree a test reads is `main`'s -- the unit must be ABSENT from it, or it is not an orphan.
+  git(["switch", "-qc", "pending"]);
+  writeFileSync(join(host, "a11ign-pending.timer"), "[Timer]\nOnCalendar=daily\n");
+  git(["add", "-A"]);
+  git(["commit", "-qm", "ship a unit on a branch"]);
+  const pendingSha = git(["rev-parse", "HEAD"]).trim();
+  git(["switch", "-q", "main"]);
+  return { dir, git, pendingSha };
 };
 
 /**
@@ -293,7 +308,11 @@ const repoWithARetirement = () => {
 const RETIRED_HERE = () => "cafe1234cafe1234cafe1234cafe1234cafe1234\n";
 const NEVER_SHIPPED_HERE = () => "";
 
-const dirs = (shipped: string[], installed: string[], git = NEVER_SHIPPED_HERE) => ({
+// `git` IS TYPED BY THE REAL SIGNATURE, not inferred from whichever stub happened to be the default: the
+// two #1993 stubs ignore their argument, so the inferred type was `() => string` and a stub that READS
+// its argv -- which #2013's must, since the whole defect is a missing flag -- would not typecheck.
+const dirs = (shipped: string[], installed: string[],
+  git: (args: string[]) => string = NEVER_SHIPPED_HERE) => ({
   shippedDir: "/shipped",
   installedDir: "/installed",
   readDir: ((d: string) => (String(d) === "/shipped" ? shipped : installed)) as never,
@@ -381,6 +400,126 @@ test("#1993: a SHALLOW clone cannot say `never`, and must not answer as though i
   assert.equal(retiredHere("a11ign-gone.timer", { git: whole }), false,
     "POSITIVE CONTROL: on a complete history the same empty log IS evidence, or this branch would make "
     + "the answer `null` for everything and the RETIRED finding unreachable");
+});
+
+// --- #2013: "no commit deleted it" was being read as "no commit ever shipped it" --------------------
+//
+// MEASURED 2026-09-22 21:05Z from the primary checkout, with `agent/worktree-prune-unit-2000` pushed and
+// unmerged. `host:check` said `a11ign-worktree-prune.service` was ORPHANED -- NEVER SHIPPED HERE, "so it
+// was installed by hand and this tree has never been able to see what it does". `git log --all --oneline
+// -- packages/agent-org/host/a11ign-worktree-prune.service`, in the same checkout seconds later, named
+// d77e47a29 shipping it. `retiredHere`'s `false` is true of THREE worlds -- never here, shipped on an
+// unmerged ref, shipped and present -- and the middle one had no case, so it was reported as the first.
+// The overstatement landed in the one message whose job is to STOP somebody acting.
+
+/** `git log --diff-filter=D` empty, a whole history, and an ADD on some ref: the third world, as a stub. */
+const SHIPPED_ON_A_REF = (sha = "d77e47a29d77e47a29d77e47a29d77e47a29d77e") => (args: string[]) => {
+  if (args[0] === "rev-parse") return "false\n";
+  return args.includes("--all") ? `${sha}\n` : "";
+};
+
+test("#2013: a unit added by a commit on an unmerged ref is SHIPPED, not a hand-installed mystery", () => {
+  const [f] = orphanedUnits(dirs([], ["a11ign-worktree-prune.service"], SHIPPED_ON_A_REF()));
+  assert.equal(f.problem, "ORPHANED -- SHIPPED ON AN UNMERGED REF d77e47a29d77",
+    "the sha is IN the one-line problem: a reader with three findings needs to know which ref to go to "
+    + "without reading three details");
+  assert.doesNotMatch(f.detail, /NO COMMIT ON ANY REF HERE EVER SHIPPED IT/);
+  assert.doesNotMatch(f.detail, /nobody here knows about/,
+    "THE DONE-WHEN: the finding must stop telling the reader the remedy would delete something the "
+    + "repository has never seen, when the repository has a commit that ships it");
+  assert.match(f.detail, /it is\s+about to be ours/);
+  assert.match(f.detail, /The remedy here is to MERGE/,
+    "the remedy is INVERTED, not reworded -- merge the ref, rather than read a journal and decide "
+    + "whether it is dead");
+  assert.match(f.detail, /git branch -a --contains d77e47a29d77/,
+    "and names the command that turns a sha into the ref carrying it, or `merge that` has no object");
+  assert.notEqual(f.removesUnit, true,
+    "`removesUnit` prints `this repository has no record of ever shipping it` on the REMEDY LINE, which "
+    + "is the same overstatement one seam out -- sharing the flag would have moved it, not fixed it");
+});
+
+test("#2013: it still says DO NOT RUN THE REMEDY -- `host:install` would delete a unit mid-flight", () => {
+  // The finding is not a downgrade to harmless. The unit is absent from THIS tree, so the one remedy
+  // this report names would still delete it -- and the PR that ships it is open, so the deletion undoes
+  // work already done. What changes is WHY, and therefore what the reader should do next.
+  const report = driftReport(orphanedUnits(dirs([], ["a11ign-worktree-prune.service"], SHIPPED_ON_A_REF())));
+  assert.match(report, /DO NOT RUN THE REMEDY YET/);
+  assert.match(report, /a11ign-worktree-prune\.service would be DELETED, and commit d77e47a29d77 ships it/);
+  assert.match(report, /Merge that ref first/);
+  assert.doesNotMatch(report, /no record of ever\n\s+shipping it/,
+    "the remedy line is where the careless reader ends up, so it is where the wrong claim did the "
+    + "damage -- #1993 put it there deliberately and #2013 is why it needed a third paragraph");
+  assert.ok(report.indexOf("DO NOT RUN") < report.indexOf("npm run host:install\n"),
+    "ABOVE the command, as #1993's own is");
+});
+
+test("#2013: `addedOnSomeRef` reads a real unmerged branch out of a real history, through the real argv", () => {
+  // AGAINST REAL `git` and a repository built here, for the reason the `retiredHere` twin gives: a stub
+  // cannot catch a wrong flag, and `--all` is precisely the flag whose absence caused this row.
+  const { dir, git, pendingSha } = repoWithARetirement();
+  try {
+    const deps = { shippedDir: join(dir, "packages/agent-org/host"), git };
+    assert.equal(addedOnSomeRef("a11ign-pending.timer", deps), pendingSha,
+      "the unit is absent from main's tree and added by a commit only `pending` reaches -- so HEAD's own "
+      + "log, which is what `retiredHere` asks, is the one history that CANNOT answer this");
+    assert.equal(addedOnSomeRef("a11ign-never-existed.timer", deps), "",
+      "POSITIVE CONTROL: a name no commit ever carried answers `` and not a sha, so `--all` is not "
+      + "matching every commit in the repository");
+    assert.equal(addedOnSomeRef("a11ign-stays.timer", deps), git(["rev-list", "--max-parents=0", "HEAD"]).trim(),
+      "and a unit still in the tree names the commit that ADDED it, not the tip -- `--diff-filter=A` is "
+      + "doing the work rather than the pathspec alone");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#2013: DELETION DECIDES -- a retired unit was also ADDED once, and must not read as pending", () => {
+  // THE ORDERING CONTROL, and the one assertion that fails if the two questions are asked the other way
+  // round. Every retired unit has an adding commit still reachable from `--all`; verified against this
+  // repository's own history, where `a11ign-fleet-gated-nightly.timer` answers both (added by 8dacbc254,
+  // deleted by b65b874a8). Asking the addition question first would relabel EVERY retirement as
+  // shipped-on-an-unmerged-ref -- and that finding's remedy is "merge it", which would send a reader off
+  // to merge a deletion that already happened.
+  const { dir, git, pendingSha } = repoWithARetirement();
+  try {
+    const deps = { shippedDir: join(dir, "packages/agent-org/host"), git };
+    assert.notEqual(addedOnSomeRef("a11ign-gone.timer", deps), "",
+      "THE CONFOUND ITSELF, asserted rather than assumed: some commit DOES add the retired unit, so the "
+      + "two questions really are both true here and the precedence really is being exercised");
+    assert.deepEqual(orphanOrigin("a11ign-gone.timer", deps), { state: "retired" });
+    assert.deepEqual(orphanOrigin("a11ign-pending.timer", deps), { state: "unmerged", sha: pendingSha });
+    assert.deepEqual(orphanOrigin("a11ign-never-existed.timer", deps), { state: "never" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#2013: a SHALLOW clone cannot say `no ref adds it` either, and `orphanOrigin` keeps the UNKNOWN", () => {
+  // `retiredHere` refuses to answer `never` on a bounded history (#1993). The addition question is bounded
+  // the same way and by the same clone, so answering it confidently there would put the honest UNKNOWN
+  // back into a confident NEVER through the new door.
+  const shallow = (args: string[]) => (args[0] === "rev-parse" ? "true\n" : "");
+  assert.equal(addedOnSomeRef("a11ign-pending.timer", { git: shallow }), null);
+  assert.deepEqual(orphanOrigin("a11ign-pending.timer", { git: shallow }), { state: "unreadable" },
+    "and it surfaces as HISTORY UNREADABLE rather than NEVER SHIPPED -- NOT ASKED and ANSWERED NO are "
+    + "the substitution this file exists to stop");
+  const whole = (args: string[]) => (args[0] === "rev-parse" ? "false\n" : "");
+  assert.deepEqual(orphanOrigin("a11ign-pending.timer", { git: whole }), { state: "never" },
+    "POSITIVE CONTROL: on a complete history the same empty log IS evidence, or `never` would be "
+    + "unreachable and the #1993 finding dead");
+});
+
+test("#2013 POSITIVE CONTROL: the two #1993 states are unchanged, and were not weakened to fit", () => {
+  // The done-when names these as the controls to keep passing. The new state must come from a question
+  // that was not being asked, never from softening the two answers that were already right.
+  const [never] = orphanedUnits(dirs([], ["a11ign-board-report.timer"], NEVER_SHIPPED_HERE));
+  assert.equal(never.problem, "ORPHANED -- NEVER SHIPPED HERE");
+  assert.equal(never.removesUnit, true);
+  assert.equal(never.shippedOnRef, undefined);
+  const [retired] = orphanedUnits(dirs([], ["a11ign-fleet-gated-nightly.timer"], RETIRED_HERE));
+  assert.equal(retired.problem, "ORPHANED -- RETIRED HERE");
+  assert.equal(retired.shippedOnRef, undefined);
+  assert.notEqual(retired.removesUnit, true);
 });
 
 test("#1951: ONLY this org's units -- the host runs others and they are not ours to judge", () => {
