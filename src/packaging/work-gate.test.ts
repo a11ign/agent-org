@@ -3342,3 +3342,55 @@ test("#2084: an EMPTY decision is NOT an approval -- the #1968 state has its own
   }
   assert.equal(new Set(Object.values(REVIEW_STATE)).size, 6, "and the six are genuinely distinct");
 });
+
+/**
+ * #2113 AT THE SEAM THAT OFFERS ROWS, WHICH IS THE ONLY PLACE THE DEFECT COULD EVER COST ANYTHING.
+ *
+ * `waitingOn`'s own tests pin the parsing and the comparison. This pins what the gate DOES with it: a
+ * `ready` row declaring a sub-day wait is shelved with its reason while the hour has not arrived, and
+ * offered the moment it has -- ON THE SAME DATE, which is the resolution the field could not express.
+ *
+ * THE CLOCK IS INJECTED, and #2113 is why this path needed one: whether a row is offerable can now change
+ * within a single day, so a test that read the host clock could not tell a correct answer from a lucky
+ * one. `partitionFleetBatch` already took a `clock` for the same reason; this is that pattern, not a new
+ * one.
+ */
+test("#2113: a Ready row waiting on an HOUR is shelved before it and offered after, on one date", () => {
+  const dated = readyRow(2002, { body: "## Not-before: 2026-09-23T06:10:00Z" });
+  const clock = (iso: string) => ({ today: "2026-09-23", nowMs: Date.parse(iso) });
+
+  // 00:20Z: the date has arrived and the 06:10Z run has not. Before #2113 this row was OFFERABLE, and a
+  // session woken for it could not have finished it.
+  const early = partitionUnclaimed([dated, readyRow(2003)], [], { clock: clock("2026-09-23T00:20:00Z") });
+  assert.deepEqual(early.offerable.map((r: { number: number }) => r.number), [2003],
+    "#2003 declares nothing and is still offered -- without it a gate that shelved everything would pass");
+  assert.equal(early.blocked.length, 1, "shelved with a reason, never silently dropped");
+  assert.equal(early.blocked[0].number, 2002);
+  assert.match(early.blocked[0].reason, /not before 2026-09-23T06:10:00Z .*clears itself/,
+    "the shelf line names the HOUR: a reader deciding whether to wait cannot use the day it falls in");
+
+  // 07:14Z, the same date -- the moment #2002's owner actually took the read. The wait has cleared with
+  // no edit to the row, which is the property every condition in this module is required to have.
+  const late = partitionUnclaimed([dated, readyRow(2003)], [], { clock: clock("2026-09-23T07:14:00Z") });
+  assert.deepEqual(late.offerable.map((r: { number: number }) => r.number), [2002, 2003],
+    "the ONLY thing that changed is the clock, so nothing else can be what released it");
+  assert.deepEqual(late.blocked, []);
+});
+
+test("#2113: a date-only Ready row is offered and shelved exactly as it was before the widening", () => {
+  // THE EQUIVALENCE AT THE SEAM. `waitingOn` is asked for the whole org here, so a change that altered
+  // any date-only row's answer would be a behaviour change dressed as a widening. A date-only value is
+  // measured against `today` at midnight UTC, and the clock is moved across the whole day to show it
+  // does not enter that path at all.
+  const dated = readyRow(2002, { body: "Not-before: 2026-09-24" });
+  for (const at of ["2026-09-23T00:00:00Z", "2026-09-23T23:59:59Z"]) {
+    const { offerable, blocked } = partitionUnclaimed([dated], [],
+      { clock: { today: "2026-09-23", nowMs: Date.parse(at) } });
+    assert.deepEqual(offerable, [], `tomorrow's date still shelves the row at ${at}`);
+    assert.match(blocked[0].reason, /not before 2026-09-24/);
+  }
+  const arrived = partitionUnclaimed([dated], [],
+    { clock: { today: "2026-09-24", nowMs: Date.parse("2026-09-24T00:00:00Z") } });
+  assert.deepEqual(arrived.offerable.map((r: { number: number }) => r.number), [2002],
+    "and the day itself is not 'before' it -- the rule this field has always had");
+});
