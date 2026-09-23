@@ -5,7 +5,7 @@
 // org can act on what it is told and cannot act on anything it learns.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { waitingOn, notBeforeDate, todayIso, describeWaiting, proseBlockers, answerOwedBy }
+import { waitingOn, notBeforeDate, todayIso, describeWaiting, proseBlockers, answerOwedBy, fleetWaitingOn }
   from "../waiting-condition.mjs";
 
 test("an OPEN blocker is a wait; a CLOSED one is a wait that has cleared", () => {
@@ -176,4 +176,147 @@ test("#2005: a row that carries the label has ALREADY done what proseBlockers as
   // THE POSITIVE CONTROL: the same body with no label is still the smell this cause exists to report.
   const prose = [{ number: 2002, body: complied[0].body }];
   assert.deepEqual(proseBlockers(prose).map((f) => f.number), [2002]);
+});
+
+// --- #2113: the date field gains an HOUR, and the comparison moves to parsed time ---
+
+/**
+ * `Not-before:` COULD NOT EXPRESS A WAIT SHORTER THAN A DAY, so a row whose last done-when turns true at
+ * a named HOUR read as startable from midnight.
+ *
+ * #2002's last done-when was a read of a `workflow_dispatch` run the host timer fires at 06:10Z. The row
+ * carried `Not-before: 2026-09-23`; at 00:20Z that date had arrived and the run had not, so `waitingOn`
+ * reported the row as waiting on NOTHING for the ~5h50m in between. The harm on #2002 itself was zero --
+ * it was `in-progress` with an owner, who took the read at 07:14Z -- and the exposure is an unclaimed
+ * `ready` row with a sub-day wait, offered to a session that cannot finish it.
+ */
+test("#2113: a `Not-before:` hour that has not arrived is a wait, and one that has passed is not", () => {
+  const row = { body: "## Not-before: 2026-09-23T06:10:00Z" };
+  const at = (iso: string) => Date.parse(iso);
+
+  assert.deepEqual(waitingOn(row, "2026-09-23", at("2026-09-23T00:20:00Z")),
+    { kind: "date", date: "2026-09-23T06:10:00Z" },
+    "00:20Z on the named date is BEFORE the named hour -- today's defect read this as waiting on nothing");
+
+  // THE ASSERTION THAT FAILS ON THE ONE-REGEX WIDENING, and it is the whole finding rather than a
+  // corollary. Widening the regex alone leaves `waitingOn` comparing `date > today` against a
+  // ten-character `today`, and a string is greater than its own prefix: `"2026-09-23T06:10:00Z" >
+  // "2026-09-23"` is `true`, so the row would stay shelved for ALL of 2026-09-23 and clear at
+  // 2026-09-24T00:00Z. A 6-hour wait turned into an 18-hour-late one -- the same defect, other sign.
+  assert.equal(waitingOn(row, "2026-09-23", at("2026-09-23T07:14:00Z")), null,
+    "07:14Z is past the named hour ON THE NAMED DATE: the wait has cleared and the row is startable");
+
+  assert.equal(describeWaiting({ kind: "date", date: "2026-09-23T06:10:00Z" }),
+    "not before 2026-09-23T06:10:00Z",
+    "a reader deciding whether to wait needs the hour, not the day it falls in");
+});
+
+/**
+ * THE DATE-ONLY EQUIVALENCE, PINNED AGAINST THE RULE IT REPLACES rather than against remembered cases.
+ *
+ * This is what makes #2113 a widening and not a behaviour change: `date > today` compared two
+ * ten-character strings, and a parsed comparison with a date-only value read as MIDNIGHT UTC gives the
+ * identical answer on every calendar-valid date-only row. The clock is varied across the whole day to
+ * show it does not enter this path at all -- a date-only wait is a claim about a calendar day.
+ */
+test("#2113: every date-only value reports exactly what the lexical rule reported", () => {
+  const dates = ["2026-09-19", "2026-09-21", "2026-09-22", "2026-12-01", "2099-01-01", "2024-02-29"];
+  const todays = ["2026-09-19", "2026-09-21", "2026-09-22", "2026-09-23", "2027-01-01"];
+  const clocks = ["2026-09-23T00:00:00Z", "2026-09-23T12:00:00Z", "2026-09-23T23:59:59Z"];
+  for (const date of dates) {
+    for (const today of todays) {
+      const lexical = date > today ? { kind: "date", date } : null;
+      for (const clock of clocks) {
+        assert.deepEqual(waitingOn({ body: `Not-before: ${date}` }, today, Date.parse(clock)), lexical,
+          `${date} against ${today} must answer as it did before #2113, whatever the clock reads`);
+      }
+    }
+  }
+});
+
+test("#2113: a time is only accepted with SECONDS and a `Z`, and anything else fails OPEN", () => {
+  // `Fleet-hold-until:`'s rule, carried onto this path: requiring seconds means a malformed field is
+  // refused as a whole rather than half-parsed. Failing open leaves the row visible for a human to find,
+  // which is the one direction of error that has a witness.
+  for (const bad of ["2026-09-23T06:10Z", "2026-09-23T06:10:00", "2026-09-23T06:10:00+01:00",
+    "2026-09-23 06:10:00Z", "2026-09-23T6:10:00Z"]) {
+    assert.equal(notBeforeDate(`Not-before: ${bad}`), null, `"${bad}" must not parse`);
+    assert.equal(waitingOn({ body: `Not-before: ${bad}` }, "2026-09-23", 0), null,
+      `"${bad}" must leave the row visible rather than hiding it on a value we could not read`);
+  }
+  assert.equal(notBeforeDate("Not-before: 2026-09-23T06:10:00Z"), "2026-09-23T06:10:00Z",
+    "the positive control: the one spelling this field accepts");
+});
+
+/**
+ * DIGIT-SHAPED IS NOT CALENDAR-VALID, and this rule ARRIVED WITH THE PARSED COMPARISON rather than
+ * beside it.
+ *
+ * A lexical comparison cannot roll a date over, because it never parses one: `"2026-02-31" > today` was a
+ * string question and February's missing 31st never came into it. The moment the comparison became a
+ * parsed one, `Date` began silently repairing such a value -- `2026-02-31T00:00:00Z` is 2026-03-03, three
+ * days later than typed -- so the round-trip refusal `fleetHoldUntil` has held since #1841 is part of
+ * this change and not a separate tightening.
+ */
+test("#2113: a calendar-invalid value is REFUSED rather than silently rolled over", () => {
+  for (const bad of ["2026-02-31", "2026-02-29", "2026-04-31", "2026-13-01", "2026-00-10",
+    "2026-02-31T04:00:00Z", "2026-09-23T25:00:00Z"]) {
+    assert.equal(notBeforeDate(`Not-before: ${bad}`), null, `"${bad}" is not a moment the calendar has`);
+    assert.equal(waitingOn({ body: `Not-before: ${bad}` }, "2026-01-01", 0), null,
+      "and it fails OPEN, the same direction a malformed value does");
+  }
+  // THE CONTROL, without which the assertions above pass on a parser that refuses everything: real dates
+  // next door to each refusal, including the leap day 2026 lacks and 2024 has.
+  assert.equal(notBeforeDate("Not-before: 2026-03-01"), "2026-03-01");
+  assert.equal(notBeforeDate("Not-before: 2024-02-29"), "2024-02-29", "2024 IS a leap year");
+  assert.equal(notBeforeDate("Not-before: 2026-04-30"), "2026-04-30");
+  assert.equal(notBeforeDate("Not-before: 2026-09-23T23:59:59Z"), "2026-09-23T23:59:59Z");
+});
+
+test("#2113: the other conditions still outrank the date, whatever granularity it is written at", () => {
+  // `waitingOn`'s own rule -- the existing conditions are asked FIRST -- is what bounds this change to
+  // rows previously reported as waiting on NOTHING. A widened field must not reorder it.
+  const blocked = { blockedBy: { nodes: [{ number: 9, state: "OPEN" }] },
+    body: "Not-before: 2099-01-01T06:10:00Z" };
+  assert.deepEqual(waitingOn(blocked, "2026-09-23", 0), { kind: "row", numbers: [9] });
+
+  // AND THE COMPLEMENT: with the hour passed, the answer-wait beneath it is what is left, so the row is
+  // still held rather than falling through to "nothing is stopping this".
+  const answered = { labels: [{ name: "answer:ceo" }], body: "Not-before: 2026-09-23T06:10:00Z" };
+  assert.deepEqual(waitingOn(answered, "2026-09-23", Date.parse("2026-09-23T07:14:00Z")),
+    { kind: "answer", session: "ceo" });
+});
+
+test("#2113: a row declaring the sub-day form has recorded it as DATA, so it is not nagged", () => {
+  // `proseBlockers` reads the same parser. A row that declares an hour has done what the rule asks, and
+  // nagging a session that complied is how a smell becomes noise (#1780).
+  const declared = [{ number: 2002, blockedBy: { totalCount: 0 },
+    body: "Not-before: 2026-09-23T06:10:00Z\nwaiting on the 06:10Z dispatch before the last done-when" }];
+  assert.deepEqual(proseBlockers(declared), []);
+
+  // THE POSITIVE CONTROL: the same prose with the field malformed is still the smell, because a value
+  // that fails open has recorded nothing.
+  const malformed = [{ number: 2002, blockedBy: { totalCount: 0 },
+    body: "Not-before: 2026-09-23T06:10Z\nwaiting on the 06:10Z dispatch before the last done-when" }];
+  assert.deepEqual(proseBlockers(malformed).map((f) => f.number), [2002]);
+});
+
+test("#2113: a fleet-gated row's two conditions are read against the SAME clock", () => {
+  // `fleetWaitingOn` takes a clock because `Fleet-hold-until:` has always been sub-day. Passing only
+  // `today` down to `waitingOn` would have left a fleet-gated row's `Not-before:` measured against the
+  // HOST clock while the hold beside it was measured against the injected one -- so a test that moved
+  // time would move one of them, and `partitionFleetBatch` would dispatch a row whose hour had not come.
+  const row = { body: "Not-before: 2026-09-23T06:10:00Z\nFleet-hold-until: 2026-09-23T04:00:00Z" };
+  assert.deepEqual(fleetWaitingOn(row, "2026-09-23", Date.parse("2026-09-23T00:20:00Z")),
+    { kind: "date", date: "2026-09-23T06:10:00Z" },
+    "the general conditions are asked first, and the injected clock is what decides this one");
+
+  // BOTH HOURS PASSED, ON THE SAME DATE: the row is dispatchable, and only the clock changed.
+  assert.equal(fleetWaitingOn(row, "2026-09-23", Date.parse("2026-09-23T07:14:00Z")), null);
+
+  // AND THE CONTROL that the hold is still read at all -- between the two hours it is the `Not-before:`
+  // that has cleared and the hold that has not.
+  const heldOnly = { body: "Fleet-hold-until: 2026-09-23T08:00:00Z" };
+  assert.deepEqual(fleetWaitingOn(heldOnly, "2026-09-23", Date.parse("2026-09-23T07:14:00Z")),
+    { kind: "fleet-hold", until: "2026-09-23T08:00:00Z" });
 });
