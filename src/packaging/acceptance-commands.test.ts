@@ -20,6 +20,8 @@ import {
   unmetCommandClosureRequirements,
   runsTheWholeSuite,
   suiteTestFiles,
+  suiteScriptFor,
+  SUITE_SCRIPTS,
   SPAWNS_GH,
   endsInsideQuote,
   handRunDeclaration, handRunAcceptanceReason, handRunEvidence,
@@ -1387,20 +1389,102 @@ test("CONTROL: a command that merely mentions the word test is not a whole-suite
 
 /**
  * THE FLOOR. Every assertion above is satisfied by finding FEWER files: an empty population makes the
- * union of requirements empty, `npm test` reads as needing nothing, and the gate passes having examined
- * nothing -- the failure this whole mechanism exists to prevent, reintroduced one layer up.
+ * union of requirements empty, a whole-suite command reads as needing nothing, and the gate passes having
+ * examined nothing -- the failure this whole mechanism exists to prevent, reintroduced one layer up.
  *
  * `suiteTestFiles` throws rather than returning `[]` for the same reason, and this proves the glob it
- * reads out of `package.json` actually resolves against this tree.
+ * reads out of `package.json` actually resolves against this tree. PER SCRIPT since #2153, because the
+ * floor is now four populations rather than one, and a floor asserted on only the widest of them would
+ * be met by three empty ones.
  */
-test("the suite population is real -- a floor, because every check above passes vacuously over an empty one", () => {
-  const files = suiteTestFiles();
-  assert.ok(files.length >= 300,
-    `only ${files.length} test file(s) found; \`test:ts\` itself asserts --min=300, so fewer means the `
-    + "glob no longer resolves and this gate is answering about a population it never examined");
-  assert.ok(files.some((f: string) => f.endsWith("row-claim-live.test.ts")),
+test("every suite script's population is real -- a floor, because every check above passes vacuously "
+  + "over an empty one", () => {
+  for (const script of SUITE_SCRIPTS) {
+    const files = suiteTestFiles(script);
+    assert.ok(files.length >= 180,
+      `\`${script}\` resolved to only ${files.length} test file(s); the narrowest of these scripts `
+      + "asserts --min=180 for itself, so fewer means the glob no longer resolves and this gate is "
+      + "answering about a population it never examined");
+  }
+  assert.ok(suiteTestFiles("test:all").some((f: string) => f.endsWith("row-claim-live.test.ts")),
     "the file whose token requirement started this must be IN the population, or the gate cannot have "
     + "caught it");
+});
+
+/**
+ * #2153 -- THE PREDICATE AND THE POPULATION MUST ANSWER ABOUT THE SAME SCRIPT.
+ *
+ * `runsTheWholeSuite` said yes to `npm test`/`npm run test:ts` and no to `npm run test:org`/`test:all`,
+ * while the population it selected was `test:all`'s glob for all of them. Both halves were wrong at once
+ * and in opposite directions: the narrow commands were charged 419 files they never load (and refused for
+ * one of them), and the wide commands were not recognised, fell through to `tsxTestFileArgs`, tokenised
+ * into three words that are not files, and were handed to the runner having been charged nothing.
+ *
+ * MEASURED: at the head this landed on, `test:ts` resolved 220 files and `test:all` 641.
+ */
+test("the four suite script names are `package.json`'s OWN, not a retyped list", () => {
+  const scripts = JSON.parse(readFileSync("package.json", "utf8")).scripts as Record<string, string>;
+  assert.equal(SUITE_SCRIPTS.length, 4,
+    "four spellings run a whole `.test.ts` suite here, and DROPPING one is the defect this row fixed -- "
+    + "an unrecognised whole-suite command is charged nothing at all, not charged less");
+  for (const name of SUITE_SCRIPTS) {
+    assert.ok(typeof scripts[name] === "string",
+      `\`${name}\` is not a script in package.json -- this list decides which commands the capability `
+      + "gate charges, so a name that no longer exists charges nothing and reads as a command that needs "
+      + "nothing");
+    assert.equal(suiteScriptFor(`npm run ${name}`), name,
+      `\`npm run ${name}\` must resolve to \`${name}\`, or the list and the pattern built from it disagree`);
+  }
+  // THE COMPLEMENT, so "every name resolves" is not satisfied by a pattern that resolves everything.
+  assert.equal(suiteScriptFor("npm run test:python"), null,
+    "python's population is the pytest tree, not the `.test.ts` glob these callers walk");
+  assert.equal(suiteScriptFor("npm run test:changed"), null,
+    "`test:changed` has no fixed glob -- it is not a whole-suite command and must not be given one");
+});
+
+test("DIRECTION 1 -- `npm test` is charged the files it RUNS, never `test:all`'s wider glob", () => {
+  const narrow = suiteTestFiles("test");
+  const wide = suiteTestFiles("test:all");
+  assert.equal(suiteScriptFor("npm test"), "test");
+  assert.ok(narrow.length < wide.length,
+    "`npm test` runs `test:ts` (the product packages) and `test:all` runs every package, so charging "
+    + "them the same population is the inversion this row fixed");
+  const org = suiteTestFiles("test:org");
+  assert.deepEqual(narrow.filter((f: string) => org.includes(f)), [],
+    "not one file `npm test` is charged may be a file only `test:org` runs -- a refusal naming a file "
+    + "the command cannot load tells its author to change a command for a reason that is not true");
+  // POSITIVE CONTROL for that emptiness: the org half is real and non-empty, so the intersection above
+  // is empty because the populations are disjoint rather than because one of them is missing.
+  assert.ok(org.length > 0 && narrow.length > 0, "both halves must be non-empty for the disjointness to mean anything");
+  assert.deepEqual([...narrow, ...org].sort(), [...wide].sort(),
+    "`test:ts` and `test:org` partition `test:all` -- if they do not, one of these three globs has moved "
+    + "and the charge is about a population no command runs");
+});
+
+test("DIRECTION 2 -- `npm run test:org` and `npm run test:all` are RECOGNISED and charged their own "
+  + "population, rather than executed having been charged nothing", () => {
+  const caps = { history: false, token: false, fleet: false, corpus: false };
+  for (const command of ["npm run test:org", "npm run test:all"]) {
+    assert.equal(runsTheWholeSuite(command), true,
+      `${command} runs every org test file; reading it as "names no test file" is how it reached the `
+      + "runner in a job with no token and no corpus");
+    const verdict = classifyCommand(command, { capabilities: caps });
+    assert.equal(verdict.verdict, "refused",
+      `${command} must be refused, not handed to the runner -- that is the 2026-09-09 failure: a red `
+      + "check naming an author for a line they never wrote");
+    assert.match(verdict.reason!, /\.test\.ts/, "the refusal must NAME a file, or it is not followable");
+  }
+  // CONTROL: the capabilities decide it, never the command's shape.
+  assert.equal(classifyCommand("npm run test:all",
+    { capabilities: { history: true, token: true, fleet: true, corpus: true } }).verdict, "runnable");
+});
+
+test("an unrecognised script name THROWS rather than reading as a population of none", () => {
+  assert.throws(() => suiteTestFiles("test:no-such-script"), /names no .* glob/,
+    "returning `[]` here is exactly the hole this function exists to close: an empty population makes "
+    + "the union of requirements empty, so the command passes the capability gate having examined "
+    + "nothing -- and `unmetCommandRequirements` returning `[]` is indistinguishable from `this command "
+    + "needs nothing`");
 });
 
 /**
