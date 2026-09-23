@@ -9,10 +9,11 @@
 // tokens carried, at least one auto-compact. Five of the six prompts were the documented path.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promptable, clearThenPrompt, queueable, queueOrLose, queueDepthNote, EXIT }
+import { promptable, clearThenPrompt, queueable, queueOrLose, queueDepthNote, queueDepth,
+  deepQueueRefusal, DEEP_QUEUE, NEEDS_DECISION_FLAG, EXIT }
   from "../prompt-session.mjs";
 import { readHandoffs } from "../wake.mjs";
 
@@ -261,4 +262,155 @@ test("a queue that cannot be read back is a DIAGNOSTIC, never a lost order", () 
     assert.match(queueDepthNote("reviewer", path), /could not read/,
       "a malformed line is reported here and thrown by the tick, where it costs only its own orders");
   });
+});
+
+// ---------------------------------------------------------------------------------------------------
+// A REPORT THAT NEEDS NO DECISION IS A ROW WRITE, NOT AN ORDER (#2167).
+//
+// Read on the agent host 2026-09-23T15:03Z: 60 pending orders, 55 of them for `product-manager`, the
+// oldest about eight hours old, and every other session at 2 or fewer. That is not a `wake` defect --
+// delivery clears its target first, so delivering faster wipes work in progress (#912/#1966) -- it is a
+// routing consequence, because `ceo`'s 2026-09-14 rule makes one session the first reader for rows,
+// claims, completions and close-outs, and that session is the one that is never between tasks.
+//
+// #2102 already told the author what they were joining, AND THE QUEUE STILL REACHED 60. A note at the
+// end of a command that has already succeeded is advice; this moves the same fact in front of the write,
+// where it decides. BOTH DIRECTIONS ARE PINNED BELOW, and the second is not a formality: without it this
+// is a mute button on the one inbox that must never be muted.
+
+/** A queue of `n` orders for `session`, the oldest `oldestHours` old. The 2026-09-23 shape, resized. */
+function queueOf(path: string, session: string, n: number, oldestHours: number): void {
+  const now = Date.now();
+  writeFileSync(path, Array.from({ length: n }, (_unused, i) => JSON.stringify({
+    id: `handoff/${session}/${i}`, session, prompt: `report ${i}`,
+    queuedAt: now - (oldestHours - (i * oldestHours) / n) * 60 * 60_000,
+  })).join("\n") + "\n");
+}
+
+test("AT THE THRESHOLD the order is REFUSED, and the refusal names depth, oldest wait and the remedy", () => {
+  inTempDir((dir) => {
+    const path = join(dir, "q");
+    queueOf(path, "product-manager", DEEP_QUEUE, 8);
+
+    const { value, err } = withStderr(() => queueOrLose({
+      label: "product-manager", text: "Merged #2158; row closed out.", why: "is working",
+      agents: [{ label: "product-manager", status: "working" }], path,
+    }));
+
+    assert.equal(value, EXIT.REFUSED, "non-zero -- nothing holds this order, and the author must act");
+    assert.match(err, /already has 10 order\(s\) waiting/, "the DEPTH, as the row asks");
+    assert.match(err, /oldest has waited 8\.0h/, "the OLDEST PENDING AGE, as the row asks");
+    assert.match(err, /WRITE IT ON THE ROW/, "the REMEDY, as the row asks");
+    assert.match(err, /--needs-decision/, "and the declaration that gets past it");
+    // IT NEVER QUEUES BEHIND THE PILE IT IS REFUSING TO JOIN. The row says so in those words, and this
+    // is the assertion: the file it was refused for is exactly as deep as it was.
+    assert.equal(readHandoffs(path).length, DEEP_QUEUE, "the refused order was NOT appended");
+    assert.equal(readHandoffs(path).some((h) => h.prompt.includes("2158")), false);
+  });
+});
+
+test("AND THE REFUSAL DOES NOT SWALLOW THE REPORT -- the text comes back, because stdin holds no copy", () => {
+  // `main` reads the order from stdin by default, so a refusal that printed only the depth would destroy
+  // the only copy of a report an author had piped in. The row's own words: it never silently drops.
+  inTempDir((dir) => {
+    const path = join(dir, "q");
+    queueOf(path, "product-manager", DEEP_QUEUE + 5, 3);
+    const text = "Claimed #2167 on branch agent/queue-depth-refusal-2167.";
+    const { err } = withStderr(() => queueOrLose({
+      label: "product-manager", text, why: "is working",
+      agents: [{ label: "product-manager", status: "working" }], path,
+    }));
+    assert.ok(err.includes(text), "the report is printed back verbatim, for the author to paste on the row");
+  });
+});
+
+test("THE SECOND DIRECTION: an order DECLARING a decision still queues at the same depth", () => {
+  // WITHOUT THIS TEST THIS CHANGE IS A MUTE BUTTON. A ruling, a stop-the-line, a question whose answer
+  // changes what somebody does next are the orders a deep queue makes MORE urgent, not less.
+  inTempDir((dir) => {
+    const path = join(dir, "q");
+    queueOf(path, "product-manager", DEEP_QUEUE, 8);
+
+    const { value, err } = withStderr(() => queueOrLose({
+      label: "product-manager", text: "STOP THE LINE: main is red at 60e8784ce.", why: "is working",
+      agents: [{ label: "product-manager", status: "working" }], path, needsDecision: true,
+    }));
+
+    assert.equal(value, EXIT.QUEUED, "declared a decision -- it is held, not refused");
+    const queued = readHandoffs(path);
+    assert.equal(queued.length, DEEP_QUEUE + 1, "and it is ON DISK, which is the assertion that matters");
+    assert.equal(queued.at(-1)?.prompt, "STOP THE LINE: main is red at 60e8784ce.");
+    assert.match(err, /QUEUE DEPTH: this is order 11/,
+      "still told what it joined -- the declaration buys a place in the queue, not silence about it");
+  });
+});
+
+test("ONE ORDER BELOW THE THRESHOLD still queues, so the boundary is pinned on both sides", () => {
+  // The refusal fires at DEEP_QUEUE, not near it. An off-by-one here is the difference between a rule
+  // and a rule that also refuses the ninth report anybody ever sends.
+  inTempDir((dir) => {
+    const path = join(dir, "q");
+    queueOf(path, "product-manager", DEEP_QUEUE - 1, 8);
+    const { value, err } = withStderr(() => queueOrLose({
+      label: "product-manager", text: "completion report", why: "is working",
+      agents: [{ label: "product-manager", status: "working" }], path,
+    }));
+    assert.equal(value, EXIT.QUEUED);
+    assert.equal(readHandoffs(path).length, DEEP_QUEUE, "the positive control: it really was appended");
+    assert.doesNotMatch(err, /NOT PROMPTED, AND NOT QUEUED/);
+    assert.match(err, /QUEUE DEPTH: this is order 10/, "#2102's note is what a queue under the bar gets");
+  });
+});
+
+test("the threshold decision is PURE, and it is the measurement that picked 10", () => {
+  // Pinned as a function of the two inputs, away from the filesystem, so the boundary is readable. 10 is
+  // the row's starting point and this file is where it is pinned: every other session's queue on
+  // 2026-09-23 was 2 or fewer, and the stalled one was 55.
+  assert.equal(DEEP_QUEUE, 10);
+  const order = { label: "product-manager", text: "report", needsDecision: false };
+  const at = (waiting: number) => ({ session: "product-manager", waiting, oldestMs: 8 * 3_600_000, stale: waiting });
+  assert.equal(deepQueueRefusal(at(DEEP_QUEUE - 1), order), null, "under the bar queues");
+  assert.ok(deepQueueRefusal(at(DEEP_QUEUE), order), "at the bar refuses");
+  assert.ok(deepQueueRefusal(at(DEEP_QUEUE + 45), order), "and above it");
+  assert.equal(deepQueueRefusal(at(DEEP_QUEUE + 45), { ...order, needsDecision: true }), null,
+    "and a declared decision is never refused, at any depth");
+  assert.equal(deepQueueRefusal(undefined, order), null,
+    "a target with nothing waiting is not in the backlog at all, and must not read as deep");
+});
+
+test("A DEPTH THAT CANNOT BE READ NEVER REFUSES -- 'could not ask' is not 'too deep'", () => {
+  // The same judgement `queueable(label, null)` makes one refusal earlier: an order is not destroyed
+  // because a file could not be parsed. `queueDepth` hands the failure back rather than throwing, and
+  // this is the assertion that the refusal path treats it as no-depth.
+  inTempDir((dir) => {
+    const path = join(dir, "q");
+    writeFileSync(path, '{"session":"product-manager"}\n');
+    const { mine, unreadable } = queueDepth("product-manager", path);
+    assert.equal(mine, undefined);
+    assert.match(String(unreadable), /missing id\/session\/prompt/, "the cause is carried, not swallowed");
+    assert.equal(deepQueueRefusal(mine, { label: "product-manager", text: "r", needsDecision: false }), null,
+      "an unmeasurable queue must not refuse an order");
+  });
+  // AND THE CONTROL: a queue that CAN be read reports a depth, so the line above is not vacuous.
+  inTempDir((dir) => {
+    const path = join(dir, "q");
+    queueOf(path, "product-manager", 3, 1);
+    const { mine, unreadable } = queueDepth("product-manager", path);
+    assert.equal(unreadable, undefined);
+    assert.equal(mine?.waiting, 3);
+  });
+});
+
+test("the flag the rules file tells an author to type is the flag this command accepts", () => {
+  // A refusal that names a flag `refuseUnknownFlags` would reject is a refusal nobody can act on -- the
+  // same shape as a refusal quoting a rule nobody wrote, which is why the row asks for both halves.
+  assert.equal(NEEDS_DECISION_FLAG, "--needs-decision");
+  const source = readFileSync(
+    new URL("../prompt-session.mjs", import.meta.url), "utf8");
+  assert.match(source, /refuseUnknownFlags\(\["--ledger", NEEDS_DECISION_FLAG\]/,
+    "the flag is declared to the unknown-flag guard, or typing it is refused before it is read");
+  const rules = readFileSync(new URL("../../../../.claude/rules/agent-practices.md", import.meta.url), "utf8");
+  assert.ok(rules.includes(NEEDS_DECISION_FLAG),
+    "and the loaded rules name it, so the refusal quotes a rule that exists");
+  assert.ok(rules.includes("ROW WRITE"), "with the routing change itself stated, not just its flag");
 });

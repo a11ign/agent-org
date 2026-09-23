@@ -123,14 +123,25 @@ export function clearThenPrompt(run, label, text) {
  * load-bearing, because this command CLEARS its target and a retry that wins the race wipes the review it
  * interrupted. The gate delivers when the gate judges the session free.
  *
+ * AND IT IS ALSO WHERE AN ORDER CAN BE REFUSED THE QUEUE (#2167). {@link deepQueueRefusal} runs between
+ * the two refusals above: the name is checked first, because a typo is an author error whatever the depth
+ * is, and the depth second, because a report joining a stalled inbox is not a message at all.
+ *
  * @param {{label: string, text: string, why: string, agents: {label: string, status: string}[] | null,
- *          path: string}} refusal
+ *          path: string, needsDecision?: boolean}} refusal
  * @returns {number}
  */
-export function queueOrLose({ label, text, why, agents, path }) {
+export function queueOrLose({ label, text, why, agents, path, needsDecision = false }) {
   if (!queueable(label, agents)) {
-    process.stderr.write(`NOT PROMPTED, AND NOT QUEUED: ${why}. Nothing will retry this -- a name the org `
+    process.stderr.write(`${NOT_QUEUED_PREFIX}${why}. Nothing will retry this -- a name the org `
       + "does not know is an author error, not a busy session. Fix the name and run it again.\n");
+    return EXIT.REFUSED;
+  }
+  // BEFORE THE WRITE, DELIBERATELY. Refusing after the append would leave the order on the queue it was
+  // refused for joining, which is the one outcome the row that asked for this ruled out by name.
+  const tooDeep = deepQueueRefusal(queueDepth(label, path).mine, { label, text, needsDecision });
+  if (tooDeep) {
+    process.stderr.write(tooDeep);
     return EXIT.REFUSED;
   }
   let entry;
@@ -168,13 +179,10 @@ export function queueOrLose({ label, text, why, agents, path }) {
  * @param {string} label @param {string} path @returns {string}
  */
 export function queueDepthNote(label, path) {
-  let mine;
-  try {
-    mine = handoffBacklog(readHandoffs(path)).find((b) => b.session === label);
-  } catch (err) {
-    return `(could not read ${path} back to say how deep "${label}"'s queue is: `
-      + `${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, 120)}. Your order is `
-      + "written; this note is not.)\n";
+  const { mine, unreadable } = queueDepth(label, path);
+  if (unreadable !== undefined) {
+    return `(could not read ${path} back to say how deep "${label}"'s queue is: ${unreadable}. Your order `
+      + "is written; this note is not.)\n";
   }
   if (!mine || mine.waiting <= 1) return "";
   return `QUEUE DEPTH: this is order ${mine.waiting} waiting for "${label}", and the oldest has waited `
@@ -183,17 +191,110 @@ export function queueDepthNote(label, path) {
     + "(`answer:<session>`, a `blocked-by` edge, or the row body) rather than only here.\n";
 }
 
+/**
+ * WHAT IS ALREADY WAITING FOR ONE TARGET, or why that could not be answered.
+ *
+ * TWO CALLERS, ONE READ, AND THEY WANT OPPOSITE THINGS FROM A FAILURE. {@link queueDepthNote} runs AFTER
+ * the write and degrades to a diagnostic; {@link deepQueueRefusal} runs BEFORE it and must not refuse an
+ * order on a depth it could not measure. Returning the failure rather than throwing it is what lets each
+ * decide that for itself -- and an `unreadable` that is a STRING rather than a thrown error is also why
+ * neither of them has an empty `catch`.
+ *
+ * @param {string} label @param {string} path
+ * @returns {{mine?: {session: string, waiting: number, oldestMs: number, stale: number},
+ *            unreadable?: string}}
+ */
+export function queueDepth(label, path) {
+  try {
+    return { mine: handoffBacklog(readHandoffs(path)).find((b) => b.session === label) };
+  } catch (err) {
+    return { unreadable: String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, 120) };
+  }
+}
+
+/**
+ * HOW MANY ORDERS ALREADY WAITING FOR ONE TARGET MAKES THE NEXT ONE A ROW WRITE INSTEAD (#2167).
+ *
+ * TEN, AND THE MEASUREMENT PICKED IT rather than roundness. Read on the agent host 2026-09-23T15:03Z:
+ * 60 pending orders, **55 of them for `product-manager`**, the oldest about eight hours old -- and every
+ * other session in the org at 2 or fewer. So the observed traffic is bimodal: ordinary authoring, which
+ * never exceeded 2, and one inbox that had stopped draining. Ten sits five times above the first and a
+ * fifth of the way to the second, which is the widest gap the data offers: no ordinary author meets it,
+ * and a stalling inbox meets it long before eight hours have accumulated.
+ *
+ * **A STARTING POINT, NOT A RULING**, and the row that asked for it says so in those words. Moving it is
+ * this one line; what should not move without a measurement is the SHAPE -- a threshold picked from the
+ * gap between two populations rather than from what looks tidy.
+ */
+export const DEEP_QUEUE = 10;
+
+/** Declares that this order needs a DECISION, so {@link deepQueueRefusal} does not apply to it. */
+export const NEEDS_DECISION_FLAG = "--needs-decision";
+
+/** Prefix on {@link deepQueueRefusal}'s message. Shared with {@link queueOrLose}'s unknown-session
+ * refusal deliberately: both mean the same thing to a script reading stderr -- nothing holds this. */
+export const NOT_QUEUED_PREFIX = "NOT PROMPTED, AND NOT QUEUED: ";
+
+/**
+ * PURE. A REPORT THAT NEEDS NO DECISION IS A ROW WRITE, NOT AN ORDER -- so refuse it the queue (#2167).
+ *
+ * {@link queueDepthNote} above tells an author what they joined; it changed no outcome, and on the day it
+ * shipped the queue still reached 60 orders with 55 for one session. A note is advice at the end of a
+ * command that has already succeeded, and the measured behaviour is that authors read it and carried on.
+ * THIS IS THE SAME FACT MOVED IN FRONT OF THE WRITE, where it decides instead of informs.
+ *
+ * ## Why a refusal rather than delivering faster
+ *
+ * Delivery CLEARS its target first, so a larger or more eager delivery wipes work in progress -- the
+ * defect #912 fixed and the reason `deliver()` refuses a second order to a session it already woke this
+ * tick. Capacity cannot come from the delivery path. It comes from not sending what a row can carry.
+ *
+ * ## The escape hatch is the whole design, not a concession to it
+ *
+ * Without {@link NEEDS_DECISION_FLAG} this is a mute button on the one inbox that must never be muted: a
+ * stop-the-line, a ruling, a question whose answer changes what somebody does next are exactly the orders
+ * a deep queue must still accept, and they are the orders a deep queue makes most urgent. The flag costs
+ * the author one declaration and is not checked -- it cannot be. What it buys is that the DEFAULT stopped
+ * being "add it to the pile".
+ *
+ * @param {{session: string, waiting: number, oldestMs: number, stale: number} | undefined} mine
+ *   what is already waiting for the target, or `undefined` for a queue this target is not in
+ * @param {{label: string, text: string, needsDecision: boolean}} order
+ * @returns {string | null} the refusal to print, or `null` when this order may queue
+ */
+export function deepQueueRefusal(mine, { label, text, needsDecision }) {
+  if (needsDecision) return null;
+  if (!mine || mine.waiting < DEEP_QUEUE) return null;
+  return `${NOT_QUEUED_PREFIX}"${label}" already has ${mine.waiting} order(s) waiting and the oldest has `
+    + `waited ${waitedFor(mine.oldestMs)}. Yours would be number ${mine.waiting + 1}. An order is `
+    + "delivered only when the gate judges its target BETWEEN TASKS, so a queue this deep is a session "
+    + "that is not reading its inbox at all -- joining it is not sending a message.\n"
+    + "REMEDY -- WRITE IT ON THE ROW. A completion, a claim report, a merge close-out needs no decision: "
+    + "the comment plus the label change IS the report, it costs no turn, and it is there exactly when "
+    + "its reader next acts on that row (`.claude/rules/agent-practices.md`, *Routing -- who reads "
+    + "what*).\n"
+    + "IF IT NEEDS A DECISION -- a ruling, a stop-the-line, a question whose answer changes what somebody "
+    + `does next -- re-run with ${NEEDS_DECISION_FLAG} and it queues at any depth.\n`
+    + "YOUR REPORT, UNCHANGED, so this refusal does not swallow it -- the text may have come on stdin and "
+    + `exist nowhere else:\n${text}\n`;
+}
+
 function main() {
   // `--ledger` IS READ, THOUGH NOT BY THIS FILE. It names the ledger whose DIRECTORY holds the handoff
   // queue, so it must mean here exactly what it means to `wake.mjs` -- `ledgerPathFrom` is the one
   // definition both use. Accepting it is what lets a test, or an operator on a second org, point both
   // halves of the queue at the same place.
-  refuseUnknownFlags(["--ledger"], { entry: import.meta.url,
+  refuseUnknownFlags(["--ledger", NEEDS_DECISION_FLAG], { entry: import.meta.url,
     command: "node packages/agent-org/src/prompt-session.mjs" });
-  // THE FLAG IS NOT PART OF THE PROMPT. `rest.join(" ")` is the order's text, so a `--ledger=` left in it
+  // NEITHER FLAG IS PART OF THE PROMPT. `rest.join(" ")` is the order's text, so a `--ledger=` left in it
   // would be typed at the reviewer -- and, worse, would change the order's `handoffId`, so the same order
-  // sent with and without the flag would queue twice.
-  const [label, ...rest] = process.argv.slice(2).filter((a) => !a.startsWith("--ledger="));
+  // sent with and without the flag would queue twice. `--needs-decision` is stripped for the same reason,
+  // and it matters more here: an author who adds the flag on a re-send must not thereby send a SECOND
+  // order, which is exactly what a text-changing flag would do.
+  const args = process.argv.slice(2);
+  const needsDecision = args.includes(NEEDS_DECISION_FLAG);
+  const [label, ...rest] = args
+    .filter((a) => !a.startsWith("--ledger=") && a !== NEEDS_DECISION_FLAG);
   // STDIN IS THE DEFAULT FOR THE TEXT, because a prompt that names a PR contains backticks and quotes,
   // and passing that through a shell argument is how a `gh pr comment` in this repo once ran as command
   // substitution inside the very message it was quoting.
@@ -205,14 +306,18 @@ function main() {
   const queue = handoffQueuePath(ledgerPathFrom(process.argv));
   const agents = readAgents(defaultRun);
   const why = promptable(label, agents);
-  if (why) process.exit(queueOrLose({ label, text, why, agents, path: queue }));
+  if (why) process.exit(queueOrLose({ label, text, why, agents, path: queue, needsDecision }));
 
+  // NO DEPTH GATE ON THIS PATH, AND THE ASYMMETRY IS THE POINT. `promptable` said the target is between
+  // tasks, so this order is DELIVERED rather than queued: it joins nothing, and a session that is idle is
+  // a session whose queue the next tick will drain. The refusal is about JOINING A PILE, not about the
+  // pile existing.
   const report = clearThenPrompt(defaultRun, label, text);
   // A PROMPT REFUSED AT THE LAST MOMENT IS THE SAME LOSS ONE STEP LATER. `promptable` said idle and herdr
   // said no, which means the session went to work in between -- the race the queue exists for. A refused
   // CLEAR is not this: the text went, on a bloated context, and re-queueing it would deliver it twice.
   if (report?.startsWith(PROMPT_REFUSED_PREFIX)) {
-    process.exit(queueOrLose({ label, text, why: report, agents, path: queue }));
+    process.exit(queueOrLose({ label, text, why: report, agents, path: queue, needsDecision }));
   }
   if (report) {
     process.stderr.write(`${report}\n`);
