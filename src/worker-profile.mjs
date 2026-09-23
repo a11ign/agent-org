@@ -238,6 +238,18 @@ export const PROFILES = Object.freeze({
     why: "the output is a brief for a person outside the org, and a vague one costs another day of "
       + "everything downstream standing still",
   }),
+  "blocker-cleared": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // HIGH, and the reason is `ready-row-unclaimed`'s rather than a weaker version of it: what this order
+    // actually asks for is the ROW BUILT, and the only difference is that the session already holds the
+    // claim. A cheaper tier would arrive at a row that has been parked for however long its blocker took
+    // and has to re-establish what it was doing -- strictly more context to rebuild than a fresh claim,
+    // not less. Measured 2026-09-22, #1908 sat with six rows queued behind it.
+    effort: "high",
+    why: "resuming a parked claim is the same multi-step build as taking a fresh row, with the prior "
+      + "state to re-establish on top of it",
+  }),
   "ready-row-unclaimed": Object.freeze({
     kind: "claude",
     model: "sonnet",

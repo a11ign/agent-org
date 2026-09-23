@@ -26,6 +26,7 @@ import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReady
   ROUTED_TO, readPromotableRows, GH_READS, partitionUnclaimed, openRowState, waitingBreakdown,
   deadMansSwitch,
   unfiledEpics, epicOrders, finishedEpics, finishedEpicOrders, fleetBatchRows, fleetBatchOrders,
+  partitionFleetBatch, blockerClearedOrders,
   FLEET_MILESTONE, readEpics, answersOwed, answerOrders,
   readOpenRows, withAnswerLabel,
   blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL,
@@ -635,7 +636,7 @@ test("every cause is classified as START or FINISH -- a new one cannot default i
   // #1969: `pr-green-unarmed` is FINISH. A drain stops the org TAKING ON work and must not stop it
   // finishing what is in flight -- and a green, unheld, unarmed pull request is the most finished work
   // there is. Withholding it during a window would strand exactly the PRs the window is waiting to land.
-  assert.deepEqual(finish, ["answer-owed", "chairman-blocked", "draft-awaiting-verdict",
+  assert.deepEqual(finish, ["answer-owed", "blocker-cleared", "chairman-blocked", "draft-awaiting-verdict",
     "draft-convinced-not-ready", "pr-checks-failing", "pr-green-unarmed", "verdict-not-convinced"]);
   for (const cause of START_CAUSES) {
     assert.ok(CAUSES.includes(cause), `${cause} is withheld by a drain but no longer exists`);
@@ -1953,6 +1954,181 @@ test("#1941: the retired timer's units are gone from the shipped host set", () =
   assert.ok(!units.some((u: string) => u.startsWith("a11ign-fleet-gated-nightly")),
     `a11ign-fleet-gated-nightly.* must not ship any more -- found ${units.join(", ")}`);
   assert.ok(units.includes("a11ign-work-tick.timer"), "POSITIVE CONTROL: the tick's own units still ship");
+});
+
+// --- #2027: the fleet batch could not see a waiting condition -------------------------------------
+//
+// The order has told `orchestrator` since #1941 that a row which cannot move yet is an answer -- say so
+// with `Fleet-hold-until:`, `--add-blocked-by` or `Not-before:` "and it leaves this set until the
+// condition clears". `fleetBatchRows` filtered on the label and the milestone and NOTHING ELSE, so
+// writing the condition changed nothing and the only exits were closing the row or removing its label.
+//
+// MEASURED IN ONE `work:gate` RUN, 2026-09-22T21:57Z: `SHELVED row #1976: blocked by #1918` and a
+// fleet-batch order naming #1976, from the same invocation. Eight of that batch's nine rows carried a
+// standing, correct condition; exactly one (#1908) was runnable.
+
+const TODAY = "2026-09-23";
+const NOW = Date.parse("2026-09-23T12:00:00Z");
+const CLOCK = { today: TODAY, nowMs: NOW };
+
+/** A `fleet-gated` row on the milestone, with whatever waiting condition the case is about. */
+const gatedRow = (n: number, extra: Record<string, unknown> = {}) => ({
+  number: n,
+  labels: [{ name: "fleet-gated" }],
+  milestone: { title: FLEET_MILESTONE },
+  ...extra,
+});
+
+const blockedByOpen = { blockedBy: { nodes: [{ number: 1918, state: "OPEN" }] } };
+const blockedByClosed = { blockedBy: { nodes: [{ number: 1918, state: "CLOSED" }] } };
+
+test("#2027: an open `blockedBy` edge takes the row out of the fleet batch -- and a closed one puts it back", () => {
+  assert.deepEqual(fleetBatchRows([gatedRow(1976, blockedByOpen)], FLEET_MILESTONE, CLOCK), [],
+    "#1976 was dispatched and shelved by the same tick; the shelving was the true reading");
+  // THE POSITIVE CONTROL, and it is the one that matters: an exclusion test alone passes on a filter that
+  // returns nothing at all, which is the defect with the sign flipped.
+  assert.deepEqual(
+    fleetBatchRows([gatedRow(1976, blockedByClosed)], FLEET_MILESTONE, CLOCK).map((r) => r.number),
+    [1976], "a blocker that has CLOSED is a condition that cleared, and the row comes back by itself");
+});
+
+test("#2027: a future `Not-before:` takes the row out -- and today's date puts it back", () => {
+  const future = gatedRow(1042, { body: "Not-before: 2026-09-30" });
+  assert.deepEqual(fleetBatchRows([future], FLEET_MILESTONE, CLOCK), [],
+    "#1042 carried exactly this on 2026-09-22 and was dispatched anyway");
+  const arrived = gatedRow(1042, { body: `Not-before: ${TODAY}` });
+  assert.deepEqual(fleetBatchRows([arrived], FLEET_MILESTONE, CLOCK).map((r) => r.number), [1042],
+    "POSITIVE CONTROL: `Not-before:` is not-BEFORE, so the named day itself is runnable");
+});
+
+test("#2027: a live `Fleet-hold-until:` takes the row out -- and a lapsed one puts it back", () => {
+  // THE FOURTH CONDITION, and the only one this population has. It was declared in
+  // `packages/control/src/fleet-playbook.mjs` and therefore unreadable by `waiting-condition.mjs`, which
+  // is #2005's defect one field over -- the same reason the fleet batch could not honour its own order.
+  const live = gatedRow(1768, { body: "Fleet-hold-until: 2026-09-23T18:00:00Z" });
+  assert.deepEqual(fleetBatchRows([live], FLEET_MILESTONE, CLOCK), [],
+    "a multi-round same-build sequence owns the fleet until the second it named");
+  const lapsed = gatedRow(1768, { body: "Fleet-hold-until: 2026-09-23T06:00:00Z" });
+  assert.deepEqual(fleetBatchRows([lapsed], FLEET_MILESTONE, CLOCK).map((r) => r.number), [1768],
+    "POSITIVE CONTROL: the hold lapses with no edit to anyone's row, which is the property it was built for");
+});
+
+test("#2027: an `answer:<session>` label takes the row out -- and removing it puts the row back", () => {
+  const owed = { number: 914, milestone: { title: FLEET_MILESTONE },
+    labels: [{ name: "fleet-gated" }, { name: `${ANSWER_PREFIX}product-manager` }] };
+  assert.deepEqual(fleetBatchRows([owed], FLEET_MILESTONE, CLOCK), [],
+    "#914 is the row that cost 6.5 hours waiting for a ruling -- re-dispatching it is re-asking it");
+  assert.deepEqual(fleetBatchRows([gatedRow(914)], FLEET_MILESTONE, CLOCK).map((r) => r.number), [914],
+    "POSITIVE CONTROL: removing the label IS the act of answering, and the row returns on that alone");
+});
+
+test("#2027: a whole batch that is waiting produces NO ORDER, rather than an order naming it", () => {
+  // THE MUTATION THIS SUITE IS FOR: make the new filter return `true` unconditionally -- a filter that
+  // excludes nothing -- and this goes red. It is the defect restored exactly.
+  const allWaiting = [gatedRow(31, blockedByOpen), gatedRow(1042, { body: "Not-before: 2026-09-30" }),
+    gatedRow(1768, { body: "Fleet-hold-until: 2026-09-23T18:00:00Z" })];
+  assert.deepEqual(fleetBatchOrders(allWaiting, FLEET_MILESTONE, CLOCK), [],
+    "every answer is already recorded in a field; re-reporting them is the treadmill the order's own "
+    + "last sentence was written to prevent");
+  const [order] = fleetBatchOrders([...allWaiting, gatedRow(1908)], FLEET_MILESTONE, CLOCK);
+  assert.equal(order?.causeKey, "orchestrator/fleet-batch-due/1908",
+    "POSITIVE CONTROL: the one genuinely runnable row still reaches orchestrator, and alone -- the "
+    + "2026-09-22 batch of nine was eight answered rows and this one");
+});
+
+test("#2027: a shelved fleet row is REPORTED, never silently dropped", () => {
+  const { batch, waiting } = partitionFleetBatch(
+    [gatedRow(1976, blockedByOpen), gatedRow(1908)], FLEET_MILESTONE, CLOCK);
+  assert.deepEqual(batch.map((r) => r.number), [1908]);
+  assert.deepEqual(waiting, [{ number: 1976,
+    reason: "blocked by #1918 -- declared on the row, and it clears itself" }],
+    "the same sentence the engineer pool's shelvings print, because a row that vanishes silently is the "
+    + "failure `blocked` already is");
+});
+
+// --- #2027, second half: nothing woke a claim holder when their blocker cleared --------------------
+//
+// PR #1957 merged 2026-09-22T21:26:01Z and closed #1948 at 21:26:02Z, leaving #1908 -- `in-progress`,
+// `session:worker-capture` -- with every blocker closed and six rows queued behind it. The `work:gate`
+// run 31 minutes later emitted NO CAUSE FOR `worker-capture` AT ALL: `ready-row-unclaimed` skips a
+// claimed row, and no other cause addresses the session that already holds one. `prompt:session` refused
+// (`NOT PROMPTED: "worker-capture" is working`) and the refusal was dropped, so the only route that
+// worked was `answer:worker-capture` applied by hand -- a label meaning "someone owes you an answer".
+
+const heldRow = (n: number, session: string, extra: Record<string, unknown> = {}) => ({
+  number: n,
+  labels: [{ name: "in-progress" }, { name: `session:${session}` }],
+  ...extra,
+});
+
+test("#2027: the session holding a row whose blockers have ALL closed is named and woken", () => {
+  const [order] = blockerClearedOrders([heldRow(1908, "worker-capture",
+    { blockedBy: { nodes: [{ number: 1948, state: "CLOSED" }, { number: 1926, state: "CLOSED" }] } })], TODAY);
+  assert.equal(order?.session, "worker-capture", "the holder, not the pool -- nobody else can act on it");
+  assert.equal(order?.cause, "blocker-cleared");
+  assert.equal(order?.causeKey, "worker-capture/blocker-cleared/row-1908/1926.1948",
+    "keyed on the CLEARED SET and sorted, so the same clearing is one question however GitHub orders it");
+  assert.match(order?.prompt ?? "", /#1926, #1948/, "the prompt names what cleared, so no turn re-derives it");
+});
+
+test("#2027: one still-open blocker is not a clearing -- the positive control on the negative", () => {
+  assert.deepEqual(blockerClearedOrders([heldRow(1908, "worker-capture",
+    { blockedBy: { nodes: [{ number: 1948, state: "CLOSED" }, { number: 1918, state: "OPEN" }] } })], TODAY), [],
+    "the LAST condition to clear is the one that frees a row");
+});
+
+test("#2027: a row that never declared a blocker is not freshly unblocked", () => {
+  // Without this, every claimed row in the tracker is announced as unblocked on the first tick after this
+  // ships. A cause that fires on its whole population the day it lands is noise, and noise is how a real
+  // signal gets filtered out.
+  assert.deepEqual(blockerClearedOrders([heldRow(1908, "worker-capture")], TODAY), []);
+  assert.deepEqual(blockerClearedOrders([heldRow(1908, "worker-capture",
+    { blockedBy: { nodes: [] } })], TODAY), [], "an empty node list is the same statement");
+});
+
+test("#2027: an UNCLAIMED row's cleared blocker is not this cause -- `ready-row-unclaimed` owns that", () => {
+  const unclaimed = { number: 1908, labels: [{ name: "ready" }], ...blockedByClosed };
+  assert.deepEqual(blockerClearedOrders([unclaimed], TODAY), [],
+    "this cause exists for the gap where a row is HELD; offering a free row is another cause's job");
+  const noSession = { number: 1908, labels: [{ name: "in-progress" }], ...blockedByClosed };
+  assert.deepEqual(blockerClearedOrders([noSession], TODAY), [],
+    "a claim with no `session:` label names nobody to wake, and waking a session called \"\" is an order "
+    + "with nowhere to go");
+  // A `session:` LABEL WITHOUT THE CLAIM IS NOT A HOLDER, and this shape is real rather than contrived:
+  // `ready-label-audit.mjs` names it as #171's -- a correct decline whose restore silently did not
+  // happen. Telling that session to "pick it back up" would tell it to resume a row it no longer holds.
+  // Caught by a mutation: with the `in-progress` test deleted, every other case here still passed.
+  const stranded = { number: 1908, ...blockedByClosed,
+    labels: [{ name: "was-ready" }, { name: "session:worker-capture" }] };
+  assert.deepEqual(blockerClearedOrders([stranded], TODAY), [],
+    "the claim label is what says a session is HOLDING the row, and it is the claim this cause resumes");
+});
+
+test("#2027: a row still waiting on a DATE or an ANSWER is not announced as runnable", () => {
+  assert.deepEqual(blockerClearedOrders([heldRow(1908, "worker-capture",
+    { ...blockedByClosed, body: "Not-before: 2026-09-30" })], TODAY), [],
+    "its `blockedBy` cleared and its `Not-before:` did not");
+  const owing = { number: 1908, ...blockedByClosed,
+    labels: [{ name: "in-progress" }, { name: "session:worker-capture" },
+      { name: `${ANSWER_PREFIX}ceo` }] };
+  assert.deepEqual(blockerClearedOrders([owing], TODAY), [],
+    "#2005's rule: a row waiting on a ruling must not be made to look free");
+});
+
+test("#2027: blocker-cleared is a FINISH cause, because a claimed row is work in flight", () => {
+  assert.ok(CAUSES.includes("blocker-cleared"), "it must be in CAUSES or worker-profile refuses it at run time");
+  assert.ok(!START_CAUSES.includes("blocker-cleared"),
+    "a drain finishes work in flight and starts none; withholding this strands exactly the claimed rows a "
+    + "transfer window needs landed");
+});
+
+test("#2027: decide() routes it, and ahead of the causes that offer new work", () => {
+  const orders = decide({ prs: [], readyRows: [],
+    openRows: [heldRow(1908, "worker-capture", { ...blockedByClosed })] });
+  const causes = orders.map((o) => o.cause);
+  assert.ok(causes.includes("blocker-cleared"),
+    "the gate could see the row become runnable and, before this, had nobody to tell");
+  assert.equal(orders.find((o) => o.cause === "blocker-cleared")?.session, "worker-capture");
 });
 
 /**

@@ -35,7 +35,7 @@ import { realpathSync, existsSync } from "node:fs";
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
 import { READY_LABEL, CLAIM_LABEL } from "./claim-labels.mjs";
 import { verdictAtHead } from "./review-verdict.mjs";
-import { waitingOn, todayIso, describeWaiting, ANSWER_PREFIX } from "./waiting-condition.mjs";
+import { waitingOn, fleetWaitingOn, todayIso, describeWaiting, ANSWER_PREFIX } from "./waiting-condition.mjs";
 import { newestPerName } from "./newest-check-run.mjs";
 import { NO_VERDICT } from "./merge-guard/checks-rule.mjs";
 // B4, ASKED EARLY. These are the SAME two functions `row-claim.mjs` runs at claim time, imported
@@ -78,7 +78,7 @@ export const EXIT = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3 };
 export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-convinced-not-ready",
   "verdict-not-convinced", "pr-checks-failing", "ready-queue-empty", "lane-backlog-unpromoted",
   "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
-  "blocked-unexaminable", "fleet-batch-due", "pr-green-unarmed"];
+  "blocked-unexaminable", "fleet-batch-due", "blocker-cleared", "pr-green-unarmed"];
 
 /**
  * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
@@ -128,6 +128,12 @@ export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog
  * `chairman-blocked` is deliberately NOT here. It is the only cause whose subject is the window
  * itself: during a transfer the chairman is the one doing the work, and silencing their brief would
  * silence the thing the drain exists to serve.
+ *
+ * `blocker-cleared` is deliberately NOT here either, and for the partition's own definition rather than
+ * a preference: its subject is a row the session ALREADY HOLDS. A drain finishes work in flight and
+ * starts none, and a claimed row is the plainest case of work in flight there is -- withholding it would
+ * strand exactly the rows a transfer window needs landed, which is the failure `START_CAUSES` was split
+ * out to prevent for the two open drafts.
  */
 export const START_CAUSES = Object.freeze(["ready-row-unclaimed", "ready-queue-empty",
   "lane-backlog-unpromoted", "org-stalled", "epic-unfiled", "epic-finished",
@@ -695,20 +701,63 @@ export function readOpenRows(run = defaultRun) {
 export const FLEET_MILESTONE = "Road to version one";
 
 /**
- * The open `fleet-gated` rows on the milestone -- the batch #914 describes.
+ * The open `fleet-gated` rows on the milestone, SPLIT BY WHETHER ANYTHING IS STOPPING THEM -- #2027.
  *
- * FREE. `readOpenRows` already reads every open row unconditionally for `answer-owed` and
- * `blocked-unexaminable`; this adds `milestone` to that same `--json` and filters locally, so `GH_READS`
- * is unchanged. A separate milestone-scoped query would have been a third unconditional call for rows
- * the tick already had in hand.
+ * THE ORDER PROMISED AN EXIT THIS FILTER DID NOT HONOUR. `fleetBatchOrders`'s own prompt has said since
+ * #1941 that a row which cannot move yet is an answer -- *"say so on it with a machine-readable condition
+ * (`Fleet-hold-until:`, `--add-blocked-by`, or `Not-before:`) and it leaves this set until the condition
+ * clears"* -- and the set was the `fleet-gated` label and the milestone AND NOTHING ELSE. Writing the
+ * condition changed nothing. The only ways out were closing the row or removing its label, which are both
+ * lies about a row that is merely waiting.
+ *
+ * MEASURED IN ONE `work:gate` RUN, 2026-09-22T21:57Z. The same invocation printed
+ * `SHELVED row #1976: blocked by #1918` and dispatched #1976 in the fleet batch. Both readings came from
+ * this file; one of them was wrong. EIGHT of that batch's NINE rows carried a standing, correct
+ * condition -- #31, #43, #149, #1865, #1918, #1926 and #1976 by `blockedBy`, #1042 by `Not-before:` --
+ * and exactly one (#1908) was genuinely runnable. Every batch therefore re-reported eight answered rows
+ * to find the one that was not: the treadmill the order's own last sentence exists to prevent.
+ *
+ * `fleetWaitingOn` AND NOT `waitingOn`, because this is the one population where the fourth condition
+ * applies: `Fleet-hold-until:` is scoped to an open `fleet-gated` row by its own definition (#1839), and
+ * a sequence holding the fleet until a named second is precisely a row this batch must not dispatch.
+ *
+ * FREE, STILL. `readOpenRows` already asks for `number,title,labels,body,blockedBy,milestone` over the
+ * same 500 open rows for `answer-owed` and `blocked-unexaminable`, and every field this needs is in that
+ * list. This is a local filter over an array already in hand, not a new call.
+ *
+ * WAITING IS REPORTED, NEVER SILENT. `partitionUnclaimed` already rules that "a row that vanishes
+ * silently is the failure `blocked` already is", so the shelved half is returned with its reason and
+ * `main` prints it on the same `SHELVED row #N:` line the engineer pool's shelvings use.
  *
  * @param {any[]} rows @param {string} [milestone]
+ * @param {{today?: string, nowMs?: number}} [clock] injected so a test moves time without a global stub
+ * @returns {{batch: any[], waiting: {number: number, reason: string}[]}}
  */
-export function fleetBatchRows(rows, milestone = FLEET_MILESTONE) {
-  return (rows ?? [])
+export function partitionFleetBatch(rows, milestone = FLEET_MILESTONE, clock = {}) {
+  const { today = todayIso(), nowMs = Date.now() } = clock;
+  const batch = [];
+  const waiting = [];
+  const gated = (rows ?? [])
     .filter((r) => labelsOf(r).includes("fleet-gated"))
     .filter((r) => String(r?.milestone?.title ?? "") === milestone)
     .sort((a, b) => Number(a.number) - Number(b.number));
+  for (const row of gated) {
+    const held = fleetWaitingOn(row, today, nowMs);
+    if (held) {
+      waiting.push({ number: Number(row.number),
+        reason: `${describeWaiting(held)} -- declared on the row, and it clears itself` });
+    } else batch.push(row);
+  }
+  return { batch, waiting };
+}
+
+/**
+ * The `fleet-gated` rows on the milestone that ARE dispatchable -- the batch #914 describes.
+ *
+ * @param {any[]} rows @param {string} [milestone] @param {{today?: string, nowMs?: number}} [clock]
+ */
+export function fleetBatchRows(rows, milestone = FLEET_MILESTONE, clock = {}) {
+  return partitionFleetBatch(rows, milestone, clock).batch;
 }
 
 /**
@@ -736,13 +785,18 @@ export function fleetBatchRows(rows, milestone = FLEET_MILESTONE) {
  * of the same three epics in an hour); a clock fires when nothing has changed and stays silent for
  * twenty-three hours when everything has.
  *
+ * A BATCH OF NOTHING IS NOT A BATCH (#2027). Every row waiting on a declared condition is gone before
+ * this counts, so a set in which everything is answered emits NO ORDER rather than an order naming rows
+ * whose answers are already recorded in a field.
+ *
  * @param {any[]} rows every open row
  * @param {string} [milestone]
+ * @param {{today?: string, nowMs?: number}} [clock]
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
  */
-export function fleetBatchOrders(rows, milestone = FLEET_MILESTONE) {
-  const batch = fleetBatchRows(rows, milestone);
+export function fleetBatchOrders(rows, milestone = FLEET_MILESTONE, clock = {}) {
+  const batch = fleetBatchRows(rows, milestone, clock);
   if (batch.length === 0) return [];
   const numbers = batch.map((r) => `#${r.number}`).join(", ");
   const key = batch.map((r) => r.number).join(".");
@@ -957,6 +1011,101 @@ export function answerOrders(rows) {
     }
   }
   return orders;
+}
+
+/**
+ * THE GATE COULD SEE A ROW BECOME RUNNABLE AND HAD NOBODY TO TELL -- #2027.
+ *
+ * MEASURED 2026-09-22. PR #1957 merged at 21:26:01Z and closed #1948 one second later, leaving #1908 --
+ * `in-progress`, `session:worker-capture` -- with every blocker closed and six rows queued behind it. The
+ * `work:gate` run 31 minutes later emitted NO CAUSE FOR `worker-capture` AT ALL. `ready-row-unclaimed`
+ * skips it (claimed, and not `ready`), and every other cause addresses a session that does NOT hold the
+ * row: the whole causal vocabulary was written for the unclaimed pool.
+ *
+ * `prompt:session` IS NOT THE FALLBACK. It refused with `NOT PROMPTED: "worker-capture" is working`, and
+ * at the time a refused prompt was dropped rather than queued. What actually delivered the news was
+ * `answer:worker-capture` applied to #1908 BY HAND -- a label meaning "someone owes you an answer"
+ * pressed into service as "your work is unblocked", two meanings in one namespace, which is the exact
+ * collision `row-file.mjs`'s own header records for `session:`.
+ *
+ * ONCE PER ROW PER CLEARING, AND THE KEY IS THE SET THAT CLEARED. `fleetBatchOrders` learned this from
+ * #1799: a key that names the state re-fires when the state moves and stays quiet while it does not. So
+ * the closed blockers' numbers are IN the key -- the same row blocked again on a new row and cleared
+ * again is a NEW question and reaches its holder, while an unchanged clearing is one order, not one every
+ * tick.
+ *
+ * A ROW WITH NO BLOCKER AT ALL IS NOT A CLEARING. `blockedBy.nodes` empty means nothing ever blocked it,
+ * and every claimed row in the tracker would otherwise be announced as freshly unblocked on the first
+ * tick after this shipped -- a cause that fires on every member of its population the day it lands is
+ * noise, and noise is how a real signal gets filtered out.
+ *
+ * AND NEITHER IS A ROW STILL WAITING ON SOMETHING ELSE. `waitingOn` is asked in full, so a row whose
+ * `blockedBy` cleared while its `Not-before:` is still in the future, or which owes an answer, is not
+ * announced as runnable. The rule this file already applies to the offer path applies here: a declared
+ * wait shelves the row, and the LAST of a row's conditions to clear is the one that frees it.
+ *
+ * @param {any[]} rows every open row
+ * @param {string} [today]
+ * @returns {{session: string, cause: string, subject: string, discriminator: string,
+ *            prompt: string, causeKey: string}[]}
+ */
+export function blockerClearedOrders(rows, today = todayIso()) {
+  const orders = [];
+  for (const row of rows ?? []) {
+    const session = sessionOf(row);
+    const cleared = declaredBlockers(row);
+    if (!session || !labelsOf(row).includes(CLAIM_LABEL) || cleared === null) continue;
+    // THE LINE THAT MAKES `cleared` MEAN CLEARED. `waitingOn` reports an OPEN `blockedBy` node before
+    // anything else, so passing here is what proves every number above is closed -- and it covers the
+    // other two conditions in the same breath, which is why `declaredBlockers` does not re-ask.
+    if (waitingOn(row, today)) continue;
+    const key = cleared.join(".");
+    orders.push({
+      session,
+      cause: "blocker-cleared",
+      subject: `row-${row.number}`,
+      discriminator: key,
+      prompt: `#${row.number} IS YOURS AND IS NO LONGER BLOCKED. Every row it declared a dependency on `
+        + `is now closed: ${cleared.map((n) => `#${n}`).join(", ")}.\n`
+        + "PICK IT BACK UP -- you already hold the claim, so nothing else will offer it to anyone and no "
+        + "other cause in this gate addresses a session that already holds a row. That is why this "
+        + "exists: on 2026-09-22 #1908's last blocker closed at 21:26:02Z, the next tick said nothing to "
+        + "`worker-capture`, and six rows sat behind it until a label meant for something else was "
+        + "applied by hand.\n"
+        + "IF IT IS STILL NOT RUNNABLE, that is an answer and it goes in a FIELD, not a comment: "
+        + `\`gh issue edit ${row.number} --add-blocked-by <n>\`, a \`Not-before: YYYY-MM-DD\` line, or `
+        + `\`${ANSWER_PREFIX}<session>\` if you are waiting on somebody to decide. Each clears itself, `
+        + "and each stops this being asked again.",
+      causeKey: `${session}/blocker-cleared/row-${row.number}/${key}`,
+    });
+    if (orders.length >= MAX_ROW_ORDERS_PER_TICK) break;
+  }
+  return orders;
+}
+
+/**
+ * The blockers this row DECLARED, oldest first -- or `null` when it declared none.
+ *
+ * IT DOES NOT ASK WHETHER THEY ARE CLOSED, AND THAT IS DELIBERATE RATHER THAN AN OMISSION. `waitingOn`
+ * already answers it: an open `blockedBy` node is the FIRST thing it reports, so by the time the caller
+ * reaches this line every node here is closed. A second openness test was written here first and a
+ * mutation proved it: deleting it left the whole suite green, because no input could reach it -- an
+ * unreachable branch is not a guard, it is a second spelling of a rule that lives in
+ * `waiting-condition.mjs`, and the two would drift the way this repository's most expensive shape always
+ * does. The caller states the dependency in one line rather than restating the rule.
+ *
+ * SORTED, so the causeKey is stable: GitHub returns `blockedBy.nodes` in its own order, and an unsorted
+ * key would mint a different question for the same clearing depending on what that order happened to be
+ * -- `fleetBatchOrders` pays for this exact property one function up.
+ *
+ * @param {any} row
+ * @returns {number[] | null}
+ */
+function declaredBlockers(row) {
+  const nodes = row?.blockedBy?.nodes ?? [];
+  if (nodes.length === 0) return null;
+  return nodes.map((/** @type {any} */ n) => Number(n.number))
+    .sort((/** @type {number} */ a, /** @type {number} */ b) => a - b);
 }
 
 /**
@@ -2162,6 +2311,11 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // FIRST, BEFORE EVERY OTHER CAUSE. Every other order asks a session what should happen next; this one
   // says another session is ALREADY STOPPED waiting on them. That outranks any standing question.
   const orders = [...answerOrders(answerOwed)];
+  // SECOND, AND FOR THE SAME REASON ONE LEVEL IN (#2027). A session holding a row whose last blocker just
+  // closed is not waiting on a decision -- it is stopped on work it can resume this minute, with whatever
+  // is queued behind that row stopped with it. Ahead of every cause that offers NEW work: a row already
+  // claimed and now runnable beats a row nobody has picked up.
+  orders.push(...blockerClearedOrders(openRows));
 
   for (const pr of prs) {
     const order = draftOrder(pr, required);
@@ -2343,7 +2497,11 @@ function main() {
   orders.push(...deadMansSwitch({ orders, drain, performed, openRows: openRowsRead }));
   for (const order of orders) process.stdout.write(`${JSON.stringify(order)}\n`);
 
-  reportWithheld({ drain, blocked: partitionUnclaimed(rows, prFiles).blocked });
+  // BOTH SHELVES ON ONE LINE-SHAPE. The engineer pool's B4/declared-wait shelvings and the fleet batch's
+  // (#2027) are the same fact -- work the gate can see and is deliberately not offering -- and a row that
+  // leaves a set silently is the defect both filters exist to fix.
+  reportWithheld({ drain, blocked: [...partitionUnclaimed(rows, prFiles).blocked,
+    ...partitionFleetBatch(allOpen).waiting] });
 
   if (prs === null || readyRows === null) {
     process.stderr.write(`PARTIAL: could not read ${prs === null ? "the pull-request list" : "the Ready rows"}. `
