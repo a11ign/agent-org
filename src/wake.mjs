@@ -621,17 +621,74 @@ function orderHeading(h, index, total, now) {
 const ORDER_SEPARATOR_BYTES = 2;
 
 /**
- * What one order adds to the rendered delivery: its own bytes, its heading and its separator.
+ * THE PLACEHOLDER `addressed` EXPANDS, and the reason the authored text is still not the rendered argv.
+ *
+ * THE DEFECT THIS CLOSES (second review of #2125, reproduced before fixing). `orderHeading` above had
+ * already moved the budget off the authored prompt and onto the heading and the wrapper -- but
+ * {@link addressed} does one more thing to the body on its way to `execFileSync`: it substitutes the
+ * target's name for every `<you>`, and `work-gate.mjs` writes that placeholder into the row orders it
+ * queues. `<you>` is five bytes and `worker-capture` is fourteen, so an order that mentions the
+ * placeholder a hundred times is charged 900 bytes less than it renders. Reproduced: 3,000 queued
+ * `engineers` orders each repeating `<you>` 100 times were charged as fitting and rendered 163,952
+ * bytes -- past the 65,536-byte budget AND past the kernel's 131,072-byte ceiling, which is `E2BIG`
+ * again from the one direction the first fix did not close.
+ */
+const YOU_PLACEHOLDER = "<you>";
+const YOU_PLACEHOLDER_BYTES = Buffer.byteLength(YOU_PLACEHOLDER, "utf8");
+
+/**
+ * What this order GAINS when `addressed` substitutes a name of `labelBytes` for each `<you>`.
+ *
+ * ZERO WHEN THE NAME IS NO WIDER THAN THE PLACEHOLDER, never negative: a shorter name renders a shorter
+ * argv than the charge, and under-spending a budget is safe in the direction that matters. Only growth
+ * can reach the kernel.
+ *
+ * @param {string} prompt @param {number} labelBytes @returns {number}
+ */
+function expansionBytes(prompt, labelBytes) {
+  const grown = labelBytes - YOU_PLACEHOLDER_BYTES;
+  if (grown <= 0) return 0;
+  return (prompt.split(YOU_PLACEHOLDER).length - 1) * grown;
+}
+
+/**
+ * The WIDEST name {@link route} could substitute into this target's batch.
+ *
+ * EXACT FOR A NAMED SESSION AND WORST-CASE FOR THE POOL, because those are the two things `route` can
+ * do. An order addressed to `reviewer-2` renders `reviewer-2` and nothing else; an order addressed to
+ * `engineers` renders whichever roster member is free at delivery time, which this cannot know and must
+ * not guess low -- the batch is built before the routing decision, so the charge has to hold for every
+ * label the decision could produce.
+ *
+ * AN EMPTY ROSTER CHARGES THE PLACEHOLDER, i.e. nothing: with no engineer to route to, `deliver` refuses
+ * the batch and no argv is ever built, so there is nothing to over-charge for.
+ *
+ * @param {string} session @param {readonly string[]} [roster] @returns {number}
+ */
+export function targetLabelBytes(session, roster = []) {
+  if (session !== "engineers") return Buffer.byteLength(session, "utf8");
+  const widths = roster.map((label) => Buffer.byteLength(label, "utf8"));
+  return widths.length === 0 ? YOU_PLACEHOLDER_BYTES : Math.max(...widths);
+}
+
+/**
+ * What one order adds to the rendered delivery: its own bytes AS RENDERED, its heading and its separator.
  *
  * THE HEADING IS CHARGED AT ITS WORST CASE, which is the last position in the longest batch this queue
  * could produce -- `ORDER 1000 of 1000` is four bytes wider than `ORDER 1 of 9`, and the batch's own
  * size is what decides which is written. Over-charging by a few bytes an order costs a long batch its
  * last entry at worst; under-charging costs the delivery, which is the failure above.
  *
+ * `labelBytes` DEFAULTS TO THE PLACEHOLDER'S OWN WIDTH, which charges no expansion. That default is for
+ * a caller that has no target to name; every caller inside this file passes the real one, because a
+ * default that silently under-charges is the defect {@link YOU_PLACEHOLDER} records.
+ *
  * @param {{prompt: string, queuedAt?: number}} h @param {number} queued @param {number} now
+ * @param {number} labelBytes
  */
-function chargeFor(h, queued, now) {
+function chargeFor(h, queued, now, labelBytes) {
   return Buffer.byteLength(h.prompt, "utf8")
+    + expansionBytes(h.prompt, labelBytes)
     + Buffer.byteLength(orderHeading(h, queued - 1, queued, now), "utf8")
     + ORDER_SEPARATOR_BYTES;
 }
@@ -652,15 +709,16 @@ function chargeFor(h, queued, now) {
  *
  * @template {{prompt: string, queuedAt?: number}} T
  * @param {readonly T[]} handoffs @param {number} budget @param {number} [now]
+ * @param {number} [labelBytes] the width of the name `addressed` will put in this batch's `<you>`
  * @returns {{take: T[], held: T[]}}
  */
-export function fitBatch(handoffs, budget, now = Date.now()) {
+export function fitBatch(handoffs, budget, now = Date.now(), labelBytes = YOU_PLACEHOLDER_BYTES) {
   const queue = [...handoffs].sort(oldestFirst);
   /** @type {T[]} */
   const take = [];
   let used = BATCH_WRAPPER_BYTES;
   for (const h of queue) {
-    const size = chargeFor(h, queue.length, now);
+    const size = chargeFor(h, queue.length, now, labelBytes);
     if (take.length > 0 && used + size > budget) break;
     take.push(h);
     used += size;
@@ -683,16 +741,22 @@ export function fitBatch(handoffs, budget, now = Date.now()) {
  * the queue until herdr has accepted the batch carrying it ({@link deliverHandoffs}), and the ids a batch
  * covers travel with it because the drop is keyed on them.
  *
+ * THE ROSTER IS HERE FOR THE BUDGET, not for the routing -- `deliver` still decides which engineer takes
+ * an `engineers` batch. {@link targetLabelBytes} needs it to know how wide that name could be, because
+ * the batch is built before the decision and the charge has to hold for whichever way it goes.
+ *
  * @param {readonly {id: string, session: string, prompt: string, queuedAt?: number}[]} handoffs
- * @param {{now?: number, budget?: number}} [opts]
+ * @param {{now?: number, budget?: number, roster?: readonly string[]}} [opts]
  * @returns {{session: string, causeKey: string, prompt: string, ids: string[]}[]}
  */
-export function handoffBatches(handoffs, { now = Date.now(), budget = HANDOFF_BATCH_BYTES } = {}) {
+export function handoffBatches(handoffs,
+  { now = Date.now(), budget = HANDOFF_BATCH_BYTES, roster = [] } = {}) {
   /** @type {Map<string, {id: string, session: string, prompt: string, queuedAt?: number}[]>} */
   const bySession = new Map();
   for (const h of handoffs) bySession.set(h.session, [...(bySession.get(h.session) ?? []), h]);
   return [...bySession.values()].map((forSession) => {
-    const { take, held } = fitBatch(forSession, budget, now);
+    const { take, held } = fitBatch(forSession, budget, now,
+      targetLabelBytes(forSession[0].session, roster));
     // ONE ORDER IS STILL ONE ORDER, and it keeps `handoffOrder`'s exact wording and its own id as the
     // causeKey. The common case -- an author prompting one reviewer about one draft -- must not start
     // reading like a digest of itself, and `WOKE reviewer <- handoff/reviewer/1a2b3c4d` stays the line
@@ -761,7 +825,7 @@ function batchedOrder(take, held, now) {
 export function deliverHandoffs(handoffs, agents, roster,
   { run = defaultRun, queuePath, drop = dropHandoffs, now = Date.now(),
     budget = HANDOFF_BATCH_BYTES } = {}) {
-  const batches = handoffBatches(handoffs, { now, budget });
+  const batches = handoffBatches(handoffs, { now, budget, roster });
   /** @type {string[]} */
   const landed = [];
   const { sent, refused } = deliver(batches, agents, roster, { run, record: (key) => landed.push(key) });
@@ -1297,6 +1361,16 @@ function main() {
   const handoffs = readHandoffs(queuePath);
   if (nothingToDeliver(orders, handoffs)) process.exit(EXIT.QUIET);
 
+  // WHAT WAS ALREADY WAITING, BEFORE THIS TICK TOUCHES IT (#2102). Reported first and reported whatever
+  // happens next, because the backlog is a fact about the org that every session running a tick should
+  // see, not a consequence of this tick's delivery: 57 orders for one session were discoverable in
+  // 2026-09-23 only by replaying a cache file by hand, and the tick that could have said so said nothing.
+  //
+  // ABOVE `readAgents`, AND THE ORDER IS THE POINT. A tick that cannot reach herdr delivers NOTHING and
+  // exits, so it is the one tick where a ten-hour backlog most needs saying -- reporting it after that
+  // exit would have made "reported whatever happens next" false for the worst case it claims to cover.
+  for (const line of backlogReport(handoffBacklog(handoffs))) process.stderr.write(line);
+
   const agents = readAgents();
   if (agents === null) {
     process.stderr.write(`CANNOT ASK: herdr did not answer, so the ${orders.length} order(s) on stdin and `
@@ -1304,12 +1378,6 @@ function main() {
       + "org.\n");
     process.exit(EXIT.CANNOT_ASK);
   }
-
-  // WHAT WAS ALREADY WAITING, BEFORE THIS TICK TOUCHES IT (#2102). Reported first and reported whatever
-  // happens next, because the backlog is a fact about the org that every session running a tick should
-  // see, not a consequence of this tick's delivery: 57 orders for one session were discoverable in
-  // 2026-09-23 only by replaying a cache file by hand, and the tick that could have said so said nothing.
-  for (const line of backlogReport(handoffBacklog(handoffs))) process.stderr.write(line);
 
   // AUTHORED ORDERS FIRST. One has already been refused once and has been waiting since; a derived cause
   // has not, and will be re-derived unchanged by the next tick if it loses the session to this one.

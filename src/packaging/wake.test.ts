@@ -6,13 +6,20 @@
  * parameter, so these tests answer "given these agent states and these orders, who gets woken and what is
  * refused" -- which is this module's whole question. Standing up herdr to ask it would test herdr.
  *
+ * WITH ONE DELIBERATE EXCEPTION, AT THE FOOT OF THIS FILE: three tests spawn `wake.mjs` as a process with
+ * a stub `herdr` on `PATH`. They exist because a seam is exactly what a DELETED CALL goes around -- a
+ * reviewer removed the tick's only `backlogReport(handoffBacklog(...))` call and every test above stayed
+ * green. Nothing there starts an agent either; the stub answers one question with one literal.
+ *
  * The cases that matter are the REFUSALS. A wake that fires is visible immediately; a wake that silently
  * does not is the 2026-09-08 shape the lead-orchestrator brief records, where "every session went idle at
  * 20:52Z and nothing woke anyone for ten" hours.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { route, undelivered, parseOrders, readLedger, deliver, readAgents, WAKEABLE, EXIT,
@@ -27,7 +34,8 @@ import { handoffId, handoffQueuePath, ledgerPathFrom, readHandoffs, queueHandoff
   deliverHandoffs, handoffOrder, staleHandoffs, nothingToDeliver, HANDOFF_STALE_MS, HANDOFF_QUEUE_FILE }
   from "../wake.mjs";
 import { handoffBacklog, backlogReport, handoffBatches, fitBatch, waitedFor, staleReport,
-  PROMPT_ARG_MAX, HANDOFF_BATCH_BYTES, BATCH_WRAPPER_BYTES } from "../wake.mjs";
+  PROMPT_ARG_MAX, HANDOFF_BATCH_BYTES, BATCH_WRAPPER_BYTES, targetLabelBytes }
+  from "../wake.mjs";
 
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));
@@ -1205,6 +1213,101 @@ test("THE BUDGET COUNTS BYTES, AND AN EM DASH COSTS THREE OF THEM", () => {
     + "have taken 15 orders, 180,000 bytes, and been refused by execFileSync");
 });
 
+test("THE NAME IS SUBSTITUTED AFTER THE BUDGET, SO THE BUDGET HAS TO KNOW HOW WIDE IT IS", () => {
+  // THE SECOND REVIEW BLOCKER ON #2125, PINNED. `chargeFor` moved the budget off the authored text and
+  // onto the heading and the wrapper -- and `addressed` still does one more thing to the body before
+  // `execFileSync` sees it: it replaces every `<you>` with the target's name. `work-gate.mjs` writes
+  // that placeholder into the row orders it queues, so this is the real corpus and not a contrivance.
+  // `<you>` is five bytes; `worker-capture` is fourteen. Reproduced by the reviewer at `43f5e65e`:
+  // 3,000 `engineers` orders repeating `<you>` 100 times were charged as 112 fitting and rendered
+  // 163,952 bytes -- past the 65,536-byte budget AND past the kernel's 131,072-byte ceiling.
+  //
+  // THE FIXTURE IS THE CONFOUND: an order is 500 authored bytes and 1,400 rendered ones, so a charge
+  // taken before substitution and a charge taken after it cannot agree.
+  const now = 10 * 60 * 60 * 1000;
+  const withPlaceholder = backlogOf("engineers", 3_000, now, 1)
+    .map((h) => ({ ...h, prompt: "<you>".repeat(100) }));
+  const [batch] = handoffBatches(withPlaceholder, { now, budget: HANDOFF_BATCH_BYTES, roster: ROSTER });
+
+  const widest = ROSTER.reduce((a, b) => (b.length > a.length ? b : a));
+  const argv = Buffer.byteLength(addressed(batch, widest), "utf8");
+  assert.ok(argv <= HANDOFF_BATCH_BYTES,
+    `THE ASSERTION: ${argv} bytes reach execFileSync after substitution, inside the `
+    + `${HANDOFF_BATCH_BYTES}-byte budget -- charged before the fix, this rendered 163,952`);
+  assert.ok(argv < PROMPT_ARG_MAX, `and under the kernel's ${PROMPT_ARG_MAX}`);
+  assert.ok(argv > HANDOFF_BATCH_BYTES / 2,
+    "and the bound is not achieved by carrying almost nothing -- a batch that fits by being empty "
+    + "would satisfy both lines above and starve the queue it exists to drain");
+  assert.match(batch.prompt, /<you>/,
+    "sanity: the placeholder really is still in the body the budget charged, so the substitution "
+    + "below is what changes its size");
+  assert.doesNotMatch(addressed(batch, widest), /<you>/,
+    "and it is all gone after `addressed`, which is why the charge has to anticipate it");
+
+  // THE CONTROL, and it is the whole finding: the SAME 500 authored bytes with no placeholder in them
+  // fit MORE orders, because nothing expands. A charge on the authored text alone cannot tell these
+  // two fixtures apart -- it takes the same count for both, and only one of them renders inside the
+  // budget.
+  const inert = withPlaceholder.map((h) => ({ ...h, prompt: "xxxxx".repeat(100) }));
+  const [control] = handoffBatches(inert, { now, budget: HANDOFF_BATCH_BYTES, roster: ROSTER });
+  assert.ok(control.ids.length > batch.ids.length,
+    `the placeholder costs the batch orders: ${batch.ids.length} carried against ${control.ids.length} `
+    + "for byte-identical authored text that does not expand");
+  assert.ok(Buffer.byteLength(addressed(control, widest), "utf8") <= HANDOFF_BATCH_BYTES,
+    "and the control is inside the budget too, so the difference above is the expansion and not a "
+    + "batch that was over-charged into fitting");
+});
+
+test("A NAMED TARGET IS CHARGED EXACTLY; THE ENGINEER POOL IS CHARGED AT ITS WIDEST", () => {
+  // `handoffBatches` runs BEFORE `route` picks the engineer, so for the pool there is no name to charge
+  // and the charge has to hold whichever way the routing goes. Under-charging here is E2BIG; the only
+  // safe reading of an unknown target is the widest one it could be.
+  assert.equal(targetLabelBytes("reviewer-2"), "reviewer-2".length,
+    "a named session renders its own name and nothing else");
+  assert.equal(targetLabelBytes("engineers", ROSTER),
+    Math.max(...ROSTER.map((l) => l.length)),
+    "the pool renders whichever roster member is free, so it is charged at the widest of them");
+  assert.ok(Math.max(...ROSTER.map((l) => l.length)) > "engineers".length,
+    "and the roster really is wider than the pool's own name, so the line above is not a tautology");
+  assert.equal(targetLabelBytes("engineers", []), "<you>".length,
+    "an empty roster charges no expansion: with no engineer to route to, `deliver` refuses the batch "
+    + "and no argv is ever built");
+  assert.equal(targetLabelBytes("ceo"), 3,
+    "and a name NARROWER than the placeholder charges its own width, never a negative expansion");
+});
+
+test("THE CALL SITE IS CHARGED TOO -- deliverHandoffs budgets against the roster it routes to", () => {
+  // THE MUTANT THAT SURVIVED THE TWO TESTS ABOVE, and it is the whole reason this one exists.
+  // `handoffBatches` TAKES the roster, so both of them pass against a `deliverHandoffs` that never
+  // passes one -- an `engineers` batch would then be charged `<you>`'s own five bytes per occurrence
+  // and every order in it under-charged. Dropping `roster` from the one call in `deliverHandoffs`
+  // changed NO assertion: 0 red, 119 green.
+  //
+  // SO THE SUBJECT IS THE ARGV, READ OFF THE RECORDER. `deliver` hands exactly one string to
+  // `execFileSync`, and that string is the only thing the kernel ever measures -- an argument to a
+  // helper is not.
+  const now = 10 * 60 * 60 * 1000;
+  const queued = backlogOf("engineers", 3_000, now, 1)
+    .map((h) => ({ ...h, prompt: "<you>".repeat(100) }));
+  const { run, calls } = recorder();
+
+  const out = deliverHandoffs(queued, agents({ "worker-capture": "idle" }), ROSTER, { run, now });
+
+  const orders = calls.filter((a) => a[2] === "agent" && a[3] === "prompt" && a[5] !== "/clear");
+  assert.equal(orders.length, 1, "one batch, one prompt -- the coalescing this row is about");
+  assert.equal(orders[0][4], "worker-capture",
+    "routed to the widest roster label, which is the one `targetLabelBytes` charged for");
+  const argv = Buffer.byteLength(String(orders[0][5]), "utf8");
+  assert.ok(argv <= HANDOFF_BATCH_BYTES,
+    `THE ASSERTION: ${argv} bytes are handed to execFileSync, inside the ${HANDOFF_BATCH_BYTES}-byte `
+    + "budget -- with the roster dropped from the call this renders past it");
+  assert.ok(argv < PROMPT_ARG_MAX, `and under the kernel's ${PROMPT_ARG_MAX}`);
+  assert.ok(argv > HANDOFF_BATCH_BYTES / 2,
+    "and it carries a real batch rather than fitting by being nearly empty");
+  assert.ok(out.ids.length > 1 && out.ids.length < queued.length,
+    `${out.ids.length} of ${queued.length} carried: a batch, and a remainder still queued`);
+});
+
 test("WHAT DID NOT FIT STAYS QUEUED -- a bound must never be a drop", () => {
   const now = 10 * 60 * 60 * 1000;
   const big = backlogOf("product-manager", 40, now).map((h) => ({ ...h, prompt: "x".repeat(4_000) }));
@@ -1293,4 +1396,94 @@ test("stale lines survive for what the delivery did NOT carry", () => {
   const lines = staleReport(queued, carried, now).join("");
   assert.doesNotMatch(lines, new RegExp(queued[0].id.replace("/", "\\/")), "carried: not announced");
   assert.match(lines, new RegExp(queued[15].id.replace(/\//g, "\\/")), "left behind: still announced");
+});
+
+// ---------------------------------------------------------------------------------------------------
+// THE TICK ITSELF, RUN AS A PROCESS.
+//
+// THE REVIEW BLOCKER THIS CLOSES (#2125 at `43f5e65e`): every assertion above drives `handoffBacklog`
+// and `backlogReport` directly, and the reviewer deleted the ONE call that joins them to the tick --
+// `wake.mjs`'s `for (const line of backlogReport(handoffBacklog(handoffs)))` -- and watched all 114
+// tests stay green. Two functions that work and are never called is precisely the shape of the defect
+// #2102 is about: a fact the org could have printed and did not.
+//
+// SO THE SUBJECT HERE IS THE ENTRY POINT, not an export of it. `herdr` is a stub on PATH rather than a
+// seam, because the seam is what the deleted line went around -- a test that injects one cannot fail
+// for the deletion. This file's own header says these tests never stand up a running org, and that
+// still holds: nothing here starts an agent, and the stub answers one question with one literal.
+
+const WAKE_ENTRY = fileURLToPath(new URL("../wake.mjs", import.meta.url));
+const STUB_MODE = 0o755; // the tick invokes `herdr` as a command, so the stub has to be runnable
+
+/** herdr answering with one session in `status`, or refusing outright when `status` is null. */
+const herdrStub = (status: string | null) => (status === null
+  ? "#!/bin/sh\nexit 1\n"
+  : "#!/bin/sh\ncase \"$*\" in\n  *'workspace list') printf '%s' "
+    + `'{"result":{"workspaces":[{"label":"product-manager","agent_status":"${status}"}]}}'`
+    + " ;;\n  *) : ;;\nesac\n");
+
+/** One real tick: the queue on disk, the gate's orders on stdin, and herdr stubbed on PATH. */
+function runTick({ queued, stdin = "", herdr = "working" as string | null }:
+  { queued: { id: string; session: string; prompt: string; queuedAt: number }[];
+    stdin?: string; herdr?: string | null }) {
+  const dir = mkdtempSync(join(tmpdir(), "wake-tick-"));
+  try {
+    const ledger = join(dir, "wake-ledger");
+    const stub = join(dir, "herdr");
+    writeFileSync(stub, herdrStub(herdr));
+    chmodSync(stub, STUB_MODE);
+    writeFileSync(handoffQueuePath(ledger), queued.map((h) => JSON.stringify(h)).join("\n") + "\n");
+    return spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${ledger}`], {
+      input: stdin, encoding: "utf8",
+      env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` },
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("THE TICK PRINTS THE BACKLOG -- the entry point, not the two functions it calls", () => {
+  const now = Date.now();
+  const ages = [9.5, 8.5, 7.5]; // hours, so all three are stale and the oldest is the row's own 9.5h
+  const queued = backlogOf("product-manager", ages.length, now)
+    .map((h, i) => ({ ...h, queuedAt: now - ages[i] * 3_600_000 }));
+  const ran = runTick({ queued });
+
+  assert.match(ran.stderr, /QUEUE BACKLOG product-manager: 3 authored order\(s\) waiting/,
+    "THE ASSERTION THE BLOCKER ASKED FOR: deleting the tick's own `backlogReport(handoffBacklog(...))` "
+    + "call leaves this line unprinted, and this test red -- where every unit test above stays green");
+  assert.match(ran.stderr, /oldest 9\.5h/, "with the age that made this row worth filing");
+  assert.match(ran.stderr, /3 over 2h/);
+  assert.match(ran.stderr, /BETWEEN TASKS/, "and the stalled-inbox warning, because all three are stale");
+  assert.match(ran.stderr, /UNDELIVERED .*"product-manager" is working/,
+    "and the tick really did run to its end: the stub says the target is mid-turn, so the batch is "
+    + "refused and stays queued -- the backlog is reported BEFORE that and regardless of it");
+  assert.equal(ran.status, 1, "an order with nowhere to go is ATTENTION, not a quiet tick");
+});
+
+test("THE CONTROL: A REAL TICK OVER A QUIET QUEUE SAYS NOTHING ABOUT A BACKLOG", () => {
+  // Without this the test above passes against a tick that prints the header unconditionally, and the
+  // line becomes noise on the overwhelming majority of ticks. The gate's own order on stdin is what
+  // keeps the tick from exiting QUIET before it would have printed anything at all -- an empty tick
+  // proves nothing here.
+  const order = JSON.stringify({ session: "product-manager", causeKey: "row/1", prompt: "a row" });
+  const ran = runTick({ queued: [], stdin: `${order}\n` });
+
+  assert.doesNotMatch(ran.stderr, /QUEUE BACKLOG/, "nothing is waiting, so nothing is said");
+  assert.match(ran.stderr, /UNDELIVERED row\/1/,
+    "and the tick reached its delivery, so the silence above is a quiet queue rather than a tick that "
+    + "stopped before the report");
+});
+
+test("A TICK THAT CANNOT REACH herdr STILL PRINTS THE BACKLOG -- the worst tick to be silent on", () => {
+  // `readAgents` returning null exits the tick without delivering anything, so this is the one tick
+  // where a ten-hour backlog is most worth saying and the least likely to be said. The report sits
+  // ABOVE that exit for exactly this case.
+  const now = Date.now();
+  const queued = backlogOf("product-manager", 2, now, 10).map((h) => ({ ...h, queuedAt: now - 3_600_000 }));
+  const ran = runTick({ queued, herdr: null });
+
+  assert.match(ran.stderr, /QUEUE BACKLOG product-manager: 2 authored order\(s\) waiting/);
+  assert.match(ran.stderr, /CANNOT ASK: herdr did not answer/, "and the tick did take that exit");
+  assert.equal(ran.status, 2, "CANNOT_ASK");
 });
