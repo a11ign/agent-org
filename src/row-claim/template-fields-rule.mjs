@@ -57,12 +57,15 @@ export function missingTemplateFields(body) {
  * This answers only *"is this the whole suite"*, which is a pure function of the command string.
  *
  * AND IT FAILS BY MISSING, WHICH THE ROW SHOULD SAY OUT LOUD. `runsTheWholeSuite` is a positive test for
- * two spellings, `npm test` and `npm run test:ts`. A third spelling of the same thing -- a shell alias,
- * `npm run test --workspaces`, a Makefile target, `node --test` with the glob written out -- reads as
- * "not whole-suite" and is then classified by whatever files it names, which for a command naming none is
- * *nothing to check*. Moving the check earlier moves that miss earlier too. It does not invent data the
+ * the four `package.json` script names that run a whole `.test.ts` suite -- `test`, `test:ts`, `test:org`
+ * and `test:all` (#2153 added the last two, which had been reading as "not whole-suite" and so as
+ * *nothing to check*, here as well as at PR time). A spelling that is not one of those -- a shell alias,
+ * `npm run test --workspaces`, a Makefile target, `node --test` with the glob written out -- still reads
+ * as "not whole-suite" and is then classified by whatever files it names, which for a command naming none
+ * is *nothing to check*. Moving the check earlier moves that miss earlier too. It does not invent data the
  * way a denylist does; it stays silent. The honest remedy is a check on what a command RUNS rather than a
- * longer alternation, and that is not this row.
+ * longer alternation, and that is still not this row -- #2153 tied the POPULATION to the script the
+ * command names, which is the same fix one layer in, but the set of recognised spellings is still a list.
  *
  * @param {string} body @param {string} tool the CLI to name in the refusal
  * @returns {string | null}

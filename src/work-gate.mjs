@@ -125,10 +125,30 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
  * one than the alternative -- the STUCK counter still catches a cause that keeps being emitted, and any
  * change to the underlying state produces a new key. An unasked question is cheaper than a question
  * asked forty times.
+ *
+ * `claimed-row-amended` JOINED ON 2026-09-23 (#2182), FOR `row-branch-unshipped`'S REASON EXACTLY.
+ * Its answer is durable in this docblock's own sense: reading an amendment and accepting it changes
+ * neither the row nor the marker, so a holder who has decided to wait reaches the same conclusion every
+ * time it is asked. And it is safe to key on state because `amendedOrder` already keys on the WHOLE
+ * marker set -- a second or replaced constraint is a different key and still reaches the holder on the
+ * next tick, which is the half a careless fix would break.
+ *
+ * MEASURED ON #1955, whose only marker was an open `blockedBy` edge that was correct, acknowledged three
+ * times and self-clearing: four offers in 71 minutes (intervals 31.0, 20.2, 20.2), each a full model turn
+ * that produced a comment saying the wait was still right. `amendedOrder`'s own docblock already claimed
+ * the property this membership gives it -- *"an unchanged row mints the identical key on every subsequent
+ * tick and the ledger drops it"* -- which held for twenty minutes, not for the length of the wait.
+ *
+ * WHAT THIS DOES NOT FIX, STATED SO NOBODY READS IT AS MORE: a judgment cause is re-offered every two
+ * hours rather than never, so a STANDING one can still reach `MAX_DELIVERIES` and escalate to the
+ * chairman -- later, not never. Whether it does turns on `JUDGMENT_TTL_MS` and `RUN_IDLE_RESET_MS` being
+ * the same two hours while `RUN_IDLE_RESET_MS`'s docblock says it is "deliberately longer", and that
+ * equality is #2227's, in `wake.mjs`, deliberately not swept in here.
  */
 export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog-unpromoted",
   "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
-  "blocked-unexaminable", "fleet-batch-due", "row-branch-unshipped", "unclaimed-blocker-cleared"]);
+  "blocked-unexaminable", "fleet-batch-due", "row-branch-unshipped", "claimed-row-amended",
+  "unclaimed-blocker-cleared"]);
 
 /**
  * The causes that START new work, as opposed to finishing work already begun.

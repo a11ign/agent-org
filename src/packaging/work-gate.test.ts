@@ -47,6 +47,12 @@ import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReady
   readRowBranches, rowBranchOrders, GIT_READS,
   reviewStateOf, reviewBlocked, reviewBlockedOrders, REVIEW_STATE }
   from "../work-gate.mjs";
+// #2182: the SHIPPED reader that decides whether a delivered cause is still live, imported so this file
+// can assert what the membership BUYS rather than only that the name is in the list. `wake.mjs` runs
+// nothing on import (its `main()` is behind an `import.meta.url` guard) and these three are pure, so this
+// costs the `no-token` promise at the top of this file nothing.
+import { readLedger, WAKE_TTL_MS, JUDGMENT_TTL_MS }
+  from "../wake.mjs";
 
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
 // without one is dropped, and the gate would read every PR as having no checks at all.
@@ -2600,6 +2606,57 @@ test("#2110: an unchanged row mints the SAME key every tick, and a second constr
   const after = claimedRowAmendedOrders([row], withComments(2099, [CLAIM_RECORD, CONSTRAINT, second]));
   assert.notEqual(after[0]?.causeKey, once[0]?.causeKey,
     "a SECOND constraint is a second order -- the newest marker names the key, so the dedupe stops matching");
+});
+
+test("#2182: it is a JUDGMENT cause -- its answer is durable, so an unchanged row is not re-asked", () => {
+  assert.ok(CAUSES.includes("claimed-row-amended"),
+    "it must be in CAUSES or worker-profile refuses it at run time");
+  // MEASURED ON #1955: four offers in 71 minutes for one open `blockedBy` edge that was correct,
+  // acknowledged three times and self-clearing. Reading an amendment and accepting it changes neither
+  // the row nor the marker, so the holder reaches the same conclusion every time it is asked.
+  assert.ok(JUDGMENT_CAUSES.includes("claimed-row-amended"),
+    "a holder who has decided to wait reaches the same answer on every re-ask");
+  // STILL FINISH, AND THAT IS UNCHANGED BY THIS. #2110 put it outside START_CAUSES because a drain is
+  // exactly the window in which withholding it costs most -- a constraint arriving unread during one is
+  // a build finished against a rule nobody applied.
+  assert.ok(!START_CAUSES.includes("claimed-row-amended"),
+    "FINISH: its subject is a row the session already holds");
+});
+
+test("#2182: the UNCHANGED marker set goes quiet past the action clock, and a CHANGED one does not", () => {
+  // THE BEHAVIOUR, NOT THE MEMBERSHIP. Naming the cause in a frozen array is satisfied by editing the
+  // array; what the row asks for is that `wake.mjs`'s reader actually suppresses the re-offer, so this
+  // drives the SHIPPED `readLedger` over a ledger holding the SHIPPED key.
+  const row = heldRow(2099, "worker-capture");
+  const unchanged = claimedRowAmendedOrders([row], withComments(2099, [CLAIM_RECORD, CONSTRAINT]));
+  const key = unchanged[0]?.causeKey ?? "";
+  assert.equal(key, "worker-capture/claimed-row-amended/row-2099/IC_constraint",
+    "the key this test suppresses is the one the gate really mints");
+
+  const at = Date.parse("2026-09-23T15:29:26Z");     // #1955's first offer, to the second
+  const ledger = `${at}\t${key}\n`;
+  const read = () => ledger;
+  const live = (now: number) => readLedger("/ledger", read as never, now, new Set(JUDGMENT_CAUSES));
+
+  // PAST THE TWENTY-MINUTE ACTION CLOCK AND STILL SILENT -- this is the defect, in one assertion.
+  // At 31 minutes #1955 was offered a second time; under the judgment clock it is not.
+  assert.ok(live(at + WAKE_TTL_MS + 60_000).has(key),
+    "31 minutes on, an unchanged wait must not buy another model turn to reach the same conclusion");
+  assert.ok(live(at + JUDGMENT_TTL_MS - 60_000).has(key), "still silent just inside the judgment window");
+  // DURABLE IS NOT ETERNAL. Shipped as never-expiring, this silenced `ready-queue-empty` for four hours
+  // with six agents idle -- so the two-hour ceiling is asserted rather than assumed.
+  assert.ok(!live(at + JUDGMENT_TTL_MS + 1).has(key), "and it IS re-offered once the window closes");
+
+  // THE POSITIVE CONTROL, IN THE SAME RUN. Without it every assertion above passes against a reader that
+  // returns every key it is given, and against a cause that simply stopped being emitted. A SECOND
+  // marker is a different key, so the same ledger line does not cover it and the holder is told at once.
+  const second = { id: "IC_constraint2", body: "## CONSTRAINT\n\nAnd it must not add an unconditional read." };
+  const changed = claimedRowAmendedOrders([row], withComments(2099, [CLAIM_RECORD, CONSTRAINT, second]));
+  const changedKey = changed[0]?.causeKey ?? "";
+  assert.notEqual(changedKey, key, "a second constraint is a second question");
+  assert.ok(!live(at + 60_000).has(changedKey),
+    "one minute later, a CHANGED marker set reaches the holder on the next tick -- the half a careless "
+    + "fix would break by keying on the row instead of on what it carries");
 });
 
 test("#2110: two markers on one row are ONE order naming both, keyed on the pair", () => {
