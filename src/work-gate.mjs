@@ -44,6 +44,10 @@ import { NO_VERDICT } from "./merge-guard/checks-rule.mjs";
 // property its own header states -- it runs before any `npm ci` or build.
 import { declaredRegionFiles } from "./region-paths.mjs";
 import { fileOverlapReason } from "./row-claim/file-overlap-rule.mjs";
+// THE REFUSAL PATH ONLY, and a LEAF import so this file keeps the property its own header states. The
+// reader lived in `queue-table.mjs` until #2003; importing THAT would have pulled five modules into the
+// graph of a script that runs 720 times a day, to use a function it calls only when already refusing.
+import { poolDiagnosis, refusalPoolLine } from "./api-pool.mjs";
 
 /**
  * FOUR STATES, AND THE POLARITY IS DELIBERATE.
@@ -2062,6 +2066,34 @@ export function deadMansSwitch({ orders, drain, performed = 0, openRows,
   return stalled ? [stalled] : [];
 }
 
+/**
+ * THE REFUSAL, WITH THE THREE FACTS THAT TELL A DEAD POOL FROM A QUIET QUEUE (#2003).
+ *
+ * The first sentence is unchanged and still does its job: it is correct, it is loud, and on 2026-09-22 it
+ * ran on every tick from 20:28:15Z. What it could not say is the only thing a reader needs -- which
+ * account was refused, which pool, and when it comes back. `328832207` is a user ID, not a login, and the
+ * answer to "for how long" (52 minutes) was sitting in the headers of the call that had just failed.
+ *
+ * THE COST IS PAID ONLY HERE, AND IT IS ONE POINT. A healthy tick still makes exactly the reads `GH_READS`
+ * names: this function is reached only when BOTH lanes have already refused, on a pool that by definition
+ * has nothing left to protect, and `poolDiagnosis` spends a single probe whatever it finds there.
+ *
+ * A DEAD POOL BUYS THE RESET RATHER THAN THE LOGIN, because no one call buys both and "how long is the org
+ * deaf" is the question the outage left unanswered; the account then reads `UNREADABLE (user ID ...)`.
+ * `api-pool.mjs` records the alternatives that were measured and rejected.
+ *
+ * `run` IS REQUIRED, which is `apiBudget`'s rule (#1405) for its reason: a defaulted one is a live `gh`
+ * call, and a test reaching this function would make it.
+ *
+ * @param {{run: (args: string[]) => string}} deps
+ * @returns {string}
+ */
+export function cannotAskReport({ run }) {
+  return "CANNOT ASK: neither the pull-request list nor the Ready rows could be read. "
+    + "Nothing was examined -- this is NOT a quiet queue, and no session has been woken.\n"
+    + `${refusalPoolLine(poolDiagnosis({ run }))}\n`;
+}
+
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/work-gate.mjs" });
   const prs = readPrs();
@@ -2069,8 +2101,7 @@ function main() {
 
   // BOTH LANES REFUSED IS `CANNOT_ASK`; ONE IS `PARTIAL`. Nothing here may report a refused read as quiet.
   if (prs === null && readyRows === null) {
-    process.stderr.write("CANNOT ASK: neither the pull-request list nor the Ready rows could be read. "
-      + "Nothing was examined -- this is NOT a quiet queue, and no session has been woken.\n");
+    process.stderr.write(cannotAskReport({ run: defaultRun }));
     process.exit(EXIT.CANNOT_ASK);
   }
 
