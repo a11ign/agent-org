@@ -43,13 +43,15 @@ import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
-import { settleBoardRows, settleClosedStatus, boardReadRefusal, shortReadRefusal }
-  from "./settle-closed-status.mjs";
+import { settleBoardRows, settleClosedStatus, boardReadRefusal, shortReadRefusal,
+  closedRowsQuery, closedRowsFromRead } from "./settle-closed-status.mjs";
 // The repository this pass reads, from the one place that names it.
 import { REPO } from "../../../scripts/repo-identity.mjs";
 // The token-carrying halves, imported HERE (an entry point) and injected, so the decision module stays
 // pure -- #1009's rule, and the reason this command's Acceptance can run in the job with no token.
-import { fetchBoardItems } from "./board-snapshot.mjs";
+// `PROJECT_OWNER`/`PROJECT_NUMBER` ride the import this file already makes: the floor's population
+// read names the Project from the ONE place that declares it, never from a literal here.
+import { fetchBoardItems, PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapshot.mjs";
 // `EXIT` and `closeRowsExit` are the SAME contract both close paths take, imported rather than re-derived:
 // "a second copy of that decision is the exact 'fact stated twice' shape this repo keeps paying for."
 import { closeRowsExit, EXIT, LIVE_SETTLE_DEPS } from "./close-rows-for-merged-pr.mjs";
@@ -57,33 +59,35 @@ import { closeRowsExit, EXIT, LIVE_SETTLE_DEPS } from "./close-rows-for-merged-p
 export const LOG_PREFIX = "SETTLE-BOARD";
 
 /**
- * How far back the floor's independent population reaches. The lag this floor watches for is a property
- * of a RECENTLY ADDED item, so the most recent closed rows are where a short read would show -- and a
- * sample that costs one request is a floor the pass can afford on every run.
+ * The cap on the floor's population read -- NOT a sample size, and the distinction is what two reviews
+ * were about. 500 against a live population of 201 (measured 2026-09-23) leaves real headroom, and
+ * `closedRowsFromRead` REFUSES an exactly-full page rather than reporting it complete, so the cap can
+ * never silently become a sample again. The remedy is to raise it, up to GitHub's 1,000-result search
+ * ceiling; the refusal names what to do past that.
+ *
+ * 500 is `fetchReadyIssueNumbers`'s own number, for the same read shape and the same contract.
  */
-const FLOOR_SAMPLE = 100;
+const FLOOR_LIMIT = 500;
 
 /** @param {string[]} args */
 const gh = (args) => execFileSync("gh", args, { encoding: "utf8" }).trim();
 
 /**
- * The floor's independent population: closed rows GitHub itself reports as items on THIS Project, read
- * through `issue.projectItems` -- the side of the API that was correct while `projectV2.items` was short
- * (see `shortReadRefusal`). `gh issue list`, never `gh pr list`: this pass's population must not depend
- * on any PR existing, which is the whole of #2081.
+ * The floor's independent population: every CLOSED row GitHub itself reports as an item on THIS Project,
+ * narrowed BY GITHUB through the `project:` search qualifier rather than by a client-side guess at what
+ * `projectItems` means. `gh issue list`, never `gh pr list`: this pass's population must not depend on any
+ * PR existing, which is the whole of #2081.
+ *
+ * `closedRowsQuery` and `closedRowsFromRead` are pure and carry the reasoning, the measurement and the
+ * truncation contract; this function is the one call between them, and it is the only thing here that
+ * spends a token.
+ *
  * @param {(args: string[]) => string} [gh_]
  * @returns {number[]}
  */
 export function closedRowsOnProject(gh_ = gh) {
-  const raw = gh_(["issue", "list", "--repo", REPO, "--state", "closed",
-    "--limit", String(FLOOR_SAMPLE), "--json", "number,projectItems"]);
-  /** @type {{ number: number, projectItems: { title?: string }[] }[]} */
-  const rows = JSON.parse(raw);
-  // `projectItems` here carries no project NUMBER, so membership is read as "has any project item at
-  // all". This repo has one Project, and a row on some other board would only make this floor STRICTER --
-  // it would refuse a read that is genuinely complete for this Project, which is the safe direction for a
-  // floor to be wrong in, and is why the looser read is acceptable.
-  return rows.filter((r) => (r.projectItems ?? []).length > 0).map((r) => r.number);
+  const query = closedRowsQuery({ repo: REPO, owner: PROJECT_OWNER, number: PROJECT_NUMBER, limit: FLOOR_LIMIT });
+  return closedRowsFromRead(gh_(query), FLOOR_LIMIT);
 }
 
 /**
@@ -102,17 +106,30 @@ function settleOne(n, heldStatus) {
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/settle-closed-rows.mjs" });
 
-  let items, boardedClosedRows;
+  let items;
   try {
     // `fetchReady: () => []` REPLACES #747's floor rather than removing it -- `shortReadRefusal` below is
     // this pass's own, over the population it acts on. `shortReadRefusal`'s header carries the measurement
     // and the reasoning; the substitution is here because the floor's population is a CALLER's choice.
     items = fetchBoardItems({ fetchReady: () => [] });
-    boardedClosedRows = closedRowsOnProject();
   } catch (cause) {
     const { degraded, line } = boardReadRefusal(cause instanceof Error ? cause.message : String(cause));
     console.error(line);
     process.exit(degraded ? EXIT.DONE : EXIT.CANNOT_ASK);
+  }
+
+  // SEPARATE FROM THE BOARD READ, because they fail differently and one of them must stay loud. The board
+  // read above is DEGRADED in CI (#546's ceiling, which no operator can lift); the floor's population is a
+  // plain issue search that CI's token can make, so a failure here is a real one -- including the
+  // truncation refusal -- and must never borrow the board read's exit-0 bridge.
+  let boardedClosedRows;
+  try {
+    boardedClosedRows = closedRowsOnProject();
+  } catch (cause) {
+    console.error(`${LOG_PREFIX}: CANNOT ASK -- the floor's own population could not be read, so this pass `
+      + `cannot tell a complete board read from a partial one: `
+      + `${cause instanceof Error ? cause.message : String(cause)}`);
+    process.exit(EXIT.CANNOT_ASK);
   }
 
   const short = shortReadRefusal(items, boardedClosedRows);

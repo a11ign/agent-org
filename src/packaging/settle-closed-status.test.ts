@@ -13,7 +13,13 @@ import {
   settleClosedStatus, refusalCause, unsettledVerdict, PROJECT_UNREADABLE,
   // #2081: the board-keyed pass's pure pieces, in the same pure module and for the same reason.
   closedRowsToSettle, settleBoardRows, boardReadRefusal, shortReadRefusal,
+  closedRowsQuery, closedRowsFromRead,
 } from "../settle-closed-status.mjs";
+// The Project this repo actually has, from the one module that declares it -- so the search qualifier
+// below is pinned against the real identity rather than against a literal retyped in the assertion.
+// Both are pure of `gh`, which is why a test whose Acceptance runs in a token-less job may import them.
+import { PROJECT_OWNER, PROJECT_NUMBER } from "../board-snapshot-scope.mjs";
+import { REPO } from "../../../../scripts/repo-identity.mjs";
 // #1996: the resting state's single copy. Imported from the pure module that owns it, so this file's
 // closure still needs no token and the row's Acceptance stays runnable where Acceptance runs.
 import { RESTING_STATUS } from "../board-status-health.mjs";
@@ -190,6 +196,11 @@ test("#1996: the skip and the log line follow the constant rather than a second 
 
 // --- #2081: the board-keyed pass -- the population is the BOARD, and no PR list is ever read ---
 
+/** One of the pass's own source files, read as text for the structural checks below. */
+const source = (file: string) => readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
+/** Whole-line comments dropped, so a check reads the code rather than the prose beside it. */
+const codeOnly = (text: string) => text.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+
 /** The board as `board-snapshot.mjs` records it, narrowed to the three fields the classifier reads. */
 type Item = { number: number | null, state: string | null, status: string | null };
 const item = (number: number | null, state: string | null, status: string | null): Item => ({ number, state, status });
@@ -325,13 +336,14 @@ test("#2081 the log prefix says which path did the work, and the two older paths
  * so "the check found nothing" and "the check cannot see anything" stay distinguishable.
  */
 test("#2081 the board-keyed command reads no PR list -- and the same check DOES fire on the path that does", () => {
-  const source = (file: string) => readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
   // COMMENTS STRIPPED FIRST: both files DISCUSS the PR-keyed population in prose -- this pass's header says
   // at length why it reads no PR list -- and a check that cannot tell a mention from a call is a check on
   // the wording rather than on the code.
-  const codeOnly = (text: string) => text.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
   const readsPrList = (text: string) => /\["pr", "list"|closingIssuesReferences/.test(codeOnly(text));
   assert.equal(readsPrList(source("settle-closed-rows.mjs")), false, "the board-keyed pass keys on the board alone");
+  assert.equal(readsPrList(source("settle-closed-status.mjs")), false,
+    "AND the pure module the floor's own `gh` argv moved into on review -- the done-when follows the "
+    + "population read wherever it is built, or the check protects the file rather than the pass");
   assert.equal(readsPrList(source("close-rows-sweep.mjs")), true,
     "THE POSITIVE CONTROL: the sweep this pass complements does read one, so the check above is not vacuous");
 });
@@ -362,4 +374,82 @@ test("#2081 the floor credits nothing to a numberless item, and an empty populat
     "nothing boarded and nothing read is not a short read -- it is the empty case, and it is stated");
   assert.match(String(shortReadRefusal([item(null, null, null)], [7])),
     /#7/, "a draft item in the read does not stand in for the closed row that is missing from it");
+});
+
+/**
+ * #2081, ON REVIEW: THE FLOOR'S POPULATION IS A POPULATION, NOT A PAGE.
+ *
+ * The first version asked for the 100 most recently closed issues and treated that as the complete set of
+ * boarded closed rows. `reviewer-2` (09:17Z) and `reviewer` (14:39Z) found it independently, five and a
+ * half hours and one push apart. Measured live 2026-09-23 15:2xZ: that read yielded **90** boarded rows
+ * reaching back to #1911, against **201** closed rows GitHub reports on this Project -- so **111 of 201**
+ * were outside the floor's population entirely, the oldest being #21. The cases below are the contract
+ * that replaced it, and the cap boundary has a FAILING case because a floor with none cannot fail.
+ */
+
+/** `n` rows in the shape `--json number` returns them. */
+const closedRowRows = (n: number, from = 1000) =>
+  JSON.stringify(Array.from({ length: n }, (_, i) => ({ number: from + i })));
+
+test("#2081 the floor's population read names THIS Project in the query, and asks GitHub to narrow it", () => {
+  assert.deepEqual(closedRowsQuery({ repo: REPO, owner: PROJECT_OWNER, number: PROJECT_NUMBER, limit: 500 }), [
+    "issue", "list", "--repo", REPO, "--state", "closed",
+    "--search", `project:${PROJECT_OWNER}/${PROJECT_NUMBER}`, "--limit", "500", "--json", "number",
+  ]);
+  const query = closedRowsQuery({ repo: REPO, owner: PROJECT_OWNER, number: PROJECT_NUMBER, limit: 500 });
+  assert.equal(query.includes("projectItems"), false,
+    "THE SHOULD-FIX: the old read asked for `projectItems`, whose entries carry no project number, so "
+    + "'has any project item at all' was the only membership question it could ask -- an item on some "
+    + "OTHER board made this floor refuse a read that was complete for this one. The qualifier is "
+    + "evaluated by GitHub: measured 2026-09-23, `project:a11ign/99` returns [] where `project:a11ign/1` "
+    + "returns 201");
+  assert.equal(query[0], "issue",
+    "and it is an ISSUE list -- a PR list is what makes a hand-closed row invisible, which is all of #2081");
+});
+
+test("#2081 CAP BOUNDARY: an exactly-full page is REFUSED, never reported as the whole population", () => {
+  assert.throws(() => closedRowsFromRead(closedRowRows(500), 500),
+    /returned exactly the requested limit \(500\)/,
+    "THE FAILING CASE THE REVIEWS ASKED FOR: 500 rows against a limit of 500 is indistinguishable from a "
+    + "truncated result, and a truncated population is one this floor would report complete over the rows "
+    + "it did not see");
+  assert.throws(() => closedRowsFromRead(closedRowRows(500), 500), /Raise the limit/,
+    "and the refusal names the remedy, including what to do past GitHub's 1,000-result search ceiling");
+  assert.throws(() => closedRowsFromRead(closedRowRows(7), 7), /exactly the requested limit \(7\)/,
+    "the contract is the CAP, not the number 500 -- it holds at whatever limit the caller sent");
+});
+
+test("#2081 CAP BOUNDARY, the other side: one row short of the cap is the complete population", () => {
+  const rows = closedRowsFromRead(closedRowRows(499), 500);
+  assert.equal(rows.length, 499,
+    "the boundary is EXACT -- off by one in this direction and the floor refuses forever, which is the "
+    + "'a refusal no operator action can satisfy' shape this pass replaced #747's floor to escape");
+  assert.deepEqual(rows.slice(0, 3), [1000, 1001, 1002], "and the numbers are the rows, not their indices");
+  assert.deepEqual(closedRowsFromRead("[]", 500), [],
+    "an empty board is the empty population, stated rather than refused: nothing closed is not a short read");
+});
+
+test("#2081 the floor refuses every response shape it would otherwise have to guess at", () => {
+  assert.throws(() => closedRowsFromRead("not json at all", 500), /was not JSON -- refusing to guess/);
+  assert.throws(() => closedRowsFromRead('{"number":1}', 500), /was not a list -- refusing to guess/);
+  assert.throws(() => closedRowsFromRead('[{"number":7},{"title":"x"}]', 500),
+    /entry 1 has no number -- refusing to guess/,
+    "NAMED by position: this list is the only thing that can tell a complete board read from a partial "
+    + "one, so a list the parser had to guess at would make the floor report clean over a population it "
+    + "never established");
+});
+
+test("#2081 the live wiring supplies the declared Project and a cap below GitHub's search ceiling", () => {
+  const wiring = codeOnly(source("settle-closed-rows.mjs"));
+  assert.match(wiring, /closedRowsQuery\(\{\s*repo: REPO, owner: PROJECT_OWNER, number: PROJECT_NUMBER/,
+    "the one call site passes the DECLARED identity, never a literal retyped here -- the floor asking "
+    + "about the wrong Project is the second review point one level up");
+  const cap = wiring.match(/const FLOOR_LIMIT = (\d+);/);
+  assert.ok(cap, "and the cap is a named constant, so the number the refusal quotes is the number sent");
+  assert.ok(Number(cap[1]) > 201 && Number(cap[1]) <= 1000,
+    `FLOOR_LIMIT is ${cap?.[1]}: it must exceed the live population (201 boarded closed rows, measured `
+    + "2026-09-23) or the pass refuses on every run, and must not exceed GitHub's 1,000-result search "
+    + "ceiling, past which 'raise the limit' stops being a remedy");
+  assert.equal(/const FLOOR_LIMIT = (\d+);/.test("const FLOOR_LIMIT = FLOOR_SAMPLE;"), false,
+    "CONTROL: the pattern above can fail -- it does not match a cap that is not a literal number");
 });

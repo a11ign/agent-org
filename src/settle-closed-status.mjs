@@ -249,3 +249,88 @@ export function shortReadRefusal(items, closedRowsOnBoard) {
     + `this Project -- refusing to settle from a partial read, which would report this pass complete `
     + `having never examined them: #${missing.join(", #")}`;
 }
+
+/**
+ * #2081, ADDED ON REVIEW: THE FLOOR'S OWN POPULATION READ, AS THE ARGV `gh` IS GIVEN.
+ *
+ * **The first version of this floor sampled, and called the sample a population.** It asked for the 100
+ * most recently closed issues and filtered them by `projectItems` being non-empty, then checked those ids
+ * against the board read. `reviewer-2` (09:17Z) and `reviewer` (14:39Z) landed on it independently, five
+ * and a half hours and one push apart: a boarded closed row ranked 101st or older is not in the sample, so
+ * the pass reports a complete read over a row it never saw -- which is the defect the floor exists to
+ * catch, arriving through the floor itself.
+ *
+ * **Measured 2026-09-23 15:2xZ, live, and it is not a corner:** `gh issue list --state closed --limit 100`
+ * yielded **90** boarded rows reaching back to #1911, against **201** closed rows GitHub reports on this
+ * Project. **111 of 201 -- 55% -- were outside the floor's population entirely**, the oldest being #21.
+ *
+ * So the read is now the population, and it is the SEARCH that narrows it rather than a client-side filter:
+ *
+ * - **`project:<owner>/<number>` is evaluated by GitHub**, which answers the second review point too. The
+ *   old read asked for `--json number,projectItems`, whose entries carry no project number at all, so
+ *   "has any project item" was the only membership question it could ask -- an item on some OTHER board
+ *   made this floor refuse a read that was complete for this one. The qualifier discriminates: measured
+ *   the same minute, `project:a11ign/99` returns `[]` where `project:a11ign/1` returns 201.
+ * - **The whole population comes back, and an exactly-full page is refused** rather than reported as
+ *   complete -- `fetchReadyIssueNumbers`'s contract, imported as a rule rather than as code, because the
+ *   two reads share the shape ("returning exactly `limit` rows is indistinguishable from a truncated
+ *   result"). At 201 against a limit of 500 there is real headroom, and "raise the limit" is a remedy an
+ *   operator can take **up to GitHub's own 1,000-result search ceiling**; past that the read has to become
+ *   a cursor walk of `repository.issues(states: CLOSED)`, and the refusal says so rather than leaving the
+ *   next reader to discover the ceiling.
+ * - **It is `gh issue list`, never `gh pr list`** -- this pass's population must not depend on any PR
+ *   existing, which is the whole of #2081.
+ *
+ * The identity is passed in rather than imported because `board-snapshot-scope.mjs` -- the one place that
+ * declares it -- already imports `refusalCause` from this file, and a cycle between two modules whose
+ * headers are both about placement is a worse trade than one argument. `settle-closed-rows.mjs` supplies
+ * it from that declaration, and the test pins this argv against the same constants.
+ *
+ * @param {{ repo: string, owner: string, number: number, limit: number }} project
+ * @returns {string[]} the argv, so the qualifier that names the Project is asserted rather than described
+ */
+export function closedRowsQuery({ repo, owner, number, limit }) {
+  return ["issue", "list", "--repo", repo, "--state", "closed",
+    "--search", `project:${owner}/${number}`, "--limit", String(limit), "--json", "number"];
+}
+
+/**
+ * #2081: `closedRowsQuery`'s response, parsed -- and REFUSED rather than trusted when it came back
+ * exactly full, which is the truncation contract the reviews asked for.
+ *
+ * THROWS on every shape it does not recognise, `fetchReadyIssueNumbers`'s discipline and for its reason:
+ * this list is the only thing that can tell a complete board read from a partial one, so a list this
+ * function had to guess at would make the floor report clean over a population it never established.
+ *
+ * @param {string} raw `gh`'s stdout
+ * @param {number} limit the `--limit` the read asked for -- exactly this many rows is a refusal
+ * @returns {number[]}
+ */
+export function closedRowsFromRead(raw, limit) {
+  /** @type {unknown} */
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (cause) {
+    throw new Error(`settle-closed-rows: gh's closed-row list was not JSON -- refusing to guess whether `
+      + `the board read is complete. First 200 chars: ${raw.slice(0, 200)}`, { cause });
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`settle-closed-rows: gh's closed-row list was not a list -- refusing to guess. `
+      + `Got: ${JSON.stringify(parsed).slice(0, 300)}`);
+  }
+  if (parsed.length === limit) {
+    throw new Error(`settle-closed-rows: gh returned exactly the requested limit (${limit}) of closed rows `
+      + `on this Project -- indistinguishable from a truncated result, and a truncated population is one `
+      + `this floor would report complete over the rows it did not see. Raise the limit; past GitHub's `
+      + `1,000-result search ceiling, walk repository.issues(states: CLOSED) by cursor instead.`);
+  }
+  return parsed.map((/** @type {unknown} */ entry, /** @type {number} */ i) => {
+    const number = /** @type {{ number?: unknown }} */ (entry)?.number;
+    if (typeof number !== "number") {
+      throw new Error(`settle-closed-rows: closed-row list entry ${i} has no number -- refusing to guess. `
+        + `Got: ${JSON.stringify(entry).slice(0, 300)}`);
+    }
+    return number;
+  });
+}
