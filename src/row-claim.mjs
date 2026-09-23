@@ -568,7 +568,9 @@ export function sessionEligibilityReason(issueNumber, mySession, { run = default
   const myFiles = lookupMyRegionFiles(issueNumber, { run: ghRun });
   const otherPrFiles = lookupOpenPrFiles({ run: ghRun });
   if (myFiles !== null && otherPrFiles !== null) {
-    const { reason, emptyOtherPrs } = fileOverlapReason(myFiles, otherPrFiles);
+    // #2101: the row's OWN pull request is not a competitor for its files. Without this number B4
+    // refuses a row whose PR was opened before its claim -- against the very work that would finish it.
+    const { reason, emptyOtherPrs } = fileOverlapReason(myFiles, otherPrFiles, { rowNumber: issueNumber });
     for (const prNumber of emptyOtherPrs) {
       process.stderr.write(`row-claim: #${prNumber} is open and reports ZERO changed files -- not folded `
         + "into \"no overlap\", just nothing to compare against right now. Worth a look if that surprises "
@@ -1565,19 +1567,21 @@ function renderStatus(issueNumber, title, status, { body, recorded }) {
  * as a clean one. That conflation is the defect this file's own `startability` refuses one level up.
  *
  * @param {string[] | null} myFiles this row's declared Region, or null when it could not be read
- * @param {{ number: number, files: string[], changedFiles: number }[] | null} otherPrFiles every other open PR, its
- *   files and its count (#1419), or null
+ * @param {{ number: number, files: string[], changedFiles: number, closes?: number[] }[] | null} otherPrFiles every
+ *   other open PR, its files, its count (#1419), and the rows it declares it closes (#2101), or null
+ * @param {number | null} [rowNumber] the row this is being asked about (#2101), so its own pull request is
+ *   excluded. `check` knows it and passes it; omitting it is the unconditional B4 of before.
  * @returns {string[]} lines to print -- NEVER empty. Three states, three sentences: refused,
  *   could-not-ask, clear. It said "empty only when B4 genuinely found no overlap" until #1085's review,
  *   which is the shape this repo records most: a doc line two lines above the function, stating what the
  *   code used to do, in the place it will be believed.
  */
-export function b4Lines(myFiles, otherPrFiles) {
+export function b4Lines(myFiles, otherPrFiles, rowNumber = null) {
   if (myFiles === null || otherPrFiles === null) {
     return ["B4 COULD NOT BE ASKED: the open pull requests or this row's Region could not be read. "
       + "INCONCLUSIVE, not clear -- `row-claim claim` asks again and may refuse."];
   }
-  const { reason, emptyOtherPrs } = fileOverlapReason(myFiles, otherPrFiles);
+  const { reason, emptyOtherPrs } = fileOverlapReason(myFiles, otherPrFiles, { rowNumber });
   const lines = [];
   // THREE STATES, THREE SENTENCES -- worker-capture reviewing #1085. The first version printed a refusal,
   // announced INCONCLUSIVE, and said NOTHING when clear. So `row-claim check` on a clean row was
@@ -1607,7 +1611,7 @@ export function b4Lines(myFiles, otherPrFiles) {
  * @param {number} issueNumber
  * @param {{ write?: (s: string) => void,
  *   mine?: (n: number) => string[] | null,
- *   others?: () => { number: number, files: string[], changedFiles: number }[] | null }} [deps]
+ *   others?: () => { number: number, files: string[], changedFiles: number, closes?: number[] }[] | null }} [deps]
  */
 export function reportB4(issueNumber, deps = {}) {
   const write = deps.write ?? ((/** @type {string} */ text) => process.stdout.write(text));
@@ -1617,7 +1621,7 @@ export function reportB4(issueNumber, deps = {}) {
   // here until #1085's review: the `reportB4 never writes` mutation was 1 red and this `if` is what that
   // red would have been credited to, so the next person mutating here would conclude the empty case was
   // covered by a branch that can no longer be taken.
-  write(`${b4Lines(mine(issueNumber), others()).join("\n")}\n`);
+  write(`${b4Lines(mine(issueNumber), others(), issueNumber).join("\n")}\n`);
 }
 
 /** @param {number} issueNumber */

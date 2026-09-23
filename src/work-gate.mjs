@@ -43,7 +43,7 @@ import { NO_VERDICT } from "./merge-guard/checks-rule.mjs";
 // counts as a path" is not allowed to exist. Both are leaf-shaped and relative, so the gate keeps the
 // property its own header states -- it runs before any `npm ci` or build.
 import { declaredRegionFiles } from "./region-paths.mjs";
-import { fileOverlapReason } from "./row-claim/file-overlap-rule.mjs";
+import { declaredClosedRows, fileOverlapReason } from "./row-claim/file-overlap-rule.mjs";
 // THE REFUSAL PATH ONLY, and a LEAF import so this file keeps the property its own header states. The
 // reader lived in `queue-table.mjs` until #2003; importing THAT would have pulled five modules into the
 // graph of a script that runs 720 times a day, to use a function it calls only when already refusing.
@@ -173,7 +173,7 @@ const defaultRun = (args) => execFileSync("gh", args, { encoding: "utf8", maxBuf
 export function readPrs(run = defaultRun) {
   try {
     const out = run(["pr", "list", "--state", "open", "--limit", "100", "--json",
-      "number,isDraft,headRefOid,statusCheckRollup,author,comments,labels,files,changedFiles"]);
+      "number,isDraft,headRefOid,statusCheckRollup,author,comments,labels,files,changedFiles,body"]);
     const parsed = JSON.parse(out);
     return Array.isArray(parsed) ? parsed : null;
   } catch {
@@ -466,8 +466,12 @@ const labelsOf = (x) => (x?.labels ?? []).map((/** @type {any} */ l) => String(l
  * **THE GATE FAILS OPEN AND THE AUTHORITY DOES NOT MOVE** -- every shelving decision here can only ever
  * remove a wake that would have ended in a refusal.
  *
+ * #2101: `closes` rides along -- the rows each PR's body DECLARES it closes, so `blockedOnOpenPr` can tell
+ * a row's own pull request from a competitor for its files. `body` is one more field on `readPrs`'s
+ * existing call and costs no extra one.
+ *
  * @param {any[]} prs
- * @returns {{ number: number, files: string[], changedFiles: number }[]}
+ * @returns {{ number: number, files: string[], changedFiles: number, closes: number[] }[]}
  */
 export function comparablePrFiles(prs) {
   return prs
@@ -475,6 +479,7 @@ export function comparablePrFiles(prs) {
       number: Number(p?.number),
       changedFiles: Number(p?.changedFiles),
       files: (p?.files ?? []).map((/** @type {any} */ f) => String(f?.path ?? f)),
+      closes: declaredClosedRows(p?.body),
     }))
     .filter((p) => Number.isInteger(p.changedFiles) && p.files.length === p.changedFiles);
 }
@@ -489,7 +494,13 @@ export function comparablePrFiles(prs) {
  * so this returns `null` too. A Region naming no path is `[]`, which `fileOverlapReason` itself answers
  * with "no overlap" -- a real comparison, and not this function's to second-guess.
  *
- * @param {any} row @param {{ number: number, files: string[], changedFiles: number }[]} prFiles
+ * #2101: THE ROW'S OWN NUMBER GOES WITH ITS REGION. A pull request declaring `Closes #<this row>` is this
+ * row's own work and cannot be a reason to withhold it -- the gate shelved #2076 behind #2077, the PR
+ * that WAS #2076, and it and two rows behind the same file went nowhere for 1h41m. This must agree with
+ * `row-claim.mjs` about that for the same reason the Region read does: a gate that shelves what the claim
+ * would grant is a gate nobody can act on.
+ *
+ * @param {any} row @param {{ number: number, files: string[], changedFiles: number, closes?: number[] }[]} prFiles
  * @param {{ rootFiles?: Set<string> }} [options] passed to `declaredRegionFiles` so a test can name its
  *   own tree rather than needing this repository's
  * @returns {string | null}
@@ -500,7 +511,7 @@ export function blockedOnOpenPr(row, prFiles, options) {
   if (prFiles.length === 0) return null;
   const mine = declaredRegionFiles(String(row?.body ?? ""), options);
   if (mine === null) return null;
-  return fileOverlapReason(mine, prFiles).reason;
+  return fileOverlapReason(mine, prFiles, { rowNumber: Number(row?.number) }).reason;
 }
 
 /**

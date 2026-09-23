@@ -32,7 +32,24 @@
 // overlap anything. So the lookup reads each PR's `changedFiles` in the same call and pages REST `pulls/<n>/files`
 // for any list shorter than it; and the rule REFUSES a PR whose list still does not match its count as NOT
 // COMPARABLE, naming both numbers, rather than reading "no overlap". A PR whose count really is 0 is still only a note.
+//
+// #2101: A ROW AND ITS OWN PULL REQUEST ARE ONE PIECE OF WORK, AND ONE PIECE OF WORK CANNOT COLLIDE WITH
+// ITSELF. B4 compared a row's Region against EVERY open PR, its own included, so a PR opened before the
+// claim -- the two in the wrong order -- made its own row permanently unclaimable by everybody, the
+// session that would finish that PR included. Measured 2026-09-23: #2077 opened 32 seconds after #2076
+// was filed, one file each side and the same file; the row sat `backlog` for 1h41m with a
+// CHANGES_REQUESTED on its PR and nobody able to take either, and #2084/#2083 shelved behind the same
+// file, until `product-manager` closed #2077 by hand. NEITHER ESCAPE THE REFUSAL NAMES EXISTS THERE:
+// "sequence with that PR's author" names a bot account, and "narrow this row's region" is impossible when
+// the Region is one file.
+//
+// SO THE EXCLUSION IS BY DECLARATION, NEVER BY GUESS. A PR is this row's own only when its body says
+// `Closes #<this row>`, read by `extractClosesDeclaration` -- the same parser B7 already gates every merge
+// on (#1966), so it is a field the org relies on rather than a convention invented here. A PR that
+// declares NOTHING, or declares ANOTHER row, still collides exactly as before: B4's value is that it is
+// unconditional about two SESSIONS touching one file, and this row is one `if` away from disabling it.
 import { REPO } from "../../../../scripts/repo-identity.mjs";
+import { extractClosesDeclaration } from "../acceptance-commands.mjs";
 import { gh, lookup } from "../merge-guard/lookups.mjs";
 import { declaredRegionFiles, regionCovers } from "../region-paths.mjs";
 
@@ -40,22 +57,63 @@ import { declaredRegionFiles, regionCovers } from "../region-paths.mjs";
 const isChangeset = (path) => path.startsWith(".changeset/");
 
 /**
+ * #2101: THE ROWS A PULL REQUEST DECLARES IT CLOSES, as numbers -- `[]` for a body that declares nothing,
+ * a `Closes: none` opt-out, or a malformed one. NO SECOND PARSER: `extractClosesDeclaration` is B7's own,
+ * and a divergence between what B4 excludes and what the merge gate reads is exactly the drift that would
+ * let a PR be its own row here and somebody else's row there.
+ *
+ * @param {string | null | undefined} body
+ * @returns {number[]}
+ */
+export function declaredClosedRows(body) {
+  const declaration = extractClosesDeclaration(body);
+  return declaration.kind === "closes" ? declaration.numbers : [];
+}
+
+/**
+ * #2101: is this open PR the row's OWN work? Only a declaration says so, and only about a row we were
+ * actually told the number of -- an absent `rowNumber` excludes nothing, which is what keeps every caller
+ * that does not know its row (and every existing test) refusing exactly as it did.
+ *
+ * `closes` is a LIST because a PR may declare several rows; a caller holding one may write it bare, which
+ * is how the hand-run fixtures and Open-checks in the rows themselves are written.
+ *
+ * @param {{ number: number, closes?: number[] | number | null }} other
+ * @param {number | null | undefined} rowNumber
+ * @returns {boolean}
+ */
+function isOwnPrOf(other, rowNumber) {
+  if (!Number.isInteger(rowNumber)) return false;
+  const declared = Array.isArray(other.closes) ? other.closes
+    : Number.isInteger(other.closes) ? [Number(other.closes)] : [];
+  return declared.includes(Number(rowNumber));
+}
+
+/**
  * THE VERDICT, PURE.
  *
  * @param {string[]} myFiles this row's own declared Region paths -- files, and (#941) directory prefixes
  *   ending in `/` (changeset entries already excluded by
  *   the caller is NOT required -- this function excludes them itself, so either side can pass a raw list)
- * @param {{ number: number, files: string[], changedFiles: number }[]} otherPrFiles every OTHER open PR, its changed
- *   files, and the count GitHub reports for them -- #1419: the list is only comparable when it matches the count
+ * @param {{ number: number, files: string[], changedFiles: number, closes?: number[] | number | null }[]} otherPrFiles
+ *   every OTHER open PR, its changed files, the count GitHub reports for them -- #1419: the list is only
+ *   comparable when it matches the count -- and (#2101) the rows its body declares it closes
+ * @param {{ rowNumber?: number | null }} [options] the number of the row being asked about, so its OWN
+ *   pull request can be excluded (#2101). ABSENT EXCLUDES NOTHING: a caller that does not know which row
+ *   it is comparing for gets the unconditional B4 of before.
  * @returns {{ reason: string | null, emptyOtherPrs: number[] }}
  */
-export function fileOverlapReason(myFiles, otherPrFiles) {
+export function fileOverlapReason(myFiles, otherPrFiles, { rowNumber = null } = {}) {
   const mine = new Set(myFiles.filter((p) => !isChangeset(p)));
   /** @type {number[]} */
   const emptyOtherPrs = [];
   if (mine.size === 0) return { reason: null, emptyOtherPrs };
 
   for (const other of otherPrFiles) {
+    // #2101: BEFORE THE COMPARABILITY CHECK, not after. A row's own PR with a truncated file list would
+    // otherwise be refused as NOT COMPARABLE -- the same deadlock arriving through #1419's door -- and
+    // there is nothing to compare either way: this is the row's own work.
+    if (isOwnPrOf(other, rowNumber)) continue;
     if (!Number.isInteger(other.changedFiles) || other.files.length !== other.changedFiles) {
       return { emptyOtherPrs, reason: notComparableReason(other) };
     }
@@ -123,18 +181,21 @@ export function lookupMyRegionFiles(issueNumber, { run = gh } = {}) {
  * #1419: the same call also reads each PR's `changedFiles`, and a list shorter than it is paged through REST, which
  * returns every file. Only a short PR costs that extra call.
  *
+ * #2101: and `body`, for the same reason -- ANOTHER FIELD ON THE CALL ALREADY BEING MADE, never another call. It
+ * is what tells a row's own pull request from a competitor for its files.
+ *
  * @param {{ run?: (args: string[]) => string, log?: (line: string) => void }} [deps]
- * @returns {{ number: number, files: string[], changedFiles: number }[] | null}
+ * @returns {{ number: number, files: string[], changedFiles: number, closes: number[] }[] | null}
  */
 export function lookupOpenPrFiles({ run = gh, log = (line) => process.stderr.write(`${line}\n`) } = {}) {
   return lookup(() => {
-    const raw = run(["pr", "list", "--repo", REPO, "--state", "open", "--json", "number,changedFiles,files"]);
-    /** @type {{ number: number, changedFiles: number, files: { path: string }[] }[]} */
+    const raw = run(["pr", "list", "--repo", REPO, "--state", "open", "--json", "number,changedFiles,files,body"]);
+    /** @type {{ number: number, changedFiles: number, files: { path: string }[], body?: string }[]} */
     const parsed = JSON.parse(raw);
     return parsed.map((pr) => {
       const listed = pr.files.map((f) => f.path);
       const files = listed.length < pr.changedFiles ? pagedPrFiles(pr.number, listed, { run, log }) : listed;
-      return { number: pr.number, files, changedFiles: pr.changedFiles };
+      return { number: pr.number, files, changedFiles: pr.changedFiles, closes: declaredClosedRows(pr.body) };
     });
   });
 }
