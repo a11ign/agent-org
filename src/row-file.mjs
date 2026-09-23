@@ -92,7 +92,7 @@
 // tree, applied to a wrapped external tool instead of to this file's own flags.
 import { execFileSync } from "node:child_process";
 import {
-  acceptancePathsReason, bulletOnlyFleetMention, extractAcceptanceSection, fleetOrLabAcceptance,
+  acceptancePathsReason, extractAcceptanceSection, fleetOrLabAcceptance, untrimmedFleetMention,
   handRunAcceptanceReason, labFetchPathReason,
 } from "./acceptance-commands.mjs";
 import { readFileSync, realpathSync } from "node:fs";
@@ -991,7 +991,7 @@ function laneLabelsOrRefusal(body, loadLanesConfig, argv) {
   // against real boxes), and dropping the path lane would route it away from the engineer who must write
   // the code. The two lanes answer different questions and a row may need both answers.
   const fleetReason = fleetOrLabAcceptance(body);
-  reportAcceptanceRouting(fleetReason, bulletOnlyFleetMention(body));
+  reportAcceptanceRouting(fleetReason, untrimmedFleetMention(body));
   const routed = withAcceptanceLane(laneLabels, fleetReason);
   const labelProblem = labelRefusal(argv, routed);
   return labelProblem ? { ok: false, message: labelProblem } : { ok: true, laneLabels: routed };
@@ -1012,17 +1012,25 @@ export function withAcceptanceLane(laneLabels, fleetReason) {
 }
 
 /**
- * #1912: SAY WHICH PATTERN ROUTED THE ROW, or which one a bullet named without routing it. #1911 came out
- * `lane:orchestrator` with nothing saying why, and the filer found the cause by reading this module.
- * @param {string | null} fleetReason @param {string | null} bulletReason
+ * #1912: SAY WHICH PATTERN ROUTED THE ROW, or which one a trim swallowed without routing it. #1911 came
+ * out `lane:orchestrator` with nothing saying why, and the filer found the cause by reading this module.
+ *
+ * #1988: THE SECOND TRIM IS NAMED IN THE SAME LINE. A scope-disclaiming paragraph now stops a NAMED
+ * pattern routing the row, and a second silent trim would have re-made exactly the defect #1912 closed --
+ * so the line says which of the two it was, and what to do about each.
+ * @param {string | null} fleetReason
+ * @param {{ reason: string, form: "bullet" | "scope disclaimer" } | null} untrimmed
  */
-function reportAcceptanceRouting(fleetReason, bulletReason) {
+function reportAcceptanceRouting(fleetReason, untrimmed) {
   if (fleetReason) {
     process.stderr.write(`row-file: lane:orchestrator added -- the Acceptance ${fleetReason}.\n`);
-  } else if (bulletReason) {
-    process.stderr.write(`row-file: NOT routed to orchestrator -- a bullet in the Acceptance names something that `
-      + `${bulletReason}, and bullets are read as describing a test (#1912). If the row DOES it, write that step `
-      + "as a numbered clause.\n");
+  } else if (untrimmed) {
+    const remedy = untrimmed.form === "bullet"
+      ? "bullets are read as describing a test (#1912). If the row DOES it, write that step as a numbered clause"
+      : "a paragraph declaring work OUT is read as disclaiming it (#1988). If the row DOES it, say so outside "
+        + "that paragraph";
+    process.stderr.write("row-file: NOT routed to orchestrator -- a "
+      + `${untrimmed.form} in the Acceptance names something that ${untrimmed.reason}, and ${remedy}.\n`);
   }
 }
 
