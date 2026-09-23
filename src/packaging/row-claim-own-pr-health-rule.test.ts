@@ -24,6 +24,7 @@ import assert from "node:assert/strict";
 import {
   inBuildReason, isInBuild, lookupOtherHeldIssues, lookupClosingPrHealth, lookupRowShape,
   deliveredRowsDeclaredBy, lookupDeliveringPr, lookupHeldRows,
+  unansweredRefusal, disputeAtHead, lookupOpenPrReviewHealth, escalateDisputeToCeo, OPEN_PR_LIMIT,
 } from "../row-claim/own-pr-health-rule.mjs";
 
 /** A row owed a commit: held, declaring files, no sub-rows, no PR. Each test changes ONE fact from this. */
@@ -628,4 +629,399 @@ test("#2026: a FAILED delivery lookup leaves the row IN BUILD — the clause fai
   assert.notEqual(rows, null, "the HELD reading answered, so the claim is not inconclusive overall");
   assert.equal(rows?.[0].deliveringPr, undefined);
   assert.ok(inBuildReason(rows ?? []), "a new clause must not change the rule's behaviour under failure");
+});
+
+// --- #2126: AN UNANSWERED REFUSAL IS WORK NEEDING THIS SESSION'S ACTION --------------------------------
+
+/**
+ * #989 IS NOT REVERSED HERE AND MUST NOT BE. One pull request AWAITING REVIEW plus one new row stays
+ * legal -- the four `n open PR(s) and no row in build` cases far above are the positive control for that,
+ * and they are untouched. The population this clause adds is narrower: a pull request whose reviewer has
+ * ASKED FOR CHANGES is not waiting on anybody but its author, and nothing counted it.
+ *
+ * THE MEASUREMENT, 2026-09-23. #2107 carried a `not convinced` from 10:37:46Z with no author response at
+ * all, and `worker-tooling` -- the session holding its row -- was free to claim a fresh one. It is the
+ * session that built this clause, which is why the fixtures below are its own numbers rather than invented
+ * ones.
+ */
+const REFUSED_HEAD = "6541b1ee3ca8332069db55e3144d93bbef4e6b0f";
+const VERDICT_HEAD = "dfe72936b50f0e6cb8a3d5f1a9c0e2b7d4f61a83";
+
+/** #2107's review health as GitHub reported it: a refusal that has outlived the head it was posted on. */
+const refusedPr = { number: 2107, head: REFUSED_HEAD,
+  reviewDecision: "CHANGES_REQUESTED", dispute: null };
+
+/**
+ * #2083's shape: a row whose commits ARE proposed, so every existing clause of `isInBuild` clears it --
+ * which is exactly why this population was invisible. Change ONE fact per test from here.
+ */
+const proposedRow = { number: 2083, declaresPaths: true, subIssues: 0,
+  closingPr: { state: "OPEN" as const }, openPrNumber: 2107, openPrReview: refusedPr };
+
+test("#2126 (1): an open PR reading CHANGES_REQUESTED REFUSES a fresh claim, naming the pull request", () => {
+  const reason = inBuildReason([proposedRow]);
+  assert.ok(reason, "a reviewer has asked for changes and nobody has answered: that is work needing action");
+  assert.match(reason as string, /#2107/, "the refusal names the PULL REQUEST, because that is where the "
+    + "work is -- unlike a row in build, which has none to name");
+  assert.match(reason as string, /#2083/, "and the row it belongs to, so the reader can find it either way");
+  assert.match(reason as string, /CHANGES_REQUESTED/,
+    "by GitHub's own field, so a reader can check the claim against `gh pr view --json reviewDecision`");
+});
+
+/**
+ * #2126 (2): THE POSITIVE CONTROL FOR CLAUSE 1, and the assertion that #989's ruling survives this row.
+ *
+ * `REVIEW_REQUIRED` is a pull request waiting on its reviewer and `APPROVED` is one waiting on the merge
+ * queue; neither is work its author owes. A clause that refused either would be #476 returning under a new
+ * name -- the refusal ceo overturned by hand three times in one day before ruling against it.
+ */
+for (const decision of ["REVIEW_REQUIRED", "APPROVED", null]) {
+  test(`#2126 (2): an open PR reading ${decision ?? "no decision at all"} is ALLOWED -- #989 preserved`, () => {
+    assert.equal(inBuildReason([{ ...proposedRow,
+      openPrReview: { ...refusedPr, reviewDecision: decision } }]), null,
+    "as many pull requests in review as it takes, ONE row in build -- unchanged by this clause");
+  });
+}
+
+test("#2126 (2): a row with no open pull request at all reads exactly as it did before this clause", () => {
+  assert.equal(unansweredRefusal({ ...proposedRow, openPrNumber: undefined, openPrReview: undefined }), null);
+  assert.equal(inBuildReason([{ ...proposedRow, openPrNumber: undefined, openPrReview: undefined }]), null,
+    "its commits are proposed and no reviewer has refused them: #989 clears it, and still does");
+});
+
+/**
+ * #2126 (3): THE CLAUSE THE OBVIOUS DISCRIMINATOR WOULD FAIL, and the reason `reviewDecision` is the one
+ * used. The natural rule -- *"refuse while a not-convinced verdict stands AT THE CURRENT HEAD"* -- would
+ * have caught NEITHER measured case, because the head moves off a verdict by itself within minutes.
+ *
+ * #2107's verdict landed 10:37:46Z on `dfe72936`. Every commit after it is an automated `Merge branch
+ * 'main'` written by the freshness sweep, and there are ZERO author commits. The discriminator that would
+ * be defeated is written out below rather than described, so this fixture can be SHOWN to defeat it --
+ * a control I can point at, not one I believe in.
+ */
+const BOT_MERGES = ["787aecd4", "5a9981d0", "d45c1b00", "6541b1ee"].map((oid) => ({
+  oid, message: "Merge branch 'main' into agent/state-reading-delivery-clock-2083" }));
+
+/** The rejected rule, in one line, so the case below is a measurement of it rather than a claim about it. */
+const refusesOnHeadIdentity = (pr: { headRefOid: string,
+  reviews: { state: string, commit: { oid: string } }[] }) =>
+  pr.reviews.some((r) => r.state === "CHANGES_REQUESTED" && r.commit.oid === pr.headRefOid);
+
+test("#2126 (3): four bot merges and NO author commit do not clear the refusal", () => {
+  assert.equal(BOT_MERGES.filter((c) => !c.message.startsWith("Merge branch 'main'")).length, 0,
+    "the fixture's own claim: every commit after the verdict is an automated merge. Its positive control "
+    + "is the head move it produces, asserted two lines down -- if this list ever holds an author commit "
+    + "the case below stops being about a bot at all");
+  assert.notEqual(BOT_MERGES[BOT_MERGES.length - 1].oid, VERDICT_HEAD.slice(0, 8),
+    "and they MOVED the head off the verdict, which is the whole mechanism");
+
+  const reason = inBuildReason([proposedRow]);
+  assert.ok(reason, "`dismiss_stale_reviews` is false, so `reviewDecision` outlives the head it was posted "
+    + "on -- the refusal is still standing after all four merges");
+  assert.match(reason as string, /BOT MERGE DOES NOT LIFT THIS/,
+    "and the refusal says so, because a reader whose head has moved four times since the verdict will "
+    + "otherwise reasonably believe it is stale and work around it");
+});
+
+test("#2126 (3): the REJECTED discriminator is measured against this fixture and finds nothing", () => {
+  // Not an argument about head identity -- a run of it. This is what makes clause 3 a control rather than
+  // a restatement of clause 1 with more prose attached.
+  const asGitHubReportsIt = { headRefOid: REFUSED_HEAD,
+    reviews: [{ state: "CHANGES_REQUESTED", commit: { oid: VERDICT_HEAD } }] };
+  assert.equal(refusesOnHeadIdentity(asGitHubReportsIt), false,
+    "a guard keyed on head identity is cleared automatically, by a bot, five minutes after the verdict");
+  assert.equal(refusesOnHeadIdentity({ ...asGitHubReportsIt, headRefOid: VERDICT_HEAD }), true,
+    "and it is a real discriminator rather than a function that never fires -- it refuses the same shape "
+    + "before the sweep moves the head, which is precisely the window it is useless outside of");
+  assert.ok(inBuildReason([proposedRow]), "`reviewDecision` reads the same fixture correctly");
+});
+
+/**
+ * #2126 (4): THE ESCAPE, AND IT IS NOT OPTIONAL. Measured on #2105: an APPROVED from `reviewer-2` and a
+ * CHANGES_REQUESTED from `reviewer` at the IDENTICAL commit `e1b8b7bc`, 57 seconds apart. Its author was
+ * handed an approval and a rejection of the same code inside a minute, and walking away was close to
+ * rational. A guard with no exit for a dispute converts a review disagreement into a stalled engineer,
+ * which is worse than what this clause fixes.
+ */
+const DISPUTED_HEAD = "e1b8b7bc58c1ed9caae9117e4f1cc787f1340eaa";
+const dispute = { head: DISPUTED_HEAD,
+  approved: { state: "APPROVED", by: "reviewer-2" },
+  refused: { state: "CHANGES_REQUESTED", by: "reviewer" } };
+const disputedRow = { ...proposedRow, number: 2099, openPrNumber: 2105,
+  openPrReview: { number: 2105, head: DISPUTED_HEAD, reviewDecision: "CHANGES_REQUESTED", dispute } };
+
+test("#2126 (4): contradictory verdicts at the SAME head are NOT refused", () => {
+  assert.equal(unansweredRefusal(disputedRow), null);
+  assert.equal(inBuildReason([disputedRow]), null,
+    "`reviewDecision` still reads CHANGES_REQUESTED -- it is the dispute, not the field, that lifts this");
+  assert.ok(inBuildReason([{ ...disputedRow,
+    openPrReview: { ...disputedRow.openPrReview, dispute: null } }]),
+  "the POSITIVE CONTROL for the escape: the identical row with the dispute removed IS refused, so the "
+    + "clearance above comes from the dispute and not from the fixture being harmless");
+});
+
+test("#2126 (4): the escape ESCALATES -- it labels the row `answer:ceo` and writes the dispute on it", () => {
+  const calls: string[][] = [];
+  const run = (args: string[]) => {
+    calls.push(args);
+    return args[0] === "issue" && args[1] === "view" ? JSON.stringify({ labels: [] }) : "";
+  };
+  const lines: string[] = [];
+  assert.equal(escalateDisputeToCeo(disputedRow, { run, log: (l) => lines.push(l) }), true);
+
+  const edit = calls.find((c) => c[0] === "issue" && c[1] === "edit");
+  assert.ok(edit, `the row must be labelled -- calls were ${calls.map((c) => c.slice(0, 2).join(" ")).join(", ")}`);
+  assert.deepEqual([edit?.[2], edit?.[edit.indexOf("--add-label") + 1]], ["2099", "answer:ceo"],
+    "on the row whose pull request is disputed, with the org's own `answer:<session>` spelling -- removing "
+    + "the label IS the act of answering, so nothing has to remember this");
+
+  const comment = calls.find((c) => c[0] === "issue" && c[1] === "comment")?.slice(-1)[0] ?? "";
+  assert.match(comment, /#2105/, "naming the pull request");
+  assert.match(comment, /e1b8b7bc/, "and the head both verdicts were posted at");
+  assert.match(comment, /reviewer-2/);
+  assert.match(comment, /reviewer\b/);
+  assert.ok(lines.some((l) => l.includes("answer:ceo")),
+    "and the claiming session is told on stderr, so the escape is never silent");
+});
+
+test("#2126 (4): a row already awaiting ceo is NOT re-labelled and NOT re-commented", () => {
+  // A claim can drive this twice (`sessionEligibilityReason`, then the `--blocked-by` path), and a second
+  // identical comment on every claim is how a useful record becomes noise a future reader has to skip.
+  const calls: string[][] = [];
+  const run = (args: string[]) => {
+    calls.push(args);
+    return JSON.stringify({ labels: [{ name: "answer:ceo" }] });
+  };
+  assert.equal(escalateDisputeToCeo(disputedRow, { run, log: () => {} }), false);
+  assert.deepEqual(calls.filter((c) => c[1] === "edit" || c[1] === "comment"), [],
+    "nothing is written -- and the control for this emptiness is the test directly above, which asserts "
+    + "the same call DOES write against a row with no label");
+});
+
+test("#2126 (4): a failed escalation write never fails the claim, and says what to do by hand", () => {
+  const lines: string[] = [];
+  const run = () => { throw new Error("gh: 403 rate limited"); };
+  assert.equal(escalateDisputeToCeo(disputedRow, { run, log: (l) => lines.push(l) }), false,
+    "the claim proceeds: a write this rule could not make must not become a refusal it never decided");
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /403 rate limited/, "the cause is recorded rather than swallowed");
+  assert.match(lines[0], /by hand/, "and the reader is told the one thing the failure cost them");
+});
+
+test("#2126 (4): a row with no dispute escalates nothing", () => {
+  const calls: string[][] = [];
+  assert.equal(escalateDisputeToCeo(proposedRow, { run: (a) => { calls.push(a); return ""; }, log: () => {} }),
+    false);
+  assert.deepEqual(calls, [], "the control is the escalation test above, which writes on the same shape "
+    + "with `dispute` set");
+});
+
+// --- #2126: reading the dispute off GitHub, where the reviewer's name is NOT `author.login` -------------
+
+/**
+ * THE PART THAT SURPRISED ME, and it is why this read goes through `reviews` and `reviewVerdict` rather
+ * than through `latestReviews` and `author.login`. Measured on #2105's five reviews on 2026-09-23: EVERY
+ * ONE is authored by `a11ign-bot`. `reviewer` and `reviewer-2` are org sessions sharing one GitHub
+ * identity, so GitHub sees one reviewer, keeps only that account's most recent review in `latestReviews`,
+ * and a dispute detector keyed on the login finds nothing -- defeated exactly the way the head-identity
+ * discriminator is. The name lives in the verdict's own `, by <name>:` opener.
+ */
+const review = (state: string, oid: string, by: string, at?: string) => ({ state, commit: { oid },
+  ...(at ? { submittedAt: at } : {}),
+  body: `**Review of #2105 at \`${oid.slice(0, 8)}\`, by ${by}: `
+    + `${state === "APPROVED" ? "convinced" : "not convinced"} (provisional).**` });
+
+test("#2126: two DIFFERENT named reviewers disagreeing at one head is a dispute", () => {
+  const found = disputeAtHead({ headRefOid: DISPUTED_HEAD, reviews: [
+    review("CHANGES_REQUESTED", "b45c57304938cfa00a005d1de2c0cab78bac2429", "reviewer-2"),
+    review("CHANGES_REQUESTED", "2939fc02b6db9a2e67443e5d5d292c598542dd37", "reviewer"),
+    review("APPROVED", DISPUTED_HEAD, "reviewer-2"),
+    review("CHANGES_REQUESTED", DISPUTED_HEAD, "reviewer"),
+  ] });
+  assert.equal(found?.approved.by, "reviewer-2");
+  assert.equal(found?.refused.by, "reviewer");
+  assert.equal(found?.head, DISPUTED_HEAD, "and only the CURRENT head counts -- the two earlier refusals "
+    + "at `b45c5730` and `2939fc02` are a review history, not a disagreement");
+});
+
+test("#2126: the same reviewer REVERSING ITSELF at one head is not a dispute", () => {
+  // GitHub has already folded this into `reviewDecision`: the latest word from that reviewer stands, and
+  // it is an ordinary unanswered refusal. Reading it as a dispute would let any reviewer who changed their
+  // mind at the same head wave the guard through.
+  assert.equal(disputeAtHead({ headRefOid: DISPUTED_HEAD, reviews: [
+    review("APPROVED", DISPUTED_HEAD, "reviewer"),
+    review("CHANGES_REQUESTED", DISPUTED_HEAD, "reviewer"),
+  ] }), null);
+});
+
+test("#2126: an UNATTRIBUTED pair is not a dispute, because it cannot be told from a reversal", () => {
+  const nameless = (state: string) => ({ state, commit: { oid: DISPUTED_HEAD },
+    body: "**Re-read: convinced.**" });
+  assert.equal(disputeAtHead({ headRefOid: DISPUTED_HEAD,
+    reviews: [nameless("APPROVED"), nameless("CHANGES_REQUESTED")] }), null,
+  "`reviewVerdict` returns `null` for an opener naming nobody and this clause must not default it to a "
+    + "name -- the same discipline #1259 states for a clock");
+});
+
+test("#2126: ONE named verdict against ONE unattributed one is not a dispute either", () => {
+  // The case that makes the unnamed filter load-bearing rather than redundant with the different-name
+  // test: `"reviewer" !== null` is TRUE, so an unnamed side compared rather than dropped would pair with a
+  // named one and read as two reviewers -- when it may be that same reviewer writing twice. Found by
+  // mutating the filter out and watching every other case stay green.
+  assert.equal(disputeAtHead({ headRefOid: DISPUTED_HEAD, reviews: [
+    { state: "APPROVED", commit: { oid: DISPUTED_HEAD }, body: "**Re-read: convinced.**" },
+    review("CHANGES_REQUESTED", DISPUTED_HEAD, "reviewer"),
+  ] }), null);
+});
+
+test("#2126: a reviewer's SUPERSEDED approval is not a side, even with a second reviewer refusing", () => {
+  // `reviewer`'s blocker at `00d34048`, as the positive-control refusal it asked for. The reversal test
+  // above has ONE reviewer, so a reversal leaves nothing to pair with and the case hides; add a second
+  // reviewer and the dead approval paired with the live refusal. `reviewDecision` reads
+  // CHANGES_REQUESTED and BOTH reviewers refuse -- there is no disagreement left to escalate.
+  assert.equal(disputeAtHead({ headRefOid: DISPUTED_HEAD, reviews: [
+    review("APPROVED", DISPUTED_HEAD, "reviewer-2"),
+    review("CHANGES_REQUESTED", DISPUTED_HEAD, "reviewer-2"),
+    review("CHANGES_REQUESTED", DISPUTED_HEAD, "reviewer"),
+  ] }), null, "the claim must be REFUSED as an unanswered refusal, not waved through and sent to `ceo` "
+    + "as a dispute nobody is having -- a guard declining to refuse is the bad direction of error");
+  // The control that keeps the collapse from being a blanket "two refusals cancel a dispute": put the
+  // approval LAST and the same three verdicts are a live disagreement again.
+  const live = disputeAtHead({ headRefOid: DISPUTED_HEAD, reviews: [
+    review("CHANGES_REQUESTED", DISPUTED_HEAD, "reviewer-2"),
+    review("CHANGES_REQUESTED", DISPUTED_HEAD, "reviewer"),
+    review("APPROVED", DISPUTED_HEAD, "reviewer-2"),
+  ] });
+  assert.equal(live?.approved.by, "reviewer-2");
+  assert.equal(live?.refused.by, "reviewer");
+});
+
+test("#2126: LATEST is read from `submittedAt`, not from where the review sits in the array", () => {
+  // The live payload carries the stamp (`gh pr list --json reviews` returns the whole review object), so
+  // an ordering this file never asserted must not be what decides which verdict is dead. Out of array
+  // order on purpose: the approval is LAST in the array and EARLIEST in time.
+  assert.equal(disputeAtHead({ headRefOid: DISPUTED_HEAD, reviews: [
+    review("CHANGES_REQUESTED", DISPUTED_HEAD, "reviewer", "2026-09-23T13:00:00Z"),
+    review("CHANGES_REQUESTED", DISPUTED_HEAD, "reviewer-2", "2026-09-23T12:30:00Z"),
+    review("APPROVED", DISPUTED_HEAD, "reviewer-2", "2026-09-23T12:00:00Z"),
+  ] }), null, "`reviewer-2`'s 12:00Z approval is superseded by its own 12:30Z refusal, whatever order "
+    + "the array happens to be in");
+  // And the fallback is exercised by every other test here, which supplies no stamp at all: the control
+  // that it is an ORDER being asserted rather than an absent field being sorted on.
+  assert.ok(disputeAtHead({ headRefOid: DISPUTED_HEAD, reviews: [
+    review("APPROVED", DISPUTED_HEAD, "reviewer-2", "2026-09-23T12:00:00Z"),
+    review("CHANGES_REQUESTED", DISPUTED_HEAD, "reviewer", "2026-09-23T12:30:00Z"),
+  ] }), "two different names, one stamp each: still an ordinary dispute");
+});
+
+test("#2126: COMMENTED and DISMISSED decide nothing, so they are not a side of a dispute", () => {
+  assert.equal(disputeAtHead({ headRefOid: DISPUTED_HEAD, reviews: [
+    review("COMMENTED", DISPUTED_HEAD, "reviewer-2"),
+    review("CHANGES_REQUESTED", DISPUTED_HEAD, "reviewer"),
+  ] }), null, "a reviewer's running commentary is not an approval");
+  assert.ok(disputeAtHead({ headRefOid: DISPUTED_HEAD, reviews: [
+    review("APPROVED", DISPUTED_HEAD, "reviewer-2"),
+    review("CHANGES_REQUESTED", DISPUTED_HEAD, "reviewer"),
+  ] }), "the control: swap the COMMENTED for an APPROVED and the same shape IS a dispute");
+  // AND THEY SUPERSEDE NOTHING EITHER, which the collapse above has to be careful about: only verdicts
+  // are collapsed, so a reviewer's commentary after its own approval leaves the approval standing --
+  // exactly as GitHub leaves it standing in `reviewDecision`.
+  assert.ok(disputeAtHead({ headRefOid: DISPUTED_HEAD, reviews: [
+    review("APPROVED", DISPUTED_HEAD, "reviewer-2"),
+    review("COMMENTED", DISPUTED_HEAD, "reviewer-2"),
+    review("CHANGES_REQUESTED", DISPUTED_HEAD, "reviewer"),
+  ] }), "a COMMENTED review is not that reviewer's latest VERDICT -- collapsing on it would erase an "
+    + "approval GitHub still counts");
+});
+
+test("#2126: the review-health read is ONE call, over every open pull request", () => {
+  // The shape the row asked for by name. #989 took two calls per held row OUT of this path when it dropped
+  // the colour read; a clause that put one back PER ROW would undo the measurement that justified it.
+  const calls: string[][] = [];
+  const run = (args: string[]) => {
+    calls.push(args);
+    return JSON.stringify([{ number: 2107, headRefOid: REFUSED_HEAD,
+      reviewDecision: "CHANGES_REQUESTED", reviews: [] }]);
+  };
+  const health = lookupOpenPrReviewHealth({ run });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].slice(0, 2), ["pr", "list"]);
+  assert.ok(calls[0].includes("--state") && calls[0][calls[0].indexOf("--state") + 1] === "open");
+  assert.match(calls[0][calls[0].indexOf("--json") + 1], /reviewDecision/);
+  assert.deepEqual(health, [{ number: 2107, head: REFUSED_HEAD,
+    reviewDecision: "CHANGES_REQUESTED", dispute: null }]);
+});
+
+test("#2126: `gh pr list`'s own default of THIRTY is overridden, or the window would be invisible", () => {
+  // A session's own pull request falling past an unasked-for page would read as "no refusal", and the
+  // clause would go quiet exactly when the queue is busiest. Measured 2026-09-23: 7 open.
+  //
+  // EQUALITY AGAINST THE DECLARED CONSTANT, not a floor: `>= 100` is satisfied by 100 and by 30000 alike,
+  // and a floor on a number the assertion also reports is the shape `reported-counts.test.ts` refuses.
+  // `indexOf` answers -1 for an absent flag, so a `pr list` sent with NO `--limit` at all fails this too.
+  const calls: string[][] = [];
+  lookupOpenPrReviewHealth({ run: (args) => { calls.push(args); return "[]"; } });
+  assert.equal(calls[0][calls[0].indexOf("--limit") + 1], String(OPEN_PR_LIMIT),
+    "the bound SENT is the declared one -- a `pr list` with no `--limit` silently applies thirty");
+});
+
+test("#2126: a FAILED review-health read refuses nothing -- the clause fails to not refusing", () => {
+  assert.equal(lookupOpenPrReviewHealth({ run: () => { throw new Error("gh: 502"); } }), null);
+  const run = (args: string[]) => {
+    if (args[0] === "issue" && args[1] === "list") return JSON.stringify([{ number: 2083 }]);
+    if (args[0] === "pr" && args[1] === "list") throw new Error("gh: 502");
+    if (args[0] === "api" && args[1] === "graphql") {
+      return JSON.stringify({ data: { repository: { issue: { closedByPullRequestsReferences: {
+        nodes: [{ number: 2107, state: "OPEN", headRefOid: REFUSED_HEAD }] } } } } });
+    }
+    if (args[0] === "issue") return JSON.stringify({ body: "## Region\n\n```\nscripts/held.mjs\n```\n" });
+    return "[]";
+  };
+  const rows = lookupHeldRows("worker-tooling", 2126, { run });
+  assert.notEqual(rows, null, "the HELD reading answered, so the claim is not inconclusive overall");
+  assert.equal(rows?.[0].openPrReview, undefined);
+  assert.equal(inBuildReason(rows ?? []), null, "this clause can only ever CREATE a refusal, so an "
+    + "unanswerable read must not manufacture one -- B2's existing teeth do not depend on this call");
+});
+
+test("#2126: no held row has an open pull request -- the review-health call is not made at all", () => {
+  // Behaviour, not thrift: `row-claim-session-eligibility.test.ts` pins that a row IN BUILD is reported
+  // without B4's `pr list` round trip, and this read is a `pr list` too.
+  let prListAsked = false;
+  const run = (args: string[]) => {
+    if (args[0] === "pr" && args[1] === "list") prListAsked = true;
+    if (args[0] === "issue" && args[1] === "list") return JSON.stringify([{ number: 2083 }]);
+    if (args[0] === "api" && args[1] === "graphql") {
+      return JSON.stringify({ data: { repository: { issue: {
+        closedByPullRequestsReferences: { nodes: [] } } } } });
+    }
+    if (args[0] === "issue") return JSON.stringify({ body: "## Region\n\n```\nscripts/held.mjs\n```\n" });
+    return "[]";
+  };
+  assert.ok(inBuildReason(lookupHeldRows("worker-tooling", 2126, { run }) ?? []));
+  assert.equal(prListAsked, false);
+});
+
+test("#2126: the open pull request's NUMBER is carried, and only while it is OPEN", () => {
+  const run = (state: string) => (args: string[]) => {
+    if (args[0] === "issue" && args[1] === "list") return JSON.stringify([{ number: 2083 }]);
+    if (args[0] === "pr" && args[1] === "list") {
+      return JSON.stringify([{ number: 2107, headRefOid: REFUSED_HEAD,
+        reviewDecision: "CHANGES_REQUESTED", reviews: [] }]);
+    }
+    if (args[0] === "api" && args[1] === "graphql") {
+      return JSON.stringify({ data: { repository: { issue: { closedByPullRequestsReferences: {
+        nodes: [{ number: 2107, state, headRefOid: REFUSED_HEAD }] } } } } });
+    }
+    if (args[0] === "issue") return JSON.stringify({ body: "## Region\n\n```\nscripts/held.mjs\n```\n" });
+    return "[]";
+  };
+  const open = lookupHeldRows("worker-tooling", 2126, { run: run("OPEN") });
+  assert.equal(open?.[0].openPrNumber, 2107);
+  assert.ok(inBuildReason(open ?? []), "#2126's own live shape, end to end through the lookup");
+
+  const merged = lookupHeldRows("worker-tooling", 2126, { run: run("MERGED") });
+  assert.equal(merged?.[0].openPrNumber, undefined,
+    "a MERGED pull request is delivered, so its last verdict is nobody's outstanding work");
+  assert.equal(inBuildReason(merged ?? []), null);
 });
