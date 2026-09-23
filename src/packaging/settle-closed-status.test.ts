@@ -8,8 +8,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   settleClosedStatus, refusalCause, unsettledVerdict, PROJECT_UNREADABLE,
+  // #2081: the board-keyed pass's three pure pieces, in the same pure module and for the same reason.
+  closedRowsToSettle, settleBoardRows, boardReadRefusal,
 } from "../settle-closed-status.mjs";
 // #1996: the resting state's single copy. Imported from the pure module that owns it, so this file's
 // closure still needs no token and the row's Acceptance stays runnable where Acceptance runs.
@@ -183,4 +186,152 @@ test("#1996: the skip and the log line follow the constant rather than a second 
   assert.deepEqual(outcome, { settled: true, refused: [] });
   assert.match(said.join("\n"), /#13 Status is already Done -- no move/,
     "and the line an operator reads still names the real status, not a variable name");
+});
+
+// --- #2081: the board-keyed pass -- the population is the BOARD, and no PR list is ever read ---
+
+/** The board as `board-snapshot.mjs` records it, narrowed to the three fields the classifier reads. */
+type Item = { number: number | null, state: string | null, status: string | null };
+const item = (number: number | null, state: string | null, status: string | null): Item => ({ number, state, status });
+
+/**
+ * THE INJECTED BOARD THE DONE-WHEN NAMES, and what makes it the right control is what is NOT in it:
+ * no PR number, no `closingIssuesReferences`, no merge time -- nothing a merged-PR-keyed path could key on.
+ * #2061 and #1976 are real rows from the 2026-09-23 measurement, closed BY HAND, drifted at a live Status.
+ */
+const HAND_CLOSED_BOARD: Item[] = [
+  item(2061, "CLOSED", "In progress"), // closed by hand, drifted -- the row this pass exists for
+  item(1976, "CLOSED", "Fleet-gated"), // and one advertising itself as pickable fleet work
+  item(2037, "CLOSED", "Done"), // already settled: no write
+  item(2081, "OPEN", "In progress"), // live work: never touched
+  item(1234, "OPEN", "Done"), // #1228's OTHER contradiction -- a different defect, not this pass's to repair
+  item(1978, "CLOSED", null), // on the board, no Status at all: counted apart, repaired the same way
+  item(null, null, "Ready"), // a draft item: content is null, so it has no issue to edit
+  item(null, "CLOSED", "In progress"), // and the same, arriving through the offender list -- see below
+];
+
+/** A `settle` that records what it was asked to move and what Status the pass handed it, and always succeeds. */
+function recordingSettle() {
+  const calls: Array<[number, string | null]> = [];
+  const settle = (n: number, held: string | null) => {
+    calls.push([n, held]);
+    return { settled: true, refused: [] } as ReturnType<typeof settleClosedStatus>;
+  };
+  return { calls, settle };
+}
+
+test("#2081 ACCEPTANCE: a row closed BY HAND is settled from the board alone -- no PR anywhere in the data", () => {
+  const move = recordingSettle();
+  const said: string[] = [];
+  const outcome = settleBoardRows(HAND_CLOSED_BOARD, { settle: move.settle, log: (l) => said.push(l) });
+  assert.deepEqual(outcome.attempted, [2061, 1976, 1978],
+    "every CLOSED row whose Status is not Done, and only those -- #2061 and #1976 have no closing PR at "
+    + "all, which is exactly why both merged-PR-keyed paths leave them drifted forever");
+  assert.deepEqual(outcome.unsettled, []);
+  assert.deepEqual(move.calls.map(([, held]) => held), ["In progress", "Fleet-gated", null],
+    "and each move is handed the Status the board read already holds, not a second per-row read (#1360)");
+  assert.match(said.join("\n"), /8 board item\(s\) read -- 2 CLOSED at a live Status, 1 CLOSED with no Status/,
+    "the census prints whatever the verdict: 'nothing drifted' and 'nothing examined' are the same empty result");
+});
+
+test("#2081 NEGATIVE: a closed row already at Done, an OPEN row, and a numberless item produce no move at all", () => {
+  const move = recordingSettle();
+  settleBoardRows(HAND_CLOSED_BOARD, { settle: move.settle, log: () => {} });
+  const touched = move.calls.map(([n]) => n);
+  assert.equal(touched.includes(2037), false, "a closed row ALREADY at Done is not written again (#1360's budget)");
+  assert.equal(touched.includes(2081), false, "an OPEN row at a live Status is live work, whatever this pass thinks");
+  assert.equal(touched.includes(1234), false,
+    "an OPEN row at Done is #1228's OTHER contradiction -- reported by the health check, never repaired by "
+    + "moving it to Done, which is where it already is");
+  assert.equal(touched.includes(null as unknown as number), false,
+    "and NOTHING WITHOUT AN ISSUE NUMBER is ever moved: `gh project item-edit --url` has no URL to name. The "
+    + "second numberless row is CLOSED at a live Status, so it reaches the offender list and only the "
+    + "narrowing keeps it out -- today's producer cannot emit that pairing (number and state both come from "
+    + "`content`), so this pins the function's contract against its DECLARED input type rather than one board");
+  assert.equal(move.calls.length, 3);
+});
+
+test("#2081 CONTROL: the population is not empty by construction -- a board with nothing drifted attempts nothing", () => {
+  const move = recordingSettle();
+  const clean = [item(1, "CLOSED", "Done"), item(2, "OPEN", "Ready"), item(3, "OPEN", "In progress")];
+  const outcome = settleBoardRows(clean, { settle: move.settle, log: () => {} });
+  assert.deepEqual(outcome.attempted, [],
+    "the emptiness this asserts is real, and the case above is its positive control");
+  assert.equal(move.calls.length, 0);
+});
+
+test("#2081 the two lists stay apart (#1228), and both are settled", () => {
+  const { atLiveStatus, withNoStatus } = closedRowsToSettle(HAND_CLOSED_BOARD);
+  assert.deepEqual(atLiveStatus, [{ number: 2061, status: "In progress" }, { number: 1976, status: "Fleet-gated" }]);
+  assert.deepEqual(withNoStatus, [{ number: 1978, status: null }],
+    "a closed row with NO Status is invisible to a check that reads Statuses, which is why #1228 counts it "
+    + "separately -- the repair is the same write, and folding the lists would undo that row");
+});
+
+test("#2081 a row that is not an item on the Project is REPORTED and skipped, never refused", () => {
+  const said: string[] = [];
+  const outcome = settleBoardRows([item(393, "CLOSED", "In progress")], {
+    log: (l) => said.push(l),
+    settle: (n) => settleClosedStatus(n, { log: (l) => said.push(l), prefix: "SETTLE-BOARD",
+      moveStatus: () => ({ moved: false, notOnBoard: true, reason: "issue #393 is not an item in project 1" }) }),
+  });
+  assert.deepEqual(outcome.unsettled, [],
+    "an off-board row is not a failure of this pass -- #2075 owns that population");
+  assert.match(said.join("\n"), /SETTLE-BOARD: #393 is not on the Project -- no Status to move/);
+});
+
+test("#2081 a refused move is carried out of the pass with its classified cause, row by row", () => {
+  const board = [item(7, "CLOSED", "In progress"), item(8, "CLOSED", "Backlog")];
+  const outcome = settleBoardRows(board, {
+    log: () => {},
+    settle: (n) => settleClosedStatus(n, { log: () => {}, prefix: "SETTLE-BOARD",
+      moveStatus: () => ({ moved: false, notOnBoard: false,
+        reason: n === 7 ? CAPTURED_PROJECT_UNREADABLE : "HTTP 500" }) }),
+  });
+  assert.deepEqual(outcome.attempted, [7, 8]);
+  assert.deepEqual(outcome.unsettled.map((r) => [r.row, r.cause]), [[7, PROJECT_UNREADABLE], [8, "other"]]);
+  // The exit contract `closeRowsExit` reads off this list, pinned through the same pure verdict it calls:
+  assert.equal(unsettledVerdict(outcome.unsettled).degraded, false,
+    "one `other` refusal still fails the run (exit 3)");
+  assert.equal(unsettledVerdict(outcome.unsettled.slice(0, 1)).degraded, true,
+    "and a run whose every refusal is the unreadable Project is DEGRADED -- exit 0, as in CI");
+});
+
+test("#2081 the BOARD READ's own refusal is classified too: CI is stopped before any row exists to refuse", () => {
+  // CAPTURED: `fetchBoardItems`'s own thrown message, which carries GraphQL's error verbatim (#555).
+  const ciRead = "board-snapshot: could not read Project 1 items -- refusing to snapshot a partial board. "
+    + "NOT_FOUND (organization.projectV2): Could not resolve to a ProjectV2 with the number 1.";
+  const degraded = boardReadRefusal(ciRead);
+  assert.equal(degraded.degraded, true,
+    "exit 0 with a DEGRADED line: this command runs in CI too, and trunk must not go red for #546's ceiling");
+  assert.match(degraded.line, /SETTLE-BOARD: DEGRADED -- the board could not be read, so no Status was examined/);
+  const other = boardReadRefusal("board-snapshot: gh's response was not JSON -- refusing to guess.");
+  assert.equal(other.degraded, false, "CONTROL: any other read failure is INCONCLUSIVE, never 'fine' -- exit 2");
+  assert.match(other.line, /SETTLE-BOARD: CANNOT ASK/);
+});
+
+test("#2081 the log prefix says which path did the work, and the two older paths are unchanged", () => {
+  const said: string[] = [];
+  settleClosedStatus(1, { moveStatus: () => ({ moved: true }), log: (l) => said.push(l), prefix: "SETTLE-BOARD" });
+  settleClosedStatus(2, { moveStatus: () => ({ moved: true }), log: (l) => said.push(l) });
+  assert.deepEqual(said, ["SETTLE-BOARD: #1 Status -> Done.", "CLOSE-ROWS: #2 Status -> Done."],
+    "close-rows-sweep.mjs's own rule -- which path did the work is a fact about the pipeline's health -- and "
+    + "the default is the literal both close paths have always logged");
+});
+
+/**
+ * #2081's done-when in its structural form: the pass must never read a PR list, because reading one is
+ * precisely what makes a hand-closed row invisible. Asserted on the source with its own positive control,
+ * so "the check found nothing" and "the check cannot see anything" stay distinguishable.
+ */
+test("#2081 the board-keyed command reads no PR list -- and the same check DOES fire on the path that does", () => {
+  const source = (file: string) => readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
+  // COMMENTS STRIPPED FIRST: both files DISCUSS the PR-keyed population in prose -- this pass's header says
+  // at length why it reads no PR list -- and a check that cannot tell a mention from a call is a check on
+  // the wording rather than on the code.
+  const codeOnly = (text: string) => text.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+  const readsPrList = (text: string) => /\["pr", "list"|closingIssuesReferences/.test(codeOnly(text));
+  assert.equal(readsPrList(source("settle-closed-rows.mjs")), false, "the board-keyed pass keys on the board alone");
+  assert.equal(readsPrList(source("close-rows-sweep.mjs")), true,
+    "THE POSITIVE CONTROL: the sweep this pass complements does read one, so the check above is not vacuous");
 });

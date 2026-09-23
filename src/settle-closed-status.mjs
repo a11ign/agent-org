@@ -9,12 +9,17 @@
 // #1996: the resting state's name comes from ONE place, and that place is pure -- so importing it here
 // adds no `gh` to this file's closure and keeps the header's rule intact. The literal used to be spelled
 // here AND defaulted in `statusContradictions`, and the two agreed about a name the board did not offer.
-import { RESTING_STATUS } from "./board-status-health.mjs";
+// #2081: `statusContradictions` comes from the same pure module, for the same reason -- the board-keyed
+// population below is the one that classifier already names, and a second filter over `state`/`status`
+// here would be the third copy of a rule this repo has already paid to consolidate twice.
+import { RESTING_STATUS, statusContradictions } from "./board-status-health.mjs";
 
 export const PROJECT_UNREADABLE = "project-unreadable";
 
 /** @typedef {{ row: number, cause: "project-unreadable" | "other", message: string }} Refusal */
 /** @typedef {{ settled: boolean, refused: Refusal[] }} SettleOutcome */
+/** @typedef {import("./board-status-health.mjs").BoardItem} BoardItem */
+/** @typedef {{ number: number, status: string | null }} SettleableRow */
 
 /**
  * WHY A MOVE WAS REFUSED, CLASSIFIED WHERE THE REFUSAL IS MADE -- never re-read from log text at the exit.
@@ -64,17 +69,26 @@ export function unsettledVerdict(unsettled) {
  * `null` means "not known", and an unknown Status is moved exactly as before: skipping on a guess would leave
  * a closed row at a live Status, which is the defect #1227 exists to prevent.
  *
+ * #2081: `prefix` NAMES WHICH PATH DID THE WORK, and defaults to the one both close paths have always
+ * logged. `close-rows-sweep.mjs`'s own header states the rule -- "which path did the work is a fact about
+ * the pipeline's health" -- and this line was the one place it could not be honoured: the sweep prints
+ * `SWEEP:` for everything it decides and `CLOSE-ROWS:` for everything settled here. The board-keyed pass
+ * (`settle-closed-rows.mjs`) is a third path, and a log that cannot tell it from a merge's settle cannot
+ * answer whether the board pass is now doing all the work.
+ *
  * @param {number} n
  * @param {{ moveStatus: (n: number, status: string) =>
  *   ({ moved: true } | { moved: false, reason: string, notOnBoard: boolean }),
  *   currentStatus?: (n: number) => string | null,
+ *   prefix?: string,
  *   log?: (line: string) => void }} deps
  * @returns {SettleOutcome} `settled` is whether the row's Status is SETTLED -- moved, or not on the board so
  *   there is none to move -- and `refused` is empty then. A refused move carries its classified refusal there: a caller that discards it reports a
  *   repair that did not happen (both close-rows paths exited 0 with no Status moved until #1299), and a caller
  *   that cannot see its cause fails every CI run on a token that cannot read the Project.
  */
-export function settleClosedStatus(n, { moveStatus, currentStatus = () => null, log = console.log }) {
+export function settleClosedStatus(n, { moveStatus, currentStatus = () => null, log = console.log,
+  prefix = "CLOSE-ROWS" }) {
   /** @type {string | null} */
   let status;
   try {
@@ -84,22 +98,121 @@ export function settleClosedStatus(n, { moveStatus, currentStatus = () => null, 
     // the Project is unreadable until #546, so letting the move try would spend a second failed read per row.
     const reason = `could not read #${n}'s Status before moving it to "${RESTING_STATUS}" -- `
       + `${/** @type {Error} */ (error).message}`;
-    log(`CLOSE-ROWS: #${n} CLOSED but Status NOT moved -- ${reason}`);
+    log(`${prefix}: #${n} CLOSED but Status NOT moved -- ${reason}`);
     return { settled: false, refused: [{ row: n, cause: refusalCause(reason), message: reason }] };
   }
   if (status === RESTING_STATUS) {
-    log(`CLOSE-ROWS: #${n} Status is already ${RESTING_STATUS} -- no move.`);
+    log(`${prefix}: #${n} Status is already ${RESTING_STATUS} -- no move.`);
     return { settled: true, refused: [] };
   }
   const result = moveStatus(n, RESTING_STATUS);
   if (result.moved) {
-    log(`CLOSE-ROWS: #${n} Status -> ${RESTING_STATUS}.`);
+    log(`${prefix}: #${n} Status -> ${RESTING_STATUS}.`);
     return { settled: true, refused: [] };
   }
   if (result.notOnBoard) {
-    log(`CLOSE-ROWS: #${n} is not on the Project -- no Status to move.`);
+    log(`${prefix}: #${n} is not on the Project -- no Status to move.`);
     return { settled: true, refused: [] };
   }
-  log(`CLOSE-ROWS: #${n} CLOSED but Status NOT moved -- ${result.reason}`);
+  log(`${prefix}: #${n} CLOSED but Status NOT moved -- ${result.reason}`);
   return { settled: false, refused: [{ row: n, cause: refusalCause(result.reason), message: result.reason }] };
+}
+
+/**
+ * #2081: THE POPULATION, KEYED ON THE BOARD RATHER THAN ON A MERGED PR.
+ *
+ * Both settle paths that existed before this one are keyed on **a merged PR inside a window**:
+ * `close-rows-for-merged-pr.mjs` takes a PR number, and `close-rows-sweep.mjs` walks
+ * `gh pr list --state merged` over its window. A row closed with `gh issue close` is in NEITHER
+ * population, so nothing looks at its Status again -- not CI, not the sweep, not a session running the
+ * sweep with any window at all. Measured 2026-09-23: of the 7 boarded rows still drifted after a
+ * hand-run sweep, **5 had been closed by hand** (`closedByPullRequestsReferences` empty) and 2 by a PR
+ * outside the window. #1978 sat at `Backlog` and #1976 at `Fleet-gated` -- closed rows advertising
+ * themselves as pickable work.
+ *
+ * So this asks the BOARD: every item GitHub reports `CLOSED` whose Status is not the resting state. A
+ * hand-closed row is in it by construction, and a CI merge whose settle was refused is picked up on the
+ * next pass.
+ *
+ * **IT NEVER INFERS THAT A ROW SHOULD BE CLOSED.** The population is rows GitHub ALREADY reports closed;
+ * `state` comes from the board read, and this changes a Status and nothing else.
+ *
+ * **THE TWO LISTS STAY APART, and #1228 is why.** A closed row AT a live Status and a closed row with NO
+ * Status at all are different facts about the board -- one is finished work a session will take as
+ * available, the other is invisible to any check that reads Statuses -- so they are counted separately
+ * even though the write that repairs both is the same one. Folding them into a single filter would undo
+ * exactly the split that row paid for.
+ *
+ * NOTHING WITHOUT AN ISSUE NUMBER IS EVER EMITTED. `board-snapshot.mjs` records a draft item -- one with
+ * no linked issue -- as `number: null`, and `gh project item-edit --url` has no URL to name for it. Today
+ * such an item is also `state: null`, so `statusContradictions` excludes it before this sees it; the
+ * narrowing below is what makes that this function's own contract against its DECLARED input type, where
+ * `number` and `state` are independently nullable, rather than an inherited property of one producer.
+ *
+ * @param {BoardItem[]} items the board, as the caller read it
+ * @returns {{ atLiveStatus: SettleableRow[], withNoStatus: SettleableRow[] }}
+ */
+export function closedRowsToSettle(items) {
+  const { closedButLive, closedUnboarded } = statusContradictions(items);
+  const withIssueNumber = (/** @type {BoardItem[]} */ rows) => rows
+    .filter((i) => typeof i.number === "number")
+    .map((i) => ({ number: /** @type {number} */ (i.number), status: i.status }));
+  return { atLiveStatus: withIssueNumber(closedButLive), withNoStatus: withIssueNumber(closedUnboarded) };
+}
+
+/**
+ * #2081: SETTLE EVERY CLOSED ROW THE BOARD REPORTS AT SOMETHING OTHER THAN `Done` -- the whole pass, pure.
+ *
+ * `settle` is injected for the reason this file's header gives: the live one carries a `token`, and the
+ * decision must be drivable by a test in the job that runs Acceptance commands. It takes the Status the
+ * caller ALREADY HOLDS, because the board read that produced `items` is the same read `settleClosedStatus`
+ * would otherwise make per row -- #1360's own header names that as the point of `currentStatus`.
+ *
+ * THE CENSUS IS PRINTED WHATEVER THE VERDICT, for `statusCensus`'s reason: "no closed row is drifted" and
+ * "no item was examined" are the same empty result, and a pass that settled nothing must say which it was.
+ *
+ * @param {BoardItem[]} items
+ * @param {{ settle: (n: number, heldStatus: string | null) => SettleOutcome,
+ *   log?: (line: string) => void }} deps
+ * @returns {{ attempted: number[], unsettled: Refusal[] }} every row a move was issued for, and the
+ *   classified refusal for each one whose Status did not move
+ */
+export function settleBoardRows(items, { settle, log = console.log }) {
+  const { atLiveStatus, withNoStatus } = closedRowsToSettle(items);
+  log(`SETTLE-BOARD: ${items.length} board item(s) read -- ${atLiveStatus.length} CLOSED at a live Status, `
+    + `${withNoStatus.length} CLOSED with no Status at all (#1228: counted apart, same repair).`);
+  /** @type {number[]} */
+  const attempted = [];
+  /** @type {Refusal[]} */
+  const unsettled = [];
+  for (const { number, status } of [...atLiveStatus, ...withNoStatus]) {
+    attempted.push(number);
+    unsettled.push(...settle(number, status).refused);
+  }
+  return { attempted, unsettled };
+}
+
+/**
+ * #2081: WHAT AN UNREADABLE BOARD MEANS FOR THIS PASS -- pure, and exported because a decision that lives
+ * only in `main()` is one no test holds (`worker-capture`'s #1357 review, which found the dispatch path's
+ * exit 3 revertible with the suite still green).
+ *
+ * **THE READ IS THE REFUSAL IN CI, not the move.** Where the other two paths reach `settleClosedStatus`
+ * with a row in hand and are refused per row, this pass asks for the whole board FIRST, so CI's
+ * unreadable Project (#546) stops it before any row exists to refuse. That must stay exit `0` with a
+ * DEGRADED line for the same reason `closeRowsExit`'s bridge does: this command runs in both contexts,
+ * and turning trunk red for a ceiling it cannot lift would make the repair's own arrival the outage.
+ *
+ * Classified by `refusalCause` -- the same classifier, on `fetchBoardItems`'s own thrown message, which
+ * carries GraphQL's `NOT_FOUND (<owner>.projectV2)` verbatim (`board-snapshot.mjs` attaches it via
+ * `graphqlErrorFromFailedRun`, #555).
+ *
+ * @param {string} message the message `fetchBoardItems` threw
+ * @returns {{ degraded: boolean, line: string }} `degraded` is "stop, but do not fail the run"
+ */
+export function boardReadRefusal(message) {
+  return refusalCause(message) === PROJECT_UNREADABLE
+    ? { degraded: true, line: "SETTLE-BOARD: DEGRADED -- the board could not be read, so no Status was "
+      + `examined: the token cannot read the Project (#546). ${message}` }
+    : { degraded: false, line: `SETTLE-BOARD: CANNOT ASK -- the board could not be read: ${message}` };
 }
