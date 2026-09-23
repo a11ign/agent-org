@@ -28,12 +28,13 @@
 // without a running org and unrunnable from CI. `wake.mjs` owns that half; `row-claim.mjs` remains the
 // authority on whether a row is actually yours.
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { realpathSync, existsSync } from "node:fs";
 // RELATIVE, not the package specifier -- this must run before any `npm ci`/build, the same constraint
 // `org-watch.mjs` and `build-packages.mjs` state at their own imports.
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
-import { READY_LABEL, CLAIM_LABEL } from "./claim-labels.mjs";
+import { READY_LABEL, CLAIM_LABEL, CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
 import { verdictAtHead } from "./review-verdict.mjs";
 import { waitingOn, fleetWaitingOn, todayIso, describeWaiting, ANSWER_PREFIX } from "./waiting-condition.mjs";
 import { newestPerName } from "./newest-check-run.mjs";
@@ -79,7 +80,8 @@ export const EXIT = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3 };
 export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-convinced-not-ready",
   "verdict-not-convinced", "pr-checks-failing", "ready-queue-empty", "lane-backlog-unpromoted",
   "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
-  "blocked-unexaminable", "fleet-batch-due", "blocker-cleared", "pr-green-unarmed"];
+  "blocked-unexaminable", "fleet-batch-due", "blocker-cleared", "pr-green-unarmed",
+  "claimed-row-amended"];
 
 /**
  * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
@@ -135,6 +137,13 @@ export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog
  * starts none, and a claimed row is the plainest case of work in flight there is -- withholding it would
  * strand exactly the rows a transfer window needs landed, which is the failure `START_CAUSES` was split
  * out to prevent for the two open drafts.
+ *
+ * `claimed-row-amended` is out for the same reason and one sharper one (#2110). Its subject is also a row
+ * the session already holds, so the sentence above applies unchanged -- but a drain is precisely the
+ * window in which withholding it costs most. A drain exists to LAND what is in flight; a constraint that
+ * arrives unread during one is a build finished against a rule nobody applied, which is the single thing
+ * a landing window cannot afford. Measured on #2099: the ruling reached the row 6 minutes after the work
+ * was done, and only a human reading the thread caused it to be honoured.
  */
 export const START_CAUSES = Object.freeze(["ready-row-unclaimed", "ready-queue-empty",
   "lane-backlog-unpromoted", "org-stalled", "epic-unfiled", "epic-finished",
@@ -223,6 +232,20 @@ export const GH_READS = Object.freeze({
   // on a healthy queue is the COMMON case, so unlike the two above this one is usually paid. It is still
   // conditional rather than unconditional: a tick with nothing green and unheld makes no call at all.
   conditionalOnGreenUnheldPr: "api graphql (open PRs' mergeQueueEntry -- readUnarmed)",
+  // #2110, AND IT IS ONE CALL FOR THE WHOLE CLAIMED POPULATION RATHER THAN ONE PER ROW. `--label
+  // in-progress` filters server-side, so the page is the claimed rows and nothing else -- 8 of them on
+  // 2026-09-23 against 500 open rows -- and asking every one of them for its comments in a single
+  // `issue list` is what keeps this a bounded read as the org grows. A per-row `issue view` would have
+  // been N calls and would have made the tick's cost a function of how busy the org is, which is the one
+  // property `work:tick` cannot trade away.
+  //
+  // CONDITIONAL, AND HONESTLY SO: the condition is that ANY row is claimed, which a busy org always
+  // satisfies. It is counted as conditional rather than unconditional because a quiet org genuinely pays
+  // nothing, and because the answer is already in hand -- `readOpenRows` has fetched the labels, so
+  // asking costs no call of its own. The comment bodies are NOT added to the unconditional 500-row read:
+  // that would carry every comment on every open row through a 32MB buffer on every tick.
+  conditionalOnClaimedRows: "issue list --label in-progress --json number,comments"
+    + " (readClaimedRowComments -- claimed-row-amended)",
 });
 
 /**
@@ -657,6 +680,21 @@ function sessionOf(pr) {
  */
 function requiredWhenRed(prs) {
   return anyChecksRed(prs) ? requiredCheckNames() : null;
+}
+
+/**
+ * PAID ONLY BY A TICK THAT CAN SEE A CLAIM. The `requiredWhenRed`/`epicsWhenShelfEmpty` shape: the
+ * condition is derived from rows already in hand, so an org holding nothing makes no call.
+ *
+ * Extracted rather than written inline in `main` for the reason the two above it were -- `main`'s job is
+ * to deliver what the gate found, and `complexity` counts every inline ternary there.
+ *
+ * @param {any[]} openRows
+ * @returns {any[] | null} `null` when not asked or refused -- `decide` treats both the same way
+ */
+function claimedRowCommentsWhenHeld(openRows) {
+  const held = openRows.some((r) => labelsOf(r).includes(CLAIM_LABEL));
+  return held ? readClaimedRowComments() : null;
 }
 
 /**
@@ -1123,6 +1161,242 @@ function declaredBlockers(row) {
   if (nodes.length === 0) return null;
   return nodes.map((/** @type {any} */ n) => Number(n.number))
     .sort((/** @type {number} */ a, /** @type {number} */ b) => a - b);
+}
+
+/**
+ * THE MARKERS A ROW USES TO SAY "THIS CHANGED UNDER YOU" -- #2110.
+ *
+ * DECLARED AND PARSED, NEVER INFERRED FROM PROSE, and that is the whole design rather than a nicety. A
+ * cause that fired on ANY comment on a claimed row would wake the holder for their own claim record,
+ * their own build report and every clarifying reply -- comment-noise arriving one door along from the
+ * gap it was meant to close. So this reads the same shape the `Acceptance:`/`Closes:`/`Not-before:`
+ * family already established: a literal a writer has to choose on purpose.
+ *
+ * TWO SPELLINGS BECAUSE THE TWO WRITERS ARE DIFFERENT. A ruling lands as a COMMENT (`## CONSTRAINT` is
+ * the heading `product-manager` used on #2099 at 10:22:34Z, before this cause existed to read it); a
+ * constraint the row is filed or amended with lands in the BODY, where `row-file`'s own sections live and
+ * where a comment would be the wrong place. Both are append-only from a reader's point of view.
+ */
+export const CONSTRAINT_COMMENT_MARKER = "## CONSTRAINT";
+export const CONSTRAINT_BODY_PREFIX = "Constraint:";
+
+/**
+ * Pure: the `## CONSTRAINT` comments a row gained AFTER its newest claim record, oldest first.
+ *
+ * THE CLAIM RECORD IS THE CLOCK, AND IT COSTS NOTHING. `row-claim` appends `CLAIM_RECORD_MARKER` to the
+ * thread on every claim, and `gh issue list --json comments` returns comments OLDEST-FIRST -- so
+ * "after the claim" is a position in a list this gate already has in hand, with no timestamp arithmetic
+ * and no second read. A row claimed, released and claimed again anchors on the NEWEST record, which is
+ * `claimRecordFrom`'s own rule for the same reason: the current holder is the one being told.
+ *
+ * A ROW WITH NO CLAIM RECORD ANCHORS AT THE START OF THE THREAD. Pre-#987 claims wrote labels and no
+ * comment, and the rows carrying them are real; refusing to look would make this cause silently blind to
+ * the oldest claims in the tracker, which is a worse failure than announcing a constraint that has been
+ * sitting there. It is still one order, because the key names the marker.
+ *
+ * @param {{body?: string, id?: string}[]} comments oldest first, as `gh issue list --json comments` returns
+ * @returns {{body?: string, id?: string}[]}
+ */
+export function constraintsAfterClaim(comments) {
+  const list = comments ?? [];
+  let claimedAt = -1;
+  for (let i = 0; i < list.length; i += 1) {
+    if ((list[i]?.body ?? "").includes(CLAIM_RECORD_MARKER)) claimedAt = i;
+  }
+  return list.slice(claimedAt + 1).filter((c) => hasConstraintHeading(c?.body ?? ""));
+}
+
+/**
+ * Pure: does this comment body carry the `## CONSTRAINT` heading as a HEADING?
+ *
+ * ANCHORED TO A LINE START, so a comment that QUOTES the marker in a sentence -- or that quotes this very
+ * rule while explaining it -- is not itself a constraint. That is the mention-versus-use trap
+ * `acceptance-commands.mjs` names, and it is the one a plain `includes` would walk straight into: the
+ * comment announcing this cause on the row would have fired it.
+ * @param {string} body
+ */
+function hasConstraintHeading(body) {
+  return new RegExp(`^${CONSTRAINT_COMMENT_MARKER}\\s*$`, "m").test(body);
+}
+
+/**
+ * Pure: the amendments a CLAIMED row is currently carrying, in a form a causeKey can name.
+ *
+ * THREE MARKERS, AND EACH ONE ANSWERS "AFTER THE CLAIM" DIFFERENTLY. This is stated here rather than
+ * discovered by the next reader, because one of the three cannot answer it at all:
+ *
+ *   `comment`    ANSWERED EXACTLY -- its position after the newest claim record, see above.
+ *   `blocked-by` ANSWERED BY A RULE ELSEWHERE. `blocked-by-edge-rule.mjs` (#1886, closed 2026-09-22)
+ *                REFUSES a claim on a row carrying an open `blockedBy`, so an open edge on a row that IS
+ *                claimed can only have arrived after the claim. That is exactly #1918: claimed while
+ *                clean, blocked by #2100 afterwards, where no claim-time rule can ever reach it.
+ *   `body`       NOT ANSWERED, AND SAYING SO IS THE POINT. Nothing in `gh issue list --json` dates a body
+ *                line, and dating one would cost a timeline call PER ROW -- the one thing this read may
+ *                not become. So a row FILED with a `Constraint:` line and then claimed emits this cause
+ *                once, on the first tick after the claim. That is one order telling a holder to read a
+ *                constraint on a row they hold, which is not the failure this cause is about; it is
+ *                keyed like the others, so it is once and never again.
+ *
+ * @param {any} row
+ * @param {{body?: string, id?: string}[]} comments this row's comments, oldest first
+ * @returns {{kind: string, id: string, says: string}[]}
+ */
+export function amendmentsOn(row, comments) {
+  const markers = [];
+  const newest = constraintsAfterClaim(comments).at(-1);
+  if (newest) markers.push({ kind: "comment", id: String(newest.id ?? "unidentified"),
+    says: `a \`${CONSTRAINT_COMMENT_MARKER}\` comment` });
+  for (const line of constraintLines(row?.body ?? "")) {
+    markers.push({ kind: "body", id: digestOf(line), says: `the row body's \`${line}\`` });
+  }
+  const open = openBlockers(row);
+  if (open.length > 0) {
+    markers.push({ kind: "blocked-by", id: `blocked.${open.join(".")}`,
+      says: `an open \`blockedBy\` edge on ${open.map((n) => `#${n}`).join(", ")}` });
+  }
+  return markers;
+}
+
+/**
+ * Pure: the row body's `Constraint:` lines, whole, in the order they appear.
+ *
+ * THE WHOLE LINE IS THE MARKER because the whole line is what changes. Keying on the mere PRESENCE of a
+ * `Constraint:` line would make a row whose constraint was REPLACED look unchanged, and the replacement
+ * is precisely the amendment a holder must be told about.
+ * @param {string} body
+ * @returns {string[]}
+ */
+function constraintLines(body) {
+  return [...(body ?? "").matchAll(new RegExp(`^${CONSTRAINT_BODY_PREFIX}\\s*(?:.*\\S)`, "gm"))]
+    .map((m) => m[0].trim());
+}
+
+/**
+ * Pure: the row's STILL-OPEN `blockedBy` numbers, sorted, or `[]`.
+ *
+ * SORTED for `declaredBlockers`'s reason one function up: GitHub returns the nodes in its own order and an
+ * unsorted key would mint a different question for the same set of blockers.
+ * @param {any} row
+ * @returns {number[]}
+ */
+function openBlockers(row) {
+  return (row?.blockedBy?.nodes ?? [])
+    .filter((/** @type {any} */ n) => String(n?.state ?? "").toUpperCase() === "OPEN")
+    .map((/** @type {any} */ n) => Number(n.number))
+    .sort((/** @type {number} */ a, /** @type {number} */ b) => a - b);
+}
+
+/**
+ * A short, stable name for a marker GitHub gives no id to -- a body line. Content-derived, so it moves
+ * when the line does, which is what makes a REPLACED constraint a new question.
+ * @param {string} text
+ */
+function digestOf(text) {
+  return createHash("sha1").update(text).digest("hex").slice(0, 12);
+}
+
+/**
+ * A ROW MOVED UNDER THE SESSION HOLDING IT, AND NOTHING IN THIS ORG SAID SO -- #2110.
+ *
+ * MEASURED TWICE IN ONE MORNING, 2026-09-23. #2099 was claimed by `worker-capture` at 09:54:06Z and built
+ * by 10:16:50Z; at 10:22:34Z `product-manager` recorded `ceo`'s ruling on it -- *"this row may NOT be
+ * implemented by granting a token"* -- 28 minutes after the claim and 6 minutes after the work was
+ * finished. It happened to be complied with, and nothing in this org CAUSED that: the gate emitted no
+ * cause for `worker-capture` at all, because a claimed row is outside every population it walks.
+ * `ready-row-unclaimed` had stopped matching at 09:54 and `blocker-cleared` is the only cause whose
+ * subject is a row somebody already holds. The same hour, `orchestrator` was holding #1918 while it
+ * acquired an open `blockedBy` on #2100 -- the same defect wearing the other marker.
+ *
+ * NOT A MESSAGING ROW, AND THAT WAS RULED RATHER THAN ASSUMED. The tempting fix is to make `SendMessage`
+ * addresses discoverable; `ceo` steered away from it on 2026-09-23 because the ruling landed precisely
+ * BECAUSE it was put on the row. This repo's own rule names the remedy in so many words: if you think you
+ * need a cron, the gate is missing a question. This is that question, and it needs no address book at all
+ * -- the row's own `session:` label names who owes the answer.
+ *
+ * ONE ORDER PER ROW, KEYED ON WHAT IS CURRENTLY THERE. The key names EVERY marker the row carries rather
+ * than a count or a clock, which is `fleetBatchOrders`'s and `blocker-cleared`'s shape and buys the two
+ * properties done-when 3 asks for: a second constraint changes the set, so it is a second question that
+ * reaches the holder; an unchanged row mints the identical key on every subsequent tick and the ledger
+ * drops it. It is deliberately not "the newest marker" -- the three kinds share no clock (a body line has
+ * no timestamp at all), so "newest" would have to be invented, and a constraint REPLACED by a different
+ * one would key the same under it and never be told.
+ *
+ * THE POSITIVE CONTROL LIVES IN `work-gate.test.ts`: an ordinary comment on a claimed row -- a claim
+ * record, a build report -- must emit NOTHING. Without it this is a comment-noise generator and the tests
+ * that assert silence would all pass against a function that returns `[]`.
+ *
+ * @param {any[]} rows every open row (`readOpenRows`)
+ * @param {{number?: number, comments?: {body?: string, id?: string}[]}[]} [claimedComments]
+ *        `readClaimedRowComments`'s answer. `[]` is "not asked or refused", which evaluates the body and
+ *        edge markers and not the comment one -- a degradation that can go quiet, never one that invents.
+ * @returns {{session: string, cause: string, subject: string, discriminator: string,
+ *            prompt: string, causeKey: string}[]}
+ */
+export function claimedRowAmendedOrders(rows, claimedComments = []) {
+  const byRow = new Map((claimedComments ?? []).map((r) => [Number(r?.number), r?.comments ?? []]));
+  const orders = [];
+  for (const row of rows ?? []) {
+    const session = sessionOf(row);
+    if (!session || !labelsOf(row).includes(CLAIM_LABEL)) continue;
+    const markers = amendmentsOn(row, byRow.get(Number(row.number)) ?? []);
+    if (markers.length === 0) continue;
+    orders.push(amendedOrder({ row, session, markers }));
+    if (orders.length >= MAX_ROW_ORDERS_PER_TICK) break;
+  }
+  return orders;
+}
+
+/**
+ * The order itself, split out so `claimedRowAmendedOrders` stays a walk over rows (the Stepdown Rule, and
+ * `max-lines-per-function`).
+ * @param {{row: any, session: string, markers: {kind: string, id: string, says: string}[]}} found
+ */
+function amendedOrder({ row, session, markers }) {
+  const key = markers.map((m) => m.id).join("+");
+  return {
+    session,
+    cause: "claimed-row-amended",
+    subject: `row-${row.number}`,
+    discriminator: key,
+    prompt: `#${row.number} IS YOURS AND IT HAS CHANGED UNDER YOU. It now carries `
+      + `${markers.map((m) => m.says).join(" and ")}.\n`
+      + "GO AND READ IT BEFORE YOU WRITE ANOTHER LINE, and if you have already built, check the diff "
+      + "against it rather than your memory of the brief. On 2026-09-23 a ruling reached #2099 six "
+      + "minutes AFTER the build was finished and 28 minutes after the claim; it was honoured only "
+      + "because a human read the thread, and this gate said nothing to the session that held the row.\n"
+      + "THEN SAY WHAT YOU DID ABOUT IT, on the row. If the constraint makes the row unbuildable as "
+      + `written, that is an answer and it goes in a FIELD: \`${ANSWER_PREFIX}<session>\` for a ruling, `
+      + `\`gh issue edit ${row.number} --add-blocked-by <n>\` for a row you must wait on, a `
+      + "`Not-before: YYYY-MM-DD` line for a date. Each clears itself.\n"
+      + "IF IT IS AN OPEN `blockedBy` EDGE: you were not refused at claim time because the edge did not "
+      + "exist then (`blocked-by-edge-rule.mjs` would have refused you) -- it arrived while you held the "
+      + "row, which is exactly what happened to #1918 on #2100.",
+    causeKey: `${session}/claimed-row-amended/row-${row.number}/${key}`,
+  };
+}
+
+/**
+ * The comments on every CLAIMED row, in one call.
+ *
+ * `--label in-progress` IS THE WHOLE POINT. The claimed population is the only one this cause has a
+ * question about, and filtering server-side is what makes this a bounded read rather than 500 rows of
+ * comment bodies through a 32MB buffer. See `GH_READS.conditionalOnClaimedRows` for the arithmetic.
+ *
+ * `null` FOR A REFUSAL, NEVER `[]` -- #1286's rule, and here it means the comment half of
+ * `claimed-row-amended` is not evaluated this tick. The body and edge halves still are, because they ride
+ * the read that has already happened.
+ *
+ * @param {(args: string[]) => string} [run]
+ * @returns {any[] | null} `null` when refused, never `[]`
+ */
+export function readClaimedRowComments(run = defaultRun) {
+  try {
+    const parsed = JSON.parse(run(["issue", "list", "--state", "open", "--label", CLAIM_LABEL,
+      "--limit", "200", "--json", "number,comments"]));
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -2424,7 +2698,8 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  * @param {{ prs: any[], readyRows: any[], promotableRows?: any[], chairmanBlocked?: any[],
  *           prFiles?: { number: number, files: string[], changedFiles: number }[],
  *           drain?: boolean, required?: string[] | null, epics?: any[], answerOwed?: any[],
- *           openRows?: any[], unarmed?: number[] | null }} state
+ *           openRows?: any[], unarmed?: number[] | null,
+ *           claimedComments?: {number?: number, comments?: {body?: string, id?: string}[]}[] }} state
  *        `required` is the checks that can block a merge (`requiredCheckNames`), or `null` for
  *        "could not be read", which counts EVERY check as before this existed.
  *        `epics` are the open `epic` rows with their `subIssuesSummary` (`readEpics`); `[]` when
@@ -2434,6 +2709,10 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *        `prFiles` is `comparablePrFiles(prs)` -- the open PRs B4 may be asked about. It DEFAULTS TO
  *        `[]`, which means "no overlap is knowable", so every row is offered: the same behaviour as
  *        before B4 shelving existed, and the reason a caller that cannot read files is never worse off.
+ *        `claimedComments` is `readClaimedRowComments()` -- the comments on the claimed rows only. It
+ *        DEFAULTS TO `[]`, which is "not asked or refused": the comment marker is not evaluated and the
+ *        body/`blockedBy` markers still are, so a caller that cannot make that read is never worse off
+ *        than before this cause existed and never invents a constraint it did not see.
  *        `unarmed` is `readUnarmed(shouldBeMerging(prs, required))` -- the green, unheld pull requests
  *        the API says nothing has armed. It DEFAULTS TO `null`, which is "not asked or refused" and
  *        emits no order: a caller that cannot make that read must never produce a false all-clear, and
@@ -2442,10 +2721,18 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *            prompt: string, causeKey: string}[]}
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
-  drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null }) {
+  drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
+  claimedComments = [] }) {
   // FIRST, BEFORE EVERY OTHER CAUSE. Every other order asks a session what should happen next; this one
   // says another session is ALREADY STOPPED waiting on them. That outranks any standing question.
   const orders = [...answerOrders(answerOwed)];
+  // SECOND, AND AHEAD OF `blocker-cleared` DELIBERATELY (#2110). Both address a session that already
+  // holds a row, so both outrank every cause that offers new work -- but between the two, a constraint
+  // the holder has not read is worse than a row they have not resumed. `blocker-cleared` says work can
+  // START again and loses nothing by waiting a tick; an unread constraint means work already in progress
+  // is being done against a rule nobody applied, and every minute of it is a minute that may have to be
+  // thrown away. #2099's ruling arrived 6 minutes after the build was finished.
+  orders.push(...claimedRowAmendedOrders(openRows, claimedComments));
   // SECOND, AND FOR THE SAME REASON ONE LEVEL IN (#2027). A session holding a row whose last blocker just
   // closed is not waiting on a decision -- it is stopped on work it can resume this minute, with whatever
   // is queued behind that row stopped with it. Ahead of every cause that offers NEW work: a row already
@@ -2624,6 +2911,10 @@ function main() {
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required,
     epics: epicsWhenShelfEmpty(rows),
     answerOwed: withAnswerLabel(allOpen), openRows: allOpen,
+    // #2110: CONDITIONAL, and the condition is answered for free from the list already in hand --
+    // `readOpenRows` fetched the labels, so "is anything claimed at all" costs no call. A quiet org with
+    // nothing in progress pays nothing; a busy one pays exactly one, whatever the size of the queue.
+    claimedComments: claimedRowCommentsWhenHeld(allOpen) ?? [],
     // #1969: CONDITIONAL, and the condition is answered for free from the list already in hand.
     // `shouldBeMerging` reads `openPrs`; only if it finds a green, unheld, non-draft PR is the
     // merge-queue call made at all.
