@@ -2074,10 +2074,13 @@ export function deadMansSwitch({ orders, drain, performed = 0, openRows,
  * account was refused, which pool, and when it comes back. `328832207` is a user ID, not a login, and the
  * answer to "for how long" (52 minutes) was sitting in the headers of the call that had just failed.
  *
- * THE COST IS PAID ONLY HERE. A healthy tick still makes exactly the reads `GH_READS` names: this function
- * is reached only when BOTH lanes have already refused, on a pool that by definition has nothing left to
- * protect. `poolDiagnosis` spends one point when the pool is alive and two when it is dead -- the second
- * on CORE, because a rate-limited response names the account as a user ID and cannot name the login.
+ * THE COST IS PAID ONLY HERE, AND IT IS ONE POINT. A healthy tick still makes exactly the reads `GH_READS`
+ * names: this function is reached only when BOTH lanes have already refused, on a pool that by definition
+ * has nothing left to protect, and `poolDiagnosis` spends a single probe whatever it finds there.
+ *
+ * A DEAD POOL BUYS THE RESET RATHER THAN THE LOGIN, because no one call buys both and "how long is the org
+ * deaf" is the question the outage left unanswered; the account then reads `UNREADABLE (user ID ...)`.
+ * `api-pool.mjs` records the alternatives that were measured and rejected.
  *
  * `run` IS REQUIRED, which is `apiBudget`'s rule (#1405) for its reason: a defaulted one is a live `gh`
  * call, and a test reaching this function would make it.

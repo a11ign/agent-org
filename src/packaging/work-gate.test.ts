@@ -1987,17 +1987,6 @@ const LIVE_GRAPHQL = [
   '{"data":{"viewer":{"login":"a11ign-ai-workers"}}}',
 ].join("\r\n");
 
-const LIVE_CORE_USER = [
-  "HTTP/2.0 200 OK",
-  "X-Ratelimit-Limit: 5000",
-  "X-Ratelimit-Remaining: 4940",
-  "X-Ratelimit-Reset: 1790120424",
-  "X-Ratelimit-Resource: core",
-  "X-Ratelimit-Used: 60",
-  "",
-  '{"login":"a11ign-ai-workers","id":328832207}',
-].join("\r\n");
-
 /** A `gh` that fails the way `execFileSync` fails: non-zero, with the response still on `stdout`. */
 const refusedWith = (stdout: string) => () => {
   throw Object.assign(new Error("gh exited 1"), { status: 1, stdout });
@@ -2012,29 +2001,29 @@ function recordingRun(reply: (args: string[]) => string) {
   };
 }
 
-test("#2003: a refusal on a DEAD pool names the login, the pool and the reset", () => {
-  const { calls, run } = recordingRun((args) => {
-    // The graphql probe is the one that fails -- it is the pool that is dead. `gh api user` spends CORE,
-    // a separate counter, which is exactly why it can still answer.
-    if (args.includes("graphql")) refusedWith(DEAD_GRAPHQL)();
-    return LIVE_CORE_USER;
-  });
+test("#2003: a refusal on a DEAD pool names the pool and the reset, for ONE call", () => {
+  const { calls, run } = recordingRun(refusedWith(DEAD_GRAPHQL));
   const report = cannotAskReport({ run });
 
   assert.match(report, /CANNOT ASK: neither the pull-request list nor the Ready rows could be read/,
     "the original refusal is unchanged -- this row adds facts to it, it does not replace it");
-  assert.match(report, /account a11ign-ai-workers/,
-    "the LOGIN, not the user ID: `328832207` is what the journal already said and what nobody could use");
-  assert.ok(!report.includes("328832207"), "a user ID is not an answer to `which account`");
   assert.match(report, /pool graphql/, "WHICH pool -- core and graphql die separately and reset separately");
   assert.match(report, /resets at 2026-09-23T01:40:11\.000Z/,
     "an ABSOLUTE reset: a reader arriving an hour later cannot use minutes counted when the line was written");
   assert.match(report, /0 remaining of 5000/);
   assert.match(report, /THE POOL IS EXHAUSTED/, "the verdict is stated, not left to be inferred from a 0");
 
-  assert.equal(calls.length, 2,
-    "one probe for the pool, and one for the login the dead pool cannot name -- and only when refusing");
-  assert.ok(calls[1].includes("user"), "the second probe is on CORE, never a retry of the pool that just died");
+  // DONE-WHEN 2 IS THE BINDING LIMIT, AND THIS IS WHERE IT BITES. A rate-limited response names a user ID
+  // and no login, and no second call may be made to improve on that -- so the account is reported
+  // UNREADABLE with the ID the response did carry, which is done-when 3's rule applied to the account.
+  assert.equal(calls.length, 1,
+    "AT MOST ONE extra request on the refusal path -- #2003 done-when 2, and the dead pool is the case "
+    + "that tests it, because it is the one where a second call would buy something");
+  assert.match(report, /account UNREADABLE \(user ID 328832207\)/,
+    "not the login, and not silence: what the refusing response actually carried, marked as not the answer");
+  assert.ok(!/account 328832207/.test(report),
+    "a user ID must never be printed as though it were the account name -- that is the journal line this "
+    + "row was filed to replace");
 });
 
 test("#2003: a LIVE pool costs ONE probe and says the pool is not the cause -- the positive control", () => {
@@ -2048,8 +2037,9 @@ test("#2003: a LIVE pool costs ONE probe and says the pool is not the cause -- t
   assert.match(report, /THE POOL IS NOT THE CAUSE/,
     "budget left means the reads were refused by something else, and saying so is the point of the line");
   assert.ok(!report.includes("EXHAUSTED"), "a healthy pool must never be reported as exhausted");
-  assert.equal(calls.length, 1,
-    "the live probe's own body names the login, so the second call is not paid -- #2003's done-when 2");
+  assert.ok(!report.includes("UNREADABLE"),
+    "a live probe answers all three facts from its own body and headers -- nothing is degraded here");
+  assert.equal(calls.length, 1, "one probe, the same one the dead-pool case pays -- #2003's done-when 2");
 });
 
 test("#2003: an unreadable probe reports UNREADABLE and never invents a pool", () => {
@@ -2066,6 +2056,24 @@ test("#2003: an unreadable probe reports UNREADABLE and never invents a pool", (
   const garbled = cannotAskReport({ run: () => "HTTP/2.0 200 OK\r\nX-Ratelimit-Resource: graphql\r\n\r\n{}" });
   assert.match(garbled, /pool UNREADABLE/,
     "a resource name with no counts is not a pool reading -- remaining and limit are what make it one");
+
+  // THE USER ID IS READ OFF PROSE, SO ITS ABSENCE HAS TO DEGRADE RATHER THAN THROW. If GitHub ever
+  // reworded the rate-limit message, this is what the line becomes -- a bare UNREADABLE, never a partial
+  // match printed as an account.
+  // THE REWORDING KEEPS A NUMBER IN IT ON PURPOSE. A fixture with no digits left would pass against a
+  // reader that had been loosened to grab the first integer it saw, so the number here is a plausible one
+  // that is NOT an account (`try again in 3600 seconds`) -- the mutant that drops the `user ID` anchor
+  // survives without it, measured.
+  const reworded = cannotAskReport({
+    run: refusedWith(DEAD_GRAPHQL.replace("for user ID 328832207",
+      "for this installation; try again in 3600 seconds")),
+  });
+  assert.match(reworded, /account UNREADABLE(?! \()/,
+    "no user ID in the message means no user ID in the line, and the pool facts still stand");
+  assert.ok(!reworded.includes("3600"),
+    "the ID is read off the `user ID` anchor, not off whatever integer the message happens to contain");
+  assert.match(reworded, /THE POOL IS EXHAUSTED/,
+    "POSITIVE CONTROL: the account degrading must not take the reset and the verdict down with it");
 });
 
 test("#2003: the pool reading has ONE definition, and the gate pays for it only when refusing", () => {

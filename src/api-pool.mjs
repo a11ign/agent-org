@@ -43,17 +43,25 @@
 export const GRAPHQL_POOL_PROBE = Object.freeze(["api", "graphql", "-f", "query=query { viewer { login } }", "-i"]);
 
 /**
- * WHO WE ARE, ASKED ON THE OTHER POOL -- and it is needed exactly when the first probe cannot answer.
+ * WHY THERE IS NO SECOND PROBE, THOUGH THE LOGIN IS WHAT #2003 ASKED FOR FIRST.
  *
  * A rate-limited response names the account as a USER ID and nothing else (`API rate limit already
  * exceeded for user ID 328832207`), so the probe above stops naming the login at the moment the login
- * matters most. This spends CORE, a separate pool with a separate counter and reset, which is why it can
- * answer while graphql is dead: measured 2026-09-09, graphql reached 0 of 5000 while core sat at 2110.
+ * matters most. Measured 2026-09-23, no single `gh` call yields both the login and the graphql pool:
  *
- * REST, not `gh auth status`, although that command names the login and the very `hosts.yml` it resolved:
- * its output is prose for a human and `.login` is a contract. Both cost the same single core call.
+ * - `gh api graphql ... -i` -- pool and reset off the 403, but a user ID for an account.
+ * - `gh api user -i` / `gh auth status` -- the login, but `X-Ratelimit-Resource: core`, not the pool that
+ *   refused; and `auth status` is not free (measured 2026-09-22T23:40Z: a real `GET /`, core, `used 1`).
+ * - `gh pr list` -- the call that actually failed carries no `X-Ratelimit-*` at all; `gh` reads the headers
+ *   off the wire (`GH_DEBUG=api` prints them) and discards them, and there is no `-i` flag to keep them.
+ * - `gh api rate_limit` -- forbidden as a gauge by `agent-practices.md` (#1275, #1967), and core-metered.
+ * - No RESPONSE HEADER names the account either: `X-Oauth-Client-Id` is the OAuth app, not the user.
+ *
+ * So the login costs a SECOND call, and #2003's done-when 2 allows one. **The reset wins the single call**,
+ * because "how long is the org deaf" is the question the row was filed to answer, and the account is then
+ * reported UNREADABLE beside the user ID the dead response did name -- never guessed, never dropped.
+ * `refusalPoolLine` renders it. Whether to buy the login back for one CORE point is #2003's to say.
  */
-export const LOGIN_PROBE = Object.freeze(["api", "user", "-i"]);
 
 /**
  * One `gh ... -i` call's raw response, WHETHER OR NOT IT SUCCEEDED. `null` when there is no response at all.
@@ -131,20 +139,17 @@ export function poolFromHeaders(args, run) {
 /**
  * The login a `gh ... -i` response names, or `null`.
  *
- * TWO SPELLINGS BECAUSE THERE ARE TWO PROBES: GraphQL answers `{data:{viewer:{login}}}` and REST answers
- * `{login}`. Neither appears on a rate-limited response, and that absence is the whole reason
- * `LOGIN_PROBE` exists -- so `null` here means "this response did not say", never "there is no account".
+ * TWO SPELLINGS BECAUSE A RESPONSE MAY COME FROM EITHER API: GraphQL answers `{data:{viewer:{login}}}`
+ * and REST answers `{login}`. Neither appears on a rate-limited response, which is exactly the case
+ * `userIdFromResponse` covers -- so `null` here means "this response did not say", never "there is no
+ * account".
  *
  * @param {string | null} raw
  * @returns {string | null}
  */
 export function loginFromResponse(raw) {
-  if (!raw) return null;
-  // The body follows the blank line that ends the headers. Splitting on the FIRST one is what keeps a
-  // `\r\n\r\n` inside a body from being read as the separator.
-  const separated = raw.split(/\r?\n\r?\n/);
-  if (separated.length < 2) return null;
-  const body = separated.slice(1).join("\n\n");
+  const body = responseBody(raw);
+  if (body === null) return null;
   try {
     const parsed = JSON.parse(body);
     const login = parsed?.data?.viewer?.login ?? parsed?.login;
@@ -158,17 +163,58 @@ export function loginFromResponse(raw) {
 }
 
 /**
- * WHICH ACCOUNT, WHICH POOL, AND WHEN IT COMES BACK -- the three facts a refusal cannot state without a
- * call, gathered for the price of one when the pool is alive.
+ * The response body, or `null` when there is no body to read.
  *
- * THE SECOND CALL IS CONDITIONAL, AND ON THE ONE CONDITION THAT NEEDS IT. #2003's done-when asks for at
- * most one extra request; one is all a healthy pool costs, because its probe's own body names the login.
- * A DEAD pool cannot name its own account -- GitHub gives a user ID -- so naming it takes a second probe
- * on CORE, a pool that by construction is not the one that just refused. That second point is spent only
- * on a tick that has already refused both of its reads, and never on a healthy one.
+ * The body follows the blank line that ends the headers. Splitting on the FIRST one is what keeps a
+ * `\r\n\r\n` inside a body from being read as the separator.
+ *
+ * @param {string | null} raw
+ * @returns {string | null}
+ */
+function responseBody(raw) {
+  if (!raw) return null;
+  const separated = raw.split(/\r?\n\r?\n/);
+  return separated.length < 2 ? null : separated.slice(1).join("\n\n");
+}
+
+/**
+ * THE ONLY NAME A DEAD POOL GIVES ITS ACCOUNT, and the reason the journal read `328832207` for eight
+ * minutes on 2026-09-22.
+ *
+ * A rate-limited response says `API rate limit exceeded for user ID 328832207.` and nothing more. That is
+ * NOT the login #2003 asked for, and it is not nothing either: it is the one identifier the refusing
+ * response carries, so the refusal quotes it beside an explicit UNREADABLE rather than dropping it or
+ * dressing it up as an account name.
+ *
+ * READ OFF THE MESSAGE TEXT, because that is where GitHub puts it -- there is no field and no header for
+ * it. A prose match is a fingerprint, not a contract: if GitHub reworded the message this would return
+ * `null` and the line would read a bare `account UNREADABLE`, which is the correct degradation and the
+ * same one an unparseable body already gets.
+ *
+ * @param {string | null} raw
+ * @returns {string | null}
+ */
+export function userIdFromResponse(raw) {
+  const body = responseBody(raw);
+  const found = body === null ? null : /\buser ID (\d+)/i.exec(body);
+  return found ? found[1] : null;
+}
+
+/**
+ * WHICH ACCOUNT, WHICH POOL, AND WHEN IT COMES BACK -- the three facts a refusal cannot state without a
+ * call, for the price of exactly ONE, always.
+ *
+ * ONE CALL IS THE WHOLE CONTRACT (#2003's done-when 2), and it is a real limit rather than a happy
+ * accident: a live pool's probe names all three, and a DEAD pool's names the pool and the reset but only a
+ * user ID for the account. The note on `GRAPHQL_POOL_PROBE` above records every alternative that was
+ * measured and why none of them buys the login inside the budget. A refusal reports what this one call
+ * said and marks the rest UNREADABLE; it never pays a second point to improve the wording of a line that
+ * is already telling the reader how long the org is deaf.
+ *
+ * `calls` is RETURNED rather than assumed, so the price is counted by the test instead of reasoned about.
  *
  * @param {{run: (args: string[]) => string}} deps
- * @returns {{login: string | null, pool: Pool | null, calls: number}}
+ * @returns {{login: string | null, userId: string | null, pool: Pool | null, calls: number}}
  */
 export function poolDiagnosis({ run }) {
   if (typeof run !== "function") {
@@ -176,10 +222,32 @@ export function poolDiagnosis({ run }) {
       + "call (#1405: apiBudget's default reached them on every run of queue-table.test.ts).");
   }
   const raw = rawResponse(GRAPHQL_POOL_PROBE, run);
-  const pool = poolFromResponse(raw);
-  const login = loginFromResponse(raw);
-  if (login !== null) return { login, pool, calls: 1 };
-  return { login: loginFromResponse(rawResponse(LOGIN_PROBE, run)), pool, calls: 2 };
+  return {
+    login: loginFromResponse(raw),
+    userId: userIdFromResponse(raw),
+    pool: poolFromResponse(raw),
+    calls: 1,
+  };
+}
+
+/**
+ * WHOSE POOL DIED, SAID AS PRECISELY AS THE ONE CALL ALLOWS.
+ *
+ * Three readings, and the middle one is the one #2003 argued about. A login is the answer. NO login and a
+ * user ID is NOT the answer and not silence either -- `UNREADABLE (user ID 328832207)` says both that the
+ * account was not named and what the refusing response did carry, so a reader can resolve it by hand and
+ * is never left thinking `328832207` is an account name. Neither is a bare UNREADABLE.
+ *
+ * The user ID is never printed WITHOUT the word UNREADABLE beside it: that pairing is the whole point, and
+ * the journal line it replaces (`API rate limit already exceeded for user ID 328832207`) is what an
+ * unqualified ID reads like to the session that has to act on it.
+ *
+ * @param {string | null} login @param {string | null} userId
+ * @returns {string}
+ */
+function accountPhrase(login, userId) {
+  if (login !== null) return `account ${login}`;
+  return userId === null ? "account UNREADABLE" : `account UNREADABLE (user ID ${userId})`;
 }
 
 /** @param {Pool} pool */
@@ -207,11 +275,11 @@ function poolPhrase(pool) {
  * answer must not answer zero: a missing pool prints UNREADABLE, never `0 remaining`, because a reader who
  * takes that for an exhausted pool waits for a reset that is not coming.
  *
- * @param {{login: string | null, pool: Pool | null}} diagnosis
+ * @param {{login: string | null, userId?: string | null, pool: Pool | null}} diagnosis
  * @returns {string}
  */
-export function refusalPoolLine({ login, pool }) {
-  const account = `account ${login ?? "UNREADABLE"}`;
+export function refusalPoolLine({ login, userId = null, pool }) {
+  const account = accountPhrase(login, userId);
   if (pool === null) {
     return `REFUSED ON: ${account}, pool UNREADABLE -- the probe could not be read either, so this tick `
       + "CANNOT say whether the pool is exhausted or something else refused both reads.";
