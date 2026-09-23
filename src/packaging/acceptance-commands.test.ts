@@ -2429,8 +2429,12 @@ test("#2105: an EMPTY BOLD declaration is no declaration -- `**Hand-run: **` cap
   const empty = `## Acceptance\n\n**Hand-run: **\n\n\`\`\`\n${HAND_RUN_GH}\n\`\`\`\n`;
   assert.match(String(handRunAcceptanceReason(empty, "row-file")), /REFUSING to file/,
     "filing refuses it, because nothing was declared");
-  const report = acceptanceReport(empty);
+  // The runner RECORDS rather than returning a bare 0: a refusal that spawned the `gh` anyway would
+  // report the same verdict while having made the live call the whole capability gate exists to prevent.
+  const spawned: string[] = [];
+  const report = acceptanceReport(empty, (cmd) => { spawned.push(cmd); return 0; });
   assert.equal(report.ok, false, "and the job refuses it too -- one story about one body");
+  assert.deepEqual(spawned, [], "and it refused BEFORE spawning -- no credential-less `gh` call was made");
   // THE VERDICT IS THE LINE'S OWN PREFIX, NEVER A SUBSTRING OF THE REPORT. A `doesNotMatch(/NOT RUN/)`
   // over the joined lines fails here on the REFUSAL'S OWN REMEDY -- which offers "a `Hand-run:` line
   // makes this line report `NOT RUN` naming your reason" -- so it would read a correct refusal as the
@@ -2446,8 +2450,11 @@ test("#2105: an EMPTY BOLD declaration is no declaration -- `**Hand-run: **` cap
   // by BOTH readers -- the positive control for the emptiness assertions above.
   const declared = `## Acceptance\n\n**Hand-run: ${HAND_RUN_REASON}**\n\n\`\`\`\n${HAND_RUN_GH}\n\`\`\`\n`;
   assert.equal(handRunAcceptanceReason(declared, "row-file"), null);
-  const declaredReport = acceptanceReport(declared);
+  const declaredSpawned: string[] = [];
+  const declaredReport = acceptanceReport(declared, (cmd) => { declaredSpawned.push(cmd); return 0; });
   assert.equal(declaredReport.ok, true);
+  assert.deepEqual(declaredSpawned, [],
+    "a declared hand-run is not run either -- that is exactly what the declaration says");
   assert.match(declaredReport.lines.join("\n"), new RegExp(`NOT RUN.*${HAND_RUN_REASON}`));
 });
 
