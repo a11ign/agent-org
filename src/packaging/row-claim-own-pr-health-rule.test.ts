@@ -826,7 +826,8 @@ test("#2126 (4): a row with no dispute escalates nothing", () => {
  * and a dispute detector keyed on the login finds nothing -- defeated exactly the way the head-identity
  * discriminator is. The name lives in the verdict's own `, by <name>:` opener.
  */
-const review = (state: string, oid: string, by: string) => ({ state, commit: { oid },
+const review = (state: string, oid: string, by: string, at?: string) => ({ state, commit: { oid },
+  ...(at ? { submittedAt: at } : {}),
   body: `**Review of #2105 at \`${oid.slice(0, 8)}\`, by ${by}: `
     + `${state === "APPROVED" ? "convinced" : "not convinced"} (provisional).**` });
 
@@ -873,6 +874,46 @@ test("#2126: ONE named verdict against ONE unattributed one is not a dispute eit
   ] }), null);
 });
 
+test("#2126: a reviewer's SUPERSEDED approval is not a side, even with a second reviewer refusing", () => {
+  // `reviewer`'s blocker at `00d34048`, as the positive-control refusal it asked for. The reversal test
+  // above has ONE reviewer, so a reversal leaves nothing to pair with and the case hides; add a second
+  // reviewer and the dead approval paired with the live refusal. `reviewDecision` reads
+  // CHANGES_REQUESTED and BOTH reviewers refuse -- there is no disagreement left to escalate.
+  assert.equal(disputeAtHead({ headRefOid: DISPUTED_HEAD, reviews: [
+    review("APPROVED", DISPUTED_HEAD, "reviewer-2"),
+    review("CHANGES_REQUESTED", DISPUTED_HEAD, "reviewer-2"),
+    review("CHANGES_REQUESTED", DISPUTED_HEAD, "reviewer"),
+  ] }), null, "the claim must be REFUSED as an unanswered refusal, not waved through and sent to `ceo` "
+    + "as a dispute nobody is having -- a guard declining to refuse is the bad direction of error");
+  // The control that keeps the collapse from being a blanket "two refusals cancel a dispute": put the
+  // approval LAST and the same three verdicts are a live disagreement again.
+  const live = disputeAtHead({ headRefOid: DISPUTED_HEAD, reviews: [
+    review("CHANGES_REQUESTED", DISPUTED_HEAD, "reviewer-2"),
+    review("CHANGES_REQUESTED", DISPUTED_HEAD, "reviewer"),
+    review("APPROVED", DISPUTED_HEAD, "reviewer-2"),
+  ] });
+  assert.equal(live?.approved.by, "reviewer-2");
+  assert.equal(live?.refused.by, "reviewer");
+});
+
+test("#2126: LATEST is read from `submittedAt`, not from where the review sits in the array", () => {
+  // The live payload carries the stamp (`gh pr list --json reviews` returns the whole review object), so
+  // an ordering this file never asserted must not be what decides which verdict is dead. Out of array
+  // order on purpose: the approval is LAST in the array and EARLIEST in time.
+  assert.equal(disputeAtHead({ headRefOid: DISPUTED_HEAD, reviews: [
+    review("CHANGES_REQUESTED", DISPUTED_HEAD, "reviewer", "2026-09-23T13:00:00Z"),
+    review("CHANGES_REQUESTED", DISPUTED_HEAD, "reviewer-2", "2026-09-23T12:30:00Z"),
+    review("APPROVED", DISPUTED_HEAD, "reviewer-2", "2026-09-23T12:00:00Z"),
+  ] }), null, "`reviewer-2`'s 12:00Z approval is superseded by its own 12:30Z refusal, whatever order "
+    + "the array happens to be in");
+  // And the fallback is exercised by every other test here, which supplies no stamp at all: the control
+  // that it is an ORDER being asserted rather than an absent field being sorted on.
+  assert.ok(disputeAtHead({ headRefOid: DISPUTED_HEAD, reviews: [
+    review("APPROVED", DISPUTED_HEAD, "reviewer-2", "2026-09-23T12:00:00Z"),
+    review("CHANGES_REQUESTED", DISPUTED_HEAD, "reviewer", "2026-09-23T12:30:00Z"),
+  ] }), "two different names, one stamp each: still an ordinary dispute");
+});
+
 test("#2126: COMMENTED and DISMISSED decide nothing, so they are not a side of a dispute", () => {
   assert.equal(disputeAtHead({ headRefOid: DISPUTED_HEAD, reviews: [
     review("COMMENTED", DISPUTED_HEAD, "reviewer-2"),
@@ -882,6 +923,15 @@ test("#2126: COMMENTED and DISMISSED decide nothing, so they are not a side of a
     review("APPROVED", DISPUTED_HEAD, "reviewer-2"),
     review("CHANGES_REQUESTED", DISPUTED_HEAD, "reviewer"),
   ] }), "the control: swap the COMMENTED for an APPROVED and the same shape IS a dispute");
+  // AND THEY SUPERSEDE NOTHING EITHER, which the collapse above has to be careful about: only verdicts
+  // are collapsed, so a reviewer's commentary after its own approval leaves the approval standing --
+  // exactly as GitHub leaves it standing in `reviewDecision`.
+  assert.ok(disputeAtHead({ headRefOid: DISPUTED_HEAD, reviews: [
+    review("APPROVED", DISPUTED_HEAD, "reviewer-2"),
+    review("COMMENTED", DISPUTED_HEAD, "reviewer-2"),
+    review("CHANGES_REQUESTED", DISPUTED_HEAD, "reviewer"),
+  ] }), "a COMMENTED review is not that reviewer's latest VERDICT -- collapsing on it would erase an "
+    + "approval GitHub still counts");
 });
 
 test("#2126: the review-health read is ONE call, over every open pull request", () => {

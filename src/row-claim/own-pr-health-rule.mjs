@@ -357,27 +357,66 @@ function unansweredRefusalReason(rows) {
  * refusal, whose latest word GitHub has already folded into `reviewDecision`. Reading it as a dispute would
  * let any reviewer who changed their mind at the same head wave the guard through.
  *
+ * AND A NAME'S SUPERSEDED VERDICT IS NOT A SIDE OF ONE EITHER -- `reviewer`'s blocker at `00d34048`, and
+ * the one case the reversal test above could not see. That test has only ONE reviewer, so a reversal
+ * leaves nothing to pair with; put a SECOND reviewer in the same head and the two rules collide.
+ * `reviewer-2` APPROVED, then `reviewer-2` CHANGES_REQUESTED, then `reviewer` CHANGES_REQUESTED: both
+ * reviewers now refuse and `reviewDecision` reads `CHANGES_REQUESTED`, but the dead `reviewer-2` approval
+ * still paired with `reviewer`'s refusal, so the claim was WAVED THROUGH and escalated to `ceo` as a
+ * disagreement that had already resolved itself. The direction of that error is the bad one: a guard whose
+ * whole job is to refuse work needing action, declining to refuse, and sending `ceo` a dispute to rule on
+ * that nobody is having. So each name is reduced to its LATEST verdict before the pairing.
+ *
+ * ORDER COMES FROM `submittedAt`, WITH THE ARRAY AS THE FALLBACK. `gh pr list --json reviews` returns the
+ * whole review object, `submittedAt` included, oldest first -- but "latest" is a claim about time and
+ * reading it off array position alone would be a silent dependence on an ordering nothing in this file
+ * asserts. When every review at the head carries a stamp they are sorted by it; when any does not, the
+ * caller's order stands, which is what a hand-built fixture supplies.
+ *
+ * A `COMMENTED` OR `DISMISSED` REVIEW SUPERSEDES NOTHING, because only verdicts are collapsed. GitHub
+ * does not let running commentary clear an approval out of `reviewDecision` and neither does this: an
+ * `APPROVED` followed by that same name's `COMMENTED` is still an approval, and still a live side.
+ *
  * @param {{ headRefOid?: string,
- *           reviews?: { state?: string, body?: string, commit?: { oid?: string } }[] }} pr
+ *           reviews?: { state?: string, body?: string, submittedAt?: string,
+ *                       commit?: { oid?: string } }[] }} pr
  * @returns {ReviewDispute | null}
  */
 export function disputeAtHead(pr) {
   const head = pr.headRefOid ?? "";
-  const named = (pr.reviews ?? [])
-    .filter((review) => headMatches(review.commit?.oid ?? null, head))
+  const named = oldestFirst((pr.reviews ?? [])
+    .filter((review) => headMatches(review.commit?.oid ?? null, head)))
     .map((review) => ({ state: /** @type {string} */ (review.state),
       by: reviewVerdict(review.body ?? "").author }))
     // AN UNNAMED SIDE IS DROPPED BEFORE THE PAIRING, not compared as `null`: one named verdict against one
     // unattributed one would otherwise pair (`"reviewer" !== null`) and read as two reviewers, when it may
     // be the same one writing twice. Dropping it here is what makes the pairing below a claim about two
     // KNOWN and DIFFERENT names.
-    .filter((side) => side.by !== null);
-  const approvals = named.filter((side) => side.state === APPROVED);
-  const refusals = named.filter((side) => side.state === CHANGES_REQUESTED);
+    .filter((side) => side.by !== null)
+    .filter((side) => side.state === APPROVED || side.state === CHANGES_REQUESTED);
+  // ONE VERDICT PER NAME, THE LATEST. A `Map` keyed on the name overwrites in place, so the last verdict
+  // each reviewer left at this head is the only one that can be a side below.
+  const current = [...new Map(named.map((side) => [side.by, side])).values()];
+  const approvals = current.filter((side) => side.state === APPROVED);
+  const refusals = current.filter((side) => side.state === CHANGES_REQUESTED);
   const pairs = approvals.flatMap((approved) => refusals
     .filter((refused) => refused.by !== approved.by)
     .map((refused) => ({ approved, refused })));
   return pairs.length === 0 ? null : { head, ...pairs[0] };
+}
+
+/**
+ * Reviews oldest first: by `submittedAt` when every one carries it, otherwise exactly as given.
+ *
+ * The fallback is not a shrug. A fixture that omits the stamp is asserting an ORDER rather than a time,
+ * and re-sorting it by an absent field would silently reorder it; a live payload always has the field.
+ * @template {{ submittedAt?: string }} T @param {T[]} reviews @returns {T[]}
+ */
+function oldestFirst(reviews) {
+  if (!reviews.every((review) => typeof review.submittedAt === "string" && review.submittedAt !== "")) {
+    return reviews;
+  }
+  return [...reviews].sort((a, b) => String(a.submittedAt).localeCompare(String(b.submittedAt)));
 }
 
 /**
@@ -413,7 +452,8 @@ export function lookupOpenPrReviewHealth({ run = gh } = {}) {
     const raw = run(["pr", "list", "--repo", REPO, "--state", "open", "--limit", String(OPEN_PR_LIMIT),
       "--json", "number,headRefOid,reviewDecision,reviews"]);
     /** @type {{ number: number, headRefOid?: string, reviewDecision?: string | null,
-     *           reviews?: { state?: string, body?: string, commit?: { oid?: string } }[] }[]} */
+     *           reviews?: { state?: string, body?: string, submittedAt?: string,
+     *                       commit?: { oid?: string } }[] }[]} */
     const parsed = JSON.parse(raw);
     return parsed.map((pr) => ({ number: pr.number, head: pr.headRefOid ?? "",
       reviewDecision: pr.reviewDecision ?? null, dispute: disputeAtHead(pr) }));
