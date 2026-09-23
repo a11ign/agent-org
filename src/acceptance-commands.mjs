@@ -97,6 +97,21 @@ const CORPUS_REMOTE = /\bA11Y_CORPUS_REMOTE\b/;
 const ON_THE_LAB = /\bon the lab\b/;
 const NAMED_NOT_INVOKED = new Set([SYSTEMCTL, SYSTEMD, PVE_KEY, CORPUS_REMOTE, ON_THE_LAB]);
 
+// #1988: A PARAGRAPH DECLARING THE WORK **OUT** IS NOT THE ROW DOING IT. `extractLabeledSection` runs to
+// the next `##` heading, so the Acceptance span swallows every bold-labelled paragraph after it --
+// `Done when` and `Not in scope` both. #1984's `Not in scope` said "and the three systemd units, done in
+// #1982", and that one sentence routed a row whose Acceptance is a single rstest run to `orchestrator`,
+// replacing the `lane:any` its Region had correctly derived (`withAcceptanceLane` drops `lane:any` by
+// design, #1912). The row was re-laned by hand.
+//
+// ONE LABEL, BECAUSE ONE IS WHAT THE POPULATION HAS. Measured 2026-09-23 over every open row: nine bodies
+// carry `**Not in scope:**` and no other bold spelling of it appears; the two `## Not in scope` headings
+// need nothing, since a heading already ends the span. NAMED and not inferred, for the reason
+// `FLEET_LAB_PATTERNS` is: a list somebody chose is what makes trimming on it safe. What is DERIVED is
+// how far the paragraph reaches -- `withoutScopeDisclaimer` below, structurally, exactly as
+// `withoutBulletProse` derives a bullet item's extent from its marker.
+const SCOPE_DISCLAIMER = /^\s*\*\*not in scope\b/i;
+
 const FLEET_LAB_PATTERNS = /** @type {[RegExp, string][]} */ ([
   [/\bfleet:/, "reaches the fleet -- a GitHub runner has no Windows worker"],
   [/\blab:/, "reaches the lab -- a GitHub runner has no Proxmox"],
@@ -158,24 +173,77 @@ export function fleetOrLabAcceptance(body) {
   // the runnable lines, this needs everything the section says it will take.
   const section = extractLabeledSection(body, "Acceptance");
   if (section === null) return null;
-  const withoutBullets = withoutBulletProse(section);
+  const named = namedPatternText(section);
   for (const [pattern, reason] of FLEET_LAB_PATTERNS) {
-    if (pattern.test(NAMED_NOT_INVOKED.has(pattern) ? withoutBullets : section)) return reason;
+    if (pattern.test(NAMED_NOT_INVOKED.has(pattern) ? named : section)) return reason;
   }
   return null;
 }
 
 /**
- * #1912: the reason a NAMED pattern would have given, when it appears ONLY in bullet prose and so did not
- * route the row -- `row-file` prints it, so the one case the bullet rule can get wrong is never silent.
- * @param {string} body a row body
- * @returns {string | null}
+ * The text a NAMED pattern is read against: the Acceptance span minus its bullet prose (#1912) and minus
+ * any scope-disclaiming paragraph (#1988).
+ *
+ * INVOCATION PATTERNS STILL READ THE WHOLE SPAN, disclaimer included, and that is deliberate rather than
+ * an omission. #1912 settled it for bullets on the same ground: `fleet:status` in a sentence is still
+ * somebody running `fleet:status`, while a NAMED thing -- a variable, a unit, a place -- may be a test's
+ * subject or, here, the work a row says it will NOT do. The conservative direction is to over-route an
+ * invocation, which a reader can see and correct, rather than to under-route one silently.
+ * @param {string} section @returns {string}
  */
-export function bulletOnlyFleetMention(body) {
+function namedPatternText(section) {
+  return withoutBulletProse(withoutScopeDisclaimer(section));
+}
+
+/**
+ * #1912, widened by #1988: the reason a NAMED pattern would have given when it appears ONLY in text the
+ * deriver trims, and WHICH trim swallowed it -- `row-file` prints both, so neither rule can get a row
+ * wrong in silence. #1912 made silence the defect; a second silent trim would re-make it.
+ *
+ * The form is derived, not assumed: the pattern is re-tested against the span with only the disclaimer
+ * removed, so a mention that survives that is the bullet rule's and one that does not is this row's.
+ * @param {string} body a row body
+ * @returns {{ reason: string, form: "bullet" | "scope disclaimer" } | null}
+ */
+export function untrimmedFleetMention(body) {
   const section = extractLabeledSection(body, "Acceptance");
   if (section === null || fleetOrLabAcceptance(body) !== null) return null;
   const hit = FLEET_LAB_PATTERNS.find(([pattern]) => NAMED_NOT_INVOKED.has(pattern) && pattern.test(section));
-  return hit ? hit[1] : null;
+  if (!hit) return null;
+  const survivesDisclaimerTrim = hit[0].test(withoutScopeDisclaimer(section));
+  return { reason: hit[1], form: survivesDisclaimerTrim ? "bullet" : "scope disclaimer" };
+}
+
+/**
+ * #1988: the Acceptance span minus any SCOPE-DISCLAIMING PARAGRAPH -- label line and continuations --
+ * outside a code fence. A NAMED pattern is read against what is left.
+ *
+ * THE LABEL IS THE MARKER AND THE EXTENT IS DERIVED, which is `withoutBulletProse`'s own shape one
+ * paragraph over: that function finds a bullet by `- ` and then works out where the item ends from the
+ * body's structure. Here the marker is `**Not in scope`, and the paragraph ends the way any lazy
+ * Markdown block does -- `endsLazyBlock`, shared with the bullet rule rather than written twice.
+ *
+ * SO A NUMBERED CLAUSE IS STILL READ, and that is the bound this trim needs: `endsLazyBlock` ends the
+ * block at a numbered clause, a heading, or a blank line followed by unindented text, so `Done when`'s
+ * clauses -- #1241's two founding rows are exactly that shape -- survive it. A row stating a real
+ * hardware dependency still routes; only the paragraph saying the work is OUT does not.
+ * @param {string} section
+ * @returns {string}
+ */
+function withoutScopeDisclaimer(section) {
+  let inFence = false;
+  let inDisclaimer = false;
+  let afterBlank = false;
+  return section.split(/\r\n|\r|\n/).filter((line) => {
+    const isFence = /^\s*(```|~~~)/.test(line);
+    if (isFence) { inFence = !inFence; inDisclaimer = false; }
+    if (inFence || isFence) return true;
+    if (SCOPE_DISCLAIMER.test(line)) { inDisclaimer = true; afterBlank = false; return false; }
+    if (line.trim() === "") { afterBlank = inDisclaimer; return true; }
+    if (inDisclaimer && !endsLazyBlock(line, afterBlank)) return false;
+    inDisclaimer = false;
+    return true;
+  }).join("\n");
 }
 
 /**
@@ -192,7 +260,7 @@ export function bulletOnlyFleetMention(body) {
  *
  * NOT A PROOF, A CONVENTION. A bullet that genuinely does the thing (`- run systemctl ...`) now answers
  * null -- the direction #1241 called unsafe -- so `row-file` says so when it happens (see
- * `bulletOnlyFleetMention`), and the fix is to write that step as a numbered clause, which is read.
+ * `untrimmedFleetMention`), and the fix is to write that step as a numbered clause, which is read.
  * @param {string} section
  * @returns {string}
  */
@@ -209,21 +277,25 @@ function withoutBulletProse(section) {
     if (inFence || isFence) return true;
     if (/^\s*[-*+]\s/.test(line)) { inItem = true; afterBlank = false; return false; }
     if (line.trim() === "") { afterBlank = inItem; return true; }
-    if (inItem && !endsListItem(line, afterBlank)) return false;
+    if (inItem && !endsLazyBlock(line, afterBlank)) return false;
     inItem = false;
     return true;
   }).join("\n");
 }
 
 /**
- * Does `line` end the bullet item above it? The WHOLE item is prose, not its marker line (#1914's review:
- * a wrapped bullet's `A11Y_PVE_KEY` on an indented continuation still routed, silently). An indented line
- * continues the item, and so does an unindented one straight after it -- Markdown's lazy continuation --
- * unless it opens a block of its own: a numbered clause, a heading or a fence is the work, and is read.
- * After a blank line only indentation keeps a line inside the item.
+ * Does `line` end the lazily-continued block above it -- a bullet item (#1912) or a scope-disclaiming
+ * paragraph (#1988)? The WHOLE block is prose, not its marker line (#1914's review: a wrapped bullet's
+ * `A11Y_PVE_KEY` on an indented continuation still routed, silently). An indented line continues the
+ * block, and so does an unindented one straight after it -- Markdown's lazy continuation -- unless it
+ * opens a block of its own: a numbered clause, a heading or a fence is the work, and is read. After a
+ * blank line only indentation keeps a line inside the block.
+ *
+ * ONE FUNCTION FOR BOTH, because it is one Markdown rule and #1988 would otherwise have been a second
+ * spelling of it that could drift from this one.
  * @param {string} line a non-blank line outside any fence @param {boolean} afterBlank
  */
-function endsListItem(line, afterBlank) {
+function endsLazyBlock(line, afterBlank) {
   if (/^\s/.test(line)) return false;
   return afterBlank || /^(\d+[.)]\s|#)/.test(line);
 }

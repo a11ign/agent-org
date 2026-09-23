@@ -202,6 +202,34 @@ export const PROFILES = Object.freeze({
     effort: "high",
     why: "a by-row reading of the fleet-gated batch decides how the org's scarcest resource is spent",
   }),
+  "host-units-stale": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // MEDIUM, and the effort is deliberately NOT bought up to match the consequence -- which is severe.
+    // The wrong call here DELETES A LIVE TIMER: `host:install`'s removal loop drops every installed
+    // `a11ign-*` unit the tree does not ship, and a unit the tree has not shipped YET is a normal state
+    // that reads identically to a retirement. This org has been one command from that twice (#1993,
+    // #2002).
+    //
+    // WHAT MAKES MEDIUM RIGHT ANYWAY: the hard part is not reasoning, it is TAKING A SECOND READING, and
+    // the order's own prompt carries that as a procedure -- confirm no finding is a live orphan by a
+    // route that does not go through the same reader, STOP and report if the two disagree, then run the
+    // remedy and post whether any `REMOVED` line appeared. A bounded checklist with one real judgment in
+    // it does not get safer with more reasoning effort; it gets safer with the second reading, which is
+    // already required. Buying `high` here would be paying for thinking where the risk is actually in
+    // looking.
+    //
+    // sonnet AND NOT haiku, though, and that is the half that is not negotiable: telling a retirement
+    // from a not-yet-shipped unit is judgment over gathered material, which is exactly where
+    // `agent-practices.md` draws its line. The gathering is already done -- the findings arrive IN the
+    // prompt.
+    //
+    // ESCALATE HERE WITH THE RUN if a session ever gets this wrong, per this file's own rule. A wrong
+    // call would be visible: a `REMOVED` line in an install the row says to post.
+    effort: "medium",
+    why: "confirming no drifting unit is a live orphan before running a remedy that deletes unshipped "
+      + "units is judgment, but a bounded one the order's own procedure carries",
+  }),
   "lane-backlog-unpromoted": Object.freeze({
     kind: "claude",
     model: "sonnet",

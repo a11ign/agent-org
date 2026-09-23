@@ -27,9 +27,9 @@
 // that needs `herdr agent list`'s `agent_status`, and putting it here would make the gate untestable
 // without a running org and unrunnable from CI. `wake.mjs` owns that half; `row-claim.mjs` remains the
 // authority on whether a row is actually yours.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import { realpathSync, existsSync } from "node:fs";
 // RELATIVE, not the package specifier -- this must run before any `npm ci`/build, the same constraint
 // `org-watch.mjs` and `build-packages.mjs` state at their own imports.
@@ -90,7 +90,7 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
   "verdict-not-convinced", "pr-checks-failing", "ready-queue-empty", "lane-backlog-unpromoted",
   "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
   "blocked-unexaminable", "fleet-batch-due", "blocker-cleared", "pr-green-unarmed",
-  "claimed-row-amended", "row-branch-unshipped"];
+  "claimed-row-amended", "row-branch-unshipped", "host-units-stale"];
 
 /**
  * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
@@ -1002,6 +1002,110 @@ export function fleetBatchOrders(rows, milestone = FLEET_MILESTONE, clock = {}) 
     causeKey: `orchestrator/fleet-batch-due/${key}`,
   }];
 }
+
+/**
+ * THE HOST WENT STALE ON A MERGE AND NOTHING IN THIS ORG FOUND OUT -- #2174.
+ *
+ * The shipped units are COPIES, not symlinks (`host-units.mjs` says so in its own header and explains
+ * why), so every merge touching `packages/agent-org/host/` makes the agent host stale the instant it
+ * lands and changes nothing on the host. The only instrument that can see it is `npm run host:check`,
+ * and until this cause NOTHING CALLED IT -- one file in `packages/agent-org/src` and the whole of
+ * `.github/workflows` mentioned the drift reader, and that file was the one defining it.
+ *
+ * THREE INSTANCES IN 24 HOURS, and the third had a consequence. #2003's comment-only diff to
+ * `a11ign-work-tick.service` left the host stale overnight, found only because somebody ran `host:check`
+ * by hand. #2144 (#1998) merged 2026-09-23T14:04:06Z changing the board unit's `ExecStart`; eight hours
+ * later the service manager still loaded the pre-#1998 program, and it would have dispatched the 06:10Z
+ * board edition from 31 lines of untracked bash whose entire deliverable was that it stop being that
+ * (#2173). A merge that changes nothing on the host is, from inside this org, indistinguishable from a
+ * merge that worked.
+ *
+ * THE GATE IS ALREADY STANDING IN THE RIGHT PLACE, which is the whole reason this is cheap.
+ * `a11ign-work-tick.service` runs on the agent host every two minutes with `npm run primary:update` as
+ * its `ExecStartPre`, so the tick reads a checkout at most one tick behind `main` FROM the one machine
+ * that can also read `~/.config/systemd/user`. Both sides of the comparison are already under its hand.
+ * It spends NO API pool -- a `readdir`, some `readFileSync` and one `systemctl` spawn per shipped timer,
+ * never a `gh` call -- so it does not touch the two-call budget the gate's whole design rests on.
+ * MEASURED on this host, `hostUnitDrift({})` five runs: 78.0, 77.5, 83.3, 85.1, 81.5 ms, mean 81.1 ms.
+ * At 720 ticks a day that is 58 seconds of CPU a day, against the 2.07s the same unit's `primary:update`
+ * already costs per tick when there is nothing to do -- about 4% of a step the tick already pays for.
+ * Not material, so nothing is short-circuited; measured first, which is what constraint 5 asked.
+ *
+ * DETECT AND WAKE, NEVER AUTO-INSTALL -- ruled on the row so review does not re-litigate it, and the
+ * shipped code holds it: this function returns ORDERS and calls nothing. The tick COULD run
+ * `host:install` itself and must not, because `hostUnitsInstall`'s removal loop deletes every installed
+ * `a11ign-*` unit the tree does not ship, and this org has twice been one command away from losing a live
+ * one -- the board dispatch pair (#1993) and the `worktrees:prune` pair (#2002), both hand-installed,
+ * both offered for deletion by the remedy, both caught by a PERSON reading the output. A unit the tree
+ * has not shipped YET is a normal state, not an error, and no automatic actor can tell it from a
+ * retirement.
+ *
+ * KEYED ON THE DRIFT SET, NOT A COUNT AND NOT A CLOCK -- `fleetBatchOrders`'s rule, for its reason. The
+ * key names every drifting unit AND its problem, sorted, so a second unit joining is a new question that
+ * reaches the owner, a unit whose problem CHANGES (`NOT INSTALLED` becoming `STALE`) is a new question
+ * too, and a host stale in exactly the same way on the next tick mints the identical key and the ledger
+ * drops it. A count would collide two different drift sets of the same size, which is #1799's finding.
+ *
+ * AN ACTION CAUSE, so it is deliberately OUT of `JUDGMENT_CAUSES` and keeps `wake.mjs`'s twenty-minute
+ * expiry. It names a thing to DO -- read these findings, then run the remedy -- and if the wake does not
+ * stick, nothing happens and nobody notices, which is the defect the expiry exists for (#1433, #1435 sat
+ * Ready overnight behind a spent causeKey).
+ *
+ * `[]` AND `null` BOTH EMIT NOTHING, AND THEY ARE NOT THE SAME CLAIM. `hostUnitDrift` returns `[]` for a
+ * clean host AND for a machine with no user systemd manager -- CI, a reviewer's laptop, a container --
+ * and `null` here is a read that THREW. All three are silence, because none of them is a stale host; but
+ * reading "not asked" as "all correct" is this repository's most-repeated defect, so `driftReport` keeps
+ * the two apart in the CLI's output and the tests below assert the three separately rather than once.
+ *
+ * @param {{unit: string, problem: string, detail: string}[] | null | undefined} drift
+ *        `host:check --json`'s findings.
+ *        `null`/omitted is "not asked or refused" and emits nothing -- a caller that cannot read the
+ *        host must never produce a false all-clear and must never invent a false alarm either.
+ * @returns {{session: string, cause: string, subject: string, discriminator: string,
+ *            prompt: string, causeKey: string}[]}
+ */
+export function hostDriftOrders(drift) {
+  const findings = Array.isArray(drift) ? drift : [];
+  if (findings.length === 0) return [];
+  const key = findings.map((f) => `${f.unit}:${f.problem}`).sort().join(".");
+  return [{
+    session: HOST_DRIFT_SESSION,
+    cause: "host-units-stale",
+    subject: "host-units",
+    discriminator: key,
+    prompt: `The agent host has drifted from the tree: ${findings.length} finding(s).\n`
+      + `${findings.map((f) => `  ${f.unit}: ${f.problem}\n    ${f.detail}`).join("\n")}\n`
+      + "THIS IS A DETECTOR, NOT AN INSTALLER. The tick deliberately does not run the remedy: "
+      + "`host:install` DELETES every installed `a11ign-*` unit the tree does not ship, and a unit the "
+      + "tree has not shipped yet is a normal state no automatic actor can tell from a retirement. "
+      + "Twice this org was one command away from deleting a live timer (#1993, #2002) and a person "
+      + "reading the output is what stopped it both times.\n"
+      + "SO READ BEFORE YOU RUN. Confirm no finding above is a live orphan -- a second reading that does "
+      + "NOT go through the same reader, such as a diff of the installed `a11ign-*` set against "
+      + "`packages/agent-org/host/` -- and say on the row what it said, whichever way it went. If that "
+      + "reading disagrees with this one, STOP and report rather than running the remedy.\n"
+      + "Then `npm run host:install`, and post whether any `REMOVED` line appeared: not one is expected, "
+      + "and a `REMOVED` line is a finding rather than a step. `npm run host:check` answers it in the "
+      + "same minute -- `hostUnitsInstall` runs `daemon-reload` itself, so nothing waits for the next "
+      + "firing.\n"
+      + "A STALE UNIT IS NOT A COSMETIC DIFF. The unit files are copies, so a merged edit reaches this "
+      + "host only when somebody reinstalls -- and until then every property this repository can read "
+      + "about that unit is a property of a file that is not the one running.",
+    causeKey: `${HOST_DRIFT_SESSION}/host-units-stale/${key}`,
+  }];
+}
+
+/**
+ * WHO IS WOKEN, NAMED ON THE ROW RATHER THAN ASSUMED, because #2174 asked for exactly that.
+ *
+ * `orchestrator`, on #2002's own reasoning: host writes are its work, and `agent-practices.md` already
+ * makes it the first reader for fleet and host questions. THE COUNTER-EVIDENCE, stated because it is
+ * real: no entry in `docs/lane-ownership.json` covers host paths at all, and BOTH host writes this org
+ * has actually made were `worker-capture`'s -- #2002 on 2026-09-23T07:15Z and #2173 at 15:54Z. So this
+ * is a routing choice with a live exception, not a settled fact; it is one line to change if the
+ * exception becomes the rule, and the wake ledger will show which session actually answers.
+ */
+const HOST_DRIFT_SESSION = "orchestrator";
 
 /** The rows that owe someone an answer. @param {any[]} rows */
 export function withAnswerLabel(rows) {
@@ -2919,7 +3023,8 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *           drain?: boolean, required?: string[] | null, epics?: any[], answerOwed?: any[],
  *           openRows?: any[], unarmed?: number[] | null,
  *           claimedComments?: {number?: number, comments?: {body?: string, id?: string}[]}[],
- *           rowBranches?: {branch: string, head: string, row: number}[] | null }} state
+ *           rowBranches?: {branch: string, head: string, row: number}[] | null,
+ *           hostDrift?: {unit: string, problem: string, detail: string}[] | null }} state
  *        `required` is the checks that can block a merge (`requiredCheckNames`), or `null` for
  *        "could not be read", which counts EVERY check as before this existed.
  *        `epics` are the open `epic` rows with their `subIssuesSummary` (`readEpics`); `[]` when
@@ -2941,6 +3046,12 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *        listing and a `null` one identically (`Array.isArray`, `?? []`), so the default would buy
  *        nothing but the sixteenth branch.
  *        Spending no API pool is the POINT rather than a saving -- see `readRowBranches`.
+ *        `hostDrift` is `readHostDrift()` -- `host-units.mjs --json`'s findings, or `null`. OMITTED
+ *        AND `null` MEAN THE SAME THING, "not asked or refused": no order is emitted, so a caller
+ *        that cannot reach the host behaves exactly as it did before #2174. It carries no `= null`
+ *        default for `rowBranches`'s reason -- a default parameter is a branch `complexity` counts,
+ *        and `decide` sits exactly on its limit of 15.
+ *        It spends NO API pool: see `readHostDrift`.
  *        `unarmed` is `readUnarmed(shouldBeMerging(prs, required))` -- the green, unheld pull requests
  *        the API says nothing has armed. It DEFAULTS TO `null`, which is "not asked or refused" and
  *        emits no order: a caller that cannot make that read must never produce a false all-clear, and
@@ -2950,7 +3061,7 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
-  claimedComments = [], rowBranches }) {
+  claimedComments = [], rowBranches, hostDrift }) {
   // FIRST, BEFORE EVERY OTHER CAUSE. Every other order asks a session what should happen next; this one
   // says another session is ALREADY STOPPED waiting on them. That outranks any standing question.
   const orders = [...answerOrders(answerOwed)];
@@ -3005,6 +3116,12 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // work that cannot land -- more urgent than a supply question, less urgent than a named red build,
   // and never withheld by a drain: a window stops the org TAKING ON work, not finishing what is in flight.
   orders.push(...greenUnarmedOrders(unarmed));
+
+  // #2174: AFTER the per-PR and per-row causes and BEFORE the chairman's, for `pr-green-unarmed`'s
+  // reason applied to the machine rather than to a pull request. A stale host is finished work that has
+  // not taken effect -- more urgent than a supply question, less urgent than a named red build. It is
+  // deliberately NOT withheld by a drain: see `START_CAUSES`.
+  orders.push(...hostDriftOrders(hostDrift));
 
   orders.push(...chairmanOrders(chairmanBlocked));
 
@@ -3109,6 +3226,53 @@ export function cannotAskReport({ run }) {
     + `${refusalPoolLine(poolDiagnosis({ run }))}\n`;
 }
 
+/**
+ * The agent host's drift, or `null` when the read could not be made -- #2174.
+ *
+ * SPAWNED, NOT IMPORTED, AND THE CHOICE IS MEASURED RATHER THAN STYLISTIC. The row offered three routes:
+ * import `hostUnitDrift`, split it into a leaf module, or spawn `host:check`. A direct import is free at
+ * LOAD -- `host-units.mjs` adds one file to a closure of 21, and 39.3ms against the gate's own 39.4ms,
+ * five runs each -- so the row's constraint 1, which feared the import WEIGHT, is satisfied by it and
+ * would have ended the question.
+ *
+ * WHAT THE WEIGHT MEASUREMENT MISSES IS THE CAPABILITY CLOSURE, and that is what decided this.
+ * `host-units.mjs` calls `git log --all` (`addedOnSomeRef`), so importing it here puts a `history`
+ * requirement into `work-gate.mjs` -- and this file is reached by `row-claim/runner-rule.mjs`, which most
+ * of the packaging suite imports. MEASURED with `deriveClosureRequirements` over
+ * `packages/lab/src/packaging/*.test.ts`, at `518de0e32` and again with the import added: **4 files
+ * derive a `history` requirement, and 28 do with it.** Twenty-four test files that will never call this
+ * code would owe a `History: full` declaration, paid by whoever next opens a PR whose Acceptance happens
+ * to name one of them. A process boundary costs one node startup per tick and leaves the closure at 4.
+ *
+ * AND IT BUYS A PROPERTY THE IMPORT CANNOT. The session this cause wakes is told to run
+ * `npm run host:check`; this spawns THE SAME FILE IN THE SAME TREE, so the gate and the human can never
+ * disagree about what drifted. Two readers of one question is the defect this repository keeps
+ * re-finding one level up, and here there is exactly one.
+ *
+ * `null` FOR EVERY UNREADABLE CASE AND NEVER `[]`, which is `readPrs`'s rule for its reason: a spawn
+ * that failed, a non-zero exit, unparseable output and `asked: false` are all "not asked", while `[]` is
+ * a host that was looked at and is correct. Both produce silence here and they are NOT the same claim --
+ * `hostDriftOrders` keeps them apart, and `driftReport` keeps them apart for the CLI's reader.
+ * @returns {{unit: string, problem: string, detail: string}[] | null}
+ */
+function readHostDrift() {
+  const run = spawnSync(process.execPath, [hostUnitsEntry(), "--json"], { encoding: "utf8" });
+  if (run.status !== 0 || typeof run.stdout !== "string") return null;
+  try {
+    const parsed = JSON.parse(run.stdout);
+    return parsed?.asked === true && Array.isArray(parsed.findings) ? parsed.findings : null;
+  } catch {
+    // UNPARSEABLE IS NOT CLEAN. A future `host:check` that prints a warning before its JSON lands here,
+    // and the only safe reading of output this function does not understand is that it did not ask.
+    return null;
+  }
+}
+
+/** `host-units.mjs` beside this file -- RESOLVED, never imported. See `readHostDrift` for why. */
+function hostUnitsEntry() {
+  return fileURLToPath(new URL("./host-units.mjs", import.meta.url));
+}
+
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/work-gate.mjs" });
   const prs = readPrs();
@@ -3154,7 +3318,11 @@ function main() {
     // #1969: CONDITIONAL, and the condition is answered for free from the list already in hand.
     // `shouldBeMerging` reads `openPrs`; only if it finds a green, unheld, non-draft PR is the
     // merge-queue call made at all.
-    unarmed: readUnarmed(shouldBeMerging(openPrs, required)), rowBranches });
+    unarmed: readUnarmed(shouldBeMerging(openPrs, required)), rowBranches,
+    // #2174: A LOCAL READ, NOT AN API ONE -- a `readdir`, some `readFileSync` and one `systemctl` spawn
+    // per shipped timer. It adds nothing to `GH_READS` and cannot be refused by an exhausted pool, which
+    // is what lets the detection exist at all.
+    hostDrift: readHostDrift() });
   const { delivered: orders, performed } = performActions(decided);
   orders.push(...deadMansSwitch({ orders, drain, performed, openRows: openRowsRead }));
   for (const order of orders) process.stdout.write(`${JSON.stringify(order)}\n`);
