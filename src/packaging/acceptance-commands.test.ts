@@ -22,6 +22,7 @@ import {
   suiteTestFiles,
   SPAWNS_GH,
   endsInsideQuote,
+  handRunDeclaration, handRunAcceptanceReason, handRunEvidence,
 } from "../acceptance-commands.mjs";
 
 // A file known to exist, relative to the repo root -- where every real invocation of this command runs
@@ -2189,4 +2190,538 @@ test("#1636: a module reached by two imports keeps the UNION of what each reache
       rmSync(dir, { recursive: true, force: true });
     }
   }
+});
+
+// --- #2099: `token` IS THE FOURTH CAPABILITY AND A ROW CAN NOW DECLARE IT ---
+//
+// `jobCapabilities()` names four capabilities the acceptance job can lack. A row could declare three:
+// `history` in the body, `fleet` by the template's required dropdown, `corpus` by the template's prose
+// rule. `token` had nothing, so a `gh` Acceptance was either RUN WITHOUT A CREDENTIAL (the bare spelling,
+// classified `runnable`, dying on `set the GH_TOKEN environment variable`) or NEVER RUN AT ALL (the `$ `
+// spelling, classified prose), and nothing said so until `pr-open` -- after a builder had claimed the row
+// and built the change.
+//
+// The tests below pin BOTH DIRECTIONS of each half: the declared spelling and the undeclared one.
+
+// #2084's real Acceptance command, the live correct-row case this row's ruling turned on: a deliberate
+// hand-run `gh` read of branch protection, named per the template's own rule for a command a runner
+// cannot make. Copied from the row's body at 2026-09-23, with the `$ ` prompt removed -- as filed it
+// carries the prompt, which classifies prose and is NOT what this row changes (see the `$ ` test below).
+const HAND_RUN_GH = "gh api repos/a11ign/a11ign/branches/main/protection --jq "
+  + "'if .required_pull_request_reviews.dismiss_stale_reviews == true then \"ok\" else error(\"no\") end'";
+
+const HAND_RUN_REASON = "whoever holds the admin credential; the acceptance job has none";
+
+function acceptanceBody(command: string, declaration?: string): string {
+  return `## Acceptance\n\n${declaration ? `Hand-run: ${declaration}\n\n` : ""}\`\`\`\n${command}\n\`\`\`\n`;
+}
+
+// #2118: the pasted run. A `$ `-prefixed command line and what it printed -- the shape a human actually
+// pastes, and deliberately NOT one this parser tries to understand: it is read as text under a heading,
+// which is the whole content of the ruling this row made (see `handRunEvidence`'s own comment).
+const HAND_RUN_OUTPUT = `\`\`\`\n$ ${HAND_RUN_GH}\n"ok"\n\`\`\``;
+
+function withHandRunOutput(body: string, output: string = HAND_RUN_OUTPUT): string {
+  return `${body}\n## Hand-run output\n\n${output}\n`;
+}
+
+const NO_CAPABILITIES = { history: false, token: false, fleet: false, corpus: false };
+
+test("#2099: a bare `gh` command is REFUSED for `token`, not classified runnable -- the job knows it has no "
+  + "credential and the classifier now asks", () => {
+  const verdict = classifyCommand(HAND_RUN_GH, { capabilities: NO_CAPABILITIES });
+  assert.equal(verdict.verdict, "refused");
+  assert.match(String(verdict.reason), /needs `token`/);
+  // FOLLOWABLE: the refusal names the way out, per #1116. A message that states the fault without the
+  // remedy is the shape that made an author learn `// no-token:` existed only by misusing it.
+  assert.match(String(verdict.reason), /Hand-run:/);
+});
+
+test("#2099 CONTROL: the SAME command against a job that HAS a token is runnable -- the refusal is about this "
+  + "job's credential, never about `gh` being unwelcome", () => {
+  assert.deepEqual(classifyCommand(HAND_RUN_GH, { capabilities: WITH_TOKEN }), { verdict: "runnable" });
+  // And the default (`FULL_CAPABILITIES`, #510's back-compatibility rule) is unchanged for every caller
+  // that never mentions capabilities.
+  assert.deepEqual(classifyCommand(HAND_RUN_GH), { verdict: "runnable" });
+});
+
+test("#2099 CONTROL: a command that merely CONTAINS `gh` is not a `gh` command -- the check reads the first "
+  + "real token, never a substring (#1860's own lesson)", () => {
+  for (const command of [
+    "node packages/agent-org/src/high-water.mjs",
+    "npx tsx --test packages/lab/src/packaging/gh-something.test.ts",
+    "npm run lint -- --rule gh",
+  ]) {
+    // `runnable` rather than merely "not refused for token": a weaker assertion would pass if the
+    // command were refused for some OTHER reason, which is the same green for the opposite fact.
+    assert.deepEqual(classifyCommand(command, { capabilities: NO_CAPABILITIES }), { verdict: "runnable" },
+      `${command} is not a gh invocation`);
+  }
+});
+
+test("#2099: a LEADING ENVIRONMENT ASSIGNMENT does not hide the `gh` behind it -- `firstRealToken`'s own rule, "
+  + "and the token variable is the spelling an author reaches for when they know about the credential", () => {
+  // SPELT IN PIECES, for the reason this file's own subject enforces: `CLOSURE_REQUIREMENT_PATTERNS`
+  // charges any file whose text carries the variable's name with requiring `token`, so writing it whole
+  // here would make THIS file undeclarable and refuse the Acceptance command that runs it. Measured: it
+  // did, and took four other tests red with it.
+  const verdict = classifyCommand(`${["GH_TO", "KEN"].join("")}=x ${HAND_RUN_GH}`,
+    { capabilities: NO_CAPABILITIES });
+  assert.equal(verdict.verdict, "refused");
+  assert.match(String(verdict.reason), /needs `token`/);
+});
+
+test("#2099: the `$ `-prefixed spelling keeps its EXISTING prose verdict -- that fault is the line never having "
+  + "been written as a command, it needs a different fix, and this row does not change it", () => {
+  const verdict = classifyCommand(`$ ${HAND_RUN_GH}`, { capabilities: NO_CAPABILITIES });
+  assert.deepEqual(verdict, { verdict: "prose", reason: 'is not a command (no executable "$")' });
+  // ... and at pr-open it still reaches EXECUTED NOTHING, which is correct: nothing verified anything.
+  const report = acceptanceReport(acceptanceBody(`$ ${HAND_RUN_GH}`), () => 0);
+  assert.equal(report.ok, false);
+  assert.ok(report.lines.some((line) => line.includes("EXECUTED NOTHING")), report.lines.join("\n"));
+});
+
+test("#2099: an UNDECLARED `gh` Acceptance is refused AT FILING, quoting the command, in the wording pr-open "
+  + "would later use -- #879's cost, paid at the moment the filer still has the context", () => {
+  const reason = String(handRunAcceptanceReason(acceptanceBody(HAND_RUN_GH), "row-file"));
+  assert.match(reason, /^row-file: REFUSING to file --/);
+  assert.ok(reason.includes(HAND_RUN_GH), `the refusal quotes the command: ${reason}`);
+  assert.match(reason, /Hand-run: <who runs it and why>/);
+  assert.match(reason, /pr-open/);
+});
+
+test("#2099: a DECLARED hand-run Acceptance files clean -- the ruling is DECLARE, not refuse, because a blanket "
+  + "refusal refuses a CORRECT row", () => {
+  assert.equal(handRunAcceptanceReason(acceptanceBody(HAND_RUN_GH, HAND_RUN_REASON), "row-file"), null);
+});
+
+// The `row-file` WIRING -- that `fileRefusalReason` actually calls this rule -- is pinned in
+// `row-file.test.ts` instead, and the reason is this file's own subject: importing `row-file.mjs` here
+// puts a `gh` spawn in THIS file's import closure, which charges it `token` and makes the Acceptance
+// command that runs it unrunnable in the acceptance job. Measured: it did, and took four other tests red
+// with it. `row-file.test.ts` carries the `// no-token: gh` declaration that answers it, proved rather
+// than asserted, and is where every other `fileRefusalReason` verdict already lives.
+
+test("#2099: a declared hand-run reports NOT RUN NAMING THE DECLARATION -- never a pass, and never "
+  + "EXECUTED NOTHING", () => {
+  // #2118 AMENDED THE BODY, NOT THE CLAIM: this row's subject is still the NOT RUN line and its reason,
+  // and the pasted output is now what keeps the report green (see the `NO HAND-RUN OUTPUT` tests below).
+  // The `ok: true` assertion at the end of this test is the thing #2118 changed the precondition for --
+  // it was true of the bare body when this test was written, and is true of an EVIDENCED one now.
+  const report = acceptanceReport(withHandRunOutput(acceptanceBody(HAND_RUN_GH, HAND_RUN_REASON)), () => 0);
+  const joined = report.lines.join("\n");
+  assert.match(joined, /ACCEPTANCE: NOT RUN/);
+  assert.ok(joined.includes(HAND_RUN_REASON), `the reason is quoted, not merely counted: ${joined}`);
+  assert.doesNotMatch(joined, /EXECUTED NOTHING/);
+  // NEVER A PASS: the report says in its own words that it verified nothing.
+  assert.doesNotMatch(joined, /-> pass/);
+  assert.match(joined, /verified NOTHING/);
+  assert.equal(report.ok, true,
+    "green and loud, because the alternative is a row whose only honest acceptance makes it unmergeable");
+});
+
+test("#2099 CONTROL: the SAME body without the declaration is the failure this row starts from -- REFUSED for "
+  + "`token`, then EXECUTED NOTHING, `ok: false`", () => {
+  const report = acceptanceReport(acceptanceBody(HAND_RUN_GH), () => 0);
+  assert.equal(report.ok, false);
+  const joined = report.lines.join("\n");
+  assert.match(joined, /ACCEPTANCE: REFUSED/);
+  assert.match(joined, /needs `token`/);
+  assert.match(joined, /EXECUTED NOTHING/);
+});
+
+test("#2099: the declaration silences EXECUTED NOTHING only when EVERY command is a declared hand-run -- a fleet "
+  + "refusal beside it keeps the section red, or the declaration becomes the line people add to turn a check "
+  + "green", () => {
+  const body = `## Acceptance\n\nHand-run: ${HAND_RUN_REASON}\n\n\`\`\`\n${HAND_RUN_GH}\nnpm run fleet:status\n\`\`\`\n`;
+  const report = acceptanceReport(body, () => 0);
+  const joined = report.lines.join("\n");
+  assert.match(joined, /ACCEPTANCE: NOT RUN/, "the gh line is still reported as the declaration says");
+  assert.match(joined, /reaches the fleet/, "the fleet line is still refused on its own facts");
+  assert.match(joined, /EXECUTED NOTHING/, "and the section still executed nothing");
+  assert.equal(report.ok, false);
+});
+
+test("#2099: a declared hand-run BESIDE a command that really runs reports both -- a partial answer is what "
+  + "#2084's amended Acceptance actually is", () => {
+  const body = `## Acceptance\n\nHand-run: ${HAND_RUN_REASON}\n\n\`\`\`\nnpx tsx --test ${REAL_FILE}\n${HAND_RUN_GH}\n\`\`\`\n`;
+  const report = acceptanceReport(body, () => 0);
+  const joined = report.lines.join("\n");
+  assert.match(joined, /ACCEPTANCE: RAN/);
+  assert.match(joined, /ACCEPTANCE: NOT RUN/);
+  assert.doesNotMatch(joined, /EXECUTED NOTHING|NOTHING RAN HERE/);
+  assert.equal(report.ok, true);
+});
+
+/**
+ * REVIEWER-2'S BLOCKER ON #2105, and it is a scope fault rather than a wiring one: `handRun` is read once
+ * from the whole body and handed to BOTH sections, so `runOneCommand` honouring it without asking which
+ * section it was in let one line convert an unrelated `Refutation:` `gh` command into
+ * `NOT RUN ... declared hand-run` -- a POSITIVE claim that a human ran something, attributed to a filer
+ * who was never asked about that command. `handRunAcceptanceReason` reads `extractAcceptanceSection`
+ * alone, so the declaration only ever spoke for the Acceptance commands.
+ *
+ * THE MATCHED PAIR IS THE POINT: the same command string, in the same body, under the two headers --
+ * honoured under `Acceptance:`, refused for `token` under `Refutation:`.
+ */
+test("#2099: a `Refutation:` `gh` line does NOT inherit the Acceptance's `Hand-run:` declaration -- it keeps "
+  + "its own REFUSED-for-`token` verdict, and nothing claims a human ran it", () => {
+  const body = `Hand-run: ${HAND_RUN_REASON}\n`
+    + `Acceptance:\nnpx tsx --test ${REAL_FILE}\n`
+    + `Refutation:\n${HAND_RUN_GH}\n`;
+  const report = acceptanceReport(body, () => 0);
+  const refutation = report.lines.filter((line) => line.startsWith("REFUTATION:")).join("\n");
+  assert.match(refutation, /REFUTATION: REFUSED/, `the refutation keeps its own verdict: ${refutation}`);
+  assert.match(refutation, /needs `token`/);
+  assert.doesNotMatch(refutation, /REFUTATION: NOT RUN/);
+  // NOT MERELY THE WORD: the reason a reader acts on must not name a declaration nobody made about this
+  // command, which is the whole content of the fault.
+  assert.ok(!refutation.includes(HAND_RUN_REASON), `the declaration is not quoted at it: ${refutation}`);
+  // AND THE REMEDY IS FOLLOWABLE HERE (#1116): the message must not send the author to add a `Hand-run:`
+  // line that this section will ignore -- it says so, and names what does work instead.
+  assert.match(refutation, /does NOT cover this line/);
+  assert.match(refutation, /move the line to `Acceptance:`/);
+  // The Acceptance half is untouched by the scoping -- it ran, so the section is a real answer.
+  assert.match(report.lines.join("\n"), /ACCEPTANCE: RAN/);
+  assert.equal(report.ok, true);
+});
+
+test("#2099 CONTROL for the pair above: the SAME command under `Acceptance:` IS honoured -- the difference is "
+  + "the header it sits under, never the command", () => {
+  // #2118: the body carries its pasted run, which is what keeps this half green now; the pair's subject
+  // is unchanged -- which HEADER the command sits under, never whether it was evidenced.
+  const body = withHandRunOutput(`Hand-run: ${HAND_RUN_REASON}\nAcceptance:\n${HAND_RUN_GH}\n`);
+  const report = acceptanceReport(body, () => 0);
+  const joined = report.lines.join("\n");
+  assert.match(joined, /ACCEPTANCE: NOT RUN/, joined);
+  assert.ok(joined.includes(HAND_RUN_REASON), `the declaration IS quoted here: ${joined}`);
+  assert.equal(report.ok, true);
+  // The other half of the same pair: UNDECLARED under `Acceptance:`, the remedy offered IS the
+  // declaration, because there it really works.
+  const undeclared = acceptanceReport(`Acceptance:\n${HAND_RUN_GH}\n`, () => 0).lines.join("\n");
+  assert.match(undeclared, /ACCEPTANCE: REFUSED/);
+  assert.match(undeclared, /Run it by hand and declare it/);
+  assert.doesNotMatch(undeclared, /does NOT cover this line/);
+});
+
+test("#2099: the `Hand-run:` line is a DECLARATION wherever it lands, never a command -- #1036's measured "
+  + "failure on `History: full`, which was taken as a command and terminated the scan before the real one", () => {
+  const inside = `## Acceptance\n\nHand-run: ${HAND_RUN_REASON}\n\n\`\`\`\nnpx tsx --test ${REAL_FILE}\n\`\`\`\n`;
+  const section = extractAcceptanceSection(inside);
+  assert.equal(section.kind, "commands");
+  assert.deepEqual(section.kind === "commands" ? section.commands : [], [`npx tsx --test ${REAL_FILE}`],
+    "the declaration is not in the command list, and the real command below it still is");
+});
+
+test("#2099: `Hand-run:` WITH NO REASON is not a declaration -- a bare flag would be the thing people add to make "
+  + "a red check green, which is why `Closes: none -- <reason>` requires one too", () => {
+  assert.equal(handRunDeclaration("Hand-run:"), null);
+  assert.equal(handRunDeclaration("Hand-run:   "), null);
+  // ... and it is still not taken as a command (the near-miss rule, #1036): the row gets ONE refusal, and
+  // it is the one that names the actual problem.
+  const body = `## Acceptance\n\nHand-run:\n\n\`\`\`\n${HAND_RUN_GH}\n\`\`\`\n`;
+  const section = extractAcceptanceSection(body);
+  assert.deepEqual(section.kind === "commands" ? section.commands : [], [HAND_RUN_GH]);
+  assert.match(String(handRunAcceptanceReason(body, "row-file")), /REFUSING to file/);
+});
+
+test("#2105: an EMPTY BOLD declaration is no declaration -- `**Hand-run: **` captured its own closing marker "
+  + "as the reason, and the two readers of that body then disagreed about it", () => {
+  // reviewer's blocker on #2105, and the bare spellings above are NOT its control: those never match the
+  // pattern at all, while these DO -- the capture takes the closing `**` and the trailing-marker strip
+  // empties it, so the emptiness has to be tested after normalization rather than inferred from the match.
+  for (const spelling of ["**Hand-run: **", "__Hand-run: ____", "**Hand-run:**", "**Hand-run:   **"]) {
+    assert.equal(handRunDeclaration(spelling), null, `${spelling} declares nothing and names no one`);
+  }
+  // THE CONTROL THAT MUST STILL PASS, differing from the first spelling above in exactly the reason:
+  // the fix must not cost the bold-wrapped declaration the row actually ships.
+  assert.equal(handRunDeclaration("**Hand-run: the admin holder**"), "the admin holder");
+
+  // AND THE PROPERTY THAT BROKE IS THE TWO READERS AGREEING, not either verdict alone. Before the fix
+  // `handRunAcceptanceReason` asked `!== null` and filed this body CLEAN while `acceptanceReport` read
+  // the same `""` for truthiness and returned `ok: false` -- the row passed the filing gate that exists
+  // to catch it early and failed the job that costs a rewrite, the exact #879 sequence #2099 ends.
+  const empty = `## Acceptance\n\n**Hand-run: **\n\n\`\`\`\n${HAND_RUN_GH}\n\`\`\`\n`;
+  assert.match(String(handRunAcceptanceReason(empty, "row-file")), /REFUSING to file/,
+    "filing refuses it, because nothing was declared");
+  // The runner RECORDS rather than returning a bare 0: a refusal that spawned the `gh` anyway would
+  // report the same verdict while having made the live call the whole capability gate exists to prevent.
+  const spawned: string[] = [];
+  const report = acceptanceReport(empty, (cmd) => { spawned.push(cmd); return 0; });
+  assert.equal(report.ok, false, "and the job refuses it too -- one story about one body");
+  assert.deepEqual(spawned, [], "and it refused BEFORE spawning -- no credential-less `gh` call was made");
+  // THE VERDICT IS THE LINE'S OWN PREFIX, NEVER A SUBSTRING OF THE REPORT. A `doesNotMatch(/NOT RUN/)`
+  // over the joined lines fails here on the REFUSAL'S OWN REMEDY -- which offers "a `Hand-run:` line
+  // makes this line report `NOT RUN` naming your reason" -- so it would read a correct refusal as the
+  // bug. That is the same false read reviewer-2's blocker produced one round earlier in this file, and
+  // it is worth the extra line: what is being asserted is which verdict this command GOT, and only the
+  // prefix says that.
+  const verdicts = report.lines.filter((line) => line.startsWith("ACCEPTANCE: "));
+  assert.equal(verdicts.some((line) => line.startsWith("ACCEPTANCE: NOT RUN")), false,
+    "never NOT RUN: there is no reason to name, which is why it is not a declaration");
+  assert.equal(verdicts.some((line) => line.startsWith("ACCEPTANCE: REFUSED")), true);
+
+  // ... and the declared twin, differing in exactly the reason inside the same bold wrapper, is honoured
+  // by BOTH readers -- the positive control for the emptiness assertions above.
+  // #2118: with its pasted run, because the bare form is now refused for the evidence rather than for the
+  // declaration -- and this pair is about the DECLARATION being read, so the other refusal must be out of
+  // the way for the assertion below to be about what it says it is about.
+  const declared = withHandRunOutput(
+    `## Acceptance\n\n**Hand-run: ${HAND_RUN_REASON}**\n\n\`\`\`\n${HAND_RUN_GH}\n\`\`\`\n`);
+  assert.equal(handRunAcceptanceReason(declared, "row-file"), null);
+  const declaredSpawned: string[] = [];
+  const declaredReport = acceptanceReport(declared, (cmd) => { declaredSpawned.push(cmd); return 0; });
+  assert.equal(declaredReport.ok, true);
+  assert.deepEqual(declaredSpawned, [],
+    "a declared hand-run is not run either -- that is exactly what the declaration says");
+  assert.match(declaredReport.lines.join("\n"), new RegExp(`NOT RUN.*${HAND_RUN_REASON}`));
+});
+
+test("#2099: the declaration is read BOLD-TOLERANTLY and keeps an interior emphasis -- `**Hand-run: ...**` is a "
+  + "spelling these bodies reach for constantly, and #1036 is the record of it being recognised nowhere", () => {
+  assert.equal(handRunDeclaration("**Hand-run: the admin holder**"), "the admin holder");
+  assert.equal(handRunDeclaration("Hand-run: the **admin** holder"), "the **admin** holder");
+});
+
+test("#2099: a declaration does NOT invent a credential -- `jobCapabilities` still reports `token: false`, "
+  + "because the job's environment is not a thing a body can change", () => {
+  assert.equal(jobCapabilities(`Hand-run: ${HAND_RUN_REASON}`).token, false);
+});
+
+test("#2099: #2084's REAL Acceptance -- the live correct-row case -- files clean, declared or not, because its "
+  + "amended command is one this job can actually run", () => {
+  // The row as it stands at 2026-09-23: an rstest command the job runs, plus the `$ `-prefixed hand-run
+  // read named as what remains. A blanket refusal of every `gh` Acceptance would have broken this row.
+  const real = "## Acceptance\n\n```\nnpx rstest run --config scripts/rstest/rstest.config.mjs "
+    + "--include packages/lab/src/packaging/branch-protection.test.ts\n```\n\n"
+    + "**What remains, run by hand and quoted into the PR body:**\n\n```\n$ " + HAND_RUN_GH + "\n```\n";
+  assert.equal(handRunAcceptanceReason(real, "row-file"), null);
+  assert.equal(handRunAcceptanceReason(`${real}\nHand-run: ${HAND_RUN_REASON}\n`, "row-file"), null);
+});
+
+test("#2099: the row template DECLARES the field -- the open-check that opened this row read `grep -ci token "
+  + "backlog-row.yml` as 0, and a mechanism no filer is told about is the prose it replaced", () => {
+  const template = readFileSync(".github/ISSUE_TEMPLATE/backlog-row.yml", "utf8");
+  assert.match(template, /Hand-run: <who runs it and why>/);
+  assert.match(template, /acceptance job/i);
+  // #2118: and it names where the output goes, for the identical reason -- the filer is told about the
+  // requirement in the one document they are actually reading when they write the Acceptance.
+  assert.match(template, /## Hand-run output/);
+});
+
+// --- #2118: THE OTHER HALF OF #2099 -- the declaration was required, the OUTPUT was not ---
+//
+// #2105 gave `token` what `fleet` has: a declared field, then verified. Only the declaration half bit.
+// `handRunAcceptanceReason` refused to FILE a `gh` Acceptance with no `Hand-run:` line, and after that
+// NOTHING required the pasted output to exist at all: a body could declare `Hand-run:`, paste nothing,
+// and merge green. Measured on the shipped module at `e1b8b7bc5`, 2026-09-23 -- `acceptanceReport` of a
+// declared-hand-run body with no output anywhere returned `{ ok: true }`.
+//
+// THE ASYMMETRY IS WHY IT MATTERED. `Acceptance: none -- <reason>` claims nothing was run.
+// `Hand-run:` asserts a human DID run something -- a positive claim about work performed, and the only
+// one on this path that nothing checked.
+//
+// THE RULING, in the tests as well as in the code: shape 1 of the two #2118 offered -- a named
+// `## Hand-run output` section that is not empty. Shape 2 (the output matched against the declared
+// command string) is refused because the only half of it checkable here is the COMMAND STRING, and that
+// proxy fails in both directions; `handRunEvidence`'s own comment carries the full argument. So these
+// tests pin what this check DOES prove -- that a human wrote something there -- and, just as explicitly,
+// that its message says what it did not.
+
+test("#2118: a body whose Acceptance is ENTIRELY declared hand-runs and which pastes NO output is REFUSED -- "
+  + "`ok: false`, and the NOTHING RAN HERE line it used to stop at is still printed beside it", () => {
+  const report = acceptanceReport(acceptanceBody(HAND_RUN_GH, HAND_RUN_REASON), () => 0);
+  assert.equal(report.ok, false, report.lines.join("\n"));
+  const joined = report.lines.join("\n");
+  assert.match(joined, /ACCEPTANCE: NO HAND-RUN OUTPUT/);
+  // THE TRUE STATEMENT STAYS. `NOTHING RAN HERE` is a fact about this job regardless of the evidence, and
+  // dropping it on the refusal path would trade one honest line for another instead of adding one.
+  assert.match(joined, /NOTHING RAN HERE/);
+  assert.match(joined, /verified NOTHING/);
+});
+
+test("#2118 CONTROL -- THE MATCHED PAIR: the SAME body carrying the pasted run is NOT refused, and the two "
+  + "differ in exactly the evidence block", () => {
+  const bare = acceptanceBody(HAND_RUN_GH, HAND_RUN_REASON);
+  const evidenced = withHandRunOutput(bare);
+  assert.equal(evidenced.replace(`\n## Hand-run output\n\n${HAND_RUN_OUTPUT}\n`, ""), bare,
+    "the pair differs in the evidence block and in nothing else");
+
+  const report = acceptanceReport(evidenced, () => 0);
+  assert.equal(report.ok, true, report.lines.join("\n"));
+  const joined = report.lines.join("\n");
+  assert.doesNotMatch(joined, /NO HAND-RUN OUTPUT/);
+  assert.match(joined, /ACCEPTANCE: NOT RUN/, "still NOT RUN: the evidence is a human's, not this job's");
+  assert.match(joined, /NOTHING RAN HERE/);
+  // AND THE ACCEPTANCE SECTION ITSELF IS UNTOUCHED BY THE NEW HEADING -- the evidence block must not
+  // become a command, or the check would change what it is checking.
+  const section = extractAcceptanceSection(evidenced);
+  assert.deepEqual(section.kind === "commands" ? section.commands : [], [HAND_RUN_GH]);
+});
+
+test("#2118: the refusal is FOLLOWABLE (#1116) -- it names the exact heading to add, and says in its own "
+  + "words what it checked and what it did not", () => {
+  const report = acceptanceReport(acceptanceBody(HAND_RUN_GH, HAND_RUN_REASON), () => 0);
+  const refusal = report.lines.find((line) => line.startsWith("ACCEPTANCE: NO HAND-RUN OUTPUT"));
+  assert.ok(refusal, report.lines.join("\n"));
+  // THE HEADING BY NAME, not "add a section": the author must not have to guess the spelling the parser
+  // accepts, which is the whole of #1116's rule.
+  assert.ok(String(refusal).includes("## Hand-run output"), `names the heading: ${refusal}`);
+  assert.ok(String(refusal).includes("**Hand-run output:**"), `names the other spelling too: ${refusal}`);
+  // AND IT DOES NOT OVERSTATE ITSELF. #2118's own instruction: "do not ship the stronger-sounding message
+  // for the weaker check". This asserts the message names the limit, not merely that a refusal occurred.
+  assert.match(String(refusal), /WHAT THIS CHECKED: that such a section exists and is not empty/);
+  assert.match(String(refusal), /WHAT IT DID NOT CHECK: whether that text is this command's output/);
+  assert.match(String(refusal), /nothing here can re-run the command and compare/);
+  // The `NOT RUN` line the author meets FIRST carries the same remedy -- a reader who acts on the first
+  // line they understand must not be sent anywhere else.
+  const notRun = report.lines.find((line) => line.startsWith("ACCEPTANCE: NOT RUN"));
+  assert.ok(String(notRun).includes("## Hand-run output"), `the NOT RUN line names it too: ${notRun}`);
+});
+
+test("#2118: and the FILING refusal says the cost up front -- #879's rule, which is the whole reason #2099 "
+  + "moved this verdict to `row-file` in the first place", () => {
+  const reason = String(handRunAcceptanceReason(acceptanceBody(HAND_RUN_GH), "row-file"));
+  assert.ok(reason.includes("## Hand-run output"), `the filer is told now, not at pr-open: ${reason}`);
+  assert.match(reason, /#2118/);
+});
+
+test("#2118 CONTROL, THE ONE THAT DECIDES WHETHER THIS ROW HELPED: #2084's REAL body -- the live "
+  + "correct-row case -- is untouched, because something in it actually RAN", () => {
+  // The row as it stands at 2026-09-23, copied in #2099's own test above: an rstest command the job runs,
+  // plus a `$ `-prefixed hand-run read named as what remains. `handRun < commands.length` here -- in fact
+  // `handRun === 0` -- so this row never reaches the new refusal at all, which is the point: #2118 must
+  // not charge a row whose Acceptance this job can execute.
+  const real = "## Acceptance\n\n```\nnpx rstest run --config scripts/rstest/rstest.config.mjs "
+    + "--include packages/lab/src/packaging/branch-protection.test.ts\n```\n\n"
+    + "**What remains, run by hand and quoted into the PR body:**\n\n```\n$ " + HAND_RUN_GH + "\n```\n";
+  const report = acceptanceReport(real, () => 0);
+  assert.equal(report.ok, true, report.lines.join("\n"));
+  assert.doesNotMatch(report.lines.join("\n"), /NO HAND-RUN OUTPUT/);
+});
+
+test("#2118 CONTROL: #2084's Acceptance reduced to its hand-run half -- the shape this row DOES charge -- is "
+  + "refused bare and passes once it carries its pasted run", () => {
+  // The same row, had its amendment not found a command the job can run: a `gh` read of branch protection
+  // and nothing else. THIS is the body #2118 is about, and the pair below is the proof that the ruling
+  // leaves it mergeable rather than stranding it -- #2099's own trade, kept.
+  const handRunOnly = acceptanceBody(HAND_RUN_GH, HAND_RUN_REASON);
+  assert.equal(handRunDeclaration(handRunOnly), HAND_RUN_REASON, "the declaration is read in this shape");
+  assert.equal(acceptanceReport(handRunOnly, () => 0).ok, false, "bare: refused");
+  const evidenced = acceptanceReport(withHandRunOutput(handRunOnly), () => 0);
+  assert.equal(evidenced.ok, true, evidenced.lines.join("\n"));
+  assert.match(evidenced.lines.join("\n"), new RegExp(`NOT RUN.*${HAND_RUN_REASON}`));
+});
+
+test("#2118: A PARTIAL HAND-RUN IS UNTOUCHED, both directions -- `handRun < commands.length` means something "
+  + "really ran, and charging it for evidence would charge a row for a command that executed", () => {
+  const body = `## Acceptance\n\nHand-run: ${HAND_RUN_REASON}\n\n\`\`\`\nnpx tsx --test ${REAL_FILE}\n${HAND_RUN_GH}\n\`\`\`\n`;
+  const bare = acceptanceReport(body, () => 0);
+  assert.equal(bare.ok, true, bare.lines.join("\n"));
+  assert.doesNotMatch(bare.lines.join("\n"), /NO HAND-RUN OUTPUT/);
+  assert.match(bare.lines.join("\n"), /ACCEPTANCE: RAN/);
+  // THE OTHER DIRECTION, which is what "pinned in both directions" has to mean here: adding the evidence
+  // changes NOTHING about a partial section. If it did, the section's verdict would depend on a field that
+  // is not supposed to speak for it, and the next reader could not tell which fact produced the green.
+  const evidenced = acceptanceReport(withHandRunOutput(body), () => 0);
+  assert.deepEqual(evidenced.lines, bare.lines);
+  assert.equal(evidenced.ok, true);
+});
+
+test("#2118: a declared hand-run BESIDE AN UNDECLARED REFUSAL keeps EXECUTED NOTHING and never reports NO "
+  + "HAND-RUN OUTPUT -- two different faults must not print the same word", () => {
+  // `ran === 0` but `handRun < commands.length`: the fleet line was refused on its own facts and nobody
+  // declared it. The fault is that the section declares nothing this job can run, which is EXECUTED
+  // NOTHING's subject; the evidence rule has no business speaking here, and pasting a run does not help.
+  const body = `## Acceptance\n\nHand-run: ${HAND_RUN_REASON}\n\n\`\`\`\n${HAND_RUN_GH}\nnpm run fleet:status\n\`\`\`\n`;
+  for (const [label, text] of [["bare", body], ["evidenced", withHandRunOutput(body)]] as const) {
+    const report = acceptanceReport(text, () => 0);
+    assert.equal(report.ok, false, `${label}: ${report.lines.join("\n")}`);
+    assert.match(report.lines.join("\n"), /EXECUTED NOTHING/, label);
+    assert.doesNotMatch(report.lines.join("\n"), /NO HAND-RUN OUTPUT/, label);
+  }
+});
+
+// --- #2118: `handRunEvidence` itself -- what counts as pasted, and what only looks like it ---
+//
+// THE POSITIVE CONTROL FOR EVERY `null` BELOW IS THE LINE BESIDE IT: each empty reading is followed by the
+// same body with real text in the same place, returning it. An emptiness assertion whose control the
+// writer cannot point at is this repo's own recorded defect, and these are deliberately paired rather than
+// grouped so the pointing is local.
+
+test("#2118: an EMPTY FENCE under the heading is not evidence -- and the same fence with a line in it is", () => {
+  assert.equal(handRunEvidence("## Hand-run output\n\n```\n```\n"), null);
+  assert.ok(handRunEvidence("## Hand-run output\n\n```\nok\n```\n"));
+});
+
+test("#2118: the TEMPLATE'S OWN HTML COMMENT is not evidence -- every author leaves it in place, so counting "
+  + "it would make the heading the evidence for itself", () => {
+  assert.equal(handRunEvidence("## Hand-run output\n\n<!-- paste what you ran and what it printed -->\n"), null);
+  assert.ok(handRunEvidence("## Hand-run output\n\n<!-- paste it here -->\n\"ok\"\n"));
+});
+
+test("#2118: the heading ALONE is not evidence, and neither is its own title text (#506's rule, which this "
+  + "parser has already paid for once)", () => {
+  assert.equal(handRunEvidence("## Hand-run output\n"), null);
+  assert.equal(handRunEvidence("## Hand-run output -- 2026-09-23, by the admin holder\n"), null,
+    "a heading's trailing text names the section; it is not somebody's pasted run");
+  assert.ok(handRunEvidence("## Hand-run output -- 2026-09-23\n\n\"ok\"\n"));
+});
+
+test("#2118: the BOLD/PLAIN spelling is accepted with its content inline -- #1036's rule, that an "
+  + "unrecognised spelling produces a refusal about something the author did not do", () => {
+  assert.equal(handRunEvidence('**Hand-run output:** "ok"'), '"ok"');
+  assert.equal(handRunEvidence("Hand-run output:\n\"ok\"\n"), '"ok"');
+  // ... and the near-miss that is NOT this field reads as absent rather than as empty evidence.
+  assert.equal(handRunEvidence("## Hand run output\n\n\"ok\"\n"), null,
+    "a different heading is a different section; this check is not satisfied by any heading");
+});
+
+test("#2118: the section ENDS at the next heading -- text under a later section is not this one's evidence, "
+  + "and the same text under the right heading is", () => {
+  assert.equal(handRunEvidence("## Hand-run output\n\n## Notes\n\n\"ok\"\n"), null);
+  assert.ok(handRunEvidence("## Notes\n\n## Hand-run output\n\n\"ok\"\n"));
+});
+
+test("#2118: EVERY heading, never the first -- the explicit decision this file's header comment demands, and "
+  + "it lands on #527's side rather than #540's", () => {
+  // Two pasted runs are two pasted runs: unlike a second `Acceptance:`, there is no "which one did you
+  // mean" to guess at, so reading both guesses at nothing. An empty FIRST section followed by a real
+  // second one is the case that decides it -- `findIndex` would have read this body as unevidenced.
+  const two = "## Hand-run output\n\n```\n```\n\n## Hand-run output\n\n\"ok\"\n";
+  assert.ok(handRunEvidence(two), "the second section is read");
+  const both = String(handRunEvidence("## Hand-run output\n\n\"first\"\n\n## Hand-run output\n\n\"second\"\n"));
+  // BOTH, IN BODY ORDER -- asserted as an ordering rather than as an exact string, because the blank
+  // lines between them are the author's own formatting and pinning them would make this test about
+  // whitespace instead of about which sections were read.
+  assert.ok(both.includes('"first"') && both.includes('"second"'), both);
+  assert.ok(both.indexOf('"first"') < both.indexOf('"second"'), both);
+});
+
+test("#2118: a bare `**Hand-run output:**` line ENDS an in-progress Acceptance block rather than becoming one "
+  + "more command -- #438's stop rule, and #1036's measured failure on exactly this shape", () => {
+  const body = `Acceptance:\nnpx tsx --test ${REAL_FILE}\n**Hand-run output:** "ok"\n`;
+  const section = extractAcceptanceSection(body);
+  assert.deepEqual(section.kind === "commands" ? section.commands : [], [`npx tsx --test ${REAL_FILE}`],
+    "the evidence header is not in the command list");
+  assert.equal(handRunEvidence(body), '"ok"');
+});
+
+test("#2118: no such section at all is `null`, and that is the state this row was filed about -- declared, "
+  + "pasted nothing", () => {
+  assert.equal(handRunEvidence(acceptanceBody(HAND_RUN_GH, HAND_RUN_REASON)), null);
+  assert.equal(handRunEvidence(""), null);
+  assert.equal(handRunEvidence(null), null);
+  assert.ok(handRunEvidence(withHandRunOutput(acceptanceBody(HAND_RUN_GH, HAND_RUN_REASON))));
+});
+
+test("#2118: the evidence is NOT overridable through `deps` -- it is the field that decides whether a "
+  + "positive claim about a human's work is believed", () => {
+  // `capabilities` is overridable (a test exercises a job it is not running in); this is not, for the
+  // sharper version of #2099's own reason: a caller able to supply it could report a run as evidenced by
+  // text that is in no body at all.
+  const report = acceptanceReport(acceptanceBody(HAND_RUN_GH, HAND_RUN_REASON), () => 0,
+    { handRunEvidence: "\"ok\"" } as never);
+  assert.equal(report.ok, false, report.lines.join("\n"));
+  assert.match(report.lines.join("\n"), /NO HAND-RUN OUTPUT/);
 });

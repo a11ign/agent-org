@@ -20,7 +20,7 @@ import { sessionEligibilityReason, claimRow, CLAIM_LABEL } from "../row-claim.mj
  */
 interface Routes {
   issueList?: string; graphql?: string; issueViewBody?: string; prList?: string;
-  heldRowBody?: string; subIssues?: string; blockedBy?: string;
+  heldRowBody?: string; subIssues?: string; blockedBy?: string; prReviews?: string;
 }
 
 /** The CLAIMED row's own body (B4 reads its Region); any other issue is a row this session HOLDS (#989). */
@@ -44,6 +44,17 @@ function claimedRowViewRoute(routes: Routes, args: string[]): string {
   return JSON.stringify({ body: routes.issueViewBody ?? "" });
 }
 
+/**
+ * #2126: TWO DIFFERENT `pr list` CALLS NOW, routed by the fields each one ASKS FOR rather than by order.
+ * B4 reads every open pull request's FILES; B2's review-health clause reads every open pull request's
+ * `reviewDecision`. Answering both from one canned string is the shape that silently skipped B4 the first
+ * time this file was written, and it would have made #2126's clause untestable in exactly the same way.
+ */
+function prListRoute(routes: Routes, args: string[]): string {
+  const fields = args[args.indexOf("--json") + 1] ?? "";
+  return /reviewDecision/.test(fields) ? routes.prReviews ?? "[]" : routes.prList ?? "[]";
+}
+
 function routedRun(routes: Routes) {
   return (_cmd: string, args: string[]): string => {
     const held = heldRowRoute(routes, args);
@@ -54,7 +65,7 @@ function routedRun(routes: Routes) {
         closedByPullRequestsReferences: { nodes: [] } } } } });
     }
     if (args[0] === "issue" && args[1] === "view") return claimedRowViewRoute(routes, args);
-    if (args[0] === "pr" && args[1] === "list") return routes.prList ?? "[]";
+    if (args[0] === "pr" && args[1] === "list") return prListRoute(routes, args);
     return "";
   };
 }
@@ -416,4 +427,162 @@ test("MUTATION TARGET: --blocked-by given while the refusal is B4 (file overlap)
   assert.equal(result.claimed, false);
   assert.match((result as { reason: string }).reason, /#406/);
   assert.doesNotMatch((result as { reason: string }).reason, /blocked-by/i);
+});
+
+// --- #2126: AN UNANSWERED REFUSAL IS WORK NEEDING ACTION, THROUGH `sessionEligibilityReason` -----------
+
+/**
+ * B2 caps WORK NEEDING THIS SESSION'S ACTION, and a pull request whose reviewer has asked for changes is
+ * exactly that -- it is not waiting on anybody but its author. #989 is untouched and the four cases far
+ * above are its positive control: as many pull requests AWAITING REVIEW as it takes, one row in build.
+ *
+ * `row-claim-own-pr-health-rule.test.ts` owns the pure coverage of the predicate, the dispute reader and
+ * the escalation. These prove the WIRING: that `sessionEligibilityReason` actually reaches them, with the
+ * one `pr list` call the row asked for and not one per held row.
+ */
+const REFUSED_HEAD = "6541b1ee3ca8332069db55e3144d93bbef4e6b0f";
+const VERDICT_HEAD = "dfe72936b50f0e6cb8a3d5f1a9c0e2b7d4f61a83";
+
+/** A held row (#472) whose commits ARE proposed by an open pull request (#900) -- #989 clears it. */
+const heldWithOpenPr = JSON.stringify({ data: { repository: { issue: {
+  closedByPullRequestsReferences: { nodes: [{ number: 900, state: "OPEN", headRefOid: REFUSED_HEAD }] },
+} } } });
+
+const verdict = (state: string, oid: string, by: string) => ({ state, commit: { oid },
+  body: `**Review of #900 at \`${oid.slice(0, 8)}\`, by ${by}: `
+    + `${state === "APPROVED" ? "convinced" : "not convinced"} (provisional).**` });
+
+const openPrReviews = (decision: string | null, reviews: unknown[] = []) => JSON.stringify(
+  [{ number: 900, headRefOid: REFUSED_HEAD, reviewDecision: decision, reviews }]);
+
+test("#2126 (1): the session's own open PR reading CHANGES_REQUESTED refuses a fresh claim", () => {
+  const run = routedRun({
+    issueList: JSON.stringify([{ number: 472 }]),
+    graphql: heldWithOpenPr,
+    prReviews: openPrReviews("CHANGES_REQUESTED"),
+  });
+  const reason = sessionEligibilityReason(455, "worker-tooling", { run });
+  assert.ok(reason, "#2126's own live shape: a refusal nobody has answered, end to end");
+  assert.match(reason as string, /#900/, "the refusal names the pull request, where the work is");
+  assert.match(reason as string, /#472/, "and the row it belongs to");
+});
+
+test("#2126 (2): the same session with that PR reading APPROVED is ALLOWED -- #989 preserved", () => {
+  // THE POSITIVE CONTROL FOR THE CASE ABOVE, and the assertion that this row did not quietly restore #476.
+  const run = routedRun({
+    issueList: JSON.stringify([{ number: 472 }]),
+    graphql: heldWithOpenPr,
+    prReviews: openPrReviews("APPROVED"),
+  });
+  assert.equal(sessionEligibilityReason(455, "worker-tooling", { run }), null);
+});
+
+test("#2126 (2): REVIEW_REQUIRED is a pull request waiting on its REVIEWER, and is ALLOWED", () => {
+  const run = routedRun({
+    issueList: JSON.stringify([{ number: 472 }]),
+    graphql: heldWithOpenPr,
+    prReviews: openPrReviews("REVIEW_REQUIRED"),
+  });
+  assert.equal(sessionEligibilityReason(455, "worker-tooling", { run }), null,
+    "an engineer does not wait on review -- ceo's ruling of 2026-09-11, unchanged by this clause");
+});
+
+test("#2126 (3): four bot merge commits and no author commit do NOT clear the refusal", () => {
+  // #2107's real shape: the verdict sits at `dfe72936` and the head is `6541b1ee`, four automated
+  // `Merge branch 'main'` commits later, with zero author commits. A guard keyed on head identity would
+  // find no verdict at the current head at all; `reviewDecision` still reads CHANGES_REQUESTED because
+  // `dismiss_stale_reviews` is false.
+  const run = routedRun({
+    issueList: JSON.stringify([{ number: 472 }]),
+    graphql: heldWithOpenPr,
+    prReviews: openPrReviews("CHANGES_REQUESTED", [verdict("CHANGES_REQUESTED", VERDICT_HEAD, "reviewer")]),
+  });
+  const reason = sessionEligibilityReason(455, "worker-tooling", { run });
+  assert.ok(reason, "the refusal outlived four head moves that no author made");
+  assert.match(reason as string, /#900/);
+  assert.match(reason as string, /BOT MERGE DOES NOT LIFT THIS/,
+    "and it says so, so a reader whose head has moved does not read the refusal as stale");
+});
+
+test("#2126 (4): contradictory verdicts at the SAME head are not refused -- they escalate to ceo", () => {
+  const calls: string[][] = [];
+  const base = routedRun({
+    issueList: JSON.stringify([{ number: 472 }]),
+    graphql: heldWithOpenPr,
+    prReviews: openPrReviews("CHANGES_REQUESTED", [
+      verdict("APPROVED", REFUSED_HEAD, "reviewer-2"),
+      verdict("CHANGES_REQUESTED", REFUSED_HEAD, "reviewer"),
+    ]),
+  });
+  const run = (cmd: string, args: string[]) => { calls.push(args); return base(cmd, args); };
+
+  assert.equal(sessionEligibilityReason(455, "worker-tooling", { run }), null,
+    "#2105's real shape: an APPROVED and a CHANGES_REQUESTED on the identical commit, 57 seconds apart. "
+    + "A guard with no exit for a dispute converts a review disagreement into a stalled engineer");
+
+  const edit = calls.find((c) => c[0] === "issue" && c[1] === "edit");
+  assert.ok(edit, `the escape must ESCALATE, not merely stay quiet -- calls were `
+    + `${calls.map((c) => c.slice(0, 2).join(" ")).join(", ")}`);
+  assert.deepEqual([edit?.[2], edit?.[edit.indexOf("--add-label") + 1]], ["472", "answer:ceo"]);
+  const comment = calls.find((c) => c[0] === "issue" && c[1] === "comment")?.slice(-1)[0] ?? "";
+  assert.match(comment, /OPPOSITE verdicts on #900/, "with the dispute written where ceo reads it");
+});
+
+test("#2126 (4): the escalation is the DISPUTE's doing -- remove one side and the same claim is refused", () => {
+  // THE POSITIVE CONTROL FOR THE ESCAPE. Identical fixture with the APPROVED dropped: no dispute, so the
+  // refusal stands and nothing is escalated. Without this, the clearance above proves only that some
+  // fixture goes quiet.
+  const calls: string[][] = [];
+  const base = routedRun({
+    issueList: JSON.stringify([{ number: 472 }]),
+    graphql: heldWithOpenPr,
+    prReviews: openPrReviews("CHANGES_REQUESTED", [verdict("CHANGES_REQUESTED", REFUSED_HEAD, "reviewer")]),
+  });
+  const run = (cmd: string, args: string[]) => { calls.push(args); return base(cmd, args); };
+  assert.ok(sessionEligibilityReason(455, "worker-tooling", { run }));
+  assert.deepEqual(calls.filter((c) => c[0] === "issue" && (c[1] === "edit" || c[1] === "comment")), [],
+    "and a refused claim escalates nothing -- the control for this emptiness is the test directly above");
+});
+
+test("#2126: the review-health read is ONE `pr list`, whatever the session holds", () => {
+  // #989 took two calls per held row OUT of this path; a clause that put one back per row would undo the
+  // measurement that justified it. Three held rows, three open pull requests, one review-health call.
+  let reviewReads = 0;
+  const base = routedRun({
+    issueList: JSON.stringify([{ number: 472 }, { number: 473 }, { number: 474 }]),
+    graphql: heldWithOpenPr,
+    prReviews: openPrReviews("APPROVED"),
+  });
+  const run = (cmd: string, args: string[]) => {
+    if (args[0] === "pr" && args[1] === "list"
+      && /reviewDecision/.test(args[args.indexOf("--json") + 1] ?? "")) reviewReads += 1;
+    return base(cmd, args);
+  };
+  assert.equal(sessionEligibilityReason(455, "worker-tooling", { run }), null);
+  assert.equal(reviewReads, 1, "one call, not one per row");
+});
+
+test("#2126: a row IN BUILD is still reported without ANY `pr list` round trip", () => {
+  // The existing B2-before-B4 expectation, restated for the new read: this clause's lookup is a `pr list`
+  // too, and a row in build has no open pull request for it to ask about. If this goes red the clause has
+  // started spending a round trip on rows it can never say anything about.
+  let prListAsked = false;
+  const base = routedRun({ issueList: JSON.stringify([{ number: 472 }]) });
+  const run = (cmd: string, args: string[]) => {
+    if (args[0] === "pr" && args[1] === "list") prListAsked = true;
+    return base(cmd, args);
+  };
+  assert.match(String(sessionEligibilityReason(455, "worker-tooling", { run })), /#472 is IN BUILD/);
+  assert.equal(prListAsked, false);
+});
+
+test("#2126: a FAILED review-health read refuses nothing, the way every lookup here fails OPEN", () => {
+  const base = routedRun({ issueList: JSON.stringify([{ number: 472 }]), graphql: heldWithOpenPr });
+  const run = (cmd: string, args: string[]) => {
+    if (args[0] === "pr" && args[1] === "list"
+      && /reviewDecision/.test(args[args.indexOf("--json") + 1] ?? "")) throw new Error("gh: 502");
+    return base(cmd, args);
+  };
+  assert.equal(sessionEligibilityReason(455, "worker-tooling", { run }), null,
+    "this clause can only ever CREATE a refusal, so an unanswerable read must not manufacture one");
 });

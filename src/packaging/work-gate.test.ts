@@ -1,3 +1,9 @@
+// no-token: MAX_ROW_ORDERS_PER_TICK -- #827. Importing anything from `work-gate.mjs` reaches `defaultRun`
+// (`execFileSync("gh", ...)`, work-gate.mjs:162), and this file never lets it run: every seam here is
+// handed an injected `run`. Measured 2026-09-23 -- 173/173 pass with `gh` off `PATH` entirely and
+// `GH_TOKEN`/`GITHUB_TOKEN`/`GH_CONFIG_DIR` unset, which is what makes this a verified claim rather than
+// a hopeful one. Without it the acceptance job refuses the row's own declared command and verifies
+// NOTHING (#2106 hit exactly that).
 /**
  * #912: THE TICK IS A SCRIPT, AND THESE ARE THE ANSWERS IT MUST NOT GET WRONG.
  *
@@ -27,10 +33,13 @@ import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReady
   deadMansSwitch,
   unfiledEpics, epicOrders, finishedEpics, finishedEpicOrders, fleetBatchRows, fleetBatchOrders,
   partitionFleetBatch, blockerClearedOrders,
+  claimedRowAmendedOrders, constraintsAfterClaim, amendmentsOn, readClaimedRowComments,
+  CONSTRAINT_COMMENT_MARKER, CONSTRAINT_BODY_PREFIX,
   FLEET_MILESTONE, readEpics, answersOwed, answerOrders,
   readOpenRows, withAnswerLabel,
   blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL,
-  ANSWER_PREFIX, redOnlyBySupersededRun, cannotAskReport }
+  ANSWER_PREFIX, redOnlyBySupersededRun, cannotAskReport,
+  readRowBranches, rowBranchOrders, GIT_READS }
   from "../work-gate.mjs";
 
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
@@ -695,8 +704,16 @@ test("every cause is classified as START or FINISH -- a new one cannot default i
   // #1969: `pr-green-unarmed` is FINISH. A drain stops the org TAKING ON work and must not stop it
   // finishing what is in flight -- and a green, unheld, unarmed pull request is the most finished work
   // there is. Withholding it during a window would strand exactly the PRs the window is waiting to land.
-  assert.deepEqual(finish, ["answer-owed", "blocker-cleared", "chairman-blocked", "draft-awaiting-verdict",
-    "draft-convinced-not-ready", "pr-checks-failing", "pr-green-unarmed", "verdict-not-convinced"]);
+  // #2110: `claimed-row-amended` is FINISH, and a drain is where withholding it would cost most -- a
+  // window exists to LAND what is in flight, and a constraint that goes unread during one is a build
+  // finished against a rule nobody applied.
+  // #2031: `row-branch-unshipped` is FINISH, and a drain is where withholding it would cost MOST rather
+  // than least. Step 2 of #63's history-purge runbook force-pushes a rewritten history, and every
+  // unlanded branch on `origin` at that moment is stranded by it -- a window exists so the org can find
+  // out what is still in flight before that happens. It also starts no work: the work already exists.
+  assert.deepEqual(finish, ["answer-owed", "blocker-cleared", "chairman-blocked", "claimed-row-amended",
+    "draft-awaiting-verdict", "draft-convinced-not-ready", "pr-checks-failing", "pr-green-unarmed",
+    "row-branch-unshipped", "verdict-not-convinced"]);
   for (const cause of START_CAUSES) {
     assert.ok(CAUSES.includes(cause), `${cause} is withheld by a drain but no longer exists`);
   }
@@ -941,6 +958,84 @@ test("requiredCheckNames fails OPEN on every unusable answer", () => {
 });
 
 /**
+ * FAILING OPEN IN SILENCE IS INDISTINGUISHABLE FROM NEVER HAVING WORKED -- #2106.
+ *
+ * `requiredCheckNames` returned `null` on EVERY tick from the day #1750 shipped until 2026-09-23, and
+ * the only sign was a bare `gh: Not Found (HTTP 404)` on stderr beside an exit 0 -- `defaultRun` inherits
+ * stderr, so `gh`'s own message was the whole report. Four days of a dead optimisation. There was never a
+ * correctness bug: the fallback counts every check, so no red pull request went unreported. What was lost
+ * is the saving, and nothing said so.
+ *
+ * THE TEST DRIVES THE THROWING CASE AND ASSERTS BOTH HALVES, because `null` alone is what the old code
+ * already did. Only the report is new, and a test that checked the `null` would pass against the defect.
+ *
+ * AND #2022'S RULING IS THE SECOND HALF: a 404 from `branches/main/protection` means FORBIDDEN or ABSENT,
+ * and reading it as "unprotected" is never allowed. `branches/main.protected` is the discriminator, so
+ * all three of its answers are pinned here -- including the one where it too is refused, which must say
+ * CANNOT TELL rather than pick a side.
+ */
+const requiredWithLog = (run: (args: string[]) => string) => {
+  const lines: string[] = [];
+  const calls: string[][] = [];
+  const required = requiredCheckNames((args: string[]) => { calls.push(args); return run(args); },
+    (line) => { lines.push(line); });
+  return { required, lines, calls };
+};
+
+/** A `gh` that refuses the protection endpoint and answers the discriminator with `protectedFlag`. */
+const refusingProtection = (protectedFlag: string | null) => (args: string[]) => {
+  if (args.includes("repos/{owner}/{repo}/branches/main/protection")) {
+    throw new Error("gh: Not Found (HTTP 404)");
+  }
+  if (protectedFlag === null) throw new Error("gh: Not Found (HTTP 404)");
+  return protectedFlag;
+};
+
+test("a refused required-checks read says so, and names the credential it needed -- #2106", () => {
+  const forbidden = requiredWithLog(refusingProtection("true"));
+  assert.equal(forbidden.required, null,
+    "FAIL OPEN IS UNCHANGED: the report is additional, never a substitute for the `null`");
+  assert.equal(forbidden.lines.length, 1, "once per tick -- `requiredWhenRed` is the only caller");
+  assert.match(forbidden.lines[0], /branches\/main\/protection/,
+    "the report names the endpoint, so the reader can run the failing call themselves");
+  assert.match(forbidden.lines[0], /FORBIDDEN rather than ABSENT/);
+  assert.match(forbidden.lines[0], /permissions\.admin/,
+    "and names WHY -- the gate's credential is not an admin, which is the fact that fixes nothing by retrying");
+  assert.match(forbidden.lines[0], /#1750/, "and what is lost: the saving, not any red pull request");
+
+  // #2022's OTHER ARM, which must not be guessed: the same 404 with an UNPROTECTED trunk behind it.
+  const absent = requiredWithLog(refusingProtection("false"));
+  assert.equal(absent.required, null);
+  assert.match(absent.lines[0], /genuinely ABSENT/);
+  assert.doesNotMatch(absent.lines[0], /FORBIDDEN rather than ABSENT/,
+    "a trunk with no protection is not a credential problem, and must not be reported as one");
+
+  // AND THE HONEST THIRD STATE. The discriminator is subject to the same fail-open rule as its caller.
+  const cannotTell = requiredWithLog(refusingProtection(null));
+  assert.equal(cannotTell.required, null);
+  assert.match(cannotTell.lines[0], /CANNOT TELL/,
+    "#2022: a 404 that cannot be discriminated is never read as unprotected");
+});
+
+test("the new report cannot become tick noise on a healthy gate -- #2106", () => {
+  // THE POSITIVE CONTROL, NAMED. Every assertion above is satisfied by a version that reports on every
+  // tick, including the successful ones -- which would bury the four-day failure it exists to surface.
+  const healthy = requiredWithLog(() => JSON.stringify(["gate"]));
+  assert.deepEqual(healthy.required, ["gate"], "the successful read is unchanged");
+  assert.deepEqual(healthy.lines, [], "a gate that CAN read the contexts says NOTHING");
+  assert.equal(healthy.calls.length, 1,
+    "and pays exactly one call -- the discriminator is reached only by a REFUSED read");
+
+  // A REACHABLE ENDPOINT WITH AN UNUSABLE ANSWER IS REPORTED, BUT NOT DIAGNOSED. The call answered, so
+  // there is nothing for `branches/main.protected` to discriminate and no second call to pay for.
+  const empty = requiredWithLog(() => "[]");
+  assert.equal(empty.required, null);
+  assert.equal(empty.calls.length, 1, "a malformed answer proves the endpoint was reachable");
+  assert.match(empty.lines[0], /no usable list of contexts/);
+  assert.doesNotMatch(empty.lines[0], /REFUSED/);
+});
+
+/**
  * `fleet-gated` ROUTES WORK; IT DOES NOT HIDE IT.
  *
  * The label's own definition on GitHub is "Acceptance needs the fleet or the lab; ORCHESTRATOR RUNS IT".
@@ -1140,6 +1235,13 @@ test("the gate's read count is counted, not remembered", () => {
     "nothing is conditional on silence any more -- the second open-rows read was deleted");
   assert.ok(GH_READS.conditionalOnEmptyShelf.includes("readEpics"));
   assert.ok(GH_READS.conditionalOnRed.includes("requiredCheckNames"));
+  // #2110: THE CLAIMED-ROW READ IS CONDITIONAL AND SERVER-SIDE FILTERED, and both halves are pinned
+  // because both are what keep it bounded. `--label in-progress` is the filter; without it this would be
+  // 500 rows of comment bodies on every tick, which is the read the row's own budget paragraph forbids.
+  assert.ok(GH_READS.conditionalOnClaimedRows.includes("--label in-progress"),
+    "the page must be the claimed rows and nothing else -- a full-population comments read is the cost "
+    + "this cause was told not to buy");
+  assert.ok(GH_READS.conditionalOnClaimedRows.includes("readClaimedRowComments"));
 });
 
 /**
@@ -2190,6 +2292,232 @@ test("#2027: decide() routes it, and ahead of the causes that offer new work", (
   assert.equal(orders.find((o) => o.cause === "blocker-cleared")?.session, "worker-capture");
 });
 
+// --- #2110: a row that moved under the session holding it ------------------------------------------
+//
+// MEASURED TWICE IN ONE MORNING, 2026-09-23. #2099 was claimed by `worker-capture` at 09:54:06Z and
+// built by 10:16:50Z; `product-manager` recorded `ceo`'s ruling on it at 10:22:34Z -- 28 minutes after
+// the claim, 6 minutes after the work was finished. The gate emitted NO cause for `worker-capture`:
+// `ready-row-unclaimed` had stopped matching at the claim, and `blocker-cleared` is the only cause whose
+// subject is a row somebody already holds. The same hour, `orchestrator` held #1918 while it acquired an
+// open `blockedBy` on #2100 -- the same defect wearing the other marker, and the one a claim-time rule
+// (`blocked-by-edge-rule.mjs`, #1886) can never reach because the edge arrives AFTER the claim.
+
+const CLAIM_RECORD = { id: "IC_claim", body: "<!-- row-claim: claim record -->\n**Claim record** -- claimed by `worker-capture`." };
+const CONSTRAINT = { id: "IC_constraint",
+  body: "## CONSTRAINT\n\n`ceo`'s ruling: this row may NOT be implemented by granting a token." };
+const BUILD_REPORT = { id: "IC_build", body: "Built as draft #2105. The Acceptance passes at `0da227db0`." };
+
+/** A claimed row, with the comment page `readClaimedRowComments` would have returned for it. */
+const withComments = (n: number, comments: { id: string; body: string }[]) => [{ number: n, comments }];
+
+test("#2110: a `## CONSTRAINT` comment posted after the claim wakes the SESSION THAT HOLDS THE ROW", () => {
+  // THE POSITIVE, first and alone: every silence assertion below is satisfied by a function that returns
+  // `[]` for everything, and this is the one that is not.
+  const [order] = claimedRowAmendedOrders([heldRow(2099, "worker-capture")],
+    withComments(2099, [CLAIM_RECORD, BUILD_REPORT, CONSTRAINT]));
+  assert.equal(order?.session, "worker-capture",
+    "read from the row's own `session:` label -- no address book, which is why this is the gate's "
+    + "question and not a messaging one");
+  assert.equal(order?.cause, "claimed-row-amended");
+  assert.equal(order?.causeKey, "worker-capture/claimed-row-amended/row-2099/IC_constraint",
+    "keyed on the MARKER, so a second constraint is a second question and an unchanged row is silent");
+  assert.match(order?.prompt ?? "", /## CONSTRAINT/,
+    "the prompt names what changed; a woken turn that has to survey the row is a tick with extra steps");
+});
+
+/**
+ * DONE-WHEN 2's POSITIVE CONTROL, AND THE REASON THIS CAUSE IS NARROW AT ALL.
+ *
+ * A cause that fired on ANY comment on a claimed row would wake the holder for their own claim record,
+ * their own build report and every clarifying reply -- the comment-noise problem arriving one door along
+ * from the gap it was written to close. Without this assertion the cause is a noise generator that every
+ * other test here still passes.
+ */
+test("#2110: an ORDINARY comment on a claimed row emits nothing -- a claim record, a build report", () => {
+  assert.deepEqual(claimedRowAmendedOrders([heldRow(2099, "worker-capture")],
+    withComments(2099, [CLAIM_RECORD, BUILD_REPORT])), [],
+    "the marker is DECLARED and parsed, never inferred from prose");
+  assert.deepEqual(claimedRowAmendedOrders([heldRow(2099, "worker-capture")], withComments(2099, [])), [],
+    "and a claimed row with no comments at all is not an amendment either");
+});
+
+test("#2110: a constraint the row ALREADY CARRIED at claim time is not news -- the record is the clock", () => {
+  // `gh issue list --json comments` returns OLDEST-FIRST, so "after the claim" is a position in a list
+  // the gate already holds. A row claimed, released and claimed again anchors on the NEWEST record --
+  // `claimRecordFrom`'s own rule, and for the same reason: the CURRENT holder is the one being told.
+  assert.deepEqual(claimedRowAmendedOrders([heldRow(2099, "worker-capture")],
+    withComments(2099, [CONSTRAINT, CLAIM_RECORD])), [],
+    "it was there to be read when the row was taken; this cause is about a row moving UNDER a holder");
+  assert.deepEqual(constraintsAfterClaim([CONSTRAINT, CLAIM_RECORD, BUILD_REPORT]), []);
+  assert.deepEqual(constraintsAfterClaim([CONSTRAINT, CLAIM_RECORD, CONSTRAINT]).map((c) => c.id),
+    ["IC_constraint"], "the SECOND claim is the anchor, and the constraint after it still counts");
+});
+
+test("#2110: a comment that QUOTES the marker is not a constraint -- mention versus use", () => {
+  // The trap `acceptance-commands.mjs`'s header names, and the one a plain `includes` walks into: the
+  // comment announcing this very cause on the row would have fired it.
+  const quoting = { id: "IC_meta",
+    body: "I am adding a cause that fires on a `## CONSTRAINT` heading -- see #2110 for the shape." };
+  assert.deepEqual(claimedRowAmendedOrders([heldRow(2110, "worker-capture")],
+    withComments(2110, [CLAIM_RECORD, quoting])), [],
+    "anchored to a line start, or this repo's own announcement of the feature triggers it");
+  assert.ok(CONSTRAINT_COMMENT_MARKER === "## CONSTRAINT",
+    "the literal #2099 actually used at 10:22:34Z, before this cause existed to read it");
+});
+
+test("#2110: a `Constraint:` line in the ROW BODY is the other declared spelling", () => {
+  const [order] = claimedRowAmendedOrders(
+    [heldRow(1234, "orchestrator", { body: "## What is wrong\n\nConstraint: no new unconditional read.\n" })],
+    withComments(1234, [CLAIM_RECORD]));
+  assert.equal(order?.cause, "claimed-row-amended");
+  assert.match(order?.prompt ?? "", /Constraint: no new unconditional read\./,
+    "the whole line is quoted back, so the woken turn does not have to go and find it");
+  assert.ok(CONSTRAINT_BODY_PREFIX === "Constraint:",
+    "the `Acceptance:`/`Closes:`/`Not-before:` family's shape -- a declared, parsed body field");
+});
+
+test("#2110: a REPLACED body constraint is a new question, because the key is the LINE and not its presence", () => {
+  const keyFor = (line: string) => claimedRowAmendedOrders(
+    [heldRow(1234, "orchestrator", { body: `${line}\n` })], withComments(1234, [CLAIM_RECORD]))[0]?.causeKey;
+  const first = keyFor("Constraint: no new unconditional read.");
+  const second = keyFor("Constraint: no new unconditional read, and no per-row call.");
+  assert.ok(first && second, "both must produce an order at all, or this compares two silences");
+  assert.notEqual(first, second,
+    "keying on mere PRESENCE would make a row whose constraint was rewritten look unchanged -- and the "
+    + "rewrite is exactly the amendment a holder must be told about");
+});
+
+/**
+ * DONE-WHEN 5, AND IT IS THE CHEAP HALF: `blockedBy` already rides the unconditional read that
+ * `blocker-cleared` makes. #1918 was claimed by `orchestrator` while clean and acquired an open edge on
+ * #2100 afterwards. The report that produced this half was itself wrong about the cause -- it concluded
+ * `claimRow` never reads `blockedBy`, when #1886 closed COMPLETED 2026-09-22T05:28:36Z and
+ * `blocked-by-edge-rule.mjs` refuses such a claim before B4. That refusal is what makes the inference
+ * here sound: an OPEN edge on a row that IS claimed can only have arrived after the claim.
+ */
+test("#2110: #1918 gained an open `blockedBy` on #2100 while `orchestrator` held it", () => {
+  const [order] = claimedRowAmendedOrders(
+    [heldRow(1918, "orchestrator", { blockedBy: { nodes: [{ number: 2100, state: "OPEN" }] } })],
+    withComments(1918, [CLAIM_RECORD]));
+  assert.equal(order?.session, "orchestrator");
+  assert.equal(order?.causeKey, "orchestrator/claimed-row-amended/row-1918/blocked.2100");
+  assert.match(order?.prompt ?? "", /#2100/, "the prompt names the blocker, not just the fact of one");
+});
+
+test("#2110: a CLOSED blocker is not an amendment -- `blocker-cleared` owns that direction", () => {
+  assert.deepEqual(claimedRowAmendedOrders([heldRow(1908, "worker-capture", { ...blockedByClosed })],
+    withComments(1908, [CLAIM_RECORD])), [],
+    "this cause says a row got HARDER; the row getting easier is #2027's, and emitting both would wake "
+    + "a holder twice for one event");
+  assert.deepEqual(amendmentsOn({ number: 1908, ...blockedByClosed }, [CLAIM_RECORD]), []);
+});
+
+test("#2110: an UNCLAIMED row is outside this cause entirely -- there is nobody it is news to", () => {
+  const constrained = withComments(2099, [CLAIM_RECORD, CONSTRAINT]);
+  assert.deepEqual(claimedRowAmendedOrders([{ number: 2099, labels: [{ name: "ready" }] }], constrained), [],
+    "a constraint on a free row is read by whoever claims it -- that is what claiming a row is");
+  assert.deepEqual(claimedRowAmendedOrders([{ number: 2099, labels: [{ name: "in-progress" }] }], constrained), [],
+    "a claim with no `session:` label names nobody, and waking a session called \"\" is an order with "
+    + "nowhere to go");
+  // A `session:` LABEL WITHOUT THE CLAIM IS NOT A HOLDER -- `ready-label-audit.mjs` names this as #171's
+  // shape, a correct decline whose restore silently did not happen. Caught by a mutation: with the
+  // `in-progress` test deleted, every other case in this block still passed.
+  assert.deepEqual(claimedRowAmendedOrders(
+    [{ number: 2099, labels: [{ name: "was-ready" }, { name: "session:worker-capture" }] }], constrained), [],
+    "the claim label is what says a session is HOLDING the row");
+});
+
+test("#2110: an unchanged row mints the SAME key every tick, and a second constraint mints a new one", () => {
+  const row = heldRow(2099, "worker-capture");
+  const once = claimedRowAmendedOrders([row], withComments(2099, [CLAIM_RECORD, CONSTRAINT]));
+  const twice = claimedRowAmendedOrders([row], withComments(2099, [CLAIM_RECORD, CONSTRAINT]));
+  assert.deepEqual(once, twice,
+    "byte-identical, so the waker's ledger deduplicates it -- that is what lets this gate be stateless");
+  const second = { id: "IC_constraint2", body: "## CONSTRAINT\n\nAnd it must not add an unconditional read." };
+  const after = claimedRowAmendedOrders([row], withComments(2099, [CLAIM_RECORD, CONSTRAINT, second]));
+  assert.notEqual(after[0]?.causeKey, once[0]?.causeKey,
+    "a SECOND constraint is a second order -- the newest marker names the key, so the dedupe stops matching");
+});
+
+test("#2110: two markers on one row are ONE order naming both, keyed on the pair", () => {
+  // Not two orders: the holder has one row to go and read, and waking them twice for it is the noise
+  // this cause is narrow to avoid. The key is the SET, so either marker changing is a new question.
+  const [order, ...rest] = claimedRowAmendedOrders(
+    [heldRow(1918, "orchestrator", { blockedBy: { nodes: [{ number: 2100, state: "OPEN" }] } })],
+    withComments(1918, [CLAIM_RECORD, CONSTRAINT]));
+  assert.deepEqual(rest, [], "one row, one order");
+  assert.equal(order?.causeKey, "orchestrator/claimed-row-amended/row-1918/IC_constraint+blocked.2100");
+  assert.match(order?.prompt ?? "", /and an open `blockedBy` edge on #2100/);
+});
+
+test("#2110: the per-tick cap applies, so one bad morning cannot wake a session nine times", () => {
+  const rows = Array.from({ length: MAX_ROW_ORDERS_PER_TICK + 3 },
+    (_unused, i) => heldRow(3000 + i, "worker-capture", { body: "Constraint: read this.\n" }));
+  assert.equal(claimedRowAmendedOrders(rows, []).length, MAX_ROW_ORDERS_PER_TICK);
+});
+
+test("#2110: claimed-row-amended is a FINISH cause, and a drain is where withholding it costs most", () => {
+  assert.ok(CAUSES.includes("claimed-row-amended"),
+    "it must be in CAUSES or worker-profile refuses it at run time");
+  assert.ok(!START_CAUSES.includes("claimed-row-amended"),
+    "its subject is a row the session ALREADY HOLDS -- and a window exists to LAND work in flight, which "
+    + "is exactly when a build finished against an unread rule is least affordable");
+});
+
+test("#2110: decide() routes it, ahead of blocker-cleared and every cause that offers new work", () => {
+  const held = heldRow(2099, "worker-capture", { ...blockedByClosed });
+  const orders = decide({ prs: [], readyRows: [], openRows: [held],
+    claimedComments: withComments(2099, [CLAIM_RECORD, CONSTRAINT]) });
+  const causes = orders.map((o) => o.cause);
+  assert.ok(causes.includes("claimed-row-amended"),
+    "before this, the gate could see the row change and had nobody to tell");
+  assert.ok(causes.indexOf("claimed-row-amended") < causes.indexOf("blocker-cleared"),
+    "an unread constraint means work in progress is being done against a rule nobody applied; a cleared "
+    + "blocker merely means work can start again and loses nothing by waiting a tick");
+  assert.equal(orders.find((o) => o.cause === "claimed-row-amended")?.session, "worker-capture");
+});
+
+test("#2110: a caller that could not read the comments still sees the body and edge markers", () => {
+  // `[]` is "not asked or refused". The degradation may go QUIET on the half it could not read; it must
+  // never invent a constraint, and it must never be worse than before this cause existed.
+  assert.deepEqual(decide({ prs: [], readyRows: [],
+    openRows: [heldRow(2099, "worker-capture")] }).map((o) => o.cause), [],
+    "no comments, no body line, no open edge -- nothing to say");
+  const [order] = claimedRowAmendedOrders(
+    [heldRow(1918, "orchestrator", { blockedBy: { nodes: [{ number: 2100, state: "OPEN" }] } })], []);
+  assert.equal(order?.cause, "claimed-row-amended",
+    "the edge rides the read that already happened, so a refused comments page cannot silence it");
+});
+
+test("#2110: the claimed-row read is ONE call, filtered server-side, and refuses to `null`", () => {
+  const calls: string[][] = [];
+  const rows = readClaimedRowComments((args: string[]) => {
+    calls.push(args);
+    return JSON.stringify([{ number: 2099, comments: [CLAIM_RECORD] }]);
+  });
+  assert.equal(calls.length, 1, "one call for the whole claimed population -- never one per row");
+  assert.deepEqual(calls[0], ["issue", "list", "--state", "open", "--label", "in-progress",
+    "--limit", "200", "--json", "number,comments"]);
+  assert.equal(rows?.length, 1);
+  assert.equal(readClaimedRowComments(() => { throw new Error("HTTP 403"); }), null,
+    "#1286's rule: a refused read is `null` and never `[]` -- a refusal that reads as an empty page "
+    + "reports every claimed row as unamended");
+});
+
+test("#2110: main pays for it only when something is actually claimed", () => {
+  const gate = readFileSync(fileURLToPath(new URL("../work-gate.mjs", import.meta.url)),
+    "utf8");
+  // The `decide` jsdoc spells the same call shape when it says where `claimedComments` comes from, so
+  // prose is excluded by its backtick rather than by counting matches -- `cannotAskReport`'s own pin one
+  // test down makes the identical exclusion for the identical reason.
+  assert.equal(gate.match(/(?<!`)readClaimedRowComments\(\)/g)?.length, 1,
+    "exactly one call site, and it is inside the condition below -- a second is a second price");
+  assert.match(gate, /const held = openRows\.some\(\(r\) => labelsOf\(r\)\.includes\(CLAIM_LABEL\)\);\s*\n\s*return held \? readClaimedRowComments\(\) : null;/,
+    "the condition is answered from rows already in hand, so asking it costs no call of its own");
+  assert.equal(GH_READS.unconditional.length, 5,
+    "#2110 adds no UNCONDITIONAL read -- the comment page is conditional on a claim existing");
+});
+
 /**
  * #2003: A DEAD POOL AND A QUIET QUEUE LOOKED IDENTICAL FROM THE JOURNAL.
  *
@@ -2473,4 +2801,161 @@ test("#2005: the org-stalled prompt NAMES the session, because that group is the
   assert.ok(order !== null, "one reachable row and no orders is still a stall");
   assert.match(order.prompt, /2 on a session's answer: 2 waiting on ceo to answer \(#2002 #1889\)/);
   assert.match(order.prompt, /REMOVING THE LABEL IS THE ACT OF ANSWERING/);
+});
+
+/**
+ * #2031: A READY ROW WHOSE WORK IS ALREADY PUSHED WAS STILL OFFERED AS A FRESH START.
+ *
+ * #2014 bought the interception at CLAIM time, and it says nothing to anyone who never attempts a claim
+ * -- the work gate, which is what actually offers rows to the org, was one of those readers. Measured
+ * 2026-09-22 on #2000: `agent/worktree-prune-unit-2000` was pushed at 21:02:36Z; the row read `ready`,
+ * no `session:`, no `in-progress`, until 21:22Z; `gh pr list --head <branch> --state all` returned `[]`
+ * for that whole window. The gate offered #2000 as `ready-row-unclaimed` throughout, because `ready`
+ * with no `session:` label was the ENTIRE question it asked, and a second session was routed into the
+ * same three Region paths at 21:06Z.
+ *
+ * THE CAUSE OF THE STALENESS IS WHY THE DETECTION MUST NOT SPEND THE POOL. Opening the pull request is
+ * the act that makes a row look claimed, and that act spends GraphQL: #1996's PR was never opened
+ * because the shared 5,000-point pool was exhausted until 21:20:11Z. So the board goes stale precisely
+ * when the pool is gone, and a detector that spent the pool would be blind in the same outage that
+ * produces the defect. `git ls-remote --heads origin` spends none, and the test below pins the BINARY
+ * the seam spawns rather than trusting the comment.
+ */
+const BRANCH_2000 = "agent/worktree-prune-unit-2000";
+const SHA_2000 = "1f4e9c7a3b5d8e2016243c5f7a9b0d1e2f3a4b5c";
+const LISTING = `${SHA_2000}\trefs/heads/${BRANCH_2000}\n`
+  + `9999999999999999999999999999999999999999\trefs/heads/main\n`;
+/** A Ready row as `readReadyRows` returns it: `ready`, no `session:`, no `in-progress`. */
+const readyRow = (n: number, extra: Record<string, unknown> = {}) =>
+  ({ number: n, title: `row ${n}`, labels: [{ name: "ready" }], ...extra });
+
+test("#2031: a Ready row whose branch is on origin gets its own cause, and is no longer offered fresh", () => {
+  // THE POSITIVE FIRST, and it is the whole row: without it every silence assertion below is satisfied
+  // by a `rowBranchOrders` that returns `[]` for everything and a partition that shelves nothing.
+  const rows = [readyRow(2000), readyRow(2001)];
+  const branches = [{ branch: BRANCH_2000, head: SHA_2000, row: 2000 }];
+  const orders = decide({ prs: [], readyRows: rows, rowBranches: branches });
+  const mine = orders.filter((o) => o.cause === "row-branch-unshipped");
+  assert.equal(mine.length, 1, "one order, for the one row origin holds a branch for");
+  assert.equal(mine[0].subject, "row-2000");
+  // NAMED IN BOTH COMMANDS, not merely somewhere in the prompt. A mutant that left one of the two as a
+  // `<branch>` placeholder survived an `includes(BRANCH_2000)` on the whole string, because the other
+  // command and the shelving sentence still carried it -- and a command a reader cannot paste is the
+  // one thing this prompt exists to hand over.
+  assert.ok(mine[0].prompt.includes(`git log --oneline origin/main..origin/${BRANCH_2000}`),
+    "the cause NAMES the branch in the history command -- done-when 1");
+  assert.ok(mine[0].prompt.includes(`git diff origin/main...origin/${BRANCH_2000}`),
+    "and in the diff command: both are pasteable, and both spend no API pool");
+  assert.ok(mine[0].prompt.includes(SHA_2000.slice(0, 12)),
+    "and its head sha, so the reader can tell which push this is about");
+  // DONE-WHEN 2: the row is no longer offered as a fresh start while the condition holds. #2001, whose
+  // number matches no head, still is -- without that half this passes against a gate that stopped
+  // offering every row.
+  assert.deepEqual(orders.filter((o) => o.cause === "ready-row-unclaimed").map((o) => o.subject),
+    ["row-2001"], "#2000 is withheld and #2001 is not");
+  assert.ok(CAUSES.includes("row-branch-unshipped"),
+    "it must be in CAUSES or worker-profile refuses it at run time");
+});
+
+test("#2031: the withheld row is SHELVED with its reason, never silently dropped", () => {
+  const { offerable, blocked } = partitionUnclaimed([readyRow(2000), readyRow(2001)], [],
+    { rowBranches: [{ branch: BRANCH_2000, head: SHA_2000, row: 2000 }] });
+  assert.deepEqual(offerable.map((r: { number: number }) => r.number), [2001]);
+  assert.equal(blocked.length, 1, "a row that vanishes silently is the failure `blocked` already is");
+  assert.ok(blocked[0].reason.includes(BRANCH_2000), "the `SHELVED row #N:` line names the branch");
+  // IT MUST NOT ASSERT THE WORK IS DONE -- #2031's own "what this will NOT fix": a branch on origin for
+  // a Ready row means only that a branch EXISTS, and telling finished work from abandoned work stays a
+  // reading of the branch. A shelving that said "this row is done" would be a wrong fact in the tick log.
+  assert.ok(/NOT a claim that the work is finished/.test(blocked[0].reason),
+    "it states existence and concludes nothing");
+});
+
+test("#2031: the detection makes NO `gh` call -- the pool is gone in the outage it exists for", () => {
+  // DONE-WHEN 3, PINNED ON THE BINARY RATHER THAN THE COMMENT. The seam takes the command as well as
+  // the arguments precisely so this can be asserted: a future edit that answered the same question with
+  // `gh api repos/.../branches` would pass an args-only spy and fail here.
+  const calls: [string, string[]][] = [];
+  const found = readRowBranches((cmd: string, args: string[]) => {
+    calls.push([cmd, args]);
+    return LISTING;
+  });
+  assert.deepEqual(calls, [["git", ["ls-remote", "--heads", "origin"]]],
+    "one local git call, and `gh` is never spawned -- a detector that spent GraphQL would be blind in "
+    + "the exhausted-pool outage that produces the staleness it detects");
+  assert.deepEqual(found, [{ branch: BRANCH_2000, head: SHA_2000, row: 2000 }],
+    "`main` is not a row branch: the trailing `-<digits>` is the whole match");
+  assert.equal(GH_READS.unconditional.length, 5, "#2031 adds NO gh read -- it is a local git call");
+  assert.ok(GIT_READS.unconditional.some((r: string) => r.includes("ls-remote")),
+    "and the free read is COUNTED rather than left out because it is free -- `GH_READS`'s own header "
+    + "records what happened last time a read went unwritten-down");
+});
+
+test("#2031: a refused listing is `null`, and the gate then behaves exactly as it did before", () => {
+  // #1286's rule. `[]` would mean "no row has a branch on origin", which is a positive claim, and a tick
+  // that could not reach the remote has not earned it. The degradation must also not go the other way:
+  // nothing is shelved, so a session is never starved of a row because `origin` was unreachable.
+  assert.equal(readRowBranches(() => { throw new Error("fatal: could not read from remote repository"); }),
+    null, "a refused read is `null`, never an empty listing");
+  const rows = [readyRow(2000)];
+  for (const rowBranches of [null, undefined]) {
+    assert.deepEqual(decide({ prs: [], readyRows: rows, rowBranches }).map((o) => o.cause),
+      ["ready-row-unclaimed"],
+      "not asked and refused are the same thing here: no cause invented, and no row withheld");
+  }
+  assert.deepEqual(rowBranchOrders(rows, null), [], "and the emitter says nothing on its own");
+});
+
+test("#2031: a CLAIMED row is not this cause's business -- `claimed-row-amended` speaks to a holder", () => {
+  // The done-when's population is "every open `ready` row carrying no `session:` label". A held row
+  // already has a session that knows about its own branch, and waking anyone about it would fire on
+  // every row every session is currently building.
+  const branches = [{ branch: BRANCH_2000, head: SHA_2000, row: 2000 }];
+  const claimed = readyRow(2000, { labels: [{ name: "ready" }, { name: "in-progress" },
+    { name: "session:worker-capture" }] });
+  assert.deepEqual(rowBranchOrders([claimed], branches), [],
+    "a row somebody holds is not offered as a fresh start either, so there is nothing to withhold");
+  const sessionOnly = readyRow(2000, { labels: [{ name: "ready" }, { name: "session:worker-capture" }] });
+  assert.deepEqual(rowBranchOrders([sessionOnly], branches), [],
+    "`session:` is the label the done-when names, and it holds on its own");
+});
+
+test("#2031: the order is keyed on the SHA, so a push is a new question and a re-read is not", () => {
+  const rows = [readyRow(2000)];
+  const at = (head: string) => rowBranchOrders(rows, [{ branch: BRANCH_2000, head, row: 2000 }])[0];
+  const first = at(SHA_2000);
+  assert.equal(first.causeKey, at(SHA_2000).causeKey,
+    "an unchanged branch mints the identical key on every tick and the wake ledger drops it -- this is "
+    + "a JUDGMENT cause, and 'abandoned, leave it' is an answer that does not change the state");
+  assert.notEqual(first.causeKey, at("0".repeat(40)).causeKey,
+    "a PUSH to that branch is a different fact and must reach the owner");
+  assert.ok(first.causeKey.includes(SHA_2000), "the sha is IN the key, not merely in the prompt");
+});
+
+test("#2031: it routes to the lane owner, else `product-manager` -- never to the engineer pool", () => {
+  // `product-manager` is this org's first reader for rows, the queue and holds (the chairman's
+  // 2026-09-14 routing direction). It is deliberately NOT `engineers`: the pool's answer to a row is to
+  // CLAIM it, and #2014 already refuses exactly that claim -- so routing there would wake a session to
+  // be refused by a guard the gate can see from here.
+  const branches = [{ branch: BRANCH_2000, head: SHA_2000, row: 2000 }];
+  assert.equal(rowBranchOrders([readyRow(2000)], branches)[0].session, "product-manager");
+  const laned = readyRow(2000, { labels: [{ name: "ready" }, { name: "lane:ceo" }] });
+  assert.equal(rowBranchOrders([laned], branches)[0].session, "ceo",
+    "a laned row's owner is the one who can act on it");
+});
+
+test("#2031: a branch whose trailing number is a COINCIDENCE is named as one, not asserted as work", () => {
+  // The match is on the NAME, which is all `ls-remote` can see. `rowBranchesInListing` cannot tell
+  // `agent/some-refactor-2000` from a branch called `release-v1-2000`, and the prompt says so rather
+  // than leaving the reader to discover it -- the third exit exists for exactly that case.
+  const order = rowBranchOrders([readyRow(2000)],
+    [{ branch: "release-v1-2000", head: SHA_2000, row: 2000 }])[0];
+  // ASSERTED ON WHAT THE PROMPT SAYS, not on a regex for words it must avoid: the prompt's own
+  // disclaimer contains the string "the work is finished" inside "NOT a claim that the work is
+  // finished", so a negative word-match would have been satisfied by DELETING the disclaimer.
+  assert.ok(order.prompt.includes("NOT a claim that the work is finished"),
+    "it must never assert the row is done -- #2031's own 'what this will NOT fix'");
+  for (const exit of ["FINISHED", "ABANDONED", "COINCIDENCE"]) {
+    assert.ok(order.prompt.includes(exit),
+      `all three exits are offered and none is chosen -- the gate cannot tell them apart (${exit})`);
+  }
 });

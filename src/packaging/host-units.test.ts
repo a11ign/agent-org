@@ -30,7 +30,8 @@ import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
 import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, systemdUserAvailable,
   hostUnitDrift, permissionModeDrift, orphanedUnits, SHIPPED_DIR, REPO_ROOT, execCommands,
   entriesFromCommand, ghSpawnReachedFrom, identityDrift, unitsSpendingGh, opaqueCommands,
-  retiredHere, addedOnSomeRef, orphanOrigin } from "../host-units.mjs";
+  retiredHere, addedOnSomeRef, orphanOrigin, shellCommandWords, shellSpawnsGh, shippedHostScripts,
+  supersededHostScripts, unitEntryPoints } from "../host-units.mjs";
 
 const SYSTEMD_OK = () => "LANG=C\n";
 const NO_SYSTEMD = () => { throw new Error("systemctl: command not found"); };
@@ -838,7 +839,12 @@ test("#1993: the board dispatch is SHIPPED, and faithful to the pair that actual
   // committing them.
   const service = readFileSync(join(SHIPPED_DIR, "a11ign-board-report.service"), "utf8");
   const timer = readFileSync(join(SHIPPED_DIR, "a11ign-board-report.timer"), "utf8");
-  assert.match(service, /^ExecStart=\/home\/agent\/\.local\/bin\/board-report-dispatch\.sh$/m);
+  assert.match(service, /^ExecStart=\/usr\/bin\/bash packages\/agent-org\/host\/board-report-dispatch\.sh$/m,
+    "#1998: the SHIPPED program, named the way the other code-running units name theirs. It read "
+    + "`/home/agent/.local/bin/board-report-dispatch.sh` until then -- 31 lines of bash carried by no "
+    + "commit anywhere, so every property above was a property of a file nobody here could read");
+  assert.match(service, /^WorkingDirectory=\/home\/agent\/repos\/a11y-witness$/m,
+    "and the checkout that repository-relative path resolves against, or systemd starts nothing");
   assert.match(timer, /^OnCalendar=\*-\*-\* 07:10:00 Europe\/London$/m,
     "London in the expression, not resolved once into a UTC hour that drifts at each BST boundary");
   assert.match(timer, /^Persistent=true$/m, "a host asleep at 07:10 still publishes");
@@ -1057,4 +1063,175 @@ test("#2000: which shipped timers run their service at `host:install`, and which
     assert.ok(enabled.includes(unit),
       `${unit} declares Requires= but the installer never starts it, so the partition above means nothing`);
   }
+});
+
+// --- #1998: the unit shipped here and the program it starts did not ----------------------------------
+//
+// MEASURED ON THE AGENT HOST 2026-09-22, at `874948280`. #1993 put the two board-dispatch units under
+// `packages/agent-org/host/` so the daily edition stopped being invisible to this repository, and scoped
+// itself to the units. Its `ExecStart` was `/home/agent/.local/bin/board-report-dispatch.sh`:
+//
+//     git log --oneline --all -- '**/board-report-dispatch*'   ->  (empty)
+//     wc -l /home/agent/.local/bin/board-report-dispatch.sh    ->  31
+//     grep -cE '\bgh (workflow run|run list)\b' <that file>    ->  2
+//
+// So the unit was reviewable and the thing it ran was not. Every property #1993 declared on the unit --
+// which `gh` is on the PATH, which account it spends -- was a property of a `gh` call inside a file
+// nobody here could read, and the next edit to it reached production with no diff, no review and no test.
+//
+// THE PROGRAM IS NOT COPIED ANYWHERE, and that is the answer to the CURRENT question rather than a gap
+// in it. The units live in `~/.config/systemd/user` because systemd will not read them out of the tree;
+// nothing makes that demand of a script, so the tree copy IS the program and a merged edit is live at
+// the next firing. A second copy would re-create #1858's own defect one level down. What that leaves is
+// the leftover at `~/.local/bin`, which `supersededHostScripts` reports until somebody removes it.
+
+test("#1998: the dispatch ships here, and it is the program that actually runs", () => {
+  assert.ok(shippedHostScripts().includes("board-report-dispatch.sh"),
+    "in the same directory as the unit that starts it -- the whole row in one assertion");
+  const script = readFileSync(join(SHIPPED_DIR, "board-report-dispatch.sh"), "utf8");
+  assert.match(script, /^set -euo pipefail$/m,
+    "byte-faithful to the installed copy, whose own first act this is: a dispatch that swallowed a "
+    + "failed `gh workflow run` would log a run id it never created");
+  assert.equal(shellCommandWords(script).filter((w) => w === "gh").length, 2,
+    "both `gh` calls, which is what the host measured: one `gh workflow run` and one `gh run list`. "
+    + "The second is inside `$(...)` on an assignment line, and a reader counting line-leading words "
+    + "would find one and charge the unit for half of what it spends");
+  assert.match(script, /gh workflow run "\$\{WORKFLOW\}" --repo "\$\{REPO\}"/,
+    "the dispatch itself, quoted from the file that has fired at 07:10 every morning since 2026-09-18");
+});
+
+test("#1998: the board dispatch's `gh` is READ, not merely not-ruled-out", () => {
+  // THE DONE-WHEN, AND IT HAS TO FAIL FOR THE RIGHT REASON. `opaque: false` is also what a unit that
+  // left the population reports -- by having no `Exec`, by not ending in `.service`, by a `shippedDir`
+  // typo. So membership is asserted FIRST and the entry point that produced the answer is asserted by
+  // name: this is green only when the script resolved and was read.
+  const spending = unitsSpendingGh();
+  const board = spending.find((u) => u.unit === "a11ign-board-report.service");
+  assert.ok(board, "still IN the population -- `opaque` going quiet by the unit leaving is the one way "
+    + "this assertion could pass while the row is undone");
+  assert.equal(board.opaque, false, "the `gh` spawn was read out of the script, not inferred from a "
+    + "path this repository cannot follow");
+  assert.equal(board.via, join(SHIPPED_DIR, "board-report-dispatch.sh"),
+    "and `via` names the file it was read from -- the entry point RESOLVED, which is the reason the "
+    + "opaque branch stopped firing");
+  assert.equal(board.declared, true, "#1993's identity line still stands");
+  assert.deepEqual(spending.filter((u) => u.opaque), [],
+    "no shipped unit starts anything this repository cannot read");
+  assert.ok(spending.length >= 3, "the population is NOT EMPTY -- an emptiness assertion over a "
+    + "`shippedDir` typo would read as compliance");
+});
+
+test("#1998: `unitEntryPoints` follows a shell interpreter exactly as it follows `node`", () => {
+  const service = readFileSync(join(SHIPPED_DIR, "a11ign-board-report.service"), "utf8");
+  assert.deepEqual(unitEntryPoints(service), [join(SHIPPED_DIR, "board-report-dispatch.sh")]);
+  assert.deepEqual(entriesFromCommand("/usr/bin/bash packages/agent-org/host/board-report-dispatch.sh"),
+    [join(SHIPPED_DIR, "board-report-dispatch.sh")],
+    "RELATIVE TO THIS CHECKOUT and not to the `WorkingDirectory` the unit names, or the answer would be "
+    + "right in the primary checkout and wrong in every worktree and in CI");
+  assert.deepEqual(entriesFromCommand("/usr/bin/bash -c 'gh workflow run x'"), [],
+    "NEGATIVE CONTROL: `-c` is not a file, so it resolves to nothing and is correctly left unread "
+    + "rather than guessed at");
+});
+
+test("#1998 NEGATIVE CONTROL: a shell script OUT of the tree is still OPAQUE", () => {
+  // The branch #1993 added must still be reachable, or this row replaced a conservative reading with a
+  // silent pass. `bash` is deliberately NOT in `ANALYSABLE_TOOLS`: an interpreter is followable only
+  // when the PATH it is handed lands inside this repository.
+  assert.deepEqual(opaqueCommands("[Service]\nExecStart=/usr/bin/bash /opt/vendor/dispatch.sh\n"),
+    ["/usr/bin/bash /opt/vendor/dispatch.sh"]);
+  assert.deepEqual(opaqueCommands("[Service]\nExecStart=/home/agent/.local/bin/board-report-dispatch.sh\n"),
+    ["/home/agent/.local/bin/board-report-dispatch.sh"],
+    "the exact command this unit carried until this row, still unreadable and still charged");
+  assert.deepEqual(
+    opaqueCommands("[Service]\nExecStart=/usr/bin/bash packages/agent-org/host/board-report-dispatch.sh\n"),
+    [], "POSITIVE CONTROL: the same interpreter, a path this repository ships, and it is readable");
+});
+
+test("#1998: a shell script spawns `gh` as a WORD, which the JavaScript pattern cannot see", () => {
+  assert.equal(ghSpawnReachedFrom(join(SHIPPED_DIR, "board-report-dispatch.sh")),
+    join(SHIPPED_DIR, "board-report-dispatch.sh"));
+  assert.deepEqual(shellCommandWords('RUN_ID="$(gh run list --repo x)"'), ["gh", "\""],
+    "the `(` split: the line's own first word is an assignment, skipped, and the call sits one "
+    + "substitution in. The trailing `\"` is the OVER-APPROXIMATION this reader is allowed -- splitting "
+    + "on separators without matching quotes can name a fragment that is not a command, and the only "
+    + "question asked of the list is whether `gh` is in it, which no dangling quote can answer yes");
+  assert.deepEqual(shellCommandWords('echo "at $(date -u +%FT%TZ)"'), ["echo", "date", "\""],
+    "a substitution is a command position wherever it sits, including inside a quoted argument");
+  assert.equal(shellSpawnsGh('ISSUE="a11ign#1998"; gh issue view "$ISSUE"\n'), true,
+    "THE WORD BOUNDARY ON THE COMMENT STRIP, and its failure direction is the dangerous one: a `#` "
+    + "mid-word is an issue reference, a fragment or an anchor, and stripping from it to end-of-line "
+    + "deletes a REAL `gh` call further along -- a false NEGATIVE, which here reads as a unit that "
+    + "spends nobody's pool");
+  assert.equal(shellSpawnsGh("# gh workflow run x\necho done\n"), false,
+    "NEGATIVE CONTROL: a `gh` in a COMMENT is not a spawn -- the shape that charged row-file.mjs for a "
+    + "note about the guard that read it (#804)");
+  assert.equal(shellSpawnsGh("git push origin agent/gh-wrapper-1974\n"), false,
+    "nor is `gh` inside a branch name, a path or a jq filter -- #1860 is this repository's own record "
+    + "of `\\bgh\\b` over a whole file costing a file named after the thing it fixed");
+  assert.equal(shellSpawnsGh("gh-real auth status\n"), false, "nor a DIFFERENT binary starting `gh`");
+  assert.equal(shellSpawnsGh("if [ -n x ]; then /usr/bin/gh pr list; fi\n"), true,
+    "POSITIVE CONTROL: past a keyword, past a separator, and by basename");
+});
+
+test("#1998: a leftover copy at ~/.local/bin is a finding, and says which way it differs", () => {
+  const scripts = (hostText: string | null) => ({
+    shippedDir: "/shipped",
+    scriptDir: "/home/agent/.local/bin",
+    readDir: (() => ["board-report-dispatch.sh", "a11ign-x.service"]) as never,
+    exists: ((p: string) => hostText !== null || !String(p).startsWith("/home/agent")) as never,
+    read: ((p: string) => (String(p).startsWith("/shipped") ? "shipped\n" : hostText)) as never,
+  });
+  assert.deepEqual(supersededHostScripts(scripts(null)), [],
+    "POSITIVE CONTROL: no copy on the host is the correct state and must not be a finding, or this "
+    + "check fires for ever and gets the whole report ignored");
+  const [same] = supersededHostScripts(scripts("shipped\n"));
+  assert.equal(same.problem, "SUPERSEDED COPY -- IDENTICAL FOR NOW");
+  assert.equal(same.unit, "/home/agent/.local/bin/board-report-dispatch.sh");
+  assert.match(same.detail, /matches the shipped file TODAY/,
+    "identical is not safe, it is unchecked -- there is nothing holding the two together");
+  const [drifted] = supersededHostScripts(scripts("edited by hand\n"));
+  assert.equal(drifted.problem, "SUPERSEDED COPY -- ALREADY DIVERGED");
+  assert.match(drifted.detail, /Read the diff before removing it/,
+    "which of the two holds the change is a question this file cannot answer");
+});
+
+test("#1998: `host:check` ACTUALLY ASKS -- the check is wired, not merely written", () => {
+  // THE SURVIVING MUTANT THIS TEST EXISTS FOR: deleting `...supersededHostScripts(deps)` from
+  // `hostUnitDrift` killed nothing, because every other assertion here calls the function directly.
+  // That is the shape this file's own #2000 block is about -- built, tested, shipped, never wired --
+  // and it is the third time in this repository, so it gets an assertion rather than a habit.
+  const drift = hostUnitDrift({
+    shippedDir: "/shipped", scriptDir: "/home/agent/.local/bin", systemctl: SYSTEMD_OK,
+    readDir: (() => ["board-report-dispatch.sh"]) as never,
+    exists: (() => true) as never,
+    read: ((p: string) => (String(p).startsWith("/shipped") ? "a\n" : "b\n")) as never,
+  });
+  assert.ok(drift.some((d) => d.problem.startsWith("SUPERSEDED COPY")),
+    "the command a reader actually runs is `host:check`, and it reaches `hostUnitDrift` -- a finding "
+    + "no report can print is a finding nobody gets");
+  assert.deepEqual(hostUnitDrift({
+    shippedDir: "/shipped", scriptDir: "/home/agent/.local/bin", systemctl: NO_SYSTEMD,
+    readDir: (() => ["board-report-dispatch.sh"]) as never,
+    exists: (() => true) as never, read: (() => "a\n") as never,
+  }), [], "POSITIVE CONTROL: and a machine with no user systemd is told nothing about its ~/.local/bin "
+    + "either -- a laptop that gets this finding is a laptop that silences the whole command");
+});
+
+test("#1998: the REMEDY LINE says the shared remedy does NOT fix it", () => {
+  // The same seam #1974 and #1993 used, for the same reason: every other finding here ends at
+  // `npm run host:install`, and a reader told that four times reads it the fifth time too.
+  const report = driftReport(supersededHostScripts({
+    shippedDir: "/shipped", scriptDir: "/home/agent/.local/bin",
+    readDir: (() => ["board-report-dispatch.sh"]) as never,
+    exists: (() => true) as never,
+    read: ((p: string) => (String(p).startsWith("/shipped") ? "a\n" : "b\n")) as never,
+  }));
+  assert.match(report, /is NOT fixed by the remedy below/);
+  assert.ok(report.indexOf("NOT fixed by the remedy") < report.indexOf("npm run host:install\n"),
+    "ABOVE the command, not below it -- a warning under the thing it warns about is read afterwards");
+  assert.match(report, /nothing in ~\/\.local\/bin/,
+    "and says WHY `host:install` leaves it alone: this repository owns the a11ign-* units and owns "
+    + "nothing in a directory that also holds `gh`, `gh-real` and `herdr`");
+  assert.doesNotMatch(report, /DO NOT RUN THE REMEDY YET/,
+    "NOT the destructive warning: running `host:install` here is harmless, it simply does not help");
 });

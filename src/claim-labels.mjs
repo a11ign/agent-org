@@ -27,3 +27,21 @@ export const WAS_READY_LABEL = "was-ready";
 
 export const CLAIM_LABEL = "in-progress";
 export const STARTED_LABEL = "started";
+
+// THE FIFTH LITERAL IS NOT A LABEL, AND IT IS HERE FOR THE REASON THE FOUR ABOVE ARE -- #2110.
+//
+// `row-claim.mjs` owns the claim-record COMMENT: the append-only record of who holds a row, which exists
+// because a 50-character label cannot hold a worktree path (#987). Its marker is an HTML comment so the
+// rendered thread stays clean while `claimRecordFrom` still has something exact to match on.
+//
+// `work-gate.mjs` now has to find it too. A comment posted AFTER the newest claim record is a comment
+// posted after the claim, and that ordering is the only free way this repo has to tell a constraint
+// added under a holder from one the row already carried when it was taken -- both arrive in the same
+// `gh issue list --json comments` page, so the question costs nothing extra to ask.
+//
+// THE ALTERNATIVE WAS A SECOND COPY OF THE LITERAL, or a `work-gate.mjs` import of `row-claim.mjs` --
+// twenty-odd modules of claim rules, a `board-snapshot` dependency and a `gh` graph, pulled into a tick
+// whose whole property is that it is two reads and no model. This module was split out to be the leaf
+// that makes neither necessary; the header above says so for the four labels, and a claim-lifecycle
+// literal two modules must agree on is the same fact whether it is spelled as a label or as a marker.
+export const CLAIM_RECORD_MARKER = "<!-- row-claim: claim record -->";

@@ -31,6 +31,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendFiledBy, boardAndVerify, boardingFor, bodyFromArgv, createIssue, directoryRegionWarning, fetchIssueBoardStatus, acceptanceShapeRefusal, fileRefusalReason, issueNumberFromUrl, labelRefusal, labelValuesFromArgv, laneLabelsFor, milestoneRefusal, withAcceptanceLane, openCheckTranscriptRefusal, sessionFromArgv, slashlessDirectoryWarning, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy, withoutLabels } from "../row-file.mjs";
+import { labelSetForPromotion, promoteArgvRefusal, promoteFromArgv, promoteRefusalReason, promoteRow,
+  promotionLabelsSettled, unverifiedPromotionFields } from "../row-file.mjs";
+import { CLAIM_LABEL } from "../claim-labels.mjs";
 import { filedByLine } from "../row-claim.mjs";
 import { REPO } from "../../../../scripts/repo-identity.mjs";
 
@@ -1674,4 +1677,308 @@ test("#1488: the check CALLS the parser and keeps no copy of its rule -- it refu
       `shape ${JSON.stringify(acceptance)} parses as ${kind}`);
   }
   assert.deepEqual([...kinds].sort(), ["commands", "duplicate", "missing", "none"], "the shapes must cover every kind");
+});
+
+// --- #2099: AN UNDECLARED `gh` ACCEPTANCE IS REFUSED AT FILING. The `acceptance` job is given no
+// credential at all -- it alone executes commands taken from an untrusted PR body -- so a `gh` line run
+// there dies on the missing credential, and nothing said so until `pr-open`, after a builder had claimed
+// the row and built the change. The rule itself lives in `acceptance-commands.mjs` beside the classifier
+// whose verdict it moves earlier, and is pinned in full there; these two pin that `fileRefusalReason`
+// ACTUALLY CALLS IT, which is the half a unit test of the rule cannot see. ---
+
+const HAND_RUN_GH_ROW = "gh api repos/a11ign/a11ign/branches/main/protection --jq '.enforce_admins.enabled'";
+
+test("#2099: a row whose Acceptance is an UNDECLARED `gh` command is refused by `fileRefusalReason`, quoting it", () => {
+  const reason = String(fileRefusalReason(withAcceptance(`## Acceptance\n\n\`\`\`\n${HAND_RUN_GH_ROW}\n\`\`\`\n\n`)));
+  assert.match(reason, /^row-file: REFUSING to file --/);
+  assert.ok(reason.includes(HAND_RUN_GH_ROW), `the refusal quotes the command: ${reason}`);
+  assert.match(reason, /Hand-run: <who runs it and why>/);
+});
+
+test("#2099 CONTROL: the SAME row carrying the declaration files clean -- the ruling is DECLARE, not refuse, "
+  + "because a blanket refusal refuses a CORRECT row (#2084 is the live one)", () => {
+  const body = withAcceptance("## Acceptance\n\nHand-run: whoever holds the admin credential, which CI has not\n\n"
+    + `\`\`\`\n${HAND_RUN_GH_ROW}\n\`\`\`\n\n`);
+  assert.equal(fileRefusalReason(body), null,
+    "and `null` is this rule's answer rather than another check's silence: the undeclared twin above differs "
+    + "in exactly the declaration line");
+});
+
+// --- #2111: the PROMOTE act -- one command for the three writes that were done by hand ---
+//
+// Filing gets a row's label and Status right in one act; promoting one did not exist here at all.
+// `gh issue edit --add-label ready`, `gh issue edit --remove-label backlog` and a Status move, typed by
+// hand, by whoever remembered. Measured 2026-09-23: #2050 and #2110 were promoted by hand and both
+// carried `backlog` AND `ready` for roughly 25 minutes, the only two of eight ready rows in that state.
+// Every dependency below is injected, exactly as the filing tests inject theirs: no spawn, no network.
+//
+// REWORKED after the reviewer's blocker on `3de784b0`: the first version put `--add-label ready` and
+// `--remove-label backlog` in ONE `gh issue edit` and called that atomic, and the tests only COUNTED the
+// invocation. `row-claim.mjs`'s #749 comment already carried #677's reproduction of that same command
+// half-applying, so the count proved nothing about the state a reader can observe. The label write is now
+// one `PUT .../issues/<n>/labels`, which sets the whole list, and the tests below INJECT the failure:
+// a write that throws, and a write that appends instead of replacing.
+
+/**
+ * A fake row whose labels are actually WRITTEN by the fake `gh`, so the read-back reads the write rather
+ * than a second hand-written fixture. A read-ordinal fixture ("the first read says this, the rest say
+ * that") cannot express a failed write at all, which is exactly what this row now has to test.
+ */
+function fakeRow(options: {
+  labels?: string[];
+  state?: "OPEN" | "CLOSED";
+  body?: string;
+  status?: string;
+  failLabelWrite?: boolean;
+  additiveLabelWrite?: boolean;
+  onStatusMove?: (row: { labels: string[] }) => void;
+} = {}) {
+  const state = options.state ?? "OPEN";
+  const row = { labels: [...(options.labels ?? ["backlog", "lane:any"])],
+    status: options.status ?? "Backlog", calls: [] as string[][] };
+  const deps = {
+    run: (_cmd: string, args: string[]) => {
+      row.calls.push(args);
+      if (args[0] !== "api") return args.includes("body") ? (options.body ?? COMPLETE_BODY) : "";
+      if (options.failLabelWrite) throw new Error("HTTP 502: Bad gateway (github.com)");
+      const wanted = args.filter((a) => a.startsWith("labels[]=")).map((a) => a.slice("labels[]=".length));
+      // The real endpoint SETS the list. `additiveLabelWrite` is the fake that does NOT, which is how the
+      // read-back's refusal gets driven rather than assumed -- see its own test below.
+      row.labels = options.additiveLabelWrite
+        ? [...row.labels, ...wanted.filter((l) => !row.labels.includes(l))]
+        : wanted;
+      return "";
+    },
+    fetchLabels: () => ({ number: 2111, title: "a real row", state, labels: [...row.labels] }),
+    fetchBoardStatus: () => row.status,
+    moveStatus: (_n: number, status: string) => {
+      row.status = status;
+      options.onStatusMove?.(row);
+      return { moved: true as const };
+    },
+    ensureLabels: () => {},
+  };
+  /** Every label-WRITING call the act made -- the population the atomicity claim is about. */
+  const labelWrites = () => row.calls.filter((args) => args[0] === "api");
+  return { row, deps, labelWrites };
+}
+
+test("#2111 ACCEPTANCE, MUTATION TARGET: the Status moves first, and the labels are then written by "
+  + "EXACTLY ONE request that SETS the whole list -- no `--add-label`/`--remove-label` pair anywhere, "
+  + "because one `gh issue edit` invocation carrying both is one COMMAND and not one write (#677)", () => {
+  const { row, deps, labelWrites } = fakeRow();
+  const order: string[] = [];
+  const code = promoteRow(["--promote=2111", "--session=worker-capture"], {
+    ...deps,
+    moveStatus: (_n: number, status: string) => { order.push(`status:${status}`); row.status = status;
+      return { moved: true as const }; },
+    run: (cmd: string, args: string[]) => { if (args[0] === "api") order.push("labels"); return deps.run(cmd, args); },
+  });
+  assert.equal(code, 0);
+  assert.deepEqual(order, ["status:Ready", "labels"],
+    `the Status moves before a single label write -- got: ${JSON.stringify(order)}`);
+  assert.equal(labelWrites().length, 1, "one request, and the reason it is one is what makes it atomic");
+  assert.deepEqual(labelWrites()[0], ["api", "--method", "PUT", `repos/${REPO}/issues/2111/labels`,
+    "-f", "labels[]=ready", "-f", "labels[]=lane:any"],
+    "GitHub's `Set labels for an issue`: the whole list in one PUT, every other label carried");
+  assert.ok(!row.calls.some((args) => args.includes("--add-label") || args.includes("--remove-label")),
+    "the delta form is the one #677 reproduced coming apart, so it must not appear at all");
+  assert.deepEqual(row.labels, ["ready", "lane:any"], "and the row ends carrying exactly that list");
+});
+
+test("#2111 ACCEPTANCE, MUTATION TARGET, FAILURE INJECTION: when the label write FAILS the row's labels "
+  + "are UNTOUCHED -- neither the both-labels state this row is about nor the neither-label one -- and "
+  + "the act says so at exit 2 rather than reporting a promotion", () => {
+  // The reviewer's blocker, made a test: the first version could not express this case, because a pair of
+  // label operations has a partial outcome and a single set replacement does not.
+  const { row, deps, labelWrites } = fakeRow({ failLabelWrite: true });
+  let stderr = "";
+  const write = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string) => { stderr += chunk; return true; }) as typeof process.stderr.write;
+  let code: number;
+  try {
+    code = promoteRow(["--promote=2111"], deps);
+  } finally {
+    process.stderr.write = write;
+  }
+  assert.equal(code, 2, "written (the Status) and unconfirmed -- createIssue's own code for exactly that");
+  assert.deepEqual(row.labels, ["backlog", "lane:any"],
+    "the labels are as they were: a failed set replacement applies no half of anything");
+  assert.equal(labelWrites().length, 1, "and nothing retried or attempted a rollback write on top of it");
+  assert.equal(row.status, "Ready", "the Status did move, which is the inconsistency the message must name");
+  assert.match(stderr, /UNTOUCHED/);
+  assert.match(stderr, /NOT in the both-labels state/);
+  assert.match(stderr, /--promote=2111 --session=<you>` again\. It is idempotent/,
+    "the recovery is this act, not a hand-written rollback that would be a second non-atomic write");
+});
+
+test("#2111 ACCEPTANCE, FAILURE INJECTION: the RECOVERY -- a second run after a failed label write "
+  + "promotes the row and leaves exactly the intended list, so Status-first has a real repair behind it "
+  + "rather than an ordering argument", () => {
+  const failing = fakeRow({ failLabelWrite: true });
+  assert.equal(promoteRow(["--promote=2111"], failing.deps), 2);
+  // The same row, in the state that failure left it: Status Ready, labels untouched.
+  const { row, deps, labelWrites } = fakeRow({ labels: failing.row.labels, status: failing.row.status });
+  assert.equal(promoteRow(["--promote=2111", "--session=worker-capture"], deps), 0);
+  assert.deepEqual(row.labels, ["ready", "lane:any"]);
+  assert.equal(labelWrites().length, 1);
+});
+
+test("#2111 ACCEPTANCE, FAILURE INJECTION: if the endpoint APPENDED instead of replacing, the read-back "
+  + "refuses to report a promotion -- the replacement semantics are checked rather than trusted", () => {
+  const { row, deps } = fakeRow({ additiveLabelWrite: true });
+  const code = promoteRow(["--promote=2111"], deps);
+  assert.equal(code, 2, "`backlog` survived the write, and the middle clause of the read-back asks exactly that");
+  assert.deepEqual(row.labels, ["backlog", "lane:any", "ready"],
+    "the fake is the one behaving additively; the assertion is that the act notices");
+});
+
+test("#2111 ACCEPTANCE, MUTATION TARGET: a claim landing between the gate and the write is REFUSED, "
+  + "never written over -- a set write computed from the older read would erase the claim's own labels "
+  + "to add `ready`", () => {
+  // The cost of a whole-list write, paid for by re-reading immediately before it. `onStatusMove` is the
+  // window: the Project round trip is where a concurrent claim actually fits.
+  const { row, deps, labelWrites } = fakeRow({
+    onStatusMove: (r) => { r.labels = [...r.labels, CLAIM_LABEL, "session:worker-judge", "branch:agent/x"]; },
+  });
+  const code = promoteRow(["--promote=2111"], deps);
+  assert.equal(code, 2);
+  assert.equal(labelWrites().length, 0, "no label write at all");
+  assert.deepEqual(row.labels, ["backlog", "lane:any", CLAIM_LABEL, "session:worker-judge", "branch:agent/x"],
+    "the claim's labels are intact -- destroying a claim to add a label is worse than not promoting");
+});
+
+test("#2111 ACCEPTANCE: labelSetForPromotion is the whole list -- `ready` in, `backlog` out, every other "
+  + "label kept, and it says `ready` once however the row spelled it", () => {
+  assert.deepEqual(labelSetForPromotion(["backlog", "lane:any"]), ["ready", "lane:any"]);
+  // The measured half-promoted state (#2050, #2110): the same one write repairs it.
+  assert.deepEqual(labelSetForPromotion(["backlog", "ready", "lane:any"]), ["ready", "lane:any"]);
+  assert.deepEqual(labelSetForPromotion(["Ready", "lane:ceo", "out-of-release"]),
+    ["ready", "lane:ceo", "out-of-release"], "case-insensitively, the way `sameLabel` reads every label here");
+  assert.deepEqual(labelSetForPromotion([]), ["ready"]);
+});
+
+test("#2111 ACCEPTANCE: promotionLabelsSettled is what stops an already-Ready row being written at all -- "
+  + "a set write that changes nothing is still a write, and a write can still clobber", () => {
+  assert.equal(promotionLabelsSettled(["ready", "lane:any"]), true);
+  assert.equal(promotionLabelsSettled(["backlog", "ready"]), false, "the half-promoted state is not settled");
+  assert.equal(promotionLabelsSettled(["backlog"]), false);
+  const { row, deps, labelWrites } = fakeRow({ labels: ["ready", "lane:any"] });
+  assert.equal(promoteRow(["--promote=2111"], deps), 0);
+  assert.equal(labelWrites().length, 0, "no label request for a row whose labels already say it");
+  assert.deepEqual(row.labels, ["ready", "lane:any"]);
+  assert.equal(row.status, "Ready", "and the Status is still moved and still verified");
+});
+
+test("#2111 ACCEPTANCE: a row already carrying BOTH labels is repaired by the one write, and reported "
+  + "promoted once the read-back confirms it", () => {
+  const { row, deps, labelWrites } = fakeRow({ labels: ["backlog", "ready", "lane:any"] });
+  assert.equal(promoteRow(["--promote=2050"], deps), 0);
+  assert.deepEqual(labelWrites()[0], ["api", "--method", "PUT", `repos/${REPO}/issues/2050/labels`,
+    "-f", "labels[]=ready", "-f", "labels[]=lane:any"]);
+  assert.deepEqual(row.labels, ["ready", "lane:any"]);
+});
+
+/**
+ * #2111 clause 6: THE CONTROL FOR THE REFUSAL BELOW. A new refusal that refuses everything passes every
+ * negative test in this file and breaks the act outright, so the well-formed case is asserted first and
+ * named as the control -- the refusal tests underneath are only meaningful beside it.
+ */
+test("#2111 ACCEPTANCE, MUTATION TARGET: a well-formed row is NOT refused -- the control for the "
+  + "claimability refusal, which would otherwise pass by refusing every promotion", () => {
+  const { row, deps } = fakeRow();
+  assert.equal(promoteRow(["--promote=2111", "--session=worker-capture"], deps), 0,
+    "COMPLETE_BODY carries Region, Acceptance and Open-check, so nothing may refuse it");
+  assert.equal(row.status, "Ready", "and the Status move actually ran rather than being skipped");
+});
+
+test("#2111 ACCEPTANCE, MUTATION TARGET: a row whose body is missing a required section is REFUSED, and "
+  + "NOTHING is written -- not the Status, not a label", () => {
+  // #2050 needed an `## Open-check` written AT PROMOTION TIME. A promote act that skipped this check
+  // would have published an unclaimable Ready row: the gate offers it, a session claims it, and
+  // `row-claim` refuses after the round trip -- a worse state than the unpromoted one it came from.
+  const incomplete = "## Region\n\npackages/lab/src/packaging/foo.ts\n\n## Acceptance\n\n```\nnpx tsx --test x\n```\n";
+  const { row, deps, labelWrites } = fakeRow({ body: incomplete });
+  assert.equal(promoteRow(["--promote=2050"], deps), 1, "refused before anything was written");
+  assert.equal(labelWrites().length, 0);
+  assert.equal(row.status, "Backlog", "no Status move -- a refusal leaves the row exactly as it was");
+});
+
+test("#2111: the claimability refusal is the SAME rule the claim side enforces, named through "
+  + "templateFieldsReason and fileRefusalReason rather than re-derived here", () => {
+  // The refusal quotes the claim-side rule verbatim, including the issue number, so a session reading it
+  // is reading the message `row-claim` would print if they claimed the row instead.
+  const missingOpenCheck = "## Region\n\nx.ts\n\n## Acceptance\n\n```\nnpx tsx --test x\n```\n";
+  const reason = promoteRefusalReason(missingOpenCheck, 2050);
+  assert.match(String(reason), /#2050 is missing Open-check/);
+  assert.equal(promoteRefusalReason(COMPLETE_BODY, 2111), null, "and a complete body is not refused");
+  // A duplicated `## Acceptance` heading -- the OTHER thing #2050 needed fixed at promotion time --
+  // reaches the filing rule's own parser rather than a second copy of it.
+  const duplicated = `${COMPLETE_BODY}\n## Acceptance: none -- nothing to run\n`;
+  assert.match(String(promoteRefusalReason(duplicated, 2050)), /DUPLICATE/);
+});
+
+test("#2111 ACCEPTANCE: the read-back refuses to report success when `backlog` is still on the row -- "
+  + "the one clause that asks whether something LEFT", () => {
+  const code = promoteRow(["--promote=2111"], {
+    ...fakeRow().deps,
+    // The write went out; the read-back still sees `backlog`. Before this row nothing asked.
+    fetchLabels: () => ({ number: 2111, title: "a real row", state: "OPEN" as const,
+      labels: ["backlog", "ready", "lane:any"] }),
+  });
+  assert.equal(code, 2, "written but unconfirmed -- createIssue's own code for exactly that");
+});
+
+test("#2111: unverifiedPromotionFields names each of the three facts separately", () => {
+  assert.deepEqual(unverifiedPromotionFields({ labels: ["ready"], boardStatus: "Ready" }), []);
+  assert.deepEqual(unverifiedPromotionFields({ labels: ["backlog"], boardStatus: "Ready" }).length, 2,
+    "`ready` absent AND `backlog` still present are two separate facts, and a reader repairing the row "
+    + "needs both named");
+  assert.match(unverifiedPromotionFields({ labels: ["ready"], boardStatus: "Backlog" })[0],
+    /reads "Backlog", not "Ready"/);
+  assert.match(unverifiedPromotionFields({ labels: ["ready"], boardStatus: null })[0], /membership/);
+});
+
+test("#2111: a Status move that fails writes NO label at all, and says so -- the order in which the "
+  + "first failure is a no-op", () => {
+  const { row, deps, labelWrites } = fakeRow();
+  const code = promoteRow(["--promote=2111"], {
+    ...deps,
+    moveStatus: () => ({ moved: false as const, reason: "is not an item in project 1", notOnBoard: true }),
+  });
+  assert.equal(code, 1, "nothing was written, so this is a refusal rather than a half-promotion");
+  assert.equal(labelWrites().length, 0);
+  assert.deepEqual(row.labels, ["backlog", "lane:any"]);
+});
+
+test("#2111: a CLOSED row and an already-CLAIMED row are refused, each for its own reason", () => {
+  assert.equal(promoteRow(["--promote=2111"], fakeRow({ state: "CLOSED" }).deps), 1);
+  // Promoting a claimed row would mint `ready` + `in-progress`, which `ready-label-audit`'s hand-claim
+  // check reports as a claim made OUTSIDE row-claim.mjs -- so the promote act would point the audit at
+  // the mechanism. `CLAIM_LABEL` is read from the module the claim path itself writes.
+  const claimed = fakeRow({ labels: [CLAIM_LABEL, "session:worker-capture", "started"] });
+  assert.equal(promoteRow(["--promote=2111"], claimed.deps), 1);
+  assert.equal(claimed.labelWrites().length, 0);
+  assert.equal(claimed.row.status, "Backlog", "refused at the gate, so not even the Status moved");
+});
+
+test("#2111: --promote= refuses every other filing argument rather than ignoring it, and accepts only "
+  + "--session=", () => {
+  assert.equal(promoteArgvRefusal(["--promote=2111"]), null);
+  assert.equal(promoteArgvRefusal(["--promote=2111", "--session=worker-capture"]), null);
+  // `refuseUnknownFlags` cannot catch these: they are flags this command genuinely knows, on its OTHER
+  // path, and a flag silently ignored on the path you are actually on is the defect that file exists to end.
+  assert.match(String(promoteArgvRefusal(["--promote=2111", "--title", "x"])), /--title/);
+  assert.match(String(promoteArgvRefusal(["--promote=2111", "--ready"])), /--ready/);
+});
+
+test("#2111: promoteFromArgv reads a row number and nothing else", () => {
+  assert.equal(promoteFromArgv(["--promote=2111"]), 2111);
+  assert.equal(promoteFromArgv(["--promote=0"]), null);
+  assert.equal(promoteFromArgv(["--promote=x"]), null);
+  assert.equal(promoteFromArgv(["--promote="]), null);
+  assert.equal(promoteFromArgv(["--session=x"]), null);
+  // Refused rather than promoting some other row: `main` routes on the flag's PRESENCE, so a `--promote=`
+  // naming something unusable must reach this refusal rather than fall through and try to FILE a row.
+  assert.equal(promoteRow(["--promote=nope"], fakeRow().deps), 1);
 });
