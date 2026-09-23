@@ -418,7 +418,14 @@ export function identityDrift(deps = {}) {
 /**
  * @typedef {{unit: string, problem: string, detail: string, revertsIdentity?: boolean,
  *            removesUnit?: boolean, shippedOnRef?: string, supersededScript?: string,
- *            missingProgram?: string}} Finding
+ *            missingProgram?: string, installedCopy?: InstalledCopyState}} Finding
+ */
+
+/**
+ * HOW THE INSTALLED UNIT STANDS AGAINST THE REPOSITORY, carried on a `missingProgram` finding as the
+ * MEASURED FACT rather than as an assumption baked into its prose. It decides both the sentence the
+ * finding prints and whether `uncovered` says the shared remedy cannot fix it.
+ * @typedef {"current" | "stale" | "unshipped"} InstalledCopyState
  */
 
 /**
@@ -898,14 +905,38 @@ const defaultGit = (args) =>
  * `WorkingDirectory=` line is SKIPPED rather than guessed at -- a relative path would then resolve
  * against systemd's own default, and inventing a base directory to check against is how a checker starts
  * reporting faults that are really its own.
- * @param {{ installedDir?: string, readDir?: typeof readdirSync, read?: typeof readFileSync,
- *           exists?: typeof existsSync }} [deps]
+ * IT STILL READS THE SHIPPED TEXT, FOR ONE THING ONLY: whether the installed copy matches it. Found in
+ * review of #2184 -- the finding's sentence claimed *"the unit is installed and matches the repository"*
+ * on EVERY unit it charged, because it never looked. On a unit that is STALE that is a false statement
+ * about the unit's state, and the remedy it prints from it (*"re-installing copies the same correct unit
+ * again"*) is false too: re-installing REPLACES a stale text, and the repository's copy may name a
+ * program that is there. The state is measured here and rendered by `missingProgramFinding`, so no
+ * sentence in this file asserts a comparison that was never made.
+ * @param {{ shippedDir?: string, installedDir?: string, readDir?: typeof readdirSync,
+ *           read?: typeof readFileSync, exists?: typeof existsSync }} [deps]
  * @returns {Finding[]}
  */
-export function missingUnitPrograms({ installedDir = INSTALLED_DIR, readDir = readdirSync,
-  read = readFileSync, exists = existsSync } = {}) {
-  return installedOrgUnits(installedDir, readDir)
-    .flatMap((unit) => missingForUnit(unit, textOf(join(installedDir, unit), read), { read, exists }));
+export function missingUnitPrograms({ shippedDir = SHIPPED_DIR, installedDir = INSTALLED_DIR,
+  readDir = readdirSync, read = readFileSync, exists = existsSync } = {}) {
+  return installedOrgUnits(installedDir, readDir).flatMap((unit) => {
+    const text = textOf(join(installedDir, unit), read);
+    const installedCopy = installedCopyState(textOf(join(shippedDir, unit), read), text);
+    return missingForUnit(unit, text, { installedCopy, read, exists });
+  });
+}
+
+/**
+ * THREE STATES AND NOT A BOOLEAN, for the same reason `unitState.current` is nullable: "differs from the
+ * repository" and "the repository does not ship this at all" are different facts with different remedies,
+ * and an orphan answering `false` to "does it match?" would print the stale sentence at a unit that has
+ * nothing to be stale against. `textOf` returns null for BOTH an absent and an unreadable shipped file;
+ * an unreadable one is `unitDrift`'s finding and lands here as `unshipped`, whose sentence claims only
+ * that this repository has no copy to compare -- which is what a reader that could not read one knows.
+ * @param {string | null} shippedText @param {string | null} installedText @returns {InstalledCopyState}
+ */
+function installedCopyState(shippedText, installedText) {
+  if (shippedText === null) return "unshipped";
+  return shippedText === installedText ? "current" : "stale";
 }
 
 /** @param {string} dir @param {typeof readdirSync} readDir @returns {string[]} */
@@ -923,9 +954,13 @@ function installedOrgUnits(dir, readDir) {
 
 /**
  * @param {string} unit @param {string | null} text the INSTALLED unit's text, or `null` if unreadable
- * @param {{ read?: typeof readFileSync, exists?: typeof existsSync }} deps @returns {Finding[]}
+ * `installedCopy` HAS NO DEFAULT, deliberately. The sentence this function's findings print depends on
+ * it, and a default would let a future caller re-acquire the exact false claim review caught in #2184 --
+ * "matches the repository" said by a reader that never compared -- silently and by omission.
+ * @param {{ installedCopy: InstalledCopyState, read?: typeof readFileSync,
+ *           exists?: typeof existsSync }} deps @returns {Finding[]}
  */
-function missingForUnit(unit, text, { read = readFileSync, exists = existsSync } = {}) {
+function missingForUnit(unit, text, { installedCopy, read = readFileSync, exists = existsSync }) {
   // A UNIT WHOSE TEXT CANNOT BE READ IS `unitDrift`'s FINDING, NOT THIS ONE. Guessing at what an
   // unreadable unit starts would report a second fault for one cause, which is the thing the "two
   // findings, never one" rule above exists to get right in the other direction.
@@ -936,19 +971,52 @@ function missingForUnit(unit, text, { read = readFileSync, exists = existsSync }
   const missing = [...new Set(execCommands(text)
     .flatMap((command) => programCandidates(command, { repoRoot: dir, scripts })))]
     .filter((path) => !exists(path));
-  return missing.map((path) => missingProgramFinding(unit, path, dir));
+  return missing.map((path) => missingProgramFinding({ unit, path, dir, installedCopy }));
 }
 
-/** @param {string} unit @param {string} path @param {string} dir @returns {Finding} */
-function missingProgramFinding(unit, path, dir) {
-  return { unit, problem: "PROGRAM MISSING", missingProgram: path,
-    detail: `the unit is installed and matches the repository, and the program it starts is not there: `
-      + `${path}. \`ExecStart\` is resolved against this unit's own \`WorkingDirectory=${dir}\`, which is `
-      + "a different tree from the one it was installed from -- so the unit text can be perfectly current "
-      + "while the file it names is absent, renamed, or simply older than the merge. THE SHARED REMEDY "
-      + "DOES NOT FIX THIS: re-installing copies the same correct unit again. Bring that checkout up to "
-      + "date, or correct the path, and this clears." };
+/**
+ * ONE FAULT, THREE SENTENCES -- because the fault is the same in all three ("the program the service
+ * manager will run is not there") and the REMEDY is not. The path is read off the INSTALLED text either
+ * way; what changes is what this finding is entitled to say about the unit around it.
+ * @param {{ unit: string, path: string, dir: string, installedCopy: InstalledCopyState }} finding
+ * @returns {Finding}
+ */
+function missingProgramFinding({ unit, path, dir, installedCopy }) {
+  return { unit, problem: "PROGRAM MISSING", missingProgram: path, installedCopy,
+    detail: MISSING_PROGRAM_DETAIL[installedCopy](path, dir) };
 }
+
+/** Where `ExecStart` resolved, said the same way in all three sentences. */
+const resolvedAgainst = (/** @type {string} */ path, /** @type {string} */ dir) =>
+  `the program it starts is not there: ${path}. \`ExecStart\` is resolved against this unit's own `
+  + `\`WorkingDirectory=${dir}\``;
+
+/** @type {Record<InstalledCopyState, (path: string, dir: string) => string>} */
+const MISSING_PROGRAM_DETAIL = {
+  current: (path, dir) => `the unit is installed and matches the repository, and `
+    + `${resolvedAgainst(path, dir)}, which is `
+    + "a different tree from the one it was installed from -- so the unit text can be perfectly current "
+    + "while the file it names is absent, renamed, or simply older than the merge. THE SHARED REMEDY "
+    + "DOES NOT FIX THIS: re-installing copies the same correct unit again. Bring that checkout up to "
+    + "date, or correct the path, and this clears.",
+  // THE REMEDY MAY WELL FIX THIS ONE, and saying otherwise is what review caught. The installed text is
+  // what the service manager runs, so the missing program is real NOW -- but it was read off text that
+  // `host:install` is about to overwrite, and the repository's copy may name a program that is there.
+  stale: (path, dir) => `${capitalised(resolvedAgainst(path, dir))}. This is read off the INSTALLED `
+    + "text, which is what the service manager will run -- and that text ALSO differs from the "
+    + "repository's, reported separately as STALE. So unlike a current unit, this one MAY be fixed by "
+    + "the shared remedy: re-installing replaces this text with the repository's, which can name a "
+    + "different program. Run the remedy, then read this again.",
+  // An orphan has nothing to be stale against, so it gets neither sentence. `host:install` DELETES an
+  // installed a11ign-* unit the repository does not ship, which `orphanedUnits` already says loudly.
+  unshipped: (path, dir) => `${capitalised(resolvedAgainst(path, dir))}. This repository does not ship `
+    + "this unit at all, so there is no repository copy for it to match or differ from -- that is "
+    + "`orphanedUnits`'s finding, and the shared remedy would DELETE the unit rather than repair this "
+    + "path. Settle what the unit is first; only then is a missing program a fault of ours.",
+};
+
+/** @param {string} sentence */
+const capitalised = (sentence) => sentence.charAt(0).toUpperCase() + sentence.slice(1);
 
 /**
  * The directory a relative `ExecStart` resolves against, or `null` when the unit declares none.
@@ -1130,7 +1198,12 @@ function uncovered(drift) {
     // #2174: THE SECOND FAULT THE SHARED REMEDY CANNOT TOUCH, and it is worse than the first because the
     // remedy LOOKS like it should work. `host:install` copies the unit; this unit is already correct, so
     // re-running it changes nothing and the reader is left believing it did.
-    + drift.filter((d) => d.missingProgram)
+    //
+    // `installedCopy === "current"` AND NOT MERELY `missingProgram`, found in review of #2184: on a unit
+    // that is STALE the remedy overwrites the very text this path was read off, so printing "not fixed
+    // by the remedy" there would talk a reader out of the one command that might fix it. The finding's
+    // own sentence says the opposite in that case, and these two must not disagree.
+    + drift.filter((d) => d.missingProgram && d.installedCopy === "current")
       .map((d) => `  !! ${d.unit} is NOT fixed by the remedy below either -- it is already identical to\n`
         + `     the repository. The file it starts, ${d.missingProgram}, is what is missing, and\n`
         + "     re-installing an already-correct unit will not create it. Update the checkout its\n"

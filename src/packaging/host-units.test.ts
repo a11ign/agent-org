@@ -1300,6 +1300,110 @@ test("#2174: it is a SEPARATE finding from STALE, and the shared remedy says it 
   assert.match(report, /\/repo\/src\/work-tick\.mjs/, "and it names the file that is missing");
 });
 
+/**
+ * #2184, FOUND IN REVIEW: "THE PROGRAM IS MISSING" AND "THE UNIT MATCHES THE REPOSITORY" ARE TWO CLAIMS,
+ * AND ONLY THE FIRST ONE WAS MEASURED.
+ *
+ * `missingUnitPrograms` runs independently of `unitDrift`, so on a unit that is BOTH stale and naming a
+ * program that is not there the host gets two findings -- and the second one asserted *"the unit is
+ * installed and matches the repository"* off a comparison it never made. Its remedy was wrong in the
+ * same breath: *"re-installing copies the same correct unit again"* is false of a stale unit, whose text
+ * `host:install` overwrites with a repository copy that may name a program that IS there. The reader is
+ * then talked out of the one command that might fix it.
+ *
+ * INTEGRATED, THROUGH `hostUnitDrift`, because the falsehood only exists when the two checks meet: each
+ * one alone is right about its own question. `permissionModeDrift` is pinned to a satisfied settings
+ * file so the drift here is exactly the pair under test.
+ */
+const UNIT_BODY = (workingDir: string) => "[Unit]\nDescription=board report\n[Service]\n"
+  + `WorkingDirectory=${workingDir}\nExecStart=/usr/bin/bash host/dispatch.sh\n`;
+/**
+ * A REAL SHIPPED DIRECTORY AND A REAL INSTALLED ONE, because `hostUnitDrift` discovers the shipped set
+ * with `shippedUnits(dir, {})` -- the real `readdirSync`, not the injected `readDir`. A stub `shippedDir`
+ * reads as an EMPTY shipped set, `unitDrift` then has nothing to compare, and the integrated pair this
+ * test exists for never forms. The first version of this test asserted two findings and got one.
+ * @returns the deps bag, and the installed unit's path so a test can rewrite it
+ */
+const hostWithOneUnit = (installedSuffix: string) => {
+  const root = mkdtempSync(join(tmpdir(), "host-units-2184-"));
+  const dirs = Object.fromEntries(["shipped", "installed", "bin", "repo"]
+    .map((name) => [name, join(root, name)]));
+  for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true });
+  const settingsPath = join(root, "settings.json");
+  // PINNED SATISFIED, so the drift under test is exactly the pair and not three findings deep.
+  writeFileSync(settingsPath, '{"permissions":{"defaultMode":"bypassPermissions"}}');
+  const unit = "a11ign-board-report.service";
+  writeFileSync(join(dirs.shipped, unit), UNIT_BODY(dirs.repo));
+  // THE SAME `ExecStart`, so the missing program is not an artefact of the staleness -- the only
+  // difference is a line that changes nothing about what runs, which is exactly the comment drift
+  // #2174 measured twice on this host. `repo/host/dispatch.sh` is never written, so the program the
+  // unit names is genuinely absent on both readings.
+  writeFileSync(join(dirs.installed, unit), UNIT_BODY(dirs.repo) + installedSuffix);
+  return { shippedDir: dirs.shipped, installedDir: dirs.installed, scriptDir: dirs.bin,
+    settingsPath, systemctl: SYSTEMD_OK, program: join(dirs.repo, "host/dispatch.sh") };
+};
+
+test("#2184 INTEGRATED CONTROL: a STALE unit whose program is missing gets BOTH findings, and the "
+  + "second does not claim the unit matches the repository", () => {
+  const host = hostWithOneUnit("# installed by hand, never merged\n");
+  const drift = hostUnitDrift(host);
+  assert.deepEqual(drift.map((d) => d.problem), ["STALE", "PROGRAM MISSING"],
+    "two findings, because there are two faults -- neither one is folded into the other");
+  const [missing] = drift.filter((d) => d.missingProgram);
+  assert.equal(missing.installedCopy, "stale",
+    "the comparison is MEASURED and carried, rather than assumed by the sentence that prints it");
+  assert.equal(missing.missingProgram, host.program);
+  assert.doesNotMatch(missing.detail, /matches the repository/,
+    "it does not match the repository -- `unitDrift` says so in the finding directly above this one");
+  assert.doesNotMatch(missing.detail, /THE SHARED REMEDY DOES NOT FIX THIS/,
+    "and the remedy it cannot promise is the one this stale unit most likely needs");
+  assert.match(missing.detail, /MAY be fixed by\s+the shared remedy/,
+    "re-installing REPLACES this text, and the repository's copy can name a program that is there");
+  const report = driftReport(drift);
+  assert.doesNotMatch(report, /NOT fixed by the remedy below either/,
+    "`uncovered` must not warn a reader off `host:install` on the one shape where it may work");
+  assert.match(report, /Remedy for all of them: npm run host:install/,
+    "and the remedy is still offered, which is what the paragraph above would have withdrawn");
+});
+
+test("#2184 THE MATCHED PAIR: the same unit CURRENT keeps both the claim and the remedy warning", () => {
+  // THE POSITIVE CONTROL FOR THE TWO `doesNotMatch` ASSERTIONS ABOVE. Change one thing -- the installed
+  // text now equals the shipped text -- and every sentence they assert is absent must come back, or the
+  // test above passes against a function that simply stopped saying anything.
+  const drift = hostUnitDrift(hostWithOneUnit(""));
+  assert.deepEqual(drift.map((d) => d.problem), ["PROGRAM MISSING"],
+    "no STALE now: the unit is byte-identical to the one this repository ships");
+  assert.equal(drift[0].installedCopy, "current");
+  assert.match(drift[0].detail, /the unit is installed and matches the repository/);
+  assert.match(drift[0].detail, /THE SHARED REMEDY DOES NOT FIX THIS/);
+  assert.match(driftReport(drift), /NOT fixed by the remedy below either/,
+    "#2174's whole point, unchanged: on a CURRENT unit the remedy looks like it should work and does "
+    + "nothing, so the reader has to be told beforehand");
+});
+
+test("#2184: an installed unit this repository does not ship gets NEITHER sentence", () => {
+  // The third state, and it is not "stale": an orphan has no repository copy to match OR differ from,
+  // so a boolean would have had to print one of the two sentences at a unit both are false of.
+  const [finding] = missingUnitPrograms({
+    shippedDir: "/shipped",
+    ...installedStub({ "a11ign-hand-placed.service": UNIT_WITH("host/gone.sh") }),
+    // `installedStub`'s `read` answers on BASENAME, so it would hand the same text back for the shipped
+    // path and read as CURRENT. This is the read that makes the shipped copy genuinely absent.
+    read: ((path: string) => {
+      if (String(path).startsWith("/shipped")) throw new Error(`ENOENT: ${path}`);
+      return UNIT_WITH("host/gone.sh");
+    }) as never,
+    exists: () => false,
+  });
+  assert.equal(finding.installedCopy, "unshipped");
+  assert.doesNotMatch(finding.detail, /matches the repository/);
+  assert.doesNotMatch(finding.detail, /MAY be fixed by the shared remedy/,
+    "the remedy DELETES an a11ign-* unit the repository does not ship; it does not repair this path");
+  assert.match(finding.detail, /does not ship\s+this unit at all/);
+  assert.doesNotMatch(driftReport([finding]), /NOT fixed by the remedy below either/,
+    "and `orphanedUnits` owns what to do about it");
+});
+
 test("#2174: a unit with NO WorkingDirectory is SKIPPED, never guessed at", () => {
   // A relative path would then resolve against systemd's own default, and inventing a base directory to
   // check against is how a checker starts reporting faults that are really its own.
