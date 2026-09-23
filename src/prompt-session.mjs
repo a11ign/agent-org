@@ -30,8 +30,8 @@ import { pathToFileURL } from "node:url";
 import { realpathSync, readFileSync } from "node:fs";
 
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
-import { clearContext, readAgents, WAKEABLE, queueHandoff, handoffQueuePath, ledgerPathFrom }
-  from "./wake.mjs";
+import { clearContext, readAgents, WAKEABLE, queueHandoff, handoffQueuePath, ledgerPathFrom,
+  handoffBacklog, readHandoffs, waitedFor } from "./wake.mjs";
 
 /**
  * `1` the order is LOST -- nothing holds it and nothing will retry it; `2` it was not delivered now and
@@ -147,7 +147,40 @@ export function queueOrLose({ label, text, why, agents, path }) {
     + `QUEUED ${entry.id} -- the next \`npm run work:tick\` delivers it to "${label}" once the gate judges `
     + "that session between tasks. DO NOT RETRY: this command clears its target first, so a retry that "
     + "lands the instant it goes idle wipes whatever it was working on.\n");
+  process.stderr.write(queueDepthNote(label, path));
   return EXIT.QUEUED;
+}
+
+/**
+ * WHAT THIS ORDER IS JOINING -- said to the author, at the one moment they can still act on it (#2102).
+ *
+ * `QUEUED <id>` is true and tells the author nothing about whether anyone will ever read it. On
+ * 2026-09-23 the same line was printed to fifty-seven successive authors, each of whom was correctly told
+ * their order was held and none of whom was told that it was fifty-seventh in a queue whose oldest entry
+ * had been waiting ten hours. The tick reports the same backlog to the org ({@link backlogReport}); this
+ * reports it to the only person who can still choose to put the thing on the row instead.
+ *
+ * A FAILED READ IS A DIAGNOSTIC, NEVER A FAILURE. The order is already on disk by the time this runs, so
+ * the exit code is settled -- and `readHandoffs` throws on a malformed line by design. Letting that
+ * throw would turn a queued order into a crash and send the author back to retrying, which is the one
+ * thing this command tells them not to do.
+ *
+ * @param {string} label @param {string} path @returns {string}
+ */
+export function queueDepthNote(label, path) {
+  let mine;
+  try {
+    mine = handoffBacklog(readHandoffs(path)).find((b) => b.session === label);
+  } catch (err) {
+    return `(could not read ${path} back to say how deep "${label}"'s queue is: `
+      + `${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, 120)}. Your order is `
+      + "written; this note is not.)\n";
+  }
+  if (!mine || mine.waiting <= 1) return "";
+  return `QUEUE DEPTH: this is order ${mine.waiting} waiting for "${label}", and the oldest has waited `
+    + `${waitedFor(mine.oldestMs)}. A deep queue means that session is never between tasks, so it is not `
+    + "reading its inbox -- if this order needs an answer, put it on the row where the org can see it "
+    + "(`answer:<session>`, a `blocked-by` edge, or the row body) rather than only here.\n";
 }
 
 function main() {
