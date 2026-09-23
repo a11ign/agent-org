@@ -30,6 +30,8 @@ import { afterGate, GATE, EXIT as TICK_EXIT } from "../work-tick.mjs";
 import { spawnInvocation, addressed, clearContext, CLEAR_TIMEOUT_MS, CLEAR_SETTLE_MS,
   RUN_IDLE_RESET_MS, stuckRowOf, escalateStuck }
   from "../wake.mjs";
+import { spawnWorker, spawnableRole, isPilotOrder, SPAWN_CAUSES, MAX_SPAWNS_PER_TICK }
+  from "../wake.mjs";
 import { handoffId, handoffQueuePath, ledgerPathFrom, readHandoffs, queueHandoff, dropHandoffs,
   deliverHandoffs, handoffOrder, staleHandoffs, nothingToDeliver, HANDOFF_STALE_MS, HANDOFF_QUEUE_FILE }
   from "../wake.mjs";
@@ -274,6 +276,204 @@ test("the `--` separator is present, or herdr eats the agent's flags as its own"
   assert.ok(args.slice(sep).includes("--model"), "the model flag must fall AFTER the separator");
   assert.ok(!args.slice(0, sep).includes("--model"), "nothing agent-bound may precede the separator");
   assert.equal(args[args.indexOf("--kind") + 1], "claude", "herdr must be told which product to start");
+});
+
+// --- #1952: THE CALLER. `spawnInvocation` was tested and had NO PRODUCTION CALLER ---
+//
+// Measured at `f34e5d817` while `ceo` ruled #1950: `grep -F spawnInvocation packages` outside the tests
+// returned ONE line, its own `export function`. Everything above this comment tested a command string
+// nothing ever ran. So these tests are driven through `deliver` -- the production entry -- and NOT through
+// `spawnWorker` alone: a seam is exactly what a DELETED CALL goes around, which is the lesson this file's
+// own header records about `backlogReport`.
+
+/** A `herdr` that records every call and answers `workspace create` as the live org did on 2026-09-23. */
+function recordingHerdr(refuse: (said: string) => boolean = () => false) {
+  const calls: string[][] = [];
+  const run = (args: string[]) => {
+    calls.push(args);
+    const said = args.join(" ");
+    // Multi-line on purpose: a refusal quotes the FIRST line, and a test that never sees a second one
+    // cannot tell a bounded excerpt from the whole message.
+    if (refuse(said)) throw new Error(`herdr: refused\nstack frame nobody needs`);
+    if (said.includes("workspace create")) {
+      return JSON.stringify({
+        result: { root_pane: { pane_id: "wB:p1" }, workspace: { workspace_id: "wB" } },
+      });
+    }
+    return "{}";
+  };
+  return { calls, run, said: (verb: string) => calls.map((c) => c.join(" ")).filter((s) => s.includes(verb)) };
+}
+
+const ROW_ORDER = {
+  session: "engineers",
+  cause: "ready-row-unclaimed",
+  causeKey: "engineers/ready-row-unclaimed/2131",
+  prompt: "Ready row #2131 is unclaimed. Claim it with `--session=<you>`.",
+};
+/** Nobody is running: every engineer role is absent from herdr's workspace list. */
+const NOBODY = agents({ ceo: "working", "product-manager": "working" });
+
+test("#1952 ACCEPTANCE: deliver STARTS a process when no engineer exists, and the order reaches it", () => {
+  const h = recordingHerdr();
+  const recorded: string[] = [];
+  const got = deliver([ROW_ORDER], NOBODY, ROSTER, { run: h.run, record: (k) => recorded.push(k) });
+
+  assert.deepEqual(h.said("workspace create"),
+    ["--session org workspace create --label worker-capture --no-focus"],
+    "the pane comes from a workspace created for the role, and `--no-focus` keeps the tick off the display");
+  assert.deepEqual(h.said("agent start"),
+    ["--session org agent start worker-capture --kind claude --pane wB:p1 -- --model sonnet --effort high "
+      + "--dangerously-skip-permissions --disallowedTools AskUserQuestion"],
+    "the pane id is the one `workspace create` just answered with, and the model/effort are the CAUSE's -- "
+    + "the standing six carry neither, which is the argument only spawning answers (#1950, correction 3)");
+  assert.equal(h.said("agent prompt").length, 1, "the started process is given the order");
+  assert.ok(h.said("agent prompt")[0].includes("You are `worker-capture`"),
+    "addressed() is the same line a standing session gets -- a spawned one must not be told less");
+  assert.deepEqual(got.sent, ["worker-capture <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
+  assert.deepEqual(got.refused, []);
+  assert.deepEqual(recorded, ["engineers/ready-row-unclaimed/2131"],
+    "a delivered order is a spent causeKey however it was delivered, or the next tick starts another one");
+});
+
+test("#1952: the name is a ROSTER ROLE, because `session:<name>` is an address arm-pr refuses off-list", () => {
+  const h = recordingHerdr();
+  deliver([ROW_ORDER], NOBODY, ROSTER, { run: h.run });
+  const name = h.said("agent start")[0].split(" ")[4];
+  assert.equal(name, "worker-capture", "the first absent role in roster order -- deterministic, never a pick");
+  // THE CLAIMABILITY PROPERTY, against the file that decides it. `arm-pr`'s LIVE_SESSIONS is this file's
+  // `live` names and refuses a `session:` label outside it, and B2 caps one row in build per NAME -- so a
+  // process called `eng-2131` would start fine and be unable to claim, label or comment on anything.
+  const live = (JSON.parse(readFileSync(
+    new URL("../../../../packages/agent-org/docs/roles/sessions.json", import.meta.url), "utf8",
+  )) as { live: { name: string }[] }).live.map((s) => s.name);
+  assert.ok(live.includes(name), `the started name must be a live role; sessions.json has ${live.join(", ")}`);
+  assert.ok(ROSTER.every((r) => live.includes(r)), "the engineer roster is a subset of the live roles");
+});
+
+test("#1952: a session that is FREE is still prompted, never replaced by a fresh process", () => {
+  const h = recordingHerdr();
+  const free = agents({ "worker-capture": "working", "worker-judge": "idle", "worker-tooling": "working" });
+  const got = deliver([ROW_ORDER], free, ROSTER, { run: h.run });
+  // Positive control for this emptiness: the ACCEPTANCE test above, which starts one from the same order.
+  assert.deepEqual(h.said("workspace create"), [], "beside the standing path means route is asked FIRST");
+  assert.deepEqual(got.sent, ["worker-judge <- engineers/ready-row-unclaimed/2131"],
+    "and the standing delivery is unchanged -- no STARTED clause, because nothing was started");
+  assert.equal(h.said("/clear").length, 1, "a standing session is still cleared before its order");
+});
+
+test("#1952: a STARTED process is not cleared -- there is nothing in it to clear", () => {
+  const h = recordingHerdr();
+  deliver([ROW_ORDER], NOBODY, ROSTER, { run: h.run });
+  assert.deepEqual(h.said("/clear"), [],
+    "a process two seconds old has only its own prefix, and `/clear` costs a prompt, a wait and "
+    + `${CLEAR_SETTLE_MS}ms of settle to reach a floor the spawn started at`);
+});
+
+test("#1952: only the pilot's cause may start a process, and any other refusal is left WORDED AS IT WAS", () => {
+  const busy = agents({ "worker-capture": "working", "worker-judge": "working", "worker-tooling": "working" });
+  for (const cause of ["pr-checks-failing", "blocker-cleared", undefined]) {
+    const h = recordingHerdr();
+    const got = deliver([{ ...ROW_ORDER, cause }], busy, ROSTER, { run: h.run });
+    assert.deepEqual(h.said("workspace create"), [], `"${cause}" is not a pilot cause`);
+    assert.deepEqual(got.refused, [`${ROW_ORDER.causeKey}: no engineer is idle (worker-capture=working, `
+      + "worker-judge=working, worker-tooling=working)"],
+      "an order that was never a candidate must not have a sentence about spawning added to its refusal");
+  }
+  assert.deepEqual([...SPAWN_CAUSES], ["ready-row-unclaimed"], "one cause: the pilot, not the mechanism");
+});
+
+test("#1952: an order addressed to a NAMED session never starts one, whatever its cause", () => {
+  const h = recordingHerdr();
+  const named = { ...ROW_ORDER, session: "orchestrator" };
+  const got = deliver([named], agents({ orchestrator: "working" }), ROSTER, { run: h.run });
+  assert.deepEqual(h.said("workspace create"), []);
+  assert.deepEqual(got.refused, [`${ROW_ORDER.causeKey}: "orchestrator" is working`],
+    "a lane-owned ready row is one session's work; the pilot is the engineer POOL");
+  assert.equal(isPilotOrder(named), false);
+  assert.equal(isPilotOrder(ROW_ORDER), true);
+});
+
+test("#1952: a busy, blocked or agentless role's ADDRESS is never lent to a second process", () => {
+  for (const status of ["working", "blocked", "unknown"]) {
+    const held = agents({ "worker-capture": status, "worker-judge": status, "worker-tooling": status });
+    const got = spawnableRole(ROW_ORDER, held, ROSTER);
+    assert.match(refusalText(got), /every engineer role already has a process/);
+    assert.match(refusalText(got), new RegExp(`worker-capture=${status}`),
+      "the refusal names what each role is doing, or nobody can tell a busy org from a broken reader");
+    const h = recordingHerdr();
+    assert.deepEqual(deliver([ROW_ORDER], held, ROSTER, { run: h.run }).sent, []);
+    assert.deepEqual(h.said("workspace create"), [], `a ${status} role's label is not reused`);
+  }
+  // The one state that IS lent, so the three refusals above are not vacuous.
+  assert.deepEqual(spawnableRole(ROW_ORDER, NOBODY, ROSTER), { role: "worker-capture" });
+});
+
+test("#1952: at most one process per tick, and the second order says so rather than going quiet", () => {
+  const h = recordingHerdr();
+  const second = { ...ROW_ORDER, causeKey: "engineers/ready-row-unclaimed/2132" };
+  const got = deliver([ROW_ORDER, second], NOBODY, ROSTER, { run: h.run });
+  assert.equal(MAX_SPAWNS_PER_TICK, 1);
+  assert.equal(h.said("agent start").length, 1, "a partial roster read must not start the whole roster");
+  assert.deepEqual(got.sent, ["worker-capture <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
+  assert.deepEqual(got.refused, [`${second.causeKey}: no engineer is idle (worker-capture=working, `
+    + "worker-judge=absent, worker-tooling=absent), and this tick has already started 1 "
+    + "(MAX_SPAWNS_PER_TICK is 1)"]);
+  assert.ok(got.refused[0].includes("worker-capture=working"),
+    "the process just started is WORKING, not a free engineer the same tick may hand a second row to -- "
+    + "it is not in the agent list this tick read, so `deliver` has to add it");
+});
+
+test("#1952 TEARDOWN: a refused `agent start` closes the workspace it opened, and says which", () => {
+  const h = recordingHerdr((said) => said.includes("agent start"));
+  const got = deliver([ROW_ORDER], NOBODY, ROSTER, { run: h.run });
+  assert.deepEqual(h.said("workspace close"), ["--session org workspace close wB"],
+    "an abandoned pane carries the ROLE's label and reports `agent_status: unknown`, which WAKEABLE "
+    + "excludes and spawnableRole refuses -- so leaving it removes that engineer from the org for good");
+  assert.deepEqual(got.sent, []);
+  assert.match(got.refused[0], /herdr refused to start "worker-capture" \(herdr: refused\)/);
+  assert.ok(!got.refused[0].includes("stack frame nobody needs"), "the excerpt is the first line only");
+  assert.match(got.refused[0], /the workspace it opened \(wB\) was closed/);
+});
+
+test("#1952 TEARDOWN: a workspace naming no pane is closed too, and an unparseable answer is refused", () => {
+  const paneless = (args: string[]) => args.join(" ").includes("workspace create")
+    ? JSON.stringify({ result: { workspace: { workspace_id: "wB" } } }) : "{}";
+  const calls: string[][] = [];
+  const got = deliver([ROW_ORDER], NOBODY, ROSTER,
+    { run: (args) => { calls.push(args); return paneless(args); } });
+  assert.match(got.refused[0], /named no pane/);
+  assert.ok(calls.some((c) => c.join(" ") === "--session org workspace close wB"),
+    "an unreadable answer is the one case where the thing to clean up is the thing we cannot describe");
+  assert.deepEqual(got.sent, []);
+});
+
+test("#1952 TEARDOWN: a close that FAILS is reported, never swallowed -- it needs a hand", () => {
+  const h = recordingHerdr((said) => said.includes("agent start") || said.includes("workspace close"));
+  const got = deliver([ROW_ORDER], NOBODY, ROSTER, { run: h.run });
+  assert.equal(h.said("workspace close").length, 1, "the close was attempted");
+  assert.match(got.refused[0], /could NOT be closed/);
+  assert.match(got.refused[0], /close it by hand, or that role reads `unknown`/);
+  assert.deepEqual(got.sent, []);
+});
+
+test("#1952: a started process whose PROMPT is refused is left running, and the cause stays unspent", () => {
+  const h = recordingHerdr((said) => said.includes("agent prompt"));
+  const recorded: string[] = [];
+  const got = deliver([ROW_ORDER], NOBODY, ROSTER, { run: h.run, record: (k) => recorded.push(k) });
+  assert.deepEqual(h.said("workspace close"), [],
+    "it is a healthy idle session under a roster label -- closing it throws away a working engineer");
+  assert.deepEqual(recorded, [], "an unrecorded causeKey is re-offered, and the ordinary route will place it");
+  assert.match(got.refused[0], /herdr refused the prompt to "worker-capture"/);
+});
+
+test("#1952: the capped cause still reaches MAX_DELIVERIES rather than starting a process forever", () => {
+  const h = recordingHerdr();
+  const counts = new Map([[ROW_ORDER.causeKey, MAX_DELIVERIES]]);
+  const got = deliver([ROW_ORDER], NOBODY, ROSTER, { run: h.run, counts });
+  assert.deepEqual(h.said("workspace create"), [],
+    "the stuck cap is read BEFORE the target, so a cause nobody acts on cannot spend a process a tick");
+  assert.equal(got.stuck.length, 1);
 });
 
 // --- addressed: the woken session is told WHO IT IS, and that nobody is at the terminal (2026-09-17) ---
