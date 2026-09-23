@@ -974,7 +974,9 @@ test("an empty stdin is NOT a quiet tick while an order is queued", () => {
 // #1966 replaced "NOT PROMPTED, and that was the end of the order" with a queue, which was right. What
 // it did not decide is what happens when the drain condition never becomes true.
 //
-// MEASURED 2026-09-23 by replaying `~/.cache/a11ign/prompt-session-handoffs` through `readHandoffs`:
+// MEASURED 2026-09-23 by replaying the live handoff queue -- `handoffQueuePath(ledgerPathFrom([]))`, and
+// it is named that way rather than spelled out because `control-plane-checkout-is-one-fact.test.ts`
+// classifies every directory a tracked file names under a home root, and this one is not its business --
 // 59 orders pending, 57 of them for `product-manager` and every other session's queue empty, oldest
 // 9.7h, 31 over two hours. Among them `ceo`'s own RULING on #2094, a STOP-THE-LINE, two MAIN IS RED
 // reports and an ORG-WIDE report -- the ruling reached its target only because `ceo` sent it again by a
@@ -1012,12 +1014,17 @@ test("THE BACKLOG IS A READING PER TARGET: count, oldest, and how many are stale
   // THE POSITIVE CONTROL for the empty case below -- this is the population being non-empty, and it is
   // the 2026-09-23 shape: one session holding everything while the others hold nothing.
   const now = 10 * 60 * 60 * 1000;
+  // THE FRESH SESSION IS ALPHABETICALLY FIRST, DELIBERATELY. The first draft of this used `reviewer-2`,
+  // which sorts after `product-manager` by name as well as by age -- so `sort by name` and `sort by worst
+  // wait` agreed on the fixture and `npm run mutate` reported the name-sort mutant as a SURVIVOR. A
+  // fixture where the two orderings agree cannot pin either of them.
   const got = handoffBacklog([...backlogOf("product-manager", 57, now),
-    ...backlogOf("reviewer-2", 1, now, 1)], now);
+    ...backlogOf("ceo", 1, now, 1)], now);
 
   assert.equal(got.length, 2, "one row per target, never one per order");
-  assert.deepEqual(got.map((b) => b.session), ["product-manager", "reviewer-2"],
-    "WORST FIRST: the session whose oldest order has waited longest is the one to look at");
+  assert.deepEqual(got.map((b) => b.session), ["product-manager", "ceo"],
+    "WORST FIRST: the session whose oldest order has waited longest is the one to look at, and a "
+    + "name sort would put `ceo` first");
   assert.equal(got[0].waiting, 57);
   assert.equal(waitedFor(got[0].oldestMs), "9.5h", "57 orders 10 minutes apart");
   assert.equal(got[0].stale, 46, "and how many of them passed the two-hour line");
