@@ -21,6 +21,7 @@ import {
   runsTheWholeSuite,
   suiteTestFiles,
   SPAWNS_GH,
+  endsInsideQuote,
 } from "../acceptance-commands.mjs";
 
 // A file known to exist, relative to the repo root -- where every real invocation of this command runs
@@ -527,6 +528,89 @@ test("#419 MUTATION TARGET (form 3): a line NOT ending in a continuation must ne
   assert.equal(result.kind, "commands");
   assert.equal((/** @type {{commands:string[]}} */(result)).commands.length, 2,
     "documents that joining is conditional on a real trailing backslash, not merely 'the next line exists'");
+});
+
+// --- #2068: an UNCLOSED QUOTE is a continuation too -- the same fact as `\` in another spelling ---
+//
+// The incident: #1989's Acceptance was a four-line `node --input-type=module -e '…'` that runs correctly
+// in any shell. On the runner (PR #2064, run 35832677295) it reached `/bin/bash -c` as four fragments --
+// `unexpected EOF while looking for matching '`, then three lines reported as "not a command" -- so
+// `acceptance` was red and `gate` red behind it on a row whose command was right. Reflowed onto one line
+// with identical semantics it passed. Nothing anywhere said the shape was forbidden.
+//
+// The population these tests have to separate: a line that ends MID-STRING (join it) from a line that
+// merely CONTAINS a quote character (leave it alone). The second is the dangerous half -- joining a
+// balanced line swallows the command after it, and a bare apostrophe in a comment is the shape that
+// tempts a regex into exactly that.
+
+const MULTILINE_FENCE = "## Acceptance\n\n```bash\nnode -e 'const a = 1;\nconsole.log(a);'\n```\n";
+
+test("#2068: a fenced command that ends inside an open quote is ONE command, not one per line", () => {
+  assert.deepEqual(extractAcceptanceSection(MULTILINE_FENCE),
+    { kind: "commands", commands: ["node -e 'const a = 1;\nconsole.log(a);'"] });
+});
+
+test("#2068: the join keeps the NEWLINE the author wrote, because a newline inside a quote is part of "
+  + "the string -- a space would silently rewrite any `python -c` whose indentation is its syntax", () => {
+  const [command] = (extractAcceptanceSection(MULTILINE_FENCE) as { commands: string[] }).commands;
+  assert.ok(command.includes("\n"), "the literal newline survives extraction");
+  assert.equal(endsInsideQuote(command), false, "and the joined command is closed -- bash can run it");
+});
+
+test("#2068: what RUNS is the whole command -- run() sees one string, never the leading fragment that "
+  + "produced `unexpected EOF while looking for matching '` on run 35832677295", () => {
+  const seen: string[] = [];
+  const body = "## Acceptance\n\n```bash\nnode --input-type=module -e 'const env = 21;\nprocess.exit(env === 21 ? 0 : 1);'\n```\n";
+  const report = acceptanceReport(body, (cmd) => { seen.push(cmd); return 0; });
+  assert.equal(report.ok, true);
+  assert.deepEqual(seen, ["node --input-type=module -e 'const env = 21;\nprocess.exit(env === 21 ? 0 : 1);'"]);
+});
+
+test("#2068 NEGATIVE CONTROL: two balanced one-line commands stay TWO -- a joiner that joins "
+  + "unconditionally passes every test above and fails this one", () => {
+  assert.deepEqual(extractAcceptanceSection("## Acceptance\n\n```bash\nnpm run lint\nnpm run typecheck\n```\n"),
+    { kind: "commands", commands: ["npm run lint", "npm run typecheck"] });
+});
+
+test("#2068 TRAP: a bare apostrophe in a trailing comment leaves the line BALANCED -- counting quote "
+  + "characters would read `# don't skip` as open and swallow the command below it", () => {
+  assert.deepEqual(extractAcceptanceSection("## Acceptance\n\n```bash\nnpm run lint # don't skip this\nnpm run typecheck\n```\n"),
+    { kind: "commands", commands: ["npm run lint # don't skip this", "npm run typecheck"] });
+});
+
+test("#2068 TRAP: a quote NESTED inside the other kind is balanced -- `node -e 'const s = \"a\";'` and "
+  + "`echo \"it's fine\"` each close, and neither may reach for the next line", () => {
+  assert.deepEqual(extractAcceptanceSection("## Acceptance\n\n```bash\nnode -e 'const s = \"a\";'\necho \"it's fine\"\nnpm run typecheck\n```\n"),
+    { kind: "commands", commands: ["node -e 'const s = \"a\";'", "echo \"it's fine\"", "npm run typecheck"] });
+});
+
+test("#2068 THE RUNAWAY: a quote that is never closed stops at the CLOSING FENCE -- a real typo must "
+  + "cost one malformed command, not a body read wrongly from there to the end", () => {
+  const body = "## Acceptance\n\n```bash\nnode -e 'oops\n```\n\n## Mutation\n\nsomething else\n";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["node -e 'oops"] });
+});
+
+test("#2068: the same shape in a BARE (unfenced) block joins, and still stops where the block ends", () => {
+  const body = "Acceptance:\nnode -e 'const a = 1;\nconsole.log(a);'\n\nMutation: flip the joiner\n";
+  assert.deepEqual(extractAcceptanceSection(body),
+    { kind: "commands", commands: ["node -e 'const a = 1;\nconsole.log(a);'"] });
+});
+
+test("#2068: the quote scanner itself, on the shapes that decide the two halves apart", () => {
+  const cases: [string, boolean][] = [
+    ["node -e 'const a = 1;", true],
+    ["node -e 'const a = 1;'", false],
+    ["npm run lint # don't skip", false],
+    ["node -e 'const s = \"a\";'", false],
+    ["echo \"it's fine\"", false],
+    ["echo \"unterminated", true],
+    ["echo \\' balanced-by-escape", false],
+    ["node -e \"const s = \\\"a\\\";\"", false],
+    ["curl http://example.test/page#anchor", false],
+  ];
+  for (const [text, expected] of cases) {
+    assert.equal(endsInsideQuote(text), expected, `endsInsideQuote(${JSON.stringify(text)})`);
+  }
 });
 
 // Form 4: a trailing `# comment` on a `tsx --test` line is not a file argument.
