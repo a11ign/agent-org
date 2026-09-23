@@ -1151,13 +1151,17 @@ test("#1998: a shell script spawns `gh` as a WORD, which the JavaScript pattern 
   assert.equal(ghSpawnReachedFrom(join(SHIPPED_DIR, "board-report-dispatch.sh")),
     join(SHIPPED_DIR, "board-report-dispatch.sh"));
   assert.deepEqual(shellCommandWords('RUN_ID="$(gh run list --repo x)"'), ["gh", "\""],
-    "the `$(` split: the line's own first word is an assignment, skipped, and the call sits one "
+    "the `(` split: the line's own first word is an assignment, skipped, and the call sits one "
     + "substitution in. The trailing `\"` is the OVER-APPROXIMATION this reader is allowed -- splitting "
     + "on separators without matching quotes can name a fragment that is not a command, and the only "
     + "question asked of the list is whether `gh` is in it, which no dangling quote can answer yes");
   assert.deepEqual(shellCommandWords('echo "at $(date -u +%FT%TZ)"'), ["echo", "date", "\""],
-    "a `#` inside a word is a format string, not the start of a comment -- strip it and this line's "
-    + "`date` disappears along with everything after it on the line");
+    "a substitution is a command position wherever it sits, including inside a quoted argument");
+  assert.equal(shellSpawnsGh('ISSUE="a11ign#1998"; gh issue view "$ISSUE"\n'), true,
+    "THE WORD BOUNDARY ON THE COMMENT STRIP, and its failure direction is the dangerous one: a `#` "
+    + "mid-word is an issue reference, a fragment or an anchor, and stripping from it to end-of-line "
+    + "deletes a REAL `gh` call further along -- a false NEGATIVE, which here reads as a unit that "
+    + "spends nobody's pool");
   assert.equal(shellSpawnsGh("# gh workflow run x\necho done\n"), false,
     "NEGATIVE CONTROL: a `gh` in a COMMENT is not a spawn -- the shape that charged row-file.mjs for a "
     + "note about the guard that read it (#804)");
@@ -1189,6 +1193,28 @@ test("#1998: a leftover copy at ~/.local/bin is a finding, and says which way it
   assert.equal(drifted.problem, "SUPERSEDED COPY -- ALREADY DIVERGED");
   assert.match(drifted.detail, /Read the diff before removing it/,
     "which of the two holds the change is a question this file cannot answer");
+});
+
+test("#1998: `host:check` ACTUALLY ASKS -- the check is wired, not merely written", () => {
+  // THE SURVIVING MUTANT THIS TEST EXISTS FOR: deleting `...supersededHostScripts(deps)` from
+  // `hostUnitDrift` killed nothing, because every other assertion here calls the function directly.
+  // That is the shape this file's own #2000 block is about -- built, tested, shipped, never wired --
+  // and it is the third time in this repository, so it gets an assertion rather than a habit.
+  const drift = hostUnitDrift({
+    shippedDir: "/shipped", scriptDir: "/home/agent/.local/bin", systemctl: SYSTEMD_OK,
+    readDir: (() => ["board-report-dispatch.sh"]) as never,
+    exists: (() => true) as never,
+    read: ((p: string) => (String(p).startsWith("/shipped") ? "a\n" : "b\n")) as never,
+  });
+  assert.ok(drift.some((d) => d.problem.startsWith("SUPERSEDED COPY")),
+    "the command a reader actually runs is `host:check`, and it reaches `hostUnitDrift` -- a finding "
+    + "no report can print is a finding nobody gets");
+  assert.deepEqual(hostUnitDrift({
+    shippedDir: "/shipped", scriptDir: "/home/agent/.local/bin", systemctl: NO_SYSTEMD,
+    readDir: (() => ["board-report-dispatch.sh"]) as never,
+    exists: (() => true) as never, read: (() => "a\n") as never,
+  }), [], "POSITIVE CONTROL: and a machine with no user systemd is told nothing about its ~/.local/bin "
+    + "either -- a laptop that gets this finding is a laptop that silences the whole command");
 });
 
 test("#1998: the REMEDY LINE says the shared remedy does NOT fix it", () => {

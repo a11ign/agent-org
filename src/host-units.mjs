@@ -237,15 +237,17 @@ const SHELL_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
  * repository's own record of that mistake costing a file which refused itself for being named after the
  * thing it fixed.
  *
- * SPLIT ON `$(` AS WELL AS THE ORDINARY SEPARATORS, because the dispatch's SECOND `gh` is
+ * SPLIT ON THE PARENTHESIS, NOT ONLY ON THE NEWLINE, because the dispatch's SECOND `gh` is
  * `RUN_ID="$(gh run list ...)"` -- the line's own first word is an assignment and the call sits one
  * substitution in. A reader that only asked about line-leading words would see one call and charge the
- * unit for half of what it actually spends.
+ * unit for half of what it actually spends. `(` covers `$(` and a bare subshell alike, and a separate
+ * `\$\(` alternative was written here first and measured DEAD: removing it changed no answer, because
+ * the character class had already split the same position.
  * @param {string} text @returns {string[]}
  */
 export function shellCommandWords(text) {
   return String(text ?? "").replace(SHELL_COMMENT, "$1")
-    .split(/\$\(|&&|\|\||[\n;()`|&]/)
+    .split(/&&|\|\||[\n;()`|&]/)
     .map((fragment) => commandWord(fragment))
     .filter((word) => word !== "");
 }
