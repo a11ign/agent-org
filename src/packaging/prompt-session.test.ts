@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promptable, clearThenPrompt, queueable, queueOrLose, EXIT }
+import { promptable, clearThenPrompt, queueable, queueOrLose, queueDepthNote, EXIT }
   from "../prompt-session.mjs";
 import { readHandoffs } from "../wake.mjs";
 
@@ -199,4 +199,66 @@ test("a failed ROSTER READ queues, because 'could not ask' is not 'no such sessi
   assert.equal(queueable("worker-judge", agents), true,
     "blocked is a state a human clears -- the order should be waiting when they do");
   assert.equal(queueable("reviewr", agents), false, "a name herdr does know it does not have");
+});
+
+// ---------------------------------------------------------------------------------------------------
+// WHAT THE AUTHOR IS TOLD ABOUT THE QUEUE THEY JUST JOINED (#2102).
+//
+// `QUEUED <id>` is true and says nothing about whether anyone will ever read it. On 2026-09-23 that line
+// was printed to fifty-seven successive authors, each correctly told their order was held, none told it
+// was fifty-seventh in a queue whose oldest entry had waited ten hours -- among them a `ceo` ruling and a
+// STOP-THE-LINE. The tick reports the backlog to the org; this reports it to the only person who can
+// still choose to put the thing on the row instead.
+
+test("A DEEP QUEUE IS SAID TO THE AUTHOR, with the count and the oldest wait", () => {
+  inTempDir((dir) => {
+    const path = join(dir, "q");
+    // Nine earlier orders for the same target, the oldest ten hours old: the 2026-09-23 shape, smaller.
+    const now = Date.now();
+    writeFileSync(path, Array.from({ length: 9 }, (_, i) => JSON.stringify({
+      id: `handoff/product-manager/${i}`, session: "product-manager", prompt: `report ${i}`,
+      queuedAt: now - (10 - i) * 60 * 60_000,
+    })).join("\n") + "\n");
+
+    const { value, err } = withStderr(() => queueOrLose({
+      label: "product-manager", text: "completion report on #2102", why: "is working",
+      agents: [{ label: "product-manager", status: "working" }], path,
+    }));
+
+    assert.equal(value, EXIT.QUEUED, "the order is still queued -- this note changes no outcome");
+    assert.equal(readHandoffs(path).length, 10, "the positive control: it really is on disk, tenth");
+    assert.match(err, /QUEUE DEPTH: this is order 10 waiting for "product-manager"/);
+    assert.match(err, /oldest has waited 10\.0h/);
+    assert.match(err, /put it on the row where the org can see it/,
+      "and it names the mechanism that does not depend on the target ever being idle");
+  });
+});
+
+test("THE CONTROL: the FIRST order for a session gets no depth note", () => {
+  // Without this, the note prints on every queued order and is noise on the case #1966 was built for --
+  // one author, one reviewer, one draft, delivered on the next tick.
+  inTempDir((dir) => {
+    const path = join(dir, "q");
+    const { err } = withStderr(() => queueOrLose({
+      label: "reviewer", text: "Draft #1963 (odd)", why: "is working",
+      agents: [{ label: "reviewer", status: "working" }], path,
+    }));
+    assert.equal(readHandoffs(path).length, 1, "the control: one order, which is the ordinary case");
+    assert.match(err, /QUEUED handoff\/reviewer\//, "still told their order is held");
+    assert.doesNotMatch(err, /QUEUE DEPTH/);
+  });
+});
+
+test("a queue that cannot be read back is a DIAGNOSTIC, never a lost order", () => {
+  // The order is on disk by the time this runs, so the exit code is settled -- and `readHandoffs` throws
+  // on a malformed line by design. Letting that throw would turn a queued order into a crash and send
+  // the author back to retrying, which is the one thing this command tells them not to do.
+  assert.match(queueDepthNote("reviewer", "/dev/null/nope/q"), /could not read/);
+  assert.match(queueDepthNote("reviewer", "/dev/null/nope/q"), /Your order is written; this note is not/);
+  inTempDir((dir) => {
+    const path = join(dir, "q");
+    writeFileSync(path, '{"session":"reviewer"}\n');
+    assert.match(queueDepthNote("reviewer", path), /could not read/,
+      "a malformed line is reported here and thrown by the tick, where it costs only its own orders");
+  });
 });
