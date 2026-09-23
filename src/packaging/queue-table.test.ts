@@ -790,9 +790,12 @@ test("#1405 apiBudget reads both pools through the injected run, with the argv t
     ["api", "repos/a11ign/a11ign", "-i", "--jq", ".name"],
     ["api", "graphql", "-f", "query=query { viewer { login } }", "-i"],
   ], "one call per pool, each of its own kind -- core through REST, graphql through GraphQL");
+  // `resource` and `resetAt` joined the shape in #2003, when `poolFromHeaders` moved to `api-pool.mjs` so
+  // `work-gate.mjs`'s refusal could name WHICH pool refused and WHEN it comes back in absolute terms. This
+  // fixture sends neither header, so both read `null` -- which is the honest answer and not a zero.
   assert.deepEqual(budget, {
-    core: { remaining: 4000, limit: 5000, used: 1000, resetInMinutes: null },
-    graphql: { remaining: 4990, limit: 5000, used: 10, resetInMinutes: null },
+    core: { remaining: 4000, limit: 5000, used: 1000, resetInMinutes: null, resource: null, resetAt: null },
+    graphql: { remaining: 4990, limit: 5000, used: 10, resetInMinutes: null, resource: null, resetAt: null },
   });
 });
 

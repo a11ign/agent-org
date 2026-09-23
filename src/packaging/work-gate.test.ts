@@ -16,7 +16,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { shippedUnits } from "../host-units.mjs";
 import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES,
   comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
@@ -27,7 +29,7 @@ import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReady
   FLEET_MILESTONE, readEpics, answersOwed, answerOrders,
   readOpenRows, withAnswerLabel,
   blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL,
-  ANSWER_PREFIX, redOnlyBySupersededRun }
+  ANSWER_PREFIX, redOnlyBySupersededRun, cannotAskReport }
   from "../work-gate.mjs";
 
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
@@ -1947,4 +1949,159 @@ test("#1941: the retired timer's units are gone from the shipped host set", () =
   assert.ok(!units.some((u: string) => u.startsWith("a11ign-fleet-gated-nightly")),
     `a11ign-fleet-gated-nightly.* must not ship any more -- found ${units.join(", ")}`);
   assert.ok(units.includes("a11ign-work-tick.timer"), "POSITIVE CONTROL: the tick's own units still ship");
+});
+
+/**
+ * #2003: A DEAD POOL AND A QUIET QUEUE LOOKED IDENTICAL FROM THE JOURNAL.
+ *
+ * Measured 2026-09-22. `a11ign-ai-workers` reached `used 5000, remaining 0`, and from 20:28:15Z every tick
+ * logged the same four lines and woke nobody. The refusal was correct and loud, and still left the only
+ * three facts a reader needs unstated: WHICH account, WHICH pool, and WHEN it comes back. `328832207` is a
+ * user ID, not a login, and the answer to "for how long" -- 52 minutes -- was in the headers of the call
+ * that had just failed.
+ *
+ * WHY A FIXTURE AND NOT A LIVE CALL: the probe has to be exercised on a DEAD pool, which is the one state
+ * a test cannot create. So the fake `run` reproduces what `execFileSync` does when `gh` exits non-zero --
+ * it THROWS with the response on `error.stdout` -- because that is the property the whole reading rests on,
+ * and a fake that returned the response normally would pass while the real refusal path returned null.
+ */
+const DEAD_GRAPHQL = [
+  "HTTP/2.0 200 OK",
+  "X-Ratelimit-Limit: 5000",
+  "X-Ratelimit-Remaining: 0",
+  "X-Ratelimit-Reset: 1790127611",
+  "X-Ratelimit-Resource: graphql",
+  "X-Ratelimit-Used: 5000",
+  "",
+  '{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for user ID 328832207."}]}',
+].join("\r\n");
+
+const LIVE_GRAPHQL = [
+  "HTTP/2.0 200 OK",
+  "X-Ratelimit-Limit: 5000",
+  "X-Ratelimit-Remaining: 3340",
+  "X-Ratelimit-Reset: 1790119231",
+  "X-Ratelimit-Resource: graphql",
+  "X-Ratelimit-Used: 1660",
+  "",
+  '{"data":{"viewer":{"login":"a11ign-ai-workers"}}}',
+].join("\r\n");
+
+/** A `gh` that fails the way `execFileSync` fails: non-zero, with the response still on `stdout`. */
+const refusedWith = (stdout: string) => () => {
+  throw Object.assign(new Error("gh exited 1"), { status: 1, stdout });
+};
+
+/** Records every `gh` invocation, so "how many calls did that cost" is counted rather than reasoned about. */
+function recordingRun(reply: (args: string[]) => string) {
+  const calls: string[][] = [];
+  return {
+    calls,
+    run: (args: string[]) => { calls.push(args); return reply(args); },
+  };
+}
+
+test("#2003: a refusal on a DEAD pool names the pool and the reset, for ONE call", () => {
+  const { calls, run } = recordingRun(refusedWith(DEAD_GRAPHQL));
+  const report = cannotAskReport({ run });
+
+  assert.match(report, /CANNOT ASK: neither the pull-request list nor the Ready rows could be read/,
+    "the original refusal is unchanged -- this row adds facts to it, it does not replace it");
+  assert.match(report, /pool graphql/, "WHICH pool -- core and graphql die separately and reset separately");
+  assert.match(report, /resets at 2026-09-23T01:40:11\.000Z/,
+    "an ABSOLUTE reset: a reader arriving an hour later cannot use minutes counted when the line was written");
+  assert.match(report, /0 remaining of 5000/);
+  assert.match(report, /THE POOL IS EXHAUSTED/, "the verdict is stated, not left to be inferred from a 0");
+
+  // DONE-WHEN 2 IS THE BINDING LIMIT, AND THIS IS WHERE IT BITES. A rate-limited response names a user ID
+  // and no login, and no second call may be made to improve on that -- so the account is reported
+  // UNREADABLE with the ID the response did carry, which is done-when 3's rule applied to the account.
+  assert.equal(calls.length, 1,
+    "AT MOST ONE extra request on the refusal path -- #2003 done-when 2, and the dead pool is the case "
+    + "that tests it, because it is the one where a second call would buy something");
+  assert.match(report, /account UNREADABLE \(user ID 328832207\)/,
+    "not the login, and not silence: what the refusing response actually carried, marked as not the answer");
+  assert.ok(!/account 328832207/.test(report),
+    "a user ID must never be printed as though it were the account name -- that is the journal line this "
+    + "row was filed to replace");
+});
+
+test("#2003: a LIVE pool costs ONE probe and says the pool is not the cause -- the positive control", () => {
+  // THE CONTROL THAT MATTERS. Without it, a refusalPoolLine that printed EXHAUSTED unconditionally would
+  // satisfy the test above perfectly, and every network blip would be reported to the org as a dead pool.
+  const { calls, run } = recordingRun(() => LIVE_GRAPHQL);
+  const report = cannotAskReport({ run });
+
+  assert.match(report, /account a11ign-ai-workers/);
+  assert.match(report, /1660 used, 3340 remaining of 5000/);
+  assert.match(report, /THE POOL IS NOT THE CAUSE/,
+    "budget left means the reads were refused by something else, and saying so is the point of the line");
+  assert.ok(!report.includes("EXHAUSTED"), "a healthy pool must never be reported as exhausted");
+  assert.ok(!report.includes("UNREADABLE"),
+    "a live probe answers all three facts from its own body and headers -- nothing is degraded here");
+  assert.equal(calls.length, 1, "one probe, the same one the dead-pool case pays -- #2003's done-when 2");
+});
+
+test("#2003: an unreadable probe reports UNREADABLE and never invents a pool", () => {
+  // DONE-WHEN 3, AND THE OLDEST RULE IN THIS FILE ONE LEVEL DOWN: an instrument that cannot answer must not
+  // answer zero. `0 remaining` reads as an exhausted pool, and a reader waits for a reset that is not coming.
+  const noResponse = cannotAskReport({ run: () => "" });
+  assert.match(noResponse, /account UNREADABLE/);
+  assert.match(noResponse, /pool UNREADABLE/);
+  assert.match(noResponse, /CANNOT say whether the pool is exhausted or something else refused/);
+  assert.ok(!/\bremaining\b/.test(noResponse.replace("pool UNREADABLE", "")),
+    "no count may be printed for a pool that was never read");
+
+  // Headers present but unparseable is the same answer, and it is a DIFFERENT failure: a response arrived.
+  const garbled = cannotAskReport({ run: () => "HTTP/2.0 200 OK\r\nX-Ratelimit-Resource: graphql\r\n\r\n{}" });
+  assert.match(garbled, /pool UNREADABLE/,
+    "a resource name with no counts is not a pool reading -- remaining and limit are what make it one");
+
+  // THE USER ID IS READ OFF PROSE, SO ITS ABSENCE HAS TO DEGRADE RATHER THAN THROW. If GitHub ever
+  // reworded the rate-limit message, this is what the line becomes -- a bare UNREADABLE, never a partial
+  // match printed as an account.
+  // THE REWORDING KEEPS A NUMBER IN IT ON PURPOSE. A fixture with no digits left would pass against a
+  // reader that had been loosened to grab the first integer it saw, so the number here is a plausible one
+  // that is NOT an account (`try again in 3600 seconds`) -- the mutant that drops the `user ID` anchor
+  // survives without it, measured.
+  const reworded = cannotAskReport({
+    run: refusedWith(DEAD_GRAPHQL.replace("for user ID 328832207",
+      "for this installation; try again in 3600 seconds")),
+  });
+  assert.match(reworded, /account UNREADABLE(?! \()/,
+    "no user ID in the message means no user ID in the line, and the pool facts still stand");
+  assert.ok(!reworded.includes("3600"),
+    "the ID is read off the `user ID` anchor, not off whatever integer the message happens to contain");
+  assert.match(reworded, /THE POOL IS EXHAUSTED/,
+    "POSITIVE CONTROL: the account degrading must not take the reset and the verdict down with it");
+});
+
+test("#2003: the pool reading has ONE definition, and the gate pays for it only when refusing", () => {
+  const gate = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+
+  // THE COST IS ON THE REFUSAL PATH OR IT IS NOT FREE. `cannotAskReport` is the only caller of
+  // `poolDiagnosis`, and its own only call site must sit inside the both-lanes-refused branch -- otherwise
+  // a healthy tick pays a point every two minutes, which is the one thing this row must not buy.
+  assert.equal(gate.match(/poolDiagnosis\(/g)?.length, 1,
+    "poolDiagnosis is called once, inside cannotAskReport -- a second call site is a second price");
+  const refusalBranch = /if \(prs === null && readyRows === null\) \{([\s\S]*?)\n {2}\}/.exec(gate)?.[1] ?? "";
+  assert.match(refusalBranch, /cannotAskReport\(\{ run: defaultRun \}\)/,
+    "the report is built inside the refusal branch; anywhere else and every healthy tick pays for it");
+  // The declaration spells the same call shape, so it is excluded by name rather than by counting matches.
+  assert.equal(gate.match(/(?<!function )cannotAskReport\(\{/g)?.length, 1,
+    "exactly one call site, and it is the one inside the refusal branch asserted above");
+
+  // AND THE READ COUNT IS UNCHANGED, which is the other half of done-when 2: this row adds no
+  // unconditional read, and `GH_READS` is the pin that would catch it if it ever did.
+  assert.equal(GH_READS.unconditional.length, 5,
+    "#2003 must not add an unconditional read -- the refusal path is where the extra call lives");
+
+  // A SECOND COPY OF "HOW TO READ A POOL" IS REFUSED (#2003's Region says so). The header name is the
+  // fingerprint: whoever writes it again has written the second copy this move exists to prevent.
+  const src = fileURLToPath(new URL("../", import.meta.url));
+  const definers = readdirSync(src)
+    .filter((f: string) => f.endsWith(".mjs"))
+    .filter((f: string) => readFileSync(join(src, f), "utf8").includes("X-Ratelimit-Remaining"));
+  assert.deepEqual(definers, ["api-pool.mjs"],
+    `only the leaf module may know how to read a pool; found ${definers.join(", ")}`);
 });
