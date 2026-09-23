@@ -281,6 +281,97 @@ function readArmed(number, repo) {
     "--jq", ".data.repository.pullRequest"])));
 }
 
+/**
+ * THE CANDIDATE READ ASKS THE SAME QUESTION `armedFromApi` ANSWERS (#2004), and until this it did not.
+ *
+ * `armedFromApi` above knows three armed states and its own comment says why the third needs GraphQL --
+ * and the candidate list was a `gh pr list ... --json number,isDraft,autoMergeRequest` with a second
+ * `--jq` predicate inside a shell argument, which is exactly the REST read that comment says structurally
+ * cannot see the merge queue. So a pull request SITTING IN THE QUEUE was swept as unarmed on every run:
+ * the arm was refused, and `sweep` exited 1 with FAILED TO ARM on a correctly armed PR. Measured
+ * 2026-09-22 against #1999, both reads in the same minute -- GraphQL said
+ * `mergeQueueEntry: {position: 1, state: "AWAITING_CHECKS"}`, the candidate read said `1999`. Deterministic,
+ * not a race: it repeated on every sweep for as long as the PR sat in the queue, and run 35781830875
+ * reddened #1999's own head for it.
+ *
+ * #1729's fix went into `confirmArmed` and `mergedMeanwhile` and never into the path that decides WHO IS
+ * SWEPT AT ALL -- the second-copy-of-a-predicate shape, where the right rule exists, is exported, is
+ * tested, and the deciding read does not call it.
+ *
+ * `merged` is queried although `states: OPEN` makes it always false here: the field is part of
+ * `armedFromApi`'s contract, and a candidate read that dropped it would be a third place deciding which
+ * states count.
+ */
+const CANDIDATES_QUERY = "query($o:String!,$r:String!,$b:String!,$limit:Int!){repository(owner:$o,name:$r)"
+  + "{pullRequests(states:OPEN,baseRefName:$b,first:$limit)"
+  + "{nodes{number isDraft merged autoMergeRequest{enabledAt} mergeQueueEntry{state}}}}}";
+
+/** The population this sweep has always had: open, against `main`, and the same 100 the old `--limit` read. */
+const CANDIDATE_BASE = "main";
+const CANDIDATE_LIMIT = 100;
+
+/**
+ * PURE. Which of these open pull requests does the sweep still have to arm?
+ *
+ * Split from the read for the same reason `armedFromApi` is -- so the rule is testable without a network,
+ * and so a fourth armed state is added in ONE place. A draft is excluded here rather than in the query
+ * because `isDraft` is the sweep's own precondition (`gh pr merge --auto` refuses a draft), not part of
+ * what "armed" means.
+ *
+ * @param {Array<{ number: number | string, isDraft?: boolean } & Parameters<typeof armedFromApi>[0]> | null} nodes
+ * @returns {string[]} PR numbers as strings, in the order the API returned them
+ */
+export function unarmedCandidates(nodes) {
+  return (nodes ?? [])
+    .filter((pr) => pr && pr.isDraft !== true && !armedFromApi(pr))
+    .map((pr) => String(pr.number));
+}
+
+/** One read of the open pull requests against main, with every field `armedFromApi` decides on. @param {string} repo */
+function readOpenPullRequests(repo) {
+  const [owner, name] = String(repo).split("/");
+  return JSON.parse(gh(["api", "graphql", "-f", `query=${CANDIDATES_QUERY}`,
+    "-f", `o=${owner}`, "-f", `r=${name}`, "-f", `b=${CANDIDATE_BASE}`, "-F", `limit=${CANDIDATE_LIMIT}`,
+    "--jq", ".data.repository.pullRequests.nodes"]));
+}
+
+/**
+ * THE ARM CALL THREW -- AND THE STATE IS READ, NEVER THE EXIT CODE. `gh` exits non-zero for a merged PR,
+ * an already-queued one, an unmergeable one and a network fault alike, so the message text cannot tell
+ * them apart; this asks the API, the same rule `disarmVerdict` follows for the mirror case.
+ *
+ * MERGED MEANWHILE IS THE ORDINARY CASE ON A FAST MAIN (#845 at 17:25:53Z): the candidate list is read at
+ * the top of a run, and on a main taking eight merges in half an hour a PR can go green, arm itself and
+ * land before this line.
+ *
+ * ARMED MEANWHILE IS THE SAME RACE ONE STEP EARLIER (#2004), and it is what the candidate read's own fix
+ * cannot close: a PR that arms between the list and the arm is still queued rather than merged, so
+ * `mergedMeanwhile` answers `false` for it and the run went red on a PR that did exactly what it should.
+ * Fixing only the candidate read leaves that race; fixing only this leaves the sweep spending an arm call
+ * per queued PR per run. Both, or neither is finished.
+ *
+ * THE COST IS PAID BY THE FAILING PATH ONLY. A genuine failure now costs two bounded re-reads rather than
+ * one -- both answers must be `false` before FAILED TO ARM is believed -- and a PR that merged or armed
+ * meanwhile short-circuits on the first `true`.
+ *
+ * @param {{ number: string, repo: string, cause: unknown }} attempt
+ * @param {{ merged?: (n: string, r: string) => boolean, armed?: (n: string, r: string) => boolean }} [deps]
+ * @returns {{ failed: boolean, line: string }}
+ */
+export function armFailureVerdict({ number, repo, cause }, { merged = mergedMeanwhile, armed = confirmArmed } = {}) {
+  if (merged(number, repo)) {
+    return { failed: false, line: `SWEEP: #${number} SKIPPED -- merged meanwhile, between this run's `
+      + "candidate read and its arm. Nothing to arm and nothing wrong." };
+  }
+  if (armed(number, repo)) {
+    return { failed: false, line: `SWEEP: #${number} SKIPPED -- armed meanwhile: the API reports it `
+      + "auto-merging or in the merge queue, between this run's candidate read and its arm. The arm this "
+      + "run attempted was already unnecessary, and `gh`'s non-zero exit is that, not a failure." };
+  }
+  return { failed: true,
+    line: `SWEEP: #${number} FAILED TO ARM -- ${cause instanceof Error ? cause.message : cause}` };
+}
+
 /** Blocks for `ms`. `main()` is synchronous end to end, like every `gh` call it makes. @param {number} ms */
 function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)), 0, 0, ms);
@@ -300,10 +391,7 @@ function main() {
 
   let candidates;
   try {
-    candidates = gh(["pr", "list", "--repo", repo, "--state", "open", "--base", "main", "--limit", "100",
-      "--json", "number,isDraft,autoMergeRequest",
-      "-q", ".[] | select(.isDraft == false and .autoMergeRequest == null) | .number"])
-      .split("\n").filter(Boolean);
+    candidates = unarmedCandidates(readOpenPullRequests(repo));
   } catch (cause) {
     console.error(`CANNOT ASK: listing open PRs failed -- ${cause instanceof Error ? cause.message : cause}`);
     process.exit(EXIT.CANNOT_ASK);
@@ -347,23 +435,10 @@ function main() {
         failed.push(number);
       }
     } catch (cause) {
-      // MERGED MEANWHILE IS THE ORDINARY CASE ON A FAST MAIN, NOT A FAILURE. The candidate list is read
-      // at the top of this run; on a main taking eight merges in half an hour, a PR can go green, arm
-      // itself and land between that read and this line. `gh pr merge --auto` then exits non-zero, and
-      // reporting it as FAILED TO ARM makes `sweep` red on main's tip for a PR that did exactly what it
-      // was supposed to. Measured on #845 at 17:25:53Z.
-      //
-      // THE STATE IS READ, NEVER THE EXIT CODE. `gh` exits 1 for a merged PR, an unmergeable one and a
-      // network fault alike, so the message text cannot be trusted to tell them apart -- the same rule
-      // `disarmVerdict` follows for the mirror case, and the reason this asks the API rather than
-      // matching on `cause.message`.
-      if (mergedMeanwhile(number, repo)) {
-        console.log(`SWEEP: #${number} SKIPPED -- merged meanwhile, between this run's candidate read `
-          + "and its arm. Nothing to arm and nothing wrong.");
-        continue;
-      }
-      console.log(`SWEEP: #${number} FAILED TO ARM -- ${cause instanceof Error ? cause.message : cause}`);
-      failed.push(number);
+      // WHY IT THREW IS ASKED OF THE API, never inferred from the exit code -- see `armFailureVerdict`.
+      const verdict = armFailureVerdict({ number, repo, cause });
+      console.log(verdict.line);
+      if (verdict.failed) failed.push(number);
     }
   }
 
