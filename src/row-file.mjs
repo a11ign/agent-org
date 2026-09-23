@@ -1472,9 +1472,10 @@ function promoteGate(issueNumber, { run, fetchLabels }) {
     return { refusal: `row-file: REFUSING to promote -- #${issueNumber} is already claimed (\`${CLAIM_LABEL}\`). `
       + `Promoting it would leave \`${READY_LABEL}\` beside \`${CLAIM_LABEL}\`, which \`ready-label-audit\` `
       + "reports as a HAND CLAIM: a claim made outside `row-claim.mjs`. That reading is strong evidence "
-      + "rather than proof -- #677's reproduction shows the claim path's own `gh issue edit` can half-apply "
-      + "as well -- but a promote act that MINTED the state deliberately would point the audit at the "
-      + "mechanism for something this command did. Decline the claim first (`row-claim.mjs decline "
+      + "rather than proof -- the claim path removes `ready` in a SECOND call (#749), so a claim whose "
+      + "removal did not land leaves the same pair -- but a promote act that MINTED the state deliberately "
+      + "would point the audit at the mechanism for something this command did. Decline the claim first "
+      + "(`row-claim.mjs decline "
       + `${issueNumber} --session=<whoever holds it>\`), which restores \`${READY_LABEL}\` by itself.` };
   }
   /** @type {string} */
