@@ -1127,6 +1127,23 @@ test("A BATCH IS BOUNDED BY BYTES, AND THE KERNEL IS WHY", () => {
   assert.match(batch.prompt, /STILL QUEUED; the next tick brings them\. Nothing has been dropped/);
 });
 
+test("THE BUDGET COUNTS BYTES, AND AN EM DASH COSTS THREE OF THEM", () => {
+  // `npm run mutate` reported `fitBatch counts characters, not bytes` as a SURVIVOR: the test above
+  // fills its prompts with "x", where a character IS a byte, so both readings agree and neither is
+  // pinned. THE REAL QUEUE IS FULL OF EM DASHES -- this repo writes them everywhere -- and the ceiling
+  // `fitBatch` exists to stay under counts bytes. A character count would therefore let roughly three
+  // times as much text into one argv as the kernel accepts, which is E2BIG with extra steps.
+  const now = 10 * 60 * 60 * 1000;
+  const wide = backlogOf("product-manager", 60, now).map((h) => ({ ...h, prompt: "\u2014".repeat(4_000) }));
+  assert.equal(Buffer.byteLength(wide[0].prompt, "utf8"), 12_000, "4,000 characters, 12,000 bytes");
+
+  const [batch] = handoffBatches(wide, { now, budget: HANDOFF_BATCH_BYTES });
+  assert.equal(batch.ids.length, 5, "five orders of 12,000 bytes fit in 64 KiB; a sixth does not");
+  assert.ok(Buffer.byteLength(addressed(batch, "product-manager"), "utf8") < PROMPT_ARG_MAX,
+    "THE ASSERTION THE BOUND IS FOR, in the encoding the kernel uses: counting characters here would "
+    + "have taken 16 orders, 192,000 bytes, and been refused by execFileSync");
+});
+
 test("WHAT DID NOT FIT STAYS QUEUED -- a bound must never be a drop", () => {
   const now = 10 * 60 * 60 * 1000;
   const big = backlogOf("product-manager", 40, now).map((h) => ({ ...h, prompt: "x".repeat(4_000) }));
