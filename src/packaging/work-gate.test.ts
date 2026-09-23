@@ -44,7 +44,8 @@ import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReady
   readOpenRows, withAnswerLabel,
   blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL,
   ANSWER_PREFIX, redOnlyBySupersededRun, cannotAskReport,
-  readRowBranches, rowBranchOrders, GIT_READS }
+  readRowBranches, rowBranchOrders, GIT_READS,
+  reviewStateOf, reviewBlocked, reviewBlockedOrders, REVIEW_STATE }
   from "../work-gate.mjs";
 
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
@@ -613,6 +614,27 @@ test("#2101 `body` rides on readPrs's existing field list -- another field, neve
   assert.match(calls[0].join(" "), /changedFiles,body/);
 });
 
+/**
+ * #2084: THE NAMED CONTROL FOR `reviewStateOf`'s `UNREADABLE` STATE, and the reason it lives here.
+ *
+ * `reviewStateOf` answers `UNREADABLE` for a payload with no `reviewDecision` key, and `reviewBlocked`
+ * deliberately does NOT emit an order for it -- a field the gate never asked for is a fact about the gate,
+ * not about the pull request. That leaves a real silent failure: a `readPrs` that stopped requesting the
+ * field would empty `pr-review-blocked` entirely and nothing would say so.
+ *
+ * SO THE GUARD SITS ON THE ARGUMENT RATHER THAN ON THE VERDICT. It catches the regression at its source on
+ * every run, where a verdict-side guard would instead fire on every synthetic pull request in this file --
+ * noise that a reader learns to ignore, which is worse than no control at all. It also pins the ONE CALL:
+ * the whole reason this field was worth adding is that it rides on a request the gate already makes.
+ */
+test("#2084 `reviewDecision` rides on readPrs's existing field list -- another field, never another call", () => {
+  const calls: string[][] = [];
+  readPrs((args: string[]) => { calls.push(args); return "[]"; });
+  assert.equal(calls.length, 1, "one call, or the field stopped being free");
+  assert.match(calls[0].join(" "), /reviewDecision/,
+    "`pr-review-blocked` goes silently empty without it, and an empty cause looks exactly like a healthy queue");
+});
+
 test("prFiles omitted means no overlap is KNOWABLE, so every row is offered exactly as before", () => {
   const orders = decide({ prs: [], readyRows: [regionRow(1452, ".github/workflows/release.yml")] });
   assert.deepEqual(orders.map((o: { subject: string }) => o.subject), ["row-1452"],
@@ -722,9 +744,14 @@ test("every cause is classified as START or FINISH -- a new one cannot default i
   // to the very checkout a unit's `WorkingDirectory=` names. It also starts no work by the partition's
   // own definition: its subject is a machine that is already wrong, not a row anybody has yet to pick up,
   // and the action is minutes rather than a build.
+  // #2084: `pr-review-blocked` is FINISH, and it is `pr-green-unarmed`'s own argument one surface over.
+  // A pull request that is green, unheld and refused by GitHub's `reviewDecision` is finished work that
+  // cannot land -- it is the most in-flight thing there is, and it takes on nothing. Withholding it during
+  // a window would strand precisely the pull requests the window is waiting to land, which is the failure
+  // `START_CAUSES` was split out to prevent.
   assert.deepEqual(finish, ["answer-owed", "blocker-cleared", "chairman-blocked", "claimed-row-amended",
     "draft-awaiting-verdict", "draft-convinced-not-ready", "host-units-stale", "pr-checks-failing",
-    "pr-green-unarmed", "row-branch-unshipped", "verdict-not-convinced"]);
+    "pr-green-unarmed", "pr-review-blocked", "row-branch-unshipped", "verdict-not-convinced"]);
   for (const cause of START_CAUSES) {
     assert.ok(CAUSES.includes(cause), `${cause} is withheld by a drain but no longer exists`);
   }
@@ -3180,6 +3207,140 @@ test("#2174: a drift value that is not a list is 'not asked', never a crash", ()
       "anything this function cannot read as a finding list is a read it did not get, and it must "
       + "neither wake anyone nor throw");
   }
+});
+
+
+// --- #2084: GitHub's own review decision, which nothing in this repository read ------------------------
+
+/**
+ * #2084: A PULL REQUEST THAT LOOKS EXACTLY LIKE FINISHED WORK, with one field added.
+ *
+ * `isDraft: false` and green, so it is past every other cause: `draft-awaiting-verdict` returns on
+ * `draftOrder`'s first line for anything that is not a draft, and `pr-checks-failing` needs a red check.
+ * The `reviewDecision` is the ONLY thing that distinguishes a mergeable pull request from one GitHub is
+ * holding, and until this row no line of this repository read it.
+ */
+function ready(n: number, reviewDecision: string | null | undefined, labels: string[] = []) {
+  const pr: Record<string, unknown> = { number: n, isDraft: false, headRefOid: HEAD,
+    statusCheckRollup: [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }],
+    author: { login: "a11ign-ai-workers" }, comments: [],
+    labels: labels.map((name) => ({ name })) };
+  // `undefined` MEANS THE KEY IS ABSENT, and it has to be absent rather than present-and-undefined:
+  // `Object.hasOwn` is what `reviewStateOf` keys on, and a fixture that sets the key to `undefined` would
+  // quietly pick a side of the very question under test. `branch-protection.test.ts` makes the same point
+  // about `bypass_actors` and parses JSON text to avoid it; here, not writing the key is enough.
+  if (reviewDecision !== undefined) pr.reviewDecision = reviewDecision;
+  return pr;
+}
+
+test("#2084 THE LIVE SHAPE: a green, unheld, ready PR awaiting review reaches product-manager", () => {
+  // MEASURED, NOT INVENTED. #2198 at `468a74f1b`: opened ready at 17:39:37Z with ZERO reviews,
+  // `mergeStateStatus: BLOCKED`, `reviewDecision: REVIEW_REQUIRED`, armed -- and `decide` run against the
+  // live payload returned NO ORDER OF ANY KIND for it, while `shouldBeMerging` listed it as a candidate.
+  // That reading is this test's subject, and it is why the row's "done-when 1 removes most of the need for
+  // it" is wrong: #2198 has no review to dismiss.
+  const orders = decide({ prs: [ready(2198, "REVIEW_REQUIRED")], readyRows: [], required: ["gate"] });
+  assert.deepEqual(orders.map((o) => o.cause), ["pr-review-blocked"],
+    "before this row a pull request in exactly this state produced no order at all");
+  assert.equal(orders[0].session, "product-manager");
+  assert.ok(CAUSES.includes(orders[0].cause), "every emitted cause is declared in CAUSES");
+  assert.match(orders[0].prompt, /#2198\s+AWAITING_REVIEW/);
+});
+
+test("#2084: an APPROVED or undecided pull request wakes NOBODY -- the control on the whole cause", () => {
+  // THE NEGATIVE HALF, and without it the cause is satisfied by a function that flags every open PR.
+  // `""` is the #1968 state -- the base requires no decision -- and it is NOT an approval; it is here
+  // because it must not BLOCK, while `reviewStateOf` below pins that it does not read as APPROVED either.
+  for (const decision of ["APPROVED", "", null]) {
+    assert.deepEqual(decide({ prs: [ready(1, decision)], readyRows: [], required: ["gate"] }), [],
+      `\`reviewDecision: ${JSON.stringify(decision)}\` blocks nothing and must wake nobody`);
+  }
+});
+
+test("#2084: a CHANGES_REQUESTED at head is reported, and the prompt says a push does not clear it", () => {
+  // #2049's own state, which sat green and armed and unmergeable for over seven hours. The prompt has to
+  // carry the mechanism rather than the word, because the recipient's first instinct is to tell the author
+  // to push -- and pushing past a refusal is exactly what does not work.
+  const orders = decide({ prs: [ready(2049, "CHANGES_REQUESTED")], readyRows: [], required: ["gate"] });
+  assert.deepEqual(orders.map((o) => o.cause), ["pr-review-blocked"]);
+  assert.match(orders[0].prompt, /does NOT clear by being pushed past/);
+  assert.match(orders[0].prompt, /compare the review's commit against `headRefOid`/,
+    "the row's whole finding: the refusal may be at a head the author has already fixed");
+});
+
+test("#2084: a DRAFT, a RED one and a HELD one are other causes' subjects, never this one", () => {
+  // EACH EXCLUSION IS A CAUSE, not an oversight, and a test rather than a paragraph. A draft belongs to
+  // `draft-awaiting-verdict`; a red one to `pr-checks-failing`; a held one is not merging BY DECISION and
+  // reporting it would send somebody to unblock what a ruling holds.
+  const drafted = { ...ready(1, "REVIEW_REQUIRED"), isDraft: true };
+  assert.ok(!decide({ prs: [drafted], readyRows: [], required: ["gate"] })
+    .some((o) => o.cause === "pr-review-blocked"), "a draft is the reviewer lane's, not this cause's");
+  const red = { ...ready(3, "REVIEW_REQUIRED"),
+    statusCheckRollup: [{ name: "gate", status: "COMPLETED", conclusion: "FAILURE" }] };
+  assert.deepEqual(decide({ prs: [red], readyRows: [], required: ["gate"] }).map((o) => o.cause),
+    ["pr-checks-failing"], "a red PR needs a fix, not a reviewer");
+  assert.deepEqual(reviewBlocked([ready(5, "REVIEW_REQUIRED", ["hold:ceo"])], ["gate"]), [],
+    "a held pull request is not merging by decision, and this cause must not argue with one");
+});
+
+test("#2084: ONE ORDER FOR THE SET, keyed on every number AND its decision", () => {
+  // `greenUnarmedOrders`' shape and for its reason -- but the DECISION is in the key as well as the
+  // number, because the two states want different acts. Keyed on numbers alone, a pull request whose
+  // refusal was answered and is now merely awaiting a review would not re-fire.
+  const orders = reviewBlockedOrders(reviewBlocked(
+    [ready(2049, "CHANGES_REQUESTED"), ready(2198, "REVIEW_REQUIRED")], ["gate"]));
+  assert.equal(orders.length, 1, "one order, or a queue-wide state wakes one session per pull request");
+  assert.equal(orders[0].causeKey, "product-manager/pr-review-blocked/2049:REFUSED.2198:AWAITING_REVIEW");
+  const answered = reviewBlockedOrders(reviewBlocked(
+    [ready(2049, "REVIEW_REQUIRED"), ready(2198, "REVIEW_REQUIRED")], ["gate"]));
+  assert.notEqual(answered[0].causeKey, orders[0].causeKey,
+    "the refusal became a pending review: a different state, so a different question");
+});
+
+test("#2084: the key carries NO head, so a rework does not re-wake product-manager every push", () => {
+  // DELIBERATE, and the reason is this row's own diagnosis. `verdict-not-convinced` keys on the head
+  // because the author is the recipient and every push IS the answer; here the recipient is the queue's
+  // reader and a push during a rework changes nothing they can act on. It also makes the key move at
+  // exactly the right moment if `dismiss_stale_reviews` is ever turned on: the push dismisses the review,
+  // the decision changes, and the key changes with it.
+  const a = reviewBlockedOrders(reviewBlocked([ready(7, "CHANGES_REQUESTED")], ["gate"]));
+  const pushed = { ...ready(7, "CHANGES_REQUESTED"), headRefOid: "ffffffffffffffffffffffffffffffff" };
+  const b = reviewBlockedOrders(reviewBlocked([pushed], ["gate"]));
+  assert.equal(a[0].causeKey, b[0].causeKey, "the head moved and the state did not");
+});
+
+test("#2084: an ABSENT `reviewDecision` is UNREADABLE and emits NOTHING -- it is a fact about the gate", () => {
+  // BOTH HALVES, because either alone is the wrong lesson. The state is named rather than folded into
+  // "fine" -- that is the honest answer for a field nobody asked for -- and it emits no order, because an
+  // order would report the gate's own read as a pull request's state. The control for the regression it
+  // would otherwise hide is the `readPrs` field-list test above, named there.
+  assert.equal(reviewStateOf(ready(1, undefined)).code, REVIEW_STATE.UNREADABLE);
+  assert.deepEqual(reviewBlocked([ready(1, undefined)], ["gate"]), []);
+  assert.deepEqual(decide({ prs: [ready(1, undefined)], readyRows: [], required: ["gate"] }), []);
+});
+
+test("#2084: an UNRECOGNISED decision BLOCKS -- the `!== never` shape, and the value nobody has seen", () => {
+  // `bindsMeVerdict`'s lesson in `branch-protection.test.ts`, one file over: an allowlist of the blocking
+  // values would be written from today's vocabulary, and the value that slips through is the one nobody
+  // has seen. A state this gate cannot name must never be the state that reads as mergeable.
+  const v = reviewStateOf(ready(1, "A_STATE_GITHUB_HAS_NOT_SHIPPED_YET"));
+  assert.equal(v.code, REVIEW_STATE.UNRECOGNISED);
+  assert.notEqual(v.code, REVIEW_STATE.APPROVED);
+  assert.deepEqual(reviewBlocked([ready(1, "A_STATE_GITHUB_HAS_NOT_SHIPPED_YET")], ["gate"])
+    .map((r) => r.number), [1], "and it reaches somebody rather than passing quietly");
+});
+
+test("#2084: an EMPTY decision is NOT an approval -- the #1968 state has its own name", () => {
+  // It blocks nothing, which the control above pins; but reading it as APPROVED would report a base that
+  // requires no review at all as a satisfied requirement. `branch-protection.test.ts` measured that shape
+  // on #1968: three reviews including an APPROVED, and an empty decision that decided nothing.
+  for (const empty of ["", null]) {
+    const v = reviewStateOf(ready(1, empty));
+    assert.equal(v.code, REVIEW_STATE.NO_DECISION);
+    assert.notEqual(v.code, REVIEW_STATE.APPROVED);
+    assert.match(v.why, /#1968 state/);
+  }
+  assert.equal(new Set(Object.values(REVIEW_STATE)).size, 6, "and the six are genuinely distinct");
 });
 
 /**
