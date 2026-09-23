@@ -23,6 +23,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   inBuildReason, isInBuild, lookupOtherHeldIssues, lookupClosingPrHealth, lookupRowShape,
+  deliveredRowsDeclaredBy, lookupDeliveringPr, lookupHeldRows,
 } from "../row-claim/own-pr-health-rule.mjs";
 
 /** A row owed a commit: held, declaring files, no sub-rows, no PR. Each test changes ONE fact from this. */
@@ -253,4 +254,240 @@ test("#1161: both TYPED spellings pass and both UNTYPED spellings fail, which is
     assert.doesNotMatch(spell(flag), typed, `${flag} must not satisfy the guard -- \`--raw-field\` ends in `
       + "`-field`, so a pattern without the second dash anchored would have let it through");
   }
+});
+
+// --- #2026: A DELIVERABLE THAT IS A COMMIT **PLUS** A NON-COMMIT STEP ----------------------------------
+
+/**
+ * THE INCIDENT, MEASURED RATHER THAN IMAGINED. 2026-09-22 21:47Z: `worker-judge` held #2000, whose pull
+ * request #2011 was OPEN and green on every required check, and was refused a claim on #2002. #2011
+ * declares `Closes: none` and is RIGHT to — #2000's done-when requires `npm run host:install` to have been
+ * RUN on the agent host, and `Closes #2000` would auto-close the row on merge, discarding the step the row
+ * exists to guarantee. The refusal's own last clause ("an open PR no longer blocks a claim") did not hold.
+ *
+ * Any row whose done-when a merge cannot satisfy is in that population: a host install, a fleet deploy, a
+ * release dispatch, a measurement taken after the run. Those rows are exactly the ones whose pull request
+ * MUST say `Closes: none`, so they are exactly the population B2 mishandled.
+ */
+const delivered = { state: "OPEN" as const, proposesRegionPath: true };
+
+test("#2026: a declared delivery clears the row its `Closes: none` PR could not", () => {
+  assert.equal(inBuildReason([{ ...inBuild, number: 2000, deliveringPr: delivered }]), null,
+    "the commit IS proposed; `Closes:` simply cannot say so without auto-closing a row that owes a host step");
+});
+
+/**
+ * THE BAR #2026 SET FOR ANY REMEDY, IN ONE ASSERTION: *"a remedy must not let a row be cleared by a PR that
+ * never proposed its commits."* A `Delivers:` line is a claim written by its own author, so the declaration
+ * alone must not be enough — the pull request has to change a path the row's own Region declares.
+ *
+ * This is the case that separates this remedy from the two #2026 listed beside it. Reading a plain
+ * cross-reference would fail it outright: probed live on #2000 on 2026-09-23, its last 20 cross-references
+ * held four pull requests — #2011, which delivered it, and #2030, #2038 and #2044, which only mention it.
+ */
+test("#2026: a declared delivery that proposes NO Region path leaves the row in build", () => {
+  const reason = inBuildReason([{ ...inBuild, number: 2000,
+    deliveringPr: { ...delivered, proposesRegionPath: false } }]);
+  assert.ok(reason, "a declaration is a claim; changing one of the row's declared files is the proposal");
+  assert.match(reason as string, /#2000 is IN BUILD/);
+});
+
+test("#2026: a declared delivery that was CLOSED unmerged leaves the row in build", () => {
+  // The same reading `closingPr` already takes one line above: an abandoned pull request proposes nothing,
+  // and abandoning one to start a third thing is exactly what B2 exists to refuse.
+  assert.ok(inBuildReason([{ ...inBuild, deliveringPr: { ...delivered, state: "CLOSED" } }]));
+});
+
+test("#2026: a MERGED declared delivery clears it too — the row stays open for its host step", () => {
+  // #2026's second measured cost: `Closes: none` does not clear on merge either, so #2000 would have stayed
+  // in build after #2011 landed until somebody closed the row by hand.
+  assert.equal(inBuildReason([{ ...inBuild, deliveringPr: { ...delivered, state: "MERGED" } }]), null);
+});
+
+test("#2026: isInBuild's delivery clause is load-bearing in both halves", () => {
+  assert.equal(isInBuild({ ...inBuild, deliveringPr: delivered }), false);
+  assert.equal(isInBuild({ ...inBuild, deliveringPr: { ...delivered, state: "MERGED" } }), false);
+  assert.equal(isInBuild({ ...inBuild, deliveringPr: { ...delivered, state: "CLOSED" } }), true);
+  assert.equal(isInBuild({ ...inBuild, deliveringPr: { ...delivered, proposesRegionPath: false } }), true);
+  assert.equal(isInBuild({ ...inBuild, deliveringPr: undefined }), true,
+    "and a row nobody declared a delivery for reads exactly as it did before this clause existed");
+});
+
+// --- #2026: the declaration's grammar ------------------------------------------------------------------
+
+test("#2026: `Delivers:` is a LINE OF ITS OWN, so a row cited in prose declares nothing", () => {
+  // The whole reason the field exists rather than reading GitHub's cross-references directly: three of the
+  // four pull requests cross-referencing #2000 on 2026-09-23 only mentioned it in prose.
+  assert.deepEqual(deliveredRowsDeclaredBy("Delivers: #2000"), [2000]);
+  assert.deepEqual(deliveredRowsDeclaredBy("body\n\nDelivers: #2000\n\nmore"), [2000]);
+  assert.deepEqual(deliveredRowsDeclaredBy("**Delivers:** #2000"), [2000], "bolded, as PR bodies here are");
+  assert.deepEqual(deliveredRowsDeclaredBy("this is the shape #2000 hit"), [],
+    "a prose mention is not a declaration, which is exactly what a cross-reference cannot tell apart");
+  assert.deepEqual(deliveredRowsDeclaredBy("see what it Delivers: #2000 eventually"), [],
+    "and not mid-sentence either — `Acceptance:` and `Closes:` are lines of their own and so is this");
+});
+
+test("#2026: one pull request may declare more than one row, and `none` declares nothing", () => {
+  assert.deepEqual(deliveredRowsDeclaredBy("Delivers: #2000, #2002"), [2000, 2002],
+    "taking only the first would clear one row and hold the other with nothing to say why");
+  assert.deepEqual(deliveredRowsDeclaredBy("Delivers: none -- it finishes no row"), []);
+  assert.deepEqual(deliveredRowsDeclaredBy(""), []);
+  assert.deepEqual(deliveredRowsDeclaredBy("Delivers: #2000\nDelivers: #2000"), [2000], "no repeats");
+});
+
+// --- #2026: what the declaration is READ from ----------------------------------------------------------
+
+/** The live shape of #2000's timeline on 2026-09-23, with #2011's body carrying the line it would need. */
+const timeline = (nodes: unknown[]) => JSON.stringify(
+  { data: { repository: { issue: { timelineItems: { nodes } } } } });
+const crossRef = (pr: { number: number; state: string; body: string; paths: string[] }) => (
+  { source: { number: pr.number, state: pr.state, body: pr.body,
+    files: { nodes: pr.paths.map((path) => ({ path })) } } });
+
+test("#2026: the timeline is the CANDIDATE set and the declaration is the filter", () => {
+  const nodes = [
+    {}, {}, // an ISSUE cross-reference matches no inline fragment and arrives as `{}` — measured, not assumed
+    crossRef({ number: 2011, state: "MERGED", body: "Delivers: #2000\n", paths: ["packages/agent-org/host/x"] }),
+    crossRef({ number: 2030, state: "MERGED", body: "mentions #2000 in prose", paths: ["docs/a.md"] }),
+    crossRef({ number: 2044, state: "MERGED", body: "also mentions #2000", paths: ["docs/b.md"] }),
+  ];
+  assert.deepEqual(lookupDeliveringPr(2000, { run: () => timeline(nodes) }),
+    { number: 2011, state: "MERGED", changedPaths: ["packages/agent-org/host/x"] },
+    "#2030 and #2044 are real cross-references of #2000 that delivered nothing — reading the timeline "
+    + "alone would have picked the last of the three");
+});
+
+test("#2026: a declaration naming ANOTHER row is not a declaration of this one", () => {
+  const nodes = [crossRef({ number: 9, state: "OPEN", body: "Delivers: #2002", paths: ["a.ts"] })];
+  assert.equal(lookupDeliveringPr(2000, { run: () => timeline(nodes) }), undefined);
+});
+
+test("#2026: nothing declaring is `undefined` and a failed lookup is `null` — different states", () => {
+  assert.equal(lookupDeliveringPr(2000, { run: () => timeline([]) }), undefined);
+  assert.equal(lookupDeliveringPr(2000, { run: () => { throw new Error("gh: network"); } }), null,
+    "an inconclusive answer must never read as 'nothing in build', which would defeat the rule");
+});
+
+test("#2026: the lookup asks GitHub's own cross-reference events, not a search over bodies", () => {
+  // A search index lags the body edit the refusal has just told somebody to make; the timeline is computed
+  // server-side the moment the body is written. This pins the mechanism, which is the finding.
+  const calls: string[][] = [];
+  lookupDeliveringPr(2000, { run: (args) => { calls.push(args); return timeline([]); } });
+  const query = calls[0].join(" ");
+  assert.match(query, /CROSS_REFERENCED_EVENT/);
+  assert.doesNotMatch(query, /\bsearch\(/, "a search query would be indexed minutes after the edit");
+});
+
+// --- #2026: the composition, and the call it does NOT make ---------------------------------------------
+
+/** Answers each `gh` shape `lookupHeldRows` drives, so one test can pin which calls are made at all. */
+const fleet = (opts: { closingPr?: string; region: string; timelineNodes?: unknown[] }) => {
+  const seen: string[] = [];
+  const run = (args: string[]) => {
+    const joined = args.join(" ");
+    if (args[0] === "issue" && args[1] === "list") { seen.push("held"); return JSON.stringify([{ number: 2000 }]); }
+    if (joined.includes("closedByPullRequestsReferences")) {
+      seen.push("closing");
+      const nodes = opts.closingPr ? [{ number: 2011, state: opts.closingPr, headRefOid: "abc" }] : [];
+      return JSON.stringify({ data: { repository: { issue: { closedByPullRequestsReferences: { nodes } } } } });
+    }
+    if (joined.includes("timelineItems")) { seen.push("delivery"); return timeline(opts.timelineNodes ?? []); }
+    if (args[0] === "issue") { seen.push("shape"); return JSON.stringify({ body: `## Region\n\n${opts.region}\n` }); }
+    seen.push("subs"); return "[]";
+  };
+  return { seen, rows: lookupHeldRows("worker-capture", 2026, { run }) };
+};
+
+const REGION = "```\npackages/agent-org/host/units.mjs\n```";
+
+test("#2026: a row already cleared by `Closes:` costs NO delivery lookup", () => {
+  // Behaviour, not an optimisation to admire: a cleared row cannot be cleared harder, so the question's
+  // answer changes nothing. #989 took two calls per held row out of this path; this adds one back only
+  // where it decides the verdict.
+  const { seen, rows } = fleet({ closingPr: "OPEN", region: REGION });
+  assert.equal(inBuildReason(rows ?? []), null);
+  assert.ok(!seen.includes("delivery"), `the delivery lookup must not run — calls were ${seen.join(",")}`);
+});
+
+test("#2026: a row in build IS asked, and the Region overlap is the tree's own `regionCovers`", () => {
+  const { seen, rows } = fleet({ region: REGION, timelineNodes: [
+    crossRef({ number: 2011, state: "OPEN", body: "Closes: none -- the host install finishes it\n"
+      + "Delivers: #2000\n", paths: ["packages/agent-org/host/units.mjs"] })] });
+  assert.ok(seen.includes("delivery"));
+  assert.deepEqual(rows?.[0].deliveringPr, { state: "OPEN", proposesRegionPath: true });
+  assert.equal(inBuildReason(rows ?? []), null, "#2026's own open-check, end to end");
+});
+
+test("#2026: a declaring PR that touches none of the Region's files still leaves the row in build", () => {
+  const { rows } = fleet({ region: REGION, timelineNodes: [
+    crossRef({ number: 2011, state: "OPEN", body: "Delivers: #2000", paths: ["docs/unrelated.md"] })] });
+  assert.deepEqual(rows?.[0].deliveringPr, { state: "OPEN", proposesRegionPath: false });
+  assert.ok(inBuildReason(rows ?? []), "the row's own bar: a PR that never proposed its commits clears nothing");
+});
+
+test("#2026: a DIRECTORY Region entry covers the file beneath it, because `regionCovers` says so", () => {
+  // Delegated, not re-implemented: #941 taught the tree one answer for directory prefixes and this rule
+  // asks it. Re-parsing the Region a second way is how two readings of one section drift apart.
+  const { rows } = fleet({ region: "packages/agent-org/host/", timelineNodes: [
+    crossRef({ number: 2011, state: "OPEN", body: "Delivers: #2000", paths: ["packages/agent-org/host/x.mjs"] })] });
+  assert.equal(rows?.[0].deliveringPr?.proposesRegionPath, true);
+});
+
+// --- #2026: the refusal names the third way out --------------------------------------------------------
+
+/**
+ * FOLLOW THE REFUSAL EXACTLY AND YOU MUST PASS — the rule #1161 paid for one clause above. The other two
+ * ways out do not fit this population: "finish it" is exactly what is happening when the commits are
+ * already proposed, and `decline` would orphan a green reviewed pull request. So the refusal has to name
+ * the line to add, AND the condition that makes it count, or the reader adds it to an unrelated pull
+ * request, is refused again, and debugs the remedy instead of doing the work.
+ */
+test("#2026: the refusal names the `Delivers:` line, by row number, and what makes it count", () => {
+  const reason = String(inBuildReason([{ ...inBuild, number: 2000 }]));
+  assert.match(reason, /add a line reading `Delivers: #2000`/,
+    "by NUMBER, so the line is copy-pasteable rather than a template the reader fills in wrong");
+  assert.match(reason, /open or merged AND changes at least one path/,
+    "and the second condition, or the remedy is followable and still fails");
+  assert.match(reason, /`## Region`/, "naming WHERE those paths are declared");
+});
+
+test("#2026: the remedy is printed only in the refusal, and mutating it out goes red", () => {
+  // The mutation this file could not otherwise express: drop the clause and the assertions above must fail.
+  // Driven on the returned STRING, because the string is what a reader is handed.
+  const withoutTheRemedy = String(inBuildReason([{ ...inBuild, number: 2000 }]))
+    .replace(/\n {2}If a pull request ALREADY PROPOSES[\s\S]*$/, "");
+  assert.doesNotMatch(withoutTheRemedy, /Delivers:/,
+    "the mutation genuinely removes what those assertions look at");
+  assert.match(withoutTheRemedy, /#2000 is IN BUILD/,
+    "and it is still recognisably the same refusal, so the mutation changes the MEANING, not the subject");
+  assert.equal(inBuildReason([{ ...inBuild, deliveringPr: delivered }]), null,
+    "while a row that is NOT refused is handed no remedy at all");
+});
+
+/**
+ * #2026: THE ONE PLACE THIS CLAUSE DEPARTS FROM THE FILE'S "a failed lookup is INCONCLUSIVE" CONVENTION,
+ * and the direction of the clause is the reason. The three lookups above establish that a row IS in build,
+ * so an unanswerable one must not manufacture a refusal. This one can only ever CLEAR a row, and it is
+ * asked only of rows already in build — so treating a failure as inconclusive would convert every refusal
+ * B2 would have made into silence the moment GraphQL hiccuped, and B2's teeth would depend on the network.
+ *
+ * FOUND BY FOUR REDS OUTSIDE THIS ROW'S REGION, not reasoned out in advance:
+ * `row-claim-session-eligibility.test.ts` routes every `api graphql` call to one
+ * `closedByPullRequestsReferences` payload, so the new query threw and four tests asserting a refusal went
+ * quiet. The fakes were right and the failure direction was wrong.
+ */
+test("#2026: a FAILED delivery lookup leaves the row IN BUILD — the clause fails to not clearing", () => {
+  const run = (args: string[]) => {
+    if (args[0] === "issue" && args[1] === "list") return JSON.stringify([{ number: 2000 }]);
+    if (args.join(" ").includes("timelineItems")) throw new Error("gh: GraphQL 502");
+    if (args[0] === "api" && args[1] === "graphql") {
+      return JSON.stringify({ data: { repository: { issue: { closedByPullRequestsReferences: { nodes: [] } } } } });
+    }
+    if (args[0] === "issue") return JSON.stringify({ body: `## Region\n\n${REGION}\n` });
+    return "[]";
+  };
+  const rows = lookupHeldRows("worker-capture", 2026, { run });
+  assert.notEqual(rows, null, "the HELD reading answered, so the claim is not inconclusive overall");
+  assert.equal(rows?.[0].deliveringPr, undefined);
+  assert.ok(inBuildReason(rows ?? []), "a new clause must not change the rule's behaviour under failure");
 });
