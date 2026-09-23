@@ -5,7 +5,7 @@
 // org can act on what it is told and cannot act on anything it learns.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { waitingOn, notBeforeDate, todayIso, describeWaiting, proseBlockers }
+import { waitingOn, notBeforeDate, todayIso, describeWaiting, proseBlockers, answerOwedBy }
   from "../waiting-condition.mjs";
 
 test("an OPEN blocker is a wait; a CLOSED one is a wait that has cleared", () => {
@@ -117,4 +117,63 @@ test("it is a SMELL, not a verdict, and the quote is what makes that usable", ()
   assert.equal(found.number, 2);
   assert.match(found.quote, /blocked by other rows/,
     "the quote must carry enough for the reader to dismiss it without opening the row");
+});
+
+// --- #2005: the third waiting condition -- a SESSION ---
+
+/**
+ * THIS MODULE IMPLEMENTED TWO OF THE THREE FOR THREE DAYS. The 2026-09-19 chairman's direction names a
+ * row (`--blocked-by`), a date (`Not-before:`) and a SESSION (`answer:<session>`), and the one whose
+ * referent is a session -- the one reached for when a DECISION rather than a dependency is outstanding --
+ * was the one this file did not know about. So it was the one that did not hold a row: #2002 carried
+ * `answer:ceo` and was promoted and offered anyway, at 2026-09-22T20:49:41Z.
+ */
+test("#2005: an answer:<session> label is a wait, and it names the session that clears it", () => {
+  const held = { labels: [{ name: "ready" }, { name: "answer:ceo" }] };
+  assert.deepEqual(waitingOn(held, "2026-09-23"), { kind: "answer", session: "ceo" });
+  assert.equal(describeWaiting({ kind: "answer", session: "ceo" }), "waiting on ceo to answer");
+
+  // IT CLEARS ITSELF, which is the property `blocked` lacks: removing the label IS the answer.
+  assert.equal(waitingOn({ labels: [{ name: "ready" }] }, "2026-09-23"), null);
+});
+
+test("#2005: a bare `answer:` names nobody, so it is not a wait -- it FAILS OPEN", () => {
+  // A wait on nobody is exactly the referent-less claim this module exists to refuse, and hiding a row
+  // behind one would be `blocked` under a new name. Reading it as not-waiting leaves the row visible for
+  // someone to find -- the same choice `notBeforeDate` makes for a malformed date.
+  assert.equal(waitingOn({ labels: [{ name: "answer:" }] }, "2026-09-23"), null);
+  assert.equal(waitingOn({ labels: [{ name: "answer:   " }] }, "2026-09-23"), null,
+    "whitespace is not a session name either -- it would wake a session herdr reports as unknown");
+  assert.equal(answerOwedBy({ labels: [{ name: "answer:" }, { name: "answer:ceo" }] }), "ceo",
+    "and a real name later in the list is still found past an empty one");
+});
+
+test("#2005: the existing two conditions are asked FIRST, so no row changes the answer it already gave", () => {
+  // The new kind may only ever change the verdict for a row previously reported as waiting on NOTHING.
+  // A row carrying both must keep reporting the blocker it reported before, or this change has silently
+  // rewritten every shelf line and every stall report that already worked.
+  const both = { labels: [{ name: "answer:ceo" }],
+    blockedBy: { nodes: [{ number: 1772, state: "OPEN" }] } };
+  assert.deepEqual(waitingOn(both, "2026-09-23"), { kind: "row", numbers: [1772] });
+  const dated = { labels: [{ name: "answer:ceo" }], body: "Not-before: 2099-01-01" };
+  assert.deepEqual(waitingOn(dated, "2026-09-23"), { kind: "date", date: "2099-01-01" });
+
+  // AND THE CONTROL: with the blocker CLOSED, the answer-wait is what is left -- so the row is still
+  // held rather than falling through to "nothing is stopping this".
+  const cleared = { labels: [{ name: "answer:ceo" }],
+    blockedBy: { nodes: [{ number: 1772, state: "CLOSED" }] } };
+  assert.deepEqual(waitingOn(cleared, "2026-09-23"), { kind: "answer", session: "ceo" });
+});
+
+test("#2005: a row that carries the label has ALREADY done what proseBlockers asks, so it is not nagged", () => {
+  // Nagging a session that complied is how a smell becomes noise -- #1780's finding, where `unfiledEpics`
+  // re-asked `product-manager` about an epic whose blocker it had just recorded. From outside, a session
+  // doing the right thing and a session ignoring its orders then look identical.
+  const complied = [{ number: 2002, labels: [{ name: "answer:ceo" }],
+    body: "This is waiting on a ruling from ceo about which account the dispatch spends." }];
+  assert.deepEqual(proseBlockers(complied), []);
+
+  // THE POSITIVE CONTROL: the same body with no label is still the smell this cause exists to report.
+  const prose = [{ number: 2002, body: complied[0].body }];
+  assert.deepEqual(proseBlockers(prose).map((f) => f.number), [2002]);
 });
