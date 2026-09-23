@@ -33,6 +33,8 @@ import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReady
   deadMansSwitch,
   unfiledEpics, epicOrders, finishedEpics, finishedEpicOrders, fleetBatchRows, fleetBatchOrders,
   partitionFleetBatch, blockerClearedOrders,
+  claimedRowAmendedOrders, constraintsAfterClaim, amendmentsOn, readClaimedRowComments,
+  CONSTRAINT_COMMENT_MARKER, CONSTRAINT_BODY_PREFIX,
   FLEET_MILESTONE, readEpics, answersOwed, answerOrders,
   readOpenRows, withAnswerLabel,
   blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL,
@@ -701,8 +703,12 @@ test("every cause is classified as START or FINISH -- a new one cannot default i
   // #1969: `pr-green-unarmed` is FINISH. A drain stops the org TAKING ON work and must not stop it
   // finishing what is in flight -- and a green, unheld, unarmed pull request is the most finished work
   // there is. Withholding it during a window would strand exactly the PRs the window is waiting to land.
-  assert.deepEqual(finish, ["answer-owed", "blocker-cleared", "chairman-blocked", "draft-awaiting-verdict",
-    "draft-convinced-not-ready", "pr-checks-failing", "pr-green-unarmed", "verdict-not-convinced"]);
+  // #2110: `claimed-row-amended` is FINISH, and a drain is where withholding it would cost most -- a
+  // window exists to LAND what is in flight, and a constraint that goes unread during one is a build
+  // finished against a rule nobody applied.
+  assert.deepEqual(finish, ["answer-owed", "blocker-cleared", "chairman-blocked", "claimed-row-amended",
+    "draft-awaiting-verdict", "draft-convinced-not-ready", "pr-checks-failing", "pr-green-unarmed",
+    "verdict-not-convinced"]);
   for (const cause of START_CAUSES) {
     assert.ok(CAUSES.includes(cause), `${cause} is withheld by a drain but no longer exists`);
   }
@@ -1224,6 +1230,13 @@ test("the gate's read count is counted, not remembered", () => {
     "nothing is conditional on silence any more -- the second open-rows read was deleted");
   assert.ok(GH_READS.conditionalOnEmptyShelf.includes("readEpics"));
   assert.ok(GH_READS.conditionalOnRed.includes("requiredCheckNames"));
+  // #2110: THE CLAIMED-ROW READ IS CONDITIONAL AND SERVER-SIDE FILTERED, and both halves are pinned
+  // because both are what keep it bounded. `--label in-progress` is the filter; without it this would be
+  // 500 rows of comment bodies on every tick, which is the read the row's own budget paragraph forbids.
+  assert.ok(GH_READS.conditionalOnClaimedRows.includes("--label in-progress"),
+    "the page must be the claimed rows and nothing else -- a full-population comments read is the cost "
+    + "this cause was told not to buy");
+  assert.ok(GH_READS.conditionalOnClaimedRows.includes("readClaimedRowComments"));
 });
 
 /**
@@ -2272,6 +2285,232 @@ test("#2027: decide() routes it, and ahead of the causes that offer new work", (
   assert.ok(causes.includes("blocker-cleared"),
     "the gate could see the row become runnable and, before this, had nobody to tell");
   assert.equal(orders.find((o) => o.cause === "blocker-cleared")?.session, "worker-capture");
+});
+
+// --- #2110: a row that moved under the session holding it ------------------------------------------
+//
+// MEASURED TWICE IN ONE MORNING, 2026-09-23. #2099 was claimed by `worker-capture` at 09:54:06Z and
+// built by 10:16:50Z; `product-manager` recorded `ceo`'s ruling on it at 10:22:34Z -- 28 minutes after
+// the claim, 6 minutes after the work was finished. The gate emitted NO cause for `worker-capture`:
+// `ready-row-unclaimed` had stopped matching at the claim, and `blocker-cleared` is the only cause whose
+// subject is a row somebody already holds. The same hour, `orchestrator` held #1918 while it acquired an
+// open `blockedBy` on #2100 -- the same defect wearing the other marker, and the one a claim-time rule
+// (`blocked-by-edge-rule.mjs`, #1886) can never reach because the edge arrives AFTER the claim.
+
+const CLAIM_RECORD = { id: "IC_claim", body: "<!-- row-claim: claim record -->\n**Claim record** -- claimed by `worker-capture`." };
+const CONSTRAINT = { id: "IC_constraint",
+  body: "## CONSTRAINT\n\n`ceo`'s ruling: this row may NOT be implemented by granting a token." };
+const BUILD_REPORT = { id: "IC_build", body: "Built as draft #2105. The Acceptance passes at `0da227db0`." };
+
+/** A claimed row, with the comment page `readClaimedRowComments` would have returned for it. */
+const withComments = (n: number, comments: { id: string; body: string }[]) => [{ number: n, comments }];
+
+test("#2110: a `## CONSTRAINT` comment posted after the claim wakes the SESSION THAT HOLDS THE ROW", () => {
+  // THE POSITIVE, first and alone: every silence assertion below is satisfied by a function that returns
+  // `[]` for everything, and this is the one that is not.
+  const [order] = claimedRowAmendedOrders([heldRow(2099, "worker-capture")],
+    withComments(2099, [CLAIM_RECORD, BUILD_REPORT, CONSTRAINT]));
+  assert.equal(order?.session, "worker-capture",
+    "read from the row's own `session:` label -- no address book, which is why this is the gate's "
+    + "question and not a messaging one");
+  assert.equal(order?.cause, "claimed-row-amended");
+  assert.equal(order?.causeKey, "worker-capture/claimed-row-amended/row-2099/IC_constraint",
+    "keyed on the MARKER, so a second constraint is a second question and an unchanged row is silent");
+  assert.match(order?.prompt ?? "", /## CONSTRAINT/,
+    "the prompt names what changed; a woken turn that has to survey the row is a tick with extra steps");
+});
+
+/**
+ * DONE-WHEN 2's POSITIVE CONTROL, AND THE REASON THIS CAUSE IS NARROW AT ALL.
+ *
+ * A cause that fired on ANY comment on a claimed row would wake the holder for their own claim record,
+ * their own build report and every clarifying reply -- the comment-noise problem arriving one door along
+ * from the gap it was written to close. Without this assertion the cause is a noise generator that every
+ * other test here still passes.
+ */
+test("#2110: an ORDINARY comment on a claimed row emits nothing -- a claim record, a build report", () => {
+  assert.deepEqual(claimedRowAmendedOrders([heldRow(2099, "worker-capture")],
+    withComments(2099, [CLAIM_RECORD, BUILD_REPORT])), [],
+    "the marker is DECLARED and parsed, never inferred from prose");
+  assert.deepEqual(claimedRowAmendedOrders([heldRow(2099, "worker-capture")], withComments(2099, [])), [],
+    "and a claimed row with no comments at all is not an amendment either");
+});
+
+test("#2110: a constraint the row ALREADY CARRIED at claim time is not news -- the record is the clock", () => {
+  // `gh issue list --json comments` returns OLDEST-FIRST, so "after the claim" is a position in a list
+  // the gate already holds. A row claimed, released and claimed again anchors on the NEWEST record --
+  // `claimRecordFrom`'s own rule, and for the same reason: the CURRENT holder is the one being told.
+  assert.deepEqual(claimedRowAmendedOrders([heldRow(2099, "worker-capture")],
+    withComments(2099, [CONSTRAINT, CLAIM_RECORD])), [],
+    "it was there to be read when the row was taken; this cause is about a row moving UNDER a holder");
+  assert.deepEqual(constraintsAfterClaim([CONSTRAINT, CLAIM_RECORD, BUILD_REPORT]), []);
+  assert.deepEqual(constraintsAfterClaim([CONSTRAINT, CLAIM_RECORD, CONSTRAINT]).map((c) => c.id),
+    ["IC_constraint"], "the SECOND claim is the anchor, and the constraint after it still counts");
+});
+
+test("#2110: a comment that QUOTES the marker is not a constraint -- mention versus use", () => {
+  // The trap `acceptance-commands.mjs`'s header names, and the one a plain `includes` walks into: the
+  // comment announcing this very cause on the row would have fired it.
+  const quoting = { id: "IC_meta",
+    body: "I am adding a cause that fires on a `## CONSTRAINT` heading -- see #2110 for the shape." };
+  assert.deepEqual(claimedRowAmendedOrders([heldRow(2110, "worker-capture")],
+    withComments(2110, [CLAIM_RECORD, quoting])), [],
+    "anchored to a line start, or this repo's own announcement of the feature triggers it");
+  assert.ok(CONSTRAINT_COMMENT_MARKER === "## CONSTRAINT",
+    "the literal #2099 actually used at 10:22:34Z, before this cause existed to read it");
+});
+
+test("#2110: a `Constraint:` line in the ROW BODY is the other declared spelling", () => {
+  const [order] = claimedRowAmendedOrders(
+    [heldRow(1234, "orchestrator", { body: "## What is wrong\n\nConstraint: no new unconditional read.\n" })],
+    withComments(1234, [CLAIM_RECORD]));
+  assert.equal(order?.cause, "claimed-row-amended");
+  assert.match(order?.prompt ?? "", /Constraint: no new unconditional read\./,
+    "the whole line is quoted back, so the woken turn does not have to go and find it");
+  assert.ok(CONSTRAINT_BODY_PREFIX === "Constraint:",
+    "the `Acceptance:`/`Closes:`/`Not-before:` family's shape -- a declared, parsed body field");
+});
+
+test("#2110: a REPLACED body constraint is a new question, because the key is the LINE and not its presence", () => {
+  const keyFor = (line: string) => claimedRowAmendedOrders(
+    [heldRow(1234, "orchestrator", { body: `${line}\n` })], withComments(1234, [CLAIM_RECORD]))[0]?.causeKey;
+  const first = keyFor("Constraint: no new unconditional read.");
+  const second = keyFor("Constraint: no new unconditional read, and no per-row call.");
+  assert.ok(first && second, "both must produce an order at all, or this compares two silences");
+  assert.notEqual(first, second,
+    "keying on mere PRESENCE would make a row whose constraint was rewritten look unchanged -- and the "
+    + "rewrite is exactly the amendment a holder must be told about");
+});
+
+/**
+ * DONE-WHEN 5, AND IT IS THE CHEAP HALF: `blockedBy` already rides the unconditional read that
+ * `blocker-cleared` makes. #1918 was claimed by `orchestrator` while clean and acquired an open edge on
+ * #2100 afterwards. The report that produced this half was itself wrong about the cause -- it concluded
+ * `claimRow` never reads `blockedBy`, when #1886 closed COMPLETED 2026-09-22T05:28:36Z and
+ * `blocked-by-edge-rule.mjs` refuses such a claim before B4. That refusal is what makes the inference
+ * here sound: an OPEN edge on a row that IS claimed can only have arrived after the claim.
+ */
+test("#2110: #1918 gained an open `blockedBy` on #2100 while `orchestrator` held it", () => {
+  const [order] = claimedRowAmendedOrders(
+    [heldRow(1918, "orchestrator", { blockedBy: { nodes: [{ number: 2100, state: "OPEN" }] } })],
+    withComments(1918, [CLAIM_RECORD]));
+  assert.equal(order?.session, "orchestrator");
+  assert.equal(order?.causeKey, "orchestrator/claimed-row-amended/row-1918/blocked.2100");
+  assert.match(order?.prompt ?? "", /#2100/, "the prompt names the blocker, not just the fact of one");
+});
+
+test("#2110: a CLOSED blocker is not an amendment -- `blocker-cleared` owns that direction", () => {
+  assert.deepEqual(claimedRowAmendedOrders([heldRow(1908, "worker-capture", { ...blockedByClosed })],
+    withComments(1908, [CLAIM_RECORD])), [],
+    "this cause says a row got HARDER; the row getting easier is #2027's, and emitting both would wake "
+    + "a holder twice for one event");
+  assert.deepEqual(amendmentsOn({ number: 1908, ...blockedByClosed }, [CLAIM_RECORD]), []);
+});
+
+test("#2110: an UNCLAIMED row is outside this cause entirely -- there is nobody it is news to", () => {
+  const constrained = withComments(2099, [CLAIM_RECORD, CONSTRAINT]);
+  assert.deepEqual(claimedRowAmendedOrders([{ number: 2099, labels: [{ name: "ready" }] }], constrained), [],
+    "a constraint on a free row is read by whoever claims it -- that is what claiming a row is");
+  assert.deepEqual(claimedRowAmendedOrders([{ number: 2099, labels: [{ name: "in-progress" }] }], constrained), [],
+    "a claim with no `session:` label names nobody, and waking a session called \"\" is an order with "
+    + "nowhere to go");
+  // A `session:` LABEL WITHOUT THE CLAIM IS NOT A HOLDER -- `ready-label-audit.mjs` names this as #171's
+  // shape, a correct decline whose restore silently did not happen. Caught by a mutation: with the
+  // `in-progress` test deleted, every other case in this block still passed.
+  assert.deepEqual(claimedRowAmendedOrders(
+    [{ number: 2099, labels: [{ name: "was-ready" }, { name: "session:worker-capture" }] }], constrained), [],
+    "the claim label is what says a session is HOLDING the row");
+});
+
+test("#2110: an unchanged row mints the SAME key every tick, and a second constraint mints a new one", () => {
+  const row = heldRow(2099, "worker-capture");
+  const once = claimedRowAmendedOrders([row], withComments(2099, [CLAIM_RECORD, CONSTRAINT]));
+  const twice = claimedRowAmendedOrders([row], withComments(2099, [CLAIM_RECORD, CONSTRAINT]));
+  assert.deepEqual(once, twice,
+    "byte-identical, so the waker's ledger deduplicates it -- that is what lets this gate be stateless");
+  const second = { id: "IC_constraint2", body: "## CONSTRAINT\n\nAnd it must not add an unconditional read." };
+  const after = claimedRowAmendedOrders([row], withComments(2099, [CLAIM_RECORD, CONSTRAINT, second]));
+  assert.notEqual(after[0]?.causeKey, once[0]?.causeKey,
+    "a SECOND constraint is a second order -- the newest marker names the key, so the dedupe stops matching");
+});
+
+test("#2110: two markers on one row are ONE order naming both, keyed on the pair", () => {
+  // Not two orders: the holder has one row to go and read, and waking them twice for it is the noise
+  // this cause is narrow to avoid. The key is the SET, so either marker changing is a new question.
+  const [order, ...rest] = claimedRowAmendedOrders(
+    [heldRow(1918, "orchestrator", { blockedBy: { nodes: [{ number: 2100, state: "OPEN" }] } })],
+    withComments(1918, [CLAIM_RECORD, CONSTRAINT]));
+  assert.deepEqual(rest, [], "one row, one order");
+  assert.equal(order?.causeKey, "orchestrator/claimed-row-amended/row-1918/IC_constraint+blocked.2100");
+  assert.match(order?.prompt ?? "", /and an open `blockedBy` edge on #2100/);
+});
+
+test("#2110: the per-tick cap applies, so one bad morning cannot wake a session nine times", () => {
+  const rows = Array.from({ length: MAX_ROW_ORDERS_PER_TICK + 3 },
+    (_unused, i) => heldRow(3000 + i, "worker-capture", { body: "Constraint: read this.\n" }));
+  assert.equal(claimedRowAmendedOrders(rows, []).length, MAX_ROW_ORDERS_PER_TICK);
+});
+
+test("#2110: claimed-row-amended is a FINISH cause, and a drain is where withholding it costs most", () => {
+  assert.ok(CAUSES.includes("claimed-row-amended"),
+    "it must be in CAUSES or worker-profile refuses it at run time");
+  assert.ok(!START_CAUSES.includes("claimed-row-amended"),
+    "its subject is a row the session ALREADY HOLDS -- and a window exists to LAND work in flight, which "
+    + "is exactly when a build finished against an unread rule is least affordable");
+});
+
+test("#2110: decide() routes it, ahead of blocker-cleared and every cause that offers new work", () => {
+  const held = heldRow(2099, "worker-capture", { ...blockedByClosed });
+  const orders = decide({ prs: [], readyRows: [], openRows: [held],
+    claimedComments: withComments(2099, [CLAIM_RECORD, CONSTRAINT]) });
+  const causes = orders.map((o) => o.cause);
+  assert.ok(causes.includes("claimed-row-amended"),
+    "before this, the gate could see the row change and had nobody to tell");
+  assert.ok(causes.indexOf("claimed-row-amended") < causes.indexOf("blocker-cleared"),
+    "an unread constraint means work in progress is being done against a rule nobody applied; a cleared "
+    + "blocker merely means work can start again and loses nothing by waiting a tick");
+  assert.equal(orders.find((o) => o.cause === "claimed-row-amended")?.session, "worker-capture");
+});
+
+test("#2110: a caller that could not read the comments still sees the body and edge markers", () => {
+  // `[]` is "not asked or refused". The degradation may go QUIET on the half it could not read; it must
+  // never invent a constraint, and it must never be worse than before this cause existed.
+  assert.deepEqual(decide({ prs: [], readyRows: [],
+    openRows: [heldRow(2099, "worker-capture")] }).map((o) => o.cause), [],
+    "no comments, no body line, no open edge -- nothing to say");
+  const [order] = claimedRowAmendedOrders(
+    [heldRow(1918, "orchestrator", { blockedBy: { nodes: [{ number: 2100, state: "OPEN" }] } })], []);
+  assert.equal(order?.cause, "claimed-row-amended",
+    "the edge rides the read that already happened, so a refused comments page cannot silence it");
+});
+
+test("#2110: the claimed-row read is ONE call, filtered server-side, and refuses to `null`", () => {
+  const calls: string[][] = [];
+  const rows = readClaimedRowComments((args: string[]) => {
+    calls.push(args);
+    return JSON.stringify([{ number: 2099, comments: [CLAIM_RECORD] }]);
+  });
+  assert.equal(calls.length, 1, "one call for the whole claimed population -- never one per row");
+  assert.deepEqual(calls[0], ["issue", "list", "--state", "open", "--label", "in-progress",
+    "--limit", "200", "--json", "number,comments"]);
+  assert.equal(rows?.length, 1);
+  assert.equal(readClaimedRowComments(() => { throw new Error("HTTP 403"); }), null,
+    "#1286's rule: a refused read is `null` and never `[]` -- a refusal that reads as an empty page "
+    + "reports every claimed row as unamended");
+});
+
+test("#2110: main pays for it only when something is actually claimed", () => {
+  const gate = readFileSync(fileURLToPath(new URL("../work-gate.mjs", import.meta.url)),
+    "utf8");
+  // The `decide` jsdoc spells the same call shape when it says where `claimedComments` comes from, so
+  // prose is excluded by its backtick rather than by counting matches -- `cannotAskReport`'s own pin one
+  // test down makes the identical exclusion for the identical reason.
+  assert.equal(gate.match(/(?<!`)readClaimedRowComments\(\)/g)?.length, 1,
+    "exactly one call site, and it is inside the condition below -- a second is a second price");
+  assert.match(gate, /const held = openRows\.some\(\(r\) => labelsOf\(r\)\.includes\(CLAIM_LABEL\)\);\s*\n\s*return held \? readClaimedRowComments\(\) : null;/,
+    "the condition is answered from rows already in hand, so asking it costs no call of its own");
+  assert.equal(GH_READS.unconditional.length, 5,
+    "#2110 adds no UNCONDITIONAL read -- the comment page is conditional on a claim existing");
 });
 
 /**
