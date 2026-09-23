@@ -59,7 +59,11 @@ import { READY_LABEL } from "./claim-labels.mjs";
 // because a constant that file imported from here would carry this file's `token` into its closure.
 import { PROJECT_OWNER, PROJECT_NUMBER, SNAPSHOT_DIR, snapshotStamp, graphqlErrors, describeGraphqlErrors,
   graphqlErrorFromFailedRun, persistSnapshot, touchedIssues, snapshotRoute, withScopedSnapshot, forgetScopedSnapshots,
-  scopedStatusOf, readUnlessProjectUnreadable }
+  scopedStatusOf, readUnlessProjectUnreadable,
+  // #2157: the per-issue read is the discriminator between "off the board" and "this read came back
+  // short", and it is the SAME read #1275 already makes before a scoped mutation -- not a second way of
+  // asking, which would be a second thing to keep true.
+  readTouchedItems }
   from "./board-snapshot-scope.mjs";
 
 export { PROJECT_OWNER, PROJECT_NUMBER, SNAPSHOT_DIR, snapshotStamp } from "./board-snapshot-scope.mjs";
@@ -298,12 +302,126 @@ export function fetchReadyIssueNumbers({ run = defaultRun, limit = 500 } = {}) {
  * @param {number | null} [excludeIssueNumber] a row's own Status-setting call must not be refused by the
  *   very absence of Status it is about to fix -- `null` (the default) excludes nothing, for every other
  *   caller (a plain snapshot, an audit) that must still see every row honestly
- * @returns {number[]} the ready issue numbers with no Status in `items` (including one missing entirely)
+ * #2157: THE TWO CAUSES COME BACK SEPARATED, because the refusal one level up used to assert the second
+ * of them unconditionally and no reader could check it. `statusByNumber.get(n)` answers `undefined` for a
+ * row ABSENT from the items connection and `null` for a row PRESENT in it with no Status; `== null` was
+ * true for both, and this function's own JSDoc said so in a parenthesis ("including one missing
+ * entirely") while the sentence `fetchBoardItems` printed said "This is the snapshot reading short, not
+ * the board being wrong".
+ *
+ * Only `boardedWithoutStatus` is #747's narrowing -- the item was in the page, its `fieldValues` was not.
+ * `absentFromItems` is not a fact about `fieldValues` at all: the item was not in the page, which happens
+ * for two unrelated reasons that this pure function cannot tell apart and `classifyAbsentReadyRows`
+ * decides with a second read. Measured 2026-09-23, both within one hour: #2093, #2092 and #2094 were OPEN
+ * with no project item at all (the BOARD was wrong, and every board read had been blind to them for as
+ * long as they had existed), while #2093 once boarded took about 25 minutes to appear in this query's own
+ * pagination although `issue.projectItems` returned it immediately (the READ was short, in a third way
+ * this message had never named). `settle-closed-status.mjs`'s `shortReadRefusal` header records the same
+ * index lag from its own side, over closed rows, the same morning.
+ *
+ * @returns {{ absentFromItems: number[], boardedWithoutStatus: number[] }} `absentFromItems` is every
+ *   ready row the items connection did not carry at all; `boardedWithoutStatus` is every ready row it
+ *   carried with no Status. Both are refusals -- see `missingStatusRefusal` -- and they are separate
+ *   because only one of them is evidence about `fieldValues`, and only one of them is a finding about the
+ *   board that a reader can act on.
  */
 export function readyRowsMissingStatus(items, readyIssueNumbers, excludeIssueNumber = null) {
   const statusByNumber = new Map(
     items.filter((i) => i.number !== null).map((i) => [i.number, i.status]));
-  return readyIssueNumbers.filter((n) => n !== excludeIssueNumber && statusByNumber.get(n) == null);
+  /** @type {number[]} */
+  const absentFromItems = [];
+  /** @type {number[]} */
+  const boardedWithoutStatus = [];
+  for (const n of readyIssueNumbers) {
+    if (n === excludeIssueNumber) continue;
+    if (!statusByNumber.has(n)) absentFromItems.push(n);
+    else if (statusByNumber.get(n) == null) boardedWithoutStatus.push(n);
+  }
+  return { absentFromItems, boardedWithoutStatus };
+}
+
+/**
+ * #2157: WHICH OF THE TWO A ROW ABSENT FROM THE ITEMS CONNECTION IS -- one request per absent row, and
+ * only on the refusal path, so a clean snapshot costs nothing.
+ *
+ * The discriminator is `readTouchedItems`, already in this repo for #1275 and already the authoritative
+ * per-issue read: it names the Project in the request rather than inferring it from an item list (so it
+ * cannot be fooled by an item on some OTHER project), and it refuses a `projectItems` list shorter than
+ * its own `totalCount` rather than reading it as "not on the board". `gh issue view <n> --json
+ * projectItems` answers the same question by hand but carries no project number at all.
+ *
+ * THIS NEVER SOFTENS THE FLOOR. Both arms still refuse; what changes is that the reader is told which one,
+ * and that an off-board row becomes a finding somebody can act on rather than an unanswered question.
+ *
+ * A FAILED DISCRIMINATING READ IS `undecided`, LOUDLY -- never quietly one arm or the other. The rows go
+ * back out with the read's own refusal attached, so the refusal above still fires and still names them,
+ * and nobody is told the board is fine on the strength of a read that did not happen.
+ *
+ * @param {number[]} absentFromItems
+ * @param {{ request: (args: string[]) => string, readTouched?: typeof readTouchedItems }} deps
+ * @returns {{ offBoard: number[], boardedButNotEnumerated: number[], undecided: number[],
+ *   undecidedReason: string | null }}
+ */
+export function classifyAbsentReadyRows(absentFromItems, { request, readTouched = readTouchedItems }) {
+  const none = { offBoard: [], boardedButNotEnumerated: [], undecided: [], undecidedReason: null };
+  if (absentFromItems.length === 0) return none;
+  try {
+    const { items, notOnBoard } = readTouched(absentFromItems, { request });
+    return {
+      ...none,
+      offBoard: notOnBoard,
+      boardedButNotEnumerated: /** @type {number[]} */ (items.map((i) => i.number).filter((n) => n !== null)),
+    };
+  } catch (cause) {
+    return { ...none, undecided: absentFromItems, undecidedReason: /** @type {Error} */ (cause).message };
+  }
+}
+
+/** `#1, #2, #3` -- the spelling every line of the refusal below uses. */
+function numberList(/** @type {number[]} */ numbers) {
+  return `#${numbers.join(", #")}`;
+}
+
+/**
+ * #2157: THE REFUSAL, ONE LINE PER CAUSE, and pure so the sentence itself is driven by fixtures rather
+ * than asserted against this file's text.
+ *
+ * `null` when every ready row is accounted for. Otherwise a refusal naming EACH cause it actually found
+ * and no cause it did not -- the defect this row is about was a single sentence that named one mechanism
+ * for three populations, and read as reassurance over the one population that was a real board defect.
+ *
+ * @param {{ offBoard: number[], boardedButNotEnumerated: number[], boardedWithoutStatus: number[],
+ *   undecided: number[], undecidedReason: string | null }} found
+ * @returns {string | null}
+ */
+export function missingStatusRefusal({ offBoard, boardedButNotEnumerated, boardedWithoutStatus, undecided,
+  undecidedReason }) {
+  const total = offBoard.length + boardedButNotEnumerated.length + boardedWithoutStatus.length
+    + undecided.length;
+  if (total === 0) return null;
+  const lines = [`board-snapshot: ${total} open ${READY_LABEL} row(s) are not accounted for by this `
+    + "snapshot -- refusing to report it as complete."];
+  if (offBoard.length > 0) {
+    lines.push(`  OFF THE BOARD -- THE BOARD IS WRONG, NOT THIS READ: ${numberList(offBoard)} have no item `
+      + `on Project ${PROJECT_NUMBER} at all, so every board read has been blind to them for as long as `
+      + "they have existed. Repair is on the BOARD (#2157).");
+  }
+  if (boardedButNotEnumerated.length > 0) {
+    lines.push(`  ON THE BOARD, NOT YET IN THIS QUERY'S PAGES -- THE READ IS SHORT: `
+      + `${numberList(boardedButNotEnumerated)} are items on Project ${PROJECT_NUMBER} by their own `
+      + "per-issue read, and GitHub's project index had not enumerated them here yet (#2157: measured at "
+      + "about 25 minutes behind the write, variable). Nothing to repair -- read again.");
+  }
+  if (boardedWithoutStatus.length > 0) {
+    lines.push(`  IN THIS READ WITH NO STATUS -- THE READ IS SHORT: ${numberList(boardedWithoutStatus)} `
+      + "came back as items with no Status (#747: fieldValues has no totalCount to check itself, so this "
+      + "is read against an independent population instead).");
+  }
+  if (undecided.length > 0) {
+    lines.push(`  CANNOT TELL off-board from short-read: ${numberList(undecided)} are absent from this `
+      + `read and the per-issue read that would say which was refused -- ${undecidedReason}`);
+  }
+  return lines.join("\n");
 }
 
 /**
@@ -337,6 +455,29 @@ function reportVocabularyDrift(offered) {
 }
 
 /**
+ * #747's floor, and #2157's classification of it, in one place -- so `fetchBoardItems` reads as the
+ * narrative it is (page the board, report drift, account for every ready row) rather than carrying the
+ * classification inline.
+ *
+ * The discriminating read happens ONLY when there is something to discriminate: `classifyAbsentReadyRows`
+ * returns without a request for an empty list, so the clean path still costs exactly the calls it always
+ * did.
+ *
+ * @param {BoardItem[]} items @param {number[]} readyNumbers
+ * @param {{ run: typeof defaultRun, readTouched: typeof readTouchedItems,
+ *   excludeIssueNumber: number | null }} deps
+ */
+function refuseUnaccountedReadyRows(items, readyNumbers, { run, readTouched, excludeIssueNumber }) {
+  const { absentFromItems, boardedWithoutStatus } =
+    readyRowsMissingStatus(items, readyNumbers, excludeIssueNumber);
+  const refusal = missingStatusRefusal({
+    ...classifyAbsentReadyRows(absentFromItems, { request: (args) => run("gh", args), readTouched }),
+    boardedWithoutStatus,
+  });
+  if (refusal !== null) throw new Error(refusal);
+}
+
+/**
  * Every item currently on the board. Paginated -- #399 measured 117 items on Project 2, comfortably past
  * one page of 100. `gh` failing, or answering with a shape this function does not recognise, THROWS: it
  * never falls through to a partial or empty list, which would let a snapshot claim completeness having
@@ -349,16 +490,24 @@ function reportVocabularyDrift(offered) {
  * every caller of this function -- `writeBoardSnapshot`, and `ready-label-audit.mjs`'s own
  * board-membership check, which reads through this exact query -- inherits it for free.
  *
+ * #2157: AND IT NOW SAYS WHICH OF THE THREE IT FOUND. The sentence above is true only of a row that came
+ * back AS AN ITEM with no Status; a row absent from the pages entirely is either off the board (a board
+ * defect) or not yet indexed (a short read of a different kind), and the refusal used to assert the
+ * `fieldValues` narrowing over all three. `ready-label-audit.mjs`'s board-membership check prints this
+ * message verbatim after `COULD NOT AUDIT board membership:`, so the sentence IS the finding a reader
+ * gets -- which is why it is built by a pure function with its own fixtures (`missingStatusRefusal`).
+ *
  * `excludeIssueNumber` -- see `readyRowsMissingStatus`'s own header (#891) -- passed through unchanged so
  * a caller boarding ONE specific issue can exempt only that issue from the floor while it is mid-fix.
+ * `readTouched` is the discriminating per-issue read, injected so a test never reaches the real `gh`.
  *
  * @param {{ run?: typeof defaultRun, fetchReady?: typeof fetchReadyIssueNumbers,
- *   excludeIssueNumber?: number | null }} [deps]
+ *   readTouched?: typeof readTouchedItems, excludeIssueNumber?: number | null }} [deps]
  * @returns {BoardItem[]}
  */
 
 export function fetchBoardItems({ run = defaultRun, fetchReady = fetchReadyIssueNumbers,
-  excludeIssueNumber = null } = {}) {
+  readTouched = readTouchedItems, excludeIssueNumber = null } = {}) {
   /** @type {BoardItem[]} */
   const items = [];
   /** @type {string[] | null} */
@@ -389,14 +538,7 @@ export function fetchBoardItems({ run = defaultRun, fetchReady = fetchReadyIssue
     cursor = page.endCursor;
   }
   reportVocabularyDrift(statusOptions);
-  const readyNumbers = fetchReady({ run });
-  const missing = readyRowsMissingStatus(items, readyNumbers, excludeIssueNumber);
-  if (missing.length > 0) {
-    throw new Error(`board-snapshot: ${missing.length} open ${READY_LABEL} row(s) came back with no `
-      + `Status -- refusing to report this snapshot as complete. This is the snapshot reading short, `
-      + `not the board being wrong (#747: fieldValues has no totalCount to check itself, so this is `
-      + `read against an independent population instead): #${missing.join(", #")}`);
-  }
+  refuseUnaccountedReadyRows(items, fetchReady({ run }), { run, readTouched, excludeIssueNumber });
   // #1219: THE CONTRADICTIONS ARE REPORTED, NOT REFUSED -- and that is a decision, not a softer guard.
   //
   // Measured when this landed: 311 closed rows at a live Status, 220 of them at `In progress`. A throw
