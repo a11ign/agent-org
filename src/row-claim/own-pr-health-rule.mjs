@@ -100,6 +100,46 @@
 // That boundary is deliberate: #2026's Region is this rule and its test, and a field the gate REQUIRES is
 // a different row with a different blast radius.
 
+// #2126: AN UNANSWERED REFUSAL IS WORK NEEDING THIS SESSION'S ACTION, AND THAT IS WHAT B2 CAPS.
+//
+// #989's decision is NOT reversed and nothing below reverses it: one pull request awaiting review plus one
+// new row stays legal, because waiting on a reviewer is not work. The gap is narrower -- a pull request
+// whose reviewer HAS ASKED FOR CHANGES is not waiting on anybody but its author, and until this clause
+// nothing counted it. Measured 2026-09-23: #2107 carried a `not convinced` from 10:37:46Z with no author
+// response at all, and its own session was free to claim a fresh row.
+//
+// THE OBVIOUS DISCRIMINATOR IS DEFEATED BY A BOT, WHICH IS WHY IT IS NOT THE ONE USED. "Refuse while a
+// not-convinced verdict stands AT THE CURRENT HEAD" would have caught neither measured case: #2107's
+// verdict landed on `dfe72936` and the freshness sweep moved the head four times in half an hour --
+// `787aecd4`, `5a9981d0`, `d45c1b00`, `6541b1ee` -- every one an automated `Merge branch 'main'` and ZERO
+// author commits. A guard keyed on head identity is cleared automatically, by a bot, minutes after the
+// refusal it was meant to hold.
+//
+// SO THE DISCRIMINATOR IS `reviewDecision`. It reads `CHANGES_REQUESTED` after all those merge commits
+// precisely because `dismiss_stale_reviews` is false, so a refusal OUTLIVES the head it was posted on.
+// One field, immune to merge noise, no heuristic about which commits "count", already populated by
+// GitHub. (Not the repo's first reader of it: `packages/lab/src/packaging/branch-protection.test.ts`
+// reads it too, and #2084's subject is that same outliving -- whichever lands second reuses the first's
+// reader rather than adding a third.)
+//
+// THE ESCAPE IS NOT OPTIONAL, and the case that forced it is measured. #2105 carried, 57 seconds apart at
+// the IDENTICAL commit `e1b8b7bc`, an APPROVED from `reviewer-2` and a CHANGES_REQUESTED from `reviewer`.
+// Its author was handed an approval and a rejection of the same code inside a minute; walking away was
+// close to rational, and a rule that encoded it as indiscipline would be wrong. So where a pull request
+// carries contradictory verdicts at its current head the claim is NOT refused: it proceeds, and the row
+// is labelled `answer:ceo` with the dispute written on it (`escalateDisputeToCeo`). A guard with no exit
+// for a dispute converts a review disagreement into a stalled engineer, which is worse than what this
+// clause fixes.
+//
+// WHO POSTED A VERDICT CANNOT BE READ FROM `author.login`, AND THIS IS THE PART THAT SURPRISED ME.
+// Measured on #2105's five reviews: EVERY ONE is authored by `a11ign-bot`. `reviewer` and `reviewer-2`
+// are org sessions sharing one GitHub identity, so GitHub itself sees one reviewer, keeps only the latest
+// review per account in `latestReviews`, and a dispute detector keyed on the login would find none --
+// defeated exactly the way the head-identity discriminator is. The reviewer's name lives in the review
+// BODY, in this repo's own `, by <name>:` convention, and `reviewVerdict` (#1259) is already its parser.
+// That is why the dispute read goes through `reviews`, not `latestReviews`, and through that parser
+// rather than through `author`.
+
 // FOUND VIA `closedByPullRequestsReferences`, THE REVERSE OF `merge-guard.mjs`'s OWN `closingIssuesReferences`
 // -- not a `session:*` label on the PR (that label is a manual HOLD, applied by `pr:hold`, and most open
 // PRs never carry one) and not a branch-name convention (not every branch encodes its issue number). The
@@ -109,6 +149,12 @@
 import { REPO } from "../../../../scripts/repo-identity.mjs";
 import { gh, lookup } from "../merge-guard/lookups.mjs";
 import { declaredRegionFiles, regionCovers } from "../region-paths.mjs";
+// #2126: the reviewer NAME is parsed by the tree's own verdict parser, never a second reading of the
+// `, by <name>:` convention -- #1245/#1259 exist because six sessions each retyped one and two disagreed.
+import { headMatches, reviewVerdict } from "../review-verdict.mjs";
+// #2126: `answer:<session>` is the org's own spelling for "somebody owes this row an answer", and
+// removing the label IS the act of answering -- so the escalation needs nothing else to remember it.
+import { ANSWER_PREFIX } from "../waiting-condition.mjs";
 
 // NO `git` SPAWN HERE, deliberately -- every lookup in this file goes through `gh` (issue/PR/GraphQL
 // reads), which needs no `sandboxGitEnv()` scrub: that helper exists for `execFileSync("git", ...)`
@@ -130,9 +176,28 @@ import { declaredRegionFiles, regionCovers } from "../region-paths.mjs";
  */
 
 /**
+ * #2126: ONE SIDE OF A REVIEW AT ONE HEAD -- the GitHub review state, and the org session the verdict's
+ * own opener line names. `by` is `null` when the opener named nobody, never defaulted to a name.
+ * @typedef {{ state: string, by: string | null }} ReviewSide
+ */
+
+/**
+ * #2126: CONTRADICTORY VERDICTS AT ONE HEAD, which is the escape rather than a refusal.
+ * @typedef {{ head: string, approved: ReviewSide, refused: ReviewSide }} ReviewDispute
+ */
+
+/**
+ * #2126: ONE OPEN PULL REQUEST'S REVIEW HEALTH. `reviewDecision` is GitHub's own field, which outlives the
+ * head it was posted on; `dispute` is `null` unless two DIFFERENT named reviewers disagree at that head.
+ * @typedef {{ number: number, head: string, reviewDecision: string | null,
+ *             dispute: ReviewDispute | null }} PrReviewHealth
+ */
+
+/**
  * @typedef {{ number: number, declaresPaths: boolean, subIssues: number,
  *             closingPr: { state: "OPEN" | "MERGED" | "CLOSED" } | undefined,
- *             deliveringPr?: DeliveringPr }} RowFacts
+ *             deliveringPr?: DeliveringPr, openPrNumber?: number,
+ *             openPrReview?: PrReviewHealth }} RowFacts
  */
 
 /**
@@ -176,7 +241,10 @@ function proposedByDeclaredDelivery(delivering) {
  */
 export function inBuildReason(rows) {
   const inBuild = rows.find(isInBuild);
-  if (!inBuild) return null;
+  // #2126: the SECOND thing B2 caps, and it is checked SECOND on purpose -- a population that has always
+  // been refused must keep the refusal it has always been given, word for word, so nothing about the new
+  // clause can move an existing verdict or an existing message.
+  if (!inBuild) return unansweredRefusalReason(rows);
   return `#${inBuild.number} is IN BUILD: you hold it, no PR that is open or merged closes it, and its `
     + "Region declares files somebody still owes a commit for. Finish it, or `decline` it, before claiming "
     + "another (this is B2: one ROW in build per session -- an open PR no longer blocks a claim).\n"
@@ -215,6 +283,141 @@ function deliversRemedy(issueNumber) {
     + "request's body and this refusal lifts. It is honoured only while that pull request is open or "
     + `merged AND changes at least one path #${issueNumber}'s own \`## Region\` declares, so it states a `
     + "delivery rather than claiming one.";
+}
+
+/** GitHub's two DECIDING review states. `COMMENTED`, `DISMISSED` and `PENDING` decide nothing, and the
+ * split below drops them by naming these two rather than by excluding those three -- an allowlist, so a
+ * review state GitHub adds tomorrow is not read as a side of a disagreement.
+ *
+ * A SET OF THESE TWO, FILTERED BEFORE THE SPLIT, WAS DEAD CODE AND IS GONE: it admitted exactly what the
+ * split then re-selected, so mutating `COMMENTED` INTO it changed no behaviour and no test could see the
+ * difference. Found by running that mutation rather than by reading the code. */
+const APPROVED = "APPROVED";
+const CHANGES_REQUESTED = "CHANGES_REQUESTED";
+
+/**
+ * #2126: THE PULL REQUEST OF THIS ROW'S THAT IS WAITING ON ITS AUTHOR RATHER THAN ON A REVIEWER, or `null`.
+ *
+ * Three conditions and each is load-bearing. The pull request must be OPEN (`openPrNumber` is only ever set
+ * for an open one -- a merged or abandoned pull request is nobody's outstanding work); `reviewDecision` must
+ * read `CHANGES_REQUESTED` (GitHub's own field, not a comment scan, and the one thing a bot merge cannot
+ * clear); and the reviewers must NOT be in dispute at the current head, which is the escape `ceo`'s ruling
+ * made non-optional rather than a hole to be closed later.
+ * @param {RowFacts} row @returns {PrReviewHealth | null}
+ */
+export function unansweredRefusal(row) {
+  const review = row.openPrReview;
+  if (!review) return null;
+  if (review.reviewDecision !== CHANGES_REQUESTED) return null;
+  if (review.dispute) return null;
+  return review;
+}
+
+/**
+ * #2126: THE REFUSAL, WHICH NAMES THE PULL REQUEST -- because unlike a row in build, a pull request is
+ * exactly where the work is, and the reader has to be able to open it.
+ *
+ * IT ALSO NAMES WHAT DOES NOT LIFT IT. A reader whose head has moved four times since the verdict will
+ * reasonably believe the refusal is stale; saying so here is the difference between a rule that is
+ * followed and one that is worked around. And it names the escape, so a genuinely disputed pull request
+ * is not read as this refusal with a broken remedy -- the #1161 shape this file has paid for once.
+ * @param {readonly RowFacts[]} rows @returns {string | null}
+ */
+function unansweredRefusalReason(rows) {
+  const row = rows.find((candidate) => unansweredRefusal(candidate) !== null);
+  const review = row ? unansweredRefusal(row) : null;
+  if (!row || !review) return null;
+  return `#${row.number}'s pull request #${review.number} carries an UNANSWERED REFUSAL: its `
+    + `\`reviewDecision\` reads ${CHANGES_REQUESTED}, so a reviewer has asked for changes and nobody has `
+    + "answered. That is work needing YOUR action rather than a row waiting on a reviewer, and B2 caps work "
+    + "needing action -- not open pull requests (#2126). #989 is unchanged: one pull request AWAITING "
+    + `REVIEW plus one new row is still legal.\n  Answer #${review.number} -- push the fix, or reply and `
+    + "have the verdict re-read -- before claiming another row.\n"
+    + "  A BOT MERGE DOES NOT LIFT THIS, and a guard keyed on the head would have been decorative: "
+    + "`dismiss_stale_reviews` is false, so `reviewDecision` outlives every automatic `Merge branch "
+    + "'main'` the freshness sweep makes. Measured on #2107, whose 10:37:46Z refusal at `dfe72936` survived "
+    + "four such commits and the head move to `6541b1ee` with ZERO author commits.\n"
+    + `  If two reviewers DISAGREE at #${review.number}'s current head this refusal does not apply at all: `
+    + `the claim proceeds and #${row.number} is labelled \`${ANSWER_PREFIX}ceo\` instead, because a guard `
+    + "with no exit for a dispute converts a review disagreement into a stalled engineer.";
+}
+
+/**
+ * #2126: CONTRADICTORY VERDICTS AT THE PULL REQUEST'S CURRENT HEAD, or `null`.
+ *
+ * READ FROM `reviews` AND NOT `latestReviews`, and from the review BODY and not `author.login`. Measured on
+ * #2105's five reviews: every one is authored by `a11ign-bot`, because `reviewer` and `reviewer-2` are org
+ * sessions sharing one GitHub identity. GitHub therefore sees ONE reviewer, keeps only that account's most
+ * recent review in `latestReviews`, and a detector keyed on the login would find no dispute at all -- the
+ * same way the head-identity discriminator is defeated by a bot. The name lives in the verdict's own
+ * `, by <name>:` opener, which `reviewVerdict` already parses.
+ *
+ * AN UNATTRIBUTED PAIR IS NOT A DISPUTE, deliberately. Two opposing verdicts at one head with no name on
+ * either cannot be told from ONE reviewer reversing themselves -- and a reversal is an ordinary unanswered
+ * refusal, whose latest word GitHub has already folded into `reviewDecision`. Reading it as a dispute would
+ * let any reviewer who changed their mind at the same head wave the guard through.
+ *
+ * @param {{ headRefOid?: string,
+ *           reviews?: { state?: string, body?: string, commit?: { oid?: string } }[] }} pr
+ * @returns {ReviewDispute | null}
+ */
+export function disputeAtHead(pr) {
+  const head = pr.headRefOid ?? "";
+  const named = (pr.reviews ?? [])
+    .filter((review) => headMatches(review.commit?.oid ?? null, head))
+    .map((review) => ({ state: /** @type {string} */ (review.state),
+      by: reviewVerdict(review.body ?? "").author }))
+    // AN UNNAMED SIDE IS DROPPED BEFORE THE PAIRING, not compared as `null`: one named verdict against one
+    // unattributed one would otherwise pair (`"reviewer" !== null`) and read as two reviewers, when it may
+    // be the same one writing twice. Dropping it here is what makes the pairing below a claim about two
+    // KNOWN and DIFFERENT names.
+    .filter((side) => side.by !== null);
+  const approvals = named.filter((side) => side.state === APPROVED);
+  const refusals = named.filter((side) => side.state === CHANGES_REQUESTED);
+  const pairs = approvals.flatMap((approved) => refusals
+    .filter((refused) => refused.by !== approved.by)
+    .map((refused) => ({ approved, refused })));
+  return pairs.length === 0 ? null : { head, ...pairs[0] };
+}
+
+/**
+ * #2126: HOW MANY OPEN PULL REQUESTS ONE REVIEW-HEALTH READ TAKES. `gh pr list` defaults to THIRTY, which
+ * is a window nobody can see -- a session's own pull request falling past it would read as "no refusal" and
+ * the clause would go quiet exactly when the queue is busiest. Measured 2026-09-23: 7 open, so this is
+ * orders past anything this repository has carried, and `row-claim` already reads every open pull request
+ * once for B4's file overlap.
+ */
+export const OPEN_PR_LIMIT = 200;
+
+/**
+ * #2126: HOW MUCH OF A SHA A MESSAGE PRINTS. Eight, because that is what this repository's review
+ * convention writes (`packages/agent-org/docs/roles/reviewer.md`: a verdict matching ``at `<head8>` ``), so a
+ * reader can match the refusal against the verdict without re-deriving anything.
+ */
+const HEAD_DISPLAY_CHARS = 8;
+
+/**
+ * #2126: EVERY OPEN PULL REQUEST'S REVIEW HEALTH, IN **ONE** CALL -- never one per held row.
+ *
+ * That is the shape the row asked for by name: #989 took two network calls per held row OUT of this path
+ * when it dropped the colour read, and a clause that put one back per row would undo the measurement that
+ * justified it. One repo-wide read costs the same whether the session holds one row or five, and mirrors
+ * `lookupOpenPrFiles`, which B4 already drives exactly this way.
+ *
+ * `null` on a failed lookup, the convention every lookup in this file shares.
+ * @param {{ run?: (args: string[]) => string }} [deps]
+ * @returns {PrReviewHealth[] | null}
+ */
+export function lookupOpenPrReviewHealth({ run = gh } = {}) {
+  return lookup(() => {
+    const raw = run(["pr", "list", "--repo", REPO, "--state", "open", "--limit", String(OPEN_PR_LIMIT),
+      "--json", "number,headRefOid,reviewDecision,reviews"]);
+    /** @type {{ number: number, headRefOid?: string, reviewDecision?: string | null,
+     *           reviews?: { state?: string, body?: string, commit?: { oid?: string } }[] }[]} */
+    const parsed = JSON.parse(raw);
+    return parsed.map((pr) => ({ number: pr.number, head: pr.headRefOid ?? "",
+      reviewDecision: pr.reviewDecision ?? null, dispute: disputeAtHead(pr) }));
+  });
 }
 
 /**
@@ -496,7 +699,110 @@ export function lookupHeldRows(mySession, excludeIssueNumber, deps = {}) {
     if (facts === null) return null; // a failed lookup partway through is INCONCLUSIVE
     rows.push(facts);
   }
-  return rows;
+  return withReviewHealth(rows, deps);
+}
+
+/**
+ * #2126: THE REVIEW-HEALTH READ, AND THE TWO CONDITIONS UNDER WHICH IT DOES NOT HAPPEN AT ALL.
+ *
+ * NOT MADE when no held row has an OPEN pull request -- which is the case for every row that is in build,
+ * by definition, so the refusal B2 has always made still costs exactly the calls it always did. That is
+ * behaviour rather than thrift: `row-claim-session-eligibility.test.ts` pins that a row in build is
+ * reported WITHOUT B4's `pr list` round trip, and this read is a `pr list` too.
+ *
+ * A FAILED READ CLEARS NOTHING AND REFUSES NOTHING. This clause can only ever CREATE a refusal, so an
+ * unanswerable read must not manufacture one -- the same reasoning `rowFactsFor`'s delivery clause states
+ * in the opposite direction for the opposite reason. B2's existing teeth do not depend on this call.
+ *
+ * @param {RowFacts[]} rows @param {{ run?: (args: string[]) => string }} deps
+ * @returns {RowFacts[]}
+ */
+function withReviewHealth(rows, deps) {
+  if (!rows.some((row) => row.openPrNumber !== undefined)) return rows;
+  const health = lookupOpenPrReviewHealth(deps);
+  if (health === null) return rows;
+  const byNumber = new Map(health.map((pr) => [pr.number, pr]));
+  const reviewed = rows.map((row) => {
+    const review = row.openPrNumber === undefined ? undefined : byNumber.get(row.openPrNumber);
+    return review === undefined ? row : { ...row, openPrReview: review };
+  });
+  for (const row of reviewed) escalateDisputeToCeo(row, deps);
+  return reviewed;
+}
+
+/**
+ * #2126: THE ESCAPE'S OTHER HALF -- a dispute that is waved through SILENTLY is not an escape, it is a
+ * hole. The chairman's 2026-09-19 direction is the rule being followed here: a conclusion that changes what
+ * should happen next goes in a FIELD, not a comment, because the org can act on what GitHub records and
+ * cannot act on anything a session merely learns. So the label is the escalation and the comment is only
+ * its reasoning.
+ *
+ * THE ONE WRITE IN THIS FILE, and it is deliberate that it sits beside a read. The moment the claim guard
+ * discovers the dispute is the only moment anything in this org is looking at it; deferring the write to a
+ * caller would mean the caller had to be taught about a state it never asks about.
+ *
+ * IDEMPOTENT, because a claim may drive this twice (`sessionEligibilityReason`, then the `--blocked-by`
+ * path): the row's existing labels are read first and a row already awaiting `ceo` is left exactly as it
+ * is. A FAILED WRITE NEVER FAILS THE CLAIM -- it is reported on stderr with the dispute in full, so the
+ * session can put the label on by hand, which is the one thing a swallowed error would have cost.
+ *
+ * @param {RowFacts} row
+ * @param {{ run?: (args: string[]) => string, log?: (line: string) => void }} [deps]
+ * @returns {boolean} whether the label was written by THIS call
+ */
+export function escalateDisputeToCeo(row, { run = gh, log = (line) => process.stderr.write(`${line}\n`) } = {}) {
+  const review = row.openPrReview;
+  const dispute = review?.dispute;
+  if (!review || !dispute) return false;
+  const label = `${ANSWER_PREFIX}ceo`;
+  try {
+    if (alreadyLabelled(row.number, label, run)) return false;
+    run(["label", "create", label, "--repo", REPO, "--force"]);
+    run(["issue", "edit", String(row.number), "--repo", REPO, "--add-label", label]);
+    run(["issue", "comment", String(row.number), "--repo", REPO,
+      "--body", disputeComment(row.number, review, dispute)]);
+    log(`row-claim: #${review.number} carries OPPOSITE verdicts at \`${dispute.head.slice(0, HEAD_DISPLAY_CHARS)}\` `
+      + `(\`${dispute.approved.by}\` approved, \`${dispute.refused.by}\` asked for changes), so the claim `
+      + `is NOT refused and #${row.number} now carries \`${label}\` (#2126).`);
+    return true;
+  } catch (error) {
+    log(`row-claim: could not label #${row.number} \`${label}\` for the review dispute on #${review.number} `
+      + `at \`${dispute.head.slice(0, HEAD_DISPLAY_CHARS)}\` (${/** @type {Error} */ (error).message}). The claim still `
+      + `proceeds; put \`${label}\` on #${row.number} by hand so ceo can see it.`);
+    return false;
+  }
+}
+
+/**
+ * Whether a row already carries `label` -- ONE read, made only on the dispute path, so the common claim
+ * pays nothing for it. Throws on a failure rather than reading as "not labelled", which would re-post the
+ * dispute comment on every claim.
+ * @param {number} issueNumber @param {string} label @param {(args: string[]) => string} run
+ * @returns {boolean}
+ */
+function alreadyLabelled(issueNumber, label, run) {
+  const raw = run(["issue", "view", String(issueNumber), "--repo", REPO, "--json", "labels"]);
+  /** @type {{ labels?: { name?: string }[] }} */
+  const parsed = JSON.parse(raw);
+  return (parsed.labels ?? []).some((entry) => entry?.name === label);
+}
+
+/**
+ * #2126: THE DISPUTE, WRITTEN WHERE `ceo` READS IT. Names both verdicts, the head they share, and the
+ * ruling's own sentence -- because the next reader's first question is whether the guard is broken, and the
+ * answer is that it is doing exactly what it was told to do.
+ * @param {number} issueNumber @param {PrReviewHealth} review @param {ReviewDispute} dispute
+ * @returns {string}
+ */
+function disputeComment(issueNumber, review, dispute) {
+  return `**Two reviewers reached OPPOSITE verdicts on #${review.number} at the same head \``
+    + `${dispute.head.slice(0, HEAD_DISPLAY_CHARS)}\`.** \`${dispute.approved.by}\` approved it; \`${dispute.refused.by}\` `
+    + `asked for changes.\n\nB2's review-health clause (#2126) therefore did NOT refuse this session a fresh `
+    + `claim, and #${issueNumber} carries \`${ANSWER_PREFIX}ceo\` instead: the guard cannot tell which `
+    + "verdict stands and the ruling is explicit that it must not try -- *\"a guard with no exit for a "
+    + "dispute converts a review disagreement into a stalled engineer, which is worse than what this row "
+    + "fixes.\"*\n\n`ceo` rules which verdict stands; **removing this label is the act of answering**.\n\n"
+    + "*Written by `row-claim`, not by hand.*";
 }
 
 /**
@@ -520,7 +826,11 @@ function rowFactsFor(issueNumber, deps = {}) {
   if (shape === null) return null;
   /** @type {RowFacts} */
   const facts = { number: issueNumber, declaresPaths: shape.declaresPaths, subIssues: shape.subIssues,
-    closingPr: closing === undefined ? undefined : { state: closing.state } };
+    closingPr: closing === undefined ? undefined : { state: closing.state },
+    // #2126: the NUMBER of the open pull request, kept at row level rather than inside `closingPr`, so the
+    // two shapes `row-claim-own-pr-health-rule.test.ts` compares whole (`deliveringPr`) keep their exact
+    // keys. Undefined whenever no pull request of this row's is open -- which includes every row in build.
+    openPrNumber: openPrNumberOf(closing, undefined) };
   if (!isInBuild(facts)) return facts;
   const delivering = lookupDeliveringPr(issueNumber, deps);
   // A FAILED DELIVERY LOOKUP IS NOT INCONCLUSIVE -- IT LEAVES THE ROW IN BUILD, and this is the one place
@@ -537,7 +847,28 @@ function rowFactsFor(issueNumber, deps = {}) {
   // `closedByPullRequestsReferences` payload, so the new query read `undefined` and threw, and four tests
   // that assert a refusal went quiet. The fakes were right and the failure direction was wrong.
   if (delivering === null || delivering === undefined) return facts;
-  return { ...facts, deliveringPr: { state: delivering.state,
-    proposesRegionPath: delivering.changedPaths.some(
-      (path) => shape.declaredPaths.some((entry) => regionCovers(entry, path))) } };
+  return { ...facts, openPrNumber: openPrNumberOf(closing, delivering),
+    deliveringPr: { state: delivering.state,
+      proposesRegionPath: delivering.changedPaths.some(
+        (path) => shape.declaredPaths.some((entry) => regionCovers(entry, path))) } };
+}
+
+/**
+ * #2126: WHICH PULL REQUEST OF THIS ROW'S IS STILL OPEN -- the one whose review health decides whether the
+ * row is work needing this session's action. Only an OPEN one qualifies: a merged pull request is delivered
+ * and a closed one is abandoned, and neither is outstanding work whatever its last verdict said.
+ *
+ * The closing pull request wins over a declared delivery when both are open, because `Closes:` is GitHub's
+ * own resolution and `Delivers:` is a body field this repository parses -- the stronger fact first. In
+ * practice a row has at most one, since `Delivers:` exists precisely for rows whose pull request must say
+ * `Closes: none`.
+ *
+ * @param {{ number: number, state: string } | undefined} closing
+ * @param {{ number: number, state: string } | undefined} delivering
+ * @returns {number | undefined}
+ */
+function openPrNumberOf(closing, delivering) {
+  if (closing && closing.state === "OPEN") return closing.number;
+  if (delivering && delivering.state === "OPEN") return delivering.number;
+  return undefined;
 }
