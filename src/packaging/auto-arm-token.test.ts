@@ -26,6 +26,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
+import { runArmPr, EXIT, looksPoolRefused, refusalScope } from "../arm-pr.mjs";
+import { shouldBeMerging, readUnarmed, greenUnarmedOrders, CAUSES }
+  from "../work-gate.mjs";
 
 const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
 const WORKFLOW = `${REPO}.github/workflows/auto-arm.yml`;
@@ -113,4 +116,212 @@ test("issues: write is NOT added for this -- #333 already measured that granting
   assert.equal(Object.keys(doc.permissions).length, 3,
     "no permission beyond the three already here (contents, pull-requests, issues) should have been "
     + "added for this token change");
+});
+
+// --- #1969: A TOKEN THAT IS SET BUT REFUSED IS NOT A TOKEN THAT WORKS -------------------------------
+//
+// The four tests above pin that both jobs BRANCH on whether `A11IGN_BOT_TOKEN` is SET. That branch was
+// the whole of the token's story, and on 2026-09-22 it was measured to be the wrong question: the secret
+// was set, the branch took the PAT path, and the PAT's GraphQL pool was exhausted from 18:45:53Z to
+// 19:13:44Z. Every `pull_request` run of `auto-arm.yml` failed on `arm-pr.mjs`'s label read, and what it
+// printed -- `could not read this PR's labels -- REFUSING to arm. Unreadable is not unheld` -- is TRUE,
+// COMPLETE, and indistinguishable from the same refusal on a single unreadable pull request.
+//
+// #1958 and #1949 were approved, convinced, green on every job and `MERGEABLE` for the whole window, and
+// NOTHING in the repository could arm either: `arm` and `sweep` are the only two things that arm, and
+// both read the one refused credential. They were found because a session was woken about an unrelated
+// red check and read the log.
+//
+// These drive the real entry points rather than asserting on source text -- the rule this file's own
+// `MUTATION TARGET` test states, and `a-hold-means-cannot-merge.test.ts` records being caught by.
+
+/** Drives `runArmPr` for #1958 with every `gh` call failing with `message`, capturing what it said. */
+function driveRefusal(message: string, stdout?: string) {
+  const lines: string[] = [];
+  const calls: string[][] = [];
+  const run = (_cmd: string, args: string[]) => {
+    calls.push(args);
+    if (args[0] === "api" && stdout !== undefined) {
+      throw Object.assign(new Error("gh: the pool refused this too"), { stdout });
+    }
+    throw new Error(message);
+  };
+  const code = runArmPr({
+    argv: ["--pr=1958", "--repo=a11ign/a11ign"], env: {}, run: run as never,
+    sleep: () => "ok" as const, log: (l: string) => lines.push(l), error: (l: string) => lines.push(l),
+  });
+  return { code, said: lines.join("\n"), calls };
+}
+
+const POOL_REFUSAL = "GraphQL: API rate limit already exceeded for user ID 46429371.";
+const ONE_PR_REFUSAL = "GraphQL: Could not resolve to a PullRequest with the number 1958.";
+
+/**
+ * The real 403's own shape. Confirmed 2026-09-23 against a REAL refusal, which is what `ceo`'s ruling
+ * required before anything relied on it: the unauthenticated core pool was driven to `403` and the
+ * refusing response carried `x-ratelimit-remaining: 0` and `x-ratelimit-reset: 1790156710`. The same day,
+ * `gh api ... -i` was confirmed to put the whole response on the thrown error's `stdout`. The reset below
+ * is the real outage's own end -- 19:13:44Z, the minute #1958 and #1949 became armable again.
+ */
+const REFUSED_403 = "HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Limit: 5000\r\nX-Ratelimit-Remaining: 0\r\n"
+  + "X-Ratelimit-Reset: 1758568424\r\nX-Ratelimit-Resource: graphql\r\n\r\n"
+  + '{"message":"API rate limit exceeded for user ID 46429371."}';
+
+test("#1969 ACCEPTANCE: a token that is SET but REFUSED says the outage is REPOSITORY-WIDE and names "
+  + "the minute it returns -- read from X-Ratelimit-Reset on the 403, never inferred", () => {
+  const { said } = driveRefusal(POOL_REFUSAL, REFUSED_403);
+  assert.match(said, /REPOSITORY-WIDE/,
+    "the refusal must say the outage is not about this pull request -- that is the whole defect");
+  assert.match(said, /until 19:13Z/,
+    "the return time is KNOWABLE, so ceo's ruling requires it NAMED rather than slept through");
+  assert.match(said, /2025-09-22T19:13:44\.000Z/, "the absolute instant too -- a reader arriving later "
+    + "cannot use a relative minute");
+  assert.match(said, /#1969/, "and where to read about it");
+});
+
+test("#1969 CONTROL: an ordinary unreadable pull request claims NOTHING repository-wide, and buys no "
+  + "probe -- the positive control for the assertion above", () => {
+  const { said, calls } = driveRefusal(ONE_PR_REFUSAL);
+  assert.doesNotMatch(said, /REPOSITORY-WIDE/i);
+  assert.doesNotMatch(said, /until \d{2}:\d{2}/);
+  assert.match(said, /SCOPE -- this is about #1958 alone/,
+    "it says the opposite explicitly rather than going quiet: silence is what #1969 is about");
+  assert.equal(calls.filter((c) => c[0] === "api").length, 0,
+    "no pool probe is bought for a refusal that does not implicate the credential -- one point per 502 "
+    + "would be a standing cost for an answer nobody needs");
+});
+
+test("#1969 MUTATION TARGET: the BEHAVIOUR is byte-identical across the two messages -- ceo's "
+  + "constraint that no arming behaviour may branch on matched text", () => {
+  const pool = driveRefusal(POOL_REFUSAL, REFUSED_403);
+  const onePr = driveRefusal(ONE_PR_REFUSAL);
+  assert.equal(pool.code, EXIT.CANNOT_ASK);
+  assert.equal(onePr.code, EXIT.CANNOT_ASK,
+    "`labels === null` refuses and exits 2 EITHER WAY -- the match may only choose the sentence");
+  for (const { calls } of [pool, onePr]) {
+    assert.equal(calls.filter((c) => c[0] === "pr" && c[1] === "merge").length, 0,
+      "nothing was armed on either path: `Unreadable is not unheld` (#645) is untouched by this row");
+    assert.equal(calls.filter((c) => c[0] === "pr" && c[1] === "edit").length, 0, "and nothing labelled");
+  }
+});
+
+test("#1969: the reset is UNREADABLE rather than guessed when the probe brings no headers back", () => {
+  const { said } = driveRefusal(POOL_REFUSAL);
+  assert.match(said, /REPOSITORY-WIDE/, "the scope is still known -- it comes from the refusal, not the probe");
+  assert.match(said, /could NOT read/, "and the minute is not");
+  assert.doesNotMatch(said, /until \d{2}:\d{2}/,
+    "an instrument that cannot answer must not answer: a guessed minute sends a reader to wait for a "
+    + "return that is not coming (api-pool.mjs's own rule)");
+});
+
+test("#1969: the fingerprint is a FINGERPRINT -- it recognises GitHub's wording and nothing else", () => {
+  assert.equal(looksPoolRefused("API rate limit already exceeded for user ID 46429371."), true);
+  assert.equal(looksPoolRefused("You have exceeded a secondary rate limit"), true,
+    "a secondary limit is also the credential refusing, not this pull request");
+  assert.equal(looksPoolRefused("Could not resolve to a PullRequest with the number 1958."), false);
+  assert.equal(looksPoolRefused("gh: HTTP 502"), false);
+  assert.equal(looksPoolRefused(null), false, "and an absent message is not a pool refusal");
+});
+
+test("#1969: a pool with budget LEFT is reported as possibly SECONDARY -- the number is never dressed "
+  + "up as an exhausted primary pool", () => {
+  const said = refusalScope({
+    number: "1958", poolRefused: true,
+    pool: { remaining: 4_812, limit: 5_000, used: 188, resetInMinutes: 12,
+      resource: "graphql", resetAt: "2026-09-22T19:13:44.000Z" },
+  });
+  assert.match(said, /SECONDARY limit/);
+  assert.match(said, /4812 remaining/);
+});
+
+// --- #1969: AND THE REPORT THAT NAMES WHAT THE OUTAGE STRANDS ---------------------------------------
+//
+// `ceo`'s ruling, 2026-09-22: shape 3 only, "it lands as DATA in `work-gate.mjs`, not as a new red
+// check", read "under `${{ github.token }}`, never the arming PAT". The gate runs on the agent host
+// under the host's own `gh` identity -- measured 2026-09-23 as `a11ign-ai-workers`, while the arming PAT
+// is `DanBeckDev`'s (user ID 46429371, the account the outage named) -- and never reads
+// `A11IGN_BOT_TOKEN` at all, which exists only inside Actions. `stalled` is the standing proof that the
+// separation is what matters: it ran green throughout the outage, on the same six runs.
+
+const GREEN = [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }];
+const REQUIRED = ["gate"];
+
+test("#1969: the gate's candidate filter is green, unheld and non-draft -- answered from the list it "
+  + "already holds, which is what makes the queue read CONDITIONAL", () => {
+  const prs = [
+    { number: 1958, isDraft: false, labels: [], statusCheckRollup: GREEN },
+    { number: 1949, isDraft: false, labels: [{ name: "session:worker-capture" }], statusCheckRollup: GREEN },
+    { number: 1900, isDraft: true, labels: [], statusCheckRollup: GREEN },
+    { number: 1901, isDraft: false, labels: [{ name: "hold:ceo" }], statusCheckRollup: GREEN },
+    { number: 1902, isDraft: false, labels: [], statusCheckRollup: [{ name: "gate", status: "COMPLETED", conclusion: "FAILURE" }] },
+    { number: 1903, isDraft: false, labels: [], statusCheckRollup: [{ name: "gate", status: "IN_PROGRESS" }] },
+  ];
+  assert.deepEqual(shouldBeMerging(prs, REQUIRED), [1949, 1958],
+    "a held PR is refused by the SAME predicate arm-pr and the sweep use (#645), a draft cannot be "
+    + "armed at all, a red one is pr-checks-failing's, and a running one is not an answer yet");
+  assert.deepEqual(shouldBeMerging([], REQUIRED), [],
+    "POSITIVE CONTROL for the emptiness above: no candidates means no queue read is made at all");
+});
+
+test("#1969: a red NON-required check does not hide a stranded PR -- the outage itself reddens `sweep` "
+  + "on every pull request it strands", () => {
+  const prs = [{ number: 1958, isDraft: false, labels: [], statusCheckRollup: [
+    { name: "gate", status: "COMPLETED", conclusion: "SUCCESS" },
+    { name: "sweep", status: "COMPLETED", conclusion: "FAILURE" },
+  ] }];
+  assert.deepEqual(shouldBeMerging(prs, REQUIRED), [1958],
+    "`gate` is the one required context on main, so this PR merges the moment something arms it");
+  assert.deepEqual(shouldBeMerging(prs, null), [],
+    "and with the required set UNREADABLE it counts every check, which is the existing fail-open rule "
+    + "rather than a new one -- stated so the difference is deliberate");
+});
+
+test("#1969 ACCEPTANCE: the predicate is armedFromApi's THREE states, so a QUEUED PR is armed although "
+  + "its autoMergeRequest reads null", () => {
+  const nodes = [
+    { number: 1958, isDraft: false, merged: false, autoMergeRequest: null, mergeQueueEntry: null },
+    { number: 1949, isDraft: false, merged: false, autoMergeRequest: null,
+      mergeQueueEntry: { state: "AWAITING_CHECKS" } },
+    { number: 1940, isDraft: false, merged: false, autoMergeRequest: { enabledAt: "2026-09-22T18:00:00Z" },
+      mergeQueueEntry: null },
+  ];
+  const run = () => JSON.stringify(nodes);
+  assert.deepEqual(readUnarmed([1958, 1949, 1940], run), [1958],
+    "ceo's ruling: the predicate is NOT `autoMergeRequest == null` -- a queued PR reads null (#1729/#2004)");
+});
+
+test("#1969: a refused queue read is `null`, never an empty all-clear -- and a candidate the query did "
+  + "not return is dropped rather than reported", () => {
+  const refuse = () => { throw new Error("GraphQL: API rate limit already exceeded"); };
+  assert.equal(readUnarmed([1958], refuse), null, "#1286's rule: refused is not empty");
+  assert.equal(readUnarmed([1958], () => "not json at all"), null);
+  assert.equal(readUnarmed([1958], () => JSON.stringify({ message: "nope" })), null,
+    "a shape that is not a node array is refused, not iterated");
+  assert.deepEqual(readUnarmed([1958], () => JSON.stringify([])), [],
+    "a candidate the read did not cover is UNKNOWN: reporting it would wake somebody to arm a pull "
+    + "request nothing looked at");
+  assert.deepEqual(readUnarmed([], refuse), [],
+    "and with no candidates the read is never made, so it cannot be refused");
+});
+
+test("#1969 ACCEPTANCE: the order names every stranded PR, goes to product-manager, and is keyed on the "
+  + "SET so it clears itself", () => {
+  const [order] = greenUnarmedOrders([1958, 1949]);
+  assert.equal(order.session, "product-manager", "routing: first reader for the queue and merge close-outs");
+  assert.equal(order.cause, "pr-green-unarmed");
+  assert.ok(CAUSES.includes("pr-green-unarmed"), "or worker-profile refuses it at run time");
+  assert.match(order.prompt, /#1958, #1949/, "both, by number -- the shape is the finding");
+  assert.match(order.prompt, /SCOPE/,
+    "it points at arm-pr's own scope line, which is the one place that says whether this is one PR or all");
+  assert.equal(order.causeKey, "product-manager/pr-green-unarmed/1958.1949",
+    "keyed on the SET (fleetBatchOrders' rule): a count would collide two different pairs of PRs");
+  assert.notEqual(greenUnarmedOrders([1958, 1949])[0].causeKey, greenUnarmedOrders([1958, 1940])[0].causeKey,
+    "MUTATION TARGET: two different pairs of the same size must not share a key, or the second is "
+    + "swallowed by the wake ledger's dedupe");
+});
+
+test("#1969: no order for a refused read and none for an empty one -- the two silences are different "
+  + "states and neither may invent an alarm", () => {
+  assert.deepEqual(greenUnarmedOrders(null), [], "refused: nothing is known, so nothing is claimed");
+  assert.deepEqual(greenUnarmedOrders([]), [], "empty: every green unheld PR is armed, which is healthy");
 });

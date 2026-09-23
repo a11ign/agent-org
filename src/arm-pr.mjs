@@ -19,6 +19,10 @@ import { readFileSync, realpathSync } from "node:fs";
 import { refuseUnknownFlags, flagValue } from "../../worker-fleet/src/cli-flags.mjs";
 import { armabilityOf } from "./pr-hold-state.mjs";
 import { extractClosesDeclaration } from "./acceptance-commands.mjs";
+// #1969: THE REFUSAL'S SCOPE, and a LEAF import for the reason `api-pool.mjs`'s own header gives. The
+// reading is not reimplemented here -- a second copy of "how to read a pool" is the one place two readers
+// could silently disagree about what exhausted looks like.
+import { GRAPHQL_POOL_PROBE, poolFromHeaders } from "./api-pool.mjs";
 
 /**
  * EXIT CODES ARE THE CONTRACT. `auto-arm.yml`'s `arm` step goes red on any non-zero, so each code's job is to tell the
@@ -59,6 +63,94 @@ export function armDecision(labels) {
     return { arm: false, reason: "could not read this PR's labels -- REFUSING to arm. Unreadable is not unheld" };
   }
   return armabilityOf({ labels });
+}
+
+/**
+ * #1969: DOES THIS READ FAILURE LOOK LIKE THE CREDENTIAL RATHER THAN THE PULL REQUEST?
+ *
+ * PURE, AND IT DECIDES NOTHING THIS SCRIPT DOES. `armDecision` above is unchanged and stays unchanged:
+ * `labels === null` refuses and exits `CANNOT_ASK` whatever this answers. `ceo`'s ruling of 2026-09-22
+ * states the constraint as a rule -- **no arming BEHAVIOUR may branch on matched text** -- and this is
+ * the whole of what a match is allowed to choose: the SENTENCE, and the reset minute that sentence names.
+ * `arm-pr-refusal-scope.test.ts`'s control drives both messages and asserts the exit code and the absence
+ * of a merge call are byte-identical across them.
+ *
+ * WHY A MATCH AT ALL, WHEN THE POOL CAN BE READ. The pool read is the better instrument and it is used --
+ * see `refusalScope` -- but it cannot be the TRIGGER. Buying a probe on every unreadable PR would spend a
+ * point on every 502 and every deleted branch; and a probe that answers "plenty left" does not mean this
+ * refusal was about the PR, because a SECONDARY rate limit refuses while the primary pool is untouched.
+ * So the fingerprint says "ask about the credential" and the pool says "and here is when it returns".
+ *
+ * A PROSE MATCH IS A FINGERPRINT, NOT A CONTRACT -- `userIdFromResponse`'s own words for the same trade.
+ * If GitHub rewords this, the refusal degrades to the per-PR sentence, which is what it said before #1969
+ * and is never a wrong ACTION -- only a less useful one.
+ *
+ * @param {string | null} message the `gh` failure's own text
+ * @returns {boolean}
+ */
+export function looksPoolRefused(message) {
+  return /\brate limit\b/i.test(String(message ?? ""));
+}
+
+/**
+ * #1969: WHOSE FAILURE IS THIS -- this one pull request's, or every pull request in the repository's?
+ *
+ * THE DEFECT THIS EXISTS FOR. On 2026-09-22 the arming identity's GraphQL pool was exhausted from
+ * 18:45:53Z to 19:13:44Z. Every `pull_request` run of `auto-arm.yml` failed on this path, and what it
+ * printed was `could not read this PR's labels -- REFUSING to arm. Unreadable is not unheld` -- a
+ * sentence that is TRUE, COMPLETE and INDISTINGUISHABLE from the same refusal on a single unreadable PR.
+ * #1958 and #1949 were green, approved, convinced and unarmed for the whole window, and were found
+ * because somebody was woken about an unrelated red check and read the log. The refusal was never the
+ * defect; being unable to tell its SCOPE from its text was.
+ *
+ * THE RETURN TIME IS READ, NEVER INFERRED. `ceo`'s ruling kept exactly one field of the refused
+ * retry/backoff shape: *"the return time is knowable, so it should be NAMED rather than slept through."*
+ * `X-Ratelimit-Reset` comes back on the 403 itself -- confirmed 2026-09-23 against a REAL refusal
+ * (unauthenticated core pool driven to `403`, `x-ratelimit-remaining: 0`, `x-ratelimit-reset: 1790156710`
+ * present on the refusing response), and `gh api ... -i` puts that whole response on the thrown error's
+ * `stdout`, confirmed the same day. `gh api rate_limit` is NOT a substitute and is forbidden as a gauge
+ * (`agent-practices.md`, #1275/#1967): during this very outage it returned `graphql {remaining: 5000}`.
+ *
+ * AN UNREADABLE RESET IS SAID, NEVER GUESSED -- `api-pool.mjs`'s rule, for its reason: a reader who takes
+ * a guessed minute for a measured one waits for a return that is not coming.
+ *
+ * @param {{ number: string, poolRefused: boolean, pool: import("./api-pool.mjs").Pool | null }} refusal
+ * @returns {string}
+ */
+export function refusalScope({ number, poolRefused, pool }) {
+  if (!poolRefused) {
+    return `arm-pr: SCOPE -- this is about #${number} alone. That one read failed and nothing here says `
+      + "anything about the arming credential or about any other open PR; re-running this arms #"
+      + `${number} if the read succeeds.`;
+  }
+  return `arm-pr: SCOPE -- THIS IS NOT A FACT ABOUT #${number}. The arming credential's API pool refused `
+    + "the read, so this is a REPOSITORY-WIDE outage that happens to be charged to whichever pull "
+    + `request's event fired. Nothing can arm any pull request ${returnPhrase(pool)}, and no report names `
+    + "a green, unheld, UNARMED pull request -- `queue-stalled.mjs` names only ARMED ones. See #1969; "
+    + "`work-gate.mjs`'s `pr-green-unarmed` is the report that does name them.";
+}
+
+/** `HH:MM` inside `2026-09-22T19:13:44.000Z` -- the minute a reader acts on, without the seconds. */
+const ISO_CLOCK_START = 11;
+const ISO_CLOCK_END = 16;
+
+/**
+ * When the pool says it comes back, or an explicit UNREADABLE. Never a guess, and never a zero.
+ * @param {import("./api-pool.mjs").Pool | null} pool
+ */
+function returnPhrase(pool) {
+  const resetAt = pool?.resetAt ?? null;
+  if (resetAt === null) {
+    // BOTH CAUSES READ THE SAME HERE and both are honest: the probe was refused with no headers, or it
+    // never reached GitHub at all. Either way this run does not know the minute, and says so.
+    return "for a period this run could NOT read (no X-Ratelimit-Reset came back), so the return time is "
+      + "UNKNOWN rather than soon";
+  }
+  const exhausted = pool?.remaining === 0
+    ? ""
+    : ` -- though that pool still reads ${pool?.remaining} remaining, so this may be a SECONDARY limit `
+      + "rather than the primary one, and the minute above is the primary pool's";
+  return `until ${resetAt.slice(ISO_CLOCK_START, ISO_CLOCK_END)}Z (${resetAt})${exhausted}`;
 }
 
 /**
@@ -301,8 +393,14 @@ export function armMerge({ number, repo }, deps = {}) {
 
 /**
  * The PR's labels, body and state in ONE read, or all three null when the read fails -- never a guess.
+ *
+ * #1969: `failure` CARRIES THE MESSAGE OUT rather than leaving it in the log. The caller has to say
+ * whether the refusal is about this PR or about the credential, and it cannot ask a `null` that question.
+ * `null` when the read succeeded, so the two states stay as distinct here as `labels` keeps them.
+ *
  * @param {{ number: string, repo: string, run: typeof defaultRun, error: (line: string) => void }} args
- * @returns {{ labels: string[] | null, prBody: string | null, state: string | null }}
+ * @returns {{ labels: string[] | null, prBody: string | null, state: string | null,
+ *             failure: string | null }}
  */
 function readPr({ number, repo, run, error }) {
   try {
@@ -310,11 +408,34 @@ function readPr({ number, repo, run, error }) {
     // common case, where the PR is plainly OPEN and this costs nothing.
     const view = JSON.parse(gh(["pr", "view", number, "--repo", repo, "--json", "labels,body,state"], run));
     return { labels: view.labels.map((/** @type {{name: string}} */ l) => l.name), prBody: view.body,
-      state: typeof view.state === "string" ? view.state : null };
+      state: typeof view.state === "string" ? view.state : null, failure: null };
   } catch (cause) {
-    error(`arm-pr: could not read #${number}'s labels: ${/** @type {Error} */ (cause).message}`);
-    return { labels: null, prBody: null, state: null };
+    const failure = /** @type {Error} */ (cause).message;
+    error(`arm-pr: could not read #${number}'s labels: ${failure}`);
+    return { labels: null, prBody: null, state: null, failure };
   }
+}
+
+/**
+ * #1969: the scope line for a refused read, buying the pool probe ONLY when the credential is implicated.
+ *
+ * ONE POINT, AND ONLY ON A REFUSAL THAT ALREADY LOOKS LIKE THE POOL. A healthy arm pays nothing; an
+ * ordinary unreadable PR pays nothing; and the one case that does pay is a pool that by definition has
+ * nothing left to protect. That is `cannotAskReport`'s bargain in `work-gate.mjs`, made here for the same
+ * reason and at the same price.
+ *
+ * THE PROBE IS ALLOWED TO FAIL, and it usually will -- it is the same credential and the same pool that
+ * just refused. `rawResponse` reads the headers off the thrown error's `stdout`, which is exactly why
+ * `api-pool.mjs` exists: an instrument that fails precisely when its subject fails reports the alarming
+ * state as no state.
+ *
+ * @param {{ number: string, failure: string | null, run: typeof defaultRun }} refusal
+ * @returns {string}
+ */
+function refusalScopeFor({ number, failure, run }) {
+  const poolRefused = looksPoolRefused(failure);
+  const pool = poolRefused ? poolFromHeaders([...GRAPHQL_POOL_PROBE], (args) => run("gh", args)) : null;
+  return refusalScope({ number, poolRefused, pool });
 }
 
 /**
@@ -381,10 +502,14 @@ export function runArmPr({ argv, env, run = defaultRun, sleep = defaultSleep, lo
       + "  REFUSING rather than guessing: arming the wrong PR is not recoverable by re-running.");
     return EXIT.CANNOT_ASK;
   }
-  const { labels, prBody, state } = readPr({ number, repo, run, error });
+  const { labels, prBody, state, failure } = readPr({ number, repo, run, error });
   const verdict = armDecision(labels);
   if (labels === null) {
     error(`arm-pr: ${verdict.reason}.`);
+    // #1969: THE SCOPE IS SAID AFTER THE REFUSAL AND CHANGES NEITHER THE REFUSAL NOR THE EXIT CODE. The
+    // line above is #645's and is untouched; this one answers the question its reader could not --
+    // whether the sentence above is about this pull request or about every one of them.
+    error(refusalScopeFor({ number, failure, run }));
     return EXIT.CANNOT_ASK;
   }
   if (!verdict.arm) {
