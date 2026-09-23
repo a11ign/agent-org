@@ -26,11 +26,10 @@
  * spells `targetUrl`, and a `StatusContext` node carries NO `name` -- which is why `newestPerName`
  * skips it and an attribution status cannot disturb the gate's read of the checks.
  */
-// no-token: gh
-//
-// The only `gh` in this file is a FAKE: `fakeGh` writes a shell shim named `gh` into a temporary
-// directory and puts that directory first on `PATH`, so the door script under test spawns the shim and
-// never the real client. Nothing here authenticates, and the module under test spawns nothing at all.
+// NO CAPABILITY DECLARATION, AND NONE IS NEEDED -- checked rather than assumed: `testFileRequirements`
+// on this file returns `[]`, because nothing here spawns `gh`. The only `gh` in the fixture is a FAKE
+// shell shim `fakeGh` writes into a temporary directory that goes first on `PATH`, so the door script
+// under test reaches the shim and never the real client; and the module under test spawns nothing at all.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -202,9 +201,9 @@ test("#2127: the door posts the review AND a `review/<session>` status pointing 
   const status = calls.find((c) => c.includes("statuses/"));
   assert.ok(status, `no attribution status written: ${calls.join(" | ")}`);
   assert.match(status!, /statuses\/e1b8b7bc0000000000000000000000000000abcd/);
-  assert.ok(status!.includes(`context=${attributionContext("reviewer")}`), status);
+  assert.ok(status!.includes(`context=${attributionContext("reviewer")}`), status!);
   assert.ok(status!.includes("target_url=https://github.com/a11ign/a11ign/pull/2105#pullrequestreview-5290399999"),
-    status);
+    status!);
   assert.ok(status!.includes("state=success"),
     "ALWAYS success: this records who reviewed, never whether the review passed");
 });
@@ -213,7 +212,7 @@ test("#2127: the door writes `reviewer-2`'s own name, not a constant -- the muta
   + "every review read as `reviewer` and hide the #2105 violation", () => {
   const { calls } = runDoor("reviewer-2", TSV);
   const status = calls.find((c) => c.includes("statuses/"));
-  assert.ok(status!.includes(`context=${attributionContext("reviewer-2")}`), status);
+  assert.ok(status!.includes(`context=${attributionContext("reviewer-2")}`), status!);
 });
 
 test("#2127: with no session declared the review STILL POSTS, and the door says it is unattributed", () => {
