@@ -216,3 +216,36 @@ export function boardReadRefusal(message) {
       + `examined: the token cannot read the Project (#546). ${message}` }
     : { degraded: false, line: `SETTLE-BOARD: CANNOT ASK -- the board could not be read: ${message}` };
 }
+
+/**
+ * #2081: THIS PASS'S OWN COMPLETENESS FLOOR -- which CLOSED rows GitHub reports on the board did the
+ * board read not come back with?
+ *
+ * **IT REPLACES AN INHERITED FLOOR RATHER THAN REMOVING ONE, and the reason is which population each one
+ * watches.** `fetchBoardItems`'s #747 floor reads the item list against OPEN `ready` rows: a population
+ * this pass never touches. Measured 2026-09-23 08:50-08:56Z, live: `projectV2.items` did not return
+ * #2083, #2084 or #2086 -- each of which `issue.projectItems` reported as an item on Project 1 at that
+ * same moment, and `items.totalCount` agreed with the SHORT list (220) rather than with the board. A row
+ * filed minutes earlier is therefore missing from every full board read until GitHub's project index
+ * catches up, so that floor refused three runs in a row and no operator action could satisfy it. A guard
+ * that only a wait can clear, over rows the pass does not act on, stops being a floor and becomes an
+ * outage -- `fetchBoardItems`'s own #1219 comment states the trade: "a refusal that blocks the repair
+ * path is not a stricter guard, it is an absent one."
+ *
+ * So the floor is keyed on the population this pass DOES act on. A closed row was boarded when it was
+ * filed, long before the index window this lag opens, so this is satisfiable in a way the inherited one
+ * is not -- and it is the STRONGER check for this pass, because a read missing a closed row is a read
+ * that would silently leave that row drifted while reporting the pass complete.
+ *
+ * @param {BoardItem[]} items the board, as the read returned it
+ * @param {number[]} closedRowsOnBoard closed rows GitHub itself reports as items on this Project
+ * @returns {string | null} the refusal, or `null` when the read accounts for every one of them
+ */
+export function shortReadRefusal(items, closedRowsOnBoard) {
+  const seen = new Set(items.filter((i) => i.number !== null).map((i) => i.number));
+  const missing = closedRowsOnBoard.filter((n) => !seen.has(n));
+  if (missing.length === 0) return null;
+  return `the board read came back without ${missing.length} CLOSED row(s) GitHub reports as items on `
+    + `this Project -- refusing to settle from a partial read, which would report this pass complete `
+    + `having never examined them: #${missing.join(", #")}`;
+}

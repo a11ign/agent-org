@@ -39,10 +39,14 @@
 //   3  one or more Statuses did not move. NAMED, never counted.
 //
 //   node packages/agent-org/src/settle-closed-rows.mjs
+import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
-import { settleBoardRows, settleClosedStatus, boardReadRefusal } from "./settle-closed-status.mjs";
+import { settleBoardRows, settleClosedStatus, boardReadRefusal, shortReadRefusal }
+  from "./settle-closed-status.mjs";
+// The repository this pass reads, from the one place that names it.
+import { REPO } from "../../../scripts/repo-identity.mjs";
 // The token-carrying halves, imported HERE (an entry point) and injected, so the decision module stays
 // pure -- #1009's rule, and the reason this command's Acceptance can run in the job with no token.
 import { fetchBoardItems } from "./board-snapshot.mjs";
@@ -51,6 +55,36 @@ import { fetchBoardItems } from "./board-snapshot.mjs";
 import { closeRowsExit, EXIT, LIVE_SETTLE_DEPS } from "./close-rows-for-merged-pr.mjs";
 
 export const LOG_PREFIX = "SETTLE-BOARD";
+
+/**
+ * How far back the floor's independent population reaches. The lag this floor watches for is a property
+ * of a RECENTLY ADDED item, so the most recent closed rows are where a short read would show -- and a
+ * sample that costs one request is a floor the pass can afford on every run.
+ */
+const FLOOR_SAMPLE = 100;
+
+/** @param {string[]} args */
+const gh = (args) => execFileSync("gh", args, { encoding: "utf8" }).trim();
+
+/**
+ * The floor's independent population: closed rows GitHub itself reports as items on THIS Project, read
+ * through `issue.projectItems` -- the side of the API that was correct while `projectV2.items` was short
+ * (see `shortReadRefusal`). `gh issue list`, never `gh pr list`: this pass's population must not depend
+ * on any PR existing, which is the whole of #2081.
+ * @param {(args: string[]) => string} [gh_]
+ * @returns {number[]}
+ */
+export function closedRowsOnProject(gh_ = gh) {
+  const raw = gh_(["issue", "list", "--repo", REPO, "--state", "closed",
+    "--limit", String(FLOOR_SAMPLE), "--json", "number,projectItems"]);
+  /** @type {{ number: number, projectItems: { title?: string }[] }[]} */
+  const rows = JSON.parse(raw);
+  // `projectItems` here carries no project NUMBER, so membership is read as "has any project item at
+  // all". This repo has one Project, and a row on some other board would only make this floor STRICTER --
+  // it would refuse a read that is genuinely complete for this Project, which is the safe direction for a
+  // floor to be wrong in, and is why the looser read is acceptable.
+  return rows.filter((r) => (r.projectItems ?? []).length > 0).map((r) => r.number);
+}
 
 /**
  * The live settle for ONE row: the live mover, and the Status this pass ALREADY READ in place of a second
@@ -68,13 +102,23 @@ function settleOne(n, heldStatus) {
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/settle-closed-rows.mjs" });
 
-  let items;
+  let items, boardedClosedRows;
   try {
-    items = fetchBoardItems();
+    // `fetchReady: () => []` REPLACES #747's floor rather than removing it -- `shortReadRefusal` below is
+    // this pass's own, over the population it acts on. `shortReadRefusal`'s header carries the measurement
+    // and the reasoning; the substitution is here because the floor's population is a CALLER's choice.
+    items = fetchBoardItems({ fetchReady: () => [] });
+    boardedClosedRows = closedRowsOnProject();
   } catch (cause) {
     const { degraded, line } = boardReadRefusal(cause instanceof Error ? cause.message : String(cause));
     console.error(line);
     process.exit(degraded ? EXIT.DONE : EXIT.CANNOT_ASK);
+  }
+
+  const short = shortReadRefusal(items, boardedClosedRows);
+  if (short) {
+    console.error(`${LOG_PREFIX}: CANNOT ASK -- ${short}`);
+    process.exit(EXIT.CANNOT_ASK);
   }
 
   const { attempted, unsettled } = settleBoardRows(items, { settle: settleOne });

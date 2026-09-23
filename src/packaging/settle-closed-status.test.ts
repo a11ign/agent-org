@@ -11,8 +11,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   settleClosedStatus, refusalCause, unsettledVerdict, PROJECT_UNREADABLE,
-  // #2081: the board-keyed pass's three pure pieces, in the same pure module and for the same reason.
-  closedRowsToSettle, settleBoardRows, boardReadRefusal,
+  // #2081: the board-keyed pass's pure pieces, in the same pure module and for the same reason.
+  closedRowsToSettle, settleBoardRows, boardReadRefusal, shortReadRefusal,
 } from "../settle-closed-status.mjs";
 // #1996: the resting state's single copy. Imported from the pure module that owns it, so this file's
 // closure still needs no token and the row's Acceptance stays runnable where Acceptance runs.
@@ -334,4 +334,32 @@ test("#2081 the board-keyed command reads no PR list -- and the same check DOES 
   assert.equal(readsPrList(source("settle-closed-rows.mjs")), false, "the board-keyed pass keys on the board alone");
   assert.equal(readsPrList(source("close-rows-sweep.mjs")), true,
     "THE POSITIVE CONTROL: the sweep this pass complements does read one, so the check above is not vacuous");
+});
+
+/**
+ * #2081: THIS PASS'S OWN COMPLETENESS FLOOR, and the live measurement that made it necessary.
+ *
+ * Measured 2026-09-23 08:50-08:57Z: `projectV2.items` returned 220 items and `items.totalCount` agreed,
+ * while `issue.projectItems` reported #2083, #2084 and #2086 as items on that same Project in the same
+ * minute. `fetchBoardItems`'s #747 floor therefore refused three runs of this pass in a row, over OPEN
+ * `ready` rows -- a population this pass never touches, and one no operator action could repair. The
+ * floor below watches the population this pass DOES act on, which was never in that window because a
+ * closed row was boarded when it was filed.
+ */
+test("#2081 the pass refuses a board read that came back without a CLOSED row GitHub reports on the board", () => {
+  const read = [item(2061, "CLOSED", "Done"), item(2013, "CLOSED", "In progress"), item(null, null, "Ready")];
+  assert.equal(shortReadRefusal(read, [2061, 2013]), null,
+    "THE POSITIVE CONTROL for the refusal below: a read that accounts for every boarded closed row passes");
+  const refusal = shortReadRefusal(read, [2061, 2013, 1980, 2002]);
+  assert.match(String(refusal), /without 2 CLOSED row\(s\) GitHub reports as items on this Project/);
+  assert.match(String(refusal), /#1980, #2002/,
+    "NAMED, never counted -- a partial read would otherwise report this pass complete having never "
+    + "examined them, which is the defect the row is about arriving through the instrument");
+});
+
+test("#2081 the floor credits nothing to a numberless item, and an empty population cannot satisfy it", () => {
+  assert.equal(shortReadRefusal([item(null, null, null)], []), null,
+    "nothing boarded and nothing read is not a short read -- it is the empty case, and it is stated");
+  assert.match(String(shortReadRefusal([item(null, null, null)], [7])),
+    /#7/, "a draft item in the read does not stand in for the closed row that is missing from it");
 });
