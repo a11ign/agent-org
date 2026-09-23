@@ -2340,6 +2340,55 @@ test("#2099: a declared hand-run BESIDE a command that really runs reports both 
   assert.equal(report.ok, true);
 });
 
+/**
+ * REVIEWER-2'S BLOCKER ON #2105, and it is a scope fault rather than a wiring one: `handRun` is read once
+ * from the whole body and handed to BOTH sections, so `runOneCommand` honouring it without asking which
+ * section it was in let one line convert an unrelated `Refutation:` `gh` command into
+ * `NOT RUN ... declared hand-run` -- a POSITIVE claim that a human ran something, attributed to a filer
+ * who was never asked about that command. `handRunAcceptanceReason` reads `extractAcceptanceSection`
+ * alone, so the declaration only ever spoke for the Acceptance commands.
+ *
+ * THE MATCHED PAIR IS THE POINT: the same command string, in the same body, under the two headers --
+ * honoured under `Acceptance:`, refused for `token` under `Refutation:`.
+ */
+test("#2099: a `Refutation:` `gh` line does NOT inherit the Acceptance's `Hand-run:` declaration -- it keeps "
+  + "its own REFUSED-for-`token` verdict, and nothing claims a human ran it", () => {
+  const body = `Hand-run: ${HAND_RUN_REASON}\n`
+    + `Acceptance:\nnpx tsx --test ${REAL_FILE}\n`
+    + `Refutation:\n${HAND_RUN_GH}\n`;
+  const report = acceptanceReport(body, () => 0);
+  const refutation = report.lines.filter((line) => line.startsWith("REFUTATION:")).join("\n");
+  assert.match(refutation, /REFUTATION: REFUSED/, `the refutation keeps its own verdict: ${refutation}`);
+  assert.match(refutation, /needs `token`/);
+  assert.doesNotMatch(refutation, /REFUTATION: NOT RUN/);
+  // NOT MERELY THE WORD: the reason a reader acts on must not name a declaration nobody made about this
+  // command, which is the whole content of the fault.
+  assert.ok(!refutation.includes(HAND_RUN_REASON), `the declaration is not quoted at it: ${refutation}`);
+  // AND THE REMEDY IS FOLLOWABLE HERE (#1116): the message must not send the author to add a `Hand-run:`
+  // line that this section will ignore -- it says so, and names what does work instead.
+  assert.match(refutation, /does NOT cover this line/);
+  assert.match(refutation, /move the line to `Acceptance:`/);
+  // The Acceptance half is untouched by the scoping -- it ran, so the section is a real answer.
+  assert.match(report.lines.join("\n"), /ACCEPTANCE: RAN/);
+  assert.equal(report.ok, true);
+});
+
+test("#2099 CONTROL for the pair above: the SAME command under `Acceptance:` IS honoured -- the difference is "
+  + "the header it sits under, never the command", () => {
+  const body = `Hand-run: ${HAND_RUN_REASON}\nAcceptance:\n${HAND_RUN_GH}\n`;
+  const report = acceptanceReport(body, () => 0);
+  const joined = report.lines.join("\n");
+  assert.match(joined, /ACCEPTANCE: NOT RUN/, joined);
+  assert.ok(joined.includes(HAND_RUN_REASON), `the declaration IS quoted here: ${joined}`);
+  assert.equal(report.ok, true);
+  // The other half of the same pair: UNDECLARED under `Acceptance:`, the remedy offered IS the
+  // declaration, because there it really works.
+  const undeclared = acceptanceReport(`Acceptance:\n${HAND_RUN_GH}\n`, () => 0).lines.join("\n");
+  assert.match(undeclared, /ACCEPTANCE: REFUSED/);
+  assert.match(undeclared, /Run it by hand and declare it/);
+  assert.doesNotMatch(undeclared, /does NOT cover this line/);
+});
+
 test("#2099: the `Hand-run:` line is a DECLARATION wherever it lands, never a command -- #1036's measured "
   + "failure on `History: full`, which was taken as a command and terminated the scan before the real one", () => {
   const inside = `## Acceptance\n\nHand-run: ${HAND_RUN_REASON}\n\n\`\`\`\nnpx tsx --test ${REAL_FILE}\n\`\`\`\n`;

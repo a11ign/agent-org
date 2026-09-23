@@ -455,18 +455,32 @@ function needsToken(command) {
  * @param {JobCapabilities} capabilities
  * @returns {Classification | null}
  */
-function tokenRefusal(command, capabilities) {
+function tokenRefusal(command, capabilities, section) {
   if (capabilities.token || !needsToken(command)) return null;
-  return { verdict: "refused", reason: noTokenReason(command) };
+  return { verdict: "refused", reason: noTokenReason(command, section) };
 }
 
-/** #2099: the one wording for "this command needs a credential this job does not have". @param {string} command */
-function noTokenReason(command) {
+/**
+ * #2099: the one wording for "this command needs a credential this job does not have".
+ *
+ * THE REMEDY IS SECTION-SPECIFIC BECAUSE THE DECLARATION IS. `Hand-run:` speaks for the Acceptance
+ * commands alone (`handRunAcceptanceReason` reads `extractAcceptanceSection`), so offering it under
+ * `Refutation:` would name a way out that does not work -- the author adds the line, the refutation line
+ * is refused exactly as before, and #1116's rule is broken in the direction that teaches people the
+ * declaration is decorative. The FACT is one string either way; only the sentence that says what to do
+ * next differs.
+ * @param {string} command @param {"ACCEPTANCE" | "REFUTATION"} [section]
+ */
+function noTokenReason(command, section) {
+  const remedy = section === "REFUTATION"
+    ? "A `Hand-run:` declaration does NOT cover this line -- it speaks for the Acceptance commands only. "
+      + "Paste the run's real output under an unparsed heading (#504), or move the line to `Acceptance:` "
+      + "and declare it there"
+    : "Run it by hand and declare it: a `Hand-run: <who runs it and why>` line in the body makes this "
+      + "line report `NOT RUN` naming your reason, instead of dying on a missing credential";
   return `needs \`token\`, which this job does not have -- \`${firstRealToken(command)}\` authenticates `
     + "against GitHub, and the `acceptance` job is given no credential at all because it alone executes "
-    + "commands taken from an untrusted PR body. Run it by hand and declare it: a `Hand-run: <who runs "
-    + "it and why>` line in the body makes this line report `NOT RUN` naming your reason, instead of "
-    + "dying on a missing credential";
+    + `commands taken from an untrusted PR body. ${remedy}`;
 }
 
 /**
@@ -1654,7 +1668,7 @@ export function classifyCommand(command,
   //
   // GUARDED BY `capabilities.token`, for #510's reason: `FULL_CAPABILITIES` is the default, so every
   // caller that never mentions capabilities keeps classifying `gh` exactly as before.
-  const noToken = tokenRefusal(command, capabilities);
+  const noToken = tokenRefusal(command, capabilities, section);
   if (noToken) return noToken;
   // #621: CLOSURE-DERIVED, CHECKED FIRST -- whatever the header says. `board-style.test.ts` has no
   // `// requires:` header at all and is refused here regardless; a file that DOES declare one correctly
@@ -2235,7 +2249,16 @@ function runOneCommand(command, run, { prefix, isPass, commandExists: exists, ca
   // why, which is the whole content of the declaration. `branch-protection.test.ts`'s opt-in live read
   // already prints exactly this word for the identical situation (a check nothing here performed), so the
   // reader meets one vocabulary rather than two.
-  if (handRun && classification.verdict === "refused" && !capabilities?.token && needsToken(executable)) {
+  //
+  // ACCEPTANCE ONLY, and the boundary is what the declaration SAYS rather than a convenience
+  // (reviewer-2's blocker on #2105). `handRunAcceptanceReason` reads `extractAcceptanceSection` alone, so
+  // `Hand-run:` is a claim about the Acceptance commands and nothing else -- the filer was never asked
+  // about the Refutation ones, and nobody promised to run them by hand. Honouring it under `Refutation:`
+  // would let one line in the body convert an unrelated `gh` refutation into `NOT RUN ... declared
+  // hand-run`, attributing to a human a run they never declared. `Refutation:` keeps its own verdict
+  // semantics: a `gh` line there is REFUSED for `token`, exactly as before this row.
+  if (prefix === "ACCEPTANCE" && handRun && classification.verdict === "refused"
+      && !capabilities?.token && needsToken(executable)) {
     return { executed: false, handRun: true, ok: true,
       line: `${prefix}: NOT RUN ${command} -> declared hand-run: ${handRun}. This job has no credential `
         + "and did not attempt it; nothing here verified this command. Paste the run into the PR body." };
