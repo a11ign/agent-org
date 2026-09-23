@@ -1005,7 +1005,14 @@ test("ONE DIALECT FOR A WAIT: minutes under the hour, hours above it", () => {
   // is a number a reader has to do arithmetic on before it means anything.
   assert.equal(waitedFor(40 * 60_000), "40 minute(s)");
   assert.equal(waitedFor(0), "0 minute(s)");
+  // A SMALL NEGATIVE PROVES NOTHING, and `npm run mutate` said so: `waitedFor(-5)` rounds to `-0`, which
+  // a template literal prints as "0", so dropping the `Math.max(0, ms)` clamp is INVISIBLE at that
+  // magnitude and the mutant survived. A clock that went backwards goes back by minutes or hours, not by
+  // five milliseconds, and at that magnitude the clamp is the difference between "0 minute(s)" and
+  // "-120 minute(s)" in a report somebody is meant to act on.
   assert.equal(waitedFor(-5), "0 minute(s)", "a clock that went backwards is not a negative wait");
+  assert.equal(waitedFor(-2 * 3_600_000), "0 minute(s)",
+    "and the magnitude that actually distinguishes the clamp: unclamped this reads -120 minute(s)");
   assert.equal(waitedFor(9.7 * 3_600_000), "9.7h", "the reading this row was filed on");
   assert.equal(waitedFor(60 * 60_000), "1.0h", "and the boundary belongs to hours");
 });
