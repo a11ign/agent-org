@@ -365,6 +365,110 @@ export function hasFullHistoryDeclaration(body) {
   return HISTORY_FULL_PATTERN.test(body ?? "");
 }
 
+// #2099: THE `token` DECLARATION, IN THE `History: full` FAMILY AND FOR ITS REASON.
+//
+// `jobCapabilities()` names four capabilities this job can lack and a row could declare three of them:
+// `history` in the body, `fleet` by a required template dropdown, `corpus` by the template's prose rule.
+// `token` had NOTHING, so a row whose Acceptance is a `gh` command said so in prose no code reads, and
+// nothing said so until `pr-open` -- after a builder had claimed the row and built the change (#879's
+// cost, paid again).
+//
+// A BODY FIELD AND NOT A TEMPLATE DROPDOWN, and the reason is which body has to carry it. The `fleet`
+// dropdown is enforced by the web form, which `gh issue create` does not apply (`fileRefusalReason` says
+// so about the three required sections), and -- decisively -- the declaration has to be readable from the
+// **PR body** at `pr-open`, where there is no template and no dropdown. `History: full` is the proven
+// shape for exactly that: one anchored line, parsed by one function, honoured wherever it lands.
+//
+// A REASON IS REQUIRED, like `Closes: none -- <reason>`. "This is hand-run" is a fact about the command;
+// WHO runs it and WHY a runner cannot is the thing a reader of the PR needs, and the bare form would
+// become the flag people add to make a red check green.
+// HORIZONTAL WHITESPACE ONLY, and this is not a style choice: `\s` matches a NEWLINE, so a pattern
+// written with `\s*` around the reason spans lines -- measured on `Hand-run:` followed by a blank line and
+// a fenced `gh` command, where it captured the fence and reported the row as declared. A declaration is
+// one line by definition, and a bare `Hand-run:` must fall through to the near-miss rule below.
+const HAND_RUN_PATTERN = /^[^\S\r\n]*(?:\*\*|__)?Hand-run:[^\S\r\n]*(?:\*\*|__)?[^\S\r\n]*(\S[^\r\n]*?)[^\S\r\n]*$/im;
+
+// #1036's near-miss rule, on this field: a line that OPENS with `Hand-run:` and is not a recognised
+// declaration (`Hand-run:` with nothing after it) is neither honoured nor a command. Taking it as a
+// command is how an unrecognised spelling produces a refusal about something else -- see
+// `isHistoryDeclarationLine` for the full argument, which is the same one.
+const HAND_RUN_ISH_PATTERN = /^\s*(?:\*\*|__)?Hand-run\s*:/i;
+
+/** #2099: is this line an attempt at the `Hand-run:` declaration, recognised or not? @param {string} trimmed */
+function isHandRunDeclarationLine(trimmed) {
+  return HAND_RUN_PATTERN.test(trimmed) || HAND_RUN_ISH_PATTERN.test(trimmed);
+}
+
+/**
+ * #2099: is this line a DECLARATION rather than a command -- `History: full` or `Hand-run: <reason>`,
+ * recognised or near-miss? One function so `commandLinesAfter` pays ONE branch for the whole family: the
+ * caller sits at this repo's complexity gate, and every declaration added since has had to be free there
+ * (`isHistoryDeclarationLine` was extracted for exactly this, and says so).
+ * @param {string} trimmed
+ * @returns {boolean}
+ */
+function isDeclarationLine(trimmed) {
+  return isHistoryDeclarationLine(trimmed) || isHandRunDeclarationLine(trimmed);
+}
+
+/**
+ * #2099: the row's or PR's own statement that its Acceptance is run BY HAND, and why -- or `null`.
+ *
+ * The reason is returned rather than a boolean, because every message this declaration produces quotes
+ * it: a `NOT RUN` line naming no reason is the prose it replaces with extra steps.
+ * @param {string | null | undefined} body
+ * @returns {string | null}
+ */
+export function handRunDeclaration(body) {
+  const match = HAND_RUN_PATTERN.exec(body ?? "");
+  return match ? match[1].replace(/\s*(?:\*\*|__)\s*$/, "").trim() : null;
+}
+
+// #2099: the strip above, and why the pattern cannot do it alone. `**Hand-run: whoever holds the admin
+// credential**` closes its bold AFTER the reason, and a lazy capture that stops before `**` would eat a
+// reason genuinely ending in an emphasis (`the **admin** credential`). Capturing greedily and trimming a
+// trailing marker keeps both readings: the wrapper is dropped, an interior `**` is not.
+
+/**
+ * #2099: does this command need a GitHub credential to be anything but an error? PURE -- a function of
+ * the command string alone, no closure walk and no file existence question (those are `deriveClosureRequirements`'s
+ * and #2035's).
+ *
+ * THE FIRST REAL TOKEN, never a substring match. `\bgh\b` over the line would match `gh` inside a path,
+ * a jq filter or a branch name -- #1860 is this repo's own record of that exact mistake costing a file
+ * that refused itself for being named after the thing it fixed. A command that reaches `gh` DEEPER than
+ * its first token (a script that spawns it) is already `SPAWNS_GH`'s question, answered by the closure
+ * walk with the chain that found it.
+ * @param {string} command
+ * @returns {boolean}
+ */
+function needsToken(command) {
+  const token = firstRealToken(command);
+  return token !== undefined && token.replace(/^['"]|['"]$/g, "") === "gh";
+}
+
+/**
+ * #2099: the `token` refusal for a command, or `null` when this job can honestly attempt it. Extracted
+ * rather than inlined in `classifyCommand`, which sits AT the complexity gate -- a called function's
+ * branches are not the caller's, the same reason `isHistoryDeclarationLine` exists next door.
+ * @param {string} command
+ * @param {JobCapabilities} capabilities
+ * @returns {Classification | null}
+ */
+function tokenRefusal(command, capabilities) {
+  if (capabilities.token || !needsToken(command)) return null;
+  return { verdict: "refused", reason: noTokenReason(command) };
+}
+
+/** #2099: the one wording for "this command needs a credential this job does not have". @param {string} command */
+function noTokenReason(command) {
+  return `needs \`token\`, which this job does not have -- \`${firstRealToken(command)}\` authenticates `
+    + "against GitHub, and the `acceptance` job is given no credential at all because it alone executes "
+    + "commands taken from an untrusted PR body. Run it by hand and declare it: a `Hand-run: <who runs "
+    + "it and why>` line in the body makes this line report `NOT RUN` naming your reason, instead of "
+    + "dying on a missing credential";
+}
+
 /**
  * What THIS acceptance job can offer a test that names a requirement (#510). `token`/`fleet` are fixed
  * facts about the job itself; `history` is the one thing a PR body can change. `docs/pipeline.md` states
@@ -1329,6 +1433,39 @@ export function labFetchPathReason(body, tool, deps = {}) {
     + "and only one of them is your code. Use the path named above.";
 }
 
+/**
+ * #2099: THE SAME VERDICT, AT FILING TIME. `pr-open` already writes a refusal a reader can follow; what
+ * it cannot do is write it before a builder has claimed the row and built the change. This is that
+ * refusal moved to where the filer still has the context -- #879's shape, which `npm test` (see
+ * `wholeSuiteAcceptanceReason`) has had since #1943 and `gh` has not.
+ *
+ * A DECLARATION, NEVER A BLANKET REFUSAL, and the ruling is `product-manager`'s on this row: #2084 is a
+ * CORRECTLY FILED row whose Acceptance is a deliberate hand-run `gh` command, named per the template's
+ * own rule for a command a runner cannot make. Refusing every `gh` Acceptance would refuse a correct row
+ * -- and the template already solved exactly this for `fleet` with a declaration rather than a refusal.
+ *
+ * ONLY THE BARE SPELLING, deliberately. A `$ `-prefixed line classifies `prose` and keeps the
+ * `EXECUTED NOTHING` refusal it already gets, which is correct and is not what this row changes: the
+ * fault there is that the line was never written as a command, and it needs a different fix from this one.
+ *
+ * @param {string} body a row body @param {string} tool the CLI to name in the refusal
+ * @returns {string | null}
+ */
+export function handRunAcceptanceReason(body, tool) {
+  const section = extractAcceptanceSection(body);
+  if (section.kind !== "commands" || handRunDeclaration(body) !== null) return null;
+  const hits = section.commands.filter((command) => needsToken(stripTrailingCommentary(command)));
+  if (hits.length === 0) return null;
+  return `${tool}: REFUSING to file -- the Acceptance section names ${hits.map((c) => `\`${c}\``).join(", ")}, `
+    + "and the `acceptance` job that runs a PR body's commands is given NO credential at all, because it "
+    + "alone executes commands taken from an untrusted PR body. Run by it, a `gh` line dies on the "
+    + "missing credential; `pr-open` refuses the same string later, when it costs a rewrite by somebody "
+    + "with less context than you have now. If a human is meant to run it -- which is a perfectly good "
+    + "row -- say so in the body: a `Hand-run: <who runs it and why>` line, the `Acceptance:`/`Closes:`/"
+    + "`Not-before:` family, makes the job report `NOT RUN` naming your reason instead. Otherwise name a "
+    + "command this job can run.";
+}
+
 /** @type {string[] | null} */
 let suiteFilesCache = null;
 /**
@@ -1510,6 +1647,15 @@ export function classifyCommand(command,
   for (const [pattern, reason] of [...FLEET_LAB_PATTERNS, ...CORPUS_PATTERNS]) {
     if (pattern.test(command)) return { verdict: "refused", reason };
   }
+  // #2099: THE FOURTH CAPABILITY, CHECKED THE WAY THE OTHER THREE ARE. A bare `gh ...` line classified
+  // `runnable`, so the job RAN it and it died on the missing credential -- the job knows it has no token
+  // and the classifier never asked. Beside the fleet/lab/corpus patterns because it is the same kind of
+  // fact: a command this job cannot honestly attempt, refused by name rather than by exit code.
+  //
+  // GUARDED BY `capabilities.token`, for #510's reason: `FULL_CAPABILITIES` is the default, so every
+  // caller that never mentions capabilities keeps classifying `gh` exactly as before.
+  const noToken = tokenRefusal(command, capabilities);
+  if (noToken) return noToken;
   // #621: CLOSURE-DERIVED, CHECKED FIRST -- whatever the header says. `board-style.test.ts` has no
   // `// requires:` header at all and is refused here regardless; a file that DOES declare one correctly
   // is refused here too, on the identical evidence, so declaring honestly never changes which branch a
@@ -2049,7 +2195,11 @@ function commandLinesAfter(lines, headerIndex) {
     // (the named file declares it on line 13) -- one placement, two messages, neither naming it. Skipping
     // rather than refusing, because the declaration is position-independent by design and honouring it
     // wherever it lands is the behaviour the author already expects.
-    if (isHistoryDeclarationLine(trimmed)) continue;
+    // #2099: `Hand-run:` joins it, for the identical reason and against the identical measured failure --
+    // a declaration is position-independent, so a row that writes it under `## Acceptance` (the natural
+    // place, next to the command it is about) must not have it taken as a command that then terminates
+    // the scan before the real command below it. Both are asked in one call; see `isDeclarationLine`.
+    if (isDeclarationLine(trimmed)) continue;
 
     // #438: stops on ANY of the three known section headers, not just Mutation:, so a bare (non-heading)
     // `Refutation:` line ends an in-progress Acceptance: block instead of being read as one more command.
@@ -2069,16 +2219,27 @@ function commandLinesAfter(lines, headerIndex) {
  * @param {string} command
  * @param {(command: string) => number} run
  * @param {{ prefix: "ACCEPTANCE" | "REFUTATION", isPass: (code: number) => boolean,
- *           commandExists?: (token: string) => boolean, capabilities?: JobCapabilities }} options
- * @returns {{ line: string, ok: boolean, executed: boolean }}
+ *           commandExists?: (token: string) => boolean, capabilities?: JobCapabilities,
+ *           handRun?: string | null }} options
+ * @returns {{ line: string, ok: boolean, executed: boolean, handRun?: boolean }}
  */
-function runOneCommand(command, run, { prefix, isPass, commandExists: exists, capabilities }) {
+function runOneCommand(command, run, { prefix, isPass, commandExists: exists, capabilities, handRun }) {
   // #658: truncate for CLASSIFICATION AND EXECUTION only. `command` itself is never reassigned, so every
   // reported line below still shows the ORIGINAL text an author wrote, even on the RAN branch (where
   // "executable" and "command" can now legitimately differ) -- seeing exactly what was written next to
   // what actually ran is what makes this line something a reader can act on, per #655's own rule.
   const executable = stripTrailingCommentary(command);
   const classification = classifyCommand(executable, { commandExists: exists, capabilities, section: prefix });
+  // #2099: A DECLARED HAND-RUN IS ITS OWN LINE SHAPE -- not RAN, not REFUSED, not prose. `REFUSED` reads
+  // as "not this job's to run and nobody's problem"; this line says a human owes a run and names who and
+  // why, which is the whole content of the declaration. `branch-protection.test.ts`'s opt-in live read
+  // already prints exactly this word for the identical situation (a check nothing here performed), so the
+  // reader meets one vocabulary rather than two.
+  if (handRun && classification.verdict === "refused" && !capabilities?.token && needsToken(executable)) {
+    return { executed: false, handRun: true, ok: true,
+      line: `${prefix}: NOT RUN ${command} -> declared hand-run: ${handRun}. This job has no credential `
+        + "and did not attempt it; nothing here verified this command. Paste the run into the PR body." };
+  }
   if (classification.verdict === "refused") {
     // A WHOLE-SUITE COMMAND IS THE ONE REFUSAL THAT FAILS. Every other REFUSED is a legitimate "not this
     // job's to run": the author named a file, and this job cannot run that particular file. `npm test`
@@ -2159,18 +2320,41 @@ function duplicateSectionLine(prefix, section) {
  * @param {string[]} commands
  * @param {(command: string) => number} run
  * @param {{ prefix: "ACCEPTANCE" | "REFUTATION", isPass: (code: number) => boolean,
- *           commandExists?: (token: string) => boolean, capabilities?: JobCapabilities }} options
+ *           commandExists?: (token: string) => boolean, capabilities?: JobCapabilities,
+ *           handRun?: string | null }} options
  * @returns {{ lines: string[], ok: boolean }}
  */
 function runSectionCommands(commands, run, options) {
   let ok = true;
   const lines = [];
   let ran = 0;
+  let handRun = 0;
   for (const command of commands) {
     const result = runOneCommand(command, run, options);
     lines.push(result.line);
     if (result.executed) ran += 1;
+    if (result.handRun) handRun += 1;
     if (!result.ok) ok = false;
+  }
+  // #2099: THE ONE CASE THE BRANCH BELOW WAS WRONG ABOUT, AND ONLY IT. That comment's stated assumption --
+  // "an Acceptance section has no such case: every refusal there is a capability this job lacks" -- is
+  // still true of `token`; what it missed is that a row CAN now say a human holds the credential and will
+  // run it, which is a fourth thing a section can honestly report.
+  //
+  // EVERY COMMAND, never merely one. If a declared hand-run could silence this beside an undeclared
+  // fleet refusal, the declaration becomes the line people add to turn a red check green -- the exact
+  // failure `History: full` is kept a warning to avoid. A fleet refusal next to it keeps the section red,
+  // as today.
+  //
+  // `ok` STAYS TRUE, and that is a trade rather than an oversight. A row whose only honest acceptance
+  // needs a credential nobody gives this job cannot otherwise ever merge (#2084 is the live case), so the
+  // choice is between a check that is green and loud and a row that is unmergeable. The line above says
+  // NOT RUN and says nothing was verified; the PR carries the pasted run, and a reviewer reads both.
+  if (options.prefix === "ACCEPTANCE" && commands.length > 0 && ran === 0 && handRun === commands.length) {
+    lines.push(`${options.prefix}: NOTHING RAN HERE -- every command above is a declared hand-run, so `
+      + "this job verified NOTHING and is not claiming otherwise. The verdict is the output pasted into "
+      + "the PR body by whoever holds the credential, read by a human; this line is not a pass.");
+    return { lines, ok };
   }
   // A SECTION THAT EXECUTED NOTHING IS NOT A SECTION THAT PASSED. This is `evidence:check`'s
   // examined-nothing shape (`2 compared: 2 same` on a 48-case sample) in the acceptance job: every
@@ -2220,7 +2404,11 @@ function runSectionCommands(commands, run, options) {
  * @returns {{ ok: boolean, lines: string[] }}
  */
 export function acceptanceReport(body, run, deps = {}) {
-  const resolvedDeps = { capabilities: jobCapabilities(body), ...deps };
+  // #2099: `handRun` is read from the body and is NOT overridable by `deps` -- unlike `capabilities`,
+  // which a test overrides to exercise a job it is not running in. The declaration is a fact the body
+  // states about itself, and a caller that could pass one the body does not carry could report `NOT RUN`
+  // for a row that never declared anything.
+  const resolvedDeps = { capabilities: jobCapabilities(body), ...deps, handRun: handRunDeclaration(body) };
   const section = extractAcceptanceSection(body);
   if (section.kind === "missing") {
     return { ok: false, lines: ["ACCEPTANCE: MISSING"] };

@@ -93,7 +93,7 @@
 import { execFileSync } from "node:child_process";
 import {
   acceptancePathsReason, bulletOnlyFleetMention, extractAcceptanceSection, fleetOrLabAcceptance,
-  labFetchPathReason,
+  handRunAcceptanceReason, labFetchPathReason,
 } from "./acceptance-commands.mjs";
 import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -447,6 +447,12 @@ export function fileRefusalReason(body) {
   if (acceptance) return `row-file: ${acceptance}`;
   const wholeSuite = wholeSuiteAcceptanceReason(body, "row-file");
   if (wholeSuite) return wholeSuite;
+  // #2099: THE FOURTH CAPABILITY, REFUSED WHERE THE OTHER "this job cannot run that" verdicts are. One
+  // line here and the whole rule in `acceptance-commands.mjs`, beside the classifier whose verdict it
+  // moves earlier -- the same seam `acceptancePathsReason` and `labFetchPathReason` below already use,
+  // and the reason `row-file.mjs` is not this row's Region: it owns none of the logic, only the call.
+  const handRun = handRunAcceptanceReason(body, "row-file");
+  if (handRun) return handRun;
   // #1943: SHAPE, THEN THE PATHS THE SHAPE NAMES. The checks above ask whether a command can be run at
   // all; this asks whether the files it names are there -- a fact about the checkout the filer is
   // standing in, available here for the cost of a `stat`, and measured twice in one day (#1939, #1936)
