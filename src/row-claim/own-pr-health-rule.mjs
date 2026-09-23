@@ -422,9 +422,12 @@ function oldestFirst(reviews) {
 /**
  * #2126: HOW MANY OPEN PULL REQUESTS ONE REVIEW-HEALTH READ TAKES. `gh pr list` defaults to THIRTY, which
  * is a window nobody can see -- a session's own pull request falling past it would read as "no refusal" and
- * the clause would go quiet exactly when the queue is busiest. Measured 2026-09-23: 7 open, so this is
- * orders past anything this repository has carried, and `row-claim` already reads every open pull request
- * once for B4's file overlap.
+ * the clause would go quiet exactly when the queue is busiest.
+ *
+ * THE READINGS ARE READINGS, AND `reviewer` was right to say so at `00d34048`: 7 open at 2026-09-23T12:20Z
+ * when this was written, 16 when the review ran, 10 at 2026-09-23T14:15Z. It is a queue and it moves; what
+ * does not move is that 200 is orders past anything this repository has carried, and that `row-claim`
+ * already reads every open pull request once for B4's file overlap, so this read costs no extra call.
  */
 export const OPEN_PR_LIMIT = 200;
 
