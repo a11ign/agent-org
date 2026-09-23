@@ -138,6 +138,28 @@ export const PROFILES = Object.freeze({
     why: "the act is one command; telling a repository-wide credential outage from one PR that missed "
       + "its arming event is the judgment, and the cheap answer leaves the outage running",
   }),
+  "pr-review-blocked": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // HIGH, for `pr-green-unarmed`'s reason with a sharper fork. The act is cheap -- one
+    // `prompt:session` to a reviewer, or one routing decision -- and CHOOSING BETWEEN THEM is the whole
+    // job. `AWAITING_REVIEW` means nobody has reviewed and the reviewer lane never saw it; `REFUSED`
+    // means somebody did and said no. Reading the second as the first prompts a reviewer who has already
+    // answered, which `agent-practices.md` records costing a cleared verdict and a re-derivation.
+    //
+    // AND THE FORK HAS A THIRD ARM THAT ONLY READING CAN SETTLE, which is this row's own subject: a
+    // `CHANGES_REQUESTED` may have been posted at a head the author has ALREADY fixed, because
+    // `dismiss_stale_reviews` does not clear one. Routing rework for a refusal nobody still owes is the
+    // failure #2049 spent seven hours in, and telling it apart means comparing the review's commit
+    // against the current head rather than reading the verdict word.
+    //
+    // `claude` AND NOT `codex`, although a reviewer may be the eventual actor. This order's recipient is
+    // `product-manager`, which is a `claude` session; the reviewer is reached by a `prompt:session` it
+    // sends, and that wake carries `draft-awaiting-verdict`'s codex profile on its own.
+    effort: "high",
+    why: "the act is one command; telling an unreviewed pull request from a refused one -- and a live "
+      + "refusal from one posted at a head the author has already fixed -- is the judgment",
+  }),
   "ready-queue-empty": Object.freeze({
     kind: "claude",
     model: "sonnet",
