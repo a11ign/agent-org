@@ -1832,24 +1832,116 @@ function stripTrailingCommentary(command) {
 }
 
 /**
+ * #2068: DOES THIS TEXT END WITH A QUOTE STILL OPEN? -- the second spelling of "this command is not
+ * finished yet", and the reason it has to be scanned rather than matched by a regex.
+ *
+ * A regex counting quotes cannot tell an APOSTROPHE from an opening quote, and this repository's own
+ * Acceptance lines are full of both: `npm run x # don't skip` is balanced and must never join, while
+ * `node -e 'const a = 1;` is not and must. Tracking state across the line answers both with one rule, and
+ * it is bash's own rule -- inside `'`, nothing escapes and `"` is literal; inside `"`, `\` escapes the
+ * next character and `'` is literal; outside both, `\` escapes and an unquoted `#` starting a word begins
+ * a comment that runs to end of line, so a `'` inside it is text rather than syntax.
+ *
+ * It is deliberately NOT a full shell parser: `$(…)`, backticks and heredocs also span lines, and none of
+ * them is the measured shape (#1989's four-line `node --input-type=module -e '…'`). A shape this does not
+ * recognise is read exactly as it was before -- one line, one command -- rather than guessed at.
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function endsInsideQuote(text) {
+  /** @type {string | null} */
+  let quote = null;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (quote === "'") { if (char === "'") quote = null; continue; }
+    if (quote === '"') {
+      if (char === "\\") { i += 1; continue; }
+      if (char === '"') quote = null;
+      continue;
+    }
+    if (char === "\\") { i += 1; continue; }
+    if (char === "'" || char === '"') { quote = char; continue; }
+    // An unquoted `#` at the start of a word is a comment: everything after it is text, so nothing in it
+    // can open a quote. Returning here rather than breaking states that an open quote BEFORE a comment is
+    // impossible by construction -- `quote` is null on this branch.
+    if (char === "#" && (i === 0 || /\s/.test(text[i - 1]))) return false;
+  }
+  return quote !== null;
+}
+
+/**
  * #419: A `\` LINE CONTINUATION IS ONE COMMAND, NOT TWO. Read line by line, a shell continuation split the
  * command in half: the first half ended in a dangling backslash and the second half became its OWN
  * "command" -- a bare filename or flag that fails the moment it is run on its own. Joins forward from
  * `startIndex` while the accumulated text still ends in `\`, so an author can chain any number of
  * continuation lines exactly as they would in a real shell script.
+ *
+ * #2068: AN UNCLOSED QUOTE IS THE SAME FACT IN ANOTHER SPELLING, and it cost a red `acceptance` and a red
+ * `gate` on a row whose command was correct (#1989 on PR #2064, run 35832677295): a four-line
+ * `node --input-type=module -e '…'` reached `/bin/bash -c` as four fragments, the first of them
+ * `unexpected EOF while looking for matching '`. bash itself would have kept reading, so this does --
+ * JOINING rather than refusing, because unlike #540's two `Acceptance:` headers there is exactly one
+ * reading of an unclosed quote, and an author who reflows nothing gets the command they wrote.
+ *
+ * THE TWO JOINS ARE NOT THE SAME JOIN, because the author wrote different things. A `\` continuation is
+ * bash's own "pretend the newline is not there", so the lines are joined by a SPACE with the backslash
+ * dropped. A newline inside a quote is a LITERAL newline in the string -- what `python -c` indentation and
+ * any multi-line here-string depend on -- so those lines are joined by the newline itself, and the
+ * continuation keeps its leading whitespace for the same reason.
+ *
+ * `limit` is exclusive and stops the scan at the end of the block (the closing fence, or whatever ends a
+ * bare one). Without it an unclosed quote -- a real typo, not a continuation -- would swallow the closing
+ * fence and every section after it, turning one malformed command into a body this parser reads wrongly
+ * end to end.
  * @param {string[]} lines
  * @param {number} startIndex
  * @param {string} firstLine
+ * @param {number} limit exclusive index past which no line may be consumed
  * @returns {{ command: string, consumed: number }}
  */
-function joinContinuations(lines, startIndex, firstLine) {
+function joinContinuations(lines, startIndex, firstLine, limit) {
   let command = firstLine;
   let consumed = 0;
-  while (/\\\s*$/.test(command) && startIndex + consumed + 1 < lines.length) {
+  while (startIndex + consumed + 1 < limit) {
+    const next = lines[startIndex + consumed + 1];
+    // Quote state first: a trailing `\` INSIDE a single-quoted string is a literal backslash, never a
+    // continuation, so asking about the quote before the backslash is what keeps that one intact.
+    if (endsInsideQuote(command)) command = `${command}\n${next.replace(/\s+$/, "")}`;
+    else if (/\\\s*$/.test(command)) command = `${command.replace(/\\\s*$/, "").trimEnd()} ${next.trim()}`;
+    else break;
     consumed += 1;
-    command = `${command.replace(/\\\s*$/, "").trimEnd()} ${lines[startIndex + consumed].trim()}`;
   }
   return { command, consumed };
+}
+
+/**
+ * #2068: THE EXCLUSIVE INDEX AT WHICH THE BLOCK A COMMAND STARTED IN ENDS -- where `joinContinuations` must
+ * stop. Inside a fence that is the closing fence; in a bare block it is the first line that would have
+ * ended the block anyway (blank, markdown heading, or another section's header), so a continuation can
+ * never consume a line the loop itself would have stopped at.
+ * @param {string[]} lines
+ * @param {number} startIndex
+ * @param {boolean} inFence
+ * @returns {number}
+ */
+function blockEndAfter(lines, startIndex, inFence) {
+  for (let i = startIndex + 1; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (inFence ? trimmed.startsWith("```") : (trimmed === "" || /^#{1,6}\s/.test(trimmed)
+      || isSectionHeaderLine(trimmed))) return i;
+  }
+  return lines.length;
+}
+
+/**
+ * #438's stop rule, as a predicate: is this line another section's bare header? Named because
+ * `blockEndAfter` has to ask the identical question the loop asks, and a second regex that could disagree
+ * about what ends a block is this repository's most-recorded shape one level up.
+ * @param {string} trimmed
+ * @returns {boolean}
+ */
+function isSectionHeaderLine(trimmed) {
+  return SECTION_FIELD_NAMES.some((name) => new RegExp(`^(?:\\*\\*|__)?${name}:(?:\\*\\*|__)?`, "i").test(trimmed));
 }
 
 /**
@@ -1903,7 +1995,7 @@ function commandLinesAfter(lines, headerIndex) {
       if (trimmed !== "" && !trimmed.startsWith("#")) {
         // A continuation is understood to still be part of the command that started it, whatever it looks
         // like on its own -- the stop rules below apply only to where a command BEGINS.
-        const { command, consumed } = joinContinuations(lines, i, trimmed);
+        const { command, consumed } = joinContinuations(lines, i, trimmed, blockEndAfter(lines, i, true));
         commands.push(unwrapBackticks(command));
         i += consumed;
       }
@@ -1931,8 +2023,8 @@ function commandLinesAfter(lines, headerIndex) {
 
     // #438: stops on ANY of the three known section headers, not just Mutation:, so a bare (non-heading)
     // `Refutation:` line ends an in-progress Acceptance: block instead of being read as one more command.
-    if (SECTION_FIELD_NAMES.some((name) => new RegExp(`^(?:\\*\\*|__)?${name}:(?:\\*\\*|__)?`, "i").test(trimmed))) break;
-    const { command, consumed } = joinContinuations(lines, i, trimmed);
+    if (isSectionHeaderLine(trimmed)) break;
+    const { command, consumed } = joinContinuations(lines, i, trimmed, blockEndAfter(lines, i, false));
     commands.push(unwrapBackticks(command));
     i += consumed;
   }
