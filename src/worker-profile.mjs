@@ -125,6 +125,19 @@ export const PROFILES = Object.freeze({
     why: "fixing a red build is debugging, and a wrong guess costs a full CI cycle on top of the tokens, "
       + "so the cheaper tier is not cheaper here",
   }),
+  "pr-green-unarmed": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // HIGH, and the reason is the FORK rather than the act. Arming a pull request by hand is one command;
+    // deciding WHICH of two situations this is, is not. One unarmed PR means that PR never got an arming
+    // event; all of them unarmed means the arming credential is refusing and nothing in the repository
+    // can arm anything until its pool returns (#1969, measured 2026-09-22: 28 minutes, two finished PRs
+    // stranded, found by accident). Getting the fork wrong in the cheap direction arms one PR by hand and
+    // leaves the outage running, which is the exact failure this cause exists to end.
+    effort: "high",
+    why: "the act is one command; telling a repository-wide credential outage from one PR that missed "
+      + "its arming event is the judgment, and the cheap answer leaves the outage running",
+  }),
   "ready-queue-empty": Object.freeze({
     kind: "claude",
     model: "sonnet",
@@ -224,6 +237,18 @@ export const PROFILES = Object.freeze({
     effort: "high",
     why: "the output is a brief for a person outside the org, and a vague one costs another day of "
       + "everything downstream standing still",
+  }),
+  "blocker-cleared": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // HIGH, and the reason is `ready-row-unclaimed`'s rather than a weaker version of it: what this order
+    // actually asks for is the ROW BUILT, and the only difference is that the session already holds the
+    // claim. A cheaper tier would arrive at a row that has been parked for however long its blocker took
+    // and has to re-establish what it was doing -- strictly more context to rebuild than a fresh claim,
+    // not less. Measured 2026-09-22, #1908 sat with six rows queued behind it.
+    effort: "high",
+    why: "resuming a parked claim is the same multi-step build as taking a fresh row, with the prior "
+      + "state to re-establish on top of it",
   }),
   "ready-row-unclaimed": Object.freeze({
     kind: "claude",

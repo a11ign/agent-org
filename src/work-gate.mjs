@@ -35,7 +35,7 @@ import { realpathSync, existsSync } from "node:fs";
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
 import { READY_LABEL, CLAIM_LABEL } from "./claim-labels.mjs";
 import { verdictAtHead } from "./review-verdict.mjs";
-import { waitingOn, todayIso, describeWaiting, ANSWER_PREFIX } from "./waiting-condition.mjs";
+import { waitingOn, fleetWaitingOn, todayIso, describeWaiting, ANSWER_PREFIX } from "./waiting-condition.mjs";
 import { newestPerName } from "./newest-check-run.mjs";
 import { NO_VERDICT } from "./merge-guard/checks-rule.mjs";
 // B4, ASKED EARLY. These are the SAME two functions `row-claim.mjs` runs at claim time, imported
@@ -43,11 +43,21 @@ import { NO_VERDICT } from "./merge-guard/checks-rule.mjs";
 // counts as a path" is not allowed to exist. Both are leaf-shaped and relative, so the gate keeps the
 // property its own header states -- it runs before any `npm ci` or build.
 import { declaredRegionFiles } from "./region-paths.mjs";
-import { fileOverlapReason } from "./row-claim/file-overlap-rule.mjs";
+import { declaredClosedRows, fileOverlapReason } from "./row-claim/file-overlap-rule.mjs";
 // THE REFUSAL PATH ONLY, and a LEAF import so this file keeps the property its own header states. The
 // reader lived in `queue-table.mjs` until #2003; importing THAT would have pulled five modules into the
 // graph of a script that runs 720 times a day, to use a function it calls only when already refusing.
 import { poolDiagnosis, refusalPoolLine } from "./api-pool.mjs";
+// #1969, AND THE PREDICATE IS IMPORTED RATHER THAN RE-DECIDED. `armedFromApi` knows THREE armed states --
+// merged, a pending auto-merge, and SITTING IN THE MERGE QUEUE, where `autoMergeRequest` reads `null` on a
+// correctly armed pull request (#1729/#1727, and #2004 for the read that fed it). `ceo`'s ruling names
+// that reuse as a constraint: "the predicate is NOT `autoMergeRequest == null` -- a queued PR reads null".
+// `openPullRequestsQueryArgs` is the same file's read, split out so this asks the identical question.
+// Both are leaf-shaped: `auto-arm-sweep.mjs` imports only `node:*`, `cli-flags.mjs` (already here) and
+// `pr-hold-state.mjs` (no imports at all), so the gate keeps the property its own header states.
+import { armedFromApi, openPullRequestsQueryArgs } from "./auto-arm-sweep.mjs";
+import { armabilityOf } from "./pr-hold-state.mjs";
+import { REPO } from "../../../scripts/repo-identity.mjs";
 
 /**
  * FOUR STATES, AND THE POLARITY IS DELIBERATE.
@@ -68,7 +78,7 @@ export const EXIT = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3 };
 export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-convinced-not-ready",
   "verdict-not-convinced", "pr-checks-failing", "ready-queue-empty", "lane-backlog-unpromoted",
   "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
-  "blocked-unexaminable", "fleet-batch-due"];
+  "blocked-unexaminable", "fleet-batch-due", "blocker-cleared", "pr-green-unarmed"];
 
 /**
  * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
@@ -118,6 +128,12 @@ export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog
  * `chairman-blocked` is deliberately NOT here. It is the only cause whose subject is the window
  * itself: during a transfer the chairman is the one doing the work, and silencing their brief would
  * silence the thing the drain exists to serve.
+ *
+ * `blocker-cleared` is deliberately NOT here either, and for the partition's own definition rather than
+ * a preference: its subject is a row the session ALREADY HOLDS. A drain finishes work in flight and
+ * starts none, and a claimed row is the plainest case of work in flight there is -- withholding it would
+ * strand exactly the rows a transfer window needs landed, which is the failure `START_CAUSES` was split
+ * out to prevent for the two open drafts.
  */
 export const START_CAUSES = Object.freeze(["ready-row-unclaimed", "ready-queue-empty",
   "lane-backlog-unpromoted", "org-stalled", "epic-unfiled", "epic-finished",
@@ -157,7 +173,7 @@ const defaultRun = (args) => execFileSync("gh", args, { encoding: "utf8", maxBuf
 export function readPrs(run = defaultRun) {
   try {
     const out = run(["pr", "list", "--state", "open", "--limit", "100", "--json",
-      "number,isDraft,headRefOid,statusCheckRollup,author,comments,labels,files,changedFiles"]);
+      "number,isDraft,headRefOid,statusCheckRollup,author,comments,labels,files,changedFiles,body"]);
     const parsed = JSON.parse(out);
     return Array.isArray(parsed) ? parsed : null;
   } catch {
@@ -195,6 +211,12 @@ export const GH_READS = Object.freeze({
     "issue list --label chairman-blocked", "issue list (all open: answer/blocked labels)"],
   conditionalOnEmptyShelf: "issue list --label epic (readEpics)",
   conditionalOnRed: "api branches/main/protection (requiredCheckNames)",
+  // #1969, AND IT IS COUNTED HERE BECAUSE THE LAST ONE WAS NOT. This constant exists because "two `gh`
+  // calls" was repeated for weeks while three readers were added, and a reviewer had to measure the call
+  // sites to find it. The condition is `shouldBeMerging` finding a green, unheld, non-draft PR -- which
+  // on a healthy queue is the COMMON case, so unlike the two above this one is usually paid. It is still
+  // conditional rather than unconditional: a tick with nothing green and unheld makes no call at all.
+  conditionalOnGreenUnheldPr: "api graphql (open PRs' mergeQueueEntry -- readUnarmed)",
 });
 
 /**
@@ -444,8 +466,12 @@ const labelsOf = (x) => (x?.labels ?? []).map((/** @type {any} */ l) => String(l
  * **THE GATE FAILS OPEN AND THE AUTHORITY DOES NOT MOVE** -- every shelving decision here can only ever
  * remove a wake that would have ended in a refusal.
  *
+ * #2101: `closes` rides along -- the rows each PR's body DECLARES it closes, so `blockedOnOpenPr` can tell
+ * a row's own pull request from a competitor for its files. `body` is one more field on `readPrs`'s
+ * existing call and costs no extra one.
+ *
  * @param {any[]} prs
- * @returns {{ number: number, files: string[], changedFiles: number }[]}
+ * @returns {{ number: number, files: string[], changedFiles: number, closes: number[] }[]}
  */
 export function comparablePrFiles(prs) {
   return prs
@@ -453,6 +479,7 @@ export function comparablePrFiles(prs) {
       number: Number(p?.number),
       changedFiles: Number(p?.changedFiles),
       files: (p?.files ?? []).map((/** @type {any} */ f) => String(f?.path ?? f)),
+      closes: declaredClosedRows(p?.body),
     }))
     .filter((p) => Number.isInteger(p.changedFiles) && p.files.length === p.changedFiles);
 }
@@ -467,7 +494,13 @@ export function comparablePrFiles(prs) {
  * so this returns `null` too. A Region naming no path is `[]`, which `fileOverlapReason` itself answers
  * with "no overlap" -- a real comparison, and not this function's to second-guess.
  *
- * @param {any} row @param {{ number: number, files: string[], changedFiles: number }[]} prFiles
+ * #2101: THE ROW'S OWN NUMBER GOES WITH ITS REGION. A pull request declaring `Closes #<this row>` is this
+ * row's own work and cannot be a reason to withhold it -- the gate shelved #2076 behind #2077, the PR
+ * that WAS #2076, and it and two rows behind the same file went nowhere for 1h41m. This must agree with
+ * `row-claim.mjs` about that for the same reason the Region read does: a gate that shelves what the claim
+ * would grant is a gate nobody can act on.
+ *
+ * @param {any} row @param {{ number: number, files: string[], changedFiles: number, closes?: number[] }[]} prFiles
  * @param {{ rootFiles?: Set<string> }} [options] passed to `declaredRegionFiles` so a test can name its
  *   own tree rather than needing this repository's
  * @returns {string | null}
@@ -478,7 +511,7 @@ export function blockedOnOpenPr(row, prFiles, options) {
   if (prFiles.length === 0) return null;
   const mine = declaredRegionFiles(String(row?.body ?? ""), options);
   if (mine === null) return null;
-  return fileOverlapReason(mine, prFiles).reason;
+  return fileOverlapReason(mine, prFiles, { rowNumber: Number(row?.number) }).reason;
 }
 
 /**
@@ -679,20 +712,63 @@ export function readOpenRows(run = defaultRun) {
 export const FLEET_MILESTONE = "Road to version one";
 
 /**
- * The open `fleet-gated` rows on the milestone -- the batch #914 describes.
+ * The open `fleet-gated` rows on the milestone, SPLIT BY WHETHER ANYTHING IS STOPPING THEM -- #2027.
  *
- * FREE. `readOpenRows` already reads every open row unconditionally for `answer-owed` and
- * `blocked-unexaminable`; this adds `milestone` to that same `--json` and filters locally, so `GH_READS`
- * is unchanged. A separate milestone-scoped query would have been a third unconditional call for rows
- * the tick already had in hand.
+ * THE ORDER PROMISED AN EXIT THIS FILTER DID NOT HONOUR. `fleetBatchOrders`'s own prompt has said since
+ * #1941 that a row which cannot move yet is an answer -- *"say so on it with a machine-readable condition
+ * (`Fleet-hold-until:`, `--add-blocked-by`, or `Not-before:`) and it leaves this set until the condition
+ * clears"* -- and the set was the `fleet-gated` label and the milestone AND NOTHING ELSE. Writing the
+ * condition changed nothing. The only ways out were closing the row or removing its label, which are both
+ * lies about a row that is merely waiting.
+ *
+ * MEASURED IN ONE `work:gate` RUN, 2026-09-22T21:57Z. The same invocation printed
+ * `SHELVED row #1976: blocked by #1918` and dispatched #1976 in the fleet batch. Both readings came from
+ * this file; one of them was wrong. EIGHT of that batch's NINE rows carried a standing, correct
+ * condition -- #31, #43, #149, #1865, #1918, #1926 and #1976 by `blockedBy`, #1042 by `Not-before:` --
+ * and exactly one (#1908) was genuinely runnable. Every batch therefore re-reported eight answered rows
+ * to find the one that was not: the treadmill the order's own last sentence exists to prevent.
+ *
+ * `fleetWaitingOn` AND NOT `waitingOn`, because this is the one population where the fourth condition
+ * applies: `Fleet-hold-until:` is scoped to an open `fleet-gated` row by its own definition (#1839), and
+ * a sequence holding the fleet until a named second is precisely a row this batch must not dispatch.
+ *
+ * FREE, STILL. `readOpenRows` already asks for `number,title,labels,body,blockedBy,milestone` over the
+ * same 500 open rows for `answer-owed` and `blocked-unexaminable`, and every field this needs is in that
+ * list. This is a local filter over an array already in hand, not a new call.
+ *
+ * WAITING IS REPORTED, NEVER SILENT. `partitionUnclaimed` already rules that "a row that vanishes
+ * silently is the failure `blocked` already is", so the shelved half is returned with its reason and
+ * `main` prints it on the same `SHELVED row #N:` line the engineer pool's shelvings use.
  *
  * @param {any[]} rows @param {string} [milestone]
+ * @param {{today?: string, nowMs?: number}} [clock] injected so a test moves time without a global stub
+ * @returns {{batch: any[], waiting: {number: number, reason: string}[]}}
  */
-export function fleetBatchRows(rows, milestone = FLEET_MILESTONE) {
-  return (rows ?? [])
+export function partitionFleetBatch(rows, milestone = FLEET_MILESTONE, clock = {}) {
+  const { today = todayIso(), nowMs = Date.now() } = clock;
+  const batch = [];
+  const waiting = [];
+  const gated = (rows ?? [])
     .filter((r) => labelsOf(r).includes("fleet-gated"))
     .filter((r) => String(r?.milestone?.title ?? "") === milestone)
     .sort((a, b) => Number(a.number) - Number(b.number));
+  for (const row of gated) {
+    const held = fleetWaitingOn(row, today, nowMs);
+    if (held) {
+      waiting.push({ number: Number(row.number),
+        reason: `${describeWaiting(held)} -- declared on the row, and it clears itself` });
+    } else batch.push(row);
+  }
+  return { batch, waiting };
+}
+
+/**
+ * The `fleet-gated` rows on the milestone that ARE dispatchable -- the batch #914 describes.
+ *
+ * @param {any[]} rows @param {string} [milestone] @param {{today?: string, nowMs?: number}} [clock]
+ */
+export function fleetBatchRows(rows, milestone = FLEET_MILESTONE, clock = {}) {
+  return partitionFleetBatch(rows, milestone, clock).batch;
 }
 
 /**
@@ -720,13 +796,18 @@ export function fleetBatchRows(rows, milestone = FLEET_MILESTONE) {
  * of the same three epics in an hour); a clock fires when nothing has changed and stays silent for
  * twenty-three hours when everything has.
  *
+ * A BATCH OF NOTHING IS NOT A BATCH (#2027). Every row waiting on a declared condition is gone before
+ * this counts, so a set in which everything is answered emits NO ORDER rather than an order naming rows
+ * whose answers are already recorded in a field.
+ *
  * @param {any[]} rows every open row
  * @param {string} [milestone]
+ * @param {{today?: string, nowMs?: number}} [clock]
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
  */
-export function fleetBatchOrders(rows, milestone = FLEET_MILESTONE) {
-  const batch = fleetBatchRows(rows, milestone);
+export function fleetBatchOrders(rows, milestone = FLEET_MILESTONE, clock = {}) {
+  const batch = fleetBatchRows(rows, milestone, clock);
   if (batch.length === 0) return [];
   const numbers = batch.map((r) => `#${r.number}`).join(", ");
   const key = batch.map((r) => r.number).join(".");
@@ -941,6 +1022,101 @@ export function answerOrders(rows) {
     }
   }
   return orders;
+}
+
+/**
+ * THE GATE COULD SEE A ROW BECOME RUNNABLE AND HAD NOBODY TO TELL -- #2027.
+ *
+ * MEASURED 2026-09-22. PR #1957 merged at 21:26:01Z and closed #1948 one second later, leaving #1908 --
+ * `in-progress`, `session:worker-capture` -- with every blocker closed and six rows queued behind it. The
+ * `work:gate` run 31 minutes later emitted NO CAUSE FOR `worker-capture` AT ALL. `ready-row-unclaimed`
+ * skips it (claimed, and not `ready`), and every other cause addresses a session that does NOT hold the
+ * row: the whole causal vocabulary was written for the unclaimed pool.
+ *
+ * `prompt:session` IS NOT THE FALLBACK. It refused with `NOT PROMPTED: "worker-capture" is working`, and
+ * at the time a refused prompt was dropped rather than queued. What actually delivered the news was
+ * `answer:worker-capture` applied to #1908 BY HAND -- a label meaning "someone owes you an answer"
+ * pressed into service as "your work is unblocked", two meanings in one namespace, which is the exact
+ * collision `row-file.mjs`'s own header records for `session:`.
+ *
+ * ONCE PER ROW PER CLEARING, AND THE KEY IS THE SET THAT CLEARED. `fleetBatchOrders` learned this from
+ * #1799: a key that names the state re-fires when the state moves and stays quiet while it does not. So
+ * the closed blockers' numbers are IN the key -- the same row blocked again on a new row and cleared
+ * again is a NEW question and reaches its holder, while an unchanged clearing is one order, not one every
+ * tick.
+ *
+ * A ROW WITH NO BLOCKER AT ALL IS NOT A CLEARING. `blockedBy.nodes` empty means nothing ever blocked it,
+ * and every claimed row in the tracker would otherwise be announced as freshly unblocked on the first
+ * tick after this shipped -- a cause that fires on every member of its population the day it lands is
+ * noise, and noise is how a real signal gets filtered out.
+ *
+ * AND NEITHER IS A ROW STILL WAITING ON SOMETHING ELSE. `waitingOn` is asked in full, so a row whose
+ * `blockedBy` cleared while its `Not-before:` is still in the future, or which owes an answer, is not
+ * announced as runnable. The rule this file already applies to the offer path applies here: a declared
+ * wait shelves the row, and the LAST of a row's conditions to clear is the one that frees it.
+ *
+ * @param {any[]} rows every open row
+ * @param {string} [today]
+ * @returns {{session: string, cause: string, subject: string, discriminator: string,
+ *            prompt: string, causeKey: string}[]}
+ */
+export function blockerClearedOrders(rows, today = todayIso()) {
+  const orders = [];
+  for (const row of rows ?? []) {
+    const session = sessionOf(row);
+    const cleared = declaredBlockers(row);
+    if (!session || !labelsOf(row).includes(CLAIM_LABEL) || cleared === null) continue;
+    // THE LINE THAT MAKES `cleared` MEAN CLEARED. `waitingOn` reports an OPEN `blockedBy` node before
+    // anything else, so passing here is what proves every number above is closed -- and it covers the
+    // other two conditions in the same breath, which is why `declaredBlockers` does not re-ask.
+    if (waitingOn(row, today)) continue;
+    const key = cleared.join(".");
+    orders.push({
+      session,
+      cause: "blocker-cleared",
+      subject: `row-${row.number}`,
+      discriminator: key,
+      prompt: `#${row.number} IS YOURS AND IS NO LONGER BLOCKED. Every row it declared a dependency on `
+        + `is now closed: ${cleared.map((n) => `#${n}`).join(", ")}.\n`
+        + "PICK IT BACK UP -- you already hold the claim, so nothing else will offer it to anyone and no "
+        + "other cause in this gate addresses a session that already holds a row. That is why this "
+        + "exists: on 2026-09-22 #1908's last blocker closed at 21:26:02Z, the next tick said nothing to "
+        + "`worker-capture`, and six rows sat behind it until a label meant for something else was "
+        + "applied by hand.\n"
+        + "IF IT IS STILL NOT RUNNABLE, that is an answer and it goes in a FIELD, not a comment: "
+        + `\`gh issue edit ${row.number} --add-blocked-by <n>\`, a \`Not-before: YYYY-MM-DD\` line, or `
+        + `\`${ANSWER_PREFIX}<session>\` if you are waiting on somebody to decide. Each clears itself, `
+        + "and each stops this being asked again.",
+      causeKey: `${session}/blocker-cleared/row-${row.number}/${key}`,
+    });
+    if (orders.length >= MAX_ROW_ORDERS_PER_TICK) break;
+  }
+  return orders;
+}
+
+/**
+ * The blockers this row DECLARED, oldest first -- or `null` when it declared none.
+ *
+ * IT DOES NOT ASK WHETHER THEY ARE CLOSED, AND THAT IS DELIBERATE RATHER THAN AN OMISSION. `waitingOn`
+ * already answers it: an open `blockedBy` node is the FIRST thing it reports, so by the time the caller
+ * reaches this line every node here is closed. A second openness test was written here first and a
+ * mutation proved it: deleting it left the whole suite green, because no input could reach it -- an
+ * unreachable branch is not a guard, it is a second spelling of a rule that lives in
+ * `waiting-condition.mjs`, and the two would drift the way this repository's most expensive shape always
+ * does. The caller states the dependency in one line rather than restating the rule.
+ *
+ * SORTED, so the causeKey is stable: GitHub returns `blockedBy.nodes` in its own order, and an unsorted
+ * key would mint a different question for the same clearing depending on what that order happened to be
+ * -- `fleetBatchOrders` pays for this exact property one function up.
+ *
+ * @param {any} row
+ * @returns {number[] | null}
+ */
+function declaredBlockers(row) {
+  const nodes = row?.blockedBy?.nodes ?? [];
+  if (nodes.length === 0) return null;
+  return nodes.map((/** @type {any} */ n) => Number(n.number))
+    .sort((/** @type {number} */ a, /** @type {number} */ b) => a - b);
 }
 
 /**
@@ -1193,6 +1369,138 @@ export function requiredCheckNames(run = defaultRun) {
 export function blockingChecks(rollup, required) {
   if (required === null) return rollup;
   return (rollup ?? []).filter((c) => required.includes(c?.name ?? c?.context));
+}
+
+/**
+ * PURE. Which open pull requests LOOK like they should be merging already -- not a draft, not held, and
+ * settled GREEN on every check that can actually block them?
+ *
+ * ANSWERED ENTIRELY FROM THE LIST THE GATE ALREADY HOLDS, which is what makes the queue read below
+ * conditional rather than unconditional. `ceo`'s ruling of 2026-09-22 requires exactly that: the merge-
+ * queue question is "asked only once a PR already looks green, unheld and unqueued". A healthy tick with
+ * every open PR armed still pays one extra call; a tick with no green unheld PR at all pays none.
+ *
+ * `armabilityOf` IS THE HOLD PREDICATE, IMPORTED. It is the same function `arm-pr.mjs` and
+ * `auto-arm-sweep.mjs` refuse a held PR with -- `pr-hold-state.mjs`'s own header records #645, where the
+ * predicate was written twice and only one copy was correct. A third copy here would report a
+ * deliberately held pull request as a stranded one, and send somebody to arm what a ruling holds.
+ *
+ * REQUIRED-ONLY, like `failingChecksOrder`. A PR green on `gate` merges whatever else is red, and `gate`
+ * is the one required context on `main` (measured 2026-09-19). Counting every check would silence this
+ * for any PR carrying a red `sweep` -- which is precisely the check the 2026-09-22 outage turned red on
+ * every pull request it stranded.
+ *
+ * @param {any[]} prs @param {string[] | null} [required]
+ * @returns {number[]} PR numbers, ascending
+ */
+export function shouldBeMerging(prs, required = null) {
+  return (prs ?? [])
+    .filter((pr) => pr && pr.isDraft !== true && Number.isFinite(Number(pr.number)))
+    // A DRAFT IS EXCLUDED AT THE SOURCE, NOT BY THE HOLD RULE: `gh pr merge --auto` refuses a draft
+    // outright, so an unarmed draft is correct rather than stranded.
+    .filter((pr) => armabilityOf({ labels: labelsOf(pr) }).arm)
+    .filter((pr) => checksSettledGreen(
+      blockingChecks(newestPerName(pr.statusCheckRollup ?? []), required)) === true)
+    .map((pr) => Number(pr.number))
+    .sort((a, b) => a - b);
+}
+
+/**
+ * Which of these candidates has NOTHING armed -- read from the API, and `null` when it could not be read.
+ *
+ * THE COST, AND WHY IT IS A GRAPHQL CALL AND NOT A FIELD. `armedFromApi`'s third state is
+ * `mergeQueueEntry`, and the merge queue is a GraphQL-only object: measured 2026-09-23 against
+ * `gh version 2.100.0`, `gh pr list --json` offers `autoMergeRequest` and NOT `mergeQueueEntry`, so the
+ * gate's existing `pr list` structurally cannot answer this however many fields are added to it. One
+ * conditional call is the cheapest form the question has.
+ *
+ * `null` MEANS REFUSED, NEVER EMPTY -- `readPrs`'s rule (#1286) and for its reason. An empty list here
+ * says "every green unheld PR is armed", which during the very outage this was built for is the one
+ * answer that must never be invented.
+ *
+ * A CANDIDATE THE QUERY DID NOT RETURN IS DROPPED, NOT REPORTED. `=== false` and not `!== true`: an
+ * absent number means the read did not cover it (a PR against another base, or past the 100-PR window),
+ * and calling that "unarmed" would wake somebody to arm a pull request nothing has looked at.
+ *
+ * @param {number[]} candidates @param {(args: string[]) => string} [run]
+ * @returns {number[] | null}
+ */
+export function readUnarmed(candidates, run = defaultRun) {
+  if (candidates.length === 0) return [];
+  try {
+    const nodes = JSON.parse(run(openPullRequestsQueryArgs(REPO)));
+    if (!Array.isArray(nodes)) return null;
+    const armed = new Map(nodes.map((n) => [Number(n?.number), armedFromApi(n)]));
+    return candidates.filter((n) => armed.get(n) === false);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * ONE ORDER NAMING EVERY GREEN, UNHELD, UNARMED PULL REQUEST -- #1969, and the report that did not exist.
+ *
+ * WHAT IT IS FOR. `queue-stalled.mjs` names every ARMED, green PR that cannot merge. Nothing named a
+ * green, unheld, UNARMED one, and that is the exact state a refused arming credential produces: measured
+ * 2026-09-22, #1958 and #1949 were approved, convinced, green on every job and `MERGEABLE` for 28
+ * minutes with nothing in the repository able to arm either, because BOTH things that arm -- `arm` and
+ * `sweep` -- read the one refused credential. They were found because a session was woken about an
+ * unrelated red check and read the log.
+ *
+ * THE WATCHER MUST NOT SHARE THE CREDENTIAL IT WATCHES, which is `ceo`'s first constraint and the reason
+ * this lands here rather than in `auto-arm.yml`. `stalled` is the standing proof of the failure: it ran
+ * green throughout the outage, on the same six runs, because it asks a question the dead credential was
+ * not needed for. This gate runs on the agent host under the host's own `gh` identity -- measured
+ * 2026-09-23 as `a11ign-ai-workers`, while the arming PAT belongs to `DanBeckDev` (user ID 46429371, the
+ * account the outage named) -- so a pool that kills arming leaves this reader alive. It never reads
+ * `A11IGN_BOT_TOKEN`; that secret exists only inside Actions.
+ *
+ * DATA AND NOT A RED CHECK, which is `ceo`'s second constraint. A repo-wide fact charged to whichever
+ * PR's event fired is #1970's defect one file over; here it is an order with a named audience.
+ *
+ * ONE ORDER FOR THE SET, NOT ONE PER PULL REQUEST, and this is the case where `rowOrders`'s lesson
+ * inverts. A credential outage strands EVERY open PR at once, so per-PR orders would wake every session
+ * in the org to hand-arm one pull request each, and none of them would see the shape. The set is also
+ * what makes the cause self-clearing: keyed on the SET (`fleetBatchOrders`'s rule), it fires when the
+ * membership changes and stays quiet while it does not -- a count would collide two different pairs.
+ *
+ * `product-manager` BECAUSE THE ROUTING RULE SAYS SO: first reader for "the queue and process ... merge
+ * close-outs". Arming by hand under another account's token is `auto-arm.yml`'s own documented exception
+ * for a PR auto-arm never armed, and it is a queue act rather than the author's code work.
+ *
+ * @param {number[] | null} unarmed `null` when the queue read was refused -- no order, never a false all-clear
+ * @returns {{session: string, cause: string, subject: string, discriminator: string,
+ *            prompt: string, causeKey: string}[]}
+ */
+export function greenUnarmedOrders(unarmed) {
+  if (unarmed === null || unarmed.length === 0) return [];
+  const key = unarmed.join(".");
+  return [{
+    session: "product-manager",
+    cause: "pr-green-unarmed",
+    subject: "pr-green-unarmed",
+    discriminator: key,
+    prompt: `${unarmed.length} pull request(s) are green on every required check, NOT held, and NOTHING `
+      + `HAS ARMED THEM: ${unarmed.map((n) => `#${n}`).join(", ")}.\n`
+      + "This is the state a refused arming credential produces, and it is invisible everywhere else: "
+      + "`queue-stalled.mjs` names armed PRs that cannot merge, and a green unarmed one is the mirror "
+      + "nothing reported until #1969. It is read here with the HOST's identity, never the arming PAT, "
+      + "so this order survives the outage it reports.\n"
+      + "FIRST ASK WHETHER THE CREDENTIAL IS REFUSING, because one PR unarmed and all of them unarmed "
+      + "want different acts: read the newest `arm` job log in `auto-arm.yml` -- since #1969 it prints a "
+      + "`SCOPE` line saying whether the refusal is about that one PR or repository-wide, and names the "
+      + "minute the pool returns.\n"
+      + "REPOSITORY-WIDE: nothing will arm anything until that minute. Arm these by hand with "
+      + "`node packages/agent-org/src/arm-pr.mjs --pr=<n> --repo=" + REPO + "` under an identity whose "
+      + "pool is alive -- the workflow's own documented exception for a PR auto-arm never armed -- and "
+      + "say on #1969 that it recurred, with the window.\n"
+      + "ONE PR ONLY: it is likelier that PR never got an arming event (opened while conflicting, or "
+      + "reopened). Arming it is the same command.\n"
+      + "IF A PR HERE SHOULD NOT MERGE, the answer is a `hold:` label or a `session:` label on the PR "
+      + "itself -- both are read by the same predicate this order used, so it leaves this set at once. A "
+      + "PR you merely skip stays in the set and this order returns unchanged.",
+    causeKey: `product-manager/pr-green-unarmed/${key}`,
+  }];
 }
 
 /**
@@ -1992,7 +2300,7 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  * @param {{ prs: any[], readyRows: any[], promotableRows?: any[], chairmanBlocked?: any[],
  *           prFiles?: { number: number, files: string[], changedFiles: number }[],
  *           drain?: boolean, required?: string[] | null, epics?: any[], answerOwed?: any[],
- *           openRows?: any[] }} state
+ *           openRows?: any[], unarmed?: number[] | null }} state
  *        `required` is the checks that can block a merge (`requiredCheckNames`), or `null` for
  *        "could not be read", which counts EVERY check as before this existed.
  *        `epics` are the open `epic` rows with their `subIssuesSummary` (`readEpics`); `[]` when
@@ -2002,14 +2310,23 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *        `prFiles` is `comparablePrFiles(prs)` -- the open PRs B4 may be asked about. It DEFAULTS TO
  *        `[]`, which means "no overlap is knowable", so every row is offered: the same behaviour as
  *        before B4 shelving existed, and the reason a caller that cannot read files is never worse off.
+ *        `unarmed` is `readUnarmed(shouldBeMerging(prs, required))` -- the green, unheld pull requests
+ *        the API says nothing has armed. It DEFAULTS TO `null`, which is "not asked or refused" and
+ *        emits no order: a caller that cannot make that read must never produce a false all-clear, and
+ *        must never produce a false alarm either.
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
-  drain = false, required = null, epics = [], answerOwed = [], openRows = [] }) {
+  drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null }) {
   // FIRST, BEFORE EVERY OTHER CAUSE. Every other order asks a session what should happen next; this one
   // says another session is ALREADY STOPPED waiting on them. That outranks any standing question.
   const orders = [...answerOrders(answerOwed)];
+  // SECOND, AND FOR THE SAME REASON ONE LEVEL IN (#2027). A session holding a row whose last blocker just
+  // closed is not waiting on a decision -- it is stopped on work it can resume this minute, with whatever
+  // is queued behind that row stopped with it. Ahead of every cause that offers NEW work: a row already
+  // claimed and now runnable beats a row nobody has picked up.
+  orders.push(...blockerClearedOrders(openRows));
 
   for (const pr of prs) {
     const order = draftOrder(pr, required);
@@ -2039,6 +2356,11 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // THE BATCH THAT USED TO BE A 01:00 TIMER. Placed here rather than first: a named row to fix
   // outranks a standing sweep, and `orchestrator` gets one order per tick either way.
   orders.push(...fleetBatchOrders(openRows));
+
+  // #1969: AFTER the per-PR and per-row causes and BEFORE the chairman's. A green unarmed PR is finished
+  // work that cannot land -- more urgent than a supply question, less urgent than a named red build,
+  // and never withheld by a drain: a window stops the org TAKING ON work, not finishing what is in flight.
+  orders.push(...greenUnarmedOrders(unarmed));
 
   orders.push(...chairmanOrders(chairmanBlocked));
 
@@ -2170,15 +2492,27 @@ function main() {
   // Both names exist so neither reader has to infer which of the two it was given (#1938).
   const openRowsRead = readOpenRows();
   const allOpen = openRowsRead ?? [];
+  // #1969: NAMED RATHER THAN CALLED TWICE. `shouldBeMerging` needs the same answer `decide` does, and
+  // `requiredWhenRed` makes a `gh` call when anything is red -- calling it inline in both places would
+  // pay for it twice on exactly the red tick this row is about.
+  const required = requiredWhenRed(openPrs);
   const decided = decide({ prs: openPrs, readyRows: rows, promotableRows: promotableRows ?? [],
-    chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required: requiredWhenRed(openPrs),
+    chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required,
     epics: epicsWhenShelfEmpty(rows),
-    answerOwed: withAnswerLabel(allOpen), openRows: allOpen });
+    answerOwed: withAnswerLabel(allOpen), openRows: allOpen,
+    // #1969: CONDITIONAL, and the condition is answered for free from the list already in hand.
+    // `shouldBeMerging` reads `openPrs`; only if it finds a green, unheld, non-draft PR is the
+    // merge-queue call made at all.
+    unarmed: readUnarmed(shouldBeMerging(openPrs, required)) });
   const { delivered: orders, performed } = performActions(decided);
   orders.push(...deadMansSwitch({ orders, drain, performed, openRows: openRowsRead }));
   for (const order of orders) process.stdout.write(`${JSON.stringify(order)}\n`);
 
-  reportWithheld({ drain, blocked: partitionUnclaimed(rows, prFiles).blocked });
+  // BOTH SHELVES ON ONE LINE-SHAPE. The engineer pool's B4/declared-wait shelvings and the fleet batch's
+  // (#2027) are the same fact -- work the gate can see and is deliberately not offering -- and a row that
+  // leaves a set silently is the defect both filters exist to fix.
+  reportWithheld({ drain, blocked: [...partitionUnclaimed(rows, prFiles).blocked,
+    ...partitionFleetBatch(allOpen).waiting] });
 
   if (prs === null || readyRows === null) {
     process.stderr.write(`PARTIAL: could not read ${prs === null ? "the pull-request list" : "the Ready rows"}. `

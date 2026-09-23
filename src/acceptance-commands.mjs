@@ -1831,6 +1831,22 @@ function stripTrailingCommentary(command) {
   return command.replace(TRAILING_COMMENTARY, "").trimEnd();
 }
 
+// #2088: THE CHARACTERS THAT END A WORD, so a `#` immediately after one of them starts a NEW word and
+// therefore a comment. This is bash's own METACHARACTER set, named here rather than left as a regex
+// class because the MEMBERSHIP is the whole point and has to be readable back:
+//
+//   - Whitespace is only five of the ten. `;`, `|`, `&`, `(`, `)`, `<` and `>` end a word just as hard,
+//     which is why `echo a;# don't` is two commands in bash and was one swallowed command here.
+//   - A QUOTE IS NOT IN HERE AND NEEDS NO ENTRY, which is a claim about the loop rather than the set.
+//     A quote does not end a word -- `echo 'a'# don't` leaves the `#` inside the same word, so the `'`
+//     in `don't` opens for real and bash says `unexpected EOF while looking for matching '`. The scan
+//     gets that right because every quote character is consumed by a branch that `continue`s before
+//     word state is updated, so this set is never consulted for one. Adding `'` and `"` to it is
+//     therefore INERT -- measured, not assumed: that mutant survives the whole suite. What is NOT
+//     inert is looking the set up against `text[i - 1]` instead of carrying the state; that mutant is
+//     killed by the escape row in `#2088 THE CONTROLS`.
+const WORD_ENDING_METACHARACTERS = new Set(["|", "&", ";", "(", ")", "<", ">", " ", "\t", "\n"]);
+
 /**
  * #2068: DOES THIS TEXT END WITH A QUOTE STILL OPEN? -- the second spelling of "this command is not
  * finished yet", and the reason it has to be scanned rather than matched by a regex.
@@ -1842,6 +1858,17 @@ function stripTrailingCommentary(command) {
  * next character and `'` is literal; outside both, `\` escapes and an unquoted `#` starting a word begins
  * a comment that runs to end of line, so a `'` inside it is text rather than syntax.
  *
+ * #2088: THAT EXAMPLE USED TO BE STATED TOO BROADLY, and the overstatement was the defect. `npm run x #
+ * don't skip` is balanced ONLY because of the space before the `#`: the scanner asked whether the
+ * previous character was WHITESPACE, so `npm run x;# don't skip` -- two commands to bash, one comment
+ * and an apostrophe inside it -- walked into the comment text, opened a quote on the `'`, never closed
+ * it, and JOINED the next Acceptance command onto this one. `acceptance` then reported on a command
+ * nobody wrote. A word begins after any of `WORD_ENDING_METACHARACTERS`, not after whitespace alone.
+ *
+ * Word start is CARRIED rather than looked back at, because `text[i - 1]` cannot see an escape: in
+ * `echo a\;# x` the `;` is literal, the word never ended, and bash keeps the `#` as text -- so reading
+ * the raw previous character would call a comment where there is none, the mirror of the bug above.
+ *
  * It is deliberately NOT a full shell parser: `$(…)`, backticks and heredocs also span lines, and none of
  * them is the measured shape (#1989's four-line `node --input-type=module -e '…'`). A shape this does not
  * recognise is read exactly as it was before -- one line, one command -- rather than guessed at.
@@ -1851,6 +1878,8 @@ function stripTrailingCommentary(command) {
 export function endsInsideQuote(text) {
   /** @type {string | null} */
   let quote = null;
+  // The start of the text is the start of a word; everything else is decided as the scan passes it.
+  let atWordStart = true;
   for (let i = 0; i < text.length; i++) {
     const char = text[i];
     if (quote === "'") { if (char === "'") quote = null; continue; }
@@ -1859,12 +1888,13 @@ export function endsInsideQuote(text) {
       if (char === '"') quote = null;
       continue;
     }
-    if (char === "\\") { i += 1; continue; }
-    if (char === "'" || char === '"') { quote = char; continue; }
+    if (char === "\\") { i += 1; atWordStart = false; continue; }
+    if (char === "'" || char === '"') { quote = char; atWordStart = false; continue; }
     // An unquoted `#` at the start of a word is a comment: everything after it is text, so nothing in it
     // can open a quote. Returning here rather than breaking states that an open quote BEFORE a comment is
     // impossible by construction -- `quote` is null on this branch.
-    if (char === "#" && (i === 0 || /\s/.test(text[i - 1]))) return false;
+    if (char === "#" && atWordStart) return false;
+    atWordStart = WORD_ENDING_METACHARACTERS.has(char);
   }
   return quote !== null;
 }

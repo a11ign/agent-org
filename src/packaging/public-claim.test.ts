@@ -543,6 +543,27 @@ const NOT_A_MEASURED_CLAIM: Record<string, string> = {
     + "inline, the same class as the 'Measured in `907ed704`' entry above -- but there is no board-gate "
     + "metric named 'true positive' for ANY recorded gate to source this figure from (checked: the word "
     + "never appears in `docs/board/reported/gates/`), so it is disclosed rather than machine-sourced.",
+  // #2089: THREE ENTRIES for #1663's reach-variance finding, landed by #2049. All three carry figures
+  // from the SWEEP's own instrumentation (`domCensus`, reach counts) over six recorded samples of
+  // `w3.org/WAI`. Recorded gates DO print a `census heading=N link=N` line -- but only for the pages in
+  // the real-pages job (`edinburgh-castle link=1`, `leeds link=74`), never for `w3.org/WAI`, and no gate
+  // records a REACH count for any page at all. So there is no entry for these figures to be sourced from.
+  "held constant at `link=75` while reach went":
+    "#1663's six-sample instrument reading, not a board-gate metric. `link=75` is this page's own "
+    + "`domCensus`, and 13/17/40/80 are how many links the SWEEP reached across six samples -- the whole "
+    + "point of the sentence is that the two diverge. No recorded gate runs `w3.org/WAI` (the real-pages "
+    + "job's census lines cover other pages), and no gate records a reach count for any page, so neither "
+    + "figure has an entry to co-occur with. The provenance is the six samples named in the sentence.",
+  "Only the last step, 80 → 84, is the live page changing":
+    "The same six-sample instrument reading as the entry above, carrying its one genuine page-change "
+    + "step. It is a statement about a LIVE third-party page moving between two captures, which no gate "
+    + "in this repository measures and none should -- a recorded gate would pin a number that w3.org is "
+    + "free to change again tomorrow. Disclosed with its apparatus (the census moved with it) inline.",
+  "figures rest on the census above rather than on identity":
+    "A back-reference to the two entries above, stating which evidence the 13 → 80 figures DO rest on -- "
+    + "it introduces no measurement of its own. `UNCOMPARABLE` is `compareIdentity`'s verdict word, not "
+    + "an outcome a gate scores, and the three result fixtures it describes are fixtures precisely "
+    + "because they dropped what `documentIdentity` reads. Nothing here is sourceable, by construction.",
   "headings went 5":
     "Measured once on this project's own local test page, illustrating what a consent-overlay swallowing "
     + "the whole run looks like -- the same class as the 'Measured in `907ed704`' entry above (a real, "
