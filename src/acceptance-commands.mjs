@@ -421,7 +421,19 @@ function isDeclarationLine(trimmed) {
  */
 export function handRunDeclaration(body) {
   const match = HAND_RUN_PATTERN.exec(body ?? "");
-  return match ? match[1].replace(/\s*(?:\*\*|__)\s*$/, "").trim() : null;
+  if (!match) return null;
+  const reason = match[1].replace(/\s*(?:\*\*|__)\s*$/, "").trim();
+  // THE EMPTINESS TEST IS ON THE NORMALIZED REASON, NEVER ON WHETHER THE PATTERN MATCHED -- reviewer's
+  // blocker on #2105. The pattern's `(\S...)` makes a bare `Hand-run:` fail to match, so the bare form
+  // was already `null`; but `**Hand-run: **` MATCHES, capturing the closing `**` as the reason, and the
+  // strip above then empties it. Returning `""` there is worse than either answer taken alone, because
+  // THE TWO READERS OF THIS FUNCTION DISAGREE ABOUT THE SAME BODY: `handRunAcceptanceReason` asks
+  // `!== null` and files the row clean, while `runOneCommand` reads the reason for TRUTHINESS and refuses
+  // it -- so the row passes the gate that exists to catch it early and fails the one that costs a
+  // rewrite, which is precisely the #879 sequence this row was filed to end. An empty reason is a
+  // declaration of nothing: it names no one and says nothing, so it falls through to the near-miss rule
+  // below and the author meets ONE refusal naming the actual problem.
+  return reason === "" ? null : reason;
 }
 
 // #2099: the strip above, and why the pattern cannot do it alone. `**Hand-run: whoever holds the admin

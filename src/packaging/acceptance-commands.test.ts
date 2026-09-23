@@ -2410,6 +2410,47 @@ test("#2099: `Hand-run:` WITH NO REASON is not a declaration -- a bare flag woul
   assert.match(String(handRunAcceptanceReason(body, "row-file")), /REFUSING to file/);
 });
 
+test("#2105: an EMPTY BOLD declaration is no declaration -- `**Hand-run: **` captured its own closing marker "
+  + "as the reason, and the two readers of that body then disagreed about it", () => {
+  // reviewer's blocker on #2105, and the bare spellings above are NOT its control: those never match the
+  // pattern at all, while these DO -- the capture takes the closing `**` and the trailing-marker strip
+  // empties it, so the emptiness has to be tested after normalization rather than inferred from the match.
+  for (const spelling of ["**Hand-run: **", "__Hand-run: ____", "**Hand-run:**", "**Hand-run:   **"]) {
+    assert.equal(handRunDeclaration(spelling), null, `${spelling} declares nothing and names no one`);
+  }
+  // THE CONTROL THAT MUST STILL PASS, differing from the first spelling above in exactly the reason:
+  // the fix must not cost the bold-wrapped declaration the row actually ships.
+  assert.equal(handRunDeclaration("**Hand-run: the admin holder**"), "the admin holder");
+
+  // AND THE PROPERTY THAT BROKE IS THE TWO READERS AGREEING, not either verdict alone. Before the fix
+  // `handRunAcceptanceReason` asked `!== null` and filed this body CLEAN while `acceptanceReport` read
+  // the same `""` for truthiness and returned `ok: false` -- the row passed the filing gate that exists
+  // to catch it early and failed the job that costs a rewrite, the exact #879 sequence #2099 ends.
+  const empty = `## Acceptance\n\n**Hand-run: **\n\n\`\`\`\n${HAND_RUN_GH}\n\`\`\`\n`;
+  assert.match(String(handRunAcceptanceReason(empty, "row-file")), /REFUSING to file/,
+    "filing refuses it, because nothing was declared");
+  const report = acceptanceReport(empty);
+  assert.equal(report.ok, false, "and the job refuses it too -- one story about one body");
+  // THE VERDICT IS THE LINE'S OWN PREFIX, NEVER A SUBSTRING OF THE REPORT. A `doesNotMatch(/NOT RUN/)`
+  // over the joined lines fails here on the REFUSAL'S OWN REMEDY -- which offers "a `Hand-run:` line
+  // makes this line report `NOT RUN` naming your reason" -- so it would read a correct refusal as the
+  // bug. That is the same false read reviewer-2's blocker produced one round earlier in this file, and
+  // it is worth the extra line: what is being asserted is which verdict this command GOT, and only the
+  // prefix says that.
+  const verdicts = report.lines.filter((line) => line.startsWith("ACCEPTANCE: "));
+  assert.equal(verdicts.some((line) => line.startsWith("ACCEPTANCE: NOT RUN")), false,
+    "never NOT RUN: there is no reason to name, which is why it is not a declaration");
+  assert.equal(verdicts.some((line) => line.startsWith("ACCEPTANCE: REFUSED")), true);
+
+  // ... and the declared twin, differing in exactly the reason inside the same bold wrapper, is honoured
+  // by BOTH readers -- the positive control for the emptiness assertions above.
+  const declared = `## Acceptance\n\n**Hand-run: ${HAND_RUN_REASON}**\n\n\`\`\`\n${HAND_RUN_GH}\n\`\`\`\n`;
+  assert.equal(handRunAcceptanceReason(declared, "row-file"), null);
+  const declaredReport = acceptanceReport(declared);
+  assert.equal(declaredReport.ok, true);
+  assert.match(declaredReport.lines.join("\n"), new RegExp(`NOT RUN.*${HAND_RUN_REASON}`));
+});
+
 test("#2099: the declaration is read BOLD-TOLERANTLY and keeps an interior emphasis -- `**Hand-run: ...**` is a "
   + "spelling these bodies reach for constantly, and #1036 is the record of it being recognised nowhere", () => {
   assert.equal(handRunDeclaration("**Hand-run: the admin holder**"), "the admin holder");
