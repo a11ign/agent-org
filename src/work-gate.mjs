@@ -678,16 +678,20 @@ function branchesText(pushed) {
  *
  * @param {any[]} readyRows @param {{ number: number, files: string[], changedFiles: number }[]} prFiles
  * @param {{ rootFiles?: Set<string>,
- *           rowBranches?: { branch: string, head: string, row: number }[] | null }} [options]
+ *           rowBranches?: { branch: string, head: string, row: number }[] | null,
+ *           clock?: {today?: string, nowMs?: number} }} [options]
  *        `rowBranches` is `readRowBranches()`. It DEFAULTS TO ABSENT, which is "not asked or refused":
  *        nothing is shelved for it and every row is offered exactly as it was before #2031, so a tick
  *        that cannot reach `origin` is never worse off than one from before this existed.
+ *        `clock` is injected the way `partitionFleetBatch` already injects one, and #2113 is why this
+ *        path needs one at all: a `Not-before:` may now name an HOUR, so whether a row is offerable can
+ *        change within a single day and a test cannot pin that against the host clock.
  * @returns {{ offerable: any[], blocked: { number: number, owner: string | null, reason: string }[] }}
  */
 export function partitionUnclaimed(readyRows, prFiles, options) {
   const offerable = [];
   const blocked = [];
-  const today = todayIso();
+  const { today = todayIso(), nowMs = Date.now() } = options?.clock ?? {};
   const onOrigin = branchIndex(options?.rowBranches);
   for (const row of readyRows) {
     // #2005's OPEN-CHECK, ANSWERED BY THIS LINE AND NOT BY A NEW RULE. The filer asked whether
@@ -717,7 +721,7 @@ export function partitionUnclaimed(readyRows, prFiles, options) {
     // gained the kind and this call site inherited it. That is the seam working -- the alternative, a
     // third prefix check written out here beside the one `readPromotableRows` already had, is exactly
     // how the offer path and the promotion path came to disagree in the first place.
-    const waiting = waitingOn(row, today);
+    const waiting = waitingOn(row, today, nowMs);
     if (waiting) {
       blocked.push({ number: Number(row.number), owner: laneOwnerOf(row),
         reason: `${describeWaiting(waiting)} -- declared on the row, and it clears itself` });
