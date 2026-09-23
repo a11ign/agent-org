@@ -26,6 +26,8 @@ import { spawnInvocation, addressed, clearContext, CLEAR_TIMEOUT_MS, CLEAR_SETTL
 import { handoffId, handoffQueuePath, ledgerPathFrom, readHandoffs, queueHandoff, dropHandoffs,
   deliverHandoffs, handoffOrder, staleHandoffs, nothingToDeliver, HANDOFF_STALE_MS, HANDOFF_QUEUE_FILE }
   from "../wake.mjs";
+import { handoffBacklog, backlogReport, handoffBatches, fitBatch, waitedFor, staleReport,
+  PROMPT_ARG_MAX, HANDOFF_BATCH_BYTES } from "../wake.mjs";
 
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));
@@ -964,4 +966,246 @@ test("an empty stdin is NOT a quiet tick while an order is queued", () => {
   assert.equal(nothingToDeliver([], []), true, "no orders and no queue really is a quiet tick");
   assert.equal(nothingToDeliver([], [HANDOFF]), false, "a queued order is work with no gate order behind it");
   assert.equal(nothingToDeliver([{ causeKey: "k" }], []), false);
+});
+
+// ---------------------------------------------------------------------------------------------------
+// A QUEUE THAT NEVER DRAINS TO A SESSION THAT IS NEVER IDLE (#2102).
+//
+// #1966 replaced "NOT PROMPTED, and that was the end of the order" with a queue, which was right. What
+// it did not decide is what happens when the drain condition never becomes true.
+//
+// MEASURED 2026-09-23 by replaying `~/.cache/a11ign/prompt-session-handoffs` through `readHandoffs`:
+// 59 orders pending, 57 of them for `product-manager` and every other session's queue empty, oldest
+// 9.7h, 31 over two hours. Among them `ceo`'s own RULING on #2094, a STOP-THE-LINE, two MAIN IS RED
+// reports and an ORG-WIDE report -- the ruling reached its target only because `ceo` sent it again by a
+// path outside this mechanism. Nothing the tick printed said any of it.
+//
+// TWO DEFECTS, AND THE SECOND IS WHY THE FIRST WAS SURVIVABLE FOR TEN HOURS. The backlog was invisible;
+// and `deliver` marks a session `working` the moment it accepts a prompt, so a per-order loop reached
+// exactly ONE of the 57 per tick and refused the other 56 -- one order every two minutes against an
+// inbox filling faster than that.
+
+/** `n` orders for one session, `gap` minutes apart, oldest first -- the shape that actually occurred. */
+function backlogOf(session: string, n: number, now: number, gap = 10): {
+  id: string; session: string; prompt: string; queuedAt: number;
+}[] {
+  return Array.from({ length: n }, (_, i) => ({
+    id: `handoff/${session}/${String(i).padStart(4, "0")}`,
+    session,
+    prompt: `report ${i}`,
+    queuedAt: now - (n - i) * gap * 60_000,
+  }));
+}
+
+test("ONE DIALECT FOR A WAIT: minutes under the hour, hours above it", () => {
+  // Two dialects would be read side by side in the same output. The minutes branch is `handoffOrder`'s
+  // existing wording to the letter, so the sentence it has always printed is unchanged; "587 minute(s)"
+  // is a number a reader has to do arithmetic on before it means anything.
+  assert.equal(waitedFor(40 * 60_000), "40 minute(s)");
+  assert.equal(waitedFor(0), "0 minute(s)");
+  assert.equal(waitedFor(-5), "0 minute(s)", "a clock that went backwards is not a negative wait");
+  assert.equal(waitedFor(9.7 * 3_600_000), "9.7h", "the reading this row was filed on");
+  assert.equal(waitedFor(60 * 60_000), "1.0h", "and the boundary belongs to hours");
+});
+
+test("THE BACKLOG IS A READING PER TARGET: count, oldest, and how many are stale", () => {
+  // THE POSITIVE CONTROL for the empty case below -- this is the population being non-empty, and it is
+  // the 2026-09-23 shape: one session holding everything while the others hold nothing.
+  const now = 10 * 60 * 60 * 1000;
+  const got = handoffBacklog([...backlogOf("product-manager", 57, now),
+    ...backlogOf("reviewer-2", 1, now, 1)], now);
+
+  assert.equal(got.length, 2, "one row per target, never one per order");
+  assert.deepEqual(got.map((b) => b.session), ["product-manager", "reviewer-2"],
+    "WORST FIRST: the session whose oldest order has waited longest is the one to look at");
+  assert.equal(got[0].waiting, 57);
+  assert.equal(waitedFor(got[0].oldestMs), "9.5h", "57 orders 10 minutes apart");
+  assert.equal(got[0].stale, 46, "and how many of them passed the two-hour line");
+  assert.equal(got[1].waiting, 1);
+  assert.equal(got[1].stale, 0, "a one-minute-old order is the ordinary case");
+});
+
+test("equal ages sort by NAME, so the same queue prints the same way twice", () => {
+  // `route`'s own rule, for its reason: a report that reorders itself between ticks cannot be diffed.
+  const now = 1_000_000;
+  const same = [{ id: "a", session: "zzz", prompt: "x", queuedAt: now - 5 },
+    { id: "b", session: "aaa", prompt: "x", queuedAt: now - 5 }];
+  assert.deepEqual(handoffBacklog(same, now).map((b) => b.session), ["aaa", "zzz"]);
+  assert.deepEqual(handoffBacklog([...same].reverse(), now).map((b) => b.session), ["aaa", "zzz"]);
+});
+
+test("THE TICK REPORTS THE COUNT AND THE OLDEST AGE -- the row's own Acceptance", () => {
+  const now = 10 * 60 * 60 * 1000;
+  const lines = backlogReport(handoffBacklog(backlogOf("product-manager", 57, now), now)).join("");
+
+  assert.match(lines, /QUEUE BACKLOG product-manager: 57 authored order\(s\) waiting/,
+    "the count, per session, in the tick's own output rather than in a cache file read by hand");
+  assert.match(lines, /oldest 9\.5h/, "and how long the oldest has waited");
+  assert.match(lines, /46 over 2h/);
+  assert.match(lines, /BETWEEN TASKS/,
+    "with the one thing a count does not say: delivery waits on a state the TARGET controls");
+  assert.doesNotMatch(lines, /handoff\/product-manager\/0001/,
+    "and not 57 lines of ids, which is the shape that said nothing");
+});
+
+test("THE CONTROL: A QUIET QUEUE REPORTS NOTHING", () => {
+  // Without this, every assertion above passes against a reporter that prints unconditionally, and the
+  // tick grows a line that is noise on the overwhelming majority of ticks. This repo's Assertions rule
+  // names where the positive control lives; it is the two tests immediately above.
+  assert.deepEqual(handoffBacklog([]), []);
+  assert.deepEqual(backlogReport([]), []);
+  assert.deepEqual(backlogReport(handoffBacklog([])), []);
+});
+
+test("a backlog with nothing stale is reported WITHOUT the stalled-inbox warning", () => {
+  // The warning is the loud half and it must stay loud. A queue two minutes deep is the mechanism
+  // working, and shouting about it is how a reader learns to skip the line that matters.
+  const now = 10 * 60 * 60 * 1000;
+  const fresh = backlogReport(handoffBacklog(backlogOf("reviewer", 2, now, 1), now)).join("");
+  assert.match(fresh, /QUEUE BACKLOG reviewer: 2 authored order\(s\) waiting/);
+  assert.doesNotMatch(fresh, /over 2h/);
+  assert.doesNotMatch(fresh, /BETWEEN TASKS/);
+});
+
+test("57 ORDERS FOR ONE SESSION ARE ONE DELIVERY, NOT 57 -- and all 57 are retired", () => {
+  // THE THROUGHPUT DEFECT, pinned at its arithmetic. `deliver` marks a session `working` as soon as it
+  // accepts a prompt, so the per-order loop this replaces sent ONE and refused 56 on every tick, for
+  // ever. The old shape fails this on two counts at once: `refused` had 56 entries and `ids` had 1.
+  const { run, calls } = recorder();
+  const now = 10 * 60 * 60 * 1000;
+  const out = deliverHandoffs(backlogOf("product-manager", 57, now),
+    agents({ "product-manager": "idle" }), ROSTER, { run, now, queuePath: undefined });
+
+  assert.equal(out.sent.length, 1, "one wake");
+  assert.deepEqual(out.refused, [], "and nothing refused for being behind a session this tick just woke");
+  assert.equal(out.ids.length, 57, "carrying every one of them");
+  assert.equal(calls.filter((a) => a.includes("/clear")).length, 1,
+    "AND CLEARED ONCE. 57 clears would have erased the context each previous order created (#1966)");
+  const prompt = String(calls.at(-1)?.at(-1));
+  assert.match(prompt, /57 ORDERS WERE QUEUED FOR YOU AND ARRIVE TOGETHER/);
+  assert.match(prompt, /ORDER 1 of 57, queued 9\.5h ago/, "oldest first, each with its own age");
+  assert.match(prompt, /ORDER 57 of 57, queued 10 minute\(s\) ago/);
+  assert.match(prompt, /report 0\b/, "and every author's own words are in it");
+  assert.match(prompt, /report 56\b/);
+});
+
+test("ONE order is still ONE order, with its own id and its own wording", () => {
+  // The common case -- an author prompting one reviewer about one draft -- must not start reading like a
+  // digest of itself, and `WOKE reviewer <- handoff/reviewer/1a2b3c4d` stays greppable back to the queue.
+  const [only] = handoffBatches([HANDOFF], { now: HANDOFF.queuedAt + 40 * 60_000 });
+  assert.equal(only.causeKey, HANDOFF.id, "not `batch-of-1`");
+  assert.deepEqual(only.ids, [HANDOFF.id]);
+  assert.equal(only.prompt, handoffOrder(HANDOFF, HANDOFF.queuedAt + 40 * 60_000).prompt,
+    "byte-for-byte the sentence this file has printed since #1966");
+  assert.doesNotMatch(only.prompt, /ARRIVE TOGETHER/);
+});
+
+test("A BATCH IS BOUNDED BY BYTES, AND THE KERNEL IS WHY", () => {
+  // MEASURED ON THIS HOST 2026-09-23 by spawning `/bin/true` with arguments of increasing length:
+  // 131,071 bytes is accepted and 131,072 is E2BIG -- `MAX_ARG_STRLEN`, 32 pages. `deliver` passes the
+  // prompt as ONE argv entry. The queue that produced this row held 136,919 characters for one session,
+  // so an unbounded "one delivery whose body is all 57 reports" would have failed E2BIG on the very
+  // backlog it was written for.
+  assert.equal(PROMPT_ARG_MAX, 131_072);
+  assert.ok(HANDOFF_BATCH_BYTES * 2 <= PROMPT_ARG_MAX,
+    "and the budget leaves room for `addressed`'s wrapper and for multi-byte characters");
+
+  const now = 10 * 60 * 60 * 1000;
+  const big = backlogOf("product-manager", 40, now).map((h) => ({ ...h, prompt: "x".repeat(4_000) }));
+  const [batch] = handoffBatches(big, { now, budget: HANDOFF_BATCH_BYTES });
+  assert.equal(batch.ids.length, 16, "64 KiB of 4,000-byte reports");
+  assert.ok(Buffer.byteLength(addressed(batch, "product-manager"), "utf8") < PROMPT_ARG_MAX,
+    "THE ASSERTION THE BOUND IS FOR: what reaches execFileSync fits in one argument");
+  assert.match(batch.prompt, /24 further order\(s\) for you did not fit/);
+  assert.match(batch.prompt, /STILL QUEUED; the next tick brings them\. Nothing has been dropped/);
+});
+
+test("WHAT DID NOT FIT STAYS QUEUED -- a bound must never be a drop", () => {
+  const now = 10 * 60 * 60 * 1000;
+  const big = backlogOf("product-manager", 40, now).map((h) => ({ ...h, prompt: "x".repeat(4_000) }));
+  const { run } = recorder();
+  const dropped: string[][] = [];
+  const out = deliverHandoffs(big, agents({ "product-manager": "idle" }), ROSTER,
+    { run, now, queuePath: "/q", drop: ((_p: string, ids: string[]) => dropped.push(ids)) as never });
+
+  assert.equal(out.ids.length, 16);
+  assert.deepEqual(dropped, [out.ids], "only what the accepted batch carried is retired");
+  const left = big.filter((h) => !new Set(out.ids).has(h.id));
+  assert.equal(left.length, 24, "and the remainder is still there for the next tick");
+  assert.deepEqual(handoffBacklog(left, now).map((b) => b.waiting), [24],
+    "where the backlog report will name it -- the wait is made visible, never overridden");
+});
+
+test("FIFO: the oldest order is in the batch, whatever it costs", () => {
+  // The failure being fixed is an order that waited ten hours. Filling a batch with whatever is newest
+  // would starve exactly that order for ever while the queue looked like it was draining -- and a single
+  // order bigger than the budget must still be attempted, for the same reason.
+  const now = 10 * 60 * 60 * 1000;
+  const huge = { id: "handoff/ceo/huge", session: "ceo", prompt: "y".repeat(HANDOFF_BATCH_BYTES * 2),
+    queuedAt: now - 9 * 3_600_000 };
+  const small = { id: "handoff/ceo/small", session: "ceo", prompt: "later", queuedAt: now - 60_000 };
+  const { take, held } = fitBatch([small, huge], HANDOFF_BATCH_BYTES);
+  assert.deepEqual(take.map((h) => h.id), [huge.id], "the oldest is taken even though it alone overflows");
+  assert.deepEqual(held.map((h) => h.id), [small.id]);
+});
+
+test("each target gets its OWN delivery, and a busy one blocks only its own", () => {
+  // The queue is per session and so is the stall. `product-manager` being unreachable must not hold an
+  // order addressed to a reviewer who is sitting idle.
+  const { run } = recorder();
+  const now = 10 * 60 * 60 * 1000;
+  const out = deliverHandoffs([...backlogOf("product-manager", 3, now), ...backlogOf("reviewer-2", 2, now)],
+    agents({ "product-manager": "working", "reviewer-2": "idle" }), ROSTER, { run, now });
+
+  assert.deepEqual([...out.busied], ["reviewer-2"]);
+  assert.equal(out.ids.length, 2, "the reviewer's two orders landed");
+  assert.deepEqual(out.refused, ['handoff/product-manager/batch-of-3: "product-manager" is working'],
+    "ONE refusal for the stalled inbox, not three -- and it names how many it was carrying");
+});
+
+test("a refused BATCH retires nothing at all, not even part of it", () => {
+  // The assertion the whole queue is for, at the batch's granularity: nothing leaves the queue until
+  // herdr has accepted the delivery that carried it. Partial credit here would lose orders silently.
+  const { run, calls } = recorder();
+  const now = 10 * 60 * 60 * 1000;
+  const dropped: string[][] = [];
+  const out = deliverHandoffs(backlogOf("product-manager", 20, now),
+    agents({ "product-manager": "working" }), ROSTER,
+    { run, now, queuePath: "/q", drop: ((_p: string, ids: string[]) => dropped.push(ids)) as never });
+
+  assert.deepEqual(out.ids, []);
+  assert.deepEqual(dropped.flat(), [], "NOTHING was removed from the queue");
+  assert.deepEqual(calls, [], "and the busy session was not typed at -- the refusal is load-bearing");
+});
+
+test("AN ORDER JUST DELIVERED IS NOT ANNOUNCED AS 'still not delivered'", () => {
+  // `main` prints `STALE QUEUED ORDER <id> ... still not delivered` for anything past two hours, and
+  // built those lines from the PRE-delivery list -- so an order handed over seconds earlier was announced
+  // as undelivered. With a batch retiring dozens at once that is dozens of false statements per tick, in
+  // the one output an operator is meant to trust.
+  const { run } = recorder();
+  const now = 10 * 60 * 60 * 1000;
+  const queued = backlogOf("product-manager", 30, now);
+  const out = deliverHandoffs(queued, agents({ "product-manager": "idle" }), ROSTER, { run, now });
+
+  // THE POSITIVE CONTROL, and it is the pre-fix behaviour exactly: told nothing was retired, the same
+  // function names every stale order. So the empty result below is a subtraction, not a mute reporter.
+  const pretendNothingLanded = staleReport(queued, [], now);
+  assert.ok(pretendNothingLanded.length > 0, "these orders ARE stale by age");
+  assert.match(String(pretendNothingLanded[0]), /STALE QUEUED ORDER handoff\/product-manager\/.* still not delivered/);
+
+  assert.equal(out.ids.length, 30, "the delivery carried all of them");
+  assert.deepEqual(staleReport(queued, out.ids, now), [],
+    "and none is announced as waiting, because none is");
+});
+
+test("stale lines survive for what the delivery did NOT carry", () => {
+  // The other half: a bound that leaves orders behind must leave their stale lines behind too, or the
+  // subtraction above would have silenced the very backlog this row is about.
+  const now = 10 * 60 * 60 * 1000;
+  const queued = backlogOf("product-manager", 30, now);
+  const carried = queued.slice(0, 10).map((h) => h.id);
+  const lines = staleReport(queued, carried, now).join("");
+  assert.doesNotMatch(lines, new RegExp(queued[0].id.replace("/", "\\/")), "carried: not announced");
+  assert.match(lines, new RegExp(queued[15].id.replace(/\//g, "\\/")), "left behind: still announced");
 });
