@@ -52,7 +52,10 @@ import { fetchBoardItems, PROJECT_NUMBER } from "./board-snapshot.mjs";
 import { fetchClosedRowEvents, unattributableClosedRows, reportableUnattributable, attributionFor,
   fetchClosingPullRequest, PROVENANCE_REQUIRED_FROM } from "./claim-provenance.mjs";
 import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
-import { READY_LABEL, WAS_READY_LABEL } from "./claim-labels.mjs";
+// `CLAIM_LABEL` from the module the CLAIM PATH itself writes, never the string "in-progress" retyped
+// here: #2008's finding was a predicate that disagreed with the claim path about what a claim means, and
+// a second spelling of the label is how that disagreement gets to happen again silently.
+import { READY_LABEL, WAS_READY_LABEL, CLAIM_LABEL } from "./claim-labels.mjs";
 // #782: THE PURE DECISION ONLY -- `labelsToStrip` classifies a label, it never calls `gh`. Importing it
 // does NOT give this file a mutation capability; the header above's ruling ("this audit REPORTS the
 // debris; it does not strip it... a bulk label mutation is product-manager's deliberate act") is
@@ -845,24 +848,36 @@ function reportHandClaims() {
  * EPICS AND CLOSED-DEBRIS ARE NOT FINDINGS. An `epic` is read by `readEpics` on its own label, and a row
  * carrying only `meta` is a process thread that was never meant to be promoted -- both are reached by
  * something. What is refused is a row reached by nothing.
+ *
+ * NEITHER IS A CLAIMED ROW, AND #2008 IS WHY THAT HAD TO BE SAID OUT LOUD. See `invisibleRows`.
  */
 function reportInvisibleRows() {
   const { issues, reportedCount } = fetchOpenIssuesChecked();
   const rows = invisibleRows(issues);
   if (rows.length === 0) {
-    process.stdout.write(`OK  ${issues.length} of ${reportedCount} open issue(s) checked, every one `
-      + "carries `backlog`, `ready`, `epic` or `meta` and is therefore reachable by some cause\n");
+    process.stdout.write(`OK  ${issues.length} of ${reportedCount} open issue(s) checked, every one is `
+      + `reachable: it carries \`backlog\`, \`ready\`, \`epic\` or \`meta\`, or it is claimed `
+      + `(\`${CLAIM_LABEL}\`) and its owner is working it\n`);
     return 0;
   }
   for (const { number, title, labels } of rows) {
-    process.stdout.write(`UNREACHABLE  #${number} "${title}" -- [${labels.join(", ")}] -- carries `
-      + "neither `backlog` nor `ready`, and `work-gate` reads both SERVER-SIDE by label, so no cause can "
-      + "see this row and no session will ever be ordered to touch it. Add `backlog` (or `ready` if it "
-      + "is genuinely startable), or close it\n");
+    process.stdout.write(`UNREACHABLE  #${number} "${title}" -- [${labels.join(", ")}] -- UNCLAIMED, and `
+      + "carries neither `backlog` nor `ready`, and `work-gate` reads both SERVER-SIDE by label, so no "
+      + "cause can see this row and no session will ever be ordered to touch it. Add `backlog` (or "
+      + "`ready` if it is genuinely startable), or close it -- on an unclaimed row that label is what "
+      + "makes a cause read it, so following this changes the row's reachability rather than only this "
+      + "line\n");
   }
   process.stdout.write(`invisible rows: ${rows.length} of ${issues.length} open issue(s)\n`);
   return rows.length;
 }
+
+/**
+ * The labels that make an UNCLAIMED row visible to a gate cause: `readPromotableRows` reads `backlog`
+ * and `readReadyRows` `ready`, both SERVER-SIDE; `readEpics` reads `epic`; a `meta` row is a process
+ * thread nobody was ever meant to promote.
+ */
+const REACHED_BY_A_CAUSE = ["backlog", "ready", "epic", "meta"];
 
 /**
  * PURE. The open rows no cause can reach.
@@ -870,17 +885,39 @@ function reportInvisibleRows() {
  * Takes `LabelledIssue[]` -- `fetchOpenIssuesChecked` has already normalised `labels` to strings, so a
  * caller reading raw `gh` output must normalise first rather than this function guessing at two shapes.
  *
+ * A CLAIMED ROW IS REACHED BY ITS OWNER, NOT BY A CAUSE (#2008). Measured 2026-09-22 over all 48 open
+ * rows: 3 of 3 findings were claimed rows -- #1996, #1966 and #1955, one of them with an open PR, a
+ * reviewer mid-review and an owner. A claim is the strongest reachability this board has: a named
+ * session is holding the row right now. `work-gate.mjs`'s `NOT_STARTABLE` CONTAINS `in-progress`
+ * (`NOT_PICKABLE` minus what is merely routed, and `CLAIM_LABEL` is in `NOT_PICKABLE`), so
+ * `readPromotableRows` filters a claimed row out EVEN WHEN IT CARRIES `backlog` -- there is no state in
+ * which a claimed row needs a promotable cause to be seen, and the two label states are equally
+ * meaningless for it.
+ *
+ * SO THE OLD MESSAGE'S REMEDY COULD NOT BE FOLLOWED, WHICH IS WORSE THAN THE NOISE. Adding `backlog` to
+ * a claimed row adds a label `readPromotableRows` filters straight back out: the row is no more
+ * reachable and the finding disappears only because the check stopped looking. Following the remedy
+ * exactly produced a green audit and no change in behaviour.
+ *
+ * THE COST WAS NEVER THE THREE LINES, IT IS WHAT THEY DO TO THE FOURTH. This check earns its place by
+ * catching #1830, and a check whose every current finding is noise trains its reader to skim it.
+ *
+ * A CLAIM WHOSE HOLDER HAS GONE IS NOT DROPPED, IT IS HANDED OVER. `reportDeadClaims` enumerates every
+ * `in-progress` row on its own label and reports the ones with no open PR, no push and no comment in the
+ * window -- `ceo`'s three legs (#723). That is the check that owns a stale claim; this one never could,
+ * because a label cannot say whether the session behind it is alive.
+ *
  * @param {LabelledIssue[]} issues
  */
 export function invisibleRows(issues) {
-  const REACHED_BY_SOMETHING = ["backlog", "ready", "epic", "meta"];
   return (issues ?? [])
     .map((i) => ({ number: Number(i.number), title: String(i.title ?? ""),
       labels: (i.labels ?? []).map((l) => String(l)) }))
     // A row with NO labels at all is `reportLabelless`'s finding, not this one -- reporting it twice
     // would make two checks disagree about whose it is the first time one of them changes.
     .filter((r) => r.labels.length > 0)
-    .filter((r) => !r.labels.some((n) => REACHED_BY_SOMETHING.includes(n)));
+    .filter((r) => !r.labels.includes(CLAIM_LABEL))
+    .filter((r) => !r.labels.some((n) => REACHED_BY_A_CAUSE.includes(n)));
 }
 
 /**

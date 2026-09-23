@@ -671,6 +671,16 @@ function fileWith(argv: string[], overrides: Record<string, unknown> = {}) {
   return { code, created };
 }
 
+/**
+ * #1962: the read-back of a row that declared itself out of release. It comes back carrying the
+ * `out-of-release` LABEL beside the board and lane ones, because that is what the filing applied -- and
+ * since #1962 the read-back checks for it, so a fake omitting it describes a row `row-file` would refuse
+ * to report success for. Shared rather than repeated: four tests file out of release for other reasons.
+ */
+const READ_BACK_OUT_OF_RELEASE = {
+  fetchLabels: () => ({ number: 900, title: "a real row", labels: ["backlog", "lane:any", OUT_OF_RELEASE] }),
+};
+
 test("#1011: neither a milestone nor `out-of-release` is REFUSED, and nothing is filed", () => {
   const { code, created } = fileWith(
     ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts"]);
@@ -701,8 +711,12 @@ test("#1011 FOLLOWABILITY: filing again with the refusal's OWN suggestion passes
 test("#1011: `--label out-of-release` with no milestone is ALLOWED -- the deliberate escape", () => {
   const { code } = fileWith(["--title", "a real row", "--body", COMPLETE_BODY,
     "--session=worker-contracts", "--label", "out-of-release"],
-  { fetchLabels: () => ({ number: 900, title: "a real row", labels: ["backlog", "lane:any"] }),
-    run: afterRun(appendFiledBy(COMPLETE_BODY, "worker-contracts"), "") });
+  { ...READ_BACK_OUT_OF_RELEASE,
+    // #1962: the milestone this filing asks for is the one `outOfReleaseArgv` ADDS beside the label, and
+    // the read-back now expects what was filed rather than what was typed. A fixture answering `""` here
+    // described a row with the label and no milestone -- the very disagreement #1130 closed, reported as
+    // a success because nothing checked the half this tool wrote itself.
+    run: afterRun(appendFiledBy(COMPLETE_BODY, "worker-contracts"), OUT_OF_RELEASE_MILESTONE) });
   assert.equal(code, 0);
 });
 
@@ -860,12 +874,48 @@ test("#1130: an explicit milestone is NOT overridden -- the caller's choice wins
     + "disagreement created by the code that exists to prevent one");
 });
 
-test("#1130: neither is still REFUSED, and a row with no label is untouched -- the direction that must not weaken", () => {
+test("#1130: neither is still REFUSED, and a row declaring no release is untouched -- the direction that must not weaken", () => {
   assert.equal(declaresRelease(["--title", "x"]), false);
   assert.deepEqual(outOfReleaseArgv(["--title", "x"]), ["--title", "x"]);
-  assert.deepEqual(outOfReleaseArgv(["-m", OUT_OF_RELEASE_MILESTONE]), ["-m", OUT_OF_RELEASE_MILESTONE],
-    "the milestone alone is left alone: adding labels a caller did not ask for is a wider change than "
-    + "this row's, and the tracker-level check in `ready-label-audit.test.ts` is what catches that side");
+  assert.deepEqual(outOfReleaseArgv(["-m", "Road to version one", "--title", "x"]),
+    ["-m", "Road to version one", "--title", "x"],
+    "a REAL milestone still gets no label -- only `Out of release` is two-faced, and labelling every "
+    + "filing would put `out-of-release` on rows that are squarely in the release");
+});
+
+// ---------------------------------------------------------------------------------------------------
+// #1962: THE HALF #1130 LEFT OPEN, WHICH THEN FILED ITS OWN FINDING.
+//
+// #1130's own test asserted that `--milestone "Out of release"` alone was "left alone", reasoning that
+// `ready-label-audit.mjs`'s tracker-level check would catch that side. It did catch it -- as RELEASE
+// DRIFT, minted by `row-file` itself. Measured 2026-09-22: `row-file --milestone "Out of release"` filed
+// #1960 with no `out-of-release` label, and the audit reads the LABEL, so the next run would have counted
+// that row out of the board's own out-of-release figure. The mirror case, #1740, came from the same run.
+// Both were repaired by hand. One fact, written to both fields the org reads, at the one moment a row is
+// created -- and the read-back confirms the half this tool added, not only the half the filer typed.
+// ---------------------------------------------------------------------------------------------------
+
+test("#1962 ACCEPTANCE: the MILESTONE alone gets the label, in every spelling gh takes", () => {
+  for (const argv of [["-m", OUT_OF_RELEASE_MILESTONE], ["--milestone", OUT_OF_RELEASE_MILESTONE],
+    [`--milestone=${OUT_OF_RELEASE_MILESTONE}`], ["--milestone", "out of release"]]) {
+    const filed = outOfReleaseArgv([...argv, "--title", "x"]);
+    assert.deepEqual(filed.slice(-2), ["--label", OUT_OF_RELEASE],
+      `${argv.join(" ")}: a row declaring itself out of release by milestone must carry the label that `
+      + "says the same thing, or `ready-label-audit.mjs`, which reads the LABEL, reports it as drift");
+    assert.deepEqual(filed.slice(0, argv.length), argv, "and nothing the filer wrote moves");
+  }
+});
+
+test("#1962 ACCEPTANCE: the LABEL alone still gets the milestone -- the half #1130 shipped, unweakened", () => {
+  const filed = outOfReleaseArgv(["--label", OUT_OF_RELEASE, "--title", "x"]);
+  assert.deepEqual(filed.slice(-2), ["--milestone", OUT_OF_RELEASE_MILESTONE]);
+});
+
+test("#1962: a row that already says BOTH is untouched -- the fix adds the missing half, never a second copy", () => {
+  const both = ["--label", OUT_OF_RELEASE, "--milestone", OUT_OF_RELEASE_MILESTONE, "--title", "x"];
+  assert.deepEqual(outOfReleaseArgv(both), both,
+    "a second `--label` or `--milestone` would make gh pick one and the filer the other, which is a "
+    + "disagreement created by the code that exists to prevent one");
 });
 
 /**
@@ -1310,14 +1360,21 @@ test("#1250: the item-add rung names BOTH steps it skips, and repairs all three"
 // ---------------------------------------------------------------------------------------------------
 
 /** `fileWith`, plus stderr and every label a `gh issue edit --add-label` call applied. */
-function fileWatching(argv: string[], overrides: Record<string, unknown> = {}) {
+/**
+ * @param readBackMilestone what the filed row's milestone READS BACK as. `CI reset` is what `FILER`
+ *   declares; a filing that declares `out-of-release` by label alone lands in `Out of release` instead,
+ *   because `outOfReleaseArgv` adds it -- and since #1962 the read-back expects what was FILED, not what
+ *   the filer typed, so a fixture still answering `CI reset` there describes a row that was never created.
+ */
+function fileWatching(argv: string[], overrides: Record<string, unknown> = {},
+  readBackMilestone = "CI reset") {
   const added: string[] = [];
   const moved: string[] = [];
   let said = "";
   const write = process.stderr.write.bind(process.stderr);
   (process.stderr as { write: unknown }).write = (chunk: unknown) => { said += String(chunk); return true; };
   try {
-    const base = afterRun(appendFiledBy(COMPLETE_BODY, "worker-contracts"));
+    const base = afterRun(appendFiledBy(COMPLETE_BODY, "worker-contracts"), readBackMilestone);
     const { code, created } = fileWith(argv, {
       run: (cmd: string, args: string[]) => {
         args.forEach((arg, i) => { if (arg === "--add-label") added.push(args[i + 1]); });
@@ -1394,7 +1451,8 @@ test("#1322: `ready` and `backlog` together refuse, in any mix of --ready and --
 test("#1322: the board and lane labels never reach `gh issue create`; every other label does, in its own spelling", () => {
   // The untouched occurrence is spelled `-l`, NOT `--label`: the rewrite itself emits `--label`, so a rewrite that
   // rebuilt every occurrence would pass a `--label` assertion (worker-capture's review of #1381).
-  const { code, created } = fileWatching([...FILER, "-l", "out-of-release", "--label=backlog,lane:any,docs"]);
+  const { code, created } = fileWatching([...FILER, "-l", "out-of-release", "--label=backlog,lane:any,docs"],
+    READ_BACK_OUT_OF_RELEASE);
   assert.equal(code, 0);
   assert.deepEqual(labelValuesFromArgv(created ?? []), ["out-of-release", "docs"]);
   const at = (created ?? []).indexOf("out-of-release");
@@ -1430,7 +1488,8 @@ test("#1393 ACCEPTANCE: every spelling gh takes files with the Out of release mi
   assert.deepEqual(UNRELEASED.includes("--milestone"), false, "the filer declares no milestone of its own");
   // `-l=` is a real spelling: `gh issue list -l=ready` returns exactly `--label ready`'s rows (5655847590 on #1393).
   for (const spelling of [["--label", "out-of-release,docs"], ["--label=Out-of-release"], ["-l=out-of-release"]]) {
-    const { code, created, said } = fileWatching([...UNRELEASED, ...spelling]);
+    const { code, created, said } = fileWatching([...UNRELEASED, ...spelling], READ_BACK_OUT_OF_RELEASE,
+      OUT_OF_RELEASE_MILESTONE);
     assert.equal(code, 0, `${spelling.join(" ")} declares out-of-release and must file -- said: ${said.slice(0, 160)}`);
     assert.equal(milestoneIn(created), OUT_OF_RELEASE_MILESTONE, `${spelling.join(" ")}: the milestone is added beside the label`);
     const at = (created ?? []).indexOf(spelling[0]);
@@ -1440,7 +1499,8 @@ test("#1393 ACCEPTANCE: every spelling gh takes files with the Out of release mi
 });
 
 test("#1393 CONTROL: `--label out-of-release` still files with the milestone, and no label is still refused", () => {
-  const exact = fileWatching([...UNRELEASED, "--label", "out-of-release"]);
+  const exact = fileWatching([...UNRELEASED, "--label", "out-of-release"], READ_BACK_OUT_OF_RELEASE,
+    OUT_OF_RELEASE_MILESTONE);
   assert.equal(exact.code, 0);
   assert.equal(milestoneIn(exact.created), OUT_OF_RELEASE_MILESTONE);
   const none = fileWatching(UNRELEASED);
@@ -1449,6 +1509,57 @@ test("#1393 CONTROL: `--label out-of-release` still files with the milestone, an
   assert.match(none.said, /REFUSING to file a row that declares no release/);
   const other = fileWatching([...UNRELEASED, "--label", "docs"]);
   assert.equal(other.code, 1, "a label that is not out-of-release declares nothing either");
+});
+
+test("#1962 ACCEPTANCE, DRIVEN: `--milestone \"Out of release\"` alone files WITH the label -- the shape that filed #1960", () => {
+  // Driven through `createIssue`, asserting the argv that reaches `gh`: `outOfReleaseArgv` returning the
+  // right array proves nothing about what this tool files if the result is dropped on the way (#1393's
+  // own lesson -- one of two copies fixed files the row with the other half missing).
+  for (const spelling of [["--milestone", OUT_OF_RELEASE_MILESTONE], ["-m", OUT_OF_RELEASE_MILESTONE],
+    [`--milestone=${OUT_OF_RELEASE_MILESTONE}`]]) {
+    const { code, created, said } = fileWatching([...UNRELEASED, ...spelling], READ_BACK_OUT_OF_RELEASE,
+      OUT_OF_RELEASE_MILESTONE);
+    assert.equal(code, 0, `${spelling.join(" ")} must file -- said: ${said.slice(0, 200)}`);
+    assert.deepEqual(labelValuesFromArgv(created ?? []), [OUT_OF_RELEASE],
+      `${spelling.join(" ")}: the label is added beside the milestone, or ready:audit reads the row as `
+      + "RELEASE DRIFT minted by the tool that filed it");
+    const at = (created ?? []).indexOf(spelling[0]);
+    assert.deepEqual((created ?? []).slice(at, at + spelling.length), spelling,
+      "and the milestone reaches gh in the filer's own spelling -- nothing is rewritten to add the label");
+  }
+});
+
+test("#1962 CONTROL: a REAL milestone gets no `out-of-release` label -- the direction that must not weaken", () => {
+  // `FILER` declares `--milestone \"CI reset\"`: a row squarely IN the release. Labelling it out of release
+  // would be the same drift pointing the other way, and this is the assertion that says the fix reads the
+  // milestone's VALUE rather than the flag's presence.
+  const { code, created } = fileWatching(FILER);
+  assert.equal(code, 0);
+  assert.deepEqual(labelValuesFromArgv(created ?? []), [],
+    "no label at all: the board and lane labels land after the Status move, and this row is not out of release");
+});
+
+test("#1962 CONTROL: the MILESTONE this tool added is read back too, not only the one the filer typed", () => {
+  // The mirror of the test below, and the reason the read-back reads `filedArgv` rather than `argv`:
+  // a filing that says `out-of-release` by label alone asks for the `Out of release` milestone because
+  // `outOfReleaseArgv` ADDS it. Expecting only what the filer typed expects `null` here, checks nothing,
+  // and reports success for a row carrying the label and no milestone -- the disagreement #1130 closed,
+  // surviving as an unverified half of its own remedy.
+  const { code, said } = fileWatching([...UNRELEASED, "--label", "out-of-release"],
+    READ_BACK_OUT_OF_RELEASE, "");
+  assert.equal(code, 2, "filed but unconfirmed is exit 2, never success");
+  assert.match(said, /missing: the milestone/, "and the refusal names the half that did not stick");
+});
+
+test("#1962 CONTROL: a label the read-back does NOT find is REFUSED, not reported as filed", () => {
+  // The positive control for the read-back added by this row: with the fixture answering a row that came
+  // back WITHOUT `out-of-release`, `row-file` must refuse rather than print the URL. `gh` accepting
+  // `--label` is not evidence the label is on the row -- #1011's own finding, one field across.
+  const { code, said } = fileWatching([...UNRELEASED, "--milestone", OUT_OF_RELEASE_MILESTONE], {},
+    OUT_OF_RELEASE_MILESTONE);
+  assert.equal(code, 2, "filed but unconfirmed is exit 2, never success");
+  assert.match(said, /the `out-of-release` label/,
+    "and the refusal NAMES the half that did not stick, so a reader repairing the row knows which");
 });
 
 test("#1393: labelsOutOfRelease reads every spelling, folds case, and is the one predicate both callers use", () => {
