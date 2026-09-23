@@ -90,7 +90,7 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
   "verdict-not-convinced", "pr-checks-failing", "ready-queue-empty", "lane-backlog-unpromoted",
   "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
   "blocked-unexaminable", "fleet-batch-due", "blocker-cleared", "pr-green-unarmed",
-  "claimed-row-amended", "row-branch-unshipped", "host-units-stale"];
+  "claimed-row-amended", "row-branch-unshipped", "host-units-stale", "pr-review-blocked"];
 
 /**
  * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
@@ -199,7 +199,16 @@ const defaultRun = (args) => execFileSync("gh", args, { encoding: "utf8", maxBuf
 export function readPrs(run = defaultRun) {
   try {
     const out = run(["pr", "list", "--state", "open", "--limit", "100", "--json",
-      "number,isDraft,headRefOid,statusCheckRollup,author,comments,labels,files,changedFiles,body"]);
+      "number,isDraft,headRefOid,statusCheckRollup,author,comments,labels,files,changedFiles,body,"
+      // #2084: `reviewDecision` IS WHAT GITHUB ITSELF MERGES ON, AND IT COST NOTHING TO ADD HERE.
+      // Measured 2026-09-23 at `468a74f1b`: `grep -rl reviewDecision --include='*.mjs'` over this tree
+      // returned ZERO. The field that decides whether any pull request here may merge was read by no line
+      // of this repository, so #2049 sat green, armed and unmergeable for over seven hours with every org
+      // read calling it healthy. It arrives on the `pr list` call this function already makes -- one more
+      // name in the `--json` list, no extra request and no extra pool -- which is the whole reason the
+      // blind spot is worth closing HERE rather than in `queue-table.mjs`, whose own header records
+      // dropping `mergeStateStatus` precisely because a GraphQL-only field meant a second, refusable call.
+      + "reviewDecision"]);
     const parsed = JSON.parse(out);
     return Array.isArray(parsed) ? parsed : null;
   } catch {
@@ -2023,15 +2032,131 @@ export function blockingChecks(rollup, required) {
  * @returns {number[]} PR numbers, ascending
  */
 export function shouldBeMerging(prs, required = null) {
+  return mergeCandidates(prs, required).map((pr) => Number(pr.number)).sort((a, b) => a - b);
+}
+
+/**
+ * PURE. The pull requests `shouldBeMerging` judges, as OBJECTS rather than numbers.
+ *
+ * EXTRACTED RATHER THAN COPIED (#2084), because two readers now ask the same question of the same
+ * population and the second one needs a field the first throws away. `shouldBeMerging` wants numbers to
+ * hand to `readUnarmed`; `reviewBlocked` below wants each PR's `reviewDecision`. A second copy of these
+ * three filters is how `pr-hold-state.mjs`'s own header records #645 going wrong -- the predicate written
+ * twice, one copy correct -- and here it would be worse than a wrong answer: the two causes would report
+ * OVERLAPPING but different populations, so a pull request could be called stranded by one and healthy by
+ * the other on the same tick.
+ *
+ * @param {any[]} prs @param {string[] | null} [required]
+ * @returns {any[]}
+ */
+function mergeCandidates(prs, required = null) {
   return (prs ?? [])
     .filter((pr) => pr && pr.isDraft !== true && Number.isFinite(Number(pr.number)))
     // A DRAFT IS EXCLUDED AT THE SOURCE, NOT BY THE HOLD RULE: `gh pr merge --auto` refuses a draft
     // outright, so an unarmed draft is correct rather than stranded.
     .filter((pr) => armabilityOf({ labels: labelsOf(pr) }).arm)
     .filter((pr) => checksSettledGreen(
-      blockingChecks(newestPerName(pr.statusCheckRollup ?? []), required)) === true)
-    .map((pr) => Number(pr.number))
-    .sort((a, b) => a - b);
+      blockingChecks(newestPerName(pr.statusCheckRollup ?? []), required)) === true);
+}
+
+/**
+ * #2084: WHAT GITHUB'S OWN REVIEW DECISION SAYS ABOUT ONE PULL REQUEST -- five states, none of them a guess.
+ *
+ * THE FIELD IS NOT A STATEMENT ABOUT THE HEAD, AND THAT IS THE FINDING RATHER THAN A CAVEAT. A review
+ * attaches to a COMMIT; `reviewDecision` is computed from the latest review REGARDLESS of which head it was
+ * posted on. With `dismiss_stale_reviews: false` a refusal outlives the fix and an approval outlives the
+ * diff it approved. So this reader deliberately reports GITHUB'S BLOCKING STATE and never claims the
+ * decision was made at the current head -- claiming that is the error #2084 exists to name.
+ *
+ * ABSENT IS ITS OWN STATE AND IT IS NOT "FINE" (`UNREADABLE`), BUT IT IS NOT THIS CAUSE'S SUBJECT EITHER.
+ * A payload that never carried the field says nothing about the pull request, so an order naming one would
+ * be reporting the gate's own read rather than a state anybody can act on. It IS still the reassuring
+ * direction -- a `readPrs` that stopped asking would empty this cause silently -- and the control for that
+ * is named and lives one layer up, where the regression would actually be: `work-gate.test.ts`'s
+ * "`reviewDecision` rides on readPrs's existing field list" asserts the `--json` argument itself. A guard
+ * on the ARGUMENT catches the regression on every run; a guard in this verdict would instead fire on every
+ * synthetic fixture in the suite, which is noise rather than a control.
+ *
+ * EMPTY IS DIFFERENT FROM ABSENT AND IS ALSO NOT A PASS (`NO_DECISION`). GitHub leaves `reviewDecision`
+ * EMPTY when the base branch requires no approval -- `branch-protection.test.ts` calls it the #1968 state,
+ * measured on a pull request carrying three reviews including an `APPROVED`. Nothing is blocked, and
+ * nothing has been reviewed either; folding it into `APPROVED` would report an unprotected base as a
+ * satisfied requirement.
+ *
+ * ANYTHING ELSE IS `UNRECOGNISED` AND STILL BLOCKS, which is `bindsMeVerdict`'s `!== "never"` shape one
+ * file over and for its reason: an allowlist of the blocking values would be written from today's
+ * vocabulary, and the one value nobody here has seen is exactly the one that would slip through. A state
+ * this code cannot name must never be the state that lets a pull request read as healthy.
+ *
+ * @param {any} pr
+ * @returns {{code: string, why: string}}
+ */
+export function reviewStateOf(pr) {
+  if (!Object.hasOwn(pr ?? {}, "reviewDecision")) {
+    return { code: REVIEW_STATE.UNREADABLE,
+      why: "the payload carries no `reviewDecision` field at all -- this read never asked GitHub, so it is "
+        + "not a statement about the pull request" };
+  }
+  const decision = pr.reviewDecision;
+  if (decision === null || decision === "") {
+    return { code: REVIEW_STATE.NO_DECISION,
+      why: "`reviewDecision` is empty: the base branch computes no decision, so no approval is required and "
+        + "none has been recorded -- the #1968 state, which is not an approval" };
+  }
+  if (decision === "APPROVED") return { code: REVIEW_STATE.APPROVED, why: "`reviewDecision` is APPROVED" };
+  if (decision === "REVIEW_REQUIRED") {
+    return { code: REVIEW_STATE.AWAITING_REVIEW,
+      why: "`reviewDecision` is REVIEW_REQUIRED: GitHub is holding it for an approval nobody has posted" };
+  }
+  if (decision === "CHANGES_REQUESTED") {
+    return { code: REVIEW_STATE.REFUSED,
+      why: "`reviewDecision` is CHANGES_REQUESTED: a reviewer refused it, and GitHub will hold it until a "
+        + "NEWER review says otherwise -- pushing past a refusal does not clear one" };
+  }
+  return { code: REVIEW_STATE.UNRECOGNISED,
+    why: `\`reviewDecision\` is ${JSON.stringify(decision)}, which this gate has never seen: an unrecognised `
+      + "state, and an unrecognised state must not read as a mergeable one" };
+}
+
+/** The five states `reviewStateOf` distinguishes. Two of them block, and two of the rest are not passes. */
+export const REVIEW_STATE = Object.freeze({
+  /** GitHub is waiting for an approval nobody has posted. */
+  AWAITING_REVIEW: "AWAITING_REVIEW",
+  /** A reviewer refused, and only a newer review clears it. */
+  REFUSED: "REFUSED",
+  /** The requirement is met. */
+  APPROVED: "APPROVED",
+  /** The base requires no decision, so there is none -- NOT an approval. */
+  NO_DECISION: "NO_DECISION",
+  /** The payload never carried the field. NOT a statement about the pull request. */
+  UNREADABLE: "UNREADABLE",
+  /** A value this gate cannot name. Blocks, deliberately. */
+  UNRECOGNISED: "UNRECOGNISED",
+});
+
+/** The states that stop a pull request merging, however green and armed it looks. @type {readonly string[]} */
+const BLOCKING_REVIEW_STATES = Object.freeze([
+  REVIEW_STATE.AWAITING_REVIEW, REVIEW_STATE.REFUSED, REVIEW_STATE.UNRECOGNISED]);
+
+/**
+ * PURE. #2084: the pull requests that LOOK like they should be merging and that GitHub's review
+ * requirement is holding -- plus any whose decision could not be read at all.
+ *
+ * `UNREADABLE` IS EXCLUDED, and `reviewStateOf`'s own note says where its control lives instead.
+ *
+ * THE POPULATION IS `mergeCandidates`', NOT EVERY OPEN PULL REQUEST, and each exclusion is another cause's
+ * subject rather than an oversight: a draft belongs to `draft-awaiting-verdict`, a red one to
+ * `pr-checks-failing`, and a held one is not merging BY DECISION. What is left is the state nothing in this
+ * repository could see before -- not a draft, not held, green on every required check, and blocked anyway.
+ *
+ * @param {any[]} prs @param {string[] | null} [required]
+ * @returns {{number: number, code: string, why: string}[]} ascending by PR number
+ */
+export function reviewBlocked(prs, required = null) {
+  return mergeCandidates(prs, required)
+    .map((pr) => ({ number: Number(pr.number), ...reviewStateOf(pr) }))
+    .filter((r) => BLOCKING_REVIEW_STATES.includes(r.code))
+    .sort((a, b) => a.number - b.number);
 }
 
 /**
@@ -2129,6 +2254,76 @@ export function greenUnarmedOrders(unarmed) {
       + "itself -- both are read by the same predicate this order used, so it leaves this set at once. A "
       + "PR you merely skip stays in the set and this order returns unchanged.",
     causeKey: `product-manager/pr-green-unarmed/${key}`,
+  }];
+}
+
+/**
+ * #2084: ONE ORDER NAMING EVERY GREEN, UNHELD PULL REQUEST THAT GITHUB'S REVIEW REQUIREMENT IS HOLDING.
+ *
+ * THE BLIND SPOT, AND IT IS THE LAST ONE IN THIS FAMILY. `pr-checks-failing` names a red PR,
+ * `pr-green-unarmed` names a green one nothing armed, and `queue-stalled.mjs` names an armed one that
+ * cannot merge -- and NONE of them can see a pull request that is green, unheld, armed, and refused by
+ * GitHub's own `reviewDecision`. Measured 2026-09-23: #2049 sat in exactly that state for over seven hours
+ * on a stale `CHANGES_REQUESTED` posted at a head the author had already fixed, and every org read
+ * returned green-and-armed. Measured again at `468a74f1b` while this was being built: #2198, opened ready
+ * at 17:39:37Z with ZERO reviews, `mergeStateStatus: BLOCKED`, `reviewDecision: REVIEW_REQUIRED`, armed --
+ * and `decide` returned no order of any kind for it.
+ *
+ * THAT SECOND READING IS THE MEASUREMENT THE ROW ASKED FOR, AND IT SETTLES A QUESTION IT LEFT OPEN.
+ * #2084 says of this done-when that "done-when 1 removes most of the need for it". It does not. #2198 has
+ * NO REVIEW TO DISMISS -- it is a docs-and-tests PR, which `agent-practices.md` says opens READY rather
+ * than as a draft, so the reviewer lane never sees it: `draftOrder` returns `null` on its first line for
+ * anything that is not a draft. Dismissing stale reviews cannot reach a pull request that has none. The
+ * two halves of this row are therefore NOT the same fact stated twice, and the evidence is one PR that
+ * neither half alone would have found.
+ *
+ * `product-manager`, AND ONE ORDER FOR THE SET -- `greenUnarmedOrders`' shape, for its reasons and one
+ * more. The routing rule makes `product-manager` first reader for "the queue and process", and
+ * `agent-practices.md` already gives it this exact act: "a draft with no verdict 30 minutes after the
+ * author's prompt is reported to `product-manager`, who re-prompts once and then tells `ceo`". So this
+ * cause needs no new reviewer-prompting machinery -- it hands an existing owner a state they could not
+ * previously see. #2084 warned against building the reviewer half without measuring the remainder, and
+ * routing to the reader whose brief already covers re-prompting is how that warning is honoured rather
+ * than argued with.
+ *
+ * KEYED ON THE SET WITH EACH DECISION IN IT, AND DELIBERATELY NOT ON THE HEAD. A head in the key would
+ * re-fire on every push, which during a rework is every few minutes; the STATE is what has to change
+ * before the question is a new one. This also makes the key the row's own diagnosis in one string: with
+ * `dismiss_stale_reviews: false` a push leaves `CHANGES_REQUESTED` standing, so the key does not move and
+ * `product-manager` is not re-woken about an unchanged refusal -- and once it is `true`, that same push
+ * dismisses the review, the decision becomes `REVIEW_REQUIRED`, the key moves, and the order fires with
+ * the state that now needs a reviewer.
+ *
+ * @param {{number: number, code: string, why: string}[]} blocked
+ * @returns {{session: string, cause: string, subject: string, discriminator: string,
+ *            prompt: string, causeKey: string}[]}
+ */
+export function reviewBlockedOrders(blocked) {
+  if (blocked.length === 0) return [];
+  const key = blocked.map((b) => `${b.number}:${b.code}`).join(".");
+  return [{
+    session: "product-manager",
+    cause: "pr-review-blocked",
+    subject: "pr-review-blocked",
+    discriminator: key,
+    prompt: `${blocked.length} pull request(s) are green on every required check and NOT held, and `
+      + "GitHub's own `reviewDecision` is holding them:\n"
+      + blocked.map((b) => `  #${b.number}  ${b.code} -- ${b.why}`).join("\n") + "\n"
+      + "NOTHING IN THIS REPOSITORY READ THIS FIELD BEFORE #2084, which is why a pull request in this "
+      + "state read as healthy everywhere: #2049 was green and armed and unmergeable for over seven "
+      + "hours, and no org read could say why.\n"
+      + "AWAITING_REVIEW is a PR that opened READY and so never entered the reviewer lane -- "
+      + "`draft-awaiting-verdict` only covers DRAFTS. Prompt its parity reviewer yourself: "
+      + "`npm run prompt:session -- reviewer \"#<n> ...\"` for an odd number, `reviewer-2` for an even "
+      + "one. A `QUEUED` exit 2 is delivery; do not retry it.\n"
+      + "REFUSED is a reviewer's `CHANGES_REQUESTED`, and it does NOT clear by being pushed past. Decide "
+      + "whether it stands: rework belongs to the session on the PR's `session:` label, and a newer "
+      + "review is the only thing that lifts it.\n"
+      + "A REFUSAL AT A HEAD THE AUTHOR HAS ALREADY FIXED IS THE #2084 SHAPE -- compare the review's "
+      + "commit against `headRefOid` before routing rework nobody owes.\n"
+      + "IF A PR HERE SHOULD NOT MERGE, a `hold:` label removes it from this set at once, read by the "
+      + "same predicate this order used. One you merely skip stays in the set.",
+    causeKey: `product-manager/pr-review-blocked/${key}`,
   }];
 }
 
@@ -3116,6 +3311,13 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // work that cannot land -- more urgent than a supply question, less urgent than a named red build,
   // and never withheld by a drain: a window stops the org TAKING ON work, not finishing what is in flight.
   orders.push(...greenUnarmedOrders(unarmed));
+
+  // #2084: BESIDE `pr-green-unarmed` AND FOR ITS REASON, ONE SURFACE OVER. Both name finished work that
+  // cannot land; that one is about the ARMING not having happened and this one about GitHub refusing to
+  // complete it. Same population (`mergeCandidates`), same audience, same placement -- more urgent than a
+  // supply question, less urgent than a named red build, and never withheld by a drain, because a drain
+  // stops the org TAKING ON work rather than finishing what is in flight.
+  orders.push(...reviewBlockedOrders(reviewBlocked(prs, required)));
 
   // #2174: AFTER the per-PR and per-row causes and BEFORE the chairman's, for `pr-green-unarmed`'s
   // reason applied to the machine rather than to a pull request. A stale host is finished work that has
