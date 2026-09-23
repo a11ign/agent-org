@@ -79,7 +79,7 @@ import { templateFieldsReason, lookupIssueBody } from "./row-claim/template-fiel
 import { staleRuleReason } from "./row-claim/stale-rule-guard.mjs";
 import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
 import { primaryWorktreeOf, unverifiedRecords } from "./prune-worktrees.mjs";
-import { CLAIM_LABEL, STARTED_LABEL } from "./claim-labels.mjs";
+import { CLAIM_LABEL, STARTED_LABEL, CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
 import { worktreeOwner, stampWorktree } from "./worktree-owner.mjs";
 import { launchGate } from "./board-snapshot-scope.mjs";
 import { assertNoLeakInArgv } from "../../lab/src/packaging/leak-patterns.mjs";
@@ -136,7 +136,11 @@ export const WORKTREE_LABEL_PREFIX = "worktree:";
 // product-manager amends -- one was amended on THIS row while it sat in the Ready column -- and a claim
 // rewriting a body it read a moment earlier would silently drop that edit. A comment is append-only, so
 // two writers cannot clobber each other, and `row-claim` already posts one (#741's exception note).
-export const CLAIM_RECORD_MARKER = "<!-- row-claim: claim record -->";
+// RE-EXPORTED FROM THE LEAF, not declared here -- #2110 gave `work-gate.mjs` a reason to read it, and
+// this file is unimportable from a tick (see `claim-labels.mjs`'s own header for the whole argument).
+// Every existing `import { CLAIM_RECORD_MARKER } from "./row-claim.mjs"` keeps working unchanged,
+// exactly as it did for the four labels above it.
+export { CLAIM_RECORD_MARKER };
 const CLAIM_RECORD_BRANCH = "Claimed-branch:";
 const CLAIM_RECORD_WORKTREE = "Claimed-worktree:";
 

@@ -250,6 +250,19 @@ export const PROFILES = Object.freeze({
     why: "resuming a parked claim is the same multi-step build as taking a fresh row, with the prior "
       + "state to re-establish on top of it",
   }),
+  "claimed-row-amended": Object.freeze({
+    kind: "claude",
+    // SONNET AND MEDIUM, AND THE EFFORT IS THE ONE DECISION HERE. The order already names the marker and
+    // quotes what the row now carries, so the woken turn is not diagnosing anything -- it reads one
+    // constraint and decides whether the work in hand still satisfies it. That is judgment over a
+    // handed-over fact, which `agent-practices.md` routes to sonnet, not the multi-step build
+    // `ready-row-unclaimed`/`blocker-cleared` ask for: those two arrive at an EMPTY worktree and have to
+    // build a row, while this one arrives mid-build with the context already loaded.
+    model: "sonnet",
+    effort: "medium",
+    why: "reading one declared constraint against work already in hand -- the gate hands over the marker "
+      + "and the row, so nothing here is diagnosed from an absence and nothing is built from scratch",
+  }),
   "ready-row-unclaimed": Object.freeze({
     kind: "claude",
     model: "sonnet",
