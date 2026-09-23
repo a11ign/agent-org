@@ -90,7 +90,8 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
   "verdict-not-convinced", "pr-checks-failing", "ready-queue-empty", "lane-backlog-unpromoted",
   "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
   "blocked-unexaminable", "fleet-batch-due", "blocker-cleared", "pr-green-unarmed",
-  "claimed-row-amended", "row-branch-unshipped", "host-units-stale", "pr-review-blocked"];
+  "claimed-row-amended", "row-branch-unshipped", "host-units-stale", "pr-review-blocked",
+  "unclaimed-blocker-cleared"];
 
 /**
  * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
@@ -112,6 +113,13 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
  * SO THESE ARE KEYED ON STATE AND NOT RE-ASKED UNTIL THE STATE MOVES. `wake` reads this and skips the
  * expiry for them; the causeKey already carries the state (a count, an age), so any real change is a new
  * question and reaches the owner immediately.
+ *
+ * `unclaimed-blocker-cleared` IS A JUDGMENT, AND IT IS THE SAME QUESTION `lane-backlog-unpromoted` ASKS
+ * (#2139) -- "should this row be promoted?" -- narrowed to one row and one clearing. Its answer is
+ * durable in the way that matters here: "it stays in backlog" does not stop being true twenty minutes
+ * later, and an ACTION expiry would re-ask it every twenty minutes for ever, which is precisely the
+ * treadmill measured on `lane-backlog-unpromoted` and #1564. The causeKey carries the cleared SET, so a
+ * row blocked again and cleared again is a new question and reaches `product-manager` immediately.
  *
  * THE RISK, STATED: a judgment wake that never lands is never retried. That is a real cost and a smaller
  * one than the alternative -- the STUCK counter still catches a cause that keeps being emitted, and any
@@ -139,7 +147,8 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
  */
 export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog-unpromoted",
   "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
-  "blocked-unexaminable", "fleet-batch-due", "row-branch-unshipped", "claimed-row-amended"]);
+  "blocked-unexaminable", "fleet-batch-due", "row-branch-unshipped", "claimed-row-amended",
+  "unclaimed-blocker-cleared"]);
 
 /**
  * The causes that START new work, as opposed to finishing work already begun.
@@ -166,6 +175,13 @@ export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog
  * strand exactly the rows a transfer window needs landed, which is the failure `START_CAUSES` was split
  * out to prevent for the two open drafts.
  *
+ * `unclaimed-blocker-cleared` IS here, and it is `blocker-cleared`'s own argument read the other way
+ * (#2139). The partition turns on whether a row is work in flight, and the ONLY difference between those
+ * two causes is the claim -- which is exactly the line the partition draws. Nobody holds this row, so
+ * promoting it is the org TAKING ON work, which is the thing a transfer window exists to stop. A drain
+ * that withheld `blocker-cleared` would strand a build half-done; one that withholds this withholds a
+ * promotion, and the row is waiting either way.
+ *
  * `claimed-row-amended` is out for the same reason and one sharper one (#2110). Its subject is also a row
  * the session already holds, so the sentence above applies unchanged -- but a drain is precisely the
  * window in which withholding it costs most. A drain exists to LAND what is in flight; a constraint that
@@ -182,7 +198,7 @@ export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog
  */
 export const START_CAUSES = Object.freeze(["ready-row-unclaimed", "ready-queue-empty",
   "lane-backlog-unpromoted", "org-stalled", "epic-unfiled", "epic-finished",
-  "blocked-unexaminable", "fleet-batch-due"]);
+  "blocked-unexaminable", "fleet-batch-due", "unclaimed-blocker-cleared"]);
 
 /** Where the drain marker lives. `touch` it to open a window; `rm` it to close one. */
 export const DRAIN_MARKER = `${process.env.HOME}/.cache/a11ign/drain`;
@@ -1406,6 +1422,112 @@ export function blockerClearedOrders(rows, today = todayIso()) {
     if (orders.length >= MAX_ROW_ORDERS_PER_TICK) break;
   }
   return orders;
+}
+
+/**
+ * THE SAME CLEARING, ONE POPULATION OVER: an UNCLAIMED row whose last declared blocker closed -- #2139.
+ *
+ * `blockerClearedOrders` above scopes itself with `labelsOf(row).includes(CLAIM_LABEL)`, and that single
+ * condition is the whole gap. A row NOBODY holds reaches no cause at all when its blockers clear:
+ * `blocker-cleared` wants a claim, `lane-backlog-unpromoted` addresses only a lane OWNER, and
+ * `ready-queue-empty` fires only when the unlaned Ready pool is EMPTY. So a `lane:any` backlog row that
+ * has just become startable is visible to the gate and addressed by nothing in it.
+ *
+ * MEASURED 2026-09-23 ON THE LIVE TRACKER, and the shape is the point rather than the six rows. A sweep
+ * for open rows whose every declared blocker is CLOSED returned SIX -- none claimed, none `ready`, all
+ * `lane:any`, every one structurally startable -- stranded 57m, 4h30m, 13h43m, 13h51m, 14h09m and
+ * **16h09m**, with three of five peer sessions idle the whole time. They were found because a queued
+ * report about an unrelated row sent a human looking.
+ *
+ * AND THE READY QUEUE WAS NOT EMPTY -- FOUR ROWS. That is precisely why the one cause that would
+ * eventually have looked stayed silent, and it is why this cause is NOT gated on an empty shelf the way
+ * `epic-unfiled` and `blocked-unexaminable` are. The failure being named is a queue with DEPTH and no
+ * THROUGHPUT: work the org already owns, already scoped, and merely unpromoted. A shelf-empty gate would
+ * have withheld every one of those six for sixteen hours and then reported them as a supply problem.
+ *
+ * TO `product-manager`, because promotion is that session's call: `agent-practices.md` makes it first
+ * reader for "filing and amendments ... holds, lane labels, promotions". This cause does not promote
+ * anything itself -- it asks the one session that may.
+ *
+ * ONE ORDER PER ROW, KEYED ON THE SET THAT CLEARED -- `blockerClearedOrders`' key discipline from #1799,
+ * unchanged. An unchanged clearing asks once; a row blocked again and cleared again is a new question.
+ *
+ * `READY_LABEL` IS EXCLUDED AND IT IS NOT A TIDINESS FILTER. A `ready` row is already offered by
+ * `ready-row-unclaimed`, so asking `product-manager` to promote it would be asking for a promotion that
+ * has already happened -- an order whose own subject line is false, which is worse than a duplicate.
+ *
+ * A ROW HIDDEN BY A `NOT_PICKABLE` LABEL IS NAMED, NOT DROPPED, and #1561 is why. Its `blockedBy` edge
+ * cleared itself at 2026-09-23T08:28:00Z exactly as designed and it still sat 4h30m, because a hand-set
+ * `blocked` LABEL outlived the referent it named: `blocked` is in `NOT_PICKABLE`, so a self-clearing edge
+ * was overridden by a non-self-clearing label. Excluding that row would reproduce the very invisibility
+ * that stranded it, and `blocked-unexaminable` -- the only other cause that could have reached it -- is
+ * itself shelf-gated and was silent for the same four hours. So the order reports the row AND names what
+ * still hides it, which is the one thing #2139 forbids doing silently: never reported as free.
+ *
+ * @param {any[]} rows every open row
+ * @param {string} [today]
+ * @returns {{session: string, cause: string, subject: string, discriminator: string,
+ *            prompt: string, causeKey: string}[]}
+ */
+export function unclaimedBlockerClearedOrders(rows, today = todayIso()) {
+  const orders = [];
+  for (const row of rows ?? []) {
+    const labels = labelsOf(row);
+    const cleared = declaredBlockers(row);
+    if (labels.includes(CLAIM_LABEL) || labels.includes(READY_LABEL) || cleared === null) continue;
+    // THE LINE THAT MAKES `cleared` MEAN CLEARED, and `blockerClearedOrders`' own sentence applies here
+    // unchanged: `waitingOn` reports an OPEN `blockedBy` node before anything else, so passing here is
+    // what proves every number above is closed -- and it covers the `Not-before:` and `answer:` cases in
+    // the same breath, which is why `declaredBlockers` does not re-ask.
+    if (waitingOn(row, today)) continue;
+    orders.push(promotionOrder(row, cleared));
+    if (orders.length >= MAX_ROW_ORDERS_PER_TICK) break;
+  }
+  return orders;
+}
+
+/**
+ * The order `unclaimedBlockerClearedOrders` emits for one row.
+ *
+ * SPLIT OUT so the loop above reads as the four conditions it actually applies. The prompt carries the
+ * ANSWER -- which row, what cleared, and what still hides it -- because a woken turn that has to survey
+ * the tracker is a tick with extra steps.
+ *
+ * @param {any} row @param {number[]} cleared
+ */
+function promotionOrder(row, cleared) {
+  // RE-DERIVED RATHER THAN PASSED IN: the caller's list is its own, and a helper that reads the row it
+  // is describing cannot be handed labels belonging to a different one.
+  const hiding = labelsOf(row).filter((n) => NOT_PICKABLE.includes(n));
+  const key = cleared.join(".");
+  return {
+    session: "product-manager",
+    cause: "unclaimed-blocker-cleared",
+    subject: `row-${row.number}`,
+    discriminator: key,
+    prompt: `#${row.number}${row.title ? ` (${row.title})` : ""} IS UNCLAIMED AND NO LONGER BLOCKED. `
+      + `Every row it declared a dependency on is now closed: ${cleared.map((n) => `#${n}`).join(", ")}.\n`
+      + "NOTHING ELSE IN THIS ORG WILL SAY SO. `blocker-cleared` addresses the session HOLDING a row and "
+      + "nobody holds this one; `lane-backlog-unpromoted` addresses a lane OWNER; `ready-queue-empty` "
+      + "fires only when the Ready shelf is EMPTY, and a shelf with four rows on it is why six rows sat "
+      + "runnable for up to 16h09m on 2026-09-23 with three engineers idle. Depth is not throughput.\n"
+      + "PROMOTE IT, OR RECORD WHY NOT AS DATA. A `ready` label is the promotion; anything else goes in a "
+      + `FIELD and not a comment -- \`gh issue edit ${row.number} --add-blocked-by <n>\`, a `
+      + `\`Not-before: YYYY-MM-DDTHH:MM:SSZ\` line in the body, or \`${ANSWER_PREFIX}<session>\` if it `
+      + "waits on a ruling. Each clears itself, each stops this being asked again, and nothing in this "
+      + "org reads comments.\n"
+      + (hiding.length > 0
+        ? `IT STILL CARRIES ${hiding.map((n) => `\`${n}\``).join(", ")}, AND THAT IS WHAT NOW HIDES IT `
+          + "-- the edge cleared itself and the label did not. #1561's `blockedBy` cleared at "
+          + "2026-09-23T08:28:00Z exactly as designed and the row sat another 4h30m behind a hand-set "
+          + "`blocked`. Take the label off if its condition has become true; if the wait is real, it is "
+          + "one of the three fields above, which is the whole difference between a condition that "
+          + "clears itself and one only a person re-reading the row can lift.\n"
+        : "")
+      + "THIS IS NOT A SURVEY OF THE BACKLOG. One row, one clearing, already named -- if the answer is "
+      + "\"it stays in backlog\", say so in a field and this stops asking.",
+    causeKey: `product-manager/unclaimed-blocker-cleared/row-${row.number}/${key}`,
+  };
 }
 
 /**
@@ -3313,6 +3435,13 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   orders.push(...rowBranchOrders(readyRows, rowBranches));
   orders.push(...rowOrders(offerable));
 
+  // #2139: AHEAD OF BOTH BACKLOG SURVEYS AND BEHIND EVERY OFFER, because it is neither. It names ONE row
+  // and the exact set that cleared, which outranks `ready-queue-empty` and `lane-backlog-unpromoted`
+  // asking somebody to go and LOOK at a backlog -- and it is deliberately not gated on the shelf being
+  // empty, which is what kept both of those silent while six rows sat runnable for up to 16h09m behind a
+  // four-row Ready queue. It sits behind `rowOrders` for the ordering the causes above use: a row already
+  // on the shelf can be claimed this minute, while this one still needs promoting first.
+  orders.push(...unclaimedBlockerClearedOrders(openRows));
 
   // The backlog is counted the same way, or the order would report rows the pool equally cannot take.
   // `ownerOf`, not `laneOwnerOf`: routed rows reach `decide` now, and the POOL's count must be exactly
