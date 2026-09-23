@@ -87,8 +87,47 @@ export function answerOwedBy(row) {
   return null;
 }
 
+/** The length of `YYYY-MM-DD` -- what tells a date-only `Not-before:` value from a timestamped one. */
+const DATE_ONLY_LENGTH = 10;
+
 /**
- * The `Not-before:` line, or `null`.
+ * The instant a `Not-before:` value names, as an ISO timestamp.
+ *
+ * A DATE-ONLY VALUE IS MIDNIGHT UTC OF THAT DATE, and that reading is what makes #2113 a WIDENING rather
+ * than a behaviour change: `waitingOn` used to shelve a row while `date > today` compared two ten-character
+ * strings, and midnight-to-midnight gives the identical answer on every calendar-valid date-only value.
+ * `waiting-condition.test.ts` pins that equivalence against the lexical rule it replaces rather than
+ * against a handful of remembered cases.
+ *
+ * @param {string} declared a value `notBeforeDate` returned
+ */
+const notBeforeIso = (declared) =>
+  declared.length === DATE_ONLY_LENGTH ? `${declared}T00:00:00Z` : declared;
+
+/**
+ * Whether a digit-shaped UTC timestamp is a date the calendar actually has.
+ *
+ * `Date.parse` SILENTLY ROLLS OVER a date that does not exist rather than refusing it --
+ * `2026-02-31T04:00:00Z` parses to 2026-03-03, three days later than typed (#1841's reviewer finding on
+ * `Fleet-hold-until:`). So the matched text is round-tripped through `Date` and compared back against
+ * itself; a date `Date` had to repair is refused rather than silently accepted with a different meaning
+ * than its author typed.
+ *
+ * SHARED BY BOTH FIELDS RATHER THAN COPIED ONTO THE SECOND ONE (#2113). `Not-before:` did not need this
+ * while it compared strings -- a lexical comparison cannot roll a date over, because it never parses one.
+ * The moment that comparison became a parsed one the trap arrived with it, so the rule is borrowed from
+ * `fleetHoldUntil` here rather than re-derived beside it.
+ *
+ * @param {string} iso
+ */
+function roundTripsUtc(iso) {
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return false;
+  return parsed.toISOString().slice(0, 19) === iso.slice(0, 19);
+}
+
+/**
+ * The `Not-before:` value, or `null` -- a `YYYY-MM-DD` date, or a `YYYY-MM-DDTHH:MM:SSZ` instant.
  *
  * A BODY FIELD RATHER THAN A LABEL, deliberately. GitHub has no native "wait until a date", so this one
  * needs a convention -- and a `not-before:<date>` LABEL would mint a new label per date into a
@@ -99,20 +138,56 @@ export function answerOwedBy(row) {
  * `Closes:` are parsed out of PR bodies by `acceptance-commands.mjs` and BLOCK THE MERGE. This is that
  * pattern applied to the other object type.
  *
- * ISO DATES ONLY, because they compare lexically and every other format invites a parser that guesses.
- * A malformed date is NOT a wait -- it fails OPEN, so a typo leaves the row visible and someone finds
- * it, rather than hiding it silently until a human happens to read the body.
+ * THE OPTIONAL TIME IS #2113, AND IT IS WHY THE COMPARISON MOVED (see `waitingOn`). A date-only field
+ * cannot express a wait shorter than a day, so a row whose last done-when turns true at a named HOUR
+ * reads as startable from midnight: #2002 declared `Not-before: 2026-09-23` for a run the host timer
+ * fires at 06:10Z, and from 00:20Z the org reported it as waiting on NOTHING for the ~5h50m in between.
+ *
+ * SECONDS REQUIRED WHEN A TIME IS GIVEN, matching `Fleet-hold-until:` -- and the widening is the reason
+ * the whole comparison had to move to parsed time rather than gaining a regex. A `Not-before:` date is
+ * always ten characters, so a lexical comparison was a chronological one for free; a timestamp is not,
+ * and `waitingOn` compared `date > today` against a ten-character `today`. **A string is greater than its
+ * own prefix**, so under a regex-only widening `Not-before: 2026-09-23T06:10:00Z` would have shelved the
+ * row for ALL of 2026-09-23 and cleared at 2026-09-24T00:00Z: a 6-hour wait turned into an 18-hour-late
+ * one, silently. Today's defect reads the row startable ~6h early; that one reads it shelved ~18h late.
+ *
+ * A MALFORMED VALUE IS NOT A WAIT -- it fails OPEN, so a typo leaves the row visible and someone finds
+ * it, rather than hiding it silently until a human happens to read the body. A time without seconds, a
+ * time without its `Z`, and an offset other than UTC are all malformed by that rule and all fail open.
  *
  * AN OPTIONAL `#{0,6}` HEADING PREFIX, because `Region`, `Done-when` and `Acceptance` are all written as
  * `## <Field>` in this repo's own row convention and `Not-before:` was written the same way on #1663 --
  * a bare-line-only regex silently read that row as having nothing stopping it (#1822).
  *
+ * THE NAME STAYS `notBeforeDate` THOUGH THE VALUE MAY CARRY AN HOUR: it is the parser of the
+ * `Not-before:` field, which is the thing every caller and every row body names.
+ *
  * @param {string | null | undefined} body
  * @returns {string | null}
  */
 export function notBeforeDate(body) {
-  const m = /^[ \t]*#{0,6}[ \t]*Not-before:[ \t]*(\d{4}-\d{2}-\d{2})[ \t]*$/im.exec(String(body ?? ""));
-  return m ? m[1] : null;
+  const m = /^[ \t]*#{0,6}[ \t]*Not-before:[ \t]*(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}Z)?)[ \t]*$/im
+    .exec(String(body ?? ""));
+  if (!m) return null;
+  return roundTripsUtc(notBeforeIso(m[1])) ? m[1] : null;
+}
+
+/**
+ * Whether a declared `Not-before:` value is still in the future -- PARSED TIME, never a string compare.
+ *
+ * TWO INSTANTS RATHER THAN ONE, and the field's own granularity chooses between them. A date-only value
+ * declares a CALENDAR DAY, so it is measured against the caller's `today` at midnight UTC -- which is
+ * exactly the old lexical rule, and is what keeps every existing row's answer identical. A timestamped
+ * value declares an INSTANT, so it is measured against the caller's clock; nothing else can tell 00:20Z
+ * from 07:14Z on the same date, which is the whole of #2113.
+ *
+ * @param {string} declared @param {string} today an ISO `YYYY-MM-DD` @param {number} nowMs
+ */
+function notBeforeIsFuture(declared, today, nowMs) {
+  const measuredAgainst = declared.length === DATE_ONLY_LENGTH
+    ? Date.parse(`${today}T00:00:00Z`)
+    : nowMs;
+  return Date.parse(notBeforeIso(declared)) > measuredAgainst;
 }
 
 /**
@@ -124,7 +199,10 @@ export function notBeforeDate(body) {
  *                takes `--blocked-by`, `gh issue list --json blockedBy` already returns it, the GitHub UI
  *                already renders it, and the gate already makes that call. Zero new vocabulary, and the
  *                edge is enforced by GitHub rather than by a parser of ours.
- *   a date    -> the `Not-before:` field above, because GitHub has no equivalent.
+ *   a date    -> the `Not-before:` field above, because GitHub has no equivalent. SINCE #2113 that field
+ *                may also name an HOUR, and this is why the comparison is PARSED TIME rather than the
+ *                string compare it was: `date > today` against a ten-character `today` reads a timestamp
+ *                as greater than its own date-prefix, which would shelve a 6-hour wait for a whole day.
  *   a session -> the `answer:<session>` LABEL, because the referent is neither a row nor a date and
  *                GitHub's assignee field cannot name one of eight sessions sharing four accounts.
  *
@@ -138,15 +216,18 @@ export function notBeforeDate(body) {
  *
  * @param {{blockedBy?: {nodes?: {number?: number, state?: string}[]}, body?: string,
  *   labels?: ({name?: string} | string)[]}} row
- * @param {string} today an ISO `YYYY-MM-DD`
+ * @param {string} [today] an ISO `YYYY-MM-DD`
+ * @param {number} [nowMs] the caller's clock, injected the way `fleetWaitingOn` already injects one --
+ *   a test moves time without a global stub. ONLY A TIMESTAMPED `Not-before:` READS IT; a date-only
+ *   value is measured against `today`, so every caller that never had a clock is unchanged.
  * @returns {{kind: "row", numbers: number[]} | {kind: "date", date: string}
  *   | {kind: "answer", session: string} | null}
  */
-export function waitingOn(row, today) {
+export function waitingOn(row, today = todayIso(), nowMs = Date.now()) {
   const open = (row?.blockedBy?.nodes ?? []).filter((n) => String(n?.state ?? "OPEN").toUpperCase() === "OPEN");
   if (open.length > 0) return { kind: "row", numbers: open.map((n) => Number(n.number)) };
   const date = notBeforeDate(row?.body);
-  if (date !== null && date > today) return { kind: "date", date };
+  if (date !== null && notBeforeIsFuture(date, today, nowMs)) return { kind: "date", date };
   const session = answerOwedBy(row ?? {});
   if (session !== null) return { kind: "answer", session };
   return null;
@@ -164,21 +245,28 @@ export function waitingOn(row, today) {
  * true of conditions declared here. `fleet-playbook.mjs` now imports and re-exports this name, so every
  * existing caller and test is untouched.
  *
- * SECONDS REQUIRED, not optional. A `Not-before:` date is always ten characters, so lexical comparison is
- * chronological comparison for free -- a timestamp is not: `T10:30Z` sorts AFTER `T10:30:15Z` lexically
- * (`Z` > `:`), which would read a later-declared, earlier-expiring hold as still live. Callers compare
- * PARSED time, which removes the trap either way; requiring seconds here means a malformed field is
- * refused as a whole rather than half-parsed.
+ * IT SAYS TWO THINGS, AND ONLY ONE OF THEM WAS EVER WRITTEN DOWN (#2113, `orchestrator`'s reading).
+ * Documented, it REFUSES `fleet:deploy`/`fleet:provision` -- a gate on two commands. Used, on five live
+ * rows as of 2026-09-23 (#2114, #2160, #37, #1918, #2152), it means "MY CAPTURE SEQUENCE OWNS THE WORKERS
+ * UNTIL T", which is a claim on the hardware that no command reads: `evidence:check` skips a busy worker
+ * rather than queueing behind it, and nothing consults this field before dispatching into an occupied
+ * fleet. Both meanings are real and a reader needs both; a session that knows only the first will read a
+ * held row as dispatchable. **AND NO FIFTH FIELD IS MINTED FOR THE SECOND ONE** -- this one already
+ * carries a full timestamp because a capture round's window is minutes to hours wide, so a
+ * `Worker-hold-until:` beside it would state one fact twice.
+ *
+ * SECONDS REQUIRED, not optional -- and `Not-before:` now carries the same rule for the same reason
+ * (#2113). A timestamp does not compare lexically: `T10:30Z` sorts AFTER `T10:30:15Z` (`Z` > `:`), which
+ * would read a later-declared, earlier-expiring hold as still live. Callers compare PARSED time, which
+ * removes the trap either way; requiring seconds means a malformed field is refused as a whole rather
+ * than half-parsed.
  *
  * A MALFORMED TIMESTAMP IS NOT A HOLD -- it fails OPEN, matching `notBeforeDate`'s rule for a malformed
  * date: a typo must leave the row visible to a human, never hide a live sequence silently.
  *
- * DIGIT-SHAPED IS NOT CALENDAR-VALID, and `Date.parse` silently ROLLS OVER a date that does not exist
- * rather than refusing it -- `2026-02-31T04:00:00Z` parses to 2026-03-03, three days later than typed.
- * That is the wrong direction of error for a HOLD: a typo would silently EXTEND a live sequence's window
- * rather than failing open the way this function's own rule requires. So the matched text is round-
- * tripped through `Date` and compared back against itself; a date `Date` had to repair is refused, not
- * silently accepted with a different meaning than its author typed (reviewer, #1841).
+ * DIGIT-SHAPED IS NOT CALENDAR-VALID -- `roundTripsUtc`, which both fields now share, records why
+ * (reviewer, #1841). The direction of that error is what makes it a refusal here: a typo would silently
+ * EXTEND a live sequence's window rather than failing open the way this function's own rule requires.
  *
  * @param {string | null | undefined} body
  * @returns {string | null}
@@ -187,10 +275,7 @@ export function fleetHoldUntil(body) {
   const m = /^[ \t]*#{0,6}[ \t]*Fleet-hold-until:[ \t]*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)[ \t]*$/im
     .exec(String(body ?? ""));
   if (!m) return null;
-  const candidate = m[1];
-  const parsed = new Date(candidate);
-  if (Number.isNaN(parsed.getTime())) return null;
-  return parsed.toISOString().slice(0, 19) === candidate.slice(0, 19) ? candidate : null;
+  return roundTripsUtc(m[1]) ? m[1] : null;
 }
 
 /**
@@ -214,7 +299,10 @@ export function fleetHoldUntil(body) {
  *   | {kind: "answer", session: string} | {kind: "fleet-hold", until: string} | null}
  */
 export function fleetWaitingOn(row, today = todayIso(), nowMs = Date.now()) {
-  const general = waitingOn(row, today);
+  // THE CLOCK GOES DOWN WITH THE DATE (#2113). `waitingOn` now reads a sub-day `Not-before:` against a
+  // clock; passing only `today` would leave a fleet-gated row's two waiting conditions measured against
+  // two different clocks, so a test that moved time would move one of them.
+  const general = waitingOn(row, today, nowMs);
   if (general) return general;
   const until = fleetHoldUntil(row?.body);
   if (until !== null && Date.parse(until) > nowMs) return { kind: "fleet-hold", until };
