@@ -25,6 +25,7 @@ import { dirname, join } from "node:path";
 import {
   parseWorktreeList, isPrimaryWorktree, classify, detachedMergeStatus, mergeStatus, isContentMerged,
   isWorkingTreeClean, pruneWorktrees, recentGitActivity, ACTIVITY_WINDOW_MS,
+  cleanliness, ignoredByAuthority,
   strandedWork, formatStranded, trackedChanges, unverifiedRecords, formatReport,
   heldByOwner, deliveredOwnCommit, mainLineCommits,
 } from "../prune-worktrees.mjs";
@@ -942,5 +943,165 @@ test("#2020: the report prints the refusal and its owner under its own heading, 
     assert.ok(text.includes(`  ${delivered}  (agent/delivered-1948)`), "and the delivered tree is named under `removed`");
     assert.doesNotMatch(text.split("refused 1 HELD")[0], new RegExp(held.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
       "the held tree must not appear in the removed list above the heading");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// --- #2012: A WORKTREE READS THE `.gitignore` AT ITS OWN CHECKED-OUT COMMIT. ---------------------
+// The first scheduled firing of `a11ign-worktree-prune.service` (2026-09-22) examined 128 worktrees and
+// refused 84 of them for a `git status --porcelain` reading exactly `?? node_modules` -- because
+// #1983/#1994 widened the rule from `node_modules/` (a directory) to `node_modules` (also a symlink)
+// AFTER those trees were cut, and the fix cannot reach a pinned commit. The refusal was correct for that
+// tree and wrong for the question; the authority moves to the primary checkout.
+//
+// EVERY TEST BELOW PINS BOTH DIRECTIONS, because the fix has an obvious wrong shape --
+// `--untracked-files=no` -- that would pass the first half alone while hiding #220's unrecoverable case:
+// a brand-new file nobody added.
+
+function buildPinnedIgnoreFixture() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "a11y-prune-pinned-ignore-")));
+  git(root, "init", "--quiet", "-b", "main");
+  git(root, "config", "user.email", "t@example.invalid");
+  git(root, "config", "user.name", "Fixture");
+  writeFileSync(join(root, "base.txt"), "base\n");
+  // THE OLD RULE: a directory only. Every worktree below is cut at this commit and reads this line.
+  writeFileSync(join(root, ".gitignore"), "node_modules/\n");
+  git(root, "add", "base.txt", ".gitignore");
+  git(root, "commit", "-q", "-m", "base, with the anchored ignore rule");
+  const baseSha = git(root, "rev-parse", "HEAD").trim();
+  git(root, "update-ref", "refs/remotes/origin/main", baseSha);
+
+  const pinned = join(root, "wt-pinned");        // only untracked entry: a `node_modules` SYMLINK
+  const genuine = join(root, "wt-genuine");      // only untracked entry: a file nothing ignores
+  const alsoModified = join(root, "wt-modified"); // the symlink AND a modified tracked file
+  for (const [path, branch] of [[pinned, "agent/pinned"], [genuine, "agent/genuine"],
+    [alsoModified, "agent/modified"]] as const) {
+    git(root, "worktree", "add", "--quiet", "-b", branch, path, baseSha);
+  }
+
+  // The symlink target carries content, so "git clean removed the LINK and not what it points at" is a
+  // measurement rather than a hope: on the real host these point into the PRIMARY's `node_modules`.
+  const linkTarget = join(root, "shared-node-modules");
+  mkdirSync(join(linkTarget, "some-package"), { recursive: true });
+  writeFileSync(join(linkTarget, "some-package", "index.js"), "module.exports = 1;\n");
+  for (const path of [pinned, alsoModified]) {
+    execFileSync("ln", ["-s", linkTarget, join(path, "node_modules")], { encoding: "utf8" });
+  }
+  writeFileSync(join(genuine, "notes.txt"), "work nobody has added yet\n");
+  writeFileSync(join(alsoModified, "base.txt"), "edited, and tracked\n");
+
+  // ONLY NOW does `main` get the widened rule -- exactly the order that produced the 84.
+  writeFileSync(join(root, ".gitignore"), "node_modules\n");
+  git(root, "commit", "-q", "-am", "#1983/#1994: unanchored, so a symlink matches too");
+  git(root, "update-ref", "refs/remotes/origin/main", git(root, "rev-parse", "HEAD").trim());
+  return { root, pinned, genuine, alsoModified, linkTarget };
+}
+
+test("#2012 REPRODUCE: the pinned tree's OWN `.gitignore` lacks the rule, and that is why it read dirty", () => {
+  const { root, pinned } = buildPinnedIgnoreFixture();
+  try {
+    assert.equal(git(pinned, "show", "HEAD:.gitignore"), "node_modules/\n",
+      "the row's own check: `git show HEAD:.gitignore | grep -qx node_modules` FAILS in all 84");
+    assert.equal(git(root, "show", "HEAD:.gitignore"), "node_modules\n", "while today's main has it");
+    assert.equal(git(pinned, "status", "--porcelain"), "?? node_modules\n",
+      "the exact string the first scheduled firing read in 84 worktrees");
+    assert.equal(isWorkingTreeClean(pinned), false,
+      "and with no ignore authority the answer is unchanged -- so nothing below can pass by the status "
+      + "read having quietly changed");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2012: the PRIMARY's rules decide -- an ignorable-only tree is clean, and names what must be cleared", () => {
+  const { root, pinned } = buildPinnedIgnoreFixture();
+  try {
+    const read = cleanliness(pinned, { ignoreAuthority: root });
+    assert.equal(read.clean, true, "today's main ignores `node_modules`, so it is not work");
+    assert.deepEqual(read.ignorable, ["node_modules"],
+      "and the path is carried out, because `git worktree remove` runs its own `git status` and would "
+      + "otherwise refuse the very tree this run just decided to take");
+    assert.equal(classify({ merge: "merged", workingTreeClean: read.clean, contentMerged: false, recentlyActive: false }),
+      "remove", "REMOVE rather than DIRTY -- the row's Done-when, at the verdict itself");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2012 THE OTHER DIRECTION: an untracked file nothing ignores is still work, and a tracked edit still refuses", () => {
+  // Without this half the fix is `--untracked-files=no` wearing a better name (the row's own words), and
+  // #220's unrecoverable case -- a brand-new file nobody added -- would be deleted on an hourly timer.
+  const { root, genuine, alsoModified } = buildPinnedIgnoreFixture();
+  try {
+    const untracked = cleanliness(genuine, { ignoreAuthority: root });
+    assert.equal(untracked.clean, false, "`?? notes.txt` matches no rule in today's main: still DIRTY");
+    assert.deepEqual(untracked.ignorable, [], "and nothing is offered up for deletion");
+    assert.equal(ignoredByAuthority(root, "notes.txt"), false,
+      "check-ignore's exit 1 is a real answer -- `no rule matched` -- not a failure to ask");
+
+    const mixed = cleanliness(alsoModified, { ignoreAuthority: root });
+    assert.equal(mixed.clean, false,
+      "a MODIFIED TRACKED FILE refuses whatever else is in the tree -- the walk ends before the authority "
+      + "is asked at all, so an ignorable path beside it can never launder it");
+    assert.deepEqual(mixed.ignorable, []);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2012: an ignore question that could NOT be asked is `unknown`, never `clean` and never `dirty`", () => {
+  // `mergeStatus`'s tristate, one predicate further in. Reading "anything non-zero" as `not ignored` is
+  // safe HERE -- it refuses -- and is still the collapse this file exists to stop: `inconclusive` says
+  // nobody could tell, and `dirty` claims a measurement that was never made.
+  const { root, pinned } = buildPinnedIgnoreFixture();
+  try {
+    assert.equal(ignoredByAuthority(join(root, "no-such-checkout"), "node_modules"), "unknown",
+      "an authority that is not a repository cannot answer; 128 is not 1");
+    assert.equal(ignoredByAuthority(root, "../../../etc/passwd"), "unknown",
+      "and neither is a path outside it");
+    const unaskable = cleanliness(pinned, {
+      ignoreAuthority: root,
+      run: (cmd: string, args: string[], opts?: { cwd?: string }) => {
+        if (args[0] === "check-ignore") { const e = new Error("cannot ask"); (e as { status?: number }).status = 128; throw e; }
+        return execFileSync(cmd, args, { ...opts, env: sandboxGitEnv(), encoding: "utf8" });
+      },
+    });
+    assert.equal(unaskable.clean, "unknown");
+    assert.deepEqual(unaskable.ignorable, [], "and an unanswered question hands nothing to the deleter");
+    assert.equal(classify({ merge: "merged", workingTreeClean: unaskable.clean, contentMerged: false, recentlyActive: false }),
+      "inconclusive");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2012 END TO END: the prune removes the pinned tree, refuses the other two, and never follows the symlink", () => {
+  const { root, pinned, genuine, alsoModified, linkTarget } = buildPinnedIgnoreFixture();
+  try {
+    const report = pruneWorktrees(root, { now: LONG_AFTER() });
+    assert.deepEqual(report.removed.map((r) => r.path), [pinned],
+      "REMOVED, not merely reclassified -- `git worktree remove` refuses `?? node_modules` on its own "
+      + "reading, so a verdict the removal cannot act on would be no fix at all");
+    assert.equal(existsSync(pinned), false, "and the directory is gone");
+    assert.deepEqual(report.dirty.map((r) => r.path).sort(), [genuine, alsoModified].sort(),
+      "the two that carry real work are still refused, by the same run");
+    assert.equal(existsSync(genuine), true);
+    assert.equal(existsSync(alsoModified), true);
+
+    // THE CATASTROPHIC ARM. On the host these symlinks point INTO the primary's `node_modules`; a
+    // recursive delete that followed the link would empty it on the hourly timer.
+    assert.equal(existsSync(join(linkTarget, "some-package", "index.js")), true,
+      "`git clean` removes the LINK and not what it points at");
+
+    assert.match(formatReport(report), /\[cleared, ignored by the primary checkout: node_modules\]/,
+      "and the prune says what it deleted that git was not tracking -- these paths go by this tool's own "
+      + "hand rather than with the worktree, and a delete nobody can see in the log is this file's subject");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2012: a tree git already reads as clean clears NOTHING -- the ordinary path is untouched", () => {
+  // The positive control for `ignorable` being empty everywhere else: `assert.deepEqual(ignorable, [])`
+  // above passes on a population of one, and this is the population that must stay at zero.
+  const { root, merged, standing } = buildFixtureRepo();
+  try {
+    assert.deepEqual(cleanliness(merged, { ignoreAuthority: root }), { clean: true, ignorable: [] },
+      "nothing untracked at all, so the authority is never consulted");
+    const report = pruneWorktrees(root, { now: LONG_AFTER() });
+    assert.deepEqual(report.removed.map((r) => r.cleared), [[], []],
+      "both removals clear nothing");
+    assert.deepEqual(report.removed.map((r) => r.path).sort(), [merged, standing].sort());
+    assert.doesNotMatch(formatReport(report), /cleared, ignored by the primary checkout/,
+      "and the report says nothing about clearing, because nothing was cleared");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
