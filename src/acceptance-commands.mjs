@@ -442,6 +442,94 @@ export function handRunDeclaration(body) {
 // trailing marker keeps both readings: the wrapper is dropped, an interior `**` is not.
 
 /**
+ * #2118: THE OUTPUT A DECLARED HAND-RUN ASSERTS SOMEBODY PRODUCED -- the text under this body's own
+ * `Hand-run output` section, or `null` when there is none.
+ *
+ * WHICH OF #2118's TWO SHAPES THIS IS, AND WHY THE OTHER WAS REFUSED. The row offered a NAMED SECTION
+ * whose body is non-empty, or the command's own output QUOTED VERBATIM AND MATCHED against the declared
+ * command string. This is the first. The second is refused on its own terms rather than on cost: the only
+ * half of it a machine here can check is the COMMAND STRING, because nothing in this job holds the
+ * credential, so nothing here can re-run the command and compare its output to anything. Matching on that
+ * string is a proxy that fails in BOTH directions -- it REFUSES a correct body whose paste wraps a
+ * continuation-joined command across lines, or redacts a token out of it, and it PASSES a body that
+ * pasted the command and no output at all. It would buy a false refusal and no additional truth: the
+ * stronger-sounding name on the same check, which is the one thing #2118 said not to ship.
+ *
+ * SO THIS PROVES EXACTLY ONE THING: that a human wrote something under that heading. It cannot tell
+ * whether the text is the declared command's output, and every message it produces says so in its own
+ * words. Do not reword them into something that sounds like verification.
+ *
+ * EVERY HEADING, NEVER THE FIRST -- the explicit decision this file's own header comment demands of any
+ * new section reader, and it lands on #527's side rather than #540's. A second `Acceptance:` is a
+ * DUPLICATE because "which one do I run" is a real question with different answers; evidence has no such
+ * question. Two pasted runs are two pasted runs, so reading every one of them guesses at nothing.
+ *
+ * @param {string | null | undefined} body
+ * @returns {string | null}
+ */
+export function handRunEvidence(body) {
+  const lines = String(body ?? "").split(/\r\n|\r|\n/);
+  const collected = [];
+  let inside = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const header = handRunOutputHeader(trimmed);
+    if (header.matched) {
+      inside = true;
+      if (header.inline !== "") collected.push(header.inline);
+      continue;
+    }
+    // #438's stop rule, unchanged: a section ends where the next one begins, whether that is a markdown
+    // heading or another field's bare header.
+    if (inside && (/^#{1,6}\s/.test(trimmed) || isSectionHeaderLine(trimmed))) inside = false;
+    if (inside) collected.push(line);
+  }
+  const text = collected.join("\n");
+  return pastedSomething(text) ? text.trim() : null;
+}
+
+// #2118: TWO SPELLINGS, for the reason #1036 recorded one level up -- an unrecognised spelling does not
+// read as "no evidence was pasted", it reads as a refusal about something the author did not do, and they
+// go looking for a fault that is not there. `## Hand-run output` is the shape the refusal names and the
+// one every neighbouring section in a PR body uses; `**Hand-run output:**` is the bold/plain form this
+// parser already accepts for every other field (`sectionHeaderPatterns`), and bodies here reach for it
+// constantly.
+const HAND_RUN_OUTPUT_HEADING = /^#{1,6}\s+Hand-run\s+output\b/i;
+const HAND_RUN_OUTPUT_PLAIN = /^(?:\*\*|__)?Hand-run\s+output:(?:\*\*|__)?/i;
+
+/**
+ * #2118: is this line the evidence section's header, and does it carry evidence on its own line?
+ *
+ * A HEADING'S TRAILING TEXT IS A TITLE, NEVER CONTENT -- #506's rule, which this file paid for once
+ * already on `## Acceptance — old read vs new`. `## Hand-run output (2026-09-23)` names the section; it
+ * is not somebody's pasted run, and counting it would make the heading its own evidence. The plain form
+ * has no such ambiguity: its colon is required to match at all, so anything after it was meant as content.
+ * @param {string} trimmed
+ * @returns {{ matched: boolean, inline: string }}
+ */
+function handRunOutputHeader(trimmed) {
+  if (HAND_RUN_OUTPUT_HEADING.test(trimmed)) return { matched: true, inline: "" };
+  const plain = HAND_RUN_OUTPUT_PLAIN.exec(trimmed);
+  if (!plain) return { matched: false, inline: "" };
+  return { matched: true, inline: trimmed.slice(plain[0].length).replace(/(?:\*\*|__)\s*$/, "").trim() };
+}
+
+/**
+ * #2118: is there anything under the heading that a human actually typed there?
+ *
+ * FENCES AND HTML COMMENTS ARE NOT CONTENT. A heading followed by an empty ``` fence has pasted nothing,
+ * and GitHub's own template convention hides its guidance in `<!-- ... -->` -- which every author leaves
+ * in place. Counting either would make the heading the evidence for itself, which is the emptiest form of
+ * the very shape this check exists to refuse.
+ * @param {string} text
+ * @returns {boolean}
+ */
+function pastedSomething(text) {
+  return text.replace(/<!--[\s\S]*?-->/g, "").split(/\r\n|\r|\n/)
+    .some((line) => line.trim() !== "" && !line.trim().startsWith("```"));
+}
+
+/**
  * #2099: does this command need a GitHub credential to be anything but an error? PURE -- a function of
  * the command string alone, no closure walk and no file existence question (those are `deriveClosureRequirements`'s
  * and #2035's).
@@ -1489,8 +1577,10 @@ export function handRunAcceptanceReason(body, tool) {
     + "missing credential; `pr-open` refuses the same string later, when it costs a rewrite by somebody "
     + "with less context than you have now. If a human is meant to run it -- which is a perfectly good "
     + "row -- say so in the body: a `Hand-run: <who runs it and why>` line, the `Acceptance:`/`Closes:`/"
-    + "`Not-before:` family, makes the job report `NOT RUN` naming your reason instead. Otherwise name a "
-    + "command this job can run.";
+    + "`Not-before:` family, makes the job report `NOT RUN` naming your reason instead. The PR that "
+    + "closes the row must then paste that run under a `## Hand-run output` heading (#2118) -- a declared "
+    + "hand-run with no pasted output is refused, so know the cost now rather than at `pr-open`. "
+    + "Otherwise name a command this job can run.";
 }
 
 /** @type {string[] | null} */
@@ -2144,7 +2234,13 @@ function blockEndAfter(lines, startIndex, inFence) {
  * @returns {boolean}
  */
 function isSectionHeaderLine(trimmed) {
-  return SECTION_FIELD_NAMES.some((name) => new RegExp(`^(?:\\*\\*|__)?${name}:(?:\\*\\*|__)?`, "i").test(trimmed));
+  // #2118: `Hand-run output` joins the stop set through its OWN predicate rather than through
+  // `SECTION_FIELD_NAMES`, because its name carries a space and the pattern built from that list would
+  // demand exactly one. The rule it is here for is #438's unchanged: a bare `**Hand-run output:**` line
+  // under an in-progress `Acceptance:` block ends that block instead of being read as one more command --
+  // which is precisely what happened to `History: full` in #1036, and the whole reason that record exists.
+  return handRunOutputHeader(trimmed).matched
+    || SECTION_FIELD_NAMES.some((name) => new RegExp(`^(?:\\*\\*|__)?${name}:(?:\\*\\*|__)?`, "i").test(trimmed));
 }
 
 /**
@@ -2274,7 +2370,9 @@ function runOneCommand(command, run, { prefix, isPass, commandExists: exists, ca
       && !capabilities?.token && needsToken(executable)) {
     return { executed: false, handRun: true, ok: true,
       line: `${prefix}: NOT RUN ${command} -> declared hand-run: ${handRun}. This job has no credential `
-        + "and did not attempt it; nothing here verified this command. Paste the run into the PR body." };
+        + "and did not attempt it; nothing here verified this command. Paste the run into the PR body "
+        + "under a `## Hand-run output` heading -- #2118: a body that declares a hand-run and pastes "
+        + "nothing is now REFUSED, because the declaration alone is a claim with no evidence behind it." };
   }
   if (classification.verdict === "refused") {
     // A WHOLE-SUITE COMMAND IS THE ONE REFUSAL THAT FAILS. Every other REFUSED is a legitimate "not this
@@ -2349,6 +2447,26 @@ function duplicateSectionLine(prefix, section) {
 }
 
 /**
+ * #2118: THE REFUSAL, AND IT SAYS WHAT IT CHECKED AND WHAT IT DID NOT -- in that order, because a reader
+ * who takes only the first sentence must not come away believing more was verified than was.
+ *
+ * FOLLOWABLE (#1116): it names the exact heading to add, not merely the state it found. A refusal whose
+ * remedy the author has to infer is one they route around -- and the route around this one is to delete
+ * the `Hand-run:` line, which costs the row the declaration that made it honest.
+ * @param {"ACCEPTANCE" | "REFUTATION"} prefix
+ * @returns {string}
+ */
+function missingHandRunOutputLine(prefix) {
+  return `${prefix}: NO HAND-RUN OUTPUT -- every command above is a declared hand-run and this body `
+    + "pastes no output, so the only thing asserting the run happened is the line declaring that it "
+    + "should. Add a `## Hand-run output` heading (or a `**Hand-run output:**` line) and paste under it "
+    + "what you ran and what it printed.\n"
+    + "  WHAT THIS CHECKED: that such a section exists and is not empty -- that a human wrote something "
+    + "there. WHAT IT DID NOT CHECK: whether that text is this command's output. Nothing in this job "
+    + "holds the credential, so nothing here can re-run the command and compare; a human reads it.";
+}
+
+/**
  * Runs every command in a `{ kind: "commands" }` section and reports each line, folding failures into
  * `ok`. Split out of `acceptanceReport` purely to keep that function's complexity within this repo's
  * ESLint budget -- the Acceptance and Refutation branches were one algorithm with a different `isPass`,
@@ -2357,7 +2475,7 @@ function duplicateSectionLine(prefix, section) {
  * @param {(command: string) => number} run
  * @param {{ prefix: "ACCEPTANCE" | "REFUTATION", isPass: (code: number) => boolean,
  *           commandExists?: (token: string) => boolean, capabilities?: JobCapabilities,
- *           handRun?: string | null }} options
+ *           handRun?: string | null, handRunEvidence?: string | null }} options
  * @returns {{ lines: string[], ok: boolean }}
  */
 function runSectionCommands(commands, run, options) {
@@ -2382,15 +2500,20 @@ function runSectionCommands(commands, run, options) {
   // failure `History: full` is kept a warning to avoid. A fleet refusal next to it keeps the section red,
   // as today.
   //
-  // `ok` STAYS TRUE, and that is a trade rather than an oversight. A row whose only honest acceptance
-  // needs a credential nobody gives this job cannot otherwise ever merge (#2084 is the live case), so the
-  // choice is between a check that is green and loud and a row that is unmergeable. The line above says
-  // NOT RUN and says nothing was verified; the PR carries the pasted run, and a reviewer reads both.
+  // `ok` STAYS TRUE ONLY WHEN THE RUN IS PASTED -- #2118 closed the half #2099 left open. The trade this
+  // comment used to describe was between a check that is green and loud and a row that is unmergeable
+  // (#2084 is the live case), and it took the first: the line below says NOT RUN and says nothing was
+  // verified, "the PR carries the pasted run, and a reviewer reads both". NOTHING REQUIRED THE PASTED RUN
+  // TO EXIST. `Hand-run:` is the one positive claim on this path -- `Acceptance: none -- <reason>` says
+  // nothing was run, while this says a human DID run something -- and it was the only one nothing checked.
+  // The trade survives intact: a declared, EVIDENCED hand-run is still green and loud and still merges.
   if (options.prefix === "ACCEPTANCE" && commands.length > 0 && ran === 0 && handRun === commands.length) {
     lines.push(`${options.prefix}: NOTHING RAN HERE -- every command above is a declared hand-run, so `
       + "this job verified NOTHING and is not claiming otherwise. The verdict is the output pasted into "
       + "the PR body by whoever holds the credential, read by a human; this line is not a pass.");
-    return { lines, ok };
+    if (options.handRunEvidence) return { lines, ok };
+    lines.push(missingHandRunOutputLine(options.prefix));
+    return { lines, ok: false };
   }
   // A SECTION THAT EXECUTED NOTHING IS NOT A SECTION THAT PASSED. This is `evidence:check`'s
   // examined-nothing shape (`2 compared: 2 same` on a 48-case sample) in the acceptance job: every
@@ -2444,7 +2567,11 @@ export function acceptanceReport(body, run, deps = {}) {
   // which a test overrides to exercise a job it is not running in. The declaration is a fact the body
   // states about itself, and a caller that could pass one the body does not carry could report `NOT RUN`
   // for a row that never declared anything.
-  const resolvedDeps = { capabilities: jobCapabilities(body), ...deps, handRun: handRunDeclaration(body) };
+  // #2118: `handRunEvidence` is read the same way and for the sharper version of the same reason. It is
+  // the one field here that decides whether a POSITIVE claim about work a human performed is believed, so
+  // a caller able to supply it could report a run as evidenced by text that is in no body at all.
+  const resolvedDeps = { capabilities: jobCapabilities(body), ...deps,
+    handRun: handRunDeclaration(body), handRunEvidence: handRunEvidence(body) };
   const section = extractAcceptanceSection(body);
   if (section.kind === "missing") {
     return { ok: false, lines: ["ACCEPTANCE: MISSING"] };
