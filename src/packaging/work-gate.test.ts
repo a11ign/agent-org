@@ -3165,3 +3165,19 @@ test("#2174: work-gate.mjs loads in a tree with NO node_modules, host-units edge
   assert.equal(run.status, 0,
     `the gate must load with no node_modules anywhere above it: ${run.stderr}`);
 });
+
+/**
+ * #2174, FOUND BY MUTATION: `Array.isArray(drift) ? drift : []` survived being weakened to `drift ?? []`,
+ * because `null` and `undefined` behave identically under both. The difference only shows on a value
+ * that is neither an array nor nullish -- and that is exactly what a future `host:check --json` printing
+ * an object where a list used to be would hand this function. Under the weaker form it reaches `.map`
+ * and throws, which takes the whole tick down: a detector that can silence the gate is worse than the
+ * defect it detects.
+ */
+test("#2174: a drift value that is not a list is 'not asked', never a crash", () => {
+  for (const notAList of [{} as never, "two findings" as never, 0 as never, true as never]) {
+    assert.deepEqual(hostDriftOrders(notAList), [],
+      "anything this function cannot read as a finding list is a read it did not get, and it must "
+      + "neither wake anyone nor throw");
+  }
+});

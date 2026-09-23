@@ -1391,3 +1391,23 @@ test("#2174: no shipped unit is falsely charged, and every one of them is charge
       `an option was resolved as a path: ${finding.missingProgram}`);
   }
 });
+
+/**
+ * #2174, FOUND BY MUTATION: the `text === null` skip in `missingForUnit` survived deletion, because no
+ * test had a unit that `readDir` LISTS and `read` cannot open. That is a real state -- a unit removed
+ * between the listing and the read, or one this process may not read -- and it is `unitDrift`'s finding
+ * rather than this one's. Without the skip, `workingDirectoryOf(null)` returns null and the unit is
+ * silently dropped anyway, so the mutant is invisible until `workingDirectoryOf` changes; this pins the
+ * behaviour at the boundary that owns it instead.
+ */
+test("#2174: a unit that is listed but cannot be READ yields no finding and does not throw", () => {
+  const found = missingUnitPrograms({
+    installedDir: "/installed",
+    readDir: (() => ["a11ign-vanished.service"]) as never,
+    read: (() => { throw new Error("ENOENT: it went away between the listing and the read"); }) as never,
+    exists: () => false,
+  });
+  assert.deepEqual(found, [],
+    "an unreadable unit is `unitDrift`'s finding -- guessing at what it starts would report a second "
+    + "fault for one cause");
+});
