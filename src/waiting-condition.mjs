@@ -22,9 +22,70 @@
 // rows carried it, several waiting on conditions that had long since become true, and #1768 carries
 // `blocked` while its native `blockedBy` is empty.
 //
-// A WAITING CONDITION MUST NAME WHAT IT WAITS ON, in a form a machine can evaluate. Both of these do,
-// and both therefore CLEAR THEMSELVES -- which is the property `blocked` lacks and the reason `blocked`
-// rots.
+// A WAITING CONDITION MUST NAME WHAT IT WAITS ON, in a form a machine can evaluate. All three of these
+// do, and all three therefore CLEAR THEMSELVES -- which is the property `blocked` lacks and the reason
+// `blocked` rots.
+//
+// THE THIRD ONE WAS MISSING FROM THIS MODULE FOR THREE DAYS, AND THAT IS #2005. The chairman's direction
+// names THREE waiting conditions -- a session (`answer:<session>`), a row (`--blocked-by`) and a date
+// (`Not-before:`). This file implemented two, so the one whose referent is a SESSION -- the one reached
+// for when a DECISION rather than a dependency is outstanding -- was the one that did not hold a row.
+//
+// MEASURED LIVE AT 2026-09-22T20:49:41Z. `product-manager` put `answer:ceo` on #2002 (`npm run
+// host:install`) at 20:47Z because the ruling it depends on was still open. The next tick promoted #2002
+// to `ready` while it carried that label, then emitted `WOKE worker-capture <- engineers/
+// ready-row-unclaimed/2002`. `worker-capture` was one turn from claiming a row whose whole point was
+// that it must not run yet -- running it would have made an unruled decision real on the host.
+//
+// IT WAS NOT THAT NOTHING READ THE LABEL. `work-gate.mjs` reads it on every tick and wakes the session
+// that owes the answer (`answerOrders`). The gate KNEW the row was waiting; the waiting-condition reader
+// was simply never told, so every OTHER question -- is this promotable, is this offerable, is this
+// reachable -- was answered as if the row were free.
+
+/**
+ * The label prefix that says which session owes an answer on a row.
+ *
+ * IT LIVES HERE NOW RATHER THAN IN `work-gate.mjs` (#2005), and the move is the fix rather than tidying.
+ * A waiting condition spelled in the file that CONSUMES it can only ever be read by that consumer's own
+ * code paths; this module's first line says it is the one reader of "this row is waiting on something",
+ * imported and never retyped, and that promise is only true of conditions declared in it. `work-gate.mjs`
+ * re-exports this name, so every existing importer is untouched.
+ *
+ * @see `answerOwedBy` for why the label, and not an assignee, is the mechanism.
+ */
+export const ANSWER_PREFIX = "answer:";
+
+/**
+ * The session that owes an answer on this row, or `null`.
+ *
+ * A LABEL AND NOT AN ASSIGNEE, and the data decided that rather than taste: `repos/:o/:r/assignees`
+ * answers with FOUR accounts which the EIGHT sessions share, so an assignee structurally cannot say
+ * WHICH session owes the answer -- the only thing this needs to express.
+ *
+ * ONE PER SESSION, NOT ONE PER INSTANCE, so it joins `session:*` and `hold:*` rather than rotting the
+ * vocabulary the way `branch:agent/...` and `worktree:/private/tmp/...` already have.
+ *
+ * AN EMPTY SESSION NAME IS NOT A SESSION. A bare `answer:` names nobody, so it is no more a referent than
+ * `blocked` is -- and a wait on nobody is exactly the referent-less claim this module exists to refuse.
+ * It reads as NOT waiting, which leaves the row visible for someone to find: the same fail-open choice
+ * `notBeforeDate` makes for a malformed date.
+ *
+ * FIRST MATCH WINS on a row carrying two. That cannot happen by the label's own rule (one per session),
+ * and if it ever does, naming one owner beats naming none -- the row is held either way, and the
+ * `answer-owed` cause wakes BOTH of them independently.
+ *
+ * @param {{labels?: ({name?: string} | string)[]}} row
+ * @returns {string | null}
+ */
+export function answerOwedBy(row) {
+  for (const label of row?.labels ?? []) {
+    const name = String(/** @type {any} */ (label)?.name ?? label);
+    if (!name.startsWith(ANSWER_PREFIX)) continue;
+    const session = name.slice(ANSWER_PREFIX.length).trim();
+    if (session) return session;
+  }
+  return null;
+}
 
 /**
  * The `Not-before:` line, or `null`.
@@ -57,26 +118,37 @@ export function notBeforeDate(body) {
 /**
  * What this row is waiting on, or `null` when nothing is stopping it.
  *
- * PURE, and the two kinds are deliberately different mechanisms:
+ * PURE, and the three kinds are deliberately different mechanisms:
  *
- *   a row  -> GITHUB'S OWN `blockedBy`. Not a convention this org invented: `gh issue create` already
- *             takes `--blocked-by`, `gh issue list --json blockedBy` already returns it, the GitHub UI
- *             already renders it, and the gate already makes that call. Zero new vocabulary, and the
- *             edge is enforced by GitHub rather than by a parser of ours.
- *   a date -> the `Not-before:` field above, because GitHub has no equivalent.
+ *   a row     -> GITHUB'S OWN `blockedBy`. Not a convention this org invented: `gh issue create` already
+ *                takes `--blocked-by`, `gh issue list --json blockedBy` already returns it, the GitHub UI
+ *                already renders it, and the gate already makes that call. Zero new vocabulary, and the
+ *                edge is enforced by GitHub rather than by a parser of ours.
+ *   a date    -> the `Not-before:` field above, because GitHub has no equivalent.
+ *   a session -> the `answer:<session>` LABEL, because the referent is neither a row nor a date and
+ *                GitHub's assignee field cannot name one of eight sessions sharing four accounts.
  *
  * ONLY AN OPEN BLOCKER COUNTS. `blockedBy.nodes` keeps closed rows in the list, and a closed blocker is
  * a condition that HAS CLEARED -- reading it as still blocking is the rot this module exists to remove.
  *
- * @param {{blockedBy?: {nodes?: {number?: number, state?: string}[]}, body?: string}} row
+ * THE ORDER OF THE THREE IS NOT ARBITRARY: the existing two are asked FIRST, so every row that already
+ * had a wait reports the same condition it reported before #2005. The new kind can only ever change the
+ * answer for a row that was previously reported as waiting on NOTHING -- which is the whole defect and
+ * nothing else.
+ *
+ * @param {{blockedBy?: {nodes?: {number?: number, state?: string}[]}, body?: string,
+ *   labels?: ({name?: string} | string)[]}} row
  * @param {string} today an ISO `YYYY-MM-DD`
- * @returns {{kind: "row", numbers: number[]} | {kind: "date", date: string} | null}
+ * @returns {{kind: "row", numbers: number[]} | {kind: "date", date: string}
+ *   | {kind: "answer", session: string} | null}
  */
 export function waitingOn(row, today) {
   const open = (row?.blockedBy?.nodes ?? []).filter((n) => String(n?.state ?? "OPEN").toUpperCase() === "OPEN");
   if (open.length > 0) return { kind: "row", numbers: open.map((n) => Number(n.number)) };
   const date = notBeforeDate(row?.body);
   if (date !== null && date > today) return { kind: "date", date };
+  const session = answerOwedBy(row ?? {});
+  if (session !== null) return { kind: "answer", session };
   return null;
 }
 
@@ -92,10 +164,16 @@ export const todayIso = (now = new Date(Date.now())) => now.toISOString().slice(
 
 /**
  * One line saying what a row is waiting on, for a report a person reads.
- * @param {{kind: string, numbers?: number[], date?: string}} waiting
+ *
+ * THE SESSION IS NAMED, not counted. #2005's own done-when asks for the shelving reason to name who owes
+ * the answer "the same way `blocked by #1918` is reported today" -- and it has to, because unlike a date
+ * this condition is cleared by a PERSON, so the report is only actionable if it says which one.
+ *
+ * @param {{kind: string, numbers?: number[], date?: string, session?: string}} waiting
  */
 export function describeWaiting(waiting) {
   if (waiting.kind === "row") return `blocked by ${(waiting.numbers ?? []).map((n) => `#${n}`).join(", ")}`;
+  if (waiting.kind === "answer") return `waiting on ${waiting.session} to answer`;
   return `not before ${waiting.date}`;
 }
 
@@ -124,6 +202,10 @@ export function proseBlockers(issues) {
   for (const issue of issues ?? []) {
     if ((issue?.blockedBy?.totalCount ?? 0) > 0) continue;
     if (notBeforeDate(issue?.body) !== null) continue;
+    // A ROW THAT CARRIES `answer:<session>` HAS ALREADY DONE WHAT THIS CAUSE ASKS FOR, and nagging a
+    // session that complied is how a smell becomes noise -- the same finding #1780 recorded when
+    // `unfiledEpics` re-asked `product-manager` about an epic whose blocker it had just recorded.
+    if (answerOwedBy(/** @type {any} */ (issue)) !== null) continue;
     const m = /(?:blocked (?:by|on)|waiting (?:on|for))[^.\n]{0,80}/i.exec(String(issue?.body ?? ""));
     if (m) found.push({ number: Number(issue.number), quote: m[0].trim() });
   }

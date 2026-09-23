@@ -1172,7 +1172,8 @@ test("a REFUSED read is still refused, not read as a queue with nothing reachabl
   assert.equal(stalledOrder({ orders: [], openRows: null }), null);
   // AND THE POSITIVE CONTROL for the whole family: an ARRAY is read, never refused -- including the
   // empty one, which genuinely means the tracker is empty and must not come back as `null`.
-  assert.deepEqual(openRowState([]), { reachable: 0, waiting: { dates: [], blocked: [], total: 0 } });
+  assert.deepEqual(openRowState([]),
+    { reachable: 0, waiting: { dates: [], blocked: [], answers: [], total: 0 } });
 });
 
 /**
@@ -2104,4 +2105,134 @@ test("#2003: the pool reading has ONE definition, and the gate pays for it only 
     .filter((f: string) => readFileSync(join(src, f), "utf8").includes("X-Ratelimit-Remaining"));
   assert.deepEqual(definers, ["api-pool.mjs"],
     `only the leaf module may know how to read a pool; found ${definers.join(", ")}`);
+});
+
+// --- #2005: `answer:<session>` HOLDS THE ROW, and does not merely wake the session that owes it ---
+
+/**
+ * THE INCIDENT, AT ONE TICK'S OUTPUT, 2026-09-22T20:49:41Z.
+ *
+ *   20:47Z  `product-manager` puts `answer:ceo` on #2002 (`npm run host:install`) because the ruling it
+ *           depends on -- which account the daily board dispatch spends -- was still open.
+ *   next    the tick PROMOTES #2002 from `backlog` to `ready` while it carries `answer:ceo`,
+ *   tick    then emits `WOKE worker-capture <- engineers/ready-row-unclaimed/2002`.
+ *
+ * `worker-capture` was one turn from claiming a row whose whole point was that it must not run yet --
+ * and running it would have made an unruled decision real on the host.
+ *
+ * THE GATE ALREADY READ THE LABEL. `GH_READS` names `issue list (all open: answer/blocked labels)` and
+ * `answerOrders` was independently waking `ceo` about the same row on the same tick. What no path asked
+ * was whether the label STOPS anything -- so `waiting on ceo` and `offer this to anyone` were both true.
+ */
+const answerRow = (n: number, session: string, extra: string[] = []) =>
+  ({ number: n, labels: [{ name: "ready" }, { name: `${ANSWER_PREFIX}${session}` },
+    ...extra.map((e) => ({ name: e }))] });
+
+test("#2005: a READY row carrying answer:<session> is SHELVED, and the shelf line names who owes it", () => {
+  const { offerable, blocked } = partitionUnclaimed([answerRow(2002, "ceo")], []);
+  assert.deepEqual(offerable, [], "one turn from claiming a row whose point was that it must not run yet");
+  assert.equal(blocked.length, 1, "shelved, never silently dropped -- a row that vanishes is the defect");
+  assert.match(blocked[0].reason, /waiting on ceo to answer .*clears itself/,
+    "the line must NAME the session: unlike a date, this condition is cleared by a person, so a reason "
+    + "that only says 'waiting' is the referent-less claim #1768 spent a row getting away from");
+  assert.equal(blocked[0].number, 2002);
+});
+
+test("#2005 done-when 3: removing the label restores the row, with no other action", () => {
+  // A SHELF THAT NEVER UNSHELVES IS THE FAILURE THIS REPLACES, and it is the property `blocked` lacks:
+  // the label clears ITSELF because taking it off IS the act of answering. Both directions, same row,
+  // one label of difference -- so a rule that shelved everything cannot pass this pair.
+  const held = answerRow(2002, "ceo");
+  const answered = { number: 2002, labels: [{ name: "ready" }] };
+  assert.deepEqual(partitionUnclaimed([held], []).offerable, []);
+  assert.deepEqual(partitionUnclaimed([answered], []).offerable.map((r: { number: number }) => r.number),
+    [2002], "the ONLY change is the label, so nothing else can be what restored it");
+  assert.deepEqual(partitionUnclaimed([answered], []).blocked, []);
+
+  // END TO END: the order the incident actually emitted is the thing that must not be emitted.
+  const withLabel = decide({ prs: [], readyRows: [held] });
+  assert.deepEqual(withLabel.filter((o: { cause: string }) => o.cause === "ready-row-unclaimed"), []);
+  const without = decide({ prs: [], readyRows: [answered] });
+  assert.deepEqual(without.filter((o: { cause: string }) => o.cause === "ready-row-unclaimed")
+    .map((o: { subject: string }) => o.subject), ["row-2002"],
+    "and the positive control: with the question answered, the row is offered exactly as before");
+});
+
+test("#2005 done-when 4: the answer-owed wake is UNCHANGED -- this holds the row, it does not quieten "
+  + "the question", () => {
+  // THE ONE WAY THIS CHANGE COULD DO HARM. A row that stops moving AND stops asking is worse than one
+  // that moves: the org would then be waiting on a question nobody is being asked. `answerOrders` reads
+  // the prefix directly and must keep doing so, on the very row the gate now shelves.
+  const held = answerRow(2002, "ceo");
+  assert.deepEqual(withAnswerLabel([held]).map((r: { number: number }) => r.number), [2002]);
+  assert.deepEqual([...answersOwed([held]).keys()], ["ceo"]);
+  const orders = answerOrders([held]);
+  assert.equal(orders.length, 1, "still exactly one order, at the session that owes the answer");
+  assert.equal(orders[0].session, "ceo");
+  assert.equal(orders[0].cause, "answer-owed");
+  assert.equal(orders[0].causeKey, "ceo/answer-owed/row-2002");
+});
+
+test("#2005: the OFFER path and the PROMOTION path now answer from one reader, so they cannot disagree", () => {
+  // THE SHAPE OF THE DEFECT, NOT JUST THE INSTANCE. #1899 taught `readPromotableRows` about the prefix
+  // with a filter local to that function, so ONE of the two questions about a row knew and the other did
+  // not. Asserting both refuse the SAME fixture is what would catch a future reader added to one path.
+  const row = { number: 2002, labels: [{ name: "backlog" }, { name: `${ANSWER_PREFIX}ceo` }] };
+  const promotable = readPromotableRows(() => JSON.stringify([row]));
+  assert.deepEqual(promotable, [], "not promotable -- done-when 1");
+  assert.deepEqual(partitionUnclaimed([{ ...row, labels: [{ name: "ready" }, { name: `${ANSWER_PREFIX}ceo` }] }],
+    []).offerable, [], "and not offerable -- done-when 2, from the same predicate");
+
+  // THE LOCAL FILTER IS GONE, and this is the assertion that keeps it gone: a second spelling of the
+  // prefix inside `readPromotableRows` is how the two paths drifted, so the source must not hold one.
+  const gate = readFileSync(fileURLToPath(new URL("../work-gate.mjs", import.meta.url)), "utf8");
+  const body = /export function readPromotableRows\([\s\S]*?\n\}/.exec(gate)?.[0] ?? "";
+  assert.ok(body.length > 0, "readPromotableRows must still be found, or this guard reads nothing");
+  assert.ok(!/withAnswerLabel|ANSWER_PREFIX/.test(body),
+    "it must ask `waitingOn` and nothing else; a prefix read of its own is the drift that caused #2005");
+});
+
+test("#2005's open-check: a row HELD BY the session that owes the answer leaves before the question is "
+  + "asked, so nothing had to express 'not offered to anyone but the holder'", () => {
+  // The filer asked whether `answer:<session>` should hold a row against its OWN HOLDER -- #1948 was
+  // `in-progress` + `session:worker-tooling` + `answer:worker-tooling` on the day this was filed, and a
+  // session is not blocked by its own unanswered question the way a stranger is. It never arises: a
+  // claimed row leaves on the CLAIM_LABEL line, before anything asks what it is waiting on.
+  const heldByOwner = { number: 1948, labels: [{ name: "ready" }, { name: "in-progress" },
+    { name: "session:worker-tooling" }, { name: `${ANSWER_PREFIX}worker-tooling` }] };
+  const { offerable, blocked } = partitionUnclaimed([heldByOwner], []);
+  assert.deepEqual(offerable, [], "a claimed row is offered to nobody, which is stronger than the rule "
+    + "the open-check proposed");
+  assert.deepEqual(blocked, [], "and it is not SHELVED either -- it is being worked, not waiting");
+});
+
+test("#2005: waitingBreakdown groups answers by session, and no group is reported with an absent referent", () => {
+  // THE MUTATION THIS CATCHES. The two-kind version read `kind === "date"` and treated everything else
+  // as a row-blocker, so a third kind would have been pushed as `{ number, on: undefined }` and rendered
+  // as "blocked by " with nothing after it -- a wrong fact in the one report built to stop `ceo`
+  // hand-reading twenty rows. An `else` over a closed set of two becomes a false statement in silence.
+  const rows = [answerRow(2002, "ceo"), answerRow(1889, "ceo"), answerRow(1878, "orchestrator"),
+    { number: 7, blockedBy: { nodes: [{ number: 1772, state: "OPEN" }] } },
+    { number: 8, body: "Not-before: 2099-01-01" }, { number: 9 }];
+  const breakdown = waitingBreakdown(rows, "2026-09-23");
+  assert.deepEqual(breakdown.answers,
+    [{ session: "ceo", numbers: [2002, 1889] }, { session: "orchestrator", numbers: [1878] }],
+    "grouped by session and sorted by it, for the reason dates are grouped by date: '3 rows are waiting "
+    + "on ceo' is the fact a reader acts on");
+  assert.deepEqual(breakdown.blocked, [{ number: 7, on: [1772] }],
+    "an answer-waiting row must NOT land in the row-blocker group with an absent `on`");
+  assert.equal(breakdown.total, 5, "three answers, one blocker, one date -- and #9 is not waiting");
+  assert.equal(openRowState(rows, "2026-09-23")?.reachable, 1,
+    "only #9 could move; counting three parked rows as reachable is the switch crying wolf in reverse");
+});
+
+test("#2005: the org-stalled prompt NAMES the session, because that group is the one a reader clears", () => {
+  // #1935's own finding one level over: the condition was computed and discarded at the same expression,
+  // and `ceo` then spent an hour hand-reading rows the gate had already read that tick. A date cannot be
+  // hurried and a blocking row is someone else's work; a question owed is a session that can be asked now.
+  const waiting = waitingBreakdown([answerRow(2002, "ceo"), answerRow(1889, "ceo")], "2026-09-23");
+  const order = stalledOrder({ orders: [], openRows: 1, waiting });
+  assert.ok(order !== null, "one reachable row and no orders is still a stall");
+  assert.match(order.prompt, /2 on a session's answer: 2 waiting on ceo to answer \(#2002 #1889\)/);
+  assert.match(order.prompt, /REMOVING THE LABEL IS THE ACT OF ANSWERING/);
 });

@@ -35,7 +35,7 @@ import { realpathSync, existsSync } from "node:fs";
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
 import { READY_LABEL, CLAIM_LABEL } from "./claim-labels.mjs";
 import { verdictAtHead } from "./review-verdict.mjs";
-import { waitingOn, todayIso, describeWaiting } from "./waiting-condition.mjs";
+import { waitingOn, todayIso, describeWaiting, ANSWER_PREFIX } from "./waiting-condition.mjs";
 import { newestPerName } from "./newest-check-run.mjs";
 import { NO_VERDICT } from "./merge-guard/checks-rule.mjs";
 // B4, ASKED EARLY. These are the SAME two functions `row-claim.mjs` runs at claim time, imported
@@ -382,14 +382,16 @@ export function readPromotableRows(run = defaultRun) {
     // the pool, so the one session it belongs to can still be told about it.
     const today = todayIso();
     // `answer:<session>` IS NOT IN `NOT_STARTABLE` AND NEVER CAN BE -- it is a PREFIX over one name per
-    // session, not a literal in the frozen list, and `withAnswerLabel` is the one existing reader of
-    // that prefix (`answersOwed`'s own source). A row carrying it is routed to whoever owes the answer
+    // session, not a literal in the frozen list. A row carrying it is routed to whoever owes the answer
     // and is already independently waking that session (`answerOrders`); it is neither unlaned nor
     // unpickable, so counting it as promotable stock is what made `ready-queue-empty` re-ask a judgment
     // already settled (#1899: #1889 and #1878, both correctly parked, both still counted).
-    const answered = new Set(withAnswerLabel(parsed).map((r) => r.number));
+    //
+    // #1899 FIXED THAT HERE, WITH A SECOND READER OF THE PREFIX, AND ONLY HERE -- which is why #2005
+    // happened one door down: this function was the only one that knew, so the identical question asked
+    // by `partitionUnclaimed` ("may this be OFFERED?") still answered `yes`. The local `answered` set is
+    // gone and `waitingOn` below now carries it, so the two questions cannot answer differently again.
     return parsed.filter((r) => !labelsOf(r).some((/** @type {string} */ n) => NOT_STARTABLE.includes(n)))
-      .filter((r) => !answered.has(r.number))
       .filter((r) => waitingOn(r, today) === null);
   } catch {
     return null;
@@ -509,9 +511,21 @@ export function partitionUnclaimed(readyRows, prFiles, options) {
   const blocked = [];
   const today = todayIso();
   for (const row of readyRows) {
+    // #2005's OPEN-CHECK, ANSWERED BY THIS LINE AND NOT BY A NEW RULE. The filer asked whether
+    // `answer:<session>` should hold a row against its OWN HOLDER -- #1948 was `in-progress` +
+    // `session:worker-tooling` + `answer:worker-tooling`, and a session is not blocked by its own
+    // unanswered question the way a stranger is. It never arises here: a claimed row carries
+    // `CLAIM_LABEL` and leaves on this line, before anything asks what it is waiting on. So "not offered
+    // to a session other than the one already holding it" needed no expression -- a held row is not
+    // offered to anybody, which is strictly stronger and was already true.
     if (labelsOf(row).includes(CLAIM_LABEL)) continue;
     // A DECLARED WAIT SHELVES THE ROW RATHER THAN HIDING IT. It goes to `blocked` with its reason, so
     // the tick log says why -- a row that vanishes silently is the failure `blocked` already is.
+    //
+    // SINCE #2005 THAT INCLUDES `answer:<session>`, and nothing here changed to make it so: `waitingOn`
+    // gained the kind and this call site inherited it. That is the seam working -- the alternative, a
+    // third prefix check written out here beside the one `readPromotableRows` already had, is exactly
+    // how the offer path and the promotion path came to disagree in the first place.
     const waiting = waitingOn(row, today);
     if (waiting) {
       blocked.push({ number: Number(row.number), owner: laneOwnerOf(row),
@@ -858,8 +872,14 @@ export function blockedReferentOrders(rows, readyRows, today = todayIso()) {
  *
  * IT CLEARS ITSELF BY BEING ANSWERED: removing the label IS the act of answering, so there is no second
  * state to maintain and nothing to remember. Same property as `blockedBy` and `Not-before:`.
+ *
+ * THE NAME MOVED TO `waiting-condition.mjs` AND IS RE-EXPORTED HERE (#2005), unchanged. It is a WAITING
+ * CONDITION, and that module is the one reader of those -- declaring it here is what let every reader of
+ * waiting conditions answer "is this row free?" as `yes` for three days while this same file was waking
+ * a session to answer the question holding it. Re-exported rather than moved outright so no importer,
+ * test or role brief has to change to say a thing that has not changed.
  */
-export const ANSWER_PREFIX = "answer:";
+export { ANSWER_PREFIX };
 
 /**
  * PURE. Who owes an answer on which rows -- `{ session: rows }`, oldest row first within each session.
@@ -1735,22 +1755,40 @@ export function openRowState(rows, today = todayIso()) {
  * DATES SORT LEXICALLY, which is why `Not-before:` is ISO-only, so `[0]` is the earliest with no
  * comparator and no `Date` parsing.
  *
+ * A THIRD GROUP, AND IT NEEDED AN EXPLICIT BRANCH RATHER THAN AN `else` (#2005). The two-kind version
+ * read `kind === "date"` and treated EVERYTHING ELSE as a row-blocker, so the moment `waitingOn` gained
+ * a third kind it would have pushed `{ number, on: undefined }` and reported an answer-waiting row as
+ * "blocked by " with nothing after it -- a wrong fact, in the one report built to stop `ceo` hand-reading
+ * twenty rows. An `else` over a closed set of two is a correct expression that becomes a false one
+ * silently; the set is now matched by name and the `date` branch is no longer the discriminator.
+ *
+ * ANSWERS ARE GROUPED BY SESSION for the same reason dates are grouped by date: "3 rows are waiting on
+ * `ceo`" is the fact a reader acts on, and three separate lines naming `ceo` is that fact spelled so it
+ * has to be re-derived.
+ *
  * @param {any[]} rows @param {string} today an ISO `YYYY-MM-DD`
  * @returns {{dates: {date: string, numbers: number[]}[], blocked: {number: number, on: number[]}[],
- *   total: number}}
+ *   answers: {session: string, numbers: number[]}[], total: number}}
  */
 export function waitingBreakdown(rows, today = todayIso()) {
   const byDate = new Map();
+  const bySession = new Map();
   const blocked = [];
   for (const row of rows ?? []) {
     const waiting = waitingOn(row, today);
     if (waiting === null) continue;
     if (waiting.kind === "date") byDate.set(waiting.date, [...(byDate.get(waiting.date) ?? []), Number(row.number)]);
-    else blocked.push({ number: Number(row.number), on: waiting.numbers });
+    else if (waiting.kind === "answer") {
+      bySession.set(waiting.session, [...(bySession.get(waiting.session) ?? []), Number(row.number)]);
+    } else blocked.push({ number: Number(row.number), on: waiting.numbers });
   }
   const dates = [...byDate.entries()].sort(([a], [b]) => a.localeCompare(b))
     .map(([date, numbers]) => ({ date, numbers }));
-  return { dates, blocked, total: dates.reduce((n, d) => n + d.numbers.length, 0) + blocked.length };
+  const answers = [...bySession.entries()].sort(([a], [b]) => a.localeCompare(b))
+    .map(([session, numbers]) => ({ session, numbers }));
+  return { dates, blocked, answers,
+    total: dates.reduce((n, d) => n + d.numbers.length, 0) + blocked.length
+      + answers.reduce((n, a) => n + a.numbers.length, 0) };
 }
 
 /**
@@ -1801,6 +1839,17 @@ function waitingParagraph(waiting, reachable) {
       .slice(0, WAITING_ROWS_NAMED)
       .map((b) => `#${b.number} ${describeWaiting({ kind: "row", numbers: b.on })}`).join("; ")}`
       + `${waiting.blocked.length > WAITING_ROWS_NAMED ? ` +${waiting.blocked.length - WAITING_ROWS_NAMED} more` : ""}.\n`);
+  }
+  // THIS GROUP IS THE ONE A READER CAN CLEAR IN THE SAME TURN, and that is why it names the session
+  // rather than counting. A date cannot be hurried and a blocking row is someone else's work; a question
+  // owed is a session that can be asked now -- so of the three groups this is the one whose line turns
+  // into an action, and burying it in "12 rows are waiting" is what made #2005 invisible for three days.
+  if (waiting.answers.length > 0) {
+    lines.push(`  ${waiting.answers.reduce((n, a) => n + a.numbers.length, 0)} on a session's answer: `
+      + `${waiting.answers.map((a) => `${a.numbers.length} `
+        + `${describeWaiting({ kind: "answer", session: a.session })} (${nameRows(a.numbers)})`).join("; ")}`
+      + ". THAT SESSION REMOVING THE LABEL IS THE ACT OF ANSWERING, and it is the only thing that "
+      + "releases these rows.\n");
   }
   // THE SELF-CLEARING PROPERTY IS WEAKER THAN IT READS, and this is the line that stops the reader
   // filing the whole paragraph under "fine, it clears tomorrow". A date-parked row can be waiting on
