@@ -234,6 +234,18 @@ test("#2127: a review that is not the newest one back from GitHub is NOT attribu
   assert.match(result.stderr, /not the one just posted/);
 });
 
+test("#2127: the read-back takes the LAST review, not the first -- a pull request with a page of "
+  + "earlier reviews still attributes the one just posted", () => {
+  const earlier = "https://github.com/a11ign/a11ign/pull/2105#pullrequestreview-1\tdeadbeef\t"
+    + "**Review of #2105 at `aaaaaaaa`, by reviewer-2: convinced.**";
+  const { result, calls } = runDoor("reviewer", `${earlier}\n${TSV}`);
+  assert.equal(result.status, 0, result.stderr);
+  const status = calls.find((c) => c.includes("statuses/"));
+  assert.ok(status, `no attribution status written: ${calls.join(" | ")}`);
+  assert.match(status!, /statuses\/e1b8b7bc0000000000000000000000000000abcd/);
+  assert.ok(!status!.includes("deadbeef"), "it attributed the older review's commit");
+});
+
 test("#2127: a failed status write is reported and still does not fail the verdict", () => {
   const { result } = runDoor("reviewer", TSV, { failStatus: true });
   assert.equal(result.status, 0);

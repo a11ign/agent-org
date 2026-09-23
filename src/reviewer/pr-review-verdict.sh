@@ -51,7 +51,11 @@ attribute() {
   # script sent one line ago, not a reading of what the sentence means -- if another review landed in
   # between, this refuses to attribute rather than labelling somebody else's.
   local latest url sha posted
-  latest="$(gh api "repos/$REPO/pulls/$n/reviews" --jq '.[-1] | [.html_url, .commit_id, .body] | @tsv')" || {
+  # `--paginate` AND `tail -n 1`, NOT `.[-1]`: a review list past 30 entries pages, and `.[-1]` would then
+  # answer about the last review of the FIRST page. It would fail safe -- the body check below refuses --
+  # but it would refuse for ever on a long-running pull request, and silently.
+  latest="$(gh api "repos/$REPO/pulls/$n/reviews?per_page=100" --paginate \
+      --jq '.[] | [.html_url, .commit_id, .body] | @tsv' | tail -n 1)" || {
     echo "pr-review-verdict: could not read back #$n's reviews; review posted UNATTRIBUTED (#2127)." >&2
     return 1
   }
