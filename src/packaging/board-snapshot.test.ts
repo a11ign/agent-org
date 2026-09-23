@@ -13,6 +13,8 @@ import {
   fetchBoardItems,
   fetchReadyIssueNumbers,
   readyRowsMissingStatus,
+  classifyAbsentReadyRows,
+  missingStatusRefusal,
   writeBoardSnapshot,
   withBoardSnapshot,
   forgetProcessSnapshot,
@@ -260,20 +262,28 @@ test("withBoardSnapshot calls the mutation, and only after logging the snapshot 
 // independently-derived floor -- every open `ready` issue must show up in the snapshot WITH a Status --
 // catches a narrowed read that every assertion available inside the response itself would pass. ---
 
-test("readyRowsMissingStatus: a ready row with a Status is not reported", () => {
+// #2157: THE POSITIVE CONTROL FOR EVERY EMPTINESS BELOW. Both halves of the return are `[]` here and
+// nowhere else in this block, so a mutant that returned two empty lists unconditionally would pass THIS
+// test and fail every other one in the group -- which is the direction that matters, since the group is
+// otherwise all emptiness assertions.
+test("readyRowsMissingStatus: a ready row with a Status is reported under NEITHER cause", () => {
   const items = [{ itemId: "PVTI_1", number: 725, title: "row", status: "Ready", state: "OPEN" }];
-  assert.deepEqual(readyRowsMissingStatus(items, [725]), []);
+  assert.deepEqual(readyRowsMissingStatus(items, [725]), { absentFromItems: [], boardedWithoutStatus: [] });
 });
 
-test("readyRowsMissingStatus: a ready row present but with a null Status IS reported -- the exact shape "
-  + "a narrowed fieldValues read produces", () => {
+// #2157: THE TWO LINES THE ROW'S OPEN-CHECK RAN. They were `[725]` and `[725]` -- identical answers to
+// two inputs that differ in exactly the way the refusal one level up was asserting about. The pair is
+// kept adjacent on purpose: separately each reads as an ordinary pin, and it is their AGREEMENT that was
+// the defect.
+test("readyRowsMissingStatus: a ready row present but with a null Status is `boardedWithoutStatus` -- "
+  + "the exact shape a narrowed fieldValues read produces, and the ONLY shape #747 describes", () => {
   const items = [{ itemId: "PVTI_1", number: 725, title: "row", status: null, state: "OPEN" }];
-  assert.deepEqual(readyRowsMissingStatus(items, [725]), [725]);
+  assert.deepEqual(readyRowsMissingStatus(items, [725]), { absentFromItems: [], boardedWithoutStatus: [725] });
 });
 
-test("readyRowsMissingStatus: a ready row absent from the snapshot entirely IS reported -- \"appears "
-  + "with a Status\" fails on either half", () => {
-  assert.deepEqual(readyRowsMissingStatus([], [725]), [725]);
+test("readyRowsMissingStatus: a ready row absent from the snapshot entirely is `absentFromItems`, NOT "
+  + "`boardedWithoutStatus` -- it is not evidence about fieldValues at all", () => {
+  assert.deepEqual(readyRowsMissingStatus([], [725]), { absentFromItems: [725], boardedWithoutStatus: [] });
 });
 
 test("readyRowsMissingStatus: draft items (number null) never match a ready issue number and are "
@@ -281,11 +291,115 @@ test("readyRowsMissingStatus: draft items (number null) never match a ready issu
   // #1219: `state: null` -- a draft has no issue, so it has no state. `tsc` caught this, the same way
   // it catches a partial fixture typechecking as the real thing.
   const items = [{ itemId: "PVTI_draft", number: null, title: null, status: null, state: null }];
-  assert.deepEqual(readyRowsMissingStatus(items, [725]), [725]);
+  assert.deepEqual(readyRowsMissingStatus(items, [725]), { absentFromItems: [725], boardedWithoutStatus: [] });
 });
 
 test("readyRowsMissingStatus: an empty ready population always passes -- nothing to check", () => {
-  assert.deepEqual(readyRowsMissingStatus([{ itemId: "x", number: 1, title: "t", status: null, state: "OPEN" }], []), []);
+  assert.deepEqual(readyRowsMissingStatus([{ itemId: "x", number: 1, title: "t", status: null, state: "OPEN" }], []),
+    { absentFromItems: [], boardedWithoutStatus: [] });
+});
+
+test("readyRowsMissingStatus: both causes at once come back separated, not merged into one list", () => {
+  const items = [{ itemId: "PVTI_1", number: 717, title: "boarded", status: null, state: "OPEN" }];
+  assert.deepEqual(readyRowsMissingStatus(items, [717, 725]),
+    { absentFromItems: [725], boardedWithoutStatus: [717] });
+});
+
+// --- #2157: the discriminator, pure of `gh`. `classifyAbsentReadyRows` decides "off the board" from
+// "this query has not enumerated it yet" with the per-issue read #1275 already makes; `missingStatusRefusal`
+// builds the sentence. Both are driven by fixtures because the sentence IS the finding: `ready-label-audit`
+// prints it verbatim after `COULD NOT AUDIT board membership:`, and on 2026-09-23 what it printed there
+// told the reader the board was fine over three rows that were not on it. ---
+
+const NO_REQUEST = () => { throw new Error("the discriminating read must not be made"); };
+
+test("#2157: classifyAbsentReadyRows makes NO request for an empty absent list -- the positive control "
+  + "for the two emptiness assertions below is every other case in this group", () => {
+  assert.deepEqual(classifyAbsentReadyRows([], { request: NO_REQUEST, readTouched: NO_REQUEST }),
+    { offBoard: [], boardedButNotEnumerated: [], undecided: [], undecidedReason: null });
+});
+
+test("#2157: a row GitHub reports no Project item for is `offBoard` -- the board is wrong", () => {
+  assert.deepEqual(classifyAbsentReadyRows([2093], { request: NO_REQUEST, readTouched: touchedOnBoard([]) }),
+    { offBoard: [2093], boardedButNotEnumerated: [], undecided: [], undecidedReason: null });
+});
+
+test("#2157: a row GitHub DOES report an item for is `boardedButNotEnumerated` -- this read is short", () => {
+  assert.deepEqual(classifyAbsentReadyRows([2093], { request: NO_REQUEST, readTouched: touchedOnBoard([2093]) }),
+    { offBoard: [], boardedButNotEnumerated: [2093], undecided: [], undecidedReason: null });
+});
+
+test("#2157: both at once are split, in the order they were asked about -- the live hour had one of each", () => {
+  assert.deepEqual(
+    classifyAbsentReadyRows([2093, 2155], { request: NO_REQUEST, readTouched: touchedOnBoard([2155]) }),
+    { offBoard: [2093], boardedButNotEnumerated: [2155], undecided: [], undecidedReason: null });
+});
+
+test("#2157: a refused per-issue read makes every absent row `undecided`, carrying the read's own "
+  + "refusal -- never silently one arm, and never a pass", () => {
+  const readTouched = () => { throw new Error("FORBIDDEN: Resource not accessible by personal access token"); };
+  assert.deepEqual(classifyAbsentReadyRows([2093, 2155], { request: NO_REQUEST, readTouched }), {
+    offBoard: [], boardedButNotEnumerated: [], undecided: [2093, 2155],
+    undecidedReason: "FORBIDDEN: Resource not accessible by personal access token",
+  });
+});
+
+test("#2157: classifyAbsentReadyRows hands its `request` to the read rather than building its own", () => {
+  const request = (args: string[]) => JSON.stringify(args);
+  let seen: unknown = null;
+  classifyAbsentReadyRows([2093], { request, readTouched: (ns, deps) => { seen = deps.request; return touchedOnBoard([])(ns); } });
+  assert.equal(seen, request);
+});
+
+test("#2157: missingStatusRefusal is null when every ready row is accounted for -- and NOTHING ELSE in "
+  + "this group returns null, which is what makes that assertion mean something", () => {
+  assert.equal(missingStatusRefusal({
+    offBoard: [], boardedButNotEnumerated: [], boardedWithoutStatus: [], undecided: [], undecidedReason: null,
+  }), null);
+});
+
+test("#2157: missingStatusRefusal counts every cause in its total and names each cause it found, and "
+  + "only those", () => {
+  const refusal = missingStatusRefusal({
+    offBoard: [2093, 2092], boardedButNotEnumerated: [2155], boardedWithoutStatus: [725],
+    undecided: [], undecidedReason: null,
+  });
+  assert.match(String(refusal), /4 open ready row\(s\) are not accounted for/);
+  assert.match(String(refusal), /OFF THE BOARD -- THE BOARD IS WRONG, NOT THIS READ: #2093, #2092/);
+  assert.match(String(refusal), /NOT YET IN THIS QUERY'S PAGES -- THE READ IS SHORT: #2155/);
+  assert.match(String(refusal), /IN THIS READ WITH NO STATUS -- THE READ IS SHORT: #725/);
+  assert.doesNotMatch(String(refusal), /CANNOT TELL/);
+});
+
+test("#2157: the OFF THE BOARD arm alone never prints either short-read sentence -- the defect was one "
+  + "sentence printed over three populations, so each line must be absent when its cause is", () => {
+  const refusal = String(missingStatusRefusal({
+    offBoard: [2093], boardedButNotEnumerated: [], boardedWithoutStatus: [], undecided: [], undecidedReason: null,
+  }));
+  assert.match(refusal, /1 open ready row\(s\) are not accounted for/);
+  assert.doesNotMatch(refusal, /THE READ IS SHORT/);
+  assert.doesNotMatch(refusal, /fieldValues has no totalCount/);
+  assert.doesNotMatch(refusal, /CANNOT TELL/);
+});
+
+test("#2157: the #747 arm alone still cites #747 and still refuses -- this row separates the causes, it "
+  + "does not relax the floor", () => {
+  const refusal = String(missingStatusRefusal({
+    offBoard: [], boardedButNotEnumerated: [], boardedWithoutStatus: [725], undecided: [], undecidedReason: null,
+  }));
+  assert.match(refusal, /refusing to report it as complete/);
+  assert.match(refusal, /#747: fieldValues has no totalCount to check itself/);
+  assert.doesNotMatch(refusal, /OFF THE BOARD/);
+});
+
+test("#2157: the CANNOT TELL arm carries the refusal that caused it, so a reader can act on the reason "
+  + "rather than on the fact that something went wrong", () => {
+  const refusal = String(missingStatusRefusal({
+    offBoard: [], boardedButNotEnumerated: [], boardedWithoutStatus: [], undecided: [2093],
+    undecidedReason: "FORBIDDEN: Resource not accessible by personal access token",
+  }));
+  assert.match(refusal, /CANNOT TELL off-board from short-read: #2093/);
+  assert.match(refusal, /FORBIDDEN: Resource not accessible by personal access token/);
 });
 
 test("fetchReadyIssueNumbers: reads --json number off gh issue list, filtered to open + ready", () => {
@@ -325,10 +439,33 @@ function dualRun(itemsPageJson: string, readyNumbers: number[]) {
   };
 }
 
+/**
+ * #2157: a `readTouched` that answers the per-issue read from a list of issue numbers GitHub reports as
+ * items on this Project. Injected everywhere below, so no case here reaches `gh` -- and so the two arms
+ * can be driven independently of the items page, which is the whole point: they disagree in the live
+ * defect, and a fixture where they agree would pin neither.
+ */
+function touchedOnBoard(onBoard: number[]) {
+  return (issueNumbers: number[]) => ({
+    items: issueNumbers.filter((n) => onBoard.includes(n)).map((n) => ({
+      itemId: `PVTI_touched_${n}`, number: n, title: `row ${n}`, status: "Ready", state: "OPEN",
+    })),
+    notOnBoard: issueNumbers.filter((n) => !onBoard.includes(n)),
+  });
+}
+
 test("fetchBoardItems: every ready row carries a Status -- passes unchanged, same as today's 203 items", () => {
   const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 725, title: "row", status: "Ready" }] }), [725]);
   const items = fetchBoardItems({ run });
   assert.deepEqual(items, [{ itemId: "PVTI_1", number: 725, title: "row", status: "Ready", state: "OPEN" }]);
+});
+
+test("#2157: a clean board makes NO discriminating per-issue read -- the extra call is on the refusal "
+  + "path only, so a snapshot that accounts for every ready row costs exactly the calls it always did", () => {
+  const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 725, title: "row", status: "Ready" }] }), [725]);
+  let touchedCalls = 0;
+  fetchBoardItems({ run, readTouched: (ns) => { touchedCalls += 1; return touchedOnBoard([])(ns); } });
+  assert.equal(touchedCalls, 0);
 });
 
 test("#747 ACCEPTANCE, MUTATION TARGET: a ready row's fieldValues dropped (the narrowed-connection "
@@ -336,13 +473,75 @@ test("#747 ACCEPTANCE, MUTATION TARGET: a ready row's fieldValues dropped (the n
   // #725 is `ready` and on the board, but its fieldValues came back empty -- exactly what a shared-budget
   // narrowing produces, and what today's response with no totalCount on fieldValues cannot itself catch.
   const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 725, title: "row" }] }), [725]);
-  assert.throws(() => fetchBoardItems({ run }), /1 open ready row\(s\) came back with no Status/);
-  assert.throws(() => fetchBoardItems({ run }), /#725/);
+  const readTouched = touchedOnBoard([]);
+  assert.throws(() => fetchBoardItems({ run, readTouched }), /1 open ready row\(s\) are not accounted for/);
+  assert.throws(() => fetchBoardItems({ run, readTouched }), /IN THIS READ WITH NO STATUS[\s\S]*#725/);
+  // #2157: and it is NOT reported as off the board -- the item WAS in the page, only its Status was not.
+  assert.throws(() => fetchBoardItems({ run, readTouched }), (error: Error) => {
+    assert.doesNotMatch(error.message, /OFF THE BOARD/);
+    return true;
+  });
 });
 
 test("fetchBoardItems: a ready row missing from the board entirely is also refused and named", () => {
   const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 1, title: "unrelated", status: "Ready" }] }), [725]);
-  assert.throws(() => fetchBoardItems({ run }), /#725/);
+  assert.throws(() => fetchBoardItems({ run, readTouched: touchedOnBoard([]) }), /#725/);
+});
+
+// --- #2157, measured 2026-09-23: a row absent from the items connection is one of TWO unrelated things,
+// and the refusal asserted the second over both. #2093, #2092 and #2094 were open with no project item at
+// all while the message said "not the board being wrong"; #2093 once boarded took ~25 minutes to appear in
+// this query's own pagination although its per-issue read returned it at once. ---
+
+test("#2157 ACCEPTANCE, MUTATION TARGET: a ready row with NO item on the Project is refused as OFF THE "
+  + "BOARD, and the refusal does NOT tell the reader the board is fine", () => {
+  const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 1, title: "unrelated", status: "Ready" }] }), [2093]);
+  assert.throws(() => fetchBoardItems({ run, readTouched: touchedOnBoard([]) }), (error: Error) => {
+    assert.match(error.message, /OFF THE BOARD -- THE BOARD IS WRONG, NOT THIS READ: #2093/);
+    // The sentence the live refusal printed over exactly this row. It must not survive on this arm.
+    assert.doesNotMatch(error.message, /not the board being wrong/);
+    assert.doesNotMatch(error.message, /NOT YET IN THIS QUERY'S PAGES/);
+    return true;
+  });
+});
+
+test("#2157: a ready row the per-issue read DOES find on the Project is refused as a SHORT READ of the "
+  + "pagination -- same input to this function, opposite verdict, decided by the injected read", () => {
+  const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 1, title: "unrelated", status: "Ready" }] }), [2093]);
+  assert.throws(() => fetchBoardItems({ run, readTouched: touchedOnBoard([2093]) }), (error: Error) => {
+    assert.match(error.message, /NOT YET IN THIS QUERY'S PAGES -- THE READ IS SHORT: #2093/);
+    assert.doesNotMatch(error.message, /OFF THE BOARD/);
+    return true;
+  });
+});
+
+test("#2157: the discriminating read is asked ONLY about the rows absent from the items connection -- "
+  + "not about the ready rows the page already accounted for", () => {
+  const run = dualRun(page({ nodes: [
+    { id: "PVTI_1", number: 717, title: "boarded, no Status" },
+    { id: "PVTI_2", number: 718, title: "boarded, with Status", status: "Ready" },
+  ] }), [717, 718, 2093]);
+  const asked: number[][] = [];
+  assert.throws(() => fetchBoardItems({
+    run,
+    readTouched: (ns) => { asked.push([...ns]); return touchedOnBoard([])(ns); },
+  }), /#2093/);
+  assert.deepEqual(asked, [[2093]]);
+});
+
+test("#2157: a refused discriminating read is CANNOT TELL, loudly -- the floor still refuses, the rows "
+  + "are still named, and neither arm is asserted on the strength of a read that did not happen", () => {
+  const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 1, title: "unrelated", status: "Ready" }] }), [2093]);
+  assert.throws(() => fetchBoardItems({
+    run,
+    readTouched: () => { throw new Error("board-snapshot: could not read Project 1's item for #2093 -- FORBIDDEN"); },
+  }), (error: Error) => {
+    assert.match(error.message, /CANNOT TELL off-board from short-read: #2093/);
+    assert.match(error.message, /FORBIDDEN/);
+    assert.doesNotMatch(error.message, /OFF THE BOARD/);
+    assert.doesNotMatch(error.message, /NOT YET IN THIS QUERY'S PAGES/);
+    return true;
+  });
 });
 
 test("fetchBoardItems: two ready rows both missing Status are both named", () => {
@@ -350,7 +549,7 @@ test("fetchBoardItems: two ready rows both missing Status are both named", () =>
     { id: "PVTI_1", number: 717, title: "a" },
     { id: "PVTI_2", number: 718, title: "b" },
   ] }), [717, 718]);
-  assert.throws(() => fetchBoardItems({ run }), /#717, #718/);
+  assert.throws(() => fetchBoardItems({ run, readTouched: touchedOnBoard([]) }), /#717, #718/);
 });
 
 test("fetchBoardItems: an empty ready population (fetchReady: () => []) skips the check entirely -- "
@@ -369,18 +568,19 @@ test("fetchBoardItems: an empty ready population (fetchReady: () => []) skips th
 
 test("readyRowsMissingStatus: excludeIssueNumber removes exactly that row from the report, even though "
   + "it is genuinely ready with no Status -- the #891 self-trip shape", () => {
-  assert.deepEqual(readyRowsMissingStatus([], [891], 891), []);
+  assert.deepEqual(readyRowsMissingStatus([], [891], 891), { absentFromItems: [], boardedWithoutStatus: [] });
 });
 
 test("readyRowsMissingStatus: excludeIssueNumber does not blind the floor to a DIFFERENT ready row "
   + "missing its Status -- only the named row is exempt", () => {
   const items = [{ itemId: "PVTI_1", number: 717, title: "unrelated", status: null, state: "OPEN" }];
-  assert.deepEqual(readyRowsMissingStatus(items, [717, 891], 891), [717]);
+  assert.deepEqual(readyRowsMissingStatus(items, [717, 891], 891),
+    { absentFromItems: [], boardedWithoutStatus: [717] });
 });
 
 test("readyRowsMissingStatus: excludeIssueNumber defaults to null, excluding nothing -- every existing "
   + "caller (a plain snapshot, an audit) sees every row honestly", () => {
-  assert.deepEqual(readyRowsMissingStatus([], [725]), [725]);
+  assert.deepEqual(readyRowsMissingStatus([], [725]), { absentFromItems: [725], boardedWithoutStatus: [] });
 });
 
 test("fetchBoardItems: excludeIssueNumber threaded through end-to-end reproduces the #891 fix -- a "
@@ -393,7 +593,7 @@ test("fetchBoardItems: excludeIssueNumber threaded through end-to-end reproduces
 test("fetchBoardItems, MUTATION TARGET: excludeIssueNumber naming the WRONG row still refuses -- proving "
   + "the exclusion is by number, not a blanket bypass of the floor", () => {
   const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 891, title: "row" }] }), [891]);
-  assert.throws(() => fetchBoardItems({ run, excludeIssueNumber: 1 }), /#891/);
+  assert.throws(() => fetchBoardItems({ run, readTouched: touchedOnBoard([]), excludeIssueNumber: 1 }), /#891/);
 });
 
 // --- #852: ONE SWEEP PER PROCESS ----------------------------------------------------------------
