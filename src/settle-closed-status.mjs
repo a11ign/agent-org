@@ -251,6 +251,25 @@ export function shortReadRefusal(items, closedRowsOnBoard) {
 }
 
 /**
+ * #2081, ADDED ON REVIEW: WHAT A FAILED **FLOOR** READ MEANS -- and it is deliberately NOT
+ * `boardReadRefusal`.
+ *
+ * The board read is DEGRADED in CI: its cause is #546's unreadable Project, a ceiling no operator can
+ * lift, and turning trunk red for it would make the repair's own arrival the outage. **The floor's
+ * population is a plain issue search, which CI's token can make**, so nothing here is a ceiling and
+ * nothing here may borrow that exit-0 bridge -- including the truncation refusal, whose whole purpose is
+ * to be louder than a silent partial population. Exported rather than left inline in `main()` for
+ * `boardReadRefusal`'s reason: a decision that lives only in an entry point is one no test holds.
+ *
+ * @param {string} message the message the population read threw
+ * @returns {{ degraded: boolean, line: string }} `degraded` is always false, and that is the decision
+ */
+export function floorReadRefusal(message) {
+  return { degraded: false, line: "SETTLE-BOARD: CANNOT ASK -- the floor's own population could not be "
+    + `read, so this pass cannot tell a complete board read from a partial one: ${message}` };
+}
+
+/**
  * #2081, ADDED ON REVIEW: THE FLOOR'S OWN POPULATION READ, AS THE ARGV `gh` IS GIVEN.
  *
  * **The first version of this floor sampled, and called the sample a population.** It asked for the 100

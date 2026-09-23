@@ -13,7 +13,7 @@ import {
   settleClosedStatus, refusalCause, unsettledVerdict, PROJECT_UNREADABLE,
   // #2081: the board-keyed pass's pure pieces, in the same pure module and for the same reason.
   closedRowsToSettle, settleBoardRows, boardReadRefusal, shortReadRefusal,
-  closedRowsQuery, closedRowsFromRead,
+  closedRowsQuery, closedRowsFromRead, floorReadRefusal,
 } from "../settle-closed-status.mjs";
 // The Project this repo actually has, from the one module that declares it -- so the search qualifier
 // below is pinned against the real identity rather than against a literal retyped in the assertion.
@@ -452,4 +452,22 @@ test("#2081 the live wiring supplies the declared Project and a cap below GitHub
     + "ceiling, past which 'raise the limit' stops being a remedy");
   assert.equal(/const FLOOR_LIMIT = (\d+);/.test("const FLOOR_LIMIT = FLOOR_SAMPLE;"), false,
     "CONTROL: the pattern above can fail -- it does not match a cap that is not a literal number");
+});
+
+test("#2081 a failed FLOOR read is CANNOT ASK, and never borrows the board read's exit-0 bridge", () => {
+  // The board read's own DEGRADED cause, handed to the floor's classifier instead: CI's unreadable
+  // Project is a ceiling no operator can lift, and that is why `boardReadRefusal` forgives it.
+  const ciRead = "board-snapshot: could not read Project 1 items -- refusing to snapshot a partial board. "
+    + "NOT_FOUND (organization.projectV2): Could not resolve to a ProjectV2 with the number 1.";
+  assert.equal(boardReadRefusal(ciRead).degraded, true, "CONTROL: the BOARD read forgives exactly this");
+  assert.equal(floorReadRefusal(ciRead).degraded, false,
+    "and the floor never does, whatever the cause looks like -- its population is a plain issue search "
+    + "CI's token can make, so nothing reaching here is a ceiling");
+  const truncated = floorReadRefusal("settle-closed-rows: gh returned exactly the requested limit (500)");
+  assert.equal(truncated.degraded, false,
+    "least of all the truncation refusal, whose whole purpose is to be louder than a silent partial "
+    + "population -- exit 0 here would restore the defect two reviewers found");
+  assert.match(truncated.line, /SETTLE-BOARD: CANNOT ASK -- the floor's own population could not be read/);
+  assert.match(truncated.line, /exactly the requested limit \(500\)/,
+    "and it carries the cause rather than summarising it");
 });

@@ -44,7 +44,7 @@ import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
 import { settleBoardRows, settleClosedStatus, boardReadRefusal, shortReadRefusal,
-  closedRowsQuery, closedRowsFromRead } from "./settle-closed-status.mjs";
+  closedRowsQuery, closedRowsFromRead, floorReadRefusal } from "./settle-closed-status.mjs";
 // The repository this pass reads, from the one place that names it.
 import { REPO } from "../../../scripts/repo-identity.mjs";
 // The token-carrying halves, imported HERE (an entry point) and injected, so the decision module stays
@@ -118,17 +118,14 @@ function main() {
     process.exit(degraded ? EXIT.DONE : EXIT.CANNOT_ASK);
   }
 
-  // SEPARATE FROM THE BOARD READ, because they fail differently and one of them must stay loud. The board
-  // read above is DEGRADED in CI (#546's ceiling, which no operator can lift); the floor's population is a
-  // plain issue search that CI's token can make, so a failure here is a real one -- including the
-  // truncation refusal -- and must never borrow the board read's exit-0 bridge.
+  // SEPARATE FROM THE BOARD READ, because they fail differently and one of them must stay loud --
+  // `floorReadRefusal`'s header carries the reasoning and the test that holds it.
   let boardedClosedRows;
   try {
     boardedClosedRows = closedRowsOnProject();
   } catch (cause) {
-    console.error(`${LOG_PREFIX}: CANNOT ASK -- the floor's own population could not be read, so this pass `
-      + `cannot tell a complete board read from a partial one: `
-      + `${cause instanceof Error ? cause.message : String(cause)}`);
+    const { line } = floorReadRefusal(cause instanceof Error ? cause.message : String(cause));
+    console.error(line);
     process.exit(EXIT.CANNOT_ASK);
   }
 
