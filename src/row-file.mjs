@@ -97,9 +97,10 @@ import {
 } from "./acceptance-commands.mjs";
 import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
+import { flagValue, refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
 import { leakRefusalReason } from "../../lab/src/packaging/leak-patterns.mjs";
-import { missingTemplateFields, wholeSuiteAcceptanceReason } from "./row-claim/template-fields-rule.mjs";
+import { missingTemplateFields, templateFieldsReason, wholeSuiteAcceptanceReason }
+  from "./row-claim/template-fields-rule.mjs";
 import { waitingLanguageWarning } from "./row-claim/waiting-language-rule.mjs";
 import { moveProjectStatus, filedByLine, fetchLabels as fetchIssueLabels, ensureLabelsExist } from "./row-claim.mjs";
 import { PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapshot.mjs";
@@ -107,6 +108,12 @@ import { launchGate } from "./board-snapshot-scope.mjs";
 import { REPO } from "../../../scripts/repo-identity.mjs";
 import { declaredRegionFiles, directoryReservations, extractLabeledSection, extractRegionSection, slashlessDirectoryEntries, unrecognisedRegionPaths } from "./region-paths.mjs";
 import { loadLanes, inLane } from "./lane-ownership.mjs";
+// #2111: both labels from the leaf module that OWNS them (#804), never the strings retyped -- a promotion
+// must refuse a row that is already claimed, and it writes `ready` four times. `ready-label-audit.test.ts`
+// enforces exactly this: a fresh local declaration of any of the four, anywhere in this directory, is a
+// finding -- and that guard reads RAW source, so this note must not spell one out either. It caught this
+// very comment first.
+import { CLAIM_LABEL, READY_LABEL } from "./claim-labels.mjs";
 
 /** @type {(cmd: string, args: string[]) => string} */
 const defaultRun = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8" });
@@ -697,7 +704,8 @@ export function milestoneRefusal(milestones) {
 export function boardingFor(argv) {
   // #1322: a filer who writes `--label=ready` means `--ready`. Read as anything else it came out `backlog`
   // AND `ready` (#1315), a row saying "take me" and "not yet" at once.
-  const ready = argv.includes(READY_FLAG) || labelValuesFromArgv(argv).some((label) => sameLabel(label, "ready"));
+  const ready = argv.includes(READY_FLAG)
+    || labelValuesFromArgv(argv).some((label) => sameLabel(label, READY_LABEL));
   return ready ? { label: "ready", status: "Ready" } : { label: "backlog", status: "Backlog" };
 }
 
@@ -709,8 +717,24 @@ export function boardingFor(argv) {
  */
 const sameLabel = (a, b) => a.toLowerCase() === b.toLowerCase();
 
+/**
+ * #2111: the OTHER board label, named -- the promote act below has to say it four times (remove it, read
+ * it back, and name it in two refusals), and a literal repeated is how the third hand write went missing.
+ *
+ * `READY_LABEL` is IMPORTED from `claim-labels.mjs`, the leaf that owns it; this one is declared locally
+ * because `backlog` is not a claim-lifecycle label and that file's header says it holds exactly four.
+ * `ready-label-audit.mjs` declares its own for the same reason, and the alternative -- an import edge
+ * between the filing tool and the audit for the sake of one string -- is the worse trade: it would pull
+ * `row-file`'s whole rule-set graph into a check that runs nightly with no build. The trade is stated
+ * rather than hidden; both files now say it ONCE each where they previously said it inline.
+ */
+const BACKLOG_LABEL = "backlog";
+
+/** The Project Status option a promoted row must end on -- the same name as its label, by #844's rule. */
+const READY_STATUS = "Ready";
+
 /** The two board labels, which `boardAndVerify` applies after the Status move (#844) and nothing else may. */
-const BOARD_LABELS = Object.freeze(["backlog", "ready"]);
+const BOARD_LABELS = Object.freeze([BACKLOG_LABEL, READY_LABEL]);
 
 /** One comma list, split the way `gh` splits it. @param {string} value */
 const splitLabels = (value) => value.split(",").map((label) => label.trim()).filter(Boolean);
@@ -790,7 +814,7 @@ export function labelRefusal(argv, laneLabels) {
       + "guard reads (#883), so a typed lane that differs would send the row to a lane that cannot merge it. Fix "
       + "the Region, or drop the --label. Nothing was filed.";
   }
-  if (boardingFor(argv).label === "ready" && given.some((label) => sameLabel(label, "backlog"))) {
+  if (boardingFor(argv).label === "ready" && given.some((label) => sameLabel(label, BACKLOG_LABEL))) {
     return "row-file: REFUSING to file -- this filing says both `ready` and `backlog`. `--ready` (or "
       + "`--label ready`) boards it Ready; no board flag boards it Backlog. Give one. Nothing was filed.";
   }
@@ -1241,8 +1265,312 @@ export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels
   return { ok: true };
 }
 
+// ---------------------------------------------------------------------------------------------------
+// #2111: PROMOTION -- the SECOND act this file owns, and the one that was three separate hand writes.
+//
+// Filing gets a row's label and its board Status right in one act, and says so in this file's own header.
+// Promoting one did not exist here at all: `gh issue edit --add-label ready`, `gh issue edit
+// --remove-label backlog`, and a Status move to `Ready`, typed by hand, in any order, by whoever
+// remembered. Miss the second and the row carries `backlog` AND `ready`, which nothing reported --
+// measured 2026-09-23 on #2050 and #2110, both in that state for roughly 25 minutes, both found by a
+// person rather than by a check.
+//
+// WHAT THAT COSTS IS NOT WHAT IT LOOKS LIKE. `backlog` is not in `work-gate.mjs`'s `NOT_PICKABLE`, so a
+// doubly-labelled row is still offered and still claimable -- nobody is hidden. The cost is DOUBLE-COUNTED
+// STOCK: `readPromotableRows` reads `--label backlog` SERVER-SIDE and then filters only on `NOT_STARTABLE`
+// and `waitingOn`, neither of which excludes `ready`. A promoted row that keeps `backlog` is counted as
+// promotable backlog WHILE ALSO BEING READY, which distorts exactly the two judgments keyed on those
+// populations (`ready-queue-empty`, `lane-backlog-unpromoted`) -- the same shape as #1899 and #1804's
+// `meta` case, both recorded in the comments around that very function.
+//
+// FIXED AT THE SOURCE, NOT IN EVERY READER (`ceo`'s direction, 2026-09-23). Teaching `readPromotableRows`
+// to ignore a row carrying `ready` would leave the row wrong on the board, in the Ready lane view, in the
+// WIP count and in the audit, and would fix only the one reader that happened to be measured.
+// ---------------------------------------------------------------------------------------------------
+
+/** #2111: the one flag that makes this invocation a PROMOTE rather than a FILE. */
+const PROMOTE_FLAG = "--promote=";
+
+/**
+ * The row this invocation promotes, or `null` when `--promote=` is absent, empty, or names something
+ * that is not a positive integer. Read through `flagValue`, the shared extractor `cli-flags.mjs` owns,
+ * rather than a sixteenth hand-rolled copy of the same three lines -- that file's own header records
+ * what the one copy that drifted did.
+ *
+ * `null` for BOTH "absent" and "malformed" on purpose: `main` routes on the flag's PRESENCE, so by the
+ * time this is asked the flag is known to be there and `null` can only mean the value is unusable.
+ * @param {string[]} argv
+ * @returns {number | null}
+ */
+export function promoteFromArgv(argv) {
+  const value = (flagValue(argv, "promote") ?? "").trim();
+  return /^[1-9]\d*$/.test(value) ? Number(value) : null;
+}
+
+/**
+ * #2111: EVERY OTHER ARGUMENT, REFUSED -- a promotion files nothing, so a `--title`, `--body`, `--label`
+ * or `--milestone` beside it is a caller who thinks they are filing. `refuseUnknownFlags` cannot catch
+ * these: they are flags this command genuinely knows, on the other of its two paths, and a flag silently
+ * ignored on the path you are actually on is the exact defect that file exists to end.
+ *
+ * `--session=<name>` is the one exception, ACCEPTED AND ECHOED in the success line rather than ignored:
+ * every other act in this org names its session, and a refusal there would put friction on the act whose
+ * whole purpose is to be used instead of three hand writes.
+ * @param {string[]} argv
+ * @returns {string | null}
+ */
+export function promoteArgvRefusal(argv) {
+  const stray = argv.filter((a) => !a.startsWith(PROMOTE_FLAG) && !a.startsWith("--session="));
+  if (stray.length === 0) return null;
+  return `row-file: REFUSING to promote -- \`${PROMOTE_FLAG}<n>\` takes no argument but \`--session=<name>\`, `
+    + `and ${stray.length} other(s) were given: ${stray.join(", ")}. A promotion FILES NOTHING: it adds `
+    + `\`${READY_LABEL}\`, removes \`${BACKLOG_LABEL}\` and moves the Status of a row that already exists. `
+    + "Nothing was changed.";
+}
+
+/**
+ * #2111 clause 2: IS THE ROW STILL CLAIMABLE AS IT STANDS? Asked of the row's EXISTING body, through the
+ * two rules that already own this question -- `templateFieldsReason` (the claim side's own refusal,
+ * which names the issue number) and `fileRefusalReason` (the filing side's, this file's own) -- never a
+ * third copy that could drift from either.
+ *
+ * NOT HYPOTHETICAL, and that is why this clause is in the row. #2050 needed an `## Open-check` written
+ * and a duplicated `## Acceptance` heading demoted AT PROMOTION TIME: a promote act that skipped these
+ * would have published an unclaimable Ready row, which is a worse state than the unpromoted one it came
+ * from -- the gate offers it, a session claims it, and `row-claim` refuses after the round trip.
+ *
+ * `fileRefusalReason`'s own wording says "REFUSING to file". Kept verbatim rather than reworded, because
+ * the alternative is a second set of strings saying the same thing, and the trailing line below says
+ * plainly which body was asked and when.
+ * @param {string | null} body @param {number} issueNumber
+ * @returns {string | null}
+ */
+export function promoteRefusalReason(body, issueNumber) {
+  const fields = templateFieldsReason(body ?? "", issueNumber);
+  if (fields) return `row-file: REFUSING to promote -- ${fields}`;
+  const filing = fileRefusalReason(body);
+  if (!filing) return null;
+  return `${filing}\n  Asked of #${issueNumber}'s EXISTING body at promotion time, in the filing rule's own `
+    + "wording: a body that could not be FILED as it stands must not be made Ready either, because Ready "
+    + "is where a claimant meets it. Nothing was changed.";
+}
+
+/**
+ * #2111: THE THREE WRITES AS TWO CALLS, AND THE SECOND ONE IS WHY THIS ROW EXISTS.
+ *
+ * `--add-label ready` and `--remove-label backlog` go to ONE `gh issue edit`, so GitHub applies both in a
+ * single request and no reader -- the gate, the board, the audit, another session -- can ever observe the
+ * row carrying both. That is the same rule `row-claim.mjs`'s `writeRowLabels` already follows on the
+ * claim side, and the reason `ready-label-audit.mjs` can state that a hand claim is PROOF the claim was
+ * made outside the mechanism. Two `gh issue edit` calls would reproduce the 25-minute window this row
+ * measured, merely narrower, and a narrower wrong state is the harder one to find.
+ *
+ * Each half is asked for only when it is needed, so promoting a row that is ALREADY half-promoted (the
+ * measured state: both labels) repairs it with a single `--remove-label`, and promoting an already-Ready
+ * row writes no labels at all and still verifies all three facts below.
+ * @param {string[]} labels the row's labels BEFORE the promotion
+ * @returns {string[]} the `gh issue edit` arguments, or `[]` when both labels are already right
+ */
+export function promotionLabelArgs(labels) {
+  const args = [];
+  if (!labels.some((l) => sameLabel(l, READY_LABEL))) args.push("--add-label", READY_LABEL);
+  if (labels.some((l) => sameLabel(l, BACKLOG_LABEL))) args.push("--remove-label", BACKLOG_LABEL);
+  return args;
+}
+
+/**
+ * #2111: what a FRESH read fails to confirm about a promotion -- named, never a boolean, for the reason
+ * `unverifiedFilingFields` gives: a reader repairing a half-promoted row needs to know WHICH of the three
+ * did not stick.
+ *
+ * THE MIDDLE CLAUSE IS AN ABSENCE, and it is the one the rest of this row is about. The other two ask
+ * whether something landed; this asks whether something LEFT, and it is the only one of the three that
+ * was never checked by anything before today.
+ * @param {{ labels: string[], boardStatus: string | null }} after
+ * @returns {string[]} empty when the promotion is confirmed
+ */
+export function unverifiedPromotionFields(after) {
+  const missing = [];
+  if (!after.labels.some((l) => sameLabel(l, READY_LABEL))) missing.push(`the \`${READY_LABEL}\` label`);
+  if (after.labels.some((l) => sameLabel(l, BACKLOG_LABEL))) {
+    missing.push(`the REMOVAL of \`${BACKLOG_LABEL}\` -- it is still on the row, which is exactly the `
+      + "double-counted stock #2111 is about, reported here rather than passed over");
+  }
+  if (after.boardStatus !== READY_STATUS) {
+    missing.push(after.boardStatus === null
+      ? `Project ${PROJECT_NUMBER} membership`
+      : `Project ${PROJECT_NUMBER} Status (reads "${after.boardStatus}", not "${READY_STATUS}")`);
+  }
+  return missing;
+}
+
+/**
+ * #2111: everything that must be true BEFORE anything is written -- the row exists, is open, is not
+ * already claimed, and its body is still claimable. Every refusal here leaves the row untouched.
+ * @param {number} issueNumber
+ * @param {{ run: typeof defaultRun, fetchLabels: typeof fetchIssueLabels }} deps
+ * @returns {{ refusal: string } | { refusal: null, before: { labels: string[] } }}
+ */
+function promoteGate(issueNumber, { run, fetchLabels }) {
+  /** @type {{ labels: string[], state?: string }} */
+  let before;
+  try {
+    before = fetchLabels(issueNumber, { run });
+  } catch (error) {
+    return { refusal: `row-file: REFUSING to promote -- #${issueNumber}'s labels could not be read, and a `
+      + `promotion that cannot see what the row already carries cannot know what to write. `
+      + `${/** @type {Error} */ (error).message}` };
+  }
+  // `state` is OPTIONAL on `fetchLabels`' own contract (#752) -- absent reads as "not verified closed",
+  // never as closed, so a caller's fixture that omits it behaves exactly as an open row does.
+  if (before.state === "CLOSED") {
+    return { refusal: `row-file: REFUSING to promote -- #${issueNumber} is CLOSED. Ready means a session `
+      + "may pick it up now, and nothing may pick up a closed row. Reopen it first if it is still work." };
+  }
+  if (before.labels.includes(CLAIM_LABEL)) {
+    return { refusal: `row-file: REFUSING to promote -- #${issueNumber} is already claimed (\`${CLAIM_LABEL}\`). `
+      + `Promoting it would leave \`${READY_LABEL}\` beside \`${CLAIM_LABEL}\`, which \`ready-label-audit\` `
+      + "reports as a HAND CLAIM -- a state `row-claim.mjs`'s own atomic label write can never produce, so "
+      + "the audit would name the mechanism as the culprit. Decline the claim first (`row-claim.mjs decline "
+      + `${issueNumber} --session=<whoever holds it>\`), which restores \`${READY_LABEL}\` by itself.` };
+  }
+  /** @type {string} */
+  let body;
+  try {
+    body = run("gh", ["issue", "view", String(issueNumber), "--repo", REPO, "--json", "body", "--jq", ".body"]);
+  } catch (error) {
+    return { refusal: `row-file: REFUSING to promote -- #${issueNumber}'s body could not be read, so the `
+      + `claimability check below could not be asked. ${/** @type {Error} */ (error).message}` };
+  }
+  const reason = promoteRefusalReason(body, issueNumber);
+  return reason ? { refusal: reason } : { refusal: null, before };
+}
+
+/**
+ * #2111: the read-back, and the only place a promotion is allowed to report success.
+ *
+ * `boardAndVerify`'s pattern, inherited for the reason it was built: a promotion that reports success
+ * without confirming the board is the drift it exists to close.
+ * @param {number} issueNumber @param {string | null} session
+ * @param {{ run: typeof defaultRun, fetchBoardStatus: typeof fetchIssueBoardStatus,
+ *   fetchLabels: typeof fetchIssueLabels }} deps
+ * @returns {{ ok: true, message: string } | { ok: false, code: number, message: string }}
+ */
+function verifyPromotion(issueNumber, session, { run, fetchBoardStatus, fetchLabels }) {
+  /** @type {{ labels: string[], boardStatus: string | null }} */
+  let after;
+  try {
+    after = { labels: fetchLabels(issueNumber, { run }).labels,
+      boardStatus: fetchBoardStatus(issueNumber, { run }) };
+  } catch (error) {
+    return { ok: false, code: 2, message: `row-file: #${issueNumber}'s promotion was WRITTEN but could not `
+      + `be read back, so it is unconfirmed rather than done. ${/** @type {Error} */ (error).message}` };
+  }
+  const missing = unverifiedPromotionFields(after);
+  if (missing.length > 0) {
+    return { ok: false, code: 2, message: `row-file: #${issueNumber} was written, but the read-back does not `
+      + `confirm it -- missing: ${missing.join("; ")}. Refusing to report a promotion it could not confirm.` };
+  }
+  const by = session ? ` by ${session}` : "";
+  return { ok: true, message: `PROMOTED #${issueNumber}${by} -- \`${READY_LABEL}\` on, \`${BACKLOG_LABEL}\` `
+    + `off, Project ${PROJECT_NUMBER} Status "${READY_STATUS}"; all three confirmed by a fresh read.` };
+}
+
+/**
+ * #2111: the Status FIRST, then the one label edit, then the read-back.
+ *
+ * THAT ORDER IS LOAD-BEARING, and for a different reason than filing's. `boardAndVerify` labels last so
+ * no reader ever sees `ready` on a row with no Status (#867's floor). Here the row already HAS a Status,
+ * so the argument is the other one: the label edit sits behind the Status move, so a Status failure
+ * writes nothing at all and leaves the row exactly as it was. There is no order in which both steps can
+ * fail safely; this is the one in which the FIRST failure is a no-op.
+ * @param {number} issueNumber @param {string | null} session @param {{ labels: string[] }} before
+ * @param {{ run: typeof defaultRun, fetchBoardStatus: typeof fetchIssueBoardStatus,
+ *   fetchLabels: typeof fetchIssueLabels, moveStatus: typeof moveProjectStatus,
+ *   ensureLabels: typeof ensureLabelsExist }} deps
+ * @returns {{ ok: true, message: string } | { ok: false, code: number, message: string }}
+ */
+function writePromotion(issueNumber, session, before, deps) {
+  const { run, moveStatus, ensureLabels } = deps;
+  const statusResult = moveStatus(issueNumber, READY_STATUS, { run });
+  if (!statusResult.moved) {
+    return { ok: false, code: 1, message: `row-file: REFUSING to promote -- #${issueNumber}'s Status could `
+      + `not be moved to "${READY_STATUS}": ${statusResult.reason}\n  NOTHING was relabelled: the label `
+      + "edit sits behind the Status move and never ran, so the row is exactly as it was. Fix the board "
+      + "and run this again -- there is no half-promotion to clean up first." };
+  }
+  const labelArgs = promotionLabelArgs(before.labels);
+  if (labelArgs.length > 0) {
+    try {
+      // #749's lesson, the same one `boardAndVerify` pays: `--add-label` refuses a label the repository
+      // does not already have. Only asked for when the add is actually in this edit.
+      if (labelArgs.includes(READY_LABEL)) ensureLabels([READY_LABEL], { run });
+      run("gh", ["issue", "edit", String(issueNumber), "--repo", REPO, ...labelArgs]);
+    } catch (error) {
+      return { ok: false, code: 2, message: `row-file: #${issueNumber}'s Status is now "${READY_STATUS}" but `
+        + `\`${labelArgs.join(" ")}\` failed -- ${/** @type {Error} */ (error).message}. The row is `
+        + `HALF-PROMOTED: Ready on the board, still labelled \`${BACKLOG_LABEL}\`, and counted as `
+        + `promotable stock until the labels are fixed. Apply them:\n    gh issue edit ${issueNumber} `
+        + `--repo ${REPO} ${labelArgs.join(" ")}` };
+    }
+  }
+  return verifyPromotion(issueNumber, session, deps);
+}
+
+/**
+ * #2111: promote #`issueNumber` to Ready as ONE act -- add `ready`, remove `backlog`, move the Status,
+ * and report nothing until a fresh read-back confirms all three.
+ *
+ * Every dependency is injectable for the same reason `createIssue`'s are: a test proves the order, the
+ * single label edit, each refusal and the read-back without spawning a real `gh` or reaching GitHub.
+ * Module-local, unlike `boardAndVerify`: `promoteRow` is the only caller and the only seam the tests
+ * need, so exporting this as well would be a second front door onto one act.
+ * @param {number} issueNumber @param {string | null} session
+ * @param {{ run: typeof defaultRun, fetchBoardStatus: typeof fetchIssueBoardStatus,
+ *   fetchLabels: typeof fetchIssueLabels, moveStatus: typeof moveProjectStatus,
+ *   ensureLabels: typeof ensureLabelsExist }} deps
+ * @returns {{ ok: true, message: string } | { ok: false, code: number, message: string }}
+ */
+function promoteAndVerify(issueNumber, session, deps) {
+  const gate = promoteGate(issueNumber, deps);
+  if (gate.refusal !== null) return { ok: false, code: 1, message: gate.refusal };
+  return writePromotion(issueNumber, session, gate.before, deps);
+}
+
+/**
+ * #2111: the CLI's promote path. Exit 1 means REFUSED and nothing was changed; exit 2 means something was
+ * written and could not be confirmed -- `createIssue`'s own two codes, meaning the same two things.
+ * @param {string[]} argv
+ * @param {{ run?: typeof defaultRun, fetchBoardStatus?: typeof fetchIssueBoardStatus,
+ *   fetchLabels?: typeof fetchIssueLabels, moveStatus?: typeof moveProjectStatus,
+ *   ensureLabels?: typeof ensureLabelsExist }} [deps]
+ * @returns {number} the process exit code
+ */
+export function promoteRow(argv, deps = {}) {
+  const merged = { run: defaultRun, fetchBoardStatus: fetchIssueBoardStatus, fetchLabels: fetchIssueLabels,
+    moveStatus: moveProjectStatus, ensureLabels: ensureLabelsExist, ...deps };
+  const stray = promoteArgvRefusal(argv);
+  if (stray) {
+    process.stderr.write(`${stray}\n`);
+    return 1;
+  }
+  const issueNumber = promoteFromArgv(argv);
+  if (issueNumber === null) {
+    process.stderr.write(`row-file: \`${PROMOTE_FLAG}<n>\` needs a row number -- \`${PROMOTE_FLAG}2111\`. `
+      + "Nothing was changed.\n");
+    return 1;
+  }
+  const result = promoteAndVerify(issueNumber, sessionFromArgv(argv), merged);
+  if (!result.ok) {
+    process.stderr.write(`${result.message}\n`);
+    return result.code;
+  }
+  process.stdout.write(`${result.message}\n`);
+  return 0;
+}
+
 function main() {
-  refuseUnknownFlags([...KNOWN_GH_ISSUE_CREATE_FLAGS, "--session=", READY_FLAG],
+  refuseUnknownFlags([...KNOWN_GH_ISSUE_CREATE_FLAGS, "--session=", READY_FLAG, PROMOTE_FLAG],
     { entry: import.meta.url, command: "npm run row-file --" });
   // #1352: from the primary checkout or a plain clone, refuse before filing anything -- exit 1, createIssue's own
   // "refused, nothing filed" code.
@@ -1250,7 +1578,10 @@ function main() {
     process.exitCode = 1;
     return;
   }
-  process.exitCode = createIssue(process.argv.slice(2));
+  // #2111: routed on the flag's PRESENCE, never on its value -- a `--promote=` naming something unusable
+  // must reach `promoteRow`'s own refusal rather than fall through and try to FILE a row.
+  const argv = process.argv.slice(2);
+  process.exitCode = argv.some((a) => a.startsWith(PROMOTE_FLAG)) ? promoteRow(argv) : createIssue(argv);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();

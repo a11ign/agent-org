@@ -31,6 +31,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendFiledBy, boardAndVerify, boardingFor, bodyFromArgv, createIssue, directoryRegionWarning, fetchIssueBoardStatus, acceptanceShapeRefusal, fileRefusalReason, issueNumberFromUrl, labelRefusal, labelValuesFromArgv, laneLabelsFor, milestoneRefusal, withAcceptanceLane, openCheckTranscriptRefusal, sessionFromArgv, slashlessDirectoryWarning, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy, withoutLabels } from "../row-file.mjs";
+import { promoteArgvRefusal, promoteFromArgv, promoteRefusalReason, promoteRow,
+  promotionLabelArgs, unverifiedPromotionFields } from "../row-file.mjs";
+import { CLAIM_LABEL } from "../claim-labels.mjs";
 import { filedByLine } from "../row-claim.mjs";
 import { REPO } from "../../../../scripts/repo-identity.mjs";
 
@@ -1699,4 +1702,214 @@ test("#2099 CONTROL: the SAME row carrying the declaration files clean -- the ru
   assert.equal(fileRefusalReason(body), null,
     "and `null` is this rule's answer rather than another check's silence: the undeclared twin above differs "
     + "in exactly the declaration line");
+});
+
+// --- #2111: the PROMOTE act -- one command for the three writes that were done by hand ---
+//
+// Filing gets a row's label and Status right in one act; promoting one did not exist here at all.
+// `gh issue edit --add-label ready`, `gh issue edit --remove-label backlog` and a Status move, typed by
+// hand, by whoever remembered. Measured 2026-09-23: #2050 and #2110 were promoted by hand and both
+// carried `backlog` AND `ready` for roughly 25 minutes, the only two of eight ready rows in that state.
+// Every dependency below is injected, exactly as the filing tests inject theirs: no spawn, no network.
+
+const PROMOTE_URL_BODY = COMPLETE_BODY;
+
+/**
+ * The happy-path promote dependencies. `labelsBefore` is what the row carries BEFORE the act, and
+ * `labelsAfter` what the read-back sees -- two separate fixtures on purpose, because the whole subject of
+ * this row is the difference between them.
+ */
+function promoteDeps(overrides: Record<string, unknown> = {}) {
+  const labelsBefore = ["backlog", "lane:any"];
+  const labelsAfter = ["ready", "lane:any"];
+  let read = 0;
+  return {
+    run: (_cmd: string, args: string[]) => (args.includes("body") ? PROMOTE_URL_BODY : ""),
+    fetchLabels: () => {
+      read += 1;
+      return { number: 2111, title: "a real row", state: "OPEN" as const,
+        labels: read === 1 ? labelsBefore : labelsAfter };
+    },
+    fetchBoardStatus: () => "Ready",
+    moveStatus: () => ({ moved: true as const }),
+    ensureLabels: () => {},
+    ...overrides,
+  };
+}
+
+test("#2111 ACCEPTANCE, MUTATION TARGET: one promote act moves the Status to Ready and then adds "
+  + "`ready` and removes `backlog` IN ONE `gh issue edit` -- a single call, so no reader can ever "
+  + "observe the row carrying both, which is the whole of this row's defect", () => {
+  const order: string[] = [];
+  let editArgs: string[] | null = null;
+  const code = promoteRow(["--promote=2111", "--session=worker-capture"], {
+    ...promoteDeps({
+      moveStatus: (n: number, s: string) => { order.push(`status:${s}`); return { moved: true as const }; },
+    }),
+    run: (_cmd: string, args: string[]) => {
+      if (args[0] === "issue" && args[1] === "edit") { order.push("edit"); editArgs = args; }
+      return args.includes("body") ? PROMOTE_URL_BODY : "";
+    },
+  });
+  assert.equal(code, 0);
+  // Status FIRST, then exactly ONE label edit. Two edits would reproduce the measured window, narrower.
+  assert.deepEqual(order, ["status:Ready", "edit"],
+    `the Status moves before a single label edit -- got: ${JSON.stringify(order)}`);
+  assert.deepEqual(editArgs, ["issue", "edit", "2111", "--repo", REPO,
+    "--add-label", "ready", "--remove-label", "backlog"],
+    "the add and the remove travel in the SAME gh issue edit call");
+});
+
+test("#2111 ACCEPTANCE: promotionLabelArgs puts the add and the remove in one argument list, and asks "
+  + "for each half only when it is needed", () => {
+  // The unpromoted row: both halves.
+  assert.deepEqual(promotionLabelArgs(["backlog", "lane:any"]),
+    ["--add-label", "ready", "--remove-label", "backlog"]);
+  // The measured half-promoted state (#2050, #2110): the add already happened, so this REPAIRS it with
+  // the one write that was missed -- running the act on a drifted row is how the drift is cleared.
+  assert.deepEqual(promotionLabelArgs(["backlog", "ready"]), ["--remove-label", "backlog"]);
+  // Already promoted correctly: nothing to write at all, and the read-back below still verifies.
+  assert.deepEqual(promotionLabelArgs(["ready", "lane:any"]), []);
+});
+
+test("#2111 ACCEPTANCE: a row already carrying both labels is repaired by a single --remove-label, and "
+  + "reported promoted once the read-back confirms it", () => {
+  let editArgs: string[] | null = null;
+  let reads = 0;
+  const code = promoteRow(["--promote=2050"], {
+    ...promoteDeps(),
+    fetchLabels: () => {
+      reads += 1;
+      return { number: 2050, title: "half-promoted", state: "OPEN" as const,
+        labels: reads === 1 ? ["backlog", "ready", "lane:any"] : ["ready", "lane:any"] };
+    },
+    run: (_cmd: string, args: string[]) => {
+      if (args[1] === "edit") editArgs = args;
+      return args.includes("body") ? PROMOTE_URL_BODY : "";
+    },
+  });
+  assert.equal(code, 0);
+  assert.deepEqual(editArgs, ["issue", "edit", "2050", "--repo", REPO, "--remove-label", "backlog"]);
+});
+
+/**
+ * #2111 clause 6: THE CONTROL FOR THE REFUSAL BELOW. A new refusal that refuses everything passes every
+ * negative test in this file and breaks the act outright, so the well-formed case is asserted first and
+ * named as the control -- the refusal tests underneath are only meaningful beside it.
+ */
+test("#2111 ACCEPTANCE, MUTATION TARGET: a well-formed row is NOT refused -- the control for the "
+  + "claimability refusal, which would otherwise pass by refusing every promotion", () => {
+  let moved = false;
+  const code = promoteRow(["--promote=2111", "--session=worker-capture"], {
+    ...promoteDeps({ moveStatus: () => { moved = true; return { moved: true as const }; } }),
+  });
+  assert.equal(code, 0, "COMPLETE_BODY carries Region, Acceptance and Open-check, so nothing may refuse it");
+  assert.ok(moved, "and the Status move actually ran rather than being skipped");
+});
+
+test("#2111 ACCEPTANCE, MUTATION TARGET: a row whose body is missing a required section is REFUSED, and "
+  + "NOTHING is written -- not the Status, not a label", () => {
+  // #2050 needed an `## Open-check` written AT PROMOTION TIME. A promote act that skipped this check
+  // would have published an unclaimable Ready row: the gate offers it, a session claims it, and
+  // `row-claim` refuses after the round trip -- a worse state than the unpromoted one it came from.
+  const incomplete = "## Region\n\npackages/lab/src/packaging/foo.ts\n\n## Acceptance\n\n```\nnpx tsx --test x\n```\n";
+  let wrote = 0;
+  const code = promoteRow(["--promote=2050"], {
+    ...promoteDeps(),
+    run: (_cmd: string, args: string[]) => {
+      if (args[1] === "edit") wrote += 1;
+      return args.includes("body") ? incomplete : "";
+    },
+    moveStatus: () => { wrote += 1; return { moved: true as const }; },
+  });
+  assert.equal(code, 1, "refused before anything was written");
+  assert.equal(wrote, 0, "no Status move and no label edit -- a refusal leaves the row exactly as it was");
+});
+
+test("#2111: the claimability refusal is the SAME rule the claim side enforces, named through "
+  + "templateFieldsReason and fileRefusalReason rather than re-derived here", () => {
+  // The refusal quotes the claim-side rule verbatim, including the issue number, so a session reading it
+  // is reading the message `row-claim` would print if they claimed the row instead.
+  const missingOpenCheck = "## Region\n\nx.ts\n\n## Acceptance\n\n```\nnpx tsx --test x\n```\n";
+  const reason = promoteRefusalReason(missingOpenCheck, 2050);
+  assert.match(String(reason), /#2050 is missing Open-check/);
+  assert.equal(promoteRefusalReason(COMPLETE_BODY, 2111), null, "and a complete body is not refused");
+  // A duplicated `## Acceptance` heading -- the OTHER thing #2050 needed fixed at promotion time --
+  // reaches the filing rule's own parser rather than a second copy of it.
+  const duplicated = `${COMPLETE_BODY}\n## Acceptance: none -- nothing to run\n`;
+  assert.match(String(promoteRefusalReason(duplicated, 2050)), /DUPLICATE/);
+});
+
+test("#2111 ACCEPTANCE: the read-back refuses to report success when `backlog` is still on the row -- "
+  + "the one clause that asks whether something LEFT", () => {
+  const code = promoteRow(["--promote=2111"], {
+    ...promoteDeps(),
+    // The write went out; the read-back still sees `backlog`. Before this row nothing asked.
+    fetchLabels: () => ({ number: 2111, title: "a real row", state: "OPEN" as const,
+      labels: ["backlog", "ready", "lane:any"] }),
+  });
+  assert.equal(code, 2, "written but unconfirmed -- createIssue's own code for exactly that");
+});
+
+test("#2111: unverifiedPromotionFields names each of the three facts separately", () => {
+  assert.deepEqual(unverifiedPromotionFields({ labels: ["ready"], boardStatus: "Ready" }), []);
+  assert.deepEqual(unverifiedPromotionFields({ labels: ["backlog"], boardStatus: "Ready" }).length, 2,
+    "`ready` absent AND `backlog` still present are two separate facts, and a reader repairing the row "
+    + "needs both named");
+  assert.match(unverifiedPromotionFields({ labels: ["ready"], boardStatus: "Backlog" })[0],
+    /reads "Backlog", not "Ready"/);
+  assert.match(unverifiedPromotionFields({ labels: ["ready"], boardStatus: null })[0], /membership/);
+});
+
+test("#2111: a Status move that fails writes NO label at all, and says so -- the order in which the "
+  + "first failure is a no-op", () => {
+  let edits = 0;
+  const code = promoteRow(["--promote=2111"], {
+    ...promoteDeps(),
+    moveStatus: () => ({ moved: false as const, reason: "is not an item in project 2", notOnBoard: true }),
+    run: (_cmd: string, args: string[]) => {
+      if (args[1] === "edit") edits += 1;
+      return args.includes("body") ? PROMOTE_URL_BODY : "";
+    },
+  });
+  assert.equal(code, 1, "nothing was written, so this is a refusal rather than a half-promotion");
+  assert.equal(edits, 0);
+});
+
+test("#2111: a CLOSED row and an already-CLAIMED row are refused, each for its own reason", () => {
+  const closed = promoteRow(["--promote=2111"], {
+    ...promoteDeps(),
+    fetchLabels: () => ({ number: 2111, title: "done", state: "CLOSED" as const, labels: ["backlog"] }),
+  });
+  assert.equal(closed, 1);
+  // Promoting a claimed row would mint `ready` + `in-progress`, which `ready-label-audit`'s hand-claim
+  // check reports as a claim made OUTSIDE row-claim.mjs -- so the promote act would make the audit
+  // blame the mechanism. `CLAIM_LABEL` is read from the module the claim path itself writes.
+  const claimed = promoteRow(["--promote=2111"], {
+    ...promoteDeps(),
+    fetchLabels: () => ({ number: 2111, title: "taken", state: "OPEN" as const,
+      labels: [CLAIM_LABEL, "session:worker-capture", "started"] }),
+  });
+  assert.equal(claimed, 1);
+});
+
+test("#2111: --promote= refuses every other filing argument rather than ignoring it, and accepts only "
+  + "--session=", () => {
+  assert.equal(promoteArgvRefusal(["--promote=2111"]), null);
+  assert.equal(promoteArgvRefusal(["--promote=2111", "--session=worker-capture"]), null);
+  // `refuseUnknownFlags` cannot catch these: they are flags this command genuinely knows, on its OTHER
+  // path, and a flag silently ignored on the path you are actually on is the defect that file exists to end.
+  assert.match(String(promoteArgvRefusal(["--promote=2111", "--title", "x"])), /--title/);
+  assert.match(String(promoteArgvRefusal(["--promote=2111", "--ready"])), /--ready/);
+});
+
+test("#2111: promoteFromArgv reads a row number and nothing else", () => {
+  assert.equal(promoteFromArgv(["--promote=2111"]), 2111);
+  assert.equal(promoteFromArgv(["--promote=0"]), null);
+  assert.equal(promoteFromArgv(["--promote=x"]), null);
+  assert.equal(promoteFromArgv(["--promote="]), null);
+  assert.equal(promoteFromArgv(["--session=x"]), null);
+  // Refused rather than promoting some other row: `main` routes on the flag's PRESENCE, so a `--promote=`
+  // naming something unusable must reach this refusal rather than fall through and try to FILE a row.
+  assert.equal(promoteRow(["--promote=nope"], promoteDeps()), 1);
 });

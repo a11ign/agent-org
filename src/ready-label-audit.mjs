@@ -74,6 +74,14 @@ import { OUT_OF_RELEASE_LABEL } from "./board-data.mjs";
 export { READY_LABEL, WAS_READY_LABEL };
 
 /**
+ * #2111: the OTHER board label, named here for the same reason `claim-labels.mjs` names the four claim
+ * ones -- `bothBoardLabels` below says it five times, and a literal said five times is how the hand
+ * promotion it reports lost one of its three writes. Declared here rather than in `claim-labels.mjs`
+ * because `backlog` is not a claim-lifecycle label and that file's header says it holds exactly four.
+ */
+const BACKLOG_LABEL = "backlog";
+
+/**
  * Every label that already means "not actually pickable", independent of `ready`.
  *
  * `in-progress` USED TO belong here (#246), and #673 split it out into its own check
@@ -831,6 +839,73 @@ function reportHandClaims() {
 }
 
 /**
+ * #2111: OPEN ROWS THAT CARRY BOTH `backlog` AND `ready` -- the state a hand promotion leaves behind.
+ *
+ * Promoting a row used to be three separate hand writes with nothing doing them together: add `ready`,
+ * remove `backlog`, move the Status to `Ready`. Miss the middle one and the row carries both, and until
+ * this check existed NOTHING reported it. Measured 2026-09-23: #2050 and #2110, promoted by hand, both
+ * in that state for roughly 25 minutes, and they were the only two of the eight ready rows in it -- the
+ * other six were clean, so this is the promotion ACT rather than drift over time. Found by `ceo`, not by
+ * any check, which is the half of the finding this function is.
+ *
+ * WHAT IT COSTS IS NOT WHAT IT LOOKS LIKE, and the message has to say so or it reads as tidying.
+ * `backlog` is not in `work-gate.mjs`'s `NOT_PICKABLE`, so the row is still offered and still claimable:
+ * nobody is hidden. The cost is DOUBLE-COUNTED STOCK -- `readPromotableRows` reads `--label backlog`
+ * SERVER-SIDE and then filters only on `NOT_STARTABLE` and `waitingOn`, neither of which excludes
+ * `ready`, so a promoted row that keeps `backlog` is counted as promotable backlog while also being
+ * ready. That distorts exactly the two judgments keyed on those populations, `ready-queue-empty` and
+ * `lane-backlog-unpromoted`, which is #1899's and #1804's recorded shape arriving through a third door.
+ *
+ * NOT `MUTEX_LABELS`, AND THE REASON IS THE REMEDY. Adding `backlog` to that list is smaller and would
+ * report the same rows -- with `mutexViolations`' generic wording, *"remove one or the other"*, which is
+ * wrong here: the promotion is a real, deliberate, later act, so the answer is always to remove
+ * `backlog`, never `ready`. Same argument `handClaims` makes for its own separate check (#673): a
+ * finding whose cause and remedy are known names them, rather than describing the contradiction.
+ *
+ * THE SOURCE-SIDE FIX IS `row-file.mjs --promote=<n>`, which writes the add and the remove in ONE
+ * `gh issue edit`, so a row promoted through it can never be observed in this state. This check is what
+ * says so when a promotion happened some other way.
+ *
+ * @param {LabelledIssue[]} issues
+ * @returns {Array<{ number: number, title: string, labels: string[] }>}
+ */
+export function bothBoardLabels(issues) {
+  return (issues ?? [])
+    .map((i) => ({ number: Number(i.number), title: String(i.title ?? ""),
+      labels: (i.labels ?? []).map((l) => String(l)) }))
+    .filter((r) => r.labels.includes(BACKLOG_LABEL) && r.labels.includes(READY_LABEL));
+}
+
+/**
+ * #2111: report every open row that carries BOTH board labels, naming the rows -- beside
+ * `reportInvisibleRows`, which catches the opposite defect (a row carrying NEITHER). One act writing
+ * three labels correctly and one check that says so when it did not are the same finding, which is why
+ * they shipped together: a fix with no detector is how the measured instance went 25 minutes unreported.
+ */
+function reportBothBoardLabels() {
+  const { issues, reportedCount } = fetchOpenIssuesChecked();
+  const rows = bothBoardLabels(issues);
+  if (rows.length === 0) {
+    process.stdout.write(`OK  ${issues.length} of ${reportedCount} open issue(s) checked, none carry both `
+      + `\`${BACKLOG_LABEL}\` and \`${READY_LABEL}\`\n`);
+    return 0;
+  }
+  for (const { number, title, labels } of rows) {
+    process.stdout.write(`HALF-PROMOTED  #${number} "${title}" -- [${labels.join(", ")}] -- carries BOTH `
+      + `\`${BACKLOG_LABEL}\` and \`${READY_LABEL}\`. It is not hidden -- \`${BACKLOG_LABEL}\` is not in `
+      + `work-gate's NOT_PICKABLE, so the row is still offered -- but \`readPromotableRows\` reads `
+      + `\`--label ${BACKLOG_LABEL}\` server-side and excludes neither \`${READY_LABEL}\` nor anything `
+      + `derived from it, so this row is counted as promotable stock WHILE ALSO BEING READY and the `
+      + `backlog reads deeper than it is\n`);
+  }
+  process.stderr.write(`\n${rows.length} row(s) were promoted without the \`${BACKLOG_LABEL}\` label being `
+    + `removed. Remove \`${BACKLOG_LABEL}\` -- never \`${READY_LABEL}\`: the promotion is the later, `
+    + `deliberate act. Then promote through the one act that writes all three together, which cannot leave `
+    + `this state: \`node packages/agent-org/src/row-file.mjs --promote=<n> --session=<you>\`.\n`);
+  return rows.length;
+}
+
+/**
  * OPEN ROWS THAT CARRY NEITHER `backlog` NOR `ready` -- INVISIBLE TO THE GATE, NOT MERELY UNTIDY.
  *
  * `reportLabelless` above catches a row with ZERO labels. This catches the commoner and quieter case: a
@@ -877,7 +952,7 @@ function reportInvisibleRows() {
  * and `readReadyRows` `ready`, both SERVER-SIDE; `readEpics` reads `epic`; a `meta` row is a process
  * thread nobody was ever meant to promote.
  */
-const REACHED_BY_A_CAUSE = ["backlog", "ready", "epic", "meta"];
+const REACHED_BY_A_CAUSE = [BACKLOG_LABEL, READY_LABEL, "epic", "meta"];
 
 /**
  * PURE. The open rows no cause can reach.
@@ -1970,6 +2045,8 @@ export const CHECKS = [
   ["filing guidance", reportGuidanceDrift],
   ["waits stated in prose", reportProseBlockers],
   ["rows no cause can reach", reportInvisibleRows],
+  // #2111: the opposite defect to the line above -- a row carrying BOTH board labels rather than neither.
+  ["half-promoted rows", reportBothBoardLabels],
 ];
 
 /**
