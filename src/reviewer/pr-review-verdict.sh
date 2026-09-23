@@ -2,7 +2,7 @@
 # Posts a reviewer's verdict as a GitHub review (#1931; ceo's 2026-09-19 ruling, #1761) AND records
 # WHICH SESSION POSTED IT, as a commit status the org can read without parsing prose (#2127).
 #
-# THE DOOR. The Codex execpolicy forbids `gh pr review` outright (~/.codex/rules/default.rules), because
+# THE DOOR. The reviewer's own execpolicy on the host forbids `gh pr review` outright, because
 # a bare prefix rule cannot tell `--approve` from `--dismiss` or `--comment` once a PR number precedes
 # the flag. This script is the one narrow way a review is posted, which is exactly why the attribution
 # belongs here: it is the only point in the whole path where the reviewing session's identity is known
