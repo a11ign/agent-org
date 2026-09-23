@@ -1105,3 +1105,26 @@ test("#2012: a tree git already reads as clean clears NOTHING -- the ordinary pa
       "and the report says nothing about clearing, because nothing was cleared");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("#2012: a tree whose ignorable paths could NOT be cleared is DIRTY, never removed and never forced", () => {
+  // The refusal this change replaces, reached by measurement instead of by a stale rule. It matters
+  // because the clearing happens by this tool's own hand: if it fails and the verdict stands, the run
+  // would either abort mid-walk or reach for `--force`, and `--force` deletes whatever appeared in the
+  // window between the status read and the removal. Found by mutation -- `report.dirty.push` swapped for
+  // `report.removed.push` here was 0 red across the other 56 tests.
+  const { root, pinned, genuine, alsoModified } = buildPinnedIgnoreFixture();
+  try {
+    const report = pruneWorktrees(root, {
+      now: LONG_AFTER(),
+      run: (cmd: string, args: string[], opts?: { cwd?: string }) => {
+        if (args[0] === "clean") { const e = new Error("cannot clear"); (e as { status?: number }).status = 128; throw e; }
+        return execFileSync(cmd, args, { ...opts, env: sandboxGitEnv(), encoding: "utf8" });
+      },
+    });
+    assert.deepEqual(report.removed, [], "nothing is removed when the tree could not be made removable");
+    assert.deepEqual(report.dirty.map((r) => r.path).sort(), [pinned, genuine, alsoModified].sort(),
+      "and the pinned tree joins the two that carry real work -- exactly where it sat before this change");
+    assert.equal(existsSync(pinned), true);
+    assert.equal(existsSync(join(pinned, "node_modules")), true, "and its untracked path is still there");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
