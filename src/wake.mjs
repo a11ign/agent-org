@@ -568,13 +568,14 @@ export function handoffOrder(handoff, now = Date.now()) {
 export const PROMPT_ARG_MAX = 131_072;
 
 /**
- * How many bytes of authored text one delivery carries.
+ * How many bytes one delivery carries -- MEASURED ON WHAT REACHES `execFileSync`, not on what the
+ * senders wrote.
  *
- * HALF THE MEASURED CEILING, ON PURPOSE, and the margin is not superstition -- three things ride on top
- * of the batch body before the kernel sees it: `addressed` prefixes the session's name and appends the
- * autonomy footer (about 2,400 characters), the batch header adds its own, and the ceiling counts BYTES
- * while a prompt full of em dashes counts fewer characters than bytes (`Buffer.byteLength` below is the
- * measure for exactly that reason).
+ * HALF THE MEASURED CEILING, ON PURPOSE, and the margin is not superstition: a batch of one order that
+ * happens to be enormous is taken anyway (see {@link fitBatch}), so the budget has to leave the kernel's
+ * ceiling somewhere above it rather than exactly at it. The ceiling also counts BYTES while a prompt
+ * full of em dashes counts fewer characters than bytes, which is why `Buffer.byteLength` is the measure
+ * everywhere below.
  *
  * It is also as much as a reader can use. 64 KiB is roughly 16k tokens of somebody else's reports in one
  * turn; the remainder is not lost, it is the next tick's delivery, and the backlog report says how much
@@ -582,8 +583,58 @@ export const PROMPT_ARG_MAX = 131_072;
  */
 export const HANDOFF_BATCH_BYTES = 64 * 1024;
 
+/**
+ * WHAT RIDES ON TOP OF THE ORDERS, reserved before the first one is charged: `batchedOrder`'s header
+ * plus `addressed`'s prefix and autonomy footer.
+ *
+ * MEASURED 2026-09-23 on a rendered batch: 647 bytes of header and 1,429 of wrapper, 2,076 together.
+ * The reserve is roughly double that because both are prose somebody will edit, and prose that grows
+ * past its reserve must fail a test rather than an `execFileSync`. `a batch reserves more than the
+ * wrapper it actually renders` is that test; this comment is not the guarantee, it is.
+ */
+export const BATCH_WRAPPER_BYTES = 4 * 1024;
+
 /** @param {{queuedAt?: number}} a @param {{queuedAt?: number}} b */
 const oldestFirst = (a, b) => Number(a.queuedAt ?? 0) - Number(b.queuedAt ?? 0);
+
+/**
+ * ONE ORDER'S HEADING INSIDE A BATCH -- written by {@link batchedOrder} AND CHARGED BY {@link fitBatch},
+ * from this one function so that the two can never disagree about what an order costs.
+ *
+ * THE DEFECT THIS CLOSES (review of #2125, reproduced before fixing): the budget counted only the
+ * AUTHORED prompt, and the heading, the batch header and `addressed`'s wrapper all rode on top of it
+ * uncharged. 3,000 valid one-byte orders therefore "fitted" in 64 KiB of authored text and rendered a
+ * 165,408-byte argv -- `E2BIG` from the kernel, a herdr refusal, and `deliverHandoffs` retaining every
+ * one of them. That is this row's own stall reached from the other side: a queue that cannot drain.
+ * The authored text is not what `execFileSync` is handed; the rendered argv is, so the rendered argv is
+ * what a budget has to be about.
+ *
+ * @param {{prompt: string, queuedAt?: number}} h
+ * @param {number} index @param {number} total @param {number} now
+ */
+function orderHeading(h, index, total, now) {
+  return `--- ORDER ${index + 1} of ${total}, queued `
+    + `${waitedFor(now - Number(h.queuedAt ?? now))} ago ---\n`;
+}
+
+/** The blank line `batchedOrder` joins consecutive orders with -- charged like everything else. */
+const ORDER_SEPARATOR_BYTES = 2;
+
+/**
+ * What one order adds to the rendered delivery: its own bytes, its heading and its separator.
+ *
+ * THE HEADING IS CHARGED AT ITS WORST CASE, which is the last position in the longest batch this queue
+ * could produce -- `ORDER 1000 of 1000` is four bytes wider than `ORDER 1 of 9`, and the batch's own
+ * size is what decides which is written. Over-charging by a few bytes an order costs a long batch its
+ * last entry at worst; under-charging costs the delivery, which is the failure above.
+ *
+ * @param {{prompt: string, queuedAt?: number}} h @param {number} queued @param {number} now
+ */
+function chargeFor(h, queued, now) {
+  return Buffer.byteLength(h.prompt, "utf8")
+    + Buffer.byteLength(orderHeading(h, queued - 1, queued, now), "utf8")
+    + ORDER_SEPARATOR_BYTES;
+}
 
 /**
  * The orders for one target that fit in one delivery, OLDEST FIRST.
@@ -595,16 +646,21 @@ const oldestFirst = (a, b) => Number(a.queuedAt ?? 0) - Number(b.queuedAt ?? 0);
  * the kernel's ceiling too then herdr refuses it and the refusal is printed, which is a loud failure
  * rather than a silent one.
  *
+ * THE BUDGET IS SPENT BEFORE THE LOOP STARTS, by {@link BATCH_WRAPPER_BYTES}, and each order is charged
+ * by {@link chargeFor} rather than by its own length. Both exist because budgeting the authored text
+ * alone let many small orders render an argv the kernel refuses; see {@link orderHeading}.
+ *
  * @template {{prompt: string, queuedAt?: number}} T
- * @param {readonly T[]} handoffs @param {number} budget @returns {{take: T[], held: T[]}}
+ * @param {readonly T[]} handoffs @param {number} budget @param {number} [now]
+ * @returns {{take: T[], held: T[]}}
  */
-export function fitBatch(handoffs, budget) {
+export function fitBatch(handoffs, budget, now = Date.now()) {
   const queue = [...handoffs].sort(oldestFirst);
   /** @type {T[]} */
   const take = [];
-  let used = 0;
+  let used = BATCH_WRAPPER_BYTES;
   for (const h of queue) {
-    const size = Buffer.byteLength(h.prompt, "utf8");
+    const size = chargeFor(h, queue.length, now);
     if (take.length > 0 && used + size > budget) break;
     take.push(h);
     used += size;
@@ -636,7 +692,7 @@ export function handoffBatches(handoffs, { now = Date.now(), budget = HANDOFF_BA
   const bySession = new Map();
   for (const h of handoffs) bySession.set(h.session, [...(bySession.get(h.session) ?? []), h]);
   return [...bySession.values()].map((forSession) => {
-    const { take, held } = fitBatch(forSession, budget);
+    const { take, held } = fitBatch(forSession, budget, now);
     // ONE ORDER IS STILL ONE ORDER, and it keeps `handoffOrder`'s exact wording and its own id as the
     // causeKey. The common case -- an author prompting one reviewer about one draft -- must not start
     // reading like a digest of itself, and `WOKE reviewer <- handoff/reviewer/1a2b3c4d` stays the line
@@ -662,8 +718,7 @@ export function handoffBatches(handoffs, { now = Date.now(), budget = HANDOFF_BA
  */
 function batchedOrder(take, held, now) {
   const oldest = waitedFor(Math.max(...take.map((h) => now - Number(h.queuedAt ?? now)), 0));
-  const body = take.map((h, i) => `--- ORDER ${i + 1} of ${take.length}, queued `
-    + `${waitedFor(now - Number(h.queuedAt ?? now))} ago ---\n${h.prompt}`).join("\n\n");
+  const body = take.map((h, i) => `${orderHeading(h, i, take.length, now)}${h.prompt}`).join("\n\n");
   return {
     session: take[0].session,
     // NOT ANY ONE ORDER'S ID. This wake answers all of them, and naming one of them in the log would

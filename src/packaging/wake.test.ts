@@ -27,7 +27,7 @@ import { handoffId, handoffQueuePath, ledgerPathFrom, readHandoffs, queueHandoff
   deliverHandoffs, handoffOrder, staleHandoffs, nothingToDeliver, HANDOFF_STALE_MS, HANDOFF_QUEUE_FILE }
   from "../wake.mjs";
 import { handoffBacklog, backlogReport, handoffBatches, fitBatch, waitedFor, staleReport,
-  PROMPT_ARG_MAX, HANDOFF_BATCH_BYTES } from "../wake.mjs";
+  PROMPT_ARG_MAX, HANDOFF_BATCH_BYTES, BATCH_WRAPPER_BYTES } from "../wake.mjs";
 
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));
@@ -1122,16 +1122,67 @@ test("A BATCH IS BOUNDED BY BYTES, AND THE KERNEL IS WHY", () => {
   // backlog it was written for.
   assert.equal(PROMPT_ARG_MAX, 131_072);
   assert.ok(HANDOFF_BATCH_BYTES * 2 <= PROMPT_ARG_MAX,
-    "and the budget leaves room for `addressed`'s wrapper and for multi-byte characters");
+    "and the budget leaves the ceiling above it, because a single oversized order is taken anyway");
 
   const now = 10 * 60 * 60 * 1000;
   const big = backlogOf("product-manager", 40, now).map((h) => ({ ...h, prompt: "x".repeat(4_000) }));
   const [batch] = handoffBatches(big, { now, budget: HANDOFF_BATCH_BYTES });
-  assert.equal(batch.ids.length, 16, "64 KiB of 4,000-byte reports");
+  assert.equal(batch.ids.length, 15, "64 KiB of 4,000-byte reports, less what the framing costs");
   assert.ok(Buffer.byteLength(addressed(batch, "product-manager"), "utf8") < PROMPT_ARG_MAX,
     "THE ASSERTION THE BOUND IS FOR: what reaches execFileSync fits in one argument");
-  assert.match(batch.prompt, /24 further order\(s\) for you did not fit/);
+  assert.match(batch.prompt, /25 further order\(s\) for you did not fit/);
   assert.match(batch.prompt, /STILL QUEUED; the next tick brings them\. Nothing has been dropped/);
+});
+
+test("MANY TINY ORDERS OVERFLOW TOO, AND THE AUTHORED TEXT IS NOT WHAT THE KERNEL COUNTS", () => {
+  // THE REVIEW BLOCKER ON #2125, PINNED. The budget used to charge only `h.prompt`, so 3,000 valid
+  // ONE-BYTE orders cost 3,000 bytes of the 64 KiB and all 3,000 were carried -- while the argv that
+  // `deliver` actually hands `execFileSync` rendered 165,408 bytes against the 131,072-byte ceiling.
+  // The kernel refused it with E2BIG, herdr reported a refusal, `deliverHandoffs` retired nothing, and
+  // the queue stalled exactly as this row describes. The per-order heading and the batch's own wrapper
+  // are 50-odd bytes and 2 KB that nobody had charged for.
+  //
+  // THE FIXTURE IS THE CONFOUND THE OTHER BOUNDS TESTS LACK: their prompts are thousands of bytes each,
+  // where framing is a rounding error and an uncharged heading changes no count. Here the framing is
+  // FIFTY TIMES the authored text, so the two readings cannot agree.
+  const now = 10 * 60 * 60 * 1000;
+  const tiny = backlogOf("product-manager", 3_000, now, 1).map((h) => ({ ...h, prompt: "x" }));
+  const [batch] = handoffBatches(tiny, { now, budget: HANDOFF_BATCH_BYTES });
+
+  assert.ok(batch.ids.length < 3_000,
+    "the batch is bounded by what it RENDERS, not by the 3,000 bytes its senders typed");
+  const argv = Buffer.byteLength(addressed(batch, "product-manager"), "utf8");
+  assert.ok(argv < PROMPT_ARG_MAX,
+    `THE ASSERTION: ${argv} bytes reach execFileSync, under the kernel's ${PROMPT_ARG_MAX}`);
+  assert.ok(argv <= HANDOFF_BATCH_BYTES,
+    `and the budget bounds the RENDERED delivery: ${argv} bytes rendered against a ${HANDOFF_BATCH_BYTES}`
+    + "-byte budget, which is what reserving the wrapper up front buys");
+  assert.ok(argv > HANDOFF_BATCH_BYTES / 2,
+    "and the bound is not achieved by carrying almost nothing -- a batch that fits by being empty "
+    + "would satisfy the lines above and starve the queue it exists to drain");
+  assert.match(batch.prompt, /further order\(s\) for you did not fit/,
+    "with the remainder named to the reader, because a bound is never a drop");
+});
+
+test("A BATCH RESERVES MORE THAN THE WRAPPER IT ACTUALLY RENDERS", () => {
+  // `BATCH_WRAPPER_BYTES` is a reserve taken before the first order is charged, and both things it
+  // reserves for -- `batchedOrder`'s header and `addressed`'s prefix and footer -- are PROSE SOMEBODY
+  // WILL EDIT. Prose that grows past its reserve has to fail here rather than at an execFileSync, so
+  // this measures the rendered wrapper instead of trusting the comment that states its size.
+  const now = 10 * 60 * 60 * 1000;
+  const three = backlogOf("product-manager", 3, now);
+  const [batch] = handoffBatches(three, { now });
+  const rendered = addressed(batch, "product-manager");
+  const orders = batch.ids.length;
+  const body = three.reduce((n, h) => n + Buffer.byteLength(h.prompt, "utf8"), 0);
+  const headings = /--- ORDER \d+ of \d+, queued [^\n]+ ---/g;
+  const framing = (batch.prompt.match(headings) ?? [])
+    .reduce((n, s) => n + Buffer.byteLength(s, "utf8") + "\n".length, 0);
+  const wrapper = Buffer.byteLength(rendered, "utf8") - body - framing - (orders - 1) * "\n\n".length;
+
+  assert.equal(orders, 3, "three orders rendered, so the subtraction above is over a real batch");
+  assert.ok(wrapper > 0 && wrapper < BATCH_WRAPPER_BYTES,
+    `the header and wrapper render ${wrapper} bytes, inside the ${BATCH_WRAPPER_BYTES}-byte reserve`);
 });
 
 test("THE BUDGET COUNTS BYTES, AND AN EM DASH COSTS THREE OF THEM", () => {
@@ -1148,7 +1199,7 @@ test("THE BUDGET COUNTS BYTES, AND AN EM DASH COSTS THREE OF THEM", () => {
   assert.equal(batch.ids.length, 5, "five orders of 12,000 bytes fit in 64 KiB; a sixth does not");
   assert.ok(Buffer.byteLength(addressed(batch, "product-manager"), "utf8") < PROMPT_ARG_MAX,
     "THE ASSERTION THE BOUND IS FOR, in the encoding the kernel uses: counting characters here would "
-    + "have taken 16 orders, 192,000 bytes, and been refused by execFileSync");
+    + "have taken 15 orders, 180,000 bytes, and been refused by execFileSync");
 });
 
 test("WHAT DID NOT FIT STAYS QUEUED -- a bound must never be a drop", () => {
@@ -1159,11 +1210,11 @@ test("WHAT DID NOT FIT STAYS QUEUED -- a bound must never be a drop", () => {
   const out = deliverHandoffs(big, agents({ "product-manager": "idle" }), ROSTER,
     { run, now, queuePath: "/q", drop: ((_p: string, ids: string[]) => dropped.push(ids)) as never });
 
-  assert.equal(out.ids.length, 16);
+  assert.equal(out.ids.length, 15);
   assert.deepEqual(dropped, [out.ids], "only what the accepted batch carried is retired");
   const left = big.filter((h) => !new Set(out.ids).has(h.id));
-  assert.equal(left.length, 24, "and the remainder is still there for the next tick");
-  assert.deepEqual(handoffBacklog(left, now).map((b) => b.waiting), [24],
+  assert.equal(left.length, 25, "and the remainder is still there for the next tick");
+  assert.deepEqual(handoffBacklog(left, now).map((b) => b.waiting), [25],
     "where the backlog report will name it -- the wait is made visible, never overridden");
 });
 
