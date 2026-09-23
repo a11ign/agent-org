@@ -430,12 +430,22 @@ export function armMerge({ number, repo }, deps = {}) {
     return { armed: true, reason: "auto-merge enabled" };
   } catch (cause) {
     const settled = waitForSettled({ number, repo }, deps);
-    if (settled !== null) return { armed: false, reason: `${settledReason(settled)} -- nothing was left to arm` };
+    if (settled !== null) return nothingLeftToArm(settledReason(settled));
     const armed = armedAlready({ number, repo, run, error });
-    if (armed !== null) return { armed: false, reason: `${armed} -- nothing was left to arm` };
+    if (armed !== null) return nothingLeftToArm(armed);
     throw cause;
   }
 }
+
+/**
+ * The one verdict `armMerge` returns for every state in which this run armed nothing AND that is
+ * correct -- #1022's two terminal ones and #2046's three armed ones. One phrase, because the caller
+ * (`runArmPr`) prints it verbatim and a reader comparing two green `arm` steps must not have to work
+ * out whether two wordings mean the same thing.
+ * @param {string | null} reason which state, from `settledReason` or `armedReason`
+ * @returns {{ armed: boolean, reason: string }}
+ */
+const nothingLeftToArm = (reason) => ({ armed: false, reason: `${reason} -- nothing was left to arm` });
 
 /**
  * The PR's labels, body and state in ONE read, or all three null when the read fails -- never a guess.
