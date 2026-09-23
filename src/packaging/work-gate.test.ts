@@ -37,7 +37,7 @@ import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReady
   ROUTED_TO, readPromotableRows, GH_READS, partitionUnclaimed, openRowState, waitingBreakdown,
   deadMansSwitch, hostDriftOrders, JUDGMENT_CAUSES,
   unfiledEpics, epicOrders, finishedEpics, finishedEpicOrders, fleetBatchRows, fleetBatchOrders,
-  partitionFleetBatch, blockerClearedOrders,
+  partitionFleetBatch, blockerClearedOrders, unclaimedBlockerClearedOrders,
   claimedRowAmendedOrders, constraintsAfterClaim, amendmentsOn, readClaimedRowComments,
   CONSTRAINT_COMMENT_MARKER, CONSTRAINT_BODY_PREFIX,
   FLEET_MILESTONE, readEpics, answersOwed, answerOrders,
@@ -727,7 +727,12 @@ test("every cause is classified as START or FINISH -- a new one cannot default i
   const finish = CAUSES.filter((c: string) => !START_CAUSES.includes(c)).sort();
   assert.deepEqual([...START_CAUSES].sort(),
     ["blocked-unexaminable", "epic-finished", "epic-unfiled", "fleet-batch-due",
-      "lane-backlog-unpromoted", "org-stalled", "ready-queue-empty", "ready-row-unclaimed"]);
+      "lane-backlog-unpromoted", "org-stalled", "ready-queue-empty", "ready-row-unclaimed",
+      "unclaimed-blocker-cleared"]);
+  // #2139: `unclaimed-blocker-cleared` is START, and it is `blocker-cleared`'s own argument read the
+  // other way. The partition turns on whether the row is work in flight, and the ONLY difference between
+  // the two causes is the claim -- which is exactly where that line falls. Nobody holds this row, so
+  // promoting it is the org TAKING ON work, and a window is for landing what is already begun.
   // #1969: `pr-green-unarmed` is FINISH. A drain stops the org TAKING ON work and must not stop it
   // finishing what is in flight -- and a green, unheld, unarmed pull request is the most finished work
   // there is. Withholding it during a window would strand exactly the PRs the window is waiting to land.
@@ -2328,6 +2333,126 @@ test("#2027: decide() routes it, and ahead of the causes that offer new work", (
   assert.ok(causes.includes("blocker-cleared"),
     "the gate could see the row become runnable and, before this, had nobody to tell");
   assert.equal(orders.find((o) => o.cause === "blocker-cleared")?.session, "worker-capture");
+});
+
+// --- #2139, the other half of #2027: nobody was told when an UNCLAIMED row's last blocker closed ----
+//
+// `blocker-cleared` above is scoped by `labelsOf(row).includes(CLAIM_LABEL)`, and that one condition is
+// the gap. A row NOBODY holds reaches no cause at all when its blockers clear: `lane-backlog-unpromoted`
+// addresses only a lane OWNER and `ready-queue-empty` fires only when the unlaned Ready pool is EMPTY.
+//
+// MEASURED 2026-09-23 ON THE LIVE TRACKER. A sweep for open rows whose every declared blocker is CLOSED
+// returned SIX -- none claimed, none `ready`, all `lane:any`, every one structurally startable -- and
+// they had been stranded 57m, 4h30m, 13h43m, 13h51m, 14h09m and 16h09m with three of five peer sessions
+// idle. The Ready queue was NOT empty (four rows), which is exactly why the one cause that would
+// eventually have looked stayed silent: a queue with depth and no throughput.
+
+/** An unclaimed backlog row -- the population `blocker-cleared` cannot see, by the one label it lacks. */
+const backlogRow = (n: number, extra: Record<string, unknown> = {}) => ({
+  number: n,
+  title: "a row whose blocker closed",
+  labels: [{ name: "backlog" }, { name: "lane:any" }],
+  ...extra,
+});
+
+test("#2139: an UNCLAIMED row whose declared blockers have ALL closed reaches product-manager", () => {
+  const [order] = unclaimedBlockerClearedOrders([backlogRow(1998,
+    { blockedBy: { nodes: [{ number: 1993, state: "CLOSED" }, { number: 1972, state: "CLOSED" }] } })], TODAY);
+  assert.equal(order?.session, "product-manager",
+    "promotion is that session's call -- agent-practices makes it first reader for rows and promotions");
+  assert.equal(order?.cause, "unclaimed-blocker-cleared");
+  assert.equal(order?.causeKey, "product-manager/unclaimed-blocker-cleared/row-1998/1972.1993",
+    "keyed on the CLEARED SET and sorted, so the same clearing is one question however GitHub orders it");
+  assert.match(order?.prompt ?? "", /#1998 \(a row whose blocker closed\)/, "the order names the row");
+  assert.match(order?.prompt ?? "", /#1972, #1993/,
+    "and what cleared, so no woken turn re-derives it -- the prompt carries the answer, not the question");
+});
+
+/**
+ * THE POSITIVE CONTROL, AND IT IS THE WHOLE ROW (#2139's own Acceptance). Each of these three negatives
+ * is a way a naive copy of `blockerClearedOrders` would announce rows that are not runnable, and a cause
+ * that fires on all three is noise -- which is how the real signal gets filtered out.
+ */
+test("#2139: the three shapes that are NOT a clearing, against the one that is", () => {
+  assert.deepEqual(unclaimedBlockerClearedOrders([backlogRow(1998)], TODAY), [],
+    "a row that never declared a blocker is not freshly unblocked -- without this, every backlog row in "
+    + "the tracker is announced on the first tick after this ships");
+  assert.deepEqual(unclaimedBlockerClearedOrders([backlogRow(1998,
+    { blockedBy: { nodes: [{ number: 1993, state: "CLOSED" }, { number: 1918, state: "OPEN" }] } })], TODAY), [],
+    "the LAST condition to clear is the one that frees a row");
+  assert.deepEqual(unclaimedBlockerClearedOrders([backlogRow(1998,
+    { ...blockedByClosed, body: "Not-before: 2026-09-30" })], TODAY), [],
+    "its `blockedBy` cleared and its `Not-before:` did not -- `waitingOn` is asked in full");
+  assert.deepEqual(unclaimedBlockerClearedOrders([{ ...backlogRow(1998), ...blockedByClosed,
+    labels: [{ name: "backlog" }, { name: `${ANSWER_PREFIX}ceo` }] }], TODAY), [],
+    "#2005's rule: a row waiting on a ruling must not be made to look free");
+  // AND THE CONTROL, same fixture shape, the only difference being that nothing else is outstanding. A
+  // reader who sees every line above empty AND this one empty has a broken fixture, not a fixed repo.
+  assert.equal(unclaimedBlockerClearedOrders([backlogRow(1998, blockedByClosed)], TODAY).length, 1,
+    "POSITIVE CONTROL: the genuinely runnable row still reaches product-manager");
+});
+
+test("#2139: a CLAIMED row is `blocker-cleared`'s, and a `ready` row is already offered", () => {
+  const claimed = { ...backlogRow(1908), ...blockedByClosed,
+    labels: [{ name: "in-progress" }, { name: "session:worker-capture" }] };
+  assert.deepEqual(unclaimedBlockerClearedOrders([claimed], TODAY), [],
+    "the two causes address different populations and must not be collapsed: this one would tell "
+    + "`product-manager` to promote a row somebody is already building");
+  assert.equal(blockerClearedOrders([claimed], TODAY).length, 1,
+    "POSITIVE CONTROL on that exclusion -- the claimed row is not dropped, it is the other cause's");
+  // `ready` IS EXCLUDED AND IT IS NOT TIDINESS. `rowOrders` already offers it, so an order asking for a
+  // promotion that has already happened is not a duplicate -- it is an order whose own subject is false.
+  assert.deepEqual(unclaimedBlockerClearedOrders([{ ...backlogRow(1998), ...blockedByClosed,
+    labels: [{ name: "ready" }, { name: "lane:any" }] }], TODAY), [],
+    "`ready-row-unclaimed` owns a row that is already on the shelf");
+});
+
+/**
+ * #1561 IS THE SECOND HALF OF THE SHAPE, and the reason this cause NAMES a hiding label rather than
+ * excluding the row. Its `blockedBy` edge cleared itself at 2026-09-23T08:28:00Z exactly as designed and
+ * it still sat 4h30m, because a hand-set `blocked` LABEL outlived the referent it named: `blocked` is in
+ * `NOT_PICKABLE`, so the self-clearing edge was overridden by the non-self-clearing label. Excluding the
+ * row would reproduce the invisibility that stranded it -- and `blocked-unexaminable`, the only other
+ * cause that could have reached it, is shelf-gated and was silent for the same four hours.
+ */
+test("#2139: a row hidden by a NOT_PICKABLE label is REPORTED with the label named, never as free", () => {
+  const [order] = unclaimedBlockerClearedOrders([{ ...backlogRow(1561), ...blockedByClosed,
+    labels: [{ name: "backlog" }, { name: "blocked" }] }], TODAY);
+  assert.ok(order, "excluding it is how #1561 sat 4h30m after its own edge cleared");
+  assert.match(order?.prompt ?? "", /IT STILL CARRIES `blocked`/,
+    "the order must not report a row that nothing will pick up as free");
+  assert.match(order?.prompt ?? "", /4h30m/, "and it names what that cost, so the answer is one edit");
+  const clean = unclaimedBlockerClearedOrders([backlogRow(1998, blockedByClosed)], TODAY);
+  assert.doesNotMatch(clean[0]?.prompt ?? "", /IT STILL CARRIES/,
+    "POSITIVE CONTROL on the sentence: a row with nothing hiding it does not carry the warning, so the "
+    + "assertion above is not matching text every order has");
+});
+
+test("#2139: the cause is in the CAUSES contract wake.mjs routes on, and is START and JUDGMENT", () => {
+  assert.ok(CAUSES.includes("unclaimed-blocker-cleared"),
+    "a cause the gate computes and does not publish reaches nobody, which is this row's entire subject -- "
+    + "and worker-profile refuses an unlisted cause at run time");
+  assert.ok(START_CAUSES.includes("unclaimed-blocker-cleared"),
+    "nobody holds this row, so promoting it is the org TAKING ON work -- the line the partition draws");
+  assert.ok(JUDGMENT_CAUSES.includes("unclaimed-blocker-cleared"),
+    "\"it stays in backlog\" does not stop being true twenty minutes later; an ACTION expiry would re-ask "
+    + "it for ever, which is the treadmill measured on lane-backlog-unpromoted");
+});
+
+test("#2139: decide() routes it, and NOT behind an empty-shelf gate", () => {
+  const orders = decide({ prs: [], readyRows: [readyRow(2222)],
+    openRows: [backlogRow(1998, blockedByClosed)] });
+  const order = orders.find((o) => o.cause === "unclaimed-blocker-cleared");
+  assert.equal(order?.session, "product-manager",
+    "the Ready queue was NOT empty on 2026-09-23 -- four rows -- which is exactly why `ready-queue-empty` "
+    + "stayed silent while six rows sat runnable. Depth is not throughput.");
+  const causes = orders.map((o) => o.cause);
+  assert.ok(causes.indexOf("ready-row-unclaimed") < causes.indexOf("unclaimed-blocker-cleared"),
+    "behind the offers: a row already on the shelf can be claimed this minute, this one needs promoting");
+  assert.deepEqual(decide({ prs: [], readyRows: [readyRow(2222)],
+    openRows: [backlogRow(1998, blockedByClosed)], drain: true })
+    .filter((o) => o.cause === "unclaimed-blocker-cleared"), [],
+    "a transfer window stops the org taking on work, and this is the plainest case of taking some on");
 });
 
 // --- #2110: a row that moved under the session holding it ------------------------------------------

@@ -300,6 +300,24 @@ export const PROFILES = Object.freeze({
     why: "resuming a parked claim is the same multi-step build as taking a fresh row, with the prior "
       + "state to re-establish on top of it",
   }),
+  "unclaimed-blocker-cleared": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // MEDIUM, AND IT IS `blocker-cleared`'s PROFILE WITH THE EXPENSIVE HALF REMOVED. That one is priced
+    // HIGH because what it asks for is the ROW BUILT; this one asks `product-manager` whether a row that
+    // is now startable should carry `ready`, and the build -- if it happens at all -- is somebody else's
+    // turn afterwards. The gate has already handed over the row, the set that cleared and any label
+    // still hiding it, so nothing here is gathered and nothing is diagnosed from an absence: it is
+    // judgment over material already in the prompt, which `agent-practices.md` routes to sonnet.
+    //
+    // NOT HIGH, THOUGH `lane-backlog-unpromoted` IS, and the difference is the population rather than
+    // the question. That cause hands a lane owner a WHOLE LANE to survey and a wrong call strands rows
+    // nobody else may touch; this one is a single named row in the unlaned pool, where a wrong call
+    // costs one row one tick -- the next clearing of a different set is a new causeKey and asks again.
+    effort: "medium",
+    why: "deciding whether one named, now-startable row should be promoted, with the row, the cleared "
+      + "set and any hiding label already in the prompt -- judgment over gathered material, not a build",
+  }),
   "claimed-row-amended": Object.freeze({
     kind: "claude",
     // SONNET AND MEDIUM, AND THE EFFORT IS THE ONE DECISION HERE. The order already names the marker and
