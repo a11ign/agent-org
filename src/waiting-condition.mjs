@@ -153,6 +153,75 @@ export function waitingOn(row, today) {
 }
 
 /**
+ * The `Fleet-hold-until:` line, or `null` -- THE FOURTH WAITING CONDITION, AND IT LIVED SOMEWHERE ELSE.
+ *
+ * IT WAS DECLARED IN `packages/control/src/fleet-playbook.mjs` (#1839), whose own comment calls it "the
+ * fourth" of this file's shapes while implementing it a package away. #2005 had already paid for exactly
+ * that: `ANSWER_PREFIX` was spelled in `work-gate.mjs`, so every OTHER reader of "is this row waiting on
+ * something" answered `no` for three days about rows the gate itself was holding. A waiting condition
+ * declared in the file that CONSUMES it can only ever be read by that consumer's own code paths, and this
+ * module's first line promises it is the ONE reader, imported and never retyped. That promise is only
+ * true of conditions declared here. `fleet-playbook.mjs` now imports and re-exports this name, so every
+ * existing caller and test is untouched.
+ *
+ * SECONDS REQUIRED, not optional. A `Not-before:` date is always ten characters, so lexical comparison is
+ * chronological comparison for free -- a timestamp is not: `T10:30Z` sorts AFTER `T10:30:15Z` lexically
+ * (`Z` > `:`), which would read a later-declared, earlier-expiring hold as still live. Callers compare
+ * PARSED time, which removes the trap either way; requiring seconds here means a malformed field is
+ * refused as a whole rather than half-parsed.
+ *
+ * A MALFORMED TIMESTAMP IS NOT A HOLD -- it fails OPEN, matching `notBeforeDate`'s rule for a malformed
+ * date: a typo must leave the row visible to a human, never hide a live sequence silently.
+ *
+ * DIGIT-SHAPED IS NOT CALENDAR-VALID, and `Date.parse` silently ROLLS OVER a date that does not exist
+ * rather than refusing it -- `2026-02-31T04:00:00Z` parses to 2026-03-03, three days later than typed.
+ * That is the wrong direction of error for a HOLD: a typo would silently EXTEND a live sequence's window
+ * rather than failing open the way this function's own rule requires. So the matched text is round-
+ * tripped through `Date` and compared back against itself; a date `Date` had to repair is refused, not
+ * silently accepted with a different meaning than its author typed (reviewer, #1841).
+ *
+ * @param {string | null | undefined} body
+ * @returns {string | null}
+ */
+export function fleetHoldUntil(body) {
+  const m = /^[ \t]*#{0,6}[ \t]*Fleet-hold-until:[ \t]*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)[ \t]*$/im
+    .exec(String(body ?? ""));
+  if (!m) return null;
+  const candidate = m[1];
+  const parsed = new Date(candidate);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString().slice(0, 19) === candidate.slice(0, 19) ? candidate : null;
+}
+
+/**
+ * What a FLEET-GATED row is waiting on -- `waitingOn` plus the one condition only the fleet has.
+ *
+ * A SEPARATE FUNCTION RATHER THAN A FOURTH BRANCH INSIDE `waitingOn`, and the scope is the argument.
+ * `waitingOn` decides whether a row is promotable, offerable and reachable for the WHOLE org; a
+ * `Fleet-hold-until:` says a capture sequence owns the fleet until a named second, which stops a fleet
+ * batch and stops nothing else. Folding it in would have shelved held rows out of the engineer pool too
+ * -- a behaviour change nobody asked for, on a population nobody measured.
+ *
+ * THE GENERAL CONDITIONS ARE ASKED FIRST, matching `waitingOn`'s own rule: a row that already reported a
+ * wait reports the same one, so this can only ever change the answer for a row previously reported as
+ * waiting on NOTHING.
+ *
+ * @param {{blockedBy?: {nodes?: {number?: number, state?: string}[]}, body?: string,
+ *   labels?: ({name?: string} | string)[]}} row
+ * @param {string} [today] an ISO `YYYY-MM-DD`
+ * @param {number} [nowMs] injected for the same reason `todayIso` takes `now` -- a test moves the clock
+ * @returns {{kind: "row", numbers: number[]} | {kind: "date", date: string}
+ *   | {kind: "answer", session: string} | {kind: "fleet-hold", until: string} | null}
+ */
+export function fleetWaitingOn(row, today = todayIso(), nowMs = Date.now()) {
+  const general = waitingOn(row, today);
+  if (general) return general;
+  const until = fleetHoldUntil(row?.body);
+  if (until !== null && Date.parse(until) > nowMs) return { kind: "fleet-hold", until };
+  return null;
+}
+
+/**
  * Today as `YYYY-MM-DD`, UTC -- the same alphabet `Not-before:` is written in.
  *
  * VIA `Date.now()` RATHER THAN A BARE `new Date()`, so a test can move the clock without threading a
@@ -169,11 +238,14 @@ export const todayIso = (now = new Date(Date.now())) => now.toISOString().slice(
  * the answer "the same way `blocked by #1918` is reported today" -- and it has to, because unlike a date
  * this condition is cleared by a PERSON, so the report is only actionable if it says which one.
  *
- * @param {{kind: string, numbers?: number[], date?: string, session?: string}} waiting
+ * @param {{kind: string, numbers?: number[], date?: string, session?: string, until?: string}} waiting
  */
 export function describeWaiting(waiting) {
   if (waiting.kind === "row") return `blocked by ${(waiting.numbers ?? []).map((n) => `#${n}`).join(", ")}`;
   if (waiting.kind === "answer") return `waiting on ${waiting.session} to answer`;
+  // NAMED, NOT COUNTED, for the same reason the session is: a fleet hold is cleared by the SEQUENCE that
+  // declared it reaching its end, so a reader deciding whether to wait needs the timestamp itself.
+  if (waiting.kind === "fleet-hold") return `holding the fleet until ${waiting.until}`;
   return `not before ${waiting.date}`;
 }
 
