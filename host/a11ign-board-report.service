@@ -19,6 +19,11 @@ Description=Dispatch the a11y-witness board-report workflow (#1234)
 [Service]
 Type=oneshot
 
+# THE CHECKOUT A REPOSITORY-RELATIVE ExecStart RESOLVES AGAINST, which this unit did not need until
+# #1998 put its program in the tree. The same line, the same path, as the other three units that run
+# code from this repository.
+WorkingDirectory=/home/agent/repos/a11y-witness
+
 # PATH IS DECLARED BECAUSE A SYSTEMD UNIT DOES NOT GET A LOGIN SHELL'S -- the same reason
 # a11ign-work-tick.service and a11ign-corpus-release-nightly.service both state their own.
 #
@@ -58,11 +63,25 @@ Environment=HOME=/home/agent
 # the run's actor, from a person to the account the org's other machinery already uses.
 Environment=GH_CONFIG_DIR=/home/agent/workers/gh
 
-# THE SCRIPT IS NOT SHIPPED HERE AND THAT IS A REMAINING GAP, deliberately left rather than missed:
-# #1993 scoped itself to the units and #1998 owns the script, on the same footing as the `gh` wrapper
-# (#1974's own exclusion). `unitsSpendingGh` treats an out-of-tree ExecStart as UNANALYSABLE rather than
-# as clean, which is why this unit is charged for an identity it cannot be read to need.
-ExecStart=/home/agent/.local/bin/board-report-dispatch.sh
+# THE PROGRAM, SHIPPED HERE AND RUN FROM HERE -- #1998, the gap #1993 named and deliberately left.
+# Until this line it read `/home/agent/.local/bin/board-report-dispatch.sh`: 31 lines of bash written by
+# hand on this host and carried by no commit anywhere, so every property declared above -- which `gh` is
+# on the PATH, which account it spends -- was a property of a `gh` call inside a file nobody here could
+# read, and the next edit to it reached production with no diff, no review and no test.
+#
+# `/usr/bin/bash <repository-relative path>` AND NOT AN ABSOLUTE PATH TO THE CHECKOUT, which is the same
+# shape `a11ign-corpus-release-nightly.service` already uses for its `.mjs`
+# (`/usr/bin/node packages/lab/scripts/corpus-release-nightly.mjs`). The relative half is what
+# `unitEntryPoints` resolves against ITS OWN checkout, so the analysis works in a worktree and in CI
+# rather than only in the one directory `WorkingDirectory` happens to name. Reading the shebang instead
+# would buy nothing: `set -euo pipefail` is in the script either way.
+#
+# AND IT IS NOT COPIED ANYWHERE. The units are copied into ~/.config/systemd/user because systemd will
+# not read them from the tree; nothing makes that demand of a script, and a second copy is the exact
+# defect #1858 is about -- a merged edit that does not reach the host until somebody reinstalls. The
+# tree copy IS the program, so there is no CURRENT question to ask about it. `host:check` reports the
+# superseded ~/.local/bin copy until it is removed, and would report a new one the day it appeared.
+ExecStart=/usr/bin/bash packages/agent-org/host/board-report-dispatch.sh
 
 # NO [Install] SECTION, and its absence is load-bearing. `WantedBy=default.target` -- which the other
 # shipped services carry -- would start this oneshot at every boot, and every boot would dispatch

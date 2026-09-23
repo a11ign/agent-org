@@ -37,6 +37,7 @@ import { READY_LABEL, CLAIM_LABEL } from "./claim-labels.mjs";
 import { verdictAtHead } from "./review-verdict.mjs";
 import { waitingOn, fleetWaitingOn, todayIso, describeWaiting, ANSWER_PREFIX } from "./waiting-condition.mjs";
 import { newestPerName } from "./newest-check-run.mjs";
+import { parityOwner } from "./review-attribution.mjs";
 import { NO_VERDICT } from "./merge-guard/checks-rule.mjs";
 // B4, ASKED EARLY. These are the SAME two functions `row-claim.mjs` runs at claim time, imported
 // rather than reimplemented: `region-paths.mjs`'s own header records why a second copy of "what
@@ -1800,8 +1801,10 @@ function draftOrder(pr, required = null) {
   if (found.verdict !== null) return settledVerdictOrder(pr, found, head8);
 
   // ODD/EVEN PARITY IS THE ORG'S OWN SPLIT (`.claude/rules/agent-practices.md`): odd PR numbers go to
-  // `reviewer`, even to `reviewer-2`. Stated there, applied here, spelled in neither twice.
-  const session = Number(pr.number) % 2 === 1 ? "reviewer" : "reviewer-2";
+  // `reviewer`, even to `reviewer-2`. Stated there, applied here, spelled in neither twice -- and since
+  // #2127 the arithmetic itself lives in `review-attribution.mjs`, beside the reader that checks whether
+  // a posted review obeyed it. A detector with its own copy would agree with a router that had drifted.
+  const session = parityOwner(pr.number);
   return {
     session,
     cause: "draft-awaiting-verdict",
