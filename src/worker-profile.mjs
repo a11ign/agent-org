@@ -125,6 +125,19 @@ export const PROFILES = Object.freeze({
     why: "fixing a red build is debugging, and a wrong guess costs a full CI cycle on top of the tokens, "
       + "so the cheaper tier is not cheaper here",
   }),
+  "pr-green-unarmed": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // HIGH, and the reason is the FORK rather than the act. Arming a pull request by hand is one command;
+    // deciding WHICH of two situations this is, is not. One unarmed PR means that PR never got an arming
+    // event; all of them unarmed means the arming credential is refusing and nothing in the repository
+    // can arm anything until its pool returns (#1969, measured 2026-09-22: 28 minutes, two finished PRs
+    // stranded, found by accident). Getting the fork wrong in the cheap direction arms one PR by hand and
+    // leaves the outage running, which is the exact failure this cause exists to end.
+    effort: "high",
+    why: "the act is one command; telling a repository-wide credential outage from one PR that missed "
+      + "its arming event is the judgment, and the cheap answer leaves the outage running",
+  }),
   "ready-queue-empty": Object.freeze({
     kind: "claude",
     model: "sonnet",

@@ -327,12 +327,32 @@ export function unarmedCandidates(nodes) {
     .map((pr) => String(pr.number));
 }
 
+/**
+ * The `gh` ARGUMENTS for one read of the open pull requests against main, with every field
+ * `armedFromApi` decides on.
+ *
+ * SPLIT FROM THE CALL FOR #1969, so a second reader can make this exact read with its own `run` without
+ * a second copy of the QUERY. The field list is not decoration: drop `mergeQueueEntry` from a copy and
+ * `armedFromApi` silently answers `false` for every pull request sitting in the merge queue, which is
+ * precisely the defect #2004 measured against #1999. `armedFromApi`'s own comment says a fourth armed
+ * state must be added in ONE place; this keeps the read that feeds it in one place too.
+ *
+ * `work-gate.mjs` is that second reader. It cannot import the CALL -- it injects its own `run` and must
+ * keep working before any `npm ci` -- but it must not ask a different question either.
+ *
+ * @param {string} repo `owner/name`
+ * @returns {string[]}
+ */
+export function openPullRequestsQueryArgs(repo) {
+  const [owner, name] = String(repo).split("/");
+  return ["api", "graphql", "-f", `query=${CANDIDATES_QUERY}`,
+    "-f", `o=${owner}`, "-f", `r=${name}`, "-f", `b=${CANDIDATE_BASE}`, "-F", `limit=${CANDIDATE_LIMIT}`,
+    "--jq", ".data.repository.pullRequests.nodes"];
+}
+
 /** One read of the open pull requests against main, with every field `armedFromApi` decides on. @param {string} repo */
 function readOpenPullRequests(repo) {
-  const [owner, name] = String(repo).split("/");
-  return JSON.parse(gh(["api", "graphql", "-f", `query=${CANDIDATES_QUERY}`,
-    "-f", `o=${owner}`, "-f", `r=${name}`, "-f", `b=${CANDIDATE_BASE}`, "-F", `limit=${CANDIDATE_LIMIT}`,
-    "--jq", ".data.repository.pullRequests.nodes"]));
+  return JSON.parse(gh(openPullRequestsQueryArgs(repo)));
 }
 
 /**

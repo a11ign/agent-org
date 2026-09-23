@@ -632,8 +632,11 @@ test("every cause is classified as START or FINISH -- a new one cannot default i
   assert.deepEqual([...START_CAUSES].sort(),
     ["blocked-unexaminable", "epic-finished", "epic-unfiled", "fleet-batch-due",
       "lane-backlog-unpromoted", "org-stalled", "ready-queue-empty", "ready-row-unclaimed"]);
+  // #1969: `pr-green-unarmed` is FINISH. A drain stops the org TAKING ON work and must not stop it
+  // finishing what is in flight -- and a green, unheld, unarmed pull request is the most finished work
+  // there is. Withholding it during a window would strand exactly the PRs the window is waiting to land.
   assert.deepEqual(finish, ["answer-owed", "chairman-blocked", "draft-awaiting-verdict",
-    "draft-convinced-not-ready", "pr-checks-failing", "verdict-not-convinced"]);
+    "draft-convinced-not-ready", "pr-checks-failing", "pr-green-unarmed", "verdict-not-convinced"]);
   for (const cause of START_CAUSES) {
     assert.ok(CAUSES.includes(cause), `${cause} is withheld by a drain but no longer exists`);
   }
