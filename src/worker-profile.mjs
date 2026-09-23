@@ -250,6 +250,34 @@ export const PROFILES = Object.freeze({
     why: "resuming a parked claim is the same multi-step build as taking a fresh row, with the prior "
       + "state to re-establish on top of it",
   }),
+  "claimed-row-amended": Object.freeze({
+    kind: "claude",
+    // SONNET AND MEDIUM, AND THE EFFORT IS THE ONE DECISION HERE. The order already names the marker and
+    // quotes what the row now carries, so the woken turn is not diagnosing anything -- it reads one
+    // constraint and decides whether the work in hand still satisfies it. That is judgment over a
+    // handed-over fact, which `agent-practices.md` routes to sonnet, not the multi-step build
+    // `ready-row-unclaimed`/`blocker-cleared` ask for: those two arrive at an EMPTY worktree and have to
+    // build a row, while this one arrives mid-build with the context already loaded.
+    model: "sonnet",
+    effort: "medium",
+    why: "reading one declared constraint against work already in hand -- the gate hands over the marker "
+      + "and the row, so nothing here is diagnosed from an absence and nothing is built from scratch",
+  }),
+  "row-branch-unshipped": Object.freeze({
+    kind: "claude",
+    // SONNET AND MEDIUM, AND THE EFFORT IS THE DECISION. This order is NOT a build and must not be
+    // priced as one: the work it is about already exists on `origin`, and the three exits the order
+    // names -- open its pull request, delete the branch, rename it -- are each one command. What the
+    // woken turn actually does is READ a diff and decide which of the three it is, over a branch and a
+    // sha the order has already handed it. That is judgment over gathered material, which
+    // `agent-practices.md` routes to sonnet, and it is the same shape as `claimed-row-amended` rather
+    // than `ready-row-unclaimed`/`blocker-cleared`: those two arrive at an empty worktree and have to
+    // build a row from a brief.
+    model: "sonnet",
+    effort: "medium",
+    why: "reading one branch's diff and choosing between three named one-command exits -- the work "
+      + "already exists on origin, so nothing here is built and nothing is diagnosed from an absence",
+  }),
   "ready-row-unclaimed": Object.freeze({
     kind: "claude",
     model: "sonnet",

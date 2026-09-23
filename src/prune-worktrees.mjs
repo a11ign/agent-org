@@ -170,7 +170,7 @@ export function isPrimaryWorktree(worktreePath) {
  * @typedef {{
  *   path: string, branch: string | null,
  *   merge: "merged" | "not-merged" | "unknown", workingTreeClean: boolean | "unknown", contentMerged: boolean,
- *   recentlyActive: boolean | "unknown",
+ *   recentlyActive: boolean | "unknown", ignorable: string[],
  * }} WorktreeAssessment
  */
 
@@ -332,17 +332,98 @@ export function isContentMerged(repoRoot, branch, { run = defaultRun } = {}) {
  * @param {{ run?: typeof defaultRun }} [deps]
  * @returns {boolean | "unknown"}
  */
-export function isWorkingTreeClean(worktreePath, { run = defaultRun } = {}) {
+export function isWorkingTreeClean(worktreePath, deps = {}) {
   // #696, THE THIRD SITE, and THE PARAMETER IS GONE WITH IT. This took a `branch` and said
   // `if (branch === null) return false` -- asserting a detached worktree is DIRTY without running
   // `git status`, which takes no branch name and answers identically either way. Keeping the parameter
   // unused would leave the next reader believing the answer depends on it.
+  return cleanliness(worktreePath, deps).clean;
+}
+
+/**
+ * #2012: WHOSE IGNORE RULES DECIDE, AND WHY THE TREE'S OWN ARE THE WRONG ONES.
+ *
+ * A linked worktree reads the `.gitignore` AT ITS OWN CHECKED-OUT COMMIT. #1983/#1994 widened this
+ * repository's rule from `node_modules/` (a directory only) to `node_modules` (also a SYMLINK), and that
+ * fix cannot reach a tree cut before it -- so `git status --porcelain` in 84 of the 128 worktrees the
+ * first scheduled prune examined (2026-09-22) read exactly `?? node_modules`, and will read it at every
+ * firing for as long as the tree exists. That is not a prune defect: the answer git gave was correct for
+ * that tree. It is the wrong tree to have asked.
+ *
+ * So the PRIMARY checkout is asked instead -- `git check-ignore` run at today's `main`. The file already
+ * consults the primary for exactly this class of judgement (`unverifiedRecords` compares `runs/` records
+ * against it, #1373), so this is a move the module already makes rather than a new dependency.
+ *
+ * THE TRISTATE, from `mergeStatus`'s own shape: `check-ignore` exits 1 for its documented "no rule
+ * matched" answer and 128 when it could not ask at all (a path outside the repository, an unreadable
+ * authority). Reading "anything non-zero" as "not ignored" would be safe HERE -- it refuses -- and would
+ * still be the collapse this file exists to stop, so 128 is `"unknown"` and reaches INCONCLUSIVE.
+ *
+ * NOT `--no-index`, deliberately. Without it, a path the primary TRACKS reads as not-ignored even when a
+ * rule also matches it, so a force-added file is refused rather than removed. The conservative arm is the
+ * default arm.
+ *
+ * @param {string} authorityPath the checkout whose ignore rules decide -- the primary, in every real call
+ * @param {string} path a path relative to the worktree root, as `git status --porcelain` printed it
+ * @param {{ run?: typeof defaultRun }} [deps]
+ * @returns {boolean | "unknown"}
+ */
+export function ignoredByAuthority(authorityPath, path, { run = defaultRun } = {}) {
   try {
-    const status = run("git", ["status", "--porcelain"], { cwd: worktreePath });
-    return status.trim() === "";
-  } catch {
-    return "unknown";
+    run("git", ["check-ignore", "-q", "--", path], { cwd: authorityPath });
+    return true;
+  } catch (error) {
+    const status = /** @type {{ status?: number }} */ (error).status;
+    return status === 1 ? false : "unknown";
   }
+}
+
+/**
+ * `isWorkingTreeClean`'s answer PLUS the untracked paths that produced it -- because a verdict of
+ * "removable" is worth nothing here unless the removal can then happen. `git worktree remove` runs its
+ * OWN `git status` inside the tree and refuses on `?? node_modules` exactly as this predicate used to
+ * (verified: `fatal: ... contains modified or untracked files, use --force to delete it`). `ignorable`
+ * names the paths `pruneWorktrees` must clear first, so git's second guard stays ARMED rather than being
+ * waved through with `--force`: anything that appears between the read and the removal still refuses.
+ *
+ * `ignorable` is EMPTY on every answer but a clean one reached through the authority, so the ordinary
+ * path -- a tree git already reads as clean -- clears nothing and behaves exactly as before.
+ *
+ * WHAT THIS IS NOT: `--untracked-files=no`. An untracked path that today's `main` does not ignore is
+ * still work, and still refuses; #220's unrecoverable case is a brand-new file nobody added, which no
+ * ignore rule matches. A TRACKED modification refuses whatever else is in the tree, because a single
+ * non-`??` entry ends the walk before the authority is asked at all.
+ *
+ * `--porcelain -z` rather than `--porcelain`: the LF form C-quotes a path containing a space or a
+ * quote, and a quoted path is not the path `check-ignore` needs. A rename's second (original) field is
+ * not `??`-prefixed, so it lands in the tracked count and the tree reads dirty -- which is correct.
+ *
+ * @param {string} worktreePath
+ * @param {{ run?: typeof defaultRun, ignoreAuthority?: string | null }} [deps]
+ * @returns {{ clean: boolean | "unknown", ignorable: string[] }}
+ */
+export function cleanliness(worktreePath, { run = defaultRun, ignoreAuthority = null } = {}) {
+  /** @type {string} */
+  let status;
+  try {
+    status = run("git", ["status", "--porcelain", "-z"], { cwd: worktreePath });
+  } catch {
+    return { clean: "unknown", ignorable: [] };
+  }
+  const entries = status.split("\0").filter((entry) => entry !== "");
+  if (entries.length === 0) return { clean: true, ignorable: [] };
+  const untracked = entries.filter((entry) => entry.startsWith("?? ")).map((entry) => entry.slice(3));
+  // A single tracked change, or no authority to ask, and the old answer stands unchanged.
+  if (untracked.length !== entries.length || ignoreAuthority === null) return { clean: false, ignorable: [] };
+  /** @type {string[]} */
+  const ignorable = [];
+  for (const path of untracked) {
+    const ignored = ignoredByAuthority(ignoreAuthority, path, { run });
+    if (ignored === "unknown") return { clean: "unknown", ignorable: [] };
+    if (ignored === false) return { clean: false, ignorable: [] };
+    ignorable.push(path);
+  }
+  return { clean: true, ignorable };
 }
 
 /**
@@ -573,7 +654,7 @@ export function heldByOwner(worktreePath, mainLine, { run = defaultRun, owner = 
 }
 
 /**
- * @typedef {{ path: string, branch: string | null }} ReportedWorktree
+ * @typedef {{ path: string, branch: string | null, cleared?: string[] }} ReportedWorktree
  * @typedef {{
  *   removed: ReportedWorktree[],
  *   records: (ReportedWorktree & { reason: string })[],
@@ -599,12 +680,17 @@ export function heldByOwner(worktreePath, mainLine, { run = defaultRun, owner = 
  * (never "unknown") when skipped, so a dirty or cherry-picked entry is never misread as inconclusive over
  * a question that does not apply to it.
  *
+ * `ignoreAuthority` (#2012) is the checkout whose ignore rules decide whether an untracked path is work
+ * -- the primary, so a tree pinned at a commit predating an ignore-rule fix is not refused for ever over
+ * a rule `main` has had since. `null` restores the pre-#2012 reading exactly.
+ *
  * @param {string} repoRoot
  * @param {WorktreeEntry} entry
- * @param {{ run: typeof defaultRun, now: number }} deps
- * @returns {Pick<WorktreeAssessment, "merge" | "workingTreeClean" | "contentMerged" | "recentlyActive">}
+ * @param {{ run: typeof defaultRun, now: number, ignoreAuthority?: string | null }} deps
+ * @returns {Pick<WorktreeAssessment,
+ *   "merge" | "workingTreeClean" | "contentMerged" | "recentlyActive" | "ignorable">}
  */
-function assessWorktree(repoRoot, entry, { run, now }) {
+function assessWorktree(repoRoot, entry, { run, now, ignoreAuthority = null }) {
   // #696: THIS SAID `: "not-merged"` FOR A DETACHED WORKTREE -- an assertion, not a measurement, and
   // false for twelve of the fifteen detached trees on the live host (0 uncommitted, 0 commits
   // `origin/main` lacks). A commit's merged-ness needs no branch NAME: `merge-base --is-ancestor` takes
@@ -612,13 +698,13 @@ function assessWorktree(repoRoot, entry, { run, now }) {
   const merge = entry.branch !== null
     ? mergeStatus(repoRoot, entry.branch, { run })
     : detachedMergeStatus(entry.path, { run });
-  const workingTreeClean = isWorkingTreeClean(entry.path, { run });
+  const { clean: workingTreeClean, ignorable } = cleanliness(entry.path, { run, ignoreAuthority });
   const contentMerged = entry.branch !== null && merge === "not-merged"
     && isContentMerged(repoRoot, entry.branch, { run });
   const recentlyActive = merge === "merged" && workingTreeClean === true
     ? recentGitActivity(entry.path, { run, now })
     : false;
-  return { merge, workingTreeClean, contentMerged, recentlyActive };
+  return { merge, workingTreeClean, contentMerged, recentlyActive, ignorable };
 }
 
 /**
@@ -763,6 +849,52 @@ export function strandedWork(repoRoot, { run = defaultRun } = {}) {
 }
 
 /**
+ * #2012: remove the untracked paths `cleanliness` established today's `main` ignores, so `git worktree
+ * remove` -- which runs its own `git status` in the tree -- does not refuse the very tree this run just
+ * decided to take. `false` when git could not clear them, which the caller buckets as DIRTY: a tree that
+ * cannot be made removable is refused, never forced.
+ *
+ * ONE PATHSPEC PER PATH, and `-x` because these paths are ignored by the authority but not necessarily by
+ * the tree -- `git clean` reads the tree's own rules, which are the stale ones. The pathspec is what keeps
+ * this honest: nothing outside the list `cleanliness` returned can be reached.
+ *
+ * VERIFIED, because the alternative would be catastrophic here: a worktree's `node_modules` is a SYMLINK
+ * into the primary's, and `git clean` removes the LINK and not its target (reproduced with content behind
+ * the link, 2026-09-23). A recursive delete that followed the link would empty the primary's
+ * `node_modules` on the hourly timer.
+ *
+ * @param {string} worktreePath
+ * @param {string[]} ignorable
+ * @param {{ run: typeof defaultRun }} deps
+ * @returns {boolean} whether the tree is now clear of them
+ */
+function clearIgnorable(worktreePath, ignorable, { run }) {
+  if (ignorable.length === 0) return true;
+  try {
+    run("git", ["clean", "-fdx", "--", ...ignorable], { cwd: worktreePath });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Clear first, then remove -- and report a tree whose ignorable paths could not be cleared as NOT removed,
+ * so the caller buckets it exactly where the stale rule used to put it. A tree that cannot be made
+ * removable is refused; it is never forced.
+ *
+ * @param {string} worktreePath
+ * @param {string[]} ignorable
+ * @param {{ run: typeof defaultRun, remove: (path: string, deps: { run: typeof defaultRun }) => void }} deps
+ * @returns {boolean}
+ */
+function removeWorktree(worktreePath, ignorable, { run, remove }) {
+  if (!clearIgnorable(worktreePath, ignorable, { run })) return false;
+  remove(worktreePath, { run });
+  return true;
+}
+
+/**
  * Which `PruneReport` bucket a `classify` verdict other than `"remove"` lands in.
  * @type {Record<"dirty" | "cherry-picked" | "inconclusive" | "active",
  *   "dirty" | "cherryPicked" | "inconclusive" | "active">}
@@ -802,7 +934,7 @@ export function pruneWorktrees(repoRoot, { run = defaultRun, remove, now = Date.
       continue;
     }
     const reported = { path: entry.path, branch: entry.branch };
-    const assessment = assessWorktree(repoRoot, entry, { run, now });
+    const assessment = assessWorktree(repoRoot, entry, { run, now, ignoreAuthority: primaryPath });
     const verdict = classify(assessment);
     if (verdict === "remove") {
       // #2020 BEFORE #1373, and only because it is the cheaper question and the more actionable answer --
@@ -831,8 +963,14 @@ export function pruneWorktrees(repoRoot, { run = defaultRun, remove, now = Date.
       // directory. A merged, clean worktree can still be somebody's current working directory, and no
       // branch-level check can see that -- their next `cd` fails and the command runs in the PRIMARY
       // checkout instead, which is the fleet-driving tree `assertFleetRunsThisCheckout` hashes.
-      if (!dryRun) doRemove(entry.path, { run });
-      report.removed.push(reported);
+      // #2012: the paths today's `main` ignores go first, or git's own check refuses the removal. A tree
+      // that cannot be cleared is DIRTY -- the refusal this replaces, reached by measurement rather than
+      // by a stale rule.
+      if (!dryRun && !removeWorktree(entry.path, assessment.ignorable, { run, remove: doRemove })) {
+        report.dirty.push(reported);
+        continue;
+      }
+      report.removed.push({ ...reported, cleared: assessment.ignorable });
     } else {
       report[VERDICT_BUCKET[verdict]].push(reported);
     }
@@ -861,7 +999,14 @@ export function formatReport(report, dryRun = false) {
     ? `WOULD REMOVE ${report.removed.length} worktree(s) -- nothing has been removed; pass --apply to `
       + "remove them, and announce the list one cycle first so no session loses its working directory:"
     : `removed ${report.removed.length} worktree(s):`];
-  for (const r of report.removed) lines.push(`  ${r.path}  (${r.branch ?? "detached"})`);
+  // NAMING WHAT WAS DELETED THAT GIT WAS NOT TRACKING (#2012). These paths are removed by the prune
+  // itself rather than by `git worktree remove`, and a delete nobody can see in the log is the shape this
+  // whole file is about.
+  for (const r of report.removed) {
+    const cleared = r.cleared !== undefined && r.cleared.length > 0
+      ? `  [cleared, ignored by the primary checkout: ${r.cleared.join(", ")}]` : "";
+    lines.push(`  ${r.path}  (${r.branch ?? "detached"})${cleared}`);
+  }
   if (report.held.length > 0) {
     lines.push(`refused ${report.held.length} HELD worktree(s) (#2020) -- stamped by a session and carrying no `
       + "commit of their own, so the claim is open rather than finished; nothing removed:");

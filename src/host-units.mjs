@@ -65,6 +65,25 @@ export function shippedUnits(dir = SHIPPED_DIR, { read = readdirSync } = {}) {
   }
 }
 
+/** Where the board dispatch was hand-placed before this repository shipped it. NOT an install target. */
+export const SCRIPT_INSTALL_DIR = `${process.env.HOME ?? ""}/.local/bin`;
+
+/**
+ * The programs this repository ships beside its units, sorted.
+ *
+ * `.sh` AND NOT "everything that is not a unit", so a README in that directory is still not a finding --
+ * the property `shippedUnits`'s own test already pins one level up.
+ * @param {string} [dir] @param {{ read?: typeof readdirSync }} [deps]
+ * @returns {string[]}
+ */
+export function shippedHostScripts(dir = SHIPPED_DIR, { read = readdirSync } = {}) {
+  try {
+    return read(dir).map(String).filter((n) => n.endsWith(".sh")).sort();
+  } catch {
+    return [];
+  }
+}
+
 // --- #1974: WHICH ACCOUNT A UNIT SPENDS, DECLARED RATHER THAN INHERITED ------------------------------
 //
 // MEASURED 2026-09-22. `a11ign-work-tick.service` ran with no `GH_CONFIG_DIR`, so the work gate
@@ -116,6 +135,11 @@ export function packageScripts(repoRoot = REPO_ROOT, read = readFileSync) {
  * THE FILES A SHELL COMMAND WOULD ACTUALLY RUN, following `npm run` through package.json.
  * `ExecStart=/usr/bin/npm run corpus:snapshot` is a path to `corpus-snapshot.mjs` with one hop in
  * between, and a check that stopped at the word `npm` would see no entry point at all and pass.
+ *
+ * A SHELL IS THE THIRD INTERPRETER AND IT ARRIVED LAST (#1998). `/usr/bin/bash <path>` is read exactly
+ * as `/usr/bin/node <path>` is, and the path is RELATIVE TO THIS CHECKOUT rather than to the
+ * `WorkingDirectory` the unit names -- which is what makes the answer the same in the primary checkout,
+ * in a worktree and in CI. `bash -c '...'` resolves to nothing and is correctly left unread.
  * @param {string} command
  * @param {{ repoRoot?: string, scripts?: Record<string, string>, exists?: typeof existsSync }} [deps]
  * @returns {string[]} absolute paths, deduplicated, that exist
@@ -130,7 +154,7 @@ export function entriesFromCommand(command, { repoRoot = REPO_ROOT, scripts = pa
     for (const stage of String(text).split(/\|\||&&|[|;]/)) {
       const argv = stage.trim().split(/\s+/).filter(Boolean);
       const tool = basename(argv[0] ?? "");
-      if (tool === "node" && argv[1]) entries.push(resolve(repoRoot, argv[1]));
+      if ((tool === "node" || SHELLS.has(tool)) && argv[1]) entries.push(resolve(repoRoot, argv[1]));
       else if ((tool === "npm" || tool === "npx") && argv[1] === "run" && argv[2]) followScript(argv[2]);
     }
   };
@@ -152,8 +176,16 @@ export function unitEntryPoints(unitText, deps = {}) {
   return [...new Set(execCommands(unitText).flatMap((command) => entriesFromCommand(command, deps)))];
 }
 
-/** The only three tools `entriesFromCommand` can follow into a repository file. */
+/** The only three tools `entriesFromCommand` can follow into a repository file WITHOUT a path to check. */
 const ANALYSABLE_TOOLS = new Set(["node", "npm", "npx"]);
+
+/**
+ * The interpreters that take the file to run as their first argument. NOT in `ANALYSABLE_TOOLS`, and the
+ * split is the point: `npm run <name>` is followable because package.json answers it, while
+ * `/usr/bin/bash <path>` is followable only when the PATH lands inside this repository. A `bash` that
+ * starts something out of tree is exactly as opaque as the bare path it replaced.
+ */
+const SHELLS = new Set(["bash", "sh", "dash"]);
 
 /**
  * AN `Exec*=` COMMAND THIS REPOSITORY CANNOT READ -- and NOT ASKED must not report as CLEAN (#1993).
@@ -167,11 +199,72 @@ const ANALYSABLE_TOOLS = new Set(["node", "npm", "npx"]);
  * So the question a bare path answers is UNKNOWN, not NO, and the conservative reading is the only safe
  * one: a unit that starts something this repository cannot read must SAY which account it acts as,
  * because nothing here can ever work out whether it needs to.
- * @param {string} unitText @returns {string[]}
+ *
+ * TWO WAYS TO NOT BE OPAQUE, and #1998 added the second. The first is the tool: `npm`/`npx`/`node` can
+ * be followed by name. The second is the FILE: any command that resolves to something this repository
+ * ships is readable whatever started it -- which is the only reading under which the board dispatch
+ * stops being charged because its script was READ, rather than because the unit left the population.
+ * An unreadable command with a `gh` in it and an unreadable command without one are still the same
+ * answer here, and that answer is still UNKNOWN.
+ * @param {string} unitText @param {Parameters<typeof entriesFromCommand>[1]} [deps] @returns {string[]}
  */
-export function opaqueCommands(unitText) {
-  return execCommands(unitText)
-    .filter((command) => !ANALYSABLE_TOOLS.has(basename(command.split(/\s+/).filter(Boolean)[0] ?? "")));
+export function opaqueCommands(unitText, deps = {}) {
+  return execCommands(unitText).filter((command) =>
+    !ANALYSABLE_TOOLS.has(basename(command.split(/\s+/).filter(Boolean)[0] ?? ""))
+    && entriesFromCommand(command, deps).length === 0);
+}
+
+/**
+ * Shell comments, stripped at a WORD BOUNDARY. A `#` mid-token is a fragment, a colour or a format
+ * string (`+%FT%TZ` sits one character away in the dispatch's own `date` call) and never opens a
+ * comment; a `#` at the start of a word always does.
+ */
+const SHELL_COMMENT = /(^|\s)#[^\n]*/g;
+
+/** The shell words that PRECEDE a command rather than being one, so a fragment's first word is not it. */
+const SHELL_PREFIXES = new Set(["if", "then", "elif", "else", "while", "until", "for", "do", "!",
+  "time", "exec", "command", "eval", "sudo", "nohup"]);
+
+/** A `VAR=value` prefix, which is not the command either -- `firstRealToken`'s question, one file over. */
+const SHELL_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/**
+ * EVERY WORD A SHELL WOULD RUN AS A COMMAND NAME, and nothing else -- #1998.
+ *
+ * `SPAWNS_GH` asks a JAVASCRIPT question (`execFileSync("gh", ...)`), and a shell script spawns `gh` by
+ * writing the word. Same question, different grammar, so it needs its own reader rather than a looser
+ * one: `\bgh\b` over the file would match a path, a branch name or a jq filter, and #1860 is this
+ * repository's own record of that mistake costing a file which refused itself for being named after the
+ * thing it fixed.
+ *
+ * SPLIT ON THE PARENTHESIS, NOT ONLY ON THE NEWLINE, because the dispatch's SECOND `gh` is
+ * `RUN_ID="$(gh run list ...)"` -- the line's own first word is an assignment and the call sits one
+ * substitution in. A reader that only asked about line-leading words would see one call and charge the
+ * unit for half of what it actually spends. `(` covers `$(` and a bare subshell alike, and a separate
+ * `\$\(` alternative was written here first and measured DEAD: removing it changed no answer, because
+ * the character class had already split the same position.
+ * @param {string} text @returns {string[]}
+ */
+export function shellCommandWords(text) {
+  return String(text ?? "").replace(SHELL_COMMENT, "$1")
+    .split(/&&|\|\||[\n;()`|&]/)
+    .map((fragment) => commandWord(fragment))
+    .filter((word) => word !== "");
+}
+
+/** @param {string} fragment @returns {string} the word a shell would execute, or `""` for none */
+function commandWord(fragment) {
+  return fragment.trim().split(/\s+/).filter(Boolean)
+    .find((word) => !SHELL_PREFIXES.has(word) && !SHELL_ASSIGNMENT.test(word)) ?? "";
+}
+
+/**
+ * Does this shell script spawn `gh`? By BASENAME, so `/usr/bin/gh` counts and `gh-real` does not.
+ * @param {string} text @returns {boolean}
+ */
+export function shellSpawnsGh(text) {
+  return shellCommandWords(text)
+    .some((word) => basename(word.replace(/^['"]|['"]$/g, "")) === "gh");
 }
 
 /**
@@ -189,6 +282,10 @@ const RUNS_NPM_SCRIPT = /["'`]npm["'`]\s*,\s*\[\s*["'`]run["'`]\s*,\s*["'`]([^"'
  *
  * A `GH_TOKEN` read is deliberately NOT this question. A token is a credential; `GH_CONFIG_DIR` picks
  * which stored credential `gh` loads, so only an actual `gh` spawn can get the account wrong.
+ *
+ * A THIRD EDGE KIND SINCE #1998: an `ExecStart` that starts a shipped `.sh`. `SPAWNS_GH` cannot answer
+ * for one -- it matches `execFileSync("gh", ...)`, and a shell script writes the word -- so a `.sh`
+ * entry is read by `shellSpawnsGh` instead.
  * @param {string} entry
  * @param {{ read?: typeof readFileSync, exists?: typeof existsSync, imports?: typeof localImports,
  *           repoRoot?: string, scripts?: Record<string, string> }} [deps]
@@ -202,7 +299,15 @@ export function ghSpawnReachedFrom(entry, { read = readFileSync, exists = exists
     const file = /** @type {string} */ (pending.pop());
     if (seen.has(file) || !exists(file)) continue;
     seen.add(file);
-    const code = stripComments(String(read(file)));
+    const text = String(read(file));
+    // A SHELL SCRIPT IS A LEAF. It spawns `gh` as a word rather than as a call, and this repository's
+    // shell scripts import nothing -- so reading it is the whole walk, and handing its text to the
+    // JavaScript comment stripper and the JavaScript spawn pattern would answer a question it is not.
+    if (file.endsWith(".sh")) {
+      if (shellSpawnsGh(text)) return file;
+      continue;
+    }
+    const code = stripComments(text);
     if (SPAWNS_GH.test(code)) return file;
     pending.push(...imports(file));
     for (const [, name] of code.matchAll(RUNS_NPM_SCRIPT)) {
@@ -238,7 +343,7 @@ export function unitsSpendingGh({ shippedDir = SHIPPED_DIR, readDir = readdirSyn
         .find((hit) => hit !== null);
       // READ FIRST, AND ONLY THEN NOT-RULED-OUT: a unit this repository can follow is reported by what
       // it actually reaches, and the opaque command is the fallback rather than a second finding.
-      const via = reached ?? opaqueCommands(text)[0];
+      const via = reached ?? opaqueCommands(text, rest)[0];
       if (!via) return [];
       return [{ unit, via, opaque: !reached, declared }];
     });
@@ -267,7 +372,7 @@ export function identityDrift(deps = {}) {
 
 /**
  * @typedef {{unit: string, problem: string, detail: string, revertsIdentity?: boolean,
- *            removesUnit?: boolean, shippedOnRef?: string}} Finding
+ *            removesUnit?: boolean, shippedOnRef?: string, supersededScript?: string}} Finding
  */
 
 /**
@@ -482,6 +587,58 @@ export function orphanedUnits({ shippedDir = SHIPPED_DIR, installedDir = INSTALL
 }
 
 /**
+ * A HAND-PLACED COPY OF A SCRIPT THIS REPOSITORY NOW SHIPS -- #1998.
+ *
+ * THE UNITS ARE COPIED AND THE SCRIPTS ARE NOT, and that asymmetry is a decision rather than an
+ * oversight. systemd will not read a unit out of the tree, so `~/.config/systemd/user` holds a copy and
+ * `unitState`'s CURRENT question exists to report its drift. Nothing makes that demand of a program:
+ * `a11ign-board-report.service` runs `packages/agent-org/host/board-report-dispatch.sh` where it sits,
+ * exactly as `a11ign-work-tick.service` runs `work-tick.mjs` where it sits. So there is no CURRENT
+ * question to ask about a script -- there is only one copy, and a merged edit is live at the next
+ * firing rather than at the next `host:install`, which is #1858's whole finding pointing the other way.
+ *
+ * WHAT THAT LEAVES, AND IT IS THIS CHECK. The copy at `~/.local/bin/board-report-dispatch.sh` that the
+ * unit used to start is still on disk, inert, with nothing pointing at it and nothing watching it. A
+ * reader who finds it will reasonably believe it is what runs; an editor of it will change nothing and
+ * be told nothing. So the answer to "can `host:check` tell whether the installed script matches the
+ * shipped one" is yes, and it also says the more useful thing: that there should not be an installed
+ * one at all.
+ *
+ * NOT REMOVED BY THE REMEDY, deliberately. `host:install` deletes orphaned UNITS because this
+ * repository owns `~/.config/systemd/user`'s `a11ign-*`; it owns nothing in `~/.local/bin`, which also
+ * holds `gh`, `gh-real` and `herdr`. A remedy that reached in there would be this file's own
+ * conservative doctrine pointed the wrong way, so the report says to read it and remove it by hand.
+ * @param {{ shippedDir?: string, scriptDir?: string, readDir?: typeof readdirSync,
+ *           read?: typeof readFileSync, exists?: typeof existsSync }} [deps]
+ * @returns {Finding[]}
+ */
+export function supersededHostScripts({ shippedDir = SHIPPED_DIR, scriptDir = SCRIPT_INSTALL_DIR,
+  readDir = readdirSync, read = readFileSync, exists = existsSync } = {}) {
+  return shippedHostScripts(shippedDir, { read: readDir })
+    .filter((name) => exists(join(scriptDir, name)))
+    .map((name) => supersededFinding(name, scriptDir,
+      textOf(join(shippedDir, name), read) === textOf(join(scriptDir, name), read)));
+}
+
+/**
+ * IDENTICAL AND DIVERGED ARE DIFFERENT FINDINGS, because only one of them can be removed without
+ * reading it. An identical leftover is a second copy with no check on it; a diverged one means somebody
+ * edited one of the two, and which one holds the change is a question this file cannot answer.
+ * @param {string} name @param {string} scriptDir @param {boolean} same @returns {Finding}
+ */
+function supersededFinding(name, scriptDir, same) {
+  const path = `${scriptDir}/${name}`;
+  return { unit: path, supersededScript: path,
+    problem: same ? "SUPERSEDED COPY -- IDENTICAL FOR NOW" : "SUPERSEDED COPY -- ALREADY DIVERGED",
+    detail: `packages/agent-org/host/${name} is the copy the unit starts; this one is left over from `
+      + `before this repository shipped it, and nothing starts it. ${same
+        ? "It matches the shipped file TODAY, which is the only day anything guarantees -- it is a "
+        + "second copy with no check on it, and an edit to it would look like it was doing something."
+        : "It ALREADY DIFFERS from the shipped file, so one of the two has been edited since. Read the "
+        + "diff before removing it: the change may be one the shipped copy still needs."}` };
+}
+
+/**
  * @typedef {{ state: "retired" | "never" | "unreadable" } | { state: "unmerged", sha: string }} OrphanOrigin
  */
 
@@ -671,10 +828,10 @@ export const ORG_UNIT_PREFIX = "a11ign-";
  * machine with no user systemd, which is not the same claim as "this host is correct" and is why
  * `driftReport` says which of the two it is.
  *
- * THREE QUESTIONS NOW, and the third is the inverse of the first two: is what we ship installed
- * (`unitDrift`), is what is installed still ours (`orphanedUnits`), and can a session act at all
- * (`permissionModeDrift`).
- * @param {Parameters<typeof unitState>[1]} [deps]
+ * FOUR QUESTIONS NOW. Is what we ship installed (`unitDrift`), is what is installed still ours
+ * (`orphanedUnits`), is a copy of what we ship still sitting where it used to be hand-placed
+ * (`supersededHostScripts`, #1998), and can a session act at all (`permissionModeDrift`).
+ * @param {Parameters<typeof unitState>[1] & Parameters<typeof supersededHostScripts>[0]} [deps]
  */
 export function hostUnitDrift(deps = {}) {
   if (!systemdUserAvailable(deps.systemctl ?? defaultSystemctl)) return [];
@@ -683,7 +840,7 @@ export function hostUnitDrift(deps = {}) {
   // posture is nobody's business either -- and a laptop told "ORG IS IN AUTO MODE" teaches its owner to
   // ignore this command, which would lose the timer finding along with it.
   return [...unitDrift(shippedUnits(dir, {}).map((u) => unitState(u, deps))),
-    ...orphanedUnits(deps), ...permissionModeDrift(deps)];
+    ...orphanedUnits(deps), ...supersededHostScripts(deps), ...permissionModeDrift(deps)];
 }
 
 /** @param {string[]} args */
@@ -803,6 +960,23 @@ export function driftReport(drift, asked = true) {
 }
 
 /**
+ * THE FINDINGS THE SHARED REMEDY DOES NOT FIX, said BEFORE the line that offers it (#1998).
+ *
+ * Every other finding here ends at `npm run host:install`, which is what makes the report actionable --
+ * and a reader who has been told that four times will read it the fifth time too. A superseded script
+ * survives the remedy untouched, so the report has to say so in the same place the remedy is offered
+ * rather than only in a `detail` line the reader already scrolled past.
+ * @param {Finding[]} drift @returns {string}
+ */
+function uncovered(drift) {
+  return drift.filter((d) => d.supersededScript)
+    .map((d) => `  !! ${d.supersededScript} is NOT fixed by the remedy below. This repository owns the\n`
+      + "     a11ign-* units in ~/.config/systemd/user and nothing in ~/.local/bin, which also holds\n"
+      + "     `gh`, `gh-real` and `herdr` -- so read it against packages/agent-org/host/ and `rm` it\n"
+      + "     by hand.\n").join("");
+}
+
+/**
  * THE REMEDY IS SHARED, AND THAT IS THE TRAP (#1974).
  *
  * Every finding here names one command, which is what makes the report actionable -- and it means a
@@ -821,7 +995,7 @@ export function driftReport(drift, asked = true) {
  * @param {Finding[]} drift @returns {string}
  */
 function remedy(drift) {
-  const line = "  Remedy for all of them: npm run host:install\n";
+  const line = `${uncovered(drift)}  Remedy for all of them: npm run host:install\n`;
   const reverts = drift.filter((d) => d.revertsIdentity);
   const removes = drift.filter((d) => d.removesUnit);
   const pending = drift.filter((d) => d.shippedOnRef);
