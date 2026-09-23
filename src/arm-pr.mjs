@@ -18,6 +18,10 @@ import { pathToFileURL } from "node:url";
 import { readFileSync, realpathSync } from "node:fs";
 import { refuseUnknownFlags, flagValue } from "../../worker-fleet/src/cli-flags.mjs";
 import { armabilityOf } from "./pr-hold-state.mjs";
+// #2046: THE ARMED PREDICATE, IMPORTED RATHER THAN RE-DECIDED -- the mirror of the `pr-hold-state.mjs`
+// line above, and for the reason this file's own header already gives about that one. Leaf-shaped:
+// `pr-armed-state.mjs` imports nothing at all, so the `actions/checkout`-only property holds.
+import { armedQueryArgs, armedReason } from "./pr-armed-state.mjs";
 import { extractClosesDeclaration } from "./acceptance-commands.mjs";
 // #1969: THE REFUSAL'S SCOPE, and a LEAF import for the reason `api-pool.mjs`'s own header gives. The
 // reading is not reimplemented here -- a second copy of "how to read a pool" is the one place two readers
@@ -296,7 +300,10 @@ export function labelArmedPr({ number, repo, prBody, run = defaultRun }) {
   return { refused: false };
 }
 
-/** #1022: the PR states in which there is nothing left to arm. Neither is a fault. */
+/** #1022: the TERMINAL states in which there is nothing left to arm. Neither is a fault.
+ *  NOT the whole set of states with nothing left to arm -- #2046: a PR sitting in the merge queue is
+ *  `OPEN` and there is nothing left to arm on it either. That one is not a STATE at all, which is why
+ *  it is read by `armedAlready` from a different field rather than added to this list. */
 const SETTLED_STATES = ["MERGED", "CLOSED"];
 
 /** How long to keep asking after a refused merge, and how often. Measured on #1020: `gh pr merge` was
@@ -365,6 +372,30 @@ export function waitForSettled({ number, repo },
 }
 
 /**
+ * #2046: HAS SOMEBODY ELSE ALREADY ARMED THIS PR? -- the question `state` structurally cannot answer.
+ *
+ * `prState` above asks `gh pr view --json state`, and a pull request sitting at position 1 of the merge
+ * queue answers `OPEN` to it forever. That is not a gap in the read, it is a gap in REST: `mergeQueueEntry`
+ * is a GraphQL-only object, which is why `pr-armed-state.mjs` exists and why this asks it instead.
+ *
+ * UNREADABLE IS NOT ARMED. A throw here returns `null`, and `null` re-throws the original merge failure --
+ * `armDecision`'s "Unreadable is not unheld" pointed at the other predicate. The direction matters: a false
+ * `null` costs one red check on a PR that merges anyway, and a false "armed" hides a PR nobody is merging.
+ *
+ * @param {{ number: string, repo: string, run?: typeof defaultRun, error?: (line: string) => void }} args
+ * @returns {string | null} which armed state it is in, or `null` for neither-armed-nor-readable
+ */
+export function armedAlready({ number, repo, run = defaultRun, error = console.error }) {
+  try {
+    return armedReason(JSON.parse(gh(armedQueryArgs({ number, repo }), run)));
+  } catch (cause) {
+    error(`arm-pr: could not read whether #${number} is already armed: `
+      + `${/** @type {Error} */ (cause).message}`);
+    return null;
+  }
+}
+
+/**
  * Enable auto-merge -- AND VERIFY THE OUTCOME FROM THE PR'S STATE, NEVER FROM `gh`'s EXIT CODE (#1022).
  *
  * This file's own tests already pin the mirror of this for DISARMING: *"`gh pr merge --disable-auto`
@@ -373,21 +404,36 @@ export function waitForSettled({ number, repo },
  * about FAILURE. One half of the class was fixed and the other was not, and the unfixed half is what made
  * a correctly merged PR carry a red check.
  *
- * A failure on a PR that is demonstrably still OPEN is re-thrown unchanged: an un-armed PR nobody merged
- * is a real fault, and swallowing it would turn this row's fix into "ignore the error".
+ * #2046: AND `MERGED`/`CLOSED` WERE ONLY TWO OF THE STATES IN WHICH THERE IS NOTHING LEFT TO ARM. The third
+ * is the one a busy queue spends most of its time in, and `waitForSettled` reads it as `OPEN` five times in
+ * a row. Measured on #2044, run 35799243526: one `ready_for_review` event, whose `sweep` and `arm` jobs
+ * raced; `sweep` armed at 23:49:40.69Z, `arm` was refused at 23:49:50.72Z with `Auto merge is already
+ * enabled`, and the PR read `{isInMergeQueue: true, mergeQueueEntry: {position: 1}, state: "OPEN"}` while
+ * the red check stood. `arm` went red on a pull request that was correctly armed by its own run.
+ *
+ * THE SETTLED POLL STILL GOES FIRST, and its ten seconds are not a cost here but a help: the armed read
+ * that follows is a SINGLE read with no retry, and it can afford to be because the queue entry was created
+ * by the very mutation that refused ours -- the winner's write had already landed when our call was
+ * refused, and the settle budget has since given the API the same slack #1306 measured it needing.
+ *
+ * A failure on a PR that is demonstrably neither settled NOR armed is re-thrown unchanged: an un-armed PR
+ * nobody merged is a real fault, and swallowing it would turn this fix into "ignore the error".
  * @param {{ number: string, repo: string }} pr
- * @param {{ run?: typeof defaultRun, sleep?: typeof defaultSleep, attempts?: number, intervalMs?: number }} [deps]
+ * @param {{ run?: typeof defaultRun, sleep?: typeof defaultSleep, attempts?: number, intervalMs?: number,
+ *   error?: (line: string) => void }} [deps]
  * @returns {{ armed: boolean, reason: string }}
  */
 export function armMerge({ number, repo }, deps = {}) {
-  const { run = defaultRun } = deps;
+  const { run = defaultRun, error = console.error } = deps;
   try {
     gh(["pr", "merge", "--auto", "--merge", number, "--repo", repo], run);
     return { armed: true, reason: "auto-merge enabled" };
   } catch (cause) {
     const settled = waitForSettled({ number, repo }, deps);
-    if (settled === null) throw cause;
-    return { armed: false, reason: `${settledReason(settled)} -- nothing was left to arm` };
+    if (settled !== null) return { armed: false, reason: `${settledReason(settled)} -- nothing was left to arm` };
+    const armed = armedAlready({ number, repo, run, error });
+    if (armed !== null) return { armed: false, reason: `${armed} -- nothing was left to arm` };
+    throw cause;
   }
 }
 
@@ -524,7 +570,7 @@ export function runArmPr({ argv, env, run = defaultRun, sleep = defaultSleep, lo
     log(`arm-pr: NOT arming #${number} -- ${already}, so there is nothing left to arm`);
     return EXIT.DONE;
   }
-  const outcome = armMerge({ number, repo }, { run, sleep });
+  const outcome = armMerge({ number, repo }, { run, sleep, error });
   // #1478: WHAT LANDED IS SAID BEFORE THE NEXT STEP RUNS, so a failure in labelling cannot hide it.
   log(outcome.armed
     ? `arm-pr: armed #${number} -- ${verdict.reason}`
