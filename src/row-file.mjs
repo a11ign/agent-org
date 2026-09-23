@@ -1356,26 +1356,65 @@ export function promoteRefusalReason(body, issueNumber) {
 }
 
 /**
- * #2111: THE THREE WRITES AS TWO CALLS, AND THE SECOND ONE IS WHY THIS ROW EXISTS.
+ * #2111 REWORK (reviewer's blocker on `3de784b0`, 2026-09-23): THE LABEL WRITE IS ONE SET REPLACEMENT,
+ * AND IT IS NOT `gh issue edit --add-label … --remove-label …`.
  *
- * `--add-label ready` and `--remove-label backlog` go to ONE `gh issue edit`, so GitHub applies both in a
- * single request and no reader -- the gate, the board, the audit, another session -- can ever observe the
- * row carrying both. That is the same rule `row-claim.mjs`'s `writeRowLabels` already follows on the
- * claim side, and the reason `ready-label-audit.mjs` can state that a hand claim is PROOF the claim was
- * made outside the mechanism. Two `gh issue edit` calls would reproduce the 25-minute window this row
- * measured, merely narrower, and a narrower wrong state is the harder one to find.
+ * The first version of this act packed the add and the remove into a single `gh issue edit` and claimed
+ * that one INVOCATION made them one WRITE. **This repository already records that it does not.**
+ * `row-claim.mjs`'s #749 comment carries #677's own live reproduction (13:23:15Z): the SAME command's
+ * `--remove-label` applied while every `--add-label` in it did not. `gh` resolves label names and applies
+ * the halves separately, so a half that fails leaves the other standing -- an invocation count is not an
+ * atomicity proof, and a read-back can REPORT the wrong state but never stop it being observed. The
+ * reviewer read that comment against this file's claim and was right to refuse it.
  *
- * Each half is asked for only when it is needed, so promoting a row that is ALREADY half-promoted (the
- * measured state: both labels) repairs it with a single `--remove-label`, and promoting an already-Ready
- * row writes no labels at all and still verifies all three facts below.
- * @param {string[]} labels the row's labels BEFORE the promotion
- * @returns {string[]} the `gh issue edit` arguments, or `[]` when both labels are already right
+ * `PUT /repos/{repo}/issues/{n}/labels` -- GitHub's "Set labels for an issue" -- sets the whole list in
+ * ONE request: no add half and no remove half to come apart, so either the row's labels are exactly this
+ * list or the request failed and they are UNTOUCHED. Verified at the wire on 2026-09-23 with `GH_DEBUG=api`
+ * against a nonexistent row (404, so nothing was written): `-f 'labels[]=<name>'` repeated builds
+ * `{"labels":[…]}` and `gh` sends exactly one PUT.
+ *
+ * **The replacement semantics are not taken on trust.** If this endpoint turned out to be additive,
+ * `backlog` would survive the write, and `unverifiedPromotionFields`' middle clause -- the one that asks
+ * whether something LEFT -- refuses to report success. The first real run MEASURES the assumption instead
+ * of resting on it, and `row-file.test.ts` drives an additive fake to pin that refusal.
+ *
+ * **What the set form costs, stated rather than hidden.** A full-set write carries every OTHER label the
+ * row holds, so a label added by somebody else between the read and the write is ERASED rather than merely
+ * outraced. That is why the set is computed from `freshLabelsForWrite`'s read -- one request older, not a
+ * Project round trip older -- and why a claim found in that read is refused rather than written over.
+ * GitHub offers no compare-and-set on labels (no `If-Match`), so the window narrows and never closes. A
+ * delta write has no such window and is not atomic; between erasing a label on a row twice verified
+ * unclaimed and silently double-counting a row for 25 minutes, this row's own measurement is what picks.
+ *
+ * @param {string[]} labels the row's labels as read immediately before the write
+ * @returns {string[]} the whole list the row must carry after it: `ready` in, `backlog` out, all else kept
  */
-export function promotionLabelArgs(labels) {
-  const args = [];
-  if (!labels.some((l) => sameLabel(l, READY_LABEL))) args.push("--add-label", READY_LABEL);
-  if (labels.some((l) => sameLabel(l, BACKLOG_LABEL))) args.push("--remove-label", BACKLOG_LABEL);
-  return args;
+export function labelSetForPromotion(labels) {
+  const kept = labels.filter((l) => !sameLabel(l, BACKLOG_LABEL) && !sameLabel(l, READY_LABEL));
+  return [READY_LABEL, ...kept];
+}
+
+/**
+ * #2111: whether the labels ALREADY say what a promotion would write, so nothing need be written at all.
+ *
+ * Asked because a set write that changes nothing is still a WRITE, and a write can still clobber: an
+ * already-Ready row must cost no label request, and still have all three facts verified below. The
+ * measured half-promoted state (both labels) is NOT settled and is repaired by the one write.
+ * @param {string[]} labels
+ */
+export function promotionLabelsSettled(labels) {
+  return labels.some((l) => sameLabel(l, READY_LABEL)) && !labels.some((l) => sameLabel(l, BACKLOG_LABEL));
+}
+
+/**
+ * #2111: the one request, as `gh api` arguments. `-f` repeated per label, which is how `gh` builds a JSON
+ * array -- and the reason this is a named function rather than an inline argument list is that the test
+ * asserts the exact request, the only place the atomicity claim above is checkable from inside the suite.
+ * @param {number} issueNumber @param {string[]} labels
+ */
+export function labelSetArgs(issueNumber, labels) {
+  return ["api", "--method", "PUT", `repos/${REPO}/issues/${issueNumber}/labels`,
+    ...labels.flatMap((label) => ["-f", `labels[]=${label}`])];
 }
 
 /**
@@ -1409,7 +1448,9 @@ export function unverifiedPromotionFields(after) {
  * already claimed, and its body is still claimable. Every refusal here leaves the row untouched.
  * @param {number} issueNumber
  * @param {{ run: typeof defaultRun, fetchLabels: typeof fetchIssueLabels }} deps
- * @returns {{ refusal: string } | { refusal: null, before: { labels: string[] } }}
+ * The labels it reads are NOT handed on: `writePromotionLabels` reads them again immediately before the
+ * write, because a set write computed from a read this old could erase a label added since (#2111 rework).
+ * @returns {{ refusal: string | null }}
  */
 function promoteGate(issueNumber, { run, fetchLabels }) {
   /** @type {{ labels: string[], state?: string }} */
@@ -1430,8 +1471,10 @@ function promoteGate(issueNumber, { run, fetchLabels }) {
   if (before.labels.includes(CLAIM_LABEL)) {
     return { refusal: `row-file: REFUSING to promote -- #${issueNumber} is already claimed (\`${CLAIM_LABEL}\`). `
       + `Promoting it would leave \`${READY_LABEL}\` beside \`${CLAIM_LABEL}\`, which \`ready-label-audit\` `
-      + "reports as a HAND CLAIM -- a state `row-claim.mjs`'s own atomic label write can never produce, so "
-      + "the audit would name the mechanism as the culprit. Decline the claim first (`row-claim.mjs decline "
+      + "reports as a HAND CLAIM: a claim made outside `row-claim.mjs`. That reading is strong evidence "
+      + "rather than proof -- #677's reproduction shows the claim path's own `gh issue edit` can half-apply "
+      + "as well -- but a promote act that MINTED the state deliberately would point the audit at the "
+      + "mechanism for something this command did. Decline the claim first (`row-claim.mjs decline "
       + `${issueNumber} --session=<whoever holds it>\`), which restores \`${READY_LABEL}\` by itself.` };
   }
   /** @type {string} */
@@ -1443,7 +1486,7 @@ function promoteGate(issueNumber, { run, fetchLabels }) {
       + `claimability check below could not be asked. ${/** @type {Error} */ (error).message}` };
   }
   const reason = promoteRefusalReason(body, issueNumber);
-  return reason ? { refusal: reason } : { refusal: null, before };
+  return { refusal: reason };
 }
 
 /**
@@ -1477,43 +1520,108 @@ function verifyPromotion(issueNumber, session, { run, fetchBoardStatus, fetchLab
 }
 
 /**
- * #2111: the Status FIRST, then the one label edit, then the read-back.
+ * #2111: the labels READ AGAIN, immediately before the set write, and the claim question asked a SECOND
+ * time.
+ *
+ * A set write carries every label the row holds, so it must be computed from the newest read there is --
+ * never from `promoteGate`'s, which by then is a Project round trip (the Status move) older. The second
+ * claim check is not defensive habit either: a claim landing in that window, written over by a set
+ * computed from the older read, would ERASE `in-progress`, `session:*`, `branch:*` and `worktree:*` --
+ * destroying a claim in order to add a label. The gate's own refusal says why promoting a claimed row is
+ * wrong; this one exists because writing over one is worse than promoting it.
+ *
+ * Both refusals here carry code 2, not 1: the Status is already `Ready` by the time this is asked, so
+ * something HAS been written and "nothing was changed" would be false.
+ * @param {number} issueNumber
+ * @param {{ run: typeof defaultRun, fetchLabels: typeof fetchIssueLabels }} deps
+ * @returns {{ refusal: string } | { refusal: null, labels: string[] }}
+ */
+function freshLabelsForWrite(issueNumber, { run, fetchLabels }) {
+  /** @type {string[]} */
+  let labels;
+  try {
+    labels = fetchLabels(issueNumber, { run }).labels;
+  } catch (error) {
+    return { refusal: `row-file: #${issueNumber}'s Status is now "${READY_STATUS}" but its labels could not `
+      + `be read, so the label write DID NOT RUN -- a set write computed from a stale read would carry `
+      + `whatever the row held a moment ago and erase anything else. ${/** @type {Error} */ (error).message}`
+      + `\n  The labels are untouched. Run \`--promote=${issueNumber}\` again: it is idempotent.` };
+  }
+  if (labels.includes(CLAIM_LABEL)) {
+    return { refusal: `row-file: #${issueNumber}'s Status is now "${READY_STATUS}" but the row was CLAIMED `
+      + `between the gate's read and this write (\`${CLAIM_LABEL}\` is on it now). REFUSING the label `
+      + `write: it sets the whole list, so it would erase the claim's own labels to add \`${READY_LABEL}\`. `
+      + `Nothing was relabelled. A claimed row is In progress, not Ready -- move its Status back if that `
+      + "is not what the board should say." };
+  }
+  return { refusal: null, labels };
+}
+
+/**
+ * #2111: the label half -- read, decide, write ONCE. `null` when there is nothing left to report, which
+ * is both "written" and "there was nothing to write".
+ * @param {number} issueNumber
+ * @param {{ run: typeof defaultRun, fetchLabels: typeof fetchIssueLabels,
+ *   ensureLabels: typeof ensureLabelsExist }} deps
+ * @returns {{ ok: false, code: number, message: string } | null}
+ */
+function writePromotionLabels(issueNumber, deps) {
+  const { run, ensureLabels } = deps;
+  const fresh = freshLabelsForWrite(issueNumber, deps);
+  if (fresh.refusal !== null) return { ok: false, code: 2, message: fresh.refusal };
+  if (promotionLabelsSettled(fresh.labels)) return null;
+  const wanted = labelSetForPromotion(fresh.labels);
+  try {
+    // #749's lesson, the same one `boardAndVerify` pays: a label the repository does not have is a
+    // refusal, and `--force` makes the creation idempotent. Kept ahead of the set write because it is
+    // unknown whether this endpoint mints a missing name, and that is not a question to answer live.
+    ensureLabels([READY_LABEL], { run });
+    run("gh", labelSetArgs(issueNumber, wanted));
+  } catch (error) {
+    return { ok: false, code: 2, message: `row-file: #${issueNumber}'s Status is now "${READY_STATUS}" but `
+      + `the label write FAILED -- ${/** @type {Error} */ (error).message}\n  The labels are UNTOUCHED: one `
+      + `PUT sets the whole list, so there is no half-applied add or remove to unpick -- the row still `
+      + `reads \`${BACKLOG_LABEL}\` and is still counted as promotable stock, exactly as before this ran. `
+      + `It is NOT in the both-labels state this row is about. What is now inconsistent is the board: `
+      + `Status "${READY_STATUS}" beside a \`${BACKLOG_LABEL}\` label.\n  The repair is this act: run `
+      + `\`npm run row-file -- --promote=${issueNumber} --session=<you>\` again. It is idempotent -- the `
+      + "Status move is a no-op and the label write is the same one request." };
+  }
+  return null;
+}
+
+/**
+ * #2111: the Status FIRST, then the one label write, then the read-back.
  *
  * THAT ORDER IS LOAD-BEARING, and for a different reason than filing's. `boardAndVerify` labels last so
  * no reader ever sees `ready` on a row with no Status (#867's floor). Here the row already HAS a Status,
- * so the argument is the other one: the label edit sits behind the Status move, so a Status failure
- * writes nothing at all and leaves the row exactly as it was. There is no order in which both steps can
- * fail safely; this is the one in which the FIRST failure is a no-op.
- * @param {number} issueNumber @param {string | null} session @param {{ labels: string[] }} before
+ * so the argument is the other one: the label write sits behind the Status move, so a Status failure
+ * writes nothing at all and leaves the row exactly as it was.
+ *
+ * The reviewer's should-fix on `3de784b0` is what the rest of this comment answers: ordering alone is not
+ * a guarantee, and the second failure has to be survivable too. It is, in three named ways -- the label
+ * write is ONE set replacement, so it cannot half-apply (`labelSetForPromotion`); its failure is reported
+ * at exit 2 naming the exact state rather than being silent; and the REPAIR is this same act, which is
+ * idempotent, so recovery is running it again rather than a hand-written rollback that would itself be a
+ * second non-atomic write. `row-file.test.ts` drives that recovery: a failed write followed by a second
+ * run that lands.
+ * @param {number} issueNumber @param {string | null} session
  * @param {{ run: typeof defaultRun, fetchBoardStatus: typeof fetchIssueBoardStatus,
  *   fetchLabels: typeof fetchIssueLabels, moveStatus: typeof moveProjectStatus,
  *   ensureLabels: typeof ensureLabelsExist }} deps
  * @returns {{ ok: true, message: string } | { ok: false, code: number, message: string }}
  */
-function writePromotion(issueNumber, session, before, deps) {
-  const { run, moveStatus, ensureLabels } = deps;
+function writePromotion(issueNumber, session, deps) {
+  const { run, moveStatus } = deps;
   const statusResult = moveStatus(issueNumber, READY_STATUS, { run });
   if (!statusResult.moved) {
     return { ok: false, code: 1, message: `row-file: REFUSING to promote -- #${issueNumber}'s Status could `
       + `not be moved to "${READY_STATUS}": ${statusResult.reason}\n  NOTHING was relabelled: the label `
-      + "edit sits behind the Status move and never ran, so the row is exactly as it was. Fix the board "
+      + "write sits behind the Status move and never ran, so the row is exactly as it was. Fix the board "
       + "and run this again -- there is no half-promotion to clean up first." };
   }
-  const labelArgs = promotionLabelArgs(before.labels);
-  if (labelArgs.length > 0) {
-    try {
-      // #749's lesson, the same one `boardAndVerify` pays: `--add-label` refuses a label the repository
-      // does not already have. Only asked for when the add is actually in this edit.
-      if (labelArgs.includes(READY_LABEL)) ensureLabels([READY_LABEL], { run });
-      run("gh", ["issue", "edit", String(issueNumber), "--repo", REPO, ...labelArgs]);
-    } catch (error) {
-      return { ok: false, code: 2, message: `row-file: #${issueNumber}'s Status is now "${READY_STATUS}" but `
-        + `\`${labelArgs.join(" ")}\` failed -- ${/** @type {Error} */ (error).message}. The row is `
-        + `HALF-PROMOTED: Ready on the board, still labelled \`${BACKLOG_LABEL}\`, and counted as `
-        + `promotable stock until the labels are fixed. Apply them:\n    gh issue edit ${issueNumber} `
-        + `--repo ${REPO} ${labelArgs.join(" ")}` };
-    }
-  }
+  const failed = writePromotionLabels(issueNumber, deps);
+  if (failed) return failed;
   return verifyPromotion(issueNumber, session, deps);
 }
 
@@ -1534,7 +1642,7 @@ function writePromotion(issueNumber, session, before, deps) {
 function promoteAndVerify(issueNumber, session, deps) {
   const gate = promoteGate(issueNumber, deps);
   if (gate.refusal !== null) return { ok: false, code: 1, message: gate.refusal };
-  return writePromotion(issueNumber, session, gate.before, deps);
+  return writePromotion(issueNumber, session, deps);
 }
 
 /**

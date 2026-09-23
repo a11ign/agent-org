@@ -86,11 +86,20 @@ const BACKLOG_LABEL = "backlog";
  *
  * `in-progress` USED TO belong here (#246), and #673 split it out into its own check
  * (`handClaims`/`reportHandClaims`, below). `row-claim.mjs`'s `writeRowLabels` removes `READY_LABEL` in
- * the SAME `gh issue edit` call that adds `in-progress`/`session:*` -- always, atomically -- so a row
- * genuinely claimed through `row-claim.mjs` can never be observed carrying both. `ready` + `in-progress`
- * together is therefore not a generic contradiction the way `ready` + `blocked` is: it is PROOF the claim
- * was made through some other route (`gh issue edit --add-label` by hand, or a direct assignment), never
- * through the mechanism itself. Measured 2026-09-09: #634, #635 and #633 all sat in exactly this state,
+ * the SAME `gh issue edit` call that adds `in-progress`/`session:*`, so a claim made through the
+ * mechanism is not expected to be observed carrying both. `ready` + `in-progress` together is therefore
+ * not a generic contradiction the way `ready` + `blocked` is: it is strong evidence that the claim was
+ * made through some other route (`gh issue edit --add-label` by hand, or a direct assignment) rather
+ * than through the mechanism itself.
+ *
+ * **THIS PARAGRAPH USED TO SAY "always, atomically" AND "PROOF", AND BOTH OVERSTATED IT (#2111 rework,
+ * 2026-09-23).** One `gh issue edit` invocation is one COMMAND, not one write: #749's own comment in
+ * `row-claim.mjs` carries #677's live reproduction, where the SAME command's `--remove-label` applied
+ * while every `--add-label` in it did not. So a partial failure of the claim's own label edit can leave
+ * this very pair, and the finding is "almost certainly a hand claim", not a proof. Nothing about the
+ * check changes -- the remedy is the same and the population is the same -- but a comment that claims an
+ * atomicity the repository has measured to be absent is how a later fix comes to rest on it, which is
+ * exactly what happened when #2111's first promote act cited this sentence as its warrant. Measured 2026-09-09: #634, #635 and #633 all sat in exactly this state,
  * claimed by hand within hours of being filed, and stayed advertised as pickable until an audit run by
  * hand caught them. Reporting that as "remove one or the other" -- this list's generic remedy -- names
  * the symptom; naming it as a hand claim names the cause AND the remedy in the same sentence (#655's
@@ -815,7 +824,8 @@ function reportMutexViolations() {
 
 /**
  * #673: Report rows claimed by hand -- `ready` + `in-progress` together, which `row-claim.mjs`'s own
- * atomic label-write can never produce. Named separately from `reportMutexViolations` because the two
+ * one-command label write is not expected to leave behind (see `MUTEX_LABELS`' own note above for why
+ * that is evidence rather than proof, #2111). Named separately from `reportMutexViolations` because the two
  * need different remedies: a hand claim's fix is to route the claim through `row-claim.mjs`, never to
  * remove one of the two labels as `mutexViolations`' generic wording would suggest.
  */
@@ -824,13 +834,13 @@ function reportHandClaims() {
   const claims = handClaims(issues);
   if (claims.length === 0) {
     process.stdout.write(`OK  ${issues.length} of ${reportedCount} open issue(s) checked, none carry `
-      + `ready + in-progress together -- row-claim's own mechanism can never produce that state\n`);
+      + `ready + in-progress together -- the state a claim made outside row-claim.mjs leaves\n`);
     return 0;
   }
   for (const { number, title, sessions } of claims) {
     const who = sessions.length > 0 ? sessions.join(", ") : "an unknown session";
     process.stdout.write(`HAND CLAIM  #${number} "${title}" -- claimed by ${who} without row-claim.mjs, `
-      + `which never leaves \`ready\` in place\n`);
+      + `which removes \`ready\` in the same command that claims\n`);
   }
   process.stderr.write(`\n${claims.length} row(s) were claimed by hand rather than through row-claim.mjs. `
     + `Route the claim through it instead: \`node packages/agent-org/src/row-claim.mjs decline <n> `
@@ -862,9 +872,11 @@ function reportHandClaims() {
  * `backlog`, never `ready`. Same argument `handClaims` makes for its own separate check (#673): a
  * finding whose cause and remedy are known names them, rather than describing the contradiction.
  *
- * THE SOURCE-SIDE FIX IS `row-file.mjs --promote=<n>`, which writes the add and the remove in ONE
- * `gh issue edit`, so a row promoted through it can never be observed in this state. This check is what
- * says so when a promotion happened some other way.
+ * THE SOURCE-SIDE FIX IS `row-file.mjs --promote=<n>`, which does not add and remove at all: it SETS the
+ * row's whole label list in one `PUT .../issues/<n>/labels`, which has no add half and no remove half to
+ * come apart, so a row promoted through it is never left in this state (#2111 rework -- the first version
+ * packed an add and a remove into one `gh issue edit` and called that atomic, which #677's reproduction
+ * had already disproved). This check is what says so when a promotion happened some other way.
  *
  * @param {LabelledIssue[]} issues
  * @returns {Array<{ number: number, title: string, labels: string[] }>}
