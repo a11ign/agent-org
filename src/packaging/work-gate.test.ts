@@ -537,7 +537,66 @@ test("a TRUNCATED pull-request file list is dropped from the comparison, never r
 test("comparablePrFiles reads gh's own shape: a file list is objects carrying a path", () => {
   assert.deepEqual(comparablePrFiles([{ number: 9, changedFiles: 2,
     files: [{ path: "a.ts" }, { path: "b.ts" }] }]),
-  [{ number: 9, changedFiles: 2, files: ["a.ts", "b.ts"] }]);
+  [{ number: 9, changedFiles: 2, files: ["a.ts", "b.ts"], closes: [] }]);
+});
+
+// --- #2101: THE GATE SHELVED A ROW BEHIND THE PULL REQUEST THAT WAS THAT ROW'S OWN WORK ---
+//
+// Measured 2026-09-23: #2077 opened 32 seconds after #2076 was filed, one file each side and the same
+// file. The gate compared #2076's Region against every open PR, #2077 included, and shelved #2076 --
+// while #2084 and #2083 waited behind the same file and three engineers were idle. Nobody could claim
+// the row and nobody could finish the PR; `product-manager` closed #2077 by hand after 1h41m.
+//
+// THE SHELVING SIDE IS PINNED BESIDE THE OFFERING SIDE ON PURPOSE. A gate that stops shelving is this
+// row's defect running the other way -- it restores exactly the wasted turn `partitionUnclaimed` exists
+// to remove -- so each assertion below that a row IS offered has a twin asserting a row is NOT.
+
+const prClosingRow = (n: number, closes: number[], ...files: string[]) =>
+  ({ number: n, files, changedFiles: files.length, closes });
+
+test("#2101 a row is OFFERED although an open PR holds its whole Region, when that PR declares `Closes #<row>`", () => {
+  const orders = decide({ prs: [], readyRows: [regionRow(2076, ".claude/rules/agent-practices.md")],
+    prFiles: [prClosingRow(2077, [2076], ".claude/rules/agent-practices.md")] });
+  assert.deepEqual(orders.map((o: { subject: string }) => o.subject), ["row-2076"],
+    "a row and its own pull request are one piece of work, and one piece of work cannot collide with itself");
+});
+
+test("#2101 NEGATIVE: the same row is still SHELVED behind a PR declaring another row, and behind one " +
+  "declaring nothing -- B4 stays unconditional about two SESSIONS in one file", () => {
+  const row = regionRow(2076, ".claude/rules/agent-practices.md");
+  const other = decide({ prs: [], readyRows: [row],
+    prFiles: [prClosingRow(2077, [2084], ".claude/rules/agent-practices.md")] });
+  assert.deepEqual(other.filter((o: { cause: string }) => o.cause === "ready-row-unclaimed"), []);
+  const undeclared = decide({ prs: [], readyRows: [row],
+    prFiles: [prTouching(2077, ".claude/rules/agent-practices.md")] });
+  assert.deepEqual(undeclared.filter((o: { cause: string }) => o.cause === "ready-row-unclaimed"), []);
+});
+
+test("#2101 the shelving REPORT names the same two, and stops naming the row's own PR", () => {
+  const row = regionRow(2076, ".claude/rules/agent-practices.md");
+  assert.deepEqual(partitionUnclaimed([row],
+    [prClosingRow(2077, [2076], ".claude/rules/agent-practices.md")]).blocked, [],
+  "a row withheld with no session able to unblock it is the deadlock itself");
+  const [withheld] = partitionUnclaimed([row],
+    [prTouching(2077, ".claude/rules/agent-practices.md")]).blocked;
+  assert.match(withheld.reason, /overlaps #2077/);
+});
+
+test("#2101 comparablePrFiles reads the declaration off the body gh already returns, never a second call", () => {
+  assert.deepEqual(comparablePrFiles([
+    { number: 2077, changedFiles: 1, files: [{ path: "a.ts" }], body: "Closes #2076\n\nsome prose" },
+    { number: 2084, changedFiles: 1, files: [{ path: "a.ts" }], body: "Closes: none -- a trunk revert" },
+    { number: 2085, changedFiles: 1, files: [{ path: "a.ts" }], body: "See #2076 for context." },
+  ]).map((p: { number: number, closes: number[] }) => [p.number, p.closes]),
+  [[2077, [2076]], [2084, []], [2085, []]],
+  "an opt-out and a bare mention declare NO row, so neither can exclude one");
+});
+
+test("#2101 `body` rides on readPrs's existing field list -- another field, never another call", () => {
+  const calls: string[][] = [];
+  readPrs((args: string[]) => { calls.push(args); return "[]"; });
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].join(" "), /changedFiles,body/);
 });
 
 test("prFiles omitted means no overlap is KNOWABLE, so every row is offered exactly as before", () => {

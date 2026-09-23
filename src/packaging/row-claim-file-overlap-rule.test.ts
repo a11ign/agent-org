@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  fileOverlapReason, lookupMyRegionFiles, lookupOpenPrFiles,
+  declaredClosedRows, fileOverlapReason, lookupMyRegionFiles, lookupOpenPrFiles,
 } from "../row-claim/file-overlap-rule.mjs";
 import { declaredRegionFiles } from "../region-paths.mjs";
 
@@ -158,10 +158,12 @@ test("lookupOpenPrFiles reads every open PR's files AND their count in one call,
   };
   const files = lookupOpenPrFiles({ run, log: () => {} });
   assert.deepEqual(calls, [["pr", "list", "--repo", "a11ign/a11ign", "--state", "open",
-    "--json", "number,changedFiles,files"]], "one bulk call, and no REST page for a complete list");
+    "--json", "number,changedFiles,files,body"]], "one bulk call, and no REST page for a complete list");
   assert.deepEqual(files, [
-    pr(406, ["packages/agent-org/src/merge-guard.mjs", "CLAUDE.md"]),
-    pr(472, ["packages/lab/src/gates/corpus-snapshot-scope.test.ts"]),
+    // #2101: `closes` is `[]` for a body that declares nothing -- and for no body at all, which is what
+    // these two fixtures have. It is another FIELD on this one call, never another call.
+    { ...pr(406, ["packages/agent-org/src/merge-guard.mjs", "CLAUDE.md"]), closes: [] },
+    { ...pr(472, ["packages/lab/src/gates/corpus-snapshot-scope.test.ts"]), closes: [] },
   ]);
 });
 
@@ -258,4 +260,109 @@ test("#1419 a FAILED page keeps the short list and says so -- the rule then refu
   assert.equal(others?.[0].files.length, 100);
   assert.match(said.join("\n"), /could not page #1412's files past 100 \(HTTP 502\)/);
   assert.match(fileOverlapReason(["package.json"], others ?? []).reason as string, /cannot compare with #1412/);
+});
+
+// --- #2101: A ROW AND ITS OWN PULL REQUEST ARE ONE PIECE OF WORK ---
+//
+// THE THREE ASSERTIONS THAT MATTER ARE THE TWO NEGATIVES AND THE POSITIVE TOGETHER. This change is one
+// `if` away from disabling B4 entirely, so "the row's own PR no longer refuses" is not a result on its
+// own: an undeclared PR and a PR declaring ANOTHER row must still refuse, naming the PR and the file, or
+// what shipped is "B4 no longer refuses" wearing this row's number.
+
+const REGION_FILE = ".claude/rules/agent-practices.md";
+
+/** #2077's real shape: an open PR touching one file, declaring the row it closes. */
+const prClosing = (number: number, files: string[], closes: number[]) =>
+  ({ number, files, changedFiles: files.length, closes });
+
+test("#2101 THE POSITIVE: a PR declaring `Closes #<row>` does NOT block that row's claim", () => {
+  const { reason } = fileOverlapReason([REGION_FILE], [prClosing(2077, [REGION_FILE], [2076])],
+    { rowNumber: 2076 });
+  assert.equal(reason, null, "#2076 was unclaimable by everybody behind #2077, which WAS #2076's work");
+});
+
+test("#2101 NEGATIVE 1: a PR touching the same file that declares NOTHING still refuses, naming PR and file", () => {
+  const { reason } = fileOverlapReason([REGION_FILE], [pr(2077, [REGION_FILE])], { rowNumber: 2076 });
+  assert.match(reason as string, /overlaps #2077, which already touches: \.claude\/rules\/agent-practices\.md/);
+});
+
+test("#2101 NEGATIVE 2: a PR touching the same file that declares ANOTHER row still refuses", () => {
+  const { reason } = fileOverlapReason([REGION_FILE], [prClosing(2077, [REGION_FILE], [2084])],
+    { rowNumber: 2076 });
+  assert.match(reason as string, /overlaps #2077, which already touches: \.claude\/rules\/agent-practices\.md/);
+});
+
+test("#2101 NEGATIVE 3: no `rowNumber` at all excludes NOTHING -- every caller that cannot say which row " +
+  "it is asking for gets the unconditional B4 of before", () => {
+  const { reason } = fileOverlapReason([REGION_FILE], [prClosing(2077, [REGION_FILE], [2076])]);
+  assert.match(reason as string, /overlaps #2077/,
+    "a declaration is only ever read against a row number the caller supplied");
+});
+
+test("#2101 the exclusion is PER PR, not per call -- the row's own PR is skipped and a THIRD party's " +
+  "overlap on the same file is still found", () => {
+  const { reason } = fileOverlapReason([REGION_FILE], [
+    prClosing(2077, [REGION_FILE], [2076]),
+    pr(2084, [REGION_FILE]),
+  ], { rowNumber: 2076 });
+  assert.match(reason as string, /overlaps #2084/, "skipping one PR must not end the walk");
+});
+
+test("#2101 a row's own PR is excluded BEFORE #1419's comparability refusal -- a truncated list on its " +
+  "own PR must not deadlock the row by the other door", () => {
+  const { reason } = fileOverlapReason([REGION_FILE],
+    [{ number: 2077, files: [REGION_FILE], changedFiles: 113, closes: [2076] }], { rowNumber: 2076 });
+  assert.equal(reason, null);
+});
+
+test("#2101 a row's own PR reading ZERO files is not reported as an empty-list note either -- there is " +
+  "nothing to compare with one's own work", () => {
+  const { reason, emptyOtherPrs } = fileOverlapReason([REGION_FILE],
+    [prClosing(2077, [], [2076])], { rowNumber: 2076 });
+  assert.deepEqual({ reason, emptyOtherPrs }, { reason: null, emptyOtherPrs: [] });
+});
+
+test("#2101 a single declared row may be written bare, the way a row's own Open-check writes it", () => {
+  const own = { number: 2077, files: [REGION_FILE], changedFiles: 1, closes: 2076 };
+  assert.equal(fileOverlapReason([REGION_FILE], [own as never], { rowNumber: 2076 }).reason, null);
+  assert.match(fileOverlapReason([REGION_FILE], [own as never], { rowNumber: 2084 }).reason as string,
+    /overlaps #2077/, "the bare form is read as a declaration, not as a blanket exclusion");
+});
+
+// --- #2101: declaredClosedRows -- NO SECOND PARSER ---
+
+test("#2101 declaredClosedRows reads B7's own declaration, and returns [] for every shape that is not a closure", () => {
+  assert.deepEqual(declaredClosedRows("Closes #2076"), [2076]);
+  assert.deepEqual(declaredClosedRows("Closes #2076, #2084"), [2076, 2084]);
+  assert.deepEqual(declaredClosedRows("Closes: none -- a trunk revert"), [],
+    "an opt-out declares no row, so it can never exclude one");
+  assert.deepEqual(declaredClosedRows("A body that says nothing about closing anything."), []);
+  assert.deepEqual(declaredClosedRows("Closes #abc"), [], "MALFORMED excludes nothing");
+  assert.deepEqual(declaredClosedRows(null), []);
+});
+
+test("#2101 A BARE MENTION IS NEVER A CLOSURE -- `See #2076 for context` in a PR body must not make that " +
+  "PR #2076's own work and let it through B4", () => {
+  assert.deepEqual(declaredClosedRows("See #2076 for context."), []);
+  const { reason } = fileOverlapReason([REGION_FILE],
+    [prClosing(2077, [REGION_FILE], declaredClosedRows("See #2076 for context."))], { rowNumber: 2076 });
+  assert.match(reason as string, /overlaps #2077/);
+});
+
+test("#2101 THE LOOKUP READS `body` ON THE CALL IT ALREADY MAKES, never a second one, and hands the rule " +
+  "the declared rows", () => {
+  const calls: string[][] = [];
+  const run = (args: string[]) => {
+    calls.push(args);
+    return JSON.stringify([
+      { number: 2077, changedFiles: 1, files: [{ path: REGION_FILE }], body: "Closes #2076\n" },
+      { number: 2084, changedFiles: 1, files: [{ path: REGION_FILE }], body: "Closes: none -- unrelated" },
+    ]);
+  };
+  const others = lookupOpenPrFiles({ run, log: () => {} });
+  assert.equal(calls.length, 1, "one `gh pr list`, `body` among its fields");
+  assert.ok(calls[0].join(" ").includes("number,changedFiles,files,body"));
+  assert.deepEqual(others?.map((o) => o.closes), [[2076], []]);
+  assert.match(fileOverlapReason([REGION_FILE], others ?? [], { rowNumber: 2076 }).reason as string,
+    /overlaps #2084/, "its own #2077 is excluded; #2084, which declares nothing, is not");
 });
