@@ -1,3 +1,9 @@
+// no-token: MAX_ROW_ORDERS_PER_TICK -- #827. Importing anything from `work-gate.mjs` reaches `defaultRun`
+// (`execFileSync("gh", ...)`, work-gate.mjs:162), and this file never lets it run: every seam here is
+// handed an injected `run`. Measured 2026-09-23 -- 173/173 pass with `gh` off `PATH` entirely and
+// `GH_TOKEN`/`GITHUB_TOKEN`/`GH_CONFIG_DIR` unset, which is what makes this a verified claim rather than
+// a hopeful one. Without it the acceptance job refuses the row's own declared command and verifies
+// NOTHING (#2106 hit exactly that).
 /**
  * #912: THE TICK IS A SCRIPT, AND THESE ARE THE ANSWERS IT MUST NOT GET WRONG.
  *
