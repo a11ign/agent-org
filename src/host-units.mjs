@@ -146,6 +146,28 @@ export function packageScripts(repoRoot = REPO_ROOT, read = readFileSync) {
  */
 export function entriesFromCommand(command, { repoRoot = REPO_ROOT, scripts = packageScripts(repoRoot),
   exists = existsSync } = {}) {
+  return programCandidates(command, { repoRoot, scripts }).filter((entry) => exists(entry));
+}
+
+/**
+ * THE SAME RESOLUTION AS `entriesFromCommand`, WITHOUT THE `exists` FILTER -- split out for #2174.
+ *
+ * `entriesFromCommand` answers "which repository files does this unit run", so filtering to the ones
+ * that exist is right there: a path that resolves to nothing is not a file whose `gh` spend anyone can
+ * analyse. **That filter is also why that function structurally cannot answer #2174's constraint 3** --
+ * a unit naming a program that is not there returns `[]`, indistinguishable from a unit naming no
+ * repository file at all. The candidate list is the thing both questions need, so it is computed once
+ * here and each caller applies its own predicate.
+ *
+ * EXTRACTED RATHER THAN RETYPED, and that is the point: a second copy of this resolution would be a
+ * second answer to "what does this unit run", and `regionRefusalReason`'s own header already records
+ * what a hand-written second reader cost when it disagreed with the shared one in BOTH directions.
+ * @param {string} command
+ * @param {{ repoRoot?: string, scripts?: Record<string, string> }} [deps]
+ * @returns {string[]} absolute paths, deduplicated, WHETHER OR NOT THEY EXIST
+ */
+export function programCandidates(command, { repoRoot = REPO_ROOT,
+  scripts = packageScripts(repoRoot) } = {}) {
   /** @type {string[]} */
   const entries = [];
   const seen = new Set();
@@ -154,7 +176,7 @@ export function entriesFromCommand(command, { repoRoot = REPO_ROOT, scripts = pa
     for (const stage of String(text).split(/\|\||&&|[|;]/)) {
       const argv = stage.trim().split(/\s+/).filter(Boolean);
       const tool = basename(argv[0] ?? "");
-      if ((tool === "node" || SHELLS.has(tool)) && argv[1]) entries.push(resolve(repoRoot, argv[1]));
+      if ((tool === "node" || SHELLS.has(tool)) && isPath(argv[1])) entries.push(resolve(repoRoot, argv[1]));
       else if ((tool === "npm" || tool === "npx") && argv[1] === "run" && argv[2]) followScript(argv[2]);
     }
   };
@@ -165,7 +187,30 @@ export function entriesFromCommand(command, { repoRoot = REPO_ROOT, scripts = pa
     follow(scripts[name]);
   };
   follow(command);
-  return [...new Set(entries)].filter((entry) => exists(entry));
+  return [...new Set(entries)];
+}
+
+/**
+ * An argument that could be a script path, as opposed to an OPTION -- `bash -c`, `node --enable-source-maps`.
+ *
+ * FOUND BY #2174, AND IT WAS A LATENT FALSE POSITIVE THAT NOTHING COULD SEE. This file's own header has
+ * claimed since #1998 that "`bash -c '...'` resolves to nothing and is correctly left unread" -- and it
+ * did not. `-c` was resolved as a path to `<repoRoot>/-c`, and the ONLY reason nothing ever reported it
+ * was `entriesFromCommand`'s `exists` filter, which drops a file that is not there. The claim was true by
+ * accident of a filter applied for a different reason.
+ *
+ * `missingUnitPrograms` asks the OPPOSITE question -- which candidates do NOT exist -- so that accident
+ * reversed into a finding: every unit running `bash -c` would have been reported as naming a missing
+ * program `<WorkingDirectory>/-c`. The check would have been noisiest on exactly the units it understands
+ * least, which is how a real finding gets silenced.
+ *
+ * So the rule is stated here rather than left to a filter: an argument beginning `-` is an option, and an
+ * option is not a path. `entriesFromCommand`'s behaviour is unchanged -- it dropped these anyway -- and
+ * the header's claim is now true because of a decision instead of a coincidence.
+ * @param {string | undefined} arg
+ */
+function isPath(arg) {
+  return typeof arg === "string" && arg !== "" && !arg.startsWith("-");
 }
 
 /**
@@ -372,7 +417,8 @@ export function identityDrift(deps = {}) {
 
 /**
  * @typedef {{unit: string, problem: string, detail: string, revertsIdentity?: boolean,
- *            removesUnit?: boolean, shippedOnRef?: string, supersededScript?: string}} Finding
+ *            removesUnit?: boolean, shippedOnRef?: string, supersededScript?: string,
+ *            missingProgram?: string}} Finding
  */
 
 /**
@@ -820,6 +866,106 @@ function unknownOriginFinding(unit, never) {
 const defaultGit = (args) =>
   execFileSync("git", ["-C", REPO_ROOT, ...args], { encoding: "utf8", env: sandboxGitEnv() });
 
+/**
+ * A UNIT THAT IS BYTE-CORRECT AND NAMES A PROGRAM THAT IS NOT THERE -- #2174's constraint 3.
+ *
+ * WHY EVERY OTHER CHECK HERE IS BLIND TO IT. `unitDrift` compares SHIPPED unit text against INSTALLED
+ * unit text, so a unit installed perfectly from the tree agrees with the tree on both sides and reads
+ * clean -- while `ExecStart` is repository-RELATIVE and resolves against the `WorkingDirectory` the unit
+ * names, which is a DIFFERENT TREE from the one anybody installed from. A stale primary checkout, a
+ * renamed script, a `WorkingDirectory` pointing at a worktree somebody deleted: in all three the unit is
+ * current, `host:check` reads green, and the timer fails at its next firing on a missing file.
+ *
+ * MEASURED, AND IT IS WHY THIS EXISTS. Closing #2173 on 2026-09-23 the primary checkout happened to be
+ * at `518de0e32` and carried `packages/agent-org/host/board-report-dispatch.sh`, so the 06:10Z board
+ * edition would run. Had it been left at the `72c8fbcd5` it held earlier that day, every reading taken
+ * that afternoon would have been identical and the firing would still have failed.
+ *
+ * **TWO FINDINGS, NEVER ONE.** "Differs from the tree" and "matches the tree and names something that is
+ * not there" have different causes and different remedies -- the first is fixed by `host:install`, and
+ * **the second is not fixed by it at all**, because installing the unit again reinstalls the same correct
+ * text. Folding them into one finding would print the shared remedy against a fault the remedy cannot
+ * touch, which is `uncovered`'s whole reason for existing one function down.
+ *
+ * IT READS THE INSTALLED TEXT, NOT THE SHIPPED TEXT, because the question is what the SERVICE MANAGER
+ * will execute. A unit not installed at all is `unitDrift`'s finding and is skipped here, so one fault
+ * never prints twice.
+ *
+ * WHAT IT CANNOT SEE, STATED. Only the three tools `programCandidates` can follow -- `node`, a shell, and
+ * `npm`/`npx run` through the WorkingDirectory's own `package.json`. A `bash -c '...'`, an opaque binary
+ * or an absolute path outside the repository yields no candidate and is silently fine here; that is
+ * `opaqueCommands`'s territory and this function does not pretend otherwise. A unit with no
+ * `WorkingDirectory=` line is SKIPPED rather than guessed at -- a relative path would then resolve
+ * against systemd's own default, and inventing a base directory to check against is how a checker starts
+ * reporting faults that are really its own.
+ * @param {{ installedDir?: string, readDir?: typeof readdirSync, read?: typeof readFileSync,
+ *           exists?: typeof existsSync }} [deps]
+ * @returns {Finding[]}
+ */
+export function missingUnitPrograms({ installedDir = INSTALLED_DIR, readDir = readdirSync,
+  read = readFileSync, exists = existsSync } = {}) {
+  return installedOrgUnits(installedDir, readDir)
+    .flatMap((unit) => missingForUnit(unit, textOf(join(installedDir, unit), read), { read, exists }));
+}
+
+/** @param {string} dir @param {typeof readdirSync} readDir @returns {string[]} */
+function installedOrgUnits(dir, readDir) {
+  try {
+    return /** @type {string[]} */ (readDir(dir))
+      .map(String).filter((n) => n.startsWith(ORG_UNIT_PREFIX));
+  } catch {
+    // NOT AN AGENT HOST, or a directory this process cannot read. `hostUnitDrift`'s `systemdUserAvailable`
+    // gate has already answered the first; returning [] here keeps the second from being reported as a
+    // clean host by a reader that never got to look.
+    return [];
+  }
+}
+
+/**
+ * @param {string} unit @param {string | null} text the INSTALLED unit's text, or `null` if unreadable
+ * @param {{ read?: typeof readFileSync, exists?: typeof existsSync }} deps @returns {Finding[]}
+ */
+function missingForUnit(unit, text, { read = readFileSync, exists = existsSync } = {}) {
+  // A UNIT WHOSE TEXT CANNOT BE READ IS `unitDrift`'s FINDING, NOT THIS ONE. Guessing at what an
+  // unreadable unit starts would report a second fault for one cause, which is the thing the "two
+  // findings, never one" rule above exists to get right in the other direction.
+  if (text === null) return [];
+  const dir = workingDirectoryOf(text);
+  if (dir === null) return [];
+  const scripts = packageScripts(dir, read);
+  const missing = [...new Set(execCommands(text)
+    .flatMap((command) => programCandidates(command, { repoRoot: dir, scripts })))]
+    .filter((path) => !exists(path));
+  return missing.map((path) => missingProgramFinding(unit, path, dir));
+}
+
+/** @param {string} unit @param {string} path @param {string} dir @returns {Finding} */
+function missingProgramFinding(unit, path, dir) {
+  return { unit, problem: "PROGRAM MISSING", missingProgram: path,
+    detail: `the unit is installed and matches the repository, and the program it starts is not there: `
+      + `${path}. \`ExecStart\` is resolved against this unit's own \`WorkingDirectory=${dir}\`, which is `
+      + "a different tree from the one it was installed from -- so the unit text can be perfectly current "
+      + "while the file it names is absent, renamed, or simply older than the merge. THE SHARED REMEDY "
+      + "DOES NOT FIX THIS: re-installing copies the same correct unit again. Bring that checkout up to "
+      + "date, or correct the path, and this clears." };
+}
+
+/**
+ * The directory a relative `ExecStart` resolves against, or `null` when the unit declares none.
+ *
+ * LAST WINS, which is systemd's own rule for a repeated directive rather than a preference of ours: a
+ * later `WorkingDirectory=` overrides an earlier one, and an EMPTY one resets it to the default, which
+ * is a unit that declares no base directory and so is skipped. A first-match read would check a path
+ * against a directory the service manager has already discarded.
+ * @param {string} unitText @returns {string | null}
+ */
+export function workingDirectoryOf(unitText) {
+  const matches = [...String(unitText ?? "").matchAll(/^WorkingDirectory=(.*)$/gm)]
+    .map((m) => m[1].trim().replace(/^-/, "").trim());
+  const last = matches.length === 0 ? null : matches[matches.length - 1];
+  return last === null || last === "" ? null : last;
+}
+
 /** Units this repository owns. The host runs others; those are not ours to have an opinion about. */
 export const ORG_UNIT_PREFIX = "a11ign-";
 
@@ -828,9 +974,15 @@ export const ORG_UNIT_PREFIX = "a11ign-";
  * machine with no user systemd, which is not the same claim as "this host is correct" and is why
  * `driftReport` says which of the two it is.
  *
- * FOUR QUESTIONS NOW. Is what we ship installed (`unitDrift`), is what is installed still ours
+ * FIVE QUESTIONS NOW. Is what we ship installed (`unitDrift`), is what is installed still ours
  * (`orphanedUnits`), is a copy of what we ship still sitting where it used to be hand-placed
- * (`supersededHostScripts`, #1998), and can a session act at all (`permissionModeDrift`).
+ * (`supersededHostScripts`, #1998), DOES THE PROGRAM EACH INSTALLED UNIT NAMES EXIST AT THE DIRECTORY IT
+ * RESOLVES AGAINST (`missingUnitPrograms`, #2174), and can a session act at all (`permissionModeDrift`).
+ *
+ * THE FOURTH IS THE ONLY ONE THE OTHERS CANNOT SEE BETWEEN THEM. Every check above compares the tree to
+ * the host; a unit copied perfectly from the tree agrees on both sides and reads clean while the file its
+ * `ExecStart` names -- resolved against the unit's OWN `WorkingDirectory`, a different tree again -- is
+ * absent. "Installed and current" was never the same claim as "the program it names exists".
  * @param {Parameters<typeof unitState>[1] & Parameters<typeof supersededHostScripts>[0]} [deps]
  */
 export function hostUnitDrift(deps = {}) {
@@ -840,7 +992,8 @@ export function hostUnitDrift(deps = {}) {
   // posture is nobody's business either -- and a laptop told "ORG IS IN AUTO MODE" teaches its owner to
   // ignore this command, which would lose the timer finding along with it.
   return [...unitDrift(shippedUnits(dir, {}).map((u) => unitState(u, deps))),
-    ...orphanedUnits(deps), ...supersededHostScripts(deps), ...permissionModeDrift(deps)];
+    ...orphanedUnits(deps), ...supersededHostScripts(deps), ...missingUnitPrograms(deps),
+    ...permissionModeDrift(deps)];
 }
 
 /** @param {string[]} args */
@@ -973,7 +1126,15 @@ function uncovered(drift) {
     .map((d) => `  !! ${d.supersededScript} is NOT fixed by the remedy below. This repository owns the\n`
       + "     a11ign-* units in ~/.config/systemd/user and nothing in ~/.local/bin, which also holds\n"
       + "     `gh`, `gh-real` and `herdr` -- so read it against packages/agent-org/host/ and `rm` it\n"
-      + "     by hand.\n").join("");
+      + "     by hand.\n").join("")
+    // #2174: THE SECOND FAULT THE SHARED REMEDY CANNOT TOUCH, and it is worse than the first because the
+    // remedy LOOKS like it should work. `host:install` copies the unit; this unit is already correct, so
+    // re-running it changes nothing and the reader is left believing it did.
+    + drift.filter((d) => d.missingProgram)
+      .map((d) => `  !! ${d.unit} is NOT fixed by the remedy below either -- it is already identical to\n`
+        + `     the repository. The file it starts, ${d.missingProgram}, is what is missing, and\n`
+        + "     re-installing an already-correct unit will not create it. Update the checkout its\n"
+        + "     `WorkingDirectory=` names, or fix the path in the unit and ship that.\n").join("");
 }
 
 /**
@@ -1015,8 +1176,39 @@ function remedy(drift) {
     + line;
 }
 
+/**
+ * `--json`: the SAME findings the report is built from, as data -- #2174's seam for `work-gate.mjs`.
+ *
+ * THE GATE SPAWNS THIS RATHER THAN IMPORTING IT, and the reason is measured rather than stylistic. A
+ * direct `import { hostUnitDrift }` in `work-gate.mjs` costs nothing at load -- +1 file on a closure of
+ * 21, 39.3ms against 39.4ms -- but it drags this file's `git log --all` (`addedOnSomeRef`) into the
+ * gate's CAPABILITY closure, and the gate is imported by `row-claim/runner-rule.mjs`, which most of the
+ * packaging suite reaches. MEASURED with `deriveClosureRequirements` over
+ * `packages/lab/src/packaging/*.test.ts`: the files deriving a `history` requirement go from **4 to 28**.
+ * That is a standing `History: full` tax on 24 test files that will never call this code, levied on
+ * whoever next writes a PR whose Acceptance happens to name one of them.
+ *
+ * A PROCESS BOUNDARY IS THE CHEAPER FENCE. It costs one node startup per tick and leaves the gate's
+ * closure at 4. And it buys a property an import cannot: THE GATE AND THE HUMAN READ THE SAME
+ * INSTRUMENT. The woken session runs `npm run host:check`; the gate runs the same file in the same tree,
+ * so the two can never disagree about what drifted -- which is the failure mode a second reader of the
+ * same question always eventually produces (`regionRefusalReason`'s header records one that disagreed in
+ * BOTH directions).
+ *
+ * `asked` IS CARRIED, because `findings: []` alone cannot say whether this is a correct host or a
+ * machine that was never askable, and that substitution is this file's most-repeated warning.
+ */
+function jsonReport() {
+  const asked = systemdUserAvailable();
+  return `${JSON.stringify({ asked, findings: asked ? hostUnitDrift() : [] })}\n`;
+}
+
 function main() {
-  refuseUnknownFlags(["--install"], { entry: import.meta.url, command: "npm run host:check" });
+  refuseUnknownFlags(["--install", "--json"], { entry: import.meta.url, command: "npm run host:check" });
+  if (process.argv.slice(2).includes("--json")) {
+    process.stdout.write(jsonReport());
+    return;
+  }
   const asked = systemdUserAvailable();
   if (process.argv.slice(2).includes("--install")) {
     hostUnitsInstall();

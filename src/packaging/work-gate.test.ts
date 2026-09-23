@@ -22,15 +22,20 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFileSync, readdirSync, mkdtempSync, mkdirSync, copyFileSync, realpathSync,
+  existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
+import { join, relative, dirname } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { shippedUnits } from "../host-units.mjs";
+import { localImports } from "../../../guards/src/local-import-closure.mjs";
+import { deriveClosureRequirements } from "../acceptance-commands.mjs";
 import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES,
   comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
   blockingChecks, anyChecksRed, requiredCheckNames, ownerOf, NOT_PICKABLE, NOT_STARTABLE,
   ROUTED_TO, readPromotableRows, GH_READS, partitionUnclaimed, openRowState, waitingBreakdown,
-  deadMansSwitch,
+  deadMansSwitch, hostDriftOrders, JUDGMENT_CAUSES,
   unfiledEpics, epicOrders, finishedEpics, finishedEpicOrders, fleetBatchRows, fleetBatchOrders,
   partitionFleetBatch, blockerClearedOrders,
   claimedRowAmendedOrders, constraintsAfterClaim, amendmentsOn, readClaimedRowComments,
@@ -711,9 +716,15 @@ test("every cause is classified as START or FINISH -- a new one cannot default i
   // than least. Step 2 of #63's history-purge runbook force-pushes a rewritten history, and every
   // unlanded branch on `origin` at that moment is stranded by it -- a window exists so the org can find
   // out what is still in flight before that happens. It also starts no work: the work already exists.
+  // #2174: `host-units-stale` is FINISH, and a drain is the window where withholding it would cost MOST.
+  // A drain does not stop the org running -- the work tick that EMITS this cause is itself one of the
+  // units that can go stale, and step 2 of #63's history-purge runbook force-pushes a rewritten history
+  // to the very checkout a unit's `WorkingDirectory=` names. It also starts no work by the partition's
+  // own definition: its subject is a machine that is already wrong, not a row anybody has yet to pick up,
+  // and the action is minutes rather than a build.
   assert.deepEqual(finish, ["answer-owed", "blocker-cleared", "chairman-blocked", "claimed-row-amended",
-    "draft-awaiting-verdict", "draft-convinced-not-ready", "pr-checks-failing", "pr-green-unarmed",
-    "row-branch-unshipped", "verdict-not-convinced"]);
+    "draft-awaiting-verdict", "draft-convinced-not-ready", "host-units-stale", "pr-checks-failing",
+    "pr-green-unarmed", "row-branch-unshipped", "verdict-not-convinced"]);
   for (const cause of START_CAUSES) {
     assert.ok(CAUSES.includes(cause), `${cause} is withheld by a drain but no longer exists`);
   }
@@ -2958,4 +2969,199 @@ test("#2031: a branch whose trailing number is a COINCIDENCE is named as one, no
     assert.ok(order.prompt.includes(exit),
       `all three exits are offered and none is chosen -- the gate cannot tell them apart (${exit})`);
   }
+});
+
+/**
+ * #2174: THE HOST GOES STALE ON A MERGE AND NOTHING IN THIS ORG FINDS OUT.
+ *
+ * The shipped units are COPIES, so a merge touching `packages/agent-org/host/` changes the tree and
+ * leaves the host as it was. Measured three times in 24 hours; the third had a consequence -- #2144
+ * (#1998) merged at 14:04:06Z changing the board unit's `ExecStart`, and eight hours later the service
+ * manager still loaded the pre-#1998 program, due to dispatch the 06:10Z board edition from the 31 lines
+ * of untracked bash whose whole removal was that PR's deliverable (#2173).
+ *
+ * THE POSITIVE CONTROL FOR EVERY EMPTINESS ASSERTION BELOW is the first test here -- the same reader over
+ * a populated drift list, asserted to produce an order that NAMES the unit. Delete it and the silence
+ * tests all pass against a `hostDriftOrders` that returns `[]` for every input, which is the shape this
+ * repository keeps re-finding.
+ */
+const DRIFT_STALE = { unit: "a11ign-board-report.service", problem: "STALE",
+  detail: "the installed copy differs from the one in the repository." };
+const DRIFT_MISSING = { unit: "a11ign-work-tick.service", problem: "PROGRAM MISSING",
+  missingProgram: "/home/agent/repos/a11y-witness/packages/agent-org/src/work-tick.mjs",
+  detail: "the program it starts is not there." };
+
+test("#2174 POSITIVE CONTROL: a host with drift produces an order that NAMES the unit and its problem", () => {
+  const orders = hostDriftOrders([DRIFT_STALE]);
+  assert.equal(orders.length, 1, "one order for the whole drift set, not one per finding");
+  const [order] = orders;
+  assert.equal(order.cause, "host-units-stale");
+  assert.ok(order.session, "it is addressed to a session -- an order nobody is named on wakes nobody");
+  // NAMES the unit and the problem, not merely that something is wrong: the whole defect this row is
+  // about is that `host:check` is a command somebody has to think to RUN, so the wake has to carry the
+  // finding rather than send the reader to go and look.
+  assert.match(order.prompt, /a11ign-board-report\.service/, "the prompt names the drifting unit");
+  assert.match(order.prompt, /STALE/, "and its problem");
+  assert.match(order.prompt, /the installed copy differs/, "and the detail, so nothing has to be re-read");
+});
+
+test("#2174: a CLEAN host produces no order", () => {
+  assert.deepEqual(hostDriftOrders([]), [],
+    "an empty finding list is a host that is correct, and waking somebody to say so is the burn "
+    + "`work-gate.mjs` exists to remove");
+});
+
+/**
+ * ASSERTED SEPARATELY FROM THE CLEAN HOST ABOVE, and that separation is the point rather than a style
+ * choice. `hostUnitDrift` returns `[]` for a clean host AND for a machine with no user systemd manager;
+ * `readHostDrift` returns `null` for a read that threw. All three are silence here -- none of them is a
+ * stale host -- but reading "not asked" as "all correct" is this repository's most-repeated defect, and
+ * one test covering both would be exactly that substitution written down.
+ */
+test("#2174: an UNASKABLE machine produces no order either -- a different claim, asserted apart", () => {
+  assert.deepEqual(hostDriftOrders(null), [],
+    "`null` is a read that was refused or threw: it must never wake anyone, and must never be read as "
+    + "a clean host either");
+  assert.deepEqual(hostDriftOrders(undefined), [], "omitted is the same claim as null");
+  // CI, a reviewer's laptop and a container all land here through `systemdUserAvailable`, which returns
+  // `[]` rather than throwing -- a check that fires on every laptop is one somebody silences within a
+  // day, taking the real finding with it.
+  assert.deepEqual(hostDriftOrders([]), [], "and so does a machine that is simply not an agent host");
+});
+
+test("#2174: the causeKey is keyed on the DRIFT SET -- stable while it persists, new when it changes", () => {
+  const once = hostDriftOrders([DRIFT_STALE])[0].causeKey;
+  assert.equal(hostDriftOrders([DRIFT_STALE])[0].causeKey, once,
+    "a host stale in the same way on the next tick mints the identical key and the ledger drops it");
+  // A SECOND UNIT JOINING IS A NEW QUESTION. `fleetBatchOrders`'s rule, for its reason: a COUNT would
+  // collide two different drift sets of the same size, which is #1799's finding.
+  assert.notEqual(hostDriftOrders([DRIFT_STALE, DRIFT_MISSING])[0].causeKey, once,
+    "a second drifting unit is a second question and must reach the owner");
+  assert.equal(hostDriftOrders([DRIFT_MISSING, DRIFT_STALE])[0].causeKey,
+    hostDriftOrders([DRIFT_STALE, DRIFT_MISSING])[0].causeKey,
+    "sorted: the reader's order is not a new question");
+  // AND THE PROBLEM IS IN THE KEY, NOT JUST THE UNIT -- a unit whose fault CHANGES is a new question too.
+  assert.notEqual(hostDriftOrders([{ ...DRIFT_STALE, problem: "NOT INSTALLED" }])[0].causeKey, once,
+    "the same unit with a different problem is a different state and must not be deduped away");
+});
+
+test("#2174: it is an ACTION cause -- in CAUSES, NOT in JUDGMENT_CAUSES, and routed by worker-profile", () => {
+  assert.ok(CAUSES.includes("host-units-stale"),
+    "it must be in CAUSES or worker-profile refuses it at run time");
+  // AN ACTION CAUSE KEEPS `wake.mjs`'s TWENTY-MINUTE EXPIRY. It names a thing to DO -- read these
+  // findings, then run the remedy -- and a wake that does not stick leaves the host stale with nobody
+  // told. That expiry exists because #1433 and #1435 sat Ready overnight behind a spent causeKey.
+  assert.ok(!JUDGMENT_CAUSES.includes("host-units-stale"),
+    "a judgment cause is never re-offered; a stale host must be");
+  assert.ok(!START_CAUSES.includes("host-units-stale"),
+    "FINISH: the tick that emits this is itself one of the units that can go stale, and a drain window "
+    + "ends in a force-push to the very checkout a unit's WorkingDirectory names");
+});
+
+test("#2174: decide() routes it, and only when it is handed drift", () => {
+  const withDrift = decide({ prs: [], readyRows: [], hostDrift: [DRIFT_STALE] });
+  const order = withDrift.find((o) => o.cause === "host-units-stale");
+  assert.ok(order, "the gate could see the host had drifted and, before this, had nobody to tell");
+  assert.match(order.prompt, /a11ign-board-report\.service/);
+  // NOT ASKED IS NOT A FALSE ALARM. `decide` carries no default for `hostDrift` deliberately -- a default
+  // parameter is a branch `complexity` counts and `decide` sits exactly on its limit of 15 -- so the
+  // omitted case has to behave, and this is what says it does.
+  assert.deepEqual(decide({ prs: [], readyRows: [] }).filter((o) => o.cause === "host-units-stale"), [],
+    "a caller that cannot read the host must produce no order at all");
+});
+
+/**
+ * #2174 CONSTRAINT 1, AND THE MEASUREMENT THAT DECIDED THE DESIGN AGAINST THE OBVIOUS ANSWER.
+ *
+ * The row offered three routes -- import `hostUnitDrift`, split it into a leaf module, or spawn
+ * `host:check`. A direct import LOOKS free and measures free on the axis constraint 1 names: every one
+ * of `host-units.mjs`'s imports is already in this gate's closure, so it adds one file to 21, and the
+ * gate loads in 39.3ms against 39.4ms without it.
+ *
+ * IT IS NOT FREE ON THE AXIS THE ROW DID NOT NAME. `host-units.mjs` calls `git log --all`, so importing
+ * it puts a `history` capability requirement into `work-gate.mjs` -- which `row-claim/runner-rule.mjs`
+ * reaches, and most of the packaging suite imports THAT. Measured both ways: **4 test files derive a
+ * `history` requirement, and 28 do with the import.** So the gate spawns instead, and these two
+ * assertions are the standing version of that measurement -- if somebody "simplifies" the spawn into an
+ * import, the second one fails and says what it costs.
+ */
+test("#2174: the gate does NOT import host-units.mjs -- the spawn is the fence, not a preference", () => {
+  const SRC = fileURLToPath(new URL("../", import.meta.url));
+  const closure = (entry: string): Set<string> => {
+    const seen = new Set<string>();
+    const stack = [entry];
+    while (stack.length) {
+      const file = stack.pop() as string;
+      if (seen.has(file)) continue;
+      seen.add(file);
+      for (const next of localImports(file)) stack.push(next);
+    }
+    return seen;
+  };
+  assert.ok(!closure(join(SRC, "work-gate.mjs")).has(join(SRC, "host-units.mjs")),
+    "importing it drags `git log --all` into the gate's capability closure and taxes 24 unrelated test "
+    + "files with `History: full`; the gate runs `host-units.mjs --json` as a child process instead");
+  // THE CONTROL: the walker really can see this edge when it exists, so the assertion above is a fact
+  // about the gate rather than about a walker that finds nothing.
+  assert.ok(closure(join(SRC, "host-units.mjs")).has(join(SRC, "acceptance-commands.mjs")),
+    "the same walker DOES find host-units.mjs's own edges");
+});
+
+test("#2174: the history-requirement population is unchanged by this row", () => {
+  const dir = fileURLToPath(new URL("./", import.meta.url));
+  const charged = readdirSync(dir).filter((f) => f.endsWith(".test.ts"))
+    .filter((f) => {
+      try {
+        return deriveClosureRequirements(join("packages/lab/src/packaging", f))
+          .some((r: { requirement: string }) => r.requirement === "history");
+      } catch { return false; }
+    }).sort();
+  // PINNED AS A SET AND NOT A COUNT, for `fleetBatchOrders`'s reason: a count collides two different
+  // populations of the same size, and the thing worth catching is a file JOINING this list.
+  assert.deepEqual(charged, ["host-units.test.ts", "pre-push-resolve-toward-main.test.ts",
+    "pre-push-stale-base.test.ts", "work-gate.test.ts"],
+  "adding a `history` reader to the gate's import closure taxes every test file that reaches it -- if "
+  + "this list grew, check what was imported rather than editing the list");
+});
+
+/**
+ * #2174 CONSTRAINT 1, THE HALF THAT IS NOT NEGOTIABLE: the gate must still load in a tree with no
+ * `node_modules`, and the row asked for that DEMONSTRATED rather than claimed.
+ *
+ * `a11ign-work-tick.service` runs `work-tick.mjs` before any `npm ci` or build, so a bare specifier
+ * anywhere in this closure is an `ERR_MODULE_NOT_FOUND` that takes the whole tick down -- and #535
+ * records what that costs when the throw is swallowed. Importing from THIS checkout proves nothing:
+ * node resolves a bare specifier by walking up from the importing file, and every worktree here has a
+ * `node_modules` to find. So the closure is copied into a throwaway tree with none in its ancestor
+ * chain, mirroring `pre-commit-hook.test.ts`'s own technique for the identical bind.
+ */
+test("#2174: work-gate.mjs loads in a tree with NO node_modules, host-units edge included", () => {
+  const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
+  const entry = join(REPO, "packages/agent-org/src/work-gate.mjs");
+  const closure = new Set<string>();
+  const stack = [entry];
+  while (stack.length) {
+    const file = stack.pop() as string;
+    if (closure.has(file)) continue;
+    closure.add(file);
+    for (const next of localImports(file)) stack.push(next);
+  }
+  // THE CONTROL IS THE GATE ITSELF, not the host-units edge -- there is deliberately no such edge (see
+  // the capability test above). What must hold is that the closure copied here is really the gate's:
+  // an empty or truncated one would make the import below pass by having nothing to resolve.
+  assert.ok(closure.size > 10 && closure.has(join(REPO, "packages/agent-org/src/waiting-condition.mjs")),
+    `the control: the closure must really be the gate's, got ${closure.size} file(s)`);
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "a11y-work-gate-no-modules-")));
+  for (const file of closure) {
+    const target = join(root, relative(REPO, file));
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(file, target);
+  }
+  assert.ok(!existsSync(join(root, "node_modules")), "the tree really has none -- the premise");
+  const run = spawnSync(process.execPath, ["--input-type=module", "-e",
+    `import(${JSON.stringify(pathToFileURL(join(root, "packages/agent-org/src/work-gate.mjs")).href)})`
+    + ".then(m => { if (!m.CAUSES.includes('host-units-stale')) throw new Error('cause missing'); })"],
+  { encoding: "utf8", cwd: root });
+  assert.equal(run.status, 0,
+    `the gate must load with no node_modules anywhere above it: ${run.stderr}`);
 });
