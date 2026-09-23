@@ -374,12 +374,14 @@ function closedNote(run, workspace) {
  * @returns {{label: string, workspace: string, profile: {kind: string, model: string, effort: string}}
  *   | {refusal: string}}
  */
-export function spawnWorker(order, agents, roster, { run = defaultRun } = {}) {
+function spawnWorker(order, agents, roster, { run = defaultRun } = {}) {
   const role = spawnableRole(order, agents, roster);
   if ("refusal" in role) return role;
   const pane = openPane(run, role.role);
   if ("refusal" in pane) return pane;
-  const invocation = spawnInvocation(order, role.role, pane.pane);
+  // `spawnableRole` has already refused anything whose cause is not in `SPAWN_CAUSES`, so by here the
+  // cause is one of those strings -- narrowed for the type rather than re-checked.
+  const invocation = spawnInvocation({ ...order, cause: String(order.cause) }, role.role, pane.pane);
   if ("refusal" in invocation) {
     return { refusal: `${invocation.refusal}${closedNote(run, pane.workspace)}` };
   }
@@ -1447,6 +1449,9 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+/** `/clear`'s refusal is reported inside a longer sentence, so it quotes less of the failure. */
+const CLEAR_REFUSAL_EXCERPT = 80;
+
 /**
  * WHY EVERY DELIVERY CLEARS FIRST, and it is the largest single saving this system has made.
  *
@@ -1477,9 +1482,6 @@ function sleepSync(ms) {
  * @param {(args: string[]) => string} run @param {string} label
  * @returns {string | null} a refusal to report, or `null` when the context was reset
  */
-/** `/clear`'s refusal is reported inside a longer sentence, so it quotes less of the failure. */
-const CLEAR_REFUSAL_EXCERPT = 80;
-
 export function clearContext(run, label) {
   try {
     // SUBMIT, SETTLE, THEN THE ORDER -- AND THE SETTLE IS A DELAY BECAUSE THERE IS NO SIGNAL.

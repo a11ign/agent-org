@@ -30,7 +30,7 @@ import { afterGate, GATE, EXIT as TICK_EXIT } from "../work-tick.mjs";
 import { spawnInvocation, addressed, clearContext, CLEAR_TIMEOUT_MS, CLEAR_SETTLE_MS,
   RUN_IDLE_RESET_MS, stuckRowOf, escalateStuck }
   from "../wake.mjs";
-import { spawnWorker, spawnableRole, isPilotOrder, SPAWN_CAUSES, MAX_SPAWNS_PER_TICK }
+import { spawnableRole, isPilotOrder, SPAWN_CAUSES, MAX_SPAWNS_PER_TICK }
   from "../wake.mjs";
 import { handoffId, handoffQueuePath, ledgerPathFrom, readHandoffs, queueHandoff, dropHandoffs,
   deliverHandoffs, handoffOrder, staleHandoffs, nothingToDeliver, HANDOFF_STALE_MS, HANDOFF_QUEUE_FILE }
