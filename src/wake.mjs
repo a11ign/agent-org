@@ -679,9 +679,12 @@ export function targetLabelBytes(session, roster = []) {
  * size is what decides which is written. Over-charging by a few bytes an order costs a long batch its
  * last entry at worst; under-charging costs the delivery, which is the failure above.
  *
- * `labelBytes` DEFAULTS TO THE PLACEHOLDER'S OWN WIDTH, which charges no expansion. That default is for
- * a caller that has no target to name; every caller inside this file passes the real one, because a
- * default that silently under-charges is the defect {@link YOU_PLACEHOLDER} records.
+ * `labelBytes` IS REQUIRED HERE AND HAS A DEFAULT ON {@link fitBatch}, and the asymmetry is deliberate:
+ * a default that charges no expansion is the defect {@link YOU_PLACEHOLDER} records, so the function
+ * doing the arithmetic may not have one. `fitBatch`'s default serves a caller with no target to name,
+ * and it is safe only because the path that reaches `execFileSync` -- `deliverHandoffs` ->
+ * `handoffBatches` -> `fitBatch` -- always supplies the real width, which is itself pinned by a test
+ * against the delivered argv rather than by this sentence.
  *
  * @param {{prompt: string, queuedAt?: number}} h @param {number} queued @param {number} now
  * @param {number} labelBytes
@@ -709,7 +712,8 @@ function chargeFor(h, queued, now, labelBytes) {
  *
  * @template {{prompt: string, queuedAt?: number}} T
  * @param {readonly T[]} handoffs @param {number} budget @param {number} [now]
- * @param {number} [labelBytes] the width of the name `addressed` will put in this batch's `<you>`
+ * @param {number} [labelBytes] the width of the name `addressed` will put in this batch's `<you>`;
+ *   the default charges no expansion and is for a caller with no target -- see {@link chargeFor}
  * @returns {{take: T[], held: T[]}}
  */
 export function fitBatch(handoffs, budget, now = Date.now(), labelBytes = YOU_PLACEHOLDER_BYTES) {
