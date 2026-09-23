@@ -267,7 +267,7 @@ export function identityDrift(deps = {}) {
 
 /**
  * @typedef {{unit: string, problem: string, detail: string, revertsIdentity?: boolean,
- *            removesUnit?: boolean}} Finding
+ *            removesUnit?: boolean, shippedOnRef?: string}} Finding
  */
 
 /**
@@ -478,7 +478,75 @@ export function orphanedUnits({ shippedDir = SHIPPED_DIR, installedDir = INSTALL
     .filter((n) => n.endsWith(".service") || n.endsWith(".timer"))
     .filter((n) => !shipped.has(n))
     .sort()
-    .map((unit) => orphanFinding(unit, retiredHere(unit, { shippedDir, git })));
+    .map((unit) => orphanFinding(unit, orphanOrigin(unit, { shippedDir, git })));
+}
+
+/**
+ * @typedef {{ state: "retired" | "never" | "unreadable" } | { state: "unmerged", sha: string }} OrphanOrigin
+ */
+
+/**
+ * WHERE DID THIS ORPHAN COME FROM? FOUR ANSWERS, AND THE THIRD IS WHY #2013 WAS FILED.
+ *
+ * `retiredHere` answers one question exactly -- did a commit in THIS history delete the unit file -- and
+ * `orphanFinding` used to render its single `false` as *"NO COMMIT HERE EVER SHIPPED IT"*: a claim about
+ * ADDITION read off a query about DELETION. `false` is true of three different worlds, and only two of
+ * them had a case. The missing one is a unit shipped on a ref this checkout has not merged -- the state
+ * every host-unit row passes through between installing a unit and merging the PR that ships it, #1858's
+ * and #1993's included. Measured 2026-09-22 from the primary checkout: `host:check` called
+ * `a11ign-worktree-prune.service` a hand-installed mystery while `git log --all` in the same tree, seconds
+ * later, named the commit shipping it.
+ *
+ * THE ORDER IS LOAD-BEARING, NOT INCIDENTAL. Every RETIRED unit was also ADDED by some commit, and that
+ * commit is still reachable from `--all` after the deletion -- so asking the addition question first would
+ * relabel every retirement as pending. Verified against this repository's own history:
+ * `a11ign-fleet-gated-nightly.timer` answers BOTH (added by 8dacbc254, deleted by b65b874a8). Deletion is
+ * the later fact about a file that was added, so deletion decides.
+ *
+ * `null` FROM `retiredHere` STILL SHORT-CIRCUITS. A history that cannot say "never" cannot say "not
+ * anywhere either", and asking `--all` on it would turn an honest UNKNOWN into a confident NEVER.
+ * @param {string} unit
+ * @param {{ shippedDir?: string, git?: (args: string[]) => string }} [deps]
+ * @returns {OrphanOrigin}
+ */
+export function orphanOrigin(unit, { shippedDir = SHIPPED_DIR, git = defaultGit } = {}) {
+  const retired = retiredHere(unit, { shippedDir, git });
+  if (retired === true) return { state: "retired" };
+  if (retired === null) return { state: "unreadable" };
+  const sha = addedOnSomeRef(unit, { shippedDir, git });
+  if (sha === null) return { state: "unreadable" };
+  return sha === "" ? { state: "never" } : { state: "unmerged", sha };
+}
+
+/**
+ * DID ANY REF'S HISTORY ADD THIS UNIT FILE? The adding commit's sha, `""` for no ref, `null` unanswerable.
+ *
+ * `--all` AND NOT THE DEFAULT `HEAD`, which is the entire point: the unit is absent from the checked-out
+ * tree by the time this is asked, so HEAD is the one history guaranteed not to hold the answer. `--all`
+ * spans every ref this checkout has, remote-tracking branches included, so a pushed and unmerged branch
+ * answers here.
+ *
+ * `""` IS BOUNDED BY WHAT THIS CHECKOUT FETCHED, exactly as `retiredHere`'s is (#1993). The shallow guard
+ * catches the depth-bounded case; it cannot catch a clone that fetched `main` alone, where no ref carries
+ * the branch and the honest answer is still only "not in what I can see". That is why the `never` finding
+ * keeps telling the reader to go and read the unit rather than to delete it.
+ *
+ * `--diff-filter=A` AND NOT A BARE `log`, so a commit that merely TOUCHED the path cannot answer a
+ * question about the file coming into existence -- the same substitution one level down that this whole
+ * function exists to undo.
+ * @param {string} unit
+ * @param {{ shippedDir?: string, git?: (args: string[]) => string }} [deps]
+ * @returns {string | null}
+ */
+export function addedOnSomeRef(unit, { shippedDir = SHIPPED_DIR, git = defaultGit } = {}) {
+  try {
+    const sha = git(["log", "--all", "--diff-filter=A", "--format=%H", "-1", "--",
+      join(shippedDir, unit)]).trim();
+    if (sha !== "") return sha;
+    return git(["rev-parse", "--is-shallow-repository"]).trim() === "true" ? null : "";
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -510,23 +578,75 @@ export function retiredHere(unit, { shippedDir = SHIPPED_DIR, git = defaultGit }
   }
 }
 
-/** @param {string} unit @param {boolean | null} retired @returns {Finding} */
-function orphanFinding(unit, retired) {
-  const stillRunning = "A unit file is not a schedule: removing one from the repository does not "
-    + "uninstall it, so this is still running on whatever schedule it had -- and if something replaced "
-    + "it, both are now firing.";
-  if (retired === true) {
-    return { unit, problem: "ORPHANED -- RETIRED HERE",
-      detail: `installed on this host and NO LONGER SHIPPED by this repository: a commit deleted its `
-        + `unit file, so retiring it was the intent. ${stillRunning} \`npm run host:install\` removes it.` };
-  }
+/** Long enough to be unambiguous in a repository this size, short enough to read in a one-line problem. */
+const SHORT_SHA_LENGTH = 12;
+
+/**
+ * THE ONE FACT EVERY ORPHAN FINDING MUST CARRY, whichever of the four it is: the reader's misconception
+ * is that deleting the file stopped the schedule, and it is the same misconception in all four.
+ */
+const STILL_RUNNING = "A unit file is not a schedule: removing one from the repository does not "
+  + "uninstall it, so this is still running on whatever schedule it had -- and if something replaced "
+  + "it, both are now firing.";
+
+/** ONE ORIGIN, ONE FINDING -- the four states and nothing else. @param {string} unit
+ * @param {OrphanOrigin} origin @returns {Finding} */
+function orphanFinding(unit, origin) {
+  if (origin.state === "retired") return retiredFinding(unit);
+  if (origin.state === "unmerged") return unmergedRefFinding(unit, origin.sha);
+  return unknownOriginFinding(unit, origin.state === "never");
+}
+
+/**
+ * THE ONE ORPHAN WHOSE REMEDY IS THE PLAIN REMEDY. A commit here deleted the unit file, so removing it
+ * from the host is what somebody already decided -- and this is the branch that must stay off both
+ * do-not-run lists, or the warning fires on every report and therefore on none.
+ * @param {string} unit @returns {Finding}
+ */
+function retiredFinding(unit) {
+  return { unit, problem: "ORPHANED -- RETIRED HERE",
+    detail: `installed on this host and NO LONGER SHIPPED by this repository: a commit deleted its `
+      + `unit file, so retiring it was the intent. ${STILL_RUNNING} \`npm run host:install\` removes it.` };
+}
+
+/**
+ * SHIPPED, JUST NOT HERE YET -- AND THE REMEDY IS THE OPPOSITE ONE (#2013).
+ *
+ * The other two "not in this tree" findings send the reader to read the unit and its journal and decide
+ * whether it is dead, because the repository has nothing to say about it. Here the repository has a
+ * COMMIT to say about it, so that instruction would be a waste of an hour ending at a pull request that
+ * was already open. `host:install` is still the wrong command -- it copies this tree over the host, and
+ * the unit is not in THIS tree, so it would delete a unit whose own PR is in flight -- but it is wrong
+ * for a reason with an expiry date, and the finding says which.
+ * @param {string} unit @param {string} sha @returns {Finding}
+ */
+function unmergedRefFinding(unit, sha) {
+  const short = sha.slice(0, SHORT_SHA_LENGTH);
+  return { unit, shippedOnRef: short,
+    problem: `ORPHANED -- SHIPPED ON AN UNMERGED REF ${short}`,
+    detail: `installed on this host and NOT in THIS checkout's tree -- but commit ${short} ADDS its unit `
+      + "file on a ref this checkout has not merged, so this is not a hand-installed mystery: it is "
+      + `about to be ours. ${STILL_RUNNING} DO NOT reach for \`npm run host:install\` yet: that command `
+      + "copies this tree over the host, and the unit is not in this tree, so it would DELETE a unit "
+      + `whose own pull request is open. \`git branch -a --contains ${short}\` names the ref carrying it; `
+      + "merge that and THEN run `npm run host:install`. The remedy here is to MERGE, not to read a "
+      + "journal and work out whether it is dead (#2013)." };
+}
+
+/**
+ * THE TWO ORPHANS THIS REPOSITORY CAN SAY NOTHING ABOUT -- no ref adds the file, or the history could not
+ * be read at all. Since #2013 the `never` half is EARNED rather than inferred: it is the answer to
+ * `git log --all --diff-filter=A`, an addition question, where it used to be read off a deletion one.
+ * @param {string} unit @param {boolean} never @returns {Finding}
+ */
+function unknownOriginFinding(unit, never) {
   return { unit, removesUnit: true,
-    problem: retired === false ? "ORPHANED -- NEVER SHIPPED HERE" : "ORPHANED -- HISTORY UNREADABLE",
-    detail: `installed on this host and NOT SHIPPED by this repository -- and ${retired === false
-      ? "NO COMMIT HERE EVER SHIPPED IT, so it was installed by hand and this tree has never been able "
-        + "to see what it does"
+    problem: never ? "ORPHANED -- NEVER SHIPPED HERE" : "ORPHANED -- HISTORY UNREADABLE",
+    detail: `installed on this host and NOT SHIPPED by this repository -- and ${never
+      ? "NO COMMIT ON ANY REF HERE EVER SHIPPED IT, so it was installed by hand and this tree has never "
+        + "been able to see what it does"
       : "this checkout's history could not be read, so whether it was ever ours is UNKNOWN"}. `
-      + `${stillRunning} DO NOT reach for \`npm run host:install\`: that command DELETES it, and a unit `
+      + `${STILL_RUNNING} DO NOT reach for \`npm run host:install\`: that command DELETES it, and a unit `
       + "the repository never had is exactly the kind that is still doing something nobody here knows "
       + "about (#1993 -- this is how the live daily board dispatch came to be offered for deletion). "
       + "Read the unit and its journal first; then either ship it under packages/agent-org/host/ or "
@@ -692,13 +812,20 @@ export function driftReport(drift, asked = true) {
  *
  * So the warning goes on the REMEDY LINE, not only on the finding, because the reader who gets hurt is
  * the one who scrolled past the finding that was not theirs.
+ *
+ * WHICH IS WHY #2013's THIRD STATE NEEDED A THIRD PARAGRAPH RATHER THAN A SEAT ON `removesUnit`. Both
+ * flags mean "this command would delete a unit", and a unit shipped on an unmerged ref genuinely would
+ * be deleted -- but the SENTENCE `removesUnit` prints is *"this repository has no record of ever shipping
+ * it"*, which is the exact overstatement the row is about, printed in the one place the careless reader
+ * does read. Sharing the flag would have moved the wrong claim rather than fixed it.
  * @param {Finding[]} drift @returns {string}
  */
 function remedy(drift) {
   const line = "  Remedy for all of them: npm run host:install\n";
   const reverts = drift.filter((d) => d.revertsIdentity);
   const removes = drift.filter((d) => d.removesUnit);
-  if (reverts.length === 0 && removes.length === 0) return line;
+  const pending = drift.filter((d) => d.shippedOnRef);
+  if (reverts.length === 0 && removes.length === 0 && pending.length === 0) return line;
   return "  !! DO NOT RUN THE REMEDY YET -- it would change this host in a way nothing here would\n"
     + "     report afterwards.\n"
     + reverts.map((d) => `     ${d.unit} is installed with a \`GH_CONFIG_DIR\` the repository does not `
@@ -707,6 +834,9 @@ function remedy(drift) {
     + removes.map((d) => `     ${d.unit} would be DELETED, and this repository has no record of ever\n`
       + "     shipping it -- so nothing here knows what stops when it goes. Read it and its journal\n"
       + "     first, then ship it under packages/agent-org/host/ or confirm it is dead.\n").join("")
+    + pending.map((d) => `     ${d.unit} would be DELETED, and commit ${d.shippedOnRef} ships it on a ref\n`
+      + "     this checkout has not merged -- so the remedy would undo work that is already done.\n"
+      + "     Merge that ref first; this command is then the right one.\n").join("")
     + "     Once the lines above are settled this command is safe and fixes everything above.\n"
     + line;
 }
