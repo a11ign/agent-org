@@ -1284,19 +1284,69 @@ export function unmetRequirements(requirements, capabilities) {
  * The failure mode is the bad one: not a refusal naming the capability, but a red check naming the
  * PR's author for a line they never wrote. Refused, it is green with a printed reason.
  *
- * `npm test` is `pretest` (build) then `test:ts` then `test:python`; `test:ts` runs
- * the recursive `.test.ts` glob under every package's `src`. So the suite's population is that glob,
- * and a whole-suite command
- * requires the UNION of what every file in it requires.
+ * A whole-suite command requires the UNION of what every file it runs requires -- so the predicate and
+ * the population must answer about the SAME script, which until #2153 they did not. This said `npm test`
+ * runs "the recursive `.test.ts` glob under every package's `src`", and that premise stopped being true
+ * when the org tooling was split out: `test:ts` globs eight product packages, `test:org` the four org
+ * ones, `test:all` every package. Reading the wide glob for the narrow command charged `npm test` 419
+ * files it cannot load and refused it for one of them; not knowing `test:org`/`test:all` by name let the
+ * command that DOES run all of them through the gate having been charged nothing, which is the
+ * 2026-09-09 failure above in the other direction. So this is no longer a bare yes/no: `suiteScriptsFor`
+ * names the scripts, and `testFilesRunBy` charges the union of their own globs.
  *
  * @param {string} command
  * @returns {boolean}
  */
 export function runsTheWholeSuite(command) {
-  // `(?![:\w-])` AND NOT `\b`: `\b` after `test` matches `npm run test:python`, whose population is the
-  // pytest tree rather than the `.test.ts` glob this function's callers walk. Refusing that command for a
-  // requirement declared by a TypeScript file would be a refusal about a population it never runs.
-  return /(?:^|&&|\|\||;)\s*npm\s+(?:run\s+)?(?:test:ts|test)(?![:\w-])/.test(command.trim());
+  return suiteScriptsFor(command).length > 0;
+}
+
+/**
+ * THE `package.json` SCRIPT NAMES THAT RUN A WHOLE SUITE, longest-first so the alternation below matches
+ * `test:all` rather than `test` and then failing its own lookahead.
+ *
+ * A LITERAL LIST, PINNED AGAINST `package.json` BY `acceptance-commands.test.ts` rather than derived from
+ * it: the scripts file also carries `test:python` (a pytest tree, not this population), `test:changed`
+ * (no fixed glob) and `test:nightly` (a different tree), so "every script starting with test" is the
+ * wrong set and deriving it would quietly widen with the next script anybody adds. The list is the
+ * decision; the pin is what stops it drifting from the scripts it names.
+ */
+export const SUITE_SCRIPTS = ["test:ts", "test:org", "test:all", "test"];
+
+// `(?![:\w-])` AND NOT `\b`: `\b` after `test` matches `npm run test:python`, whose population is the
+// pytest tree rather than the `.test.ts` glob this function's callers walk. Refusing that command for a
+// requirement declared by a TypeScript file would be a refusal about a population it never runs.
+// `g` AND `matchAll` ONLY, NEVER `exec`/`test` (#2207): a chained command names more than one script,
+// and a global regex driven by `exec` carries `lastIndex` between calls, so the second caller would start
+// reading in the middle of a different command. `matchAll` works on a copy and leaves this one alone.
+const SUITE_COMMAND = new RegExp(
+  `(?:^|&&|\\|\\||;)\\s*npm\\s+(?:run\\s+)?(${SUITE_SCRIPTS.join("|")})(?![:\\w-])`, "g");
+
+/**
+ * EVERY `package.json` script a command invokes, in the order it invokes them -- empty when it is not a
+ * whole-suite command at all.
+ *
+ * THE RESOLUTION IS THE POINT (#2153). `npm test` and `npm run test:all` are not the same population and
+ * must not be charged the same one; naming the script is what lets `suiteTestFiles` read that script's
+ * OWN glob instead of a single hard-wired one. `npm test` resolves to the `test` script, and
+ * `suiteTestFiles` follows its `npm run` delegation from there -- this function does not decide that
+ * `test` means `test:ts`, because `package.json` already says so.
+ *
+ * PLURAL, AND #2207 IS WHY. This returned the FIRST match, from one non-global `exec`. The pattern's own
+ * `(?:^|&&|\|\||;)` alternation exists to recognise a whole-suite call anywhere in a CHAIN, so
+ * `npm run test:ts && npm run test:org` is a command this grammar accepts -- and it was charged
+ * `test:ts`'s 220 files while the shell ran both scripts' 641. The org half's token requirement went
+ * unread and the chain classified `runnable` in a job with no token: the 2026-09-09 failure again, from
+ * the direction #2153 left open. A command runs every script it names, so it is charged every script it
+ * names, and the union is `testFilesRunBy`'s to take.
+ *
+ * Deduplicated, because `npm test && npm test` runs one population twice and requires it once.
+ *
+ * @param {string} command
+ * @returns {string[]}
+ */
+export function suiteScriptsFor(command) {
+  return [...new Set([...command.trim().matchAll(SUITE_COMMAND)].map((match) => match[1]))];
 }
 
 /**
@@ -1655,50 +1705,88 @@ export function handRunAcceptanceReason(body, tool) {
     + "Otherwise name a command this job can run.";
 }
 
-/** @type {string[] | null} */
-let suiteFilesCache = null;
+/** @type {Map<string, string[]>} */
+const suiteFilesCache = new Map();
+
 /**
- * Every test file the WHOLE suite runs, FROM `test:all`'s OWN GLOB rather than a second copy of it.
+ * Every `.test.ts` glob a `package.json` script runs, INCLUDING the ones it delegates to.
  *
- * `test:all`, not `test:ts`: since the org tooling became @a11ign/agent-org, `test:ts` is the PRODUCT
- * suite a contributor runs and `test:all` is every package. The token charge is about what CI executes
- * across the tree, so reading the narrower glob would under-charge -- it would stop seeing the org's own
- * tests, which are the ones that spawn `gh`.
+ * `test` carries no glob of its own -- it is `npm run test:ts && npm run test:python` -- so resolving it
+ * means following what it invokes. Doing that here rather than hard-wiring `test -> test:ts` keeps the
+ * mapping where `package.json` already states it: the day `test` stops delegating to `test:ts`, this
+ * follows, and a retyped pair would not. A delegate with no glob (`test:python`, whose population is the
+ * pytest tree) contributes nothing, which is the right answer rather than a special case.
  *
- * The glob is read out of `package.json`'s `test:all` script, because a hand-written copy here would be
- * the same fact in two places -- and the copy that drifts is the one that decides whether a PR's check
- * goes red. If the script cannot be read or carries no glob this THROWS rather than returning `[]`: an
- * empty population would make every whole-suite command pass the capability gate, which is exactly the
- * hole this function was added to close.
+ * `seen` is cycle protection, not memoisation: `a -> b -> a` in a scripts file would otherwise recurse
+ * forever, and a scripts file is not this module's to trust.
  *
+ * @param {Record<string, unknown> | undefined} scripts @param {string} name @param {Set<string>} seen
  * @returns {string[]}
  */
-export function suiteTestFiles() {
-  if (suiteFilesCache) return suiteFilesCache;
-  let script;
-  try {
-    script = JSON.parse(readFileSync("package.json", "utf8")).scripts?.["test:all"];
-  } catch (cause) {
-    throw new Error("acceptance-commands: could not read package.json to find what `npm test` runs -- "
-      + "refusing to report a whole-suite command as needing nothing.", { cause });
-  }
-  const glob = typeof script === "string" ? /"([^"]*\*[^"]*\.test\.ts)"/.exec(script)?.[1] : null;
-  if (!glob) {
-    throw new Error("acceptance-commands: `test:ts` names no `*.test.ts` glob, so the suite's population "
-      + "is unknown. Refusing to treat that as an empty population -- every `npm test` acceptance would "
-      + "then pass the capability gate having examined nothing.");
-  }
-  suiteFilesCache = globSync(glob);
-  return suiteFilesCache;
+function suiteGlobsOf(scripts, name, seen = new Set()) {
+  if (seen.has(name)) return [];
+  seen.add(name);
+  const script = scripts?.[name];
+  if (typeof script !== "string") return [];
+  const own = [...script.matchAll(/"([^"]*\*[^"]*\.test\.ts)"/g)].map((match) => match[1]);
+  const delegated = [...script.matchAll(/npm\s+run\s+([\w:-]+)/g)]
+    .flatMap((match) => suiteGlobsOf(scripts, match[1], seen));
+  return [...own, ...delegated];
 }
 
 /**
- * The files a command runs: the ones it NAMES, or -- for a whole-suite command -- all of them.
+ * Every test file ONE named suite script runs, FROM THAT SCRIPT'S OWN GLOB rather than a second copy of it.
+ *
+ * TAKES THE SCRIPT NAME, AND #2153 IS WHY. This used to read `test:all`'s glob for every caller while
+ * `runsTheWholeSuite` recognised only `npm test`/`npm run test:ts` -- so the narrow commands were charged
+ * the wide population (419 of 641 files they never load, one of which refused them) and the wide ones
+ * were not recognised at all and charged nothing. The predicate names the script now, and the population
+ * comes from that same script: one fact, read once, in the file that already states it.
+ *
+ * The glob is read out of `package.json` because a hand-written copy here would be the same fact in two
+ * places -- and the copy that drifts is the one that decides whether a PR's check goes red. If the file
+ * cannot be read, or the named script resolves to no glob at all, this THROWS rather than returning `[]`:
+ * an empty population would make that whole-suite command pass the capability gate, which is exactly the
+ * hole this function was added to close -- and an unrecognised script name must reach that throw rather
+ * than fall through to "this command names no test files", which is how `npm run test:all` used to pass.
+ *
+ * @param {string} script a `package.json` script name, e.g. `test`, `test:ts`, `test:org`, `test:all`
+ * @returns {string[]}
+ */
+export function suiteTestFiles(script) {
+  const cached = suiteFilesCache.get(script);
+  if (cached) return cached;
+  let scripts;
+  try {
+    scripts = JSON.parse(readFileSync("package.json", "utf8")).scripts;
+  } catch (cause) {
+    throw new Error("acceptance-commands: could not read package.json to find what `npm run " + script
+      + "` runs -- refusing to report a whole-suite command as needing nothing.", { cause });
+  }
+  const globs = suiteGlobsOf(scripts, script);
+  if (globs.length === 0) {
+    throw new Error(`acceptance-commands: \`${script}\` names no \`*.test.ts\` glob and delegates to no `
+      + "script that does, so the suite's population is unknown. Refusing to treat that as an empty "
+      + "population -- that acceptance command would then pass the capability gate having examined "
+      + "nothing.");
+  }
+  const files = [...new Set(globs.flatMap((glob) => globSync(glob)))];
+  suiteFilesCache.set(script, files);
+  return files;
+}
+
+/**
+ * The files a command runs: the ones it NAMES, or -- for a whole-suite command -- the UNION over every
+ * script it invokes. NOT `runsTheWholeSuite` + a fixed population (#2153): the same command string decides
+ * both halves, so they cannot answer about different suites. The union rather than the first script
+ * (#2207): a chain runs each of them, and charging it one leaves the rest's requirements unread.
  * @param {string} command
  * @returns {string[]}
  */
 function testFilesRunBy(command) {
-  return runsTheWholeSuite(command) ? suiteTestFiles() : tsxTestFileArgs(command);
+  const scripts = suiteScriptsFor(command);
+  if (scripts.length === 0) return tsxTestFileArgs(command);
+  return [...new Set(scripts.flatMap((script) => suiteTestFiles(script)))];
 }
 
 /**
