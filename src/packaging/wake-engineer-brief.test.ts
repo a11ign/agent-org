@@ -54,7 +54,12 @@ test("the singletons and a reviewer are NOT told, whatever roster is supplied or
 
 test("every engineer role in sessions.json is told, with the roster READ and not injected", () => {
   const engineers = engineerRoles();
-  assert.ok(engineers.length >= 8, `a realistic population was examined (${engineers.length})`);
+  // The population is derived a SECOND way -- every live name that is not one of the three singletons the test
+  // above pins -- and compared by EQUALITY, so a count floor is not standing in for "the roster is right" (#1067).
+  const singletons = ["ceo", "orchestrator", "product-manager"];
+  assert.deepEqual(engineers, SESSIONS.live.map((s) => s.name).filter((n) => !singletons.includes(n)),
+    "the engineer roles are every live session that is not a singleton");
+  assert.ok(engineers.includes("worker-tooling"), "the positive control: a known engineer is in the population");
   for (const label of engineers) assert.match(addressed(ORDER, label), BRIEF_LINE, label);
 });
 
@@ -91,7 +96,8 @@ test("every command family both briefs' ban blocks name appears in the engineer 
     "the positive control: the capture brief's block DOES name the exception, so filtering it below is not vacuous");
   assert.ok(!judge.includes(EXCEPTION), "and the judge's block does not");
   const derived = [...new Set([...capture, ...judge])].filter((f) => f !== EXCEPTION);
-  assert.ok(derived.length >= 9, `a realistic family count was derived (${derived.join(", ")})`);
+  // Non-empty, with the count NOT in the message (#1067): the eight named families below say the list is RIGHT.
+  assert.ok(derived.length > 0, "the derivation found command families at all");
   for (const family of ["fleet:*", "fleet:deploy", "lab:*", "training:capture*", "worker:*", "evidence:check",
     "gate:stability", "capture:check"]) {
     assert.ok(derived.includes(family), `the derivation found ${family}`);
