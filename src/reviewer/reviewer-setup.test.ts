@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const ROLE_DOC = fileURLToPath(new URL("../../docs/roles/reviewer.md", import.meta.url));
+const KNOWN_GAPS = fileURLToPath(new URL("../../../../docs/known-gaps.md", import.meta.url));
 
 /** Split a shell line into words, dropping quotes; enough for the `ln` lines a recipe carries. */
 function words(line: string): string[] {
@@ -71,4 +72,46 @@ test("the shipped reviewer recipe symlinks no whole node_modules, and still buil
   assert.match(text, /^\s*ln -sfn .*\.venv/m);
   assert.match(text, /node_modules\/@a11ign\/\$\(basename "\$p"\)/);
   assert.match(text, /npm --prefix \/private\/tmp\/rv-<PR> run build/);
+});
+
+/**
+ * #2402: the reviewer's `gh api` execpolicy rule is skipped inside `zsh -lc`, and the row's job was to
+ * choose between a wall and an ACCEPTED exposure and say which. The choice is accepted, because the token is
+ * readable by the reviewer's own uid, so `/usr/bin/gh` or `curl` goes around any shim. What this pins is that
+ * the record keeps saying so in both places a reader would look; the probe itself reads a host file and a live
+ * sandbox, which a repo test cannot, and its transcript is in the §48 text it reads.
+ */
+/** A real §48 is several paragraphs; an empty slice would make every `match` below fail for the wrong reason. */
+const MIN_SECTION_CHARS = 1000;
+
+function knownGapsSection48(): string {
+  const text = readFileSync(KNOWN_GAPS, "utf8");
+  const start = text.search(/^## 48\. /m);
+  assert.notEqual(start, -1, "known-gaps.md has no §48");
+  const rest = text.slice(start + 1);
+  const next = rest.search(/^## \d+\. /m);
+  return next === -1 ? rest : rest.slice(0, next);
+}
+
+test("known-gaps §48 records the accepted exposure: the compound form, the reason no shim helps, who, and the change condition", () => {
+  const section = knownGapsSection48();
+  // Positive control: the slice is the §48 body, not an empty string that every `notMatch` below would pass.
+  assert.ok(section.length > MIN_SECTION_CHARS, "the §48 slice is implausibly short");
+  assert.match(section, /zsh -lc 'x=\$\(gh api user --jq \.login\); echo \$x'/, "the probe that found the hole");
+  assert.match(section, /a11ign-bot/);
+  assert.match(section, /\/usr\/bin\/gh/, "the bypass no PATH shim can stop");
+  assert.match(section, /hosts\.yml/, "the reason: the token is readable by the reviewer's uid");
+  assert.match(section, /`ceo`/, "who accepts it");
+  assert.match(section, /The check that would change the decision/);
+  assert.match(section, /plain form stays forbidden/, "the negative control the row asks to keep");
+});
+
+test("the reviewer role document says the rules stop accident, not a wall, and points at §48", () => {
+  const text = readFileSync(ROLE_DOC, "utf8");
+  const start = text.indexOf("## What your sandbox rules are, and are not");
+  assert.notEqual(start, -1, "reviewer.md lost the section");
+  const section = text.slice(start, text.indexOf("\n## ", start + 1));
+  assert.match(section, /ACCEPTED rather than walled/);
+  assert.match(section, /known-gaps\.md` §48/);
+  assert.match(section, /pr-review-verdict/);
 });
