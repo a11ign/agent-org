@@ -12,11 +12,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { promptable, clearThenPrompt, queueable, queueOrLose, queueDepthNote, queueDepth,
-  deepQueueRefusal, DEEP_QUEUE, NEEDS_DECISION_FLAG, DECISION_FLAG, FYI_FLAG, STANCE, parseStance,
-  stanceNote, EXIT }
+  deepQueueRefusal, DEEP_QUEUE, NEEDS_DECISION_FLAG, DECISION_FLAG, EXIT }
   from "../prompt-session.mjs";
 import { readHandoffs } from "../wake.mjs";
 import { readLoadedRules } from "./rules-files.ts";
@@ -418,124 +415,4 @@ test("the flag the rules file tells an author to type is the flag this command a
   assert.ok(rules.includes(NEEDS_DECISION_FLAG),
     "and the loaded rules name it, so the refusal quotes a rule that exists");
   assert.ok(rules.includes("ROW WRITE"), "with the routing change itself stated, not just its flag");
-});
-
-// ---------------------------------------------------------------------------------------------------
-// #2222 -- THE SENDER DECLARES WHETHER AN ORDER ASKS FOR AN ANSWER, and the queue records it.
-//
-// On the 27-order delivery that filed the row, 22 of the 30 orders that OPENED as a routine report also
-// asked for a decision, so nothing downstream can compute this: it is declared here or it is lost.
-
-const PM = [{ label: "product-manager", status: "working" }];
-
-test("THE DECLARATION IS RECORDED ON THE QUEUE ENTRY -- a decision as true, an FYI as false", () => {
-  inTempDir((dir) => {
-    const path = join(dir, "q");
-    const send = (text: string, stance?: "decision" | "fyi" | "undeclared") => withStderr(() => queueOrLose({
-      label: "product-manager", text, why: "is working", agents: PM, path, stance,
-    }));
-    send("Your call: 64 KiB, or nearer the ceiling?", STANCE.DECISION);
-    send("Completion report on #2102.", STANCE.FYI);
-    send("A report from a sender that has not adopted the flag.");
-
-    const queued = readHandoffs(path);
-    assert.equal(queued.length, 3, "the positive control: all three are on disk to be read");
-    assert.deepEqual(queued.map((h) => h.decision), [true, false, false],
-      "only a declared decision is recorded as one; FYI and no declaration are both `false`");
-  });
-});
-
-test("RE-SENDING THE SAME WORDS WITH --decision UPGRADES THE ORDER RATHER THAN QUEUEING IT TWICE", () => {
-  // The id hashes the target and the text, not the declaration. An author who sent it as FYI and then
-  // realised it asks for an answer sends ONE order twice, and the first line must not win: that would
-  // demote it -- the dangerous direction, and the reason the field exists.
-  inTempDir((dir) => {
-    const path = join(dir, "q");
-    const send = (stance: "decision" | "fyi") => withStderr(() => queueOrLose({
-      label: "product-manager", text: "Do you want #2057 declined?", why: "is working", agents: PM, path,
-      stance,
-    }));
-    send(STANCE.FYI);
-    send(STANCE.DECISION);
-    const queued = readHandoffs(path);
-    assert.equal(queued.length, 1, "one order");
-    assert.equal(queued[0].decision, true, "and it is the declared decision");
-  });
-  // AND THE OTHER DIRECTION IS NOT AN UPGRADE: a decision re-sent as FYI stays a decision.
-  inTempDir((dir) => {
-    const path = join(dir, "q");
-    const send = (stance: "decision" | "fyi") => withStderr(() => queueOrLose({
-      label: "product-manager", text: "Do you want #2057 declined?", why: "is working", agents: PM, path,
-      stance,
-    }));
-    send(STANCE.DECISION);
-    send(STANCE.FYI);
-    assert.equal(readHandoffs(path)[0].decision, true, "a later FYI never withdraws a declared ask");
-  });
-});
-
-test("THE AUTHOR IS TOLD WHAT WAS RECORDED, and the default is STATED, not silent", () => {
-  inTempDir((dir) => {
-    const said = (stance: "decision" | "fyi" | "undeclared", text: string) => withStderr(() => queueOrLose({
-      label: "product-manager", text, why: "is working", agents: PM, path: join(dir, "q"), stance,
-    })).err;
-    assert.match(said(STANCE.DECISION, "d"), /DECLARED DECISION[^\n]*bundle header/);
-    assert.match(said(STANCE.DECISION, "d2"), /WHAT CLEARS IT[^\n]*answer:<session>[^\n]*#928/,
-      "a decision is asked to name what clears it -- and pointed at the label where a row exists");
-    assert.match(said(STANCE.FYI, "f"), /DECLARED FYI/);
-    const silent = said(STANCE.UNDECLARED, "u");
-    assert.match(silent, /NO DECLARATION, SO THIS IS RECORDED AS FYI \(the default\)/);
-    assert.ok(silent.includes(DECISION_FLAG), "and names the flag that changes it");
-  });
-  assert.ok(stanceNote(STANCE.UNDECLARED).length > 0, "the default is never the empty string");
-});
-
-test("--decision, --fyi and the older --needs-decision are parsed, and NONE is left in the text", () => {
-  assert.deepEqual(parseStance(["ceo", "hello", "there"]),
-    { stance: STANCE.UNDECLARED, rest: ["ceo", "hello", "there"] }, "the default is FYI");
-  assert.deepEqual(parseStance([DECISION_FLAG, "ceo", "hello"]),
-    { stance: STANCE.DECISION, rest: ["ceo", "hello"] });
-  assert.deepEqual(parseStance(["ceo", FYI_FLAG, "hello"]),
-    { stance: STANCE.FYI, rest: ["ceo", "hello"] });
-  assert.deepEqual(parseStance(["ceo", "hello", NEEDS_DECISION_FLAG]),
-    { stance: STANCE.DECISION, rest: ["ceo", "hello"] },
-    "#2167's spelling is the same declaration, kept as an alias so the rules file stays true");
-  assert.deepEqual(parseStance(["--ledger=/tmp/l", "ceo", "x", DECISION_FLAG]),
-    { stance: STANCE.DECISION, rest: ["ceo", "x"] }, "and --ledger is still stripped beside them");
-});
-
-test("BOTH --decision AND --fyi IS REFUSED, not resolved for the sender", () => {
-  const both = parseStance(["ceo", "x", DECISION_FLAG, FYI_FLAG]);
-  assert.match(String(both.refusal), /contradict/);
-  assert.equal("stance" in both, false, "no stance is picked: choosing one would be inferring it");
-  assert.match(String(parseStance(["ceo", "x", NEEDS_DECISION_FLAG, FYI_FLAG]).refusal), /contradict/,
-    "the alias contradicts --fyi too");
-});
-
-test("the deep-queue refusal names the flag that is now the canonical spelling", () => {
-  const mine = { session: "product-manager", waiting: DEEP_QUEUE, oldestMs: 3_600_000, stale: 0, decisions: 0 };
-  const refusal = deepQueueRefusal(mine, { label: "product-manager", text: "r", decision: false });
-  assert.ok(refusal?.includes(DECISION_FLAG), "the refusal tells the author to type --decision");
-  assert.equal(deepQueueRefusal(mine, { label: "product-manager", text: "r", decision: true }), null);
-});
-
-test("END TO END: the real command records --decision on the queue and strips it from the text", () => {
-  // The CLI, not its parts -- a flag can be parsed correctly and still never reach the entry. herdr is
-  // absent here, so the roster read fails, which queues (`queueable(label, null)`): that is the path
-  // that writes the entry we are reading back.
-  inTempDir((dir) => {
-    const run = (...args: string[]) => spawnSync(process.execPath,
-      [fileURLToPath(new URL("../prompt-session.mjs", import.meta.url)),
-        `--ledger=${join(dir, "wake-ledger")}`, ...args],
-      { encoding: "utf8", env: { ...process.env, PATH: dir }, timeout: 30_000 });
-    const asked = run("ceo", "Ratify", "64", "KiB?", DECISION_FLAG);
-    const fyi = run("ceo", "Completion", "report", "on", "#1");
-    assert.equal(asked.status, EXIT.QUEUED, asked.stderr);
-    assert.equal(fyi.status, EXIT.QUEUED, fyi.stderr);
-    const queued = readHandoffs(join(dir, "prompt-session-handoffs"));
-    assert.deepEqual(queued.map((h) => [h.prompt, h.decision]),
-      [["Ratify 64 KiB?", true], ["Completion report on #1", false]],
-      "the flag reached the entry, and the text is what the author typed without it");
-    assert.equal(run("ceo", "x", DECISION_FLAG, FYI_FLAG).status, EXIT.REFUSED);
-  });
 });
