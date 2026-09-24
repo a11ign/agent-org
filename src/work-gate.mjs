@@ -297,12 +297,10 @@ export const GH_READS = Object.freeze({
     // #2356: ONE REST CALL on the core pool -- the newest runs of `trunk.yml` on `main` (readTrunkRed).
     "api actions/workflows/trunk.yml/runs (readTrunkRed -- trunk-red)"],
   conditionalOnEmptyShelf: "issue list --label epic (readEpics)",
-  // #2106 ADDED THE SECOND HALF OF THIS LINE, AND IT IS COUNTED FOR THE SAME REASON AS THE LINE BELOW:
-  // `refusedProtectionDiagnosis` reads `branches/main` to tell FORBIDDEN from ABSENT, and a read that is
-  // not written down here is one the next person inherits uncounted. It is conditional on the FIRST read
-  // being refused, so a tick that can read the contexts pays one call and a healthy tick pays none.
-  conditionalOnRed: "api branches/main/protection (requiredCheckNames), then -- only if that is refused --"
-    + " api branches/main (the .protected discriminator, #2022)",
+  // ONE call, and it needs no admin (#2331). It used to be two -- the admin-only protection endpoint, then
+  // `branches/main` as the discriminator for its 404 (#2106, #2022) -- and the discriminator's only job
+  // was to explain the admin-only 404, which `branches/main` does not give a non-admin credential. Conditional on a settled-red check.
+  conditionalOnRed: "api branches/main (requiredCheckNames)",
   // #1969, AND IT IS COUNTED HERE BECAUSE THE LAST ONE WAS NOT. This constant exists because "two `gh`
   // calls" was repeated for weeks while three readers were added, and a reviewer had to measure the call
   // sites to find it. The condition is `shouldBeMerging` finding a green, unheld, non-draft PR -- which
@@ -2191,11 +2189,22 @@ export function anyChecksRed(prs) {
 }
 
 /**
- * ONE SPELLING OF THE ENDPOINT, so the report names what the read actually asked for. A report that
+ * ONE SPELLING OF THE ENDPOINT, so the report names what the read actually asks for. A report that
  * quotes a path by hand drifts from the call beside it, and a wrong path in a diagnostic sends the next
  * reader to test something the gate never did.
+ *
+ * `branches/main`, NOT `branches/main/protection` (#2331). The protection endpoints are repository-ADMIN
+ * only, and this gate runs as `a11ign-ai-workers` (`permissions.admin: false`), so it 404'd on every tick
+ * for four days (#2106). `branches/main` needs only `pull` and carries the same list.
  */
-const PROTECTION_ENDPOINT = "repos/{owner}/{repo}/branches/main/protection";
+const BRANCH_ENDPOINT = "repos/{owner}/{repo}/branches/main";
+
+/**
+ * What the gate asks of `BRANCH_ENDPOINT`: the list, plus `protected` so the "no usable list" report quotes
+ * whether `main` is protected at all (`false` is a trunk fact worth escalating) instead of leaving the
+ * reader to guess. Small enough to quote whole.
+ */
+const BRANCH_JQ = "{protected, contexts: .protection.required_status_checks.contexts}";
 
 /**
  * The checks that can actually BLOCK A MERGE, or `null` when that could not be read.
@@ -2236,15 +2245,15 @@ const PROTECTION_ENDPOINT = "repos/{owner}/{repo}/branches/main/protection";
 export function requiredCheckNames(run = defaultRun, log = (line) => process.stderr.write(line)) {
   let answer;
   try {
-    answer = run(["api", PROTECTION_ENDPOINT, "--jq", ".required_status_checks.contexts"]);
+    answer = run(["api", BRANCH_ENDPOINT, "--jq", BRANCH_JQ]);
   } catch (error) {
-    // THE REFUSAL AND THE UNUSABLE ANSWER ARE DIFFERENT FACTS, so the call is separated from the parse
-    // rather than sharing one `catch`. Only a call that never answered is worth asking a discriminator
-    // about; a malformed body already proves the endpoint was reachable.
-    log(cannotReadRequiredChecks(refusedProtectionDiagnosis({ run, error })));
+    // THE REFUSAL AND THE UNUSABLE ANSWER ARE DIFFERENT FACTS, so the call is separated from the parse.
+    // A refusal says nothing about whether `main` is protected, and #2022 forbids reading it as if it did.
+    const why = String(/** @type {any} */ (error)?.message ?? error).split("\n")[0].trim();
+    log(cannotReadRequiredChecks(`was REFUSED (${why}).`));
     return null;
   }
-  const contexts = parsedOrNull(answer);
+  const contexts = parsedOrNull(answer)?.contexts;
   if (Array.isArray(contexts) && contexts.length > 0) return contexts;
   log(cannotReadRequiredChecks(`answered, but with no usable list of contexts: ${quoted(answer)}.`));
   return null;
@@ -2284,63 +2293,9 @@ function parsedOrNull(text) {
  * @param {string} diagnosis
  */
 function cannotReadRequiredChecks(diagnosis) {
-  return `CANNOT READ the required checks: \`gh api ${PROTECTION_ENDPOINT}\` ${diagnosis} `
+  return `CANNOT READ the required checks: \`gh api ${BRANCH_ENDPOINT}\` ${diagnosis} `
     + "Falling back to EVERY check on the head (pre-#1750 behaviour): no red pull request is missed, "
     + "but the wasted prompts #1750 was filed to stop are still being sent.\n";
-}
-
-/**
- * FORBIDDEN OR ABSENT -- and #2022's ruling is that a 404 here may NEVER be read as "unprotected".
- *
- * `branches/main/protection` 404s for both, so the 404 alone decides nothing. `branches/main.protected`
- * is the discriminator, it needs no admin, and it was measured 2026-09-22T23:05Z reading `true` in the
- * same second the protection endpoint 404'd for `a11ign-ai-workers` -- whose `permissions.admin` is
- * `false`, and which is the credential this gate runs with.
- *
- * DOUBLY CONDITIONAL, SO A HEALTHY TICK PAYS NOTHING. `requiredCheckNames` is itself paid only by a tick
- * that saw a settled-red check, and this second call is made only when THAT one was refused. A tick that
- * reads the contexts successfully never reaches this function at all -- which is the `GH_READS` bargain,
- * not a new unconditional cost.
- *
- * FAIL OPEN LIKE ITS CALLER. The discriminator can be refused too, and a refused discriminator produces a
- * loud `cannot tell` rather than a guess in either direction: guessing ABSENT is the reading #2022
- * forbids, and guessing FORBIDDEN would hide a genuinely unprotected trunk.
- *
- * @param {{ run: (args: string[]) => string, error: unknown }} deps
- */
-function refusedProtectionDiagnosis({ run, error }) {
-  const why = String(/** @type {any} */ (error)?.message ?? error).split("\n")[0].trim();
-  const isProtected = branchProtectedFlag(run);
-  if (isProtected === true) {
-    return `was REFUSED (${why}), and \`branches/main.protected\` reads \`true\` in the same tick, `
-      + "so this is FORBIDDEN rather than ABSENT: classic branch protection is admin-only and this "
-      + "credential has `permissions.admin: false` (#2022's discriminator).";
-  }
-  if (isProtected === false) {
-    return `was REFUSED (${why}), and \`branches/main.protected\` reads \`false\`, so protection is `
-      + "genuinely ABSENT -- a trunk-protection fact, not a credential one, and worth escalating.";
-  }
-  return `was REFUSED (${why}), and the discriminator \`branches/main.protected\` could not be read `
-    + "either, so this tick CANNOT TELL forbidden from absent. #2022 forbids reading it as unprotected.";
-}
-
-/**
- * `main`'s `protected` flag: `true`, `false`, or `null` when even this could not be read.
- *
- * READABLE WITHOUT ADMIN, which is the entire reason it can answer a question the protection endpoint
- * refuses to. Anything that is not a boolean is `null`: a field that came back missing or reshaped tells
- * us nothing, and inventing a `false` from it is the exact reading #2022 rules out.
- *
- * @param {(args: string[]) => string} run
- * @returns {boolean | null}
- */
-function branchProtectedFlag(run) {
-  try {
-    const value = JSON.parse(run(["api", "repos/{owner}/{repo}/branches/main", "--jq", ".protected"]));
-    return typeof value === "boolean" ? value : null;
-  } catch {
-    return null;
-  }
 }
 
 /**

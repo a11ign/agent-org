@@ -22,7 +22,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path";
 import { prRow, nonSuccessByName, newestPerName, render, fetchRefs, renderStalled, windowOf,
   renderMergedChecks, STALL_MINUTES, EXIT, hostState, hostContention, reliefFor, topConsumers, isRed, renderBudget,
-  fetchRemoteBranchesChecked, branchPrefixCensus, renderBranchPrefixes, apiBudget, ghHeaders }
+  fetchRemoteBranchesChecked, branchPrefixCensus, renderBranchPrefixes, apiBudget, ghHeaders, requiredContexts }
   from "../queue-table.mjs";
 
 const NOW = new Date("2026-09-09T08:00:00Z");
@@ -934,4 +934,55 @@ test("section 6 reports a real branch census when collect() supplies one", () =>
     prs: [], merged: [], now: NOW, required: [], host: HOST_OK,
     branchCensus: { branches: ["agent/foo-1", "origin", "main"], remoteCount: 3 } });
   assert.match(text, /NO PREFIX\s+origin/);
+});
+
+/**
+ * A `gh` ON `PATH` THAT PLAYS A NON-ADMIN CREDENTIAL (#2331): every `branches/main/protection*` path is a
+ * 404, exactly as GitHub answers `a11ign-ai-workers` (`permissions.admin: false`), and `branches/main`
+ * answers with `body`. It logs every request, so a test can assert the ADMIN endpoint was never asked for
+ * rather than merely that the answer came out right -- a site that tried the admin path first and fell
+ * back would pass the second and fail the first.
+ */
+function withNonAdminGh<T>(body: object, fn: (requests: () => string[]) => T): T {
+  const dir = mkdtempSync(join(tmpdir(), "a11y-2331-"));
+  const log = join(dir, "requests.log");
+  writeFileSync(join(dir, "body.json"), JSON.stringify(body));
+  writeFileSync(join(dir, "gh"), `#!/bin/sh
+echo "$*" >> "${log}"
+case "$*" in
+  *branches/main/protection*) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+  *branches/main) cat "${dir}/body.json" ;;
+  *) echo "unexpected gh call: $*" >&2; exit 2 ;;
+esac
+`);
+  chmodSync(join(dir, "gh"), 0o755);
+  const realPath = process.env.PATH;
+  process.env.PATH = `${dir}:${realPath ?? ""}`;
+  try {
+    return fn(() => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : []));
+  } finally {
+    process.env.PATH = realPath;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** `branches/main` as measured 2026-09-24 for `a11ign-ai-workers`. */
+const PROTECTED_WITH_GATE = { name: "main", protected: true,
+  protection: { enabled: true, required_status_checks: { contexts: ["gate"], enforcement_level: "everyone" } } };
+/** The POSITIVE CONTROL's body: protected, but no list to read -- what a default would paper over. */
+const PROTECTED_WITHOUT_LIST = { name: "main", protected: true, protection: { enabled: true } };
+
+test("requiredContexts reads the required checks with the ADMIN endpoint answering 404 -- #2331", () => {
+  withNonAdminGh(PROTECTED_WITH_GATE, (requests) => {
+    assert.deepEqual(requiredContexts(), ["gate"]);
+    assert.ok(requests().length > 0, "the read reached the fake `gh` at all");
+    assert.ok(requests().every((r) => !r.includes("branches/main/protection")),
+      `no request may name the admin-only endpoint; saw ${JSON.stringify(requests())}`);
+  });
+});
+
+test("requiredContexts: a protected branch showing no list is null (prints unknown), not a default -- #2331's control", () => {
+  withNonAdminGh(PROTECTED_WITHOUT_LIST, () => {
+    assert.equal(requiredContexts(), null);
+  });
 });

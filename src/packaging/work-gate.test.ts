@@ -1121,11 +1121,14 @@ test("the expensive question is asked only when something is red", () => {
   assert.equal(anyChecksRed([]), false);
 });
 
+const BRANCH_ANSWER = (contexts: string[] | null, isProtected = true) =>
+  JSON.stringify({ protected: isProtected, contexts });
+
 test("requiredCheckNames fails OPEN on every unusable answer", () => {
-  assert.deepEqual(requiredCheckNames(() => JSON.stringify(["gate"])), ["gate"]);
+  assert.deepEqual(requiredCheckNames(() => BRANCH_ANSWER(["gate"])), ["gate"]);
   assert.equal(requiredCheckNames(() => { throw new Error("HTTP 404"); }), null,
     "a repo with no branch protection must not read as 'nothing blocks a merge'");
-  assert.equal(requiredCheckNames(() => "[]"), null, "an EMPTY required set is treated as unreadable");
+  assert.equal(requiredCheckNames(() => BRANCH_ANSWER([])), null, "an EMPTY required set is treated as unreadable");
   assert.equal(requiredCheckNames(() => "not json"), null);
 });
 
@@ -1138,13 +1141,15 @@ test("requiredCheckNames fails OPEN on every unusable answer", () => {
  * correctness bug: the fallback counts every check, so no red pull request went unreported. What was lost
  * is the saving, and nothing said so.
  *
+ * #2331 REMOVED THE CAUSE, NOT THE REPORT. The gate now reads `branches/main`, which a non-admin
+ * credential can read, so the admin-only 404 that produced the four dead days is gone -- and with it the
+ * `branches/main.protected` DISCRIMINATOR that existed to explain that 404 (#2022's FORBIDDEN-versus-ABSENT).
+ * Nothing reaches a second read any more: the discriminator was the same endpoint as the read it explained.
+ * The report itself stays, because `branches/main` can still be refused (network, a renamed trunk) and
+ * "fails open" must still announce itself.
+ *
  * THE TEST DRIVES THE THROWING CASE AND ASSERTS BOTH HALVES, because `null` alone is what the old code
  * already did. Only the report is new, and a test that checked the `null` would pass against the defect.
- *
- * AND #2022'S RULING IS THE SECOND HALF: a 404 from `branches/main/protection` means FORBIDDEN or ABSENT,
- * and reading it as "unprotected" is never allowed. `branches/main.protected` is the discriminator, so
- * all three of its answers are pinned here -- including the one where it too is refused, which must say
- * CANNOT TELL rather than pick a side.
  */
 const requiredWithLog = (run: (args: string[]) => string) => {
   const lines: string[] = [];
@@ -1154,55 +1159,50 @@ const requiredWithLog = (run: (args: string[]) => string) => {
   return { required, lines, calls };
 };
 
-/** A `gh` that refuses the protection endpoint and answers the discriminator with `protectedFlag`. */
-const refusingProtection = (protectedFlag: string | null) => (args: string[]) => {
-  if (args.includes("repos/{owner}/{repo}/branches/main/protection")) {
-    throw new Error("gh: Not Found (HTTP 404)");
-  }
-  if (protectedFlag === null) throw new Error("gh: Not Found (HTTP 404)");
-  return protectedFlag;
+/** The gate's credential, as GitHub answers it: the ADMIN endpoint is a 404, `branches/main` answers. */
+const nonAdminGh = (branchAnswer: string) => (args: string[]) => {
+  if (args.some((arg) => arg.includes("branches/main/protection"))) throw new Error("gh: Not Found (HTTP 404)");
+  return branchAnswer;
 };
 
-test("a refused required-checks read says so, and names the credential it needed -- #2106", () => {
-  const forbidden = requiredWithLog(refusingProtection("true"));
-  assert.equal(forbidden.required, null,
-    "FAIL OPEN IS UNCHANGED: the report is additional, never a substitute for the `null`");
-  assert.equal(forbidden.lines.length, 1, "once per tick -- `requiredWhenRed` is the only caller");
-  assert.match(forbidden.lines[0], /branches\/main\/protection/,
-    "the report names the endpoint, so the reader can run the failing call themselves");
-  assert.match(forbidden.lines[0], /FORBIDDEN rather than ABSENT/);
-  assert.match(forbidden.lines[0], /permissions\.admin/,
-    "and names WHY -- the gate's credential is not an admin, which is the fact that fixes nothing by retrying");
-  assert.match(forbidden.lines[0], /#1750/, "and what is lost: the saving, not any red pull request");
-
-  // #2022's OTHER ARM, which must not be guessed: the same 404 with an UNPROTECTED trunk behind it.
-  const absent = requiredWithLog(refusingProtection("false"));
-  assert.equal(absent.required, null);
-  assert.match(absent.lines[0], /genuinely ABSENT/);
-  assert.doesNotMatch(absent.lines[0], /FORBIDDEN rather than ABSENT/,
-    "a trunk with no protection is not a credential problem, and must not be reported as one");
-
-  // AND THE HONEST THIRD STATE. The discriminator is subject to the same fail-open rule as its caller.
-  const cannotTell = requiredWithLog(refusingProtection(null));
-  assert.equal(cannotTell.required, null);
-  assert.match(cannotTell.lines[0], /CANNOT TELL/,
-    "#2022: a 404 that cannot be discriminated is never read as unprotected");
+test("the required checks are read through `branches/main` with the ADMIN endpoint answering 404 -- #2331", () => {
+  const read = requiredWithLog(nonAdminGh(BRANCH_ANSWER(["gate"])));
+  assert.deepEqual(read.required, ["gate"]);
+  assert.deepEqual(read.lines, [], "and a read that works says nothing");
+  assert.equal(read.calls.length, 1, "ONE call -- there is no discriminator left to pay for");
+  assert.ok(read.calls.every((args) => args.every((arg) => !arg.includes("branches/main/protection"))),
+    `no call may name the admin-only endpoint; saw ${JSON.stringify(read.calls)}`);
+  assert.ok(read.calls[0].some((arg) => arg.endsWith("/branches/main")));
 });
 
-test("the new report cannot become tick noise on a healthy gate -- #2106", () => {
+test("POSITIVE CONTROL: a protected branch with no list is the existing 'cannot read' outcome -- #2331", () => {
+  // Without this, the test above is satisfied by any function that returns ["gate"].
+  const noList = requiredWithLog(nonAdminGh(BRANCH_ANSWER(null)));
+  assert.equal(noList.required, null, "protected, but nothing to read: fail open, never a default");
+  assert.equal(noList.lines.length, 1);
+  assert.match(noList.lines[0], /CANNOT READ the required checks/);
+  assert.match(noList.lines[0], /no usable list of contexts/);
+  assert.match(noList.lines[0], /"protected":true/, "the report quotes whether `main` is protected at all");
+
+  // #2022 STILL HOLDS AND NEEDS NO DISCRIMINATOR: a refusal is `null` and never a claim about protection.
+  const refused = requiredWithLog(() => { throw new Error("gh: Not Found (HTTP 404)"); });
+  assert.equal(refused.required, null);
+  assert.match(refused.lines[0], /REFUSED/);
+  assert.doesNotMatch(refused.lines[0], /ABSENT|unprotected/,
+    "a refused read says nothing about whether the trunk is protected");
+  assert.equal(refused.calls.length, 1, "and a refusal is not followed by a second, diagnosing read");
+});
+
+test("the report cannot become tick noise on a healthy gate -- #2106", () => {
   // THE POSITIVE CONTROL, NAMED. Every assertion above is satisfied by a version that reports on every
-  // tick, including the successful ones -- which would bury the four-day failure it exists to surface.
-  const healthy = requiredWithLog(() => JSON.stringify(["gate"]));
+  // tick, including the successful ones -- which would bury the failure it exists to surface.
+  const healthy = requiredWithLog(() => BRANCH_ANSWER(["gate"]));
   assert.deepEqual(healthy.required, ["gate"], "the successful read is unchanged");
   assert.deepEqual(healthy.lines, [], "a gate that CAN read the contexts says NOTHING");
-  assert.equal(healthy.calls.length, 1,
-    "and pays exactly one call -- the discriminator is reached only by a REFUSED read");
+  assert.equal(healthy.calls.length, 1);
 
-  // A REACHABLE ENDPOINT WITH AN UNUSABLE ANSWER IS REPORTED, BUT NOT DIAGNOSED. The call answered, so
-  // there is nothing for `branches/main.protected` to discriminate and no second call to pay for.
-  const empty = requiredWithLog(() => "[]");
+  const empty = requiredWithLog(() => BRANCH_ANSWER([]));
   assert.equal(empty.required, null);
-  assert.equal(empty.calls.length, 1, "a malformed answer proves the endpoint was reachable");
   assert.match(empty.lines[0], /no usable list of contexts/);
   assert.doesNotMatch(empty.lines[0], /REFUSED/);
 });
