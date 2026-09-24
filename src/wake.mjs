@@ -282,6 +282,35 @@ export function spawnInvocation(order, name, pane, override = {}) {
 export const SPAWN_CAUSES = Object.freeze(["ready-row-unclaimed"]);
 
 /**
+ * The engineer roles, in the order they are offered work: `sessions.json`'s `live` entries whose `role` is
+ * `engineer`, in file order.
+ *
+ * READ, NOT TYPED (#2279). The default roster here was the literal `"worker-capture,worker-judge,worker-tooling"`,
+ * so a role added to `sessions.json` could be claimed under and armed for and still never be offered work or
+ * spawned into -- the second copy of a list `arm-pr.mjs` already reads from the file (#1453). File order is
+ * the offer order, so the standing three come before the spares and a spare is only started once they are
+ * all taken.
+ *
+ * @param {string | URL} [path] the roster file; a parameter so a test can hand it a fixture
+ * @returns {string[]}
+ */
+export function engineerRoles(path = new URL("../docs/roles/sessions.json", import.meta.url)) {
+  const { live } = /** @type {{ live: { name: string, role: string }[] }} */ (JSON.parse(readFileSync(path, "utf8")));
+  return live.filter((s) => s.role === "engineer").map((s) => s.name);
+}
+
+/**
+ * The roster this run offers work to: `--roster=a,b` when given, otherwise every engineer role in `sessions.json`.
+ * @param {string[]} argv
+ * @param {string | URL} [path] the roster file, for a test
+ * @returns {string[]}
+ */
+export function rosterFrom(argv, path) {
+  const flagged = flagValue(argv, "roster");
+  return flagged === undefined ? engineerRoles(path) : flagged.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+/**
  * At most this many processes started per tick.
  *
  * ONE, because a pilot that can start three processes on a bad tick is not a pilot -- and the bad tick is
@@ -344,6 +373,15 @@ export function isPilotOrder(order) {
  * own stated reason: a wake that cannot be reproduced from the same two inputs cannot be explained after
  * the fact.
  *
+ * THE ROSTER MUST HOLD ROLES THAT NOBODY RUNS, OR THIS NEVER FIRES (#2279). Every standing engineer role is
+ * permanently occupied, so "the first ABSENT role" was empty by construction and the pilot could start only
+ * after a standing session died -- which reported live as three UNDELIVERED orders in a row. `sessions.json`
+ * therefore lists spare engineer roles (`worker-4`, `worker-5`) with no standing process: an address for
+ * an instance to answer to, since two processes under one address would share one B2 budget. The number of
+ * instances is bounded by the orders `route` could not place, one per tick (`MAX_SPAWNS_PER_TICK`); the
+ * spare count is only `ceo`'s ceiling on that, and the refusal below says so rather than blaming the
+ * standing three.
+ *
  * @param {{session: string, cause?: string}} order
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster engineer labels, in the order they should be offered work
@@ -361,7 +399,8 @@ export function spawnableRole(order, agents, roster) {
   const role = roster.find((label) => !agents.some((a) => a.label === label));
   if (!role) {
     const seen = roster.map((label) => `${label}=${agents.find((a) => a.label === label)?.status}`).join(", ");
-    return { refusal: `no spawn: every engineer role already has a process (${seen}) -- a busy, blocked or `
+    return { refusal: `no spawn: all ${roster.length} engineer roles hold a process (${seen}) -- that is the `
+      + "ceiling: the engineer roles `sessions.json` lists, and adding one is `ceo`'s. A busy, blocked or "
       + "agentless one is not reused, and `spawnableRole` says why for each" };
   }
   return { role };
@@ -1749,8 +1788,7 @@ function main() {
   // Beside the ledger: one directory holds the org's runtime state.
   const emittedPath = `${dirname(ledgerPath)}/wake-emitted`;
   const queuePath = handoffQueuePath(ledgerPath);
-  const roster = (flagValue(process.argv, "roster") ?? "worker-capture,worker-judge,worker-tooling")
-    .split(",").map((s) => s.trim()).filter(Boolean);
+  const roster = rosterFrom(process.argv);
 
   const orders = parseOrders(readFileSync(0, "utf8"));
   // A QUEUED ORDER IS WORK EVEN WHEN THE GATE FOUND NONE, and this is the line that makes it so. The
