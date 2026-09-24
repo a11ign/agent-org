@@ -2414,6 +2414,77 @@ test("#2186: a row the FLEET holds is not announced as runnable until the hold p
   assert.equal(order?.cause, "blocker-cleared");
 });
 
+// --- #2161: the cause must not ask a holder who has already resumed ------------------------------------
+//
+// #2031 (6m56s past a green draft), #2145 (1m47s) and #2170 (2m24s after APPROVED and in the merge queue)
+// were each told to "PICK IT BACK UP" for a row whose holder had built it and opened a pull request. The
+// screen asked who HOLDS the row and never whether they had acted, and because this is an ACTION cause the
+// twenty-minute expiry re-offers it until `MAX_DELIVERIES` labels a healthy row `needs:chairman`.
+
+/** An open pull request as `readPrs` returns it: only `number` and `body` matter to this screen. */
+const openPr = (number: number, body: string) => ({ number, body, isDraft: true, files: [], changedFiles: 0 });
+
+test("#2161: the SAME row is announced with no pull request and screened once one names it -- both ways", () => {
+  const row = heldRow(2031, "worker-capture", { blockedBy: { nodes: [{ number: 2014, state: "CLOSED" }] } });
+  const [unresumed] = blockerClearedOrders([row], TODAY, NOW, [openPr(2999, "Closes #1111")]);
+  assert.equal(unresumed?.session, "worker-capture",
+    "POSITIVE CONTROL: an open PR for ANOTHER row is not this holder's answer, so the order still goes");
+  assert.equal(unresumed?.causeKey, "worker-capture/blocker-cleared/row-2031/2014");
+  assert.deepEqual(blockerClearedOrders([row], TODAY, NOW, []).map((o) => o.causeKey),
+    ["worker-capture/blocker-cleared/row-2031/2014"], "no open PR at all: the holder has not resumed");
+  assert.deepEqual(blockerClearedOrders([row], TODAY, NOW, [openPr(2156, "Closes #2031")]), [],
+    "an open PR whose `Closes:` names the row proves the clearing was acted on -- and this is the SAME "
+    + "row, session and blocker as the two assertions above");
+});
+
+test("#2161: it is the DECLARATION that screens, in every spelling the merge gate reads", () => {
+  const row = heldRow(2170, "worker-judge", { ...blockedByClosed });
+  for (const body of ["Closes #2170", "Closes: #2170", "Closes #2100, #2170", "Closes #2100\nCloses #2170"]) {
+    assert.deepEqual(blockerClearedOrders([row], TODAY, NOW, [openPr(2246, body)]), [], `\`${body}\``);
+  }
+  // `Closes: none` and prose that merely mentions the number declare nothing, so they screen nothing --
+  // the identical rule B4 applies (#2101), read from the same parser. A row claimed and then ABANDONED,
+  // with an unrelated PR mentioning its number, is exactly the holder this cause must still reach.
+  for (const body of ["Closes: none -- docs only", "see #2170 for context", "", null]) {
+    assert.equal(blockerClearedOrders([row], TODAY, NOW, [openPr(2246, body as string)]).length, 1,
+      `${JSON.stringify(body)} names no row`);
+  }
+});
+
+test("#2161: a truncated file list does not withdraw the screen -- it reads `prs`, not `comparablePrFiles`", () => {
+  // `comparablePrFiles` drops a PR whose `files` is shorter than `changedFiles` (#1419), which is right for
+  // an overlap comparison. The largest pull requests are the likeliest to be a row's whole build.
+  const big = { number: 2246, body: "Closes #2170", files: [{ path: "a" }], changedFiles: 400 };
+  assert.deepEqual(blockerClearedOrders([heldRow(2170, "worker-judge", { ...blockedByClosed })],
+    TODAY, NOW, [big]), []);
+});
+
+test("#2161: the narrowing REMOVES nothing but the resumed row -- one orders, one does not, side by side", () => {
+  const rows = [heldRow(2031, "worker-capture", { ...blockedByClosed }),
+    heldRow(2145, "worker-5", { ...blockedByClosed })];
+  assert.deepEqual(blockerClearedOrders(rows, TODAY, NOW, [openPr(2156, "Closes #2031")]).map((o) => o.session),
+    ["worker-5"], "the holder who has NOT resumed is still told, with #2027's prompt");
+  assert.match(blockerClearedOrders(rows, TODAY, NOW, [openPr(2156, "Closes #2031")])[0]?.prompt ?? "",
+    /PICK IT BACK UP/);
+});
+
+test("#2161: decide() hands the cause the pull requests it already read", () => {
+  const row = heldRow(2031, "worker-capture", { ...blockedByClosed });
+  const cleared = (prs: ReturnType<typeof openPr>[]) => decide({ prs, readyRows: [], openRows: [row] })
+    .filter((o) => o.cause === "blocker-cleared");
+  assert.equal(cleared([]).length, 1, "POSITIVE CONTROL: with no open PR the order is still emitted");
+  assert.equal(cleared([openPr(2156, "Closes #2031")]).length, 0,
+    "and with the holder's open PR in `prs` the same call emits none -- decide must pass `prs` through");
+});
+
+test("#2161: the narrowing spends no `gh` call -- it reads what `draftOrder` already has", () => {
+  assert.equal(GH_READS.unconditional.length, 5, "#2161 adds no unconditional read");
+  const gate = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  const body = gate.slice(gate.indexOf("function rowsWithOpenPr"), gate.indexOf("export function blockerClearedOrders"));
+  assert.ok(body.length > 0 && !/\brun\(|spawnSync|defaultRun/.test(body),
+    "the helper is pure: no seam, no subprocess, so no binary for a budget to be charged against");
+});
+
 test("#2027: blocker-cleared is a FINISH cause, because a claimed row is work in flight", () => {
   assert.ok(CAUSES.includes("blocker-cleared"), "it must be in CAUSES or worker-profile refuses it at run time");
   assert.ok(!START_CAUSES.includes("blocker-cleared"),

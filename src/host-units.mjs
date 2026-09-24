@@ -32,8 +32,9 @@
 // adopting a different install strategy -- and `hostUnitsInstall` below re-copies, so the remedy is one
 // command either way.
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, copyFileSync, mkdirSync, rmSync, existsSync, realpathSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { readdirSync, readFileSync, copyFileSync, mkdirSync, rmSync, existsSync, realpathSync, writeFileSync,
+  renameSync, chmodSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
 import { localImports, stripComments } from "../../guards/src/local-import-closure.mjs";
@@ -103,8 +104,82 @@ export function shippedHostScripts(dir = SHIPPED_DIR, { read = readdirSync } = {
 // ASSERTED OVER THE UNITS ON DISK, never a hand-typed list of three. A fourth unit that spawns `gh`
 // inherits the check the day it is added, which is the only version of this that survives the next row.
 
-/** A `GH_CONFIG_DIR` declaration -- which `gh` config, and so which account, a unit acts as. */
-const IDENTITY_LINE = /^Environment=GH_CONFIG_DIR=/;
+/** The variable that says which `gh` config, and so which account, a unit acts as. */
+const IDENTITY_VARIABLE = "GH_CONFIG_DIR";
+
+/**
+ * `Environment=`'s WORDS, as systemd splits them (`systemd.exec(5)`, `extract_first_word` with UNQUOTE and
+ * CUNESCAPE): whitespace separates, a quote may open ANYWHERE in a word and is dropped, a backslash escapes
+ * the next character. So `"GH_CONFIG_DIR=/x"`, `GH_CONFIG_DIR="/x"` and `PATH=/bin GH_CONFIG_DIR=/x` all
+ * declare the same thing, and a matcher anchored on `Environment=GH_CONFIG_DIR=` read none of them (#2336
+ * review): the person's account could be declared in a spelling `host:check` never looked at.
+ * @param {string} text @returns {string[]}
+ */
+function systemdWords(text) {
+  const words = [];
+  let word = null;
+  let quote = null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === "\\" && i + 1 < text.length) { word = (word ?? "") + escapedCharacter(text[++i]); continue; }
+    if (quote !== null) { if (c === quote) quote = null; else word += c; continue; }
+    if (c === '"' || c === "'") { quote = c; word ??= ""; continue; }
+    if (/\s/.test(c)) { if (word !== null) words.push(word); word = null; continue; }
+    word = (word ?? "") + c;
+  }
+  if (word !== null) words.push(word);
+  return words;
+}
+
+/**
+ * The single character a C-style escape stands for; anything unrecognised stands for itself.
+ * @param {string} c @returns {string}
+ */
+function escapedCharacter(c) {
+  /** @type {Record<string, string>} */
+  const named = { n: "\n", t: "\t", s: " " };
+  return named[c] ?? c;
+}
+
+/**
+ * A unit's LOGICAL lines: a trailing backslash continues onto the next line (systemd joins them with a
+ * space), and a `#` or `;` line is a comment, so a commented-out declaration is not one.
+ * @param {string | null | undefined} unitText @returns {string[]}
+ */
+function logicalLines(unitText) {
+  const lines = [];
+  let pending = "";
+  for (const raw of String(unitText ?? "").split("\n")) {
+    const line = (pending + raw).trim();
+    if (line.endsWith("\\")) { pending = `${line.slice(0, -1)} `; continue; }
+    pending = "";
+    if (line !== "" && !/^[#;]/.test(line)) lines.push(line);
+  }
+  if (pending.trim() !== "") lines.push(pending.trim());
+  return lines;
+}
+
+/**
+ * EVERY `GH_CONFIG_DIR` A UNIT'S `Environment=` LINES LEAVE IN FORCE, in order, each with the logical line
+ * it came from. An `Environment=` with NO value empties the list (systemd's reset), so a declaration
+ * before one is not a declaration. `EnvironmentFile=` is NOT read: the file lives on the host, so a unit
+ * that takes its account from one shows here as declaring none -- which `NO IDENTITY DECLARED` reports.
+ * @param {string | null} unitText @returns {{value: string, line: string}[]}
+ */
+function identityDeclarations(unitText) {
+  const declared = [];
+  for (const line of logicalLines(unitText)) {
+    const assignment = /^Environment\s*=(.*)$/.exec(line);
+    if (!assignment) continue;
+    const words = systemdWords(assignment[1]);
+    if (words.length === 0) { declared.length = 0; continue; }
+    for (const word of words) {
+      const eq = word.indexOf("=");
+      if (eq > 0 && word.slice(0, eq) === IDENTITY_VARIABLE) declared.push({ value: word.slice(eq + 1), line });
+    }
+  }
+  return declared;
+}
 
 /**
  * Every `Exec*=` command a unit runs, with systemd's own prefixes stripped (`-` ignore failure,
@@ -382,7 +457,7 @@ export function unitsSpendingGh({ shippedDir = SHIPPED_DIR, readDir = readdirSyn
     .filter((unit) => unit.endsWith(".service"))
     .flatMap((unit) => {
       const text = String(read(join(shippedDir, unit)));
-      const declared = text.split("\n").some((l) => IDENTITY_LINE.test(l.trim()));
+      const declared = identityDeclarations(text).length > 0;
       const reached = unitEntryPoints(text, rest)
         .map((entry) => ghSpawnReachedFrom(entry, { read, ...rest }))
         .find((hit) => hit !== null);
@@ -395,11 +470,43 @@ export function unitsSpendingGh({ shippedDir = SHIPPED_DIR, readDir = readdirSyn
 }
 
 /**
- * The finding: a unit that spawns `gh` and never says as whom, so it gets the fallback account.
- * @param {Parameters<typeof unitsSpendingGh>[0]} [deps]
+ * The person's own `gh` config, however a unit spells the home directory -- or an EMPTY value, which
+ * declares nothing (`GH_CONFIG_DIR=` reads as unset to the wrapper, so it routes as a shell with no
+ * workspace id: the person).
+ */
+const HUMAN_CONFIG_DIR = /^(?:|(?:\/home\/agent|%h|\$HOME|~)\/\.config\/gh\/?)$/;
+
+/**
+ * UNITS THAT MAY ACT AS THE HUMAN ACCOUNT, each with the reason. EMPTY, and that is the point (chairman,
+ * #1950, #2332): the one entry there was, the corpus release, moved to `a11ign-ai-leads` once that account
+ * had write on `a11ign/corpus-backups`. An entry needs `ceo`'s ruling, so it is a line in a reviewed file
+ * rather than an `Environment=` line nobody reads.
+ * @type {Record<string, string>}
+ */
+export const HUMAN_ACCOUNT_ALLOWED = {};
+
+/**
+ * The account a unit DECLARES: the LAST `GH_CONFIG_DIR` its `Environment=` lines leave in force (systemd
+ * applies them in order), or `null` when it declares none.
+ * @param {string} unitText @returns {string | null}
+ */
+function declaredConfigDir(unitText) {
+  const declared = identityDeclarations(unitText);
+  return declared.length === 0 ? null : declared[declared.length - 1].value;
+}
+
+/**
+ * The findings: a unit that spawns `gh` and never says as whom (so it gets the fallback account), and a
+ * unit that says the answer is the PERSON, which no unit may since #2332 unless a named entry says why.
+ * @param {Parameters<typeof unitsSpendingGh>[0] & { humanAllowed?: Record<string, string> }} [deps]
  * @returns {Finding[]}
  */
 export function identityDrift(deps = {}) {
+  return [...undeclaredIdentity(deps), ...humanAccountDeclared(deps)];
+}
+
+/** @param {Parameters<typeof unitsSpendingGh>[0]} deps @returns {Finding[]} */
+function undeclaredIdentity(deps) {
   return unitsSpendingGh(deps)
     .filter((u) => !u.declared)
     .map(({ unit, via, opaque }) => ({ unit, problem: "NO IDENTITY DECLARED",
@@ -411,13 +518,36 @@ export function identityDrift(deps = {}) {
         + "`HERDR_WORKSPACE_ID`, so the `gh` wrapper falls back to `~/.config/gh` -- a person's "
         + "account -- and the unit spends a human's rate limit until it runs out, then refuses "
         + "silently (#1974). Add `Environment=GH_CONFIG_DIR=/home/agent/workers/gh` to the unit, or "
-        + "`/home/agent/.config/gh` where the human account is the one that can do the job (the "
-        + "corpus backup's own comment is the worked example)." }));
+        + "`/home/agent/leads/gh` where the job needs the write access the workers account lacks "
+        + "(the corpus backup's own comment is the worked example)." }));
+}
+
+/**
+ * EVERY SHIPPED `.service`, not only the ones that reach `gh`: a unit that declares the person's config and
+ * spawns nothing today is one `npm run` away from spending it. The chairman's rule (#1950) is that no agent
+ * acts as them unless something explicitly asks, and a unit is an agent.
+ * @param {Parameters<typeof unitsSpendingGh>[0] & { humanAllowed?: Record<string, string> }} deps
+ * @returns {Finding[]}
+ */
+function humanAccountDeclared({ shippedDir = SHIPPED_DIR, readDir = readdirSync, read = readFileSync,
+  humanAllowed = HUMAN_ACCOUNT_ALLOWED } = {}) {
+  return shippedUnits(shippedDir, { read: readDir })
+    .filter((unit) => unit.endsWith(".service") && !Object.hasOwn(humanAllowed, unit))
+    .flatMap((unit) => {
+      const dir = declaredConfigDir(String(read(join(shippedDir, unit))));
+      if (dir === null || !HUMAN_CONFIG_DIR.test(dir)) return [];
+      return [{ unit, problem: "DECLARES THE HUMAN ACCOUNT",
+        detail: `it sets \`GH_CONFIG_DIR=${dir}\`, the person's own login (which has ADMIN). No agent acts as `
+          + "the chairman unless something explicitly asks (#1950): use `/home/agent/workers/gh` "
+          + "(a11ign-ai-workers) or `/home/agent/leads/gh` (a11ign-ai-leads, write on a11ign/a11ign and "
+          + "a11ign/corpus-backups), or add the unit to HUMAN_ACCOUNT_ALLOWED in host-units.mjs with the "
+          + "ruling that says why." }];
+    });
 }
 
 /**
  * @typedef {{unit: string, problem: string, detail: string, revertsIdentity?: boolean,
- *            removesUnit?: boolean, shippedOnRef?: string, supersededScript?: string,
+ *            manualFix?: boolean, removesUnit?: boolean, shippedOnRef?: string, supersededScript?: string,
  *            missingProgram?: string, installedCopy?: InstalledCopyState}} Finding
  */
 
@@ -492,16 +622,22 @@ function textOf(path, read) {
  * THE `GH_CONFIG_DIR` LINES `host:install` WOULD DELETE -- installed on the host, absent from the
  * repository. This direction and not the other: the reverse (shipped, not installed) is a drift the
  * remedy FIXES, and only this one is a drift the remedy CAUSES.
+ *
+ * ONLY WHEN THE REPOSITORY DECLARES NO ACCOUNT AT ALL (#2332). A shipped unit that names a DIFFERENT one
+ * is a reviewed decision the install carries out, not an identity the host holds and the repository forgot:
+ * the corpus release moving from the person's config to `a11ign-ai-leads` is exactly that, and shouting
+ * "DO NOT RUN THE REMEDY" at the one command that lands it would train a reader to ignore the shout.
  * @param {string | null} shippedText @param {string | null} installedText @returns {string[]}
  */
 function installedOnlyIdentity(shippedText, installedText) {
   const shipped = new Set(identityLines(shippedText));
-  return identityLines(installedText).filter((line) => !shipped.has(line));
+  if (shipped.size > 0) return [];
+  return identityLines(installedText);
 }
 
 /** @param {string | null} text @returns {string[]} */
 function identityLines(text) {
-  return String(text ?? "").split("\n").map((line) => line.trim()).filter((line) => IDENTITY_LINE.test(line));
+  return [...new Set(identityDeclarations(text).map(({ line }) => line))];
 }
 
 /**
@@ -689,6 +825,192 @@ function supersededFinding(name, scriptDir, same) {
         + "second copy with no check on it, and an edit to it would look like it was doing something."
         : "It ALREADY DIFFERS from the shipped file, so one of the two has been edited since. Read the "
         + "diff before removing it: the change may be one the shipped copy still needs."}` };
+}
+
+// --- #2332: THE IDENTITY POLICY LIVES ON THE HOST, SO IT IS SHIPPED AND CHECKED ----------------------
+//
+// MEASURED 2026-09-24 (chairman's ruling, #1950: *no agent acts as me unless something explicitly asks*).
+// `~/.local/bin/gh` was an allow-list for the workers account, so every workspace it did not list FELL
+// THROUGH to the chairman's own login -- which has ADMIN -- and worker-4 and worker-5 acted as the chairman
+// for hours. Nobody could review the rule: it existed only on the host. `git push` was a second, unwrapped
+// door, because the global gitconfig pointed its credential helper at the real `/usr/bin/gh`.
+//
+// THERE IS NO EXCEPTION LEFT (#2333). The decision-holders (w6 ceo, w2 product-manager, w5 orchestrator) were
+// first a named human-account exception because the workers pool could not carry them; the chairman then
+// created `a11ign-ai-leads` (write, not admin, its own GraphQL pool) and the wrapper routes them there.
+//
+// A COPY WITH A DRIFT CHECK, NOT A SYMLINK (`ceo`'s ruling on the shape). `gh` is on EVERY agent's PATH, so a
+// link into a working tree that may be mid-rebase would break `gh` for the whole org. `hostIdentityInstall`
+// copies; `hostIdentityDrift` compares the installed bytes to the shipped ones. That makes
+// `~/.local/bin/gh` the ONE file this repository owns in a directory `supersededFinding` and `uncovered` say
+// it owns nothing in -- `gh-real` and `herdr` stay unowned.
+
+/** Where the workers account and its config live. */
+export const WORKERS_DIR = `${process.env.HOME ?? ""}/workers`;
+
+/** Where the leads account, its config and the list of workspaces that use it live. */
+export const LEADS_DIR = `${process.env.HOME ?? ""}/leads`;
+
+/** `git config --global`'s file: where the credential helper and a person's `user.*` would be set. */
+export const GLOBAL_GITCONFIG = `${process.env.HOME ?? ""}/.gitconfig`;
+
+/**
+ * What `~/workers/README.md` says. Generated here and not shipped as a file because the host is the only
+ * place it is read, and the old text ("everything else uses the default (human) config") became the OPPOSITE
+ * of the rule the day #1950 was ruled -- a description of a policy that must change when the policy does.
+ */
+export const WORKERS_README = `# workers — the a11ign-ai-workers GitHub identity for agent sessions
+
+Owned by the repository (packages/agent-org/src/host-units.mjs): \`npm run host:install\` writes this file and
+\`npm run host:check\` reports it DIVERGED. Edit it there.
+
+- \`gh/\` — GH_CONFIG_DIR for the machine account \`a11ign-ai-workers\` (device-flow login; token lives only in gh/hosts.yml, mode 600).
+- \`~/leads/\` — the same for \`a11ign-ai-leads\` (write, not admin; its own GraphQL pool). \`~/leads/workspaces.txt\` lists the herdr workspace ids that use it (w6 ceo, w2 product-manager, w5 orchestrator).
+- The routing is \`~/.local/bin/gh\` (shipped as packages/agent-org/host/gh, a wrapper over \`gh-real\`): an explicit GH_CONFIG_DIR always wins; an agent workspace (HERDR_WORKSPACE_ID set) routes to \`~/leads/gh\` when it is on that list and here otherwise; an agent workspace whose config is missing REFUSES; NO agent acts as the human account. Only a shell with no workspace id is a person and uses the default config.
+- \`git push\` goes through the same wrapper: the global gitconfig's credential helper is \`!~/.local/bin/gh auth git-credential\`, and \`host:check\` reports it when it is not.
+- \`~/workers/workspaces.txt\`, if it is still there, is the retired allow-list and nothing reads it any more.
+`;
+
+/**
+ * The files this repository owns on the host for the identity policy, each with the text it must hold.
+ * `expected` is `null` when the shipped source cannot be read, which is NOT the empty string.
+ * @param {{ shippedDir?: string, scriptDir?: string, workersDir?: string, leadsDir?: string,
+ *           read?: typeof readFileSync }} [deps]
+ * @returns {{ label: string, target: string, mode: number, expected: string | null }[]}
+ */
+export function ownedIdentityFiles({ shippedDir = SHIPPED_DIR, scriptDir = SCRIPT_INSTALL_DIR,
+  workersDir = WORKERS_DIR, leadsDir = LEADS_DIR, read = readFileSync } = {}) {
+  return [
+    { label: "gh", target: join(scriptDir, "gh"), mode: 0o755, expected: textOf(join(shippedDir, "gh"), read) },
+    { label: "gh-leads-workspaces.txt", target: join(leadsDir, "workspaces.txt"),
+      mode: 0o644, expected: textOf(join(shippedDir, "gh-leads-workspaces.txt"), read) },
+    { label: "workers README", target: join(workersDir, "README.md"), mode: 0o644, expected: WORKERS_README },
+  ];
+}
+
+/**
+ * The host's identity files against the repository's: NOT INSTALLED, DIVERGED, or the credential helper
+ * pointing somewhere other than the wrapper.
+ *
+ * **ONE FINDING PER FILE, AND `host:install` FIXES EVERY ONE.** Unlike `supersededHostScripts`, these are
+ * files the remedy writes, so the shared remedy line is honest for them.
+ * @param {Parameters<typeof ownedIdentityFiles>[0] & { gitConfigPath?: string,
+ *           gitConfig?: typeof defaultGitConfig }} [deps]
+ * @returns {Finding[]}
+ */
+export function hostIdentityDrift(deps = {}) {
+  const { read = readFileSync } = deps;
+  const files = ownedIdentityFiles(deps).flatMap(({ label, target, expected }) => {
+    if (expected === null) {
+      return [{ unit: target, problem: "SHIPPED COPY UNREADABLE",
+        detail: `the repository's ${label} could not be read, so this host cannot be compared to it.` }];
+    }
+    const installed = textOf(target, read);
+    if (installed === expected) return [];
+    return [{ unit: target, problem: installed === null ? "NOT INSTALLED" : "DIVERGED",
+      detail: installed === null
+        ? `the repository ships ${label} and this host has no copy at ${target}.`
+        : `the installed ${label} is not byte-identical to the one this repository ships. The shipped copy `
+          + "is the reviewed one (#2332); `host:install` overwrites the installed one with it, so read the "
+          + "diff first if somebody edited the host copy by hand and the change is one to keep." }];
+  });
+  return [...files, ...credentialHelperDrift(deps)];
+}
+
+/**
+ * `git config --file <path> --get-all <key>`, or `null` when git could not read it. Exit 1 is git's "no such
+ * key", which is an answer (an empty list) and not a failure.
+ * @param {string} path @param {string} key @returns {string[] | null}
+ */
+function defaultGitConfig(path, key) {
+  try {
+    const lines = execFileSync("git", ["config", "--file", path, "--get-all", key],
+      { encoding: "utf8", env: sandboxGitEnv() }).split("\n");
+    lines.pop(); // the newline after the last value; an EMPTY value is a real line and must survive
+    return lines;
+  } catch (cause) {
+    return /** @type {{ status?: number }} */ (cause).status === 1 ? [] : null;
+  }
+}
+
+/** The helper a push to github.com must use: the wrapper, so the push is routed like every other call. */
+const wrapperHelper = (/** @type {string} */ scriptDir) => `!${scriptDir}/gh auth git-credential`;
+
+/**
+ * THE SECOND DOOR. `git push` does not run `gh` as the caller types it: it runs whatever
+ * `credential.https://github.com.helper` names, and this host's said `!/usr/bin/gh auth git-credential` --
+ * the real binary, no wrapper -- so every push by every agent authenticated as the chairman whenever
+ * `GH_CONFIG_DIR` was unset (measured: `username=DanBeckDev` with it unset, `a11ign-ai-workers` with it set).
+ *
+ * THE EFFECTIVE LIST, NOT THE FILE'S LINES. git treats an empty `helper =` as "forget every helper so far",
+ * so the helpers that run are those AFTER the last empty value -- and they must be EXACTLY the wrapper, since
+ * a second helper (`cache`, `store`) could answer with a credential the wrapper would never have chosen.
+ * READS THE GLOBAL FILE ONLY: a repository's own `.git/config` or `/etc/gitconfig` can still add a helper,
+ * and this cannot see them.
+ * @param {{ scriptDir?: string, gitConfigPath?: string, gitConfig?: typeof defaultGitConfig }} [deps]
+ * @returns {Finding[]}
+ */
+function credentialHelperDrift({ scriptDir = SCRIPT_INSTALL_DIR, gitConfigPath = GLOBAL_GITCONFIG,
+  gitConfig = defaultGitConfig } = {}) {
+  const values = gitConfig(gitConfigPath, "credential.https://github.com.helper");
+  const remedy = `The helper must be exactly \`${wrapperHelper(scriptDir)}\`; \`git config --global --unset-all `
+    + `credential.https://github.com.helper\` and then add that one. This is NOT fixed by \`host:install\`, `
+    + "which owns no line of a person's dotfile.";
+  if (values === null) {
+    return [{ unit: gitConfigPath, problem: "UNREADABLE", manualFix: true,
+      detail: `git could not read it, so which account \`git push\` authenticates as is UNKNOWN rather than wrong. ${remedy}` }];
+  }
+  const effective = values.slice(values.lastIndexOf("") + 1);
+  if (effective.length === 1 && effective[0] === wrapperHelper(scriptDir)) return [];
+  return [{ unit: gitConfigPath, problem: "DIVERGED", manualFix: true,
+    detail: `the github.com credential helper is ${effective.length === 0 ? "unset" : effective.map((h) => `\`${h}\``).join(" then ")}, `
+      + "so `git push` may authenticate as an account the `gh` wrapper would not have chosen -- the chairman's, "
+      + `when the real binary is named and \`GH_CONFIG_DIR\` is unset (#1950). ${remedy}` }];
+}
+
+/** An identity that is a machine's: a GitHub App (`[bot]`) or the workers account. Everything else is a person. */
+const MACHINE_IDENTITY = /\[bot\]|ai-workers/i;
+
+/**
+ * THE GLOBAL `user.name` / `user.email`, reported and NEVER a failure (#2332 point 3). A repository's own
+ * `.git/config` overrides them (this one sets `github-actions[bot]`), so commits HERE are not authored as
+ * the chairman -- but any repository, or worktree of one, without the override is. Not a failure because the
+ * remedy is a choice about a person's dotfile that `host:install` must not make.
+ * @param {{ gitConfigPath?: string, gitConfig?: typeof defaultGitConfig }} [deps]
+ * @returns {Finding[]}
+ */
+export function hostIdentityNotes({ gitConfigPath = GLOBAL_GITCONFIG, gitConfig = defaultGitConfig } = {}) {
+  const set = ["user.name", "user.email"].flatMap((key) => {
+    const value = (gitConfig(gitConfigPath, key) ?? []).at(-1);
+    return value && !MACHINE_IDENTITY.test(value) ? [`${key} = ${value}`] : [];
+  });
+  if (set.length === 0) return [];
+  return [{ unit: gitConfigPath, problem: "GLOBAL GIT IDENTITY IS A PERSON'S",
+    detail: `${set.join(", ")}. A commit in any repository WITHOUT its own \`user.*\` override is authored as `
+      + "them. Not a failure, and `host:install` will not change it: set an identity in each repository, or "
+      + "unset the global one." }];
+}
+
+/**
+ * Write every owned identity file, each ATOMICALLY (a temp file in the same directory, then a rename): `gh`
+ * is executed by every agent, so a half-written copy is a broken `gh` for the whole org for as long as the
+ * write takes. IDEMPOTENT, like `hostUnitsInstall`. Refuses rather than writing an unreadable source.
+ * @param {Parameters<typeof ownedIdentityFiles>[0] & { mkdir?: typeof mkdirSync, write?: typeof writeFileSync,
+ *           chmod?: typeof chmodSync, rename?: typeof renameSync, out?: (line: string) => void }} [deps]
+ * @returns {string[]} the paths it wrote
+ */
+export function hostIdentityInstall({ mkdir = mkdirSync, write = writeFileSync, chmod = chmodSync,
+  rename = renameSync, out = (l) => process.stdout.write(l), ...where } = {}) {
+  return ownedIdentityFiles(where).map(({ label, target, mode, expected }) => {
+    if (expected === null) throw new Error(`cannot install ${label}: the shipped copy could not be read`);
+    mkdir(dirname(target), { recursive: true });
+    const temp = `${target}.installing`;
+    write(temp, expected);
+    chmod(temp, mode);
+    rename(temp, target);
+    out(`installed ${target}\n`);
+    return target;
+  });
 }
 
 /**
@@ -1042,16 +1364,19 @@ export const ORG_UNIT_PREFIX = "a11ign-";
  * machine with no user systemd, which is not the same claim as "this host is correct" and is why
  * `driftReport` says which of the two it is.
  *
- * FIVE QUESTIONS NOW. Is what we ship installed (`unitDrift`), is what is installed still ours
+ * SEVEN QUESTIONS NOW. Is what we ship installed (`unitDrift`), is what is installed still ours
  * (`orphanedUnits`), is a copy of what we ship still sitting where it used to be hand-placed
  * (`supersededHostScripts`, #1998), DOES THE PROGRAM EACH INSTALLED UNIT NAMES EXIST AT THE DIRECTORY IT
- * RESOLVES AGAINST (`missingUnitPrograms`, #2174), and can a session act at all (`permissionModeDrift`).
+ * RESOLVES AGAINST (`missingUnitPrograms`, #2174), IS THE `gh` IDENTITY POLICY THE REVIEWED ONE
+ * (`hostIdentityDrift`, #2332), DOES EVERY SHIPPED UNIT SAY WHICH ACCOUNT IT ACTS AS, AND IS THE ANSWER NEVER THE
+ * PERSON (`identityDrift`, #1974, #2332), and can a session act at all (`permissionModeDrift`).
  *
  * THE FOURTH IS THE ONLY ONE THE OTHERS CANNOT SEE BETWEEN THEM. Every check above compares the tree to
  * the host; a unit copied perfectly from the tree agrees on both sides and reads clean while the file its
  * `ExecStart` names -- resolved against the unit's OWN `WorkingDirectory`, a different tree again -- is
  * absent. "Installed and current" was never the same claim as "the program it names exists".
- * @param {Parameters<typeof unitState>[1] & Parameters<typeof supersededHostScripts>[0]} [deps]
+ * @param {Parameters<typeof unitState>[1] & Parameters<typeof supersededHostScripts>[0]
+ *   & Parameters<typeof hostIdentityDrift>[0] & Parameters<typeof identityDrift>[0]} [deps]
  */
 export function hostUnitDrift(deps = {}) {
   if (!systemdUserAvailable(deps.systemctl ?? defaultSystemctl)) return [];
@@ -1061,7 +1386,7 @@ export function hostUnitDrift(deps = {}) {
   // ignore this command, which would lose the timer finding along with it.
   return [...unitDrift(shippedUnits(dir, {}).map((u) => unitState(u, deps))),
     ...orphanedUnits(deps), ...supersededHostScripts(deps), ...missingUnitPrograms(deps),
-    ...permissionModeDrift(deps)];
+    ...hostIdentityDrift(deps), ...identityDrift(deps), ...permissionModeDrift(deps)];
 }
 
 /** @param {string[]} args */
@@ -1168,16 +1493,22 @@ export function permissionModeDrift({ settingsPath = `${process.env.HOME ?? ""}/
  * when it means the first -- that substitution is this repository's most-repeated defect.
  * @param {Finding[]} drift
  * @param {boolean} [asked] whether systemd could be asked at all
+ * @param {Finding[]} [notes] what is reported and is NOT a failure (#2332): they never enter the count, the
+ *   exit code or the remedy line, and are printed even when nothing else drifted.
  */
-export function driftReport(drift, asked = true) {
+export function driftReport(drift, asked = true, notes = []) {
   if (!asked) {
     return "host units: NOT CHECKED -- this machine runs no systemd user manager, so it is not an "
       + "agent host. That is not a claim that any host is correct.\n";
   }
-  if (drift.length === 0) return "host units: every shipped unit is installed, current and running.\n";
+  const noted = notes.length === 0 ? "" : "notes (not failures):\n"
+    + notes.map((d) => `  ${d.unit}: ${d.problem}\n    ${d.detail}\n`).join("");
+  if (drift.length === 0) {
+    return `host units: every shipped unit is installed, current and running, and the gh identity files match.\n${noted}`;
+  }
   return `host units: ${drift.length} problem(s).\n`
     + drift.map((d) => `  ${d.unit}: ${d.problem}\n    ${d.detail}\n`).join("")
-    + remedy(drift);
+    + remedy(drift) + noted;
 }
 
 /**
@@ -1203,6 +1534,11 @@ function uncovered(drift) {
     // that is STALE the remedy overwrites the very text this path was read off, so printing "not fixed
     // by the remedy" there would talk a reader out of the one command that might fix it. The finding's
     // own sentence says the opposite in that case, and these two must not disagree.
+    // #2332: THE THIRD, and the only one that is a person's file. `host:install` owns three files on this
+    // host and none of them is the global gitconfig, so a diverged credential helper survives the remedy.
+    + drift.filter((d) => d.manualFix)
+      .map((d) => `  !! ${d.unit} is NOT fixed by the remedy below -- it is a person's dotfile and\n`
+        + "     `host:install` writes no line of it. Change it by hand, as the finding says.\n").join("")
     + drift.filter((d) => d.missingProgram && d.installedCopy === "current")
       .map((d) => `  !! ${d.unit} is NOT fixed by the remedy below either -- it is already identical to\n`
         + `     the repository. The file it starts, ${d.missingProgram}, is what is missing, and\n`
@@ -1273,7 +1609,10 @@ function remedy(drift) {
  */
 function jsonReport() {
   const asked = systemdUserAvailable();
-  return `${JSON.stringify({ asked, findings: asked ? hostUnitDrift() : [] })}\n`;
+  // `notes` ARE NOT `findings`: the gate wakes a session on any finding, and a global `user.name` is not
+  // something to wake anybody for (#2332).
+  return `${JSON.stringify({ asked, findings: asked ? hostUnitDrift() : [],
+    notes: asked ? hostIdentityNotes() : [] })}\n`;
 }
 
 function main() {
@@ -1285,11 +1624,12 @@ function main() {
   const asked = systemdUserAvailable();
   if (process.argv.slice(2).includes("--install")) {
     hostUnitsInstall();
-    process.stdout.write(driftReport(hostUnitDrift(), asked));
+    hostIdentityInstall();
+    process.stdout.write(driftReport(hostUnitDrift(), asked, asked ? hostIdentityNotes() : []));
     return;
   }
   const drift = hostUnitDrift();
-  process.stdout.write(driftReport(drift, asked));
+  process.stdout.write(driftReport(drift, asked, asked ? hostIdentityNotes() : []));
   if (drift.length > 0) process.exitCode = 1;
 }
 
