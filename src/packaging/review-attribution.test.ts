@@ -1,5 +1,6 @@
 /**
- * #2127: THE REVIEWER PARITY RULE, MADE OBSERVABLE -- and the proof that this reader could not be
+ * #2127 (owner rule changed by #2401: PR n belongs to `reviewer-<n>`, and the passages below that say odd/even
+ * describe the rule as it stood when the defect was measured): THE REVIEWER PARITY RULE, MADE OBSERVABLE -- and the proof that this reader could not be
  * satisfied by the account that posts the review.
  *
  * THE DEFECT THIS PINS. `.claude/rules/agent-practices.md` gives odd pull requests to `reviewer` and
@@ -38,14 +39,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  ATTRIBUTION_CONTEXT_PREFIX, PARITY, attributionContext, attributedSession, parityOfReview,
+  ATTRIBUTION_CONTEXT_PREFIX, PARITY, PER_PR_REVIEWERS_FROM, RETIRED_REVIEWERS, attributionContext, attributedSession, parityOfReview,
   parityOwner, parityViolationsOnCommit, reviewingSession,
 } from "../review-attribution.mjs";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../..", import.meta.url));
 const DOOR = join(REPO_ROOT, "packages/agent-org/src/reviewer/pr-review-verdict.sh");
 
-/** The review `reviewer-2` should never have posted: #2105 is odd, so the parity owner is `reviewer`. */
+/** A review on #2105, whose owner is `reviewer-2105` (#2401); `reviewer-2` posted it under the old odd/even rule. */
 const REVIEW_2105_APPROVAL = {
   html_url: "https://github.com/a11ign/a11ign/pull/2105#pullrequestreview-5290312345",
   commit_id: "e1b8b7bc0000000000000000000000000000abcd",
@@ -72,48 +73,85 @@ const rollupStatus = (session: string, targetUrl: string) =>
 
 // --- the parity rule itself -------------------------------------------------------------------
 
-test("#2127: the parity rule is ODD -> reviewer, EVEN -> reviewer-2, and #2105 is reviewer's", () => {
-  assert.equal(parityOwner(2105), "reviewer");
-  assert.equal(parityOwner(2126), "reviewer-2");
-  assert.equal(parityOwner("2127"), "reviewer");
+test("#2401: the owner of PR n is `reviewer-<n>` for every n, and the odd/even split is gone", () => {
+  assert.deepEqual([1, 2, 3, 4].map(parityOwner), ["reviewer-1", "reviewer-2", "reviewer-3", "reviewer-4"]);
+  assert.equal(parityOwner(2105), "reviewer-2105");
+  assert.equal(parityOwner(2398), "reviewer-2398");
+  assert.equal(parityOwner("2127"), "reviewer-2127", "a string number is the same pull request");
+  // THE MUTANT THIS PINS: any two consecutive pull requests sharing an owner is the parity split again.
+  assert.notEqual(parityOwner(2105), parityOwner(2106));
+  assert.notEqual(parityOwner(2105), parityOwner(2107), "odd/odd must not collapse to `reviewer`");
 });
 
 // --- the three the row asks for ---------------------------------------------------------------
 
-test("#2127 (1): a review by the PARITY-CORRECT reviewer reads as correct", () => {
-  const statuses = [restStatus("reviewer", REVIEW_2105_REFUSAL.html_url)];
-  assert.equal(reviewingSession(REVIEW_2105_REFUSAL, statuses), "reviewer");
+test("#2127 (1): a review by the pull request's OWN instance reads as correct", () => {
+  const statuses = [restStatus("reviewer-2105", REVIEW_2105_REFUSAL.html_url)];
+  assert.equal(reviewingSession(REVIEW_2105_REFUSAL, statuses), "reviewer-2105");
   assert.equal(parityOfReview({ prNumber: 2105, review: REVIEW_2105_REFUSAL, statuses }), PARITY.correct);
 });
 
-test("#2127 (2) POSITIVE CONTROL, the #2105 shape: an ODD pull request with a `reviewer-2` review "
-  + "reads as a VIOLATION", () => {
-  const statuses = [restStatus("reviewer-2", REVIEW_2105_APPROVAL.html_url)];
-  assert.equal(reviewingSession(REVIEW_2105_APPROVAL, statuses), "reviewer-2");
+test("#2127 (2) POSITIVE CONTROL: another pull request's instance reviewing #2105 reads as a VIOLATION", () => {
+  const statuses = [restStatus("reviewer-2126", REVIEW_2105_APPROVAL.html_url)];
+  assert.equal(reviewingSession(REVIEW_2105_APPROVAL, statuses), "reviewer-2126");
   assert.equal(parityOfReview({ prNumber: 2105, review: REVIEW_2105_APPROVAL, statuses }), PARITY.violation);
   // And the commit-level question a counter asks, with its own positive control one test down.
-  assert.deepEqual(parityViolationsOnCommit({ prNumber: 2105, statuses }), ["reviewer-2"]);
+  assert.deepEqual(parityViolationsOnCommit({ prNumber: 2105, statuses }), ["reviewer-2126"]);
 });
 
 test("#2127 (3): two reviews with the SAME `user.login` and different sessions come apart -- which is "
   + "what a reader keyed on the account cannot do", () => {
   const statuses = [
-    rollupStatus("reviewer-2", REVIEW_2105_APPROVAL.html_url),
-    rollupStatus("reviewer", REVIEW_2105_REFUSAL.html_url),
+    rollupStatus("reviewer-2126", REVIEW_2105_APPROVAL.html_url),
+    rollupStatus("reviewer-2105", REVIEW_2105_REFUSAL.html_url),
   ];
   assert.equal(REVIEW_2105_APPROVAL.user.login, REVIEW_2105_REFUSAL.user.login,
     "the fixture only means something while both reviews carry the identical account");
-  assert.equal(reviewingSession(REVIEW_2105_APPROVAL, statuses), "reviewer-2");
-  assert.equal(reviewingSession(REVIEW_2105_REFUSAL, statuses), "reviewer");
+  assert.equal(reviewingSession(REVIEW_2105_APPROVAL, statuses), "reviewer-2126");
+  assert.equal(reviewingSession(REVIEW_2105_REFUSAL, statuses), "reviewer-2105");
   assert.equal(parityOfReview({ prNumber: 2105, review: REVIEW_2105_APPROVAL, statuses }), PARITY.violation);
   assert.equal(parityOfReview({ prNumber: 2105, review: REVIEW_2105_REFUSAL, statuses }), PARITY.correct);
 });
 
+// --- #2401: HISTORY STAYS VALID -------------------------------------------------------------------
+//
+// `rollupStatus` is stamped 2026-09-23, the day before the per-PR path, and #2105's real reviews were
+// written by `reviewer-2`, a standing pane. Read by today's rule that is a violation on an odd pull request,
+// and reading it so would make every merged pull request's record accuse a reviewer of obeying the rule
+// then in force. `restStatus` carries NO time, and an unstamped record cannot show it predates anything.
+
+test("#2401: a retired standing reviewer's status stamped BEFORE the cutover is history, not a violation", () => {
+  const statuses = [rollupStatus("reviewer-2", REVIEW_2105_APPROVAL.html_url),
+    rollupStatus("reviewer", REVIEW_2105_REFUSAL.html_url)];
+  assert.equal(parityOfReview({ prNumber: 2105, review: REVIEW_2105_APPROVAL, statuses }), PARITY.retired);
+  assert.equal(parityOfReview({ prNumber: 2105, review: REVIEW_2105_REFUSAL, statuses }), PARITY.retired);
+  assert.deepEqual(parityViolationsOnCommit({ prNumber: 2105, statuses }), []);
+  assert.deepEqual(parityViolationsOnCommit({ prNumber: 2398, statuses }), [],
+    "and the same on an even pull request, where `reviewer-2` was never the owner of #2398");
+});
+
+test("#2401 CONTROL: the same retired names are VIOLATIONS once stamped after the cutover, or unstamped", () => {
+  const after = { ...rollupStatus("reviewer-2", REVIEW_2105_APPROVAL.html_url),
+    createdAt: new Date(Date.parse(PER_PR_REVIEWERS_FROM) + 1).toISOString() };
+  assert.equal(parityOfReview({ prNumber: 2105, review: REVIEW_2105_APPROVAL, statuses: [after] }),
+    PARITY.violation);
+  assert.deepEqual(parityViolationsOnCommit({ prNumber: 2105, statuses: [after] }), ["reviewer-2"]);
+  const unstamped = restStatus("reviewer", REVIEW_2105_REFUSAL.html_url);
+  assert.deepEqual(parityViolationsOnCommit({ prNumber: 2105, statuses: [unstamped] }), ["reviewer"]);
+  assert.ok(RETIRED_REVIEWERS.includes("reviewer") && RETIRED_REVIEWERS.includes("reviewer-2"));
+});
+
+test("#2401: `reviewer-2` IS the owner of PR 2, so its status there is correct in both eras", () => {
+  const review = { ...REVIEW_2105_APPROVAL, html_url: "https://github.com/a11ign/a11ign/pull/2#pullrequestreview-1" };
+  const statuses = [restStatus("reviewer-2", review.html_url)];
+  assert.equal(parityOfReview({ prNumber: 2, review, statuses }), PARITY.correct);
+});
+
 // --- what the reader refuses to guess ---------------------------------------------------------
 
-test("#2127: a commit with only the PARITY OWNER's attributions reports no violation -- the empty "
+test("#2127: a commit with only the OWNER's attributions reports no violation -- the empty "
   + "answer whose positive control is the test above", () => {
-  const statuses = [rollupStatus("reviewer", REVIEW_2105_REFUSAL.html_url)];
+  const statuses = [rollupStatus("reviewer-2105", REVIEW_2105_REFUSAL.html_url)];
   assert.deepEqual(parityViolationsOnCommit({ prNumber: 2105, statuses }), []);
 });
 

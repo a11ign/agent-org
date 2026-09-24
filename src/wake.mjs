@@ -30,14 +30,16 @@
 // anyone for ten" hours. So an order with nowhere to go exits ATTENTION and names the session, every time.
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { readFileSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, realpathSync, existsSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHash } from "node:crypto";
 // RELATIVE, not the package specifier -- this must run before any `npm ci`/build, the same constraint
 // `work-gate.mjs` and `org-watch.mjs` state at their own imports.
 import { refuseUnknownFlags, flagValue } from "../../worker-fleet/src/cli-flags.mjs";
 import { profileFor, agentArgs } from "./worker-profile.mjs";
-import { JUDGMENT_CAUSES, CHAIRMAN_LABEL } from "./work-gate.mjs";
+import { JUDGMENT_CAUSES, CHAIRMAN_LABEL, REVIEWER_REGISTRY_FILE, readReviewerRegistry } from "./work-gate.mjs";
+import { reviewerInstanceNumber } from "./review-attribution.mjs";
+import { REPO } from "../../../scripts/repo-identity.mjs";
 import { inBuildReason, isInBuild, unansweredRefusal, lookupHeldRows, lookupOtherHeldIssues }
   from "./row-claim/own-pr-health-rule.mjs";
 import { parseWorktreeList, isPrimaryWorktree, isWorkingTreeClean, mergeStatus, detachedMergeStatus }
@@ -516,7 +518,8 @@ export function withSpareInstances(roster, agents, families = SPARE_FAMILIES) {
  * answers with `result.root_pane.pane_id` and `result.workspace.workspace_id`, and `workspace close <id>`
  * answers `{"type":"ok"}`.
  *
- * NO `--cwd`, DELIBERATELY. The default is `/home/agent/repos/a11y-witness`, the primary checkout, which is
+ * NO `--cwd` FOR AN ENGINEER, DELIBERATELY (a reviewer passes one, #2401: its whole task is one pull request's
+ * tree, and the tree is prepared before the pane opens). The default is `/home/agent/repos/a11y-witness`, the primary checkout, which is
  * where all six standing sessions already run -- so passing one would invent a convention rather than
  * follow it. The obvious candidate, a `role-<name>` worktree, is NOT a convention: four of the six roles
  * have one. The order's own text tells the woken session that `row-claim` creates its worktree.
@@ -530,12 +533,14 @@ export function withSpareInstances(roster, agents, families = SPARE_FAMILIES) {
  * @param {(args: string[]) => string} run
  * @param {string} label
  * @param {Record<string, string>} env
+ * @param {string} [cwd] where the pane's shell starts; the engineer path passes none and starts where herdr does
  * @returns {{pane: string, workspace: string} | {refusal: string}}
  */
-function openPane(run, label, env) {
+function openPane(run, label, env, cwd) {
   let created;
   try {
     created = JSON.parse(run(["--session", "org", "workspace", "create", "--label", label, "--no-focus",
+      ...(cwd === undefined ? [] : ["--cwd", cwd]),
       ...Object.entries(env).flatMap(([key, value]) => ["--env", `${key}=${value}`])]));
   } catch (err) {
     return { refusal: `herdr could not open a pane for "${label}" (${firstLine(err)})` };
@@ -626,6 +631,398 @@ function spawnWorker(order, agents, roster, { run = defaultRun, env = spawnEnvir
       + `${closedNote(run, pane.workspace)}` };
   }
   return { label: role.role, workspace: pane.workspace, profile: invocation.profile };
+}
+
+// --- #2401: ONE REVIEWER INSTANCE PER PULL REQUEST, ADDRESSED BY HERDR NAME ---
+
+/**
+ * The causes whose recipient is the pull request's reviewer, and so the only ones a reviewer INSTANCE is started for.
+ * A SIBLING OF `SPAWN_CAUSES`, NEVER A WIDENING OF IT: that list is the engineer pilot's and #1950's 20-clean-cycles
+ * counter is running on it, so a reviewer cause added there would start counting as an engineer cycle.
+ */
+export const REVIEWER_CAUSES = Object.freeze(["draft-awaiting-verdict", "verdict-comment-unreviewed"]);
+
+/**
+ * The account a reviewer instance acts as: the reviewer's own `gh` config (`a11ign-bot`), never the workers' one the
+ * engineers get -- self-approval is refused for the author and `a11ign-bot` approves both engineer accounts
+ * (`docs/reviewer-instancing.md`, section 1). It is `/home/agent/reviewer/gh` on the host.
+ */
+export const REVIEWER_GH_CONFIG_DIR = "/home/agent/reviewer/gh";
+
+/**
+ * The environment a reviewer instance's workspace starts with: its own `gh` account and, as
+ * `A11Y_REVIEWER_SESSION`, the name `pr-review-verdict` writes into the attribution status (#2127) -- without it
+ * the review posts UNATTRIBUTED. An `override` wins, key by key, as in {@link spawnEnvironment}.
+ * @param {string} session @param {Record<string, string>} [override]
+ * @returns {Record<string, string>}
+ */
+export function reviewerEnvironment(session, override = {}) {
+  return { GH_CONFIG_DIR: REVIEWER_GH_CONFIG_DIR, A11Y_REVIEWER_SESSION: session, ...override };
+}
+
+/**
+ * Is this an order a reviewer INSTANCE may be started for: a reviewer cause addressed to `reviewer-<n>`.
+ * Asked before {@link isPilotOrder}, which is the engineer's question and stays exactly as it was.
+ * @param {{session: string, cause?: string}} order
+ */
+export function isReviewerOrder(order) {
+  return reviewerInstanceNumber(order.session) !== null && REVIEWER_CAUSES.includes(String(order.cause));
+}
+
+/**
+ * The live reviewer instances -- workspaces labelled `reviewer-<n>`, the retired standing pane excluded.
+ * @param {{label: string}[]} agents @returns {string[]}
+ */
+export function liveReviewers(agents) {
+  return agents.filter((a) => reviewerInstanceNumber(a.label) !== null).map((a) => a.label);
+}
+
+/**
+ * The pull request an order is ABOUT, read from its cause key (`reviewer-<n>/<cause>/pr-<n>/<head>`), or `null`
+ * when the key names none. The gate writes the number into the key of every order about a pull request, so this
+ * reads the one fact an instance's exclusivity has to be judged on without asking GitHub.
+ * @param {{causeKey?: string}} order @returns {number | null}
+ */
+export function orderPullRequest(order) {
+  const match = /(?:^|\/)pr-([1-9][0-9]*)(?:\/|$)/.exec(String(order.causeKey ?? ""));
+  return match === null ? null : Number(match[1]);
+}
+
+/**
+ * WHY THIS ORDER MAY NOT REACH THIS SESSION, or `null` when it may (#2401, Done-when 8). `reviewer-<n>` reviews
+ * pull request n AND NOTHING ELSE: it belongs to no pool, so an order about any other pull request -- or about
+ * none -- is refused even when the instance is idle and the only reviewer alive. FAIL CLOSED: an order whose key
+ * names no pull request cannot be shown to be about this one.
+ *
+ * ASKED OF EVERY ROUTED TARGET, whatever the cause and whether the route was direct or a fallback, because the
+ * guarantee is about the instance and not about the two causes that usually address it. A label that is not an
+ * instance (an engineer, a standing session, the retired pane) answers `null`: this file does not judge them.
+ * @param {{causeKey?: string}} order @param {string} label @returns {string | null}
+ */
+export function reviewerMismatch(order, label) {
+  const owned = reviewerInstanceNumber(label);
+  if (owned === null) return null;
+  const pr = orderPullRequest(order);
+  if (pr === owned) return null;
+  return `"${label}" reviews PR #${owned} and nothing else, and this order is ${pr === null
+    ? "about no pull request" : `about PR #${pr}`} (${order.causeKey})`;
+}
+
+/**
+ * May a reviewer instance be started for this order, or why not. THERE IS NO COUNT IN THIS FUNCTION AND NO REFUSAL
+ * MAY CITE ONE (#2401, Done-when 2; the chairman ruled the pool follows the pull requests waiting): a start
+ * refuses for a NAMED CAUSE -- the order is not for an instance, the label is in use, or the label was started
+ * earlier and herdr does not list it now.
+ *
+ * THE LAST IS WHAT THE OLD PER-TICK LIMIT WAS FOR. A partial workspace list reads every instance as absent, and
+ * without a limit a tick would start a SECOND process under every waiting pull request's label. The registry is
+ * the tick's own record of what it started, so an instance it started and cannot see is refused rather than
+ * duplicated -- a duplicate label makes `route` ambiguous. If the instance really died, the refusal says how to
+ * clear it.
+ *
+ * @param {{session: string, cause?: string, causeKey?: string}} order @param {{label: string}[]} agents
+ * @param {Record<string, {spawnedAt: number}>} [registry] what this path started and has not ended
+ * @returns {{session: string} | {refusal: string}}
+ */
+export function spawnableReviewer(order, agents, registry = {}) {
+  if (!isReviewerOrder(order)) {
+    return { refusal: `no reviewer spawn: "${order.session}" is not a reviewer instance for a reviewer cause` };
+  }
+  if (agents.some((a) => a.label === order.session)) {
+    return { refusal: `no reviewer spawn: a workspace labelled "${order.session}" already exists` };
+  }
+  const started = registry[order.session];
+  if (started !== undefined) {
+    return { refusal: `no reviewer spawn: "${order.session}" was started at ${new Date(started.spawnedAt).toISOString()} `
+      + "and herdr does not list it now (a partial workspace list, or the instance died) -- not starting a second "
+      + `under the same label; if it died, delete its key from ${REVIEWER_REGISTRY_FILE} and the next tick starts a fresh one` };
+  }
+  return { session: order.session };
+}
+
+/**
+ * WHERE A REVIEWER'S TREE LIVES: ON DISK, NOT UNDER `/tmp`. `/tmp` is RAM-backed on this host and 58% full when
+ * this was measured (2026-09-24), and a per-PR tree that is never removed there is #2163's defect. A tree here
+ * costs disk and, if a teardown ever fails, leaks disk.
+ */
+export const REVIEW_CHECKOUT_ROOT = `${process.env.HOME}/reviews`;
+
+/** The tick's own checkout, where every review tree's git metadata lives (a linked worktree keeps it there). */
+const REPO_ROOT = new URL("../../..", import.meta.url).pathname;
+
+/**
+ * The path of `session`'s tree: named for the instance, and so for the pull request it may never leave.
+ * @param {string} session @param {string} [root]
+ */
+export function reviewCheckoutPath(session, root = REVIEW_CHECKOUT_ROOT) {
+  return `${root}/${session}`;
+}
+
+/**
+ * The private ref pull request `pr`'s head is fetched into. NOT `FETCH_HEAD`: that file is shared by every session
+ * that fetches in this checkout, and another fetch between ours and the read would hand the reviewer some other
+ * pull request's commit.
+ * @param {number} pr
+ */
+const reviewRef = (pr) => `refs/review/pr-${pr}`;
+
+/**
+ * @typedef {{git?: (cmd: string, args: string[], opts?: object) => string, exists?: (path: string) => boolean,
+ *   root?: string, repoRoot?: string}} CheckoutDeps
+ */
+
+/**
+ * PREPARE `session`'s tree at pull request `pr`'s CURRENT head, and return where it is -- or say why not.
+ * DONE BY THE TICK, NEVER BY THE REVIEWER: measured 2026-09-24 with `codex sandbox` under the reviewer's own policy
+ * (`workspace-write`, `/tmp` writable, network on), `git checkout` and `git fetch` are refused with `Read-only file
+ * system` in BOTH a shallow clone and a linked worktree, because codex protects `.git`; reading (`log`, `diff`,
+ * `show`, `status`) and writing files in the tree work in both. So the kind was chosen on what else differs: a
+ * linked worktree adds no second object store (30 MB against 40 MB) and can be removed in one command.
+ *
+ * SO A CHECKOUT THAT DOES NOT EXIST IS A REFUSAL, and the order is not sent: an order that names a path the
+ * reviewer cannot find is a review of nothing. The same call re-points an existing tree at a new head, which is
+ * how the one instance follows every head-changing push.
+ *
+ * @param {{pr: number, session: string} & CheckoutDeps} args
+ * @returns {{path: string, head: string} | {refusal: string}}
+ */
+export function prepareReviewCheckout({ pr, session, git = defaultGit, exists = existsSync,
+  root = REVIEW_CHECKOUT_ROOT, repoRoot = REPO_ROOT }) {
+  const path = reviewCheckoutPath(session, root);
+  try {
+    git("git", ["-C", repoRoot, "fetch", "--quiet", "origin", `+refs/pull/${pr}/head:${reviewRef(pr)}`]);
+    const head = git("git", ["-C", repoRoot, "rev-parse", "--verify", reviewRef(pr)]).trim();
+    if (exists(path)) git("git", ["-C", path, "checkout", "--quiet", "--detach", head]);
+    // `worktree add` makes the missing parents of `path`, so the first tree needs no directory made for it.
+    else git("git", ["-C", repoRoot, "worktree", "add", "--quiet", "--force", "--detach", path, head]);
+    const at = git("git", ["-C", path, "rev-parse", "HEAD"]).trim();
+    if (at !== head || !exists(path)) return { refusal: `no review checkout: ${path} is at ${at || "nothing"}, not PR #${pr}'s head ${head}` };
+    return { path, head };
+  } catch (err) {
+    return { refusal: `no review checkout for PR #${pr} at ${path} (${firstLine(err)})` };
+  }
+}
+
+/**
+ * REMOVE `session`'s tree and its private ref, and answer `null` when nothing is left, or WHY it could not.
+ * The counterpart of {@link prepareReviewCheckout}, called when the instance is ended (#2401, Done-when 7): a tree
+ * that outlives its pull request is the leak #2163 measured, and this row must not add instances of it.
+ * A tree that is already gone is done, not an error.
+ *
+ * @param {{pr: number, session: string} & CheckoutDeps} args @returns {string | null}
+ */
+export function removeReviewCheckout({ pr, session, git = defaultGit, exists = existsSync,
+  root = REVIEW_CHECKOUT_ROOT, repoRoot = REPO_ROOT }) {
+  const path = reviewCheckoutPath(session, root);
+  try {
+    if (exists(path)) git("git", ["-C", repoRoot, "worktree", "remove", "--force", path]);
+    if (exists(path)) return `${path} is still there after \`git worktree remove\``;
+    git("git", ["-C", repoRoot, "update-ref", "-d", reviewRef(pr)]);
+    return null;
+  } catch (err) {
+    return `could not remove ${path} (${firstLine(err)})`;
+  }
+}
+
+/**
+ * The order's text, with the sentence that says where the reviewer's tree is and what it cannot do to it. The path
+ * named here is one {@link prepareReviewCheckout} has just verified exists, so it is the only path an order names.
+ * @param {{prompt: string}} order @param {{path: string, head: string}} checkout @param {number} pr
+ */
+export function withReviewCheckout(order, checkout, pr) {
+  return { ...order, prompt: `${order.prompt}\n\nYour checkout of #${pr} is \`${checkout.path}\`, detached at the pull `
+    + `request's current head \`${checkout.head.slice(0, 8)}\`. It was prepared for you and is re-pointed on every push. Your `
+    + "sandbox cannot write `.git`, so `git checkout`, `git fetch` and `git worktree` are refused there: review from "
+    + "this path and do not make another checkout." };
+}
+
+/**
+ * Start a reviewer instance for `order.session` -- a workspace labelled with that name, opened IN its checkout, and
+ * a codex started in it with the profile of the order's cause -- and return the address it answers to. Its own
+ * path beside {@link spawnWorker}: no role, no drain, no claim precheck, because a reviewer holds no row.
+ *
+ * @param {{session: string, cause?: string, causeKey?: string}} order @param {{label: string, status: string}[]} agents
+ * @param {{run?: (args: string[]) => string, env?: Record<string, string>, cwd: string,
+ *   registry?: Record<string, {spawnedAt: number}>}} deps `cwd` is the verified checkout
+ * @returns {{label: string, workspace: string, profile: {kind: string, model: string, effort: string}}
+ *   | {refusal: string}}
+ */
+function spawnReviewer(order, agents, { run = defaultRun, env, cwd, registry }) {
+  const reviewer = spawnableReviewer(order, agents, registry);
+  if ("refusal" in reviewer) return reviewer;
+  const pane = openPane(run, reviewer.session, env ?? reviewerEnvironment(reviewer.session), cwd);
+  if ("refusal" in pane) return pane;
+  const invocation = spawnInvocation({ ...order, cause: String(order.cause) }, reviewer.session, pane.pane);
+  if ("refusal" in invocation) return { refusal: `${invocation.refusal}${closedNote(run, pane.workspace)}` };
+  try {
+    run(invocation.args);
+  } catch (err) {
+    return { refusal: `herdr refused to start "${reviewer.session}" (${firstLine(err)})${closedNote(run, pane.workspace)}` };
+  }
+  return { label: reviewer.session, workspace: pane.workspace, profile: invocation.profile };
+}
+
+/**
+ * @typedef {{run: (args: string[]) => string, reviewerEnv?: Record<string, string>, checkout?: CheckoutDeps,
+ *   registry?: () => Record<string, {spawnedAt: number}>, registerReviewer?: (session: string) => void}} ReviewerDeps
+ */
+
+/**
+ * WHERE A REVIEWER ORDER GOES, and what it carries: the instance for its pull request, started when none exists,
+ * with its tree at the pull request's current head. NOTHING ELSE CAN RECEIVE IT -- no roster, no fallback, no
+ * other instance (Done-when 8) -- so this asks {@link route} for the order's own session and for nothing more.
+ *
+ * ORDER OF THE STEPS IS THE POINT. The checkout is prepared BEFORE a pane is opened or a prompt typed, so a failed
+ * fetch costs no process and no order names a path that is not there; a `reviewer-<n>` that exists and is working
+ * WAITS for the next tick, because a second workspace under its label would make `route` ambiguous.
+ *
+ * @param {{session: string, cause?: string, causeKey?: string, prompt: string}} order
+ * @param {{label: string, status: string}[]} live
+ * @param {ReviewerDeps} deps
+ * @returns {{label: string, profile?: {kind: string, model: string, effort: string}, reviewer: true,
+ *   order: {prompt: string}} | {refusal: string}}
+ */
+function reviewerTarget(order, live, deps) {
+  const wrong = reviewerMismatch(order, order.session);
+  if (wrong !== null) return { refusal: wrong };
+  const routed = route(order.session, live, []);
+  if ("refusal" in routed) {
+    const may = spawnableReviewer(order, live, deps.registry?.());
+    if ("refusal" in may) return { refusal: `${routed.refusal}; ${may.refusal}` };
+  }
+  const pr = Number(orderPullRequest(order));
+  const checkout = prepareReviewCheckout({ pr, session: order.session, ...deps.checkout });
+  if ("refusal" in checkout) return checkout;
+  const carried = withReviewCheckout(order, checkout, pr);
+  if (!("refusal" in routed)) return { label: routed.label, reviewer: true, order: carried };
+  const spawn = spawnReviewer(order, live, { run: deps.run, env: deps.reviewerEnv, cwd: checkout.path,
+    registry: deps.registry?.() });
+  if ("refusal" in spawn) return { refusal: `${routed.refusal}; ${spawn.refusal}` };
+  // REGISTERED BEFORE THE PROMPT, as the engineer path does: a refused prompt leaves the process running.
+  deps.registerReviewer?.(spawn.label);
+  return { label: spawn.label, profile: spawn.profile, reviewer: true, order: carried };
+}
+
+/** @param {string} ledgerPath @returns {{registry: string, endings: string}} */
+export function reviewerPathsFrom(ledgerPath) {
+  return { registry: `${dirname(ledgerPath)}/${REVIEWER_REGISTRY_FILE}`,
+    endings: `${dirname(ledgerPath)}/reviewer-endings` };
+}
+
+/**
+ * Note that a reviewer instance was STARTED for `session`: the gate's auth detector reads `spawnedAt` to tell a
+ * refresh that came after the instance started from one it lived through, and the teardown reads the keys.
+ * @param {{registry: string}} paths @param {string} session @param {number} [now]
+ */
+export function registerReviewer(paths, session, now = Date.now()) {
+  const registry = readReviewerRegistry(paths.registry);
+  registry[session] = { spawnedAt: now };
+  writeFileSync(paths.registry, `${JSON.stringify(registry)}\n`);
+}
+
+/**
+ * END EVERY REVIEWER INSTANCE WHOSE PULL REQUEST HAS MERGED OR CLOSED, and write one ledger line for each ending.
+ *
+ * ONLY INSTANCES THIS PATH STARTED (the registry's keys), NEVER A WORKSPACE THAT MERELY LOOKS LIKE ONE: the two
+ * standing panes stay running until `ceo` closes them (Done-when 6), and `reviewer-2` is a name the retired pane
+ * carries. An instance survives head-changing pushes -- it is ended by the PULL REQUEST's state, not by a verdict.
+ *
+ * AN ENDING REMOVES THE INSTANCE'S CHECKOUT TOO (Done-when 7): a tree that outlives its pull request is #2163's
+ * defect. The workspace closes first (nothing may be reading the tree), and a tree that will not go leaves the
+ * instance REGISTERED, so the next tick -- which finds the workspace already gone -- retries just the removal.
+ *
+ * A LOOKUP THAT CANNOT ASK ENDS NOTHING, a working instance is left until it is between turns, and a workspace that
+ * will not close is left, said, and retried -- no line is written for an ending that did not happen.
+ *
+ * @param {{label: string, status: string}[]} agents
+ * @param {{registry: Record<string, {spawnedAt: number}>, now: number, run: (args: string[]) => string,
+ *   prState: (pr: number) => string | null, removeCheckout: (session: string, pr: number) => string | null,
+ *   record: (line: object) => void, warn: (line: string) => void}} deps
+ * @returns {{ended: string[], registry: Record<string, {spawnedAt: number}>}}
+ */
+export function endFinishedReviewers(agents, deps) {
+  const registry = { ...deps.registry };
+  /** @type {string[]} */
+  const ended = [];
+  for (const session of Object.keys(registry)) {
+    const pr = reviewerInstanceNumber(session);
+    const state = pr === null ? null : deps.prState(pr);
+    if (state === null) {
+      if (pr !== null) deps.warn(`reviewer teardown: could not read PR #${pr}'s state -- leaving "${session}" running.`);
+      continue;
+    }
+    if (state === "open") continue;
+    const agent = agents.find((a) => a.label === session);
+    if (agent !== undefined && !WAKEABLE.includes(agent.status)) continue;
+    if (agent !== undefined && !closeReviewer(session, deps)) continue;
+    const left = deps.removeCheckout(session, Number(pr));
+    if (left !== null) {
+      deps.warn(`reviewer teardown: "${session}" is finished but its checkout was not removed (${left}) -- retried next tick.`);
+      continue;
+    }
+    deps.record({ session, pr, state, at: new Date(deps.now).toISOString(),
+      workspace: agent === undefined ? "already gone" : "closed", checkout: "removed" });
+    delete registry[session];
+    ended.push(session);
+  }
+  return { ended, registry };
+}
+
+/**
+ * Close one reviewer instance's workspace; `false`, with a warning, when it would not close.
+ * @param {string} session @param {{run: (args: string[]) => string, warn: (line: string) => void}} deps
+ */
+function closeReviewer(session, deps) {
+  const id = workspaceIdOf(deps.run, session);
+  if (id === null) {
+    deps.warn(`reviewer teardown: "${session}" is finished but its workspace id is not exactly one -- left running.`);
+    return false;
+  }
+  try {
+    deps.run(["--session", "org", "workspace", "close", id]);
+    return true;
+  } catch (err) {
+    deps.warn(`reviewer teardown: "${session}" (${id}) could not be closed (${firstLine(err)}) -- retried next tick.`);
+    return false;
+  }
+}
+
+/**
+ * `open`, `closed` (merged pulls are closed too) or `null` for anything GitHub would not say -- REST, so the
+ * per-tick lookup spends the CORE pool and not the GRAPHQL one the gate already leans on.
+ * @param {number} pr @returns {string | null}
+ */
+function pullRequestState(pr) {
+  try {
+    const state = defaultGh(["api", `repos/${REPO}/pulls/${pr}`, "--jq", ".state"]).trim();
+    return state === "open" || state === "closed" ? state : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The reviewer teardown with its real dependencies, called by `work-tick` on every tick beside {@link tearDownSpares}
+ * and for the same reason: a merge produces no order, so a quiet gate is the tick a finished instance needs ending.
+ * Reports and never throws.
+ *
+ * @param {{label: string, status: string}[]} agents @param {string} ledgerPath
+ * @param {(line: string) => void} [say]
+ */
+export function tearDownReviewers(agents, ledgerPath, say = (line) => process.stderr.write(line)) {
+  try {
+    const paths = reviewerPathsFrom(ledgerPath);
+    const before = readReviewerRegistry(paths.registry);
+    if (Object.keys(before).length === 0) return;
+    const { ended, registry } = endFinishedReviewers(agents, { registry: before, now: Date.now(), run: defaultRun,
+      prState: pullRequestState, removeCheckout: (session, pr) => removeReviewCheckout({ session, pr }),
+      warn: (line) => say(`${line}\n`),
+      record: (line) => writeFileSync(paths.endings, `${JSON.stringify(line)}\n`, { flag: "a" }) });
+    writeFileSync(paths.registry, `${JSON.stringify(registry)}\n`);
+    for (const session of ended) say(`ENDED ${session}: its pull request is no longer open\n`);
+  } catch (err) {
+    say(`reviewer teardown FAILED (${firstLine(err)}): no reviewer instance was ended this tick.\n`);
+  }
 }
 
 /**
@@ -1944,14 +2341,22 @@ export function clearContext(run, label) {
  * @param {string[]} roster
  * @param {{run: (args: string[]) => string, spawned: number, ineligibleReason?: (label: string) => string | null,
  *   env?: Record<string, string>, registerSpawn?: (role: string) => void, drained?: readonly string[],
- *   claimable?: (order: {causeKey: string}) => string | null}} deps
- *   `spawned` is how many processes this tick has already started -- see `MAX_SPAWNS_PER_TICK`;
- *   `ineligibleReason` is {@link route}'s; `env` is the spawn's environment ({@link spawnEnvironment})
- * @returns {{label: string, profile?: {kind: string, model: string, effort: string}} | {refusal: string}}
+ *   claimable?: (order: {causeKey: string}) => string | null} & ReviewerDeps} deps
+ *   `spawned` is how many ENGINEER processes this tick has already started -- see `MAX_SPAWNS_PER_TICK`, which a
+ *   reviewer start never spends (#2401); `ineligibleReason` is {@link route}'s; `env` is the spawn's environment
+ *   ({@link spawnEnvironment})
+ * @returns {{label: string, profile?: {kind: string, model: string, effort: string}, reviewer?: true,
+ *   order?: {prompt: string}} | {refusal: string}}
  */
 function targetFor(order, live, roster, deps) {
+  // A REVIEWER ORDER IS ASKED FIRST AND SEPARATELY (#2401): the engineer pilot's checks below are unchanged.
+  if (isReviewerOrder(order)) return reviewerTarget(order, live, deps);
   const routed = routeWithFallback(order, live, withSpareInstances(roster, live), deps.ineligibleReason);
-  if (!("refusal" in routed)) return { label: routed.label };
+  if (!("refusal" in routed)) {
+    // AN INSTANCE TAKES ITS OWN PULL REQUEST'S ORDERS ONLY, whatever cause or fallback brought the order here.
+    const wrong = reviewerMismatch(order, routed.label);
+    return wrong === null ? { label: routed.label } : { refusal: wrong };
+  }
   if (!isPilotOrder(order)) return { refusal: routed.refusal };
   if (deps.spawned >= MAX_SPAWNS_PER_TICK) {
     return { refusal: `${routed.refusal}, and this tick has already started ${deps.spawned} `
@@ -1963,6 +2368,23 @@ function targetFor(order, live, roster, deps) {
   // REGISTERED BEFORE THE PROMPT, because a refused prompt leaves the process running (see `deliver`).
   deps.registerSpawn?.(spawn.label);
   return { label: spawn.label, profile: spawn.profile };
+}
+
+/**
+ * What a placed target costs the ENGINEER pilot's per-tick allowance: one for a process started for an engineer, none
+ * for anything else -- a reviewer start never spends it (#2401), so `MAX_SPAWNS_PER_TICK` reads as it always did.
+ * @param {{profile?: object, reviewer?: true}} target @returns {number}
+ */
+function engineerStarts(target) {
+  return target.profile !== undefined && target.reviewer !== true ? 1 : 0;
+}
+
+/**
+ * The order as it is TYPED: a reviewer's carries the sentence naming its verified checkout ({@link withReviewCheckout}).
+ * @param {{session: string, prompt: string}} order @param {{order?: {prompt: string}}} target
+ */
+function carriedOrder(order, target) {
+  return target.order === undefined ? order : { ...order, ...target.order };
 }
 
 /**
@@ -1978,14 +2400,17 @@ function targetFor(order, live, roster, deps) {
  * @param {{run?: (args: string[]) => string, record?: (key: string, recipient?: string) => void,
  *          counts?: Map<string, number>, ineligibleReason?: (label: string) => string | null,
  *          env?: Record<string, string>, registerSpawn?: (role: string) => void, drained?: readonly string[],
- *          claimable?: (order: {causeKey: string}) => string | null}} [deps]
+ *          claimable?: (order: {causeKey: string}) => string | null} & Partial<ReviewerDeps>} [deps]
+ *   `registerReviewer` is told of every reviewer instance this tick starts (#2401), for the auth detector;
+ *   `checkout` and `registry` are the reviewer path's seams (its git, its filesystem, what it has started);
  *   `registerSpawn` is told of every process this tick STARTS, so the teardown can tell an instance that has
  *   not claimed yet from one that finished ({@link endFinishedSpares}); `drained` is the roles the drain holds
  *   back now, which a spawn must not start into; `claimable` is the spawn's precheck ({@link spawnClaimability})
  * @returns {{sent: string[], refused: string[], stuck: string[]}}
  */
 export function deliver(orders, agents, roster,
-  { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable } = {}) {
+  { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, reviewerEnv,
+    registerReviewer, checkout, registry } = {}) {
   const sent = [];
   const refused = [];
   const stuck = [];
@@ -2000,8 +2425,8 @@ export function deliver(orders, agents, roster,
       stuck.push(`${order.causeKey}: delivered ${already} times and the cause is still true`);
       continue;
     }
-    const target = targetFor(order, live, roster,
-      { run, spawned, ineligibleReason, env, registerSpawn, drained, claimable });
+    const target = targetFor(order, live, roster, { run, spawned, ineligibleReason, env,
+      registerSpawn, drained, claimable, reviewerEnv, registerReviewer, checkout, registry });
     if ("refusal" in target) {
       refused.push(`${order.causeKey}: ${target.refusal}`);
       continue;
@@ -2010,15 +2435,15 @@ export function deliver(orders, agents, roster,
     // prompt, a bounded wait and a five-second settle (`CLEAR_SETTLE_MS`) before the order can be typed.
     // Spending that on a session whose context is its own prefix would be paying the standing path's cost
     // to reach a floor the spawn already started at -- which is the whole argument for spawning.
-    if (target.profile) spawned += 1;
-    else {
+    spawned += engineerStarts(target);
+    if (!target.profile) {
       // CLEARED BEFORE PROMPTED, always. See `clearContext` for the measurement; in short, a session on its
       // 500th turn costs ~24x one on its 10th for identical output, and the clear costs one cheap turn.
       const clearRefusal = clearContext(run, target.label);
       if (clearRefusal) refused.push(`${order.causeKey}: ${clearRefusal} -- delivered anyway`);
     }
     try {
-      run(["--session", "org", "agent", "prompt", target.label, addressed(order, target.label)]);
+      run(["--session", "org", "agent", "prompt", target.label, addressed(carriedOrder(order, target), target.label)]);
     } catch (err) {
       // A STARTED PROCESS IS LEFT RUNNING HERE, and the causeKey is NOT recorded. It is a healthy, idle
       // session under a roster label, so the next tick's `route` offers it this same order by the ordinary
@@ -2675,7 +3100,9 @@ function main() {
   const drained = drainNow(spares.cycles);
   const { sent, refused: gateRefused, stuck } = deliver(todo, free, roster, { record,
     counts: deliveryCounts(ledgerPath), ineligibleReason: engineerEligibility({ drained }),
-    registerSpawn: (role) => registerSpawn(spares, role), drained, claimable: spawnClaimability() });
+    registerSpawn: (role) => registerSpawn(spares, role), drained, claimable: spawnClaimability(),
+    registerReviewer: (session) => registerReviewer(reviewerPathsFrom(ledgerPath), session),
+    registry: () => readReviewerRegistry(reviewerPathsFrom(ledgerPath).registry) });
   const refused = [...handed.refused, ...gateRefused];
   for (const line of [...handed.sent, ...sent]) process.stdout.write(`WOKE ${line}\n`);
   for (const line of stuck) process.stderr.write(`STUCK ${line}\n`);
