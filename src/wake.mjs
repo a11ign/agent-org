@@ -1352,13 +1352,29 @@ export function endedRuns(emitted, path, { read = readFileSync, write = writeFil
  * created the other's failure, in the same file, one day apart.
  *
  * SO A RUN ALSO ENDS ON TIME. Not on the cause going away -- on nobody having been told for this long.
- * Two hours is deliberately longer than `JUDGMENT_TTL_MS`, so it can only fire after the cause has had
- * a full chance to be re-offered and was not: it measures DELIVERY silence, not cause silence.
+ * It is TWICE `JUDGMENT_TTL_MS`, so it can only fire after the cause has had a whole extra window in which
+ * to be re-offered and was not: it measures DELIVERY silence, not cause silence.
+ *
+ * IT WAS EQUAL TO `JUDGMENT_TTL_MS` FOR A WHILE, WHILE THIS SENTENCE CLAIMED "DELIBERATELY LONGER" (#2227).
+ * A judgment cause is re-offered on the first tick whose gap REACHES the TTL, and the reset needs a gap
+ * that STRICTLY EXCEEDS this number -- so a gap of exactly two hours re-offered the cause AND failed to
+ * reset the run. On a tick grid that divides two hours (the shipped timer is every two minutes) every gap
+ * lands on that boundary and the breaker trips after six; add a minute of drift and each gap resets the
+ * run, so a standing judgment cause NEVER escalated. Same cause, same wait, opposite outcomes, decided by
+ * `7200000` against `7200001`. The direction taken is the one the sentence promised, not the opposite: a
+ * reset SHORTER than the TTL would make every re-offer a new run and the breaker decorative for the
+ * judgment half of `CAUSES`. It is derived from `JUDGMENT_TTL_MS` rather than written as a second number
+ * so the two cannot be edited apart, and `wake.test.ts` pins the relationship on the boundary.
+ *
+ * WHAT A HEALTHY STANDING WAIT NOW COSTS: a judgment cause whose state never changes is offered every
+ * two hours and escalates to the chairman on its sixth delivery, about ten hours after its first, whatever
+ * the tick grid does. Before this it did so only on a lucky grid. That is the breaker working as
+ * `MAX_DELIVERIES` describes -- an answer given six times and not acted on is worth a person's attention.
  *
  * This does not weaken the breaker. A cause that is genuinely stuck still trips after six, still
  * escalates to the chairman, and still costs at most three deliveries an hour.
  */
-export const RUN_IDLE_RESET_MS = 2 * 60 * 60 * 1000;
+export const RUN_IDLE_RESET_MS = 2 * JUDGMENT_TTL_MS;
 
 /**
  * A TRIPPED BREAKER MUST REACH A PERSON, NOT A JOURNAL.
