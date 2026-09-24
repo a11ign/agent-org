@@ -2617,8 +2617,14 @@ test("#2099: #2084's REAL Acceptance -- the live correct-row case -- files clean
   + "amended command is one this job can actually run", () => {
   // The row as it stands at 2026-09-23: an rstest command the job runs, plus the `$ `-prefixed hand-run
   // read named as what remains. A blanket refusal of every `gh` Acceptance would have broken this row.
+  //
+  // #2221: THE FILE IS NOT #2084's ANY MORE, AND THAT IS THE FINDING. That row named
+  // `branch-protection.test.ts`, which declares `// requires: token`; the capability gate never read a
+  // named `rstest --include` command, so a row this job could not honestly run read as one it could. The
+  // gate reads it now and refuses it, so this control uses a file that needs nothing -- the point of the
+  // control is the hand-run split, not which test the command names.
   const real = "## Acceptance\n\n```\nnpx rstest run --config scripts/rstest/rstest.config.mjs "
-    + "--include packages/lab/src/packaging/branch-protection.test.ts\n```\n\n"
+    + `--include ${REAL_FILE}\n\`\`\`\n\n`
     + "**What remains, run by hand and quoted into the PR body:**\n\n```\n$ " + HAND_RUN_GH + "\n```\n";
   assert.equal(handRunAcceptanceReason(real, "row-file"), null);
   assert.equal(handRunAcceptanceReason(`${real}\nHand-run: ${HAND_RUN_REASON}\n`, "row-file"), null);
@@ -2717,8 +2723,14 @@ test("#2118 CONTROL, THE ONE THAT DECIDES WHETHER THIS ROW HELPED: #2084's REAL 
   // plus a `$ `-prefixed hand-run read named as what remains. `handRun < commands.length` here -- in fact
   // `handRun === 0` -- so this row never reaches the new refusal at all, which is the point: #2118 must
   // not charge a row whose Acceptance this job can execute.
+  //
+  // #2221: THE FILE IS NOT #2084's ANY MORE, AND THAT IS THE FINDING. That row named
+  // `branch-protection.test.ts`, which declares `// requires: token`; the capability gate never read a
+  // named `rstest --include` command, so a row this job could not honestly run read as one it could. The
+  // gate reads it now and refuses it, so this control uses a file that needs nothing -- the point of the
+  // control is the hand-run split, not which test the command names.
   const real = "## Acceptance\n\n```\nnpx rstest run --config scripts/rstest/rstest.config.mjs "
-    + "--include packages/lab/src/packaging/branch-protection.test.ts\n```\n\n"
+    + `--include ${REAL_FILE}\n\`\`\`\n\n`
     + "**What remains, run by hand and quoted into the PR body:**\n\n```\n$ " + HAND_RUN_GH + "\n```\n";
   const report = acceptanceReport(real, () => 0);
   assert.equal(report.ok, true, report.lines.join("\n"));
@@ -2849,4 +2861,115 @@ test("#2118: the evidence is NOT overridable through `deps` -- it is the field t
     { handRunEvidence: "\"ok\"" } as never);
   assert.equal(report.ok, false, report.lines.join("\n"));
   assert.match(report.lines.join("\n"), /NO HAND-RUN OUTPUT/);
+});
+
+// --- #2221: THE CAPABILITY GATE IS KEYED ON THE FILES A COMMAND NAMES, NOT ON THE RUNNER'S NAME. Both
+// requirement checks opened with "is this `tsx --test` or a whole suite", so `rstest run --include <file>`
+// -- the spelling every row is now required to write -- was charged nothing: the same corpus-requiring
+// file was refused via `npm test` and handed to the runner when named. ---
+
+/** The file the row's own probe used: it reaches the corpus, and declares nothing. Real, so `existsSync` holds. */
+const CORPUS_FILE = "packages/lab/src/abstention-regression.test.ts";
+const RSTEST = "npx rstest run --config scripts/rstest/rstest.config.mjs";
+/** Every spelling of "run this one file" that this repo's rows, scripts and CI use. */
+const NAMING_SPELLINGS: Record<string, (file: string) => string> = {
+  "rstest --include": (file) => `${RSTEST} --include ${file}`,
+  "rstest --include=": (file) => `npx rstest run --include=${file}`,
+  "assert-glob-not-empty --runner=rstest": (file) =>
+    `node packages/guards/src/assert-glob-not-empty.mjs "${file}" --min=1 --run --runner=rstest`,
+  "tsx --test (the regression control)": (file) => `npx tsx --test ${file}`,
+};
+
+test("#2221 THE CONTROL THIS ROW EXISTS FOR: a corpus-requiring file is REFUSED in every spelling that "
+  + "names it, with a message naming the FILE and the REQUIREMENT -- not merely a non-empty list", () => {
+  assert.equal(unmetCommandClosureRequirements("npm test", NO_CAPABILITIES).length, 1,
+    "positive control: the suite spelling already refuses on `corpus` -- the population is not empty");
+  for (const [spelling, command] of Object.entries(NAMING_SPELLINGS)) {
+    const unmet = unmetCommandClosureRequirements(command(CORPUS_FILE), NO_CAPABILITIES);
+    assert.equal(unmet.length, 1, `${spelling}: expected one refusal, got ${JSON.stringify(unmet)}`);
+    assert.equal(unmet[0].requirement, "corpus", spelling);
+    assert.match(unmet[0].message, /^abstention-regression\.test\.ts requires corpus via /, spelling);
+    const verdict = classifyCommand(command(CORPUS_FILE), { capabilities: NO_CAPABILITIES });
+    assert.equal(verdict.verdict, "refused", spelling);
+    assert.match(String((verdict as { reason?: string }).reason),
+      /needs `corpus`, which this job does not have -- abstention-regression\.test\.ts requires corpus/,
+      spelling);
+  }
+});
+
+test("#2221 THE SAME FILE, THE SAME COMMAND, once the job HAS the capability: nothing unmet -- the refusal "
+  + "tracked the capability, not the spelling", () => {
+  const withCorpus = { ...NO_CAPABILITIES, corpus: true };
+  for (const [spelling, command] of Object.entries(NAMING_SPELLINGS)) {
+    assert.deepEqual(unmetCommandClosureRequirements(command(CORPUS_FILE), withCorpus), [], spelling);
+  }
+});
+
+test("#2221: `--config <file>` names a file that exists and is no test -- it is NOT read as one", () => {
+  // A file-shaped argument that is not a test file must not be walked: charging a command for its
+  // runner's own configuration would refuse every named row.
+  assert.deepEqual(unmetCommandClosureRequirements(`${RSTEST} --include ${REAL_FILE}`, NO_CAPABILITIES), []);
+  assert.deepEqual(unmetCommandRequirements(`${RSTEST} --include ${REAL_FILE}`, NO_CAPABILITIES), []);
+});
+
+test("#2221: a NAMED command reports EVERY file it names; the suite short-circuits on the first -- exactly "
+  + "the split the comment in the loop states", () => {
+  const dir = mkdtempSync(join(tmpdir(), "acceptance-2221-"));
+  try {
+    writeSyntheticMixedModule(dir, "checkRelease");
+    const needy = ["a.test.mjs", "b.test.mjs"].map((name) => {
+      const entry = join(dir, name);
+      writeFileSync(entry, "import { safeRender } from \"./mixed-module.mjs\";\nsafeRender(1);\n");
+      return entry;
+    });
+    const unmet = unmetCommandClosureRequirements(`npx rstest run --include ${needy.join(" ")}`,
+      NO_CAPABILITIES);
+    assert.deepEqual(unmet.map((u) => u.message.split(" ")[0]), ["a.test.mjs", "b.test.mjs"]);
+    assert.equal(unmetCommandClosureRequirements("npm test", NO_CAPABILITIES).length, 1,
+      "the whole-suite command still reports ONE refusal");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#2221: a `// no-token:` declaration STILL suppresses it for a named file, and the same file with no "
+  + "declaration is refused -- #827's mechanism is the author's answer and this row does not touch it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "acceptance-2221-"));
+  try {
+    writeSyntheticMixedModule(dir, "checkRelease");
+    const body = "import { safeRender } from \"./mixed-module.mjs\";\nsafeRender(1);\n";
+    const undeclared = join(dir, "undeclared.test.mjs");
+    const declared = join(dir, "declared.test.mjs");
+    writeFileSync(undeclared, body);
+    writeFileSync(declared, `// no-token: checkRelease\n${body}`);
+    const command = (file: string) => `npx rstest run --include ${file}`;
+    assert.deepEqual(
+      unmetCommandClosureRequirements(command(undeclared), NO_CAPABILITIES).map((u) => u.requirement),
+      ["token"], "the undeclared file needs a token and says so");
+    assert.deepEqual(unmetCommandClosureRequirements(command(declared), NO_CAPABILITIES), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#2221: a header-declared `// requires:` is charged for a named rstest file too", () => {
+  const dir = mkdtempSync(join(tmpdir(), "acceptance-2221-"));
+  try {
+    const file = join(dir, "needs-history.test.mjs");
+    writeFileSync(file, "// requires: history\nexport {};\n");
+    assert.deepEqual(unmetCommandRequirements(`npx rstest run --include ${file}`, NO_CAPABILITIES),
+      [{ requirement: "history", files: [file] }]);
+    assert.deepEqual(
+      unmetCommandRequirements(`npx rstest run --include ${file}`, { ...NO_CAPABILITIES, history: true }), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#2221: a command that names no test file is still never inspected, and one that names a file which "
+  + "does not exist is skipped rather than throwing -- `testFileArgumentsResolve` owns that question", () => {
+  assert.deepEqual(unmetCommandClosureRequirements("npm run lint", NO_CAPABILITIES), []);
+  assert.deepEqual(unmetCommandClosureRequirements(
+    "npx rstest run --include packages/lab/src/training/abstention-regression.test.ts", NO_CAPABILITIES), [],
+    "a path that does not exist reads 0 for a reason that is NOT the hole -- the row's own first probe");
 });
