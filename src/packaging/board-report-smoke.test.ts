@@ -165,10 +165,17 @@ test("#2282: open-row ages bucket ready, backlog and the rest, and leave the met
   assert.match(out, /\| other \| 2 \| 0 \| 0 \|/, "#2 and #8 are in-progress; meta #7 is not counted at all");
 });
 
-test("#2282: a listing AT its cap is printed as FLOORS, with how far back it reaches", () => {
+test("#2282: a listing AT its cap that reaches past the window says FILED is complete and CLOSED is a floor", () => {
   const out = flowSection({ rows: ROWS, listLimit: ROWS.length, events: eventMap(CLAIMS), now: NOW });
-  assert.match(out, /AT the cap[^\n]*FLOORS[^\n]*2026-09-01T08:00:00Z/);
+  assert.match(out, /AT the cap[^\n]*Filed is complete[^\n]*2026-09-01T08:00:00Z[^\n]*CLOSED IS A FLOOR/);
   assert.match(out, /the counts are floors/);
+});
+
+test("#2282: a listing AT its cap that stops inside the window says BOTH columns are floors", () => {
+  const recent = ROWS.filter((r) => r.createdAt >= "2026-09-20");
+  const out = flowSection({ rows: recent, listLimit: recent.length, events: eventMap(CLAIMS), now: NOW });
+  assert.match(out, /AT the cap[^\n]*BOTH columns are FLOORS[^\n]*2026-09-20T08:00:00Z/);
+  assert.doesNotMatch(out, /Filed is complete/);
 });
 
 test("#2282: the report states that it sets no threshold", () => {

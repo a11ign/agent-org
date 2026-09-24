@@ -410,17 +410,28 @@ function duration(ms) {
   return hours < HOURS_PER_DAY * 2 ? `${hours.toFixed(1)} h` : `${(hours / HOURS_PER_DAY).toFixed(1)} d`;
 }
 
+/** What a listing AT its cap does and does not lose. FILED is complete whenever the listing reaches back past
+ * the window's first day, because it is ordered by creation; CLOSED is not, since a row created before the
+ * listing's oldest and closed inside the window is missed.
+ * @param {{ oldestListed: string | null, perDay: { day: string }[] }} flow */
+function capNote({ oldestListed, perDay }) {
+  const reaches = oldestListed !== null && (londonDay(oldestListed) ?? "") < perDay[0].day;
+  return "**That is AT the cap, so the listing may be truncated.** "
+    + (reaches
+      ? `**Filed is complete** (the listing reaches back to a row created ${oldestListed}, before the window's `
+        + "first day) and **CLOSED IS A FLOOR** (a row created before that and closed inside the window is missed)."
+      : `**BOTH columns are FLOORS** (the listing reaches back only to a row created ${oldestListed}, inside `
+        + "the window).");
+}
+
 /** @param {any} d @param {string[]} L */
 export function flowPerDay(d, L) {
-  const { perDay, listed, capped, listLimit, oldestListed } = d.flow;
+  const { perDay, listed, capped, listLimit } = d.flow;
   /** @type {(k: "filed" | "closed") => number} */
   const total = (k) => perDay.reduce((/** @type {number} */ n, /** @type {any} */ x) => n + x[k], 0);
   L.push(`### Filed and closed per day — last ${FLOW_DAYS} London days, today partial`);
   L.push(`Read from \`gh issue list --state all --limit ${listLimit}\`, which returned **${listed}** rows. `
-    + (capped
-      ? `**That is AT the cap, so the listing may be truncated and BOTH columns are FLOORS** (it reaches back `
-        + `only to a row created ${oldestListed}: a row created before that and closed inside the window is missed).`
-      : "That is under the cap, so the listing is complete and neither column is a floor for that reason.")
+    + (capped ? capNote(d.flow) : "That is under the cap, so the listing is complete and neither column is a floor for that reason.")
     + " **Closed counts every close** (sweeps and not-planned included) by each row's latest `closedAt`, "
     + "so it is not engineer throughput.");
   L.push("");
