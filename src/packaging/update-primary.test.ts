@@ -204,14 +204,14 @@ function driveMove(changedAnswer: string[], npm: (args: string[]) => void = () =
   return { git, asked, npmCalls, thrown };
 }
 
-test("#1384 ACCEPTANCE: a move that changed the lockfile runs npm install, BEFORE the build", () => {
-  const { git, asked, npmCalls, thrown } = driveMove(["package-lock.json"]);
+test("#1384 ACCEPTANCE: a move that changed the lockfile runs pnpm install, BEFORE the build", () => {
+  const { git, asked, npmCalls, thrown } = driveMove(["pnpm-lock.yaml"]);
   assert.equal(thrown, undefined);
-  assert.deepEqual(asked, [{ range: ["old111", "new222"], pathspec: ["package-lock.json"] }],
+  assert.deepEqual(asked, [{ range: ["old111", "new222"], pathspec: ["pnpm-lock.yaml"] }],
     "the question is asked of the commit the checkout LEFT and the one it ARRIVED at, for the root lockfile");
   assert.equal(git.some((argv) => argv[0] === "diff"), false,
     "#939: the paths come from packages/guards/src/changed-files.mjs, never from a second spelling of the diff");
-  assert.deepEqual(npmCalls, [["install"], ["run", "build"]],
+  assert.deepEqual(npmCalls, [["pnpm", "install", "--frozen-lockfile"], ["npm", "run", "build"]],
     "install first: a build before it compiles the new source against the old node_modules");
 });
 
@@ -220,13 +220,14 @@ test("#1384 CONTROL: a move that did NOT change the lockfile asks the question a
   assert.equal(thrown, undefined);
   assert.equal(asked.length, 1,
     "the positive control for the absence below: the lockfile question WAS asked, and answered no");
-  assert.deepEqual(npmCalls, [["run", "build"]]);
+  assert.deepEqual(npmCalls, [["npm", "run", "build"]]);
 });
 
 test("#1384 the install is NEVER npm ci -- it would delete node_modules from under every worktree", () => {
-  const { npmCalls } = driveMove(["package-lock.json"]);
-  const installs = npmCalls.filter((argv) => argv[0] !== "run");
-  assert.deepEqual(installs, [["install"]], "exactly one install, and it is `npm install`");
+  const { npmCalls } = driveMove(["pnpm-lock.yaml"]);
+  const installs = npmCalls.filter((argv) => argv[1] !== "run");
+  assert.deepEqual(installs, [["pnpm", "install", "--frozen-lockfile"]],
+    "exactly one install, and it is pnpm's (#2301: the lockfile it reads is pnpm-lock.yaml, not npm's)");
   assert.equal(npmCalls.some((argv) => argv.includes("ci") || argv.includes("clean-install")), false,
     "`npm ci` deletes node_modules before installing, which removes it from under every running worktree");
 });
@@ -238,20 +239,20 @@ test("#1384 a HEAD that did not move asks no lockfile question at all", () => {
   try {
     mkdirSync(join(root, ".git"));
     updatePrimary(root, () => "same333\n", (_cwd, args) => npmCalls.push(args),
-      (range, pathspec) => { asked.push({ range, pathspec }); return ["package-lock.json"]; });
+      (range, pathspec) => { asked.push({ range, pathspec }); return ["pnpm-lock.yaml"]; });
   } finally { rmSync(root, { recursive: true, force: true }); }
   assert.deepEqual(asked, [], "a range from a commit to itself is empty by construction, so it is not asked");
-  assert.deepEqual(npmCalls, [["run", "build"]]);
+  assert.deepEqual(npmCalls, [["npm", "run", "build"]]);
 });
 
-test("#1384 the lockfile is matched BY NAME: a nested package-lock.json in the answer does not install", () => {
-  const { npmCalls } = driveMove(["packages/x/package-lock.json"]);
-  assert.deepEqual(npmCalls, [["run", "build"]]);
+test("#1384 the lockfile is matched BY NAME: a nested pnpm-lock.yaml in the answer does not install", () => {
+  const { npmCalls } = driveMove(["packages/x/pnpm-lock.yaml"]);
+  assert.deepEqual(npmCalls, [["npm", "run", "build"]]);
 });
 
 test("#1384 a FAILED install throws naming the stale node_modules, skips the build, and rolls nothing back", () => {
-  const { git, npmCalls, thrown } = driveMove(["package-lock.json"], (args) => {
-    if (args[0] === "install") throw Object.assign(new Error("boom"), { status: 7 });
+  const { git, npmCalls, thrown } = driveMove(["pnpm-lock.yaml"], (args) => {
+    if (args[1] === "install") throw Object.assign(new Error("boom"), { status: 7 });
   });
   assert.ok(thrown instanceof Error, "reported, never swallowed");
   assert.match(thrown.message, /stale node_modules/, "the message says what a failed install DOES to every worktree");
@@ -259,7 +260,7 @@ test("#1384 a FAILED install throws naming the stale node_modules, skips the bui
   assert.match(thrown.message, /will NOT retry/, "a re-run finds HEAD at the target and asks nothing, so it must say so");
   assert.match(thrown.message, /never `npm ci`/, "the by-hand remedy must not be the one that breaks every worktree");
   assert.equal((thrown.cause as Error).message, "boom");
-  assert.deepEqual(npmCalls, [["install"]], "the build does not run against a node_modules known to be stale");
+  assert.deepEqual(npmCalls, [["pnpm", "install", "--frozen-lockfile"]], "the build does not run against a node_modules known to be stale");
   assert.ok(git.some((argv) => argv[0] === "checkout"), "the checkout already moved and is correct");
   assert.equal(git.some((argv) => argv[0] === "reset" || argv[0] === "revert" || argv.includes("old111") && argv[0] === "checkout"),
     false, "a failed install must not revert a checkout somebody else may already be reading");
@@ -275,15 +276,15 @@ test("#1384 lockfileMoved through the REAL changed-files helper: the root lockfi
       return sandbox.run(["rev-parse", "HEAD"]).trim();
     };
     const changed = (range: string[], pathspec: string[]) => changedFiles(range, { repoRoot: sandbox.dir, pathspec });
-    const first = commitWith("package-lock.json", '{"lockfileVersion":3}\n');
+    const first = commitWith("pnpm-lock.yaml", '{"lockfileVersion":3}\n');
     const readmeOnly = commitWith("README.md", "docs\n");
-    const nestedOnly = commitWith("packages/x/package-lock.json", "{}\n");
-    const lockfile = commitWith("package-lock.json", '{"lockfileVersion":3,"packages":{}}\n');
-    sandbox.run(["mv", "package-lock.json", "moved-lock.json"]);
+    const nestedOnly = commitWith("packages/x/pnpm-lock.yaml", "{}\n");
+    const lockfile = commitWith("pnpm-lock.yaml", '{"lockfileVersion":3,"packages":{}}\n');
+    sandbox.run(["mv", "pnpm-lock.yaml", "moved-lock.json"]);
     sandbox.commit("move the lockfile away");
     const movedAway = sandbox.run(["rev-parse", "HEAD"]).trim();
     assert.equal(lockfileMoved(changed, first, readmeOnly), false, "a README-only move is not a lockfile move");
-    assert.equal(lockfileMoved(changed, readmeOnly, nestedOnly), false, "a nested package-lock.json is not the root one");
+    assert.equal(lockfileMoved(changed, readmeOnly, nestedOnly), false, "a nested pnpm-lock.yaml is not the root one");
     assert.equal(lockfileMoved(changed, nestedOnly, lockfile), true, "the root lockfile changed");
     assert.equal(lockfileMoved(changed, first, lockfile), true, "a fast-forward spanning several commits, the real shape");
     assert.equal(lockfileMoved(changed, lockfile, movedAway), true,
