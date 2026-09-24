@@ -41,10 +41,20 @@ export function lookup(fn) {
   }
 }
 
-/** The branch-protection required status-check contexts for `main`, or `null` if the lookup failed. */
+/**
+ * The branch-protection required status-check contexts for `main`, or `null` if the lookup failed.
+ *
+ * READ FROM `branches/main`, NOT `branches/main/protection/required_status_checks` (#2331). The protection
+ * endpoints are repository-ADMIN only and 404 for every agent credential, so reading them meant a session
+ * either got `null` here or borrowed the chairman's account (#1950). `branches/main` answers with `pull`
+ * permission and carries the same list under `.protection.required_status_checks`. A `protected` branch
+ * that shows no such list yields `null` rather than `[]`: "could not read" is not "nothing is required".
+ */
 export function lookupRequiredContexts() {
-  return lookup(() => JSON.parse(
-    gh(["api", `repos/${REPO}/branches/main/protection/required_status_checks`])).contexts);
+  return lookup(() => {
+    const contexts = JSON.parse(gh(["api", `repos/${REPO}/branches/main`])).protection?.required_status_checks?.contexts;
+    return Array.isArray(contexts) ? contexts : null;
+  });
 }
 
 /**
