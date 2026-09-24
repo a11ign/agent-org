@@ -523,8 +523,14 @@ export const TRUNK_FIX_POLICY = Object.freeze({
   neverDisplacesAQueuedPr: true,
 });
 
-/** One `trunk.yml` page is enough for a streak: past this many consecutive reds the older ones are simply not named. */
-const RED_STREAK_WINDOW = 30;
+/**
+ * The streak is read PAGE BY PAGE until a green verdict ends it, because the policy says ANY merge in the current
+ * streak is eligible and a fixed window silently made that false past its size (#2441's review: a window of 1 kept
+ * every test green). The cap is the honest limit -- a streak still unbroken after this many runs is reported as
+ * unreadable to its end, never as "the marker names nothing".
+ */
+const RED_STREAK_PAGE_SIZE = 100;
+const RED_STREAK_MAX_PAGES = 10;
 
 /** How much of a sha a message quotes -- enough to grep, short enough to read. */
 const SHA_ABBREV = 9;
@@ -558,14 +564,26 @@ export function extractTrunkFixDeclaration(body) {
  * @returns {{ id: number, head_sha: string, conclusion: string, html_url: string }[]}
  */
 export function redStreak(payload) {
+  return redStreakReading(payload).streak;
+}
+
+/**
+ * PURE. `redStreak`, plus whether the streak is KNOWN to have ended: `ended` is true only when a GREEN verdict was
+ * seen after the reds. A streak that runs out of runs is not known to be over -- the next page may hold more of it,
+ * which is exactly the difference between "the marker names nothing" and "this page does not say".
+ * @param {Parameters<typeof newestVerdictRun>[0]} payload
+ * @returns {{ streak: ReturnType<typeof redStreak>, ended: boolean }}
+ */
+export function redStreakReading(payload) {
   const streak = [];
   let remaining = payload?.workflow_runs ?? [];
-  for (let run = newestVerdictRun({ workflow_runs: remaining }); run !== null && run.conclusion === "failure";
-    run = newestVerdictRun({ workflow_runs: remaining })) {
+  for (let run = newestVerdictRun({ workflow_runs: remaining }); run !== null; run = newestVerdictRun({ workflow_runs: remaining })) {
+    if (run.conclusion !== "failure") return { streak, ended: true };
+    const { id } = run;
     streak.push(run);
-    remaining = remaining.filter((r) => r.id !== run.id);
+    remaining = remaining.filter((r) => r.id !== id);
   }
-  return streak;
+  return { streak, ended: false };
 }
 
 /**
@@ -590,17 +608,37 @@ export function jumpDecision(declaration, streak) {
 }
 
 /**
- * `null` when the read failed -- never `[]`, which would say "green" about a trunk nobody looked at.
- * @param {{ repo: string, run: typeof defaultRun, error: (line: string) => void }} args
+ * Does the streak already name one of the marker's shas? Then it is IN the streak, however much more of it there is.
+ * @param {ReturnType<typeof redStreak>} streak @param {string[]} shas
+ */
+const streakNames = (streak, shas) => streak.some((run) => shas.some((sha) => run.head_sha.toLowerCase().startsWith(sha)));
+
+/**
+ * Reads `trunk.yml`'s runs on `main` a page at a time, stopping at the first of: the streak ended in a green, the
+ * marker's sha was found in it, or the history ran out. Only a marked PR pays for a read, and usually for one page.
+ * `null` when the read failed, or when the streak outran `RED_STREAK_MAX_PAGES` without naming the marker's sha --
+ * never `[]`, which would say "green" about a trunk nobody looked at, and never a short streak, which would say
+ * "the marker names nothing" about a streak nobody finished reading.
+ * @param {{ repo: string, shas: string[], run: typeof defaultRun, error: (line: string) => void }} args
  * @returns {ReturnType<typeof redStreak> | null}
  */
-function readRedStreak({ repo, run, error }) {
+function readRedStreak({ repo, shas, run, error }) {
+  /** @type {any[]} */
+  const runs = [];
   try {
-    return redStreak(JSON.parse(gh(["api", `repos/${repo}/actions/workflows/${TRUNK_WORKFLOW}/runs?branch=main&per_page=${RED_STREAK_WINDOW}`], run)));
+    for (let page = 1; page <= RED_STREAK_MAX_PAGES; page += 1) {
+      const url = `repos/${repo}/actions/workflows/${TRUNK_WORKFLOW}/runs?branch=main&per_page=${RED_STREAK_PAGE_SIZE}&page=${page}`;
+      const answered = JSON.parse(gh(["api", url], run)).workflow_runs ?? [];
+      runs.push(...answered);
+      const { streak, ended } = redStreakReading({ workflow_runs: runs });
+      if (ended || streakNames(streak, shas) || answered.length < RED_STREAK_PAGE_SIZE) return streak;
+    }
   } catch (cause) {
     error(`arm-pr: could not read ${TRUNK_WORKFLOW}'s runs on main: ${/** @type {Error} */ (cause).message}`);
     return null;
   }
+  error(`arm-pr: ${TRUNK_WORKFLOW}'s red streak on main is longer than ${RED_STREAK_MAX_PAGES * RED_STREAK_PAGE_SIZE} runs and names none of ${shas.join(", ")} -- not read to its end`);
+  return null;
 }
 
 /** The PR's node id, head, readiness and queue seat in one GraphQL read -- `mergeQueueEntry` exists on no REST shape (#2046). */
@@ -724,7 +762,7 @@ function judgeSeat(entry, how) {
 function armOrJump({ number, repo, prBody }, { run, sleep, log, error }) {
   const ordinary = () => armMerge({ number, repo }, { run, sleep, error });
   const declaration = extractTrunkFixDeclaration(prBody);
-  const decision = jumpDecision(declaration, declaration.kind === "fixes-trunk" ? readRedStreak({ repo, run, error }) : null);
+  const decision = jumpDecision(declaration, declaration.kind === "fixes-trunk" ? readRedStreak({ repo, shas: declaration.shas, run, error }) : null);
   if (!decision.marked) return { outcome: ordinary(), jumpFailure: null };
   log(`arm-pr: #${number} declares ${TRUNK_FIX_POLICY.marker} -- jump ${decision.grant ? "GRANTED" : "REFUSED"}: ${decision.reason}`);
   if (!decision.grant) return { outcome: ordinary(), jumpFailure: null };
