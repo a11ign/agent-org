@@ -70,7 +70,8 @@ import { REPO } from "../../../scripts/repo-identity.mjs";
 import { READY_LABEL, WAS_READY_LABEL } from "./ready-label-audit.mjs";
 import { gitCommonDir, appendJsonl } from "./merge-guard.mjs";
 import { withBoardSnapshot, PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapshot.mjs";
-import { runnerReason, laneReason } from "./row-claim/runner-rule.mjs";
+import { runnerReason, laneReason, drainReason } from "./row-claim/runner-rule.mjs";
+import { activeDrain, sparePathsFrom, ledgerPathFrom } from "./wake.mjs";
 import { inBuildReason, lookupHeldRows } from "./row-claim/own-pr-health-rule.mjs";
 import { resolveBlockedByOverride, blockedByExceptionNote } from "./row-claim/blocked-by-rule.mjs";
 import { blockedByEdgeReason, lookupBlockedByEdge } from "./row-claim/blocked-by-edge-rule.mjs";
@@ -767,11 +768,13 @@ function applyClaimLabels(issueNumber, { run, sessionLabel, extraLabels, wasRead
  * @param {string[]} extraLabels labels written alongside `in-progress` + `session:<name>` -- `[]` for a
  *   dispatch, `[STARTED_LABEL]` for a claim/start
  * @param {{ run?: typeof defaultRun, moveStatus?: typeof moveProjectStatus, branch?: string,
- *           worktree?: string, blockedBy?: string }} deps
+ *           worktree?: string, blockedBy?: string, drained?: readonly string[] }} deps
+ *   `drained` (#2324) is the roles the drain holds back now -- see {@link drainedNow}. ABSENT MEANS NONE, so a
+ *   caller that does not say is not refused for a fact it never asked about; the CLI is what asks.
  * @returns {{ claimed: true, statusMoved: true } | { claimed: true, statusMoved: false, notOnBoard: boolean, statusReason: string } | { claimed: false, reason: string }}
  */
 function writeRowLabels(issueNumber, mySession, extraLabels,
-  { run = defaultRun, moveStatus = moveProjectStatus, branch, worktree, blockedBy } = {}) {
+  { run = defaultRun, moveStatus = moveProjectStatus, branch, worktree, blockedBy, drained = [] } = {}) {
   const before = fetchLabels(issueNumber, { run });
   const decision = decideClaim(before.labels, mySession);
   if (!decision.proceed) return { claimed: false, reason: decision.reason };
@@ -812,6 +815,9 @@ function writeRowLabels(issueNumber, mySession, extraLabels,
   const alreadyMine = claimStatus(before.labels).sessions.includes(mySession);
   let blockedByNote = null;
   if (!alreadyMine) {
+    // #2324: A NEW ROW, which is the only kind a drained role is refused -- resuming its own is not one.
+    const drain = drainReason(mySession, drained);
+    if (drain) return { claimed: false, reason: drain };
     const ineligible = sessionEligibilityReason(issueNumber, mySession, { run });
     if (ineligible) {
       const eligibility = eligibilityWithBlockedBy({ issueNumber, mySession, ineligible, blockedBy },
@@ -963,7 +969,7 @@ export function dispatchRow(issueNumber, mySession, deps = {}) {
  * @param {number} issueNumber
  * @param {string} mySession
  * @param {{ run?: typeof defaultRun, moveStatus?: typeof moveProjectStatus, branch?: string,
- *           worktree?: string, blockedBy?: string }} [deps]
+ *           worktree?: string, blockedBy?: string, drained?: readonly string[] }} [deps]
  * @returns {{ claimed: true, statusMoved: true } | { claimed: true, statusMoved: false, notOnBoard: boolean, statusReason: string } | { claimed: false, reason: string }}
  */
 export function claimRow(issueNumber, mySession, deps = {}) {
@@ -1677,8 +1683,30 @@ function claimLineFor(mode, issueNumber, mySession, { branch, worktree }) {
  */
 function claimOrDispatch(mode, issueNumber, mySession, { branch, worktree, blockedBy }) {
   if (mode === "dispatch") return dispatchRow(issueNumber, mySession);
-  if (branch && worktree) return claimWithWorktree(issueNumber, mySession, { branch, worktree, claimDeps: { blockedBy } });
-  return claimRow(issueNumber, mySession, { blockedBy });
+  const claimDeps = { blockedBy, drained: drainedNow() };
+  if (branch && worktree) return claimWithWorktree(issueNumber, mySession, { branch, worktree, claimDeps });
+  return claimRow(issueNumber, mySession, claimDeps);
+}
+
+/**
+ * #2324: the roles the drain holds back at the moment of THIS claim -- the same `activeDrain` `wake.mjs`'s router
+ * reads, so the offer and the refusal cannot disagree. Read here, at the CLI, and not inside the library
+ * functions: a test or another caller handing `claimRow` a session gets the claim's other rules and not a fact
+ * about this host's ledger.
+ *
+ * FAILS OPEN AND SAYS SO, like B2/B4/#1886 beside it: a claim guard that stops every claim when a file is
+ * unreadable gets bypassed and then never consulted. A lifted drain costs one avoidable claim; a stuck one
+ * strands the row.
+ * @returns {string[]}
+ */
+function drainedNow() {
+  try {
+    return activeDrain({ cycles: sparePathsFrom(ledgerPathFrom([])).cycles });
+  } catch (error) {
+    process.stderr.write(`row-claim: could not read the drain (${String(/** @type {any} */ (error)?.message ?? error)
+      .split("\n")[0]}) -- claiming as though it were lifted (#2324).\n`);
+    return [];
+  }
 }
 
 /**
