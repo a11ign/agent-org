@@ -565,30 +565,79 @@ export const OPEN_PR_LIMIT = 200;
 const HEAD_DISPLAY_CHARS = 8;
 
 /**
- * #2126: EVERY OPEN PULL REQUEST'S REVIEW HEALTH, IN **ONE** CALL -- never one per held row.
+ * #2316: THE LIST READ'S FIELDS, which must NEVER include `commits`. #2254 added it here (226e6a24e) and
+ * GitHub refused the whole query -- *"requesting up to 1,000,000 possible nodes which exceeds the maximum
+ * limit of 500,000"* -- because `commits` nests a connection inside `reviews` inside a 200-row page. The
+ * read failed, `lookup` swallowed it, and B2's unanswered-refusal clause was OFF for every claim until
+ * this row. `commits` is fetched per pull request instead (`commitsOf`), and only where it is consulted.
+ */
+const LIST_FIELDS = "number,headRefOid,reviewDecision,reviews,author";
+
+/**
+ * #2316: THE ONE PLACE `commits` IS READ, PER PULL REQUEST. `authorCommitsSinceRefusal` counts commits
+ * after the latest refusal and returns 0 for a pull request with no `CHANGES_REQUESTED` review, so only a
+ * pull request GitHub itself reports as `CHANGES_REQUESTED` can have its answer read from here. Everything
+ * else costs nothing extra: with none refused, the whole health read is still exactly one call.
+ * @param {number} number @param {(args: string[]) => string} run @returns {PrCommit[]}
+ */
+function commitsOf(number, run) {
+  const raw = run(["pr", "view", String(number), "--repo", REPO, "--json", "commits"]);
+  /** @type {{ commits?: PrCommit[] }} */
+  const parsed = JSON.parse(raw);
+  return parsed.commits ?? [];
+}
+
+/**
+ * @param {(args: string[]) => string} run
+ * @returns {PrReviewHealth[]}
+ */
+function readOpenPrReviewHealth(run) {
+  const raw = run(["pr", "list", "--repo", REPO, "--state", "open", "--limit", String(OPEN_PR_LIMIT),
+    "--json", LIST_FIELDS]);
+  /** @type {{ number: number, headRefOid?: string, reviewDecision?: string | null,
+   *           reviews?: { state?: string, body?: string, submittedAt?: string,
+   *                       commit?: { oid?: string } }[],
+   *           author?: { login?: string } }[]} */
+  const parsed = JSON.parse(raw);
+  return parsed.map((pr) => {
+    const refused = pr.reviewDecision === CHANGES_REQUESTED;
+    return { number: pr.number, head: pr.headRefOid ?? "",
+      reviewDecision: pr.reviewDecision ?? null, dispute: disputeAtHead(pr),
+      authorCommitsSinceReview: authorCommitsSinceRefusal({ ...pr, commits: refused ? commitsOf(pr.number, run) : [] }) };
+  });
+}
+
+/**
+ * WHAT GITHUB SAID, rather than what `execFileSync` wrapped it in. A refused query's reason is on the
+ * error's `stderr`; `message` is `Command failed: gh ...`, which would have hidden the node limit again.
+ * @param {unknown} error @returns {string}
+ */
+function reasonOf(error) {
+  const stderr = /** @type {{ stderr?: unknown }} */ (error)?.stderr;
+  const text = String(stderr ?? "").trim() || (error instanceof Error ? error.message : String(error));
+  return text.replace(/\s+/g, " ");
+}
+
+/**
+ * #2126: EVERY OPEN PULL REQUEST'S REVIEW HEALTH -- one `pr list` over the whole queue, never one per held
+ * row (#989 took two network calls per held row OUT of this path, and a clause that put one back would undo
+ * the measurement that justified it), plus one `commits` read per pull request that is `CHANGES_REQUESTED`
+ * and no other (#2316).
  *
- * That is the shape the row asked for by name: #989 took two network calls per held row OUT of this path
- * when it dropped the colour read, and a clause that put one back per row would undo the measurement that
- * justified it. One repo-wide read costs the same whether the session holds one row or five, and mirrors
- * `lookupOpenPrFiles`, which B4 already drives exactly this way.
- *
- * `null` on a failed lookup, the convention every lookup in this file shares.
- * @param {{ run?: (args: string[]) => string }} [deps]
+ * `null` on a failed read, the convention every lookup in this file shares -- BUT A FAILURE IS SAID ALOUD
+ * (#2316). `null` makes B2 refuse nothing, which is the right direction for an unanswerable read and the
+ * wrong thing to do silently: the read was off for hours behind a swallowed error. The line names GitHub's
+ * own reason, because that is what turns a diagnosis from hours into minutes.
+ * @param {{ run?: (args: string[]) => string, log?: (line: string) => void }} [deps]
  * @returns {PrReviewHealth[] | null}
  */
-export function lookupOpenPrReviewHealth({ run = gh } = {}) {
-  return lookup(() => {
-    const raw = run(["pr", "list", "--repo", REPO, "--state", "open", "--limit", String(OPEN_PR_LIMIT),
-      "--json", "number,headRefOid,reviewDecision,reviews,commits,author"]);
-    /** @type {{ number: number, headRefOid?: string, reviewDecision?: string | null,
-     *           reviews?: { state?: string, body?: string, submittedAt?: string,
-     *                       commit?: { oid?: string } }[],
-     *           author?: { login?: string }, commits?: PrCommit[] }[]} */
-    const parsed = JSON.parse(raw);
-    return parsed.map((pr) => ({ number: pr.number, head: pr.headRefOid ?? "",
-      reviewDecision: pr.reviewDecision ?? null, dispute: disputeAtHead(pr),
-      authorCommitsSinceReview: authorCommitsSinceRefusal(pr) }));
-  });
+export function lookupOpenPrReviewHealth({ run = gh, log = (line) => process.stderr.write(`${line}\n`) } = {}) {
+  try {
+    return readOpenPrReviewHealth(run);
+  } catch (error) {
+    log(`B2 review-health read FAILED: ${reasonOf(error)}; claims are not being checked for unanswered refusals`);
+    return null;
+  }
 }
 
 /**
@@ -863,7 +912,7 @@ export function lookupRowShape(issueNumber, { run = gh } = {}) {
  *
  * @param {string} mySession
  * @param {number} excludeIssueNumber the row being claimed right now -- never checked against itself
- * @param {{ run?: (args: string[]) => string }} [deps]
+ * @param {{ run?: (args: string[]) => string, log?: (line: string) => void }} [deps]
  * @returns {RowFacts[] | null}
  */
 export function lookupHeldRows(mySession, excludeIssueNumber, deps = {}) {
