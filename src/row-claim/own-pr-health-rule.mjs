@@ -189,8 +189,11 @@ import { ANSWER_PREFIX } from "../waiting-condition.mjs";
 /**
  * #2126: ONE OPEN PULL REQUEST'S REVIEW HEALTH. `reviewDecision` is GitHub's own field, which outlives the
  * head it was posted on; `dispute` is `null` unless two DIFFERENT named reviewers disagree at that head.
+ * #2254: `authorCommitsSinceReview` counts the NON-MERGE commits AUTHORED BY THE ANSWERER (the pull
+ * request's author, or a session's `claude` co-author) committed after the latest refusal, which is what
+ * tells "nobody has answered" from "answered, waiting on a re-read". Absent reads as zero.
  * @typedef {{ number: number, head: string, reviewDecision: string | null,
- *             dispute: ReviewDispute | null }} PrReviewHealth
+ *             dispute: ReviewDispute | null, authorCommitsSinceReview?: number }} PrReviewHealth
  */
 
 /**
@@ -303,6 +306,19 @@ const CHANGES_REQUESTED = "CHANGES_REQUESTED";
  * read `CHANGES_REQUESTED` (GitHub's own field, not a comment scan, and the one thing a bot merge cannot
  * clear); and the reviewers must NOT be in dispute at the current head, which is the escape `ceo`'s ruling
  * made non-optional rather than a hole to be closed later.
+ *
+ * #2254 -- THE FOURTH CONDITION, AND THE RULING IS TO LIFT THE CAP: an AUTHOR commit (not a merge) after the
+ * latest refusal means the author has done the one thing the refusal asks, so the pull request is now
+ * AWAITING REVIEW, which #989 says one new row may sit beside. `reviewDecision` cannot see it -- it keeps
+ * reading `CHANGES_REQUESTED` until a new review lands -- so the guard was telling an author who HAD answered
+ * that nobody had (#2165: #2240 answered at `c0c0e6df`, ready row #2176 unclaimed for the turn).
+ *
+ * WHY LIFT RATHER THAN ADD A THIRD, STILL-CAPPED STATE: a capped "answered" state would bind the session
+ * until a reviewer acted, which is the stall this row measured, only with a truer sentence. And the
+ * objection -- a trivial commit clears the cap without answering anything -- is real but cheap: this guard
+ * meters WHICH ROW A SESSION MAY CLAIM, while `main` still requires an approving review, so a trivial commit
+ * buys a second row in flight and no merge. It also corrects itself: a reviewer who re-refuses posts a
+ * verdict AFTER that commit, and the count is taken from the latest refusal, so the cap returns.
  * @param {RowFacts} row @returns {PrReviewHealth | null}
  */
 export function unansweredRefusal(row) {
@@ -310,7 +326,68 @@ export function unansweredRefusal(row) {
   if (!review) return null;
   if (review.reviewDecision !== CHANGES_REQUESTED) return null;
   if (review.dispute) return null;
+  if ((review.authorCommitsSinceReview ?? 0) > 0) return null;
   return review;
+}
+
+/** A commit the sweep or a `git pull` writes rather than an author: GitHub's own default merge headlines. */
+const MERGE_HEADLINE = /^Merge (?:branch|pull request|remote-tracking branch)\b/;
+
+/**
+ * The co-author a SESSION's commit carries: the org's attribution rule ends every commit message with a
+ * `Co-Authored-By: Claude ... <noreply@anthropic.com>` trailer, which GitHub resolves to the login `claude`.
+ * It is a second identity because an agent's commit is NOT attributed to the pull request's author login:
+ * measured on #2240 (answer `c0c0e6df` authored by `web-flow` + `claude`, PR author `a11ign-ai-workers`) and
+ * on #2288 itself (`github-actions[bot]` + `claude`). Matching the PR author's login alone would refuse the
+ * very #2165 answer this row exists to recognise.
+ */
+const SESSION_CO_AUTHOR_LOGIN = "claude";
+
+/** @typedef {{ messageHeadline?: string, committedDate?: string, authors?: { login?: string }[] }} PrCommit */
+
+/**
+ * #2254: WHETHER A COMMIT IS THE ANSWERER'S. A bot's or a maintainer's ordinary commit (`Automated
+ * formatting` by `github-actions[bot]`, a human's push) is not the author answering the refusal, so it
+ * carries neither the pull request's author login nor the session co-author and does not count. A commit
+ * with no readable `authors` proves nothing, which is the safe direction: it reads as not an answer.
+ * @param {PrCommit} commit @param {string | undefined} prAuthor @returns {boolean}
+ */
+function isAnswererCommit(commit, prAuthor) {
+  return (commit.authors ?? []).some((author) => author.login !== undefined
+    && (author.login === SESSION_CO_AUTHOR_LOGIN || author.login === prAuthor));
+}
+
+/**
+ * #2254: HOW MANY COMMITS THE AUTHOR HAS PUSHED SINCE THE LATEST REFUSAL, merges and other identities not
+ * counted.
+ *
+ * THE MERGE EXCLUSION IS THE #2107 CONTROL: the freshness sweep moves the head with `Merge branch 'main'`
+ * commits and ZERO author work, so counting them would reopen exactly what #2126 closed. `gh pr list`
+ * gives no parent list, so a merge is recognised by its headline -- a conflict-resolving merge the AUTHOR
+ * wrote is excluded too, which errs toward refusing, the safe direction.
+ *
+ * THE IDENTITY TEST IS THE SECOND CONTROL (`isAnswererCommit`): a non-merge commit from somebody else --
+ * a formatter bot, a maintainer -- is not the author answering, and must not lift the cap.
+ *
+ * EVERY UNREADABLE INPUT COUNTS ZERO: no refusal with a `submittedAt`, or a commit with no `committedDate`
+ * or no `authors`, cannot be placed on the timeline or attributed and so proves no answer. Ties are not
+ * answers either (`>`, not `>=`). `gh` returns at most the first hundred commits, so a longer pull request
+ * can under-count -- also toward refusing.
+ * @param {{ author?: { login?: string },
+ *           reviews?: { state?: string, submittedAt?: string }[],
+ *           commits?: PrCommit[] }} pr
+ * @returns {number}
+ */
+export function authorCommitsSinceRefusal(pr) {
+  const refusedAt = (pr.reviews ?? [])
+    .filter((review) => review.state === CHANGES_REQUESTED)
+    .map((review) => Date.parse(review.submittedAt ?? ""))
+    .filter((time) => !Number.isNaN(time))
+    .reduce((latest, time) => Math.max(latest, time), Number.NEGATIVE_INFINITY);
+  if (refusedAt === Number.NEGATIVE_INFINITY) return 0;
+  return (pr.commits ?? []).filter((commit) => !MERGE_HEADLINE.test(commit.messageHeadline ?? "")
+    && Date.parse(commit.committedDate ?? "") > refusedAt
+    && isAnswererCommit(commit, pr.author?.login)).length;
 }
 
 /**
@@ -331,8 +408,10 @@ function unansweredRefusalReason(rows) {
     + `\`reviewDecision\` reads ${CHANGES_REQUESTED}, so a reviewer has asked for changes and nobody has `
     + "answered. That is work needing YOUR action rather than a row waiting on a reviewer, and B2 caps work "
     + "needing action -- not open pull requests (#2126). #989 is unchanged: one pull request AWAITING "
-    + `REVIEW plus one new row is still legal.\n  Answer #${review.number} -- push the fix, or reply and `
-    + "have the verdict re-read -- before claiming another row.\n"
+    + `REVIEW plus one new row is still legal.\n  Answer #${review.number} -- push a commit of your own, and `
+    + "have the verdict re-read -- before claiming another row. A commit YOU push after the verdict lifts "
+    + "this refusal at once (#2254: answered and waiting on a re-read is awaiting review, which is legal); "
+    + "a reply with no commit does not.\n"
     + "  A BOT MERGE DOES NOT LIFT THIS, and a guard keyed on the head would have been decorative: "
     + "`dismiss_stale_reviews` is false, so `reviewDecision` outlives every automatic `Merge branch "
     + "'main'` the freshness sweep makes. Measured on #2107, whose 10:37:46Z refusal at `dfe72936` survived "
@@ -453,13 +532,15 @@ const HEAD_DISPLAY_CHARS = 8;
 export function lookupOpenPrReviewHealth({ run = gh } = {}) {
   return lookup(() => {
     const raw = run(["pr", "list", "--repo", REPO, "--state", "open", "--limit", String(OPEN_PR_LIMIT),
-      "--json", "number,headRefOid,reviewDecision,reviews"]);
+      "--json", "number,headRefOid,reviewDecision,reviews,commits,author"]);
     /** @type {{ number: number, headRefOid?: string, reviewDecision?: string | null,
      *           reviews?: { state?: string, body?: string, submittedAt?: string,
-     *                       commit?: { oid?: string } }[] }[]} */
+     *                       commit?: { oid?: string } }[],
+     *           author?: { login?: string }, commits?: PrCommit[] }[]} */
     const parsed = JSON.parse(raw);
     return parsed.map((pr) => ({ number: pr.number, head: pr.headRefOid ?? "",
-      reviewDecision: pr.reviewDecision ?? null, dispute: disputeAtHead(pr) }));
+      reviewDecision: pr.reviewDecision ?? null, dispute: disputeAtHead(pr),
+      authorCommitsSinceReview: authorCommitsSinceRefusal(pr) }));
   });
 }
 
