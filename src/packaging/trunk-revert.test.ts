@@ -329,6 +329,19 @@ test("POSITIVE CONTROL: the workflow walk found the workflows, trunk.yml among t
   assert.ok(WORKFLOW_FILES.includes("trunk.yml"));
 });
 
+// THE DELETED NAMES ARE SPELT IN PIECES, ON PURPOSE: the row's own open-check is a `git grep` for them over
+// `.github packages docs` that must print nothing, and a test that named them whole would be the one thing it found.
+const DELETED_SCRIPT = ["trunk-revert", ".mjs"].join("");
+const DELETED_JOB = ["decide", "Revert"].join("");
+const DELETED_NAMES = new RegExp(`${DELETED_SCRIPT.replace(".", "\\.")}|${DELETED_JOB}`);
+
+test("POSITIVE CONTROL: the deleted-names pattern matches the names it spells in pieces, and not the guard beside them", () => {
+  assert.ok(DELETED_NAMES.test(`run: node packages/agent-org/src/${DELETED_SCRIPT}`));
+  assert.ok(DELETED_NAMES.test(`${DELETED_JOB}:`));
+  assert.ok(!DELETED_NAMES.test("run: node packages/agent-org/src/trunk-revert-guard.mjs"),
+    "the guard reverts nothing and is still wired -- matching it would make the walk below refuse trunk.yml");
+});
+
 test("NO WORKFLOW calls `git revert`, pushes or opens a `revert/` branch, or names the deleted script", () => {
   const offenders: string[] = [];
   for (const file of WORKFLOW_FILES) {
@@ -338,13 +351,13 @@ test("NO WORKFLOW calls `git revert`, pushes or opens a `revert/` branch, or nam
     if (/git\s+revert\b/.test(code)) offenders.push(`${file}: git revert`);
     if (/revert\/[\w$-]/.test(code)) offenders.push(`${file}: a revert/ branch`);
     if (/gh\s+pr\s+create[^\n]*revert/i.test(code)) offenders.push(`${file}: a revert pull request`);
-    if (/trunk-revert\.mjs|decideRevert/.test(code)) offenders.push(`${file}: the deleted revert path`);
+    if (DELETED_NAMES.test(code)) offenders.push(`${file}: the deleted revert path`);
   }
   assert.deepEqual(offenders, []);
 });
 
 test("the revert script and its token test are GONE, and the guard that reverts nothing is still wired", () => {
-  assert.ok(!existsSync(path.join(REPO_ROOT, "packages/agent-org/src/trunk-revert.mjs")));
+  assert.ok(!existsSync(path.join(REPO_ROOT, "packages/agent-org/src", DELETED_SCRIPT)));
   assert.ok(!existsSync(path.join(REPO_ROOT, "packages/lab/src/packaging/trunk-revert-token.test.ts")));
   assert.ok(existsSync(path.join(REPO_ROOT, "packages/agent-org/src/trunk-revert-guard.mjs")),
     "despite the name it reverts nothing: it checks a push did not silently UNDO work already on main (#411)");

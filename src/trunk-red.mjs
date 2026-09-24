@@ -1,7 +1,7 @@
 // @ts-check
 // A RED `main` WAKES A FIXER -- it does not open a revert (#2356, the chairman's ruling of 2026-09-24).
 //
-// THE ORG ALWAYS FIXES FORWARD. Until this row `trunk.yml`'s `decideRevert` job reverted a merge whose own
+// THE ORG ALWAYS FIXES FORWARD. Until this row `trunk.yml`'s revert job reverted a merge whose own
 // gate failed, unattended, and #2341 showed the price: it would have removed a correct doc for a two-entry
 // map miss in a test, and the fix (#2346/#2347) was smaller than the re-land. The chairman ruled that
 // nothing reverts a merge automatically and that there is no fallback either -- not after 60 minutes
@@ -11,7 +11,7 @@
 // what makes a fix-forward FAST. `work-gate.mjs` reads it once a tick, no model, and hands what it finds to
 // `wake.mjs` -- the gate, not a cron and not a retry loop.
 //
-// WHAT THIS FILE KEEPS OF THE OLD DECISION, because it was the good part of it. `trunk-revert.mjs` knew
+// WHAT THIS FILE KEEPS OF THE OLD DECISION, because it was the good part of it. the revert script knew
 // two ways a bare "act on red" is worse than nothing, both measured live: an INHERITED failure (13 of 19
 // PRs read red on one bad commit and none was at fault) and a STALE parent reading (#616: the parent was
 // green when measured and red when asked again). Neither is a reason to stay silent now -- `main` is red
