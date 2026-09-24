@@ -37,7 +37,9 @@ import { createHash } from "node:crypto";
 // `work-gate.mjs` and `org-watch.mjs` state at their own imports.
 import { refuseUnknownFlags, flagValue } from "../../worker-fleet/src/cli-flags.mjs";
 import { profileFor, agentArgs } from "./worker-profile.mjs";
-import { JUDGMENT_CAUSES, CHAIRMAN_LABEL } from "./work-gate.mjs";
+import { JUDGMENT_CAUSES, CHAIRMAN_LABEL, REVIEWER_REGISTRY_FILE, readReviewerRegistry } from "./work-gate.mjs";
+import { reviewerInstanceNumber } from "./review-attribution.mjs";
+import { REPO } from "../../../scripts/repo-identity.mjs";
 import { inBuildReason, isInBuild, unansweredRefusal, lookupHeldRows, lookupOtherHeldIssues }
   from "./row-claim/own-pr-health-rule.mjs";
 import { parseWorktreeList, isPrimaryWorktree, isWorkingTreeClean, mergeStatus, detachedMergeStatus }
@@ -569,6 +571,242 @@ function spawnWorker(order, agents, roster, { run = defaultRun, env = spawnEnvir
       + `${closedNote(run, pane.workspace)}` };
   }
   return { label: role.role, workspace: pane.workspace, profile: invocation.profile };
+}
+
+// --- #2401: ONE REVIEWER INSTANCE PER PULL REQUEST, ADDRESSED BY HERDR NAME ---
+
+/**
+ * The causes whose recipient is the pull request's reviewer, and so the only ones a reviewer INSTANCE is started for.
+ * A SIBLING OF `SPAWN_CAUSES`, NEVER A WIDENING OF IT: that list is the engineer pilot's and #1950's 20-clean-cycles
+ * counter is running on it, so a reviewer cause added there would start counting as an engineer cycle.
+ */
+export const REVIEWER_CAUSES = Object.freeze(["draft-awaiting-verdict", "verdict-comment-unreviewed"]);
+
+/**
+ * THE CEILING ON LIVE REVIEWER INSTANCES -- a PILOT number, like the engineer pool's five (`ceo`, #2401), which the
+ * chairman did not ask for: N instances are the exposure to the credential-refresh race and to codex cost, and an
+ * uncapped pilot would be the first thing to hit both. RAISING IT IS A ONE-LINE EDIT AND IT IS `ceo`'s, when the
+ * tick logs `no reviewer spawn` while pull requests wait.
+ */
+export const MAX_REVIEWER_INSTANCES = 4;
+
+/**
+ * At most this many reviewer instances started per tick, for `MAX_SPAWNS_PER_TICK`'s reason: a partial workspace list
+ * reads every instance as absent, and one bad tick must cost one process rather than one per waiting pull request.
+ * Its own counter, so a reviewer start never spends the engineer pilot's allowance.
+ */
+export const MAX_REVIEWER_SPAWNS_PER_TICK = 1;
+
+/**
+ * The account a reviewer instance acts as: the reviewer's own `gh` config (`a11ign-bot`), never the workers' one the
+ * engineers get -- self-approval is refused for the author and `a11ign-bot` approves both engineer accounts
+ * (`docs/reviewer-instancing.md`, section 1). It is `/home/agent/reviewer/gh` on the host.
+ */
+export const REVIEWER_GH_CONFIG_DIR = "/home/agent/reviewer/gh";
+
+/**
+ * The environment a reviewer instance's workspace starts with: its own `gh` account and, as
+ * `A11Y_REVIEWER_SESSION`, the name `pr-review-verdict` writes into the attribution status (#2127) -- without it
+ * the review posts UNATTRIBUTED. An `override` wins, key by key, as in {@link spawnEnvironment}.
+ * @param {string} session @param {Record<string, string>} [override]
+ * @returns {Record<string, string>}
+ */
+export function reviewerEnvironment(session, override = {}) {
+  return { GH_CONFIG_DIR: REVIEWER_GH_CONFIG_DIR, A11Y_REVIEWER_SESSION: session, ...override };
+}
+
+/**
+ * Is this an order a reviewer INSTANCE may be started for: a reviewer cause addressed to `reviewer-<n>`.
+ * Asked before {@link isPilotOrder}, which is the engineer's question and stays exactly as it was.
+ * @param {{session: string, cause?: string}} order
+ */
+export function isReviewerOrder(order) {
+  return reviewerInstanceNumber(order.session) !== null && REVIEWER_CAUSES.includes(String(order.cause));
+}
+
+/**
+ * The live reviewer instances -- workspaces labelled `reviewer-<n>`, the retired standing pane excluded.
+ * @param {{label: string}[]} agents @returns {string[]}
+ */
+export function liveReviewers(agents) {
+  return agents.filter((a) => reviewerInstanceNumber(a.label) !== null).map((a) => a.label);
+}
+
+/**
+ * May a reviewer instance be started for this order, or why not. A REFUSAL NAMES THE COUNT AND THE CEILING, and is
+ * never a silent drop: the order stays undelivered, the ledger does not record it, and the next tick asks again.
+ * @param {{session: string, cause?: string}} order @param {{label: string}[]} agents
+ * @returns {{session: string} | {refusal: string}}
+ */
+export function spawnableReviewer(order, agents) {
+  if (!isReviewerOrder(order)) {
+    return { refusal: `no reviewer spawn: "${order.session}" is not a reviewer instance for a reviewer cause` };
+  }
+  const live = liveReviewers(agents);
+  if (live.length >= MAX_REVIEWER_INSTANCES) {
+    return { refusal: `no reviewer spawn: ${live.length} live reviewer instance(s) (${live.join(", ")}) and the `
+      + `ceiling is ${MAX_REVIEWER_INSTANCES} -- raising it is a one-line edit of MAX_REVIEWER_INSTANCES and is \`ceo\`'s` };
+  }
+  return { session: order.session };
+}
+
+/**
+ * Start a reviewer instance for `order.session` -- a workspace labelled with that name, and a codex started in it
+ * with the profile of the order's cause -- and return the address it answers to. Its own path beside
+ * {@link spawnWorker}: no role, no drain, no claim precheck, because a reviewer holds no row.
+ *
+ * @param {{session: string, cause?: string}} order @param {{label: string, status: string}[]} agents
+ * @param {{run?: (args: string[]) => string, env?: Record<string, string>}} [deps]
+ * @returns {{label: string, workspace: string, profile: {kind: string, model: string, effort: string}}
+ *   | {refusal: string}}
+ */
+function spawnReviewer(order, agents, { run = defaultRun, env } = {}) {
+  const reviewer = spawnableReviewer(order, agents);
+  if ("refusal" in reviewer) return reviewer;
+  const pane = openPane(run, reviewer.session, env ?? reviewerEnvironment(reviewer.session));
+  if ("refusal" in pane) return pane;
+  const invocation = spawnInvocation({ ...order, cause: String(order.cause) }, reviewer.session, pane.pane);
+  if ("refusal" in invocation) return { refusal: `${invocation.refusal}${closedNote(run, pane.workspace)}` };
+  try {
+    run(invocation.args);
+  } catch (err) {
+    return { refusal: `herdr refused to start "${reviewer.session}" (${firstLine(err)})${closedNote(run, pane.workspace)}` };
+  }
+  return { label: reviewer.session, workspace: pane.workspace, profile: invocation.profile };
+}
+
+/**
+ * Where a refused reviewer order goes: a fresh instance when NONE exists under that name, and the original
+ * refusal otherwise. A `reviewer-<n>` that exists and is working WAITS for the next tick -- a second workspace under
+ * its label would make `route`'s label match ambiguous, `spawnableRole`'s stated reason.
+ *
+ * @param {{session: string, cause?: string}} order @param {{label: string, status: string}[]} live
+ * @param {string} refused what `route` said
+ * @param {{run: (args: string[]) => string, reviewersStarted: number, reviewerEnv?: Record<string, string>,
+ *   registerReviewer?: (session: string) => void}} deps
+ * @returns {{label: string, profile: {kind: string, model: string, effort: string}, reviewer: true} | {refusal: string}}
+ */
+function placeReviewer(order, live, refused, deps) {
+  if (live.some((a) => a.label === order.session)) return { refusal: refused };
+  if (deps.reviewersStarted >= MAX_REVIEWER_SPAWNS_PER_TICK) {
+    return { refusal: `${refused}, and this tick has already started ${deps.reviewersStarted} reviewer `
+      + `instance(s) (MAX_REVIEWER_SPAWNS_PER_TICK is ${MAX_REVIEWER_SPAWNS_PER_TICK})` };
+  }
+  const spawn = spawnReviewer(order, live, { run: deps.run, env: deps.reviewerEnv });
+  if ("refusal" in spawn) return { refusal: `${refused}; ${spawn.refusal}` };
+  // REGISTERED BEFORE THE PROMPT, as the engineer path does: a refused prompt leaves the process running.
+  deps.registerReviewer?.(spawn.label);
+  return { label: spawn.label, profile: spawn.profile, reviewer: true };
+}
+
+/** @param {string} ledgerPath @returns {{registry: string, endings: string}} */
+export function reviewerPathsFrom(ledgerPath) {
+  return { registry: `${dirname(ledgerPath)}/${REVIEWER_REGISTRY_FILE}`,
+    endings: `${dirname(ledgerPath)}/reviewer-endings` };
+}
+
+/**
+ * Note that a reviewer instance was STARTED for `session`: the gate's auth detector reads `spawnedAt` to tell a
+ * refresh that came after the instance started from one it lived through, and the teardown reads the keys.
+ * @param {{registry: string}} paths @param {string} session @param {number} [now]
+ */
+export function registerReviewer(paths, session, now = Date.now()) {
+  const registry = readReviewerRegistry(paths.registry);
+  registry[session] = { spawnedAt: now };
+  writeFileSync(paths.registry, `${JSON.stringify(registry)}\n`);
+}
+
+/**
+ * END EVERY REVIEWER INSTANCE WHOSE PULL REQUEST HAS MERGED OR CLOSED, and write one ledger line for each ending.
+ *
+ * ONLY INSTANCES THIS PATH STARTED (the registry's keys), NEVER A WORKSPACE THAT MERELY LOOKS LIKE ONE: the two
+ * standing panes stay running until `ceo` closes them (Done-when 6), and `reviewer-2` is a name the retired pane
+ * carries. An instance survives head-changing pushes -- it is ended by the PULL REQUEST's state, not by a verdict.
+ *
+ * A LOOKUP THAT CANNOT ASK ENDS NOTHING, a working instance is left until it is between turns, and a workspace that
+ * will not close is left, said, and retried -- no line is written for an ending that did not happen.
+ *
+ * @param {{label: string, status: string}[]} agents
+ * @param {{registry: Record<string, {spawnedAt: number}>, now: number, run: (args: string[]) => string,
+ *   prState: (pr: number) => string | null, record: (line: object) => void, warn: (line: string) => void}} deps
+ * @returns {{ended: string[], registry: Record<string, {spawnedAt: number}>}}
+ */
+export function endFinishedReviewers(agents, deps) {
+  const registry = { ...deps.registry };
+  /** @type {string[]} */
+  const ended = [];
+  for (const session of Object.keys(registry)) {
+    const pr = reviewerInstanceNumber(session);
+    const state = pr === null ? null : deps.prState(pr);
+    if (state === null) {
+      if (pr !== null) deps.warn(`reviewer teardown: could not read PR #${pr}'s state -- leaving "${session}" running.`);
+      continue;
+    }
+    if (state === "open") continue;
+    const agent = agents.find((a) => a.label === session);
+    if (agent !== undefined && !WAKEABLE.includes(agent.status)) continue;
+    if (agent !== undefined && !closeReviewer(session, deps)) continue;
+    deps.record({ session, pr, state, at: new Date(deps.now).toISOString(), workspace: agent === undefined ? "already gone" : "closed" });
+    delete registry[session];
+    ended.push(session);
+  }
+  return { ended, registry };
+}
+
+/**
+ * Close one reviewer instance's workspace; `false`, with a warning, when it would not close.
+ * @param {string} session @param {{run: (args: string[]) => string, warn: (line: string) => void}} deps
+ */
+function closeReviewer(session, deps) {
+  const id = workspaceIdOf(deps.run, session);
+  if (id === null) {
+    deps.warn(`reviewer teardown: "${session}" is finished but its workspace id is not exactly one -- left running.`);
+    return false;
+  }
+  try {
+    deps.run(["--session", "org", "workspace", "close", id]);
+    return true;
+  } catch (err) {
+    deps.warn(`reviewer teardown: "${session}" (${id}) could not be closed (${firstLine(err)}) -- retried next tick.`);
+    return false;
+  }
+}
+
+/**
+ * `open`, `closed` (merged pulls are closed too) or `null` for anything GitHub would not say -- REST, so the
+ * per-tick lookup spends the CORE pool and not the GRAPHQL one the gate already leans on.
+ * @param {number} pr @returns {string | null}
+ */
+function pullRequestState(pr) {
+  try {
+    const state = defaultGh(["api", `repos/${REPO}/pulls/${pr}`, "--jq", ".state"]).trim();
+    return state === "open" || state === "closed" ? state : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The reviewer teardown with its real dependencies, called by `work-tick` on every tick beside {@link tearDownSpares}
+ * and for the same reason: a merge produces no order, so a quiet gate is the tick a finished instance needs ending.
+ * Reports and never throws.
+ *
+ * @param {{label: string, status: string}[]} agents @param {string} ledgerPath
+ * @param {(line: string) => void} [say]
+ */
+export function tearDownReviewers(agents, ledgerPath, say = (line) => process.stderr.write(line)) {
+  try {
+    const paths = reviewerPathsFrom(ledgerPath);
+    const before = readReviewerRegistry(paths.registry);
+    if (Object.keys(before).length === 0) return;
+    const { ended, registry } = endFinishedReviewers(agents, { registry: before, now: Date.now(), run: defaultRun,
+      prState: pullRequestState, warn: (line) => say(`${line}\n`),
+      record: (line) => writeFileSync(paths.endings, `${JSON.stringify(line)}\n`, { flag: "a" }) });
+    writeFileSync(paths.registry, `${JSON.stringify(registry)}\n`);
+    for (const session of ended) say(`ENDED ${session}: its pull request is no longer open\n`);
+  } catch (err) {
+    say(`reviewer teardown FAILED (${firstLine(err)}): no reviewer instance was ended this tick.\n`);
+  }
 }
 
 /**
@@ -1853,16 +2091,22 @@ export function clearContext(run, label) {
  * @param {{session: string, causeKey: string, prompt: string, cause?: string}} order
  * @param {{label: string, status: string}[]} live
  * @param {string[]} roster
- * @param {{run: (args: string[]) => string, spawned: number, ineligibleReason?: (label: string) => string | null,
+ * @param {{run: (args: string[]) => string, spawned: number, reviewersStarted: number,
+ *   ineligibleReason?: (label: string) => string | null,
  *   env?: Record<string, string>, registerSpawn?: (role: string) => void, drained?: readonly string[],
- *   claimable?: (order: {causeKey: string}) => string | null}} deps
- *   `spawned` is how many processes this tick has already started -- see `MAX_SPAWNS_PER_TICK`;
+ *   claimable?: (order: {causeKey: string}) => string | null, reviewerEnv?: Record<string, string>,
+ *   registerReviewer?: (session: string) => void}} deps
+ *   `spawned` is how many processes this tick has already started -- see `MAX_SPAWNS_PER_TICK`; `reviewersStarted`
+ *   is the reviewer instances -- `MAX_REVIEWER_SPAWNS_PER_TICK` -- counted apart so neither spends the other's;
  *   `ineligibleReason` is {@link route}'s; `env` is the spawn's environment ({@link spawnEnvironment})
- * @returns {{label: string, profile?: {kind: string, model: string, effort: string}} | {refusal: string}}
+ * @returns {{label: string, profile?: {kind: string, model: string, effort: string}, reviewer?: true}
+ *   | {refusal: string}}
  */
 function targetFor(order, live, roster, deps) {
   const routed = routeWithFallback(order, live, roster, deps.ineligibleReason);
   if (!("refusal" in routed)) return { label: routed.label };
+  // A REVIEWER ORDER IS ASKED FIRST AND SEPARATELY (#2401): the engineer pilot's checks below are unchanged.
+  if (isReviewerOrder(order)) return placeReviewer(order, live, routed.refusal, deps);
   if (!isPilotOrder(order)) return { refusal: routed.refusal };
   if (deps.spawned >= MAX_SPAWNS_PER_TICK) {
     return { refusal: `${routed.refusal}, and this tick has already started ${deps.spawned} `
@@ -1874,6 +2118,16 @@ function targetFor(order, live, roster, deps) {
   // REGISTERED BEFORE THE PROMPT, because a refused prompt leaves the process running (see `deliver`).
   deps.registerSpawn?.(spawn.label);
   return { label: spawn.label, profile: spawn.profile };
+}
+
+/**
+ * Count a process this tick started. COUNTED APART (#2401): a reviewer start must not spend the engineer pilot's
+ * per-tick allowance, and an engineer start must not spend the reviewers'.
+ * @param {{spawned: number, reviewersStarted: number}} started @param {{reviewer?: true}} target
+ */
+function noteStart(started, target) {
+  if (target.reviewer) started.reviewersStarted += 1;
+  else started.spawned += 1;
 }
 
 /**
@@ -1889,19 +2143,22 @@ function targetFor(order, live, roster, deps) {
  * @param {{run?: (args: string[]) => string, record?: (key: string, recipient?: string) => void,
  *          counts?: Map<string, number>, ineligibleReason?: (label: string) => string | null,
  *          env?: Record<string, string>, registerSpawn?: (role: string) => void, drained?: readonly string[],
- *          claimable?: (order: {causeKey: string}) => string | null}} [deps]
+ *          claimable?: (order: {causeKey: string}) => string | null, reviewerEnv?: Record<string, string>,
+ *          registerReviewer?: (session: string) => void}} [deps]
+ *   `registerReviewer` is told of every reviewer instance this tick starts (#2401), for the auth detector;
  *   `registerSpawn` is told of every process this tick STARTS, so the teardown can tell an instance that has
  *   not claimed yet from one that finished ({@link endFinishedSpares}); `drained` is the roles the drain holds
  *   back now, which a spawn must not start into; `claimable` is the spawn's precheck ({@link spawnClaimability})
  * @returns {{sent: string[], refused: string[], stuck: string[]}}
  */
 export function deliver(orders, agents, roster,
-  { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable } = {}) {
+  { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, reviewerEnv,
+    registerReviewer } = {}) {
   const sent = [];
   const refused = [];
   const stuck = [];
   const live = agents.map((a) => ({ ...a }));
-  let spawned = 0;
+  const started = { spawned: 0, reviewersStarted: 0 };
   for (const order of orders) {
     // A CAUSE THAT KEEPS COMING BACK IS NOT A TIMING PROBLEM. Offering it a seventh time would be the
     // silent-retry version of the bug this whole change fixes -- work going nowhere while the log looks
@@ -1911,8 +2168,8 @@ export function deliver(orders, agents, roster,
       stuck.push(`${order.causeKey}: delivered ${already} times and the cause is still true`);
       continue;
     }
-    const target = targetFor(order, live, roster,
-      { run, spawned, ineligibleReason, env, registerSpawn, drained, claimable });
+    const target = targetFor(order, live, roster, { run, ...started, ineligibleReason, env,
+      registerSpawn, drained, claimable, reviewerEnv, registerReviewer });
     if ("refusal" in target) {
       refused.push(`${order.causeKey}: ${target.refusal}`);
       continue;
@@ -1921,7 +2178,7 @@ export function deliver(orders, agents, roster,
     // prompt, a bounded wait and a five-second settle (`CLEAR_SETTLE_MS`) before the order can be typed.
     // Spending that on a session whose context is its own prefix would be paying the standing path's cost
     // to reach a floor the spawn already started at -- which is the whole argument for spawning.
-    if (target.profile) spawned += 1;
+    if (target.profile) noteStart(started, target);
     else {
       // CLEARED BEFORE PROMPTED, always. See `clearContext` for the measurement; in short, a session on its
       // 500th turn costs ~24x one on its 10th for identical output, and the clear costs one cheap turn.
@@ -2557,7 +2814,8 @@ function main() {
   const drained = drainNow(spares.cycles);
   const { sent, refused: gateRefused, stuck } = deliver(todo, free, roster, { record,
     counts: deliveryCounts(ledgerPath), ineligibleReason: engineerEligibility({ drained }),
-    registerSpawn: (role) => registerSpawn(spares, role), drained, claimable: spawnClaimability() });
+    registerSpawn: (role) => registerSpawn(spares, role), drained, claimable: spawnClaimability(),
+    registerReviewer: (session) => registerReviewer(reviewerPathsFrom(ledgerPath), session) });
   const refused = [...handed.refused, ...gateRefused];
   for (const line of [...handed.sent, ...sent]) process.stdout.write(`WOKE ${line}\n`);
   for (const line of stuck) process.stderr.write(`STUCK ${line}\n`);
