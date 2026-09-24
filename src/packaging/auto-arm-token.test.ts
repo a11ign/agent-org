@@ -71,7 +71,7 @@ test("the fallback prints a warning naming what breaks -- trunk.yml's closeRows,
     const [[warning]] = warnings;
     // THE NAMES ARE THE WORKFLOW'S CURRENT ONES, and they moved without this moving with them. The
     // warning used to say "trunk-guard" and "close-rows"; it now says "trunk.yml's closeRows ... and
-    // trunkGate/trunkBuildTest/decideRevert chain", which is strictly more precise and names the jobs a
+    // trunkGate/trunkBuildTest/trunkRecheck chain", which is strictly more precise and names the jobs a
     // reader can actually go and look at. This asserted the old spellings and turned `main` red -- every
     // pull request inherited it, because `ts` runs this file.
     //

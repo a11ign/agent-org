@@ -95,10 +95,10 @@ test("trunk.yml carries workflow_dispatch, so nightly.yml's gateSweep can trigge
     "without this, the gate sweep has nothing to trigger and the gate half of #417 does nothing");
 });
 
-test("trunk.yml's decideRevert falls back to a computed before-sha when github.event.before is "
+test("trunk.yml's trunkRecheck falls back to a computed before-sha when github.event.before is "
   + "absent -- the workflow_dispatch case this PR adds", () => {
   const text = readFileSync(`${REPO}/.github/workflows/trunk.yml`, "utf8");
   assert.match(text, /git rev-parse HEAD\^1/,
     "github.event.before only exists on a real push event; without a fallback, a sweep-triggered run "
-    + "would pass an empty --before-sha and trunk-revert.mjs refuses to run at all");
+    + "would recheck against an empty parent, which reads as `unknown` at best and a wrong parent at worst");
 });

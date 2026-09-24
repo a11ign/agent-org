@@ -21,7 +21,7 @@ import { assertNoLeakInArgv } from "../../../lab/src/packaging/leak-patterns.mjs
 
 /** @param {string[]} args */
 export const gh = (args) => {
-  // #1053: `trunk-revert` reaches GitHub through this, and so does anything else that imports it.
+  // #1053: every importer reaches GitHub through this, so the leak guard sits here rather than at each call site.
   assertNoLeakInArgv("gh", args);
   return execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 };

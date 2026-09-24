@@ -29,14 +29,14 @@
 
 // no-token: gh
 //
-// #827. `revertVerdict` takes its facts as an argument and returns a verdict -- `trunk-revert.mjs`'s
-// caller does the lookups -- and this file calls it with a fixture. The closure walk reaches `gh` through
-// that module's graph rather than through anything these tests execute.
+// #827. `trunkRedOrders` takes its facts as an argument and returns the order -- `readTrunkRed`, in
+// `trunk-red.mjs`, does the lookups -- and this file calls the first with a fixture. The closure walk reaches
+// `gh` through that module's graph rather than through anything these tests execute.
 //
 // The spawned script runs `git`, not `gh`, and since #890 it runs against a local clone rather than the
 // checkout hosting the suite.
 //
-// Verified against the entry's own code by #827's mechanism, so if `revertVerdict` ever starts doing its
+// Verified against the entry's own code by #827's mechanism, so if `trunkRedOrders` ever starts doing its
 // own lookups this refuses rather than trusting the comment.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
@@ -50,7 +50,7 @@ import { parse as parseYaml } from "yaml";
 import {
   unexplainedDeletions, mergeParents, deletedPaths, branchTouchedPaths, EXIT,
 } from "../trunk-revert-guard.mjs";
-import { revertVerdict, EXIT as REVERT_EXIT } from "../trunk-revert.mjs";
+import { trunkRedOrders } from "../trunk-red.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const SCRIPT = `${REPO}/packages/agent-org/src/trunk-revert-guard.mjs`;
@@ -250,13 +250,14 @@ test("ACCEPTANCE (#411, criterion 2): the real incident (f2cdfaf3) is REFUSED, n
   ]) {
     assert.ok(out.includes(p), `expected the refusal to name ${p}, got:\n${out}`);
   }
-  // #655: naming the deleted paths is not a remedy on its own -- decideRevert deliberately never
-  // auto-reverts a trunkGate-only failure (a question this merge's own two parents cannot answer by
-  // re-running a suite), so a human must be told what to actually DO, not just what is wrong.
-  assert.match(out, /git revert -m 1 f2cdfaf3/,
+  // #655: naming the deleted paths is not a remedy on its own, so a human must be told what to actually DO,
+  // not just what is wrong. #2356: AND THE REMEDY IS A FORWARD FIX -- the org never reverts a merge, so the
+  // message names the restore command and must never hand a reader `git revert`.
+  assert.match(out, /git checkout f2cdfaf3\^1 -- <path>/,
     `expected the refusal to name the exact recovery command, got:\n${out}`);
-  assert.match(out, /not auto-reverted/i,
-    `expected the refusal to say this is NOT handled automatically, got:\n${out}`);
+  assert.match(out, /NOTHING REVERTS THIS MERGE/,
+    `expected the refusal to say the org fixes forward, got:\n${out}`);
+  assert.doesNotMatch(out, /git revert/, `a refusal that tells a reader to revert contradicts the ruling:\n${out}`);
 });
 
 test("ACCEPTANCE (#411, criterion 3): a legitimate deletion (#354, fc9b89d2) is NOT refused -- the half "
@@ -303,21 +304,21 @@ test("trunk.yml runs trunk-revert-guard.mjs INSIDE trunkGate, not as a separate 
   };
   const trunkGateRuns = (doc.jobs.trunkGate.steps ?? []).map((s) => String(s.run ?? "")).join("\n");
   assert.match(trunkGateRuns, /node packages\/agent-org\/src\/trunk-revert-guard\.mjs/,
-    "the guard must run as a step inside trunkGate -- a refusal there is what makes decideRevert's own "
-    + "`if: needs.trunkGate.result == 'failure'` fire and drive the EXISTING revert machinery. A separate "
-    + "job would need its own revert wiring, which ceo's ruling says not to build.");
+    "the guard must run as a step inside trunkGate -- a refusal there is what makes trunkRecheck's own "
+    + "`if: needs.trunkGate.result == 'failure'` fire and the gate's `trunk-red` cause wake a fixer. A "
+    + "separate job would need its own wiring, which ceo's ruling says not to build.");
   assert.match(trunkGateRuns, /--merge=\$\{\{ github\.sha \}\}/,
     "it must check the commit THIS push actually landed, not an inferred or default ref.");
 });
 
 /**
  * C3 (#465): THE OTHER HALF OF THE WIRING -- a refusal here is worthless unless it actually FAILS the
- * `trunkGate` job (never `continue-on-error`) and `decideRevert` is gated on exactly that failure, never
+ * `trunkGate` job (never `continue-on-error`) and `trunkRecheck` is gated on exactly that failure, never
  * on a broader condition. This is the seam neither `trunk-revert-guard.test.ts` (which only proves the
- * GUARD's own verdict) nor `trunk-revert.test.ts` (which only proves `revertVerdict`'s own logic in
- * isolation) has ever tested: nothing before this asserted that the two are actually CONNECTED in the
- * workflow, and "a revert is the most destructive action in the whole plan" (ceo, on this row) is exactly
- * why that connection needs its own guard rather than an inference from reading the YAML once.
+ * GUARD's own verdict) nor `trunk-revert.test.ts` (which only proves the red-trunk order in isolation) has
+ * ever tested: nothing before this asserted that the two are actually CONNECTED in the workflow. It used to
+ * matter because a revert is destructive; it matters now because a guard whose refusal reaches nobody is a
+ * red `main` that wakes no fixer.
  */
 test("C3 ACCEPTANCE: trunk-revert-guard.mjs's step has no continue-on-error -- its failure must reach the job", () => {
   const doc = parseYaml(readFileSync(`${REPO}/.github/workflows/trunk.yml`, "utf8")) as {
@@ -327,29 +328,29 @@ test("C3 ACCEPTANCE: trunk-revert-guard.mjs's step has no continue-on-error -- i
     String(s.run ?? "").includes("trunk-revert-guard.mjs"));
   assert.ok(guardStep, "the step running the guard must exist");
   assert.equal(guardStep!["continue-on-error"], undefined,
-    "continue-on-error on this step would make a REFUSE verdict invisible to decideRevert -- the exact "
+    "continue-on-error on this step would make a REFUSE verdict invisible to trunkRecheck -- the exact "
     + "shape of a guard whose wrongness is absorbed by another mechanism (#188's own rule) applied to the "
     + "step level instead of the job level.");
 });
 
-test("C3 ACCEPTANCE: decideRevert fires on trunkGate's or trunkBuildTest's failure, and ONLY those", () => {
+test("C3 ACCEPTANCE: trunkRecheck fires on trunkGate's or trunkBuildTest's failure, and ONLY those", () => {
   // A1 (#452) split the original single `trunkGate` job in two: `trunkGate` (the revert-guard check
   // alone) and `trunkBuildTest` (a CALL to reusable-build-test.yml). Either can now be the real failure,
-  // so decideRevert must watch both -- but `trunkBuildTest`'s own `needs: trunkGate` already means it
+  // so trunkRecheck must watch both -- but `trunkBuildTest`'s own `needs: trunkGate` already means it
   // reads `skipped`, never `failure`, when trunkGate itself failed, so checking both here does not
   // double-fire on one real failure.
   const doc = parseYaml(readFileSync(`${REPO}/.github/workflows/trunk.yml`, "utf8")) as {
     jobs: Record<string, { needs?: string | string[], if?: string, uses?: string }>,
   };
-  const decideRevert = doc.jobs.decideRevert;
-  assert.ok(decideRevert, "decideRevert must exist as its own job");
-  const needs = Array.isArray(decideRevert.needs) ? decideRevert.needs : [decideRevert.needs];
+  const recheck = doc.jobs.trunkRecheck;
+  assert.ok(recheck, "trunkRecheck must exist as its own job");
+  const needs = Array.isArray(recheck.needs) ? recheck.needs : [recheck.needs];
   assert.ok(needs.includes("trunkGate"),
-    "decideRevert must declare trunkGate among its needs -- without it, GitHub cannot resolve "
+    "trunkRecheck must declare trunkGate among its needs -- without it, GitHub cannot resolve "
     + "`needs.trunkGate.result` at all and the job would fail to even start, not skip quietly");
   assert.ok(needs.includes("trunkBuildTest"),
-    "decideRevert must also declare trunkBuildTest among its needs -- the real build/test suite now runs "
-    + "there, and a revert decision that cannot see its result would miss the exact failure #316 exists "
+    "trunkRecheck must also declare trunkBuildTest among its needs -- the real build/test suite now runs "
+    + "there, and a recheck that cannot see its result would miss the exact failure #316 exists "
     + "to catch");
   assert.ok(doc.jobs.trunkBuildTest?.uses, "trunkBuildTest must call a reusable workflow, not carry its "
     + "own steps -- otherwise this test is checking a job that no longer exists in this shape");
@@ -358,11 +359,11 @@ test("C3 ACCEPTANCE: decideRevert fires on trunkGate's or trunkBuildTest's failu
   // IMPLICIT `success()`, so `needs.trunkGate.result == 'failure'` alone means
   // `success() && needs.trunkGate.result == 'failure'` -- self-contradictory, since `success()` is false
   // exactly when a needed job failed. Measured on the real repo: 5 of the newest 40 trunk-guard runs had
-  // `trunkGate=failure`, and `decideRevert` read `skipped` in every one -- this job had never fired.
+  // `trunkGate=failure`, and the job read `skipped` in every one -- this job had never fired.
   // `always()` LIFTS the implicit success without making the job unconditional: the explicit
   // `result == 'failure'` checks still exclude a green run, and `cancelled` (someone manually cancelled
   // the run) is still excluded too, because `always()` does not turn a cancellation into a failure.
-  assert.equal(decideRevert.if,
+  assert.equal(recheck.if,
     "always() && (needs.trunkGate.result == 'failure' || needs.trunkBuildTest.result == 'failure')",
     "must be EXACTLY this condition, `always()` prefix included -- without it the job's default implicit "
     + "`success()` makes the whole condition unsatisfiable whenever it should fire, which is the exact "
@@ -370,29 +371,13 @@ test("C3 ACCEPTANCE: decideRevert fires on trunkGate's or trunkBuildTest's failu
 });
 
 /**
- * C3 ACCEPTANCE, COMPOSED: does the REAL f2cdfaf3 incident's guard verdict, fed through the EXISTING
- * revert decision with the facts that incident would plausibly have carried, actually come out READY
- * (revert)? Neither script's own test suite asks this: `trunk-revert-guard.test.ts` stops at "REFUSED,
- * naming six paths"; `trunk-revert.test.ts` drives `revertVerdict` only against synthetic facts. This is
- * the seam -- proving a REFUSE from the guard is not merely compatible with `revertVerdict`'s shape, but
- * genuinely produces a revert-worthy verdict once trunkGate's failure reaches it.
+ * C3 ACCEPTANCE, COMPOSED: does the REAL f2cdfaf3 incident's guard verdict, once `trunkGate` fails on it,
+ * actually produce a FIX-FORWARD ORDER? Neither script's own test suite asks this: `trunk-revert-guard.test.ts`
+ * stops at "REFUSED, naming six paths"; `trunk-revert.test.ts` drives `trunkRedOrders` only against
+ * synthetic facts. This is the seam -- proving a REFUSE from the guard is not merely compatible with the
+ * order's shape, but genuinely reaches a fixer, with "fix forward" in it and no revert.
  */
-test("C3 ACCEPTANCE, COMPOSED: the real f2cdfaf3 REFUSAL, once trunkGate fails on it, IS revert-worthy", (t) => {
-  // #928: THIS TEST WAS THE FOURTH ONE, AND IT DID NOT FAIL IN THE INCIDENT -- IT PASSED.
-  //
-  // The three tests #928 names skipped correctly once #923 gave them `fixturePresent`. This one spawns the
-  // same fixture and was left unguarded, and its assertion was `assert.throws` with no code: **that accepts
-  // ANY non-zero exit.** Measured in a deliberately shallow checkout on 2026-09-12:
-  //
-  //     full history   --merge=f2cdfaf3  ->  exit 1   REFUSE
-  //     full history   --merge=fc9b89d2  ->  exit 0   PASS
-  //     depth 1        --merge=f2cdfaf3  ->  exit 2   CANNOT_ASK
-  //
-  // So on a shallow checkout this test PASSED, having asserted "the guard must still refuse f2cdfaf3, or
-  // this composed test is asserting nothing real" against a run that refused nothing. **A green test that
-  // examined a question it could not ask** is worse than the three red ones beside it, because nothing in
-  // the log says so. Both halves are fixed: the fixture is guarded like its siblings, AND the exit code is
-  // asserted as REFUSE rather than as merely non-zero -- the second half closes it in ANY checkout.
+test("C3 ACCEPTANCE, COMPOSED: the real f2cdfaf3 REFUSAL, once trunkGate fails on it, WAKES A FIXER", (t) => {
   if (!fixturePresent("f2cdfaf3")) return t.skip(NO_FIXTURE("f2cdfaf3"));
   // `assert.throws` returns undefined, so the error is caught by hand -- the exit CODE is the subject here
   // and `throws` alone cannot see it. That is the whole defect in one line.
@@ -407,39 +392,28 @@ test("C3 ACCEPTANCE, COMPOSED: the real f2cdfaf3 REFUSAL, once trunkGate fails o
     + `CANNOT_ASK (${EXIT.CANNOT_ASK}) is an unanswerable question, not a refusal -- reading the second as `
     + "the first is how this test passed while its three siblings failed for 27.8 hours");
 
-  // trunkGate failing on f2cdfaf3 means `decideRevert` runs with `--push-sha=f2cdfaf3` and
-  // `--before-sha=f2cdfaf3^1`. The two facts `revertVerdict` needs are asked of the REAL commit graph and
-  // GitHub, exactly as `trunk-revert.mjs`'s own `main()` would -- this is not a synthetic fixture.
-  const composed = revertVerdict({
-    // f2cdfaf3^1 is the commit main was at right before the incident landed -- long since superseded and
-    // itself long since proven clean by every gate that has run since, so treating it as the "before" a
-    // real trunkGate run would have recorded as `success` is the honest fact this incident's own history
-    // establishes, not an assumption invented for the test.
-    // #582: EVERY trigger job, not one of them. `trunkGate` alone was the defect -- a parent with
-    // `trunkGate: success` and `trunkBuildTest: failure` read as green, and this fixture would have
-    // asserted READY on the strength of half an answer.
-    beforeConclusions: { trunkGate: "success", trunkBuildTest: "success" },
-    // #616: the composed acceptance now needs the parent's failing check RE-RUN, not just its recorded
-    // conclusion. `f2cdfaf3^1` has been proven clean by every gate that has run since, so a re-check of
-    // it passing is the honest fact this incident's own history establishes -- the same reasoning the
-    // comment above gives for treating its recorded conclusion as `success`, applied to the second
-    // question. Without this the case reads CANNOT_ASK, which is correct behaviour and not this test's
-    // subject.
-    parentRecheck: "pass" as const,
-    currentMainSha: "f2cdfaf3", // the case where main has NOT moved on since -- this push is still the tip
-    pushSha: "f2cdfaf3",
+  // trunkGate failing on f2cdfaf3 is a red run whose only failed job is `trunkGate`: `trunkRecheck` records
+  // `pass` for it (a question about this merge's own two parents cannot be inherited), and the gate reads
+  // that as THIS MERGE'S OWN and addresses the order to the session that merged it.
+  const [order] = trunkRedOrders({
+    runId: 1, url: "https://example.test/runs/1", sha: "f2cdfaf3", failedJobs: ["trunkGate"],
+    failingTests: null, recheck: "pass", parentFailingTests: null,
+    originPr: { number: 232, title: "the merge that lost six files", session: "worker-tooling" },
   });
-  assert.equal(composed.code, REVERT_EXIT.READY,
-    `expected READY (revert-worthy), got code ${composed.code}: ${composed.reason}`);
+  assert.ok(order, "a REFUSE from the guard must reach somebody -- an empty result is a red main nobody hears about");
+  assert.equal(order.cause, "trunk-red");
+  assert.equal(order.session, "worker-tooling", "the guard's refusal is this merge's own: it goes to its session");
+  assert.match(order.prompt, /FIX FORWARD -- DO NOT REVERT/);
+  assert.match(order.prompt, /`trunkGate`/, "the order must name the job that failed");
 });
 
-test("C3 ACCEPTANCE, COMPOSED, POSITIVE CONTROL: an ordinary merge's PASS never even reaches decideRevert", (t) => {
+test("C3 ACCEPTANCE, COMPOSED, POSITIVE CONTROL: an ordinary merge's PASS never even reaches trunkRecheck", (t) => {
   if (!fixturePresent("fc9b89d2")) return t.skip(NO_FIXTURE("fc9b89d2"));
   // fc9b89d2 (#354) is the guard's own documented legitimate-deletion case -- PASSES, so trunkGate's guard
   // step succeeds, the job does not fail on this step, and (assuming the rest of trunkGate is otherwise
-  // green) `decideRevert`'s `if: needs.trunkGate.result == 'failure'` is false: it never runs at all. There
-  // is no `revertVerdict` call to make in this branch, which is the point -- the positive control for a
-  // destructive action is "nothing happens", not "a different, harmless verdict is computed".
+  // green) `trunkRecheck`'s `if: needs.trunkGate.result == 'failure'` is false: it never runs at all. There
+  // is no order to emit in this branch, which is the point -- the positive control for a wake is "nobody
+  // is woken", not "a different, harmless order is computed".
   const out = execFileSync("node", [SCRIPT, "--merge=fc9b89d2"], { cwd: CLONE, encoding: "utf8", stdio: "pipe" });
   assert.match(out, /PASS/);
 });

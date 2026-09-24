@@ -2,14 +2,14 @@
  * #744: `trunk.yml`'s #616 parent re-check used to print `tail -40 /tmp/parent-test.log` when the
  * parent failed the suite now. A `node:test` TAP log's last forty lines are the trailing PASSING
  * subtests, never the failure -- measured live on #718 (2026-09-09): a genuine failure produced a step
- * output of `ok 4180`, `ok 4181`, `ok 4182`, not one of them a failure, and `decideRevert` correctly
- * declined to act on a verdict naming no cause. A real revert was refused and main stayed red for ninety
- * minutes on a fix anyone could have reverted in one command, had the evidence named it.
+ * output of `ok 4180`, `ok 4181`, `ok 4182`, not one of them a failure, and the decision downstream
+ * correctly declined to act on a verdict naming no cause. Main stayed red for ninety minutes on a failure
+ * anyone could have fixed, had the evidence named it.
  *
  * `summarizeTestLog` fixes the confirmed defect: it reads the TAP summary (`# fail N`) and the individual
  * `not ok <n>` lines, wherever they sit in the log, and reports `unknown` -- never `fail` -- when it
- * cannot actually name a failing subtest. `trunk-revert.mjs`'s own `revertVerdict` already treats a
- * `parentRecheck` that is not literally `"pass"` or `"fail"` as `null` (CANNOT_ASK), so `unknown` was
+ * cannot actually name a failing subtest. `trunk-red.mjs`'s own `attributionOf` already treats a
+ * `recheck` that is not literally `"pass"` or `"fail"` as `unknown` (its own answer), so `unknown` was
  * already the safe answer this function needed to be ABLE to give; it just could not, because `tail -40`
  * never told it "I don't know", it told it "fail" with the wrong evidence attached.
  */

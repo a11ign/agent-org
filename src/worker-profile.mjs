@@ -160,6 +160,19 @@ export const PROFILES = Object.freeze({
     why: "resolving a merge conflict is judgment about which side of each hunk wins, and a wrong guess "
       + "either costs a CI cycle or silently drops the other pull request's change",
   }),
+  "trunk-red": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // HIGH, for `pr-checks-failing`'s reason with a sharper edge: this is a red build on the branch every
+    // other pull request merges onto, so a wrong guess costs a CI cycle for the whole org rather than for one
+    // author. It is debugging against a failing test, which is where a cheap tier guesses, pushes, waits and
+    // guesses again. NOT `opus`: `agent-practices.md` reserves it for reasoning a cheaper tier has MEASURABLY
+    // got wrong, and no red trunk has been fixed on `sonnet`/`high` and recorded failing yet -- when one is,
+    // raise it HERE with the run.
+    effort: "high",
+    why: "a red trunk is a debugging job on the branch every pull request lands on, so a wrong guess costs "
+      + "the whole org a CI cycle, and the cheaper tier is not cheaper here",
+  }),
   "pr-review-blocked": Object.freeze({
     kind: "claude",
     model: "sonnet",

@@ -114,7 +114,7 @@ test("daysSince counts whole days, so 'today' is 0 and does not read as stale", 
 });
 
 // #901: the watchdog is a step in `trunk.yml`'s `watchdogs` job since 2026-09-10, not a workflow of
-// #909 (2026-09-12): the no-`schedule:` assertion below is on the WHOLE file, so it also covers `decideRevert`
+// #909 (2026-09-12): the no-`schedule:` assertion below is on the WHOLE file, so it also covers `trunkRecheck`
 // and `closeRows`, which live in `trunk.yml` as tenants -- measured by worker-capture on #1145: a cron added to
 // trunk.yml fails this test AND the identical assertions in npm-token-liveness.test.ts and
 // workflow-run-liveness.test.ts (measured by ceo, each file run alone: 1 red in all three). Three guards hold

@@ -13,7 +13,7 @@
  *
  * ## It has been fixed FOUR TIMES at four call sites
  *
- * `update-branch-sweep.mjs` (#500, then again at #517), `trunk-revert.mjs` (#582), `queue-table.mjs`
+ * `update-branch-sweep.mjs` (#500, then again at #517), the since-retired revert script (#582), `queue-table.mjs`
  * (which is where this function was, with a header naming the other three). **That is this repository's
  * most expensive recurring shape — a remedy applied where the fault was noticed rather than everywhere
  * the behaviour reaches — and a fifth call site had never had it**: `merge-queue.mjs`'s

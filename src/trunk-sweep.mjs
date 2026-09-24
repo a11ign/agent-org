@@ -18,8 +18,8 @@
 // `needsGateSweep` is the whole decision: does `main`'s tip have zero check runs? If so, trigger
 // `trunk.yml` directly via `workflow_dispatch` (added to that workflow in this same PR) -- no `ref`
 // needed, since a dispatch with none given runs against the repository's default branch, which is `main`.
-// `decideRevert`'s own `if: needs.trunkGate.result == 'failure'` then fires exactly as it would for a
-// real push, driving the SAME revert machinery -- nothing new to build there.
+// `trunkRecheck`'s own `if: needs.trunkGate.result == 'failure'` then fires exactly as it would for a
+// real push, and the gate's `trunk-red` cause reads the same run -- nothing new to build there.
 //
 // ## Why this is a SCHEDULE, when this repository deliberately avoids one everywhere else
 //

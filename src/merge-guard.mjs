@@ -57,7 +57,7 @@
 //
 // This file composes them (`mergeReadiness`, the full composition; `mergeSafetyVerdict`, the narrower
 // self-reference-safe one), re-exports every name a rule module owns (so the five existing importers --
-// `merge-queue.mjs`, `trunk-revert.mjs`, `row-claim.mjs`, `workflow-run-liveness.mjs`, and
+// `merge-queue.mjs`, `row-claim.mjs`, `workflow-run-liveness.mjs`, and
 // `pre-push-armed-pr.test.ts` -- need no changes at all), and runs the CLI.
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
