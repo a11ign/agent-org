@@ -31,7 +31,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { readFileSync, writeFileSync, mkdirSync, realpathSync, existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 // RELATIVE, not the package specifier -- this must run before any `npm ci`/build, the same constraint
 // `work-gate.mjs` and `org-watch.mjs` state at their own imports.
@@ -2313,6 +2313,16 @@ const SLUG_WORDS = 4;
 const SLUG_MAX_CHARS = 40;
 
 /**
+ * The host's directory layout under one root: the linked worktrees AND the primary checkout beside them
+ * (`PRIMARY_CHECKOUT` is `${HOST_REPOS}/a11y-witness`). `--worktrees-dir` moves the whole of it, because the claim's
+ * `git fetch` runs IN the primary, which a CI runner does not have at the host's path (`spawnSync git ENOENT`).
+ * @param {string} root
+ */
+function layoutUnder(root) {
+  return { worktreesDir: root, primary: join(root, basename(PRIMARY_CHECKOUT)) };
+}
+
+/**
  * What `addressed` asks about the host, so a test can hand it a fixture instead of the real directory.
  * @typedef {{ exists?: (path: string) => boolean, worktreesDir?: string, primary?: string }} LaunchFacts
  */
@@ -2736,7 +2746,7 @@ function main() {
   const roster = rosterFrom(process.argv);
   // WHERE THE LINKED WORKTREES LIVE (#2405): the host's own directory unless a run names another, which is what lets a
   // test drive this entry through PATH stubs without the claim creating `role-<name>` beside the real checkout.
-  const worktreesDir = flagValue(process.argv, "worktrees-dir") ?? HOST_REPOS;
+  const hostLayout = layoutUnder(flagValue(process.argv, "worktrees-dir") ?? HOST_REPOS);
 
   const orders = parseOrders(readFileSync(0, "utf8"));
   // A QUEUED ORDER IS WORK EVEN WHEN THE GATE FOUND NONE, and this is the line that makes it so. The
@@ -2790,7 +2800,7 @@ function main() {
   const { sent, refused: gateRefused, stuck } = deliver(todo, free, roster, { record,
     counts: deliveryCounts(ledgerPath), ineligibleReason: engineerEligibility({ drained }),
     registerSpawn: (role) => registerSpawn(spares, role), drained, claimable: spawnClaimability(),
-    claimer: spawnClaimer({ worktreesDir }), launch: { worktreesDir } });
+    claimer: spawnClaimer(hostLayout), launch: hostLayout });
   const refused = [...handed.refused, ...gateRefused];
   for (const line of [...handed.sent, ...sent]) process.stdout.write(`WOKE ${line}\n`);
   for (const line of stuck) process.stderr.write(`STUCK ${line}\n`);
