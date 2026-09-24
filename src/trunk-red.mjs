@@ -210,7 +210,7 @@ function readOriginPr(run, sha) {
  * other cause, not withheld by a drain, and re-offered on `wake`'s twenty-minute expiry until `main` is
  * green. JUMPING THE FIX PR PAST THE MERGE QUEUE (`enqueuePullRequest`'s `jump`) IS NOT BUILT HERE -- the
  * mutation exists (schema read 2026-09-24) but arming it is a write that only a live queue can verify,
- * and a queue jump that misfires costs more than the wait it saves. It is its own row.
+ * and a queue jump that misfires costs more than the wait it saves. It is its own row, #2391.
  */
 export const RED_TRUNK_POLICY = Object.freeze({
   othersKeepMerging: true,
