@@ -3105,7 +3105,23 @@ export function withCommitChains(prs, run = defaultRun) {
 }
 
 /**
- * One order per unclaimed Ready row, oldest first, capped.
+ * The label a Ready row carries to be offered ahead of the rest (#2293). Adding it is the act of
+ * prioritising and removing it is the clearing, so nothing has to remember to lift a ruling.
+ */
+export const PRIORITY_LABEL = "priority";
+
+/**
+ * Rows carrying `PRIORITY_LABEL` first; row number ascending inside each group, so the oldest-first
+ * fairness rule survives within a group. A comparator over rows, not a flag argument.
+ * @param {any} a @param {any} b
+ */
+function byPriorityThenOldest(a, b) {
+  const rank = (/** @type {any} */ row) => (labelsOf(row).includes(PRIORITY_LABEL) ? 0 : 1);
+  return rank(a) - rank(b) || Number(a.number) - Number(b.number);
+}
+
+/**
+ * One order per unclaimed Ready row, `priority` rows first and then oldest first, capped.
  *
  * SPLIT OUT OF `decide` for the same reason `laneBacklogOrders` was: adding lane routing took that
  * function past `local/max-physical-lines-per-function` 90. `decide` asks what the queue needs;
@@ -3132,9 +3148,14 @@ function rowOrders(unclaimed) {
   // Per-row orders also make the ledger do the right thing. `wake` marks an agent working the moment it
   // prompts it, so several orders in one tick fan out across whoever is free, and a row already woken
   // for is a `causeKey` already spent -- the same row cannot recruit a second engineer on the next tick.
-  // OLDEST FIRST, because a queue that hands out its newest rows first starves its oldest -- and the
-  // number is a row number, so ascending IS oldest.
-  const oldestFirst = [...unclaimed].sort((a, b) => Number(a.number) - Number(b.number));
+  // `priority` FIRST, THEN OLDEST FIRST WITHIN EACH GROUP (#2293). A priority call made by `ceo` or the
+  // chairman used to live in a comment or a body line, and this sort reads neither: #2279 was prioritised
+  // at ~08:55Z on 2026-09-24 and was still unclaimed three hours later while an engineer went idle,
+  // because a high row number is the LAST row offered. The label is a FIELD the gate already has in hand.
+  // It orders OFFERS and nothing else: `unclaimed` arrives already stripped of B4-shelved and
+  // NOT_PICKABLE rows, and `laneOwnerOf` below still sends a `lane:<owner>` row to its owner.
+  // The sort comes BEFORE the cap's slice, so a priority row numbered above the cap is still offered.
+  const oldestFirst = [...unclaimed].sort(byPriorityThenOldest);
   for (const row of oldestFirst.slice(0, MAX_ROW_ORDERS_PER_TICK)) {
     // NO SESSION NAMED. Which engineer takes it depends on who is idle RIGHT NOW, which only
     // `herdr agent list` knows -- so the order names the lane and `wake.mjs` picks the body.

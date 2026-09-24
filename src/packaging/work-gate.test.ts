@@ -217,6 +217,52 @@ test("rows go out OLDEST first -- a queue that hands out its newest starves its 
     ["row-12", "row-45", "row-90"]);
 });
 
+// --- #2293: a `priority` label sorts a Ready row ahead of the rest ---
+//
+// The gate offered rows by row number alone, so a priority ruling lived in a comment and lost to row order:
+// #2279 sat unclaimed three hours after it was prioritised. Every case goes through `decide`, because
+// `rowOrders` is private and the seam that matters is the order the woken engineer actually receives.
+const rowWith = (n: number, ...extra: string[]) =>
+  ({ number: n, labels: ["ready", ...extra].map((name) => ({ name })) });
+const offered = (rows: unknown[]) => decide({ prs: [], readyRows: rows })
+  .filter((o: { cause: string }) => o.cause === "ready-row-unclaimed")
+  .map((o: { subject: string }) => o.subject);
+
+test("#2293 a `priority` row is offered BEFORE a lower-numbered unlabelled one", () => {
+  assert.deepEqual(offered([rowWith(10), rowWith(90, "priority")]), ["row-90", "row-10"]);
+});
+
+test("#2293 POSITIVE CONTROL: the same two rows with the label REMOVED come out in row-number order", () => {
+  assert.deepEqual(offered([rowWith(10), rowWith(90)]), ["row-10", "row-90"],
+    "the label is the ONLY difference from the case above, so nothing else reordered it");
+});
+
+test("#2293 within two `priority` rows the lower number is first, and the rest keep row order", () => {
+  assert.deepEqual(offered([rowWith(5), rowWith(90, "priority"), rowWith(40, "priority"), rowWith(7)]),
+    ["row-40", "row-90", "row-5", "row-7"]);
+});
+
+test("#2293 `priority` orders offers and nothing else: a lane row still goes to its owner, a shelved or " +
+  "NOT_PICKABLE row is still not offered", () => {
+  const orders = decide({ prs: [], readyRows: [rowWith(20, "priority", "lane:ceo"), rowWith(21, "priority", "in-progress"), rowWith(23, "priority", "answer:ceo"),
+    regionRow(22, ".github/workflows/release.yml", ["priority"]), rowWith(30)],
+  prFiles: [prTouching(1695, ".github/workflows/release.yml")] })
+    .filter((o: { cause: string }) => o.cause === "ready-row-unclaimed");
+  assert.deepEqual(orders.map((o: { subject: string, session: string }) => [o.subject, o.session]),
+    [["row-20", "ceo"], ["row-30", "engineers"]],
+    "#21 (claimed: `in-progress` is in NOT_PICKABLE), #22 (B4 overlap) and #23 (`answer:ceo` shelf) stay hidden "
+      + "despite the label; #20 stays with its lane owner");
+});
+
+test("#2293 with more than MAX_ROW_ORDERS_PER_TICK rows ready, a `priority` row above the cap is INSIDE the offer", () => {
+  const rows = Array.from({ length: MAX_ROW_ORDERS_PER_TICK + 4 }, (_, i) => rowWith(100 + i));
+  const top = 100 + MAX_ROW_ORDERS_PER_TICK + 3;
+  assert.equal(offered(rows).includes(`row-${top}`), false, "control: unlabelled, it is cut by the cap");
+  const withLabel = offered([...rows.slice(0, -1), rowWith(top, "priority")]);
+  assert.equal(withLabel.length, MAX_ROW_ORDERS_PER_TICK);
+  assert.equal(withLabel[0], `row-${top}`);
+});
+
 test("the per-tick cap bounds the REPORT, not the parallelism", () => {
   const many = Array.from({ length: 30 }, (_, i) => ({ number: 100 + i, labels: [{ name: "ready" }] }));
   const orders = decide({ prs: [], readyRows: many });
