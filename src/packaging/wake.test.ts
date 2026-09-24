@@ -321,7 +321,7 @@ test("#1952 ACCEPTANCE: deliver STARTS a process when no engineer exists, and th
   const got = deliver([ROW_ORDER], NOBODY, ROSTER, { run: h.run, record: (k) => recorded.push(k) });
 
   assert.deepEqual(h.said("workspace create"),
-    ["--session org workspace create --label worker-capture --no-focus"],
+    ["--session org workspace create --label worker-capture --no-focus --env GH_CONFIG_DIR=/home/agent/workers/gh"],
     "the pane comes from a workspace created for the role, and `--no-focus` keeps the tick off the display");
   assert.deepEqual(h.said("agent start"),
     ["--session org agent start worker-capture --kind claude --pane wB:p1 -- --model sonnet --effort high "
@@ -414,10 +414,10 @@ test("#1952: a busy, blocked or agentless role's ADDRESS is never lent to a seco
 // role is spawnable, so `spawnableRole` had nothing to start into -- reported live as three UNDELIVERED orders.
 // The roster is the `sessions.json` engineer roles, so the fix is two addresses in that file and no new mechanism.
 const STANDING = ["worker-capture", "worker-judge", "worker-tooling"];
-const SPARES = ["worker-4", "worker-5"];
+const SPARES = ["worker-4", "worker-5", "worker-6", "worker-7", "worker-8"];
 const REAL_ROSTER = engineerRoles();
 
-test("#2279: the roster is sessions.json's engineer roles, the standing three FIRST and two spares after", () => {
+test("#2279: the roster is sessions.json's engineer roles, the standing three FIRST and five spares after", () => {
   assert.deepEqual(REAL_ROSTER, [...STANDING, ...SPARES],
     "file order is the offer order, so a spare is started only once every standing role is taken");
   const live = (JSON.parse(readFileSync(
@@ -468,7 +468,8 @@ test("#2279 ACCEPTANCE: with all three standing engineers WORKING, `deliver` STA
   const standingBusy = agents(Object.fromEntries(STANDING.map((r) => [r, "working"])));
   const got = deliver([ROW_ORDER], standingBusy, REAL_ROSTER, { run: h.run });
 
-  assert.deepEqual(h.said("workspace create"), ["--session org workspace create --label worker-4 --no-focus"]);
+  assert.deepEqual(h.said("workspace create"),
+    ["--session org workspace create --label worker-4 --no-focus --env GH_CONFIG_DIR=/home/agent/workers/gh"]);
   assert.equal(h.said("agent start").length, 1);
   assert.ok(h.said("agent start")[0].startsWith("--session org agent start worker-4 --kind claude "));
   assert.deepEqual(got.sent, ["worker-4 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
@@ -492,8 +493,8 @@ test("#2279 POSITIVE CONTROL: worker-4 and worker-5 BOTH working is refused, and
   assert.deepEqual(h.said("workspace create"), [], "no process is started past the ceiling");
   assert.deepEqual(got.sent, []);
   assert.equal(got.refused.length, 1);
-  assert.match(got.refused[0], /all 5 engineer roles hold a process \(worker-capture=working, worker-judge=working, /);
-  assert.match(got.refused[0], /worker-4=working, worker-5=working\)/);
+  assert.match(got.refused[0], /all 8 engineer roles hold a process \(worker-capture=working, worker-judge=working, /);
+  assert.match(got.refused[0], /worker-4=working, worker-5=working, worker-6=working, worker-7=working, worker-8=working\)/);
   assert.ok(!/every engineer role already has a process/.test(got.refused[0]),
     "that wording read as a fact about the standing three, which is the misreading that hid this defect");
   assert.match(got.refused[0], /ceiling/);

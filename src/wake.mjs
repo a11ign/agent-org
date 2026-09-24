@@ -38,7 +38,14 @@ import { createHash } from "node:crypto";
 import { refuseUnknownFlags, flagValue } from "../../worker-fleet/src/cli-flags.mjs";
 import { profileFor, agentArgs } from "./worker-profile.mjs";
 import { JUDGMENT_CAUSES, CHAIRMAN_LABEL } from "./work-gate.mjs";
-import { inBuildReason, isInBuild, unansweredRefusal, lookupHeldRows } from "./row-claim/own-pr-health-rule.mjs";
+import { inBuildReason, isInBuild, unansweredRefusal, lookupHeldRows, lookupOtherHeldIssues }
+  from "./row-claim/own-pr-health-rule.mjs";
+import { parseWorktreeList, isPrimaryWorktree, isWorkingTreeClean, mergeStatus, detachedMergeStatus }
+  from "./prune-worktrees.mjs";
+import { worktreeOwner } from "./worktree-owner.mjs";
+// The scrubbing helper, RELATIVE like the imports above: a leaked GIT_DIR must not redirect the teardown's
+// `git worktree list` onto another repository (git-spawn-classification.test.ts).
+import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
 
 /**
  * `0` QUIET nothing to deliver; `1` ATTENTION an order had nowhere to go; `2` CANNOT_ASK herdr did not
@@ -376,11 +383,12 @@ export function isPilotOrder(order) {
  * THE ROSTER MUST HOLD ROLES THAT NOBODY RUNS, OR THIS NEVER FIRES (#2279). Every standing engineer role is
  * permanently occupied, so "the first ABSENT role" was empty by construction and the pilot could start only
  * after a standing session died -- which reported live as three UNDELIVERED orders in a row. `sessions.json`
- * therefore lists spare engineer roles (`worker-4`, `worker-5`) with no standing process: an address for
- * an instance to answer to, since two processes under one address would share one B2 budget. The number of
- * instances is bounded by the orders `route` could not place, one per tick (`MAX_SPAWNS_PER_TICK`); the
- * spare count is only `ceo`'s ceiling on that, and the refusal below says so rather than blaming the
- * standing three.
+ * therefore lists spare engineer roles (`worker-4` to `worker-8`, marked `spare`) with no standing process: an
+ * address for an instance to answer to, since two processes under one address would share one B2 budget. The
+ * number of instances is bounded by the orders `route` could not place, one per tick (`MAX_SPAWNS_PER_TICK`);
+ * the spare count is only `ceo`'s ceiling on that, and the refusal below says so rather than blaming the
+ * standing three. A spare is ENDED when its row closes (`endFinishedSpares`, #2323), so the address is free
+ * again for the next row's instance.
  *
  * @param {{session: string, cause?: string}} order
  * @param {{label: string, status: string}[]} agents
@@ -420,14 +428,20 @@ export function spawnableRole(order, agents, roster) {
  *
  * `--no-focus` because a tick must not steal the display from whoever is watching it.
  *
+ * `--env` IS HOW THE SPAWN DECIDES WHO IT ACTS AS (#2323). herdr's server starts the pane's shell, so the
+ * ticking process's own environment never reaches it -- measured 2026-09-24: `workspace create --env
+ * GH_CONFIG_DIR=...` and `echo $GH_CONFIG_DIR` in that pane answers the value. See {@link spawnEnvironment}.
+ *
  * @param {(args: string[]) => string} run
  * @param {string} label
+ * @param {Record<string, string>} env
  * @returns {{pane: string, workspace: string} | {refusal: string}}
  */
-function openPane(run, label) {
+function openPane(run, label, env) {
   let created;
   try {
-    created = JSON.parse(run(["--session", "org", "workspace", "create", "--label", label, "--no-focus"]));
+    created = JSON.parse(run(["--session", "org", "workspace", "create", "--label", label, "--no-focus",
+      ...Object.entries(env).flatMap(([key, value]) => ["--env", `${key}=${value}`])]));
   } catch (err) {
     return { refusal: `herdr could not open a pane for "${label}" (${firstLine(err)})` };
   }
@@ -445,10 +459,14 @@ function openPane(run, label) {
 /**
  * Close a workspace this tick opened, and say so in the same breath as whatever failed.
  *
- * THE TEARDOWN IS ONLY FOR A HALF-STARTED SPAWN, and that bound is the design rather than a gap. A
- * workspace whose agent started IS the role's workspace from then on -- its label is the role's own name,
- * so `route` finds it, follow-up causes reach it, and there is nothing orphaned to collect. Only the window
- * between `workspace create` and a successful `agent start` can leave a pane nobody will ever use.
+ * THIS TEARDOWN IS FOR A HALF-STARTED SPAWN; A FINISHED INSTANCE IS ENDED BY `endFinishedSpares` (#2323). A
+ * workspace whose agent started IS the role's workspace while its row is open -- its label is the role's own
+ * name, so `route` finds it and follow-up causes reach it. Only the window between `workspace create` and a
+ * successful `agent start` leaves a pane nobody will ever use, and that is what this closes. Once the row
+ * that instance claimed has closed (or been released) the tick ends it, on a rule read from `sessions.json`'s
+ * `spare` mark and not from this comment -- the old bound ("nothing orphaned to collect") was true of the
+ * pane and false of the ROLE: a spawned engineer that was never ended became a standing seat the first time
+ * it claimed, and #1950's clean-cycle count could not count it.
  *
  * AND LEAVING ONE IS NOT A TIDINESS PROBLEM. A workspace with no agent reports `agent_status: "unknown"`,
  * which `WAKEABLE` excludes and `spawnableRole` refuses -- so an abandoned pane carrying a role's label
@@ -484,14 +502,14 @@ function closedNote(run, workspace) {
  * @param {{session: string, cause?: string}} order
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster
- * @param {{run?: (args: string[]) => string}} [deps]
+ * @param {{run?: (args: string[]) => string, env?: Record<string, string>}} [deps]
  * @returns {{label: string, workspace: string, profile: {kind: string, model: string, effort: string}}
  *   | {refusal: string}}
  */
-function spawnWorker(order, agents, roster, { run = defaultRun } = {}) {
+function spawnWorker(order, agents, roster, { run = defaultRun, env = spawnEnvironment() } = {}) {
   const role = spawnableRole(order, agents, roster);
   if ("refusal" in role) return role;
-  const pane = openPane(run, role.role);
+  const pane = openPane(run, role.role, env);
   if ("refusal" in pane) return pane;
   // `spawnableRole` has already refused anything whose cause is not in `SPAWN_CAUSES`, so by here the
   // cause is one of those strings -- narrowed for the type rather than re-checked.
@@ -1790,9 +1808,10 @@ export function clearContext(run, label) {
  * @param {{session: string, causeKey: string, prompt: string, cause?: string}} order
  * @param {{label: string, status: string}[]} live
  * @param {string[]} roster
- * @param {{run: (args: string[]) => string, spawned: number, ineligibleReason?: (label: string) => string | null}} deps
+ * @param {{run: (args: string[]) => string, spawned: number, ineligibleReason?: (label: string) => string | null,
+ *   env?: Record<string, string>, registerSpawn?: (role: string) => void}} deps
  *   `spawned` is how many processes this tick has already started -- see `MAX_SPAWNS_PER_TICK`;
- *   `ineligibleReason` is {@link route}'s
+ *   `ineligibleReason` is {@link route}'s; `env` is the spawn's environment ({@link spawnEnvironment})
  * @returns {{label: string, profile?: {kind: string, model: string, effort: string}} | {refusal: string}}
  */
 function targetFor(order, live, roster, deps) {
@@ -1803,8 +1822,10 @@ function targetFor(order, live, roster, deps) {
     return { refusal: `${routed.refusal}, and this tick has already started ${deps.spawned} `
       + `(MAX_SPAWNS_PER_TICK is ${MAX_SPAWNS_PER_TICK})` };
   }
-  const spawn = spawnWorker(order, live, roster, { run: deps.run });
+  const spawn = spawnWorker(order, live, roster, { run: deps.run, env: deps.env });
   if ("refusal" in spawn) return { refusal: `${routed.refusal}; ${spawn.refusal}` };
+  // REGISTERED BEFORE THE PROMPT, because a refused prompt leaves the process running (see `deliver`).
+  deps.registerSpawn?.(spawn.label);
   return { label: spawn.label, profile: spawn.profile };
 }
 
@@ -1819,10 +1840,14 @@ function targetFor(order, live, roster, deps) {
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster
  * @param {{run?: (args: string[]) => string, record?: (key: string, recipient?: string) => void,
- *          counts?: Map<string, number>, ineligibleReason?: (label: string) => string | null}} [deps]
+ *          counts?: Map<string, number>, ineligibleReason?: (label: string) => string | null,
+ *          env?: Record<string, string>, registerSpawn?: (role: string) => void}} [deps]
+ *   `registerSpawn` is told of every process this tick STARTS, so the teardown can tell an instance that has
+ *   not claimed yet from one that finished ({@link endFinishedSpares})
  * @returns {{sent: string[], refused: string[], stuck: string[]}}
  */
-export function deliver(orders, agents, roster, { run = defaultRun, record, counts, ineligibleReason } = {}) {
+export function deliver(orders, agents, roster,
+  { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn } = {}) {
   const sent = [];
   const refused = [];
   const stuck = [];
@@ -1837,7 +1862,7 @@ export function deliver(orders, agents, roster, { run = defaultRun, record, coun
       stuck.push(`${order.causeKey}: delivered ${already} times and the cause is still true`);
       continue;
     }
-    const target = targetFor(order, live, roster, { run, spawned, ineligibleReason });
+    const target = targetFor(order, live, roster, { run, spawned, ineligibleReason, env, registerSpawn });
     if ("refusal" in target) {
       refused.push(`${order.causeKey}: ${target.refusal}`);
       continue;
@@ -1879,6 +1904,381 @@ export function deliver(orders, agents, roster, { run = defaultRun, record, coun
       : `${target.label} <- ${order.causeKey}`);
   }
   return { sent, refused, stuck };
+}
+
+// --- #2323: A SPAWNED INSTANCE ENDS WHEN ITS ROW DOES, AND EVERY ENDING IS A LEDGER LINE ---
+
+/**
+ * The account a spawned engineer acts as -- `ceo`'s ruling on #2323, which #916 makes `ceo`'s to make:
+ * `a11ign-ai-workers`, like the standing three, and never the person.
+ *
+ * WHY THE SPAWN DECIDES AND A LIST DOES NOT. The `gh` wrapper routes by matching `HERDR_WORKSPACE_ID` against
+ * a file of ids, and an instance gets a FRESH workspace id per row: `worker-4` ran in `wD` and `worker-5` in
+ * `wE`, both absent, so every `gh` call they made from 09:42Z (2026-09-24) spent the chairman's GraphQL pool
+ * and wrote as him. An explicit `GH_CONFIG_DIR` always wins in that wrapper, so setting it at spawn removes
+ * the id list from the question altogether.
+ */
+export const WORKERS_GH_CONFIG_DIR = "/home/agent/workers/gh";
+
+/**
+ * The environment a spawned workspace's shell starts with. An `override` wins, key by key, because a caller
+ * that names its own account has decided something this default has no business second-guessing.
+ * @param {Record<string, string>} [override]
+ * @returns {Record<string, string>}
+ */
+export function spawnEnvironment(override = {}) {
+  return { GH_CONFIG_DIR: WORKERS_GH_CONFIG_DIR, ...override };
+}
+
+/**
+ * The engineer roles `sessions.json` MARKS spare, in file order: the only roles this file ever ends a process
+ * for. READ, NOT TYPED, for #2279's reason -- a second copy of the list drifts -- and a ROLE fact rather than
+ * an instance one, so `_rolesNotProcesses` stands.
+ *
+ * @param {string | URL} [path] the roster file; a parameter so a test can hand it a fixture
+ * @returns {string[]}
+ */
+export function spareRoles(path = new URL("../docs/roles/sessions.json", import.meta.url)) {
+  const { live } = /** @type {{ live: { name: string, role: string, spare?: boolean }[] }} */ (
+    JSON.parse(readFileSync(path, "utf8")));
+  return live.filter((s) => s.role === "engineer" && s.spare === true).map((s) => s.name);
+}
+
+/**
+ * How long a spawned instance may sit idle without ever holding a row before the cycle counts as FAILED.
+ * Generous on purpose: the instance's first turn is reading the order, the row and its own worktree, and an
+ * idle reading inside it is not yet a defect.
+ */
+export const SPARE_CLAIM_BOUND_MS = 30 * 60 * 1000;
+
+/**
+ * What one tick knows about one spare instance: when it was first seen, and every row it has been seen holding.
+ * @typedef {{ spawnedAt: number, rows: number[] }} SpareInstance
+ */
+
+/**
+ * Whether a present spare instance is ended this tick, and if not, why not.
+ *
+ * `held` IS WHAT IS HELD NOW AND `instance.rows` IS WHAT WAS EVER HELD, and the rule needs both: "holds no open
+ * row" is true of an instance that has not claimed yet, which is in its FIRST TURN, so it alone would end
+ * every spare the moment it was spawned. The rule is "has held a row, holds none now, and is idle".
+ *
+ * `idle` OR `done`, the two states `WAKEABLE` already names: herdr says `done` for a finished turn nobody has
+ * looked at yet, and a spare parked there would otherwise never end. `working` is mid-turn, `blocked` is stopped
+ * on a question whose text is the only record of it (`blockedSessions`), and `unknown` is not known to be
+ * anything -- none of the three is ended.
+ *
+ * AN INSTANCE THAT NEVER CLAIMS IS ENDED TOO, and RECORDED AS A FAILURE rather than silently: it holds a role's
+ * address and does nothing with it. The verdict says `failed`; the caller writes the line.
+ *
+ * @param {{ status: string, instance: SpareInstance, held: number[], now: number, claimBoundMs?: number }} facts
+ * @returns {{ end: false, why: string } | { end: true, failed?: string }}
+ */
+export function spareDecision({ status, instance, held, now, claimBoundMs = SPARE_CLAIM_BOUND_MS }) {
+  if (!WAKEABLE.includes(status)) return { end: false, why: `${status}: not between turns` };
+  if (held.length > 0) return { end: false, why: `holds ${held.map((n) => `#${n}`).join(", ")}` };
+  if (instance.rows.length > 0) return { end: true };
+  const waited = now - instance.spawnedAt;
+  if (waited < claimBoundMs) return { end: false, why: "has not claimed a row yet (first turn)" };
+  return { end: true, failed: `never claimed a row in ${Math.round(waited / 60_000)} minutes` };
+}
+
+/**
+ * @typedef {{ path: string, clean: boolean | "unknown", merge: "merged" | "not-merged" | "unknown" }} SpareWorktree
+ * @typedef {{ role: string, row: number | null, at: number, clean: boolean, why: string }} SpareCycle
+ */
+
+/**
+ * Was this cycle CLEAN -- the one fact #1950's "20 consecutive clean spawn-and-teardown cycles" counts.
+ *
+ * PURE, and stricter than "it ended": every row the instance held is CLOSED (a row released or abandoned is a
+ * cycle that left work behind), no open row still carries its `session:` label, and every worktree it made is
+ * clean and merged, i.e. `worktrees:prune` may take it. Anything the reads could not establish is NOT clean --
+ * a counter that rounds "could not tell" up to "clean" reaches 20 by not looking.
+ *
+ * NO WORKTREE FOUND IS CLEAN: nothing was left. It is the caller's job to look under the row's own name.
+ *
+ * @param {{ role: string, rows: { number: number, state: string }[], held: number[], worktrees: SpareWorktree[] }} facts
+ * @returns {{ clean: boolean, why: string }}
+ */
+export function cycleVerdict({ role, rows, held, worktrees }) {
+  /** @type {string[]} */
+  const problems = [];
+  for (const row of rows) {
+    if (row.state !== "CLOSED") problems.push(`#${row.number} is ${row.state.toLowerCase()}, not closed`);
+  }
+  if (held.length > 0) problems.push(`session:${role} still labels ${held.map((n) => `#${n}`).join(", ")}`);
+  for (const tree of worktrees) {
+    if (tree.clean === "unknown" || tree.merge === "unknown") problems.push(`${tree.path} could not be read`);
+    else if (tree.clean === false) problems.push(`${tree.path} has uncommitted changes`);
+    else if (tree.merge !== "merged") problems.push(`${tree.path} is not merged into origin/main`);
+  }
+  if (problems.length > 0) return { clean: false, why: problems.join("; ") };
+  const rowsSaid = rows.map((r) => `#${r.number}`).join(", ") || "no row";
+  return { clean: true,
+    why: `${rowsSaid} closed; no open row carries session:${role}; ${worktrees.length > 0
+      ? "worktree clean and merged" : "no worktree left"}` };
+}
+
+/**
+ * The current run of clean cycles, read from the ledger -- THE FUNCTION #1950's 20 IS READ FROM.
+ *
+ * `empty` IS SEPARATE FROM `run: 0` because they are different statements: a ledger of one failure says the
+ * run was broken, and an EMPTY ledger says nothing has been measured, which must not read as "0 of 20 clean"
+ * to anyone deciding whether the condition is close. A failure resets the run; a clean line extends it.
+ *
+ * @param {Pick<SpareCycle, "clean">[]} ledger oldest first
+ * @returns {{ run: number, empty: boolean }}
+ */
+export function consecutiveClean(ledger) {
+  let run = 0;
+  for (const line of ledger) run = line.clean === true ? run + 1 : 0;
+  return { run, empty: ledger.length === 0 };
+}
+
+/**
+ * The ledger of ended cycles, oldest first. A LINE THAT CANNOT BE PARSED IS A FAILED CYCLE, never a skipped
+ * one: this file is what a retirement is argued from, and a corrupt line that vanished from the count would
+ * let a run of clean ones bridge a failure nobody could read.
+ *
+ * @param {string} path @param {typeof readFileSync} [read]
+ * @returns {SpareCycle[]}
+ */
+export function readSpareCycles(path, read = readFileSync) {
+  let text;
+  try {
+    text = String(read(path, "utf8"));
+  } catch (err) {
+    if (/** @type {any} */ (err)?.code === "ENOENT") return [];
+    throw err;
+  }
+  return text.split("\n").filter((line) => line.trim() !== "").map((line) => {
+    try {
+      return /** @type {SpareCycle} */ (JSON.parse(line));
+    } catch {
+      return { role: "?", row: null, at: 0, clean: false, why: `unreadable ledger line: ${line.slice(0, 60)}` };
+    }
+  });
+}
+
+/** Where the instance registry and the cycle ledger live: beside the delivery ledger, with the org's other state. */
+export function sparePathsFrom(/** @type {string} */ ledgerPath) {
+  return { registry: `${dirname(ledgerPath)}/spare-instances.json`, cycles: `${dirname(ledgerPath)}/spare-cycles` };
+}
+
+/**
+ * @param {string} path @param {typeof readFileSync} [read]
+ * @returns {Record<string, SpareInstance>}
+ */
+export function readSpareRegistry(path, read = readFileSync) {
+  try {
+    return JSON.parse(String(read(path, "utf8")));
+  } catch (err) {
+    if (/** @type {any} */ (err)?.code === "ENOENT") return {};
+    throw err;
+  }
+}
+
+/**
+ * Where a live workspace's id is, by its label -- or `null` when there is not exactly one. `workspace close`
+ * takes an id, and two workspaces under one label (the ambiguity `spawnableRole` refuses to create) must never
+ * be closed by guessing which was meant.
+ *
+ * @param {(args: string[]) => string} run @param {string} label
+ * @returns {string | null}
+ */
+function workspaceIdOf(run, label) {
+  try {
+    const list = JSON.parse(run(["--session", "org", "workspace", "list"]))?.result?.workspaces;
+    const named = (Array.isArray(list) ? list : []).filter((w) => w.label === label);
+    return named.length === 1 && typeof named[0].workspace_id === "string" ? named[0].workspace_id : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The worktrees a spare role made for these rows: stamped by the role (`row-claim` stamps every tree it makes,
+ * #1128) and named for a row -- `wt-<row>` or a branch ending `-<row>`, the shape every claim here has. Read
+ * from git, and each fact carries "could not read" as its own answer.
+ *
+ * @param {{ role: string, rows: number[], repoRoot: string, run?: (cmd: string, args: string[], opts?: object) => string }} query
+ * @returns {SpareWorktree[]}
+ */
+export function spareWorktrees({ role, rows, repoRoot, run = defaultGit }) {
+  const named = (/** @type {string} */ path, /** @type {string | null} */ branch) => rows.some(
+    (row) => path.endsWith(`/wt-${row}`) || (branch !== null && branch.endsWith(`-${row}`)));
+  return parseWorktreeList(run("git", ["worktree", "list", "--porcelain"], { cwd: repoRoot }))
+    .filter((tree) => !isPrimaryWorktree(tree.path) && named(tree.path, tree.branch)
+      && worktreeOwner(tree.path) === role)
+    .map((tree) => ({ path: tree.path, clean: isWorkingTreeClean(tree.path, { run }),
+      merge: tree.branch === null ? detachedMergeStatus(tree.path, { run }) : mergeStatus(repoRoot, tree.branch, { run }) }));
+}
+
+/** @param {string} cmd @param {string[]} args @param {object} [opts] */
+const defaultGit = (cmd, args, opts) =>
+  execFileSync(cmd, args, { encoding: "utf8", timeout: 30_000, ...opts, env: sandboxGitEnv() });
+
+/**
+ * The facts `endFinishedSpares` reads through, every one injected so the tick's teardown is tested without a
+ * host. `heldRows` and `rowState` answer `null` when GitHub could not be asked -- never `[]`, never a state.
+ *
+ * @typedef {{
+ *   spares: string[],
+ *   registry: Record<string, SpareInstance>,
+ *   now: number,
+ *   run: (args: string[]) => string,
+ *   heldRows: (role: string) => number[] | null,
+ *   rowState: (row: number) => string | null,
+ *   worktrees: (role: string, rows: number[]) => SpareWorktree[],
+ *   record: (cycle: SpareCycle) => void,
+ *   warn: (line: string) => void,
+ * }} TeardownDeps
+ */
+
+/**
+ * END EVERY SPARE INSTANCE WHOSE ROW HAS CLOSED, and write one ledger line for each ending. The tick's
+ * teardown step (#2323); {@link spareDecision} is the rule and {@link cycleVerdict} the reading.
+ *
+ * ASKED ON EVERY TICK, INCLUDING A QUIET ONE, because an instance's row closing is exactly the event that
+ * produces no order -- a gate with nothing to say is the tick on which a finished spare most needs closing.
+ * So this is called by `work-tick` before its quiet exit and not from `wake`, which a quiet gate never runs.
+ *
+ * EVERY PRESENT SPARE IS OBSERVED, WORKING OR NOT: the row it holds is recorded while it holds it, because
+ * closing the row removes the `session:` label and with it the only account of what the instance did.
+ * A spare no earlier tick saw (started before this shipped, or by hand) is ADOPTED as first seen now -- its
+ * unclaimed clock starts at the adoption, never at a spawn nobody recorded.
+ *
+ * A LOOKUP THAT CANNOT ASK ENDS NOTHING: an unread label list would read as "holds no row" and end a
+ * working engineer. And a workspace that will not close is left, said, and retried -- no line is written for
+ * an ending that did not happen.
+ *
+ * @param {{label: string, status: string}[]} agents
+ * @param {TeardownDeps} deps
+ * @returns {{ ended: SpareCycle[], registry: Record<string, SpareInstance> }}
+ */
+export function endFinishedSpares(agents, deps) {
+  const registry = { ...deps.registry };
+  /** @type {SpareCycle[]} */
+  const ended = [];
+  for (const role of deps.spares) {
+    const agent = agents.find((a) => a.label === role);
+    if (agent === undefined) continue; // A partial read looks the same as absence, so this records nothing.
+    const held = deps.heldRows(role);
+    if (held === null) {
+      deps.warn(`teardown: could not read the rows "${role}" holds -- leaving it running.`);
+      continue;
+    }
+    const before = registry[role] ?? { spawnedAt: deps.now, rows: [] };
+    const instance = { spawnedAt: before.spawnedAt, rows: [...new Set([...before.rows, ...held])] };
+    registry[role] = instance;
+    const decision = spareDecision({ status: agent.status, instance, held, now: deps.now });
+    if (!decision.end) continue;
+    const cycle = closeInstance(role, instance, decision.failed, deps);
+    if (cycle === null) continue;
+    ended.push(cycle);
+    delete registry[role];
+  }
+  return { ended, registry };
+}
+
+/**
+ * Close one instance's workspace and write its ledger line -- or `null`, with a warning, when the workspace
+ * could not be closed. The verdict is read BEFORE the close, while the worktree and the rows are still there
+ * to be read.
+ *
+ * @param {string} role @param {SpareInstance} instance @param {string | undefined} failed
+ * @param {TeardownDeps} deps
+ * @returns {SpareCycle | null}
+ */
+function closeInstance(role, instance, failed, deps) {
+  const id = workspaceIdOf(deps.run, role);
+  if (id === null) {
+    deps.warn(`teardown: "${role}" is finished but its workspace id is not exactly one -- left running.`);
+    return null;
+  }
+  const row = instance.rows.length > 0 ? instance.rows[instance.rows.length - 1] : null;
+  const verdict = failed === undefined ? readVerdict(role, instance, deps) : { clean: false, why: failed };
+  try {
+    deps.run(["--session", "org", "workspace", "close", id]);
+  } catch (err) {
+    deps.warn(`teardown: "${role}" (${id}) could not be closed (${firstLine(err)}) -- retried next tick.`);
+    return null;
+  }
+  const cycle = { role, row, at: deps.now, ...verdict };
+  deps.record(cycle);
+  return cycle;
+}
+
+/**
+ * @param {string} role @param {SpareInstance} instance @param {TeardownDeps} deps
+ * @returns {{ clean: boolean, why: string }}
+ */
+function readVerdict(role, instance, deps) {
+  const rows = instance.rows.map((number) => ({ number, state: deps.rowState(number) ?? "UNREADABLE" }));
+  return cycleVerdict({ role, rows, held: [], worktrees: deps.worktrees(role, instance.rows) });
+}
+
+/**
+ * Note that a process was STARTED for `role`. A registry entry already there means the previous instance left
+ * without the teardown -- closed by hand, crashed -- and THAT is a failed cycle, written now because this is the
+ * one moment the role is known to have been absent rather than merely missing from a partial list.
+ *
+ * @param {{ registry: string, cycles: string }} paths
+ * @param {string} role @param {number} [now]
+ */
+export function registerSpawn(paths, role, now = Date.now()) {
+  const registry = readSpareRegistry(paths.registry);
+  if (registry[role] !== undefined) {
+    const rows = registry[role].rows;
+    appendSpareCycle(paths.cycles, { role, row: rows.length > 0 ? rows[rows.length - 1] : null, at: now,
+      clean: false, why: "the previous instance left without the teardown (closed by hand or crashed)" });
+  }
+  registry[role] = { spawnedAt: now, rows: [] };
+  writeFileSync(paths.registry, `${JSON.stringify(registry)}\n`);
+}
+
+/** @param {string} path @param {SpareCycle} cycle */
+function appendSpareCycle(path, cycle) {
+  writeFileSync(path, `${JSON.stringify(cycle)}\n`, { flag: "a" });
+}
+
+/**
+ * The tick's teardown step with its real dependencies, called by `work-tick` on every tick. It reports and
+ * never throws: a broken teardown must not stop the tick that delivers work, and a swallowed one is the defect
+ * this file exists to refuse -- so the failure is a line on stderr naming what to look at.
+ *
+ * @param {{label: string, status: string}[]} agents
+ * @param {string} ledgerPath the delivery ledger; the teardown's state lives beside it
+ * @param {(line: string) => void} [say]
+ */
+export function tearDownSpares(agents, ledgerPath, say = (line) => process.stderr.write(line)) {
+  try {
+    const paths = sparePathsFrom(ledgerPath);
+    mkdirSync(dirname(ledgerPath), { recursive: true });
+    const repoRoot = new URL("../../..", import.meta.url).pathname;
+    const { ended, registry } = endFinishedSpares(agents, {
+      spares: spareRoles(), registry: readSpareRegistry(paths.registry), now: Date.now(), run: defaultRun,
+      heldRows: (role) => lookupOtherHeldIssues(role, 0),
+      rowState: (row) => rowStateOf(row),
+      worktrees: (role, rows) => spareWorktrees({ role, rows, repoRoot }),
+      record: (cycle) => appendSpareCycle(paths.cycles, cycle),
+      warn: (line) => say(`${line}\n`),
+    });
+    writeFileSync(paths.registry, `${JSON.stringify(registry)}\n`);
+    for (const c of ended) say(`ENDED ${c.role} (#${c.row ?? "none"}, ${c.clean ? "clean" : "NOT clean"}): ${c.why}\n`);
+  } catch (err) {
+    say(`teardown FAILED (${firstLine(err)}): no spare was ended this tick, and none was recorded.\n`);
+  }
+}
+
+/** @param {number} row @returns {string | null} */
+function rowStateOf(row) {
+  try {
+    return String(JSON.parse(defaultGh(["issue", "view", String(row), "--json", "state"])).state);
+  } catch {
+    return null;
+  }
 }
 
 function main() {
@@ -1938,8 +2338,10 @@ function main() {
     writeFileSync(ledgerPath, `${Date.now()}\t${RESET}\t${key}\n`, { flag: "a" });
   }
 
+  const spares = sparePathsFrom(ledgerPath);
   const { sent, refused: gateRefused, stuck } = deliver(todo, free, roster, { record,
-    counts: deliveryCounts(ledgerPath), ineligibleReason: engineerEligibility() });
+    counts: deliveryCounts(ledgerPath), ineligibleReason: engineerEligibility(),
+    registerSpawn: (role) => registerSpawn(spares, role) });
   const refused = [...handed.refused, ...gateRefused];
   for (const line of [...handed.sent, ...sent]) process.stdout.write(`WOKE ${line}\n`);
   for (const line of stuck) process.stderr.write(`STUCK ${line}\n`);
