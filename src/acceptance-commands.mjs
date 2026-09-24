@@ -2201,6 +2201,18 @@ export function extractRefutationSection(body) {
 }
 
 /**
+ * #2307: the `Mutation:` section, read by the ONE section parser rather than a fourth copy of it -- this
+ * file's header says to read it before adding a section reader. This job still never RUNS it (see the
+ * SCOPED TO `Acceptance:` ONLY note above); the reader is for `pr-open.mjs`, which runs it on the AUTHOR's
+ * machine, where the objection to executing a mutation on a shared runner does not apply.
+ * @param {string | null | undefined} body
+ * @returns {Section}
+ */
+export function extractMutationSection(body) {
+  return extractSection("Mutation", body);
+}
+
+/**
  * #419: A BACKTICKED COMMAND IS STILL THE COMMAND. This repository's own prose convention wraps a command
  * in single backticks (`` `like this` ``), and that is exactly wrong for a line the extractor hands
  * verbatim to bash -- the backticks stayed attached, so the file check saw `` `npx `` as a token and
