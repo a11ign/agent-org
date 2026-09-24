@@ -2991,8 +2991,15 @@ function rowOrders(unclaimed) {
         // system (2026-09-17) stopped and asked a human for both facts, because the order named
         // neither -- so they are named here rather than left to a role brief the session may not have
         // read yet. `../wt-<n>` is the sibling convention every live worktree on the host follows.
-        + "The claim creates that worktree for you; run the command from the primary checkout, then do all "
-        + "the work inside the new worktree rather than the primary.\n"
+        // THE LAUNCH DIRECTORY IS NAMED, AND IT IS NOT THE PRIMARY (#2237). This sentence said "run the
+        // command from the primary checkout" for nine days after `launchGate` (#1352) began refusing
+        // exactly that launch, so every engineer woken by this cause paid a refused command first. The
+        // role worktree is what `wake.mjs` documents as not universal (`worker-capture` has none), hence
+        // the fallback to any linked worktree -- what `launchGate` tests is "is `.git` a file", not whose.
+        + "The claim creates that worktree for you; run the command from your own linked worktree, "
+        + "`/home/agent/repos/role-<you>` (or any other linked worktree `git worktree list` names) -- NOT "
+        + "the primary checkout at `/home/agent/repos/a11y-witness`, which the tooling refuses -- then do "
+        + "all the work inside the new worktree.\n"
         + "If the claim is refused because someone took it first, that is an answer: stop and say so.",
       causeKey: `${owner ?? "engineers"}/ready-row-unclaimed/${row.number}`,
     });

@@ -54,6 +54,10 @@ import { MAX_ROW_ORDERS_PER_TICK, readCommitChain, withCommitChains, decide, che
 // costs the `no-token` promise at the top of this file nothing.
 import { readLedger, WAKE_TTL_MS, JUDGMENT_TTL_MS }
   from "../wake.mjs";
+// #2237: the decider that REFUSES a launch, so the order's named launch directory is checked against it
+// rather than read by a reviewer. Pure over an injected filesystem.
+import { primaryLaunchRefusal, launchCheckoutOf }
+  from "../board-snapshot-scope.mjs";
 
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
 // without one is dropped, and the gate would read every PR as having no checks at all.
@@ -532,6 +536,69 @@ test("the SAME row IS offered when no open PR touches its Region", () => {
   const orders = decide({ prs: [], readyRows: [regionRow(1452, ".github/workflows/release.yml")],
     prFiles: [prTouching(1695, "packages/lab/src/packaging/something.test.ts")] });
   assert.deepEqual(orders.map((o: { subject: string }) => o.subject), ["row-1452"]);
+});
+
+// --- #2237: the order names a launch directory `launchGate` ACCEPTS ---
+//
+// `rowOrders` told every woken engineer to run `row-claim` "from the primary checkout" for nine days
+// after `launchGate` (#1352) began refusing that launch. Deleting the sentence would re-open the
+// 2026-09-17 incident it exists for (an engineer stopped and asked a human where to run it), so the
+// assertions come in both directions: it must not name the primary, AND it must name somewhere.
+const HOST_REPOS = "/home/agent/repos";
+const HOST_PRIMARY = `${HOST_REPOS}/a11y-witness`;
+
+/**
+ * The host as `launchGate` reads it: the primary's `.git` is a DIRECTORY, and any other checkout under the
+ * repos directory is a linked worktree whose `.git` is a FILE. Every direct child counts as a checkout so a
+ * named directory the fixture had never heard of is judged, not waved through as "outside any checkout"
+ * (`launchCheckoutOf` returns null there and `primaryLaunchRefusal` then says nothing).
+ */
+const HOST_FS = {
+  exists: (path: string) => /^\/home\/agent\/repos\/[^/]+\/\.git$/.test(path),
+  isDirectory: (path: string) => path === `${HOST_PRIMARY}/.git`,
+  read: () => "",
+};
+
+const claimOrderPrompt = () => {
+  const orders = decide({ prs: [], readyRows: [{ number: 9001, title: "t", labels: [] }] }) as
+    { cause: string, prompt: string }[];
+  return (orders.find((o) => o.cause === "ready-row-unclaimed") as { prompt: string }).prompt;
+};
+
+/**
+ * THE LAUNCH DIRECTORY THE ORDER NAMES: the first absolute path in it, `<you>` rendered as a roster name the
+ * way `wake.mjs`'s `addressed` does. "First" is a convention this test imposes -- an order that names the
+ * primary at all, even to forbid it, must name its own directory BEFORE it -- and it is what lets a reworded
+ * order that instructs the primary go red here without this file pinning a spelling of the wrong sentence.
+ */
+const namedLaunchDirectory = (prompt: string) =>
+  /\/home\/agent\/repos\/[^\s`),;]+/.exec(prompt.replaceAll("<you>", "worker-tooling"))?.[0] ?? null;
+
+test("#2237 DONE-WHEN 1: the ready-row order does not instruct the launch `launchGate` refuses", () => {
+  assert.doesNotMatch(claimOrderPrompt(), /from the primary checkout/i,
+    "row-claim, pr-open and row-file all refuse a launch from the primary checkout (#1352)");
+});
+
+test("#2237 DONE-WHEN 2+3: it names a launch directory, and `launchGate` accepts the one it names", () => {
+  const dir = namedLaunchDirectory(claimOrderPrompt());
+  // DONE-WHEN 2. A prompt that names nothing passes clause 1 and re-opens the 2026-09-17 incident.
+  assert.ok(dir !== null, "the order must say where to run the command, or the engineer stops and asks");
+  assert.ok(launchCheckoutOf(dir, HOST_FS) !== null, `${dir} must be a checkout, else the refusal below is vacuous`);
+  // DONE-WHEN 3. Asked of the DECIDER, so a rewording that still points at the primary is red here.
+  assert.equal(primaryLaunchRefusal("row-claim", { cwd: dir, fs: HOST_FS }), null,
+    `the order sends the engineer to ${dir}, and launchGate refuses it`);
+});
+
+test("#2237: POSITIVE CONTROL -- the same decider DOES refuse the primary, so the acceptance above can go red", () => {
+  const refusal = primaryLaunchRefusal("row-claim", { cwd: HOST_PRIMARY, fs: HOST_FS });
+  assert.match(refusal ?? "", /^row-claim: REFUSED -- launched from \/home\/agent\/repos\/a11y-witness, which is not a linked worktree/);
+  assert.equal(primaryLaunchRefusal("row-claim", { cwd: `${HOST_REPOS}/role-worker-tooling`, fs: HOST_FS }), null);
+});
+
+test("#2237 DONE-WHEN 4: both flags stay named -- row-claim refuses when given only one", () => {
+  const prompt = claimOrderPrompt();
+  assert.match(prompt, /--branch=agent\/<slug>-9001/);
+  assert.match(prompt, /--worktree=\.\.\/wt-9001/);
 });
 
 test("NO REGION is cannot-ask, not no-overlap -- the row is still offered, as row-claim would grant it", () => {
