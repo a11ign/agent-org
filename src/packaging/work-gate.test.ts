@@ -251,6 +251,16 @@ test("#2296: the label reorders offers and does NOT grant a claim -- a shelved `
   assert.deepEqual(offered([held]), []);
 });
 
+// --- #2293: what the label does NOT override, beyond #2296's shelved and claimed cases ---
+test("#2293 a `priority` row keeps its lane owner, and an `answer:` shelf still hides it", () => {
+  const orders = decide({ prs: [], readyRows: [priorityRow(20, "priority", "lane:ceo"),
+    priorityRow(23, "priority", "answer:ceo"), priorityRow(30)] })
+    .filter((o: { cause: string }) => o.cause === "ready-row-unclaimed");
+  assert.deepEqual(orders.map((o: { subject: string, session: string }) => [o.subject, o.session]),
+    [["row-20", "ceo"], ["row-30", "engineers"]],
+    "#23 stays shelved despite the label; #20 goes to its lane owner rather than the engineer pool");
+});
+
 test("the per-tick cap bounds the REPORT, not the parallelism", () => {
   const many = Array.from({ length: 30 }, (_, i) => ({ number: 100 + i, labels: [{ name: "ready" }] }));
   const orders = decide({ prs: [], readyRows: many });
