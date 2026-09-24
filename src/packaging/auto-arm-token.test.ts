@@ -118,6 +118,59 @@ test("issues: write is NOT added for this -- #333 already measured that granting
     + "added for this token change");
 });
 
+// --- #2358: WHICH ACCOUNT HOLDS THE SECRET -- and where it lives --------------------------------------
+//
+// `A11IGN_BOT_TOKEN` was the chairman's PERSONAL token, so CI acted as `DanBeckDev`: 23 of the last 40
+// merged PRs were completed by that account (read by `ceo`, 2026-09-24, from `mergedBy`), against the
+// ruling that no agent acts as the chairman (#1950/#2333). The chairman swapped it 2026-09-24T19:54:17Z.
+//
+// WHAT HOLDS IT NOW, and it is a fact about GitHub's settings that no file in this repository can read:
+//   - the account is `a11ign-ci`, a machine account no session uses. NOT `a11ign-bot` (the reviewer: the
+//     account that approves must not be the one that arms and completes the merge, or `main`'s review
+//     requirement is decorative -- `.claude/rules/main-review-requirement.md`), and not a session's
+//     identity (`a11ign-ai-workers`, `a11ign-ai-leads`), which would attribute CI's merges to a session.
+//   - the secret is ORG-LEVEL. The repository-level copy was deleted on purpose, so there is one place to
+//     manage it. A repository-level secret of the same name would SHADOW the org one (GitHub resolves the
+//     narrower scope first), so a swap back to a person can be made at either level and only one of them
+//     is where the chairman looks.
+//
+// WHAT A TEST CAN AND CANNOT DO ABOUT THAT. The secret's value never reaches the repo, so nothing here
+// can read WHO holds it. What can be pinned is (1) the NAME every workflow step reads, so a rename that
+// quietly moves CI onto a different credential is red, and (2) below, the constants naming who is
+// EXPECTED to hold it, which `auto-arm-token-live.test.ts` reads back from GitHub's own timeline: an
+// `auto_merge_enabled` or `merged` actor that is a person is a red test THERE. This file must stay
+// token-free (the acceptance job has none), and the live read spawns `gh`, so it is a separate file.
+
+/** The secret's name, and the account and scope expected to hold it. Moving any of them is a decision. */
+const SECRET_NAME = "A11IGN_BOT_TOKEN";
+const SECRET_HOLDER = "a11ign-ci";
+const SECRET_SCOPE = "organization";
+
+/** Every `secrets.X` a workflow reads, so a step that reads a DIFFERENT secret is visible by name. */
+function secretsRead(workflow: string): string[] {
+  const text = readFileSync(`${REPO}.github/workflows/${workflow}`, "utf8");
+  return [...text.matchAll(/secrets\.([A-Z0-9_]+)/g)].map((m) => m[1]);
+}
+
+test("#2358: the workflows that act as the arming identity read `secrets.A11IGN_BOT_TOKEN` and no other "
+  + "credential, at the counts measured 2026-09-24 (auto-arm.yml 3, nightly.yml 2)", () => {
+  for (const [workflow, uses] of [["auto-arm.yml", 3], ["nightly.yml", 2]] as const) {
+    assert.deepEqual(secretsRead(workflow), Array(uses).fill(SECRET_NAME),
+      `${workflow} must read exactly ${uses} x secrets.${SECRET_NAME} and nothing else. A rename moves CI onto `
+      + `another credential without a red test; \`${SECRET_HOLDER}\` holds ${SECRET_NAME} at ${SECRET_SCOPE} `
+      + "level (#2358), so a change of name is a change of who acts, and belongs on a row");
+  }
+});
+
+test("#2358: trunk.yml no longer reads the arming secret -- the auto-revert path that used it is gone "
+  + "(#2356), so the arming identity is not what trunk runs as", () => {
+  assert.ok(!secretsRead("trunk.yml").includes(SECRET_NAME),
+    "trunk.yml reads the arming secret again: that is the revert path #2356 removed, or a new use of an "
+    + "identity that completes merges, and either belongs on a row before it lands");
+  assert.ok(secretsRead("auto-arm.yml").length > 0,
+    "POSITIVE CONTROL for the two assertions above: the reader finds the secret where it is known to be used");
+});
+
 // --- #1969: A TOKEN THAT IS SET BUT REFUSED IS NOT A TOKEN THAT WORKS -------------------------------
 //
 // The four tests above pin that both jobs BRANCH on whether `A11IGN_BOT_TOKEN` is SET. That branch was
