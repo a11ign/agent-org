@@ -94,3 +94,30 @@ export function laneReason(labels, mySession, deps) {
     + "PR body so it is in the log rather than in somebody's memory. `lane:any` reserves nothing; this "
     + "label names an owner.";
 }
+
+/**
+ * RULE: IS THE ASKING SESSION DRAINED? -- #2324 (`ceo`, #1950 ruling b).
+ *
+ * `sessions.json` marks the three standing engineers `drain` so that every NEW row goes through spawn and #1950's
+ * 20 clean cycles build at full throughput. `wake.mjs`'s `route` stops OFFERING them rows, but a session that
+ * finishes a row and claims the next one by hand keeps the accumulated history the design exists to drop -- the
+ * chairman's own reading of `worker-4` -- so the offer alone is not the drain. This is the other half.
+ *
+ * THE FACT IS INJECTED, NOT READ HERE. `drained` is what `wake.mjs`'s `activeDrain` returns: the marked roles
+ * while the newest cycle is clean and NONE once one failed, so this rule needs no ledger of its own and cannot
+ * disagree with the router about whether the drain is in force. A spare or an undrained role is not named and
+ * proceeds. Resuming a row the session already holds is not a new row and never reaches this
+ * (`writeRowLabels` asks only when the claim is not already this session's).
+ *
+ * @param {string} mySession
+ * @param {readonly string[]} drained the roles the drain holds back now
+ * @returns {string | null} a refusal reason, or null if `mySession` may take a new row
+ */
+export function drainReason(mySession, drained) {
+  if (!drained.includes(mySession)) return null;
+  return `${mySession} is DRAINED (\`"drain": true\` in packages/agent-org/docs/roles/sessions.json, #2324): it `
+    + "finishes the rows it holds and claims no NEW ones, so every new row goes through a spawned instance and "
+    + "#1950's clean-cycle count is not fed by an engineer carrying history. Nothing is retired -- rework and "
+    + "review orders on a row you hold still reach you. The drain lifts itself if the last `spare-cycles` line "
+    + "is not clean (`npm run spawn:cycles` prints it); removing the field ends it, and that is `ceo`'s.";
+}

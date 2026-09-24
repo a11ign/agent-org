@@ -36,6 +36,7 @@ import { handoffId, handoffQueuePath, ledgerPathFrom, readHandoffs, queueHandoff
   deliverHandoffs, handoffOrder, staleHandoffs, nothingToDeliver, HANDOFF_STALE_MS, HANDOFF_QUEUE_FILE }
   from "../wake.mjs";
 import { engineerEligibility, b2Verdict, ledgerKeyOf, ledgerLine } from "../wake.mjs";
+import { sparePathsFrom } from "../wake.mjs";
 import { handoffBacklog, backlogReport, handoffBatches, fitBatch, waitedFor, staleReport,
   PROMPT_ARG_MAX, HANDOFF_BATCH_BYTES, BATCH_WRAPPER_BYTES, targetLabelBytes }
   from "../wake.mjs";
@@ -1974,10 +1975,16 @@ case "$*" in
 esac
 `;
 
-function runPoolTick(ghStub: string | null) {
+/** A cycle line that FAILED: the drain lifts itself on it (#2324), so a tick given this offers a standing engineer. */
+const FAILED_CYCLE = `${JSON.stringify({ role: "worker-4", row: 2131, at: 1, clean: false, why: "fixture" })}\n`;
+
+function runPoolTick(ghStub: string | null, { cycles = FAILED_CYCLE as string | null } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "wake-pool-"));
   try {
     const ledger = join(dir, "wake-ledger");
+    // THE REAL `sessions.json` MARKS `worker-judge` DRAINED, so without a ledger line these two ticks would refuse
+    // the very engineer they were written to offer. A failed cycle is the drain's own release, not a bypass of it.
+    if (cycles !== null) writeFileSync(sparePathsFrom(ledger).cycles, cycles);
     writeFileSync(join(dir, "herdr"), herdrStub("idle").replace("product-manager", "worker-judge"));
     writeFileSync(join(dir, "gh"), ghStub ?? "#!/bin/sh\nexit 1\n");
     chmodSync(join(dir, "herdr"), STUB_MODE);
@@ -2010,4 +2017,14 @@ test("#2226 (4): THE TICK with a `gh` that cannot answer still offers the order"
     "fail OPEN: an API outage must not stop the engineers being woken");
   assert.match(written, /^\d+\tengineers\/ready-row-unclaimed\/2131\tworker-judge\n$/,
     "and the ledger line NAMES THE RECIPIENT, which the causeKey alone never could");
+});
+
+// --- THE WIRING, AS A PROCESS: `main` hands `deliver` the drain and the precheck ---
+
+test("#2324: THE TICK with the drain in force (no ledger line) refuses a standing engineer, and says it is drained", () => {
+  const { ran, written } = runPoolTick(GH_STUB, { cycles: null });
+  assert.match(ran.stderr, /UNDELIVERED engineers\/ready-row-unclaimed\/2131: no engineer is idle and allowed to claim \(worker-judge=drained \(#2324\)\)/,
+    `main must hand the router the drain; got ${ran.stderr}`);
+  assert.equal(ran.status, 1);
+  assert.equal(written, "", "the row stays offered");
 });
