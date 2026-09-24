@@ -30,7 +30,7 @@ import { afterGate, GATE, EXIT as TICK_EXIT } from "../work-tick.mjs";
 import { spawnInvocation, addressed, clearContext, CLEAR_TIMEOUT_MS, CLEAR_SETTLE_MS,
   RUN_IDLE_RESET_MS, stuckRowOf, escalateStuck }
   from "../wake.mjs";
-import { spawnableRole, isPilotOrder, SPAWN_CAUSES, MAX_SPAWNS_PER_TICK }
+import { spawnableRole, isPilotOrder, SPAWN_CAUSES, MAX_SPAWNS_PER_TICK, engineerRoles, rosterFrom }
   from "../wake.mjs";
 import { handoffId, handoffQueuePath, ledgerPathFrom, readHandoffs, queueHandoff, dropHandoffs,
   deliverHandoffs, handoffOrder, staleHandoffs, nothingToDeliver, HANDOFF_STALE_MS, HANDOFF_QUEUE_FILE }
@@ -399,7 +399,7 @@ test("#1952: a busy, blocked or agentless role's ADDRESS is never lent to a seco
   for (const status of ["working", "blocked", "unknown"]) {
     const held = agents({ "worker-capture": status, "worker-judge": status, "worker-tooling": status });
     const got = spawnableRole(ROW_ORDER, held, ROSTER);
-    assert.match(refusalText(got), /every engineer role already has a process/);
+    assert.match(refusalText(got), /all 3 engineer roles hold a process/);
     assert.match(refusalText(got), new RegExp(`worker-capture=${status}`),
       "the refusal names what each role is doing, or nobody can tell a busy org from a broken reader");
     const h = recordingHerdr();
@@ -408,6 +408,95 @@ test("#1952: a busy, blocked or agentless role's ADDRESS is never lent to a seco
   }
   // The one state that IS lent, so the three refusals above are not vacuous.
   assert.deepEqual(spawnableRole(ROW_ORDER, NOBODY, ROSTER), { role: "worker-capture" });
+});
+
+// #2279: THE PILOT COULD NOT FIRE. All three standing engineer roles are permanently occupied and only an ABSENT
+// role is spawnable, so `spawnableRole` had nothing to start into -- reported live as three UNDELIVERED orders.
+// The roster is the `sessions.json` engineer roles, so the fix is two addresses in that file and no new mechanism.
+const STANDING = ["worker-capture", "worker-judge", "worker-tooling"];
+const SPARES = ["worker-4", "worker-5"];
+const REAL_ROSTER = engineerRoles();
+
+test("#2279: the roster is sessions.json's engineer roles, the standing three FIRST and two spares after", () => {
+  assert.deepEqual(REAL_ROSTER, [...STANDING, ...SPARES],
+    "file order is the offer order, so a spare is started only once every standing role is taken");
+  const live = (JSON.parse(readFileSync(
+    new URL("../../../../packages/agent-org/docs/roles/sessions.json", import.meta.url), "utf8",
+  )) as { live: { name: string; role: string; brief: string | null }[] }).live;
+  for (const spare of SPARES) {
+    assert.deepEqual(live.find((s) => s.name === spare)?.role, "engineer");
+    assert.equal(live.find((s) => s.name === spare)?.brief, null, "a spare is an address, not a briefed session");
+  }
+  assert.equal(REAL_ROSTER.length, live.filter((s) => s.role === "engineer").length,
+    "no engineer role in the file is missing from what `wake` offers work to");
+});
+
+test("#2279: `wake` offers work to the file's roster by default, and `--roster` still overrides it", () => {
+  assert.deepEqual(rosterFrom(["node", "wake.mjs"]), REAL_ROSTER,
+    "the default was a typed list of the standing three, so a role added to the file was never offered work");
+  assert.deepEqual(rosterFrom(["node", "wake.mjs", "--roster=worker-judge, worker-4"]), ["worker-judge", "worker-4"]);
+});
+
+test("#2279: the roster FOLLOWS THE FILE it is given -- names, order and role filter all come from it", () => {
+  // The two tests above read the REAL file, whose engineers are today's five, so a hardcoded array of those five
+  // passes them (reviewer's mutation at e4ecd910). A fixture whose engineers differ from today's, in a different
+  // order and interleaved with non-engineers, can only be answered by reading the path.
+  const dir = mkdtempSync(join(tmpdir(), "wake-roster-"));
+  try {
+    const path = join(dir, "sessions.json");
+    writeFileSync(path, JSON.stringify({ live: [
+      { name: "zed-spare", role: "engineer" },
+      { name: "an-orchestrator", role: "orchestrator" },
+      { name: "alpha-engineer", role: "engineer" },
+      { name: "a-reviewer", role: "reviewer" },
+      { name: "worker-judge", role: "engineer" },
+    ] }));
+    const expected = ["zed-spare", "alpha-engineer", "worker-judge"];
+
+    assert.deepEqual(engineerRoles(path), expected, "file order, engineers only");
+    assert.deepEqual(rosterFrom(["node", "wake.mjs"], path), expected, "the default follows the file it is handed");
+    assert.deepEqual(rosterFrom(["node", "wake.mjs", "--roster=worker-4"], path), ["worker-4"],
+      "`--roster` still wins over the file");
+    assert.notDeepEqual(expected, REAL_ROSTER, "the fixture differs from the real roster, or it proves nothing");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#2279 ACCEPTANCE: with all three standing engineers WORKING, `deliver` STARTS a process under worker-4", () => {
+  const h = recordingHerdr();
+  const standingBusy = agents(Object.fromEntries(STANDING.map((r) => [r, "working"])));
+  const got = deliver([ROW_ORDER], standingBusy, REAL_ROSTER, { run: h.run });
+
+  assert.deepEqual(h.said("workspace create"), ["--session org workspace create --label worker-4 --no-focus"]);
+  assert.equal(h.said("agent start").length, 1);
+  assert.ok(h.said("agent start")[0].startsWith("--session org agent start worker-4 --kind claude "));
+  assert.deepEqual(got.sent, ["worker-4 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
+  assert.deepEqual(got.refused, []);
+});
+
+test("#2279: the SECOND spare is next once worker-4 holds a process, in roster order", () => {
+  const h = recordingHerdr();
+  const held = agents({ ...Object.fromEntries(STANDING.map((r) => [r, "working"])), "worker-4": "working" });
+  const got = deliver([ROW_ORDER], held, REAL_ROSTER, { run: h.run });
+  assert.deepEqual(got.sent, ["worker-5 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
+});
+
+test("#2279 POSITIVE CONTROL: worker-4 and worker-5 BOTH working is refused, and the text names the ceiling", () => {
+  // The control for the two tests above: the same order and roster, the only difference being that the spares hold
+  // a process -- so the refusal is the ceiling, not a roster that could never have started anything.
+  const h = recordingHerdr();
+  const everyone = agents(Object.fromEntries(REAL_ROSTER.map((r) => [r, "working"])));
+  const got = deliver([ROW_ORDER], everyone, REAL_ROSTER, { run: h.run });
+
+  assert.deepEqual(h.said("workspace create"), [], "no process is started past the ceiling");
+  assert.deepEqual(got.sent, []);
+  assert.equal(got.refused.length, 1);
+  assert.match(got.refused[0], /all 5 engineer roles hold a process \(worker-capture=working, worker-judge=working, /);
+  assert.match(got.refused[0], /worker-4=working, worker-5=working\)/);
+  assert.ok(!/every engineer role already has a process/.test(got.refused[0]),
+    "that wording read as a fact about the standing three, which is the misreading that hid this defect");
+  assert.match(got.refused[0], /ceiling/);
 });
 
 test("#1952: at most one process per tick, and the second order says so rather than going quiet", () => {
