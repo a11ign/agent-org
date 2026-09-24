@@ -45,6 +45,7 @@ import { REPO } from "../../../scripts/repo-identity.mjs";
 import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
 import { newestPerName } from "./newest-check-run.mjs";
 import { holdersOf } from "./pr-hold-state.mjs";
+import { armedFromApi } from "./pr-armed-state.mjs";
 // `poolFromHeaders` WAS DEFINED HERE until #2003, and its `Pool` shape with it. `work-gate.mjs` needs the
 // same reading on its refusal path and may not import this file, so the reader is a leaf now.
 import { poolFromHeaders } from "./api-pool.mjs";
@@ -220,8 +221,8 @@ export function renderBranchPrefixes(census) {
  * be rate-limited out from under the table.
  *
  * @param {{number: number, headRefName: string, headRefOid: string,
- *   armed: boolean, holders?: string[], updatedAt: string, redChecks: string[] | null,
- *   draft?: boolean | null}} pr
+ *   armed: boolean | null, queue?: {state?: string, position?: number} | null, holders?: string[],
+ *   updatedAt: string, redChecks: string[] | null, draft?: boolean | null}} pr
  * @param {number | null} behind
  * @param {Date} now
  */
@@ -233,6 +234,8 @@ export function prRow(pr, behind, now) {
     owner,
     behind,
     armed: pr.armed,
+    // ABSENT IS `null`, as `draft` below: a payload with no queue reading is not one that says "not queued".
+    queue: pr.queue ?? null,
     holders: pr.holders ?? [],
     idleMinutes,
     // CARRIED THROUGH, because `openPRs()` reading the field is not the same as a caller being able to
@@ -303,6 +306,55 @@ export function trunkState() {
 }
 
 /**
+ * The queue field REST cannot carry, for every open pull request in ONE call -- `mergeQueueEntry` is a
+ * GraphQL-only object (`pr-armed-state.mjs`'s `ARMED_QUERY` says the same about its per-PR read), and
+ * `ARMED_QUERY` asks about one PR by number, which would be a call per row. `autoMergeRequest` rides along
+ * so a single node answers `armedFromApi`'s whole question. First 100, matching the REST page above.
+ */
+export const QUEUE_QUERY = "query($o:String!,$r:String!){repository(owner:$o,name:$r)"
+  + "{pullRequests(states:OPEN,first:100){nodes{number autoMergeRequest{enabledAt} "
+  + "mergeQueueEntry{state position}}}}}";
+
+/** The `gh` argv that asks `QUEUE_QUERY`, jq'd down to the list of nodes. @returns {string[]} */
+export function queueEntriesArgs() {
+  const [owner, name] = REPO.split("/");
+  return ["api", "graphql", "-f", `query=${QUEUE_QUERY}`, "-f", `o=${owner}`, "-f", `r=${name}`,
+    "--jq", ".data.repository.pullRequests.nodes"];
+}
+
+/**
+ * Each open PR's queue reading by number, or `null` when the queue could not be asked. NULL, NEVER AN EMPTY
+ * MAP: an empty map says "read it, nobody is queued", and a GraphQL outage must not produce that answer.
+ * @param {(args: string[]) => string} run
+ * @returns {Map<number, {autoMergeRequest?: unknown, mergeQueueEntry?: {state?: string, position?: number} | null}> | null}
+ */
+export function queueEntries(run) {
+  const nodes = ask(() => JSON.parse(run(queueEntriesArgs())));
+  if (!Array.isArray(nodes)) return null;
+  return new Map(nodes.map((/** @type {any} */ node) => [node.number, node]));
+}
+
+/**
+ * PURE. Is this listed pull request armed, and where in the queue is it? One question, put to
+ * `armedFromApi` and to nothing else in this file (#2245).
+ *
+ * `merged: false` is a fact about the population, not a guess: this is the OPEN list. `armed` is `null`
+ * when the queue reading is missing for this PR (unreadable, or the PR was past the first 100) and REST
+ * alone shows no auto-merge -- the state in which "not armed" would be an answer nobody had made.
+ *
+ * @param {{ number: number, auto_merge?: unknown }} pr one element of the REST pulls list
+ * @param {ReturnType<typeof queueEntries>} queue
+ * @returns {{ armed: boolean | null, queue: { state?: string, position?: number } | null }}
+ */
+export function armedState(pr, queue) {
+  const node = queue?.get(pr.number);
+  const view = { merged: false, autoMergeRequest: pr.auto_merge ?? node?.autoMergeRequest ?? null,
+    mergeQueueEntry: node?.mergeQueueEntry ?? null };
+  const armed = armedFromApi(view);
+  return { armed: armed || node ? armed : null, queue: view.mergeQueueEntry };
+}
+
+/**
  * Every open PR, with its red check names. `null` red list means the lookup failed for that PR.
  *
  * REST, NOT `gh pr list`. On 2026-09-09 the shared GraphQL pool reached 5000 of 5000 and every
@@ -320,30 +372,63 @@ export function trunkState() {
  * `auto_merge` and `updated_at` come back on the REST list; check conclusions come from `check-runs`,
  * which is core and kept working throughout.
  *
- * PROVEN AGAINST AN ARMED PR, 2026-09-09 15:06Z. When this was written every open PR read
- * `auto_merge: null`, which was CORRECT -- all of them opened after 14:41Z with a failing `arm` job, so
- * none was armed. Consistent with the known state is not the same as proven, and the difference matters
- * here because a false "UNARMED" is wrong in the reassuring direction: it reads as work still to do
- * rather than as a table that has stopped seeing. So it was left stated as unproven until it could be
- * read non-null.
+ * ARMED IS NOT A REST FIELD, AND THIS TABLE READ IT AS ONE UNTIL #2245. REST carries `auto_merge` and no
+ * merge-queue field at all, and a pull request LEAVES auto-merge when it enters the queue -- so the one at
+ * the FRONT of the queue read `auto_merge: null` and printed UNARMED (#2239, 2026-09-23T21:03:26Z, measured
+ * by `ceo` in one second against both APIs: REST `auto_merge: null`, GraphQL `mergeQueueEntry`
+ * `{position: 1, state: AWAITING_CHECKS}`). Wrong in the reassuring direction: "nobody has got to this
+ * yet" is the reading that gets a pull request armed that is already merging, and a TRUE UNARMED (a refused
+ * arming credential, #1257/#1969) looks identical in the one table people scan. So the question is now put
+ * to `armedFromApi` -- the predicate `arm-pr.mjs` and `auto-arm-sweep.mjs` already ask (#1729, #2004,
+ * #2046) -- and the queue is read with ONE bulk GraphQL call beside the REST list, `queueEntries`.
  *
- * It now is, and against a SECOND API rather than a re-read of the same one: REST `auto_merge` and
- * GraphQL `autoMergeRequest` agree on #805 (armed/MERGE), #799 (armed/MERGE) and #742 (null/null, a
- * draft nothing armed). The negative case is the half that matters -- two APIs agreeing on a positive
- * would not distinguish a field that is always truthy.
+ * THE ANSWER IS THREE-VALUED, because the table was made REST-only to survive a GraphQL outage (above) and
+ * a queue read that fails must not turn back into the defect: `armed` is `true` when the predicate says so,
+ * `false` only when the queue WAS read and the PR is in neither state, and `null` -- rendered `armed?`,
+ * section INCOMPLETE -- when the queue could not be asked and REST alone shows no auto-merge. A REST
+ * `auto_merge` that is set is armed whatever GraphQL said, so an outage still reports every PR it can.
  *
- * If this regresses, `armed` silently becomes always-false and NO TEST ON A FIXTURE CAN SEE IT, because
- * the fixtures supply the field. The check is a live one or it is nothing.
+ * THE OLD PARAGRAPH HERE CLAIMED THE FIELD "PROVEN AGAINST AN ARMED PR" AND IS WITHDRAWN AS A GENERAL
+ * ASSURANCE. It was true of #805, #799 and #742 (REST `auto_merge` and GraphQL `autoMergeRequest` agreeing
+ * on each) and false as a statement about the field: none of the three was queued, and while a pull request
+ * is not queued those two fields CANNOT differ, so the check was real and its population was the complement
+ * of the defect. A second-API check settles only the states its sample was in.
+ *
+ * THE RAW DERIVATIONS OF THE SAME PREDICATE ELSEWHERE, classified (#2245 done-when 4; counted at
+ * `c06bc5cc3` by grepping for `autoMergeRequest != null`). Three of the four read a GraphQL field and
+ * still miss the queue, so "use GraphQL" was never the lesson -- ask the ONE predicate is. None is
+ * changed here, this row's Region being this file:
+ *
+ *   queue-stalled.mjs `examinePr`         a queued PR is not armed -> not green -> `examined: false`, so the
+ *                                         conflict and armed-behind stall checks never run on it. SILENTLY
+ *                                         UNEXAMINED. Not a one-line swap: `ageMs` reads
+ *                                         `autoMergeRequest.enabledAt`, which a queued PR does not have, and
+ *                                         whether the queue owns "behind" for a queued PR is a ruling.
+ *   merge-guard/armed-race-rule.mjs       a queued PR does not race -> a push to its branch is allowed. FAILS
+ *                                         OPEN, by that file's own design ("a convenience guard is not a
+ *                                         correctness gate"), so it is a decision to revisit rather than a
+ *                                         defect to fix.
+ *   update-branch-sweep.mjs `sweepPrs`    two readers of one expression. The SKIP is correct (a queued PR is
+ *                                         not this job's concern). `armedCount`, #1257's "is the arming layer
+ *                                         working" reading, UNDERCOUNTS, worst when the queue is busiest --
+ *                                         a false negative that sends a session to investigate a healthy
+ *                                         layer. That is the one BEHAVIOUR CHANGE, and `ceo` named it on #2245.
+ *
+ * The injected `run` exists so a test can pin WHICH calls this makes and not only what it does with the
+ * answers: a fixture-only fix passes every assertion and leaves the payload without the queue key.
+ *
+ * @param {{ run?: (args: string[]) => string }} [deps]
  */
-export function openPRs() {
-  const prs = ask(() => JSON.parse(gh(["api", `repos/${REPO}/pulls?state=open&per_page=100`])));
+export function openPRs({ run = gh } = {}) {
+  const prs = ask(() => JSON.parse(run(["api", `repos/${REPO}/pulls?state=open&per_page=100`])));
   if (!Array.isArray(prs)) return null;
+  const queue = queueEntries(run);
   return prs.map((/** @type {any} */ pr) => ({
     number: pr.number,
     headRefName: pr.head?.ref ?? "?",
     headRefOid: pr.head?.sha ?? "",
     updatedAt: pr.updated_at,
-    armed: Boolean(pr.auto_merge),
+    ...armedState(pr, queue),
     // THE DRAFT FLAG COMES BACK ON THE SAME PAYLOAD, so reading it costs nothing -- the same reason
     // `holders` is read below. It was dropped here until #912's gate needed it: "every open pull request
     // that is a draft and has no verdict at its current head" is the reviewer's whole lane
@@ -368,7 +453,7 @@ export function openPRs() {
     // rather than by somebody remembering, and it agrees with `arm-pr`/`auto-arm-sweep` at every instant
     // including the one where main has the rename and this branch has not been carried yet.
     holders: holdersOf((pr.labels ?? []).map((/** @type {any} */ l) => String(l?.name ?? ""))),
-    redChecks: checksOnSha(pr.head?.sha ?? "")?.filter(isRed).map((c) => c.name) ?? null,
+    redChecks: checksOnSha(pr.head?.sha ?? "", run)?.filter(isRed).map((c) => c.name) ?? null,
   }));
 }
 
@@ -432,10 +517,11 @@ function defaultGitLog(limit) {
  * unreadable sha and a sha with no checks are different facts and the caller reports them differently.
  *
  * @param {string} sha
+ * @param {(args: string[]) => string} [run] injectable for the same reason `openPRs`'s is
  * @returns {{name: string, conclusion: string}[] | null}
  */
-export function checksOnSha(sha) {
-  const raw = ask(() => gh(["api", `repos/${REPO}/commits/${sha}/check-runs`, "--paginate",
+export function checksOnSha(sha, run = gh) {
+  const raw = ask(() => run(["api", `repos/${REPO}/commits/${sha}/check-runs`, "--paginate",
     "--jq", ".check_runs[] | {name, conclusion, completedAt: .completed_at}"]));
   if (raw === null) return null;
   const runs = raw.trim().split("\n").filter(Boolean).flatMap((line) => {
@@ -495,10 +581,24 @@ export function renderOpenPRs(prs) {
     // pair the hold exists to prevent.
     const arm = row.holders.length
       ? (row.armed ? `HELD+ARMED(${row.holders.join(",")})` : `HELD(${row.holders.join(",")})`)
-      : (row.armed ? "armed  " : "UNARMED");
+      : armedWord(row);
     return `   #${row.number}  ${row.owner.padEnd(11)} behind=${behind.padEnd(3)} ${arm}${red}`;
   });
-  return { lines, incomplete: prs.some((r) => r.behind === null || r.red === null) };
+  return { lines, incomplete: prs.some((r) => r.behind === null || r.red === null || r.armed === null) };
+}
+
+/**
+ * The word for a pull request nobody has held. QUEUED is named rather than folded into `armed`: they are
+ * different facts and the table is read by people (#2245) -- auto-merge is waiting for its checks, a
+ * queued pull request is already merging. `armed?` is a read this row could not make, never `UNARMED`:
+ * the queue was unreadable and REST shows no auto-merge, which is silence rather than an answer.
+ *
+ * @param {{armed: boolean | null, queue?: {position?: number} | null}} row
+ */
+function armedWord(row) {
+  if (row.armed === null) return "armed? ";
+  if (!row.armed) return "UNARMED";
+  return row.queue ? `QUEUED(${row.queue.position ?? "?"})` : "armed  ";
 }
 
 /** @param {any[]} prs @returns {string[]} */
