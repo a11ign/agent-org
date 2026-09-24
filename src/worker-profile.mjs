@@ -138,6 +138,17 @@ export const PROFILES = Object.freeze({
     why: "the act is one command; telling a repository-wide credential outage from one PR that missed "
       + "its arming event is the judgment, and the cheap answer leaves the outage running",
   }),
+  "pr-merge-conflict": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // HIGH, for `pr-checks-failing`'s reason: the act is a rebase, and resolving a conflict is a judgment
+    // about which side of each hunk wins. A cheap tier that guesses pushes a merge that still fails CI or,
+    // worse, silently drops the other pull request's change -- #2203 conflicted on `work-gate.mjs` and
+    // `agent-practices.md` after #2205 landed, files whose every hunk carries a ruling.
+    effort: "high",
+    why: "resolving a merge conflict is judgment about which side of each hunk wins, and a wrong guess "
+      + "either costs a CI cycle or silently drops the other pull request's change",
+  }),
   "pr-review-blocked": Object.freeze({
     kind: "claude",
     model: "sonnet",

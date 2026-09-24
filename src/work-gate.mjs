@@ -91,7 +91,7 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
   "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
   "blocked-unexaminable", "fleet-batch-due", "blocker-cleared", "pr-green-unarmed",
   "claimed-row-amended", "row-branch-unshipped", "host-units-stale", "pr-review-blocked",
-  "unclaimed-blocker-cleared"];
+  "unclaimed-blocker-cleared", "pr-merge-conflict"];
 
 /**
  * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
@@ -248,7 +248,14 @@ export function readPrs(run = defaultRun) {
       // list, no extra request and no extra pool -- which is the whole reason the blind spot is worth
       // closing HERE rather than in `queue-table.mjs`, whose own header records dropping
       // `mergeStateStatus` precisely because a GraphQL-only field meant a second, refusable call.
-      + "reviewDecision"]);
+      + "reviewDecision,"
+      // #2209: `mergeStateStatus` AND `mergeable`, BOTH ON THE SAME CALL, because nothing here read whether
+      // a pull request CONFLICTS with `main`. #2203 went DIRTY when #2205 merged, was green and approved,
+      // and was reported as a credential outage while six Ready rows sat behind it. `gh pr list --json`
+      // offers both names (checked 2026-09-24), so this is two more names on a request already made --
+      // not the second, refusable call `queue-table.mjs`'s header records avoiding. GitHub computes them
+      // lazily and may answer `UNKNOWN`; `conflictStateOf` reads that as unread, never as clean.
+      + "mergeStateStatus,mergeable"]);
     const parsed = JSON.parse(out);
     return Array.isArray(parsed) ? parsed : null;
   } catch {
@@ -2200,6 +2207,21 @@ export function shouldBeMerging(prs, required = null) {
  * @returns {any[]}
  */
 function mergeCandidates(prs, required = null) {
+  return greenUnheldPrs(prs, required)
+    .filter((pr) => conflictStateOf(pr) !== CONFLICT_STATE.CONFLICTING);
+}
+
+/**
+ * PURE. The pull requests that are not a draft, not held and settled green on every required check --
+ * BEFORE asking whether they can merge. Both halves of that question are read from this one population:
+ * `mergeCandidates` keeps the ones that can, `conflictedPrs` the ones that cannot, so the two partition it
+ * and no pull request is called stranded by one cause and healthy by another on the same tick (#2084's
+ * argument for extracting `mergeCandidates`, applied once more).
+ *
+ * @param {any[]} prs @param {string[] | null} [required]
+ * @returns {any[]}
+ */
+function greenUnheldPrs(prs, required = null) {
   return (prs ?? [])
     .filter((pr) => pr && pr.isDraft !== true && Number.isFinite(Number(pr.number)))
     // A DRAFT IS EXCLUDED AT THE SOURCE, NOT BY THE HOLD RULE: `gh pr merge --auto` refuses a draft
@@ -2207,6 +2229,104 @@ function mergeCandidates(prs, required = null) {
     .filter((pr) => armabilityOf({ labels: labelsOf(pr) }).arm)
     .filter((pr) => checksSettledGreen(
       blockingChecks(newestPerName(pr.statusCheckRollup ?? []), required)) === true);
+}
+
+/** The three answers `conflictStateOf` can give. `UNREAD` is deliberately not a spelling of "clear". */
+export const CONFLICT_STATE = Object.freeze({
+  /** GitHub says the branch cannot merge into `main` as it stands. */
+  CONFLICTING: "CONFLICTING",
+  /** GitHub named a merge state and it is not a conflict. */
+  NOT_CONFLICTING: "NOT_CONFLICTING",
+  /** The payload carried no usable state -- absent, or `UNKNOWN` while GitHub is still computing it. */
+  UNREAD: "UNREAD",
+});
+
+/**
+ * PURE. #2209: DOES THIS PULL REQUEST CONFLICT WITH `main`? -- three answers, and the third is not "no".
+ *
+ * EITHER FIELD SAYING CONFLICT IS ENOUGH. `mergeStateStatus: DIRTY` and `mergeable: CONFLICTING` are the
+ * same fact in two vocabularies (#2203 carried both), and a conflict is the one state where believing the
+ * louder of two fields is safe: the error it can make is a pull request reported to its author, who looks
+ * and finds it clean, rather than one nobody was told about.
+ *
+ * ABSENT OR `UNKNOWN` IS `UNREAD`, AND IT FALLS THE WAY `readPrs`'s OWN `null`-MEANS-REFUSED RULE FALLS
+ * (#1286), ONE FIELD DOWN: a question that was not answered is not answered "fine". Concretely, an unread
+ * pull request is never certified as one that can merge and is never sent a conflict order it may not
+ * deserve, and it STAYS in `mergeCandidates` -- exactly where it sat before this row. Dropping it there
+ * would turn a field the gate lost, or GitHub had not yet computed, into a silently emptier
+ * `pr-green-unarmed`, which is the reassuring direction a blind spot fails in.
+ *
+ * @param {any} pr
+ * @returns {string} a `CONFLICT_STATE` value
+ */
+export function conflictStateOf(pr) {
+  if (pr?.mergeStateStatus === "DIRTY" || pr?.mergeable === "CONFLICTING") return CONFLICT_STATE.CONFLICTING;
+  const status = pr?.mergeStateStatus;
+  if ((typeof status === "string" && status !== "UNKNOWN") || pr?.mergeable === "MERGEABLE") {
+    return CONFLICT_STATE.NOT_CONFLICTING;
+  }
+  return CONFLICT_STATE.UNREAD;
+}
+
+/**
+ * PURE. #2209: the green, unheld, non-draft pull requests that CANNOT MERGE because they conflict with
+ * `main` -- the complement of `mergeCandidates` inside `greenUnheldPrs`.
+ *
+ * @param {any[]} prs @param {string[] | null} [required]
+ * @returns {any[]} ascending by PR number
+ */
+export function conflictedPrs(prs, required = null) {
+  return greenUnheldPrs(prs, required)
+    .filter((pr) => conflictStateOf(pr) === CONFLICT_STATE.CONFLICTING)
+    .sort((a, b) => Number(a.number) - Number(b.number));
+}
+
+/**
+ * #2209: ONE ORDER PER CONFLICTED PULL REQUEST, ADDRESSED TO ITS AUTHOR -- and never to `product-manager`
+ * when the pull request names one.
+ *
+ * THE FIX FOR THIS BLIND SPOT IS NOT AN EXCLUSION. Removing a `DIRTY` pull request from
+ * `shouldBeMerging` and reporting it nowhere is strictly worse than the state the row found, where
+ * `pr-green-unarmed` at least reached somebody, wrongly. A conflict is CODE WORK -- a rebase, with
+ * judgment about which side of each hunk wins -- so it belongs to the session on the PR's `session:`
+ * label, exactly as `failingChecksOrder` and `notConvincedOrder` route theirs. With no label it falls back
+ * to `product-manager`, the queue's first reader, who can find out whose it is.
+ *
+ * PER PULL REQUEST AND NOT ONE ORDER FOR THE SET, unlike `greenUnarmedOrders`: a credential outage strands
+ * every open PR at once and one order shows the shape, but a conflict is one author's one branch, and a set
+ * order would wake somebody about work that is not theirs. The `causeKey` carries the head, so a push that
+ * did not clear the conflict is a new question and a push that did leaves the set.
+ *
+ * `arm-pr.mjs` IS NOT OFFERED and the prompt says so: `auto-arm-sweep.mjs` records that `gh pr merge
+ * --auto` "exits non-zero for a merged PR, an unmergeable one and a network fault alike", so the remedy
+ * `pr-green-unarmed` hands over cannot succeed on this state.
+ *
+ * @param {any[]} conflicted from `conflictedPrs`
+ * @returns {{session: string, cause: string, subject: string, discriminator: string,
+ *            prompt: string, causeKey: string}[]}
+ */
+export function mergeConflictOrders(conflicted) {
+  return conflicted.map((pr) => {
+    const owner = sessionOf(pr);
+    const session = owner ?? "product-manager";
+    const head8 = String(pr.headRefOid ?? "").slice(0, 8) || "no-head";
+    return {
+      session,
+      cause: "pr-merge-conflict",
+      subject: `pr-${pr.number}`,
+      discriminator: head8,
+      prompt: `#${pr.number} at \`${head8}\` is green on every required check and NOT held, and it `
+        + "CONFLICTS with `main`: GitHub reports it cannot merge as it stands, whatever its review "
+        + "decision or arming.\n"
+        + `${owner ? "It carries your session label, so the rebase is yours." : "It names no session, so find whose it is."} `
+        + "Merge or rebase `main` into the branch, resolve the conflicts, re-run the gate and push.\n"
+        + "DO NOT ARM IT: `gh pr merge --auto` exits non-zero for an unmergeable pull request, so "
+        + "`arm-pr.mjs` cannot succeed here. Until this is resolved it is also holding every Ready row "
+        + "that shares a file with it (B4) -- #2203 held six. If the pull request should be closed, say so "
+        + "on it; a conflicted pull request nobody answers never lands.",
+      causeKey: `${session}/pr-merge-conflict/pr-${pr.number}/${head8}`,
+    };
+  });
 }
 
 /**
@@ -3475,6 +3595,9 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // supply question, less urgent than a named red build, and never withheld by a drain, because a drain
   // stops the org TAKING ON work rather than finishing what is in flight.
   orders.push(...reviewBlockedOrders(reviewBlocked(prs, required)));
+  // #2209: `mergeCandidates` no longer holds a conflicting PR, so without this line it is reported nowhere
+  // -- worse than before, when `pr-green-unarmed` at least named it. To its author; a drain keeps it.
+  orders.push(...mergeConflictOrders(conflictedPrs(prs, required)));
 
   // #2174: AFTER the per-PR and per-row causes and BEFORE the chairman's, for `pr-green-unarmed`'s
   // reason applied to the machine rather than to a pull request. A stale host is finished work that has
