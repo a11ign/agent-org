@@ -65,6 +65,8 @@ import { labelsToStrip } from "./close-rows-for-merged-pr.mjs";
 // #1130: the label constant comes from where the BOARD reads it, never restated here -- the drift
 // check below exists because two copies of one fact disagreed, so it must not add a third.
 import { OUT_OF_RELEASE_LABEL } from "./board-data.mjs";
+// #2190: the rule the CLAIM path refuses by, CALLED here and never re-derived -- see `unclaimableReadyRows`.
+import { REQUIRED_FIELDS, missingTemplateFields, templateFieldsReason } from "./row-claim/template-fields-rule.mjs";
 
 // #804: READY_LABEL/WAS_READY_LABEL are IMPORTED (above) from the leaf claim-labels.mjs and re-exported
 // here, not declared in this file -- see claim-labels.mjs's own header for why. Every existing
@@ -923,6 +925,108 @@ function reportBothBoardLabels() {
     + `deliberate act. Then promote through the one act that writes all three together, which cannot leave `
     + `this state: \`node packages/agent-org/src/row-file.mjs --promote=<n> --session=<you>\`.\n`);
   return rows.length;
+}
+
+/**
+ * #2190: OPEN `ready` ROWS THAT `row-claim` WOULD REFUSE FOR A MISSING TEMPLATE SECTION -- the shape of #75,
+ * the incident this file's own header names ("no Region or Acceptance a worker could run") and the one
+ * shape it never went on to check. #13's became the label mutex; #75's became nothing.
+ *
+ * THE QUESTION IS ALREADY OWNED, BY THE RULE AT THE FAR END, AND THIS CALLS IT. `templateFieldsReason` is
+ * what `row-claim` and `promoteRefusalReason` (#2111) refuse by, so a `ready` row is reported here exactly
+ * when a session's claim would bounce -- one round trip earlier, and before a claimant has spent a turn on
+ * a defect in somebody else's filing. **Which sections are required is NOT restated in this file**: a
+ * second copy of that list is a thing that drifts from the first, and the verdict AND the names both come
+ * from the rule module. (`missingTemplateFields` is the same function `templateFieldsReason` is built on;
+ * if the two ever disagree the row is still reported, with the rule's own sentence, rather than dropped.)
+ *
+ * A HAND PROMOTION IS WHAT THIS CATCHES. `row-file --promote=<n>` runs the rule at promotion time, but a
+ * promotion by hand is three label writes no act mediates. Measured (from the timeline API): #1990 was
+ * filed with no `## Open-check`, promoted `backlog` -> `ready` by hand 2026-09-23T07:51:47Z, and refused
+ * at its claim about three minutes later (07:55:05Z).
+ *
+ * ITS OWN POPULATION, NEVER FOLDED INTO `mutexViolations` OR `closedDebris`: an unclaimable row is a
+ * different state from `ready` beside `blocked`, and the remedy differs -- add the missing section, not
+ * remove a label.
+ *
+ * @param {ReadyRowWithBody[]} rows
+ * @returns {Array<{ number: number, title: string, missing: string[], reason: string }>}
+ */
+export function unclaimableReadyRows(rows) {
+  return (rows ?? [])
+    .filter((row) => (row.labels ?? []).includes(READY_LABEL))
+    .flatMap((row) => {
+      const number = Number(row.number);
+      const reason = templateFieldsReason(row.body ?? "", number);
+      if (reason === null) return [];
+      return [{ number, title: String(row.title ?? ""), missing: missingTemplateFields(row.body ?? ""), reason }];
+    });
+}
+
+/**
+ * @typedef {{ number: number, title: string, labels: string[], body: string }} ReadyRowWithBody
+ */
+
+/**
+ * Every open row carrying `ready`, WITH its body -- the one field `fetchIssues` does not carry.
+ *
+ * THROUGH `listUntilShort` like every list here, and the `--label ready` filter is server-side so the
+ * walk reads only the population being asked about rather than every open body. A response entry with no
+ * `body` STRING throws: an empty body (`""`) is a real, checkable fact -- every section missing -- while
+ * an entry that never carried the key is "asked the wrong question", and reading it as empty would report
+ * a row unclaimable on the strength of a field nobody read (the same distinction `lookupIssueBody` draws
+ * on the claim path).
+ *
+ * @param {{ run?: typeof defaultRun }} [deps]
+ * @returns {ReadyRowWithBody[]}
+ */
+export function fetchReadyRowsWithBodies({ run = defaultRun } = {}) {
+  const parsed = listUntilShort({ run, what: "open ready rows with bodies",
+    argv: (ask) => ["issue", "list", "--repo", REPO, "--state", "open", "--label", READY_LABEL,
+      "--limit", String(ask), "--json", "number,title,labels,body"] });
+  return parsed.map((/** @type {unknown} */ entry, /** @type {number} */ i) => {
+    const obj = /** @type {{ number?: unknown, title?: unknown, labels?: unknown, body?: unknown }} */ (entry);
+    if (typeof obj?.number !== "number" || typeof obj?.title !== "string" || !Array.isArray(obj?.labels)
+      || typeof obj?.body !== "string") {
+      throw new Error(`ready-label-audit: ready row entry ${i} is missing number/title/labels/body -- `
+        + `refusing to guess. Got: ${JSON.stringify(entry).slice(0, 300)}`);
+    }
+    const labels = obj.labels.map((/** @type {unknown} */ l) => {
+      const name = /** @type {{ name?: unknown }} */ (l)?.name;
+      if (typeof name !== "string") {
+        throw new Error(`ready-label-audit: issue #${obj.number} has a label with no name -- refusing to `
+          + `guess. Got: ${JSON.stringify(l)}`);
+      }
+      return name;
+    });
+    return { number: obj.number, title: obj.title, labels, body: obj.body };
+  });
+}
+
+/**
+ * #2190: report every open `ready` row `row-claim` would refuse for a missing template section, by number
+ * and by section. Its own count, its own line -- see `unclaimableReadyRows`.
+ */
+function reportUnclaimableReadyRows() {
+  const rows = fetchReadyRowsWithBodies();
+  const found = unclaimableReadyRows(rows);
+  if (found.length === 0) {
+    process.stdout.write(`OK  ${rows.length} open \`${READY_LABEL}\` row(s) checked, every one states `
+      + `${REQUIRED_FIELDS.join(", ")} -- none would be refused at claim\n`);
+    return 0;
+  }
+  for (const { number, title, missing, reason } of found) {
+    process.stdout.write(`UNCLAIMABLE  #${number} "${title}" -- carries \`${READY_LABEL}\` and is missing `
+      + `${missing.length > 0 ? missing.join(", ") : `a section the rule refused for (${reason})`}, so the gate `
+      + `offers it and \`row-claim\` refuses it: the claimant pays a turn for a defect in somebody else's `
+      + `filing\n`);
+  }
+  process.stdout.write(`unclaimable ready rows: ${found.length} of ${rows.length} open \`${READY_LABEL}\` `
+    + `row(s)\n`);
+  process.stderr.write(`\n${found.length} \`${READY_LABEL}\` row(s) would be refused at claim. Add each `
+    + `missing \`## <Field>\` section with real content -- the row is not wrong to be Ready once it says what a `
+    + `worker would run, and removing \`${READY_LABEL}\` instead hides the defect rather than fixing it.\n`);
+  return found.length;
 }
 
 /**
@@ -2067,6 +2171,8 @@ export const CHECKS = [
   ["rows no cause can reach", reportInvisibleRows],
   // #2111: the opposite defect to the line above -- a row carrying BOTH board labels rather than neither.
   ["half-promoted rows", reportBothBoardLabels],
+  // #2190: a row `ready` and unclaimable -- #75's shape, never checked until now.
+  ["unclaimable ready rows", reportUnclaimableReadyRows],
 ];
 
 /**
