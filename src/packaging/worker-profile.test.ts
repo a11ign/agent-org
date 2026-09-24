@@ -9,14 +9,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { readLoadedRules } from "./rules-files.ts";
 import { PROFILES, EFFORTS, MODELS, profileFor, agentArgs }
   from "../worker-profile.mjs";
 
 /** A `why` shorter than this is a label, not an argument. */
 const MIN_WHY_CHARS = 40;
 
-const PRACTICES = readFileSync(
-  new URL("../../../../.claude/rules/agent-practices.md", import.meta.url), "utf8");
+const PRACTICES = readLoadedRules();
 const GATE = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
 
 /** The two shapes `profileFor` and `spawnInvocation` return, and narrowing that ASSERTS rather than casts. */
