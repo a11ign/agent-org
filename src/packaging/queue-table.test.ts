@@ -1075,3 +1075,36 @@ test("#2245 a failing REST list is still `null` -- the queue call does not paper
   };
   assert.equal(openPRs({ run }), null);
 });
+
+// #2245, reviewer-2's blocker at 6a19cbf3: the row's source-shape command matched the SPELLING
+// `armed = Boolean(pr.auto_merge)`, so `rawArmed = Boolean(pr.auto_merge)` beside the shared import
+// restored the defect and still exited 0. This scan reads no variable name: the three spellings of the
+// auto-merge/queue fields may appear in CODE only inside `armedState` and the GraphQL query constant.
+const AUTO_MERGE_FIELDS = /auto_merge|autoMergeRequest|mergeQueueEntry/;
+
+/** The code of `source` with comments, `armedState`'s body and `QUEUE_QUERY`'s string removed. */
+function codeOutsideArmedState(source: string): string {
+  const uncommented = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  const start = uncommented.indexOf("export function armedState(");
+  assert.ok(start >= 0, "armedState is in the script");
+  const end = uncommented.indexOf("\n}\n", start);
+  assert.ok(end > start, "armedState's body ends");
+  return (uncommented.slice(0, start) + uncommented.slice(end))
+    .replace(/export const QUEUE_QUERY =[\s\S]*?;\n/, "");
+}
+
+const queueTableSource = () => readFileSync(new URL("../queue-table.mjs", import.meta.url), "utf8");
+
+test("#2245 no second derivation of `armed`, however spelled: the fields are read only inside armedState", () => {
+  const outside = codeOutsideArmedState(queueTableSource());
+  assert.doesNotMatch(outside, AUTO_MERGE_FIELDS, "a REST/GraphQL arming field is read outside armedState");
+  const inside = queueTableSource().split("export function armedState(")[1].split("\n}\n")[0];
+  assert.match(inside, /const armed = armedFromApi\(view\);/, "armedState asks the shared predicate");
+});
+
+test("#2245 CONTROL for the source guard: a renamed raw derivation IS caught, and the shipped file is NOT", () => {
+  const renamed = queueTableSource().replace("armed: pr.armed,", "armed: Boolean(pr.auto_merge),");
+  assert.notEqual(renamed, queueTableSource(), "the mutation applied");
+  assert.match(codeOutsideArmedState(renamed), AUTO_MERGE_FIELDS);
+  assert.doesNotMatch(codeOutsideArmedState(queueTableSource()), AUTO_MERGE_FIELDS);
+});
