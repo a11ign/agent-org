@@ -1776,17 +1776,46 @@ export function suiteTestFiles(script) {
 }
 
 /**
- * The files a command runs: the ones it NAMES, or -- for a whole-suite command -- the UNION over every
+ * The files a command runs: every one it NAMES, plus -- for a whole-suite command -- the UNION over every
  * script it invokes. NOT `runsTheWholeSuite` + a fixed population (#2153): the same command string decides
  * both halves, so they cannot answer about different suites. The union rather than the first script
  * (#2207): a chain runs each of them, and charging it one leaves the rest's requirements unread.
+ *
+ * KEYED ON THE FILES, NOT ON THE RUNNER'S NAME (#2221). The requirement checks used to open by asking
+ * whether the command was `tsx --test` or a whole suite, so `rstest run --include <file>` -- the form a
+ * row is now REQUIRED to write -- was charged nothing, and the same corpus-requiring file was refused
+ * spelled one way and handed to the runner spelled the other.
  * @param {string} command
  * @returns {string[]}
  */
 function testFilesRunBy(command) {
+  const named = namedTestFiles(command);
   const scripts = suiteScriptsFor(command);
-  if (scripts.length === 0) return tsxTestFileArgs(command);
-  return [...new Set(scripts.flatMap((script) => suiteTestFiles(script)))];
+  if (scripts.length === 0) return named;
+  return [...new Set([...scripts.flatMap((script) => suiteTestFiles(script)), ...named])];
+}
+
+/** A file name a test runner is pointed at, whatever the runner: `x.test.ts`, `x.test.mjs`, `x.spec.tsx`. */
+const NAMED_TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
+
+/**
+ * The test files a command NAMES, in order, for whichever runner spells them.
+ *
+ * `tsx --test` takes every non-flag token, as it always did -- that arm is the regression control (#2221's
+ * ceo amendment) and a fixture there need not be called `*.test.ts`. Any other command is read for tokens
+ * that LOOK like a test file, because its other arguments are also real paths -- `--config
+ * scripts/rstest/rstest.config.mjs` names a file that exists and is no test -- and a flag's `=value`
+ * (`--include=<file>`) is a file the runner is given, so it is read too. A token that is no file falls
+ * out later on `existsSync`, so `rstest`, `run` and the flags need no list here.
+ * @param {string} command
+ * @returns {string[]}
+ */
+function namedTestFiles(command) {
+  if (/\btsx\s+--test\b/.test(command)) return tsxTestFileArgs(command);
+  const withoutTrailingComment = command.replace(/(?:^|\s)#.*$/, "");
+  return withoutTrailingComment.split(/\s+/).filter(Boolean)
+    .map((token) => token.replace(/^--?[\w-]+=/, "").replace(/^['"]|['"]$/g, ""))
+    .filter((token) => NAMED_TEST_FILE.test(token));
 }
 
 /**
@@ -1806,7 +1835,8 @@ function tsxTestFileArgs(command) {
 }
 
 /**
- * For a `tsx --test <file(s)>` command, every requirement a REAL file it names declares that this job's
+ * For any command that names test files (or runs a whole suite -- #2221: whatever its runner), every
+ * requirement a REAL file it names declares that this job's
  * `capabilities` do not satisfy -- grouped by requirement, naming every declaring file, so a refusal reads
  * as a fact about the tests rather than an opaque code. Glob arguments and files that do not exist are
  * skipped here on purpose: whether a file exists at all is `testFileArgumentsResolve`'s own question, and
@@ -1816,7 +1846,6 @@ function tsxTestFileArgs(command) {
  * @returns {{ requirement: string, files: string[] }[]}
  */
 export function unmetCommandRequirements(command, capabilities) {
-  if (!/\btsx\s+--test\b/.test(command) && !runsTheWholeSuite(command)) return [];
   /** @type {Map<string, string[]>} */
   const byRequirement = new Map();
   for (const fileArg of testFilesRunBy(command)) {
@@ -1840,7 +1869,6 @@ export function unmetCommandRequirements(command, capabilities) {
  * @returns {{ requirement: string, message: string }[]}
  */
 export function unmetCommandClosureRequirements(command, capabilities) {
-  if (!/\btsx\s+--test\b/.test(command) && !runsTheWholeSuite(command)) return [];
   /** @type {{ requirement: string, message: string }[]} */
   const out = [];
   for (const fileArg of testFilesRunBy(command)) {
@@ -1855,8 +1883,8 @@ export function unmetCommandClosureRequirements(command, capabilities) {
 }
 
 /**
- * Does ANY real `tsx --test` file named across `commands` actually declare `// requires: history`? #497's
- * own stated boundary: "a PR carrying `History: full` and no historical fixture is asking for something it
+ * Does ANY real test file named across `commands` (whatever its runner -- #2221) actually declare
+ * `// requires: history`? #497's own stated boundary: "a PR carrying `History: full` and no historical fixture is asking for something it
  * does not use -- worth a warning, not a refusal, since the cost is only time." So this is checked
  * independent of `unmetCommandRequirements` (which asks whether a declared requirement is SATISFIED, not
  * whether the declaration exists at all) -- a file naming `requires: history` always counts as "used" here,
@@ -1871,8 +1899,7 @@ export function unmetCommandClosureRequirements(command, capabilities) {
  */
 function anyCommandUsesHistory(commands) {
   return commands.some((command) => {
-    if (!/\btsx\s+--test\b/.test(command)) return false;
-    return tsxTestFileArgs(command).some((fileArg) => {
+    return namedTestFiles(command).some((fileArg) => {
       if (/[*?[{]/.test(fileArg) || !existsSync(fileArg)) return false;
       if (testFileRequirements(readFileSync(fileArg, "utf8")).includes("history")) return true;
       return deriveClosureRequirements(fileArg).some((hit) => hit.requirement === "history");
