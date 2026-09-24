@@ -31,7 +31,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { shippedUnits } from "../host-units.mjs";
 import { localImports } from "../../../guards/src/local-import-closure.mjs";
 import { deriveClosureRequirements } from "../acceptance-commands.mjs";
-import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES,
+import { MAX_ROW_ORDERS_PER_TICK, readCommitChain, withCommitChains, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES,
   comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
   blockingChecks, anyChecksRed, requiredCheckNames, ownerOf, NOT_PICKABLE, NOT_STARTABLE,
   ROUTED_TO, readPromotableRows, GH_READS, partitionUnclaimed, openRowState, waitingBreakdown,
@@ -93,8 +93,11 @@ test("#912: a settled green draft with no verdict wakes its parity reviewer -- a
   assert.equal(checksSettledGreen(GREEN), true);
   assert.equal(checksSettledGreen(RED), false);
 
-  // A NON-DRAFT IS ALREADY ARMED -- `reviewer.md` skips it, so the gate must not raise it.
-  assert.equal(decide({ prs: [{ ...draft(11, GREEN), isDraft: false }], readyRows: [] }).length, 0);
+  // A NON-DRAFT IS NO LONGER SKIPPED (#2176). This line used to assert 0 -- "already armed, `reviewer.md`
+  // skips it" -- which is how a pull request that opened READY sat `CHANGES_REQUESTED` for 5h47m with the
+  // gate silent. Arming is not review: main requires an approving review (#2022). The full positive and
+  // negative halves are in the #2176 tests below.
+  assert.equal(decide({ prs: [{ ...draft(11, GREEN), isDraft: false }], readyRows: [] }).length, 1);
 });
 
 test("#912: a verdict settles its own head and no other", () => {
@@ -1243,8 +1246,10 @@ test("a row carrying answer:<session> is not promotable (#1899): it is already r
  * refused to comment on a closed pull request. It was relayed by the chairman instead.
  */
 test("a SUPERSEDED red run does not wake anyone -- the newest run per name is what counts", () => {
-  const twice = { number: 1, isDraft: false, headRefOid: "head1234aaaaaaaa", author: { login: "x" },
-    labels: [{ name: "session:worker-capture" }], comments: [],
+  const twice = { number: 1, isDraft: false, headRefOid: "abc12345aaaaaaaa", author: { login: "x" },
+    labels: [{ name: "session:worker-capture" }],
+    // A verdict at head, so the only order this fixture can produce is the red one (#2176).
+    comments: [{ body: "Review of #1 at `abc12345`, by `reviewer`: convinced." }],
     statusCheckRollup: [
       { __typename: "CheckRun", name: "gate", status: "COMPLETED", conclusion: "FAILURE",
         completedAt: "2026-09-19T10:00:00Z" },
@@ -3401,15 +3406,17 @@ test("#2174: a drift value that is not a list is 'not asked', never a crash", ()
 /**
  * #2084: A PULL REQUEST THAT LOOKS EXACTLY LIKE FINISHED WORK, with one field added.
  *
- * `isDraft: false` and green, so it is past every other cause: `draft-awaiting-verdict` returns on
- * `draftOrder`'s first line for anything that is not a draft, and `pr-checks-failing` needs a red check.
+ * `isDraft: false` and green, so it is past `pr-checks-failing`, which needs a red check. It CARRIES A
+ * CONVINCED VERDICT AT ITS HEAD (#2176), because since that row a ready pull request with none is a
+ * `draft-awaiting-verdict` subject, and these tests are about `reviewDecision`, not about review routing.
  * The `reviewDecision` is the ONLY thing that distinguishes a mergeable pull request from one GitHub is
- * holding, and until this row no line of this repository read it.
+ * holding, and until #2084 no line of this repository read it.
  */
 function ready(n: number, reviewDecision: string | null | undefined, labels: string[] = []) {
   const pr: Record<string, unknown> = { number: n, isDraft: false, headRefOid: HEAD,
     statusCheckRollup: [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }],
-    author: { login: "a11ign-ai-workers" }, comments: [],
+    author: { login: "a11ign-ai-workers" },
+    comments: [{ body: `Review of #${n} at \`${HEAD.slice(0, 8)}\`, by \`reviewer\`: convinced.` }],
     labels: labels.map((name) => ({ name })) };
   // `undefined` MEANS THE KEY IS ABSENT, and it has to be absent rather than present-and-undefined:
   // `Object.hasOwn` is what `reviewStateOf` keys on, and a fixture that sets the key to `undefined` would
@@ -3670,4 +3677,143 @@ test("#2209 pr-green-unarmed keeps saying what it said for the state it was buil
   assert.deepEqual(shouldBeMergingPrs([mergeable], ["gate"]), [8]);
   const orders = decide({ prs: [mergeable], readyRows: [], required: ["gate"], unarmed: [8] });
   assert.deepEqual(orders.map((o) => o.cause), ["pr-green-unarmed"]);
+});
+
+
+// --- #2176: the review question is asked of every green pull request, and keyed on the AUTHORED head ------
+
+const AUTHORED = "a".repeat(40);
+const AUTHORED_2 = "d".repeat(40);
+const MERGE_UI = "b".repeat(40);
+const MERGE_SESSION = "c".repeat(40);
+const commit = (oid: string, messageHeadline: string, parents = 1) => ({ oid, messageHeadline, parents });
+const UPDATE_BRANCH = (oid: string) => commit(oid, "Merge branch 'main' into agent/x-2104", 2);
+const SESSION_MERGE = (oid: string) => commit(oid, "Merge remote-tracking branch 'origin/main' into agent/x-2104", 2);
+const verdictAt = (n: number, oid: string, word: string) =>
+  ({ body: `Review of #${n} at \`${oid.slice(0, 8)}\`, by \`reviewer\`: ${word}.` });
+
+/** A green, NON-draft pull request -- the shape #2104 had -- with an optional commit chain attached. */
+function readyPr(n: number, head: string, extra: Record<string, unknown> = {}) {
+  return { number: n, isDraft: false, headRefOid: head, statusCheckRollup: GREEN,
+    author: { login: "a11ign-ai-workers" }, comments: [], labels: [{ name: "session:worker-judge" }], ...extra };
+}
+const ordersFor = (pr: unknown) => decide({ prs: [pr], readyRows: [] }) as
+  { cause: string, session: string, causeKey: string, prompt: string }[];
+
+test("#2176 a green NON-DRAFT with no verdict at its head wakes its parity reviewer", () => {
+  // THE POSITIVE HALF, and the row's Open-check: this returned ZERO orders before #2176.
+  const orders = ordersFor(readyPr(9999, AUTHORED));
+  assert.deepEqual(orders.map((o) => [o.session, o.cause]), [["reviewer", "draft-awaiting-verdict"]]);
+  assert.deepEqual(ordersFor(readyPr(9998, AUTHORED)).map((o) => o.session), ["reviewer-2"],
+    "odd to `reviewer`, even to `reviewer-2`, exactly as for a draft");
+  assert.match(orders[0].prompt, /Ready \(not a draft\) #9999/, "the wording must be true of the pull request");
+  assert.doesNotMatch(orders[0].prompt, /Draft #/);
+  // THE CONTRAST THAT MAKES THE RESULT A DEFECT RATHER THAN A FIXTURE PROPERTY: the same pull request as a draft.
+  assert.equal(ordersFor({ ...readyPr(9999, AUTHORED), isDraft: true }).length, 1);
+});
+
+test("#2176 a green NON-DRAFT carrying `not convinced` at head sends the rework to the session on its label", () => {
+  const pr = readyPr(2104, AUTHORED, { comments: [verdictAt(2104, AUTHORED, "not convinced")] });
+  const [order] = ordersFor(pr);
+  assert.equal(order.cause, "verdict-not-convinced");
+  assert.equal(order.session, "worker-judge", "the session named by the pull request's own label");
+  assert.equal(order.causeKey, `worker-judge/verdict-not-convinced/pr-2104/${AUTHORED.slice(0, 8)}`);
+  assert.deepEqual(ordersFor({ ...pr, isDraft: true }).map((o) => o.cause), ["verdict-not-convinced"],
+    "exactly as the draft case does");
+});
+
+test("#2176 a green NON-DRAFT with a CONVINCED verdict produces NO order -- draft-convinced-not-ready stays draft-only", () => {
+  const convinced = readyPr(2105, AUTHORED, { comments: [verdictAt(2105, AUTHORED, "convinced")] });
+  assert.deepEqual(ordersFor(convinced), [], "already ready: there is nothing to flip");
+  // THE POSITIVE CONTROL for the emptiness above, which is the two tests before this one and, beside it,
+  // the same reader over the same shape with the WORD changed: it must be non-empty, or the assertion above
+  // passes for a function that returns [] for everything.
+  const refused = { ...convinced, comments: [verdictAt(2105, AUTHORED, "not convinced")] };
+  assert.equal(ordersFor(refused).length, 1);
+  // AND THE CAUSE THAT MUST SURVIVE, so "applies to both" cannot silently become "applies to all four".
+  assert.deepEqual(ordersFor({ ...convinced, isDraft: true }).map((o) => o.cause), ["draft-convinced-not-ready"]);
+});
+
+test("#2176 a head advanced only by a merge from main keeps the SAME causeKey -- both spellings", () => {
+  const keyOf = (pr: unknown) => ordersFor(pr)[0].causeKey;
+  const alone = readyPr(2104, AUTHORED, { commits: [commit(AUTHORED, "Fix the thing")] });
+  const base = keyOf(alone);
+  assert.match(base, new RegExp(`/pr-2104/${AUTHORED.slice(0, 8)}$`));
+  const viaUi = readyPr(2104, MERGE_UI, { commits: [commit(AUTHORED, "Fix the thing"), UPDATE_BRANCH(MERGE_UI)] });
+  assert.equal(keyOf(viaUi), base, "GitHub's update-branch: `Merge branch 'main' into ...`");
+  const viaSession = readyPr(2104, MERGE_SESSION,
+    { commits: [commit(AUTHORED, "Fix the thing"), SESSION_MERGE(MERGE_SESSION)] });
+  assert.equal(keyOf(viaSession), base, "a session's push: `Merge remote-tracking branch 'origin/main'`");
+  const both = readyPr(2104, MERGE_SESSION, { commits: [commit(AUTHORED, "Fix the thing"),
+    UPDATE_BRANCH(MERGE_UI), SESSION_MERGE(MERGE_SESSION)] });
+  assert.equal(keyOf(both), base, "21 update-branches is still one piece of work");
+  // THE CONTROL: an AUTHORED commit after the merge moves the key, or the assertions above are a constant.
+  const authoredAfter = readyPr(2104, AUTHORED_2, { commits: [commit(AUTHORED, "Fix the thing"),
+    UPDATE_BRANCH(MERGE_UI), commit(AUTHORED_2, "Address the review")] });
+  assert.notEqual(keyOf(authoredAfter), base);
+  assert.match(keyOf(authoredAfter), new RegExp(`/pr-2104/${AUTHORED_2.slice(0, 8)}$`));
+  // A ONE-PARENT COMMIT THAT REUSES THE WORDS IS AUTHORED WORK, not a merge.
+  const lookalike = readyPr(2104, MERGE_UI, { commits: [commit(AUTHORED, "Fix the thing"),
+    commit(MERGE_UI, "Merge branch 'main' into agent/x-2104", 1)] });
+  assert.notEqual(keyOf(lookalike), base);
+});
+
+test("#2176 #2104's shape: a verdict at the AUTHORED head still stands after update-branch moved the head", () => {
+  const chain = [commit(AUTHORED, "Fix the thing"), UPDATE_BRANCH(MERGE_UI), SESSION_MERGE(MERGE_SESSION)];
+  const refused = readyPr(2104, MERGE_SESSION,
+    { commits: chain, comments: [verdictAt(2104, AUTHORED, "not convinced")] });
+  const [order] = ordersFor(refused);
+  assert.equal(order.cause, "verdict-not-convinced", "rework is owed, however many merges came after");
+  assert.equal(order.causeKey, `worker-judge/verdict-not-convinced/pr-2104/${AUTHORED.slice(0, 8)}`);
+  // Without the chain the verdict is at a head that no longer exists, and the reviewer is summoned again:
+  // the failure this row is written to prevent, kept as the control that the chain is what settles it.
+  assert.equal(ordersFor({ ...refused, commits: undefined })[0].cause, "draft-awaiting-verdict");
+  // A verdict written AFTER an update-branch names the merge head, and it settles the pull request too.
+  const answeredAtMerge = readyPr(2104, MERGE_SESSION,
+    { commits: chain, comments: [verdictAt(2104, MERGE_UI, "convinced")] });
+  assert.deepEqual(ordersFor(answeredAtMerge), []);
+});
+
+test("#2176 the reviewer's prompt names the authored head when an update-branch moved the head", () => {
+  const pr = readyPr(2104, MERGE_UI, { commits: [commit(AUTHORED, "Fix the thing"), UPDATE_BRANCH(MERGE_UI)] });
+  assert.match(ordersFor(pr)[0].prompt, new RegExp(`at \`${MERGE_UI.slice(0, 8)}\`.*${AUTHORED.slice(0, 8)}`));
+  assert.doesNotMatch(ordersFor(readyPr(2104, AUTHORED, { commits: [commit(AUTHORED, "x")] }))[0].prompt,
+    /every commit after it merges/, "nothing to explain when the head is the authored one");
+});
+
+test("#2176 a chain that does not end at the current head is ignored, never trusted", () => {
+  // The list and the chain are read seconds apart; a push between them must not key the order on a stale head.
+  const stale = readyPr(2104, AUTHORED_2, { commits: [commit(AUTHORED, "Fix the thing"), UPDATE_BRANCH(MERGE_UI)] });
+  assert.match(ordersFor(stale)[0].causeKey, new RegExp(`/pr-2104/${AUTHORED_2.slice(0, 8)}$`));
+});
+
+test("#2176 withCommitChains reads commits ONLY where the review question is genuinely open", () => {
+  const calls: string[][] = [];
+  const run = (args: string[]) => {
+    calls.push(args);
+    return [commit(AUTHORED, "Fix"), UPDATE_BRANCH(MERGE_UI)].map((c) => JSON.stringify(c)).join("\n");
+  };
+  const open = readyPr(1, MERGE_UI);
+  const settled = readyPr(2, MERGE_UI, { comments: [verdictAt(2, MERGE_UI, "convinced")] });
+  const red = readyPr(3, MERGE_UI, { statusCheckRollup: RED });
+  const pending = readyPr(4, MERGE_UI, { statusCheckRollup: PENDING });
+  const out = withCommitChains([open, settled, red, pending], run) as { commits?: unknown[] }[];
+  assert.equal(calls.length, 1, "one REST call: the unreviewed green pull request, and no other");
+  assert.deepEqual(calls[0].slice(0, 2), ["api", "repos/a11ign/a11ign/pulls/1/commits"]);
+  assert.equal(out[0].commits?.length, 2, "the positive control: the open one WAS enriched");
+  assert.deepEqual(out.slice(1).map((p) => p.commits), [undefined, undefined, undefined]);
+});
+
+test("#2176 a REFUSED commit read leaves the pull request as it was -- never an empty chain", () => {
+  const refuse = () => { throw new Error("HTTP 403"); };
+  const [pr] = withCommitChains([readyPr(1, MERGE_UI)], refuse) as { commits?: unknown }[];
+  assert.equal(pr.commits, undefined);
+  assert.equal(readCommitChain(1, refuse), null);
+  assert.equal(readCommitChain(1, () => ""), null, "no commits is not a chain either");
+  assert.deepEqual(readCommitChain(1, () => `${JSON.stringify(commit(AUTHORED, "Fix"))}\n`),
+    [commit(AUTHORED, "Fix")]);
+});
+
+test("#2176 the commit read is counted in GH_READS", () => {
+  assert.match(GH_READS.conditionalOnUnreviewedGreenPr, /pulls\/\{n\}\/commits/);
 });
