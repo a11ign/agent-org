@@ -1,6 +1,7 @@
 // command: print which session stamped a worktree, so a session can tell whose tree it is standing in
-//          before it moves HEAD -- `npm run worktree:whose [-- <path>]`, and stamp the tree you
-//          just made with `npm run worktree:stamp [-- <path>]`
+//          before it moves HEAD, and where that tree's `@a11ign/*` resolve (#2181) --
+//          `npm run worktree:whose [-- <path>]`, and stamp the tree you just made with
+//          `npm run worktree:stamp [-- <path>]`
 //
 // #1128: WHOSE WORKTREE IS THIS? The question the incident needed answered and nothing could.
 //
@@ -29,6 +30,7 @@ import { readFileSync, writeFileSync, existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
+import { worktreeResolution, resolutionLine } from "./worktree-resolution.mjs";
 
 /** The stamp's filename, inside the worktree it names. */
 export const OWNER_FILE = ".a11y-owner";
@@ -94,6 +96,9 @@ function main() {
   if (args.includes("--stamp")) return stamp(target, session);
   const asking = session ?? "(no A11Y_SESSION set)";
   process.stdout.write(`${whoseWorktree(target, asking)}\n`);
+  // #2181: OWNERSHIP IS NOT THE WHOLE OF "SAFE TO WORK IN". A tree that is yours can still resolve its
+  // `@a11ign/*` to another checkout, so a suite run in it measures that checkout. Reported, never refused.
+  process.stdout.write(`${resolutionLine(target, worktreeResolution(target))}\n`);
 }
 
 /**
