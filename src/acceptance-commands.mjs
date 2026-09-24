@@ -61,7 +61,7 @@
 // to the code that makes it safe: this module runs the AUTHOR'S OWN commands from a PR body, so it must
 // only ever run under the fork's read-only token and the fork's own checked-out code. Nothing in this
 // file grants itself write access; it doesn't need to.
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import {
   declaredRegionFiles, extractLabeledSection, regionCovers, trackedTopLevelDirs,
 } from "./region-paths.mjs";
@@ -70,6 +70,7 @@ import { existsSync, globSync, readFileSync, realpathSync, statSync } from "node
 import { createRequire } from "node:module";
 import { basename, delimiter, join } from "node:path";
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
+import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
 import { localImports, importedNamesFor, stripComments } from "../../guards/src/local-import-closure.mjs";
 
 /** @typedef {{ verdict: "runnable" } | { verdict: "refused", reason: string } | { verdict: "prose", reason: string }} Classification */
@@ -2922,6 +2923,91 @@ export function closesDeclarationReport(body) {
   return { ok: true, line: `CLOSES: #${declaration.numbers.join(", #")}` };
 }
 
+// #2305: A PR THAT ADDS OR CHANGES A TEST MUST CARRY A `Mutation:` RECORD, or `Mutation: none -- <reason>`.
+// `ceo`'s ruling, 2026-09-24: 11 of 46 first-review refusals over the 80 most recent merged PRs were "the
+// test passes without testing its claim", each found by a reviewer running a mutant the author never ran.
+// The template already had the line and NOTHING READ IT.
+//
+// SHAPE, NOT EXECUTION. This job still never runs a `Mutation:` command (see the SCOPED TO `Acceptance:`
+// ONLY note above; `pr:open` runs it on the author's machine and only WARNS, #2307). What it certifies is
+// that the line EXISTS -- the cheap half. It cannot say a mutant ran, and must not be read as saying so.
+//
+// `Mutation: none -- <reason>` is the escape hatch and the reason is REQUIRED, the same rule as
+// `Closes: none` and `Acceptance: none`: "nobody wrote one" and "deliberately none" stay different states.
+// `extractSection` already reads a reasonless `none` as MISSING, so this needs no dialect of its own.
+//
+// THE DIFF IS READ FROM GIT, NOT FROM THE BODY. A body is the author's own claim about what changed.
+const MUTATION_FILES_NAMED = 3;
+const MERGE_PARENTS = 2;
+const TEST_FILE_PATTERN = /(?:\.test\.(?:ts|tsx|mjs|cjs|js)|(?:^|\/)test_[^/]+\.py|_test\.py)$/;
+
+/**
+ * Pure. Which of these repo-relative paths are test files -- the ones a `Mutation:` record is owed for.
+ * @param {string[]} paths
+ * @returns {string[]}
+ */
+export function testFilesAmong(paths) {
+  return paths.filter((path) => TEST_FILE_PATTERN.test(path));
+}
+
+/** @typedef {{ ok: true, files: string[] } | { ok: false, why: string }} DiffReading */
+
+/**
+ * THE VERDICT for `Mutation:`. Three outcomes and a fourth that is deliberately not a pass or a failure:
+ * no test in the diff (nothing owed), a record present, a record MISSING/duplicated (fails), and a diff this
+ * job COULD NOT READ -- UNCHECKED, loud, and not a failure, because a job that goes red on a git hiccup
+ * blocks the queue for a reason no author can fix and trains them to reach for the escape hatch.
+ * @param {{ body: string | null | undefined, diff: DiffReading }} input
+ * @returns {{ ok: boolean, line: string }}
+ */
+export function mutationRecordReport({ body, diff }) {
+  if (!diff.ok) {
+    return { ok: true, line: `MUTATION: UNCHECKED -- could not read the diff (${diff.why}); `
+      + "a PR that changes a test still owes a `Mutation:` record" };
+  }
+  const tests = testFilesAmong(diff.files);
+  if (tests.length === 0) return { ok: true, line: "MUTATION: NOT REQUIRED -- no test file in the diff" };
+  const section = extractMutationSection(body);
+  if (section.kind === "none") return { ok: true, line: `MUTATION: NONE -> ${section.reason}` };
+  // An inline `Mutation: <!-- what you broke -->` is the template's own placeholder, not a record.
+  if (section.kind === "commands" && section.commands.some((line) => line.replace(/<!--.*?-->/g, "").trim())) {
+    return { ok: true, line: `MUTATION: RECORDED (${tests.length} test file(s) in the diff)` };
+  }
+  if (section.kind === "duplicate") {
+    return { ok: false, line: "MUTATION: DUPLICATE -- more than one `Mutation:` header; keep one" };
+  }
+  const named = tests.slice(0, MUTATION_FILES_NAMED);
+  return { ok: false, line: `MUTATION: MISSING -- the diff changes ${tests.length} test file(s) (`
+    + `${named.join(", ")}${tests.length > named.length ? ", ..." : ""}) and the body carries no `
+    + "`Mutation:` record. Write what you broke and that the test went red (`npm run mutate` makes it "
+    + "cheap), or `Mutation: none -- <reason>` (a reason is required)" };
+}
+
+/**
+ * The files THIS pull request adds or changes, read from the merge commit `actions/checkout` builds for a
+ * `pull_request` event: its first parent is the base, so `HEAD^1..HEAD` is the PR's own diff and not
+ * whatever the base did since. The checkout is depth 1, so the parent is fetched when it is missing. A HEAD that is not
+ * a merge commit would show only its LAST commit and under-read the PR, so it is UNREADABLE, not guessed at.
+ * Deleted files are excluded: there is no test left to owe a mutant.
+ * @param {string} [cwd]
+ * @returns {DiffReading}
+ */
+export function changedFilesOfThisPullRequest(cwd = process.cwd()) {
+  const git = (/** @type {string[]} */ ...args) =>
+    execFileSync("git", args, { cwd, encoding: "utf8", env: sandboxGitEnv() });
+  try {
+    const parentCount = () => git("rev-list", "--parents", "-n", "1", "HEAD").trim().split(/\s+/).length - 1;
+    // A depth-1 checkout has cut HEAD's parents off; ask for one more level only when they are missing, so
+    // a complete clone (`History: full`, a local run) never spends a fetch it does not need.
+    if (parentCount() < MERGE_PARENTS) git("fetch", "--deepen=1", "origin");
+    if (parentCount() < MERGE_PARENTS) return { ok: false, why: "HEAD is not a merge commit" };
+    const names = git("diff", "--name-only", "--diff-filter=ACMR", "HEAD^1", "HEAD");
+    return { ok: true, files: names.split("\n").filter((line) => line.length > 0) };
+  } catch (error) {
+    return { ok: false, why: `git said: ${/** @type {Error} */ (error).message.split("\n")[0]}` };
+  }
+}
+
 /**
  * Does this command re-run a suite that `ci.yml`'s `ts` job is already running?
  *
@@ -2980,7 +3066,9 @@ function main() {
   }
   const closes = closesDeclarationReport(body);
   console.log(closes.line);
-  process.exit(report.ok && closes.ok ? 0 : 1);
+  const mutation = mutationRecordReport({ body, diff: changedFilesOfThisPullRequest() });
+  console.log(mutation.line);
+  process.exit(report.ok && closes.ok && mutation.ok ? 0 : 1);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();
