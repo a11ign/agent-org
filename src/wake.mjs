@@ -2292,10 +2292,10 @@ function engineerStarts(target) {
 
 /**
  * The order as it is TYPED: a reviewer's carries the sentence naming its verified checkout ({@link withReviewCheckout}).
- * @param {{prompt: string}} order @param {{order?: {prompt: string}}} target
+ * @param {{session: string, prompt: string}} order @param {{order?: {prompt: string}}} target
  */
 function carriedOrder(order, target) {
-  return target.order ?? order;
+  return target.order === undefined ? order : { ...order, ...target.order };
 }
 
 /**
