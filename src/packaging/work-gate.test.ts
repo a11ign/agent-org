@@ -36,6 +36,7 @@ import { MAX_ROW_ORDERS_PER_TICK, decide, checksSettledGreen, readPrs, readReady
   blockingChecks, anyChecksRed, requiredCheckNames, ownerOf, NOT_PICKABLE, NOT_STARTABLE,
   ROUTED_TO, readPromotableRows, GH_READS, partitionUnclaimed, openRowState, waitingBreakdown,
   deadMansSwitch, hostDriftOrders, JUDGMENT_CAUSES,
+  shouldBeMerging as shouldBeMergingPrs, conflictedPrs, conflictStateOf, mergeConflictOrders,
   unfiledEpics, epicOrders, finishedEpics, finishedEpicOrders, fleetBatchRows, fleetBatchOrders,
   partitionFleetBatch, blockerClearedOrders, unclaimedBlockerClearedOrders,
   claimedRowAmendedOrders, constraintsAfterClaim, amendmentsOn, readClaimedRowComments,
@@ -755,6 +756,8 @@ test("every cause is classified as START or FINISH -- a new one cannot default i
   // to the very checkout a unit's `WorkingDirectory=` names. It also starts no work by the partition's
   // own definition: its subject is a machine that is already wrong, not a row anybody has yet to pick up,
   // and the action is minutes rather than a build.
+  // #2209: `pr-merge-conflict` is FINISH, for `pr-review-blocked`'s argument: a green, unheld pull request
+  // that cannot merge is finished work that cannot land, and a window waits on exactly those.
   // #2084: `pr-review-blocked` is FINISH, and it is `pr-green-unarmed`'s own argument one surface over.
   // A pull request that is green, unheld and refused by GitHub's `reviewDecision` is finished work that
   // cannot land -- it is the most in-flight thing there is, and it takes on nothing. Withholding it during
@@ -762,7 +765,8 @@ test("every cause is classified as START or FINISH -- a new one cannot default i
   // `START_CAUSES` was split out to prevent.
   assert.deepEqual(finish, ["answer-owed", "blocker-cleared", "chairman-blocked", "claimed-row-amended",
     "draft-awaiting-verdict", "draft-convinced-not-ready", "host-units-stale", "pr-checks-failing",
-    "pr-green-unarmed", "pr-review-blocked", "row-branch-unshipped", "verdict-not-convinced"]);
+    "pr-green-unarmed", "pr-merge-conflict", "pr-review-blocked", "row-branch-unshipped",
+    "verdict-not-convinced"]);
   for (const cause of START_CAUSES) {
     assert.ok(CAUSES.includes(cause), `${cause} is withheld by a drain but no longer exists`);
   }
@@ -3575,4 +3579,95 @@ test("#2113: a date-only Ready row is offered and shelved exactly as it was befo
     { clock: { today: "2026-09-24", nowMs: Date.parse("2026-09-24T00:00:00Z") } });
   assert.deepEqual(arrived.offerable.map((r: { number: number }) => r.number), [2002],
     "and the day itself is not 'before' it -- the rule this field has always had");
+});
+
+
+// --- #2209: a pull request that CONFLICTS with `main`, which nothing in this repository could see ---------
+
+/**
+ * #2203's own shape: green, unheld, not a draft, approved, armed -- and DIRTY. The two merge fields are the
+ * only thing that distinguishes it from a pull request that is merely waiting, and until this row no line
+ * of the gate asked for either.
+ */
+function conflicted(n: number, labels: string[] = ["session:worker-tooling"]) {
+  return { ...ready(n, "APPROVED", labels), mergeStateStatus: "DIRTY", mergeable: "CONFLICTING" };
+}
+
+test("#2209 `mergeStateStatus` and `mergeable` ride on readPrs's existing call -- the fixture and the org agree", () => {
+  // THE CONTROL FOR EVERYTHING BELOW: a filter reading a field production never fetches is green on a
+  // fixture and blind in the org, and an empty cause looks exactly like a healthy queue.
+  const calls: string[][] = [];
+  readPrs((args: string[]) => { calls.push(args); return "[]"; });
+  assert.equal(calls.length, 1, "one call, or the fields stopped being free");
+  const fields = String(calls[0][calls[0].indexOf("--json") + 1]).split(",");
+  assert.ok(fields.includes("mergeStateStatus"), "the conflict predicate reads this");
+  assert.ok(fields.includes("mergeable"), "and this");
+  assert.ok(fields.includes("reviewDecision"), "and the #2084 field is still there");
+});
+
+test("#2209 a CONFLICTING pull request is not one that should be merging; a merely blocked one still is", () => {
+  const blocked = { ...ready(2, "REVIEW_REQUIRED"), mergeStateStatus: "BLOCKED", mergeable: "MERGEABLE" };
+  assert.deepEqual(shouldBeMergingPrs([conflicted(1), blocked], ["gate"]), [2],
+    "the conflicting one leaves; the control -- MERGEABLE, blocked on something else -- must stay");
+});
+
+test("#2209 THE LIVE SHAPE: a conflicted, approved, green PR reaches its AUTHOR with the real state named", () => {
+  // MEASURED: #2203 at 2026-09-23T18:30Z -- `DIRTY`, `CONFLICTING`, `APPROVED` -- was reported to
+  // `product-manager` as a credential outage. THE REMEDY IS NOT AN EXCLUSION: dropping it from
+  // `shouldBeMerging` and reporting it nowhere fails the row, and this is the assertion that says so.
+  const orders = decide({ prs: [conflicted(2203)], readyRows: [], required: ["gate"] });
+  assert.deepEqual(orders.map((o) => o.cause), ["pr-merge-conflict"],
+    "it must still reach somebody, and not as pr-green-unarmed or pr-review-blocked");
+  assert.equal(orders[0].session, "worker-tooling", "the conflict is code work: the PR's own session");
+  assert.ok(CAUSES.includes(orders[0].cause));
+  assert.match(orders[0].prompt, /CONFLICTS with `main`/);
+  assert.match(orders[0].prompt, /DO NOT ARM IT/, "the remedy pr-green-unarmed hands over cannot succeed here");
+  assert.equal(orders[0].causeKey, `worker-tooling/pr-merge-conflict/pr-2203/${HEAD.slice(0, 8)}`);
+});
+
+test("#2209 an unlabelled conflicted PR falls back to product-manager, never to nobody", () => {
+  const orders = mergeConflictOrders(conflictedPrs([conflicted(7, [])], ["gate"]));
+  assert.equal(orders.length, 1);
+  assert.equal(orders[0].session, "product-manager");
+  assert.match(orders[0].prompt, /names no session/);
+});
+
+test("#2209 the conflict cause and pr-review-blocked PARTITION one population -- no PR is named by both", () => {
+  const both = { ...conflicted(9), reviewDecision: "REVIEW_REQUIRED" };
+  assert.deepEqual(reviewBlocked([both], ["gate"]), [],
+    "a conflicted PR is the author's rebase first; the review question comes back after it");
+  assert.deepEqual(conflictedPrs([both], ["gate"]).map((p: { number: number }) => p.number), [9]);
+});
+
+test("#2209 a draft, a red PR and a held PR are other causes' subjects, never this one", () => {
+  // The positive control for these three exclusions is the LIVE SHAPE test above, which shares the fixture.
+  const drafted = { ...conflicted(1), isDraft: true };
+  const red = { ...conflicted(3), statusCheckRollup: [{ name: "gate", status: "COMPLETED", conclusion: "FAILURE" }] };
+  const held = conflicted(5, ["hold:ceo"]);
+  assert.deepEqual(conflictedPrs([drafted, red, held], ["gate"]), []);
+  assert.deepEqual(decide({ prs: [red], readyRows: [], required: ["gate"] }).map((o) => o.cause),
+    ["pr-checks-failing"]);
+});
+
+test("#2209 an UNREAD merge state is not read as mergeable, and not read as a conflict", () => {
+  // THE FALL DIRECTION, pinned: absent or `UNKNOWN` (GitHub still computing) is neither certified clear
+  // nor accused. It STAYS in the candidate set -- `pr-green-unarmed`'s population as it was -- so a field
+  // the gate lost cannot silently empty that cause.
+  const absent = ready(4, "APPROVED");
+  const unknown = { ...ready(6, "APPROVED"), mergeStateStatus: "UNKNOWN", mergeable: "UNKNOWN" };
+  assert.equal(conflictStateOf(absent), "UNREAD");
+  assert.equal(conflictStateOf(unknown), "UNREAD");
+  assert.equal(conflictStateOf({ mergeStateStatus: "CLEAN" }), "NOT_CONFLICTING");
+  assert.equal(conflictStateOf({ mergeable: "CONFLICTING" }), "CONFLICTING", "either field is enough");
+  assert.equal(conflictStateOf({ mergeStateStatus: "DIRTY" }), "CONFLICTING");
+  assert.deepEqual(shouldBeMergingPrs([absent, unknown], ["gate"]), [4, 6]);
+  assert.deepEqual(conflictedPrs([absent, unknown], ["gate"]), []);
+});
+
+test("#2209 pr-green-unarmed keeps saying what it said for the state it was built for", () => {
+  // #1969's credential outage: green, unheld, unarmed and MERGEABLE. Its text is unchanged.
+  const mergeable = { ...ready(8, "APPROVED"), mergeStateStatus: "CLEAN", mergeable: "MERGEABLE" };
+  assert.deepEqual(shouldBeMergingPrs([mergeable], ["gate"]), [8]);
+  const orders = decide({ prs: [mergeable], readyRows: [], required: ["gate"], unarmed: [8] });
+  assert.deepEqual(orders.map((o) => o.cause), ["pr-green-unarmed"]);
 });
