@@ -163,12 +163,13 @@ export const PROMPT_REFUSED_PREFIX = "prompt refused: ";
  * Clear, then prompt. Returns what to report, or `null` when the prompt landed.
  *
  * THE PROMPT IS {@link deliveredText}: clearing strips everything the session knew, so what it wakes to
- * must say who it is and who asked. `sender` is `null` for a caller that is not a known session.
+ * must say who it is and who asked. `sender` is `null` (the default) for a caller that is not a known
+ * session -- a systemd unit such as the nightly firing is named as unidentified, never guessed.
  *
  * @param {(args: string[]) => string} run @param {string} label @param {string} text
- * @param {string | null} sender
+ * @param {string | null} [sender]
  */
-export function clearThenPrompt(run, label, text, sender) {
+export function clearThenPrompt(run, label, text, sender = null) {
   const clearRefusal = clearContext(run, label);
   try {
     run(["--session", "org", "agent", "prompt", label, deliveredText(label, text, sender)]);
