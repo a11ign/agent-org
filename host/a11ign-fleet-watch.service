@@ -1,0 +1,44 @@
+[Unit]
+# THE UNATTENDED HALF OF #1815, SCHEDULED HERE BY #2230. `fleet-watch.mjs` reads `fleet:status` and posts to
+# #928 when a worker has been non-`ready` past a threshold. It had no invoker anywhere in the tree -- not
+# even an npm script -- so it had only ever run as `node` typed by hand. Its docblock believed
+# `lab-watch.mjs` had already become "a script the host schedules"; it had not, and this pair and
+# a11ign-lab-watch.* are the first of either.
+#
+# A HOST UNIT, not a workflow: `fleetStatus()` needs the control-plane credential and inventory a GitHub
+# runner lacks (why `org-watch.mjs` is in `nightly.yml` and this is not). A TIMER rather than a fold into
+# a11ign-work-tick.service for the reason a11ign-lab-watch.service prices: a fleet HTTP sweep on the
+# critical path of a two-minute tick would let one slow worker delay every wake in the org.
+#
+# THE STATE FILE IS WHY WorkingDirectory MATTERS: `runs/fleet-watch-state.json` is relative to it and holds
+# each worker's first-seen-non-ready time, the only memory between firings. The first firing after a
+# worker goes non-ready therefore only RECORDS it; a later one reports it once it is past the threshold.
+Description=a11ign: read the fleet for stuck workers and post to #928 if any (#1815, #2230)
+After=herdr.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/agent/repos/a11y-witness
+
+# A systemd unit gets no login shell's PATH -- the reason the other host units state their own.
+Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=/home/agent
+
+# WHICH ACCOUNT THIS SPENDS, DECLARED (#1974): the workers account, as a11ign-work-tick.service does.
+Environment=GH_CONFIG_DIR=/home/agent/workers/gh
+
+# `A11Y_PVE_KEY` and `A11Y_CONTROL_HOST_FILE` (#1911) -- the control plane the fleet is read through. A
+# missing file is left to the script's own CANNOT_ASK.
+EnvironmentFile=-%h/.config/a11ign/fleet.env
+
+ExecStartPre=-/usr/bin/npm run primary:update
+
+ExecStart=/usr/bin/npm run fleet:watch -- --post
+
+# 0 QUIET and 1 ATTENTION (already posted) are the unit doing its job; 2 CANNOT_ASK stays FAILED so a
+# fleet this could not read never looks like a healthy one. docs/gate-exit-codes.md.
+SuccessExitStatus=0 1
+
+TimeoutStartSec=300
+
+# NO [Install] SECTION: the timer is the only thing that may start it (see a11ign-board-report.service).
