@@ -24,6 +24,13 @@
 // from a script); the web form remains unguarded, the mirror of #735 (the row template's own web-form-vs-
 // `gh issue create` gap).
 //
+// A DIFF OUTSIDE THE ROW'S REGION IS REFUSED TOO (#2417, ceo on #928, ruling 3). Three reviews were spent on a
+// path the row never declared (#2253 twice, #2408), each after the PR had reached a reviewer. The Region is read
+// from the row the body's `Closes #N` names, through `region-paths.mjs` -- the leaf the claim rules already
+// import, never a second parser of what counts as a path. The way through is a declared line, never an override:
+// `Outside-Region: <path> — <reason>`, em dash required. The wiring lives in the ENTRY block, like #1352's
+// `launchGate`: the row's body is read from GitHub, and the tests that call `main` directly must not reach it.
+//
 // EXIT CODES (#1479). A caller must be able to tell a refusal from a partial success, because they need
 // opposite next steps: retry the command, or never retry it.
 //   0  the body passed, `gh pr <mode>` ran, and a ready create was armed.
@@ -38,8 +45,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
-  acceptanceReport, closesDeclarationReport, extractAcceptanceSection, extractMutationSection,
+  acceptanceReport, closesDeclarationReport, extractAcceptanceSection, extractClosesDeclaration, extractMutationSection,
 } from "./acceptance-commands.mjs";
+import { declaredRegionFiles, regionCovers } from "./region-paths.mjs";
 import { leakRefusalReason } from "../../lab/src/packaging/leak-patterns.mjs";
 import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
 import { DEFAULT_BUDGET_SECONDS, mutateRunner, survivorsFor } from "../../guards/src/mutant-survivors.mjs";
@@ -110,6 +118,165 @@ export function checkBody(body, { run = runForReal } = {}) {
   const report = acceptanceReport(body, run);
   const closes = closesDeclarationReport(body);
   return { ok: report.ok && closes.ok, lines: [...report.lines, closes.line] };
+}
+
+/**
+ * #2417: WHAT NOBODY CHOOSES, EXEMPT FROM THE REGION, AND NAMED SO THE REFUSAL CAN PRINT IT. A row's Region is the
+ * author's declaration of what they will change; these three change without anyone deciding to, so a Region naming
+ * them would be padding and a refusal over them a false one. One entry per reason, because an author who is told
+ * a path is exempt should be told why: an exemption nobody can argue with is a hole nobody can close.
+ * `entry` is spelled as `region-paths.mjs`'s `regionCovers` reads it: a trailing `/` is a directory.
+ */
+export const REGION_EXEMPT = [
+  { entry: "pnpm-lock.yaml",
+    reason: "the package manager rewrites it whenever a dependency moves, so no author chooses its contents" },
+  { entry: "docs/commands.md",
+    reason: "generated from the CLIs' own flags and tracked on purpose (#478); `generated-paths.test.ts` names it the "
+      + "one tracked generated file" },
+  { entry: ".changeset/",
+    reason: "a PR that changes a package carries a changeset, which its row cannot declare before it is written" },
+];
+
+/** Any line naming the escape, so one that misses the shape is REPORTED rather than silently not clearing a path. */
+const OUTSIDE_REGION_LINE = /^\s*(?:[-*>]\s+)?(?:\*\*|__)?Outside-Region:(?:\*\*|__)?\s*(.*)$/i;
+/** `<path> — <reason>`: an EM DASH, and a reason. A hyphen or two is `Closes: none`'s spelling and does not clear. */
+const OUTSIDE_REGION_SHAPE = /^`?([^\s`]+)`?\s+—\s+(\S.*)$/;
+
+/**
+ * #2417: THE ESCAPE -- every `Outside-Region: <path> — <reason>` line in the body. `malformed` keeps the lines that
+ * name the escape and miss its shape (a hyphen, no reason), so the refusal can say why one did not clear.
+ * @param {string} body
+ * @returns {{ declared: { path: string, reason: string }[], malformed: string[] }}
+ */
+export function outsideRegionDeclarations(body) {
+  /** @type {{ path: string, reason: string }[]} */
+  const declared = [];
+  /** @type {string[]} */
+  const malformed = [];
+  for (const line of body.split(/\r\n|\r|\n/)) {
+    const named = OUTSIDE_REGION_LINE.exec(line);
+    if (!named) continue;
+    const shape = OUTSIDE_REGION_SHAPE.exec(named[1].trim());
+    if (shape) declared.push({ path: shape[1], reason: shape[2].trim() });
+    else malformed.push(line.trim());
+  }
+  return { declared, malformed };
+}
+
+/**
+ * #2417: WHERE ONE CHANGED FILE STANDS AGAINST THE REGION -- the Region first, then the exempt set, then a declared
+ * escape, so a path in the Region is never counted as an escape the author did not need to write.
+ * @param {string} file
+ * @param {{ region: readonly string[], declared: readonly { path: string }[] }} against
+ * @returns {"inside" | "exempt" | "declared" | "outside"}
+ */
+export function standingAgainstRegion(file, { region, declared }) {
+  if (region.some((entry) => regionCovers(entry, file))) return "inside";
+  if (REGION_EXEMPT.some(({ entry }) => regionCovers(entry, file))) return "exempt";
+  if (declared.some(({ path }) => regionCovers(path, file))) return "declared";
+  return "outside";
+}
+
+/**
+ * The refusal, whole, so an author never learns the escape or the exempt set from a SECOND refusal.
+ * @param {{ rows: string, outside: string[], region: readonly string[], base: string, malformed: string[] }} at
+ * @returns {string}
+ */
+function regionRefusalText({ rows, outside, region, base, malformed }) {
+  const ignored = malformed.map((line) => `\n  IGNORED, not the declared shape (an em dash and a reason are required): ${line}`);
+  return `pr-open: REFUSED -- ${outside.length} path(s) changed outside ${rows}'s Region (the diff read is `
+    + `${base}...HEAD; \`git fetch origin\` first if that ref is stale):\n`
+    + outside.map((file) => `  ${file}`).join("\n")
+    + `\nThe Region it was read against: ${region.length > 0 ? region.join(", ") : "(names no path)"}.`
+    + "\nIf the change really belongs in this PR, say so, one line per path, in the PR body (the em dash is required, "
+    + "and a hyphen does not clear it):\n  Outside-Region: <path> — <reason>"
+    + `${ignored.join("")}\nExempt without a line, because nobody chooses them:\n`
+    + REGION_EXEMPT.map(({ entry, reason }) => `  ${entry} -- ${reason}`).join("\n")
+    + "\nNothing was sent to GitHub (#2417).";
+}
+
+/**
+ * The one line a passing check prints, so a green reading is not silence either.
+ * @param {{ rows: string, changed: string[], standing: string[], base: string }} at
+ * @returns {string}
+ */
+function regionPassLine({ rows, changed, standing, base }) {
+  const count = (/** @type {string} */ kind) => standing.filter((s) => s === kind).length;
+  return `REGION: ${changed.length} changed path(s) against ${rows}'s Region (${base}...HEAD): ${count("inside")} inside, `
+    + `${count("exempt")} exempt, ${count("declared")} cleared by an Outside-Region line.`;
+}
+
+/**
+ * The union of the Regions of the rows a body closes, read through `region-paths.mjs`. A row whose body cannot be
+ * read is `unread` (refuse: absence is not proof the diff is inside), and one with no Region section at all is
+ * `no-section` (nothing to compare against, said aloud).
+ * @param {number[]} numbers
+ * @param {{ rowBody: (number: number) => string, rootFiles?: Set<string> }} deps
+ * @returns {{ kind: "region", region: string[] } | { kind: "unread", why: string } | { kind: "no-section", row: number }}
+ */
+function readRegions(numbers, { rowBody, rootFiles }) {
+  /** @type {Set<string>} */
+  const union = new Set();
+  for (const number of numbers) {
+    let text;
+    try {
+      text = rowBody(number);
+    } catch (error) {
+      return { kind: "unread", why: `could not read row #${number}'s body (${messageOf(error).split("\n")[0]})` };
+    }
+    // `declaredRegionFiles` reads `origin/main`'s root files by default; an injected set spares a test that git call.
+    const declared = declaredRegionFiles(text, rootFiles ? { rootFiles } : undefined);
+    if (declared === null) return { kind: "no-section", row: number };
+    for (const path of declared) union.add(path);
+  }
+  return { kind: "region", region: [...union] };
+}
+
+/**
+ * THE REGION CHECK (#2417), pure over its seams: the row's body (`rowBody`, GitHub) and the diff (`git`, the local tree,
+ * which #1344/#1446 already require to be the head being sent). `refusal` is the whole text to refuse with, `note` the
+ * one line to print when nothing is refused. Both are null only when there is nothing to say: a body whose `Closes` is
+ * missing or malformed, which `checkBody` refuses next in its own words.
+ *
+ * DECISIONS THE ROW MADE AND THE PR STATES: the row is the one `Closes #N` names (several: the union of their
+ * Regions); `Closes: none` has no row and so no Region, and says so; a row that cannot be read REFUSES, because the
+ * alternative is a check that passes exactly when GitHub is down.
+ * @param {string} body
+ * @param {string[]} rest the args handed to `gh pr <mode>`
+ * @param {{ git?: (args: string[]) => string, rowBody: (number: number) => string, rootFiles?: Set<string> }} deps
+ * @returns {{ refusal: string | null, note: string | null }}
+ */
+export function checkRegion(body, rest, { git = defaultGit, rowBody, rootFiles }) {
+  const closes = extractClosesDeclaration(body);
+  if (closes.kind === "none") {
+    return { refusal: null, note: "REGION: not checked -- `Closes: none` names no row, so there is no Region to read." };
+  }
+  if (closes.kind !== "closes") return { refusal: null, note: null };
+  const rows = closes.numbers.map((n) => `#${n}`).join(", ");
+  const read = readRegions(closes.numbers, { rowBody, rootFiles });
+  if (read.kind === "no-section") {
+    return { refusal: null, note: `REGION: not checked -- row #${read.row} has no Region section to read.` };
+  }
+  if (read.kind === "unread") {
+    return { refusal: `pr-open: REFUSED -- ${read.why}, so the diff cannot be checked against ${rows}'s Region. `
+      + "Retry once GitHub answers. Nothing was sent to GitHub (#2417).", note: null };
+  }
+  const base = `origin/${flagAfter(rest, "--base") ?? "main"}`;
+  /** @type {string[]} */
+  let changed;
+  try {
+    changed = git(["diff", "--name-only", "--no-renames", "-z", `${base}...HEAD`]).split("\0").filter(Boolean);
+  } catch (error) {
+    return { refusal: `pr-open: REFUSED -- could not read the diff ${base}...HEAD (${messageOf(error).split("\n")[0]}), `
+      + `so ${rows}'s Region cannot be checked. Nothing was sent to GitHub (#2417).`, note: null };
+  }
+  const { declared, malformed } = outsideRegionDeclarations(body);
+  const standing = changed.map((file) => standingAgainstRegion(file, { region: read.region, declared }));
+  const outside = changed.filter((_file, index) => standing[index] === "outside");
+  if (outside.length > 0) {
+    return { refusal: regionRefusalText({ rows, outside, region: read.region, base, malformed }), note: null };
+  }
+  return { refusal: null, note: regionPassLine({ rows, changed, standing, base }) };
 }
 
 /**
@@ -439,9 +606,38 @@ const defaultGh = (args) => { execFileSync("gh", args, { stdio: "inherit" }); };
  */
 const defaultPrHead = (repo, number) => JSON.parse(execFileSync("gh",
   ["api", `repos/${repo}/pulls/${number}`, "--jq", "{ref: .head.ref, oid: .head.sha}"], { encoding: "utf8" }));
+/**
+ * Row N's body, over REST like `defaultPrHead` (the core pool, not the GraphQL one that runs out), as the caller. It is
+ * a sibling of `run` and not a use of it: `run` is `stdio: "inherit"` and returns nothing, so it cannot hand a body back.
+ * @param {number} number
+ * @returns {string}
+ */
+const defaultRowBody = (number) =>
+  execFileSync("gh", ["api", `repos/${REPO}/issues/${number}`, "--jq", ".body"], { encoding: "utf8" });
 /** `sandboxGitEnv()` CALLED: git exports GIT_DIR into every hook environment. @param {string[]} args */
 const defaultGit = (args) =>
   execFileSync("git", args, { encoding: "utf8", env: sandboxGitEnv() }).trim();
+
+/**
+ * #2417: `checkRegion` in `main`'s terms: prints its note, or its refusal, and returns the exit code only for a refusal.
+ * OFF when no `rowBody` is wired, which is every direct caller of `main` and none of the shipped CLI: the entry block
+ * passes the real reader (#1352's `launchGate` is placed the same way, and `pr-open-region.test.ts` pins the wiring).
+ * @param {string} body
+ * @param {string[]} rest
+ * @param {{ git?: (args: string[]) => string, rowBody?: (number: number) => string, rootFiles?: Set<string>,
+ *           out: (line: string) => void, err: (line: string) => void }} deps
+ * @returns {number | null} EXIT_NOTHING_SENT for a refusal, else null
+ */
+function regionStep(body, rest, { git, rowBody, rootFiles, out, err }) {
+  if (!rowBody) return null;
+  const region = checkRegion(body, rest, { git, rowBody, rootFiles });
+  if (region.refusal) {
+    err(`${region.refusal}\n`);
+    return EXIT_NOTHING_SENT;
+  }
+  if (region.note) out(`${region.note}\n`);
+  return null;
+}
 
 /**
  * The CLI, returning the header's exit code, with every spawn injectable so the path that matters most, a
@@ -451,11 +647,13 @@ const defaultGit = (args) =>
  *           prHead?: (repo: string, number: string) => { ref: string, oid: string } | null,
  *           runAcceptance?: (command: string) => number, runMutation?: (command: string) => number,
  *           survivors?: (body: string) => { lines: string[], section: boolean },
- *           owner?: () => string | null, out?: (line: string) => void, err?: (line: string) => void }} [deps]
+ *           owner?: () => string | null, rowBody?: (number: number) => string, rootFiles?: Set<string>,
+ *           out?: (line: string) => void, err?: (line: string) => void }} [deps]
  * @returns {number}
  */
 export function main(argv = process.argv.slice(2),
-  { run, git, prHead, runAcceptance, runMutation = runForReal, survivors, owner, out = writeOut, err = writeErr } = {}) {
+  { run, git, prHead, runAcceptance, runMutation = runForReal, survivors, owner, rowBody, rootFiles, out = writeOut,
+    err = writeErr } = {}) {
   const [mode, ...rest] = argv;
   if (mode !== "create" && mode !== "edit") {
     err(usage());
@@ -474,6 +672,9 @@ export function main(argv = process.argv.slice(2),
     err(`${headRefused}\n`);
     return EXIT_NOTHING_SENT;
   }
+  // #2417: before checkBody for the same reason, and before anything is sent.
+  const outsideRegion = regionStep(body, rest, { git, rowBody, rootFiles, out, err });
+  if (outsideRegion !== null) return outsideRegion;
   const result = checkBody(body, { run: runAcceptance });
   for (const line of result.lines) out(`${line}\n`);
   if (!result.ok) {
@@ -678,6 +879,6 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
   if (launchGate(`pr-open ${process.argv[2] ?? ""}`.trim())) {
     process.exitCode = EXIT_NOTHING_SENT;
   } else {
-    process.exitCode = main(process.argv.slice(2), { survivors: survivorsOfThisTree });
+    process.exitCode = main(undefined, { rowBody: defaultRowBody, survivors: survivorsOfThisTree });
   }
 }
