@@ -652,7 +652,8 @@ test("#2178: the same shape in a BARE (unfenced) block joins, and still stops wh
 });
 
 test("#2178: #2068's two shapes still join beside the new one -- the positive control for the counts above", () => {
-  assert.deepEqual(extractAcceptanceSection(fenced("node -e 'const a = 1;", "console.log(a);'")).commands.length, 1);
+  assert.deepEqual(extractAcceptanceSection(fenced("node -e 'const a = 1;", "console.log(a);'")),
+    { kind: "commands", commands: ["node -e 'const a = 1;\nconsole.log(a);'"] });
   assert.deepEqual(extractAcceptanceSection(fenced("node -e 1 \\", "  --check")),
     { kind: "commands", commands: ["node -e 1 --check"] });
 });
