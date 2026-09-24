@@ -22,7 +22,8 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path";
 import { prRow, nonSuccessByName, newestPerName, render, fetchRefs, renderStalled, windowOf,
   renderMergedChecks, STALL_MINUTES, EXIT, hostState, hostContention, reliefFor, topConsumers, isRed, renderBudget,
-  fetchRemoteBranchesChecked, branchPrefixCensus, renderBranchPrefixes, apiBudget, ghHeaders, requiredContexts }
+  fetchRemoteBranchesChecked, branchPrefixCensus, renderBranchPrefixes, apiBudget, ghHeaders, requiredContexts,
+  openPRs, armedState, queueEntries, renderOpenPRs, QUEUE_QUERY }
   from "../queue-table.mjs";
 
 const NOW = new Date("2026-09-09T08:00:00Z");
@@ -985,4 +986,92 @@ test("requiredContexts: a protected branch showing no list is null (prints unkno
   withNonAdminGh(PROTECTED_WITHOUT_LIST, () => {
     assert.equal(requiredContexts(), null);
   });
+});
+
+// #2245: `armed` was `Boolean(pr.auto_merge)`, and REST has no merge-queue field, so a pull request at the
+// FRONT of the queue (which leaves auto-merge on entry) printed UNARMED. These pin the answer, and WHICH
+// CALLS are made -- a fixture-only fix leaves the payload without the queue key.
+const restPr = (over = {}) => ({ number: 2239, head: { ref: "agent/x-2239", sha: "b".repeat(40) },
+  updated_at: "2026-09-23T21:03:00Z", auto_merge: null, draft: false, labels: [], ...over });
+/** The observed shape (#2239 at 2026-09-23T21:03:26Z): REST `auto_merge: null`, GraphQL says position 1. */
+const queuedNode = { number: 2239, autoMergeRequest: null,
+  mergeQueueEntry: { state: "AWAITING_CHECKS", position: 1 } };
+const plainNode = (number: number, over = {}) => ({ number, autoMergeRequest: null, mergeQueueEntry: null, ...over });
+const armedLine = (rows: unknown[]) => renderOpenPRs(rows.map((r) => prRow(r as never, 0, NOW))).lines[0];
+
+test("#2245 a pull request at the FRONT of the queue is QUEUED, never UNARMED", () => {
+  const state = armedState(restPr(), new Map([[2239, queuedNode]]));
+  assert.equal(state.armed, true, "REST auto_merge is null and the queue entry alone makes it armed");
+  const line = armedLine([pr({ number: 2239, ...state })]);
+  assert.match(line, /QUEUED\(1\)/);
+  assert.doesNotMatch(line, /UNARMED/);
+});
+
+test("#2245 CONTROL: in neither state, with the queue READ, is UNARMED -- the word still means something", () => {
+  const state = armedState(restPr({ number: 7 }), new Map([[7, plainNode(7)]]));
+  assert.deepEqual(state, { armed: false, queue: null });
+  assert.match(armedLine([pr({ number: 7, ...state })]), /UNARMED/);
+});
+
+test("#2245 a pending auto-merge is still `armed`, and is not called QUEUED", () => {
+  const state = armedState(restPr({ number: 8, auto_merge: { merge_method: "merge" } }), new Map([[8, plainNode(8)]]));
+  assert.equal(state.armed, true);
+  const line = armedLine([pr({ number: 8, ...state })]);
+  assert.match(line, /armed /);
+  assert.doesNotMatch(line, /QUEUED|UNARMED/);
+});
+
+test("#2245 an UNREADABLE queue is `armed?` and INCOMPLETE, never UNARMED -- the defect must not return by outage", () => {
+  const state = armedState(restPr(), null);
+  assert.equal(state.armed, null);
+  const { lines, incomplete } = renderOpenPRs([prRow(pr({ ...state }), 0, NOW)]);
+  assert.match(lines[0], /armed\?/);
+  assert.doesNotMatch(lines[0], /UNARMED/);
+  assert.equal(incomplete, true);
+  assert.equal(armedState(restPr({ auto_merge: { merge_method: "merge" } }), null).armed, true,
+    "a REST auto_merge that is set is armed whatever the queue read said");
+  assert.equal(armedState(restPr({ number: 9 }), new Map([[7, plainNode(7)]])).armed, null,
+    "a PR absent from the queue answer is unread, not unqueued");
+});
+
+test("#2245 a queued PR held by a person is the FAILURE state HELD+ARMED, not plain HELD", () => {
+  const state = armedState(restPr(), new Map([[2239, queuedNode]]));
+  assert.match(armedLine([pr({ number: 2239, holders: ["ceo"], ...state })]), /HELD\+ARMED\(ceo\)/);
+});
+
+test("#2245 openPRs asks the QUEUE as well as the REST list, and reads a queued PR as armed", () => {
+  const calls: string[][] = [];
+  const run = (args: string[]) => {
+    calls.push(args);
+    if (args[1] === "graphql") return JSON.stringify([queuedNode]);
+    return /check-runs/.test(args[1]) ? "" : JSON.stringify([restPr()]);
+  };
+  const rows = openPRs({ run })!;
+  assert.equal(calls.filter((a) => a[1] === "graphql").length, 1,
+    "ONE bulk GraphQL call for the whole list -- not a call per pull request");
+  assert.ok(calls.some((a) => a[0] === "api" && /repos\/.+\/pulls\?state=open/.test(a[1])), "the REST list");
+  const graphql = calls.find((a) => a[1] === "graphql")!;
+  assert.ok(graphql.includes(`query=${QUEUE_QUERY}`), "the query it sends is the exported one");
+  assert.match(QUEUE_QUERY, /mergeQueueEntry/, "and that query carries the queue field");
+  assert.equal(rows[0].armed, true);
+  assert.deepEqual(rows[0].queue, { state: "AWAITING_CHECKS", position: 1 });
+});
+
+test("#2245 a FAILING queue call leaves openPRs answering from REST, with armed unknown for the unarmed", () => {
+  const run = (args: string[]) => {
+    if (args[1] === "graphql") throw new Error("GraphQL pool exhausted");
+    if (/check-runs/.test(args[1])) return "";
+    return JSON.stringify([restPr(), restPr({ number: 3, auto_merge: { merge_method: "merge" } })]);
+  };
+  const rows = openPRs({ run })!;
+  assert.deepEqual(rows.map((r: { armed: boolean | null }) => r.armed), [null, true]);
+  assert.equal(queueEntries(run), null, "an unreadable queue is null, never an empty map");
+});
+
+test("#2245 a failing REST list is still `null` -- the queue call does not paper over it", () => {
+  const run = (args: string[]) => {
+    if (args[1] !== "graphql") throw new Error("REST down");
+    return JSON.stringify([queuedNode]);
+  };
+  assert.equal(openPRs({ run }), null);
 });
