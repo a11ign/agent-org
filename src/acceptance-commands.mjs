@@ -3069,7 +3069,9 @@ function looksLikeCommand(line) {
  */
 function measuredSections(body) {
   const lines = body.replace(/<!--[\s\S]*?-->/g, "").split(/\r\n|\r|\n/);
+  /** @type {string[][]} */
   const sections = [];
+  /** @type {string[] | null} */
   let current = null;
   let inFence = false;
   for (const line of lines) {
