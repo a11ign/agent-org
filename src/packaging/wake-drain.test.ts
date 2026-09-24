@@ -8,11 +8,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, chmodSync, readdirSync, copyFileSync } from "node:fs";
+import { spawnSync, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname, relative } from "node:path";
+import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
+import { localImports } from "../../../guards/src/local-import-closure.mjs";
 import { deliver, engineerRoles, engineerEligibility, spawnableRole, EXIT }
   from "../wake.mjs";
 import { activeDrain, drainedRoles, drainInForce, cyclesReport, spawnClaimability, rowOfOrder, DRAINED_SEEN,
@@ -374,13 +376,48 @@ test("#2324 (3) POSITIVE CONTROLS through `claimRow`: a spare claims, an empty d
 // injected seam is exactly what a deleted call goes around, so this drives `row-claim.mjs claim` itself with a `gh`
 // on PATH and a HOME with no ledger (an empty one keeps the drain in force). CI's plain clone is refused by the
 // launch gate, so the printed override is set -- its first users are exactly these tests.
+//
+// IN A COPY OF ITS OWN CLOSURE, NOT THE CHECKOUT (#2394's first red): the CLI refuses first of all when it CANNOT
+// ASK whether its rule is current (`origin/main` unresolvable) and when the rule IS behind, and the acceptance job's
+// clone has no `origin/main` at the moment it runs the test, so the real checkout answered `COULD NOT DETERMINE`
+// there. It would have gone red locally the day `main` moved a rule file, too. The copy is of the WORKING TREE
+// (so a mutation made there is the one under test), is its own one-commit repo, and its `origin/main` is that
+// commit -- a truthful "up to date", made in a directory nothing else reads.
 const ROW_CLAIM_ENTRY = fileURLToPath(new URL("../row-claim.mjs", import.meta.url));
+const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
+const SESSIONS_JSON = "packages/agent-org/docs/roles/sessions.json";
 const GH_READY_ROW = `#!/bin/sh
 case "$*" in
   *number,title,labels,state*) printf '%s' '{"number":2324,"title":"A row","state":"OPEN","labels":[{"name":"ready"}]}' ;;
   *) exit 1 ;;
 esac
 `;
+
+/** Copies the entry's import closure, the rule directory and `sessions.json` into `copyRoot`, as an up-to-date repo. */
+function copyClosureAsRepo(copyRoot: string): string {
+  const files = new Set<string>([join(REPO_ROOT, SESSIONS_JSON)]);
+  const visit = (file: string): void => {
+    if (files.has(file)) return;
+    files.add(file);
+    for (const next of localImports(file)) visit(next);
+  };
+  visit(ROW_CLAIM_ENTRY);
+  for (const name of readdirSync(join(REPO_ROOT, "packages/agent-org/src/row-claim"))) {
+    visit(join(REPO_ROOT, "packages/agent-org/src/row-claim", name));
+  }
+  for (const file of files) {
+    const target = join(copyRoot, relative(REPO_ROOT, file));
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(file, target);
+  }
+  const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args],
+    { cwd: copyRoot, env: sandboxGitEnv(), stdio: "pipe" });
+  git("init", "--quiet");
+  git("add", "-A");
+  git("commit", "--quiet", "-m", "copy");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  return join(copyRoot, relative(REPO_ROOT, ROW_CLAIM_ENTRY));
+}
 
 function claimProcess(session: string, ledger: string | null) {
   const dir = mkdtempSync(join(tmpdir(), "row-claim-drain-"));
@@ -392,9 +429,10 @@ function claimProcess(session: string, ledger: string | null) {
       mkdirSync(join(dir, ".cache/a11ign"), { recursive: true });
       writeFileSync(path, ledger);
     }
-    return spawnSync(process.execPath, [ROW_CLAIM_ENTRY, "claim", "2324", `--session=${session}`], {
+    const entry = copyClosureAsRepo(join(dir, "checkout"));
+    return spawnSync(process.execPath, [entry, "claim", "2324", `--session=${session}`], {
       encoding: "utf8",
-      env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, A11Y_POLICY_LAUNCH_REASON: "#2324 drives the CLI" },
+      env: { ...sandboxGitEnv(), HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, A11Y_POLICY_LAUNCH_REASON: "#2324 drives the CLI" },
     });
   } finally {
     rmSync(dir, { recursive: true, force: true });
