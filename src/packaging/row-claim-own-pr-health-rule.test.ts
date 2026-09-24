@@ -1121,3 +1121,150 @@ test("#2254 (7): the PR author's OWN login counts -- a human author, or a sessio
     commits: [commit("Rework it", "2026-09-23T22:00:00Z", [{ login: "a11ign-ai-workers" }])] });
   assert.equal(noPrAuthor.authorCommitsSinceReview, 0, "no PR author to match: `undefined` must not equal `undefined`");
 });
+
+// --- #2241: a row the GATE has shelved is not a row its holder can build ------------------------------
+//
+// THE ONE ROW, both deciders reading it: #1926 held `Not-before: 2026-09-24T01:30:00Z` for a fourteen-hour
+// machine run, `waitingOn` said "nothing owed until then" and B2 said "you owe a commit" -- two claims lost,
+// two offline rows left with no engineer. `worker-judge`'s refusal the same evening, on a `CHANGES_REQUESTED`,
+// was RIGHT and stays right: the discriminator is `waitingOn`, and a refusal produces no waiting condition.
+
+/** The Open-check's row, verbatim, and the clock at which it was measured (2026-09-23 21:0xZ). */
+const shelved1926 = { number: 1926, body: "Not-before: 2026-09-24T01:30:00Z", labels: [] as string[],
+  declaresPaths: true, subIssues: 0, closingPr: undefined };
+const EVENING = Date.parse("2026-09-23T21:05:00Z");
+const AFTER_THE_RUN = Date.parse("2026-09-24T09:40:00Z");
+
+test("#2241 (1): the Open-check's own row -- a held row waiting on a future `Not-before:` -- does not refuse", () => {
+  assert.equal(isInBuild(shelved1926), true, "still a row somebody owes a commit for: only the WAIT changed");
+  assert.equal(inBuildReason([shelved1926], EVENING), null);
+});
+
+test("#2241 (1): each of the three waiting conditions `waitingOn` reads lifts the refusal", () => {
+  const dated = { ...shelved1926, body: "Not-before: 2099-01-01" };
+  const blocked = { ...shelved1926, body: "", blockedBy: { nodes: [{ number: 1918, state: "OPEN" }] } };
+  const answer = { ...shelved1926, body: "", labels: [{ name: "answer:ceo" }] };
+  for (const [name, row] of Object.entries({ dated, blocked, answer })) {
+    assert.equal(inBuildReason([row], EVENING), null, `${name}: the gate shelves it, so B2 must not hand it back`);
+  }
+});
+
+test("#2241 (2) POSITIVE CONTROL: a held row with NO waiting condition still refuses -- B2 is not deleted", () => {
+  const reason = inBuildReason([{ ...shelved1926, body: "## Region\n\n```\nscripts/held.mjs\n```\n" }], EVENING);
+  assert.ok(reason, "a fix returning null for every held row has deleted B2");
+  assert.match(reason as string, /#1926 is IN BUILD/);
+});
+
+test("#2241 (2) POSITIVE CONTROL: a `Not-before:` that has PASSED refuses again", () => {
+  assert.ok(inBuildReason([shelved1926], AFTER_THE_RUN), "the run is over: the commit is owed today");
+  const dateOnly = { ...shelved1926, body: "Not-before: 2026-09-23" };
+  assert.ok(inBuildReason([dateOnly], EVENING), "a date-only value is midnight UTC of that date, and 21:05Z is past it");
+  assert.equal(inBuildReason([dateOnly], Date.parse("2026-09-22T21:05:00Z")), null, "and the day before it is a wait");
+});
+
+test("#2241 (2) POSITIVE CONTROL: a CLOSED blocker is a condition that has CLEARED, so it refuses", () => {
+  const cleared = { ...shelved1926, body: "", blockedBy: { nodes: [{ number: 1918, state: "CLOSED" }] } };
+  assert.ok(inBuildReason([cleared], EVENING));
+});
+
+test("#2241 (3): a session's own CHANGES_REQUESTED still refuses while ANOTHER held row is waiting", () => {
+  const reason = inBuildReason([shelved1926, proposedRow], EVENING);
+  assert.ok(reason, "two clauses, and the waiting one must not swallow the other");
+  assert.match(reason as string, /#2107/, "it is the review clause that fired, and it names the pull request");
+  assert.doesNotMatch(reason as string, /is IN BUILD/);
+});
+
+test("#2241 (3): a row's own wait does not excuse its pull request's CHANGES_REQUESTED", () => {
+  // The same row carries a future `Not-before:` AND an open pull request a reviewer refused. The date says
+  // nothing is owed on the DELIVERABLE; the reviewer says something is owed on the pull request today.
+  const both = { ...proposedRow, body: "Not-before: 2099-01-01" };
+  assert.ok(inBuildReason([both], EVENING), "a reviewer has asked for changes: owed work, whatever date the row carries");
+  assert.match(inBuildReason([both], EVENING) as string, /#2107/);
+});
+
+test("#2241: two held rows, one waiting and one not -- the refusal names the one NOT waiting", () => {
+  const owed = { ...shelved1926, number: 2002, body: "" };
+  const reason = inBuildReason([shelved1926, owed], EVENING);
+  assert.match(reason as string, /#2002 is IN BUILD/);
+  assert.doesNotMatch(reason as string, /#1926 is IN BUILD/);
+});
+
+test("#2241 (4): the refusal that still fires says which clause fired and what would clear it", () => {
+  const reason = inBuildReason([{ ...shelved1926, body: "Not-before: 2026-09-24T01:30:00Z" }], AFTER_THE_RUN) as string;
+  assert.match(reason, /#1926 is IN BUILD/, "the clause that fired");
+  assert.match(reason, /WAITING on something no commit of yours can hasten/, "the way out this row adds");
+  for (const condition of [/Not-before: YYYY-MM-DDTHH:MM:SSZ/, /--add-blocked-by <row>/, /answer:<session>/]) {
+    assert.match(reason, condition, "all three conditions `waitingOn` reads are NAMED, not only the one that fits");
+  }
+  assert.match(reason, /reads no such condition on #1926 now/, "and it says what it read, so a wrong reading is visible");
+  // The three remedies that already existed are still there, in the order they always were.
+  assert.match(reason, /Finish it, or `decline` it/);
+  assert.match(reason, /Delivers: #1926/);
+  assert.ok(reason.indexOf("Delivers: #1926") < reason.indexOf("WAITING on something"));
+});
+
+test("#2241 (5) FAIL CLOSED: a row that cannot be parsed for a waiting condition REFUSES", () => {
+  // Each of these is a wait its author MEANT and `waitingOn` could not read. `null` from it means "not
+  // parsed", and here that must not read as "nothing is owed" -- the opposite of #2226's eligibility read
+  // and for the opposite reason: there a lookup that cannot ask must not withhold a row from the queue,
+  // here a parse that cannot answer must not hand out a second row.
+  const unreadable: Record<string, object> = {
+    "a time without seconds": { body: "Not-before: 2099-01-01T01:30Z" },
+    "a time without its Z": { body: "Not-before: 2099-01-01T01:30:00" },
+    "an offset other than UTC": { body: "Not-before: 2099-01-01T01:30:00+01:00" },
+    "a date the calendar does not have": { body: "Not-before: 2099-02-31" },
+    "a wait written in prose": { body: "Not-before the recapture finishes, roughly Thursday" },
+    "no body at all": { body: undefined },
+    "a bare `answer:` naming nobody": { body: "", labels: [{ name: "answer:" }] },
+    "a blockedBy list the lookup did not carry": { body: "", blockedBy: undefined },
+    "a body that is not a string": { body: 42 },
+  };
+  for (const [name, facts] of Object.entries(unreadable)) {
+    assert.ok(inBuildReason([{ ...shelved1926, ...facts } as never], EVENING), `${name}: unreadable, so it refuses`);
+  }
+  assert.ok(inBuildReason([{ number: 1926, declaresPaths: true, subIssues: 0, closingPr: undefined }], EVENING),
+    "a row fact set with NONE of the waiting fields is exactly today's B2, unchanged");
+  // ...and the READABLE spelling of the same wait is the other direction, so the pair is pinned both ways.
+  assert.equal(inBuildReason([{ ...shelved1926, body: "Not-before: 2099-01-01T01:30:00Z" }], EVENING), null);
+});
+
+test("#2241: the lookup carries body, labels and blockedBy on the SAME `issue view` call", () => {
+  const seen: string[][] = [];
+  const view = { body: "## Region\n\n```\nscripts/held.mjs\n```\n\nNot-before: 2099-01-01\n",
+    labels: [{ name: "in-progress" }], blockedBy: { nodes: [], totalCount: 0 } };
+  const run = (args: string[]) => {
+    seen.push(args);
+    if (args[0] === "issue" && args[1] === "list") return JSON.stringify([{ number: 1926 }]);
+    if (args[0] === "api" && args[1] === "graphql") {
+      return JSON.stringify({ data: { repository: { issue: { closedByPullRequestsReferences: { nodes: [] } } } } });
+    }
+    if (args[0] === "issue") return JSON.stringify(view);
+    return "[]";
+  };
+  const rows = lookupHeldRows("worker-tooling", 2241, { run });
+  assert.equal(rows?.[0].body, view.body);
+  assert.deepEqual(rows?.[0].labels, view.labels);
+  assert.deepEqual(rows?.[0].blockedBy, view.blockedBy);
+  const views = seen.filter((args) => args[0] === "issue" && args[1] === "view");
+  assert.equal(views.length, 1, "one round trip per held row: a second `issue view` would undo #989's measurement");
+  assert.equal(views[0][views[0].indexOf("--json") + 1], "body,labels,blockedBy");
+  assert.equal(inBuildReason(rows ?? []), null, "end to end: a real lookup of a shelved row does not refuse");
+});
+
+test("#2241: a lookup that carried a Region but NO wait fields leaves the row in build -- fail closed, end to end", () => {
+  const withView = (view: object) => (args: string[]) => {
+    if (args[0] === "issue" && args[1] === "list") return JSON.stringify([{ number: 1926 }]);
+    if (args[0] === "api" && args[1] === "graphql") {
+      return JSON.stringify({ data: { repository: { issue: { closedByPullRequestsReferences: { nodes: [] } } } } });
+    }
+    if (args[0] === "issue") return JSON.stringify(view);
+    return "[]";
+  };
+  const region = "## Region\n\n```\nscripts/held.mjs\n```\n";
+  // The wait lives in `blockedBy`, which this lookup answer does not carry: nothing to read it from.
+  const uncarried = lookupHeldRows("worker-tooling", 2241, { run: withView({ body: region }) });
+  assert.ok(inBuildReason(uncarried ?? []), "a wait that could not be read is not a wait");
+  const carried = lookupHeldRows("worker-tooling", 2241, { run: withView({ body: region, labels: [],
+    blockedBy: { nodes: [{ number: 1918, state: "OPEN" }] } }) });
+  assert.equal(inBuildReason(carried ?? []), null, "and the same row with the blocker CARRIED is the other direction");
+});
