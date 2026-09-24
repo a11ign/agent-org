@@ -339,6 +339,13 @@ const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=\S*$/;
 // answer "is this refusable" cannot also answer "is this claim supportable", so it needs its own list.
 const UNVERIFIABLE_BUILTINS = new Set(["echo", "true", ":", "test", "time", "["]);
 
+// #2178: THE SHELL KEYWORDS THAT OPEN OR CLOSE A BLOCK. `for` IS a command -- to bash -- so telling the filer
+// it has "no executable" sends them to look for a missing binary. It has none because it is grammar, not a
+// program. `[[` is left out on purpose: `[[ -f x ]]` is a complete one-line command, not a block edge.
+// Only the REASON differs from the no-executable refusal; the verdict is the same `prose` it always was.
+const SHELL_BLOCK_KEYWORDS = new Set(["for", "while", "until", "if", "case", "select", "function",
+  "do", "then", "else", "elif", "fi", "done", "esac", "{", "}"]);
+
 /**
  * The first token of a command that could plausibly BE the command -- skipping any leading `VAR=value`
  * assignments (#446). `undefined` for an empty or whitespace-only line.
@@ -1910,6 +1917,32 @@ function anyCommandUsesHistory(commands) {
 }
 
 /**
+ * #446/#2178: WHY A LINE'S FIRST TOKEN CANNOT BE A CHECK, or null when it can -- split out of
+ * `classifyCommand`, which had reached the complexity ceiling with the shell-keyword reason added.
+ * @param {string} token
+ * @param {(token: string) => boolean} exists
+ * @returns {Classification | null}
+ */
+function proseFirstToken(token, exists) {
+  const bareToken = token.replace(/^['"]|['"]$/g, "");
+  if (UNVERIFIABLE_BUILTINS.has(bareToken)) {
+    return { verdict: "prose",
+      reason: `cannot verify anything -- \`${bareToken}\`'s exit code says nothing about whether the `
+        + "claim in this line is true" };
+  }
+  if (SHELL_BLOCK_KEYWORDS.has(bareToken)) {
+    return { verdict: "prose",
+      reason: `starts a shell block: \`${bareToken}\` is a shell keyword, not an executable, so this line is an `
+        + "incomplete command on its own -- an Acceptance line is read one command at a time, and a block "
+        + "spanning lines is not joined. Put it in a script, or in one `bash -c '...'` line" };
+  }
+  if (!exists(token)) {
+    return { verdict: "prose", reason: `is not a command (no executable "${token}")` };
+  }
+  return null;
+}
+
+/**
  * Pure. Never executes anything -- just decides whether this command is this job's to run.
  *
  * #446: A THIRD VERDICT, "prose", for a line that was never a command at all -- either its first token
@@ -1982,16 +2015,7 @@ export function classifyCommand(command,
   if (!token) {
     return { verdict: "prose", reason: "is not a command (the line is empty)" };
   }
-  const bareToken = token.replace(/^['"]|['"]$/g, "");
-  if (UNVERIFIABLE_BUILTINS.has(bareToken)) {
-    return { verdict: "prose",
-      reason: `cannot verify anything -- \`${bareToken}\`'s exit code says nothing about whether the `
-        + "claim in this line is true" };
-  }
-  if (!exists(token)) {
-    return { verdict: "prose", reason: `is not a command (no executable "${token}")` };
-  }
-  return { verdict: "runnable" };
+  return proseFirstToken(token, exists) ?? { verdict: "runnable" };
 }
 
 /**
@@ -2364,6 +2388,25 @@ export function endsInsideQuote(text) {
 }
 
 /**
+ * #2178: DOES THIS TEXT END IN A SHELL OPERATOR THAT NEEDS A RIGHT-HAND SIDE? -- the third spelling of "this
+ * command is not finished yet", and the least ambiguous: a line ending in `&&`, `||`, `|` or `|&` is never a
+ * complete command, so the next line is its other half. Not joining it sent `npm run build &&` to bash as a
+ * syntax error and ran `npm test` on its own, where it could pass -- with the condition the author wrote
+ * gone.
+ *
+ * A single trailing `&` is NOT here: it backgrounds the command, which is complete. An operator preceded by
+ * a backslash is a literal character. Quote state is asked BEFORE this by `joinContinuations`, so an
+ * operator inside an open string never reaches it. A trailing `# comment` after the operator is not looked
+ * through: bash would still continue, but reading that line as complete is the pre-#2178 behaviour, not a
+ * new one, and the author can move the comment.
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function endsInOperator(text) {
+  return /(?<!\\)(?:&&|\|\|?|\|&)\s*$/.test(text);
+}
+
+/**
  * #419: A `\` LINE CONTINUATION IS ONE COMMAND, NOT TWO. Read line by line, a shell continuation split the
  * command in half: the first half ended in a dangling backslash and the second half became its OWN
  * "command" -- a bare filename or flag that fails the moment it is run on its own. Joins forward from
@@ -2402,6 +2445,8 @@ function joinContinuations(lines, startIndex, firstLine, limit) {
     // continuation, so asking about the quote before the backslash is what keeps that one intact.
     if (endsInsideQuote(command)) command = `${command}\n${next.replace(/\s+$/, "")}`;
     else if (/\\\s*$/.test(command)) command = `${command.replace(/\\\s*$/, "").trimEnd()} ${next.trim()}`;
+    // #2178: the operator stays -- it is part of the command -- and the two lines are joined by a space.
+    else if (endsInOperator(command)) command = `${command.trimEnd()} ${next.trim()}`;
     else break;
     consumed += 1;
   }
