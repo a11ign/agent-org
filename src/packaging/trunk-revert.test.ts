@@ -310,6 +310,40 @@ test("the answer is recorded even when an earlier step died, and an unreadable a
   assert.match(step.run ?? "", /\*\) RECHECK_RESULT=unknown/, "anything that is not pass|fail|unknown is unknown");
 });
 
+// --- the parent re-check asks the question the RED job asked (#2389 review) ---
+
+const REUSABLE = parseYaml(readFileSync(path.join(WORKFLOWS, "reusable-build-test.yml"), "utf8")) as
+  { jobs: Record<string, { steps: { run?: string; name?: string }[] }> };
+
+/** The commands `trunkBuildTest` runs for its verdict, read from the workflow it calls, not retyped here. */
+const RED_JOB_BATTERY = Object.values(REUSABLE.jobs).flatMap((j) => j.steps).map((s) => (s.run ?? "").trim())
+  .filter((run) => /^(npm run (lint|typecheck|test:all)|PYTHONDONTWRITEBYTECODE=1 pytest\b.*)$/.test(run));
+
+/** lint, typecheck, the unscoped suite, pytest. */
+const RED_JOB_COMMAND_COUNT = 4;
+
+const PARENT_STEP = (trunk.jobs[RECHECK_JOB].steps ?? []).find((s) => s.name?.includes("parent fail the same check"))?.run ?? "";
+/** The step's COMMANDS: its comments name `npm test` to explain why it is gone, and must not count as running it. */
+const PARENT_COMMANDS = PARENT_STEP.split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
+
+test("POSITIVE CONTROL: the red job's battery was found, all four commands, and so was the parent step", () => {
+  assert.equal(RED_JOB_BATTERY.length, RED_JOB_COMMAND_COUNT, `found: ${JSON.stringify(RED_JOB_BATTERY)}`);
+  assert.ok(RED_JOB_BATTERY.includes("npm run test:all"), "the unscoped suite is the one that covers agent-org and lab");
+  assert.ok(PARENT_STEP.length > 0);
+});
+
+test("the parent re-check runs EVERY command the red job ran, so a red in agent-org or lab cannot re-check green", () => {
+  for (const command of RED_JOB_BATTERY) {
+    assert.ok(PARENT_COMMANDS.includes(command), `the parent re-check does not run \`${command}\` -- it would answer a narrower question`);
+  }
+  assert.doesNotMatch(PARENT_COMMANDS, /npm test\b/, "`npm test` is `test:ts`, whose glob excludes packages/agent-org and packages/lab");
+});
+
+test("a parent that does not build is UNKNOWN, never a pass: the build's failure is not swallowed", () => {
+  assert.match(PARENT_COMMANDS, /if ! npm run build[^\n]*; then[\s\S]*?result=unknown/);
+  assert.doesNotMatch(PARENT_COMMANDS, /npm run build[^\n]*\|\| true/);
+});
+
 // --- 4. the policy asked for on the row, pinned ---
 
 test("THE POLICY: other PRs keep merging onto a red main; the fix goes first by its ORDER; no queue jump is built", () => {
