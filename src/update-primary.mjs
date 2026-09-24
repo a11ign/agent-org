@@ -16,7 +16,7 @@ import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { refuseUnknownFlags } from "@a11ign/worker-fleet/cli-flags";
-import { npmCliInvocation } from "../../../scripts/npm-cli-executable.mjs";
+import { npmCliInvocation, pnpmCliInvocation } from "../../../scripts/npm-cli-executable.mjs";
 import { changedFiles } from "../../guards/src/changed-files.mjs";
 
 const REPO = fileURLToPath(new URL("../../../", import.meta.url));
@@ -66,8 +66,12 @@ function moveLocalMain(run, sha) {
   run(["update-ref", "refs/heads/main", sha, before]);
 }
 
-/** The one lockfile of this workspace. Every package resolves through the root `node_modules` it describes. */
-export const LOCKFILE = "package-lock.json";
+/**
+ * The one lockfile of this workspace. Every package resolves through the root `node_modules` it describes.
+ * `pnpm-lock.yaml` since #2301, which deleted `package-lock.json`: asking about the old name would have
+ * answered "no" for every move from then on, and the install below would never have run again.
+ */
+export const LOCKFILE = "pnpm-lock.yaml";
 
 /**
  * DID THE MOVE CHANGE THE LOCKFILE? Asked of the two commits the checkout actually moved between, never of
@@ -93,11 +97,11 @@ export function lockfileMoved(changed, before, after) {
 /**
  * @param {string} [root]
  * @param {(args: string[]) => string} [run]
- * @param {(root: string, args: string[]) => void} [npmAt] runs npm in `root`; throws on a non-zero exit
+ * @param {(root: string, argv: string[]) => void} [runAt] runs `argv` (its first element names the tool, `npm` or `pnpm`) in `root`; throws on a non-zero exit
  * @param {(range: string[], pathspec: string[]) => string[]} [changed] the paths a range touched
  */
 export function updatePrimary(root = REPO, run = (args) =>
-  execFileSync("git", args, { cwd: root, env: sandboxGitEnv(), encoding: "utf8" }), npmAt = runNpm,
+  execFileSync("git", args, { cwd: root, env: sandboxGitEnv(), encoding: "utf8" }), runAt = runTool,
 changed = (range, pathspec) => changedFiles(range, { repoRoot: root, pathspec })) {
   if (!isPrimaryWorktree(root)) {
     throw new Error(`${root} is not the primary checkout (its .git is a linked worktree's, not a real `
@@ -112,8 +116,8 @@ changed = (range, pathspec) => changedFiles(range, { repoRoot: root, pathspec })
   moveLocalMain(run, sha);
   // INSTALL BEFORE BUILD: the build compiles against `node_modules`, so building first would compile the
   // new source against the old dependencies and fail on exactly the module the install was about to add.
-  if (lockfileMoved(changed, before, sha)) installAt(root, npmAt);
-  buildAt(root, npmAt);
+  if (lockfileMoved(changed, before, sha)) installAt(root, runAt);
+  buildAt(root, runAt);
   return sha;
 }
 
@@ -131,26 +135,27 @@ function exitOf(error) {
  * worktree on the host failed its pre-push typecheck with TS2307 on a module the shared `node_modules`
  * did not have, until `ceo` noticed and installed by hand.
  *
- * `npm install`, NEVER `npm ci` (`ceo`'s ruling on the row). `npm ci` deletes `node_modules` before it
+ * `install`, NEVER a clean install (`ceo`'s ruling on the row). `npm ci` deletes `node_modules` before it
  * installs, which removes it from under every worktree that is running a test or a push at that moment.
- * `npm install` is additive and respects the lockfile.
+ * `pnpm install --frozen-lockfile` (since #2301) is not that: it links what the lockfile names into the
+ * existing tree and refuses, rather than rewrites, a lockfile that disagrees with a manifest.
  *
  * A FAILED INSTALL IS REPORTED, NEVER SWALLOWED, the same way a failed build is, and for the same reason:
  * the checkout has already moved and is correct. The message also says a re-run will not retry, because
  * the next run finds HEAD already at the target and so asks no lockfile question at all.
  *
- * @param {string} root @param {(root: string, args: string[]) => void} npmAt
+ * @param {string} root @param {(root: string, argv: string[]) => void} runAt
  */
-function installAt(root, npmAt) {
+function installAt(root, runAt) {
   try {
-    npmAt(root, ["install"]);
+    runAt(root, ["pnpm", "install", "--frozen-lockfile"]);
   } catch (error) {
-    throw new Error(`the primary moved to a new ${LOCKFILE}, but \`npm install\` failed (exit `
+    throw new Error(`the primary moved to a new ${LOCKFILE}, but \`pnpm install\` failed (exit `
       + `${exitOf(error)}). Every worktree resolves THIS checkout's node_modules, so they are now resolving `
       + "a stale node_modules against the new lockfile, and a push from any of them can fail its typecheck "
       + "on a missing module. The build did not run. Re-running primary:update will NOT retry the install "
-      + "(HEAD is already at the target), so run `npm install` here by hand -- never `npm ci`, which "
-      + "deletes node_modules from under every running worktree.", { cause: error });
+      + "(HEAD is already at the target), so run `pnpm install --frozen-lockfile` here by hand -- never "
+      + "`npm ci`, which deletes node_modules from under every running worktree.", { cause: error });
   }
 }
 
@@ -177,15 +182,15 @@ function installAt(root, npmAt) {
  * already happened and is correct, and leaving a stale `dist` beside a moved source with a loud error is
  * strictly better than silently reverting a checkout somebody else may already be reading.
  *
- * THE WRAPPING LIVES HERE, NOT IN `npmAt`, because what a failed build MEANS is a fact about this
+ * THE WRAPPING LIVES HERE, NOT IN `runAt`, because what a failed build MEANS is a fact about this
  * checkout's relationship to every worktree -- true whichever npm runner ran, and the reason a caller
  * needs the message at all.
  *
- * @param {string} root @param {(root: string, args: string[]) => void} npmAt
+ * @param {string} root @param {(root: string, argv: string[]) => void} runAt
  */
-function buildAt(root, npmAt) {
+function buildAt(root, runAt) {
   try {
-    npmAt(root, ["run", "build"]);
+    runAt(root, ["npm", "run", "build"]);
   } catch (error) {
     throw new Error(`the primary moved, but \`npm run build\` failed (exit ${exitOf(error)}). Every `
       + "worktree resolves THIS checkout's dist, so they are now compiling against a source this dist "
@@ -193,12 +198,17 @@ function buildAt(root, npmAt) {
   }
 }
 
-/** @param {string} root @param {string[]} args */
-function runNpm(root, args) {
-  // `npmCliInvocation`, never a bare `npm` -- #? : a bare npm/npx spawn is unsafe on Windows and this
+/**
+ * Runs `argv` in `root`, its first element naming the tool: `pnpm` installs, `npm run` runs the scripts (every
+ * script here is spelled `npm run`, and the installer is not what runs them).
+ * @param {string} root @param {string[]} argv
+ */
+function runTool(root, argv) {
+  // `npmCliInvocation`/`pnpmCliInvocation`, never a bare `npm` -- #? : a bare npm/npx spawn is unsafe on Windows and this
   // repository's own guard refuses one anywhere in the tree. Same call shape as every other site.
-  const npm = npmCliInvocation("npm", args);
-  execFileSync(npm.command, npm.args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+  const [tool, ...args] = argv;
+  const invocation = tool === "pnpm" ? pnpmCliInvocation(args) : npmCliInvocation("npm", args);
+  execFileSync(invocation.command, invocation.args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
