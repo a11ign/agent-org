@@ -2401,6 +2401,19 @@ test("#2027: a row still waiting on a DATE or an ANSWER is not announced as runn
     "#2005's rule: a row waiting on a ruling must not be made to look free");
 });
 
+test("#2186: a row the FLEET holds is not announced as runnable until the hold passes", () => {
+  // #2114's shape, from the row: blockers all closed, `in-progress`, held by a session, and a
+  // `Fleet-hold-until:` six hours out. `waitingOn` answers null for it BY DESIGN, so the cause woke a
+  // holder for a row the same tick's shelf line said was held.
+  const held = heldRow(2114, "worker-judge", { ...blockedByClosed, body: "Fleet-hold-until: 2026-09-23T22:00:00Z" });
+  assert.deepEqual(blockerClearedOrders([held], TODAY, NOW), [],
+    "a live fleet hold is as disqualifying to a holder as an open `blockedBy` edge");
+  const [order] = blockerClearedOrders([held], TODAY, Date.parse("2026-09-23T22:00:01Z"));
+  assert.equal(order?.session, "worker-judge",
+    "and the SAME row is woken once the timestamp has passed -- the other direction, or this is a mute button");
+  assert.equal(order?.cause, "blocker-cleared");
+});
+
 test("#2027: blocker-cleared is a FINISH cause, because a claimed row is work in flight", () => {
   assert.ok(CAUSES.includes("blocker-cleared"), "it must be in CAUSES or worker-profile refuses it at run time");
   assert.ok(!START_CAUSES.includes("blocker-cleared"),
