@@ -25,6 +25,7 @@ import {
   inBuildReason, isInBuild, lookupOtherHeldIssues, lookupClosingPrHealth, lookupRowShape,
   deliveredRowsDeclaredBy, lookupDeliveringPr, lookupHeldRows,
   unansweredRefusal, disputeAtHead, lookupOpenPrReviewHealth, escalateDisputeToCeo, OPEN_PR_LIMIT,
+  authorCommitsSinceRefusal,
 } from "../row-claim/own-pr-health-rule.mjs";
 
 /** A row owed a commit: held, declaring files, no sub-rows, no PR. Each test changes ONE fact from this. */
@@ -949,7 +950,7 @@ test("#2126: the review-health read is ONE call, over every open pull request", 
   assert.ok(calls[0].includes("--state") && calls[0][calls[0].indexOf("--state") + 1] === "open");
   assert.match(calls[0][calls[0].indexOf("--json") + 1], /reviewDecision/);
   assert.deepEqual(health, [{ number: 2107, head: REFUSED_HEAD,
-    reviewDecision: "CHANGES_REQUESTED", dispute: null }]);
+    reviewDecision: "CHANGES_REQUESTED", dispute: null, authorCommitsSinceReview: 0 }]);
 });
 
 test("#2126: `gh pr list`'s own default of THIRTY is overridden, or the window would be invisible", () => {
@@ -1024,4 +1025,71 @@ test("#2126: the open pull request's NUMBER is carried, and only while it is OPE
   assert.equal(merged?.[0].openPrNumber, undefined,
     "a MERGED pull request is delivered, so its last verdict is nobody's outstanding work");
   assert.equal(inBuildReason(merged ?? []), null);
+});
+
+/**
+ * #2254: "NOBODY HAS ANSWERED" versus "ANSWERED, AWAITING A RE-READ". The RULING is to LIFT the cap when an
+ * AUTHOR (non-merge) commit postdates the latest refusal -- see `unansweredRefusal` for why not a third,
+ * still-capped state. Both fixtures below are MEASURED, and both go through `lookupOpenPrReviewHealth` so the
+ * discriminator is exercised on the payload `gh pr list` really returns rather than on a hand-set count.
+ *
+ * THE TWO MUTATIONS THE ROW NAMES, each caught by a DIFFERENT test:
+ *  - `authorCommitsSinceRefusal` always positive  -> "#2254 (2)" goes red (the #2107 sweep case is waved through);
+ *  - `authorCommitsSinceRefusal` always zero      -> "#2254 (1)" goes red (the #2165 answer is still refused).
+ */
+const refusedAt = "2026-09-23T21:25:38Z";
+type Health = NonNullable<Parameters<typeof unansweredRefusal>[0]["openPrReview"]>;
+const healthOf = (pr: object) => (lookupOpenPrReviewHealth({ run: () => JSON.stringify([{
+  number: 2240, headRefOid: "bfee37e369", reviewDecision: "CHANGES_REQUESTED",
+  reviews: [{ state: "CHANGES_REQUESTED", submittedAt: refusedAt, commit: { oid: "16840d7f" },
+    body: "**Review of #2240 at `16840d7f`, by reviewer-2: not convinced.**" }], ...pr }]) })?.[0]) as Health;
+const commit = (messageHeadline: string, committedDate: string) => ({ messageHeadline, committedDate });
+const asRow = (review: Health) => ({ ...proposedRow, openPrNumber: 2240, openPrReview: review });
+
+test("#2254 (1): #2165 -- an author commit AFTER the refusal lifts the cap, and no sentence says nobody answered", () => {
+  const answered = healthOf({ commits: [
+    commit("Merge branch 'main' into agent/x-2176", "2026-09-23T21:20:00Z"),
+    commit("Rework the assertion the reviewer named", "2026-09-23T21:29:43Z")] });
+  assert.equal(answered.authorCommitsSinceReview, 1, "read from the payload, not supplied by the fixture");
+  assert.equal(unansweredRefusal(asRow(answered)), null);
+  assert.equal(inBuildReason([asRow(answered)]), null,
+    "answered and waiting on a re-read is AWAITING REVIEW, which #989 makes legal beside one new row");
+});
+
+test("#2254 (2): #2107 -- four bot merges and ZERO author commits after the refusal are STILL refused", () => {
+  // The control that keeps this row from reopening what #2126 closed. Every commit is later than the refusal.
+  const swept = healthOf({ commits: ["787aecd4", "5a9981d0", "d45c1b00", "6541b1ee"].map((oid, i) => commit(
+    `Merge branch 'main' into agent/state-reading-delivery-clock-2083 (${oid})`, `2026-09-23T21:${30 + i}:00Z`)) });
+  assert.equal(swept.authorCommitsSinceReview, 0, "the merges moved the head and answered nothing");
+  assert.ok(inBuildReason([asRow(swept)]), "so the refusal stands");
+  const mergedPr = healthOf({ commits: [commit("Merge pull request #2266 from a11ign/x", "2026-09-23T22:00:00Z"),
+    commit("Merge remote-tracking branch 'origin/main'", "2026-09-23T22:01:00Z")] });
+  assert.equal(mergedPr.authorCommitsSinceReview, 0, "every GitHub default merge headline is a merge");
+});
+
+test("#2254 (3): only commits AFTER THE LATEST refusal answer it, and a tie or an unreadable time does not", () => {
+  const at = (headline: string, when: string | undefined) => ({ messageHeadline: headline, committedDate: when });
+  assert.equal(authorCommitsSinceRefusal({ commits: [at("fix", "2026-09-23T21:29:43Z")], reviews: [
+    { state: "CHANGES_REQUESTED", submittedAt: "2026-09-23T21:25:38Z" },
+    { state: "CHANGES_REQUESTED", submittedAt: "2026-09-23T21:40:00Z" }] }), 0,
+  "a commit between two refusals answered the FIRST one; the latest is still standing");
+  assert.equal(authorCommitsSinceRefusal({ commits: [at("fix", refusedAt)], reviews: [
+    { state: "CHANGES_REQUESTED", submittedAt: refusedAt }] }), 0, "same second: not an answer");
+  assert.equal(authorCommitsSinceRefusal({ commits: [at("fix", undefined), at("fix", "not a date")], reviews: [
+    { state: "CHANGES_REQUESTED", submittedAt: refusedAt }] }), 0, "a commit that cannot be placed proves nothing");
+  assert.equal(authorCommitsSinceRefusal({ commits: [at("fix", "2026-09-23T22:00:00Z")], reviews: [
+    { state: "CHANGES_REQUESTED" }, { state: "APPROVED", submittedAt: refusedAt }] }), 0,
+  "no refusal with a timestamp: nothing to be after, so the refusal is unchanged");
+  assert.equal(authorCommitsSinceRefusal({}), 0, "a payload with no commits or reviews at all reads zero");
+});
+
+test("#2254 (4): the refusal that remains says what lifts it, and no longer offers a bare reply", () => {
+  const reason = inBuildReason([proposedRow]) as string;
+  assert.match(reason, /A commit YOU push after the verdict lifts this refusal/);
+  assert.match(reason, /a reply with no commit does not/);
+  assert.match(reason, /BOT MERGE DOES NOT LIFT THIS/, "the #2107 sentence is kept beside it");
+});
+
+test("#2254 (5): a dispute at the head is still the escape, whatever the commits say", () => {
+  assert.equal(unansweredRefusal(asRow({ ...refusedPr, dispute, authorCommitsSinceReview: 0 })), null);
 });
