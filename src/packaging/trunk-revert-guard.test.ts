@@ -42,9 +42,11 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve, join } from "node:path";
-import { readFileSync, mkdtempSync, rmSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { dirname, resolve } from "node:path";
+import { readFileSync, rmSync } from "node:fs";
+// #2154: the clone (and the two empty directories below) go through the #2158 helper, so a full `/tmp`
+// reports the HOST as the cause instead of a bare `Disk quota exceeded` from inside `git clone`.
+import { buildSandbox, withSandbox } from "../../../guards/src/sandbox-exhaustion.mjs";
 import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
 import { parse as parseYaml } from "yaml";
 import {
@@ -82,9 +84,10 @@ const SCRIPT = `${REPO}/packages/agent-org/src/trunk-revert-guard.mjs`;
  * `after()`. A clone per spawn would be correct and four times the cost for no extra isolation, since
  * none of these tests writes to it.
  */
-const CLONE = realpathSync(mkdtempSync(join(tmpdir(), "a11y-revert-guard-")));
-execFileSync("git", ["clone", "--local", "--no-hardlinks", "--quiet", REPO, CLONE],
-  { stdio: "pipe", env: sandboxGitEnv() });
+const CLONE = buildSandbox({ prefix: "a11y-revert-guard-" }, (root) => {
+  execFileSync("git", ["clone", "--local", "--no-hardlinks", "--quiet", REPO, root],
+    { stdio: "pipe", env: sandboxGitEnv() });
+});
 
 /**
  * A clone of a SHALLOW checkout is shallow, and the two real merges below are then simply absent --
@@ -455,8 +458,7 @@ test("#1040 ACCEPTANCE: an UNREADABLE clone is reported as unreadable, never as 
   //
   // Driven over a real directory rather than by stubbing git, for the reason this file already gives: a
   // hand-written stub of git is a second copy of the predicate wearing git's name.
-  const notARepo = realpathSync(mkdtempSync(join(tmpdir(), "a11y-not-a-repo-")));
-  try {
+  withSandbox({ prefix: "a11y-not-a-repo-" }, (notARepo) => {
     const readable = (cwd: string) => {
       try {
         execFileSync("git", ["cat-file", "-e", "HEAD^{commit}"], { cwd, stdio: "pipe", env: sandboxGitEnv() });
@@ -477,15 +479,12 @@ test("#1040 ACCEPTANCE: an UNREADABLE clone is reported as unreadable, never as 
       "a missing OBJECT in a real repository");
     assert.equal(status(["cat-file", "-e", "HEAD^{commit}"], notARepo), 128,
       "and an unreadable REPOSITORY -- the same code, which is why a positive control is the only separator");
-  } finally {
-    rmSync(notARepo, { recursive: true, force: true });
-  }
+  });
 });
 
 test("#1040 ACCEPTANCE: against an UNREADABLE clone, fixturePresent says absent and the LINE says why -- "
   + "driven through the shipped functions, not through a copy of them", () => {
-  const notARepo = realpathSync(mkdtempSync(join(tmpdir(), "a11y-not-a-repo-")));
-  try {
+  withSandbox({ prefix: "a11y-not-a-repo-" }, (notARepo) => {
     assert.equal(fixturePresent("f2cdfaf3", notARepo), false,
       "it cannot claim the fixture is present, and it must not throw either");
     const line = NO_FIXTURE("f2cdfaf3", notARepo);
@@ -494,9 +493,7 @@ test("#1040 ACCEPTANCE: against an UNREADABLE clone, fixturePresent says absent 
       "the remedy, which is the whole point -- `(shallow clone)` sends a reader to deepen a checkout that "
       + "is not the problem");
     assert.doesNotMatch(line, /shallow clone/, "and NOT the other cause");
-  } finally {
-    rmSync(notARepo, { recursive: true, force: true });
-  }
+  });
 });
 
 test("#1040: the skip line names the cause it actually established", () => {
