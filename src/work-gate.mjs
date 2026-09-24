@@ -303,6 +303,9 @@ export const GH_READS = Object.freeze({
   // sites to find it. The condition is `shouldBeMerging` finding a green, unheld, non-draft PR -- which
   // on a healthy queue is the COMMON case, so unlike the two above this one is usually paid. It is still
   // conditional rather than unconditional: a tick with nothing green and unheld makes no call at all.
+  // #2176: ONE REST CALL PER GREEN PULL REQUEST WITH NO VERDICT AT ITS HEAD -- the ones the review question
+  // is genuinely asked of -- on the CORE pool. `commits` cannot ride on `pr list`: GraphQL refuses it.
+  conditionalOnUnreviewedGreenPr: "api repos/{repo}/pulls/{n}/commits (withCommitChains -- the last authored head)",
   conditionalOnGreenUnheldPr: "api graphql (open PRs' mergeQueueEntry -- readUnarmed)",
   // #2110, AND IT IS ONE CALL FOR THE WHOLE CLAIMED POPULATION RATHER THAN ONE PER ROW. `--label
   // in-progress` filters server-side, so the page is the claimed rows and nothing else -- 8 of them on
@@ -2542,8 +2545,8 @@ export function greenUnarmedOrders(unarmed) {
  * THAT SECOND READING IS THE MEASUREMENT THE ROW ASKED FOR, AND IT SETTLES A QUESTION IT LEFT OPEN.
  * #2084 says of this done-when that "done-when 1 removes most of the need for it". It does not. #2198 has
  * NO REVIEW TO DISMISS -- it is a docs-and-tests PR, which `agent-practices.md` says opens READY rather
- * than as a draft, so the reviewer lane never sees it: `draftOrder` returns `null` on its first line for
- * anything that is not a draft. Dismissing stale reviews cannot reach a pull request that has none. The
+ * than as a draft, so the reviewer lane never sees it: until #2176 `draftOrder` returned `null` on its first
+ * line for anything that is not a draft. Dismissing stale reviews cannot reach a pull request that has none. The
  * two halves of this row are therefore NOT the same fact stated twice, and the evidence is one PR that
  * neither half alone would have found.
  *
@@ -2582,10 +2585,10 @@ export function reviewBlockedOrders(blocked) {
       + "NO QUEUE READ IN THIS REPOSITORY TOUCHED THIS FIELD BEFORE #2084 -- only `row-claim`'s own "
       + "claim refusal -- which is why a pull request in this state read as healthy everywhere: #2049 "
       + "was green and armed and unmergeable for over seven hours, and no org read could say why.\n"
-      + "AWAITING_REVIEW is a PR that opened READY and so never entered the reviewer lane -- "
-      + "`draft-awaiting-verdict` only covers DRAFTS. Prompt its parity reviewer yourself: "
-      + "`npm run prompt:session -- reviewer \"#<n> ...\"` for an odd number, `reviewer-2` for an even "
-      + "one. A `QUEUED` exit 2 is delivery; do not retry it.\n"
+      + "AWAITING_REVIEW is a PR nobody has reviewed. Since #2176 `draft-awaiting-verdict` covers a READY "
+      + "pull request as well as a draft, so its parity reviewer has normally been ordered already -- read "
+      + "the wake ledger before prompting: `npm run prompt:session -- reviewer \"#<n> ...\"` for an odd "
+      + "number, `reviewer-2` for an even one. A `QUEUED` exit 2 is delivery; do not retry it.\n"
       + "REFUSED is a reviewer's `CHANGES_REQUESTED`, and it does NOT clear by being pushed past. Decide "
       + "whether it stands: rework belongs to the session on the PR's `session:` label, and a newer "
       + "review is the only thing that lifts it.\n"
@@ -2664,9 +2667,9 @@ function failingChecksOrder(pr, required = null) {
  * decision are genuinely `product-manager`'s, and that prompt is unchanged.
  *
  * @param {any} pr @param {{verdict: string | null, by: string | null,
- *        byIsAuthor: boolean | null}} found @param {string} head8
+ *        byIsAuthor: boolean | null}} found @param {ReviewHeads} heads
  */
-function notConvincedOrder(pr, found, head8) {
+function notConvincedOrder(pr, found, { head8, keyHead8 }) {
   const owner = sessionOf(pr);
   const session = owner ?? "product-manager";
   const from = found.by ? ` from ${found.by}` : "";
@@ -2683,9 +2686,9 @@ function notConvincedOrder(pr, found, head8) {
     session,
     cause: "verdict-not-convinced",
     subject: `pr-${pr.number}`,
-    discriminator: head8,
+    discriminator: keyHead8,
     prompt,
-    causeKey: `${session}/verdict-not-convinced/pr-${pr.number}/${head8}`,
+    causeKey: `${session}/verdict-not-convinced/pr-${pr.number}/${keyHead8}`,
   };
 }
 
@@ -2706,21 +2709,26 @@ function notConvincedOrder(pr, found, head8) {
  * landing on the queue's first reader is defensible (#2001 deliberately left this one alone).
  * `verdict-not-convinced` no longer does: see `notConvincedOrder`.
  *
+ * `draft-convinced-not-ready` IS THE ONE REVIEW CAUSE THAT STAYS DRAFT-ONLY (#2176): it is about flipping a
+ * draft ready, and a convinced verdict on a pull request that is already ready asks nothing of anybody.
+ * `not-convinced` applies to both, because rework is owed whatever state the pull request is in.
+ *
  * @param {any} pr @param {{verdict: string | null, by: string | null,
- *        byIsAuthor: boolean | null}} found @param {string} head8
+ *        byIsAuthor: boolean | null}} found @param {ReviewHeads} heads
  */
-function settledVerdictOrder(pr, found, head8) {
+function settledVerdictOrder(pr, found, heads) {
+  const { head8, keyHead8 } = heads;
   if (found.verdict === "convinced" && pr.isDraft) {
     return {
       session: "product-manager",
       cause: "draft-convinced-not-ready",
       subject: `pr-${pr.number}`,
-      discriminator: head8,
+      discriminator: keyHead8,
       prompt: `Draft #${pr.number} at \`${head8}\` is green and carries a CONVINCED verdict`
         + `${found.by ? ` from ${found.by}` : ""}, and is still a draft. Per agent-practices a product `
         + "PR is marked ready once the reviewer is convinced. Mark it ready for review, or say on the PR "
         + "why it must stay a draft -- an unexplained convinced draft is work nobody is finishing.",
-      causeKey: `product-manager/draft-convinced-not-ready/pr-${pr.number}/${head8}`,
+      causeKey: `product-manager/draft-convinced-not-ready/pr-${pr.number}/${keyHead8}`,
       // THE GATE ALREADY KNOWS THE ANSWER, SO IT DOES THIS ONE ITSELF (see `performActions`). Every
       // condition for a safe ready-flip has been checked by the time we are here: not red, still a
       // draft, checks SETTLED green, and a convinced verdict AT THIS HEAD. The order stays attached as
@@ -2733,10 +2741,98 @@ function settledVerdictOrder(pr, found, head8) {
       ...(found.byIsAuthor === false ? { action: { kind: "ready", pr: Number(pr.number) } } : {}),
     };
   }
-  if (found.verdict === "not-convinced") return notConvincedOrder(pr, found, head8);
+  if (found.verdict === "not-convinced") return notConvincedOrder(pr, found, heads);
   // Any other settled verdict -- `unrecognised`, or one the opener did not attribute -- is left alone:
   // re-prompting a reviewer who has already answered costs more than waiting for a human to look.
   return null;
+}
+
+/**
+ * @typedef {{head8: string, keyHead8: string}} ReviewHeads
+ * `head8` is the head a reviewer would be reading; `keyHead8` is the head the ORDER is keyed on -- the last
+ * one the AUTHOR produced (#2176). They are the same string unless an update-branch has moved the head.
+ */
+
+/** GitHub's update-branch headline (`Merge branch 'main' into <branch>`) and a session's own merge of it
+ * (`Merge remote-tracking branch 'origin/main'`), which are produced by two different actors. Both are
+ * a merge FROM `main`, and neither is work to review. */
+const MERGE_FROM_MAIN = /^Merge (?:branch|remote-tracking branch) '(?:origin\/)?main'/;
+
+/**
+ * Whether a commit is a merge of `main` into the branch. TWO CONDITIONS: the headline names `main`, AND the
+ * commit has two parents when that is known -- so a one-parent commit that merely reuses the words is
+ * authored work. THE LIMIT, STATED: this cannot see a tree change, so a merge-from-main whose conflicts
+ * were resolved by hand still reads as no new work. `gh` offers no diff on the list call, and a headline
+ * is what both actors write; `parents` is absent on fixtures and never blocks the headline test alone.
+ *
+ * @param {{messageHeadline?: string, parents?: number} | null | undefined} commit
+ */
+function isMergeFromMain(commit) {
+  if (typeof commit?.messageHeadline !== "string" || !MERGE_FROM_MAIN.test(commit.messageHeadline)) return false;
+  return typeof commit.parents !== "number" || commit.parents >= 2;
+}
+
+/**
+ * The heads a reviewer's verdict on this pull request may sit at, NEWEST FIRST, and the last one the AUTHOR
+ * produced. `commits` is oldest-first, as the REST list returns it; the authored head is the newest commit
+ * that is not a merge of `main`, and every merge after it is the same work at a later sha.
+ *
+ * `null` when the chain was not read, does not end at `headRefOid` (the list and the chain were read a few
+ * seconds apart and a push landed between them), or is all merges -- and the caller then treats the current
+ * head as the only head, which is what this gate did before #2176.
+ *
+ * @param {any} pr @returns {{authored: string, heads: string[]} | null}
+ */
+function reviewChainOf(pr) {
+  const commits = Array.isArray(pr?.commits) ? pr.commits : [];
+  const oids = commits.map((/** @type {any} */ c) => String(c?.oid ?? ""));
+  if (oids.length === 0 || oids[oids.length - 1] !== String(pr.headRefOid ?? "")) return null;
+  let i = commits.length - 1;
+  while (i >= 0 && isMergeFromMain(commits[i])) i -= 1;
+  if (i < 0) return null;
+  return { authored: oids[i], heads: oids.slice(i).reverse() };
+}
+
+/**
+ * The head this pull request's review question is asked at, or `null` when it is not asked: red, still
+ * running, or headless. Shared by `draftOrder` and the enrichment that decides which pull requests are
+ * worth a commit read, so the two can never disagree about who is being asked.
+ * @param {any} pr @returns {string | null}
+ */
+function reviewableHead(pr) {
+  if (checksSettledGreen(newestPerName(pr?.statusCheckRollup)) !== true) return null;
+  return String(pr.headRefOid ?? "") || null;
+}
+
+/**
+ * The verdict this pull request carries, looked for at EVERY head an update-branch made equivalent, newest
+ * first. A reviewer who wrote `at <head8>` after the last update-branch wrote it at THAT sha, so reading
+ * only the authored one would re-summon a reviewer who had answered.
+ * @param {any} pr @param {string[]} heads
+ */
+function verdictAmong(pr, heads) {
+  const comments = (pr.comments ?? []).map((/** @type {any} */ c) => ({ body: c?.body ?? "", id: c?.id }));
+  let found = verdictAtHead({ comments, head: heads[0], prAuthor: pr.author?.login ?? null });
+  for (const head of heads.slice(1)) {
+    if (found.verdict !== null) break;
+    found = verdictAtHead({ comments, head, prAuthor: pr.author?.login ?? null });
+  }
+  return found;
+}
+
+/**
+ * The wording of the re-review order, TRUE OF WHICHEVER STATE THE PULL REQUEST IS IN (#2176). It used to
+ * say "Draft" unconditionally, which is a false statement to a reviewer about the ready pull request this
+ * cause now reaches.
+ * @param {any} pr @param {ReviewHeads} heads
+ */
+function awaitingVerdictPrompt(pr, { head8, keyHead8 }) {
+  const state = pr.isDraft ? "Draft" : "Ready (not a draft)";
+  const moved = head8 === keyHead8 ? ""
+    : ` The last commit its author pushed is \`${keyHead8}\`; every commit after it merges \`main\`, so review the `
+      + "author's work and write your verdict at the head you actually read.";
+  return `${state} #${pr.number} at \`${head8}\` has settled green checks and no verdict at that head.${moved} `
+    + "Review it per packages/agent-org/docs/roles/reviewer.md and leave one comment carrying your verdict.";
 }
 
 /**
@@ -2748,29 +2844,34 @@ function settledVerdictOrder(pr, found, head8) {
  * "what does the whole queue need". AT MOST ONE order, because a pull request in two states at once
  * would be a contradiction rather than two jobs.
  *
+ * THE REVIEW QUESTION IS ASKED OF EVERY GREEN PULL REQUEST, DRAFT OR NOT (#2176). It used to sit below
+ * `if (!pr?.isDraft) return null`, so a pull request that opened READY -- which `agent-practices.md` says
+ * docs-and-tests PRs do -- was invisible to review routing: #2104 sat `CHANGES_REQUESTED` and green for
+ * 5h47m while 171 other pull requests were ordered about. The draft-only test now lives where it belongs,
+ * on `draft-convinced-not-ready` in `settledVerdictOrder`.
+ *
+ * KEYED ON THE LAST AUTHORED HEAD, because `causeKey` moves with the head and an update-branch is a new
+ * head with no new work: extending the read alone would have turned #2104 into a reviewer order every
+ * ten minutes. See `reviewChainOf` for the test and its limit.
+ *
  * @param {any} pr @param {string[] | null} [required]
  */
 function draftOrder(pr, required = null) {
-  // RED FIRST, and before the draft check: a red PR is work whether or not it is a draft, and it can
+  // RED FIRST, and before the green check: a red PR is work whether or not it is a draft, and it can
   // never reach the reviewer lane below, which requires green.
   const red = failingChecksOrder(pr, required);
   if (red) return red;
-  if (!pr?.isDraft) return null;
-  if (checksSettledGreen(newestPerName(pr.statusCheckRollup)) !== true) return null;
-  const head = String(pr.headRefOid ?? "");
+  const head = reviewableHead(pr);
   if (!head) return null;
-  const found = verdictAtHead({
-    comments: (pr.comments ?? []).map((/** @type {any} */ c) => ({ body: c?.body ?? "", id: c?.id })),
-    head,
-    prAuthor: pr.author?.login ?? null,
-  });
-  const head8 = head.slice(0, 8);
+  const chain = reviewChainOf(pr) ?? { authored: head, heads: [head] };
+  const heads = { head8: head.slice(0, 8), keyHead8: chain.authored.slice(0, 8) };
+  const found = verdictAmong(pr, chain.heads);
   // A VERDICT THE OPENER DID NOT ATTRIBUTE COUNTS AS SETTLED, and that is the wake side's default rather
   // than a reading of the comment: `verdictAtHead` returns `byIsAuthor: null` for it and refuses to guess
   // (#1244). Waking anyway would re-prompt a reviewer who has already answered; the cost of being wrong
   // the other way is one author-written verdict going unchallenged, which `ceo`'s spot-check of one
   // verdict in five is the control for.
-  if (found.verdict !== null) return settledVerdictOrder(pr, found, head8);
+  if (found.verdict !== null) return settledVerdictOrder(pr, found, heads);
 
   // ODD/EVEN PARITY IS THE ORG'S OWN SPLIT (`.claude/rules/agent-practices.md`): odd PR numbers go to
   // `reviewer`, even to `reviewer-2`. Stated there, applied here, spelled in neither twice -- and since
@@ -2781,11 +2882,51 @@ function draftOrder(pr, required = null) {
     session,
     cause: "draft-awaiting-verdict",
     subject: `pr-${pr.number}`,
-    discriminator: head8,
-    prompt: `Draft #${pr.number} at \`${head8}\` has settled green checks and no verdict at that head. `
-      + "Review it per packages/agent-org/docs/roles/reviewer.md and leave one comment carrying your verdict.",
-    causeKey: `${session}/draft-awaiting-verdict/pr-${pr.number}/${head8}`,
+    discriminator: heads.keyHead8,
+    prompt: awaitingVerdictPrompt(pr, heads),
+    causeKey: `${session}/draft-awaiting-verdict/pr-${pr.number}/${heads.keyHead8}`,
   };
+}
+
+/**
+ * The commits of one pull request, oldest first, or `null` when the read was refused.
+ *
+ * REST, NOT THE LIST CALL, AND MEASURED: `commits` on `gh pr list --limit 100` is refused outright by
+ * GraphQL ("requesting up to 1,000,000 possible nodes which exceeds the maximum limit of 500,000",
+ * 2026-09-24) even with no other field beside it, so it cannot ride on `readPrs` however cheap it looks.
+ * REST also spends the CORE pool, not the GRAPHQL one the list call already leans on, and returns every
+ * commit rather than the first hundred -- `reviewChainOf` reads the END of the list.
+ *
+ * @param {number} number @param {(args: string[]) => string} run
+ * @returns {{oid: string, messageHeadline: string, parents: number}[] | null}
+ */
+export function readCommitChain(number, run = defaultRun) {
+  try {
+    const out = run(["api", `repos/${REPO}/pulls/${number}/commits`, "--paginate", "--jq",
+      ".[] | {oid: .sha, parents: (.parents | length), messageHeadline: (.commit.message | split(\"\\n\")[0])}"]);
+    const commits = out.split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l));
+    return commits.length > 0 ? commits : null;
+  } catch {
+    // A REFUSED READ LEAVES THE PULL REQUEST UNENRICHED, and `draftOrder` then reads the current head alone
+    // -- this gate's behaviour before #2176. Never an empty chain: that would claim "no commits".
+    return null;
+  }
+}
+
+/**
+ * The pull requests, each with its `commits` attached WHERE THE REVIEW QUESTION NEEDS THEM -- green, and
+ * with no verdict at the current head. Everything else is returned untouched, so a quiet queue pays no call
+ * and a busy one pays one per unreviewed green pull request, not one per open one.
+ *
+ * @param {any[]} prs @param {(args: string[]) => string} [run]
+ */
+export function withCommitChains(prs, run = defaultRun) {
+  return prs.map((pr) => {
+    const head = reviewableHead(pr);
+    if (!head || verdictAmong(pr, [head]).verdict !== null) return pr;
+    const commits = readCommitChain(Number(pr.number), run);
+    return commits ? { ...pr, commits } : pr;
+  });
 }
 
 /**
@@ -3789,7 +3930,7 @@ function main() {
   // `requiredWhenRed` makes a `gh` call when anything is red -- calling it inline in both places would
   // pay for it twice on exactly the red tick this row is about.
   const required = requiredWhenRed(openPrs);
-  const decided = decide({ prs: openPrs, readyRows: rows, promotableRows: promotableRows ?? [],
+  const decided = decide({ prs: withCommitChains(openPrs), readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required,
     epics: epicsWhenShelfEmpty(rows),
     answerOwed: withAnswerLabel(allOpen), openRows: allOpen,
