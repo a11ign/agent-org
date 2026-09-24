@@ -38,6 +38,7 @@ import { createHash } from "node:crypto";
 import { refuseUnknownFlags, flagValue } from "../../worker-fleet/src/cli-flags.mjs";
 import { profileFor, agentArgs } from "./worker-profile.mjs";
 import { JUDGMENT_CAUSES, CHAIRMAN_LABEL } from "./work-gate.mjs";
+import { inBuildReason, isInBuild, unansweredRefusal, lookupHeldRows } from "./row-claim/own-pr-health-rule.mjs";
 
 /**
  * `0` QUIET nothing to deliver; `1` ATTENTION an order had nowhere to go; `2` CANNOT_ASK herdr did not
@@ -124,10 +125,19 @@ export function readAgents(run = defaultRun) {
 /**
  * Which concrete session takes this order, or `null` when none can.
  *
- * `work-gate` addresses engineers as a POOL (`"engineers"`), because whether a row is yours is
+ * `work-gate` addresses engineers as a POOL (`"engineers"`), because whether a ROW is yours is
  * `row-claim.mjs`'s question and not a thing the gate may pre-empt. Here the pool resolves to one free
  * engineer; the order still says "claim it", so an engineer woken for a row another has since claimed
  * finds that out from the claim, which is the authority.
+ *
+ * FREE MEANS IDLE AND ALLOWED TO CLAIM (#2226). Idle is herdr's word for "between turns" and says nothing
+ * about whether `row-claim` will take the session's claim: B2 refuses a session holding a row in build or
+ * a pull request carrying an unanswered `CHANGES_REQUESTED`, and that answer is the same for EVERY row, so
+ * it is not a row-ownership decision the gate's "not mine to pre-empt" reasoning protects. Five refused
+ * pool deliveries to two sessions in 45 minutes (2026-09-23) were each a model turn spent to learn it.
+ * `ineligibleReason` is that question, INJECTED so this stays a pure function of its inputs: a string
+ * skips the engineer and is the reason the refusal prints; `null` -- including "could not ask" -- offers
+ * the row as before.
  *
  * DETERMINISTIC among equals -- the first free engineer in `roster` order, never a random or round-robin
  * pick. A wake that cannot be reproduced from the same two inputs cannot be explained after the fact.
@@ -135,9 +145,10 @@ export function readAgents(run = defaultRun) {
  * @param {string} session the order's `session`
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster engineer labels, in the order they should be offered work
+ * @param {(label: string) => string | null} [ineligibleReason] why this engineer may not claim, or `null`
  * @returns {{label: string} | {refusal: string}}
  */
-export function route(session, agents, roster) {
+export function route(session, agents, roster, ineligibleReason = () => null) {
   /** @param {string} label */
   const statusOf = (label) => agents.find((a) => a.label === label)?.status;
   if (session !== "engineers") {
@@ -146,10 +157,74 @@ export function route(session, agents, roster) {
     if (!WAKEABLE.includes(status)) return { refusal: `"${session}" is ${status}` };
     return { label: session };
   }
-  const free = roster.find((label) => WAKEABLE.includes(String(statusOf(label))));
+  /** Asked only of an IDLE engineer, and once: a lookup costs API calls a working one never earns. @type {Map<string, string>} */
+  const skipped = new Map();
+  const free = roster.find((label) => {
+    if (!WAKEABLE.includes(String(statusOf(label)))) return false;
+    const reason = ineligibleReason(label);
+    if (reason !== null) skipped.set(label, reason);
+    return reason === null;
+  });
   if (free) return { label: free };
-  const seen = roster.map((label) => `${label}=${statusOf(label) ?? "absent"}`).join(", ");
-  return { refusal: `no engineer is idle (${seen})` };
+  // AN ENGINEER SKIPPED FOR ELIGIBILITY IS NAMED BY ITS REASON, not its liveness: `worker-judge=idle` beside
+  // a refusal would read as the very thing that was NOT the problem, and an order that reaches nobody and
+  // says nothing is #2049's shape one level up.
+  const seen = roster.map((label) => `${label}=${skipped.get(label) ?? statusOf(label) ?? "absent"}`).join(", ");
+  return { refusal: `no engineer is idle${skipped.size > 0 ? " and allowed to claim" : ""} (${seen})` };
+}
+
+/**
+ * B2's verdict on one session, SHORT enough to sit in a `seen` list -- or `null` when B2 would let it claim.
+ *
+ * THE DECIDER IS `inBuildReason` ITSELF, called rather than restated: a copy of B2's clauses here would go
+ * stale the next time one is added, which is how #2126 came to sit beside #989 in the first place. The two
+ * predicates below only NAME what it already refused for, and both arms are named because a `seen` string
+ * built for one would report the other as eligible (`worker-tooling` was refused for holding a row in
+ * build, `worker-judge` for a review).
+ *
+ * @param {import("./row-claim/own-pr-health-rule.mjs").RowFacts[]} rows every row the session holds
+ * @returns {string | null}
+ */
+export function b2Verdict(rows) {
+  if (inBuildReason(rows) === null) return null;
+  const building = rows.find(isInBuild);
+  if (building) return `holds #${building.number} in build`;
+  const review = rows.map((row) => unansweredRefusal(row)).find((found) => found !== null);
+  return review ? `CHANGES_REQUESTED on #${review.number}` : "refused by B2";
+}
+
+/**
+ * Whether each engineer may claim -- the `ineligibleReason` {@link route} is handed, built once per tick.
+ *
+ * ASKED AT MOST ONCE PER SESSION PER TICK, and only for an engineer `route` reaches (an idle one before the
+ * first free one), so the calls -- `lookupHeldRows` reads the session's held rows and, only when one has an
+ * open pull request, ONE repo-wide `pr list` -- are not paid per order or per working engineer.
+ *
+ * A LOOKUP THAT CANNOT ASK OFFERS THE ROW (#2226 done-when 4). `lookupHeldRows` answers `null`, never `[]`,
+ * when GitHub does not answer, and B2's own convention is to fail OPEN on it: withholding on an outage would
+ * stop waking engineers exactly when the API is down, which is worse than the defect. It is SAID, so a quiet
+ * offer is not read as a clean bill.
+ *
+ * `lookupHeldRows` may ESCALATE a disputed review to `ceo` (one idempotent label -- see its own comment). That
+ * is the claim's behaviour and is left as it is: the dispute is discovered here a few minutes earlier than the
+ * claim would discover it, and nothing here can make it happen twice.
+ *
+ * @param {{ lookup?: typeof lookupHeldRows, warn?: (line: string) => void }} [deps]
+ * @returns {(label: string) => string | null}
+ */
+export function engineerEligibility({ lookup = lookupHeldRows,
+  warn = (line) => { process.stderr.write(`${line}\n`); } } = {}) {
+  /** @type {Map<string, string | null>} */
+  const memo = new Map();
+  return (label) => {
+    if (memo.has(label)) return memo.get(label) ?? null;
+    // No row is excluded: the order's row is unclaimed, so it is not one of the session's held rows.
+    const rows = lookup(label, 0, {});
+    if (rows === null) warn(`wake: could not read the rows "${label}" holds -- offering it the order anyway (B2 fails open).`);
+    const verdict = rows === null ? null : b2Verdict(rows);
+    memo.set(label, verdict);
+    return verdict;
+  };
 }
 
 /**
@@ -1119,9 +1194,33 @@ export const WAKE_TTL_MS = 20 * 60 * 1000;
 export const JUDGMENT_TTL_MS = 2 * 60 * 60 * 1000;
 
 /**
+ * One delivery's ledger line. The recipient rides AFTER the key, so `ledgerKeyOf` -- which every reader goes
+ * through -- still finds the same key and the dedupe is untouched.
+ * @param {number} at @param {string} key @param {string} [recipient]
+ * @returns {string}
+ */
+export function ledgerLine(at, key, recipient) {
+  return `${at}\t${key}${recipient ? `\t${recipient}` : ""}\n`;
+}
+
+/**
+ * The causeKey out of what follows a ledger line's timestamp, WHATEVER ELSE THE LINE CARRIES (#2226).
+ *
+ * A line is `<epochMs>\t<causeKey>[\t<recipient>]`, or `<epochMs>\tRESET\t<causeKey>`. The recipient is
+ * evidence and never identity: a reader that took everything after the first tab as the key would count
+ * `k\tworker-judge` and `k\tworker-tooling` as two causes, and the dedupe this ledger exists for would go.
+ * @param {string} rest
+ * @returns {string}
+ */
+export function ledgerKeyOf(rest) {
+  const fields = rest.split("\t");
+  return fields[0] === RESET ? fields.slice(0, 2).join("\t") : fields[0];
+}
+
+/**
  * The causeKeys still counted as delivered, given the clock.
  *
- * A LINE IS `<epochMs>\t<causeKey>`. Lines without a tab are read as OLD -- the format before this
+ * A LINE IS `<epochMs>\t<causeKey>[\t<recipient>]` (see {@link ledgerKeyOf}). Lines without a tab are read as OLD -- the format before this
  * change, written by a version that recorded no time -- and they expire immediately rather than being
  * discarded or kept for ever. Discarding them would re-wake every cause the moment this ships; keeping
  * them for ever is the bug. Expiring them is the honest reading: a wake whose age cannot be known has no
@@ -1160,7 +1259,7 @@ export function readLedger(path, read = readFileSync, now = Date.now(), judgment
     const tab = text.indexOf("\t");
     if (tab < 0) continue;                       // pre-TTL line: unknown age, so not live
     const at = Number(text.slice(0, tab));
-    const key = text.slice(tab + 1);
+    const key = ledgerKeyOf(text.slice(tab + 1));
     if (!Number.isFinite(at) || !key) continue;  // malformed: same reading as unknown age
     // A JUDGMENT CAUSE GETS A LONGER WINDOW, NOT AN INFINITE ONE. Its answer is durable -- the
     // causeKey carries the state, so re-asking inside the window buys a model turn to reach a
@@ -1278,7 +1377,7 @@ export function deliveryCounts(path, read = readFileSync) {
     const text = line.trim();
     if (!text) continue;
     const tab = text.indexOf("\t");
-    const key = tab < 0 ? text : text.slice(tab + 1);
+    const key = ledgerKeyOf(tab < 0 ? text : text.slice(tab + 1));
     if (!key) continue;
     // A RESET ENDS A RUN AND STARTS THE COUNT AGAIN AT ZERO, rather than removing anything. The ledger
     // stays append-only, so what happened is still readable -- six deliveries, a reset, then two more
@@ -1535,12 +1634,13 @@ export function clearContext(run, label) {
  * @param {{session: string, causeKey: string, prompt: string, cause?: string}} order
  * @param {{label: string, status: string}[]} live
  * @param {string[]} roster
- * @param {{run: (args: string[]) => string, spawned: number}} deps `spawned` is how many processes this
- *   tick has already started -- see `MAX_SPAWNS_PER_TICK`
+ * @param {{run: (args: string[]) => string, spawned: number, ineligibleReason?: (label: string) => string | null}} deps
+ *   `spawned` is how many processes this tick has already started -- see `MAX_SPAWNS_PER_TICK`;
+ *   `ineligibleReason` is {@link route}'s
  * @returns {{label: string, profile?: {kind: string, model: string, effort: string}} | {refusal: string}}
  */
 function targetFor(order, live, roster, deps) {
-  const routed = route(order.session, live, roster);
+  const routed = route(order.session, live, roster, deps.ineligibleReason);
   if (!("refusal" in routed)) return { label: routed.label };
   if (!isPilotOrder(order)) return { refusal: routed.refusal };
   if (deps.spawned >= MAX_SPAWNS_PER_TICK) {
@@ -1562,11 +1662,11 @@ function targetFor(order, live, roster, deps) {
  * @param {{session: string, causeKey: string, prompt: string, cause?: string}[]} orders
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster
- * @param {{run?: (args: string[]) => string, record?: (key: string) => void,
- *          counts?: Map<string, number>}} [deps]
+ * @param {{run?: (args: string[]) => string, record?: (key: string, recipient?: string) => void,
+ *          counts?: Map<string, number>, ineligibleReason?: (label: string) => string | null}} [deps]
  * @returns {{sent: string[], refused: string[], stuck: string[]}}
  */
-export function deliver(orders, agents, roster, { run = defaultRun, record, counts } = {}) {
+export function deliver(orders, agents, roster, { run = defaultRun, record, counts, ineligibleReason } = {}) {
   const sent = [];
   const refused = [];
   const stuck = [];
@@ -1581,7 +1681,7 @@ export function deliver(orders, agents, roster, { run = defaultRun, record, coun
       stuck.push(`${order.causeKey}: delivered ${already} times and the cause is still true`);
       continue;
     }
-    const target = targetFor(order, live, roster, { run, spawned });
+    const target = targetFor(order, live, roster, { run, spawned, ineligibleReason });
     if ("refusal" in target) {
       refused.push(`${order.causeKey}: ${target.refusal}`);
       continue;
@@ -1614,7 +1714,10 @@ export function deliver(orders, agents, roster, { run = defaultRun, record, coun
     const entry = live.find((a) => a.label === target.label);
     if (entry) entry.status = "working";
     else live.push({ label: target.label, status: "working" });
-    if (record) record(order.causeKey);
+    // A POOL ORDER'S RECIPIENT IS RECORDED (#2226): its causeKey names `engineers`, so the ledger alone could
+    // not say who was woken, and the only account of a wrong delivery was the recipient's own prose. A NAMED
+    // order's recipient is already in its key and is not repeated.
+    if (record) record(order.causeKey, order.session === "engineers" ? target.label : undefined);
     sent.push(target.profile
       ? `${target.label} <- ${order.causeKey} (STARTED ${target.profile.model}/${target.profile.effort})`
       : `${target.label} <- ${order.causeKey}`);
@@ -1670,8 +1773,9 @@ function main() {
   const delivered = readLedger(ledgerPath, readFileSync, Date.now(), new Set(JUDGMENT_CAUSES));
   const todo = undelivered(orders, delivered);
   mkdirSync(dirname(ledgerPath), { recursive: true });
-  /** @param {string} key */
-  const record = (key) => writeFileSync(ledgerPath, `${Date.now()}\t${key}\n`, { flag: "a" });
+  /** @param {string} key @param {string} [recipient] */
+  const record = (key, recipient) => writeFileSync(ledgerPath, ledgerLine(Date.now(), key, recipient),
+    { flag: "a" });
 
   // A RUN THAT ENDED IS MARKED BEFORE THE COUNTS ARE READ, so a cause that went away and came back is
   // offered again rather than being held at a cap it earned under conditions that no longer hold.
@@ -1680,7 +1784,7 @@ function main() {
   }
 
   const { sent, refused: gateRefused, stuck } = deliver(todo, free, roster, { record,
-    counts: deliveryCounts(ledgerPath) });
+    counts: deliveryCounts(ledgerPath), ineligibleReason: engineerEligibility() });
   const refused = [...handed.refused, ...gateRefused];
   for (const line of [...handed.sent, ...sent]) process.stdout.write(`WOKE ${line}\n`);
   for (const line of stuck) process.stderr.write(`STUCK ${line}\n`);
