@@ -516,6 +516,13 @@ export function ownerOf(row) {
 export const CHAIRMAN_LABEL = "needs:chairman";
 
 /**
+ * Where a `ready-row-unclaimed` order says which directory to launch the claim from -- FILLED IN BY `wake.mjs` (#2405),
+ * because the answer is a fact about the RECIPIENT (does `role-<you>` exist?) and the gate routes a pool order before
+ * anyone has taken it. Exported from here so the two files cannot spell it differently; `wake.mjs` already imports this one.
+ */
+export const LAUNCH_PLACEHOLDER = "<launch-directory>";
+
+/**
  * Rows waiting on the chairman, oldest first.
  *
  * WHY THIS EXISTS, MEASURED: #63 (the org transfer) sat four days with its last comment from the chairman
@@ -3208,6 +3215,8 @@ function rowOrders(unclaimed) {
       session: owner ?? "engineers",
       cause: "ready-row-unclaimed",
       subject: `row-${row.number}`,
+      // The spawner names the branch and the instance's first message from it (#2405).
+      title: row.title ?? "",
       // THE ROW IS THE DISCRIMINATOR NOW, not the queue depth. Keyed on the count, every claim rewrote
       // every remaining order's key and re-woke someone for rows already being offered.
       discriminator: String(row.number),
@@ -3220,15 +3229,13 @@ function rowOrders(unclaimed) {
         // system (2026-09-17) stopped and asked a human for both facts, because the order named
         // neither -- so they are named here rather than left to a role brief the session may not have
         // read yet. `../wt-<n>` is the sibling convention every live worktree on the host follows.
-        // THE LAUNCH DIRECTORY IS NAMED, AND IT IS NOT THE PRIMARY (#2237). This sentence said "run the
-        // command from the primary checkout" for nine days after `launchGate` (#1352) began refusing
-        // exactly that launch, so every engineer woken by this cause paid a refused command first. The
-        // role worktree is what `wake.mjs` documents as not universal (`worker-capture` has none), hence
-        // the fallback to any linked worktree -- what `launchGate` tests is "is `.git` a file", not whose.
-        + "The claim creates that worktree for you; run the command from your own linked worktree, "
-        + "`/home/agent/repos/role-<you>` (or any other linked worktree `git worktree list` names) -- NOT "
-        + "the primary checkout at `/home/agent/repos/a11y-witness`, which the tooling refuses -- then do "
-        + "all the work inside the new worktree.\n"
+        // THE LAUNCH DIRECTORY IS NAMED, AND IT IS NOT THE PRIMARY (#2237) -- BUT NAMED AT DELIVERY, NOT HERE (#2405).
+        // This sentence named `/home/agent/repos/role-<you>` for nine days after `launchGate` (#1352) began
+        // refusing the primary, and `role-<you>` did not exist for six of the eight engineer addresses; the
+        // fallback it offered instead (whichever linked worktree `git worktree list` named) let an engineer BORROW one a peer was working in.
+        // The gate cannot know who takes a pool order, and so cannot know whether that address has a
+        // worktree, so `wake.mjs` fills `LAUNCH_PLACEHOLDER` in when it knows the recipient (`addressed`).
+        + `The claim creates that worktree for you. ${LAUNCH_PLACEHOLDER}\n`
         + "If the claim is refused because someone took it first, that is an answer: stop and say so.",
       causeKey: `${owner ?? "engineers"}/ready-row-unclaimed/${row.number}`,
     });
