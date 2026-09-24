@@ -13,7 +13,7 @@ import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promptable, clearThenPrompt, queueable, queueOrLose, queueDepthNote, queueDepth,
-  deepQueueRefusal, DEEP_QUEUE, NEEDS_DECISION_FLAG, DECISION_FLAG, EXIT }
+  deepQueueRefusal, DEEP_QUEUE, NEEDS_DECISION_FLAG, EXIT }
   from "../prompt-session.mjs";
 import { readHandoffs } from "../wake.mjs";
 import { readLoadedRules } from "./rules-files.ts";
