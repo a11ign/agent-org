@@ -154,7 +154,7 @@ import { declaredRegionFiles, regionCovers } from "../region-paths.mjs";
 import { headMatches, reviewVerdict } from "../review-verdict.mjs";
 // #2126: `answer:<session>` is the org's own spelling for "somebody owes this row an answer", and
 // removing the label IS the act of answering -- so the escalation needs nothing else to remember it.
-import { ANSWER_PREFIX } from "../waiting-condition.mjs";
+import { ANSWER_PREFIX, todayIso, waitingOn } from "../waiting-condition.mjs";
 
 // NO `git` SPAWN HERE, deliberately -- every lookup in this file goes through `gh` (issue/PR/GraphQL
 // reads), which needs no `sandboxGitEnv()` scrub: that helper exists for `execFileSync("git", ...)`
@@ -200,7 +200,9 @@ import { ANSWER_PREFIX } from "../waiting-condition.mjs";
  * @typedef {{ number: number, declaresPaths: boolean, subIssues: number,
  *             closingPr: { state: "OPEN" | "MERGED" | "CLOSED" } | undefined,
  *             deliveringPr?: DeliveringPr, openPrNumber?: number,
- *             openPrReview?: PrReviewHealth }} RowFacts
+ *             openPrReview?: PrReviewHealth,
+ *             body?: string, labels?: ({ name?: string } | string)[],
+ *             blockedBy?: { nodes?: { number?: number, state?: string }[] } }} RowFacts
  */
 
 /**
@@ -230,6 +232,32 @@ function proposedByDeclaredDelivery(delivering) {
 }
 
 /**
+ * #2241: A ROW THE GATE HAS SHELVED IS NOT ONE ITS HOLDER CAN BUILD, and B2 must not read it as one. The
+ * gate (`waitingOn`) and this rule read the SAME row and disagreed: `Not-before: 2026-09-24T01:30:00Z` on
+ * #1926 said "nothing is owed here until 01:30Z" while B2 said "you owe a commit for it", and the claim
+ * won -- a fourteen-hour machine run cost two claims and left two offline rows with no engineer.
+ *
+ * THE DISCRIMINATOR IS `waitingOn`, CALLED, NOT RESTATED, and it is what keeps B2's other teeth: a
+ * `CHANGES_REQUESTED` produces NO waiting condition, so the clause below still sees it. A future
+ * `Not-before:`, an open `blockedBy` and an owed `answer:<session>` each produce one.
+ *
+ * IT FAILS CLOSED, which is the opposite of #2226's eligibility read and for the opposite reason: there, a
+ * lookup that cannot ask must not withhold a row from the queue; here, a parse that cannot answer must not
+ * hand out a SECOND row. `waitingOn` reads `null` for a body it could not parse (a malformed timestamp
+ * fails open on purpose -- the row stays visible), for a `blockedBy` or `labels` list the lookup did not
+ * carry, and for a `Not-before:` that has PASSED; every one leaves the row in build.
+ *
+ * WHAT THIS CANNOT SEE: an `answer:<session>` naming the CLAIMING session itself is work that session can
+ * do today, exactly as a `CHANGES_REQUESTED` is, and this reads it as a wait like any other because
+ * `waitingOn` does. The row names `answer:` among its three conditions, so that is the ruling taken; a
+ * refinement that keys it on the claimant is a separate row.
+ * @param {RowFacts} row @param {number} nowMs @returns {boolean}
+ */
+function inBuildAndNotWaiting(row, nowMs) {
+  return isInBuild(row) && waitingOn(row, todayIso(new Date(nowMs)), nowMs) === null;
+}
+
+/**
  * THE VERDICT, PURE. `null` when nothing blocks -- including when the lookup could not ask, which its own
  * caller reports separately; this function only ever sees rows it was given.
  *
@@ -240,10 +268,12 @@ function proposedByDeclaredDelivery(delivering) {
  * `row-claim-own-pr-health-rule.test.ts` pins that as a known limitation rather than describing it.
  *
  * @param {readonly RowFacts[]} rows every OTHER row this session holds
+ * @param {number} [nowMs] the caller's clock, injected the way `waitingOn` injects one -- a test moves time
+ *   without a global stub, and a `Not-before:` timestamp is only in the future relative to SOME clock
  * @returns {string | null}
  */
-export function inBuildReason(rows) {
-  const inBuild = rows.find(isInBuild);
+export function inBuildReason(rows, nowMs = Date.now()) {
+  const inBuild = rows.find((row) => inBuildAndNotWaiting(row, nowMs));
   // #2126: the SECOND thing B2 caps, and it is checked SECOND on purpose -- a population that has always
   // been refused must keep the refusal it has always been given, word for word, so nothing about the new
   // clause can move an existing verdict or an existing message.
@@ -264,7 +294,8 @@ export function inBuildReason(rows) {
     // Found by worker-capture following it, which is the only way it could have been found: the message is
     // correct, the diagnosis is correct, and THE ONE PART THAT IS EXECUTABLE IS THE PART NOBODY EXECUTED.
     + `gh api repos/${REPO}/issues/${inBuild.number}/sub_issues -F sub_issue_id=<id>\` and this refusal lifts.`
-    + deliversRemedy(inBuild.number);
+    + deliversRemedy(inBuild.number)
+    + waitingRemedy(inBuild.number);
 }
 
 /**
@@ -286,6 +317,22 @@ function deliversRemedy(issueNumber) {
     + "request's body and this refusal lifts. It is honoured only while that pull request is open or "
     + `merged AND changes at least one path #${issueNumber}'s own \`## Region\` declares, so it states a `
     + "delivery rather than claiming one.";
+}
+
+/**
+ * #2241: THE FOURTH WAY OUT, AND IT NAMES THE CLAUSE THAT FIRED. The refusal above fires because the row
+ * reads as owing a commit AND as waiting on nothing -- the second half is new, so it is said, or a reader
+ * whose row IS waiting on a machine run cannot tell which fact the guard got wrong. It names all three
+ * conditions `waitingOn` reads, and that a PASSED `Not-before:` is no longer one, because a remedy whose
+ * fine print is a secret is the #1161 shape again.
+ * @param {number} issueNumber @returns {string}
+ */
+function waitingRemedy(issueNumber) {
+  return `\n  If #${issueNumber} is genuinely WAITING on something no commit of yours can hasten -- a machine run, `
+    + "a date, another row, an answer -- declare it and this refusal lifts: a `Not-before: YYYY-MM-DDTHH:MM:SSZ` "
+    + "line still in the future, `gh issue edit " + issueNumber + " --add-blocked-by <row>` on an OPEN row, or an "
+    + "`answer:<session>` label. It reads no such condition on #" + issueNumber + " now (a `Not-before:` that "
+    + "has passed, or one that is malformed, is not one), so the row counts as work you can do today.";
 }
 
 /** GitHub's two DECIDING review states. `COMMENTED`, `DISMISSED` and `PENDING` decide nothing, and the
@@ -786,11 +833,16 @@ function everyNodeOf(page) {
  *
  * @param {number} issueNumber
  * @param {{ run?: (args: string[]) => string }} [deps]
- * @returns {{ declaresPaths: boolean, declaredPaths: string[], subIssues: number } | null}
+ * @returns {{ declaresPaths: boolean, declaredPaths: string[], subIssues: number, body: string,
+ *   labels?: RowFacts["labels"], blockedBy?: RowFacts["blockedBy"] } | null}
  */
 export function lookupRowShape(issueNumber, { run = gh } = {}) {
   return lookup(() => {
-    const body = JSON.parse(run(["issue", "view", String(issueNumber), "--repo", REPO, "--json", "body"])).body;
+    // #2241: `labels` and `blockedBy` ride the SAME call, because `waitingOn` reads all three of the row's
+    // waiting conditions off one object and a second `issue view` would be a second round trip per held row.
+    const view = JSON.parse(run(["issue", "view", String(issueNumber), "--repo", REPO,
+      "--json", "body,labels,blockedBy"]));
+    const body = view.body;
     // `declaredRegionFiles` is the tree's own parser, not a second reading of the Region: #941 taught it
     // directory items, #975 root-level files, #999 fenced extensionless paths. A row whose Region it reads
     // as empty is a row naming no file -- which is what "the deliverable is not a commit" looks like.
@@ -799,7 +851,8 @@ export function lookupRowShape(issueNumber, { run = gh } = {}) {
     // label can: filing the sub-row is what creates it.
     const subs = JSON.parse(run(["api", `repos/${REPO}/issues/${issueNumber}/sub_issues`]));
     return { declaresPaths: declared.length > 0, declaredPaths: declared,
-      subIssues: Array.isArray(subs) ? subs.length : 0 };
+      subIssues: Array.isArray(subs) ? subs.length : 0,
+      body: body ?? "", labels: view.labels, blockedBy: view.blockedBy };
   });
 }
 
@@ -950,6 +1003,9 @@ function rowFactsFor(issueNumber, deps = {}) {
   if (shape === null) return null;
   /** @type {RowFacts} */
   const facts = { number: issueNumber, declaresPaths: shape.declaresPaths, subIssues: shape.subIssues,
+    // #2241: what `waitingOn` reads. An ABSENT `labels`/`blockedBy` reads as no wait, so a lookup that did
+    // not carry them leaves the row in build -- fail closed, deliberately.
+    body: shape.body, labels: shape.labels, blockedBy: shape.blockedBy,
     closingPr: closing === undefined ? undefined : { state: closing.state },
     // #2126: the NUMBER of the open pull request, kept at row level rather than inside `closingPr`, so the
     // two shapes `row-claim-own-pr-health-rule.test.ts` compares whole (`deliveringPr`) keep their exact
