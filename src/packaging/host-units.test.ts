@@ -34,7 +34,7 @@ import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, syst
   retiredHere, addedOnSomeRef, orphanOrigin, shellCommandWords, shellSpawnsGh, shippedHostScripts,
   supersededHostScripts, unitEntryPoints, missingUnitPrograms, workingDirectoryOf,
   programCandidates, hostIdentityDrift, hostIdentityNotes, hostIdentityInstall, ownedIdentityFiles,
-  WORKERS_README } from "../host-units.mjs";
+  WORKERS_README, HUMAN_ACCOUNT_ALLOWED } from "../host-units.mjs";
 
 const SYSTEMD_OK = () => "LANG=C\n";
 const NO_SYSTEMD = () => { throw new Error("systemctl: command not found"); };
@@ -1460,8 +1460,8 @@ test("#2174: it is a SEPARATE finding from STALE, and the shared remedy says it 
  * @returns the deps `hostIdentityDrift` takes
  */
 const identityHost = (where: { shippedDir: string, scriptDir: string, workersDir: string,
-  gitConfigPath: string }) => {
-  for (const name of ["gh", "gh-human-account-workspaces.txt"]) {
+  leadsDir: string, gitConfigPath: string }) => {
+  for (const name of ["gh", "gh-leads-workspaces.txt"]) {
     writeFileSync(join(where.shippedDir, name), readFileSync(join(SHIPPED_DIR, name)));
   }
   mkdirSync(where.scriptDir, { recursive: true });
@@ -1472,7 +1472,10 @@ const identityHost = (where: { shippedDir: string, scriptDir: string, workersDir
 };
 
 const UNIT_BODY = (workingDir: string) => "[Unit]\nDescription=board report\n[Service]\n"
-  + `WorkingDirectory=${workingDir}\nExecStart=/usr/bin/bash host/dispatch.sh\n`;
+  + `WorkingDirectory=${workingDir}\nExecStart=/usr/bin/bash host/dispatch.sh\n`
+  // DECLARED, because `hostUnitDrift` now asks `identityDrift` too and this unit's opaque `ExecStart` is
+  // charged on UNKNOWN (#1993): an undeclared one would add a third finding to every pair asserted below.
+  + "Environment=GH_CONFIG_DIR=/home/agent/workers/gh\n";
 /**
  * A REAL SHIPPED DIRECTORY AND A REAL INSTALLED ONE, because `hostUnitDrift` discovers the shipped set
  * with `shippedUnits(dir, {})` -- the real `readdirSync`, not the injected `readDir`. A stub `shippedDir`
@@ -1482,7 +1485,7 @@ const UNIT_BODY = (workingDir: string) => "[Unit]\nDescription=board report\n[Se
  */
 const hostWithOneUnit = (installedSuffix: string) => {
   const root = mkdtempSync(join(tmpdir(), "host-units-2184-"));
-  const dirs = Object.fromEntries(["shipped", "installed", "bin", "repo", "workers"]
+  const dirs = Object.fromEntries(["shipped", "installed", "bin", "repo", "workers", "leads"]
     .map((name) => [name, join(root, name)]));
   for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true });
   const settingsPath = join(root, "settings.json");
@@ -1497,7 +1500,7 @@ const hostWithOneUnit = (installedSuffix: string) => {
   writeFileSync(join(dirs.installed, unit), UNIT_BODY(dirs.repo) + installedSuffix);
   // PINNED SATISFIED TOO (#2332): the identity files are installed and the helper is the wrapper.
   const identity = identityHost({ shippedDir: dirs.shipped, scriptDir: dirs.bin, workersDir: dirs.workers,
-    gitConfigPath: join(root, "gitconfig") });
+    leadsDir: dirs.leads, gitConfigPath: join(root, "gitconfig") });
   return { ...identity, installedDir: dirs.installed,
     settingsPath, systemctl: SYSTEMD_OK, program: join(dirs.repo, "host/dispatch.sh") };
 };
@@ -1675,19 +1678,20 @@ test("#2174: a unit that is listed but cannot be READ yields no finding and does
     + "fault for one cause");
 });
 
-// --- #2332: THE `gh` IDENTITY WRAPPER, ITS EXCEPTION LIST AND THE CREDENTIAL HELPER -------------------
+// --- #2332: THE `gh` IDENTITY WRAPPER, ITS LEADS LIST AND THE CREDENTIAL HELPER ----------------------
 //
 // THE WRAPPER IS RUN, NOT READ. A regex over `packages/agent-org/host/gh` would pass on a file whose
 // branches were in the wrong order; these tests put a stub `gh-real` behind it and ask which account the
-// stub was started as. The three ways the file can be pointed elsewhere (`A11Y_GH_REAL`, `A11Y_WORKERS_DIR`)
-// are environment variables with the production values as defaults, so nothing here touches the real host.
+// stub was started as. The three paths it can be pointed elsewhere by (`A11Y_GH_REAL`, `A11Y_WORKERS_DIR`,
+// `A11Y_LEADS_DIR`) are environment variables with the production values as defaults, so nothing here
+// touches the real host.
 
 const WRAPPER = join(SHIPPED_DIR, "gh");
 const STUB_EXIT = 7; // a status nothing else here returns, so it can only have come from the stub
 const EXECUTABLE = 0o111;
 const PERMISSION_BITS = 0o777;
 const RWX_R_X_R_X = 0o755;
-const HUMAN_LIST = join(SHIPPED_DIR, "gh-human-account-workspaces.txt");
+const LEADS_LIST = join(SHIPPED_DIR, "gh-leads-workspaces.txt");
 
 /** The ids on a list file's own lines: not comments, not blanks. */
 const listedIds = (text: string) => text.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
@@ -1696,30 +1700,33 @@ const listedIds = (text: string) => text.split("\n").map((l) => l.trim()).filter
  * A stub `gh-real` that says which config it was started with and leaves a marker: THE POSITIVE CONTROL for
  * every "reached gh-real" assertion below, since a wrapper that exits before the stub also prints nothing.
  */
-const wrapperHost = ({ workers = true, list = true } = {}) => {
+const wrapperHost = ({ workers = true, leads = true, list = true } = {}) => {
   const root = mkdtempSync(join(tmpdir(), "gh-wrapper-2332-"));
   const workersDir = join(root, "workers");
+  const leadsDir = join(root, "leads");
   const marker = join(root, "reached");
   const stub = join(root, "gh-real");
   writeFileSync(stub, `#!/bin/sh\necho "reached $*" > "${marker}"\necho "CONFIG=<\${GH_CONFIG_DIR-UNSET}>"\nexit ${STUB_EXIT}\n`,
     { mode: 0o755 });
-  mkdirSync(workersDir, { recursive: true });
-  if (workers) {
-    mkdirSync(join(workersDir, "gh"));
-    writeFileSync(join(workersDir, "gh", "hosts.yml"), "github.com: {}\n");
+  for (const [present, dir] of [[workers, workersDir], [leads, leadsDir]] as const) {
+    mkdirSync(dir, { recursive: true });
+    if (!present) continue;
+    mkdirSync(join(dir, "gh"));
+    writeFileSync(join(dir, "gh", "hosts.yml"), "github.com: {}\n");
   }
   // THE SHIPPED LIST, not a fixture of one: the file under review is the file that decides.
-  if (list) writeFileSync(join(workersDir, "human-account-workspaces.txt"), readFileSync(HUMAN_LIST));
+  if (list) writeFileSync(join(leadsDir, "workspaces.txt"), readFileSync(LEADS_LIST));
   const run = (env: Record<string, string>, ...args: string[]) => {
     const r = spawnSync("sh", [WRAPPER, ...args], { encoding: "utf8", env: {
-      PATH: process.env.PATH ?? "", A11Y_GH_REAL: stub, A11Y_WORKERS_DIR: workersDir, ...env } });
+      PATH: process.env.PATH ?? "", A11Y_GH_REAL: stub, A11Y_WORKERS_DIR: workersDir,
+      A11Y_LEADS_DIR: leadsDir, ...env } });
     return { status: r.status, stdout: r.stdout, stderr: r.stderr, reached: existsSync(marker),
       reachedWith: existsSync(marker) ? readFileSync(marker, "utf8").trim() : null };
   };
-  return { root, workersDir, run };
+  return { root, workersDir, leadsDir, run };
 };
 
-test("#2332: an agent workspace that is NOT on the list gets the workers account", () => {
+test("#2332: an agent workspace that is NOT on the leads list gets the workers account", () => {
   const { root, workersDir, run } = wrapperHost();
   try {
     for (const id of ["w3", "w9", "wD", "w-unknown"]) {
@@ -1731,13 +1738,15 @@ test("#2332: an agent workspace that is NOT on the list gets the workers account
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("#2332: the three NAMED exceptions get the human default -- nothing is set for them", () => {
-  const { root, run } = wrapperHost();
+test("#2332: the three decision-holders get the LEADS account -- an explicit config, never the person's default", () => {
+  const { root, leadsDir, run } = wrapperHost();
   try {
     for (const id of ["w6", "w2", "w5"]) {
       const r = run({ HERDR_WORKSPACE_ID: id });
-      assert.match(r.stdout, /CONFIG=<UNSET>/, `${id} is on the list, so gh-real is left to pick the default`);
-      assert.ok(r.reached, "POSITIVE CONTROL: UNSET means the stub ran and saw nothing, not that it never ran");
+      assert.match(r.stdout, new RegExp(`CONFIG=<${leadsDir}/gh>`), `${id} is on the leads list, so it acts as a11ign-ai-leads`);
+      assert.doesNotMatch(r.stdout, /CONFIG=<UNSET>/,
+        "UNSET is what the human account looks like from here, and no agent workspace may be it");
+      assert.ok(r.reached, "POSITIVE CONTROL: the stub ran, so the config it printed is the one it was started with");
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -1761,48 +1770,61 @@ test("#2332: a shell with NO workspace id is a person, and is left alone", () =>
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("#2332: an unlisted agent workspace with the workers account MISSING refuses and never reaches gh-real", () => {
-  const { root, run } = wrapperHost({ workers: false });
+test("#2332: an agent workspace whose account is MISSING refuses and never reaches gh-real", () => {
+  const noWorkers = wrapperHost({ workers: false });
+  const noLeads = wrapperHost({ leads: false });
   try {
-    const r = run({ HERDR_WORKSPACE_ID: "w9" }, "api", "user");
-    assert.notEqual(r.status, 0);
-    assert.match(r.stderr, /must not act as the human account/);
-    assert.equal(r.reached, false, "the whole point: it does NOT fall through to the human's login");
-    assert.equal(r.stdout, "");
-    // THE CONTROL: the same missing workers account does not stop a LISTED workspace, which never needed it.
-    assert.ok(run({ HERDR_WORKSPACE_ID: "w6" }).reached);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+    const worker = noWorkers.run({ HERDR_WORKSPACE_ID: "w9" }, "api", "user");
+    assert.notEqual(worker.status, 0);
+    assert.match(worker.stderr, /must not act as the human account/);
+    assert.equal(worker.reached, false, "the whole point: it does NOT fall through to the human's login");
+    assert.equal(worker.stdout, "");
+    // THE SAME FOR A LEAD: a missing leads config is a refusal and not a quiet fall-back to the workers
+    // account (which would spend the pool the chairman gave the leads their own to avoid) or the person.
+    const lead = noLeads.run({ HERDR_WORKSPACE_ID: "w6" }, "api", "user");
+    assert.notEqual(lead.status, 0);
+    assert.match(lead.stderr, new RegExp(`${noLeads.leadsDir}/gh/hosts\\.yml`), "and names the file that is missing");
+    assert.equal(lead.reached, false);
+    // THE CONTROLS: each missing account stops only the workspaces that route to it.
+    assert.ok(noWorkers.run({ HERDR_WORKSPACE_ID: "w6" }).reached, "a lead does not need the workers config");
+    assert.ok(noLeads.run({ HERDR_WORKSPACE_ID: "w9" }).reached, "a worker does not need the leads config");
+  } finally {
+    rmSync(noWorkers.root, { recursive: true, force: true });
+    rmSync(noLeads.root, { recursive: true, force: true });
+  }
 });
 
 test("#2332: the list is matched by WHOLE LINE, and a missing list fails toward the workers account", () => {
   const { root, run } = wrapperHost();
   try {
-    // `w66` contains `w6` and `w` contains nothing: a substring match would hand either the human account.
+    // `w66` contains `w6` and `w` contains nothing: a substring match would hand either the leads account.
     for (const id of ["w66", "w", "6"]) {
-      assert.match(run({ HERDR_WORKSPACE_ID: id }).stdout, /CONFIG=<.*\/gh>/, `${id} is NOT w6`);
+      assert.match(run({ HERDR_WORKSPACE_ID: id }).stdout, /CONFIG=<.*\/workers\/gh>/, `${id} is NOT w6`);
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
   const noList = wrapperHost({ list: false });
   try {
-    assert.match(noList.run({ HERDR_WORKSPACE_ID: "w6" }).stdout, /CONFIG=<.*\/gh>/,
-      "no list file means NO exception, so even w6 is an agent -- the default is the workers account");
+    assert.match(noList.run({ HERDR_WORKSPACE_ID: "w6" }).stdout, /CONFIG=<.*\/workers\/gh>/,
+      "no list file means NO lead, so even w6 gets the workers account -- and never the person's");
   } finally { rmSync(noList.root, { recursive: true, force: true }); }
 });
 
-test("#2332: the shipped list holds EXACTLY the three decision-holders, each with its role, marked TEMPORARY", () => {
-  const text = readFileSync(HUMAN_LIST, "utf8");
+test("#2332: the shipped leads list holds EXACTLY the three decision-holders, each with its role, and no exception", () => {
+  const text = readFileSync(LEADS_LIST, "utf8");
   assert.deepEqual(listedIds(text), ["w6", "w2", "w5"],
-    "a fourth id is a fourth session acting as the chairman: it needs a ruling, not an edit");
+    "a fourth id is a fourth session on the leads account: it needs a ruling, not an edit");
   for (const [id, role] of [["w6", "ceo"], ["w2", "product-manager"], ["w5", "orchestrator"]]) {
     assert.match(text, new RegExp(`^# ${id} ${role}\\n${id}$`, "m"), `${id} carries its role on the line above it`);
   }
-  assert.match(text, /^# TEMPORARY: removed by the row that moves the decision-holders off the human account/m);
+  assert.doesNotMatch(text, /TEMPORARY/i,
+    "there is no exception any more (#2333): nothing on this list is waiting to be removed");
+  assert.ok(!existsSync(join(SHIPPED_DIR, "gh-human-account-workspaces.txt")), "and the human list is gone from the tree");
 });
 
 const identityDeps = () => {
   const root = mkdtempSync(join(tmpdir(), "host-identity-2332-"));
   const where = { shippedDir: join(root, "shipped"), scriptDir: join(root, "bin"),
-    workersDir: join(root, "workers"), gitConfigPath: join(root, "gitconfig") };
+    workersDir: join(root, "workers"), leadsDir: join(root, "leads"), gitConfigPath: join(root, "gitconfig") };
   mkdirSync(where.shippedDir);
   return { root, where, ...where, host: identityHost(where) };
 };
@@ -1832,14 +1854,14 @@ test("#2332: `host:check` reports DIVERGED for ~/.local/bin/gh when its bytes di
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("#2332: the exception list and the README each report DIVERGED too, and host:install repairs all three", () => {
+test("#2332: the leads list and the README each report DIVERGED too, and host:install repairs all three", () => {
   const { root, where } = identityDeps();
   try {
-    writeFileSync(join(where.workersDir, "human-account-workspaces.txt"), "w6\nw2\nw5\nw9\n");
+    writeFileSync(join(where.leadsDir, "workspaces.txt"), "w6\nw2\nw5\nw9\n");
     writeFileSync(join(where.workersDir, "README.md"), "everything else uses the default (human) config\n");
     writeFileSync(join(where.scriptDir, "gh"), "stale\n");
     assert.deepEqual(hostIdentityDrift(where).map((d) => `${d.unit.split("/").pop()}:${d.problem}`),
-      ["gh:DIVERGED", "human-account-workspaces.txt:DIVERGED", "README.md:DIVERGED"]);
+      ["gh:DIVERGED", "workspaces.txt:DIVERGED", "README.md:DIVERGED"]);
     hostIdentityInstall({ ...where, out: () => {} });
     assert.deepEqual(hostIdentityDrift(where), [], "the shared remedy clears every file finding it names");
     assert.deepEqual(readdirSync(where.scriptDir), ["gh"], "the atomic write left no temp file behind");
@@ -1947,8 +1969,8 @@ test("#2332: END TO END -- `host:install` then `host:check --json` on a temp HOM
     const entry = join(REPO_ROOT, "packages/agent-org/src/host-units.mjs");
     const run = (...args: string[]) => spawnSync(process.execPath, [entry, ...args], { encoding: "utf8", env });
     const identityFindings = (out: string) => JSON.parse(out).findings
-      .filter((f: { unit: string }) => f.unit.startsWith(home) && /\/(gh|human-account-workspaces\.txt|README\.md|\.gitconfig)$/.test(f.unit));
-    assert.ok(identityFindings(run("--json").stdout).length >= 3, "before the install: gh, the list and the README are all absent");
+      .filter((f: { unit: string }) => f.unit.startsWith(home) && /\/(gh|workspaces\.txt|README\.md|\.gitconfig)$/.test(f.unit));
+    assert.ok(identityFindings(run("--json").stdout).length >= 3, "before the install: gh, the leads list and the README are all absent");
     const install = run("--install");
     assert.match(install.stdout, /installed .*\/\.local\/bin\/gh/);
     const after = JSON.parse(run("--json").stdout);
@@ -1958,4 +1980,100 @@ test("#2332: END TO END -- `host:install` then `host:check --json` on a temp HOM
       "and NEVER as a finding, because the gate wakes a session on findings");
     assert.equal(statSync(join(home, ".local/bin/gh")).mode & PERMISSION_BITS, RWX_R_X_R_X);
   } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+// --- #2332 / #2333: NO UNIT ACTS AS THE HUMAN ACCOUNT, AND `host:check` SAYS SO -----------------------
+//
+// The corpus release was the last thing that did, by a comment that called it "the right answer": the
+// workers account could not push to `a11ign/corpus-backups`. `a11ign-ai-leads` can (`push: true, admin:
+// false` on it and on `a11ign/a11ign`, read back 2026-09-24), so the unit moved and the exception with it.
+// The refusal below is what keeps the next unit from reintroducing one by an `Environment=` line nobody
+// reads: it is asserted over the units ON DISK and it runs inside `host:check`, not only in this suite.
+
+/** A one-unit shipped directory and the deps `identityDrift` takes for it. */
+const oneUnit = (body: string, extra: Record<string, unknown> = {}) => ({
+  shippedDir: "/shipped",
+  readDir: (() => ["a11ign-x.service"]) as never,
+  read: ((p: string) => (String(p).startsWith("/shipped") ? body : "execFileSync(\"gh\", [])")) as never,
+  ...extra,
+});
+
+test("#2332: the corpus release runs as the LEADS account, and nothing shipped declares the person's", () => {
+  const service = readFileSync(join(SHIPPED_DIR, "a11ign-corpus-release-nightly.service"), "utf8");
+  assert.match(service, /^Environment=GH_CONFIG_DIR=\/home\/agent\/leads\/gh$/m,
+    "a11ign-ai-leads has push (not admin) on a11ign/corpus-backups, which is all `gh release create` needs");
+  assert.doesNotMatch(service, /THE HUMAN ONE, AND THAT IS THE RIGHT ANSWER/,
+    "the comment that argued for the person's account must not survive beside the line that removed it");
+  // THE POPULATION, NAMED: the emptiness assertion below is only worth what this says about its input.
+  const declared = readdirSync(SHIPPED_DIR).filter((f) => f.endsWith(".service"))
+    .map((f) => [f, /^Environment=GH_CONFIG_DIR=(.*)$/m.exec(readFileSync(join(SHIPPED_DIR, f), "utf8"))?.[1] ?? null]);
+  assert.ok(declared.filter(([, dir]) => dir !== null).length >= 5, `too few units declare an account: ${JSON.stringify(declared)}`);
+  assert.deepEqual(declared.filter(([, dir]) => dir !== null && /\.config\/gh/.test(String(dir))), [],
+    "no shipped unit declares the person's config");
+  assert.deepEqual(HUMAN_ACCOUNT_ALLOWED, {}, "and nothing is exempted: an entry needs `ceo`'s ruling");
+});
+
+test("#2332 NEGATIVE CONTROL: a unit that declares the person's config IS a finding, however it spells the home", () => {
+  for (const dir of ["/home/agent/.config/gh", "/home/agent/.config/gh/", "%h/.config/gh", "$HOME/.config/gh",
+    "~/.config/gh", ""]) {
+    const [f, ...rest] = identityDrift(oneUnit(`[Service]\nExecStart=/usr/bin/true\nEnvironment=GH_CONFIG_DIR=${dir}\n`));
+    assert.deepEqual(rest, [], `${JSON.stringify(dir)}: one finding`);
+    assert.equal(f?.problem, "DECLARES THE HUMAN ACCOUNT", `${JSON.stringify(dir)} is the person`);
+    assert.equal(f?.unit, "a11ign-x.service");
+    assert.match(f.detail, /HUMAN_ACCOUNT_ALLOWED/, "and says how a ruled exception is recorded");
+  }
+  // ...EVEN IF IT SPAWNS NOTHING: the unit above runs `/usr/bin/true`, so the check reads the declaration.
+  for (const dir of ["/home/agent/workers/gh", "/home/agent/leads/gh"]) {
+    assert.deepEqual(identityDrift(oneUnit(`[Service]\nExecStart=/usr/bin/true\nEnvironment=GH_CONFIG_DIR=${dir}\n`)), [],
+      `CONTROL: ${dir} is an org account`);
+  }
+  // A path that merely CONTAINS the person's config is not it: `/x/.config/gh-workers` is somebody's own dir.
+  assert.deepEqual(identityDrift(oneUnit("[Service]\nExecStart=/usr/bin/true\nEnvironment=GH_CONFIG_DIR=/home/agent/.config/gh-bot\n")), []);
+});
+
+test("#2332: the LAST declaration wins, as in systemd, and a named allow-entry is honoured", () => {
+  const human = "Environment=GH_CONFIG_DIR=/home/agent/.config/gh\n";
+  const leads = "Environment=GH_CONFIG_DIR=/home/agent/leads/gh\n";
+  assert.deepEqual(identityDrift(oneUnit(`[Service]\nExecStart=/usr/bin/true\n${human}${leads}`)), [],
+    "the person's line overridden by a later org one is the org account");
+  assert.equal(identityDrift(oneUnit(`[Service]\nExecStart=/usr/bin/true\n${leads}${human}`)).length, 1,
+    "and the reverse order IS the person, whatever the first line said");
+  assert.deepEqual(identityDrift(oneUnit(`[Service]\nExecStart=/usr/bin/true\n${human}`,
+    { humanAllowed: { "a11ign-x.service": "ceo ruled it, #0000" } })), [], "a named entry exempts exactly that unit");
+  assert.equal(identityDrift(oneUnit(`[Service]\nExecStart=/usr/bin/true\n${human}`,
+    { humanAllowed: { "a11ign-y.service": "another unit's ruling" } })).length, 1, "and no other");
+});
+
+test("#2332: `host:check` REFUSES an undeclared gh unit and a human-declaring one -- the check is wired in", () => {
+  // THE MUTANT: dropping `...identityDrift(deps)` from `hostUnitDrift` leaves every direct call above green
+  // and the command a reader runs silent about both.
+  const clean = hostWithOneUnit("");
+  assert.deepEqual(hostUnitDrift(clean).filter((d) => /IDENTITY|HUMAN/.test(d.problem)), [],
+    "CONTROL: the declaring fixture unit reads clean, so what follows is the unit's doing");
+  const unit = "a11ign-board-report.service";
+  const body = (line: string) => UNIT_BODY(join(clean.shippedDir, "..", "repo")).replace(
+    "Environment=GH_CONFIG_DIR=/home/agent/workers/gh\n", line);
+  for (const [line, problem] of [["", "NO IDENTITY DECLARED"],
+    ["Environment=GH_CONFIG_DIR=/home/agent/.config/gh\n", "DECLARES THE HUMAN ACCOUNT"]] as const) {
+    writeFileSync(join(clean.shippedDir, unit), body(line));
+    writeFileSync(join(clean.installedDir, unit), body(line));
+    assert.ok(hostUnitDrift(clean).some((d) => d.problem === problem && d.unit === unit),
+      `${problem}: \`host:check\` reports it against the unit`);
+  }
+});
+
+test("#2332: a shipped unit that changes the account is a reviewed change, NOT 'installed identity the repo lacks'", () => {
+  // The corpus release moving from the person's config to leads is exactly this: installed has one line,
+  // shipped has a different one. `host:install` carries the decision out; "DO NOT RUN THE REMEDY" printed
+  // above the one command that lands it would be the false alarm that trains a reader to ignore the true one.
+  const state = unitState("a11ign-corpus-release-nightly.service", {
+    exists: (() => true) as never,
+    read: ((p: string) => (String(p).startsWith(SHIPPED_DIR)
+      ? "[Service]\nEnvironment=GH_CONFIG_DIR=/home/agent/leads/gh\n"
+      : "[Service]\nEnvironment=GH_CONFIG_DIR=/home/agent/.config/gh\n")) as never,
+  });
+  assert.deepEqual(state.identityRevert, []);
+  assert.equal(unitDrift([state])[0].problem, "STALE");
+  // CONTROL: the original direction still fires -- shipped declares NOTHING, so the install would delete it.
+  assert.deepEqual(staleWithIdentity().identityRevert, ["Environment=GH_CONFIG_DIR=/home/agent/workers/gh"]);
 });
