@@ -1,0 +1,36 @@
+#!/bin/sh
+# gh identity wrapper.
+#
+# 2026-09-13: engineer sessions use the a11ign-ai-workers account so the human account's GraphQL pool is
+# not shared six ways. 2026-09-24 (chairman's ruling, #1950): NO AGENT ACTS AS THE HUMAN BY DEFAULT. The
+# first version was an allow-list for the workers account, so any workspace it did not list FELL THROUGH to
+# the human's own login, which has admin -- worker-4 and worker-5 acted as the chairman for hours because
+# their workspace ids were not on it. It is now the other way round:
+#
+#   1. an explicit GH_CONFIG_DIR always wins (a systemd unit, the codex reviewer, a spawn (#2323));
+#   2. an agent workspace (HERDR_WORKSPACE_ID set) gets the workers account, UNLESS its id is on the
+#      human-account list, which is a NAMED EXCEPTION and not a default;
+#   3. a shell with no workspace id (a person at a terminal, or a unit that forgot to declare) is not an
+#      agent, so it is left alone: the human's own login, as before.
+#
+# The human-account list is w6 w2 w5: ceo, product-manager, orchestrator. TEMPORARY -- they move to an org
+# account when the chairman provides one (a shared workers pool would run at ~4,600 of 5,000 GraphQL/hour
+# with eight engineers). Routing is by herdr workspace id, which survives a session restart.
+#
+# Shipped from packages/agent-org/host/gh and COPIED to ~/.local/bin/gh by `npm run host:install` (#2332); `npm
+# run host:check` reports DIVERGED when the installed bytes differ. A copy and not a symlink, because this is on
+# every agent's PATH and a link into a checkout that is mid-rebase would break `gh` for the whole org. The two
+# paths below are overridable so a test can RUN this file against a stub; that is no new hole, since an explicit
+# GH_CONFIG_DIR already wins over everything here. `git push` goes through it too (the global gitconfig's credential helper).
+GH_REAL=${A11Y_GH_REAL:-/home/agent/.local/bin/gh-real}
+WORKERS_DIR=${A11Y_WORKERS_DIR:-/home/agent/workers}
+if [ -z "$GH_CONFIG_DIR" ] && [ -n "$HERDR_WORKSPACE_ID" ] \
+   && ! grep -qxF "$HERDR_WORKSPACE_ID" "$WORKERS_DIR/human-account-workspaces.txt" 2>/dev/null; then
+  if [ ! -f "$WORKERS_DIR/gh/hosts.yml" ]; then
+    echo "gh: workspace $HERDR_WORKSPACE_ID is an agent and must not act as the human account, and the workers account is not installed ($WORKERS_DIR/gh/hosts.yml). Refusing." >&2
+    exit 1
+  fi
+  GH_CONFIG_DIR=$WORKERS_DIR/gh
+  export GH_CONFIG_DIR
+fi
+exec "$GH_REAL" "$@"

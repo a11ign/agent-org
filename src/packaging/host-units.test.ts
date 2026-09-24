@@ -22,8 +22,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { readFileSync, readdirSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, statSync,
+  existsSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
@@ -32,7 +33,8 @@ import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, syst
   entriesFromCommand, ghSpawnReachedFrom, identityDrift, unitsSpendingGh, opaqueCommands,
   retiredHere, addedOnSomeRef, orphanOrigin, shellCommandWords, shellSpawnsGh, shippedHostScripts,
   supersededHostScripts, unitEntryPoints, missingUnitPrograms, workingDirectoryOf,
-  programCandidates } from "../host-units.mjs";
+  programCandidates, hostIdentityDrift, hostIdentityNotes, hostIdentityInstall, ownedIdentityFiles,
+  WORKERS_README } from "../host-units.mjs";
 
 const SYSTEMD_OK = () => "LANG=C\n";
 const NO_SYSTEMD = () => { throw new Error("systemctl: command not found"); };
@@ -1452,6 +1454,23 @@ test("#2174: it is a SEPARATE finding from STALE, and the shared remedy says it 
  * one alone is right about its own question. `permissionModeDrift` is pinned to a satisfied settings
  * file so the drift here is exactly the pair under test.
  */
+/**
+ * A HOST WHOSE IDENTITY FILES ARE IN SYNC, built by the REAL installer over temp directories -- so the
+ * fixture is what `host:install` produces, not a hand-typed copy of what it should produce.
+ * @returns the deps `hostIdentityDrift` takes
+ */
+const identityHost = (where: { shippedDir: string, scriptDir: string, workersDir: string,
+  gitConfigPath: string }) => {
+  for (const name of ["gh", "gh-human-account-workspaces.txt"]) {
+    writeFileSync(join(where.shippedDir, name), readFileSync(join(SHIPPED_DIR, name)));
+  }
+  mkdirSync(where.scriptDir, { recursive: true });
+  hostIdentityInstall({ ...where, out: () => {} });
+  writeFileSync(where.gitConfigPath, `[credential "https://github.com"]\n\thelper = \n`
+    + `\thelper = !${where.scriptDir}/gh auth git-credential\n`);
+  return where;
+};
+
 const UNIT_BODY = (workingDir: string) => "[Unit]\nDescription=board report\n[Service]\n"
   + `WorkingDirectory=${workingDir}\nExecStart=/usr/bin/bash host/dispatch.sh\n`;
 /**
@@ -1463,7 +1482,7 @@ const UNIT_BODY = (workingDir: string) => "[Unit]\nDescription=board report\n[Se
  */
 const hostWithOneUnit = (installedSuffix: string) => {
   const root = mkdtempSync(join(tmpdir(), "host-units-2184-"));
-  const dirs = Object.fromEntries(["shipped", "installed", "bin", "repo"]
+  const dirs = Object.fromEntries(["shipped", "installed", "bin", "repo", "workers"]
     .map((name) => [name, join(root, name)]));
   for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true });
   const settingsPath = join(root, "settings.json");
@@ -1476,7 +1495,10 @@ const hostWithOneUnit = (installedSuffix: string) => {
   // #2174 measured twice on this host. `repo/host/dispatch.sh` is never written, so the program the
   // unit names is genuinely absent on both readings.
   writeFileSync(join(dirs.installed, unit), UNIT_BODY(dirs.repo) + installedSuffix);
-  return { shippedDir: dirs.shipped, installedDir: dirs.installed, scriptDir: dirs.bin,
+  // PINNED SATISFIED TOO (#2332): the identity files are installed and the helper is the wrapper.
+  const identity = identityHost({ shippedDir: dirs.shipped, scriptDir: dirs.bin, workersDir: dirs.workers,
+    gitConfigPath: join(root, "gitconfig") });
+  return { ...identity, installedDir: dirs.installed,
     settingsPath, systemctl: SYSTEMD_OK, program: join(dirs.repo, "host/dispatch.sh") };
 };
 
@@ -1651,4 +1673,289 @@ test("#2174: a unit that is listed but cannot be READ yields no finding and does
   assert.deepEqual(found, [],
     "an unreadable unit is `unitDrift`'s finding -- guessing at what it starts would report a second "
     + "fault for one cause");
+});
+
+// --- #2332: THE `gh` IDENTITY WRAPPER, ITS EXCEPTION LIST AND THE CREDENTIAL HELPER -------------------
+//
+// THE WRAPPER IS RUN, NOT READ. A regex over `packages/agent-org/host/gh` would pass on a file whose
+// branches were in the wrong order; these tests put a stub `gh-real` behind it and ask which account the
+// stub was started as. The three ways the file can be pointed elsewhere (`A11Y_GH_REAL`, `A11Y_WORKERS_DIR`)
+// are environment variables with the production values as defaults, so nothing here touches the real host.
+
+const WRAPPER = join(SHIPPED_DIR, "gh");
+const STUB_EXIT = 7; // a status nothing else here returns, so it can only have come from the stub
+const EXECUTABLE = 0o111;
+const PERMISSION_BITS = 0o777;
+const RWX_R_X_R_X = 0o755;
+const HUMAN_LIST = join(SHIPPED_DIR, "gh-human-account-workspaces.txt");
+
+/** The ids on a list file's own lines: not comments, not blanks. */
+const listedIds = (text: string) => text.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+
+/**
+ * A stub `gh-real` that says which config it was started with and leaves a marker: THE POSITIVE CONTROL for
+ * every "reached gh-real" assertion below, since a wrapper that exits before the stub also prints nothing.
+ */
+const wrapperHost = ({ workers = true, list = true } = {}) => {
+  const root = mkdtempSync(join(tmpdir(), "gh-wrapper-2332-"));
+  const workersDir = join(root, "workers");
+  const marker = join(root, "reached");
+  const stub = join(root, "gh-real");
+  writeFileSync(stub, `#!/bin/sh\necho "reached $*" > "${marker}"\necho "CONFIG=<\${GH_CONFIG_DIR-UNSET}>"\nexit ${STUB_EXIT}\n`,
+    { mode: 0o755 });
+  mkdirSync(workersDir, { recursive: true });
+  if (workers) {
+    mkdirSync(join(workersDir, "gh"));
+    writeFileSync(join(workersDir, "gh", "hosts.yml"), "github.com: {}\n");
+  }
+  // THE SHIPPED LIST, not a fixture of one: the file under review is the file that decides.
+  if (list) writeFileSync(join(workersDir, "human-account-workspaces.txt"), readFileSync(HUMAN_LIST));
+  const run = (env: Record<string, string>, ...args: string[]) => {
+    const r = spawnSync("sh", [WRAPPER, ...args], { encoding: "utf8", env: {
+      PATH: process.env.PATH ?? "", A11Y_GH_REAL: stub, A11Y_WORKERS_DIR: workersDir, ...env } });
+    return { status: r.status, stdout: r.stdout, stderr: r.stderr, reached: existsSync(marker),
+      reachedWith: existsSync(marker) ? readFileSync(marker, "utf8").trim() : null };
+  };
+  return { root, workersDir, run };
+};
+
+test("#2332: an agent workspace that is NOT on the list gets the workers account", () => {
+  const { root, workersDir, run } = wrapperHost();
+  try {
+    for (const id of ["w3", "w9", "wD", "w-unknown"]) {
+      const r = run({ HERDR_WORKSPACE_ID: id }, "api", "user");
+      assert.match(r.stdout, new RegExp(`CONFIG=<${workersDir}/gh>`), `${id} must be routed to the workers account`);
+      assert.equal(r.reachedWith, "reached api user", "the stub PROVES it ran, with the caller's arguments");
+      assert.equal(r.status, STUB_EXIT, "and gh-real's own exit status is the wrapper's");
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2332: the three NAMED exceptions get the human default -- nothing is set for them", () => {
+  const { root, run } = wrapperHost();
+  try {
+    for (const id of ["w6", "w2", "w5"]) {
+      const r = run({ HERDR_WORKSPACE_ID: id });
+      assert.match(r.stdout, /CONFIG=<UNSET>/, `${id} is on the list, so gh-real is left to pick the default`);
+      assert.ok(r.reached, "POSITIVE CONTROL: UNSET means the stub ran and saw nothing, not that it never ran");
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2332: an explicit GH_CONFIG_DIR is passed through UNCHANGED, whatever the workspace is", () => {
+  const { root, run } = wrapperHost();
+  try {
+    for (const id of ["w9", "w6"]) {
+      const r = run({ HERDR_WORKSPACE_ID: id, GH_CONFIG_DIR: "/somewhere/else" });
+      assert.match(r.stdout, /CONFIG=<\/somewhere\/else>/, `${id}: a unit or a spawn that DECLARES its account wins`);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2332: a shell with NO workspace id is a person, and is left alone", () => {
+  const { root, run } = wrapperHost();
+  try {
+    const r = run({});
+    assert.match(r.stdout, /CONFIG=<UNSET>/);
+    assert.ok(r.reached);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2332: an unlisted agent workspace with the workers account MISSING refuses and never reaches gh-real", () => {
+  const { root, run } = wrapperHost({ workers: false });
+  try {
+    const r = run({ HERDR_WORKSPACE_ID: "w9" }, "api", "user");
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /must not act as the human account/);
+    assert.equal(r.reached, false, "the whole point: it does NOT fall through to the human's login");
+    assert.equal(r.stdout, "");
+    // THE CONTROL: the same missing workers account does not stop a LISTED workspace, which never needed it.
+    assert.ok(run({ HERDR_WORKSPACE_ID: "w6" }).reached);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2332: the list is matched by WHOLE LINE, and a missing list fails toward the workers account", () => {
+  const { root, run } = wrapperHost();
+  try {
+    // `w66` contains `w6` and `w` contains nothing: a substring match would hand either the human account.
+    for (const id of ["w66", "w", "6"]) {
+      assert.match(run({ HERDR_WORKSPACE_ID: id }).stdout, /CONFIG=<.*\/gh>/, `${id} is NOT w6`);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+  const noList = wrapperHost({ list: false });
+  try {
+    assert.match(noList.run({ HERDR_WORKSPACE_ID: "w6" }).stdout, /CONFIG=<.*\/gh>/,
+      "no list file means NO exception, so even w6 is an agent -- the default is the workers account");
+  } finally { rmSync(noList.root, { recursive: true, force: true }); }
+});
+
+test("#2332: the shipped list holds EXACTLY the three decision-holders, each with its role, marked TEMPORARY", () => {
+  const text = readFileSync(HUMAN_LIST, "utf8");
+  assert.deepEqual(listedIds(text), ["w6", "w2", "w5"],
+    "a fourth id is a fourth session acting as the chairman: it needs a ruling, not an edit");
+  for (const [id, role] of [["w6", "ceo"], ["w2", "product-manager"], ["w5", "orchestrator"]]) {
+    assert.match(text, new RegExp(`^# ${id} ${role}\\n${id}$`, "m"), `${id} carries its role on the line above it`);
+  }
+  assert.match(text, /^# TEMPORARY: removed by the row that moves the decision-holders off the human account/m);
+});
+
+const identityDeps = () => {
+  const root = mkdtempSync(join(tmpdir(), "host-identity-2332-"));
+  const where = { shippedDir: join(root, "shipped"), scriptDir: join(root, "bin"),
+    workersDir: join(root, "workers"), gitConfigPath: join(root, "gitconfig") };
+  mkdirSync(where.shippedDir);
+  return { root, where, ...where, host: identityHost(where) };
+};
+
+test("#2332: an in-sync host reads clean, and the installer wrote a runnable, executable wrapper", () => {
+  const { root, where } = identityDeps();
+  try {
+    assert.deepEqual(hostIdentityDrift(where), [], "the control every DIVERGED case below is a one-change mutation of");
+    assert.equal(statSync(join(where.scriptDir, "gh")).mode & EXECUTABLE, EXECUTABLE, "gh is executable");
+    assert.equal(readFileSync(join(where.workersDir, "README.md"), "utf8"), WORKERS_README);
+    assert.doesNotMatch(WORKERS_README, /everything else uses the default \(human\) config/,
+      "the sentence #1950 made false must not survive in the file host:install writes");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2332: `host:check` reports DIVERGED for ~/.local/bin/gh when its bytes differ, and NOT INSTALLED when absent", () => {
+  const { root, where } = identityDeps();
+  try {
+    writeFileSync(join(where.scriptDir, "gh"), "#!/bin/sh\nexec /usr/bin/gh \"$@\"\n");
+    const [finding, ...rest] = hostIdentityDrift(where);
+    assert.deepEqual(rest, [], "exactly one file drifted, so exactly one finding");
+    assert.equal(finding.unit, join(where.scriptDir, "gh"));
+    assert.equal(finding.problem, "DIVERGED");
+    assert.notEqual(finding.manualFix, true, "host:install DOES fix a copied file, so the remedy line is honest for it");
+    rmSync(join(where.scriptDir, "gh"));
+    assert.deepEqual(hostIdentityDrift(where).map((d) => d.problem), ["NOT INSTALLED"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2332: the exception list and the README each report DIVERGED too, and host:install repairs all three", () => {
+  const { root, where } = identityDeps();
+  try {
+    writeFileSync(join(where.workersDir, "human-account-workspaces.txt"), "w6\nw2\nw5\nw9\n");
+    writeFileSync(join(where.workersDir, "README.md"), "everything else uses the default (human) config\n");
+    writeFileSync(join(where.scriptDir, "gh"), "stale\n");
+    assert.deepEqual(hostIdentityDrift(where).map((d) => `${d.unit.split("/").pop()}:${d.problem}`),
+      ["gh:DIVERGED", "human-account-workspaces.txt:DIVERGED", "README.md:DIVERGED"]);
+    hostIdentityInstall({ ...where, out: () => {} });
+    assert.deepEqual(hostIdentityDrift(where), [], "the shared remedy clears every file finding it names");
+    assert.deepEqual(readdirSync(where.scriptDir), ["gh"], "the atomic write left no temp file behind");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2332: an unreadable shipped copy is a finding and an install REFUSES, never writing an empty gh", () => {
+  const { root, where } = identityDeps();
+  try {
+    rmSync(join(where.shippedDir, "gh"));
+    assert.ok(hostIdentityDrift(where).some((d) => d.problem === "SHIPPED COPY UNREADABLE"));
+    const before = readFileSync(join(where.scriptDir, "gh"), "utf8");
+    assert.throws(() => hostIdentityInstall({ ...where, out: () => {} }), /shipped copy could not be read/);
+    assert.equal(readFileSync(join(where.scriptDir, "gh"), "utf8"), before,
+      "the installed wrapper is untouched: an empty gh on every agent's PATH is worse than a stale one");
+    assert.equal(ownedIdentityFiles(where).find((f) => f.label === "gh")?.expected, null);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+const helperFile = (lines: string[]) => `[credential "https://github.com"]\n${lines.map((l) => `\thelper = ${l}\n`).join("")}`;
+
+test("#2332: `host:check` reports DIVERGED for the global gitconfig when the github.com helper is not the wrapper", () => {
+  const { root, where } = identityDeps();
+  const wrapper = `!${where.scriptDir}/gh auth git-credential`;
+  const check = (lines: string[] | null) => {
+    if (lines !== null) writeFileSync(where.gitConfigPath, helperFile(lines));
+    else rmSync(where.gitConfigPath, { force: true });
+    return hostIdentityDrift(where).filter((d) => d.unit === where.gitConfigPath);
+  };
+  try {
+    assert.deepEqual(check(["", wrapper]), [], "CONTROL: an empty reset then the wrapper is the correct shape");
+    assert.deepEqual(check([wrapper]), [], "and the wrapper alone is too");
+    for (const [name, lines] of Object.entries({
+      "the REAL binary (the measured defect)": ["", "!/usr/bin/gh auth git-credential"],
+      "the wrapper's own name with no reset, after another helper": ["!/usr/bin/gh auth git-credential", wrapper],
+      "the wrapper followed by a second helper": ["", wrapper, "cache"],
+      "a reset that FORGETS the wrapper": [wrapper, ""],
+      "no helper at all": [],
+    })) {
+      const [finding, ...rest] = check(lines);
+      assert.deepEqual(rest, [], name);
+      assert.equal(finding?.problem, "DIVERGED", name);
+      assert.equal(finding?.manualFix, true, `${name}: host:install writes no line of a person's dotfile`);
+    }
+    assert.equal(check(null)[0]?.problem, "DIVERGED", "a missing global gitconfig has no helper, so it is not the wrapper");
+    assert.equal(hostIdentityDrift({ ...where, gitConfig: () => null })
+      .find((d) => d.unit === where.gitConfigPath)?.problem, "UNREADABLE", "unknown is not wrong, and not fine");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2332: the report says a diverged global gitconfig is NOT fixed by the remedy printed under it", () => {
+  const { root, where } = identityDeps();
+  try {
+    writeFileSync(where.gitConfigPath, helperFile(["", "!/usr/bin/gh auth git-credential"]));
+    const report = driftReport(hostIdentityDrift(where));
+    assert.match(report, /!! .*gitconfig is NOT fixed by the remedy below/);
+    assert.match(report, /Remedy for all of them: npm run host:install/);
+    writeFileSync(join(where.scriptDir, "gh"), "stale\n");
+    assert.doesNotMatch(driftReport(hostIdentityDrift(where).filter((d) => d.unit.endsWith("/gh"))),
+      /NOT fixed by the remedy below/, "CONTROL: a copied file's finding does not carry the warning");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2332: `host:check` is WIRED to the identity check, and a machine with no user systemd is told nothing", () => {
+  // THE MUTANT: deleting `...hostIdentityDrift(deps)` from `hostUnitDrift` kills every direct call above
+  // and none of the command a reader runs.
+  const host = hostWithOneUnit("");
+  writeFileSync(join(host.scriptDir, "gh"), "stale\n");
+  assert.ok(hostUnitDrift(host).some((d) => d.unit === join(host.scriptDir, "gh") && d.problem === "DIVERGED"));
+  assert.deepEqual(hostUnitDrift({ ...host, systemctl: NO_SYSTEMD }), [],
+    "a laptop has no ~/.local/bin/gh of ours and is not an agent host");
+});
+
+test("#2332: a person's global user.name/user.email is a NOTE -- reported, never counted, never a failure", () => {
+  const { root, where } = identityDeps();
+  const config = (text: string) => { writeFileSync(where.gitConfigPath, text); return hostIdentityNotes(where); };
+  try {
+    const [note, ...rest] = config("[user]\n\tname = Dan Beck\n\temail = 46429371+DanBeckDev@users.noreply.github.com\n");
+    assert.deepEqual(rest, []);
+    assert.equal(note.problem, "GLOBAL GIT IDENTITY IS A PERSON'S");
+    assert.match(note.detail, /user\.name = Dan Beck, user\.email = 46429371\+DanBeckDev@/);
+    assert.deepEqual(config(""), [], "CONTROL: nothing set, nothing to report");
+    assert.deepEqual(config("[user]\n\tname = github-actions[bot]\n\temail = a11ign-ai-workers@example.org\n"), [],
+      "a machine's identity is not a person's");
+    const report = driftReport([], true, hostIdentityNotes({ ...where, gitConfig: () => ["Dan Beck"] }));
+    assert.match(report, /^host units: every shipped unit is installed/, "notes never turn a clean host into problems");
+    assert.match(report, /notes \(not failures\):/);
+    assert.doesNotMatch(report, /problem\(s\)/);
+    assert.doesNotMatch(driftReport([], true, []), /notes/, "and with none there is no heading");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2332: END TO END -- `host:install` then `host:check --json` on a temp HOME: files match, notes are NOT findings", () => {
+  // The real entry point, so `main`'s wiring (install writes the files; --json carries `notes` apart from
+  // `findings`, which is what the gate wakes a session on) is exercised rather than assumed.
+  const home = mkdtempSync(join(tmpdir(), "host-e2e-2332-"));
+  try {
+    const bin = join(home, "stub-bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "systemctl"), '#!/bin/sh\ncase "$*" in *is-enabled*) echo enabled;; *is-active*) echo active;; *) echo LANG=C;; esac\n',
+      { mode: 0o755 });
+    writeFileSync(join(home, ".gitconfig"), helperFile(["", `!${home}/.local/bin/gh auth git-credential`])
+      + "[user]\n\tname = Dan Beck\n");
+    const env = { PATH: `${bin}:${process.env.PATH}`, HOME: home };
+    const entry = join(REPO_ROOT, "packages/agent-org/src/host-units.mjs");
+    const run = (...args: string[]) => spawnSync(process.execPath, [entry, ...args], { encoding: "utf8", env });
+    const identityFindings = (out: string) => JSON.parse(out).findings
+      .filter((f: { unit: string }) => f.unit.startsWith(home) && /\/(gh|human-account-workspaces\.txt|README\.md|\.gitconfig)$/.test(f.unit));
+    assert.ok(identityFindings(run("--json").stdout).length >= 3, "before the install: gh, the list and the README are all absent");
+    const install = run("--install");
+    assert.match(install.stdout, /installed .*\/\.local\/bin\/gh/);
+    const after = JSON.parse(run("--json").stdout);
+    assert.deepEqual(identityFindings(JSON.stringify(after)), [], "after the install every identity file matches");
+    assert.equal(after.notes.length, 1, "the person's user.name is carried as a note");
+    assert.ok(after.findings.every((f: { problem: string }) => !/GLOBAL GIT IDENTITY/.test(f.problem)),
+      "and NEVER as a finding, because the gate wakes a session on findings");
+    assert.equal(statSync(join(home, ".local/bin/gh")).mode & PERMISSION_BITS, RWX_R_X_R_X);
+  } finally { rmSync(home, { recursive: true, force: true }); }
 });
