@@ -312,6 +312,18 @@ export const PROFILES = Object.freeze({
       + "silently stopped being true. Measured over 48 hours, every instance was a different shape, and "
       + "the only thing that ever noticed was a human reading a terminal.",
   }),
+  "reviewer-auth-failed": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // MEDIUM, and the recipient is `ceo`, so this is the profile a spawned worker would take if one ever were
+    // (`ceo` is a standing decision-holder and is never spawned). The work is a BRIEF FOR THE CHAIRMAN: which
+    // instances, on which signal, and the one action that fixes it -- a re-login of the reviewer's codex
+    // account, interactive, so nothing here can do it. The reasoning is reading two signals the gate already
+    // named, not diagnosing an absence, so `org-stalled`'s `high` would be paid for nothing (#2401).
+    effort: "medium",
+    why: "the gate has already named the instances and the signal; the output is a short brief for the "
+      + "chairman, whose only action is a re-login no session can perform",
+  }),
   "chairman-blocked": Object.freeze({
     kind: "claude",
     model: "sonnet",

@@ -27,7 +27,8 @@ import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
 // from `wake`, because `afterGate` returns `deliver: false` on a QUIET gate and `wake` is then never
 // run at all -- which is exactly the state it was found in: a quiet queue and a session stuck behind a
 // menu since nobody knows when.
-import { readAgents, blockedSessions, readHandoffs, handoffQueuePath, ledgerPathFrom, tearDownSpares }
+import { readAgents, blockedSessions, readHandoffs, handoffQueuePath, ledgerPathFrom, tearDownSpares,
+  tearDownReviewers }
   from "./wake.mjs";
 
 /** `0` the tick completed (quiet or delivered); `1` orders had nowhere to go; `2` a read was refused. */
@@ -117,6 +118,8 @@ function main() {
     // closing is an event that produces no order, so a quiet gate is the tick on which a finished spare most
     // needs ending -- and `wake`, which owns the rule, is never run on one.
     tearDownSpares(roster, ledgerPathFrom(passthrough));
+    // AND ITS SIBLING FOR REVIEWER INSTANCES (#2401): ended when their pull request merges or closes.
+    tearDownReviewers(roster, ledgerPathFrom(passthrough));
   }
 
   const next = afterGate(gate.status ?? EXIT.CANNOT_ASK,
