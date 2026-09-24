@@ -355,10 +355,12 @@ test("#1101: this file's reported test count equals what it declares", () => {
   // test runner sets it for its own children, and a child that sees it emits the **v8 serialiser**
   // regardless of `--test-reporter` -- so the spawn returned bytes in neither format and the count could
   // not be read at all. **The harness was shaping the output it was being used to measure.**
+  // TSX'S OWN ENTRY, not `node_modules/.bin/tsx`: npm makes that a symlink to a JS file, which `node` can run;
+  // pnpm makes it a shell-script shim, which `node` cannot (#2297).
   const { NODE_TEST_CONTEXT, ...env } = process.env;
   void NODE_TEST_CONTEXT;
   const run = spawnSync(process.execPath,
-    [join(REPO, "node_modules/.bin/tsx"), "--test", "--test-reporter=tap", join(REPO, file)],
+    [join(REPO, "node_modules/tsx/dist/cli.mjs"), "--test", "--test-reporter=tap", join(REPO, file)],
     { encoding: "utf8", env });
   const reported = /^# tests (\d+)$/m.exec(`${run.stdout}${run.stderr}`);
   assert.ok(reported, `could not read a TAP test count from the run:\n${run.stdout.slice(0, 300)}`);
