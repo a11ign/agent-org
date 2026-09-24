@@ -27,6 +27,10 @@ import { extractClosesDeclaration } from "./acceptance-commands.mjs";
 // reading is not reimplemented here -- a second copy of "how to read a pool" is the one place two readers
 // could silently disagree about what exhausted looks like.
 import { GRAPHQL_POOL_PROBE, poolFromHeaders } from "./api-pool.mjs";
+// #2391: WHAT "MAIN IS RED" MEANS IS THE GATE'S DEFINITION, IMPORTED. `newestVerdictRun` looks THROUGH a
+// cancelled or in-flight run, so the streak read below agrees with the order `work-gate.mjs` wakes a fixer
+// with -- a second reading of red here would let the two disagree about whether the fix is owed.
+import { newestVerdictRun, TRUNK_WORKFLOW } from "./trunk-red.mjs";
 
 /**
  * EXIT CODES ARE THE CONTRACT. `auto-arm.yml`'s `arm` step goes red on any non-zero, so each code's job is to tell the
@@ -39,8 +43,11 @@ import { GRAPHQL_POOL_PROBE, poolFromHeaders } from "./api-pool.mjs";
  * - `3` ARMED_THEN_LABEL_FAILED: (#1478) the arm step FINISHED -- auto-merge landed, or there was nothing left to arm
  *   -- and the labelling step after it threw. The message names what landed and the labels that were not applied, so a
  *   caller can tell a partial success from a refusal.
+ * - `4` JUMP_UNCONFIRMED: (#2391) a `Fixes-trunk:` jump was GRANTED and the queue read back afterwards does not show the
+ *   PR at position 1. The PR may well be queued -- the message says where -- but the front seat the marker asked for is
+ *   not confirmed, and the mutation's own exit code is never the evidence of it.
  */
-export const EXIT = { DONE: 0, REFUSED: 1, CANNOT_ASK: 2, ARMED_THEN_LABEL_FAILED: 3 };
+export const EXIT = { DONE: 0, REFUSED: 1, CANNOT_ASK: 2, ARMED_THEN_LABEL_FAILED: 3, JUMP_UNCONFIRMED: 4 };
 
 /** @param {string} cmd @param {string[]} args */
 const defaultRun = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8" });
@@ -489,6 +496,247 @@ export function armMerge({ number, repo }, deps = {}) {
 const nothingLeftToArm = (reason) => ({ armed: false, reason: `${reason} -- nothing was left to arm` });
 
 /**
+ * #2391: THE FIX FOR A RED `main` JUMPS THE MERGE QUEUE -- the three decisions the row handed to its builder,
+ * written as DATA so a test can pin them (`RED_TRUNK_POLICY`'s shape, for `RED_TRUNK_POLICY`'s reason).
+ *
+ * THE MARKER is a body line, `Fixes-trunk: <sha>`, where the sha is a merge `trunk.yml` read red -- the one the
+ * `trunk-red` order names. A body line and not a label: a label is applied by anybody with triage and read by
+ * nothing here, while the body is what `Closes` already rides, so it is parsed the way `Closes` is.
+ *
+ * A JUMP IS A PRIVILEGE, SO IT IS REFUSED WHILE `main` IS NOT RED -- and "not red" includes "could not be read".
+ * Anybody can type the marker, so the marker alone grants nothing: the grant is `main`'s own newest verdict.
+ * A REFUSED JUMP STILL ARMS, the ordinary way. The privilege is withheld; the PR is not stranded by a stale or
+ * mistyped line, which would turn a speed feature into a way to hold a merge.
+ *
+ * A SECOND RED WHILE A FIX IS QUEUED changes nothing about the queued one -- nothing here ever removes a PR from
+ * the queue -- and the marker is honoured when it names ANY merge in the CURRENT red streak, not only the newest.
+ * That is the ordinary case, not the odd one: other PRs keep merging onto a red `main` (`RED_TRUNK_POLICY`), each
+ * one another red `trunk.yml` run, so a marker that had to name the newest red would need editing after every
+ * merge in the window it exists for. A streak that ended in green ends the privilege with it.
+ */
+export const TRUNK_FIX_POLICY = Object.freeze({
+  marker: "Fixes-trunk:",
+  grantedOnlyWhileMainIsRed: true,
+  unreadableRedIsNotRed: true,
+  refusedJumpStillArms: true,
+  honouredForAnyMergeInTheRedStreak: true,
+  neverDisplacesAQueuedPr: true,
+});
+
+/** One `trunk.yml` page is enough for a streak: past this many consecutive reds the older ones are simply not named. */
+const RED_STREAK_WINDOW = 30;
+
+/** How much of a sha a message quotes -- enough to grep, short enough to read. */
+const SHA_ABBREV = 9;
+
+/** A body LINE, anchored, so a paragraph that merely discusses the marker (this row's own PR does) grants nothing. */
+const TRUNK_FIX_LINE = /^[ \t]*Fixes-trunk:[ \t]*(.*?)[ \t]*$/gim;
+const MERGE_SHA = /^[0-9a-f]{7,40}$/i;
+
+/**
+ * PURE. What does the PR body say about a red trunk -- `none`, `fixes-trunk` with the shas it names, or
+ * `malformed`? The three shapes are kept apart for `extractClosesDeclaration`'s reason: a check that cannot tell
+ * "wrote something wrong" from "wrote nothing" cannot tell an author who tried from one who never noticed.
+ * @param {string | null | undefined} body
+ * @returns {{ kind: "none" } | { kind: "fixes-trunk", shas: string[] } | { kind: "malformed", detail: string }}
+ */
+export function extractTrunkFixDeclaration(body) {
+  const values = [...String(body ?? "").matchAll(TRUNK_FIX_LINE)].map((m) => m[1]);
+  if (values.length === 0) return { kind: "none" };
+  const bad = values.find((v) => !MERGE_SHA.test(v));
+  if (bad !== undefined) {
+    return { kind: "malformed", detail: `\`${TRUNK_FIX_POLICY.marker}\` must name a merge sha of 7 to 40 hex characters, got \`${bad}\`` };
+  }
+  return { kind: "fixes-trunk", shas: [...new Set(values.map((v) => v.toLowerCase()))] };
+}
+
+/**
+ * PURE. The run of consecutive RED `trunk.yml` verdicts on `main`, newest first -- empty when `main` is green.
+ * Built by asking `newestVerdictRun` again with the run it just answered removed, so "what counts as a verdict"
+ * (completed, success or failure, a cancelled run looked through) is the gate's own predicate and not a copy.
+ * @param {Parameters<typeof newestVerdictRun>[0]} payload the `actions/workflows/<f>/runs` body
+ * @returns {{ id: number, head_sha: string, conclusion: string, html_url: string }[]}
+ */
+export function redStreak(payload) {
+  const streak = [];
+  let remaining = payload?.workflow_runs ?? [];
+  for (let run = newestVerdictRun({ workflow_runs: remaining }); run !== null && run.conclusion === "failure";
+    run = newestVerdictRun({ workflow_runs: remaining })) {
+    streak.push(run);
+    remaining = remaining.filter((r) => r.id !== run.id);
+  }
+  return streak;
+}
+
+/**
+ * PURE. May this PR jump? `streak` is `redStreak`'s answer, or `null` when it could not be read.
+ * `marked: false` means the body said nothing, and the caller stays silent about a privilege nobody asked for.
+ * @param {ReturnType<typeof extractTrunkFixDeclaration>} declaration
+ * @param {ReturnType<typeof redStreak> | null} streak
+ * @returns {{ marked: boolean, grant: boolean, reason: string }}
+ */
+export function jumpDecision(declaration, streak) {
+  if (declaration.kind === "none") return { marked: false, grant: false, reason: "" };
+  if (declaration.kind === "malformed") return { marked: true, grant: false, reason: declaration.detail };
+  if (streak === null) {
+    return { marked: true, grant: false, reason: "could not read whether main is red -- an unreadable trunk is not a red one" };
+  }
+  if (streak.length === 0) return { marked: true, grant: false, reason: "main is NOT red, and a jump is granted only for a red one" };
+  const named = streak.find((run) => declaration.shas.some((sha) => run.head_sha.toLowerCase().startsWith(sha)));
+  return named
+    ? { marked: true, grant: true, reason: `main is red and \`${named.head_sha.slice(0, SHA_ABBREV)}\` is in its current red streak (${named.html_url})` }
+    : { marked: true, grant: false,
+      reason: `main is red but none of ${declaration.shas.join(", ")} is in its current red streak (${streak.map((r) => r.head_sha.slice(0, SHA_ABBREV)).join(", ")})` };
+}
+
+/**
+ * `null` when the read failed -- never `[]`, which would say "green" about a trunk nobody looked at.
+ * @param {{ repo: string, run: typeof defaultRun, error: (line: string) => void }} args
+ * @returns {ReturnType<typeof redStreak> | null}
+ */
+function readRedStreak({ repo, run, error }) {
+  try {
+    return redStreak(JSON.parse(gh(["api", `repos/${repo}/actions/workflows/${TRUNK_WORKFLOW}/runs?branch=main&per_page=${RED_STREAK_WINDOW}`], run)));
+  } catch (cause) {
+    error(`arm-pr: could not read ${TRUNK_WORKFLOW}'s runs on main: ${/** @type {Error} */ (cause).message}`);
+    return null;
+  }
+}
+
+/** The PR's node id, head, readiness and queue seat in one GraphQL read -- `mergeQueueEntry` exists on no REST shape (#2046). */
+const SEAT_QUERY = "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r)"
+  + "{pullRequest(number:$n){id headRefOid mergeStateStatus mergeQueueEntry{position state jump}}}}";
+
+/**
+ * `expectedHeadOid` is the head whose readiness was READ, so a push landing between that read and this write is
+ * refused by GitHub rather than jumped unchecked past the whole queue.
+ */
+const JUMP_MUTATION = "mutation($id:ID!,$oid:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$id,jump:true,expectedHeadOid:$oid})"
+  + "{mergeQueueEntry{position state jump}}}";
+
+/**
+ * @param {{ number: string, repo: string, run: typeof defaultRun }} args
+ * @returns {{ id: string, headRefOid: string, mergeStateStatus: string,
+ *   mergeQueueEntry: { position: number, state: string } | null }}
+ */
+function readSeat({ number, repo, run }) {
+  const [owner, name] = repo.split("/");
+  const pr = JSON.parse(gh(["api", "graphql", "-f", `query=${SEAT_QUERY}`, "-f", `o=${owner}`, "-f", `r=${name}`,
+    "-F", `n=${number}`, "--jq", ".data.repository.pullRequest"], run));
+  if (!pr || typeof pr.id !== "string") throw new Error("the read answered no pull request");
+  return pr;
+}
+
+/**
+ * PURE. Is a queue entry the FRONT seat? The ONLY definition of "the jump worked" -- `position === 1`, read back.
+ * `null` (not queued) and an entry with no readable position are both NOT at the front: a missing answer is not
+ * a yes, which is `armMerge`'s rule about exit codes said the other way round.
+ * @param {{ position?: unknown } | null | undefined} entry
+ * @returns {boolean}
+ */
+export function atFrontOfQueue(entry) {
+  return entry?.position === 1;
+}
+
+/**
+ * What became of a GRANTED jump: `front` (read back at position 1), `behind` / `unconfirmed` (queued or
+ * possibly queued, NOT confirmed at the front -- exit `JUMP_UNCONFIRMED`), or `not-jumped` (nothing was
+ * enqueued, so the ordinary arm still has to run).
+ * @typedef {{ kind: "front" | "behind" | "unconfirmed" | "not-jumped", why: string }} JumpResult
+ */
+
+/**
+ * IMPURE. Put ONE granted PR at the front of the merge queue, and say what a READ of the queue then shows.
+ *
+ * THE VERDICT IS `mergeQueueEntry.position`, NEVER THE MUTATION'S EXIT CODE -- this file's own header records
+ * that exit codes lie about success AND failure, and a jump is the write where a false success is the most
+ * expensive: a fix believed to be at the front while it waits behind N others. So a mutation that THREW is read
+ * back too (it may have landed), and one that succeeded is not believed until the seat says so.
+ *
+ * NOTHING HERE REMOVES A PR FROM THE QUEUE. One already queued behind others -- somebody's ordinary arm won the
+ * race, and `sweep` runs beside `arm` on the same event -- is reported as `behind`, not repositioned: whether a
+ * queued PR can be moved is exactly the kind of fact only a live queue can answer.
+ *
+ * NOT ENQUEUED UNTIL `mergeStateStatus` IS `CLEAN` (every required check green and the approval in place): the
+ * row's "once its checks are green". Anything else is `not-jumped`, and the ordinary arm that follows enqueues it
+ * at the back the moment it is ready.
+ * @param {{ number: string, repo: string, run: typeof defaultRun }} args
+ * @returns {JumpResult}
+ */
+export function enqueueAtFront({ number, repo, run }) {
+  let seat;
+  try {
+    seat = readSeat({ number, repo, run });
+  } catch (cause) {
+    return { kind: "not-jumped", why: `could not read #${number}'s queue seat: ${/** @type {Error} */ (cause).message}` };
+  }
+  if (seat.mergeQueueEntry !== null && seat.mergeQueueEntry !== undefined) return judgeSeat(seat.mergeQueueEntry, "it was already queued");
+  if (seat.mergeStateStatus !== "CLEAN") {
+    return { kind: "not-jumped", why: `mergeStateStatus is ${seat.mergeStateStatus}, not CLEAN -- not ready to enqueue yet` };
+  }
+  let refusal = null;
+  try {
+    gh(["api", "graphql", "-f", `query=${JUMP_MUTATION}`, "-f", `id=${seat.id}`, "-f", `oid=${seat.headRefOid}`], run);
+  } catch (cause) {
+    refusal = /** @type {Error} */ (cause).message;
+  }
+  return readBack({ number, repo, run }, refusal);
+}
+
+/**
+ * The seat AFTER the mutation -- the read the verdict is taken from. `refusal` is the mutation's own error, or
+ * `null` when it reported success; it changes the SENTENCE only, and the position decides everything else.
+ * @param {{ number: string, repo: string, run: typeof defaultRun }} args
+ * @param {string | null} refusal
+ * @returns {JumpResult}
+ */
+function readBack({ number, repo, run }, refusal) {
+  try {
+    const { mergeQueueEntry } = readSeat({ number, repo, run });
+    if (mergeQueueEntry) return judgeSeat(mergeQueueEntry, refusal === null ? "the jump reported success" : `the jump reported a failure (${refusal}) yet it is queued`);
+    return refusal === null
+      ? { kind: "unconfirmed", why: "the jump reported success and the PR is NOT in the merge queue on read-back" }
+      : { kind: "not-jumped", why: `the jump was refused: ${refusal}` };
+  } catch (cause) {
+    return { kind: "unconfirmed", why: `the jump ${refusal === null ? "reported success" : "was refused"} and the read-back FAILED, so its position is unknown: ${/** @type {Error} */ (cause).message}` };
+  }
+}
+
+/**
+ * @param {{ position: number, state?: string }} entry @param {string} how how it came to be queued
+ * @returns {JumpResult}
+ */
+function judgeSeat(entry, how) {
+  return atFrontOfQueue(entry)
+    ? { kind: "front", why: `${how}, and the queue reads back position 1 (${entry.state})` }
+    : { kind: "behind", why: `${how}, and the queue reads back position ${entry.position} (${entry.state}), NOT the front` };
+}
+
+/**
+ * THE ARM STEP WITH THE JUMP IN FRONT OF IT: a PR whose body carries the marker and is GRANTED gets the front seat
+ * where the ordinary path would have armed it at the back; every other PR takes the ordinary path with NOT ONE
+ * extra call (an unmarked PR costs a regex). `jumpFailure` is set only when a granted jump is not confirmed at
+ * the front, and is what turns the exit code to `JUMP_UNCONFIRMED`.
+ * @param {{ number: string, repo: string, prBody: string | null }} pr
+ * @param {{ run: typeof defaultRun, sleep: typeof defaultSleep, log: (line: string) => void, error: (line: string) => void }} deps
+ * @returns {{ outcome: { armed: boolean, reason: string }, jumpFailure: string | null }}
+ */
+function armOrJump({ number, repo, prBody }, { run, sleep, log, error }) {
+  const ordinary = () => armMerge({ number, repo }, { run, sleep, error });
+  const declaration = extractTrunkFixDeclaration(prBody);
+  const decision = jumpDecision(declaration, declaration.kind === "fixes-trunk" ? readRedStreak({ repo, run, error }) : null);
+  if (!decision.marked) return { outcome: ordinary(), jumpFailure: null };
+  log(`arm-pr: #${number} declares ${TRUNK_FIX_POLICY.marker} -- jump ${decision.grant ? "GRANTED" : "REFUSED"}: ${decision.reason}`);
+  if (!decision.grant) return { outcome: ordinary(), jumpFailure: null };
+  const jump = enqueueAtFront({ number, repo, run });
+  log(`arm-pr: jump for #${number} -- ${jump.kind}: ${jump.why}`);
+  if (jump.kind === "not-jumped") return { outcome: ordinary(), jumpFailure: null };
+  const front = jump.kind === "front";
+  return { outcome: { armed: true, reason: `${front ? "enqueued at the front of the merge queue" : "queued, front seat NOT confirmed"} (${jump.why})` },
+    jumpFailure: front ? null : `JUMP NOT CONFIRMED for #${number}: ${jump.why}. The PR may be queued; it is not known to be first.` };
+}
+
+/**
  * The PR's labels, body and state in ONE read, or all three null when the read fails -- never a guess.
  *
  * #1969: `failure` CARRIES THE MESSAGE OUT rather than leaving it in the log. The caller has to say
@@ -621,12 +869,16 @@ export function runArmPr({ argv, env, run = defaultRun, sleep = defaultSleep, lo
     log(`arm-pr: NOT arming #${number} -- ${already}, so there is nothing left to arm`);
     return EXIT.DONE;
   }
-  const outcome = armMerge({ number, repo }, { run, sleep, error });
+  const { outcome, jumpFailure } = armOrJump({ number, repo, prBody }, { run, sleep, log, error });
   // #1478: WHAT LANDED IS SAID BEFORE THE NEXT STEP RUNS, so a failure in labelling cannot hide it.
   log(outcome.armed
     ? `arm-pr: armed #${number} -- ${verdict.reason}`
     : `arm-pr: did not need to arm #${number} -- ${outcome.reason}`);
-  return labelAfterArm({ number, repo, prBody, run, error }, outcome);
+  const code = labelAfterArm({ number, repo, prBody, run, error }, outcome);
+  if (jumpFailure === null) return code;
+  error(`arm-pr: ${jumpFailure}`);
+  // A LABELLING FAILURE KEEPS ITS OWN CODE: it names a command to run by hand, and this one names none.
+  return code === EXIT.DONE ? EXIT.JUMP_UNCONFIRMED : code;
 }
 
 function main() {
