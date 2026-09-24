@@ -35,6 +35,7 @@ import { spawnableRole, isPilotOrder, SPAWN_CAUSES, MAX_SPAWNS_PER_TICK }
 import { handoffId, handoffQueuePath, ledgerPathFrom, readHandoffs, queueHandoff, dropHandoffs,
   deliverHandoffs, handoffOrder, staleHandoffs, nothingToDeliver, HANDOFF_STALE_MS, HANDOFF_QUEUE_FILE }
   from "../wake.mjs";
+import { engineerEligibility, b2Verdict, ledgerKeyOf, ledgerLine } from "../wake.mjs";
 import { handoffBacklog, backlogReport, handoffBatches, fitBatch, waitedFor, staleReport,
   PROMPT_ARG_MAX, HANDOFF_BATCH_BYTES, BATCH_WRAPPER_BYTES, targetLabelBytes }
   from "../wake.mjs";
@@ -1737,4 +1738,186 @@ test("A TICK THAT CANNOT REACH herdr STILL PRINTS THE BACKLOG -- the worst tick 
   assert.match(ran.stderr, /QUEUE BACKLOG product-manager: 2 authored order\(s\) waiting/);
   assert.match(ran.stderr, /CANNOT ASK: herdr did not answer/, "and the tick did take that exit");
   assert.equal(ran.status, 2, "CANNOT_ASK");
+});
+
+// ---------------------------------------------------------------------------------------------------
+// #2226: THE ENGINEER POOL PICKS ON ELIGIBILITY AS WELL AS LIVENESS.
+//
+// Five `ready-row-unclaimed` deliveries went to two sessions `row-claim` then refused (B2), each a model
+// turn spent to learn what `inBuildReason` answers with no model at all. The fixtures are the two refused
+// populations by their real numbers: `worker-judge`'s #2213 (CHANGES_REQUESTED) and `worker-tooling`'s
+// #1926 (a row in build).
+
+const REVIEW_REFUSED = { number: 2213, head: "a".repeat(40), reviewDecision: "CHANGES_REQUESTED", dispute: null };
+/** A row whose PR is open and unanswered: `worker-judge`'s shape. */
+const ROW_REVIEW_REFUSED = { number: 2155, declaresPaths: true, subIssues: 0,
+  closingPr: { state: "OPEN" as const }, openPrNumber: 2213, openPrReview: REVIEW_REFUSED };
+/** A row with files owed and no PR: `worker-tooling`'s shape. */
+const ROW_IN_BUILD = { number: 1926, declaresPaths: true, subIssues: 0, closingPr: undefined };
+/** A held row that blocks nothing: proposed, and its PR is not refused. */
+const ROW_FINE = { number: 2000, declaresPaths: true, subIssues: 0, closingPr: { state: "MERGED" as const } };
+
+const ALL_IDLE = agents({ "worker-capture": "idle", "worker-judge": "idle", "worker-tooling": "idle" });
+const VERDICTS: Record<string, string | null> = {
+  "worker-capture": "holds #1926 in build", "worker-judge": "CHANGES_REQUESTED on #2213", "worker-tooling": null,
+};
+
+test("#2226 (1): an IDLE engineer that B2 refuses is not the pool's pick -- the Open-check, inverted", () => {
+  const idle = agents({ "worker-judge": "idle" });
+  assert.deepEqual(route("engineers", idle, ["worker-judge"]), { label: "worker-judge" },
+    "unchanged when nobody says otherwise -- this is the row's Open-check reading");
+  const got = route("engineers", idle, ["worker-judge"], () => "CHANGES_REQUESTED on #2213");
+  assert.ok("refusal" in (got as object), `must not return ${JSON.stringify(got)}: B2 refuses it the instant it acts`);
+});
+
+test("#2226 (2): the row is still OFFERED to an eligible engineer -- a routing fix, not a queue cut", () => {
+  const got = route("engineers", ALL_IDLE, ROSTER, (label) => VERDICTS[label]);
+  assert.deepEqual(got, { label: "worker-tooling" },
+    "the first two are refused and the THIRD is not, so the row goes there rather than nowhere");
+  const second = route("engineers", agents({ "worker-capture": "idle", "worker-judge": "idle" }),
+    ["worker-judge", "worker-capture"], (label) => (label === "worker-judge" ? "holds #1 in build" : null));
+  assert.deepEqual(second, { label: "worker-capture" }, "roster order still decides among the eligible");
+});
+
+test("#2226 (3): a pool with NO eligible engineer says WHY each was skipped, both arms of B2", () => {
+  const refusal = refusalText(route("engineers", ALL_IDLE, ROSTER, (label) => VERDICTS[label] ?? "holds #9 in build"));
+  assert.match(refusal, /worker-capture=holds #1926 in build/);
+  assert.match(refusal, /worker-judge=CHANGES_REQUESTED on #2213/);
+  assert.doesNotMatch(refusal, /=idle/, "`worker-judge=idle` is the liveness reading this row says was not the point");
+  assert.match(refusal, /no engineer is idle and allowed to claim/);
+});
+
+test("#2226 (3): a busy engineer still reads as its liveness, and is never asked about eligibility", () => {
+  const asked: string[] = [];
+  const refusal = refusalText(route("engineers",
+    agents({ "worker-capture": "working", "worker-judge": "idle", "worker-tooling": "blocked" }), ROSTER,
+    (label) => { asked.push(label); return "CHANGES_REQUESTED on #2213"; }));
+  assert.deepEqual(asked, ["worker-judge"], "a lookup costs API calls, which a session that cannot be woken never earns");
+  assert.match(refusal, /worker-capture=working, worker-judge=CHANGES_REQUESTED on #2213, worker-tooling=blocked/);
+});
+
+test("#2226: NAMED-session orders are untouched -- eligibility is a POOL question", () => {
+  const got = route("worker-judge", agents({ "worker-judge": "idle" }), ROSTER, () => "refused");
+  assert.deepEqual(got, { label: "worker-judge" }, "an order addressed to one session already chose it");
+});
+
+test("#2226: `b2Verdict` names each arm from the SHIPPED decider, and is null where B2 is not", () => {
+  assert.equal(b2Verdict([ROW_IN_BUILD]), "holds #1926 in build");
+  assert.equal(b2Verdict([ROW_REVIEW_REFUSED]), "CHANGES_REQUESTED on #2213");
+  assert.equal(b2Verdict([ROW_FINE]), null, "positive control: a session holding a delivered row may claim");
+  assert.equal(b2Verdict([]), null, "and one holding nothing");
+  assert.equal(b2Verdict([{ ...ROW_REVIEW_REFUSED, openPrReview: { ...REVIEW_REFUSED, reviewDecision: "APPROVED" } }]),
+    null, "a review that is not a refusal blocks nothing");
+});
+
+test("#2226 (4): a lookup that CANNOT ASK does not refuse -- pinned in both directions", () => {
+  const warned: string[] = [];
+  const cannotAsk = engineerEligibility({ lookup: () => null, warn: (line) => warned.push(line) });
+  assert.equal(cannotAsk("worker-judge"), null, "B2 fails open: an outage must not stop engineers being woken");
+  assert.match(warned.join(""), /could not read the rows "worker-judge" holds/, "and the quiet offer is SAID");
+  assert.deepEqual(route("engineers", agents({ "worker-judge": "idle" }), ["worker-judge"], cannotAsk),
+    { label: "worker-judge" });
+  // The other direction, or the fail-open above passes against a reader that never refuses anything.
+  const refusing = engineerEligibility({ lookup: () => [ROW_IN_BUILD], warn: () => {} });
+  assert.equal(refusing("worker-judge"), "holds #1926 in build");
+});
+
+test("#2226: eligibility is read ONCE per session per tick, and for the session asked", () => {
+  const calls: string[] = [];
+  const reader = engineerEligibility({ lookup: (label: string) => { calls.push(label); return [ROW_FINE]; } });
+  for (let i = 0; i < 3; i += 1) reader("worker-judge");
+  reader("worker-tooling");
+  assert.deepEqual(calls, ["worker-judge", "worker-tooling"], "a tick with 29 orders is not 29 lookups");
+});
+
+test("#2226: `deliver` skips the refused engineer, wakes the eligible one, and names the skip when none", () => {
+  const h = recordingHerdr();
+  const got = deliver([ROW_ORDER], ALL_IDLE, ROSTER, { run: h.run, ineligibleReason: (l) => VERDICTS[l] });
+  assert.deepEqual(got.sent, ["worker-tooling <- engineers/ready-row-unclaimed/2131"]);
+  assert.equal(h.said("agent prompt").length, 2, "one /clear and one order, both to the ELIGIBLE session");
+  assert.ok(h.said("agent prompt").every((line) => line.includes("worker-tooling")), "never to a refused one");
+
+  const none = recordingHerdr();
+  const idle = agents({ "worker-capture": "idle", "worker-judge": "idle", "worker-tooling": "idle" });
+  const refused = deliver([ROW_ORDER], idle, ROSTER, { run: none.run, ineligibleReason: () => "CHANGES_REQUESTED on #2213" });
+  assert.deepEqual(none.said("agent prompt"), [], "no order reaches a session that will refuse it");
+  assert.match(refused.refused[0], /CHANGES_REQUESTED on #2213/, "and the undelivered line says why, not silence");
+  assert.deepEqual(refused.sent, []);
+});
+
+test("#2226 (5): a POOL delivery records its RECIPIENT; a named one records nothing extra", () => {
+  const recorded: [string, string | undefined][] = [];
+  const h = recordingHerdr();
+  deliver([ROW_ORDER, { ...ROW_ORDER, session: "orchestrator", causeKey: "orchestrator/x/1" }],
+    agents({ "worker-judge": "idle", orchestrator: "idle" }), ROSTER,
+    { run: h.run, record: (key, recipient) => recorded.push([key, recipient]) });
+  assert.deepEqual(recorded, [["engineers/ready-row-unclaimed/2131", "worker-judge"], ["orchestrator/x/1", undefined]]);
+});
+
+test("#2226 (5): the recipient rides AFTER the key, so no reader counts it as a different cause", () => {
+  const now = Date.now();
+  const key = "engineers/ready-row-unclaimed/2155";
+  assert.equal(ledgerLine(now, key, "worker-judge"), `${now}\t${key}\tworker-judge\n`);
+  assert.equal(ledgerLine(now, key), `${now}\t${key}\n`, "the line older readers wrote is unchanged");
+  assert.equal(ledgerKeyOf(`${key}\tworker-judge`), key);
+  assert.equal(ledgerKeyOf(`${RESET}\t${key}`), `${RESET}\t${key}`, "a RESET marker keeps its own shape");
+  const raw = [ledgerLine(now - 3000, key, "worker-judge"), ledgerLine(now - 2000, key, "worker-tooling"),
+    ledgerLine(now - 1000, "other/key")].join("");
+  assert.deepEqual([...readLedger("x", () => raw)].sort(), [key, "other/key"],
+    "two recipients of ONE cause are one cause: the dedupe must not change");
+  assert.equal(deliveryCounts("x", () => raw).get(key), 2, "and the breaker counts them together");
+  const reset = raw + `${now}\t${RESET}\t${key}\n` + ledgerLine(now, key, "worker-judge");
+  assert.equal(deliveryCounts("x", () => reset).get(key), 1, "a RESET still ends the run when lines carry recipients");
+});
+
+// THE WIRING, AS A PROCESS: `deliver` is handed `engineerEligibility()` by `main`, and an injected seam is
+// exactly what a deleted call goes around (see the header of the tick section above). `gh` and `herdr` are
+// stubs on PATH; `worker-judge` is the only engineer, idle, holding #1926 -- a row in build.
+const GH_STUB = `#!/bin/sh
+case "$*" in
+  "issue list"*"session:worker-judge"*) printf '%s' '[{"number":1926}]' ;;
+  "issue list"*) printf '%s' '[]' ;;
+  "api graphql"*) printf '%s' '{"data":{"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":[]}}}}}' ;;
+  "issue view"*) printf '%s' '{"body":"## Region\\n\\n- packages/agent-org/src/wake.mjs\\n"}' ;;
+  "api repos/"*"/sub_issues") printf '%s' '[]' ;;
+  *) exit 1 ;;
+esac
+`;
+
+function runPoolTick(ghStub: string | null) {
+  const dir = mkdtempSync(join(tmpdir(), "wake-pool-"));
+  try {
+    const ledger = join(dir, "wake-ledger");
+    writeFileSync(join(dir, "herdr"), herdrStub("idle").replace("product-manager", "worker-judge"));
+    writeFileSync(join(dir, "gh"), ghStub ?? "#!/bin/sh\nexit 1\n");
+    chmodSync(join(dir, "herdr"), STUB_MODE);
+    chmodSync(join(dir, "gh"), STUB_MODE);
+    const order = JSON.stringify({ ...ROW_ORDER, session: "engineers" });
+    const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${ledger}`, "--roster=worker-judge"], {
+      input: `${order}\n`, encoding: "utf8",
+      env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` },
+    });
+    let written = "";
+    try { written = readFileSync(ledger, "utf8"); } catch { written = ""; }
+    return { ran, written };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("#2226: THE TICK does not offer a pool order to a session B2 refuses, and says why", () => {
+  const { ran, written } = runPoolTick(GH_STUB);
+  assert.match(ran.stderr, /UNDELIVERED engineers\/ready-row-unclaimed\/2131: no engineer is idle and allowed to claim \(worker-judge=holds #1926 in build\)/,
+    `the refusal must carry B2's verdict; got ${ran.stderr}`);
+  assert.equal(ran.status, 1, "an order with nowhere to go is ATTENTION");
+  assert.equal(written, "", "and nothing was recorded as delivered, so the next tick re-offers it");
+});
+
+test("#2226 (4): THE TICK with a `gh` that cannot answer still offers the order", () => {
+  const { ran, written } = runPoolTick(null);
+  assert.match(ran.stderr, /could not read the rows "worker-judge" holds/);
+  assert.match(ran.stdout, /WOKE worker-judge <- engineers\/ready-row-unclaimed\/2131/,
+    "fail OPEN: an API outage must not stop the engineers being woken");
+  assert.match(written, /^\d+\tengineers\/ready-row-unclaimed\/2131\tworker-judge\n$/,
+    "and the ledger line NAMES THE RECIPIENT, which the causeKey alone never could");
 });
