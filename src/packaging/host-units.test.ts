@@ -22,10 +22,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
 import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, systemdUserAvailable,
   hostUnitDrift, permissionModeDrift, orphanedUnits, SHIPPED_DIR, REPO_ROOT, execCommands,
@@ -616,7 +616,8 @@ test("#1974: every shipped unit that spawns `gh` declares which account -- over 
   // units it names are the assertion that it did: a floor is a bound on the count, and these are the
   // members.
   assert.deepEqual(spending.map((u) => u.unit).sort(),
-    ["a11ign-board-report.service", "a11ign-corpus-release-nightly.service", "a11ign-work-tick.service"],
+    ["a11ign-board-report.service", "a11ign-corpus-release-nightly.service",
+      "a11ign-fleet-watch.service", "a11ign-lab-watch.service", "a11ign-work-tick.service"],
     "every shipped .service that can reach `gh` -- including the one whose ExecStart this repository "
     + "cannot read, which is charged on UNKNOWN rather than excused on it");
   assert.deepEqual(identityDrift(), [],
@@ -1044,10 +1045,15 @@ test("#2000: which shipped timers run their service at `host:install`, and which
     + "starts the service too -- once, at install time, whether or not the timer was already running. "
     + "Adding a fifth entry here means that service now runs during `host:install`: say so in the unit, "
     + "and check it is a run you want unattended at an operator's keystroke");
-  assert.deepEqual(timers.filter((u) => !requiring.includes(u)), ["a11ign-board-report.timer"],
-    "THE CONTROL, and a measured one rather than a fixture: at the 2026-09-22 21:03Z `host:install` the "
-    + "four above each started their service in that second and this one did not, though the same run "
-    + "reinstalled it. It is the only shipped timer that activates its service by name alone");
+  assert.deepEqual(timers.filter((u) => !requiring.includes(u)), [
+    "a11ign-board-report.timer",
+    "a11ign-fleet-watch.timer",
+    "a11ign-lab-watch.timer",
+  ], "THE CONTROL, and a measured one rather than a fixture: at the 2026-09-22 21:03Z `host:install` the "
+    + "four above each started their service in that second and board-report did not, though the same run "
+    + "reinstalled it. It activates its service by name alone -- and #2230's two watchers are written the "
+    + "same way ON PURPOSE: each `--post`s, so a firing at every `host:install` would put a comment on "
+    + "#928 whenever the host is in ATTENTION, at an operator's keystroke rather than on the clock");
   // AND THE INSTALL-TIME START IS NOT HYPOTHETICAL. The partition above only matters because the installer
   // really does issue that start job for every shipped timer; asserted through the same injected
   // `systemctl` the #1858 test uses, against the REAL shipped directory.
@@ -1063,6 +1069,137 @@ test("#2000: which shipped timers run their service at `host:install`, and which
   for (const unit of requiring) {
     assert.ok(enabled.includes(unit),
       `${unit} declares Requires= but the installer never starts it, so the partition above means nothing`);
+  }
+});
+
+// --- #2230: TWO WATCHERS BUILT TO RUN UNATTENDED, AND NOTHING RAN EITHER ------------------------------
+//
+// #866 and #1815 both closed on a script that was correct, tested and unreachable. `lab-watch.mjs` had an
+// npm script and no scheduler; `fleet-watch.mjs` had no invoker in the tree at all. `agent-practices.md`
+// told every session that #928 is where "`org-watch.mjs`, `fleet-watch.mjs` and `lab-watch.mjs` already
+// post" -- two thirds untrue. `org-watch.mjs` is the third, and it alone was wired (`nightly.yml`), because
+// it reads GitHub and nothing else; the two that needed the lab's credential are host units.
+
+const WATCH_UNITS = ["lab", "fleet"].flatMap((name) =>
+  [`a11ign-${name}-watch.service`, `a11ign-${name}-watch.timer`]);
+
+test("#2230: each watcher ships as a pair, so `host:install` has something to install", () => {
+  const units = shippedUnits();
+  for (const unit of WATCH_UNITS) {
+    assert.ok(units.includes(unit), `${unit} must ship: a script nothing schedules is the state #2230 ended`);
+  }
+});
+
+test("#2230: each service runs its watcher WITH `--post`, and the command resolves to the script", () => {
+  // THE HIGHEST-VALUE ASSERTION HERE, for the reason #2000's `--apply` one was: without `--post` the unit
+  // is installed, enabled, active, current, exits 0 or 1 every hour and writes to the journal alone. Every
+  // other check in this file would be green over a watcher that tells nobody.
+  const expected = { lab: "packages/control/src/lab-watch.mjs", fleet: "packages/control/src/fleet-watch.mjs" };
+  for (const [name, script] of Object.entries(expected)) {
+    const service = readFileSync(join(SHIPPED_DIR, `a11ign-${name}-watch.service`), "utf8");
+    assert.match(service, new RegExp(`^ExecStart=/usr/bin/npm run ${name}:watch -- --post$`, "m"));
+    assert.deepEqual(entriesFromCommand(execCommands(service).find((c) => c.includes("watch")) as string),
+      [join(REPO_ROOT, script)],
+      "a renamed or missing npm script leaves the unit syntactically perfect and starting nothing");
+    // THE EXIT CONTRACT, docs/gate-exit-codes.md: ATTENTION (1) is a posted finding, not a failed unit;
+    // CANNOT_ASK (2) must stay a failed one, or a watcher that could not read its source reads as clean.
+    assert.match(service, /^SuccessExitStatus=0 1$/m, `${name}: 0 and 1 are success, and NOT 2`);
+    assert.match(service, /^Environment=GH_CONFIG_DIR=\/home\/agent\/workers\/gh$/m,
+      `${name}: it posts as the workers account, declared rather than inherited (#1974)`);
+    assert.doesNotMatch(service, /^\[Install\]$/m,
+      `${name}: no [Install] -- WantedBy=default.target would fire it at every boot`);
+  }
+  // IT IS READ, NOT ASSUMED, THAT THESE SPEND A POOL: both are charged for an identity by the same
+  // reader that charges the other units, so the GH_CONFIG_DIR line above is demanded and not decorative.
+  const spending = unitsSpendingGh().map((u) => u.unit);
+  assert.ok(spending.includes("a11ign-lab-watch.service") && spending.includes("a11ign-fleet-watch.service"),
+    `both watchers reach a gh spawn; charged: ${JSON.stringify(spending)}`);
+});
+
+test("#2230: the watcher timers are CALENDAR timers, hourly, and off the org-watch minute", () => {
+  const minutes: Record<string, string> = {};
+  for (const name of ["lab", "fleet"]) {
+    const timer = readFileSync(join(SHIPPED_DIR, `a11ign-${name}-watch.timer`), "utf8");
+    const [, minute] = timer.match(/^OnCalendar=\*-\*-\* \*:(\d\d):00$/m) ?? [];
+    assert.ok(minute, `${name}: an hourly calendar expression`);
+    minutes[name] = minute;
+    assert.match(timer, /^Persistent=true$/m, `${name}: a missed hour is read at next opportunity`);
+  }
+  // `nightly.yml` runs org-watch at :37 and the three would otherwise share a minute; :00 is where every
+  // other clock fires (#965).
+  assert.equal(new Set([...Object.values(minutes), "37"]).size, 3, `three distinct minutes: ${JSON.stringify(minutes)}`);
+  assert.ok(!Object.values(minutes).includes("00"));
+});
+
+/**
+ * EVERY SCRIPT THAT POSTS ON THE ORG'S READING ISSUE. Exporting `ORG_READING_ISSUE` is what "this file
+ * posts on #928" already looks like in this tree.
+ *
+ * IT FINDS TWO OF THE THREE WATCHERS, NOT THREE -- #2230's body said all three export it, and MEASURED at
+ * this commit `org-watch.mjs` does not: it never names #928 at all, `nightly.yml` posts its output with
+ * `gh issue comment 928`. So the discriminator sees the two host-unit watchers, which are the ones that
+ * had no caller, and cannot see a workflow-posted one. Widening it would need a change to `org-watch.mjs`,
+ * which this row's Region excludes; the population below is pinned so the gap is stated, not silent.
+ */
+function orgReadingWatchers(dirs: string[]): string[] {
+  return dirs.flatMap((dir) => readdirSync(dir)
+    .filter((f) => f.endsWith(".mjs"))
+    .map((f) => join(dir, f))
+    .filter((path) => /^export const ORG_READING_ISSUE\b/m.test(readFileSync(path, "utf8"))))
+    .sort();
+}
+
+/** The watchers that no shipped unit starts and no workflow step invokes -- the state #2230 found. */
+function watchersWithNoCaller(watchers: string[], { unitTexts, workflowTexts }:
+  { unitTexts: string[]; workflowTexts: string[] }): string[] {
+  const startedByUnit = new Set(unitTexts.flatMap((text) => unitEntryPoints(text)));
+  const workflowLines = workflowTexts.flatMap((text) => text.split("\n"))
+    .filter((line) => !line.trim().startsWith("#"));
+  const startedByWorkflow = (path: string) => workflowLines.some((line) =>
+    line.includes(basename(path))
+    || entriesFromCommand(line.replace(/^\s*(-\s*)?run:\s*/, "").trim()).includes(path));
+  return watchers.filter((path) => !startedByUnit.has(path) && !startedByWorkflow(path));
+}
+
+const realCallers = () => ({
+  unitTexts: shippedUnits().map((u) => readFileSync(join(SHIPPED_DIR, u), "utf8")),
+  workflowTexts: readdirSync(join(REPO_ROOT, ".github/workflows")).filter((f) => f.endsWith(".yml"))
+    .map((f) => readFileSync(join(REPO_ROOT, ".github/workflows", f), "utf8")),
+});
+
+test("#2230: every script that posts on #928 has a caller -- a watcher nothing runs is not a watcher", () => {
+  const watchers = orgReadingWatchers(
+    ["packages/control/src", "packages/agent-org/src"].map((d) => join(REPO_ROOT, d)));
+  // THE POPULATION'S OWN CONTROL: an emptiness assertion over "watchers with no caller" passes when the
+  // glob finds no watchers at all, so the population is pinned to the two it is known to contain.
+  assert.deepEqual(watchers.map((w) => basename(w)), ["fleet-watch.mjs", "lab-watch.mjs"],
+    "a new --posting watcher is welcome, and this list is where it says so. org-watch.mjs is NOT in it: "
+    + "it does not export ORG_READING_ISSUE (see orgReadingWatchers)");
+  assert.deepEqual(watchersWithNoCaller(watchers, realCallers()), [],
+    "each must be started by a shipped host unit or a workflow step -- these two need the lab's "
+    + "credential, so they are host units");
+});
+
+test("#2230: POSITIVE CONTROL -- the guard flags a watcher with no unit and no workflow step", () => {
+  // THE NAMED CONTROL for the emptiness above. A fixture watcher exporting ORG_READING_ISSUE, in a temp
+  // directory the repository's real units and workflows cannot name, must be FLAGGED; and the same guard
+  // over the same fixture WITH a unit that starts it must not be, or "flagged" means nothing.
+  const dir = mkdtempSync(join(tmpdir(), "watcher-guard-"));
+  try {
+    const orphan = join(dir, "orphan-watch.mjs");
+    writeFileSync(orphan, "export const ORG_READING_ISSUE = 928;\n");
+    writeFileSync(join(dir, "not-a-watcher.mjs"), "export const OTHER = 1;\n");
+    assert.deepEqual(orgReadingWatchers([dir]), [orphan], "discriminated by the export, not the directory");
+    assert.deepEqual(watchersWithNoCaller([orphan], realCallers()), [orphan],
+      "no shipped unit and no workflow step names it, so it is the finding");
+    assert.deepEqual(watchersWithNoCaller([orphan], {
+      unitTexts: [`[Service]\nExecStart=/usr/bin/node ${orphan}\n`], workflowTexts: [] }), [],
+      "and a unit that starts it clears it");
+    assert.deepEqual(watchersWithNoCaller([orphan], {
+      unitTexts: [], workflowTexts: ["      # node orphan-watch.mjs\n"] }), [orphan],
+      "a COMMENT naming it in a workflow is not a caller");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
