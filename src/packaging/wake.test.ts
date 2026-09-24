@@ -426,7 +426,10 @@ test("#2279: the roster is sessions.json's engineer roles, the standing three FI
   )) as { live: { name: string; role: string; brief: string | null }[] }).live;
   for (const spare of SPARES) {
     assert.deepEqual(live.find((s) => s.name === spare)?.role, "engineer");
-    assert.equal(live.find((s) => s.name === spare)?.brief, null, "a spare is an address, not a briefed session");
+    // #2406: was `null` ("an address, not a briefed session"). A spare is still an address with no standing
+    // session, but every engineer address is briefed by the ONE shared file, and `addressed()` tells it to read it.
+    assert.equal(live.find((s) => s.name === spare)?.brief, "docs/roles/engineer.md",
+      "a spare is an address, but every engineer address is briefed by the shared engineer brief");
   }
   assert.equal(REAL_ROSTER.length, live.filter((s) => s.role === "engineer").length,
     "no engineer role in the file is missing from what `wake` offers work to");
