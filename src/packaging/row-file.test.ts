@@ -33,6 +33,8 @@ import { fileURLToPath } from "node:url";
 import { appendFiledBy, boardAndVerify, boardingFor, bodyFromArgv, createIssue, directoryRegionWarning, fetchIssueBoardStatus, acceptanceShapeRefusal, fileRefusalReason, issueNumberFromUrl, labelRefusal, labelValuesFromArgv, laneLabelsFor, milestoneRefusal, withAcceptanceLane, openCheckTranscriptRefusal, sessionFromArgv, slashlessDirectoryWarning, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy, withoutLabels } from "../row-file.mjs";
 import { labelSetForPromotion, promoteArgvRefusal, promoteFromArgv, promoteRefusalReason, promoteRow,
   promotionLabelsSettled, unverifiedPromotionFields } from "../row-file.mjs";
+import { filingWarnings, malformedAcceptanceCommandWarning, quotedTestCountWarning, regionClosureWarning }
+  from "../row-file.mjs";
 import { CLAIM_LABEL } from "../claim-labels.mjs";
 import { filedByLine } from "../row-claim.mjs";
 import { REPO } from "../../../../scripts/repo-identity.mjs";
@@ -2061,4 +2063,193 @@ test("#2111: promoteFromArgv reads a row number and nothing else", () => {
   // Refused rather than promoting some other row: `main` routes on the flag's PRESENCE, so a `--promote=`
   // naming something unusable must reach this refusal rather than fall through and try to FILE a row.
   assert.equal(promoteRow(["--promote=nope"], fakeRow().deps), 1);
+});
+
+
+// --- #2035: THE THREE ACCEPTANCE-SIDE WARNINGS. Each is pinned in BOTH directions, because a warning that
+// fires on every filing is noise and its no-warning direction is the only control on that. ---
+
+/** A body with a Region, an Acceptance and an Open-check, so the rest of `fileRefusalReason` is satisfied. */
+const acceptanceBody = (region: string, acceptance: string) =>
+  `## Region\n\n\`\`\`\n${region}\n\`\`\`\n\n## Acceptance\n\n${acceptance}\n\n## Open-check\n\nOpen while the guard is missing.\n`;
+const FENCED_TEST = "```\nnpx tsx --test packages/lab/src/training/capture-fleet-guard.test.ts\n```";
+
+/** #2018's own entry script: reads `runs/` through `realCorpusRoot -> dataset-paths.mjs`. */
+const CORPUS_ENTRY = "packages/lab/src/training/capture-real-pages.mjs";
+/** A leaf module: it imports nothing that needs a capability the acceptance job lacks. */
+const CORPUS_FREE = "packages/agent-org/src/claim-labels.mjs";
+
+test("#2035 warning 1: a Region naming a corpus-reading ENTRY SCRIPT warns, in the wording pr-open uses", () => {
+  const warned = String(regionClosureWarning(acceptanceBody(CORPUS_ENTRY, FENCED_TEST)));
+  assert.match(warned, /^WARNING/);
+  // The requirement, the file and the chain -- the same sentence `classifyCommand` prints, which is what
+  // would have saved #2018 its round.
+  assert.match(warned, /capture-real-pages\.mjs: needs `corpus`, which this job does not have/);
+  assert.match(warned, /requires corpus via realCorpusRoot .+ dataset-paths\.mjs:\d+/);
+  // A WARNING and never a refusal: a fleet-gated row legitimately declares a corpus-needing Acceptance.
+  assert.equal(fileRefusalReason(acceptanceBody(CORPUS_ENTRY, FENCED_TEST)),
+    fileRefusalReason(acceptanceBody(CORPUS_FREE, FENCED_TEST)), "the closure must not change the refusal");
+});
+
+test("#2035 warning 1, the other direction: a Region naming a corpus-free module does NOT warn", () => {
+  assert.equal(regionClosureWarning(acceptanceBody(CORPUS_FREE, FENCED_TEST)), null);
+  // Not a source file at all: a `.md` Region entry has no import closure to read, and is not "unread".
+  assert.equal(regionClosureWarning(acceptanceBody("docs/row-filing.md", FENCED_TEST)), null);
+});
+
+test("#2035 warning 1, POSITIVE CONTROL: a Region file that does not exist does NOT read as clean", () => {
+  // The walk on a path that does not exist returns `[]`, indistinguishable from "needs nothing" -- the
+  // failure this row exists for. Read it through the REAL walk AND through a stub that always says `[]`.
+  const absent = "packages/lab/src/training/nope-does-not-exist.mjs";
+  const real = String(regionClosureWarning(acceptanceBody(absent, FENCED_TEST)));
+  assert.match(real, /NOT read/);
+  assert.match(real, /nope-does-not-exist\.mjs/);
+  assert.notEqual(regionClosureWarning(acceptanceBody(absent, FENCED_TEST)),
+    regionClosureWarning(acceptanceBody(CORPUS_FREE, FENCED_TEST)), "absent must not equal a clean reading");
+  const stubbed = String(regionClosureWarning(acceptanceBody(absent, FENCED_TEST),
+    { exists: () => false, walk: () => [] }));
+  assert.match(stubbed, /NOT read/, "a walk that reports nothing must not turn an unread file into a clean one");
+});
+
+test("#2035 warning 1: only a TEST Acceptance is charged -- pr-open's closure walk reads nothing else", () => {
+  assert.equal(regionClosureWarning(acceptanceBody(CORPUS_ENTRY, "```\nnode scripts/repo-identity.mjs\n```")), null);
+  assert.match(String(regionClosureWarning(acceptanceBody(CORPUS_ENTRY,
+    "```\nnpx rstest run --include packages/lab/src/packaging/row-file.test.ts\n```"))), /corpus/, "rstest counts");
+});
+
+test("#2035 warning 1: `token` is NOT charged -- a test declares `// no-token:` itself, so the walk cannot judge it", () => {
+  // Measured 2026-09-24 over 70 open and 80 closed rows: charging `token` made this warning speak on 79 of
+  // 150 (53%), 69 of those for an entry script that spawns `gh`. `corpus` has no such per-test exit.
+  const hit = (requirement: string) => () => [{ requirement, message: `x requires ${requirement}` }];
+  const only = (requirement: string) => regionClosureWarning(acceptanceBody(CORPUS_FREE, FENCED_TEST),
+    { exists: () => true, walk: hit(requirement) });
+  assert.equal(only("token"), null);
+  assert.match(String(only("corpus")), /needs `corpus`/);
+  assert.match(String(only("history")), /needs `history`/);
+});
+
+/**
+ * #2035 warning 2. THE SPELLINGS COME FROM THE POPULATION: `## Acceptance` sections of 70 open and 80 closed
+ * rows, read 2026-09-24T21:49Z with `gh issue list`, every line quoting a count. Each is a verbatim line from
+ * the row named, so a spelling nobody wrote cannot creep in and one somebody did cannot be dropped.
+ */
+const QUOTED_COUNT_LINES: [string, string, string][] = [
+  ["#2147", "**132 tests, 0 failed, measured at `b1a076747` on 2026-09-23T13:44Z", "132 tests, 0 fail"],
+  ["#2245", "- The **third is green today** (the file's 76 tests, 0 failed, at `c06bc5cc3`) and is where", "76 tests, 0 fail"],
+  ["#2177", "**Run before writing it, not assumed:** 2 files, 187 tests, `status: pass`.", "187 tests, `status: pass"],
+  ["#2154", "3. A healthy host is unchanged: the 24 tests in `trunk-revert-guard.test.ts`, as measured 2026-09-23.", "24 tests in `trunk-revert-guard.test.ts`, as measured"],
+  ["#2134", "Run at filing time on `b1a0767`: **9 passed / 0 failed, 911 ms, exit 0**. Hermetic", "9 passed / 0 fail"],
+  ["#2206", "`\"status\": \"pass\"`, `testFiles: 1`, `tests: 46`, `0 failed`, at the same commit.", "tests: 46"],
+  ["#2221", "and the suite reads 173 tests green after the change", "173 tests green"],
+  ["#2003", "-> 140/0 at 4c68f44a2", "140/0"],
+];
+
+test("#2035 warning 2: every spelling the population uses warns, quoting the count it found", () => {
+  for (const [row, line, count] of QUOTED_COUNT_LINES) {
+    const warned = String(quotedTestCountWarning(acceptanceBody(CORPUS_FREE, `${FENCED_TEST}\n\n${line}`)));
+    assert.match(warned, /^WARNING/, `${row} must warn`);
+    assert.ok(warned.includes(`\`${count}`), `${row}: the warning must quote "${count}", not merely fire`);
+    assert.match(warned, /RE-MEASURE AT YOUR OWN BRANCH POINT/, `${row}: and carry the sentence to add`);
+  }
+});
+
+test("#2035 warning 2, the other direction: the SAME body with the re-measure sentence does not warn", () => {
+  // #2147's own body says it, and is silent -- the control drawn from the population, not invented.
+  const sentence = "**THE NUMBER IS A READING AT A NAMED COMMIT, NOT A REQUIREMENT -- RE-MEASURE AT YOUR OWN BRANCH POINT.**";
+  for (const [row, line] of QUOTED_COUNT_LINES) {
+    const body = acceptanceBody(CORPUS_FREE, `${FENCED_TEST}\n\n${line}\n\n${sentence}`);
+    assert.equal(quotedTestCountWarning(body), null, `${row}: a body that tells the builder to re-measure is silent`);
+  }
+  // Anywhere in the body, not only under Acceptance: "nowhere tells the builder".
+  const elsewhere = `${acceptanceBody(CORPUS_FREE, `${FENCED_TEST}\n\n${QUOTED_COUNT_LINES[0][1]}`)}\nRe-measure at your branch point.\n`;
+  assert.equal(quotedTestCountWarning(elsewhere), null);
+});
+
+test("#2035 warning 2: a PLAUSIBLE NON-TARGET NUMBER in an Acceptance does not warn", () => {
+  // The control that makes the pin mean something (#2043's mutant 4 survived until its fixture carried one).
+  for (const line of [
+    "node packages/guards/src/assert-glob-not-empty.mjs \"x.test.ts\" --min=2 --run --runner=rstest",
+    "Precedent: #2043 and #2005; measured 2026-09-23, 9 September at 13:50Z.",
+    "Declared status populations are at least twelve per subtype, and 12 files in total.",
+    "The new file adds 3 outcomes and one control.",
+    "npm run gate:isolation      # 6/6 under pnpm",
+    "A run that matches nothing reports `tests: 0`.",
+  ]) {
+    assert.equal(quotedTestCountWarning(acceptanceBody(CORPUS_FREE, `${FENCED_TEST}\n\n${line}`)), null, line);
+  }
+  // And a count outside `## Acceptance` is not this warning's business.
+  const outside = `${acceptanceBody(CORPUS_FREE, FENCED_TEST)}\n## Notes\n\n${QUOTED_COUNT_LINES[0][1]}\n`;
+  assert.equal(quotedTestCountWarning(outside), null);
+});
+
+test("#2035 warning 3: a fence followed IMMEDIATELY by prose warns, and names the one-blank-line fix", () => {
+  // #2094/#1865's shape: the reader absorbs the paragraph into the block and reports it as a command.
+  const prose = "The command above passes: an out-of-Region diff is refused with the exempt set named.";
+  const glued = acceptanceBody(CORPUS_FREE, `${FENCED_TEST}\n${prose}`);
+  const warned = String(malformedAcceptanceCommandWarning(glued));
+  assert.match(warned, /^WARNING/);
+  assert.ok(warned.includes("The command above passes"), "it quotes the prose line it found");
+  assert.match(warned, /directly under the closing fence with no blank line/);
+  assert.match(warned, /add ONE blank line/);
+  // THE OTHER DIRECTION: the same body with the blank line is clean -- measured on both rows' own bodies.
+  assert.equal(malformedAcceptanceCommandWarning(acceptanceBody(CORPUS_FREE, `${FENCED_TEST}\n\n${prose}`)), null);
+});
+
+test("#2035 warning 3: a section with NO fenced block, whose whole 'command' is a paragraph (#1889), warns", () => {
+  const body = "## Region\n\ndocs/README.md\n\n## Acceptance\n\n**The gate reads green once the header is corrected.**\n\n"
+    + "## Open-check\n\nOpen.\n";
+  const warned = String(malformedAcceptanceCommandWarning(body));
+  assert.match(warned, /The gate reads green/);
+  assert.match(warned, /fenced block directly under `## Acceptance`/, "the remedy for THIS cause, not the glued one");
+  assert.doesNotMatch(warned, /add ONE blank line/);
+});
+
+test("#2035 warning 3: a sentence carrying an inline code span warns like any other prose line", () => {
+  // #1865's fourth "command" was a span lifted out of the glued paragraph. NOT PINNED HERE, deliberately:
+  // its span was `lab:pipeline`, and `classifyCommand` reads a lab word as `refused` before it can read
+  // `prose`, so this warning does not see that one -- said in `docs/row-filing.md` rather than left implied.
+  const body = acceptanceBody(CORPUS_FREE, `${FENCED_TEST}\nAlso run \`some-tool\` by hand.\n`);
+  assert.match(String(malformedAcceptanceCommandWarning(body)), /Also run/);
+});
+
+test("#2035 warning 3: a correct command does not warn -- including a path the filer's checkout lacks", () => {
+  assert.equal(malformedAcceptanceCommandWarning(acceptanceBody(CORPUS_FREE, FENCED_TEST)), null);
+  // Measured on #2304 and #2234: `.venv/bin/pytest` is absent HERE and present in the job, so `classifyCommand`
+  // reads it as prose from this machine. A verdict that depends on the filer's checkout must not be a warning.
+  for (const command of [".venv/bin/pytest -p no:cacheprovider packages/lab/tests/test_x.py",
+    "PYTHONDONTWRITEBYTECODE=1 .acceptance-venv/bin/pytest -p no:cacheprovider packages/lab/tests/test_x.py",
+    "./scripts/no-such-script-yet.sh"]) {
+    assert.equal(malformedAcceptanceCommandWarning(acceptanceBody(CORPUS_FREE, `\`\`\`\n${command}\n\`\`\``)), null, command);
+  }
+});
+
+test("#2035 warning 3: it ASKS `classifyCommand` -- a stubbed decider moves the verdict both ways", () => {
+  // Called, never a regex (#2014's ruling): if this held its own idea of "a command", the stub would not matter.
+  const body = acceptanceBody(CORPUS_FREE, FENCED_TEST);
+  assert.match(String(malformedAcceptanceCommandWarning(body,
+    { classify: () => ({ verdict: "prose", reason: "stubbed" }) })), /npx tsx --test/);
+  const prose = acceptanceBody(CORPUS_FREE, `${FENCED_TEST}\nA sentence, not a command.`);
+  assert.equal(malformedAcceptanceCommandWarning(prose, { classify: () => ({ verdict: "runnable" }) }), null);
+});
+
+test("#2035: the three reach the author through createIssue, and the row is still FILED", () => {
+  // An exported function nobody calls is not surfaced (#1085): drive the real caller and read stderr.
+  const trips = acceptanceBody(CORPUS_ENTRY,
+    `\`\`\`\nnpx tsx --test packages/lab/src/packaging/row-file.test.ts\n\`\`\`\nThe command above passes, 153 tests, 0 failed.`);
+  assert.equal(fileRefusalReason(trips), null, "a fixture that is refused proves nothing about warnings");
+  let stderr = "";
+  const original = process.stderr.write;
+  process.stderr.write = ((chunk: string) => { stderr += chunk; return true; }) as typeof process.stderr.write;
+  let code: number;
+  try {
+    code = createIssue(["--title", "a real row", "--body", trips, "--session=worker-contracts", ...RELEASE],
+      { ...happyDeps("worker-contracts", "backlog"), run: afterRun(appendFiledBy(trips, "worker-contracts")) });
+  } finally {
+    process.stderr.write = original;
+  }
+  assert.equal(code, 0, "warnings never refuse");
+  assert.match(stderr, /row-file: WARNING -- the `## Region` names source file\(s\) whose import closure/);
+  assert.match(stderr, /row-file: WARNING -- the `## Acceptance` section quotes a test count/);
+  assert.match(stderr, /row-file: WARNING -- the `## Acceptance` section yields 1 line\(s\)/);
+  assert.equal(filingWarnings(acceptanceBody(CORPUS_FREE, FENCED_TEST), []).length, 0, "a clean body prints nothing");
 });
