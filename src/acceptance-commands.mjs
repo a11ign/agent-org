@@ -3029,6 +3029,95 @@ export function mutationRecordReport({ body, diff }) {
     + "cheap), or `Mutation: none -- <reason>` (a reason is required)" };
 }
 
+// #2308: A NUMBER IN A PR BODY SITS UNDER A `## Measured` SECTION, WITH ITS COMMAND AND THE OUTPUT IT PRINTED.
+// Part c of `ceo`'s 2026-09-24 ruling on #2305: 7 of 46 first-review refusals were a count or population claim
+// ("25 merged pull requests", "every package.json is 0.0.0") that was not true at the head under review.
+//
+// SCOPED TO A DECLARED SECTION, DELIBERATELY. A machine cannot find "the numbers" in prose, and a scan that
+// guessed would refuse honest bodies and miss dishonest ones. So the author who cites a measured figure
+// declares `## Measured`, and THIS reads what the declaration holds. The ABSENCE of the section is not a
+// refusal -- it is the reviewer's cue that the body claims no measurement.
+//
+// THE HEADING FORM ONLY, and outside HTML comments. `extractLabeledSection` also accepts a bare
+// `Measured:` line, and prose like "Measured: 25 PRs" is exactly the claim this exists to catch, not a
+// declaration of the section -- while the template's own guidance comment names the heading and must
+// not count as one.
+//
+// THE SHAPE is `row-file.mjs`'s Open-check rule (`hasAdjacentTranscript`, #1174): a fenced block with a
+// command line and, directly under it, a line it printed. That helper is copied rather than imported
+// because `row-file.mjs` drags the board and claim machinery into a job that must stay a plain parser.
+// A copy can drift; the tests below pin the shapes this side accepts.
+//
+// WHAT THIS CANNOT DO, as #1174 says of its own: it cannot tell a pasted run from an invented adjacent
+// pair. It removes the defect that happened -- a figure with no run beside it -- and certifies no more.
+const MEASURED_HEADING = /^\s*#{1,6}\s*Measured\s*(?:[:\u2014\u2013-].*)?$/i;
+const ANY_HEADING = /^\s*#{1,6}\s+\S/;
+const FENCE_LINE = /^\s*```/;
+const PROMPTED_COMMAND = /^\s*\$\s+\S/;
+const UNPROMPTED_COMMAND = /^\s*(?:npx|npm|node|git|gh|grep|rg|sed|awk|cat|ls|find|python3?|bash|sh|wc)\b/;
+
+/** @param {string | undefined} line @returns {boolean} */
+function looksLikeCommand(line) {
+  return line !== undefined && (PROMPTED_COMMAND.test(line) || UNPROMPTED_COMMAND.test(line));
+}
+
+/**
+ * The body of every `## Measured` heading, each up to the next heading OUTSIDE a fence -- a `# comment`
+ * line inside a fenced block is shell text, not a heading.
+ * @param {string} body
+ * @returns {string[][]}
+ */
+function measuredSections(body) {
+  const lines = body.replace(/<!--[\s\S]*?-->/g, "").split(/\r\n|\r|\n/);
+  /** @type {string[][]} */
+  const sections = [];
+  /** @type {string[] | null} */
+  let current = null;
+  let inFence = false;
+  for (const line of lines) {
+    if (!inFence && MEASURED_HEADING.test(line)) { current = []; sections.push(current); continue; }
+    if (!inFence && ANY_HEADING.test(line)) { current = null; continue; }
+    if (FENCE_LINE.test(line)) inFence = !inFence;
+    current?.push(line);
+  }
+  return sections;
+}
+
+/**
+ * Does one of the section's fenced blocks hold a command with something it printed directly beneath?
+ * @param {string[]} section
+ * @returns {boolean}
+ */
+function hasCommandWithOutput(section) {
+  for (const fence of section.join("\n").match(/```[\s\S]*?```/g) ?? []) {
+    const lines = fence.split("\n").slice(1, -1).filter((line) => line.trim() !== "");
+    for (let i = 0; i < lines.length - 1; i += 1) {
+      if (looksLikeCommand(lines[i]) && !looksLikeCommand(lines[i + 1])) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * THE VERDICT for `## Measured`: absent (nothing claimed), present with a command and its output beneath
+ * (passes), present without one, or declared twice (both fail, as a duplicate `Mutation:` does).
+ * @param {string | null | undefined} body
+ * @returns {{ ok: boolean, line: string }}
+ */
+export function measuredSectionReport(body) {
+  const sections = measuredSections(body ?? "");
+  if (sections.length === 0) {
+    return { ok: true, line: "MEASURED: NOT DECLARED -- the body claims no measurement" };
+  }
+  if (sections.length > 1) {
+    return { ok: false, line: "MEASURED: DUPLICATE -- more than one `## Measured` section; keep one" };
+  }
+  if (hasCommandWithOutput(sections[0])) return { ok: true, line: "MEASURED: RECORDED" };
+  return { ok: false, line: "MEASURED: MALFORMED -- a `## Measured` section holds no fenced block with a "
+    + "command and, on the line directly under it, what it printed. Paste the run at the head being "
+    + "opened (command, then its output, in one fence), or delete the section if the body claims no measurement" };
+}
+
 /**
  * The files THIS pull request adds or changes, read from the merge commit `actions/checkout` builds for a
  * `pull_request` event: its first parent is the base, so `HEAD^1..HEAD` is the PR's own diff and not
@@ -3115,7 +3204,9 @@ function main() {
   console.log(closes.line);
   const mutation = mutationRecordReport({ body, diff: changedFilesOfThisPullRequest() });
   console.log(mutation.line);
-  process.exit(report.ok && closes.ok && mutation.ok ? 0 : 1);
+  const measured = measuredSectionReport(body);
+  console.log(measured.line);
+  process.exit(report.ok && closes.ok && mutation.ok && measured.ok ? 0 : 1);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();

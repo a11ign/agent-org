@@ -27,7 +27,7 @@ import {
   endsInsideQuote,
   endsInOperator,
   handRunDeclaration, handRunAcceptanceReason, handRunEvidence,
-  testFilesAmong, mutationRecordReport, changedFilesOfThisPullRequest,
+  testFilesAmong, mutationRecordReport, changedFilesOfThisPullRequest, measuredSectionReport,
 } from "../acceptance-commands.mjs";
 import { withGitSandbox, sandboxGitEnv } from "../../../../scripts/test-support/git-sandbox.ts";
 
@@ -3169,4 +3169,71 @@ test("#2305: `main()` is WIRED -- the job exits 1 on a missing record and 0 once
     assert.equal(written.status, 0, written.stdout + written.stderr);
     assert.match(written.stdout, /MUTATION: NONE/);
   });
+});
+
+// #2308: a number in a PR body sits under `## Measured`, with its command and what it printed.
+const FENCE = "```";
+const measuredBody = (inside: string) => `Closes #1\n\n## Measured\n\n${FENCE}\n${inside}\n${FENCE}\n\n## What changes\n`;
+
+test("#2308: THE ROW'S OWN FAILING TEST -- a `## Measured` fence with a command and no output is MALFORMED, and one with the output pasted passes", () => {
+  const bare = measuredSectionReport(measuredBody("$ gh pr list --state merged | wc -l"));
+  assert.equal(bare.ok, false);
+  assert.match(bare.line, /^MEASURED: MALFORMED/);
+  const pasted = measuredSectionReport(measuredBody("$ gh pr list --state merged | wc -l\n25"));
+  assert.deepEqual(pasted, { ok: true, line: "MEASURED: RECORDED" });
+});
+
+test("#2308: the absence of the section is not a refusal -- it is the reviewer's cue that nothing is claimed", () => {
+  for (const body of ["Closes #1\n\n25 merged pull requests", "", null, undefined]) {
+    const report = measuredSectionReport(body);
+    assert.equal(report.ok, true, `${JSON.stringify(body)} must pass`);
+    assert.match(report.line, /^MEASURED: NOT DECLARED/);
+  }
+});
+
+test("#2308: prose under the heading is not a transcript, and neither is output pasted ABOVE its command", () => {
+  assert.equal(measuredSectionReport("## Measured\n\n25 merged pull requests, I counted.\n").ok, false);
+  assert.equal(measuredSectionReport(measuredBody("25\n$ gh pr list | wc -l")).ok, false,
+    "the number sits above the command, which is how a reconstructed transcript looks");
+  assert.equal(measuredSectionReport(measuredBody("$ git ls-files\n$ git ls-files | wc -l")).ok, false,
+    "two commands in a row printed nothing here");
+  assert.equal(measuredSectionReport(`## Measured\n\n$ git ls-files | wc -l\n412\n`).ok, false,
+    "an unfenced pair is not the shape the Open-check rule reads");
+});
+
+test("#2308: unprompted commands count as commands, as in the Open-check rule", () => {
+  assert.equal(measuredSectionReport(measuredBody("git ls-files | wc -l\n412")).ok, true);
+  assert.equal(measuredSectionReport(measuredBody("$ echo hi\nhi")).ok, true, "a `$ ` prompt marks any first word");
+});
+
+test("#2308: a `# comment` inside the fence does not end the section, and the next heading does", () => {
+  const withComment = measuredBody("# the population\n$ git ls-files | wc -l\n412");
+  assert.equal(measuredSectionReport(withComment).ok, true);
+  const runUnderAnotherHeading = `## Measured\n\nsee below\n\n## Evidence\n\n${FENCE}\n$ git ls-files | wc -l\n412\n${FENCE}\n`;
+  assert.equal(measuredSectionReport(runUnderAnotherHeading).ok, false,
+    "a transcript under a DIFFERENT heading is not this section's");
+});
+
+test("#2308: only the heading declares it -- a `Measured:` prose line, or the template's own comment, does not", () => {
+  assert.match(measuredSectionReport("Measured: 25 merged PRs").line, /^MEASURED: NOT DECLARED/);
+  assert.match(measuredSectionReport("<!-- put it under\n## Measured\nwith the command -->\n").line, /^MEASURED: NOT DECLARED/);
+  assert.equal(measuredSectionReport("### Measured at abc123\n\nnothing").ok, true,
+    "a heading that merely begins with the word is another section (`Measured at ...` names no declaration)");
+});
+
+test("#2308: two `## Measured` sections fail rather than pick one", () => {
+  const twice = `${measuredBody("$ echo a\na")}\n## Measured\n\n${FENCE}\n$ echo b\nb\n${FENCE}\n`;
+  const report = measuredSectionReport(twice);
+  assert.equal(report.ok, false);
+  assert.match(report.line, /^MEASURED: DUPLICATE/);
+});
+
+test("#2308: the CLI reads the verdict -- a malformed section exits 1 and prints its line", () => {
+  const run = (body: string) => spawnSync(process.execPath, ["packages/agent-org/src/acceptance-commands.mjs"],
+    { encoding: "utf8", env: { ...process.env, PR_BODY: body } });
+  const bad = run(`Closes #1\n\nAcceptance: none \u2014 nothing to run\n\n${measuredBody("$ git ls-files | wc -l")}`);
+  assert.match(bad.stdout, /MEASURED: MALFORMED/);
+  assert.equal(bad.status, 1);
+  const good = run(`Closes #1\n\nAcceptance: none \u2014 nothing to run\n\n${measuredBody("$ git ls-files | wc -l\n412")}`);
+  assert.match(good.stdout, /MEASURED: RECORDED/);
 });

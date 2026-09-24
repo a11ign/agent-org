@@ -179,20 +179,19 @@ function main() {
       "RULE: prune stale/fully-merged trees regularly; `git worktree remove` refuses a dirty tree by "
       + "design, which is the existing safety net. Manual practice today (dispatcher), no new command."],
     ["node_modules — real (own install)", `${nmStates.filter((s) => s === "real").length} of ${trees.length}, ${humanMb(nmRealBytes)}`,
-      "DECISION, deliberately BIMODAL rather than averaged: an installed worktree costs roughly the same "
-      + "regardless of size (measured 2026-09-06: 25 trees at ~169 MB each, 3.4 GB of duplicate installs), "
-      + "so a mean across installed and un-installed trees would describe neither population. Real by "
-      + "default; a worktree may symlink to the primary's INSTEAD only when its unit does not change "
-      + "package source another worktree's test would need fresh. STRUCTURAL FIX IS `pnpm` (#57, "
-      + "deliberately post-publish) — a content-addressed store makes every worktree's install nearly "
-      + "free rather than a per-unit judgement call between disk and staleness risk. Measured here so "
-      + "that row has a number when #57 is scheduled, not implemented by this row."],
+      "DEFAULT since #57 (pnpm 3/6, #2300): a worktree gets its own with `pnpm install --frozen-lockfile` "
+      + "(`corepack pnpm install --frozen-lockfile` where pnpm is not on PATH) -- hard-linked from one "
+      + "content-addressed store, so an install costs seconds rather than a per-unit choice "
+      + "between disk and staleness. The 2026-09-06 figure (25 trees at ~169 MB each, 3.4 GB) was taken when "
+      + "an install was a full copy."],
     ["node_modules — symlinked to primary", `${nmStates.filter((s) => s === "symlink").length} of ${trees.length}`,
-      "OWNER: #57 tracks the resolution risk this creates. Reported here, not re-decided here."],
+      "LEGACY, being retired: such a tree reads the PRIMARY's `dist` (#2181), and `pnpm install` refuses to "
+      + "run through the link (`.pnpmfile.cjs`). `rm node_modules` (the link: no trailing slash, no -r) "
+      + "then `pnpm install --frozen-lockfile`. Converting them is host housekeeping; this row only counts."],
     ["node_modules — missing (no install, no symlink)", `${nmStates.filter((s) => s === "missing").length} of ${trees.length}`,
-      "EXPECTED for a worktree mid-setup (created but `npm install` not yet run) or one kept only for "
-      + "its git history. Not a defect on its own; becomes one only if a worktree is actually being "
-      + "worked in this state, which this script cannot tell from the outside."],
+      "EXPECTED for a worktree mid-setup (created but `pnpm install --frozen-lockfile` not yet run) or one "
+      + "kept only for its git history. Not a defect on its own; becomes one only if a worktree is actually "
+      + "being worked in this state, which this script cannot tell from the outside."],
     [".venv — real (own copy)", `${venvStates.filter((s) => s === "real").length} of ${trees.length}, ${humanMb(venvRealBytes)}`,
       "RULE: always symlink `.venv` to the primary's, never install a fresh one per worktree -- one real "
       + "copy (the primary's) is correct; any other is the accumulator to fix by hand if this count "
