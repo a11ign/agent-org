@@ -22,10 +22,11 @@ import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "@a11ign/worker-fleet/cli-flags";
 import {
-  REPO, MILESTONE, HOURS_MS, READ_SET,
+  REPO, MILESTONE, HOURS_MS, MINUTE_MS, MEDIAN, READ_SET,
   gh, git, issues, milestone, mergeState, misAuthored, reported, daysUntil, readSetIsNotMain, countable,
   conflictMetrics, readyRows} from "./board-data.mjs";
 import { editionDay } from "./board-discussion.mjs";
+import { claimsFromEvents, labelEventsByIssue, parseEventLines } from "./claim-provenance.mjs";
 
 const argv = process.argv.slice(2);
 /** @type {(name: string) => string | undefined} */
@@ -260,6 +261,252 @@ export function queue(d, L) {
   }
 }
 
+// ---- THE QUEUE'S FLOW, three readings and NO threshold (#2282) ----
+//
+// Nothing measured whether the queue was healthy, and the org argued from a filed-per-day figure with no
+// closed-per-day beside it (107 filed against 78 closed reads as a crisis until the second number is on the
+// table). These readings put the flow side by side so a ceiling on OPEN rows, if ever ruled, is ruled by
+// `ceo` from two weeks of them. The report picks no number itself: nobody has evidence for one, and a cap
+// chosen before the readings exist is the invented figure #1950's ruling warned against.
+export const FLOW_DAYS = 14;
+/** The listing's cap. A listing of exactly this many rows may be TRUNCATED, and is printed as a floor. */
+export const FLOW_LIST_LIMIT = 1000;
+const DAY_MS = 24 * HOURS_MS;
+const YOUNG_DAYS = 2;
+const AGING_DAYS = 7;
+const MINUTES_PER_HOUR = 60;
+const HOURS_PER_DAY = 24;
+// Every label event in the repository, projected to four fields inside `gh` (`--jq`), one object per line so
+// paginated pages concatenate. Same shape `claim-provenance.mjs` reads; restated because that file keeps it
+// private and a copy of a jq string is cheaper than widening its exports past this row's Region.
+const LABEL_EVENTS_PATH = `repos/${REPO}/issues/events?per_page=100`;
+const LABEL_EVENTS_JQ = '.[] | select(.event == "labeled" or .event == "unlabeled")'
+  + ' | { number: .issue.number, event: .event, label: .label.name, at: .created_at }';
+
+/** The day is LONDON's, from `editionDay`, like the edition's own title (#1302): a second zone here is the
+ * split that guard exists to stop. @param {string | null | undefined} iso @returns {string | null} */
+function londonDay(iso) {
+  return iso ? editionDay(new Date(Date.parse(iso))) : null;
+}
+
+/** The last `FLOW_DAYS` London days, oldest first. Stepped back in HALF-days and de-duplicated, because a
+ * 23-hour day (spring forward) can be skipped whole by a 24-hour step.
+ * @param {number} now @returns {string[]} */
+function lastDays(now) {
+  /** @type {string[]} */
+  const days = [];
+  for (let step = 0; days.length < FLOW_DAYS; step += 1) {
+    const day = editionDay(new Date(now - step * (DAY_MS / 2)));
+    if (!days.includes(day)) days.unshift(day);
+  }
+  return days;
+}
+
+/**
+ * Pure: filed and closed per London day over the last `FLOW_DAYS` days, today included (and partial).
+ * `closed` is the count of rows whose LATEST close falls on that day: every close, sweeps and not-planned
+ * included, so it is not engineer throughput.
+ * @param {{ createdAt?: string, closedAt?: string | null, state: string }[]} rows @param {number} now
+ * @returns {{ day: string, filed: number, closed: number }[]}
+ */
+export function filedAndClosedPerDay(rows, now) {
+  const days = lastDays(now).map((day) => ({ day, filed: 0, closed: 0 }));
+  const byDay = new Map(days.map((d) => [d.day, d]));
+  for (const r of rows) {
+    const filed = byDay.get(londonDay(r.createdAt) ?? "");
+    if (filed) filed.filed += 1;
+    const closed = r.state === "CLOSED" ? byDay.get(londonDay(r.closedAt) ?? "") : undefined;
+    if (closed) closed.closed += 1;
+  }
+  return days;
+}
+
+/** @param {number[]} sortedAscending @param {number} p 0..1 */
+function nearestRank(sortedAscending, p) {
+  const index = Math.min(sortedAscending.length - 1, Math.max(0, Math.ceil(p * sortedAscending.length) - 1));
+  return sortedAscending[index];
+}
+
+/**
+ * Pure: for each `session:` claim that BEGAN inside the window, the time from the row's `ready` label to
+ * that claim. The anchor is the latest `ready` label applied at or before the claim, and never earlier than
+ * the end of the row's previous claim, so a row claimed, released and claimed again measures its second wait
+ * from the release and not from the first `ready`. A claim with no `ready` event before it, or with no
+ * recorded start, is COUNTED in `unmeasurable` and left out of the figures: "could not be timed" and "took
+ * no time" must not share a value.
+ * @param {Map<number, import("./claim-provenance.mjs").LabelEvent[]>} byNumber @param {number} sinceMs
+ * @returns {{ waitsMs: number[], unmeasurable: number }}
+ */
+export function readyToClaimWaits(byNumber, sinceMs) {
+  /** @type {number[]} */
+  const waitsMs = [];
+  let unmeasurable = 0;
+  for (const events of byNumber.values()) {
+    const readyAt = events.filter((e) => e.event === "labeled" && e.label === "ready")
+      .map((e) => Date.parse(e.at)).sort((a, b) => a - b);
+    const claims = claimsFromEvents(events);
+    claims.forEach((claim, i) => {
+      const from = claim.from ? Date.parse(claim.from) : NaN;
+      if (Number.isNaN(from)) {
+        if (claim.to && Date.parse(claim.to) >= sinceMs) unmeasurable += 1;
+        return;
+      }
+      if (from < sinceMs) return;
+      const priorEnds = claims.slice(0, i).map((c) => (c.to ? Date.parse(c.to) : NaN)).filter((t) => t <= from);
+      const anchor = Math.max(-Infinity, ...readyAt.filter((t) => t <= from), ...priorEnds);
+      if (anchor === -Infinity) unmeasurable += 1;
+      else waitsMs.push(from - anchor);
+    });
+  }
+  return { waitsMs, unmeasurable };
+}
+
+/**
+ * Pure: age of each open row in buckets, split ready / backlog / everything else so the three sum to the
+ * open count the Queue section prints.
+ * @param {{ createdAt?: string, labelNames: string[] }[]} open @param {number} now
+ */
+export function openRowAges(open, now) {
+  const empty = () => ({ young: 0, aging: 0, old: 0 });
+  const split = { ready: empty(), backlog: empty(), other: empty() };
+  for (const r of open) {
+    const ageDays = (now - Date.parse(r.createdAt ?? "")) / DAY_MS;
+    const group = r.labelNames.includes("ready") ? split.ready
+      : r.labelNames.includes("backlog") ? split.backlog : split.other;
+    if (ageDays < YOUNG_DAYS) group.young += 1;
+    else if (ageDays <= AGING_DAYS) group.aging += 1;
+    else group.old += 1;
+  }
+  return split;
+}
+
+/**
+ * Pure: the three readings from raw inputs. `events` is `null` when the event log could not be read, and
+ * that is reported as unread, never as an empty history.
+ * @param {{ rows: any[], listLimit?: number, events: Map<number, any[]> | null, eventsError?: string, now: number }} input
+ */
+export function flowReadings({ rows, listLimit = FLOW_LIST_LIMIT, events, eventsError, now }) {
+  const sinceMs = now - FLOW_DAYS * DAY_MS;
+  const open = rows.filter((r) => r.state === "OPEN")
+    .map((r) => ({ ...r, labelNames: r.labelNames ?? r.labels.map((/** @type {any} */ l) => l.name) }));
+  const perDay = filedAndClosedPerDay(rows, now);
+  // The repository's event log is ISSUES AND PULL REQUESTS together, and a PR carries `session:` labels of
+  // its own. Only a row in the issue listing is a row that was ever claimed, so the log is cut to those.
+  const issueNumbers = new Set(rows.map((r) => r.number));
+  const rowEvents = events && new Map([...events].filter(([n]) => issueNumbers.has(n)));
+  const latency = rowEvents === null
+    ? { status: /** @type {const} */ ("unread"), reason: eventsError ?? "the event log was not read" }
+    : { status: /** @type {const} */ ("read"), ...readyToClaimWaits(rowEvents, sinceMs) };
+  const oldestListed = rows.map((r) => r.createdAt).filter(Boolean).sort()[0] ?? null;
+  return { now, listed: rows.length, capped: rows.length >= listLimit, listLimit, oldestListed, perDay, latency,
+    ages: openRowAges(countable(open), now) };
+}
+
+/** @param {number} ms */
+function duration(ms) {
+  const minutes = ms / MINUTE_MS;
+  if (minutes < MINUTES_PER_HOUR) return `${Math.round(minutes)} min`;
+  const hours = minutes / MINUTES_PER_HOUR;
+  return hours < HOURS_PER_DAY * 2 ? `${hours.toFixed(1)} h` : `${(hours / HOURS_PER_DAY).toFixed(1)} d`;
+}
+
+/** What a listing AT its cap does and does not lose. FILED is complete whenever the listing reaches back past
+ * the window's first day, because it is ordered by creation; CLOSED is not, since a row created before the
+ * listing's oldest and closed inside the window is missed.
+ * @param {{ oldestListed: string | null, perDay: { day: string }[] }} flow */
+function capNote({ oldestListed, perDay }) {
+  const reaches = oldestListed !== null && (londonDay(oldestListed) ?? "") < perDay[0].day;
+  return "**That is AT the cap, so the listing may be truncated.** "
+    + (reaches
+      ? `**Filed is complete** (the listing reaches back to a row created ${oldestListed}, before the window's `
+        + "first day) and **CLOSED IS A FLOOR** (a row created before that and closed inside the window is missed)."
+      : `**BOTH columns are FLOORS** (the listing reaches back only to a row created ${oldestListed}, inside `
+        + "the window).");
+}
+
+/** @param {any} d @param {string[]} L */
+export function flowPerDay(d, L) {
+  const { perDay, listed, capped, listLimit } = d.flow;
+  /** @type {(k: "filed" | "closed") => number} */
+  const total = (k) => perDay.reduce((/** @type {number} */ n, /** @type {any} */ x) => n + x[k], 0);
+  L.push(`### Filed and closed per day — last ${FLOW_DAYS} London days, today partial`);
+  L.push(`Read from \`gh issue list --state all --limit ${listLimit}\`, which returned **${listed}** rows. `
+    + (capped ? capNote(d.flow) : "That is under the cap, so the listing is complete and neither column is a floor for that reason.")
+    + " **Closed counts every close** (sweeps and not-planned included) by each row's latest `closedAt`, "
+    + "so it is not engineer throughput.");
+  L.push("");
+  L.push("| day (London) | filed | closed | net |");
+  L.push("|---|---|---|---|");
+  for (const { day, filed, closed } of perDay) L.push(`| ${day} | ${filed} | ${closed} | ${filed - closed >= 0 ? "+" : ""}${filed - closed} |`);
+  L.push(`| **total** | **${total("filed")}** | **${total("closed")}** | **${total("filed") - total("closed")}** |`);
+  L.push("");
+}
+
+/** @param {any} d @param {string[]} L */
+export function flowLatency(d, L) {
+  const { latency, capped } = d.flow;
+  L.push(`### Ready-to-claim latency — claims that began in the last ${FLOW_DAYS} days`);
+  if (latency.status === "unread") {
+    L.push(`**Not read: ${latency.reason}.** Reported as unread rather than as no claims: "could not ask" `
+      + "and \"nobody claimed\" are different answers.");
+  } else if (latency.waitsMs.length === 0) {
+    L.push(latency.unmeasurable === 0
+      ? "**No claims in the window**, so there is no latency to report — not a latency of zero."
+      : `**No claim in the window could be timed** (${latency.unmeasurable} began, none with a \`ready\` event `
+        + "before it), so there is no latency to report — not a latency of zero.");
+  } else {
+    const sorted = [...latency.waitsMs].sort((a, b) => a - b);
+    const median = nearestRank(sorted, MEDIAN);
+    L.push(`**${sorted.length}** claim${sorted.length === 1 ? "" : "s"}: median **${duration(median)}**, `
+      + `worst **${duration(sorted[sorted.length - 1])}**. Read from the repository's whole label-event log `
+      + "(paginated, not a sample): the time from a row's latest `ready` label to the `session:` label that "
+      + `claimed it. ${latency.unmeasurable} claim${latency.unmeasurable === 1 ? "" : "s"} in the window `
+      + "had no `ready` event before them or no recorded start, and are left out of these figures, not counted as zero.");
+  }
+  if (capped && latency.status === "read") {
+    L.push("**The row listing is at its cap, so a claim on a row older than the listing is also missed: the "
+      + "counts are floors.**");
+  }
+  L.push("");
+}
+
+/** @param {any} d @param {string[]} L */
+export function flowAges(d, L) {
+  const { ages, now } = d.flow;
+  L.push(`### Age of open rows — from \`createdAt\` to ${new Date(now).toISOString()}`);
+  L.push("Meta rows excluded, as in the Queue section, so the three groups sum to its **Open** count.");
+  L.push("");
+  L.push(`| group | under ${YOUNG_DAYS} days | ${YOUNG_DAYS} to ${AGING_DAYS} days | over ${AGING_DAYS} days |`);
+  L.push("|---|---|---|---|");
+  for (const [name, a] of Object.entries(ages)) L.push(`| ${name} | ${a.young} | ${a.aging} | ${a.old} |`);
+  L.push("");
+}
+
+/** @param {any} d @param {string[]} L */
+export function flow(d, L) {
+  L.push("");
+  L.push("## Queue flow");
+  L.push("**This report sets no threshold and proposes no ceiling.** It prints three readings so a ceiling on "
+    + "open rows, if one is ever ruled, is ruled by `ceo` from two weeks of them and not from a feeling.");
+  L.push("");
+  flowPerDay(d, L);
+  flowLatency(d, L);
+  flowAges(d, L);
+}
+
+/** @param {number} now */
+function readFlow(now) {
+  const rows = JSON.parse(gh(["issue", "list", "--repo", REPO, "--state", "all", "--limit", String(FLOW_LIST_LIMIT),
+    "--json", "number,state,createdAt,closedAt,labels"]));
+  try {
+    const raw = gh(["api", "--paginate", LABEL_EVENTS_PATH, "--jq", LABEL_EVENTS_JQ]);
+    return flowReadings({ rows, events: labelEventsByIssue(parseEventLines(raw)), now });
+  } catch (cause) {
+    // Recorded in the edition itself, never swallowed: the other two readings do not depend on the log.
+    return flowReadings({ rows, events: null, eventsError: `the label-event log could not be read (${/** @type {Error} */ (cause).message.split("\n")[0]})`, now });
+  }
+}
+
 /**
  * Everything the sections read, gathered once.
  * @param {string} since
@@ -281,7 +528,7 @@ function facts(since, sinceLabel) {
   const awaiting = open.filter((/** @type {any} */ i) => i.labelNames.includes("awaiting-merge"));
 
   return { since, sinceLabel, all, ms, merges, unpushed, strays, latestGate, gateIsFresh,
-    fleetHours, closed, open, blockers, ready, awaiting, conflict };
+    fleetHours, closed, open, blockers, ready, awaiting, conflict, flow: readFlow(Date.now()) };
 }
 
 /** @param {any} d @param {Date} [now] the render instant: the title's day is London's, from editionDay (#1442) */
@@ -304,6 +551,7 @@ export function render(d, now = new Date()) {
   fleetHoursSection(d, L);
   conflictMetricsSection(d, L);
   queue(d, L);
+  flow(d, L);
   return L.join("\n");
 }
 
