@@ -321,6 +321,11 @@ export const GH_READS = Object.freeze({
   // that would carry every comment on every open row through a 32MB buffer on every tick.
   conditionalOnClaimedRows: "issue list --label in-progress --json number,comments"
     + " (readClaimedRowComments -- claimed-row-amended)",
+  // #2286: ONE CALL FOR EVERY BLOCKER, paid only when some unclaimed row has a cleared blocker to ask
+  // about. `gh`'s `blockedBy` nodes carry no closing time, and a per-blocker read would make the tick's
+  // cost a function of how many rows are waiting.
+  conditionalOnClearedRows: "issue list --state closed --limit 100 --json number,closedAt"
+    + " (readRecentlyClosed -- unclaimed-blocker-cleared's backoff)",
 });
 
 /**
@@ -1442,6 +1447,116 @@ export function blockerClearedOrders(rows, today = todayIso(), nowMs = Date.now(
   return orders;
 }
 
+const HOUR_MS = 60 * 60 * 1000;
+
+/**
+ * WHEN AN UNANSWERED `unclaimed-blocker-cleared` ORDER MAY BE ASKED AGAIN -- #2286.
+ *
+ * MEASURED 2026-09-24 (a reading at a moment, from the host's wake ledger): 28 of `product-manager`'s 46
+ * recent deliveries were this cause and 23 of them were four rows re-asked at an UNCHANGED key on the
+ * two-hour `JUDGMENT_TTL_MS`, six times each over ten hours, with nothing changed between. #2280
+ * re-measured the whole ledger and found the same thing at scale: 447 of 454 redundant deliveries were
+ * this TTL re-ask working as designed, 7 were inside the window. So the defect is not a leak in the
+ * dedupe; it is that the TTL is a FIXED interval, and a fixed interval is the right answer for a question
+ * that may have been missed and the wrong one for a question that has been missed FIVE TIMES.
+ *
+ * A BACKOFF, DERIVED FROM WHEN THE ROW WAS CLEARED, so the gate stays stateless (see `decide`): the
+ * order is emitted only during a WINDOW that opens at each offset after the last blocker closed.
+ *
+ *   0    the clearing itself, at once. #2139 exists because six rows sat runnable up to 16h09m; nothing
+ *        here may delay the FIRST ask, and the key of this window is byte-identical to the pre-#2286 key.
+ *   6h   a second ask, because an order that lands while `product-manager` is mid-turn is genuinely
+ *        missed sometimes, and six hours is one working stretch. #2149 and #2092 were being worked ten
+ *        hours after their first delivery, so the second ask is the one that earns its turn.
+ *   24h  a third, a day on: the row is now the oldest thing in the queue and the ask is cheap next to
+ *        the cost of a forgotten row.
+ *   72h, AND EVERY 72h FOR EVER AFTER. THE TAIL NEVER ENDS, which is `ceo`'s first constraint: a row
+ *        nobody answered must not go silent, or the treadmill is replaced by the forgotten row this
+ *        cause was written to stop. Three days is a long weekend, so a row is never unasked longer.
+ *
+ * `ceo` DID NOT PICK THIS SCHEDULE AND NOTHING EVIDENCES IT; the four rows' cost under it is in #2286's
+ * pull request, and a different ladder is a change to these two constants and nothing else.
+ *
+ * EACH WINDOW IS EXACTLY `JUDGMENT_TTL_MS` LONG, AND THAT COUPLING IS THE MECHANISM. `wake` dedupes a
+ * judgment cause for two hours after a delivery, and a delivery can only happen inside the window, so a
+ * key delivered at time `t >= start` is held until `t + 2h >= start + 2h`, the window's end: ONE delivery
+ * per window with no state kept anywhere. A window shorter than the TTL would ask once per window too;
+ * a longer one would let the TTL re-ask inside it, which is the treadmill. `work-gate.test.ts` pins the
+ * two numbers equal, because `wake.mjs` imports this file and cannot be imported back.
+ *
+ * A window whose order was never delivered (the session was busy, the tick was refused) is RETRIED every
+ * tick until the window closes, then not until the next one -- the cost of stopping the treadmill, stated.
+ */
+export const PROMOTION_ASK_OFFSETS_MS = Object.freeze([0, 6 * HOUR_MS, 24 * HOUR_MS]);
+
+/** The interval of the tail: an ask at every multiple of this after the ladder, for ever. */
+export const PROMOTION_ASK_PERIOD_MS = 72 * HOUR_MS;
+
+/** How long each ask stays open -- `wake.mjs`'s `JUDGMENT_TTL_MS`, pinned equal by the test. */
+export const PROMOTION_ASK_WINDOW_MS = 2 * HOUR_MS;
+
+/**
+ * PURE. The ask a row is in, `age` after its last blocker closed -- or `null` between asks.
+ *
+ * @param {number} age milliseconds since the clearing; a future stamp (clock skew) reads as zero
+ * @returns {{suffix: string} | null} `suffix` is `""` for the first ask, else `@<hours>h`, and it is
+ *          part of the causeKey so each window is a NEW question to `wake`'s ledger
+ */
+export function promotionAskWindow(age) {
+  const at = Math.max(0, age);
+  const tail = Math.floor(at / PROMOTION_ASK_PERIOD_MS) * PROMOTION_ASK_PERIOD_MS;
+  const start = Math.max(tail, ...PROMOTION_ASK_OFFSETS_MS.filter((o) => o <= at));
+  if (at - start >= PROMOTION_ASK_WINDOW_MS) return null;
+  return { suffix: start === 0 ? "" : `@${start / HOUR_MS}h` };
+}
+
+/**
+ * When the last of `cleared` closed, in epoch ms. A blocker missing from `closings` closed before the
+ * window that read covers, so it counts as the epoch: the row lands on the wall-clock 72-hour grid
+ * (`promotionAskWindow`'s tail) rather than being anchored to a moment nobody can name.
+ *
+ * @param {number[]} cleared @param {Map<number, number>} closings
+ */
+function clearedAt(cleared, closings) {
+  return Math.max(...cleared.map((n) => closings.get(n) ?? 0));
+}
+
+/** How many of the most recently closed rows `readRecentlyClosed` asks for: about two days of merges. */
+const RECENTLY_CLOSED_LIMIT = 100;
+
+/**
+ * When each of the most recently closed rows closed, or `null` when the read is refused.
+ *
+ * ONE CALL FOR EVERY BLOCKER, NOT ONE PER ROW: `gh`'s `blockedBy` nodes carry `number` and `state` and no
+ * closing time, and a per-blocker `issue view` would make the tick's cost a function of how many rows are
+ * waiting -- the property `GH_READS` exists to protect. A blocker older than this list is treated as old
+ * (`clearedAt`), which is what it is.
+ *
+ * `null` IS "COULD NOT READ" AND `unclaimedBlockerClearedOrders` FAILS OPEN ON IT: with no closing time the
+ * gate asks at the unstaged key, which is the pre-#2286 behaviour. The alternative -- reading a refused
+ * call as "everything closed long ago" -- would silence a FRESH clearing behind the 72-hour grid, the
+ * exact stranding #2139 was written to end.
+ *
+ * @param {(args: string[]) => string} [run]
+ * @returns {Map<number, number> | null}
+ */
+export function readRecentlyClosed(run = defaultRun) {
+  try {
+    const parsed = JSON.parse(run(["issue", "list", "--state", "closed", "--limit",
+      String(RECENTLY_CLOSED_LIMIT), "--json", "number,closedAt"]));
+    if (!Array.isArray(parsed)) return null;
+    /** @type {Map<number, number>} */
+    const closings = new Map();
+    for (const r of parsed) {
+      const at = Date.parse(r?.closedAt);
+      if (Number.isFinite(at)) closings.set(Number(r.number), at);
+    }
+    return closings;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * THE SAME CLEARING, ONE POPULATION OVER: an UNCLAIMED row whose last declared blocker closed -- #2139.
  *
@@ -1482,13 +1597,36 @@ export function blockerClearedOrders(rows, today = todayIso(), nowMs = Date.now(
  * itself shelf-gated and was silent for the same four hours. So the order reports the row AND names what
  * still hides it, which is the one thing #2139 forbids doing silently: never reported as free.
  *
+ * AN UNANSWERED ORDER BACKS OFF (#2286): see `PROMOTION_ASK_OFFSETS_MS`. `closings` says when each blocker
+ * closed; without it (`null`, or an old caller) every order is the unstaged first ask, which is the
+ * behaviour before the backoff existed and is what a refused read must fall back to.
+ *
  * @param {any[]} rows every open row
  * @param {string} [today]
+ * @param {{closings?: Map<number, number> | null, now?: number}} [when]
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
  */
-export function unclaimedBlockerClearedOrders(rows, today = todayIso()) {
+export function unclaimedBlockerClearedOrders(rows, today = todayIso(), { closings = null, now = Date.now() } = {}) {
   const orders = [];
+  for (const { row, cleared } of unclaimedClearings(rows, today)) {
+    const window = closings ? promotionAskWindow(now - clearedAt(cleared, closings)) : { suffix: "" };
+    if (window) orders.push(promotionOrder(row, cleared, window.suffix));
+    if (orders.length >= MAX_ROW_ORDERS_PER_TICK) break;
+  }
+  return orders;
+}
+
+/**
+ * The unclaimed rows whose last declared blocker has closed, with the set that cleared -- the population
+ * `unclaimedBlockerClearedOrders` asks about, and the one `main` reads BEFORE deciding whether to pay for
+ * `readRecentlyClosed` at all. Split out so those two callers cannot drift into two spellings of "cleared".
+ *
+ * @param {any[]} rows @param {string} [today]
+ * @returns {{row: any, cleared: number[]}[]}
+ */
+export function unclaimedClearings(rows, today = todayIso()) {
+  const found = [];
   for (const row of rows ?? []) {
     const labels = labelsOf(row);
     const cleared = declaredBlockers(row);
@@ -1498,10 +1636,9 @@ export function unclaimedBlockerClearedOrders(rows, today = todayIso()) {
     // what proves every number above is closed -- and it covers the `Not-before:` and `answer:` cases in
     // the same breath, which is why `declaredBlockers` does not re-ask.
     if (waitingOn(row, today)) continue;
-    orders.push(promotionOrder(row, cleared));
-    if (orders.length >= MAX_ROW_ORDERS_PER_TICK) break;
+    found.push({ row, cleared });
   }
-  return orders;
+  return found;
 }
 
 /**
@@ -1512,8 +1649,9 @@ export function unclaimedBlockerClearedOrders(rows, today = todayIso()) {
  * the tracker is a tick with extra steps.
  *
  * @param {any} row @param {number[]} cleared
+ * @param {string} [suffix] which re-ask this is -- `""` for the first, `@6h` for the one due six hours on
  */
-function promotionOrder(row, cleared) {
+function promotionOrder(row, cleared, suffix = "") {
   // RE-DERIVED RATHER THAN PASSED IN: the caller's list is its own, and a helper that reads the row it
   // is describing cannot be handed labels belonging to a different one.
   const hiding = labelsOf(row).filter((n) => NOT_PICKABLE.includes(n));
@@ -1544,7 +1682,7 @@ function promotionOrder(row, cleared) {
         : "")
       + "THIS IS NOT A SURVEY OF THE BACKLOG. One row, one clearing, already named -- if the answer is "
       + "\"it stays in backlog\", say so in a field and this stops asking.",
-    causeKey: `product-manager/unclaimed-blocker-cleared/row-${row.number}/${key}`,
+    causeKey: `product-manager/unclaimed-blocker-cleared/row-${row.number}/${key}${suffix}`,
   };
 }
 
@@ -3645,7 +3783,8 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *           openRows?: any[], unarmed?: number[] | null,
  *           claimedComments?: {number?: number, comments?: {body?: string, id?: string}[]}[],
  *           rowBranches?: {branch: string, head: string, row: number}[] | null,
- *           hostDrift?: {unit: string, problem: string, detail: string}[] | null }} state
+ *           hostDrift?: {unit: string, problem: string, detail: string}[] | null,
+ *           closings?: Map<number, number> | null }} state
  *        `required` is the checks that can block a merge (`requiredCheckNames`), or `null` for
  *        "could not be read", which counts EVERY check as before this existed.
  *        `epics` are the open `epic` rows with their `subIssuesSummary` (`readEpics`); `[]` when
@@ -3682,7 +3821,7 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
-  claimedComments = [], rowBranches, hostDrift }) {
+  claimedComments = [], rowBranches, hostDrift, closings }) {
   // FIRST, BEFORE EVERY OTHER CAUSE. Every other order asks a session what should happen next; this one
   // says another session is ALREADY STOPPED waiting on them. That outranks any standing question.
   const orders = [...answerOrders(answerOwed)];
@@ -3717,7 +3856,8 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // empty, which is what kept both of those silent while six rows sat runnable for up to 16h09m behind a
   // four-row Ready queue. It sits behind `rowOrders` for the ordering the causes above use: a row already
   // on the shelf can be claimed this minute, while this one still needs promoting first.
-  orders.push(...unclaimedBlockerClearedOrders(openRows));
+  // #2286: `closings` LETS IT BACK OFF. Absent, it asks at the unstaged key on every TTL, as before.
+  orders.push(...unclaimedBlockerClearedOrders(openRows, undefined, { closings }));
 
   // The backlog is counted the same way, or the order would report rows the pool equally cannot take.
   // `ownerOf`, not `laneOwnerOf`: routed rows reach `decide` now, and the POOL's count must be exactly
@@ -3911,6 +4051,18 @@ function hostUnitsEntry() {
   return fileURLToPath(new URL("./host-units.mjs", import.meta.url));
 }
 
+/**
+ * The closing times `unclaimedBlockerClearedOrders` backs off on, read ONLY when some unclaimed row has a
+ * cleared blocker to ask about. `openRows` is already in hand, so the condition costs no call, and a quiet
+ * tracker pays nothing (`GH_READS.conditionalOnClearedRows`). `null` when there is nothing to ask about
+ * OR the read was refused -- in both cases the caller's fallback is the unstaged first ask.
+ *
+ * @param {any[]} openRows
+ */
+function closingsWhenRowsCleared(openRows) {
+  return unclaimedClearings(openRows).length > 0 ? readRecentlyClosed() : null;
+}
+
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/work-gate.mjs" });
   const prs = readPrs();
@@ -3960,7 +4112,9 @@ function main() {
     // #2174: A LOCAL READ, NOT AN API ONE -- a `readdir`, some `readFileSync` and one `systemctl` spawn
     // per shipped timer. It adds nothing to `GH_READS` and cannot be refused by an exhausted pool, which
     // is what lets the detection exist at all.
-    hostDrift: readHostDrift() });
+    hostDrift: readHostDrift(),
+    // #2286: CONDITIONAL, and the condition is answered for free from the list already in hand.
+    closings: closingsWhenRowsCleared(allOpen) });
   const { delivered: orders, performed } = performActions(decided);
   orders.push(...deadMansSwitch({ orders, drain, performed, openRows: openRowsRead }));
   for (const order of orders) process.stdout.write(`${JSON.stringify(order)}\n`);

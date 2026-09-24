@@ -39,6 +39,8 @@ import { MAX_ROW_ORDERS_PER_TICK, readCommitChain, withCommitChains, decide, che
   shouldBeMerging as shouldBeMergingPrs, conflictedPrs, conflictStateOf, mergeConflictOrders,
   unfiledEpics, epicOrders, finishedEpics, finishedEpicOrders, fleetBatchRows, fleetBatchOrders,
   partitionFleetBatch, blockerClearedOrders, unclaimedBlockerClearedOrders,
+  promotionAskWindow, readRecentlyClosed, PROMOTION_ASK_OFFSETS_MS,
+  PROMOTION_ASK_PERIOD_MS, PROMOTION_ASK_WINDOW_MS,
   claimedRowAmendedOrders, constraintsAfterClaim, amendmentsOn, readClaimedRowComments,
   CONSTRAINT_COMMENT_MARKER, CONSTRAINT_BODY_PREFIX,
   FLEET_MILESTONE, readEpics, answersOwed, answerOrders,
@@ -52,7 +54,7 @@ import { MAX_ROW_ORDERS_PER_TICK, readCommitChain, withCommitChains, decide, che
 // can assert what the membership BUYS rather than only that the name is in the list. `wake.mjs` runs
 // nothing on import (its `main()` is behind an `import.meta.url` guard) and these three are pure, so this
 // costs the `no-token` promise at the top of this file nothing.
-import { readLedger, WAKE_TTL_MS, JUDGMENT_TTL_MS }
+import { readLedger, undelivered, WAKE_TTL_MS, JUDGMENT_TTL_MS }
   from "../wake.mjs";
 // #2237: the decider that REFUSES a launch, so the order's named launch directory is checked against it
 // rather than read by a reviewer. Pure over an injected filesystem.
@@ -2548,6 +2550,139 @@ test("#2139: decide() routes it, and NOT behind an empty-shelf gate", () => {
     openRows: [backlogRow(1998, blockedByClosed)], drain: true })
     .filter((o) => o.cause === "unclaimed-blocker-cleared"), [],
     "a transfer window stops the org taking on work, and this is the plainest case of taking some on");
+});
+
+// --- #2286: an UNANSWERED promotion order backs off instead of repeating on the two-hour TTL -----------
+//
+// MEASURED 2026-09-24 (a reading at a moment, from the host wake ledger): 28 of `product-manager`'s 46
+// recent deliveries were `unclaimed-blocker-cleared`, and 23 of those were FOUR rows re-asked at an
+// unchanged key on `JUDGMENT_TTL_MS`, six times each over ten hours. #2280 found the same thing across
+// the whole ledger: 447 of 454 redundant deliveries were this re-ask working as designed.
+
+const HOUR = 60 * 60 * 1000;
+const T0 = Date.parse("2026-09-23T22:00:00Z");
+/** A backlog row whose blocker #2139 closed at `T0`, and the closing times that say so. */
+const clearedRow = (n: number) => backlogRow(n, { blockedBy: { nodes: [{ number: 2139, state: "CLOSED" }] } });
+const closedAtT0 = new Map([[2139, T0]]);
+const askKeys = (rows: object[], now: number, closings: Map<number, number> | null = closedAtT0) =>
+  unclaimedBlockerClearedOrders(rows, TODAY, { closings, now }).map((o) => o.causeKey);
+const FIRST_KEY = "product-manager/unclaimed-blocker-cleared/row-2161/2139";
+
+test("#2286: the schedule -- each window is one ask, the ladder is 0/6h/24h and the tail never ends", () => {
+  const at = (h: number, m = 0) => promotionAskWindow(h * HOUR + m * 60_000)?.suffix;
+  assert.equal(at(0), "", "the clearing itself is asked AT ONCE, and its key is the pre-#2286 key");
+  assert.equal(at(1, 59), "", "still the first window a minute before it closes");
+  assert.equal(at(2), undefined, "between asks nothing is emitted: this is the silence that ends the treadmill");
+  assert.equal(at(5, 59), undefined);
+  assert.equal(at(6), "@6h", "the second ask");
+  assert.equal(at(8), undefined);
+  assert.equal(at(24), "@24h", "the third");
+  assert.equal(at(48), undefined);
+  assert.equal(at(72), "@72h", "the tail begins");
+  assert.equal(at(144), "@144h", "and every 72h after, FOR EVER -- ceo's first constraint: never silent");
+  assert.equal(at(24 * 365 + 6), undefined, "a year on it is between asks, not switched off...");
+  assert.notEqual(promotionAskWindow(72 * 40 * HOUR)?.suffix, undefined, "...and asked again at a later multiple");
+  assert.equal(promotionAskWindow(-5 * HOUR)?.suffix, "", "a closing stamped in the future (clock skew) is a fresh one");
+  assert.deepEqual([...PROMOTION_ASK_OFFSETS_MS], [0, 6 * HOUR, 24 * HOUR], "the ladder, in one place");
+  assert.equal(PROMOTION_ASK_PERIOD_MS, 72 * HOUR);
+});
+
+test("#2286: the window is EXACTLY the wake ledger's judgment TTL -- that equality is the whole mechanism", () => {
+  assert.equal(PROMOTION_ASK_WINDOW_MS, JUDGMENT_TTL_MS,
+    "shorter would still ask once per window; longer lets the TTL re-ask INSIDE a window, which is the "
+    + "treadmill. `wake.mjs` imports the gate, so the gate cannot import this number: a test holds both.");
+});
+
+test("#2286: a FRESH clearing is asked at once, then again at each horizon -- and not between", () => {
+  const row = [clearedRow(2161)];
+  assert.deepEqual(askKeys(row, T0 + 20 * 60_000), [FIRST_KEY],
+    "POSITIVE CONTROL: the first ask is immediate and byte-identical to the unstaged key, so shipping "
+    + "this does not re-fire every key already in the ledger");
+  assert.deepEqual(askKeys(row, T0 + 3 * HOUR), [], "an unanswered order is NOT re-asked on the TTL");
+  assert.deepEqual(askKeys(row, T0 + 6 * HOUR + 60_000), [`${FIRST_KEY}@6h`],
+    "POSITIVE CONTROL: the same row IS asked again after the schedule's horizon, under a NEW key");
+  assert.deepEqual(askKeys(row, T0 + 30 * HOUR), [], "and stays quiet between the later ones");
+  assert.deepEqual(askKeys(row, T0 + 25 * HOUR), [`${FIRST_KEY}@24h`]);
+  assert.deepEqual(askKeys(row, T0 + 73 * HOUR), [`${FIRST_KEY}@72h`]);
+});
+
+test("#2286: a CHANGED cleared set is a new question, delivered at once whatever the old one's age", () => {
+  const twice = backlogRow(2161, { blockedBy: { nodes: [{ number: 2139, state: "CLOSED" },
+    { number: 2186, state: "CLOSED" }] } });
+  const closings = new Map([[2139, T0], [2186, T0 + 30 * HOUR]]);
+  assert.deepEqual(askKeys([twice], T0 + 30.5 * HOUR, closings),
+    ["product-manager/unclaimed-blocker-cleared/row-2161/2139.2186"],
+    "the row was blocked again and cleared again: its anchor is the LAST closing, its key names the new "
+    + "set, so it reaches `product-manager` immediately instead of waiting for the old set's next horizon");
+  assert.deepEqual(askKeys([clearedRow(2161)], T0 + 30.5 * HOUR, closings), [],
+    "CONTROL: the old set, unchanged, is still in its silence at the same instant");
+});
+
+test("#2286: a row whose ANSWER has been written is not asked at all, even inside a window", () => {
+  const now = T0 + 20 * 60_000;
+  const inside = (extra: Record<string, unknown>) => askKeys([{ ...clearedRow(2161), ...extra }], now);
+  assert.equal(inside({}).length, 1, "POSITIVE CONTROL: the same row, unanswered, is inside its first window");
+  assert.deepEqual(inside({ labels: [{ name: "ready" }] }), [], "`ready` is the promotion");
+  assert.deepEqual(inside({ body: "Not-before: 2026-09-30T00:00:00Z" }), [], "a `Not-before:` is an answer");
+  assert.deepEqual(inside({ labels: [{ name: "backlog" }, { name: `${ANSWER_PREFIX}ceo` }] }), [],
+    "`answer:<session>` is an answer");
+  assert.deepEqual(inside({ blockedBy: { nodes: [{ number: 2139, state: "CLOSED" },
+    { number: 2186, state: "OPEN" }] } }), [], "a new open `blockedBy` edge is an answer");
+});
+
+test("#2286: a refused closing-time read FAILS OPEN to the unstaged ask, never to silence", () => {
+  assert.deepEqual(askKeys([clearedRow(2161)], T0 + 20 * 60_000, null), [FIRST_KEY],
+    "no closing time means the gate cannot tell a fresh clearing from an old one, and silencing a fresh "
+    + "one is the 16h09m stranding #2139 ended");
+  assert.deepEqual(askKeys([clearedRow(2161)], T0 + 3 * HOUR, null), [FIRST_KEY],
+    "it is today's behaviour, TTL and all -- degraded, not dropped");
+  assert.equal(readRecentlyClosed(() => { throw new Error("rate limited"); }), null, "a refusal is null");
+  assert.equal(readRecentlyClosed(() => "{}"), null, "so is a body that is not a list");
+  const read = readRecentlyClosed(() => JSON.stringify([{ number: 2139, closedAt: "2026-09-23T22:00:00Z" },
+    { number: 7, closedAt: "not a date" }]));
+  assert.deepEqual([...(read ?? [])], [[2139, T0]], "POSITIVE CONTROL: a good read maps number to epoch ms, "
+    + "and a row with no usable stamp is left out rather than read as the epoch");
+});
+
+test("#2286: a blocker older than the closed-rows window lands on the wall-clock grid, not on a fresh ask", () => {
+  const row = [clearedRow(2161)];
+  const unknown = new Map<number, number>();
+  assert.deepEqual(askKeys(row, Date.parse("2026-09-23T12:00:00Z"), unknown), [],
+    "an unknown closing is OLD, so 12:00Z on a day that is not a 72h multiple is between asks");
+  const grid = Math.ceil(Date.parse("2026-09-23T12:00:00Z") / PROMOTION_ASK_PERIOD_MS) * PROMOTION_ASK_PERIOD_MS;
+  assert.equal(askKeys(row, grid + 60_000, unknown).length, 1,
+    "POSITIVE CONTROL: and it is asked once per 72h, so an old clearing is never silent either");
+});
+
+test("#2286: decide() passes the closing times through, and without them behaves as before", () => {
+  const state = { prs: [], readyRows: [readyRow(2222)], openRows: [clearedRow(2161)] };
+  const asked = (closings?: Map<number, number> | null) =>
+    decide({ ...state, ...(closings === undefined ? {} : { closings }) })
+      .filter((o) => o.cause === "unclaimed-blocker-cleared").length;
+  assert.equal(asked(), 1, "a caller that passes nothing gets the unstaged ask");
+  assert.equal(asked(new Map([[2139, Date.now() - 30 * HOUR + 3 * 60_000]])), 0,
+    "and one that passes closing times gets the backoff: 30h after the clearing is between the 24h and 72h asks");
+  assert.equal(asked(new Map([[2139, Date.now() - 5 * 60_000]])), 1, "POSITIVE CONTROL: a fresh one is asked");
+});
+
+test("#2286: THROUGH wake's ledger, ten hours of an unanswered row is 2 deliveries, not 6", () => {
+  const row = [clearedRow(2161)];
+  const TICK = 10 * 60_000;
+  const judgment = new Set(JUDGMENT_CAUSES);
+  const replay = (closings: Map<number, number> | null) => {
+    let ledger = "";
+    let delivered = 0;
+    for (let now = T0 + TICK; now <= T0 + 10 * HOUR; now += TICK) {
+      const live = readLedger("ledger", () => ledger, now, judgment);
+      const orders = undelivered(unclaimedBlockerClearedOrders(row, TODAY, { closings, now }), live);
+      for (const o of orders) { ledger += `${now}\t${o.causeKey}\n`; delivered += 1; }
+    }
+    return delivered;
+  };
+  assert.equal(replay(null), 5,
+    "POSITIVE CONTROL: with no backoff the SAME loop reproduces the measured treadmill -- one delivery "
+    + "per two-hour TTL -- so the 2 below is the schedule, not a loop that cannot deliver");
+  assert.equal(replay(closedAtT0), 2, "the first ask, and the six-hour one -- and nothing between");
 });
 
 // --- #2110: a row that moved under the session holding it ------------------------------------------
