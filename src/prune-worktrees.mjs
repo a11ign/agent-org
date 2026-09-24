@@ -586,6 +586,23 @@ export function unverifiedRecords(worktreePath, primaryPath, { hash = sha256OfFi
  * WIDENING `ACTIVITY_WINDOW_MS` INSTEAD WAS REFUSED, and by the row rather than by preference: a window
  * wide enough for an overnight idle is wide enough to stop the prune doing anything, against a measured
  * leak of about 15 trees a day (#2000). This adds a fact; it does not blunt the clock.
+ *
+ * #2149: A STANDING TREE IS HELD ON WHAT IT IS, NOT ON WHERE ITS HEAD SITS. Everything above holds a tree
+ * only until its own work merges, which is right for a tree made for ONE row and wrong for a tree a session
+ * keeps across many: the minute its own commit landed it read `delivered` and sat ten quiet minutes from
+ * `--apply`. Work landing is not the session finishing with the tree, and for a standing tree they are
+ * weeks apart. THE GROUND, STATED: a tree with NO BRANCH OF ITS OWN -- a detached HEAD -- is a standing
+ * checkout. `row-claim` makes every row tree with `-b agent/<slug>-<row>`, so a row tree always has a
+ * branch whose delivery can mean "this row is done"; the role and policy trees (`role-*`, `wt-*-policy`,
+ * `wt-*-rows`, measured 2026-09-24: all ten stamped, all detached) are moved between rows with
+ * `git checkout --detach`, so they have no branch and nothing whose merge could finish them. Detachment is
+ * read from git and does not move when a commit merges, which is the property the position test lacked.
+ *
+ * WHAT THIS COSTS, and what it does not: a row tree its owner detached after delivering is now refused
+ * whatever its position (on main's line it already was) -- a leaked directory, the direction this file
+ * chooses everywhere. A row tree that stays on its branch still removes once delivered, and that is
+ * deliberate rather than a gap: it is disposable, and this row asks for a better question, not a longer
+ * timer. An UNSTAMPED standing tree is still unprotected, for the reason given above.
  */
 
 /**
@@ -628,6 +645,26 @@ export function deliveredOwnCommit(worktreePath, mainLine, { run = defaultRun } 
 }
 
 /**
+ * Whether this worktree's HEAD names a branch. A DETACHED HEAD is the mark of a standing tree (#2149): it
+ * was never given a branch, so no merge can mean it is finished.
+ *
+ * `rev-parse --abbrev-ref HEAD` prints `HEAD` for a detached checkout and the branch name otherwise; a
+ * failure is `"unknown"`, never `true` -- an unanswered question must not read as "a disposable row tree".
+ *
+ * @param {string} worktreePath
+ * @param {{ run?: typeof defaultRun }} [deps]
+ * @returns {boolean | "unknown"}
+ */
+export function hasOwnBranch(worktreePath, { run = defaultRun } = {}) {
+  try {
+    const name = run("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: worktreePath }).trim();
+    return name === "" ? "unknown" : name !== "HEAD";
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
  * #2020: whether `worktreePath` is a tree a session still holds -- see the block header above.
  *
  * @param {string} worktreePath
@@ -641,6 +678,15 @@ export function heldByOwner(worktreePath, mainLine, { run = defaultRun, owner = 
   // speaks only about trees whose owner is recorded; the honest gap is named in the header, not papered
   // over by treating an absent stamp as an owner.
   if (who === null) return { refused: false };
+  // #2149 FIRST, because it does not depend on the answer below: a standing tree stays held after its
+  // own work merges. An unanswered question refuses too -- the tristate this file keeps everywhere.
+  const branched = hasOwnBranch(worktreePath, { run });
+  if (branched !== true) {
+    return { refused: true, reason: `${worktreePath} is stamped ${who} and ${branched === false
+      ? "its HEAD is detached -- it has no branch of its own, so it is a STANDING checkout a session moves "
+        + "between rows, and its work merging does not mean the session has finished with it (#2149)"
+      : "whether it has a branch of its own could not be determined"}. Refusing to remove it` };
+  }
   const delivered = deliveredOwnCommit(worktreePath, mainLine, { run });
   if (delivered === true) return { refused: false };
   if (delivered === "unknown") {
@@ -1009,7 +1055,7 @@ export function formatReport(report, dryRun = false) {
   }
   if (report.held.length > 0) {
     lines.push(`refused ${report.held.length} HELD worktree(s) (#2020) -- stamped by a session and carrying no `
-      + "commit of their own, so the claim is open rather than finished; nothing removed:");
+      + "commit of their own, or standing (detached, #2149), so the claim is open rather than finished; nothing removed:");
     for (const r of report.held) lines.push(`  ${r.path}  (${r.branch ?? "detached"}): ${r.reason}`);
   }
   if (report.records.length > 0) {

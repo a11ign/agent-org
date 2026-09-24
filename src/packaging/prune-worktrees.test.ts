@@ -27,7 +27,7 @@ import {
   isWorkingTreeClean, pruneWorktrees, recentGitActivity, ACTIVITY_WINDOW_MS,
   cleanliness, ignoredByAuthority,
   strandedWork, formatStranded, trackedChanges, unverifiedRecords, formatReport,
-  heldByOwner, deliveredOwnCommit, mainLineCommits,
+  heldByOwner, deliveredOwnCommit, mainLineCommits, hasOwnBranch,
 } from "../prune-worktrees.mjs";
 import { stampWorktree } from "../worktree-owner.mjs";
 import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
@@ -943,6 +943,70 @@ test("#2020: the report prints the refusal and its owner under its own heading, 
     assert.ok(text.includes(`  ${delivered}  (agent/delivered-1948)`), "and the delivered tree is named under `removed`");
     assert.doesNotMatch(text.split("refused 1 HELD")[0], new RegExp(held.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
       "the held tree must not appear in the removed list above the heading");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// --- #2149: A STANDING TREE IS HELD ON WHAT IT IS, NOT ON WHERE ITS HEAD SITS. -------------------
+// `wt-2121` (stamped) read `{"refused":false}` eleven minutes after its own work merged and went from
+// DIRTY to WOULD REMOVE. Standing trees (role and policy trees) are DETACHED and are reused across many rows.
+
+/** `buildHeldFixture`, plus a STAMPED DETACHED tree whose own commit has merged -- the shape #2149 measured. */
+function buildStandingFixture() {
+  const fixture = buildHeldFixture();
+  const { root } = fixture;
+  const standing = join(root, "wt-standing");
+  git(root, "worktree", "add", "--quiet", "--detach", standing, fixture.mainTip);
+  writeFileSync(join(standing, "policy.txt"), "work done in a standing tree\n");
+  git(standing, "add", "policy.txt");
+  git(standing, "commit", "-q", "-m", "work that lands from a detached tree");
+  const tip = git(standing, "rev-parse", "HEAD").trim();
+  git(root, "merge", "--no-ff", "--quiet", "-m", "Merge pull request #2149", tip);
+  git(root, "update-ref", "refs/remotes/origin/main", git(root, "rev-parse", "HEAD").trim());
+  stampWorktree(standing, "ceo");
+  return { ...fixture, standing, standingTip: tip };
+}
+
+test("#2149: a stamped DETACHED tree whose own work has merged is REFUSED -- while a delivered ROW tree and an unstamped tree are still removed", () => {
+  const { root, standing, delivered, unstamped, standingTip } = buildStandingFixture();
+  try {
+    const mainLine = mainLineCommits(root);
+    // The premise, read rather than assumed: this tree's HEAD is OFF main's line, so the position test
+    // alone answers "delivered" -- which is exactly why it was removed before this fix.
+    assert.equal(deliveredOwnCommit(standing, mainLine), true);
+    assert.equal(mainLine?.has(standingTip), false);
+    const report = pruneWorktrees(root, { now: LONG_AFTER() });
+    assert.ok(report.held.some((r) => r.path === standing), "the standing tree must be refused after its work merged");
+    assert.ok(existsSync(standing), "and still on disk");
+    assert.match(report.held.find((r) => r.path === standing)?.reason ?? "", /stamped ceo and its HEAD is detached/);
+    // THE CONTROLS: "refuse everything" passes the assertion above alone.
+    assert.ok(report.removed.some((r) => r.path === delivered),
+      "a stamped tree ON ITS OWN BRANCH whose work merged is a disposable row tree and must still be removed");
+    assert.ok(report.removed.some((r) => r.path === unstamped), "and a tree with no claim on it is still removed");
+    assert.equal(existsSync(delivered), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2149: the same standing tree is refused straight from `heldByOwner`, with a delivered row tree as the control in one call", () => {
+  const { root, standing, delivered } = buildStandingFixture();
+  try {
+    const mainLine = mainLineCommits(root);
+    assert.equal(heldByOwner(standing, mainLine).refused, true);
+    assert.deepEqual(heldByOwner(delivered, mainLine), { refused: false },
+      "the gate answers at all: a branch-attached delivered tree passes through it");
+    assert.equal(hasOwnBranch(standing), false);
+    assert.equal(hasOwnBranch(delivered), true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2149: a stamped tree whose branch state cannot be read is REFUSED, never read as a disposable row tree", () => {
+  const { root, delivered } = buildStandingFixture();
+  try {
+    const failing = () => { throw new Error("no"); };
+    assert.equal(hasOwnBranch(delivered, { run: failing }), "unknown");
+    assert.equal(hasOwnBranch(delivered, { run: () => "\n" }), "unknown");
+    const refusal = heldByOwner(delivered, mainLineCommits(root), { run: failing });
+    assert.equal(refusal.refused, true);
+    assert.match((refusal as { reason: string }).reason, /whether it has a branch of its own could not be determined/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

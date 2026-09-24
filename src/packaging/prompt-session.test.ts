@@ -16,6 +16,7 @@ import { promptable, clearThenPrompt, queueable, queueOrLose, queueDepthNote, qu
   deepQueueRefusal, DEEP_QUEUE, NEEDS_DECISION_FLAG, EXIT }
   from "../prompt-session.mjs";
 import { readHandoffs } from "../wake.mjs";
+import { readLoadedRules } from "./rules-files.ts";
 
 const agents = [{ label: "reviewer", status: "idle" }, { label: "reviewer-2", status: "working" },
   { label: "ceo", status: "done" }, { label: "worker-judge", status: "blocked" }];
@@ -409,7 +410,7 @@ test("the flag the rules file tells an author to type is the flag this command a
     new URL("../prompt-session.mjs", import.meta.url), "utf8");
   assert.match(source, /refuseUnknownFlags\(\["--ledger", NEEDS_DECISION_FLAG\]/,
     "the flag is declared to the unknown-flag guard, or typing it is refused before it is read");
-  const rules = readFileSync(new URL("../../../../.claude/rules/agent-practices.md", import.meta.url), "utf8");
+  const rules = readLoadedRules();
   assert.ok(rules.includes(NEEDS_DECISION_FLAG),
     "and the loaded rules name it, so the refusal quotes a rule that exists");
   assert.ok(rules.includes("ROW WRITE"), "with the routing change itself stated, not just its flag");
