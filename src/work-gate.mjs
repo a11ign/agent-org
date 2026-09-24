@@ -1395,12 +1395,20 @@ export function answerOrders(rows) {
  * announced as runnable. The rule this file already applies to the offer path applies here: a declared
  * wait shelves the row, and the LAST of a row's conditions to clear is the one that frees it.
  *
+ * AND NOT A ROW THE FLEET HOLDS (#2186). This asks `fleetWaitingOn`, not `waitingOn`, because the split
+ * between them was drawn for the OFFER path -- whether a row is reachable by the engineer pool -- and this
+ * cause is not that: it addresses the session that already holds the row and says "PICK IT BACK UP". For
+ * that caller a live `Fleet-hold-until:` is as disqualifying as an open `blockedBy` edge. Measured
+ * 2026-09-23: #2114's holder was woken at 15:37Z for a row the fleet held until 22:00Z, while the same
+ * tick's shelf line said so. The hold clears itself, so the order goes out the tick after it passes.
+ *
  * @param {any[]} rows every open row
  * @param {string} [today]
+ * @param {number} [nowMs] the clock a timestamped hold is read against, injected so a test moves time
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
  */
-export function blockerClearedOrders(rows, today = todayIso()) {
+export function blockerClearedOrders(rows, today = todayIso(), nowMs = Date.now()) {
   const orders = [];
   for (const row of rows ?? []) {
     const session = sessionOf(row);
@@ -1408,8 +1416,8 @@ export function blockerClearedOrders(rows, today = todayIso()) {
     if (!session || !labelsOf(row).includes(CLAIM_LABEL) || cleared === null) continue;
     // THE LINE THAT MAKES `cleared` MEAN CLEARED. `waitingOn` reports an OPEN `blockedBy` node before
     // anything else, so passing here is what proves every number above is closed -- and it covers the
-    // other two conditions in the same breath, which is why `declaredBlockers` does not re-ask.
-    if (waitingOn(row, today)) continue;
+    // other conditions in the same breath, which is why `declaredBlockers` does not re-ask.
+    if (fleetWaitingOn(row, today, nowMs)) continue;
     const key = cleared.join(".");
     orders.push({
       session,
