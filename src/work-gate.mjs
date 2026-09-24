@@ -140,10 +140,10 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
  * tick and the ledger drops it"* -- which held for twenty minutes, not for the length of the wait.
  *
  * WHAT THIS DOES NOT FIX, STATED SO NOBODY READS IT AS MORE: a judgment cause is re-offered every two
- * hours rather than never, so a STANDING one can still reach `MAX_DELIVERIES` and escalate to the
- * chairman -- later, not never. Whether it does turns on `JUDGMENT_TTL_MS` and `RUN_IDLE_RESET_MS` being
- * the same two hours while `RUN_IDLE_RESET_MS`'s docblock says it is "deliberately longer", and that
- * equality is #2227's, in `wake.mjs`, deliberately not swept in here.
+ * hours rather than never, so a STANDING one still reaches `MAX_DELIVERIES` and escalates to the
+ * chairman -- later, not never, about ten hours after its first delivery. That used to turn on
+ * `JUDGMENT_TTL_MS` and `RUN_IDLE_RESET_MS` being the same two hours (a regular tick grid escalated, a
+ * drifting one never did); #2227 made the reset twice the TTL, so it now escalates on any grid.
  */
 export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog-unpromoted",
   "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
