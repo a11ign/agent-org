@@ -55,10 +55,24 @@ export function trackedTopLevelDirs() {
   return topLevelCache;
 }
 
-/** Repo-relative source paths named anywhere in a row's prose — its Region, and whatever else it cites. */
+/**
+ * Repo-relative source paths named anywhere in a row's prose — its Region, and whatever else it cites.
+ *
+ * #2233: THE EXTENSION IS READ WHOLE OR NOT AT ALL. It used to end `\.[A-Za-z]{2,4}` with nothing after
+ * it, so a longer extension matched its first four letters and stopped: `corpus.jsonl` declared
+ * `corpus.json`, `x.service` declared `x.serv`, `x.timer` declared `x.time`. The last two name nothing
+ * and were inert; **`corpus.json` is a name that can exist**, so a row naming one file reserved, and
+ * reported in the merge-blocking `ownedPaths`, its neighbour.
+ *
+ * Both halves of the fix are needed and neither is the other: the run is now any letters-and-digits
+ * length (so `.service`, `.timer` and `.jsonl` declare as written), and the lookahead refuses to stop
+ * partway through one (so an extension nobody imagined still cannot become a different file). The
+ * lookahead is what carries the property *"never the wrong file"*; the longer run only decides how many
+ * real names get declared instead of nothing.
+ */
 export function pathInProse() {
   const alts = trackedTopLevelDirs().map((d) => d.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-  return new RegExp(`(?:^|[\\s\`"'(])((?:${alts})\\/[A-Za-z0-9/_.-]+\\.[A-Za-z]{2,4})`, "g");
+  return new RegExp(`(?:^|[\\s\`"'(])((?:${alts})\\/[A-Za-z0-9/_.-]+\\.[A-Za-z][A-Za-z0-9]+(?![A-Za-z0-9_]))`, "g");
 }
 
 /**
@@ -296,6 +310,46 @@ function linesUntilNextHeading(lines, startIndex) {
   return rest;
 }
 
+// #2233: A PARAGRAPH DECLARING A PATH OUT IS NOT THE ROW DECLARING IT IN. `linesUntilNextHeading` runs to
+// the next heading, so a Region section swallows every bold-labelled paragraph after its fence -- including
+// the one whose whole job is to say a path is NOT this row's. #2230's read *"**Deliberately NOT in the
+// Region: ... `.github/workflows/nightly.yml`.**"*, `declaredRegionFiles` returned that workflow, and it is
+// the ONE path lane in `docs/lane-ownership.json`: the row was labelled `lane:ceo`, which refuses every
+// other session, for a workflow it had said in terms it would not touch. It is #1988's shape one section
+// over (`SCOPE_DISCLAIMER` in `acceptance-commands.mjs`), which fixed only the Acceptance span -- and the
+// Region span is the one feeding BOTH the lane label and B4 file-overlap.
+//
+// A NAMED LIST OF LABELS, NEVER AN INFERRED ONE, for #1988's reason: a list somebody chose is what makes
+// trimming on it safe, and what is derived is only how far the paragraph reaches. The spellings are the
+// ones the population has -- measured 2026-09-24 over the 80 open rows' Region sections, every
+// bold-opened paragraph after a fence: three declare a path out, and they are `**Deliberately NOT in the
+// Region: ...**` (#2230), `**Deliberately out of the Region, ...**` (#2233) and a bold lead-in carrying
+// the path itself, `**\`.github/workflows/ci.yml\` is deliberately NOT reserved here.**` (#2208 -- the
+// same defect, and the reason the label may follow other bold text). Two more spellings, `Not in scope`
+// and `Not in the Region`, are named although NO open row uses them: they are the obvious wording, #1988
+// found `Not in scope` in nine bodies, and the next author will not have read this list. Bold is REQUIRED: a sentence that merely
+// says "not in scope" mid-line is prose, and prose is left to the path grammar.
+const EXCLUSION_LABEL = /^\s*(?:\*\*|__)[^\n]*?(?<![A-Za-z0-9])(?:deliberately (?:not|out)\b|not in the region\b|not in scope\b|out of the region\b)/i;
+
+/**
+ * `lines` minus every exclusion paragraph -- label line and continuations, up to the first blank line or
+ * fence -- outside a code fence. A blank line ends it: a Region's paragraphs are blank-line separated, and
+ * a path on the far side of one is the row's own. Lines inside a fence are never trimmed, so a fenced path
+ * beneath an exclusion label still declares.
+ * @param {string[]} lines @returns {string[]}
+ */
+function withoutExclusionParagraphs(lines) {
+  let inFence = false;
+  let inExclusion = false;
+  return lines.filter((line) => {
+    if (FENCE_LINE.test(line)) { inFence = !inFence; inExclusion = false; return true; }
+    if (inFence) return true;
+    if (line.trim() === "") { inExclusion = false; return true; }
+    if (EXCLUSION_LABEL.test(line)) inExclusion = true;
+    return !inExclusion;
+  });
+}
+
 /**
  * #710: the raw text of a row's OWN declared `## Region` (or inline `Region:`) section, or `null` when
  * the body has no Region section at all. Deliberately returns text, not paths -- `declaredRegionFiles`
@@ -310,7 +364,7 @@ export function extractRegionSection(body) {
     const heading = REGION_HEADING.exec(line);
     if (heading) {
       const inline = heading[1].trim();
-      return inline.length > 0 ? inline : linesUntilNextHeading(lines, index + 1).join("\n");
+      return inline.length > 0 ? inline : withoutExclusionParagraphs(linesUntilNextHeading(lines, index + 1)).join("\n");
     }
     const plain = REGION_INLINE.exec(line);
     if (plain) return plain[1].trim();
