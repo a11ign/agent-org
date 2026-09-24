@@ -189,8 +189,9 @@ import { ANSWER_PREFIX } from "../waiting-condition.mjs";
 /**
  * #2126: ONE OPEN PULL REQUEST'S REVIEW HEALTH. `reviewDecision` is GitHub's own field, which outlives the
  * head it was posted on; `dispute` is `null` unless two DIFFERENT named reviewers disagree at that head.
- * #2254: `authorCommitsSinceReview` counts the NON-MERGE commits committed after the latest refusal, which
- * is what tells "nobody has answered" from "answered, waiting on a re-read". Absent reads as zero.
+ * #2254: `authorCommitsSinceReview` counts the NON-MERGE commits AUTHORED BY THE ANSWERER (the pull
+ * request's author, or a session's `claude` co-author) committed after the latest refusal, which is what
+ * tells "nobody has answered" from "answered, waiting on a re-read". Absent reads as zero.
  * @typedef {{ number: number, head: string, reviewDecision: string | null,
  *             dispute: ReviewDispute | null, authorCommitsSinceReview?: number }} PrReviewHealth
  */
@@ -333,19 +334,48 @@ export function unansweredRefusal(row) {
 const MERGE_HEADLINE = /^Merge (?:branch|pull request|remote-tracking branch)\b/;
 
 /**
- * #2254: HOW MANY COMMITS THE AUTHOR HAS PUSHED SINCE THE LATEST REFUSAL, merges not counted.
+ * The co-author a SESSION's commit carries: the org's attribution rule ends every commit message with a
+ * `Co-Authored-By: Claude ... <noreply@anthropic.com>` trailer, which GitHub resolves to the login `claude`.
+ * It is a second identity because an agent's commit is NOT attributed to the pull request's author login:
+ * measured on #2240 (answer `c0c0e6df` authored by `web-flow` + `claude`, PR author `a11ign-ai-workers`) and
+ * on #2288 itself (`github-actions[bot]` + `claude`). Matching the PR author's login alone would refuse the
+ * very #2165 answer this row exists to recognise.
+ */
+const SESSION_CO_AUTHOR_LOGIN = "claude";
+
+/** @typedef {{ messageHeadline?: string, committedDate?: string, authors?: { login?: string }[] }} PrCommit */
+
+/**
+ * #2254: WHETHER A COMMIT IS THE ANSWERER'S. A bot's or a maintainer's ordinary commit (`Automated
+ * formatting` by `github-actions[bot]`, a human's push) is not the author answering the refusal, so it
+ * carries neither the pull request's author login nor the session co-author and does not count. A commit
+ * with no readable `authors` proves nothing, which is the safe direction: it reads as not an answer.
+ * @param {PrCommit} commit @param {string | undefined} prAuthor @returns {boolean}
+ */
+function isAnswererCommit(commit, prAuthor) {
+  return (commit.authors ?? []).some((author) => author.login !== undefined
+    && (author.login === SESSION_CO_AUTHOR_LOGIN || author.login === prAuthor));
+}
+
+/**
+ * #2254: HOW MANY COMMITS THE AUTHOR HAS PUSHED SINCE THE LATEST REFUSAL, merges and other identities not
+ * counted.
  *
  * THE MERGE EXCLUSION IS THE #2107 CONTROL: the freshness sweep moves the head with `Merge branch 'main'`
  * commits and ZERO author work, so counting them would reopen exactly what #2126 closed. `gh pr list`
  * gives no parent list, so a merge is recognised by its headline -- a conflict-resolving merge the AUTHOR
  * wrote is excluded too, which errs toward refusing, the safe direction.
  *
- * EVERY UNREADABLE INPUT COUNTS ZERO: no refusal with a `submittedAt`, or a commit with no `committedDate`,
- * cannot be placed on the timeline and so proves no answer. Ties are not answers either (`>`, not `>=`).
- * `gh` returns at most the first hundred commits, so a longer pull request can under-count -- also toward
- * refusing.
- * @param {{ reviews?: { state?: string, submittedAt?: string }[],
- *           commits?: { messageHeadline?: string, committedDate?: string }[] }} pr
+ * THE IDENTITY TEST IS THE SECOND CONTROL (`isAnswererCommit`): a non-merge commit from somebody else --
+ * a formatter bot, a maintainer -- is not the author answering, and must not lift the cap.
+ *
+ * EVERY UNREADABLE INPUT COUNTS ZERO: no refusal with a `submittedAt`, or a commit with no `committedDate`
+ * or no `authors`, cannot be placed on the timeline or attributed and so proves no answer. Ties are not
+ * answers either (`>`, not `>=`). `gh` returns at most the first hundred commits, so a longer pull request
+ * can under-count -- also toward refusing.
+ * @param {{ author?: { login?: string },
+ *           reviews?: { state?: string, submittedAt?: string }[],
+ *           commits?: PrCommit[] }} pr
  * @returns {number}
  */
 export function authorCommitsSinceRefusal(pr) {
@@ -356,7 +386,8 @@ export function authorCommitsSinceRefusal(pr) {
     .reduce((latest, time) => Math.max(latest, time), Number.NEGATIVE_INFINITY);
   if (refusedAt === Number.NEGATIVE_INFINITY) return 0;
   return (pr.commits ?? []).filter((commit) => !MERGE_HEADLINE.test(commit.messageHeadline ?? "")
-    && Date.parse(commit.committedDate ?? "") > refusedAt).length;
+    && Date.parse(commit.committedDate ?? "") > refusedAt
+    && isAnswererCommit(commit, pr.author?.login)).length;
 }
 
 /**
@@ -501,11 +532,11 @@ const HEAD_DISPLAY_CHARS = 8;
 export function lookupOpenPrReviewHealth({ run = gh } = {}) {
   return lookup(() => {
     const raw = run(["pr", "list", "--repo", REPO, "--state", "open", "--limit", String(OPEN_PR_LIMIT),
-      "--json", "number,headRefOid,reviewDecision,reviews,commits"]);
+      "--json", "number,headRefOid,reviewDecision,reviews,commits,author"]);
     /** @type {{ number: number, headRefOid?: string, reviewDecision?: string | null,
      *           reviews?: { state?: string, body?: string, submittedAt?: string,
      *                       commit?: { oid?: string } }[],
-     *           commits?: { messageHeadline?: string, committedDate?: string }[] }[]} */
+     *           author?: { login?: string }, commits?: PrCommit[] }[]} */
     const parsed = JSON.parse(raw);
     return parsed.map((pr) => ({ number: pr.number, head: pr.headRefOid ?? "",
       reviewDecision: pr.reviewDecision ?? null, dispute: disputeAtHead(pr),

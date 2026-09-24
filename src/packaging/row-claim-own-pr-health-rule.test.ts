@@ -1035,20 +1035,26 @@ test("#2126: the open pull request's NUMBER is carried, and only while it is OPE
  *
  * THE TWO MUTATIONS THE ROW NAMES, each caught by a DIFFERENT test:
  *  - `authorCommitsSinceRefusal` always positive  -> "#2254 (2)" goes red (the #2107 sweep case is waved through);
- *  - `authorCommitsSinceRefusal` always zero      -> "#2254 (1)" goes red (the #2165 answer is still refused).
+ *  - `authorCommitsSinceRefusal` always zero      -> "#2254 (1)" goes red (the #2165 answer is still refused);
+ *  - `isAnswererCommit` always true               -> "#2254 (6)" goes red (a bot's commit lifts B2).
  */
 const refusedAt = "2026-09-23T21:25:38Z";
 type Health = NonNullable<Parameters<typeof unansweredRefusal>[0]["openPrReview"]>;
 const healthOf = (pr: object) => (lookupOpenPrReviewHealth({ run: () => JSON.stringify([{
-  number: 2240, headRefOid: "bfee37e369", reviewDecision: "CHANGES_REQUESTED",
+  number: 2240, headRefOid: "bfee37e369", reviewDecision: "CHANGES_REQUESTED", author: { login: "a11ign-ai-workers" },
   reviews: [{ state: "CHANGES_REQUESTED", submittedAt: refusedAt, commit: { oid: "16840d7f" },
     body: "**Review of #2240 at `16840d7f`, by reviewer-2: not convinced.**" }], ...pr }]) })?.[0]) as Health;
-const commit = (messageHeadline: string, committedDate: string) => ({ messageHeadline, committedDate });
+// AUTHORS ARE MEASURED, not invented: the sweep's merges are `DanBeckDev` (#2107, #2240); the answer to #2240
+// was `web-flow` + the `claude` co-author, because a session's commit is NOT under the PR author's login.
+const SWEEP = [{ login: "DanBeckDev" }];
+const SESSION = [{ login: "web-flow" }, { login: "claude" }];
+const commit = (messageHeadline: string, committedDate: string, authors: { login: string }[] = SESSION) =>
+  ({ messageHeadline, committedDate, authors });
 const asRow = (review: Health) => ({ ...proposedRow, openPrNumber: 2240, openPrReview: review });
 
 test("#2254 (1): #2165 -- an author commit AFTER the refusal lifts the cap, and no sentence says nobody answered", () => {
   const answered = healthOf({ commits: [
-    commit("Merge branch 'main' into agent/x-2176", "2026-09-23T21:20:00Z"),
+    commit("Merge branch 'main' into agent/x-2176", "2026-09-23T21:20:00Z", SWEEP),
     commit("Rework the assertion the reviewer named", "2026-09-23T21:29:43Z")] });
   assert.equal(answered.authorCommitsSinceReview, 1, "read from the payload, not supplied by the fixture");
   assert.equal(unansweredRefusal(asRow(answered)), null);
@@ -1059,7 +1065,7 @@ test("#2254 (1): #2165 -- an author commit AFTER the refusal lifts the cap, and 
 test("#2254 (2): #2107 -- four bot merges and ZERO author commits after the refusal are STILL refused", () => {
   // The control that keeps this row from reopening what #2126 closed. Every commit is later than the refusal.
   const swept = healthOf({ commits: ["787aecd4", "5a9981d0", "d45c1b00", "6541b1ee"].map((oid, i) => commit(
-    `Merge branch 'main' into agent/state-reading-delivery-clock-2083 (${oid})`, `2026-09-23T21:${30 + i}:00Z`)) });
+    `Merge branch 'main' into agent/state-reading-delivery-clock-2083 (${oid})`, `2026-09-23T21:${30 + i}:00Z`, SWEEP)) });
   assert.equal(swept.authorCommitsSinceReview, 0, "the merges moved the head and answered nothing");
   assert.ok(inBuildReason([asRow(swept)]), "so the refusal stands");
   const mergedPr = healthOf({ commits: [commit("Merge pull request #2266 from a11ign/x", "2026-09-23T22:00:00Z"),
@@ -1068,7 +1074,8 @@ test("#2254 (2): #2107 -- four bot merges and ZERO author commits after the refu
 });
 
 test("#2254 (3): only commits AFTER THE LATEST refusal answer it, and a tie or an unreadable time does not", () => {
-  const at = (headline: string, when: string | undefined) => ({ messageHeadline: headline, committedDate: when });
+  const at = (headline: string, when: string | undefined) =>
+    ({ messageHeadline: headline, committedDate: when, authors: SESSION });
   assert.equal(authorCommitsSinceRefusal({ commits: [at("fix", "2026-09-23T21:29:43Z")], reviews: [
     { state: "CHANGES_REQUESTED", submittedAt: "2026-09-23T21:25:38Z" },
     { state: "CHANGES_REQUESTED", submittedAt: "2026-09-23T21:40:00Z" }] }), 0,
@@ -1092,4 +1099,25 @@ test("#2254 (4): the refusal that remains says what lifts it, and no longer offe
 
 test("#2254 (5): a dispute at the head is still the escape, whatever the commits say", () => {
   assert.equal(unansweredRefusal(asRow({ ...refusedPr, dispute, authorCommitsSinceReview: 0 })), null);
+});
+
+test("#2254 (6): a NON-AUTHOR commit after the refusal answers nothing -- a formatter bot, a maintainer", () => {
+  // The reviewer's probe of 226e6a24: `Automated formatting` after the refusal counted 1 and lifted B2.
+  const later = "2026-09-23T22:00:00Z";
+  const bot = healthOf({ commits: [commit("Automated formatting", later, [{ login: "github-actions[bot]" }])] });
+  assert.equal(bot.authorCommitsSinceReview, 0, "a bot's ordinary commit is not the author answering");
+  assert.ok(inBuildReason([asRow(bot)]), "so the refusal stands");
+  const maintainer = healthOf({ commits: [commit("Tidy the docs", later, [{ login: "DanBeckDev" }])] });
+  assert.equal(maintainer.authorCommitsSinceReview, 0, "nor is somebody else's push");
+  const unattributed = healthOf({ commits: [{ messageHeadline: "fix", committedDate: later }] });
+  assert.equal(unattributed.authorCommitsSinceReview, 0, "a commit with no readable authors proves nothing");
+});
+
+test("#2254 (7): the PR author's OWN login counts -- a human author, or a session committing as itself", () => {
+  const own = healthOf({ commits: [commit("Rework it", "2026-09-23T22:00:00Z", [{ login: "a11ign-ai-workers" }])] });
+  assert.equal(own.authorCommitsSinceReview, 1);
+  assert.equal(unansweredRefusal(asRow(own)), null);
+  const noPrAuthor = healthOf({ author: undefined,
+    commits: [commit("Rework it", "2026-09-23T22:00:00Z", [{ login: "a11ign-ai-workers" }])] });
+  assert.equal(noPrAuthor.authorCommitsSinceReview, 0, "no PR author to match: `undefined` must not equal `undefined`");
 });
