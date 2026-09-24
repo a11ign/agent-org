@@ -10,7 +10,23 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { LIVE_SESSIONS, RETIRED_SESSIONS } from "../arm-pr.mjs";
+import { LIVE_SESSIONS, RETIRED_SESSIONS, isLiveSession } from "../arm-pr.mjs";
+
+// #2403: a spare-family label (`session:worker-9`) is CREATED by `row-claim` when the spawn path allocates the
+// address, and no list names it -- so coverage asks `isLiveSession`, the same reader arm-pr asks. The MISSING
+// half of the test below stays on the finite lists: a family member's label comes and goes with its process, and
+// "every classified label exists" cannot hold of an unbounded set.
+const classifiedLabels = () => new Set([...LIVE_SESSIONS, ...RETIRED_SESSIONS].map((s) => `session:${s}`));
+const unclassifiedLabels = (labels: string[]) => labels
+  .filter((l) => !classifiedLabels().has(l) && !isLiveSession(l.slice("session:".length))).sort();
+
+test("#2403: a generated family label is classified, a non-canonical spelling and a stranger are not", () => {
+  // The opt-in test below cannot show this while no family label exists on GitHub, so the rule is pinned here on
+  // literals: `worker-9` and `worker-12` are the family, `worker-09` is a second spelling of 9, `worker-3` is
+  // below the family's `from`, and `mystery` is on no list.
+  assert.deepEqual(unclassifiedLabels(["session:worker-9", "session:worker-12", "session:worker-09",
+    "session:worker-3", "session:mystery"]), ["session:mystery", "session:worker-09", "session:worker-3"]);
+});
 
 test("#1000: every `session:*` label that EXISTS is classified -- asked of GitHub, skipped honestly", () => {
   // THE COVERAGE HALF, and it cannot be a literal: the question is "which labels exist", which only the
@@ -37,8 +53,8 @@ test("#1000: every `session:*` label that EXISTS is classified -- asked of GitHu
       + "exist. Run this locally with a token before trusting the split.");
     return;
   }
-  const classified = new Set([...LIVE_SESSIONS, ...RETIRED_SESSIONS].map((s) => `session:${s}`));
-  const unclassified = labels.filter((l) => !classified.has(l)).sort();
+  const classified = classifiedLabels();
+  const unclassified = unclassifiedLabels(labels);
   assert.deepEqual(unclassified, [],
     `these \`session:*\` labels exist and are neither live nor retired: ${unclassified.join(", ")}. A new `
     + "session must be added to LIVE_SESSIONS in arm-pr.mjs, or arm-pr will refuse every row it claims.");
