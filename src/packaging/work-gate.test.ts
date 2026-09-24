@@ -217,6 +217,40 @@ test("rows go out OLDEST first -- a queue that hands out its newest starves its 
     ["row-12", "row-45", "row-90"]);
 });
 
+// --- #2296: the `priority` label is READ, and it orders offers without granting a claim ---
+const priorityRow = (n: number, ...extra: string[]) =>
+  ({ number: n, labels: [{ name: "ready" }, ...extra.map((e) => ({ name: e }))] });
+const offered = (rows: unknown[], extra = {}) =>
+  decide({ prs: [], readyRows: rows, ...extra })
+    .filter((o: { cause: string }) => o.cause === "ready-row-unclaimed")
+    .map((o: { subject: string }) => o.subject);
+
+test("#2296: a higher-numbered row labelled `priority` is offered FIRST", () => {
+  assert.deepEqual(offered([priorityRow(50), priorityRow(90, "priority")]), ["row-90", "row-50"]);
+});
+
+test("#2296: a `priority` row is inside the cap even when it is the highest-numbered of nine", () => {
+  const rows = [...Array.from({ length: 8 }, (_, i) => priorityRow(100 + i)), priorityRow(999, "priority")];
+  const names = offered(rows);
+  assert.equal(names.length, MAX_ROW_ORDERS_PER_TICK);
+  assert.equal(names[0], "row-999", "the slice must come AFTER the reorder, or the cap cuts the row it exists to lift");
+  // POSITIVE CONTROL: without the label the same nine rows cut #999, so the assertion above can go red.
+  assert.ok(!offered(rows.map((r) => priorityRow(r.number))).includes("row-999"));
+});
+
+test("#2296: oldest-first holds within each group, priority and not", () => {
+  const rows = [priorityRow(70), priorityRow(30, "priority"), priorityRow(20), priorityRow(80, "priority")];
+  assert.deepEqual(offered(rows), ["row-30", "row-80", "row-20", "row-70"]);
+});
+
+test("#2296: the label reorders offers and does NOT grant a claim -- a shelved `priority` row stays shelved", () => {
+  const shelved = { ...regionRow(1452, ".github/workflows/release.yml"),
+    labels: [{ name: "ready" }, { name: "priority" }] };
+  assert.deepEqual(offered([shelved], { prFiles: [prTouching(1695, ".github/workflows/release.yml")] }), []);
+  const held = priorityRow(1453, "priority", "in-progress");
+  assert.deepEqual(offered([held]), []);
+});
+
 test("the per-tick cap bounds the REPORT, not the parallelism", () => {
   const many = Array.from({ length: 30 }, (_, i) => ({ number: 100 + i, labels: [{ name: "ready" }] }));
   const orders = decide({ prs: [], readyRows: many });

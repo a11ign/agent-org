@@ -617,6 +617,9 @@ export function readReadyRows(run = defaultRun) {
  */
 export const MAX_ROW_ORDERS_PER_TICK = 8;
 
+/** The label `ceo` created for "offer this row before others"; `offerOrder` reads it (#2296). */
+export const PRIORITY_LABEL = "priority";
+
 /** @param {any} x @returns {string[]} */
 const labelsOf = (x) => (x?.labels ?? []).map((/** @type {any} */ l) => String(l?.name ?? l));
 
@@ -3105,7 +3108,25 @@ export function withCommitChains(prs, run = defaultRun) {
 }
 
 /**
- * One order per unclaimed Ready row, oldest first, capped.
+ * THE `priority` LABEL ORDERS OFFERS, AND DOES NOT GRANT (#2296). `ceo` created it 2026-09-24 as "offer this
+ * row before others"; nothing read it, so a priority row waited its turn by row number like any other.
+ * Labelled rows go AHEAD of the rest and this runs BEFORE the per-tick slice, or a high-numbered priority
+ * row would be cut by the very cap it exists to beat. A row `partitionUnclaimed` shelved never reaches
+ * here, so the label cannot walk a row past B4 or a claim label.
+ *
+ * OLDEST FIRST WITHIN EACH GROUP, because a queue that hands out its newest rows first starves its oldest --
+ * and the number is a row number, so ascending IS oldest. Hand assignment stays the fallback.
+ *
+ * @param {any[]} unclaimed
+ */
+function offerOrder(unclaimed) {
+  const isPriority = (/** @type {any} */ row) => labelsOf(row).includes(PRIORITY_LABEL);
+  return [...unclaimed].sort((a, b) =>
+    Number(isPriority(b)) - Number(isPriority(a)) || Number(a.number) - Number(b.number));
+}
+
+/**
+ * One order per unclaimed Ready row, priority rows first then oldest first, capped.
  *
  * SPLIT OUT OF `decide` for the same reason `laneBacklogOrders` was: adding lane routing took that
  * function past `local/max-physical-lines-per-function` 90. `decide` asks what the queue needs;
@@ -3132,10 +3153,7 @@ function rowOrders(unclaimed) {
   // Per-row orders also make the ledger do the right thing. `wake` marks an agent working the moment it
   // prompts it, so several orders in one tick fan out across whoever is free, and a row already woken
   // for is a `causeKey` already spent -- the same row cannot recruit a second engineer on the next tick.
-  // OLDEST FIRST, because a queue that hands out its newest rows first starves its oldest -- and the
-  // number is a row number, so ascending IS oldest.
-  const oldestFirst = [...unclaimed].sort((a, b) => Number(a.number) - Number(b.number));
-  for (const row of oldestFirst.slice(0, MAX_ROW_ORDERS_PER_TICK)) {
+  for (const row of offerOrder(unclaimed).slice(0, MAX_ROW_ORDERS_PER_TICK)) {
     // NO SESSION NAMED. Which engineer takes it depends on who is idle RIGHT NOW, which only
     // `herdr agent list` knows -- so the order names the lane and `wake.mjs` picks the body.
     // ROUTED BY LANE. Every ready row went to `engineers` regardless of its lane, so a `lane:ceo` row
