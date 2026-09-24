@@ -138,6 +138,17 @@ export const PROFILES = Object.freeze({
     why: "the act is one command; telling a repository-wide credential outage from one PR that missed "
       + "its arming event is the judgment, and the cheap answer leaves the outage running",
   }),
+  "verdict-comment-unreviewed": Object.freeze({
+    kind: "codex",
+    model: "gpt-5.6-luna",
+    // LOW, and `draft-awaiting-verdict`'s `medium` is the contrast. That cause asks for a REVIEW -- judgment
+    // over a diff. This one asks the reviewer to re-post a verdict it already formed, through the one script
+    // that turns a comment into a review (#2365): the judgment was spent, and what remains is getting a
+    // first line right. `codex` and not `claude` because the recipient is `reviewer`/`reviewer-2`.
+    effort: "low",
+    why: "the verdict already exists as a comment; the act is one `pr-review-verdict` call, so the "
+      + "reasoning was spent writing it and low effort is enough to re-post it correctly",
+  }),
   "pr-merge-conflict": Object.freeze({
     kind: "claude",
     model: "sonnet",
