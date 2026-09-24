@@ -437,6 +437,32 @@ test("#2279: `wake` offers work to the file's roster by default, and `--roster` 
   assert.deepEqual(rosterFrom(["node", "wake.mjs", "--roster=worker-judge, worker-4"]), ["worker-judge", "worker-4"]);
 });
 
+test("#2279: the roster FOLLOWS THE FILE it is given -- names, order and role filter all come from it", () => {
+  // The two tests above read the REAL file, whose engineers are today's five, so a hardcoded array of those five
+  // passes them (reviewer's mutation at e4ecd910). A fixture whose engineers differ from today's, in a different
+  // order and interleaved with non-engineers, can only be answered by reading the path.
+  const dir = mkdtempSync(join(tmpdir(), "wake-roster-"));
+  try {
+    const path = join(dir, "sessions.json");
+    writeFileSync(path, JSON.stringify({ live: [
+      { name: "zed-spare", role: "engineer" },
+      { name: "an-orchestrator", role: "orchestrator" },
+      { name: "alpha-engineer", role: "engineer" },
+      { name: "a-reviewer", role: "reviewer" },
+      { name: "worker-judge", role: "engineer" },
+    ] }));
+    const expected = ["zed-spare", "alpha-engineer", "worker-judge"];
+
+    assert.deepEqual(engineerRoles(path), expected, "file order, engineers only");
+    assert.deepEqual(rosterFrom(["node", "wake.mjs"], path), expected, "the default follows the file it is handed");
+    assert.deepEqual(rosterFrom(["node", "wake.mjs", "--roster=worker-4"], path), ["worker-4"],
+      "`--roster` still wins over the file");
+    assert.notDeepEqual(expected, REAL_ROSTER, "the fixture differs from the real roster, or it proves nothing");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("#2279 ACCEPTANCE: with all three standing engineers WORKING, `deliver` STARTS a process under worker-4", () => {
   const h = recordingHerdr();
   const standingBusy = agents(Object.fromEntries(STANDING.map((r) => [r, "working"])));
