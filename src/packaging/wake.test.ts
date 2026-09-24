@@ -399,13 +399,14 @@ test("#1952: an order addressed to a NAMED session never starts one, whatever it
 test("#1952: a busy, blocked or agentless role's ADDRESS is never lent to a second process", () => {
   for (const status of ["working", "blocked", "unknown"]) {
     const held = agents({ "worker-capture": status, "worker-judge": status, "worker-tooling": status });
-    const got = spawnableRole(ROW_ORDER, held, ROSTER);
-    assert.match(refusalText(got), /all 3 engineer roles hold a process/);
-    assert.match(refusalText(got), new RegExp(`worker-capture=${status}`),
-      "the refusal names what each role is doing, or nobody can tell a busy org from a broken reader");
+    // #2403: the held address is skipped and the FAMILY supplies the next -- the address is never reused, and
+    // the pool no longer ends at the three, so what is refused here is a process under a held label.
+    assert.deepEqual(spawnableRole(ROW_ORDER, held, ROSTER), { role: "worker-4" });
     const h = recordingHerdr();
-    assert.deepEqual(deliver([ROW_ORDER], held, ROSTER, { run: h.run }).sent, []);
-    assert.deepEqual(h.said("workspace create"), [], `a ${status} role's label is not reused`);
+    assert.deepEqual(deliver([ROW_ORDER], held, ROSTER, { run: h.run }).sent,
+      ["worker-4 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
+    assert.deepEqual(h.said("workspace create").filter((line) => /--label worker-(capture|judge|tooling) /.test(line)), [],
+      `a ${status} role's label is not reused`);
   }
   // The one state that IS lent, so the three refusals above are not vacuous.
   assert.deepEqual(spawnableRole(ROW_ORDER, NOBODY, ROSTER), { role: "worker-capture" });
@@ -415,21 +416,24 @@ test("#1952: a busy, blocked or agentless role's ADDRESS is never lent to a seco
 // role is spawnable, so `spawnableRole` had nothing to start into -- reported live as three UNDELIVERED orders.
 // The roster is the `sessions.json` engineer roles, so the fix is two addresses in that file and no new mechanism.
 const STANDING = ["worker-capture", "worker-judge", "worker-tooling"];
+// #2403: the spares are a FAMILY (`worker-<n>`, n from 4), not five addresses, so the ones that hold a process in a
+// fixture are named here; the roster `route` walks is the addresses the file lists.
 const SPARES = ["worker-4", "worker-5", "worker-6", "worker-7", "worker-8"];
 const REAL_ROSTER = engineerRoles();
 
-test("#2279: the roster is sessions.json's engineer roles, the standing three FIRST and five spares after", () => {
-  assert.deepEqual(REAL_ROSTER, [...STANDING, ...SPARES],
+test("#2279: the roster is sessions.json's engineer addresses, the standing three FIRST, and the spares are one FAMILY after", () => {
+  assert.deepEqual(REAL_ROSTER, STANDING,
     "file order is the offer order, so a spare is started only once every standing role is taken");
   const live = (JSON.parse(readFileSync(
     new URL("../../../../packages/agent-org/docs/roles/sessions.json", import.meta.url), "utf8",
-  )) as { live: { name: string; role: string; brief: string | null }[] }).live;
-  for (const spare of SPARES) {
-    assert.deepEqual(live.find((s) => s.name === spare)?.role, "engineer");
-    assert.equal(live.find((s) => s.name === spare)?.brief, null, "a spare is an address, not a briefed session");
-  }
-  assert.equal(REAL_ROSTER.length, live.filter((s) => s.role === "engineer").length,
-    "no engineer role in the file is missing from what `wake` offers work to");
+  )) as { live: { name: string; role: string; brief: string | null; spare?: boolean;
+    family?: { prefix: string; from: number } }[] }).live;
+  const families = live.filter((s) => s.family !== undefined);
+  assert.equal(families.length, 1, "#2403: ONE entry says `worker-<n>` for n from 4 is a spare engineer role");
+  assert.deepEqual([families[0].role, families[0].spare, families[0].brief, families[0].family],
+    ["engineer", true, null, { prefix: "worker-", from: 4 }], "a spare is an address, not a briefed session");
+  assert.equal(REAL_ROSTER.length, live.filter((s) => s.role === "engineer" && s.family === undefined).length,
+    "no engineer address in the file is missing from what `wake` offers work to");
 });
 
 test("#2279: `wake` offers work to the file's roster by default, and `--roster` still overrides it", () => {
@@ -484,21 +488,18 @@ test("#2279: the SECOND spare is next once worker-4 holds a process, in roster o
   assert.deepEqual(got.sent, ["worker-5 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
 });
 
-test("#2279 POSITIVE CONTROL: worker-4 and worker-5 BOTH working is refused, and the text names the ceiling", () => {
-  // The control for the two tests above: the same order and roster, the only difference being that the spares hold
-  // a process -- so the refusal is the ceiling, not a roster that could never have started anything.
+test("#2403: every address held, INCLUDING worker-4 to worker-8, starts worker-9 -- there is no ceiling to refuse at", () => {
+  // Was #2279's POSITIVE CONTROL for the ceiling: the same order and roster with the five spares all holding a
+  // process was REFUSED, and the text named the list as the ceiling. The chairman ruled on 2026-09-24 that the
+  // pool has none, so the same fixture now allocates the next number and the refusal text is gone.
   const h = recordingHerdr();
-  const everyone = agents(Object.fromEntries(REAL_ROSTER.map((r) => [r, "working"])));
+  const everyone = agents(Object.fromEntries([...REAL_ROSTER, ...SPARES].map((r) => [r, "working"])));
   const got = deliver([ROW_ORDER], everyone, REAL_ROSTER, { run: h.run });
 
-  assert.deepEqual(h.said("workspace create"), [], "no process is started past the ceiling");
-  assert.deepEqual(got.sent, []);
-  assert.equal(got.refused.length, 1);
-  assert.match(got.refused[0], /all 8 engineer roles hold a process \(worker-capture=working, worker-judge=working, /);
-  assert.match(got.refused[0], /worker-4=working, worker-5=working, worker-6=working, worker-7=working, worker-8=working\)/);
-  assert.ok(!/every engineer role already has a process/.test(got.refused[0]),
-    "that wording read as a fact about the standing three, which is the misreading that hid this defect");
-  assert.match(got.refused[0], /ceiling/);
+  assert.deepEqual(got.sent, ["worker-9 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
+  assert.deepEqual(got.refused, []);
+  assert.equal(h.said("workspace create").length, 1);
+  assert.ok(h.said("workspace create")[0].includes("--label worker-9 "));
 });
 
 test("#1952: at most one process per tick, and the second order says so rather than going quiet", () => {
@@ -1930,7 +1931,10 @@ test("#2226: `deliver` skips the refused engineer, wakes the eligible one, and n
 
   const none = recordingHerdr();
   const idle = agents({ "worker-capture": "idle", "worker-judge": "idle", "worker-tooling": "idle" });
-  const refused = deliver([ROW_ORDER], idle, ROSTER, { run: none.run, ineligibleReason: () => "CHANGES_REQUESTED on #2213" });
+  // #2403: with the spare family there is an address to START into, so the row is made unclaimable here -- the
+  // refusal this pins is `route`'s, and it is only reported when the spawn path has also declined.
+  const refused = deliver([ROW_ORDER], idle, ROSTER,
+    { run: none.run, ineligibleReason: () => "CHANGES_REQUESTED on #2213", claimable: () => "held" });
   assert.deepEqual(none.said("agent prompt"), [], "no order reaches a session that will refuse it");
   assert.match(refused.refused[0], /CHANGES_REQUESTED on #2213/, "and the undelivered line says why, not silence");
   assert.deepEqual(refused.sent, []);

@@ -41,7 +41,7 @@ import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
 import { REPO } from "../../../scripts/repo-identity.mjs";
 import { launchGate } from "./board-snapshot-scope.mjs";
 import { worktreeOwner } from "./worktree-owner.mjs";
-import { LIVE_SESSIONS } from "./arm-pr.mjs";
+import { isLiveSession } from "./arm-pr.mjs";
 
 // The header's EXIT CODES, named because 1 and 3 ask a caller for opposite next steps.
 export const EXIT_NOTHING_SENT = 1;
@@ -544,7 +544,7 @@ export function armAfterCreate(mode, rest) {
  */
 export function labelAfterCreate(mode, rest, owner) {
   if (mode !== "create" || owner === null) return [];
-  if (!LIVE_SESSIONS.includes(owner)) return [];
+  if (!isLiveSession(owner)) return [];
   const head = flagAfter(rest, "--head");
   return [["pr", "edit", ...(head ? [head] : []), "--add-label", `session:${owner}`]];
 }

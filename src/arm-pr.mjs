@@ -209,9 +209,49 @@ export function sessionLabelsOf(rowLabels) {
  * The pane a session currently holds is herdr's answer at runtime (`wake.mjs` asks for the workspace list and matches
  * by LABEL), never this file's to remember -- which is why the type below names `name` and nothing else.
  */
-const SESSIONS = /** @type {{ live: { name: string }[], retired: { name: string }[] }} */ (
+const SESSIONS = /** @type {{ live: { name: string, family?: SpareFamily }[], retired: { name: string }[] }} */ (
   JSON.parse(readFileSync(new URL("../docs/roles/sessions.json", import.meta.url), "utf8")));
-export const LIVE_SESSIONS = SESSIONS.live.map((s) => s.name);
+/** The `live` entries that are ONE ADDRESS each -- a family entry (#2403) is a rule for many, listed in {@link SPARE_FAMILIES}. */
+export const LIVE_SESSIONS = SESSIONS.live.filter((s) => s.family === undefined).map((s) => s.name);
+
+/**
+ * #2403: A SPARE FAMILY IS A FACT ABOUT A ROLE, NOT A LONGER LIST. `{ prefix: "worker-", from: 4 }` says every
+ * `worker-<n>` for n from 4 is an instance of the entry's role, so the allocator can name `worker-9` and
+ * `worker-10` without a committed edit for each. Read from the same file as the names, so no reader types one.
+ * @typedef {{ prefix: string, from: number }} SpareFamily
+ */
+/** @type {SpareFamily[]} */
+export const SPARE_FAMILIES = SESSIONS.live.flatMap((s) => (s.family === undefined ? [] : [s.family]));
+
+/**
+ * Pure: which number does this address carry in a family, or `null` when it is not a member?
+ *
+ * CANONICAL DIGITS ONLY, and the reason is that a label is compared as a string everywhere else: `worker-09`
+ * would be a second spelling of `worker-9`, a second address `row-claim`'s B2 would count separately, so it is
+ * not a member. A number below `from` is not one either -- `worker-3` names no roster entry and stays refused.
+ * @param {string} name @param {readonly SpareFamily[]} [families]
+ * @returns {number | null}
+ */
+export function familyNumber(name, families = SPARE_FAMILIES) {
+  for (const { prefix, from } of families) {
+    const digits = name.startsWith(prefix) ? name.slice(prefix.length) : "";
+    const n = /^[1-9]\d*$/.test(digits) ? Number(digits) : NaN;
+    if (Number.isSafeInteger(n) && n >= from) return n;
+  }
+  return null;
+}
+
+/**
+ * Pure: is this name a session that exists -- a listed address, or a member of a spare family? THE ONE QUESTION
+ * every reader of a `session:<name>` label asks (the arm live check, the unknown-label check, `laneReason`,
+ * `pr-open`'s owner label), so that they cannot disagree about whether `worker-9` exists.
+ * @param {string} name
+ * @param {readonly string[]} [live] @param {readonly SpareFamily[]} [families]
+ * @returns {boolean}
+ */
+export function isLiveSession(name, live = LIVE_SESSIONS, families = SPARE_FAMILIES) {
+  return live.includes(name) || familyNumber(name, families) !== null;
+}
 
 /** Retired 2026-09-10 by the Org Reset (#913), kept as labels because merged PRs carry them. Read from the same file. */
 export const RETIRED_SESSIONS = SESSIONS.retired.map((s) => s.name);
@@ -232,7 +272,7 @@ export const RETIRED_SESSIONS = SESSIONS.retired.map((s) => s.name);
  */
 export function unknownSessionLabels(sessionLabels) {
   return sessionLabels
-    .filter((l) => !LIVE_SESSIONS.includes(l.slice("session:".length)))
+    .filter((l) => !isLiveSession(l.slice("session:".length)))
     .map((label) => ({ label, retired: RETIRED_SESSIONS.includes(label.slice("session:".length)) }));
 }
 
@@ -287,7 +327,8 @@ export function labelArmedPr({ number, repo, prBody, run = defaultRun }) {
         + "PRs carry it as attribution, but nothing new may be given it"
       : `${label} is not a session this repository knows`)).join("; ");
     console.error(`arm-pr: REFUSING to label #${number} -- ${why}.\n`
-      + `  The ${LIVE_SESSIONS.length} live sessions (packages/agent-org/docs/roles/sessions.json) are ${LIVE_SESSIONS.join(", ")}.\n`
+      + `  The ${LIVE_SESSIONS.length} live sessions (packages/agent-org/docs/roles/sessions.json) are ${LIVE_SESSIONS.join(", ")}`
+      + `${SPARE_FAMILIES.map(({ prefix, from }) => `, and every ${prefix}<n> for n from ${from}`).join("")}.\n`
       + `  Fix the ROW's own label first: \`gh issue edit <row> --remove-label ${notLive[0].label} `
       + "--add-label session:<a live session>`, then re-run this.");
     // RETURNED, NEVER `process.exitCode` FROM IN HERE: setting the exit code inside a library function

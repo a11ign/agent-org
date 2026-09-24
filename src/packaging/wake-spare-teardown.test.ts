@@ -16,14 +16,13 @@ import { join } from "node:path";
 import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
 import { deliver, engineerRoles }
   from "../wake.mjs";
-import { spareRoles, spareDecision, cycleVerdict, consecutiveClean, endFinishedSpares, spawnEnvironment,
+import { spareRoles, spareInstances, spareDecision, cycleVerdict, consecutiveClean, endFinishedSpares, spawnEnvironment,
   readSpareCycles, sparePathsFrom, registerSpawn, spareWorktrees, SPARE_CLAIM_BOUND_MS, WORKERS_GH_CONFIG_DIR }
   from "../wake.mjs";
 
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));
 const ROSTER = ["worker-capture", "worker-judge", "worker-tooling"];
-const SPARES = ["worker-4", "worker-5", "worker-6", "worker-7", "worker-8"];
 const WAKE_ENTRY = fileURLToPath(new URL("../wake.mjs", import.meta.url));
 const STUB_MODE = 0o755; // the tick invokes `herdr` and `gh` as commands, so the stubs have to be runnable
 
@@ -50,7 +49,9 @@ const ROW_ORDER = {
 const NOBODY = agents({ ceo: "working", "product-manager": "working" });
 
 test("#2323: the engineer roster still offers the standing three before any spare", () => {
-  assert.deepEqual(engineerRoles(), [...ROSTER, ...SPARES]);
+  // #2403: the spare FAMILY is a rule and not an address, so it is not in the list `route` walks; the instances that
+  // exist reach the offer through `withSpareInstances` (wake-spare-family.test.ts).
+  assert.deepEqual(engineerRoles(), ROSTER);
 });
 
 // --- #2323: A SPAWNED ENGINEER IS ENDED WHEN ITS ROW CLOSES, AND ACTS AS THE WORKERS ACCOUNT ---
@@ -83,19 +84,23 @@ function finishedSpare(over: Record<string, unknown> = {}) {
     { label: "worker-tooling", workspace_id: "w9", agent_status: "idle" }], over.refuseClose === true);
   const cycles: unknown[] = [];
   const warned: string[] = [];
+  const listed = agents({ "worker-4": status, "worker-tooling": "idle" });
   const deps = {
-    spares: spareRoles(), registry: { "worker-4": { spawnedAt: T0 - 5 * HOUR, rows: [2323] } },
+    spares: spareInstances(listed), registry: { "worker-4": { spawnedAt: T0 - 5 * HOUR, rows: [2323] } },
     now: T0, run: herdr.run, heldRows: () => [] as number[] | null, rowState: () => "CLOSED" as string | null,
     worktrees: () => [] as { path: string; clean: boolean | "unknown"; merge: "merged" | "not-merged" | "unknown" }[],
     record: (c: unknown) => cycles.push(c), warn: (l: string) => warned.push(l), ...over,
   };
-  const listed = agents({ "worker-4": status, "worker-tooling": "idle" });
   return { got: endFinishedSpares(listed, deps as never), herdr, cycles, warned };
 }
 
-test("#2323 (1): the marks are READ from sessions.json -- worker-4 to worker-8 are spare, the standing three are not", () => {
-  assert.deepEqual(spareRoles(), SPARES);
-  assert.ok(!spareRoles().includes("worker-tooling"), "a standing engineer is never a candidate for ending");
+test("#2323 (1): the marks are READ from sessions.json -- every worker-<n> from 4 is spare, the standing three are not", () => {
+  // #2403: the five addresses became ONE family entry, so no address is named and the instances are found by
+  // their label among the processes that exist.
+  assert.deepEqual(spareRoles(), []);
+  const present = agents({ "worker-tooling": "idle", "worker-4": "idle", "worker-11": "idle", "worker-3": "idle" });
+  assert.deepEqual(spareInstances(present), ["worker-4", "worker-11"],
+    "a family member is a candidate, whatever its number; the standing three and a number below `from` never are");
   const dir = mkdtempSync(join(tmpdir(), "wake-spare-"));
   try {
     const path = join(dir, "sessions.json");
@@ -131,7 +136,7 @@ test("#2323 (1) POSITIVE CONTROLS: the same fixture is NOT ended while the row i
   }
   // A STANDING engineer, idle, with a registry entry that says it held a row: not in `spares`, so never touched.
   const herdr = teardownHerdr([{ label: "worker-tooling", workspace_id: "w9", agent_status: "idle" }]);
-  const got = endFinishedSpares(agents({ "worker-tooling": "idle" }), { spares: spareRoles(),
+  const got = endFinishedSpares(agents({ "worker-tooling": "idle" }), { spares: spareInstances(agents({ "worker-tooling": "idle" })),
     registry: { "worker-tooling": { spawnedAt: T0 - HOUR, rows: [1] } }, now: T0, run: herdr.run,
     heldRows: () => [], rowState: () => "CLOSED", worktrees: () => [], record: () => {}, warn: () => {} });
   assert.deepEqual([herdr.closed(), got.ended], [[], []]);
@@ -175,7 +180,7 @@ test("#2323: a lookup that cannot ask ends NOTHING, a close that fails is not re
 
   const twice = teardownHerdr([{ label: "worker-4", workspace_id: "wD", agent_status: "idle" },
     { label: "worker-4", workspace_id: "wG", agent_status: "idle" }]);
-  const got = endFinishedSpares(agents({ "worker-4": "idle" }), { spares: spareRoles(),
+  const got = endFinishedSpares(agents({ "worker-4": "idle" }), { spares: spareInstances(agents({ "worker-4": "idle" })),
     registry: { "worker-4": { spawnedAt: T0, rows: [2323] } }, now: T0, run: twice.run, heldRows: () => [],
     rowState: () => "CLOSED", worktrees: () => [], record: () => {}, warn: () => {} });
   assert.deepEqual([twice.closed(), got.ended], [[], []]);

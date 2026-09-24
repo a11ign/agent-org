@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join, dirname, relative } from "node:path";
 import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
 import { localImports } from "../../../guards/src/local-import-closure.mjs";
-import { deliver, engineerRoles, engineerEligibility, spawnableRole, EXIT }
+import { deliver, route, withSpareInstances, engineerRoles, engineerEligibility, spawnableRole, EXIT }
   from "../wake.mjs";
 import { activeDrain, drainedRoles, drainInForce, cyclesReport, spawnClaimability, rowOfOrder, DRAINED_SEEN,
   CLEAN_CYCLES_TARGET, readSpareCycles, sparePathsFrom, spareRoles }
@@ -116,13 +116,19 @@ test("#2324 (1) POSITIVE CONTROL: the same fixture with the `drain` field REMOVE
 
 test("#2324: with every spare taken, the drained three are STILL not offered the row, and the refusal names the drain", () => {
   const h = recordingHerdr();
-  const everyone = agents(Object.fromEntries(REAL_ROSTER.map((r) => [r, STANDING.includes(r) ? "idle" : "working"])));
-  const got = deliver([ROW_ORDER], everyone, REAL_ROSTER, { run: h.run, ...drainDeps(drainedRoles()) });
+  // #2403: the spares are a FAMILY, so the five that hold a process are named here, not read off the roster.
+  const spares = ["worker-4", "worker-5", "worker-6", "worker-7", "worker-8"];
+  const everyone = agents(Object.fromEntries([...REAL_ROSTER, ...spares].map((r) => [r, STANDING.includes(r) ? "idle" : "working"])));
+  // The refusal `route` reports is what names the drain, and #2403 means `deliver` no longer STOPS at it: the pool
+  // has no ceiling, so the row goes to a fresh `worker-9` and the drained three are still never prompted.
+  const routed = route("engineers", everyone, withSpareInstances(REAL_ROSTER, everyone), engineerEligibility({ drained: drainedRoles() }));
+  assert.match(String((routed as { refusal: string }).refusal), /no engineer is idle and allowed to claim \(worker-capture=drained \(#2324\), worker-judge=drained \(#2324\), worker-tooling=drained \(#2324\), worker-4=working/);
+  assert.ok(String((routed as { refusal: string }).refusal).includes(DRAINED_SEEN));
 
-  assert.deepEqual(got.sent, []);
-  assert.match(got.refused[0], /no engineer is idle and allowed to claim \(worker-capture=drained \(#2324\), worker-judge=drained \(#2324\), worker-tooling=drained \(#2324\), worker-4=working/);
-  assert.ok(got.refused[0].includes(DRAINED_SEEN));
-  assert.deepEqual(h.said("agent prompt"), [], "the row stays offered rather than falling to a drained engineer");
+  const got = deliver([ROW_ORDER], everyone, REAL_ROSTER, { run: h.run, ...drainDeps(drainedRoles()) });
+  assert.deepEqual(got.sent, ["worker-9 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
+  assert.ok(h.said("agent prompt").every((line) => line.includes("worker-9")),
+    "the row falls to the new instance, never to a drained engineer");
 });
 
 test("#2324: a drained role is never SPAWNED INTO either, even when its own process is absent", () => {
