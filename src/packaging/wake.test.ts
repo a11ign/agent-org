@@ -430,8 +430,11 @@ test("#2279: the roster is sessions.json's engineer addresses, the standing thre
     family?: { prefix: string; from: number } }[] }).live;
   const families = live.filter((s) => s.family !== undefined);
   assert.equal(families.length, 1, "#2403: ONE entry says `worker-<n>` for n from 4 is a spare engineer role");
+  // #2406: was `null` ("an address, not a briefed session"). A spare is still an address with no standing session,
+  // but every engineer address is briefed by the ONE shared file, and `addressed()` tells it to read it.
   assert.deepEqual([families[0].role, families[0].spare, families[0].brief, families[0].family],
-    ["engineer", true, null, { prefix: "worker-", from: 4 }], "a spare is an address, not a briefed session");
+    ["engineer", true, "docs/roles/engineer.md", { prefix: "worker-", from: 4 }],
+    "a spare is an address, but every engineer address is briefed by the shared engineer brief");
   assert.equal(REAL_ROSTER.length, live.filter((s) => s.role === "engineer" && s.family === undefined).length,
     "no engineer address in the file is missing from what `wake` offers work to");
 });

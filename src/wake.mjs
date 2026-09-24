@@ -1551,6 +1551,30 @@ function escalationFor(label) {
   return "product-manager";
 }
 
+/** The one engineer brief, from the repository root: general lessons, the acceptance standard, the resource ban. */
+export const ENGINEER_BRIEF = "packages/agent-org/docs/roles/engineer.md";
+
+/**
+ * The paragraph that tells an ENGINEER to read {@link ENGINEER_BRIEF}, or nothing for any other label.
+ *
+ * MEMBERSHIP IN THE ROSTER, NOT A NAME TEST: the roster is `sessions.json`'s engineer roles, so a role added
+ * there is briefed with no edit here, and `ceo`, `product-manager`, `orchestrator` and a reviewer -- none of
+ * which is an engineer role -- are not told to read a brief written for someone else.
+ *
+ * A SPARE-FAMILY MEMBER IS A MEMBER (#2403): `engineerRoles` lists ADDRESSES, and `worker-9` is listed nowhere, so
+ * an address-only test would leave the instance the pilot spawns -- the one that starts knowing nothing -- the one
+ * engineer never told to read the brief. The family is read from the same file, so it is a rule and not a name test.
+ *
+ * @param {string} label
+ * @param {string[]} engineers
+ * @param {readonly import("./arm-pr.mjs").SpareFamily[]} families
+ */
+function engineerBriefLine(label, engineers, families) {
+  if (!engineers.includes(label) && familyNumber(label, families) === null) return "";
+  return `Before you start, read \`${ENGINEER_BRIEF}\`: the resource ban, the acceptance standard and `
+    + "the habits every engineer is held to. Nothing else tells you them.\n\n";
+}
+
 /**
  * The prompt as the woken session receives it: the order's text, prefixed with WHO IT IS.
  *
@@ -1567,10 +1591,17 @@ function escalationFor(label) {
  * point of this design is that nobody is sitting at that terminal. An agent that blocks on a human it
  * cannot reach is an agent that has stopped.
  *
+ * AND, FOR AN ENGINEER ONLY, THE BRIEF TO READ (#2406). No code read `sessions.json`'s `brief` field, and this
+ * function named no file under `docs/roles`, so a spawned engineer -- which starts knowing nothing -- was
+ * never told the acceptance standard or the resource ban. {@link engineerBriefLine} adds one line for the
+ * roster's engineer roles and for no other label.
+ *
  * @param {{session: string, prompt: string}} order
  * @param {string} label the concrete session this went to
+ * @param {string[]} [engineers] the engineer roles; a parameter so a test can hand it a roster
+ * @param {readonly import("./arm-pr.mjs").SpareFamily[]} [families] the spare families, likewise
  */
-export function addressed(order, label) {
+export function addressed(order, label, engineers = engineerRoles(), families = SPARE_FAMILIES) {
   // `<you>` SUBSTITUTED, not merely explained: the order's own command text carries the placeholder, and
   // an agent that has been told its name still has to edit the command it was handed. Handing it a
   // command it can run is the difference between an instruction and a task.
@@ -1578,6 +1609,7 @@ export function addressed(order, label) {
   return `You are \`${label}\`, an org session in this repository. Use that name wherever a command `
     + `asks which session you are (\`--session=${label}\`).\n\n`
     + `${prompt}\n\n`
+    + engineerBriefLine(label, engineers, families)
     + "Work autonomously to the end: nobody is at this terminal to answer you. If something genuinely "
     + `blocks you, say so on the row and message \`${escalationFor(label)}\` -- never stop and wait on a `
     + "human. If you cannot claim the row (already taken, or the claim refuses), that is an answer: "
