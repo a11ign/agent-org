@@ -14,7 +14,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { render, flowReadings } from "../board-report.mjs";
+import { render, flowReadings, filedAndClosedPerDay } from "../board-report.mjs";
 
 const MINIMAL_FACTS = {
   since: "2026-09-05T00:00:00.000Z",
@@ -123,7 +123,7 @@ test("#2282: filed and closed per day are the fixture's, day by day, with the wi
   const out = flowSection({ rows: ROWS, events: eventMap([...READY, ...CLAIMS]), now: NOW });
   assert.match(out, /\| 2026-09-23 \| 3 \| 0 \| \+3 \|/);
   assert.match(out, /\| 2026-09-24 \| 2 \| 2 \| \+0 \|/);
-  assert.match(out, /last 14 UTC days, today partial/);
+  assert.match(out, /last 14 London days, today partial/);
   assert.match(out, /--limit 1000`, which returned \*\*9\*\* rows\. That is under the cap/);
 });
 
@@ -174,4 +174,14 @@ test("#2282: a listing AT its cap is printed as FLOORS, with how far back it rea
 test("#2282: the report states that it sets no threshold", () => {
   assert.match(flowSection({ rows: ROWS, events: eventMap(CLAIMS), now: NOW }),
     /This report sets no threshold and proposes no ceiling/);
+});
+
+test("#2282: a 23-hour day is not skipped -- 00:10 BST on 30 March steps back 24 hours into the 28th", () => {
+  // Spring forward makes 2026-03-29 23 hours long. A 24-hour step from 00:10 BST on the 30th (23:10Z on the 29th) lands
+  // on 23:10 GMT on the 28th and the whole 29th disappears; a table missing a day reads as a day with nothing filed.
+  const days = filedAndClosedPerDay([], Date.parse("2026-03-29T23:10:00Z")).map((d) => d.day);
+  assert.equal(days.length, 14);
+  assert.ok(days.includes("2026-03-29"), `the 23-hour day is missing from ${days.join(" ")}`);
+  assert.equal(days.at(-1), "2026-03-30");
+  assert.equal(new Set(days).size, 14);
 });

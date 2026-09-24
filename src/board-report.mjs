@@ -283,26 +283,39 @@ const LABEL_EVENTS_PATH = `repos/${REPO}/issues/events?per_page=100`;
 const LABEL_EVENTS_JQ = '.[] | select(.event == "labeled" or .event == "unlabeled")'
   + ' | { number: .issue.number, event: .event, label: .label.name, at: .created_at }';
 
-/** @param {string | null | undefined} iso @returns {string | null} the UTC calendar day, or null for no time */
-function utcDay(iso) {
-  return iso ? new Date(Date.parse(iso)).toISOString().slice(0, 10) : null;
+/** The day is LONDON's, from `editionDay`, like the edition's own title (#1302): a second zone here is the
+ * split that guard exists to stop. @param {string | null | undefined} iso @returns {string | null} */
+function londonDay(iso) {
+  return iso ? editionDay(new Date(Date.parse(iso))) : null;
+}
+
+/** The last `FLOW_DAYS` London days, oldest first. Stepped back in HALF-days and de-duplicated, because a
+ * 23-hour day (spring forward) can be skipped whole by a 24-hour step.
+ * @param {number} now @returns {string[]} */
+function lastDays(now) {
+  /** @type {string[]} */
+  const days = [];
+  for (let step = 0; days.length < FLOW_DAYS; step += 1) {
+    const day = editionDay(new Date(now - step * (DAY_MS / 2)));
+    if (!days.includes(day)) days.unshift(day);
+  }
+  return days;
 }
 
 /**
- * Pure: filed and closed per UTC day over the last `FLOW_DAYS` days, today included (and partial).
+ * Pure: filed and closed per London day over the last `FLOW_DAYS` days, today included (and partial).
  * `closed` is the count of rows whose LATEST close falls on that day: every close, sweeps and not-planned
  * included, so it is not engineer throughput.
  * @param {{ createdAt?: string, closedAt?: string | null, state: string }[]} rows @param {number} now
  * @returns {{ day: string, filed: number, closed: number }[]}
  */
 export function filedAndClosedPerDay(rows, now) {
-  const days = Array.from({ length: FLOW_DAYS }, (_, i) => ({
-    day: /** @type {string} */ (utcDay(new Date(now - (FLOW_DAYS - 1 - i) * DAY_MS).toISOString())), filed: 0, closed: 0 }));
+  const days = lastDays(now).map((day) => ({ day, filed: 0, closed: 0 }));
   const byDay = new Map(days.map((d) => [d.day, d]));
   for (const r of rows) {
-    const filed = byDay.get(utcDay(r.createdAt) ?? "");
+    const filed = byDay.get(londonDay(r.createdAt) ?? "");
     if (filed) filed.filed += 1;
-    const closed = r.state === "CLOSED" ? byDay.get(utcDay(r.closedAt) ?? "") : undefined;
+    const closed = r.state === "CLOSED" ? byDay.get(londonDay(r.closedAt) ?? "") : undefined;
     if (closed) closed.closed += 1;
   }
   return days;
@@ -402,7 +415,7 @@ export function flowPerDay(d, L) {
   const { perDay, listed, capped, listLimit, oldestListed } = d.flow;
   /** @type {(k: "filed" | "closed") => number} */
   const total = (k) => perDay.reduce((/** @type {number} */ n, /** @type {any} */ x) => n + x[k], 0);
-  L.push(`### Filed and closed per day — last ${FLOW_DAYS} UTC days, today partial`);
+  L.push(`### Filed and closed per day — last ${FLOW_DAYS} London days, today partial`);
   L.push(`Read from \`gh issue list --state all --limit ${listLimit}\`, which returned **${listed}** rows. `
     + (capped
       ? `**That is AT the cap, so the listing may be truncated and BOTH columns are FLOORS** (it reaches back `
@@ -411,7 +424,7 @@ export function flowPerDay(d, L) {
     + " **Closed counts every close** (sweeps and not-planned included) by each row's latest `closedAt`, "
     + "so it is not engineer throughput.");
   L.push("");
-  L.push("| day (UTC) | filed | closed | net |");
+  L.push("| day (London) | filed | closed | net |");
   L.push("|---|---|---|---|");
   for (const { day, filed, closed } of perDay) L.push(`| ${day} | ${filed} | ${closed} | ${filed - closed >= 0 ? "+" : ""}${filed - closed} |`);
   L.push(`| **total** | **${total("filed")}** | **${total("closed")}** | **${total("filed") - total("closed")}** |`);
