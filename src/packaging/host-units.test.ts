@@ -2044,6 +2044,42 @@ test("#2332: the LAST declaration wins, as in systemd, and a named allow-entry i
     { humanAllowed: { "a11ign-y.service": "another unit's ruling" } })).length, 1, "and no other");
 });
 
+test("#2332 (review): systemd's OTHER `Environment=` spellings declare the person's account too, and are refused", () => {
+  // The reviewer's two, and the rest of what systemd's word splitting accepts: quotes may open anywhere in
+  // a word, several assignments share a line, a backslash continues a line, and an EMPTY `Environment=`
+  // resets everything before it. A matcher anchored on `Environment=GH_CONFIG_DIR=` read none of these.
+  const human = "/home/agent/.config/gh";
+  for (const line of [`Environment="GH_CONFIG_DIR=${human}"`, `Environment=PATH=/usr/bin GH_CONFIG_DIR=${human}`,
+    `Environment=GH_CONFIG_DIR="${human}"`, `Environment='GH_CONFIG_DIR=${human}'`,
+    `Environment="PATH=/a b" "GH_CONFIG_DIR=${human}" X=1`, `Environment=PATH=/usr/bin \\\n  GH_CONFIG_DIR=${human}`,
+    `Environment = GH_CONFIG_DIR=${human}`, `   Environment=GH_CONFIG_DIR=${human}`]) {
+    const [f, ...rest] = identityDrift(oneUnit(`[Service]\nExecStart=/usr/bin/true\n${line}\n`));
+    assert.deepEqual(rest, [], `${JSON.stringify(line)}: one finding`);
+    assert.equal(f?.problem, "DECLARES THE HUMAN ACCOUNT", `${JSON.stringify(line)} is the person`);
+    assert.match(f.detail, new RegExp(`GH_CONFIG_DIR=${human.replaceAll("/", "\\/")}`), "and names the value it read");
+  }
+});
+
+test("#2332 (review): those spellings are also DECLARATIONS -- a gh-reaching unit using one is not 'undeclared'", () => {
+  // The other half of the same blind spot: `unitsSpendingGh` said `declared: false` for a unit that named
+  // an org account in a quoted or shared line, so a CORRECT unit would have been refused as undeclared.
+  for (const line of ['Environment="GH_CONFIG_DIR=/home/agent/leads/gh"', "Environment=PATH=/usr/bin GH_CONFIG_DIR=/home/agent/workers/gh"]) {
+    assert.deepEqual(identityDrift(oneUnit(`[Service]\nExecStart=/home/agent/.local/bin/opaque.sh\n${line}\n`)), [],
+      `${line}: an org account, declared`);
+    const [u] = unitsSpendingGh(oneUnit(`[Service]\nExecStart=/home/agent/.local/bin/opaque.sh\n${line}\n`));
+    assert.equal(u?.declared, true, `${line} counts as a declaration`);
+  }
+  // CONTROL: the parser does not invent one from a lookalike, a comment, or a value of another variable.
+  for (const line of ["Environment=NOT_GH_CONFIG_DIR=/home/agent/.config/gh", "# Environment=GH_CONFIG_DIR=/home/agent/.config/gh",
+    "Environment=PATH=/home/agent/.config/gh", 'Environment="X=GH_CONFIG_DIR=/home/agent/.config/gh"',
+    "Environment=GH_CONFIG_DIR=/home/agent/.config/gh\nEnvironment="]) {
+    assert.deepEqual(identityDrift(oneUnit(`[Service]\nExecStart=/usr/bin/true\n${line}\n`))
+      .filter((f) => f.problem === "DECLARES THE HUMAN ACCOUNT"), [], `${JSON.stringify(line)} declares no human account`);
+  }
+  const [none] = unitsSpendingGh(oneUnit("[Service]\nExecStart=/home/agent/.local/bin/opaque.sh\nEnvironment=GH_CONFIG_DIR=/home/agent/.config/gh\nEnvironment=\n"));
+  assert.equal(none?.declared, false, "an empty `Environment=` resets the list, so the earlier line is no declaration");
+});
+
 test("#2332: `host:check` REFUSES an undeclared gh unit and a human-declaring one -- the check is wired in", () => {
   // THE MUTANT: dropping `...identityDrift(deps)` from `hostUnitDrift` leaves every direct call above green
   // and the command a reader runs silent about both.

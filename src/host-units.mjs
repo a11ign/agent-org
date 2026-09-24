@@ -104,8 +104,82 @@ export function shippedHostScripts(dir = SHIPPED_DIR, { read = readdirSync } = {
 // ASSERTED OVER THE UNITS ON DISK, never a hand-typed list of three. A fourth unit that spawns `gh`
 // inherits the check the day it is added, which is the only version of this that survives the next row.
 
-/** A `GH_CONFIG_DIR` declaration -- which `gh` config, and so which account, a unit acts as. */
-const IDENTITY_LINE = /^Environment=GH_CONFIG_DIR=/;
+/** The variable that says which `gh` config, and so which account, a unit acts as. */
+const IDENTITY_VARIABLE = "GH_CONFIG_DIR";
+
+/**
+ * `Environment=`'s WORDS, as systemd splits them (`systemd.exec(5)`, `extract_first_word` with UNQUOTE and
+ * CUNESCAPE): whitespace separates, a quote may open ANYWHERE in a word and is dropped, a backslash escapes
+ * the next character. So `"GH_CONFIG_DIR=/x"`, `GH_CONFIG_DIR="/x"` and `PATH=/bin GH_CONFIG_DIR=/x` all
+ * declare the same thing, and a matcher anchored on `Environment=GH_CONFIG_DIR=` read none of them (#2336
+ * review): the person's account could be declared in a spelling `host:check` never looked at.
+ * @param {string} text @returns {string[]}
+ */
+function systemdWords(text) {
+  const words = [];
+  let word = null;
+  let quote = null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === "\\" && i + 1 < text.length) { word = (word ?? "") + escapedCharacter(text[++i]); continue; }
+    if (quote !== null) { if (c === quote) quote = null; else word += c; continue; }
+    if (c === '"' || c === "'") { quote = c; word ??= ""; continue; }
+    if (/\s/.test(c)) { if (word !== null) words.push(word); word = null; continue; }
+    word = (word ?? "") + c;
+  }
+  if (word !== null) words.push(word);
+  return words;
+}
+
+/**
+ * The single character a C-style escape stands for; anything unrecognised stands for itself.
+ * @param {string} c @returns {string}
+ */
+function escapedCharacter(c) {
+  /** @type {Record<string, string>} */
+  const named = { n: "\n", t: "\t", s: " " };
+  return named[c] ?? c;
+}
+
+/**
+ * A unit's LOGICAL lines: a trailing backslash continues onto the next line (systemd joins them with a
+ * space), and a `#` or `;` line is a comment, so a commented-out declaration is not one.
+ * @param {string | null | undefined} unitText @returns {string[]}
+ */
+function logicalLines(unitText) {
+  const lines = [];
+  let pending = "";
+  for (const raw of String(unitText ?? "").split("\n")) {
+    const line = (pending + raw).trim();
+    if (line.endsWith("\\")) { pending = `${line.slice(0, -1)} `; continue; }
+    pending = "";
+    if (line !== "" && !/^[#;]/.test(line)) lines.push(line);
+  }
+  if (pending.trim() !== "") lines.push(pending.trim());
+  return lines;
+}
+
+/**
+ * EVERY `GH_CONFIG_DIR` A UNIT'S `Environment=` LINES LEAVE IN FORCE, in order, each with the logical line
+ * it came from. An `Environment=` with NO value empties the list (systemd's reset), so a declaration
+ * before one is not a declaration. `EnvironmentFile=` is NOT read: the file lives on the host, so a unit
+ * that takes its account from one shows here as declaring none -- which `NO IDENTITY DECLARED` reports.
+ * @param {string | null} unitText @returns {{value: string, line: string}[]}
+ */
+function identityDeclarations(unitText) {
+  const declared = [];
+  for (const line of logicalLines(unitText)) {
+    const assignment = /^Environment\s*=(.*)$/.exec(line);
+    if (!assignment) continue;
+    const words = systemdWords(assignment[1]);
+    if (words.length === 0) { declared.length = 0; continue; }
+    for (const word of words) {
+      const eq = word.indexOf("=");
+      if (eq > 0 && word.slice(0, eq) === IDENTITY_VARIABLE) declared.push({ value: word.slice(eq + 1), line });
+    }
+  }
+  return declared;
+}
 
 /**
  * Every `Exec*=` command a unit runs, with systemd's own prefixes stripped (`-` ignore failure,
@@ -383,7 +457,7 @@ export function unitsSpendingGh({ shippedDir = SHIPPED_DIR, readDir = readdirSyn
     .filter((unit) => unit.endsWith(".service"))
     .flatMap((unit) => {
       const text = String(read(join(shippedDir, unit)));
-      const declared = text.split("\n").some((l) => IDENTITY_LINE.test(l.trim()));
+      const declared = identityDeclarations(text).length > 0;
       const reached = unitEntryPoints(text, rest)
         .map((entry) => ghSpawnReachedFrom(entry, { read, ...rest }))
         .find((hit) => hit !== null);
@@ -412,14 +486,13 @@ const HUMAN_CONFIG_DIR = /^(?:|(?:\/home\/agent|%h|\$HOME|~)\/\.config\/gh\/?)$/
 export const HUMAN_ACCOUNT_ALLOWED = {};
 
 /**
- * The account a unit DECLARES: the LAST `Environment=GH_CONFIG_DIR=` value (systemd applies them in order),
- * or `null` when it declares none.
+ * The account a unit DECLARES: the LAST `GH_CONFIG_DIR` its `Environment=` lines leave in force (systemd
+ * applies them in order), or `null` when it declares none.
  * @param {string} unitText @returns {string | null}
  */
 function declaredConfigDir(unitText) {
-  const values = unitText.split("\n").map((l) => l.trim())
-    .filter((l) => IDENTITY_LINE.test(l)).map((l) => l.replace(IDENTITY_LINE, "").trim());
-  return values.length === 0 ? null : values[values.length - 1];
+  const declared = identityDeclarations(unitText);
+  return declared.length === 0 ? null : declared[declared.length - 1].value;
 }
 
 /**
@@ -564,7 +637,7 @@ function installedOnlyIdentity(shippedText, installedText) {
 
 /** @param {string | null} text @returns {string[]} */
 function identityLines(text) {
-  return String(text ?? "").split("\n").map((line) => line.trim()).filter((line) => IDENTITY_LINE.test(line));
+  return [...new Set(identityDeclarations(text).map(({ line }) => line))];
 }
 
 /**
