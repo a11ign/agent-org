@@ -4177,10 +4177,18 @@ test("#2365 the same pull request with an APPROVED review at head produces NO su
   // THE CONTROL is the test above: same reader, same shape, `reviews` empty, non-empty.
   assert.equal(unreviewed(commentOnly()).length, 1);
   assert.deepEqual(unreviewed(commentOnly(9999, AUTHORED, { reviews: [approvalAt(AUTHORED)] })), []);
-  // `reviewDecision` is what GitHub merges on, and this cause must not contradict it.
-  assert.deepEqual(unreviewed(commentOnly(9999, AUTHORED, { reviewDecision: "APPROVED" })), []);
   // An approval at an OLDER head that is not equivalent is not an approval at this one.
   assert.equal(unreviewed(commentOnly(9999, AUTHORED, { reviews: [approvalAt(AUTHORED_2)] })).length, 1);
+});
+
+test("#2365 a PR-wide `reviewDecision: APPROVED` does not stand in for an approval AT this head (reviewer-2, #2388)", () => {
+  // `main` keeps a stale approval, so `reviewDecision` stays APPROVED while nothing approves the current head.
+  const staleButApproved = commentOnly(9999, AUTHORED, { reviewDecision: "APPROVED", reviews: [approvalAt(AUTHORED_2)] });
+  assert.equal(unreviewed(staleButApproved).length, 1, "the stale approval must not silence the order");
+  // THE CONTROL: the same shape with the approval AT head is silent, so the line above is not a constant.
+  assert.deepEqual(unreviewed({ ...staleButApproved, reviews: [approvalAt(AUTHORED)] }), []);
+  // `reviews` UNREAD stays no order whatever `reviewDecision` says.
+  assert.deepEqual(unreviewed({ ...staleButApproved, reviews: undefined }), []);
 });
 
 test("#2365 `not convinced` at head, a STALE head, and an UNREAD `reviews` field each produce NO such order", () => {

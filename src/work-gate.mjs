@@ -2879,15 +2879,17 @@ function notConvincedOrder(pr, found, { head8, keyHead8 }) {
 /**
  * Whether a review APPROVED this pull request at the head a verdict may sit at: `true`, `false`, or `null`
  * when the payload never carried `reviews` -- unread, which is NOT "no review" (`readPrs`'s rule, #1286: a
- * missing field never becomes an order). `reviewDecision === "APPROVED"` also answers `true`: GitHub itself
- * says the requirement is met, and this cause must never contradict the field `pr-review-blocked` reads.
+ * missing field never becomes an order). `reviewDecision` IS NOT READ HERE, deliberately (reviewer-2 on #2388):
+ * it is PULL-REQUEST-WIDE, and `main` keeps an approval posted at an older head, so it can say APPROVED while
+ * nothing approves THIS one -- `reviewStateOf` documents that it is no statement about the head. Reading it
+ * as an answer would silence the order for exactly a stale approval, so the answer comes from the reviews'
+ * own commit oids. (`pr-review-blocked` keeps reading the field; the two ask different questions.)
  *
  * ANY equivalent head counts, not only the current one: an approval at the authored head is the same work
  * as the merge-from-main after it, exactly as `verdictAmong` treats a verdict.
  * @param {any} pr @param {string[]} heads @returns {boolean | null}
  */
 function approvedAtHead(pr, heads) {
-  if (pr.reviewDecision === "APPROVED") return true;
   if (!Array.isArray(pr.reviews)) return null;
   return pr.reviews.some((/** @type {any} */ r) =>
     r?.state === "APPROVED" && heads.includes(String(r?.commit?.oid ?? "")));
