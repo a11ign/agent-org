@@ -1215,7 +1215,7 @@ export function deliverHandoffs(handoffs, agents, roster,
  * dated deliveries): 454 redundant, of which 447 are re-asks after the window and 7 are inside it. The 7:
  * five on 2026-09-18 before `JUDGMENT_TTL_MS` shipped, two on 2026-09-19 13:24Z one second apart in
  * lockstep (two wake processes over one ledger; cause not established). None since. The 506-of-1,046
- * reported for #2280 was NOT reproduced: 422 of the first 1,046 deliveries. `wake.test.ts` pins the
+ * reported for #2280 was NOT reproduced: 422 of the first 1,046 deliveries. `wake-rehand.test.ts` pins the
  * composed path against the seven.
  */
 export const WAKE_TTL_MS = 20 * 60 * 1000;
