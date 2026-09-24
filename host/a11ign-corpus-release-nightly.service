@@ -22,18 +22,20 @@ Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin
 # failure otherwise is silent, forever.
 Environment=HOME=/home/agent
 
-# WHICH ACCOUNT THIS NIGHTLY SPENDS, DECLARED -- #1974. THE HUMAN ONE, AND THAT IS THE RIGHT ANSWER HERE
-# rather than the exception to it. `corpus:release` writes releases to `a11ign/corpus-backups`, the
-# owner's own private repository; measured 2026-09-22, `a11ign-ai-workers` has `pull` there and NOT
-# `push`, and every release on it since 2026-09-06 was created by `DanBeckDev`. Pointing this unit at the
-# workers config would 403 on `gh release create` and take the offsite backup down.
+# WHICH ACCOUNT THIS NIGHTLY SPENDS, DECLARED -- #1974, AND NOT THE HUMAN ONE (chairman, #1950, #2332).
+# `corpus:release` writes releases to `a11ign/corpus-backups`, which `a11ign-ai-workers` can only READ
+# (measured 2026-09-22: `pull` and not `push`), so until 2026-09-24 this unit declared the person's own
+# config -- and every release since 2026-09-06 was created by `DanBeckDev`, an ADMIN login, by a job nobody
+# was watching. The chairman then created `a11ign-ai-leads` (write, not admin; its own GraphQL pool) and
+# read back `permissions` on this repository AND on `a11ign/corpus-backups`: `push: true, admin: false` on
+# both. That is enough for `gh release create` and no more, so the backup no longer depends on a login that
+# could also delete the repository.
 #
-# So the line does not change who this runs as. It changes the fact from INHERITED to DECLARED: without
-# it the account comes from `~/.local/bin/gh`'s fallback -- a dotfile outside this tree, invisible to the
-# repository -- and the identity the backup depends on is one `chmod` away from being nobody's decision.
-# a11ign-work-tick.service's own #1974 comment is the case where the fallback was WRONG; this is the case
-# where it was right and still unstated. Both are the same defect.
-Environment=GH_CONFIG_DIR=/home/agent/.config/gh
+# The line is still a DECLARATION rather than the wrapper's fallback: a systemd unit has no
+# `HERDR_WORKSPACE_ID`, so left undeclared it would inherit the person's account from a dotfile outside this
+# tree. `host:check` refuses a unit that declares that account (`HUMAN_ACCOUNT_ALLOWED` is empty), and one
+# that reaches `gh` and declares none.
+Environment=GH_CONFIG_DIR=/home/agent/leads/gh
 
 # #1911: `lab:fetch` needs A11Y_PVE_KEY (and A11Y_CONTROL_HOST_FILE), which a shell gets from its .zshenv and a
 # unit never does -- the unit failed every firing without them. The `-` is deliberate: a missing file is
