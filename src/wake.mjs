@@ -43,6 +43,10 @@ import { inBuildReason, isInBuild, unansweredRefusal, lookupHeldRows, lookupOthe
 import { parseWorktreeList, isPrimaryWorktree, isWorkingTreeClean, mergeStatus, detachedMergeStatus }
   from "./prune-worktrees.mjs";
 import { worktreeOwner } from "./worktree-owner.mjs";
+// THE CLAIM'S OWN CHECKS, called rather than restated (#2324): a spawn is refused for the reasons the claim
+// would refuse the row, and a copy of either rule here would go stale the next time the rule changed.
+import { lookupBlockedByEdge, blockedByEdgeReason } from "./row-claim/blocked-by-edge-rule.mjs";
+import { fileOverlapReason, lookupMyRegionFiles, lookupOpenPrFiles } from "./row-claim/file-overlap-rule.mjs";
 // The scrubbing helper, RELATIVE like the imports above: a leaked GIT_DIR must not redirect the teardown's
 // `git worktree list` onto another repository (git-spawn-classification.test.ts).
 import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
@@ -216,14 +220,21 @@ export function b2Verdict(rows) {
  * is the claim's behaviour and is left as it is: the dispute is discovered here a few minutes earlier than the
  * claim would discover it, and nothing here can make it happen twice.
  *
- * @param {{ lookup?: typeof lookupHeldRows, warn?: (line: string) => void }} [deps]
+ * A DRAINED ROLE IS REFUSED BEFORE ANY LOOKUP (#2324). `route` asks this only for an order addressed to the
+ * POOL, and the pool's one cause is `ready-row-unclaimed` -- a NEW row -- so this is where "claims no new rows"
+ * lives, while an order about a row the role already holds is addressed to it by NAME and never reaches here.
+ * It costs no API call: the drain is a fact about the role, not about what it holds.
+ *
+ * @param {{ lookup?: typeof lookupHeldRows, warn?: (line: string) => void, drained?: readonly string[] }} [deps]
+ *   `drained` is the roles the drain holds back NOW ({@link activeDrain}) -- already empty once a cycle failed
  * @returns {(label: string) => string | null}
  */
-export function engineerEligibility({ lookup = lookupHeldRows,
+export function engineerEligibility({ lookup = lookupHeldRows, drained = [],
   warn = (line) => { process.stderr.write(`${line}\n`); } } = {}) {
   /** @type {Map<string, string | null>} */
   const memo = new Map();
   return (label) => {
+    if (drained.includes(label)) return DRAINED_SEEN;
     if (memo.has(label)) return memo.get(label) ?? null;
     // No row is excluded: the order's row is unclaimed, so it is not one of the session's held rows.
     const rows = lookup(label, 0, {});
@@ -390,12 +401,16 @@ export function isPilotOrder(order) {
  * standing three. A spare is ENDED when its row closes (`endFinishedSpares`, #2323), so the address is free
  * again for the next row's instance.
  *
+ * A DRAINED ROLE IS NEVER SPAWNED INTO (#2324), even when absent: `row-claim` refuses it a claim, so an instance
+ * started under its address could read the order, be refused, and sit there holding the address.
+ *
  * @param {{session: string, cause?: string}} order
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster engineer labels, in the order they should be offered work
+ * @param {readonly string[]} [drained] the roles the drain holds back now
  * @returns {{role: string} | {refusal: string}}
  */
-export function spawnableRole(order, agents, roster) {
+export function spawnableRole(order, agents, roster, drained = []) {
   if (order.session !== "engineers") {
     return { refusal: `no spawn: the pilot covers the engineer pool, and this order is addressed to `
       + `"${order.session}"` };
@@ -404,7 +419,7 @@ export function spawnableRole(order, agents, roster) {
     return { refusal: `no spawn: "${order.cause ?? "an order carrying no cause"}" is not a pilot cause `
       + `(${SPAWN_CAUSES.join(", ")})` };
   }
-  const role = roster.find((label) => !agents.some((a) => a.label === label));
+  const role = roster.find((label) => !agents.some((a) => a.label === label) && !drained.includes(label));
   if (!role) {
     const seen = roster.map((label) => `${label}=${agents.find((a) => a.label === label)?.status}`).join(", ");
     return { refusal: `no spawn: all ${roster.length} engineer roles hold a process (${seen}) -- that is the `
@@ -499,16 +514,23 @@ function closedNote(run, workspace) {
  * a spawned session is told who it is by the same line that tells a standing one -- and a spawn whose
  * prompt is refused leaves a live, idle session the next tick routes to normally.
  *
- * @param {{session: string, cause?: string}} order
+ * @param {{session: string, causeKey: string, cause?: string}} order
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster
- * @param {{run?: (args: string[]) => string, env?: Record<string, string>}} [deps]
+ * @param {{run?: (args: string[]) => string, env?: Record<string, string>, drained?: readonly string[],
+ *   claimable?: (order: {causeKey: string}) => string | null}} [deps]
+ *   `claimable` says why the CLAIM would refuse this order's row, or `null` -- see {@link spawnClaimability}
  * @returns {{label: string, workspace: string, profile: {kind: string, model: string, effort: string}}
  *   | {refusal: string}}
  */
-function spawnWorker(order, agents, roster, { run = defaultRun, env = spawnEnvironment() } = {}) {
-  const role = spawnableRole(order, agents, roster);
+function spawnWorker(order, agents, roster, { run = defaultRun, env = spawnEnvironment(), drained = [],
+  claimable = () => null } = {}) {
+  const role = spawnableRole(order, agents, roster, drained);
   if ("refusal" in role) return role;
+  // AFTER THE ROLE AND BEFORE THE PANE: a pane is the first thing this opens, and "no instance is created to be
+  // refused and sit idle" (#2324) means the answer is known before it exists.
+  const unclaimable = claimable(order);
+  if (unclaimable !== null) return { refusal: `no spawn: ${unclaimable}` };
   const pane = openPane(run, role.role, env);
   if ("refusal" in pane) return pane;
   // `spawnableRole` has already refused anything whose cause is not in `SPAWN_CAUSES`, so by here the
@@ -1809,7 +1831,8 @@ export function clearContext(run, label) {
  * @param {{label: string, status: string}[]} live
  * @param {string[]} roster
  * @param {{run: (args: string[]) => string, spawned: number, ineligibleReason?: (label: string) => string | null,
- *   env?: Record<string, string>, registerSpawn?: (role: string) => void}} deps
+ *   env?: Record<string, string>, registerSpawn?: (role: string) => void, drained?: readonly string[],
+ *   claimable?: (order: {causeKey: string}) => string | null}} deps
  *   `spawned` is how many processes this tick has already started -- see `MAX_SPAWNS_PER_TICK`;
  *   `ineligibleReason` is {@link route}'s; `env` is the spawn's environment ({@link spawnEnvironment})
  * @returns {{label: string, profile?: {kind: string, model: string, effort: string}} | {refusal: string}}
@@ -1822,7 +1845,8 @@ function targetFor(order, live, roster, deps) {
     return { refusal: `${routed.refusal}, and this tick has already started ${deps.spawned} `
       + `(MAX_SPAWNS_PER_TICK is ${MAX_SPAWNS_PER_TICK})` };
   }
-  const spawn = spawnWorker(order, live, roster, { run: deps.run, env: deps.env });
+  const spawn = spawnWorker(order, live, roster,
+    { run: deps.run, env: deps.env, drained: deps.drained, claimable: deps.claimable });
   if ("refusal" in spawn) return { refusal: `${routed.refusal}; ${spawn.refusal}` };
   // REGISTERED BEFORE THE PROMPT, because a refused prompt leaves the process running (see `deliver`).
   deps.registerSpawn?.(spawn.label);
@@ -1841,13 +1865,15 @@ function targetFor(order, live, roster, deps) {
  * @param {string[]} roster
  * @param {{run?: (args: string[]) => string, record?: (key: string, recipient?: string) => void,
  *          counts?: Map<string, number>, ineligibleReason?: (label: string) => string | null,
- *          env?: Record<string, string>, registerSpawn?: (role: string) => void}} [deps]
+ *          env?: Record<string, string>, registerSpawn?: (role: string) => void, drained?: readonly string[],
+ *          claimable?: (order: {causeKey: string}) => string | null}} [deps]
  *   `registerSpawn` is told of every process this tick STARTS, so the teardown can tell an instance that has
- *   not claimed yet from one that finished ({@link endFinishedSpares})
+ *   not claimed yet from one that finished ({@link endFinishedSpares}); `drained` is the roles the drain holds
+ *   back now, which a spawn must not start into; `claimable` is the spawn's precheck ({@link spawnClaimability})
  * @returns {{sent: string[], refused: string[], stuck: string[]}}
  */
 export function deliver(orders, agents, roster,
-  { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn } = {}) {
+  { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable } = {}) {
   const sent = [];
   const refused = [];
   const stuck = [];
@@ -1862,7 +1888,8 @@ export function deliver(orders, agents, roster,
       stuck.push(`${order.causeKey}: delivered ${already} times and the cause is still true`);
       continue;
     }
-    const target = targetFor(order, live, roster, { run, spawned, ineligibleReason, env, registerSpawn });
+    const target = targetFor(order, live, roster,
+      { run, spawned, ineligibleReason, env, registerSpawn, drained, claimable });
     if ("refusal" in target) {
       refused.push(`${order.causeKey}: ${target.refusal}`);
       continue;
@@ -2064,6 +2091,142 @@ export function readSpareCycles(path, read = readFileSync) {
 /** Where the instance registry and the cycle ledger live: beside the delivery ledger, with the org's other state. */
 export function sparePathsFrom(/** @type {string} */ ledgerPath) {
   return { registry: `${dirname(ledgerPath)}/spare-instances.json`, cycles: `${dirname(ledgerPath)}/spare-cycles` };
+}
+
+// --- #2324: THE STANDING ENGINEERS DRAIN, AND A SPAWN IS ONLY MADE FOR A ROW THAT WOULD PASS THE CLAIM ---
+//
+// DRAIN, DON'T RETIRE (`ceo`, #1950 ruling b). The three standing engineers keep their panes, their roles and
+// every order about a row they hold; they stop being OFFERED new rows, so every new row goes through spawn and
+// #1950's 20 clean cycles build at full throughput. `sessions.json`'s `drain` mark is the fact, and it lifts
+// itself: see {@link drainInForce}.
+
+const SESSIONS_FILE = new URL("../docs/roles/sessions.json", import.meta.url);
+
+/** What `route`'s refusal calls a drained engineer -- short enough to sit in a `seen` list beside a status. */
+export const DRAINED_SEEN = "drained (#2324)";
+
+/** #1950's bar: consecutive clean spawn-and-teardown cycles before `ceo` files the retirement row. */
+export const CLEAN_CYCLES_TARGET = 20;
+
+/**
+ * The engineer roles `sessions.json` MARKS `drain`, in file order. READ, NOT TYPED, for #2279's reason, and a
+ * ROLE fact like `spare` (`_rolesNotProcesses`): it names no pane.
+ *
+ * @param {string | URL} [path] the roster file; a parameter so a test can hand it a fixture
+ * @returns {string[]}
+ */
+export function drainedRoles(path = SESSIONS_FILE) {
+  const { live } = /** @type {{ live: { name: string, role: string, drain?: boolean }[] }} */ (
+    JSON.parse(readFileSync(path, "utf8")));
+  return live.filter((s) => s.role === "engineer" && s.drain === true).map((s) => s.name);
+}
+
+/**
+ * Is the drain in force, given the cycle ledger (oldest first)?
+ *
+ * IT LIFTS ITSELF ON A FAILED CYCLE, which is the chairman's safety condition for having no fixed cap: the drain
+ * is in force only while the NEWEST line is clean, so one failure hands the standing three their claims back
+ * with nobody's edit. Re-arming it is `ceo`'s and is an edit to `sessions.json`.
+ *
+ * AN EMPTY LEDGER KEEPS IT IN FORCE. Nothing has failed, and nothing else would ever start the count: with the
+ * drain off until a first line existed, the standing three would take every row and no cycle would be run.
+ * (`spawn:cycles` still refuses to print that as a count -- the two questions are different.) A line that could
+ * not be parsed reads as a failure (`readSpareCycles`), so a corrupt ledger lifts the drain rather than hiding it.
+ *
+ * @param {Pick<SpareCycle, "clean">[]} ledger
+ * @returns {boolean}
+ */
+export function drainInForce(ledger) {
+  return ledger.length === 0 || ledger[ledger.length - 1].clean === true;
+}
+
+/**
+ * The roles the drain holds back RIGHT NOW: the file's drained roles while {@link drainInForce}, none once a
+ * cycle failed. The one reader `route`, the spawn and `row-claim` all take, so they cannot disagree.
+ *
+ * @param {{ cycles: string, sessions?: string | URL, read?: typeof readFileSync }} paths `cycles` is the
+ *   ledger file ({@link sparePathsFrom})
+ * @returns {string[]}
+ */
+export function activeDrain({ cycles, sessions = SESSIONS_FILE, read = readFileSync }) {
+  return drainInForce(readSpareCycles(cycles, read)) ? drainedRoles(sessions) : [];
+}
+
+/**
+ * `spawn:cycles` -- #1950's 20 as a command's output rather than a comment.
+ *
+ * AN EMPTY LEDGER IS NOT `0` and exits non-zero: "no cycle has run" and "the run was broken at zero" are
+ * different statements, and a count that printed `0` for the first would be read by whoever is deciding whether
+ * the condition is near. The last line is printed verbatim, so the run length can be checked against it.
+ *
+ * @param {SpareCycle[]} ledger oldest first @param {string[]} drained the drain `sessions.json` marks
+ * @returns {{ exit: number, stdout: string, stderr: string }}
+ */
+export function cyclesReport(ledger, drained) {
+  const { run, empty } = consecutiveClean(ledger);
+  if (empty) {
+    return { exit: EXIT.ATTENTION, stdout: "", stderr: "spawn:cycles: the ledger is EMPTY -- no spawn-and-teardown "
+      + "cycle has ended yet, so nothing has been counted. That is NOT 0 of "
+      + `${CLEAN_CYCLES_TARGET}: a run of zero would mean a cycle failed.\n` };
+  }
+  const last = ledger[ledger.length - 1];
+  const held = drainInForce(ledger)
+    ? `IN FORCE on ${drained.join(", ") || "no role (no role is marked drain)"}`
+    : "LIFTED -- the last cycle was not clean, so the standing engineers claim again until `ceo` re-arms it";
+  return { exit: 0, stderr: "", stdout: `clean cycles in the current run: ${run} of ${CLEAN_CYCLES_TARGET}\n`
+    + `last ledger line: ${JSON.stringify(last)}\n`
+    + `ledger lines: ${ledger.length}\n`
+    + `drain: ${held}\n` };
+}
+
+/**
+ * The row an order is about, from its `causeKey` (`engineers/ready-row-unclaimed/<row>`), or `null`.
+ * @param {{ causeKey: string }} order @returns {number | null}
+ */
+export function rowOfOrder(order) {
+  const found = /\/ready-row-unclaimed\/(\d+)$/.exec(order.causeKey);
+  return found ? Number(found[1]) : null;
+}
+
+/**
+ * SPAWN ONLY FOR A ROW THAT WOULD PASS THE CLAIM (`ceo`, #1950 ruling d): the answer to "would the claim refuse
+ * this row" for an order about to start a process, so no instance is created to be refused and sit idle.
+ *
+ * THE CLAIM'S OWN CHECKS, CALLED: #1886's `blockedBy` edge and B4's file overlap, through the same readers
+ * `row-claim` uses (`blockedByEdgeReason`, `fileOverlapReason`). B2 is not asked -- a fresh instance holds no
+ * rows. `lane:` and `runner:` are not asked either: the gate already routes by lane, and a `lane:ceo` order is
+ * not addressed to the pool.
+ *
+ * EACH REFUSAL NAMES ITS CHECK, because the log line is the only place a row that keeps not spawning can be
+ * explained. The row stays OFFERED: a derived cause is not recorded for a refusal, so the next tick asks again
+ * and the row spawns once the edge closes or the other pull request merges.
+ *
+ * A LOOKUP THAT CANNOT ASK OFFERS THE ROW, as the claim does (B2/B4/#1886 all fail open): a guard that stops all
+ * spawning when GitHub is down is bypassed and then never consulted. It is SAID. The open-PR list is read once
+ * per tick and only when a row has a Region to compare -- it is the expensive read.
+ *
+ * @param {{ run?: (args: string[]) => string, warn?: (line: string) => void }} [deps]
+ * @returns {(order: { causeKey: string }) => string | null} why the claim would refuse, or `null`
+ */
+export function spawnClaimability({ run = defaultGh,
+  warn = (line) => { process.stderr.write(`${line}\n`); } } = {}) {
+  /** @type {ReturnType<typeof lookupOpenPrFiles> | undefined} */
+  let openPrs;
+  return (order) => {
+    const row = rowOfOrder(order);
+    if (row === null) return `cannot tell which row "${order.causeKey}" is about, so cannot ask the claim's checks`;
+    const blocked = blockedByEdgeReason(lookupBlockedByEdge(row, { run }));
+    if (blocked) return `#${row} would be refused at the claim by the \`blockedBy\` check (#1886): ${blocked}`;
+    const mine = lookupMyRegionFiles(row, { run });
+    if (mine === null || mine.length === 0) return null;
+    openPrs ??= lookupOpenPrFiles({ run, log: warn });
+    if (openPrs === null) {
+      warn(`wake: could not read the open pull requests -- offering #${row} a spawn anyway (B4 fails open).`);
+      return null;
+    }
+    const { reason } = fileOverlapReason(mine, openPrs, { rowNumber: row });
+    return reason ? `#${row} would be refused at the claim by the file-overlap check (B4): ${reason}` : null;
+  };
 }
 
 /**
@@ -2272,6 +2435,21 @@ export function tearDownSpares(agents, ledgerPath, say = (line) => process.stder
   }
 }
 
+/**
+ * The roles the drain holds back this tick. A ledger or roster that cannot be READ lifts the drain and says so:
+ * an unreadable file is not a clean bill, and the alternative -- routing on a guess -- is what a drain that could
+ * strand every new row would do.
+ * @param {string} cyclesPath @returns {string[]}
+ */
+function drainNow(cyclesPath) {
+  try {
+    return activeDrain({ cycles: cyclesPath });
+  } catch (err) {
+    process.stderr.write(`wake: could not read the drain (${firstLine(err)}) -- treating it as LIFTED this tick.\n`);
+    return [];
+  }
+}
+
 /** @param {number} row @returns {string | null} */
 function rowStateOf(row) {
   try {
@@ -2281,11 +2459,24 @@ function rowStateOf(row) {
   }
 }
 
+/**
+ * `npm run spawn:cycles`: print the current clean run and the ledger's last line, from the same ledger the
+ * teardown writes. Kept out of `main` so a `--cycles` call never reads the tick's stdin.
+ * @param {string} ledgerPath
+ */
+function printCycles(ledgerPath) {
+  const report = cyclesReport(readSpareCycles(sparePathsFrom(ledgerPath).cycles), drainedRoles());
+  process.stdout.write(report.stdout);
+  process.stderr.write(report.stderr);
+  process.exit(report.exit);
+}
+
 function main() {
-  refuseUnknownFlags(["--ledger", "--roster"], {
+  refuseUnknownFlags(["--ledger", "--roster", "--cycles"], {
     entry: import.meta.url, command: "node packages/agent-org/src/wake.mjs",
   });
   const ledgerPath = ledgerPathFrom(process.argv);
+  if (process.argv.includes("--cycles")) printCycles(ledgerPath);
   // Beside the ledger: one directory holds the org's runtime state.
   const emittedPath = `${dirname(ledgerPath)}/wake-emitted`;
   const queuePath = handoffQueuePath(ledgerPath);
@@ -2339,9 +2530,10 @@ function main() {
   }
 
   const spares = sparePathsFrom(ledgerPath);
+  const drained = drainNow(spares.cycles);
   const { sent, refused: gateRefused, stuck } = deliver(todo, free, roster, { record,
-    counts: deliveryCounts(ledgerPath), ineligibleReason: engineerEligibility(),
-    registerSpawn: (role) => registerSpawn(spares, role) });
+    counts: deliveryCounts(ledgerPath), ineligibleReason: engineerEligibility({ drained }),
+    registerSpawn: (role) => registerSpawn(spares, role), drained, claimable: spawnClaimability() });
   const refused = [...handed.refused, ...gateRefused];
   for (const line of [...handed.sent, ...sent]) process.stdout.write(`WOKE ${line}\n`);
   for (const line of stuck) process.stderr.write(`STUCK ${line}\n`);
