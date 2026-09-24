@@ -629,6 +629,21 @@ export function handoffId(session, prompt) {
 }
 
 /**
+ * DID THE SENDER DECLARE THAT THIS ORDER ASKS FOR AN ANSWER (#2222)?
+ *
+ * ONLY A LITERAL `true` COUNTS, and an order with no field -- one written before the flag existed, or by a
+ * sender that never adopted it -- is FYI. That default is the row's own ruling: refusing an undeclared
+ * order would block every sender until all of them had adopted the flag, which is how a protocol change
+ * strands the queue it was meant to fix. The default is stated to the reader ({@link decisionHeader}) so
+ * it is never a silent one.
+ *
+ * @param {unknown} order @returns {boolean}
+ */
+export function declaresDecision(order) {
+  return /** @type {any} */ (order)?.decision === true;
+}
+
+/**
  * A DELIVERY IS A LINE OF ITS OWN, NEVER THE ABSENCE OF ONE. See {@link dropHandoffs}.
  * @param {unknown} entry @returns {string | null} the id this line retires, or `null` if it queues one
  */
@@ -656,7 +671,7 @@ function deliveredId(entry) {
  *
  * @param {string} path
  * @param {(p: any, enc: any) => any} [read]
- * @returns {{id: string, session: string, prompt: string, queuedAt: number}[]}
+ * @returns {{id: string, session: string, prompt: string, queuedAt: number, decision?: boolean}[]}
  */
 export function readHandoffs(path, read = readFileSync) {
   let raw;
@@ -680,7 +695,16 @@ export function readHandoffs(path, read = readFileSync) {
     }
     // FIRST WINS, so `queuedAt` is when the author FIRST asked -- the age that matters is how long the
     // order has been waiting, not when a duplicate call restated it.
-    if (!byId.has(entry.id)) byId.set(entry.id, entry);
+    const first = byId.get(entry.id);
+    if (!first) byId.set(entry.id, entry);
+    // ...EXCEPT THAT A DECLARED DECISION IS NEVER LOST TO AN EARLIER DUPLICATE (#2222). The id hashes the
+    // target and the text, not the declaration, so an author who sent a report as FYI and re-sent the same
+    // words with `--decision` sent ONE order twice. Letting the first line win would silently demote it --
+    // the dangerous direction, and the whole reason the declaration exists. Only the flag is taken from
+    // the later line: the wait is still measured from the first.
+    else if (declaresDecision(entry) && !declaresDecision(first)) {
+      byId.set(entry.id, { ...first, decision: true });
+    }
   }
   return [...byId.values()];
 }
@@ -692,13 +716,18 @@ export function readHandoffs(path, read = readFileSync) {
  * short `O_APPEND` write is atomic, and two authors queueing at once both land. Duplicates are collapsed
  * on READ by `handoffId`, which is the same answer without the race.
  *
+ * `decision` IS THE SENDER'S DECLARATION (#2222): `true` says this order asks its reader for an answer.
+ * It is written on EVERY entry, `false` included, so the queue can be read for decisions owed
+ * ({@link handoffBacklog}) rather than inferred from prose. An entry written before the field existed has
+ * none, and {@link declaresDecision} reads that as FYI -- the stated default, not a silent one.
+ *
  * @param {string} path
- * @param {{session: string, prompt: string, now?: number,
+ * @param {{session: string, prompt: string, decision?: boolean, now?: number,
  *          write?: typeof writeFileSync, mkdir?: typeof mkdirSync}} order
  */
-export function queueHandoff(path, { session, prompt, now = Date.now(),
+export function queueHandoff(path, { session, prompt, decision = false, now = Date.now(),
   write = writeFileSync, mkdir = mkdirSync }) {
-  const entry = { id: handoffId(session, prompt), session, prompt, queuedAt: now };
+  const entry = { id: handoffId(session, prompt), session, prompt, queuedAt: now, decision };
   mkdir(dirname(path), { recursive: true });
   write(path, `${JSON.stringify(entry)}\n`, { flag: "a" });
   return entry;
@@ -822,17 +851,23 @@ export function waitedFor(ms) {
  * that reorders itself between ticks cannot be diffed, and `route`'s own comment makes the same argument
  * about picks that cannot be reproduced.
  *
- * @param {readonly {session: string, queuedAt?: number}[]} handoffs @param {number} [now]
- * @returns {{session: string, waiting: number, oldestMs: number, stale: number}[]}
+ * `decisions` IS HOW MANY OF THEM DECLARE THEY ASK FOR AN ANSWER (#2222) -- the queue read for what is
+ * OWED rather than only how deep it is. It counts DECLARATIONS and nothing else: an undeclared order is
+ * FYI ({@link declaresDecision}), so this is a floor on what is owed, never a count of it.
+ *
+ * @param {readonly {session: string, queuedAt?: number, decision?: boolean}[]} handoffs @param {number} [now]
+ * @returns {{session: string, waiting: number, oldestMs: number, stale: number, decisions: number}[]}
  */
 export function handoffBacklog(handoffs, now = Date.now()) {
-  /** @type {Map<string, {session: string, waiting: number, oldestMs: number, stale: number}>} */
+  /** @type {Map<string, {session: string, waiting: number, oldestMs: number, stale: number,
+   *   decisions: number}>} */
   const bySession = new Map();
   for (const h of handoffs) {
     const waited = Math.max(0, now - Number(h.queuedAt ?? now));
     const row = bySession.get(h.session)
-      ?? { session: h.session, waiting: 0, oldestMs: 0, stale: 0 };
+      ?? { session: h.session, waiting: 0, oldestMs: 0, stale: 0, decisions: 0 };
     row.waiting += 1;
+    if (declaresDecision(h)) row.decisions += 1;
     row.oldestMs = Math.max(row.oldestMs, waited);
     if (waited >= HANDOFF_STALE_MS) row.stale += 1;
     bySession.set(h.session, row);
@@ -850,7 +885,8 @@ export function handoffBacklog(handoffs, now = Date.now()) {
  * repo's Assertions rule -- the positive control is `handoffBacklog`'s own non-empty case, pinned beside
  * it).
  *
- * @param {readonly {session: string, waiting: number, oldestMs: number, stale: number}[]} backlog
+ * @param {readonly {session: string, waiting: number, oldestMs: number, stale: number,
+ *   decisions?: number}[]} backlog
  * @returns {string[]}
  */
 export function backlogReport(backlog) {
@@ -858,6 +894,7 @@ export function backlogReport(backlog) {
   const lines = backlog.map((b) => `QUEUE BACKLOG ${b.session}: ${b.waiting} authored order(s) waiting, `
     + `oldest ${waitedFor(b.oldestMs)}`
     + (b.stale > 0 ? `, ${b.stale} over ${Math.round(HANDOFF_STALE_MS / 3_600_000)}h` : "")
+    + (b.decisions ? `, ${b.decisions} declared as asking for a decision` : "")
     + "\n");
   const worst = backlog[0];
   if (worst.stale === 0) return lines;
@@ -948,11 +985,16 @@ const oldestFirst = (a, b) => Number(a.queuedAt ?? 0) - Number(b.queuedAt ?? 0);
  * The authored text is not what `execFileSync` is handed; the rendered argv is, so the rendered argv is
  * what a budget has to be about.
  *
- * @param {{prompt: string, queuedAt?: number}} h
+ * A DECLARED DECISION IS TAGGED HERE AS WELL AS LISTED IN THE HEADER (#2222), so a reader who reaches the
+ * order without having read the list still sees what it is. The tag is part of this string, so
+ * {@link chargeFor} charges it by construction.
+ *
+ * @param {{prompt: string, queuedAt?: number, decision?: boolean}} h
  * @param {number} index @param {number} total @param {number} now
  */
 function orderHeading(h, index, total, now) {
-  return `--- ORDER ${index + 1} of ${total}, queued `
+  const tag = declaresDecision(h) ? " (DECISION)" : "";
+  return `--- ORDER ${index + 1} of ${total}${tag}, queued `
     + `${waitedFor(now - Number(h.queuedAt ?? now))} ago ---\n`;
 }
 
@@ -1025,8 +1067,8 @@ export function targetLabelBytes(session, roster = []) {
  * `handoffBatches` -> `fitBatch` -- always supplies the real width, which is itself pinned by a test
  * against the delivered argv rather than by this sentence.
  *
- * @param {{prompt: string, queuedAt?: number}} h @param {number} queued @param {number} now
- * @param {number} labelBytes
+ * @param {{prompt: string, queuedAt?: number, decision?: boolean}} h @param {number} queued
+ * @param {number} now @param {number} labelBytes
  */
 function chargeFor(h, queued, now, labelBytes) {
   return Buffer.byteLength(h.prompt, "utf8")
@@ -1088,13 +1130,15 @@ export function fitBatch(handoffs, budget, now = Date.now(), labelBytes = YOU_PL
  * an `engineers` batch. {@link targetLabelBytes} needs it to know how wide that name could be, because
  * the batch is built before the decision and the charge has to hold for whichever way it goes.
  *
- * @param {readonly {id: string, session: string, prompt: string, queuedAt?: number}[]} handoffs
+ * @param {readonly {id: string, session: string, prompt: string, queuedAt?: number,
+ *   decision?: boolean}[]} handoffs
  * @param {{now?: number, budget?: number, roster?: readonly string[]}} [opts]
  * @returns {{session: string, causeKey: string, prompt: string, ids: string[]}[]}
  */
 export function handoffBatches(handoffs,
   { now = Date.now(), budget = HANDOFF_BATCH_BYTES, roster = [] } = {}) {
-  /** @type {Map<string, {id: string, session: string, prompt: string, queuedAt?: number}[]>} */
+  /** @type {Map<string, {id: string, session: string, prompt: string, queuedAt?: number,
+   *   decision?: boolean}[]>} */
   const bySession = new Map();
   for (const h of handoffs) bySession.set(h.session, [...(bySession.get(h.session) ?? []), h]);
   return [...bySession.values()].map((forSession) => {
@@ -1112,6 +1156,48 @@ export function handoffBatches(handoffs,
 }
 
 /**
+ * HOW MANY ORDER NUMBERS THE HEADER LISTS before it says "and N more". The list rides inside
+ * {@link BATCH_WRAPPER_BYTES}'s reserve, which is a fixed size, so it cannot grow with the batch: a batch
+ * can hold over a thousand orders, and every one of them being a declared decision must not spend the
+ * reserve. Each order past the cap is still tagged `(DECISION)` at its own heading ({@link orderHeading}).
+ */
+export const MAX_LISTED_DECISIONS = 40;
+
+/**
+ * WHICH OF THESE ORDERS THEIR SENDERS SAID ASK FOR AN ANSWER -- the line a reader triages by (#2222).
+ *
+ * THE SENDER KNOWS AND NOBODY ELSE CAN COMPUTE IT. Measured on the 27-order delivery this row was filed
+ * on: 22 of the 30 orders that opened as a routine report also asked for a decision, so a classifier on
+ * the opening line demotes exactly the messages that need an answer. The fact is therefore DECLARED at
+ * `prompt:session` and only READ here -- there is no inference in this function, and adding one would
+ * rebuild the classifier the measurement rules out.
+ *
+ * THE NUMBERS ARE THOSE OF THE HEADINGS BELOW, oldest first, because a list a reader must translate is
+ * one they will not use.
+ *
+ * WHEN NONE IS DECLARED IT SAYS SO AND SAYS WHAT THAT MEANS: an order with no flag is FYI, so silence
+ * here is a reading of what senders DECLARED, not a finding that nothing asks. Printing nothing instead
+ * would look identical to a queue whose senders had never heard of the flag. A question attached to a
+ * ROW is not this line's business -- that stays on the row's `answer:` label, which is the place to look
+ * for it.
+ *
+ * @param {readonly {decision?: boolean}[]} take @returns {string}
+ */
+export function decisionHeader(take) {
+  const numbers = take.flatMap((h, i) => (declaresDecision(h) ? [i + 1] : []));
+  if (numbers.length === 0) {
+    return `DECISIONS DECLARED: none of these ${take.length} orders. A sender that gave no flag is counted `
+      + "as FYI, so this is what was DECLARED, not proof that nothing here asks -- an ask that belongs to "
+      + "a row is on that row's `answer:` label.";
+  }
+  const listed = numbers.slice(0, MAX_LISTED_DECISIONS).map((n) => `ORDER ${n}`).join(", ");
+  const more = numbers.length > MAX_LISTED_DECISIONS
+    ? `, and ${numbers.length - MAX_LISTED_DECISIONS} more (each is tagged (DECISION) at its own heading)` : "";
+  return `DECISIONS DECLARED: ${numbers.length} of ${take.length} orders ask you for an answer -- ${listed}`
+    + `${more}. Read those first. The rest are FYI, or gave no flag and are counted as FYI.`;
+}
+
+/**
  * The batch body: the header that explains why it is a batch, then every order, oldest first.
  *
  * THE HEADER IS NOT DECORATION. A session handed 30 reports in one turn will otherwise read them as one
@@ -1120,7 +1206,7 @@ export function handoffBatches(handoffs,
  * single stale order -- *"re-read anything it names, a head may have moved"* -- at the scale that
  * actually occurred.
  *
- * @param {readonly {session: string, prompt: string, queuedAt?: number}[]} take
+ * @param {readonly {session: string, prompt: string, queuedAt?: number, decision?: boolean}[]} take
  * @param {readonly unknown[]} held @param {number} now
  */
 function batchedOrder(take, held, now) {
@@ -1134,6 +1220,7 @@ function batchedOrder(take, held, now) {
     prompt: `${take.length} ORDERS WERE QUEUED FOR YOU AND ARRIVE TOGETHER, oldest first; the oldest has `
       + `waited ${oldest}. \`prompt:session\` could not deliver any of them when they were written, `
       + "because you were mid-turn each time, so the gate held them until you were between tasks.\n"
+      + `${decisionHeader(take)}\n`
       + "THIS IS ONE WAKE CARRYING MANY REPORTS, NOT MANY WAKES: each delivery clears your context "
       + "first, so sending them one at a time would erase what the previous one built (#1966, #2102).\n"
       + "They are from several senders and were written over the whole period above. RE-READ WHAT THEY "
@@ -1157,7 +1244,7 @@ function batchedOrder(take, held, now) {
  * true after it is answered, so `undelivered` and `MAX_DELIVERIES` would both be answering a question
  * nobody is asking here. See {@link handoffId}.
  *
- * @param {{id: string, session: string, prompt: string, queuedAt?: number}[]} handoffs
+ * @param {{id: string, session: string, prompt: string, queuedAt?: number, decision?: boolean}[]} handoffs
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster
  * @param {{run?: (args: string[]) => string, queuePath?: string, drop?: typeof dropHandoffs,
