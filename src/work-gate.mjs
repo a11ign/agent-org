@@ -1365,6 +1365,20 @@ export function answerOrders(rows) {
 }
 
 /**
+ * #2161: the rows an open pull request DECLARES it closes -- the holders who have demonstrably acted.
+ * `declaredClosedRows` is the parser B4 and B7 already share, so "this PR is the row's own work" means
+ * one thing in all three places, and `Closes: none` and a malformed body both read as `[]` and so screen
+ * nothing. It reads `prs` and not `comparablePrFiles`: that filter drops a PR whose file list is
+ * truncated, which is right for an overlap comparison and would here silently withdraw the screen for
+ * the largest pull requests -- the ones most likely to be a row's whole build.
+ * @param {any[] | null | undefined} openPrs
+ * @returns {Set<number>}
+ */
+function rowsWithOpenPr(openPrs) {
+  return new Set((openPrs ?? []).flatMap((pr) => declaredClosedRows(pr?.body)));
+}
+
+/**
  * THE GATE COULD SEE A ROW BECOME RUNNABLE AND HAD NOBODY TO TELL -- #2027.
  *
  * MEASURED 2026-09-22. PR #1957 merged at 21:26:01Z and closed #1948 one second later, leaving #1908 --
@@ -1402,18 +1416,33 @@ export function answerOrders(rows) {
  * 2026-09-23: #2114's holder was woken at 15:37Z for a row the fleet held until 22:00Z, while the same
  * tick's shelf line said so. The hold clears itself, so the order goes out the tick after it passes.
  *
+ * AND NOT A HOLDER WHO HAS ALREADY RESUMED (#2161). An open pull request whose `Closes:` names the row is
+ * the holder's own answer to this cause: they picked the row back up, built it and opened the PR, and
+ * "PICK IT BACK UP" is then a question with a known answer. Measured 2026-09-23 on three rows: 6m56s past a
+ * green draft (#2031), 1m47s (#2145), and 2m24s after APPROVED and in the merge queue (#2170) -- and
+ * because this is an ACTION cause `wake`'s twenty-minute expiry re-offers it for as long as the key still
+ * matches, so the bound is `MAX_DELIVERIES` and reaching it labels a built, green row `needs:chairman`.
+ * THE PR IS THE DISCRIMINATOR AND A CLAIM TIMESTAMP IS NOT, on `worker-judge`'s argument on the row: a
+ * claim that post-dates the clearing means STARTED, an open PR means ACTED ON, and a row claimed after its
+ * clearing and then abandoned is exactly the holder this cause must still reach. `prs` is the read
+ * `draftOrder` already made, so the narrowing spends no call and does not touch `GH_READS`.
+ *
  * @param {any[]} rows every open row
  * @param {string} [today]
  * @param {number} [nowMs] the clock a timestamped hold is read against, injected so a test moves time
+ * @param {any[]} [openPrs] `readPrs`'s open pull requests. OMITTED MEANS "NOT ASKED", and the cause then
+ *   behaves exactly as before #2161: it fails toward telling the holder, never toward silence
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
  */
-export function blockerClearedOrders(rows, today = todayIso(), nowMs = Date.now()) {
+export function blockerClearedOrders(rows, today = todayIso(), nowMs = Date.now(), openPrs = []) {
   const orders = [];
+  const resumed = rowsWithOpenPr(openPrs);
   for (const row of rows ?? []) {
     const session = sessionOf(row);
     const cleared = declaredBlockers(row);
     if (!session || !labelsOf(row).includes(CLAIM_LABEL) || cleared === null) continue;
+    if (resumed.has(Number(row.number))) continue;
     // THE LINE THAT MAKES `cleared` MEAN CLEARED. `waitingOn` reports an OPEN `blockedBy` node before
     // anything else, so passing here is what proves every number above is closed -- and it covers the
     // other conditions in the same breath, which is why `declaredBlockers` does not re-ask.
@@ -3697,7 +3726,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // closed is not waiting on a decision -- it is stopped on work it can resume this minute, with whatever
   // is queued behind that row stopped with it. Ahead of every cause that offers NEW work: a row already
   // claimed and now runnable beats a row nobody has picked up.
-  orders.push(...blockerClearedOrders(openRows));
+  orders.push(...blockerClearedOrders(openRows, todayIso(), Date.now(), prs));
 
   for (const pr of prs) {
     const order = draftOrder(pr, required);
