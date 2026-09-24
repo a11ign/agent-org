@@ -1,3 +1,4 @@
+// no-token: clearContext -- every herdr call is the injected `run`; nothing here reaches gh or a real session
 // THE CLEAR THAT THE DOCUMENTED PATH SKIPPED.
 //
 // `wake.mjs` clears a session before every order the gate delivers -- 690k -> 37k input tokens on a real
@@ -9,13 +10,15 @@
 // tokens carried, at least one auto-compact. Five of the six prompts were the documented path.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promptable, clearThenPrompt, queueable, queueOrLose, queueDepthNote, queueDepth,
-  deepQueueRefusal, DEEP_QUEUE, NEEDS_DECISION_FLAG, EXIT }
+  deepQueueRefusal, DEEP_QUEUE, NEEDS_DECISION_FLAG, EXIT, senderName, resolveSender, attributed,
+  deliveredText }
   from "../prompt-session.mjs";
-import { readHandoffs } from "../wake.mjs";
+import { readHandoffs, handoffOrder, addressed } from "../wake.mjs";
+
 import { readLoadedRules } from "./rules-files.ts";
 
 const agents = [{ label: "reviewer", status: "idle" }, { label: "reviewer-2", status: "working" },
@@ -76,11 +79,12 @@ test("a refused agent read is refused, never treated as an empty roster", () => 
 
 test("THE CLEAR COMES FIRST, and the order of the two calls is the whole point", () => {
   const calls: string[][] = [];
-  assert.equal(clearThenPrompt((a: string[]) => { calls.push(a); return ""; }, "reviewer", "Draft #1 …"),
-    null);
+  assert.equal(clearThenPrompt((a: string[]) => { calls.push(a); return ""; }, "reviewer", "Draft #1 …",
+    "worker-5"), null);
   const verbs = calls.map((a) => a.slice(2).join(" "));
   assert.equal(verbs[0], "agent prompt reviewer /clear", "the clear must be the FIRST thing sent");
-  assert.equal(verbs.at(-1), "agent prompt reviewer Draft #1 …", "and the order the last");
+  assert.equal(verbs.at(-1), `agent prompt reviewer ${deliveredText("reviewer", "Draft #1 …", "worker-5")}`,
+    "and the order the last");
   assert.ok(verbs.some((v) => v.startsWith("agent wait")), "with the settle between them");
 });
 
@@ -91,10 +95,10 @@ test("a refused CLEAR still delivers the prompt, and says so", () => {
   let sent = false;
   const run = (a: string[]) => {
     if (a.includes("/clear")) throw new Error("no socket");
-    if (a.includes("Draft #2")) sent = true;
+    if (a.some((x) => x.includes("Draft #2"))) sent = true;
     return "";
   };
-  assert.match(String(clearThenPrompt(run, "reviewer", "Draft #2")), /clear refused/);
+  assert.match(String(clearThenPrompt(run, "reviewer", "Draft #2", null)), /clear refused/);
   assert.equal(sent, true, "the prompt went anyway -- a refused clear is not a refused wake");
 });
 
@@ -104,7 +108,7 @@ test("a refused PROMPT is reported, never reported as delivered", () => {
     if (a[2] === "agent" && a[3] === "prompt") throw new Error("agent_blocked");
     return "";
   };
-  assert.match(String(clearThenPrompt(run, "reviewer", "Draft #3")), /prompt refused: agent_blocked/);
+  assert.match(String(clearThenPrompt(run, "reviewer", "Draft #3", null)), /prompt refused: agent_blocked/);
 });
 
 test("the exit codes distinguish a LOST order from a QUEUED one", () => {
@@ -140,8 +144,8 @@ test("A REFUSED PROMPT IS WRITTEN TO THE QUEUE, and the file is the one wake rea
     const queued = readHandoffs(path);
     assert.equal(queued.length, 1, "the order the author wrote is in the queue");
     assert.equal(queued[0].session, "reviewer");
-    assert.equal(queued[0].prompt, "Draft #1963 (odd) is ready for review.",
-      "byte-for-byte what the author typed -- the reviewer is going to read this");
+    assert.equal(queued[0].prompt, attributed("Draft #1963 (odd) is ready for review.", null),
+      "what the author typed, byte-for-byte, behind the line saying who asked (#2344)");
     assert.ok(Number.isFinite(queued[0].queuedAt), "with the time it started waiting");
     assert.match(err, /QUEUED handoff\/reviewer\//, "and the author is told which order was kept");
     assert.match(err, /DO NOT RETRY/,
@@ -340,7 +344,7 @@ test("THE SECOND DIRECTION: an order DECLARING a decision still queues at the sa
     assert.equal(value, EXIT.QUEUED, "declared a decision -- it is held, not refused");
     const queued = readHandoffs(path);
     assert.equal(queued.length, DEEP_QUEUE + 1, "and it is ON DISK, which is the assertion that matters");
-    assert.equal(queued.at(-1)?.prompt, "STOP THE LINE: main is red at 60e8784ce.");
+    assert.equal(queued.at(-1)?.prompt, attributed("STOP THE LINE: main is red at 60e8784ce.", null));
     assert.match(err, /QUEUE DEPTH: this is order 11/,
       "still told what it joined -- the declaration buys a place in the queue, not silence about it");
   });
@@ -415,4 +419,94 @@ test("the flag the rules file tells an author to type is the flag this command a
   assert.ok(rules.includes(NEEDS_DECISION_FLAG),
     "and the loaded rules name it, so the refusal quotes a rule that exists");
   assert.ok(rules.includes("ROW WRITE"), "with the routing change itself stated, not just its flag");
+});
+
+// ---------------------------------------------------------------------------------------------------
+// THE CLEARED SESSION WAKES KNOWING WHO IT IS AND WHO ASKED (#2344).
+//
+// `prompt:session` clears its target and used to type the sender's raw text at it, so `ceo`, cleared at
+// 2026-09-24T12:22:50Z, woke nameless. The wake path wraps every order in `addressed`; this path now
+// does too, through the same function.
+
+const workspaces = [{ workspace_id: "w3", label: "worker-5" }, { workspace_id: "w1", label: "ceo" },
+  { workspace_id: "w7", label: "" }];
+
+/** What the cleared session was actually typed, as its FIRST (and only) prompt after the clear. */
+function firstMessage(label: string, text: string, sender: string | null): string {
+  const prompts: string[] = [];
+  const run = (a: string[]) => {
+    if (a[2] === "agent" && a[3] === "prompt" && a[5] !== "/clear") prompts.push(a[5]);
+    return "";
+  };
+  assert.equal(clearThenPrompt(run, label, text, sender), null);
+  assert.equal(prompts.length, 1, "the positive control: exactly one prompt reached the session");
+  return prompts[0];
+}
+
+test("THE FIRST MESSAGE says who the session is and who asked, the asker resolved from the workspace id", () => {
+  const sender = senderName(workspaces, "w3");
+  assert.equal(sender, "worker-5");
+  const got = firstMessage("reviewer", "Draft #9 (odd) is ready.", sender);
+  assert.match(got, /^You are `reviewer`, an org session in this repository\./, "its own label, first");
+  assert.match(got, /Sent to you by `worker-5`/, "and who asked");
+  assert.ok(got.includes("Draft #9 (odd) is ready."), "and the order itself");
+});
+
+test("THE TEXT IS `addressed`'s OWN OUTPUT -- the one function, compared, not a copy", () => {
+  const got = firstMessage("reviewer", "Draft #9", "worker-5");
+  assert.equal(got, addressed({ session: "reviewer", prompt: attributed("Draft #9", "worker-5") }, "reviewer"));
+});
+
+test("there is ONE copy of the autonomy footer in the agent-org sources (with its positive control)", () => {
+  const sentence = "ENDING YOUR TURN WITH A QUESTION IS THE SAME AS STOPPING";
+  const dir = new URL("../", import.meta.url);
+  const holders = readdirSync(dir).filter((f) => f.endsWith(".mjs"))
+    .filter((f) => readFileSync(new URL(f, dir), "utf8").includes(sentence));
+  assert.deepEqual(holders, ["wake.mjs"],
+    "the control: wake.mjs holds it, so an empty result would mean the scan is blind, not that it is unique");
+});
+
+test("BOTH DIRECTIONS: a caller the roster does not list is named unknown, never another session, and is delivered", () => {
+  for (const [id, why] of [["w99", "an id herdr does not list"], [undefined, "no workspace id at all"],
+    ["w7", "a listed id with no label"]] as const) {
+    const sender = senderName(workspaces, id);
+    assert.equal(sender, null, why);
+    const got = firstMessage("reviewer", "Draft #9", sender);
+    assert.match(got, /could not identify/, `${why}: named as unknown`);
+    assert.ok(!/worker-5|`ceo`, through/.test(got.split("Draft #9")[0].split("could not identify")[1]),
+      "and not given another session's name");
+    assert.ok(got.includes("Draft #9"), "the order was still delivered");
+  }
+});
+
+test("the sender is resolved from herdr's workspace list, and a failed read is unknown, not a failure", () => {
+  const list = JSON.stringify({ result: { workspaces } });
+  const calls: string[][] = [];
+  assert.equal(resolveSender((a: string[]) => { calls.push(a); return list; }, "w1"), "ceo");
+  assert.deepEqual(calls, [["--session", "org", "workspace", "list"]]);
+  assert.equal(resolveSender(() => { throw new Error("no socket"); }, "w1"), null);
+  assert.equal(resolveSender(() => "not json", "w1"), null);
+  assert.equal(resolveSender(() => list, undefined), null, "no id, no read");
+});
+
+test("THE QUEUED PATH carries the sender, and the entry the gate delivers names who asked", () => {
+  inTempDir((dir) => {
+    const path = join(dir, "q");
+    withStderr(() => queueOrLose({ label: "reviewer", text: "Draft #9 (odd)", why: "is working", agents,
+      path, sender: "worker-5" }));
+    const queued = readHandoffs(path);
+    assert.equal(queued.length, 1, "the control: the order is queued");
+    assert.match(queued[0].prompt, /Sent to you by `worker-5`/, "the sender is on the queue entry");
+    const delivered = addressed(handoffOrder(queued[0]), "reviewer");
+    assert.match(delivered, /Sent to you by `worker-5`/, "and survives the gate's delivery");
+    assert.match(delivered, /^You are `reviewer`/);
+  });
+});
+
+test("REGRESSION: an order to `ceo` carries ceo's own escalation route, not product-manager's", () => {
+  const got = firstMessage("ceo", "State reading.", "product-manager");
+  assert.match(got, /^You are `ceo`/);
+  assert.match(got, /message `the chairman on the row itself -- no session can message them`/);
+  assert.ok(!got.includes("message `product-manager`"), "the route is not product-manager's");
+  assert.match(firstMessage("reviewer", "x", "ceo"), /message `product-manager`/, "the control: others keep it");
 });
