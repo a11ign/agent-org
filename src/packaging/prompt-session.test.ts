@@ -334,7 +334,7 @@ test("THE SECOND DIRECTION: an order DECLARING a decision still queues at the sa
 
     const { value, err } = withStderr(() => queueOrLose({
       label: "product-manager", text: "STOP THE LINE: main is red at 60e8784ce.", why: "is working",
-      agents: [{ label: "product-manager", status: "working" }], path, needsDecision: true,
+      agents: [{ label: "product-manager", status: "working" }], path, stance: "decision",
     }));
 
     assert.equal(value, EXIT.QUEUED, "declared a decision -- it is held, not refused");
@@ -368,12 +368,12 @@ test("the threshold decision is PURE, and it is the measurement that picked 10",
   // the row's starting point and this file is where it is pinned: every other session's queue on
   // 2026-09-23 was 2 or fewer, and the stalled one was 55.
   assert.equal(DEEP_QUEUE, 10);
-  const order = { label: "product-manager", text: "report", needsDecision: false };
+  const order = { label: "product-manager", text: "report", decision: false };
   const at = (waiting: number) => ({ session: "product-manager", waiting, oldestMs: 8 * 3_600_000, stale: waiting });
   assert.equal(deepQueueRefusal(at(DEEP_QUEUE - 1), order), null, "under the bar queues");
   assert.ok(deepQueueRefusal(at(DEEP_QUEUE), order), "at the bar refuses");
   assert.ok(deepQueueRefusal(at(DEEP_QUEUE + 45), order), "and above it");
-  assert.equal(deepQueueRefusal(at(DEEP_QUEUE + 45), { ...order, needsDecision: true }), null,
+  assert.equal(deepQueueRefusal(at(DEEP_QUEUE + 45), { ...order, decision: true }), null,
     "and a declared decision is never refused, at any depth");
   assert.equal(deepQueueRefusal(undefined, order), null,
     "a target with nothing waiting is not in the backlog at all, and must not read as deep");
@@ -389,7 +389,7 @@ test("A DEPTH THAT CANNOT BE READ NEVER REFUSES -- 'could not ask' is not 'too d
     const { mine, unreadable } = queueDepth("product-manager", path);
     assert.equal(mine, undefined);
     assert.match(String(unreadable), /missing id\/session\/prompt/, "the cause is carried, not swallowed");
-    assert.equal(deepQueueRefusal(mine, { label: "product-manager", text: "r", needsDecision: false }), null,
+    assert.equal(deepQueueRefusal(mine, { label: "product-manager", text: "r", decision: false }), null,
       "an unmeasurable queue must not refuse an order");
   });
   // AND THE CONTROL: a queue that CAN be read reports a depth, so the line above is not vacuous.
@@ -408,7 +408,8 @@ test("the flag the rules file tells an author to type is the flag this command a
   assert.equal(NEEDS_DECISION_FLAG, "--needs-decision");
   const source = readFileSync(
     new URL("../prompt-session.mjs", import.meta.url), "utf8");
-  assert.match(source, /refuseUnknownFlags\(\["--ledger", NEEDS_DECISION_FLAG\]/,
+  assert.match(source,
+    /refuseUnknownFlags\(\["--ledger", DECISION_FLAG, FYI_FLAG, NEEDS_DECISION_FLAG\]/,
     "the flag is declared to the unknown-flag guard, or typing it is refused before it is read");
   const rules = readLoadedRules();
   assert.ok(rules.includes(NEEDS_DECISION_FLAG),
