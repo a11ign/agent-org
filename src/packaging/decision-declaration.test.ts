@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { queueOrLose, deepQueueRefusal, DEEP_QUEUE, DECISION_FLAG, FYI_FLAG, NEEDS_DECISION_FLAG, STANCE,
-  parseStance, stanceNote, EXIT } from "../prompt-session.mjs";
+  parseStance, stanceNote, EXIT, attributed } from "../prompt-session.mjs";
 import { handoffId, readHandoffs, queueHandoff, handoffOrder, handoffBacklog, backlogReport,
   handoffBatches, addressed, declaresDecision, decisionHeader, MAX_LISTED_DECISIONS, PROMPT_ARG_MAX,
   HANDOFF_BATCH_BYTES } from "../wake.mjs";
@@ -172,8 +172,9 @@ test("END TO END: the real command records --decision on the queue and strips it
     assert.equal(fyi.status, EXIT.QUEUED, fyi.stderr);
     const queued = readHandoffs(join(dir, "prompt-session-handoffs"));
     assert.deepEqual(queued.map((h) => [h.prompt, h.decision]),
-      [["Ratify 64 KiB?", true], ["Completion report on #1", false]],
-      "the flag reached the entry, and the text is what the author typed without it");
+      [[attributed("Ratify 64 KiB?", null), true], [attributed("Completion report on #1", null), false]],
+      "the flag reached the entry, and the text is what the author typed without it (behind the asker "
+      + "line, #2344 -- herdr is absent here, so the sender is unknown)");
     assert.equal(run("ceo", "x", DECISION_FLAG, FYI_FLAG).status, EXIT.REFUSED);
   });
 });

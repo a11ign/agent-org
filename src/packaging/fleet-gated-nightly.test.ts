@@ -136,8 +136,8 @@ test("performFiring posts the #914 comment AND wakes the session when rows are o
   const bodyIndex = commentCall?.indexOf("--body") ?? -1;
   assert.equal(commentCall?.[bodyIndex + 1], result.comment, "the exact comment text is what gets posted");
 
-  const wakeCall = herdrCalls.find((c) => c.includes(wakeText([{ number: 1768 }])));
-  assert.ok(wakeCall, "the wake must carry wakeText's exact text, not a paraphrase");
+  const wakeCall = herdrCalls.find((c) => c.some((a) => a.includes(wakeText([{ number: 1768 }]))));
+  assert.ok(wakeCall, "the wake must carry wakeText's exact text (inside the addressed brief, #2344), not a paraphrase");
   assert.ok(herdrCalls.some((c) => c.includes(SESSION)), "the wake names the session it woke");
 });
 
