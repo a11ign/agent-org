@@ -79,6 +79,8 @@ import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { armabilityOf, HOLD_PREFIX } from "./pr-hold-state.mjs";
+// A LEAF (no imports), so this job's `actions/checkout`-only bootstrap still resolves it.
+import { PARITY } from "./review-attribution.mjs";
 // #2046: ONE PLACE DECIDES WHETHER A PR IS ARMED, the way `pr-hold-state.mjs` above owns whether it is
 // held. The rule was written here and `arm-pr.mjs`'s refusal path did not call it, which is the third
 // row of the same shape (#1729, #2004, #2046) -- so it moved out to a module with no imports, and this
@@ -136,10 +138,17 @@ export function decideAndWarn({ number, labels, checkRunCount }, { log = console
  * repository's own recorded defect (`SIGNAL_TYPES`, the `sweepLog` regex) -- both passed having examined
  * nothing.
  *
- * @param {{ labels: string[], checkRunCount: number, holdReason?: string | null }} pr
+ * `parity` is `review-attribution.mjs`'s own answer for the review that would arm this PR (#2195), and ONLY
+ * `violation` refuses. `correct`, absent and `unobservable` all arm: `unobservable` is deliberate, because it
+ * was every review's answer before attribution recorded and refusing on it would stop the queue rather than
+ * the defect. #2079 was armed on an off-parity approval and the parity owner's refusal landed 61s later.
+ * `parityOwner` and `reviewedBy` only make the refusal say WHO -- the author needs both to re-prompt.
+ *
+ * @param {{ labels: string[], checkRunCount: number, holdReason?: string | null, parity?: string,
+ *           parityOwner?: string, reviewedBy?: string[] }} pr
  * @returns {{ arm: boolean, reason: string }}
  */
-export function sweepDecision({ labels, checkRunCount, holdReason = null }) {
+export function sweepDecision({ labels, checkRunCount, holdReason = null, parity, parityOwner, reviewedBy = [] }) {
   if (labels.includes("blocked")) {
     return { arm: false, reason: "labelled `blocked` -- a person refused this one, and a green `gate` does not answer that" };
   }
@@ -148,6 +157,7 @@ export function sweepDecision({ labels, checkRunCount, holdReason = null }) {
   // fact-stated-twice shape, with only one copy correct. Both callers now read `pr-hold-state.mjs`.
   const held = armabilityOf({ labels, holdReason });
   if (!held.arm) return held;
+  if (parity === PARITY.violation) return { arm: false, reason: parityViolationReason({ parityOwner, reviewedBy }) };
   if (checkRunCount === 0) {
     return {
       arm: false,
@@ -156,6 +166,19 @@ export function sweepDecision({ labels, checkRunCount, holdReason = null }) {
     };
   }
   return { arm: true, reason: `${checkRunCount} check run(s) on its head` };
+}
+
+/**
+ * WHY AN OFF-PARITY REVIEW DOES NOT ARM, saying by whom and who should have (#2195). A bare "refused" costs the
+ * author the re-prompt this refusal exists to make possible. Names are optional so a caller that knows only
+ * the verdict still gets a reason that says what rule was broken.
+ * @param {{ parityOwner?: string, reviewedBy: string[] }} who
+ */
+function parityViolationReason({ parityOwner, reviewedBy }) {
+  const by = reviewedBy.length > 0 ? reviewedBy.map((s) => `\`${s}\``).join(", ") : "a session other than its parity owner";
+  const owner = parityOwner ? `\`${parityOwner}\`` : "its parity owner";
+  return `reviewed off parity -- by ${by}, and the parity rule gives this PR to ${owner}. Arming now would queue it before `
+    + `${owner}'s verdict can stop it (#2079); prompt ${owner} for a verdict at this head`;
 }
 
 /**
