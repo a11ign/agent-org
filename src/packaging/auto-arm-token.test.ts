@@ -1,3 +1,7 @@
+// no-token: GH_TOKEN
+// #2358: this file reads auto-arm.yml's TEXT and drives `runArmPr` with an injected `run`; the literal `GH_TOKEN` in
+// an assertion message is what charged it, and it never uses a token. Without this the row's own Acceptance
+// command was REFUSED by the token-less acceptance job and verified nothing.
 /**
  * #416: AUTO-ARM MUST ARM WITH A TOKEN WHOSE EVENTS FIRE.
  *
