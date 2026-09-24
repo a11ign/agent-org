@@ -39,6 +39,12 @@
  * and nothing else. No matching status, or two statuses naming different sessions for one review,
  * both return `null` -- the same `null` this file exists to make rarer, but an HONEST one that a
  * caller can see, rather than a name inferred from the only status that happened to be there.
+ *
+ * #2401 CHANGED WHO OWNS A PULL REQUEST, NOT WHAT THIS FILE IS FOR. Reviewers are instanced per pull
+ * request, so the owner of PR n is `reviewer-<n>` and the odd/even split described above is history. The
+ * names `parityOwner`, `parityOfReview` and `parityViolationsOnCommit` are kept: the last two keep their
+ * meaning (a review by a session that is not the pull request's instance is a violation), and the row's
+ * own Open-check calls the first by that name. "Parity" now reads as "the owner matches".
  */
 
 /** A commit status whose context starts with this is a review attribution; nothing else is. */
@@ -49,7 +55,27 @@ export const PARITY = Object.freeze({
   correct: "correct",
   violation: "violation",
   unobservable: "unobservable",
+  /** A retired standing reviewer, stamped before the cutover: valid history, judged by no rule. */
+  retired: "retired",
 });
+
+/**
+ * The two standing panes #2401 retires as the review path. Their names stay VALID ON HISTORY: a status
+ * naming one on a commit stamped before {@link PER_PR_REVIEWERS_FROM} is what the org did under the rule
+ * then in force, and reading it as a violation of today's would make every merged pull request's record
+ * accuse a reviewer of obeying the previous rule.
+ */
+export const RETIRED_REVIEWERS = Object.freeze(["reviewer", "reviewer-2"]);
+
+/**
+ * The instant the per-PR path landed; a status stamped BEFORE it may name a retired reviewer.
+ *
+ * A DATE THIS ROW CHOSE, and the cost of choosing it wrong is stated: too late and a standing pane's
+ * review in the gap reads as history when it is a violation; too early and it reads as a violation while
+ * the panes are still running, which `ceo` closes only after the first per-PR verdict (Done-when 6).
+ * A status with NO readable time is never history -- an unstamped record cannot show it predates anything.
+ */
+export const PER_PR_REVIEWERS_FROM = "2026-09-25T00:00:00Z";
 
 /**
  * The context string the door must write for `session`. ONE SPELLING, EXPORTED, because the writer is
@@ -62,18 +88,52 @@ export function attributionContext(session) {
 }
 
 /**
- * The reviewing session the parity rule gives a pull request: ODD is `reviewer`'s, EVEN is
- * `reviewer-2`'s (`.claude/rules/agent-practices.md`, "The author of a draft prompts its parity
- * reviewer").
+ * The reviewing session that owns a pull request: `reviewer-<n>`, the herdr workspace the per-PR path
+ * starts for it (#2401; `wake.mjs`'s `route` finds it by that label).
  *
- * MOVED HERE FROM `work-gate.mjs`, which spelled it inline, so that the rule and the check on the rule
- * read the same arithmetic. A detector with its own copy of the parity would agree with a router that
- * had drifted.
+ * THE ARITHMETIC LIVES HERE, beside the reader that checks whether a posted review obeyed it, since #2127:
+ * a detector with its own copy would agree with a router that had drifted.
  * @param {number | string} prNumber
  * @returns {string}
  */
 export function parityOwner(prNumber) {
-  return Number(prNumber) % 2 === 1 ? "reviewer" : "reviewer-2";
+  return `reviewer-${Number(prNumber)}`;
+}
+
+/**
+ * The pull request a reviewer INSTANCE label belongs to, or `null` when the label is not one.
+ *
+ * `reviewer-2` IS NOT ONE, though it matches the shape: it is the retired standing pane (`RETIRED_REVIEWERS`,
+ * `sessions.json`'s `retired`), and treating it as PR 2's instance would let the teardown close a pane this
+ * row promises to leave running and would count it against the ceiling. Pull request 2 closed long ago.
+ * @param {string} label
+ * @returns {number | null}
+ */
+export function reviewerInstanceNumber(label) {
+  const match = /^reviewer-([1-9][0-9]*)$/.exec(label);
+  return match === null || RETIRED_REVIEWERS.includes(label) ? null : Number(match[1]);
+}
+
+/**
+ * When a status was stamped, as epoch milliseconds, or `null` when it carries no readable time. REST spells
+ * it `created_at` and GraphQL `createdAt`, for `targetUrlOf`'s reason.
+ * @param {any} status
+ * @returns {number | null}
+ */
+function statusTime(status) {
+  const at = Date.parse(String(status?.created_at ?? status?.createdAt ?? ""));
+  return Number.isNaN(at) ? null : at;
+}
+
+/**
+ * Is this status valid history rather than a violation: a retired standing reviewer, stamped before the cutover.
+ * @param {any} status
+ */
+function isRetiredHistory(status) {
+  const session = attributedSession(status);
+  const at = statusTime(status);
+  return session !== null && RETIRED_REVIEWERS.includes(session)
+    && at !== null && at < Date.parse(PER_PR_REVIEWERS_FROM);
 }
 
 /**
@@ -120,6 +180,16 @@ function sessionsNamedBy(statuses) {
 }
 
 /**
+ * The attribution statuses that name this review, matched on its own `html_url` and nothing else.
+ * @param {any} review @param {any[] | null | undefined} statuses
+ * @returns {any[]}
+ */
+function statusesNaming(review, statuses) {
+  const url = reviewUrlOf(review);
+  return url === "" ? [] : (statuses ?? []).filter((status) => targetUrlOf(status) === url);
+}
+
+/**
  * WHICH SESSION POSTED THIS REVIEW -- or `null` when the commit's statuses do not say.
  *
  * `user.login` is never consulted, and could not help if it were: every review here carries the same
@@ -130,21 +200,21 @@ function sessionsNamedBy(statuses) {
  * @returns {string | null}
  */
 export function reviewingSession(review, statuses) {
-  const url = reviewUrlOf(review);
-  if (url === "") return null;
-  const named = sessionsNamedBy((statuses ?? []).filter((status) => targetUrlOf(status) === url));
+  const named = sessionsNamedBy(statusesNaming(review, statuses));
   // TWO SESSIONS CLAIMING ONE REVIEW IS NOT A TIE TO BREAK. It means the record is wrong, and the
   // caller has to know that rather than be handed whichever came first.
   return named.length === 1 ? named[0] : null;
 }
 
 /**
- * Does this review obey the parity rule?
+ * Does this review obey the owner rule?
  *
  * `unobservable` IS THE THIRD ANSWER AND IT IS LOUD ON PURPOSE -- the same shape as the branch
  * protection reader's `CANNOT_TELL` (ceo's 2026-09-22 ruling): a check that cannot read the fact must
  * never report the pass. Today, before the door is installed and writing statuses, EVERY review
  * answers `unobservable`, and that is the honest reading of the state #2127 describes.
+ *
+ * `retired` IS THE FOURTH (#2401): a retired standing reviewer's review, stamped before the cutover.
  *
  * @param {{prNumber: number | string, review: any, statuses: any[] | null | undefined}} args
  * @returns {string} one of `PARITY`
@@ -152,11 +222,14 @@ export function reviewingSession(review, statuses) {
 export function parityOfReview({ prNumber, review, statuses }) {
   const session = reviewingSession(review, statuses);
   if (session === null) return PARITY.unobservable;
-  return session === parityOwner(prNumber) ? PARITY.correct : PARITY.violation;
+  if (session === parityOwner(prNumber)) return PARITY.correct;
+  const attributions = statusesNaming(review, statuses).filter((status) => attributedSession(status) !== null);
+  return attributions.every(isRetiredHistory) ? PARITY.retired : PARITY.violation;
 }
 
 /**
- * Every session attributed on a commit that the parity rule does NOT give this pull request.
+ * Every session attributed on a commit that is NOT this pull request's instance -- a retired standing
+ * reviewer's status stamped before the cutover is history, not a violation (#2401).
  *
  * THE QUESTION A REPORT ASKS, as distinct from the one above: `parityOfReview` answers about one
  * review, and a counter of violations wants the whole commit at once. It needs no review objects,
@@ -167,5 +240,6 @@ export function parityOfReview({ prNumber, review, statuses }) {
  */
 export function parityViolationsOnCommit({ prNumber, statuses }) {
   const owner = parityOwner(prNumber);
-  return sessionsNamedBy(statuses ?? []).filter((session) => session !== owner);
+  return sessionsNamedBy((statuses ?? []).filter((status) => !isRetiredHistory(status)))
+    .filter((session) => session !== owner);
 }

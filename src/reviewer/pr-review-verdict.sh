@@ -6,7 +6,7 @@
 # a bare prefix rule cannot tell `--approve` from `--dismiss` or `--comment` once a PR number precedes
 # the flag. This script is the one narrow way a review is posted, which is exactly why the attribution
 # belongs here: it is the only point in the whole path where the reviewing session's identity is known
-# at all. GitHub loses it one line later -- `reviewer` and `reviewer-2` share the `a11ign-bot` account,
+# at all. GitHub loses it one line later -- every reviewer instance shares the `a11ign-bot` account,
 # so `user.login` on the posted review says nothing (see review-attribution.mjs for the measurement).
 #
 # THIS FILE IS THE SOURCE; the host copy at the reviewer's `bin/` is an install of it. It lived only on
@@ -18,7 +18,7 @@
 # exactly what it could not record.
 #
 # Usage: pr-review-verdict <pr-number> <convinced|not-convinced> <verdict-comment-file>
-# Env:   A11Y_REVIEWER_SESSION  the org session name posting this review (`reviewer`, `reviewer-2`).
+# Env:   A11Y_REVIEWER_SESSION  the org session name posting this review (`reviewer-<n>` for pull request n, #2401).
 #                               Without it the review still posts, UNATTRIBUTED and loudly.
 set -euo pipefail
 
