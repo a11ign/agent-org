@@ -39,6 +39,8 @@ import { engineerEligibility, b2Verdict, ledgerKeyOf, ledgerLine } from "../wake
 import { handoffBacklog, backlogReport, handoffBatches, fitBatch, waitedFor, staleReport,
   PROMPT_ARG_MAX, HANDOFF_BATCH_BYTES, BATCH_WRAPPER_BYTES, targetLabelBytes }
   from "../wake.mjs";
+import { declaresDecision, decisionHeader, MAX_LISTED_DECISIONS }
+  from "../wake.mjs";
 
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));
@@ -2009,4 +2011,134 @@ test("#2226 (4): THE TICK with a `gh` that cannot answer still offers the order"
     "fail OPEN: an API outage must not stop the engineers being woken");
   assert.match(written, /^\d+\tengineers\/ready-row-unclaimed\/2131\tworker-judge\n$/,
     "and the ledger line NAMES THE RECIPIENT, which the causeKey alone never could");
+});
+
+// ---------------------------------------------------------------------------------------------------
+// #2222 -- A BUNDLED DELIVERY SAYS WHICH OF ITS ORDERS THEIR SENDERS DECLARED AS ASKING FOR AN ANSWER.
+//
+// Measured on the 27-order delivery that filed the row: 22 of the 30 orders that OPENED as a routine
+// report also asked for a decision. So the fact is DECLARED by the sender and only READ here; every test
+// below builds its orders with the text a classifier on the opening line would have got wrong.
+
+/** `n` orders whose text always opens like a routine report, with `decisions` (1-based) declared asks. */
+function declared(n: number, decisions: readonly number[], now: number) {
+  return backlogOf("product-manager", n, now).map((h, i) => ({
+    ...h,
+    prompt: `Completion report from worker-judge on row #${2000 + i}. Your call: 64 KiB, or nearer the ceiling?`,
+    decision: decisions.includes(i + 1),
+  }));
+}
+
+test("ONLY A LITERAL `true` IS A DECLARED DECISION, and no field at all is FYI", () => {
+  assert.equal(declaresDecision({ decision: true }), true);
+  assert.equal(declaresDecision({ decision: false }), false);
+  assert.equal(declaresDecision({}), false, "an entry written before the field existed is FYI");
+  assert.equal(declaresDecision({ decision: "true" }), false, "a string is not a declaration");
+  assert.equal(declaresDecision({ decision: 1 }), false);
+  assert.equal(declaresDecision(undefined), false);
+});
+
+test("queueHandoff WRITES THE DECLARATION on every entry, FYI included", () => {
+  const written: string[] = [];
+  const write = ((_p: string, d: string) => { written.push(d); }) as never;
+  const mkdir = (() => undefined) as never;
+  const asked = queueHandoff("/q/h", { session: "ceo", prompt: "Ratify?", decision: true, write, mkdir });
+  const plain = queueHandoff("/q/h", { session: "ceo", prompt: "Done.", write, mkdir });
+  assert.equal(asked.decision, true);
+  assert.equal(plain.decision, false, "the default is FYI, and it is written rather than left absent");
+  assert.deepEqual(written.map((w) => JSON.parse(w).decision), [true, false],
+    "and it is what reaches the file, not only what the function returns");
+});
+
+test("A DUPLICATE CANNOT DEMOTE A DECLARED DECISION, in either order, and the wait is still the first", () => {
+  const fyi = { ...HANDOFF, decision: false, queuedAt: 1_000 };
+  const asks = { ...HANDOFF, decision: true, queuedAt: 9_000 };
+  const read = (...lines: object[]) =>
+    readHandoffs("q", (() => lines.map((l) => JSON.stringify(l)).join("\n")) as never);
+  for (const got of [read(fyi, asks), read(asks, fyi)]) {
+    assert.equal(got.length, 1, "one order");
+    assert.equal((got[0] as { decision?: boolean }).decision, true, "the declared ask survives");
+  }
+  assert.equal(read(fyi, asks)[0].queuedAt, 1_000, "an upgrade takes the flag, NOT the later clock");
+  assert.equal(read(asks, fyi)[0].queuedAt, 9_000);
+  // THE CONTROL: two FYI duplicates stay FYI, so the branch above is not simply "always true".
+  assert.equal((read(fyi, { ...fyi, queuedAt: 2_000 })[0] as { decision?: boolean }).decision, false);
+});
+
+test("THE HEADER LISTS THE ORDERS THAT DECLARED, by the numbers their headings carry", () => {
+  const now = 10 * 60 * 60 * 1000;
+  const [batch] = handoffBatches(declared(27, [4, 9, 20], now), { now });
+  const header = batch.prompt.split("--- ORDER 1 of 27")[0];
+
+  assert.match(header, /DECISIONS DECLARED: 3 of 27 orders ask you for an answer -- ORDER 4, ORDER 9, ORDER 20/,
+    "a count and the numbered list, ABOVE the orders");
+  assert.ok(header.includes("Read those first"), "and what to do with it");
+  assert.match(batch.prompt, /--- ORDER 9 of 27 \(DECISION\), queued/, "the number is the one on the heading");
+  assert.match(batch.prompt, /--- ORDER 8 of 27, queued/, "an FYI heading carries no tag");
+  // THE CLASSIFIER'S ERROR, PINNED: every order opens "Completion report", and only the declared ones
+  // are listed. A header keyed on the opening line would list none, or all.
+  assert.equal(batch.prompt.match(/\(DECISION\)/g)?.length, 3, "exactly the three declared headings are tagged");
+});
+
+test("A BUNDLE WITH NO DECLARED DECISION SAYS SO, AND SAYS WHAT THAT DOES NOT PROVE", () => {
+  const now = 10 * 60 * 60 * 1000;
+  const [batch] = handoffBatches(declared(5, [], now), { now });
+  assert.match(batch.prompt, /DECISIONS DECLARED: none of these 5 orders/);
+  assert.match(batch.prompt, /counted as FYI, so this is what was DECLARED, not proof that nothing here asks/,
+    "silence is stated as a reading of declarations, never as 'nothing asks'");
+  assert.match(batch.prompt, /`answer:` label/, "and points a row-attached ask at the label");
+  assert.doesNotMatch(batch.prompt, /\(DECISION\)/);
+});
+
+test("THE LIST IS CAPPED, so a batch of all-decisions cannot spend the wrapper reserve", () => {
+  const now = 10 * 60 * 60 * 1000;
+  const all = decisionHeader(declared(200, Array.from({ length: 200 }, (_, i) => i + 1), now));
+  assert.match(all, new RegExp(`200 of 200 orders ask you for an answer -- ORDER 1, ORDER 2,`));
+  assert.ok(all.includes(`ORDER ${MAX_LISTED_DECISIONS}`) && !all.includes(`ORDER ${MAX_LISTED_DECISIONS + 1},`),
+    "the list stops at the cap");
+  assert.match(all, new RegExp(`and ${200 - MAX_LISTED_DECISIONS} more \\(each is tagged`),
+    "and says how many it left out, and where to find them");
+  assert.ok(Buffer.byteLength(all, "utf8") < 1_024, "so its size does not grow with the batch");
+});
+
+test("A BATCH OF ALL DECISIONS STILL RENDERS UNDER THE BUDGET, the tag and the header charged", () => {
+  // The tag lengthens every heading and the header lengthens the wrapper. Both must be inside what
+  // `fitBatch` charges, or a queue of asks -- the orders that must not stall -- is the one that E2BIGs.
+  const now = 10 * 60 * 60 * 1000;
+  const many = backlogOf("product-manager", 3_000, now, 0).map((h) => ({ ...h, prompt: "x", decision: true }));
+  const [batch] = handoffBatches(many, { now });
+  const argv = Buffer.byteLength(addressed(batch, "product-manager"), "utf8");
+  assert.ok(batch.ids.length > 500, "the positive control: a large batch really was built");
+  assert.ok(argv <= HANDOFF_BATCH_BYTES, `${argv} bytes rendered, inside the ${HANDOFF_BATCH_BYTES} budget`);
+  assert.ok(argv < PROMPT_ARG_MAX);
+});
+
+test("ONE declared decision is still ONE order -- its wording is unchanged and nothing is bundled", () => {
+  const [only] = handoffBatches([{ ...HANDOFF, decision: true }], { now: HANDOFF.queuedAt + 40 * 60_000 });
+  assert.equal(only.causeKey, HANDOFF.id);
+  assert.equal(only.prompt, handoffOrder(HANDOFF, HANDOFF.queuedAt + 40 * 60_000).prompt);
+  assert.doesNotMatch(only.prompt, /DECISIONS DECLARED/, "a header is for a bundle, which a lone order is not");
+});
+
+test("THE BACKLOG COUNTS DECLARED DECISIONS PER TARGET, so the queue reads for what is owed", () => {
+  const now = 10 * 60 * 60 * 1000;
+  const [row] = handoffBacklog(declared(12, [2, 5, 7], now), now);
+  assert.equal(row.waiting, 12);
+  assert.equal(row.decisions, 3, "a floor on what is owed: undeclared orders are FYI");
+  assert.match(backlogReport([row]).join(""), /12 authored order\(s\) waiting[^\n]*, 3 declared as asking for a decision/);
+  // THE CONTROL: no declaration, no clause -- a reporter that always printed it would be noise.
+  const [none] = handoffBacklog(backlogOf("product-manager", 4, now), now);
+  assert.equal(none.decisions, 0);
+  assert.doesNotMatch(backlogReport([none]).join(""), /declared as asking/);
+});
+
+test("pending is read off `delivered`, NOT off `id` -- a delivered decision is no longer owed", () => {
+  // The ledger's ack lines key off `delivered`. Computing pending any other way overstated it badly
+  // (182 queued / 172 acked / 10 truly pending), and a decision counted after delivery is owed to nobody.
+  const asks = { ...HANDOFF, decision: true };
+  const raw = [JSON.stringify(asks), JSON.stringify({ delivered: asks.id, at: 5 })].join("\n");
+  assert.equal(handoffBacklog(readHandoffs("q", (() => raw) as never)).length, 0);
+  const again = [raw, JSON.stringify({ ...asks, queuedAt: 7_000 })].join("\n");
+  assert.equal(handoffBacklog(readHandoffs("q", (() => again) as never), 8_000)[0].decisions, 1,
+    "and re-queued after delivery it is owed again");
 });
