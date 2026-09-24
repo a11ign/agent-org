@@ -1299,7 +1299,9 @@ export function deliverHandoffs(handoffs, agents, roster,
  * pool order, else the key's first segment. It is a DEFECT only when the earlier delivery was younger than
  * this window (or `JUDGMENT_TTL_MS` for a judgment cause); a re-ask AFTER it is this window working.
  * MEASURED 2026-09-24T11:16Z at 65eb7e978, over the whole `wake-ledger` (2026-09-18T07:23Z onward, 1,184
- * dated deliveries): 454 redundant, of which 447 are re-asks after the window and 7 are inside it. The 7:
+ * dated deliveries, across eleven addressees -- nine named in the comment, plus `worker-4` and `worker-5`,
+ * one delivery each, 0 redundant, pool orders whose recorded recipient is not the key's first segment):
+ * 454 redundant, of which 447 are re-asks after the window and 7 are inside it. The 7:
  * five on 2026-09-18 before `JUDGMENT_TTL_MS` shipped, two on 2026-09-19 13:24Z one second apart in
  * lockstep (two wake processes over one ledger; cause not established). None since. The 506-of-1,046
  * reported for #2280 was NOT reproduced: 422 of the first 1,046 deliveries. `wake-rehand.test.ts` pins the
