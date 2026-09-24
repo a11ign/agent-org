@@ -24,6 +24,7 @@ import {
   SUITE_SCRIPTS,
   SPAWNS_GH,
   endsInsideQuote,
+  endsInOperator,
   handRunDeclaration, handRunAcceptanceReason, handRunEvidence,
 } from "../acceptance-commands.mjs";
 
@@ -597,6 +598,92 @@ test("#2068: the same shape in a BARE (unfenced) block joins, and still stops wh
   const body = "Acceptance:\nnode -e 'const a = 1;\nconsole.log(a);'\n\nMutation: flip the joiner\n";
   assert.deepEqual(extractAcceptanceSection(body),
     { kind: "commands", commands: ["node -e 'const a = 1;\nconsole.log(a);'"] });
+});
+
+// --- #2178: a TRAILING OPERATOR is the third continuation -- `&&`, `||`, `|` and `|&` never end a command ---
+//
+// The incident shape: `npm run build &&` on one line and `npm test` on the next reached bash as two commands.
+// The first is `syntax error: unexpected end of file`; the second runs ALONE and can be green, so the
+// conjunction the author wrote (the second only if the first) asserted nothing. The first fragment also
+// classified `runnable`, so nothing warned at filing time.
+
+const fenced = (...lines: string[]) => `## Acceptance\n\n\`\`\`bash\n${lines.join("\n")}\n\`\`\`\n`;
+
+test("#2178: a fenced line ending in EACH of the four operators joins the next line -- one command, "
+  + "never one per line, and never one operator standing in for the family", () => {
+  for (const op of ["&&", "||", "|", "|&"]) {
+    assert.deepEqual(extractAcceptanceSection(fenced(`npm run build ${op}`, "  npm test")),
+      { kind: "commands", commands: [`npm run build ${op} npm test`] }, `operator ${op}`);
+  }
+});
+
+test("#2178: a chain of several operator-ended lines is ONE command", () => {
+  assert.deepEqual(extractAcceptanceSection(fenced("gh issue list |", "  jq length |", "  cat")),
+    { kind: "commands", commands: ["gh issue list | jq length | cat"] });
+});
+
+test("#2178: what RUNS is the whole conjunction -- run() never sees the `&&` fragment", () => {
+  const seen: string[] = [];
+  const report = acceptanceReport(fenced("npm run lint &&", "  npm run typecheck"), (cmd) => { seen.push(cmd); return 0; },
+    { commandExists: () => true });
+  assert.equal(report.ok, true);
+  assert.deepEqual(seen, ["npm run lint && npm run typecheck"]);
+});
+
+test("#2178 NEGATIVE CONTROLS: an operator that does not END the line, a lone `&` (background -- a complete "
+  + "command), and an escaped `\\|` each leave the next line a SEPARATE command -- a joiner with no operator "
+  + "test fuses every two-command Acceptance in the repository", () => {
+  assert.deepEqual(extractAcceptanceSection(fenced("npm run a && npm run b", "npm run c")),
+    { kind: "commands", commands: ["npm run a && npm run b", "npm run c"] });
+  assert.deepEqual(extractAcceptanceSection(fenced("npm run a &", "npm run c")),
+    { kind: "commands", commands: ["npm run a &", "npm run c"] });
+  assert.deepEqual(extractAcceptanceSection(fenced("echo a\\|", "npm run c")),
+    { kind: "commands", commands: ["echo a\\|", "npm run c"] });
+});
+
+test("#2178 THE RUNAWAY: an operator on the last line of the block stops at the CLOSING FENCE", () => {
+  const body = `${fenced("npm run build &&")}\n## Mutation\n\nsomething else\n`;
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npm run build &&"] });
+});
+
+test("#2178: the same shape in a BARE (unfenced) block joins, and still stops where the block ends", () => {
+  const body = "Acceptance:\nnpm run build &&\nnpm test\n\nMutation: flip the joiner\n";
+  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npm run build && npm test"] });
+});
+
+test("#2178: #2068's two shapes still join beside the new one -- the positive control for the counts above", () => {
+  assert.deepEqual(extractAcceptanceSection(fenced("node -e 'const a = 1;", "console.log(a);'")).commands.length, 1);
+  assert.deepEqual(extractAcceptanceSection(fenced("node -e 1 \\", "  --check")),
+    { kind: "commands", commands: ["node -e 1 --check"] });
+});
+
+test("#2178: the operator scanner itself", () => {
+  const cases: Array<[string, boolean]> = [
+    ["npm run build &&", true], ["npm run build &&  ", true], ["a ||", true], ["a |", true], ["a |&", true],
+    ["a&&", true],
+    ["a &", false], ["a && b", false], ["a | b", false], ["a \\|", false], ["a", false], ["", false],
+  ];
+  for (const [text, expected] of cases) {
+    assert.equal(endsInOperator(text), expected, `endsInOperator(${JSON.stringify(text)})`);
+  }
+});
+
+test("#2178: a block-opening keyword is refused for what it IS, not for a binary it lacks -- `for` is a "
+  + "command to bash, and `no executable` sends the filer looking for a missing program", () => {
+  for (const line of ["for f in a b; do", "while true; do", "if true; then", "case x in", "do", "fi", "{"]) {
+    const verdict = classifyCommand(line);
+    assert.equal(verdict.verdict, "prose", line);
+    assert.doesNotMatch((verdict as { reason: string }).reason, /no executable/, line);
+    assert.match((verdict as { reason: string }).reason, /keyword/, line);
+  }
+});
+
+test("#2178 CONTROL: a token that is not a keyword and not on $PATH keeps the `no executable` reason, and `[[` "
+  + "(a complete one-line command) is not treated as a block edge", () => {
+  const missing = classifyCommand("definitely-not-a-binary --x", { commandExists: () => false });
+  assert.match((missing as { reason: string }).reason, /no executable "definitely-not-a-binary"/);
+  const test2 = classifyCommand("[[ -f x ]]", { commandExists: () => false });
+  assert.match((test2 as { reason: string }).reason, /no executable "\[\["/);
 });
 
 test("#2068: the quote scanner itself, on the shapes that decide the two halves apart", () => {
