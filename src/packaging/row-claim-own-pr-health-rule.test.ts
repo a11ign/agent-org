@@ -935,22 +935,85 @@ test("#2126: COMMENTED and DISMISSED decide nothing, so they are not a side of a
     + "approval GitHub still counts");
 });
 
-test("#2126: the review-health read is ONE call, over every open pull request", () => {
+test("#2126/#2316: with no pull request CHANGES_REQUESTED the review-health read is exactly ONE call", () => {
   // The shape the row asked for by name. #989 took two calls per held row OUT of this path when it dropped
-  // the colour read; a clause that put one back PER ROW would undo the measurement that justified it.
+  // the colour read; a clause that put one back PER ROW would undo the measurement that justified it. Since
+  // #2316 a `CHANGES_REQUESTED` pull request costs one more (`commits`), so this pins what is still protected:
+  // a queue with nothing refused is read in one call however long it is.
   const calls: string[][] = [];
   const run = (args: string[]) => {
     calls.push(args);
-    return JSON.stringify([{ number: 2107, headRefOid: REFUSED_HEAD,
-      reviewDecision: "CHANGES_REQUESTED", reviews: [] }]);
+    return JSON.stringify([2107, 2108, 2109].map((number) => ({ number, headRefOid: REFUSED_HEAD,
+      reviewDecision: number === 2109 ? "APPROVED" : null, reviews: [] })));
   };
   const health = lookupOpenPrReviewHealth({ run });
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0].slice(0, 2), ["pr", "list"]);
   assert.ok(calls[0].includes("--state") && calls[0][calls[0].indexOf("--state") + 1] === "open");
   assert.match(calls[0][calls[0].indexOf("--json") + 1], /reviewDecision/);
-  assert.deepEqual(health, [{ number: 2107, head: REFUSED_HEAD,
-    reviewDecision: "CHANGES_REQUESTED", dispute: null, authorCommitsSinceReview: 0 }]);
+  assert.equal(health?.length, 3);
+  assert.doesNotMatch(calls[0].join(" "), /commits/, "GitHub refuses `commits` on the list: 1,000,000 nodes > 500,000");
+});
+
+test("#2316: `commits` is read PER PULL REQUEST, and only for a CHANGES_REQUESTED one", () => {
+  const calls: string[][] = [];
+  const run = (args: string[]) => {
+    calls.push(args);
+    if (args[1] === "view") return JSON.stringify({ commits: [] });
+    return JSON.stringify([
+      { number: 2107, headRefOid: REFUSED_HEAD, reviewDecision: "CHANGES_REQUESTED", reviews: [] },
+      { number: 2108, headRefOid: REFUSED_HEAD, reviewDecision: "APPROVED", reviews: [] },
+      { number: 2109, headRefOid: REFUSED_HEAD, reviewDecision: null, reviews: [] }]);
+  };
+  lookupOpenPrReviewHealth({ run });
+  const views = calls.filter((args) => args[1] === "view");
+  assert.equal(calls.length, 2, "one list, one view");
+  assert.deepEqual(views.map((args) => args[2]), ["2107"], "the refused pull request and no other");
+  assert.equal(views[0][views[0].indexOf("--json") + 1], "commits");
+});
+
+/** The text GitHub returned for #2254's query, verbatim from the row's Open-check. */
+const NODE_LIMIT = "GraphQL: By the time this query traverses to the authors connection, it is requesting up to "
+  + "1,000,000 possible nodes which exceeds the maximum limit of 500,000.";
+
+test("#2316: a read GitHub REFUSES is REPORTED with GitHub's reason, and a healthy read prints nothing", () => {
+  // THE CONTROL IS IN THE SAME TEST: a reporter that always spoke would pass the first half alone.
+  const lines: string[] = [];
+  const healthy = lookupOpenPrReviewHealth({ run: () => "[]", log: (line) => lines.push(line) });
+  assert.deepEqual(healthy, []);
+  assert.equal(lines.length, 0, "a healthy read is silent");
+
+  // `execFileSync` puts what GitHub said on `stderr`; `message` is only `Command failed: gh pr list ...`.
+  const refused = Object.assign(new Error("Command failed: gh pr list --json ..."), { stderr: `${NODE_LIMIT}\n` });
+  const failed = lookupOpenPrReviewHealth({ run: () => { throw refused; }, log: (line) => lines.push(line) });
+  assert.equal(failed, null, "still `null`: an unanswerable read refuses nothing");
+  assert.deepEqual(lines, [`B2 review-health read FAILED: ${NODE_LIMIT}; claims are not being checked for unanswered refusals`]);
+
+  // A failure in the PER-PULL-REQUEST stage is the same failure and is reported the same way.
+  const viewFails = (args: string[]) => {
+    if (args[1] === "view") throw new Error("gh: 502");
+    return JSON.stringify([{ number: 2107, headRefOid: REFUSED_HEAD, reviewDecision: "CHANGES_REQUESTED", reviews: [] }]);
+  };
+  assert.equal(lookupOpenPrReviewHealth({ run: viewFails, log: (line) => lines.push(line) }), null);
+  assert.match(lines[1], /^B2 review-health read FAILED: gh: 502; claims are not/);
+});
+
+test("#2316: through the claim path, the failure reaches the log and B2 still refuses nothing", () => {
+  const lines: string[] = [];
+  const run = (args: string[]) => {
+    if (args[0] === "issue" && args[1] === "list") return JSON.stringify([{ number: 2083 }]);
+    if (args[0] === "pr" && args[1] === "list") throw new Error(NODE_LIMIT);
+    if (args[0] === "api" && args[1] === "graphql") {
+      return JSON.stringify({ data: { repository: { issue: { closedByPullRequestsReferences: {
+        nodes: [{ number: 2107, state: "OPEN", headRefOid: REFUSED_HEAD }] } } } } });
+    }
+    if (args[0] === "issue") return JSON.stringify({ body: "## Region\n\n```\nscripts/held.mjs\n```\n" });
+    return "[]";
+  };
+  const rows = lookupHeldRows("worker-tooling", 2126, { run, log: (line) => lines.push(line) });
+  assert.equal(rows?.[0].openPrReview, undefined);
+  assert.equal(lines.length, 1, "the read failed once and said so once");
+  assert.match(lines[0], /1,000,000 possible nodes/);
 });
 
 test("#2126: `gh pr list`'s own default of THIRTY is overridden, or the window would be invisible", () => {
@@ -967,7 +1030,7 @@ test("#2126: `gh pr list`'s own default of THIRTY is overridden, or the window w
 });
 
 test("#2126: a FAILED review-health read refuses nothing -- the clause fails to not refusing", () => {
-  assert.equal(lookupOpenPrReviewHealth({ run: () => { throw new Error("gh: 502"); } }), null);
+  assert.equal(lookupOpenPrReviewHealth({ run: () => { throw new Error("gh: 502"); }, log: () => {} }), null);
   const run = (args: string[]) => {
     if (args[0] === "issue" && args[1] === "list") return JSON.stringify([{ number: 2083 }]);
     if (args[0] === "pr" && args[1] === "list") throw new Error("gh: 502");
@@ -1040,10 +1103,17 @@ test("#2126: the open pull request's NUMBER is carried, and only while it is OPE
  */
 const refusedAt = "2026-09-23T21:25:38Z";
 type Health = NonNullable<Parameters<typeof unansweredRefusal>[0]["openPrReview"]>;
-const healthOf = (pr: object) => (lookupOpenPrReviewHealth({ run: () => JSON.stringify([{
-  number: 2240, headRefOid: "bfee37e369", reviewDecision: "CHANGES_REQUESTED", author: { login: "a11ign-ai-workers" },
-  reviews: [{ state: "CHANGES_REQUESTED", submittedAt: refusedAt, commit: { oid: "16840d7f" },
-    body: "**Review of #2240 at `16840d7f`, by reviewer-2: not convinced.**" }], ...pr }]) })?.[0]) as Health;
+// #2316: the payload is served the way `gh` serves it -- the LIST carries no `commits` (GitHub refuses that
+// query), and `pr view <n>` carries them. A fixture that put `commits` in the list would test a read that fails live.
+const healthOf = (pr: Record<string, unknown>) => {
+  const { commits, ...listed } = pr as { commits?: object[] } & Record<string, unknown>;
+  const run = (args: string[]) => args[1] === "view" ? JSON.stringify({ commits: commits ?? [] })
+    : JSON.stringify([{
+      number: 2240, headRefOid: "bfee37e369", reviewDecision: "CHANGES_REQUESTED", author: { login: "a11ign-ai-workers" },
+      reviews: [{ state: "CHANGES_REQUESTED", submittedAt: refusedAt, commit: { oid: "16840d7f" },
+        body: "**Review of #2240 at `16840d7f`, by reviewer-2: not convinced.**" }], ...listed }]);
+  return lookupOpenPrReviewHealth({ run })?.[0] as Health;
+};
 // AUTHORS ARE MEASURED, not invented: the sweep's merges are `DanBeckDev` (#2107, #2240); the answer to #2240
 // was `web-flow` + the `claude` co-author, because a session's commit is NOT under the PR author's login.
 const SWEEP = [{ login: "DanBeckDev" }];
