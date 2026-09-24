@@ -71,6 +71,7 @@ import { createRequire } from "node:module";
 import { basename, delimiter, join } from "node:path";
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
 import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
+import { changedFiles } from "../../guards/src/changed-files.mjs";
 import { localImports, importedNamesFor, stripComments } from "../../guards/src/local-import-closure.mjs";
 
 /** @typedef {{ verdict: "runnable" } | { verdict: "refused", reason: string } | { verdict: "prose", reason: string }} Classification */
@@ -3001,8 +3002,9 @@ export function changedFilesOfThisPullRequest(cwd = process.cwd()) {
     // a complete clone (`History: full`, a local run) never spends a fetch it does not need.
     if (parentCount() < MERGE_PARENTS) git("fetch", "--deepen=1", "origin");
     if (parentCount() < MERGE_PARENTS) return { ok: false, why: "HEAD is not a merge commit" };
-    const names = git("diff", "--name-only", "--diff-filter=ACMR", "HEAD^1", "HEAD");
-    return { ok: true, files: names.split("\n").filter((line) => line.length > 0) };
+    // Through the one reader of "which paths changed" (#939): with renames detected a moved test file
+    // lists only where it WENT. `--no-renames` reads a move as delete + add, and the add is what ACMR keeps.
+    return { ok: true, files: changedFiles(["--diff-filter=ACMR", "HEAD^1", "HEAD"], { repoRoot: cwd }) };
   } catch (error) {
     return { ok: false, why: `git said: ${/** @type {Error} */ (error).message.split("\n")[0]}` };
   }
