@@ -1,0 +1,17 @@
+[Unit]
+# THE CLOCK BEHIND lab-watch.mjs -- #866, scheduled by #2230. See a11ign-lab-watch.service.
+Description=Hourly read of the lab's failed units, posted to #928 only when there are some (#2230)
+
+[Timer]
+# HOURLY, at :23. `org-watch.mjs` runs hourly at :37 in `nightly.yml`; a failed lab unit is an hours-scale
+# fact (#866's oldest was three days), so a finer clock buys nothing and, while a unit stays failed, each
+# firing posts again -- so hourly is also the ceiling on that repetition. :23 keeps it off the top of the
+# hour (#965) and off :37.
+OnCalendar=*-*-* *:23:00
+# A missed hour is read at next opportunity rather than skipped: silence from this watcher must not be
+# confusable with a quiet lab.
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

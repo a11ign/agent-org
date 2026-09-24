@@ -1,0 +1,15 @@
+[Unit]
+# THE CLOCK BEHIND fleet-watch.mjs -- #1815, scheduled by #2230. See a11ign-fleet-watch.service.
+Description=Hourly read of the fleet for stuck workers, posted to #928 only when there are some (#2230)
+
+[Timer]
+# HOURLY, at :47 -- clear of a11ign-lab-watch's :23, org-watch's :37 and the top of the hour (#965). The
+# incidents that filed #1815 were hours to days old, and the 10-minute threshold means the second firing
+# already sees a stuck worker. Each firing while one stays stuck posts again, so hourly bounds that too.
+OnCalendar=*-*-* *:47:00
+# A missed hour is read at next opportunity, so silence is never a skipped clock.
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
