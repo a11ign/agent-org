@@ -99,10 +99,15 @@ test("known-gaps §48 records the accepted exposure: the compound form, the reas
   assert.ok(section.length > MIN_SECTION_CHARS, "the §48 slice is implausibly short");
   assert.match(section, /zsh -lc 'x=\$\(gh api user --jq \.login\); echo \$x'/, "the probe that found the hole");
   assert.match(section, /a11ign-bot/);
-  assert.match(section, /\/usr\/bin\/gh/, "the bypass no PATH shim can stop");
+  // Anchored to the transcript's own command line: the prose repeats `/usr/bin/gh`, so an unanchored match stays
+  // green when the transcript line itself drifts (`/usr/bin/git api user` did).
+  assert.match(section, /^\$ \.\.\. -- \/usr\/bin\/gh api user\s+-> \{"matchedRules":\[\]\}/m, "the bypass no PATH shim can stop");
   assert.match(section, /hosts\.yml/, "the reason: the token is readable by the reviewer's uid");
-  assert.match(section, /`ceo`/, "who accepts it");
-  assert.match(section, /The check that would change the decision/);
+  assert.match(section, /\*\*Who accepted it: `ceo`, on the chairman's word \(the ruling on #2401\), 2026-09-24\.\*\*/, "who accepted it, and when");
+  assert.doesNotMatch(section, /pending `ceo`|not yet on the record/, "the acceptance is recorded; a pending marker would contradict it");
+  const change = section.slice(section.indexOf("The check that would change the decision"));
+  assert.match(change, /token scoped to review-posting/, "the first change condition");
+  assert.match(change, /reviewer\s+running under its own uid/, "the second change condition");
   assert.match(section, /plain form stays forbidden/, "the negative control the row asks to keep");
 });
 
