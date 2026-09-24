@@ -1,0 +1,52 @@
+[Unit]
+# THE UNATTENDED HALF OF #866, SCHEDULED HERE BY #2230. `lab-watch.mjs` reads `lab-status.yml` and posts to
+# #928 when an a11y-job-* unit is `failed` -- and until this file nothing ran it. Its own docblock says it
+# "runs unattended", and #866 closed on that sentence; the script was correct, tested and unreachable.
+#
+# A HOST UNIT AND NOT A GITHUB WORKFLOW, which is why `org-watch.mjs` is wired in `nightly.yml` and this is
+# not: it runs `ansible-playbook` against the lab, so it needs the control-plane credential and the
+# gitignored inventory, neither of which a GitHub runner has.
+#
+# A TIMER AND NOT A FOLD INTO a11ign-work-tick.service (#2230's design question, priced). Folding would cost
+# one unit, but it puts an `ansible-playbook` round trip on the critical path of a tick that fires every two
+# minutes, and a lab slow to answer would then delay every wake in the org. Hourly, off the tick's path, a
+# slow lab delays only this reading.
+#
+# This is not the "cron to check for work" `agent-practices.md` forbids: that rule is about a tick that IS
+# a model turn. This is the shape its own remedy names -- a host unit running a script. `--post` writes at
+# most one comment and wakes nobody.
+Description=a11ign: read the lab's failed units and post to #928 if any (#866, #2230)
+After=herdr.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/agent/repos/a11y-witness
+
+# A systemd unit gets no login shell's PATH, and this spawns `ansible-playbook` and `gh` -- the reason the
+# other host units state their own.
+Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=/home/agent
+
+# WHICH ACCOUNT THIS SPENDS, DECLARED (#1974): the workers account, as a11ign-work-tick.service does. It
+# posts one issue comment; `a11ign-ai-workers` already writes to this repository's issues.
+Environment=GH_CONFIG_DIR=/home/agent/workers/gh
+
+# `A11Y_PVE_KEY` and `A11Y_CONTROL_HOST_FILE`, which a shell gets from its .zshenv and a unit never does
+# (#1911, the same file a11ign-corpus-release-nightly.service reads). The `-` leaves a missing file to the
+# script's own CANNOT_ASK rather than to systemd's generic "Failed to load environment files".
+EnvironmentFile=-%h/.config/a11ign/fleet.env
+
+# UPDATED FIRST, and non-fatal, as the other units that run this checkout's code do.
+ExecStartPre=-/usr/bin/npm run primary:update
+
+ExecStart=/usr/bin/npm run lab:watch -- --post
+
+# THE EXIT CONTRACT IS THE POINT (docs/gate-exit-codes.md): 0 QUIET, 1 ATTENTION -- it found something and
+# has ALREADY posted it, so the unit did its job -- and 2 CANNOT_ASK, which must stay a FAILED unit: a clock
+# that cannot read its source must not read as clean. Listing only 0 and 1 is what keeps 2 visible.
+SuccessExitStatus=0 1
+
+TimeoutStartSec=300
+
+# NO [Install] SECTION, as a11ign-board-report.service: `WantedBy=default.target` would fire this at every
+# boot. The timer is the only thing that may start it.
