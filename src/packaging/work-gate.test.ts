@@ -874,6 +874,8 @@ test("every cause is classified as START or FINISH -- a new one cannot default i
   // and the action is minutes rather than a build.
   // #2209: `pr-merge-conflict` is FINISH, for `pr-review-blocked`'s argument: a green, unheld pull request
   // that cannot merge is finished work that cannot land, and a window waits on exactly those.
+  // #2365: `verdict-comment-unreviewed` is FINISH: its subject is a green, unheld pull request whose verdict
+  // exists and cannot merge, which is finished work a window is waiting to land.
   // #2084: `pr-review-blocked` is FINISH, and it is `pr-green-unarmed`'s own argument one surface over.
   // A pull request that is green, unheld and refused by GitHub's `reviewDecision` is finished work that
   // cannot land -- it is the most in-flight thing there is, and it takes on nothing. Withholding it during
@@ -882,7 +884,7 @@ test("every cause is classified as START or FINISH -- a new one cannot default i
   assert.deepEqual(finish, ["answer-owed", "blocker-cleared", "chairman-blocked", "claimed-row-amended",
     "draft-awaiting-verdict", "draft-convinced-not-ready", "host-units-stale", "pr-checks-failing",
     "pr-green-unarmed", "pr-merge-conflict", "pr-review-blocked", "row-branch-unshipped",
-    "verdict-not-convinced"]);
+    "verdict-comment-unreviewed", "verdict-not-convinced"]);
   for (const cause of START_CAUSES) {
     assert.ok(CAUSES.includes(cause), `${cause} is withheld by a drain but no longer exists`);
   }
@@ -4146,4 +4148,86 @@ test("#2176 a REFUSED commit read leaves the pull request as it was -- never an 
 
 test("#2176 the commit read is counted in GH_READS", () => {
   assert.match(GH_READS.conditionalOnUnreviewedGreenPr, /pulls\/\{n\}\/commits/);
+});
+
+
+// --- #2365: a convinced verdict that is only a COMMENT ---------------------------------------------------
+
+const approvalAt = (oid: string) => ({ state: "APPROVED", commit: { oid }, author: { login: "a11ign-bot" } });
+/** #2337's shape: green, ready, a convinced COMMENT at head, and `reviews` READ and empty. */
+const commentOnly = (n = 9999, head = AUTHORED, extra: Record<string, unknown> = {}) =>
+  readyPr(n, head, { comments: [verdictAt(n, head, "convinced")], reviews: [], reviewDecision: "REVIEW_REQUIRED", ...extra });
+const unreviewed = (pr: unknown) => ordersFor(pr).filter((o) => o.cause === "verdict-comment-unreviewed");
+
+test("#2365 a green ready PR with a convinced COMMENT and no review at head orders its parity reviewer", () => {
+  const [order, ...rest] = unreviewed(commentOnly(9999));
+  assert.deepEqual(rest, []);
+  assert.equal(order.session, "reviewer", "odd to `reviewer`");
+  assert.equal(unreviewed(commentOnly(9998))[0].session, "reviewer-2", "even to `reviewer-2`");
+  assert.match(order.prompt, /pr-review-verdict/, "it must name the remedy");
+  assert.match(order.prompt, /not a new review round/);
+  assert.equal(order.causeKey, `reviewer/verdict-comment-unreviewed/pr-9999/${AUTHORED.slice(0, 8)}`);
+  // `pr-review-blocked` (#2084) ALSO names it, for the whole set to `product-manager`: two questions, two
+  // remedies, and neither replaces the other -- this one names the comment and who re-posts it.
+  assert.deepEqual(ordersFor(commentOnly(9999)).map((o) => o.cause).sort(),
+    ["pr-review-blocked", "verdict-comment-unreviewed"]);
+});
+
+test("#2365 the same pull request with an APPROVED review at head produces NO such order", () => {
+  // THE CONTROL is the test above: same reader, same shape, `reviews` empty, non-empty.
+  assert.equal(unreviewed(commentOnly()).length, 1);
+  assert.deepEqual(unreviewed(commentOnly(9999, AUTHORED, { reviews: [approvalAt(AUTHORED)] })), []);
+  // `reviewDecision` is what GitHub merges on, and this cause must not contradict it.
+  assert.deepEqual(unreviewed(commentOnly(9999, AUTHORED, { reviewDecision: "APPROVED" })), []);
+  // An approval at an OLDER head that is not equivalent is not an approval at this one.
+  assert.equal(unreviewed(commentOnly(9999, AUTHORED, { reviews: [approvalAt(AUTHORED_2)] })).length, 1);
+});
+
+test("#2365 `not convinced` at head, a STALE head, and an UNREAD `reviews` field each produce NO such order", () => {
+  const notConvinced = commentOnly(9999, AUTHORED, { comments: [verdictAt(9999, AUTHORED, "not convinced")] });
+  assert.deepEqual(unreviewed(notConvinced), [], "rework is `verdict-not-convinced`'s");
+  assert.deepEqual(ordersFor(notConvinced).map((o) => o.cause).filter((c) => c !== "pr-review-blocked"),
+    ["verdict-not-convinced"]);
+  const stale = commentOnly(9999, AUTHORED, { comments: [verdictAt(9999, AUTHORED_2, "convinced")] });
+  assert.deepEqual(unreviewed(stale), [], "a comment at a head that is not this one says nothing about it");
+  assert.deepEqual(ordersFor(stale).map((o) => o.cause).filter((c) => c !== "pr-review-blocked"),
+    ["draft-awaiting-verdict"], "the reviewer is asked afresh");
+  const unread = { ...commentOnly(), reviews: undefined };
+  assert.deepEqual(unreviewed(unread), [], "an absent field is UNREAD, never 'no review'");
+});
+
+test("#2365 a HELD or RED pull request is not asked", () => {
+  assert.equal(unreviewed(commentOnly()).length, 1);
+  const held = commentOnly(9999, AUTHORED, { labels: [{ name: "session:worker-judge" }, { name: "hold:ceo" }] });
+  assert.deepEqual(unreviewed(held), [], "held is not merging BY DECISION");
+  assert.deepEqual(unreviewed(commentOnly(9999, AUTHORED, { statusCheckRollup: [] })), []);
+});
+
+test("#2365 when both apply, a DRAFT's next act is `draft-convinced-not-ready`, and the ready PR gets this one", () => {
+  const draft = commentOnly(9999, AUTHORED, { isDraft: true });
+  assert.deepEqual(ordersFor(draft).map((o) => o.cause), ["draft-convinced-not-ready"]);
+  assert.deepEqual(ordersFor({ ...draft, isDraft: false }).map((o) => o.cause).filter((c) => c !== "pr-review-blocked"),
+    ["verdict-comment-unreviewed"]);
+});
+
+test("#2365 a head advanced only by a merge from main keeps the SAME causeKey; an authored commit moves it", () => {
+  const keyOf = (pr: unknown) => unreviewed(pr)[0].causeKey;
+  const base = keyOf(commentOnly(9999, AUTHORED, { commits: [commit(AUTHORED, "Fix the thing")] }));
+  const merged = commentOnly(9999, MERGE_UI, { comments: [verdictAt(9999, AUTHORED, "convinced")],
+    commits: [commit(AUTHORED, "Fix the thing"), UPDATE_BRANCH(MERGE_UI)] });
+  assert.equal(keyOf(merged), base, "update-branch is a new head with no new work");
+  // An approval AT THE AUTHORED HEAD still counts after the merge: it is the same work.
+  assert.deepEqual(unreviewed({ ...merged, reviews: [approvalAt(AUTHORED)] }), []);
+  const authoredAfter = commentOnly(9999, AUTHORED_2, { comments: [verdictAt(9999, AUTHORED_2, "convinced")],
+    commits: [commit(AUTHORED, "Fix the thing"), UPDATE_BRANCH(MERGE_UI), commit(AUTHORED_2, "Address the review")] });
+  assert.notEqual(keyOf(authoredAfter), base, "THE CONTROL: without it the equalities above are a constant");
+});
+
+test("#2365 `readPrs` asks for `reviews` -- not `latestReviews`, whose commit oid is empty -- on the one list call", () => {
+  const calls: string[][] = [];
+  readPrs((args: string[]) => { calls.push(args); return "[]"; });
+  assert.equal(calls.length, 1);
+  const fields = calls[0][calls[0].indexOf("--json") + 1].split(",");
+  assert.ok(fields.includes("reviews"));
+  assert.ok(!fields.includes("latestReviews"));
 });
