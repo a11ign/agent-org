@@ -35,7 +35,7 @@
 import { execFileSync, execSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { acceptanceReport, closesDeclarationReport } from "./acceptance-commands.mjs";
+import { acceptanceReport, closesDeclarationReport, extractMutationSection } from "./acceptance-commands.mjs";
 import { leakRefusalReason } from "../../lab/src/packaging/leak-patterns.mjs";
 import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
 import { REPO } from "../../../scripts/repo-identity.mjs";
@@ -106,6 +106,60 @@ export function checkBody(body, { run = runForReal } = {}) {
   const closes = closesDeclarationReport(body);
   return { ok: report.ok && closes.ok, lines: [...report.lines, closes.line] };
 }
+
+/**
+ * #2307: what `packages/guards/src/mutation-check.mjs` means by each exit code, said as the line an author reads
+ * beside the Acceptance result. Only `0` is not a warning -- and even that one says what it cannot know, because
+ * the tool "observes a nonzero exit, not WHY": a mutation that broke the build reports the same red.
+ * @param {string} command
+ * @param {number} code
+ * @returns {{ line: string, warned: boolean }}
+ */
+function mutationVerdict(command, code) {
+  const named = `\`${command}\``;
+  if (code === 0) {
+    return { warned: false, line: `MUTATION: ${named} -> the guard bites (exit 0). That means the suite went red, `
+      + "not that it went red for the reason you mutated: read its output above." };
+  }
+  const because = {
+    1: "THE GUARD DID NOT BITE (exit 1): the code was broken and the test still passed. Suspect the guard "
+      + "before the code.",
+    2: "mutate refused before mutating (exit 2), so this says nothing either way about the guard.",
+    3: "THE RESTORE FAILED (exit 3): the file on disk is not what it was. Restore it by hand before "
+      + "pushing anything.",
+  }[code] ?? `exit ${code} is not one of mutate's four codes, so nothing was learned about the guard.`;
+  return { warned: true, line: `MUTATION: WARNING -- ${named} -> ${because} Nothing is refused (ceo, #2305).` };
+}
+
+/**
+ * #2307: RUN THE `Mutation:` COMMAND THE AUTHOR DECLARED, AND WARN WHEN THE GUARD DOES NOT BITE. Part b of `ceo`'s
+ * 2026-09-24 ruling on #2305, after 11 of 46 first-review refusals were tests that pass without testing their claim.
+ *
+ * WARNING, NEVER REFUSAL -- the ruling, and the reason is `mutation-check.mjs`'s own stated limit: it sees a
+ * nonzero exit and not WHY, so a refusal on its reading would be wrong often enough to teach authors to
+ * `gh pr create` around this wrapper. `ok` is therefore not a field here.
+ *
+ * WHY THE CI JOB STILL DOES NOT RUN IT. `acceptance-commands.mjs` scopes itself to `Acceptance:` because a
+ * mutation edits a real file and a shared runner must not; here the file is the AUTHOR's, in the author's
+ * tree, so that objection does not apply.
+ *
+ * ONLY `npm run mutate` LINES RUN. The template calls `Mutation:` a RECORD, so most of what sits under it is
+ * prose, and the section reader hands back every line as a "command". Nothing else in that section is gated
+ * the way `Acceptance:` is, so nothing else in it is executed. The author names the mutation, as `reviewer.md`
+ * already asks the reviewer to; no mutant is generated here.
+ * @param {string} body
+ * @param {(command: string) => number} run
+ * @returns {{ lines: string[], warned: boolean }}
+ */
+export function mutationReport(body, run) {
+  const section = extractMutationSection(body);
+  if (section.kind !== "commands") return { lines: [], warned: false };
+  const verdicts = section.commands.filter((command) => MUTATE_COMMAND.test(command))
+    .map((command) => mutationVerdict(command, run(command)));
+  return { lines: verdicts.map((v) => v.line), warned: verdicts.some((v) => v.warned) };
+}
+
+const MUTATE_COMMAND = /^npm run mutate(?:\s|$)/;
 
 /**
  * The body to check, read from the SAME flags `gh pr create`/`gh pr edit` themselves read -- never a
@@ -288,12 +342,12 @@ const defaultGit = (args) =>
  * @param {string[]} [argv]
  * @param {{ run?: (args: string[]) => void, git?: (args: string[]) => string,
  *           prHead?: (repo: string, number: string) => { ref: string, oid: string } | null,
- *           runAcceptance?: (command: string) => number, owner?: () => string | null,
- *           out?: (line: string) => void, err?: (line: string) => void }} [deps]
+ *           runAcceptance?: (command: string) => number, runMutation?: (command: string) => number,
+ *           owner?: () => string | null, out?: (line: string) => void, err?: (line: string) => void }} [deps]
  * @returns {number}
  */
 export function main(argv = process.argv.slice(2),
-  { run, git, prHead, runAcceptance, owner, out = writeOut, err = writeErr } = {}) {
+  { run, git, prHead, runAcceptance, runMutation = runForReal, owner, out = writeOut, err = writeErr } = {}) {
   const [mode, ...rest] = argv;
   if (mode !== "create" && mode !== "edit") {
     err(usage());
@@ -319,6 +373,8 @@ export function main(argv = process.argv.slice(2),
       + `gh pr ${mode} runs (nothing was sent to GitHub).\n`);
     return EXIT_NOTHING_SENT;
   }
+  // #2307: only for a body that will be SENT, and never a reason not to send it.
+  for (const line of mutationReport(body, runMutation).lines) out(`${line}\n`);
   return sendToGitHub(mode, rest, { run, git, err, owner });
 }
 
