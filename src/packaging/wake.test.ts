@@ -570,10 +570,61 @@ test("the idle reset measures DELIVERY silence, not cause silence", () => {
   // Deliberately longer than `JUDGMENT_TTL_MS`, so it can only fire after the cause has had a full
   // chance to be re-offered and was not. A shorter window would forgive an ignored cause every two
   // hours and the breaker would never trip at all.
-  assert.ok(RUN_IDLE_RESET_MS >= JUDGMENT_TTL_MS,
-    "shorter than the judgment TTL and the cap could never be reached by a judgment cause");
+  assert.ok(RUN_IDLE_RESET_MS > JUDGMENT_TTL_MS,
+    "shorter than the judgment TTL and the cap could never be reached by a judgment cause; EQUAL to it "
+    + "and a gap of exactly one TTL both re-offers the cause and fails to reset (#2227)");
   assert.ok(RUN_IDLE_RESET_MS >= 6 * WAKE_TTL_MS,
     "and it must exceed a full run of wake-TTL deliveries, or a stuck cause resets mid-run");
+});
+
+/**
+ * #2227: THE RELATIONSHIP BETWEEN THE TWO TWO-HOUR CONSTANTS, DRIVEN ON THE BOUNDARY THAT DECIDED IT.
+ *
+ * A judgment cause is re-offered on the first tick whose gap REACHES `JUDGMENT_TTL_MS` (`readLedger`),
+ * and a run resets only on a gap that STRICTLY EXCEEDS `RUN_IDLE_RESET_MS` (`startsNewRun`). Equal
+ * constants made a gap of exactly one TTL do both at once, so whether a standing cause escalated turned on
+ * `7200000` against `7200001`: a grid dividing two hours escalated after six, and any drift reset the run
+ * and it never did. Every ledger below is the SHIPPED readers over a real ledger text, not a model of them.
+ */
+const runOfDeliveries = (first: number, gaps: number[]) => {
+  let at = first;
+  return [`${at}\tk`, ...gaps.map((gap) => `${at += gap}\tk`)].join("\n");
+};
+const GAPS_IN_A_TRIPPED_RUN = MAX_DELIVERIES - 1;
+
+test("a gap of exactly the re-offer interval IS the re-offer, and it continues the run", () => {
+  const first = Date.now() - 10 * RUN_IDLE_RESET_MS;
+  const at = first + JUDGMENT_TTL_MS;
+  const live = (now: number) => readLedger("x", () => `${first}\tk-key/judgment-cause/1`, now,
+    new Set(["judgment-cause"])).size;
+  assert.equal(live(at - 1), 1, "one millisecond inside the window the answer still stands");
+  assert.equal(live(at), 0, "at exactly the TTL the cause is re-offered -- this is the boundary");
+  const exact = runOfDeliveries(first, Array(GAPS_IN_A_TRIPPED_RUN).fill(JUDGMENT_TTL_MS));
+  assert.equal(deliveryCounts("x", () => exact).get("k"), MAX_DELIVERIES,
+    "six deliveries a re-offer apart are ONE run, so the breaker trips");
+});
+
+test("delivery drift on top of the re-offer interval does not reset the run either", () => {
+  // The shipped timer is `OnUnitActiveSec=2min`, so a real gap is the TTL plus a tick's worth of drift.
+  // Before #2227 every one of these gaps was a NEW RUN and a standing cause never escalated.
+  const first = Date.now() - 10 * RUN_IDLE_RESET_MS;
+  const drifted = runOfDeliveries(first, Array(GAPS_IN_A_TRIPPED_RUN).fill(JUDGMENT_TTL_MS + 60_000));
+  assert.equal(deliveryCounts("x", () => drifted).get("k"), MAX_DELIVERIES,
+    "a minute of drift per gap is still the same standing cause");
+  const barely = runOfDeliveries(first, Array(GAPS_IN_A_TRIPPED_RUN).fill(JUDGMENT_TTL_MS + 1));
+  assert.equal(deliveryCounts("x", () => barely).get("k"), MAX_DELIVERIES,
+    "and so is one millisecond -- the outcome must not hang on 7200000 against 7200001");
+});
+
+test("positive control: a gap of one re-offer window missed ENTIRELY still resets the run", () => {
+  const first = Date.now() - 10 * RUN_IDLE_RESET_MS;
+  const atTheLimit = runOfDeliveries(first, [JUDGMENT_TTL_MS, RUN_IDLE_RESET_MS]);
+  assert.equal(deliveryCounts("x", () => atTheLimit).get("k"), 3,
+    "a gap of exactly RUN_IDLE_RESET_MS is not longer than it, so the run stands");
+  const past = runOfDeliveries(first, [JUDGMENT_TTL_MS, RUN_IDLE_RESET_MS + 1]);
+  assert.equal(deliveryCounts("x", () => past).get("k"), 1,
+    "one millisecond longer and it IS a new run -- without this the assertions above pass on a reset "
+    + "that can never fire");
 });
 
 test("a cause delivered MAX times is named and STOPPED, never offered again", () => {
