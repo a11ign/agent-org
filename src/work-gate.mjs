@@ -94,7 +94,7 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
   "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
   "blocked-unexaminable", "fleet-batch-due", "blocker-cleared", "pr-green-unarmed",
   "claimed-row-amended", "row-branch-unshipped", "host-units-stale", "pr-review-blocked",
-  "unclaimed-blocker-cleared", "pr-merge-conflict", "trunk-red"];
+  "unclaimed-blocker-cleared", "pr-merge-conflict", "trunk-red", "verdict-comment-unreviewed"];
 
 /**
  * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
@@ -258,7 +258,13 @@ export function readPrs(run = defaultRun) {
       // offers both names (checked 2026-09-24), so this is two more names on a request already made --
       // not the second, refusable call `queue-table.mjs`'s header records avoiding. GitHub computes them
       // lazily and may answer `UNKNOWN`; `conflictStateOf` reads that as unread, never as clean.
-      + "mergeStateStatus,mergeable"]);
+      + "mergeStateStatus,mergeable,"
+      // #2365: `reviews` AND NOT `latestReviews`, MEASURED 2026-09-24 against `gh` on this host. Both ride on
+      // the `--limit 100` call without tripping GraphQL's node limit (which `commits` does), but
+      // `latestReviews[].commit.oid` comes back the EMPTY STRING and `reviews[].commit.oid` carries the sha the
+      // review was posted at -- and "was this convinced verdict converted into a review AT THIS HEAD" is a
+      // question about exactly that sha. `gh api .../pulls/N/reviews` `commit_id` agrees with it. No second call.
+      + "reviews"]);
     const parsed = JSON.parse(out);
     return Array.isArray(parsed) ? parsed : null;
   } catch {
@@ -2836,6 +2842,76 @@ function notConvincedOrder(pr, found, { head8, keyHead8 }) {
 }
 
 /**
+ * Whether a review APPROVED this pull request at the head a verdict may sit at: `true`, `false`, or `null`
+ * when the payload never carried `reviews` -- unread, which is NOT "no review" (`readPrs`'s rule, #1286: a
+ * missing field never becomes an order). `reviewDecision` IS NOT READ HERE, deliberately (reviewer-2 on #2388):
+ * it is PULL-REQUEST-WIDE, and `main` keeps an approval posted at an older head, so it can say APPROVED while
+ * nothing approves THIS one -- `reviewStateOf` documents that it is no statement about the head. Reading it
+ * as an answer would silence the order for exactly a stale approval, so the answer comes from the reviews'
+ * own commit oids. (`pr-review-blocked` keeps reading the field; the two ask different questions.)
+ *
+ * ANY equivalent head counts, not only the current one: an approval at the authored head is the same work
+ * as the merge-from-main after it, exactly as `verdictAmong` treats a verdict.
+ * @param {any} pr @param {string[]} heads @returns {boolean | null}
+ */
+function approvedAtHead(pr, heads) {
+  if (!Array.isArray(pr.reviews)) return null;
+  return pr.reviews.some((/** @type {any} */ r) =>
+    r?.state === "APPROVED" && heads.includes(String(r?.commit?.oid ?? "")));
+}
+
+/**
+ * #2365: A CONVINCED VERDICT THAT IS ONLY A COMMENT, on a pull request that is not a draft.
+ *
+ * THE QUESTION `settledVerdictOrder` NEVER ASKED. It answered "is a draft convinced" and returned `null` for
+ * a ready pull request, correctly for "flip it ready" -- so a verdict posted as a COMMENT with no review at
+ * that head was invisible, and GitHub's `reviewDecision` stayed `REVIEW_REQUIRED` with nothing to say why.
+ * Measured 2026-09-24 on #2337: `reviewer-2`'s *convinced (provisional)* at 14:02Z, `/reviews` empty, held
+ * until somebody read it by hand. `ceo`'s ruling on #928: the reviewer's typo is not the remedy, the STATE is
+ * a gate question. (The comment existed because `pr-review-verdict.sh` refused a malformed first line AFTER
+ * `gh pr comment` had posted.)
+ *
+ * TO THE PARITY REVIEWER, NOT `product-manager`, and that is the difference from `pr-review-blocked`: that
+ * order says "nobody has approved" for a SET; this one names a single comment and a remedy that is not a new
+ * review round -- re-post it through `pr-review-verdict`.
+ *
+ * WHICH CAUSE WINS WHEN BOTH APPLY: a DRAFT is `draft-convinced-not-ready`'s, whose next act (flip it ready)
+ * comes first, and this function returns `null` for one. Once flipped, the next tick asks this question.
+ *
+ * NOT HELD, and green (`draftOrder` has already required green): a held pull request is not merging BY
+ * DECISION, so an approval nobody wants yet is no defect. Keyed on the AUTHORED head, so update-branch does
+ * not re-fire it.
+ *
+ * @param {any} pr @param {{verdict: string | null, by: string | null, byIsAuthor: boolean | null}} found
+ * @param {ReviewHeads} heads
+ */
+function unreviewedConvincedOrder(pr, found, heads) {
+  if (pr.isDraft) return null;
+  if (!armabilityOf({ labels: labelsOf(pr) }).arm) return null;
+  if (approvedAtHead(pr, heads.all ?? []) !== false) return null;
+  const { head8, keyHead8 } = heads;
+  const session = parityOwner(pr.number);
+  const authored = found.byIsAuthor === true
+    ? " That comment is signed by the pull request's own author, so it is not a review of anything: "
+      + "review the change first, and post the approval only if it stands."
+    : "";
+  return {
+    session,
+    cause: "verdict-comment-unreviewed",
+    subject: `pr-${pr.number}`,
+    discriminator: keyHead8,
+    prompt: `Ready #${pr.number} at \`${head8}\` is green and carries a CONVINCED verdict`
+      + `${found.by ? ` from ${found.by}` : ""} as a COMMENT, and no APPROVED review at that head -- `
+      + "so GitHub's `reviewDecision` is not APPROVED and it cannot merge. The comment did not become a "
+      + "review. Post the approving review with `pr-review-verdict` at the CURRENT head; its first line "
+      + `must begin "**Review of #${pr.number} at " or the script refuses (after any comment was posted). `
+      + "This is not a new review round: if your verdict stands, re-post it; do not re-read the diff."
+      + authored,
+    causeKey: `${session}/verdict-comment-unreviewed/pr-${pr.number}/${keyHead8}`,
+  };
+}
+
+/**
  * The follow-up a SETTLED verdict deserves, or `null` when it deserves none.
  *
  * A VERDICT IS NOT THE END OF THE WORK, AND READING IT AS ONE LEFT PULL REQUESTS ABANDONED. The gate used
@@ -2853,8 +2929,9 @@ function notConvincedOrder(pr, found, { head8, keyHead8 }) {
  * `verdict-not-convinced` no longer does: see `notConvincedOrder`.
  *
  * `draft-convinced-not-ready` IS THE ONE REVIEW CAUSE THAT STAYS DRAFT-ONLY (#2176): it is about flipping a
- * draft ready, and a convinced verdict on a pull request that is already ready asks nothing of anybody.
- * `not-convinced` applies to both, because rework is owed whatever state the pull request is in.
+ * draft ready. A convinced verdict on a pull request that is already ready asks nothing of anybody -- UNLESS
+ * it is only a comment (#2365), which `unreviewedConvincedOrder` asks about. `not-convinced` applies to both,
+ * because rework is owed whatever state the pull request is in.
  *
  * @param {any} pr @param {{verdict: string | null, by: string | null,
  *        byIsAuthor: boolean | null}} found @param {ReviewHeads} heads
@@ -2884,6 +2961,7 @@ function settledVerdictOrder(pr, found, heads) {
       ...(found.byIsAuthor === false ? { action: { kind: "ready", pr: Number(pr.number) } } : {}),
     };
   }
+  if (found.verdict === "convinced") return unreviewedConvincedOrder(pr, found, heads);
   if (found.verdict === "not-convinced") return notConvincedOrder(pr, found, heads);
   // Any other settled verdict -- `unrecognised`, or one the opener did not attribute -- is left alone:
   // re-prompting a reviewer who has already answered costs more than waiting for a human to look.
@@ -2891,9 +2969,10 @@ function settledVerdictOrder(pr, found, heads) {
 }
 
 /**
- * @typedef {{head8: string, keyHead8: string}} ReviewHeads
+ * @typedef {{head8: string, keyHead8: string, all?: string[]}} ReviewHeads
  * `head8` is the head a reviewer would be reading; `keyHead8` is the head the ORDER is keyed on -- the last
  * one the AUTHOR produced (#2176). They are the same string unless an update-branch has moved the head.
+ * `all` is every full head that update-branches made equivalent, newest first (`reviewChainOf`'s `heads`).
  */
 
 /** GitHub's update-branch headline (`Merge branch 'main' into <branch>`) and a session's own merge of it
@@ -3007,7 +3086,7 @@ function draftOrder(pr, required = null) {
   const head = reviewableHead(pr);
   if (!head) return null;
   const chain = reviewChainOf(pr) ?? { authored: head, heads: [head] };
-  const heads = { head8: head.slice(0, 8), keyHead8: chain.authored.slice(0, 8) };
+  const heads = { head8: head.slice(0, 8), keyHead8: chain.authored.slice(0, 8), all: chain.heads };
   const found = verdictAmong(pr, chain.heads);
   // A VERDICT THE OPENER DID NOT ATTRIBUTE COUNTS AS SETTLED, and that is the wake side's default rather
   // than a reading of the comment: `verdictAtHead` returns `byIsAuthor: null` for it and refuses to guess
