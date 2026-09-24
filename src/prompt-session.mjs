@@ -127,11 +127,16 @@ export function clearThenPrompt(run, label, text) {
  * the two refusals above: the name is checked first, because a typo is an author error whatever the depth
  * is, and the depth second, because a report joining a stalled inbox is not a message at all.
  *
+ * THE ORDER IS WRITTEN WITH ITS DECLARATION (#2222): `stance` says whether the sender declared it a
+ * decision, an FYI, or nothing, and the queue entry records the first as `decision: true`. The author is
+ * told what was recorded ({@link stanceNote}), including when it was the default.
+ *
  * @param {{label: string, text: string, why: string, agents: {label: string, status: string}[] | null,
- *          path: string, needsDecision?: boolean}} refusal
+ *          path: string, stance?: Stance}} refusal
  * @returns {number}
  */
-export function queueOrLose({ label, text, why, agents, path, needsDecision = false }) {
+export function queueOrLose({ label, text, why, agents, path, stance = STANCE.UNDECLARED }) {
+  const decision = stance === STANCE.DECISION;
   if (!queueable(label, agents)) {
     process.stderr.write(`${NOT_QUEUED_PREFIX}${why}. Nothing will retry this -- a name the org `
       + "does not know is an author error, not a busy session. Fix the name and run it again.\n");
@@ -139,14 +144,14 @@ export function queueOrLose({ label, text, why, agents, path, needsDecision = fa
   }
   // BEFORE THE WRITE, DELIBERATELY. Refusing after the append would leave the order on the queue it was
   // refused for joining, which is the one outcome the row that asked for this ruled out by name.
-  const tooDeep = deepQueueRefusal(queueDepth(label, path).mine, { label, text, needsDecision });
+  const tooDeep = deepQueueRefusal(queueDepth(label, path).mine, { label, text, decision });
   if (tooDeep) {
     process.stderr.write(tooDeep);
     return EXIT.REFUSED;
   }
   let entry;
   try {
-    entry = queueHandoff(path, { session: label, prompt: text });
+    entry = queueHandoff(path, { session: label, prompt: text, decision });
   } catch (err) {
     // THE ONE CASE WHERE AN ORDER REALLY IS LOST, so it is the loudest line this file can print.
     process.stderr.write(`NOT PROMPTED, AND NOT QUEUED: ${why}; and the queue at ${path} could not be `
@@ -158,6 +163,7 @@ export function queueOrLose({ label, text, why, agents, path, needsDecision = fa
     + `QUEUED ${entry.id} -- the next \`npm run work:tick\` delivers it to "${label}" once the gate judges `
     + "that session between tasks. DO NOT RETRY: this command clears its target first, so a retry that "
     + "lands the instant it goes idle wipes whatever it was working on.\n");
+  process.stderr.write(stanceNote(stance));
   process.stderr.write(queueDepthNote(label, path));
   return EXIT.QUEUED;
 }
@@ -201,7 +207,8 @@ export function queueDepthNote(label, path) {
  * neither of them has an empty `catch`.
  *
  * @param {string} label @param {string} path
- * @returns {{mine?: {session: string, waiting: number, oldestMs: number, stale: number},
+ * @returns {{mine?: {session: string, waiting: number, oldestMs: number, stale: number,
+ *              decisions: number},
  *            unreadable?: string}}
  */
 export function queueDepth(label, path) {
@@ -228,8 +235,78 @@ export function queueDepth(label, path) {
  */
 export const DEEP_QUEUE = 10;
 
-/** Declares that this order needs a DECISION, so {@link deepQueueRefusal} does not apply to it. */
+/**
+ * THE SENDER'S DECLARATION, AND THE ONLY PLACE IT CAN COME FROM (#2222). Whether an order asks its reader
+ * for an answer is known to whoever wrote it and computable by nobody else: on the delivery that filed
+ * the row, 22 of the 30 orders that OPENED as a routine report also asked for a decision, so a classifier
+ * on the text is wrong in the dangerous direction. It is declared here, recorded on the queue entry, and
+ * surfaced in the bundle header ({@link decisionHeader} in `wake.mjs`).
+ *
+ * It does NOT replace `answer:<session>`. Where a row exists the label stays the answer -- it found 8 of
+ * 8 on that delivery. This is for the ask with no row to put it on: a constant to ratify, a policy
+ * question, a cross-row ruling.
+ */
+export const DECISION_FLAG = "--decision";
+
+/** Declares that this order asks for no answer. Also the DEFAULT, so it changes nothing -- it exists so
+ * a sender can say so on purpose, and so `--decision --fyi` can be refused as the contradiction it is. */
+export const FYI_FLAG = "--fyi";
+
+/** The spelling #2167 shipped, for the same declaration: it exempts a decision from
+ * {@link deepQueueRefusal}. It is kept as an ALIAS rather than removed -- the rules file tells authors to
+ * type it -- so one declaration does both jobs and there is no second way to say the same thing. */
 export const NEEDS_DECISION_FLAG = "--needs-decision";
+
+/** @typedef {"decision" | "fyi" | "undeclared"} Stance */
+/** @type {{DECISION: "decision", FYI: "fyi", UNDECLARED: "undeclared"}} */
+export const STANCE = { DECISION: "decision", FYI: "fyi", UNDECLARED: "undeclared" };
+
+/**
+ * PURE. Split the declaration off the arguments -- and NEVER LEAVE A FLAG IN THE TEXT.
+ *
+ * `rest.join(" ")` is the order's text, and its id hashes that text, so a flag left in it would be typed
+ * at the reader AND make the same order sent with and without the flag queue twice. That matters most
+ * for the declaration: an author who adds `--decision` when re-sending must not thereby send a SECOND
+ * order.
+ *
+ * BOTH FLAGS AT ONCE IS REFUSED, not resolved: an order cannot be both, and picking one for the sender
+ * would be inferring the thing this row exists to stop inferring.
+ *
+ * @param {readonly string[]} args
+ * @returns {{stance: Stance, rest: string[], refusal?: undefined} | {refusal: string}}
+ */
+export function parseStance(args) {
+  const asks = args.some((a) => a === DECISION_FLAG || a === NEEDS_DECISION_FLAG);
+  const fyi = args.includes(FYI_FLAG);
+  if (asks && fyi) {
+    return { refusal: `${DECISION_FLAG} and ${FYI_FLAG} contradict each other: this order either asks its `
+      + "reader for an answer or it does not. Pick one -- nothing else can know which.\n" };
+  }
+  const flags = [DECISION_FLAG, FYI_FLAG, NEEDS_DECISION_FLAG];
+  const rest = args.filter((a) => !a.startsWith("--ledger=") && !flags.includes(a));
+  return { stance: asks ? STANCE.DECISION : fyi ? STANCE.FYI : STANCE.UNDECLARED, rest };
+}
+
+/**
+ * PURE. What the author is told the queue recorded -- the DEFAULT INCLUDED, so it is stated, never silent.
+ *
+ * A DECISION IS ASKED TO NAME WHAT CLEARS IT (SHOULD, not must). A conclusion that changes what happens
+ * next belongs in a field, and the reader of a bundle triages by the header line and then has to act: a
+ * row to label `answer:<session>`, or "reply on #928". Where a row exists the label is the answer and
+ * this order is the pointer to it, which is why this only advises and refuses nothing.
+ *
+ * @param {Stance} stance @returns {string}
+ */
+export function stanceNote(stance) {
+  if (stance === STANCE.DECISION) {
+    return "DECLARED DECISION -- recorded on the queue entry, so the bundle header lists this order. "
+      + "Say in the text WHAT CLEARS IT: a row to label `answer:<session>`, or \"reply on #928\". Where a "
+      + "row exists, the label is the answer and this order only points at it.\n";
+  }
+  if (stance === STANCE.FYI) return "DECLARED FYI -- recorded: this order asks for no answer.\n";
+  return `NO DECLARATION, SO THIS IS RECORDED AS FYI (the default). If it asks for an answer, send it `
+    + `again with ${DECISION_FLAG} -- the same words are the same order, so it is not queued twice.\n`;
+}
 
 /** Prefix on {@link deepQueueRefusal}'s message. Shared with {@link queueOrLose}'s unknown-session
  * refusal deliberately: both mean the same thing to a script reading stderr -- nothing holds this. */
@@ -251,7 +328,7 @@ export const NOT_QUEUED_PREFIX = "NOT PROMPTED, AND NOT QUEUED: ";
  *
  * ## The escape hatch is the whole design, not a concession to it
  *
- * Without {@link NEEDS_DECISION_FLAG} this is a mute button on the one inbox that must never be muted: a
+ * Without {@link DECISION_FLAG} this is a mute button on the one inbox that must never be muted: a
  * stop-the-line, a ruling, a question whose answer changes what somebody does next are exactly the orders
  * a deep queue must still accept, and they are the orders a deep queue makes most urgent. The flag costs
  * the author one declaration and is not checked -- it cannot be. What it buys is that the DEFAULT stopped
@@ -259,11 +336,11 @@ export const NOT_QUEUED_PREFIX = "NOT PROMPTED, AND NOT QUEUED: ";
  *
  * @param {{session: string, waiting: number, oldestMs: number, stale: number} | undefined} mine
  *   what is already waiting for the target, or `undefined` for a queue this target is not in
- * @param {{label: string, text: string, needsDecision: boolean}} order
+ * @param {{label: string, text: string, decision: boolean}} order
  * @returns {string | null} the refusal to print, or `null` when this order may queue
  */
-export function deepQueueRefusal(mine, { label, text, needsDecision }) {
-  if (needsDecision) return null;
+export function deepQueueRefusal(mine, { label, text, decision }) {
+  if (decision) return null;
   if (!mine || mine.waiting < DEEP_QUEUE) return null;
   return `${NOT_QUEUED_PREFIX}"${label}" already has ${mine.waiting} order(s) waiting and the oldest has `
     + `waited ${waitedFor(mine.oldestMs)}. Yours would be number ${mine.waiting + 1}. An order is `
@@ -274,7 +351,8 @@ export function deepQueueRefusal(mine, { label, text, needsDecision }) {
     + "its reader next acts on that row (`.claude/rules/agent-practices.md`, *Routing -- who reads "
     + "what*).\n"
     + "IF IT NEEDS A DECISION -- a ruling, a stop-the-line, a question whose answer changes what somebody "
-    + `does next -- re-run with ${NEEDS_DECISION_FLAG} and it queues at any depth.\n`
+    + `does next -- re-run with ${DECISION_FLAG} (or ${NEEDS_DECISION_FLAG}, the same declaration) `
+    + "and it queues at any depth.\n"
     + "YOUR REPORT, UNCHANGED, so this refusal does not swallow it -- the text may have come on stdin and "
     + `exist nowhere else:\n${text}\n`;
 }
@@ -284,17 +362,16 @@ function main() {
   // queue, so it must mean here exactly what it means to `wake.mjs` -- `ledgerPathFrom` is the one
   // definition both use. Accepting it is what lets a test, or an operator on a second org, point both
   // halves of the queue at the same place.
-  refuseUnknownFlags(["--ledger", NEEDS_DECISION_FLAG], { entry: import.meta.url,
-    command: "node packages/agent-org/src/prompt-session.mjs" });
-  // NEITHER FLAG IS PART OF THE PROMPT. `rest.join(" ")` is the order's text, so a `--ledger=` left in it
-  // would be typed at the reviewer -- and, worse, would change the order's `handoffId`, so the same order
-  // sent with and without the flag would queue twice. `--needs-decision` is stripped for the same reason,
-  // and it matters more here: an author who adds the flag on a re-send must not thereby send a SECOND
-  // order, which is exactly what a text-changing flag would do.
-  const args = process.argv.slice(2);
-  const needsDecision = args.includes(NEEDS_DECISION_FLAG);
-  const [label, ...rest] = args
-    .filter((a) => !a.startsWith("--ledger=") && a !== NEEDS_DECISION_FLAG);
+  refuseUnknownFlags(["--ledger", DECISION_FLAG, FYI_FLAG, NEEDS_DECISION_FLAG], {
+    entry: import.meta.url, command: "node packages/agent-org/src/prompt-session.mjs" });
+  // NO FLAG IS PART OF THE PROMPT -- `parseStance` strips them, and its comment carries why.
+  const parsed = parseStance(process.argv.slice(2));
+  if (parsed.refusal) {
+    process.stderr.write(parsed.refusal);
+    process.exit(EXIT.REFUSED);
+  }
+  const { stance } = parsed;
+  const [label, ...rest] = parsed.rest;
   // STDIN IS THE DEFAULT FOR THE TEXT, because a prompt that names a PR contains backticks and quotes,
   // and passing that through a shell argument is how a `gh pr comment` in this repo once ran as command
   // substitution inside the very message it was quoting.
@@ -306,7 +383,7 @@ function main() {
   const queue = handoffQueuePath(ledgerPathFrom(process.argv));
   const agents = readAgents(defaultRun);
   const why = promptable(label, agents);
-  if (why) process.exit(queueOrLose({ label, text, why, agents, path: queue, needsDecision }));
+  if (why) process.exit(queueOrLose({ label, text, why, agents, path: queue, stance }));
 
   // NO DEPTH GATE ON THIS PATH, AND THE ASYMMETRY IS THE POINT. `promptable` said the target is between
   // tasks, so this order is DELIVERED rather than queued: it joins nothing, and a session that is idle is
@@ -317,7 +394,7 @@ function main() {
   // said no, which means the session went to work in between -- the race the queue exists for. A refused
   // CLEAR is not this: the text went, on a bloated context, and re-queueing it would deliver it twice.
   if (report?.startsWith(PROMPT_REFUSED_PREFIX)) {
-    process.exit(queueOrLose({ label, text, why: report, agents, path: queue, needsDecision }));
+    process.exit(queueOrLose({ label, text, why: report, agents, path: queue, stance }));
   }
   if (report) {
     process.stderr.write(`${report}\n`);

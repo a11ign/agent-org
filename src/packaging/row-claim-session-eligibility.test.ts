@@ -21,6 +21,7 @@ import { sessionEligibilityReason, claimRow, CLAIM_LABEL } from "../row-claim.mj
 interface Routes {
   issueList?: string; graphql?: string; issueViewBody?: string; prList?: string;
   heldRowBody?: string; subIssues?: string; blockedBy?: string; prReviews?: string;
+  prCommits?: string;
 }
 
 /** The CLAIMED row's own body (B4 reads its Region); any other issue is a row this session HOLDS (#989). */
@@ -66,6 +67,8 @@ function routedRun(routes: Routes) {
     }
     if (args[0] === "issue" && args[1] === "view") return claimedRowViewRoute(routes, args);
     if (args[0] === "pr" && args[1] === "list") return prListRoute(routes, args);
+    // #2316: `commits` is read PER PULL REQUEST, the way `gh` serves it -- GitHub refuses it on the list.
+    if (args[0] === "pr" && args[1] === "view") return routes.prCommits ?? JSON.stringify({ commits: [] });
     return "";
   };
 }
