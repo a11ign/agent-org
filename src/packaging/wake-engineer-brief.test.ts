@@ -20,7 +20,7 @@ import { addressed, deliver, engineerRoles, ENGINEER_BRIEF } from "../wake.mjs";
 const ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const read = (repoPath: string) => readFileSync(`${ROOT}${repoPath}`, "utf8");
 const SESSIONS = JSON.parse(read("packages/agent-org/docs/roles/sessions.json")) as {
-  live: { name: string; role: string; brief: string | null }[];
+  live: { name: string; role: string; brief: string | null; family?: { prefix: string; from: number } }[];
   retired: { name: string }[];
 };
 const ROLES_DIR = "packages/agent-org/docs/roles";
@@ -38,8 +38,19 @@ test("an engineer label's first message names the engineer brief", () => {
 });
 
 test("the positive control: with an EMPTY roster nobody is told, so the line is the roster's doing", () => {
-  assert.doesNotMatch(addressed(ORDER, "worker-6", []), BRIEF_LINE);
-  assert.doesNotMatch(addressed(ORDER, "worker-6", ["worker-7"]), BRIEF_LINE, "membership, not the label's shape");
+  assert.doesNotMatch(addressed(ORDER, "worker-6", [], []), BRIEF_LINE);
+  assert.doesNotMatch(addressed(ORDER, "worker-3", ["worker-7"]), BRIEF_LINE, "membership, not the label's shape");
+});
+
+test("#2403: a SPARE-FAMILY member is told, though no address in the roster names it", () => {
+  // The instance the pilot spawns starts knowing nothing, and `engineerRoles()` lists addresses only, so a
+  // roster-only test would leave `worker-9` the one engineer never told to read the brief.
+  assert.ok(!engineerRoles().includes("worker-9"), "the positive control: worker-9 is in no listed address");
+  assert.match(addressed(ORDER, "worker-9"), BRIEF_LINE, "worker-9, roster and families read from sessions.json");
+  assert.match(addressed(ORDER, "worker-12"), BRIEF_LINE, "worker-12: a number nobody committed");
+  assert.doesNotMatch(addressed(ORDER, "worker-9", [], []), BRIEF_LINE, "the family is the doing, not the label");
+  assert.doesNotMatch(addressed(ORDER, "worker-3"), BRIEF_LINE, "below the family's `from` names no engineer role");
+  assert.doesNotMatch(addressed(ORDER, "worker-09"), BRIEF_LINE, "a second spelling of worker-9 is not a member");
 });
 
 test("the singletons and a reviewer are NOT told, whatever roster is supplied or read", () => {
@@ -57,8 +68,9 @@ test("every engineer role in sessions.json is told, with the roster READ and not
   // The population is derived a SECOND way -- every live name that is not one of the three singletons the test
   // above pins -- and compared by EQUALITY, so a count floor is not standing in for "the roster is right" (#1067).
   const singletons = ["ceo", "orchestrator", "product-manager"];
-  assert.deepEqual(engineers, SESSIONS.live.map((s) => s.name).filter((n) => !singletons.includes(n)),
-    "the engineer roles are every live session that is not a singleton");
+  assert.deepEqual(engineers,
+    SESSIONS.live.filter((s) => s.family === undefined).map((s) => s.name).filter((n) => !singletons.includes(n)),
+    "the engineer addresses are every live session that is not a singleton and not a family (#2403)");
   assert.ok(engineers.includes("worker-tooling"), "the positive control: a known engineer is in the population");
   for (const label of engineers) assert.match(addressed(ORDER, label), BRIEF_LINE, label);
 });
@@ -120,9 +132,12 @@ test("worker-tooling and every spare point at the engineer brief; capture and ju
   const brief = (name: string) => SESSIONS.live.find((s) => s.name === name)?.brief;
   const shared = "docs/roles/engineer.md";
   assert.ok(`packages/agent-org/${shared}` === ENGINEER_BRIEF, "the field's path is the one addressed() names");
-  for (const name of ["worker-tooling", "worker-4", "worker-5", "worker-6", "worker-7", "worker-8"]) {
+  // #2403: the spares are ONE family entry, `worker-<n>`, and not five addresses.
+  for (const name of ["worker-tooling", "worker-<n>"]) {
     assert.equal(brief(name), shared, name);
   }
+  assert.equal(SESSIONS.live.filter((s) => s.family !== undefined).length, 1,
+    "the positive control: the family entry is the one `worker-<n>` was read from");
   assert.equal(brief("worker-capture"), "docs/roles/worker-capture.md");
   assert.equal(brief("worker-judge"), "docs/roles/worker-judge.md");
   for (const s of SESSIONS.live.filter((e) => e.role === "engineer")) {
@@ -141,14 +156,25 @@ const NESTED = [
   { file: "packages/judge/CLAUDE.md", heading: /^## The judge/m,
     governs: ["packages/judge/src/rules.ts", "packages/judge/src/criterion-coverage.ts"] },
 ];
-const SESSION_NAMES = [...SESSIONS.live.map((s) => s.name), ...SESSIONS.retired.map((s) => s.name)];
-/** A name as a WORD: `worker-ctl.sh` and `worker-fleet` are not sessions, and `worker-4` inside `worker-40` is not. */
-const namesIn = (text: string) => SESSION_NAMES.filter((n) => new RegExp(`(?<![\\w-])${n}(?![\\w-])`).test(text));
+const FAMILIES = SESSIONS.live.flatMap((s) => (s.family === undefined ? [] : [s.family]));
+const SESSION_NAMES = [...SESSIONS.live.filter((s) => s.family === undefined).map((s) => s.name),
+  ...SESSIONS.retired.map((s) => s.name)];
+/** A name as a WORD: `worker-ctl.sh` and `worker-fleet` are not sessions. */
+const namesIn = (text: string) => [
+  ...SESSION_NAMES.filter((n) => new RegExp(`(?<![\\w-])${n}(?![\\w-])`).test(text)),
+  // #2403: a family member is every `<prefix><n>` for n from `from`, so the matcher reads the family and not a list.
+  ...FAMILIES.flatMap(({ prefix, from }) => [...text.matchAll(new RegExp(`(?<![\\w-])${prefix}(\\d+)(?![\\w-])`, "g"))]
+    .filter((m) => Number(m[1]) >= from).map((m) => m[0])),
+];
 
 test("the name matcher notices a session name, and only as a word (its own positive control)", () => {
   assert.deepEqual(namesIn("hand it to `orchestrator`, then worker-4."), ["orchestrator", "worker-4"]);
-  assert.deepEqual(namesIn("`worker-ctl.sh up`, the worker-fleet package, worker-40, ceo-ish, preceo"), []);
-  assert.ok(SESSION_NAMES.includes("worker-capture") && SESSION_NAMES.length >= 12, "the roster was read");
+  assert.deepEqual(namesIn("and worker-40, a family member nobody listed"), ["worker-40"]);
+  assert.deepEqual(namesIn("`worker-ctl.sh up`, the worker-fleet package, worker-3, worker-4abc, ceo-ish, preceo"), []);
+  // #2403: the floor of 12 counted the five spare addresses; the roster is now checked by what it must hold.
+  assert.ok(SESSION_NAMES.includes("worker-capture") && SESSIONS.retired.every((r) => SESSION_NAMES.includes(r.name)),
+    "the roster was read: a live address and every retired name");
+  assert.ok(!SESSION_NAMES.includes("worker-<n>") && FAMILIES.length === 1, "the family is matched as a rule");
 });
 
 for (const { file, heading, governs } of NESTED) {

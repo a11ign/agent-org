@@ -45,6 +45,9 @@ import { inBuildReason, isInBuild, unansweredRefusal, lookupHeldRows, lookupOthe
 import { parseWorktreeList, isPrimaryWorktree, isWorkingTreeClean, mergeStatus, detachedMergeStatus }
   from "./prune-worktrees.mjs";
 import { worktreeOwner } from "./worktree-owner.mjs";
+// THE FAMILY IS THE ROSTER'S, READ BY ONE MODULE (#2403): `worker-<n>` for n from 4 is a spare engineer role, and
+// `arm-pr.mjs` is where every other reader of a `session:<name>` label already asks whether a name is one.
+import { SPARE_FAMILIES, familyNumber } from "./arm-pr.mjs";
 // THE CLAIM'S OWN CHECKS, called rather than restated (#2324): a spawn is refused for the reasons the claim
 // would refuse the row, and a copy of either rule here would go stale the next time the rule changed.
 import { lookupBlockedByEdge, blockedByEdgeReason } from "./row-claim/blocked-by-edge-rule.mjs";
@@ -334,12 +337,17 @@ export const SPAWN_CAUSES = Object.freeze(["ready-row-unclaimed"]);
  * the offer order, so the standing three come before the spares and a spare is only started once they are
  * all taken.
  *
+ * ADDRESSES THE FILE NAMES, NEVER THE FAMILY (#2403): the `worker-<n>` entry is a RULE for addresses, not one, so
+ * it is not in this list. The instances that exist reach the offer through {@link withSpareInstances}, and the
+ * next free number is {@link nextSpareLabel}'s.
+ *
  * @param {string | URL} [path] the roster file; a parameter so a test can hand it a fixture
  * @returns {string[]}
  */
 export function engineerRoles(path = new URL("../docs/roles/sessions.json", import.meta.url)) {
-  const { live } = /** @type {{ live: { name: string, role: string }[] }} */ (JSON.parse(readFileSync(path, "utf8")));
-  return live.filter((s) => s.role === "engineer").map((s) => s.name);
+  const { live } = /** @type {{ live: { name: string, role: string, family?: object }[] }} */ (
+    JSON.parse(readFileSync(path, "utf8")));
+  return live.filter((s) => s.role === "engineer" && s.family === undefined).map((s) => s.name);
 }
 
 /**
@@ -419,12 +427,16 @@ export function isPilotOrder(order) {
  * THE ROSTER MUST HOLD ROLES THAT NOBODY RUNS, OR THIS NEVER FIRES (#2279). Every standing engineer role is
  * permanently occupied, so "the first ABSENT role" was empty by construction and the pilot could start only
  * after a standing session died -- which reported live as three UNDELIVERED orders in a row. `sessions.json`
- * therefore lists spare engineer roles (`worker-4` to `worker-8`, marked `spare`) with no standing process: an
- * address for an instance to answer to, since two processes under one address would share one B2 budget. The
- * number of instances is bounded by the orders `route` could not place, one per tick (`MAX_SPAWNS_PER_TICK`);
- * the spare count is only `ceo`'s ceiling on that, and the refusal below says so rather than blaming the
- * standing three. A spare is ENDED when its row closes (`endFinishedSpares`, #2323), so the address is free
- * again for the next row's instance.
+ * therefore declares a spare engineer FAMILY (`worker-<n>` for n from 4, marked `spare`) with no standing
+ * process: an address for an instance to answer to, since two processes under one address would share one B2
+ * budget.
+ *
+ * THERE IS NO CEILING (#2403, the chairman, 2026-09-24). The roster was a list of five and its size was the
+ * bound, lifted by an edit once somebody read the refusal in a log. Now, when every address in `roster` holds
+ * a process, {@link nextSpareLabel} allocates the LOWEST free number of the family, so the bound is the orders
+ * `route` could not place, one per tick (`MAX_SPAWNS_PER_TICK`), for rows `spawnClaimability` finds claimable
+ * -- and no count appears here. A spare is ENDED when its row closes (`endFinishedSpares`, #2323), so its
+ * address is free again for the next row's instance and the numbers stay as small as the concurrency needs.
  *
  * A DRAINED ROLE IS NEVER SPAWNED INTO (#2324), even when absent: `row-claim` refuses it a claim, so an instance
  * started under its address could read the order, be refused, and sit there holding the address.
@@ -444,15 +456,60 @@ export function spawnableRole(order, agents, roster, drained = []) {
     return { refusal: `no spawn: "${order.cause ?? "an order carrying no cause"}" is not a pilot cause `
       + `(${SPAWN_CAUSES.join(", ")})` };
   }
-  const role = roster.find((label) => !agents.some((a) => a.label === label) && !drained.includes(label));
-  if (!role) {
+  const role = roster.find((label) => !agents.some((a) => a.label === label) && !drained.includes(label))
+    ?? nextSpareLabel({ agents, drained });
+  if (role === null) {
     const seen = roster.map((label) => `${label}=${agents.find((a) => a.label === label)?.status}`).join(", ");
-    return { refusal: `no spawn: all ${roster.length} engineer roles hold a process (${seen}) -- that is the `
-      + "ceiling: the engineer roles `sessions.json` lists, and adding one is `ceo`'s. A busy, blocked or "
-      + "agentless one is not reused, and `spawnableRole` says why for each" };
+    return { refusal: `no spawn: all ${roster.length} engineer roles hold a process (${seen}) and \`sessions.json\` `
+      + "declares no spare family to allocate the next address from (#2403). A busy, blocked or agentless one "
+      + "is not reused, and `spawnableRole` says why for each" };
   }
   return { role };
 }
+
+/**
+ * The next address of a spare family: the LOWEST number, from the family's `from`, that holds no process and is
+ * not drained -- or `null` when the roster declares no family (#2403).
+ *
+ * LOWEST FIRST, AND THAT IS WHAT KEEPS THE NUMBERS SMALL. A finished spare's workspace is closed and its address
+ * is free again, so `worker-5` finishing while `worker-9` still works makes `worker-5` the next answer; the
+ * numbers track the concurrency and not the count of rows the org has ever run. ONE family is declared, and the
+ * first is the one allocated from. ANY process at an address
+ * holds it, whatever its status, for the reason {@link spawnableRole} gives for `working`, `blocked` and
+ * `unknown`. The loop ends because a tick's agents are finite.
+ *
+ * @param {{ agents: {label: string}[], drained?: readonly string[], families?: readonly {prefix: string, from: number}[] }} args
+ * @returns {string | null}
+ */
+export function nextSpareLabel({ agents, drained = [], families = SPARE_FAMILIES }) {
+  const taken = new Set([...agents.map((a) => a.label), ...drained]);
+  const family = families[0];
+  if (family === undefined) return null;
+  let n = family.from;
+  while (taken.has(`${family.prefix}${n}`)) n += 1;
+  return `${family.prefix}${n}`;
+}
+
+/**
+ * The roster this tick OFFERS work to: the addresses the file names, then every spare-family instance that
+ * exists, lowest number first (#2403).
+ *
+ * WITHOUT THIS A SPAWNED `worker-9` IS INVISIBLE TO `route`. The file lists a family as a rule, so the next
+ * tick's roster held no `worker-9` and an instance that had started (and was idle, waiting for its order after
+ * a refused prompt) could never be offered one -- the very case `deliver` says the ordinary path handles.
+ * Present instances only: an absent address is {@link nextSpareLabel}'s to allocate, never `route`'s to offer.
+ *
+ * @param {string[]} roster @param {{label: string}[]} agents
+ * @param {readonly {prefix: string, from: number}[]} [families]
+ * @returns {string[]}
+ */
+export function withSpareInstances(roster, agents, families = SPARE_FAMILIES) {
+  const numbered = agents
+    .map((a) => ({ label: a.label, n: familyNumber(a.label, families) }))
+    .filter((a) => a.n !== null && !roster.includes(a.label));
+  return [...roster, ...numbered.sort((a, b) => Number(a.n) - Number(b.n)).map((a) => a.label)];
+}
+
 
 /**
  * A new workspace for `label`, and the pane to start an agent in -- or a refusal.
@@ -1901,11 +1958,16 @@ export const ENGINEER_BRIEF = "packages/agent-org/docs/roles/engineer.md";
  * there is briefed with no edit here, and `ceo`, `product-manager`, `orchestrator` and a reviewer -- none of
  * which is an engineer role -- are not told to read a brief written for someone else.
  *
+ * A SPARE-FAMILY MEMBER IS A MEMBER (#2403): `engineerRoles` lists ADDRESSES, and `worker-9` is listed nowhere, so
+ * an address-only test would leave the instance the pilot spawns -- the one that starts knowing nothing -- the one
+ * engineer never told to read the brief. The family is read from the same file, so it is a rule and not a name test.
+ *
  * @param {string} label
  * @param {string[]} engineers
+ * @param {readonly import("./arm-pr.mjs").SpareFamily[]} families
  */
-function engineerBriefLine(label, engineers) {
-  if (!engineers.includes(label)) return "";
+function engineerBriefLine(label, engineers, families) {
+  if (!engineers.includes(label) && familyNumber(label, families) === null) return "";
   return `Before you start, read \`${ENGINEER_BRIEF}\`: the resource ban, the acceptance standard and `
     + "the habits every engineer is held to. Nothing else tells you them.\n\n";
 }
@@ -1934,8 +1996,9 @@ function engineerBriefLine(label, engineers) {
  * @param {{session: string, prompt: string}} order
  * @param {string} label the concrete session this went to
  * @param {string[]} [engineers] the engineer roles; a parameter so a test can hand it a roster
+ * @param {readonly import("./arm-pr.mjs").SpareFamily[]} [families] the spare families, likewise
  */
-export function addressed(order, label, engineers = engineerRoles()) {
+export function addressed(order, label, engineers = engineerRoles(), families = SPARE_FAMILIES) {
   // `<you>` SUBSTITUTED, not merely explained: the order's own command text carries the placeholder, and
   // an agent that has been told its name still has to edit the command it was handed. Handing it a
   // command it can run is the difference between an instruction and a task.
@@ -1943,7 +2006,7 @@ export function addressed(order, label, engineers = engineerRoles()) {
   return `You are \`${label}\`, an org session in this repository. Use that name wherever a command `
     + `asks which session you are (\`--session=${label}\`).\n\n`
     + `${prompt}\n\n`
-    + engineerBriefLine(label, engineers)
+    + engineerBriefLine(label, engineers, families)
     + "Work autonomously to the end: nobody is at this terminal to answer you. If something genuinely "
     + `blocks you, say so on the row and message \`${escalationFor(label)}\` -- never stop and wait on a `
     + "human. If you cannot claim the row (already taken, or the claim refuses), that is an answer: "
@@ -2288,7 +2351,7 @@ export function clearContext(run, label) {
 function targetFor(order, live, roster, deps) {
   // A REVIEWER ORDER IS ASKED FIRST AND SEPARATELY (#2401): the engineer pilot's checks below are unchanged.
   if (isReviewerOrder(order)) return reviewerTarget(order, live, deps);
-  const routed = routeWithFallback(order, live, roster, deps.ineligibleReason);
+  const routed = routeWithFallback(order, live, withSpareInstances(roster, live), deps.ineligibleReason);
   if (!("refusal" in routed)) {
     // AN INSTANCE TAKES ITS OWN PULL REQUEST'S ORDERS ONLY, whatever cause or fallback brought the order here.
     const wrong = reviewerMismatch(order, routed.label);
@@ -2435,15 +2498,44 @@ export function spawnEnvironment(override = {}) {
 /**
  * The engineer roles `sessions.json` MARKS spare, in file order: the only roles this file ever ends a process
  * for. READ, NOT TYPED, for #2279's reason -- a second copy of the list drifts -- and a ROLE fact rather than
- * an instance one, so `_rolesNotProcesses` stands.
+ * an instance one, so `_rolesNotProcesses` stands. THE ADDRESSES IT NAMES ONLY (#2403): a family is not in this
+ * list, its members are found among the running processes ({@link spareInstances}).
  *
  * @param {string | URL} [path] the roster file; a parameter so a test can hand it a fixture
  * @returns {string[]}
  */
 export function spareRoles(path = new URL("../docs/roles/sessions.json", import.meta.url)) {
-  const { live } = /** @type {{ live: { name: string, role: string, spare?: boolean }[] }} */ (
-    JSON.parse(readFileSync(path, "utf8")));
-  return live.filter((s) => s.role === "engineer" && s.spare === true).map((s) => s.name);
+  return spareEntries(path).addresses;
+}
+
+/**
+ * @param {string | URL} path
+ * @returns {{ addresses: string[], families: { prefix: string, from: number }[] }} the spare roles the file marks:
+ *   the addresses it names, and the families it declares
+ */
+function spareEntries(path) {
+  const { live } = /** @type {{ live: { name: string, role: string, spare?: boolean,
+    family?: { prefix: string, from: number } }[] }} */ (JSON.parse(readFileSync(path, "utf8")));
+  const spares = live.filter((s) => s.role === "engineer" && s.spare === true);
+  return {
+    addresses: spares.filter((s) => s.family === undefined).map((s) => s.name),
+    families: spares.flatMap((s) => (s.family === undefined ? [] : [s.family])),
+  };
+}
+
+/**
+ * The spare instances that EXIST: the marked addresses that hold a process, and every process whose label is a
+ * member of a marked family (#2403). What the teardown ends from -- a family has no list to walk, so the
+ * agents are where its members are found.
+ *
+ * @param {{label: string}[]} agents
+ * @param {string | URL} [path] the roster file; a parameter so a test can hand it a fixture
+ * @returns {string[]}
+ */
+export function spareInstances(agents, path = new URL("../docs/roles/sessions.json", import.meta.url)) {
+  const { addresses, families } = spareEntries(path);
+  const labels = agents.map((a) => a.label);
+  return [...new Set([...addresses, ...labels.filter((l) => familyNumber(l, families) !== null)])];
 }
 
 /**
@@ -2896,7 +2988,7 @@ export function tearDownSpares(agents, ledgerPath, say = (line) => process.stder
     mkdirSync(dirname(ledgerPath), { recursive: true });
     const repoRoot = new URL("../../..", import.meta.url).pathname;
     const { ended, registry } = endFinishedSpares(agents, {
-      spares: spareRoles(), registry: readSpareRegistry(paths.registry), now: Date.now(), run: defaultRun,
+      spares: spareInstances(agents), registry: readSpareRegistry(paths.registry), now: Date.now(), run: defaultRun,
       heldRows: (role) => lookupOtherHeldIssues(role, 0),
       rowState: (row) => rowStateOf(row),
       worktrees: (role, rows) => spareWorktrees({ role, rows, repoRoot }),

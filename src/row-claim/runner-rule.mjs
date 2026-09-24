@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @ts-check
-import { LIVE_SESSIONS } from "../arm-pr.mjs";
+import { LIVE_SESSIONS, isLiveSession } from "../arm-pr.mjs";
 import { ROUTED_TO } from "../work-gate.mjs";
 
 // RULE: IS THIS ROW RESERVED FOR A SPECIFIC SESSION? -- #444.
@@ -86,7 +86,7 @@ export function laneReason(labels, mySession, deps) {
   const owners = labels
     .filter((l) => l.startsWith("lane:"))
     .map((l) => l.slice("lane:".length))
-    .filter((owner) => owner !== "any" && owner !== mySession && live.includes(owner))
+    .filter((owner) => owner !== "any" && owner !== mySession && isLiveSession(owner, live))
     .filter((owner) => !(pool.includes(owner) && pool.includes(mySession)));
   if (owners.length === 0) return null;
   return `this row is in ${owners.join(", ")}'s lane (a \`lane:\` label), and a lane is not a wall: ask `
