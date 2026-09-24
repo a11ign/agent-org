@@ -92,10 +92,10 @@
 // tree, applied to a wrapped external tool instead of to this file's own flags.
 import { execFileSync } from "node:child_process";
 import {
-  acceptancePathsReason, extractAcceptanceSection, fleetOrLabAcceptance, untrimmedFleetMention,
-  handRunAcceptanceReason, labFetchPathReason,
+  acceptancePathsReason, classifyCommand, extractAcceptanceSection, fleetOrLabAcceptance, jobCapabilities,
+  unmetClosureRequirements, untrimmedFleetMention, handRunAcceptanceReason, labFetchPathReason,
 } from "./acceptance-commands.mjs";
-import { readFileSync, realpathSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { flagValue, refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
 import { leakRefusalReason } from "../../lab/src/packaging/leak-patterns.mjs";
@@ -413,6 +413,202 @@ export function acceptanceShapeRefusal(body) {
       + "in a fenced block, or write `## Acceptance: none — <reason>` with the reason stated.";
   }
   return null;
+}
+
+/**
+ * Is there a file at this path in the checkout the filer is standing in? Deliberately `statSync`:
+ * `acceptance-check-at-filing.test.ts` reads this file's RAW source and refuses the usual boolean fs probe by
+ * name (so this comment cannot spell it either), to stop a second copy of the ACCEPTANCE-token path check
+ * (#1943) growing here. This asks about the REGION's source files, a different population the shared check
+ * never sees, and that guard cannot tell the two apart by text.
+ * @param {string} path @returns {boolean}
+ */
+function isReadable(path) {
+  return statSync(path, { throwIfNoEntry: false }) !== undefined;
+}
+
+/** A source file the closure walk can read; a `.md` or `.json` Region entry has no import closure. */
+const WALKABLE_SOURCE = /\.(?:mjs|cjs|js|ts|tsx)$/;
+
+/**
+ * The one requirement a Region walk cannot judge: a TEST declares `// no-token: <fn>` (#827) in ITS OWN header,
+ * and the test is what does not exist yet, so a `token` charge on an entry script is the walk being unable to
+ * see the escape. Measured 2026-09-24 over 70 open and 80 closed rows: with it the closure warning spoke on
+ * 79 of 150 (53%), 69 of them charged to `token` by entry scripts that spawn `gh` -- every filing of
+ * `work-gate.mjs` or `wake.mjs` -- which is the warning that fires on every filing. `corpus` and `history`
+ * have no such per-test exit that a Region walk misses, so they stay.
+ */
+const TEST_DECLARABLE = "token";
+
+/** A command that RUNS tests: `tsx --test`, an rstest run, or one that names a test file. */
+const TEST_COMMAND = /\btsx\s+--test\b|\brstest\b|\.(?:test|spec)\.[cm]?[jt]sx?\b/;
+
+/**
+ * #2035: A REGION FILE THE ACCEPTANCE JOB WILL CHARGE FOR A CAPABILITY IT LACKS -- said at filing, while the
+ * Region can still change.
+ *
+ * `pr-open` refuses a test command whose import closure needs `corpus`; on #2018 that surfaced a round late,
+ * after the row was built. The closure walk (`unmetClosureRequirements`, the very call `pr-open` makes) can
+ * answer it now -- but NOT from the Acceptance command, because at filing time that names a test that has not
+ * been written, and the walk on a path that does not exist returns `[]`, which reads as "needs nothing". So
+ * this walks the files the Region NAMES, which exist, and lets the filer see what the entry script reaches.
+ *
+ * **AN ABSENT FILE IS REPORTED AS UNREAD, NEVER AS CLEAN.** The same `[]` would otherwise pass a Region full
+ * of files this checkout does not have -- a new module, a moved path -- and the warning would go quiet in
+ * exactly the case it was written for. The message says the walk did not happen, so silence keeps one
+ * meaning.
+ *
+ * A WARNING, not a refusal: a `fleet-gated` row legitimately declares an Acceptance meant for the lab, and a
+ * refusal would block it outright. Scoped to a TEST Acceptance, because that is the only kind `pr-open`'s
+ * closure walk charges.
+ *
+ * @param {string} body
+ * @param {{ exists?: (path: string) => boolean,
+ *   walk?: typeof unmetClosureRequirements }} [deps]
+ * @returns {string | null}
+ */
+export function regionClosureWarning(body, { exists = isReadable, walk = unmetClosureRequirements } = {}) {
+  const section = extractAcceptanceSection(body);
+  if (section.kind !== "commands" || !section.commands.some((c) => TEST_COMMAND.test(c))) return null;
+  const files = (declaredRegionFiles(body) ?? []).filter((file) => WALKABLE_SOURCE.test(file));
+  const capabilities = jobCapabilities(body);
+  const unread = files.filter((file) => !exists(file));
+  const charges = files.filter((file) => exists(file)).flatMap((file) => walk(file, capabilities)
+    .filter((hit) => hit.requirement !== TEST_DECLARABLE)
+    .map((hit) => `${file}: needs \`${hit.requirement}\`, which this job does not have -- ${hit.message}`));
+  if (charges.length === 0 && unread.length === 0) return null;
+  const chargeText = charges.length === 0 ? "" : `WARNING -- the \`## Region\` names source file(s) whose `
+    + `import closure needs a capability the acceptance job lacks, and this row's Acceptance `
+    + `runs tests: ${charges.join("; ")}. \`pr-open\` will refuse a test command that reaches it. Keep what the `
+    + "test imports out of that closure (a `corpus` reader goes in its own module), declare `History: full` "
+    + "for a `history` charge, or route the row to `orchestrator` if it is fleet-gated by design.";
+  const unreadText = unread.length === 0 ? "" : `WARNING -- ${unread.length} Region source file(s) do not `
+    + `exist in this checkout, so their import closure was NOT read and this is not a clean reading: `
+    + `${unread.join(", ")}. If one is a new entry script the tests will import, check by hand what it `
+    + "reaches (`unmetClosureRequirements`, `acceptance-commands.mjs`) before the row is built.";
+  return [chargeText, unreadText].filter((text) => text !== "").join(" ");
+}
+
+/**
+ * #2035: HOW THE ROWS ACTUALLY QUOTE A TEST COUNT, derived from the population and not imagined -- the
+ * `## Acceptance` sections of 70 open and 80 recently closed rows, read 2026-09-24T21:49Z. Each spelling
+ * cites a row it was read from, and `row-file.test.ts` pins every one against that row's verbatim line.
+ * A count needs a RESULT word beside it (`0 failed`, `pass`, a commit) so "adds 3 tests" is not a reading.
+ */
+const QUOTED_COUNT_SPELLINGS = [
+  // `132 tests, 0 failed, measured at ...` (#2147), `2 files, 187 tests, \`status: pass\`` (#2177),
+  // `the 24 tests in ...` (#2154, as measured), `the file's 76 tests, 0 failed, at \`c06bc5cc3\`` (#2245).
+  /\b\d+\s+(?:tests?|specs?)\b[^\n]{0,60}?(?:\b0\s+fail|\bpass|\bgreen\b|\bmeasured\b|\b(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b)/i,
+  // `9 passed / 0 failed` (#2134), `-> 140/0 at 4c68f44a2` and `142/0` (#2003, #2005).
+  /\b\d+\s+pass(?:ed)?\s*\/\s*\d+\s+fail/i,
+  /\b\d+\s*\/\s*0\b(?!\.\d)/,
+  // rstest's own JSON: `tests: 46` (#2206). Not `tests: 0`: a zero-match run is a condition, and zero cannot rot.
+  /\btests:\s*[1-9]\d*\b/,
+];
+
+/** The sentence a body carries when it tells the builder its numbers are readings. */
+const REMEASURE_INSTRUCTION = /\bre-?measure\b|\breading at a (?:named )?commit\b/i;
+
+/**
+ * #2035: A COUNT QUOTED IN AN ACCEPTANCE IS A READING AT A NAMED COMMIT, NEVER A REQUIREMENT.
+ *
+ * #2003 and #2005 both declared `140/0`; the builder read 142 at their own branch point and spent a paragraph
+ * reconciling it. Naming the ref is necessary and not sufficient -- the builder necessarily reads at another
+ * commit -- so the body must also say they re-measure and that what has to RISE is their own pre-change
+ * reading. Same defect shape as `regionClosureWarning`: an Acceptance that reads fine at filing and misleads
+ * whoever runs it later.
+ *
+ * A WARNING: a count is sometimes honest context. One that fires on every filing is noise, so a body that
+ * carries the sentence is silent, and only a count beside a RESULT word is read (`QUOTED_COUNT_SPELLINGS`).
+ *
+ * @param {string} body
+ * @returns {string | null}
+ */
+export function quotedTestCountWarning(body) {
+  const section = extractLabeledSection(body, "Acceptance");
+  if (section === null || REMEASURE_INSTRUCTION.test(body)) return null;
+  const quoted = QUOTED_COUNT_SPELLINGS.map((spelling) => spelling.exec(section)).find((hit) => hit !== null);
+  if (!quoted) return null;
+  return `WARNING -- the \`## Acceptance\` section quotes a test count (\`${quoted[0].trim()}\`) and the body `
+    + "nowhere tells the builder to re-measure it. A count is a reading at a named commit, and the builder "
+    + "reads at a different one, so a mismatch reads as 'my branch is wrong' when it is 'the file grew'. "
+    + "Add: **THE NUMBER IS A READING AT A NAMED COMMIT, NOT A REQUIREMENT -- RE-MEASURE AT YOUR OWN BRANCH "
+    + "POINT BEFORE YOU CHANGE ANYTHING; what must rise is YOUR pre-change reading.**";
+}
+
+/**
+ * The lines of the Acceptance section a paragraph sits on directly under a CLOSING fence, no blank line
+ * between -- the cause `commandLinesAfter` turns into a "command". Odd fence ordinal = the closing one.
+ * @param {string} section @param {string} line @returns {boolean}
+ */
+function gluedToClosingFence(section, line) {
+  const lines = section.split(/\r\n|\r|\n/);
+  const at = lines.findIndex((candidate) => candidate.trim() === line);
+  if (at < 1 || !lines[at - 1].trim().startsWith("```")) return false;
+  const fencesBefore = lines.slice(0, at - 1).filter((l) => l.trim().startsWith("```")).length;
+  return fencesBefore % 2 === 1;
+}
+
+/** Enough of a prose line for the filer to find it; a whole paragraph would bury the sentence around it. */
+const QUOTED_LINE_LIMIT = 80;
+
+/**
+ * A command whose first real token is a PATH (`.venv/bin/pytest`, `./scripts/x.sh`). `classifyCommand` calls
+ * one `prose` when the file is not executable in THIS checkout, and a venv or a script a CI job creates is
+ * absent from the filer's -- measured on #2304 and #2234, whose correct `pytest` lines both read as prose.
+ * @param {string} command @returns {boolean}
+ */
+function namesAPath(command) {
+  const first = command.trim().split(/\s+/).find((token) => !/^[A-Za-z_]\w*=/.test(token));
+  return first !== undefined && first.includes("/");
+}
+
+/**
+ * #2035: AN ACCEPTANCE LINE THAT IS PROSE, WHICH THE PARSER NEVERTHELESS READS AS A COMMAND.
+ *
+ * Measured over the 63 open rows on 2026-09-23: #1889 declared its whole Acceptance as one bold paragraph,
+ * and #2094 and #1865 glued a paragraph to the closing fence, so `extractAcceptanceSection` returned prose
+ * (and, on #1865, an inline code span) as the row's commands. The row then declares an acceptance nobody
+ * can run. `classifyCommand` already decides what is a command -- called here, never a regex -- so this
+ * asks the decider CI asks, at the moment the filer can add one blank line.
+ *
+ * A WARNING: a `prose` verdict depends on which executables exist on the filer's PATH, so refusing on it
+ * would make filing depend on the machine.
+ *
+ * @param {string} body
+ * @param {{ classify?: typeof classifyCommand }} [deps]
+ * @returns {string | null}
+ */
+export function malformedAcceptanceCommandWarning(body, { classify = classifyCommand } = {}) {
+  const section = extractAcceptanceSection(body);
+  if (section.kind !== "commands") return null;
+  const capabilities = jobCapabilities(body);
+  const prose = section.commands.filter((command) => !namesAPath(command)
+    && classify(command, { capabilities }).verdict === "prose");
+  if (prose.length === 0) return null;
+  const raw = extractLabeledSection(body, "Acceptance") ?? "";
+  const glued = prose.filter((line) => gluedToClosingFence(raw, line));
+  const quoted = prose.map((line) => `\`${line.slice(0, QUOTED_LINE_LIMIT)}\``).join(", ");
+  const remedy = glued.length > 0
+    ? `${glued.length} of them sit directly under the closing fence with no blank line, so the parser absorbed `
+      + "them into the block: add ONE blank line after the closing ```."
+    : "Put the command in a fenced block directly under `## Acceptance`, and any prose after a blank line.";
+  return `WARNING -- the \`## Acceptance\` section yields ${prose.length} line(s) CI's acceptance parser reads `
+    + `as a command that is not one: ${quoted}. ${remedy}`;
+}
+
+/**
+ * Every warning a filing carries, in the order they print. Warnings, never refusals -- the author sees them
+ * while they still have the body in front of them, which is the only moment each is cheap to act on. Pulled
+ * out of `createIssue` so a seventh is one line here and not another branch there.
+ * @param {string} body
+ * @param {string[]} argv
+ * @returns {string[]}
+ */
+export function filingWarnings(body, argv) {
+  return [unrecognisedRegionWarning(body), directoryRegionWarning(body), slashlessDirectoryWarning(body),
+    waitingLanguageWarning(body, argv), regionClosureWarning(body), quotedTestCountWarning(body),
+    malformedAcceptanceCommandWarning(body)].filter((warning) => warning !== null && warning !== undefined);
 }
 
 /**
@@ -1079,22 +1275,15 @@ export function createIssue(argv, deps = {}) {
     process.stderr.write(`${reason}\n`);
     return 1;
   }
-  // #1158: AFTER the refusals and BEFORE anything is filed. It does not stop the filing -- see
-  // `unrecognisedRegionWarning` for why a warning rather than a refusal -- but the author sees it while
-  // they still have the body in front of them, which is the only moment the line is cheap to act on.
-  const strayRegion = unrecognisedRegionWarning(/** @type {string} */ (body));
-  if (strayRegion) process.stderr.write(`row-file: ${strayRegion}\n`);
-  const dirRegion = directoryRegionWarning(/** @type {string} */ (body));
-  if (dirRegion) process.stderr.write(`row-file: ${dirRegion}\n`);
-  // #1193: beside the other two, for the same reason and at the same moment. These three answer three
-  // different questions about one Region and a body can trip more than one -- they are printed, never
-  // chosen between.
-  const slashless = slashlessDirectoryWarning(/** @type {string} */ (body));
-  if (slashless) process.stderr.write(`row-file: ${slashless}\n`);
-  // #1832: beside the other three, for the same reason and at the same moment -- a body that waits in
-  // prose but declares no native `--blocked-by=`/`--blocking=` link is printed, never refused.
-  const waitingLanguage = waitingLanguageWarning(/** @type {string} */ (body), argv);
-  if (waitingLanguage) process.stderr.write(`row-file: ${waitingLanguage}\n`);
+  // #1158: AFTER the refusals and BEFORE anything is filed. None of these stops the filing -- see
+  // `unrecognisedRegionWarning` for why a warning rather than a refusal -- but the author sees them while they
+  // still have the body in front of them, which is the only moment each line is cheap to act on. They answer
+  // different questions about one body and a body can trip several: all are printed, never chosen between.
+  // #2035: the acceptance-side three (`regionClosureWarning`, `quotedTestCountWarning`,
+  // `malformedAcceptanceCommandWarning`) join the four Region/waiting ones in `filingWarnings`.
+  for (const warning of filingWarnings(/** @type {string} */ (body), argv)) {
+    process.stderr.write(`row-file: ${warning}\n`);
+  }
   // #883: THE LANE(S), DERIVED BEFORE ANYTHING IS FILED -- see `laneLabelsOrRefusal`'s own header for why
   // a missing/malformed `docs/lane-ownership.json` refuses here rather than guessing.
   const laneResult = laneLabelsOrRefusal(/** @type {string} */ (body), loadLanesConfig, argv);
