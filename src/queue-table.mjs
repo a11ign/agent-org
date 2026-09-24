@@ -455,8 +455,10 @@ export function checksOnSha(sha) {
  */
 export function requiredContexts() {
   return ask(() => {
-    const contexts = JSON.parse(gh(["api", `repos/${REPO}/branches/main/protection`,
-      "--jq", ".required_status_checks.contexts"]));
+    // `branches/main`, not `branches/main/protection`: the latter is repository-ADMIN only, so it 404s for
+    // every agent credential and printed "unknown" for exactly the sessions that read this table (#2331).
+    const contexts = JSON.parse(gh(["api", `repos/${REPO}/branches/main`]))
+      .protection?.required_status_checks?.contexts;
     return Array.isArray(contexts) ? contexts : null;
   });
 }
