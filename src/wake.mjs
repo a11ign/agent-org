@@ -181,6 +181,29 @@ export function route(session, agents, roster, ineligibleReason = () => null) {
 }
 
 /**
+ * `route`, WITH THE ORDER'S OWN WAY OUT WHEN ITS SESSION CANNOT BE WOKEN (#2356).
+ *
+ * `trunk-red` is addressed to the session that merged the red -- it holds the context -- but a red `main`
+ * is not worth waiting on that session: it may be gone (a spare instance ends with its row), busy, or
+ * blocked, and every other order that finds its session unwakeable simply waits for the next tick. An order
+ * carrying `fallback` names WHERE ELSE it may go, and only a refusal from the first choice reaches it, so
+ * a session that CAN be woken is never bypassed. The refusal reported when both fail names both.
+ *
+ * @param {{session: string, fallback?: string}} order
+ * @param {{label: string, status: string}[]} agents
+ * @param {string[]} roster
+ * @param {(label: string) => string | null} [ineligibleReason]
+ * @returns {{label: string} | {refusal: string}}
+ */
+export function routeWithFallback(order, agents, roster, ineligibleReason) {
+  const first = route(order.session, agents, roster, ineligibleReason);
+  if (!("refusal" in first) || typeof order.fallback !== "string") return first;
+  const second = route(order.fallback, agents, roster, ineligibleReason);
+  if (!("refusal" in second)) return second;
+  return { refusal: `${first.refusal}; and the fallback "${order.fallback}": ${second.refusal}` };
+}
+
+/**
  * B2's verdict on one session, SHORT enough to sit in a `seen` list -- or `null` when B2 would let it claim.
  *
  * THE DECIDER IS `inBuildReason` ITSELF, called rather than restated: a copy of B2's clauses here would go
@@ -1815,7 +1838,7 @@ export function clearContext(run, label) {
  * @returns {{label: string, profile?: {kind: string, model: string, effort: string}} | {refusal: string}}
  */
 function targetFor(order, live, roster, deps) {
-  const routed = route(order.session, live, roster, deps.ineligibleReason);
+  const routed = routeWithFallback(order, live, roster, deps.ineligibleReason);
   if (!("refusal" in routed)) return { label: routed.label };
   if (!isPilotOrder(order)) return { refusal: routed.refusal };
   if (deps.spawned >= MAX_SPAWNS_PER_TICK) {
@@ -1898,7 +1921,8 @@ export function deliver(orders, agents, roster,
     // A POOL ORDER'S RECIPIENT IS RECORDED (#2226): its causeKey names `engineers`, so the ledger alone could
     // not say who was woken, and the only account of a wrong delivery was the recipient's own prose. A NAMED
     // order's recipient is already in its key and is not repeated.
-    if (record) record(order.causeKey, order.session === "engineers" ? target.label : undefined);
+    // A FALLBACK DELIVERY IS RECORDED THE SAME WAY (#2356): the key names the session it was ADDRESSED to.
+    if (record) record(order.causeKey, target.label !== order.session ? target.label : undefined);
     sent.push(target.profile
       ? `${target.label} <- ${order.causeKey} (STARTED ${target.profile.model}/${target.profile.effort})`
       : `${target.label} <- ${order.causeKey}`);

@@ -6,8 +6,8 @@
 // failed. The last forty lines of a `node:test` run are the TAP SUMMARY -- trailing PASSING subtests,
 // never the failing ones, which are wherever they happen to sit in a run of thousands. Measured live on
 // #718 (2026-09-09): a genuine failure produced a step output of nothing but `ok 4180`, `ok 4181`, `ok
-// 4182` -- twenty-eight lines, not one of them a failure -- and `decideRevert` correctly refused to act on
-// a verdict with no named cause, so a real revert was declined and main stayed red for ninety minutes.
+// 4182` -- twenty-eight lines, not one of them a failure -- and the decision downstream correctly refused to act on
+// a verdict with no named cause, so main stayed red for ninety minutes.
 //
 // `node:test`'s TAP output ends with `# fail N` and names every failing subtest as its own `not ok <n>`
 // line, wherever it falls. Both survive to the end of the log regardless of length, so this never needs
@@ -21,9 +21,9 @@ import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
  * Pure. `text` is a `node:test` TAP log (`npm test`'s own stdout+stderr, redirected). Returns `fail` only
  * when a real failing subtest can be NAMED; anything else -- a log with no TAP summary at all, a `# fail
  * N` line with N > 0 but no matching `not ok` (a truncated or malformed capture) -- is `unknown`, never
- * `fail`, because a verdict this function cannot back up must not be fed to `decideRevert` as though it
- * could. See `trunk-revert.mjs`'s own `revertVerdict`: `parentRecheck !== "fail"` (including `unknown`,
- * which resolves to `null`) is CANNOT_ASK, never a refusal to revert on false grounds.
+ * `fail`, because a verdict this function cannot back up must not be recorded as though it
+ * could. See `trunk-red.mjs`'s `attributionOf`: `unknown` is its own answer, never read as inherited (which
+ * would send the fix to nobody in particular) and never as this merge's own (which would blame it).
  *
  * @param {string} text
  * @returns {{ verdict: "fail" | "unknown", notOkLines: string[], failCount: number | null, reason: string | null }}

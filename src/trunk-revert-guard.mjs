@@ -53,13 +53,13 @@
 // and the refusal/pass message says so, per this repo's own rule that an unstated bound reads as
 // completeness.
 //
-// ## RIDES trunkGate, NOT A NEW JOB -- ceo's ruling: REVERT, never warn
+// ## RIDES trunkGate, NOT A NEW JOB -- ceo's ruling: FAIL, never warn
 //
 // This runs as an added STEP inside `trunk.yml`'s existing `trunkGate` job, never a separate one.
-// A refusal here fails that job exactly like a failing test would, which is what makes `decideRevert`
-// (`if: needs.trunkGate.result == 'failure'`) fire and drive `trunk-revert.mjs` -- the EXISTING revert
-// machinery, unmodified. Unit 3 already reverts a push that fails `gate`; this is the identical class,
-// not a new mechanism needing its own revert path.
+// A refusal here fails that job exactly like a failing test would, which is what makes `trunkRecheck`
+// (`if: needs.trunkGate.result == 'failure'`) fire and the gate's `trunk-red` cause wake a fixer (#2356).
+// NOTHING REVERTS A MERGE: the org fixes forward, so the remedy for a refusal here is a pull request that
+// restores what was lost, never `git revert` (the chairman's ruling of 2026-09-24).
 //
 // `git fetch origin` runs immediately before the diff below, not only at checkout -- worker-contracts'
 // finding, 2026-09-07: a stale local `origin/main` made a legitimate file read as an unexplained
@@ -194,12 +194,11 @@ function main() {
   for (const p of unexplained) console.error(`  ${p}`);
   console.error("Content reverts without a matching deletion are out of scope for this check -- see the "
     + "script's own header.");
-  console.error("#655: this is NOT auto-reverted -- trunk.yml's decideRevert deliberately treats a "
-    + "trunkGate-only failure as a question this merge's own two parents cannot answer by re-running a "
-    + "suite, so it always records `pass` there and takes no automatic action. A human decides: read the "
-    + "paths above against what this merge actually resolved. If the deletion was accidental (the #232 "
-    + `shape), revert the merge and push: git revert -m 1 ${merge}. If it was deliberate, no action is `
-    + "needed here.");
+  console.error("#2356: NOTHING REVERTS THIS MERGE -- the org fixes forward. This refusal wakes a fixer through "
+    + "the gate's `trunk-red` cause. Read the paths above against what this merge actually resolved. If the "
+    + "deletion was accidental (the #232 shape), restore them in a NEW pull request "
+    + `(\`git checkout ${merge}^1 -- <path>\` for each) and say so on the merged one. If it was `
+    + "deliberate, no action is needed here.");
   process.exit(EXIT.REFUSE);
 }
 

@@ -69,6 +69,9 @@ import { poolDiagnosis, refusalPoolLine } from "./api-pool.mjs";
 import { armedFromApi, openPullRequestsQueryArgs } from "./auto-arm-sweep.mjs";
 import { armabilityOf } from "./pr-hold-state.mjs";
 import { REPO } from "../../../scripts/repo-identity.mjs";
+// #2356: A RED `main` WAKES A FIXER. Imports only `node:*`, `parent-recheck-summary.mjs` and the repo identity,
+// so the gate keeps the property its own header states -- it runs before any `npm ci` or build.
+import { readTrunkRed, trunkRedOrders } from "./trunk-red.mjs";
 
 /**
  * FOUR STATES, AND THE POLARITY IS DELIBERATE.
@@ -91,7 +94,7 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
   "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
   "blocked-unexaminable", "fleet-batch-due", "blocker-cleared", "pr-green-unarmed",
   "claimed-row-amended", "row-branch-unshipped", "host-units-stale", "pr-review-blocked",
-  "unclaimed-blocker-cleared", "pr-merge-conflict"];
+  "unclaimed-blocker-cleared", "pr-merge-conflict", "trunk-red"];
 
 /**
  * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
@@ -290,7 +293,9 @@ export function readPrs(run = defaultRun) {
  */
 export const GH_READS = Object.freeze({
   unconditional: ["pr list", "issue list --label ready", "issue list --label backlog",
-    "issue list --label chairman-blocked", "issue list (all open: answer/blocked labels)"],
+    "issue list --label chairman-blocked", "issue list (all open: answer/blocked labels)",
+    // #2356: ONE REST CALL on the core pool -- the newest runs of `trunk.yml` on `main` (readTrunkRed).
+    "api actions/workflows/trunk.yml/runs (readTrunkRed -- trunk-red)"],
   conditionalOnEmptyShelf: "issue list --label epic (readEpics)",
   // #2106 ADDED THE SECOND HALF OF THIS LINE, AND IT IS COUNTED FOR THE SAME REASON AS THE LINE BELOW:
   // `refusedProtectionDiagnosis` reads `branches/main` to tell FORBIDDEN from ABSENT, and a read that is
@@ -326,6 +331,11 @@ export const GH_READS = Object.freeze({
   // cost a function of how many rows are waiting.
   conditionalOnClearedRows: "issue list --state closed --limit 100 --json number,closedAt"
     + " (readRecentlyClosed -- unclaimed-blocker-cleared's backoff)",
+  // #2356: FOUR MORE REST CALLS, paid ONLY by a tick that found `main` red -- the run's jobs, the recheck
+  // job's annotations, `run view --log-failed` for the failing test names, and the merged PR's session.
+  // A healthy `main` pays none of them; a red one is rare and short-lived by the ruling this cause serves.
+  conditionalOnRedTrunk: "api runs/{id}/jobs, check-runs/{id}/annotations, run view --log-failed,"
+    + " commits/{sha}/pulls (readTrunkRed -- trunk-red)",
 });
 
 /**
@@ -3831,7 +3841,7 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *           claimedComments?: {number?: number, comments?: {body?: string, id?: string}[]}[],
  *           rowBranches?: {branch: string, head: string, row: number}[] | null,
  *           hostDrift?: {unit: string, problem: string, detail: string}[] | null,
- *           closings?: Map<number, number> | null }} state
+ *           closings?: Map<number, number> | null, trunkRed?: ReturnType<typeof readTrunkRed> }} state
  *        `required` is the checks that can block a merge (`requiredCheckNames`), or `null` for
  *        "could not be read", which counts EVERY check as before this existed.
  *        `epics` are the open `epic` rows with their `subIssuesSummary` (`readEpics`); `[]` when
@@ -3859,6 +3869,9 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *        default for `rowBranches`'s reason -- a default parameter is a branch `complexity` counts,
  *        and `decide` sits exactly on its limit of 15.
  *        It spends NO API pool: see `readHostDrift`.
+ *        `trunkRed` is `readTrunkRed()` -- the facts about a red `main`, or `null` when it is green or the
+ *        read was refused. OMITTED AND `null` MEAN THE SAME THING and it carries no `= null` default, for
+ *        `rowBranches`'s reason: `decide` sits exactly on its limit of 15.
  *        `unarmed` is `readUnarmed(shouldBeMerging(prs, required))` -- the green, unheld pull requests
  *        the API says nothing has armed. It DEFAULTS TO `null`, which is "not asked or refused" and
  *        emits no order: a caller that cannot make that read must never produce a false all-clear, and
@@ -3868,10 +3881,10 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
-  claimedComments = [], rowBranches, hostDrift, closings }) {
-  // FIRST, BEFORE EVERY OTHER CAUSE. Every other order asks a session what should happen next; this one
-  // says another session is ALREADY STOPPED waiting on them. That outranks any standing question.
-  const orders = [...answerOrders(answerOwed)];
+  claimedComments = [], rowBranches, hostDrift, closings, trunkRed }) {
+  // FIRST, BEFORE EVERY OTHER CAUSE (#2356): a red `main` outranks even `answer-owed` -- see `trunkRedOrders`.
+  // `answer-owed` says another session is ALREADY STOPPED waiting on them, which outranks any standing question.
+  const orders = [...trunkRedOrders(trunkRed), ...answerOrders(answerOwed)];
   // SECOND, AND AHEAD OF `blocker-cleared` DELIBERATELY (#2110). Both address a session that already
   // holds a row, so both outrank every cause that offers new work -- but between the two, a constraint
   // the holder has not read is worse than a row they have not resumed. `blocker-cleared` says work can
@@ -4161,7 +4174,10 @@ function main() {
     // is what lets the detection exist at all.
     hostDrift: readHostDrift(),
     // #2286: CONDITIONAL, and the condition is answered for free from the list already in hand.
-    closings: closingsWhenRowsCleared(allOpen) });
+    closings: closingsWhenRowsCleared(allOpen),
+    // #2356: `null` for a refused read or a green `main`, and the two need no telling apart HERE -- both
+    // emit nothing, and a refused read is not reported as health because nothing else reads "trunk is fine".
+    trunkRed: readTrunkRed() });
   const { delivered: orders, performed } = performActions(decided);
   orders.push(...deadMansSwitch({ orders, drain, performed, openRows: openRowsRead }));
   for (const order of orders) process.stdout.write(`${JSON.stringify(order)}\n`);

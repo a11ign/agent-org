@@ -540,7 +540,7 @@ test("#681 gitProcessCount: pgrep's exit 1 is a real ZERO, and any other failure
  *     commits examined: 10
  *       RED: audit                 -> 7 of 10
  *       RED: trunkBuildTest / run  -> 6 of 10
- *       RED: decideRevert          -> 4 of 10
+ *       RED: (the retired revert job) -> 4 of 10
  *
  * Seven of ten. The same number, the same check name, and the section written to catch it could not see
  * it.
