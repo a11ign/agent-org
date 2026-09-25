@@ -30,7 +30,8 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { pathToFileURL, fileURLToPath } from "node:url";
-import { realpathSync, existsSync } from "node:fs";
+import { realpathSync, existsSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 // RELATIVE, not the package specifier -- this must run before any `npm ci`/build, the same constraint
 // `org-watch.mjs` and `build-packages.mjs` state at their own imports.
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
@@ -38,7 +39,7 @@ import { READY_LABEL, CLAIM_LABEL, CLAIM_RECORD_MARKER } from "./claim-labels.mj
 import { verdictAtHead } from "./review-verdict.mjs";
 import { waitingOn, fleetWaitingOn, todayIso, describeWaiting, ANSWER_PREFIX } from "./waiting-condition.mjs";
 import { newestPerName } from "./newest-check-run.mjs";
-import { parityOwner } from "./review-attribution.mjs";
+import { parityOwner, reviewerInstanceNumber } from "./review-attribution.mjs";
 import { NO_VERDICT } from "./merge-guard/checks-rule.mjs";
 // B4, ASKED EARLY. These are the SAME two functions `row-claim.mjs` runs at claim time, imported
 // rather than reimplemented: `region-paths.mjs`'s own header records why a second copy of "what
@@ -94,7 +95,8 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
   "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
   "blocked-unexaminable", "fleet-batch-due", "blocker-cleared", "pr-green-unarmed",
   "claimed-row-amended", "row-branch-unshipped", "host-units-stale", "pr-review-blocked",
-  "unclaimed-blocker-cleared", "pr-merge-conflict", "trunk-red", "verdict-comment-unreviewed"];
+  "unclaimed-blocker-cleared", "pr-merge-conflict", "trunk-red", "verdict-comment-unreviewed",
+  "reviewer-auth-failed"];
 
 /**
  * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
@@ -151,7 +153,7 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
 export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog-unpromoted",
   "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
   "blocked-unexaminable", "fleet-batch-due", "row-branch-unshipped", "claimed-row-amended",
-  "unclaimed-blocker-cleared"]);
+  "unclaimed-blocker-cleared", "reviewer-auth-failed"]);
 
 /**
  * The causes that START new work, as opposed to finishing work already begun.
@@ -300,6 +302,11 @@ export function readPrs(run = defaultRun) {
 export const GH_READS = Object.freeze({
   unconditional: ["pr list", "issue list --label ready", "issue list --label backlog",
     "issue list --label chairman-blocked", "issue list (all open: answer/blocked labels)",
+    // #2202: TWO SMALL CALLS, because a closed row still owing an answer is invisible to the open read above
+    // and `gh` cannot filter a label PREFIX. The first lists the repo's `answer:` label names, the second
+    // asks for the closed rows carrying any of them -- exact, so no window a row can fall out of silently.
+    "label list --search answer: (readClosedAnswerRows)",
+    "issue list --state closed --search label:<answer labels> (readClosedAnswerRows -- answer-owed on a closed row)",
     // #2356: ONE REST CALL on the core pool -- the newest runs of `trunk.yml` on `main` (readTrunkRed).
     "api actions/workflows/trunk.yml/runs (readTrunkRed -- trunk-red)"],
   conditionalOnEmptyShelf: "issue list --label epic (readEpics)",
@@ -514,6 +521,13 @@ export function ownerOf(row) {
  * none says WHO must act, so a row waiting on org admin looked exactly like a row waiting on a capture.
  */
 export const CHAIRMAN_LABEL = "needs:chairman";
+
+/**
+ * Where a `ready-row-unclaimed` order says which directory to launch the claim from -- FILLED IN BY `wake.mjs` (#2405),
+ * because the answer is a fact about the RECIPIENT (does `role-<you>` exist?) and the gate routes a pool order before
+ * anyone has taken it. Exported from here so the two files cannot spell it differently; `wake.mjs` already imports this one.
+ */
+export const LAUNCH_PLACEHOLDER = "<launch-directory>";
 
 /**
  * Rows waiting on the chairman, oldest first.
@@ -964,6 +978,39 @@ export function readOpenRows(run = defaultRun) {
 }
 
 /**
+ * #2202: THE CLOSED ROWS THAT STILL OWE AN ANSWER -- the half of `answer-owed` that `readOpenRows` cannot see.
+ *
+ * `answer:<session>` is the org's only machine-readable "a named session still owes an answer here", and
+ * `readOpenRows` is `--state open`, so a merge that closed the row ended the wake and nothing said it had
+ * stopped. Measured 2026-09-22: #1936, #1970 and #2034, each labelled 5m23s to 14m45s before the merge that
+ * closed it, none of the three questions ever answered. The close path now KEEPS the label
+ * (`labelsToStrip`) and says so; this is what keeps acting on it.
+ *
+ * TWO CALLS, AND BOTH ARE EXACT. `gh` matches one whole label name, and this is a PREFIX over one name per
+ * session, so the repo's own `answer:` labels are listed first and the closed rows carrying any of them
+ * are asked for by name (`label:"a","b"` is GitHub's OR). A window over the newest closed rows would be
+ * one call, but a question older than the window would fall out of it -- the silent-void defect again,
+ * one level down -- so this pays the second call to have no such edge.
+ *
+ * @param {(args: string[]) => string} [run]
+ * @returns {any[] | null} `null` when refused, never `[]` -- "could not ask" is not "nobody owes anything"
+ */
+export function readClosedAnswerRows(run = defaultRun) {
+  try {
+    const labels = JSON.parse(run(["label", "list", "--search", ANSWER_PREFIX, "--limit", "100",
+      "--json", "name"]));
+    if (!Array.isArray(labels)) return null;
+    const names = labels.map((l) => l?.name).filter((n) => typeof n === "string" && n.startsWith(ANSWER_PREFIX));
+    if (names.length === 0) return [];
+    const parsed = JSON.parse(run(["issue", "list", "--state", "closed", "--limit", "100",
+      "--search", `label:${names.map((n) => `"${n}"`).join(",")}`, "--json", "number,title,labels,state"]));
+    return Array.isArray(parsed) ? withAnswerLabel(parsed) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The milestone the fleet batch is scoped to. Matches `fleet-gated-nightly.mjs`'s own constant, which is
  * where #914's bar is written down.
  */
@@ -1192,6 +1239,21 @@ export function hostDriftOrders(drift) {
  */
 const HOST_DRIFT_SESSION = "orchestrator";
 
+/**
+ * #2202: `readClosedAnswerRows` with its refusal SAID. Every other reader here degrades to `[]` silently, and
+ * that is the one shape this row exists to end for this question -- an answer owed that stopped waking a
+ * session with nothing saying it had -- so a refused read is a line, not an empty list.
+ * @returns {any[]}
+ */
+function closedAnswerRows() {
+  const rows = readClosedAnswerRows();
+  if (rows === null) {
+    process.stderr.write("NOTE: could not read the closed rows that still owe an answer -- a question on a row "
+      + "a merge already closed is NOT being chased this tick (#2202).\n");
+  }
+  return rows ?? [];
+}
+
 /** The rows that owe someone an answer. @param {any[]} rows */
 export function withAnswerLabel(rows) {
   return (rows ?? []).filter((r) => labelsOf(r).some((/** @type {string} */ n) => n.startsWith(ANSWER_PREFIX)));
@@ -1374,6 +1436,8 @@ export function answerOrders(rows) {
         prompt: `#${row.number} IS WAITING ON AN ANSWER FROM YOU. Another session asked you something `
           + "there and cannot move until you reply -- read that row's most recent comments for the "
           + "question.\n"
+          + (row.state === "CLOSED" ? "THE ROW IS CLOSED: a merge closed it while your answer was still owed, "
+            + "and closing did not answer it (#2202). A closed row takes a comment, so answer there.\n" : "")
           + `ANSWER ON THE ROW, then remove its \`${ANSWER_PREFIX}${session}\` label: taking the label `
           + "off IS the act of answering, and it is the only thing that stops this being asked again.\n"
           + "\"I cannot answer this\" is an answer -- say so, say who can, and re-label it to them. "
@@ -2735,9 +2799,10 @@ export function reviewBlockedOrders(blocked) {
       + "claim refusal -- which is why a pull request in this state read as healthy everywhere: #2049 "
       + "was green and armed and unmergeable for over seven hours, and no org read could say why.\n"
       + "AWAITING_REVIEW is a PR nobody has reviewed. Since #2176 `draft-awaiting-verdict` covers a READY "
-      + "pull request as well as a draft, so its parity reviewer has normally been ordered already -- read "
-      + "the wake ledger before prompting: `npm run prompt:session -- reviewer \"#<n> ...\"` for an odd "
-      + "number, `reviewer-2` for an even one. A `QUEUED` exit 2 is delivery; do not retry it.\n"
+      + "pull request as well as a draft, so its reviewer, `reviewer-<n>` for pull request n, has normally "
+      + "been ordered already (and started, if none was live) -- read the wake ledger before prompting: "
+      + "`npm run prompt:session -- reviewer-<n> \"#<n> ...\"`. A `QUEUED` exit 2 is delivery; do not "
+      + "retry it.\n"
       + "REFUSED is a reviewer's `CHANGES_REQUESTED`, and it does NOT clear by being pushed past. Decide "
       + "whether it stands: rework belongs to the session on the PR's `session:` label, and a newer "
       + "review is the only thing that lifts it.\n"
@@ -3095,10 +3160,10 @@ function draftOrder(pr, required = null) {
   // verdict in five is the control for.
   if (found.verdict !== null) return settledVerdictOrder(pr, found, heads);
 
-  // ODD/EVEN PARITY IS THE ORG'S OWN SPLIT (`.claude/rules/agent-practices.md`): odd PR numbers go to
-  // `reviewer`, even to `reviewer-2`. Stated there, applied here, spelled in neither twice -- and since
-  // #2127 the arithmetic itself lives in `review-attribution.mjs`, beside the reader that checks whether
-  // a posted review obeyed it. A detector with its own copy would agree with a router that had drifted.
+  // PULL REQUEST n IS `reviewer-<n>`'S (#2401; the odd/even split it replaced is retired). The name is
+  // herdr's, and `wake.mjs` starts the instance when none is live. The arithmetic lives in
+  // `review-attribution.mjs`, beside the reader that checks whether a posted review obeyed it -- a
+  // detector with its own copy would agree with a router that had drifted.
   const session = parityOwner(pr.number);
   return {
     session,
@@ -3208,6 +3273,8 @@ function rowOrders(unclaimed) {
       session: owner ?? "engineers",
       cause: "ready-row-unclaimed",
       subject: `row-${row.number}`,
+      // The spawner names the branch and the instance's first message from it (#2405).
+      title: row.title ?? "",
       // THE ROW IS THE DISCRIMINATOR NOW, not the queue depth. Keyed on the count, every claim rewrote
       // every remaining order's key and re-woke someone for rows already being offered.
       discriminator: String(row.number),
@@ -3220,15 +3287,13 @@ function rowOrders(unclaimed) {
         // system (2026-09-17) stopped and asked a human for both facts, because the order named
         // neither -- so they are named here rather than left to a role brief the session may not have
         // read yet. `../wt-<n>` is the sibling convention every live worktree on the host follows.
-        // THE LAUNCH DIRECTORY IS NAMED, AND IT IS NOT THE PRIMARY (#2237). This sentence said "run the
-        // command from the primary checkout" for nine days after `launchGate` (#1352) began refusing
-        // exactly that launch, so every engineer woken by this cause paid a refused command first. The
-        // role worktree is what `wake.mjs` documents as not universal (`worker-capture` has none), hence
-        // the fallback to any linked worktree -- what `launchGate` tests is "is `.git` a file", not whose.
-        + "The claim creates that worktree for you; run the command from your own linked worktree, "
-        + "`/home/agent/repos/role-<you>` (or any other linked worktree `git worktree list` names) -- NOT "
-        + "the primary checkout at `/home/agent/repos/a11y-witness`, which the tooling refuses -- then do "
-        + "all the work inside the new worktree.\n"
+        // THE LAUNCH DIRECTORY IS NAMED, AND IT IS NOT THE PRIMARY (#2237) -- BUT NAMED AT DELIVERY, NOT HERE (#2405).
+        // This sentence named `/home/agent/repos/role-<you>` for nine days after `launchGate` (#1352) began
+        // refusing the primary, and `role-<you>` did not exist for six of the eight engineer addresses; the
+        // fallback it offered instead (whichever linked worktree `git worktree list` named) let an engineer BORROW one a peer was working in.
+        // The gate cannot know who takes a pool order, and so cannot know whether that address has a
+        // worktree, so `wake.mjs` fills `LAUNCH_PLACEHOLDER` in when it knows the recipient (`addressed`).
+        + `The claim creates that worktree for you. ${LAUNCH_PLACEHOLDER}\n`
         + "If the claim is refused because someone took it first, that is an answer: stop and say so.",
       causeKey: `${owner ?? "engineers"}/ready-row-unclaimed/${row.number}`,
     });
@@ -4027,6 +4092,258 @@ function reportWithheld({ drain, blocked }) {
   }
 }
 
+// --- #2401: A REVIEWER WHOSE CODEX FAILED TO AUTHENTICATE ---------------------------------------------------
+
+/** Where the org's runtime state lives -- beside `wake.mjs`'s ledger, which defaults to the same directory. */
+export const REVIEWER_STATE_DIR = `${process.env.HOME}/.cache/a11ign`;
+
+/** The instances `wake.mjs` STARTED and has not ended: `{ "reviewer-<n>": { spawnedAt } }`. `wake` writes, this reads. */
+export const REVIEWER_REGISTRY_FILE = "reviewer-instances.json";
+
+/** Every change of the credential's `last_refresh`, one JSON line each -- the reading ruling 2 asked for. */
+export const REVIEWER_REFRESH_LEDGER_FILE = "reviewer-refreshes";
+
+/** The reviewers' codex credential. Only `last_refresh` is ever read from it: the tokens beside it are secrets. */
+export const CODEX_AUTH_FILE = `${process.env.HOME}/.codex/auth.json`;
+
+/**
+ * CODEX'S OWN AUTH-FAILURE TEXT (signal a), READ FROM CODEX AND NOT INVENTED.
+ *
+ * Measured 2026-09-24 by scanning the printable strings of the installed `codex-cli 0.156.1` binary
+ * (`~/.codex/packages/standalone/releases/0.156.1-x86_64-unknown-linux-musl/bin/codex`), no refresh forced.
+ * These are the user-facing messages of its auth-recovery path, each verbatim:
+ *   - "Your access token could not be refreshed. Please log out and sign in again."
+ *   - "Your access token could not be refreshed because you have since logged out or signed in to another
+ *      account. Please sign in again."
+ *   - "Your authentication session could not be refreshed automatically. Please log out and sign in again."
+ *   - "OAuth refresh token was rejected: " and "Failed to refresh token: " (the error prefixes)
+ * WHAT THIS DOES NOT PROVE: that any of them RENDERS in a pane as written. No live failure was available -- forcing one
+ * could log out live reviewers, which ruling 2 excluded -- so the match is a needle into a pane's recent
+ * output, and the first real refresh either finds it or is caught by signal (b). A new codex may reword
+ * these; `docs/known-gaps.md` says so.
+ */
+export const CODEX_AUTH_FAILURE_TEXT = Object.freeze([
+  "Your access token could not be refreshed",
+  "Your authentication session could not be refreshed automatically",
+  "OAuth refresh token was rejected",
+  "Failed to refresh token",
+]);
+
+const MS_PER_MINUTE = 60_000;
+
+/**
+ * How long a reviewer may go without a verdict after the credential refreshed before that is called a failure.
+ * A review is minutes of reading, not an hour, and a healthy reviewer that refreshed mid-review still answers
+ * inside this; a number, not a measurement, and the refresh ledger is where the first real one is read.
+ */
+export const REVIEWER_SILENCE_MS = 30 * MS_PER_MINUTE;
+
+/** The two causes whose recipient is a reviewer that owes a verdict. */
+const REVIEWER_VERDICT_CAUSES = Object.freeze(["draft-awaiting-verdict", "verdict-comment-unreviewed"]);
+
+/**
+ * `credential.last_refresh` as epoch milliseconds, or `null` when the file cannot be read or carries none.
+ * `null` is "could not ask" and signal (b) says nothing for it; it is never a time.
+ * @param {string} [path] @param {(path: string, enc: "utf8") => string} [read]
+ * @returns {number | null}
+ */
+export function readLastRefresh(path = CODEX_AUTH_FILE, read = readFileSync) {
+  try {
+    const at = Date.parse(String(JSON.parse(read(path, "utf8"))?.last_refresh ?? ""));
+    return Number.isNaN(at) ? null : at;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The instances `wake.mjs` started, from the registry file. `{}` for a missing file (nothing was started) AND for
+ * one that will not parse -- the second is a lost reading, so it is never confused with an instance that FAILED.
+ * @param {string} path @param {(path: string, enc: "utf8") => string} [read]
+ * @returns {Record<string, {spawnedAt: number}>}
+ */
+export function readReviewerRegistry(path, read = readFileSync) {
+  try {
+    const parsed = JSON.parse(read(path, "utf8"));
+    return parsed !== null && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The phrase of codex's own auth-failure text a pane shows, or `null`.
+ * @param {string | null | undefined} text
+ * @returns {string | null}
+ */
+export function authFailureShownIn(text) {
+  return CODEX_AUTH_FAILURE_TEXT.find((phrase) => String(text ?? "").includes(phrase)) ?? null;
+}
+
+/**
+ * The reviewer sessions this tick's orders say still OWE a verdict: an order addressed to `reviewer-<n>` for one
+ * of the two verdict causes. The gate derives those from GitHub each tick, so "still emitted" is "still owed".
+ * @param {{session: string, cause?: string}[]} orders
+ * @returns {Set<string>}
+ */
+export function sessionsOwingVerdict(orders) {
+  return new Set(orders
+    .filter((o) => REVIEWER_VERDICT_CAUSES.includes(String(o.cause)) && reviewerInstanceNumber(o.session) !== null)
+    .map((o) => o.session));
+}
+
+/**
+ * WHICH LIVE REVIEWER INSTANCES HAVE FAILED TO AUTHENTICATE -- two signals, each named on the failure it yields.
+ *
+ *   pane            (a) the instance's pane shows codex's own auth-failure text. Asked of EVERY registered instance,
+ *                   because the text is the failure itself and needs no bound.
+ *   refresh-silence (b) `last_refresh` is later than the instance's start, it still owes a verdict, and the refresh is
+ *                   older than `silenceMs`. A healthy reviewer that refreshed answers inside the bound; one that
+ *                   lost its login sits at the prompt and never does.
+ *
+ * (b) NEEDS THE VERDICT STILL OWED, and that is what keeps an idle instance -- verdict posted, PR waiting to
+ * merge -- from reading as failed the moment the credential moves. A `paneText` that cannot be read is `null`,
+ * which says nothing for (a) and leaves (b) to stand alone.
+ *
+ * @param {{instances: Record<string, {spawnedAt: number}>, owing: Set<string>, lastRefresh: number | null,
+ *   paneText: (session: string) => string | null, now: number, silenceMs?: number}} facts
+ * @returns {{session: string, signals: string[]}[]}
+ */
+export function reviewerAuthFailures({ instances, owing, lastRefresh, paneText, now, silenceMs = REVIEWER_SILENCE_MS }) {
+  return Object.entries(instances).flatMap(([session, { spawnedAt }]) => {
+    const signals = [];
+    if (authFailureShownIn(paneText(session)) !== null) signals.push("pane");
+    const refreshedSinceStart = lastRefresh !== null && lastRefresh > spawnedAt;
+    if (refreshedSinceStart && owing.has(session) && now - lastRefresh > silenceMs) signals.push("refresh-silence");
+    return signals.length > 0 ? [{ session, signals }] : [];
+  });
+}
+
+/**
+ * The incident order to `ceo`, or none. `ceo` because the remedy is a re-login of the reviewer's codex account, an
+ * interactive step only the chairman can take (ruling 2). JUDGMENT-keyed on the failed set and the refresh it
+ * followed, so the same failure is not re-asked every twenty minutes and a NEW one is a new question.
+ * @param {{session: string, signals: string[]}[]} failures @param {number | null} lastRefresh
+ * @returns {{session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string}[]}
+ */
+export function reviewerAuthOrders(failures, lastRefresh) {
+  if (failures.length === 0) return [];
+  const key = `${failures.map((f) => f.session).sort().join(".")}/${lastRefresh === null ? "no-refresh" : new Date(lastRefresh).toISOString()}`;
+  return [{
+    session: "ceo",
+    cause: "reviewer-auth-failed",
+    subject: "reviewer-auth",
+    discriminator: key,
+    prompt: `${failures.length} reviewer instance(s) have FAILED TO AUTHENTICATE with codex:\n`
+      + failures.map((f) => `  ${f.session}  (${f.signals.join(" + ")})`).join("\n") + "\n"
+      + "`pane` is codex's own auth-failure text in the instance's pane; `refresh-silence` is the credential's "
+      + "`last_refresh` moving after the instance started while it still owes a verdict for more than "
+      + `${REVIEWER_SILENCE_MS / MS_PER_MINUTE} minutes.\n`
+      + "THE REMEDY IS A RE-LOGIN OF THE REVIEWER'S CODEX ACCOUNT, and only the chairman can do it (`codex "
+      + "login`, interactive). Afterwards close each failed workspace (`herdr --session org workspace close "
+      + "<id>`): the gate starts a fresh instance for a pull request that still needs a verdict on its next tick. "
+      + "The reading is `reviewer-refreshes`, beside the wake ledger (every refresh, with the live-instance count).",
+    causeKey: `ceo/reviewer-auth-failed/${key}`,
+  }];
+}
+
+/**
+ * The ledger lines to append for this tick: a `refresh` line when `last_refresh` differs from the newest recorded
+ * one, and a `failure` line for each instance found failed on a refresh not yet recorded as failing.
+ *
+ * EVERY REFRESH IS A READING (ruling 2): how many instances were live when it moved, and whether any then
+ * failed, so "the first real refresh is the measurement" is a file someone can read. A failure is detected up to
+ * `REVIEWER_SILENCE_MS` AFTER the refresh, so it is its own line naming the refresh it followed, never a
+ * rewrite of the `refresh` line.
+ *
+ * @param {{ledger: {type: string, lastRefresh: string | null, session?: string}[], lastRefresh: number | null,
+ *   live: string[], failures: {session: string, signals: string[]}[], now: number}} facts
+ * @returns {object[]}
+ */
+export function refreshLedgerLines({ ledger, lastRefresh, live, failures, now }) {
+  if (lastRefresh === null) return [];
+  const iso = new Date(lastRefresh).toISOString();
+  const at = new Date(now).toISOString();
+  const lines = [];
+  const known = ledger.some((l) => l.type === "refresh" && l.lastRefresh === iso);
+  const hadOtherRefresh = ledger.some((l) => l.type === "refresh");
+  if (!known) lines.push({ type: "refresh", at, lastRefresh: iso, live: live.length, liveSessions: live,
+    firstRecorded: !hadOtherRefresh });
+  for (const f of failures) {
+    if (ledger.some((l) => l.type === "failure" && l.lastRefresh === iso && l.session === f.session)) continue;
+    lines.push({ type: "failure", at, lastRefresh: iso, session: f.session, signals: f.signals });
+  }
+  return lines;
+}
+
+/** @param {string} path @param {(path: string, enc: "utf8") => string} [read] */
+function readRefreshLedger(path, read = readFileSync) {
+  try {
+    return String(read(path, "utf8")).split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The live reviewer instances' panes as text, through herdr: workspace list, the pane of the one labelled
+ * `session`, and that pane's recent output. `null` for anything herdr will not say -- never `""`, which would
+ * read as "a pane that shows no failure".
+ *
+ * A HERDR CALL FROM THE GATE, AND THE ONE EXCEPTION to its header (which keeps herdr to `wake.mjs` so this file
+ * stays testable): the seam is `run`, INJECTED, and it is reached only for an instance in the registry, so a tick
+ * with no reviewer instance makes no call at all.
+ * @param {(args: string[]) => string} run
+ * @returns {(session: string) => string | null}
+ */
+export function herdrPaneReader(run) {
+  return (session) => {
+    try {
+      const workspaces = JSON.parse(run(["--session", "org", "workspace", "list"]))?.result?.workspaces ?? [];
+      const workspace = workspaces.find((/** @type {any} */ w) => w.label === session)?.workspace_id;
+      if (typeof workspace !== "string") return null;
+      const panes = JSON.parse(run(["--session", "org", "pane", "list", "--workspace", workspace]))?.result?.panes ?? [];
+      const pane = panes[0]?.pane_id;
+      return typeof pane === "string" ? run(["--session", "org", "pane", "read", pane, "--lines", "60"]) : null;
+    } catch {
+      return null;
+    }
+  };
+}
+
+/**
+ * The detector's whole tick: read the registry, the credential and the panes; append the refresh ledger; return
+ * the incident order. Reads the SAME state directory `wake.mjs` writes its registry into.
+ *
+ * NEVER THROWS -- a detector that can crash the gate would stop every order behind it. A failure to append the
+ * ledger is said on stderr and the order is still returned.
+ *
+ * @param {{orders: {session: string, cause?: string}[], dir?: string, authFile?: string, now?: number,
+ *   run?: (args: string[]) => string, log?: (line: string) => void}} args
+ */
+export function reviewerAuthTick({ orders, dir = REVIEWER_STATE_DIR, authFile = CODEX_AUTH_FILE, now = Date.now(),
+  run = herdrRun, log = (line) => process.stderr.write(line) }) {
+  const instances = readReviewerRegistry(`${dir}/${REVIEWER_REGISTRY_FILE}`);
+  const lastRefresh = readLastRefresh(authFile);
+  const failures = reviewerAuthFailures({ instances, owing: sessionsOwingVerdict(orders), lastRefresh,
+    paneText: Object.keys(instances).length > 0 ? herdrPaneReader(run) : () => null, now });
+  const ledgerPath = `${dir}/${REVIEWER_REFRESH_LEDGER_FILE}`;
+  const lines = refreshLedgerLines({ ledger: readRefreshLedger(ledgerPath), lastRefresh,
+    live: Object.keys(instances), failures, now });
+  try {
+    if (lines.length > 0) {
+      mkdirSync(dirname(ledgerPath), { recursive: true });
+      appendFileSync(ledgerPath, lines.map((l) => `${JSON.stringify(l)}\n`).join(""));
+    }
+  } catch (err) {
+    log(`reviewer-auth: could not append ${ledgerPath} (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0]}) -- the order below is unaffected.\n`);
+  }
+  return reviewerAuthOrders(failures, lastRefresh);
+}
+
+/** @param {string[]} args */
+const herdrRun = (args) => execFileSync("herdr", args, { encoding: "utf8", timeout: 10_000 });
+
 /**
  * The dead man's switch, wired: asked ONLY when everything else said nothing.
  *
@@ -4194,7 +4511,7 @@ function main() {
   const decided = decide({ prs: withCommitChains(openPrs), readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required,
     epics: epicsWhenShelfEmpty(rows),
-    answerOwed: withAnswerLabel(allOpen), openRows: allOpen,
+    answerOwed: [...withAnswerLabel(allOpen), ...closedAnswerRows()], openRows: allOpen,
     // #2110: CONDITIONAL, and the condition is answered for free from the list already in hand --
     // `readOpenRows` fetched the labels, so "is anything claimed at all" costs no call. A quiet org with
     // nothing in progress pays nothing; a busy one pays exactly one, whatever the size of the queue.
@@ -4213,6 +4530,7 @@ function main() {
     // emit nothing, and a refused read is not reported as health because nothing else reads "trunk is fine".
     trunkRed: readTrunkRed() });
   const { delivered: orders, performed } = performActions(decided);
+  orders.push(...reviewerAuthTick({ orders }));
   orders.push(...deadMansSwitch({ orders, drain, performed, openRows: openRowsRead }));
   for (const order of orders) process.stdout.write(`${JSON.stringify(order)}\n`);
 

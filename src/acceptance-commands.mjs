@@ -147,6 +147,44 @@ const FLEET_LAB_PATTERNS = /** @type {[RegExp, string][]} */ ([
   [ON_THE_LAB, "names work done ON the lab, which only `orchestrator` reaches"],
 ]);
 
+// #2175: THE INVOCATION PATTERNS -- everything a declared No does NOT silence. The five NAMED patterns name a
+// THING a test double can also name (`systemctl` in "given a fake `systemctl`"); these name a COMMAND, and
+// `fleet:status` in an Acceptance is somebody running it whatever the row's answer says (#1912's ground).
+const INVOCATION_PATTERNS = FLEET_LAB_PATTERNS.filter(([pattern]) => !NAMED_NOT_INVOKED.has(pattern));
+const NAMED_PATTERNS = FLEET_LAB_PATTERNS.filter(([pattern]) => NAMED_NOT_INVOKED.has(pattern));
+
+// #2175: THE TEMPLATE'S OWN QUESTION (`.github/ISSUE_TEMPLATE/backlog-row.yml`, id `fleet`), which every
+// row answers and nothing read. Matched by `extractLabeledSection`, so the heading's `?` and any level of
+// `#` are handled where the rest of this module already handles them.
+const FLEET_QUESTION = "Does the acceptance need the fleet or the lab";
+
+// NAMED, NOT INFERRED -- the answer is the FIRST WORD, from a short list somebody chose. Measured 2026-09-25
+// over the 400 most recent rows (151 carry the section): `No`/`Neither` and `Yes`/`Both` are the
+// unambiguous ones, `Partly` and free prose (`The lab only`, `It needs the corpus ...`) are not, and a
+// reader that guessed at prose would be the deriver's own defect (#1241) moved one section along. The
+// lookahead keeps `Nobody`, `Not applicable` and `No-op` from reading as No.
+const ANSWER_END = "(?=$|[\\s.,:;!\u2014\u2013])";
+const DECLARED_NO = new RegExp(`^(?:no|neither)${ANSWER_END}`, "i");
+const DECLARED_YES = new RegExp(`^(?:yes|both)${ANSWER_END}`, "i");
+
+const DECLARED_YES_REASON = `is declared by the row itself ("${FLEET_QUESTION}?" answers Yes) to need the fleet or the lab`;
+
+/**
+ * #2175: THE ROW'S OWN ANSWER to the template's "Does the acceptance need the fleet or the lab?" -- `"no"`,
+ * `"yes"`, or `null` for a body that has no such section OR whose answer is not an unambiguous No/Yes
+ * (`Partly`, prose, empty). **`null` means UNDECLARED, and undeclared rows derive exactly as they did
+ * before this existed**: absence and "could not read it" are never promoted to an answer.
+ * @param {string} body a row body @returns {"no" | "yes" | null}
+ */
+export function declaredFleetAnswer(body) {
+  if (typeof body !== "string") return null;
+  const section = extractLabeledSection(body, FLEET_QUESTION);
+  if (section === null) return null;
+  const answer = section.replace(/^[\s*_`]+/, "");
+  if (DECLARED_NO.test(answer)) return "no";
+  return DECLARED_YES.test(answer) ? "yes" : null;
+}
+
 /**
  * #1241: DOES THIS ROW'S ACCEPTANCE NAME A FLEET OR LAB COMMAND? The lane derivation asks; nothing else
  * could answer it.
@@ -173,10 +211,23 @@ export function fleetOrLabAcceptance(body) {
   //
   // Running a command and CLASSIFYING a row are different questions over the same text: `pr-open` needs
   // the runnable lines, this needs everything the section says it will take.
+  const declared = declaredFleetAnswer(body);
   const section = extractLabeledSection(body, "Acceptance");
-  if (section === null) return null;
+  // #2175: DECLARATION FIRST, PATTERN SECOND. A No silences the five NAMED patterns and nothing else; a Yes
+  // routes with no pattern at all. Rows that say neither derive from the patterns alone, as before.
+  const patterns = declared === "no" ? INVOCATION_PATTERNS : FLEET_LAB_PATTERNS;
+  const matched = section === null ? null : patternReason(section, patterns);
+  return matched ?? (declared === "yes" ? DECLARED_YES_REASON : null);
+}
+
+/**
+ * The reason of the first of `patterns` that matches `section`: a NAMED pattern is read against
+ * `namedPatternText` (#1912, #1988), an invocation against the whole span.
+ * @param {string} section @param {readonly [RegExp, string][]} patterns @returns {string | null}
+ */
+function patternReason(section, patterns) {
   const named = namedPatternText(section);
-  for (const [pattern, reason] of FLEET_LAB_PATTERNS) {
+  for (const [pattern, reason] of patterns) {
     if (pattern.test(NAMED_NOT_INVOKED.has(pattern) ? named : section)) return reason;
   }
   return null;
@@ -210,10 +261,41 @@ function namedPatternText(section) {
 export function untrimmedFleetMention(body) {
   const section = extractLabeledSection(body, "Acceptance");
   if (section === null || fleetOrLabAcceptance(body) !== null) return null;
+  // #2175: under a declared No the DECLARATION decided, and `declarationDisagreement` says so. Naming a
+  // trim here would send the filer to the wrong fix -- a numbered clause is not a bullet.
+  if (declaredFleetAnswer(body) === "no") return null;
   const hit = FLEET_LAB_PATTERNS.find(([pattern]) => NAMED_NOT_INVOKED.has(pattern) && pattern.test(section));
   if (!hit) return null;
   const survivesDisclaimerTrim = hit[0].test(withoutScopeDisclaimer(section));
   return { reason: hit[1], form: survivesDisclaimerTrim ? "bullet" : "scope disclaimer" };
+}
+
+/**
+ * #2175: WHERE THE ROW'S ANSWER AND THE PATTERNS DISAGREE, and which one won. The finding is the
+ * disagreement, and before this it was resolved silently in the pattern's favour.
+ *
+ * Three shapes, and an agreement is `null`: a No that silenced a NAMED pattern (`routed: false`, and the
+ * pattern that lost is named); a No that an INVOCATION overrode (`routed: true`, and the pattern that won
+ * is named); a Yes that no pattern backed (`routed: true`, `reason: null`). A row that declares nothing has
+ * nothing to disagree with -- that is `untrimmedFleetMention`'s territory.
+ * @param {string} body a row body
+ * @returns {{ declared: "no" | "yes", routed: boolean, reason: string | null } | null}
+ */
+export function declarationDisagreement(body) {
+  const declared = declaredFleetAnswer(body);
+  if (declared === null) return null;
+  const section = extractLabeledSection(body, "Acceptance");
+  if (declared === "yes") {
+    return section !== null && patternReason(section, FLEET_LAB_PATTERNS) !== null
+      ? null : { declared, routed: true, reason: null };
+  }
+  if (section === null) return null;
+  const invocation = patternReason(section, INVOCATION_PATTERNS);
+  if (invocation !== null) return { declared, routed: true, reason: invocation };
+  // The RAW span, not `namedPatternText`: under a No the declaration decided, so a mention the bullet or
+  // disclaimer trim would have swallowed anyway is still worth naming rather than passing over.
+  const silenced = NAMED_PATTERNS.find(([pattern]) => pattern.test(section));
+  return silenced ? { declared, routed: false, reason: silenced[1] } : null;
 }
 
 /**
@@ -302,12 +384,19 @@ function endsLazyBlock(line, afterBlank) {
   return afterBlank || /^(\d+[.)]\s|#)/.test(line);
 }
 
+// #2473: `check-signals` is the only entry spelled like a FILE STEM, and `-` is a word boundary, so the bare
+// word also refused any test FILE whose name merely begins with it (`check-signals-pipe.test.ts`, whose
+// import closure never reaches runs/). The gate is the npm script (`training:check-signals`, with an
+// optional `:complete` suffix) or `check-signals.mjs`: the name NOT continued by `-`, `.` or a path
+// separator. `.mjs` is the one `.` continuation that IS the gate.
+const CHECK_SIGNALS_GATE = /\bcheck-signals(?:\.mjs\b|(?![-.\w/]))/;
+
 // `runs/` is gitignored -- a GitHub runner never has a corpus, so these read nothing and report cleanly.
 // CLAUDE.md: "A GATE THAT READS runs/ IS NOT YOURS TO REPORT."
 const CORPUS_PATTERNS = /** @type {[RegExp, string][]} */ ([
   [/\brules:gate\b/, "reads runs/, which is gitignored and absent in CI"],
   [/\brules:coverage\b/, "reads runs/, which is gitignored and absent in CI"],
-  [/\bcheck-signals\b/, "reads runs/, which is gitignored and absent in CI"],
+  [CHECK_SIGNALS_GATE, "reads runs/, which is gitignored and absent in CI"],
   [/\bcorpus:starvation\b/, "reads runs/, which is gitignored and absent in CI"],
   [/\bscorer:shortcuts\b/, "reads runs/, which is gitignored and absent in CI"],
 ]);

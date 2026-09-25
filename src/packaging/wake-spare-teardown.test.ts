@@ -8,7 +8,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -118,7 +118,7 @@ test("#2323 (1): the marks are READ from sessions.json -- every worker-<n> from 
 test("#2323 (1) ACCEPTANCE: an idle spare whose only row is closed has its workspace CLOSED and one line written", () => {
   const { got, herdr, cycles } = finishedSpare();
   assert.deepEqual(herdr.closed(), ["--session org workspace close wD"]);
-  assert.deepEqual(cycles, [{ role: "worker-4", row: 2323, at: T0, clean: true,
+  assert.deepEqual(cycles, [{ role: "worker-4", row: 2323, at: T0, rows: [2323], clean: true,
     why: "#2323 closed; no open row carries session:worker-4; no worktree left" }]);
   assert.deepEqual(got.ended, cycles);
   assert.equal(got.registry["worker-4"], undefined, "the instance is forgotten, so the next spawn starts a fresh one");
@@ -156,7 +156,7 @@ test("#2323 (2): one that never claims within its bound is recorded `clean: fals
   const { herdr, cycles } = finishedSpare({
     registry: { "worker-4": { spawnedAt: T0 - SPARE_CLAIM_BOUND_MS - 1, rows: [] } } });
   assert.equal(herdr.closed().length, 1);
-  assert.deepEqual(cycles, [{ role: "worker-4", row: null, at: T0, clean: false,
+  assert.deepEqual(cycles, [{ role: "worker-4", row: null, at: T0, rows: [], clean: false,
     why: "never claimed a row in 30 minutes" }]);
 });
 
@@ -212,18 +212,20 @@ test("#2323 (3): spareDecision needs all of `has held a row`, `holds none now` a
 });
 
 test("#2323 (3): consecutiveClean -- empty says EMPTY, 20 clean is 20, and a failure resets the run", () => {
-  const clean = (n: number) => Array.from({ length: n }, () => ({ clean: true }));
+  // #2407: a line that counts carries `rows`, exactly one of them. The bare `{ clean: true }` these used is LEGACY now.
+  const clean = (n: number) => Array.from({ length: n }, () => ({ clean: true, rows: [1] }));
+  const failed = { clean: false, rows: [1] };
   assert.deepEqual(consecutiveClean([]), { run: 0, empty: true },
     "no line is not `0 of 20 clean`: nothing has been measured");
-  assert.deepEqual(consecutiveClean([{ clean: false }]), { run: 0, empty: false }, "one failure IS a measurement");
+  assert.deepEqual(consecutiveClean([failed]), { run: 0, empty: false }, "one failure IS a measurement");
   assert.deepEqual(consecutiveClean(clean(20)), { run: 20, empty: false });
-  assert.deepEqual(consecutiveClean([...clean(19), { clean: false }, ...clean(3)]), { run: 3, empty: false });
-  assert.equal(consecutiveClean([...clean(20), { clean: false }]).run, 0, "a failure LAST leaves nothing");
+  assert.deepEqual(consecutiveClean([...clean(19), failed, ...clean(3)]), { run: 3, empty: false });
+  assert.equal(consecutiveClean([...clean(20), failed]).run, 0, "a failure LAST leaves nothing");
 });
 
 test("#2323: an unreadable ledger line is a FAILED cycle, so a corrupt line cannot bridge a run of clean ones", () => {
-  const raw = `${JSON.stringify({ role: "worker-4", row: 1, at: 1, clean: true, why: "x" })}\nnot json\n`
-    + `${JSON.stringify({ role: "worker-4", row: 2, at: 2, clean: true, why: "x" })}\n`;
+  const raw = `${JSON.stringify({ role: "worker-4", row: 1, at: 1, rows: [1], clean: true, why: "x" })}\nnot json\n`
+    + `${JSON.stringify({ role: "worker-4", row: 2, at: 2, rows: [2], clean: true, why: "x" })}\n`;
   const read = readSpareCycles("x", (() => raw) as never);
   assert.equal(read.length, 3);
   assert.equal(consecutiveClean(read).run, 1);
@@ -305,16 +307,32 @@ test("#2323 THE WAKE ENTRY: a spawn is REGISTERED, so the teardown can tell a fi
   const dir = mkdtempSync(join(tmpdir(), "wake-spawn-reg-"));
   try {
     const ledger = join(dir, "wake-ledger");
-    writeFileSync(join(dir, "herdr"), "#!/bin/sh\ncase \"$*\" in\n  *'workspace list') printf '%s' '{\"result\":{\"workspaces\":[]}}' ;;\n"
+    mkdirSync(join(dir, "repos", "a11y-witness"), { recursive: true });   // the primary, where the claim's `git fetch` runs
+    const herdrLog = join(dir, "herdr-calls");
+    writeFileSync(join(dir, "herdr"), "#!/bin/sh\necho \"$*\" >> " + herdrLog + "\ncase \"$*\" in\n  *'workspace list') printf '%s' '{\"result\":{\"workspaces\":[]}}' ;;\n"
       + "  *'workspace create'*) printf '%s' '{\"result\":{\"root_pane\":{\"pane_id\":\"wB:p1\"},\"workspace\":{\"workspace_id\":\"wB\"}}}' ;;\n"
       + "  *) : ;;\nesac\n");
     chmodSync(join(dir, "herdr"), STUB_MODE);
     writeFileSync(join(dir, "gh"), "#!/bin/sh\nprintf '%s' '[]'\n");
     chmodSync(join(dir, "gh"), STUB_MODE);
-    const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${ledger}`, "--roster=worker-4"], {
+    // #2405: A SPAWN CLAIMS BEFORE IT OPENS A PANE, so the claim's two programs are stubbed too -- `git` makes the
+    // role's launch worktree and `node` (which is `row-claim`) makes the row's -- both under `--worktrees-dir`, so the
+    // run cannot create `role-worker-4` beside the real checkout.
+    const fetchedIn = join(dir, "git-fetch-cwd");
+    writeFileSync(join(dir, "git"), "#!/bin/sh\ncase \"$1\" in\n  fetch) pwd >> " + fetchedIn + " ;;\n  worktree) mkdir -p \"$4\" ;;\n  *) : ;;\nesac\n");
+    writeFileSync(join(dir, "node"), "#!/bin/sh\nmkdir -p ../wt-2131\necho 'STARTED -- #2131 fixture'\n");
+    chmodSync(join(dir, "git"), STUB_MODE);
+    chmodSync(join(dir, "node"), STUB_MODE);
+    const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${ledger}`, "--roster=worker-4",
+      `--worktrees-dir=${join(dir, "repos")}`], {
       input: `${JSON.stringify(ROW_ORDER)}\n`, encoding: "utf8",
       env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
     assert.match(ran.stdout, /WOKE worker-4 <- engineers\/ready-row-unclaimed\/2131 \(STARTED sonnet\/high\)/, ran.stderr);
+    // #2405: the claim's `git fetch` runs in the primary the flag moved, not the host's -- which a CI runner has not got
+    // (`spawnSync git ENOENT`, 2026-09-24), and which this run would otherwise pass on by finding on a host that has.
+    assert.equal(readFileSync(fetchedIn, "utf8").trim(), join(dir, "repos", "a11y-witness"));
+    // #2405: THE WIRING -- `main` hands `deliver` the claimer, so the pane opens in the worktree the claim made.
+    assert.match(readFileSync(herdrLog, "utf8"), new RegExp(`workspace create .*--cwd ${join(dir, "repos", "wt-2131")}( |$)`, "m"));
     const registry = JSON.parse(readFileSync(sparePathsFrom(ledger).registry, "utf8"));
     assert.deepEqual(Object.keys(registry), ["worker-4"]);
     assert.deepEqual(registry["worker-4"].rows, []);

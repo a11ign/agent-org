@@ -65,6 +65,8 @@ import { labelsToStrip } from "./close-rows-for-merged-pr.mjs";
 // #1130: the label constant comes from where the BOARD reads it, never restated here -- the drift
 // check below exists because two copies of one fact disagreed, so it must not add a third.
 import { OUT_OF_RELEASE_LABEL } from "./board-data.mjs";
+// #2190: the rule the CLAIM path refuses by, CALLED here and never re-derived -- see `unclaimableReadyRows`.
+import { REQUIRED_FIELDS, missingTemplateFields, templateFieldsReason } from "./row-claim/template-fields-rule.mjs";
 
 // #804: READY_LABEL/WAS_READY_LABEL are IMPORTED (above) from the leaf claim-labels.mjs and re-exported
 // here, not declared in this file -- see claim-labels.mjs's own header for why. Every existing
@@ -80,6 +82,15 @@ export { READY_LABEL, WAS_READY_LABEL };
  * because `backlog` is not a claim-lifecycle label and that file's header says it holds exactly four.
  */
 const BACKLOG_LABEL = "backlog";
+
+/**
+ * #2150: the Project Status option that says the same thing as the `ready` label -- the name
+ * `row-file.mjs` writes on a promotion (its own `READY_STATUS`, which is not exported and whose module
+ * runs an act on import, so it is restated here rather than imported). `vocabularyDrift`
+ * (`board-status-health.mjs`) holds `"Ready"` in `WRITTEN_STATUSES`, so a board that stopped offering it
+ * is reported there; this constant only has to match what the board offers.
+ */
+const READY_STATUS = "Ready";
 
 /**
  * Every label that already means "not actually pickable", independent of `ready`.
@@ -923,6 +934,222 @@ function reportBothBoardLabels() {
     + `deliberate act. Then promote through the one act that writes all three together, which cannot leave `
     + `this state: \`node packages/agent-org/src/row-file.mjs --promote=<n> --session=<you>\`.\n`);
   return rows.length;
+}
+
+/**
+ * #2150: the three ways a row's board Status and its `ready` label can disagree, named so the report can
+ * give each its own remedy. Two directions, and the first is split in two because its cause is known when
+ * `backlog` is on the row and unknown when it is not.
+ */
+export const STATUS_LABEL_KINDS = Object.freeze({
+  /** Status `Ready`, labels say `backlog` and not `ready`: the promotion act stopped between its writes. */
+  INTERRUPTED_PROMOTION: "interrupted-promotion",
+  /** Status `Ready`, labels say neither `ready` nor `backlog`: somebody moved one field by hand. */
+  STATUS_READY_LABEL_ABSENT: "status-ready-label-absent",
+  /** `ready` on the labels, Status anything else: somebody moved one field by hand. */
+  LABEL_READY_STATUS_ELSEWHERE: "label-ready-status-elsewhere",
+});
+
+/**
+ * @param {string} status a non-null board Status @param {string[]} labels
+ * @returns {string | null} one of `STATUS_LABEL_KINDS`, or `null` when the two agree
+ */
+function statusLabelKind(status, labels) {
+  const labelSaysReady = labels.includes(READY_LABEL);
+  const statusSaysReady = status === READY_STATUS;
+  if (statusSaysReady && !labelSaysReady) {
+    return labels.includes(BACKLOG_LABEL)
+      ? STATUS_LABEL_KINDS.INTERRUPTED_PROMOTION : STATUS_LABEL_KINDS.STATUS_READY_LABEL_ABSENT;
+  }
+  if (labelSaysReady && !statusSaysReady) return STATUS_LABEL_KINDS.LABEL_READY_STATUS_ELSEWHERE;
+  return null;
+}
+
+/**
+ * #2150: OPEN ROWS WHOSE BOARD STATUS AND `ready` LABEL DISAGREE, IN BOTH DIRECTIONS.
+ *
+ * EVERY OTHER CHECK IN THIS FILE READS LABELS, so a row could read `Ready` on the Project while its labels
+ * said `backlog`, or carry `ready` while its Status said `Backlog`, and nothing reported either. The
+ * nearest neighbours answer narrower questions and this is the population between them: `openRowsAbsentFromBoard`
+ * owns a row with NO board item and `readyRowsMissingStatus` (`board-snapshot.mjs`, run by
+ * `fetchBoardItems` itself) owns a `ready` row whose item has NO Status. **This owns the row where both
+ * fields exist and contradict each other**, which is why a null Status and an unboarded row are SKIPPED
+ * here rather than reported a second time (done-when 5).
+ *
+ * WHY IT MATTERS NOW: `row-file --promote` (#2111) moves the Status first and writes the labels second, so
+ * a failed label write leaves exactly `Ready` beside `backlog`. That act reports it (exit 2) to whoever ran
+ * it; this reports it to everyone else.
+ *
+ * ONLY `ready` IS COMPARED, NOT EVERY LABEL/STATUS PAIR. `backlog` beside Status `Backlog` and
+ * `in-progress` beside `In progress` are further pairs of the same family, but the claim lifecycle moves
+ * those through `row-claim` and this row's population is the promotion pair. A `Backlog` Status with no
+ * `backlog` label is not a finding here.
+ *
+ * TWO READS, TWO MOMENTS: the labels and the board are fetched separately, so a promotion landing between
+ * them can be reported once and clear on the next run. That is the ordinary cost of a live tracker and the
+ * same one `fetchOpenIssuesChecked` names for its own two reads.
+ *
+ * @param {LabelledIssue[]} issues the open issues, as `fetchOpenIssuesChecked` returns them
+ * @param {Array<{ number: number | null, status: string | null }>} boardItems
+ * @returns {Array<{ number: number, title: string, status: string, labels: string[], kind: string }>}
+ */
+export function statusLabelDisagreements(issues, boardItems) {
+  const openByNumber = new Map((issues ?? []).map((i) => [Number(i.number), i]));
+  /** @type {ReturnType<typeof statusLabelDisagreements>} */
+  const found = [];
+  for (const { number, status } of boardItems ?? []) {
+    const issue = number === null ? undefined : openByNumber.get(number);
+    if (issue === undefined || status === null) continue;
+    const labels = (issue.labels ?? []).map((l) => String(l));
+    const kind = statusLabelKind(status, labels);
+    if (kind === null) continue;
+    found.push({ number: Number(issue.number), title: String(issue.title ?? ""), status, labels, kind });
+  }
+  return found.sort((a, b) => a.number - b.number);
+}
+
+/**
+ * #2150: what to DO about each kind. The interrupted promotion has one right answer (finish it); the two
+ * hand-moved kinds have two readings and only whoever moved the field knows which is right, so both are
+ * printed and neither is picked. `--promote` is the repair whenever the row SHOULD be `Ready`: it writes
+ * the Status and every label together and is idempotent (`row-file.mjs`), though it refuses a claimed row.
+ * @param {number} number @param {string} kind
+ */
+export function statusLabelRemedy(number, kind) {
+  const promote = `\`npm run row-file -- --promote=${number} --session=<you>\``;
+  if (kind === STATUS_LABEL_KINDS.INTERRUPTED_PROMOTION) {
+    return `an INTERRUPTED PROMOTION -- the act moves the Status first and writes the labels second, and the `
+      + `label write did not land. Finish it: ${promote} (idempotent)`;
+  }
+  if (kind === STATUS_LABEL_KINDS.STATUS_READY_LABEL_ABSENT) {
+    return `a field moved by hand, and TWO READINGS: if the row IS ready, ${promote}; if it is NOT, move the `
+      + `Status back to the column its labels describe`;
+  }
+  return `a field moved by hand, and TWO READINGS: if the row IS ready, ${promote}; if it is NOT, remove `
+    + `\`${READY_LABEL}\` and put the labels back to what the Status says`;
+}
+
+/**
+ * #2150: report every open row whose Status and `ready` label disagree, beside `reportAbsentFromBoard`,
+ * which reads the same board items for the row with no item at all.
+ */
+function reportStatusLabelDisagreements() {
+  const { issues, reportedCount } = fetchOpenIssuesChecked();
+  const rows = statusLabelDisagreements(issues, fetchBoardItems());
+  if (rows.length === 0) {
+    process.stdout.write(`OK  ${issues.length} of ${reportedCount} open issue(s) checked, every board Status `
+      + `agrees with the \`${READY_LABEL}\` label\n`);
+    return 0;
+  }
+  for (const { number, title, status, labels, kind } of rows) {
+    process.stdout.write(`STATUS/LABEL DISAGREE  #${number} "${title}" -- Status \`${status}\`, labels `
+      + `[${labels.join(", ")}] -- ${statusLabelRemedy(number, kind)}\n`);
+  }
+  process.stderr.write(`\n${rows.length} open row(s) have a board Status and a \`${READY_LABEL}\` label that `
+    + `say different things, so one of the two is wrong. The remedy for each row is printed with it.\n`);
+  return rows.length;
+}
+
+/**
+ * #2190: OPEN `ready` ROWS THAT `row-claim` WOULD REFUSE FOR A MISSING TEMPLATE SECTION -- the shape of #75,
+ * the incident this file's own header names ("no Region or Acceptance a worker could run") and the one
+ * shape it never went on to check. #13's became the label mutex; #75's became nothing.
+ *
+ * THE QUESTION IS ALREADY OWNED, BY THE RULE AT THE FAR END, AND THIS CALLS IT. `templateFieldsReason` is
+ * what `row-claim` and `promoteRefusalReason` (#2111) refuse by, so a `ready` row is reported here exactly
+ * when a session's claim would bounce -- one round trip earlier, and before a claimant has spent a turn on
+ * a defect in somebody else's filing. **Which sections are required is NOT restated in this file**: a
+ * second copy of that list is a thing that drifts from the first, and the verdict AND the names both come
+ * from the rule module. (`missingTemplateFields` is the same function `templateFieldsReason` is built on;
+ * if the two ever disagree the row is still reported, with the rule's own sentence, rather than dropped.)
+ *
+ * A HAND PROMOTION IS WHAT THIS CATCHES. `row-file --promote=<n>` runs the rule at promotion time, but a
+ * promotion by hand is three label writes no act mediates. Measured (from the timeline API): #1990 was
+ * filed with no `## Open-check`, promoted `backlog` -> `ready` by hand 2026-09-23T07:51:47Z, and refused
+ * at its claim about three minutes later (07:55:05Z).
+ *
+ * ITS OWN POPULATION, NEVER FOLDED INTO `mutexViolations` OR `closedDebris`: an unclaimable row is a
+ * different state from `ready` beside `blocked`, and the remedy differs -- add the missing section, not
+ * remove a label.
+ *
+ * @param {ReadyRowWithBody[]} rows
+ * @returns {Array<{ number: number, title: string, missing: string[], reason: string }>}
+ */
+export function unclaimableReadyRows(rows) {
+  return (rows ?? [])
+    .filter((row) => (row.labels ?? []).includes(READY_LABEL))
+    .flatMap((row) => {
+      const number = Number(row.number);
+      const reason = templateFieldsReason(row.body ?? "", number);
+      if (reason === null) return [];
+      return [{ number, title: String(row.title ?? ""), missing: missingTemplateFields(row.body ?? ""), reason }];
+    });
+}
+
+/**
+ * @typedef {{ number: number, title: string, labels: string[], body: string }} ReadyRowWithBody
+ */
+
+/**
+ * Every open row carrying `ready`, WITH its body -- the one field `fetchIssues` does not carry.
+ *
+ * THROUGH `listUntilShort` like every list here, and the `--label ready` filter is server-side so the
+ * walk reads only the population being asked about rather than every open body. A response entry with no
+ * `body` STRING throws: an empty body (`""`) is a real, checkable fact -- every section missing -- while
+ * an entry that never carried the key is "asked the wrong question", and reading it as empty would report
+ * a row unclaimable on the strength of a field nobody read (the same distinction `lookupIssueBody` draws
+ * on the claim path).
+ *
+ * @param {{ run?: typeof defaultRun }} [deps]
+ * @returns {ReadyRowWithBody[]}
+ */
+export function fetchReadyRowsWithBodies({ run = defaultRun } = {}) {
+  const parsed = listUntilShort({ run, what: "open ready rows with bodies",
+    argv: (ask) => ["issue", "list", "--repo", REPO, "--state", "open", "--label", READY_LABEL,
+      "--limit", String(ask), "--json", "number,title,labels,body"] });
+  return parsed.map((/** @type {unknown} */ entry, /** @type {number} */ i) => {
+    const obj = /** @type {{ number?: unknown, title?: unknown, labels?: unknown, body?: unknown }} */ (entry);
+    if (typeof obj?.number !== "number" || typeof obj?.title !== "string" || !Array.isArray(obj?.labels)
+      || typeof obj?.body !== "string") {
+      throw new Error(`ready-label-audit: ready row entry ${i} is missing number/title/labels/body -- `
+        + `refusing to guess. Got: ${JSON.stringify(entry).slice(0, 300)}`);
+    }
+    const labels = obj.labels.map((/** @type {unknown} */ l) => {
+      const name = /** @type {{ name?: unknown }} */ (l)?.name;
+      if (typeof name !== "string") {
+        throw new Error(`ready-label-audit: issue #${obj.number} has a label with no name -- refusing to `
+          + `guess. Got: ${JSON.stringify(l)}`);
+      }
+      return name;
+    });
+    return { number: obj.number, title: obj.title, labels, body: obj.body };
+  });
+}
+
+/**
+ * #2190: report every open `ready` row `row-claim` would refuse for a missing template section, by number
+ * and by section. Its own count, its own line -- see `unclaimableReadyRows`.
+ */
+function reportUnclaimableReadyRows() {
+  const rows = fetchReadyRowsWithBodies();
+  const found = unclaimableReadyRows(rows);
+  if (found.length === 0) {
+    process.stdout.write(`OK  ${rows.length} open \`${READY_LABEL}\` row(s) checked, every one states `
+      + `${REQUIRED_FIELDS.join(", ")} -- none would be refused at claim\n`);
+    return 0;
+  }
+  for (const { number, title, missing, reason } of found) {
+    process.stdout.write(`UNCLAIMABLE  #${number} "${title}" -- carries \`${READY_LABEL}\` and is missing `
+      + `${missing.length > 0 ? missing.join(", ") : `a section the rule refused for (${reason})`}, so the gate `
+      + `offers it and \`row-claim\` refuses it: the claimant pays a turn for a defect in somebody else's `
+      + `filing\n`);
+  }
+  process.stdout.write(`unclaimable ready rows: ${found.length} of ${rows.length} open \`${READY_LABEL}\` `
+    + `row(s)\n`);
+  process.stderr.write(`\n${found.length} \`${READY_LABEL}\` row(s) would be refused at claim. Add each `
+    + `missing \`## <Field>\` section with real content -- the row is not wrong to be Ready once it says what a `
+    + `worker would run, and removing \`${READY_LABEL}\` instead hides the defect rather than fixing it.\n`);
+  return found.length;
 }
 
 /**
@@ -2067,6 +2294,10 @@ export const CHECKS = [
   ["rows no cause can reach", reportInvisibleRows],
   // #2111: the opposite defect to the line above -- a row carrying BOTH board labels rather than neither.
   ["half-promoted rows", reportBothBoardLabels],
+  // #2190: a row `ready` and unclaimable -- #75's shape, never checked until now.
+  ["unclaimable ready rows", reportUnclaimableReadyRows],
+  // #2150: every check above reads labels; this is the one that compares a label with the board Status.
+  ["status vs ready label", reportStatusLabelDisagreements],
 ];
 
 /**

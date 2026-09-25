@@ -32,14 +32,14 @@ const BRIEF_LINE = new RegExp(ENGINEER_BRIEF.replaceAll(".", "\\."));
 test("an engineer label's first message names the engineer brief", () => {
   assert.equal(ENGINEER_BRIEF, `${ROLES_DIR}/engineer.md`);
   assert.ok(existsSync(`${ROOT}${ENGINEER_BRIEF}`), "the file the line names exists");
-  const message = addressed(ORDER, "worker-6", ["worker-6"]);
+  const message = addressed(ORDER, "worker-6", { engineers: ["worker-6"] });
   assert.match(message, BRIEF_LINE);
   assert.match(message, /claim row 1 as `worker-6`/, "and the order's own text, with <you> substituted, survives");
 });
 
 test("the positive control: with an EMPTY roster nobody is told, so the line is the roster's doing", () => {
-  assert.doesNotMatch(addressed(ORDER, "worker-6", [], []), BRIEF_LINE);
-  assert.doesNotMatch(addressed(ORDER, "worker-3", ["worker-7"]), BRIEF_LINE, "membership, not the label's shape");
+  assert.doesNotMatch(addressed(ORDER, "worker-6", { engineers: [], families: [] }), BRIEF_LINE);
+  assert.doesNotMatch(addressed(ORDER, "worker-3", { engineers: ["worker-7"] }), BRIEF_LINE, "membership, not the label's shape");
 });
 
 test("#2403: a SPARE-FAMILY member is told, though no address in the roster names it", () => {
@@ -48,7 +48,7 @@ test("#2403: a SPARE-FAMILY member is told, though no address in the roster name
   assert.ok(!engineerRoles().includes("worker-9"), "the positive control: worker-9 is in no listed address");
   assert.match(addressed(ORDER, "worker-9"), BRIEF_LINE, "worker-9, roster and families read from sessions.json");
   assert.match(addressed(ORDER, "worker-12"), BRIEF_LINE, "worker-12: a number nobody committed");
-  assert.doesNotMatch(addressed(ORDER, "worker-9", [], []), BRIEF_LINE, "the family is the doing, not the label");
+  assert.doesNotMatch(addressed(ORDER, "worker-9", { engineers: [], families: [] }), BRIEF_LINE, "the family is the doing, not the label");
   assert.doesNotMatch(addressed(ORDER, "worker-3"), BRIEF_LINE, "below the family's `from` names no engineer role");
   assert.doesNotMatch(addressed(ORDER, "worker-09"), BRIEF_LINE, "a second spelling of worker-9 is not a member");
 });
@@ -58,7 +58,7 @@ test("the singletons and a reviewer are NOT told, whatever roster is supplied or
   assert.deepEqual(notEngineers.sort(), ["ceo", "orchestrator", "product-manager"],
     "the positive control for the loop below: the three singletons really are the non-engineer roles");
   for (const label of [...notEngineers, "reviewer", "reviewer-2"]) {
-    assert.doesNotMatch(addressed(ORDER, label, ["worker-6"]), BRIEF_LINE, `${label}, with an injected roster`);
+    assert.doesNotMatch(addressed(ORDER, label, { engineers: ["worker-6"] }), BRIEF_LINE, `${label}, with an injected roster`);
     assert.doesNotMatch(addressed(ORDER, label), BRIEF_LINE, `${label}, with the roster read from sessions.json`);
   }
 });

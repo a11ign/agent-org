@@ -95,6 +95,9 @@ import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
 // shape this repo names as its own most expensive recurring defect -- three copies of four literals is
 // worse than the cycle either duplicate was solving. See claim-labels.mjs's own header for the full story.
 import { READY_LABEL, CLAIM_LABEL, STARTED_LABEL } from "./claim-labels.mjs";
+// #2202: `waiting-condition.mjs` imports NOTHING, so it is import-safe under this header's no-`npm ci`/no-build
+// constraint for the same reason `claim-labels.mjs` is: it cannot be part of a cycle.
+import { answersOwedBy, ANSWER_PREFIX } from "./waiting-condition.mjs";
 // #2036/#1053: THE LEAK GUARD, IN THE SPAWN HELPER. This file now sends a `--body` -- the orphaned-row
 // report -- and `tracker-writer-population.test.ts` refuses a body-sending script that does not reach this
 // module through its import closure. Guarded in `gh` rather than at the one call site, the way
@@ -161,10 +164,20 @@ export function closeRowsExit({ failed, unsettled }, prefix) {
  * `closurePlan` never took. A row with no `ReopenedEvent`, or one that predates the merge (the ordinary
  * never-closed-yet row this function has always handled), is unaffected and still closes exactly as before.
  *
+ * #2202: `owed` IS NOT A BUCKET. It cuts ACROSS `close` and `already` and names, for every row that leaves the
+ * open population carrying `answer:<session>`, the row AND the session that owes the answer. The close
+ * cannot be prevented (`Closes #N` often closes the row natively before this script runs) and must not
+ * be, so the one thing this can do is stop the close being SILENT: `readOpenRows` is `--state open`, so a
+ * closed row stops waking the session that owes it, and nothing said the wake had stopped. Measured
+ * 2026-09-22 on #1936, #1970 and #2034 (`docs/operational-lessons.md`). A `skip` row is not in it: it is
+ * OPEN again, so the gate still reads it. An ordinary row is not in it either -- `owed` empty is the
+ * normal reading, and `close-rows-on-merge.test.ts` pairs it with a row that IS owed.
+ *
  * @param {{ number: number, state: string, labels?: string[], reopenedAt?: string | null }[]} issues  as GitHub resolved them
  * @param {{ prMergedAt?: string | null }} [ctx] the PR's own merge time, to weigh a reopen against
  * @returns {{ close: { number: number, labels: string[] }[], already: { number: number, labels: string[] }[],
- *   skip: { number: number, labels: string[] }[], none: boolean }}
+ *   skip: { number: number, labels: string[] }[], none: boolean,
+ *   owed: { number: number, session: string }[] }}
  */
 export function closurePlan(issues, { prMergedAt = null } = {}) {
   const reopenedAfterMerge = (/** @type {{ reopenedAt?: string | null }} */ i) => prMergedAt != null
@@ -174,7 +187,9 @@ export function closurePlan(issues, { prMergedAt = null } = {}) {
   const close = open.filter((i) => !reopenedAfterMerge(i)).map((i) => ({ number: i.number, labels: i.labels ?? [] }));
   const already = issues.filter((i) => i.state !== "OPEN")
     .map((i) => ({ number: i.number, labels: i.labels ?? [] }));
-  return { close, already, skip, none: issues.length === 0 };
+  const owed = [...close, ...already]
+    .flatMap((row) => answersOwedBy(row).map((session) => ({ number: row.number, session })));
+  return { close, already, skip, none: issues.length === 0, owed };
 }
 
 /**
@@ -182,6 +197,15 @@ export function closurePlan(issues, { prMergedAt = null } = {}) {
  * `ready` (it is no longer pickable), `in-progress`/`started` and any `session:*` (the claim is over), so
  * `audit`'s recurring DEBRIS finding -- *"a closed row still carries a pickable/claimed label"* -- stops
  * being PRODUCED by this path rather than being cleared by hand each hour.
+ *
+ * `answer:<session>` IS DELIBERATELY NEVER IN IT EITHER, AND IT IS THE OPPOSITE REASON (#2202). `was-ready`
+ * is kept because it is a record; `answer:*` is kept because it is a LIVE DEBT -- the only machine-readable
+ * "a named session still owes an answer here". Stripping it on close would erase the question in the same
+ * act that ends the wake, so the row would read as answered when it was merely closed; that is the exact
+ * silence this row (#2202) exists to end. The gate's closed-row read (`readClosedAnswerRows`) keeps waking
+ * the session, and the session clears the label by answering. The price, stated: a closed row can wear a
+ * live `answer:` label, and that is what it MEANS now, not debris -- `audit`'s DEBRIS finding is about
+ * claim labels, which are on this list.
  *
  * `was-ready` is DELIBERATELY NEVER in this list. It is a record of what the row WAS, not a claim on it
  * (#703 still carries it correctly, and this must not change that) -- the same distinction
@@ -373,18 +397,35 @@ export function logRateLimit(label, gh_ = gh) {
 }
 
 /**
+ * #2202: THE PARAGRAPH A CLOSING COMMENT ADDS WHEN THE ROW STILL OWES AN ANSWER, or nothing. It says the label
+ * was KEPT and why, because a reader of a closed row wearing a live `answer:` label would otherwise take it
+ * for the debris `audit` exists to clear -- and clear it, which is the defect this note exists to end.
+ * @param {string[]} owedBy @returns {string}
+ */
+export function owedNote(owedBy) {
+  if (owedBy.length === 0) return "";
+  const labels = owedBy.map((session) => `\`${ANSWER_PREFIX}${session}\``).join(", ");
+  return `\n\n**This row closed with an answer still owed: ${labels} was left ON, deliberately.** Closing `
+    + "does not answer the question, and the gate keeps waking the named session for a closed row that still "
+    + `wears the label. **Answer on this row, then remove ${labels}** -- that is the only thing that stops it `
+    + "(#2202).";
+}
+
+/**
  * Closes one row with the standard sentence. Returns whether it succeeded -- never throws, so the caller
  * can decide what to do next (and, for #754, whether the label strip below should even be attempted).
- * @param {number} n @param {{ prNumber: string, sha: string, repo: string }} ctx
+ * #2202: `owedBy` names the sessions still owing an answer on this row, and the closing comment says so IN THE
+ * SAME ACT as the close -- the row's own record that the question survived it and who still owes it.
+ * @param {number} n @param {{ prNumber: string, sha: string, repo: string, owedBy?: string[] }} ctx
  * @returns {boolean}
  */
-function closeOneRow(n, { prNumber, sha, repo }) {
+function closeOneRow(n, { prNumber, sha, repo, owedBy = [] }) {
   const sentence = `Closed by the pipeline: PR #${prNumber} merged as \`${sha}\` and declared `
     + `\`Closes #${n}\`.\n\nGitHub does not apply a closing reference when the merge is performed by `
     + `\`github-actions[bot]\` -- measured on #310, #321 and #344 (see #298), where three of three bot `
     + `merges left their rows open while two of two human merges closed theirs. This comment and this `
     + `closure are that step, performed explicitly.\n\nIf the work did not land, reopen and say so on `
-    + `the row: \`git show ${sha}\` is what actually merged.`;
+    + `the row: \`git show ${sha}\` is what actually merged.${owedNote(owedBy)}`;
   try {
     gh(["issue", "close", String(n), "--repo", repo, "--comment", sentence, "--reason", "completed"]);
     console.log(`CLOSE-ROWS: #${n} CLOSED (PR #${prNumber}, merge ${sha}).`);
@@ -497,15 +538,21 @@ export function liveOrphanEffects(repo) {
  * move. A row reopened after this exact PR merged already has a session's own reasoning on it; this
  * function's job is to leave that reasoning standing, not to weigh in under it.
  *
+ * #2202: `owed` IS REPORTED, ROW BY ROW, BEFORE ANY STRIP -- the record of the question outlives the close because
+ * `labelsToStrip` never takes `answer:*`, and this says so on the row (`owedNote`, for a row this run closes)
+ * and in the job log (for every row, including one GitHub closed natively first).
+ *
  * @param {{ close: {number:number, labels:string[]}[], already: {number:number, labels:string[]}[],
- *   skip?: {number:number, labels:string[]}[] }} plan
+ *   skip?: {number:number, labels:string[]}[], owed?: {number:number, session:string}[] }} plan
  * @param {{ prNumber: string, sha: string, repo: string }} ctx
  * @param {ClosureEffects} effects
- * @returns {{ failed: number[], unsettled: import("./settle-closed-status.mjs").Refusal[], skipped: number[] }}
+ * @returns {{ failed: number[], unsettled: import("./settle-closed-status.mjs").Refusal[], skipped: number[],
+ *   owed: { number: number, session: string }[] }}
  *   rows that could not be closed, the refusal for each closed row whose Status did not move (#1299), and
- *   rows left alone because they were reopened after this PR merged (#1877) -- all empty on a clean run
+ *   rows left alone because they were reopened after this PR merged (#1877) -- all empty on a clean run --
+ *   and the rows that left the open population still owing an answer (#2202), empty on an ordinary one
  */
-export function applyClosurePlan({ close, already, skip = [] }, ctx, effects) {
+export function applyClosurePlan({ close, already, skip = [], owed = [] }, ctx, effects) {
   const missing = CLOSURE_EFFECTS.filter((name) => typeof effects?.[name] !== "function");
   if (missing.length > 0) {
     throw new Error(`applyClosurePlan: no ${missing.join(", ")} given -- every effect is required, because a `
@@ -516,12 +563,21 @@ export function applyClosurePlan({ close, already, skip = [] }, ctx, effects) {
   /** @type {import("./settle-closed-status.mjs").Refusal[]} */
   const unsettled = [];
   const record = (/** @type {number} */ n) => { unsettled.push(...settle(n).refused); };
+  const owedBy = (/** @type {number} */ n) => owed.filter((o) => o.number === n).map((o) => o.session);
+  const reportOwed = (/** @type {number} */ n) => {
+    for (const session of owedBy(n)) {
+      console.log(`CLOSE-ROWS: #${n} IS CLOSED STILL OWING AN ANSWER from ${session} -- \`${ANSWER_PREFIX}${session}\` `
+        + "KEPT, and the gate keeps waking that session (#2202).");
+    }
+  };
+
   // #776/#791: THE CLOSE is left alone -- re-closing an already-closed row is not this loop's job, and
   // never was. The CLAIM is not: a row that reaches this script already CLOSED is not necessarily one
   // somebody closed by hand days ago -- it may be THIS exact merge, one second earlier (GitHub's own
   // native closing-keyword resolution), and its claim is exactly as stale as a freshly-closed row's.
   for (const { number: n, labels } of already) {
     console.log(`CLOSE-ROWS: #${n} ALREADY CLOSED -- left alone.`);
+    reportOwed(n);
     strip(n, labels, ctx.repo);
     record(n);
   }
@@ -532,14 +588,16 @@ export function applyClosurePlan({ close, already, skip = [] }, ctx, effects) {
     return n;
   });
 
+  /** @type {number[]} */
   const failed = [];
   for (const { number: n, labels } of close) {
-    const closed = closeOne(n, ctx);
+    const closed = closeOne(n, { ...ctx, owedBy: owedBy(n) });
     if (!closed) { failed.push(n); continue; }
+    reportOwed(n);
     strip(n, labels, ctx.repo);
     record(n);
   }
-  return { failed, unsettled, skipped };
+  return { failed, unsettled, skipped, owed: owed.filter((o) => !failed.includes(o.number)) };
 }
 
 /**
