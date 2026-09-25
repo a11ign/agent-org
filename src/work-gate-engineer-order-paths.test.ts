@@ -36,15 +36,15 @@ test("#2405 the gate names NO directory: it leaves the placeholder, because only
   assert.deepEqual(paths(prompt), [], "and nothing else in the gate's text names a host path");
 });
 
-// THE ADDRESSES A STANDING ENGINEER CAN HAVE: the roster's own (#2403 left three) and the first four members of each
-// spare family, `worker-4` to `worker-7` today. Derived from the two sources `addressed` itself reads, so a roster
+// THE ADDRESSES A STANDING ENGINEER CAN HAVE: the roster's own (none since #2505 retired the last three) and the first
+// four members of each spare family, `worker-4` to `worker-7` today. Derived from the two sources `addressed` itself reads, so a roster
 // change moves this list with it rather than leaving the sweeps below running over a population that no longer exists.
 const ADDRESSES = [...engineerRoles(),
   ...SPARE_FAMILIES.flatMap(({ prefix, from }) => [0, 1, 2, 3].map((i) => `${prefix}${from + i}`))];
 
 test("#2405 the addresses the sweeps below run over are not empty, and hold the roles the row measured", () => {
-  assert.ok(engineerRoles().includes("worker-tooling"), "the roster still lists worker-tooling");
-  assert.ok(ADDRESSES.length >= 7, `${ADDRESSES.length} addresses: the roster plus a family sample`);
+  assert.deepEqual(engineerRoles(), [], "#2505: no standing engineer address is listed, so the family sample IS the population");
+  assert.ok(ADDRESSES.length >= 4, `${ADDRESSES.length} addresses: the family sample`);
   assert.ok(ADDRESSES.includes("worker-4") && ADDRESSES.includes("worker-5"));
 });
 
@@ -71,8 +71,8 @@ test("#2405 STANDING ENGINEER, role worktree ABSENT: the order gives the ONE com
   }
 });
 
-test("#2405 THE HOST AS MEASURED: a few addresses have a worktree, most do not -- and no order names an absent path it does not create", () => {
-  const present = new Set([`${HOST_REPOS}/role-worker-tooling`, `${HOST_REPOS}/role-worker-5`]);
+test("#2405 THE HOST AS MEASURED: a few addresses have a worktree, the rest do not -- and no order names an absent path it does not create", () => {
+  const present = new Set([`${HOST_REPOS}/role-worker-4`, `${HOST_REPOS}/role-worker-5`]);
   const roles = ADDRESSES;
   let creating = 0;
   for (const role of roles) {
