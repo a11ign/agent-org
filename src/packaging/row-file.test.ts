@@ -1555,6 +1555,80 @@ test("#1322: labelValuesFromArgv reads every spelling gh takes; withoutLabels dr
 });
 
 // ---------------------------------------------------------------------------------------------------
+// #2147: #2059 CAME OUT `backlog, lane:any, lane:orchestrator` -- AN ANSWER AND ITS NEGATION -- and the
+// composing functions (`laneLabelsFor`, `withAcceptanceLane`, `labelRefusal`) are each correct today, so a
+// test of any one of them would have passed on 2026-09-23. This one asserts the SET THE FILER APPLIES: what
+// reaches `gh issue create` plus every `gh issue edit --add-label`, over every Region x Acceptance x typed-lane
+// combination that can reach a filing.
+//
+// Not reproduced at `28196cb02` or `4121f9be8` (the last main before the filing). Reproduced EXACTLY -- the same
+// labels, the same silent stderr, `lane:any` stripped from the create call and applied at the board step -- by
+// any tree before `6a1c41ad9` (#1912), where `withAcceptanceLane` did not yet drop `lane:any`.
+// ---------------------------------------------------------------------------------------------------
+
+/** What each Region x Acceptance cell must derive, written out by hand so the test is not the code it checks. */
+const LANE_CELLS = [
+  { region: "no lane", acceptance: "npx tsx --test x", lanes: { lanes: [] }, derived: ["lane:any"] },
+  { region: "an owned lane", acceptance: "npx tsx --test x",
+    lanes: { lanes: [{ owner: "ceo", paths: ["packages/lab/src/packaging/foo.ts"] }] }, derived: ["lane:ceo"] },
+  { region: "no lane", acceptance: "npm run lab:status", lanes: { lanes: [] }, derived: ["lane:orchestrator"] },
+  { region: "an owned lane", acceptance: "npm run lab:status",
+    lanes: { lanes: [{ owner: "ceo", paths: ["packages/lab/src/packaging/foo.ts"] }] },
+    derived: ["lane:ceo", "lane:orchestrator"] },
+];
+const TYPED_LANES = [[], ["--label=lane:any"], ["--label=lane:orchestrator"], ["--label=lane:ceo"],
+  ["--label=lane:any,lane:orchestrator"]];
+
+/** One filing of `cell`'s body with `typed` appended: the exit code, and the lanes that reached `gh`. */
+function lanesAppliedBy(cell: (typeof LANE_CELLS)[number], typed: string[]) {
+  const body = COMPLETE_BODY.replace("npx tsx --test x", cell.acceptance);
+  assert.equal(body.includes(cell.acceptance), true, "the Acceptance replacement landed");
+  const argv = ["--title", "a real row", "--body", body, "--session=worker-contracts", ...RELEASE, ...typed];
+  let created: string[] = [];
+  const added: string[] = [];
+  const write = process.stderr.write.bind(process.stderr);
+  (process.stderr as { write: unknown }).write = () => true;
+  try {
+    const code = createIssue(argv, {
+      ...happyDeps("worker-contracts", "backlog", {
+        loadLanesConfig: () => cell.lanes,
+        fetchLabels: () => ({ number: 900, title: "a real row", labels: ["backlog", ...cell.derived] }),
+      }),
+      spawnGh: (a: string[]) => { created = a; return FILED_URL; },
+      run: (cmd: string, args: string[]) => {
+        args.forEach((arg, i) => { if (arg === "--add-label") added.push(args[i + 1]); });
+        return afterRun(appendFiledBy(body, "worker-contracts"))(cmd, args);
+      },
+    });
+    return { code, applied: lanesIn([...labelValuesFromArgv(created), ...added]).sort() };
+  } finally {
+    (process.stderr as { write: unknown }).write = write;
+  }
+}
+
+test("#2147: the lanes a filing applies are the derived set exactly, and never `lane:any` beside an owned lane", () => {
+  let filed = 0;
+  for (const cell of LANE_CELLS) {
+    for (const typed of TYPED_LANES) {
+      const said = `${cell.region} + ${cell.acceptance} + typed [${typed.join(" ")}]`;
+      const { code, applied } = lanesAppliedBy(cell, typed);
+      if (labelValuesFromArgv(typed).every((lane) => cell.derived.includes(lane))) {
+        filed += 1;
+        assert.equal(code, 0, `${said} files`);
+        assert.deepEqual(applied, cell.derived, `${said}: the derived set, once each`);
+      } else {
+        assert.equal(code, 1, `${said}: a typed lane the Region and Acceptance do not derive refuses`);
+        assert.deepEqual(applied, [], `${said}: and nothing reaches gh`);
+      }
+      assert.equal(applied.includes("lane:any") && applied.length > 1, false, `${said}: an answer beside its negation`);
+    }
+  }
+  assert.equal(filed, 4 + 1 + 2 + 2,
+    "positive control: the untyped filing of each of 4 cells, plus a typed lane wherever it IS derived "
+    + "(`lane:any` in 1 cell, `lane:orchestrator` in 2, `lane:ceo` in 2), still files");
+});
+
+// ---------------------------------------------------------------------------------------------------
 // #1393: `out-of-release` WAS READ BY EXACT SPELLING, IN TWO COPIES.
 //
 // `declaresRelease` made the refusal and `outOfReleaseArgv` added the milestone, and both matched only
