@@ -30,7 +30,9 @@
 // anyone for ten" hours. So an order with nowhere to go exits ATTENTION and names the session, every time.
 import { execFileSync, spawnSync } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
-import { readFileSync, writeFileSync, mkdirSync, realpathSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, realpathSync, existsSync, readdirSync, openSync, readSync, closeSync,
+  fstatSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 // RELATIVE, not the package specifier -- this must run before any `npm ci`/build, the same constraint
@@ -86,6 +88,195 @@ export const WAKEABLE = Object.freeze(["idle", "done"]);
  */
 export function blockedSessions(agents) {
   return agents.filter((a) => a.status === "blocked").map((a) => a.label);
+}
+
+// --- #2256: A SESSION OUT OF ALLOWANCE CANNOT ANSWER, SO A PROMPT SENT TO IT IS NOT A DELIVERY ---
+
+/**
+ * The line Claude Code writes as the session's own reply when the allowance is spent. MEASURED in the host's
+ * transcripts, two forms and one qualifier: `resets 8am (Europe/London)` (494 lines) and, when the reset is more than
+ * a day off, `resets Sep 17, 8am (Europe/London)` (1,171), both after `hit your weekly limit`. The qualifier is
+ * matched by SHAPE (`[\w-]+`), so a `session` or `5-hour` limit is read the same way but has NOT been seen.
+ * Anchored at both ends: a session QUOTING the sentence inside a paragraph (this row's own text does) is not limited.
+ */
+const LIMIT_MESSAGE = /^You[’']ve hit your (?:[\w-]+ )?limit · resets (?:([A-Z][a-z]{2}) (\d{1,2}), )?(\d{1,2})(?::(\d{2}))?(am|pm) \(([^)]+)\)$/;
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * How long a limit message whose reset time cannot be read still holds a session back. A matched message with an
+ * unreadable reset is a limited session all the same, so it is not offered work; but it must not hold for ever on a
+ * guess, and an hour is short beside the two it takes six deliveries to reach the cap.
+ */
+export const LIMIT_UNREADABLE_HOLD_MS = 60 * 60_000;
+
+/** How much of a transcript's end is read for its last entry: the limit line is a few hundred bytes. */
+const TRANSCRIPT_TAIL_BYTES = 64 * 1024;
+
+/**
+ * A zone's offset from UTC at an instant. `Intl` is the tz database the host already has; nothing here carries one.
+ * @param {number} instant @param {string} timeZone @returns {number} milliseconds
+ */
+function zoneOffsetMs(instant, timeZone) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone, hourCycle: "h23", year: "numeric",
+    month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric" })
+    .formatToParts(new Date(instant)).map((part) => [part.type, part.value]));
+  const wall = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second);
+  return wall - Math.floor(instant / 1000) * 1000;
+}
+
+/**
+ * The instant a wall-clock time falls on in a zone. `day` may overflow (`Date.UTC` carries it), and the offset is read
+ * a second time at the first answer, so a time either side of a clock change lands on the right side.
+ * @param {{year: number, month: number, day: number, hour: number, minute: number}} wall `month` is 0-based
+ * @param {string} timeZone @returns {number}
+ */
+function zonedInstant({ year, month, day, hour, minute }, timeZone) {
+  const asUtc = Date.UTC(year, month, day, hour, minute);
+  return asUtc - zoneOffsetMs(asUtc - zoneOffsetMs(asUtc, timeZone), timeZone);
+}
+
+/** @param {number} instant @param {string} timeZone @returns {{year: number, month: number, day: number}} */
+function dateInZone(instant, timeZone) {
+  const shifted = new Date(instant + zoneOffsetMs(instant, timeZone));
+  return { year: shifted.getUTCFullYear(), month: shifted.getUTCMonth(), day: shifted.getUTCDate() };
+}
+
+/**
+ * When a limit message says the allowance returns, as an instant -- or `null` when this is not a limit message or its
+ * time cannot be read. THE MESSAGE CARRIES NO YEAR AND, IN ITS SHORT FORM, NO DATE, so the instant it was WRITTEN is
+ * what fixes them: the first occurrence of that clock time after it. That is why the caller reads the transcript's
+ * timestamp and not the pane -- the same words a day later would name a different instant.
+ * @param {string} text @param {number} writtenAt epoch ms @returns {number | null}
+ */
+export function limitResetAt(text, writtenAt) {
+  const m = LIMIT_MESSAGE.exec(String(text).trim());
+  if (!m) return null;
+  const [, monthName, dayOfMonth, hour12, minute = "0", meridiem, timeZone] = m;
+  if (Number(hour12) < 1 || Number(hour12) > 12) return null;
+  const hour = (Number(hour12) % 12) + (meridiem === "pm" ? 12 : 0);
+  try {
+    const today = dateInZone(writtenAt, timeZone);
+    const at = (/** @type {object} */ date) => zonedInstant({ ...today, ...date, hour, minute: Number(minute) }, timeZone);
+    if (monthName) {
+      const month = MONTHS.indexOf(monthName);
+      if (month < 0) return null;
+      const dated = at({ month, day: Number(dayOfMonth) });
+      return dated > writtenAt ? dated : at({ year: today.year + 1, month, day: Number(dayOfMonth) });
+    }
+    const sameDay = at({});
+    return sameDay > writtenAt ? sameDay : at({ day: today.day + 1 });
+  } catch (/** @type {any} */ err) {
+    // An unknown zone name is the one thing `Intl` throws here; anything else is a bug and must not read as "no reset".
+    if (err instanceof RangeError) return null;
+    throw err;
+  }
+}
+
+/**
+ * The last thing said in a transcript, read from its end. Lines are JSON; the first line of a tail is usually cut and a
+ * line that does not parse is skipped, so a file being written cannot make this throw. Sub-agent (`isSidechain`) and
+ * bookkeeping entries are not the conversation.
+ * @param {string} path @returns {{role: string, text: string, at: number} | null}
+ */
+export function lastSaidIn(path) {
+  const fd = openSync(path, "r");
+  let tail;
+  try {
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
+    const buffer = Buffer.alloc(length);
+    readSync(fd, buffer, 0, length, size - length);
+    tail = buffer.toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+  for (const line of tail.split("\n").reverse()) {
+    /** @type {any} */ let entry;
+    try { entry = JSON.parse(line); } catch { continue; } // a cut or half-written line: not an entry
+    if ((entry?.type !== "user" && entry?.type !== "assistant") || entry.isSidechain) continue;
+    const content = entry.message?.content;
+    const text = typeof content === "string" ? content
+      : (Array.isArray(content) ? content.map((/** @type {any} */ c) => (c?.type === "text" ? c.text : "")).join("") : "");
+    return { role: entry.type, text, at: Date.parse(entry.timestamp) };
+  }
+  return null;
+}
+
+/** @param {string} sessionId @param {string} home @returns {string | null} the transcript, wherever its project directory is */
+function transcriptOf(sessionId, home) {
+  const root = join(home, ".claude", "projects");
+  for (const dir of readdirSync(root)) {
+    const candidate = join(root, dir, `${sessionId}.jsonl`);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+/** herdr's own id for a claude session is the transcript's file name; nothing else is let into a path. */
+const SESSION_ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+
+/**
+ * Whether a session can answer a prompt now. THREE STATES, and they never share a value: `limited` (its last word is
+ * a limit message whose reset has not come), `clear`, and `unknown` (could not ask: herdr, the file or the JSON said
+ * no). `unknown` is NOT `clear` here -- {@link unavailableReason} collapses them on purpose, and says why.
+ *
+ * READ FROM THE TRANSCRIPT, not the pane: it is the only place the message has a TIME (see {@link limitResetAt}), and
+ * a session whose allowance has since come back still shows the old message on screen until something is typed to
+ * it -- which is exactly what a refusal would be withholding. A session that answered anything after the message has
+ * that answer last, so it reads `clear` with no clock at all.
+ *
+ * @param {string} label @param {{run?: (args: string[]) => string, home?: string, now?: number}} [deps]
+ * @returns {{state: "limited", until: number, text: string} | {state: "clear"} | {state: "unknown", why: string}}
+ */
+export function sessionAllowance(label, { run = defaultRun, home = homedir(), now = Date.now() } = {}) {
+  try {
+    return allowanceOf(JSON.parse(run(["--session", "org", "agent", "get", label]))?.result?.agent, home, now);
+  } catch (/** @type {any} */ err) {
+    return { state: "unknown", why: firstLine(err) };
+  }
+}
+
+/**
+ * @param {any} agent what `herdr agent get` says of the session @param {string} home @param {number} now
+ * @returns {ReturnType<typeof sessionAllowance>}
+ */
+function allowanceOf(agent, home, now) {
+  if (agent?.agent !== "claude") return { state: "clear" }; // a `codex` reviewer has another allowance and another message
+  const id = String(agent?.agent_session?.value ?? "");
+  if (!SESSION_ID.test(id)) return { state: "unknown", why: "herdr names no session id" };
+  const said = lastSaidBy(id, home);
+  if (said === null || !LIMIT_MESSAGE.test(said.text)) return { state: "clear" };
+  const until = limitResetAt(said.text, said.at) ?? (said.at + LIMIT_UNREADABLE_HOLD_MS);
+  return until > now ? { state: "limited", until, text: said.text } : { state: "clear" };
+}
+
+/**
+ * What a session last said, as an ASSISTANT: `null` when it has no transcript yet (it has said nothing, so it has not
+ * been told no) or when the last thing in it is not the session's own reply (a prompt in flight, or an answer to one).
+ * @param {string} sessionId @param {string} home @returns {{text: string, at: number} | null}
+ */
+function lastSaidBy(sessionId, home) {
+  const path = transcriptOf(sessionId, home);
+  const said = path === null ? null : lastSaidIn(path);
+  return said?.role === "assistant" ? { text: said.text.trim(), at: said.at } : null;
+}
+
+/**
+ * The reason a session is not to be sent a prompt because it is out of allowance, or `null`.
+ *
+ * `unknown` COLLAPSES TO `null` DELIBERATELY: not being able to ask leaves the delivery exactly as it was before this
+ * existed, which is the safe direction here -- a wrong "limited" would strand work behind a session that is well, a
+ * wrong "clear" costs one prompt. It is the tri-state above that keeps the two apart for a reader who needs to.
+ *
+ * @param {string} label @param {Parameters<typeof sessionAllowance>[1]} [deps] @returns {string | null}
+ */
+export function unavailableReason(label, deps) {
+  const allowance = sessionAllowance(label, deps);
+  return allowance.state === "limited"
+    ? `"${label}" is out of usage allowance until ${new Date(allowance.until).toISOString()} ("${allowance.text}") `
+      + "-- nothing sent and nothing counted as a delivery"
+    : null;
 }
 
 /** @param {string[]} args */
@@ -2214,17 +2405,17 @@ function batchedOrder(take, held, now) {
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster
  * @param {{run?: (args: string[]) => string, queuePath?: string, drop?: typeof dropHandoffs,
- *          now?: number, budget?: number}} [deps]
+ *          now?: number, budget?: number, unavailable?: (label: string) => string | null}} [deps]
  * @returns {{sent: string[], refused: string[], ids: string[], busied: Set<string>}} `ids` is every
  *   order a delivery CARRIED, which is what the caller subtracts before calling anything still stale.
  */
 export function deliverHandoffs(handoffs, agents, roster,
   { run = defaultRun, queuePath, drop = dropHandoffs, now = Date.now(),
-    budget = HANDOFF_BATCH_BYTES } = {}) {
+    budget = HANDOFF_BATCH_BYTES, unavailable } = {}) {
   const batches = handoffBatches(handoffs, { now, budget, roster });
   /** @type {string[]} */
   const landed = [];
-  const { sent, refused } = deliver(batches, agents, roster, { run, record: (key) => landed.push(key) });
+  const { sent, refused } = deliver(batches, agents, roster, { run, record: (key) => landed.push(key), unavailable });
   // THE BATCH IS WHAT WAS ACCEPTED; THE IDS ARE WHAT IT COVERED. `record` fires on the causeKey, because
   // that is the seam `deliver` offers, so the ids to retire come back through the batch that carried
   // them -- and a batch nobody accepted retires nothing, which is the assertion this whole queue is for.
@@ -2721,10 +2912,16 @@ export function stuckRowOf(causeKey) {
  * The alternative -- a breaker whose alarm silently fails -- is the exact shape being fixed.
  *
  * @param {string[]} stuck @param {(args: string[]) => string} run @param {(line: string) => void} log
- * @param {{escalated?: Set<string>, record?: (key: string) => void}} [memory]
+ *
+ * NOT WHEN THE SESSION CANNOT ANSWER (#2256). A cause's key opens with the session it was addressed to, and one whose
+ * session is out of allowance NOW is not a stuck row: `unavailable` says so, the line goes to the tick log INSTEAD of
+ * to the row, and nothing is recorded, so the same key escalates the tick after the session is back if it is still at
+ * the cap. `engineers` is a pool, not a session, and is not asked.
+ *
+ * @param {{escalated?: Set<string>, record?: (key: string) => void, unavailable?: (label: string) => string | null}} [memory]
  */
 export function escalateStuck(stuck, run = defaultGh, log = (l) => process.stderr.write(l),
-  { escalated = new Set(), record = () => {} } = {}) {
+  { escalated = new Set(), record = () => {}, unavailable = () => null } = {}) {
   const labelled = [];
   for (const line of stuck ?? []) {
     const key = String(line).split(":")[0];
@@ -2735,6 +2932,11 @@ export function escalateStuck(stuck, run = defaultGh, log = (l) => process.stder
     }
     if (escalated.has(key)) {
       log(`ALREADY ESCALATED #${row} (${key}) -- a removed label is an answer; it stays off until the cause changes\n`);
+      continue;
+    }
+    const outage = outageOf(key, unavailable);
+    if (outage !== null) {
+      log(`NOT ESCALATED #${row} (${key}) -- ${outage}; a session that cannot answer is not a row that needs a chairman\n`);
       continue;
     }
     try {
@@ -2748,6 +2950,16 @@ export function escalateStuck(stuck, run = defaultGh, log = (l) => process.stder
     recordEscalation(key, row, record, log);
   }
   return labelled;
+}
+
+/**
+ * Why the session a cause was addressed to cannot answer now, or `null`. A key opens with that session; `engineers` is
+ * the pool and names none.
+ * @param {string} key @param {(label: string) => string | null} unavailable @returns {string | null}
+ */
+function outageOf(key, unavailable) {
+  const session = key.split("/")[0];
+  return session === "engineers" ? null : unavailable(session);
 }
 
 /**
@@ -2977,6 +3189,16 @@ function clearUnlessStarted(run, target, causeKey, refused) {
 }
 
 /**
+ * Why this target cannot answer now, or `null`. A process this tick STARTED has a fresh allowance question no
+ * transcript can answer yet, so it is not asked (#2256).
+ * @param {{label: string, profile?: object}} target @param {((label: string) => string | null) | undefined} unavailable
+ * @returns {string | null}
+ */
+function whyUnavailable(target, unavailable) {
+  return target.profile ? null : (unavailable?.(target.label) ?? null);
+}
+
+/**
  * Deliver each order, and say what happened to every one of them.
  *
  * REPORTS BEFORE IT RECORDS. An order is written to the ledger only once herdr has accepted it, so a crash
@@ -2990,8 +3212,9 @@ function clearUnlessStarted(run, target, causeKey, refused) {
  *          counts?: Map<string, number>, ineligibleReason?: (label: string) => string | null,
  *          env?: Record<string, string>, registerSpawn?: (role: string) => void, drained?: readonly string[],
  *          claimable?: (order: {causeKey: string}) => string | null, claimer?: SpawnClaimer,
- *          launch?: LaunchFacts} & Partial<ReviewerDeps>} [deps]
- *   `registerReviewer` is told of every reviewer instance this tick starts (#2401), for the auth detector;
+ *          launch?: LaunchFacts, unavailable?: (label: string) => string | null} & Partial<ReviewerDeps>} [deps]
+ *   `unavailable` says why a session cannot ANSWER now (`unavailableReason`), and an order to one is refused with that
+ *   reason and neither sent nor recorded (#2256); `registerReviewer` is told of every reviewer instance this tick starts (#2401), for the auth detector;
  *   `checkout` and `registry` are the reviewer path's seams (its git, its filesystem, what it has started);
  *   `registerSpawn` is told of every process this tick STARTS, so the teardown can tell an instance that has
  *   not claimed yet from one that finished ({@link endFinishedSpares}); `drained` is the roles the drain holds
@@ -3002,7 +3225,7 @@ function clearUnlessStarted(run, target, causeKey, refused) {
  */
 export function deliver(orders, agents, roster,
   { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer,
-    launch, reviewerEnv, registerReviewer, checkout, registry } = {}) {
+    launch, reviewerEnv, registerReviewer, checkout, registry, unavailable } = {}) {
   const sent = [];
   const refused = [];
   const stuck = [];
@@ -3021,6 +3244,15 @@ export function deliver(orders, agents, roster,
       claimable, claimer, reviewerEnv, registerReviewer, checkout, registry });
     if ("refusal" in target) {
       refused.push(`${order.causeKey}: ${target.refusal}`);
+      continue;
+    }
+    // A SESSION OUT OF ALLOWANCE IS NOT DELIVERED TO (#2256), for the reason a `blocked` one is not: a prompt typed into it
+    // is answered by the same limit message, and the ledger would count it as an answer given. Six such counts tripped the
+    // breaker overnight 2026-09-23/24 on eleven causes and put two rows in the chairman's inbox for an outage. A process
+    // this tick started has a fresh allowance question no transcript can answer yet, so it is not asked.
+    const unavailableWhy = whyUnavailable(target, unavailable);
+    if (unavailableWhy !== null) {
+      refused.push(`${order.causeKey}: ${unavailableWhy}`);
       continue;
     }
     // A PROCESS THAT HAS EXISTED FOR TWO SECONDS HAS NOTHING TO CLEAR, and `/clear` is not free: it is a
@@ -3952,12 +4184,36 @@ function exitCannotAsk(gateOrders, handoffs) {
 }
 
 /**
+ * A lookup asked once per label for the length of a tick. `agent get` plus a transcript read is cheap, but a session
+ * is asked about by the router, the delivery and the escalation, and the three must not disagree within one tick.
+ * @param {(label: string) => string | null} ask @returns {(label: string) => string | null}
+ */
+function memoised(ask) {
+  /** @type {Map<string, string | null>} */
+  const answers = new Map();
+  return (label) => {
+    if (!answers.has(label)) answers.set(label, ask(label));
+    return answers.get(label) ?? null;
+  };
+}
+
+/**
+ * The pool router's reason to skip an engineer: the eligibility rule's first, then being out of allowance. Without the
+ * second a pool order (`engineers`) picked the first idle seat, was refused for it, and never reached the next one.
+ * @param {(label: string) => string | null} eligibility @param {(label: string) => string | null} unavailable
+ * @returns {(label: string) => string | null}
+ */
+export function poolEngineerReason(eligibility, unavailable) {
+  return (label) => eligibility(label) ?? unavailable(label);
+}
+
+/**
  * What `escalateStuck` remembers between ticks: which keys it already labelled this run, and how to add one. Read AFTER the
  * `RESET` lines of this tick are written, so a cause that went away and came back escalates again.
- * @param {string} ledgerPath
+ * @param {string} ledgerPath @param {(label: string) => string | null} unavailable
  */
-function escalationMemory(ledgerPath) {
-  return { escalated: escalatedKeys(ledgerPath),
+function escalationMemory(ledgerPath, unavailable) {
+  return { escalated: escalatedKeys(ledgerPath), unavailable,
     record: (/** @type {string} */ key) => writeFileSync(ledgerPath, `${Date.now()}\t${ESCALATED}\t${key}\n`, { flag: "a" }) };
 }
 
@@ -4000,7 +4256,8 @@ function main() {
 
   // AUTHORED ORDERS FIRST. One has already been refused once and has been waiting since; a derived cause
   // has not, and will be re-derived unchanged by the next tick if it loses the session to this one.
-  const handed = deliverHandoffs(waiting, agents, roster, { queuePath });
+  const unavailable = memoised(unavailableReason);
+  const handed = deliverHandoffs(waiting, agents, roster, { queuePath, unavailable });
   // STALE MEANS STILL WAITING, so it is asked AFTER the delivery and against what the delivery carried.
   for (const line of staleReport(waiting, handed.ids)) process.stderr.write(line);
   // A session this tick just woke is working NOW, so the gate's own orders must not be routed to it.
@@ -4021,8 +4278,8 @@ function main() {
 
   const spares = sparePathsFrom(ledgerPath);
   const drained = drainNow(spares.cycles);
-  const { sent, refused: gateRefused, stuck } = deliver(todo, free, roster, { record,
-    counts: deliveryCounts(ledgerPath), ineligibleReason: poolEligibility(spares, drained),
+  const { sent, refused: gateRefused, stuck } = deliver(todo, free, roster, { record, unavailable,
+    counts: deliveryCounts(ledgerPath), ineligibleReason: poolEngineerReason(poolEligibility(spares, drained), unavailable),
     registerSpawn: (role) => registerSpawn(spares, role), drained, claimable: spawnClaimability(),
     claimer: spawnClaimer({ ...hostLayout, settle: (role) => { settleAbsentInstance(spares, role); } }), launch: hostLayout,
     registerReviewer: (session) => registerReviewer(reviewerPathsFrom(ledgerPath), session),
@@ -4032,7 +4289,7 @@ function main() {
   for (const line of stuck) process.stderr.write(`STUCK ${line}\n`);
   // THE BREAKER'S ALARM. Printing `STUCK` and stopping is what let two of `ceo`'s causes go silent for
   // over half an hour with every session idle -- see `escalateStuck`.
-  escalateStuck(stuck, undefined, undefined, escalationMemory(ledgerPath));
+  escalateStuck(stuck, undefined, undefined, escalationMemory(ledgerPath, unavailable));
   if (stuck.length > 0) {
     process.stderr.write(`${stuck.length} cause(s) have been offered ${MAX_DELIVERIES}+ times and are `
       + "still true. They are NOT being retried: something about the row, the prompt or the session is "
