@@ -68,7 +68,7 @@ import { poolDiagnosis, refusalPoolLine } from "./api-pool.mjs";
 // Both are leaf-shaped: `auto-arm-sweep.mjs` imports only `node:*`, `cli-flags.mjs` (already here) and
 // `pr-hold-state.mjs` (no imports at all), so the gate keeps the property its own header states.
 import { armedFromApi, openPullRequestsQueryArgs } from "./auto-arm-sweep.mjs";
-import { armabilityOf } from "./pr-hold-state.mjs";
+import { armabilityOf, holdersOf, HOLD_PREFIX } from "./pr-hold-state.mjs";
 import { REPO } from "../../../scripts/repo-identity.mjs";
 // #2356: A RED `main` WAKES A FIXER. Imports only `node:*`, `parent-recheck-summary.mjs` and the repo identity,
 // so the gate keeps the property its own header states -- it runs before any `npm ci` or build.
@@ -2898,6 +2898,44 @@ export function reviewBlockedOrders(blocked) {
 }
 
 /**
+ * The two jobs a `hold:` label turns red, and nothing else does: `deliberateRefusals` refuses a held pull
+ * request on purpose (`merge-guard.mjs --ci-gate`, "IS HELD by ..."), and `gate` is red only because it
+ * `needs` it. Named here rather than read off the job so the gate stays a script that runs before any build.
+ */
+export const HOLD_RED_JOBS = ["deliberateRefusals", "gate"];
+
+/**
+ * PURE. Is this pull request red ONLY because its addressee holds it?
+ *
+ * A HOLD IS AN ANSWER (#2400), and it was read as an unanswered question. #2376 carried
+ * `hold:product-manager` on purpose until a Windows run was recorded; the hold made `deliberateRefusals` red and
+ * `gate` with it, and the order that asks `product-manager` to fix the cause was delivered 35 times to the very
+ * session that had placed the hold and answered "nothing to fix" each time. `MAX_DELIVERIES` then labelled the PR
+ * `needs:chairman`, and clearing the label did not hold: the order was still emitted, so the count stayed at the
+ * cap and the breaker re-added it (`escalateStuck` reads only what `deliver` sees, so an order never emitted can
+ * never escalate -- which is why the fix is here and not in `wake.mjs`).
+ *
+ * TWO KEYS, AND BOTH MUST HOLD. (1) Every settled-red job on the head is one of `HOLD_RED_JOBS`. It reads
+ * `head`, not the blocking set: with `gate` the only required check the blocking set is `[gate]` whatever else is
+ * red, so a real `ts / run` failure would have read as the hold's own. (2) The hold is the ADDRESSEE's own
+ * (`hold:<session>`): a hold by somebody else is not an answer from the session being asked, so the order still
+ * goes. THE EXEMPTION ENDS WITH EITHER KEY: remove the hold or let a third job go red and the order is emitted
+ * again, and the run of deliveries it earned while suppressed starts from nothing (`endedRuns` writes `RESET` for
+ * the key that stopped being emitted).
+ *
+ * WHAT IT CANNOT SEE: `deliberateRefusals` also carries #549's `Closes` comparison, and a rollup names the JOB, not
+ * the step. A held PR whose body ALSO declares the wrong `Closes` is red for two reasons and silent about one of
+ * them until the hold is released, when the refusal reappears with nothing else red.
+ *
+ * @param {any} pr @param {any[]} onHead every check on the head, narrowed @param {string} session the addressee
+ */
+function redOnlyFromHoldOf(pr, onHead, session) {
+  if (!holdersOf(labelsOf(pr)).includes(`${HOLD_PREFIX}${session}`)) return false;
+  const red = onHead.filter((c) => checksSettledGreen([c]) === false);
+  return red.length > 0 && red.every((c) => HOLD_RED_JOBS.includes(String(c?.name ?? c?.context)));
+}
+
+/**
  * A pull request whose checks have SETTLED RED, and nobody is fixing it.
  *
  * THE THIRD BLIND SPOT, and the one where work actually dies. Found 2026-09-17 by the chairman looking at
@@ -2933,6 +2971,7 @@ function failingChecksOrder(pr, required = null, baseTip = null) {
   // ITS OWN SESSION FIRST. Falling back to `product-manager` rather than dropping the order: an unlabelled
   // red PR is still a stalled PR, and the queue's first reader can find out whose it is.
   const session = sessionOf(pr) ?? "product-manager";
+  if (redOnlyFromHoldOf(pr, onHead, session)) return null;
   return {
     session,
     cause: "pr-checks-failing",
