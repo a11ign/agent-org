@@ -49,8 +49,9 @@ export const CLAIM_STALLED = "claim-stalled";
  *               nudge fires later, never earlier).
  *   RESULT      p50 9 min, p75 15, p90 26, p95 48 min. The largest gap on an ordinary row is 51 minutes; then NOTHING until
  *               264, and 13 rows above it (264 .. 962 minutes). 120 minutes sits at the 95.6th percentile: 284 of 297 rows
- *               at or below it, and every row above it is one a person had to notice (six are the rows `ceo`'s
- *               2026-09-25 sweep named).
+ *               at or below it. Ten of the thirteen above it are rows `ceo`'s 2026-09-25 ruling on the stalled sweep names as
+ *               built, unpushed and idle (nine) or is the row that started it (#2407); the other three (#2181, #2223, #2451) were
+ *               not examined.
  * WHAT THIS DOES NOT PROVE: that 120 is right for a slower regime. The population is one week of a fast one, and it is
  * rows that LANDED, so a row that stalled and was released never appears in it.
  */
@@ -67,7 +68,7 @@ export const NUDGE_OFFER_MS = 20 * MINUTE_MS;
 /**
  * The window before a `herdr.service` restart in which a delivery is presumed KILLED if its target made no move.
  *
- * MEASURED (2026-09-25, `worker-capture`, from `wake-ledger` beside the wake ledger): 1,352 cause deliveries that were
+ * MEASURED (2026-09-25, `worker-capture`, from the wake ledger itself): 1,352 cause deliveries that were
  * ANSWERED -- the cause stopped being emitted, which `endedRuns` records as a `RESET` line -- read from the first delivery
  * in the run to the `RESET`. p50 4.0 min, p75 9.9, p90 61.5, p95 225. 60 minutes is p89.9: 1,216 of 1,352. A delivery
  * older than that at the moment of a restart has had longer than nine in ten answered orders ever took, so no move by then
@@ -381,8 +382,7 @@ export function claimFactsFrom(input, io) {
   try {
     const branch = record.branch;
     const own = (/** @type {string | undefined} */ head) => head !== undefined && (head === branch || head.endsWith(`-${input.row}`));
-    const merged = branch === null ? null : (input.mergedPrs ?? []).filter((p) => p.headRefName === branch
-      && Date.parse(String(p.mergedAt ?? "")) > record.at).at(-1) ?? null;
+    const merged = branch === null ? null : newestMergedAfter(input.mergedPrs ?? [], branch, record.at);
     return { row: input.row, session: input.session, claimedAt: record.at, branch, worktree,
       ...(input.title === undefined ? {} : { title: input.title }),
       comment: commentMove(input.comments, record),
@@ -397,6 +397,17 @@ export function claimFactsFrom(input, io) {
     if (err instanceof Unreadable) return { skip: `#${input.row}: ${err.message}` };
     throw err;
   }
+}
+
+/**
+ * The newest pull request MERGED from `branch` after `since`, or `null`: a merge before this claim is another instance's work on the row.
+ * @param {{ number: number, headRefName?: string, mergedAt?: string }[]} merged @param {string} branch @param {number} since
+ * @returns {{ number: number, mergedAt: string } | null}
+ */
+function newestMergedAfter(merged, branch, since) {
+  const after = merged.filter((p) => p.headRefName === branch && Date.parse(String(p.mergedAt ?? "")) > since);
+  const [newest] = after.sort((a, b) => Date.parse(String(b.mergedAt)) - Date.parse(String(a.mergedAt)));
+  return newest === undefined ? null : { number: newest.number, mergedAt: String(newest.mergedAt) };
 }
 
 /**

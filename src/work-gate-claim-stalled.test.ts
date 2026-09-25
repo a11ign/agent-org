@@ -10,7 +10,8 @@
  * releases nothing only because the same second reading with none releases. Nothing here is asserted against an empty population.
  */
 import { test } from "node:test";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, chmodSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
@@ -30,6 +31,7 @@ import {
 } from "./claim-stall.mjs";
 import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const MIN = 60_000;
 const NOW = Date.parse("2026-09-25T16:00:00Z");
@@ -946,6 +948,22 @@ test("#2470 (11b) an AUTHORED order is re-sent from its retained text as a fresh
   });
 });
 
+test("#2470 (11b) an INTERRUPTED pane with NO restart in view marks its own recent deliveries as killed, and only its own", () => {
+  withState((dir) => {
+    const ledger = join(dir, "wake-ledger");
+    const mine = `worker-7/claimed-row-amended/row-1/x`;
+    writeFileSync(ledger, ledgerOf(`${NOW - 10 * MIN}\t${mine}`, `${NOW - 3 * 3_600_000}\t${mine}old`, `${NOW - 10 * MIN}\tworker-9/answer-owed/row-2/y`));
+    const agents = [{ label: "worker-7", status: "idle" }, { label: "worker-9", status: "idle" }];
+    const run = herdrReading({ "worker-7": pane(INTERRUPTED_LINE), "worker-9": pane("● Done.") });
+    const lines = recoverInterruptedWork({ agents, ledgerPath: ledger, now: NOW, restartAt: null, moved: () => false, log: () => {}, run });
+    assert.deepEqual(lines.filter((l) => l.startsWith("RE-SENDING")).map((l) => l.split(" ")[1]), [mine],
+      "the interrupted session's delivery inside the window is voided; an older one is not, and neither is the ordinary idle session's");
+    assert.equal(readLedger(ledger, readFileSync as never, NOW, new Set()).has(mine), false, "so the gate's order is offered again");
+    assert.equal(readLedger(ledger, readFileSync as never, NOW, new Set()).has("worker-9/answer-owed/row-2/y"), true, "and the other session's delivery still holds");
+    assert.ok(lines.some((l) => l.startsWith("RESUMING worker-7")), "and it is resumed as well");
+  });
+});
+
 test("#2470 (11) a restart noticed LATE is not acted on if it is older than the horizon, and a session that has since acted is left alone", () => {
   const facts = (over: object) => recoverableWork({ now: RESTART + 90_000, restartAt: RESTART, actedRestart: null, agents: [], paneText: () => null,
     deliveries: () => [delivery(68)], moved: () => false, resentAt: {}, ...over });
@@ -954,6 +972,15 @@ test("#2470 (11) a restart noticed LATE is not acted on if it is older than the 
   assert.equal(facts({ actedRestart: RESTART }).killed.length, 0, "the last restart acted on is not acted on twice");
   assert.equal(facts({ restartAt: null }).killed.length, 0, "a restart that could not be read is not guessed");
   assert.equal(facts({ moved: (_s: string, _from: number, to: number) => to > RESTART + 60_000 }).killed.length, 0, "a session that acted AFTER the restart, before the tick noticed");
+});
+
+test("#2470 the common tick reads NEITHER ledger: with no fresh restart and no interrupted pane the deliveries are never asked for", () => {
+  const explode = () => { throw new Error("the ledgers were read on a tick with nothing to recover"); };
+  const quiet = recoverableWork({ now: RESTART + 90_000, restartAt: RESTART - 3 * 24 * 3_600_000, actedRestart: null, agents: [{ label: "worker-9", status: "idle" }],
+    paneText: () => pane("● Done."), deliveries: explode, moved: () => false, resentAt: {} });
+  assert.deepEqual([quiet.killed, quiet.interrupted, quiet.restartActed], [[], [], null]);
+  assert.throws(() => recoverableWork({ now: RESTART + 90_000, restartAt: RESTART, actedRestart: null, agents: [], paneText: () => null,
+    deliveries: explode, moved: () => false, resentAt: {} }), /ledgers were read/, "CONTROL: a fresh restart DOES ask");
 });
 
 test("#2470 (11) `sessionMoved` says `moved` for anything it cannot establish: absence of evidence is not evidence a delivery was killed", () => {
@@ -1001,6 +1028,39 @@ test("#2470 the git argv is VALID for real git: `--no-optional-locks` is a GLOBA
     git("update-ref", "refs/remotes/origin/agent/x-1", "HEAD");
     assert.equal(workAtRisk(io, { worktree: dir, branch: "agent/x-1", repo: dir }).state, "none", "pushed: it exists elsewhere, so it is not at risk");
     assert.equal(gitRun(join(dir, "missing"), ["status"]).status === 0, false, "a directory that is not a repository is a failure, which every caller reads as UNREADABLE");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- the tick, driven through its ENTRY: a release that does not land is not a quiet tick --------------------------------------------------
+
+const WAKE_ENTRY = fileURLToPath(new URL("./wake.mjs", import.meta.url));
+
+test("#2470 the wake ENTRY performs the gate's release order, and one that does NOT land is an ATTENTION exit with a line, never a quiet tick", () => {
+  const dir = mkdtempSync(join(tmpdir(), "claim-stall-tick-"));
+  try {
+    const stub = join(dir, "herdr");
+    writeFileSync(stub, `#!/bin/sh
+case "$*" in
+  *"workspace list"*) echo '{"result":{"workspaces":[{"label":"worker-7","workspace_id":"w1","agent_status":"idle"}]}}';;
+  *"workspace close"*) echo "herdr: refused" >&2; exit 1;;
+  *) echo '{}';;
+esac
+`);
+    chmodSync(stub, 0o755);
+    const release = { session: "worker-7", cause: "claim-stalled", subject: "row-2407", discriminator: "release-stalled", prompt: "RELEASE",
+      causeKey: "worker-7/claim-stalled/row-2407/release-stalled",
+      release: { row: 2407, session: "worker-7", why: "stalled", branch: null, worktree: null, idleMinutes: 250, nudgedAt: 1 } };
+    const tick = (stdin: string) => spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${join(dir, "wake-ledger")}`, `--worktrees-dir=${dir}`], {
+      input: stdin, encoding: "utf8", env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
+    const ran = tick(`${JSON.stringify(release)}\n`);
+    assert.match(ran.stdout, /NOT RELEASED worker-7's workspace could not be closed/, ran.stdout + ran.stderr);
+    assert.match(ran.stderr, /UNDELIVERED claim release not done -- worker-7's workspace could not be closed -- nothing was changed/);
+    assert.equal(ran.status, 1, "the release did not land: ATTENTION, the same exit an order with nowhere to go gets");
+    // THE CONTROL: with nothing to deliver at all the same entry is QUIET, so the exit above is the release's doing.
+    const quiet = tick("");
+    assert.deepEqual([quiet.status, quiet.stdout], [0, ""]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

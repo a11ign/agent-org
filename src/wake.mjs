@@ -4876,12 +4876,16 @@ function escalationMemory(ledgerPath, unavailable) {
  * @template {{ causeKey: string, release?: import("./claim-stall.mjs").ReleaseRequest }} O
  * @param {O[]} orders @param {{label: string, status: string}[]} agents
  * @param {{ ledgerPath: string, hostLayout: { worktreesDir: string, primary: string } }} where
- * @returns {O[]}
+ * @returns {{ orders: O[], failed: string[] }} the orders that remain, and one line per release that did not land
  */
 function performReleases(orders, agents, { ledgerPath, hostLayout }) {
   const requests = orders.flatMap((o) => (o.release === undefined ? [] : [o.release]));
-  for (const line of performClaimReleases(requests, agents, { ledgerPath, host: hostLayout })) process.stdout.write(`${line}\n`);
-  return orders.filter((o) => o.release === undefined);
+  const lines = performClaimReleases(requests, agents, { ledgerPath, host: hostLayout });
+  for (const line of lines) process.stdout.write(`${line}\n`);
+  // A RELEASE THAT DID NOT LAND IS NOT QUIET: it is retried next tick (the gate emits it again), and the tick says so with the same exit an
+  // undelivered order gets, so a release that fails EVERY tick is a repeating line in the journal and an ATTENTION exit, never a silence.
+  const failed = lines.filter((line) => line.startsWith("NOT RELEASED")).map((line) => `claim release not done -- ${line.slice("NOT RELEASED ".length)}`);
+  return { orders: orders.filter((o) => o.release === undefined), failed };
 }
 
 /**
@@ -4972,7 +4976,7 @@ function main() {
   // ten-hour backlog most needs saying. It says it, unclassified, because nothing is known about any target.
   const agents = readAgents();
   if (agents === null) exitCannotAsk(gateOrders.length, handoffs);
-  const orders = performReleases(gateOrders, agents, { ledgerPath, hostLayout });
+  const { orders, failed: releasesNotDone } = performReleases(gateOrders, agents, { ledgerPath, hostLayout });
 
   const waiting = settleEndedOrders(handoffs, agents, { queuePath, ledgerPath });
   for (const line of backlogReport(handoffBacklog(waiting), agents)) process.stderr.write(line);
@@ -5008,7 +5012,7 @@ function main() {
     claimer: claimerFor(spares, ledgerPath, hostLayout), launch: hostLayout,
     registerReviewer: (session) => registerReviewer(reviewerPathsFrom(ledgerPath), session),
     registry: () => readReviewerRegistry(reviewerPathsFrom(ledgerPath).registry) });
-  finishTick({ handed, sent, gateRefused, stuck, ledgerPath, unavailable });
+  finishTick({ handed, sent, gateRefused: [...gateRefused, ...releasesNotDone], stuck, ledgerPath, unavailable });
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();
