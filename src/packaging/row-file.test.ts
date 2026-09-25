@@ -25,7 +25,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { regionRefusalReason, declaresRelease, outOfReleaseArgv, labelsOutOfRelease, OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE }
   from "../row-file.mjs";
-import { declaredRegionFiles } from "../region-paths.mjs";
+import { declaredRegionFiles, NOT_A_COMMIT } from "../region-paths.mjs";
+import { startability, subjectAndRegionFacts } from "../row-reachability.mjs";
 import { declarationDisagreement, extractAcceptanceSection, fleetOrLabAcceptance, untrimmedFleetMention } from "../acceptance-commands.mjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -2366,4 +2367,33 @@ test("#2175: createIssue on a No that still runs an invocation routes it AND pri
   assert.equal(code, 0, stderr);
   assert.deepEqual(ensured, ["backlog", "lane:orchestrator"]);
   assert.match(stderr, /lane:orchestrator added although the row declares "No" to "Does the acceptance need the fleet or the lab\?" -- the Acceptance reaches the fleet/);
+});
+
+// #2177: THE FILER AND THE CLAIMER AGREE ON ONE BODY, driven from ONE exported sentence. Both readers are
+// CALLED over the same fixtures -- never two regexes compared -- so a second spelling in either shows up as
+// a disagreement here rather than as a misleading note on somebody's claim.
+test("#2177: a body row-file accepts is one row-reachability calls declared, and a refused one still warns", () => {
+  const sentence = NOT_A_COMMIT.source;
+  assert.equal(new RegExp(sentence, "i").test(sentence), true, "the exported spelling is a plain sentence");
+  const noteOf = (body: string) => {
+    const facts = subjectAndRegionFacts(body, { run: () => "", refs: () => [], state: () => "no PR" });
+    return startability({ row: 1, ...facts, state: "OPEN" }).lines.join("\n");
+  };
+  const tail = "\n\n## Acceptance\nNot a test.\n\n## Open-check\nn/a\n";
+  const accepted = [
+    `## What it is\nx\n\n## Region\n${sentence}.${tail}`,
+    `## What it is\nx\n\n**Region:** ${sentence}.${tail}`,
+  ];
+  const refused = [
+    `## What it is\nx\n\n## Region\nThe destination.\n\n### Why\n${sentence}.${tail}`,
+    `## What it is\n${sentence}, they said.\n\n## Region\nThe destination.${tail}`,
+  ];
+  for (const body of accepted) {
+    assert.equal(regionRefusalReason(body), null);
+    assert.match(noteOf(body + " `someSymbolName`"), /declares `its deliverable is not a commit`/);
+  }
+  for (const body of refused) {
+    assert.ok(regionRefusalReason(body));
+    assert.match(noteOf(body + " `someSymbolName`"), /yielded NO path this could read/);
+  }
 });

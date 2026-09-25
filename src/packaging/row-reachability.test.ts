@@ -30,7 +30,7 @@ import { fileURLToPath } from "node:url";
 
 import { startability, subjectAndRegionFacts, symbolOnMain, refsCarryingSymbol, proveOriginMainReadable, onMain,
   heldRefsSummary } from "../row-reachability.mjs";
-import { declaredRegionFiles, regionPathsFromBody } from "../region-paths.mjs";
+import { declaredRegionFiles, declaresNoCommit, regionPathsFromBody } from "../region-paths.mjs";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync, chmodSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -953,4 +953,63 @@ test("#1064: the environment read takes a DIFFERENT ROUTE, held by the route's o
     "every line of `git branch -r` is indented. A flush-left listing means this is `for-each-ref` again -- "
     + "the subject's own command, which makes the skip circular: a defect in `unmergedRefs` would make "
     + `both see zero and the floor would skip saying the checkout cannot hold a population. First line: ${JSON.stringify(lines[0])}`);
+});
+
+// ---------------------------------------------------------------------------------------------------
+// #2177: THREE REGION STATES, THREE SENTENCES. `row-file` demands `its deliverable is not a commit` from a
+// row with no files; this reader used to branch on the COUNT alone, so a row that had declared it got told
+// to "check the section names files" -- advice that would have `row-file` reserve paths that do not exist.
+// Driven from the body through `subjectAndRegionFacts`, the seam that sees both, never from a hand-built
+// `examined`, so a fix that only reached `startability` would leave these red.
+// ---------------------------------------------------------------------------------------------------
+const DECLARATION = "Its deliverable is not a commit: a host action. Nothing in this tree changes.";
+const regionBody = (region: string | null) => (region === null
+  ? "## What it is\nx\n\n## Acceptance\nn/a\n"
+  : `## What it is\nx\n\n## Region\n${region}\n\n## Acceptance\nn/a\n`);
+const verdictText = (body: string) => {
+  const facts = subjectAndRegionFacts(body, { run: () => "", refs: () => [], state: () => "no PR" });
+  return startability({ row: 2177, ...facts, state: "OPEN" }).lines.join("\n");
+};
+
+test("#2177: a Region that DECLARES no commit gets no 'not asked' note, and a sentence naming the declaration", () => {
+  const text = verdictText(regionBody(DECLARATION));
+  assert.ok(!/not asked/.test(text), "a declared row must not be told to read its region as 'not asked'");
+  assert.ok(!/Check the section names files/.test(text), "nor to add paths it has declared it does not have");
+  assert.match(text, /declares `its deliverable is not a commit`/, "the sentence names the declaration");
+  assert.match(text, /STARTABLE/, "and it is not CANNOT_ASK: the row said it has nothing to examine");
+  assert.ok(!/region was NOT examined/.test(text), "'not examined' would say the opposite of what it declared");
+});
+
+test("#2177 CONTROL: an empty Region that declares NOTHING keeps the existing note, unchanged", () => {
+  // The two rows differ only by the declared sentence, so a fix that silenced the note for EVERY empty
+  // region fails here rather than in the bullet above.
+  const text = verdictText(regionBody("The corpus backup destination, on the lab.\n\n`someSymbolName`"));
+  assert.match(text, /yielded NO path this could read/);
+  assert.match(text, /read the region line as "not asked" rather than as "clear"/);
+  assert.ok(!/declares `its deliverable is not a commit`/.test(text));
+});
+
+test("#2177: no Region section at all keeps its own third sentence", () => {
+  const text = verdictText(regionBody(null).replace("x\n", "x `someSymbolName`\n"));
+  assert.match(text, /declares no `## Region` section, so the region half asked nothing/);
+  assert.ok(!/yielded NO path/.test(text) && !/declares `its deliverable is not a commit`/.test(text),
+    "collapsing 'declared none', 'declared nothing readable' and 'no section' is the defect one level up");
+});
+
+test("#2177: the declaration is read by the SHARED extractor -- inline form yes, past a `###` sub-heading no", () => {
+  assert.match(verdictText("## What it is\nx\n\n**Region:** its deliverable is not a commit.\n\n## Acceptance\nn/a\n"),
+    /declares `its deliverable is not a commit`/, "the inline `Region:` form declares");
+  const past = "## What it is\nx\n\n## Region\nThe destination.\n\n### Why\nIts deliverable is not a commit.\n\n"
+    + "## Acceptance\nn/a\n";
+  assert.equal(declaresNoCommit(past), false, "a `###` sub-heading ends the section, so this is not declared");
+  assert.match(verdictText(`${past}\`someSymbolName\``), /yielded NO path this could read/, "and the claimer still warns about it");
+});
+
+test("#2177: a declared row with no symbol and no path is STARTABLE, not 'gives this nothing to examine'", () => {
+  const v = startability({ row: 2173, subjectsMissing: [], heldRegions: [], state: "OPEN",
+    examined: { paths: 0, symbols: 0, prose: 0, refs: 12, region: 0, declaredNoCommit: true } });
+  assert.equal(v.code, 0);
+  const undeclared = startability({ row: 2173, subjectsMissing: [], heldRegions: [], state: "OPEN",
+    examined: { paths: 0, symbols: 0, prose: 0, refs: 12, region: 0 } });
+  assert.notEqual(undeclared.code, 0, "control: the same counts WITHOUT the declaration still cannot say");
 });

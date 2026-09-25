@@ -373,6 +373,30 @@ export function extractRegionSection(body) {
 }
 
 /**
+ * #2177: THE ONE SPELLING OF "THIS ROW HAS NO FILES, ON PURPOSE", read by the filer AND the claimer.
+ *
+ * #989's own words, so the clock, the filer and `row-reachability` name one category rather than three
+ * spellings. It lived as a private `const` in `row-file.mjs`, so the filer demanded the sentence and the
+ * claimer never heard of it and told a correctly declared row to add paths it does not have. It sits
+ * beside `extractRegionSection` because that is what scopes it: a regex of its own over the whole body
+ * disagreed with the shared extractor both ways (the inline `Region:` form, and a `###` sub-heading that
+ * ends the section everywhere else).
+ */
+export const NOT_A_COMMIT = /its deliverable is not a commit/i;
+
+/**
+ * Did this row's `## Region` section say its deliverable is not a commit? Scoped to the section, never
+ * the body: the phrase appears in prose on rows that DO change files, and a declaration that can be made
+ * by accident elsewhere is the easy path past the check that demands it.
+ * @param {string} body
+ * @returns {boolean}
+ */
+export function declaresNoCommit(body) {
+  const section = extractRegionSection(body);
+  return section !== null && NOT_A_COMMIT.test(section);
+}
+
+/**
  * #941: a STANDALONE directory item -- a whole line, or a whole item of a list on one line (split at `,`,
  * `;`, `and`, `or`), that is exactly one path ending in `/`, bar a list bullet or backticks. `PATH_IN_PROSE`
  * needs a file extension, so `packages/control/ansible/` never matched it and vanished: on 2026-09-11, 14 of
