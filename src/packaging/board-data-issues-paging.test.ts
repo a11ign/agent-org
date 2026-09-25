@@ -92,3 +92,18 @@ test("#2435: an unexpected response shape refuses rather than reporting an empty
   assert.throws(() => issues({ run: () => JSON.stringify({ errors: [{ message: "rate limited" }] }) }),
     /could not be proved complete.*unexpected response shape/);
 });
+
+test("#2435: a page with no pageInfo refuses as a shape error, even when its row count matches totalCount", () => {
+  // The count check alone would pass this one-row page, so only the shape guard can refuse it.
+  const onePage = (pageInfo?: unknown) => () => JSON.stringify({ data: { repository: { issues: {
+    totalCount: 1, ...(pageInfo === undefined ? {} : { pageInfo }), nodes: [issueNode(1)] } } } });
+  assert.throws(() => issues({ run: onePage() }), /could not be proved complete.*unexpected response shape/);
+  assert.throws(() => issues({ run: onePage({ endCursor: null }) }), /unexpected response shape/,
+    "pageInfo without a boolean hasNextPage is no better");
+  assert.equal(issues({ run: onePage({ hasNextPage: false, endCursor: null }) }).length, 1, "positive control: the intact page reads");
+});
+
+test("#2435: a page with no pageInfo AND a shortfall refuses, and names the shape rather than the count", () => {
+  const run = () => JSON.stringify({ data: { repository: { issues: { totalCount: 5, nodes: [issueNode(1)] } } } });
+  assert.throws(() => issues({ run }), /unexpected response shape/);
+});

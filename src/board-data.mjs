@@ -155,7 +155,9 @@ function issuePage(run, after) {
   if (after) args.push("-f", `after=${after}`);
   const body = JSON.parse(run(args));
   const page = body?.data?.repository?.issues;
-  if (!page || !Array.isArray(page.nodes) || !Number.isInteger(page.totalCount)) {
+  // `pageInfo` is part of the shape: an absent one must not read as "this was the last page".
+  if (!page || !Array.isArray(page.nodes) || !Number.isInteger(page.totalCount)
+    || typeof page.pageInfo?.hasNextPage !== "boolean") {
     throw new Error(`unexpected response shape: ${JSON.stringify(body).slice(0, 200)}`);
   }
   return page;
@@ -185,7 +187,7 @@ export function issues({ run = gh } = {}) {
       const page = issuePage(run, after);
       totalCount = page.totalCount;
       nodes.push(...page.nodes);
-      if (!page.pageInfo?.hasNextPage) break;
+      if (!page.pageInfo.hasNextPage) break;
       if (!page.pageInfo.endCursor || page.pageInfo.endCursor === after) throw new Error("the cursor did not advance");
       after = page.pageInfo.endCursor;
     }
