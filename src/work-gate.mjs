@@ -1093,13 +1093,27 @@ export function readClosedAnswerRows(run = defaultRun) {
 }
 
 /**
- * The milestone the fleet batch is scoped to. Matches `fleet-gated-nightly.mjs`'s own constant, which is
- * where #914's bar is written down.
+ * WHICH ROWS ARE THE FLEET BATCH -- ONE SPELLING, IMPORTED BY BOTH FEEDERS (#2443).
+ *
+ * The batch used to be scoped by the version-one-path MILESTONE, and `fleet-gated-nightly.mjs` carried
+ * its own copy of that constant. A `fleet-gated` label means "the acceptance needs a fleet run"; a
+ * milestone means "on the version-one path". Those are different questions, so a `fleet-gated` row filed
+ * off-path, or moved there by #2273's sort, was invisible to `orchestrator` and nothing said so (#2212 sat
+ * on `Out of release` for hours on 2026-09-24 until `product-manager` moved it back by hand).
+ *
+ * THE LABEL, AND THE ROW'S OWN WAITING FIELDS, AND NOTHING ELSE. `listArgs` is the `gh issue list` half
+ * for the feeder that queries; `matches` is the local half for the feeder that already holds every open
+ * row. Two feeders reading one object cannot disagree about the population again.
  */
-export const FLEET_MILESTONE = "Road to version one";
+export const FLEET_GATED_SELECTOR = Object.freeze({
+  label: "fleet-gated",
+  listArgs: Object.freeze(["--label", "fleet-gated"]),
+  /** @param {any} row */
+  matches: (row) => labelsOf(row).includes("fleet-gated"),
+});
 
 /**
- * The open `fleet-gated` rows on the milestone, SPLIT BY WHETHER ANYTHING IS STOPPING THEM -- #2027.
+ * The open `fleet-gated` rows, SPLIT BY WHETHER ANYTHING IS STOPPING THEM -- #2027.
  *
  * THE ORDER PROMISED AN EXIT THIS FILTER DID NOT HONOUR. `fleetBatchOrders`'s own prompt has said since
  * #1941 that a row which cannot move yet is an answer -- *"say so on it with a machine-readable condition
@@ -1127,17 +1141,16 @@ export const FLEET_MILESTONE = "Road to version one";
  * silently is the failure `blocked` already is", so the shelved half is returned with its reason and
  * `main` prints it on the same `SHELVED row #N:` line the engineer pool's shelvings use.
  *
- * @param {any[]} rows @param {string} [milestone]
+ * @param {any[]} rows
  * @param {{today?: string, nowMs?: number}} [clock] injected so a test moves time without a global stub
  * @returns {{batch: any[], waiting: {number: number, reason: string}[]}}
  */
-export function partitionFleetBatch(rows, milestone = FLEET_MILESTONE, clock = {}) {
+export function partitionFleetBatch(rows, clock = {}) {
   const { today = todayIso(), nowMs = Date.now() } = clock;
   const batch = [];
   const waiting = [];
   const gated = (rows ?? [])
-    .filter((r) => labelsOf(r).includes("fleet-gated"))
-    .filter((r) => String(r?.milestone?.title ?? "") === milestone)
+    .filter(FLEET_GATED_SELECTOR.matches)
     .sort((a, b) => Number(a.number) - Number(b.number));
   for (const row of gated) {
     const held = fleetWaitingOn(row, today, nowMs);
@@ -1150,12 +1163,12 @@ export function partitionFleetBatch(rows, milestone = FLEET_MILESTONE, clock = {
 }
 
 /**
- * The `fleet-gated` rows on the milestone that ARE dispatchable -- the batch #914 describes.
+ * The `fleet-gated` rows that ARE dispatchable -- the batch #914 describes.
  *
- * @param {any[]} rows @param {string} [milestone] @param {{today?: string, nowMs?: number}} [clock]
+ * @param {any[]} rows @param {{today?: string, nowMs?: number}} [clock]
  */
-export function fleetBatchRows(rows, milestone = FLEET_MILESTONE, clock = {}) {
-  return partitionFleetBatch(rows, milestone, clock).batch;
+export function fleetBatchRows(rows, clock = {}) {
+  return partitionFleetBatch(rows, clock).batch;
 }
 
 /**
@@ -1188,13 +1201,12 @@ export function fleetBatchRows(rows, milestone = FLEET_MILESTONE, clock = {}) {
  * whose answers are already recorded in a field.
  *
  * @param {any[]} rows every open row
- * @param {string} [milestone]
  * @param {{today?: string, nowMs?: number}} [clock]
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
  */
-export function fleetBatchOrders(rows, milestone = FLEET_MILESTONE, clock = {}) {
-  const batch = fleetBatchRows(rows, milestone, clock);
+export function fleetBatchOrders(rows, clock = {}) {
+  const batch = fleetBatchRows(rows, clock);
   if (batch.length === 0) return [];
   const numbers = batch.map((r) => `#${r.number}`).join(", ");
   const key = batch.map((r) => r.number).join(".");
@@ -1203,7 +1215,7 @@ export function fleetBatchOrders(rows, milestone = FLEET_MILESTONE, clock = {}) 
     cause: "fleet-batch-due",
     subject: "fleet-batch",
     discriminator: key,
-    prompt: `${batch.length} row(s) carry \`fleet-gated\` and are open on "${milestone}": ${numbers}.\n`
+    prompt: `${batch.length} row(s) carry \`fleet-gated\` and are open: ${numbers}.\n`
       + "Run the by-row batch per #914's own bar: each row gets a comment naming the capture, the "
       + "reading, and whether it is now workable without the fleet -- or is named not covered and why.\n"
       + "THIS ARRIVES WHEN THE SET CHANGES, NOT ON A CLOCK. It replaced a 01:00 timer that cost 5 "
