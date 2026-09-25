@@ -1,3 +1,7 @@
+// no-token: GH_TOKEN
+// #2358: this file reads auto-arm.yml's TEXT and drives `runArmPr` with an injected `run`; the literal `GH_TOKEN` in
+// an assertion message is what charged it, and it never uses a token. Without this the row's own Acceptance
+// command was REFUSED by the token-less acceptance job and verified nothing.
 /**
  * #416: AUTO-ARM MUST ARM WITH A TOKEN WHOSE EVENTS FIRE.
  *
@@ -26,6 +30,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
+import { SECRET_NAME, SECRET_HOLDER, PERSONAL_ACCOUNTS, NOT_CI_ACCOUNTS } from "./auto-arm-identity.ts";
 import { runArmPr, EXIT, looksPoolRefused, refusalScope } from "../arm-pr.mjs";
 import { shouldBeMerging, readUnarmed, greenUnarmedOrders, CAUSES }
   from "../work-gate.mjs";
@@ -116,6 +121,68 @@ test("issues: write is NOT added for this -- #333 already measured that granting
   assert.equal(Object.keys(doc.permissions).length, 3,
     "no permission beyond the three already here (contents, pull-requests, issues) should have been "
     + "added for this token change");
+});
+
+// --- #2358: WHICH ACCOUNT HOLDS THE SECRET -- and where it lives --------------------------------------
+//
+// `A11IGN_BOT_TOKEN` was the chairman's PERSONAL token, so CI acted as `DanBeckDev`: 23 of the last 40
+// merged PRs were completed by that account (read by `ceo`, 2026-09-24, from `mergedBy`), against the
+// ruling that no agent acts as the chairman (#1950/#2333). The chairman swapped it 2026-09-24T19:54:17Z.
+//
+// WHAT HOLDS IT NOW, and it is a fact about GitHub's settings that no file in this repository can read:
+//   - the account is `SECRET_HOLDER` (`auto-arm-identity.ts`), a machine account no session uses. NOT
+//     `a11ign-bot` (the reviewer: the account that approves must not be the one that arms and completes the
+//     merge, or `main`'s review requirement is decorative -- `.claude/rules/main-review-requirement.md`), and
+//     not a session's identity (`a11ign-ai-workers`, `a11ign-ai-leads`), which would attribute CI's merges to
+//     a session. The test below enforces the NAMING (the constant is a machine account); the live file
+//     compares that same constant with who GitHub says acted.
+//   - the secret is ORG-LEVEL. The repository-level copy was deleted on purpose, so there is one place to
+//     manage it. A repository-level secret of the same name would SHADOW the org one (GitHub resolves the
+//     narrower scope first), so a swap back to a person can be made at either level and only one of them
+//     is where the chairman looks. THIS IS NOT ENFORCED ANYWHERE: reading a secret's scope needs admin, which
+//     no session and no CI job here holds, so it is recorded as a claim and left out of the constants.
+//
+// WHAT A TEST CAN AND CANNOT DO ABOUT THAT. The secret's value never reaches the repo, so nothing here
+// can read WHO holds it. What can be pinned is (1) the NAME every workflow step reads, so a rename that
+// quietly moves CI onto a different credential is red, and (2) below, the constants naming who is
+// EXPECTED to hold it, which `auto-arm-token-live.test.ts` reads back from GitHub's own timeline: an
+// `auto_merge_enabled` or `merged` actor that is a person is a red test THERE. This file must stay
+// token-free (the acceptance job has none), and the live read spawns `gh`, so it is a separate file.
+
+/** Every `secrets.X` a workflow reads, so a step that reads a DIFFERENT secret is visible by name. */
+function secretsRead(workflow: string): string[] {
+  const text = readFileSync(`${REPO}.github/workflows/${workflow}`, "utf8");
+  return [...text.matchAll(/secrets\.([A-Z0-9_]+)/g)].map((m) => m[1]);
+}
+
+test("#2358: the workflows that act as the arming identity read `secrets.A11IGN_BOT_TOKEN` and no other "
+  + "credential, at the counts measured 2026-09-24 (auto-arm.yml 3, nightly.yml 2)", () => {
+  for (const [workflow, uses] of [["auto-arm.yml", 3], ["nightly.yml", 2]] as const) {
+    assert.deepEqual(secretsRead(workflow), Array(uses).fill(SECRET_NAME),
+      `${workflow} must read exactly ${uses} x secrets.${SECRET_NAME} and nothing else. A rename moves CI onto `
+      + `another credential without a red test; \`${SECRET_HOLDER}\` holds ${SECRET_NAME} (#2358), so a `
+      + "change of name is a change of who acts, and belongs on a row");
+  }
+});
+
+test("#2358: the named holder is a machine account -- not a person, not the reviewer, not a session", () => {
+  assert.ok(!PERSONAL_ACCOUNTS.includes(SECRET_HOLDER),
+    `${SECRET_HOLDER} is a personal account: CI would act as the chairman again (#1950/#2333, #2358)`);
+  assert.ok(!NOT_CI_ACCOUNTS.includes(SECRET_HOLDER),
+    `${SECRET_HOLDER} is the reviewer's or a session's identity: the approver would arm and complete the merge, `
+    + "or a session would be credited with CI's merges");
+  // POSITIVE CONTROL for the two refusals above: the lists are not empty, so `!includes` is not vacuous, and
+  // the holder is a real name rather than an empty string that no list contains.
+  assert.ok(PERSONAL_ACCOUNTS.length > 0 && NOT_CI_ACCOUNTS.length > 0 && /^[\w-]+$/.test(SECRET_HOLDER));
+});
+
+test("#2358: trunk.yml no longer reads the arming secret -- the auto-revert path that used it is gone "
+  + "(#2356), so the arming identity is not what trunk runs as", () => {
+  assert.ok(!secretsRead("trunk.yml").includes(SECRET_NAME),
+    "trunk.yml reads the arming secret again: that is the revert path #2356 removed, or a new use of an "
+    + "identity that completes merges, and either belongs on a row before it lands");
+  assert.ok(secretsRead("auto-arm.yml").length > 0,
+    "POSITIVE CONTROL for the two assertions above: the reader finds the secret where it is known to be used");
 });
 
 // --- #1969: A TOKEN THAT IS SET BUT REFUSED IS NOT A TOKEN THAT WORKS -------------------------------
