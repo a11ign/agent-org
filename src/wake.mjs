@@ -2318,7 +2318,8 @@ export function ledgerLine(at, key, recipient, noClear = false) {
 /**
  * The causeKey out of what follows a ledger line's timestamp, WHATEVER ELSE THE LINE CARRIES (#2226).
  *
- * A line is `<epochMs>\t<causeKey>[\t<recipient>]`, or `<epochMs>\tRESET\t<causeKey>`. The recipient is
+ * A line is `<epochMs>\t<causeKey>[\t<recipient>]`, or `<epochMs>\tRESET\t<causeKey>` or
+ * `<epochMs>\tESCALATED\t<causeKey>` (the two markers). The recipient is
  * evidence and never identity: a reader that took everything after the first tab as the key would count
  * `k\tworker-judge` and `k\tworker-tooling` as two causes, and the dedupe this ledger exists for would go.
  * @param {string} rest
@@ -2326,7 +2327,7 @@ export function ledgerLine(at, key, recipient, noClear = false) {
  */
 export function ledgerKeyOf(rest) {
   const fields = rest.split("\t");
-  return fields[0] === RESET ? fields.slice(0, 2).join("\t") : fields[0];
+  return fields[0] === RESET || fields[0] === ESCALATED ? fields.slice(0, 2).join("\t") : fields[0];
 }
 
 /**
@@ -2537,6 +2538,7 @@ export function deliveryCounts(path, read = readFileSync) {
     // stays append-only, so what happened is still readable -- six deliveries, a reset, then two more
     // says something a bare `2` cannot.
     if (key.startsWith(`${RESET}\t`)) { counts.set(key.slice(RESET.length + 1), 0); continue; }
+    if (key.startsWith(`${ESCALATED}\t`)) continue; // an alarm is not a delivery -- see `escalatedKeys`
     // A QUIET SPELL ALSO ENDS A RUN -- see `RUN_IDLE_RESET_MS`.
     const at = tab < 0 ? NaN : Number(text.slice(0, tab));
     counts.set(key, startsNewRun(at, lastAt.get(key)) ? 1 : (counts.get(key) ?? 0) + 1);
@@ -2553,6 +2555,51 @@ export function deliveryCounts(path, read = readFileSync) {
  * removed the evidence for the next diagnosis.
  */
 export const RESET = "RESET";
+
+/**
+ * The marker that says a run's breaker trip has been ESCALATED. A ledger line is `<epochMs>\tESCALATED\t<causeKey>`.
+ *
+ * WHY THE LEDGER: it is already the append-only record of what the org was told, `RESET` already ends a run in it,
+ * and a marker beside `RESET` costs no `gh` call. The alternative -- reading the label's removal from the row's
+ * events -- costs a call per escalated row per tick and cannot tell the gate's own removal from a person's.
+ */
+export const ESCALATED = "ESCALATED";
+
+/**
+ * The causeKeys already escalated IN THEIR CURRENT RUN, and so not to be labelled again (#2462).
+ *
+ * Removing `needs:chairman` is the act of clearing (`escalateStuck`), and the gate read it as nothing: the count
+ * that tripped the breaker is still at the cap and the cause is still emitted, so the next tick labelled the row
+ * again. Measured 2026-09-25: #2451, #2258 and #2223 were re-labelled 28 s, 27 s and 26 s after a person removed
+ * the label. The state after removal is exactly the state before it, so the only thing that can tell the two
+ * apart is a record that the first escalation happened.
+ *
+ * A RUN ENDS THE MARK. A `RESET` (`endedRuns`: the cause stopped being emitted) removes it, and so does any
+ * ordinary delivery line after it -- a key at the cap is not delivered, so a delivery means the run began again.
+ * A CHANGED causeKey is a different key and was never marked, which is the whole "until the cause changes" of it.
+ *
+ * @param {string} path @param {(p: any, enc: any) => any} [read] @returns {Set<string>}
+ */
+export function escalatedKeys(path, read = readFileSync) {
+  /** @type {Set<string>} */
+  const escalated = new Set();
+  let raw;
+  try {
+    raw = String(read(path, "utf8"));
+  } catch (err) {
+    if (/** @type {any} */ (err)?.code === "ENOENT") return escalated;
+    throw err;
+  }
+  for (const line of raw.split("\n")) {
+    const tab = line.trim().indexOf("\t");
+    if (tab < 0) continue;
+    const key = ledgerKeyOf(line.trim().slice(tab + 1));
+    if (key.startsWith(`${ESCALATED}\t`)) escalated.add(key.slice(ESCALATED.length + 1));
+    else if (key.startsWith(`${RESET}\t`)) escalated.delete(key.slice(RESET.length + 1));
+    else escalated.delete(key);
+  }
+  return escalated;
+}
 
 /**
  * The causeKeys whose RUN OF DELIVERIES HAS ENDED -- emitted on the previous tick, absent from this one.
@@ -2660,14 +2707,24 @@ export function stuckRowOf(causeKey) {
 }
 
 /**
- * Label every stuck cause's row `needs:chairman`, and say which could not be.
+ * Label every stuck cause's row `needs:chairman`, ONCE PER RUN, and say which could not be.
  *
- * FAILS OPEN AND LOUD: a `gh` refusal is reported, never swallowed. The alternative -- a breaker whose
- * alarm silently fails -- is the exact shape being fixed.
+ * ONCE PER RUN, BECAUSE REMOVING THE LABEL IS AN ANSWER (#2462). A person who removes `needs:chairman` has read the
+ * escalation; the key is still at the cap and still emitted, so without a memory of having escalated it the next
+ * tick labelled the row again 28 s later. `escalated` is that memory (`escalatedKeys`) and `record` writes it. The
+ * count question, answered: removal LEAVES THE KEY CAPPED AND SILENT until the causeKey changes or the cause stops
+ * being emitted (`RESET`), rather than resetting the count. A reset would offer the same unchanged cause to the
+ * sessions that already failed to act on it six times, for two more hours, on the strength of an answer that named
+ * no change; the person who wants it offered again ends the run by hand with a `RESET` line.
+ *
+ * FAILS OPEN AND LOUD: a `gh` refusal is reported, never swallowed, and NOT recorded -- so the next tick tries again.
+ * The alternative -- a breaker whose alarm silently fails -- is the exact shape being fixed.
  *
  * @param {string[]} stuck @param {(args: string[]) => string} run @param {(line: string) => void} log
+ * @param {{escalated?: Set<string>, record?: (key: string) => void}} [memory]
  */
-export function escalateStuck(stuck, run = defaultGh, log = (l) => process.stderr.write(l)) {
+export function escalateStuck(stuck, run = defaultGh, log = (l) => process.stderr.write(l),
+  { escalated = new Set(), record = () => {} } = {}) {
   const labelled = [];
   for (const line of stuck ?? []) {
     const key = String(line).split(":")[0];
@@ -2676,15 +2733,35 @@ export function escalateStuck(stuck, run = defaultGh, log = (l) => process.stder
       log(`STUCK ${line} -- names no row, so it cannot be escalated by label; read the key\n`);
       continue;
     }
+    if (escalated.has(key)) {
+      log(`ALREADY ESCALATED #${row} (${key}) -- a removed label is an answer; it stays off until the cause changes\n`);
+      continue;
+    }
     try {
       run(["issue", "edit", String(row), "--add-label", CHAIRMAN_LABEL]);
       labelled.push(row);
       log(`ESCALATED #${row} -> ${CHAIRMAN_LABEL} (cause offered ${MAX_DELIVERIES}+ times, still true)\n`);
     } catch (/** @type {any} */ err) {
       log(`COULD NOT ESCALATE #${row}: ${String(err?.message ?? err).split("\n")[0].slice(0, 90)}\n`);
+      continue;
     }
+    recordEscalation(key, row, record, log);
   }
   return labelled;
+}
+
+/**
+ * Write down that `key` was escalated. A ledger that cannot be written (ENOSPC took the host's tools for three hours
+ * on 2026-09-25) means the next tick labels again, so that is said rather than swallowed.
+ * @param {string} key @param {number} row @param {(key: string) => void} record @param {(line: string) => void} log
+ */
+function recordEscalation(key, row, record, log) {
+  try {
+    record(key);
+  } catch (/** @type {any} */ err) {
+    log(`COULD NOT RECORD the escalation of #${row}, so the next tick labels it again: `
+      + `${String(err?.message ?? err).split("\n")[0].slice(0, 90)}\n`);
+  }
 }
 
 /**
@@ -3874,6 +3951,16 @@ function exitCannotAsk(gateOrders, handoffs) {
   process.exit(EXIT.CANNOT_ASK);
 }
 
+/**
+ * What `escalateStuck` remembers between ticks: which keys it already labelled this run, and how to add one. Read AFTER the
+ * `RESET` lines of this tick are written, so a cause that went away and came back escalates again.
+ * @param {string} ledgerPath
+ */
+function escalationMemory(ledgerPath) {
+  return { escalated: escalatedKeys(ledgerPath),
+    record: (/** @type {string} */ key) => writeFileSync(ledgerPath, `${Date.now()}\t${ESCALATED}\t${key}\n`, { flag: "a" }) };
+}
+
 function main() {
   refuseUnknownFlags(["--ledger", "--roster", "--cycles", "--worktrees-dir"], {
     entry: import.meta.url, command: "node packages/agent-org/src/wake.mjs",
@@ -3945,7 +4032,7 @@ function main() {
   for (const line of stuck) process.stderr.write(`STUCK ${line}\n`);
   // THE BREAKER'S ALARM. Printing `STUCK` and stopping is what let two of `ceo`'s causes go silent for
   // over half an hour with every session idle -- see `escalateStuck`.
-  escalateStuck(stuck);
+  escalateStuck(stuck, undefined, undefined, escalationMemory(ledgerPath));
   if (stuck.length > 0) {
     process.stderr.write(`${stuck.length} cause(s) have been offered ${MAX_DELIVERIES}+ times and are `
       + "still true. They are NOT being retried: something about the row, the prompt or the session is "
