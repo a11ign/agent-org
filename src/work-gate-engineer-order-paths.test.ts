@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { decide, LAUNCH_PLACEHOLDER } from "./work-gate.mjs";
 import { addressed, engineerRoles, launchAdvice, HOST_REPOS, PRIMARY_CHECKOUT } from "./wake.mjs";
+import { SPARE_FAMILIES } from "./arm-pr.mjs";
 
 const PATH_RE = /\/home\/agent\/repos\/[^\s`),;]+/g;
 
@@ -35,14 +36,20 @@ test("#2405 the gate names NO directory: it leaves the placeholder, because only
   assert.deepEqual(paths(prompt), [], "and nothing else in the gate's text names a host path");
 });
 
-test("#2405 the roster the sweep below runs over is not empty, and holds the roles the row measured", () => {
-  const roles = engineerRoles();
-  assert.ok(roles.length >= 8, `sessions.json lists ${roles.length} engineer roles`);
-  assert.ok(roles.includes("worker-tooling") && roles.includes("worker-4"));
+// THE ADDRESSES A STANDING ENGINEER CAN HAVE: the roster's own (#2403 left three) and the first four members of each
+// spare family, `worker-4` to `worker-7` today. Derived from the two sources `addressed` itself reads, so a roster
+// change moves this list with it rather than leaving the sweeps below running over a population that no longer exists.
+const ADDRESSES = [...engineerRoles(),
+  ...SPARE_FAMILIES.flatMap(({ prefix, from }) => [0, 1, 2, 3].map((i) => `${prefix}${from + i}`))];
+
+test("#2405 the addresses the sweeps below run over are not empty, and hold the roles the row measured", () => {
+  assert.ok(engineerRoles().includes("worker-tooling"), "the roster still lists worker-tooling");
+  assert.ok(ADDRESSES.length >= 7, `${ADDRESSES.length} addresses: the roster plus a family sample`);
+  assert.ok(ADDRESSES.includes("worker-4") && ADDRESSES.includes("worker-5"));
 });
 
 test("#2405 STANDING ENGINEER, role worktree EXISTS: the order names it, and the only other path is the primary, as a refusal", () => {
-  for (const role of engineerRoles()) {
+  for (const role of ADDRESSES) {
     const dir = `${HOST_REPOS}/role-${role}`;
     const text = addressed({ session: "engineers", prompt: gateOrder().prompt }, role, { exists: (p) => p === dir });
     assert.equal(paths(text)[0], dir, `${role}: the directory to use comes first`);
@@ -53,7 +60,7 @@ test("#2405 STANDING ENGINEER, role worktree EXISTS: the order names it, and the
 });
 
 test("#2405 STANDING ENGINEER, role worktree ABSENT: the order gives the ONE command that creates it, detached at origin/main", () => {
-  for (const role of engineerRoles()) {
+  for (const role of ADDRESSES) {
     const dir = `${HOST_REPOS}/role-${role}`;
     const text = addressed({ session: "engineers", prompt: gateOrder().prompt }, role, { exists: () => false });
     assert.equal(paths(text)[0], dir, `${role}: the directory comes before the primary`);
@@ -64,9 +71,9 @@ test("#2405 STANDING ENGINEER, role worktree ABSENT: the order gives the ONE com
   }
 });
 
-test("#2405 THE HOST AS MEASURED: two roles have a worktree, six do not -- and no order names an absent path it does not create", () => {
+test("#2405 THE HOST AS MEASURED: a few addresses have a worktree, most do not -- and no order names an absent path it does not create", () => {
   const present = new Set([`${HOST_REPOS}/role-worker-tooling`, `${HOST_REPOS}/role-worker-5`]);
-  const roles = engineerRoles();
+  const roles = ADDRESSES;
   let creating = 0;
   for (const role of roles) {
     const text = addressed({ session: "engineers", prompt: gateOrder().prompt }, role, { exists: (p) => present.has(p) });
@@ -83,7 +90,7 @@ test("#2405 THE HOST AS MEASURED: two roles have a worktree, six do not -- and n
 test("#2405 NO ORDER SAYS TO BORROW: neither the delivered text nor the source carries the offer of another worktree", () => {
   const borrow = /any other linked worktree|another session'?s worktree|whichever linked worktree/i;
   for (const exists of [true, false]) {
-    for (const role of engineerRoles()) {
+    for (const role of ADDRESSES) {
       const text = addressed({ session: "engineers", prompt: gateOrder().prompt }, role, { exists: () => exists });
       assert.doesNotMatch(text, borrow, `${role} (role tree exists: ${exists})`);
     }
