@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  declaredClosedRows, fileOverlapReason, lookupMyRegionFiles, lookupOpenPrFiles,
+  declaredClosedRows, fileOverlapReason, lookupBlockersOf, lookupMyRegionFiles, lookupOpenPrFiles,
 } from "../row-claim/file-overlap-rule.mjs";
 import { declaredRegionFiles } from "../region-paths.mjs";
 
@@ -158,12 +158,13 @@ test("lookupOpenPrFiles reads every open PR's files AND their count in one call,
   };
   const files = lookupOpenPrFiles({ run, log: () => {} });
   assert.deepEqual(calls, [["pr", "list", "--repo", "a11ign/a11ign", "--state", "open",
-    "--json", "number,changedFiles,files,body"]], "one bulk call, and no REST page for a complete list");
+    "--json", "number,changedFiles,files,body,labels"]], "one bulk call, and no REST page for a complete list");
   assert.deepEqual(files, [
     // #2101: `closes` is `[]` for a body that declares nothing -- and for no body at all, which is what
     // these two fixtures have. It is another FIELD on this one call, never another call.
-    { ...pr(406, ["packages/agent-org/src/merge-guard.mjs", "CLAUDE.md"]), closes: [] },
-    { ...pr(472, ["packages/lab/src/gates/corpus-snapshot-scope.test.ts"]), closes: [] },
+    // #2493: `held` is false for a PR with no `hold:` label, and for one whose `labels` came back absent.
+    { ...pr(406, ["packages/agent-org/src/merge-guard.mjs", "CLAUDE.md"]), closes: [], held: false },
+    { ...pr(472, ["packages/lab/src/gates/corpus-snapshot-scope.test.ts"]), closes: [], held: false },
   ]);
 });
 
@@ -365,4 +366,140 @@ test("#2101 THE LOOKUP READS `body` ON THE CALL IT ALREADY MAKES, never a second
   assert.deepEqual(others?.map((o) => o.closes), [[2076], []]);
   assert.match(fileOverlapReason([REGION_FILE], others ?? [], { rowNumber: 2076 }).reason as string,
     /overlaps #2084/, "its own #2077 is excluded; #2084, which declares nothing, is not");
+});
+
+// --- #2493: A HELD PR WAITING ON THIS ROW IS NOT A COMPETITOR FOR ITS FILES ---
+//
+// #2399 was refused for a file #2376 held, and #2376 was waiting on #2399: it declared `Closes #2359`, so it was a
+// stranger to the asking row and its wait was a comment. `ceo` (#2400 section 2): exclude ONLY when the PR is
+// held AND every row it closes is `blockedBy` the asking row. Each clause below breaks one half.
+
+const ASKING = 2399;
+const HELD_CLOSING = (closes: number[], held = true) => ({ ...prClosing(2376, [REGION_FILE], closes), held });
+/** `blockersOf` over a fixed table; a row not in it is a FAILED lookup (`null`), as `lookupBlockersOf` reports. */
+const edges = (table: Record<number, number[]>) => (row: number) => table[row] ?? null;
+
+test("#2493 THE POSITIVE: a held PR whose every closed row is blockedBy the asking row is EXCLUDED", () => {
+  const { reason } = fileOverlapReason([REGION_FILE], [HELD_CLOSING([2359])],
+    { rowNumber: ASKING, blockersOf: edges({ 2359: [ASKING] }) });
+  assert.equal(reason, null, "#2399 sat behind #2376, which was waiting on it, until it was broken by hand");
+});
+
+test("#2493 NEGATIVE: the same held PR with NO edge still refuses", () => {
+  const { reason } = fileOverlapReason([REGION_FILE], [HELD_CLOSING([2359])],
+    { rowNumber: ASKING, blockersOf: edges({ 2359: [] }) });
+  assert.match(reason as string, /overlaps #2376/);
+});
+
+test("#2493 NEGATIVE: an edge to a DIFFERENT row is not an edge to the asking row", () => {
+  const { reason } = fileOverlapReason([REGION_FILE], [HELD_CLOSING([2359])],
+    { rowNumber: ASKING, blockersOf: edges({ 2359: [2084] }) });
+  assert.match(reason as string, /overlaps #2376/);
+});
+
+test("#2493 NEGATIVE: an edge but NO `hold:` label still refuses -- an unheld PR may merge first", () => {
+  const { reason } = fileOverlapReason([REGION_FILE], [HELD_CLOSING([2359], false)],
+    { rowNumber: ASKING, blockersOf: edges({ 2359: [ASKING] }) });
+  assert.match(reason as string, /overlaps #2376/);
+  const noField = fileOverlapReason([REGION_FILE], [prClosing(2376, [REGION_FILE], [2359])],
+    { rowNumber: ASKING, blockersOf: edges({ 2359: [ASKING] }) });
+  assert.match(noField.reason as string, /overlaps #2376/, "a PR that says nothing about a hold is not held");
+});
+
+test("#2493 NEGATIVE: a held PR that declares `Closes: none`, or closes nothing, still refuses -- `every` is " +
+  "vacuously true of an empty list", () => {
+  const asked: number[] = [];
+  const blockersOf = (row: number) => { asked.push(row); return [ASKING]; };
+  for (const closes of [[], undefined, null]) {
+    const { reason } = fileOverlapReason([REGION_FILE],
+      [{ ...pr(2376, [REGION_FILE]), held: true, closes } as never], { rowNumber: ASKING, blockersOf });
+    assert.match(reason as string, /overlaps #2376/, `closes=${JSON.stringify(closes)}`);
+  }
+  assert.deepEqual(asked, [], "nothing to ask about when nothing is closed");
+});
+
+test("#2493 NEGATIVE: a held PR closing TWO rows, one without the edge, still refuses", () => {
+  const { reason } = fileOverlapReason([REGION_FILE], [HELD_CLOSING([2359, 2360])],
+    { rowNumber: ASKING, blockersOf: edges({ 2359: [ASKING], 2360: [2084] }) });
+  assert.match(reason as string, /overlaps #2376/);
+  const both = fileOverlapReason([REGION_FILE], [HELD_CLOSING([2359, 2360])],
+    { rowNumber: ASKING, blockersOf: edges({ 2359: [ASKING], 2360: [ASKING, 2084] }) });
+  assert.equal(both.reason, null, "the control: every closed row carrying the edge excludes it");
+});
+
+test("#2493 a FAILED lookup of a closed row's blockers reads as NOT excluded, never as excluded", () => {
+  const { reason } = fileOverlapReason([REGION_FILE], [HELD_CLOSING([2359, 2360])],
+    { rowNumber: ASKING, blockersOf: edges({ 2359: [ASKING] }) });
+  assert.match(reason as string, /overlaps #2376/, "2360 could not be read");
+});
+
+test("#2493 no `blockersOf`, or no `rowNumber`, excludes NOTHING", () => {
+  assert.match(fileOverlapReason([REGION_FILE], [HELD_CLOSING([2359])], { rowNumber: ASKING }).reason as string,
+    /overlaps #2376/);
+  assert.match(fileOverlapReason([REGION_FILE], [HELD_CLOSING([2359])],
+    { blockersOf: edges({ 2359: [ASKING] }) }).reason as string, /overlaps #2376/);
+});
+
+test("#2493 the exclusion is PER PR: a held PR waiting on the row is skipped and a THIRD party's overlap is found", () => {
+  const { reason } = fileOverlapReason([REGION_FILE], [HELD_CLOSING([2359]), pr(2500, [REGION_FILE])],
+    { rowNumber: ASKING, blockersOf: edges({ 2359: [ASKING] }) });
+  assert.match(reason as string, /overlaps #2500/);
+});
+
+test("#2493 no extra call: `blockersOf` is asked only for a held PR that OVERLAPS", () => {
+  const asked: number[] = [];
+  const blockersOf = (row: number) => { asked.push(row); return [ASKING]; };
+  fileOverlapReason([REGION_FILE], [
+    { ...prClosing(2376, ["elsewhere.md"], [2359]), held: true },
+    prClosing(2377, [REGION_FILE], [2361]),
+  ], { rowNumber: ASKING, blockersOf });
+  assert.deepEqual(asked, [], "a held PR on other files, and an unheld one on this file, cost nothing");
+  fileOverlapReason([REGION_FILE], [HELD_CLOSING([2359])], { rowNumber: ASKING, blockersOf });
+  assert.deepEqual(asked, [2359]);
+});
+
+test("#2493 lookupOpenPrFiles reads `held` from a `hold:<session>` label and from no other", () => {
+  const run = () => JSON.stringify([
+    { number: 1, changedFiles: 1, files: [{ path: "a" }], labels: [{ name: "hold:product-manager" }] },
+    { number: 2, changedFiles: 1, files: [{ path: "b" }], labels: [{ name: "session:worker-1" }] },
+    { number: 3, changedFiles: 1, files: [{ path: "c" }], labels: [] },
+  ]);
+  assert.deepEqual(lookupOpenPrFiles({ run, log: () => {} })?.map((p) => [p.number, p.held]),
+    [[1, true], [2, false], [3, false]]);
+});
+
+test("#2493 lookupBlockersOf reads GitHub's `blockedBy` edge for one row, and a failed read is null", () => {
+  const calls: string[][] = [];
+  const run = (args: string[]) => {
+    calls.push(args);
+    return JSON.stringify({ blockedBy: { nodes: [{ number: 2399, state: "OPEN" }, { number: 7, state: "CLOSED" }] } });
+  };
+  assert.deepEqual(lookupBlockersOf({ run })(2359), [2399, 7]);
+  assert.deepEqual(calls, [["issue", "view", "2359", "--repo", "a11ign/a11ign", "--json", "blockedBy"]]);
+  assert.equal(lookupBlockersOf({ run: () => { throw new Error("boom"); } })(2359), null);
+  assert.deepEqual(lookupBlockersOf({ run: () => JSON.stringify({ blockedBy: { nodes: [] } }) })(2359), []);
+});
+
+test("#2493 END TO END through the claim's own lookup: a held PR waiting on the row is excluded with NO `blockersOf` " +
+  "passed, and `gh issue view` is spent only on a held PR that overlaps", () => {
+  const calls: string[][] = [];
+  const edgesOf: Record<string, number[]> = { "2359": [ASKING], "2400": [] };
+  const run = (args: string[]) => {
+    calls.push(args);
+    if (args[0] === "issue") return JSON.stringify({ blockedBy: { nodes: (edgesOf[args[2]] ?? []).map((number) => ({ number, state: "OPEN" })) } });
+    return JSON.stringify([
+      { number: 2376, changedFiles: 1, files: [{ path: REGION_FILE }], body: "Closes #2359", labels: [{ name: "hold:product-manager" }] },
+      { number: 2377, changedFiles: 1, files: [{ path: "elsewhere.md" }], body: "Closes #2400", labels: [{ name: "hold:product-manager" }] },
+      { number: 2378, changedFiles: 1, files: [{ path: REGION_FILE }], body: "Closes #2401", labels: [] },
+    ]);
+  };
+  const prs = lookupOpenPrFiles({ run, log: () => {} }) ?? [];
+  assert.deepEqual(calls.map((c) => c[0]), ["pr"], "the lookup itself makes no per-row call");
+  assert.match(fileOverlapReason([REGION_FILE], prs, { rowNumber: ASKING }).reason as string, /overlaps #2378/,
+    "the held PR waiting on the row is skipped; the UNHELD one on the same file still refuses");
+  assert.deepEqual(calls.filter((c) => c[0] === "issue").map((c) => c[2]), ["2359"],
+    "asked about #2376's closed row only: #2377 does not overlap and #2378 is not held");
+  // The control: the same PRs with the edge absent refuse on #2376 first.
+  edgesOf["2359"] = [];
+  assert.match(fileOverlapReason([REGION_FILE], prs, { rowNumber: ASKING }).reason as string, /overlaps #2376/);
 });

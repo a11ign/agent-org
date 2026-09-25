@@ -48,10 +48,19 @@
 // on (#1966), so it is a field the org relies on rather than a convention invented here. A PR that
 // declares NOTHING, or declares ANOTHER row, still collides exactly as before: B4's value is that it is
 // unconditional about two SESSIONS touching one file, and this row is one `if` away from disabling it.
+//
+// #2493: A HELD PR THAT IS WAITING ON THIS ROW CANNOT MERGE FIRST, SO IT IS NOT A COMPETITOR EITHER. #2399 was
+// refused for a file #2376 held, and #2376 was waiting on #2399: it declared `Closes #2359`, so it was a stranger
+// to the asking row, and the wait lived in a comment nothing reads. The exclusion needs BOTH facts (`ceo`, #2400
+// section 2), because either alone is a hole: a `hold:` label with no edge is a PR that may still merge when the
+// hold lifts, and an edge with no hold is a PR that `deliberateRefusals` will let merge first. See
+// `isHeldPrWaitingOn`. The gate reads the same two facts (`work-gate.mjs`'s `blockedOnOpenPr`).
 import { REPO } from "../../../../scripts/repo-identity.mjs";
 import { extractClosesDeclaration } from "../acceptance-commands.mjs";
 import { gh, lookup } from "../merge-guard/lookups.mjs";
+import { holdersOf } from "../pr-hold-state.mjs";
 import { declaredRegionFiles, regionCovers } from "../region-paths.mjs";
+import { lookupBlockedByEdge } from "./blocked-by-edge-rule.mjs";
 
 /** @type {(path: string) => boolean} */
 const isChangeset = (path) => path.startsWith(".changeset/");
@@ -71,12 +80,22 @@ export function declaredClosedRows(body) {
 }
 
 /**
+ * The rows a listed PR declares it closes. `closes` is a LIST because a PR may declare several rows; a
+ * caller holding one may write it bare, which is how the hand-run fixtures and Open-checks in the rows
+ * themselves are written.
+ *
+ * @param {{ closes?: number[] | number | null }} other
+ * @returns {number[]}
+ */
+function closedRowsOf(other) {
+  if (Array.isArray(other.closes)) return other.closes;
+  return Number.isInteger(other.closes) ? [Number(other.closes)] : [];
+}
+
+/**
  * #2101: is this open PR the row's OWN work? Only a declaration says so, and only about a row we were
  * actually told the number of -- an absent `rowNumber` excludes nothing, which is what keeps every caller
  * that does not know its row (and every existing test) refusing exactly as it did.
- *
- * `closes` is a LIST because a PR may declare several rows; a caller holding one may write it bare, which
- * is how the hand-run fixtures and Open-checks in the rows themselves are written.
  *
  * @param {{ number: number, closes?: number[] | number | null }} other
  * @param {number | null | undefined} rowNumber
@@ -84,9 +103,37 @@ export function declaredClosedRows(body) {
  */
 function isOwnPrOf(other, rowNumber) {
   if (!Number.isInteger(rowNumber)) return false;
-  const declared = Array.isArray(other.closes) ? other.closes
-    : Number.isInteger(other.closes) ? [Number(other.closes)] : [];
-  return declared.includes(Number(rowNumber));
+  return closedRowsOf(other).includes(Number(rowNumber));
+}
+
+/**
+ * #2493: is this overlapping PR HELD AND WAITING ON THE ASKING ROW -- so it cannot merge first, and B4's
+ * "sequence with that PR's author" would name somebody who is waiting on you?
+ *
+ * BOTH FACTS, NEVER ONE (`ceo`, #2400 section 2): (a) a `hold:` label, so `deliberateRefusals` will not let
+ * it merge, AND (b) every row it closes is `blockedBy` the asking row, the edge being the data GitHub already
+ * has and the thing `blocker-cleared` wakes the holder on. An unheld PR on the same file is a real collision.
+ *
+ * `every` IS VACUOUSLY TRUE OF AN EMPTY LIST, and a held PR declaring `Closes: none` closes nothing and so
+ * waits on nothing: the empty case is refused HERE, by name, rather than left to fall out of `every`.
+ * `blockersOf` answers `null` when the lookup failed, and a failed lookup reads as NOT excluded -- the
+ * refusal stands -- because the exclusion is the one thing here that lets a claim through.
+ *
+ * WHO ANSWERS "WHAT BLOCKS THAT ROW": the caller's `blockersOf` option (the gate, from the rows it already read), else
+ * the PR's own `blockersOf` (a held PR out of `lookupOpenPrFiles` carries a lazy one over the same `run`, so the claim,
+ * `check` and the spawn filter get the exclusion without each having to be edited to ask for it).
+ *
+ * @param {{ held?: boolean, closes?: number[] | number | null, blockersOf?: (row: number) => number[] | null }} other
+ * @param {number | null | undefined} rowNumber
+ * @param {((row: number) => number[] | null) | undefined} blockersOf the rows blocking a given row, or `null`
+ * @returns {boolean}
+ */
+function isHeldPrWaitingOn(other, rowNumber, blockersOf) {
+  const resolve = blockersOf ?? other.blockersOf;
+  if (other.held !== true || !Number.isInteger(rowNumber) || typeof resolve !== "function") return false;
+  const closed = closedRowsOf(other);
+  if (closed.length === 0) return false;
+  return closed.every((row) => resolve(row)?.includes(Number(rowNumber)) === true);
 }
 
 /**
@@ -95,15 +142,18 @@ function isOwnPrOf(other, rowNumber) {
  * @param {string[]} myFiles this row's own declared Region paths -- files, and (#941) directory prefixes
  *   ending in `/` (changeset entries already excluded by
  *   the caller is NOT required -- this function excludes them itself, so either side can pass a raw list)
- * @param {{ number: number, files: string[], changedFiles: number, closes?: number[] | number | null }[]} otherPrFiles
+ * @param {{ number: number, files: string[], changedFiles: number, closes?: number[] | number | null,
+ *   held?: boolean, blockersOf?: (row: number) => number[] | null }[]} otherPrFiles
  *   every OTHER open PR, its changed files, the count GitHub reports for them -- #1419: the list is only
- *   comparable when it matches the count -- and (#2101) the rows its body declares it closes
- * @param {{ rowNumber?: number | null }} [options] the number of the row being asked about, so its OWN
- *   pull request can be excluded (#2101). ABSENT EXCLUDES NOTHING: a caller that does not know which row
- *   it is comparing for gets the unconditional B4 of before.
+ *   comparable when it matches the count -- (#2101) the rows its body declares it closes, and (#2493)
+ *   whether it carries a `hold:` label
+ * @param {{ rowNumber?: number | null, blockersOf?: (row: number) => number[] | null }} [options] the number
+ *   of the row being asked about, so its OWN pull request can be excluded (#2101). ABSENT EXCLUDES NOTHING: a
+ *   caller that does not know which row it is comparing for gets the unconditional B4 of before.
+ *   `blockersOf` (#2493) is asked ONLY for a held PR that overlaps, and ABSENT EXCLUDES NOTHING likewise.
  * @returns {{ reason: string | null, emptyOtherPrs: number[] }}
  */
-export function fileOverlapReason(myFiles, otherPrFiles, { rowNumber = null } = {}) {
+export function fileOverlapReason(myFiles, otherPrFiles, { rowNumber = null, blockersOf } = {}) {
   const mine = new Set(myFiles.filter((p) => !isChangeset(p)));
   /** @type {number[]} */
   const emptyOtherPrs = [];
@@ -127,6 +177,9 @@ export function fileOverlapReason(myFiles, otherPrFiles, { rowNumber = null } = 
     if (theirs.length === 0) continue;
     // #941: an entry ending in `/` is a directory the row declared, and it covers every file under it.
     const overlap = theirs.filter((p) => [...mine].some((entry) => regionCovers(entry, p)));
+    // #2493: AFTER THE OVERLAP IS KNOWN, so the closed rows' `blockedBy` is read only for a held PR that
+    // actually collides -- the one read this exclusion is allowed to add.
+    if (overlap.length > 0 && isHeldPrWaitingOn(other, rowNumber, blockersOf)) continue;
     if (overlap.length > 0) {
       return {
         emptyOtherPrs,
@@ -185,17 +238,26 @@ export function lookupMyRegionFiles(issueNumber, { run = gh } = {}) {
  * is what tells a row's own pull request from a competitor for its files.
  *
  * @param {{ run?: (args: string[]) => string, log?: (line: string) => void }} [deps]
- * @returns {{ number: number, files: string[], changedFiles: number, closes: number[] }[] | null}
+ * #2493: and `labels`, on that same call, for whether the PR is held.
+ *
+ * A HELD PR ALSO CARRIES `blockersOf`, lazy and over this same `run`, so every caller of the rule that got its PRs
+ * from here can ask the one question the exclusion needs and no caller has to remember to pass it. It is CALLED only
+ * for a held PR that overlaps (`fileOverlapReason`); merely carrying it costs nothing.
+ *
+ * @returns {{ number: number, files: string[], changedFiles: number, closes: number[], held: boolean,
+ *   blockersOf?: (row: number) => number[] | null }[] | null}
  */
 export function lookupOpenPrFiles({ run = gh, log = (line) => process.stderr.write(`${line}\n`) } = {}) {
   return lookup(() => {
-    const raw = run(["pr", "list", "--repo", REPO, "--state", "open", "--json", "number,changedFiles,files,body"]);
-    /** @type {{ number: number, changedFiles: number, files: { path: string }[], body?: string }[]} */
+    const raw = run(["pr", "list", "--repo", REPO, "--state", "open", "--json", "number,changedFiles,files,body,labels"]);
+    /** @type {{ number: number, changedFiles: number, files: { path: string }[], body?: string, labels?: { name: string }[] }[]} */
     const parsed = JSON.parse(raw);
     return parsed.map((pr) => {
       const listed = pr.files.map((f) => f.path);
       const files = listed.length < pr.changedFiles ? pagedPrFiles(pr.number, listed, { run, log }) : listed;
-      return { number: pr.number, files, changedFiles: pr.changedFiles, closes: declaredClosedRows(pr.body) };
+      const held = holdersOf((pr.labels ?? []).map((l) => l.name)).length > 0;
+      const entry = { number: pr.number, files, changedFiles: pr.changedFiles, closes: declaredClosedRows(pr.body), held };
+      return held ? { ...entry, blockersOf: lookupBlockersOf({ run }) } : entry;
     });
   });
 }
@@ -217,4 +279,21 @@ function pagedPrFiles(number, listed, { run, log }) {
       + "-- B4 will refuse it as not comparable (#1419).");
     return listed;
   }
+}
+
+/**
+ * #2493: THE ROWS BLOCKING A GIVEN ROW, read from GitHub's own `blockedBy` edge, for a caller that holds no
+ * rows of its own (the claim, `check`, the spawn filter, all of which reach it through `lookupOpenPrFiles`). One
+ * `gh issue view` per call, and `fileOverlapReason` makes a call only for a held PR that overlaps. `null` on a
+ * failed lookup, which the rule reads as "not excluded". The gate does not use this: it already holds `blockedBy`
+ * for every open row.
+ *
+ * @param {{ run?: typeof gh }} [deps]
+ * @returns {(row: number) => number[] | null}
+ */
+export function lookupBlockersOf({ run = gh } = {}) {
+  return (row) => {
+    const read = lookupBlockedByEdge(row, { run });
+    return read === null ? null : (read.blockedBy?.nodes ?? []).map((n) => Number(n.number));
+  };
 }
