@@ -118,7 +118,7 @@ test("#2323 (1): the marks are READ from sessions.json -- every worker-<n> from 
 test("#2323 (1) ACCEPTANCE: an idle spare whose only row is closed has its workspace CLOSED and one line written", () => {
   const { got, herdr, cycles } = finishedSpare();
   assert.deepEqual(herdr.closed(), ["--session org workspace close wD"]);
-  assert.deepEqual(cycles, [{ role: "worker-4", row: 2323, at: T0, clean: true,
+  assert.deepEqual(cycles, [{ role: "worker-4", row: 2323, at: T0, rows: [2323], clean: true,
     why: "#2323 closed; no open row carries session:worker-4; no worktree left" }]);
   assert.deepEqual(got.ended, cycles);
   assert.equal(got.registry["worker-4"], undefined, "the instance is forgotten, so the next spawn starts a fresh one");
@@ -156,7 +156,7 @@ test("#2323 (2): one that never claims within its bound is recorded `clean: fals
   const { herdr, cycles } = finishedSpare({
     registry: { "worker-4": { spawnedAt: T0 - SPARE_CLAIM_BOUND_MS - 1, rows: [] } } });
   assert.equal(herdr.closed().length, 1);
-  assert.deepEqual(cycles, [{ role: "worker-4", row: null, at: T0, clean: false,
+  assert.deepEqual(cycles, [{ role: "worker-4", row: null, at: T0, rows: [], clean: false,
     why: "never claimed a row in 30 minutes" }]);
 });
 
@@ -212,18 +212,20 @@ test("#2323 (3): spareDecision needs all of `has held a row`, `holds none now` a
 });
 
 test("#2323 (3): consecutiveClean -- empty says EMPTY, 20 clean is 20, and a failure resets the run", () => {
-  const clean = (n: number) => Array.from({ length: n }, () => ({ clean: true }));
+  // #2407: a line that counts carries `rows`, exactly one of them. The bare `{ clean: true }` these used is LEGACY now.
+  const clean = (n: number) => Array.from({ length: n }, () => ({ clean: true, rows: [1] }));
+  const failed = { clean: false, rows: [1] };
   assert.deepEqual(consecutiveClean([]), { run: 0, empty: true },
     "no line is not `0 of 20 clean`: nothing has been measured");
-  assert.deepEqual(consecutiveClean([{ clean: false }]), { run: 0, empty: false }, "one failure IS a measurement");
+  assert.deepEqual(consecutiveClean([failed]), { run: 0, empty: false }, "one failure IS a measurement");
   assert.deepEqual(consecutiveClean(clean(20)), { run: 20, empty: false });
-  assert.deepEqual(consecutiveClean([...clean(19), { clean: false }, ...clean(3)]), { run: 3, empty: false });
-  assert.equal(consecutiveClean([...clean(20), { clean: false }]).run, 0, "a failure LAST leaves nothing");
+  assert.deepEqual(consecutiveClean([...clean(19), failed, ...clean(3)]), { run: 3, empty: false });
+  assert.equal(consecutiveClean([...clean(20), failed]).run, 0, "a failure LAST leaves nothing");
 });
 
 test("#2323: an unreadable ledger line is a FAILED cycle, so a corrupt line cannot bridge a run of clean ones", () => {
-  const raw = `${JSON.stringify({ role: "worker-4", row: 1, at: 1, clean: true, why: "x" })}\nnot json\n`
-    + `${JSON.stringify({ role: "worker-4", row: 2, at: 2, clean: true, why: "x" })}\n`;
+  const raw = `${JSON.stringify({ role: "worker-4", row: 1, at: 1, rows: [1], clean: true, why: "x" })}\nnot json\n`
+    + `${JSON.stringify({ role: "worker-4", row: 2, at: 2, rows: [2], clean: true, why: "x" })}\n`;
   const read = readSpareCycles("x", (() => raw) as never);
   assert.equal(read.length, 3);
   assert.equal(consecutiveClean(read).run, 1);

@@ -26,6 +26,12 @@ Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin
 # and it is stated rather than assumed because the failure is the same silent CANNOT_ASK.
 Environment=HOME=/home/agent
 
+# V8'S COMPILE CACHE GOES UNDER THE HOME, NOT /tmp -- #2458. `tsc`, `eslint`, `rstest` and `changeset` (all reached
+# through `npm run`) call `enableCompileCache()` with no directory, which writes `<tmpdir>/node-compile-cache`:
+# one entry per file per checkout path, 141,353 inodes in the 2026-09-25 outage. A unit reads no shell startup
+# file, so this line is the ONLY place a unit can get it; `host-units.test.ts` pins it on every shipped service.
+Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache
+
 # WHICH ACCOUNT THIS TICK SPENDS, DECLARED -- #1974. Without this line the tick authenticated as
 # `DanBeckDev`, a PERSON, and spent that human account's 5,000-point-per-hour GraphQL budget on 2026-09-22.
 # A POINT IS NOT A REQUEST -- this line read "5,000 GraphQL requests" until #2003, and the gate's five reads

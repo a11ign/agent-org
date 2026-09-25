@@ -42,7 +42,7 @@ import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "@a11ign/worker-fleet/cli-flags";
 import { REPO } from "../../../scripts/repo-identity.mjs";
 import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
-import { regionPathsFromBody, declaredRegionFiles } from "./region-paths.mjs";
+import { regionPathsFromBody, declaredRegionFiles, declaresNoCommit } from "./region-paths.mjs";
 
 const EXIT = { STARTABLE: 0, BLOCKED: 1, CANNOT_ASK: 2 };
 
@@ -95,14 +95,26 @@ function unsearchedPopulationNote(refs) {
  *
  * `null` means the body has NO Region section at all, which is a different sentence again: nothing was
  * declared, so nothing was skipped.
- * @param {number | null | undefined} region @returns {string[]}
+ *
+ * #2177: THREE STATES, THREE SENTENCES. A row that DECLARED `its deliverable is not a commit` has an empty
+ * region set as its ANSWER, not a gap: nothing holds its region because nothing can. Telling its claimant
+ * to "check the section names files" sends them to add paths that do not exist, which `row-file` would
+ * then reserve under B4 for a row that changes nothing. The declaration is the one `row-file` demands,
+ * read through the same `declaresNoCommit`.
+ * @param {number | null | undefined} region
+ * @param {boolean} [declaredNoCommit] @returns {string[]}
  */
-function unreadRegionNote(region) {
+function unreadRegionNote(region, declaredNoCommit = false) {
   if (region === null || region === undefined) {
     return ["  NOTE: this row declares no `## Region` section, so the region half asked nothing. The "
       + "symbol verdict above stands on its own."];
   }
   if (region > 0) return [];
+  if (declaredNoCommit) {
+    return ["  NOTE: this row's `## Region` declares `its deliverable is not a commit`, so it holds no files and "
+      + "no branch can be in its region. That is the answer, not a gap: there is nothing to add and nothing "
+      + "to wait for on the region half."];
+  }
   return ["  NOTE: this row's `## Region` section yielded NO path this could read, so the region half "
     + "searched an empty set. Check the section names files or directories (a directory ends in `/`); "
     + "until it does, read the region line as \"not asked\" rather than as \"clear\"."];
@@ -120,7 +132,7 @@ function unreadRegionNote(region) {
  * ceiling, which is the lint rule doing its job rather than an obstacle to route around.
  *
  * @param {number} row
- * @param {{paths: number, symbols: number, prose?: number, refs?: number, region?: number | null}} examined
+ * @param {{paths: number, symbols: number, prose?: number, refs?: number, region?: number | null, declaredNoCommit?: boolean}} examined
  * @returns {{code: number, lines: string[]} | null} null when there IS something to check.
  */
 function examinedNothing(row, examined) {
@@ -129,6 +141,8 @@ function examinedNothing(row, examined) {
   // taught to read declared entries, such a row reached here and was reported CANNOT_ASK -- having, in
   // fact, examined three declared entries against 291 refs.
   if (examined.paths > 0 || examined.symbols > 0 || (examined.region ?? 0) > 0) return null;
+  // #2177: a row that DECLARED it has no files has not "given this nothing to examine" -- it said so.
+  if (examined.declaredNoCommit) return null;
   if ((examined.prose ?? 0) > 0) {
     return { code: EXIT.CANNOT_ASK, lines: [
       `CANNOT SAY whether #${row} is startable: it names ${examined.prose} document(s) and no source `
@@ -188,19 +202,22 @@ function contendedVerdict(row, heldRegions) {
  * path and is not reachable from here. A pre-check that answers in the deciding rule's vocabulary and
  * omits the deciding rule is worse than no pre-check, because nothing tells the reader to ask again.
  * @param {number} row
- * @param {{paths: number, symbols: number, prose?: number, refs?: number, region?: number | null}} examined
+ * @param {{paths: number, symbols: number, prose?: number, refs?: number, region?: number | null, declaredNoCommit?: boolean}} examined
  * @returns {string[]}
  */
 function startableLines(row, examined) {
   const counted = `${examined.paths} path(s), ${examined.symbols} symbol(s), `
     + `${examined.region ?? 0} declared region entr(ies), ${examined.refs ?? 0} unmerged ref(s) examined`;
+  const emptyRegionClause = examined.declaredNoCommit
+    ? "and it declares no files, so no branch can be in its region"
+    : "and its region was NOT examined";
   const regionClause = (examined.region ?? 0) > 0
     ? "and no unmerged branch is in its region"
-    : "and its region was NOT examined";
+    : emptyRegionClause;
   return [
     `#${row} is STARTABLE: every symbol it names is on \`main\`, ${regionClause} (${counted}).`,
     ...unsearchedPopulationNote(examined.refs ?? 0),
-    ...unreadRegionNote(examined.region),
+    ...unreadRegionNote(examined.region, examined.declaredNoCommit),
     "  This checks SYMBOLS, this row's DECLARED region against unmerged branches, and the `blocked`",
     "  label. It does NOT run B4 -- whether an OPEN PR already touches one of these files. `row-claim",
     "  check` runs that separately (#1063) and prints its refusal beside this verdict; run through",
@@ -224,7 +241,7 @@ function startableLines(row, examined) {
  *          state?: string | null,
  *          closedAt?: string | null,
  *          examined: {paths: number, symbols: number, prose?: number, refs?: number,
- *            region?: number | null}}} facts
+ *            region?: number | null, declaredNoCommit?: boolean}}} facts
  * @returns {{code: number, lines: string[]}}
  */
 
@@ -540,7 +557,7 @@ export function subjectAndRegionFacts(body, deps = {}) {
   const heldRegions = heldRegionsFor({ present, refs, run, stateOf });
   return { subjectsMissing, heldRegions,
     examined: { paths: paths.length, symbols: symbols.length, prose: prose.length, refs: refs.length,
-      region: declared === null ? null : declared.length } };
+      region: declared === null ? null : declared.length, declaredNoCommit: declaresNoCommit(body) } };
 }
 
 /**

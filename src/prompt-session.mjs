@@ -30,7 +30,7 @@ import { pathToFileURL } from "node:url";
 import { realpathSync, readFileSync } from "node:fs";
 
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
-import { clearContext, readAgents, WAKEABLE, queueHandoff, handoffQueuePath, ledgerPathFrom,
+import { clearBeforeOrder, isPerRowInstance, readAgents, WAKEABLE, queueHandoff, handoffQueuePath, ledgerPathFrom,
   handoffBacklog, readHandoffs, waitedFor, addressed } from "./wake.mjs";
 
 /**
@@ -160,7 +160,8 @@ export function deliveredText(label, text, sender) {
 export const PROMPT_REFUSED_PREFIX = "prompt refused: ";
 
 /**
- * Clear, then prompt. Returns what to report, or `null` when the prompt landed.
+ * Clear, then prompt -- the clear only for a standing seat ({@link clearBeforeOrder}; a per-row instance keeps its
+ * context, #2483). Returns what to report, or `null` when the prompt landed.
  *
  * THE PROMPT IS {@link deliveredText}: clearing strips everything the session knew, so what it wakes to
  * must say who it is and who asked. `sender` is `null` (the default) for a caller that is not a known
@@ -170,7 +171,7 @@ export const PROMPT_REFUSED_PREFIX = "prompt refused: ";
  * @param {string | null} [sender]
  */
 export function clearThenPrompt(run, label, text, sender = null) {
-  const clearRefusal = clearContext(run, label);
+  const { refusal: clearRefusal } = clearBeforeOrder(run, label);
   try {
     run(["--session", "org", "agent", "prompt", label, deliveredText(label, text, sender)]);
   } catch (/** @type {any} */ err) {
@@ -191,8 +192,9 @@ export function clearThenPrompt(run, label, text, sender = null) {
  * that moment. Measured 2026-09-22 on draft #1963: three refusals in 4m37s, no trace of any of them.
  *
  * WHAT IT DOES NOT DO IS RETRY, and `wake.mjs`'s handoff section carries why at length: the refusal is
- * load-bearing, because this command CLEARS its target and a retry that wins the race wipes the review it
- * interrupted. The gate delivers when the gate judges the session free.
+ * load-bearing, because a standing seat is CLEARED first and a retry that wins the race wipes the work it
+ * interrupted (a per-row instance is not cleared, #2483, so for one the retry is only a second copy). The gate
+ * delivers when the gate judges the session free.
  *
  * AND IT IS ALSO WHERE AN ORDER CAN BE REFUSED THE QUEUE (#2167). {@link deepQueueRefusal} runs between
  * the two refusals above: the name is checked first, because a typo is an author error whatever the depth
@@ -235,8 +237,9 @@ export function queueOrLose({ label, text, why, agents, path, stance = STANCE.UN
   }
   process.stderr.write(`NOT PROMPTED NOW: ${why}.\n`
     + `QUEUED ${entry.id} -- the next \`npm run work:tick\` delivers it to "${label}" once the gate judges `
-    + "that session between tasks. DO NOT RETRY: this command clears its target first, so a retry that "
-    + "lands the instant it goes idle wipes whatever it was working on.\n");
+    + "that session between tasks. DO NOT RETRY: a retry that lands the instant it goes idle is a second "
+    + "copy, and for a standing seat, which is cleared first, it also wipes whatever it was working on "
+    + "(a per-row instance -- a spawned `worker-<n>`, a `reviewer-<n>` -- is never cleared).\n");
   process.stderr.write(stanceNote(stance));
   process.stderr.write(queueDepthNote(label, path));
   return EXIT.QUEUED;
@@ -475,7 +478,9 @@ function main() {
     process.stderr.write(`${report}\n`);
     process.exit(EXIT.REFUSED);
   }
-  process.stdout.write(`PROMPTED ${label}, on a cleared context\n`);
+  process.stdout.write(isPerRowInstance(label)
+    ? `PROMPTED ${label}, context kept (a per-row instance is never cleared)\n`
+    : `PROMPTED ${label}, on a cleared context\n`);
   process.exit(EXIT.OK);
 }
 
