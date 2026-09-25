@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import {
-  CAUSES, JUDGMENT_CAUSES, START_CAUSES, CODEX_AUTH_FAILURE_TEXT, REVIEWER_SILENCE_MS, REVIEWER_REGISTRY_FILE,
+  CAUSES, JUDGMENT_CAUSES, START_CAUSES, CODEX_AUTH_FAILURE_TEXT, CODEX_LOGGED_OUT_SCREEN, REVIEWER_SILENCE_MS, REVIEWER_REGISTRY_FILE,
   REVIEWER_REFRESH_LEDGER_FILE, authFailureShownIn, readLastRefresh, readReviewerRegistry, reviewerAuthFailures,
   reviewerAuthOrders, reviewerAuthTick, refreshLedgerLines, herdrPaneReader, sessionsOwingVerdict,
 } from "./work-gate.mjs";
@@ -89,6 +89,25 @@ test("#2401 (a): codex's auth-failure text is matched verbatim as codex spells i
   assert.equal(authFailureShownIn("• Reading packages/agent-org/src/wake.mjs\n› Ask Codex to do anything"), null);
   assert.equal(authFailureShownIn(null), null);
   assert.equal(authFailureShownIn(""), null);
+});
+
+// PROVENANCE OF THE FIXTURE, a comment and not an assertion: codex 0.157.0, its TUI started in tmux with a REJECTED
+// credential (expired, structurally valid, private CODEX_HOME, 401), 2026-09-25. It does NOT establish what a pane
+// that loses its login MID-SESSION renders; that stays unseen (`docs/known-gaps.md` §49).
+const LOGGED_OUT_STARTUP = "Welcome to Codex, OpenAI's command-line coding agent\n  Sign in with ChatGPT\n  or connect an API key";
+
+test("#2555 (a): codex's logged-out startup screen is recognised by its welcome line -- and quoting the sign-in phrase is not it", () => {
+  assert.equal(authFailureShownIn(LOGGED_OUT_STARTUP), CODEX_LOGGED_OUT_SCREEN.anchor);
+  assert.equal(authFailureShownIn(`  ${LOGGED_OUT_STARTUP}\n`), CODEX_LOGGED_OUT_SCREEN.anchor);
+  // The four phrases still win where a pane shows one, so their answers are unchanged.
+  assert.equal(authFailureShownIn(`${LOGGED_OUT_STARTUP}\nFailed to refresh token: 401`), "Failed to refresh token");
+  // FALSE-POSITIVE CONTROLS: a reviewer DISCUSSING the screen, and each half alone, read healthy.
+  assert.equal(authFailureShownIn("• The docs say to choose \"Sign in with ChatGPT\" or connect an API key.\n› Ask Codex to do anything"), null);
+  assert.equal(authFailureShownIn("Sign in with ChatGPT"), null);
+  assert.equal(authFailureShownIn("Welcome to Codex, OpenAI's command-line coding agent"), null);
+  // Positive control for those nulls: the same healthy pane as above, and an invented phrase, are absent.
+  assert.equal(authFailureShownIn("• Reading packages/agent-org/src/wake.mjs\n› Ask Codex to do anything"), null);
+  assert.ok(!LOGGED_OUT_STARTUP.includes("Nothing in codex says this, invented"), "and the fixture can fail: an invented phrase is absent");
 });
 
 /** The codex binary this host runs, or `null` -- the provenance of signal (a)'s text is read FROM IT. */

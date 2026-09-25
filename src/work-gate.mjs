@@ -3980,6 +3980,22 @@ export const CODEX_AUTH_FAILURE_TEXT = Object.freeze([
   "Failed to refresh token",
 ]);
 
+/**
+ * THE LOGGED-OUT STARTUP SCREEN (signal a, second form): what codex 0.157.0's TUI showed at startup on a REJECTED
+ * credential (a deliberately expired, structurally valid fake in a private `CODEX_HOME`, 401), 2026-09-25, read in
+ * tmux. It dropped to onboarding and rendered none of the four phrases above:
+ *   Welcome to Codex, OpenAI's command-line coding agent / Sign in with ChatGPT / or connect an API key
+ * WHAT THIS DOES NOT ESTABLISH: what a pane that loses its login MID-SESSION renders -- the case a running reviewer
+ * meets. It is the startup path only, and `docs/known-gaps.md` §49's refresh race stays unmeasured.
+ * `anchor` is the welcome line and `alsoShows` must be in the same text: "Sign in with ChatGPT" alone is a phrase a
+ * reviewer QUOTES in a review, so neither half fires on its own. A separate list so the four above, whose provenance
+ * test reads the installed binary, are unchanged.
+ */
+export const CODEX_LOGGED_OUT_SCREEN = Object.freeze({
+  anchor: "Welcome to Codex, OpenAI's command-line coding agent",
+  alsoShows: "Sign in with ChatGPT",
+});
+
 const MS_PER_MINUTE = 60_000;
 
 /**
@@ -4023,12 +4039,16 @@ export function readReviewerRegistry(path, read = readFileSync) {
 }
 
 /**
- * The phrase of codex's own auth-failure text a pane shows, or `null`.
+ * The phrase of codex's own auth-failure text a pane shows, or `null`. The logged-out startup screen answers with
+ * its welcome line.
  * @param {string | null | undefined} text
  * @returns {string | null}
  */
 export function authFailureShownIn(text) {
-  return CODEX_AUTH_FAILURE_TEXT.find((phrase) => String(text ?? "").includes(phrase)) ?? null;
+  const shown = String(text ?? "");
+  const { anchor, alsoShows } = CODEX_LOGGED_OUT_SCREEN;
+  const loggedOut = shown.includes(anchor) && shown.includes(alsoShows) ? anchor : null;
+  return CODEX_AUTH_FAILURE_TEXT.find((phrase) => shown.includes(phrase)) ?? loggedOut;
 }
 
 /**
