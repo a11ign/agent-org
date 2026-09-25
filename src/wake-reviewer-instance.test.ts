@@ -142,15 +142,15 @@ test("#2401 (1b): the reviewer's own account is `/home/agent/reviewer/gh`, never
   assert.equal(reviewerEnvironment("reviewer-7", { GH_CONFIG_DIR: "/x" }).GH_CONFIG_DIR, "/x");
 });
 
-test("#2401 (2): a LIVE idle `reviewer-<n>` answers the next head -- the same instance, cleared, no second one", () => {
+test("#2401 (2): a LIVE idle `reviewer-<n>` answers the next head -- the same instance, NOT cleared (#2483), no second one", () => {
   const w = world();
   const told: string[] = [];
   const out = deliver([reviewOrder(2398, "verdict-comment-unreviewed")], agents({ "reviewer-2398": "idle" }), ROSTER,
     { ...w.deps, registerReviewer: (s) => told.push(s) });
-  assert.deepEqual(out.sent, ["reviewer-2398 <- reviewer-2398/verdict-comment-unreviewed/pr-2398/abc12345"]);
+  assert.deepEqual(out.sent, ["reviewer-2398 <- reviewer-2398/verdict-comment-unreviewed/pr-2398/abc12345 (no clear)"]);
   assert.equal(w.h.said("workspace create").length, 0, "no second workspace under a label that exists");
   assert.equal(w.h.said("agent start").length, 0);
-  assert.ok(w.h.said("/clear").length > 0, "context is cleared per pull request before the order is typed");
+  assert.equal(w.h.said("/clear").length, 0, "an instance's context is its one pull request: never cleared (#2483)");
   assert.deepEqual(told, [], "and a reused instance is not re-registered");
 });
 
