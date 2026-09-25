@@ -20,9 +20,15 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { limitResetAt, sessionAllowance, unavailableReason, deliver, deliverHandoffs, escalateStuck, deliveryCounts,
+import { limitResetAt, sessionAllowance, unavailableReason, deliver as settlingDeliver, deliverHandoffs as settlingDeliverHandoffs, escalateStuck, deliveryCounts,
   poolEngineerReason, MAX_DELIVERIES, LIMIT_UNREADABLE_HOLD_MS }
   from "../wake.mjs";
+/** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
+const noSettle = () => {};
+const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: noSettle });
+const deliverHandoffs: typeof settlingDeliverHandoffs = (handoffs, agents, roster, deps) =>
+  settlingDeliverHandoffs(handoffs, agents, roster, { ...deps, sleep: noSettle });
+
 
 const HOUR = 3_600_000;
 const SESSION = "5f0c8e3a-1b2d-4c6e-9a7f-0123456789ab";
