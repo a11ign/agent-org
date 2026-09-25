@@ -213,8 +213,11 @@ function fakeGh(bin: string, tsvLine: string, { failStatus = false } = {}) {
   return log;
 }
 
-function runDoor(session: string | null, tsvLine: string, options: { failStatus?: boolean } = {}) {
+/** `cwd` is a path under the run's own temp dir, made if absent; the default is a directory no reviewer tree could be. */
+function runDoor(session: string | null, tsvLine: string, options: { failStatus?: boolean; cwd?: string } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "pr-review-verdict-"));
+  const cwd = join(dir, options.cwd ?? "elsewhere");
+  mkdirSync(cwd, { recursive: true });
   const bin = join(dir, "bin");
   const log = fakeGh(bin, tsvLine, options);
   const file = join(dir, "verdict.md");
@@ -224,7 +227,7 @@ function runDoor(session: string | null, tsvLine: string, options: { failStatus?
     PATH: `${bin}:${process.env.PATH}` };
   delete env.A11Y_REVIEWER_SESSION;
   if (session !== null) env.A11Y_REVIEWER_SESSION = session;
-  const result = spawnSync("bash", [DOOR, "2105", "not-convinced", file], { env, encoding: "utf8" });
+  const result = spawnSync("bash", [DOOR, "2105", "not-convinced", file], { env, cwd, encoding: "utf8" });
   return { result, calls: existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [], body };
 }
 
@@ -260,6 +263,59 @@ test("#2127: with no session declared the review STILL POSTS, and the door says 
   assert.ok(!calls.some((c) => c.includes("statuses/")), "nothing to attribute it to");
   assert.match(result.stderr, /UNATTRIBUTED/);
   assert.match(result.stderr, /A11Y_REVIEWER_SESSION/);
+});
+
+// --- #2528: THE NAME, DERIVED AT THE DOOR WHEN A RESTORED PANE HAS NONE -----------------------------
+//
+// `herdr.service` restarted at 12:01:57Z on 2026-09-25 and `reviewer-2485`'s `codex resume` began at 12:01:58Z without the
+// `--env` the tick gave the original, so its verdicts carried no `review/reviewer-<n>` status. Every case below unsets
+// `A11Y_REVIEWER_SESSION` and varies only WHERE the door runs. Before this change every one of them printed UNATTRIBUTED.
+
+const statusOf = (calls: string[]) => calls.find((c) => c.includes("statuses/"));
+
+test("#2528 (1): unset, run in `reviews/reviewer-<n>` for THIS pull request -> attributed to it, and stderr says how", () => {
+  const { result, calls } = runDoor(null, TSV, { cwd: "reviews/reviewer-2105" });
+  assert.equal(result.status, 0, result.stderr);
+  const status = statusOf(calls);
+  assert.ok(status, `no attribution status written: ${calls.join(" | ")}`);
+  assert.ok(status!.includes(`context=${attributionContext("reviewer-2105")}`), status!);
+  assert.match(result.stderr, /derived `reviewer-2105` from the checkout/);
+  assert.doesNotMatch(result.stderr, /UNATTRIBUTED/);
+});
+
+test("#2528 (1): a SUBDIRECTORY of that tree derives the same name -- the pane may have `cd`-ed", () => {
+  const { calls } = runDoor(null, TSV, { cwd: "reviews/reviewer-2105/packages/agent-org" });
+  assert.ok(statusOf(calls)!.includes(`context=${attributionContext("reviewer-2105")}`));
+});
+
+test("#2528 (1): NOT derivable -> the #2127 behaviour is unchanged: posts, no status, UNATTRIBUTED", () => {
+  for (const cwd of [
+    "elsewhere",                       // no reviewer tree at all
+    "reviews/reviewer-2126",           // ANOTHER pull request's instance must not sign for #2105
+    "reviews/reviewer-21050",          // a prefix of the number is not the number
+    "work/reviewer-2105",              // the name without the `reviews` root is a guess
+    "reviews/reviewer-2105-old/x",     // and so is a longer name
+  ]) {
+    const { result, calls } = runDoor(null, TSV, { cwd });
+    assert.equal(result.status, 0, `${cwd}: ${result.stderr}`);
+    assert.ok(calls.some((c) => c.startsWith("pr review 2105 ")), `${cwd}: the review must still post`);
+    assert.equal(statusOf(calls), undefined, `${cwd}: derived a name it had no proof of`);
+    assert.match(result.stderr, /UNATTRIBUTED/, cwd);
+  }
+});
+
+test("#2528 (2): a derived name still needs the exact-body proof -- another session's newest review is NOT labelled", () => {
+  const otherBody = "**Review of #2105 at `e1b8b7bc`, by reviewer-2126: convinced.**";
+  const tsv = `https://github.com/a11ign/a11ign/pull/2105#pullrequestreview-1\tdeadbeef\t${otherBody}`;
+  const { result, calls } = runDoor(null, tsv, { cwd: "reviews/reviewer-2105" });
+  assert.equal(result.status, 0);
+  assert.equal(statusOf(calls), undefined, "it would have attributed somebody else's review");
+  assert.match(result.stderr, /not the one just posted/);
+});
+
+test("#2528: a session the tick DID give the pane wins over the checkout -- derivation fills a gap, never overrides", () => {
+  const { calls } = runDoor("reviewer-9", TSV, { cwd: "reviews/reviewer-2105" });
+  assert.ok(statusOf(calls)!.includes(`context=${attributionContext("reviewer-9")}`));
 });
 
 test("#2127: a review that is not the newest one back from GitHub is NOT attributed -- the door never "

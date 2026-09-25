@@ -19,7 +19,9 @@
 #
 # Usage: pr-review-verdict <pr-number> <convinced|not-convinced> <verdict-comment-file>
 # Env:   A11Y_REVIEWER_SESSION  the org session name posting this review (`reviewer-<n>` for pull request n, #2401).
-#                               Without it the review still posts, UNATTRIBUTED and loudly.
+#                               Unset, the door derives `reviewer-<n>` from the checkout it runs in when that checkout
+#                               IS `.../reviews/reviewer-<n>` for THIS pull request (#2528); where it cannot, the review
+#                               still posts, UNATTRIBUTED and loudly.
 set -euo pipefail
 
 REPO=a11ign/a11ign
@@ -38,9 +40,30 @@ esac
 body="$(head -n 1 "$file")"
 [[ "$body" == "**Review of #$n at "* ]] || { echo "pr-review-verdict: first line of '$file' is not the verdict line for #$n" >&2; exit 2; }
 
+# THE NAME, WHEN THE PANE WAS NOT GIVEN ONE (#2528). A pane herdr restores itself is not started by the tick, so it holds
+# no `A11Y_REVIEWER_SESSION` (`herdr.service` restarted at 12:01:57Z on 2026-09-25 and `reviewer-2485`'s `codex resume`
+# began a second later). The one place every path converges is this door, so the name is closed here. DERIVED FROM THE
+# CHECKOUT, NEVER FROM THE PR NUMBER ALONE: any session can be handed a pull request number, but only the instance for
+# pull request n runs in `<root>/reviews/reviewer-<n>` (`reviewCheckoutPath` in wake.mjs). Prints the name, or nothing.
+derive_session() {
+  local dir; dir="$(pwd -P)"
+  while [[ "$dir" != / && -n "$dir" ]]; do
+    if [[ "$(basename "$dir")" == "reviewer-$n" && "$(basename "$(dirname "$dir")")" == reviews ]]; then
+      echo "reviewer-$n"
+      return 0
+    fi
+    dir="$(dirname "$dir")"
+  done
+}
+
 # Records who posted the review that carries `$body`. Returns non-zero when it could not, having said why.
 attribute() {
   local session="${A11Y_REVIEWER_SESSION:-}"
+  if [[ -z "$session" ]]; then
+    session="$(derive_session)"
+    [[ -z "$session" ]] || echo "pr-review-verdict: A11Y_REVIEWER_SESSION is unset; derived \`$session\` from the checkout" \
+      "$(pwd -P) (#2528). The read-back below still has to prove the review is ours before it is labelled." >&2
+  fi
   if [[ -z "$session" ]]; then
     echo "pr-review-verdict: A11Y_REVIEWER_SESSION is unset -- review on #$n posted UNATTRIBUTED." \
          "Nothing but the review's own prose can say which session reviewed it (#2127)." >&2
