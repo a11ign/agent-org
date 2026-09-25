@@ -48,14 +48,14 @@ import { MAX_ROW_ORDERS_PER_TICK, readCommitChain, withCommitChains, decide, che
   blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL,
   ANSWER_PREFIX, redOnlyBySupersededRun, cannotAskReport,
   readRowBranches, rowBranchOrders, GIT_READS,
-  reviewStateOf, reviewBlocked, reviewBlockedOrders, REVIEW_STATE }
+  reviewStateOf, reviewBlocked, reviewBlockedOrders, REVIEW_STATE, HOLD_RED_JOBS }
   from "../work-gate.mjs";
 // #2182: the SHIPPED reader that decides whether a delivered cause is still live, imported so this file
 // can assert what the membership BUYS rather than only that the name is in the list. `wake.mjs` runs
 // nothing on import (its `main()` is behind an `import.meta.url` guard) and these three are pure, so this
 // costs the `no-token` promise at the top of this file nothing.
-import { readLedger, undelivered, addressed, WAKE_TTL_MS, JUDGMENT_TTL_MS }
-  from "../wake.mjs";
+import { readLedger, undelivered, addressed, WAKE_TTL_MS, JUDGMENT_TTL_MS, deliver, escalateStuck,
+  MAX_DELIVERIES } from "../wake.mjs";
 // #2237: the decider that REFUSES a launch, so the order's named launch directory is checked against it
 // rather than read by a reviewer. Pure over an injected filesystem.
 import { primaryLaunchRefusal, launchCheckoutOf }
@@ -1123,6 +1123,91 @@ test("a real FAILURE beside a CANCELLED one is red even while something runs -- 
     "only a cancellation is no-verdict; a failure has answered");
   assert.equal(redOnlyBySupersededRun([cancelled], [cancelled]), false, "nothing running: the last word");
   assert.equal(redOnlyBySupersededRun([], running), false, "no red at all is not this function's case");
+});
+
+/**
+ * #2400: A HOLD IS AN ANSWER. #2376 carried `hold:product-manager` on purpose; the hold turned `deliberateRefusals`
+ * red and `gate` with it, and the gate ordered `product-manager` to fix a cause it had itself placed -- 35 times,
+ * then `needs:chairman`. The fixture is that PR's shape: no `session:` label, so the addressee is `product-manager`.
+ */
+const HELD_RED = [["deliberateRefusals", "FAILURE"], ["gate", "FAILURE"], ["ts / run", "SUCCESS"]] as [string, string][];
+const heldPr = (labels: string[], checks: [string, string][] = HELD_RED) => ({ number: 2376, isDraft: true,
+  headRefOid: "b7fd42fe00000000", author: { login: "x" }, labels: labels.map((name) => ({ name })), comments: [],
+  statusCheckRollup: rollupOf(checks) });
+const failingOrders = (pr: unknown, required: string[] | null) =>
+  (decide({ prs: [pr], readyRows: [], required }) as { cause: string, session: string, causeKey: string, prompt: string }[])
+    .filter((o) => o.cause === "pr-checks-failing");
+
+test("a PR red ONLY from its addressee's own hold generates no failing-checks order -- #2400", () => {
+  // BOTH required-set spellings: with `gate` the only required check the blocking set is `[gate]`, and `null`
+  // (unreadable) counts every check, so the exemption has to hold on each.
+  for (const required of [["gate"], null]) {
+    assert.deepEqual(failingOrders(heldPr(["hold:product-manager"]), required), [],
+      `hold:product-manager and only deliberateRefusals + gate red (required=${JSON.stringify(required)})`);
+  }
+});
+
+test("the same two red jobs WITHOUT the hold still order -- the null is the exemption, not an empty rollup", () => {
+  // THE POSITIVE CONTROL (clause 4), and also "the hold is removed": the order comes back on the next tick.
+  for (const required of [["gate"], null]) {
+    const [order, ...rest] = failingOrders(heldPr([]), required);
+    assert.equal(rest.length, 0);
+    assert.equal(order?.session, "product-manager");
+    assert.equal(order?.causeKey, "product-manager/pr-checks-failing/pr-2376/b7fd42fe");
+  }
+});
+
+test("a THIRD red job ends the exemption, so a real failure under a hold still reaches its session", () => {
+  const real: [string, string][] = [["deliberateRefusals", "FAILURE"], ["gate", "FAILURE"], ["ts / run", "FAILURE"]];
+  for (const required of [["gate"], null]) {
+    const [order] = failingOrders(heldPr(["hold:product-manager"], real), required);
+    assert.equal(order?.causeKey, "product-manager/pr-checks-failing/pr-2376/b7fd42fe",
+      `required=${JSON.stringify(required)}: with gate the only REQUIRED check, reading the blocking set alone `
+      + "would have called this the hold's doing");
+  }
+  const noHoldRed: [string, string][] = [["gate", "FAILURE"], ["changeset", "FAILURE"]];
+  assert.equal(failingOrders(heldPr(["hold:product-manager"], noHoldRed), ["gate"]).length, 1,
+    "a hold does not excuse a red gate whose cause is not the hold (deliberateRefusals is green here)");
+});
+
+test("only the ADDRESSEE's own hold is an answer from it -- #2400", () => {
+  assert.equal(failingOrders(heldPr(["hold:ceo"]), ["gate"]).length, 1,
+    "held by ceo, addressed to product-manager: product-manager has answered nothing");
+  const labelled = (...labels: string[]) => heldPr(["session:worker-5", ...labels]);
+  const [routed] = failingOrders(labelled("hold:product-manager"), ["gate"]);
+  assert.equal(routed?.session, "worker-5", "a PR with a session label is addressed to that session");
+  assert.deepEqual(failingOrders(labelled("hold:worker-5"), ["gate"]), [], "worker-5 holding its own PR");
+  assert.deepEqual(failingOrders(labelled("hold:ceo", "hold:worker-5"), ["gate"]), [],
+    "two holders, one of them the addressee");
+});
+
+test("HOLD_RED_JOBS names the jobs ci.yml defines, so the exemption cannot go stale on a rename", () => {
+  const ci = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../../../.github/workflows/ci.yml"), "utf8");
+  assert.deepEqual([...HOLD_RED_JOBS], ["deliberateRefusals", "gate"]);
+  for (const job of HOLD_RED_JOBS) assert.match(ci, new RegExp(`\\n {2}${job}:\\n`), `${job} is a job in ci.yml`);
+});
+
+/**
+ * Clauses 3 and 5: the escalation is read off what `deliver` is HANDED, so an order never emitted cannot reach the
+ * breaker at all. The wake half is driven with the ledger already at the cap, which is #2376's state.
+ */
+test("a held PR at the cap stops appearing in stuck, and a real failure under the same hold still escalates -- #2400", () => {
+  const at = (checkNames: [string, string][]) => {
+    const orders = failingOrders(heldPr(["hold:product-manager"], checkNames), ["gate"]);
+    const counts = new Map(orders.map((o) => [o.causeKey, MAX_DELIVERIES]));
+    const calls: string[][] = [];
+    const { sent, stuck } = deliver(orders, [], [], { counts, run: () => { throw new Error("nothing may be sent"); } });
+    const labelled = escalateStuck(stuck, (a: string[]) => { calls.push(a); return ""; }, () => {});
+    return { orders, sent, stuck, labelled, calls };
+  };
+  const held = at(HELD_RED);
+  assert.deepEqual([held.orders, held.stuck, held.labelled, held.calls], [[], [], [], []],
+    "no order, so no stuck line, so no needs:chairman");
+  const real = at([["deliberateRefusals", "FAILURE"], ["gate", "FAILURE"], ["changeset", "FAILURE"]]);
+  assert.equal(real.orders.length, 1, "POSITIVE CONTROL: the order exists");
+  assert.equal(real.stuck.length, 1, "and at the cap it is stuck, by the ordinary count");
+  assert.deepEqual(real.labelled, [2376]);
+  assert.deepEqual(real.calls, [["issue", "edit", "2376", "--add-label", "needs:chairman"]]);
 });
 
 test("the expensive question is asked only when something is red", () => {
