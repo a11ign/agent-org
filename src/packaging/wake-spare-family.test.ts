@@ -130,7 +130,7 @@ test("#2403: ONE spawn per tick still holds, and an instance that exists is OFFE
   assert.deepEqual(route("engineers", idle, withSpareInstances(REAL_ROSTER, idle)), { label: "worker-12" });
   const offered = recordingHerdr();
   assert.deepEqual(deliver([ROW_ORDER], idle, REAL_ROSTER, { run: offered.run }).sent,
-    ["worker-12 <- engineers/ready-row-unclaimed/2403"]);
+    ["worker-12 <- engineers/ready-row-unclaimed/2403 (no clear)"]);
   assert.deepEqual(offered.said("workspace create"), []);
   // Numeric, not lexical, order: worker-9 comes before worker-10.
   assert.deepEqual(withSpareInstances([], agents({ "worker-10": "idle", "worker-9": "idle", ceo: "idle" })),
