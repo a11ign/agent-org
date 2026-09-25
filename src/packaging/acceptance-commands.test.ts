@@ -29,6 +29,7 @@ import {
   handRunDeclaration, handRunAcceptanceReason, handRunEvidence,
   testFilesAmong, mutationRecordReport, changedFilesOfThisPullRequest, measuredSectionReport,
   acceptancePathsReason, declaredNewFiles, unresolvedAcceptancePaths,
+  declaredFleetAnswer,
 } from "../acceptance-commands.mjs";
 import { withGitSandbox, sandboxGitEnv } from "../../../../scripts/test-support/git-sandbox.ts";
 
@@ -3324,4 +3325,62 @@ test("#2192: on the REAL tree, #2068's own body is refused and names the real te
   assert.ok(!existsSync(TYPO), "the typo is only a control while the file is genuinely absent");
   const reason = acceptancePathsReason(copiedIntoBoth(TYPO), "row-file", { regionEntries: [TYPO] });
   assert.ok(reason?.includes(REAL_TWIN));
+});
+
+/**
+ * #2175: THE ROW'S OWN ANSWER TO "Does the acceptance need the fleet or the lab?" IS READ, AND ONLY WHEN IT
+ * IS UNAMBIGUOUS.
+ *
+ * The forms below are the ones the filed population uses -- measured 2026-09-25 over the 400 most recent
+ * rows (151 carry the section): the template's own three dropdown lines, a bold-led `**No.**`, and the
+ * `**Neither.**` / `**Both**` / `The lab only` prose the template does not offer. NAMED, not inferred: the
+ * first word decides, from a short list somebody chose, because a reader that guesses at prose is the
+ * lane deriver's own defect (#1241) moved one section along.
+ */
+const FLEET_HEADING = "## Does the acceptance need the fleet or the lab?\n\n";
+
+test("#2175: a leading No/Neither reads as no, and a leading Yes/Both reads as yes, in every form the population uses", () => {
+  const declared = {
+    "No — completable offline, start now": "no",
+    "**No.** Everything is driven through injected seams.": "no",
+    "No. One source file and its test, both offline.": "no",
+    "**Neither.** The change is to the evaluator and its unit tests.": "no",
+    "Yes — cannot start until the orchestrator frees a worker": "yes",
+    "**Yes: one guest.** orchestrator's to run.": "yes",
+    "**Both, and in that order.** Clause 1 needs a CAPTURE.": "yes",
+    "no": "no",
+  } as const;
+  for (const [answer, expected] of Object.entries(declared)) {
+    assert.equal(declaredFleetAnswer(`${FLEET_HEADING}${answer}\n`), expected, answer);
+  }
+});
+
+test("#2175: anything that is not an unambiguous No or Yes is UNDECLARED, never guessed at", () => {
+  // The positive control for every null below is the previous test: the same reader, over the same
+  // heading, answers `no` and `yes` for the forms that ARE unambiguous.
+  const undeclared = [
+    "Partly — offline step given above, fleet step named as what remains",
+    "The lab only -- `training:generate` touches no worker.",
+    "**It needs the corpus and the scorer, not a Windows worker.**",
+    "Reading which fields are affected does not (this row's evidence is offline).",
+    "Not applicable.",
+    "Nobody reaches a worker from this row.",
+    "No-op on the fleet, real on the lab.",
+    "None.",
+    "",
+  ];
+  for (const answer of undeclared) {
+    assert.equal(declaredFleetAnswer(`${FLEET_HEADING}${answer}\n`), null, JSON.stringify(answer));
+  }
+});
+
+test("#2175: the answer is read from ITS section only -- a body without the section, or with the answer under another heading, is undeclared", () => {
+  assert.equal(declaredFleetAnswer("## Acceptance\n\n```\nnpx rstest run\n```\n"), null, "no section at all");
+  assert.equal(declaredFleetAnswer(`${FLEET_HEADING}## Open-check\n\nNo.\n`), null,
+    "an empty section is not answered by the `No.` under the NEXT heading");
+  assert.equal(declaredFleetAnswer("## Acceptance\n\nNo. This is the Acceptance and not the question.\n"), null,
+    "a `No.` elsewhere in the body is not the declaration");
+  assert.equal(declaredFleetAnswer("## Does the acceptance need the fleet or the lab\n\nYes.\n"), "yes",
+    "and the heading without its question mark is still the heading -- the control for the nulls above");
+  assert.equal(declaredFleetAnswer(undefined as unknown as string), null, "an absent body is undeclared, never a crash");
 });
