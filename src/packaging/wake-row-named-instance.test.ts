@@ -128,7 +128,7 @@ test("#2469 ACCEPTANCE (2): an instance running as worker-4 is not renamed, and 
   const named = { ...orderFor(2469), session: "worker-4", causeKey: "worker-4/review-answer/2469" };
   const h = recordingHerdr();
   const got = deliver([named], running, REAL_ROSTER, { run: h.run });
-  assert.deepEqual(got.sent, ["worker-4 <- worker-4/review-answer/2469"]);
+  assert.deepEqual(got.sent, ["worker-4 <- worker-4/review-answer/2469 (no clear)"]);
   assert.deepEqual(got.refused, []);
   assert.deepEqual(h.said("workspace create"), [], "delivered to the running instance, not to a new one");
   assert.deepEqual(h.said("rename"), []);
@@ -218,7 +218,7 @@ test("#2469 (4b): a drained address is not spawned into either, and an IDLE hold
   const idle = agents({ ...Object.fromEntries(STANDING.map((r) => [r, "working"])), "worker-2469": "idle" });
   const h = recordingHerdr();
   const sent = deliver([orderFor(2469)], idle, REAL_ROSTER, { run: h.run });
-  assert.deepEqual(sent.sent, ["worker-2469 <- engineers/ready-row-unclaimed/2469"]);
+  assert.deepEqual(sent.sent, ["worker-2469 <- engineers/ready-row-unclaimed/2469 (no clear)"]);
   assert.deepEqual(h.said("workspace create"), []);
 });
 
