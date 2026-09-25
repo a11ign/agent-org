@@ -20,7 +20,8 @@ const PRACTICES = readLoadedRules();
 // #2356: THE GATE'S ORDERS ARE BUILT IN MORE THAN ONE FILE NOW. `trunk-red.mjs` builds the red-trunk order and
 // `work-gate.mjs` imports it, so a scan of the gate alone would report `trunk-red` as a profile for a cause
 // nothing emits. Both are read, and the positive control below asserts the second one was actually found.
-const GATE = ["work-gate.mjs", "trunk-red.mjs"]
+// #2470: AND `claim-stall.mjs` BUILDS THE `claim-stalled` ORDERS, for the same reason.
+const GATE = ["work-gate.mjs", "trunk-red.mjs", "claim-stall.mjs"]
   .map((f) => readFileSync(new URL(`../${f}`, import.meta.url), "utf8")).join("\n");
 
 /** The two shapes `profileFor` and `spawnInvocation` return, and narrowing that ASSERTS rather than casts. */
@@ -44,6 +45,7 @@ test("every cause work-gate can actually emit has a profile, and nothing else do
   const emitted = [...GATE.matchAll(/cause: "([a-z-]+)"/g)].map((m) => m[1]).sort();
   assert.ok(emitted.length > 0, "read no causes out of work-gate.mjs -- this guard cannot see its population");
   assert.ok(emitted.includes("trunk-red"), "and it must have read the second emitter, `trunk-red.mjs`, too");
+  assert.ok(emitted.includes("claim-stalled"), "and the third, `claim-stall.mjs` (#2470), whose orders are built beside its reading");
   assert.deepEqual(Object.keys(PROFILES).sort(), [...new Set(emitted)].sort(),
     "a cause work-gate emits with no profile refuses at run time, and a profile for a cause that no "
     + "longer exists is a routing decision nothing will ever read");

@@ -347,6 +347,19 @@ export const PROFILES = Object.freeze({
     why: "the gate has already read the filesystem and named the low resource; the output is a decision about "
       + "what to remove, and a full disk is the one fault that stops every session at once",
   }),
+  "claim-stalled": Object.freeze({
+    kind: "claude",
+    // SONNET AND MEDIUM, AND THE RECIPIENT IS THE HOLDER, so this is the profile a spawned worker would take if one ever were
+    // (#2470; a nudge names a session that already exists and a release names nobody). The gate has already read the row, the
+    // branch, the worktree and the interval, and the woken turn does one of three one-command things: commit or push what it
+    // has, comment on the row, or write the reason it cannot in a FIELD. That is a short judgment over a stated fact, not the
+    // multi-step build `blocker-cleared` asks for -- the session is mid-build with its context loaded -- and not diagnosis from
+    // an absence, so `org-stalled`'s `high` would be paid for nothing.
+    model: "sonnet",
+    effort: "medium",
+    why: "the gate has already read the claim and named what has not moved; the output is one commit, push or comment, "
+      + "or a declared wait, by a session that is mid-build with its context loaded",
+  }),
   "chairman-blocked": Object.freeze({
     kind: "claude",
     model: "sonnet",

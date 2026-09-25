@@ -897,8 +897,10 @@ test("every cause is classified as START or FINISH -- a new one cannot default i
   // `START_CAUSES` was split out to prevent.
   // #2416: `awaiting-evidence-stale` is FINISH: its subject is a pull request already open and waiting on a run,
   // which a window that is landing in-flight work cares about, and it takes on nothing new.
-  assert.deepEqual(finish, ["answer-owed", "awaiting-evidence-stale", "blocker-cleared", "chairman-blocked", "claimed-row-amended",
-    "disk-headroom-low", "draft-awaiting-verdict", "draft-convinced-not-ready", "host-units-stale", "pr-checks-failing",
+  // #2470: `claim-stalled` is FINISH, and an ACTION cause (in `JUDGMENT_CAUSES` neither): its subject is a row a session already
+  // holds, which a drain exists to land, and a release only returns the row to a pool that a drain already withholds.
+  assert.deepEqual(finish, ["answer-owed", "awaiting-evidence-stale", "blocker-cleared", "chairman-blocked", "claim-stalled",
+    "claimed-row-amended", "disk-headroom-low", "draft-awaiting-verdict", "draft-convinced-not-ready", "host-units-stale", "pr-checks-failing",
     "pr-green-unarmed", "pr-merge-conflict", "pr-review-blocked", "reviewer-auth-failed",
     "row-branch-unshipped", "trunk-red", "verdict-comment-unreviewed", "verdict-not-convinced"]);
   for (const cause of START_CAUSES) {
