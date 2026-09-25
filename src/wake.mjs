@@ -60,7 +60,7 @@ import { fileOverlapReason, lookupMyRegionFiles, lookupOpenPrFiles } from "./row
 import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
 // #2470: THE PURE HALF OF A CLAIM THAT DOES NOT MOVE -- a leaf, so `work-gate.mjs` and this file both import it and neither imports the other's
 // half. What is performed here is the part that needs a pane, a process or a row: the release, the resume, the re-send.
-import { workAtRisk, gitRun, pathExists, statMtime, readStallState, KEPT_CLAIMS_FILE, RESTART_STATE_FILE, RESTART_RESEND_WINDOW_MS,
+import { workAtRisk, gitRun, pathExists, statMtime, KEPT_CLAIMS_FILE, RESTART_STATE_FILE, RESTART_RESEND_WINDOW_MS,
   readHerdrRestart, paneInterrupted, killedDeliveries, writeJsonObject, readJsonObject, INTERRUPTED_TEXT } from "./claim-stall.mjs";
 
 /**
@@ -2080,7 +2080,7 @@ export function holderOf(ref, run = defaultGh) {
  * head it names may have moved, and `update-branch` invalidates a verdict sha. Silently handing over a
  * stale order would trade one invisible failure for another.
  *
- * @param {{id: string, session: string, prompt: string, queuedAt?: number}} handoff @param {number} [now]
+ * @param {{id: string, session: string, prompt: string, queuedAt?: number, resume?: boolean}} handoff @param {number} [now]
  */
 export function handoffOrder(handoff, now = Date.now()) {
   const waited = waitedFor(now - Number(handoff.queuedAt ?? now));
@@ -2369,7 +2369,7 @@ export function decisionHeader(take) {
  * single stale order -- *"re-read anything it names, a head may have moved"* -- at the scale that
  * actually occurred.
  *
- * @param {readonly {session: string, prompt: string, queuedAt?: number, decision?: boolean}[]} take
+ * @param {readonly {session: string, prompt: string, queuedAt?: number, decision?: boolean, resume?: boolean}[]} take
  * @param {readonly unknown[]} held @param {number} now
  */
 function batchedOrder(take, held, now) {
@@ -4427,7 +4427,7 @@ export function performClaimReleases(requests, agents, { ledgerPath, host, now =
 
 /** @param {string} path @returns {Record<string, KeptClaim>} */
 export function readKeptClaims(path) {
-  return /** @type {Record<string, KeptClaim>} */ (readStallState(path));
+  return /** @type {Record<string, KeptClaim>} */ (readJsonObject(path));
 }
 
 /** @param {string} path @param {Record<string, KeptClaim>} kept */
@@ -4861,7 +4861,7 @@ function escalationMemory(ledgerPath, unavailable) {
  * asks nobody anything, so it never reaches the ledger or `deliver`, and the gate emits it again next tick until the label is off. FIRST, before
  * anything is delivered, because it changes who holds which row and everything after reads that.
  *
- * @template {{ release?: import("./claim-stall.mjs").ReleaseRequest }} O
+ * @template {{ causeKey: string, release?: import("./claim-stall.mjs").ReleaseRequest }} O
  * @param {O[]} orders @param {{label: string, status: string}[]} agents
  * @param {{ ledgerPath: string, hostLayout: { worktreesDir: string, primary: string } }} where
  * @returns {O[]}

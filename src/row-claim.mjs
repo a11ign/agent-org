@@ -1167,7 +1167,8 @@ function rowBranchRefusal(issueNumber, found) {
  * `branch`, which is the author's free choice, so two sessions picking different slugs collided with nothing.
  * The fourth NAMES NO OWNER, deliberately, so that it spends nothing: a `gh` read here would be a GraphQL call on
  * the one path whose whole premise is an exhausted GraphQL pool. `rowBranchRefusal` carries the full reasoning.
- * @param {{ branch: string, worktree: string, issueNumber: number }} target
+ * @param {{ branch: string, worktree: string, issueNumber: number, adopt?: string }} target
+ *   `adopt` (#2470) names the session whose EXISTING tree this claim takes in place -- see {@link adoptionReason}
  * @param {{ run?: typeof defaultRun, exists?: (path: string) => boolean, owner?: (worktree: string) => string | null }} [deps]
  * @returns {string | null} the refusal, or null to go ahead
  */

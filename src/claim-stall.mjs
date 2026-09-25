@@ -451,18 +451,20 @@ export function nextStallState(before, readings, now) {
 
 /**
  * Write a memory ATOMICALLY (a temp file and a rename), because two processes read these files -- the gate and the tick -- and a
- * half-written one must read as the previous one, not as `{}`.
- * @param {string} path @param {object} state @param {typeof writeFileSync} [write]
+ * half-written one must read as the previous one, and never as an empty object.
+ * @param {string} path
+ * @param {object} state
+ * @param {(path: string, data: string) => void} [writer] a seam, so a test writes nowhere
  */
-export function writeJsonObject(path, state, write = writeFileSync) {
+export function writeJsonObject(path, state, writer = writeFileSync) {
   mkdirSync(dirname(path), { recursive: true });
-  write(`${path}.tmp`, `${JSON.stringify(state)}\n`);
+  writer(`${path}.tmp`, `${JSON.stringify(state)}\n`);
   renameSync(`${path}.tmp`, path);
 }
 
-/** @param {string} path @param {StallState} state @param {typeof writeFileSync} [write] */
-export function writeStallState(path, state, write = writeFileSync) {
-  writeJsonObject(path, state, write);
+/** @param {string} path @param {StallState} state @param {(path: string, data: string) => void} [writer] */
+export function writeStallState(path, state, writer = writeFileSync) {
+  writeJsonObject(path, state, writer);
 }
 
 // --- THE ORDERS -----------------------------------------------------------------------------------------------------

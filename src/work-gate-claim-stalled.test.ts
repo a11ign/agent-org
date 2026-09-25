@@ -252,9 +252,9 @@ test("#2470 a second reading with nothing moved RELEASES; with something moved i
   const later = NOW + STALL_INTERVAL_MS + MIN;
   const second = tickWith({ commit: null }, comments, { memory: { ...memory }, now: later });
   assert.equal(second.orders.length, 1);
-  assert.equal(second.orders[0].release.why, "stalled");
-  assert.equal(second.orders[0].release.row, 2407);
-  assert.equal(second.orders[0].release.session, "worker-7");
+  assert.equal(second.orders[0].release!.why, "stalled");
+  assert.equal(second.orders[0].release!.row, 2407);
+  assert.equal(second.orders[0].release!.session, "worker-7");
 
   // THE CONTROL, one thing changed: a commit AFTER the nudge and the same second reading releases nothing.
   const moved = tickWith({ commit: 60 }, comments, { memory: { ...memory }, now: later });
@@ -308,8 +308,8 @@ test("#2470 (11f) the no-progress clock starts no earlier than the restart: a se
 test("#2470 (8) a claim whose row has an OPEN blockedBy edge and whose holder holds nothing is released at once, naming the edge", () => {
   const blocked = tickWith({ commit: null, refExists: false, worktreeExists: false }, [claim(20)], { blockedBy: [2258] });
   assert.equal(blocked.orders.length, 1);
-  assert.equal(blocked.orders[0].release.why, "blocked");
-  assert.deepEqual(blocked.orders[0].release.edges, [2258]);
+  assert.equal(blocked.orders[0].release!.why, "blocked");
+  assert.deepEqual(blocked.orders[0].release!.edges, [2258]);
   assert.match(blocked.orders[0].prompt, /blocked by #2258/);
 });
 
@@ -334,9 +334,9 @@ test("#2470 (10) a MERGED `Closes: none` pull request on the claimed branch rele
   const merged = [{ number: 2497, headRefName: BRANCH, mergedAt: iso(ago(30)) }];
   const { orders } = tickWith({ commit: 40, push: 40 }, [claim(600)], { merged });
   assert.equal(orders.length, 1);
-  assert.equal(orders[0].release.why, "merged");
-  assert.equal(orders[0].release.answer, "product-manager", "the gate sets the answer at the merge, not by hand");
-  assert.equal(orders[0].release.mergedPr, 2497);
+  assert.equal(orders[0].release!.why, "merged");
+  assert.equal(orders[0].release!.answer, "product-manager", "the gate sets the answer at the merge, not by hand");
+  assert.equal(orders[0].release!.mergedPr, 2497);
 });
 
 test("#2470 (10) POSITIVE CONTROLS: a second open PR, unpushed work, a PR merged BEFORE the claim, or a different branch's do not release", () => {
@@ -528,7 +528,7 @@ function releaseHost(o: { world?: World; spare?: boolean; agents?: { label: stri
   const execs: { cmd: string; args: string[]; cwd: string }[] = [];
   const gh: string[][] = [];
   const warns: string[] = [];
-  const cycles: { role: string; row: number | null; clean: boolean; released?: string; rows?: number[]; why: string }[] = [];
+  const cycles: Parameters<ReleaseDeps["cycle"]>[0][] = [];
   const kept: Record<number, unknown> = {};
   const dropped: string[] = [];
   const h = host(o.world ?? {});
@@ -788,7 +788,7 @@ test("#2470 (9) an interrupted pane yields a RESUME order -- a plain prompt, que
     assert.equal((queued[0] as { resume?: boolean }).resume, true, "queued as a RESUME: delivered plain");
     assert.match(queued[0].prompt, /NOTHING WAS CLEARED/);
     assert.match(queued[0].prompt, new RegExp(INTERRUPTED_TEXT));
-    assert.equal(handoffBatches(queued)[0].resume, true, "and the delivery order carries the flag to `deliver`");
+    assert.equal((handoffBatches(queued)[0] as { resume?: boolean }).resume, true, "and the delivery order carries the flag to `deliver`");
 
     // IDEMPOTENT: the same pane one tick later is not resumed again inside a wake window, and IS once the window has passed.
     const again = recoverInterruptedWork({ agents, ledgerPath: ledger, now: NOW + 2 * MIN, restartAt: null, moved: () => true, log: () => {},
@@ -898,7 +898,7 @@ test("#2470 (11b) an AUTHORED order is re-sent from its retained text as a fresh
     const live = readHandoffs(queue);
     assert.deepEqual(live.map((h) => [h.session, h.prompt]), [["worker-9", "Please close out #2220."]]);
     assert.equal((live[0] as { resume?: boolean }).resume, true);
-    assert.equal(handoffBatches(live)[0].resume, true);
+    assert.equal((handoffBatches(live)[0] as { resume?: boolean }).resume, true);
   });
   // THE CONTROL, one thing changed: a target that MOVED is left alone, and nothing is queued for it.
   withState((dir) => {
