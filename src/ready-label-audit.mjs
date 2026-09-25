@@ -84,6 +84,15 @@ export { READY_LABEL, WAS_READY_LABEL };
 const BACKLOG_LABEL = "backlog";
 
 /**
+ * #2150: the Project Status option that says the same thing as the `ready` label -- the name
+ * `row-file.mjs` writes on a promotion (its own `READY_STATUS`, which is not exported and whose module
+ * runs an act on import, so it is restated here rather than imported). `vocabularyDrift`
+ * (`board-status-health.mjs`) holds `"Ready"` in `WRITTEN_STATUSES`, so a board that stopped offering it
+ * is reported there; this constant only has to match what the board offers.
+ */
+const READY_STATUS = "Ready";
+
+/**
  * Every label that already means "not actually pickable", independent of `ready`.
  *
  * `in-progress` USED TO belong here (#246), and #673 split it out into its own check
@@ -924,6 +933,120 @@ function reportBothBoardLabels() {
     + `removed. Remove \`${BACKLOG_LABEL}\` -- never \`${READY_LABEL}\`: the promotion is the later, `
     + `deliberate act. Then promote through the one act that writes all three together, which cannot leave `
     + `this state: \`node packages/agent-org/src/row-file.mjs --promote=<n> --session=<you>\`.\n`);
+  return rows.length;
+}
+
+/**
+ * #2150: the three ways a row's board Status and its `ready` label can disagree, named so the report can
+ * give each its own remedy. Two directions, and the first is split in two because its cause is known when
+ * `backlog` is on the row and unknown when it is not.
+ */
+export const STATUS_LABEL_KINDS = Object.freeze({
+  /** Status `Ready`, labels say `backlog` and not `ready`: the promotion act stopped between its writes. */
+  INTERRUPTED_PROMOTION: "interrupted-promotion",
+  /** Status `Ready`, labels say neither `ready` nor `backlog`: somebody moved one field by hand. */
+  STATUS_READY_LABEL_ABSENT: "status-ready-label-absent",
+  /** `ready` on the labels, Status anything else: somebody moved one field by hand. */
+  LABEL_READY_STATUS_ELSEWHERE: "label-ready-status-elsewhere",
+});
+
+/**
+ * @param {string} status a non-null board Status @param {string[]} labels
+ * @returns {string | null} one of `STATUS_LABEL_KINDS`, or `null` when the two agree
+ */
+function statusLabelKind(status, labels) {
+  const labelSaysReady = labels.includes(READY_LABEL);
+  const statusSaysReady = status === READY_STATUS;
+  if (statusSaysReady && !labelSaysReady) {
+    return labels.includes(BACKLOG_LABEL)
+      ? STATUS_LABEL_KINDS.INTERRUPTED_PROMOTION : STATUS_LABEL_KINDS.STATUS_READY_LABEL_ABSENT;
+  }
+  if (labelSaysReady && !statusSaysReady) return STATUS_LABEL_KINDS.LABEL_READY_STATUS_ELSEWHERE;
+  return null;
+}
+
+/**
+ * #2150: OPEN ROWS WHOSE BOARD STATUS AND `ready` LABEL DISAGREE, IN BOTH DIRECTIONS.
+ *
+ * EVERY OTHER CHECK IN THIS FILE READS LABELS, so a row could read `Ready` on the Project while its labels
+ * said `backlog`, or carry `ready` while its Status said `Backlog`, and nothing reported either. The
+ * nearest neighbours answer narrower questions and this is the population between them: `openRowsAbsentFromBoard`
+ * owns a row with NO board item and `readyRowsMissingStatus` (`board-snapshot.mjs`, run by
+ * `fetchBoardItems` itself) owns a `ready` row whose item has NO Status. **This owns the row where both
+ * fields exist and contradict each other**, which is why a null Status and an unboarded row are SKIPPED
+ * here rather than reported a second time (done-when 5).
+ *
+ * WHY IT MATTERS NOW: `row-file --promote` (#2111) moves the Status first and writes the labels second, so
+ * a failed label write leaves exactly `Ready` beside `backlog`. That act reports it (exit 2) to whoever ran
+ * it; this reports it to everyone else.
+ *
+ * ONLY `ready` IS COMPARED, NOT EVERY LABEL/STATUS PAIR. `backlog` beside Status `Backlog` and
+ * `in-progress` beside `In progress` are further pairs of the same family, but the claim lifecycle moves
+ * those through `row-claim` and this row's population is the promotion pair. A `Backlog` Status with no
+ * `backlog` label is not a finding here.
+ *
+ * TWO READS, TWO MOMENTS: the labels and the board are fetched separately, so a promotion landing between
+ * them can be reported once and clear on the next run. That is the ordinary cost of a live tracker and the
+ * same one `fetchOpenIssuesChecked` names for its own two reads.
+ *
+ * @param {LabelledIssue[]} issues the open issues, as `fetchOpenIssuesChecked` returns them
+ * @param {Array<{ number: number | null, status: string | null }>} boardItems
+ * @returns {Array<{ number: number, title: string, status: string, labels: string[], kind: string }>}
+ */
+export function statusLabelDisagreements(issues, boardItems) {
+  const openByNumber = new Map((issues ?? []).map((i) => [Number(i.number), i]));
+  /** @type {ReturnType<typeof statusLabelDisagreements>} */
+  const found = [];
+  for (const { number, status } of boardItems ?? []) {
+    const issue = number === null ? undefined : openByNumber.get(number);
+    if (issue === undefined || status === null) continue;
+    const labels = (issue.labels ?? []).map((l) => String(l));
+    const kind = statusLabelKind(status, labels);
+    if (kind === null) continue;
+    found.push({ number: Number(issue.number), title: String(issue.title ?? ""), status, labels, kind });
+  }
+  return found.sort((a, b) => a.number - b.number);
+}
+
+/**
+ * #2150: what to DO about each kind. The interrupted promotion has one right answer (finish it); the two
+ * hand-moved kinds have two readings and only whoever moved the field knows which is right, so both are
+ * printed and neither is picked. `--promote` is the repair whenever the row SHOULD be `Ready`: it writes
+ * the Status and every label together and is idempotent (`row-file.mjs`), though it refuses a claimed row.
+ * @param {number} number @param {string} kind
+ */
+export function statusLabelRemedy(number, kind) {
+  const promote = `\`npm run row-file -- --promote=${number} --session=<you>\``;
+  if (kind === STATUS_LABEL_KINDS.INTERRUPTED_PROMOTION) {
+    return `an INTERRUPTED PROMOTION -- the act moves the Status first and writes the labels second, and the `
+      + `label write did not land. Finish it: ${promote} (idempotent)`;
+  }
+  if (kind === STATUS_LABEL_KINDS.STATUS_READY_LABEL_ABSENT) {
+    return `a field moved by hand, and TWO READINGS: if the row IS ready, ${promote}; if it is NOT, move the `
+      + `Status back to the column its labels describe`;
+  }
+  return `a field moved by hand, and TWO READINGS: if the row IS ready, ${promote}; if it is NOT, remove `
+    + `\`${READY_LABEL}\` and put the labels back to what the Status says`;
+}
+
+/**
+ * #2150: report every open row whose Status and `ready` label disagree, beside `reportAbsentFromBoard`,
+ * which reads the same board items for the row with no item at all.
+ */
+function reportStatusLabelDisagreements() {
+  const { issues, reportedCount } = fetchOpenIssuesChecked();
+  const rows = statusLabelDisagreements(issues, fetchBoardItems());
+  if (rows.length === 0) {
+    process.stdout.write(`OK  ${issues.length} of ${reportedCount} open issue(s) checked, every board Status `
+      + `agrees with the \`${READY_LABEL}\` label\n`);
+    return 0;
+  }
+  for (const { number, title, status, labels, kind } of rows) {
+    process.stdout.write(`STATUS/LABEL DISAGREE  #${number} "${title}" -- Status \`${status}\`, labels `
+      + `[${labels.join(", ")}] -- ${statusLabelRemedy(number, kind)}\n`);
+  }
+  process.stderr.write(`\n${rows.length} open row(s) have a board Status and a \`${READY_LABEL}\` label that `
+    + `say different things, so one of the two is wrong. The remedy for each row is printed with it.\n`);
   return rows.length;
 }
 
@@ -2173,6 +2296,8 @@ export const CHECKS = [
   ["half-promoted rows", reportBothBoardLabels],
   // #2190: a row `ready` and unclaimable -- #75's shape, never checked until now.
   ["unclaimable ready rows", reportUnclaimableReadyRows],
+  // #2150: every check above reads labels; this is the one that compares a label with the board Status.
+  ["status vs ready label", reportStatusLabelDisagreements],
 ];
 
 /**
