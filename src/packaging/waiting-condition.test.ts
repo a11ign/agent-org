@@ -5,7 +5,7 @@
 // org can act on what it is told and cannot act on anything it learns.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { waitingOn, notBeforeDate, todayIso, describeWaiting, proseBlockers, answerOwedBy, fleetWaitingOn }
+import { waitingOn, notBeforeDate, todayIso, describeWaiting, proseBlockers, answerOwedBy, answersOwedBy, fleetWaitingOn }
   from "../waiting-condition.mjs";
 
 test("an OPEN blocker is a wait; a CLOSED one is a wait that has cleared", () => {
@@ -319,4 +319,12 @@ test("#2113: a fleet-gated row's two conditions are read against the SAME clock"
   const heldOnly = { body: "Fleet-hold-until: 2026-09-23T08:00:00Z" };
   assert.deepEqual(fleetWaitingOn(heldOnly, "2026-09-23", Date.parse("2026-09-23T07:14:00Z")),
     { kind: "fleet-hold", until: "2026-09-23T08:00:00Z" });
+});
+
+test("#2202: answersOwedBy lists EVERY owing session and answerOwedBy is its first -- one decision about a name", () => {
+  const row = { labels: [{ name: "backlog" }, { name: "answer:" }, { name: "answer:ceo" }, "answer:orchestrator"] };
+  assert.deepEqual(answersOwedBy(row), ["ceo", "orchestrator"], "a bare `answer:` names nobody; strings and label objects both read");
+  assert.equal(answerOwedBy(row), answersOwedBy(row)[0]);
+  assert.deepEqual(answersOwedBy({ labels: [{ name: "backlog" }] }), [], "a row owing nobody is the control");
+  assert.equal(answerOwedBy({}), null);
 });

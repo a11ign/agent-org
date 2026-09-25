@@ -44,7 +44,7 @@ import { MAX_ROW_ORDERS_PER_TICK, readCommitChain, withCommitChains, decide, che
   claimedRowAmendedOrders, constraintsAfterClaim, amendmentsOn, readClaimedRowComments,
   CONSTRAINT_COMMENT_MARKER, CONSTRAINT_BODY_PREFIX,
   FLEET_MILESTONE, readEpics, answersOwed, answerOrders,
-  readOpenRows, withAnswerLabel,
+  readOpenRows, withAnswerLabel, rowsOwingAnswers, readClosedAnswerRows,
   blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL,
   ANSWER_PREFIX, redOnlyBySupersededRun, cannotAskReport,
   readRowBranches, rowBranchOrders, GIT_READS,
@@ -1523,11 +1523,12 @@ test("a SUPERSEDED red run does not wake anyone -- the newest run per name is wh
  * sentence. This test is why the next person inherits a checked number.
  */
 test("the gate's read count is counted, not remembered", () => {
+  // EIGHT since #2202 added the closed-row answer read (two calls, both exact -- see `readClosedAnswerRows`).
   // SIX since #2356 added the trunk read (`readTrunkRed`: one REST call, core pool). It was FIVE since
   // `answer-owed` landed. This pin caught that read within a minute of it being added, which
   // is exactly why it exists: the number it replaced ("two `gh` calls") had been wrong for months
   // because three readers arrived and nobody re-counted.
-  assert.equal(GH_READS.unconditional.length, 6,
+  assert.equal(GH_READS.unconditional.length, 8,
     "if you add or remove an unconditional read, this number and every comment quoting it move together");
   // #1938 REMOVED THE SILENCE-CONDITIONAL READ ENTIRELY: the dead man's switch now derives its
   // answer from the rows the unconditional read already fetched. The key is GONE rather than empty,
@@ -2657,7 +2658,7 @@ test("#2161: decide() hands the cause the pull requests it already read", () => 
 });
 
 test("#2161: the narrowing spends no `gh` call -- it reads what `draftOrder` already has", () => {
-  assert.equal(GH_READS.unconditional.length, 6, "#2161 adds no unconditional read");
+  assert.equal(GH_READS.unconditional.length, 8, "#2161 adds no unconditional read (8 since #2202)");
   const gate = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
   const body = gate.slice(gate.indexOf("function rowsWithOpenPr"), gate.indexOf("export function blockerClearedOrders"));
   assert.ok(body.length > 0 && !/\brun\(|spawnSync|defaultRun/.test(body),
@@ -3206,7 +3207,7 @@ test("#2110: main pays for it only when something is actually claimed", () => {
     "exactly one call site, and it is inside the condition below -- a second is a second price");
   assert.match(gate, /const held = openRows\.some\(\(r\) => labelsOf\(r\)\.includes\(CLAIM_LABEL\)\);\s*\n\s*return held \? readClaimedRowComments\(\) : null;/,
     "the condition is answered from rows already in hand, so asking it costs no call of its own");
-  assert.equal(GH_READS.unconditional.length, 6,
+  assert.equal(GH_READS.unconditional.length, 8,
     "#2110 adds no UNCONDITIONAL read -- the comment page is conditional on a claim existing");
 });
 
@@ -3352,7 +3353,7 @@ test("#2003: the pool reading has ONE definition, and the gate pays for it only 
 
   // AND THE READ COUNT IS UNCHANGED, which is the other half of done-when 2: this row adds no
   // unconditional read, and `GH_READS` is the pin that would catch it if it ever did.
-  assert.equal(GH_READS.unconditional.length, 6,
+  assert.equal(GH_READS.unconditional.length, 8,
     "#2003 must not add an unconditional read -- the refusal path is where the extra call lives");
 
   // A SECOND COPY OF "HOW TO READ A POOL" IS REFUSED (#2003's Region says so). The header name is the
@@ -3576,7 +3577,7 @@ test("#2031: the detection makes NO `gh` call -- the pool is gone in the outage 
     + "the exhausted-pool outage that produces the staleness it detects");
   assert.deepEqual(found, [{ branch: BRANCH_2000, head: SHA_2000, row: 2000 }],
     "`main` is not a row branch: the trailing `-<digits>` is the whole match");
-  assert.equal(GH_READS.unconditional.length, 6, "#2031 adds NO gh read -- it is a local git call");
+  assert.equal(GH_READS.unconditional.length, 8, "#2031 adds NO gh read -- it is a local git call");
   assert.ok(GIT_READS.unconditional.some((r: string) => r.includes("ls-remote")),
     "and the free read is COUNTED rather than left out because it is free -- `GH_READS`'s own header "
     + "records what happened last time a read went unwritten-down");
@@ -4369,4 +4370,111 @@ test("#2365 `readPrs` asks for `reviews` -- not `latestReviews`, whose commit oi
   const fields = calls[0][calls[0].indexOf("--json") + 1].split(",");
   assert.ok(fields.includes("reviews"));
   assert.ok(!fields.includes("latestReviews"));
+});
+
+// --- #2202: a merge's close ended the wake on `answer:<session>` and nothing said so ---
+
+const closedOwedRow = (n: number, session: string) => ({ number: n, state: "CLOSED",
+  labels: [{ name: `${ANSWER_PREFIX}${session}` }] });
+
+test("#2202 DONE-WHEN 3: a CLOSED row still wearing answer:<session> wakes that session, and says the row is closed", () => {
+  const [order] = answerOrders([closedOwedRow(1936, "orchestrator")]) as { session: string, cause: string, prompt: string }[];
+  assert.equal(order.session, "orchestrator");
+  assert.equal(order.cause, "answer-owed");
+  assert.match(order.prompt, /THE ROW IS CLOSED/);
+  assert.match(order.prompt, /remove its `answer:orchestrator` label/);
+  const [open] = answerOrders([owedRow(1936, "orchestrator")]) as { prompt: string }[];
+  assert.doesNotMatch(open.prompt, /THE ROW IS CLOSED/, "an open row is not told it is closed -- the control");
+});
+
+test("#2202: decide wakes the session for a closed row given as `answerOwed`, before every other cause", () => {
+  const orders = decide({ prs: [], readyRows: [], promotableRows: [],
+    answerOwed: [closedOwedRow(2034, "product-manager")] }) as { cause: string, session: string }[];
+  assert.deepEqual(orders.map((o) => [o.cause, o.session]), [["answer-owed", "product-manager"]]);
+});
+
+test("#2202: readClosedAnswerRows asks for the CLOSED rows carrying the repo's own answer labels, and returns the "
+  + "rows GitHub gives it -- driven with a CLOSED row, not by the shape of an argv", () => {
+  const calls: string[][] = [];
+  const run = (args: string[]) => {
+    calls.push(args);
+    if (args[0] === "label") return JSON.stringify([{ name: "answer:ceo" }, { name: "answer:orchestrator" }, { name: "answered" }]);
+    return JSON.stringify([closedOwedRow(1936, "orchestrator"), { number: 8, state: "CLOSED", labels: [{ name: "backlog" }] }]);
+  };
+  const rows = readClosedAnswerRows(run);
+  assert.deepEqual(rows?.map((r: { number: number }) => r.number), [1936], "only the row that carries an answer: label");
+  const search = calls[1][calls[1].indexOf("--search") + 1];
+  assert.equal(search, 'label:"answer:ceo","answer:orchestrator"', "a label that merely starts with `answer` is not asked for");
+  assert.ok(calls[1].includes("closed"), "and it is the CLOSED population -- the open read already has the rest");
+});
+
+test("#2202: readClosedAnswerRows refuses rather than reporting nobody owes anything, and asks nothing with no labels", () => {
+  assert.equal(readClosedAnswerRows(() => { throw new Error("HTTP 502"); }), null);
+  assert.equal(readClosedAnswerRows(() => "not json"), null);
+  assert.deepEqual(readClosedAnswerRows((args) => { if (args[0] === "label") return "[]"; throw new Error("no search with no labels"); }),
+    [], "no answer: label exists, so nothing can owe -- and no search is made");
+  const refusedSearch = (args: string[]) => { if (args[0] === "label") return JSON.stringify([{ name: "answer:ceo" }]); return "{}"; };
+  assert.equal(readClosedAnswerRows(refusedSearch), null, "a search answering a non-list is a refusal, never an empty tracker");
+});
+
+test("#2202: main feeds the closed-row read into `answerOwed` beside the open one, through the helper that SAYS a refusal", () => {
+  const source = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  assert.match(source, /answerOwed: rowsOwingAnswers\(\{ openRows: allOpen, openPrs, closedRows: closedAnswerRows\(\) \}\)/,
+    "a closed row owing an answer must reach `decide` -- the open read alone is the defect");
+  assert.match(source, /function closedAnswerRows\(\) \{[^]*?NOTE: could not read the closed rows/,
+    "a refused read is a line on stderr, never a silent empty list");
+});
+
+// --- #2492: answer:<session> on a PULL REQUEST woke nobody, because `gh issue list` does not return PRs ---
+
+/** A PR as `readPrs` returns one: `isDraft` and `headRefOid` present, `state` absent (it asks `--state open`). */
+const prWithLabels = (n: number, ...names: string[]) => ({ number: n, isDraft: false, headRefOid: "abc123",
+  labels: names.map((name) => ({ name })) });
+
+test("#2492 DONE-WHEN 1: a PR carrying answer:worker-tooling emits ONE order, worker-tooling/answer-owed/row-<n>, through decide", () => {
+  const orders = decide({ prs: [], readyRows: [], promotableRows: [],
+    answerOwed: withAnswerLabel([prWithLabels(2376, `${ANSWER_PREFIX}worker-tooling`)]) }) as
+    { cause: string, session: string, causeKey: string }[];
+  assert.deepEqual(orders.map((o) => [o.cause, o.session, o.causeKey]),
+    [["answer-owed", "worker-tooling", "worker-tooling/answer-owed/row-2376"]]);
+});
+
+test("#2492 DONE-WHEN 2: the same PR WITHOUT the label emits none, and the same label on an ISSUE still emits exactly one", () => {
+  assert.deepEqual(answerOrders(withAnswerLabel([prWithLabels(2376, "in-progress")])), [],
+    "the negative control: a PR owing nobody wakes nobody");
+  const issue = answerOrders([owedRow(2377, "worker-tooling")]) as { causeKey: string }[];
+  assert.deepEqual(issue.map((o) => o.causeKey), ["worker-tooling/answer-owed/row-2377"],
+    "an issue owing an answer is unchanged");
+  const both = answerOrders([owedRow(2377, "worker-tooling"), prWithLabels(2376, `${ANSWER_PREFIX}worker-tooling`)]) as
+    { causeKey: string }[];
+  assert.deepEqual(both.map((o) => o.causeKey).sort(),
+    ["worker-tooling/answer-owed/row-2376", "worker-tooling/answer-owed/row-2377"],
+    "one number is one thing: an issue and a PR are two orders, never one each twice");
+});
+
+test("#2492 DONE-WHEN 3: the prompt says pull request for a PR and row for an issue, and a PR with no `state` reads as open", () => {
+  const [pr] = answerOrders([prWithLabels(2376, `${ANSWER_PREFIX}ceo`)]) as { prompt: string }[];
+  assert.match(pr.prompt, /^#2376 IS A PULL REQUEST WAITING ON AN ANSWER FROM YOU/);
+  assert.match(pr.prompt, /ANSWER ON THE PULL REQUEST, then remove its `answer:ceo` label/);
+  assert.doesNotMatch(pr.prompt, /THE ROW IS CLOSED|that row's/, "a PR from `readPrs` is open, and is not called a row");
+  const [row] = answerOrders([owedRow(2377, "ceo")]) as { prompt: string }[];
+  assert.match(row.prompt, /^#2377 IS WAITING ON AN ANSWER FROM YOU/);
+  assert.match(row.prompt, /ANSWER ON THE ROW, then remove its `answer:ceo` label/);
+  assert.doesNotMatch(row.prompt, /pull request/i, "the control: an issue is never called a pull request");
+});
+
+test("#2492 DONE-WHEN 4: the PR half feeds the SAME answerOwed input, so answer-owed still orders before every other cause", () => {
+  const orders = decide({ prs: [openPr(5, "")], readyRows: [], promotableRows: [],
+    answerOwed: [...withAnswerLabel([owedRow(2377, "ceo")]), ...withAnswerLabel([prWithLabels(2376, `${ANSWER_PREFIX}ceo`)])] }) as
+    { cause: string, causeKey: string }[];
+  assert.deepEqual(orders.slice(0, 2).map((o) => [o.cause, o.causeKey]),
+    [["answer-owed", "ceo/answer-owed/row-2377"], ["answer-owed", "ceo/answer-owed/row-2376"]]);
+});
+
+test("#2492: rowsOwingAnswers carries a labelled PR beside the open and closed rows, and a PR without the label adds nothing", () => {
+  const reads = { openRows: [owedRow(2377, "ceo")], closedRows: [closedOwedRow(1936, "orchestrator")] };
+  const numbers = (openPrs: unknown[]) => (rowsOwingAnswers({ ...reads, openPrs }) as { number: number }[]).map((r) => r.number);
+  assert.deepEqual(numbers([prWithLabels(2376, `${ANSWER_PREFIX}worker-tooling`)]), [2377, 2376, 1936]);
+  assert.deepEqual(numbers([prWithLabels(2376, "in-progress")]), [2377, 1936], "the negative control: the label decides, not the PR");
+  assert.deepEqual(numbers([]), [2377, 1936]);
 });

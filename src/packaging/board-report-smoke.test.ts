@@ -14,7 +14,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { render, flowReadings, filedAndClosedPerDay } from "../board-report.mjs";
+import { render, flowReadings, filedAndClosedPerDay, mergeFlowRows } from "../board-report.mjs";
 
 const MINIMAL_FACTS = {
   since: "2026-09-05T00:00:00.000Z",
@@ -124,7 +124,7 @@ test("#2282: filed and closed per day are the fixture's, day by day, with the wi
   assert.match(out, /\| 2026-09-23 \| 3 \| 0 \| \+3 \|/);
   assert.match(out, /\| 2026-09-24 \| 2 \| 2 \| \+0 \|/);
   assert.match(out, /last 14 London days, today partial/);
-  assert.match(out, /--limit 1000`, which returned \*\*9\*\* rows\. That is under the cap/);
+  assert.match(out, /--limit 1000`, which returned \*\*9\*\* rows\. That listing is complete/);
 });
 
 test("#2282: ready-to-claim latency is the median and worst of the TIMED claims in the window", () => {
@@ -176,6 +176,32 @@ test("#2282: a listing AT its cap that stops inside the window says BOTH columns
   const out = flowSection({ rows: recent, listLimit: recent.length, events: eventMap(CLAIMS), now: NOW });
   assert.match(out, /AT the cap[^\n]*BOTH columns are FLOORS[^\n]*2026-09-20T08:00:00Z/);
   assert.doesNotMatch(out, /Filed is complete/);
+});
+
+test("#2282: a listing AT its cap says the over-7-days column is a FLOOR, because the missing rows are the oldest", () => {
+  const out = flowSection({ rows: ROWS, listLimit: ROWS.length, events: eventMap(CLAIMS), now: NOW });
+  assert.match(out, /at its cap, so an open row older than its oldest row is missed[^\n]*FLOOR/);
+});
+
+test("#2282 POSITIVE CONTROL: a complete read makes no such claim about the ages", () => {
+  const out = flowSection({ rows: ROWS, events: eventMap(CLAIMS), now: NOW });
+  assert.doesNotMatch(out, /is a FLOOR/);
+  assert.doesNotMatch(out, /at its cap/);
+});
+
+test("#2282: a reader that pages says how it read, and a full ROW COUNT is not a cap when it declares itself complete", () => {
+  const out = flowSection({ rows: ROWS, listLimit: ROWS.length, capped: false, source: "a paged read", events: eventMap(CLAIMS), now: NOW });
+  assert.match(out, /Read from a paged read, which returned \*\*9\*\* rows\. That listing is complete/);
+  assert.doesNotMatch(out, /AT the cap/);
+  assert.doesNotMatch(out, /is a FLOOR/);
+});
+
+test("#2282: the open rows and the window's rows merge to one entry per issue, the window's copy of a shared row kept out", () => {
+  const open = [{ number: 1, state: "OPEN", tag: "open" }, { number: 2, state: "OPEN", tag: "open" }];
+  const window = [{ number: 2, state: "OPEN", tag: "window" }, { number: 3, state: "CLOSED", tag: "window" }];
+  const merged = mergeFlowRows(open, window);
+  assert.deepEqual(merged.map((r) => r.number).sort(), [1, 2, 3], "every issue once, none twice");
+  assert.equal(merged.find((r) => r.number === 2)?.tag, "open", "the open listing is the fresher read of an open row");
 });
 
 test("#2282: the report states that it sets no threshold", () => {

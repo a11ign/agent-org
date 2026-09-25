@@ -25,8 +25,9 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { regionRefusalReason, declaresRelease, outOfReleaseArgv, labelsOutOfRelease, OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE }
   from "../row-file.mjs";
-import { declaredRegionFiles } from "../region-paths.mjs";
-import { extractAcceptanceSection, fleetOrLabAcceptance, untrimmedFleetMention } from "../acceptance-commands.mjs";
+import { declaredRegionFiles, NOT_A_COMMIT } from "../region-paths.mjs";
+import { startability, subjectAndRegionFacts } from "../row-reachability.mjs";
+import { declarationDisagreement, extractAcceptanceSection, fleetOrLabAcceptance, untrimmedFleetMention } from "../acceptance-commands.mjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1554,6 +1555,80 @@ test("#1322: labelValuesFromArgv reads every spelling gh takes; withoutLabels dr
 });
 
 // ---------------------------------------------------------------------------------------------------
+// #2147: #2059 CAME OUT `backlog, lane:any, lane:orchestrator` -- AN ANSWER AND ITS NEGATION -- and the
+// composing functions (`laneLabelsFor`, `withAcceptanceLane`, `labelRefusal`) are each correct today, so a
+// test of any one of them would have passed on 2026-09-23. This one asserts the SET THE FILER APPLIES: what
+// reaches `gh issue create` plus every `gh issue edit --add-label`, over every Region x Acceptance x typed-lane
+// combination that can reach a filing.
+//
+// Not reproduced at `28196cb02` or `4121f9be8` (the last main before the filing). Reproduced EXACTLY -- the same
+// labels, the same silent stderr, `lane:any` stripped from the create call and applied at the board step -- by
+// any tree before `6a1c41ad9` (#1912), where `withAcceptanceLane` did not yet drop `lane:any`.
+// ---------------------------------------------------------------------------------------------------
+
+/** What each Region x Acceptance cell must derive, written out by hand so the test is not the code it checks. */
+const LANE_CELLS = [
+  { region: "no lane", acceptance: "npx tsx --test x", lanes: { lanes: [] }, derived: ["lane:any"] },
+  { region: "an owned lane", acceptance: "npx tsx --test x",
+    lanes: { lanes: [{ owner: "ceo", paths: ["packages/lab/src/packaging/foo.ts"] }] }, derived: ["lane:ceo"] },
+  { region: "no lane", acceptance: "npm run lab:status", lanes: { lanes: [] }, derived: ["lane:orchestrator"] },
+  { region: "an owned lane", acceptance: "npm run lab:status",
+    lanes: { lanes: [{ owner: "ceo", paths: ["packages/lab/src/packaging/foo.ts"] }] },
+    derived: ["lane:ceo", "lane:orchestrator"] },
+];
+const TYPED_LANES = [[], ["--label=lane:any"], ["--label=lane:orchestrator"], ["--label=lane:ceo"],
+  ["--label=lane:any,lane:orchestrator"]];
+
+/** One filing of `cell`'s body with `typed` appended: the exit code, and the lanes that reached `gh`. */
+function lanesAppliedBy(cell: (typeof LANE_CELLS)[number], typed: string[]) {
+  const body = COMPLETE_BODY.replace("npx tsx --test x", cell.acceptance);
+  assert.equal(body.includes(cell.acceptance), true, "the Acceptance replacement landed");
+  const argv = ["--title", "a real row", "--body", body, "--session=worker-contracts", ...RELEASE, ...typed];
+  let created: string[] = [];
+  const added: string[] = [];
+  const write = process.stderr.write.bind(process.stderr);
+  (process.stderr as { write: unknown }).write = () => true;
+  try {
+    const code = createIssue(argv, {
+      ...happyDeps("worker-contracts", "backlog", {
+        loadLanesConfig: () => cell.lanes,
+        fetchLabels: () => ({ number: 900, title: "a real row", labels: ["backlog", ...cell.derived] }),
+      }),
+      spawnGh: (a: string[]) => { created = a; return FILED_URL; },
+      run: (cmd: string, args: string[]) => {
+        args.forEach((arg, i) => { if (arg === "--add-label") added.push(args[i + 1]); });
+        return afterRun(appendFiledBy(body, "worker-contracts"))(cmd, args);
+      },
+    });
+    return { code, applied: lanesIn([...labelValuesFromArgv(created), ...added]).sort() };
+  } finally {
+    (process.stderr as { write: unknown }).write = write;
+  }
+}
+
+test("#2147: the lanes a filing applies are the derived set exactly, and never `lane:any` beside an owned lane", () => {
+  let filed = 0;
+  for (const cell of LANE_CELLS) {
+    for (const typed of TYPED_LANES) {
+      const said = `${cell.region} + ${cell.acceptance} + typed [${typed.join(" ")}]`;
+      const { code, applied } = lanesAppliedBy(cell, typed);
+      if (labelValuesFromArgv(typed).every((lane) => cell.derived.includes(lane))) {
+        filed += 1;
+        assert.equal(code, 0, `${said} files`);
+        assert.deepEqual(applied, cell.derived, `${said}: the derived set, once each`);
+      } else {
+        assert.equal(code, 1, `${said}: a typed lane the Region and Acceptance do not derive refuses`);
+        assert.deepEqual(applied, [], `${said}: and nothing reaches gh`);
+      }
+      assert.equal(applied.includes("lane:any") && applied.length > 1, false, `${said}: an answer beside its negation`);
+    }
+  }
+  assert.equal(filed, 4 + 1 + 2 + 2,
+    "positive control: the untyped filing of each of 4 cells, plus a typed lane wherever it IS derived "
+    + "(`lane:any` in 1 cell, `lane:orchestrator` in 2, `lane:ceo` in 2), still files");
+});
+
+// ---------------------------------------------------------------------------------------------------
 // #1393: `out-of-release` WAS READ BY EXACT SPELLING, IN TWO COPIES.
 //
 // `declaresRelease` made the refusal and `outOfReleaseArgv` added the milestone, and both matched only
@@ -2252,4 +2327,147 @@ test("#2035: the three reach the author through createIssue, and the row is stil
   assert.match(stderr, /row-file: WARNING -- the `## Acceptance` section quotes a test count/);
   assert.match(stderr, /row-file: WARNING -- the `## Acceptance` section yields 1 line\(s\)/);
   assert.equal(filingWarnings(acceptanceBody(CORPUS_FREE, FENCED_TEST), []).length, 0, "a clean body prints nothing");
+});
+
+/**
+ * #2175: THE ROW'S OWN ANSWER OUTRANKS A PATTERN MATCH -- IN BOTH DIRECTIONS.
+ *
+ * #2174's Acceptance was `npm run test:org`, offline, and its numbered clause said "given a fake
+ * `systemctl` and a fake installed directory" -- a test double. `withoutBulletProse` (#1912) would have
+ * read that as a described test had it been a bullet; a numbered clause is read as work, so the row was
+ * laned to `orchestrator` although its own `## Does the acceptance need the fleet or the lab?` said No.
+ * Nothing read that answer. It is now the decider for the five NAMED patterns, and the patterns stay the
+ * backstop for a row that says nothing.
+ */
+// #2174's Acceptance as first filed (numbered clauses, before the row was rewritten to bullets), from
+// #2175's own account of it, with ONE change: its command was `npm run test:org`, which filing now refuses
+// (a whole-suite command cannot complete in the acceptance job), so the fence carries `COMPLETE_BODY`'s.
+// The clauses -- the thing under test -- are #2174's.
+const ROW_2174_NUMBERED = "## Acceptance\n\n```\nnpx tsx --test x\n```\n\n"
+  + "Offline; no fleet, no host, no lab. The run passes and includes:\n\n"
+  + "1. A host with drift produces an ORDER. Given a fake `systemctl` and a fake installed directory in "
+  + "which one shipped unit differs, the gate emits a wake order naming the drifting unit.\n"
+  + "2. A clean host produces NO order, asserted separately from an unaskable machine.\n\n";
+const FLEET_SECTION = (answer: string) => `## Does the acceptance need the fleet or the lab?\n\n${answer}\n`;
+const row2174 = (answer: string | null) => COMPLETE_BODY
+  .replace("## Acceptance\n\n```\nnpx tsx --test x\n```\n\n", ROW_2174_NUMBERED)
+  + (answer === null ? "" : `\n${FLEET_SECTION(answer)}`);
+const DECLARES_NO = "**No.** Pure body-parsing and its tests.";
+
+test("#2175: a row answering No is NOT routed by a named pattern in a numbered clause -- #2174's own text", () => {
+  assert.notEqual(row2174(null), COMPLETE_BODY, "the Acceptance replacement landed");
+  assert.match(String(fleetOrLabAcceptance(row2174(null))), /drives systemd on the control host/,
+    "THE CONTROL, over the same body: without the declaration the numbered clause routes, as it always has");
+  assert.equal(fleetOrLabAcceptance(row2174(DECLARES_NO)), null,
+    "the row said No, and a test double named in a numbered clause is not the row driving systemd");
+});
+
+test("#2175: a row answering Yes IS routed even when no pattern matches anywhere in it", () => {
+  const body = COMPLETE_BODY + `\n${FLEET_SECTION("Yes — cannot start until the orchestrator frees a worker")}`;
+  assert.match(String(fleetOrLabAcceptance(body)), /declared.*need the fleet or the lab/,
+    "the direction that failed silently: nothing in the body matched, so the deriver answered null and "
+    + "looked exactly like it does for a row that is lane:any");
+  assert.equal(fleetOrLabAcceptance(COMPLETE_BODY), null, "and the same body without the answer is null");
+  const both = COMPLETE_BODY.replace("npx tsx --test x", "npm run fleet:status") + `\n${FLEET_SECTION("Yes.")}`;
+  assert.match(String(fleetOrLabAcceptance(both)), /reaches the fleet/,
+    "when a pattern ALSO matches, the specific reason wins over the generic declared one");
+});
+
+test("#2175: a body with no answer, or one that is not an unambiguous No or Yes, derives exactly as before", () => {
+  const forms = [null, "Partly — offline step given above, fleet step named as what remains",
+    "The lab only -- `training:generate` touches no worker."];
+  for (const answer of forms) {
+    assert.match(String(fleetOrLabAcceptance(row2174(answer))), /drives systemd on the control host/,
+      `${answer}: the pattern path is untouched -- this is the compatibility clause`);
+    assert.equal(declarationDisagreement(row2174(answer)), null, `${answer}: nothing declared, nothing to disagree with`);
+  }
+  const plain = COMPLETE_BODY + `\n${FLEET_SECTION("Partly — offline step given above")}`;
+  assert.equal(fleetOrLabAcceptance(plain), null, "and a body no pattern matches still answers null");
+});
+
+test("#2175: an INVOCATION under a No still routes -- the declaration outranks only the five named patterns", () => {
+  const body = COMPLETE_BODY.replace("npx tsx --test x", "npm run fleet:status") + `\n${FLEET_SECTION(DECLARES_NO)}`;
+  assert.match(String(fleetOrLabAcceptance(body)), /reaches the fleet/,
+    "`fleet:status` in an Acceptance is somebody running it whatever the row says (#1912's ground); a "
+    + "row that says No and runs it is the disagreement worth a human's eye, and under-routing it is silent");
+});
+
+test("#2175: a disagreement between the declaration and the patterns is NAMED, whichever way it resolved", () => {
+  assert.equal(untrimmedFleetMention(row2174(DECLARES_NO)), null,
+    "under a declared No the DECLARATION decided; the bullet/disclaimer reader must not also speak, and if it did "
+    + "it would name the wrong trim -- a numbered clause is not a bullet. (`createIssue` masks this by printing "
+    + "the disagreement first, so only a direct call sees it)");
+  assert.equal(untrimmedFleetMention(row2174(null)), null, "and without a declaration a numbered clause routes, so there is nothing to warn about");
+  assert.deepEqual(declarationDisagreement(row2174(DECLARES_NO)),
+    { declared: "no", routed: false, reason: "drives systemd on the control host, which only `orchestrator` reaches" },
+    "No, and a named pattern matched: not routed, and the pattern that lost is named");
+  const invoked = COMPLETE_BODY.replace("npx tsx --test x", "npm run fleet:status") + `\n${FLEET_SECTION(DECLARES_NO)}`;
+  assert.deepEqual(declarationDisagreement(invoked),
+    { declared: "no", routed: true, reason: "reaches the fleet -- a GitHub runner has no Windows worker" },
+    "No, and an invocation matched: routed anyway, and the pattern that won is named");
+  assert.deepEqual(declarationDisagreement(COMPLETE_BODY + `\n${FLEET_SECTION("Yes.")}`),
+    { declared: "yes", routed: true, reason: null }, "Yes, and no pattern matched: routed by the declaration alone");
+  // THE POSITIVE CONTROLS for the null below: the three above are the same reader over the same
+  // shapes, each returning a finding. A reader returning null for everything would fail all three.
+  assert.equal(declarationDisagreement(COMPLETE_BODY + `\n${FLEET_SECTION(DECLARES_NO)}`), null, "No and nothing matched agree");
+  assert.equal(declarationDisagreement(
+    COMPLETE_BODY.replace("npx tsx --test x", "npm run fleet:status") + `\n${FLEET_SECTION("Yes.")}`), null,
+  "Yes and a pattern matched agree");
+});
+
+test("#2175: createIssue on #2174's shape files lane:any and SAYS the declaration decided it", () => {
+  const { code, stderr, ensured } = fileCapturingStderr(row2174(DECLARES_NO), ["backlog", "lane:any"]);
+  assert.equal(code, 0, stderr);
+  assert.deepEqual(ensured, ["backlog", "lane:any"],
+    "#2174 was re-laned by hand the minute it was filed; the row's own answer keeps it lane:any");
+  assert.match(stderr, /NOT routed to orchestrator -- the row declares "No" to "Does the acceptance need the fleet or the lab\?"/);
+  assert.match(stderr, /names something that drives systemd on the control host/, "and it names the pattern that lost");
+  assert.match(stderr, /If the row DOES need it, change the answer/, "and the message is followable");
+  assert.doesNotMatch(stderr, /lane:orchestrator added|a bullet in the Acceptance|a scope disclaimer/,
+    "one line, and the right trim: the bullet and disclaimer warnings would send the filer to the wrong fix");
+});
+
+test("#2175: createIssue on a Yes with no pattern files lane:orchestrator, without lane:any, and says why", () => {
+  const body = COMPLETE_BODY + `\n${FLEET_SECTION("Yes — cannot start until the orchestrator frees a worker")}`;
+  const { code, stderr, ensured } = fileCapturingStderr(body, ["backlog", "lane:orchestrator"]);
+  assert.equal(code, 0, stderr);
+  assert.deepEqual(ensured, ["backlog", "lane:orchestrator"], "`happyDeps` derives lane:any; the answer REPLACES it");
+  assert.match(stderr, /lane:orchestrator added -- the row declares "Yes" to "Does the acceptance need the fleet or the lab\?", though no pattern/);
+});
+
+test("#2175: createIssue on a No that still runs an invocation routes it AND prints the disagreement", () => {
+  const body = COMPLETE_BODY.replace("npx tsx --test x", "npm run fleet:status") + `\n${FLEET_SECTION(DECLARES_NO)}`;
+  const { code, stderr, ensured } = fileCapturingStderr(body, ["backlog", "lane:orchestrator"]);
+  assert.equal(code, 0, stderr);
+  assert.deepEqual(ensured, ["backlog", "lane:orchestrator"]);
+  assert.match(stderr, /lane:orchestrator added although the row declares "No" to "Does the acceptance need the fleet or the lab\?" -- the Acceptance reaches the fleet/);
+});
+
+// #2177: THE FILER AND THE CLAIMER AGREE ON ONE BODY, driven from ONE exported sentence. Both readers are
+// CALLED over the same fixtures -- never two regexes compared -- so a second spelling in either shows up as
+// a disagreement here rather than as a misleading note on somebody's claim.
+test("#2177: a body row-file accepts is one row-reachability calls declared, and a refused one still warns", () => {
+  const sentence = NOT_A_COMMIT.source;
+  assert.equal(new RegExp(sentence, "i").test(sentence), true, "the exported spelling is a plain sentence");
+  const noteOf = (body: string) => {
+    const facts = subjectAndRegionFacts(body, { run: () => "", refs: () => [], state: () => "no PR" });
+    return startability({ row: 1, ...facts, state: "OPEN" }).lines.join("\n");
+  };
+  const tail = "\n\n## Acceptance\nNot a test.\n\n## Open-check\nn/a\n";
+  const accepted = [
+    `## What it is\nx\n\n## Region\n${sentence}.${tail}`,
+    `## What it is\nx\n\n**Region:** ${sentence}.${tail}`,
+  ];
+  const refused = [
+    `## What it is\nx\n\n## Region\nThe destination.\n\n### Why\n${sentence}.${tail}`,
+    `## What it is\n${sentence}, they said.\n\n## Region\nThe destination.${tail}`,
+  ];
+  for (const body of accepted) {
+    assert.equal(regionRefusalReason(body), null);
+    assert.match(noteOf(body + " `someSymbolName`"), /declares `its deliverable is not a commit`/);
+  }
+  for (const body of refused) {
+    assert.ok(regionRefusalReason(body));
+    assert.match(noteOf(body + " `someSymbolName`"), /yielded NO path this could read/);
+  }
 });

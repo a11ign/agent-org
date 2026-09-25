@@ -45,26 +45,29 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../.
  * So the list is the guard. Adding a public claim without adding it here is the only way back in. */
 const CLAIM_FILES = ["README.md", "docs/try-it.md", "docs/github-action.md", "examples/workflow.yml"] as const;
 
-/* #1599 done-when 2: CLAUDE.md IS DELIBERATELY NOT SCANNED, and this is the reason rather than an
- * oversight. It carries its own copy of the "N conformant real pages ... asserted wrongly, N referred"
- * figures (found unguarded by this row) and, unlike `CLAIM_FILES`, has no `<!-- CLAIM:BEGIN -->` marker
- * and is not the surface `CLAIM_FILES`'s own comment above is about -- it is read by an agent working ON
- * the repo, not a stranger deciding whether to trust the tool, and it is edited directly, same-day, by
- * whoever is maintaining it (this file's own history has two such edits landing mid-session).
+/* #1599 done-when 2: CLAUDE.md IS STILL NOT SCANNED BY THE CLAIM MACHINERY, and #2451 is what now guards
+ * the one figure it carries that a stranger-facing claim also carries. #1599's reason stands: CLAUDE.md
+ * has no `<!-- CLAIM:BEGIN -->` marker and is not the surface `CLAIM_FILES`'s comment above is about -- it
+ * is read by an agent working ON the repo, not a stranger deciding whether to trust the tool, and it is
+ * edited directly, same-day, by whoever is maintaining it. Holding it to the figure-sourcing and
+ * denominator checks would make every such edit answer to rules written for the README, and turning the
+ * scan on it (tried under #1599) caught a stale "0 false positives across 1,183 conformant records" that
+ * was a wrong figure, not a misclassified one.
  *
- * Turning the scan on it (tried while building this row) immediately caught a REAL, pre-existing stale
- * figure -- "0 false positives across 1,183 conformant records", copied from a corpus that has since grown
- * to 1,405 -- that predates this row and sits outside its Region (`public-claim.test.ts` only; no doc
- * file). The honest choices were: fix CLAUDE.md's prose (out of Region), hide the stale figure behind a
- * NOT_A_MEASURED_CLAIM entry (that table's contract is "this reads like a claim and ISN'T one" -- this one
- * IS a claim, just a wrong one, so classifying it would be the false statement, not a documentation of
- * one), or leave the scan off with the defect named here. This is the third.
+ * WHAT #2451 CHANGED, AND WHY THAT DOES NOT OVERRIDE THE ABOVE. The `N criteria asserted wrongly, M
+ * referred` pair is stated in THREE files (README's claim block, CLAUDE.md, and the record's current-
+ * reading section in docs/operational-lessons.md) and nothing compared the copies: reviewer-2 changed only
+ * CLAUDE.md to `394 referred` on #2418 and every guard stayed green. The test "the calibration reading
+ * is the same pair in all three files" pins ONLY that pair, and pins it to the README's copy -- the one
+ * the sourcing test above already ties to a recorded gate. CLAUDE.md gains no marker and no other rule;
+ * a same-day edit that leaves the pair alone is untouched. A same-day edit that MOVES it fails naming the
+ * file, which is the cost intended: the number is a reading at a moment (CLAUDE.md says so itself) and a
+ * copy that lags it is the stale claim. The author of the change that moves the README's pair moves the
+ * other two in the same PR -- the test derives the number, so it needs no one's permission.
  *
- * WHAT ALREADY GUARDS CLAUDE.md: `asserting-subtypes.test.ts`'s own "CLAUDE.md's counts match the
- * artefacts" test pins its RULE-OWNERSHIP figures (the "only N of the M rules-owned subtypes actually
- * assert" count) against `rule-ownership.json` directly. The corpus/real-page figure family is not
- * otherwise guarded and the stale 1,183 above is that gap made concrete -- a fix for CLAUDE.md's own text,
- * not for this file. */
+ * WHAT STILL GUARDS THE REST OF CLAUDE.md: `asserting-subtypes.test.ts`'s "CLAUDE.md's counts match the
+ * artefacts" pins its RULE-OWNERSHIP figures against `rule-ownership.json`. No other CLAUDE.md figure is
+ * guarded. */
 
 function claimBlockIn(file: string): string {
   const text = readFileSync(path.join(REPO, file), "utf8");
@@ -373,6 +376,110 @@ test("the claim block is reachable from the README a stranger opens", () => {
   const readme = readFileSync(path.join(REPO, "README.md"), "utf8");
   assert.match(readme, /## What this tool claims, with the number it was measured on/,
     "the claim must be a section of the README, not a hidden comment block");
+});
+
+/* #2451: THE CALIBRATION READING IS ONE PAIR IN THREE FILES, AND THE README'S COPY IS THE ANCHOR.
+ *
+ * `N criteria asserted wrongly, M referred` sits in README's claim block, in CLAUDE.md and in the record's
+ * current-reading section. The README's copy is the one the sourcing test above ties to a recorded gate, so
+ * the other two are compared to IT and not to a literal here -- a literal would be the test that enforces
+ * staleness (see the note after `assertDenominators`). Why CLAUDE.md is compared without being scanned is
+ * answered beside `CLAIM_FILES`, in the #1599 note.
+ *
+ * `\s+` between the words because all three files hard-wrap, and the record's copy does split across a
+ * line ("asserted wrongly,\n395 referred."). Only the "criteria asserted wrongly" phrasing is the current
+ * reading: the record's superseded paragraph says "0 asserted wrongly, 422 referred" without "criteria",
+ * which is why it can sit in the same section and not be mistaken for a second current reading.
+ *
+ * The THIRD copy the row's Open-check lists (`operational-lessons.md`, "CLAUDE.md's index prose, before
+ * #2217 shortened it") is a verbatim archive of what CLAUDE.md said at that date and is dated in its own
+ * text, so it is deliberately outside the section this reads. */
+const READING_PAIR = /\b(\d[\d,]*)\s+criteria\s+asserted\s+wrongly,\s+(\d[\d,]*)\s+referred\b/g;
+const RECORD_READING_HEADING = "## What ASSERTED versus REFERRED was measured at";
+
+function readingPairsIn(text: string): string[] {
+  return [...text.matchAll(READING_PAIR)]
+    .map(([, wrong, referred]) => `${wrong.replace(/,/g, "")} asserted wrongly, ${referred.replace(/,/g, "")} referred`);
+}
+
+function recordReadingSection(): string {
+  const text = readFileSync(path.join(REPO, "docs/operational-lessons.md"), "utf8");
+  const begin = text.indexOf(`\n${RECORD_READING_HEADING}\n`);
+  assert.ok(begin !== -1,
+    `docs/operational-lessons.md has no "${RECORD_READING_HEADING}" section, so the record's copy of the `
+    + "calibration reading is not being compared with anything (CLAUDE.md links to that heading)");
+  const next = text.indexOf("\n## ", begin + 1);
+  return text.slice(begin, next === -1 ? undefined : next);
+}
+
+function assertReadingCopies(copies: { readme: string; claude: string; record: string }): void {
+  const anchor = readingPairsIn(copies.readme);
+  assert.ok(anchor.length <= 1,
+    `README's claim block states the calibration reading ${anchor.length} times (${anchor.join(" | ")}), so `
+    + "there is no single reading for CLAUDE.md and the record to be compared with");
+  if (anchor.length === 0) {
+    // Withdrawn is the ONE honest way for the README to state no pair, and it must say so: without this an
+    // edit to the README's phrasing blinds the regex above and both comparisons below pass on nothing.
+    assert.match(copies.readme, /under\s+re-measurement\b/i,
+      "README's claim block states no `N criteria asserted wrongly, M referred` pair and does not say it is "
+      + "under re-measurement, so this guard can no longer see the reading it exists to compare");
+    assert.deepEqual([readingPairsIn(copies.claude), readingPairsIn(copies.record)], [[], []],
+      "README's claim block has withdrawn the calibration reading, but CLAUDE.md or "
+      + "docs/operational-lessons.md still states one -- the stale claim, wearing a file nobody scans");
+    return;
+  }
+  assert.deepEqual(readingPairsIn(copies.claude), anchor,
+    `CLAUDE.md's calibration reading is not README's (${anchor[0]}). Move it in the same change that moved `
+    + "the README's; the README's is the one a recorded gate sources.");
+  assert.ok(readingPairsIn(copies.record).includes(anchor[0]),
+    `docs/operational-lessons.md's "${RECORD_READING_HEADING}" section does not state README's calibration `
+    + `reading (${anchor[0]}) as its current one. Move it in the same change that moved the README's.`);
+}
+
+test("the calibration reading is the same pair in README, CLAUDE.md and the record", () => {
+  assertReadingCopies({
+    readme: claimBlockIn("README.md"),
+    claude: readFileSync(path.join(REPO, "CLAUDE.md"), "utf8"),
+    record: recordReadingSection(),
+  });
+});
+
+test("PROOF (#2451): editing the pair in any ONE of the three files turns the comparison red, and only then", () => {
+  const pair = (wrong: number, referred: number, sep = " ") =>
+    `**${wrong} criteria asserted wrongly,${sep}${referred} referred**`;
+  const copies = (over: Partial<Record<"readme" | "claude" | "record", string>> = {}) => ({
+    readme: `On our own corpus ... Measured 2026-09-24 ...: ${pair(0, 395)}. The 2026-08-24 figure is superseded: 0 asserted wrongly, 180 referred.`,
+    claude: `Measured 2026-09-24 on the calibration set at protocol 21: ${pair(0, 395)} -- a reading at a moment.`,
+    // The record wraps mid-pair, and quotes superseded readings WITHOUT "criteria" in the same section.
+    record: `${pair(0, 395, "\n")}.\n\n**Superseded readings.** 2026-09-14: 0 asserted wrongly, 422 referred.`,
+    ...over,
+  });
+
+  // CONTROL: the undamaged three, wrapped record copy and superseded readings included.
+  assert.doesNotThrow(() => assertReadingCopies(copies()));
+
+  // MUTATION, once per file -- the same edit reviewer-2 made to CLAUDE.md alone on #2418 (395 -> 394).
+  assert.throws(() => assertReadingCopies(copies({ claude: pair(0, 394) })), /CLAUDE\.md/);
+  assert.throws(() => assertReadingCopies(copies({ record: pair(0, 394, "\n") })), /operational-lessons\.md/);
+  assert.throws(() => assertReadingCopies(copies({ readme: pair(0, 394) })), /CLAUDE\.md/);
+  // The other half of the pair, and a superseded quote is not a substitute for the current reading.
+  assert.throws(() => assertReadingCopies(copies({ claude: pair(1, 395) })), /CLAUDE\.md/);
+  assert.throws(() => assertReadingCopies(copies({ record: "0 asserted wrongly, 395 referred" })),
+    /operational-lessons\.md/);
+});
+
+test("PROOF (#2451): a withdrawn README reading must be withdrawn everywhere, and a blinded regex is refused", () => {
+  const withdrawn = "The reading is under re-measurement since 2026-09-25.";
+  assert.doesNotThrow(() => assertReadingCopies({ readme: withdrawn, claude: "no pair", record: "no pair" }));
+  assert.throws(() => assertReadingCopies(
+    { readme: withdrawn, claude: "**0 criteria asserted wrongly, 395 referred**", record: "no pair" }),
+    /withdrawn/);
+  // README rephrased so the pair is not recognised and nothing says withdrawn: the guard must not go quiet.
+  assert.throws(() => assertReadingCopies(
+    { readme: "0 asserted wrongly, 395 referred", claude: "no pair", record: "no pair" }), /can no longer see/);
+  assert.throws(() => assertReadingCopies({
+    readme: "0 criteria asserted wrongly, 395 referred; 0 criteria asserted wrongly, 180 referred",
+    claude: "", record: "" }), /states the calibration reading 2 times/);
 });
 
 /* ------------------------------------------------------------------------------------------------ *
