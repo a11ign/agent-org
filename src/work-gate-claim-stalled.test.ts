@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import { decide, claimStallTick, CAUSES, START_CAUSES, JUDGMENT_CAUSES, GH_READS } from "./work-gate.mjs";
 import { profileFor } from "./worker-profile.mjs";
 import { WAKE_TTL_MS } from "./wake.mjs";
-import { claimRecordComment } from "./row-claim.mjs";
+import { claimRecordComment, declineRow, claimWithWorktree, worktreeTargetReason, worktreeFlagsReason } from "./row-claim.mjs";
 import { CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
 import {
   CLAIM_STALLED, STALL_INTERVAL_MS, NUDGE_OFFER_MS, claimRecordOf, commentMove, workAtRisk, fileMove, claimReading,
@@ -33,6 +33,10 @@ const REPO = "/home/agent/repos/a11y-witness";
 const WT = "/home/agent/repos/wt-2407";
 
 type Comment = { body: string; createdAt: string; author: { login: string } };
+type Release = { row: number; session: string; why: string; edges?: number[]; answer?: string; mergedPr?: number };
+type Order = { session: string; cause: string; causeKey: string; prompt: string; release?: Release };
+type Facts = Parameters<typeof claimReading>[0];
+type Stalls = NonNullable<Parameters<typeof decide>[0]["claimStalls"]>;
 
 /** The claim record exactly as `row-claim.mjs` writes it -- the REAL writer, so a change to its format breaks these. */
 const claim = (minutesAgo: number, { session = "worker-7", author = "a11ign-ai-workers" } = {}): Comment => ({
@@ -88,7 +92,7 @@ function tickWith(world: World, comments: Comment[], { rows = [row(2407)], memor
       for (const k of Object.keys(memory)) delete memory[k];
       Object.assign(memory, s);
     } });
-  return { orders: orders as { session: string; cause: string; causeKey: string; prompt: string; release?: any }[], log, memory, h };
+  return { orders: orders as Order[], log, memory, h };
 }
 
 // --- Done-when 1 & Acceptance 3: the cause exists, is classified, and has a profile ------------------------------------------------
@@ -259,7 +263,7 @@ test("#2470 a comment or a changed file after the nudge also cancels the release
 });
 
 test("#2470 the nudge memory is dropped for a row that is no longer claimed, released or moving -- and only a NUDGE writes it", () => {
-  const facts = (n: number) => ({ row: n, session: "worker-7" }) as any;
+  const facts = (n: number) => ({ row: n, session: "worker-7" }) as unknown as Facts;
   const before = { "1": { session: "worker-7", nudgedAt: 5 }, "2": { session: "worker-7", nudgedAt: 6 } };
   const after = nextStallState(before, [
     { facts: facts(1), reading: { kind: "moving", lastMoveAt: 1 } },
@@ -335,7 +339,7 @@ test("#2470 (10) POSITIVE CONTROLS: a second open PR, unpushed work, a PR merged
 
 test("#2470 claimReading is pure in its inputs: a `nudged` row inside the offer window keeps its key, and outside it emits nothing", () => {
   const facts = { row: 1, session: "s", claimedAt: ago(1000), branch: BRANCH, worktree: WT, comment: null, commit: null, push: null,
-    file: () => null, work: () => ({ state: "none", dirty: 0, unpushed: 0 }), openPrs: 0, mergedPr: null, waiting: null, blockedBy: [] } as any;
+    file: () => null, work: () => ({ state: "none", dirty: 0, unpushed: 0 }), openPrs: 0, mergedPr: null, waiting: null, blockedBy: [] } as Facts;
   const reading = readClaim(facts, { now: NOW, restartAt: null, nudge: { nudgedAt: NOW - MIN } });
   assert.equal(reading.kind, "nudged");
   assert.equal(claimStalledOrders([{ facts, reading }], NOW).length, 1);
@@ -347,11 +351,11 @@ test("#2470 claimReading is pure in its inputs: a `nudged` row inside the offer 
 test("#2470 decide() carries the orders, keeps them through a drain, and an OMITTED `claimStalls` changes nothing", () => {
   const { orders } = tickWith({ commit: null }, [claim(N_MIN + 200)]);
   const base = decide({ prs: [], readyRows: [] });
-  const withStall = decide({ prs: [], readyRows: [], claimStalls: orders as any });
+  const withStall = decide({ prs: [], readyRows: [], claimStalls: orders as unknown as Stalls });
   assert.equal(withStall.length, base.length + 1);
-  assert.ok(withStall.some((o: any) => o.cause === "claim-stalled"));
-  const drained = decide({ prs: [], readyRows: [], claimStalls: orders as any, drain: true });
-  assert.ok(drained.some((o: any) => o.cause === "claim-stalled"), "a drain does not withhold work in flight");
+  assert.ok(withStall.some((o: { cause: string }) => o.cause === "claim-stalled"));
+  const drained = decide({ prs: [], readyRows: [], claimStalls: orders as unknown as Stalls, drain: true });
+  assert.ok(drained.some((o: { cause: string }) => o.cause === "claim-stalled"), "a drain does not withhold work in flight");
 });
 
 // --- git-level facts ------------------------------------------------------------------------------------------------------------------
@@ -379,7 +383,120 @@ test("#2470 fileMove reads the newest changed file's mtime, skips a deleted one,
 test("#2470 claimFactsFrom reports a row it cannot evaluate rather than throwing, and resolves the recorded worktree against the repo", () => {
   const h = host({ commit: null });
   const input = { row: 2407, session: "worker-7", waiting: null, blockedBy: [], comments: [claim(50)], openPrs: [], mergedPrs: null, repo: REPO };
-  const facts = claimFactsFrom(input, h.io) as any;
+  const facts = claimFactsFrom(input, h.io) as { worktree: string };
   assert.equal(facts.worktree, WT, "`../wt-2407` resolved against the checkout the gate runs from");
   assert.ok("skip" in claimFactsFrom({ ...input, comments: [] }, h.io));
+});
+
+// --- Done-when 7: a release KEEPS the work, and the next instance starts in it -----------------------------------------------------
+//
+// THE THREE POSITIVE CONTROLS the row names, each beside the CONTROL that shows its fixture would have caught the defect: the same
+// release WITHOUT `keepWorktree` removes the clean tree and refuses over the dirty one, which is exactly what the row measured.
+
+/** A board fake for `declineRow`: the row's labels, and a recording `run`. */
+function releaseBoard(labels: string[] = ["in-progress", "session:worker-7", "started", "was-ready"]) {
+  const calls: string[][] = [];
+  const run = (_cmd: string, args: string[]) => {
+    calls.push(args);
+    return args[1] === "view" ? JSON.stringify({ number: 2416, title: "A row", state: "OPEN", labels: labels.map((name) => ({ name })) }) : "";
+  };
+  const edits = () => calls.filter((a) => a[1] === "edit").map((a) => ({
+    removed: a.flatMap((x, i) => (x === "--remove-label" ? [a[i + 1]] : [])), added: a.flatMap((x, i) => (x === "--add-label" ? [a[i + 1]] : [])) }));
+  return { run, calls, edits };
+}
+const RECORD = [claimRecordComment({ session: "worker-7", branch: BRANCH, worktree: WT })];
+const NO_STATUS = () => ({ moved: true }) as const;
+
+test("#2470 (7a) a CLEAN tree with UNPUSHED commits keeps them across the release: `--keep-worktree` removes nothing", () => {
+  const board = releaseBoard();
+  const removed: string[] = [];
+  const kept = declineRow(2416, "worker-7", { run: board.run as never, fetchComments: () => RECORD, moveStatus: NO_STATUS as never,
+    keepWorktree: true, removeWorktree: ((p: string) => { removed.push(p); return { removed: true }; }) as never });
+  assert.equal(kept.declined, true);
+  assert.deepEqual(removed, [], "the recorded worktree is not removed, so the commits that live only there survive");
+  assert.equal(board.calls.some((a) => a.includes("worktree") && a.includes("remove")), false, "and no `git worktree remove` ran at all");
+  assert.deepEqual(board.edits()[0].added, ["ready"], "the row goes back to the pool (it was ready before the claim)");
+  assert.ok(board.edits()[0].removed.includes("session:worker-7"), "and the holder's labels come off, which is what makes it a release");
+  assert.ok(board.calls.some((a) => a[1] === "comment" && a.join(" ").includes("released by")), "and the release is RECORDED, so `check` stops naming the tree");
+
+  // THE CONTROL: the same release without the flag calls the remover -- which, on a clean tree, deletes it.
+  const control: string[] = [];
+  declineRow(2416, "worker-7", { run: releaseBoard().run as never, fetchComments: () => RECORD, moveStatus: NO_STATUS as never,
+    removeWorktree: ((p: string) => { control.push(p); return { removed: true }; }) as never });
+  assert.deepEqual(control, [WT], "without `keepWorktree` the tree IS removed -- the defect this clause is about");
+});
+
+test("#2470 (7a) a DIRTY tree is neither removed nor refused into a stuck claim", () => {
+  const dirty = () => ({ removed: false as const, reason: `${WT} has uncommitted change(s) -- refusing to remove it: ?? new-file.mjs`, files: ["?? new-file.mjs"] });
+  const stuck = declineRow(2416, "worker-7", { run: releaseBoard().run as never, fetchComments: () => RECORD, moveStatus: NO_STATUS as never,
+    removeWorktree: dirty as never });
+  assert.equal(stuck.declined, false, "CONTROL: without the flag a dirty tree refuses the whole decline, so the claim can never be released");
+  const board = releaseBoard();
+  const freed = declineRow(2416, "worker-7", { run: board.run as never, fetchComments: () => RECORD, moveStatus: NO_STATUS as never,
+    keepWorktree: true, removeWorktree: dirty as never });
+  assert.equal(freed.declined, true, "with it the release goes through and the labels come off");
+  assert.ok(board.edits().length === 1);
+});
+
+test("#2470 (7b) the respawn's claim ADOPTS the kept tree: nothing is created, nothing is removed, and it is re-stamped to the new instance", () => {
+  const order: string[] = [];
+  const stamped: [string, string][] = [];
+  const claims: { worktree?: string; branch?: string }[] = [];
+  const adopt = (over: { owner?: string | null; head?: string; exists?: boolean; claimed?: boolean } = {}) => claimWithWorktree(2416, "worker-2416", {
+    branch: BRANCH, worktree: WT, adopt: "worker-7",
+    run: ((cmd: string, args: string[]) => { order.push(`${cmd} ${args.join(" ")}`); return args.includes("symbolic-ref") ? `${over.head ?? BRANCH}\n` : ""; }) as never,
+    exists: () => over.exists ?? true, owner: () => (over.owner === undefined ? "worker-7" : over.owner),
+    stamp: (w: string, sess: string) => { stamped.push([w, sess]); },
+    claim: ((_n: number, _s: string, deps: { worktree?: string; branch?: string }) => { claims.push(deps); return over.claimed === false ? { claimed: false, reason: "B2 refused" } : { claimed: true, statusMoved: true }; }) as never });
+  const won = adopt();
+  assert.equal(won.claimed, true);
+  assert.deepEqual(stamped, [[WT, "worker-2416"]], "the tree becomes the new instance's");
+  assert.deepEqual(claims.map(({ branch, worktree }) => ({ branch, worktree })), [{ branch: BRANCH, worktree: WT }],
+    "the claim RECORDS the existing branch and worktree");
+  assert.equal(order.some((c) => /fetch|worktree add|worktree remove/.test(c)), false, "it creates nothing and removes nothing");
+
+  // A claim that LOSES leaves the tree exactly where it was, re-stamped to its previous owner: it holds another instance's work.
+  order.length = 0; stamped.length = 0;
+  const lost = adopt({ claimed: false });
+  assert.equal(lost.claimed, false);
+  assert.match((lost as { reason: string }).reason, /left in place, with its work, and re-stamped `worker-7`/);
+  assert.deepEqual(stamped, [[WT, "worker-2416"], [WT, "worker-7"]]);
+  assert.equal(order.some((c) => /worktree remove|branch -D/.test(c)), false, "unlike a tree the claim just made, this one is never torn down on a lost race");
+});
+
+test("#2470 (7b) a worktree stamped by a DIFFERENT session -- or by nobody, or on another branch -- is STILL REFUSED (the #1432 guard stays)", () => {
+  const reason = (over: { owner?: string | null; exists?: boolean; head?: string | null }) => worktreeTargetReason(
+    { branch: BRANCH, worktree: WT, issueNumber: 2416, adopt: "worker-7" },
+    { exists: () => over.exists ?? true, owner: () => (over.owner === undefined ? "worker-7" : over.owner),
+      run: (() => { if (over.head === null) throw new Error("detached"); return `${over.head ?? BRANCH}\n`; }) as never });
+  assert.equal(reason({}), null, "CONTROL: the previous holder's own tree, on its branch, is adopted");
+  assert.match(String(reason({ owner: "worker-9" })), /stamped by `worker-9`, not `worker-7`/);
+  assert.match(String(reason({ owner: null })), /UNSTAMPED/);
+  assert.match(String(reason({ head: "agent/other-1" })), /not --branch=agent\/one-instance-one-row-2407/);
+  assert.match(String(reason({ head: null })), /no branch \(detached\)/);
+  assert.match(String(reason({ exists: false })), /does not exist -- there is nothing to adopt/);
+  // ...and the ordinary claim over a tree it finds is refused exactly as before: `adopt` is the ONLY way in.
+  const plain = worktreeTargetReason({ branch: BRANCH, worktree: WT, issueNumber: 2416 },
+    { exists: () => true, owner: () => "worker-7", run: (() => "") as never });
+  assert.match(String(plain), /ALREADY EXISTS, stamped by `worker-7`/);
+});
+
+test("#2470 (7b) `--adopt` is refused without both --branch and --worktree, and is not a way to name one only", () => {
+  assert.match(String(worktreeFlagsReason({ adopt: "worker-7" })), /--adopt needs --branch and --worktree/);
+  assert.match(String(worktreeFlagsReason({ adopt: "worker-7", branch: BRANCH })), /--adopt needs --branch and --worktree/);
+  assert.equal(worktreeFlagsReason({ adopt: "worker-7", branch: BRANCH, worktree: WT }), null);
+  assert.equal(worktreeFlagsReason({}), null, "and a claim naming neither is unchanged");
+});
+
+test("#2470 (10) `decline --answer=<session>` releases to that session's `answer:` label, NOT to `ready`, and refuses to be a finding too", () => {
+  const board = releaseBoard();
+  const done = declineRow(2416, "worker-7", { run: board.run as never, fetchComments: () => RECORD, moveStatus: NO_STATUS as never,
+    keepWorktree: true, answer: "product-manager" });
+  assert.equal(done.declined, true);
+  assert.deepEqual(board.edits()[0].added, ["answer:product-manager"], "the row was `ready` before the claim, and is NOT returned to the pool: the work merged");
+  const control = releaseBoard();
+  declineRow(2416, "worker-7", { run: control.run as never, fetchComments: () => RECORD, moveStatus: NO_STATUS as never, keepWorktree: true });
+  assert.deepEqual(control.edits()[0].added, ["ready"], "CONTROL: the same release without --answer restores `ready`");
+  const both = declineRow(2416, "worker-7", { run: releaseBoard().run as never, fetchComments: () => RECORD, blockedReason: "x", answer: "product-manager" });
+  assert.equal(both.declined, false);
 });

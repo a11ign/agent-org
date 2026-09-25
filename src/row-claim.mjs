@@ -98,6 +98,8 @@ import { assertNoLeakInArgv } from "../../lab/src/packaging/leak-patterns.mjs";
 // name -- hence import-then-export as two separate statements rather than one re-export line.
 export { CLAIM_LABEL, STARTED_LABEL };
 export const BLOCKED_LABEL = "blocked";
+/** #2470: `decline --answer=<session>` adds `answer:<session>`, the label `waiting-condition.mjs` reads as "that session owes an answer". */
+const ANSWER_LABEL_PREFIX = "answer:";
 
 /**
  * #771: the `Filed-by: <session>` line `row-file.mjs` writes, or `null` when absent -- a LITERAL line
@@ -1049,10 +1051,14 @@ export function claimRow(issueNumber, mySession, deps = {}) {
 /**
  * #1432: Pure: a claim given ONE of `--branch`/`--worktree` is refused -- `claim` creates the worktree from both, and
  * recording one without the other is the half-claim the hand-written chain used to leave.
- * @param {{ branch?: string, worktree?: string }} flags
+ * #2470: and `--adopt=<session>` is refused without both, since it names the tree it claims in place.
+ * @param {{ branch?: string, worktree?: string, adopt?: string }} flags
  * @returns {string | null}
  */
-export function worktreeFlagsReason({ branch, worktree }) {
+export function worktreeFlagsReason({ branch, worktree, adopt }) {
+  if (adopt !== undefined && !(branch && worktree)) {
+    return "--adopt needs --branch and --worktree (#2470): it claims THAT tree, in place, on THAT branch.";
+  }
   if (Boolean(branch) === Boolean(worktree)) return null;
   return "--branch and --worktree go together (#1432): `claim` creates the worktree at --worktree on the new branch "
     + "--branch, from origin/main. Give both, or neither for a row that changes no code.";
@@ -1165,7 +1171,8 @@ function rowBranchRefusal(issueNumber, found) {
  * @param {{ run?: typeof defaultRun, exists?: (path: string) => boolean, owner?: (worktree: string) => string | null }} [deps]
  * @returns {string | null} the refusal, or null to go ahead
  */
-export function worktreeTargetReason({ branch, worktree, issueNumber }, { run = defaultRun, exists = existsSync, owner = worktreeOwner } = {}) {
+export function worktreeTargetReason({ branch, worktree, issueNumber, adopt }, { run = defaultRun, exists = existsSync, owner = worktreeOwner } = {}) {
+  if (adopt !== undefined) return adoptionReason({ branch, worktree, adopt }, { run, exists, owner });
   if (exists(worktree)) {
     const who = owner(worktree);
     return `--worktree=${worktree} ALREADY EXISTS, ${who ? `stamped by \`${who}\`` : "UNSTAMPED (nobody recorded an owner, which is not the same as free)"}. `
@@ -1180,6 +1187,44 @@ export function worktreeTargetReason({ branch, worktree, issueNumber }, { run = 
   const rowBranches = rowBranchesOnOrigin(issueNumber, run);
   if (rowBranches.length > 0) return rowBranchRefusal(issueNumber, rowBranches);
   return null;
+}
+
+/**
+ * #2470: THE ONE CASE IN WHICH A CLAIM MAY GO ON INSIDE A TREE IT DID NOT CREATE: `--adopt=<session>` names the session that made
+ * it, and the tree must be that session's, on that branch. `release` (`decline --keep-worktree`) leaves a stalled holder's tree
+ * in place with the work in it, and the next instance for the row starts THERE -- which the refusal above forbids for a tree it
+ * finds, and rightly (two 2026-09-13 incidents of acting in a peer's tree). So the exception is made narrow enough to keep the
+ * guard's whole reason: the named session must be the one the STAMP names (#1128), so a tree stamped by anybody else, or by
+ * nobody, is still refused; and the tree must already be on the branch the claim records, so it cannot be pointed at a
+ * different one. Refuses BEFORE any write, like every reason here.
+ * @param {{ branch: string, worktree: string, adopt: string }} target
+ * @param {{ run: typeof defaultRun, exists: (path: string) => boolean, owner: (worktree: string) => string | null }} deps
+ * @returns {string | null}
+ */
+function adoptionReason({ branch, worktree, adopt }, { run, exists, owner }) {
+  if (!exists(worktree)) {
+    return `--adopt=${adopt} names ${worktree}, which does not exist -- there is nothing to adopt. Refusing before any write.`;
+  }
+  const who = owner(worktree);
+  if (who !== adopt) {
+    return `--worktree=${worktree} is ${who ? `stamped by \`${who}\`, not \`${adopt}\`` : "UNSTAMPED (nobody recorded an owner)"}. `
+      + "Refusing before any write (#1432): only the tree of the session --adopt names may be claimed in place.";
+  }
+  const head = headBranchOf(worktree, run);
+  if (head !== branch) {
+    return `--worktree=${worktree} is on ${head === null ? "no branch (detached)" : `\`${head}\``}, not --branch=${branch}. `
+      + "Refusing before any write: an adopted tree keeps the branch its work is on.";
+  }
+  return null;
+}
+
+/** @param {string} worktree @param {typeof defaultRun} run @returns {string | null} the branch checked out there, `null` when detached or unreadable */
+function headBranchOf(worktree, run) {
+  try {
+    return String(run("git", ["-C", worktree, "symbolic-ref", "--short", "HEAD"])).trim() || null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1206,15 +1251,17 @@ function undoCreatedWorktree({ branch, worktree }, run) {
  * its race removes what this created. A failure after the worktree landed carries it in #1399's landed list.
  * @param {number} issueNumber
  * @param {string} mySession
- * @param {{ branch: string, worktree: string, run?: typeof defaultRun, exists?: (path: string) => boolean,
+ * @param {{ branch: string, worktree: string, adopt?: string, run?: typeof defaultRun, exists?: (path: string) => boolean,
  *   owner?: (worktree: string) => string | null, stamp?: (worktree: string, session: string) => void,
  *   claim?: typeof claimRow, claimDeps?: Parameters<typeof claimRow>[2] }} args
+ *   `adopt` (#2470) claims the EXISTING tree of the session it names, in place -- see {@link adoptionReason}
  * @returns {ReturnType<typeof claimRow>}
  */
-export function claimWithWorktree(issueNumber, mySession, { branch, worktree, run = defaultRun, exists = existsSync,
+export function claimWithWorktree(issueNumber, mySession, { branch, worktree, adopt, run = defaultRun, exists = existsSync,
   owner = worktreeOwner, stamp = stampWorktree, claim = claimRow, claimDeps = {} }) {
-  const refusal = worktreeTargetReason({ branch, worktree, issueNumber }, { run, exists, owner });
+  const refusal = worktreeTargetReason({ branch, worktree, issueNumber, adopt }, { run, exists, owner });
   if (refusal) return { claimed: false, reason: refusal };
+  if (adopt !== undefined) return adoptWorktree(issueNumber, mySession, { branch, worktree, adopt, run, stamp, claim, claimDeps });
   /** @type {string[]} */
   const landed = [];
   return withLandedWrites(issueNumber, landed, () => {
@@ -1226,6 +1273,29 @@ export function claimWithWorktree(issueNumber, mySession, { branch, worktree, ru
     const result = claim(issueNumber, mySession, { run, ...claimDeps, branch, worktree });
     if (result.claimed) return result;
     return { claimed: false, reason: `${result.reason} -- and ${undoCreatedWorktree({ branch, worktree }, run)}` };
+  });
+}
+
+/**
+ * #2470: THE CLAIM OF A TREE THAT ALREADY HOLDS WORK. Re-stamps it to the claimant and claims with the branch and worktree
+ * recorded, and creates NOTHING -- no fetch, no `worktree add`, and above all no removal: a claim that loses its race leaves the
+ * tree exactly where it found it, RE-STAMPED BACK to its previous owner, because unlike a tree this call made, this one holds
+ * somebody's unpushed work and `undoCreatedWorktree` would destroy it.
+ * @param {number} issueNumber @param {string} mySession
+ * @param {{ branch: string, worktree: string, adopt: string, run: typeof defaultRun,
+ *   stamp: (worktree: string, session: string) => void, claim: typeof claimRow, claimDeps: Parameters<typeof claimRow>[2] }} args
+ * @returns {ReturnType<typeof claimRow>}
+ */
+function adoptWorktree(issueNumber, mySession, { branch, worktree, adopt, run, stamp, claim, claimDeps }) {
+  /** @type {string[]} */
+  const landed = [];
+  return withLandedWrites(issueNumber, landed, () => {
+    stamp(worktree, mySession);
+    landed.push(`re-stamped ${worktree} from ${adopt} to ${mySession}`);
+    const result = claim(issueNumber, mySession, { run, ...claimDeps, branch, worktree });
+    if (result.claimed) return result;
+    stamp(worktree, adopt);
+    return { claimed: false, reason: `${result.reason} -- the adopted worktree ${worktree} was left in place, with its work, and re-stamped \`${adopt}\`` };
   });
 }
 
@@ -1303,11 +1373,14 @@ function declineRemoveLabels(status, mySession, wasReady) {
  * out of `declineRow` to keep its own complexity below the lint gate, same reason `declineRemoveLabels`
  * was. `isClosed` wins over every other reason to add a label (#752): a closed row has no lane to go back
  * to, so neither `wasReady` nor `blockedReason` may add anything once it is true.
- * @param {{ isClosed: boolean, wasReady: boolean, blockedReason: string | undefined }} facts
+ * @param {{ isClosed: boolean, wasReady: boolean, blockedReason: string | undefined, answer?: string }} facts
  * @returns {{ restoreReady: boolean, addLabels: string[] }}
  */
-function declineAddLabels({ isClosed, wasReady, blockedReason }) {
+function declineAddLabels({ isClosed, wasReady, blockedReason, answer }) {
   if (isClosed) return { restoreReady: false, addLabels: [] };
+  // #2470: `answer:<session>` says the row is not for the pool: a session owes a RULING on it (the work merged and the row is
+  // still open, or it needs a decision), so it neither returns to `ready` nor is marked `blocked`.
+  if (answer) return { restoreReady: false, addLabels: [`${ANSWER_LABEL_PREFIX}${answer}`] };
   const restoreReady = wasReady && !blockedReason;
   return { restoreReady, addLabels: blockedReason ? [BLOCKED_LABEL] : restoreReady ? [READY_LABEL] : [] };
 }
@@ -1374,8 +1447,13 @@ function declineOwnershipReason(status, mySession) {
  *
  * @param {number} issueNumber
  * @param {string} mySession
+ * #2470: `keepWorktree` LEAVES THE RECORDED WORKTREE IN PLACE. Without it a decline removes the tree first and refuses while it is
+ * dirty, which for a session that stalled with 215 uncommitted lines either destroys a clean tree's unpushed commits (the branch
+ * survives, the tree does not) or cannot run at all. With it the release is a LABEL and RECORD operation and touches no file;
+ * the caller decides what becomes of the tree. `answer` releases to `answer:<session>` instead of `ready` -- see `declineAddLabels`.
+ *
  * @param {{ run?: typeof defaultRun, moveStatus?: typeof moveProjectStatus, blockedReason?: string,
- *           removeWorktree?: typeof removeClaimedWorktree,
+ *           removeWorktree?: typeof removeClaimedWorktree, keepWorktree?: boolean, answer?: string,
  *           fetchComments?: typeof fetchClaimComments }} [deps]
  * @returns {{ declined: true, restoredReady: boolean, blocked: boolean, closed: boolean, statusMoved: true }
  *   | { declined: true, restoredReady: true, blocked: false, closed: false, statusMoved: false,
@@ -1384,7 +1462,10 @@ function declineOwnershipReason(status, mySession) {
  */
 export function declineRow(issueNumber, mySession,
   { run = defaultRun, moveStatus = moveProjectStatus, blockedReason, removeWorktree = removeClaimedWorktree,
-    fetchComments = fetchClaimComments } = {}) {
+    fetchComments = fetchClaimComments, keepWorktree = false, answer } = {}) {
+  if (blockedReason && answer) {
+    return { declined: false, reason: "--blocked and --answer are two different releases (a finding vs. a ruling owed); give one" };
+  }
   const before = fetchLabels(issueNumber, { run });
   const status = claimStatus(before.labels);
   const ownershipReason = declineOwnershipReason(status, mySession);
@@ -1398,24 +1479,26 @@ export function declineRow(issueNumber, mySession,
   const landed = [];
   // #1399: as `writeRowLabels` -- from the worktree removal on, a failure reports what it already changed.
   return withLandedWrites(issueNumber, landed, () => releaseRow(issueNumber,
-    { run, moveStatus, blockedReason, removeWorktree, mySession, before, status, recorded, landed }));
+    { run, moveStatus, blockedReason, removeWorktree, keepWorktree, answer, mySession, before, status, recorded, landed }));
 }
 
 /**
  * #1399: `declineRow` from the worktree removal on -- every write recorded in `landed` as it succeeds.
  * @param {number} issueNumber
  * @param {{ run: typeof defaultRun, moveStatus: typeof moveProjectStatus, blockedReason?: string,
- *   removeWorktree: typeof removeClaimedWorktree, mySession: string, before: IssueClaim,
+ *   removeWorktree: typeof removeClaimedWorktree, keepWorktree: boolean, answer?: string, mySession: string, before: IssueClaim,
  *   status: ReturnType<typeof claimStatus>, recorded: { branch: string | null, worktree: string | null },
  *   landed: string[] }} state
  * @returns {ReturnType<typeof declineRow>}
  */
 function releaseRow(issueNumber,
-  { run, moveStatus, blockedReason, removeWorktree, mySession, before, status, recorded, landed }) {
+  { run, moveStatus, blockedReason, removeWorktree, keepWorktree, answer, mySession, before, status, recorded, landed }) {
   // #665: THE WORKTREE COMES OFF FIRST, before any label is touched -- a dirty one refuses the WHOLE
   // decline (see this function's own header for why), so the claim record stays intact until an operator
   // has dealt with the uncommitted work by hand.
-  if (recorded.worktree) {
+  if (recorded.worktree && keepWorktree) {
+    landed.push(`KEPT the recorded worktree ${recorded.worktree} (#2470: it holds the released instance's work)`);
+  } else if (recorded.worktree) {
     const removal = removeWorktree(recorded.worktree, { run });
     if (!removal.removed) return { declined: false, reason: removal.reason };
     landed.push(`removed the recorded worktree ${recorded.worktree}`);
@@ -1423,7 +1506,7 @@ function releaseRow(issueNumber,
 
   const isClosed = before.state === "CLOSED";
   const wasReady = before.labels.includes(WAS_READY_LABEL);
-  const { restoreReady, addLabels } = declineAddLabels({ isClosed, wasReady, blockedReason });
+  const { restoreReady, addLabels } = declineAddLabels({ isClosed, wasReady, blockedReason, answer });
   const removeLabels = declineRemoveLabels(status, mySession, wasReady);
   run("gh", ["issue", "edit", String(issueNumber), "--repo", REPO,
     ...removeLabels.flatMap((l) => ["--remove-label", l]),
@@ -1544,13 +1627,15 @@ function usage() {
     + "  node packages/agent-org/src/row-claim.mjs check <issue-number>                       (alias of --row=)\n"
     + "  node packages/agent-org/src/row-claim.mjs dispatch <issue-number> --session=<name>   (mark taken at dispatch)\n"
     + "  node packages/agent-org/src/row-claim.mjs claim <issue-number> --session=<name> [--branch=<name>] "
-    + "[--worktree=<path>] [--blocked-by=#N]  (mark started; #1432: given both, CREATES the worktree at <path> on new branch <name> from origin/main, refusing first if either exists; #656/#665: records the branch and worktree "
+    + "[--worktree=<path>] [--adopt=<session>] [--blocked-by=#N]  (mark started; #2470: --adopt claims that session's EXISTING tree in place instead of creating one; #1432: given both, CREATES the worktree at <path> on new branch <name> from origin/main, refusing first if either exists; #656/#665: records the branch and worktree "
     + "-- #987: in a claim COMMENT, so a path of ANY length works, where a label capped it at 41 characters, "
     + "so a future escalation can tell portable from held, and decline can remove the worktree safely; "
     + "#741: --blocked-by releases B2 only with a measurement comment already on this session's own open "
     + "PR, and only while #N is open)\n"
-    + "  node packages/agent-org/src/row-claim.mjs decline <issue-number> --session=<name>    (give it back; #665: also "
-    + "removes the recorded worktree, refusing by name if it is dirty)\n"
+    + "  node packages/agent-org/src/row-claim.mjs decline <issue-number> --session=<name> [--keep-worktree] "
+    + "[--answer=<session>]    (give it back; #665: also "
+    + "removes the recorded worktree, refusing by name if it is dirty; #2470: --keep-worktree leaves it, with its work, and "
+    + "--answer= releases to that session's `answer:` label instead of `ready`)\n"
     + "  node packages/agent-org/src/row-claim.mjs conflict <issue-number> --found=<text>     (#226: reality differed)\n";
 }
 
@@ -1715,17 +1800,17 @@ function runStatus(issueNumber) {
  * @param {"dispatch" | "claim"} mode
  * @param {number} issueNumber
  * @param {string} mySession
- * @param {{ branch?: string, worktree?: string }} record
+ * @param {{ branch?: string, worktree?: string, adopt?: string }} record
  * @returns {string}
  */
-function claimLineFor(mode, issueNumber, mySession, { branch, worktree }) {
+function claimLineFor(mode, issueNumber, mySession, { branch, worktree, adopt }) {
   const label = mode === "dispatch" ? "DISPATCHED" : "STARTED";
   const startedSuffix = mode === "claim" ? ` / ${STARTED_LABEL}` : "";
   // #987: `branch <name>`, not `branch:<name>` -- the colon form named a LABEL, and this claim no longer
   // writes one. The same two facts are in the claim-record comment, and saying `branch:` here would tell a
   // reader to go looking for a label that is not there.
   const branchSuffix = mode === "claim" && branch ? ` / branch ${branch}` : "";
-  const worktreeSuffix = mode === "claim" && worktree ? ` / worktree ${worktree}` : "";
+  const worktreeSuffix = mode === "claim" && worktree ? ` / worktree ${worktree}${adopt ? ` (ADOPTED from ${adopt}, work kept)` : ""}` : "";
   return `${label} -- #${issueNumber} is now ${CLAIM_LABEL} / session:${mySession}`
     + `${startedSuffix}${branchSuffix}${worktreeSuffix}`;
 }
@@ -1733,12 +1818,12 @@ function claimLineFor(mode, issueNumber, mySession, { branch, worktree }) {
 /**
  * #1432: which write a `dispatch`/`claim` CLI makes -- a claim given a branch and worktree creates them first.
  * @param {"dispatch" | "claim"} mode @param {number} issueNumber @param {string} mySession
- * @param {{ branch?: string, worktree?: string, blockedBy?: string }} flags
+ * @param {{ branch?: string, worktree?: string, blockedBy?: string, adopt?: string }} flags
  */
-function claimOrDispatch(mode, issueNumber, mySession, { branch, worktree, blockedBy }) {
+function claimOrDispatch(mode, issueNumber, mySession, { branch, worktree, blockedBy, adopt }) {
   if (mode === "dispatch") return dispatchRow(issueNumber, mySession);
   const claimDeps = { blockedBy, drained: drainedNow(), instance: instanceNow(mySession, issueNumber) };
-  if (branch && worktree) return claimWithWorktree(issueNumber, mySession, { branch, worktree, claimDeps });
+  if (branch && worktree) return claimWithWorktree(issueNumber, mySession, { branch, worktree, adopt, claimDeps });
   return claimRow(issueNumber, mySession, claimDeps);
 }
 
@@ -1817,16 +1902,18 @@ function runDispatchOrClaim(mode, issueNumber, rest) {
   // `--worktree=` do -- a dispatch precedes any of this session's own PR existing at all.
   const blockedByFlag = rest.find((a) => a.startsWith("--blocked-by="));
   const blockedBy = blockedByFlag?.slice("--blocked-by=".length);
-  const flagsReason = mode === "claim" ? worktreeFlagsReason({ branch, worktree }) : null;
+  // #2470: `--adopt=<session>` claims that session's EXISTING tree in place (the respawn of a released row starts in the work).
+  const adopt = rest.find((a) => a.startsWith("--adopt="))?.slice("--adopt=".length);
+  const flagsReason = mode === "claim" ? worktreeFlagsReason({ branch, worktree, adopt }) : null;
   if (flagsReason) {
     process.stderr.write(`row-claim claim: ${flagsReason}\n`);
     process.exitCode = 2;
     return;
   }
   try {
-    const result = claimOrDispatch(mode, issueNumber, mySession, { branch, worktree, blockedBy });
+    const result = claimOrDispatch(mode, issueNumber, mySession, { branch, worktree, blockedBy, adopt });
     if (result.claimed) {
-      const claimLine = claimLineFor(mode, issueNumber, mySession, { branch, worktree });
+      const claimLine = claimLineFor(mode, issueNumber, mySession, { branch, worktree, adopt });
       if (result.statusMoved) {
         process.stdout.write(`${claimLine}\n`);
         process.exitCode = 0;
@@ -1856,6 +1943,17 @@ function runDispatchOrClaim(mode, issueNumber, rest) {
 }
 
 /**
+ * #2470: `--keep-worktree` (leave the recorded tree in place) and `--answer=<session>` (release to that session's `answer:` label).
+ * @param {string[]} rest
+ * @returns {{ keepWorktree: boolean, answer: string | undefined } | { refusal: string }}
+ */
+function releaseFlags(rest) {
+  const answer = rest.find((a) => a.startsWith("--answer="))?.slice("--answer=".length);
+  if (rest.some((a) => a.startsWith("--answer=")) && !answer) return { refusal: "--answer=<session> needs a session, not an empty string" };
+  return { keepWorktree: rest.includes("--keep-worktree"), answer };
+}
+
+/**
  * @param {number} issueNumber
  * @param {string[]} rest
  */
@@ -1874,14 +1972,22 @@ function runDecline(issueNumber, rest) {
     process.exitCode = 2;
     return;
   }
+  const release = releaseFlags(rest);
+  if ("refusal" in release) {
+    process.stderr.write(`row-claim decline: ${release.refusal}\n`);
+    process.exitCode = 2;
+    return;
+  }
+  const { keepWorktree, answer } = release;
   try {
-    const result = declineRow(issueNumber, mySession, { blockedReason });
+    const result = declineRow(issueNumber, mySession, { blockedReason, keepWorktree, answer });
     if (result.declined) {
       // #449/#752: WHAT CAME BACK, NOT JUST THAT SOMETHING DID -- the four shapes read differently to a
       // human deciding what happens next: restored (pickable again), blocked (a finding, do not repick
       // yet), closed (done -- "restored to ready" would be false on its face), or neither (was never
       // `ready`, unclaimed and no more startable than that already implies).
       const outcome = result.closed ? "; the row is CLOSED, so it is NOT returned to `ready`"
+        : answer ? `and labelled \`answer:${answer}\` (NOT returned to \`ready\`)`
         : result.blocked ? "and marked `blocked`"
         : result.restoredReady ? "and restored to `ready`"
         : "(was not `ready` before the claim -- not restored)";
@@ -1953,7 +2059,7 @@ async function main() {
   // own documented invocation. A flag guard that has not been merged forward is a guard that breaks the
   // thing it protects.
   refuseUnknownFlags(["--session", "--row=", "--found=", "--blocked=", "--branch=", "--worktree=",
-    "--blocked-by="], { entry: import.meta.url, command: "node packages/agent-org/src/row-claim.mjs" });
+    "--blocked-by=", "--keep-worktree", "--answer=", "--adopt="], { entry: import.meta.url, command: "node packages/agent-org/src/row-claim.mjs" });
   // #1352: FIRST OF ALL, where it was launched. From the primary checkout or a plain clone this refuses before any read,
   // exit 2 -- the "could not determine at all" outcome every consumer already classifies, as the stale-rule guard does.
   if (launchGate("row-claim")) {
