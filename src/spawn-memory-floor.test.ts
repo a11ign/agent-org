@@ -207,8 +207,10 @@ test("#2508 (5): a held order is NOT consumed -- tick one is below the floor and
 test("#2508 (reviewer): a NEW `reviewer-<n>` is held below the floor BEFORE its checkout or pane; a LIVE one is not asked", () => {
   const h = recordingHerdr();
   const git: string[] = [];
-  const checkout = { git: (_c: string, a: string[]) => { git.push(a.join(" ")); return ""; }, exists: () => true,
-    root: "/reviews-root", repoRoot: "/primary" };
+  // `link` is #2498's seam: a checkout ends in `linkReviewDependencies`, which REFUSES a tree with no dependencies, and
+  // this test has no disk -- so the link is injected, as `wake-reviewer-instance.test.ts` does, never a real `node_modules`.
+  const checkout = { git: (_c: string, a: string[]) => { git.push(a.join(" ")); return ""; }, link: () => null,
+    exists: () => true, root: "/reviews-root", repoRoot: "/primary" };
   const memory = spawnMemoryGate({ read: () => meminfo(RUNAWAY_KB) });
 
   const held = deliver([reviewOrder(2398)], agents({ ceo: "working" }), [], { run: h.run, checkout, memory });
