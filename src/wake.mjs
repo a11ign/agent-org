@@ -949,6 +949,17 @@ export function isReviewerOrder(order) {
 }
 
 /**
+ * A WORKSPACE WITH NO AGENT IN IT (#2534): herdr's `unknown` is its word for a pane where no agent is detected, which
+ * is what a codex that EXITED (a self-update, an OOM, a crash) leaves behind. Its label still names the instance, so
+ * reading the label as presence kept the pane alive as far as #2465's count and {@link spawnableReviewer} were
+ * concerned, and the pull request went unreviewed until a human closed it. `WAKEABLE` already excludes it.
+ * @param {{status?: string}} agent
+ */
+function hasNoAgent(agent) {
+  return agent.status === "unknown";
+}
+
+/**
  * The live reviewer instances -- workspaces labelled `reviewer-<n>`, the retired standing pane excluded.
  * @param {{label: string}[]} agents @returns {string[]}
  */
@@ -999,7 +1010,7 @@ export function reviewerMismatch(order, label) {
  * duplicated -- a duplicate label makes `route` ambiguous. If the instance really died, the refusal says how to
  * clear it.
  *
- * @param {{session: string, cause?: string, causeKey?: string}} order @param {{label: string}[]} agents
+ * @param {{session: string, cause?: string, causeKey?: string}} order @param {{label: string, status?: string}[]} agents
  * @param {Record<string, {spawnedAt: number}>} [registry] what this path started and has not ended
  * @returns {{session: string} | {refusal: string}}
  */
@@ -1007,8 +1018,10 @@ export function spawnableReviewer(order, agents, registry = {}) {
   if (!isReviewerOrder(order)) {
     return { refusal: `no reviewer spawn: "${order.session}" is not a reviewer instance for a reviewer cause` };
   }
-  if (agents.some((a) => a.label === order.session)) {
-    return { refusal: `no reviewer spawn: a workspace labelled "${order.session}" already exists` };
+  const holder = agents.find((a) => a.label === order.session);
+  if (holder !== undefined) {
+    return { refusal: `no reviewer spawn: a workspace labelled "${order.session}" already exists`
+      + `${hasNoAgent(holder) ? ` and holds NO agent (${holder.status}): the teardown closes it after ${REVIEWER_DEAD_AFTER_TICKS} ticks of a COMPLETE listing that shows it so, then the next tick starts a fresh one (#2534)` : ""}` };
   }
   const started = registry[order.session];
   if (started !== undefined) {
@@ -1318,20 +1331,24 @@ export function listingIsComplete(agents) {
  *    failing cannot starve a real death of its ticks, and not advanced, so it cannot manufacture one.
  *  - ABSENT FROM A COMPLETE LISTING: one more tick, and dead at {@link REVIEWER_DEAD_AFTER_TICKS}.
  *
+ * `listed` is presence WITH an agent. A workspace that holds none (`agentless`, #2534) is `listed: false`: it is absent as
+ * far as the count goes, and the caller closes it when the count says dead, since its label is what blocks a respawn.
+ *
  * @param {ReviewerInstance} entry
- * @param {{listed: boolean, complete: boolean}} seen
+ * @param {{listed: boolean, complete: boolean, agentless?: boolean}} seen
  * @returns {{entry: ReviewerInstance | null, event: string | null, absentTicks: number}}
  */
-export function observeOpenReviewer(entry, { listed, complete }) {
+export function observeOpenReviewer(entry, { listed, complete, agentless = false }) {
   const { absentTicks = 0, absentNoted, ...kept } = entry;
   if (listed) return { entry: kept, event: null, absentTicks: 0 };
+  const kind = agentless ? "agentless" : "absent";
   if (!complete) {
-    const event = absentNoted === "unconfirmed" ? null : "absent-unconfirmed";
+    const event = absentNoted === "unconfirmed" ? null : `${kind}-unconfirmed`;
     return { entry: { ...kept, absentTicks, absentNoted: "unconfirmed" }, event, absentTicks };
   }
   const ticks = absentTicks + 1;
   if (ticks >= REVIEWER_DEAD_AFTER_TICKS) return { entry: null, event: "cleared", absentTicks: ticks };
-  return { entry: { ...kept, absentTicks: ticks, absentNoted: `seen-${ticks}` }, event: "absent-seen", absentTicks: ticks };
+  return { entry: { ...kept, absentTicks: ticks, absentNoted: `seen-${ticks}` }, event: `${kind}-seen`, absentTicks: ticks };
 }
 
 /**
@@ -1395,25 +1412,44 @@ export function endFinishedReviewers(agents, deps) {
  * Mutates `registry` (the caller's copy) and returns `true` when the instance was called dead and its key removed.
  *
  * ITS CHECKOUT IS LEFT WHERE IT IS: {@link prepareReviewCheckout} re-points an existing tree, which is what lets the
- * fresh instance reuse the dead one's path. NOTHING IS CLOSED either -- the workspace is not there to close. Every
+ * fresh instance reuse the dead one's path. AN ABSENT INSTANCE HAS NOTHING TO CLOSE; an AGENTLESS workspace (#2534: codex
+ * exited and left the pane) is closed when the count says dead, and only then is the key cleared. Every
  * observation that changes what a reader would want to know is written to the absences ledger, so the refusal
  * {@link spawnableReviewer} keeps making is readable from an org read and not only from a tick's stderr.
  *
- * @param {{session: string, pr: number, agents: {label: string}[], registry: Record<string, ReviewerInstance>}} at
- * @param {{now: number, warn: (line: string) => void, recordAbsence?: (line: object) => void}} deps
+ * @param {{session: string, pr: number, agents: {label: string, status: string}[], registry: Record<string, ReviewerInstance>}} at
+ * @param {{now: number, run: (args: string[]) => string, warn: (line: string) => void, recordAbsence?: (line: object) => void}} deps
  * @returns {boolean}
  */
 function reconcileOpenReviewer({ session, pr, agents, registry }, deps) {
   const complete = listingIsComplete(agents);
-  const seen = observeOpenReviewer(registry[session], { listed: agents.some((a) => a.label === session), complete });
-  if (seen.entry === null) delete registry[session];
-  else registry[session] = seen.entry;
-  if (seen.event === null) return false;
-  deps.recordAbsence?.({ session, pr, at: new Date(deps.now).toISOString(), event: seen.event,
-    absentTicks: seen.absentTicks, needed: REVIEWER_DEAD_AFTER_TICKS, listing: complete ? "complete" : "partial" });
+  const holder = agents.find((a) => a.label === session);
+  const agentless = holder !== undefined && hasNoAgent(holder);
+  const before = registry[session];
+  const seen = observeOpenReviewer(before, { listed: holder !== undefined && !agentless, complete, agentless });
+  // CLOSED BEFORE THE KEY GOES (#2534): the label is what blocks the next spawn, so a key cleared over a workspace that
+  // will not close would only trade this refusal for the spawn's. A close that fails keeps the key one tick short of dead.
+  const stuck = seen.entry === null && agentless && !closeReviewer(session, deps);
+  const dead = seen.entry === null && !stuck;
+  if (dead) delete registry[session];
+  else registry[session] = seen.entry ?? { ...before, absentTicks: REVIEWER_DEAD_AFTER_TICKS - 1, absentNoted: "close-failed" };
+  const event = stuck ? "close-failed" : seen.event;
+  if (event !== null) noteAbsence({ session, pr, event, ticks: seen.absentTicks, complete, agentless }, deps);
+  return dead;
+}
+
+/**
+ * Write one absence observation to the ledger and to the tick's stderr. `agentless` says which of the two it was: a
+ * workspace that is not in the listing, or one that is and holds no agent (#2534).
+ * @param {{session: string, pr: number, event: string, ticks: number, complete: boolean, agentless: boolean}} seen
+ * @param {{now: number, warn: (line: string) => void, recordAbsence?: (line: object) => void}} deps
+ */
+function noteAbsence({ session, pr, event, ticks, complete, agentless }, deps) {
+  deps.recordAbsence?.({ session, pr, at: new Date(deps.now).toISOString(), event, absentTicks: ticks,
+    needed: REVIEWER_DEAD_AFTER_TICKS, listing: complete ? "complete" : "partial",
+    presence: agentless ? "workspace with no agent" : "absent from the listing" });
   deps.warn(`reviewer teardown: "${session}" is registered for OPEN PR #${pr} and herdr's ${complete ? "complete" : "PARTIAL"} `
-    + `listing does not show it (${seen.event}, ${seen.absentTicks}/${REVIEWER_DEAD_AFTER_TICKS}).`);
-  return seen.entry === null;
+    + `listing ${agentless ? "shows a workspace with NO AGENT in it" : "does not show it"} (${event}, ${ticks}/${REVIEWER_DEAD_AFTER_TICKS}).`);
 }
 
 /**
