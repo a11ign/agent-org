@@ -22,6 +22,12 @@ Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin
 # failure otherwise is silent, forever.
 Environment=HOME=/home/agent
 
+# V8'S COMPILE CACHE GOES UNDER THE HOME, NOT /tmp -- #2458. `tsc`, `eslint`, `rstest` and `changeset` (all reached
+# through `npm run`) call `enableCompileCache()` with no directory, which writes `<tmpdir>/node-compile-cache`:
+# one entry per file per checkout path, 141,353 inodes in the 2026-09-25 outage. A unit reads no shell startup
+# file, so this line is the ONLY place a unit can get it; `host-units.test.ts` pins it on every shipped service.
+Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache
+
 # WHICH ACCOUNT THIS NIGHTLY SPENDS, DECLARED -- #1974, AND NOT THE HUMAN ONE (chairman, #1950, #2332).
 # `corpus:release` writes releases to `a11ign/corpus-backups`, which `a11ign-ai-workers` can only READ
 # (measured 2026-09-22: `pull` and not `push`), so until 2026-09-24 this unit declared the person's own
