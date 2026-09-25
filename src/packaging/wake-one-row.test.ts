@@ -106,7 +106,7 @@ test("#2407 (2) an order that NAMES the spent spare is still delivered; the pool
     return "{}";
   };
   const got = deliver([named], live, roster, { run, ineligibleReason, drained: STANDING });
-  assert.deepEqual(got.sent, ["worker-4 <- worker-4/changes-requested/pr-2380/abc"],
+  assert.deepEqual(got.sent, ["worker-4 <- worker-4/changes-requested/pr-2380/abc (no clear)"],
     "the same idle spare that is skipped for a pool order is woken for an order about its own row");
 
   const pool = deliver([ROW_ORDER], agents({ "worker-4": "idle" }), roster, { run, ineligibleReason, drained: STANDING });
@@ -266,7 +266,7 @@ test("#2407 THE WAKE ENTRY (router): an idle spare with a recorded row is skippe
   assert.match(spent.ran.stdout, /WOKE worker-5 <- engineers\/ready-row-unclaimed\/2407 \(STARTED/, spent.ran.stderr);
   assert.ok(!/WOKE worker-4/.test(spent.ran.stdout), "the spent instance is not woken for a new row");
   const control = tickWith({ "worker-4": { spawnedAt: 1, rows: [] } }, IDLE_WORKER_4);
-  assert.match(control.ran.stdout, /WOKE worker-4 <- engineers\/ready-row-unclaimed\/2407\n/,
+  assert.match(control.ran.stdout, /WOKE worker-4 <- engineers\/ready-row-unclaimed\/2407 \(no clear\)\n/,
     `the control: nothing recorded and nothing held, so the idle spare takes the row; got ${control.ran.stderr}`);
 });
 

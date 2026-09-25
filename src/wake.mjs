@@ -1219,7 +1219,7 @@ export function parseOrders(text) {
 // target before delivering, so a retry that lands the instant a busy session goes idle does not merely
 // interleave -- it WIPES A REVIEW IN PROGRESS. `reviewer` was mid-review of #1963 in `/tmp/rv-1963`
 // during that exact window, so the three refusals protected it and a fourth success would have destroyed
-// it. A queued order is therefore delivered when the GATE judges the target free, never by a caller
+// it (true then; since #2483 a `reviewer-<n>` instance is never cleared, and the retry is a second copy). A queued order is therefore delivered when the GATE judges the target free, never by a caller
 // racing the same window; and a poll inside an author's session is the model turn the 2026-09-17 cron
 // ruling retired, wearing a different hat.
 //
@@ -1983,14 +1983,20 @@ export const WAKE_TTL_MS = 20 * 60 * 1000;
  */
 export const JUDGMENT_TTL_MS = 2 * 60 * 60 * 1000;
 
+/** What an instance's delivery line and ledger line say in place of a clear (#2483). */
+export const NO_CLEAR_NOTE = " (no clear)";
+const NO_CLEAR_FIELD = "no-clear";
+
 /**
- * One delivery's ledger line. The recipient rides AFTER the key, so `ledgerKeyOf` -- which every reader goes
- * through -- still finds the same key and the dedupe is untouched.
- * @param {number} at @param {string} key @param {string} [recipient]
+ * One delivery's ledger line. The recipient rides AFTER the key, and so does `no-clear` (with an empty recipient
+ * field when there is none), so `ledgerKeyOf` -- which every reader goes through -- still finds the same key and the
+ * dedupe is untouched.
+ * @param {number} at @param {string} key @param {string} [recipient] @param {boolean} [noClear]
  * @returns {string}
  */
-export function ledgerLine(at, key, recipient) {
-  return `${at}\t${key}${recipient ? `\t${recipient}` : ""}\n`;
+export function ledgerLine(at, key, recipient, noClear = false) {
+  const fields = noClear ? [recipient ?? "", NO_CLEAR_FIELD] : recipient ? [recipient] : [];
+  return `${[at, key, ...fields].join("\t")}\n`;
 }
 
 /**
@@ -2010,7 +2016,7 @@ export function ledgerKeyOf(rest) {
 /**
  * The causeKeys still counted as delivered, given the clock.
  *
- * A LINE IS `<epochMs>\t<causeKey>[\t<recipient>]` (see {@link ledgerKeyOf}). Lines without a tab are read as OLD -- the format before this
+ * A LINE IS `<epochMs>\t<causeKey>[\t<recipient>[\tno-clear]]` (see {@link ledgerKeyOf}). Lines without a tab are read as OLD -- the format before this
  * change, written by a version that recorded no time -- and they expire immediately rather than being
  * discarded or kept for ever. Discarding them would re-wake every cause the moment this ships; keeping
  * them for ever is the bug. Expiring them is the honest reading: a wake whose age cannot be known has no
@@ -2415,10 +2421,18 @@ const CLEAR_REFUSAL_EXCERPT = 80;
  * *"`/clear` between unrelated topics; a fresh window beats stale history"*. It was a habit nobody could
  * keep because nothing reminded anyone. Here it is mechanical.
  *
- * SAFE BECAUSE OF WHO IS BEING WOKEN. `wake` only ever delivers to a session herdr reports `idle` or
- * `done`, so it is between tasks by definition -- and each order is its own task, which is the exact
- * "unrelated topic" the rule is about. The row is the state (`agent-practices.md` again), so a session
- * carries nothing across tasks worth keeping.
+ * WHO IS CLEARED, AND WHO IS NOT (#2483). `wake` only ever delivers to a session herdr reports `idle` or
+ * `done`, so it is between tasks by definition. What that says about the NEXT order depends on the seat:
+ *
+ *   a STANDING seat (`ceo`, `product-manager`, `orchestrator`, `worker-capture`, `worker-tooling`,
+ *   `worker-judge`) is cleared. Its orders really are unrelated topics -- the exact "unrelated topic" the
+ *   rule is about -- and the row is the state (`agent-practices.md` again), so it carries nothing across
+ *   tasks worth keeping.
+ *
+ *   a PER-ROW INSTANCE (a spawned `worker-<n>`, a `reviewer-<n>`; {@link isPerRowInstance}) is NOT. Its one
+ *   row is its whole life, so a failing check, a refusal or a conflict on ITS pull request is the SAME task
+ *   and not an unrelated one: wiping the window discards exactly what the order is about (chairman, via
+ *   `ceo`, 2026-09-25). The cost is bounded by one row's lifetime, which is why `/compact` is not added either.
  *
  * NOT `agent start`. Spawning a fresh worker per cause reaches the same context floor and costs a process
  * restart, a pane at a shell prompt, and a window where the session is neither old nor new. `/clear`
@@ -2466,6 +2480,31 @@ export function clearContext(run, label) {
     // strictly better than undelivered, and the refusal is reported rather than swallowed.
     return `${label}: /clear refused (${firstLine(err, CLEAR_REFUSAL_EXCERPT)})`;
   }
+}
+
+/**
+ * IS THIS A SESSION WHOSE ONLY WORK IS ONE ROW (#2483) -- and so one that must never be cleared between orders.
+ *
+ * ONE PREDICATE, CALLING THE TWO READERS THAT ALREADY SAY SO, and no pattern of its own: {@link familyNumber} for
+ * the roster's spare family (`worker-4` onward) and `reviewerInstanceNumber` for `reviewer-<n>`, which lives in
+ * another module and also refuses the retired `reviewer-2`. `worker-capture`, `worker-tooling` and `worker-judge`
+ * share the `worker-` prefix and answer `null` on both, so they stay standing seats and keep the clear.
+ * @param {string} label
+ */
+export function isPerRowInstance(label) {
+  return familyNumber(label) !== null || reviewerInstanceNumber(label) !== null;
+}
+
+/**
+ * THE CLEAR BEFORE AN ORDER, FOR EVERY PATH THAT DELIVERS ONE (`deliver` here, `clearThenPrompt` in
+ * `prompt-session.mjs`): sent to a standing seat, skipped for a per-row instance ({@link isPerRowInstance}).
+ * Both callers go through it, because fixing one leaves the reviewer wiped by its own author.
+ * @param {(args: string[]) => string} run @param {string} label
+ * @returns {{sent: boolean, refusal: string | null}} whether a clear was sent, and `clearContext`'s refusal
+ */
+export function clearBeforeOrder(run, label) {
+  if (isPerRowInstance(label)) return { sent: false, refusal: null };
+  return { sent: true, refusal: clearContext(run, label) };
 }
 
 /**
@@ -2531,6 +2570,20 @@ function carriedOrder(order, target) {
 }
 
 /**
+ * The clear before an order (see {@link clearContext}), NOT for a session this tick started -- it has nothing to clear.
+ * A refusal is reported into `refused` and the order still goes.
+ * @param {(args: string[]) => string} run @param {{label: string, profile?: object}} target
+ * @param {string} causeKey @param {string[]} refused
+ * @returns {boolean} true when an existing session was left uncleared because it is a per-row instance
+ */
+function clearUnlessStarted(run, target, causeKey, refused) {
+  if (target.profile) return false;
+  const clear = clearBeforeOrder(run, target.label);
+  if (clear.refusal) refused.push(`${causeKey}: ${clear.refusal} -- delivered anyway`);
+  return !clear.sent;
+}
+
+/**
  * Deliver each order, and say what happened to every one of them.
  *
  * REPORTS BEFORE IT RECORDS. An order is written to the ledger only once herdr has accepted it, so a crash
@@ -2540,7 +2593,7 @@ function carriedOrder(order, target) {
  * @param {{session: string, causeKey: string, prompt: string, cause?: string, title?: string}[]} orders
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster
- * @param {{run?: (args: string[]) => string, record?: (key: string, recipient?: string) => void,
+ * @param {{run?: (args: string[]) => string, record?: (key: string, recipient?: string, noClear?: boolean) => void,
  *          counts?: Map<string, number>, ineligibleReason?: (label: string) => string | null,
  *          env?: Record<string, string>, registerSpawn?: (role: string) => void, drained?: readonly string[],
  *          claimable?: (order: {causeKey: string}) => string | null, claimer?: SpawnClaimer,
@@ -2582,12 +2635,10 @@ export function deliver(orders, agents, roster,
     // Spending that on a session whose context is its own prefix would be paying the standing path's cost
     // to reach a floor the spawn already started at -- which is the whole argument for spawning.
     spawned += engineerStarts(target);
-    if (!target.profile) {
-      // CLEARED BEFORE PROMPTED, always. See `clearContext` for the measurement; in short, a session on its
-      // 500th turn costs ~24x one on its 10th for identical output, and the clear costs one cheap turn.
-      const clearRefusal = clearContext(run, target.label);
-      if (clearRefusal) refused.push(`${order.causeKey}: ${clearRefusal} -- delivered anyway`);
-    }
+    // CLEARED BEFORE PROMPTED, except a per-row instance (#2483). See `clearContext` for the measurement and for
+    // who is cleared: a standing seat's 500th turn costs ~24x its 10th for identical output, an instance's
+    // window is its one row.
+    const noClear = clearUnlessStarted(run, target, order.causeKey, refused);
     try {
       run(["--session", "org", "agent", "prompt", target.label,
         addressed(carriedOrder(order, target), target.label, { ...launch, spawned: target.claimed })]);
@@ -2610,10 +2661,12 @@ export function deliver(orders, agents, roster,
     // not say who was woken, and the only account of a wrong delivery was the recipient's own prose. A NAMED
     // order's recipient is already in its key and is not repeated.
     // A FALLBACK DELIVERY IS RECORDED THE SAME WAY (#2356): the key names the session it was ADDRESSED to.
-    if (record) record(order.causeKey, target.label !== order.session ? target.label : undefined);
+    if (record) record(order.causeKey, target.label !== order.session ? target.label : undefined, noClear);
+    // WHETHER A CLEAR WAS SENT IS READABLE (#2483): a STARTED line has no history to clear, a standing seat's
+    // line is unchanged, and an instance's says it was left alone -- so the tick log shows no `/clear` to one.
     sent.push(target.profile
       ? `${target.label} <- ${order.causeKey} (STARTED ${target.profile.model}/${target.profile.effort})`
-      : `${target.label} <- ${order.causeKey}`);
+      : `${target.label} <- ${order.causeKey}${noClear ? NO_CLEAR_NOTE : ""}`);
   }
   return { sent, refused, stuck };
 }
@@ -3518,9 +3571,9 @@ function main() {
   const delivered = readLedger(ledgerPath, readFileSync, Date.now(), new Set(JUDGMENT_CAUSES));
   const todo = undelivered(orders, delivered);
   mkdirSync(dirname(ledgerPath), { recursive: true });
-  /** @param {string} key @param {string} [recipient] */
-  const record = (key, recipient) => writeFileSync(ledgerPath, ledgerLine(Date.now(), key, recipient),
-    { flag: "a" });
+  /** @param {string} key @param {string} [recipient] @param {boolean} [noClear] */
+  const record = (key, recipient, noClear) => writeFileSync(ledgerPath,
+    ledgerLine(Date.now(), key, recipient, noClear), { flag: "a" });
 
   // A RUN THAT ENDED IS MARKED BEFORE THE COUNTS ARE READ, so a cause that went away and came back is
   // offered again rather than being held at a cap it earned under conditions that no longer hold.
