@@ -121,6 +121,29 @@ test("classifyCommand: THE #353 CORPUS BAN -- every runs/-reading gate is refuse
   }
 });
 
+test("classifyCommand: #2473 the check-signals GATE stays refused in every spelling that runs it", () => {
+  // The positive control for the runnable case below: the anchored pattern must still bite the gate.
+  for (const command of [
+    "npm run check-signals",
+    "npm run check-signals -- --require-complete",
+    "npm run training:check-signals:complete",
+    "node packages/lab/src/training/check-signals.mjs",
+    "node packages/lab/src/training/check-signals.mjs --require-complete",
+  ]) {
+    assert.equal(classifyCommand(command).verdict, "refused", `expected ${command} to be refused`);
+  }
+});
+
+test("classifyCommand: #2473 a test FILE whose name merely begins `check-signals-` is runnable -- `-` is a "
+  + "word boundary, so the bare word refused it as \"reads runs/\" though its closure never reaches runs/", () => {
+  for (const command of [
+    "npx tsx --test packages/lab/src/training/check-signals-pipe.test.ts",
+    "npx tsx --test packages/lab/src/training/check-signals.test.ts",
+  ]) {
+    assert.deepEqual(classifyCommand(command), { verdict: "runnable" }, `expected ${command} to be runnable`);
+  }
+});
+
 test("classifyCommand: a command that merely MENTIONS a banned word without the pattern is still runnable", () => {
   // `worker-fleet` contains "worker" but not the `worker:` script-name shape this bans.
   assert.deepEqual(classifyCommand("npx tsx --test packages/worker-fleet/src/cli-flags.test.ts"),
