@@ -27,7 +27,8 @@
 // prompt about a topic, which is the "unrelated topic" the clear rule is actually about.
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { realpathSync, readFileSync } from "node:fs";
+import { realpathSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 
 import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
 import { clearBeforeOrder, isPerRowInstance, readAgents, WAKEABLE, queueHandoff, handoffQueuePath, ledgerPathFrom,
@@ -434,6 +435,86 @@ export function deepQueueRefusal(mine, { label, text, decision }) {
     + `exist nowhere else:\n${text}\n`;
 }
 
+/** The record of what was DELIVERED, beside {@link queueHandoff}'s record of what is WAITING (#2500). */
+export const DIRECT_RECORD_FILE = "prompt-session-direct";
+
+/** How much of the order a direct record keeps: enough to tell which order it was, not a second copy of it. */
+const DIRECT_RECORD_PROMPT_CHARS = 300;
+
+/** @param {string} queuePath the handoff queue's path @returns {string} */
+export function directRecordPath(queuePath) {
+  return `${dirname(queuePath)}/${DIRECT_RECORD_FILE}`;
+}
+
+/**
+ * APPEND ONE LINE SAYING AN ORDER WENT STRAIGHT TO AN IDLE SESSION (#2500). Returns whether it was written.
+ *
+ * Only the queued path used to leave a record, so an order that WAS sent read as one that never was: #2494
+ * grepped the ledger for a reviewer's prompts, found none, and took nobody-asked from a file that was
+ * silent by construction. The receiver's own transcript was the only witness, and it is swept.
+ *
+ * A SEPARATE FILE, NEVER A LINE IN THE QUEUE. A line shaped like a queue entry (`id`, `session`, `prompt`,
+ * `queuedAt`) would be read by `readHandoffs` as an order still waiting and delivered AGAIN, and a
+ * per-PR reviewer or spawned engineer is cleared before every order (#2483), so the second delivery wipes
+ * the work the first started.
+ *
+ * A FAILED APPEND DOES NOT FAIL THE DELIVERY: the order has gone, and reporting it lost would send the
+ * author back to retrying, which #1966 says never to do. The loss of the record is one stderr line.
+ *
+ * @param {string} queuePath the handoff queue's path; the record lands in its directory
+ * @param {{label: string, text: string, sender: string | null, cleared: boolean, now?: number}} delivery
+ * @returns {boolean}
+ */
+export function recordDirectDelivery(queuePath, { label, text, sender, cleared, now = Date.now() }) {
+  const path = directRecordPath(queuePath);
+  const line = { session: label, sender, sentAt: now, prompt: text.slice(0, DIRECT_RECORD_PROMPT_CHARS), cleared };
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    appendFileSync(path, `${JSON.stringify(line)}\n`);
+    return true;
+  } catch (/** @type {any} */ err) {
+    process.stderr.write(`the order to ${label} WAS delivered, but its record could not be written to ${path} `
+      + `(${String(err?.message ?? err).split("\n")[0].slice(0, 120)}). Do not send it again.\n`);
+    return false;
+  }
+}
+
+/**
+ * Deliver the order if the session is between tasks, queue it if not. Returns the exit code.
+ *
+ * ONE ORDER, ONE RECORD: an order leaves a queue entry ({@link queueOrLose}) or a direct line
+ * ({@link recordDirectDelivery}), never both, and the direct line is written only once the prompt landed.
+ *
+ * @param {{run: (args: string[]) => string, label: string, text: string, agents: {label: string, status: string}[] | null,
+ *          path: string, stance: Stance, sender: string | null}} order
+ * @returns {number}
+ */
+export function promptOrQueue({ run, label, text, agents, path, stance, sender }) {
+  const why = promptable(label, agents);
+  if (why) return queueOrLose({ label, text, why, agents, path, stance, sender });
+
+  // NO DEPTH GATE ON THIS PATH, AND THE ASYMMETRY IS THE POINT. `promptable` said the target is between
+  // tasks, so this order is DELIVERED rather than queued: it joins nothing, and a session that is idle is
+  // a session whose queue the next tick will drain. The refusal is about JOINING A PILE, not about the
+  // pile existing.
+  const report = clearThenPrompt(run, label, text, sender);
+  // A PROMPT REFUSED AT THE LAST MOMENT IS THE SAME LOSS ONE STEP LATER. `promptable` said idle and herdr
+  // said no, which means the session went to work in between -- the race the queue exists for. A refused
+  // CLEAR is not this: the text went, on a bloated context, and re-queueing it would deliver it twice.
+  if (report?.startsWith(PROMPT_REFUSED_PREFIX)) {
+    return queueOrLose({ label, text, why: report, agents, path, stance, sender });
+  }
+  recordDirectDelivery(path, { label, text, sender, cleared: !isPerRowInstance(label) && !report });
+  if (report) {
+    process.stderr.write(`${report}\n`);
+    return EXIT.REFUSED;
+  }
+  process.stdout.write(isPerRowInstance(label)
+    ? `PROMPTED ${label}, context kept (a per-row instance is never cleared)\n`
+    : `PROMPTED ${label}, on a cleared context\n`);
+  return EXIT.OK;
+}
+
 function main() {
   // `--ledger` IS READ, THOUGH NOT BY THIS FILE. It names the ledger whose DIRECTORY holds the handoff
   // queue, so it must mean here exactly what it means to `wake.mjs` -- `ledgerPathFrom` is the one
@@ -460,28 +541,7 @@ function main() {
   const queue = handoffQueuePath(ledgerPathFrom(process.argv));
   const agents = readAgents(defaultRun);
   const sender = resolveSender(defaultRun, process.env.HERDR_WORKSPACE_ID);
-  const why = promptable(label, agents);
-  if (why) process.exit(queueOrLose({ label, text, why, agents, path: queue, stance, sender }));
-
-  // NO DEPTH GATE ON THIS PATH, AND THE ASYMMETRY IS THE POINT. `promptable` said the target is between
-  // tasks, so this order is DELIVERED rather than queued: it joins nothing, and a session that is idle is
-  // a session whose queue the next tick will drain. The refusal is about JOINING A PILE, not about the
-  // pile existing.
-  const report = clearThenPrompt(defaultRun, label, text, sender);
-  // A PROMPT REFUSED AT THE LAST MOMENT IS THE SAME LOSS ONE STEP LATER. `promptable` said idle and herdr
-  // said no, which means the session went to work in between -- the race the queue exists for. A refused
-  // CLEAR is not this: the text went, on a bloated context, and re-queueing it would deliver it twice.
-  if (report?.startsWith(PROMPT_REFUSED_PREFIX)) {
-    process.exit(queueOrLose({ label, text, why: report, agents, path: queue, stance, sender }));
-  }
-  if (report) {
-    process.stderr.write(`${report}\n`);
-    process.exit(EXIT.REFUSED);
-  }
-  process.stdout.write(isPerRowInstance(label)
-    ? `PROMPTED ${label}, context kept (a per-row instance is never cleared)\n`
-    : `PROMPTED ${label}, on a cleared context\n`);
-  process.exit(EXIT.OK);
+  process.exit(promptOrQueue({ run: defaultRun, label, text, agents, path: queue, stance, sender }));
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();
