@@ -2035,3 +2035,45 @@ test("#2324: THE TICK with the drain in force (no ledger line) refuses a standin
   assert.equal(ran.status, 1);
   assert.equal(written, "", "the row stays offered");
 });
+
+// --- `npm run work:tick` AS THE SHELL RUNS IT: the gate's refusal must survive to the exit status (#1972) ---
+
+/**
+ * Runs the script text `package.json` defines for `work:tick`, through `sh` as npm does, with `gh` stubbed to
+ * refuse (`null`) or to answer an empty list, and `herdr` answering an empty roster. Reading the script rather
+ * than naming `work-tick.mjs` is the point: the pin is what a person typing `npm run work:tick` observes, so it
+ * holds for any spelling of the script that keeps the gate's code and fails for one that swallows it.
+ */
+function runTickScript(gh: string | null) {
+  const dir = mkdtempSync(join(tmpdir(), "wake-tick-script-"));
+  try {
+    const script = JSON.parse(readFileSync(join(TICK_REPO_ROOT, "package.json"), "utf8")).scripts["work:tick"];
+    assert.equal(typeof script, "string", "package.json defines work:tick");
+    writeFileSync(join(dir, "gh"), gh === null ? "#!/bin/sh\nexit 1\n" : `#!/bin/sh\nprintf '%s' '${gh}'\n`);
+    writeFileSync(join(dir, "herdr"), herdrStub("idle"));
+    chmodSync(join(dir, "gh"), STUB_MODE);
+    chmodSync(join(dir, "herdr"), STUB_MODE);
+    return spawnSync("sh", ["-c", script], {
+      cwd: TICK_REPO_ROOT, encoding: "utf8",
+      env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` },
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+const TICK_REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
+
+test("#1972: `npm run work:tick` exits CANNOT_ASK when the gate could examine nothing -- not the quiet 0 a pipe reports", () => {
+  const ran = runTickScript(null);
+  assert.match(ran.stderr, /Nothing was examined/, `the gate must have been the one that refused; got ${ran.stderr}`);
+  assert.equal(ran.status, TICK_EXIT.CANNOT_ASK,
+    "a refused tick is distinguishable from a quiet one by its status alone; `a | b` returns b's, which was 0");
+});
+
+test("#1972 (control): the same script does NOT exit CANNOT_ASK when the gate could read, so the status above is the gate's", () => {
+  // `[]` for every read: both lanes answer, so the refusal branch is not taken. Whatever else the tick reports
+  // (this stub host has unrelated findings and nobody to deliver them to), it is not the refused-read verdict.
+  const ran = runTickScript("[]");
+  assert.doesNotMatch(ran.stderr, /Nothing was examined/, "the gate read its lanes");
+  assert.notEqual(ran.status, TICK_EXIT.CANNOT_ASK, "an always-2 script would fail here");
+});
