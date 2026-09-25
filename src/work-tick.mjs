@@ -28,7 +28,7 @@ import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
 // run at all -- which is exactly the state it was found in: a quiet queue and a session stuck behind a
 // menu since nobody knows when.
 import { readAgents, blockedSessions, readHandoffs, handoffQueuePath, ledgerPathFrom, tearDownSpares,
-  tearDownReviewers }
+  tearDownReviewers, recoverNow }
   from "./wake.mjs";
 
 /** `0` the tick completed (quiet or delivered); `1` orders had nowhere to go; `2` a read was refused. */
@@ -120,6 +120,10 @@ function main() {
     tearDownSpares(roster, ledgerPathFrom(passthrough));
     // AND ITS SIBLING FOR REVIEWER INSTANCES (#2401): ended when their pull request merges or closes.
     tearDownReviewers(roster, ledgerPathFrom(passthrough));
+    // AND THE RECOVERY OF WORK A RESTART OR A KILL DROPPED (#2470): a pane whose last line reads `Interrupted`, and a delivery the ledger
+    // recorded that never arrived. BEFORE THE QUIET EXIT FOR THE SAME REASON -- a session the outage silenced produces no order, so it is
+    // found on a quiet tick or never. It QUEUES (a resume is an authored handoff), and the queue is what makes a quiet gate deliver.
+    recoverNow(roster, ledgerPathFrom(passthrough));
   }
 
   const next = afterGate(gate.status ?? EXIT.CANNOT_ASK,

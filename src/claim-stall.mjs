@@ -408,17 +408,26 @@ export function readClaim(facts, ctx) {
 /** @typedef {Record<string, { session: string, nudgedAt: number }>} StallState keyed by row number */
 
 /**
- * The nudge memory. A missing file is EMPTY and an unparseable one is empty too: the cost of forgetting a nudge is one
- * more nudge, and a memory that could stop the gate would be worse than none.
- * @param {string} path @param {typeof readFileSync} [read] @returns {StallState}
+ * A JSON object kept in a file beside the wake ledger, or `{}`. A missing file is EMPTY and an unparseable one is empty too:
+ * every file this reads is a MEMORY (the nudge, the kept worktree, the last restart acted on) whose loss costs one repeat of
+ * something, and a memory that could stop the tick would be worse than none.
+ * @param {string} path @param {typeof readFileSync} [read] @returns {Record<string, any>}
  */
-export function readStallState(path, read = readFileSync) {
+export function readJsonObject(path, read = readFileSync) {
   try {
     const parsed = JSON.parse(String(read(path, "utf8")));
     return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
   } catch {
     return {};
   }
+}
+
+/**
+ * The nudge memory, from `claim-stalls.json`.
+ * @param {string} path @param {typeof readFileSync} [read] @returns {StallState}
+ */
+export function readStallState(path, read = readFileSync) {
+  return readJsonObject(path, read);
 }
 
 /**
@@ -440,11 +449,20 @@ export function nextStallState(before, readings, now) {
   return JSON.stringify(after) === JSON.stringify(before) ? before : after;
 }
 
-/** @param {string} path @param {StallState} state @param {typeof writeFileSync} [write] */
-export function writeStallState(path, state, write = writeFileSync) {
+/**
+ * Write a memory ATOMICALLY (a temp file and a rename), because two processes read these files -- the gate and the tick -- and a
+ * half-written one must read as the previous one, not as `{}`.
+ * @param {string} path @param {object} state @param {typeof writeFileSync} [write]
+ */
+export function writeJsonObject(path, state, write = writeFileSync) {
   mkdirSync(dirname(path), { recursive: true });
   write(`${path}.tmp`, `${JSON.stringify(state)}\n`);
   renameSync(`${path}.tmp`, path);
+}
+
+/** @param {string} path @param {StallState} state @param {typeof writeFileSync} [write] */
+export function writeStallState(path, state, write = writeFileSync) {
+  writeJsonObject(path, state, write);
 }
 
 // --- THE ORDERS -----------------------------------------------------------------------------------------------------
@@ -570,16 +588,18 @@ export function paneInterrupted(text) {
 }
 
 /**
- * Deliveries a restart (or an interruption) killed: inside `windowMs` before `at`, and whose target made no move between the
- * delivery and `at`. `moved` is asked only of a delivery inside the window.
+ * Deliveries a restart (or an interruption) killed: inside `windowMs` before `at`, and whose target made no move from the delivery until
+ * `until`. `until` is `at` for an interruption noticed as it happens, and NOW for a restart: a tick that notices a restart LATE (the tick was
+ * down, or this shipped after it) must not re-send what the session has since answered, so "no move before the restart" is read through to the
+ * moment of asking. `moved` is asked only of a delivery inside the window.
  *
  * @template {{ session: string, at: number }} D
- * @param {{ deliveries: D[], at: number, moved: (session: string, from: number, to: number) => boolean,
+ * @param {{ deliveries: D[], at: number, until?: number, moved: (session: string, from: number, to: number) => boolean,
  *   windowMs?: number }} facts
  * @returns {D[]}
  */
-export function killedDeliveries({ deliveries, at, moved, windowMs = RESTART_RESEND_WINDOW_MS }) {
-  return deliveries.filter((d) => d.at >= at - windowMs && d.at < at && !moved(d.session, d.at, at));
+export function killedDeliveries({ deliveries, at, until = at, moved, windowMs = RESTART_RESEND_WINDOW_MS }) {
+  return deliveries.filter((d) => d.at >= at - windowMs && d.at < at && !moved(d.session, d.at, until));
 }
 
 /** @param {string} path @returns {number | null} the mtime in ms, `null` for a path that is gone */

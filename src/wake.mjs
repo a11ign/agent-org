@@ -58,6 +58,10 @@ import { fileOverlapReason, lookupMyRegionFiles, lookupOpenPrFiles } from "./row
 // The scrubbing helper, RELATIVE like the imports above: a leaked GIT_DIR must not redirect the teardown's
 // `git worktree list` onto another repository (git-spawn-classification.test.ts).
 import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
+// #2470: THE PURE HALF OF A CLAIM THAT DOES NOT MOVE -- a leaf, so `work-gate.mjs` and this file both import it and neither imports the other's
+// half. What is performed here is the part that needs a pane, a process or a row: the release, the resume, the re-send.
+import { workAtRisk, gitRun, pathExists, statMtime, readStallState, KEPT_CLAIMS_FILE, RESTART_STATE_FILE, RESTART_RESEND_WINDOW_MS,
+  readHerdrRestart, paneInterrupted, killedDeliveries, writeJsonObject, readJsonObject, INTERRUPTED_TEXT } from "./claim-stall.mjs";
 
 /**
  * `0` QUIET nothing to deliver; `1` ATTENTION an order had nowhere to go; `2` CANNOT_ASK herdr did not
@@ -1581,12 +1585,13 @@ export function readHandoffs(path, read = readFileSync) {
  * none, and {@link declaresDecision} reads that as FYI -- the stated default, not a silent one.
  *
  * @param {string} path
- * @param {{session: string, prompt: string, decision?: boolean, now?: number,
+ * @param {{session: string, prompt: string, decision?: boolean, now?: number, resume?: boolean,
  *          write?: typeof writeFileSync, mkdir?: typeof mkdirSync}} order
  */
 export function queueHandoff(path, { session, prompt, decision = false, now = Date.now(),
-  write = writeFileSync, mkdir = mkdirSync }) {
-  const entry = { id: handoffId(session, prompt), session, prompt, queuedAt: now, decision };
+  write = writeFileSync, mkdir = mkdirSync, resume = false }) {
+  // `resume` (#2470) marks a RE-SEND of an order a restart killed: it is delivered as a plain prompt and never behind a `/clear`.
+  const entry = { id: handoffId(session, prompt), session, prompt, queuedAt: now, decision, ...(resume ? { resume: true } : {}) };
   mkdir(dirname(path), { recursive: true });
   write(path, `${JSON.stringify(entry)}\n`, { flag: "a" });
   return entry;
@@ -2082,6 +2087,7 @@ export function handoffOrder(handoff, now = Date.now()) {
   return {
     session: handoff.session,
     causeKey: handoff.id,
+    ...(handoff.resume === true ? { resume: true } : {}),
     prompt: `${handoff.prompt}\n\n(Queued ${waited} ago: \`prompt:session\` could not deliver `
       + "this when it was written, because you were mid-turn, so the gate held it until you were between "
       + "tasks. Re-read anything it names -- a head may have moved since.)",
@@ -2371,6 +2377,8 @@ function batchedOrder(take, held, now) {
   const body = take.map((h, i) => `${orderHeading(h, i, take.length, now)}${h.prompt}`).join("\n\n");
   return {
     session: take[0].session,
+    // ONE RE-SENT ORDER IN THE BATCH SPARES THE WHOLE BATCH THE CLEAR (#2470): the clear would wipe the very context the re-send exists to keep.
+    ...(take.some((h) => h.resume === true) ? { resume: true } : {}),
     // NOT ANY ONE ORDER'S ID. This wake answers all of them, and naming one of them in the log would
     // read as the other N-1 having gone somewhere else.
     causeKey: `handoff/${take[0].session}/batch-of-${take.length}`,
@@ -2509,8 +2517,8 @@ export function ledgerLine(at, key, recipient, noClear = false) {
 /**
  * The causeKey out of what follows a ledger line's timestamp, WHATEVER ELSE THE LINE CARRIES (#2226).
  *
- * A line is `<epochMs>\t<causeKey>[\t<recipient>]`, or `<epochMs>\tRESET\t<causeKey>` or
- * `<epochMs>\tESCALATED\t<causeKey>` (the two markers). The recipient is
+ * A line is `<epochMs>\t<causeKey>[\t<recipient>]`, or `<epochMs>\tRESET\t<causeKey>`,
+ * `<epochMs>\tESCALATED\t<causeKey>` or `<epochMs>\tVOIDED\t<causeKey>\t<deliveredAt>` (the three markers). The recipient is
  * evidence and never identity: a reader that took everything after the first tab as the key would count
  * `k\tworker-judge` and `k\tworker-tooling` as two causes, and the dedupe this ledger exists for would go.
  * @param {string} rest
@@ -2518,7 +2526,7 @@ export function ledgerLine(at, key, recipient, noClear = false) {
  */
 export function ledgerKeyOf(rest) {
   const fields = rest.split("\t");
-  return fields[0] === RESET || fields[0] === ESCALATED ? fields.slice(0, 2).join("\t") : fields[0];
+  return fields[0] === RESET || fields[0] === ESCALATED || fields[0] === VOIDED ? fields.slice(0, 2).join("\t") : fields[0];
 }
 
 /**
@@ -2556,15 +2564,9 @@ export function readLedger(path, read = readFileSync, now = Date.now(), judgment
     if (/** @type {any} */ (err)?.code === "ENOENT") return new Set();
     throw err;
   }
+  const times = deliveryTimes(raw);
   const live = new Set();
-  for (const line of raw.split("\n")) {
-    const text = line.trim();
-    if (!text) continue;
-    const tab = text.indexOf("\t");
-    if (tab < 0) continue;                       // pre-TTL line: unknown age, so not live
-    const at = Number(text.slice(0, tab));
-    const key = ledgerKeyOf(text.slice(tab + 1));
-    if (!Number.isFinite(at) || !key) continue;  // malformed: same reading as unknown age
+  for (const [key, list] of times) {
     // A JUDGMENT CAUSE GETS A LONGER WINDOW, NOT AN INFINITE ONE. Its answer is durable -- the
     // causeKey carries the state, so re-asking inside the window buys a model turn to reach a
     // conclusion somebody already reached; `orchestrator` spent one establishing that #1564 is a
@@ -2573,9 +2575,43 @@ export function readLedger(path, read = readFileSync, now = Date.now(), judgment
     // `JUDGMENT_TTL_MS` for that measurement and for why two hours is the number.
     const cause = key.split("/")[1] ?? "";
     const ttl = judgment.has(cause) ? JUDGMENT_TTL_MS : WAKE_TTL_MS;
-    if (now - at < ttl) live.add(key);
+    if (list.length > 0 && now - Math.max(...list) < ttl) live.add(key);
   }
   return live;
+}
+
+/**
+ * Every counted delivery's time, per key, from the ledger's text: a line without a tab is OLD (unknown age, so not live), a malformed one
+ * reads the same, and a VOIDED line takes one delivery back (#2470).
+ * @param {string} raw @returns {Map<string, number[]>}
+ */
+function deliveryTimes(raw) {
+  /** @type {Map<string, number[]>} */
+  const times = new Map();
+  for (const line of raw.split("\n")) {
+    const text = line.trim();
+    const tab = text.indexOf("\t");
+    if (!text || tab < 0) continue;
+    const at = Number(text.slice(0, tab));
+    const key = ledgerKeyOf(text.slice(tab + 1));
+    if (!Number.isFinite(at) || !key) continue;
+    if (key.startsWith(`${VOIDED}\t`)) takeBackDelivery(times, key.slice(VOIDED.length + 1), Number(text.split("\t")[3]));
+    else times.set(key, [...(times.get(key) ?? []), at]);
+  }
+  return times;
+}
+
+/**
+ * A VOIDED LINE TAKES BACK ONE DELIVERY (#2470, done-when 11d): the one at `deliveredAt`, or the newest when that time is not on the
+ * ledger. A delivery a restart killed never reached its target, so it must not keep the cause live for the window (the gate's order would
+ * then be dropped as "already delivered", silently, for twenty minutes or two hours) and must not spend `MAX_DELIVERIES`.
+ * @param {Map<string, number[]>} times @param {string} key @param {number} deliveredAt
+ */
+function takeBackDelivery(times, key, deliveredAt) {
+  const list = times.get(key);
+  if (list === undefined || list.length === 0) return;
+  const at = list.lastIndexOf(deliveredAt);
+  list.splice(at === -1 ? list.length - 1 : at, 1);
 }
 
 /**
@@ -2725,17 +2761,31 @@ export function deliveryCounts(path, read = readFileSync) {
     const tab = text.indexOf("\t");
     const key = ledgerKeyOf(tab < 0 ? text : text.slice(tab + 1));
     if (!key) continue;
-    // A RESET ENDS A RUN AND STARTS THE COUNT AGAIN AT ZERO, rather than removing anything. The ledger
-    // stays append-only, so what happened is still readable -- six deliveries, a reset, then two more
-    // says something a bare `2` cannot.
-    if (key.startsWith(`${RESET}\t`)) { counts.set(key.slice(RESET.length + 1), 0); continue; }
-    if (key.startsWith(`${ESCALATED}\t`)) continue; // an alarm is not a delivery -- see `escalatedKeys`
+    if (countMarker(counts, key)) continue;
     // A QUIET SPELL ALSO ENDS A RUN -- see `RUN_IDLE_RESET_MS`.
     const at = tab < 0 ? NaN : Number(text.slice(0, tab));
     counts.set(key, startsNewRun(at, lastAt.get(key)) ? 1 : (counts.get(key) ?? 0) + 1);
     if (Number.isFinite(at)) lastAt.set(key, at);
   }
   return counts;
+}
+
+/**
+ * The three markers, as they bear on a COUNT: returns whether `key` was one (and so is not a delivery).
+ *
+ * A RESET ENDS A RUN AND STARTS THE COUNT AGAIN AT ZERO, rather than removing anything. The ledger stays append-only, so what happened is
+ * still readable -- six deliveries, a reset, then two more says something a bare `2` cannot. An ESCALATED line is an alarm, not a delivery
+ * (see `escalatedKeys`). A VOIDED line is a delivery that DID NOT HAPPEN (#2470): the count goes back to where it was, so the re-send that
+ * follows a restart replaces the killed delivery in the run instead of being a seventh of a six-delivery breaker.
+ * @param {Map<string, number>} counts @param {string} key @returns {boolean}
+ */
+function countMarker(counts, key) {
+  if (key.startsWith(`${RESET}\t`)) counts.set(key.slice(RESET.length + 1), 0);
+  else if (key.startsWith(`${VOIDED}\t`)) {
+    const voided = key.slice(VOIDED.length + 1);
+    counts.set(voided, Math.max(0, (counts.get(voided) ?? 0) - 1));
+  } else return key.startsWith(`${ESCALATED}\t`);
+  return true;
 }
 
 /**
@@ -2746,6 +2796,14 @@ export function deliveryCounts(path, read = readFileSync) {
  * removed the evidence for the next diagnosis.
  */
 export const RESET = "RESET";
+
+/**
+ * The marker that says a delivery NEVER ARRIVED (#2470). A ledger line is `<epochMs>\tVOIDED\t<causeKey>\t<deliveredAt>`, and it takes back
+ * the delivery stamped `deliveredAt`: the cause is offered again on the next tick as if that delivery had not happened, and the run's
+ * count does not include it. APPEND-ONLY, like every other marker, because this ledger is the only record of what the org was told and a
+ * rewrite would remove the evidence for the diagnosis that wrote it.
+ */
+export const VOIDED = "VOIDED";
 
 /**
  * The marker that says a run's breaker trip has been ESCALATED. A ledger line is `<epochMs>\tESCALATED\t<causeKey>`.
@@ -3189,6 +3247,17 @@ function clearUnlessStarted(run, target, causeKey, refused) {
 }
 
 /**
+ * The clear before an order, or NONE for a resume (#2470): its whole point is the context the session still has, and a clear would wipe
+ * exactly what the interrupted turn had built. Same return as {@link clearUnlessStarted}: whether the session was left uncleared.
+ * @param {{ causeKey: string, resume?: boolean }} order
+ * @param {{ run: (args: string[]) => string, target: { label: string, profile?: object }, refused: string[] }} ctx
+ * @returns {boolean}
+ */
+function clearedFirst(order, { run, target, refused }) {
+  return order.resume === true || clearUnlessStarted(run, target, order.causeKey, refused);
+}
+
+/**
  * Why this target cannot answer now, or `null`. A process this tick STARTED has a fresh allowance question no
  * transcript can answer yet, so it is not asked (#2256).
  * @param {{label: string, profile?: object}} target @param {((label: string) => string | null) | undefined} unavailable
@@ -3205,7 +3274,8 @@ function whyUnavailable(target, unavailable) {
  * between the two re-wakes rather than losing the wake. Re-waking is visible and costs one turn; losing one
  * is invisible and costs however long until someone notices -- the 2026-09-08 shape.
  *
- * @param {{session: string, causeKey: string, prompt: string, cause?: string, title?: string}[]} orders
+ * @param {{session: string, causeKey: string, prompt: string, cause?: string, title?: string, resume?: boolean}[]} orders
+ *   `resume` (#2470) sends the prompt WITHOUT the `/clear` a standing seat is otherwise given first
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster
  * @param {{run?: (args: string[]) => string, record?: (key: string, recipient?: string, noClear?: boolean) => void,
@@ -3263,7 +3333,9 @@ export function deliver(orders, agents, roster,
     // CLEARED BEFORE PROMPTED, except a per-row instance (#2483). See `clearContext` for the measurement and for
     // who is cleared: a standing seat's 500th turn costs ~24x its 10th for identical output, an instance's
     // window is its one row.
-    const noClear = clearUnlessStarted(run, target, order.causeKey, refused);
+    // A RESUME IS NEVER PRECEDED BY A CLEAR (#2470): its whole point is the context the session still has. Sent to a standing seat it
+    // would wipe exactly what the interrupted turn had built, and the ledger says so with the same `no-clear` mark an instance's carries.
+    const noClear = clearedFirst(order, { run, target, refused });
     try {
       run(["--session", "org", "agent", "prompt", target.label,
         addressed(carriedOrder(order, target), target.label, { ...launch, spawned: target.claimed })]);
@@ -3418,9 +3490,11 @@ export function spareDecision({ status, instance, held, now, claimBoundMs = SPAR
 
 /**
  * @typedef {{ path: string, clean: boolean | "unknown", merge: "merged" | "not-merged" | "unknown" }} SpareWorktree
- * @typedef {{ role: string, row: number | null, at: number, clean: boolean, why: string, rows?: number[] }} SpareCycle
+ * @typedef {{ role: string, row: number | null, at: number, clean: boolean, why: string, rows?: number[],
+ *   released?: "stalled" | "blocked" | "merged" }} SpareCycle
  *   `rows` is EVERY row the instance held, oldest first (#2407), and its ABSENCE is what marks a legacy line: one
- *   written before the field existed, which {@link consecutiveClean} counts for nothing
+ *   written before the field existed, which {@link consecutiveClean} counts for nothing. `released` (#2470) marks a line the GATE
+ *   wrote when it took a claim back from a stalled, blocked or merged holder: see {@link isReleaseLine}
  */
 
 /**
@@ -3472,16 +3546,34 @@ export function cycleVerdict({ role, rows, held, worktrees }) {
  * restarts at 0. Any other line that has `rows` and is not a clean single-row one (a failure, a multi-row line, the
  * unreadable placeholder {@link readSpareCycles} makes) RESETS the run.
  *
- * @param {Pick<SpareCycle, "clean" | "rows">[]} ledger oldest first
+ * A RELEASE LINE (#2470) IS SKIPPED -- neither counted nor a reset: see {@link isReleaseLine}.
+ *
+ * @param {Pick<SpareCycle, "clean" | "rows" | "released">[]} ledger oldest first
  * @returns {{ run: number, empty: boolean }}
  */
 export function consecutiveClean(ledger) {
   let run = 0;
   for (const line of ledger) {
-    if (!Array.isArray(line.rows)) continue;
+    if (!Array.isArray(line.rows) || isReleaseLine(line)) continue;
     run = line.clean === true && line.rows.length === 1 ? run + 1 : 0;
   }
   return { run, empty: ledger.length === 0 };
+}
+
+/**
+ * IS THIS LINE A RELEASE THE GATE MADE, NOT A CYCLE THE INSTANCE ENDED (#2470, done-when 5)? DECIDED, NOT DEFAULTED.
+ *
+ * A stall release used to have exactly two ways to be written, and each was wrong. As `clean: false` it lifts #2324's drain by its own
+ * rule -- the drain is in force only while the NEWEST line is clean -- so the standing engineers would resume claiming the moment ONE
+ * instance stalled. As `clean: true` it would count toward #1950's run for a cycle that ended with the row unfinished. THE DECISION: a
+ * release line is neither. It is written (`clean: false`, because that is what it is, and any reader that knows nothing of it counts
+ * it as the failure it is not fooled by) and carries `released`, and {@link consecutiveClean} and {@link drainInForce} both SKIP it --
+ * it neither extends nor resets a run, and it neither lifts the drain nor holds it. A stalled instance is not evidence that
+ * one-instance-one-row failed; an instance that leaked a second row or left work behind still is, and still writes the line that says so.
+ * @param {Pick<SpareCycle, "released">} line @returns {boolean}
+ */
+export function isReleaseLine(line) {
+  return line.released !== undefined;
 }
 
 /**
@@ -3555,11 +3647,14 @@ export function drainedRoles(path = SESSIONS_FILE) {
  * (`spawn:cycles` still refuses to print that as a count -- the two questions are different.) A line that could
  * not be parsed reads as a failure (`readSpareCycles`), so a corrupt ledger lifts the drain rather than hiding it.
  *
- * @param {Pick<SpareCycle, "clean">[]} ledger
+ * A RELEASE LINE (#2470, {@link isReleaseLine}) IS NOT A CYCLE: the newest line that is one decides, so a stall release lifts nothing.
+ *
+ * @param {Pick<SpareCycle, "clean" | "released">[]} ledger
  * @returns {boolean}
  */
 export function drainInForce(ledger) {
-  return ledger.length === 0 || ledger[ledger.length - 1].clean === true;
+  const cycles = ledger.filter((line) => !isReleaseLine(line));
+  return cycles.length === 0 || cycles[cycles.length - 1].clean === true;
 }
 
 /**
@@ -3600,6 +3695,7 @@ export function cyclesReport(ledger, drained) {
     + `last ledger line: ${JSON.stringify(last)}\n`
     + `ledger lines: ${ledger.length}\n`
     + `legacy lines counted for nothing (no rows field, #2407): ${legacy}\n`
+    + `release lines counted for nothing (claims the gate took back, #2470): ${ledger.filter(isReleaseLine).length}\n`
     + `drain: ${held}\n` };
 }
 
@@ -3695,8 +3791,9 @@ function layoutUnder(root) {
  */
 
 /**
- * A row claimed for a spawn, and where.
- * @typedef {{ row: number, branch: string, worktree: string, launchDir: string }} ClaimedRow
+ * A row claimed for a spawn, and where. `adopted` (#2470) says the worktree was a RELEASED holder's, with its work still in it.
+ * @typedef {{ row: number, branch: string, worktree: string, launchDir: string,
+ *   adopted?: { from: string, dirty: number, unpushed: number } }} ClaimedRow
  */
 
 /**
@@ -3784,8 +3881,9 @@ const CLAIM_NOT_LANDED = Object.freeze([1, 2]);
  * @returns {string} a clause to append to the refusal being reported
  */
 function releaseClaim(claimed, role, env, exec) {
-  const ran = exec("node", [ROW_CLAIM, "decline", String(claimed.row), `--session=${role}`],
-    { cwd: claimed.launchDir, env });
+  // AN ADOPTED TREE IS NEVER REMOVED BY THE UNDO (#2470): unlike one this call just made, it holds another instance's work.
+  const ran = exec("node", [ROW_CLAIM, "decline", String(claimed.row), `--session=${role}`,
+    ...(claimed.adopted ? ["--keep-worktree"] : [])], { cwd: claimed.launchDir, env });
   if (ran.status === 0) return ` -- the claim on #${claimed.row} was released`;
   return ` -- AND the claim on #${claimed.row} could NOT be released (${verdictLine(ran.output)}): the row is held by `
     + `"${role}" with no process, which nothing reads as a fault -- run \`node packages/agent-org/src/row-claim.mjs `
@@ -3798,13 +3896,15 @@ function releaseClaim(claimed, role, env, exec) {
  * claim writes labels and comments and must be attributed to the account the agent acts as (#916).
  *
  * @param {{ exec?: Exec, exists?: (path: string) => boolean, worktreesDir?: string, primary?: string,
- *   settle?: (role: string) => void }} [host]
+ *   settle?: (role: string) => void, kept?: (row: number) => KeptClaim | null, forget?: (row: number) => void }} [host]
  *   every one a seam, so the claim is testable without a host: the defaults are the tick's own. `settle` drops a
- *   leftover registry entry for the role BEFORE the claim (see {@link settleAbsentInstance}, #2407)
+ *   leftover registry entry for the role BEFORE the claim (see {@link settleAbsentInstance}, #2407). `kept` answers "did a release leave a
+ *   worktree for this row" (#2470): the claim then ADOPTS it -- `--adopt=<the released holder>` on the recorded branch and path, creating
+ *   nothing -- and `forget` drops the record once it has
  * @returns {SpawnClaimer}
  */
 export function spawnClaimer({ exec = defaultExec, exists = existsSync, worktreesDir = HOST_REPOS,
-  primary = PRIMARY_CHECKOUT, settle = () => {} } = {}) {
+  primary = PRIMARY_CHECKOUT, settle = () => {}, kept = () => null, forget = () => {} } = {}) {
   return {
     claim(order, role, env) {
       const row = rowOfOrder(order);
@@ -3812,12 +3912,13 @@ export function spawnClaimer({ exec = defaultExec, exists = existsSync, worktree
       settle(role);
       const launch = launchWorktree(role, { exec, exists, worktreesDir, primary });
       if ("refusal" in launch) return launch;
-      const branch = `agent/${slugOf(order.title)}-${row}`;
-      const claimed = { row, branch, launchDir: launch.dir, worktree: join(worktreesDir, `wt-${row}`) };
-      const ran = exec("node", [ROW_CLAIM, "claim", String(row), `--session=${role}`, `--branch=${branch}`,
-        `--worktree=../wt-${row}`], { cwd: launch.dir, env });
+      const { claimed, args } = claimTarget({ row, order, role, launchDir: launch.dir, worktreesDir, left: kept(row), exists });
+      const ran = exec("node", [ROW_CLAIM, ...args], { cwd: launch.dir, env });
       const landed = /^STARTED/m.test(ran.output) && CLAIM_LANDED.includes(Number(ran.status));
-      if (landed && exists(claimed.worktree)) return claimed;
+      if (landed && exists(claimed.worktree)) {
+        if (claimed.adopted !== undefined) forget(row);
+        return claimed;
+      }
       const why = landed ? `${claimed.worktree} was not created` : verdictLine(ran.output);
       const undone = landed || !CLAIM_NOT_LANDED.includes(Number(ran.status))
         ? releaseClaim(claimed, role, env, exec) : "";
@@ -3825,6 +3926,23 @@ export function spawnClaimer({ exec = defaultExec, exists = existsSync, worktree
     },
     release: (claimed, role, env) => releaseClaim(claimed, role, env, exec),
   };
+}
+
+/**
+ * WHAT THE SPAWNER CLAIMS AND WHERE (#2470): a fresh tree at `../wt-<row>` on `agent/<slug>-<row>`, or -- when a release left one for this
+ * row and it is still on disk -- THAT tree, on the branch its work is on, claimed in place with `--adopt=<the holder it was taken from>`.
+ * `row-claim` still decides: an adoption of a tree stamped by anyone but that holder is refused there, and the spawn says so.
+ * @param {{ row: number, order: { title?: string }, role: string, launchDir: string, worktreesDir: string, left: KeptClaim | null,
+ *   exists: (path: string) => boolean }} at
+ * @returns {{ claimed: ClaimedRow, args: string[] }} `args` are `row-claim`'s
+ */
+function claimTarget({ row, order, role, launchDir, worktreesDir, left, exists }) {
+  const adopting = left !== null && exists(left.worktree) ? left : null;
+  const branch = adopting?.branch ?? `agent/${slugOf(order.title)}-${row}`;
+  const claimed = { row, branch, launchDir, worktree: adopting?.worktree ?? join(worktreesDir, `wt-${row}`),
+    ...(adopting === null ? {} : { adopted: { from: adopting.from, dirty: adopting.dirty, unpushed: adopting.unpushed } }) };
+  return { claimed, args: ["claim", String(row), `--session=${role}`, `--branch=${branch}`,
+    `--worktree=${adopting?.worktree ?? `../wt-${row}`}`, ...(adopting === null ? [] : [`--adopt=${adopting.from}`])] };
 }
 
 /**
@@ -3859,7 +3977,21 @@ export function spawnedPrompt(order, claimed) {
   return `Row #${claimed.row}${order.title ? `: ${order.title}` : ""} has been claimed for you, and you are in its `
     + `worktree \`${claimed.worktree}\` on branch \`${claimed.branch}\`. Build it here: read the row, then do the work `
     + "in this directory. The claim was made before your process started, as your own session, so there is nothing "
-    + "left to claim.";
+    + `left to claim.${adoptedNote(claimed)}`;
+}
+
+/**
+ * THE SENTENCE A RESPAWN INTO A KEPT TREE NEEDS (#2470): the tree is not empty. An instance told only "build it here" would read the row
+ * and start again from `origin/main`'s idea of the code, which is exactly the work the release kept.
+ * @param {ClaimedRow} claimed @returns {string}
+ */
+function adoptedNote(claimed) {
+  if (claimed.adopted === undefined) return "";
+  const { from, dirty, unpushed } = claimed.adopted;
+  return `\n\nTHIS WORKTREE IS NOT EMPTY. It is \`${from}\`'s, taken back when that claim stopped moving, and it holds ${dirty} changed `
+    + `file(s) and ${unpushed} commit(s) that exist nowhere else. READ \`git status\` AND \`git log origin/main..HEAD\` FIRST and `
+    + "continue what is there; do not redo it from the row. If it is wrong or finished, say so on the row and commit or push what is "
+    + "worth keeping before you change direction.";
 }
 
 /**
@@ -4087,6 +4219,513 @@ export function tearDownSpares(agents, ledgerPath, say = (line) => process.stder
   }
 }
 
+// --- #2470: A CLAIM TAKEN BACK, AND THE WORK KEPT ---------------------------------------------------------------------
+//
+// THE GATE DECIDES (`claim-stall.mjs`) AND THIS PERFORMS, because the parts of a release that need a pane, a process or a row are this
+// file's: ending the holder's workspace (as `endFinishedSpares` ends a finished one), running `row-claim decline` as the holder, and
+// leaving a record the respawn reads. THE RELEASE KEEPS THE WORK (done-when 7): `decline` alone removes the recorded worktree first and
+// refuses while it is dirty, so a stalled tree with 215 uncommitted lines could neither be released nor survive a release. Here the tree
+// is left in place with `--keep-worktree`, and the next instance for the row claims it IN PLACE (`spawnClaimer`, `--adopt`).
+
+/** A tree a release left behind, and whose it was -- what the respawn's claim adopts. @typedef {{ worktree: string, branch: string, from: string, at: number, why: string, dirty: number, unpushed: number }} KeptClaim */
+
+/** Where the kept-worktree records live: beside the wake ledger, with the org's other state. @param {string} ledgerPath */
+export function keptClaimsPath(ledgerPath) {
+  return `${dirname(ledgerPath)}/${KEPT_CLAIMS_FILE}`;
+}
+
+/**
+ * Everything a release needs from the host, every one a seam so the whole of it is tested without one.
+ * @typedef {{
+ *   run: (args: string[]) => string, exec: Exec, io: import("./claim-stall.mjs").HostReads, now: number,
+ *   agents: { label: string, status: string }[], isSpare: (label: string) => boolean,
+ *   host: { worktreesDir: string, primary: string, exists: (path: string) => boolean }, env: Record<string, string>,
+ *   gh: (args: string[]) => string, warn: (line: string) => void,
+ *   cycle: (cycle: SpareCycle) => void, dropInstance: (role: string) => SpareInstance | undefined,
+ *   remember: (row: number, kept: KeptClaim | null) => void,
+ * }} ReleaseDeps
+ * @typedef {import("./claim-stall.mjs").ReleaseRequest} ReleaseRequest
+ */
+
+/**
+ * WHAT A RELEASE DOES WITH THE HOLDER'S TREE, decided from a FRESH read of it (never the gate's, which is a tick old).
+ *
+ * The tree is KEPT when it exists and holds anything: work that exists nowhere else (dirty or unpushed), or a branch already on `origin`
+ * (a pushed branch with no PR is what the respawn's claim would otherwise refuse over, #2014). A tree with nothing in it and nothing
+ * pushed is not kept -- there is nothing to lose, and leaving an empty one would only refuse the respawn's own claim.
+ *
+ * A BLOCKED or MERGED release is REFUSED when the holder now holds work: those two are decided on "the holder holds nothing", and it
+ * may have started something since the gate looked. A STALLED release keeps whatever it finds -- unreadable included.
+ *
+ * @param {ReleaseRequest} request @param {ReleaseDeps} deps
+ * @returns {{ keep: boolean, work: ReturnType<typeof workAtRisk> } | { refusal: string }}
+ */
+function releasePlan(request, deps) {
+  const repo = deps.host.primary;
+  const work = workAtRisk(deps.io, { worktree: request.worktree, branch: request.branch, repo });
+  if (request.why !== "stalled" && work.state !== "none") {
+    return { refusal: `the holder now holds work (${work.state}: ${work.dirty} dirty, ${work.unpushed} unpushed) -- not released` };
+  }
+  const onOrigin = request.branch !== null
+    && deps.io.git(repo, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${request.branch}`]).status === 0;
+  const treeExists = request.worktree !== null && deps.io.exists(request.worktree);
+  return { keep: treeExists && (work.state !== "none" || onOrigin), work };
+}
+
+/**
+ * End the holder's workspace, for a SPARE only: `closed`, `absent` (nothing to close: the instance is already gone), or `failed`
+ * (`workspace close` takes an id and two workspaces under one label must never be closed by guessing). A standing seat is never ended:
+ * only its claim is released.
+ * @param {string} session @param {ReleaseDeps} deps @returns {"closed" | "absent" | "failed" | "kept"}
+ */
+function closeHolder(session, deps) {
+  if (!deps.isSpare(session)) return "kept";
+  if (!deps.agents.some((a) => a.label === session)) return "absent";
+  const id = workspaceIdOf(deps.run, session);
+  if (id === null) return "failed";
+  try {
+    deps.run(["--session", "org", "workspace", "close", id]);
+    return "closed";
+  } catch (err) {
+    deps.warn(`release: "${session}" (${id}) could not be closed (${firstLine(err)}) -- retried next tick.`);
+    return "failed";
+  }
+}
+
+/** @param {ReleaseRequest} request @returns {string} the sentence the release comment opens with */
+function releaseHeadline(request) {
+  if (request.why === "merged") return `#${request.mergedPr} MERGED and this row stayed open, so the work landed and the holder has nothing left on it`;
+  if (request.why === "blocked") {
+    return `this row carries an open \`blockedBy\` edge on ${(request.edges ?? []).map((n) => `#${n}`).join(", ")} and the holder holds nothing built`;
+  }
+  return `nothing on this row moved for ${request.idleMinutes} minutes (no commit, push, pull request, changed file or row comment) and the nudge was not answered`;
+}
+
+/**
+ * The comment a release leaves ON THE ROW: what happened, what was kept and where, and what happens next. The row is the state, and the
+ * machine-readable half (labels, the claim record) is written by `decline`; this is the half a person reads.
+ * @param {ReleaseRequest} request @param {{ keep: boolean, work: ReturnType<typeof workAtRisk> }} plan @returns {string}
+ */
+function releaseComment(request, plan) {
+  const kept = plan.keep
+    ? `The worktree \`${request.worktree}\` on \`${request.branch}\` was KEPT with everything in it (${plan.work.dirty} changed file(s), `
+      + `${plan.work.unpushed} commit(s) not on any remote): the next instance for this row starts in it and continues, and nothing was removed.`
+    : "Nothing was left on this host worth keeping, so no worktree was kept.";
+  const next = request.why === "merged"
+    ? `\`answer:${request.answer}\` is set: whether the row is finished, or needs re-scoping, is theirs to rule. If more work is needed a fresh \`worker-<row>\` is started.`
+    : "The row is back in the pool, and a fresh instance takes it.";
+  return `**Claim released by the gate (#2470).** \`${request.session}\` held this row, and ${releaseHeadline(request)}. ${kept} ${next}`;
+}
+
+/**
+ * Everything after the label edit landed, each step alone in its own guard: a comment that cannot be posted, a record that cannot be
+ * written and a branch that cannot be deleted are SAID and do not undo a release that has happened.
+ * @param {ReleaseRequest} request @param {{ keep: boolean, work: ReturnType<typeof workAtRisk> }} plan @param {ReleaseDeps} deps
+ */
+function settleRelease(request, plan, deps) {
+  const attempt = (/** @type {string} */ what, /** @type {() => void} */ act) => {
+    try { act(); } catch (err) { deps.warn(`release: #${request.row}: could not ${what} (${firstLine(err)}).`); }
+  };
+  attempt("post the release comment", () => {
+    deps.gh(["issue", "comment", String(request.row), "--repo", REPO, "--body", releaseComment(request, plan)]);
+  });
+  attempt("record the kept worktree", () => {
+    deps.remember(request.row, plan.keep && request.worktree !== null && request.branch !== null
+      ? { worktree: request.worktree, branch: request.branch, from: request.session, at: deps.now, why: request.why,
+        dirty: plan.work.dirty, unpushed: plan.work.unpushed } : null);
+  });
+  // A TREE WITH NOTHING IN IT ALSO LEAVES AN EMPTY LOCAL BRANCH, which `decline` does not delete and the respawn's claim then refuses over
+  // (`--branch=... ALREADY EXISTS locally`). `-d`, never `-D`: it refuses a branch that holds anything git cannot find elsewhere.
+  if (!plan.keep && request.branch !== null) {
+    attempt("delete the empty local branch", () => { deps.io.git(deps.host.primary, ["branch", "-d", /** @type {string} */ (request.branch)]); });
+  }
+}
+
+/**
+ * A spare's line in `spare-cycles` for a claim taken back: `clean: false` and `released`, which {@link isReleaseLine} makes neither a
+ * reset nor a count. Written only when the release LANDED, so a failed one leaves no line and is retried without a duplicate.
+ * @param {ReleaseRequest} request @param {ReleaseDeps} deps @param {boolean} kept
+ */
+function recordReleaseCycle(request, deps, kept) {
+  if (!deps.isSpare(request.session)) return;
+  const instance = deps.dropInstance(request.session);
+  const rows = [...new Set([...(instance?.rows ?? []), request.row])];
+  deps.cycle({ role: request.session, row: request.row, at: deps.now, rows, clean: false, released: request.why,
+    why: `claim on #${request.row} released (${request.why}); ${kept ? "worktree and unpushed work kept" : "nothing kept"}` });
+}
+
+/**
+ * PERFORM ONE RELEASE. Refuses BEFORE any write when the fresh read of the holder's tree disagrees with the gate's (blocked and merged
+ * only); ends a spare's workspace FIRST -- so nothing it does can race the read -- then takes the claim back with `row-claim decline`, run
+ * AS THE HOLDER (decline releases only its own session's claim) from the holder's launch worktree; then comments, records and cleans.
+ *
+ * ORDER IS RECOVERABLE AT EVERY STEP. A workspace that will not close aborts with nothing changed; a decline that fails after the close
+ * leaves a claimed row and no process, which the gate emits again next tick (the stall persists) and this finds `absent`, so the retry
+ * closes nothing and declines. The cycle line is written LAST, once, only when the claim actually came off.
+ *
+ * @param {ReleaseRequest} request @param {ReleaseDeps} deps
+ * @returns {{ released: boolean, why: string }}
+ */
+export function performRelease(request, deps) {
+  const plan = releasePlan(request, deps);
+  if ("refusal" in plan) return { released: false, why: plan.refusal };
+  if (closeHolder(request.session, deps) === "failed") {
+    return { released: false, why: `${request.session}'s workspace could not be closed -- nothing was changed` };
+  }
+  const launch = launchWorktree(request.session, { exec: deps.exec, exists: deps.host.exists,
+    worktreesDir: deps.host.worktreesDir, primary: deps.host.primary });
+  if ("refusal" in launch) return { released: false, why: `no launch worktree for ${request.session} (${launch.refusal})` };
+  const ran = deps.exec("node", [ROW_CLAIM, "decline", String(request.row), `--session=${request.session}`,
+    ...(plan.keep ? ["--keep-worktree"] : []), ...(request.answer === undefined ? [] : [`--answer=${request.answer}`])],
+  { cwd: launch.dir, env: deps.env });
+  if (!(/^DECLINED/m.test(ran.output) && CLAIM_LANDED.includes(Number(ran.status)))) {
+    return { released: false, why: `decline of #${request.row} as ${request.session} did not land (${verdictLine(ran.output)})` };
+  }
+  settleRelease(request, plan, deps);
+  recordReleaseCycle(request, deps, plan.keep);
+  return { released: true, why: `#${request.row} (${request.session}, ${request.why}): ${plan.keep
+    ? `worktree KEPT at ${request.worktree}` : "nothing kept"}` };
+}
+
+/**
+ * The tick's releases, performed with the real host: `herdr`, `node row-claim`, `gh`, `git`. NEVER THROWS -- a release that cannot run is a
+ * line on stderr naming what to look at, and the gate emits the order again next tick. Returns one line per release for the tick log.
+ *
+ * @param {ReleaseRequest[]} requests @param {{label: string, status: string}[]} agents
+ * @param {{ ledgerPath: string, host: { worktreesDir: string, primary: string }, now?: number }} where
+ * @returns {string[]}
+ */
+export function performClaimReleases(requests, agents, { ledgerPath, host, now = Date.now() }) {
+  const lines = [];
+  const paths = sparePathsFrom(ledgerPath);
+  const keptPath = keptClaimsPath(ledgerPath);
+  for (const request of requests) {
+    try {
+      const result = performRelease(request, { run: defaultRun, exec: defaultExec, io: { git: gitRun, exists: pathExists, mtime: statMtime },
+        now, agents, isSpare: (label) => isSpareRole(label), host: { ...host, exists: existsSync }, env: spawnEnvironment(),
+        gh: defaultGh, warn: (line) => { process.stderr.write(`${line}\n`); },
+        cycle: (cycle) => appendSpareCycle(paths.cycles, cycle),
+        dropInstance: (role) => {
+          const registry = readSpareRegistry(paths.registry);
+          const gone = registry[role];
+          delete registry[role];
+          writeFileSync(paths.registry, `${JSON.stringify(registry)}\n`);
+          return gone;
+        },
+        remember: (row, kept) => {
+          const all = readKeptClaims(keptPath);
+          if (kept === null) delete all[row]; else all[row] = kept;
+          writeKeptClaims(keptPath, all);
+        } });
+      lines.push(`${result.released ? "RELEASED" : "NOT RELEASED"} ${result.why}`);
+    } catch (err) {
+      lines.push(`NOT RELEASED #${request.row}: release FAILED (${firstLine(err)})`);
+    }
+  }
+  return lines;
+}
+
+/** @param {string} path @returns {Record<string, KeptClaim>} */
+export function readKeptClaims(path) {
+  return /** @type {Record<string, KeptClaim>} */ (readStallState(path));
+}
+
+/** @param {string} path @param {Record<string, KeptClaim>} kept */
+export function writeKeptClaims(path, kept) {
+  writeJsonObject(path, kept);
+}
+
+// --- #2470: A DELIVERY A RESTART KILLED IS UNDELIVERED, AND AN INTERRUPTED PANE IS A STALL THE GATE CAN SEE ---------------------
+//
+// MEASURED 2026-09-25 BY THE CHAIRMAN. `product-manager`'s answer asks went out at 12:00:45Z, the OOM restart of `herdr.service` hit at
+// 12:01:53Z (68 seconds later), every session came back idle or `Interrupted`, and the ledger had already recorded each ask as DELIVERED --
+// so the gate never sent it again and nine workers sat on finished or half-finished work until a person nudged them by hand. Two readings
+// find those, and they are asked together because they are one defect:
+//   THE RESTART   `systemctl --user show herdr.service -p ActiveEnterTimestamp` (through a seam), answering for the LATEST start only.
+//   THE PANE      the last line of a pane's output reads `Interrupted`: `herdr agent read <name>` -- the pane's own recent OUTPUT, one call per
+//                 idle session -- and never herdr's `idle`, which it reports for every interrupted pane.
+//
+// WHAT IT DOES FOR AN EARLIER RESTART, stated because `ActiveEnterTimestamp` cannot say: nothing. The last restart ACTED ON is kept in
+// `restart-resends.json`; a restart older than that, or older than `RESTART_ACT_HORIZON_MS`, is history and is never re-read as an outage.
+// Two restarts between two ticks are one event to this file, and a delivery older than the window before the FIRST of them is not recovered.
+
+/**
+ * How old a restart may be and still be an outage to recover from. NOT MEASURED, and said so: a day is long enough that a tick which was
+ * down over a restart still acts, and short enough that the first tick after this ships does not re-send a week-old order.
+ */
+export const RESTART_ACT_HORIZON_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Every cause delivery on the ledger, oldest first, as `{ at, key, session }` -- with a VOIDED delivery taken back. The session is the
+ * RECORDED RECIPIENT when there is one (a pool order's key names `engineers`), else the key's first segment: the addressee the delivery
+ * went to, which is who a restart may have killed it for.
+ * @param {string} path @param {typeof readFileSync} [read]
+ * @returns {{ at: number, key: string, session: string }[]}
+ */
+export function readLedgerDeliveries(path, read = readFileSync) {
+  const raw = readTextOrNull(path, read);
+  if (raw === null) return [];
+  /** @type {{ at: number, key: string, session: string }[]} */
+  const kept = [];
+  for (const line of raw.split("\n")) {
+    const fields = line.trim().split("\t");
+    const at = Number(fields[0]);
+    const key = fields.length < 2 ? "" : ledgerKeyOf(fields.slice(1).join("\t"));
+    if (!Number.isFinite(at) || !key) continue;
+    if (key.startsWith(`${VOIDED}\t`)) removeVoided(kept, key.slice(VOIDED.length + 1), Number(fields[3]));
+    else if (!key.startsWith(`${RESET}\t`) && !key.startsWith(`${ESCALATED}\t`)) {
+      const recipient = fields[2] !== undefined && fields[2] !== "" && fields[2] !== NO_CLEAR_FIELD ? fields[2] : null;
+      kept.push({ at, key, session: recipient ?? key.split("/")[0] });
+    }
+  }
+  return kept;
+}
+
+/** Take the VOIDED delivery (matched by key and time) out of a delivery list. @param {{ at: number, key: string }[]} kept @param {string} key @param {number} at */
+function removeVoided(kept, key, at) {
+  const index = kept.map((d) => d.key === key && d.at === at).lastIndexOf(true);
+  if (index !== -1) kept.splice(index, 1);
+}
+
+/** A file's text, `null` when it does not exist -- and a THROW for any other failure: an unreadable file is not an empty one. @param {string} path @param {typeof readFileSync} read */
+function readTextOrNull(path, read) {
+  try {
+    return String(read(path, "utf8"));
+  } catch (err) {
+    if (/** @type {any} */ (err)?.code === "ENOENT") return null;
+    throw err;
+  }
+}
+
+/**
+ * Every AUTHORED order the queue records as delivered, with its text, oldest first: `{ id, session, prompt, decision, at }`. The text is
+ * still in the queue file -- a delivery is a line APPENDED, never an erasure (#2009) -- which is what makes a re-send possible at all: an
+ * authored order has no second copy anywhere else.
+ * @param {string} path @param {typeof readFileSync} [read]
+ * @returns {{ id: string, session: string, prompt: string, decision: boolean, at: number }[]}
+ */
+export function readDeliveredHandoffs(path, read = readFileSync) {
+  const raw = readTextOrNull(path, read);
+  if (raw === null) return [];
+  /** @type {Map<string, any>} */
+  const latest = new Map();
+  /** @type {{ id: string, session: string, prompt: string, decision: boolean, at: number }[]} */
+  const delivered = [];
+  for (const line of raw.split("\n")) {
+    if (line.trim() === "") continue;
+    const entry = JSON.parse(line);
+    const id = deliveredId(entry);
+    if (id === null) {
+      if (typeof entry.id === "string") latest.set(entry.id, entry);
+    } else if (latest.has(id)) {
+      const text = latest.get(id);
+      delivered.push({ id, session: text.session, prompt: text.prompt, decision: declaresDecision(text), at: Number(entry.at) });
+    }
+  }
+  return delivered;
+}
+
+/**
+ * The timestamps (ms) of every assistant entry in a session's TRANSCRIPT, or `null` for anything that cannot be established (no session id,
+ * no transcript, an unreadable file). The transcript records every assistant turn and every tool call the session makes, so it is a SUPERSET
+ * of the moves done-when 11 lists: a commit, a push, a pull request, a row comment and a label change are each a tool call that lands in it.
+ * @param {string} label
+ * @param {{ run?: (args: string[]) => string, home?: string, read?: typeof readFileSync }} [deps]
+ * @returns {number[] | null}
+ */
+export function assistantTimestamps(label, { run = defaultRun, home = homedir(), read = readFileSync } = {}) {
+  try {
+    const id = String(JSON.parse(run(["--session", "org", "agent", "get", label]))?.result?.agent?.agent_session?.value ?? "");
+    const path = SESSION_ID.test(id) ? transcriptOf(id, home) : null;
+    return path === null ? null : assistantTimesIn(String(read(path, "utf8")));
+  } catch {
+    return null;
+  }
+}
+
+/** @param {string} transcript the JSONL text @returns {number[]} */
+function assistantTimesIn(transcript) {
+  const times = [];
+  for (const line of transcript.split("\n")) {
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (entry?.type === "assistant" && entry.isSidechain !== true) times.push(Date.parse(entry.timestamp));
+  }
+  return times;
+}
+
+/**
+ * Did a session act between two instants: an assistant entry in its transcript strictly between them. "No entry between the delivery and the
+ * restart" implies none of the moves done-when 11 lists, so this errs toward NOT re-sending -- a session that read the order and did
+ * something small is left alone. `true` for anything unestablishable: absence of evidence is not evidence a delivery was killed.
+ * @param {(label: string) => number[] | null} timestamps asked once per session by the caller (`assistantTimestamps`, memoised)
+ * @returns {(label: string, from: number, to: number) => boolean}
+ */
+export function sessionMoved(timestamps) {
+  return (label, from, to) => {
+    const times = timestamps(label);
+    return times === null || times.some((at) => at > from && at < to);
+  };
+}
+
+/**
+ * What the tick recovers, decided from facts: the sessions whose pane reads `Interrupted`, and the deliveries a restart (or an interruption
+ * with no restart in view) killed -- inside {@link RESTART_RESEND_WINDOW_MS} before it, to a target that made no move before it.
+ *
+ * A RESTART IS ACTED ON ONCE (`actedRestart`): the re-send is itself a delivery stamped AFTER the restart, so the window excludes it, and
+ * the record of the last restart acted on keeps a second tick from re-deriving the same set. An INTERRUPTED pane with no restart in view
+ * treats NOW as the moment of the interruption (its real time is unknown), and a session already re-sent inside one wake window is not
+ * sent to again, so a pane that stays interrupted is not resent to on every tick.
+ *
+ * @template {{ session: string, at: number }} D
+ * @param {{ now: number, restartAt: number | null, actedRestart: number | null, agents: { label: string, status: string }[],
+ *   paneText: (label: string) => string | null, deliveries: () => D[], moved: (session: string, from: number, to: number) => boolean,
+ *   resentAt: Record<string, number> }} facts
+ *   `deliveries` is a thunk: it reads two ledgers, and is called only when a restart is fresh or a pane is interrupted
+ * @returns {{ interrupted: string[], killed: D[], restartActed: number | null }}
+ */
+export function recoverableWork({ now, restartAt, actedRestart, agents, paneText, deliveries, moved, resentAt }) {
+  const recent = restartAt !== null && restartAt > (actedRestart ?? 0) && now - restartAt <= RESTART_ACT_HORIZON_MS;
+  const quiet = (/** @type {string} */ session) => now - (resentAt[session] ?? -Infinity) < WAKE_TTL_MS;
+  const interrupted = agents.filter((a) => WAKEABLE.includes(a.status) && paneInterrupted(paneText(a.label)) && !quiet(a.label))
+    .map((a) => a.label);
+  // THE LEDGERS ARE READ ONLY WHEN THERE IS SOMETHING TO RECOVER: the common tick has neither a fresh restart nor an interrupted pane.
+  if (!recent && interrupted.length === 0) return { interrupted, killed: [], restartActed: null };
+  const all = deliveries();
+  const byRestart = recent ? killedDeliveries({ deliveries: all, at: /** @type {number} */ (restartAt), until: now, moved }) : [];
+  const byPane = killedDeliveries({ deliveries: all.filter((d) => interrupted.includes(d.session)), at: now, moved });
+  return { interrupted, killed: [...new Set([...byRestart, ...byPane])], restartActed: recent ? restartAt : null };
+}
+
+/**
+ * The prompt an interrupted session gets: PLAIN (queued with `resume: true`, so it is never behind a `/clear`), naming what happened and what to
+ * do -- and that nothing was cleared, because that is the property that makes it a resume.
+ * @returns {string}
+ */
+export function resumePrompt() {
+  return `YOU WERE INTERRUPTED. Your pane's last line reads \`${INTERRUPTED_TEXT}\`: the process under you was killed mid-turn (a `
+    + "restart of `herdr.service`, or the kernel's OOM killer -- 2026-09-25 lost every session at once), and `idle` is what herdr "
+    + "reports for that, so nothing has told you until now.\n"
+    + "RESUME WHERE YOU LEFT OFF. This is a plain prompt and NOTHING WAS CLEARED: your context is intact. THE ROW IS THE STATE: re-read the "
+    + "row you hold and its pull request, run `git status` and `git log origin/main..HEAD` in your worktree, then continue what you were "
+    + "doing. If it is already finished, say so on the row and stop.";
+}
+
+/**
+ * A pane's recent OUTPUT, or `null` for anything herdr will not say. `herdr agent read <name>` is the reading, and it is what the row asked
+ * to be read FIRST: it addresses the agent by its label (no workspace-and-pane walk), returns the terminal's own recent scrollback, and costs
+ * one process per idle session. `--source recent` and not `detection`, which is herdr's classifier's own excerpt and says `idle`.
+ * @param {(args: string[]) => string} run @returns {(label: string) => string | null}
+ */
+export function paneReader(run) {
+  return (label) => {
+    try {
+      return run(["--session", "org", "agent", "read", label, "--source", "recent", "--lines", "40"]);
+    } catch {
+      return null;
+    }
+  };
+}
+
+/**
+ * THE TICK'S RECOVERY: find the sessions a restart or a kill interrupted, take back the deliveries that never arrived, and QUEUE what to send.
+ *
+ *   - a CAUSE delivery that never arrived gets a `VOIDED` ledger line, so the gate's order is offered again as if it had not happened and the
+ *     run's count is where it was (`wake` reads the recent VOIDED keys and delivers those as plain prompts, never behind a `/clear`);
+ *   - an AUTHORED delivery that never arrived is appended to the queue again from its retained text, as a fresh live line;
+ *   - an interrupted pane gets a RESUME order: an authored handoff with `resume: true`, which is what makes it reach a session on a tick whose
+ *     gate found nothing (`work-tick` runs this BEFORE its quiet exit and delivers the queue when it is not empty).
+ *
+ * ONCE PER RESTART, and the record of it is written LAST, so a tick that dies partway re-derives the same set: a voided line already on the
+ * ledger takes back nothing twice (it is matched by its delivery time), and a re-queued handoff folds into the same id.
+ * NEVER THROWS -- it must not stop the tick that delivers work -- and says so.
+ *
+ * @param {{ agents: { label: string, status: string }[], ledgerPath: string, now?: number, restartAt: number | null,
+ *   run?: (args: string[]) => string, log?: (line: string) => void, moved: (label: string, from: number, to: number) => boolean }} args
+ *   `restartAt` and `moved` are REQUIRED: a default would be a live `systemctl` and a live transcript read, which a test reaches by forgetting
+ * @returns {string[]} what was done, one line each
+ */
+export function recoverInterruptedWork({ agents, ledgerPath, now = Date.now(), restartAt, run = defaultRun,
+  log = (line) => { process.stderr.write(line); }, moved }) {
+  try {
+    const statePath = `${dirname(ledgerPath)}/${RESTART_STATE_FILE}`;
+    const state = readJsonObject(statePath);
+    const queuePath = handoffQueuePath(ledgerPath);
+    const found = recoverableWork({ now, agents, actedRestart: state.restartAt ?? null, restartAt, moved,
+      paneText: paneReader(run), resentAt: state.resent ?? {}, deliveries: () => deliveriesOf(ledgerPath, queuePath) });
+    if (found.killed.length === 0 && found.interrupted.length === 0 && found.restartActed === null) return [];
+    const lines = actOnKilledWork({ found, now, ledgerPath, queuePath });
+    writeJsonObject(statePath, { restartAt: found.restartActed ?? state.restartAt ?? null, resent: resentAfter(state.resent ?? {}, found, now) });
+    for (const line of lines) log(`${line}\n`);
+    return lines;
+  } catch (err) {
+    log(`recovery FAILED (${firstLine(err)}): no killed delivery was re-sent and no pane was resumed this tick.\n`);
+    return [];
+  }
+}
+
+/**
+ * {@link recoverInterruptedWork} with the REAL host: the live `herdr.service` start, and a movement test read from the sessions' own transcripts
+ * (asked once per session for the length of the tick). The pure function takes both as arguments so a test states them, and cannot be
+ * handed a live `systemctl` by forgetting to.
+ * @param {{ label: string, status: string }[]} agents @param {string} ledgerPath
+ */
+export function recoverNow(agents, ledgerPath) {
+  const timestamps = memoised2((/** @type {string} */ label) => assistantTimestamps(label));
+  return recoverInterruptedWork({ agents, ledgerPath, restartAt: readHerdrRestart(systemctlShow), moved: sessionMoved(timestamps) });
+}
+
+/** Every delivery on the two ledgers, each tagged with which. @param {string} ledgerPath @param {string} queuePath */
+function deliveriesOf(ledgerPath, queuePath) {
+  return [
+    ...readLedgerDeliveries(ledgerPath).map((d) => ({ ...d, kind: /** @type {const} */ ("cause") })),
+    ...readDeliveredHandoffs(queuePath).map((h) => ({ ...h, kind: /** @type {const} */ ("handoff") })),
+  ];
+}
+
+/** Who was re-sent to and when: the last window's worth, plus this tick's. @param {Record<string, number>} before @param {ReturnType<typeof recoverableWork>} found @param {number} now */
+function resentAfter(before, found, now) {
+  const resent = Object.fromEntries(Object.entries(before).filter(([, at]) => now - Number(at) < RESTART_RESEND_WINDOW_MS));
+  for (const d of found.killed) resent[d.session] = now;
+  for (const label of found.interrupted) resent[label] = now;
+  return resent;
+}
+
+/** A function asked once per argument for the length of a tick. @template A, R @param {(a: A) => R} ask @returns {(a: A) => R} */
+function memoised2(ask) {
+  /** @type {Map<A, R>} */
+  const answers = new Map();
+  return (a) => {
+    if (!answers.has(a)) answers.set(a, ask(a));
+    return /** @type {R} */ (answers.get(a));
+  };
+}
+
+/** @param {string[]} args */
+const systemctlShow = (args) => execFileSync("systemctl", args, { encoding: "utf8", timeout: 10_000 });
+
+/**
+ * Perform what {@link recoverableWork} found: a VOIDED line per cause delivery, a fresh queue line per authored one.
+ * @param {{ found: ReturnType<typeof recoverableWork>, now: number, ledgerPath: string, queuePath: string }} args @returns {string[]}
+ */
+function actOnKilledWork({ found, now, ledgerPath, queuePath }) {
+  const lines = [];
+  for (const d of /** @type {any[]} */ (found.killed)) {
+    if (d.kind === "cause") {
+      writeFileSync(ledgerPath, `${now}\t${VOIDED}\t${d.key}\t${d.at}\n`, { flag: "a" });
+      lines.push(`RE-SENDING ${d.key} to ${d.session}: delivered ${new Date(d.at).toISOString()} and the target made no move before the interruption (VOIDED on the ledger)`);
+    } else {
+      queueHandoff(queuePath, { session: d.session, prompt: d.prompt, decision: d.decision, now, resume: true });
+      lines.push(`RE-QUEUED ${d.id} for ${d.session}: delivered ${new Date(d.at).toISOString()} and the target made no move before the interruption`);
+    }
+  }
+  for (const label of found.interrupted) {
+    queueHandoff(queuePath, { session: label, prompt: resumePrompt(), now, resume: true });
+    lines.push(`RESUMING ${label}: its pane's last line reads Interrupted`);
+  }
+  return lines;
+}
+
 /**
  * The roles the drain holds back this tick. A ledger or roster that cannot be READ lifts the drain and says so:
  * an unreadable file is not a clean bill, and the alternative -- routing on a guess -- is what a drain that could
@@ -4217,6 +4856,77 @@ function escalationMemory(ledgerPath, unavailable) {
     record: (/** @type {string} */ key) => writeFileSync(ledgerPath, `${Date.now()}\t${ESCALATED}\t${key}\n`, { flag: "a" }) };
 }
 
+/**
+ * The claim releases in this tick's orders, PERFORMED, and the orders that are left (#2470). A release is an order that carries a `release`: it
+ * asks nobody anything, so it never reaches the ledger or `deliver`, and the gate emits it again next tick until the label is off. FIRST, before
+ * anything is delivered, because it changes who holds which row and everything after reads that.
+ *
+ * @template {{ release?: import("./claim-stall.mjs").ReleaseRequest }} O
+ * @param {O[]} orders @param {{label: string, status: string}[]} agents
+ * @param {{ ledgerPath: string, hostLayout: { worktreesDir: string, primary: string } }} where
+ * @returns {O[]}
+ */
+function performReleases(orders, agents, { ledgerPath, hostLayout }) {
+  const requests = orders.flatMap((o) => (o.release === undefined ? [] : [o.release]));
+  for (const line of performClaimReleases(requests, agents, { ledgerPath, host: hostLayout })) process.stdout.write(`${line}\n`);
+  return orders.filter((o) => o.release === undefined);
+}
+
+/**
+ * The cause keys a restart or an interruption VOIDED in the last wake window: their re-send is a RESUME (a plain prompt, no `/clear`), because
+ * the session still has the context the clear would wipe (#2470, done-when 11b). Read from the ledger, where the VOIDED line is the record.
+ * @param {string} ledgerPath @param {number} since @returns {Set<string>}
+ */
+export function recentlyVoidedKeys(ledgerPath, since) {
+  const raw = readTextOrNull(ledgerPath, readFileSync) ?? "";
+  const keys = new Set();
+  for (const line of raw.split("\n")) {
+    const fields = line.trim().split("\t");
+    if (fields[1] === VOIDED && Number(fields[0]) >= since) keys.add(fields[2]);
+  }
+  return keys;
+}
+
+/**
+ * The spawner's claim, wired to the host: a worktree a release KEPT for the row is adopted, not refused (#2470), and forgotten once claimed.
+ * @param {ReturnType<typeof sparePathsFrom>} spares @param {string} ledgerPath @param {ReturnType<typeof layoutUnder>} hostLayout
+ */
+function claimerFor(spares, ledgerPath, hostLayout) {
+  const keptPath = keptClaimsPath(ledgerPath);
+  return spawnClaimer({ ...hostLayout, settle: (role) => { settleAbsentInstance(spares, role); },
+    kept: (row) => readKeptClaims(keptPath)[row] ?? null,
+    forget: (row) => { const all = readKeptClaims(keptPath); delete all[row]; writeKeptClaims(keptPath, all); } });
+}
+
+/**
+ * The tick's report and exit, after everything was delivered: the breaker's alarm for a cause offered `MAX_DELIVERIES` times and still true,
+ * and the list of orders that had nowhere to go. THE BREAKER'S ALARM: printing `STUCK` and stopping is what let two of `ceo`'s causes go silent for
+ * over half an hour with every session idle -- see `escalateStuck`.
+ * @param {{ handed: ReturnType<typeof deliverHandoffs>, sent: string[], gateRefused: string[], stuck: string[], ledgerPath: string,
+ *   unavailable: (label: string) => string | null }} outcome
+ * @returns {never}
+ */
+function finishTick({ handed, sent, gateRefused, stuck, ledgerPath, unavailable }) {
+  const refused = [...handed.refused, ...gateRefused];
+  for (const line of [...handed.sent, ...sent]) process.stdout.write(`WOKE ${line}\n`);
+  for (const line of stuck) process.stderr.write(`STUCK ${line}\n`);
+  escalateStuck(stuck, undefined, undefined, escalationMemory(ledgerPath, unavailable));
+  if (stuck.length > 0) {
+    process.stderr.write(`${stuck.length} cause(s) have been offered ${MAX_DELIVERIES}+ times and are `
+      + "still true. They are NOT being retried: something about the row, the prompt or the session is "
+      + "wrong, and another delivery would only make the log busier.\n");
+    process.exit(EXIT.ATTENTION);
+  }
+  if (refused.length > 0) {
+    for (const line of refused) process.stderr.write(`UNDELIVERED ${line}\n`);
+    process.stderr.write(`${refused.length} order(s) had nowhere to go. A derived cause is NOT in the `
+      + "ledger and an authored one is still in the queue, so both are retried on the next tick; if this "
+      + "repeats, no session is taking this work.\n");
+    process.exit(EXIT.ATTENTION);
+  }
+  process.exit(EXIT.QUIET);
+}
+
 function main() {
   refuseUnknownFlags(["--ledger", "--roster", "--cycles", "--worktrees-dir"], {
     entry: import.meta.url, command: "node packages/agent-org/src/wake.mjs",
@@ -4231,13 +4941,13 @@ function main() {
   // test drive this entry through PATH stubs without the claim creating `role-<name>` beside the real checkout.
   const hostLayout = layoutUnder(flagValue(process.argv, "worktrees-dir") ?? HOST_REPOS);
 
-  const orders = parseOrders(readFileSync(0, "utf8"));
+  const gateOrders = parseOrders(readFileSync(0, "utf8"));
   // A QUEUED ORDER IS WORK EVEN WHEN THE GATE FOUND NONE, and this is the line that makes it so. The
   // common case for a handoff is precisely a quiet gate -- the reviewer is busy reviewing, nothing else
   // is outstanding -- so exiting QUIET on an empty stdin would have left the queue undelivered exactly
   // when it mattered most.
   const handoffs = readHandoffs(queuePath);
-  if (nothingToDeliver(orders, handoffs)) process.exit(EXIT.QUIET);
+  if (nothingToDeliver(gateOrders, handoffs)) process.exit(EXIT.QUIET);
 
   // WHAT WAS ALREADY WAITING, BEFORE THIS TICK DELIVERS ANYTHING (#2102). Reported first and reported whatever
   // happens next, because the backlog is a fact about the org that every session running a tick should
@@ -4249,7 +4959,8 @@ function main() {
   // ordering protected: a tick that cannot reach herdr delivers NOTHING and exits, so it is the one tick where a
   // ten-hour backlog most needs saying. It says it, unclassified, because nothing is known about any target.
   const agents = readAgents();
-  if (agents === null) exitCannotAsk(orders.length, handoffs);
+  if (agents === null) exitCannotAsk(gateOrders.length, handoffs);
+  const orders = performReleases(gateOrders, agents, { ledgerPath, hostLayout });
 
   const waiting = settleEndedOrders(handoffs, agents, { queuePath, ledgerPath });
   for (const line of backlogReport(handoffBacklog(waiting), agents)) process.stderr.write(line);
@@ -4264,7 +4975,8 @@ function main() {
   const free = agents.map((a) => (handed.busied.has(a.label) ? { ...a, status: "working" } : a));
 
   const delivered = readLedger(ledgerPath, readFileSync, Date.now(), new Set(JUDGMENT_CAUSES));
-  const todo = undelivered(orders, delivered);
+  const voided = recentlyVoidedKeys(ledgerPath, Date.now() - WAKE_TTL_MS);
+  const todo = undelivered(orders, delivered).map((o) => (voided.has(o.causeKey) ? { ...o, resume: true } : o));
   mkdirSync(dirname(ledgerPath), { recursive: true });
   /** @param {string} key @param {string} [recipient] @param {boolean} [noClear] */
   const record = (key, recipient, noClear) => writeFileSync(ledgerPath,
@@ -4281,29 +4993,10 @@ function main() {
   const { sent, refused: gateRefused, stuck } = deliver(todo, free, roster, { record, unavailable,
     counts: deliveryCounts(ledgerPath), ineligibleReason: poolEngineerReason(poolEligibility(spares, drained), unavailable),
     registerSpawn: (role) => registerSpawn(spares, role), drained, claimable: spawnClaimability(),
-    claimer: spawnClaimer({ ...hostLayout, settle: (role) => { settleAbsentInstance(spares, role); } }), launch: hostLayout,
+    claimer: claimerFor(spares, ledgerPath, hostLayout), launch: hostLayout,
     registerReviewer: (session) => registerReviewer(reviewerPathsFrom(ledgerPath), session),
     registry: () => readReviewerRegistry(reviewerPathsFrom(ledgerPath).registry) });
-  const refused = [...handed.refused, ...gateRefused];
-  for (const line of [...handed.sent, ...sent]) process.stdout.write(`WOKE ${line}\n`);
-  for (const line of stuck) process.stderr.write(`STUCK ${line}\n`);
-  // THE BREAKER'S ALARM. Printing `STUCK` and stopping is what let two of `ceo`'s causes go silent for
-  // over half an hour with every session idle -- see `escalateStuck`.
-  escalateStuck(stuck, undefined, undefined, escalationMemory(ledgerPath, unavailable));
-  if (stuck.length > 0) {
-    process.stderr.write(`${stuck.length} cause(s) have been offered ${MAX_DELIVERIES}+ times and are `
-      + "still true. They are NOT being retried: something about the row, the prompt or the session is "
-      + "wrong, and another delivery would only make the log busier.\n");
-    process.exit(EXIT.ATTENTION);
-  }
-  if (refused.length > 0) {
-    for (const line of refused) process.stderr.write(`UNDELIVERED ${line}\n`);
-    process.stderr.write(`${refused.length} order(s) had nowhere to go. A derived cause is NOT in the `
-      + "ledger and an authored one is still in the queue, so both are retried on the next tick; if this "
-      + "repeats, no session is taking this work.\n");
-    process.exit(EXIT.ATTENTION);
-  }
-  process.exit(EXIT.QUIET);
+  finishTick({ handed, sent, gateRefused, stuck, ledgerPath, unavailable });
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();
