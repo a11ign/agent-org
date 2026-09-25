@@ -28,16 +28,17 @@
 // prompt into a bare shell. But declining SILENTLY is the defect the org already had once: the
 // lead-orchestrator brief records 2026-09-08, when "every session went idle at 20:52Z and nothing woke
 // anyone for ten" hours. So an order with nowhere to go exits ATTENTION and names the session, every time.
-import { execFileSync } from "node:child_process";
-import { pathToFileURL } from "node:url";
+import { execFileSync, spawnSync } from "node:child_process";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import { readFileSync, writeFileSync, mkdirSync, realpathSync, existsSync } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 // RELATIVE, not the package specifier -- this must run before any `npm ci`/build, the same constraint
 // `work-gate.mjs` and `org-watch.mjs` state at their own imports.
 import { refuseUnknownFlags, flagValue } from "../../worker-fleet/src/cli-flags.mjs";
 import { profileFor, agentArgs } from "./worker-profile.mjs";
-import { JUDGMENT_CAUSES, CHAIRMAN_LABEL, REVIEWER_REGISTRY_FILE, readReviewerRegistry } from "./work-gate.mjs";
+import { JUDGMENT_CAUSES, CHAIRMAN_LABEL, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry }
+  from "./work-gate.mjs";
 import { reviewerInstanceNumber } from "./review-attribution.mjs";
 import { REPO } from "../../../scripts/repo-identity.mjs";
 import { inBuildReason, isInBuild, unansweredRefusal, lookupHeldRows, lookupOtherHeldIssues }
@@ -518,11 +519,13 @@ export function withSpareInstances(roster, agents, families = SPARE_FAMILIES) {
  * answers with `result.root_pane.pane_id` and `result.workspace.workspace_id`, and `workspace close <id>`
  * answers `{"type":"ok"}`.
  *
- * NO `--cwd` FOR AN ENGINEER, DELIBERATELY (a reviewer passes one, #2401: its whole task is one pull request's
- * tree, and the tree is prepared before the pane opens). The default is `/home/agent/repos/a11y-witness`, the primary checkout, which is
- * where all six standing sessions already run -- so passing one would invent a convention rather than
- * follow it. The obvious candidate, a `role-<name>` worktree, is NOT a convention: four of the six roles
- * have one. The order's own text tells the woken session that `row-claim` creates its worktree.
+ * THE PANE STARTS IN A NAMED DIRECTORY WHEN THE CALLER HAS ONE (#2405, #2401). Without `--cwd` herdr's default is
+ * `/home/agent/repos/a11y-witness`, the PRIMARY checkout, which is the one directory `launchGate` (#1352) refuses
+ * every policy script from -- so a spawned engineer began in the place it was forbidden to work, and its order
+ * then named a directory that usually did not exist. The spawner has claimed the row by now (`spawnWorker`), so
+ * the worktree exists and the agent's cwd is its unit of work; it never touches the primary and never borrows a
+ * peer's tree. A REVIEWER passes its verified checkout (#2401: its whole task is one pull request's tree, prepared before the
+ * pane opens). A `cwd` of `undefined` is the old default, kept for a caller that has claimed nothing.
  *
  * `--no-focus` because a tick must not steal the display from whoever is watching it.
  *
@@ -533,7 +536,7 @@ export function withSpareInstances(roster, agents, families = SPARE_FAMILIES) {
  * @param {(args: string[]) => string} run
  * @param {string} label
  * @param {Record<string, string>} env
- * @param {string} [cwd] where the pane's shell starts; the engineer path passes none and starts where herdr does
+ * @param {string} [cwd] the directory the pane's shell starts in
  * @returns {{pane: string, workspace: string} | {refusal: string}}
  */
 function openPane(run, label, env, cwd) {
@@ -593,44 +596,57 @@ function closedNote(run, workspace) {
  * Start a fresh process for an engineer role that has none, and return the address it answers to.
  *
  * THE CALLER `spawnInvocation` NEVER HAD. Everything it needs beyond the invocation itself is here: the
- * name (a roster role, per `spawnableRole`), the pane (`openPane`), and the teardown (`closedNote`).
+ * name (a roster role, per `spawnableRole`), the claim (`claimer`), the pane (`openPane`), and the teardown
+ * (`closedNote`, `SpawnClaimer.release`).
+ *
+ * THE ROW IS CLAIMED BEFORE ANY PANE EXISTS (#2405, `ceo`'s ruling on the chairman's message). The claim creates
+ * the row's worktree, and the pane starts in it -- so the engineer's first directory is the one it builds in. A
+ * REFUSED CLAIM IS AN ANSWER, NOT A FAILURE: someone took the row first, no pane is opened, nothing is registered
+ * and no `spare-cycles` line is written, and the next tick offers the next row. A FAILURE AFTER THE CLAIM landed
+ * (the workspace will not open, the agent will not start) RELEASES IT, or the row would sit claimed by a role with
+ * no process, which nothing reads as a fault.
  *
  * IT DOES NOT PROMPT. `deliver` does, through the same `addressed(...)` call every other delivery uses, so
  * a spawned session is told who it is by the same line that tells a standing one -- and a spawn whose
  * prompt is refused leaves a live, idle session the next tick routes to normally.
  *
- * @param {{session: string, causeKey: string, cause?: string}} order
+ * @param {{session: string, causeKey: string, cause?: string, title?: string}} order
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster
  * @param {{run?: (args: string[]) => string, env?: Record<string, string>, drained?: readonly string[],
- *   claimable?: (order: {causeKey: string}) => string | null}} [deps]
- *   `claimable` says why the CLAIM would refuse this order's row, or `null` -- see {@link spawnClaimability}
- * @returns {{label: string, workspace: string, profile: {kind: string, model: string, effort: string}}
- *   | {refusal: string}}
+ *   claimable?: (order: {causeKey: string}) => string | null, claimer?: SpawnClaimer}} [deps]
+ *   `claimable` says why the CLAIM would refuse this order's row, or `null` -- see {@link spawnClaimability};
+ *   `claimer` claims the row for the role about to start -- see {@link spawnClaimer}. With none, the pane opens
+ *   in herdr's default directory and nothing is claimed (the pre-#2405 spawn, kept for a caller that has no claim)
+ * @returns {{label: string, workspace: string, profile: {kind: string, model: string, effort: string},
+ *   claimed?: ClaimedRow} | {refusal: string}}
  */
 function spawnWorker(order, agents, roster, { run = defaultRun, env = spawnEnvironment(), drained = [],
-  claimable = () => null } = {}) {
+  claimable = () => null, claimer } = {}) {
   const role = spawnableRole(order, agents, roster, drained);
   if ("refusal" in role) return role;
   // AFTER THE ROLE AND BEFORE THE PANE: a pane is the first thing this opens, and "no instance is created to be
   // refused and sit idle" (#2324) means the answer is known before it exists.
   const unclaimable = claimable(order);
   if (unclaimable !== null) return { refusal: `no spawn: ${unclaimable}` };
-  const pane = openPane(run, role.role, env);
-  if ("refusal" in pane) return pane;
+  const claimed = claimer?.claim(order, role.role, env);
+  if (claimed !== undefined && "refusal" in claimed) return { refusal: `no spawn: ${claimed.refusal}` };
+  /** @param {string} refusal @param {string} [workspace] a workspace this call opened, to close with it */
+  const unwound = (refusal, workspace) => `${refusal}${workspace ? closedNote(run, workspace) : ""}`
+    + `${claimed && claimer ? claimer.release(claimed, role.role, env) : ""}`;
+  const pane = openPane(run, role.role, env, claimed?.worktree);
+  // `openPane` closes a workspace it opened and could not use, so only the claim is left to undo here.
+  if ("refusal" in pane) return { refusal: unwound(pane.refusal) };
   // `spawnableRole` has already refused anything whose cause is not in `SPAWN_CAUSES`, so by here the
   // cause is one of those strings -- narrowed for the type rather than re-checked.
   const invocation = spawnInvocation({ ...order, cause: String(order.cause) }, role.role, pane.pane);
-  if ("refusal" in invocation) {
-    return { refusal: `${invocation.refusal}${closedNote(run, pane.workspace)}` };
-  }
+  if ("refusal" in invocation) return { refusal: unwound(invocation.refusal, pane.workspace) };
   try {
     run(invocation.args);
   } catch (err) {
-    return { refusal: `herdr refused to start "${role.role}" (${firstLine(err)})`
-      + `${closedNote(run, pane.workspace)}` };
+    return { refusal: unwound(`herdr refused to start "${role.role}" (${firstLine(err)})`, pane.workspace) };
   }
-  return { label: role.role, workspace: pane.workspace, profile: invocation.profile };
+  return { label: role.role, workspace: pane.workspace, profile: invocation.profile, claimed };
 }
 
 // --- #2401: ONE REVIEWER INSTANCE PER PULL REQUEST, ADDRESSED BY HERDR NAME ---
@@ -1993,24 +2009,30 @@ function engineerBriefLine(label, engineers, families) {
  * never told the acceptance standard or the resource ban. {@link engineerBriefLine} adds one line for the
  * roster's engineer roles and for no other label.
  *
- * @param {{session: string, prompt: string}} order
+ * A SPAWNED ENGINEER'S ORDER IS DIFFERENT IN KIND (#2405): its row is already claimed and it is already in the
+ * row's worktree, so `spawned` REPLACES the order's text with {@link spawnedPrompt} -- there is no claim command
+ * to run and no other directory to name. A STANDING session keeps the order's own text, with `LAUNCH_PLACEHOLDER`
+ * filled by {@link launchAdvice}. `engineers` and `families` are parameters so a test can hand `addressed` a roster.
+ *
+ * @param {{session: string, prompt: string, title?: string, causeKey?: string}} order
  * @param {string} label the concrete session this went to
- * @param {string[]} [engineers] the engineer roles; a parameter so a test can hand it a roster
- * @param {readonly import("./arm-pr.mjs").SpareFamily[]} [families] the spare families, likewise
+ * @param {LaunchFacts & {spawned?: ClaimedRow, engineers?: string[],
+ *   families?: readonly import("./arm-pr.mjs").SpareFamily[]}} [facts]
  */
-export function addressed(order, label, engineers = engineerRoles(), families = SPARE_FAMILIES) {
+export function addressed(order, label,
+  { spawned, engineers = engineerRoles(), families = SPARE_FAMILIES, ...launch } = {}) {
   // `<you>` SUBSTITUTED, not merely explained: the order's own command text carries the placeholder, and
   // an agent that has been told its name still has to edit the command it was handed. Handing it a
   // command it can run is the difference between an instruction and a task.
-  const prompt = order.prompt.replaceAll("<you>", label);
+  const prompt = spawned ? spawnedPrompt(order, spawned)
+    : order.prompt.replaceAll("<you>", label).replaceAll(LAUNCH_PLACEHOLDER, launchAdvice(label, launch));
   return `You are \`${label}\`, an org session in this repository. Use that name wherever a command `
     + `asks which session you are (\`--session=${label}\`).\n\n`
     + `${prompt}\n\n`
     + engineerBriefLine(label, engineers, families)
     + "Work autonomously to the end: nobody is at this terminal to answer you. If something genuinely "
     + `blocks you, say so on the row and message \`${escalationFor(label)}\` -- never stop and wait on a `
-    + "human. If you cannot claim the row (already taken, or the claim refuses), that is an answer: "
-    + "report it and stop, rather than working outside a claim.\n\n"
+    + `human.${spawned ? "" : ` ${REFUSED_CLAIM_IS_AN_ANSWER}`}\n\n`
     + "ENDING YOUR TURN WITH A QUESTION IS THE SAME AS STOPPING. Nobody reads this terminal, so "
     + "\"want me to file it?\" and not filing it are the same outcome -- except the first also looks "
     + "like progress. IF THE ACTION IS IN YOUR LANE, TAKE IT AND REPORT WHAT YOU DID. Measured "
@@ -2023,6 +2045,10 @@ export function addressed(order, label, engineers = engineerRoles(), families = 
     + "job, and polling a pull request for a verdict that has its own cause is a turn spent on a "
     + "question the tick already answers.";
 }
+
+/** What a session that must claim its row is told about a refusal; a spawned one has nothing left to claim (#2405). */
+const REFUSED_CLAIM_IS_AN_ANSWER = "If you cannot claim the row (already taken, or the claim refuses), that is an "
+  + "answer: report it and stop, rather than working outside a claim.";
 
 /**
  * Does this delivery begin a new run -- i.e. was nobody told for longer than `RUN_IDLE_RESET_MS`?
@@ -2336,17 +2362,17 @@ export function clearContext(run, label) {
  * fact that a spawn was attempted and why it did not happen, which is precisely the question a pilot exists
  * to answer.
  *
- * @param {{session: string, causeKey: string, prompt: string, cause?: string}} order
+ * @param {{session: string, causeKey: string, prompt: string, cause?: string, title?: string}} order
  * @param {{label: string, status: string}[]} live
  * @param {string[]} roster
  * @param {{run: (args: string[]) => string, spawned: number, ineligibleReason?: (label: string) => string | null,
  *   env?: Record<string, string>, registerSpawn?: (role: string) => void, drained?: readonly string[],
- *   claimable?: (order: {causeKey: string}) => string | null} & ReviewerDeps} deps
+ *   claimable?: (order: {causeKey: string}) => string | null, claimer?: SpawnClaimer} & ReviewerDeps} deps
  *   `spawned` is how many ENGINEER processes this tick has already started -- see `MAX_SPAWNS_PER_TICK`, which a
  *   reviewer start never spends (#2401); `ineligibleReason` is {@link route}'s; `env` is the spawn's environment
  *   ({@link spawnEnvironment})
- * @returns {{label: string, profile?: {kind: string, model: string, effort: string}, reviewer?: true,
- *   order?: {prompt: string}} | {refusal: string}}
+ * @returns {{label: string, profile?: {kind: string, model: string, effort: string}, claimed?: ClaimedRow,
+ *   reviewer?: true, order?: {prompt: string}} | {refusal: string}}
  */
 function targetFor(order, live, roster, deps) {
   // A REVIEWER ORDER IS ASKED FIRST AND SEPARATELY (#2401): the engineer pilot's checks below are unchanged.
@@ -2363,11 +2389,11 @@ function targetFor(order, live, roster, deps) {
       + `(MAX_SPAWNS_PER_TICK is ${MAX_SPAWNS_PER_TICK})` };
   }
   const spawn = spawnWorker(order, live, roster,
-    { run: deps.run, env: deps.env, drained: deps.drained, claimable: deps.claimable });
+    { run: deps.run, env: deps.env, drained: deps.drained, claimable: deps.claimable, claimer: deps.claimer });
   if ("refusal" in spawn) return { refusal: `${routed.refusal}; ${spawn.refusal}` };
   // REGISTERED BEFORE THE PROMPT, because a refused prompt leaves the process running (see `deliver`).
   deps.registerSpawn?.(spawn.label);
-  return { label: spawn.label, profile: spawn.profile };
+  return { label: spawn.label, profile: spawn.profile, claimed: spawn.claimed };
 }
 
 /**
@@ -2394,23 +2420,26 @@ function carriedOrder(order, target) {
  * between the two re-wakes rather than losing the wake. Re-waking is visible and costs one turn; losing one
  * is invisible and costs however long until someone notices -- the 2026-09-08 shape.
  *
- * @param {{session: string, causeKey: string, prompt: string, cause?: string}[]} orders
+ * @param {{session: string, causeKey: string, prompt: string, cause?: string, title?: string}[]} orders
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster
  * @param {{run?: (args: string[]) => string, record?: (key: string, recipient?: string) => void,
  *          counts?: Map<string, number>, ineligibleReason?: (label: string) => string | null,
  *          env?: Record<string, string>, registerSpawn?: (role: string) => void, drained?: readonly string[],
- *          claimable?: (order: {causeKey: string}) => string | null} & Partial<ReviewerDeps>} [deps]
+ *          claimable?: (order: {causeKey: string}) => string | null, claimer?: SpawnClaimer,
+ *          launch?: LaunchFacts} & Partial<ReviewerDeps>} [deps]
  *   `registerReviewer` is told of every reviewer instance this tick starts (#2401), for the auth detector;
  *   `checkout` and `registry` are the reviewer path's seams (its git, its filesystem, what it has started);
  *   `registerSpawn` is told of every process this tick STARTS, so the teardown can tell an instance that has
  *   not claimed yet from one that finished ({@link endFinishedSpares}); `drained` is the roles the drain holds
- *   back now, which a spawn must not start into; `claimable` is the spawn's precheck ({@link spawnClaimability})
+ *   back now, which a spawn must not start into; `claimable` is the spawn's precheck ({@link spawnClaimability});
+ *   `claimer` claims the row for a spawn before its pane opens ({@link spawnClaimer}); `launch` is what `addressed`
+ *   asks about a standing session's worktree
  * @returns {{sent: string[], refused: string[], stuck: string[]}}
  */
 export function deliver(orders, agents, roster,
-  { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, reviewerEnv,
-    registerReviewer, checkout, registry } = {}) {
+  { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer,
+    launch, reviewerEnv, registerReviewer, checkout, registry } = {}) {
   const sent = [];
   const refused = [];
   const stuck = [];
@@ -2425,8 +2454,8 @@ export function deliver(orders, agents, roster,
       stuck.push(`${order.causeKey}: delivered ${already} times and the cause is still true`);
       continue;
     }
-    const target = targetFor(order, live, roster, { run, spawned, ineligibleReason, env,
-      registerSpawn, drained, claimable, reviewerEnv, registerReviewer, checkout, registry });
+    const target = targetFor(order, live, roster, { run, spawned, ineligibleReason, env, registerSpawn, drained,
+      claimable, claimer, reviewerEnv, registerReviewer, checkout, registry });
     if ("refusal" in target) {
       refused.push(`${order.causeKey}: ${target.refusal}`);
       continue;
@@ -2443,7 +2472,8 @@ export function deliver(orders, agents, roster,
       if (clearRefusal) refused.push(`${order.causeKey}: ${clearRefusal} -- delivered anyway`);
     }
     try {
-      run(["--session", "org", "agent", "prompt", target.label, addressed(carriedOrder(order, target), target.label)]);
+      run(["--session", "org", "agent", "prompt", target.label,
+        addressed(carriedOrder(order, target), target.label, { ...launch, spawned: target.claimed })]);
     } catch (err) {
       // A STARTED PROCESS IS LEFT RUNNING HERE, and the causeKey is NOT recorded. It is a healthy, idle
       // session under a roster label, so the next tick's `route` offers it this same order by the ordinary
@@ -2796,6 +2826,212 @@ export function spawnClaimability({ run = defaultGh,
   };
 }
 
+// --- #2405: A SPAWNED ENGINEER STARTS IN ITS ROW'S WORKTREE, BECAUSE THE SPAWNER CLAIMED THE ROW FIRST ---
+//
+// Measured by the chairman watching `worker-6` on 2026-09-24 and re-read at `a7a91408a`: the pane opened in the
+// primary checkout, which `launchGate` refuses, and its order named `role-worker-6`, which did not exist (six of
+// the eight engineer addresses have no such directory). The order also offered whichever linked worktree `git
+// worktree list` named, which makes a spawned engineer BORROW one -- possibly `role-worker-5` while `worker-5` works in it, two agents' git
+// commands in one tree. `ceo` accepted the pre-claim on the chairman's message: this section is the claim, run
+// by the spawner as the address it is about to start, from a linked worktree that address owns.
+
+/**
+ * The host's layout, which the gate's own order text already hardcoded (`/home/agent/repos/...`): the PRIMARY
+ * checkout, and the directory its linked worktrees (`role-<name>`, `wt-<row>`) sit beside it in.
+ */
+export const HOST_REPOS = "/home/agent/repos";
+export const PRIMARY_CHECKOUT = `${HOST_REPOS}/a11y-witness`;
+
+/** Where `row-claim` lives, resolved from THIS file: the claim a spawn runs is the code the tick itself runs. */
+const ROW_CLAIM = fileURLToPath(new URL("./row-claim.mjs", import.meta.url));
+
+/** One `git fetch` plus a claim (which fetches again and reads GitHub) -- generous, because a killed claim can land writes. */
+const CLAIM_TIMEOUT_MS = 120_000;
+
+/** A branch slug is a hint to a human reading the branch list, so a few words of the title are enough. */
+const SLUG_WORDS = 4;
+const SLUG_MAX_CHARS = 40;
+
+/**
+ * The host's directory layout under one root: the linked worktrees AND the primary checkout beside them
+ * (`PRIMARY_CHECKOUT` is `${HOST_REPOS}/a11y-witness`). `--worktrees-dir` moves the whole of it, because the claim's
+ * `git fetch` runs IN the primary, which a CI runner does not have at the host's path (`spawnSync git ENOENT`).
+ * @param {string} root
+ */
+function layoutUnder(root) {
+  return { worktreesDir: root, primary: join(root, basename(PRIMARY_CHECKOUT)) };
+}
+
+/**
+ * What `addressed` asks about the host, so a test can hand it a fixture instead of the real directory.
+ * @typedef {{ exists?: (path: string) => boolean, worktreesDir?: string, primary?: string }} LaunchFacts
+ */
+
+/**
+ * A row claimed for a spawn, and where.
+ * @typedef {{ row: number, branch: string, worktree: string, launchDir: string }} ClaimedRow
+ */
+
+/**
+ * The claim a spawn makes before it has a pane, and the release for a spawn that fails after it.
+ * @typedef {{
+ *   claim: (order: { causeKey: string, title?: string }, role: string, env: Record<string, string>)
+ *     => ClaimedRow | { refusal: string },
+ *   release: (claimed: ClaimedRow, role: string, env: Record<string, string>) => string,
+ * }} SpawnClaimer
+ */
+
+/**
+ * One process run, without `execFileSync`'s throw: the status decides what a claim MEANS (a refusal and a claim that
+ * landed and then failed are different exits), so it is read, not caught.
+ * @typedef {(command: string, args: string[], options: { cwd: string, env: Record<string, string> })
+ *   => { status: number | null, output: string }} Exec
+ */
+
+/** @type {Exec} */
+const defaultExec = (command, args, { cwd, env }) => {
+  const ran = spawnSync(command, args, { cwd, env: sandboxGitEnv(env), encoding: "utf8", timeout: CLAIM_TIMEOUT_MS });
+  return { status: ran.status, output: `${ran.stdout ?? ""}${ran.stderr ?? ""}${ran.error ? ran.error.message : ""}` };
+};
+
+/**
+ * The line of a command's output that says what happened: `row-claim` prints a board-snapshot notice before its
+ * verdict, so the FIRST line names the snapshot and not the refusal.
+ * @param {string} output
+ */
+function verdictLine(output) {
+  const lines = output.split("\n").map((l) => l.trim()).filter(Boolean);
+  const found = lines.find((l) => /NOT CLAIMED|REFUSED|COULD NOT|PARTIALLY WRITTEN|fatal:|error:/i.test(l));
+  return (found ?? lines[lines.length - 1] ?? "no output").slice(0, REFUSAL_EXCERPT * 2);
+}
+
+/** A branch slug from a row title, or `row` when the title has no words in it. @param {string | undefined} title */
+export function slugOf(title) {
+  const words = String(title ?? "").toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  return words.slice(0, SLUG_WORDS).join("-").slice(0, SLUG_MAX_CHARS).replace(/-$/, "") || "row";
+}
+
+/**
+ * The linked worktree the claim is LAUNCHED from, created for the address if it has none.
+ *
+ * THE CLAIM NEEDS A LINKED-WORKTREE LAUNCH (`launchGate`), and the tick runs from the primary checkout -- so the spawner
+ * needs a directory that is not the primary and is not somebody else's. `role-<name>` is the address's own: a spawn is
+ * only made for a role no process holds, so nobody is working in it, which is exactly what the "any other linked
+ * worktree" the order used to offer could not promise. It is created DETACHED at `origin/main` (no branch to collide
+ * with), and an existing one is brought to `origin/main` only when that cannot lose anything: detached and clean. The
+ * claim's own stale-rule guard is the backstop for one left behind, and it says so in the refusal.
+ *
+ * @param {string} role
+ * @param {{ exec: Exec, exists: (path: string) => boolean, worktreesDir: string, primary: string }} host
+ * @returns {{ dir: string } | { refusal: string }}
+ */
+function launchWorktree(role, { exec, exists, worktreesDir, primary }) {
+  const dir = join(worktreesDir, `role-${role}`);
+  const git = (/** @type {string[]} */ args, /** @type {string} */ cwd) => exec("git", args, { cwd, env: {} });
+  const fetched = git(["fetch", "--quiet", "origin"], primary);
+  if (fetched.status !== 0) return { refusal: `git fetch origin failed (${verdictLine(fetched.output)})` };
+  if (!exists(dir)) {
+    const made = git(["worktree", "add", "--detach", dir, "origin/main"], primary);
+    return made.status === 0 ? { dir } : { refusal: `could not create ${dir} (${verdictLine(made.output)})` };
+  }
+  const onBranch = git(["symbolic-ref", "-q", "HEAD"], dir).status === 0;
+  const dirty = git(["status", "--porcelain", "--untracked-files=no"], dir).output.trim() !== "";
+  // BEST EFFORT, and its failure is not a refusal: a tree that cannot be moved is still a launch directory, and the
+  // stale-rule guard names the case where it matters.
+  if (!onBranch && !dirty) git(["checkout", "--quiet", "--detach", "origin/main"], dir);
+  return { dir };
+}
+
+/** Exits of a claim that HELD: `STARTED` (0), and `STARTED ... BUT the Project Status could not be moved` (3, still claimed). */
+const CLAIM_LANDED = Object.freeze([0, 3]);
+
+/** Exits after which the claim did NOT land: `NOT CLAIMED` (1) and `could not determine`/the launch refusal (2). */
+const CLAIM_NOT_LANDED = Object.freeze([1, 2]);
+
+/**
+ * Release a claim this call made and could not use -- `row-claim decline`, which also removes the worktree it created
+ * and refuses by name if that is dirty. NEVER THROWS, and says what remained, like {@link closedNote}.
+ *
+ * @param {ClaimedRow} claimed @param {string} role @param {Record<string, string>} env
+ * @param {Exec} exec
+ * @returns {string} a clause to append to the refusal being reported
+ */
+function releaseClaim(claimed, role, env, exec) {
+  const ran = exec("node", [ROW_CLAIM, "decline", String(claimed.row), `--session=${role}`],
+    { cwd: claimed.launchDir, env });
+  if (ran.status === 0) return ` -- the claim on #${claimed.row} was released`;
+  return ` -- AND the claim on #${claimed.row} could NOT be released (${verdictLine(ran.output)}): the row is held by `
+    + `"${role}" with no process, which nothing reads as a fault -- run \`node packages/agent-org/src/row-claim.mjs `
+    + `decline ${claimed.row} --session=${role}\` from a linked worktree`;
+}
+
+/**
+ * The spawner's claim: `row-claim claim <row> --session=<role> --branch=agent/<slug>-<row> --worktree=../wt-<row>`,
+ * run from the role's own launch worktree under the environment the agent will run in (`spawnEnvironment`), because a
+ * claim writes labels and comments and must be attributed to the account the agent acts as (#916).
+ *
+ * @param {{ exec?: Exec, exists?: (path: string) => boolean, worktreesDir?: string, primary?: string }} [host]
+ *   every one a seam, so the claim is testable without a host: the defaults are the tick's own
+ * @returns {SpawnClaimer}
+ */
+export function spawnClaimer({ exec = defaultExec, exists = existsSync, worktreesDir = HOST_REPOS,
+  primary = PRIMARY_CHECKOUT } = {}) {
+  return {
+    claim(order, role, env) {
+      const row = rowOfOrder(order);
+      if (row === null) return { refusal: `cannot tell which row "${order.causeKey}" is about, so cannot claim it` };
+      const launch = launchWorktree(role, { exec, exists, worktreesDir, primary });
+      if ("refusal" in launch) return launch;
+      const branch = `agent/${slugOf(order.title)}-${row}`;
+      const claimed = { row, branch, launchDir: launch.dir, worktree: join(worktreesDir, `wt-${row}`) };
+      const ran = exec("node", [ROW_CLAIM, "claim", String(row), `--session=${role}`, `--branch=${branch}`,
+        `--worktree=../wt-${row}`], { cwd: launch.dir, env });
+      const landed = /^STARTED/m.test(ran.output) && CLAIM_LANDED.includes(Number(ran.status));
+      if (landed && exists(claimed.worktree)) return claimed;
+      const why = landed ? `${claimed.worktree} was not created` : verdictLine(ran.output);
+      const undone = landed || !CLAIM_NOT_LANDED.includes(Number(ran.status))
+        ? releaseClaim(claimed, role, env, exec) : "";
+      return { refusal: `the claim of #${row} as ${role} did not hold (${why})${undone}` };
+    },
+    release: (claimed, role, env) => releaseClaim(claimed, role, env, exec),
+  };
+}
+
+/**
+ * What a STANDING session is told about where to launch the claim from (#2405): `role-<you>` when it EXISTS, and the one
+ * command that creates it when it does not -- never a path that is absent, and never a peer's worktree to borrow. The primary is named only to say the tooling refuses it, AFTER the directory to use.
+ *
+ * @param {string} label
+ * @param {LaunchFacts} [facts]
+ * @returns {string}
+ */
+export function launchAdvice(label, { exists = existsSync, worktreesDir = HOST_REPOS, primary = PRIMARY_CHECKOUT } = {}) {
+  const dir = join(worktreesDir, `role-${label}`);
+  const refused = `NOT the primary checkout at \`${primary}\`, which the tooling refuses`;
+  if (exists(dir)) {
+    return `Run the command from your own linked worktree \`${dir}\` -- ${refused} -- then do all the work inside `
+      + "the new worktree.";
+  }
+  return `You have no linked worktree yet (\`${dir}\` does not exist), so create it and run the command from there: `
+    + `\`git -C ${primary} fetch --quiet origin && git -C ${primary} worktree add --detach ${dir} origin/main\` `
+    + `-- ${refused} -- then do all the work inside the new worktree.`;
+}
+
+/**
+ * The order a SPAWNED engineer gets (#2405). The row is already claimed and the pane is already in the worktree the
+ * claim created, so the order says both, names no command to run the claim and no directory but that worktree, and
+ * sends the engineer straight to building.
+ *
+ * @param {{ title?: string }} order @param {ClaimedRow} claimed
+ * @returns {string}
+ */
+export function spawnedPrompt(order, claimed) {
+  return `Row #${claimed.row}${order.title ? `: ${order.title}` : ""} has been claimed for you, and you are in its `
+    + `worktree \`${claimed.worktree}\` on branch \`${claimed.branch}\`. Build it here: read the row, then do the work `
+    + "in this directory. The claim was made before your process started, as your own session, so there is nothing "
+    + "left to claim.";
+}
+
 /**
  * @param {string} path @param {typeof readFileSync} [read]
  * @returns {Record<string, SpareInstance>}
@@ -3039,7 +3275,7 @@ function printCycles(ledgerPath) {
 }
 
 function main() {
-  refuseUnknownFlags(["--ledger", "--roster", "--cycles"], {
+  refuseUnknownFlags(["--ledger", "--roster", "--cycles", "--worktrees-dir"], {
     entry: import.meta.url, command: "node packages/agent-org/src/wake.mjs",
   });
   const ledgerPath = ledgerPathFrom(process.argv);
@@ -3048,6 +3284,9 @@ function main() {
   const emittedPath = `${dirname(ledgerPath)}/wake-emitted`;
   const queuePath = handoffQueuePath(ledgerPath);
   const roster = rosterFrom(process.argv);
+  // WHERE THE LINKED WORKTREES LIVE (#2405): the host's own directory unless a run names another, which is what lets a
+  // test drive this entry through PATH stubs without the claim creating `role-<name>` beside the real checkout.
+  const hostLayout = layoutUnder(flagValue(process.argv, "worktrees-dir") ?? HOST_REPOS);
 
   const orders = parseOrders(readFileSync(0, "utf8"));
   // A QUEUED ORDER IS WORK EVEN WHEN THE GATE FOUND NONE, and this is the line that makes it so. The
@@ -3101,6 +3340,7 @@ function main() {
   const { sent, refused: gateRefused, stuck } = deliver(todo, free, roster, { record,
     counts: deliveryCounts(ledgerPath), ineligibleReason: engineerEligibility({ drained }),
     registerSpawn: (role) => registerSpawn(spares, role), drained, claimable: spawnClaimability(),
+    claimer: spawnClaimer(hostLayout), launch: hostLayout,
     registerReviewer: (session) => registerReviewer(reviewerPathsFrom(ledgerPath), session),
     registry: () => readReviewerRegistry(reviewerPathsFrom(ledgerPath).registry) });
   const refused = [...handed.refused, ...gateRefused];
