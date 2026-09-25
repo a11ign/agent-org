@@ -13,8 +13,9 @@ import { PARITY, parityOwner } from "../review-attribution.mjs";
 const pr = (over: Partial<{ labels: string[]; checkRunCount: number }> = {}) =>
   ({ labels: [], checkRunCount: 9, ...over });
 
-// #2195: an off-parity approval must not queue the PR. #2079 (odd, so `reviewer`'s) was armed on `reviewer-2`'s
-// approval at 08:45:06Z and `reviewer`'s refusal arrived at 08:46:07Z, 61s after the queue entry.
+// #2195: an off-parity approval must not queue the PR. #2079 (odd, so `reviewer`'s under the odd/even split) was
+// armed on `reviewer-2`'s approval at 08:45:06Z and `reviewer`'s refusal arrived at 08:46:07Z, 61s after the queue
+// entry. Since #2401 the owner is `reviewer-<n>`, so the owner is read from `parityOwner` and never typed here.
 const PR_2079 = 2079;
 const OFF_PARITY = { parity: PARITY.violation, parityOwner: parityOwner(PR_2079), reviewedBy: ["reviewer-2"] };
 
@@ -22,7 +23,7 @@ test("#2195 ACCEPTANCE: a parity VIOLATION is refused, and the reason names the 
   const { arm, reason } = sweepDecision({ ...pr({ checkRunCount: 30 }), ...OFF_PARITY });
   assert.equal(arm, false);
   assert.match(reason, /`reviewer-2`/, "it must say who reviewed");
-  assert.match(reason, /`reviewer`/, "and who should have, or the author cannot re-prompt");
+  assert.ok(reason.includes(`\`${parityOwner(PR_2079)}\``), "and who should have, or the author cannot re-prompt");
 });
 
 test("#2195 CONTROL: `correct`, ABSENT and `unobservable` parity all still ARM -- only a violation refuses", () => {
