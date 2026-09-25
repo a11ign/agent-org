@@ -195,6 +195,17 @@ export const PROFILES = Object.freeze({
     why: "the act is one command; telling an unreviewed pull request from a refused one -- and a live "
       + "refusal from one posted at a head the author has already fixed -- is the judgment",
   }),
+  "awaiting-evidence-stale": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // MEDIUM. The act is reading a short list and routing each entry: to the row's owner for a wait nobody
+    // explained, to `orchestrator` when the run is a fleet or lab one, or nowhere when the evidence source
+    // turns out to be stated after all. There is no build, no verdict and no state to re-derive -- the order
+    // names the pull requests and the label's age -- so `high` would buy a longer look at a list.
+    effort: "medium",
+    why: "the act is routing a short list of stalled waits, and the order already carries the pull requests "
+      + "and the label's age",
+  }),
   "ready-queue-empty": Object.freeze({
     kind: "claude",
     model: "sonnet",

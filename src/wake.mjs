@@ -30,7 +30,9 @@
 // anyone for ten" hours. So an order with nowhere to go exits ATTENTION and names the session, every time.
 import { execFileSync, spawnSync } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
-import { readFileSync, writeFileSync, mkdirSync, realpathSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, realpathSync, existsSync, readdirSync, openSync, readSync, closeSync,
+  fstatSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 // RELATIVE, not the package specifier -- this must run before any `npm ci`/build, the same constraint
@@ -86,6 +88,195 @@ export const WAKEABLE = Object.freeze(["idle", "done"]);
  */
 export function blockedSessions(agents) {
   return agents.filter((a) => a.status === "blocked").map((a) => a.label);
+}
+
+// --- #2256: A SESSION OUT OF ALLOWANCE CANNOT ANSWER, SO A PROMPT SENT TO IT IS NOT A DELIVERY ---
+
+/**
+ * The line Claude Code writes as the session's own reply when the allowance is spent. MEASURED in the host's
+ * transcripts, two forms and one qualifier: `resets 8am (Europe/London)` (494 lines) and, when the reset is more than
+ * a day off, `resets Sep 17, 8am (Europe/London)` (1,171), both after `hit your weekly limit`. The qualifier is
+ * matched by SHAPE (`[\w-]+`), so a `session` or `5-hour` limit is read the same way but has NOT been seen.
+ * Anchored at both ends: a session QUOTING the sentence inside a paragraph (this row's own text does) is not limited.
+ */
+const LIMIT_MESSAGE = /^You[’']ve hit your (?:[\w-]+ )?limit · resets (?:([A-Z][a-z]{2}) (\d{1,2}), )?(\d{1,2})(?::(\d{2}))?(am|pm) \(([^)]+)\)$/;
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * How long a limit message whose reset time cannot be read still holds a session back. A matched message with an
+ * unreadable reset is a limited session all the same, so it is not offered work; but it must not hold for ever on a
+ * guess, and an hour is short beside the two it takes six deliveries to reach the cap.
+ */
+export const LIMIT_UNREADABLE_HOLD_MS = 60 * 60_000;
+
+/** How much of a transcript's end is read for its last entry: the limit line is a few hundred bytes. */
+const TRANSCRIPT_TAIL_BYTES = 64 * 1024;
+
+/**
+ * A zone's offset from UTC at an instant. `Intl` is the tz database the host already has; nothing here carries one.
+ * @param {number} instant @param {string} timeZone @returns {number} milliseconds
+ */
+function zoneOffsetMs(instant, timeZone) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone, hourCycle: "h23", year: "numeric",
+    month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric" })
+    .formatToParts(new Date(instant)).map((part) => [part.type, part.value]));
+  const wall = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second);
+  return wall - Math.floor(instant / 1000) * 1000;
+}
+
+/**
+ * The instant a wall-clock time falls on in a zone. `day` may overflow (`Date.UTC` carries it), and the offset is read
+ * a second time at the first answer, so a time either side of a clock change lands on the right side.
+ * @param {{year: number, month: number, day: number, hour: number, minute: number}} wall `month` is 0-based
+ * @param {string} timeZone @returns {number}
+ */
+function zonedInstant({ year, month, day, hour, minute }, timeZone) {
+  const asUtc = Date.UTC(year, month, day, hour, minute);
+  return asUtc - zoneOffsetMs(asUtc - zoneOffsetMs(asUtc, timeZone), timeZone);
+}
+
+/** @param {number} instant @param {string} timeZone @returns {{year: number, month: number, day: number}} */
+function dateInZone(instant, timeZone) {
+  const shifted = new Date(instant + zoneOffsetMs(instant, timeZone));
+  return { year: shifted.getUTCFullYear(), month: shifted.getUTCMonth(), day: shifted.getUTCDate() };
+}
+
+/**
+ * When a limit message says the allowance returns, as an instant -- or `null` when this is not a limit message or its
+ * time cannot be read. THE MESSAGE CARRIES NO YEAR AND, IN ITS SHORT FORM, NO DATE, so the instant it was WRITTEN is
+ * what fixes them: the first occurrence of that clock time after it. That is why the caller reads the transcript's
+ * timestamp and not the pane -- the same words a day later would name a different instant.
+ * @param {string} text @param {number} writtenAt epoch ms @returns {number | null}
+ */
+export function limitResetAt(text, writtenAt) {
+  const m = LIMIT_MESSAGE.exec(String(text).trim());
+  if (!m) return null;
+  const [, monthName, dayOfMonth, hour12, minute = "0", meridiem, timeZone] = m;
+  if (Number(hour12) < 1 || Number(hour12) > 12) return null;
+  const hour = (Number(hour12) % 12) + (meridiem === "pm" ? 12 : 0);
+  try {
+    const today = dateInZone(writtenAt, timeZone);
+    const at = (/** @type {object} */ date) => zonedInstant({ ...today, ...date, hour, minute: Number(minute) }, timeZone);
+    if (monthName) {
+      const month = MONTHS.indexOf(monthName);
+      if (month < 0) return null;
+      const dated = at({ month, day: Number(dayOfMonth) });
+      return dated > writtenAt ? dated : at({ year: today.year + 1, month, day: Number(dayOfMonth) });
+    }
+    const sameDay = at({});
+    return sameDay > writtenAt ? sameDay : at({ day: today.day + 1 });
+  } catch (/** @type {any} */ err) {
+    // An unknown zone name is the one thing `Intl` throws here; anything else is a bug and must not read as "no reset".
+    if (err instanceof RangeError) return null;
+    throw err;
+  }
+}
+
+/**
+ * The last thing said in a transcript, read from its end. Lines are JSON; the first line of a tail is usually cut and a
+ * line that does not parse is skipped, so a file being written cannot make this throw. Sub-agent (`isSidechain`) and
+ * bookkeeping entries are not the conversation.
+ * @param {string} path @returns {{role: string, text: string, at: number} | null}
+ */
+export function lastSaidIn(path) {
+  const fd = openSync(path, "r");
+  let tail;
+  try {
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
+    const buffer = Buffer.alloc(length);
+    readSync(fd, buffer, 0, length, size - length);
+    tail = buffer.toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+  for (const line of tail.split("\n").reverse()) {
+    /** @type {any} */ let entry;
+    try { entry = JSON.parse(line); } catch { continue; } // a cut or half-written line: not an entry
+    if ((entry?.type !== "user" && entry?.type !== "assistant") || entry.isSidechain) continue;
+    const content = entry.message?.content;
+    const text = typeof content === "string" ? content
+      : (Array.isArray(content) ? content.map((/** @type {any} */ c) => (c?.type === "text" ? c.text : "")).join("") : "");
+    return { role: entry.type, text, at: Date.parse(entry.timestamp) };
+  }
+  return null;
+}
+
+/** @param {string} sessionId @param {string} home @returns {string | null} the transcript, wherever its project directory is */
+function transcriptOf(sessionId, home) {
+  const root = join(home, ".claude", "projects");
+  for (const dir of readdirSync(root)) {
+    const candidate = join(root, dir, `${sessionId}.jsonl`);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+/** herdr's own id for a claude session is the transcript's file name; nothing else is let into a path. */
+const SESSION_ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+
+/**
+ * Whether a session can answer a prompt now. THREE STATES, and they never share a value: `limited` (its last word is
+ * a limit message whose reset has not come), `clear`, and `unknown` (could not ask: herdr, the file or the JSON said
+ * no). `unknown` is NOT `clear` here -- {@link unavailableReason} collapses them on purpose, and says why.
+ *
+ * READ FROM THE TRANSCRIPT, not the pane: it is the only place the message has a TIME (see {@link limitResetAt}), and
+ * a session whose allowance has since come back still shows the old message on screen until something is typed to
+ * it -- which is exactly what a refusal would be withholding. A session that answered anything after the message has
+ * that answer last, so it reads `clear` with no clock at all.
+ *
+ * @param {string} label @param {{run?: (args: string[]) => string, home?: string, now?: number}} [deps]
+ * @returns {{state: "limited", until: number, text: string} | {state: "clear"} | {state: "unknown", why: string}}
+ */
+export function sessionAllowance(label, { run = defaultRun, home = homedir(), now = Date.now() } = {}) {
+  try {
+    return allowanceOf(JSON.parse(run(["--session", "org", "agent", "get", label]))?.result?.agent, home, now);
+  } catch (/** @type {any} */ err) {
+    return { state: "unknown", why: firstLine(err) };
+  }
+}
+
+/**
+ * @param {any} agent what `herdr agent get` says of the session @param {string} home @param {number} now
+ * @returns {ReturnType<typeof sessionAllowance>}
+ */
+function allowanceOf(agent, home, now) {
+  if (agent?.agent !== "claude") return { state: "clear" }; // a `codex` reviewer has another allowance and another message
+  const id = String(agent?.agent_session?.value ?? "");
+  if (!SESSION_ID.test(id)) return { state: "unknown", why: "herdr names no session id" };
+  const said = lastSaidBy(id, home);
+  if (said === null || !LIMIT_MESSAGE.test(said.text)) return { state: "clear" };
+  const until = limitResetAt(said.text, said.at) ?? (said.at + LIMIT_UNREADABLE_HOLD_MS);
+  return until > now ? { state: "limited", until, text: said.text } : { state: "clear" };
+}
+
+/**
+ * What a session last said, as an ASSISTANT: `null` when it has no transcript yet (it has said nothing, so it has not
+ * been told no) or when the last thing in it is not the session's own reply (a prompt in flight, or an answer to one).
+ * @param {string} sessionId @param {string} home @returns {{text: string, at: number} | null}
+ */
+function lastSaidBy(sessionId, home) {
+  const path = transcriptOf(sessionId, home);
+  const said = path === null ? null : lastSaidIn(path);
+  return said?.role === "assistant" ? { text: said.text.trim(), at: said.at } : null;
+}
+
+/**
+ * The reason a session is not to be sent a prompt because it is out of allowance, or `null`.
+ *
+ * `unknown` COLLAPSES TO `null` DELIBERATELY: not being able to ask leaves the delivery exactly as it was before this
+ * existed, which is the safe direction here -- a wrong "limited" would strand work behind a session that is well, a
+ * wrong "clear" costs one prompt. It is the tri-state above that keeps the two apart for a reader who needs to.
+ *
+ * @param {string} label @param {Parameters<typeof sessionAllowance>[1]} [deps] @returns {string | null}
+ */
+export function unavailableReason(label, deps) {
+  const allowance = sessionAllowance(label, deps);
+  return allowance.state === "limited"
+    ? `"${label}" is out of usage allowance until ${new Date(allowance.until).toISOString()} ("${allowance.text}") `
+      + "-- nothing sent and nothing counted as a delivery"
+    : null;
 }
 
 /** @param {string[]} args */
@@ -1312,6 +1503,15 @@ function deliveredId(entry) {
 }
 
 /**
+ * A DROP IS A LINE OF ITS OWN TOO, AND IT IS NOT A DELIVERY (#2459). See {@link recordDrop}.
+ * @param {unknown} entry @returns {string | null} the id this line retires as DROPPED, or `null`
+ */
+function droppedId(entry) {
+  const id = /** @type {any} */ (entry)?.dropped;
+  return typeof id === "string" ? id : null;
+}
+
+/**
  * Every order still waiting in the queue: the file REPLAYED IN ORDER, not filtered.
  *
  * THE FILE IS A LOG AND THIS IS ITS FOLD, which is what lets {@link dropHandoffs} append instead of
@@ -1346,8 +1546,8 @@ export function readHandoffs(path, read = readFileSync) {
     const text = line.trim();
     if (!text) continue;
     const entry = JSON.parse(text);
-    const delivered = deliveredId(entry);
-    if (delivered !== null) { byId.delete(delivered); continue; }
+    const retired = deliveredId(entry) ?? droppedId(entry);
+    if (retired !== null) { byId.delete(retired); continue; }
     if (typeof entry.id !== "string" || typeof entry.session !== "string"
       || typeof entry.prompt !== "string") {
       throw new Error(`wake: queued order is missing id/session/prompt: ${text.slice(0, 120)}`);
@@ -1544,30 +1744,328 @@ export function handoffBacklog(handoffs, now = Date.now()) {
  * repo's Assertions rule -- the positive control is `handoffBacklog`'s own non-empty case, pinned beside
  * it).
  *
+ * A TARGET THAT DOES NOT EXIST IS NOT A TARGET THAT IS NEVER IDLE (#2459). Given the live `agents`, a row whose
+ * session has no workspace says so, and the stalled-inbox warning -- true only of a session that EXISTS -- is
+ * replaced by what is true of one that does not. Without `agents` (herdr did not answer) nothing is known
+ * about any target, and the report reads as it always did.
+ *
  * @param {readonly {session: string, waiting: number, oldestMs: number, stale: number,
  *   decisions?: number}[]} backlog
+ * @param {readonly {label: string}[] | null} [agents]
  * @returns {string[]}
  */
-export function backlogReport(backlog) {
+export function backlogReport(backlog, agents = null) {
   if (backlog.length === 0) return [];
   const lines = backlog.map((b) => `QUEUE BACKLOG ${b.session}: ${b.waiting} authored order(s) waiting, `
     + `oldest ${waitedFor(b.oldestMs)}`
     + (b.stale > 0 ? `, ${b.stale} over ${Math.round(HANDOFF_STALE_MS / 3_600_000)}h` : "")
     + (b.decisions ? `, ${b.decisions} declared as asking for a decision` : "")
+    + (agents !== null && isAbsent(b.session, agents) ? `, NO workspace is labelled "${b.session}"` : "")
     + "\n");
   const worst = backlog[0];
   if (worst.stale === 0) return lines;
-  // THE ONE THING A COUNT DOES NOT SAY. Delivery is gated on the TARGET being between tasks, so a target
-  // that is never between tasks holds its inbox for ever and no amount of ticking changes that. Nothing
-  // here is dropped and nothing here is forced -- #1966's measurement is that forcing a delivery into a
-  // working session wipes what it was doing -- so the only thing that clears a stalled inbox is that
-  // session finishing a turn, or somebody noticing it never does.
-  lines.push(`QUEUE BACKLOG: "${worst.session}" has held an order for ${waitedFor(worst.oldestMs)}. `
+  lines.push(agents !== null && isAbsent(worst.session, agents) ? absentAdvice(worst) : stalledInboxAdvice(worst));
+  return lines;
+}
+
+/**
+ * THE ONE THING A COUNT DOES NOT SAY. Delivery is gated on the TARGET being between tasks, so a target
+ * that is never between tasks holds its inbox for ever and no amount of ticking changes that. Nothing
+ * here is dropped and nothing here is forced -- #1966's measurement is that forcing a delivery into a
+ * working session wipes what it was doing -- so the only thing that clears a stalled inbox is that
+ * session finishing a turn, or somebody noticing it never does.
+ * @param {{session: string, oldestMs: number}} worst @returns {string}
+ */
+function stalledInboxAdvice(worst) {
+  return `QUEUE BACKLOG: "${worst.session}" has held an order for ${waitedFor(worst.oldestMs)}. `
     + "An authored order is delivered only when the gate judges its target BETWEEN TASKS, so a session "
     + "that is never idle never receives one, and nothing here overrides that -- forcing a delivery into "
     + "a working session wipes what it was mid-way through (#1966). If this repeats, that session's "
-    + "inbox is not being read: route around it, or stop sending it reports it does not need.\n");
-  return lines;
+    + "inbox is not being read: route around it, or stop sending it reports it does not need.\n";
+}
+
+/**
+ * WHAT IS TRUE OF A SESSION THAT IS NOT THERE: it has no inbox, so nobody is failing to read one. And the order is
+ * KEPT, because absent is not ended -- see {@link targetState}.
+ * @param {{session: string, oldestMs: number}} worst @returns {string}
+ */
+function absentAdvice(worst) {
+  return `QUEUE BACKLOG: no session is labelled "${worst.session}", so its order (waiting ${waitedFor(worst.oldestMs)}) `
+    + "has no addressee -- this is NOT a busy session's unread inbox. It is KEPT rather than dropped, because "
+    + "the tick has no record that this session ended: it may be an instance the gate has not started yet "
+    + "(a reviewer is started AFTER an order for it can already be queued), or one that was closed without "
+    + "a teardown. If it is neither, re-send the order to whoever holds the row it names.\n";
+}
+
+// --- #2459: AN ORDER TO A SESSION THAT HAS ENDED HAS NO ADDRESSEE, AND THE QUEUE USED TO KEEP IT FOR EVER ---
+//
+// Measured 2026-09-25 (#2459): an order for `worker-12` sat 7.1h and the tick said, every time, that a busy
+// session's inbox was not being read. `worker-12` had been TORN DOWN -- engineer instances are one per row
+// (#2323) -- so there was no inbox, and `route` refused it with `no workspace labelled` on every tick. Keeping
+// an order for a session that is busy is right (#1966: forcing a delivery wipes the work it interrupts); a
+// session that does not exist has nothing to wipe, and the same rule had been applied to it anyway.
+//
+// THREE TARGETS, THREE OUTCOMES ({@link targetState}): a session that exists is delivered to when it is between
+// tasks, as before; one that ENDED is re-addressed or dropped, with a record, on the first tick that sees it gone;
+// and one that is merely ABSENT stays queued, because absent is not ended.
+
+/**
+ * The session that wrote an order, from the line `prompt-session` puts in front of every prompt
+ * ({@link attributed} in that file), or `null` when the order names nobody.
+ * @param {string} prompt @returns {string | null}
+ */
+export function authorOf(prompt) {
+  const found = /^Sent to you by `([^`]+)`/.exec(prompt);
+  return found === null ? null : found[1];
+}
+
+/**
+ * The reviewer instances' endings, from `reviewer-endings`: one JSON line per instance {@link endFinishedReviewers}
+ * closed. A missing file is no endings. A LINE THAT CANNOT BE PARSED IS SKIPPED, the opposite of the spare ledger's
+ * rule and for the opposite reason: that file counts failures, so an unreadable line must count against it; this
+ * one is EVIDENCE OF AN ENDING, and an unreadable line cannot establish one -- an order is only ever dropped on
+ * evidence that was read.
+ * @param {string} path @param {typeof readFileSync} [read]
+ * @returns {{session: string, at: string}[]}
+ */
+export function readReviewerEndings(path, read = readFileSync) {
+  let text;
+  try {
+    text = String(read(path, "utf8"));
+  } catch (err) {
+    if (/** @type {any} */ (err)?.code === "ENOENT") return [];
+    throw err;
+  }
+  return text.split("\n").filter((line) => line.trim() !== "").flatMap((line) => {
+    try {
+      return [JSON.parse(line)];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/**
+ * WHICH LABELS ARE KNOWN TO HAVE ENDED, and when -- the signal this row names: a TORN-DOWN INSTANCE'S RECORD.
+ * `cycles` is the spare ledger (one line per engineer instance {@link endFinishedSpares} closed) and `endings` is
+ * the reviewer ledger; each is written by the teardown at the moment it closes a workspace, so a line is a fact
+ * that the instance existed and was ended on purpose. It costs two local file reads and NO API call.
+ *
+ * A LABEL THAT STARTED AGAIN IS NOT ENDED. Spare labels are reused (`nextSpareLabel`), and `registries` hold what
+ * each start path has registered and not yet ended: an entry stamped at or after the ending is a later instance
+ * under the same name, and the label leaves the map. (`registerSpawn` stamps a failed cycle and the new entry with
+ * the same `now`, which is why the comparison is `>=`.)
+ *
+ * WHAT IS NOT IN THE MAP, ON PURPOSE: a label that was never started (`reviewer-<n>` before the gate starts it),
+ * and one registered and then missing with no ending -- closed by hand or crashed, which is a failed cycle for
+ * the ledger to say and not a fact this function may act on.
+ *
+ * @param {{cycles: {role: string, at: number}[], endings: {session: string, at: string}[],
+ *   registries: Record<string, {spawnedAt: number}>[]}} evidence
+ * @returns {Map<string, number>} label -> when its latest ending was recorded (ms)
+ */
+export function endedSessions({ cycles, endings, registries }) {
+  /** @type {Map<string, number>} */
+  const ended = new Map();
+  /** @param {unknown} label @param {number} at */
+  const note = (label, at) => {
+    if (typeof label !== "string" || label === "?" || !Number.isFinite(at)) return;
+    if (at > (ended.get(label) ?? -Infinity)) ended.set(label, at);
+  };
+  for (const cycle of cycles) note(cycle.role, Number(cycle.at));
+  for (const ending of endings) note(ending.session, Date.parse(ending.at));
+  for (const registry of registries) {
+    for (const [label, started] of Object.entries(registry)) {
+      if (started.spawnedAt >= (ended.get(label) ?? Infinity)) ended.delete(label);
+    }
+  }
+  return ended;
+}
+
+/**
+ * The ended labels, read from the state beside the ledger. THROWS on an unreadable file, and the tick treats that
+ * as "no evidence": nothing is dropped on a reading that could not be made.
+ * @param {string} ledgerPath @param {typeof readFileSync} [read] @returns {Map<string, number>}
+ */
+export function endedSessionsAt(ledgerPath, read = readFileSync) {
+  const spares = sparePathsFrom(ledgerPath);
+  const reviewers = reviewerPathsFrom(ledgerPath);
+  return endedSessions({
+    cycles: readSpareCycles(spares.cycles, read),
+    endings: readReviewerEndings(reviewers.endings, read),
+    registries: [readSpareRegistry(spares.registry, read), readReviewerRegistry(reviewers.registry)],
+  });
+}
+
+/**
+ * ABSENT IS NOT ENDED, and this is the whole trap (#2459 done-when 4). `live`: the workspace exists, so
+ * {@link route} decides -- delivered between tasks, refused while busy, exactly as before. `ended`: it does not
+ * exist AND a teardown recorded that it was closed. `absent`: it does not exist and nothing says it ever did --
+ * `reviewer-<n>` is started by the gate AFTER an order for it may already be queued, so treating every missing
+ * label as ended would drop a reviewer's first order.
+ *
+ * `engineers` is the pool, never a label of its own, and `route` resolves it.
+ *
+ * @param {string} session @param {readonly {label: string}[]} agents @param {ReadonlyMap<string, number>} ended
+ * @returns {"live" | "ended" | "absent"}
+ */
+export function targetState(session, agents, ended) {
+  if (!isAbsent(session, agents)) return "live";
+  return ended.has(session) ? "ended" : "absent";
+}
+
+/** @param {string} session @param {readonly {label: string}[]} agents @returns {boolean} */
+function isAbsent(session, agents) {
+  return session !== "engineers" && !agents.some((a) => a.label === session);
+}
+
+/**
+ * The rows and pull requests an order names, as `#<n>`, first appearance first. A bare `#<n>` only: a hash inside a
+ * word, a path or a URL fragment is not a reference.
+ * @param {string} prompt @returns {number[]}
+ */
+export function namedRefs(prompt) {
+  return [...new Set([...prompt.matchAll(/(?<![\w/&#])#([1-9][0-9]*)\b/g)].map((m) => Number(m[1])))];
+}
+
+/** How many of an order's references are looked up: the order names its subject early, and every lookup is an API call. */
+const MAX_REFS_LOOKED_UP = 3;
+
+/**
+ * WHO NOW HOLDS WHAT THE ORDER IS ABOUT, or why nobody does. The order's first references are asked of
+ * `holder` -- an OPEN row or pull request carrying a `session:` label naming a session that is live -- and the first
+ * to have one is where the order goes. A reference that is closed, or held by nobody live, is skipped.
+ *
+ * A LOOKUP THAT CANNOT ASK ENDS NOTHING: `holder` answers `null` for a GitHub that would not say, and that is
+ * `unknown`, never `none` -- an order is dropped only when GitHub said nobody holds what it names.
+ *
+ * @param {{session: string, prompt: string}} order @param {readonly {label: string}[]} agents
+ * @param {(ref: number) => {open: boolean, sessions: string[]} | null} holder
+ * @returns {{to: string, ref: number} | {none: true, looked: number[]} | {unknown: string}}
+ */
+function readdress(order, agents, holder) {
+  const refs = namedRefs(order.prompt).slice(0, MAX_REFS_LOOKED_UP);
+  for (const ref of refs) {
+    const facts = holder(ref);
+    if (facts === null) return { unknown: `could not read who holds #${ref}` };
+    const to = facts.open ? facts.sessions.find((s) => s !== order.session && !isAbsent(s, agents)) : undefined;
+    if (to !== undefined) return { to, ref };
+  }
+  return { none: true, looked: refs };
+}
+
+/**
+ * Retire one order as DROPPED, by APPENDING that it was -- never a `delivered` line, because nothing was delivered,
+ * and never a rewrite of the log (see {@link dropHandoffs}: no writer removes a line another writer wrote).
+ * The record carries what a later reader needs to tell it from a delivery and to act on it: the order id, the
+ * target, the age, the reason, the author when the order names one, where it went, and -- when it went nowhere --
+ * THE PROMPT ITSELF, so a drop loses no text. {@link readHandoffs} folds it, so the order stops counting as waiting.
+ *
+ * @param {string} path
+ * @param {{id: string, session: string, prompt: string, queuedAt?: number}} order
+ * @param {{reason: string, reroutedTo?: string}} why
+ * @param {{write?: typeof writeFileSync, now?: number}} [io]
+ */
+export function recordDrop(path, order, { reason, reroutedTo }, { write = writeFileSync, now = Date.now() } = {}) {
+  const queuedAt = Number(order.queuedAt ?? now);
+  const record = { dropped: order.id, session: order.session, author: authorOf(order.prompt), queuedAt,
+    ageMs: Math.max(0, now - queuedAt), at: now, reason, reroutedTo: reroutedTo ?? null,
+    prompt: reroutedTo === undefined ? order.prompt : null };
+  write(path, `${JSON.stringify(record)}\n`, { flag: "a" });
+}
+
+/**
+ * @typedef {{agents: readonly {label: string}[], ended: ReadonlyMap<string, number>,
+ *   holder: (ref: number) => {open: boolean, sessions: string[]} | null, queuePath: string,
+ *   write?: typeof writeFileSync, now?: number}} EndedDeps
+ */
+
+/**
+ * RESOLVE EVERY ORDER WHOSE TARGET HAS ENDED, on the first tick that sees the target gone (#2459 done-when 1c), by
+ * re-addressing it to the live session that holds what it names, else dropping it with a record. Anything else is
+ * left exactly as it was: a live target, an absent one, and an ended one whose holder could not be read.
+ *
+ * THE NEW ORDER IS WRITTEN BEFORE THE OLD ONE IS RETIRED, so a crash between the two leaves the order twice --
+ * visible, and harmless to whoever reads it -- and never zero times, which is the defect this queue exists to
+ * remove. The re-addressed order keeps its `queuedAt` and its `decision`: the wait is still measured from when
+ * the author first asked, and an ask stays an ask.
+ *
+ * @param {readonly {id: string, session: string, prompt: string, queuedAt?: number, decision?: boolean}[]} handoffs
+ * @param {EndedDeps} deps
+ * @returns {{settled: string[], lines: string[]}} the ids no longer waiting, and what to say about each order touched
+ */
+export function resolveEndedHandoffs(handoffs, deps) {
+  /** @type {Map<number, {open: boolean, sessions: string[]} | null>} */
+  const asked = new Map();
+  // ONE LOOKUP PER REFERENCE PER TICK: fifty orders naming one row are one question.
+  const holder = (/** @type {number} */ ref) => {
+    if (!asked.has(ref)) asked.set(ref, deps.holder(ref));
+    return asked.get(ref) ?? null;
+  };
+  /** @type {string[]} */
+  const settled = [];
+  /** @type {string[]} */
+  const lines = [];
+  for (const order of handoffs) {
+    if (targetState(order.session, deps.agents, deps.ended) !== "ended") continue;
+    const outcome = readdress(order, deps.agents, holder);
+    const line = settle(order, outcome, deps);
+    lines.push(line.said);
+    if (line.done) settled.push(order.id);
+  }
+  return { settled, lines };
+}
+
+/**
+ * Carry out one order's outcome, and say it. The line NAMES THE TARGET AS GONE -- never as busy -- and says what was
+ * done about the order, who wrote it, and how long it waited.
+ * @param {{id: string, session: string, prompt: string, queuedAt?: number, decision?: boolean}} order
+ * @param {ReturnType<typeof readdress>} outcome @param {EndedDeps} deps
+ * @returns {{done: boolean, said: string}}
+ */
+function settle(order, outcome, deps) {
+  const now = deps.now ?? Date.now();
+  const io = { write: deps.write, now };
+  const author = authorOf(order.prompt);
+  const gone = `"${order.session}" has ENDED (torn down ${new Date(deps.ended.get(order.session) ?? 0).toISOString()}), `
+    + `so order ${order.id}${author === null ? "" : ` from "${author}"`} (waited ${waitedFor(now - Number(order.queuedAt ?? now))}) has no addressee`;
+  if ("unknown" in outcome) {
+    return { done: false, said: `ENDED SESSION, ORDER KEPT ${order.id}: ${gone}; ${outcome.unknown}, so it is `
+      + "neither re-addressed nor dropped and is asked again next tick.\n" };
+  }
+  if ("to" in outcome) {
+    const entry = queueHandoff(deps.queuePath, { session: outcome.to, decision: order.decision === true,
+      prompt: `${order.prompt}\n\n(Re-addressed by the tick: this was written for "${order.session}", which has ended. `
+        + `You hold #${outcome.ref}, which it names.)`, now: Number(order.queuedAt ?? now), write: deps.write });
+    recordDrop(deps.queuePath, order, { reason: `target ended; re-addressed to the holder of #${outcome.ref}`,
+      reroutedTo: outcome.to }, io);
+    return { done: true, said: `RE-ADDRESSED ${order.id}: ${gone}. #${outcome.ref} is held by live "${outcome.to}", `
+      + `so it now waits there as ${entry.id}.\n` };
+  }
+  const named = outcome.looked.length === 0 ? "names no row or pull request"
+    : `names ${outcome.looked.map((n) => `#${n}`).join(", ")}, none open and held by a live session`;
+  recordDrop(deps.queuePath, order, { reason: `target ended; the order ${named}` }, io);
+  return { done: true, said: `DROPPED ${order.id}: ${gone}, and it ${named}. It is retired with a record `
+    + "(`dropped`, carrying its text), not as a delivery.\n" };
+}
+
+/**
+ * Who holds a row or pull request, from GitHub's REST issue read (which answers for both, and spends the CORE pool
+ * rather than GRAPHQL). `null` for anything GitHub would not say; a reference that does not exist is CLOSED and
+ * held by nobody, because an order mentioning `#99999` in prose must not be kept for ever by a 404.
+ * @param {number} ref @param {(args: string[]) => string} [run]
+ * @returns {{open: boolean, sessions: string[]} | null}
+ */
+export function holderOf(ref, run = defaultGh) {
+  try {
+    const read = JSON.parse(run(["api", `repos/${REPO}/issues/${ref}`, "--jq", "{state, labels: [.labels[].name]}"]));
+    const sessions = /** @type {string[]} */ (read.labels).filter((l) => l.startsWith("session:"))
+      .map((l) => l.slice("session:".length)).sort();
+    return { open: read.state === "open", sessions };
+  } catch (err) {
+    return /HTTP 404|Not Found/.test(String(/** @type {any} */ (err)?.stderr ?? /** @type {any} */ (err)?.message))
+      ? { open: false, sessions: [] } : null;
+  }
 }
 
 /**
@@ -1907,17 +2405,17 @@ function batchedOrder(take, held, now) {
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster
  * @param {{run?: (args: string[]) => string, queuePath?: string, drop?: typeof dropHandoffs,
- *          now?: number, budget?: number}} [deps]
+ *          now?: number, budget?: number, unavailable?: (label: string) => string | null}} [deps]
  * @returns {{sent: string[], refused: string[], ids: string[], busied: Set<string>}} `ids` is every
  *   order a delivery CARRIED, which is what the caller subtracts before calling anything still stale.
  */
 export function deliverHandoffs(handoffs, agents, roster,
   { run = defaultRun, queuePath, drop = dropHandoffs, now = Date.now(),
-    budget = HANDOFF_BATCH_BYTES } = {}) {
+    budget = HANDOFF_BATCH_BYTES, unavailable } = {}) {
   const batches = handoffBatches(handoffs, { now, budget, roster });
   /** @type {string[]} */
   const landed = [];
-  const { sent, refused } = deliver(batches, agents, roster, { run, record: (key) => landed.push(key) });
+  const { sent, refused } = deliver(batches, agents, roster, { run, record: (key) => landed.push(key), unavailable });
   // THE BATCH IS WHAT WAS ACCEPTED; THE IDS ARE WHAT IT COVERED. `record` fires on the causeKey, because
   // that is the seam `deliver` offers, so the ids to retire come back through the batch that carried
   // them -- and a batch nobody accepted retires nothing, which is the assertion this whole queue is for.
@@ -2011,7 +2509,8 @@ export function ledgerLine(at, key, recipient, noClear = false) {
 /**
  * The causeKey out of what follows a ledger line's timestamp, WHATEVER ELSE THE LINE CARRIES (#2226).
  *
- * A line is `<epochMs>\t<causeKey>[\t<recipient>]`, or `<epochMs>\tRESET\t<causeKey>`. The recipient is
+ * A line is `<epochMs>\t<causeKey>[\t<recipient>]`, or `<epochMs>\tRESET\t<causeKey>` or
+ * `<epochMs>\tESCALATED\t<causeKey>` (the two markers). The recipient is
  * evidence and never identity: a reader that took everything after the first tab as the key would count
  * `k\tworker-judge` and `k\tworker-tooling` as two causes, and the dedupe this ledger exists for would go.
  * @param {string} rest
@@ -2019,7 +2518,7 @@ export function ledgerLine(at, key, recipient, noClear = false) {
  */
 export function ledgerKeyOf(rest) {
   const fields = rest.split("\t");
-  return fields[0] === RESET ? fields.slice(0, 2).join("\t") : fields[0];
+  return fields[0] === RESET || fields[0] === ESCALATED ? fields.slice(0, 2).join("\t") : fields[0];
 }
 
 /**
@@ -2230,6 +2729,7 @@ export function deliveryCounts(path, read = readFileSync) {
     // stays append-only, so what happened is still readable -- six deliveries, a reset, then two more
     // says something a bare `2` cannot.
     if (key.startsWith(`${RESET}\t`)) { counts.set(key.slice(RESET.length + 1), 0); continue; }
+    if (key.startsWith(`${ESCALATED}\t`)) continue; // an alarm is not a delivery -- see `escalatedKeys`
     // A QUIET SPELL ALSO ENDS A RUN -- see `RUN_IDLE_RESET_MS`.
     const at = tab < 0 ? NaN : Number(text.slice(0, tab));
     counts.set(key, startsNewRun(at, lastAt.get(key)) ? 1 : (counts.get(key) ?? 0) + 1);
@@ -2246,6 +2746,51 @@ export function deliveryCounts(path, read = readFileSync) {
  * removed the evidence for the next diagnosis.
  */
 export const RESET = "RESET";
+
+/**
+ * The marker that says a run's breaker trip has been ESCALATED. A ledger line is `<epochMs>\tESCALATED\t<causeKey>`.
+ *
+ * WHY THE LEDGER: it is already the append-only record of what the org was told, `RESET` already ends a run in it,
+ * and a marker beside `RESET` costs no `gh` call. The alternative -- reading the label's removal from the row's
+ * events -- costs a call per escalated row per tick and cannot tell the gate's own removal from a person's.
+ */
+export const ESCALATED = "ESCALATED";
+
+/**
+ * The causeKeys already escalated IN THEIR CURRENT RUN, and so not to be labelled again (#2462).
+ *
+ * Removing `needs:chairman` is the act of clearing (`escalateStuck`), and the gate read it as nothing: the count
+ * that tripped the breaker is still at the cap and the cause is still emitted, so the next tick labelled the row
+ * again. Measured 2026-09-25: #2451, #2258 and #2223 were re-labelled 28 s, 27 s and 26 s after a person removed
+ * the label. The state after removal is exactly the state before it, so the only thing that can tell the two
+ * apart is a record that the first escalation happened.
+ *
+ * A RUN ENDS THE MARK. A `RESET` (`endedRuns`: the cause stopped being emitted) removes it, and so does any
+ * ordinary delivery line after it -- a key at the cap is not delivered, so a delivery means the run began again.
+ * A CHANGED causeKey is a different key and was never marked, which is the whole "until the cause changes" of it.
+ *
+ * @param {string} path @param {(p: any, enc: any) => any} [read] @returns {Set<string>}
+ */
+export function escalatedKeys(path, read = readFileSync) {
+  /** @type {Set<string>} */
+  const escalated = new Set();
+  let raw;
+  try {
+    raw = String(read(path, "utf8"));
+  } catch (err) {
+    if (/** @type {any} */ (err)?.code === "ENOENT") return escalated;
+    throw err;
+  }
+  for (const line of raw.split("\n")) {
+    const tab = line.trim().indexOf("\t");
+    if (tab < 0) continue;
+    const key = ledgerKeyOf(line.trim().slice(tab + 1));
+    if (key.startsWith(`${ESCALATED}\t`)) escalated.add(key.slice(ESCALATED.length + 1));
+    else if (key.startsWith(`${RESET}\t`)) escalated.delete(key.slice(RESET.length + 1));
+    else escalated.delete(key);
+  }
+  return escalated;
+}
 
 /**
  * The causeKeys whose RUN OF DELIVERIES HAS ENDED -- emitted on the previous tick, absent from this one.
@@ -2353,14 +2898,30 @@ export function stuckRowOf(causeKey) {
 }
 
 /**
- * Label every stuck cause's row `needs:chairman`, and say which could not be.
+ * Label every stuck cause's row `needs:chairman`, ONCE PER RUN, and say which could not be.
  *
- * FAILS OPEN AND LOUD: a `gh` refusal is reported, never swallowed. The alternative -- a breaker whose
- * alarm silently fails -- is the exact shape being fixed.
+ * ONCE PER RUN, BECAUSE REMOVING THE LABEL IS AN ANSWER (#2462). A person who removes `needs:chairman` has read the
+ * escalation; the key is still at the cap and still emitted, so without a memory of having escalated it the next
+ * tick labelled the row again 28 s later. `escalated` is that memory (`escalatedKeys`) and `record` writes it. The
+ * count question, answered: removal LEAVES THE KEY CAPPED AND SILENT until the causeKey changes or the cause stops
+ * being emitted (`RESET`), rather than resetting the count. A reset would offer the same unchanged cause to the
+ * sessions that already failed to act on it six times, for two more hours, on the strength of an answer that named
+ * no change; the person who wants it offered again ends the run by hand with a `RESET` line.
+ *
+ * FAILS OPEN AND LOUD: a `gh` refusal is reported, never swallowed, and NOT recorded -- so the next tick tries again.
+ * The alternative -- a breaker whose alarm silently fails -- is the exact shape being fixed.
  *
  * @param {string[]} stuck @param {(args: string[]) => string} run @param {(line: string) => void} log
+ *
+ * NOT WHEN THE SESSION CANNOT ANSWER (#2256). A cause's key opens with the session it was addressed to, and one whose
+ * session is out of allowance NOW is not a stuck row: `unavailable` says so, the line goes to the tick log INSTEAD of
+ * to the row, and nothing is recorded, so the same key escalates the tick after the session is back if it is still at
+ * the cap. `engineers` is a pool, not a session, and is not asked.
+ *
+ * @param {{escalated?: Set<string>, record?: (key: string) => void, unavailable?: (label: string) => string | null}} [memory]
  */
-export function escalateStuck(stuck, run = defaultGh, log = (l) => process.stderr.write(l)) {
+export function escalateStuck(stuck, run = defaultGh, log = (l) => process.stderr.write(l),
+  { escalated = new Set(), record = () => {}, unavailable = () => null } = {}) {
   const labelled = [];
   for (const line of stuck ?? []) {
     const key = String(line).split(":")[0];
@@ -2369,15 +2930,50 @@ export function escalateStuck(stuck, run = defaultGh, log = (l) => process.stder
       log(`STUCK ${line} -- names no row, so it cannot be escalated by label; read the key\n`);
       continue;
     }
+    if (escalated.has(key)) {
+      log(`ALREADY ESCALATED #${row} (${key}) -- a removed label is an answer; it stays off until the cause changes\n`);
+      continue;
+    }
+    const outage = outageOf(key, unavailable);
+    if (outage !== null) {
+      log(`NOT ESCALATED #${row} (${key}) -- ${outage}; a session that cannot answer is not a row that needs a chairman\n`);
+      continue;
+    }
     try {
       run(["issue", "edit", String(row), "--add-label", CHAIRMAN_LABEL]);
       labelled.push(row);
       log(`ESCALATED #${row} -> ${CHAIRMAN_LABEL} (cause offered ${MAX_DELIVERIES}+ times, still true)\n`);
     } catch (/** @type {any} */ err) {
       log(`COULD NOT ESCALATE #${row}: ${String(err?.message ?? err).split("\n")[0].slice(0, 90)}\n`);
+      continue;
     }
+    recordEscalation(key, row, record, log);
   }
   return labelled;
+}
+
+/**
+ * Why the session a cause was addressed to cannot answer now, or `null`. A key opens with that session; `engineers` is
+ * the pool and names none.
+ * @param {string} key @param {(label: string) => string | null} unavailable @returns {string | null}
+ */
+function outageOf(key, unavailable) {
+  const session = key.split("/")[0];
+  return session === "engineers" ? null : unavailable(session);
+}
+
+/**
+ * Write down that `key` was escalated. A ledger that cannot be written (ENOSPC took the host's tools for three hours
+ * on 2026-09-25) means the next tick labels again, so that is said rather than swallowed.
+ * @param {string} key @param {number} row @param {(key: string) => void} record @param {(line: string) => void} log
+ */
+function recordEscalation(key, row, record, log) {
+  try {
+    record(key);
+  } catch (/** @type {any} */ err) {
+    log(`COULD NOT RECORD the escalation of #${row}, so the next tick labels it again: `
+      + `${String(err?.message ?? err).split("\n")[0].slice(0, 90)}\n`);
+  }
 }
 
 /**
@@ -2593,6 +3189,16 @@ function clearUnlessStarted(run, target, causeKey, refused) {
 }
 
 /**
+ * Why this target cannot answer now, or `null`. A process this tick STARTED has a fresh allowance question no
+ * transcript can answer yet, so it is not asked (#2256).
+ * @param {{label: string, profile?: object}} target @param {((label: string) => string | null) | undefined} unavailable
+ * @returns {string | null}
+ */
+function whyUnavailable(target, unavailable) {
+  return target.profile ? null : (unavailable?.(target.label) ?? null);
+}
+
+/**
  * Deliver each order, and say what happened to every one of them.
  *
  * REPORTS BEFORE IT RECORDS. An order is written to the ledger only once herdr has accepted it, so a crash
@@ -2606,8 +3212,9 @@ function clearUnlessStarted(run, target, causeKey, refused) {
  *          counts?: Map<string, number>, ineligibleReason?: (label: string) => string | null,
  *          env?: Record<string, string>, registerSpawn?: (role: string) => void, drained?: readonly string[],
  *          claimable?: (order: {causeKey: string}) => string | null, claimer?: SpawnClaimer,
- *          launch?: LaunchFacts} & Partial<ReviewerDeps>} [deps]
- *   `registerReviewer` is told of every reviewer instance this tick starts (#2401), for the auth detector;
+ *          launch?: LaunchFacts, unavailable?: (label: string) => string | null} & Partial<ReviewerDeps>} [deps]
+ *   `unavailable` says why a session cannot ANSWER now (`unavailableReason`), and an order to one is refused with that
+ *   reason and neither sent nor recorded (#2256); `registerReviewer` is told of every reviewer instance this tick starts (#2401), for the auth detector;
  *   `checkout` and `registry` are the reviewer path's seams (its git, its filesystem, what it has started);
  *   `registerSpawn` is told of every process this tick STARTS, so the teardown can tell an instance that has
  *   not claimed yet from one that finished ({@link endFinishedSpares}); `drained` is the roles the drain holds
@@ -2618,7 +3225,7 @@ function clearUnlessStarted(run, target, causeKey, refused) {
  */
 export function deliver(orders, agents, roster,
   { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer,
-    launch, reviewerEnv, registerReviewer, checkout, registry } = {}) {
+    launch, reviewerEnv, registerReviewer, checkout, registry, unavailable } = {}) {
   const sent = [];
   const refused = [];
   const stuck = [];
@@ -2637,6 +3244,15 @@ export function deliver(orders, agents, roster,
       claimable, claimer, reviewerEnv, registerReviewer, checkout, registry });
     if ("refusal" in target) {
       refused.push(`${order.causeKey}: ${target.refusal}`);
+      continue;
+    }
+    // A SESSION OUT OF ALLOWANCE IS NOT DELIVERED TO (#2256), for the reason a `blocked` one is not: a prompt typed into it
+    // is answered by the same limit message, and the ledger would count it as an answer given. Six such counts tripped the
+    // breaker overnight 2026-09-23/24 on eleven causes and put two rows in the chairman's inbox for an outage. A process
+    // this tick started has a fresh allowance question no transcript can answer yet, so it is not asked.
+    const unavailableWhy = whyUnavailable(target, unavailable);
+    if (unavailableWhy !== null) {
+      refused.push(`${order.causeKey}: ${unavailableWhy}`);
       continue;
     }
     // A PROCESS THAT HAS EXISTED FOR TWO SECONDS HAS NOTHING TO CLEAR, and `/clear` is not free: it is a
@@ -3529,6 +4145,78 @@ function printCycles(ledgerPath) {
   process.exit(report.exit);
 }
 
+/**
+ * The tick's queue, AFTER every order to an ended session has been re-addressed or dropped (#2459), and what was
+ * said about each. THE EVIDENCE IS READ FOR A QUEUE THAT NAMES A TARGET NOT IN HERDR'S LIST ONLY -- the common tick
+ * pays no file read -- and an evidence file that cannot be read settles nothing, says so, and leaves the queue as
+ * it found it: an order is dropped only on a reading that was made. The queue is RE-READ after a settlement, so an
+ * order re-addressed this tick is delivered this tick and the log, not this function, says what is waiting.
+ *
+ * @param {ReturnType<typeof readHandoffs>} handoffs @param {{label: string, status: string}[]} agents
+ * @param {{queuePath: string, ledgerPath: string}} paths
+ * @returns {ReturnType<typeof readHandoffs>}
+ */
+function settleEndedOrders(handoffs, agents, { queuePath, ledgerPath }) {
+  if (!handoffs.some((h) => isAbsent(h.session, agents))) return handoffs;
+  try {
+    const ended = endedSessionsAt(ledgerPath);
+    const { settled, lines } = resolveEndedHandoffs(handoffs, { agents, ended, holder: holderOf, queuePath });
+    for (const line of lines) process.stderr.write(line);
+    return settled.length === 0 ? handoffs : readHandoffs(queuePath);
+  } catch (err) {
+    process.stderr.write(`ENDED-SESSION CHECK FAILED (${firstLine(err)}): no order was re-addressed or dropped this tick.\n`);
+    return handoffs;
+  }
+}
+
+/**
+ * The tick's exit when herdr does not answer: the backlog, unclassified (nothing is known about any target), then
+ * `CANNOT ASK`. THIS IS BEFORE ANY ORDER IS RESOLVED (#2459 done-when 6): a blip read as every session having
+ * ended would drop the whole queue, so a tick that cannot ask classifies nothing and drops nothing.
+ * @param {number} gateOrders @param {ReturnType<typeof readHandoffs>} handoffs @returns {never}
+ */
+function exitCannotAsk(gateOrders, handoffs) {
+  for (const line of backlogReport(handoffBacklog(handoffs))) process.stderr.write(line);
+  process.stderr.write(`CANNOT ASK: herdr did not answer, so the ${gateOrders} order(s) on stdin and `
+    + `${handoffs.length} queued order(s) were NOT delivered and NOTHING was woken. This is not a quiet `
+    + "org.\n");
+  process.exit(EXIT.CANNOT_ASK);
+}
+
+/**
+ * A lookup asked once per label for the length of a tick. `agent get` plus a transcript read is cheap, but a session
+ * is asked about by the router, the delivery and the escalation, and the three must not disagree within one tick.
+ * @param {(label: string) => string | null} ask @returns {(label: string) => string | null}
+ */
+function memoised(ask) {
+  /** @type {Map<string, string | null>} */
+  const answers = new Map();
+  return (label) => {
+    if (!answers.has(label)) answers.set(label, ask(label));
+    return answers.get(label) ?? null;
+  };
+}
+
+/**
+ * The pool router's reason to skip an engineer: the eligibility rule's first, then being out of allowance. Without the
+ * second a pool order (`engineers`) picked the first idle seat, was refused for it, and never reached the next one.
+ * @param {(label: string) => string | null} eligibility @param {(label: string) => string | null} unavailable
+ * @returns {(label: string) => string | null}
+ */
+export function poolEngineerReason(eligibility, unavailable) {
+  return (label) => eligibility(label) ?? unavailable(label);
+}
+
+/**
+ * What `escalateStuck` remembers between ticks: which keys it already labelled this run, and how to add one. Read AFTER the
+ * `RESET` lines of this tick are written, so a cause that went away and came back escalates again.
+ * @param {string} ledgerPath @param {(label: string) => string | null} unavailable
+ */
+function escalationMemory(ledgerPath, unavailable) {
+  return { escalated: escalatedKeys(ledgerPath), unavailable,
+    record: (/** @type {string} */ key) => writeFileSync(ledgerPath, `${Date.now()}\t${ESCALATED}\t${key}\n`, { flag: "a" }) };
+}
+
 function main() {
   refuseUnknownFlags(["--ledger", "--roster", "--cycles", "--worktrees-dir"], {
     entry: import.meta.url, command: "node packages/agent-org/src/wake.mjs",
@@ -3551,29 +4239,27 @@ function main() {
   const handoffs = readHandoffs(queuePath);
   if (nothingToDeliver(orders, handoffs)) process.exit(EXIT.QUIET);
 
-  // WHAT WAS ALREADY WAITING, BEFORE THIS TICK TOUCHES IT (#2102). Reported first and reported whatever
+  // WHAT WAS ALREADY WAITING, BEFORE THIS TICK DELIVERS ANYTHING (#2102). Reported first and reported whatever
   // happens next, because the backlog is a fact about the org that every session running a tick should
   // see, not a consequence of this tick's delivery: 57 orders for one session were discoverable in
   // 2026-09-23 only by replaying a cache file by hand, and the tick that could have said so said nothing.
   //
-  // ABOVE `readAgents`, AND THE ORDER IS THE POINT. A tick that cannot reach herdr delivers NOTHING and
-  // exits, so it is the one tick where a ten-hour backlog most needs saying -- reporting it after that
-  // exit would have made "reported whatever happens next" false for the worst case it claims to cover.
-  for (const line of backlogReport(handoffBacklog(handoffs))) process.stderr.write(line);
-
+  // `readAgents` COMES FIRST NOW (#2459), because a report that says whether a target EXISTS needs the list of
+  // what does -- but the report still precedes the CANNOT ASK exit, which is the whole of what the original
+  // ordering protected: a tick that cannot reach herdr delivers NOTHING and exits, so it is the one tick where a
+  // ten-hour backlog most needs saying. It says it, unclassified, because nothing is known about any target.
   const agents = readAgents();
-  if (agents === null) {
-    process.stderr.write(`CANNOT ASK: herdr did not answer, so the ${orders.length} order(s) on stdin and `
-      + `${handoffs.length} queued order(s) were NOT delivered and NOTHING was woken. This is not a quiet `
-      + "org.\n");
-    process.exit(EXIT.CANNOT_ASK);
-  }
+  if (agents === null) exitCannotAsk(orders.length, handoffs);
+
+  const waiting = settleEndedOrders(handoffs, agents, { queuePath, ledgerPath });
+  for (const line of backlogReport(handoffBacklog(waiting), agents)) process.stderr.write(line);
 
   // AUTHORED ORDERS FIRST. One has already been refused once and has been waiting since; a derived cause
   // has not, and will be re-derived unchanged by the next tick if it loses the session to this one.
-  const handed = deliverHandoffs(handoffs, agents, roster, { queuePath });
+  const unavailable = memoised(unavailableReason);
+  const handed = deliverHandoffs(waiting, agents, roster, { queuePath, unavailable });
   // STALE MEANS STILL WAITING, so it is asked AFTER the delivery and against what the delivery carried.
-  for (const line of staleReport(handoffs, handed.ids)) process.stderr.write(line);
+  for (const line of staleReport(waiting, handed.ids)) process.stderr.write(line);
   // A session this tick just woke is working NOW, so the gate's own orders must not be routed to it.
   const free = agents.map((a) => (handed.busied.has(a.label) ? { ...a, status: "working" } : a));
 
@@ -3592,8 +4278,8 @@ function main() {
 
   const spares = sparePathsFrom(ledgerPath);
   const drained = drainNow(spares.cycles);
-  const { sent, refused: gateRefused, stuck } = deliver(todo, free, roster, { record,
-    counts: deliveryCounts(ledgerPath), ineligibleReason: poolEligibility(spares, drained),
+  const { sent, refused: gateRefused, stuck } = deliver(todo, free, roster, { record, unavailable,
+    counts: deliveryCounts(ledgerPath), ineligibleReason: poolEngineerReason(poolEligibility(spares, drained), unavailable),
     registerSpawn: (role) => registerSpawn(spares, role), drained, claimable: spawnClaimability(),
     claimer: spawnClaimer({ ...hostLayout, settle: (role) => { settleAbsentInstance(spares, role); } }), launch: hostLayout,
     registerReviewer: (session) => registerReviewer(reviewerPathsFrom(ledgerPath), session),
@@ -3603,7 +4289,7 @@ function main() {
   for (const line of stuck) process.stderr.write(`STUCK ${line}\n`);
   // THE BREAKER'S ALARM. Printing `STUCK` and stopping is what let two of `ceo`'s causes go silent for
   // over half an hour with every session idle -- see `escalateStuck`.
-  escalateStuck(stuck);
+  escalateStuck(stuck, undefined, undefined, escalationMemory(ledgerPath, unavailable));
   if (stuck.length > 0) {
     process.stderr.write(`${stuck.length} cause(s) have been offered ${MAX_DELIVERIES}+ times and are `
       + "still true. They are NOT being retried: something about the row, the prompt or the session is "

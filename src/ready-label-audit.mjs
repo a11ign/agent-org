@@ -104,23 +104,20 @@ const READY_STATUS = "Ready";
  * cause and a remedy where this list's generic wording would name neither.
  *
  * **THIS PARAGRAPH USED TO SAY THE TWO TRAVEL IN ONE `gh issue edit` "always, atomically", AND THAT THE
- * PAIR IS THEREFORE "PROOF". BOTH ARE WRONG (#2111 rework, 2026-09-23), AND THE SECOND FOLLOWED FROM THE
- * FIRST.** They are not one call: #749 deliberately SPLIT them into two, the additions first and the
- * removal only once the additions are known to have landed, precisely because #677's reproduction showed
- * one combined `gh issue edit` half-applying (its `--remove-label ready` applied while every
- * `--add-label` did not). That ordering is the right one -- a failure then keeps `ready`, which is
- * recoverable and visible, rather than losing it while gaining nothing -- but it means the mechanism's
- * OWN failure mode is a row carrying `ready` beside `in-progress`, permanently if the second call never
- * lands. So this pair is the state a hand claim leaves AND the state a claim whose removal did not land
- * leaves, and `handClaims` cannot tell them apart. Filed rather than papered over.
+ * PAIR IS THEREFORE "PROOF". BOTH WERE WRONG (#2111 rework, 2026-09-23).** #749 had SPLIT them into two
+ * calls, the additions first and the removal once the additions were known to have landed, because #677's
+ * reproduction showed one combined `gh issue edit` half-applying (its `--remove-label ready` applied while
+ * every `--add-label` did not) -- and that made the mechanism's OWN failure mode a row carrying `ready`
+ * beside `in-progress`, permanently if the second call never landed. **#2151 CLOSED THAT CAUSE: the claim's
+ * labels are now ONE `PUT .../labels`** (`row-claim.mjs`'s `applyClaimLabels`), so a claim through the
+ * mechanism either leaves the row as claimed or leaves its labels untouched, and can no longer leave this
+ * pair. What the pair still cannot distinguish is named on the finding itself (`HAND_CLAIM_CAUSES`).
  *
- * Nothing about the check changes -- population and remedy are as they were -- but a comment asserting an
- * atomicity this repository has measured to be absent is how a later fix comes to rest on it, which is
- * exactly what happened when #2111's first promote act cited this sentence as its warrant. Measured 2026-09-09: #634, #635 and #633 all sat in exactly this state,
- * claimed by hand within hours of being filed, and stayed advertised as pickable until an audit run by
- * hand caught them. Reporting that as "remove one or the other" -- this list's generic remedy -- names
- * the symptom; naming it as a hand claim names the cause AND the remedy in the same sentence (#655's
- * rule), so it gets a dedicated check instead of a place in this generic list.
+ * Measured 2026-09-09: #634, #635 and #633 all sat in exactly this state, claimed by hand within hours of
+ * being filed, and stayed advertised as pickable until an audit run by hand caught them. Reporting that as
+ * "remove one or the other" -- this list's generic remedy -- names the symptom; naming it as a hand claim
+ * names the cause AND the remedy in the same sentence (#655's rule), so it gets a dedicated check instead
+ * of a place in this generic list.
  *
  * `runner:*` DELIBERATELY DOES NOT JOIN THIS LIST (#444). A row reserved for a specific session
  * (`ready` + `runner:worker-audit`) is still genuinely pickable -- BY ITS RUNNER -- so it is not a
@@ -427,10 +424,11 @@ export function mutexViolations(issues) {
 
 /**
  * #673: Pure -- which open issues carry BOTH `ready` and `in-progress`? `row-claim.mjs`'s
- * `writeRowLabels` removes `READY_LABEL` in the same edit that adds `in-progress`/`session:*`, always --
- * so this co-occurrence can only arise from a claim made outside `row-claim.mjs` (a hand-applied label, a
- * direct assignment). A row claimed through the real mechanism never reaches this filter, which is the
- * mutation the issue itself names: claim one through `row-claim` and confirm this stays silent.
+ * `writeRowLabels` removes `READY_LABEL` in the SAME REQUEST that sets `in-progress`/`session:*` (#2151:
+ * one `PUT .../labels`; before it, two `gh issue edit` calls, and the pair was a claim's own failure mode
+ * as well as a hand claim's). A row claimed through the real mechanism therefore never reaches this
+ * filter, which is the mutation the issue itself names: claim one through `row-claim` and confirm this
+ * stays silent. `HAND_CLAIM_CAUSES` names what it can still be.
  *
  * @param {LabelledIssue[]} issues
  * @returns {Array<{ number: number, title: string, sessions: string[] }>}
@@ -840,12 +838,43 @@ function reportMutexViolations() {
 }
 
 /**
- * #673: Report rows claimed by hand -- `ready` + `in-progress` together, which a COMPLETED claim through
- * `row-claim.mjs` does not leave behind (see `MUTEX_LABELS`' own note above for why that is strong
- * evidence rather than proof: the claim's own removal is a second call, and a claim whose removal did not
- * land leaves this same pair, #2111). Named separately from `reportMutexViolations` because the two
- * need different remedies: a hand claim's fix is to route the claim through `row-claim.mjs`, never to
- * remove one of the two labels as `mutexViolations`' generic wording would suggest.
+ * #2151: what `ready` + `in-progress` can still be, each with its own remedy, because `handClaims` reads
+ * the LABELS and two causes leave the same ones. Claiming through `row-claim.mjs` is no longer one of them
+ * (one `PUT`, see `MUTEX_LABELS`' note), so the finding no longer has to hedge about it.
+ *
+ * The second is INFERRED, not measured: `declineRow` restores `ready` and removes `in-progress` in one
+ * combined `gh issue edit`, which is the call shape #677 measured half-applying. It is named so the
+ * remedy for it is not left to be rediscovered, and it is exactly the case where prescribing "route the
+ * claim through row-claim" would be wrong -- nobody is working the row.
+ */
+export const HAND_CLAIM_CAUSES = [
+  { cause: "a claim made by hand (a label applied outside row-claim.mjs)",
+    remedy: "route the claim through row-claim.mjs: `row-claim.mjs decline <n> --session=<holder>`, then "
+      + "claim or dispatch it properly" },
+  { cause: "a `decline` whose one combined edit half-applied (`ready` came back, `in-progress` did not go)",
+    remedy: "the holder has released it and nobody works it: `row-claim.mjs decline <n> --session=<holder>` "
+      + "again finishes the release; do not re-claim on its behalf" },
+];
+
+/**
+ * #2151: the finding for one `ready` + `in-progress` row, naming every remaining cause and its remedy.
+ * Pure, so a test reads the sentence rather than a reporter's side effects.
+ * @param {{ number: number, title: string, sessions: string[] }} claim
+ * @returns {string}
+ */
+export function handClaimFinding({ number, title, sessions }) {
+  const who = sessions.length > 0 ? sessions.join(", ") : "an unknown session";
+  const causes = HAND_CLAIM_CAUSES.map(({ cause, remedy }, i) => `(${i + 1}) ${cause} -- ${remedy}`).join("; ");
+  return `HAND CLAIM  #${number} "${title}" -- \`ready\` and \`in-progress\` together, held by ${who}. A claim `
+    + `through row-claim.mjs does not leave this pair (its label write is one request, #2151), so it is one of: `
+    + `${causes}\n`;
+}
+
+/**
+ * #673: Report rows carrying `ready` + `in-progress`, which a COMPLETED claim through `row-claim.mjs` does
+ * not leave behind. Named separately from `reportMutexViolations` because the two need different remedies:
+ * the fix is never to remove one of the two labels as `mutexViolations`' generic wording would suggest,
+ * and it depends on which cause left the pair (`HAND_CLAIM_CAUSES`).
  */
 function reportHandClaims() {
   const { issues, reportedCount } = fetchOpenIssuesChecked();
@@ -855,15 +884,9 @@ function reportHandClaims() {
       + `ready + in-progress together -- the state a claim made outside row-claim.mjs leaves\n`);
     return 0;
   }
-  for (const { number, title, sessions } of claims) {
-    const who = sessions.length > 0 ? sessions.join(", ") : "an unknown session";
-    process.stdout.write(`HAND CLAIM  #${number} "${title}" -- claimed by ${who} without row-claim.mjs, `
-      + `which removes \`ready\` as part of claiming (a claim through it whose removal did not land `
-      + `leaves this same pair, and this check cannot tell the two apart)\n`);
-  }
-  process.stderr.write(`\n${claims.length} row(s) were claimed by hand rather than through row-claim.mjs. `
-    + `Route the claim through it instead: \`node packages/agent-org/src/row-claim.mjs decline <n> `
-    + `--session=<whoever holds it>\`, then claim or dispatch it properly.\n`);
+  for (const claim of claims) process.stdout.write(handClaimFinding(claim));
+  process.stderr.write(`\n${claims.length} row(s) carry \`ready\` beside \`in-progress\`. The remedy depends on `
+    + `the cause -- see each line; \`row-claim.mjs decline <n> --session=<holder>\` is the release in both.\n`);
   return claims.length;
 }
 

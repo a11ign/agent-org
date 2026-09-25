@@ -231,7 +231,8 @@ test("#2403: `row-claim` creates `session:worker-<n>` before adding it, so the f
   const got = claimRow(2403, "worker-12", { run, moveStatus: () => ({ moved: true }), branch: "agent/x-2403" });
   assert.equal(got.claimed, true);
   const create = calls.findIndex((a) => a[0] === "label" && a[1] === "create" && a[2] === "session:worker-12");
-  const add = calls.findIndex((a) => a[1] === "edit" && a.includes("--add-label") && a.includes("session:worker-12"));
+  // #2151: the claim's labels are one `PUT`, which names the label as `labels[]=<name>`.
+  const add = calls.findIndex((a) => a[2] === "PUT" && a.includes("labels[]=session:worker-12"));
   assert.ok(create !== -1 && add !== -1 && create < add, "created, then added");
   assert.ok(calls[create].includes("--force"), "idempotently: a label a previous instance made is not an error");
 });
