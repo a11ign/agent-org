@@ -257,7 +257,7 @@ test("#2417: a body whose `Closes` is missing is left to checkBody's own refusal
 });
 
 test("#2417 WIRING: the shipped entry hands `main` the real row reader, and `main` runs the check before checkBody", () => {
-  assert.match(PR_OPEN_SOURCE, /process\.exitCode = main\(undefined, \{ rowBody: defaultRowBody \}\)/,
+  assert.match(PR_OPEN_SOURCE, /process\.exitCode = main\(undefined, \{ rowBody: defaultRowBody, survivors: survivorsOfThisTree \}\)/,
     "without it the guard is off in the CLI, which is the only place it matters");
   const start = PR_OPEN_SOURCE.indexOf("export function main(");
   const region = PR_OPEN_SOURCE.indexOf("regionStep(body", start);
