@@ -54,7 +54,7 @@ import { MAX_ROW_ORDERS_PER_TICK, readCommitChain, withCommitChains, decide, che
 // can assert what the membership BUYS rather than only that the name is in the list. `wake.mjs` runs
 // nothing on import (its `main()` is behind an `import.meta.url` guard) and these three are pure, so this
 // costs the `no-token` promise at the top of this file nothing.
-import { readLedger, undelivered, WAKE_TTL_MS, JUDGMENT_TTL_MS }
+import { readLedger, undelivered, addressed, WAKE_TTL_MS, JUDGMENT_TTL_MS }
   from "../wake.mjs";
 // #2237: the decider that REFUSES a launch, so the order's named launch directory is checked against it
 // rather than read by a reviewer. Pure over an injected filesystem.
@@ -612,21 +612,28 @@ const claimOrderPrompt = () => {
 };
 
 /**
- * THE LAUNCH DIRECTORY THE ORDER NAMES: the first absolute path in it, `<you>` rendered as a roster name the
- * way `wake.mjs`'s `addressed` does. "First" is a convention this test imposes -- an order that names the
+ * THE ORDER AS THE ENGINEER READS IT (#2405): the gate leaves the launch directory to `wake.mjs`, which knows who
+ * took the order, so the sentence #2237 pins is asserted on what `addressed` delivers to a standing session whose
+ * `role-<you>` worktree exists. `work-gate-engineer-order-paths.test.ts` pins the branch where it does not.
+ */
+const deliveredClaimOrder = () => addressed({ session: "engineers", prompt: claimOrderPrompt() }, "worker-tooling",
+  { exists: () => true });
+
+/**
+ * THE LAUNCH DIRECTORY THE ORDER NAMES: the first absolute path in it, the order as `addressed` delivers it. "First" is a convention this test imposes -- an order that names the
  * primary at all, even to forbid it, must name its own directory BEFORE it -- and it is what lets a reworded
  * order that instructs the primary go red here without this file pinning a spelling of the wrong sentence.
  */
 const namedLaunchDirectory = (prompt: string) =>
-  /\/home\/agent\/repos\/[^\s`),;]+/.exec(prompt.replaceAll("<you>", "worker-tooling"))?.[0] ?? null;
+  /\/home\/agent\/repos\/[^\s`),;]+/.exec(prompt)?.[0] ?? null;
 
 test("#2237 DONE-WHEN 1: the ready-row order does not instruct the launch `launchGate` refuses", () => {
-  assert.doesNotMatch(claimOrderPrompt(), /from the primary checkout/i,
+  assert.doesNotMatch(deliveredClaimOrder(), /from the primary checkout/i,
     "row-claim, pr-open and row-file all refuse a launch from the primary checkout (#1352)");
 });
 
 test("#2237 DONE-WHEN 2+3: it names a launch directory, and `launchGate` accepts the one it names", () => {
-  const dir = namedLaunchDirectory(claimOrderPrompt());
+  const dir = namedLaunchDirectory(deliveredClaimOrder());
   // DONE-WHEN 2. A prompt that names nothing passes clause 1 and re-opens the 2026-09-17 incident.
   assert.ok(dir !== null, "the order must say where to run the command, or the engineer stops and asks");
   assert.ok(launchCheckoutOf(dir, HOST_FS) !== null, `${dir} must be a checkout, else the refusal below is vacuous`);
