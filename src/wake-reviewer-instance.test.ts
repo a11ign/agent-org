@@ -485,16 +485,17 @@ test("#2498 (2a): `A11Y_REVIEWER_SESSION` reaches the pane by EVERY path the tic
   deliver([reviewOrder(2398)], agents({ "reviewer-2398": "idle" }), ROSTER, live.deps);
   const [typed] = live.h.said("agent prompt reviewer-2398");
   assert.match(typed, /A11Y_REVIEWER_SESSION=reviewer-2398 pr-review-verdict/,
-    "a pane the tick did not start (a `codex resume` by hand) holds no variable, so the ORDER carries the name: it is the one thing every path delivers");
+    "a pane the tick did not start (herdr's restore of a live agent after a restart) holds no variable, so the ORDER carries the name: it is the one thing every path delivers");
   assert.match(typed, /node_modules\/\.cache\/npm/, "and the cache path, for the same pane");
 });
 
 test("#2498 (2b): the tick has exactly ONE way to open a reviewer's pane and ONE to start its agent -- and neither is a resume", () => {
   const source = readFileSync(fileURLToPath(new URL("./wake.mjs", import.meta.url)), "utf8");
-  // Measured 2026-09-25: `reviewer-2485`'s live codex was `codex resume <uuid>`, started 92 minutes after the registry's spawn, and this
-  // file had no path that resumes a PROCESS (its `resume` is a plain PROMPT to a pane that exists, #2470). So a pane with no
-  // `A11Y_REVIEWER_SESSION` was made outside this file. A NEW site that opens or starts one must carry `reviewerEnvironment`, and this
-  // count is where that is decided: change it deliberately, and pin the new site's environment in (2a).
+  // Measured 2026-09-25: `herdr.service` restarted at 12:01:57Z and `reviewer-2485`'s live codex was `codex resume <uuid>` from 12:01:58Z, with four
+  // `claude --resume` in the same two seconds: herdr's own restore, which keeps none of the `--env` given to `workspace create`. This file has no
+  // path that resumes a PROCESS (its `resume` is a plain PROMPT to a pane that exists, #2470), so a pane with no `A11Y_REVIEWER_SESSION` is one
+  // this file did not start. A NEW site that opens or starts one must carry `reviewerEnvironment`, and this count is where that is decided:
+  // change it deliberately, and pin the new site's environment in (2a).
   assert.equal((source.match(/"workspace",\s*"create"/g) ?? []).length, 1, "the one `workspace create`, in openPane");
   assert.equal((source.match(/"agent",\s*"start"/g) ?? []).length, 1, "the one `agent start`, in spawnInvocation");
   assert.doesNotMatch(source, /["'`]codex["'`]\s*,\s*["'`]resume["'`]|--resume/, "and no codex/claude process is resumed from here");
