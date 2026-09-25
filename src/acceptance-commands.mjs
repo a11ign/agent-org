@@ -384,12 +384,19 @@ function endsLazyBlock(line, afterBlank) {
   return afterBlank || /^(\d+[.)]\s|#)/.test(line);
 }
 
+// #2473: `check-signals` is the only entry spelled like a FILE STEM, and `-` is a word boundary, so the bare
+// word also refused any test FILE whose name merely begins with it (`check-signals-pipe.test.ts`, whose
+// import closure never reaches runs/). The gate is the npm script (`training:check-signals`, with an
+// optional `:complete` suffix) or `check-signals.mjs`: the name NOT continued by `-`, `.` or a path
+// separator. `.mjs` is the one `.` continuation that IS the gate.
+const CHECK_SIGNALS_GATE = /\bcheck-signals(?:\.mjs\b|(?![-.\w/]))/;
+
 // `runs/` is gitignored -- a GitHub runner never has a corpus, so these read nothing and report cleanly.
 // CLAUDE.md: "A GATE THAT READS runs/ IS NOT YOURS TO REPORT."
 const CORPUS_PATTERNS = /** @type {[RegExp, string][]} */ ([
   [/\brules:gate\b/, "reads runs/, which is gitignored and absent in CI"],
   [/\brules:coverage\b/, "reads runs/, which is gitignored and absent in CI"],
-  [/\bcheck-signals\b/, "reads runs/, which is gitignored and absent in CI"],
+  [CHECK_SIGNALS_GATE, "reads runs/, which is gitignored and absent in CI"],
   [/\bcorpus:starvation\b/, "reads runs/, which is gitignored and absent in CI"],
   [/\bscorer:shortcuts\b/, "reads runs/, which is gitignored and absent in CI"],
 ]);
