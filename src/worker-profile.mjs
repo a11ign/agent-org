@@ -324,6 +324,18 @@ export const PROFILES = Object.freeze({
     why: "the gate has already named the instances and the signal; the output is a short brief for the "
       + "chairman, whose only action is a re-login no session can perform",
   }),
+  "disk-headroom-low": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // MEDIUM, and the recipient is `ceo`, a standing decision-holder that is never spawned, so this is the profile
+    // a spawned worker would take if one ever were (#2163). The gate has already read the filesystem and named which
+    // resource is low; the work is choosing what to remove and whether the chairman must be told another way. That
+    // is a short judgment over a stated figure, not diagnosis from an absence, so `org-stalled`'s `high` would be
+    // paid for nothing.
+    effort: "medium",
+    why: "the gate has already read the filesystem and named the low resource; the output is a decision about "
+      + "what to remove, and a full disk is the one fault that stops every session at once",
+  }),
   "chairman-blocked": Object.freeze({
     kind: "claude",
     model: "sonnet",

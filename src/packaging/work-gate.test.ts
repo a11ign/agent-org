@@ -888,13 +888,15 @@ test("every cause is classified as START or FINISH -- a new one cannot default i
   // exists and cannot merge, which is finished work a window is waiting to land.
   // #2401: `reviewer-auth-failed` is FINISH: a reviewer that cannot authenticate is the reason in-flight pull
   // requests cannot land, and a window waiting to land them is waiting on the login. It starts no work.
+  // #2163: `disk-headroom-low` is FINISH: it starts no work, and a drain is precisely when nobody is looking, so a full
+  // disk that a window silenced would be found by the first session to fail with ENOSPC, which is the outage it exists for.
   // #2084: `pr-review-blocked` is FINISH, and it is `pr-green-unarmed`'s own argument one surface over.
   // A pull request that is green, unheld and refused by GitHub's `reviewDecision` is finished work that
   // cannot land -- it is the most in-flight thing there is, and it takes on nothing. Withholding it during
   // a window would strand precisely the pull requests the window is waiting to land, which is the failure
   // `START_CAUSES` was split out to prevent.
   assert.deepEqual(finish, ["answer-owed", "blocker-cleared", "chairman-blocked", "claimed-row-amended",
-    "draft-awaiting-verdict", "draft-convinced-not-ready", "host-units-stale", "pr-checks-failing",
+    "disk-headroom-low", "draft-awaiting-verdict", "draft-convinced-not-ready", "host-units-stale", "pr-checks-failing",
     "pr-green-unarmed", "pr-merge-conflict", "pr-review-blocked", "reviewer-auth-failed",
     "row-branch-unshipped", "trunk-red", "verdict-comment-unreviewed", "verdict-not-convinced"]);
   for (const cause of START_CAUSES) {

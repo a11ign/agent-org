@@ -73,6 +73,8 @@ import { REPO } from "../../../scripts/repo-identity.mjs";
 // #2356: A RED `main` WAKES A FIXER. Imports only `node:*`, `parent-recheck-summary.mjs` and the repo identity,
 // so the gate keeps the property its own header states -- it runs before any `npm ci` or build.
 import { readTrunkRed, trunkRedOrders } from "./trunk-red.mjs";
+// #2163: FREE BYTES AND FREE INODES. Imports only `node:*`, so the gate keeps the property its own header states.
+import { diskHeadroom, MIN_FREE_FRACTION } from "./disk-headroom.mjs";
 
 /**
  * FOUR STATES, AND THE POLARITY IS DELIBERATE.
@@ -96,7 +98,7 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
   "blocked-unexaminable", "fleet-batch-due", "blocker-cleared", "pr-green-unarmed",
   "claimed-row-amended", "row-branch-unshipped", "host-units-stale", "pr-review-blocked",
   "unclaimed-blocker-cleared", "pr-merge-conflict", "trunk-red", "verdict-comment-unreviewed",
-  "reviewer-auth-failed"];
+  "reviewer-auth-failed", "disk-headroom-low"];
 
 /**
  * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
@@ -153,7 +155,7 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
 export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog-unpromoted",
   "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
   "blocked-unexaminable", "fleet-batch-due", "row-branch-unshipped", "claimed-row-amended",
-  "unclaimed-blocker-cleared", "reviewer-auth-failed"]);
+  "unclaimed-blocker-cleared", "reviewer-auth-failed", "disk-headroom-low"]);
 
 /**
  * The causes that START new work, as opposed to finishing work already begun.
@@ -4341,6 +4343,92 @@ export function reviewerAuthTick({ orders, dir = REVIEWER_STATE_DIR, authFile = 
   return reviewerAuthOrders(failures, lastRefresh);
 }
 
+const BYTES_PER_GIB = 1_073_741_824;
+
+/**
+ * `/` and `/tmp` -> `root+tmp`: a mount as a word a causeKey can carry. `/` is `root`, any other loses its leading
+ * slash and turns the rest into `-`.
+ * @param {string[]} mounts
+ */
+function mountsLabel(mounts) {
+  return mounts.map((m) => (m === "/" ? "root" : m.replace(/^\//, "").replaceAll("/", "-"))).join("+");
+}
+
+/** @param {import("./disk-headroom.mjs").LowFinding} f */
+function describeLow(f) {
+  const amount = f.resource === "bytes"
+    ? `${(f.free / BYTES_PER_GIB).toFixed(1)} GiB of ${(f.total / BYTES_PER_GIB).toFixed(1)} GiB`
+    : `${f.free.toLocaleString("en-US")} of ${f.total.toLocaleString("en-US")}`;
+  return `${f.mounts.join(" + ")}  FREE ${f.resource.toUpperCase()}: ${amount} (${(f.fraction * 100).toFixed(1)}%)`;
+}
+
+/**
+ * The incident order to `ceo`, or none (#2163). `ceo` because a full disk is the one fault every session shares and
+ * no session owns, and the remedy (what to delete, whether to schedule the prune) is theirs to rule on.
+ *
+ * JUDGMENT-KEYED ON WHICH RESOURCE OF WHICH FILESYSTEM IS LOW, and on nothing else -- so a condition that persists
+ * is asked again on the judgment window and not on every tick, and a SECOND resource going low is a new question
+ * that reaches `ceo` at once. The cost, stated: 9% and 0% free are the same key, so a disk getting worse does not
+ * re-page inside the window; the stderr line below is written every tick and does.
+ *
+ * @param {import("./disk-headroom.mjs").LowFinding[]} low
+ * @returns {{session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string}[]}
+ */
+export function diskHeadroomOrders(low) {
+  if (low.length === 0) return [];
+  const key = low.map((f) => `${mountsLabel(f.mounts)}:${f.resource}`).sort().join(".");
+  return [{
+    session: "ceo",
+    cause: "disk-headroom-low",
+    subject: "disk-headroom",
+    discriminator: key,
+    prompt: `DISK HEADROOM IS LOW on this host (a resource is low below ${MIN_FREE_FRACTION * 100}% free):\n`
+      + low.map((f) => `  ${describeLow(f)}`).join("\n") + "\n"
+      + "BYTES AND INODES ARE JUDGED SEPARATELY, and `df -h` shows only bytes. On 2026-09-25 `/tmp` ran out of "
+      + "INODES at 73% of its bytes and every session failed with ENOSPC for about six hours. Read both: "
+      + "`df -h / /tmp` and `df -i / /tmp`.\n"
+      + "What has filled it before: `/tmp/rv-*` review clones, `/tmp/claude-1000` session scratchpads, "
+      + "`~/repos/wt-*` worktrees (each with a `node_modules`), and npm caches. `node "
+      + "packages/agent-org/src/prune-tmp.mjs` classifies `/tmp` and removes NOTHING without `--apply`, and "
+      + "`--apply` waits for a named list one cycle first (#2243). `npm run worktrees:prune` is the worktree half.\n"
+      + "IF YOUR OWN SHELL IS FAILING WITH ENOSPC you cannot fix this from here: tell the chairman by another "
+      + "route. The same reading is written on the tick's stderr before `wake` runs (`journalctl --user -u "
+      + "a11ign-work-tick.service | grep 'DISK LOW'`), though that journal sits on this same filesystem.",
+    causeKey: `ceo/disk-headroom-low/${key}`,
+  }];
+}
+
+/**
+ * The detector's whole tick: read `/` and `/tmp`, say on stderr what is low, return the incident order.
+ *
+ * NEVER THROWS, for `reviewerAuthTick`'s reason -- a detector that can crash the gate stops every order behind it.
+ * A mount that cannot be READ is said on stderr and is neither reported low nor counted healthy: `statfs` failing
+ * is not the disk being full, and silence about it would read as a clean bill.
+ *
+ * THE STDERR LINE IS THE CHANNEL THAT DOES NOT NEED THE DISK (#2163 done-when 4). `work-tick` relays the gate's
+ * stderr BEFORE it runs `wake`, and `wake`'s writes (`wake-emitted`, the ledger) are what a full disk breaks: a
+ * throwing write to `wake-emitted` ends `wake` with an uncaught exception, exit 1, BEFORE any delivery, and one to
+ * the ledger ends it AFTER the first delivery and before the rest (both measured -- `disk-headroom.test.ts`). The
+ * line is written whether or not the order is ever delivered. THE JOURNAL IT LANDS IN IS ON THE SAME FILESYSTEM
+ * (`/var/log/journal`, persistent), so this is a channel that does not depend on a write BY THE ORG, not one proven
+ * to survive an exhausted disk: journald's own free-space rules decide that, and nothing here has run it to zero.
+ *
+ * @param {{ read?: typeof diskHeadroom, log?: (line: string) => void }} [io]
+ */
+export function diskHeadroomTick({ read = diskHeadroom, log = (line) => process.stderr.write(line) } = {}) {
+  try {
+    const { low, unreadable } = read();
+    for (const u of unreadable) {
+      log(`disk-headroom: could not read ${u.mount} (${u.reason}) -- neither reported low nor counted healthy.\n`);
+    }
+    for (const f of low) log(`DISK LOW: ${describeLow(f)}\n`);
+    return diskHeadroomOrders(low);
+  } catch (err) {
+    log(`disk-headroom: could not run (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0]}) -- no order this tick.\n`);
+    return [];
+  }
+}
+
 /** @param {string[]} args */
 const herdrRun = (args) => execFileSync("herdr", args, { encoding: "utf8", timeout: 10_000 });
 
@@ -4476,6 +4564,10 @@ function closingsWhenRowsCleared(openRows) {
 
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/work-gate.mjs" });
+  // READ BEFORE ANY GITHUB CALL (#2163), because it is the one reading a `CANNOT_ASK` exit must not hide: a tick
+  // that cannot reach GitHub delivers nothing, so on that path the stderr line is the only thing that says the
+  // disk is full. Its ORDER is put in front of the others further down.
+  const diskOrders = diskHeadroomTick();
   const prs = readPrs();
   const readyRows = readReadyRows();
 
@@ -4531,6 +4623,9 @@ function main() {
     trunkRed: readTrunkRed() });
   const { delivered: orders, performed } = performActions(decided);
   orders.push(...reviewerAuthTick({ orders }));
+  // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so
+  // on a full disk the tick can end partway. The order that says the disk is full must not be the one behind it.
+  orders.unshift(...diskOrders);
   orders.push(...deadMansSwitch({ orders, drain, performed, openRows: openRowsRead }));
   for (const order of orders) process.stdout.write(`${JSON.stringify(order)}\n`);
 
