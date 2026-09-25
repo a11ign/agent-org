@@ -160,13 +160,13 @@ function logicalLines(unitText) {
 }
 
 /**
- * EVERY `GH_CONFIG_DIR` A UNIT'S `Environment=` LINES LEAVE IN FORCE, in order, each with the logical line
- * it came from. An `Environment=` with NO value empties the list (systemd's reset), so a declaration
- * before one is not a declaration. `EnvironmentFile=` is NOT read: the file lives on the host, so a unit
- * that takes its account from one shows here as declaring none -- which `NO IDENTITY DECLARED` reports.
- * @param {string | null} unitText @returns {{value: string, line: string}[]}
+ * EVERY DECLARATION OF `variable` A UNIT'S `Environment=` LINES LEAVE IN FORCE, in order, each with the
+ * logical line it came from. An `Environment=` with NO value empties the list (systemd's reset), so a
+ * declaration before one is not a declaration. `EnvironmentFile=` is NOT read: the file lives on the host,
+ * so a unit that takes its value from one shows here as declaring none -- which is reported as such.
+ * @param {string | null} unitText @param {string} variable @returns {{value: string, line: string}[]}
  */
-function identityDeclarations(unitText) {
+function environmentDeclarations(unitText, variable) {
   const declared = [];
   for (const line of logicalLines(unitText)) {
     const assignment = /^Environment\s*=(.*)$/.exec(line);
@@ -175,11 +175,14 @@ function identityDeclarations(unitText) {
     if (words.length === 0) { declared.length = 0; continue; }
     for (const word of words) {
       const eq = word.indexOf("=");
-      if (eq > 0 && word.slice(0, eq) === IDENTITY_VARIABLE) declared.push({ value: word.slice(eq + 1), line });
+      if (eq > 0 && word.slice(0, eq) === variable) declared.push({ value: word.slice(eq + 1), line });
     }
   }
   return declared;
 }
+
+/** The `gh` config, and so the account, a unit's `Environment=` lines leave in force. @param {string | null} unitText */
+const identityDeclarations = (unitText) => environmentDeclarations(unitText, IDENTITY_VARIABLE);
 
 /**
  * Every `Exec*=` command a unit runs, with systemd's own prefixes stripped (`-` ignore failure,
@@ -542,6 +545,49 @@ function humanAccountDeclared({ shippedDir = SHIPPED_DIR, readDir = readdirSync,
           + "(a11ign-ai-workers) or `/home/agent/leads/gh` (a11ign-ai-leads, write on a11ign/a11ign and "
           + "a11ign/corpus-backups), or add the unit to HUMAN_ACCOUNT_ALLOWED in host-units.mjs with the "
           + "ruling that says why." }];
+    });
+}
+
+/**
+ * WHERE A UNIT'S NODE PROCESSES KEEP V8'S COMPILE CACHE (#2458). `tsc`, `eslint`, `rstest` and `changeset`
+ * each call `module.enableCompileCache()` with no directory, and with `NODE_COMPILE_CACHE` unset Node then
+ * writes `<os.tmpdir()>/node-compile-cache`. The entry is keyed by source text AND path, so the same file in
+ * two worktrees is two entries: measured 895 files from one `npm run lint`, and 141,353 inodes in the
+ * 2026-09-25 outage. A unit that runs any of them via `npm run` inherits its cache from the unit, never from
+ * `~/.zshenv`, which only a login shell reads.
+ */
+const COMPILE_CACHE_VARIABLE = "NODE_COMPILE_CACHE";
+
+/** A directory under a home's `.cache`: the `%h` specifier, or an absolute `/home/<user>` (a unit cannot expand `~`). */
+const HOME_CACHE_DIRECTORY = /^(?:%h|\/home\/[A-Za-z0-9._-]+)\/\.cache\/[^/\s]+/;
+
+/**
+ * The compile-cache directory a unit's `Environment=` lines leave in force, or `null` when it declares none.
+ * @param {string | null} unitText @returns {string | null}
+ */
+export function declaredCompileCache(unitText) {
+  const declared = environmentDeclarations(unitText, COMPILE_CACHE_VARIABLE);
+  return declared.length === 0 ? null : declared[declared.length - 1].value;
+}
+
+/**
+ * EVERY SHIPPED `.service` whose compile cache is not under a home's `.cache`, the unit that says nothing
+ * included: it gets the default, which is the system temp directory.
+ * @param {{ shippedDir?: string, readDir?: typeof readdirSync, read?: typeof readFileSync }} [deps]
+ * @returns {Finding[]}
+ */
+export function compileCacheDrift({ shippedDir = SHIPPED_DIR, readDir = readdirSync, read = readFileSync } = {}) {
+  return shippedUnits(shippedDir, { read: readDir })
+    .filter((unit) => unit.endsWith(".service"))
+    .flatMap((unit) => {
+      const directory = declaredCompileCache(String(read(join(shippedDir, unit))));
+      if (directory !== null && HOME_CACHE_DIRECTORY.test(directory)) return [];
+      return [{ unit, problem: "COMPILE CACHE NOT UNDER THE HOME'S .cache",
+        detail: directory === null
+          ? "it declares no `Environment=NODE_COMPILE_CACHE=...` line, so `tsc`/`eslint`/`rstest` write "
+            + "the compile cache under the system temp directory, one entry per file per checkout path"
+          : `it sets \`NODE_COMPILE_CACHE=${directory}\`, which is not under a home's \`.cache\``
+        + ". Add `Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache` (#2458)." }];
     });
 }
 

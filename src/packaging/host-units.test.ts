@@ -34,7 +34,7 @@ import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, syst
   retiredHere, addedOnSomeRef, orphanOrigin, shellCommandWords, shellSpawnsGh, shippedHostScripts,
   supersededHostScripts, unitEntryPoints, missingUnitPrograms, workingDirectoryOf,
   programCandidates, hostIdentityDrift, hostIdentityNotes, hostIdentityInstall, ownedIdentityFiles,
-  WORKERS_README, HUMAN_ACCOUNT_ALLOWED } from "../host-units.mjs";
+  WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift, declaredCompileCache } from "../host-units.mjs";
 
 const SYSTEMD_OK = () => "LANG=C\n";
 const NO_SYSTEMD = () => { throw new Error("systemctl: command not found"); };
@@ -244,6 +244,57 @@ test("#1911: the corpus-release unit reads fleet.env, the only place a unit can 
   // leaves a missing file to corpus-release-nightly.mjs's own refusal, which names it.
   const unit = readFileSync(join(SHIPPED_DIR, "a11ign-corpus-release-nightly.service"), "utf8");
   assert.match(unit, /^EnvironmentFile=-%h\/\.config\/a11ign\/fleet\.env$/m);
+});
+
+// --- #2458: the compile cache is written under the system temp directory unless a unit says otherwise -----
+//
+// MEASURED 2026-09-25 (worker-15), each under a private TMPDIR so only that command's writes were counted:
+// `npm run lint` left 895 files in `<TMPDIR>/node-compile-cache`, `eslint --version` 194, `rstest --version` 28,
+// `changeset --version` 14, `tsc --version` 4, `node -e 1` none. The keying is source text AND path: one file
+// copied to two directories made two entries, which is how one checkout per row reaches 141,353 inodes.
+
+/** A shipped-directory stub: `read` answers from the table, so no real unit file is involved. */
+const stubUnits = (units: Record<string, string>) => ({
+  shippedDir: "/stub",
+  readDir: (() => Object.keys(units)) as never,
+  read: ((p: string) => units[basename(String(p))]) as never,
+});
+
+test("#2458: every shipped service puts the compile cache under a home's .cache", () => {
+  // THE POPULATION, NAMED: emptiness below is worth what this says about its input. Seven services ship
+  // today, and the positive control for "a unit lacking the line is a finding" is the next test.
+  const services = readdirSync(SHIPPED_DIR).filter((f) => f.endsWith(".service"));
+  assert.ok(services.length >= 7, `too few services shipped to mean anything: ${services.join(", ")}`);
+  assert.deepEqual(compileCacheDrift(), []);
+  for (const service of services) {
+    assert.equal(declaredCompileCache(readFileSync(join(SHIPPED_DIR, service), "utf8")),
+      "%h/.cache/node-compile-cache", `${service} declares a different directory from the others`);
+  }
+});
+
+test("#2458 NEGATIVE CONTROL: a unit that says nothing, or names /tmp, or resets the line, IS a finding", () => {
+  const line = "Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache";
+  const findings = compileCacheDrift(stubUnits({
+    "a11ign-silent.service": "[Service]\nExecStart=/usr/bin/npm run x\n",
+    "a11ign-tmp.service": "[Service]\nEnvironment=NODE_COMPILE_CACHE=/tmp/node-compile-cache\n",
+    "a11ign-commented.service": `[Service]\n# ${line}\n`,
+    "a11ign-reset.service": `[Service]\n${line}\nEnvironment=\n`,
+    "a11ign-elsewhere.service": "[Service]\nEnvironment=NODE_COMPILE_CACHE=/var/cache/node\n",
+    "a11ign-percent-h.service": `[Service]\n${line}\n`,
+    "a11ign-absolute.service": "[Service]\nEnvironment=NODE_COMPILE_CACHE=/home/agent/.cache/node-compile-cache\n",
+    "a11ign-quoted.service": `[Service]\nEnvironment=PATH=/bin "NODE_COMPILE_CACHE=%h/.cache/node-compile-cache"\n`,
+    "a11ign-timer-only.timer": "[Timer]\nOnCalendar=daily\n",
+  }));
+  assert.deepEqual(findings.map((f) => f.unit).sort(), [
+    "a11ign-commented.service", "a11ign-elsewhere.service", "a11ign-reset.service",
+    "a11ign-silent.service", "a11ign-tmp.service"]);
+  assert.match(findings.find((f) => f.unit === "a11ign-silent.service")?.detail ?? "", /declares no/);
+  assert.match(findings.find((f) => f.unit === "a11ign-tmp.service")?.detail ?? "", /\/tmp\/node-compile-cache/);
+});
+
+test("#2458: the last declaration wins, as in systemd, and a cache in a different variable is not one", () => {
+  assert.equal(declaredCompileCache("Environment=NODE_COMPILE_CACHE=/a\nEnvironment=NODE_COMPILE_CACHE=/b\n"), "/b");
+  assert.equal(declaredCompileCache("Environment=GH_CONFIG_DIR=/x\n"), null);
 });
 
 // --- #1951: a unit the repo stopped shipping keeps firing, and nothing said so ------------------------
