@@ -33,7 +33,8 @@ import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
 
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));
-const ROSTER = ["worker-capture", "worker-judge", "worker-tooling", "worker-4"];
+/** `engineerRoles()` since #2505: the three standing engineers are retired and the spares are a FAMILY, so no address is listed. */
+const ROSTER: string[] = [];
 const STUB_MODE = 0o755; // the tick invokes `herdr` and `gh` as commands, so the stubs have to be runnable
 const TICK_ENTRY = fileURLToPath(new URL("./work-tick.mjs", import.meta.url));
 
@@ -42,8 +43,8 @@ const reviewOrder = (n: number, cause = "draft-awaiting-verdict") => ({
   session: `reviewer-${n}`, cause, causeKey: `reviewer-${n}/${cause}/pr-${n}/abc12345`,
   prompt: `Draft #${n} is green with no verdict at its head.`,
 });
-/** The standing three are busy, so the first ABSENT engineer role is the spare `worker-4`. */
-const STANDING = agents({ "worker-capture": "working", "worker-judge": "working", "worker-tooling": "working" });
+/** No engineer process runs and no standing address is listed, so a row's spare is named for the ROW: `worker-2131` (#2469). */
+const NO_ENGINEERS = agents({});
 const ROW_ORDER = {
   session: "engineers", cause: "ready-row-unclaimed", causeKey: "engineers/ready-row-unclaimed/2131",
   prompt: "Ready row #2131 is unclaimed.",
@@ -401,9 +402,9 @@ test("#2401 (3b): `spawnableRole`, `SPAWN_CAUSES` and `MAX_SPAWNS_PER_TICK` read
   + "cause is still not a pilot cause", () => {
   assert.deepEqual([...SPAWN_CAUSES], ["ready-row-unclaimed"]);
   assert.equal(MAX_SPAWNS_PER_TICK, 1);
-  const refused = spawnableRole(reviewOrder(5), STANDING, ROSTER) as { refusal: string };
+  const refused = spawnableRole(reviewOrder(5), NO_ENGINEERS, ROSTER) as { refusal: string };
   assert.match(refused.refusal, /no spawn: the pilot covers the engineer pool, and this order is addressed to "reviewer-5"/);
-  assert.deepEqual(spawnableRole(ROW_ORDER, STANDING, ROSTER), { role: "worker-4" });
+  assert.deepEqual(spawnableRole(ROW_ORDER, NO_ENGINEERS, ROSTER), { role: "worker-2131" });
 });
 
 test("#2401 (3c): an engineer order still starts an engineer and REGISTERS it as a spare -- a reviewer start in the "
@@ -411,12 +412,12 @@ test("#2401 (3c): an engineer order still starts an engineer and REGISTERS it as
   const w = world();
   const spares: string[] = [];
   const reviewers: string[] = [];
-  const out = deliver([reviewOrder(2398), ROW_ORDER], STANDING, ROSTER,
+  const out = deliver([reviewOrder(2398), ROW_ORDER], NO_ENGINEERS, ROSTER,
     { ...w.deps, registerSpawn: (r) => spares.push(r), registerReviewer: (s) => reviewers.push(s) });
   assert.equal(out.sent.length, 2, "both were started in one tick: each has its own allowance");
-  assert.deepEqual(spares, ["worker-4"], "only the ENGINEER start reaches `registerSpawn`, which feeds `spare-cycles`");
+  assert.deepEqual(spares, ["worker-2131"], "only the ENGINEER start reaches `registerSpawn`, which feeds `spare-cycles`");
   assert.deepEqual(reviewers, ["reviewer-2398"]);
-  assert.match(out.sent.join("\n"), /worker-4 <- engineers\/ready-row-unclaimed\/2131 \(STARTED sonnet\/high\)/);
+  assert.match(out.sent.join("\n"), /worker-2131 <- engineers\/ready-row-unclaimed\/2131 \(STARTED sonnet\/high\)/);
 });
 
 test("#2401 (3d): the reviewer registry is its OWN file -- it is never the spare registry or the `spare-cycles` ledger", () => {

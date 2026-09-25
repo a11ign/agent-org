@@ -6,7 +6,7 @@
  * acceptance job refused it and verified nothing. Every fact read here -- herdr, GitHub, the two ledgers -- is
  * injected or stubbed on PATH, so the row's Acceptance is a command the job can RUN.
  */
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, chmodSync, readdirSync, copyFileSync } from "node:fs";
 import { spawnSync, execFileSync } from "node:child_process";
@@ -26,7 +26,6 @@ import { claimRow } from "../row-claim.mjs";
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));
 const STANDING = ["worker-capture", "worker-judge", "worker-tooling"];
-const REAL_ROSTER = engineerRoles();
 const WAKE_ENTRY = fileURLToPath(new URL("../wake.mjs", import.meta.url));
 const ALL_IDLE = agents(Object.fromEntries(STANDING.map((r) => [r, "idle"])));
 
@@ -60,6 +59,28 @@ const NOBODY = agents({ ceo: "working", "product-manager": "working" });
 // outcome is named by the test and not inferred from it.
 
 const REAL_SESSIONS = new URL("../../../../packages/agent-org/docs/roles/sessions.json", import.meta.url);
+
+/**
+ * THE ROSTER AS IT WAS BEFORE #2505, AS A FIXTURE. The drain mechanism outlived its only user: #2505 retired the three
+ * standing engineers, so the real file marks NO role `drain` and every test below that needs a drained role would have
+ * nothing to drain. The fixture is the real file plus the three standing engineers as they stood at `90b65b787` --
+ * `role: "engineer"`, `drain: true`, in file order, before the spare family -- so `engineerRoles`, `drainedRoles`,
+ * `activeDrain` and the row-claim CLI are each driven through the READER of a file that marks them, not through a
+ * literal list. The real file's own state is pinned by the first test.
+ */
+const FIXTURE_DIR = mkdtempSync(join(tmpdir(), "wake-drain-roster-"));
+after(() => rmSync(FIXTURE_DIR, { recursive: true, force: true }));
+const DRAINED_SESSIONS_TEXT = (() => {
+  const file = JSON.parse(readFileSync(REAL_SESSIONS, "utf8")) as { live: Record<string, unknown>[] };
+  const standing = STANDING.map((name) => ({ name, role: "engineer", drain: true, brief: "docs/roles/engineer.md" }));
+  const at = file.live.findIndex((e) => e.family !== undefined);
+  file.live.splice(at, 0, ...standing);
+  return JSON.stringify(file);
+})();
+const DRAINED_SESSIONS = join(FIXTURE_DIR, "sessions-drained.json");
+writeFileSync(DRAINED_SESSIONS, DRAINED_SESSIONS_TEXT);
+/** What `engineerRoles` reads from the fixture: the standing three, as `wake` offered work to them. */
+const DRAINED_ROSTER = engineerRoles(DRAINED_SESSIONS);
 // #2407: a line carries `rows`, and only a clean line with exactly ONE row counts -- a fixture without it is legacy.
 const CLEAN_CYCLE = JSON.stringify({ role: "worker-4", row: 2131, at: 1, rows: [2131], clean: true, why: "fixture" });
 const FAILED = JSON.stringify({ role: "worker-4", row: 2131, at: 2, rows: [2131], clean: false, why: "fixture" });
@@ -72,25 +93,31 @@ function drainDeps(drained: string[]) {
   return { drained, ineligibleReason: engineerEligibility({ drained, lookup: () => [] }) };
 }
 
-/** `sessions.json` as it is, except the `drain` field is gone -- the control for "the field is what changed". */
+/** The fixture roster, except the `drain` field is gone -- the control for "the field is what changed". */
 function withoutDrainField(dir: string): string {
-  const file = JSON.parse(readFileSync(REAL_SESSIONS, "utf8")) as { live: { drain?: boolean }[] };
+  const file = JSON.parse(DRAINED_SESSIONS_TEXT) as { live: { drain?: boolean }[] };
   for (const s of file.live) delete s.drain;
   const path = join(dir, "sessions-undrained.json");
   writeFileSync(path, JSON.stringify(file));
   return path;
 }
 
-test("#2324: sessions.json marks EXACTLY the three standing engineers drained, and no spare", () => {
-  assert.deepEqual(drainedRoles(), STANDING);
-  assert.deepEqual(spareRoles().filter((r) => drainedRoles().includes(r)), [],
+test("#2505: the real sessions.json marks NO role drained, and the reader still finds the mark in a file that has one", () => {
+  assert.deepEqual(drainedRoles(), [], "the three standing engineers are retired, so nothing is being drained");
+  // The positive control for that emptiness: the same reader over the roster as it was before #2505.
+  assert.deepEqual(drainedRoles(DRAINED_SESSIONS), STANDING, "the fixture marks exactly the three standing engineers");
+  assert.deepEqual(DRAINED_ROSTER, STANDING, "and lists them, in file order, ahead of the family");
+});
+
+test("#2324: a spare is never marked drained", () => {
+  assert.deepEqual(spareRoles().filter((r) => drainedRoles(DRAINED_SESSIONS).includes(r)), [],
     "a spare is disposable and is ended by the teardown; draining one would leave no role to spawn into");
 });
 
 test("#2324 (1) ACCEPTANCE: all three standing engineers IDLE and drained -> `deliver` starts a spare, prompting no standing one", () => {
   const h = recordingHerdr();
-  const drained = activeDrain({ cycles: "x", read: reading("") });
-  const got = deliver([ROW_ORDER], ALL_IDLE, REAL_ROSTER, { run: h.run, ...drainDeps(drained) });
+  const drained = activeDrain({ cycles: "x", read: reading(""), sessions: DRAINED_SESSIONS });
+  const got = deliver([ROW_ORDER], ALL_IDLE, DRAINED_ROSTER, { run: h.run, ...drainDeps(drained) });
 
   assert.deepEqual(got.sent, ["worker-2131 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
   assert.deepEqual(got.refused, []);
@@ -105,7 +132,7 @@ test("#2324 (1) POSITIVE CONTROL: the same fixture with the `drain` field REMOVE
     const h = recordingHerdr();
     const drained = activeDrain({ cycles: "x", read: reading(""), sessions: withoutDrainField(dir) });
     assert.deepEqual(drained, [], "nothing else changed: the field is the only difference");
-    const got = deliver([ROW_ORDER], ALL_IDLE, REAL_ROSTER, { run: h.run, ...drainDeps(drained) });
+    const got = deliver([ROW_ORDER], ALL_IDLE, DRAINED_ROSTER, { run: h.run, ...drainDeps(drained) });
 
     assert.deepEqual(got.sent, ["worker-capture <- engineers/ready-row-unclaimed/2131"],
       "the first idle standing engineer takes it, exactly as before this row");
@@ -119,14 +146,14 @@ test("#2324: with every spare taken, the drained three are STILL not offered the
   const h = recordingHerdr();
   // #2403: the spares are a FAMILY, so the five that hold a process are named here, not read off the roster.
   const spares = ["worker-4", "worker-5", "worker-6", "worker-7", "worker-8"];
-  const everyone = agents(Object.fromEntries([...REAL_ROSTER, ...spares].map((r) => [r, STANDING.includes(r) ? "idle" : "working"])));
+  const everyone = agents(Object.fromEntries([...DRAINED_ROSTER, ...spares].map((r) => [r, STANDING.includes(r) ? "idle" : "working"])));
   // The refusal `route` reports is what names the drain, and #2403 means `deliver` no longer STOPS at it: the pool
   // has no ceiling, so the row goes to a fresh `worker-2131` (named for the row, #2469) and the drained three are still never prompted.
-  const routed = route("engineers", everyone, withSpareInstances(REAL_ROSTER, everyone), engineerEligibility({ drained: drainedRoles() }));
+  const routed = route("engineers", everyone, withSpareInstances(DRAINED_ROSTER, everyone), engineerEligibility({ drained: drainedRoles(DRAINED_SESSIONS) }));
   assert.match(String((routed as { refusal: string }).refusal), /no engineer is idle and allowed to claim \(worker-capture=drained \(#2324\), worker-judge=drained \(#2324\), worker-tooling=drained \(#2324\), worker-4=working/);
   assert.ok(String((routed as { refusal: string }).refusal).includes(DRAINED_SEEN));
 
-  const got = deliver([ROW_ORDER], everyone, REAL_ROSTER, { run: h.run, ...drainDeps(drainedRoles()) });
+  const got = deliver([ROW_ORDER], everyone, DRAINED_ROSTER, { run: h.run, ...drainDeps(drainedRoles(DRAINED_SESSIONS)) });
   assert.deepEqual(got.sent, ["worker-2131 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
   assert.ok(h.said("agent prompt").every((line) => line.includes("worker-2131")),
     "the row falls to the new instance, never to a drained engineer");
@@ -135,9 +162,9 @@ test("#2324: with every spare taken, the drained three are STILL not offered the
 test("#2324: a drained role is never SPAWNED INTO either, even when its own process is absent", () => {
   // `spawnableRole` starts into the first ABSENT role. A drained standing role that died is absent, and an
   // instance started under its address would be refused at the claim and sit holding it.
-  const got = spawnableRole(ROW_ORDER, NOBODY, REAL_ROSTER, STANDING);
+  const got = spawnableRole(ROW_ORDER, NOBODY, DRAINED_ROSTER, STANDING);
   assert.deepEqual(got, { role: "worker-2131" });
-  assert.deepEqual(spawnableRole(ROW_ORDER, NOBODY, REAL_ROSTER), { role: "worker-capture" },
+  assert.deepEqual(spawnableRole(ROW_ORDER, NOBODY, DRAINED_ROSTER), { role: "worker-capture" },
     "control: without the drain the first absent role is the standing one, as it always was");
 });
 
@@ -145,7 +172,7 @@ test("#2324 (2): a drained role holding a row still receives the orders about TH
   const h = recordingHerdr();
   const aboutItsRow = { session: "worker-judge", cause: "review-verdict", causeKey: "worker-judge/review-verdict/2100",
     prompt: "PR #2100 has CHANGES_REQUESTED." };
-  const got = deliver([aboutItsRow, ROW_ORDER], ALL_IDLE, REAL_ROSTER, { run: h.run, ...drainDeps(drainedRoles()) });
+  const got = deliver([aboutItsRow, ROW_ORDER], ALL_IDLE, DRAINED_ROSTER, { run: h.run, ...drainDeps(drainedRoles(DRAINED_SESSIONS)) });
 
   assert.deepEqual(got.sent, [
     "worker-judge <- worker-judge/review-verdict/2100",
@@ -163,18 +190,18 @@ test("#2324: drainInForce -- in force until the NEWEST line fails, and an empty 
 
 test("#2324 (4) ACCEPTANCE: with the last ledger line `clean: false` the same fixture prompts the standing engineer", () => {
   const h = recordingHerdr();
-  const lifted = activeDrain({ cycles: "x", read: reading(`${CLEAN_CYCLE}\n${FAILED}\n`) });
+  const lifted = activeDrain({ cycles: "x", read: reading(`${CLEAN_CYCLE}\n${FAILED}\n`), sessions: DRAINED_SESSIONS });
   assert.deepEqual(lifted, [], "the drain lifted itself: nobody edited sessions.json");
-  const got = deliver([ROW_ORDER], ALL_IDLE, REAL_ROSTER, { run: h.run, ...drainDeps(lifted) });
+  const got = deliver([ROW_ORDER], ALL_IDLE, DRAINED_ROSTER, { run: h.run, ...drainDeps(lifted) });
 
   assert.deepEqual(got.sent, ["worker-capture <- engineers/ready-row-unclaimed/2131"]);
   assert.deepEqual(h.said("workspace create"), []);
   // ...and it is the LEDGER that decided, not the roster: the same file with a clean last line drains again.
-  assert.deepEqual(activeDrain({ cycles: "x", read: reading(`${FAILED}\n${CLEAN_CYCLE}\n`) }), STANDING);
+  assert.deepEqual(activeDrain({ cycles: "x", read: reading(`${FAILED}\n${CLEAN_CYCLE}\n`), sessions: DRAINED_SESSIONS }), STANDING);
 });
 
 test("#2324: an unreadable ledger line is a FAILED cycle, so it lifts the drain instead of hiding behind the last clean one", () => {
-  assert.deepEqual(activeDrain({ cycles: "x", read: reading(`${CLEAN_CYCLE}\nnot json\n`) }), []);
+  assert.deepEqual(activeDrain({ cycles: "x", read: reading(`${CLEAN_CYCLE}\nnot json\n`), sessions: DRAINED_SESSIONS }), []);
 });
 
 // --- the precheck: no instance is created to be refused and sit idle ---
@@ -268,7 +295,7 @@ test("#2324: an order whose row cannot be read is refused rather than spawned fo
 test("#2324: an order the standing path takes is never prechecked -- the precheck is the SPAWN's, not `route`'s", () => {
   const h = recordingHerdr();
   let asked = 0;
-  const got = deliver([ROW_ORDER], ALL_IDLE, REAL_ROSTER, { run: h.run, claimable: () => { asked += 1; return "no"; } });
+  const got = deliver([ROW_ORDER], ALL_IDLE, DRAINED_ROSTER, { run: h.run, claimable: () => { asked += 1; return "no"; } });
   assert.deepEqual(got.sent, ["worker-capture <- engineers/ready-row-unclaimed/2131"]);
   assert.equal(asked, 0, "no lookup was paid for an order a standing engineer took");
 });
@@ -419,6 +446,8 @@ function copyClosureAsRepo(copyRoot: string): string {
   }
   const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args],
     { cwd: copyRoot, env: sandboxGitEnv(), stdio: "pipe" });
+  // The COPY's roster is the fixture, so the CLI reads a file that marks the standing three drained (see the top).
+  writeFileSync(join(copyRoot, SESSIONS_JSON), DRAINED_SESSIONS_TEXT);
   git("init", "--quiet");
   git("add", "-A");
   git("commit", "--quiet", "-m", "copy");
@@ -447,7 +476,7 @@ function claimProcess(session: string, ledger: string | null) {
 }
 
 test("#2324 (3): THE COMMAND -- `row-claim claim` by a drained role refuses naming the drain; a failed cycle lifts it", () => {
-  assert.deepEqual(drainedRoles(), STANDING, "sessions.json is what marks them");
+  assert.deepEqual(drainedRoles(DRAINED_SESSIONS), STANDING, "the roster the CLI's copy carries is what marks them");
   const drained = claimProcess("worker-judge", null);
   assert.match(drained.stdout, /NOT CLAIMED: worker-judge is DRAINED/, `got stdout ${drained.stdout} stderr ${drained.stderr}`);
   assert.equal(drained.status, 1);

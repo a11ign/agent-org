@@ -48,10 +48,12 @@ const ROW_ORDER = {
 /** Nobody is running: every engineer role is absent from herdr's workspace list. */
 const NOBODY = agents({ ceo: "working", "product-manager": "working" });
 
-test("#2323: the engineer roster still offers the standing three before any spare", () => {
+test("#2505: the engineer roster lists no standing address, so every engineer is a spare-family instance", () => {
   // #2403: the spare FAMILY is a rule and not an address, so it is not in the list `route` walks; the instances that
-  // exist reach the offer through `withSpareInstances` (wake-spare-family.test.ts).
-  assert.deepEqual(engineerRoles(), ROSTER);
+  // exist reach the offer through `withSpareInstances` (wake-spare-family.test.ts). The three standing engineers that
+  // used to head this list were retired by #2505, so the list is empty; `ROSTER` above is a FIXTURE roster with a
+  // standing role in it, because the tests below need one to tell "a spawn" from "a prompt to a standing session".
+  assert.deepEqual(engineerRoles(), []);
 });
 
 // --- #2323: A SPAWNED ENGINEER IS ENDED WHEN ITS ROW CLOSES, AND ACTS AS THE WORKERS ACCOUNT ---
