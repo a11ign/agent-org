@@ -254,24 +254,46 @@ export function b2Verdict(rows) {
  * lives, while an order about a row the role already holds is addressed to it by NAME and never reaches here.
  * It costs no API call: the drain is a fact about the role, not about what it holds.
  *
- * @param {{ lookup?: typeof lookupHeldRows, warn?: (line: string) => void, drained?: readonly string[] }} [deps]
- *   `drained` is the roles the drain holds back NOW ({@link activeDrain}) -- already empty once a cycle failed
+ * A SPARE INSTANCE THAT HOLDS OR HAS HELD A ROW IS NOT A MEMBER OF THE POOL (#2407, "one instance, one row"). B2 alone
+ * refuses only a row IN BUILD, so an instance whose pull request was in review looked free and was offered a second
+ * row -- `worker-4` held four. What it has held is asked first from the registry the teardown keeps (no API call, and
+ * it outlives the row's label), then from the labels (a row no tick has observed yet). AN ORDER THAT NAMES THE
+ * INSTANCE never reaches this: {@link route} asks only for the pool, so a review refusal, a failing check or a
+ * conflict on its own PR is delivered as before.
+ *
+ * @param {{ lookup?: typeof lookupHeldRows, warn?: (line: string) => void, drained?: readonly string[],
+ *   spare?: (label: string) => boolean, instances?: Record<string, SpareInstance> }} [deps]
+ *   `drained` is the roles the drain holds back NOW ({@link activeDrain}) -- already empty once a cycle failed;
+ *   `spare` is the roster's mark ({@link isSpareRole}) and `instances` the registry ({@link readSpareRegistry}).
+ *   ABSENT MEANS NONE of either, so a caller that does not say is asked about B2 alone
  * @returns {(label: string) => string | null}
  */
-export function engineerEligibility({ lookup = lookupHeldRows, drained = [],
+export function engineerEligibility({ lookup = lookupHeldRows, drained = [], spare = () => false, instances = {},
   warn = (line) => { process.stderr.write(`${line}\n`); } } = {}) {
   /** @type {Map<string, string | null>} */
   const memo = new Map();
   return (label) => {
     if (drained.includes(label)) return DRAINED_SEEN;
     if (memo.has(label)) return memo.get(label) ?? null;
+    const recorded = spare(label) ? instances[label]?.rows ?? [] : [];
+    if (recorded.length > 0) return remember(memo, label, spentSeen(recorded));
     // No row is excluded: the order's row is unclaimed, so it is not one of the session's held rows.
     const rows = lookup(label, 0, {});
     if (rows === null) warn(`wake: could not read the rows "${label}" holds -- offering it the order anyway (B2 fails open).`);
-    const verdict = rows === null ? null : b2Verdict(rows);
-    memo.set(label, verdict);
-    return verdict;
+    if (rows !== null && spare(label) && rows.length > 0) return remember(memo, label, spentSeen(rows.map((r) => r.number)));
+    return remember(memo, label, rows === null ? null : b2Verdict(rows));
   };
+}
+
+/** @param {Map<string, string | null>} memo @param {string} label @param {string | null} verdict @returns {string | null} */
+function remember(memo, label, verdict) {
+  memo.set(label, verdict);
+  return verdict;
+}
+
+/** What `route`'s refusal calls a spare that holds or has held a row -- short enough to sit in a `seen` list. @param {readonly number[]} rows */
+export function spentSeen(rows) {
+  return `has held ${rows.map((n) => `#${n}`).join(", ")}: one instance, one row (#2407)`;
 }
 
 /**
@@ -2664,6 +2686,20 @@ export function spareInstances(agents, path = new URL("../docs/roles/sessions.js
 }
 
 /**
+ * Is this address a SPARE engineer role -- marked `spare` in the roster, by name or as a member of a marked family?
+ * The one question the router's pool and `row-claim`'s second-row refusal both ask (#2407), answered from the FILE and
+ * not from a process list, so it holds for an address that has no process yet. A standing engineer is not one.
+ *
+ * @param {string} label
+ * @param {string | URL} [path] the roster file; a parameter so a test can hand it a fixture
+ * @returns {boolean}
+ */
+export function isSpareRole(label, path = new URL("../docs/roles/sessions.json", import.meta.url)) {
+  const { addresses, families } = spareEntries(path);
+  return addresses.includes(label) || familyNumber(label, families) !== null;
+}
+
+/**
  * How long a spawned instance may sit idle without ever holding a row before the cycle counts as FAILED.
  * Generous on purpose: the instance's first turn is reading the order, the row and its own worktree, and an
  * idle reading inside it is not yet a defect.
@@ -2704,7 +2740,9 @@ export function spareDecision({ status, instance, held, now, claimBoundMs = SPAR
 
 /**
  * @typedef {{ path: string, clean: boolean | "unknown", merge: "merged" | "not-merged" | "unknown" }} SpareWorktree
- * @typedef {{ role: string, row: number | null, at: number, clean: boolean, why: string }} SpareCycle
+ * @typedef {{ role: string, row: number | null, at: number, clean: boolean, why: string, rows?: number[] }} SpareCycle
+ *   `rows` is EVERY row the instance held, oldest first (#2407), and its ABSENCE is what marks a legacy line: one
+ *   written before the field existed, which {@link consecutiveClean} counts for nothing
  */
 
 /**
@@ -2723,6 +2761,9 @@ export function spareDecision({ status, instance, held, now, claimBoundMs = SPAR
 export function cycleVerdict({ role, rows, held, worktrees }) {
   /** @type {string[]} */
   const problems = [];
+  // #2407: ONE INSTANCE, ONE ROW. An instance that ended holding more than one is a failed cycle, so a leak is a line
+  // that resets the run (and lifts the drain) instead of a count that quietly carries on.
+  if (rows.length > 1) problems.push(`held ${rows.length} rows (${rows.map((r) => `#${r.number}`).join(", ")}): one instance, one row (#2407)`);
   for (const row of rows) {
     if (row.state !== "CLOSED") problems.push(`#${row.number} is ${row.state.toLowerCase()}, not closed`);
   }
@@ -2746,12 +2787,22 @@ export function cycleVerdict({ role, rows, held, worktrees }) {
  * run was broken, and an EMPTY ledger says nothing has been measured, which must not read as "0 of 20 clean"
  * to anyone deciding whether the condition is close. A failure resets the run; a clean line extends it.
  *
- * @param {Pick<SpareCycle, "clean">[]} ledger oldest first
+ * ONLY A SINGLE-ROW CLEAN LINE COUNTS (#2407, `ceo`'s ruling on the chairman's point that a cycle spanning three rows is
+ * not the cycle the rule means). A line's `rows` is the account, so **a line with no `rows` field is LEGACY and counts
+ * for nothing -- never as a reset and never as evidence**, which is what lets the arithmetic not be argued with
+ * afterwards: the two lines on the ledger when this landed were 2 of 20, one of them a three-row cycle, and the count
+ * restarts at 0. Any other line that has `rows` and is not a clean single-row one (a failure, a multi-row line, the
+ * unreadable placeholder {@link readSpareCycles} makes) RESETS the run.
+ *
+ * @param {Pick<SpareCycle, "clean" | "rows">[]} ledger oldest first
  * @returns {{ run: number, empty: boolean }}
  */
 export function consecutiveClean(ledger) {
   let run = 0;
-  for (const line of ledger) run = line.clean === true ? run + 1 : 0;
+  for (const line of ledger) {
+    if (!Array.isArray(line.rows)) continue;
+    run = line.clean === true && line.rows.length === 1 ? run + 1 : 0;
+  }
   return { run, empty: ledger.length === 0 };
 }
 
@@ -2775,7 +2826,8 @@ export function readSpareCycles(path, read = readFileSync) {
     try {
       return /** @type {SpareCycle} */ (JSON.parse(line));
     } catch {
-      return { role: "?", row: null, at: 0, clean: false, why: `unreadable ledger line: ${line.slice(0, 60)}` };
+      // `rows: []` so it is a line that HAS an account -- and a failed one -- rather than a legacy line (#2407).
+      return { role: "?", row: null, at: 0, clean: false, rows: [], why: `unreadable ledger line: ${line.slice(0, 60)}` };
     }
   });
 }
@@ -2862,12 +2914,14 @@ export function cyclesReport(ledger, drained) {
       + `${CLEAN_CYCLES_TARGET}: a run of zero would mean a cycle failed.\n` };
   }
   const last = ledger[ledger.length - 1];
+  const legacy = ledger.filter((line) => !Array.isArray(line.rows)).length;
   const held = drainInForce(ledger)
     ? `IN FORCE on ${drained.join(", ") || "no role (no role is marked drain)"}`
     : "LIFTED -- the last cycle was not clean, so the standing engineers claim again until `ceo` re-arms it";
   return { exit: 0, stderr: "", stdout: `clean cycles in the current run: ${run} of ${CLEAN_CYCLES_TARGET}\n`
     + `last ledger line: ${JSON.stringify(last)}\n`
     + `ledger lines: ${ledger.length}\n`
+    + `legacy lines counted for nothing (no rows field, #2407): ${legacy}\n`
     + `drain: ${held}\n` };
 }
 
@@ -3065,16 +3119,19 @@ function releaseClaim(claimed, role, env, exec) {
  * run from the role's own launch worktree under the environment the agent will run in (`spawnEnvironment`), because a
  * claim writes labels and comments and must be attributed to the account the agent acts as (#916).
  *
- * @param {{ exec?: Exec, exists?: (path: string) => boolean, worktreesDir?: string, primary?: string }} [host]
- *   every one a seam, so the claim is testable without a host: the defaults are the tick's own
+ * @param {{ exec?: Exec, exists?: (path: string) => boolean, worktreesDir?: string, primary?: string,
+ *   settle?: (role: string) => void }} [host]
+ *   every one a seam, so the claim is testable without a host: the defaults are the tick's own. `settle` drops a
+ *   leftover registry entry for the role BEFORE the claim (see {@link settleAbsentInstance}, #2407)
  * @returns {SpawnClaimer}
  */
 export function spawnClaimer({ exec = defaultExec, exists = existsSync, worktreesDir = HOST_REPOS,
-  primary = PRIMARY_CHECKOUT } = {}) {
+  primary = PRIMARY_CHECKOUT, settle = () => {} } = {}) {
   return {
     claim(order, role, env) {
       const row = rowOfOrder(order);
       if (row === null) return { refusal: `cannot tell which row "${order.causeKey}" is about, so cannot claim it` };
+      settle(role);
       const launch = launchWorktree(role, { exec, exists, worktreesDir, primary });
       if ("refusal" in launch) return launch;
       const branch = `agent/${slugOf(order.title)}-${row}`;
@@ -3266,7 +3323,7 @@ function closeInstance(role, instance, failed, deps) {
     deps.warn(`teardown: "${role}" (${id}) could not be closed (${firstLine(err)}) -- retried next tick.`);
     return null;
   }
-  const cycle = { role, row, at: deps.now, ...verdict };
+  const cycle = { role, row, at: deps.now, rows: instance.rows, ...verdict };
   deps.record(cycle);
   return cycle;
 }
@@ -3289,14 +3346,33 @@ function readVerdict(role, instance, deps) {
  * @param {string} role @param {number} [now]
  */
 export function registerSpawn(paths, role, now = Date.now()) {
-  const registry = readSpareRegistry(paths.registry);
-  if (registry[role] !== undefined) {
-    const rows = registry[role].rows;
-    appendSpareCycle(paths.cycles, { role, row: rows.length > 0 ? rows[rows.length - 1] : null, at: now,
-      clean: false, why: "the previous instance left without the teardown (closed by hand or crashed)" });
-  }
+  const registry = settleAbsentInstance(paths, role, now);
   registry[role] = { spawnedAt: now, rows: [] };
   writeFileSync(paths.registry, `${JSON.stringify(registry)}\n`);
+}
+
+/**
+ * A registry entry for a role that holds NO process is an instance that left without the teardown (closed by hand,
+ * crashed): a FAILED cycle, written here and the entry dropped, because this is the one moment the role is known to
+ * have been absent rather than merely missing from a partial list. Returns the registry without it.
+ *
+ * ASKED BEFORE A SPAWN'S CLAIM AS WELL AS AFTER IT (#2407): the claim runs as the new instance, and `row-claim`
+ * refuses a spare a second row on the strength of this very registry, so a leftover entry would refuse the first
+ * claim of the next instance to take that address -- and the lowest free address is chosen every tick, so nothing
+ * would ever spawn again. Idempotent: the second call finds nothing.
+ *
+ * @param {{ registry: string, cycles: string }} paths @param {string} role @param {number} [now]
+ * @returns {Record<string, SpareInstance>}
+ */
+export function settleAbsentInstance(paths, role, now = Date.now()) {
+  const registry = readSpareRegistry(paths.registry);
+  if (registry[role] === undefined) return registry;
+  const rows = registry[role].rows;
+  appendSpareCycle(paths.cycles, { role, row: rows.length > 0 ? rows[rows.length - 1] : null, at: now,
+    clean: false, rows, why: "the previous instance left without the teardown (closed by hand or crashed)" });
+  delete registry[role];
+  writeFileSync(paths.registry, `${JSON.stringify(registry)}\n`);
+  return registry;
 }
 
 /** @param {string} path @param {SpareCycle} cycle */
@@ -3345,6 +3421,28 @@ function drainNow(cyclesPath) {
   } catch (err) {
     process.stderr.write(`wake: could not read the drain (${firstLine(err)}) -- treating it as LIFTED this tick.\n`);
     return [];
+  }
+}
+
+/**
+ * The tick's pool eligibility: B2, the drain, and "one instance, one row" (#2407) -- the last read from the registry the
+ * teardown keeps and the roster's `spare` mark. @param {{ registry: string }} spares @param {readonly string[]} drained
+ */
+function poolEligibility(spares, drained) {
+  return engineerEligibility({ drained, spare: (label) => isSpareRole(label), instances: instancesNow(spares.registry) });
+}
+
+/**
+ * The registry the router reads this tick. One that cannot be READ is treated as empty and SAID -- the labels are still
+ * asked, so a spare holding a row is still skipped -- rather than stopping every delivery on a file (#2407).
+ * @param {string} registryPath @returns {Record<string, SpareInstance>}
+ */
+function instancesNow(registryPath) {
+  try {
+    return readSpareRegistry(registryPath);
+  } catch (err) {
+    process.stderr.write(`wake: could not read the spare registry (${firstLine(err)}) -- routing on the row labels alone.\n`);
+    return {};
   }
 }
 
@@ -3433,9 +3531,9 @@ function main() {
   const spares = sparePathsFrom(ledgerPath);
   const drained = drainNow(spares.cycles);
   const { sent, refused: gateRefused, stuck } = deliver(todo, free, roster, { record,
-    counts: deliveryCounts(ledgerPath), ineligibleReason: engineerEligibility({ drained }),
+    counts: deliveryCounts(ledgerPath), ineligibleReason: poolEligibility(spares, drained),
     registerSpawn: (role) => registerSpawn(spares, role), drained, claimable: spawnClaimability(),
-    claimer: spawnClaimer(hostLayout), launch: hostLayout,
+    claimer: spawnClaimer({ ...hostLayout, settle: (role) => { settleAbsentInstance(spares, role); } }), launch: hostLayout,
     registerReviewer: (session) => registerReviewer(reviewerPathsFrom(ledgerPath), session),
     registry: () => readReviewerRegistry(reviewerPathsFrom(ledgerPath).registry) });
   const refused = [...handed.refused, ...gateRefused];

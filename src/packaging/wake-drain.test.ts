@@ -60,8 +60,9 @@ const NOBODY = agents({ ceo: "working", "product-manager": "working" });
 // outcome is named by the test and not inferred from it.
 
 const REAL_SESSIONS = new URL("../../../../packages/agent-org/docs/roles/sessions.json", import.meta.url);
-const CLEAN_CYCLE = JSON.stringify({ role: "worker-4", row: 2131, at: 1, clean: true, why: "fixture" });
-const FAILED = JSON.stringify({ role: "worker-4", row: 2131, at: 2, clean: false, why: "fixture" });
+// #2407: a line carries `rows`, and only a clean line with exactly ONE row counts -- a fixture without it is legacy.
+const CLEAN_CYCLE = JSON.stringify({ role: "worker-4", row: 2131, at: 1, rows: [2131], clean: true, why: "fixture" });
+const FAILED = JSON.stringify({ role: "worker-4", row: 2131, at: 2, rows: [2131], clean: false, why: "fixture" });
 
 /** A ledger file's text as `activeDrain`'s `read` -- cast once here, since a `readFileSync` overload set is not a lambda. */
 const reading = (text: string) => (() => text) as unknown as typeof readFileSync;
@@ -451,7 +452,7 @@ test("#2324 (3): THE COMMAND -- `row-claim claim` by a drained role refuses nami
   assert.match(drained.stdout, /NOT CLAIMED: worker-judge is DRAINED/, `got stdout ${drained.stdout} stderr ${drained.stderr}`);
   assert.equal(drained.status, 1);
 
-  const failed = `${JSON.stringify({ role: "worker-4", row: 1, at: 1, clean: false, why: "fixture" })}\n`;
+  const failed = `${JSON.stringify({ role: "worker-4", row: 1, at: 1, rows: [1], clean: false, why: "fixture" })}\n`;
   const lifted = claimProcess("worker-judge", failed);
   assert.ok(!/DRAINED/.test(lifted.stdout), `the ledger's failed line lifts the drain in the CLI too; got ${lifted.stdout}`);
 
