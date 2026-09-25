@@ -2876,8 +2876,7 @@ export function mergeConflictOrders(conflicted) {
         + "Merge or rebase `main` into the branch, resolve the conflicts, re-run the gate and push.\n"
         + "DO NOT ARM IT: `gh pr merge --auto` exits non-zero for an unmergeable pull request, so "
         + "`arm-pr.mjs` cannot succeed here. Until this is resolved it is also holding every Ready row "
-        + "that shares a file with it (B4) -- #2203 held six. If the pull request should be closed, say so "
-        + "on it; a conflicted pull request nobody answers never lands.",
+        + "that shares a file with it (B4) -- #2203 held six.",
       causeKey: `${session}/pr-merge-conflict/pr-${pr.number}/${head8}`,
     };
   });
@@ -3264,9 +3263,7 @@ function failingChecksPrompt({ pr, head8, blocking, baseTip }) {
     + "(b) a run that tested a `main` since fixed (a stale merge ref) -- a PUSH or `update-branch`, because "
     + "`gh run rerun` reuses the same merge ref and cannot clear it; "
     + "(c) a check that could not ASK (a rate-limit or other refusal, no defect at all) -- `gh run rerun`, "
-    + "there is nothing to push. Read the failing job to see which. "
-    + "If the failure is not yours to fix or the PR should be closed, say so on the PR -- "
-    + "a red pull request nobody answers never lands.";
+    + "there is nothing to push. Read the failing job to see which.";
 }
 
 /**
@@ -3336,11 +3333,10 @@ function notConvincedOrder(pr, found, { head8, keyHead8 }) {
     ? `#${pr.number} at \`${head8}\` carries a NOT CONVINCED verdict${from} and it carries your session `
       + "label, so the rework is yours. Read the verdict, fix what it names on that branch and push. If "
       + "you believe the verdict is wrong, that is a DISPUTE rather than rework: say so on the PR and "
-      + "product-manager decides. A refused verdict nobody answers is a pull request that never lands."
+      + "product-manager decides."
     : `#${pr.number} at \`${head8}\` carries a NOT CONVINCED verdict${from} and nothing has moved since. `
       + "Read the verdict, decide whether it stands, and route the rework to the session holding that "
-      + "row -- or close the PR if the row was wrong. A refused verdict nobody answers is a pull request "
-      + "that never lands.";
+      + "row -- or close the PR if the row was wrong.";
   return {
     session,
     cause: "verdict-not-convinced",

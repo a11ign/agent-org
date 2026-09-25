@@ -83,13 +83,33 @@ test("#2505: sessions.json lists NO standing engineer address, so the roster REA
 
 test("the delivery path carries the line: what herdr is handed is the addressed text", () => {
   const prompts: string[][] = [];
+  const run = (args: string[]) => {
+    prompts.push(args);
+    return args.join(" ").includes("workspace create")
+      ? JSON.stringify({ result: { root_pane: { pane_id: "wB:p1" }, workspace: { workspace_id: "wB" } } }) : "{}";
+  };
+  // A spare-family instance STARTED for the row -- the FIRST order, which is the one that carries the brief line (#2538): no
+  // standing address exists to use since #2505, and the family is who is told (#2403). Every standing address is held so the
+  // pilot has to start `worker-2131`.
+  const held = ["worker-capture", "worker-judge", "worker-tooling"].map((label) => ({ label, status: "working" }));
+  const rowOrder = { session: "engineers", cause: "ready-row-unclaimed", causeKey: "engineers/ready-row-unclaimed/2131",
+    prompt: "Ready row #2131 is unclaimed." };
+  const got = deliver([rowOrder], held, ["worker-capture", "worker-judge", "worker-tooling"], { run });
+  assert.deepEqual(got.sent, [`worker-2131 <- ${rowOrder.causeKey} (STARTED sonnet/high)`], `it was delivered: ${JSON.stringify(got)}`);
+  const prompt = prompts.find((a) => a[3] === "prompt" && a[4] === "worker-2131" && a[5] !== "/clear");
+  assert.match(String(prompt?.[5]), BRIEF_LINE);
+});
+
+test("#2538 the brief line is the FIRST order's: a follow-up to a live instance does not repeat it", () => {
+  const prompts: string[][] = [];
   const run = (args: string[]) => { prompts.push(args); return "{}"; };
-  // A spare-family instance: no standing address exists to use since #2505, and the family is who is told (#2403).
   const engineerOrder = { session: "worker-4", causeKey: "worker-4/rework/1", prompt: "rework #1" };
   const got = deliver([engineerOrder], [{ label: "worker-4", status: "idle" }], engineerRoles(), { run });
   assert.deepEqual(got.sent, [`worker-4 <- ${engineerOrder.causeKey} (no clear)`], `it was delivered: ${JSON.stringify(got)}`);
   const prompt = prompts.find((a) => a[3] === "prompt" && a[4] === "worker-4" && a[5] !== "/clear");
-  assert.match(String(prompt?.[5]), BRIEF_LINE);
+  assert.ok(prompt, "the order was typed, so the absence below is not an empty run");
+  assert.doesNotMatch(String(prompt[5]), BRIEF_LINE);
+  assert.match(addressed(engineerOrder, "worker-4"), BRIEF_LINE, "CONTROL: the full form for the same label DOES carry it");
 });
 
 // --- done-when 4: the ban is in the brief, DERIVED from the two briefs' own blocks, with no exception --------------

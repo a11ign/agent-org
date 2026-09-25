@@ -149,10 +149,13 @@ export function attributed(text, sender) {
  * THE TEXT THE CLEARED SESSION RECEIVES: `wake.mjs`'s `addressed`, the ONE function, around the asker and
  * the order. A second wrapper here would be a second place for the autonomy clause to drift (#2344).
  *
- * @param {string} label @param {string} text @param {string | null} sender
+ * A SESSION NOT CLEARED FIRST is a per-row instance mid-row (#2483), whose window already holds the first-contact preamble, so
+ * `followUp` gives it the one-line header instead (#2538); a standing seat, cleared, gets the whole of it.
+ *
+ * @param {string} label @param {string} text @param {string | null} sender @param {{followUp?: boolean}} [how]
  */
-export function deliveredText(label, text, sender) {
-  return addressed({ session: label, prompt: attributed(text, sender) }, label);
+export function deliveredText(label, text, sender, { followUp = false } = {}) {
+  return addressed({ session: label, prompt: attributed(text, sender) }, label, { followUp });
 }
 
 /** Prefix on {@link clearThenPrompt}'s return value when the PROMPT ITSELF failed -- the order never
@@ -172,9 +175,9 @@ export const PROMPT_REFUSED_PREFIX = "prompt refused: ";
  * @param {string | null} [sender]
  */
 export function clearThenPrompt(run, label, text, sender = null) {
-  const { refusal: clearRefusal } = clearBeforeOrder(run, label);
+  const { sent, refusal: clearRefusal } = clearBeforeOrder(run, label);
   try {
-    run(["--session", "org", "agent", "prompt", label, deliveredText(label, text, sender)]);
+    run(["--session", "org", "agent", "prompt", label, deliveredText(label, text, sender, { followUp: !sent })]);
   } catch (/** @type {any} */ err) {
     return `${PROMPT_REFUSED_PREFIX}${String(err?.message ?? err).split("\n")[0].slice(0, 120)}`;
   }

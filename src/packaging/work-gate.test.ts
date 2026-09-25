@@ -177,8 +177,7 @@ test("#2001: a NOT CONVINCED verdict on a PR naming no session is unchanged", ()
   assert.equal(order.causeKey, "product-manager/verdict-not-convinced/pr-13/abc12345");
   assert.equal(order.prompt, "#13 at `abc12345` carries a NOT CONVINCED verdict from reviewer and "
     + "nothing has moved since. Read the verdict, decide whether it stands, and route the rework to the "
-    + "session holding that row -- or close the PR if the row was wrong. A refused verdict nobody "
-    + "answers is a pull request that never lands.");
+    + "session holding that row -- or close the PR if the row was wrong.");
 });
 
 test("#912: a claimed row is not work, and an unclaimed one names no session", () => {
@@ -1139,6 +1138,18 @@ test("a red check that CAN block the merge still wakes its session", () => {
     session: string }[];
   assert.equal(order.cause, "pr-checks-failing");
   assert.equal(order.session, "worker-capture", "and it goes to the session named on the PR");
+});
+
+test("#2538 the pr-checks-failing order keeps its (a)/(b)/(c) triage and drops the tail the preamble already says", () => {
+  const pr = { number: 1650, isDraft: false, headRefOid: "deadbeefcafe0000", author: { login: "x" },
+    labels: [{ name: "session:worker-capture" }], comments: [],
+    statusCheckRollup: rollupOf([["gate", "FAILURE"]]) };
+  const [order] = decide({ prs: [pr], readyRows: [], required: ["gate"] }) as { prompt: string }[];
+  for (const kept of ["(a) a real defect on your branch", "(b) a run that tested a `main` since fixed", "(c) a check that could not ASK"]) {
+    assert.ok(order.prompt.includes(kept), `the triage is useful and stays: ${kept}`);
+  }
+  assert.ok(order.prompt.endsWith("Read the failing job to see which."), "and the order now ends where the triage does");
+  assert.doesNotMatch(order.prompt, /nobody answers|not yours to fix/, "the closing 'say so on the PR' repeated the preamble");
 });
 
 test("an UNREADABLE required set counts every check, exactly as before it existed", () => {
@@ -4322,6 +4333,8 @@ test("#2209 THE LIVE SHAPE: a conflicted, approved, green PR reaches its AUTHOR 
   assert.ok(CAUSES.includes(orders[0].cause));
   assert.match(orders[0].prompt, /CONFLICTS with `main`/);
   assert.match(orders[0].prompt, /DO NOT ARM IT/, "the remedy pr-green-unarmed hands over cannot succeed here");
+  assert.match(orders[0].prompt, /holding every Ready row that shares a file with it \(B4\)/, "the B4 consequence is said nowhere else and stays (#2538)");
+  assert.doesNotMatch(orders[0].prompt, /nobody answers|should be closed/, "the closing tail repeated the preamble (#2538)");
   assert.equal(orders[0].causeKey, `worker-tooling/pr-merge-conflict/pr-2203/${HEAD.slice(0, 8)}`);
 });
 

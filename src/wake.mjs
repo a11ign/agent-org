@@ -2830,18 +2830,23 @@ function engineerBriefLine(label, engineers, families) {
  * to run and no other directory to name. A STANDING session keeps the order's own text, with `LAUNCH_PLACEHOLDER`
  * filled by {@link launchAdvice}. `engineers` and `families` are parameters so a test can hand `addressed` a roster.
  *
+ * A FOLLOW-UP GETS ONE LINE, NOT THIS WHOLE WRAPPER (#2538). `followUp` is `deliver`'s and `clearThenPrompt`'s say-so that the
+ * target was neither started nor cleared for this order, so its window already holds all of the above; the default is the full
+ * form, so a caller that does not know is never the one that leaves a session unbriefed. A `spawned` order is never a follow-up.
+ *
  * @param {{session: string, prompt: string, title?: string, causeKey?: string}} order
  * @param {string} label the concrete session this went to
- * @param {LaunchFacts & {spawned?: ClaimedRow, engineers?: string[],
+ * @param {LaunchFacts & {spawned?: ClaimedRow, followUp?: boolean, engineers?: string[],
  *   families?: readonly import("./arm-pr.mjs").SpareFamily[]}} [facts]
  */
 export function addressed(order, label,
-  { spawned, engineers = engineerRoles(), families = SPARE_FAMILIES, ...launch } = {}) {
+  { spawned, followUp = false, engineers = engineerRoles(), families = SPARE_FAMILIES, ...launch } = {}) {
   // `<you>` SUBSTITUTED, not merely explained: the order's own command text carries the placeholder, and
   // an agent that has been told its name still has to edit the command it was handed. Handing it a
   // command it can run is the difference between an instruction and a task.
   const prompt = spawned ? spawnedPrompt(order, spawned)
     : order.prompt.replaceAll("<you>", label).replaceAll(LAUNCH_PLACEHOLDER, launchAdvice(label, launch));
+  if (followUp && !spawned) return `${FOLLOW_UP_HEADER(label)}\n\n${prompt}`;
   return `You are \`${label}\`, an org session in this repository. Use that name wherever a command `
     + `asks which session you are (\`--session=${label}\`).\n\n`
     + `${prompt}\n\n`
@@ -2861,6 +2866,18 @@ export function addressed(order, label,
     + "job, and polling a pull request for a verdict that has its own cause is a turn spent on a "
     + "question the tick already answers.";
 }
+
+/**
+ * THE ONE LINE A FOLLOW-UP CARRIES IN PLACE OF THE FIRST-CONTACT PREAMBLE (#2538). `deliver` and `clearThenPrompt` send it
+ * to a session whose context they did NOT just start or clear -- a per-row instance mid-row, or a resume (#2470) -- where the
+ * preamble is already in the window and a repeat is a copy that stays: ~1,640 chars per order, four copies on a PR with three
+ * review rounds.
+ *
+ * IT KEEPS THE WORDS `You are \`<session>\`` because `token-audit`'s `sessionOf` attributes a transcript to a session by that
+ * exact phrase; a header that dropped them would leave a transcript that opens on a follow-up unattributed spend.
+ * @param {string} label
+ */
+const FOLLOW_UP_HEADER = (label) => `You are \`${label}\` -- a follow-up order to your session: your first order and its brief still stand.`;
 
 /** What a session that must claim its row is told about a refusal; a spawned one has nothing left to claim (#2405). */
 const REFUSED_CLAIM_IS_AN_ANSWER = "If you cannot claim the row (already taken, or the claim refuses), that is an "
@@ -3409,6 +3426,16 @@ function clearedFirst(order, { run, target, refused }) {
 }
 
 /**
+ * IS THIS ORDER A FOLLOW-UP, whose session already holds the first-contact preamble (#2538)? Only a target that was neither
+ * started this tick (`profile`) nor cleared before the order (`noClear` is false) does. A resume is `noClear` too, but a
+ * process this tick STARTED for one is new and knows nothing, so it is briefed however it was ordered.
+ * @param {{profile?: object}} target @param {boolean} noClear
+ */
+function isFollowUp(target, noClear) {
+  return noClear && target.profile === undefined;
+}
+
+/**
  * Why this target cannot answer now, or `null`. A process this tick STARTED has a fresh allowance question no
  * transcript can answer yet, so it is not asked (#2256).
  * @param {{label: string, profile?: object}} target @param {((label: string) => string | null) | undefined} unavailable
@@ -3490,7 +3517,8 @@ export function deliver(orders, agents, roster,
     const noClear = clearedFirst(order, { run, target, refused });
     try {
       run(["--session", "org", "agent", "prompt", target.label,
-        addressed(carriedOrder(order, target), target.label, { ...launch, spawned: target.claimed })]);
+        addressed(carriedOrder(order, target), target.label,
+          { ...launch, spawned: target.claimed, followUp: isFollowUp(target, noClear) })]);
     } catch (err) {
       // A STARTED PROCESS IS LEFT RUNNING HERE, and the causeKey is NOT recorded. It is a healthy, idle
       // session under a roster label, so the next tick's `route` offers it this same order by the ordinary
