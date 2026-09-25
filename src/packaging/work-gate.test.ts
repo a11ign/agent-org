@@ -33,7 +33,7 @@ import { localImports } from "../../../guards/src/local-import-closure.mjs";
 import { deriveClosureRequirements } from "../acceptance-commands.mjs";
 import { MAX_ROW_ORDERS_PER_TICK, readCommitChain, withCommitChains, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES,
   comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
-  blockingChecks, anyChecksRed, requiredCheckNames, ownerOf, NOT_PICKABLE, NOT_STARTABLE,
+  blockingChecks, anyChecksRed, requiredCheckNames, readBaseTip, baseTipWhenRed, ownerOf, NOT_PICKABLE, NOT_STARTABLE,
   ROUTED_TO, readPromotableRows, GH_READS, partitionUnclaimed, openRowState, waitingBreakdown,
   deadMansSwitch, hostDriftOrders, JUDGMENT_CAUSES,
   shouldBeMerging as shouldBeMergingPrs, conflictedPrs, conflictStateOf, mergeConflictOrders,
@@ -1134,6 +1134,121 @@ test("the expensive question is asked only when something is red", () => {
 
 const BRANCH_ANSWER = (contexts: string[] | null, isProtected = true) =>
   JSON.stringify({ protected: isProtected, contexts });
+
+/**
+ * #2117: THE `pr-checks-failing` PROMPT CARRIES WHEN THE FAILING RUN STARTED AND WHETHER `main` MOVED
+ * SINCE -- A FACT, NEVER A PREDICATE. #2087 (2026-09-23): the gate held `startedAt` and threw it away, and two
+ * sessions reached opposite readings of one PR. The fixture is the row's own open-check.
+ */
+const RED_CI = { name: "ci", status: "COMPLETED", conclusion: "FAILURE", startedAt: "2026-09-23T09:07:00Z" };
+const RED_2087 = {
+  number: 2087, isDraft: true, headRefOid: "06a5230817c14f3f6dedf986c7d722201e1333eb",
+  statusCheckRollup: [RED_CI],
+  author: { login: "worker-judge" }, comments: [], labels: [{ name: "session:worker-judge" }],
+};
+const TIP_AFTER = { sha: "b08d5486bcafe0000", date: "2026-09-23T09:15:13Z" };
+const TIP_BEFORE = { sha: "a1a1a1a1bcafe0000", date: "2026-09-23T09:00:00Z" };
+type Order = { cause: string, prompt: string, session: string, subject: string, discriminator: string,
+  causeKey: string };
+const redOrder = (baseTip?: { sha: string, date: string } | null, pr: object = RED_2087) =>
+  (decide({ prs: [pr], readyRows: [], baseTip }) as Order[]).find((o) => o.cause === "pr-checks-failing") as Order;
+
+test("the pr-checks-failing prompt states when the failing run started", () => {
+  const order = redOrder(TIP_AFTER);
+  assert.ok(order.prompt.includes("2026-09-23T09:07:00Z"), `the start time is in the prompt: ${order.prompt}`);
+});
+
+test("the prompt says main HAS moved when its tip is dated after the run started", () => {
+  const { prompt } = redOrder(TIP_AFTER);
+  assert.match(prompt, /`main` has MOVED since/);
+  assert.ok(prompt.includes("b08d5486"), "it names the tip so a reader can `git log` it");
+  assert.doesNotMatch(prompt, /has NOT moved/);
+});
+
+test("the prompt says main has NOT moved when its tip is no later than the run's start", () => {
+  const { prompt } = redOrder(TIP_BEFORE);
+  assert.match(prompt, /`main` has NOT moved since/);
+  assert.doesNotMatch(prompt, /has MOVED/);
+});
+
+test("an unread tip or a missing start time is UNKNOWN, never `has not moved`", () => {
+  for (const baseTip of [null, undefined]) {
+    const { prompt } = redOrder(baseTip);
+    assert.match(prompt, /NOT READ this tick[^]*UNKNOWN/, "an unread tip is not evidence that main stood still");
+    assert.doesNotMatch(prompt, /has NOT moved|has MOVED/);
+  }
+  const noStart = { ...RED_2087, statusCheckRollup: [{ name: "ci", status: "COMPLETED", conclusion: "FAILURE" }] };
+  const { prompt } = redOrder(TIP_AFTER, noStart);
+  assert.match(prompt, /carried no start time[^]*UNKNOWN/);
+  assert.doesNotMatch(prompt, /has NOT moved|has MOVED/);
+});
+
+test("the start quoted is the NEWEST failing check's, so `moved since` holds for every red check", () => {
+  const two = { ...RED_2087, statusCheckRollup: [
+    { name: "gate", status: "COMPLETED", conclusion: "FAILURE", startedAt: "2026-09-23T09:07:00Z" },
+    { name: "ts / run", status: "COMPLETED", conclusion: "FAILURE", startedAt: "2026-09-23T09:20:00Z" },
+    { name: "lint", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-09-23T09:30:00Z" }] };
+  const { prompt } = redOrder(TIP_AFTER, two);
+  assert.ok(prompt.includes("2026-09-23T09:20:00Z"), "a green check's later start is not the failing run's");
+  assert.match(prompt, /has NOT moved/, "the tip at 09:15 precedes the 09:20 failing run");
+});
+
+test("the base having moved changes NO predicate: same session, subject, discriminator, causeKey", () => {
+  // Done-when 2. The order's WORDS may differ; whether, to whom and under which key must not.
+  const strip = (o: Order) => ({ ...o, prompt: "" });
+  const baseline = strip(redOrder(null));
+  for (const baseTip of [TIP_AFTER, TIP_BEFORE, undefined]) {
+    assert.deepEqual(strip(redOrder(baseTip)), baseline);
+  }
+  assert.equal(baseline.cause, "pr-checks-failing");
+  assert.equal(baseline.session, "worker-judge");
+  assert.equal(baseline.subject, "pr-2087");
+  assert.equal(baseline.discriminator, "06a52308");
+  assert.equal(baseline.causeKey, "worker-judge/pr-checks-failing/pr-2087/06a52308");
+  // And the moved base does not SILENCE a genuine red, nor conjure an order for a green PR.
+  const green = { ...RED_2087, statusCheckRollup: [{ ...RED_CI, conclusion: "SUCCESS" }] };
+  assert.equal(redOrder(TIP_AFTER, green), undefined, "a green PR gets no red order however far main moved");
+});
+
+test("the prompt names BOTH regimes and chooses neither", () => {
+  for (const baseTip of [TIP_AFTER, TIP_BEFORE, null]) {
+    const { prompt } = redOrder(baseTip);
+    assert.match(prompt, /stale merge ref[^]*PUSH or `update-branch`/, "regime 1: a push clears it");
+    assert.match(prompt, /`gh run rerun` reuses the same merge ref and cannot clear it/);
+    assert.match(prompt, /could not ASK[^]*`gh run rerun`[^]*nothing to push/, "regime 2: a re-run clears it");
+    assert.match(prompt, /does not choose/, "and it says so, naming what decides");
+    assert.match(prompt, /what the failing assertion names/);
+  }
+});
+
+test("readBaseTip reads `commits/main`, and fails OPEN and LOUDLY on every unusable answer", () => {
+  const calls: string[][] = [];
+  const tip = readBaseTip((args: string[]) => { calls.push(args); return JSON.stringify(TIP_AFTER); });
+  assert.deepEqual(tip, TIP_AFTER);
+  assert.equal(calls[0][0], "api");
+  assert.ok(calls[0][1].endsWith("/commits/main"), `one CORE read of main's tip commit: ${calls[0][1]}`);
+  const logged: string[] = [];
+  const log = (line: string) => logged.push(line);
+  assert.equal(readBaseTip(() => { throw new Error("HTTP 403\nrate limit"); }, log), null);
+  assert.match(logged[0], /CANNOT READ main's tip[^]*HTTP 403/);
+  assert.equal(readBaseTip(() => "not json", log), null);
+  assert.equal(readBaseTip(() => JSON.stringify({ sha: "abc", date: "yesterday" }), log), null,
+    "an unparseable date must not be compared -- NaN > NaN is false, which would read as `not moved`");
+  assert.equal(readBaseTip(() => JSON.stringify({ date: TIP_AFTER.date }), log), null);
+});
+
+test("the tip is read ONLY on a red tick, and declared in GH_READS beside requiredCheckNames", () => {
+  const calls: string[][] = [];
+  const spy = (args: string[]) => { calls.push(args); return JSON.stringify(TIP_AFTER); };
+  const green = { ...RED_2087, statusCheckRollup: [{ ...RED_CI, conclusion: "SUCCESS" }] };
+  assert.equal(baseTipWhenRed([green], spy), null);
+  assert.equal(baseTipWhenRed([], spy), null);
+  assert.equal(calls.length, 0, "a healthy tick pays nothing");
+  assert.deepEqual(baseTipWhenRed([RED_2087], spy), TIP_AFTER);
+  assert.equal(calls.length, 1, "a red tick pays exactly one call");
+  assert.ok(GH_READS.conditionalOnRedBase.includes("readBaseTip"));
+  assert.ok(!GH_READS.unconditional.some((r: string) => r.includes("readBaseTip")), "never unconditional");
+});
 
 test("requiredCheckNames fails OPEN on every unusable answer", () => {
   assert.deepEqual(requiredCheckNames(() => BRANCH_ANSWER(["gate"])), ["gate"]);
