@@ -17,15 +17,17 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, chmodSync, copyFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname, relative } from "node:path";
 import { route, undelivered, parseOrders, readLedger, deliver, readAgents, WAKEABLE, EXIT,
   WAKE_TTL_MS, JUDGMENT_TTL_MS, MAX_DELIVERIES, deliveryCounts, endedRuns, RESET,
   blockedSessions }
   from "../wake.mjs";
+import { localImports } from "../../../guards/src/local-import-closure.mjs";
+import { isLiveSession } from "../arm-pr.mjs";
 import { afterGate, GATE, EXIT as TICK_EXIT } from "../work-tick.mjs";
 import { spawnInvocation, addressed, clearContext, CLEAR_TIMEOUT_MS, CLEAR_SETTLE_MS,
   RUN_IDLE_RESET_MS, stuckRowOf, escalateStuck }
@@ -338,19 +340,19 @@ test("#1952 ACCEPTANCE: deliver STARTS a process when no engineer exists, and th
     "a delivered order is a spent causeKey however it was delivered, or the next tick starts another one");
 });
 
-test("#1952: the name is a ROSTER ROLE, because `session:<name>` is an address arm-pr refuses off-list", () => {
+test("#1952: the name is a LIVE ADDRESS, because `session:<name>` is an address arm-pr refuses off-list", () => {
+  // #2505: the roster `route` walks is EMPTY (the standing three are retired), so the first absent role no longer
+  // decides the name -- the row does, and `worker-2131` is a member of the spare family `sessions.json` declares.
   const h = recordingHerdr();
-  deliver([ROW_ORDER], NOBODY, ROSTER, { run: h.run });
+  deliver([ROW_ORDER], NOBODY, [], { run: h.run });
   const name = h.said("agent start")[0].split(" ")[4];
-  assert.equal(name, "worker-capture", "the first absent role in roster order -- deterministic, never a pick");
-  // THE CLAIMABILITY PROPERTY, against the file that decides it. `arm-pr`'s LIVE_SESSIONS is this file's
-  // `live` names and refuses a `session:` label outside it, and B2 caps one row in build per NAME -- so a
+  assert.equal(name, "worker-2131", "named for the row, never a pick");
+  // THE CLAIMABILITY PROPERTY, against the file that decides it. `arm-pr`'s `isLiveSession` reads this file's `live`
+  // names AND its family, and refuses a `session:` label outside them, and B2 caps one row in build per NAME -- so a
   // process called `eng-2131` would start fine and be unable to claim, label or comment on anything.
-  const live = (JSON.parse(readFileSync(
-    new URL("../../../../packages/agent-org/docs/roles/sessions.json", import.meta.url), "utf8",
-  )) as { live: { name: string }[] }).live.map((s) => s.name);
-  assert.ok(live.includes(name), `the started name must be a live role; sessions.json has ${live.join(", ")}`);
-  assert.ok(ROSTER.every((r) => live.includes(r)), "the engineer roster is a subset of the live roles");
+  assert.ok(isLiveSession(name), `the started name must be a live address; ${name} is not`);
+  assert.ok(!isLiveSession("eng-2131"), "the positive control: an address off the roster and off the family is refused");
+  assert.ok(!isLiveSession("worker-capture"), "and a retired standing name is refused too (#2505)");
 });
 
 test("#1952: a session that is FREE is still prompted, never replaced by a fresh process", () => {
@@ -422,9 +424,9 @@ const STANDING = ["worker-capture", "worker-judge", "worker-tooling"];
 const SPARES = ["worker-4", "worker-5", "worker-6", "worker-7", "worker-8"];
 const REAL_ROSTER = engineerRoles();
 
-test("#2279: the roster is sessions.json's engineer addresses, the standing three FIRST, and the spares are one FAMILY after", () => {
-  assert.deepEqual(REAL_ROSTER, STANDING,
-    "file order is the offer order, so a spare is started only once every standing role is taken");
+test("#2279 / #2505: the roster is sessions.json's engineer addresses -- NONE since the standing three retired -- and the spares are one FAMILY", () => {
+  assert.deepEqual(REAL_ROSTER, [],
+    "#2505: the three standing engineers are retired, so no address is listed and every engineer is a spare");
   const live = (JSON.parse(readFileSync(
     new URL("../../../../packages/agent-org/docs/roles/sessions.json", import.meta.url), "utf8",
   )) as { live: { name: string; role: string; brief: string | null; spare?: boolean;
@@ -1986,19 +1988,54 @@ esac
 /** A cycle line that FAILED: the drain lifts itself on it (#2324), so a tick given this offers a standing engineer. */
 const FAILED_CYCLE = `${JSON.stringify({ role: "worker-4", row: 2131, at: 1, clean: false, why: "fixture" })}\n`;
 
-function runPoolTick(ghStub: string | null, { cycles = FAILED_CYCLE as string | null } = {}) {
+const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
+const SESSIONS_JSON = "packages/agent-org/docs/roles/sessions.json";
+
+/**
+ * `wake.mjs` and its local-import closure, copied under `copyRoot` with a `sessions.json` that MARKS `worker-judge`
+ * DRAINED. The real file marks nobody since #2505 retired the standing three, and `wake.mjs` reads the roster from
+ * beside itself with no seam, so the drain's WIRING (`main` handing `deliver` the drain) can only be driven as a process
+ * against a copy. The roster is the real file plus the three standing engineers as they stood at `90b65b787`, before the
+ * spare family -- the same fixture `wake-drain.test.ts` builds. Returns the copied entry.
+ */
+function copyWakeWithDrainedRoster(copyRoot: string): string {
+  const entry = join(REPO_ROOT, "packages/agent-org/src/wake.mjs");
+  const files = new Set<string>();
+  const visit = (file: string): void => {
+    if (files.has(file)) return;
+    files.add(file);
+    for (const next of localImports(file)) visit(next);
+  };
+  visit(entry);
+  for (const file of files) {
+    const target = join(copyRoot, relative(REPO_ROOT, file));
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(file, target);
+  }
+  const sessions = JSON.parse(readFileSync(join(REPO_ROOT, SESSIONS_JSON), "utf8")) as { live: Record<string, unknown>[] };
+  const standing = ["worker-capture", "worker-judge", "worker-tooling"]
+    .map((name) => ({ name, role: "engineer", drain: true, brief: "docs/roles/engineer.md" }));
+  sessions.live.splice(sessions.live.findIndex((e) => e.family !== undefined), 0, ...standing);
+  mkdirSync(join(copyRoot, dirname(SESSIONS_JSON)), { recursive: true });
+  writeFileSync(join(copyRoot, SESSIONS_JSON), JSON.stringify(sessions));
+  return join(copyRoot, relative(REPO_ROOT, entry));
+}
+
+function runPoolTick(ghStub: string | null, { cycles = FAILED_CYCLE as string | null, drainedRoster = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "wake-pool-"));
   try {
     const ledger = join(dir, "wake-ledger");
-    // THE REAL `sessions.json` MARKS `worker-judge` DRAINED, so without a ledger line these two ticks would refuse
-    // the very engineer they were written to offer. A failed cycle is the drain's own release, not a bypass of it.
+    // The drain is only in force where the roster marks a role `drain`: the real file marks none (#2505), so a tick
+    // that must SEE the drain runs a copy whose roster does (`drainedRoster`). Without it a ledger line is unneeded;
+    // with it, a failed cycle is the drain's own release, not a bypass of it.
     if (cycles !== null) writeFileSync(sparePathsFrom(ledger).cycles, cycles);
+    const entry = drainedRoster ? copyWakeWithDrainedRoster(join(dir, "checkout")) : WAKE_ENTRY;
     writeFileSync(join(dir, "herdr"), herdrStub("idle").replace("product-manager", "worker-judge"));
     writeFileSync(join(dir, "gh"), ghStub ?? "#!/bin/sh\nexit 1\n");
     chmodSync(join(dir, "herdr"), STUB_MODE);
     chmodSync(join(dir, "gh"), STUB_MODE);
     const order = JSON.stringify({ ...ROW_ORDER, session: "engineers" });
-    const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${ledger}`, "--roster=worker-judge"], {
+    const ran = spawnSync(process.execPath, [entry, `--ledger=${ledger}`, "--roster=worker-judge"], {
       input: `${order}\n`, encoding: "utf8",
       env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` },
     });
@@ -2030,7 +2067,7 @@ test("#2226 (4): THE TICK with a `gh` that cannot answer still offers the order"
 // --- THE WIRING, AS A PROCESS: `main` hands `deliver` the drain and the precheck ---
 
 test("#2324: THE TICK with the drain in force (no ledger line) refuses a standing engineer, and says it is drained", () => {
-  const { ran, written } = runPoolTick(GH_STUB, { cycles: null });
+  const { ran, written } = runPoolTick(GH_STUB, { cycles: null, drainedRoster: true });
   assert.match(ran.stderr, /UNDELIVERED engineers\/ready-row-unclaimed\/2131: no engineer is idle and allowed to claim \(worker-judge=drained \(#2324\)\)/,
     `main must hand the router the drain; got ${ran.stderr}`);
   assert.equal(ran.status, 1);

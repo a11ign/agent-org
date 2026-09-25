@@ -7,9 +7,9 @@
  * the acceptance standard or the ban. Its own file, and not a block in `wake.test.ts`, for #2280's reason: that
  * file reaches `gh`, so the token-less acceptance job refused it and verified nothing.
  *
- * THE RETIREMENT ROW OWNS THIS FILE'S SECOND HALF. `worker-capture.md` and `worker-judge.md` are the SOURCE the ban
- * test derives from, and they are deleted by the retirement row, not by #2406; that row moves the derivation to
- * whatever then holds the ban and says so, rather than leaving this test to crash on a missing file.
+ * #2505 (the retirement row) DELETED `worker-capture.md` and `worker-judge.md`, which were the SOURCE the ban test derived
+ * from. The derivation now reads the one place that holds the ban, `engineer.md`, and is checked against the eight
+ * families the row measured, so it is no longer the brief compared with itself.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -63,7 +63,7 @@ test("the singletons and a reviewer are NOT told, whatever roster is supplied or
   }
 });
 
-test("every engineer role in sessions.json is told, with the roster READ and not injected", () => {
+test("#2505: sessions.json lists NO standing engineer address, so the roster READ is empty and the family is the population", () => {
   const engineers = engineerRoles();
   // The population is derived a SECOND way -- every live name that is not one of the three singletons the test
   // above pins -- and compared by EQUALITY, so a count floor is not standing in for "the roster is right" (#1067).
@@ -71,17 +71,24 @@ test("every engineer role in sessions.json is told, with the roster READ and not
   assert.deepEqual(engineers,
     SESSIONS.live.filter((s) => s.family === undefined).map((s) => s.name).filter((n) => !singletons.includes(n)),
     "the engineer addresses are every live session that is not a singleton and not a family (#2403)");
-  assert.ok(engineers.includes("worker-tooling"), "the positive control: a known engineer is in the population");
-  for (const label of engineers) assert.match(addressed(ORDER, label), BRIEF_LINE, label);
+  assert.deepEqual(engineers, [], "the three standing engineers are retired, not live (#2505)");
+  // An emptiness needs its positive control (`.claude/rules/guards-and-assertions.md`): it is the `#2403` test above,
+  // which asserts `worker-9` and `worker-12` ARE told by the family, and the loop below, which
+  // asserts each of the three is in `retired` with `retiredBy` this row.
+  for (const name of ["worker-capture", "worker-judge", "worker-tooling"]) {
+    assert.deepEqual(SESSIONS.retired.find((r) => r.name === name), { name, retiredBy: "#2505" }, `${name} is retired by #2505`);
+    assert.ok(!SESSIONS.live.some((s) => s.name === name), `${name} is not live`);
+  }
 });
 
 test("the delivery path carries the line: what herdr is handed is the addressed text", () => {
   const prompts: string[][] = [];
   const run = (args: string[]) => { prompts.push(args); return "{}"; };
-  const engineerOrder = { session: "worker-tooling", causeKey: "worker-tooling/rework/1", prompt: "rework #1" };
-  const got = deliver([engineerOrder], [{ label: "worker-tooling", status: "idle" }], engineerRoles(), { run });
-  assert.deepEqual(got.sent, [`worker-tooling <- ${engineerOrder.causeKey}`], `it was delivered: ${JSON.stringify(got)}`);
-  const prompt = prompts.find((a) => a[3] === "prompt" && a[4] === "worker-tooling" && a[5] !== "/clear");
+  // A spare-family instance: no standing address exists to use since #2505, and the family is who is told (#2403).
+  const engineerOrder = { session: "worker-4", causeKey: "worker-4/rework/1", prompt: "rework #1" };
+  const got = deliver([engineerOrder], [{ label: "worker-4", status: "idle" }], engineerRoles(), { run });
+  assert.deepEqual(got.sent, [`worker-4 <- ${engineerOrder.causeKey} (no clear)`], `it was delivered: ${JSON.stringify(got)}`);
+  const prompt = prompts.find((a) => a[3] === "prompt" && a[4] === "worker-4" && a[5] !== "/clear");
   assert.match(String(prompt?.[5]), BRIEF_LINE);
 });
 
@@ -101,22 +108,20 @@ const families = (block: string) => [...block.matchAll(/`([a-z]+:[a-z*][a-z:*-]*
 /** The one command #1828 lets a routed pool run; it is never copied into the shared brief (#1817). */
 const EXCEPTION = "lab:job";
 
-test("every command family both briefs' ban blocks name appears in the engineer brief", () => {
-  const capture = families(banBlock(read(`${ROLES_DIR}/worker-capture.md`)));
-  const judge = families(banBlock(read(`${ROLES_DIR}/worker-judge.md`)));
-  assert.ok(capture.includes(EXCEPTION),
-    "the positive control: the capture brief's block DOES name the exception, so filtering it below is not vacuous");
-  assert.ok(!judge.includes(EXCEPTION), "and the judge's block does not");
-  const derived = [...new Set([...capture, ...judge])].filter((f) => f !== EXCEPTION);
-  // Non-empty, with the count NOT in the message (#1067): the eight named families below say the list is RIGHT.
-  assert.ok(derived.length > 0, "the derivation found command families at all");
-  for (const family of ["fleet:*", "fleet:deploy", "lab:*", "training:capture*", "worker:*", "evidence:check",
-    "gate:stability", "capture:check"]) {
-    assert.ok(derived.includes(family), `the derivation found ${family}`);
+test("#2505: the two briefs the ban was derived from are GONE, and the engineer brief names every family the row measured", () => {
+  // The positive control for the deletion: the two files were the source until #2505, and a test that read a missing
+  // file would crash rather than say so. That they are absent is asserted, not assumed.
+  for (const gone of ["worker-capture.md", "worker-judge.md"]) {
+    assert.ok(!existsSync(`${ROOT}${ROLES_DIR}/${gone}`), `${gone} was deleted by the retirement row`);
   }
   const brief = read(ENGINEER_BRIEF);
-  const missing = derived.filter((f) => !brief.includes(f));
-  assert.deepEqual(missing, [], "every derived family is in the engineer brief");
+  const derived = families(banBlock(brief));
+  // The eight named families are the independent list: `derived` is read from the brief, so they say it is RIGHT.
+  for (const family of ["fleet:*", "fleet:deploy", "fleet:provision", "lab:*", "lab:stop", "lab:status", "training:capture*",
+    "worker:*", "evidence:check", "gate:stability", "capture:check"]) {
+    assert.ok(derived.includes(family), `the engineer brief's ban block names ${family}`);
+  }
+  assert.ok(!derived.includes(EXCEPTION), "and the exception a routed pool holds is not among them");
 });
 
 test("the engineer brief carries the ban with NO exception, and never the words `lab:job`", () => {
@@ -128,18 +133,14 @@ test("the engineer brief carries the ban with NO exception, and never the words 
 
 // --- done-when 5: the `brief` field is honest ---------------------------------------------------------------------
 
-test("worker-tooling and every spare point at the engineer brief; capture and judge keep their own", () => {
+test("the family points at the engineer brief, and every live engineer's brief exists", () => {
   const brief = (name: string) => SESSIONS.live.find((s) => s.name === name)?.brief;
   const shared = "docs/roles/engineer.md";
   assert.ok(`packages/agent-org/${shared}` === ENGINEER_BRIEF, "the field's path is the one addressed() names");
   // #2403: the spares are ONE family entry, `worker-<n>`, and not five addresses.
-  for (const name of ["worker-tooling", "worker-<n>"]) {
-    assert.equal(brief(name), shared, name);
-  }
+  assert.equal(brief("worker-<n>"), shared, "worker-<n>");
   assert.equal(SESSIONS.live.filter((s) => s.family !== undefined).length, 1,
     "the positive control: the family entry is the one `worker-<n>` was read from");
-  assert.equal(brief("worker-capture"), "docs/roles/worker-capture.md");
-  assert.equal(brief("worker-judge"), "docs/roles/worker-judge.md");
   for (const s of SESSIONS.live.filter((e) => e.role === "engineer")) {
     assert.ok(s.brief !== null && existsSync(`${ROOT}packages/agent-org/${s.brief}`), `${s.name}'s brief exists`);
   }
