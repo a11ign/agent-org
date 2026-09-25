@@ -893,7 +893,9 @@ test("every cause is classified as START or FINISH -- a new one cannot default i
   // cannot land -- it is the most in-flight thing there is, and it takes on nothing. Withholding it during
   // a window would strand precisely the pull requests the window is waiting to land, which is the failure
   // `START_CAUSES` was split out to prevent.
-  assert.deepEqual(finish, ["answer-owed", "blocker-cleared", "chairman-blocked", "claimed-row-amended",
+  // #2416: `awaiting-evidence-stale` is FINISH: its subject is a pull request already open and waiting on a run,
+  // which a window that is landing in-flight work cares about, and it takes on nothing new.
+  assert.deepEqual(finish, ["answer-owed", "awaiting-evidence-stale", "blocker-cleared", "chairman-blocked", "claimed-row-amended",
     "draft-awaiting-verdict", "draft-convinced-not-ready", "host-units-stale", "pr-checks-failing",
     "pr-green-unarmed", "pr-merge-conflict", "pr-review-blocked", "reviewer-auth-failed",
     "row-branch-unshipped", "trunk-red", "verdict-comment-unreviewed", "verdict-not-convinced"]);
