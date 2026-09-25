@@ -58,6 +58,8 @@ import { fileOverlapReason, lookupMyRegionFiles, lookupOpenPrFiles } from "./row
 // The scrubbing helper, RELATIVE like the imports above: a leaked GIT_DIR must not redirect the teardown's
 // `git worktree list` onto another repository (git-spawn-classification.test.ts).
 import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
+// #2470: THIS FILE NOW SENDS A BODY TO GITHUB (the release comment), so it reaches the leak guard like every other tracker writer (#1053).
+import { assertNoLeakInArgv } from "../../lab/src/packaging/leak-patterns.mjs";
 // #2470: THE PURE HALF OF A CLAIM THAT DOES NOT MOVE -- a leaf, so `work-gate.mjs` and this file both import it and neither imports the other's
 // half. What is performed here is the part that needs a pane, a process or a row: the release, the resume, the re-send.
 import { workAtRisk, gitRun, pathExists, statMtime, KEPT_CLAIMS_FILE, RESTART_STATE_FILE, RESTART_RESEND_WINDOW_MS,
@@ -306,6 +308,16 @@ function firstLine(err, max = REFUSAL_EXCERPT) {
 /** `gh`, for the escalation half -- a different binary from `herdr`, so a different runner. */
 const defaultGh = (/** @type {string[]} */ args) =>
   execFileSync("gh", args, { encoding: "utf8", timeout: 30_000 });
+
+/**
+ * `gh` for the one call in this file that SENDS A BODY -- the comment a release leaves on its row (#2470) -- refused before it is spawned if
+ * the body would leak (#1053: "guarded in the SPAWN HELPER"). Every other `gh` call here is a read or a label edit, which send none.
+ * @param {string[]} args
+ */
+const guardedGh = (args) => {
+  assertNoLeakInArgv("gh", args);
+  return defaultGh(args);
+};
 
 /**
  * Every workspace herdr knows, as `{ label, status }`, or `null` when herdr could not be asked.
@@ -4403,7 +4415,7 @@ export function performClaimReleases(requests, agents, { ledgerPath, host, now =
     try {
       const result = performRelease(request, { run: defaultRun, exec: defaultExec, io: { git: gitRun, exists: pathExists, mtime: statMtime },
         now, agents, isSpare: (label) => isSpareRole(label), host: { ...host, exists: existsSync }, env: spawnEnvironment(),
-        gh: defaultGh, warn: (line) => { process.stderr.write(`${line}\n`); },
+        gh: guardedGh, warn: (line) => { process.stderr.write(`${line}\n`); },
         cycle: (cycle) => appendSpareCycle(paths.cycles, cycle),
         dropInstance: (role) => {
           const registry = readSpareRegistry(paths.registry);

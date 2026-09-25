@@ -163,10 +163,20 @@ export class Unreadable extends Error {}
  * @type {GitRun}
  */
 export const gitRun = (dir, args) => {
-  const ran = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8", env: sandboxGitEnv(), timeout: GIT_TIMEOUT_MS,
+  const ran = spawnSync("git", gitInvocation(dir, args), { encoding: "utf8", env: sandboxGitEnv(), timeout: GIT_TIMEOUT_MS,
     maxBuffer: GIT_MAX_BUFFER });
   return { status: ran.status, out: ran.stdout ?? "" };
 };
+
+/**
+ * THE ARGV, with `--no-optional-locks` where git accepts it: a GLOBAL option, before the subcommand. It is not a `status` flag -- `git status
+ * --no-optional-locks` exits 129 (usage), which the first live run of this code found (the fakes in the tests answered any argv). It is on EVERY read,
+ * and the reason is `status`'s: a plain one REFRESHES THE INDEX, and the index's mtime would be a "file change" caused by this very read.
+ * @param {string} dir @param {string[]} args @returns {string[]}
+ */
+export function gitInvocation(dir, args) {
+  return ["-C", dir, "--no-optional-locks", ...args];
+}
 const GIT_TIMEOUT_MS = 20_000;
 const GIT_MAX_BUFFER = 8 * 1024 * 1024;
 
@@ -195,12 +205,12 @@ const MAX_PATHS_STAT = 400;
 
 /**
  * The newest mtime (ms) among the paths a worktree has CHANGED, or `null` for a clean one or none that still exists.
- * `--no-optional-locks` is the reason it is safe to ask every tick: a plain `git status` REFRESHES THE INDEX, and the
- * index's mtime would then be a "file change" caused by this very read.
+ * {@link gitInvocation} is why it is safe to ask every tick: it never takes the index lock, so this read cannot manufacture the
+ * "file change" it looks for.
  * @param {HostReads} io @param {string} dir @returns {number | null}
  */
 export function fileMove({ git, mtime }, dir) {
-  const out = mustGit(git, dir, ["status", "--porcelain", "--no-optional-locks", "--untracked-files=all", "-z"]);
+  const out = mustGit(git, dir, ["status", "--porcelain", "--untracked-files=all", "-z"]);
   const entries = out.split("\0").filter((e) => e !== "");
   let newest = null;
   for (const entry of entries.slice(0, MAX_PATHS_STAT)) {
@@ -230,7 +240,7 @@ export function fileMove({ git, mtime }, dir) {
 export function workAtRisk(io, { worktree, branch, repo }) {
   try {
     if (worktree !== null && io.exists(worktree)) {
-      const dirty = mustGit(io.git, worktree, ["status", "--porcelain", "--no-optional-locks", "--untracked-files=all"])
+      const dirty = mustGit(io.git, worktree, ["status", "--porcelain", "--untracked-files=all"])
         .split("\n").filter((l) => l.trim() !== "").length;
       const unpushed = Number(mustGit(io.git, worktree, ["rev-list", "--count", "HEAD", "--not", "--remotes"]).trim());
       return { state: dirty > 0 || unpushed > 0 ? "at-risk" : "none", dirty, unpushed };
@@ -431,8 +441,8 @@ export function readStallState(path, read = readFileSync) {
 }
 
 /**
- * The memory after this tick's readings: a NUDGE is recorded at `now`, a `nudged` row keeps its record, and every other
- * row -- moving, released, no longer claimed by that session -- loses it, so a row that stalls a second time is a first
+ * The memory after this tick's readings: a NUDGE is recorded at `now`, a `nudged` row keeps its record (and so does a STALL release
+ * that is not yet performed), and every other row -- moving, no longer claimed by that session -- loses it, so a row that stalls a second time is a first
  * reading again and not a release on the strength of last week's nudge.
  *
  * @param {StallState} before
@@ -445,6 +455,12 @@ export function nextStallState(before, readings, now) {
   for (const { facts, reading } of readings) {
     if (reading.kind === "nudge") after[facts.row] = { session: facts.session, nudgedAt: now };
     else if (reading.kind === "nudged") after[facts.row] = { session: facts.session, nudgedAt: reading.nudgedAt };
+    // A STALL RELEASE THAT HAS NOT YET BEEN PERFORMED KEEPS ITS MEMORY: `wake.mjs` performs it after this tick, may fail (a workspace that will
+    // not close, a decline that is refused), and the gate emits the order again next tick -- which must read as the SECOND reading again, not
+    // forget the nudge and start a fresh two hours. Once performed the row is no longer claimed and the entry goes with it.
+    else if (reading.kind === "release" && reading.why === "stalled" && reading.nudgedAt !== null) {
+      after[facts.row] = { session: facts.session, nudgedAt: reading.nudgedAt };
+    }
   }
   return JSON.stringify(after) === JSON.stringify(before) ? before : after;
 }

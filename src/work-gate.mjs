@@ -2157,12 +2157,19 @@ export function readMergedPrs(run = defaultRun) {
  * What a row DECLARES it is waiting on, as a phrase, or `null`. Only the waits that are DATA the org already reads -- a
  * future `Not-before:`, an `answer:<session>` label, a `Fleet-hold-until:` and the chairman's label -- and NOT an open
  * `blockedBy` edge, which `claimReading` treats separately (a holder with nothing built is released from one).
- * @param {any} row @returns {string | null}
+ *
+ * `answer:<the holder>` IS NOT A WAIT OF THE HOLDER'S. It says a session owes an answer, and when that session is the one holding the row it
+ * is the row waiting on the HOLDER -- the opposite of a holder with a legitimate reason to be quiet. `ceo`'s ruling on the 2026-09-25 stalled
+ * sweep (a comment on #2470, section B) has `product-manager` set `answer:<holder>` on each stalled claim to wake it; reading those as
+ * declared waits would exempt exactly the rows this cause exists for. An `answer:` owed by ANOTHER session (`answer:product-manager` on a
+ * row an orchestrator holds) is the holder waiting on a ruling, and is respected.
+ * @param {any} row @param {string} holder @returns {string | null}
  */
-function declaredWait(row) {
+function declaredWait(row, holder) {
   if (labelsOf(row).includes(CHAIRMAN_LABEL)) return `waiting on the chairman (${CHAIRMAN_LABEL})`;
   const waiting = waitingOn({ ...row, blockedBy: { nodes: [] } }) ?? fleetWaitingOn(row);
-  return waiting === null ? null : describeWaiting(waiting);
+  if (waiting === null || (waiting.kind === "answer" && waiting.session === holder)) return null;
+  return describeWaiting(waiting);
 }
 
 /**
@@ -2232,7 +2239,7 @@ function readClaims({ held, byRow, openPrs, mergedPrs, io, repo, now, restart, b
       continue;
     }
     const session = sessions[0].slice("session:".length);
-    const facts = claimFactsFrom({ row: row.number, title: row.title, session, waiting: declaredWait(row),
+    const facts = claimFactsFrom({ row: row.number, title: row.title, session, waiting: declaredWait(row, session),
       blockedBy: openBlockers(row), comments: byRow.get(Number(row.number)) ?? [], openPrs, mergedPrs, repo }, io);
     if ("skip" in facts) {
       log(`claim-stall: ${facts.skip} -- not evaluated.\n`);

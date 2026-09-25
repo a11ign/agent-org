@@ -26,8 +26,10 @@ import { CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
 import {
   CLAIM_STALLED, STALL_INTERVAL_MS, NUDGE_OFFER_MS, claimRecordOf, commentMove, workAtRisk, fileMove, claimReading,
   claimFactsFrom, readClaim, nextStallState, claimStalledOrders, paneInterrupted, killedDeliveries, readHerdrRestart,
-  RESTART_RESEND_WINDOW_MS, INTERRUPTED_TEXT,
+  RESTART_RESEND_WINDOW_MS, INTERRUPTED_TEXT, gitRun, gitInvocation, newestOwnCommit, statMtime, pathExists,
 } from "./claim-stall.mjs";
+import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
+import { execFileSync } from "node:child_process";
 
 const MIN = 60_000;
 const NOW = Date.parse("2026-09-25T16:00:00Z");
@@ -182,8 +184,8 @@ test("#2470 the file-change signal is read ONLY for a row that is otherwise quie
   const moving = tickWith({ commit: 5 }, [claim(N_MIN + 300)]);
   assert.equal(moving.h.calls.some((c) => c.includes("status")), false, "a commit inside N is enough: no worktree read");
   const quiet = tickWith({ commit: null }, [claim(N_MIN + 300)]);
-  assert.equal(quiet.h.calls.some((c) => c.includes("status") && c.includes("--no-optional-locks")), true,
-    "a quiet row asks, and asks WITHOUT taking the index lock -- a plain status would touch the index and manufacture the move it looks for");
+  assert.equal(quiet.h.calls.some((c) => c.includes("status")), true,
+    "a quiet row asks (WITHOUT taking the index lock: `gitInvocation` puts `--no-optional-locks` on every read, pinned against real git below)");
 });
 
 test("#2470 THE SESSION'S OWN STATUS IS NOT AN INPUT: a BUSY holder of an unmoved row is nudged (worker-7's shape, #2407)", () => {
@@ -199,6 +201,14 @@ test("#2470 THE SESSION'S OWN STATUS IS NOT AN INPUT: a BUSY holder of an unmove
   const two = tickWith({ commit: null }, [claim(N_MIN + 200)],
     { rows: [row(2407), row(2500, ["in-progress", "session:worker-7"])] });
   assert.equal(two.orders.filter((o) => o.causeKey.includes("row-2407")).length, 1);
+});
+
+test("#2470 `answer:<the holder>` is NOT a wait of the holder's (the row waits on IT); `answer:<another session>` is", () => {
+  const old = claim(N_MIN + 300);
+  const ownAnswer = tickWith({ commit: null }, [old], { rows: [row(2407, ["in-progress", "session:worker-7", "answer:worker-7"])] });
+  assert.equal(ownAnswer.orders.length, 1, "a session owing the answer on ITS OWN row is the case this cause is for");
+  const rulingOwed = tickWith({ commit: null }, [old], { rows: [row(2407, ["in-progress", "session:worker-7", "answer:product-manager"])] });
+  assert.deepEqual(rulingOwed.orders, [], "CONTROL: waiting on someone else's ruling is a declared wait");
 });
 
 test("#2470 a row that DECLARES its wait is not stalled, and a row with no claim record is not evaluated (and says so)", () => {
@@ -262,6 +272,20 @@ test("#2470 a second reading with nothing moved RELEASES; with something moved i
   assert.deepEqual(Object.keys(moved.memory), [], "and the row's nudge is FORGOTTEN, so a second stall is a first reading and not last week's release");
 });
 
+test("#2470 a move just AFTER the nudge, then quiet again for N, is a NEW first reading (a nudge), never a release on the old nudge", () => {
+  // The move is old enough that the row is stalled AGAIN, so the cheap "moving" exit does not hide the case: only the reading's own
+  // `nudgedAt > lastMoveAt` separates a release from a fresh nudge here.
+  const memory = { "2407": { session: "worker-7", nudgedAt: NOW } };
+  const later = NOW + STALL_INTERVAL_MS + 5 * MIN;
+  const oneMinuteAfterTheNudge = (later - (NOW + MIN)) / MIN;
+  const got = tickWith({ commit: oneMinuteAfterTheNudge }, [claim(N_MIN * 4)], { memory: { ...memory }, now: later });
+  assert.deepEqual(got.orders.filter((o) => o.release), [], "something moved after the nudge: the old nudge is not a first half of anything");
+  assert.equal(got.orders.length, 1, "and the row IS stalled again, so it is nudged afresh");
+  assert.match(got.orders[0].causeKey, new RegExp(`nudge-${later}$`), "with a NEW key, one per stall episode");
+  const control = tickWith({ commit: null }, [claim(N_MIN * 4)], { memory: { ...memory }, now: later });
+  assert.equal(control.orders.filter((o) => o.release).length, 1, "CONTROL: with no move after the nudge it IS the second reading");
+});
+
 test("#2470 a comment or a changed file after the nudge also cancels the release, and a nudge from a DIFFERENT holder is not this holder's", () => {
   const memory = { "2407": { session: "worker-7", nudgedAt: NOW } };
   const later = NOW + STALL_INTERVAL_MS + MIN;
@@ -273,6 +297,20 @@ test("#2470 a comment or a changed file after the nudge also cancels the release
   const fresh = tickWith({ commit: null }, base, { memory: { ...other }, now: later });
   assert.equal(fresh.orders.filter((o) => o.release).length, 0, "another session's nudge on the row is not this one's second reading");
   assert.equal(fresh.orders.length, 1, "it is a FIRST reading: a nudge");
+});
+
+test("#2470 a stall release that was not PERFORMED is emitted again as a release, never as a fresh first reading", () => {
+  const memory: Record<string, unknown> = { "2407": { session: "worker-7", nudgedAt: ago(130) } };
+  const comments = [claim(N_MIN * 3)];
+  const first = tickWith({ commit: null }, comments, { memory });
+  assert.equal(first.orders[0].release!.why, "stalled");
+  assert.deepEqual(Object.keys(memory), ["2407"], "the nudge memory SURVIVES the release order: wake may fail to perform it");
+  const second = tickWith({ commit: null }, comments, { memory, now: NOW + 2 * MIN });
+  assert.equal(second.orders.length, 1);
+  assert.equal(second.orders[0].release!.why, "stalled", "the retry is a release again, not a nudge and another two hours");
+  // ...and once the release is PERFORMED the row is unclaimed, so it is no longer read and the memory goes.
+  const gone = tickWith({ commit: null }, comments, { memory, now: NOW + 4 * MIN, rows: [] });
+  assert.deepEqual([gone.orders, Object.keys(memory)], [[], []]);
 });
 
 test("#2470 the nudge memory is dropped for a row that is no longer claimed, released or moving -- and only a NUDGE writes it", () => {
@@ -928,4 +966,42 @@ test("#2470 (11) `sessionMoved` says `moved` for anything it cannot establish: a
 test("#2470 the kept-worktree file is beside the wake ledger, with the org's other state", () => {
   assert.equal(keptClaimsPath("/state/wake-ledger"), "/state/kept-claims.json");
   assert.equal(existsSync("/nonexistent-2470"), false);
+});
+
+// --- the REAL git and filesystem: the fakes above answer any argv, which is how an invalid one shipped once ------------------------------------
+
+test("#2470 the git argv is VALID for real git: `--no-optional-locks` is a GLOBAL option, so `status` is not given it (the first live run exited 129)", () => {
+  const invocation = gitInvocation("/x", ["status", "--porcelain"]);
+  assert.deepEqual(invocation, ["-C", "/x", "--no-optional-locks", "status", "--porcelain"], "global option before the subcommand");
+  const dir = mkdtempSync(join(tmpdir(), "claim-stall-git-"));
+  try {
+    const git = (...args: string[]) => execFileSync("git", ["-C", dir, ...args], { env: sandboxGitEnv(), encoding: "utf8" });
+    git("init", "-q", "-b", "main");
+    git("config", "user.email", "t@example.invalid");
+    git("config", "user.name", "t");
+    writeFileSync(join(dir, "a.txt"), "one\n");
+    git("add", "a.txt");
+    git("commit", "-q", "-m", "base");
+    git("update-ref", "refs/remotes/origin/main", "HEAD");
+    git("checkout", "-q", "-b", "agent/x-1");
+    const io = { git: gitRun, exists: pathExists, mtime: statMtime };
+    assert.equal(gitRun(dir, ["status", "--porcelain", "--untracked-files=all", "-z"]).status, 0, "real git accepts the argv every reader here builds");
+    assert.deepEqual(workAtRisk(io, { worktree: dir, branch: "agent/x-1", repo: dir }), { state: "none", dirty: 0, unpushed: 0 }, "clean, and nothing ahead");
+    assert.equal(newestOwnCommit(gitRun, dir, "agent/x-1"), null, "a branch not ahead of main has NO commit of its own: its tip's date is main's");
+    assert.equal(newestOwnCommit(gitRun, dir, "origin/agent/x-1"), null, "a ref that does not exist is `null`, not a failure");
+    writeFileSync(join(dir, "b.txt"), "two\n");
+    const moved = fileMove(io, dir);
+    assert.ok(moved !== null && Math.abs(moved - Date.now()) < 60_000, `an untracked file is a move at its mtime, read ${moved}`);
+    assert.equal(workAtRisk(io, { worktree: dir, branch: "agent/x-1", repo: dir }).state, "at-risk", "untracked work is at risk");
+    git("add", "b.txt");
+    git("commit", "-q", "-m", "own");
+    const own = newestOwnCommit(gitRun, dir, "agent/x-1");
+    assert.ok(own !== null && Math.abs(own - Date.now()) < 60_000, "a commit ahead of main is a move");
+    assert.deepEqual(workAtRisk(io, { worktree: dir, branch: "agent/x-1", repo: dir }), { state: "at-risk", dirty: 0, unpushed: 1 }, "committed, and on no remote");
+    git("update-ref", "refs/remotes/origin/agent/x-1", "HEAD");
+    assert.equal(workAtRisk(io, { worktree: dir, branch: "agent/x-1", repo: dir }).state, "none", "pushed: it exists elsewhere, so it is not at risk");
+    assert.equal(gitRun(join(dir, "missing"), ["status"]).status === 0, false, "a directory that is not a repository is a failure, which every caller reads as UNREADABLE");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
