@@ -15,17 +15,17 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import { decide, claimStallTick, CAUSES, START_CAUSES, JUDGMENT_CAUSES, GH_READS } from "./work-gate.mjs";
+import { decide, claimStallTick, claimStallsNow, CAUSES, START_CAUSES, JUDGMENT_CAUSES, GH_READS } from "./work-gate.mjs";
 import { profileFor } from "./worker-profile.mjs";
 import {
   WAKE_TTL_MS, MAX_DELIVERIES, performRelease, spawnClaimer, spawnedPrompt, deliver, consecutiveClean, drainInForce, isReleaseLine,
   cyclesReport, readLedger, deliveryCounts, readLedgerDeliveries, readDeliveredHandoffs, recoverInterruptedWork, recoverableWork,
-  queueHandoff, readHandoffs, handoffBatches, recentlyVoidedKeys, sessionMoved, VOIDED, keptClaimsPath,
+  queueHandoff, readHandoffs, handoffBatches, recentlyVoidedKeys, sessionMoved, VOIDED, keptClaimsPath, ledgerLine,
 } from "./wake.mjs";
 import { claimRecordComment, declineRow, claimWithWorktree, worktreeTargetReason, worktreeFlagsReason } from "./row-claim.mjs";
 import { CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
 import {
-  CLAIM_STALLED, STALL_INTERVAL_MS, NUDGE_OFFER_MS, claimRecordOf, commentMove, workAtRisk, fileMove, claimReading,
+  CLAIM_STALLED, STALL_INTERVAL_MS, STALL_UNTOLD_RELEASE_MS, INTERRUPTED_SETTLE_MS, nudgeKey, nudgeDeliveredAt, claimRecordOf, commentMove, workAtRisk, fileMove, claimReading,
   claimFactsFrom, readClaim, nextStallState, claimStalledOrders, paneInterrupted, killedDeliveries, readHerdrRestart,
   RESTART_RESEND_WINDOW_MS, INTERRUPTED_TEXT, gitRun, gitInvocation, newestOwnCommit, statMtime, pathExists,
 } from "./claim-stall.mjs";
@@ -46,7 +46,7 @@ const WT = "/home/agent/repos/wt-2407";
 
 type Comment = { body: string; createdAt: string; author: { login: string } };
 type Release = { row: number; session: string; why: string; edges?: number[]; answer?: string; mergedPr?: number };
-type Order = { session: string; cause: string; causeKey: string; prompt: string; release?: Release };
+type Order = { session: string; cause: string; causeKey: string; prompt: string; release?: Release; resume?: boolean };
 type Facts = Parameters<typeof claimReading>[0];
 type Stalls = NonNullable<Parameters<typeof decide>[0]["claimStalls"]>;
 
@@ -96,15 +96,19 @@ function host(w: World = {}, ref = NOW) {
   return { calls, io: { git, exists: (p: string) => p === WT && w.worktreeExists !== false, mtime: (p: string) => mtimes.get(p) ?? null } };
 }
 
+/** The wake ledger's line for the nudge `worker-7` was sent at `nudgedAt`, recorded as delivered at `deliveredAt` -- the REAL writer's format. */
+const nudgeDelivered = (nudgedAt: number, deliveredAt: number, session = "worker-7") =>
+  ledgerLine(deliveredAt, nudgeKey(session, 2407, nudgedAt));
+
 /** A whole tick over one claimed row, with the nudge memory in a map that survives between calls. */
 function tickWith(world: World, comments: Comment[], { rows = [row(2407)], memory = {} as Record<string, unknown>, prs = [] as object[],
-  merged = null as object[] | null, restartAt = null as number | null, now = NOW, blockedBy = [] as number[] } = {}) {
+  merged = null as object[] | null, restartAt = null as number | null, now = NOW, blockedBy = [] as number[], ledger = "" } = {}) {
   const h = host(world, now);
   const log: string[] = [];
   const claimed = rows.map((r) => (r.number === 2407 && blockedBy.length > 0
     ? { ...r, blockedBy: { nodes: blockedBy.map((n) => ({ number: n, state: "OPEN" })) } } : r));
   const orders = claimStallTick({ rows: claimed, claimedComments: claimed.map((r) => ({ number: r.number, comments })), openPrs: prs,
-    mergedPrs: merged, io: h.io, repo: REPO, now, restartAt, stateDir: "/state",
+    mergedPrs: merged, io: h.io, repo: REPO, now, restartAt, stateDir: "/state", ledger: () => ledger,
     log: (l: string) => log.push(l), read: () => JSON.parse(JSON.stringify(memory)), write: (_p: string, s: object) => {
       for (const k of Object.keys(memory)) delete memory[k];
       Object.assign(memory, s);
@@ -126,8 +130,16 @@ test("#2470 the read the gate adds is counted in GH_READS, and it is conditional
   assert.match(GH_READS.conditionalOnClaimedBranches, /pr list --state merged/);
 });
 
-test("#2470 the nudge is offered for exactly the ledger's window, so it is ONE delivery and never a stream toward MAX_DELIVERIES", () => {
-  assert.equal(NUDGE_OFFER_MS, WAKE_TTL_MS, "claim-stall.mjs cannot import wake.mjs, so equality is pinned here");
+test("#2470 the nudge key has ONE spelling, and the ledger's delivery of it is read back through the REAL writer's format", () => {
+  const key = nudgeKey("worker-7", 2407, 123);
+  assert.equal(key, "worker-7/claim-stalled/row-2407/nudge-123");
+  assert.equal(nudgeDeliveredAt(ledgerLine(456, key), key), 456, "wake's ledgerLine is what nudgeDeliveredAt reads: a change of format breaks THIS, not the release");
+  assert.equal(nudgeDeliveredAt(ledgerLine(456, `${key}x`), key), null, "another key is not this one");
+  assert.equal(nudgeDeliveredAt("", key), null);
+  const voided = `${ledgerLine(456, key)}${NOW}\t${VOIDED}\t${key}\t456\n`;
+  assert.equal(nudgeDeliveredAt(voided, key), null, "a delivery a restart killed was NOT delivered");
+  assert.equal(nudgeDeliveredAt(`${ledgerLine(100, key)}${voided}`, key), 100, "and it takes back ONE delivery, the one it names");
+  assert.equal(nudgeDeliveredAt(`${ledgerLine(456, key, "worker-9")}`, key), 456, "a recorded recipient does not hide the key");
 });
 
 // --- the claim record, read ---------------------------------------------------------------------------------------------------
@@ -243,35 +255,48 @@ test("#2470 a REFUSED comments read evaluates NOTHING, because a row read withou
 
 // --- Done-when 4 & Acceptance 2: the second reading ---------------------------------------------------------------------------------
 
-test("#2470 a second reading with nothing moved RELEASES; with something moved it does NOT (the nudge memory carries between ticks)", () => {
+test("#2470 a second reading with nothing moved RELEASES -- N after the nudge was DELIVERED; with something moved it does NOT", () => {
   const memory: Record<string, unknown> = {};
   const comments = [claim(N_MIN * 3)];
   const first = tickWith({ commit: null }, comments, { memory });
   assert.equal(first.orders.length, 1, "first reading: the nudge");
   assert.deepEqual(Object.keys(memory), ["2407"], "and it is WRITTEN DOWN, or a released row would carry no memory of it");
+  const nudgedAt = (memory["2407"] as { nudgedAt: number }).nudgedAt;
 
-  // Inside the grace: the SAME nudge is re-offered (same key, so the ledger drops it) and nothing is released.
-  const soon = tickWith({ commit: null }, comments, { memory, now: NOW + 5 * MIN });
-  assert.equal(soon.orders.length, 1);
-  assert.equal(soon.orders[0].causeKey, first.orders[0].causeKey, "byte-identical, so it is one delivery");
-  assert.equal(soon.orders.some((o) => o.release), false);
+  // UNDELIVERED (a holder that is `working`): the SAME nudge is offered on every tick, however long -- and nothing is released.
+  for (const minutes of [5, 30, 90]) {
+    const offered = tickWith({ commit: null }, comments, { memory: { ...memory }, now: NOW + minutes * MIN });
+    assert.deepEqual(offered.orders.map((o) => o.causeKey), [first.orders[0].causeKey], `still offered ${minutes} minutes on, byte-identical so it is one delivery`);
+  }
 
-  // After the offer window the nudge is no longer re-offered, and there is still no release until N after it.
-  const quiet = tickWith({ commit: null }, comments, { memory, now: NOW + NUDGE_OFFER_MS + MIN });
-  assert.deepEqual(quiet.orders, [], "one nudge, then silence for the rest of the grace");
-
-  // A second reading N after the nudge with nothing moved: the release.
-  const later = NOW + STALL_INTERVAL_MS + MIN;
-  const second = tickWith({ commit: null }, comments, { memory: { ...memory }, now: later });
+  // DELIVERED at +5 minutes: never offered again (the ledger holds a delivered key for one window only, so a longer offer would send it twice)...
+  const delivered = nudgeDelivered(nudgedAt, NOW + 5 * MIN);
+  assert.deepEqual(tickWith({ commit: null }, comments, { memory: { ...memory }, now: NOW + 6 * MIN, ledger: delivered }).orders, [], "delivered: silence");
+  // ...and the grace runs from the DELIVERY: one minute short of N after it there is no release, and N after it there is.
+  const justShort = tickWith({ commit: null }, comments, { memory: { ...memory }, now: NOW + 5 * MIN + STALL_INTERVAL_MS - MIN, ledger: delivered });
+  assert.deepEqual(justShort.orders, [], "N after the NUDGE is not N after it was TOLD");
+  const later = NOW + 5 * MIN + STALL_INTERVAL_MS;
+  const second = tickWith({ commit: null }, comments, { memory: { ...memory }, now: later, ledger: delivered });
   assert.equal(second.orders.length, 1);
   assert.equal(second.orders[0].release!.why, "stalled");
   assert.equal(second.orders[0].release!.row, 2407);
   assert.equal(second.orders[0].release!.session, "worker-7");
 
   // THE CONTROL, one thing changed: a commit AFTER the nudge and the same second reading releases nothing.
-  const moved = tickWith({ commit: 60 }, comments, { memory: { ...memory }, now: later });
+  const moved = tickWith({ commit: 60 }, comments, { memory: { ...memory }, now: later, ledger: delivered });
   assert.deepEqual(moved.orders.filter((o) => o.release), [], "a move after the nudge is not 'nothing moved'");
   assert.deepEqual(Object.keys(moved.memory), [], "and the row's nudge is FORGOTTEN, so a second stall is a first reading and not last week's release");
+});
+
+test("#2470 a nudge that NEVER reached its holder (busy, out of allowance, gone) releases at 2N from the nudge, and never at N", () => {
+  const memory = { "2407": { session: "worker-7", nudgedAt: NOW } };
+  const comments = [claim(N_MIN * 5)];
+  const atN = tickWith({ commit: null }, comments, { memory: { ...memory }, now: NOW + STALL_INTERVAL_MS + MIN });
+  assert.equal(atN.orders.filter((o) => o.release).length, 0, "N after an UNDELIVERED nudge: the holder has not been told, so it is not released");
+  assert.equal(atN.orders.length, 1, "and the nudge is still being offered");
+  const atTwoN = tickWith({ commit: null }, comments, { memory: { ...memory }, now: NOW + STALL_UNTOLD_RELEASE_MS });
+  assert.equal(atTwoN.orders.filter((o) => o.release).length, 1, "2N: a holder that cannot be told for that long is not working on the row either -- the work is kept");
+  assert.equal(STALL_UNTOLD_RELEASE_MS, 2 * STALL_INTERVAL_MS);
 });
 
 test("#2470 a move just AFTER the nudge, then quiet again for N, is a NEW first reading (a nudge), never a release on the old nudge", () => {
@@ -280,23 +305,24 @@ test("#2470 a move just AFTER the nudge, then quiet again for N, is a NEW first 
   const memory = { "2407": { session: "worker-7", nudgedAt: NOW } };
   const later = NOW + STALL_INTERVAL_MS + 5 * MIN;
   const oneMinuteAfterTheNudge = (later - (NOW + MIN)) / MIN;
-  const got = tickWith({ commit: oneMinuteAfterTheNudge }, [claim(N_MIN * 4)], { memory: { ...memory }, now: later });
+  const got = tickWith({ commit: oneMinuteAfterTheNudge }, [claim(N_MIN * 4)], { memory: { ...memory }, now: later, ledger: nudgeDelivered(NOW, NOW + MIN) });
   assert.deepEqual(got.orders.filter((o) => o.release), [], "something moved after the nudge: the old nudge is not a first half of anything");
   assert.equal(got.orders.length, 1, "and the row IS stalled again, so it is nudged afresh");
   assert.match(got.orders[0].causeKey, new RegExp(`nudge-${later}$`), "with a NEW key, one per stall episode");
-  const control = tickWith({ commit: null }, [claim(N_MIN * 4)], { memory: { ...memory }, now: later });
-  assert.equal(control.orders.filter((o) => o.release).length, 1, "CONTROL: with no move after the nudge it IS the second reading");
+  const control = tickWith({ commit: null }, [claim(N_MIN * 4)], { memory: { ...memory }, now: later, ledger: nudgeDelivered(NOW, NOW + MIN) });
+  assert.equal(control.orders.filter((o) => o.release).length, 1, "CONTROL: with no move after the nudge (and the nudge delivered) it IS the second reading");
 });
 
 test("#2470 a comment or a changed file after the nudge also cancels the release, and a nudge from a DIFFERENT holder is not this holder's", () => {
   const memory = { "2407": { session: "worker-7", nudgedAt: NOW } };
   const later = NOW + STALL_INTERVAL_MS + MIN;
   const base = [claim(N_MIN * 3)];
-  assert.equal(tickWith({ commit: null }, base, { memory: { ...memory }, now: later }).orders.filter((o) => o.release).length, 1, "control");
-  assert.equal(tickWith({ commit: null }, [...base, said(90, "a11ign-ai-workers", "still on it", later)], { memory: { ...memory }, now: later }).orders.length, 0, "a comment");
-  assert.equal(tickWith({ dirty: [{ file: "a.mjs", ago: 90 }] }, base, { memory: { ...memory }, now: later }).orders.length, 0, "a file");
+  const ledger = nudgeDelivered(NOW, NOW + MIN);
+  assert.equal(tickWith({ commit: null }, base, { memory: { ...memory }, now: later, ledger }).orders.filter((o) => o.release).length, 1, "control");
+  assert.equal(tickWith({ commit: null }, [...base, said(90, "a11ign-ai-workers", "still on it", later)], { memory: { ...memory }, now: later, ledger }).orders.length, 0, "a comment");
+  assert.equal(tickWith({ dirty: [{ file: "a.mjs", ago: 90 }] }, base, { memory: { ...memory }, now: later, ledger }).orders.length, 0, "a file");
   const other = { "2407": { session: "worker-9", nudgedAt: NOW } };
-  const fresh = tickWith({ commit: null }, base, { memory: { ...other }, now: later });
+  const fresh = tickWith({ commit: null }, base, { memory: { ...other }, now: later, ledger });
   assert.equal(fresh.orders.filter((o) => o.release).length, 0, "another session's nudge on the row is not this one's second reading");
   assert.equal(fresh.orders.length, 1, "it is a FIRST reading: a nudge");
 });
@@ -304,14 +330,15 @@ test("#2470 a comment or a changed file after the nudge also cancels the release
 test("#2470 a stall release that was not PERFORMED is emitted again as a release, never as a fresh first reading", () => {
   const memory: Record<string, unknown> = { "2407": { session: "worker-7", nudgedAt: ago(130) } };
   const comments = [claim(N_MIN * 3)];
-  const first = tickWith({ commit: null }, comments, { memory });
+  const ledger = nudgeDelivered(ago(130), ago(125));
+  const first = tickWith({ commit: null }, comments, { memory, ledger });
   assert.equal(first.orders[0].release!.why, "stalled");
   assert.deepEqual(Object.keys(memory), ["2407"], "the nudge memory SURVIVES the release order: wake may fail to perform it");
-  const second = tickWith({ commit: null }, comments, { memory, now: NOW + 2 * MIN });
+  const second = tickWith({ commit: null }, comments, { memory, now: NOW + 2 * MIN, ledger });
   assert.equal(second.orders.length, 1);
   assert.equal(second.orders[0].release!.why, "stalled", "the retry is a release again, not a nudge and another two hours");
   // ...and once the release is PERFORMED the row is unclaimed, so it is no longer read and the memory goes.
-  const gone = tickWith({ commit: null }, comments, { memory, now: NOW + 4 * MIN, rows: [] });
+  const gone = tickWith({ commit: null }, comments, { memory, now: NOW + 4 * MIN, rows: [], ledger });
   assert.deepEqual([gone.orders, Object.keys(memory)], [[], []]);
 });
 
@@ -320,7 +347,7 @@ test("#2470 the nudge memory is dropped for a row that is no longer claimed, rel
   const before = { "1": { session: "worker-7", nudgedAt: 5 }, "2": { session: "worker-7", nudgedAt: 6 } };
   const after = nextStallState(before, [
     { facts: facts(1), reading: { kind: "moving", lastMoveAt: 1 } },
-    { facts: facts(2), reading: { kind: "nudged", nudgedAt: 6, lastMoveAt: 1 } },
+    { facts: facts(2), reading: { kind: "nudged", nudgedAt: 6, deliveredAt: null, lastMoveAt: 1 } },
     { facts: facts(3), reading: { kind: "nudge", lastMoveAt: 1, idleMs: 1 } },
   ], 99);
   assert.deepEqual(after, { "2": { session: "worker-7", nudgedAt: 6 }, "3": { session: "worker-7", nudgedAt: 99 } });
@@ -390,13 +417,16 @@ test("#2470 (10) POSITIVE CONTROLS: a second open PR, unpushed work, a PR merged
 
 // --- the reading, directly ---------------------------------------------------------------------------------------------------------
 
-test("#2470 claimReading is pure in its inputs: a `nudged` row inside the offer window keeps its key, and outside it emits nothing", () => {
+test("#2470 claimReading is pure in its inputs: an UNDELIVERED `nudged` row keeps offering its key, a delivered one goes quiet", () => {
   const facts = { row: 1, session: "s", claimedAt: ago(1000), branch: BRANCH, worktree: WT, comment: null, commit: null, push: null,
     file: () => null, work: () => ({ state: "none", dirty: 0, unpushed: 0 }), openPrs: 0, mergedPr: null, waiting: null, blockedBy: [] } as Facts;
-  const reading = readClaim(facts, { now: NOW, restartAt: null, nudge: { nudgedAt: NOW - MIN } });
-  assert.equal(reading.kind, "nudged");
-  assert.equal(claimStalledOrders([{ facts, reading }], NOW).length, 1);
-  assert.equal(claimStalledOrders([{ facts, reading }], NOW + NUDGE_OFFER_MS).length, 0);
+  const undelivered = readClaim(facts, { now: NOW, restartAt: null, nudge: { nudgedAt: NOW - MIN, deliveredAt: null } });
+  assert.equal(undelivered.kind, "nudged");
+  assert.equal(claimStalledOrders([{ facts, reading: undelivered }], NOW).length, 1);
+  assert.equal(claimStalledOrders([{ facts, reading: undelivered }], NOW + 90 * MIN).length, 1, "however long it has been offered");
+  const delivered = readClaim(facts, { now: NOW, restartAt: null, nudge: { nudgedAt: NOW - MIN, deliveredAt: NOW - MIN } });
+  assert.equal(delivered.kind, "nudged");
+  assert.equal(claimStalledOrders([{ facts, reading: delivered }], NOW).length, 0, "delivered: it is not sent a second time");
   assert.equal(claimReading({ ...facts, openPrs: 1 }, { now: NOW, restartAt: null, nudge: null }).kind, "pr-owned");
   assert.equal(claimStalledOrders(undefined, NOW).length, 0, "omitted readings mean none");
 });
@@ -563,7 +593,7 @@ const ROW_CLAIM_MJS = /row-claim\.mjs$/;
 
 /** A release host: every seam a release reaches, recording. `herdr` lists worker-7 and can refuse a close; `row-claim decline` can fail. */
 function releaseHost(o: { world?: World; spare?: boolean; agents?: { label: string; status: string }[]; closeFails?: boolean;
-  declineStatus?: number } = {}) {
+  declineStatus?: number; labels?: string[] | null; wasNotReady?: boolean } = {}) {
   const runs: string[][] = [];
   const execs: { cmd: string; args: string[]; cwd: string }[] = [];
   const gh: string[][] = [];
@@ -583,19 +613,30 @@ function releaseHost(o: { world?: World; spare?: boolean; agents?: { label: stri
     execs.push({ cmd, args, cwd: opts.cwd });
     if (ROW_CLAIM_MJS.test(args[0] ?? "") && args[1] === "decline") {
       const status = o.declineStatus ?? 0;
-      return { status, output: status === 0 ? "DECLINED -- #2407 is unclaimed again and restored to `ready`\n" : "NOT DECLINED: the row is held by someone else\n" };
+      return { status, output: status === 0
+        ? `DECLINED -- #2407 is unclaimed again ${o.wasNotReady ? "(was not `ready` before the claim -- not restored)" : "and restored to `ready`"}\n`
+        : "NOT DECLINED: the row is held by someone else\n" };
     }
     return { status: 0, output: "" };
   };
   const deps: ReleaseDeps = {
     run, exec, io: h.io, now: NOW, agents, isSpare: () => o.spare ?? true,
     host: { worktreesDir: "/home/agent/repos", primary: REPO, exists: (p: string) => (p === WT ? o.world?.worktreeExists !== false : true) },
-    env: {}, gh: (a: string[]) => { gh.push(a); return ""; }, warn: (l: string) => { warns.push(l); },
+    env: {}, warn: (l: string) => { warns.push(l); },
+    gh: (a: string[]) => {
+      gh.push(a);
+      if (a[1] !== "view") return "";
+      if (o.labels === null) throw new Error("gh: refused");
+      return JSON.stringify({ labels: (o.labels ?? ["in-progress", "session:worker-7"]).map((name) => ({ name })) });
+    },
     cycle: (c) => { cycles.push(c); }, dropInstance: (r: string) => { dropped.push(r); return { spawnedAt: 1, rows: [2407] }; },
     remember: (row: number, k: unknown) => { if (k === null) delete kept[row]; else kept[row] = k; },
   };
   const decline = () => execs.find((e) => ROW_CLAIM_MJS.test(e.args[0] ?? "") && e.args[1] === "decline");
-  return { deps, runs, execs, gh, warns, cycles, kept, dropped, h, decline };
+  /** What was WRITTEN to the row (a label READ is not a change). */
+  const comments = () => gh.filter((a) => a[1] === "comment");
+  const comment = () => comments()[0]?.join(" ") ?? "";
+  return { deps, runs, execs, gh, comments, comment, warns, cycles, kept, dropped, h, decline };
 }
 
 test("#2470 (4) a stalled release ENDS the spare's workspace, declines the claim AS THE HOLDER keeping the tree, comments, records and writes ONE line", () => {
@@ -608,8 +649,8 @@ test("#2470 (4) a stalled release ENDS the spare's workspace, declines the claim
   assert.deepEqual(decline.args.slice(1), ["decline", "2407", "--session=worker-7", "--keep-worktree"], "as the holder, and the tree is KEPT");
   assert.match(decline.cwd, /\/role-worker-7$/, "from the holder's own launch worktree, which launchGate accepts");
   assert.ok(r.execs.findIndex((e) => e === decline) > -1 && closeAt > -1, "and the close came first, so nothing the instance does can race the read");
-  assert.match(r.gh[0].join(" "), /Claim released by the gate \(#2470\).*`worker-7`.*nothing on this row moved for 250 minutes.*KEPT/s);
-  assert.match(r.gh[0].join(" "), /2 commit\(s\) not on any remote/);
+  assert.match(r.comment(), /Claim released by the gate \(#2470\).*`worker-7`.*nothing on this row moved for 250 minutes.*KEPT/s);
+  assert.match(r.comment(), /2 commit\(s\) not on any remote/);
   assert.deepEqual(r.kept[2407], { worktree: WT, branch: BRANCH, from: "worker-7", at: NOW, why: "stalled", dirty: 1, unpushed: 2 });
   assert.equal(r.cycles.length, 1);
   assert.deepEqual([r.cycles[0].role, r.cycles[0].row, r.cycles[0].released, r.cycles[0].clean], ["worker-7", 2407, "stalled", false]);
@@ -628,10 +669,13 @@ test("#2470 (7) a tree with NOTHING in it is not kept (and its empty branch is d
   performRelease(STALL, pushed.deps);
   assert.ok(pushed.decline()!.args.includes("--keep-worktree"));
   assert.ok(pushed.kept[2407] !== undefined);
+  assert.match(pushed.comment(), /row-branch-unshipped.*holds it for `product-manager`/s, "and the comment says the row is HELD, not simply back in the pool");
+  assert.match(r.comment(), /back in the pool, and a fresh instance takes it/, "CONTROL: a local-only tree is offered at once");
 });
 
 test("#2470 (6) a claim by a role that is NOT a spare is released and NEVER ended: the standing engineers and the decision-holders keep their process", () => {
-  const r = releaseHost({ spare: false, agents: [{ label: "worker-capture", status: "working" }], world: { unpushed: 1 } });
+  const holdsRow = ["in-progress", "session:worker-capture"];
+  const r = releaseHost({ spare: false, agents: [{ label: "worker-capture", status: "working" }], world: { unpushed: 1 }, labels: holdsRow });
   const got = performRelease({ ...STALL, session: "worker-capture" }, r.deps);
   assert.equal(got.released, true);
   assert.equal(r.runs.some((a) => a.includes("close")), false, "no workspace is closed");
@@ -639,7 +683,7 @@ test("#2470 (6) a claim by a role that is NOT a spare is released and NEVER ende
   assert.deepEqual(r.dropped, []);
   assert.ok(r.decline()!.args.includes("--session=worker-capture"), "only the CLAIM is released");
   // THE CONTROL: the same request for a spare closes it.
-  const spare = releaseHost({ agents: [{ label: "worker-capture", status: "working" }], world: { unpushed: 1 } });
+  const spare = releaseHost({ agents: [{ label: "worker-capture", status: "working" }], world: { unpushed: 1 }, labels: holdsRow });
   performRelease({ ...STALL, session: "worker-capture" }, spare.deps);
   assert.equal(spare.runs.some((a) => a.includes("close")), true, "a spare IS ended, whatever it is doing -- its claim is gone and nothing it does now matters");
 });
@@ -669,7 +713,7 @@ test("#2470 (8/10) a blocked or merged release is REFUSED, before any write, whe
     const got = performRelease({ ...STALL, why, edges: [2258], mergedPr: 2497, answer: "product-manager" }, r.deps);
     assert.equal(got.released, false, why);
     assert.match(got.why, /holds work/);
-    assert.deepEqual([r.runs.some((a) => a.includes("close")), r.decline(), r.gh.length], [false, undefined, 0], "nothing was changed");
+    assert.deepEqual([r.runs.some((a) => a.includes("close")), r.decline(), r.comments().length], [false, undefined, 0], "nothing was changed");
   }
   const stalled = releaseHost({ world: dirty });
   assert.equal(performRelease(STALL, stalled.deps).released, true, "CONTROL: a STALLED release is the one that KEEPS what it finds");
@@ -680,7 +724,7 @@ test("#2470 (10) a merged release sets the answer at the merge (`--answer`), say
   const got = performRelease({ ...STALL, why: "merged", mergedPr: 2497, answer: "product-manager", idleMinutes: null, nudgedAt: null }, r.deps);
   assert.equal(got.released, true);
   assert.deepEqual(r.decline()!.args.slice(1), ["decline", "2407", "--session=worker-7", "--answer=product-manager"]);
-  assert.match(r.gh[0].join(" "), /#2497 MERGED and this row stayed open.*`answer:product-manager` is set/s);
+  assert.match(r.comment(), /#2497 MERGED and this row stayed open.*`answer:product-manager` is set/s);
   assert.equal(r.runs.some((a) => a.includes("close")), true);
   assert.equal(r.cycles[0].released, "merged");
 });
@@ -689,12 +733,12 @@ test("#2470 a release is RECOVERABLE at every step: a workspace that will not cl
   const stuck = releaseHost({ closeFails: true, world: { unpushed: 1 } });
   const first = performRelease(STALL, stuck.deps);
   assert.equal(first.released, false);
-  assert.deepEqual([stuck.decline(), stuck.cycles.length, stuck.gh.length], [undefined, 0, 0], "a close that failed aborts with nothing changed");
+  assert.deepEqual([stuck.decline(), stuck.cycles.length, stuck.comments().length], [undefined, 0, 0], "a close that failed aborts with nothing changed");
 
   // The decline fails AFTER the close: the row is still claimed and there is no process. No line, no comment, no record...
   const declined = releaseHost({ declineStatus: 1, world: { unpushed: 1 } });
   assert.equal(performRelease(STALL, declined.deps).released, false);
-  assert.deepEqual([declined.cycles.length, declined.gh.length, Object.keys(declined.kept).length], [0, 0, 0]);
+  assert.deepEqual([declined.cycles.length, declined.comments().length, Object.keys(declined.kept).length], [0, 0, 0]);
   // ...and the retry on the next tick finds the workspace ABSENT, closes nothing and declines: exactly ONE line for the whole release.
   const retry = releaseHost({ agents: [], world: { unpushed: 1 } });
   assert.equal(performRelease(STALL, retry.deps).released, true);
@@ -819,7 +863,7 @@ test("#2470 (9) an interrupted pane yields a RESUME order -- a plain prompt, que
   withState((dir) => {
     const ledger = join(dir, "wake-ledger");
     const agents = [{ label: "worker-7", status: "idle" }, { label: "worker-9", status: "idle" }, { label: "worker-4", status: "working" }, { label: "ceo", status: "done" }];
-    const lines = recoverInterruptedWork({ agents, ledgerPath: ledger, now: NOW, restartAt: null, moved: () => true, log: () => {},
+    const lines = recoverInterruptedWork({ agents, ledgerPath: ledger, now: NOW, restartAt: null, moved: () => true, lastActive: () => NOW - 30 * MIN, log: () => {},
       run: herdrReading({ "worker-7": pane(INTERRUPTED_LINE), "worker-9": pane("● Done."), "worker-4": pane(INTERRUPTED_LINE), ceo: pane("✻ Cooked for 1m") }) });
     assert.deepEqual(lines.filter((l) => l.startsWith("RESUMING")), ["RESUMING worker-7: its pane's last line reads Interrupted"],
       "only the idle interrupted pane: a `working` session is mid-turn (not woken) and an ordinary idle one has nothing to resume");
@@ -831,10 +875,10 @@ test("#2470 (9) an interrupted pane yields a RESUME order -- a plain prompt, que
     assert.equal((handoffBatches(queued)[0] as { resume?: boolean }).resume, true, "and the delivery order carries the flag to `deliver`");
 
     // IDEMPOTENT: the same pane one tick later is not resumed again inside a wake window, and IS once the window has passed.
-    const again = recoverInterruptedWork({ agents, ledgerPath: ledger, now: NOW + 2 * MIN, restartAt: null, moved: () => true, log: () => {},
+    const again = recoverInterruptedWork({ agents, ledgerPath: ledger, now: NOW + 2 * MIN, restartAt: null, moved: () => true, lastActive: () => NOW - 30 * MIN, log: () => {},
       run: herdrReading({ "worker-7": pane(INTERRUPTED_LINE) }) });
     assert.deepEqual(again, [], "a pane that stays interrupted is not re-prompted on every tick");
-    const later = recoverInterruptedWork({ agents, ledgerPath: ledger, now: NOW + WAKE_TTL_MS + MIN, restartAt: null, moved: () => true, log: () => {},
+    const later = recoverInterruptedWork({ agents, ledgerPath: ledger, now: NOW + WAKE_TTL_MS + MIN, restartAt: null, moved: () => true, lastActive: () => NOW - 30 * MIN, log: () => {},
       run: herdrReading({ "worker-7": pane(INTERRUPTED_LINE) }) });
     assert.equal(later.filter((l) => l.startsWith("RESUMING")).length, 1);
   });
@@ -906,7 +950,7 @@ test("#2470 (11) a killed CAUSE delivery is re-sent once, as a resume, and the r
   withState((dir) => {
     const ledger = join(dir, "wake-ledger");
     writeFileSync(ledger, ledgerOf(`${RESTART - 68_000}\t${key}`, `${RESTART - 3 * 3_600_000}\t${key}old`));
-    const args = { agents: [{ label: "worker-9", status: "idle" }], ledgerPath: ledger, now: RESTART + 90_000, restartAt: RESTART, log: () => {},
+    const args = { agents: [{ label: "worker-9", status: "idle" }], ledgerPath: ledger, now: RESTART + 90_000, restartAt: RESTART, lastActive: () => null, log: () => {},
       run: herdrReading({ "worker-9": pane("● Done.") }) };
     const first = recoverInterruptedWork({ ...args, moved: () => false });
     assert.deepEqual(first, [`RE-SENDING ${key} to worker-9: delivered 2026-09-25T12:00:45.000Z and the target made no move before the interruption (VOIDED on the ledger)`]);
@@ -927,7 +971,7 @@ test("#2470 (11b) an AUTHORED order is re-sent from its retained text as a fresh
     queueHandoff(queue, { session: "worker-9", prompt: "Please close out #2220.", decision: true, now: RESTART - 300_000 });
     writeFileSync(queue, `${JSON.stringify({ delivered: readHandoffs(queue)[0].id, at: RESTART - 68_000 })}\n`, { flag: "a" });
     return { queue, args: { agents: [{ label: "worker-9", status: "idle" }], ledgerPath: join(dir, "wake-ledger"), now: RESTART + 90_000,
-      restartAt: RESTART, log: () => {}, run: herdrReading({ "worker-9": pane("● Done.") }) } };
+      restartAt: RESTART, lastActive: () => null, log: () => {}, run: herdrReading({ "worker-9": pane("● Done.") }) } };
   };
   withState((dir) => {
     const { queue, args } = setup(dir);
@@ -955,7 +999,7 @@ test("#2470 (11b) an INTERRUPTED pane with NO restart in view marks its own rece
     writeFileSync(ledger, ledgerOf(`${NOW - 10 * MIN}\t${mine}`, `${NOW - 3 * 3_600_000}\t${mine}old`, `${NOW - 10 * MIN}\tworker-9/answer-owed/row-2/y`));
     const agents = [{ label: "worker-7", status: "idle" }, { label: "worker-9", status: "idle" }];
     const run = herdrReading({ "worker-7": pane(INTERRUPTED_LINE), "worker-9": pane("● Done.") });
-    const lines = recoverInterruptedWork({ agents, ledgerPath: ledger, now: NOW, restartAt: null, moved: () => false, log: () => {}, run });
+    const lines = recoverInterruptedWork({ agents, ledgerPath: ledger, now: NOW, restartAt: null, moved: () => false, lastActive: () => NOW - 30 * MIN, log: () => {}, run });
     assert.deepEqual(lines.filter((l) => l.startsWith("RE-SENDING")).map((l) => l.split(" ")[1]), [mine],
       "the interrupted session's delivery inside the window is voided; an older one is not, and neither is the ordinary idle session's");
     assert.equal(readLedger(ledger, readFileSync as never, NOW, new Set()).has(mine), false, "so the gate's order is offered again");
@@ -965,7 +1009,7 @@ test("#2470 (11b) an INTERRUPTED pane with NO restart in view marks its own rece
 });
 
 test("#2470 (11) a restart noticed LATE is not acted on if it is older than the horizon, and a session that has since acted is left alone", () => {
-  const facts = (over: object) => recoverableWork({ now: RESTART + 90_000, restartAt: RESTART, actedRestart: null, agents: [], paneText: () => null,
+  const facts = (over: object) => recoverableWork({ now: RESTART + 90_000, restartAt: RESTART, actedRestart: null, agents: [], paneText: () => null, lastActive: () => null,
     deliveries: () => [delivery(68)], moved: () => false, resentAt: {}, ...over });
   assert.equal(facts({}).killed.length, 1, "control");
   assert.equal(facts({ now: RESTART + 25 * 3_600_000 }).killed.length, 0, "a day-old restart is history, not an outage to recover from");
@@ -977,9 +1021,9 @@ test("#2470 (11) a restart noticed LATE is not acted on if it is older than the 
 test("#2470 the common tick reads NEITHER ledger: with no fresh restart and no interrupted pane the deliveries are never asked for", () => {
   const explode = () => { throw new Error("the ledgers were read on a tick with nothing to recover"); };
   const quiet = recoverableWork({ now: RESTART + 90_000, restartAt: RESTART - 3 * 24 * 3_600_000, actedRestart: null, agents: [{ label: "worker-9", status: "idle" }],
-    paneText: () => pane("● Done."), deliveries: explode, moved: () => false, resentAt: {} });
+    paneText: () => pane("● Done."), lastActive: () => null, deliveries: explode, moved: () => false, resentAt: {} });
   assert.deepEqual([quiet.killed, quiet.interrupted, quiet.restartActed], [[], [], null]);
-  assert.throws(() => recoverableWork({ now: RESTART + 90_000, restartAt: RESTART, actedRestart: null, agents: [], paneText: () => null,
+  assert.throws(() => recoverableWork({ now: RESTART + 90_000, restartAt: RESTART, actedRestart: null, agents: [], paneText: () => null, lastActive: () => null,
     deliveries: explode, moved: () => false, resentAt: {} }), /ledgers were read/, "CONTROL: a fresh restart DOES ask");
 });
 
@@ -1049,6 +1093,12 @@ case "$*" in
 esac
 `);
     chmodSync(stub, 0o755);
+    // `gh` is a STUB too: the release reads the row's labels before it closes anything, and nothing here may reach the real one.
+    const ghStub = join(dir, "gh");
+    writeFileSync(ghStub, `#!/bin/sh
+echo '{"labels":[{"name":"in-progress"},{"name":"session:worker-7"}]}'
+`);
+    chmodSync(ghStub, 0o755);
     const release = { session: "worker-7", cause: "claim-stalled", subject: "row-2407", discriminator: "release-stalled", prompt: "RELEASE",
       causeKey: "worker-7/claim-stalled/row-2407/release-stalled",
       release: { row: 2407, session: "worker-7", why: "stalled", branch: null, worktree: null, idleMinutes: 250, nudgedAt: 1 } };
@@ -1064,4 +1114,73 @@ esac
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- the review's findings, each pinned ------------------------------------------------------------------------------------------------------
+
+test("#2470 a release is REFUSED, before anything is closed, when the row no longer carries the holder's label (or the labels cannot be read)", () => {
+  const gone = releaseHost({ labels: ["in-progress", "session:worker-9"], world: { unpushed: 1 } });
+  const got = performRelease(STALL, gone.deps);
+  assert.equal(got.released, false);
+  assert.match(got.why, /`session:worker-7` is no longer on #2407 -- a stale order/);
+  assert.deepEqual([gone.runs.some((a) => a.includes("close")), gone.decline(), gone.comments().length], [false, undefined, 0],
+    "a stale order must not end whatever now runs under a REUSED address, and must not touch the row");
+  const unreadable = releaseHost({ labels: null, world: { unpushed: 1 } });
+  assert.match(performRelease(STALL, unreadable.deps).why, /could not read #2407's labels -- not released, retried next tick/);
+  assert.equal(unreadable.runs.some((a) => a.includes("close")), false);
+  assert.equal(performRelease(STALL, releaseHost({ world: { unpushed: 1 } }).deps).released, true, "CONTROL: the holder still holds it");
+});
+
+test("#2470 the release comment says the truth about the pool: a row that was NOT `ready` before the claim is not back in it", () => {
+  const notReady = releaseHost({ wasNotReady: true, world: { unpushed: 1 } });
+  assert.equal(performRelease(STALL, notReady.deps).released, true);
+  assert.match(notReady.comment(), /NOT `ready` before it was claimed, so it is NOT back in the pool: `product-manager` promotes it again/);
+  assert.equal(/back in the pool, and a fresh instance takes it/.test(notReady.comment()), false);
+  const ready = releaseHost({ world: { unpushed: 1 } });
+  performRelease(STALL, ready.deps);
+  assert.match(ready.comment(), /back in the pool, and a fresh instance takes it/, "CONTROL: a row that was `ready` is");
+});
+
+test("#2470 a NUDGE is a plain prompt: it carries `resume`, and a standing seat is not `/clear`ed before it", () => {
+  const { orders } = tickWith({ commit: null }, [claim(N_MIN + 200, { session: "worker-capture" })], { rows: [row(2407, ["in-progress", "session:worker-capture"])] });
+  assert.equal(orders[0].resume, true);
+  const sent: string[][] = [];
+  deliver([orders[0] as never], [{ label: "worker-capture", status: "idle" }], ["worker-capture"], { run: (args: string[]) => { sent.push(args); return ""; } });
+  assert.equal(sent.some((a) => a.includes("/clear")), false, "a standing seat mid-build keeps the context the nudge is ABOUT");
+  assert.equal(sent.filter((a) => a.includes("prompt")).length, 1);
+});
+
+test("#2470 with the open ROWS or the open PULL REQUESTS unread, NOTHING is evaluated and nothing is written (a refusal is not 'none open')", () => {
+  const calls: string[] = [];
+  const log: string[] = [];
+  const deps = { tick: (() => { calls.push("tick"); return []; }) as never, merged: (() => { calls.push("merged"); return null; }) as never, log: (l: string) => log.push(l) };
+  assert.deepEqual(claimStallsNow(null, [], [], deps), []);
+  assert.deepEqual(claimStallsNow([row(2407)], [], null, deps), []);
+  assert.deepEqual(calls, [], "neither the tick nor the merged-PR read ran");
+  assert.match(log.join(""), /open rows could not be read.*open pull requests could not be read/s);
+  claimStallsNow([row(2407)], [], [], deps);
+  assert.deepEqual(calls, ["merged", "tick"], "CONTROL: with both read, a claimed row asks for the merged list and runs the tick");
+  calls.length = 0;
+  claimStallsNow([{ number: 1, labels: [] }], [], [], deps);
+  assert.deepEqual(calls, ["tick"], "and a tick with nothing claimed does not pay for the merged-PR read");
+});
+
+test("#2470 an EXPECTED hold (a blocked holder with work) is not said every tick; a read that could not be made is", () => {
+  const expected = tickWith({ unpushed: 2 }, [claim(20)], { blockedBy: [2258] });
+  assert.deepEqual(expected.orders, []);
+  assert.equal(/HELD/.test(expected.log.join("")), false, "expected: silent");
+  const unreadable = tickWith({ broken: 128 }, [claim(20)], { blockedBy: [2258] });
+  assert.equal(/not evaluated/.test(unreadable.log.join("")), true, "CONTROL: an unreadable worktree is said");
+});
+
+test("#2470 (9) a pane interrupted for LESS than the settle time is left alone (a person who pressed Esc is about to type); a settled one is resumed", () => {
+  const agents = [{ label: "worker-7", status: "idle" }];
+  const seen = (lastActive: number | null) => recoverableWork({ now: NOW, restartAt: null, actedRestart: null, agents, paneText: () => pane(INTERRUPTED_LINE),
+    lastActive: () => lastActive, deliveries: () => [], moved: () => false, resentAt: {} }).interrupted;
+  assert.deepEqual(seen(NOW - 2 * MIN), [], "silent for 2 minutes: a person may be typing");
+  assert.deepEqual(seen(NOW - INTERRUPTED_SETTLE_MS + 1), [], "one millisecond short");
+  assert.deepEqual(seen(NOW - INTERRUPTED_SETTLE_MS), ["worker-7"], "settled: resumed");
+  assert.deepEqual(seen(null), [], "a session whose last activity cannot be established is left alone");
+  assert.match(readFileSync(new URL("./wake.mjs", import.meta.url), "utf8"), /if you were stopped on purpose, say so on the row and stop/,
+    "and the prompt itself tells a deliberately stopped session what to do");
 });

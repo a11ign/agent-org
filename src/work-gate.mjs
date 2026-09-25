@@ -77,7 +77,7 @@ import { readTrunkRed, trunkRedOrders } from "./trunk-red.mjs";
 import { diskHeadroom, MIN_FREE_FRACTION } from "./disk-headroom.mjs";
 // #2470: A CLAIM THAT DOES NOT MOVE. A leaf, like every import above, so the gate keeps the property its own header states.
 import { STALL_STATE_FILE, claimFactsFrom, readClaim, claimStalledOrders, nextStallState, readStallState,
-  writeStallState, readHerdrRestart, gitRun, pathExists, statMtime } from "./claim-stall.mjs";
+  writeStallState, readHerdrRestart, gitRun, pathExists, statMtime, nudgeKey, nudgeDeliveredAt } from "./claim-stall.mjs";
 
 /**
  * FOUR STATES, AND THE POLARITY IS DELIBERATE.
@@ -2184,34 +2184,46 @@ function declaredWait(row, holder) {
  * THE CLOCK NEVER STARTS BEFORE THE LAST `herdr.service` START (`restartAt`, 11f), and the tick reads it only when some row
  * is claimed at all. NEVER THROWS: a broken detector must not stop the orders behind it, and it says so.
  *
+ * THE SECOND READING IS FAIR ONLY TO A HOLDER THAT WAS TOLD: for a row with a remembered nudge the tick reads the WAKE LEDGER for that nudge's
+ * key, and the grace runs from the delivery it finds (`claimReading`). `ledger` is the seam for that read; an unreadable ledger reads as "not
+ * delivered", which only DELAYS a release.
+ *
  * @param {{ rows: any[], claimedComments: any[] | null, openPrs: any[], mergedPrs: any[] | null,
  *   io?: import("./claim-stall.mjs").HostReads, repo?: string, now?: number, restartAt?: number | null,
- *   stateDir?: string, log?: (line: string) => void,
+ *   stateDir?: string, log?: (line: string) => void, ledger?: () => string,
  *   read?: typeof readStallState, write?: typeof writeStallState }} args
  * @returns {import("./claim-stall.mjs").StallOrder[]}
  */
-export function claimStallTick({ rows, claimedComments, openPrs, mergedPrs,
-  io = { git: gitRun, exists: pathExists, mtime: statMtime }, repo = REPO_CHECKOUT, now = Date.now(), restartAt,
-  stateDir = REVIEWER_STATE_DIR, log = (line) => process.stderr.write(line), read = readStallState,
-  write = writeStallState }) {
-  const held = rows.filter((r) => labelsOf(r).includes(CLAIM_LABEL));
-  const statePath = `${stateDir}/${STALL_STATE_FILE}`;
+export function claimStallTick({ io = { git: gitRun, exists: pathExists, mtime: statMtime }, repo = REPO_CHECKOUT, now = Date.now(),
+  stateDir = REVIEWER_STATE_DIR, log = (line) => process.stderr.write(line), read = readStallState, write = writeStallState, ...inputs }) {
   try {
-    if (held.length > 0 && claimedComments === null) {
-      log("claim-stall: the comments on the claimed rows could not be read -- NO claim was evaluated this tick.\n");
-      return [];
-    }
-    const before = read(statePath);
-    const byRow = new Map((claimedComments ?? []).map((r) => [Number(r?.number), r?.comments ?? []]));
-    const readings = readClaims({ held, byRow, openPrs, mergedPrs, io, repo, now, before, log,
-      restart: restartFor(held, restartAt) });
-    const after = nextStallState(before, readings, now);
-    if (after !== before) write(statePath, after);
-    return claimStalledOrders(readings, now);
+    return evaluateClaims({ ...inputs, io, repo, now, stateDir, log, read, write });
   } catch (/** @type {any} */ err) {
     log(`claim-stall: could not run (${String(err?.message ?? err).split("\n")[0]}) -- no claim-stalled order this tick.\n`);
     return [];
   }
+}
+
+/**
+ * `claimStallTick`'s body, with every default resolved by its caller. NEVER CALLED WITHOUT THE CATCH ABOVE: a throw here is the tick's to report.
+ * @param {{ rows: any[], claimedComments: any[] | null, openPrs: any[], mergedPrs: any[] | null, restartAt?: number | null,
+ *   ledger?: () => string, io: import("./claim-stall.mjs").HostReads, repo: string, now: number, stateDir: string,
+ *   log: (line: string) => void, read: typeof readStallState, write: typeof writeStallState }} args
+ */
+function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, restartAt, ledger, io, repo, now, stateDir, log, read, write }) {
+  const held = rows.filter((r) => labelsOf(r).includes(CLAIM_LABEL));
+  if (held.length > 0 && claimedComments === null) {
+    log("claim-stall: the comments on the claimed rows could not be read -- NO claim was evaluated this tick.\n");
+    return [];
+  }
+  const statePath = `${stateDir}/${STALL_STATE_FILE}`;
+  const before = read(statePath);
+  const byRow = new Map((claimedComments ?? []).map((r) => [Number(r?.number), r?.comments ?? []]));
+  const readings = readClaims({ held, byRow, openPrs, mergedPrs, io, repo, now, before, log,
+    ledger: ledger ?? (() => ledgerText(`${stateDir}/wake-ledger`)), restart: restartFor(held, restartAt) });
+  const after = nextStallState(before, readings, now);
+  if (after !== before) write(statePath, after);
+  return claimStalledOrders(readings, now);
 }
 
 /**
@@ -2227,9 +2239,9 @@ function restartFor(held, given) {
 /**
  * @param {{ held: any[], byRow: Map<number, any[]>, openPrs: any[], mergedPrs: any[] | null,
  *   io: import("./claim-stall.mjs").HostReads, repo: string, now: number, restart: number | null,
- *   before: import("./claim-stall.mjs").StallState, log: (line: string) => void }} ctx
+ *   before: import("./claim-stall.mjs").StallState, log: (line: string) => void, ledger: () => string }} ctx
  */
-function readClaims({ held, byRow, openPrs, mergedPrs, io, repo, now, restart, before, log }) {
+function readClaims({ held, byRow, openPrs, mergedPrs, io, repo, now, restart, before, log, ledger }) {
   /** @type {{ facts: import("./claim-stall.mjs").ClaimFacts, reading: import("./claim-stall.mjs").Reading }[]} */
   const readings = [];
   for (const row of held) {
@@ -2246,9 +2258,13 @@ function readClaims({ held, byRow, openPrs, mergedPrs, io, repo, now, restart, b
       continue;
     }
     const remembered = before[facts.row];
-    const reading = readClaim(facts, { now, restartAt: restart,
-      nudge: remembered?.session === session ? remembered : null });
-    if (reading.kind === "holding") log(`claim-stall: #${facts.row} (${session}) is HELD, not released: ${reading.why}.\n`);
+    const nudge = remembered?.session === session ? { nudgedAt: remembered.nudgedAt,
+      deliveredAt: nudgeDeliveredAt(ledger(), nudgeKey(session, facts.row, remembered.nudgedAt)) } : null;
+    const reading = readClaim(facts, { now, restartAt: restart, nudge });
+    // A HOLDER THAT HAS WORK AND A BLOCKER is the EXPECTED hold and is not said every tick; only a read that could not be made is.
+    if (reading.kind === "holding" && reading.expected !== true) {
+      log(`claim-stall: #${facts.row} (${session}) is HELD, not released: ${reading.why}.\n`);
+    }
     readings.push({ facts, reading });
   }
   return readings;
@@ -2257,14 +2273,31 @@ function readClaims({ held, byRow, openPrs, mergedPrs, io, repo, now, restart, b
 /** @param {import("./claim-stall.mjs").StallOrder[] | undefined} orders */
 const stallOrdersOrNone = (orders) => orders ?? [];
 
+/** The wake ledger's text, `""` when it cannot be read. @param {string} path */
+function ledgerText(path) {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return "";
+  }
+}
+
 /**
- * `claimStallTick` with its two API-facing inputs read HERE, so `main` stays a list of reads: the open rows' claimed set is
- * already in hand, and the merged-PR list is paid only when some row is claimed (`GH_READS.conditionalOnClaimedBranches`).
- * @param {any[]} rows @param {any[] | null} claimedComments @param {any[]} openPrs
+ * `claimStallTick` with its API-facing inputs read HERE, so `main` stays a list of reads: the merged-PR list is paid only when some row is
+ * claimed (`GH_READS.conditionalOnClaimedBranches`). THE OPEN ROWS AND THE OPEN PULL REQUESTS ARE PASSED RAW, `null` for a refusal: with either
+ * missing nothing is evaluated and nothing is written. A refused pull-request read coalesced to "none open" would read a holder whose PR is in
+ * review as one with no PR at all (nudged, or, with a `blockedBy` edge, released), and a refused row read would empty the nudge memory.
+ * @param {any[] | null} rows @param {any[] | null} claimedComments @param {any[] | null} prs
+ * @param {{ tick?: typeof claimStallTick, merged?: typeof readMergedPrs, log?: (line: string) => void }} [deps]
  */
-function claimStallsNow(rows, claimedComments, openPrs) {
+export function claimStallsNow(rows, claimedComments, prs, { tick = claimStallTick, merged = readMergedPrs,
+  log = (line) => process.stderr.write(line) } = {}) {
+  if (rows === null || prs === null) {
+    log(`claim-stall: the ${rows === null ? "open rows" : "open pull requests"} could not be read -- NO claim was evaluated this tick.\n`);
+    return [];
+  }
   const anyClaimed = rows.some((r) => labelsOf(r).includes(CLAIM_LABEL));
-  return claimStallTick({ rows, claimedComments, openPrs, mergedPrs: anyClaimed ? readMergedPrs() : null });
+  return tick({ rows, claimedComments, openPrs: prs, mergedPrs: anyClaimed ? merged() : null });
 }
 
 /** @param {string[]} args */
@@ -5094,7 +5127,7 @@ function main() {
     // nothing in progress pays nothing; a busy one pays exactly one, whatever the size of the queue.
     claimedComments: claimedComments ?? [],
     // #2470: the SAME comments, read once, and the raw `null` kept for the reader that must tell "refused" from "none".
-    claimStalls: claimStallsNow(allOpen, claimedComments, openPrs),
+    claimStalls: claimStallsNow(openRowsRead, claimedComments, prs),
     // #1969: CONDITIONAL, and the condition is answered for free from the list already in hand.
     // `shouldBeMerging` reads `openPrs`; only if it finds a green, unheld, non-draft PR is the
     // merge-queue call made at all.

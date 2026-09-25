@@ -58,12 +58,20 @@ export const CLAIM_STALLED = "claim-stalled";
 export const STALL_INTERVAL_MS = 120 * MINUTE_MS;
 
 /**
- * How long a nudge is OFFERED: `WAKE_TTL_MS`, the ledger's window for an action cause. Offered for exactly one window
- * means one delivery (the ledger holds a delivered key for that long) and no more: a longer offer would re-send it every
- * twenty minutes of the grace period and reach `MAX_DELIVERIES`, which escalates the ROW to the chairman for a stall this
- * cause exists to handle. A test pins that the two are the same number, because this file cannot import `wake.mjs`.
+ * HOW LONG A NUDGE MAY GO UNDELIVERED before the claim is released anyway: twice N, counted from the nudge. A release is on the SECOND reading,
+ * and the second reading is only fair to a holder that was TOLD: the nudge is offered every tick until the wake ledger records it delivered, and
+ * the grace runs from THAT delivery (`claimReading`). A holder that is never wakeable -- `working` for hours, out of allowance, or gone -- would
+ * otherwise hold the row for ever, so after this long the claim is released without the nudge having reached it; the work is kept either way.
  */
-export const NUDGE_OFFER_MS = 20 * MINUTE_MS;
+export const STALL_UNTOLD_RELEASE_MS = 2 * STALL_INTERVAL_MS;
+
+/**
+ * How long a pane must have been silent, with `Interrupted` as its last line, before it is RESUMED. Claude Code prints the same sentence when a
+ * PERSON presses Esc as when the process under it was killed, and a person who stopped a session is about to type: resuming it two minutes later
+ * would undo a deliberate stop. A killed pane stays interrupted for ever, so a wait costs the killed case only time. CHOSEN, NOT MEASURED: ten
+ * minutes is long enough for a person to act and short beside the hours a killed session otherwise sits.
+ */
+export const INTERRUPTED_SETTLE_MS = 10 * MINUTE_MS;
 
 /**
  * The window before a `herdr.service` restart in which a delivery is presumed KILLED if its target made no move.
@@ -234,6 +242,10 @@ export function fileMove({ git, mtime }, dir) {
  * `unknown` is a third answer and never `none`: git that will not answer is not a clean tree, and the callers that RELEASE
  * refuse on it. No worktree and no local branch is `none` -- there is nothing on this host to lose.
  *
+ * IT ASSUMES A MERGE KEEPS THE BRANCH'S COMMITS reachable from `origin/main` (a MERGE COMMIT, which is what this repository's merge queue
+ * makes -- read live at the first run: the merged branches of #2220 and #2188 both read `none`). A SQUASH-merging repository would leave the
+ * branch's commits on no remote once its remote branch is pruned, and the merged release would read `at-risk` and never fire.
+ *
  * @param {HostReads} io
  * @param {{ worktree: string | null, branch: string | null, repo: string }} where `repo` is any checkout of the repository
  * @returns {{ state: "none" | "at-risk" | "unknown", dirty: number, unpushed: number, why?: string }}
@@ -277,10 +289,10 @@ export function workAtRisk(io, { worktree, branch, repo }) {
  *
  * @typedef {{ kind: "moving", lastMoveAt: number } | { kind: "pr-owned" } | { kind: "waiting", waiting: string }
  *   | { kind: "nudge", lastMoveAt: number, idleMs: number }
- *   | { kind: "nudged", nudgedAt: number, lastMoveAt: number }
+ *   | { kind: "nudged", nudgedAt: number, deliveredAt: number | null, lastMoveAt: number }
  *   | { kind: "release", why: "stalled" | "blocked" | "merged", lastMoveAt: number | null, idleMs: number | null,
  *       nudgedAt: number | null, edges?: number[], mergedPr?: number }
- *   | { kind: "holding", why: string }} Reading
+ *   | { kind: "holding", why: string, expected?: boolean }} Reading
  */
 
 /** @param {(number | null)[]} times @returns {number | null} */
@@ -304,7 +316,7 @@ function latest(times) {
  * for a stall the gate itself caused and has not yet answered.
  *
  * @param {ClaimFacts} facts
- * @param {{ now: number, restartAt: number | null, nudge: { nudgedAt: number } | null, intervalMs?: number }} ctx
+ * @param {{ now: number, restartAt: number | null, nudge: { nudgedAt: number, deliveredAt: number | null } | null, intervalMs?: number }} ctx
  * @returns {Reading}
  */
 export function claimReading(facts, ctx) {
@@ -318,12 +330,16 @@ export function claimReading(facts, ctx) {
   if (ctx.now - cheap < interval) return { kind: "moving", lastMoveAt: cheap };
   const lastMoveAt = /** @type {number} */ (latest([cheap, facts.file()]));
   if (ctx.now - lastMoveAt < interval) return { kind: "moving", lastMoveAt };
-  // THE SECOND READING: a nudge nothing has moved since. A move after the nudge, or a restart after it, is not "nothing".
+  // THE SECOND READING: a nudge nothing has moved since. A move after the nudge, or a restart after it, is not "nothing". IT IS FAIR ONLY TO A
+  // HOLDER THAT WAS TOLD: the grace runs from the nudge's DELIVERY, and a nudge that never reached its holder (working, out of allowance, gone)
+  // releases after `STALL_UNTOLD_RELEASE_MS` from the nudge instead -- the work is kept either way.
   if (ctx.nudge !== null && ctx.nudge.nudgedAt > lastMoveAt) {
-    if (ctx.now - ctx.nudge.nudgedAt >= interval) {
-      return { kind: "release", why: "stalled", lastMoveAt, idleMs: ctx.now - lastMoveAt, nudgedAt: ctx.nudge.nudgedAt };
+    const { nudgedAt, deliveredAt } = ctx.nudge;
+    const told = deliveredAt !== null && ctx.now - deliveredAt >= interval;
+    if (told || (deliveredAt === null && ctx.now - nudgedAt >= STALL_UNTOLD_RELEASE_MS)) {
+      return { kind: "release", why: "stalled", lastMoveAt, idleMs: ctx.now - lastMoveAt, nudgedAt };
     }
-    return { kind: "nudged", nudgedAt: ctx.nudge.nudgedAt, lastMoveAt };
+    return { kind: "nudged", nudgedAt, deliveredAt, lastMoveAt };
   }
   return { kind: "nudge", lastMoveAt, idleMs: ctx.now - lastMoveAt };
 }
@@ -337,7 +353,8 @@ function mergedReading(facts) {
   if (facts.mergedPr === null) return null;
   const work = facts.work();
   if (work.state !== "none") {
-    return { kind: "holding", why: `#${facts.mergedPr.number} merged, but ${work.state === "unknown" ? "the worktree could not be read" : `the holder still has ${work.dirty} dirty file(s) and ${work.unpushed} unpushed commit(s)`}` };
+    return { kind: "holding", expected: work.state !== "unknown",
+      why: `#${facts.mergedPr.number} merged, but ${work.state === "unknown" ? "the worktree could not be read" : `the holder still has ${work.dirty} dirty file(s) and ${work.unpushed} unpushed commit(s)`}` };
   }
   return { kind: "release", why: "merged", lastMoveAt: null, idleMs: null, nudgedAt: null, mergedPr: facts.mergedPr.number };
 }
@@ -350,7 +367,7 @@ function mergedReading(facts) {
 function blockedReading(facts) {
   const work = facts.work();
   if (work.state !== "none") {
-    return { kind: "holding", why: work.state === "unknown" ? "blocked, and the worktree could not be read"
+    return { kind: "holding", expected: work.state !== "unknown", why: work.state === "unknown" ? "blocked, and the worktree could not be read"
       : `blocked, but the holder has ${work.dirty} dirty file(s) and ${work.unpushed} unpushed commit(s)` };
   }
   return { kind: "release", why: "blocked", lastMoveAt: null, idleMs: null, nudgedAt: null, edges: facts.blockedBy };
@@ -504,7 +521,7 @@ const minutes = (ms) => Math.round(ms / MINUTE_MS);
  *   worktree: string | null, idleMinutes: number | null, nudgedAt: number | null, edges?: number[],
  *   mergedPr?: number, answer?: string }} ReleaseRequest
  * @typedef {{ session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string,
- *   title?: string, release?: ReleaseRequest }} StallOrder
+ *   title?: string, release?: ReleaseRequest, resume?: boolean }} StallOrder
  */
 
 /**
@@ -528,12 +545,44 @@ function nudgeOrder(facts, nudgedAt, lastMoveAt) {
       + "of the three is a move and resets the clock. IF YOU CANNOT, say what stops you in a FIELD, not a sentence "
       + "(`answer:<session>` for a ruling, `gh issue edit <n> --add-blocked-by <m>` for a row you wait on, "
       + "`Not-before:` for a date) -- each clears itself.\n"
-      + `IF NOTHING MOVES FOR ANOTHER ${minutes(STALL_INTERVAL_MS)} MINUTES the claim is RELEASED and the row goes back to `
-      + "the pool. Your worktree and everything unpushed in it are KEPT, and the next instance starts in them: nothing "
-      + "you have built is lost, and nothing you have not built is held.",
-    causeKey: `${facts.session}/${CLAIM_STALLED}/row-${facts.row}/nudge-${nudgedAt}`,
+      + `IF NOTHING MOVES FOR ${minutes(STALL_INTERVAL_MS)} MINUTES AFTER THIS REACHES YOU the claim is RELEASED (the row is offered to `
+      + "the pool again, or comes to `product-manager` if it was not Ready before you took it). Your worktree and everything unpushed in it "
+      + "are KEPT, and the next instance starts in them: nothing you have built is lost, and nothing you have not built is held.",
+    causeKey: nudgeKey(facts.session, facts.row, nudgedAt),
+    // A NUDGE IS SENT AS A PLAIN PROMPT, NEVER BEHIND A `/clear` (#2470): its whole subject is what the session has built, and a standing seat
+    // that was wiped first would be asked "what have you done" by a context that has forgotten.
+    resume: true,
     ...(facts.title === undefined ? {} : { title: facts.title }),
   };
+}
+
+/**
+ * The nudge's `causeKey`: one per stall episode. The gate derives it here and reads the wake ledger for it, and `wake.mjs` records it on delivery,
+ * so the key has ONE spelling. @param {string} session @param {number} row @param {number} nudgedAt
+ */
+export function nudgeKey(session, row, nudgedAt) {
+  return `${session}/${CLAIM_STALLED}/row-${row}/nudge-${nudgedAt}`;
+}
+
+/**
+ * When the wake ledger last recorded `key` as DELIVERED, or `null`: the line `<epochMs>\t<causeKey>[...]` the tick writes once herdr has accepted the
+ * prompt, with a `VOIDED` line (a delivery a restart killed) taking one back. THE LEDGER'S FORMAT IS `wake.mjs`'s, which this leaf cannot import, so
+ * the test writes a line with the real `ledgerLine` and reads it here: a change of format breaks that test and not the release.
+ * @param {string} raw the ledger's text @param {string} key @returns {number | null}
+ */
+export function nudgeDeliveredAt(raw, key) {
+  /** @type {number[]} */
+  const times = [];
+  for (const line of raw.split("\n")) {
+    const fields = line.trim().split("\t");
+    const at = Number(fields[0]);
+    if (!Number.isFinite(at)) continue;
+    if (fields[1] === "VOIDED" && fields[2] === key) {
+      const index = times.lastIndexOf(Number(fields[3]));
+      times.splice(index === -1 ? times.length - 1 : index, 1);
+    } else if (fields[1] === key) times.push(at);
+  }
+  return times.length === 0 ? null : Math.max(...times);
 }
 
 /**
@@ -569,7 +618,9 @@ export function claimStalledOrders(readings, now) {
   const orders = [];
   for (const { facts, reading } of readings ?? []) {
     if (reading.kind === "nudge") orders.push(nudgeOrder(facts, now, reading.lastMoveAt));
-    else if (reading.kind === "nudged" && now - reading.nudgedAt < NUDGE_OFFER_MS) {
+    // OFFERED UNTIL DELIVERED, and then never again: the ledger holds a delivered key for one wake window only, so an offer that outlived the
+    // delivery would send it a second time.
+    else if (reading.kind === "nudged" && reading.deliveredAt === null) {
       orders.push(nudgeOrder(facts, reading.nudgedAt, reading.lastMoveAt));
     } else if (reading.kind === "release") orders.push(releaseOrder(facts, reading));
   }

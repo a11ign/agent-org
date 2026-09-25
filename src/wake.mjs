@@ -63,7 +63,8 @@ import { assertNoLeakInArgv } from "../../lab/src/packaging/leak-patterns.mjs";
 // #2470: THE PURE HALF OF A CLAIM THAT DOES NOT MOVE -- a leaf, so `work-gate.mjs` and this file both import it and neither imports the other's
 // half. What is performed here is the part that needs a pane, a process or a row: the release, the resume, the re-send.
 import { workAtRisk, gitRun, pathExists, statMtime, KEPT_CLAIMS_FILE, RESTART_STATE_FILE, RESTART_RESEND_WINDOW_MS,
-  readHerdrRestart, paneInterrupted, killedDeliveries, writeJsonObject, readJsonObject, INTERRUPTED_TEXT } from "./claim-stall.mjs";
+  readHerdrRestart, paneInterrupted, killedDeliveries, writeJsonObject, readJsonObject, INTERRUPTED_TEXT, INTERRUPTED_SETTLE_MS }
+  from "./claim-stall.mjs";
 
 /**
  * `0` QUIET nothing to deliver; `1` ATTENTION an order had nowhere to go; `2` CANNOT_ASK herdr did not
@@ -4270,10 +4271,16 @@ export function keptClaimsPath(ledgerPath) {
  * may have started something since the gate looked. A STALLED release keeps whatever it finds -- unreadable included.
  *
  * @param {ReleaseRequest} request @param {ReleaseDeps} deps
- * @returns {{ keep: boolean, work: ReturnType<typeof workAtRisk> } | { refusal: string }}
+ * @returns {{ keep: boolean, work: ReturnType<typeof workAtRisk>, onOrigin: boolean, restored?: boolean } | { refusal: string }}
+ *   `restored` is filled in AFTER the decline: whether `decline` put `ready` back (it does only for a row that was `ready` before the claim)
  */
 function releasePlan(request, deps) {
   const repo = deps.host.primary;
+  const holds = stillHolds(request, deps);
+  if (holds !== true) {
+    return { refusal: holds === false ? `\`session:${request.session}\` is no longer on #${request.row} -- a stale order, nothing to release`
+      : `could not read #${request.row}'s labels -- not released, retried next tick` };
+  }
   const work = workAtRisk(deps.io, { worktree: request.worktree, branch: request.branch, repo });
   if (request.why !== "stalled" && work.state !== "none") {
     return { refusal: `the holder now holds work (${work.state}: ${work.dirty} dirty, ${work.unpushed} unpushed) -- not released` };
@@ -4281,7 +4288,22 @@ function releasePlan(request, deps) {
   const onOrigin = request.branch !== null
     && deps.io.git(repo, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${request.branch}`]).status === 0;
   const treeExists = request.worktree !== null && deps.io.exists(request.worktree);
-  return { keep: treeExists && (work.state !== "none" || onOrigin), work };
+  return { keep: treeExists && (work.state !== "none" || onOrigin), work, onOrigin };
+}
+
+/**
+ * Does the row STILL carry the holder's `session:` label? `null` when it cannot be read. ASKED BEFORE THE WORKSPACE IS CLOSED: a closed workspace is
+ * looked up by LABEL, and an address is reused (a counter-named spare, freed and started again for another row), so an order that outlived its claim
+ * -- a decline that failed after the close, retried next tick -- must not end whatever now runs under that name.
+ * @param {ReleaseRequest} request @param {ReleaseDeps} deps @returns {boolean | null}
+ */
+function stillHolds(request, deps) {
+  try {
+    const labels = JSON.parse(deps.gh(["issue", "view", String(request.row), "--repo", REPO, "--json", "labels"]))?.labels;
+    return Array.isArray(labels) && labels.some((/** @type {any} */ l) => l?.name === `session:${request.session}`);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -4316,7 +4338,7 @@ function releaseHeadline(request) {
 /**
  * The comment a release leaves ON THE ROW: what happened, what was kept and where, and what happens next. The row is the state, and the
  * machine-readable half (labels, the claim record) is written by `decline`; this is the half a person reads.
- * @param {ReleaseRequest} request @param {{ keep: boolean, work: ReturnType<typeof workAtRisk> }} plan @returns {string}
+ * @param {ReleaseRequest} request @param {{ keep: boolean, work: ReturnType<typeof workAtRisk>, onOrigin: boolean, restored?: boolean }} plan @returns {string}
  */
 function releaseComment(request, plan) {
   const kept = plan.keep
@@ -4325,14 +4347,19 @@ function releaseComment(request, plan) {
     : "Nothing was left on this host worth keeping, so no worktree was kept.";
   const next = request.why === "merged"
     ? `\`answer:${request.answer}\` is set: whether the row is finished, or needs re-scoping, is theirs to rule. If more work is needed a fresh \`worker-<row>\` is started.`
-    : "The row is back in the pool, and a fresh instance takes it.";
+    : plan.restored === false
+      ? "The row was NOT `ready` before it was claimed, so it is NOT back in the pool: `product-manager` promotes it again when it should be taken."
+      : plan.onOrigin
+      ? "The row is back in the pool, BUT its branch is on `origin` with no pull request, so #2031's `row-branch-unshipped` holds it for `product-manager` "
+        + "to read first (open the PR, delete the branch, or rename it); the kept worktree waits, and the respawn adopts it once the row is offered."
+      : "The row is back in the pool, and a fresh instance takes it.";
   return `**Claim released by the gate (#2470).** \`${request.session}\` held this row, and ${releaseHeadline(request)}. ${kept} ${next}`;
 }
 
 /**
  * Everything after the label edit landed, each step alone in its own guard: a comment that cannot be posted, a record that cannot be
  * written and a branch that cannot be deleted are SAID and do not undo a release that has happened.
- * @param {ReleaseRequest} request @param {{ keep: boolean, work: ReturnType<typeof workAtRisk> }} plan @param {ReleaseDeps} deps
+ * @param {ReleaseRequest} request @param {{ keep: boolean, work: ReturnType<typeof workAtRisk>, onOrigin: boolean, restored?: boolean }} plan @param {ReleaseDeps} deps
  */
 function settleRelease(request, plan, deps) {
   const attempt = (/** @type {string} */ what, /** @type {() => void} */ act) => {
@@ -4393,7 +4420,7 @@ export function performRelease(request, deps) {
   if (!(/^DECLINED/m.test(ran.output) && CLAIM_LANDED.includes(Number(ran.status)))) {
     return { released: false, why: `decline of #${request.row} as ${request.session} did not land (${verdictLine(ran.output)})` };
   }
-  settleRelease(request, plan, deps);
+  settleRelease(request, { ...plan, restored: /restored to `ready`/.test(ran.output) }, deps);
   recordReleaseCycle(request, deps, plan.keep);
   return { released: true, why: `#${request.row} (${request.session}, ${request.why}): ${plan.keep
     ? `worktree KEPT at ${request.worktree}` : "nothing kept"}` };
@@ -4591,15 +4618,18 @@ export function sessionMoved(timestamps) {
  *
  * @template {{ session: string, at: number }} D
  * @param {{ now: number, restartAt: number | null, actedRestart: number | null, agents: { label: string, status: string }[],
- *   paneText: (label: string) => string | null, deliveries: () => D[], moved: (session: string, from: number, to: number) => boolean,
- *   resentAt: Record<string, number> }} facts
+ *   paneText: (label: string) => string | null, lastActive: (label: string) => number | null, deliveries: () => D[],
+ *   moved: (session: string, from: number, to: number) => boolean, resentAt: Record<string, number> }} facts
  *   `deliveries` is a thunk: it reads two ledgers, and is called only when a restart is fresh or a pane is interrupted
  * @returns {{ interrupted: string[], killed: D[], restartActed: number | null }}
  */
-export function recoverableWork({ now, restartAt, actedRestart, agents, paneText, deliveries, moved, resentAt }) {
+export function recoverableWork({ now, restartAt, actedRestart, agents, paneText, lastActive, deliveries, moved, resentAt }) {
   const recent = restartAt !== null && restartAt > (actedRestart ?? 0) && now - restartAt <= RESTART_ACT_HORIZON_MS;
   const quiet = (/** @type {string} */ session) => now - (resentAt[session] ?? -Infinity) < WAKE_TTL_MS;
-  const interrupted = agents.filter((a) => WAKEABLE.includes(a.status) && paneInterrupted(paneText(a.label)) && !quiet(a.label))
+  // SETTLED: Claude Code prints the same sentence when a PERSON presses Esc, and a person who stopped a session is about to type. A pane is resumed
+  // only once its session has been SILENT for `INTERRUPTED_SETTLE_MS`, and a session whose last activity cannot be established is left alone.
+  const settled = (/** @type {string} */ label) => { const at = lastActive(label); return at !== null && now - at >= INTERRUPTED_SETTLE_MS; };
+  const interrupted = agents.filter((a) => WAKEABLE.includes(a.status) && paneInterrupted(paneText(a.label)) && !quiet(a.label) && settled(a.label))
     .map((a) => a.label);
   // THE LEDGERS ARE READ ONLY WHEN THERE IS SOMETHING TO RECOVER: the common tick has neither a fresh restart nor an interrupted pane.
   if (!recent && interrupted.length === 0) return { interrupted, killed: [], restartActed: null };
@@ -4615,10 +4645,11 @@ export function recoverableWork({ now, restartAt, actedRestart, agents, paneText
  * @returns {string}
  */
 export function resumePrompt() {
-  return `YOU WERE INTERRUPTED. Your pane's last line reads \`${INTERRUPTED_TEXT}\`: the process under you was killed mid-turn (a `
-    + "restart of `herdr.service`, or the kernel's OOM killer -- 2026-09-25 lost every session at once), and `idle` is what herdr "
-    + "reports for that, so nothing has told you until now.\n"
-    + "RESUME WHERE YOU LEFT OFF. This is a plain prompt and NOTHING WAS CLEARED: your context is intact. THE ROW IS THE STATE: re-read the "
+  return `YOU WERE INTERRUPTED. Your pane's last line reads \`${INTERRUPTED_TEXT}\` and has read it for at least ${INTERRUPTED_SETTLE_MS / 60_000} minutes: `
+    + "the process under you was most likely killed mid-turn (a restart of `herdr.service`, or the kernel's OOM killer -- 2026-09-25 lost every "
+    + "session at once), and `idle` is what herdr reports for that, so nothing has told you until now. Claude Code prints the same line when a "
+    + "PERSON presses Esc: if you were stopped on purpose, say so on the row and stop.\n"
+    + "OTHERWISE RESUME WHERE YOU LEFT OFF. This is a plain prompt and NOTHING WAS CLEARED: your context is intact. THE ROW IS THE STATE: re-read the "
     + "row you hold and its pull request, run `git status` and `git log origin/main..HEAD` in your worktree, then continue what you were "
     + "doing. If it is already finished, say so on the row and stop.";
 }
@@ -4653,17 +4684,18 @@ export function paneReader(run) {
  * NEVER THROWS -- it must not stop the tick that delivers work -- and says so.
  *
  * @param {{ agents: { label: string, status: string }[], ledgerPath: string, now?: number, restartAt: number | null,
- *   run?: (args: string[]) => string, log?: (line: string) => void, moved: (label: string, from: number, to: number) => boolean }} args
- *   `restartAt` and `moved` are REQUIRED: a default would be a live `systemctl` and a live transcript read, which a test reaches by forgetting
+ *   run?: (args: string[]) => string, log?: (line: string) => void, moved: (label: string, from: number, to: number) => boolean,
+ *   lastActive: (label: string) => number | null }} args
+ *   `restartAt`, `moved` and `lastActive` are REQUIRED: a default would be a live `systemctl` and a live transcript read, which a test reaches by forgetting
  * @returns {string[]} what was done, one line each
  */
 export function recoverInterruptedWork({ agents, ledgerPath, now = Date.now(), restartAt, run = defaultRun,
-  log = (line) => { process.stderr.write(line); }, moved }) {
+  log = (line) => { process.stderr.write(line); }, moved, lastActive }) {
   try {
     const statePath = `${dirname(ledgerPath)}/${RESTART_STATE_FILE}`;
     const state = readJsonObject(statePath);
     const queuePath = handoffQueuePath(ledgerPath);
-    const found = recoverableWork({ now, agents, actedRestart: state.restartAt ?? null, restartAt, moved,
+    const found = recoverableWork({ now, agents, actedRestart: state.restartAt ?? null, restartAt, moved, lastActive,
       paneText: paneReader(run), resentAt: state.resent ?? {}, deliveries: () => deliveriesOf(ledgerPath, queuePath) });
     if (found.killed.length === 0 && found.interrupted.length === 0 && found.restartActed === null) return [];
     const lines = actOnKilledWork({ found, now, ledgerPath, queuePath });
@@ -4684,7 +4716,11 @@ export function recoverInterruptedWork({ agents, ledgerPath, now = Date.now(), r
  */
 export function recoverNow(agents, ledgerPath) {
   const timestamps = memoised2((/** @type {string} */ label) => assistantTimestamps(label));
-  return recoverInterruptedWork({ agents, ledgerPath, restartAt: readHerdrRestart(systemctlShow), moved: sessionMoved(timestamps) });
+  const lastActive = (/** @type {string} */ label) => {
+    const times = timestamps(label);
+    return times === null || times.length === 0 ? null : Math.max(...times);
+  };
+  return recoverInterruptedWork({ agents, ledgerPath, restartAt: readHerdrRestart(systemctlShow), moved: sessionMoved(timestamps), lastActive });
 }
 
 /** Every delivery on the two ledgers, each tagged with which. @param {string} ledgerPath @param {string} queuePath */
