@@ -27,6 +27,14 @@ interface Routes {
 /** The CLAIMED row's own body (B4 reads its Region); any other issue is a row this session HOLDS (#989). */
 const CLAIMED_ROWS = ["455", "705"];
 
+/** #2151: a claim's labels are ONE `PUT .../labels` (or, for a back-off or a decline, an `issue edit`), so a
+ * test that asks "did the claim write?" must read both -- watching only `issue edit` would call a claim that
+ * wrote nothing and a claim that wrote everything the same. */
+function writesLabels(args: string[]): boolean {
+  return (args[0] === "issue" && args[1] === "edit")
+    || (args[0] === "api" && args[1] === "--method" && args[2] === "PUT" && /\/labels$/.test(args[3]));
+}
+
 /** #989's two reads for a held row: does its Region name files, and does it have sub-issues. */
 function heldRowRoute(routes: Routes, args: string[]): string | null {
   if (args[0] === "api" && /\/sub_issues$/.test(args[1] ?? "")) return routes.subIssues ?? "[]";
@@ -243,7 +251,7 @@ test("claimRow refuses a genuinely new claim when the session holds a row IN BUI
         : JSON.stringify({ number: 455, title: "A row", labels: [] }); // unclaimed, and no `body` key:
         // `lookupIssueBody` reads null and #707's template check is skipped, as it was before #989.
     }
-    if (args[0] === "issue" && args[1] === "edit") { editCalled = true; return ""; }
+    if (writesLabels(args)) { editCalled = true; return ""; }
     if (args[0] === "issue" && args[1] === "list") return JSON.stringify([{ number: 472 }]);
     if (args[0] === "api" && /\/sub_issues$/.test(args[1] ?? "")) return "[]";
     if (args[0] === "api" && args[1] === "graphql") {
@@ -266,7 +274,7 @@ test("claimRow proceeds normally when eligibility is silent -- unchanged from be
     if (args[0] === "issue" && args[1] === "view") {
       return JSON.stringify({ number: 461, title: "A row", labels: [] });
     }
-    if (args[0] === "issue" && args[1] === "edit") { editCalled = true; return ""; }
+    if (writesLabels(args)) { editCalled = true; return ""; }
     return "[]";
   };
   const result = claimRow(461, "worker-judge", { run, moveStatus: () => ({ moved: true }) });
@@ -300,7 +308,7 @@ test("RESUMING a row this session already holds still refuses on the row's own o
   let editCalled = false;
   const run = (cmd: string, args: string[]) => {
     if (args[0] === "issue" && args[1] === "list") { listAsked = true; return "[]"; }
-    if (args[0] === "issue" && args[1] === "edit") { editCalled = true; return ""; }
+    if (writesLabels(args)) { editCalled = true; return ""; }
     if (args[0] === "issue" && args[1] === "view") {
       const fields = args[args.indexOf("--json") + 1];
       if (fields === "blockedBy") {
@@ -345,7 +353,7 @@ function blockedByRun(routes: { rowLabels?: string, blockerState?: string, comme
   onEdit?: () => void, onComment?: (body: string) => void }) {
   return (cmd: string, args: string[]): string => {
     const shape = args.slice(0, 2).join(" ");
-    if (shape === "issue edit") { routes.onEdit?.(); return ""; }
+    if (writesLabels(args)) { routes.onEdit?.(); return ""; }
     if (shape === "issue comment") { routes.onComment?.(args[args.length - 1]); return ""; }
     if (shape === "issue list") return JSON.stringify([{ number: 472 }]);
     if (shape === "api graphql") {
