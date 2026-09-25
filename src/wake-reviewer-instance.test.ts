@@ -587,6 +587,13 @@ test("#2401 THE TICK: a QUIET gate still ends a finished reviewer instance, and 
   }
 });
 
+/** A `/proc/meminfo` for an idle host, for a test that drives the wake ENTRY and is not about memory. */
+function idleMeminfo(dir: string) {
+  const path = join(dir, "meminfo");
+  writeFileSync(path, "MemTotal:       31594708 kB\nMemAvailable:   23830268 kB\n");
+  return path;
+}
+
 test("#2401 THE WAKE ENTRY: a started reviewer instance is REGISTERED with its start time, in a file of its own", () => {
   const dir = mkdtempSync(join(tmpdir(), "wake-rv-reg-"));
   try {
@@ -602,7 +609,8 @@ test("#2401 THE WAKE ENTRY: a started reviewer instance is REGISTERED with its s
     const before = Date.now();
     const ran = spawnSync(process.execPath, [TICK_ENTRY.replace("work-tick.mjs", "wake.mjs"), `--ledger=${ledger}`,
       "--roster=worker-4"], { input: `${JSON.stringify(reviewOrder(2398))}\n`, encoding: "utf8",
-      env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
+      // The memory gate (#2508) reads the HOST unless told a file: this test is about the registry, so it is handed an idle host.
+      env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, A11Y_MEMINFO_PATH: idleMeminfo(dir) } });
     assert.match(ran.stdout, /WOKE reviewer-2398 <- reviewer-2398\/draft-awaiting-verdict\/pr-2398\/abc12345 \(STARTED gpt-5\.6-luna\/medium\)/, ran.stderr);
     const registry = JSON.parse(readFileSync(reviewerPathsFrom(ledger).registry, "utf8"));
     assert.deepEqual(Object.keys(registry), ["reviewer-2398"]);

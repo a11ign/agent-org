@@ -48,6 +48,7 @@ import { inBuildReason, isInBuild, unansweredRefusal, lookupHeldRows, lookupOthe
 import { parseWorktreeList, isPrimaryWorktree, isWorkingTreeClean, mergeStatus, detachedMergeStatus }
   from "./prune-worktrees.mjs";
 import { worktreeOwner } from "./worktree-owner.mjs";
+import { spawnMemoryGate } from "./spawn-memory-floor.mjs";
 // THE FAMILY IS THE ROSTER'S, READ BY ONE MODULE (#2403): `worker-<n>` for n from 4 is a spare engineer role, and
 // `arm-pr.mjs` is where every other reader of a `session:<name>` label already asks whether a name is one.
 import { SPARE_FAMILIES, familyNumber } from "./arm-pr.mjs";
@@ -832,6 +833,19 @@ function closedNote(run, workspace) {
 }
 
 /**
+ * Why a NEW engineer process must not start for this order, or `null`: the host's memory first (#2508), then the claim's
+ * own refusal. BOTH ARE ASKED BEFORE THE CLAIM IS MADE, because a claim creates a worktree and a spawn refused for either
+ * reason must leave nothing behind; the memory first because it is one file read where the claim's precheck reaches
+ * `gh`. A refusal here is offered again next tick. An absent seam is no refusal (a caller with no claim, a test).
+ * @param {{causeKey: string}} order
+ * @param {{memory?: () => string | null, claimable?: (order: {causeKey: string}) => string | null}} asks
+ * @returns {string | null}
+ */
+function whyNoSpawn(order, { memory, claimable }) {
+  return memory?.() ?? claimable?.(order) ?? null;
+}
+
+/**
  * Start a fresh process for an engineer role that has none, and return the address it answers to.
  *
  * THE CALLER `spawnInvocation` NEVER HAD. Everything it needs beyond the invocation itself is here: the
@@ -853,7 +867,9 @@ function closedNote(run, workspace) {
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster
  * @param {{run?: (args: string[]) => string, env?: Record<string, string>, drained?: readonly string[],
- *   claimable?: (order: {causeKey: string}) => string | null, claimer?: SpawnClaimer}} [deps]
+ *   claimable?: (order: {causeKey: string}) => string | null, claimer?: SpawnClaimer,
+ *   memory?: () => string | null}} [deps]
+ *   `memory` says why a NEW process must not start on this host now, or `null` -- see {@link spawnMemoryGate} (#2508);
  *   `claimable` says why the CLAIM would refuse this order's row, or `null` -- see {@link spawnClaimability};
  *   `claimer` claims the row for the role about to start -- see {@link spawnClaimer}. With none, the pane opens
  *   in herdr's default directory and nothing is claimed (the pre-#2405 spawn, kept for a caller that has no claim)
@@ -861,13 +877,13 @@ function closedNote(run, workspace) {
  *   claimed?: ClaimedRow} | {refusal: string}}
  */
 function spawnWorker(order, agents, roster, { run = defaultRun, env = spawnEnvironment(), drained = [],
-  claimable = () => null, claimer } = {}) {
+  claimable, claimer, memory } = {}) {
   const role = spawnableRole(order, agents, roster, drained);
   if ("refusal" in role) return role;
   // AFTER THE ROLE AND BEFORE THE PANE: a pane is the first thing this opens, and "no instance is created to be
   // refused and sit idle" (#2324) means the answer is known before it exists.
-  const unclaimable = claimable(order);
-  if (unclaimable !== null) return { refusal: `no spawn: ${unclaimable}` };
+  const unspawnable = whyNoSpawn(order, { memory, claimable });
+  if (unspawnable !== null) return { refusal: `no spawn: ${unspawnable}` };
   const claimed = claimer?.claim(order, role.role, env);
   if (claimed !== undefined && "refusal" in claimed) return { refusal: `no spawn: ${claimed.refusal}` };
   /** @param {string} refusal @param {string} [workspace] a workspace this call opened, to close with it */
@@ -1121,7 +1137,8 @@ function spawnReviewer(order, agents, { run = defaultRun, env, cwd, registry }) 
 
 /**
  * @typedef {{run: (args: string[]) => string, reviewerEnv?: Record<string, string>, checkout?: CheckoutDeps,
- *   registry?: () => Record<string, {spawnedAt: number}>, registerReviewer?: (session: string) => void}} ReviewerDeps
+ *   registry?: () => Record<string, {spawnedAt: number}>, registerReviewer?: (session: string) => void,
+ *   memory?: () => string | null}} ReviewerDeps
  */
 
 /**
@@ -1146,6 +1163,12 @@ function reviewerTarget(order, live, deps) {
   if ("refusal" in routed) {
     const may = spawnableReviewer(order, live, deps.registry?.());
     if ("refusal" in may) return { refusal: `${routed.refusal}; ${may.refusal}` };
+    // A NEW REVIEWER IS HELD FOR MEMORY TOO (#2508), and BEFORE its checkout: the fetch and the worktree are the first
+    // things it would cost. A `reviewer-<n>` that is live is not asked -- it adds no process. The cost of the hold is one
+    // tick of merge latency, since the order is offered again; a `claude`-sized process added to a host whose kernel is
+    // choosing victims can take `herdr.service` and every agent with it, so the two are not the same size.
+    const held = deps.memory?.() ?? null;
+    if (held !== null) return { refusal: `${routed.refusal}; no spawn: ${held}` };
   }
   const pr = Number(orderPullRequest(order));
   const checkout = prepareReviewCheckout({ pr, session: order.session, ...deps.checkout });
@@ -3200,6 +3223,7 @@ export function clearBeforeOrder(run, label) {
  * @param {{run: (args: string[]) => string, spawned: number, ineligibleReason?: (label: string) => string | null,
  *   env?: Record<string, string>, registerSpawn?: (role: string) => void, drained?: readonly string[],
  *   claimable?: (order: {causeKey: string}) => string | null, claimer?: SpawnClaimer} & ReviewerDeps} deps
+ *   (`memory`, from {@link ReviewerDeps}, is the memory hold both spawn paths ask -- {@link spawnMemoryGate});
  *   `spawned` is how many ENGINEER processes this tick has already started -- see `MAX_SPAWNS_PER_TICK`, which a
  *   reviewer start never spends (#2401); `ineligibleReason` is {@link route}'s; `env` is the spawn's environment
  *   ({@link spawnEnvironment})
@@ -3221,7 +3245,8 @@ function targetFor(order, live, roster, deps) {
       + `(MAX_SPAWNS_PER_TICK is ${MAX_SPAWNS_PER_TICK})` };
   }
   const spawn = spawnWorker(order, live, roster,
-    { run: deps.run, env: deps.env, drained: deps.drained, claimable: deps.claimable, claimer: deps.claimer });
+    { run: deps.run, env: deps.env, drained: deps.drained, claimable: deps.claimable, claimer: deps.claimer,
+      memory: deps.memory });
   if ("refusal" in spawn) return { refusal: `${routed.refusal}; ${spawn.refusal}` };
   // REGISTERED BEFORE THE PROMPT, because a refused prompt leaves the process running (see `deliver`).
   deps.registerSpawn?.(spawn.label);
@@ -3295,19 +3320,20 @@ function whyUnavailable(target, unavailable) {
  *          counts?: Map<string, number>, ineligibleReason?: (label: string) => string | null,
  *          env?: Record<string, string>, registerSpawn?: (role: string) => void, drained?: readonly string[],
  *          claimable?: (order: {causeKey: string}) => string | null, claimer?: SpawnClaimer,
- *          launch?: LaunchFacts, unavailable?: (label: string) => string | null} & Partial<ReviewerDeps>} [deps]
+ *          memory?: () => string | null, launch?: LaunchFacts, unavailable?: (label: string) => string | null} & Partial<ReviewerDeps>} [deps]
  *   `unavailable` says why a session cannot ANSWER now (`unavailableReason`), and an order to one is refused with that
  *   reason and neither sent nor recorded (#2256); `registerReviewer` is told of every reviewer instance this tick starts (#2401), for the auth detector;
  *   `checkout` and `registry` are the reviewer path's seams (its git, its filesystem, what it has started);
  *   `registerSpawn` is told of every process this tick STARTS, so the teardown can tell an instance that has
  *   not claimed yet from one that finished ({@link endFinishedSpares}); `drained` is the roles the drain holds
  *   back now, which a spawn must not start into; `claimable` is the spawn's precheck ({@link spawnClaimability});
- *   `claimer` claims the row for a spawn before its pane opens ({@link spawnClaimer}); `launch` is what `addressed`
+ *   `claimer` claims the row for a spawn before its pane opens ({@link spawnClaimer}); `memory` is the hold
+ *   for a host short of memory, asked before either kind of NEW process (#2508); `launch` is what `addressed`
  *   asks about a standing session's worktree
  * @returns {{sent: string[], refused: string[], stuck: string[]}}
  */
 export function deliver(orders, agents, roster,
-  { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer,
+  { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer, memory,
     launch, reviewerEnv, registerReviewer, checkout, registry, unavailable } = {}) {
   const sent = [];
   const refused = [];
@@ -3324,7 +3350,7 @@ export function deliver(orders, agents, roster,
       continue;
     }
     const target = targetFor(order, live, roster, { run, spawned, ineligibleReason, env, registerSpawn, drained,
-      claimable, claimer, reviewerEnv, registerReviewer, checkout, registry });
+      claimable, claimer, memory, reviewerEnv, registerReviewer, checkout, registry });
     if ("refusal" in target) {
       refused.push(`${order.causeKey}: ${target.refusal}`);
       continue;
@@ -5045,7 +5071,7 @@ function main() {
   const { sent, refused: gateRefused, stuck } = deliver(todo, free, roster, { record, unavailable,
     counts: deliveryCounts(ledgerPath), ineligibleReason: poolEngineerReason(poolEligibility(spares, drained), unavailable),
     registerSpawn: (role) => registerSpawn(spares, role), drained, claimable: spawnClaimability(),
-    claimer: claimerFor(spares, ledgerPath, hostLayout), launch: hostLayout,
+    memory: spawnMemoryGate(), claimer: claimerFor(spares, ledgerPath, hostLayout), launch: hostLayout,
     registerReviewer: (session) => registerReviewer(reviewerPathsFrom(ledgerPath), session),
     registry: () => readReviewerRegistry(reviewerPathsFrom(ledgerPath).registry) });
   finishTick({ handed, sent, gateRefused: [...gateRefused, ...releasesNotDone], stuck, ledgerPath, unavailable });
