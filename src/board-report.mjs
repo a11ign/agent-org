@@ -383,9 +383,12 @@ export function openRowAges(open, now) {
 /**
  * Pure: the three readings from raw inputs. `events` is `null` when the event log could not be read, and
  * that is reported as unread, never as an empty history.
- * @param {{ rows: any[], listLimit?: number, events: Map<number, any[]> | null, eventsError?: string, now: number }} input
+ * `source` and `capped` are supplied by a reader that KNOWS how it read (`readFlow` pages, so it is not
+ * capped); left out, the rows are taken to be one `gh issue list --state all` of `listLimit`, which is capped
+ * when it comes back full.
+ * @param {{ rows: any[], listLimit?: number, source?: string, capped?: boolean, events: Map<number, any[]> | null, eventsError?: string, now: number }} input
  */
-export function flowReadings({ rows, listLimit = FLOW_LIST_LIMIT, events, eventsError, now }) {
+export function flowReadings({ rows, listLimit = FLOW_LIST_LIMIT, source, capped = rows.length >= listLimit, events, eventsError, now }) {
   const sinceMs = now - FLOW_DAYS * DAY_MS;
   const open = rows.filter((r) => r.state === "OPEN")
     .map((r) => ({ ...r, labelNames: r.labelNames ?? r.labels.map((/** @type {any} */ l) => l.name) }));
@@ -398,8 +401,8 @@ export function flowReadings({ rows, listLimit = FLOW_LIST_LIMIT, events, events
     ? { status: /** @type {const} */ ("unread"), reason: eventsError ?? "the event log was not read" }
     : { status: /** @type {const} */ ("read"), ...readyToClaimWaits(rowEvents, sinceMs) };
   const oldestListed = rows.map((r) => r.createdAt).filter(Boolean).sort()[0] ?? null;
-  return { now, listed: rows.length, capped: rows.length >= listLimit, listLimit, oldestListed, perDay, latency,
-    ages: openRowAges(countable(open), now) };
+  return { now, listed: rows.length, capped, listLimit, oldestListed, perDay, latency,
+    source: source ?? `\`gh issue list --state all --limit ${listLimit}\``, ages: openRowAges(countable(open), now) };
 }
 
 /** @param {number} ms */
@@ -426,12 +429,12 @@ function capNote({ oldestListed, perDay }) {
 
 /** @param {any} d @param {string[]} L */
 export function flowPerDay(d, L) {
-  const { perDay, listed, capped, listLimit } = d.flow;
+  const { perDay, listed, capped, source } = d.flow;
   /** @type {(k: "filed" | "closed") => number} */
   const total = (k) => perDay.reduce((/** @type {number} */ n, /** @type {any} */ x) => n + x[k], 0);
   L.push(`### Filed and closed per day — last ${FLOW_DAYS} London days, today partial`);
-  L.push(`Read from \`gh issue list --state all --limit ${listLimit}\`, which returned **${listed}** rows. `
-    + (capped ? capNote(d.flow) : "That is under the cap, so the listing is complete and neither column is a floor for that reason.")
+  L.push(`Read from ${source}, which returned **${listed}** rows. `
+    + (capped ? capNote(d.flow) : "That listing is complete, so neither column is a floor for that reason.")
     + " **Closed counts every close** (sweeps and not-planned included) by each row's latest `closedAt`, "
     + "so it is not engineer throughput.");
   L.push("");
@@ -475,6 +478,10 @@ export function flowAges(d, L) {
   const { ages, now } = d.flow;
   L.push(`### Age of open rows — from \`createdAt\` to ${new Date(now).toISOString()}`);
   L.push("Meta rows excluded, as in the Queue section, so the three groups sum to its **Open** count.");
+  if (d.flow.capped) {
+    L.push("**The listing is at its cap, so an open row older than its oldest row is missed: every count here, "
+      + `and the over-${AGING_DAYS}-days column most of all, is a FLOOR.**`);
+  }
   L.push("");
   L.push(`| group | under ${YOUNG_DAYS} days | ${YOUNG_DAYS} to ${AGING_DAYS} days | over ${AGING_DAYS} days |`);
   L.push("|---|---|---|---|");
@@ -494,16 +501,47 @@ export function flow(d, L) {
   flowAges(d, L);
 }
 
-/** @param {number} now */
+// One REST row projected to the listing shape `flowReadings` reads. `issues` returns pull requests too; they
+// carry a `pull_request` key and are not rows.
+const WINDOW_ROWS_JQ = '.[] | select(.pull_request == null) | { number, state: (.state | ascii_upcase),'
+  + ' createdAt: .created_at, closedAt: .closed_at, labels: [.labels[] | { name }] }';
+
+/** @param {string} raw one JSON object per line, as `--paginate` with a `--jq` that emits objects prints them */
+function jsonLines(raw) {
+  return raw.split("\n").filter((line) => line.trim().length > 0).map((line) => JSON.parse(line));
+}
+
+/**
+ * Pure: the union of the open rows and the rows touched in the window, one entry per issue.
+ * @template {{ number: number }} Row
+ * @param {Row[]} openRows @param {Row[]} windowRows
+ */
+export function mergeFlowRows(openRows, windowRows) {
+  return [...new Map([...windowRows, ...openRows].map((r) => [r.number, r])).values()];
+}
+
+/**
+ * A `gh issue list` cannot page, and past 1000 issues its newest-first listing drops the OLDEST rows, which
+ * are the open ones the age reading exists to count (#2435 found the tracker at 1201). So the reads are split
+ * by what each needs: the OPEN rows are a small set that fits one listing, and everything filed or closed in
+ * the window was UPDATED in the window, so one paged REST read `since` its start holds every such row. Both
+ * columns of the per-day table are then complete, and only an open set that itself fills the cap is a floor.
+ * @param {number} now
+ */
 function readFlow(now) {
-  const rows = JSON.parse(gh(["issue", "list", "--repo", REPO, "--state", "all", "--limit", String(FLOW_LIST_LIMIT),
-    "--json", "number,state,createdAt,closedAt,labels"]));
+  const shape = "number,state,createdAt,closedAt,labels";
+  const openRows = JSON.parse(gh(["issue", "list", "--repo", REPO, "--state", "open", "--limit", String(FLOW_LIST_LIMIT), "--json", shape]));
+  const since = new Date(now - (FLOW_DAYS + 1) * DAY_MS).toISOString();
+  const windowRows = jsonLines(gh(["api", "--paginate", `repos/${REPO}/issues?state=all&since=${since}&per_page=100`, "--jq", WINDOW_ROWS_JQ]));
+  const rows = mergeFlowRows(openRows, windowRows);
+  const read = { rows, capped: openRows.length >= FLOW_LIST_LIMIT,
+    source: `every open issue (\`gh issue list --state open --limit ${FLOW_LIST_LIMIT}\`) plus every issue updated since ${since} (paged REST, not capped)` };
   try {
     const raw = gh(["api", "--paginate", LABEL_EVENTS_PATH, "--jq", LABEL_EVENTS_JQ]);
-    return flowReadings({ rows, events: labelEventsByIssue(parseEventLines(raw)), now });
+    return flowReadings({ ...read, events: labelEventsByIssue(parseEventLines(raw)), now });
   } catch (cause) {
     // Recorded in the edition itself, never swallowed: the other two readings do not depend on the log.
-    return flowReadings({ rows, events: null, eventsError: `the label-event log could not be read (${/** @type {Error} */ (cause).message.split("\n")[0]})`, now });
+    return flowReadings({ ...read, events: null, eventsError: `the label-event log could not be read (${/** @type {Error} */ (cause).message.split("\n")[0]})`, now });
   }
 }
 
