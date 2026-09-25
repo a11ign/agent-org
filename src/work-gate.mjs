@@ -96,7 +96,7 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
   "blocked-unexaminable", "fleet-batch-due", "blocker-cleared", "pr-green-unarmed",
   "claimed-row-amended", "row-branch-unshipped", "host-units-stale", "pr-review-blocked",
   "unclaimed-blocker-cleared", "pr-merge-conflict", "trunk-red", "verdict-comment-unreviewed",
-  "reviewer-auth-failed"];
+  "reviewer-auth-failed", "awaiting-evidence-stale"];
 
 /**
  * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
@@ -153,7 +153,7 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
 export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog-unpromoted",
   "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
   "blocked-unexaminable", "fleet-batch-due", "row-branch-unshipped", "claimed-row-amended",
-  "unclaimed-blocker-cleared", "reviewer-auth-failed"]);
+  "unclaimed-blocker-cleared", "reviewer-auth-failed", "awaiting-evidence-stale"]);
 
 /**
  * The causes that START new work, as opposed to finishing work already begun.
@@ -327,6 +327,9 @@ export const GH_READS = Object.freeze({
   // #2176: ONE REST CALL PER GREEN PULL REQUEST WITH NO VERDICT AT ITS HEAD -- the ones the review question
   // is genuinely asked of -- on the CORE pool. `commits` cannot ride on `pr list`: GraphQL refuses it.
   conditionalOnUnreviewedGreenPr: "api repos/{repo}/pulls/{n}/commits (withCommitChains -- the last authored head)",
+  // #2416: ONE REST CALL PER OPEN PULL REQUEST CARRYING `awaiting-evidence`, and NONE when no open pull
+  // request carries it -- the label's age is not on `pr list`, so the labelled ones are asked and only those.
+  conditionalOnAwaitingEvidenceLabel: "api repos/{repo}/issues/{n}/events (readEvidenceLabelledAt -- awaiting-evidence-stale)",
   conditionalOnGreenUnheldPr: "api graphql (open PRs' mergeQueueEntry -- readUnarmed)",
   // #2110, AND IT IS ONE CALL FOR THE WHOLE CLAIMED POPULATION RATHER THAN ONE PER ROW. `--label
   // in-progress` filters server-side, so the page is the claimed rows and nothing else -- 8 of them on
@@ -2722,9 +2725,14 @@ const BLOCKING_REVIEW_STATES = Object.freeze([
  * @returns {{number: number, code: string, why: string}[]} ascending by PR number
  */
 export function reviewBlocked(prs, required = null) {
+  const byNumber = new Map(prs.map((pr) => [Number(pr.number), pr]));
   return mergeCandidates(prs, required)
     .map((pr) => ({ number: Number(pr.number), ...reviewStateOf(pr) }))
     .filter((r) => BLOCKING_REVIEW_STATES.includes(r.code))
+    // #2416: `pr-review-blocked` is the third route into a review -- it tells `product-manager` to prompt the
+    // reviewer for an AWAITING_REVIEW pull request. A labelled one is waiting for evidence, not a reviewer; a
+    // REFUSED one stays, because a refusal is real whatever the PR is waiting on.
+    .filter((r) => r.code !== REVIEW_STATE.AWAITING_REVIEW || !awaitingEvidence(byNumber.get(r.number)))
     .sort((a, b) => a.number - b.number);
 }
 
@@ -3344,6 +3352,12 @@ function draftOrder(pr, required = null, baseTip = null) {
   // the other way is one author-written verdict going unchallenged, which `ceo`'s spot-check of one
   // verdict in five is the control for.
   if (found.verdict !== null) return settledVerdictOrder(pr, found, heads);
+  // #2416: A PULL REQUEST WAITING FOR AN EXTERNAL RUN IS NOT ASKED FOR A VERDICT, and this is the gate's half of
+  // the two routes into a review (the author's is a sentence in `org-routing-and-timers.md`). It sits AFTER
+  // the settled-verdict read on purpose: a verdict somebody prompted by hand is still read and acted on, so
+  // the label removes the MACHINERY's order and never the reviewer's ability to answer, and it sits after the
+  // red-checks order because a red build is the author's work whether or not evidence is pending.
+  if (awaitingEvidence(pr)) return null;
 
   // PULL REQUEST n IS `reviewer-<n>`'S (#2401; the odd/even split it replaced is retired). The name is
   // herdr's, and `wake.mjs` starts the instance when none is live. The arithmetic lives in
@@ -3358,6 +3372,16 @@ function draftOrder(pr, required = null, baseTip = null) {
     prompt: awaitingVerdictPrompt(pr, heads),
     causeKey: `${session}/draft-awaiting-verdict/pr-${pr.number}/${heads.keyHead8}`,
   };
+}
+
+/**
+ * Every order the open pull requests earn: each one's own (`draftOrder`), then the set-wide one for labelled
+ * pull requests nobody has explained (#2416).
+ * @param {any[]} prs @param {string[] | null} required @param {any} [baseTip]
+ */
+function perPullRequestOrders(prs, required, baseTip) {
+  const own = prs.map((pr) => draftOrder(pr, required, baseTip)).filter((o) => o !== null);
+  return [...own, ...awaitingEvidenceStaleOrders(prs)];
 }
 
 /**
@@ -3395,9 +3419,113 @@ export function readCommitChain(number, run = defaultRun) {
 export function withCommitChains(prs, run = defaultRun) {
   return prs.map((pr) => {
     const head = reviewableHead(pr);
-    if (!head || verdictAmong(pr, [head]).verdict !== null) return pr;
+    // #2416: NO VERDICT WILL BE ASKED OF A LABELLED PULL REQUEST, so its commit chain is a call for nothing.
+    if (!head || awaitingEvidence(pr) || verdictAmong(pr, [head]).verdict !== null) return pr;
     const commits = readCommitChain(Number(pr.number), run);
     return commits ? { ...pr, commits } : pr;
+  });
+}
+
+/** #2416: the PR label meaning "my done-when needs an external run, and the evidence is not posted yet". */
+export const AWAITING_EVIDENCE_LABEL = "awaiting-evidence";
+
+/** #2416: how long a PR may carry the label with nobody saying what it waits on before `product-manager` is asked. */
+export const AWAITING_EVIDENCE_QUIET_HOURS = 48;
+export const AWAITING_EVIDENCE_QUIET_MS = AWAITING_EVIDENCE_QUIET_HOURS * HOUR_MS;
+
+/** @param {any} pr */
+function awaitingEvidence(pr) {
+  return labelsOf(pr).includes(AWAITING_EVIDENCE_LABEL);
+}
+
+/**
+ * When the label was LAST applied to this pull request (ISO string), or `null` when it could not be read.
+ *
+ * THE EVENTS LIST, NOT THE TIMELINE: `issues/{n}/events` answers "when was this label applied" with a
+ * `created_at` on each `labeled` event and is a strict subset of the timeline, so it is the cheaper of the two
+ * reads that can answer it. THE LAST `labeled` EVENT, because a label removed (the evidence posted) and
+ * applied again is a new wait. `null` is refused-or-never-applied, and neither becomes an order: an order
+ * naming a PR whose label age is unknown would be a claim the gate never measured.
+ *
+ * @param {number} number @param {(args: string[]) => string} run @returns {string | null}
+ */
+export function readEvidenceLabelledAt(number, run = defaultRun) {
+  try {
+    const out = run(["api", `repos/${REPO}/issues/${number}/events`, "--paginate", "--jq",
+      `.[] | select(.event == "labeled" and .label.name == "${AWAITING_EVIDENCE_LABEL}") | .created_at`]);
+    const applied = out.split("\n").map((l) => l.trim()).filter((l) => l !== "");
+    return applied.length > 0 ? applied[applied.length - 1] : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The pull requests, each one carrying the label with `awaitingSince` attached. A queue where nothing carries the
+ * label pays NO call, and a labelled one pays one per labelled pull request -- the condition is answered from
+ * the list already in hand, which is what makes the read affordable on every tick.
+ *
+ * @param {any[]} prs @param {(args: string[]) => string} [run]
+ */
+export function withEvidenceLabelAges(prs, run = defaultRun) {
+  return prs.map((pr) => {
+    if (!awaitingEvidence(pr)) return pr;
+    const awaitingSince = readEvidenceLabelledAt(Number(pr.number), run);
+    return awaitingSince ? { ...pr, awaitingSince } : pr;
+  });
+}
+
+/**
+ * #2416: ONE ORDER FOR THE SET OF LABELLED PULL REQUESTS THAT HAVE SAID NOTHING FOR 48 HOURS, or none.
+ *
+ * THE LABEL IS VALID ONLY WITH A STATED EVIDENCE SOURCE, and the statement is a COMMENT after the label was
+ * applied -- so "no comment after it was applied" is the reading of "nobody said what this waits on". A
+ * comment ANYWHERE after the application counts, and that is deliberate: this asks whether the wait was
+ * EXPLAINED, and a stale-but-explained wait is `product-manager`'s to audit through the row, not this cause's
+ * to re-ask (a judgment cause is keyed on state, so it is not repeated while the set is unchanged).
+ *
+ * `awaitingSince` UNREAD, `comments` UNREAD, or a comment whose time cannot be parsed is NEVER an order:
+ * absence of a reading is not a reading of absence. Keyed on the SET of numbers and not on the ages, which
+ * move every tick and would re-ask a question whose answer has not changed. Ordered to `product-manager`,
+ * whose brief names holds and waits, in `greenUnarmedOrders`' one-order-for-the-set shape.
+ *
+ * @param {any[]} prs @param {number} [now]
+ */
+export function awaitingEvidenceStaleOrders(prs, now = Date.now()) {
+  const stale = prs.filter((pr) => awaitingEvidence(pr) && evidenceWaitUnexplained(pr, now))
+    .sort((a, b) => Number(a.number) - Number(b.number));
+  if (stale.length === 0) return [];
+  const key = stale.map((pr) => pr.number).join(".");
+  const lines = stale.map((pr) => `  #${pr.number}  carried \`${AWAITING_EVIDENCE_LABEL}\` for `
+    + `${Math.floor((now - Date.parse(pr.awaitingSince)) / HOUR_MS)}h with no comment after it was applied`);
+  return [{
+    session: "product-manager",
+    cause: "awaiting-evidence-stale",
+    subject: "awaiting-evidence-stale",
+    discriminator: key,
+    prompt: `${stale.length} pull request(s) carry \`${AWAITING_EVIDENCE_LABEL}\` and nobody has said what they wait `
+      + `on for more than ${AWAITING_EVIDENCE_QUIET_HOURS}h:\n${lines.join("\n")}\n`
+      + "The label means the done-when needs an external run whose evidence is not posted yet, and it is valid "
+      + "only with that source STATED. WHAT WOULD CLEAR IT: the evidence is posted and the label is removed "
+      + "(`gh pr edit <n> --remove-label awaiting-evidence`) -- removing it IS posting the evidence -- or the "
+      + "author says on the PR what it waits on and who owns that run. If nobody owns it, the label is hiding a "
+      + "stalled PR: route it to the row's owner, or to `orchestrator` when the run is a fleet or lab one. "
+      + "It is NOT `blocked`, which has no referent.",
+    causeKey: `product-manager/awaiting-evidence-stale/${key}`,
+  }];
+}
+
+/**
+ * Whether a labelled pull request has been quiet since the label went on for longer than the bound.
+ * @param {any} pr @param {number} now
+ */
+function evidenceWaitUnexplained(pr, now) {
+  const since = Date.parse(String(pr.awaitingSince ?? ""));
+  if (Number.isNaN(since) || !Array.isArray(pr.comments)) return false;
+  if (now - since <= AWAITING_EVIDENCE_QUIET_MS) return false;
+  return !pr.comments.some((/** @type {any} */ c) => {
+    const at = Date.parse(String(c?.createdAt ?? ""));
+    return Number.isNaN(at) || at > since;
   });
 }
 
@@ -4186,10 +4314,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // claimed and now runnable beats a row nobody has picked up.
   orders.push(...blockerClearedOrders(openRows, todayIso(), Date.now(), prs));
 
-  for (const pr of prs) {
-    const order = draftOrder(pr, required, baseTip);
-    if (order) orders.push(order);
-  }
+  orders.push(...perPullRequestOrders(prs, required, baseTip));
   // #2031: AHEAD OF THE OFFER, AND IT IS THE SAME READING THAT WITHHELD IT. `partitionUnclaimed` shelves
   // the row on `rowBranches` and this emits the cause that names the branch -- one condition, one read,
   // said once as a withholding and once as a question. Ahead of `rowOrders` for the ordering reason the
@@ -4698,7 +4823,7 @@ function main() {
   // pay for it twice on exactly the red tick this row is about.
   const required = requiredWhenRed(openPrs);
   const baseTip = baseTipWhenRed(openPrs);
-  const decided = decide({ prs: withCommitChains(openPrs), readyRows: rows, promotableRows: promotableRows ?? [],
+  const decided = decide({ prs: withEvidenceLabelAges(withCommitChains(openPrs)), readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required, baseTip,
     epics: epicsWhenShelfEmpty(rows),
     answerOwed: rowsOwingAnswers({ openRows: allOpen, openPrs, closedRows: closedAnswerRows() }),
