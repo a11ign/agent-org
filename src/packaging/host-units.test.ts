@@ -2016,7 +2016,7 @@ test("#2552: a .zshenv that does not export NODE_COMPILE_CACHE under $HOME/.cach
       if (zshenv === null) throw new Error(`ENOENT: ${path}`);
       return zshenv;
     }) as never });
-  assert.equal(notes("export PATH=$HOME/bin:$PATH\n").length, 1, "no such line");
+  assert.equal(notes("export PATH=/usr/local/bin:$PATH\n").length, 1, "no such line");
   assert.equal(notes("export NODE_COMPILE_CACHE=/tmp/node-compile-cache\n").length, 1, "pointing at /tmp");
   assert.equal(notes("# export NODE_COMPILE_CACHE=\"$HOME/.cache/x\"\n").length, 1, "a comment is not an export");
   assert.equal(notes(null).length, 1, "a missing file is the regression itself");
