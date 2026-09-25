@@ -1,4 +1,4 @@
-// no-token: deliver / clearThenPrompt -- every herdr call is the injected `run`; nothing here reaches gh
+// no-token: clearContext -- every herdr call is the injected `run`; nothing here reaches gh
 /**
  * #2538: THE FIRST-CONTACT PREAMBLE GOES ON A SESSION'S FIRST ORDER ONLY (chairman, relayed by `ceo`, 2026-09-25).
  * `worker-2443`'s second order arrived wrapped in the WHOLE preamble again -- "Before you start", "Work autonomously",
@@ -12,7 +12,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addressed, deliver } from "../wake.mjs";
+import { deliver } from "../wake.mjs";
 import { clearThenPrompt, deliveredText } from "../prompt-session.mjs";
 import { sessionOf } from "../token-audit.mjs";
 
@@ -101,8 +101,8 @@ test("#2538 a process this tick STARTED for a resume is NEW, and is briefed in f
 // --- THE ATTRIBUTION SURVIVES (done-when 3) ---
 
 test("#2538 token-audit still attributes a transcript that opens on a follow-up to its session", () => {
-  const header = addressed(order("worker-2443"), "worker-2443", { followUp: true });
-  const full = addressed(order("worker-2443"), "worker-2443");
+  const header = deliveredText("worker-2443", ORDER_TEXT, null, { followUp: true });
+  const full = deliveredText("worker-2443", ORDER_TEXT, null);
   assert.equal(sessionOf(header), "worker-2443", "the header names the session in the words `sessionOf` reads");
   assert.equal(sessionOf(full), "worker-2443", "and the full form is unchanged");
   assert.equal(sessionOf(ORDER_TEXT), null, "CONTROL: an order with no name is NOT attributed, so the two above prove the header");
