@@ -481,8 +481,15 @@ export const NOT_PICKABLE = Object.freeze(["blocked", "fleet-gated", "epic", "di
  * (`ownerOf`, `laneBacklogOrders`, `decide`'s pool-count math) must treat the value as a list of names,
  * never assume it is exactly one -- that assumption is what would have silently dropped the second name
  * or thrown reading past index 0.
+ *
+ * THE POOL IS ONE NAME AGAIN -- #2506, the pool half of the standing-engineer retirement (`ceo`'s ruling on
+ * #2470, "The pool, decided"). `worker-capture` is retired, so no generic engineer may claim a `fleet-gated`
+ * `lane:orchestrator` row (`laneReason` refuses it) and fleet-gated throughput is `orchestrator`'s own turn
+ * rate until `orchestrator` shows a generic engineer's `lab:job` dispatch cannot collide with another capture;
+ * the exception then attaches to a ROW, not to a name. The value stays a LIST on purpose: every reader above
+ * still treats it as one.
  */
-export const ROUTED_TO = Object.freeze({ "fleet-gated": Object.freeze(["orchestrator", "worker-capture"]) });
+export const ROUTED_TO = Object.freeze({ "fleet-gated": Object.freeze(["orchestrator"]) });
 
 /**
  * Labels meaning the row is not startable work FOR ANYONE -- `NOT_PICKABLE` minus what is merely routed.
