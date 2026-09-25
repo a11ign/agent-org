@@ -314,6 +314,11 @@ export const GH_READS = Object.freeze({
   // `branches/main` as the discriminator for its 404 (#2106, #2022) -- and the discriminator's only job
   // was to explain the admin-only 404, which `branches/main` does not give a non-admin credential. Conditional on a settled-red check.
   conditionalOnRed: "api branches/main (requiredCheckNames)",
+  // #2117: ONE MORE CORE READ ON THE SAME RED TICK -- `main`'s tip commit, so the `pr-checks-failing` prompt can
+  // say whether `main` moved after the failing run started. `branches/main` already carries that commit, but
+  // `requiredCheckNames` returns a bare list and four tests pin its shape; a second read costs one call on a tick
+  // that is already paying one, and never touches a healthy tick.
+  conditionalOnRedBase: "api commits/main (readBaseTip -- pr-checks-failing's `has main moved`)",
   // #1969, AND IT IS COUNTED HERE BECAUSE THE LAST ONE WAS NOT. This constant exists because "two `gh`
   // calls" was repeated for weeks while three readers were added, and a reviewer had to measure the call
   // sites to find it. The condition is `shouldBeMerging` finding a green, unheld, non-draft PR -- which
@@ -911,6 +916,18 @@ function sessionOf(pr) {
  */
 function requiredWhenRed(prs) {
   return anyChecksRed(prs) ? requiredCheckNames() : null;
+}
+
+/**
+ * PAID ONLY BY A RED TICK, and by the same condition as `requiredWhenRed`, so the two reads ride together
+ * and a healthy queue pays neither (#2117). Extracted from `main` for `requiredWhenRed`'s reason, and
+ * exported with a `run` seam so a test can assert a healthy tick makes NO call.
+ *
+ * @param {any[]} prs @param {(args: string[]) => string} [run]
+ * @returns {{sha: string, date: string} | null}
+ */
+export function baseTipWhenRed(prs, run = defaultRun) {
+  return anyChecksRed(prs) ? readBaseTip(run) : null;
 }
 
 /**
@@ -2402,6 +2419,41 @@ function cannotReadRequiredChecks(diagnosis) {
     + "but the wasted prompts #1750 was filed to stop are still being sent.\n";
 }
 
+/** Where `main` is now, and the one field of it the prompt needs. */
+const BASE_TIP_ENDPOINT = "repos/{owner}/{repo}/commits/main";
+/** A commit id, abbreviated or whole. An empty or non-hex `sha` would render as a blank tip in the prompt. */
+const HEX_SHA = /^[0-9a-f]{7,40}$/i;
+const BASE_TIP_JQ = "{sha: .sha, date: .commit.committer.date}";
+
+/**
+ * `main`'s tip commit and its committer date, or `null` (#2117).
+ *
+ * THIS IS A FACT FOR A PROMPT AND NEVER A PREDICATE. `null` -- refused, malformed, no date -- makes the
+ * prompt say "not read", which is different from "has not moved", and changes nothing about whether or to
+ * whom the order is sent. The committer date is a reading of when `main` last changed, not the instant of
+ * the push: a rebased commit keeps an older date, so the prompt quotes the date and lets a reader `git log`.
+ *
+ * Refusals are announced on stderr like `requiredCheckNames`': a read that fails silently is
+ * indistinguishable from one that never ran.
+ *
+ * @param {(args: string[]) => string} [run]
+ * @param {(line: string) => void} [log]
+ * @returns {{sha: string, date: string} | null}
+ */
+export function readBaseTip(run = defaultRun, log = (line) => process.stderr.write(line)) {
+  let answer;
+  try {
+    answer = run(["api", BASE_TIP_ENDPOINT, "--jq", BASE_TIP_JQ]);
+  } catch (error) {
+    const why = String(/** @type {any} */ (error)?.message ?? error).split("\n")[0].trim();
+    log(`CANNOT READ main's tip: \`gh api ${BASE_TIP_ENDPOINT}\` was REFUSED (${why}). `
+      + "pr-checks-failing prompts will call `has main moved` UNKNOWN; no order is withheld for it.\n");
+    return null;
+  }
+  const tip = parsedOrNull(answer);
+  return HEX_SHA.test(String(tip?.sha)) && Number.isFinite(Date.parse(tip?.date)) ? tip : null;
+}
+
 /**
  * PURE. The rollup entries that can hold this pull request, given what is required.
  *
@@ -2907,9 +2959,13 @@ function redOnlyFromHoldOf(pr, onHead, session) {
  * DRAFTS COUNT TOO. A red draft is not "not ready yet" -- it is a branch whose author stopped, and it
  * will never earn a verdict because the reviewer lane requires green.
  *
- * @param {any} pr @param {string[] | null} [required]
+ * THE PROMPT CARRIES A FACT AND MAKES NO JUDGMENT (#2117). `baseTip` changes only the words -- never
+ * whether the order is sent, to whom, or under which key -- so it can excuse no genuine red. See
+ * `failingChecksPrompt`.
+ *
+ * @param {any} pr @param {string[] | null} [required] @param {{sha: string, date: string} | null} [baseTip]
  */
-function failingChecksOrder(pr, required = null) {
+function failingChecksOrder(pr, required = null, baseTip = null) {
   // ONLY A CHECK THAT CAN HOLD THE PULL REQUEST COUNTS AS RED. A settled-red job outside the required
   // set is a real failure and somebody's problem -- it is not THIS pull request being blocked, and
   // waking its session to "fix the cause on that branch" is a prompt spent on a PR that merges anyway.
@@ -2929,12 +2985,71 @@ function failingChecksOrder(pr, required = null) {
     cause: "pr-checks-failing",
     subject: `pr-${pr.number}`,
     discriminator: head8,
-    prompt: `#${pr.number} at \`${head8}\` has FAILING checks and is blocked. `
-      + `${sessionOf(pr) ? "It carries your session label, so it is yours to fix." : "It names no session."} `
-      + "Read the failing job, fix the cause on that branch and push. If the failure is not yours to fix "
-      + "or the PR should be closed, say so on the PR -- a red pull request nobody answers never lands.",
+    prompt: failingChecksPrompt({ pr, head8, blocking, baseTip }),
     causeKey: `${session}/pr-checks-failing/pr-${pr.number}/${head8}`,
   };
+}
+
+/**
+ * The words of a `pr-checks-failing` order: when the failing run started, whether `main` has moved since,
+ * and the question that decides the fix (#2117).
+ *
+ * TWO REGIMES WITH OPPOSITE REMEDIES, and this prompt names both and picks neither. A run that tested a
+ * `main` since fixed (its merge ref computed against the old one) needs a PUSH or `update-branch` --
+ * `gh run rerun` reuses the same merge ref and cannot clear it. A run that could not ASK (the rate-limit
+ * `arm` regime) needs `gh run rerun`, and there is nothing to push. Same red; what tells them apart is
+ * whether the failing assertion names a defect or a refusal. #2087 (2026-09-23) cost two sessions a cycle
+ * each, and they reached opposite readings of one PR.
+ *
+ * @param {{pr: any, head8: string, blocking: any[], baseTip: {sha: string, date: string} | null}} facts
+ */
+function failingChecksPrompt({ pr, head8, blocking, baseTip }) {
+  return `#${pr.number} at \`${head8}\` has FAILING checks and is blocked. `
+    + `${sessionOf(pr) ? "It carries your session label, so it is yours to fix." : "It names no session."} `
+    + `${baseMovedSentence(failingRunStartedAt(blocking), baseTip)} `
+    + "WHICH FIX is decided by what the failing assertion names, and this order does not choose: "
+    + "(a) a real defect on your branch -- fix it and push; "
+    + "(b) a run that tested a `main` since fixed (a stale merge ref) -- a PUSH or `update-branch`, because "
+    + "`gh run rerun` reuses the same merge ref and cannot clear it; "
+    + "(c) a check that could not ASK (a rate-limit or other refusal, no defect at all) -- `gh run rerun`, "
+    + "there is nothing to push. Read the failing job to see which. "
+    + "If the failure is not yours to fix or the PR should be closed, say so on the PR -- "
+    + "a red pull request nobody answers never lands.";
+}
+
+/**
+ * When the newest failing blocking check started, or `null`. THE LATEST, not the earliest: "main moved
+ * since" is then true of EVERY red check, so the sentence never overstates. `checksSettledGreen([c])`
+ * is `false` for exactly the settled-red ones.
+ *
+ * @param {any[]} blocking
+ * @returns {string | null}
+ */
+function failingRunStartedAt(blocking) {
+  const started = blocking.filter((c) => checksSettledGreen([c]) === false)
+    .map((c) => String(c?.startedAt ?? "")).filter((t) => Number.isFinite(Date.parse(t)));
+  return started.sort((a, b) => Date.parse(a) - Date.parse(b)).at(-1) ?? null;
+}
+
+/**
+ * The one sentence of fact. Three unknowns stay UNKNOWN rather than collapsing to "has not moved": absence
+ * of a start time or of a tip is not evidence that `main` stood still.
+ *
+ * @param {string | null} startedAt @param {{sha: string, date: string} | null} baseTip
+ */
+function baseMovedSentence(startedAt, baseTip) {
+  if (startedAt === null) {
+    return "The failing check carried no start time, so whether `main` has moved since it ran is UNKNOWN.";
+  }
+  if (baseTip === null) {
+    return `The failing run started at ${startedAt}. Whether \`main\` has moved since was NOT READ this tick, `
+      + "so it is UNKNOWN, not \"no\".";
+  }
+  const tip = `\`main\`'s tip \`${baseTip.sha.slice(0, 8)}\` is dated ${baseTip.date}`;
+  return Date.parse(baseTip.date) > Date.parse(startedAt)
+    ? `The failing run started at ${startedAt}; \`main\` has MOVED since (${tip}, after that start), so the `
+      + "run may have tested a `main` that no longer exists."
+    : `The failing run started at ${startedAt}; \`main\` has NOT moved since (${tip}, no later than that start).`;
 }
 
 /**
@@ -3219,12 +3334,12 @@ function awaitingVerdictPrompt(pr, { head8, keyHead8 }) {
  * head with no new work: extending the read alone would have turned #2104 into a reviewer order every
  * ten minutes. See `reviewChainOf` for the test and its limit.
  *
- * @param {any} pr @param {string[] | null} [required]
+ * @param {any} pr @param {string[] | null} [required] @param {{sha: string, date: string} | null} [baseTip]
  */
-function draftOrder(pr, required = null) {
+function draftOrder(pr, required = null, baseTip = null) {
   // RED FIRST, and before the green check: a red PR is work whether or not it is a draft, and it can
   // never reach the reviewer lane below, which requires green.
-  const red = failingChecksOrder(pr, required);
+  const red = failingChecksOrder(pr, required, baseTip);
   if (red) return red;
   const head = reviewableHead(pr);
   if (!head) return null;
@@ -3262,10 +3377,10 @@ function draftOrder(pr, required = null) {
 /**
  * Every order the open pull requests earn: each one's own (`draftOrder`), then the set-wide one for labelled
  * pull requests nobody has explained (#2416).
- * @param {any[]} prs @param {string[] | null} required
+ * @param {any[]} prs @param {string[] | null} required @param {any} [baseTip]
  */
-function perPullRequestOrders(prs, required) {
-  const own = prs.map((pr) => draftOrder(pr, required)).filter((o) => o !== null);
+function perPullRequestOrders(prs, required, baseTip) {
+  const own = prs.map((pr) => draftOrder(pr, required, baseTip)).filter((o) => o !== null);
   return [...own, ...awaitingEvidenceStaleOrders(prs)];
 }
 
@@ -4138,7 +4253,8 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *           claimedComments?: {number?: number, comments?: {body?: string, id?: string}[]}[],
  *           rowBranches?: {branch: string, head: string, row: number}[] | null,
  *           hostDrift?: {unit: string, problem: string, detail: string}[] | null,
- *           closings?: Map<number, number> | null, trunkRed?: ReturnType<typeof readTrunkRed> }} state
+ *           closings?: Map<number, number> | null, trunkRed?: ReturnType<typeof readTrunkRed>,
+ *           baseTip?: {sha: string, date: string} | null }} state
  *        `required` is the checks that can block a merge (`requiredCheckNames`), or `null` for
  *        "could not be read", which counts EVERY check as before this existed.
  *        `epics` are the open `epic` rows with their `subIssuesSummary` (`readEpics`); `[]` when
@@ -4169,6 +4285,9 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *        `trunkRed` is `readTrunkRed()` -- the facts about a red `main`, or `null` when it is green or the
  *        read was refused. OMITTED AND `null` MEAN THE SAME THING and it carries no `= null` default, for
  *        `rowBranches`'s reason: `decide` sits exactly on its limit of 15.
+ *        `baseTip` is `readBaseTip()` -- `main`'s tip commit, read only on a red tick (#2117). It carries no
+ *        `= null` default for `rowBranches`'s reason, and OMITTED AND `null` MEAN THE SAME THING: the
+ *        `pr-checks-failing` prompt says whether `main` moved is UNKNOWN. IT CHANGES ONLY THOSE WORDS.
  *        `unarmed` is `readUnarmed(shouldBeMerging(prs, required))` -- the green, unheld pull requests
  *        the API says nothing has armed. It DEFAULTS TO `null`, which is "not asked or refused" and
  *        emits no order: a caller that cannot make that read must never produce a false all-clear, and
@@ -4178,7 +4297,7 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
-  claimedComments = [], rowBranches, hostDrift, closings, trunkRed }) {
+  claimedComments = [], rowBranches, hostDrift, closings, trunkRed, baseTip }) {
   // FIRST, BEFORE EVERY OTHER CAUSE (#2356): a red `main` outranks even `answer-owed` -- see `trunkRedOrders`.
   // `answer-owed` says another session is ALREADY STOPPED waiting on them, which outranks any standing question.
   const orders = [...trunkRedOrders(trunkRed), ...answerOrders(answerOwed)];
@@ -4195,7 +4314,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // claimed and now runnable beats a row nobody has picked up.
   orders.push(...blockerClearedOrders(openRows, todayIso(), Date.now(), prs));
 
-  orders.push(...perPullRequestOrders(prs, required));
+  orders.push(...perPullRequestOrders(prs, required, baseTip));
   // #2031: AHEAD OF THE OFFER, AND IT IS THE SAME READING THAT WITHHELD IT. `partitionUnclaimed` shelves
   // the row on `rowBranches` and this emits the cause that names the branch -- one condition, one read,
   // said once as a withholding and once as a question. Ahead of `rowOrders` for the ordering reason the
@@ -4703,8 +4822,9 @@ function main() {
   // `requiredWhenRed` makes a `gh` call when anything is red -- calling it inline in both places would
   // pay for it twice on exactly the red tick this row is about.
   const required = requiredWhenRed(openPrs);
+  const baseTip = baseTipWhenRed(openPrs);
   const decided = decide({ prs: withEvidenceLabelAges(withCommitChains(openPrs)), readyRows: rows, promotableRows: promotableRows ?? [],
-    chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required,
+    chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required, baseTip,
     epics: epicsWhenShelfEmpty(rows),
     answerOwed: rowsOwingAnswers({ openRows: allOpen, openPrs, closedRows: closedAnswerRows() }),
     openRows: allOpen,
