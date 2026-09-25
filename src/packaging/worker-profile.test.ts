@@ -21,7 +21,11 @@ const PRACTICES = readLoadedRules();
 // `work-gate.mjs` imports it, so a scan of the gate alone would report `trunk-red` as a profile for a cause
 // nothing emits. Both are read, and the positive control below asserts the second one was actually found.
 // #2470: AND `claim-stall.mjs` BUILDS THE `claim-stalled` ORDERS, for the same reason.
-const GATE = ["work-gate.mjs", "trunk-red.mjs", "claim-stall.mjs"]
+// #2542: AND `work-gate/pr-orders.mjs` BUILDS THE PULL-REQUEST ORDERS (draft, failing checks, verdicts, unarmed,
+// review-blocked, merge conflict, awaiting-evidence). Left off this list the scan reads nine causes fewer than the
+// gate emits and this test goes RED -- the loud direction; the quiet one is a guard that greps the old file for text
+// now in the new module and passes by absence, which is why the control below names a cause that lives ONLY there.
+const GATE = ["work-gate.mjs", "work-gate/pr-orders.mjs", "trunk-red.mjs", "claim-stall.mjs"]
   .map((f) => readFileSync(new URL(`../${f}`, import.meta.url), "utf8")).join("\n");
 
 /** The two shapes `profileFor` and `spawnInvocation` return, and narrowing that ASSERTS rather than casts. */
@@ -46,6 +50,7 @@ test("every cause work-gate can actually emit has a profile, and nothing else do
   assert.ok(emitted.length > 0, "read no causes out of work-gate.mjs -- this guard cannot see its population");
   assert.ok(emitted.includes("trunk-red"), "and it must have read the second emitter, `trunk-red.mjs`, too");
   assert.ok(emitted.includes("claim-stalled"), "and the third, `claim-stall.mjs` (#2470), whose orders are built beside its reading");
+  assert.ok(emitted.includes("pr-checks-failing"), "and the fourth, `work-gate/pr-orders.mjs` (#2542), which now holds every pull-request order");
   assert.deepEqual(Object.keys(PROFILES).sort(), [...new Set(emitted)].sort(),
     "a cause work-gate emits with no profile refuses at run time, and a profile for a cause that no "
     + "longer exists is a routing decision nothing will ever read");

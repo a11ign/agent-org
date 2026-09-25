@@ -97,7 +97,9 @@ test("#2405 NO ORDER SAYS TO BORROW: neither the delivered text nor the source c
   }
   assert.doesNotMatch(launchAdvice("worker-9", { exists: () => true }), borrow);
   // THE SOURCE, for the words being GONE rather than merely unreachable: the phrase was in two files' comments once.
-  for (const file of ["wake.mjs", "work-gate.mjs"]) {
+  // #2542: `work-gate/pr-orders.mjs` holds the pull-request orders' prompts now, so an absence asserted over the
+  // gate alone would pass having read less of the gate than before.
+  for (const file of ["wake.mjs", "work-gate.mjs", "work-gate/pr-orders.mjs"]) {
     const source = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
     assert.doesNotMatch(source, /any other linked worktree/i, `${file} still says it`);
   }
