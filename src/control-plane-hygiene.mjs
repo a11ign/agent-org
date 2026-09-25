@@ -9,7 +9,7 @@
 // Read-only. Never deletes anything -- a lifecycle rule is a decision to record, not an action to take
 // here, and `runs/` in particular must never be touched by a script that does not answer to `orchestrator`.
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, statfsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -160,6 +160,113 @@ export function undecidedRefusal(rows) {
     + "or an explicit threshold -- the table's own job is to make that decision legible, not to defer it.";
 }
 
+// #2220: on 2026-09-23 `/tmp` on the agent host was a tmpfs mounted `usrquota`, and the quota (80% of the
+// filesystem's size, measured 2026-09-24) was reached while `df` still showed room: `df` read 80% and 3.1 GB
+// free while a 50 MB write was refused. The only symptom was unrelated test files that build git sandboxes
+// under /tmp going red. THAT HOST PREMISE HAS CHANGED: `/tmp` now sits on `/` (ext4, no `usrquota`) and the
+// 2026-09-25 outage was inode exhaustion, so on this host the reading below is NOT MEASURABLE. It stays as a
+// diagnostic for a host that does have a quota. The reading comes from the QUOTA, and `df` is printed only as
+// the contrast.
+const TMP = "/tmp";
+const KIB = 1024;
+/** A user this far into its quota is CONSTRAINED before it is exhausted: a test that clones a worktree
+ * needs tens of MB, and the next session's scratchpad needs more than that. */
+const QUOTA_CONSTRAINED_AT = 0.9;
+// No `quota`/`repquota` binary is installed here and `quota -s` prints nothing for this user, so the quota is
+// read the way those tools would: `quotactl_fd` (syscall 443, the same number on every architecture), asked
+// for Q_GETQUOTA (0x800007 << 8 | USRQUOTA) on an fd of the mount. It needs no privilege for one's own uid.
+// `struct if_dqblk` opens with three u64s: hard limit and soft limit in 1 KiB blocks, then bytes in use.
+export const QUOTACTL_PY = [
+  "import ctypes, json, os, struct, sys",
+  "libc = ctypes.CDLL(None, use_errno=True)",
+  "buf = ctypes.create_string_buffer(112)",
+  "fd = os.open(sys.argv[1], os.O_RDONLY)",
+  "if libc.syscall(443, fd, (0x800007 << 8) | 0, int(sys.argv[2]), buf) != 0:",
+  "    print(json.dumps({'error': os.strerror(ctypes.get_errno())}))",
+  "else:",
+  "    hard, soft, used = struct.unpack_from('QQQ', buf.raw)",
+  "    print(json.dumps({'hardKb': hard, 'softKb': soft, 'usedBytes': used}))",
+].join("\n");
+
+/**
+ * What the host says about the quota on `path`, each part read separately so a part that could not be read is
+ * `null` rather than a guess. `exec` is injectable: a test that shells out to the real `/tmp` reports whatever
+ * the host happens to be that minute.
+ * @typedef {{ hardKb: number, softKb: number, usedBytes: number }} UserQuota
+ * @typedef {{ mountOptions: string | null, quota: UserQuota | null, quotaError: string | null,
+ *   dfFreeBytes: number | null }} QuotaReading
+ * @param {string} path
+ * @param {typeof execFileSync} exec
+ * @returns {QuotaReading}
+ */
+export function readTmpQuota(path = TMP, exec = execFileSync) {
+  /** @type {QuotaReading} */
+  const reading = { mountOptions: null, quota: null, quotaError: null, dfFreeBytes: null };
+  try {
+    reading.mountOptions = String(exec("findmnt", ["-no", "OPTIONS", "-T", path], { encoding: "utf8" })).trim();
+  } catch (cause) {
+    reading.quotaError = `findmnt failed: ${errorLine(cause)}`;
+    return reading;
+  }
+  try {
+    const fs = statfsSync(path);
+    reading.dfFreeBytes = fs.bavail * fs.bsize;
+  } catch {
+    reading.dfFreeBytes = null; // the contrast figure only; the verdict never reads it
+  }
+  try {
+    const out = String(exec("python3", ["-c", QUOTACTL_PY, path, String(process.getuid?.() ?? -1)], { encoding: "utf8" }));
+    const parsed = JSON.parse(out);
+    if (parsed.error) reading.quotaError = `quotactl_fd: ${parsed.error}`;
+    else reading.quota = parsed;
+  } catch (cause) {
+    reading.quotaError = `python3 quotactl_fd failed: ${errorLine(cause)}`;
+  }
+  return reading;
+}
+
+/** @param {unknown} cause */
+function errorLine(cause) {
+  return String(cause instanceof Error ? cause.message : cause).split("\n")[0];
+}
+
+/**
+ * EXHAUSTED | CONSTRAINED | OK | NOT MEASURABLE, from the QUOTA alone. `dfFreeBytes` is deliberately never
+ * consulted: a verdict that read it would reproduce the blindness this exists to fix. NOT MEASURABLE is not a
+ * pass -- "no quota" and "quota fine" are different answers and only one of them is healthy.
+ * @param {QuotaReading} reading
+ * @returns {{ state: "EXHAUSTED" | "CONSTRAINED" | "OK" | "NOT MEASURABLE", detail: string }}
+ */
+export function classifyTmpQuota(reading) {
+  const notMeasurable = (/** @type {string} */ why) => ({ state: /** @type {const} */ ("NOT MEASURABLE"), detail: why });
+  if (reading.mountOptions === null) return notMeasurable(reading.quotaError ?? "the mount options could not be read");
+  if (!reading.mountOptions.split(",").includes("usrquota")) return notMeasurable("the mount declares no usrquota");
+  if (reading.quota === null) return notMeasurable(reading.quotaError ?? "the quota could not be read");
+  const limits = [reading.quota.hardKb, reading.quota.softKb].filter((kb) => kb > 0);
+  if (limits.length === 0) return notMeasurable("usrquota is on but no limit is set for this user");
+  const limitBytes = Math.min(...limits) * KIB;
+  const usedFraction = reading.quota.usedBytes / limitBytes;
+  const detail = `${humanMb(reading.quota.usedBytes)} of ${humanMb(limitBytes)} used (${(usedFraction * 100).toFixed(0)}%)`;
+  if (usedFraction >= 1) return { state: "EXHAUSTED", detail };
+  return { state: usedFraction >= QUOTA_CONSTRAINED_AT ? "CONSTRAINED" : "OK", detail };
+}
+
+/** The `/tmp` quota row of the report. `read` is injectable so a test never touches the real host.
+ * @param {(path: string) => QuotaReading} read
+ * @returns {[string, string, string]}
+ */
+export function tmpQuotaRow(read = readTmpQuota) {
+  const reading = read(TMP);
+  const verdict = classifyTmpQuota(reading);
+  const dfNote = reading.dfFreeBytes === null ? "" : `; df shows ${humanMb(reading.dfFreeBytes)} free`;
+  return [`${TMP} user quota`, `${verdict.state} -- ${verdict.detail}${dfNote}`,
+    "RULE: read the QUOTA, never `df` (#2220): at 80% and 3.1 GB free a 50 MB write was refused, and the "
+    + "only symptom was unrelated test files that build git sandboxes under /tmp going red. EXHAUSTED or "
+    + "CONSTRAINED means those reds are the host's, not the change's; clearing abandoned session scratchpads "
+    + "under /tmp/claude-<uid> that no live session holds is a HOST act -- this report never deletes. NOT "
+    + "MEASURABLE is not a pass: no quota and a fine quota are different answers."];
+}
+
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "npm run hygiene:report" });
 
@@ -210,6 +317,7 @@ function main() {
       "RULE (already the answer, restated so nobody re-derives it): KEEP — it is what lets this machine "
       + "read the corpus at all. Staleness, not size, is the risk; `npm run lab:inventory` reports how "
       + "stale a copy is. Never delete without `orchestrator` — it is a copy several tools read."],
+    tmpQuotaRow(),
     ["Disk free", `${(diskFreeKb / (1024 * 1024)).toFixed(0)} GB`,
       "Informational only — not an accumulator, no rule needed at current scale."],
   ];
