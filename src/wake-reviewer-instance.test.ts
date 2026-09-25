@@ -15,7 +15,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, chmodSync, existsSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, chmodSync, existsSync, mkdirSync, symlinkSync, readdirSync,
+  realpathSync, lstatSync, readlinkSync, rmSync as removeSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -25,7 +26,7 @@ import {
   REVIEWER_CAUSES, REVIEWER_GH_CONFIG_DIR, reviewerEnvironment, spawnableReviewer, isReviewerOrder,
   liveReviewers, endFinishedReviewers, registerReviewer, reviewerPathsFrom, sparePathsFrom, spawnEnvironment,
   MAX_SPAWNS_PER_TICK, orderPullRequest, reviewerMismatch, prepareReviewCheckout, removeReviewCheckout,
-  reviewCheckoutPath, withReviewCheckout,
+  reviewCheckoutPath, withReviewCheckout, linkReviewDependencies,
 } from "./wake.mjs";
 import { readReviewerRegistry, REVIEWER_REGISTRY_FILE } from "./work-gate.mjs";
 import { parityOwner } from "./review-attribution.mjs";
@@ -77,7 +78,7 @@ const headOf = (pr: number, gen = 1) => `${String(gen).padStart(8, "d")}${String
  * A `git` and a filesystem that behave as the checkout path needs and record what was asked, in the same event log
  * as herdr. NOTHING here touches a disk: a checkout is a set of paths and the head each one is at.
  */
-function fakeCheckout(events: Events = [], { failFetch = false, failRemove = false } = {}) {
+function fakeCheckout(events: Events = [], { failFetch = false, failRemove = false, failLink = false } = {}) {
   const trees = new Map<string, string>();
   const gen = new Map<number, number>();
   const refs = new Set<number>();
@@ -102,11 +103,16 @@ function fakeCheckout(events: Events = [], { failFetch = false, failRemove = fal
     if (line.includes("update-ref -d")) { refs.delete(pr); return ""; }
     throw new Error(`unexpected git ${line}`);
   };
+  /** The dependency step (#2498): recorded in the event log so a test can say it ran BEFORE the pane opened. */
+  const link = ({ path }: { path: string }) => {
+    events.push(`link ${path}`);
+    return failLink ? `${PRIMARY}/node_modules does not exist: the tick's own checkout has no dependencies to link` : null;
+  };
   return { git, trees, refs, exists: (path: string) => trees.has(path), push: (pr: number) => gen.set(pr, (gen.get(pr) ?? 1) + 1),
-    seams: { git, exists: (path: string) => trees.has(path), root: REVIEW_ROOT, repoRoot: PRIMARY } };
+    seams: { git, link, exists: (path: string) => trees.has(path), root: REVIEW_ROOT, repoRoot: PRIMARY } };
 }
 /** The reviewer path's seams for one test: herdr, git and the tree set, sharing an event log. */
-function world(over: { failFetch?: boolean } = {}) {
+function world(over: { failFetch?: boolean; failLink?: boolean } = {}) {
   const events: Events = [];
   const h = recordingHerdr(events);
   const co = fakeCheckout(events, over);
@@ -127,6 +133,8 @@ test("#2401 (1): with no `reviewer-<n>` live, the order STARTS one -- a codex in
   assert.match(create, /--label reviewer-2398/);
   assert.ok(create.includes(`--env GH_CONFIG_DIR=${REVIEWER_GH_CONFIG_DIR}`), create);
   assert.ok(create.includes("--env A11Y_REVIEWER_SESSION=reviewer-2398"), create);
+  assert.ok(create.includes("--env npm_config_cache=/reviews-root/reviewer-2398/node_modules/.cache/npm"),
+    `a cache under the instance's own tree, the one place its sandbox can write (#2498); got ${create}`);
   const [start] = w.h.said("agent start");
   assert.match(start, /agent start reviewer-2398 --kind codex --pane wB:p1/, "a codex, named for the pull request");
   assert.deepEqual(told, ["reviewer-2398"], "the start is registered, for the detector and the teardown");
@@ -138,8 +146,10 @@ test("#2401 (1b): the reviewer's own account is `/home/agent/reviewer/gh`, never
   + "override wins key by key", () => {
   assert.equal(REVIEWER_GH_CONFIG_DIR, "/home/agent/reviewer/gh");
   assert.notEqual(REVIEWER_GH_CONFIG_DIR, spawnEnvironment().GH_CONFIG_DIR);
-  assert.deepEqual(reviewerEnvironment("reviewer-7"),
-    { GH_CONFIG_DIR: "/home/agent/reviewer/gh", A11Y_REVIEWER_SESSION: "reviewer-7" });
+  assert.deepEqual(reviewerEnvironment("reviewer-7", {}, "/r/reviewer-7"), { GH_CONFIG_DIR: "/home/agent/reviewer/gh",
+    A11Y_REVIEWER_SESSION: "reviewer-7", npm_config_cache: "/r/reviewer-7/node_modules/.cache/npm" });
+  assert.equal(reviewerEnvironment("reviewer-7").npm_config_cache, `${reviewCheckoutPath("reviewer-7")}/node_modules/.cache/npm`,
+    "the default tree is the instance's own checkout");
   assert.equal(reviewerEnvironment("reviewer-7", { GH_CONFIG_DIR: "/x" }).GH_CONFIG_DIR, "/x");
 });
 
@@ -306,16 +316,24 @@ test("#2401 (7e): the checkout is REAL git, not only a fake -- fetched from `ref
     mkdirSync(origin);
     git(origin, "init", "-q", "-b", "main");
     writeFileSync(join(origin, "a.txt"), "one\n");
+    mkdirSync(join(origin, "packages", "a"), { recursive: true });
+    writeFileSync(join(origin, "packages", "a", "index.js"), "// package a\n");
     git(origin, "add", "."); git(origin, "commit", "-q", "-m", "one");
     const first = git(origin, "rev-parse", "HEAD");
     git(origin, "update-ref", "refs/pull/7/head", first);
     const primary = join(dir, "primary");
     git(dir, "clone", "-q", origin, primary);
+    mkdirSync(join(primary, "node_modules", "left-pad"), { recursive: true }); // what the tick's own checkout carries (#2498)
     const root = join(dir, "reviews");
 
     const one = prepareReviewCheckout({ pr: 7, session: "reviewer-7", root, repoRoot: primary });
     assert.deepEqual(one, { path: join(root, "reviewer-7"), head: first }, JSON.stringify(one));
     assert.equal(readFileSync(join(root, "reviewer-7", "a.txt"), "utf8"), "one\n");
+    const modules = join(root, "reviewer-7", "node_modules");
+    assert.equal(realpathSync(join(modules, "left-pad")), realpathSync(join(primary, "node_modules", "left-pad")),
+      "a third-party package resolves to the tick's checkout, with no install");
+    assert.equal(realpathSync(join(modules, "@a11ign", "a")), realpathSync(join(root, "reviewer-7", "packages", "a")),
+      "and an `@a11ign/*` one to THIS tree, never to the primary's source");
 
     writeFileSync(join(origin, "a.txt"), "two\n");
     git(origin, "commit", "-aq", "-m", "two");
@@ -339,8 +357,175 @@ test("#2401 (7e): the checkout is REAL git, not only a fake -- fetched from `ref
 test("#2401 (7f): the path is named for the INSTANCE, so two pull requests can never share a tree", () => {
   assert.equal(reviewCheckoutPath("reviewer-7", "/r"), "/r/reviewer-7");
   assert.notEqual(reviewCheckoutPath("reviewer-7", "/r"), reviewCheckoutPath("reviewer-8", "/r"));
-  assert.match(withReviewCheckout({ prompt: "P" }, { path: "/r/reviewer-7", head: "a".repeat(40) }, 7).prompt,
+  assert.match(withReviewCheckout({ prompt: "P", session: "reviewer-7" }, { path: "/r/reviewer-7", head: "a".repeat(40) }, 7).prompt,
     /^P\n\nYour checkout of #7 is `\/r\/reviewer-7`, detached at the pull request's current head `aaaaaaaa`/);
+});
+
+// --- #2498: THE INSTANCE CAN RUN ITS PULL REQUEST'S ACCEPTANCE, AND SIGNS ITS VERDICT ----------------------------------------
+//
+// Measured 2026-09-25 with `codex sandbox -c sandbox_mode="workspace-write"` (the reviewer's own policy): the checkout and `/tmp`
+// are writable, `~/.npm` and the checkout's parent are not, and `npx` in a tree with NO `node_modules` died with `rofs` writing
+// `~/.npm/_logs` -- #2376's "0/4; `npx` failed before execution". With the tree's dependencies linked in, the same `npx` runs.
+
+const realFs = { existsSync, mkdirSync, readdirSync, lstatSync, readlinkSync, symlinkSync, rmSync: removeSync };
+
+/** A tick checkout with dependencies and a review tree with two packages, on a real disk, so a link is a real link. */
+function depsWorld() {
+  const dir = mkdtempSync(join(tmpdir(), "wake-rv-deps-"));
+  const primary = join(dir, "primary");
+  const tree = join(dir, "reviews", "reviewer-7");
+  for (const d of ["node_modules/left-pad", "node_modules/@a11ign/a", "node_modules/.bin", "node_modules/.cache/rstest", ".venv"]) {
+    mkdirSync(join(primary, d), { recursive: true });
+  }
+  writeFileSync(join(primary, "node_modules", ".package-lock.json"), "{}");
+  for (const p of ["a", "b"]) mkdirSync(join(tree, "packages", p), { recursive: true });
+  return { dir, primary, tree, modules: join(tree, "node_modules") };
+}
+/** `realFs` that counts what it WROTE, so a second run can be shown to write nothing. */
+function countingFs(writes: string[]) {
+  return { ...realFs,
+    symlinkSync: (...a: Parameters<typeof symlinkSync>) => { writes.push(`symlink ${a[1]}`); return symlinkSync(...a); },
+    rmSync: (...a: Parameters<typeof removeSync>) => { writes.push(`rm ${a[0]}`); return removeSync(...a); } };
+}
+
+test("#2498 (1a): the dependency step runs AFTER the tree exists and BEFORE the pane opens, and again on a re-point", () => {
+  const w = world();
+  deliver([reviewOrder(2398)], agents({}), ROSTER, w.deps);
+  const at = (needle: string) => w.events.findIndex((e) => e.includes(needle));
+  assert.ok(at("worktree add") < at("link /reviews-root/reviewer-2398"), "the tree first: there is nothing to link into before it");
+  assert.ok(at("link /reviews-root/reviewer-2398") < at("workspace create"), "and the pane opens on a tree whose Acceptance can run");
+  w.co.push(2398);
+  deliver([{ ...reviewOrder(2398), causeKey: "reviewer-2398/draft-awaiting-verdict/pr-2398/eeee5555" }],
+    agents({ "reviewer-2398": "idle" }), ROSTER, w.deps);
+  assert.equal(w.events.filter((e) => e.startsWith("link ")).length, 2, "every head-changing push re-links: the PR may add a package");
+});
+
+test("#2498 (1b): a tree whose dependencies could NOT be prepared REFUSES the order -- no pane, no prompt, the reason said", () => {
+  const w = world({ failLink: true });
+  const out = deliver([reviewOrder(2398)], agents({}), ROSTER, w.deps);
+  assert.deepEqual(out.sent, []);
+  assert.match(out.refused[0], /no review dependencies for PR #2398 at \/reviews-root\/reviewer-2398 \(.*node_modules does not exist/);
+  assert.equal(w.h.said("workspace create").length, 0, "the pane never opens on a tree that cannot run its Acceptance");
+  const idle = world({ failLink: true });
+  const again = deliver([reviewOrder(2398)], agents({ "reviewer-2398": "idle" }), ROSTER, idle.deps);
+  assert.deepEqual([again.sent, idle.h.said("agent prompt")], [[], []], "an EXISTING instance is not prompted onto such a tree either");
+  const control = world();
+  assert.equal(deliver([reviewOrder(2398)], agents({}), ROSTER, control.deps).sent.length, 1, "CONTROL: the same order is placed when they can");
+});
+
+test("#2498 (1c): `linkReviewDependencies` builds the HYBRID `node_modules` -- third-party and `.bin` to the tick's checkout, "
+  + "`@a11ign/*` to THIS tree, and never `.cache`", () => {
+  const w = depsWorld();
+  try {
+    assert.equal(linkReviewDependencies({ path: w.tree, repoRoot: w.primary }), null);
+    assert.deepEqual(readdirSync(w.modules).sort(), [".bin", "@a11ign", "left-pad"],
+      "exactly these: `.cache` is where the instance's npm cache lives, and a link there would send its writes to the primary");
+    for (const e of ["left-pad", ".bin"]) assert.equal(readlinkSync(join(w.modules, e)), join(w.primary, "node_modules", e));
+    assert.deepEqual(readdirSync(join(w.modules, "@a11ign")).sort(), ["a", "b"], "one per package of THIS tree");
+    assert.equal(readlinkSync(join(w.modules, "@a11ign", "a")), join(w.tree, "packages", "a"),
+      "to the review tree's source, which `assert-glob-not-empty --run` requires (#2378), and not the primary's `@a11ign/a`");
+    assert.equal(readlinkSync(join(w.tree, ".venv")), join(w.primary, ".venv"), "and the Python leg's environment");
+    assert.equal(lstatSync(join(w.primary, "node_modules", "@a11ign", "a")).isDirectory(), true, "nothing was written into the primary");
+    assert.equal(existsSync(join(w.primary, "node_modules", ".cache", "rstest")), true);
+  } finally {
+    removeSync(w.dir, { recursive: true, force: true });
+  }
+});
+
+test("#2498 (1d): it is IDEMPOTENT, follows a PR that adds or removes a package, and replaces a wrong entry", () => {
+  const w = depsWorld();
+  try {
+    linkReviewDependencies({ path: w.tree, repoRoot: w.primary });
+    const writes: string[] = [];
+    assert.equal(linkReviewDependencies({ path: w.tree, repoRoot: w.primary, fs: countingFs(writes) as never }), null);
+    assert.deepEqual(writes, [], "a second run on a right tree writes nothing: it runs on every push");
+
+    removeSync(join(w.tree, "packages", "b"), { recursive: true });
+    mkdirSync(join(w.tree, "packages", "c"));
+    linkReviewDependencies({ path: w.tree, repoRoot: w.primary });
+    assert.deepEqual(readdirSync(join(w.modules, "@a11ign")).sort(), ["a", "c"], "b's link is gone, c's is there");
+
+    removeSync(join(w.modules, "left-pad"));
+    mkdirSync(join(w.modules, "left-pad"));
+    writeFileSync(join(w.modules, "left-pad", "stale.txt"), "x");
+    linkReviewDependencies({ path: w.tree, repoRoot: w.primary });
+    assert.equal(readlinkSync(join(w.modules, "left-pad")), join(w.primary, "node_modules", "left-pad"), "a wrong real directory is replaced");
+    assert.equal(existsSync(join(w.primary, "node_modules", "left-pad")), true, "and the primary's is untouched");
+  } finally {
+    removeSync(w.dir, { recursive: true, force: true });
+  }
+});
+
+test("#2498 (1e): it answers WHY, never throws -- no dependencies in the tick's checkout, no `packages/`, or a write that fails", () => {
+  const w = depsWorld();
+  try {
+    assert.match(String(linkReviewDependencies({ path: w.tree, repoRoot: join(w.dir, "nowhere") })),
+      /nowhere\/node_modules does not exist: the tick's own checkout has no dependencies to link/);
+    removeSync(join(w.tree, "packages"), { recursive: true });
+    assert.match(String(linkReviewDependencies({ path: w.tree, repoRoot: w.primary })), /could not link dependencies into .*node_modules: ENOENT/);
+    mkdirSync(join(w.tree, "packages", "a"), { recursive: true });
+    const broken = { ...realFs, symlinkSync: () => { throw new Error("EROFS: read-only file system\nmore"); } };
+    assert.match(String(linkReviewDependencies({ path: w.tree, repoRoot: w.primary, fs: broken as never })),
+      /could not link dependencies into .*node_modules: EROFS: read-only file system$/);
+    assert.equal(linkReviewDependencies({ path: w.tree, repoRoot: w.primary }), null, "CONTROL: the same trees link when nothing is wrong");
+  } finally {
+    removeSync(w.dir, { recursive: true, force: true });
+  }
+});
+
+test("#2498 (2a): `A11Y_REVIEWER_SESSION` reaches the pane by EVERY path the tick has -- a start whose caller named other "
+  + "variables, and an order to a live instance it did not start", () => {
+  const started = world();
+  deliver([reviewOrder(2398)], agents({}), ROSTER, { ...started.deps, reviewerEnv: { A_OTHER: "1", GH_CONFIG_DIR: "/x" } });
+  const [create] = started.h.said("workspace create");
+  assert.ok(create.includes("--env A11Y_REVIEWER_SESSION=reviewer-2398"), `a caller's variables are laid OVER the reviewer's, not instead of them: ${create}`);
+  assert.ok(create.includes("--env A_OTHER=1") && create.includes("--env GH_CONFIG_DIR=/x"), "and win key by key");
+
+  const live = world();
+  deliver([reviewOrder(2398)], agents({ "reviewer-2398": "idle" }), ROSTER, live.deps);
+  const [typed] = live.h.said("agent prompt reviewer-2398");
+  assert.match(typed, /A11Y_REVIEWER_SESSION=reviewer-2398 pr-review-verdict/,
+    "a pane the tick did not start (herdr's restore of a live agent after a restart) holds no variable, so the ORDER carries the name: it is the one thing every path delivers");
+  assert.match(typed, /node_modules\/\.cache\/npm/, "and the cache path, for the same pane");
+});
+
+test("#2498 (2b): the tick has exactly ONE way to open a reviewer's pane and ONE to start its agent -- and neither is a resume", () => {
+  const source = readFileSync(fileURLToPath(new URL("./wake.mjs", import.meta.url)), "utf8");
+  // Measured 2026-09-25: `herdr.service` restarted at 12:01:57Z and `reviewer-2485`'s live codex was `codex resume <uuid>` from 12:01:58Z, with four
+  // `claude --resume` in the same two seconds: herdr's own restore, which keeps none of the `--env` given to `workspace create`. This file has no
+  // path that resumes a PROCESS (its `resume` is a plain PROMPT to a pane that exists, #2470), so a pane with no `A11Y_REVIEWER_SESSION` is one
+  // this file did not start. A NEW site that opens or starts one must carry `reviewerEnvironment`, and this count is where that is decided:
+  // change it deliberately, and pin the new site's environment in (2a).
+  assert.equal((source.match(/"workspace",\s*"create"/g) ?? []).length, 1, "the one `workspace create`, in openPane");
+  assert.equal((source.match(/"agent",\s*"start"/g) ?? []).length, 1, "the one `agent start`, in spawnInvocation");
+  assert.doesNotMatch(source, /["'`]codex["'`]\s*,\s*["'`]resume["'`]|--resume/, "and no codex/claude process is resumed from here");
+});
+
+test("#2498 (2c): the order names the dependencies, the cache and the session for ANY pane, on the first head and on every later one", () => {
+  const order = withReviewCheckout({ prompt: "P", session: "reviewer-7" }, { path: "/r/reviewer-7", head: "a".repeat(40) }, 7).prompt;
+  assert.match(order, /already linked in \(`node_modules`/);
+  assert.match(order, /`\/r\/reviewer-7\/node_modules\/\.cache\/npm`, the one place npm can write: set `npm_config_cache` to it/);
+  assert.match(order, /SIGN AS `reviewer-7`.*`A11Y_REVIEWER_SESSION=reviewer-7 pr-review-verdict <n> <convinced\|not-convinced> <file>`/);
+});
+
+// --- #2498 Done-when 3: `reviewer.md` says what a verdict that did not execute must say -----------------------------------------
+
+/** One `## ` section of a file: from its heading to the next `## `, so a phrase elsewhere in the file cannot satisfy a pin on it. */
+function section(text: string, heading: RegExp): string {
+  const start = text.search(heading);
+  assert.notEqual(start, -1, `no section matching ${heading}`);
+  const rest = text.slice(start + 1);
+  const end = rest.search(/\n## /);
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
+test("#2498 (3): `reviewer.md` pins the rule for a verdict whose Acceptance did not execute -- environmental is never "
+  + "`not runnable`, and a `convinced` names the CI run it relies on or is `not convinced (environment)`", () => {
+  const doc = readFileSync(fileURLToPath(new URL("../docs/roles/reviewer.md", import.meta.url)), "utf8");
+  const rule = section(doc, /^## A verdict whose Acceptance did not execute/m).replace(/\s+/g, " ");
+  assert.match(rule, /never says the Acceptance is "not runnable" for an ENVIRONMENTAL reason/);
+  assert.match(rule, /A `convinced` verdict whose Acceptance did not execute names the CI run it relies on \(run id or job URL\) in the verdict line/);
+  assert.match(rule, /Without one it is `not convinced \(environment\)`/);
 });
 
 // --- DONE-WHEN 8: `reviewer-<n>` reviews PR n and NOTHING ELSE ---------------------------------------------------
@@ -540,7 +725,7 @@ echo "$*" >> ${join(dir, "git-calls")}
 case "$*" in
   *"rev-parse --verify"*) echo 0123456789abcdef0123456789abcdef01234567 ;;
   *"rev-parse HEAD"*) echo 0123456789abcdef0123456789abcdef01234567 ;;
-  *"worktree add"*) for a; do p2=$p1; p1=$a; done; mkdir -p "$p2" ;;
+  *"worktree add"*) for a; do p2=$p1; p1=$a; done; mkdir -p "$p2/packages/a" ;;
   *"worktree remove"*) for a; do last=$a; done; rm -rf "$last" ;;
   *) : ;;
 esac
@@ -612,6 +797,10 @@ test("#2401 THE WAKE ENTRY: a started reviewer instance is REGISTERED with its s
     assert.equal(existsSync(tree), true, "the checkout the order names exists");
     assert.match(readFileSync(join(dir, "herdr-calls"), "utf8"), new RegExp(`workspace create .*--cwd ${tree}`),
       "and the workspace was opened in it");
+    assert.match(readFileSync(join(dir, "herdr-calls"), "utf8"), new RegExp(`--env A11Y_REVIEWER_SESSION=reviewer-2398 --env npm_config_cache=${tree}/node_modules/\\.cache/npm`),
+      "with its own name and a cache it can write, from the real entry");
+    assert.equal(realpathSync(join(tree, "node_modules", "@a11ign", "a")), realpathSync(join(tree, "packages", "a")),
+      "and the tree's dependencies were linked in BEFORE the pane opened, by the real entry");
     assert.match(readFileSync(join(dir, "git-calls"), "utf8"), /fetch --quiet origin \+refs\/pull\/2398\/head:refs\/review\/pr-2398/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
