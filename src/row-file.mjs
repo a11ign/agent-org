@@ -106,7 +106,7 @@ import { moveProjectStatus, filedByLine, fetchLabels as fetchIssueLabels, ensure
 import { PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapshot.mjs";
 import { launchGate } from "./board-snapshot-scope.mjs";
 import { REPO } from "../../../scripts/repo-identity.mjs";
-import { declaredRegionFiles, directoryReservations, extractLabeledSection, extractRegionSection, slashlessDirectoryEntries, unrecognisedRegionPaths } from "./region-paths.mjs";
+import { declaredRegionFiles, declaresNoCommit, directoryReservations, extractLabeledSection, slashlessDirectoryEntries, unrecognisedRegionPaths } from "./region-paths.mjs";
 import { loadLanes, inLane } from "./lane-ownership.mjs";
 // #2111: both labels from the leaf module that OWNS them (#804), never the strings retyped -- a promotion
 // must refuse a row that is already claimed, and it writes `ready` four times. `ready-label-audit.test.ts`
@@ -284,14 +284,13 @@ export function regionRefusalReason(body) {
   // change files -- this row's own body says it twice -- and a declaration that can be made accidentally
   // somewhere else is the easy path past the check this refusal exists to close.
   //
-  // THROUGH `extractRegionSection`, NOT A REGEX. My first version wrote its own, and worker-judge found
-  // it disagrees with the shared one BOTH WAYS: the inline form (`Region: ...`) was invisible to mine, so
-  // a row using it could not make the declaration at all; and a `###` sub-heading ENDS the section
+  // THROUGH THE SHARED `declaresNoCommit`, NOT A REGEX (#2177 moved the sentence to `region-paths.mjs`, so
+  // `row-reachability` reads the same one). My first version wrote its own, and worker-judge found it
+  // disagrees with the shared extractor BOTH WAYS: the inline form (`Region: ...`) was invisible to mine,
+  // so a row using it could not make the declaration at all; and a `###` sub-heading ENDS the section
   // everywhere else (#170's recorded shape) while mine ran past it, so a declaration under `### Why`
-  // would have been accepted here and ignored by B4. **The section half is where all of this row's logic
-  // lives, so "the same function B4 reads" has to be true of the section, not only of the paths.**
-  const section = extractRegionSection(body);
-  if (section !== null && NOT_A_COMMIT.test(section)) return null;
+  // would have been accepted here and ignored by B4.
+  if (declaresNoCommit(body)) return null;
   return "REFUSING to file -- the `## Region` section names no file, and nothing says that is deliberate. "
     + "A Region naming no path reserves nothing under B4, so a row that simply FORGOT its paths is "
     + "indistinguishable from one that has none, and nobody can route around it. Either name the files "
@@ -299,9 +298,6 @@ export function regionRefusalReason(body) {
     + "the sentence #989's in-build rule already uses for a settings change, a ruling, or a measurement "
     + "posted on the row.";
 }
-
-/** #989's own words, so the clock and the filer name one category rather than two spellings. */
-const NOT_A_COMMIT = /its deliverable is not a commit/i;
 
 /**
  * A sentence in an Open-check that ASSERTS what the command prints. `Prints \`0\` today`, `returns 3`,
