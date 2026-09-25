@@ -900,6 +900,9 @@ export const LEADS_DIR = `${process.env.HOME ?? ""}/leads`;
 /** `git config --global`'s file: where the credential helper and a person's `user.*` would be set. */
 export const GLOBAL_GITCONFIG = `${process.env.HOME ?? ""}/.gitconfig`;
 
+/** The file every interactive agent shell reads first, and so the one place its `NODE_COMPILE_CACHE` can come from (#2552). */
+export const GLOBAL_ZSHENV = `${process.env.HOME ?? ""}/.zshenv`;
+
 /**
  * What `~/workers/README.md` says. Generated here and not shipped as a file because the host is the only
  * place it is read, and the old text ("everything else uses the default (human) config") became the OPPOSITE
@@ -1035,6 +1038,57 @@ export function hostIdentityNotes({ gitConfigPath = GLOBAL_GITCONFIG, gitConfig 
     detail: `${set.join(", ")}. A commit in any repository WITHOUT its own \`user.*\` override is authored as `
       + "them. Not a failure, and `host:install` will not change it: set an identity in each repository, or "
       + "unset the global one." }];
+}
+
+/**
+ * The value of the LAST `export NODE_COMPILE_CACHE=` line in a `.zshenv` (the one zsh leaves in force), or
+ * `null` when there is none. Comments are skipped, and one surrounding pair of quotes is dropped.
+ * @param {string} text @returns {string | null}
+ */
+function zshenvCompileCache(text) {
+  const values = text.split("\n").flatMap((line) => {
+    const declared = /^\s*export\s+NODE_COMPILE_CACHE=(.*?)\s*$/.exec(line);
+    return declared ? [declared[1].replace(/^(["'])(.*)\1$/, "$2")] : [];
+  });
+  return values.at(-1) ?? null;
+}
+
+/**
+ * WHETHER `~/.zshenv` EXPORTS A COMPILE CACHE UNDER THE HOME'S `.cache`, reported and NEVER a failure (#2552).
+ * `compileCacheDrift` reads the shipped `.service` files; an interactive agent session reads no unit, only
+ * this file, so a fresh host or a re-created account regresses to the system temp directory (`/tmp`, a
+ * RAM-backed tmpfs: 895 files from one `npm run lint`) and nothing said so. Not a failure for
+ * `hostIdentityNotes`'s reason: the remedy is an edit to a person's dotfile that `host:install` must not make.
+ * A file that cannot be read is a finding here too, since its absence is exactly the regression.
+ * @param {{ zshenvPath?: string, home?: string, read?: typeof readFileSync }} [deps]
+ * @returns {Finding[]}
+ */
+export function compileCacheNotes({ zshenvPath = GLOBAL_ZSHENV, home = process.env.HOME ?? "",
+  read = readFileSync } = {}) {
+  let text;
+  try { text = String(read(zshenvPath, "utf8")); } catch (cause) {
+    return [zshenvNote(zshenvPath, `it could not be read (${cause instanceof Error ? cause.message : cause})`)];
+  }
+  const value = zshenvCompileCache(text);
+  const spellings = ["$HOME/.cache/", "${HOME}/.cache/", ...(home === "" ? [] : [`${home}/.cache/`])];
+  const underHomeCache = value !== null && spellings.some((prefix) => value.startsWith(prefix));
+  if (underHomeCache) return [];
+  return [zshenvNote(zshenvPath, value === null
+    ? "it has no `export NODE_COMPILE_CACHE=` line"
+    : `it exports \`NODE_COMPILE_CACHE=${value}\`, which is not under \`$HOME/.cache\``)];
+}
+
+/** @param {string} unit @param {string} why @returns {Finding} */
+function zshenvNote(unit, why) {
+  return { unit, problem: "INTERACTIVE SHELLS GET NO COMPILE CACHE UNDER THE HOME",
+    detail: `${why}, so \`tsc\`/\`eslint\`/\`rstest\` in an agent session write the compile cache under /tmp, one `
+      + "entry per file per checkout path. Not a failure, and `host:install` will not change it: add "
+      + "`export NODE_COMPILE_CACHE=\"$HOME/.cache/node-compile-cache\"` to it (#2458, docs/known-gaps.md §50)." };
+}
+
+/** Every note `host:check` reports beside its findings; none of them is a failure. @returns {Finding[]} */
+function hostNotes() {
+  return [...hostIdentityNotes(), ...compileCacheNotes()];
 }
 
 /**
@@ -1658,7 +1712,7 @@ function jsonReport() {
   // `notes` ARE NOT `findings`: the gate wakes a session on any finding, and a global `user.name` is not
   // something to wake anybody for (#2332).
   return `${JSON.stringify({ asked, findings: asked ? hostUnitDrift() : [],
-    notes: asked ? hostIdentityNotes() : [] })}\n`;
+    notes: asked ? hostNotes() : [] })}\n`;
 }
 
 function main() {
@@ -1671,11 +1725,11 @@ function main() {
   if (process.argv.slice(2).includes("--install")) {
     hostUnitsInstall();
     hostIdentityInstall();
-    process.stdout.write(driftReport(hostUnitDrift(), asked, asked ? hostIdentityNotes() : []));
+    process.stdout.write(driftReport(hostUnitDrift(), asked, asked ? hostNotes() : []));
     return;
   }
   const drift = hostUnitDrift();
-  process.stdout.write(driftReport(drift, asked, asked ? hostIdentityNotes() : []));
+  process.stdout.write(driftReport(drift, asked, asked ? hostNotes() : []));
   if (drift.length > 0) process.exitCode = 1;
 }
 
