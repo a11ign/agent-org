@@ -134,11 +134,12 @@ export function wakeText(issues) {
  * or `herdr` in the loop.
  *
  * @param {{ ghRun?: (args: string[]) => string, herdrRun?: (args: string[]) => string,
- *           now?: () => string }} [deps]
+ *           now?: () => string, sleep?: (ms: number) => void }} [deps]
+ *   `sleep` is the clear's settle ({@link clearThenPrompt}): real by default, injected by a test that is not about it (#2546)
  * @returns {FiringResult}
  */
 export function performFiring({ ghRun = defaultGhRun, herdrRun = defaultHerdrRun,
-  now = () => new Date().toISOString() } = {}) {
+  now = () => new Date().toISOString(), sleep } = {}) {
   /** @type {{ number: number, comments: unknown[] }[]} */
   let issues;
   try {
@@ -166,7 +167,7 @@ export function performFiring({ ghRun = defaultGhRun, herdrRun = defaultHerdrRun
     // into "the firing failed", because it did not.
     return { kind: "not-woken", comment, why };
   }
-  const wakeReport = clearThenPrompt(herdrRun, SESSION, wakeText(issues));
+  const wakeReport = clearThenPrompt(herdrRun, SESSION, wakeText(issues), { sleep });
   // A FAILED PROMPT IS NOT A LANDED WAKE. `clearThenPrompt` returns `PROMPT_REFUSED_PREFIX`-prefixed text
   // when the order itself never reached the session (as opposed to a refused clear, where the text still
   // went) -- reported as `woke` before this, a `journalctl` read could show `WOKE orchestrator` for a
