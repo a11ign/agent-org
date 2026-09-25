@@ -2418,6 +2418,8 @@ function cannotReadRequiredChecks(diagnosis) {
 
 /** Where `main` is now, and the one field of it the prompt needs. */
 const BASE_TIP_ENDPOINT = "repos/{owner}/{repo}/commits/main";
+/** A commit id, abbreviated or whole. An empty or non-hex `sha` would render as a blank tip in the prompt. */
+const HEX_SHA = /^[0-9a-f]{7,40}$/i;
 const BASE_TIP_JQ = "{sha: .sha, date: .commit.committer.date}";
 
 /**
@@ -2446,7 +2448,7 @@ export function readBaseTip(run = defaultRun, log = (line) => process.stderr.wri
     return null;
   }
   const tip = parsedOrNull(answer);
-  return typeof tip?.sha === "string" && Number.isFinite(Date.parse(tip?.date)) ? tip : null;
+  return HEX_SHA.test(String(tip?.sha)) && Number.isFinite(Date.parse(tip?.date)) ? tip : null;
 }
 
 /**

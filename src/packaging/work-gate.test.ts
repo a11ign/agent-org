@@ -1235,6 +1235,10 @@ test("readBaseTip reads `commits/main`, and fails OPEN and LOUDLY on every unusa
   assert.equal(readBaseTip(() => JSON.stringify({ sha: "abc", date: "yesterday" }), log), null,
     "an unparseable date must not be compared -- NaN > NaN is false, which would read as `not moved`");
   assert.equal(readBaseTip(() => JSON.stringify({ date: TIP_AFTER.date }), log), null);
+  for (const sha of ["", "not-a-sha", "abc", 12345]) {
+    assert.equal(readBaseTip(() => JSON.stringify({ sha, date: TIP_AFTER.date }), log), null,
+      `a tip whose sha is ${JSON.stringify(sha)} is unusable, so the prompt says UNKNOWN rather than quoting a blank`);
+  }
 });
 
 test("the tip is read ONLY on a red tick, and declared in GH_READS beside requiredCheckNames", () => {
