@@ -38,7 +38,7 @@ import { MAX_ROW_ORDERS_PER_TICK, readCommitChain, withCommitChains, decide, che
   deadMansSwitch, hostDriftOrders, JUDGMENT_CAUSES,
   shouldBeMerging as shouldBeMergingPrs, conflictedPrs, conflictStateOf, mergeConflictOrders,
   unfiledEpics, epicOrders, finishedEpics, finishedEpicOrders, fleetBatchRows, fleetBatchOrders,
-  partitionFleetBatch, blockerClearedOrders, unclaimedBlockerClearedOrders,
+  partitionFleetBatch, blockersFromRows, blockerClearedOrders, unclaimedBlockerClearedOrders,
   promotionAskWindow, readRecentlyClosed, PROMOTION_ASK_OFFSETS_MS,
   PROMOTION_ASK_PERIOD_MS, PROMOTION_ASK_WINDOW_MS,
   claimedRowAmendedOrders, constraintsAfterClaim, amendmentsOn, readClaimedRowComments,
@@ -682,7 +682,7 @@ test("a TRUNCATED pull-request file list is dropped from the comparison, never r
 test("comparablePrFiles reads gh's own shape: a file list is objects carrying a path", () => {
   assert.deepEqual(comparablePrFiles([{ number: 9, changedFiles: 2,
     files: [{ path: "a.ts" }, { path: "b.ts" }] }]),
-  [{ number: 9, changedFiles: 2, files: ["a.ts", "b.ts"], closes: [] }]);
+  [{ number: 9, changedFiles: 2, files: ["a.ts", "b.ts"], closes: [], held: false }]);
 });
 
 // --- #2101: THE GATE SHELVED A ROW BEHIND THE PULL REQUEST THAT WAS THAT ROW'S OWN WORK ---
@@ -742,6 +742,83 @@ test("#2101 `body` rides on readPrs's existing field list -- another field, neve
   readPrs((args: string[]) => { calls.push(args); return "[]"; });
   assert.equal(calls.length, 1);
   assert.match(calls[0].join(" "), /changedFiles,body/);
+});
+
+// --- #2493: A HELD PR WAITING ON THE ASKING ROW IS NOT A REASON TO SHELVE IT ------------------------
+//
+// #2399 was shelved behind #2376, which carried `hold:` on purpose and was WAITING on #2399 -- the wait was a
+// comment. `ceo` (#2400 section 2): exclude only when the PR is held AND every row it closes is `blockedBy` the
+// asking row. The gate must give the verdicts `fileOverlapReason` gives at claim time, or it shelves what the
+// claim would grant. Each "offered" assertion has a "shelved" twin, as in #2101 above.
+
+const HELD_REGION = ".claude/rules/agent-practices.md";
+const edgeRow = (n: number, ...blockers: number[]) =>
+  ({ number: n, labels: [{ name: "in-progress" }], blockedBy: { nodes: blockers.map((number) => ({ number, state: "OPEN" })) } });
+/** #2376's shape: a HELD pull request on the region, closing `closes`. */
+const heldPrClosing = (closes: number[], held = true) => ({ ...prClosingRow(2376, closes, HELD_REGION), held });
+const shelved = (row: unknown, prFiles: { number: number; files: string[]; changedFiles: number }[], openRows: unknown[]) =>
+  partitionUnclaimed([row], prFiles, { openRows }).blocked.map((b: { number: number }) => b.number);
+
+test("#2493 THE POSITIVE: a held PR whose every closed row is blockedBy the asking row does not shelve it", () => {
+  const row = regionRow(2399, HELD_REGION);
+  const openRows = [edgeRow(2359, 2399)];
+  assert.deepEqual(shelved(row, [heldPrClosing([2359])], openRows), []);
+  const orders = decide({ prs: [], readyRows: [row], prFiles: [heldPrClosing([2359])], openRows });
+  assert.deepEqual(orders.filter((o: { cause: string }) => o.cause === "ready-row-unclaimed")
+    .map((o: { subject: string }) => o.subject), ["row-2399"], "offered, as `row-claim` would grant it");
+});
+
+test("#2493 NEGATIVES, through the gate: no edge, an edge to another row, no hold, and an unread row all SHELVE", () => {
+  const row = regionRow(2399, HELD_REGION);
+  assert.deepEqual(shelved(row, [heldPrClosing([2359])], [edgeRow(2359)]), [2399], "held, no edge");
+  assert.deepEqual(shelved(row, [heldPrClosing([2359])], [edgeRow(2359, 2084)]), [2399], "an edge to ANOTHER row");
+  assert.deepEqual(shelved(row, [heldPrClosing([2359], false)], [edgeRow(2359, 2399)]), [2399], "an edge but no `hold:`");
+  assert.deepEqual(shelved(row, [heldPrClosing([2359])], []), [2399], "the closed row is not among those read: not excluded");
+  assert.deepEqual(partitionUnclaimed([row], [heldPrClosing([2359])]).blocked.map((b: { number: number }) => b.number),
+    [2399], "`openRows` absent excludes nothing, so every caller that does not pass it is unchanged");
+  assert.match(partitionUnclaimed([row], [heldPrClosing([2359], false)], { openRows: [edgeRow(2359, 2399)] }).blocked[0].reason,
+    /overlaps #2376/);
+});
+
+test("#2493 a held PR closing NOTHING, or closing TWO rows with one edge missing, still shelves", () => {
+  const row = regionRow(2399, HELD_REGION);
+  assert.deepEqual(shelved(row, [heldPrClosing([])], [edgeRow(2359, 2399)]), [2399], "`Closes: none` waits on nothing");
+  assert.deepEqual(shelved(row, [heldPrClosing([2359, 2360])], [edgeRow(2359, 2399), edgeRow(2360, 2084)]), [2399]);
+  assert.deepEqual(shelved(row, [heldPrClosing([2359, 2360])], [edgeRow(2359, 2399), edgeRow(2360, 2399)]), [],
+    "the control: with both edges present the same PR is excluded");
+});
+
+test("#2493 `held` comes off the `labels` readPrs already returns, and only a `hold:` label is a hold", () => {
+  const raw = (labels: string[]) => [{ number: 2376, changedFiles: 1, files: [{ path: "a.ts" }],
+    body: "Closes #2359", labels: labels.map((name) => ({ name })) }];
+  assert.equal(comparablePrFiles(raw(["hold:product-manager", "session:worker-1"]))[0].held, true);
+  assert.equal(comparablePrFiles(raw(["session:worker-1", "ready"]))[0].held, false);
+  assert.equal(comparablePrFiles(raw([]))[0].held, false);
+  const calls: string[][] = [];
+  readPrs((args: string[]) => { calls.push(args); return "[]"; });
+  assert.match(calls[0].join(" "), /,labels,/, "the field is already on the call");
+});
+
+/** #2493: the two readers agree on the same fixtures -- the gate's `blockersFromRows` and the claim's lookup. */
+test("#2493 blockersFromRows answers from the open rows already read, and `null` for a row it never read", () => {
+  const blockersOf = blockersFromRows([edgeRow(2359, 2399, 7), edgeRow(2360)]);
+  assert.deepEqual(blockersOf(2359), [2399, 7]);
+  assert.deepEqual(blockersOf(2360), [], "read, and nothing blocks it");
+  assert.equal(blockersOf(9999), null, "not read: unknown, which the rule reads as not excluded");
+  assert.equal(blockersFromRows(null)(2359), null);
+});
+
+/** #2493 done-when 5: the ready audit's line lives in the role brief, pinned so deleting it is red. */
+test("#2493: product-manager's brief says `SOLE HOLDER IS A HELD PR`, and what to read next, in ONE bullet", () => {
+  const brief = readFileSync(new URL("../../../agent-org/docs/roles/product-manager.md", import.meta.url), "utf8");
+  // THE BULLET, SLICED: a whole-file `includes` is satisfied by any second copy of the phrase elsewhere.
+  const start = brief.indexOf("- **A ready audit that names a B4 holder");
+  assert.ok(start >= 0, "the bullet is gone");
+  const bullet = brief.slice(start, brief.indexOf("\n- **", start + 1));
+  assert.match(bullet, /`SOLE HOLDER IS A HELD PR`/);
+  assert.match(bullet, /only holder carries `hold:`/, "the condition that makes the line true");
+  assert.match(bullet, /FIRST audit/, "the point of the row: the cycle is named at the first reading, not the fifth");
+  assert.match(bullet, /--add-blocked-by/, "and the remedy is the edge, which is data, not a comment");
 });
 
 /**
@@ -2710,6 +2787,29 @@ test("#2161: the SAME row is announced with no pull request and screened once on
   assert.deepEqual(blockerClearedOrders([row], TODAY, NOW, [openPr(2156, "Closes #2031")]), [],
     "an open PR whose `Closes:` names the row proves the clearing was acted on -- and this is the SAME "
     + "row, session and blocker as the two assertions above");
+});
+
+// --- #2493: FILING THE EDGE MUST BE ENOUGH TO WAKE THE OWNER OF A HELD PR ---------------------------------
+//
+// `ceo`'s ruling (#2400 section 2) rests on `blocker-cleared` addressing the holder of a row whose LAST blocker
+// closes. That is pinned above for a holder with no pull request, and the #2161 screen is what stood between it
+// and the case that matters here: #2376's owner HAS an open PR (`Closes #2359`), so the screen read them as
+// "already resumed" and the wake never came. A HELD pull request is the holder's declaration that they are
+// WAITING, so it is not evidence they acted on this clearing.
+
+const heldPrOf = (number: number, body: string, labels: string[]) =>
+  ({ ...openPr(number, body), labels: labels.map((name) => ({ name })) });
+
+test("#2493: the holder of a row whose LAST blocker closed is woken although a HELD pull request names the row", () => {
+  const waiting = heldRow(2359, "worker-9", { blockedBy: { nodes: [{ number: 2399, state: "OPEN" }] } });
+  assert.deepEqual(blockerClearedOrders([waiting], TODAY, NOW, [heldPrOf(2376, "Closes #2359", ["hold:worker-9"])]), [],
+    "while the edge is OPEN nobody is woken -- the positive control's other side");
+  const cleared = heldRow(2359, "worker-9", { blockedBy: { nodes: [{ number: 2399, state: "CLOSED" }] } });
+  const [order] = blockerClearedOrders([cleared], TODAY, NOW, [heldPrOf(2376, "Closes #2359", ["hold:worker-9"])]);
+  assert.equal(order?.session, "worker-9", "the edge is what wakes the owner: no other message is needed");
+  assert.equal(order?.causeKey, "worker-9/blocker-cleared/row-2359/2399");
+  assert.deepEqual(blockerClearedOrders([cleared], TODAY, NOW, [heldPrOf(2376, "Closes #2359", ["session:worker-9"])]), [],
+    "and an UNHELD open PR still screens, exactly as #2161 says: only the hold changes the reading");
 });
 
 test("#2161: it is the DECLARATION that screens, in every spelling the merge gate reads", () => {
