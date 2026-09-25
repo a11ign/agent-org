@@ -731,35 +731,86 @@ export function failureReport(error) {
 }
 
 /**
- * #749: writes the claim's labels, split from `writeRowLabels` for the same reason
+ * #2151: THE WHOLE LABEL LIST a claim leaves the row carrying, computed from `labels` as read immediately
+ * before the write: everything it already holds stays, `ready` goes, and each of `add` joins unless the
+ * row has it. Pure.
+ *
+ * KEEPING what is there is what makes the `dispatched -> started` resume safe as a SET: the row already
+ * holds `in-progress`, `session:<me>` and `was-ready` (its `ready` went at the dispatch), so they are
+ * passed through rather than re-added, and a `was-ready` marker the resume would not recompute survives.
+ * @param {readonly string[]} labels
+ * @param {readonly string[]} add
+ * @returns {string[]}
+ */
+export function labelSetForClaim(labels, add) {
+  const kept = labels.filter((l) => l !== READY_LABEL);
+  return [...kept, ...add.filter((l) => !kept.includes(l))];
+}
+
+/**
+ * #2151: `PUT /repos/<repo>/issues/<n>/labels` -- GitHub's "Set labels for an issue" -- as `gh api`
+ * arguments: the whole list in ONE request, so there is no add half and no remove half to come apart.
+ * `row-file.mjs`'s `labelSetArgs` builds the identical request for the promote act (#2111) and cannot be
+ * imported from here (it imports this module and runs an act on load); it is outside this row's Region, so
+ * folding the two into one function is left to whoever next touches that file.
+ * @param {number} issueNumber
+ * @param {readonly string[]} labels
+ * @returns {string[]}
+ */
+export function claimLabelSetArgs(issueNumber, labels) {
+  return ["api", "--method", "PUT", `repos/${REPO}/issues/${issueNumber}/labels`,
+    ...labels.flatMap((label) => ["-f", `labels[]=${label}`])];
+}
+
+/**
+ * #749, then #2151: writes the claim's labels, split from `writeRowLabels` for the same reason
  * `postBlockedByNoteIfAny` above is (a called function's own lines are not the caller's).
  *
- * The label must EXIST before `gh` can add it (see `ensureLabelsExist`'s own header), and the ADD and the
- * REMOVE are now two SEPARATE calls, in that order, rather than one combined edit -- #677's own
- * reproduction proved a combined call is not atomic (its `--remove-label ready` applied while every
- * `--add-label` did not), so "leaves the row's labels exactly as it found them on ANY failure" can only be
- * honoured by making the removal wait until the additions are KNOWN to have succeeded: `run` throws on a
- * non-zero exit (`defaultRun`'s own `execFileSync`), so a failed ADD call never reaches the REMOVE below --
- * the row keeps `ready` (worse than a clean claim, but recoverable and visible) rather than losing it while
- * gaining nothing.
+ * THE WRITE IS ONE `PUT`, NOT AN ADD FOLLOWED BY A REMOVAL. #749 split the two because #677 measured one
+ * `gh issue edit` half-applying (its `--remove-label ready` landed while every `--add-label` did not), and
+ * ordering the removal last kept a failure recoverable -- but it left a window in which the row carried
+ * `ready` beside `in-progress`, PERMANENTLY if the second call never ran, which `ready-label-audit`'s
+ * `handClaims` reads as a claim made outside this mechanism. A set replacement has no window: the row's
+ * labels are exactly the list below or, if the request failed, untouched.
+ *
+ * WHAT A SET COSTS THAT A DELTA DID NOT, and the answer: it carries every OTHER label the row holds, so a
+ * label added by somebody else between the read it was computed from and the write is ERASED, not merely
+ * outraced -- and when that label is ANOTHER SESSION'S CLAIM it would erase the very record the after-the-fact
+ * race check below needs to find. So the list is computed from a read taken HERE, one request before the
+ * write and not the several lookups earlier that `writeRowLabels` read `before` at, and a claim by anyone
+ * else in that fresh read is REFUSED rather than written over. GitHub offers no compare-and-set on labels,
+ * so the window narrows and never closes; what remains is the `completeClaim` re-read, unchanged, which
+ * still backs off a claim that lost a race in it. A resume is answered by `decideClaim`, which proceeds on
+ * this session's own claim, and by {@link labelSetForClaim}, which keeps what it holds.
+ *
+ * The label must EXIST before it is named (see `ensureLabelsExist`'s own header), and that too happens
+ * before the read, so the read stays as close to the write as it can.
  *
  * #987: NO `branch:`/`worktree:` LABEL IS BUILT HERE ANY MORE -- see `CLAIM_RECORD_MARKER`'s own header
  * for why (GitHub's 50-character label-name cap made the documented `--worktree=<path>` usage impossible
  * for any path outside `/private/tmp`). The two facts are written as a claim COMMENT instead, by
  * `writeRowLabels` after it knows it won the race.
  * @param {number} issueNumber
- * @param {{ run: typeof defaultRun, sessionLabel: string, extraLabels: string[], wasReady: boolean,
- *   landed: string[] }} args `landed` gains each write once it has succeeded (#1399)
+ * @param {{ run: typeof defaultRun, mySession: string, extraLabels: string[], landed: string[] }} args
+ *   `landed` gains the write once it has succeeded (#1399)
+ * @returns {{ refusal: string | null }} a refusal means NOTHING was written
  */
-function applyClaimLabels(issueNumber, { run, sessionLabel, extraLabels, wasReady, landed }) {
-  const labelsToAdd = [CLAIM_LABEL, sessionLabel, ...extraLabels,
-    ...(wasReady ? [WAS_READY_LABEL] : [])];
-  ensureLabelsExist(labelsToAdd, { run });
-  run("gh", ["issue", "edit", String(issueNumber), "--repo", REPO,
-    ...labelsToAdd.flatMap((l) => ["--add-label", l])]);
-  landed.push(`added labels ${labelsToAdd.join(", ")}`);
-  run("gh", ["issue", "edit", String(issueNumber), "--repo", REPO, "--remove-label", READY_LABEL]);
-  landed.push(`removed label ${READY_LABEL}`);
+function applyClaimLabels(issueNumber, { run, mySession, extraLabels, landed }) {
+  const claimLabels = [CLAIM_LABEL, `session:${mySession}`, ...extraLabels];
+  ensureLabelsExist([...claimLabels, WAS_READY_LABEL], { run });
+  const fresh = fetchLabels(issueNumber, { run });
+  const decision = decideClaim(fresh.labels, mySession);
+  if (!decision.proceed) {
+    return { refusal: `${decision.reason} -- as read immediately before the label write, which a claim that `
+      + "landed since the first read would otherwise have been erased by. Nothing was written." };
+  }
+  // #449: `ready` is seen ONLY here, so the marker `declineRow` restores it from is decided here, on the
+  // read the write is computed from. A resume finds `ready` already gone and adds nothing.
+  const wasReady = fresh.labels.includes(READY_LABEL);
+  const labels = labelSetForClaim(fresh.labels, wasReady ? [...claimLabels, WAS_READY_LABEL] : claimLabels);
+  run("gh", claimLabelSetArgs(issueNumber, labels));
+  landed.push(`set the row's labels to ${labels.join(", ")} (\`${READY_LABEL}\` removed in the same write)`);
+  return { refusal: null };
 }
 
 /**
@@ -835,18 +886,13 @@ function writeRowLabels(issueNumber, mySession, extraLabels,
   }
 
   const sessionLabel = `session:${mySession}`;
-  // #449: RECORD, IN THE SAME EDIT, THAT THIS ROW WAS `ready` BEFORE THE CLAIM -- `declineRow`'s only way
-  // to know whether releasing this row should restore `ready`, since removing it below is the one place
-  // that fact is ever seen. A resumed claim (dispatched -> started, `ready` already gone) computes false
-  // here and adds nothing, harmlessly -- the marker this row's own earlier dispatch already wrote stays
-  // exactly where it is.
-  const wasReady = before.labels.includes(READY_LABEL);
   /** @type {string[]} */
   const landed = [];
   // #1399: FROM THE FIRST WRITE ON, A FAILURE IS A PARTIAL WRITE, never `COULD NOT DETERMINE` -- see
   // `LANDED_WRITE_EXIT`. The checks above wrote nothing, so a throw from them still propagates as it did.
   return withLandedWrites(issueNumber, landed, () => {
-    applyClaimLabels(issueNumber, { run, sessionLabel, extraLabels, wasReady, landed });
+    const { refusal } = applyClaimLabels(issueNumber, { run, mySession, extraLabels, landed });
+    if (refusal) return { claimed: false, reason: refusal };
     return completeClaim(issueNumber,
       { run, moveStatus, mySession, sessionLabel, extraLabels, blockedByNote, branch, worktree, landed });
   });
