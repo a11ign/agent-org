@@ -70,9 +70,9 @@ import { REPO } from "../../../scripts/repo-identity.mjs";
 import { READY_LABEL, WAS_READY_LABEL } from "./ready-label-audit.mjs";
 import { gitCommonDir, appendJsonl } from "./merge-guard.mjs";
 import { withBoardSnapshot, PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapshot.mjs";
-import { runnerReason, laneReason, drainReason } from "./row-claim/runner-rule.mjs";
-import { activeDrain, sparePathsFrom, ledgerPathFrom } from "./wake.mjs";
-import { inBuildReason, lookupHeldRows } from "./row-claim/own-pr-health-rule.mjs";
+import { runnerReason, laneReason, drainReason, oneRowReason } from "./row-claim/runner-rule.mjs";
+import { activeDrain, sparePathsFrom, ledgerPathFrom, isSpareRole, readSpareRegistry } from "./wake.mjs";
+import { inBuildReason, lookupHeldRows, lookupOtherHeldIssues } from "./row-claim/own-pr-health-rule.mjs";
 import { resolveBlockedByOverride, blockedByExceptionNote } from "./row-claim/blocked-by-rule.mjs";
 import { blockedByEdgeReason, lookupBlockedByEdge } from "./row-claim/blocked-by-edge-rule.mjs";
 import { fileOverlapReason, lookupMyRegionFiles, lookupOpenPrFiles } from "./row-claim/file-overlap-rule.mjs";
@@ -768,13 +768,17 @@ function applyClaimLabels(issueNumber, { run, sessionLabel, extraLabels, wasRead
  * @param {string[]} extraLabels labels written alongside `in-progress` + `session:<name>` -- `[]` for a
  *   dispatch, `[STARTED_LABEL]` for a claim/start
  * @param {{ run?: typeof defaultRun, moveStatus?: typeof moveProjectStatus, branch?: string,
- *           worktree?: string, blockedBy?: string, drained?: readonly string[] }} deps
+ *           worktree?: string, blockedBy?: string, drained?: readonly string[],
+ *           instance?: { spare: boolean, rows: readonly number[] } }} deps
  *   `drained` (#2324) is the roles the drain holds back now -- see {@link drainedNow}. ABSENT MEANS NONE, so a
- *   caller that does not say is not refused for a fact it never asked about; the CLI is what asks.
+ *   caller that does not say is not refused for a fact it never asked about; the CLI is what asks. `instance`
+ *   (#2407) is what the asking session's instance holds or has held -- see {@link instanceNow}, and the same
+ *   convention: absent is a standing engineer with no rows.
  * @returns {{ claimed: true, statusMoved: true } | { claimed: true, statusMoved: false, notOnBoard: boolean, statusReason: string } | { claimed: false, reason: string }}
  */
 function writeRowLabels(issueNumber, mySession, extraLabels,
-  { run = defaultRun, moveStatus = moveProjectStatus, branch, worktree, blockedBy, drained = [] } = {}) {
+  { run = defaultRun, moveStatus = moveProjectStatus, branch, worktree, blockedBy, drained = [],
+    instance = { spare: false, rows: [] } } = {}) {
   const before = fetchLabels(issueNumber, { run });
   const decision = decideClaim(before.labels, mySession);
   if (!decision.proceed) return { claimed: false, reason: decision.reason };
@@ -818,6 +822,9 @@ function writeRowLabels(issueNumber, mySession, extraLabels,
     // #2324: A NEW ROW, which is the only kind a drained role is refused -- resuming its own is not one.
     const drain = drainReason(mySession, drained);
     if (drain) return { claimed: false, reason: drain };
+    // #2407: ONE INSTANCE, ONE ROW -- the same "new row only" placement, for a spare that holds or has held another.
+    const oneRow = oneRowReason(mySession, issueNumber, instance);
+    if (oneRow) return { claimed: false, reason: oneRow };
     const ineligible = sessionEligibilityReason(issueNumber, mySession, { run });
     if (ineligible) {
       const eligibility = eligibilityWithBlockedBy({ issueNumber, mySession, ineligible, blockedBy },
@@ -969,7 +976,8 @@ export function dispatchRow(issueNumber, mySession, deps = {}) {
  * @param {number} issueNumber
  * @param {string} mySession
  * @param {{ run?: typeof defaultRun, moveStatus?: typeof moveProjectStatus, branch?: string,
- *           worktree?: string, blockedBy?: string, drained?: readonly string[] }} [deps]
+ *           worktree?: string, blockedBy?: string, drained?: readonly string[],
+ *           instance?: { spare: boolean, rows: readonly number[] } }} [deps]
  * @returns {{ claimed: true, statusMoved: true } | { claimed: true, statusMoved: false, notOnBoard: boolean, statusReason: string } | { claimed: false, reason: string }}
  */
 export function claimRow(issueNumber, mySession, deps = {}) {
@@ -1683,7 +1691,7 @@ function claimLineFor(mode, issueNumber, mySession, { branch, worktree }) {
  */
 function claimOrDispatch(mode, issueNumber, mySession, { branch, worktree, blockedBy }) {
   if (mode === "dispatch") return dispatchRow(issueNumber, mySession);
-  const claimDeps = { blockedBy, drained: drainedNow() };
+  const claimDeps = { blockedBy, drained: drainedNow(), instance: instanceNow(mySession, issueNumber) };
   if (branch && worktree) return claimWithWorktree(issueNumber, mySession, { branch, worktree, claimDeps });
   return claimRow(issueNumber, mySession, claimDeps);
 }
@@ -1706,6 +1714,35 @@ function drainedNow() {
     process.stderr.write(`row-claim: could not read the drain (${String(/** @type {any} */ (error)?.message ?? error)
       .split("\n")[0]}) -- claiming as though it were lifted (#2324).\n`);
     return [];
+  }
+}
+
+/**
+ * #2407: what the asking session's INSTANCE holds or has held, for {@link oneRowReason} -- read here, at the CLI, as
+ * {@link drainedNow} is, so the rule takes a fact and not a host's files.
+ *
+ * ONLY A SPARE IS ASKED ABOUT: the mark is the roster's (`isSpareRole`), so a standing engineer costs no lookup and is
+ * never refused. The rows are the registry beside the wake ledger (every row a tick has seen this instance hold, which
+ * outlives the row's `session:` label) plus the open rows labelled with the session right now (which a tick may not
+ * have observed yet). FAILS OPEN AND SAYS SO, like the drain: a claim guard that stops every claim when a file or the
+ * API is unreadable gets bypassed and then never consulted, and a leak this misses is exactly what the ledger's
+ * failed-cycle line records.
+ * @param {string} mySession @param {number} issueNumber
+ * @returns {{ spare: boolean, rows: number[] }}
+ */
+function instanceNow(mySession, issueNumber) {
+  try {
+    if (!isSpareRole(mySession)) return { spare: false, rows: [] };
+    const registry = readSpareRegistry(sparePathsFrom(ledgerPathFrom([])).registry);
+    const labelled = lookupOtherHeldIssues(mySession, issueNumber);
+    if (labelled === null) {
+      process.stderr.write(`row-claim: could not read the rows ${mySession} holds -- using only the registry (#2407).\n`);
+    }
+    return { spare: true, rows: [...(registry[mySession]?.rows ?? []), ...(labelled ?? [])] };
+  } catch (error) {
+    process.stderr.write(`row-claim: could not read the instance's rows (${String(/** @type {any} */ (error)?.message ?? error)
+      .split("\n")[0]}) -- claiming as though it held none (#2407).\n`);
+    return { spare: false, rows: [] };
   }
 }
 
