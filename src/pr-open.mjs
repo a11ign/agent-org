@@ -40,17 +40,13 @@
 //      the step the error line names. Before #1479 that throw escaped `main` and Node exited 1 for a PR
 //      that existed.
 import { execFileSync, execSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import {
-  acceptanceReport, closesDeclarationReport, extractAcceptanceSection, extractClosesDeclaration, extractMutationSection,
-} from "./acceptance-commands.mjs";
+import { acceptanceReport, closesDeclarationReport, extractClosesDeclaration, extractMutationSection }
+  from "./acceptance-commands.mjs";
 import { declaredRegionFiles, regionCovers } from "./region-paths.mjs";
 import { leakRefusalReason } from "../../lab/src/packaging/leak-patterns.mjs";
 import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
-import { DEFAULT_BUDGET_SECONDS, mutateRunner, survivorsFor } from "../../guards/src/mutant-survivors.mjs";
 import { REPO } from "../../../scripts/repo-identity.mjs";
 import { launchGate } from "./board-snapshot-scope.mjs";
 import { worktreeOwner } from "./worktree-owner.mjs";
@@ -334,108 +330,6 @@ export function mutationReport(body, run) {
 const MUTATE_COMMAND = /^npm run mutate(?:\s|$)/;
 
 /**
- * #2415: THE MUTANTS A MACHINE CHOSE, AS A `Survivors:` SECTION APPENDED TO THE BODY THAT IS SENT. Advisory and
- * bounded, on `ceo`'s ruling 1 on #928, and SHIPPED ONLY BECAUSE `docs/mutant-replay.md` READS `SHIP` (a test
- * holds the wiring and the verdict to each other).
- *
- * WHAT IT RUNS: the mutants of the lines this branch added since `origin/main` (`mutant-survivors.mjs`), against
- * the tests THE ACCEPTANCE SECTION NAMES and nothing else, for `A11Y_SURVIVORS_BUDGET` seconds (default
- * `DEFAULT_BUDGET_SECONDS`; `0` skips it). It never refuses: a survivor, a crash or a diff too large to read is a
- * line in the output and the body still goes. `create` only -- an `edit` re-sends a body the author already holds,
- * and a several-minute run on every body edit would cost more than a stale list.
- *
- * `skipped` says WHY every time, because a silent skip reads as "no survivors".
- * @param {string} body
- * @param {{ git?: (args: string[]) => string, diff?: (base: string) => string, env?: Record<string, string | undefined>,
- *   runMutant?: (mutant: import("../../guards/src/mutant-survivors.mjs").Mutant) => number }} [deps]
- * @returns {{ lines: string[], section: boolean }} what to print, and whether it is the section to append
- */
-export function survivorsOfThisTree(body, { git = defaultGit, diff = defaultDiff, env = process.env, runMutant } = {}) {
-  const skipped = (/** @type {string} */ why) => ({ lines: [`Survivors: SKIPPED -- ${why}.`], section: false });
-  const budgetSeconds = Number(env.A11Y_SURVIVORS_BUDGET ?? DEFAULT_BUDGET_SECONDS);
-  if (!(budgetSeconds > 0)) return skipped("A11Y_SURVIVORS_BUDGET is 0");
-  const acceptance = extractAcceptanceSection(body);
-  if (acceptance.kind !== "commands") return skipped("the body names no Acceptance command, so no test to run mutants against");
-  try {
-    const root = git(["rev-parse", "--show-toplevel"]);
-    const test = acceptance.commands.join(" && ");
-    const found = survivorsFor({ diff: diff(git(["merge-base", "HEAD", "origin/main"])), budgetSeconds,
-      read: (file) => (existsSync(path.join(root, file)) ? readFileSync(path.join(root, file), "utf8") : null),
-      runMutant: runMutant ?? mutateRunner({ cwd: root, test }) });
-    return { lines: found.lines, section: true };
-  } catch (error) {
-    return skipped(`it could not run (${messageOf(error).split("\n")[0]})`);
-  }
-}
-
-/** `git diff -U0` against the merge base, with a buffer that a real branch's diff fits in (`defaultGit`'s does not).
- * @param {string} base */
-const defaultDiff = (base) => execFileSync("git", ["diff", "-U0", base, "--"],
-  { encoding: "utf8", env: sandboxGitEnv(), maxBuffer: 256 * 1024 * 1024 });
-
-/**
- * The body with a `## Survivors` section at its end -- a blank line and a heading, so the section reader that ends
- * a section at a heading never reads it as part of `Acceptance:` -- replacing one that was already there.
- * @param {string} body
- * @param {string[]} lines
- * @returns {string}
- */
-export function withSurvivorsSection(body, lines) {
-  const earlier = body.split("\n");
-  const from = earlier.findIndex((line) => /^##\s+Survivors\b/.test(line));
-  const kept = from === -1 ? earlier : earlier.slice(0, from);
-  return `${kept.join("\n").trimEnd()}\n\n## Survivors\n\n${lines.join("\n")}\n`;
-}
-
-/**
- * The args to send: the author's own, or with the `Survivors:` section on a `create` whose caller supplied `survivors`.
- * @param {{ mode: string, body: string, rest: string[], out: (line: string) => void,
- *   survivors?: (body: string) => { lines: string[], section: boolean } }} at
- * @returns {string[]}
- */
-function argsAfterSurvivors({ mode, body, rest, survivors, out }) {
-  if (mode !== "create" || !survivors) return rest;
-  const found = survivors(body);
-  for (const line of found.lines) out(`${line}\n`);
-  return found.section ? argsWithSurvivors(rest, body, found.lines, out) : rest;
-}
-
-/**
- * The args that carry the `Survivors:` section, or the author's own when the extended body would trip the leak scan
- * -- the source lines a survivor quotes are the author's, and CI's scan reads the whole body.
- * @param {string[]} rest
- * @param {string} body
- * @param {string[]} lines
- * @param {(line: string) => void} out
- * @returns {string[]}
- */
-function argsWithSurvivors(rest, body, lines, out) {
-  const extended = withSurvivorsSection(body, lines);
-  const leak = leakRefusalReason(extended);
-  if (!leak) return withBody(rest, extended);
-  out(`Survivors: NOT APPENDED -- a line it quotes would fail the leak scan CI runs on the body (${leak.split("\n")[0]}).\n`);
-  return rest;
-}
-
-/**
- * The `gh` args with the body swapped for `body`: `--body <text>` in place, or `--body-file <path>` pointing at a
- * new file, since the author's own file is theirs and is left as it was. Same precedence as `bodyFromArgs`.
- * @param {readonly string[]} args
- * @param {string} body
- * @returns {string[]}
- */
-export function withBody(args, body) {
-  const out = [...args];
-  const bodyIndex = out.indexOf("--body");
-  if (bodyIndex !== -1 && out[bodyIndex + 1] !== undefined) { out[bodyIndex + 1] = body; return out; }
-  const fileIndex = out.indexOf("--body-file");
-  const file = path.join(mkdtempSync(path.join(tmpdir(), "pr-body-")), "body.md");
-  writeFileSync(file, body);
-  out[fileIndex + 1] = file;
-  return out;
-}
-
-/**
  * The body to check, read from the SAME flags `gh pr create`/`gh pr edit` themselves read -- never a
  * shape this wrapper invents. `null` when neither is given, which `main` treats as a hard refusal: a body
  * typed into `gh`'s own interactive editor cannot be checked synchronously before it is sent.
@@ -646,13 +540,12 @@ function regionStep(body, rest, { git, rowBody, rootFiles, out, err }) {
  * @param {{ run?: (args: string[]) => void, git?: (args: string[]) => string,
  *           prHead?: (repo: string, number: string) => { ref: string, oid: string } | null,
  *           runAcceptance?: (command: string) => number, runMutation?: (command: string) => number,
- *           survivors?: (body: string) => { lines: string[], section: boolean },
  *           owner?: () => string | null, rowBody?: (number: number) => string, rootFiles?: Set<string>,
  *           out?: (line: string) => void, err?: (line: string) => void }} [deps]
  * @returns {number}
  */
 export function main(argv = process.argv.slice(2),
-  { run, git, prHead, runAcceptance, runMutation = runForReal, survivors, owner, rowBody, rootFiles, out = writeOut,
+  { run, git, prHead, runAcceptance, runMutation = runForReal, owner, rowBody, rootFiles, out = writeOut,
     err = writeErr } = {}) {
   const [mode, ...rest] = argv;
   if (mode !== "create" && mode !== "edit") {
@@ -684,9 +577,7 @@ export function main(argv = process.argv.slice(2),
   }
   // #2307: only for a body that will be SENT, and never a reason not to send it.
   for (const line of mutationReport(body, runMutation).lines) out(`${line}\n`);
-  // #2415: OFF unless the caller passes `survivors` -- the entry block below does, and the tests that drive `main`
-  // do not, so none of them spawns a mutant.
-  return sendToGitHub(mode, argsAfterSurvivors({ mode, body, rest, survivors, out }), { run, git, err, owner });
+  return sendToGitHub(mode, rest, { run, git, err, owner });
 }
 
 /**
@@ -879,6 +770,6 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
   if (launchGate(`pr-open ${process.argv[2] ?? ""}`.trim())) {
     process.exitCode = EXIT_NOTHING_SENT;
   } else {
-    process.exitCode = main(undefined, { rowBody: defaultRowBody, survivors: survivorsOfThisTree });
+    process.exitCode = main(undefined, { rowBody: defaultRowBody });
   }
 }
