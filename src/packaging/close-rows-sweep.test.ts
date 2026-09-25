@@ -74,7 +74,7 @@ test("close-rows-sweep imports the SAME closurePlan close-rows-for-merged-pr.mjs
   // identity on a case closurePlan's own tests already cover: a mix of OPEN and already-closed issues.
   const result = closurePlan([{ number: 1, state: "OPEN" }, { number: 2, state: "CLOSED" }]);
   assert.deepEqual(result,
-    { close: [{ number: 1, labels: [] }], already: [{ number: 2, labels: [] }], skip: [], none: false });
+    { close: [{ number: 1, labels: [] }], already: [{ number: 2, labels: [] }], skip: [], none: false, owed: [] });
 });
 
 // --- IDEMPOTENCY: running against the same issues twice closes nothing the second time ---
@@ -82,10 +82,10 @@ test("close-rows-sweep imports the SAME closurePlan close-rows-for-merged-pr.mjs
 test("ACCEPTANCE (#394, criterion 2): the sweep is idempotent -- a second closurePlan call against "
   + "issues already closed reports ALREADY CLOSED for all of them, closes nothing new", () => {
   const firstPass = closurePlan([{ number: 10, state: "OPEN" }]);
-  assert.deepEqual(firstPass, { close: [{ number: 10, labels: [] }], already: [], skip: [], none: false });
+  assert.deepEqual(firstPass, { close: [{ number: 10, labels: [] }], already: [], skip: [], none: false, owed: [] });
   // After #10 is closed (simulated: its state is now CLOSED, as it would be on GitHub after the first run)
   const secondPass = closurePlan([{ number: 10, state: "CLOSED" }]);
-  assert.deepEqual(secondPass, { close: [], already: [{ number: 10, labels: [] }], skip: [], none: false });
+  assert.deepEqual(secondPass, { close: [], already: [{ number: 10, labels: [] }], skip: [], none: false, owed: [] });
 });
 
 // --- the CLI, guarded like every other argv-reading script here ---
