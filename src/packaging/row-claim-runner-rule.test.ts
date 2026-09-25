@@ -64,21 +64,29 @@ test("MUTATION target: removing the runner clause from decideClaim must be exact
 
 /**
  * RULE: A `fleet-gated` ROW'S `lane:` LABEL IS SATISFIED BY ANY MEMBER OF ITS ROUTED POOL -- #1828,
- * ceo's ruling on #1817. `row-file.mjs`'s `fleetOrLabAcceptance` force-adds `lane:orchestrator` to any
- * row whose Acceptance reaches the fleet or the lab, which is what a real fleet-gated capture row carries
- * at filing -- and, before this row, is exactly what refused every session but `orchestrator`, including
- * `worker-capture` once the ruling put it in the same pool. This reads `ROUTED_TO["fleet-gated"]`
- * directly (from `work-gate.mjs`), never a second copy of the pool, so the two cannot drift.
+ * ceo's ruling on #1817, NARROWED TO ONE NAME BY #2506. `row-file.mjs`'s `fleetOrLabAcceptance` force-adds
+ * `lane:orchestrator` to any row whose Acceptance reaches the fleet or the lab. The pool was two names
+ * (`orchestrator`, `worker-capture`) and `worker-capture` is retired, so the shipped pool is `orchestrator`
+ * alone and a generic engineer is refused: fleet-gated throughput is `orchestrator`'s own turn rate until
+ * `orchestrator` shows a `lab:job` dispatch from an engineer cannot collide with another capture, and the
+ * exception then attaches to a ROW, not to a name. This reads `ROUTED_TO["fleet-gated"]` directly (from
+ * `work-gate.mjs`), never a second copy of the pool, so the two cannot drift.
+ *
+ * THE POOL-EXEMPTION BRANCH (`pool.includes(owner) && pool.includes(mySession)`) NEEDS TWO MEMBERS TO FIRE, and
+ * the shipped pool has one. Its positive control is the `pool` seam on `laneReason`'s `deps`: the cases tagged
+ * "TWO-NAME POOL" hand it a pool of two and are what stops the exemption being dead code with no test.
  *
  * PLAIN `lane:` SEMANTICS ARE UNCHANGED EVERYWHERE ELSE: a `lane:ceo` row still refuses every session
  * outside `ceo` unconditionally, because `ceo` is not a member of any `ROUTED_TO` pool.
  */
 const captureRow = ["backlog", "ready", "fleet-gated", "lane:orchestrator"];
+const twoNamePool = ["orchestrator", "worker-capture"];
 
-test("#1828: a fleet-gated capture row is claimable by worker-capture, not only orchestrator", () => {
-  assert.equal(laneReason(captureRow, "worker-capture"), null,
-    "worker-capture is in ROUTED_TO['fleet-gated']'s pool, so orchestrator's lane label must not refuse it");
-  assert.equal(decideClaim(captureRow, "worker-capture").proceed, true);
+test("#2506: a fleet-gated capture row is refused to worker-capture, naming orchestrator", () => {
+  const reason = laneReason(captureRow, "worker-capture");
+  assert.ok(reason, "worker-capture is retired and no longer in the pool, so orchestrator's lane label refuses it");
+  assert.match(reason as string, /orchestrator/);
+  assert.equal(decideClaim(captureRow, "worker-capture").proceed, false);
 });
 
 test("#1828: orchestrator itself is unaffected -- still claimable exactly as before", () => {
@@ -86,30 +94,40 @@ test("#1828: orchestrator itself is unaffected -- still claimable exactly as bef
   assert.equal(decideClaim(captureRow, "orchestrator").proceed, true);
 });
 
-test("#1828: worker-judge and worker-tooling are still refused -- the pool is two names, not every session", () => {
-  for (const outsider of ["worker-judge", "worker-tooling"]) {
+test("#2506: the pool is one name -- every other session, a generic spare included, is refused", () => {
+  // `worker-9` is the positive control for "nothing else changed": it was refused before this row and still is.
+  for (const outsider of ["worker-judge", "worker-tooling", "worker-9"]) {
     const reason = laneReason(captureRow, outsider);
     assert.ok(reason, `${outsider} must still be refused a fleet-gated row -- it is not in the routed pool`);
     assert.match(reason as string, /orchestrator/);
-    const decision = decideClaim(captureRow, outsider);
-    assert.equal(decision.proceed, false);
+    assert.equal(decideClaim(captureRow, outsider).proceed, false);
   }
+});
+
+test("#1828 TWO-NAME POOL: the exemption fires for a member of the pool and only for one", () => {
+  // The positive control for the branch the shipped one-name pool can no longer reach.
+  assert.equal(laneReason(captureRow, "worker-capture", { pool: twoNamePool }), null,
+    "a second pool member is admitted to the lane the other one's label names");
+  assert.ok(laneReason(captureRow, "worker-9", { pool: twoNamePool }),
+    "and a session outside the two-name pool is still refused");
+});
+
+test("#1828 TWO-NAME POOL, MUTATION target: without `fleet-gated` on the row, the exemption must not fire", () => {
+  // Constructed so that a pool check keyed on `mySession`/`owner` alone, and not also on the row itself
+  // carrying `fleet-gated`, would wrongly admit a pool member to an ORDINARY orchestrator lane row.
+  assert.ok(laneReason(["ready", "lane:orchestrator"], "worker-capture", { pool: twoNamePool }),
+    "a pool member must still be refused an orchestrator lane row that is not fleet-gated");
 });
 
 test("#1828: a lane:ceo row is untouched -- ceo is not in any ROUTED_TO pool", () => {
   // The pool-exemption must be scoped to members of the SAME pool as the asking session, not a blanket
   // OR for every `lane:` label on a `fleet-gated` row.
-  assert.ok(laneReason(["ready", "fleet-gated", "lane:ceo"], "worker-capture"),
-    "worker-capture is not ceo, and ceo owns this lane regardless of the fleet-gated label");
-});
-
-test("#1828 MUTATION target: without `fleet-gated` on the row, the pool exemption must not fire", () => {
-  // Constructed so that a pool check keyed on `mySession`/`owner` alone, and not also on the row itself
-  // carrying `fleet-gated`, would wrongly admit worker-capture to an ORDINARY orchestrator lane row.
-  const reason = laneReason(["ready", "lane:orchestrator"], "worker-capture");
-  assert.ok(reason, "worker-capture must still be refused an orchestrator lane row that is not fleet-gated");
+  assert.ok(laneReason(["ready", "fleet-gated", "lane:ceo"], "orchestrator"),
+    "orchestrator is not ceo, and ceo owns this lane regardless of the fleet-gated label");
+  assert.ok(laneReason(["ready", "fleet-gated", "lane:ceo"], "worker-capture", { pool: twoNamePool }),
+    "and a two-name pool does not change that for a member of it");
 });
 
 test("#1828: ROUTED_TO['fleet-gated'] is read directly, so this suite and the pool cannot drift", () => {
-  assert.deepEqual(ROUTED_TO["fleet-gated"], ["orchestrator", "worker-capture"]);
+  assert.deepEqual(ROUTED_TO["fleet-gated"], ["orchestrator"]);
 });

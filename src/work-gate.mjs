@@ -481,8 +481,15 @@ export const NOT_PICKABLE = Object.freeze(["blocked", "fleet-gated", "epic", "di
  * (`ownerOf`, `laneBacklogOrders`, `decide`'s pool-count math) must treat the value as a list of names,
  * never assume it is exactly one -- that assumption is what would have silently dropped the second name
  * or thrown reading past index 0.
+ *
+ * THE POOL IS ONE NAME AGAIN -- #2506, the pool half of the standing-engineer retirement (`ceo`'s ruling on
+ * #2470, "The pool, decided"). `worker-capture` is retired, so no generic engineer may claim a `fleet-gated`
+ * `lane:orchestrator` row (`laneReason` refuses it) and fleet-gated throughput is `orchestrator`'s own turn
+ * rate until `orchestrator` shows a generic engineer's `lab:job` dispatch cannot collide with another capture;
+ * the exception then attaches to a ROW, not to a name. The value stays a LIST on purpose: every reader above
+ * still treats it as one.
  */
-export const ROUTED_TO = Object.freeze({ "fleet-gated": Object.freeze(["orchestrator", "worker-capture"]) });
+export const ROUTED_TO = Object.freeze({ "fleet-gated": Object.freeze(["orchestrator"]) });
 
 /**
  * Labels meaning the row is not startable work FOR ANYONE -- `NOT_PICKABLE` minus what is merely routed.
@@ -704,7 +711,9 @@ const labelsOf = (x) => (x?.labels ?? []).map((/** @type {any} */ l) => String(l
  * existing call and costs no extra one.
  *
  * @param {any[]} prs
- * @returns {{ number: number, files: string[], changedFiles: number, closes: number[] }[]}
+ * #2493: `held` rides along too -- whether the PR carries a `hold:` label -- from `labels`, already on that call.
+ *
+ * @returns {{ number: number, files: string[], changedFiles: number, closes: number[], held: boolean }[]}
  */
 export function comparablePrFiles(prs) {
   return prs
@@ -713,6 +722,8 @@ export function comparablePrFiles(prs) {
       changedFiles: Number(p?.changedFiles),
       files: (p?.files ?? []).map((/** @type {any} */ f) => String(f?.path ?? f)),
       closes: declaredClosedRows(p?.body),
+      // #2493: the other half of the exclusion `fileOverlapReason` reads -- a `hold:` label on the PR.
+      held: holdersOf(labelsOf(p)).length > 0,
     }))
     .filter((p) => Number.isInteger(p.changedFiles) && p.files.length === p.changedFiles);
 }
@@ -733,9 +744,14 @@ export function comparablePrFiles(prs) {
  * `row-claim.mjs` about that for the same reason the Region read does: a gate that shelves what the claim
  * would grant is a gate nobody can act on.
  *
- * @param {any} row @param {{ number: number, files: string[], changedFiles: number, closes?: number[] }[]} prFiles
- * @param {{ rootFiles?: Set<string> }} [options] passed to `declaredRegionFiles` so a test can name its
- *   own tree rather than needing this repository's
+ * #2493: AND SO DOES THE HELD-PR EXCLUSION, for the same reason: a PR carrying `hold:` whose every closed row is
+ * `blockedBy` this row is waiting on it and cannot merge first, so it is no reason to withhold the row -- #2399 was
+ * shelved behind #2376, which was waiting on #2399. `blockersOf` is how the gate answers "what blocks that row" from
+ * the `blockedBy` it already holds for every open row (`blockersFromRows`), so it makes no call of its own.
+ *
+ * @param {any} row @param {{ number: number, files: string[], changedFiles: number, closes?: number[], held?: boolean }[]} prFiles
+ * @param {{ rootFiles?: Set<string>, blockersOf?: (row: number) => number[] | null }} [options] `rootFiles` is
+ *   passed to `declaredRegionFiles` so a test can name its own tree rather than needing this repository's
  * @returns {string | null}
  */
 export function blockedOnOpenPr(row, prFiles, options) {
@@ -744,7 +760,23 @@ export function blockedOnOpenPr(row, prFiles, options) {
   if (prFiles.length === 0) return null;
   const mine = declaredRegionFiles(String(row?.body ?? ""), options);
   if (mine === null) return null;
-  return fileOverlapReason(mine, prFiles, { rowNumber: Number(row?.number) }).reason;
+  return fileOverlapReason(mine, prFiles, { rowNumber: Number(row?.number), blockersOf: options?.blockersOf }).reason;
+}
+
+/**
+ * #2493: what blocks a row, answered from the open rows the gate has ALREADY READ -- `blockedBy` rides
+ * `readOpenRows`'s call -- so the exclusion costs the gate nothing. `null` for a row not among them (closed, or
+ * beyond the read's limit), which the rule reads as "not excluded".
+ *
+ * @param {any[] | null | undefined} openRows
+ * @returns {(row: number) => number[] | null}
+ */
+export function blockersFromRows(openRows) {
+  const byNumber = new Map((openRows ?? []).map((r) => [Number(r?.number), r]));
+  return (number) => {
+    const found = byNumber.get(number);
+    return found ? (found.blockedBy?.nodes ?? []).map((/** @type {any} */ n) => Number(n.number)) : null;
+  };
 }
 
 /**
@@ -805,13 +837,16 @@ function branchesText(pushed) {
  * `main` reports every shelving on stderr, and `emptyShelfOrder` names the pool's blocked rows, because a
  * row that vanishes silently is the exact shape of the empty-shelf defect these orders exist to catch.
  *
- * @param {any[]} readyRows @param {{ number: number, files: string[], changedFiles: number }[]} prFiles
+ * @param {any[]} readyRows @param {{ number: number, files: string[], changedFiles: number, closes?: number[], held?: boolean }[]} prFiles
  * @param {{ rootFiles?: Set<string>,
+ *           openRows?: any[] | null,
  *           rowBranches?: { branch: string, head: string, row: number }[] | null,
  *           clock?: {today?: string, nowMs?: number} }} [options]
  *        `rowBranches` is `readRowBranches()`. It DEFAULTS TO ABSENT, which is "not asked or refused":
  *        nothing is shelved for it and every row is offered exactly as it was before #2031, so a tick
  *        that cannot reach `origin` is never worse off than one from before this existed.
+ *        `openRows` (#2493) is every open row the gate read, for the `blockedBy` edges that say whether a HELD PR is
+ *        waiting on the row asked about. ABSENT, no held PR is excluded and B4 refuses exactly as before.
  *        `clock` is injected the way `partitionFleetBatch` already injects one, and #2113 is why this
  *        path needs one at all: a `Not-before:` may now name an HOUR, so whether a row is offerable can
  *        change within a single day and a test cannot pin that against the host clock.
@@ -822,6 +857,7 @@ export function partitionUnclaimed(readyRows, prFiles, options) {
   const blocked = [];
   const { today = todayIso(), nowMs = Date.now() } = options?.clock ?? {};
   const onOrigin = branchIndex(options?.rowBranches);
+  const blockersOf = blockersFromRows(options?.openRows);
   for (const row of readyRows) {
     // #2005's OPEN-CHECK, ANSWERED BY THIS LINE AND NOT BY A NEW RULE. The filer asked whether
     // `answer:<session>` should hold a row against its OWN HOLDER -- #1948 was `in-progress` +
@@ -856,7 +892,7 @@ export function partitionUnclaimed(readyRows, prFiles, options) {
         reason: `${describeWaiting(waiting)} -- declared on the row, and it clears itself` });
       continue;
     }
-    const reason = blockedOnOpenPr(row, prFiles, options);
+    const reason = blockedOnOpenPr(row, prFiles, { ...options, blockersOf });
     if (reason) blocked.push({ number: Number(row.number), owner: laneOwnerOf(row), reason });
     else offerable.push(row);
   }
@@ -1534,11 +1570,17 @@ export function answerOrders(rows) {
  * nothing. It reads `prs` and not `comparablePrFiles`: that filter drops a PR whose file list is
  * truncated, which is right for an overlap comparison and would here silently withdraw the screen for
  * the largest pull requests -- the ones most likely to be a row's whole build.
+ * #2493: a pull request carrying a `hold:` label does not count -- see the body.
  * @param {any[] | null | undefined} openPrs
  * @returns {Set<number>}
  */
 function rowsWithOpenPr(openPrs) {
-  return new Set((openPrs ?? []).flatMap((pr) => declaredClosedRows(pr?.body)));
+  // #2493: A HELD PR IS NOT AN ACT, IT IS A DECLARED WAIT. `hold:` is the owner saying "do not merge me yet", and the
+  // wait behind it is a `blockedBy` edge (#2400 section 2) -- so the holder of a held PR is exactly who must hear
+  // that the last edge closed. Counting it as "resumed" silenced the one wake the ruling relies on: #2376's owner
+  // had an open PR naming #2359 and would never have been told #2399 merged.
+  return new Set((openPrs ?? []).filter((pr) => holdersOf(labelsOf(pr)).length === 0)
+    .flatMap((pr) => declaredClosedRows(pr?.body)));
 }
 
 /**
@@ -4522,7 +4564,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // the row on `rowBranches` and this emits the cause that names the branch -- one condition, one read,
   // said once as a withholding and once as a question. Ahead of `rowOrders` for the ordering reason the
   // causes above use: work that already EXISTS outranks work nobody has started.
-  const { offerable, blocked } = partitionUnclaimed(readyRows, prFiles, { rowBranches });
+  const { offerable, blocked } = partitionUnclaimed(readyRows, prFiles, { rowBranches, openRows });
   orders.push(...rowBranchOrders(readyRows, rowBranches));
   orders.push(...rowOrders(offerable));
 
@@ -5152,7 +5194,7 @@ function main() {
   // BOTH SHELVES ON ONE LINE-SHAPE. The engineer pool's B4/declared-wait shelvings and the fleet batch's
   // (#2027) are the same fact -- work the gate can see and is deliberately not offering -- and a row that
   // leaves a set silently is the defect both filters exist to fix.
-  reportWithheld({ drain, blocked: [...partitionUnclaimed(rows, prFiles, { rowBranches }).blocked,
+  reportWithheld({ drain, blocked: [...partitionUnclaimed(rows, prFiles, { rowBranches, openRows: allOpen }).blocked,
     ...partitionFleetBatch(allOpen).waiting] });
 
   if (prs === null || readyRows === null) {

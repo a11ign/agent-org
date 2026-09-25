@@ -31,7 +31,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { readFileSync, writeFileSync, mkdirSync, realpathSync, existsSync, readdirSync, openSync, readSync, closeSync,
-  fstatSync } from "node:fs";
+  fstatSync, lstatSync, readlinkSync, symlinkSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { createHash } from "node:crypto";
@@ -921,14 +921,22 @@ export const REVIEWER_CAUSES = Object.freeze(["draft-awaiting-verdict", "verdict
 export const REVIEWER_GH_CONFIG_DIR = "/home/agent/reviewer/gh";
 
 /**
- * The environment a reviewer instance's workspace starts with: its own `gh` account and, as
- * `A11Y_REVIEWER_SESSION`, the name `pr-review-verdict` writes into the attribution status (#2127) -- without it
- * the review posts UNATTRIBUTED. An `override` wins, key by key, as in {@link spawnEnvironment}.
- * @param {string} session @param {Record<string, string>} [override]
+ * The environment a reviewer instance's workspace starts with: its own `gh` account; as `A11Y_REVIEWER_SESSION`, the
+ * name `pr-review-verdict` writes into the attribution status (#2127) -- without it the review posts UNATTRIBUTED --
+ * and as `npm_config_cache`, a cache the instance can WRITE (#2498). An `override` wins, key by key, as in
+ * {@link spawnEnvironment}.
+ *
+ * THE CACHE LIVES IN THE INSTANCE'S OWN TREE, NOT UNDER `HOME` AND NOT UNDER `/tmp`. Measured 2026-09-25 with `codex sandbox`
+ * under the reviewer's own policy (`workspace-write`, `writable_roots = ["/tmp"]`): the checkout and `/tmp` are writable and
+ * `~/.npm` and the checkout's parent are not, so `npx` in a tree with no dependencies died with `rofs` writing `~/.npm/_logs`.
+ * `/tmp` is RAM-backed ({@link REVIEW_CHECKOUT_ROOT}); `node_modules/.cache` is gitignored and goes with the tree when
+ * {@link removeReviewCheckout} removes it, so nothing outlives the pull request.
+ * @param {string} session @param {Record<string, string>} [override] @param {string} [tree] the instance's checkout
  * @returns {Record<string, string>}
  */
-export function reviewerEnvironment(session, override = {}) {
-  return { GH_CONFIG_DIR: REVIEWER_GH_CONFIG_DIR, A11Y_REVIEWER_SESSION: session, ...override };
+export function reviewerEnvironment(session, override = {}, tree = reviewCheckoutPath(session)) {
+  return { GH_CONFIG_DIR: REVIEWER_GH_CONFIG_DIR, A11Y_REVIEWER_SESSION: session, npm_config_cache: `${tree}/node_modules/.cache/npm`,
+    ...override };
 }
 
 /**
@@ -1041,8 +1049,63 @@ const reviewRef = (pr) => `refs/review/pr-${pr}`;
 
 /**
  * @typedef {{git?: (cmd: string, args: string[], opts?: object) => string, exists?: (path: string) => boolean,
- *   root?: string, repoRoot?: string}} CheckoutDeps
+ *   root?: string, repoRoot?: string, link?: (args: {path: string, repoRoot: string}) => string | null}} CheckoutDeps
  */
+
+/**
+ * The filesystem calls {@link linkReviewDependencies} makes, so a test can hand it a fake; the default is the real one.
+ * @typedef {Pick<typeof import("node:fs"), "existsSync" | "mkdirSync" | "readdirSync" | "lstatSync" | "readlinkSync" | "symlinkSync"
+ *   | "rmSync">} LinkFs
+ */
+/** @type {LinkFs} */
+const REAL_LINK_FS = { existsSync, mkdirSync, readdirSync, lstatSync, readlinkSync, symlinkSync, rmSync };
+
+/**
+ * Make `link` a symlink to `target`: nothing when it already is one, a replacement for anything else. Only ever called with a
+ * `link` under a review tree's own `node_modules`, so the `rmSync` never reaches the primary (it removes a symlink, not what it names).
+ * @param {LinkFs} fs @param {string} target @param {string} link
+ */
+function relink(fs, target, link) {
+  const found = fs.lstatSync(link, { throwIfNoEntry: false });
+  if (found?.isSymbolicLink() && fs.readlinkSync(link) === target) return;
+  if (found !== undefined) fs.rmSync(link, { recursive: true, force: true });
+  fs.symlinkSync(target, link);
+}
+
+/**
+ * GIVE `path`'s tree its dependencies, and answer `null` when it has them or WHY not (#2498). DONE BY THE TICK, NEVER BY THE
+ * REVIEWER, for the reason {@link prepareReviewCheckout} is: measured 2026-09-25 under the reviewer's own sandbox, a tree with no
+ * `node_modules` makes `npx rstest` reach for the registry, and that writes `~/.npm`, which is read-only there -- so the PR's
+ * Acceptance died before its first test (#2376: "0/4; `npx` failed before execution"). With the links below the same `npx` runs.
+ *
+ * THE HYBRID SHAPE `reviewer.md` teaches, chosen because the other two are worse. Third-party entries (and `.bin`) link to the tick's
+ * checkout, so no install runs and no second copy is stored; `@a11ign/*` link to THIS tree's `packages/`, because a whole-tree link
+ * makes every `@a11ign/*` resolve to the PRIMARY's source and `assert-glob-not-empty --run` REFUSES that tree (#2378, #2218). Other
+ * dot-entries are skipped, and `.cache` is the one that matters: it is where {@link reviewerEnvironment} points npm, and a link
+ * there would send the instance's cache writes to the primary, which its sandbox cannot write. Idempotent, because it runs on every
+ * head-changing push: a package the PR adds or removes is linked or unlinked, and one already right is left alone.
+ *
+ * @param {{path: string, repoRoot: string, fs?: LinkFs}} args @returns {string | null}
+ */
+export function linkReviewDependencies({ path, repoRoot, fs = REAL_LINK_FS }) {
+  const primary = `${repoRoot}/node_modules`;
+  const modules = `${path}/node_modules`;
+  const scope = `${modules}/@a11ign`;
+  if (!fs.existsSync(primary)) return `${primary} does not exist: the tick's own checkout has no dependencies to link`;
+  try {
+    fs.mkdirSync(scope, { recursive: true });
+    for (const entry of fs.readdirSync(primary)) {
+      if (entry !== "@a11ign" && (entry === ".bin" || !entry.startsWith("."))) relink(fs, `${primary}/${entry}`, `${modules}/${entry}`);
+    }
+    const packages = fs.readdirSync(`${path}/packages`);
+    for (const name of packages) relink(fs, `${path}/packages/${name}`, `${scope}/${name}`);
+    for (const stale of fs.readdirSync(scope).filter((name) => !packages.includes(name))) fs.rmSync(`${scope}/${stale}`, { recursive: true, force: true });
+    if (fs.existsSync(`${repoRoot}/.venv`)) relink(fs, `${repoRoot}/.venv`, `${path}/.venv`);
+    return null;
+  } catch (err) {
+    return `could not link dependencies into ${modules}: ${firstLine(err)}`;
+  }
+}
 
 /**
  * PREPARE `session`'s tree at pull request `pr`'s CURRENT head, and return where it is -- or say why not.
@@ -1056,11 +1119,14 @@ const reviewRef = (pr) => `refs/review/pr-${pr}`;
  * reviewer cannot find is a review of nothing. The same call re-points an existing tree at a new head, which is
  * how the one instance follows every head-changing push.
  *
+ * AND A TREE WITH NO DEPENDENCIES IS A REFUSAL TOO (#2498): the last step is {@link linkReviewDependencies}, so a tree
+ * the order names is one whose Acceptance can run. It stays where it is on a refusal and the next tick retries.
+ *
  * @param {{pr: number, session: string} & CheckoutDeps} args
  * @returns {{path: string, head: string} | {refusal: string}}
  */
 export function prepareReviewCheckout({ pr, session, git = defaultGit, exists = existsSync,
-  root = REVIEW_CHECKOUT_ROOT, repoRoot = REPO_ROOT }) {
+  root = REVIEW_CHECKOUT_ROOT, repoRoot = REPO_ROOT, link = linkReviewDependencies }) {
   const path = reviewCheckoutPath(session, root);
   try {
     git("git", ["-C", repoRoot, "fetch", "--quiet", "origin", `+refs/pull/${pr}/head:${reviewRef(pr)}`]);
@@ -1070,6 +1136,8 @@ export function prepareReviewCheckout({ pr, session, git = defaultGit, exists = 
     else git("git", ["-C", repoRoot, "worktree", "add", "--quiet", "--force", "--detach", path, head]);
     const at = git("git", ["-C", path, "rev-parse", "HEAD"]).trim();
     if (at !== head || !exists(path)) return { refusal: `no review checkout: ${path} is at ${at || "nothing"}, not PR #${pr}'s head ${head}` };
+    const unlinked = link({ path, repoRoot });
+    if (unlinked !== null) return { refusal: `no review dependencies for PR #${pr} at ${path} (${unlinked})` };
     return { path, head };
   } catch (err) {
     return { refusal: `no review checkout for PR #${pr} at ${path} (${firstLine(err)})` };
@@ -1100,19 +1168,28 @@ export function removeReviewCheckout({ pr, session, git = defaultGit, exists = e
 /**
  * The order's text, with the sentence that says where the reviewer's tree is and what it cannot do to it. The path
  * named here is one {@link prepareReviewCheckout} has just verified exists, so it is the only path an order names.
- * @param {{prompt: string}} order @param {{path: string, head: string}} checkout @param {number} pr
+ * @param {{prompt: string, session: string}} order @param {{path: string, head: string}} checkout @param {number} pr
  */
 export function withReviewCheckout(order, checkout, pr) {
   return { ...order, prompt: `${order.prompt}\n\nYour checkout of #${pr} is \`${checkout.path}\`, detached at the pull `
     + `request's current head \`${checkout.head.slice(0, 8)}\`. It was prepared for you and is re-pointed on every push. Your `
     + "sandbox cannot write `.git`, so `git checkout`, `git fetch` and `git worktree` are refused there: review from "
-    + "this path and do not make another checkout." };
+    + "this path and do not make another checkout.\n\n"
+    + "Its dependencies are already linked in (`node_modules`, linked for you: do not install or link your own), so the pull "
+    + "request's Acceptance runs there as written, after `npm run build` when it needs `dist`. Your npm cache is "
+    + `\`${checkout.path}/node_modules/.cache/npm\`, the one place npm can write: set \`npm_config_cache\` to it if your pane does not.\n\n`
+    + `SIGN AS \`${order.session}\`: your pane may not hold \`A11Y_REVIEWER_SESSION\` (one started outside the tick does not), so `
+    + `post the verdict as \`A11Y_REVIEWER_SESSION=${order.session} pr-review-verdict <n> <convinced|not-convinced> <file>\` `
+    + "and the verdict line's `by` names you." };
 }
 
 /**
  * Start a reviewer instance for `order.session` -- a workspace labelled with that name, opened IN its checkout, and
  * a codex started in it with the profile of the order's cause -- and return the address it answers to. Its own
  * path beside {@link spawnWorker}: no role, no drain, no claim precheck, because a reviewer holds no row.
+ *
+ * THE ENVIRONMENT IS ALWAYS {@link reviewerEnvironment}'s, with `env` laid over it key by key (#2498): a caller's `env` used to REPLACE it,
+ * so a caller that named one variable started a pane with no session name and its verdicts posted UNSIGNED.
  *
  * @param {{session: string, cause?: string, causeKey?: string}} order @param {{label: string, status: string}[]} agents
  * @param {{run?: (args: string[]) => string, env?: Record<string, string>, cwd: string,
@@ -1123,7 +1200,7 @@ export function withReviewCheckout(order, checkout, pr) {
 function spawnReviewer(order, agents, { run = defaultRun, env, cwd, registry }) {
   const reviewer = spawnableReviewer(order, agents, registry);
   if ("refusal" in reviewer) return reviewer;
-  const pane = openPane(run, reviewer.session, env ?? reviewerEnvironment(reviewer.session), cwd);
+  const pane = openPane(run, reviewer.session, reviewerEnvironment(reviewer.session, env, cwd), cwd);
   if ("refusal" in pane) return pane;
   const invocation = spawnInvocation({ ...order, cause: String(order.cause) }, reviewer.session, pane.pane);
   if ("refusal" in invocation) return { refusal: `${invocation.refusal}${closedNote(run, pane.workspace)}` };

@@ -76,13 +76,15 @@ export function runnerReason(labels, mySession) {
  *
  * @param {string[]} labels
  * @param {string} mySession
- * @param {{ liveSessions?: readonly string[] }} [deps] injected so a test can state the roster it means
- *   rather than inheriting today's -- the retired case is only expressible against a known roster
+ * @param {{ liveSessions?: readonly string[], pool?: readonly string[] }} [deps] injected so a test can state
+ *   the roster it means rather than inheriting today's -- the retired case is only expressible against a known
+ *   roster. `pool` is the same for the routed pool: #2506 left the shipped pool ONE name, and the exemption
+ *   below needs two members to fire, so without this seam no test could reach it
  * @returns {string | null} a refusal reason, or null if no live session's lane reserves this row
  */
 export function laneReason(labels, mySession, deps) {
   const live = deps?.liveSessions ?? LIVE_SESSIONS;
-  const pool = labels.includes("fleet-gated") ? ROUTED_TO["fleet-gated"] : [];
+  const pool = labels.includes("fleet-gated") ? (deps?.pool ?? ROUTED_TO["fleet-gated"]) : [];
   const owners = labels
     .filter((l) => l.startsWith("lane:"))
     .map((l) => l.slice("lane:".length))
