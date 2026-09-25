@@ -38,9 +38,9 @@ type Line = Record<string, unknown>;
 type Registry = Record<string, { spawnedAt: number; absentTicks?: number; absentNoted?: string }>;
 
 /** One teardown pass over an OPEN pull request, with the seams recorded; returns the registry to feed the next tick. */
-function pass(agents: { label: string; status: string }[], registry: Registry, seams: { lines: Line[]; warns: string[] }) {
+function pass(agents: { label: string; status: string }[], registry: Registry, seams: { lines: Line[]; warns: string[]; run?: (args: string[]) => string }) {
   return endFinishedReviewers(agents, {
-    registry, now: T0, run: () => "", prState: () => "open",
+    registry, now: T0, run: seams.run ?? (() => ""), prState: () => "open",
     removeCheckout: () => { throw new Error("an OPEN pull request's checkout must never be removed"); },
     record: () => { throw new Error("no ENDING is recorded for an instance whose pull request is open"); },
     recordAbsence: (line: object) => { seams.lines.push(line as Line); }, warn: (line: string) => seams.warns.push(line),
@@ -48,8 +48,8 @@ function pass(agents: { label: string; status: string }[], registry: Registry, s
 }
 
 /** `ticks` passes over `agents`, each fed the last one's registry. */
-function passes(ticks: number, agents: { label: string; status: string }[], start: Registry) {
-  const seams = { lines: [] as Line[], warns: [] as string[] };
+function passes(ticks: number, agents: { label: string; status: string }[], start: Registry, run?: (args: string[]) => string) {
+  const seams = { lines: [] as Line[], warns: [] as string[], run };
   let registry = start;
   const cleared: string[][] = [];
   for (let i = 0; i < ticks; i++) {
@@ -57,7 +57,7 @@ function passes(ticks: number, agents: { label: string; status: string }[], star
     registry = got.registry;
     cleared.push(got.cleared);
   }
-  return { registry, cleared, ...seams };
+  return { registry, cleared, lines: seams.lines, warns: seams.warns };
 }
 
 test("#2465 (a) a COMPLETE listing that keeps lacking the instance CLEARS it, and the next start is allowed", () => {
@@ -115,7 +115,7 @@ test("#2465 the refusal stays READABLE: one absences line per change, naming the
   const got = passes(4, PARTIAL, { [DEAD]: { spawnedAt: T0 } });
   assert.equal(got.lines.length, 1, "one line for a state that does not change, not one per tick");
   assert.deepEqual(got.lines[0], { session: DEAD, pr: 2453, at: new Date(T0).toISOString(), event: "absent-unconfirmed",
-    absentTicks: 0, needed: REVIEWER_DEAD_AFTER_TICKS, listing: "partial" });
+    absentTicks: 0, needed: REVIEWER_DEAD_AFTER_TICKS, listing: "partial", presence: "absent from the listing" });
   assert.match(got.warns[0], /reviewer-2453.*OPEN PR #2453.*PARTIAL/);
 });
 
@@ -159,4 +159,91 @@ test("#2465 THE TICK: a registered reviewer under an OPEN pr that herdr stops li
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// #2534: a workspace whose codex EXITED still carries the instance's label, with no agent in it.
+const AGENTLESS = [...COMPLETE, { label: DEAD, status: "unknown" }];
+const LIVE = [...COMPLETE, { label: DEAD, status: "working" }];
+
+/** A herdr whose `workspace list` shows `agents`, recording every `workspace close` it is asked for. */
+function herdr(agents: { label: string; status: string }[], opts: { closeFails?: boolean } = {}) {
+  const closed: string[] = [];
+  const run = (args: string[]) => {
+    if (args.includes("list")) {
+      return JSON.stringify({ result: { workspaces: agents.map((a) => ({ label: a.label, workspace_id: `w-${a.label}`, agent_status: a.status })) } });
+    }
+    if (opts.closeFails) throw new Error("herdr: close refused");
+    closed.push(String(args.at(-1)));
+    return "";
+  };
+  return { run, closed };
+}
+
+test("#2534 (a) an AGENTLESS instance under an OPEN pr is CLOSED and cleared after N complete listings, and the next start proceeds", () => {
+  const before = spawnableReviewer(order, AGENTLESS, { [DEAD]: { spawnedAt: T0 } });
+  assert.match(String((before as { refusal?: string }).refusal), /holds NO agent/, "the premise: the label blocks the spawn today, and says why");
+
+  const h = herdr(AGENTLESS);
+  const got = passes(REVIEWER_DEAD_AFTER_TICKS, AGENTLESS, { [DEAD]: { spawnedAt: T0 } }, h.run);
+
+  assert.deepEqual(got.registry, {}, "the key is gone");
+  assert.deepEqual(h.closed, [`w-${DEAD}`], "the workspace was closed, once, on the last tick and not before");
+  assert.deepEqual(got.cleared, [...Array(REVIEWER_DEAD_AFTER_TICKS - 1).fill([]), [DEAD]]);
+  assert.deepEqual(spawnableReviewer(order, COMPLETE, got.registry), { session: DEAD }, "with the pane gone the fresh one may start");
+  assert.deepEqual(got.lines.map((l) => l.event), [...Array(REVIEWER_DEAD_AFTER_TICKS - 1).fill("agentless-seen"), "cleared"]);
+  assert.ok(got.lines.every((l) => l.presence === "workspace with no agent"), "the ledger says a pane was PRESENT with no agent, not that it was absent");
+});
+
+test("#2534 (b) the same agentless instance under a PARTIAL listing neither closes nor clears", () => {
+  const partial = [...PARTIAL, { label: DEAD, status: "unknown" }];
+  const h = herdr(partial);
+  const got = passes(REVIEWER_DEAD_AFTER_TICKS * 3, partial, { [DEAD]: { spawnedAt: T0 } }, h.run);
+
+  assert.deepEqual(Object.keys(got.registry), [DEAD]);
+  assert.deepEqual(h.closed, [], "nothing closed");
+  assert.deepEqual(got.cleared.flat(), []);
+  assert.deepEqual(got.lines.map((l) => l.event), ["agentless-unconfirmed"], "one line, for a state that does not change");
+});
+
+test("#2534 (c) ONE agentless tick then a live status starts the count again: a pane between create and start closes nothing", () => {
+  const first = passes(REVIEWER_DEAD_AFTER_TICKS - 1, AGENTLESS, { [DEAD]: { spawnedAt: T0 } });
+  const h = herdr(LIVE);
+  const seen = passes(1, LIVE, first.registry, h.run);
+  assert.deepEqual(seen.registry, { [DEAD]: { spawnedAt: T0 } }, "the counter is gone");
+
+  const again = passes(REVIEWER_DEAD_AFTER_TICKS - 1, AGENTLESS, seen.registry, h.run);
+  assert.deepEqual(Object.keys(again.registry), [DEAD], "and it takes N more");
+  assert.deepEqual(h.closed, [], "nothing was ever closed");
+  assert.deepEqual(passes(1, AGENTLESS, { [DEAD]: { spawnedAt: T0 } }).cleared, [[]], "a single agentless tick clears nothing");
+});
+
+test("#2534 a workspace that will NOT close keeps its key, one tick short of dead, and says so; the retry then succeeds", () => {
+  const stuck = herdr(AGENTLESS, { closeFails: true });
+  const got = passes(REVIEWER_DEAD_AFTER_TICKS, AGENTLESS, { [DEAD]: { spawnedAt: T0 } }, stuck.run);
+  assert.deepEqual(Object.keys(got.registry), [DEAD], "the key stays: clearing it over a live label only moves the refusal");
+  assert.deepEqual(got.cleared.flat(), []);
+  assert.match(got.warns.join("\n"), /could not be closed/);
+  assert.equal(got.lines.at(-1)?.event, "close-failed");
+
+  const ok = herdr(AGENTLESS);
+  const retry = passes(1, AGENTLESS, got.registry, ok.run);
+  assert.deepEqual(retry.registry, {}, "the next tick closes it and clears the key");
+  assert.deepEqual(ok.closed, [`w-${DEAD}`]);
+});
+
+test("#2534 a STANDING seat is never closed or cleared by this path, even when it reads `unknown`", () => {
+  const ceoGone = [...panes("orchestrator", "reviewer-2454"), { label: "ceo", status: "unknown" }];
+  const h = herdr(ceoGone);
+  const start = { ceo: { spawnedAt: T0 }, orchestrator: { spawnedAt: T0 } };
+  const got = passes(REVIEWER_DEAD_AFTER_TICKS * 2, ceoGone, start, h.run);
+  assert.deepEqual(got.registry, start, "nothing cleared");
+  assert.deepEqual(h.closed, [], "nothing closed");
+  assert.deepEqual(got.lines, [], "and nothing said");
+  assert.equal(listingIsComplete(ceoGone), true, "the positive control: the listing IS complete, so only the label kept the seat safe");
+});
+
+test("#2534 observeOpenReviewer: an agentless pane counts as absent, and names itself in its events", () => {
+  assert.deepEqual(observeOpenReviewer({ spawnedAt: T0 }, { listed: false, complete: true, agentless: true }),
+    { entry: { spawnedAt: T0, absentTicks: 1, absentNoted: "seen-1" }, event: "agentless-seen", absentTicks: 1 });
+  assert.equal(observeOpenReviewer({ spawnedAt: T0 }, { listed: false, complete: false, agentless: true }).event, "agentless-unconfirmed");
 });
