@@ -8,7 +8,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -305,16 +305,32 @@ test("#2323 THE WAKE ENTRY: a spawn is REGISTERED, so the teardown can tell a fi
   const dir = mkdtempSync(join(tmpdir(), "wake-spawn-reg-"));
   try {
     const ledger = join(dir, "wake-ledger");
-    writeFileSync(join(dir, "herdr"), "#!/bin/sh\ncase \"$*\" in\n  *'workspace list') printf '%s' '{\"result\":{\"workspaces\":[]}}' ;;\n"
+    mkdirSync(join(dir, "repos", "a11y-witness"), { recursive: true });   // the primary, where the claim's `git fetch` runs
+    const herdrLog = join(dir, "herdr-calls");
+    writeFileSync(join(dir, "herdr"), "#!/bin/sh\necho \"$*\" >> " + herdrLog + "\ncase \"$*\" in\n  *'workspace list') printf '%s' '{\"result\":{\"workspaces\":[]}}' ;;\n"
       + "  *'workspace create'*) printf '%s' '{\"result\":{\"root_pane\":{\"pane_id\":\"wB:p1\"},\"workspace\":{\"workspace_id\":\"wB\"}}}' ;;\n"
       + "  *) : ;;\nesac\n");
     chmodSync(join(dir, "herdr"), STUB_MODE);
     writeFileSync(join(dir, "gh"), "#!/bin/sh\nprintf '%s' '[]'\n");
     chmodSync(join(dir, "gh"), STUB_MODE);
-    const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${ledger}`, "--roster=worker-4"], {
+    // #2405: A SPAWN CLAIMS BEFORE IT OPENS A PANE, so the claim's two programs are stubbed too -- `git` makes the
+    // role's launch worktree and `node` (which is `row-claim`) makes the row's -- both under `--worktrees-dir`, so the
+    // run cannot create `role-worker-4` beside the real checkout.
+    const fetchedIn = join(dir, "git-fetch-cwd");
+    writeFileSync(join(dir, "git"), "#!/bin/sh\ncase \"$1\" in\n  fetch) pwd >> " + fetchedIn + " ;;\n  worktree) mkdir -p \"$4\" ;;\n  *) : ;;\nesac\n");
+    writeFileSync(join(dir, "node"), "#!/bin/sh\nmkdir -p ../wt-2131\necho 'STARTED -- #2131 fixture'\n");
+    chmodSync(join(dir, "git"), STUB_MODE);
+    chmodSync(join(dir, "node"), STUB_MODE);
+    const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${ledger}`, "--roster=worker-4",
+      `--worktrees-dir=${join(dir, "repos")}`], {
       input: `${JSON.stringify(ROW_ORDER)}\n`, encoding: "utf8",
       env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
     assert.match(ran.stdout, /WOKE worker-4 <- engineers\/ready-row-unclaimed\/2131 \(STARTED sonnet\/high\)/, ran.stderr);
+    // #2405: the claim's `git fetch` runs in the primary the flag moved, not the host's -- which a CI runner has not got
+    // (`spawnSync git ENOENT`, 2026-09-24), and which this run would otherwise pass on by finding on a host that has.
+    assert.equal(readFileSync(fetchedIn, "utf8").trim(), join(dir, "repos", "a11y-witness"));
+    // #2405: THE WIRING -- `main` hands `deliver` the claimer, so the pane opens in the worktree the claim made.
+    assert.match(readFileSync(herdrLog, "utf8"), new RegExp(`workspace create .*--cwd ${join(dir, "repos", "wt-2131")}( |$)`, "m"));
     const registry = JSON.parse(readFileSync(sparePathsFrom(ledger).registry, "utf8"));
     assert.deepEqual(Object.keys(registry), ["worker-4"]);
     assert.deepEqual(registry["worker-4"].rows, []);
