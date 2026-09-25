@@ -261,10 +261,12 @@ const stubUnits = (units: Record<string, string>) => ({
 });
 
 test("#2458: every shipped service puts the compile cache under a home's .cache", () => {
-  // THE POPULATION, NAMED: emptiness below is worth what this says about its input. Seven services ship
-  // today, and the positive control for "a unit lacking the line is a finding" is the next test.
-  const services = readdirSync(SHIPPED_DIR).filter((f) => f.endsWith(".service"));
-  assert.ok(services.length >= 7, `too few services shipped to mean anything: ${services.join(", ")}`);
+  // THE POPULATION, NAMED: emptiness below is worth what this says about its input. The directory is read
+  // two ways (a plain listing, and `shippedUnits`, which is what `compileCacheDrift` walks) and they must
+  // agree on a non-empty list; the positive control for "a unit lacking the line is a finding" is the next test.
+  const services = readdirSync(SHIPPED_DIR).filter((f) => f.endsWith(".service")).sort();
+  assert.deepEqual(services, shippedUnits(SHIPPED_DIR).filter((unit) => unit.endsWith(".service")));
+  assert.notDeepEqual(services, [], "nothing ships, so the emptiness below would prove nothing");
   assert.deepEqual(compileCacheDrift(), []);
   for (const service of services) {
     assert.equal(declaredCompileCache(readFileSync(join(SHIPPED_DIR, service), "utf8")),
