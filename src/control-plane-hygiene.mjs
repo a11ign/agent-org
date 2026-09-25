@@ -160,10 +160,13 @@ export function undecidedRefusal(rows) {
     + "or an explicit threshold -- the table's own job is to make that decision legible, not to defer it.";
 }
 
-// #2220: `/tmp` on the agent host is a tmpfs mounted `usrquota`, and the quota (80% of the filesystem's size
-// on this host, measured 2026-09-24) is reached while `df` still shows room: `df` read 80% and 3.1 GB free
-// while a 50 MB write was refused. The only symptom was unrelated test files that build git sandboxes under
-// /tmp going red. So the reading below comes from the QUOTA, and `df` is printed only as the contrast.
+// #2220: on 2026-09-23 `/tmp` on the agent host was a tmpfs mounted `usrquota`, and the quota (80% of the
+// filesystem's size, measured 2026-09-24) was reached while `df` still showed room: `df` read 80% and 3.1 GB
+// free while a 50 MB write was refused. The only symptom was unrelated test files that build git sandboxes
+// under /tmp going red. THAT HOST PREMISE HAS CHANGED: `/tmp` now sits on `/` (ext4, no `usrquota`) and the
+// 2026-09-25 outage was inode exhaustion, so on this host the reading below is NOT MEASURABLE. It stays as a
+// diagnostic for a host that does have a quota. The reading comes from the QUOTA, and `df` is printed only as
+// the contrast.
 const TMP = "/tmp";
 const KIB = 1024;
 /** A user this far into its quota is CONSTRAINED before it is exhausted: a test that clones a worktree
