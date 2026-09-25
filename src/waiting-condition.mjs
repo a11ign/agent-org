@@ -78,13 +78,35 @@ export const ANSWER_PREFIX = "answer:";
  * @returns {string | null}
  */
 export function answerOwedBy(row) {
+  return answersOwedBy(row)[0] ?? null;
+}
+
+/**
+ * EVERY session that owes an answer on this row, in label order -- `answerOwedBy` is this list's first
+ * entry, so there is ONE decision about what counts as a session name (#2202). The close path needs the
+ * whole list rather than the first: a row that closes while two sessions owe it an answer has two
+ * questions outstanding, and naming one of them would be the silent-void defect at half the size.
+ *
+ * WHY THE CLOSE PATH ASKS AT ALL. This wait is the one that is EXTINGUISHED rather than cleared by an
+ * unrelated event: `readOpenRows` is `--state open`, so the instant a merge closes the row it leaves the
+ * population `answer-owed` reads, and the wake stops with nothing saying it stopped. Measured
+ * 2026-09-22 on #1936, #1970 and #2034 -- each labelled 5m23s to 14m45s before a merged PR closed it,
+ * none of the three questions ever answered (`docs/operational-lessons.md`, "a merged PR's close voids
+ * `answer:<session>`"). A waiting condition must clear ITSELF, and being answered is the only event that
+ * may do it.
+ *
+ * @param {{labels?: ({name?: string} | string)[]}} row
+ * @returns {string[]}
+ */
+export function answersOwedBy(row) {
+  const sessions = [];
   for (const label of row?.labels ?? []) {
     const name = String(/** @type {any} */ (label)?.name ?? label);
     if (!name.startsWith(ANSWER_PREFIX)) continue;
     const session = name.slice(ANSWER_PREFIX.length).trim();
-    if (session) return session;
+    if (session) sessions.push(session);
   }
-  return null;
+  return sessions;
 }
 
 /** The length of `YYYY-MM-DD` -- what tells a date-only `Not-before:` value from a timestamped one. */

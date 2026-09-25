@@ -400,11 +400,12 @@ test("#1952: a busy, blocked or agentless role's ADDRESS is never lent to a seco
   for (const status of ["working", "blocked", "unknown"]) {
     const held = agents({ "worker-capture": status, "worker-judge": status, "worker-tooling": status });
     // #2403: the held address is skipped and the FAMILY supplies the next -- the address is never reused, and
-    // the pool no longer ends at the three, so what is refused here is a process under a held label.
-    assert.deepEqual(spawnableRole(ROW_ORDER, held, ROSTER), { role: "worker-4" });
+    // the pool no longer ends at the three, so what is refused here is a process under a held label. #2469: the
+    // family's address is the ROW's (`worker-2131`), not the lowest free counter.
+    assert.deepEqual(spawnableRole(ROW_ORDER, held, ROSTER), { role: "worker-2131" });
     const h = recordingHerdr();
     assert.deepEqual(deliver([ROW_ORDER], held, ROSTER, { run: h.run }).sent,
-      ["worker-4 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
+      ["worker-2131 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
     assert.deepEqual(h.said("workspace create").filter((line) => /--label worker-(capture|judge|tooling) /.test(line)), [],
       `a ${status} role's label is not reused`);
   }
@@ -471,27 +472,27 @@ test("#2279: the roster FOLLOWS THE FILE it is given -- names, order and role fi
   }
 });
 
-test("#2279 ACCEPTANCE: with all three standing engineers WORKING, `deliver` STARTS a process under worker-4", () => {
+test("#2279 ACCEPTANCE: with all three standing engineers WORKING, `deliver` STARTS a process under worker-<row>", () => {
   const h = recordingHerdr();
   const standingBusy = agents(Object.fromEntries(STANDING.map((r) => [r, "working"])));
   const got = deliver([ROW_ORDER], standingBusy, REAL_ROSTER, { run: h.run });
 
   assert.deepEqual(h.said("workspace create"),
-    ["--session org workspace create --label worker-4 --no-focus --env GH_CONFIG_DIR=/home/agent/workers/gh"]);
+    ["--session org workspace create --label worker-2131 --no-focus --env GH_CONFIG_DIR=/home/agent/workers/gh"]);
   assert.equal(h.said("agent start").length, 1);
-  assert.ok(h.said("agent start")[0].startsWith("--session org agent start worker-4 --kind claude "));
-  assert.deepEqual(got.sent, ["worker-4 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
+  assert.ok(h.said("agent start")[0].startsWith("--session org agent start worker-2131 --kind claude "));
+  assert.deepEqual(got.sent, ["worker-2131 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
   assert.deepEqual(got.refused, []);
 });
 
-test("#2279: the SECOND spare is next once worker-4 holds a process, in roster order", () => {
+test("#2279 / #2469: a counter-named spare holding a process does not move the NEXT one's name -- it is the row's", () => {
   const h = recordingHerdr();
   const held = agents({ ...Object.fromEntries(STANDING.map((r) => [r, "working"])), "worker-4": "working" });
   const got = deliver([ROW_ORDER], held, REAL_ROSTER, { run: h.run });
-  assert.deepEqual(got.sent, ["worker-5 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
+  assert.deepEqual(got.sent, ["worker-2131 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
 });
 
-test("#2403: every address held, INCLUDING worker-4 to worker-8, starts worker-9 -- there is no ceiling to refuse at", () => {
+test("#2403: every address held, INCLUDING worker-4 to worker-8, starts worker-<row> -- there is no ceiling to refuse at", () => {
   // Was #2279's POSITIVE CONTROL for the ceiling: the same order and roster with the five spares all holding a
   // process was REFUSED, and the text named the list as the ceiling. The chairman ruled on 2026-09-24 that the
   // pool has none, so the same fixture now allocates the next number and the refusal text is gone.
@@ -499,10 +500,10 @@ test("#2403: every address held, INCLUDING worker-4 to worker-8, starts worker-9
   const everyone = agents(Object.fromEntries([...REAL_ROSTER, ...SPARES].map((r) => [r, "working"])));
   const got = deliver([ROW_ORDER], everyone, REAL_ROSTER, { run: h.run });
 
-  assert.deepEqual(got.sent, ["worker-9 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
+  assert.deepEqual(got.sent, ["worker-2131 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
   assert.deepEqual(got.refused, []);
   assert.equal(h.said("workspace create").length, 1);
-  assert.ok(h.said("workspace create")[0].includes("--label worker-9 "));
+  assert.ok(h.said("workspace create")[0].includes("--label worker-2131 "));
 });
 
 test("#1952: at most one process per tick, and the second order says so rather than going quiet", () => {

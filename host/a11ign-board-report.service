@@ -39,6 +39,12 @@ Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin
 # other host units state it: the failure otherwise is silent, forever.
 Environment=HOME=/home/agent
 
+# V8'S COMPILE CACHE GOES UNDER THE HOME, NOT /tmp -- #2458. `tsc`, `eslint`, `rstest` and `changeset` (all reached
+# through `npm run`) call `enableCompileCache()` with no directory, which writes `<tmpdir>/node-compile-cache`:
+# one entry per file per checkout path, 141,353 inodes in the 2026-09-25 outage. A unit reads no shell startup
+# file, so this line is the ONLY place a unit can get it; `host-units.test.ts` pins it on every shipped service.
+Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache
+
 # WHICH ACCOUNT THIS DISPATCH SPENDS, DECLARED -- and this line CHANGES it, which the other two #1974
 # lines did not. Stated rather than inherited was only half the defect here; the inherited value was
 # also the wrong one.

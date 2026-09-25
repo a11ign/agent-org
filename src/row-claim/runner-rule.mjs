@@ -121,3 +121,37 @@ export function drainReason(mySession, drained) {
     + "review orders on a row you hold still reach you. The drain lifts itself if the last `spare-cycles` line "
     + "is not clean (`npm run spawn:cycles` prints it); removing the field ends it, and that is `ceo`'s.";
 }
+
+/**
+ * RULE: HAS THIS SPARE INSTANCE ALREADY HELD A ROW? -- #2407 (`ceo`, on the chairman's "one instance, one row").
+ *
+ * #2323 ended a spawned engineer "when its row closes" and #2324 stopped the router offering the standing three new
+ * rows, and neither closed the door this one does: B2 refuses only a session holding a row IN BUILD, so an instance
+ * whose pull request was in review looked free, and `worker-5` went on to hold three rows in two hours as one
+ * process and one ledger line. The router's half is {@link engineerEligibility}; **the offer alone is not the
+ * limit, the claim is the other half** -- an instance told to claim the next Ready row by hand goes around any router.
+ *
+ * THE FACT IS INJECTED, NOT READ HERE, as `drained` is. `instance.spare` is the roster's mark (a fact about a ROLE:
+ * a standing engineer is not refused, and names no process, #1951) and `instance.rows` is every row this instance
+ * holds or has held -- the registry beside the ledger plus the open rows labelled with its session, which the CLI
+ * reads. The row being claimed is never counted against itself, so RESUMING the instance's own row is not a second
+ * one and never reaches the refusal (`writeRowLabels` asks only when the claim is not already this session's).
+ *
+ * THE HONEST RESIDUAL: the interval between a row closing and the next tick observing it, when the label is gone and
+ * the registry has not yet recorded the row. That window is what the failed-cycle ledger line exists to catch
+ * (`cycleVerdict` writes `clean: false` for an instance that ends with two rows).
+ *
+ * @param {string} mySession
+ * @param {number} issueNumber the row being claimed
+ * @param {{ spare: boolean, rows: readonly number[] }} instance
+ * @returns {string | null} a refusal reason, or null if `mySession` may take this row
+ */
+export function oneRowReason(mySession, issueNumber, instance) {
+  if (!instance.spare) return null;
+  const others = [...new Set(instance.rows)].filter((row) => row !== issueNumber);
+  if (others.length === 0) return null;
+  return `one instance, one row: ${mySession} holds or has held ${others.map((row) => `#${row}`).join(", ")} `
+    + `(#2407), so this instance ends when ${others.length === 1 ? `#${others[0]} closes` : "its row closes"} and a new `
+    + "row gets a new instance -- the tick starts one for a Ready row. Nothing is retired: review and rework orders "
+    + "on the row you hold still reach you, and resuming that row is not refused.";
+}

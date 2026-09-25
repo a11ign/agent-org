@@ -302,6 +302,11 @@ export function readPrs(run = defaultRun) {
 export const GH_READS = Object.freeze({
   unconditional: ["pr list", "issue list --label ready", "issue list --label backlog",
     "issue list --label chairman-blocked", "issue list (all open: answer/blocked labels)",
+    // #2202: TWO SMALL CALLS, because a closed row still owing an answer is invisible to the open read above
+    // and `gh` cannot filter a label PREFIX. The first lists the repo's `answer:` label names, the second
+    // asks for the closed rows carrying any of them -- exact, so no window a row can fall out of silently.
+    "label list --search answer: (readClosedAnswerRows)",
+    "issue list --state closed --search label:<answer labels> (readClosedAnswerRows -- answer-owed on a closed row)",
     // #2356: ONE REST CALL on the core pool -- the newest runs of `trunk.yml` on `main` (readTrunkRed).
     "api actions/workflows/trunk.yml/runs (readTrunkRed -- trunk-red)"],
   conditionalOnEmptyShelf: "issue list --label epic (readEpics)",
@@ -973,6 +978,39 @@ export function readOpenRows(run = defaultRun) {
 }
 
 /**
+ * #2202: THE CLOSED ROWS THAT STILL OWE AN ANSWER -- the half of `answer-owed` that `readOpenRows` cannot see.
+ *
+ * `answer:<session>` is the org's only machine-readable "a named session still owes an answer here", and
+ * `readOpenRows` is `--state open`, so a merge that closed the row ended the wake and nothing said it had
+ * stopped. Measured 2026-09-22: #1936, #1970 and #2034, each labelled 5m23s to 14m45s before the merge that
+ * closed it, none of the three questions ever answered. The close path now KEEPS the label
+ * (`labelsToStrip`) and says so; this is what keeps acting on it.
+ *
+ * TWO CALLS, AND BOTH ARE EXACT. `gh` matches one whole label name, and this is a PREFIX over one name per
+ * session, so the repo's own `answer:` labels are listed first and the closed rows carrying any of them
+ * are asked for by name (`label:"a","b"` is GitHub's OR). A window over the newest closed rows would be
+ * one call, but a question older than the window would fall out of it -- the silent-void defect again,
+ * one level down -- so this pays the second call to have no such edge.
+ *
+ * @param {(args: string[]) => string} [run]
+ * @returns {any[] | null} `null` when refused, never `[]` -- "could not ask" is not "nobody owes anything"
+ */
+export function readClosedAnswerRows(run = defaultRun) {
+  try {
+    const labels = JSON.parse(run(["label", "list", "--search", ANSWER_PREFIX, "--limit", "100",
+      "--json", "name"]));
+    if (!Array.isArray(labels)) return null;
+    const names = labels.map((l) => l?.name).filter((n) => typeof n === "string" && n.startsWith(ANSWER_PREFIX));
+    if (names.length === 0) return [];
+    const parsed = JSON.parse(run(["issue", "list", "--state", "closed", "--limit", "100",
+      "--search", `label:${names.map((n) => `"${n}"`).join(",")}`, "--json", "number,title,labels,state"]));
+    return Array.isArray(parsed) ? withAnswerLabel(parsed) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The milestone the fleet batch is scoped to. Matches `fleet-gated-nightly.mjs`'s own constant, which is
  * where #914's bar is written down.
  */
@@ -1201,6 +1239,21 @@ export function hostDriftOrders(drift) {
  */
 const HOST_DRIFT_SESSION = "orchestrator";
 
+/**
+ * #2202: `readClosedAnswerRows` with its refusal SAID. Every other reader here degrades to `[]` silently, and
+ * that is the one shape this row exists to end for this question -- an answer owed that stopped waking a
+ * session with nothing saying it had -- so a refused read is a line, not an empty list.
+ * @returns {any[]}
+ */
+function closedAnswerRows() {
+  const rows = readClosedAnswerRows();
+  if (rows === null) {
+    process.stderr.write("NOTE: could not read the closed rows that still owe an answer -- a question on a row "
+      + "a merge already closed is NOT being chased this tick (#2202).\n");
+  }
+  return rows ?? [];
+}
+
 /** The rows that owe someone an answer. @param {any[]} rows */
 export function withAnswerLabel(rows) {
   return (rows ?? []).filter((r) => labelsOf(r).some((/** @type {string} */ n) => n.startsWith(ANSWER_PREFIX)));
@@ -1383,6 +1436,8 @@ export function answerOrders(rows) {
         prompt: `#${row.number} IS WAITING ON AN ANSWER FROM YOU. Another session asked you something `
           + "there and cannot move until you reply -- read that row's most recent comments for the "
           + "question.\n"
+          + (row.state === "CLOSED" ? "THE ROW IS CLOSED: a merge closed it while your answer was still owed, "
+            + "and closing did not answer it (#2202). A closed row takes a comment, so answer there.\n" : "")
           + `ANSWER ON THE ROW, then remove its \`${ANSWER_PREFIX}${session}\` label: taking the label `
           + "off IS the act of answering, and it is the only thing that stops this being asked again.\n"
           + "\"I cannot answer this\" is an answer -- say so, say who can, and re-label it to them. "
@@ -4456,7 +4511,7 @@ function main() {
   const decided = decide({ prs: withCommitChains(openPrs), readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required,
     epics: epicsWhenShelfEmpty(rows),
-    answerOwed: withAnswerLabel(allOpen), openRows: allOpen,
+    answerOwed: [...withAnswerLabel(allOpen), ...closedAnswerRows()], openRows: allOpen,
     // #2110: CONDITIONAL, and the condition is answered for free from the list already in hand --
     // `readOpenRows` fetched the labels, so "is anything claimed at all" costs no call. A quiet org with
     // nothing in progress pays nothing; a busy one pays exactly one, whatever the size of the queue.

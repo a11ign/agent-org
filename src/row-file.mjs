@@ -93,7 +93,7 @@
 import { execFileSync } from "node:child_process";
 import {
   acceptancePathsReason, classifyCommand, extractAcceptanceSection, fleetOrLabAcceptance, jobCapabilities,
-  unmetClosureRequirements, untrimmedFleetMention, handRunAcceptanceReason, labFetchPathReason,
+  unmetClosureRequirements, untrimmedFleetMention, declarationDisagreement, handRunAcceptanceReason, labFetchPathReason,
 } from "./acceptance-commands.mjs";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -106,7 +106,7 @@ import { moveProjectStatus, filedByLine, fetchLabels as fetchIssueLabels, ensure
 import { PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapshot.mjs";
 import { launchGate } from "./board-snapshot-scope.mjs";
 import { REPO } from "../../../scripts/repo-identity.mjs";
-import { declaredRegionFiles, directoryReservations, extractLabeledSection, extractRegionSection, slashlessDirectoryEntries, unrecognisedRegionPaths } from "./region-paths.mjs";
+import { declaredRegionFiles, declaresNoCommit, directoryReservations, extractLabeledSection, slashlessDirectoryEntries, unrecognisedRegionPaths } from "./region-paths.mjs";
 import { loadLanes, inLane } from "./lane-ownership.mjs";
 // #2111: both labels from the leaf module that OWNS them (#804), never the strings retyped -- a promotion
 // must refuse a row that is already claimed, and it writes `ready` four times. `ready-label-audit.test.ts`
@@ -284,14 +284,13 @@ export function regionRefusalReason(body) {
   // change files -- this row's own body says it twice -- and a declaration that can be made accidentally
   // somewhere else is the easy path past the check this refusal exists to close.
   //
-  // THROUGH `extractRegionSection`, NOT A REGEX. My first version wrote its own, and worker-judge found
-  // it disagrees with the shared one BOTH WAYS: the inline form (`Region: ...`) was invisible to mine, so
-  // a row using it could not make the declaration at all; and a `###` sub-heading ENDS the section
+  // THROUGH THE SHARED `declaresNoCommit`, NOT A REGEX (#2177 moved the sentence to `region-paths.mjs`, so
+  // `row-reachability` reads the same one). My first version wrote its own, and worker-judge found it
+  // disagrees with the shared extractor BOTH WAYS: the inline form (`Region: ...`) was invisible to mine,
+  // so a row using it could not make the declaration at all; and a `###` sub-heading ENDS the section
   // everywhere else (#170's recorded shape) while mine ran past it, so a declaration under `### Why`
-  // would have been accepted here and ignored by B4. **The section half is where all of this row's logic
-  // lives, so "the same function B4 reads" has to be true of the section, not only of the paths.**
-  const section = extractRegionSection(body);
-  if (section !== null && NOT_A_COMMIT.test(section)) return null;
+  // would have been accepted here and ignored by B4.
+  if (declaresNoCommit(body)) return null;
   return "REFUSING to file -- the `## Region` section names no file, and nothing says that is deliberate. "
     + "A Region naming no path reserves nothing under B4, so a row that simply FORGOT its paths is "
     + "indistinguishable from one that has none, and nobody can route around it. Either name the files "
@@ -299,9 +298,6 @@ export function regionRefusalReason(body) {
     + "the sentence #989's in-build rule already uses for a settings change, a ruling, or a measurement "
     + "posted on the row.";
 }
-
-/** #989's own words, so the clock and the filer name one category rather than two spellings. */
-const NOT_A_COMMIT = /its deliverable is not a commit/i;
 
 /**
  * A sentence in an Open-check that ASSERTS what the command prints. `Prints \`0\` today`, `returns 3`,
@@ -1187,7 +1183,7 @@ function laneLabelsOrRefusal(body, loadLanesConfig, argv) {
   // against real boxes), and dropping the path lane would route it away from the engineer who must write
   // the code. The two lanes answer different questions and a row may need both answers.
   const fleetReason = fleetOrLabAcceptance(body);
-  reportAcceptanceRouting(fleetReason, untrimmedFleetMention(body));
+  reportAcceptanceRouting(fleetReason, untrimmedFleetMention(body), declarationDisagreement(body));
   const routed = withAcceptanceLane(laneLabels, fleetReason);
   const labelProblem = labelRefusal(argv, routed);
   return labelProblem ? { ok: false, message: labelProblem } : { ok: true, laneLabels: routed };
@@ -1214,10 +1210,19 @@ export function withAcceptanceLane(laneLabels, fleetReason) {
  * #1988: THE SECOND TRIM IS NAMED IN THE SAME LINE. A scope-disclaiming paragraph now stops a NAMED
  * pattern routing the row, and a second silent trim would have re-made exactly the defect #1912 closed --
  * so the line says which of the two it was, and what to do about each.
+ *
+ * #2175: THE ROW'S OWN ANSWER IS THE THIRD THING A LANE CAN BE DECIDED BY, and where it and a pattern
+ * disagree the line says so -- it was resolved in the pattern's favour, silently, before. It comes first:
+ * it says everything the two lines below would, and says which side won.
  * @param {string | null} fleetReason
  * @param {{ reason: string, form: "bullet" | "scope disclaimer" } | null} untrimmed
+ * @param {{ declared: "no" | "yes", routed: boolean, reason: string | null } | null} disagreement
  */
-function reportAcceptanceRouting(fleetReason, untrimmed) {
+function reportAcceptanceRouting(fleetReason, untrimmed, disagreement) {
+  if (disagreement) {
+    process.stderr.write(`${disagreementLine(disagreement)}\n`);
+    return;
+  }
   if (fleetReason) {
     process.stderr.write(`row-file: lane:orchestrator added -- the Acceptance ${fleetReason}.\n`);
   } else if (untrimmed) {
@@ -1228,6 +1233,29 @@ function reportAcceptanceRouting(fleetReason, untrimmed) {
     process.stderr.write("row-file: NOT routed to orchestrator -- a "
       + `${untrimmed.form} in the Acceptance names something that ${untrimmed.reason}, and ${remedy}.\n`);
   }
+}
+
+/**
+ * #2175: the one stderr line for a declaration that disagrees with the patterns. Each shape names the
+ * question it quotes, which side won, and the one thing the filer can do about it.
+ * @param {{ declared: "no" | "yes", routed: boolean, reason: string | null }} d
+ * @returns {string}
+ */
+function disagreementLine({ declared, routed, reason }) {
+  const question = '"Does the acceptance need the fleet or the lab?"';
+  if (declared === "yes") {
+    return `row-file: lane:orchestrator added -- the row declares "Yes" to ${question}, though no pattern in `
+      + "the Acceptance names the fleet or the lab. A declaration outranks a pattern (#2175); if the answer "
+      + "is wrong, change it.";
+  }
+  if (routed) {
+    return `row-file: lane:orchestrator added although the row declares "No" to ${question} -- the Acceptance `
+      + `${reason}. A declaration silences only the named patterns, never an invocation (#2175); if the row `
+      + "does not run it, say so without the command, and if it does, change the answer.";
+  }
+  return `row-file: NOT routed to orchestrator -- the row declares "No" to ${question}, and the Acceptance `
+    + `names something that ${reason}. A declaration outranks a pattern (#2175). If the row DOES need it, `
+    + "change the answer.";
 }
 
 /**
