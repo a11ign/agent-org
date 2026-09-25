@@ -33,7 +33,7 @@ import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, syst
   entriesFromCommand, ghSpawnReachedFrom, identityDrift, unitsSpendingGh, opaqueCommands,
   retiredHere, addedOnSomeRef, orphanOrigin, shellCommandWords, shellSpawnsGh, shippedHostScripts,
   supersededHostScripts, unitEntryPoints, missingUnitPrograms, workingDirectoryOf,
-  programCandidates, hostIdentityDrift, hostIdentityNotes, hostIdentityInstall, ownedIdentityFiles,
+  programCandidates, hostIdentityDrift, hostIdentityNotes, hostIdentityInstall, ownedIdentityFiles, compileCacheNotes,
   WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift, declaredCompileCache } from "../host-units.mjs";
 
 const SYSTEMD_OK = () => "LANG=C\n";
@@ -2007,6 +2007,35 @@ test("#2332: a person's global user.name/user.email is a NOTE -- reported, never
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+// --- #2552: THE INTERACTIVE HALF OF THE COMPILE CACHE, which `compileCacheDrift` cannot see ------------
+
+test("#2552: a .zshenv that does not export NODE_COMPILE_CACHE under $HOME/.cache is ONE note, never a failure", () => {
+  const home = "/home/agent";
+  const notes = (zshenv: string | null) => compileCacheNotes({ home, zshenvPath: `${home}/.zshenv`,
+    read: ((path: string) => {
+      if (zshenv === null) throw new Error(`ENOENT: ${path}`);
+      return zshenv;
+    }) as never });
+  assert.equal(notes("export PATH=/usr/local/bin:$PATH\n").length, 1, "no such line");
+  assert.equal(notes("export NODE_COMPILE_CACHE=/tmp/node-compile-cache\n").length, 1, "pointing at /tmp");
+  assert.equal(notes("# export NODE_COMPILE_CACHE=\"$HOME/.cache/x\"\n").length, 1, "a comment is not an export");
+  assert.equal(notes(null).length, 1, "a missing file is the regression itself");
+  assert.equal(notes('export NODE_COMPILE_CACHE="$HOME/.cache/node-compile-cache"\n\nexport X=1\n').length, 0,
+    "CONTROL: the shipped spelling reads clean");
+  assert.equal(notes("export NODE_COMPILE_CACHE=${HOME}/.cache/nc\n").length, 0, "braced HOME");
+  assert.equal(notes("export NODE_COMPILE_CACHE=/home/agent/.cache/nc\n").length, 0, "the literal home");
+  assert.equal(notes('export NODE_COMPILE_CACHE="$HOME/.cache/nc"\nexport NODE_COMPILE_CACHE=/tmp/x\n').length, 1,
+    "the LAST export is the one in force");
+  const [note] = notes(null);
+  assert.equal(note.problem, "INTERACTIVE SHELLS GET NO COMPILE CACHE UNDER THE HOME");
+  assert.equal(note.unit, `${home}/.zshenv`);
+  const report = driftReport([], true, [note]);
+  assert.match(report, /^host units: every shipped unit is installed/, "a note never turns a clean host into problems");
+  assert.doesNotMatch(report, /problem\(s\)/);
+  assert.equal(compileCacheNotes({ home: "", read: (() => "export NODE_COMPILE_CACHE=/.cache/x\n") as never }).length, 1,
+    "an unset HOME cannot make `/.cache` count as under the home");
+});
+
 test("#2332: END TO END -- `host:install` then `host:check --json` on a temp HOME: files match, notes are NOT findings", () => {
   // The real entry point, so `main`'s wiring (install writes the files; --json carries `notes` apart from
   // `findings`, which is what the gate wakes a session on) is exercised rather than assumed.
@@ -2018,6 +2047,7 @@ test("#2332: END TO END -- `host:install` then `host:check --json` on a temp HOM
       { mode: 0o755 });
     writeFileSync(join(home, ".gitconfig"), helperFile(["", `!${home}/.local/bin/gh auth git-credential`])
       + "[user]\n\tname = Dan Beck\n");
+    writeFileSync(join(home, ".zshenv"), 'export NODE_COMPILE_CACHE="$HOME/.cache/node-compile-cache"\n');
     const env = { PATH: `${bin}:${process.env.PATH}`, HOME: home };
     const entry = join(REPO_ROOT, "packages/agent-org/src/host-units.mjs");
     const run = (...args: string[]) => spawnSync(process.execPath, [entry, ...args], { encoding: "utf8", env });
@@ -2028,7 +2058,13 @@ test("#2332: END TO END -- `host:install` then `host:check --json` on a temp HOM
     assert.match(install.stdout, /installed .*\/\.local\/bin\/gh/);
     const after = JSON.parse(run("--json").stdout);
     assert.deepEqual(identityFindings(JSON.stringify(after)), [], "after the install every identity file matches");
-    assert.equal(after.notes.length, 1, "the person's user.name is carried as a note");
+    assert.equal(after.notes.length, 1, "the person's user.name is carried as a note, and the correct .zshenv adds none");
+    rmSync(join(home, ".zshenv"));
+    const without = JSON.parse(run("--json").stdout);
+    assert.deepEqual(without.notes.map((n: { problem: string }) => n.problem).sort(),
+      ["GLOBAL GIT IDENTITY IS A PERSON'S", "INTERACTIVE SHELLS GET NO COMPILE CACHE UNDER THE HOME"],
+      "WIRING: `host:check --json` carries the compile-cache note when the account's .zshenv is gone");
+    assert.ok(without.findings.every((f: { unit: string }) => !f.unit.endsWith(".zshenv")), "and never as a finding");
     assert.ok(after.findings.every((f: { problem: string }) => !/GLOBAL GIT IDENTITY/.test(f.problem)),
       "and NEVER as a finding, because the gate wakes a session on findings");
     assert.equal(statSync(join(home, ".local/bin/gh")).mode & PERMISSION_BITS, RWX_R_X_R_X);
