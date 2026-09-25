@@ -92,10 +92,10 @@ test("#2324 (1) ACCEPTANCE: all three standing engineers IDLE and drained -> `de
   const drained = activeDrain({ cycles: "x", read: reading("") });
   const got = deliver([ROW_ORDER], ALL_IDLE, REAL_ROSTER, { run: h.run, ...drainDeps(drained) });
 
-  assert.deepEqual(got.sent, ["worker-4 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
+  assert.deepEqual(got.sent, ["worker-2131 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
   assert.deepEqual(got.refused, []);
   assert.equal(h.said("agent prompt").length, 1);
-  assert.ok(h.said("agent prompt")[0].includes("agent prompt worker-4 "), "the one prompt went to the spare");
+  assert.ok(h.said("agent prompt")[0].includes("agent prompt worker-2131 "), "the one prompt went to the spare");
   assert.deepEqual(h.said("/clear"), [], "no standing engineer was cleared, let alone prompted");
 });
 
@@ -121,14 +121,14 @@ test("#2324: with every spare taken, the drained three are STILL not offered the
   const spares = ["worker-4", "worker-5", "worker-6", "worker-7", "worker-8"];
   const everyone = agents(Object.fromEntries([...REAL_ROSTER, ...spares].map((r) => [r, STANDING.includes(r) ? "idle" : "working"])));
   // The refusal `route` reports is what names the drain, and #2403 means `deliver` no longer STOPS at it: the pool
-  // has no ceiling, so the row goes to a fresh `worker-9` and the drained three are still never prompted.
+  // has no ceiling, so the row goes to a fresh `worker-2131` (named for the row, #2469) and the drained three are still never prompted.
   const routed = route("engineers", everyone, withSpareInstances(REAL_ROSTER, everyone), engineerEligibility({ drained: drainedRoles() }));
   assert.match(String((routed as { refusal: string }).refusal), /no engineer is idle and allowed to claim \(worker-capture=drained \(#2324\), worker-judge=drained \(#2324\), worker-tooling=drained \(#2324\), worker-4=working/);
   assert.ok(String((routed as { refusal: string }).refusal).includes(DRAINED_SEEN));
 
   const got = deliver([ROW_ORDER], everyone, REAL_ROSTER, { run: h.run, ...drainDeps(drainedRoles()) });
-  assert.deepEqual(got.sent, ["worker-9 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
-  assert.ok(h.said("agent prompt").every((line) => line.includes("worker-9")),
+  assert.deepEqual(got.sent, ["worker-2131 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)"]);
+  assert.ok(h.said("agent prompt").every((line) => line.includes("worker-2131")),
     "the row falls to the new instance, never to a drained engineer");
 });
 
@@ -136,7 +136,7 @@ test("#2324: a drained role is never SPAWNED INTO either, even when its own proc
   // `spawnableRole` starts into the first ABSENT role. A drained standing role that died is absent, and an
   // instance started under its address would be refused at the claim and sit holding it.
   const got = spawnableRole(ROW_ORDER, NOBODY, REAL_ROSTER, STANDING);
-  assert.deepEqual(got, { role: "worker-4" });
+  assert.deepEqual(got, { role: "worker-2131" });
   assert.deepEqual(spawnableRole(ROW_ORDER, NOBODY, REAL_ROSTER), { role: "worker-capture" },
     "control: without the drain the first absent role is the standing one, as it always was");
 });
@@ -149,7 +149,7 @@ test("#2324 (2): a drained role holding a row still receives the orders about TH
 
   assert.deepEqual(got.sent, [
     "worker-judge <- worker-judge/review-verdict/2100",
-    "worker-4 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)",
+    "worker-2131 <- engineers/ready-row-unclaimed/2131 (STARTED sonnet/high)",
   ], "the named order reached the drained engineer; the pool order went to a spare");
   assert.deepEqual(got.refused, []);
 });

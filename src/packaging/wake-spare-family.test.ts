@@ -1,8 +1,8 @@
 // no-token: gh -- every `gh` and `herdr` here is an injected `run` seam; nothing imported spawns the real one
 /**
  * #2403: the engineer pool has NO CEILING. `sessions.json` declares the spare engineers as ONE FAMILY (`worker-<n>`
- * for n from 4) and, when every address holds a process and a claimable row waits, `spawnableRole` allocates the
- * lowest free number instead of refusing at the list's length.
+ * for n from 4) and, when every address holds a process and a claimable row waits, `spawnableRole` allocates a
+ * spare instead of refusing at the list's length (#2469: named for the row, no longer the lowest free number).
  *
  * Its own file, and not a block in `wake.test.ts`, for #2280's reason: that file spawns `route`, which reaches `gh`,
  * so the token-less acceptance job refused it and verified nothing. Every fact read here -- herdr, GitHub, the
@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deliver, spawnableRole, nextSpareLabel, withSpareInstances, engineerRoles, spareInstances,
+import { deliver, spawnableRole, spareLabelForRow, withSpareInstances, engineerRoles, spareInstances,
   endFinishedSpares, readSpareCycles, consecutiveClean, route }
   from "../wake.mjs";
 import { isLiveSession, familyNumber, unknownSessionLabels, labelArmedPr, LIVE_SESSIONS, SPARE_FAMILIES }
@@ -53,53 +53,44 @@ function recordingHerdr() {
 }
 
 // --- Done-when 1: the allocation --------------------------------------------------------------------------------
+// #2469: a spare is NAMED FOR ITS ROW (`worker-<row>`), so the tests that once read the LOWEST free counter now read
+// the row's own number; what they still pin is that there is NO CEILING and that a held address is not shared.
 
-test("#2403 ACCEPTANCE (1): with all eight addresses busy the allocation is worker-9, not a refusal", () => {
+test("#2403 ACCEPTANCE (1): with all eight addresses busy the spare is named for the row, not refused", () => {
   // The row's own Open-check shape: the eight-name roster, every one working, the standing three drained.
   const busy = agents(Object.fromEntries(ROSTER_OF_EIGHT.map((r) => [r, "working"])));
-  assert.deepEqual(spawnableRole(ROW_ORDER, busy, ROSTER_OF_EIGHT, STANDING), { role: "worker-9" });
+  assert.deepEqual(spawnableRole(ROW_ORDER, busy, ROSTER_OF_EIGHT, STANDING), { role: "worker-2403" });
   // And through `deliver`, against the REAL roster: only the standing three are listed there, and the five spares
   // that hold a process are found among the agents -- so the answer is the same.
   const h = recordingHerdr();
   const got = deliver([ROW_ORDER], busy, REAL_ROSTER, { run: h.run });
-  assert.deepEqual(got.sent, ["worker-9 <- engineers/ready-row-unclaimed/2403 (STARTED sonnet/high)"]);
+  assert.deepEqual(got.sent, ["worker-2403 <- engineers/ready-row-unclaimed/2403 (STARTED sonnet/high)"]);
   assert.deepEqual(got.refused, []);
-  assert.ok(h.said("workspace create")[0].includes("--label worker-9 "));
+  assert.ok(h.said("workspace create")[0].includes("--label worker-2403 "));
 });
 
-test("#2403 ACCEPTANCE (1): with worker-9 busy and worker-5 free it is worker-5 -- LOWEST FIRST", () => {
+test("#2403: a free counter number no longer decides the name -- worker-5 free, and the row is still worker-2403", () => {
   const spec = Object.fromEntries(ROSTER_OF_EIGHT.map((r) => [r, "working"]));
   delete spec["worker-5"];
-  const busy = agents({ ...spec, "worker-9": "working" });
-  assert.deepEqual(spawnableRole(ROW_ORDER, busy, ROSTER_OF_EIGHT, STANDING), { role: "worker-5" });
-  // The same fact with NO spare named in the roster at all -- the shape of the real file -- so the family alone
-  // must find the gap.
+  const gap = agents({ ...spec, "worker-9": "working" });
+  assert.deepEqual(spawnableRole(ROW_ORDER, gap, ROSTER_OF_EIGHT, STANDING), { role: "worker-5" },
+    "a roster that LISTS an absent spare still offers it first (the fixture shape; the real file lists none)");
   const realShape = agents({ ...Object.fromEntries(STANDING.map((r) => [r, "working"])), "worker-4": "working",
     "worker-6": "working", "worker-9": "working" });
-  assert.deepEqual(spawnableRole(ROW_ORDER, realShape, REAL_ROSTER), { role: "worker-5" });
-  // CONTROL: the gap is the only thing that changed, so the answer moves when it closes.
-  assert.deepEqual(spawnableRole(ROW_ORDER, [...realShape, ...agents({ "worker-5": "working" })], REAL_ROSTER),
-    { role: "worker-7" });
+  assert.deepEqual(spawnableRole(ROW_ORDER, realShape, REAL_ROSTER), { role: "worker-2403" },
+    "the real roster lists no spare, so the gap at worker-5 is not filled");
 });
 
-test("#2403: any process at an address holds it -- working, blocked, unknown or idle -- and a drained one is skipped", () => {
-  for (const status of ["working", "blocked", "unknown", "idle"]) {
-    const held = agents({ ...Object.fromEntries(STANDING.map((r) => [r, "working"])), "worker-4": status });
-    assert.equal(nextSpareLabel({ agents: held }), "worker-5", `a ${status} process still holds worker-4`);
-  }
-  assert.equal(nextSpareLabel({ agents: [], drained: ["worker-4"] }), "worker-5", "a drained address is not spawned into");
-  assert.equal(nextSpareLabel({ agents: [] }), "worker-4", "control: with nothing held the first number is the family's `from`");
-});
-
-test("#2403: no count appears -- twenty busy spares still allocate, and the `ceiling` refusal text is gone", () => {
+test("#2403: no count appears -- twenty busy spares still spawn, and the `ceiling` refusal text is gone", () => {
   const spares = Array.from({ length: 20 }, (_, i) => `worker-${i + 4}`);
   const busy = agents(Object.fromEntries([...STANDING, ...spares].map((r) => [r, "working"])));
-  assert.deepEqual(spawnableRole(ROW_ORDER, busy, REAL_ROSTER), { role: "worker-24" });
+  assert.deepEqual(spawnableRole(ROW_ORDER, busy, REAL_ROSTER), { role: "worker-2403" });
   const source = readFileSync(new URL("../wake.mjs", import.meta.url), "utf8");
   assert.ok(!/that is the\s*"?\s*\+?\s*"?ceiling/.test(source) && !source.includes("adding one is `ceo`'s"),
     "the refusal that called the roster's size the ceiling no longer exists");
   // The one refusal left is a roster that DECLARES no family, and it does not call anything a ceiling.
-  assert.equal(nextSpareLabel({ agents: busy, families: [] }), null);
+  assert.equal(spareLabelForRow({ row: 2403, families: [] }), null);
+  assert.equal(spareLabelForRow({ row: 2403 }), "worker-2403");
   assert.ok(SPARE_FAMILIES.length === 1, "the positive control: the real file declares a family, so the case above is the fixture's");
 });
 
@@ -121,7 +112,7 @@ test("#2403: ONE spawn per tick still holds, and an instance that exists is OFFE
   const second = { ...ROW_ORDER, causeKey: "engineers/ready-row-unclaimed/2404" };
   const got = deliver([ROW_ORDER, second], busy, REAL_ROSTER, { run: h.run });
   assert.equal(h.said("agent start").length, 1, "MAX_SPAWNS_PER_TICK is untouched");
-  assert.deepEqual(got.sent, ["worker-4 <- engineers/ready-row-unclaimed/2403 (STARTED sonnet/high)"]);
+  assert.deepEqual(got.sent, ["worker-2403 <- engineers/ready-row-unclaimed/2403 (STARTED sonnet/high)"]);
 
   // An idle worker-12 (a spawn whose prompt was refused, left running) is a roster member for `route`, so the
   // next order goes to it rather than starting worker-4.

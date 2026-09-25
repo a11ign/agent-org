@@ -362,7 +362,7 @@ export const SPAWN_CAUSES = Object.freeze(["ready-row-unclaimed"]);
  *
  * ADDRESSES THE FILE NAMES, NEVER THE FAMILY (#2403): the `worker-<n>` entry is a RULE for addresses, not one, so
  * it is not in this list. The instances that exist reach the offer through {@link withSpareInstances}, and the
- * next free number is {@link nextSpareLabel}'s.
+ * name a NEW one is given is {@link spareLabelForRow}'s.
  *
  * @param {string | URL} [path] the roster file; a parameter so a test can hand it a fixture
  * @returns {string[]}
@@ -456,15 +456,19 @@ export function isPilotOrder(order) {
  *
  * THERE IS NO CEILING (#2403, the chairman, 2026-09-24). The roster was a list of five and its size was the
  * bound, lifted by an edit once somebody read the refusal in a log. Now, when every address in `roster` holds
- * a process, {@link nextSpareLabel} allocates the LOWEST free number of the family, so the bound is the orders
- * `route` could not place, one per tick (`MAX_SPAWNS_PER_TICK`), for rows `spawnClaimability` finds claimable
- * -- and no count appears here. A spare is ENDED when its row closes (`endFinishedSpares`, #2323), so its
- * address is free again for the next row's instance and the numbers stay as small as the concurrency needs.
+ * a process, {@link spareLabelForRow} names the spare for the order's ROW (`worker-<row>`, #2469), so the bound is
+ * the orders `route` could not place, one per tick (`MAX_SPAWNS_PER_TICK`), for rows `spawnClaimability` finds
+ * claimable -- and no count appears here. A spare is ENDED when its row closes (`endFinishedSpares`, #2323), so
+ * its address is free again should that row reopen, and the same row is then given the same name.
+ *
+ * AN ADDRESS THAT HOLDS A PROCESS IS REFUSED, never shared (#2469): a counter-named instance that is running
+ * keeps its name and drains out (`withSpareInstances` still offers it work), so a row whose own address is taken
+ * waits, with the address and its status in the reason.
  *
  * A DRAINED ROLE IS NEVER SPAWNED INTO (#2324), even when absent: `row-claim` refuses it a claim, so an instance
  * started under its address could read the order, be refused, and sit there holding the address.
  *
- * @param {{session: string, cause?: string}} order
+ * @param {{session: string, causeKey: string, cause?: string}} order
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster engineer labels, in the order they should be offered work
  * @param {readonly string[]} [drained] the roles the drain holds back now
@@ -479,38 +483,43 @@ export function spawnableRole(order, agents, roster, drained = []) {
     return { refusal: `no spawn: "${order.cause ?? "an order carrying no cause"}" is not a pilot cause `
       + `(${SPAWN_CAUSES.join(", ")})` };
   }
-  const role = roster.find((label) => !agents.some((a) => a.label === label) && !drained.includes(label))
-    ?? nextSpareLabel({ agents, drained });
-  if (role === null) {
-    const seen = roster.map((label) => `${label}=${agents.find((a) => a.label === label)?.status}`).join(", ");
-    return { refusal: `no spawn: all ${roster.length} engineer roles hold a process (${seen}) and \`sessions.json\` `
-      + "declares no spare family to allocate the next address from (#2403). A busy, blocked or agentless one "
-      + "is not reused, and `spawnableRole` says why for each" };
+  const listed = roster.find((label) => !agents.some((a) => a.label === label) && !drained.includes(label));
+  if (listed !== undefined) return { role: listed };
+  const seen = roster.map((label) => `${label}=${agents.find((a) => a.label === label)?.status}`).join(", ");
+  const row = rowOfOrder(order);
+  const label = spareLabelForRow({ row });
+  if (label === null) {
+    return { refusal: `no spawn: all ${roster.length} engineer roles hold a process (${seen}) and this order names `
+      + "no row a spare could be named for, or `sessions.json` declares no spare family to name it in (#2469). A "
+      + "busy, blocked or agentless one is not reused, and `spawnableRole` says why for each" };
   }
-  return { role };
+  const holder = agents.find((a) => a.label === label);
+  if (holder !== undefined || drained.includes(label)) {
+    return { refusal: `no spawn: "${label}" is the address row #${row} would be named, and it `
+      + `${holder === undefined ? "is drained" : `already holds a process (${holder.status})`} -- a second process `
+      + "under one address would share one B2 budget, so the row waits for that process to end (#2469)" };
+  }
+  return { role: label };
 }
 
 /**
- * The next address of a spare family: the LOWEST number, from the family's `from`, that holds no process and is
- * not drained -- or `null` when the roster declares no family (#2403).
+ * The address a spare engineer for `row` answers to: the family's prefix and the ROW's number -- `worker-2469` for
+ * row #2469 -- or `null` when there is no row to name it for, the roster declares no family, or the number falls
+ * below the family's `from` (a name {@link familyNumber} would not recognise, so nothing could route to it) (#2469).
  *
- * LOWEST FIRST, AND THAT IS WHAT KEEPS THE NUMBERS SMALL. A finished spare's workspace is closed and its address
- * is free again, so `worker-5` finishing while `worker-9` still works makes `worker-5` the next answer; the
- * numbers track the concurrency and not the count of rows the org has ever run. ONE family is declared, and the
- * first is the one allocated from. ANY process at an address
- * holds it, whatever its status, for the reason {@link spawnableRole} gives for `working`, `blocked` and
- * `unknown`. The loop ends because a tick's agents are finite.
+ * NAMED FOR THE ROW, NEVER COUNTED (`ceo`'s ruling on #2407, section 2). A counter name was reused across unrelated
+ * rows (`worker-4` held six), so nobody reading the ledger or a herdr list could tell which row a name meant; a
+ * spare holds ONE row (#2407), so the row is the name and it stays true. A pure function of the row: whether the
+ * address is already held is {@link spawnableRole}'s to answer, because that needs the agents and this does not.
+ * ONE family is declared, and the first is the one named from.
  *
- * @param {{ agents: {label: string}[], drained?: readonly string[], families?: readonly {prefix: string, from: number}[] }} args
+ * @param {{ row: number | null, families?: readonly {prefix: string, from: number}[] }} args
  * @returns {string | null}
  */
-export function nextSpareLabel({ agents, drained = [], families = SPARE_FAMILIES }) {
-  const taken = new Set([...agents.map((a) => a.label), ...drained]);
+export function spareLabelForRow({ row, families = SPARE_FAMILIES }) {
   const family = families[0];
-  if (family === undefined) return null;
-  let n = family.from;
-  while (taken.has(`${family.prefix}${n}`)) n += 1;
-  return `${family.prefix}${n}`;
+  if (family === undefined || row === null || row < family.from) return null;
+  return `${family.prefix}${row}`;
 }
 
 /**
@@ -520,7 +529,7 @@ export function nextSpareLabel({ agents, drained = [], families = SPARE_FAMILIES
  * WITHOUT THIS A SPAWNED `worker-9` IS INVISIBLE TO `route`. The file lists a family as a rule, so the next
  * tick's roster held no `worker-9` and an instance that had started (and was idle, waiting for its order after
  * a refused prompt) could never be offered one -- the very case `deliver` says the ordinary path handles.
- * Present instances only: an absent address is {@link nextSpareLabel}'s to allocate, never `route`'s to offer.
+ * Present instances only: an absent address is {@link spareLabelForRow}'s to name, never `route`'s to offer.
  *
  * @param {string[]} roster @param {{label: string}[]} agents
  * @param {readonly {prefix: string, from: number}[]} [families]
