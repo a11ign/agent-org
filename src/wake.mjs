@@ -1186,6 +1186,15 @@ function deliveredId(entry) {
 }
 
 /**
+ * A DROP IS A LINE OF ITS OWN TOO, AND IT IS NOT A DELIVERY (#2459). See {@link recordDrop}.
+ * @param {unknown} entry @returns {string | null} the id this line retires as DROPPED, or `null`
+ */
+function droppedId(entry) {
+  const id = /** @type {any} */ (entry)?.dropped;
+  return typeof id === "string" ? id : null;
+}
+
+/**
  * Every order still waiting in the queue: the file REPLAYED IN ORDER, not filtered.
  *
  * THE FILE IS A LOG AND THIS IS ITS FOLD, which is what lets {@link dropHandoffs} append instead of
@@ -1220,8 +1229,8 @@ export function readHandoffs(path, read = readFileSync) {
     const text = line.trim();
     if (!text) continue;
     const entry = JSON.parse(text);
-    const delivered = deliveredId(entry);
-    if (delivered !== null) { byId.delete(delivered); continue; }
+    const retired = deliveredId(entry) ?? droppedId(entry);
+    if (retired !== null) { byId.delete(retired); continue; }
     if (typeof entry.id !== "string" || typeof entry.session !== "string"
       || typeof entry.prompt !== "string") {
       throw new Error(`wake: queued order is missing id/session/prompt: ${text.slice(0, 120)}`);
@@ -1418,30 +1427,328 @@ export function handoffBacklog(handoffs, now = Date.now()) {
  * repo's Assertions rule -- the positive control is `handoffBacklog`'s own non-empty case, pinned beside
  * it).
  *
+ * A TARGET THAT DOES NOT EXIST IS NOT A TARGET THAT IS NEVER IDLE (#2459). Given the live `agents`, a row whose
+ * session has no workspace says so, and the stalled-inbox warning -- true only of a session that EXISTS -- is
+ * replaced by what is true of one that does not. Without `agents` (herdr did not answer) nothing is known
+ * about any target, and the report reads as it always did.
+ *
  * @param {readonly {session: string, waiting: number, oldestMs: number, stale: number,
  *   decisions?: number}[]} backlog
+ * @param {readonly {label: string}[] | null} [agents]
  * @returns {string[]}
  */
-export function backlogReport(backlog) {
+export function backlogReport(backlog, agents = null) {
   if (backlog.length === 0) return [];
   const lines = backlog.map((b) => `QUEUE BACKLOG ${b.session}: ${b.waiting} authored order(s) waiting, `
     + `oldest ${waitedFor(b.oldestMs)}`
     + (b.stale > 0 ? `, ${b.stale} over ${Math.round(HANDOFF_STALE_MS / 3_600_000)}h` : "")
     + (b.decisions ? `, ${b.decisions} declared as asking for a decision` : "")
+    + (agents !== null && isAbsent(b.session, agents) ? `, NO workspace is labelled "${b.session}"` : "")
     + "\n");
   const worst = backlog[0];
   if (worst.stale === 0) return lines;
-  // THE ONE THING A COUNT DOES NOT SAY. Delivery is gated on the TARGET being between tasks, so a target
-  // that is never between tasks holds its inbox for ever and no amount of ticking changes that. Nothing
-  // here is dropped and nothing here is forced -- #1966's measurement is that forcing a delivery into a
-  // working session wipes what it was doing -- so the only thing that clears a stalled inbox is that
-  // session finishing a turn, or somebody noticing it never does.
-  lines.push(`QUEUE BACKLOG: "${worst.session}" has held an order for ${waitedFor(worst.oldestMs)}. `
+  lines.push(agents !== null && isAbsent(worst.session, agents) ? absentAdvice(worst) : stalledInboxAdvice(worst));
+  return lines;
+}
+
+/**
+ * THE ONE THING A COUNT DOES NOT SAY. Delivery is gated on the TARGET being between tasks, so a target
+ * that is never between tasks holds its inbox for ever and no amount of ticking changes that. Nothing
+ * here is dropped and nothing here is forced -- #1966's measurement is that forcing a delivery into a
+ * working session wipes what it was doing -- so the only thing that clears a stalled inbox is that
+ * session finishing a turn, or somebody noticing it never does.
+ * @param {{session: string, oldestMs: number}} worst @returns {string}
+ */
+function stalledInboxAdvice(worst) {
+  return `QUEUE BACKLOG: "${worst.session}" has held an order for ${waitedFor(worst.oldestMs)}. `
     + "An authored order is delivered only when the gate judges its target BETWEEN TASKS, so a session "
     + "that is never idle never receives one, and nothing here overrides that -- forcing a delivery into "
     + "a working session wipes what it was mid-way through (#1966). If this repeats, that session's "
-    + "inbox is not being read: route around it, or stop sending it reports it does not need.\n");
-  return lines;
+    + "inbox is not being read: route around it, or stop sending it reports it does not need.\n";
+}
+
+/**
+ * WHAT IS TRUE OF A SESSION THAT IS NOT THERE: it has no inbox, so nobody is failing to read one. And the order is
+ * KEPT, because absent is not ended -- see {@link targetState}.
+ * @param {{session: string, oldestMs: number}} worst @returns {string}
+ */
+function absentAdvice(worst) {
+  return `QUEUE BACKLOG: no session is labelled "${worst.session}", so its order (waiting ${waitedFor(worst.oldestMs)}) `
+    + "has no addressee -- this is NOT a busy session's unread inbox. It is KEPT rather than dropped, because "
+    + "the tick has no record that this session ended: it may be an instance the gate has not started yet "
+    + "(a reviewer is started AFTER an order for it can already be queued), or one that was closed without "
+    + "a teardown. If it is neither, re-send the order to whoever holds the row it names.\n";
+}
+
+// --- #2459: AN ORDER TO A SESSION THAT HAS ENDED HAS NO ADDRESSEE, AND THE QUEUE USED TO KEEP IT FOR EVER ---
+//
+// Measured 2026-09-25 (#2459): an order for `worker-12` sat 7.1h and the tick said, every time, that a busy
+// session's inbox was not being read. `worker-12` had been TORN DOWN -- engineer instances are one per row
+// (#2323) -- so there was no inbox, and `route` refused it with `no workspace labelled` on every tick. Keeping
+// an order for a session that is busy is right (#1966: forcing a delivery wipes the work it interrupts); a
+// session that does not exist has nothing to wipe, and the same rule had been applied to it anyway.
+//
+// THREE TARGETS, THREE OUTCOMES ({@link targetState}): a session that exists is delivered to when it is between
+// tasks, as before; one that ENDED is re-addressed or dropped, with a record, on the first tick that sees it gone;
+// and one that is merely ABSENT stays queued, because absent is not ended.
+
+/**
+ * The session that wrote an order, from the line `prompt-session` puts in front of every prompt
+ * ({@link attributed} in that file), or `null` when the order names nobody.
+ * @param {string} prompt @returns {string | null}
+ */
+export function authorOf(prompt) {
+  const found = /^Sent to you by `([^`]+)`/.exec(prompt);
+  return found === null ? null : found[1];
+}
+
+/**
+ * The reviewer instances' endings, from `reviewer-endings`: one JSON line per instance {@link endFinishedReviewers}
+ * closed. A missing file is no endings. A LINE THAT CANNOT BE PARSED IS SKIPPED, the opposite of the spare ledger's
+ * rule and for the opposite reason: that file counts failures, so an unreadable line must count against it; this
+ * one is EVIDENCE OF AN ENDING, and an unreadable line cannot establish one -- an order is only ever dropped on
+ * evidence that was read.
+ * @param {string} path @param {typeof readFileSync} [read]
+ * @returns {{session: string, at: string}[]}
+ */
+export function readReviewerEndings(path, read = readFileSync) {
+  let text;
+  try {
+    text = String(read(path, "utf8"));
+  } catch (err) {
+    if (/** @type {any} */ (err)?.code === "ENOENT") return [];
+    throw err;
+  }
+  return text.split("\n").filter((line) => line.trim() !== "").flatMap((line) => {
+    try {
+      return [JSON.parse(line)];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/**
+ * WHICH LABELS ARE KNOWN TO HAVE ENDED, and when -- the signal this row names: a TORN-DOWN INSTANCE'S RECORD.
+ * `cycles` is the spare ledger (one line per engineer instance {@link endFinishedSpares} closed) and `endings` is
+ * the reviewer ledger; each is written by the teardown at the moment it closes a workspace, so a line is a fact
+ * that the instance existed and was ended on purpose. It costs two local file reads and NO API call.
+ *
+ * A LABEL THAT STARTED AGAIN IS NOT ENDED. Spare labels are reused (`nextSpareLabel`), and `registries` hold what
+ * each start path has registered and not yet ended: an entry stamped at or after the ending is a later instance
+ * under the same name, and the label leaves the map. (`registerSpawn` stamps a failed cycle and the new entry with
+ * the same `now`, which is why the comparison is `>=`.)
+ *
+ * WHAT IS NOT IN THE MAP, ON PURPOSE: a label that was never started (`reviewer-<n>` before the gate starts it),
+ * and one registered and then missing with no ending -- closed by hand or crashed, which is a failed cycle for
+ * the ledger to say and not a fact this function may act on.
+ *
+ * @param {{cycles: {role: string, at: number}[], endings: {session: string, at: string}[],
+ *   registries: Record<string, {spawnedAt: number}>[]}} evidence
+ * @returns {Map<string, number>} label -> when its latest ending was recorded (ms)
+ */
+export function endedSessions({ cycles, endings, registries }) {
+  /** @type {Map<string, number>} */
+  const ended = new Map();
+  /** @param {unknown} label @param {number} at */
+  const note = (label, at) => {
+    if (typeof label !== "string" || label === "?" || !Number.isFinite(at)) return;
+    if (at > (ended.get(label) ?? -Infinity)) ended.set(label, at);
+  };
+  for (const cycle of cycles) note(cycle.role, Number(cycle.at));
+  for (const ending of endings) note(ending.session, Date.parse(ending.at));
+  for (const registry of registries) {
+    for (const [label, started] of Object.entries(registry)) {
+      if (started.spawnedAt >= (ended.get(label) ?? Infinity)) ended.delete(label);
+    }
+  }
+  return ended;
+}
+
+/**
+ * The ended labels, read from the state beside the ledger. THROWS on an unreadable file, and the tick treats that
+ * as "no evidence": nothing is dropped on a reading that could not be made.
+ * @param {string} ledgerPath @param {typeof readFileSync} [read] @returns {Map<string, number>}
+ */
+export function endedSessionsAt(ledgerPath, read = readFileSync) {
+  const spares = sparePathsFrom(ledgerPath);
+  const reviewers = reviewerPathsFrom(ledgerPath);
+  return endedSessions({
+    cycles: readSpareCycles(spares.cycles, read),
+    endings: readReviewerEndings(reviewers.endings, read),
+    registries: [readSpareRegistry(spares.registry, read), readReviewerRegistry(reviewers.registry)],
+  });
+}
+
+/**
+ * ABSENT IS NOT ENDED, and this is the whole trap (#2459 done-when 4). `live`: the workspace exists, so
+ * {@link route} decides -- delivered between tasks, refused while busy, exactly as before. `ended`: it does not
+ * exist AND a teardown recorded that it was closed. `absent`: it does not exist and nothing says it ever did --
+ * `reviewer-<n>` is started by the gate AFTER an order for it may already be queued, so treating every missing
+ * label as ended would drop a reviewer's first order.
+ *
+ * `engineers` is the pool, never a label of its own, and `route` resolves it.
+ *
+ * @param {string} session @param {readonly {label: string}[]} agents @param {ReadonlyMap<string, number>} ended
+ * @returns {"live" | "ended" | "absent"}
+ */
+export function targetState(session, agents, ended) {
+  if (!isAbsent(session, agents)) return "live";
+  return ended.has(session) ? "ended" : "absent";
+}
+
+/** @param {string} session @param {readonly {label: string}[]} agents @returns {boolean} */
+function isAbsent(session, agents) {
+  return session !== "engineers" && !agents.some((a) => a.label === session);
+}
+
+/**
+ * The rows and pull requests an order names, as `#<n>`, first appearance first. A bare `#<n>` only: a hash inside a
+ * word, a path or a URL fragment is not a reference.
+ * @param {string} prompt @returns {number[]}
+ */
+export function namedRefs(prompt) {
+  return [...new Set([...prompt.matchAll(/(?<![\w/&#])#([1-9][0-9]*)\b/g)].map((m) => Number(m[1])))];
+}
+
+/** How many of an order's references are looked up: the order names its subject early, and every lookup is an API call. */
+const MAX_REFS_LOOKED_UP = 3;
+
+/**
+ * WHO NOW HOLDS WHAT THE ORDER IS ABOUT, or why nobody does. The order's first references are asked of
+ * `holder` -- an OPEN row or pull request carrying a `session:` label naming a session that is live -- and the first
+ * to have one is where the order goes. A reference that is closed, or held by nobody live, is skipped.
+ *
+ * A LOOKUP THAT CANNOT ASK ENDS NOTHING: `holder` answers `null` for a GitHub that would not say, and that is
+ * `unknown`, never `none` -- an order is dropped only when GitHub said nobody holds what it names.
+ *
+ * @param {{session: string, prompt: string}} order @param {readonly {label: string}[]} agents
+ * @param {(ref: number) => {open: boolean, sessions: string[]} | null} holder
+ * @returns {{to: string, ref: number} | {none: true, looked: number[]} | {unknown: string}}
+ */
+function readdress(order, agents, holder) {
+  const refs = namedRefs(order.prompt).slice(0, MAX_REFS_LOOKED_UP);
+  for (const ref of refs) {
+    const facts = holder(ref);
+    if (facts === null) return { unknown: `could not read who holds #${ref}` };
+    const to = facts.open ? facts.sessions.find((s) => s !== order.session && !isAbsent(s, agents)) : undefined;
+    if (to !== undefined) return { to, ref };
+  }
+  return { none: true, looked: refs };
+}
+
+/**
+ * Retire one order as DROPPED, by APPENDING that it was -- never a `delivered` line, because nothing was delivered,
+ * and never a rewrite of the log (see {@link dropHandoffs}: no writer removes a line another writer wrote).
+ * The record carries what a later reader needs to tell it from a delivery and to act on it: the order id, the
+ * target, the age, the reason, the author when the order names one, where it went, and -- when it went nowhere --
+ * THE PROMPT ITSELF, so a drop loses no text. {@link readHandoffs} folds it, so the order stops counting as waiting.
+ *
+ * @param {string} path
+ * @param {{id: string, session: string, prompt: string, queuedAt?: number}} order
+ * @param {{reason: string, reroutedTo?: string}} why
+ * @param {{write?: typeof writeFileSync, now?: number}} [io]
+ */
+export function recordDrop(path, order, { reason, reroutedTo }, { write = writeFileSync, now = Date.now() } = {}) {
+  const queuedAt = Number(order.queuedAt ?? now);
+  const record = { dropped: order.id, session: order.session, author: authorOf(order.prompt), queuedAt,
+    ageMs: Math.max(0, now - queuedAt), at: now, reason, reroutedTo: reroutedTo ?? null,
+    prompt: reroutedTo === undefined ? order.prompt : null };
+  write(path, `${JSON.stringify(record)}\n`, { flag: "a" });
+}
+
+/**
+ * @typedef {{agents: readonly {label: string}[], ended: ReadonlyMap<string, number>,
+ *   holder: (ref: number) => {open: boolean, sessions: string[]} | null, queuePath: string,
+ *   write?: typeof writeFileSync, now?: number}} EndedDeps
+ */
+
+/**
+ * RESOLVE EVERY ORDER WHOSE TARGET HAS ENDED, on the first tick that sees the target gone (#2459 done-when 1c), by
+ * re-addressing it to the live session that holds what it names, else dropping it with a record. Anything else is
+ * left exactly as it was: a live target, an absent one, and an ended one whose holder could not be read.
+ *
+ * THE NEW ORDER IS WRITTEN BEFORE THE OLD ONE IS RETIRED, so a crash between the two leaves the order twice --
+ * visible, and harmless to whoever reads it -- and never zero times, which is the defect this queue exists to
+ * remove. The re-addressed order keeps its `queuedAt` and its `decision`: the wait is still measured from when
+ * the author first asked, and an ask stays an ask.
+ *
+ * @param {readonly {id: string, session: string, prompt: string, queuedAt?: number, decision?: boolean}[]} handoffs
+ * @param {EndedDeps} deps
+ * @returns {{settled: string[], lines: string[]}} the ids no longer waiting, and what to say about each order touched
+ */
+export function resolveEndedHandoffs(handoffs, deps) {
+  /** @type {Map<number, {open: boolean, sessions: string[]} | null>} */
+  const asked = new Map();
+  // ONE LOOKUP PER REFERENCE PER TICK: fifty orders naming one row are one question.
+  const holder = (/** @type {number} */ ref) => {
+    if (!asked.has(ref)) asked.set(ref, deps.holder(ref));
+    return asked.get(ref) ?? null;
+  };
+  /** @type {string[]} */
+  const settled = [];
+  /** @type {string[]} */
+  const lines = [];
+  for (const order of handoffs) {
+    if (targetState(order.session, deps.agents, deps.ended) !== "ended") continue;
+    const outcome = readdress(order, deps.agents, holder);
+    const line = settle(order, outcome, deps);
+    lines.push(line.said);
+    if (line.done) settled.push(order.id);
+  }
+  return { settled, lines };
+}
+
+/**
+ * Carry out one order's outcome, and say it. The line NAMES THE TARGET AS GONE -- never as busy -- and says what was
+ * done about the order, who wrote it, and how long it waited.
+ * @param {{id: string, session: string, prompt: string, queuedAt?: number, decision?: boolean}} order
+ * @param {ReturnType<typeof readdress>} outcome @param {EndedDeps} deps
+ * @returns {{done: boolean, said: string}}
+ */
+function settle(order, outcome, deps) {
+  const now = deps.now ?? Date.now();
+  const io = { write: deps.write, now };
+  const author = authorOf(order.prompt);
+  const gone = `"${order.session}" has ENDED (torn down ${new Date(deps.ended.get(order.session) ?? 0).toISOString()}), `
+    + `so order ${order.id}${author === null ? "" : ` from "${author}"`} (waited ${waitedFor(now - Number(order.queuedAt ?? now))}) has no addressee`;
+  if ("unknown" in outcome) {
+    return { done: false, said: `ENDED SESSION, ORDER KEPT ${order.id}: ${gone}; ${outcome.unknown}, so it is `
+      + "neither re-addressed nor dropped and is asked again next tick.\n" };
+  }
+  if ("to" in outcome) {
+    const entry = queueHandoff(deps.queuePath, { session: outcome.to, decision: order.decision === true,
+      prompt: `${order.prompt}\n\n(Re-addressed by the tick: this was written for "${order.session}", which has ended. `
+        + `You hold #${outcome.ref}, which it names.)`, now: Number(order.queuedAt ?? now), write: deps.write });
+    recordDrop(deps.queuePath, order, { reason: `target ended; re-addressed to the holder of #${outcome.ref}`,
+      reroutedTo: outcome.to }, io);
+    return { done: true, said: `RE-ADDRESSED ${order.id}: ${gone}. #${outcome.ref} is held by live "${outcome.to}", `
+      + `so it now waits there as ${entry.id}.\n` };
+  }
+  const named = outcome.looked.length === 0 ? "names no row or pull request"
+    : `names ${outcome.looked.map((n) => `#${n}`).join(", ")}, none open and held by a live session`;
+  recordDrop(deps.queuePath, order, { reason: `target ended; the order ${named}` }, io);
+  return { done: true, said: `DROPPED ${order.id}: ${gone}, and it ${named}. It is retired with a record `
+    + "(`dropped`, carrying its text), not as a delivery.\n" };
+}
+
+/**
+ * Who holds a row or pull request, from GitHub's REST issue read (which answers for both, and spends the CORE pool
+ * rather than GRAPHQL). `null` for anything GitHub would not say; a reference that does not exist is CLOSED and
+ * held by nobody, because an order mentioning `#99999` in prose must not be kept for ever by a 404.
+ * @param {number} ref @param {(args: string[]) => string} [run]
+ * @returns {{open: boolean, sessions: string[]} | null}
+ */
+export function holderOf(ref, run = defaultGh) {
+  try {
+    const read = JSON.parse(run(["api", `repos/${REPO}/issues/${ref}`, "--jq", "{state, labels: [.labels[].name]}"]));
+    const sessions = /** @type {string[]} */ (read.labels).filter((l) => l.startsWith("session:"))
+      .map((l) => l.slice("session:".length)).sort();
+    return { open: read.state === "open", sessions };
+  } catch (err) {
+    return /HTTP 404|Not Found/.test(String(/** @type {any} */ (err)?.stderr ?? /** @type {any} */ (err)?.message))
+      ? { open: false, sessions: [] } : null;
+  }
 }
 
 /**
@@ -3274,6 +3581,44 @@ function printCycles(ledgerPath) {
   process.exit(report.exit);
 }
 
+/**
+ * The tick's queue, AFTER every order to an ended session has been re-addressed or dropped (#2459), and what was
+ * said about each. THE EVIDENCE IS READ FOR A QUEUE THAT NAMES A TARGET NOT IN HERDR'S LIST ONLY -- the common tick
+ * pays no file read -- and an evidence file that cannot be read settles nothing, says so, and leaves the queue as
+ * it found it: an order is dropped only on a reading that was made. The queue is RE-READ after a settlement, so an
+ * order re-addressed this tick is delivered this tick and the log, not this function, says what is waiting.
+ *
+ * @param {ReturnType<typeof readHandoffs>} handoffs @param {{label: string, status: string}[]} agents
+ * @param {{queuePath: string, ledgerPath: string}} paths
+ * @returns {ReturnType<typeof readHandoffs>}
+ */
+function settleEndedOrders(handoffs, agents, { queuePath, ledgerPath }) {
+  if (!handoffs.some((h) => isAbsent(h.session, agents))) return handoffs;
+  try {
+    const ended = endedSessionsAt(ledgerPath);
+    const { settled, lines } = resolveEndedHandoffs(handoffs, { agents, ended, holder: holderOf, queuePath });
+    for (const line of lines) process.stderr.write(line);
+    return settled.length === 0 ? handoffs : readHandoffs(queuePath);
+  } catch (err) {
+    process.stderr.write(`ENDED-SESSION CHECK FAILED (${firstLine(err)}): no order was re-addressed or dropped this tick.\n`);
+    return handoffs;
+  }
+}
+
+/**
+ * The tick's exit when herdr does not answer: the backlog, unclassified (nothing is known about any target), then
+ * `CANNOT ASK`. THIS IS BEFORE ANY ORDER IS RESOLVED (#2459 done-when 6): a blip read as every session having
+ * ended would drop the whole queue, so a tick that cannot ask classifies nothing and drops nothing.
+ * @param {number} gateOrders @param {ReturnType<typeof readHandoffs>} handoffs @returns {never}
+ */
+function exitCannotAsk(gateOrders, handoffs) {
+  for (const line of backlogReport(handoffBacklog(handoffs))) process.stderr.write(line);
+  process.stderr.write(`CANNOT ASK: herdr did not answer, so the ${gateOrders} order(s) on stdin and `
+    + `${handoffs.length} queued order(s) were NOT delivered and NOTHING was woken. This is not a quiet `
+    + "org.\n");
+  process.exit(EXIT.CANNOT_ASK);
+}
+
 function main() {
   refuseUnknownFlags(["--ledger", "--roster", "--cycles", "--worktrees-dir"], {
     entry: import.meta.url, command: "node packages/agent-org/src/wake.mjs",
@@ -3296,29 +3641,26 @@ function main() {
   const handoffs = readHandoffs(queuePath);
   if (nothingToDeliver(orders, handoffs)) process.exit(EXIT.QUIET);
 
-  // WHAT WAS ALREADY WAITING, BEFORE THIS TICK TOUCHES IT (#2102). Reported first and reported whatever
+  // WHAT WAS ALREADY WAITING, BEFORE THIS TICK DELIVERS ANYTHING (#2102). Reported first and reported whatever
   // happens next, because the backlog is a fact about the org that every session running a tick should
   // see, not a consequence of this tick's delivery: 57 orders for one session were discoverable in
   // 2026-09-23 only by replaying a cache file by hand, and the tick that could have said so said nothing.
   //
-  // ABOVE `readAgents`, AND THE ORDER IS THE POINT. A tick that cannot reach herdr delivers NOTHING and
-  // exits, so it is the one tick where a ten-hour backlog most needs saying -- reporting it after that
-  // exit would have made "reported whatever happens next" false for the worst case it claims to cover.
-  for (const line of backlogReport(handoffBacklog(handoffs))) process.stderr.write(line);
-
+  // `readAgents` COMES FIRST NOW (#2459), because a report that says whether a target EXISTS needs the list of
+  // what does -- but the report still precedes the CANNOT ASK exit, which is the whole of what the original
+  // ordering protected: a tick that cannot reach herdr delivers NOTHING and exits, so it is the one tick where a
+  // ten-hour backlog most needs saying. It says it, unclassified, because nothing is known about any target.
   const agents = readAgents();
-  if (agents === null) {
-    process.stderr.write(`CANNOT ASK: herdr did not answer, so the ${orders.length} order(s) on stdin and `
-      + `${handoffs.length} queued order(s) were NOT delivered and NOTHING was woken. This is not a quiet `
-      + "org.\n");
-    process.exit(EXIT.CANNOT_ASK);
-  }
+  if (agents === null) exitCannotAsk(orders.length, handoffs);
+
+  const waiting = settleEndedOrders(handoffs, agents, { queuePath, ledgerPath });
+  for (const line of backlogReport(handoffBacklog(waiting), agents)) process.stderr.write(line);
 
   // AUTHORED ORDERS FIRST. One has already been refused once and has been waiting since; a derived cause
   // has not, and will be re-derived unchanged by the next tick if it loses the session to this one.
-  const handed = deliverHandoffs(handoffs, agents, roster, { queuePath });
+  const handed = deliverHandoffs(waiting, agents, roster, { queuePath });
   // STALE MEANS STILL WAITING, so it is asked AFTER the delivery and against what the delivery carried.
-  for (const line of staleReport(handoffs, handed.ids)) process.stderr.write(line);
+  for (const line of staleReport(waiting, handed.ids)) process.stderr.write(line);
   // A session this tick just woke is working NOW, so the gate's own orders must not be routed to it.
   const free = agents.map((a) => (handed.busied.has(a.label) ? { ...a, status: "working" } : a));
 
