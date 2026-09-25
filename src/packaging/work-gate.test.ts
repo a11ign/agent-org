@@ -44,7 +44,7 @@ import { MAX_ROW_ORDERS_PER_TICK, readCommitChain, withCommitChains, decide, che
   claimedRowAmendedOrders, constraintsAfterClaim, amendmentsOn, readClaimedRowComments,
   CONSTRAINT_COMMENT_MARKER, CONSTRAINT_BODY_PREFIX,
   FLEET_MILESTONE, readEpics, answersOwed, answerOrders,
-  readOpenRows, withAnswerLabel, readClosedAnswerRows,
+  readOpenRows, withAnswerLabel, rowsOwingAnswers, readClosedAnswerRows,
   blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL,
   ANSWER_PREFIX, redOnlyBySupersededRun, cannotAskReport,
   readRowBranches, rowBranchOrders, GIT_READS,
@@ -4304,8 +4304,62 @@ test("#2202: readClosedAnswerRows refuses rather than reporting nobody owes anyt
 
 test("#2202: main feeds the closed-row read into `answerOwed` beside the open one, through the helper that SAYS a refusal", () => {
   const source = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
-  assert.match(source, /answerOwed: \[\.\.\.withAnswerLabel\(allOpen\), \.\.\.closedAnswerRows\(\)\]/,
+  assert.match(source, /answerOwed: rowsOwingAnswers\(\{ openRows: allOpen, openPrs, closedRows: closedAnswerRows\(\) \}\)/,
     "a closed row owing an answer must reach `decide` -- the open read alone is the defect");
   assert.match(source, /function closedAnswerRows\(\) \{[^]*?NOTE: could not read the closed rows/,
     "a refused read is a line on stderr, never a silent empty list");
+});
+
+// --- #2492: answer:<session> on a PULL REQUEST woke nobody, because `gh issue list` does not return PRs ---
+
+/** A PR as `readPrs` returns one: `isDraft` and `headRefOid` present, `state` absent (it asks `--state open`). */
+const prWithLabels = (n: number, ...names: string[]) => ({ number: n, isDraft: false, headRefOid: "abc123",
+  labels: names.map((name) => ({ name })) });
+
+test("#2492 DONE-WHEN 1: a PR carrying answer:worker-tooling emits ONE order, worker-tooling/answer-owed/row-<n>, through decide", () => {
+  const orders = decide({ prs: [], readyRows: [], promotableRows: [],
+    answerOwed: withAnswerLabel([prWithLabels(2376, `${ANSWER_PREFIX}worker-tooling`)]) }) as
+    { cause: string, session: string, causeKey: string }[];
+  assert.deepEqual(orders.map((o) => [o.cause, o.session, o.causeKey]),
+    [["answer-owed", "worker-tooling", "worker-tooling/answer-owed/row-2376"]]);
+});
+
+test("#2492 DONE-WHEN 2: the same PR WITHOUT the label emits none, and the same label on an ISSUE still emits exactly one", () => {
+  assert.deepEqual(answerOrders(withAnswerLabel([prWithLabels(2376, "in-progress")])), [],
+    "the negative control: a PR owing nobody wakes nobody");
+  const issue = answerOrders([owedRow(2377, "worker-tooling")]) as { causeKey: string }[];
+  assert.deepEqual(issue.map((o) => o.causeKey), ["worker-tooling/answer-owed/row-2377"],
+    "an issue owing an answer is unchanged");
+  const both = answerOrders([owedRow(2377, "worker-tooling"), prWithLabels(2376, `${ANSWER_PREFIX}worker-tooling`)]) as
+    { causeKey: string }[];
+  assert.deepEqual(both.map((o) => o.causeKey).sort(),
+    ["worker-tooling/answer-owed/row-2376", "worker-tooling/answer-owed/row-2377"],
+    "one number is one thing: an issue and a PR are two orders, never one each twice");
+});
+
+test("#2492 DONE-WHEN 3: the prompt says pull request for a PR and row for an issue, and a PR with no `state` reads as open", () => {
+  const [pr] = answerOrders([prWithLabels(2376, `${ANSWER_PREFIX}ceo`)]) as { prompt: string }[];
+  assert.match(pr.prompt, /^#2376 IS A PULL REQUEST WAITING ON AN ANSWER FROM YOU/);
+  assert.match(pr.prompt, /ANSWER ON THE PULL REQUEST, then remove its `answer:ceo` label/);
+  assert.doesNotMatch(pr.prompt, /THE ROW IS CLOSED|that row's/, "a PR from `readPrs` is open, and is not called a row");
+  const [row] = answerOrders([owedRow(2377, "ceo")]) as { prompt: string }[];
+  assert.match(row.prompt, /^#2377 IS WAITING ON AN ANSWER FROM YOU/);
+  assert.match(row.prompt, /ANSWER ON THE ROW, then remove its `answer:ceo` label/);
+  assert.doesNotMatch(row.prompt, /pull request/i, "the control: an issue is never called a pull request");
+});
+
+test("#2492 DONE-WHEN 4: the PR half feeds the SAME answerOwed input, so answer-owed still orders before every other cause", () => {
+  const orders = decide({ prs: [openPr(5, "")], readyRows: [], promotableRows: [],
+    answerOwed: [...withAnswerLabel([owedRow(2377, "ceo")]), ...withAnswerLabel([prWithLabels(2376, `${ANSWER_PREFIX}ceo`)])] }) as
+    { cause: string, causeKey: string }[];
+  assert.deepEqual(orders.slice(0, 2).map((o) => [o.cause, o.causeKey]),
+    [["answer-owed", "ceo/answer-owed/row-2377"], ["answer-owed", "ceo/answer-owed/row-2376"]]);
+});
+
+test("#2492: rowsOwingAnswers carries a labelled PR beside the open and closed rows, and a PR without the label adds nothing", () => {
+  const reads = { openRows: [owedRow(2377, "ceo")], closedRows: [closedOwedRow(1936, "orchestrator")] };
+  const numbers = (openPrs: unknown[]) => (rowsOwingAnswers({ ...reads, openPrs }) as { number: number }[]).map((r) => r.number);
+  assert.deepEqual(numbers([prWithLabels(2376, `${ANSWER_PREFIX}worker-tooling`)]), [2377, 2376, 1936]);
+  assert.deepEqual(numbers([prWithLabels(2376, "in-progress")]), [2377, 1936], "the negative control: the label decides, not the PR");
+  assert.deepEqual(numbers([]), [2377, 1936]);
 });
