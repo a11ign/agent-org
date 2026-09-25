@@ -773,7 +773,9 @@ export function spawnableReviewer(order, agents, registry = {}) {
   if (started !== undefined) {
     return { refusal: `no reviewer spawn: "${order.session}" was started at ${new Date(started.spawnedAt).toISOString()} `
       + "and herdr does not list it now (a partial workspace list, or the instance died) -- not starting a second "
-      + `under the same label; if it died, delete its key from ${REVIEWER_REGISTRY_FILE} and the next tick starts a fresh one` };
+      + `under the same label; if it died, the teardown clears it after ${REVIEWER_DEAD_AFTER_TICKS} ticks of a COMPLETE `
+      + `listing that lacks it (reviewer-absences says where it stands), or delete its key from ${REVIEWER_REGISTRY_FILE} `
+      + "now; either way the next tick starts a fresh one" };
   }
   return { session: order.session };
 }
@@ -941,10 +943,10 @@ function reviewerTarget(order, live, deps) {
   return { label: spawn.label, profile: spawn.profile, reviewer: true, order: carried };
 }
 
-/** @param {string} ledgerPath @returns {{registry: string, endings: string}} */
+/** @param {string} ledgerPath @returns {{registry: string, endings: string, absences: string}} */
 export function reviewerPathsFrom(ledgerPath) {
   return { registry: `${dirname(ledgerPath)}/${REVIEWER_REGISTRY_FILE}`,
-    endings: `${dirname(ledgerPath)}/reviewer-endings` };
+    endings: `${dirname(ledgerPath)}/reviewer-endings`, absences: `${dirname(ledgerPath)}/reviewer-absences` };
 }
 
 /**
@@ -956,6 +958,63 @@ export function registerReviewer(paths, session, now = Date.now()) {
   const registry = readReviewerRegistry(paths.registry);
   registry[session] = { spawnedAt: now };
   writeFileSync(paths.registry, `${JSON.stringify(registry)}\n`);
+}
+
+/**
+ * How many CONSECUTIVE complete listings must lack a registered reviewer, under a pull request that is still open,
+ * before it is called dead (#2465). A tick is two minutes, so this is about six: past a workspace that is between
+ * being created and being listed, and short enough that a dead reviewer costs minutes and not the seven hours it
+ * cost on 2026-09-25.
+ */
+export const REVIEWER_DEAD_AFTER_TICKS = 3;
+
+/** The two panes that are always running. A listing that shows neither of them is not a listing of the org. */
+const STANDING_PANES = Object.freeze(["ceo", "orchestrator"]);
+
+/**
+ * @typedef {{spawnedAt: number, absentTicks?: number, absentNoted?: string}} ReviewerInstance
+ * `absentTicks` counts complete listings that lacked it; `absentNoted` is the last thing written to the absences
+ * ledger about it, so a state that does not change writes one line and not one per tick.
+ */
+
+/**
+ * IS THIS LISTING THE WHOLE ORG, as far as a listing can say so: it shows every standing pane. This is the test
+ * that separates "herdr gave a complete list and this instance is not in it" from the partial list
+ * {@link spawnableReviewer}'s refusal was written for, which reads EVERY instance as absent -- the standing panes
+ * included. A listing missing `ceo` or `orchestrator` is missing things that exist, so what else it lacks is
+ * unproven. WHAT IT DOES NOT PROVE: a listing that dropped only some workspaces and happened to keep both panes.
+ * That is why one complete listing is never enough ({@link REVIEWER_DEAD_AFTER_TICKS}), and why an instance that
+ * is LISTED even once starts the count again.
+ * @param {{label: string}[]} agents
+ */
+export function listingIsComplete(agents) {
+  return STANDING_PANES.every((pane) => agents.some((a) => a.label === pane));
+}
+
+/**
+ * What one tick's listing does to a registered reviewer whose pull request is still open: its next registry entry
+ * (`null` when it is dead and the key goes) and the line worth writing, or `null` when nothing changed that a
+ * reader would want.
+ *
+ *  - LISTED: alive, and the count starts again -- presence is positive evidence even in a partial listing.
+ *  - ABSENT FROM A PARTIAL LISTING: nothing learned. The count is HELD, not reset, so a listing that keeps
+ *    failing cannot starve a real death of its ticks, and not advanced, so it cannot manufacture one.
+ *  - ABSENT FROM A COMPLETE LISTING: one more tick, and dead at {@link REVIEWER_DEAD_AFTER_TICKS}.
+ *
+ * @param {ReviewerInstance} entry
+ * @param {{listed: boolean, complete: boolean}} seen
+ * @returns {{entry: ReviewerInstance | null, event: string | null, absentTicks: number}}
+ */
+export function observeOpenReviewer(entry, { listed, complete }) {
+  const { absentTicks = 0, absentNoted, ...kept } = entry;
+  if (listed) return { entry: kept, event: null, absentTicks: 0 };
+  if (!complete) {
+    const event = absentNoted === "unconfirmed" ? null : "absent-unconfirmed";
+    return { entry: { ...kept, absentTicks, absentNoted: "unconfirmed" }, event, absentTicks };
+  }
+  const ticks = absentTicks + 1;
+  if (ticks >= REVIEWER_DEAD_AFTER_TICKS) return { entry: null, event: "cleared", absentTicks: ticks };
+  return { entry: { ...kept, absentTicks: ticks, absentNoted: `seen-${ticks}` }, event: "absent-seen", absentTicks: ticks };
 }
 
 /**
@@ -972,16 +1031,21 @@ export function registerReviewer(paths, session, now = Date.now()) {
  * A LOOKUP THAT CANNOT ASK ENDS NOTHING, a working instance is left until it is between turns, and a workspace that
  * will not close is left, said, and retried -- no line is written for an ending that did not happen.
  *
+ * A registered instance whose pull request is still OPEN is not ended, but it is reconciled against the listing
+ * ({@link reconcileOpenReviewer}): one that a COMPLETE listing keeps not showing is cleared, so a replacement can start.
+ *
  * @param {{label: string, status: string}[]} agents
- * @param {{registry: Record<string, {spawnedAt: number}>, now: number, run: (args: string[]) => string,
+ * @param {{registry: Record<string, ReviewerInstance>, now: number, run: (args: string[]) => string,
  *   prState: (pr: number) => string | null, removeCheckout: (session: string, pr: number) => string | null,
- *   record: (line: object) => void, warn: (line: string) => void}} deps
- * @returns {{ended: string[], registry: Record<string, {spawnedAt: number}>}}
+ *   record: (line: object) => void, warn: (line: string) => void, recordAbsence?: (line: object) => void}} deps
+ * @returns {{ended: string[], cleared: string[], registry: Record<string, ReviewerInstance>}}
  */
 export function endFinishedReviewers(agents, deps) {
   const registry = { ...deps.registry };
   /** @type {string[]} */
   const ended = [];
+  /** @type {string[]} */
+  const cleared = [];
   for (const session of Object.keys(registry)) {
     const pr = reviewerInstanceNumber(session);
     const state = pr === null ? null : deps.prState(pr);
@@ -989,7 +1053,10 @@ export function endFinishedReviewers(agents, deps) {
       if (pr !== null) deps.warn(`reviewer teardown: could not read PR #${pr}'s state -- leaving "${session}" running.`);
       continue;
     }
-    if (state === "open") continue;
+    if (state === "open") {
+      if (reconcileOpenReviewer({ session, pr: Number(pr), agents, registry }, deps)) cleared.push(session);
+      continue;
+    }
     const agent = agents.find((a) => a.label === session);
     if (agent !== undefined && !WAKEABLE.includes(agent.status)) continue;
     if (agent !== undefined && !closeReviewer(session, deps)) continue;
@@ -1003,7 +1070,33 @@ export function endFinishedReviewers(agents, deps) {
     delete registry[session];
     ended.push(session);
   }
-  return { ended, registry };
+  return { ended, cleared, registry };
+}
+
+/**
+ * A registered reviewer under a pull request that is STILL OPEN, and the listing that may not show it (#2465).
+ * Mutates `registry` (the caller's copy) and returns `true` when the instance was called dead and its key removed.
+ *
+ * ITS CHECKOUT IS LEFT WHERE IT IS: {@link prepareReviewCheckout} re-points an existing tree, which is what lets the
+ * fresh instance reuse the dead one's path. NOTHING IS CLOSED either -- the workspace is not there to close. Every
+ * observation that changes what a reader would want to know is written to the absences ledger, so the refusal
+ * {@link spawnableReviewer} keeps making is readable from an org read and not only from a tick's stderr.
+ *
+ * @param {{session: string, pr: number, agents: {label: string}[], registry: Record<string, ReviewerInstance>}} at
+ * @param {{now: number, warn: (line: string) => void, recordAbsence?: (line: object) => void}} deps
+ * @returns {boolean}
+ */
+function reconcileOpenReviewer({ session, pr, agents, registry }, deps) {
+  const complete = listingIsComplete(agents);
+  const seen = observeOpenReviewer(registry[session], { listed: agents.some((a) => a.label === session), complete });
+  if (seen.entry === null) delete registry[session];
+  else registry[session] = seen.entry;
+  if (seen.event === null) return false;
+  deps.recordAbsence?.({ session, pr, at: new Date(deps.now).toISOString(), event: seen.event,
+    absentTicks: seen.absentTicks, needed: REVIEWER_DEAD_AFTER_TICKS, listing: complete ? "complete" : "partial" });
+  deps.warn(`reviewer teardown: "${session}" is registered for OPEN PR #${pr} and herdr's ${complete ? "complete" : "PARTIAL"} `
+    + `listing does not show it (${seen.event}, ${seen.absentTicks}/${REVIEWER_DEAD_AFTER_TICKS}).`);
+  return seen.entry === null;
 }
 
 /**
@@ -1052,12 +1145,14 @@ export function tearDownReviewers(agents, ledgerPath, say = (line) => process.st
     const paths = reviewerPathsFrom(ledgerPath);
     const before = readReviewerRegistry(paths.registry);
     if (Object.keys(before).length === 0) return;
-    const { ended, registry } = endFinishedReviewers(agents, { registry: before, now: Date.now(), run: defaultRun,
-      prState: pullRequestState, removeCheckout: (session, pr) => removeReviewCheckout({ session, pr }),
-      warn: (line) => say(`${line}\n`),
-      record: (line) => writeFileSync(paths.endings, `${JSON.stringify(line)}\n`, { flag: "a" }) });
+    /** @param {string} path */
+    const appendTo = (path) => (/** @type {object} */ line) => writeFileSync(path, `${JSON.stringify(line)}\n`, { flag: "a" });
+    const { ended, cleared, registry } = endFinishedReviewers(agents, { registry: before, now: Date.now(),
+      run: defaultRun, prState: pullRequestState, removeCheckout: (session, pr) => removeReviewCheckout({ session, pr }),
+      warn: (line) => say(`${line}\n`), record: appendTo(paths.endings), recordAbsence: appendTo(paths.absences) });
     writeFileSync(paths.registry, `${JSON.stringify(registry)}\n`);
     for (const session of ended) say(`ENDED ${session}: its pull request is no longer open\n`);
+    for (const session of cleared) say(`CLEARED ${session}: its pull request is open and it is gone from herdr -- the next tick starts a fresh one\n`);
   } catch (err) {
     say(`reviewer teardown FAILED (${firstLine(err)}): no reviewer instance was ended this tick.\n`);
   }
