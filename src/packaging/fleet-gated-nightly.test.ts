@@ -17,8 +17,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { fleetGatedRows, examinedComment, wakeText, performFiring, MILESTONE, STANDING_ROW, SESSION }
+import { fleetGatedRows, examinedComment, wakeText, performFiring, STANDING_ROW, SESSION }
   from "../fleet-gated-nightly.mjs";
+import { FLEET_GATED_SELECTOR } from "../work-gate.mjs";
 import { PROMPT_REFUSED_PREFIX } from "../prompt-session.mjs";
 
 const FIRED_AT = "2026-09-22T01:00:03.412Z";
@@ -36,10 +37,10 @@ test("a non-empty set names every row number, not just the count", () => {
   assert.match(comment, /#1768/);
   assert.match(comment, /#71/);
   assert.match(comment, /#44/);
-  assert.match(comment, new RegExp(MILESTONE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(comment, /`fleet-gated`/);
 });
 
-test("the comment states the milestone and the fired-at timestamp it was measured at", () => {
+test("the comment states the fired-at timestamp it was measured at", () => {
   const comment = examinedComment([{ number: 1 }], FIRED_AT);
   assert.match(comment, new RegExp(FIRED_AT.replace(/[.:]/g, "\\$&")));
 });
@@ -61,9 +62,9 @@ test("wakeText on an empty list still reads as a sentence, not a template artefa
 test("fleetGatedRows parses the query's own JSON shape straight through", () => {
   const run = (args: string[]) => {
     assert.deepEqual(args.slice(0, 2), ["issue", "list"]);
-    assert.ok(args.includes("--milestone"));
-    assert.ok(args.includes(MILESTONE));
-    assert.ok(args.includes("fleet-gated"));
+    assert.ok(!args.includes("--milestone"), "#2443: an off-path row must be named too");
+    assert.deepEqual(args.slice(args.indexOf("--label"), args.indexOf("--label") + 2),
+      [...FLEET_GATED_SELECTOR.listArgs], "the query is the shared selector's own spelling");
     return JSON.stringify([{ number: 5, comments: [] }]);
   };
   assert.deepEqual(fleetGatedRows(run), [{ number: 5, comments: [] }]);

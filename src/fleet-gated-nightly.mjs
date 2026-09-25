@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @ts-check
-// command: fleet-gated-nightly -- gather the fleet-gated rows on the milestone (no model), post the
+// command: fleet-gated-nightly -- gather the open fleet-gated rows (no model), post the
 // examined count as a fact on #914, then wake `orchestrator` to run the by-row batch #914's bar requires.
 //
 // #1941: THE TIMER IS GONE AND THIS IS NOW A MANUAL COMMAND. The scheduled path is
@@ -43,8 +43,8 @@ import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
 import { gh, REPO } from "./board-data.mjs";
 import { promptable, clearThenPrompt, PROMPT_REFUSED_PREFIX } from "./prompt-session.mjs";
 import { readAgents } from "./wake.mjs";
+import { FLEET_GATED_SELECTOR } from "./work-gate.mjs";
 
-export const MILESTONE = "Road to version one";
 // #914 -- the standing-responsibility record this firing discharges (product-manager's 2026-09-20T08:34:20Z
 // ruling: #914 stays open as the record; #1830 is what performs it). Kept as a string, matching `gh`'s
 // own argv shape, not a number this file would otherwise coerce back and forth for no reason.
@@ -59,7 +59,7 @@ const defaultGhRun = (args) => gh(args);
 /** @param {string[]} args */
 const defaultHerdrRun = (args) => execFileSync("herdr", args, { encoding: "utf8", timeout: 30_000 });
 
-// `gh issue list` defaults to 30 -- fine for a milestone-scoped, label-scoped slice today, silent
+// `gh issue list` defaults to 30 -- fine for a label-scoped slice today, silent
 // truncation the day it is not. `board-data.mjs`'s own `issues()` already met this: a higher number alone
 // just moves the cliff (`length === LIMIT` reads the same as "there were exactly LIMIT"), so the read
 // asks for more than this query should ever return AND refuses to report on a listing that might be
@@ -67,7 +67,8 @@ const defaultHerdrRun = (args) => execFileSync("herdr", args, { encoding: "utf8"
 const LIMIT = 500;
 
 /**
- * The fleet-gated rows open on the milestone right now -- the exact query #1830's own Acceptance names.
+ * The fleet-gated rows open right now, on ANY milestone (#2443; #1830's query scoped by milestone, and the
+ * selector both feeders share does not).
  * Throws on a refused read, and on a listing that saturated `LIMIT` and so MAY BE TRUNCATED; never
  * returns `[]` or a partial list for either. See this file's header for why that distinction is the
  * whole point.
@@ -75,8 +76,8 @@ const LIMIT = 500;
  * @returns {{ number: number, comments: unknown[] }[]}
  */
 export function fleetGatedRows(run = defaultGhRun) {
-  const out = run(["issue", "list", "--repo", REPO, "--state", "open", "--milestone", MILESTONE,
-    "--label", "fleet-gated", "--json", "number,comments", "--limit", String(LIMIT)]);
+  const out = run(["issue", "list", "--repo", REPO, "--state", "open",
+    ...FLEET_GATED_SELECTOR.listArgs, "--json", "number,comments", "--limit", String(LIMIT)]);
   const issues = JSON.parse(out);
   if (issues.length >= LIMIT) {
     throw new Error(`fleetGatedRows: the listing returned ${issues.length} row(s) against a limit of `
@@ -94,7 +95,7 @@ export function fleetGatedRows(run = defaultGhRun) {
 export function examinedComment(issues, firedAtIso) {
   const numbers = issues.map((i) => `#${i.number}`).join(", ");
   return `Nightly fleet-gated firing (#1830) at ${firedAtIso}: examined ${issues.length} row(s) `
-    + `open with \`fleet-gated\` on "${MILESTONE}"`
+    + "open with `fleet-gated`"
     + (issues.length > 0 ? ` -- ${numbers}. Waking \`${SESSION}\` to work through them by row.`
       : ", none open right now. Nobody woken.");
 }
@@ -108,7 +109,7 @@ export function examinedComment(issues, firedAtIso) {
 export function wakeText(issues) {
   const numbers = issues.map((i) => `#${i.number}`).join(", ");
   return `Nightly fleet-gated firing (#1830): ${issues.length} row(s) carry \`fleet-gated\` and are open `
-    + `on "${MILESTONE}" -- ${numbers}. Run tonight's by-row batch per #914's own bar: each row gets a `
+    + `-- ${numbers}. Run tonight's by-row batch per #914's own bar: each row gets a `
     + "comment naming the capture, the reading, and whether it is now workable without the fleet -- or is "
     + "named not covered and why. State the examined count against this list when you report on #914.";
 }
@@ -143,8 +144,8 @@ export function performFiring({ ghRun = defaultGhRun, herdrRun = defaultHerdrRun
   try {
     issues = fleetGatedRows(ghRun);
   } catch (/** @type {any} */ error) {
-    return { kind: "cannot-ask", message: `CANNOT ASK: could not list fleet-gated rows on `
-      + `"${MILESTONE}" (${error?.message ?? error}). Nothing was examined and nothing was posted.` };
+    return { kind: "cannot-ask", message: `CANNOT ASK: could not list fleet-gated rows `
+      + `(${error?.message ?? error}). Nothing was examined and nothing was posted.` };
   }
 
   const comment = examinedComment(issues, now());

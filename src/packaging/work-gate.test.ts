@@ -38,12 +38,12 @@ import { MAX_ROW_ORDERS_PER_TICK, readCommitChain, withCommitChains, decide, che
   deadMansSwitch, hostDriftOrders, JUDGMENT_CAUSES,
   shouldBeMerging as shouldBeMergingPrs, conflictedPrs, conflictStateOf, mergeConflictOrders,
   unfiledEpics, epicOrders, finishedEpics, finishedEpicOrders, fleetBatchRows, fleetBatchOrders,
-  partitionFleetBatch, blockersFromRows, blockerClearedOrders, unclaimedBlockerClearedOrders,
+  partitionFleetBatch, FLEET_GATED_SELECTOR, blockersFromRows, blockerClearedOrders, unclaimedBlockerClearedOrders,
   promotionAskWindow, readRecentlyClosed, PROMOTION_ASK_OFFSETS_MS,
   PROMOTION_ASK_PERIOD_MS, PROMOTION_ASK_WINDOW_MS,
   claimedRowAmendedOrders, constraintsAfterClaim, amendmentsOn, readClaimedRowComments,
   CONSTRAINT_COMMENT_MARKER, CONSTRAINT_BODY_PREFIX,
-  FLEET_MILESTONE, readEpics, answersOwed, answerOrders,
+  readEpics, answersOwed, answerOrders,
   readOpenRows, withAnswerLabel, rowsOwingAnswers, readClosedAnswerRows,
   blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL,
   ANSWER_PREFIX, redOnlyBySupersededRun, cannotAskReport,
@@ -2529,20 +2529,45 @@ test("#1848: one order per finished epic, capped like every other row cause", ()
 // `agent-practices.md` already forbade it: "a cron is right for something that must happen at a
 // WALL-CLOCK time regardless of state; it is never right for 'has anything changed yet'."
 
-const batchRow = (n: number, milestone: string | null = FLEET_MILESTONE) => ({
+// The two milestones the batch must read the SAME (#2443): the version-one path, and the one a row filed
+// off-path lands on. Literals, because the feeders no longer carry either as a constant.
+const ON_PATH = "Road to version one";
+const OFF_PATH = "Out of release";
+
+const batchRow = (n: number, milestone: string | null = ON_PATH) => ({
   number: n,
   labels: [{ name: "fleet-gated" }],
   milestone: milestone === null ? null : { title: milestone },
 });
 
-test("#1941: the batch is every open fleet-gated row ON THE MILESTONE, in row order", () => {
-  const rows = [batchRow(1768), batchRow(1042), batchRow(99, "Some other milestone"),
-    { number: 5, labels: [{ name: "backlog" }], milestone: { title: FLEET_MILESTONE } }];
-  assert.deepEqual(fleetBatchRows(rows).map((r) => r.number), [1042, 1768],
-    "milestone-scoped and label-scoped, and SORTED -- an unsorted set would mint a different causeKey "
+test("#1941/#2443: the batch is every open fleet-gated row, in row order, WHATEVER ITS MILESTONE", () => {
+  // POSITIVE CONTROL is the on-path pair (the case #1941 pinned before #2443): 1042 and 1768 must still
+  // be offered, unchanged.
+  const rows = [batchRow(1768), batchRow(1042), batchRow(99, OFF_PATH),
+    { number: 5, labels: [{ name: "backlog" }], milestone: { title: ON_PATH } }];
+  assert.deepEqual(fleetBatchRows(rows).map((r) => r.number), [99, 1042, 1768],
+    "label-scoped, and SORTED -- an unsorted set would mint a different causeKey "
     + "for the same batch depending on what order GitHub happened to return it in");
-  assert.deepEqual(fleetBatchRows([batchRow(1, null)]), [],
-    "a row with no milestone is not on this one");
+  assert.deepEqual(fleetBatchRows([batchRow(1, null)]).map((r) => r.number), [1],
+    "a row with no milestone at all is still a row that needs a fleet run");
+});
+
+test("#2443: a fleet-gated row carrying `out-of-release` and the `Out of release` milestone IS offered", () => {
+  // THE DEFECT: #2212 sat here for hours on 2026-09-24 and nothing said so.
+  const offPath = { ...batchRow(2212, OFF_PATH),
+    labels: [{ name: "fleet-gated" }, { name: "out-of-release" }] };
+  const [order] = fleetBatchOrders([offPath]);
+  assert.equal(order?.causeKey, "orchestrator/fleet-batch-due/2212");
+  assert.doesNotMatch(order.prompt, /Road to version one/, "the order no longer claims a milestone");
+  assert.deepEqual(fleetBatchOrders([batchRow(2258)]).map((o) => o.causeKey),
+    ["orchestrator/fleet-batch-due/2258"], "POSITIVE CONTROL: the on-path case is unchanged");
+});
+
+test("#2443: the selector is ONE object, and its two halves name the same label", () => {
+  assert.deepEqual([...FLEET_GATED_SELECTOR.listArgs], ["--label", FLEET_GATED_SELECTOR.label]);
+  assert.ok(FLEET_GATED_SELECTOR.matches(batchRow(1)), "the local half accepts a fleet-gated row");
+  assert.ok(!FLEET_GATED_SELECTOR.matches({ number: 2, labels: [{ name: "backlog" }] }),
+    "and refuses a row without the label");
 });
 
 test("#1941: THE CAUSEKEY IS THE SET, so it fires when the set changes and never on a clock", () => {
@@ -2613,29 +2638,38 @@ const CLOCK = { today: TODAY, nowMs: NOW };
 const gatedRow = (n: number, extra: Record<string, unknown> = {}) => ({
   number: n,
   labels: [{ name: "fleet-gated" }],
-  milestone: { title: FLEET_MILESTONE },
+  milestone: { title: ON_PATH },
   ...extra,
 });
 
 const blockedByOpen = { blockedBy: { nodes: [{ number: 1918, state: "OPEN" }] } };
 const blockedByClosed = { blockedBy: { nodes: [{ number: 1918, state: "CLOSED" }] } };
 
+test("#2443: the waiting fields still shelve an OFF-path row, exactly as they do an on-path one", () => {
+  const future = { ...gatedRow(2212, { body: "Not-before: 2026-09-30" }), milestone: { title: OFF_PATH } };
+  const blocked = { ...gatedRow(2213, blockedByOpen), milestone: { title: OFF_PATH } };
+  const free = { ...gatedRow(2214), milestone: { title: OFF_PATH } };
+  const { batch, waiting } = partitionFleetBatch([future, blocked, free], CLOCK);
+  assert.deepEqual(batch.map((r) => r.number), [2214], "the runnable off-path row is offered");
+  assert.deepEqual(waiting.map((w) => w.number), [2212, 2213], "the waiting ones leave, and are reported");
+});
+
 test("#2027: an open `blockedBy` edge takes the row out of the fleet batch -- and a closed one puts it back", () => {
-  assert.deepEqual(fleetBatchRows([gatedRow(1976, blockedByOpen)], FLEET_MILESTONE, CLOCK), [],
+  assert.deepEqual(fleetBatchRows([gatedRow(1976, blockedByOpen)], CLOCK), [],
     "#1976 was dispatched and shelved by the same tick; the shelving was the true reading");
   // THE POSITIVE CONTROL, and it is the one that matters: an exclusion test alone passes on a filter that
   // returns nothing at all, which is the defect with the sign flipped.
   assert.deepEqual(
-    fleetBatchRows([gatedRow(1976, blockedByClosed)], FLEET_MILESTONE, CLOCK).map((r) => r.number),
+    fleetBatchRows([gatedRow(1976, blockedByClosed)], CLOCK).map((r) => r.number),
     [1976], "a blocker that has CLOSED is a condition that cleared, and the row comes back by itself");
 });
 
 test("#2027: a future `Not-before:` takes the row out -- and today's date puts it back", () => {
   const future = gatedRow(1042, { body: "Not-before: 2026-09-30" });
-  assert.deepEqual(fleetBatchRows([future], FLEET_MILESTONE, CLOCK), [],
+  assert.deepEqual(fleetBatchRows([future], CLOCK), [],
     "#1042 carried exactly this on 2026-09-22 and was dispatched anyway");
   const arrived = gatedRow(1042, { body: `Not-before: ${TODAY}` });
-  assert.deepEqual(fleetBatchRows([arrived], FLEET_MILESTONE, CLOCK).map((r) => r.number), [1042],
+  assert.deepEqual(fleetBatchRows([arrived], CLOCK).map((r) => r.number), [1042],
     "POSITIVE CONTROL: `Not-before:` is not-BEFORE, so the named day itself is runnable");
 });
 
@@ -2644,19 +2678,19 @@ test("#2027: a live `Fleet-hold-until:` takes the row out -- and a lapsed one pu
   // `packages/control/src/fleet-playbook.mjs` and therefore unreadable by `waiting-condition.mjs`, which
   // is #2005's defect one field over -- the same reason the fleet batch could not honour its own order.
   const live = gatedRow(1768, { body: "Fleet-hold-until: 2026-09-23T18:00:00Z" });
-  assert.deepEqual(fleetBatchRows([live], FLEET_MILESTONE, CLOCK), [],
+  assert.deepEqual(fleetBatchRows([live], CLOCK), [],
     "a multi-round same-build sequence owns the fleet until the second it named");
   const lapsed = gatedRow(1768, { body: "Fleet-hold-until: 2026-09-23T06:00:00Z" });
-  assert.deepEqual(fleetBatchRows([lapsed], FLEET_MILESTONE, CLOCK).map((r) => r.number), [1768],
+  assert.deepEqual(fleetBatchRows([lapsed], CLOCK).map((r) => r.number), [1768],
     "POSITIVE CONTROL: the hold lapses with no edit to anyone's row, which is the property it was built for");
 });
 
 test("#2027: an `answer:<session>` label takes the row out -- and removing it puts the row back", () => {
-  const owed = { number: 914, milestone: { title: FLEET_MILESTONE },
+  const owed = { number: 914, milestone: { title: ON_PATH },
     labels: [{ name: "fleet-gated" }, { name: `${ANSWER_PREFIX}product-manager` }] };
-  assert.deepEqual(fleetBatchRows([owed], FLEET_MILESTONE, CLOCK), [],
+  assert.deepEqual(fleetBatchRows([owed], CLOCK), [],
     "#914 is the row that cost 6.5 hours waiting for a ruling -- re-dispatching it is re-asking it");
-  assert.deepEqual(fleetBatchRows([gatedRow(914)], FLEET_MILESTONE, CLOCK).map((r) => r.number), [914],
+  assert.deepEqual(fleetBatchRows([gatedRow(914)], CLOCK).map((r) => r.number), [914],
     "POSITIVE CONTROL: removing the label IS the act of answering, and the row returns on that alone");
 });
 
@@ -2665,10 +2699,10 @@ test("#2027: a whole batch that is waiting produces NO ORDER, rather than an ord
   // excludes nothing -- and this goes red. It is the defect restored exactly.
   const allWaiting = [gatedRow(31, blockedByOpen), gatedRow(1042, { body: "Not-before: 2026-09-30" }),
     gatedRow(1768, { body: "Fleet-hold-until: 2026-09-23T18:00:00Z" })];
-  assert.deepEqual(fleetBatchOrders(allWaiting, FLEET_MILESTONE, CLOCK), [],
+  assert.deepEqual(fleetBatchOrders(allWaiting, CLOCK), [],
     "every answer is already recorded in a field; re-reporting them is the treadmill the order's own "
     + "last sentence was written to prevent");
-  const [order] = fleetBatchOrders([...allWaiting, gatedRow(1908)], FLEET_MILESTONE, CLOCK);
+  const [order] = fleetBatchOrders([...allWaiting, gatedRow(1908)], CLOCK);
   assert.equal(order?.causeKey, "orchestrator/fleet-batch-due/1908",
     "POSITIVE CONTROL: the one genuinely runnable row still reaches orchestrator, and alone -- the "
     + "2026-09-22 batch of nine was eight answered rows and this one");
@@ -2676,7 +2710,7 @@ test("#2027: a whole batch that is waiting produces NO ORDER, rather than an ord
 
 test("#2027: a shelved fleet row is REPORTED, never silently dropped", () => {
   const { batch, waiting } = partitionFleetBatch(
-    [gatedRow(1976, blockedByOpen), gatedRow(1908)], FLEET_MILESTONE, CLOCK);
+    [gatedRow(1976, blockedByOpen), gatedRow(1908)], CLOCK);
   assert.deepEqual(batch.map((r) => r.number), [1908]);
   assert.deepEqual(waiting, [{ number: 1976,
     reason: "blocked by #1918 -- declared on the row, and it clears itself" }],
