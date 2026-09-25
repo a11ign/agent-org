@@ -111,8 +111,8 @@ test("#2407 (2) an order that NAMES the spent spare is still delivered; the pool
 
   const pool = deliver([ROW_ORDER], agents({ "worker-4": "idle" }), roster, { run, ineligibleReason, drained: STANDING });
   assert.equal(pool.sent.length, 1);
-  assert.match(pool.sent[0], /^worker-5 <- engineers\/ready-row-unclaimed\/2407 \(STARTED/,
-    "the spent instance is skipped and the next address is started: a new row always gets a new instance");
+  assert.match(pool.sent[0], /^worker-2407 <- engineers\/ready-row-unclaimed\/2407 \(STARTED/,
+    "the spent instance is skipped and the ROW's own address is started (#2469): a new row always gets a new instance");
   assert.ok(!pool.sent.some((line) => line.startsWith("worker-4")));
 });
 
@@ -261,9 +261,9 @@ function tickWith(registry: Record<string, unknown> | null, listed: string) {
 }
 const IDLE_WORKER_4 = '{"label":"worker-4","workspace_id":"wD","agent_status":"idle"}';
 
-test("#2407 THE WAKE ENTRY (router): an idle spare with a recorded row is skipped and the next address is started", () => {
+test("#2407 THE WAKE ENTRY (router): an idle spare with a recorded row is skipped and the row's own address is started", () => {
   const spent = tickWith({ "worker-4": { spawnedAt: 1, rows: [2378] } }, IDLE_WORKER_4);
-  assert.match(spent.ran.stdout, /WOKE worker-5 <- engineers\/ready-row-unclaimed\/2407 \(STARTED/, spent.ran.stderr);
+  assert.match(spent.ran.stdout, /WOKE worker-2407 <- engineers\/ready-row-unclaimed\/2407 \(STARTED/, spent.ran.stderr);
   assert.ok(!/WOKE worker-4/.test(spent.ran.stdout), "the spent instance is not woken for a new row");
   const control = tickWith({ "worker-4": { spawnedAt: 1, rows: [] } }, IDLE_WORKER_4);
   assert.match(control.ran.stdout, /WOKE worker-4 <- engineers\/ready-row-unclaimed\/2407 \(no clear\)\n/,
@@ -271,11 +271,12 @@ test("#2407 THE WAKE ENTRY (router): an idle spare with a recorded row is skippe
 });
 
 test("#2407 THE WAKE ENTRY (settle): a leftover entry is gone before the next instance's claim, and its failure is recorded", () => {
-  const stale = tickWith({ "worker-4": { spawnedAt: 1, rows: [2378] } }, "");
-  assert.match(stale.ran.stdout, /WOKE worker-4 <- engineers\/ready-row-unclaimed\/2407 \(STARTED/, stale.ran.stderr);
+  // #2469: the address the tick starts is the ROW's, so the leftover entry is the one under that name.
+  const stale = tickWith({ "worker-2407": { spawnedAt: 1, rows: [2378] } }, "");
+  assert.match(stale.ran.stdout, /WOKE worker-2407 <- engineers\/ready-row-unclaimed\/2407 \(STARTED/, stale.ran.stderr);
   assert.ok(!stale.atClaim.includes("2378"), `the claim saw a registry still naming the dead instance's row: ${stale.atClaim}`);
   const [line] = stale.cycles;
-  assert.deepEqual([line?.role, line?.rows, line?.clean], ["worker-4", [2378], false]);
+  assert.deepEqual([line?.role, line?.rows, line?.clean], ["worker-2407", [2378], false]);
   assert.equal(stale.cycles.length, 1, "one failed line for the one missing teardown, not two");
-  assert.deepEqual(stale.registry["worker-4"].rows, [], "and the new instance is registered fresh");
+  assert.deepEqual(stale.registry["worker-2407"].rows, [], "and the new instance is registered fresh");
 });
