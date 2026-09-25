@@ -189,5 +189,5 @@ test("#2416 done-when 2: the rules sentence says the author's prompt does not ap
   assert.ok(at >= 0, "the sentence about the per-PR reviewer is still there");
   const bullet = rules.slice(at, rules.indexOf("- **ONE CALL IS ENOUGH"));
   assert.match(bullet, /The author re-prompts a live one after a push/, "the sentence the label amends still exists");
-  assert.match(bullet, /Neither does for a PR labelled `awaiting-evidence`/);
+  assert.match(bullet, /Neither does for `awaiting-evidence` PRs/);
 });
