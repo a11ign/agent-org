@@ -2836,7 +2836,7 @@ function engineerBriefLine(label, engineers, families) {
  * target was neither started nor cleared for this order, so its window already holds all of the above; the default is the full
  * form, so a caller that does not know is never the one that leaves a session unbriefed. A `spawned` order is never a follow-up.
  *
- * @param {{session: string, prompt: string, title?: string, causeKey?: string}} order
+ * @param {{session: string, prompt: string, title?: string, causeKey?: string, cause?: string}} order
  * @param {string} label the concrete session this went to
  * @param {LaunchFacts & {spawned?: ClaimedRow, followUp?: boolean, engineers?: string[],
  *   families?: readonly import("./arm-pr.mjs").SpareFamily[]}} [facts]
@@ -2855,7 +2855,7 @@ export function addressed(order, label,
     + engineerBriefLine(label, engineers, families)
     + "Work autonomously to the end: nobody is at this terminal to answer you. If something genuinely "
     + `blocks you, say so on the row and message \`${escalationFor(label)}\` -- never stop and wait on a `
-    + `human.${spawned ? "" : ` ${REFUSED_CLAIM_IS_AN_ANSWER}`}\n\n`
+    + `human.${claimSentence(order, spawned)}\n\n`
     + "ENDING YOUR TURN WITH A QUESTION IS THE SAME AS STOPPING. Nobody reads this terminal, so "
     + "\"want me to file it?\" and not filing it are the same outcome -- except the first also looks "
     + "like progress. IF THE ACTION IS IN YOUR LANE, TAKE IT AND REPORT WHAT YOU DID. Measured "
@@ -2884,6 +2884,22 @@ const FOLLOW_UP_HEADER = (label) => `You are \`${label}\` -- a follow-up order t
 /** What a session that must claim its row is told about a refusal; a spawned one has nothing left to claim (#2405). */
 const REFUSED_CLAIM_IS_AN_ANSWER = "If you cannot claim the row (already taken, or the claim refuses), that is an "
   + "answer: report it and stop, rather than working outside a claim.";
+
+/**
+ * A REVIEWER CLAIMS NO ROW (#2590), so the sentence above is the opposite of its job: `reviewer-2584` ran `row-claim claim 2556`, was
+ * refused because the PR's own author still held the claim -- the normal state -- and ended its turn without a verdict.
+ */
+const REVIEWER_CLAIMS_NO_ROW = "You claim no row, and the author's claim on it is not a blocker: review the pull request.";
+
+/**
+ * The claim sentence an order carries: none for a spawned one (already claimed, #2405), the reviewer's own for a reviewer (#2590),
+ * the refusal-is-an-answer rule for any other.
+ * @param {{session: string, cause?: string}} order @param {unknown} spawned
+ */
+function claimSentence(order, spawned) {
+  if (spawned) return "";
+  return ` ${isReviewerOrder(order) ? REVIEWER_CLAIMS_NO_ROW : REFUSED_CLAIM_IS_AN_ANSWER}`;
+}
 
 /**
  * Does this delivery begin a new run -- i.e. was nobody told for longer than `RUN_IDLE_RESET_MS`?
