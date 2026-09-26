@@ -52,8 +52,8 @@ import { statusContradictions, statusCensus, vocabularyDrift } from "./board-sta
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
-import { REPO } from "../../../scripts/repo-identity.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { REPO } from "./project-identity.mjs";
 import { READY_LABEL } from "./claim-labels.mjs";
 // #1275: the scoped half, PURE OF `gh` -- see that file's header. The constants live there and are re-exported above,
 // because a constant that file imported from here would carry this file's `token` into its closure.

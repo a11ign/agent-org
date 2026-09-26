@@ -36,9 +36,9 @@ import { readdirSync, readFileSync, copyFileSync, mkdirSync, rmSync, existsSync,
   renameSync, chmodSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
-import { localImports, stripComments } from "../../guards/src/local-import-closure.mjs";
-import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { localImports, stripComments } from "./lib/local-import-closure.mjs";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { SPAWNS_GH } from "./acceptance-commands.mjs";
 
 /** Where the repository keeps the units it ships. */

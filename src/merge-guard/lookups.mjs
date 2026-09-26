@@ -15,9 +15,9 @@
 // reconciliation log's `gitCommonDir`) happened to import and call it -- moving the two into separate
 // files made the omission visible rather than introducing it.
 import { execFileSync } from "node:child_process";
-import { REPO } from "../../../../scripts/repo-identity.mjs";
-import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
-import { assertNoLeakInArgv } from "../../../lab/src/packaging/leak-patterns.mjs";
+import { REPO } from "../project-identity.mjs";
+import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { assertNoLeakInArgv } from "../lib/leak-patterns.mjs";
 
 /** @param {string[]} args */
 export const gh = (args) => {

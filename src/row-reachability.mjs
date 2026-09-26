@@ -39,9 +39,9 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "@a11ign/worker-fleet/cli-flags";
-import { REPO } from "../../../scripts/repo-identity.mjs";
-import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { REPO } from "./project-identity.mjs";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { regionPathsFromBody, declaredRegionFiles, declaresNoCommit } from "./region-paths.mjs";
 
 const EXIT = { STARTABLE: 0, BLOCKED: 1, CANNOT_ASK: 2 };

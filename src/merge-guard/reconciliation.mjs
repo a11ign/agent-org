@@ -25,7 +25,7 @@
 // common dir resolves to the SAME `.git` for the primary and every worktree.
 import { execFileSync } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
-import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { reasonKind } from "./reason-kind.mjs";
 
 const EXIT = { READY: 0, CANNOT_ASK: 2 };

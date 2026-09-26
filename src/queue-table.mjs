@@ -39,10 +39,10 @@ import { loadavg } from "node:os";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-import { refuseUnknownFlags, flagValue } from "../../worker-fleet/src/cli-flags.mjs";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { behindByCount } from "./queue-stalled.mjs";
-import { REPO } from "../../../scripts/repo-identity.mjs";
-import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
+import { REPO } from "./project-identity.mjs";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { newestPerName } from "./newest-check-run.mjs";
 import { holdersOf } from "./pr-hold-state.mjs";
 import { armedFromApi } from "./pr-armed-state.mjs";

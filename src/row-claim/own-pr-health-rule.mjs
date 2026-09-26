@@ -146,7 +146,7 @@
 // one fact this whole fleet can rely on is which issue a PR's own `Closes #N` resolves, because GitHub
 // computes it server-side. So: find the OTHER issues `mySession` currently holds (`in-progress` +
 // `session:<name>`, excluding the row being claimed right now), and ask GitHub which PR would close each.
-import { REPO } from "../../../../scripts/repo-identity.mjs";
+import { REPO } from "../project-identity.mjs";
 import { gh, lookup } from "../merge-guard/lookups.mjs";
 import { declaredRegionFiles, regionCovers } from "../region-paths.mjs";
 // #2126: the reviewer NAME is parsed by the tree's own verdict parser, never a second reading of the

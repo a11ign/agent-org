@@ -69,10 +69,10 @@ import { pathToFileURL } from "node:url";
 import { existsSync, globSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, delimiter, join } from "node:path";
-import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
-import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
-import { changedFiles } from "../../guards/src/changed-files.mjs";
-import { localImports, importedNamesFor, stripComments } from "../../guards/src/local-import-closure.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { changedFiles } from "./lib/changed-files.mjs";
+import { localImports, importedNamesFor, stripComments } from "./lib/local-import-closure.mjs";
 
 /** @typedef {{ verdict: "runnable" } | { verdict: "refused", reason: string } | { verdict: "prose", reason: string }} Classification */
 /** @typedef {{ kind: "missing" } | { kind: "none", reason: string } | { kind: "commands", commands: string[] } | { kind: "duplicate", occurrences: { line: number, text: string }[] }} Section */

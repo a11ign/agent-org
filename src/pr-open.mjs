@@ -45,9 +45,9 @@ import { pathToFileURL } from "node:url";
 import { acceptanceReport, closesDeclarationReport, extractClosesDeclaration, extractMutationSection }
   from "./acceptance-commands.mjs";
 import { declaredRegionFiles, regionCovers } from "./region-paths.mjs";
-import { leakRefusalReason } from "../../lab/src/packaging/leak-patterns.mjs";
-import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
-import { REPO } from "../../../scripts/repo-identity.mjs";
+import { leakRefusalReason } from "./lib/leak-patterns.mjs";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { REPO } from "./project-identity.mjs";
 import { launchGate } from "./board-snapshot-scope.mjs";
 import { worktreeOwner } from "./worktree-owner.mjs";
 import { isLiveSession } from "./arm-pr.mjs";

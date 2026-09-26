@@ -65,8 +65,8 @@ import { fileURLToPath } from "node:url";
 // points at `dist/`, so it needs both `node_modules` AND a completed build. This file is reachable
 // from a pre-install entry (see `pre-install-import-graph.test.ts`, which derives that population
 // rather than naming it), and there it dies on startup with ERR_MODULE_NOT_FOUND.
-import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
-import { REPO } from "../../../scripts/repo-identity.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { REPO } from "./project-identity.mjs";
 import { READY_LABEL, WAS_READY_LABEL } from "./ready-label-audit.mjs";
 import { gitCommonDir, appendJsonl } from "./merge-guard.mjs";
 import { withBoardSnapshot, PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapshot.mjs";
@@ -84,12 +84,12 @@ import { staleRuleReason } from "./row-claim/stale-rule-guard.mjs";
 // `rowBranchesOnOrigin` is the tested spelling". The FAILURE POLICY stayed here -- see `rowBranchesOnOrigin`
 // below, which still throws -- because the gate's is deliberately different.
 import { LS_REMOTE_ARGS, branchesForRow } from "./row-claim/row-branch-rule.mjs";
-import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { primaryWorktreeOf, unverifiedRecords } from "./prune-worktrees.mjs";
 import { CLAIM_LABEL, STARTED_LABEL, CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
 import { worktreeOwner, stampWorktree } from "./worktree-owner.mjs";
 import { launchGate } from "./board-snapshot-scope.mjs";
-import { assertNoLeakInArgv } from "../../lab/src/packaging/leak-patterns.mjs";
+import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
 
 // #804: CLAIM_LABEL/STARTED_LABEL are IMPORTED (above) from the leaf claim-labels.mjs and re-exported
 // here, not declared in this file -- see claim-labels.mjs's own header for why. Every existing

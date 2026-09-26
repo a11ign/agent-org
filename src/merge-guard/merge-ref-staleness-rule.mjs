@@ -24,7 +24,7 @@
 // answer (never zero, never a guess), and the caller decides what to do with "could not ask" rather than
 // this rule silently choosing "clean" on its behalf.
 import { execFileSync } from "node:child_process";
-import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.mjs";
 
 /** How many commits behind `main` before a stale merge ref is worth reporting, rather than every PR that
  * fell behind in the last thirty seconds. Chosen to match the granularity `queue-table.mjs` already

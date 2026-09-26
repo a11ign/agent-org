@@ -19,7 +19,7 @@
 // says which of three it is and never blames a merge for a failure it did not cause.
 import { execFileSync } from "node:child_process";
 import { summarizeTestLog, testIdentity } from "./parent-recheck-summary.mjs";
-import { REPO } from "../../../scripts/repo-identity.mjs";
+import { REPO } from "./project-identity.mjs";
 
 /** The workflow whose newest run on `main` says whether `main` is red. */
 export const TRUNK_WORKFLOW = "trunk.yml";

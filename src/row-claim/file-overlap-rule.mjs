@@ -55,7 +55,7 @@
 // section 2), because either alone is a hole: a `hold:` label with no edge is a PR that may still merge when the
 // hold lifts, and an edge with no hold is a PR that `deliberateRefusals` will let merge first. See
 // `isHeldPrWaitingOn`. The gate reads the same two facts (`work-gate.mjs`'s `blockedOnOpenPr`).
-import { REPO } from "../../../../scripts/repo-identity.mjs";
+import { REPO } from "../project-identity.mjs";
 import { extractClosesDeclaration } from "../acceptance-commands.mjs";
 import { gh, lookup } from "../merge-guard/lookups.mjs";
 import { holdersOf } from "../pr-hold-state.mjs";

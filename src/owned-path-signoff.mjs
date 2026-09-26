@@ -47,7 +47,7 @@ import { pathToFileURL } from "node:url";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { refuseUnknownFlags, flagValue } from "../../worker-fleet/src/cli-flags.mjs";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 
 const EXIT = { SIGNED: 0, REFUSED: 1, CANNOT_ASK: 2 };
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");

@@ -63,7 +63,7 @@ import { existsSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync }
 import { join, sep } from "node:path";
 // RELATIVE rather than `@a11ign/worker-fleet/cli-flags` for the reason `prune-worktrees.mjs` records:
 // files in this package run before `npm ci`, where a package specifier dies.
-import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 
 /**
  * How long after its newest write a path stops counting as somebody's current work.

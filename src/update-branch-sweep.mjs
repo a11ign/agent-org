@@ -43,8 +43,8 @@
 //   1  at least one PR could not be updated. NAMED, never counted.
 //   2  a lookup failed. INCONCLUSIVE, never "fine".
 import { execFileSync } from "node:child_process";
-import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
-import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { NO_VERDICT } from "./merge-guard/checks-rule.mjs";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";

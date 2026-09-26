@@ -33,7 +33,7 @@
 // `merge-guard.mjs`. Only asked when green: an armed-but-not-green PR never races (see `racesAnArmedMerge`
 // below), so a behind-by lookup there would be a round trip for a value nothing reads. `null` (could not
 // determine) folds into "does not race" the same fail-open direction as everything else here.
-import { REPO } from "../../../../scripts/repo-identity.mjs";
+import { REPO } from "../project-identity.mjs";
 import { checkReasons } from "./checks-rule.mjs";
 import { gh, lookup, lookupRequiredContexts, lookupCheckRuns } from "./lookups.mjs";
 
