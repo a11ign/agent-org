@@ -10,8 +10,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, chmodSync, readdirSync, copyFileSync } from "node:fs";
-import { spawnSync, execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync, chmodSync, readdirSync, copyFileSync } from "node:fs";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join, dirname, relative } from "node:path";
@@ -102,6 +102,28 @@ case "$*" in
 esac
 `;
 
+// #2606: `git commit` in the fixture forks a DETACHED `git maintenance run --auto --detach` once the repo holds 100
+// loose objects (observed with GIT_TRACE2_EVENT on git 2.53: a `child_start` of exactly that argv). That child is the
+// probable writer of the ENOTEMPTY on `.git` (CI run 36219190351, attempts 1-3, held #2605 red): its spawn was observed,
+// its writing during a teardown was not, and CI's loose-object count was not read. Two independent defences, each pinned below:
+// the fixture repo never auto-maintains, and the removal is retried WHOLE while something is still writing.
+// `rmSync`'s own `maxRetries` is NOT the second defence: measured on Node 22.22.1, it re-runs the `rmdir` without
+// emptying the directory again, so a file the writer created after the scan keeps it failing ENOTEMPTY for every retry
+// (10 retries, 5.5s, then the same error). Only running the whole removal again sees the new entry.
+const TEARDOWN_ATTEMPTS = 20;
+const TEARDOWN_PAUSE_MS = 100;
+function removeFixture(dir: string): void {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOTEMPTY" || attempt === TEARDOWN_ATTEMPTS) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, TEARDOWN_PAUSE_MS);
+    }
+  }
+}
+
 function copyClosureAsRepo(copyRoot: string): string {
   const files = new Set<string>([join(REPO_ROOT, SESSIONS_JSON)]);
   const visit = (file: string): void => {
@@ -121,6 +143,8 @@ function copyClosureAsRepo(copyRoot: string): string {
   const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args],
     { cwd: copyRoot, env: sandboxGitEnv(), stdio: "pipe" });
   git("init", "--quiet");
+  git("config", "maintenance.auto", "false");
+  git("config", "gc.auto", "0");
   git("add", "-A");
   git("commit", "--quiet", "-m", "copy");
   git("update-ref", "refs/remotes/origin/main", "HEAD");
@@ -144,9 +168,52 @@ function claimProcess(session: string, { registry = null, held = [] }: { registr
         HELD_ROWS: JSON.stringify(held.map((number) => ({ number }))) },
     });
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    removeFixture(dir);
   }
 }
+
+// The writer is a separate process that keeps creating files under the fixture's `.git` for a while, which is the shape
+// of the detached maintenance child without depending on git's threshold. WITHOUT the whole-removal retry the bare `rmSync` throws ENOTEMPTY.
+const GIT_WRITER = `
+  const { writeFileSync, mkdirSync } = require("node:fs");
+  const dir = process.argv[1];
+  const until = Date.now() + 600;
+  for (let i = 0; Date.now() < until; i++) {
+    try { mkdirSync(dir + "/d" + (i % 7), { recursive: true }); writeFileSync(dir + "/d" + (i % 7) + "/w" + i, "x"); }
+    catch (error) { process.exit(0); }
+  }
+`;
+
+test("#2606 POSITIVE CONTROL: teardown completes while a writer is still creating files inside the fixture's `.git`", () => {
+  const dir = mkdtempSync(join(tmpdir(), "row-claim-one-row-"));
+  const objects = join(dir, "checkout/.git/objects");
+  mkdirSync(objects, { recursive: true });
+  const writer = spawn(process.execPath, ["-e", GIT_WRITER, objects], { stdio: "ignore" });
+  try {
+    for (const deadline = Date.now() + 5000; readdirSync(objects).length === 0; ) {
+      assert.ok(Date.now() < deadline, "the writer never started, so this control would prove nothing");
+    }
+    removeFixture(dir);
+    assert.equal(existsSync(dir), false, "the fixture is gone although a writer was inside it when removal began");
+  } finally {
+    writer.kill();
+    removeFixture(dir);
+  }
+});
+
+test("#2606: the fixture repo is created with auto-maintenance OFF, so no detached git child outlives its commit", () => {
+  const dir = mkdtempSync(join(tmpdir(), "row-claim-one-row-"));
+  try {
+    const entry = copyClosureAsRepo(join(dir, "checkout"));
+    const config = (key: string) => execFileSync("git", ["config", "--get", key], { cwd: join(dir, "checkout"), env: sandboxGitEnv(), encoding: "utf8" }).trim();
+    assert.ok(entry.startsWith(dir), "the copy is the one this test built");
+    assert.equal(config("maintenance.auto"), "false");
+    assert.equal(config("gc.auto"), "0");
+  } finally {
+    removeFixture(dir);
+  }
+});
+
 const refusedFor = (ran: ReturnType<typeof claimProcess>) => REFUSAL.test(ran.stdout);
 
 test("#2407 (1) THE COMMAND: an instance through claim, review and close is refused a second claim -- from the labels AND from the registry", () => {
