@@ -1297,12 +1297,12 @@ test("a held PR at the cap stops appearing in stuck, and a real failure under th
   };
   const held = at(HELD_RED);
   assert.deepEqual([held.orders, held.stuck, held.labelled, held.calls], [[], [], [], []],
-    "no order, so no stuck line, so no needs:chairman");
+    "no order, so no stuck line, so no escalation label");
   const real = at([["deliberateRefusals", "FAILURE"], ["gate", "FAILURE"], ["changeset", "FAILURE"]]);
   assert.equal(real.orders.length, 1, "POSITIVE CONTROL: the order exists");
   assert.equal(real.stuck.length, 1, "and at the cap it is stuck, by the ordinary count");
   assert.deepEqual(real.labelled, [2376]);
-  assert.deepEqual(real.calls, [["issue", "edit", "2376", "--add-label", "needs:chairman"]]);
+  assert.deepEqual(real.calls, [["issue", "edit", "2376", "--add-label", "answer:ceo"]]);
 });
 
 test("the expensive question is asked only when something is red", () => {
