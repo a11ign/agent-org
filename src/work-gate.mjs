@@ -668,7 +668,15 @@ export function readPromotableRows(run = defaultRun) {
     // happened one door down: this function was the only one that knew, so the identical question asked
     // by `partitionUnclaimed` ("may this be OFFERED?") still answered `yes`. The local `answered` set is
     // gone and `waitingOn` below now carries it, so the two questions cannot answer differently again.
+    //
+    // `needs:chairman` IS A WAIT THAT `waitingOn` DOES NOT READ, AND THIS IS THE SECOND READER OF THAT GAP
+    // (#2604, after #2583/#2585 closed `unclaimedClearings`). The label names a person and clears when
+    // removed, so a row carrying it is not stock anybody can promote: `ready-queue-empty` counted #2561 (whose
+    // first step, a private repository, did not exist) and woke `product-manager` to re-derive a verdict
+    // already on the row. Dropped HERE, in this reader's own population, and not taught to `waitingOn`, which
+    // every reader of that function would then inherit -- the same choice #2585 made.
     return parsed.filter((r) => !labelsOf(r).some((/** @type {string} */ n) => NOT_STARTABLE.includes(n)))
+      .filter((r) => !labelsOf(r).includes(CHAIRMAN_LABEL))
       .filter((r) => waitingOn(r, today) === null);
   } catch {
     return null;

@@ -1625,6 +1625,25 @@ test("a backlog+meta row is not promotable (#1804): #20 stopped re-asking a sett
   assert.deepEqual(read([dailyReport]), [], "a container/process row has no Region/Acceptance to promote");
 });
 
+test("a backlog row carrying needs:chairman is not promotable (#2604): nobody but the chairman can move it", () => {
+  // #2561 carried `needs:chairman` and was counted as the third of three promotable rows, so the
+  // empty-shelf order read 3 where the truthful reading was 2. #2585 fixed `unclaimedClearings`; this is
+  // the second reader of the same gap.
+  const read = (rows: unknown[]) => {
+    const got = readPromotableRows(() => JSON.stringify(rows));
+    assert.ok(got !== null, "the fixture read must not be refused");
+    return got.map((r: { number: number }) => r.number);
+  };
+  const base = [{ name: "backlog" }, { name: "lane:any" }];
+  const waiting = { number: 9001, labels: [...base, { name: CHAIRMAN_LABEL }], blockedBy: { nodes: [] } };
+  const startable = { number: 9002, labels: base, blockedBy: { nodes: [] } };
+  assert.deepEqual(read([waiting]), [], "a needs:chairman row is not stock");
+  // POSITIVE CONTROL: the same row without the label is still counted, so the emptiness above is not a
+  // look at nothing.
+  assert.deepEqual(read([startable]), [9002], "the row without the label is counted exactly as before");
+  assert.deepEqual(read([waiting, startable]), [9002], "only the labelled row of a mixed shelf is dropped");
+});
+
 /**
  * #1899, measured live at the 2026-09-22 ~06:41Z `ready-queue-empty` tick: #1889 (`backlog`,
  * `answer:ceo`) and #1878 (`backlog`, `lane:any`, `answer:orchestrator`) both already carry the correct
