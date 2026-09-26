@@ -16,7 +16,7 @@
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { readFileSync, realpathSync } from "node:fs";
-import { refuseUnknownFlags, flagValue } from "../../worker-fleet/src/cli-flags.mjs";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { armabilityOf } from "./pr-hold-state.mjs";
 // #2046: THE ARMED PREDICATE, IMPORTED RATHER THAN RE-DECIDED -- the mirror of the `pr-hold-state.mjs`
 // line above, and for the reason this file's own header already gives about that one. Leaf-shaped:

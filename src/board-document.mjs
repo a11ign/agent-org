@@ -23,12 +23,12 @@ import { pathToFileURL } from "node:url";
 import { statedWritingTime } from "./board-summary-check.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 import path from "node:path";
-import { refuseUnknownFlags } from "@a11ign/worker-fleet/cli-flags";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { collect, readSetIsNotMain, ROOT, REPO, MILESTONE, HOURS_MS, issues, outOfRelease, unclassified, achievementsWhoseWorldMoved,
   realPageCaptureAge, worstVerdict } from "./board-data.mjs";
 import { toHtml } from "./board-markdown.mjs";
 import { editionDay, publishEdition, todaysEditionExists } from "./board-discussion.mjs";
-import { productHome, PRODUCT_HOME_SOURCE } from "../../../scripts/product-home.mjs";
+import { productHome, PRODUCT_HOME_SOURCE } from "./lib/product-home.mjs";
 
 // Module scope, not inside main(): `section5` reads it, and `document()` is exported for the renderer
 // test, which builds a real document without ever calling main().

@@ -15,7 +15,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { REPO } from "../../../scripts/repo-identity.mjs";
+import { REPO } from "./project-identity.mjs";
 // #2616: the board is a field of the project's declaration, not a value derived from `REPO` and a constant.
 import { homeProjectDeclaration } from "./project-config.mjs";
 // #1425: the classifier the close path already uses. That module imports nothing, so this file stays free of `gh`.

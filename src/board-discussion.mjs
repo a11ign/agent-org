@@ -19,7 +19,7 @@
 //   node packages/agent-org/src/board-discussion.mjs --exists     the workflow's republish precondition
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "@a11ign/worker-fleet/cli-flags";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { gh, REPO } from "./board-data.mjs";
 
 export const EDITION_CATEGORY_SLUG = "board-editions";

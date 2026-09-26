@@ -50,7 +50,7 @@ import { existsSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
-import { refuseUnknownFlags } from "@a11ign/worker-fleet/cli-flags";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { REPO, ROOT, gh } from "./board-data.mjs";
 import { editionDay } from "./board-discussion.mjs";
 

@@ -30,7 +30,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import path from "node:path";
-import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { bodyCapRefusal, document } from "./board-document.mjs";
 import { collect, reported } from "./board-data.mjs";
 
