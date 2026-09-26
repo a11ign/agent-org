@@ -172,10 +172,11 @@ export const PROMPT_REFUSED_PREFIX = "prompt refused: ";
  * session -- a systemd unit such as the nightly firing is named as unidentified, never guessed.
  *
  * @param {(args: string[]) => string} run @param {string} label @param {string} text
- * @param {string | null} [sender]
+ * @param {{sender?: string | null, sleep?: (ms: number) => void}} [options] `sleep` is the clear's settle
+ *   ({@link clearBeforeOrder}): real by default, injected only by a test that is not about the delay (#2546)
  */
-export function clearThenPrompt(run, label, text, sender = null) {
-  const { sent, refusal: clearRefusal } = clearBeforeOrder(run, label);
+export function clearThenPrompt(run, label, text, { sender = null, sleep } = {}) {
+  const { sent, refusal: clearRefusal } = clearBeforeOrder(run, label, sleep);
   try {
     run(["--session", "org", "agent", "prompt", label, deliveredText(label, text, sender, { followUp: !sent })]);
   } catch (/** @type {any} */ err) {
@@ -489,10 +490,11 @@ export function recordDirectDelivery(queuePath, { label, text, sender, cleared, 
  * ({@link recordDirectDelivery}), never both, and the direct line is written only once the prompt landed.
  *
  * @param {{run: (args: string[]) => string, label: string, text: string, agents: {label: string, status: string}[] | null,
- *          path: string, stance: Stance, sender: string | null}} order
+ *          path: string, stance: Stance, sender: string | null, sleep?: (ms: number) => void}} order
+ *   `sleep` is the clear's settle, passed to {@link clearThenPrompt} (#2546)
  * @returns {number}
  */
-export function promptOrQueue({ run, label, text, agents, path, stance, sender }) {
+export function promptOrQueue({ run, label, text, agents, path, stance, sender, sleep }) {
   const why = promptable(label, agents);
   if (why) return queueOrLose({ label, text, why, agents, path, stance, sender });
 
@@ -500,7 +502,7 @@ export function promptOrQueue({ run, label, text, agents, path, stance, sender }
   // tasks, so this order is DELIVERED rather than queued: it joins nothing, and a session that is idle is
   // a session whose queue the next tick will drain. The refusal is about JOINING A PILE, not about the
   // pile existing.
-  const report = clearThenPrompt(run, label, text, sender);
+  const report = clearThenPrompt(run, label, text, { sender, sleep });
   // A PROMPT REFUSED AT THE LAST MOMENT IS THE SAME LOSS ONE STEP LATER. `promptable` said idle and herdr
   // said no, which means the session went to work in between -- the race the queue exists for. A refused
   // CLEAR is not this: the text went, on a bloated context, and re-queueing it would deliver it twice.

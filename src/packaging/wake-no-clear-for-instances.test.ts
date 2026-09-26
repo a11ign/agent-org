@@ -18,9 +18,17 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deliver, deliverHandoffs, isPerRowInstance, clearBeforeOrder, ledgerLine, ledgerKeyOf, readLedger,
+import { deliver as settlingDeliver, deliverHandoffs as settlingDeliverHandoffs, isPerRowInstance, clearBeforeOrder, ledgerLine, ledgerKeyOf, readLedger,
   NO_CLEAR_NOTE } from "../wake.mjs";
-import { clearThenPrompt } from "../prompt-session.mjs";
+import { clearThenPrompt as settlingClearThenPrompt } from "../prompt-session.mjs";
+
+/** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
+const noSettle = () => {};
+const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: noSettle });
+const deliverHandoffs: typeof settlingDeliverHandoffs = (handoffs, agents, roster, deps) =>
+  settlingDeliverHandoffs(handoffs, agents, roster, { ...deps, sleep: noSettle });
+const clearThenPrompt: typeof settlingClearThenPrompt = (run, label, text, options) =>
+  settlingClearThenPrompt(run, label, text, { ...options, sleep: noSettle });
 
 const PROMPT_SESSION = fileURLToPath(new URL("../prompt-session.mjs", import.meta.url));
 const STUB_MODE = 0o755;
@@ -99,7 +107,7 @@ test("#2483 a queued handoff to a spawned worker is delivered without a clear; o
 test("#2483 clearThenPrompt: an instance gets its text and no /clear", () => {
   for (const label of INSTANCES) {
     const r = recorder();
-    assert.equal(clearThenPrompt(r.run, label, "the check failed", "worker-5"), null);
+    assert.equal(clearThenPrompt(r.run, label, "the check failed", { sender: "worker-5" }), null);
     assert.deepEqual(r.cleared(), [], `${label} was not cleared`);
     assert.equal(r.typed().length, 1, `${label}: the text was typed`);
   }
@@ -108,7 +116,7 @@ test("#2483 clearThenPrompt: an instance gets its text and no /clear", () => {
 test("#2483 clearThenPrompt CONTROL: the standing seats are still cleared first", () => {
   for (const label of STANDING) {
     const r = recorder();
-    assert.equal(clearThenPrompt(r.run, label, "a ruling", "worker-5"), null);
+    assert.equal(clearThenPrompt(r.run, label, "a ruling", { sender: "worker-5" }), null);
     assert.deepEqual(r.cleared(), [label], `${label} was cleared`);
     assert.equal(r.typed()[0], `${label}: /clear`, `${label}: first`);
   }

@@ -10,9 +10,13 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promptOrQueue, recordDirectDelivery, directRecordPath, DIRECT_RECORD_FILE, STANCE, EXIT,
+import { promptOrQueue as settlingPromptOrQueue, recordDirectDelivery, directRecordPath, DIRECT_RECORD_FILE, STANCE, EXIT,
   PROMPT_REFUSED_PREFIX } from "../prompt-session.mjs";
 import { handoffQueuePath, readHandoffs, HANDOFF_QUEUE_FILE } from "../wake.mjs";
+/** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
+const noSettle = () => {};
+const promptOrQueue: typeof settlingPromptOrQueue = (order) => settlingPromptOrQueue({ ...order, sleep: noSettle });
+
 
 const agents = [{ label: "reviewer-2376", status: "idle" }, { label: "reviewer-2377", status: "working" },
   { label: "product-manager", status: "done" }];

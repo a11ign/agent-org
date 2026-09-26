@@ -15,13 +15,17 @@ import { tmpdir } from "node:os";
 import { join, dirname, relative } from "node:path";
 import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
 import { localImports } from "../../../guards/src/local-import-closure.mjs";
-import { deliver, route, withSpareInstances, engineerRoles, engineerEligibility, spawnableRole, EXIT }
+import { deliver as settlingDeliver, route, withSpareInstances, engineerRoles, engineerEligibility, spawnableRole, EXIT }
   from "../wake.mjs";
 import { activeDrain, drainedRoles, drainInForce, cyclesReport, spawnClaimability, rowOfOrder, DRAINED_SEEN,
   CLEAN_CYCLES_TARGET, readSpareCycles, sparePathsFrom, spareRoles }
   from "../wake.mjs";
 import { drainReason } from "../row-claim/runner-rule.mjs";
 import { claimRow } from "../row-claim.mjs";
+/** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
+const noSettle = () => {};
+const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: noSettle });
+
 
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));

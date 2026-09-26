@@ -7,8 +7,12 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { undelivered, readLedger, deliver, ledgerLine, WAKE_TTL_MS, JUDGMENT_TTL_MS }
+import { undelivered, readLedger, deliver as settlingDeliver, ledgerLine, WAKE_TTL_MS, JUDGMENT_TTL_MS }
   from "../wake.mjs";
+/** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
+const noSettle = () => {};
+const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: noSettle });
+
 
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));
