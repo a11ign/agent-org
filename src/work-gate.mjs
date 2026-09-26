@@ -586,6 +586,15 @@ export function ownerOf(row) {
 export const CHAIRMAN_LABEL = "needs:chairman";
 
 /**
+ * The label for a row parked ON PURPOSE until its prerequisite phase is done (chairman, 2026-09-26): `ceo` schedules
+ * it, and it is never `needs:chairman`. Like that label it is a wait `waitingOn` does not read, and this is the THIRD
+ * reader of the gap (after #2583 and #2604): #2568 was ordered for promotion 30 minutes after `product-manager` had
+ * parked it, because its blockers had closed. Skipped in each population that offers a row for PROMOTION, not taught
+ * to `waitingOn`, which every reader of that function would then inherit.
+ */
+export const PARKED_LABEL = "parked";
+
+/**
  * Where a `ready-row-unclaimed` order says which directory to launch the claim from -- FILLED IN BY `wake.mjs` (#2405),
  * because the answer is a fact about the RECIPIENT (does `role-<you>` exist?) and the gate routes a pool order before
  * anyone has taken it. Exported from here so the two files cannot spell it differently; `wake.mjs` already imports this one.
@@ -681,6 +690,9 @@ export function readPromotableRows(run = defaultRun) {
     // every reader of that function would then inherit -- the same choice #2585 made.
     return parsed.filter((r) => !labelsOf(r).some((/** @type {string} */ n) => NOT_STARTABLE.includes(n)))
       .filter((r) => !labelsOf(r).includes(CHAIRMAN_LABEL))
+      // `parked` IS THE THIRD READER OF THE SAME GAP (#2653): a row parked until its prerequisite phase is done is
+      // not stock either, and `laneBacklogOrders` and `decide`'s pool count consume THIS list, so they inherit it.
+      .filter((r) => !labelsOf(r).includes(PARKED_LABEL))
       .filter((r) => waitingOn(r, today) === null);
   } catch {
     return null;
@@ -2172,6 +2184,9 @@ export function unclaimedClearings(rows, today = todayIso()) {
     // repeats at every `PROMOTION_ASK_OFFSETS_MS` step. Skipped HERE, in this cause's own population,
     // rather than taught to `waitingOn`, which every reader of that function would then inherit.
     if (labels.includes(CHAIRMAN_LABEL)) continue;
+    // `parked` IS THE SAME WAIT WITH A DIFFERENT LIFTER (#2653): `ceo` schedules the row when its prerequisite phase
+    // is done, so a cleared blocker is not the event that promotes it. #2568 was ordered 30 minutes after being parked.
+    if (labels.includes(PARKED_LABEL)) continue;
     // THE LINE THAT MAKES `cleared` MEAN CLEARED, and `blockerClearedOrders`' own sentence applies here
     // unchanged: `waitingOn` reports an OPEN `blockedBy` node before anything else, so passing here is
     // what proves every number above is closed -- and it covers the `Not-before:` and `answer:` cases in

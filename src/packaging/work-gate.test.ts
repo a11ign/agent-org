@@ -45,7 +45,7 @@ import { MAX_ROW_ORDERS_PER_TICK, readCommitChain, withCommitChains, decide, che
   CONSTRAINT_COMMENT_MARKER, CONSTRAINT_BODY_PREFIX,
   readEpics, answersOwed, answerOrders,
   readOpenRows, withAnswerLabel, rowsOwingAnswers, readClosedAnswerRows, withoutEndedAnswerSessions, endedSessionLabels,
-  blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL,
+  blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL, PARKED_LABEL,
   ANSWER_PREFIX, redOnlyBySupersededRun, cannotAskReport,
   readRowBranches, rowBranchOrders, GIT_READS,
   reviewStateOf, reviewBlocked, reviewBlockedOrders, REVIEW_STATE, HOLD_RED_JOBS,
@@ -1644,6 +1644,37 @@ test("a backlog row carrying needs:chairman is not promotable (#2604): nobody bu
   assert.deepEqual(read([waiting, startable]), [9002], "only the labelled row of a mixed shelf is dropped");
 });
 
+test("a backlog row carrying parked is not promotable (#2653): `ceo` schedules it when its prerequisite phase is done", () => {
+  // The third reader of the gap #2583 and #2604 closed for `needs:chairman`. The row is dropped in the reader, so
+  // the two consumers of its list (`laneBacklogOrders`, `decide`'s pool count) inherit the skip; the row-by-row
+  // pins for those consumers are below.
+  const read = (rows: unknown[]) => {
+    const got = readPromotableRows(() => JSON.stringify(rows));
+    assert.ok(got !== null, "the fixture read must not be refused");
+    return got.map((r: { number: number }) => r.number);
+  };
+  const base = [{ name: "backlog" }, { name: "lane:any" }];
+  const parked = { number: 9001, labels: [...base, { name: PARKED_LABEL }], blockedBy: { nodes: [] } };
+  const startable = { number: 9002, labels: base, blockedBy: { nodes: [] } };
+  assert.deepEqual(read([parked]), [], "a parked row is not stock");
+  // POSITIVE CONTROL: the same row without the label is still counted, so the emptiness above is not a look at nothing.
+  assert.deepEqual(read([startable]), [9002], "the row without the label is counted exactly as before");
+  assert.deepEqual(read([parked, startable]), [9002], "only the labelled row of a mixed shelf is dropped");
+
+  // END TO END, the two consumers of that list: a lane owner's `lane-backlog-unpromoted` and the pool's
+  // `ready-queue-empty`, each fed through the real reader.
+  const causes = (rows: unknown[]) => decide({ prs: [], readyRows: [],
+    promotableRows: readPromotableRows(() => JSON.stringify(rows)) ?? [] })
+    .map((o: { cause: string }) => o.cause);
+  const parkedCeo = { number: 9003, labels: [{ name: "backlog" }, { name: "lane:ceo" }, { name: PARKED_LABEL }] };
+  const unparkedCeo = { ...parkedCeo, labels: [{ name: "backlog" }, { name: "lane:ceo" }] };
+  assert.deepEqual(causes([parked, parkedCeo]), [], "a shelf of only parked rows asks nobody to promote anything");
+  // POSITIVE CONTROLS, the same two rows without the label: each consumer DOES fire, so the empty list above is the
+  // label's doing and not a fixture that never yields an order.
+  assert.ok(causes([unparkedCeo]).includes("lane-backlog-unpromoted"), "the lane owner is asked about an unparked row");
+  assert.ok(causes([startable]).includes("ready-queue-empty"), "product-manager is asked about an unparked pool row");
+});
+
 /**
  * #1899, measured live at the 2026-09-22 ~06:41Z `ready-queue-empty` tick: #1889 (`backlog`,
  * `answer:ceo`) and #1878 (`backlog`, `lane:any`, `answer:orchestrator`) both already carry the correct
@@ -3015,6 +3046,20 @@ test("#2583: a row labelled `needs:chairman` is WAITING, so its cleared blockers
   assert.equal(unclaimedBlockerClearedOrders([{ ...labelled,
     labels: [{ name: "backlog" }, { name: "lane:any" }] }], TODAY).length, 1,
     "POSITIVE CONTROL: without `needs:chairman` the same row still reaches product-manager");
+});
+
+test("#2653: a row labelled `parked` is WAITING on `ceo`, so its cleared blockers order no promotion", () => {
+  // #2568: blockers #2561 and #2644 closed and `product-manager` had already parked it -- and the order came anyway.
+  const parked = { ...backlogRow(2568, blockedByClosed),
+    labels: [{ name: "backlog" }, { name: "lane:any" }, { name: PARKED_LABEL }] };
+  assert.deepEqual(unclaimedBlockerClearedOrders([parked], TODAY), [],
+    "a parked row was ordered to `product-manager` for promotion, and again at every re-ask");
+  assert.equal(unclaimedClearings([parked], TODAY).length, 0,
+    "`main` reads this population before paying for `readRecentlyClosed`, so it must not count the row either");
+  // THE CONTROL: the same row minus the label, so an empty result above is the label's doing.
+  assert.equal(unclaimedBlockerClearedOrders([{ ...parked,
+    labels: [{ name: "backlog" }, { name: "lane:any" }] }], TODAY).length, 1,
+    "POSITIVE CONTROL: without `parked` the same row still reaches product-manager");
 });
 
 test("#2139: a CLAIMED row is `blocker-cleared`'s, and a `ready` row is already offered", () => {
