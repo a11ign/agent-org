@@ -42,11 +42,11 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { settleBoardRows, settleClosedStatus, boardReadRefusal, shortReadRefusal,
   closedRowsQuery, closedRowsFromRead, floorReadRefusal } from "./settle-closed-status.mjs";
 // The repository this pass reads, from the one place that names it.
-import { REPO } from "../../../scripts/repo-identity.mjs";
+import { REPO } from "./project-identity.mjs";
 // The token-carrying halves, imported HERE (an entry point) and injected, so the decision module stays
 // pure -- #1009's rule, and the reason this command's Acceptance can run in the job with no token.
 // `PROJECT_OWNER`/`PROJECT_NUMBER` ride the import this file already makes: the floor's population

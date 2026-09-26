@@ -42,7 +42,7 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 
 export const EXIT = { DONE: 0, COULD_NOT_TRIGGER: 1, CANNOT_ASK: 2 };
 

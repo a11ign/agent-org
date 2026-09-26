@@ -30,7 +30,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-import { refuseUnknownFlags, flagValue } from "../../worker-fleet/src/cli-flags.mjs";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 
 /** `0` a report was produced; `2` nothing could be read, which is NOT an org that spent nothing. */
 export const EXIT = { REPORTED: 0, CANNOT_ASK: 2 };

@@ -16,7 +16,7 @@
 // A MISSING FIELD IS REFUSED BY NAME, never folded into one generic "template incomplete" message -- the
 // same reason `owned-path-signoff.mjs` (#603) names each unstated fact rather than saying "sign-off
 // missing": a reader fixing the row needs to know WHICH of the three to add, not that something is wrong.
-import { REPO } from "../../../../scripts/repo-identity.mjs";
+import { REPO } from "../project-identity.mjs";
 import { gh, lookup } from "../merge-guard/lookups.mjs";
 import { hasTemplateField } from "../region-paths.mjs";
 import { extractAcceptanceSection, runsTheWholeSuite } from "../acceptance-commands.mjs";

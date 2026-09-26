@@ -50,10 +50,10 @@
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-import { refuseUnknownFlags, flagValue } from "@a11ign/worker-fleet/cli-flags";
-import { REPO } from "../../../scripts/repo-identity.mjs";
-import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
-import { assertNoLeakInArgv } from "../../lab/src/packaging/leak-patterns.mjs";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
+import { REPO } from "./project-identity.mjs";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
 
 export const EXIT = { OK: 0, CANDIDATES: 1, CANNOT_ASK: 2, LANDED_THEN_FAILED: 3 };
 

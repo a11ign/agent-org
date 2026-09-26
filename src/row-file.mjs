@@ -97,15 +97,15 @@ import {
 } from "./acceptance-commands.mjs";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { flagValue, refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
-import { leakRefusalReason } from "../../lab/src/packaging/leak-patterns.mjs";
+import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { leakRefusalReason } from "./lib/leak-patterns.mjs";
 import { missingTemplateFields, templateFieldsReason, wholeSuiteAcceptanceReason }
   from "./row-claim/template-fields-rule.mjs";
 import { waitingLanguageWarning } from "./row-claim/waiting-language-rule.mjs";
 import { moveProjectStatus, filedByLine, fetchLabels as fetchIssueLabels, ensureLabelsExist } from "./row-claim.mjs";
 import { PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapshot.mjs";
 import { launchGate } from "./board-snapshot-scope.mjs";
-import { REPO } from "../../../scripts/repo-identity.mjs";
+import { REPO } from "./project-identity.mjs";
 import { declaredRegionFiles, declaresNoCommit, directoryReservations, extractLabeledSection, slashlessDirectoryEntries, unrecognisedRegionPaths } from "./region-paths.mjs";
 import { loadLanes, inLane } from "./lane-ownership.mjs";
 // #2111: both labels from the leaf module that OWNS them (#804), never the strings retyped -- a promotion

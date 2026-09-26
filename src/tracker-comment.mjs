@@ -29,9 +29,9 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
-import { leakRefusalReason } from "../../lab/src/packaging/leak-patterns.mjs";
-import { REPO } from "../../../scripts/repo-identity.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { leakRefusalReason } from "./lib/leak-patterns.mjs";
+import { REPO } from "./project-identity.mjs";
 
 /** @type {(args: string[]) => string} */
 const defaultRun = (args) => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
