@@ -23,7 +23,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, mkdtempSync, mkdirSync, copyFileSync, realpathSync,
-  existsSync } from "node:fs";
+  existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { join, relative, dirname } from "node:path";
@@ -44,7 +44,7 @@ import { MAX_ROW_ORDERS_PER_TICK, readCommitChain, withCommitChains, decide, che
   claimedRowAmendedOrders, constraintsAfterClaim, amendmentsOn, readClaimedRowComments,
   CONSTRAINT_COMMENT_MARKER, CONSTRAINT_BODY_PREFIX,
   readEpics, answersOwed, answerOrders,
-  readOpenRows, withAnswerLabel, rowsOwingAnswers, readClosedAnswerRows,
+  readOpenRows, withAnswerLabel, rowsOwingAnswers, readClosedAnswerRows, withoutEndedAnswerSessions, endedSessionLabels,
   blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL,
   ANSWER_PREFIX, redOnlyBySupersededRun, cannotAskReport,
   readRowBranches, rowBranchOrders, GIT_READS,
@@ -4780,6 +4780,81 @@ test("#2202: main feeds the closed-row read into `answerOwed` beside the open on
     "a closed row owing an answer must reach `decide` -- the open read alone is the defect");
   assert.match(source, /function closedAnswerRows\(\) \{[^]*?NOTE: could not read the closed rows/,
     "a refused read is a line on stderr, never a silent empty list");
+});
+
+// --- #2609: a closed row's answer:<session> for a session that has ENDED re-queued an order with no addressee every tick ---
+
+const ENDED_AT = Date.parse("2026-09-26T05:00:00Z");
+/** Runs `withoutEndedAnswerSessions` over `rows` with `live` workspaces and `ended` evidence; returns the orders and what was said. */
+const settleAnswers = (rows: unknown[], live: string[] | null, ended: Record<string, number> | Error) => {
+  const said: string[] = [];
+  const kept = withoutEndedAnswerSessions(rows, { agents: () => live,
+    ended: () => { if (ended instanceof Error) throw ended; return new Map(Object.entries(ended)); },
+    say: (line: string) => said.push(line) });
+  return { orders: answerOrders(withAnswerLabel(kept)) as { session: string, subject: string }[], said };
+};
+
+test("#2609 DONE-WHEN 1+4: a closed row's answer: for an ENDED session (absent from herdr, teardown recorded) orders nobody, "
+  + "and the line says GONE rather than busy", () => {
+  const { orders, said } = settleAnswers([closedOwedRow(2116, "worker-8")], ["ceo"], { "worker-8": ENDED_AT });
+  assert.deepEqual(orders, []);
+  assert.equal(said.length, 1);
+  assert.match(said[0], /SKIPPED answer-owed for worker-8 on closed row #2116: that session has ENDED/);
+  assert.doesNotMatch(said[0], /busy/i, "names the session as gone, not as busy");
+});
+
+test("#2609 DONE-WHEN 3+4: the LIVE session's closed-row question still wakes it, even when the ledger says it ended once", () => {
+  const { orders, said } = settleAnswers([closedOwedRow(1936, "worker-8")], ["worker-8"], { "worker-8": ENDED_AT });
+  assert.deepEqual(orders.map((o) => o.session), ["worker-8"], "live wins: a reused label is not gone");
+  assert.deepEqual(said, []);
+  const standing = settleAnswers([closedOwedRow(2034, "product-manager")], ["product-manager"], {});
+  assert.deepEqual(standing.orders.map((o) => o.session), ["product-manager"]);
+});
+
+test("#2609 DONE-WHEN 2+4: ABSENT IS NOT ENDED -- a session that has not started, and a herdr that does not answer, skip nothing", () => {
+  const notStarted = settleAnswers([closedOwedRow(2500, "reviewer-2500")], ["ceo"], { "worker-8": ENDED_AT });
+  assert.deepEqual(notStarted.orders.map((o) => o.session), ["reviewer-2500"], "absent with no teardown record keeps its order");
+  const blip = settleAnswers([closedOwedRow(2116, "worker-8")], null, { "worker-8": ENDED_AT });
+  assert.deepEqual(blip.orders.map((o) => o.session), ["worker-8"], "herdr silent classifies nothing");
+  assert.match(blip.said.join(""), /herdr did not answer/);
+  const unreadable = settleAnswers([closedOwedRow(2116, "worker-8")], ["ceo"], new Error("EACCES: permission denied"));
+  assert.deepEqual(unreadable.orders.map((o) => o.session), ["worker-8"], "evidence that cannot be read drops nothing");
+  assert.match(unreadable.said.join(""), /could not be read \(EACCES/);
+});
+
+test("#2609: only the ended session's label is taken off a row that carries two, and the `engineers` pool is never gone", () => {
+  const row = { number: 7, state: "CLOSED", labels: [{ name: "answer:worker-8" }, { name: "answer:ceo" }, { name: "lane:any" }] };
+  const { orders } = settleAnswers([row], ["ceo"], { "worker-8": ENDED_AT });
+  assert.deepEqual(orders.map((o) => o.session), ["ceo"]);
+  assert.deepEqual(settleAnswers([closedOwedRow(8, "engineers")], [], { engineers: ENDED_AT }).orders.map((o) => o.session), ["engineers"]);
+});
+
+test("#2609: a quiet tracker pays nothing -- no closed row wearing an answer: label asks herdr or the ledgers at all", () => {
+  const boom = () => { throw new Error("must not be asked"); };
+  const rows = [{ number: 1, state: "CLOSED", labels: [{ name: "lane:any" }] }];
+  assert.equal(withoutEndedAnswerSessions(rows, { agents: boom, ended: boom, say: boom }), rows);
+});
+
+test("#2609: `endedSessionLabels` reads a teardown's record, and a label that STARTED AGAIN is not ended", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "a11y-ended-labels-")));
+  const at = (ms: number) => new Date(ms).toISOString();
+  writeFileSync(join(dir, "spare-cycles"), [JSON.stringify({ role: "worker-8", at: ENDED_AT }), "not json",
+    JSON.stringify({ role: "worker-9", at: ENDED_AT })].join("\n") + "\n");
+  writeFileSync(join(dir, "reviewer-endings"), `${JSON.stringify({ session: "reviewer-2401", at: at(ENDED_AT) })}\n`);
+  writeFileSync(join(dir, "spare-instances.json"), JSON.stringify({ "worker-9": { spawnedAt: ENDED_AT } }));
+  const ended = endedSessionLabels({ dir });
+  assert.deepEqual([...ended.keys()].sort(), ["reviewer-2401", "worker-8"],
+    "worker-9 started at the ending's own instant (>=), so it is a later instance and is not ended");
+  writeFileSync(join(dir, "spare-instances.json"), JSON.stringify({ "worker-9": { spawnedAt: ENDED_AT - 1 } }));
+  assert.ok(endedSessionLabels({ dir }).has("worker-9"), "THE CONTROL: a registry entry OLDER than the ending leaves it ended");
+  assert.equal(endedSessionLabels({ dir: join(dir, "nowhere") }).size, 0, "no ledgers is no evidence, not an error");
+  writeFileSync(join(dir, "spare-instances.json"), "{ torn");
+  assert.throws(() => endedSessionLabels({ dir }), "an unreadable registry is a lost reading and THROWS -- nothing is dropped on it");
+});
+
+test("#2609: `closedAnswerRows` runs the ended-session filter on what `readClosedAnswerRows` returned", () => {
+  const source = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  assert.match(source, /function closedAnswerRows\(\) \{[^]*?return withoutEndedAnswerSessions\(rows\);/);
 });
 
 // --- #2492: answer:<session> on a PULL REQUEST woke nobody, because `gh issue list` does not return PRs ---

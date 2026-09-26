@@ -1488,8 +1488,123 @@ function closedAnswerRows() {
   if (rows === null) {
     process.stderr.write("NOTE: could not read the closed rows that still owe an answer -- a question on a row "
       + "a merge already closed is NOT being chased this tick (#2202).\n");
+    return [];
   }
-  return rows ?? [];
+  return withoutEndedAnswerSessions(rows);
+}
+
+/**
+ * #2609: A CLOSED ROW'S `answer:<session>` FOR A SESSION THAT HAS ENDED HAS NO ADDRESSEE (#2459's second producer).
+ * The close path keeps the label on purpose (#2202), so a question closed unanswered still wakes the session that owes
+ * the answer -- and that is right for a LIVE session and wrong for one torn down with its row: engineer instances are
+ * one per row, and `worker-8` on #2116 was ordered `UNDELIVERED ... no workspace labelled` seven ticks running.
+ *
+ * WHAT ESTABLISHES `ended`, AND WHAT IT COSTS. The label is absent from `herdr workspace list` AND a teardown wrote it
+ * down: `endedSessionLabels` reads the spare-cycle ledger and the reviewer-endings ledger, two local files and no API
+ * call. Absent WITHOUT that record is not ended (`reviewer-<n>` is started after its order can exist, #2459 done-when 4),
+ * and a herdr that does not answer classifies NOTHING: a blip read as every session gone would silence every question.
+ * The herdr call is made only when a closed row carries an `answer:` label at all, so a quiet tracker pays nothing.
+ *
+ * Only the ENDED session's label is taken off the row COPY; another session's `answer:` on the same row still orders.
+ * @param {any[]} rows
+ * @param {{agents?: () => string[] | null, ended?: () => Map<string, number>, say?: (line: string) => void}} [io]
+ * @returns {any[]}
+ */
+export function withoutEndedAnswerSessions(rows, { agents = liveWorkspaceLabels, ended = endedSessionLabels,
+  say = (line) => process.stderr.write(line) } = {}) {
+  const owed = rows.filter((r) => labelsOf(r).some((n) => n.startsWith(ANSWER_PREFIX)));
+  if (owed.length === 0) return rows;
+  const live = agents();
+  if (live === null) {
+    say("NOTE: herdr did not answer, so no closed row's `answer:` label was classed as gone this tick -- every one "
+      + "still orders (#2609).\n");
+    return rows;
+  }
+  let gone;
+  try {
+    gone = ended();
+  } catch (err) {
+    say(`NOTE: the ended-session ledgers could not be read (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0]}) -- no closed row's \`answer:\` label was classed as gone this tick (#2609).\n`);
+    return rows;
+  }
+  return rows.map((row) => dropGoneLabels(row, (session) => session !== "engineers" && !live.includes(session)
+    && gone.has(session), say));
+}
+
+/**
+ * `row` without its `answer:<session>` labels for sessions `isGone` names, saying each one -- as GONE, never as busy.
+ * @param {any} row @param {(session: string) => boolean} isGone @param {(line: string) => void} say
+ */
+function dropGoneLabels(row, isGone, say) {
+  const goneLabels = labelsOf(row).filter((n) => n.startsWith(ANSWER_PREFIX) && isGone(n.slice(ANSWER_PREFIX.length)));
+  for (const label of goneLabels) {
+    say(`SKIPPED answer-owed for ${label.slice(ANSWER_PREFIX.length)} on closed row #${row.number}: that session has ENDED `
+      + "(it is absent from herdr and a teardown recorded its ending), so the order would have no addressee (#2609).\n");
+  }
+  return goneLabels.length === 0 ? row
+    : { ...row, labels: (row.labels ?? []).filter((/** @type {any} */ l) => !goneLabels.includes(l?.name ?? l)) };
+}
+
+/**
+ * Every workspace label herdr knows, or `null` when it would not say -- never `[]`, which would read as "nobody is
+ * live" and class every session gone. @returns {string[] | null}
+ */
+function liveWorkspaceLabels() {
+  try {
+    const workspaces = JSON.parse(herdrRun(["--session", "org", "workspace", "list"]))?.result?.workspaces;
+    return Array.isArray(workspaces) ? workspaces.map((/** @type {any} */ w) => String(w.label ?? "")) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** @param {string} path @param {typeof readFileSync} read @returns {string} `""` for a file that is not there; THROWS otherwise */
+function evidenceText(path, read) {
+  try {
+    return String(read(path, "utf8"));
+  } catch (err) {
+    if (/** @type {any} */ (err)?.code === "ENOENT") return "";
+    throw err;
+  }
+}
+
+/** @param {string} path @param {typeof readFileSync} read @returns {any[]} an unparseable line is skipped: it cannot establish an ending */
+function evidenceLines(path, read) {
+  return evidenceText(path, read).split("\n").filter((l) => l.trim() !== "").flatMap((line) => {
+    try {
+      return [JSON.parse(line)];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/**
+ * WHICH LABELS A TEARDOWN RECORDED AS ENDED, and when (ms) -- the same reading as `wake.mjs`'s `endedSessions`, which this
+ * file cannot import (it imports this one). Two ledgers name an ending (`spare-cycles`, one line per engineer instance
+ * closed; `reviewer-endings`) and two registries name what STARTED and has not ended: an entry stamped at or after the
+ * ending is a later instance under the same name, and the label is not ended. THROWS on a file that exists and cannot be
+ * read, so the caller drops nothing on a reading it could not make.
+ * @param {{dir?: string, read?: typeof readFileSync}} [io] @returns {Map<string, number>}
+ */
+export function endedSessionLabels({ dir = REVIEWER_STATE_DIR, read = readFileSync } = {}) {
+  /** @type {Map<string, number>} */
+  const ended = new Map();
+  /** @param {unknown} label @param {number} at */
+  const note = (label, at) => {
+    if (typeof label !== "string" || label === "?" || !Number.isFinite(at)) return;
+    if (at > (ended.get(label) ?? -Infinity)) ended.set(label, at);
+  };
+  for (const cycle of evidenceLines(`${dir}/spare-cycles`, read)) note(cycle.role, Number(cycle.at));
+  for (const ending of evidenceLines(`${dir}/reviewer-endings`, read)) note(ending.session, Date.parse(ending.at));
+  for (const file of ["spare-instances.json", REVIEWER_REGISTRY_FILE]) {
+    const text = evidenceText(`${dir}/${file}`, read);
+    const registry = text === "" ? {} : JSON.parse(text);
+    for (const [label, started] of Object.entries(registry ?? {})) {
+      if (Number(started?.spawnedAt) >= (ended.get(label) ?? Infinity)) ended.delete(label);
+    }
+  }
+  return ended;
 }
 
 /** The rows that owe someone an answer. @param {any[]} rows */
