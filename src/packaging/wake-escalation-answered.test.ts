@@ -28,8 +28,8 @@ const HOUR = 60 * MINUTE;
 const MARKED_AT = 3 * HOUR;     // after the six deliveries have all been made
 const RESET_AT = 4 * HOUR;
 const SECOND_RUN_AT = 5 * HOUR;
-const ROW_2451 = "issue edit 2451 --add-label needs:chairman";
-const ROW_2223 = "issue edit 2223 --add-label needs:chairman";
+const ROW_2451 = "issue edit 2451 --add-label answer:ceo";
+const ROW_2223 = "issue edit 2223 --add-label answer:ceo";
 const LONG_AGO = Date.UTC(2026, 8, 22, 0, 0, 0); // days before the tick, so the deliveries are past every TTL
 const KEY = "worker-5/blocker-cleared/row-2451/2340";
 const CHANGED_KEY = "worker-5/blocker-cleared/row-2451/2340.2341";
@@ -88,7 +88,7 @@ test("#2462 POSITIVE: a CHANGED key at the cap escalates, on the same row as an 
     const { ran, labels } = tick(dir, [order(KEY), order(CHANGED_KEY)]);
     assert.deepEqual(labels, [ROW_2451], ran.stderr);
     assert.match(ran.stderr, new RegExp(`ALREADY ESCALATED #2451 \\(${KEY}\\)`), "the old key is the one held back");
-    assert.match(ran.stderr, /ESCALATED #2451 -> needs:chairman/, "the changed key is the one that went");
+    assert.match(ran.stderr, /ESCALATED #2451 -> answer:ceo/, "the changed key is the one that went");
   });
 });
 

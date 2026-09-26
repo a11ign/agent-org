@@ -39,7 +39,7 @@ import { createHash } from "node:crypto";
 // `work-gate.mjs` and `org-watch.mjs` state at their own imports.
 import { refuseUnknownFlags, flagValue } from "../../worker-fleet/src/cli-flags.mjs";
 import { profileFor, agentArgs } from "./worker-profile.mjs";
-import { JUDGMENT_CAUSES, CHAIRMAN_LABEL, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry }
+import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry }
   from "./work-gate.mjs";
 import { reviewerInstanceNumber } from "./review-attribution.mjs";
 import { REPO } from "../../../scripts/repo-identity.mjs";
@@ -3001,7 +3001,7 @@ export const ESCALATED = "ESCALATED";
 /**
  * The causeKeys already escalated IN THEIR CURRENT RUN, and so not to be labelled again (#2462).
  *
- * Removing `needs:chairman` is the act of clearing (`escalateStuck`), and the gate read it as nothing: the count
+ * Removing the escalation label is the act of clearing (`escalateStuck`), and the gate read it as nothing: the count
  * that tripped the breaker is still at the cap and the cause is still emitted, so the next tick labelled the row
  * again. Measured 2026-09-25: #2451, #2258 and #2223 were re-labelled 28 s, 27 s and 26 s after a person removed
  * the label. The state after removal is exactly the state before it, so the only thing that can tell the two
@@ -3100,17 +3100,17 @@ export function endedRuns(emitted, path, { read = readFileSync, write = writeFil
  * so the two cannot be edited apart, and `wake.test.ts` pins the relationship on the boundary.
  *
  * WHAT A HEALTHY STANDING WAIT NOW COSTS: a judgment cause whose state never changes is offered every
- * two hours and escalates to the chairman on its sixth delivery, about ten hours after its first, whatever
+ * two hours and escalates to `ceo` (`answer:ceo`, #2636) on its sixth delivery, about ten hours after its first, whatever
  * the tick grid does. Before this it did so only on a lucky grid. That is the breaker working as
- * `MAX_DELIVERIES` describes -- an answer given six times and not acted on is worth a person's attention.
+ * `MAX_DELIVERIES` describes -- an answer given six times and not acted on is worth `ceo`'s attention.
  *
  * This does not weaken the breaker. A cause that is genuinely stuck still trips after six, still
- * escalates to the chairman, and still costs at most three deliveries an hour.
+ * escalates to `ceo`, and still costs at most three deliveries an hour.
  */
 export const RUN_IDLE_RESET_MS = 2 * JUDGMENT_TTL_MS;
 
 /**
- * A TRIPPED BREAKER MUST REACH A PERSON, NOT A JOURNAL.
+ * A TRIPPED BREAKER MUST REACH A SESSION, NOT A JOURNAL.
  *
  * `MAX_DELIVERIES` is a circuit breaker and the reasoning behind it is sound -- an unresolvable cause
  * would otherwise burn a `sonnet`/`high` turn every twenty minutes forever. What was missing is the half
@@ -3122,11 +3122,18 @@ export const RUN_IDLE_RESET_MS = 2 * JUDGMENT_TTL_MS;
  * could no longer be asked, every session read idle, and THE ONLY THING THAT NOTICED WAS THE CHAIRMAN
  * SAYING "the AI agents have all stopped completely".
  *
- * `needs:chairman` IS THE RIGHT DESTINATION, not a new mechanism. The breaker's own comment says the cap
- * is "short enough that a genuinely stuck row is named while someone is still awake to read it" -- that
- * is exactly what `needs:chairman` means, it is already read by `readChairmanBlocked`, already routed by
- * the `chairman-blocked` cause, and removing it is the act of clearing. A cause that six deliveries did
- * not resolve is, by definition, not resolvable by another delivery.
+ * `answer:ceo` IS THE DESTINATION (#2636), NOT `needs:chairman`. A stuck row is a row the SESSIONS could not clear,
+ * which is `ceo`'s to unstick; `needs:chairman` now means only what the chairman alone can do (an account, admin,
+ * money, a legal act) or a choice `ceo` cannot make, and a briefing that exists to be short. `answer:<session>` is
+ * the org's own "a named session owes an answer here": the `answer-owed` cause delivers it (`answerOrders`), removing
+ * the label IS the act of answering, and `ESCALATION_LABEL` is set by nobody but this function.
+ *
+ * THE READER SEES AN OPEN ROW OR AN OPEN PULL REQUEST, and only those (`rowsOwingAnswers`: open issues, `readPrs`'s
+ * open PRs, and closed ISSUES still owing). `gh issue edit` accepts a PR number for labels, so both subjects
+ * `stuckRowOf` yields can be labelled. A MERGED pull request can be labelled and is read by nothing: `trunkRedOrders`
+ * names the merged PR as its subject, so a red `main` nobody fixes lands its `answer:ceo` where `gh issue list` and
+ * `gh pr list --state open` do not look. `needs:chairman` never reached that case either (`readChairmanBlocked` is
+ * `issue list --state open`), so this is a gap kept, not made -- and it is `work-gate.mjs`'s to close.
  *
  * SUBJECT-DERIVED, because a causeKey is not a row. `row-1234` and `pr-1837` carry their number; a
  * subject like `chairman` or `ready-queue` names no row and cannot be labelled, so it is reported and
@@ -3140,9 +3147,18 @@ export function stuckRowOf(causeKey) {
 }
 
 /**
- * Label every stuck cause's row `needs:chairman`, ONCE PER RUN, and say which could not be.
+ * The label a stuck cause's row is escalated with: `ceo` owes an answer there (#2636). Not `CHAIRMAN_LABEL`, which
+ * is for a wait only a person can end and is set by nobody automatically.
+ */
+export const ESCALATION_LABEL = `${ANSWER_PREFIX}ceo`;
+
+/**
+ * Label every stuck cause's row `answer:ceo`, ONCE PER RUN, and say which could not be.
  *
- * ONCE PER RUN, BECAUSE REMOVING THE LABEL IS AN ANSWER (#2462). A person who removes `needs:chairman` has read the
+ * A key addressed TO `ceo` is escalated to `ceo` all the same: if its `answer-owed` order is itself the stuck one, the
+ * row already carries the label, the add is a no-op, and the memory below is what ends it.
+ *
+ * ONCE PER RUN, BECAUSE REMOVING THE LABEL IS AN ANSWER (#2462). Whoever removes `answer:ceo` has read the
  * escalation; the key is still at the cap and still emitted, so without a memory of having escalated it the next
  * tick labelled the row again 28 s later. `escalated` is that memory (`escalatedKeys`) and `record` writes it. The
  * count question, answered: removal LEAVES THE KEY CAPPED AND SILENT until the causeKey changes or the cause stops
@@ -3178,13 +3194,13 @@ export function escalateStuck(stuck, run = defaultGh, log = (l) => process.stder
     }
     const outage = outageOf(key, unavailable);
     if (outage !== null) {
-      log(`NOT ESCALATED #${row} (${key}) -- ${outage}; a session that cannot answer is not a row that needs a chairman\n`);
+      log(`NOT ESCALATED #${row} (${key}) -- ${outage}; a session that cannot answer is not a stuck row\n`);
       continue;
     }
     try {
-      run(["issue", "edit", String(row), "--add-label", CHAIRMAN_LABEL]);
+      run(["issue", "edit", String(row), "--add-label", ESCALATION_LABEL]);
       labelled.push(row);
-      log(`ESCALATED #${row} -> ${CHAIRMAN_LABEL} (cause offered ${MAX_DELIVERIES}+ times, still true)\n`);
+      log(`ESCALATED #${row} -> ${ESCALATION_LABEL} (cause offered ${MAX_DELIVERIES}+ times, still true)\n`);
     } catch (/** @type {any} */ err) {
       log(`COULD NOT ESCALATE #${row}: ${String(err?.message ?? err).split("\n")[0].slice(0, 90)}\n`);
       continue;

@@ -264,11 +264,11 @@ test("escalateStuck does not label a row whose session is out of allowance, and 
   assert.deepEqual(labelled, []);
   assert.equal(gh.length, 0, "no `gh issue edit`");
   assert.equal(recorded.length, 0, "and no memory of having escalated, so it can escalate once the session is back");
-  assert.match(log.join(""), /^NOT ESCALATED #2253 \(worker-capture\/verdict-not-convinced\/pr-2253\/a308b8b6\) -- "worker-capture" is out of usage allowance until 07:00; a session that cannot answer is not a row that needs a chairman\n$/);
+  assert.match(log.join(""), /^NOT ESCALATED #2253 \(worker-capture\/verdict-not-convinced\/pr-2253\/a308b8b6\) -- "worker-capture" is out of usage allowance until 07:00; a session that cannot answer is not a stuck row\n$/);
 
   const healthy = escalateStuck(stuck, ghRun, () => {}, memory(() => null));
   assert.deepEqual(healthy, [2253], "POSITIVE CONTROL: a healthy session's stuck cause is still escalated");
-  assert.deepEqual(gh, [["issue", "edit", "2253", "--add-label", "needs:chairman"]]);
+  assert.deepEqual(gh, [["issue", "edit", "2253", "--add-label", "answer:ceo"]]);
   assert.deepEqual(recorded, [CAUSE]);
 });
 

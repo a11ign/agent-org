@@ -1070,13 +1070,13 @@ test("it names polling as the specific waste it is", () => {
  * over half an hour, every session read idle, and the only thing that noticed was the chairman saying
  * "the AI agents have all stopped completely".
  */
-test("a stuck cause labels its row needs:chairman", () => {
+test("a stuck cause labels its row answer:ceo", () => {
   const calls: string[][] = [];
   const out: string[] = [];
   const labelled = escalateStuck(["ceo/lane-backlog-unpromoted/row-1234: delivered 6 times"],
     (a: string[]) => { calls.push(a); return ""; }, (l: string) => out.push(l));
   assert.deepEqual(labelled, [1234]);
-  assert.deepEqual(calls, [["issue", "edit", "1234", "--add-label", "needs:chairman"]]);
+  assert.deepEqual(calls, [["issue", "edit", "1234", "--add-label", "answer:ceo"]]);
   assert.match(out.join(""), /ESCALATED #1234/);
 });
 

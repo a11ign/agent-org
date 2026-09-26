@@ -160,8 +160,8 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
  * tick and the ledger drops it"* -- which held for twenty minutes, not for the length of the wait.
  *
  * WHAT THIS DOES NOT FIX, STATED SO NOBODY READS IT AS MORE: a judgment cause is re-offered every two
- * hours rather than never, so a STANDING one still reaches `MAX_DELIVERIES` and escalates to the
- * chairman -- later, not never, about ten hours after its first delivery. That used to turn on
+ * hours rather than never, so a STANDING one still reaches `MAX_DELIVERIES` and escalates to `ceo`
+ * (`answer:ceo`, #2636: a stuck row is the sessions' to unstick, and `needs:chairman` is for a wait only a person can end) -- later, not never, about ten hours after its first delivery. That used to turn on
  * `JUDGMENT_TTL_MS` and `RUN_IDLE_RESET_MS` being the same two hours (a regular tick grid escalated, a
  * drifting one never did); #2227 made the reset twice the TTL, so it now escalates on any grid.
  */
