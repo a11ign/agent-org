@@ -281,7 +281,7 @@ function reviewBlockedSetOrder(blocked) {
 /**
  * One labelled pull request's order, to the session on its label. PER PULL REQUEST, where the set order is one
  * for the set: this is one author's one branch, and a set order would wake them about work that is not theirs.
- * @param {{number: number, code: string, session?: string | null, head?: string, refusedAt?: string | null}} b
+ * @param {{number: number, repoKey?: string, code: string, session?: string | null, head?: string, refusedAt?: string | null}} b
  */
 function ownedReviewBlockedOrder(b) {
   const session = String(b.session);

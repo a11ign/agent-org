@@ -34,6 +34,8 @@ const row = (number: number, extra: Record<string, unknown> = {}) => ({ number, 
 type Order = { session: string, cause: string, subject: string, discriminator: string, causeKey: string, prompt: string, title?: string,
   action?: Record<string, unknown> };
 const asOrders = (orders: unknown) => orders as Order[];
+/** A ledger reader that returns `text`, typed as the `readFileSync` the ledger functions default to. */
+const reads = (text: string) => (() => text) as never;
 
 // --- THE TWO PROJECTS ------------------------------------------------------------------------------------------------------------
 
@@ -59,7 +61,7 @@ function fakeGh(byRepo: Record<string, { prs?: unknown[] | Error, ready?: unknow
   return { run, calls };
 }
 
-const NO_READINGS = { code: (prs: any[]) => ({ prs, required: null, baseTip: null, unarmed: null }),
+const NO_READINGS = { code: (prs: unknown[]) => ({ prs, required: null, baseTip: null, unarmed: null }),
   tracker: () => ({ claimedComments: [], epics: [], closedRows: [], closings: null }) };
 
 /** One scope's orders, made the way `main` makes them: the lanes through `readLanes`, then `decide` (the per-tick extras stubbed). */
@@ -112,11 +114,11 @@ test("DONE-WHEN 1: with two projects, one open pull request in each with the SAM
 
 test("the collision holds over EVERY cause: the same fixture in two repositories shares no cause key, and differs only in the naming", () => {
   const { BUSY_INPUT } = fixtures();
-  const tag = (list: any[], key: string) => list.map((item) => ({ ...item, repoKey: key, repo: `acme/${key}` }));
-  const asKey = (input: any, key: string) => ({ ...input, prs: tag(input.prs, key), readyRows: tag(input.readyRows, key), answerOwed: tag(input.answerOwed, key),
+  const tag = <T extends object>(list: T[], key: string) => list.map((item) => ({ ...item, repoKey: key, repo: `acme/${key}` }));
+  const asKey = (input: ReturnType<typeof fixtures>["BUSY_INPUT"], key: string) => ({ ...input, prs: tag(input.prs, key), readyRows: tag(input.readyRows, key), answerOwed: tag(input.answerOwed, key),
     openRows: tag(input.openRows, key), key, repo: `acme/${key}` });
   const primary = asOrders(decide(BUSY_INPUT));
-  const other = asOrders(decide(asKey(BUSY_INPUT, "other")));
+  const other = asOrders(decide(asKey(BUSY_INPUT, "other") as Parameters<typeof decide>[0]));
   assert.ok(primary.length >= 12, `POSITIVE CONTROL: the fixture emits ${primary.length} orders across many causes, not a handful`);
   assert.equal(other.length, primary.length, "the same causes fire for the same facts, in either repository");
   const primaryKeys = new Set(primary.map((o) => o.causeKey));
@@ -188,7 +190,7 @@ test("DONE-WHEN 4: today's ledger lines are READ by the new code unchanged, and 
     read += 1;
   }
   assert.equal(read, 5, "five delivery lines were read, of eight (three are markers, which `endedRuns` and the escalation writer own)");
-  const deliveries = readLedgerDeliveries("ledger", () => text);
+  const deliveries = readLedgerDeliveries("ledger", reads(text));
   assert.deepEqual(deliveries.map((d) => d.key), ["engineers/ready-row-unclaimed/2620", "ceo/answer-owed/row-2649", "product-manager/pr-review-blocked/2630:REFUSED",
     "worker-2667/pr-checks-failing/pr-2669/ed8208fe", "product-manager/unclaimed-blocker-cleared/row-2620/2616.2658"]);
   assert.equal(deliveries[0].session, "worker-2620", "a recipient is read as before");
@@ -200,7 +202,7 @@ test("DONE-WHEN 4: today's ledger lines are READ by the new code unchanged, and 
   // A KEYED key travels through the same reader and writer with no special case: it is one more opaque key.
   const keyed = "engineers/ready-row-unclaimed/other#2620";
   assert.equal(ledgerLine(5, keyed, "worker-other-2620"), `5\t${keyed}\tworker-other-2620\n`);
-  assert.deepEqual(readLedgerDeliveries("l", () => `5\t${keyed}\tworker-other-2620\n5\tRESET\t${keyed}\n`).map((d) => d.key), [keyed]);
+  assert.deepEqual(readLedgerDeliveries("l", reads(`5\t${keyed}\tworker-other-2620\n5\tRESET\t${keyed}\n`)).map((d) => d.key), [keyed]);
   assert.equal(readLedger("l", () => ledgerLine(Date.now(), keyed), Date.now()).has(keyed), true);
   assert.equal(readLedger("l", () => `${ledgerLine(Date.now(), keyed)}${ledgerLine(Date.now(), "engineers/ready-row-unclaimed/2620")}`, Date.now()).size, 2,
     "the primary's row 2620 and the other's are TWO live keys, so neither's delivery silences the other");
@@ -302,8 +304,8 @@ test("a row in the SECOND tracker reaches the ready queue and is offered -- unde
   assert.equal(ordersOf(other, gh).lanes.readyRows?.[0].repoKey, "other", "read from THE OTHER TRACKER's repository, not the primary's");
   assert.ok(gh.calls.some((c) => c.repo === "acme/other" && c.args.includes("ready")), "the call was aimed at the second tracker's repository");
   // NEGATIVE: wake's row parser does NOT read the keyed key as the primary's row 7 -- claiming the wrong row would be worse than none.
-  assert.equal(rowOfOrder({ causeKey: mine[0].causeKey } as any), 7);
-  assert.equal(rowOfOrder({ causeKey: theirs[0].causeKey } as any), null);
+  assert.equal(rowOfOrder({ causeKey: mine[0].causeKey }), 7);
+  assert.equal(rowOfOrder({ causeKey: theirs[0].causeKey }), null);
 });
 
 // --- A FAILED READ OF ONE REPOSITORY --------------------------------------------------------------------------------------------
@@ -345,7 +347,7 @@ test("wake: `reviewer-7` and `reviewer-other-7` each refuse an order about the O
   // Routing predicates recognise the keyed instance, so its order is NOT taken for an engineer's.
   assert.equal(isReviewerOrder({ session: "reviewer-other-7", cause: "draft-awaiting-verdict" }), true);
   assert.equal(isReviewerOrder({ session: "worker-other-7", cause: "draft-awaiting-verdict" }), false);
-  assert.deepEqual(liveReviewers([{ label: "reviewer-7" }, { label: "reviewer-other-7" }, { label: "reviewer-2" }, { label: "worker-4" }] as any),
+  assert.deepEqual(liveReviewers([{ label: "reviewer-7" }, { label: "reviewer-other-7" }, { label: "reviewer-2" }, { label: "worker-4" }] as never),
     ["reviewer-7", "reviewer-other-7"]);
   assert.equal(isPerRowInstance("reviewer-other-7"), true, "a keyed reviewer is a per-row instance and is never /clear-ed between orders (#2483)");
 });
@@ -382,6 +384,6 @@ test("`gh pr ready` for a pull request of another repository is aimed at THAT re
   const run = (args: string[]) => { calls.push(args); return ""; };
   const order = (action: Record<string, unknown>) => ({ session: "product-manager", cause: "draft-convinced-not-ready", causeKey: "k", prompt: "p", action });
   const quiet = () => undefined;
-  performActions([order({ kind: "ready", pr: 12 }), order({ kind: "ready", pr: 12, repo: "acme/other" })] as any, run, quiet);
+  performActions([order({ kind: "ready", pr: 12 }), order({ kind: "ready", pr: 12, repo: "acme/other" })], run, quiet);
   assert.deepEqual(calls, [["pr", "ready", "12"], ["pr", "ready", "12", "--repo", "acme/other"]]);
 });

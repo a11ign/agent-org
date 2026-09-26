@@ -1385,7 +1385,7 @@ export function readRowsOffBoard(run = defaultRun) {
  *
  * @param {BoardFacts[]} facts
  * @param {number} [nowMs]
- * @returns {{ number: number, title: string }[]}
+ * @returns {{ number: number, repoKey?: string, title: string }[]}
  */
 export function rowsOffBoard(facts, nowMs = Date.now()) {
   return facts
@@ -4183,7 +4183,7 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  * @param {{ prs: any[], readyRows: any[], promotableRows?: any[], chairmanBlocked?: any[],
  *           prFiles?: { number: number, files: string[], changedFiles: number }[],
  *           drain?: boolean, required?: string[] | null, epics?: any[], answerOwed?: any[],
- *           openRows?: any[], unarmed?: number[] | null,
+ *           key?: string, repo?: string, openRows?: any[], unarmed?: number[] | null,
  *           claimedComments?: {number?: number, comments?: {body?: string, id?: string}[]}[],
  *           rowBranches?: {branch: string, head: string, row: number}[] | null,
  *           hostDrift?: {unit: string, problem: string, detail: string}[] | null,
