@@ -38,7 +38,7 @@ import { MAX_ROW_ORDERS_PER_TICK, readCommitChain, withCommitChains, decide, che
   deadMansSwitch, hostDriftOrders, JUDGMENT_CAUSES,
   shouldBeMerging as shouldBeMergingPrs, conflictedPrs, conflictStateOf, mergeConflictOrders,
   unfiledEpics, epicOrders, finishedEpics, finishedEpicOrders, fleetBatchRows, fleetBatchOrders,
-  partitionFleetBatch, FLEET_GATED_SELECTOR, blockersFromRows, blockerClearedOrders, unclaimedBlockerClearedOrders,
+  partitionFleetBatch, FLEET_GATED_SELECTOR, blockersFromRows, blockerClearedOrders, unclaimedBlockerClearedOrders, unclaimedClearings,
   promotionAskWindow, readRecentlyClosed, PROMOTION_ASK_OFFSETS_MS,
   PROMOTION_ASK_PERIOD_MS, PROMOTION_ASK_WINDOW_MS,
   claimedRowAmendedOrders, constraintsAfterClaim, amendmentsOn, readClaimedRowComments,
@@ -2976,6 +2976,20 @@ test("#2139: the three shapes that are NOT a clearing, against the one that is",
   // reader who sees every line above empty AND this one empty has a broken fixture, not a fixed repo.
   assert.equal(unclaimedBlockerClearedOrders([backlogRow(1998, blockedByClosed)], TODAY).length, 1,
     "POSITIVE CONTROL: the genuinely runnable row still reaches product-manager");
+});
+
+test("#2583: a row labelled `needs:chairman` is WAITING, so its cleared blockers order no promotion", () => {
+  const labelled = { ...backlogRow(2561, blockedByClosed),
+    labels: [{ name: "backlog" }, { name: "lane:any" }, { name: CHAIRMAN_LABEL }] };
+  assert.deepEqual(unclaimedBlockerClearedOrders([labelled], TODAY), [],
+    "#2561 was ordered to `product-manager` at every re-ask for a row whose first step was impossible");
+  assert.equal(unclaimedClearings([labelled], TODAY).length, 0,
+    "`main` reads this population before paying for `readRecentlyClosed`, so it must not count the row either");
+  // THE CONTROL: the same row minus the label, so an empty result above is the label's doing and not a
+  // fixture that never yielded an order.
+  assert.equal(unclaimedBlockerClearedOrders([{ ...labelled,
+    labels: [{ name: "backlog" }, { name: "lane:any" }] }], TODAY).length, 1,
+    "POSITIVE CONTROL: without `needs:chairman` the same row still reaches product-manager");
 });
 
 test("#2139: a CLAIMED row is `blocker-cleared`'s, and a `ready` row is already offered", () => {

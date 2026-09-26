@@ -1843,6 +1843,12 @@ export function unclaimedClearings(rows, today = todayIso()) {
     const labels = labelsOf(row);
     const cleared = declaredBlockers(row);
     if (labels.includes(CLAIM_LABEL) || labels.includes(READY_LABEL) || cleared === null) continue;
+    // `needs:chairman` IS A WAIT AND `waitingOn` DOES NOT READ IT (#2583). The label names a person and
+    // clears when removed, exactly as `blockedWithoutReferent` already rules, so an order to PROMOTE such a
+    // row offers work whose first step is impossible (#2561: its private repository did not exist), and
+    // repeats at every `PROMOTION_ASK_OFFSETS_MS` step. Skipped HERE, in this cause's own population,
+    // rather than taught to `waitingOn`, which every reader of that function would then inherit.
+    if (labels.includes(CHAIRMAN_LABEL)) continue;
     // THE LINE THAT MAKES `cleared` MEAN CLEARED, and `blockerClearedOrders`' own sentence applies here
     // unchanged: `waitingOn` reports an OPEN `blockedBy` node before anything else, so passing here is
     // what proves every number above is closed -- and it covers the `Not-before:` and `answer:` cases in
