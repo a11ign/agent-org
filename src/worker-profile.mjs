@@ -347,6 +347,18 @@ export const PROFILES = Object.freeze({
     why: "the gate has already read the filesystem and named the low resource; the output is a decision about "
       + "what to remove, and a full disk is the one fault that stops every session at once",
   }),
+  "row-off-board": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // MEDIUM (#2075). The gate has already read each row's own Project membership and named the absent ones; the work is
+    // boarding each at the Status its label says and declaring a release where there is none. The Status is a small
+    // judgment over a stated label (`ready` -> Ready, `in-progress` -> In progress), not diagnosis from an absence, so
+    // `org-stalled`'s `high` would be paid for nothing -- and not a bare relay either, since a row that carries no label
+    // that names a Status has to be read to be placed.
+    effort: "medium",
+    why: "the gate has already named the rows with no Project 1 item; the output is adding each at the Status its "
+      + "label says and declaring a release where none exists",
+  }),
   "claim-stalled": Object.freeze({
     kind: "claude",
     // SONNET AND MEDIUM, AND THE RECIPIENT IS THE HOLDER, so this is the profile a spawned worker would take if one ever were
