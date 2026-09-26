@@ -39,7 +39,7 @@ import { READY_LABEL, CLAIM_LABEL, CLAIM_RECORD_MARKER } from "./claim-labels.mj
 import { verdictAtHead } from "./review-verdict.mjs";
 import { waitingOn, fleetWaitingOn, todayIso, describeWaiting, ANSWER_PREFIX } from "./waiting-condition.mjs";
 import { newestPerName } from "./newest-check-run.mjs";
-import { reviewerInstanceNumber } from "./review-attribution.mjs";
+import { reviewerInstance, subjectIdentity, subjectMention, subjectRef } from "./review-attribution.mjs";
 // B4, ASKED EARLY. These are the SAME two functions `row-claim.mjs` runs at claim time, imported
 // rather than reimplemented: `region-paths.mjs`'s own header records why a second copy of "what
 // counts as a path" is not allowed to exist. Both are leaf-shaped and relative, so the gate keeps the
@@ -69,6 +69,7 @@ import { poolDiagnosis, refusalPoolLine } from "./api-pool.mjs";
 import { armedFromApi, openPullRequestsQueryArgs } from "./auto-arm-sweep.mjs";
 import { armabilityOf, holdersOf } from "./pr-hold-state.mjs";
 import { REPO } from "./project-identity.mjs";
+import { homeProjectDeclaration } from "./project-config.mjs";
 // #2075: WHICH PROJECT A ROW MUST BE ON. `board-snapshot-scope.mjs` runs no `gh` and imports only `node:*`, the repo
 // identity and `settle-closed-status.mjs`, so the gate keeps the property its own header states.
 import { PROJECT_NUMBER } from "./board-snapshot-scope.mjs";
@@ -250,8 +251,40 @@ export function draining(path = DRAIN_MARKER, exists = existsSync) {
   return exists(path);
 }
 
-/** @param {string[]} args */
-const defaultRun = (args) => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
+/**
+ * THE REPOSITORY THE READS ARE ABOUT, when it is not the checkout's own (#2618, child 3c of #69). `undefined` -- the primary
+ * project's, and every read before a second repository existed -- runs `gh` exactly as it always ran, with no `env` option
+ * added, so one declared project makes the same calls it made. Any other repository is `GH_REPO`, which `gh pr`, `gh issue`,
+ * `gh label` and the `{owner}/{repo}` placeholders of `gh api` all honour, so ONE seam scopes every reader including the zero-argument
+ * wrappers `main` calls, without threading a repository through thirty signatures.
+ *
+ * Synchronous (`execFileSync`) and restored in a `finally`, which is what makes an ambient safe: no read of one repository
+ * can run while another's is set.
+ * @type {string | undefined}
+ */
+let activeRepo;
+
+/**
+ * Run `read` with every `gh` call it makes aimed at `repo` (`undefined` is the checkout's own).
+ * @template T
+ * @param {string | undefined} repo @param {() => T} read @returns {T}
+ */
+export function inRepo(repo, read) {
+  const outer = activeRepo;
+  activeRepo = repo;
+  try {
+    return read();
+  } finally {
+    activeRepo = outer;
+  }
+}
+
+/** The repository a literal-path read (`repos/<repo>/...`) asks about: the scoped one, else the checkout's own. */
+const repoNow = () => activeRepo ?? REPO;
+
+/** @param {string[]} args @param {string} [repo] the repository to aim at; the ambient one when omitted */
+const defaultRun = (args, repo = activeRepo) => execFileSync("gh", args,
+  { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, ...(repo === undefined ? {} : { env: { ...process.env, GH_REPO: repo } }) });
 
 /**
  * Open PRs with everything the draft lane needs, in ONE call.
@@ -918,7 +951,7 @@ export function partitionUnclaimed(readyRows, prFiles, options) {
     // is the failure `blocked` already is.
     const pushed = onOrigin.get(Number(row.number)) ?? [];
     if (pushed.length > 0) {
-      blocked.push({ number: Number(row.number), owner: laneOwnerOf(row), reason: branchesText(pushed) });
+      blocked.push({ number: Number(row.number), ...subjectIdentity(row), owner: laneOwnerOf(row), reason: branchesText(pushed) });
       continue;
     }
     // A DECLARED WAIT SHELVES THE ROW RATHER THAN HIDING IT. It goes to `blocked` with its reason, so
@@ -930,12 +963,12 @@ export function partitionUnclaimed(readyRows, prFiles, options) {
     // how the offer path and the promotion path came to disagree in the first place.
     const waiting = waitingOn(row, today, nowMs);
     if (waiting) {
-      blocked.push({ number: Number(row.number), owner: laneOwnerOf(row),
+      blocked.push({ number: Number(row.number), ...subjectIdentity(row), owner: laneOwnerOf(row),
         reason: `${describeWaiting(waiting)} -- declared on the row, and it clears itself` });
       continue;
     }
     const reason = blockedOnOpenPr(row, prFiles, { ...options, blockersOf });
-    if (reason) blocked.push({ number: Number(row.number), owner: laneOwnerOf(row), reason });
+    if (reason) blocked.push({ number: Number(row.number), ...subjectIdentity(row), owner: laneOwnerOf(row), reason });
     else offerable.push(row);
   }
   return { offerable, blocked };
@@ -1230,8 +1263,8 @@ export function fleetBatchRows(rows, clock = {}) {
 export function fleetBatchOrders(rows, clock = {}) {
   const batch = fleetBatchRows(rows, clock);
   if (batch.length === 0) return [];
-  const numbers = batch.map((r) => `#${r.number}`).join(", ");
-  const key = batch.map((r) => r.number).join(".");
+  const numbers = batch.map((r) => subjectMention(r)).join(", ");
+  const key = batch.map((r) => subjectRef(r.repoKey, r.number)).join(".");
   return [{
     session: "orchestrator",
     cause: "fleet-batch-due",
@@ -1325,7 +1358,7 @@ function boardFactsOf(node) {
  * @returns {BoardFacts[] | null}
  */
 export function readRowsOffBoard(run = defaultRun) {
-  const [owner, name] = REPO.split("/");
+  const [owner, name] = repoNow().split("/");
   /** @type {BoardFacts[]} */
   const facts = [];
   try {
@@ -1385,14 +1418,14 @@ export function rowsOffBoard(facts, nowMs = Date.now()) {
 export function rowOffBoardOrders(facts, nowMs = Date.now()) {
   const absent = rowsOffBoard(facts ?? [], nowMs);
   if (absent.length === 0) return [];
-  const key = absent.map((r) => r.number).join(".");
+  const key = absent.map((r) => subjectRef(r.repoKey, r.number)).join(".");
   return [{
     session: "product-manager",
     cause: "row-off-board",
     subject: "project-1",
     discriminator: key,
     prompt: `${absent.length} open row(s) have NO item on Project ${PROJECT_NUMBER}, so they are invisible in every Status view:\n`
-      + absent.map((r) => `  #${r.number} ${r.title}`).join("\n") + "\n"
+      + absent.map((r) => `  ${subjectMention(r)} ${r.title}`).join("\n") + "\n"
       + "A row filed with a bare `gh issue create` never reaches the board: only `row-file` boards one, and a board label applied "
       + "AT CREATION (`ready` or `backlog` one second after the row exists) is the fingerprint of that path. Each was read from "
       + "the ISSUE's own `projectItems`, not from a board listing (which lags minutes behind an add), and none is younger than "
@@ -1716,9 +1749,9 @@ export function blockedReferentOrders(rows, readyRows, today = todayIso()) {
     .map((/** @type {any} */ r) => ({
       session: "product-manager",
       cause: "blocked-unexaminable",
-      subject: `row-${r.number}`,
-      discriminator: String(r.number),
-      prompt: `#${r.number}${r.title ? ` (${r.title})` : ""} is labelled \`blocked\` and names NOTHING a `
+      subject: `row-${subjectRef(r.repoKey, r.number)}`,
+      discriminator: subjectRef(r.repoKey, r.number),
+      prompt: `${subjectMention(r)}${r.title ? ` (${r.title})` : ""} is labelled \`blocked\` and names NOTHING a `
         + "machine can check -- no `blockedBy` edge, no `Not-before:` line. NOTHING IN THIS ORG CAN SEE "
         + "IT: `blocked` is filtered out before any cause runs, so only a person re-reading the row can "
         + "ever lift it.\n"
@@ -1745,7 +1778,7 @@ export function blockedReferentOrders(rows, readyRows, today = todayIso()) {
         + `are, and \`${CHAIRMAN_LABEL}\` is then the honest answer.\n`
         + "THE CONDITION HAS OFTEN ALREADY CLEARED. On 2026-09-20 eleven rows carried this label with the "
         + "queue empty behind them, one of them (#1731) about code that had been fixed the day before.",
-      causeKey: `product-manager/blocked-unexaminable/row-${r.number}`,
+      causeKey: `product-manager/blocked-unexaminable/row-${subjectRef(r.repoKey, r.number)}`,
     }));
 }
 
@@ -1863,9 +1896,9 @@ export function answerOrders(rows) {
       orders.push({
         session,
         cause: "answer-owed",
-        subject: `row-${row.number}`,
-        discriminator: String(row.number),
-        prompt: `#${row.number} ${isPullRequest(row) ? "IS A PULL REQUEST " : "IS "}WAITING ON AN ANSWER FROM YOU. `
+        subject: `row-${subjectRef(row.repoKey, row.number)}`,
+        discriminator: subjectRef(row.repoKey, row.number),
+        prompt: `${subjectMention(row)} ${isPullRequest(row) ? "IS A PULL REQUEST " : "IS "}WAITING ON AN ANSWER FROM YOU. `
           + `Another session asked you something there and cannot move until you reply -- read that ${subject}'s `
           + "most recent comments for the question.\n"
           + closedNote(row, subject)
@@ -1874,7 +1907,7 @@ export function answerOrders(rows) {
           + "\"I cannot answer this\" is an answer -- say so, say who can, and re-label it to them. "
           + "What is not an answer is silence: on 2026-09-20 a question sat unread for 6.5 hours while "
           + "the session that asked it re-posted five times, because nothing in this org reads comments.",
-        causeKey: `${session}/answer-owed/row-${row.number}`,
+        causeKey: `${session}/answer-owed/row-${subjectRef(row.repoKey, row.number)}`,
       });
     }
   }
@@ -1974,9 +2007,9 @@ export function blockerClearedOrders(rows, today = todayIso(), nowMs = Date.now(
     orders.push({
       session,
       cause: "blocker-cleared",
-      subject: `row-${row.number}`,
+      subject: `row-${subjectRef(row.repoKey, row.number)}`,
       discriminator: key,
-      prompt: `#${row.number} IS YOURS AND IS NO LONGER BLOCKED. Every row it declared a dependency on `
+      prompt: `${subjectMention(row)} IS YOURS AND IS NO LONGER BLOCKED. Every row it declared a dependency on `
         + `is now closed: ${cleared.map((n) => `#${n}`).join(", ")}.\n`
         + "PICK IT BACK UP -- you already hold the claim, so nothing else will offer it to anyone and no "
         + "other cause in this gate addresses a session that already holds a row. That is why this "
@@ -1987,7 +2020,7 @@ export function blockerClearedOrders(rows, today = todayIso(), nowMs = Date.now(
         + `\`gh issue edit ${row.number} --add-blocked-by <n>\`, a \`Not-before: YYYY-MM-DD\` line, or `
         + `\`${ANSWER_PREFIX}<session>\` if you are waiting on somebody to decide. Each clears itself, `
         + "and each stops this being asked again.",
-      causeKey: `${session}/blocker-cleared/row-${row.number}/${key}`,
+      causeKey: `${session}/blocker-cleared/row-${subjectRef(row.repoKey, row.number)}/${key}`,
     });
     if (orders.length >= MAX_ROW_ORDERS_PER_TICK) break;
   }
@@ -2215,9 +2248,9 @@ function promotionOrder(row, cleared, suffix = "") {
   return {
     session: "product-manager",
     cause: "unclaimed-blocker-cleared",
-    subject: `row-${row.number}`,
+    subject: `row-${subjectRef(row.repoKey, row.number)}`,
     discriminator: key,
-    prompt: `#${row.number}${row.title ? ` (${row.title})` : ""} IS UNCLAIMED AND NO LONGER BLOCKED. `
+    prompt: `${subjectMention(row)}${row.title ? ` (${row.title})` : ""} IS UNCLAIMED AND NO LONGER BLOCKED. `
       + `Every row it declared a dependency on is now closed: ${cleared.map((n) => `#${n}`).join(", ")}.\n`
       + "NOTHING ELSE IN THIS ORG WILL SAY SO. `blocker-cleared` addresses the session HOLDING a row and "
       + "nobody holds this one; `lane-backlog-unpromoted` addresses a lane OWNER; `ready-queue-empty` "
@@ -2238,7 +2271,7 @@ function promotionOrder(row, cleared, suffix = "") {
         : "")
       + "THIS IS NOT A SURVEY OF THE BACKLOG. One row, one clearing, already named -- if the answer is "
       + "\"it stays in backlog\", say so in a field and this stops asking.",
-    causeKey: `product-manager/unclaimed-blocker-cleared/row-${row.number}/${key}${suffix}`,
+    causeKey: `product-manager/unclaimed-blocker-cleared/row-${subjectRef(row.repoKey, row.number)}/${key}${suffix}`,
   };
 }
 
@@ -2460,9 +2493,9 @@ function amendedOrder({ row, session, markers }) {
   return {
     session,
     cause: "claimed-row-amended",
-    subject: `row-${row.number}`,
+    subject: `row-${subjectRef(row.repoKey, row.number)}`,
     discriminator: key,
-    prompt: `#${row.number} IS YOURS AND IT HAS CHANGED UNDER YOU. It now carries `
+    prompt: `${subjectMention(row)} IS YOURS AND IT HAS CHANGED UNDER YOU. It now carries `
       + `${markers.map((m) => m.says).join(" and ")}.\n`
       + "GO AND READ IT BEFORE YOU WRITE ANOTHER LINE, and if you have already built, check the diff "
       + "against it rather than your memory of the brief. On 2026-09-23 a ruling reached #2099 six "
@@ -2475,7 +2508,7 @@ function amendedOrder({ row, session, markers }) {
       + "IF IT IS AN OPEN `blockedBy` EDGE: you were not refused at claim time because the edge did not "
       + "exist then (`blocked-by-edge-rule.mjs` would have refused you) -- it arrived while you held the "
       + "row, which is exactly what happened to #1918 on #2100.",
-    causeKey: `${session}/claimed-row-amended/row-${row.number}/${key}`,
+    causeKey: `${session}/claimed-row-amended/row-${subjectRef(row.repoKey, row.number)}/${key}`,
   };
 }
 
@@ -2758,9 +2791,9 @@ export function epicOrders(epics, readyRows) {
   return unfiled.slice(0, MAX_ROW_ORDERS_PER_TICK).map((/** @type {any} */ e) => ({
     session: "product-manager",
     cause: "epic-unfiled",
-    subject: `epic-${e.number}`,
-    discriminator: String(e.number),
-    prompt: `NOTHING IS READY AND #${e.number}${e.title ? ` (${e.title})` : ""} IS AN OPEN EPIC WITH NO `
+    subject: `epic-${subjectRef(e.repoKey, e.number)}`,
+    discriminator: subjectRef(e.repoKey, e.number),
+    prompt: `NOTHING IS READY AND ${subjectMention(e)}${e.title ? ` (${e.title})` : ""} IS AN OPEN EPIC WITH NO `
       + "SUB-ISSUES. An epic with no children is not a container -- it is work nobody has filed, and it "
       + "is invisible to every other cause because `epic` means NOT PICKABLE.\n"
       + "Split it into rows an engineer can claim (a Region, an Acceptance, a done-when), using "
@@ -2771,7 +2804,7 @@ export function epicOrders(epics, readyRows) {
       + "next unrelated epic gets filed.\n"
       + "PREFER THE ONES THE FLEET CAN ALREADY SERVE. The fleet is the org's scarcest resource and it "
       + "sits idle when capture work is unfiled; a `fleet-gated` epic is where the idle capacity is.",
-    causeKey: `product-manager/epic-unfiled/epic-${e.number}`,
+    causeKey: `product-manager/epic-unfiled/epic-${subjectRef(e.repoKey, e.number)}`,
   }));
 }
 
@@ -2831,9 +2864,9 @@ export function finishedEpicOrders(epics, readyRows) {
   return finishedEpics(epics).slice(0, MAX_ROW_ORDERS_PER_TICK).map((/** @type {any} */ e) => ({
     session: "product-manager",
     cause: "epic-finished",
-    subject: `epic-${e.number}`,
-    discriminator: String(e.number),
-    prompt: `#${e.number}${e.title ? ` (${e.title})` : ""} IS AN OPEN EPIC WHOSE EVERY CHILD IS CLOSED `
+    subject: `epic-${subjectRef(e.repoKey, e.number)}`,
+    discriminator: subjectRef(e.repoKey, e.number),
+    prompt: `${subjectMention(e)}${e.title ? ` (${e.title})` : ""} IS AN OPEN EPIC WHOSE EVERY CHILD IS CLOSED `
       + `(${e?.subIssuesSummary?.completed ?? 0} of ${e?.subIssuesSummary?.total ?? 0}).\n`
       + "TWO ANSWERS, AND THE ORDER DOES NOT PRESUME WHICH. Either the line of work is FINISHED -- close "
       + "the epic -- or the next tranche of children has simply never been filed, which is the more "
@@ -2846,7 +2879,7 @@ export function finishedEpicOrders(epics, readyRows) {
       + "without anyone noticing.\n"
       + "RECORD THE ANSWER ON THE EPIC either way, and READ ITS OWN RECENT COMMENTS FIRST: a durable "
       + "reason recorded there stands until something about THIS epic changes.",
-    causeKey: `product-manager/epic-finished/epic-${e.number}`,
+    causeKey: `product-manager/epic-finished/epic-${subjectRef(e.repoKey, e.number)}`,
   }));
 }
 
@@ -3269,7 +3302,7 @@ function refusalCommitOf(pr) {
 export function reviewBlocked(prs, required = null) {
   const byNumber = new Map(prs.map((pr) => [Number(pr.number), pr]));
   return mergeCandidates(prs, required)
-    .map((pr) => ({ number: Number(pr.number), ...reviewStateOf(pr), session: sessionOf(pr),
+    .map((pr) => ({ number: Number(pr.number), ...subjectIdentity(pr), ...reviewStateOf(pr), session: sessionOf(pr),
       head: String(pr.headRefOid ?? ""), refusedAt: refusalCommitOf(pr) }))
     .filter((r) => BLOCKING_REVIEW_STATES.includes(r.code))
     // #2416: `pr-review-blocked` is the third route into a review -- it tells `product-manager` to prompt the
@@ -3302,7 +3335,7 @@ export function reviewBlocked(prs, required = null) {
 export function readUnarmed(candidates, run = defaultRun) {
   if (candidates.length === 0) return [];
   try {
-    const nodes = JSON.parse(run(openPullRequestsQueryArgs(REPO)));
+    const nodes = JSON.parse(run(openPullRequestsQueryArgs(repoNow())));
     if (!Array.isArray(nodes)) return null;
     const armed = new Map(nodes.map((n) => [Number(n?.number), armedFromApi(n)]));
     return candidates.filter((n) => armed.get(n) === false);
@@ -3352,7 +3385,7 @@ export function verdictAmong(pr, heads) {
  */
 export function readCommitChain(number, run = defaultRun) {
   try {
-    const out = run(["api", `repos/${REPO}/pulls/${number}/commits`, "--paginate", "--jq",
+    const out = run(["api", `repos/${repoNow()}/pulls/${number}/commits`, "--paginate", "--jq",
       ".[] | {oid: .sha, parents: (.parents | length), messageHeadline: (.commit.message | split(\"\\n\")[0])}"]);
     const commits = out.split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l));
     return commits.length > 0 ? commits : null;
@@ -3405,7 +3438,7 @@ export function awaitingEvidence(pr) {
  */
 export function readEvidenceLabelledAt(number, run = defaultRun) {
   try {
-    const out = run(["api", `repos/${REPO}/issues/${number}/events`, "--paginate", "--jq",
+    const out = run(["api", `repos/${repoNow()}/issues/${number}/events`, "--paginate", "--jq",
       `.[] | select(.event == "labeled" and .label.name == "${AWAITING_EVIDENCE_LABEL}") | .created_at`]);
     const applied = out.split("\n").map((l) => l.trim()).filter((l) => l !== "");
     return applied.length > 0 ? applied[applied.length - 1] : null;
@@ -3485,13 +3518,13 @@ function rowOrders(unclaimed) {
     orders.push({
       session: owner ?? "engineers",
       cause: "ready-row-unclaimed",
-      subject: `row-${row.number}`,
+      subject: `row-${subjectRef(row.repoKey, row.number)}`,
       // The spawner names the branch and the instance's first message from it (#2405).
       title: row.title ?? "",
       // THE ROW IS THE DISCRIMINATOR NOW, not the queue depth. Keyed on the count, every claim rewrote
       // every remaining order's key and re-woke someone for rows already being offered.
-      discriminator: String(row.number),
-      prompt: `Ready row #${row.number} is unclaimed${row.title ? `: ${row.title}` : ""}. Claim it with `
+      discriminator: subjectRef(row.repoKey, row.number),
+      prompt: `Ready row ${subjectMention(row)} is unclaimed${row.title ? `: ${row.title}` : ""}. Claim it with `
         + `\`node packages/agent-org/src/row-claim.mjs claim ${row.number} --session=<you> `
         + `--branch=agent/<slug>-${row.number} --worktree=../wt-${row.number}\` and build it there.\n`
         // BOTH FLAGS OR NEITHER, and the primary refuses the work entirely: `row-claim` creates the
@@ -3508,7 +3541,7 @@ function rowOrders(unclaimed) {
         // worktree, so `wake.mjs` fills `LAUNCH_PLACEHOLDER` in when it knows the recipient (`addressed`).
         + `The claim creates that worktree for you. ${LAUNCH_PLACEHOLDER}\n`
         + "If the claim is refused because someone took it first, that is an answer: stop and say so.",
-      causeKey: `${owner ?? "engineers"}/ready-row-unclaimed/${row.number}`,
+      causeKey: `${owner ?? "engineers"}/ready-row-unclaimed/${subjectRef(row.repoKey, row.number)}`,
     });
   }
 
@@ -3583,11 +3616,11 @@ function unshippedOrder({ row, pushed }) {
   return {
     session: owner,
     cause: "row-branch-unshipped",
-    subject: `row-${row.number}`,
+    subject: `row-${subjectRef(row.repoKey, row.number)}`,
     discriminator: key,
-    prompt: `Row #${row.number} reads \`ready\` and unclaimed, but ${branchesText(pushed)}.\n`
+    prompt: `Row ${subjectMention(row)} reads \`ready\` and unclaimed, but ${branchesText(pushed)}.\n`
       + "THE BOARD IS SAYING SOMETHING THAT IS NOT TRUE, and until this is settled the gate has STOPPED "
-      + `offering #${row.number} as a fresh start -- so nobody will be routed into work that may already `
+      + `offering ${subjectMention(row)} as a fresh start -- so nobody will be routed into work that may already `
       + "exist. Measured 2026-09-22 on #2000: its branch sat pushed for 20 minutes while the row read "
       + "`ready`, and a second session was routed into the same three Region paths.\n"
       + "READ THE BRANCH FIRST. Both of these spend NO API pool: "
@@ -3601,7 +3634,7 @@ function unshippedOrder({ row, pushed }) {
       + "IF IT NEEDS A WAIT INSTEAD, that goes in a FIELD and not a comment: `Not-before: YYYY-MM-DD` in "
       + `the body, \`gh issue edit ${row.number} --add-blocked-by <n>\`, or \`${ANSWER_PREFIX}<session>\`. `
       + "Each clears itself.",
-    causeKey: `${owner}/row-branch-unshipped/row-${row.number}/${key}`,
+    causeKey: `${owner}/row-branch-unshipped/row-${subjectRef(row.repoKey, row.number)}/${key}`,
   };
 }
 
@@ -3666,7 +3699,7 @@ function alsoOwned(mine, current) {
   const others = mine.filter((/** @type {any} */ r) => r.number !== current.number);
   if (others.length === 0) return "";
   const named = others.slice(0, MAX_ROW_ORDERS_PER_TICK)
-    .map((/** @type {any} */ r) => `#${r.number}`).join(", ");
+    .map((/** @type {any} */ r) => subjectMention(r)).join(", ");
   return `YOU ALSO OWN ${others.length} OTHER ACTIONABLE ROW(S): ${named}`
     + `${others.length > MAX_ROW_ORDERS_PER_TICK ? ", ..." : ""}.\n`
     + `IF #${current.number} CANNOT MOVE RIGHT NOW -- it waits on a clock, a capture window, or a `
@@ -3710,9 +3743,9 @@ function backlogOrders(owner, mine) {
   return names.flatMap((name) => mine.slice(0, MAX_ROW_ORDERS_PER_TICK).map((/** @type {any} */ r) => ({
     session: name,
     cause: "lane-backlog-unpromoted",
-    subject: `row-${r.number}`,
-    discriminator: String(r.number),
-    prompt: `#${r.number} is an open backlog row you own and there is NOTHING Ready among your rows.`
+    subject: `row-${subjectRef(r.repoKey, r.number)}`,
+    discriminator: subjectRef(r.repoKey, r.number),
+    prompt: `${subjectMention(r)} is an open backlog row you own and there is NOTHING Ready among your rows.`
       + (laneOwnerOf(r) === name
         ? " It carries your lane: nobody else may promote it."
         : " It carries `fleet-gated`, which ROUTES rather than blocks -- the acceptance needs the fleet"
@@ -3726,7 +3759,7 @@ function backlogOrders(owner, mine) {
       + "RECORD THE ANSWER ON THE ROW, whatever it is. A decision that exists only in your terminal is "
       + "one the org cannot see: the next reader finds an untouched row and re-derives it from scratch.\n"
       + alsoOwned(mine, r),
-    causeKey: `${name}/lane-backlog-unpromoted/row-${r.number}`,
+    causeKey: `${name}/lane-backlog-unpromoted/row-${subjectRef(r.repoKey, r.number)}`,
   })));
 }
 
@@ -3750,12 +3783,12 @@ function chairmanOrders(chairmanBlocked) {
   // person outside the org can answer and the wrong one to repeat every twenty minutes.
   if (chairmanBlocked.length === 0) return [];
   const oldest = daysSince(chairmanBlocked[0]?.updatedAt);
-  const rows = chairmanBlocked.slice(0, 6).map((/** @type {any} */ r) => `#${r.number}`).join(", ");
+  const rows = chairmanBlocked.slice(0, 6).map((/** @type {any} */ r) => subjectMention(r)).join(", ");
   return [{
     session: "ceo",
     cause: "chairman-blocked",
     subject: "chairman",
-    discriminator: String(oldest),
+    discriminator: subjectRef(chairmanBlocked[0].repoKey, oldest),
     prompt: `${chairmanBlocked.length} row(s) are labelled \`${CHAIRMAN_LABEL}\` and can only move by the `
       + `chairman's own hands: ${rows}${chairmanBlocked.length > 6 ? ", ..." : ""}. The quietest has had `
       + `NO ACTIVITY OF ANY KIND for ${oldest} day(s) -- not time spent waiting, which is longer: any `
@@ -3763,7 +3796,7 @@ function chairmanOrders(chairmanBlocked) {
       + "Brief the chairman: what is waiting, what it blocks downstream, and the single next action in "
       + "their hands. If a row no longer needs them, take the label off -- a stale one here makes the "
       + "count meaningless, which is how the last escalation went four days unread.",
-    causeKey: `ceo/chairman-blocked/${oldest}`,
+    causeKey: `ceo/chairman-blocked/${subjectRef(chairmanBlocked[0].repoKey, oldest)}`,
   }];
 }
 
@@ -3811,9 +3844,9 @@ function chairmanOrders(chairmanBlocked) {
  * re-laning them to `lane:any` would have handed an engineer the identical refusal.
  *
  * @param {{ offerable: any[], blocked: { number: number, owner: string | null, reason: string }[],
- *           promotable: number }} state
+ *           promotable: number, key?: string }} state `key` is the tracker's key, so two trackers' counts are two ledger keys
  */
-function emptyShelfOrder({ offerable, blocked, promotable }) {
+function emptyShelfOrder({ offerable, blocked, promotable, key }) {
   const pool = offerable.filter((r) => laneOwnerOf(r) === null);
   if (pool.length > 0 || promotable === 0) return null;
   const poolBlocked = blocked.filter((b) => b.owner === null);
@@ -3822,7 +3855,7 @@ function emptyShelfOrder({ offerable, blocked, promotable }) {
     laned > 0 ? `${laned} unclaimed row(s) belong to a lane` : "",
     poolBlocked.length > 0
       ? `${poolBlocked.length} unlaned row(s) blocked (`
-        + poolBlocked.map((b) => `#${b.number}: ${b.reason}`).join("; ")
+        + poolBlocked.map((b) => `${subjectMention(b)}: ${b.reason}`).join("; ")
         + ")"
       : "",
   ].filter(Boolean).join(", and ");
@@ -3833,7 +3866,7 @@ function emptyShelfOrder({ offerable, blocked, promotable }) {
     // THE COUNT IS THE DISCRIMINATOR, so the order stops repeating the moment a row is promoted and
     // re-fires if the shelf empties again at a different depth. Keyed on anything constant it would
     // nag every two minutes until someone acted, which is how a wake becomes noise to route around.
-    discriminator: String(promotable),
+    discriminator: subjectRef(key, promotable),
     prompt: `The Ready queue has NOTHING an engineer may take${why ? ` -- ${why}` : ""} -- and `
       + `${promotable} unlaned backlog row(s) carry no label that means unpickable (not blocked, `
       + "fleet-gated, epic, disputed, decision, awaiting-merge, review-only or already claimed). Every "
@@ -3862,7 +3895,7 @@ function emptyShelfOrder({ offerable, blocked, promotable }) {
       + "terminal is one the next audit must derive again from scratch -- and this one did: the 07:19Z "
       + "sweep reached a complete, well-argued verdict on #1731 and left no trace on it, so the same "
       + "reasoning was due to be repeated every two hours indefinitely.",
-    causeKey: `product-manager/ready-queue-empty/${promotable}`,
+    causeKey: `product-manager/ready-queue-empty/${subjectRef(key, promotable)}`,
   };
 }
 
@@ -4123,7 +4156,8 @@ export function performActions(orders, run = defaultRun, log = (line) => process
     const { action, ...rest } = order;
     if (!action) { delivered.push(order); continue; }
     try {
-      run(["pr", "ready", String(action.pr)]);
+      // A pull request in another repository is ready-flipped THERE: `repo` rides on the action only when it is not the primary's.
+      run(["pr", "ready", String(action.pr), ...(action.repo === undefined ? [] : ["--repo", action.repo])]);
       performed += 1;
       log(`DID ${action.kind} pr-${action.pr} (${order.cause}) -- no session woken\n`);
     } catch (/** @type {any} */ error) {
@@ -4203,7 +4237,7 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
-  claimedComments = [], rowBranches, hostDrift, closings, trunkRed, baseTip, claimStalls, offBoard }) {
+  claimedComments = [], rowBranches, hostDrift, closings, trunkRed, baseTip, claimStalls, offBoard, key, repo }) {
   // FIRST, BEFORE EVERY OTHER CAUSE (#2356): a red `main` outranks even `answer-owed` -- see `trunkRedOrders`.
   // `answer-owed` says another session is ALREADY STOPPED waiting on them, which outranks any standing question.
   const orders = [...trunkRedOrders(trunkRed), ...answerOrders(answerOwed)];
@@ -4244,7 +4278,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // `ownerOf`, not `laneOwnerOf`: routed rows reach `decide` now, and the POOL's count must be exactly
   // what it was -- an engineer offered a `fleet-gated` row would be queueing for a worker box.
   const poolPromotable = promotableRows.filter((r) => ownerOf(r) === null);
-  const shelf = emptyShelfOrder({ offerable, blocked, promotable: poolPromotable.length });
+  const shelf = emptyShelfOrder({ offerable, blocked, promotable: poolPromotable.length, key });
   if (shelf) orders.push(shelf);
 
   orders.push(...laneBacklogOrders(promotableRows, readyRows));
@@ -4264,7 +4298,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // #1969: AFTER the per-PR and per-row causes and BEFORE the chairman's. A green unarmed PR is finished
   // work that cannot land -- more urgent than a supply question, less urgent than a named red build,
   // and never withheld by a drain: a window stops the org TAKING ON work, not finishing what is in flight.
-  orders.push(...greenUnarmedOrders(unarmed));
+  orders.push(...greenUnarmedOrders(unarmed, { key: key ?? "", repo: repo ?? REPO }));
 
   // #2084: BESIDE `pr-green-unarmed` AND FOR ITS REASON, ONE SURFACE OVER. Both name finished work that
   // cannot land; that one is about the ARMING not having happened and this one about GitHub refusing to
@@ -4302,7 +4336,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
  * for as long as nobody thought to look for it, so every tick says where it is and how to remove it.
  *
  * (Split out of `main`, which reached `complexity` 16 when the drain branch landed.)
- * @param {{ drain: boolean, blocked: { number: number, reason: string }[] }} withheld
+ * @param {{ drain: boolean, blocked: { number: number, repoKey?: string, reason: string }[] }} withheld
  */
 function reportWithheld({ drain, blocked }) {
   if (drain) {
@@ -4310,7 +4344,7 @@ function reportWithheld({ drain, blocked }) {
       + `Withheld: ${START_CAUSES.join(", ")}. Remove that file to reopen the queue.\n`);
   }
   for (const row of blocked) {
-    process.stderr.write(`SHELVED row #${row.number}: ${row.reason}\n`);
+    process.stderr.write(`SHELVED row ${subjectMention(row)}: ${row.reason}\n`);
   }
 }
 
@@ -4430,7 +4464,7 @@ export function authFailureShownIn(text) {
  */
 export function sessionsOwingVerdict(orders) {
   return new Set(orders
-    .filter((o) => REVIEWER_VERDICT_CAUSES.includes(String(o.cause)) && reviewerInstanceNumber(o.session) !== null)
+    .filter((o) => REVIEWER_VERDICT_CAUSES.includes(String(o.cause)) && reviewerInstance(o.session) !== null)
     .map((o) => o.session));
 }
 
@@ -4816,6 +4850,178 @@ function closingsWhenRowsCleared(openRows) {
   return unclaimedClearings(openRows).length > 0 ? readRecentlyClosed() : null;
 }
 
+// --- #2618 (child 3c of #69): EVERY REPOSITORY THE PROJECT DECLARES, NOT ONE ---------------------------------------------
+
+/**
+ * @typedef {{ repo: string }} ScopeRepository
+ * @typedef {{ key: string, code: ScopeRepository | null, tracker: ScopeRepository | null }} Scope
+ */
+
+/**
+ * THE SCOPES OF A TICK: one per KEY across every declaration handed in, the primary project's (the empty key) FIRST.
+ *
+ * A scope pairs the code repository and the tracker that share a key, either of which may be absent (a layer repository
+ * has code and no tracker of its own). Inside one scope a pull request or row number is unambiguous, which is why `decide`
+ * is run PER SCOPE rather than over one merged list: every map in it is keyed by number, and PR 7 in two repositories
+ * would be one entry. Names are made distinct at the OUTPUT (`subjectRef`, `reviewerSeat`), not by renumbering the input.
+ *
+ * A key declared twice REFUSES, naming it: `project-config.mjs` refuses a duplicate within one declaration, and this is the
+ * same rule across the host (ADR 0040, decision 2: the key is "unique across the host"), which no single declaration can see.
+ * @param {readonly { tracker: readonly { key: string, repo: string }[], code: readonly { key: string, repo: string }[] }[]} declarations
+ * @returns {Scope[]}
+ */
+export function scopesOf(declarations) {
+  /** @type {Map<string, Scope>} */
+  const byKey = new Map();
+  /** @param {string} key @param {"code" | "tracker"} part @param {string} repo */
+  const declare = (key, part, repo) => {
+    const scope = byKey.get(key) ?? { key, code: null, tracker: null };
+    if (scope[part] !== null) throw new Error(`key ${key === "" ? "(empty)" : `\`${key}\``} declares a ${part} repository twice (${scope[part].repo} and ${repo}); a key is unique across the host`);
+    scope[part] = { repo };
+    byKey.set(key, scope);
+  };
+  for (const declaration of declarations) {
+    for (const entry of declaration.tracker) declare(entry.key, "tracker", entry.repo);
+    for (const entry of declaration.code) declare(entry.key, "code", entry.repo);
+  }
+  return [...byKey.values()].sort((a, b) => Number(b.key === "") - Number(a.key === "") || a.key.localeCompare(b.key));
+}
+
+/**
+ * The repository a scope's read is AIMED at, or `undefined` for the primary project's own: its reads are made exactly as
+ * they were before a second repository existed, with nothing added to the call.
+ * @param {Scope} scope @param {ScopeRepository | null} part @returns {string | undefined}
+ */
+const aimOf = (scope, part) => (scope.key === "" || part === null ? undefined : part.repo);
+
+/**
+ * A list a reader returned, its members marked with the repository they came from -- and `null` (a refusal) left as `null`.
+ * The primary project's members are returned UNTOUCHED, so its records stay byte-identical to what they were.
+ * @param {any[] | null} list @param {string} key @param {string | undefined} repo @returns {any[] | null}
+ */
+function tagged(list, key, repo) {
+  return list === null || key === "" ? list : list.map((item) => ({ ...item, repoKey: key, repo }));
+}
+
+/**
+ * THE ENUMERATION: what one scope's two lanes answered. `readPrs` and `readOpenRows` (and the Ready, backlog and chairman
+ * reads beside them) were the reads that assumed one repository; here each is asked of the scope's own, through `run`, which
+ * is handed the repository as a second argument. EACH LANE IS `null` WHEN ITS READ WAS REFUSED and `[]` when the scope has no
+ * such repository, so "could not ask" and "nothing there" never share a value (#1286), and a refusal in one scope
+ * is visible beside another scope's answer instead of taking it down.
+ * @param {Scope} scope @param {(args: string[], repo?: string) => string} [run]
+ */
+export function readLanes(scope, run = defaultRun) {
+  const codeRepo = aimOf(scope, scope.code);
+  const trackerRepo = aimOf(scope, scope.tracker);
+  /** @param {string | undefined} repo @returns {(args: string[]) => string} */
+  const aimed = (repo) => (args) => run(args, repo);
+  /** @param {ScopeRepository | null} part @param {(run: (args: string[]) => string) => any[] | null} read */
+  const lane = (part, read) => (part === null ? [] : tagged(read(aimed(aimOf(scope, part))), scope.key, aimOf(scope, part)));
+  return {
+    prs: lane(scope.code, (aim) => readPrs(aim)),
+    readyRows: lane(scope.tracker, (aim) => readReadyRows(aim)),
+    promotableRows: lane(scope.tracker, (aim) => readPromotableRows(aim)),
+    chairmanBlocked: lane(scope.tracker, (aim) => readChairmanBlocked(aim)),
+    openRows: lane(scope.tracker, (aim) => readOpenRows(aim)),
+    codeRepo, trackerRepo,
+  };
+}
+
+/**
+ * The words that tell an agent WHICH repository a keyed order is about, appended to its prompt. A prompt names `gh` commands with
+ * a bare number (`gh issue edit 7 ...`), and the session that runs one in the primary's checkout would edit the PRIMARY's row 7.
+ * @param {Scope} scope
+ */
+function repositoryNote(scope) {
+  const repos = [scope.code && `code \`${scope.code.repo}\``, scope.tracker && `rows \`${scope.tracker.repo}\``].filter(Boolean).join(", ");
+  return `\n\nREPOSITORY \`${scope.key}\` (${repos}). A number in this order belongs to THAT repository, not the primary's: put `
+    + "`--repo <owner/name>` on every `gh` command that names one, and read its name as `<key>#<n>`.";
+}
+
+/**
+ * The orders and readings of ONE NON-PRIMARY SCOPE, made from its own lanes. The primary project's tick is `main`'s own, and
+ * stays where it is, so one declared project makes the calls it made before and the orders it made before.
+ *
+ * WHAT IT DOES NOT ASK, and why (each is the primary project's, or a later row's): the local git reads (`rowBranches`, claim
+ * stalls) look at THIS checkout and its worktrees; `hostDrift`, `trunkRed`, the disk and the reviewer's credentials are
+ * facts about the host or about the primary's `main`; and Project-1 membership names a board, which 3d and 3f make a
+ * declaration's. Each is passed as `undefined`, which `decide` reads as "not asked", so nothing here invents a reading.
+ * @param {Scope} scope @param {boolean} drain
+ * @param {ReturnType<typeof readLanes>} [read] the lanes, when the caller has already asked
+ * @param {{ code: typeof codeReadings, tracker: typeof trackerReadings }} [readings] the per-tick reads beyond the lanes; a test hands stubs, so no `gh` is spawned
+ * @returns {{ orders: any[], blocked: any[], refused: string[] }}
+ */
+export function scopeTick(scope, drain, read = readLanes(scope), readings = { code: codeReadings, tracker: trackerReadings }) {
+  const { prs, readyRows, promotableRows, chairmanBlocked, openRows } = read;
+  const refused = [
+    ...(prs === null ? [`the pull-request list of ${scope.code?.repo}`] : []),
+    ...(readyRows === null ? [`the Ready rows of ${scope.tracker?.repo}`] : []),
+  ];
+  const openPrs = prs ?? [];
+  const rows = readyRows ?? [];
+  const allOpen = openRows ?? [];
+  const code = inRepo(read.codeRepo, () => readings.code(openPrs));
+  const tracker = inRepo(read.trackerRepo, () => readings.tracker({ rows, allOpen }));
+  const prFiles = comparablePrFiles(openPrs);
+  const orders = decide({ prs: code.prs, readyRows: rows, promotableRows: promotableRows ?? [],
+    chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required: code.required, baseTip: code.baseTip,
+    epics: tracker.epics, answerOwed: rowsOwingAnswers({ openRows: allOpen, openPrs, closedRows: tracker.closedRows }),
+    openRows: allOpen, claimedComments: tracker.claimedComments, unarmed: code.unarmed, closings: tracker.closings,
+    key: scope.key, repo: scope.code?.repo ?? scope.tracker?.repo });
+  return { orders: orders.map((order) => ({ ...order, prompt: `${order.prompt}${repositoryNote(scope)}` })),
+    blocked: partitionUnclaimed(rows, prFiles, { rowBranches: null, openRows: allOpen }).blocked, refused };
+}
+
+/**
+ * The reads about a scope's PULL REQUESTS that are made per tick beyond the list itself. Run inside `inRepo` for the code repository.
+ * @param {any[]} openPrs
+ */
+function codeReadings(openPrs) {
+  const required = requiredWhenRed(openPrs);
+  return { prs: withEvidenceLabelAges(withCommitChains(openPrs)), required, baseTip: baseTipWhenRed(openPrs),
+    unarmed: readUnarmed(shouldBeMerging(openPrs, required)) };
+}
+
+/**
+ * The reads about a scope's ROWS that are made per tick beyond the lists themselves. Run inside `inRepo` for the tracker repository.
+ * @param {{ rows: any[], allOpen: any[] }} lists
+ */
+function trackerReadings({ rows, allOpen }) {
+  return { claimedComments: claimedRowCommentsWhenHeld(allOpen) ?? [], epics: epicsWhenShelfEmpty(rows),
+    closedRows: closedAnswerRows(), closings: closingsWhenRowsCleared(allOpen) };
+}
+
+/**
+ * Every NON-PRIMARY scope the declaration lists, ticked. Empty for one project, which is what keeps one project's orders
+ * identical to what they were.
+ * @param {boolean} drain
+ */
+function otherScopeTicks(drain) {
+  return scopesOf([homeProjectDeclaration()]).filter((scope) => scope.key !== "").map((scope) => scopeTick(scope, drain));
+}
+
+/**
+ * Every lane this tick could not read, named -- the primary's own two and each other scope's. A refusal in one repository is
+ * REPORTED beside the orders the others produced and never drops them (#2618).
+ * @param {{ prs: any[] | null, readyRows: any[] | null, others: { refused: string[] }[] }} reads
+ * @returns {string[]}
+ */
+export function unreadLanes({ prs, readyRows, others }) {
+  return [...(prs === null ? ["the pull-request list"] : []), ...(readyRows === null ? ["the Ready rows"] : []),
+    ...others.flatMap((tick) => tick.refused)];
+}
+
+/**
+ * SAY WHICH LANES WENT UNREAD AND END THE TICK `PARTIAL` -- the orders already printed stay real, and none is dropped.
+ * @param {string[]} unread @param {number} delivered @returns {never}
+ */
+function exitPartial(unread, delivered) {
+  process.stderr.write(`PARTIAL: could not read ${unread.join(" and ")}. `
+    + `The ${delivered} order(s) above are real; ${unread.length === 1 ? "that lane was" : "those lanes were"} NOT examined and may hold work.\n`);
+  process.exit(EXIT.PARTIAL);
+}
+
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/work-gate.mjs" });
   // READ BEFORE ANY GITHUB CALL (#2163), because it is the one reading a `CANNOT_ASK` exit must not hide: a tick
@@ -4883,7 +5089,8 @@ function main() {
     trunkRed: readTrunkRed(),
     // #2075: ONE GRAPHQL CALL, READ PER ISSUE. `null` (refused) emits nothing and is said on stderr below.
     offBoard });
-  const { delivered: orders, performed } = performActions(decided);
+  const others = otherScopeTicks(drain); // #2618: the OTHER declared repositories -- none for one project, whose orders are what they were
+  const { delivered: orders, performed } = performActions([...decided, ...others.flatMap((tick) => tick.orders)]);
   orders.push(...reviewerAuthTick({ orders }));
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so
   // on a full disk the tick can end partway. The order that says the disk is full must not be the one behind it.
@@ -4895,13 +5102,10 @@ function main() {
   // (#2027) are the same fact -- work the gate can see and is deliberately not offering -- and a row that
   // leaves a set silently is the defect both filters exist to fix.
   reportWithheld({ drain, blocked: [...partitionUnclaimed(rows, prFiles, { rowBranches, openRows: allOpen }).blocked,
-    ...partitionFleetBatch(allOpen).waiting] });
+    ...partitionFleetBatch(allOpen).waiting, ...others.flatMap((tick) => tick.blocked)] });
 
-  if (prs === null || readyRows === null) {
-    process.stderr.write(`PARTIAL: could not read ${prs === null ? "the pull-request list" : "the Ready rows"}. `
-      + `The ${orders.length} order(s) above are real; that lane was NOT examined and may hold work.\n`);
-    process.exit(EXIT.PARTIAL);
-  }
+  const unread = unreadLanes({ prs, readyRows, others });
+  if (unread.length > 0) exitPartial(unread, orders.length);
   // PERFORMED COUNTS AS WORK. A tick that marked a draft ready did something, and exiting QUIET would
   // report it as an idle org to every reader of this exit code.
   process.exit(orders.length > 0 || performed > 0 ? EXIT.WORK : EXIT.QUIET);
