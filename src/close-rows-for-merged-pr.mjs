@@ -86,7 +86,7 @@ import { pathToFileURL } from "node:url";
 // nothing else -- no `npm ci`, no build -- so the package specifier would resolve to a `dist/` that does
 // not exist there. #330 and #331 are what that circular bootstrap costs. `cli-flags.mjs` imports only
 // `node:path`, `node:fs` and `node:url`.
-import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 // #804: A LEAF IMPORT, safe under the identical no-`npm ci`/no-build constraint the rest of this header
 // names -- `claim-labels.mjs` imports nothing at all, so it cannot be part of a cycle. This replaced two
 // rounds of "duplicate the constant locally instead" (#754 for CLAIM_LABEL/STARTED_LABEL, #782 for
@@ -105,7 +105,7 @@ import { answersOwedBy, ANSWER_PREFIX } from "./waiting-condition.mjs";
 // covered too. IMPORT-SAFE under this header's no-`npm ci`/no-build constraint: `leak-patterns.mjs`
 // imports nothing at all, so it cannot be part of a cycle -- the identical argument `claim-labels.mjs`
 // carries above.
-import { assertNoLeakInArgv } from "../../lab/src/packaging/leak-patterns.mjs";
+import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
 
 export const EXIT = { DONE: 0, COULD_NOT_CLOSE: 1, CANNOT_ASK: 2, STATUS_NOT_MOVED: 3 };
 

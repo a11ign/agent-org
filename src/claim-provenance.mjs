@@ -28,8 +28,8 @@
 // synthetic one, because a row claimed by hand (#673's shape: `gh issue edit --add-label` with no
 // `session:` label at all) leaves no event to find.
 import { execFileSync } from "node:child_process";
-import { REPO } from "../../../scripts/repo-identity.mjs";
-import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
+import { REPO } from "./project-identity.mjs";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
 
 // `maxBuffer` is RAISED because the projected event log is a few hundred KB today and grows with the
 // repository; the default 1 MB is a cliff that would turn a complete read into a thrown ENOBUFS on some

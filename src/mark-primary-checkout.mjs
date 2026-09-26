@@ -20,12 +20,12 @@
 import { execFileSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "@a11ign/worker-fleet/cli-flags";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 // GIT_* SCRUBBED, and it is load-bearing rather than ceremony HERE of all places. An inherited `GIT_DIR`
 // -- exported by any hook that invoked us -- would point these `git config --local` calls at whatever
 // repository that variable names, so a command whose entire job is "mark THIS checkout" would read, or
 // SET, the mark on another one. That is the 2026-09-06 GIT_DIR leak aimed at the guard for it.
-import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
 
 const KEY = "a11y.primaryCheckout";
 

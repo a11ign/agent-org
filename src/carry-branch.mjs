@@ -51,14 +51,14 @@ import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
-import { REPO } from "../../../scripts/repo-identity.mjs";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { REPO } from "./project-identity.mjs";
 import { parseWorktreeList } from "./prune-worktrees.mjs";
 import { stampWorktree } from "./worktree-owner.mjs";
 // RELATIVE, not the `@a11ign/worker-fleet/cli-flags` package specifier -- see `row-claim.mjs`'s own
 // header for why: this needs `node_modules` and a completed build, and this file has neither guarantee.
-import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
-import { assertNoLeakInArgv } from "../../lab/src/packaging/leak-patterns.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
 
 /** @type {(cmd: string, args: string[], opts?: { cwd?: string }) => string} */
 const defaultRun = (cmd, args, opts = {}) => {
