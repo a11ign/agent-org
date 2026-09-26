@@ -32,7 +32,7 @@
 // adopting a different install strategy -- and `hostUnitsInstall` below re-copies, so the remedy is one
 // command either way.
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, copyFileSync, mkdirSync, rmSync, existsSync, realpathSync, writeFileSync,
+import { readdirSync, readFileSync, mkdirSync, rmSync, existsSync, realpathSync, writeFileSync,
   renameSync, chmodSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -40,34 +40,171 @@ import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { localImports, stripComments } from "./lib/local-import-closure.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { SPAWNS_GH } from "./acceptance-commands.mjs";
+import { TEMPLATE_SUFFIX, homeHostConfig, leadsWorkspacesText, readUnitsDeclaration, renderTemplate, renderedName,
+  templateValues } from "./host-config.mjs";
 
-/** Where the repository keeps the units it ships. */
+/**
+ * Where the TOOL keeps the units and scripts it ships: three unit templates (each a service and a timer), the board-report
+ * dispatcher and the `gh` routing wrapper (#2620, child 3f of #69).
+ */
 export const SHIPPED_DIR = fileURLToPath(new URL("../host/", import.meta.url));
 
 /** The checkout every shipped unit names as its `WorkingDirectory`, so an `ExecStart` path resolves. */
 export const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 
+/**
+ * Where the PROJECT keeps the units that are its own -- a11ign's corpus and fleet clocks -- read beside the tool's, so `host:check`
+ * and `host:install` see one set (#2620; ADR 0040, decision 9). They are plain files, named by the project and copied verbatim.
+ */
+export const PROJECT_UNITS_DIR = join(REPO_ROOT, ".agent-org/units");
+
+// --- #2620: THE PARTITION OF WHAT THE HOST DIRECTORY HELD, recorded once, WHERE THIS FILE READS IT ------------------------------------
+//
+// SEVENTEEN entries were in `packages/agent-org/host/` before this row, and every one is now classified as exactly one of three
+// things, so an eighteenth that is none of them is REFUSED (`unclassifiedEntries`) and not adopted by whichever glob it happens to
+// match:
+//   the TOOL's     eight files that stay in `host/`: the three unit templates (service + timer), the dispatcher, the `gh` wrapper;
+//   the PROJECT's  eight that moved to `.agent-org/units/` -- the project's declaration (`units.own`) names them, because the tool
+//                  cannot name a11ign's units in its own source without being a11ign's tool;
+//   HOST DATA      one, `gh-leads-workspaces.txt`, which is now `host.json`'s `gh.leadsWorkspaces` and is rendered, not shipped.
+
+/** The tool's own entries in `SHIPPED_DIR`. A template is named without its prefix; the project supplies that. */
+export const TOOL_ENTRIES = Object.freeze([
+  "board-report-dispatch.sh", "board-report.service.in", "board-report.timer.in", "gh",
+  "work-tick.service.in", "work-tick.timer.in", "worktree-prune.service.in", "worktree-prune.timer.in",
+]);
+
+/** The host-data entry that is no longer a file, and where its content lives now. */
+export const HOST_DATA_ENTRIES = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({ "gh-leads-workspaces.txt": "gh.leadsWorkspaces" }));
+
 /** Where a systemd USER unit has to live to be run. */
 export const INSTALLED_DIR = `${process.env.HOME ?? ""}/.config/systemd/user`;
 
+/** @typedef {import("./host-config.mjs").HostConfig} HostConfig @typedef {import("./host-config.mjs").UnitsDeclaration} UnitsDeclaration */
+
 /**
- * The unit files this repository ships, sorted so a report reads the same way twice.
- * @param {string} [dir] @param {{ read?: typeof readdirSync }} [deps]
+ * @typedef {{ shippedDir?: string, projectUnitsDir?: string | null, readDir?: typeof readdirSync, read?: typeof readFileSync,
+ *   host?: HostConfig, units?: UnitsDeclaration }} ShippedDeps
+ * `projectUnitsDir` is the project's own units: the real one when `shippedDir` is left to default, and NONE when a test hands its own
+ * `shippedDir`, so a fixture directory is never silently joined by a11ign's eight units. `host` and `units` stand in for the two
+ * declarations a template is rendered from.
+ */
+
+/**
+ * The unit files this repository ships, sorted so a report reads the same way twice: the tool's (templates listed under the name
+ * they install as) and, when there is one, the project's.
+ * @param {string} [dir] @param {{ read?: typeof readdirSync, projectUnitsDir?: string | null, prefix?: string }} [deps]
  * @returns {string[]}
  */
-export function shippedUnits(dir = SHIPPED_DIR, { read = readdirSync } = {}) {
+export function shippedUnits(dir = SHIPPED_DIR, { read = readdirSync, projectUnitsDir, prefix } = {}) {
+  const projectDir = projectUnitsDir !== undefined ? projectUnitsDir : dir === SHIPPED_DIR ? PROJECT_UNITS_DIR : null;
+  const own = namesIn(dir, read).flatMap((name) => {
+    if (!name.endsWith(TEMPLATE_SUFFIX)) return isUnit(name) ? [name] : [];
+    const rendered = renderedName(name, prefix ?? readUnitsDeclaration().prefix);
+    return isUnit(rendered) ? [rendered] : [];
+  });
+  const theirs = projectDir === null ? [] : namesIn(projectDir, read).filter(isUnit);
+  return [...new Set([...own, ...theirs])].sort();
+}
+
+/** @param {string} name */
+const isUnit = (name) => name.endsWith(".service") || name.endsWith(".timer");
+
+/** @param {string} dir @param {typeof readdirSync} read @returns {string[]} */
+function namesIn(dir, read) {
   try {
-    return read(dir)
-      .map(String)
-      .filter((n) => n.endsWith(".service") || n.endsWith(".timer"))
-      .sort();
+    return read(dir).map(String);
   } catch {
     return [];
   }
 }
 
-/** Where the board dispatch was hand-placed before this repository shipped it. NOT an install target. */
-export const SCRIPT_INSTALL_DIR = `${process.env.HOME ?? ""}/.local/bin`;
+/**
+ * @param {ShippedDeps} deps
+ * @returns {{ toolDir: string, projectDir: string | null, read: typeof readFileSync, values: () => Record<string, string>, host: () => HostConfig }}
+ */
+function shippedContext({ shippedDir, projectUnitsDir, read = readFileSync, host, units } = {}) {
+  /** @type {Record<string, string> | undefined} */
+  let values;
+  const toolDir = shippedDir ?? SHIPPED_DIR;
+  return {
+    toolDir,
+    projectDir: projectUnitsDir !== undefined ? projectUnitsDir : toolDir === SHIPPED_DIR ? PROJECT_UNITS_DIR : null,
+    read,
+    host: () => host ?? homeHostConfig(),
+    values: () => (values ??= templateValues(host ?? homeHostConfig(), units ?? readUnitsDeclaration())),
+  };
+}
+
+/**
+ * The shipped unit names, for a caller holding the whole `deps` bag its own function takes.
+ * @param {ShippedDeps} [deps]
+ */
+function shippedUnitNames({ shippedDir = SHIPPED_DIR, readDir = readdirSync, projectUnitsDir, units } = {}) {
+  return shippedUnits(shippedDir, { read: readDir, projectUnitsDir, prefix: units?.prefix });
+}
+
+/** The unit-name prefix of the project this tool serves: the project's own declaration says it. @param {ShippedDeps} [deps] */
+function unitPrefix({ units } = {}) {
+  return (units ?? readUnitsDeclaration()).prefix;
+}
+
+/** Where the workers account lives, from the host's declaration. @param {ShippedDeps} [deps] */
+function workersDirectory({ host } = {}) {
+  return (host ?? homeHostConfig()).gh.workers;
+}
+
+/** Where the leads account, its config and its workspace list live. @param {ShippedDeps} [deps] */
+function leadsDirectory({ host } = {}) {
+  return (host ?? homeHostConfig()).gh.leads;
+}
+
+/**
+ * ONE UNIT'S TEXT AS IT WOULD BE INSTALLED, or null when nothing ships under that name. The tool's own file first (a plain unit, else
+ * the template it renders from), then the project's -- so a fixture directory of plain units behaves as it always did and the real
+ * three come out RENDERED. NULL AND NOT "" when it is absent: two unreadable files would otherwise compare equal (`textOf`).
+ * A template that will not render THROWS; it is a defect in the declaration, and reading it as "absent" would report a shipped unit
+ * as never having existed.
+ * @param {string} unit @param {ShippedDeps} [deps] @returns {string | null}
+ */
+export function shippedUnitText(unit, deps = {}) {
+  const { toolDir, projectDir, read, values } = shippedContext(deps);
+  const plain = textOf(join(toolDir, unit), read);
+  if (plain !== null) return plain;
+  const prefix = values().prefix;
+  const template = unit.startsWith(prefix) ? textOf(join(toolDir, `${unit.slice(prefix.length)}${TEMPLATE_SUFFIX}`), read) : null;
+  if (template !== null) return renderTemplate(template, values(), unit);
+  return projectDir === null ? null : textOf(join(projectDir, unit), read);
+}
+
+/**
+ * A script the tool ships beside its units, as it would be installed. The routing wrapper `gh` is a template UNDER ITS OWN NAME -- the
+ * row's Region names `host/gh`, and it is installed as `gh` -- so every script is rendered, and one with no placeholder comes out as it
+ * went in.
+ * @param {string} name @param {ShippedDeps} [deps] @returns {string | null}
+ */
+export function shippedScriptText(name, deps = {}) {
+  const { toolDir, read, values } = shippedContext(deps);
+  const text = textOf(join(toolDir, name), read);
+  return text === null ? null : renderTemplate(text, values(), name);
+}
+
+/**
+ * The rendered text of the leads list `~/leads/workspaces.txt` -- from `host.json`, since the file it used to be shipped as is host data.
+ * @param {ShippedDeps} [deps]
+ */
+export function leadsListText(deps = {}) {
+  return leadsWorkspacesText(shippedContext(deps).host());
+}
+
+/**
+ * Where the host keeps its programs on PATH -- `host.json`'s `binDir`. The routing wrapper installs here, and the board dispatch was
+ * hand-placed here before this repository shipped it (NOT an install target for the dispatch).
+ * @param {ShippedDeps} [deps]
+ */
+function binDirectory({ host } = {}) {
+  return (host ?? homeHostConfig()).binDir;
+}
 
 /**
  * The programs this repository ships beside its units, sorted.
@@ -96,7 +233,7 @@ export function shippedHostScripts(dir = SHIPPED_DIR, { read = readdirSync } = {
 // The gate then refused correctly and silently ("CANNOT ASK: neither the pull-request list nor the Ready
 // rows could be read"), which from inside the org is indistinguishable from a quiet queue.
 //
-// IDENTITY HERE IS INHERITED FROM A DOTFILE AND NEVER DECLARED. `/home/agent/.local/bin/gh` routes by
+// IDENTITY HERE IS INHERITED FROM A DOTFILE AND NEVER DECLARED. `~/.local/bin/gh` routes by
 // `HERDR_WORKSPACE_ID` -- present in every org session, absent from every systemd unit -- and falls back
 // to `~/.config/gh`, the human account. So a unit that does not SAY which account it is cannot get the
 // right one, and nothing in this repository could see the choice being made.
@@ -313,7 +450,7 @@ const SHELLS = new Set(["bash", "sh", "dash"]);
 /**
  * AN `Exec*=` COMMAND THIS REPOSITORY CANNOT READ -- and NOT ASKED must not report as CLEAN (#1993).
  *
- * MEASURED 2026-09-22. `a11ign-board-report.service` starts `/home/agent/.local/bin/board-report-dispatch.sh`,
+ * MEASURED 2026-09-22. `a11ign-board-report.service` starts `~/.local/bin/board-report-dispatch.sh`,
  * a host script this tree does not ship. `unitEntryPoints` follows `node <file>` and `npm run <script>`
  * and nothing else, so for this unit it returned the empty list -- and an empty list of entry points
  * reached no `gh` spawn, which `unitsSpendingGh` scored exactly as it scores a unit that genuinely
@@ -446,7 +583,7 @@ export function ghSpawnReachedFrom(entry, { read = readFileSync, exists = exists
  * The population, exported separately from the finding, because an emptiness assertion over it passes
  * when a glob matches nothing -- so the test asserts this is non-empty and `identityDrift` is empty, and
  * a `shippedDir` typo can no longer read as compliance.
- * @param {{ shippedDir?: string, readDir?: typeof readdirSync, read?: typeof readFileSync,
+ * @param {ShippedDeps & { shippedDir?: string, readDir?: typeof readdirSync, read?: typeof readFileSync,
  *           exists?: typeof existsSync, imports?: typeof localImports, repoRoot?: string,
  *           scripts?: Record<string, string> }} [deps]
  * TWO WAYS IN, and the second is #1993's: `opaque` says whether the `gh` spawn was READ or merely
@@ -454,12 +591,12 @@ export function ghSpawnReachedFrom(entry, { read = readFileSync, exists = exists
  * the second footing, which is the only reading that does not score "we did not look" as "it is fine".
  * @returns {{unit: string, via: string, opaque: boolean, declared: boolean}[]}
  */
-export function unitsSpendingGh({ shippedDir = SHIPPED_DIR, readDir = readdirSync,
-  read = readFileSync, ...rest } = {}) {
-  return shippedUnits(shippedDir, { read: readDir })
+export function unitsSpendingGh(deps = {}) {
+  const { read = readFileSync, ...rest } = deps;
+  return shippedUnitNames(deps)
     .filter((unit) => unit.endsWith(".service"))
     .flatMap((unit) => {
-      const text = String(read(join(shippedDir, unit)));
+      const text = String(shippedUnitText(unit, deps));
       const declared = identityDeclarations(text).length > 0;
       const reached = unitEntryPoints(text, rest)
         .map((entry) => ghSpawnReachedFrom(entry, { read, ...rest }))
@@ -475,9 +612,13 @@ export function unitsSpendingGh({ shippedDir = SHIPPED_DIR, readDir = readdirSyn
 /**
  * The person's own `gh` config, however a unit spells the home directory -- or an EMPTY value, which
  * declares nothing (`GH_CONFIG_DIR=` reads as unset to the wrapper, so it routes as a shell with no
- * workspace id: the person).
+ * workspace id: the person). The home is the HOST's (`host.json`), never a literal.
+ * @param {string} home
  */
-const HUMAN_CONFIG_DIR = /^(?:|(?:\/home\/agent|%h|\$HOME|~)\/\.config\/gh\/?)$/;
+function humanConfigDir(home) {
+  const escaped = home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^(?:|(?:${escaped}|%h|\\$HOME|~)/\\.config/gh/?)$`);
+}
 
 /**
  * UNITS THAT MAY ACT AS THE HUMAN ACCOUNT, each with the reason. EMPTY, and that is the point (chairman,
@@ -520,8 +661,8 @@ function undeclaredIdentity(deps) {
         + " and carries no `Environment=GH_CONFIG_DIR=...` line. A systemd unit has no "
         + "`HERDR_WORKSPACE_ID`, so the `gh` wrapper falls back to `~/.config/gh` -- a person's "
         + "account -- and the unit spends a human's rate limit until it runs out, then refuses "
-        + "silently (#1974). Add `Environment=GH_CONFIG_DIR=/home/agent/workers/gh` to the unit, or "
-        + "`/home/agent/leads/gh` where the job needs the write access the workers account lacks "
+        + `silently (#1974). Add \`Environment=GH_CONFIG_DIR=${workersDirectory(deps)}/gh\` to the unit, or `
+        + `\`${leadsDirectory(deps)}/gh\` where the job needs the write access the workers account lacks `
         + "(the corpus backup's own comment is the worked example)." }));
 }
 
@@ -532,17 +673,18 @@ function undeclaredIdentity(deps) {
  * @param {Parameters<typeof unitsSpendingGh>[0] & { humanAllowed?: Record<string, string> }} deps
  * @returns {Finding[]}
  */
-function humanAccountDeclared({ shippedDir = SHIPPED_DIR, readDir = readdirSync, read = readFileSync,
-  humanAllowed = HUMAN_ACCOUNT_ALLOWED } = {}) {
-  return shippedUnits(shippedDir, { read: readDir })
+function humanAccountDeclared(deps = {}) {
+  const { humanAllowed = HUMAN_ACCOUNT_ALLOWED } = deps;
+  const humanConfig = humanConfigDir((deps.host ?? homeHostConfig()).home);
+  return shippedUnitNames(deps)
     .filter((unit) => unit.endsWith(".service") && !Object.hasOwn(humanAllowed, unit))
     .flatMap((unit) => {
-      const dir = declaredConfigDir(String(read(join(shippedDir, unit))));
-      if (dir === null || !HUMAN_CONFIG_DIR.test(dir)) return [];
+      const dir = declaredConfigDir(String(shippedUnitText(unit, deps)));
+      if (dir === null || !humanConfig.test(dir)) return [];
       return [{ unit, problem: "DECLARES THE HUMAN ACCOUNT",
         detail: `it sets \`GH_CONFIG_DIR=${dir}\`, the person's own login (which has ADMIN). No agent acts as `
-          + "the chairman unless something explicitly asks (#1950): use `/home/agent/workers/gh` "
-          + "(a11ign-ai-workers) or `/home/agent/leads/gh` (a11ign-ai-leads, write on a11ign/a11ign and "
+          + `the chairman unless something explicitly asks (#1950): use \`${workersDirectory(deps)}/gh\` `
+          + `(a11ign-ai-workers) or \`${leadsDirectory(deps)}/gh\` (a11ign-ai-leads, write on a11ign/a11ign and `
           + "a11ign/corpus-backups), or add the unit to HUMAN_ACCOUNT_ALLOWED in host-units.mjs with the "
           + "ruling that says why." }];
     });
@@ -573,14 +715,14 @@ export function declaredCompileCache(unitText) {
 /**
  * EVERY SHIPPED `.service` whose compile cache is not under a home's `.cache`, the unit that says nothing
  * included: it gets the default, which is the system temp directory.
- * @param {{ shippedDir?: string, readDir?: typeof readdirSync, read?: typeof readFileSync }} [deps]
+ * @param {ShippedDeps & { shippedDir?: string, readDir?: typeof readdirSync, read?: typeof readFileSync }} [deps]
  * @returns {Finding[]}
  */
-export function compileCacheDrift({ shippedDir = SHIPPED_DIR, readDir = readdirSync, read = readFileSync } = {}) {
-  return shippedUnits(shippedDir, { read: readDir })
+export function compileCacheDrift(deps = {}) {
+  return shippedUnitNames(deps)
     .filter((unit) => unit.endsWith(".service"))
     .flatMap((unit) => {
-      const directory = declaredCompileCache(String(read(join(shippedDir, unit))));
+      const directory = declaredCompileCache(String(shippedUnitText(unit, deps)));
       if (directory !== null && HOME_CACHE_DIRECTORY.test(directory)) return [];
       return [{ unit, problem: "COMPILE CACHE NOT UNDER THE HOME'S .cache",
         detail: directory === null
@@ -612,17 +754,17 @@ export function compileCacheDrift({ shippedDir = SHIPPED_DIR, readDir = readdirS
  * said `inactive`, and a single "is it on?" flag would have had to pick one and would have picked wrong.
  *
  * @param {string} unit
- * @param {{ shippedDir?: string, installedDir?: string,
+ * @param {ShippedDeps & { shippedDir?: string, installedDir?: string,
  *           read?: typeof readFileSync, exists?: typeof existsSync,
  *           systemctl?: (args: string[]) => string }} [deps]
  * @returns {{ unit: string, present: boolean, current: boolean | null, identityRevert: string[],
  *             enabled: string | null, active: string | null }}
  */
-export function unitState(unit, { shippedDir = SHIPPED_DIR, installedDir = INSTALLED_DIR,
-  read = readFileSync, exists = existsSync, systemctl = defaultSystemctl } = {}) {
+export function unitState(unit, deps = {}) {
+  const { installedDir = INSTALLED_DIR, read = readFileSync, exists = existsSync, systemctl = defaultSystemctl } = deps;
   const installedPath = join(installedDir, unit);
   const present = exists(installedPath);
-  const shippedText = textOf(join(shippedDir, unit), read);
+  const shippedText = shippedUnitText(unit, deps);
   const installedText = present ? textOf(installedPath, read) : null;
   // NULL, NOT FALSE, when it is not installed. "the copy differs" and "there is no copy" are different
   // findings with different remedies, and collapsing them would report the missing unit twice.
@@ -797,13 +939,13 @@ export function systemdUserAvailable(systemctl = defaultSystemctl) {
  * daily board dispatch, firing at 07:10 every morning. The remedy it named deletes them, and nothing
  * would have reported the loss except an edition that never arrived. `git log --diff-filter=D` is what
  * separates the two, so the report says which it found rather than assuming the safe-looking one.
- * @param {{ shippedDir?: string, installedDir?: string, readDir?: typeof readdirSync,
+ * @param {ShippedDeps & { shippedDir?: string, installedDir?: string, readDir?: typeof readdirSync,
  *           git?: (args: string[]) => string }} [deps]
  * @returns {Finding[]}
  */
-export function orphanedUnits({ shippedDir = SHIPPED_DIR, installedDir = INSTALLED_DIR,
-  readDir = readdirSync, git = defaultGit } = {}) {
-  const shipped = new Set(shippedUnits(shippedDir, { read: readDir }));
+export function orphanedUnits(deps = {}) {
+  const { shippedDir = SHIPPED_DIR, installedDir = INSTALLED_DIR, readDir = readdirSync, git = defaultGit } = deps;
+  const shipped = new Set(shippedUnitNames(deps));
   /** @type {string[]} */
   let installed;
   try {
@@ -814,7 +956,7 @@ export function orphanedUnits({ shippedDir = SHIPPED_DIR, installedDir = INSTALL
     return [];
   }
   return installed
-    .filter((n) => n.startsWith(ORG_UNIT_PREFIX))
+    .filter((n) => n.startsWith(unitPrefix(deps)))
     .filter((n) => n.endsWith(".service") || n.endsWith(".timer"))
     .filter((n) => !shipped.has(n))
     .sort()
@@ -843,12 +985,13 @@ export function orphanedUnits({ shippedDir = SHIPPED_DIR, installedDir = INSTALL
  * repository owns `~/.config/systemd/user`'s `a11ign-*`; it owns nothing in `~/.local/bin`, which also
  * holds `gh`, `gh-real` and `herdr`. A remedy that reached in there would be this file's own
  * conservative doctrine pointed the wrong way, so the report says to read it and remove it by hand.
- * @param {{ shippedDir?: string, scriptDir?: string, readDir?: typeof readdirSync,
+ * @param {ShippedDeps & { shippedDir?: string, scriptDir?: string, readDir?: typeof readdirSync,
  *           read?: typeof readFileSync, exists?: typeof existsSync }} [deps]
  * @returns {Finding[]}
  */
-export function supersededHostScripts({ shippedDir = SHIPPED_DIR, scriptDir = SCRIPT_INSTALL_DIR,
-  readDir = readdirSync, read = readFileSync, exists = existsSync } = {}) {
+export function supersededHostScripts(deps = {}) {
+  const { shippedDir = SHIPPED_DIR, scriptDir = binDirectory(deps), readDir = readdirSync, read = readFileSync,
+    exists = existsSync } = deps;
   return shippedHostScripts(shippedDir, { read: readDir })
     .filter((name) => exists(join(scriptDir, name)))
     .map((name) => supersededFinding(name, scriptDir,
@@ -891,12 +1034,6 @@ function supersededFinding(name, scriptDir, same) {
 // `~/.local/bin/gh` the ONE file this repository owns in a directory `supersededFinding` and `uncovered` say
 // it owns nothing in -- `gh-real` and `herdr` stay unowned.
 
-/** Where the workers account and its config live. */
-export const WORKERS_DIR = `${process.env.HOME ?? ""}/workers`;
-
-/** Where the leads account, its config and the list of workspaces that use it live. */
-export const LEADS_DIR = `${process.env.HOME ?? ""}/leads`;
-
 /** `git config --global`'s file: where the credential helper and a person's `user.*` would be set. */
 export const GLOBAL_GITCONFIG = `${process.env.HOME ?? ""}/.gitconfig`;
 
@@ -923,16 +1060,16 @@ Owned by the repository (packages/agent-org/src/host-units.mjs): \`npm run host:
 /**
  * The files this repository owns on the host for the identity policy, each with the text it must hold.
  * `expected` is `null` when the shipped source cannot be read, which is NOT the empty string.
- * @param {{ shippedDir?: string, scriptDir?: string, workersDir?: string, leadsDir?: string,
+ * @param {ShippedDeps & { shippedDir?: string, scriptDir?: string, workersDir?: string, leadsDir?: string,
  *           read?: typeof readFileSync }} [deps]
  * @returns {{ label: string, target: string, mode: number, expected: string | null }[]}
  */
-export function ownedIdentityFiles({ shippedDir = SHIPPED_DIR, scriptDir = SCRIPT_INSTALL_DIR,
-  workersDir = WORKERS_DIR, leadsDir = LEADS_DIR, read = readFileSync } = {}) {
+export function ownedIdentityFiles(deps = {}) {
+  const { scriptDir = binDirectory(deps), workersDir = workersDirectory(deps), leadsDir = leadsDirectory(deps) } = deps;
   return [
-    { label: "gh", target: join(scriptDir, "gh"), mode: 0o755, expected: textOf(join(shippedDir, "gh"), read) },
+    { label: "gh", target: join(scriptDir, "gh"), mode: 0o755, expected: shippedScriptText("gh", deps) },
     { label: "gh-leads-workspaces.txt", target: join(leadsDir, "workspaces.txt"),
-      mode: 0o644, expected: textOf(join(shippedDir, "gh-leads-workspaces.txt"), read) },
+      mode: 0o644, expected: leadsListText(deps) },
     { label: "workers README", target: join(workersDir, "README.md"), mode: 0o644, expected: WORKERS_README },
   ];
 }
@@ -996,11 +1133,11 @@ const wrapperHelper = (/** @type {string} */ scriptDir) => `!${scriptDir}/gh aut
  * a second helper (`cache`, `store`) could answer with a credential the wrapper would never have chosen.
  * READS THE GLOBAL FILE ONLY: a repository's own `.git/config` or `/etc/gitconfig` can still add a helper,
  * and this cannot see them.
- * @param {{ scriptDir?: string, gitConfigPath?: string, gitConfig?: typeof defaultGitConfig }} [deps]
+ * @param {{ scriptDir?: string, gitConfigPath?: string, gitConfig?: typeof defaultGitConfig, host?: HostConfig }} [deps]
  * @returns {Finding[]}
  */
-function credentialHelperDrift({ scriptDir = SCRIPT_INSTALL_DIR, gitConfigPath = GLOBAL_GITCONFIG,
-  gitConfig = defaultGitConfig } = {}) {
+function credentialHelperDrift(deps = {}) {
+  const { scriptDir = binDirectory(deps), gitConfigPath = GLOBAL_GITCONFIG, gitConfig = defaultGitConfig } = deps;
   const values = gitConfig(gitConfigPath, "credential.https://github.com.helper");
   const remedy = `The helper must be exactly \`${wrapperHelper(scriptDir)}\`; \`git config --global --unset-all `
     + `credential.https://github.com.helper\` and then add that one. This is NOT fixed by \`host:install\`, `
@@ -1334,15 +1471,15 @@ const defaultGit = (args) =>
  * again"*) is false too: re-installing REPLACES a stale text, and the repository's copy may name a
  * program that is there. The state is measured here and rendered by `missingProgramFinding`, so no
  * sentence in this file asserts a comparison that was never made.
- * @param {{ shippedDir?: string, installedDir?: string, readDir?: typeof readdirSync,
+ * @param {ShippedDeps & { shippedDir?: string, installedDir?: string, readDir?: typeof readdirSync,
  *           read?: typeof readFileSync, exists?: typeof existsSync }} [deps]
  * @returns {Finding[]}
  */
-export function missingUnitPrograms({ shippedDir = SHIPPED_DIR, installedDir = INSTALLED_DIR,
-  readDir = readdirSync, read = readFileSync, exists = existsSync } = {}) {
-  return installedOrgUnits(installedDir, readDir).flatMap((unit) => {
+export function missingUnitPrograms(deps = {}) {
+  const { installedDir = INSTALLED_DIR, readDir = readdirSync, read = readFileSync, exists = existsSync } = deps;
+  return installedOrgUnits(installedDir, readDir, unitPrefix(deps)).flatMap((unit) => {
     const text = textOf(join(installedDir, unit), read);
-    const installedCopy = installedCopyState(textOf(join(shippedDir, unit), read), text);
+    const installedCopy = installedCopyState(shippedUnitText(unit, deps), text);
     return missingForUnit(unit, text, { installedCopy, read, exists });
   });
 }
@@ -1361,11 +1498,14 @@ function installedCopyState(shippedText, installedText) {
   return shippedText === installedText ? "current" : "stale";
 }
 
-/** @param {string} dir @param {typeof readdirSync} readDir @returns {string[]} */
-function installedOrgUnits(dir, readDir) {
+/**
+ * Units the project's prefix says are ours. The host runs others; those are not ours to have an opinion about.
+ * @param {string} dir @param {typeof readdirSync} readDir @param {string} prefix @returns {string[]}
+ */
+function installedOrgUnits(dir, readDir, prefix) {
   try {
     return /** @type {string[]} */ (readDir(dir))
-      .map(String).filter((n) => n.startsWith(ORG_UNIT_PREFIX));
+      .map(String).filter((n) => n.startsWith(prefix));
   } catch {
     // NOT AN AGENT HOST, or a directory this process cannot read. `hostUnitDrift`'s `systemdUserAvailable`
     // gate has already answered the first; returning [] here keeps the second from being reported as a
@@ -1456,15 +1596,49 @@ export function workingDirectoryOf(unitText) {
   return last === null || last === "" ? null : last;
 }
 
-/** Units this repository owns. The host runs others; those are not ours to have an opinion about. */
-export const ORG_UNIT_PREFIX = "a11ign-";
+/**
+ * #2620: THE EIGHTEENTH ENTRY. Every file in the tool's host directory must be one the tool records (`TOOL_ENTRIES`), and every unit in
+ * the project's directory one its declaration lists (`units.own`); a file that is neither is REFUSED, named, rather than adopted by
+ * whichever glob it happens to match -- `shippedUnits` matches on a suffix, so a stray `.service` would otherwise be installed as the
+ * tool's or the project's on nothing but its extension. `gh-leads-workspaces.txt` is refused too, saying where it went.
+ * @param {ShippedDeps & { units?: UnitsDeclaration }} [deps]
+ * @returns {Finding[]}
+ */
+export function unclassifiedEntries(deps = {}) {
+  const { shippedDir = SHIPPED_DIR, readDir = readdirSync, units } = deps;
+  const { projectDir } = shippedContext(deps);
+  const tool = new Set(TOOL_ENTRIES);
+  const own = new Set((units ?? readUnitsDeclaration()).own);
+  const strays = namesIn(shippedDir, readDir).filter((name) => !tool.has(name)).map((name) => ({
+    unit: name, problem: "UNCLASSIFIED ENTRY",
+    detail: Object.hasOwn(HOST_DATA_ENTRIES, name)
+      ? `${name} is host data now: it is \`${HOST_DATA_ENTRIES[name]}\` in host.json, and is rendered rather than shipped`
+      : `${shippedDir} holds ${name}, which is not one of the tool's ${TOOL_ENTRIES.length} entries. Add it to TOOL_ENTRIES in `
+        + "host-units.mjs if it is the tool's, or move it to the project's `.agent-org/units/` and list it in `units.own`",
+  }));
+  const foreign = projectDir === null ? [] : namesIn(projectDir, readDir).filter((name) => !own.has(name)).map((name) => ({
+    unit: name, problem: "UNCLASSIFIED ENTRY",
+    detail: `${projectDir} holds ${name}, which the project's declaration does not list in \`units.own\`. List it there, or remove it`,
+  }));
+  return [...strays, ...foreign];
+}
+
+/**
+ * The classification, asked of the LIVE trees, or of a fixture whose caller HANDS the project's declaration (`units`): a test's own
+ * directory of stand-in units is not a place `TOOL_ENTRIES` has an opinion about unless it says whose partition to read it against.
+ * @param {ShippedDeps & { units?: UnitsDeclaration }} deps
+ */
+function unclassifiedInLiveTree(deps) {
+  return deps.shippedDir === undefined || deps.units !== undefined ? unclassifiedEntries(deps) : [];
+}
 
 /**
  * Every shipped unit's drift, in one call -- what both the CLI and the gate ask for. An empty list on a
  * machine with no user systemd, which is not the same claim as "this host is correct" and is why
  * `driftReport` says which of the two it is.
  *
- * SEVEN QUESTIONS NOW. Is what we ship installed (`unitDrift`), is what is installed still ours
+ * EIGHT QUESTIONS NOW, THE EIGHTH ASKED FIRST (#2620): is every entry of the two shipped directories classified (`unclassifiedEntries`)?
+ * SEVEN BEFORE IT. Is what we ship installed (`unitDrift`), is what is installed still ours
  * (`orphanedUnits`), is a copy of what we ship still sitting where it used to be hand-placed
  * (`supersededHostScripts`, #1998), DOES THE PROGRAM EACH INSTALLED UNIT NAMES EXIST AT THE DIRECTORY IT
  * RESOLVES AGAINST (`missingUnitPrograms`, #2174), IS THE `gh` IDENTITY POLICY THE REVIEWED ONE
@@ -1480,11 +1654,10 @@ export const ORG_UNIT_PREFIX = "a11ign-";
  */
 export function hostUnitDrift(deps = {}) {
   if (!systemdUserAvailable(deps.systemctl ?? defaultSystemctl)) return [];
-  const dir = deps.shippedDir ?? SHIPPED_DIR;
   // THE SAME GATE COVERS BOTH. A machine with no user systemd is not an agent host, so its `~/.claude`
   // posture is nobody's business either -- and a laptop told "ORG IS IN AUTO MODE" teaches its owner to
   // ignore this command, which would lose the timer finding along with it.
-  return [...unitDrift(shippedUnits(dir, {}).map((u) => unitState(u, deps))),
+  return [...unclassifiedInLiveTree(deps), ...unitDrift(shippedUnitNames(deps).map((u) => unitState(u, deps))),
     ...orphanedUnits(deps), ...supersededHostScripts(deps), ...missingUnitPrograms(deps),
     ...hostIdentityDrift(deps), ...identityDrift(deps), ...permissionModeDrift(deps)];
 }
@@ -1493,6 +1666,29 @@ export function hostUnitDrift(deps = {}) {
 const defaultSystemctl = (args) =>
   execFileSync("systemctl", ["--user", ...args], { encoding: "utf8" });
 
+/** An install REFUSES while an entry is classified nowhere: it would copy whatever a glob matched. @param {Parameters<typeof unclassifiedInLiveTree>[0]} deps */
+function refuseUnclassified(deps) {
+  const refused = unclassifiedInLiveTree(deps);
+  if (refused.length === 0) return;
+  throw new Error(`cannot install: ${refused.map((f) => `${f.unit}: ${f.problem}`).join("; ")} -- ${refused[0].detail}`);
+}
+
+/**
+ * WRITTEN, NOT COPIED (#2620): three of the units are rendered from templates, so there is no file to copy, and one path for every unit
+ * means the installed bytes are always the ones `unitState` compared.
+ * @param {string[]} units
+ * @param {ShippedDeps & { installedDir?: string, write?: typeof writeFileSync, out?: (line: string) => void }} deps
+ */
+function writeShippedUnits(units, deps) {
+  const { installedDir = INSTALLED_DIR, write = writeFileSync, out = (l) => process.stdout.write(l) } = deps;
+  for (const unit of units) {
+    const text = shippedUnitText(unit, deps);
+    if (text === null) throw new Error(`cannot install ${unit}: the shipped copy could not be read`);
+    write(join(installedDir, unit), text);
+    out(`installed ${unit}\n`);
+  }
+}
+
 /**
  * Copy every shipped unit into place and start every timer. IDEMPOTENT -- re-running it on a correct
  * host changes nothing, which is what lets it be the single remedy every message here names.
@@ -1500,30 +1696,28 @@ const defaultSystemctl = (args) =>
  * `enable --now`, NEVER a bare `enable`: the bare form is what left `a11ign-corpus-snapshot.timer`
  * enabled and dead for nine days, and an installer that can reproduce the bug it exists to fix is not
  * an installer.
- * @param {{ shippedDir?: string, installedDir?: string, systemctl?: (args: string[]) => string,
- *           copy?: typeof copyFileSync, mkdir?: typeof mkdirSync, rm?: typeof rmSync,
- *           readDir?: typeof readdirSync, git?: (args: string[]) => string,
- *           out?: (line: string) => void }} [deps]
+ * @param {ShippedDeps & { installedDir?: string, systemctl?: (args: string[]) => string,
+ *           write?: typeof writeFileSync, mkdir?: typeof mkdirSync, rm?: typeof rmSync,
+ *           git?: (args: string[]) => string, out?: (line: string) => void }} [deps]
  * @returns {string[]} the units it installed
  */
-export function hostUnitsInstall({ shippedDir = SHIPPED_DIR, installedDir = INSTALLED_DIR,
-  systemctl = defaultSystemctl, copy = copyFileSync, mkdir = mkdirSync, rm = rmSync,
-  readDir = readdirSync, git = defaultGit, out = (l) => process.stdout.write(l) } = {}) {
+export function hostUnitsInstall(deps = {}) {
+  const { installedDir = INSTALLED_DIR, systemctl = defaultSystemctl, mkdir = mkdirSync, rm = rmSync,
+    out = (l) => process.stdout.write(l) } = deps;
+  const { shippedDir = SHIPPED_DIR, readDir = readdirSync, git = defaultGit } = deps;
+  refuseUnclassified(deps);
   // `readDir` IS INJECTED THROUGH TO BOTH DISCOVERIES, and the first version of this hard-wired
   // `readdirSync` into the `orphanedUnits` call below. A test could not reach the removal path at all,
   // so deleting the ENTIRE removal loop killed zero tests -- it passed vacuously, which is the same
   // defect this file's own `no-token` header was written to catch one level up. Found by mutating it.
-  const units = shippedUnits(shippedDir, { read: readDir });
+  const units = shippedUnitNames(deps);
   mkdir(installedDir, { recursive: true });
-  for (const unit of units) {
-    copy(join(shippedDir, unit), join(installedDir, unit));
-    out(`installed ${unit}\n`);
-  }
+  writeShippedUnits(units, deps);
   // REMOVED BEFORE THE RELOAD, so systemd never re-reads a unit that is on its way out. `disable --now`
   // first because deleting the file leaves an enabled symlink in `timers.target.wants` behind, and a
   // dangling want is a warning on every subsequent `daemon-reload` -- noise that trains an operator to
   // ignore this command's output.
-  for (const { unit } of orphanedUnits({ shippedDir, installedDir, readDir, git })) {
+  for (const { unit } of orphanedUnits({ ...deps, shippedDir, installedDir, readDir, git })) {
     if (unit.endsWith(".timer")) systemctl(["disable", "--now", unit]);
     rm(join(installedDir, unit), { force: true });
     out(`REMOVED ${unit} -- no longer shipped by this repository\n`);

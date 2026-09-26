@@ -1,6 +1,6 @@
 [Unit]
 # THE CLOCK BEHIND THE DAILY BOARD EDITION -- #1234, shipped here by #1993. See
-# a11ign-board-report.service for why the dispatch lives on this host rather than on GitHub's own
+# @@prefix@@board-report.service for why the dispatch lives on this host rather than on GitHub's own
 # `schedule` trigger, and for what `host:check` was about to do to this pair while it was un-shipped.
 Description=Daily 07:10 London dispatch of the a11y-witness board edition (#1234)
 

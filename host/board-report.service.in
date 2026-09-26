@@ -22,22 +22,22 @@ Type=oneshot
 # THE CHECKOUT A REPOSITORY-RELATIVE ExecStart RESOLVES AGAINST, which this unit did not need until
 # #1998 put its program in the tree. The same line, the same path, as the other three units that run
 # code from this repository.
-WorkingDirectory=/home/agent/repos/a11y-witness
+WorkingDirectory=@@checkout@@
 
 # PATH IS DECLARED BECAUSE A SYSTEMD UNIT DOES NOT GET A LOGIN SHELL'S -- the same reason
-# a11ign-work-tick.service and a11ign-corpus-release-nightly.service both state their own.
+# @@prefix@@work-tick.service and a11ign-corpus-release-nightly.service both state their own.
 #
 # MEASURED 2026-09-22 on this host: the user manager's PATH is
 # `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:...` -- it does NOT contain
-# /home/agent/.local/bin. The dispatch script calls a bare `gh`, so under the installed pair that
-# resolved to /usr/bin/gh, THE REAL BINARY: the routing wrapper at /home/agent/.local/bin/gh was not
+# @@binDir@@. The dispatch script calls a bare `gh`, so under the installed pair that
+# resolved to /usr/bin/gh, THE REAL BINARY: the routing wrapper at @@binDir@@/gh was not
 # merely unconfigured here, it was never executed. This line puts the wrapper back on the path the rest
 # of this host uses, so the unit and an interactive session are running the same `gh`.
-Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PATH=@@binDir@@:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # `gh` needs a home to find credentials under. Stated rather than assumed, for the identical reason the
 # other host units state it: the failure otherwise is silent, forever.
-Environment=HOME=/home/agent
+Environment=HOME=@@home@@
 
 # V8'S COMPILE CACHE GOES UNDER THE HOME, NOT /tmp -- #2458. `tsc`, `eslint`, `rstest` and `changeset` (all reached
 # through `npm run`) call `enableCompileCache()` with no directory, which writes `<tmpdir>/node-compile-cache`:
@@ -67,10 +67,10 @@ Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache
 # `${{ github.token }}` under its own `permissions:` block (contents: read, issues: write,
 # discussions: write); the dispatcher only has to be allowed to POST the dispatch. The visible change is
 # the run's actor, from a person to the account the org's other machinery already uses.
-Environment=GH_CONFIG_DIR=/home/agent/workers/gh
+Environment=GH_CONFIG_DIR=@@workersDir@@/gh
 
 # THE PROGRAM, SHIPPED HERE AND RUN FROM HERE -- #1998, the gap #1993 named and deliberately left.
-# Until this line it read `/home/agent/.local/bin/board-report-dispatch.sh`: 31 lines of bash written by
+# Until this line it read `@@binDir@@/board-report-dispatch.sh`: 31 lines of bash written by
 # hand on this host and carried by no commit anywhere, so every property declared above -- which `gh` is
 # on the PATH, which account it spends -- was a property of a `gh` call inside a file nobody here could
 # read, and the next edit to it reached production with no diff, no review and no test.

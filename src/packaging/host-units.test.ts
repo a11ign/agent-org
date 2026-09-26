@@ -34,7 +34,18 @@ import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, syst
   retiredHere, addedOnSomeRef, orphanOrigin, shellCommandWords, shellSpawnsGh, shippedHostScripts,
   supersededHostScripts, unitEntryPoints, missingUnitPrograms, workingDirectoryOf,
   programCandidates, hostIdentityDrift, hostIdentityNotes, hostIdentityInstall, ownedIdentityFiles, compileCacheNotes,
-  WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift, declaredCompileCache } from "../host-units.mjs";
+  WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift, declaredCompileCache, PROJECT_UNITS_DIR, shippedUnitText,
+  shippedScriptText, leadsListText } from "../host-units.mjs";
+
+/**
+ * #2620: ONE SHIPPED UNIT AS IT INSTALLS -- the tool's three are rendered from `host/*.in` templates and the project's own are read
+ * verbatim from `.agent-org/units/`, so a test that wants a unit's text asks for it by its installed name and not by a directory.
+ */
+const shippedText = (unit: string): string => {
+  const text = shippedUnitText(unit);
+  assert.ok(text !== null, `nothing ships a unit named ${unit}`);
+  return text;
+};
 
 const SYSTEMD_OK = () => "LANG=C\n";
 const NO_SYSTEMD = () => { throw new Error("systemctl: command not found"); };
@@ -147,7 +158,7 @@ test("#1858: the installer uses `enable --now`, never a bare `enable`", () => {
   hostUnitsInstall({
     installedDir: "/installed",
     systemctl: ((args: string[]) => { calls.push(args); return ""; }) as never,
-    copy: ((from: string) => { copied.push(String(from)); }) as never,
+    write: ((to: string) => { copied.push(String(to)); }) as never,
     mkdir: (() => undefined) as never,
     out: () => undefined,
   });
@@ -242,7 +253,7 @@ test("#1863: a machine with no user systemd is not told its permissions are wron
 test("#1911: the corpus-release unit reads fleet.env, the only place a unit can get A11Y_PVE_KEY", () => {
   // `~/.zshenv` exported it for every shell and for no unit, so the nightly failed every firing. The `-`
   // leaves a missing file to corpus-release-nightly.mjs's own refusal, which names it.
-  const unit = readFileSync(join(SHIPPED_DIR, "a11ign-corpus-release-nightly.service"), "utf8");
+  const unit = shippedText("a11ign-corpus-release-nightly.service");
   assert.match(unit, /^EnvironmentFile=-%h\/\.config\/a11ign\/fleet\.env$/m);
 });
 
@@ -264,12 +275,14 @@ test("#2458: every shipped service puts the compile cache under a home's .cache"
   // THE POPULATION, NAMED: emptiness below is worth what this says about its input. The directory is read
   // two ways (a plain listing, and `shippedUnits`, which is what `compileCacheDrift` walks) and they must
   // agree on a non-empty list; the positive control for "a unit lacking the line is a finding" is the next test.
-  const services = readdirSync(SHIPPED_DIR).filter((f) => f.endsWith(".service")).sort();
-  assert.deepEqual(services, shippedUnits(SHIPPED_DIR).filter((unit) => unit.endsWith(".service")));
+  const listed = [...readdirSync(SHIPPED_DIR).filter((f) => f.endsWith(".service.in")).map((f) => `a11ign-${f.slice(0, -".in".length)}`),
+    ...readdirSync(PROJECT_UNITS_DIR).filter((f) => f.endsWith(".service"))].sort();
+  const services = listed;
+  assert.deepEqual(services, shippedUnits().filter((unit) => unit.endsWith(".service")));
   assert.notDeepEqual(services, [], "nothing ships, so the emptiness below would prove nothing");
   assert.deepEqual(compileCacheDrift(), []);
   for (const service of services) {
-    assert.equal(declaredCompileCache(readFileSync(join(SHIPPED_DIR, service), "utf8")),
+    assert.equal(declaredCompileCache(shippedText(service)),
       "%h/.cache/node-compile-cache", `${service} declares a different directory from the others`);
   }
 });
@@ -624,7 +637,8 @@ test("#1951: the installer REMOVES an orphan, disabling the timer before deletin
       : ["a11ign-work-tick.timer", "a11ign-fleet-gated-nightly.timer", "a11ign-old.service"])) as never,
     systemctl: ((a: string[]) => { calls.push(a); return ""; }) as never,
     git: RETIRED_HERE,
-    copy: (() => undefined) as never,
+    read: (() => "[Unit]\n") as never,
+    write: (() => undefined) as never,
     mkdir: (() => undefined) as never,
     rm: ((path: string) => { removed.push(String(path)); }) as never,
     out: () => undefined,
@@ -894,8 +908,8 @@ test("#1993: the board dispatch is SHIPPED, and faithful to the pair that actual
   // checked, reviewed or reasoned about by anything here. These values are read from the installed pair
   // on the agent host, 2026-09-22 -- the schedule and the program must not drift in the act of
   // committing them.
-  const service = readFileSync(join(SHIPPED_DIR, "a11ign-board-report.service"), "utf8");
-  const timer = readFileSync(join(SHIPPED_DIR, "a11ign-board-report.timer"), "utf8");
+  const service = shippedText("a11ign-board-report.service");
+  const timer = shippedText("a11ign-board-report.timer");
   assert.match(service, /^ExecStart=\/usr\/bin\/bash packages\/agent-org\/host\/board-report-dispatch\.sh$/m,
     "#1998: the SHIPPED program, named the way the other code-running units name theirs. It read "
     + "`/home/agent/.local/bin/board-report-dispatch.sh` until then -- 31 lines of bash carried by no "
@@ -915,7 +929,7 @@ test("#1993: the board dispatch declares the PATH that reaches this host's `gh`,
   // /home/agent/.local/bin, so the script's bare `gh` was /usr/bin/gh and the routing wrapper never ran.
   // Declaring the account as well as the path is what makes the choice visible to this repository --
   // the wrapper keys on HERDR_WORKSPACE_ID, which no systemd unit has.
-  const service = readFileSync(join(SHIPPED_DIR, "a11ign-board-report.service"), "utf8");
+  const service = shippedText("a11ign-board-report.service");
   assert.match(service, /^Environment=PATH=\/home\/agent\/\.local\/bin:/m,
     "the wrapper's directory FIRST, or the declaration changes nothing");
   assert.match(service, /^Environment=GH_CONFIG_DIR=\/home\/agent\/workers\/gh$/m,
@@ -954,7 +968,7 @@ test("#2000: the unit passes `--apply`, or the clock runs a REPORT and the backl
   // The dry run is the DEFAULT deliberately (2026-09-09: a session ran `npm run worktrees:prune` to read
   // the breakdown before writing a row about worktree accounting, and removed three other sessions'
   // trees), so the flag has to be in the unit, and something has to say that it is.
-  const service = readFileSync(join(SHIPPED_DIR, "a11ign-worktree-prune.service"), "utf8");
+  const service = shippedText("a11ign-worktree-prune.service");
   assert.match(service, /^ExecStart=\/usr\/bin\/npm run worktrees:prune -- --apply$/m);
   assert.deepEqual(entriesFromCommand(execCommands(service)[0]),
     [join(REPO_ROOT, "packages/agent-org/src/prune-worktrees.mjs")],
@@ -1000,14 +1014,14 @@ test("#2000: the prune spends no API budget, and that is READ rather than assume
   // that change back to #1950's ruling, which put this chore on a clock instead of a wake-cause precisely
   // because it spends nothing. A unit that quietly grew an API identity would keep the clock and lose the
   // argument for it.
-  const service = readFileSync(join(SHIPPED_DIR, "a11ign-worktree-prune.service"), "utf8");
+  const service = shippedText("a11ign-worktree-prune.service");
   assert.doesNotMatch(service, /^Environment=GH_CONFIG_DIR=/m,
     "no identity line: this unit spends no pool, and saying it spends one would be false as well as "
     + "unnecessary");
 });
 
 test("#2000: the prune timer is a CALENDAR timer, so `Persistent=` is not inert", () => {
-  const timer = readFileSync(join(SHIPPED_DIR, "a11ign-worktree-prune.timer"), "utf8");
+  const timer = shippedText("a11ign-worktree-prune.timer");
   assert.match(timer, /^OnCalendar=\*-\*-\* \*:07:00$/m,
     "hourly: ~15 trees a day accumulate, one per claim, and a full pass measured 88s over 143 of them -- "
     + "and a tree cannot become removable for the 10 minutes ACTIVITY_WINDOW_MS makes it wait anyway, so "
@@ -1044,7 +1058,7 @@ test("#2000: no shipped timer pairs `Persistent=` with monotonic-only triggers",
   assert.ok(timers.length >= 5,
     `the population must not be empty or this passes vacuously; found ${JSON.stringify(timers)}`);
   const offenders = timers
-    .map((unit) => ({ unit, text: readFileSync(join(SHIPPED_DIR, unit), "utf8") }))
+    .map((unit) => ({ unit, text: shippedText(unit) }))
     .filter(({ text }) => /^Persistent=/m.test(text) && !/^OnCalendar=/m.test(text))
     .map(({ unit }) => unit);
   assert.deepEqual(offenders, [],
@@ -1087,7 +1101,7 @@ test("#2000: no shipped timer pairs `Persistent=` with monotonic-only triggers",
 test("#2000: which shipped timers run their service at `host:install`, and which do not", () => {
   const timers = shippedUnits().filter((u) => u.endsWith(".timer"));
   const requiring = timers
-    .filter((unit) => /^Requires=/m.test(readFileSync(join(SHIPPED_DIR, unit), "utf8"))).sort();
+    .filter((unit) => /^Requires=/m.test(shippedText(unit))).sort();
   // NEITHER SIDE OF THIS PARTITION IS AN EMPTINESS ASSERTION, which is why it needs no fixture control:
   // both lists are non-empty populations read from the real directory, so a `shippedUnits` that stopped
   // working fails both halves rather than passing vacuously.
@@ -1116,7 +1130,7 @@ test("#2000: which shipped timers run their service at `host:install`, and which
   hostUnitsInstall({
     installedDir: "/installed",
     systemctl: ((args: string[]) => { calls.push(args); return ""; }) as never,
-    copy: (() => undefined) as never,
+    write: (() => undefined) as never,
     mkdir: (() => undefined) as never,
     out: () => undefined,
   });
@@ -1151,7 +1165,7 @@ test("#2230: each service runs its watcher WITH `--post`, and the command resolv
   // other check in this file would be green over a watcher that tells nobody.
   const expected = { lab: "packages/control/src/lab-watch.mjs", fleet: "packages/control/src/fleet-watch.mjs" };
   for (const [name, script] of Object.entries(expected)) {
-    const service = readFileSync(join(SHIPPED_DIR, `a11ign-${name}-watch.service`), "utf8");
+    const service = shippedText(`a11ign-${name}-watch.service`);
     assert.match(service, new RegExp(`^ExecStart=/usr/bin/npm run ${name}:watch -- --post$`, "m"));
     assert.deepEqual(entriesFromCommand(execCommands(service).find((c) => c.includes("watch")) as string),
       [join(REPO_ROOT, script)],
@@ -1174,7 +1188,7 @@ test("#2230: each service runs its watcher WITH `--post`, and the command resolv
 test("#2230: the watcher timers are CALENDAR timers, hourly, and off the org-watch minute", () => {
   const minutes: Record<string, string> = {};
   for (const name of ["lab", "fleet"]) {
-    const timer = readFileSync(join(SHIPPED_DIR, `a11ign-${name}-watch.timer`), "utf8");
+    const timer = shippedText(`a11ign-${name}-watch.timer`);
     const [, minute] = timer.match(/^OnCalendar=\*-\*-\* \*:(\d\d):00$/m) ?? [];
     assert.ok(minute, `${name}: an hourly calendar expression`);
     minutes[name] = minute;
@@ -1217,7 +1231,7 @@ function watchersWithNoCaller(watchers: string[], { unitTexts, workflowTexts }:
 }
 
 const realCallers = () => ({
-  unitTexts: shippedUnits().map((u) => readFileSync(join(SHIPPED_DIR, u), "utf8")),
+  unitTexts: shippedUnits().map((u) => shippedText(u)),
   workflowTexts: readdirSync(join(REPO_ROOT, ".github/workflows")).filter((f) => f.endsWith(".yml"))
     .map((f) => readFileSync(join(REPO_ROOT, ".github/workflows", f), "utf8")),
 });
@@ -1281,7 +1295,7 @@ test("#2230: POSITIVE CONTROL -- the guard flags a watcher with no unit and no w
 test("#1998: the dispatch ships here, and it is the program that actually runs", () => {
   assert.ok(shippedHostScripts().includes("board-report-dispatch.sh"),
     "in the same directory as the unit that starts it -- the whole row in one assertion");
-  const script = readFileSync(join(SHIPPED_DIR, "board-report-dispatch.sh"), "utf8");
+  const script = shippedText("board-report-dispatch.sh");
   assert.match(script, /^set -euo pipefail$/m,
     "byte-faithful to the installed copy, whose own first act this is: a dispatch that swallowed a "
     + "failed `gh workflow run` would log a run id it never created");
@@ -1315,7 +1329,7 @@ test("#1998: the board dispatch's `gh` is READ, not merely not-ruled-out", () =>
 });
 
 test("#1998: `unitEntryPoints` follows a shell interpreter exactly as it follows `node`", () => {
-  const service = readFileSync(join(SHIPPED_DIR, "a11ign-board-report.service"), "utf8");
+  const service = shippedText("a11ign-board-report.service");
   assert.deepEqual(unitEntryPoints(service), [join(SHIPPED_DIR, "board-report-dispatch.sh")]);
   assert.deepEqual(entriesFromCommand("/usr/bin/bash packages/agent-org/host/board-report-dispatch.sh"),
     [join(SHIPPED_DIR, "board-report-dispatch.sh")],
@@ -1514,9 +1528,8 @@ test("#2174: it is a SEPARATE finding from STALE, and the shared remedy says it 
  */
 const identityHost = (where: { shippedDir: string, scriptDir: string, workersDir: string,
   leadsDir: string, gitConfigPath: string }) => {
-  for (const name of ["gh", "gh-leads-workspaces.txt"]) {
-    writeFileSync(join(where.shippedDir, name), readFileSync(join(SHIPPED_DIR, name)));
-  }
+  // The leads list is rendered from `host.json`, so only the wrapper is a file to put in the fixture's shipped directory.
+  writeFileSync(join(where.shippedDir, "gh"), shippedScriptText("gh") as string);
   mkdirSync(where.scriptDir, { recursive: true });
   hostIdentityInstall({ ...where, out: () => {} });
   writeFileSync(where.gitConfigPath, `[credential "https://github.com"]\n\thelper = \n`
@@ -1690,7 +1703,7 @@ test("#2174: hostUnitDrift asks the new question too, and stays silent where it 
  */
 test("#2174: no shipped unit is falsely charged, and every one of them is charged when it should be", () => {
   const units = Object.fromEntries(shippedUnits().map((u) =>
-    [u, readFileSync(join(SHIPPED_DIR, u), "utf8")]));
+    [u, shippedText(u)]));
   const stub = {
     installedDir: "/installed",
     readDir: (() => Object.keys(units)) as never,
@@ -1739,12 +1752,18 @@ test("#2174: a unit that is listed but cannot be READ yields no finding and does
 // `A11Y_LEADS_DIR`) are environment variables with the production values as defaults, so nothing here
 // touches the real host.
 
-const WRAPPER = join(SHIPPED_DIR, "gh");
+/** The wrapper AS IT INSTALLS (#2620: `host/gh.in` is a template), rendered once into a temp directory so it can be RUN. */
+const WRAPPER = (() => {
+  const rendered = join(mkdtempSync(join(tmpdir(), "gh-wrapper-render-")), "gh");
+  writeFileSync(rendered, shippedScriptText("gh") as string, { mode: 0o755 });
+  return rendered;
+})();
 const STUB_EXIT = 7; // a status nothing else here returns, so it can only have come from the stub
 const EXECUTABLE = 0o111;
 const PERMISSION_BITS = 0o777;
 const RWX_R_X_R_X = 0o755;
-const LEADS_LIST = join(SHIPPED_DIR, "gh-leads-workspaces.txt");
+/** The leads list as it installs (#2620: host data now, rendered from `host.json`'s `gh.leadsWorkspaces`). */
+const LEADS_LIST_TEXT = leadsListText();
 
 /** The ids on a list file's own lines: not comments, not blanks. */
 const listedIds = (text: string) => text.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
@@ -1768,7 +1787,7 @@ const wrapperHost = ({ workers = true, leads = true, list = true } = {}) => {
     writeFileSync(join(dir, "gh", "hosts.yml"), "github.com: {}\n");
   }
   // THE SHIPPED LIST, not a fixture of one: the file under review is the file that decides.
-  if (list) writeFileSync(join(leadsDir, "workspaces.txt"), readFileSync(LEADS_LIST));
+  if (list) writeFileSync(join(leadsDir, "workspaces.txt"), LEADS_LIST_TEXT);
   const run = (env: Record<string, string>, ...args: string[]) => {
     const r = spawnSync("sh", [WRAPPER, ...args], { encoding: "utf8", env: {
       PATH: process.env.PATH ?? "", A11Y_GH_REAL: stub, A11Y_WORKERS_DIR: workersDir,
@@ -1863,7 +1882,7 @@ test("#2332: the list is matched by WHOLE LINE, and a missing list fails toward 
 });
 
 test("#2332: the shipped leads list holds EXACTLY the three decision-holders, each with its role, and no exception", () => {
-  const text = readFileSync(LEADS_LIST, "utf8");
+  const text = LEADS_LIST_TEXT;
   assert.deepEqual(listedIds(text), ["w6", "w2", "w5"],
     "a fourth id is a fourth session on the leads account: it needs a ruling, not an edit");
   for (const [id, role] of [["w6", "ceo"], ["w2", "product-manager"], ["w5", "orchestrator"]]) {
@@ -2048,9 +2067,20 @@ test("#2332: END TO END -- `host:install` then `host:check --json` on a temp HOM
     writeFileSync(join(home, ".gitconfig"), helperFile(["", `!${home}/.local/bin/gh auth git-credential`])
       + "[user]\n\tname = Dan Beck\n");
     writeFileSync(join(home, ".zshenv"), 'export NODE_COMPILE_CACHE="$HOME/.cache/node-compile-cache"\n');
-    const env = { PATH: `${bin}:${process.env.PATH}`, HOME: home };
+    // #2620: THE MACHINE'S PATHS COME FROM `host.json`, so a temp HOME needs a temp host declaration -- `AGENT_ORG_HOST` says which. Without
+    // it this test would install a11ign's real `~/leads/workspaces.txt` and `~/workers/README.md` from a "temp" run.
+    const declared = JSON.parse(readFileSync(join(REPO_ROOT, ".agent-org/host.json"), "utf8"));
+    const hostFile = join(home, "host.json");
+    writeFileSync(hostFile, JSON.stringify({ ...declared, home, binDir: join(home, ".local/bin"),
+      projects: [{ id: declared.primary, checkout: REPO_ROOT.replace(/\/$/, "") }],
+      gh: { ...declared.gh, workers: join(home, "workers"), leads: join(home, "leads") } }));
+    const env = { PATH: `${bin}:${process.env.PATH}`, HOME: home, AGENT_ORG_HOST: hostFile };
     const entry = join(REPO_ROOT, "packages/agent-org/src/host-units.mjs");
-    const run = (...args: string[]) => spawnSync(process.execPath, [entry, ...args], { encoding: "utf8", env });
+    const run = (...args: string[]) => {
+      const done = spawnSync(process.execPath, [entry, ...args], { encoding: "utf8", env });
+      assert.notEqual(done.stdout, "", `host-units.mjs ${args.join(" ")} wrote nothing; stderr: ${done.stderr}`);
+      return done;
+    };
     const identityFindings = (out: string) => JSON.parse(out).findings
       .filter((f: { unit: string }) => f.unit.startsWith(home) && /\/(gh|workspaces\.txt|README\.md|\.gitconfig)$/.test(f.unit));
     assert.ok(identityFindings(run("--json").stdout).length >= 3, "before the install: gh, the leads list and the README are all absent");
@@ -2088,14 +2118,14 @@ const oneUnit = (body: string, extra: Record<string, unknown> = {}) => ({
 });
 
 test("#2332: the corpus release runs as the LEADS account, and nothing shipped declares the person's", () => {
-  const service = readFileSync(join(SHIPPED_DIR, "a11ign-corpus-release-nightly.service"), "utf8");
+  const service = shippedText("a11ign-corpus-release-nightly.service");
   assert.match(service, /^Environment=GH_CONFIG_DIR=\/home\/agent\/leads\/gh$/m,
     "a11ign-ai-leads has push (not admin) on a11ign/corpus-backups, which is all `gh release create` needs");
   assert.doesNotMatch(service, /THE HUMAN ONE, AND THAT IS THE RIGHT ANSWER/,
     "the comment that argued for the person's account must not survive beside the line that removed it");
   // THE POPULATION, NAMED: the emptiness assertion below is only worth what this says about its input.
-  const declared = readdirSync(SHIPPED_DIR).filter((f) => f.endsWith(".service"))
-    .map((f) => [f, /^Environment=GH_CONFIG_DIR=(.*)$/m.exec(readFileSync(join(SHIPPED_DIR, f), "utf8"))?.[1] ?? null]);
+  const declared = shippedUnits().filter((f) => f.endsWith(".service"))
+    .map((f) => [f, /^Environment=GH_CONFIG_DIR=(.*)$/m.exec(shippedText(f))?.[1] ?? null]);
   assert.ok(declared.filter(([, dir]) => dir !== null).length >= 5, `too few units declare an account: ${JSON.stringify(declared)}`);
   assert.deepEqual(declared.filter(([, dir]) => dir !== null && /\.config\/gh/.test(String(dir))), [],
     "no shipped unit declares the person's config");

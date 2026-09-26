@@ -11,20 +11,20 @@ Wants=herdr.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/agent/repos/a11y-witness
+WorkingDirectory=@@checkout@@
 
 # PATH IS DECLARED BECAUSE A SYSTEMD UNIT DOES NOT GET A LOGIN SHELL'S.
 #
-# `gh` and `herdr` both live in /home/agent/.local/bin, which is on the interactive PATH and on no
+# `gh` and `herdr` both live in @@binDir@@, which is on the interactive PATH and on no
 # default one. Without this line `work-gate` cannot spawn `gh` and exits CANNOT_ASK on every tick, and
 # `wake` cannot spawn `herdr` and reports every order undeliverable -- both of them quietly, for ever,
-# while the timer looks like it is running fine. Verified on this host: gh at /home/agent/.local/bin/gh,
+# while the timer looks like it is running fine. Verified on this host: gh at @@binDir@@/gh,
 # node and npm at /usr/bin.
-Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PATH=@@binDir@@:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # `gh` needs a home to find credentials under, so HOME must be the agent's own. A user unit sets this,
 # and it is stated rather than assumed because the failure is the same silent CANNOT_ASK.
-Environment=HOME=/home/agent
+Environment=HOME=@@home@@
 
 # V8'S COMPILE CACHE GOES UNDER THE HOME, NOT /tmp -- #2458. `tsc`, `eslint`, `rstest` and `changeset` (all reached
 # through `npm run`) call `enableCompileCache()` with no directory, which writes `<tmpdir>/node-compile-cache`:
@@ -40,11 +40,11 @@ Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache
 # rows could be read` -- which from inside the org is indistinguishable from a quiet queue. Since #2003 that
 # refusal also names the account, the pool and the reset, so the silence has a time on it.
 #
-# THE ROUTING IS IN A DOTFILE AND CANNOT REACH A UNIT. `/home/agent/.local/bin/gh` picks the workers
+# THE ROUTING IS IN A DOTFILE AND CANNOT REACH A UNIT. `@@binDir@@/gh` picks the workers
 # account by `HERDR_WORKSPACE_ID`, which every org session has and no systemd unit does; the wrapper's
 # fallback is `~/.config/gh`, the human. So a unit that does not say which account it is must get the
 # wrong one. Declaring it here also makes the choice visible to the repository, where the wrapper is not.
-Environment=GH_CONFIG_DIR=/home/agent/workers/gh
+Environment=GH_CONFIG_DIR=@@workersDir@@/gh
 
 # THE CHECKOUT IS UPDATED FIRST, AND THIS IS THE `git pull` HALF OF THE LOOP.
 #

@@ -5,8 +5,24 @@
 # real dispatch. See issue #1234 for the full derivation.
 set -euo pipefail
 
-REPO="a11ign/a11ign"
-WORKFLOW="board-report.yml"
+# #2620 (child 3f of #69): THE REPOSITORY AND THE WORKFLOW ARE THE PROJECT'S, not this tool's, so they are read from the
+# project's declaration. The unit's WorkingDirectory is the project's checkout, so the declaration is the file beside it.
+# A missing file or field FAILS the dispatch (`set -e` sees the `node` exit), which is the point: a default here would
+# dispatch the WRONG project's board silently, the failure `project-config.mjs` refuses to have anywhere else.
+DECLARATION="${AGENT_ORG_PROJECT:-.agent-org/project.json}"
+declared() {
+  node -e '
+    const d = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+    const value = process.argv[2] === "repo" ? d.tracker?.[0]?.repo : d.units?.boardReportWorkflow;
+    if (typeof value !== "string" || value === "") {
+      console.error(`board-report-dispatch: ${process.argv[1]} does not declare ${process.argv[2]}`);
+      process.exit(1);
+    }
+    console.log(value);
+  ' "${DECLARATION}" "$1"
+}
+REPO="$(declared repo)"
+WORKFLOW="$(declared workflow)"
 
 echo "board-report-dispatch: dispatching ${WORKFLOW} on ${REPO} at $(date -u +%FT%TZ)"
 gh workflow run "${WORKFLOW}" --repo "${REPO}"
