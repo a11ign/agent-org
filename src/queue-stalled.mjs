@@ -50,8 +50,8 @@
 //      see the workflow step for what treats it as one)
 //   2  a lookup failed. INCONCLUSIVE, never "fine".
 import { execFileSync } from "node:child_process";
-import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
-import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { newestConclusion, newestRun, headQuietSeconds, normaliseConclusion, SUCCESS }

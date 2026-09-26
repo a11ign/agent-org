@@ -78,7 +78,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
-import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
 // RELATIVE for the same reason as `cli-flags.mjs` below (#1373): `row-claim.mjs` imports this file before
 // `npm ci`, where a package specifier dies.
 import { worktreeOwner } from "./worktree-owner.mjs";
@@ -1137,7 +1137,7 @@ import { realpathSync } from "node:fs";
 // #1373: RELATIVE, not `@a11ign/worker-fleet/cli-flags` -- `row-claim.mjs` imports this file now, and
 // `close-rows-for-merged-pr.mjs`, `close-rows-sweep.mjs` and `workflow-run-liveness.mjs` run it before
 // `npm ci`, where a package specifier dies (`pre-install-import-graph.test.ts`).
-import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
   main();
 }

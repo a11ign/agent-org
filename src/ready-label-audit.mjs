@@ -42,8 +42,8 @@ import { realpathSync, readFileSync } from "node:fs";
 // from a pre-install entry (see `pre-install-import-graph.test.ts`, which derives that population
 // rather than naming it), and there it dies on startup with ERR_MODULE_NOT_FOUND.
 import { proseBlockers } from "./waiting-condition.mjs";
-import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
-import { REPO } from "../../../scripts/repo-identity.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { REPO } from "./project-identity.mjs";
 import { fetchBoardItems, PROJECT_NUMBER } from "./board-snapshot.mjs";
 // `claimsFromEvents`/`describeClaims` are no longer imported: a row that reaches the report has NO claim
 // events by construction, so describing them printed "no session ever claimed this row" every time --
@@ -51,7 +51,7 @@ import { fetchBoardItems, PROJECT_NUMBER } from "./board-snapshot.mjs";
 // the three states it is instead.
 import { fetchClosedRowEvents, unattributableClosedRows, reportableUnattributable, attributionFor,
   fetchClosingPullRequest, PROVENANCE_REQUIRED_FROM } from "./claim-provenance.mjs";
-import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
 // `CLAIM_LABEL` from the module the CLAIM PATH itself writes, never the string "in-progress" retyped
 // here: #2008's finding was a predicate that disagreed with the claim path about what a claim means, and
 // a second spelling of the label is how that disagreement gets to happen again silently.

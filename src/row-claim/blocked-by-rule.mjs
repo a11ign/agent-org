@@ -19,7 +19,7 @@
 // -- deliberately. That file's fail-open protects a session's ability to claim ANYTHING when `gh` is down;
 // this is the override path itself, and an override that can be reached by a failed lookup is an override
 // that fires on assertion alone, which is exactly what this row exists to prevent.
-import { REPO } from "../../../../scripts/repo-identity.mjs";
+import { REPO } from "../project-identity.mjs";
 import { lookup } from "../merge-guard/lookups.mjs";
 
 /** The literal header a measurement comment must start its claim with -- a marker, not a sentence this

@@ -23,7 +23,7 @@
 // reader of the row -- a bypass flag here would just be a second, unrecorded way to the same effect.
 import { waitingOn, todayIso } from "../waiting-condition.mjs";
 import { lookup, gh } from "../merge-guard/lookups.mjs";
-import { REPO } from "../../../../scripts/repo-identity.mjs";
+import { REPO } from "../project-identity.mjs";
 
 /**
  * @param {number} issueNumber the row about to be claimed
