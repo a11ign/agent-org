@@ -20,7 +20,7 @@ import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 // THE ONE THING THIS FILE ASKS THAT IS NOT ABOUT DELIVERY. A session herdr reports as `blocked` is
 // stopped on a question nobody will answer, and `wake.mjs`'s `WAKEABLE` is `idle`/`done` -- so it is
 // never offered another cause and never mentioned anywhere. It has to be reported from HERE rather than

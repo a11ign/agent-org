@@ -39,8 +39,8 @@ import { pathToFileURL } from "node:url";
 // points at `dist/`, so it needs both `node_modules` AND a completed build. This file is reachable
 // from a pre-install entry (see `pre-install-import-graph.test.ts`, which derives that population
 // rather than naming it), and there it dies on startup with ERR_MODULE_NOT_FOUND.
-import { refuseUnknownFlags, flagValue } from "../../worker-fleet/src/cli-flags.mjs";
-import { REPO } from "../../../scripts/repo-identity.mjs";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
+import { REPO } from "./project-identity.mjs";
 import { gh, lookup, lookupRequiredContexts, lookupCheckRuns, checkReasons } from "./merge-guard.mjs";
 
 export const EXIT = { TESTED: 0, NOT_TESTED: 1, CANNOT_TELL: 2 };

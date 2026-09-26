@@ -12,12 +12,12 @@
 // `pre-commit`/`post-checkout` already use, imported rather than restated.
 import { execFileSync } from "node:child_process";
 import { isPrimaryWorktree } from "./prune-worktrees.mjs";
-import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-import { refuseUnknownFlags } from "@a11ign/worker-fleet/cli-flags";
-import { npmCliInvocation, pnpmCliInvocation } from "../../../scripts/npm-cli-executable.mjs";
-import { changedFiles } from "../../guards/src/changed-files.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { npmCliInvocation, pnpmCliInvocation } from "./lib/npm-cli-executable.mjs";
+import { changedFiles } from "./lib/changed-files.mjs";
 
 const REPO = fileURLToPath(new URL("../../../", import.meta.url));
 

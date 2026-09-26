@@ -21,7 +21,7 @@ import { newestPerName } from "../newest-check-run.mjs";
 import { parityOwner } from "../review-attribution.mjs";
 import { NO_VERDICT } from "../merge-guard/checks-rule.mjs";
 import { armabilityOf, holdersOf, HOLD_PREFIX } from "../pr-hold-state.mjs";
-import { REPO } from "../../../../scripts/repo-identity.mjs";
+import { REPO } from "../project-identity.mjs";
 import { labelsOf, sessionOf, checksSettledGreen, conclusionOf, stillRunning, anyChecksRed, requiredCheckNames,
   blockingChecks, reviewableHead, verdictAmong, awaitingEvidence, AWAITING_EVIDENCE_LABEL,
   AWAITING_EVIDENCE_QUIET_HOURS, AWAITING_EVIDENCE_QUIET_MS, HOUR_MS, REVIEW_STATE } from "../work-gate.mjs";

@@ -27,7 +27,7 @@
 // nobody able to say who decided it.
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-import { refuseUnknownFlags, flagValue } from "../../worker-fleet/src/cli-flags.mjs";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 
 /** The effort levels the `claude` CLI accepts. A value outside this set is a typo, not a preference. */
 export const CLAUDE_EFFORTS = Object.freeze(["low", "medium", "high", "xhigh", "max"]);

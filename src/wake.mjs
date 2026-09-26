@@ -37,12 +37,12 @@ import { basename, dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 // RELATIVE, not the package specifier -- this must run before any `npm ci`/build, the same constraint
 // `work-gate.mjs` and `org-watch.mjs` state at their own imports.
-import { refuseUnknownFlags, flagValue } from "../../worker-fleet/src/cli-flags.mjs";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { profileFor, agentArgs } from "./worker-profile.mjs";
 import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry }
   from "./work-gate.mjs";
 import { reviewerInstanceNumber } from "./review-attribution.mjs";
-import { REPO } from "../../../scripts/repo-identity.mjs";
+import { REPO } from "./project-identity.mjs";
 import { inBuildReason, isInBuild, unansweredRefusal, lookupHeldRows, lookupOtherHeldIssues }
   from "./row-claim/own-pr-health-rule.mjs";
 import { parseWorktreeList, isPrimaryWorktree, isWorkingTreeClean, mergeStatus, detachedMergeStatus }
@@ -58,9 +58,9 @@ import { lookupBlockedByEdge, blockedByEdgeReason } from "./row-claim/blocked-by
 import { fileOverlapReason, lookupMyRegionFiles, lookupOpenPrFiles } from "./row-claim/file-overlap-rule.mjs";
 // The scrubbing helper, RELATIVE like the imports above: a leaked GIT_DIR must not redirect the teardown's
 // `git worktree list` onto another repository (git-spawn-classification.test.ts).
-import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
 // #2470: THIS FILE NOW SENDS A BODY TO GITHUB (the release comment), so it reaches the leak guard like every other tracker writer (#1053).
-import { assertNoLeakInArgv } from "../../lab/src/packaging/leak-patterns.mjs";
+import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
 // #2470: THE PURE HALF OF A CLAIM THAT DOES NOT MOVE -- a leaf, so `work-gate.mjs` and this file both import it and neither imports the other's
 // half. What is performed here is the part that needs a pane, a process or a row: the release, the resume, the re-send.
 import { workAtRisk, gitRun, pathExists, statMtime, KEPT_CLAIMS_FILE, RESTART_STATE_FILE, RESTART_RESEND_WINDOW_MS,
