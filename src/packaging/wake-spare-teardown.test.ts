@@ -14,11 +14,15 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
-import { deliver, engineerRoles }
+import { deliver as settlingDeliver, engineerRoles }
   from "../wake.mjs";
 import { spareRoles, spareInstances, spareDecision, cycleVerdict, consecutiveClean, endFinishedSpares, spawnEnvironment,
   readSpareCycles, sparePathsFrom, registerSpawn, spareWorktrees, SPARE_CLAIM_BOUND_MS, WORKERS_GH_CONFIG_DIR }
   from "../wake.mjs";
+/** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
+const noSettle = () => {};
+const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: noSettle });
+
 
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));

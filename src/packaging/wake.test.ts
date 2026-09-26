@@ -22,7 +22,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join, dirname, relative } from "node:path";
-import { route, undelivered, parseOrders, readLedger, deliver, readAgents, WAKEABLE, EXIT,
+import { route, undelivered, parseOrders, readLedger, deliver as settlingDeliver, readAgents, WAKEABLE, EXIT,
   WAKE_TTL_MS, JUDGMENT_TTL_MS, MAX_DELIVERIES, deliveryCounts, endedRuns, RESET,
   blockedSessions }
   from "../wake.mjs";
@@ -35,13 +35,19 @@ import { spawnInvocation, addressed, clearContext, CLEAR_TIMEOUT_MS, CLEAR_SETTL
 import { spawnableRole, isPilotOrder, SPAWN_CAUSES, MAX_SPAWNS_PER_TICK, engineerRoles, rosterFrom }
   from "../wake.mjs";
 import { handoffId, handoffQueuePath, ledgerPathFrom, readHandoffs, queueHandoff, dropHandoffs,
-  deliverHandoffs, handoffOrder, staleHandoffs, nothingToDeliver, HANDOFF_STALE_MS, HANDOFF_QUEUE_FILE }
+  deliverHandoffs as settlingDeliverHandoffs, handoffOrder, staleHandoffs, nothingToDeliver, HANDOFF_STALE_MS, HANDOFF_QUEUE_FILE }
   from "../wake.mjs";
 import { engineerEligibility, b2Verdict, ledgerKeyOf, ledgerLine } from "../wake.mjs";
 import { sparePathsFrom } from "../wake.mjs";
 import { handoffBacklog, backlogReport, handoffBatches, fitBatch, waitedFor, staleReport,
   PROMPT_ARG_MAX, HANDOFF_BATCH_BYTES, BATCH_WRAPPER_BYTES, targetLabelBytes }
   from "../wake.mjs";
+/** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
+const noSettle = () => {};
+const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: noSettle });
+const deliverHandoffs: typeof settlingDeliverHandoffs = (handoffs, agents, roster, deps) =>
+  settlingDeliverHandoffs(handoffs, agents, roster, { ...deps, sleep: noSettle });
+
 
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));
@@ -773,7 +779,7 @@ test("a REFUSED clear still delivers -- expensive beats undelivered", () => {
 });
 
 test("clearContext reports a refusal rather than throwing, and null on success", () => {
-  assert.equal(clearContext(() => "", "reviewer"), null);
+  assert.equal(clearContext(() => "", "reviewer", noSettle), null);
   assert.match(String(clearContext(() => { throw new Error("no socket"); }, "ceo")),
     /ceo: \/clear refused \(no socket/);
 });
@@ -790,7 +796,7 @@ test("clearContext reports a refusal rather than throwing, and null on success",
  */
 test("the clear WAITS for the agent to settle, or it races the order that follows", () => {
   const calls: string[][] = [];
-  clearContext((a: string[]) => { calls.push(a); return ""; }, "ceo");
+  clearContext((a: string[]) => { calls.push(a); return ""; }, "ceo", noSettle);
   // SUBMIT then WAIT, as two commands. `prompt --wait` requires an observed state CHANGE within 5000ms
   // and a `/clear` to an already-`done` agent changes nothing observable -- two of three live wakes came
   // back `agent_prompt_stalled`. `agent wait` matches a STATE, so an already-idle agent passes at once.
@@ -806,13 +812,15 @@ test("the clear timeout is bounded and not absurd", () => {
   assert.ok(CLEAR_TIMEOUT_MS <= 120_000, "longer than two minutes and one stuck agent stalls every tick");
 });
 
-test("the settle is bounded at both ends -- 0 mangles, and a long one stalls every tick", () => {
+test("the settle is EXACTLY the measured five seconds -- 0 mangles, and a long one stalls every tick", () => {
   // MEASURED on the live org: 0s produced `Unknown command: /clearYou are...`; 2s and 5s both produced
   // clean prompts. There is nothing to synchronise on -- `/clear` moves neither the agent's status nor
   // its `state_change_seq` (it sat at 6221 across one) -- so this is a delay and is named as one.
-  assert.ok(CLEAR_SETTLE_MS >= 2_000, "2s was the shortest delay measured clean; below it is untested");
-  assert.ok(CLEAR_SETTLE_MS <= 15_000,
-    "the tick runs every two minutes and may clear several agents; a long settle eats the interval");
+  //
+  // EXACT, NOT A RANGE (#2546). The old pin allowed anything from 2s to 15s, which let a fast test lower the production
+  // value and still pass. `sleep` is injectable now, so no test needs to touch the constant to be fast, and
+  // `wake-clear-settle.test.ts` pins the same number beside the order of calls and the real-by-default control.
+  assert.equal(CLEAR_SETTLE_MS, 5_000, "the value measured clean with margin on the live org; change it only with a new measurement");
 });
 
 // --- #1564: a question already answered must not be asked again (2026-09-18) ---

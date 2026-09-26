@@ -12,9 +12,15 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deliver } from "../wake.mjs";
-import { clearThenPrompt, deliveredText } from "../prompt-session.mjs";
+import { deliver as settlingDeliver } from "../wake.mjs";
+import { clearThenPrompt as settlingClearThenPrompt, deliveredText } from "../prompt-session.mjs";
 import { sessionOf } from "../token-audit.mjs";
+
+/** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
+const noSettle = () => {};
+const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: noSettle });
+const clearThenPrompt: typeof settlingClearThenPrompt = (run, label, text, options) =>
+  settlingClearThenPrompt(run, label, text, { ...options, sleep: noSettle });
 
 const PREAMBLE_PHRASES = ["Before you start", "Work autonomously", "ENDING YOUR TURN"];
 const ROSTER = ["worker-capture", "worker-judge", "worker-tooling"];
@@ -112,14 +118,14 @@ test("#2538 token-audit still attributes a transcript that opens on a follow-up 
 
 test("#2538 clearThenPrompt: an instance gets the header; a standing seat, cleared, gets the whole preamble", () => {
   const instance = recorder();
-  assert.equal(clearThenPrompt(instance.run, "worker-2443", "Rebase on main.", "ceo"), null);
+  assert.equal(clearThenPrompt(instance.run, "worker-2443", "Rebase on main.", { sender: "ceo" }), null);
   const [typedToInstance] = instance.ordered("worker-2443");
   assert.deepEqual(counts(typedToInstance), [0, 0, 0]);
   assert.ok(typedToInstance.startsWith("You are `worker-2443` -- a follow-up"));
   assert.ok(typedToInstance.includes("Sent to you by `ceo`"), "the asker still travels");
 
   const standing = recorder();
-  assert.equal(clearThenPrompt(standing.run, "worker-tooling", "Rebase on main.", "ceo"), null);
+  assert.equal(clearThenPrompt(standing.run, "worker-tooling", "Rebase on main.", { sender: "ceo" }), null);
   assert.deepEqual(standing.cleared(), ["worker-tooling"]);
   const [typedToSeat] = standing.ordered("worker-tooling");
   assert.deepEqual(counts(typedToSeat).slice(1), [1, 1], "POSITIVE CONTROL: the cleared seat is told everything");

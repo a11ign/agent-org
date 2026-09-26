@@ -13,13 +13,18 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promptable, clearThenPrompt, queueable, queueOrLose, queueDepthNote, queueDepth,
+import { promptable, clearThenPrompt as settlingClearThenPrompt, queueable, queueOrLose, queueDepthNote, queueDepth,
   deepQueueRefusal, DEEP_QUEUE, NEEDS_DECISION_FLAG, EXIT, senderName, resolveSender, attributed,
   deliveredText }
   from "../prompt-session.mjs";
 import { readHandoffs, handoffOrder, addressed } from "../wake.mjs";
 
 import { readLoadedRules } from "./rules-files.ts";
+/** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
+const noSettle = () => {};
+const clearThenPrompt: typeof settlingClearThenPrompt = (run, label, text, options) =>
+  settlingClearThenPrompt(run, label, text, { ...options, sleep: noSettle });
+
 
 const agents = [{ label: "reviewer", status: "idle" }, { label: "reviewer-2", status: "working" },
   { label: "ceo", status: "done" }, { label: "worker-judge", status: "blocked" }];
@@ -80,7 +85,7 @@ test("a refused agent read is refused, never treated as an empty roster", () => 
 test("THE CLEAR COMES FIRST, and the order of the two calls is the whole point", () => {
   const calls: string[][] = [];
   assert.equal(clearThenPrompt((a: string[]) => { calls.push(a); return ""; }, "reviewer", "Draft #1 …",
-    "worker-5"), null);
+    { sender: "worker-5" }), null);
   const verbs = calls.map((a) => a.slice(2).join(" "));
   assert.equal(verbs[0], "agent prompt reviewer /clear", "the clear must be the FIRST thing sent");
   assert.equal(verbs.at(-1), `agent prompt reviewer ${deliveredText("reviewer", "Draft #1 …", "worker-5")}`,
@@ -98,7 +103,7 @@ test("a refused CLEAR still delivers the prompt, and says so", () => {
     if (a.some((x) => x.includes("Draft #2"))) sent = true;
     return "";
   };
-  assert.match(String(clearThenPrompt(run, "reviewer", "Draft #2", null)), /clear refused/);
+  assert.match(String(clearThenPrompt(run, "reviewer", "Draft #2")), /clear refused/);
   assert.equal(sent, true, "the prompt went anyway -- a refused clear is not a refused wake");
 });
 
@@ -108,7 +113,7 @@ test("a refused PROMPT is reported, never reported as delivered", () => {
     if (a[2] === "agent" && a[3] === "prompt") throw new Error("agent_blocked");
     return "";
   };
-  assert.match(String(clearThenPrompt(run, "reviewer", "Draft #3", null)), /prompt refused: agent_blocked/);
+  assert.match(String(clearThenPrompt(run, "reviewer", "Draft #3")), /prompt refused: agent_blocked/);
 });
 
 test("the exit codes distinguish a LOST order from a QUEUED one", () => {
@@ -438,7 +443,7 @@ function firstMessage(label: string, text: string, sender: string | null): strin
     if (a[2] === "agent" && a[3] === "prompt" && a[5] !== "/clear") prompts.push(a[5]);
     return "";
   };
-  assert.equal(clearThenPrompt(run, label, text, sender), null);
+  assert.equal(clearThenPrompt(run, label, text, { sender }), null);
   assert.equal(prompts.length, 1, "the positive control: exactly one prompt reached the session");
   return prompts[0];
 }

@@ -2562,17 +2562,19 @@ function batchedOrder(take, held, now) {
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster
  * @param {{run?: (args: string[]) => string, queuePath?: string, drop?: typeof dropHandoffs,
- *          now?: number, budget?: number, unavailable?: (label: string) => string | null}} [deps]
+ *          now?: number, budget?: number, unavailable?: (label: string) => string | null,
+ *          sleep?: (ms: number) => void}} [deps] `sleep` is `deliver`'s clear settle, passed straight through (#2546)
  * @returns {{sent: string[], refused: string[], ids: string[], busied: Set<string>}} `ids` is every
  *   order a delivery CARRIED, which is what the caller subtracts before calling anything still stale.
  */
 export function deliverHandoffs(handoffs, agents, roster,
   { run = defaultRun, queuePath, drop = dropHandoffs, now = Date.now(),
-    budget = HANDOFF_BATCH_BYTES, unavailable } = {}) {
+    budget = HANDOFF_BATCH_BYTES, unavailable, sleep } = {}) {
   const batches = handoffBatches(handoffs, { now, budget, roster });
   /** @type {string[]} */
   const landed = [];
-  const { sent, refused } = deliver(batches, agents, roster, { run, record: (key) => landed.push(key), unavailable });
+  const { sent, refused } = deliver(batches, agents, roster,
+    { run, record: (key) => landed.push(key), unavailable, sleep });
   // THE BATCH IS WHAT WAS ACCEPTED; THE IDS ARE WHAT IT COVERED. `record` fires on the causeKey, because
   // that is the seam `deliver` offers, so the ids to retire come back through the batch that carried
   // them -- and a batch nobody accepted retires nothing, which is the assertion this whole queue is for.
@@ -3269,10 +3271,17 @@ const CLEAR_REFUSAL_EXCERPT = 80;
  *
  * MEASURED, NOT ASSUMED: 690k -> 37k on a real session, an 18x cut in per-turn input.
  *
+ * THE SETTLE IS A SEAM, AND THE DEFAULT IS THE REAL SLEEP (#2546). `sleep` is what waits `CLEAR_SETTLE_MS`; production passes
+ * nothing and blocks for the measured five seconds, exactly as before. A test that drives a clear for some OTHER
+ * property injects a recording fake and does not pay it -- `wake-clear-settle.test.ts` pins the order (clear, wait, settle,
+ * order), the exact value, and ONE test with no injection that measures the real delay, so a default that quietly became
+ * a no-op is caught there and not by a fast suite going green.
+ *
  * @param {(args: string[]) => string} run @param {string} label
+ * @param {(ms: number) => void} [sleep] blocks for `ms`; real by default
  * @returns {string | null} a refusal to report, or `null` when the context was reset
  */
-export function clearContext(run, label) {
+export function clearContext(run, label, sleep = sleepSync) {
   try {
     // SUBMIT, SETTLE, THEN THE ORDER -- AND THE SETTLE IS A DELAY BECAUSE THERE IS NO SIGNAL.
     //
@@ -3302,7 +3311,7 @@ export function clearContext(run, label) {
     run(["--session", "org", "agent", "prompt", label, "/clear"]);
     run(["--session", "org", "agent", "wait", label, "--until", "idle", "--until", "done",
       "--timeout", String(CLEAR_TIMEOUT_MS)]);
-    sleepSync(CLEAR_SETTLE_MS);
+    sleep(CLEAR_SETTLE_MS);
     return null;
   } catch (err) {
     // A REFUSED CLEAR IS NOT A REFUSED WAKE. The order still goes, on a bloated context: expensive is
@@ -3329,11 +3338,12 @@ export function isPerRowInstance(label) {
  * `prompt-session.mjs`): sent to a standing seat, skipped for a per-row instance ({@link isPerRowInstance}).
  * Both callers go through it, because fixing one leaves the reviewer wiped by its own author.
  * @param {(args: string[]) => string} run @param {string} label
+ * @param {(ms: number) => void} [sleep] `clearContext`'s settle, which is where the real default lives -- passed on as it came
  * @returns {{sent: boolean, refusal: string | null}} whether a clear was sent, and `clearContext`'s refusal
  */
-export function clearBeforeOrder(run, label) {
+export function clearBeforeOrder(run, label, sleep) {
   if (isPerRowInstance(label)) return { sent: false, refusal: null };
-  return { sent: true, refusal: clearContext(run, label) };
+  return { sent: true, refusal: clearContext(run, label, sleep) };
 }
 
 /**
@@ -3403,13 +3413,14 @@ function carriedOrder(order, target) {
 /**
  * The clear before an order (see {@link clearContext}), NOT for a session this tick started -- it has nothing to clear.
  * A refusal is reported into `refused` and the order still goes.
- * @param {(args: string[]) => string} run @param {{label: string, profile?: object}} target
+ * @param {{run: (args: string[]) => string, sleep?: (ms: number) => void}} herdr `run`, and the settle's seam ({@link clearContext})
+ * @param {{label: string, profile?: object}} target
  * @param {string} causeKey @param {string[]} refused
  * @returns {boolean} true when an existing session was left uncleared because it is a per-row instance
  */
-function clearUnlessStarted(run, target, causeKey, refused) {
+function clearUnlessStarted({ run, sleep }, target, causeKey, refused) {
   if (target.profile) return false;
-  const clear = clearBeforeOrder(run, target.label);
+  const clear = clearBeforeOrder(run, target.label, sleep);
   if (clear.refusal) refused.push(`${causeKey}: ${clear.refusal} -- delivered anyway`);
   return !clear.sent;
 }
@@ -3418,11 +3429,12 @@ function clearUnlessStarted(run, target, causeKey, refused) {
  * The clear before an order, or NONE for a resume (#2470): its whole point is the context the session still has, and a clear would wipe
  * exactly what the interrupted turn had built. Same return as {@link clearUnlessStarted}: whether the session was left uncleared.
  * @param {{ causeKey: string, resume?: boolean }} order
- * @param {{ run: (args: string[]) => string, target: { label: string, profile?: object }, refused: string[] }} ctx
+ * @param {{ run: (args: string[]) => string, sleep?: (ms: number) => void, target: { label: string, profile?: object },
+ *   refused: string[] }} ctx
  * @returns {boolean}
  */
-function clearedFirst(order, { run, target, refused }) {
-  return order.resume === true || clearUnlessStarted(run, target, order.causeKey, refused);
+function clearedFirst(order, { run, sleep, target, refused }) {
+  return order.resume === true || clearUnlessStarted({ run, sleep }, target, order.causeKey, refused);
 }
 
 /**
@@ -3460,7 +3472,9 @@ function whyUnavailable(target, unavailable) {
  *          counts?: Map<string, number>, ineligibleReason?: (label: string) => string | null,
  *          env?: Record<string, string>, registerSpawn?: (role: string) => void, drained?: readonly string[],
  *          claimable?: (order: {causeKey: string}) => string | null, claimer?: SpawnClaimer,
- *          memory?: () => string | null, launch?: LaunchFacts, unavailable?: (label: string) => string | null} & Partial<ReviewerDeps>} [deps]
+ *          memory?: () => string | null, launch?: LaunchFacts, unavailable?: (label: string) => string | null,
+ *          sleep?: (ms: number) => void} & Partial<ReviewerDeps>} [deps]
+ *   `sleep` is the clear's settle ({@link clearContext}): real by default, injected only by a test that is not about the delay (#2546);
  *   `unavailable` says why a session cannot ANSWER now (`unavailableReason`), and an order to one is refused with that
  *   reason and neither sent nor recorded (#2256); `registerReviewer` is told of every reviewer instance this tick starts (#2401), for the auth detector;
  *   `checkout` and `registry` are the reviewer path's seams (its git, its filesystem, what it has started);
@@ -3474,7 +3488,7 @@ function whyUnavailable(target, unavailable) {
  */
 export function deliver(orders, agents, roster,
   { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer, memory,
-    launch, reviewerEnv, registerReviewer, checkout, registry, unavailable } = {}) {
+    launch, reviewerEnv, registerReviewer, checkout, registry, unavailable, sleep } = {}) {
   const sent = [];
   const refused = [];
   const stuck = [];
@@ -3514,7 +3528,7 @@ export function deliver(orders, agents, roster,
     // window is its one row.
     // A RESUME IS NEVER PRECEDED BY A CLEAR (#2470): its whole point is the context the session still has. Sent to a standing seat it
     // would wipe exactly what the interrupted turn had built, and the ledger says so with the same `no-clear` mark an instance's carries.
-    const noClear = clearedFirst(order, { run, target, refused });
+    const noClear = clearedFirst(order, { run, sleep, target, refused });
     try {
       run(["--session", "org", "agent", "prompt", target.label,
         addressed(carriedOrder(order, target), target.label,
