@@ -107,13 +107,14 @@ export function templateFieldsReason(body, issueNumber) {
  * answering a DIFFERENT `--json` request the same way) is "asked the wrong question", not "asked and the
  * row has nothing". Collapsing the two via `parsed.body ?? ""` would read the second as the first and
  * refuse every claim.
+ * #2617: `repo` is the TRACKER the row lives in, as the project's declaration names it (default the first).
  * @param {number} issueNumber
- * @param {{ run?: (args: string[]) => string }} [deps]
+ * @param {{ run?: (args: string[]) => string, repo?: string }} [deps]
  * @returns {string | null}
  */
-export function lookupIssueBody(issueNumber, { run = gh } = {}) {
+export function lookupIssueBody(issueNumber, { run = gh, repo = REPO } = {}) {
   return lookup(() => {
-    const raw = run(["issue", "view", String(issueNumber), "--repo", REPO, "--json", "body"]);
+    const raw = run(["issue", "view", String(issueNumber), "--repo", repo, "--json", "body"]);
     /** @type {{ body?: string }} */
     const parsed = JSON.parse(raw);
     if (!("body" in parsed)) throw new Error("response carried no body field");

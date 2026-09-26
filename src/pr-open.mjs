@@ -42,9 +42,10 @@
 import { execFileSync, execSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { acceptanceReport, closesDeclarationReport, extractClosesDeclaration, extractMutationSection }
+import { acceptanceReport, closesDeclarationReport, closesReferences, extractClosesDeclaration, extractMutationSection }
   from "./acceptance-commands.mjs";
-import { declaredRegionFiles, regionCovers } from "./region-paths.mjs";
+import { declaredRegionFiles, regionCovers, regionCoversIn } from "./region-paths.mjs";
+import { homeProjectDeclaration } from "./project-config.mjs";
 import { leakRefusalReason } from "./lib/leak-patterns.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { REPO } from "./project-identity.mjs";
@@ -162,12 +163,14 @@ export function outsideRegionDeclarations(body) {
 /**
  * #2417: WHERE ONE CHANGED FILE STANDS AGAINST THE REGION -- the Region first, then the exempt set, then a declared
  * escape, so a path in the Region is never counted as an escape the author did not need to write.
+ * #2617: `treeKey` is the declared key of the repository THIS tree is (default the first), so `nvda-worker:src/x.ts` in a Region covers
+ * `src/x.ts` of that repository's tree and of no other -- and a bare entry is the first repository's, as it always was.
  * @param {string} file
- * @param {{ region: readonly string[], declared: readonly { path: string }[] }} against
+ * @param {{ region: readonly string[], declared: readonly { path: string }[], treeKey?: string }} against
  * @returns {"inside" | "exempt" | "declared" | "outside"}
  */
-export function standingAgainstRegion(file, { region, declared }) {
-  if (region.some((entry) => regionCovers(entry, file))) return "inside";
+export function standingAgainstRegion(file, { region, declared, treeKey = "" }) {
+  if (region.some((entry) => regionCoversIn(entry, treeKey, file))) return "inside";
   if (REGION_EXEMPT.some(({ entry }) => regionCovers(entry, file))) return "exempt";
   if (declared.some(({ path }) => regionCovers(path, file))) return "declared";
   return "outside";
@@ -206,26 +209,50 @@ function regionPassLine({ rows, changed, standing, base }) {
  * The union of the Regions of the rows a body closes, read through `region-paths.mjs`. A row whose body cannot be
  * read is `unread` (refuse: absence is not proof the diff is inside), and one with no Region section at all is
  * `no-section` (nothing to compare against, said aloud).
- * @param {number[]} numbers
- * @param {{ rowBody: (number: number) => string, rootFiles?: Set<string> }} deps
- * @returns {{ kind: "region", region: string[] } | { kind: "unread", why: string } | { kind: "no-section", row: number }}
+ *
+ * #2617: a row is read from the repository the body NAMES (`Closes owner/repo#N`) and from the default tracker when it names none, so
+ * `rowBody` is called with the repository only for a qualified row -- a bare one is asked exactly as before. `row` in a `no-section` is the
+ * row as written (`#7`, `owner/repo#7`).
+ * @param {import("./acceptance-commands.mjs").ClosesReference[]} references
+ * @param {{ rowBody: (number: number, repo?: string) => string, rootFiles?: Set<string> }} deps
+ * @returns {{ kind: "region", region: string[] } | { kind: "unread", why: string } | { kind: "no-section", row: string }}
  */
-function readRegions(numbers, { rowBody, rootFiles }) {
+function readRegions(references, { rowBody, rootFiles }) {
   /** @type {Set<string>} */
   const union = new Set();
-  for (const number of numbers) {
+  for (const reference of references) {
+    const name = referenceName(reference);
     let text;
     try {
-      text = rowBody(number);
+      text = reference.repo === null ? rowBody(reference.number) : rowBody(reference.number, reference.repo);
     } catch (error) {
-      return { kind: "unread", why: `could not read row #${number}'s body (${messageOf(error).split("\n")[0]})` };
+      return { kind: "unread", why: `could not read row ${name}'s body (${messageOf(error).split("\n")[0]})` };
     }
     // `declaredRegionFiles` reads `origin/main`'s root files by default; an injected set spares a test that git call.
     const declared = declaredRegionFiles(text, rootFiles ? { rootFiles } : undefined);
-    if (declared === null) return { kind: "no-section", row: number };
+    if (declared === null) return { kind: "no-section", row: name };
     for (const path of declared) union.add(path);
   }
   return { kind: "region", region: [...union] };
+}
+
+/**
+ * #2617: a row as its body wrote it -- `#7`, or `owner/repo#7` when it named a repository.
+ * @param {import("./acceptance-commands.mjs").ClosesReference} reference
+ * @returns {string}
+ */
+const referenceName = (reference) => `${reference.repo ?? ""}#${reference.number}`;
+
+/**
+ * #2617: WHICH DECLARED REPOSITORY THIS TREE IS, by `--repo` (the flag `gh pr` takes to name one), as its key -- the first repository's,
+ * the empty key, when the flag is absent or names none the declaration lists. It is what makes a Region entry's prefix mean a tree.
+ * @param {string[]} rest the args handed to `gh pr <mode>`
+ * @param {readonly { key: string, repo: string }[]} [code] the project's code repositories; absent, the declaration's
+ * @returns {string}
+ */
+function treeKeyOf(rest, code = homeProjectDeclaration().code) {
+  const repo = flagAfter(rest, "--repo");
+  return code.find((entry) => entry.repo === repo)?.key ?? "";
 }
 
 /**
@@ -239,19 +266,21 @@ function readRegions(numbers, { rowBody, rootFiles }) {
  * alternative is a check that passes exactly when GitHub is down.
  * @param {string} body
  * @param {string[]} rest the args handed to `gh pr <mode>`
- * @param {{ git?: (args: string[]) => string, rowBody: (number: number) => string, rootFiles?: Set<string> }} deps
+ * @param {{ git?: (args: string[]) => string, rowBody: (number: number, repo?: string) => string, rootFiles?: Set<string>,
+ *   code?: readonly { key: string, repo: string }[] }} deps `code` is the project's code repositories, for which one THIS tree is (`--repo`)
  * @returns {{ refusal: string | null, note: string | null }}
  */
-export function checkRegion(body, rest, { git = defaultGit, rowBody, rootFiles }) {
+export function checkRegion(body, rest, { git = defaultGit, rowBody, rootFiles, code }) {
   const closes = extractClosesDeclaration(body);
   if (closes.kind === "none") {
     return { refusal: null, note: "REGION: not checked -- `Closes: none` names no row, so there is no Region to read." };
   }
   if (closes.kind !== "closes") return { refusal: null, note: null };
-  const rows = closes.numbers.map((n) => `#${n}`).join(", ");
-  const read = readRegions(closes.numbers, { rowBody, rootFiles });
+  const references = closesReferences(closes);
+  const rows = references.map(referenceName).join(", ");
+  const read = readRegions(references, { rowBody, rootFiles });
   if (read.kind === "no-section") {
-    return { refusal: null, note: `REGION: not checked -- row #${read.row} has no Region section to read.` };
+    return { refusal: null, note: `REGION: not checked -- row ${read.row} has no Region section to read.` };
   }
   if (read.kind === "unread") {
     return { refusal: `pr-open: REFUSED -- ${read.why}, so the diff cannot be checked against ${rows}'s Region. `
@@ -267,7 +296,8 @@ export function checkRegion(body, rest, { git = defaultGit, rowBody, rootFiles }
       + `so ${rows}'s Region cannot be checked. Nothing was sent to GitHub (#2417).`, note: null };
   }
   const { declared, malformed } = outsideRegionDeclarations(body);
-  const standing = changed.map((file) => standingAgainstRegion(file, { region: read.region, declared }));
+  const treeKey = treeKeyOf(rest, code);
+  const standing = changed.map((file) => standingAgainstRegion(file, { region: read.region, declared, treeKey }));
   const outside = changed.filter((_file, index) => standing[index] === "outside");
   if (outside.length > 0) {
     return { refusal: regionRefusalText({ rows, outside, region: read.region, base, malformed }), note: null };
@@ -503,11 +533,13 @@ const defaultPrHead = (repo, number) => JSON.parse(execFileSync("gh",
 /**
  * Row N's body, over REST like `defaultPrHead` (the core pool, not the GraphQL one that runs out), as the caller. It is
  * a sibling of `run` and not a use of it: `run` is `stdio: "inherit"` and returns nothing, so it cannot hand a body back.
+ * #2617: from `repo` when the body's `Closes` named one, else the default tracker.
  * @param {number} number
+ * @param {string} [repo]
  * @returns {string}
  */
-const defaultRowBody = (number) =>
-  execFileSync("gh", ["api", `repos/${REPO}/issues/${number}`, "--jq", ".body"], { encoding: "utf8" });
+const defaultRowBody = (number, repo = REPO) =>
+  execFileSync("gh", ["api", `repos/${repo}/issues/${number}`, "--jq", ".body"], { encoding: "utf8" });
 /** `sandboxGitEnv()` CALLED: git exports GIT_DIR into every hook environment. @param {string[]} args */
 const defaultGit = (args) =>
   execFileSync("git", args, { encoding: "utf8", env: sandboxGitEnv() }).trim();
@@ -518,13 +550,13 @@ const defaultGit = (args) =>
  * passes the real reader (#1352's `launchGate` is placed the same way, and `pr-open-region.test.ts` pins the wiring).
  * @param {string} body
  * @param {string[]} rest
- * @param {{ git?: (args: string[]) => string, rowBody?: (number: number) => string, rootFiles?: Set<string>,
- *           out: (line: string) => void, err: (line: string) => void }} deps
+ * @param {{ git?: (args: string[]) => string, rowBody?: (number: number, repo?: string) => string, rootFiles?: Set<string>,
+ *           code?: readonly { key: string, repo: string }[], out: (line: string) => void, err: (line: string) => void }} deps
  * @returns {number | null} EXIT_NOTHING_SENT for a refusal, else null
  */
-function regionStep(body, rest, { git, rowBody, rootFiles, out, err }) {
+function regionStep(body, rest, { git, rowBody, rootFiles, code, out, err }) {
   if (!rowBody) return null;
-  const region = checkRegion(body, rest, { git, rowBody, rootFiles });
+  const region = checkRegion(body, rest, { git, rowBody, rootFiles, code });
   if (region.refusal) {
     err(`${region.refusal}\n`);
     return EXIT_NOTHING_SENT;
@@ -540,12 +572,13 @@ function regionStep(body, rest, { git, rowBody, rootFiles, out, err }) {
  * @param {{ run?: (args: string[]) => void, git?: (args: string[]) => string,
  *           prHead?: (repo: string, number: string) => { ref: string, oid: string } | null,
  *           runAcceptance?: (command: string) => number, runMutation?: (command: string) => number,
- *           owner?: () => string | null, rowBody?: (number: number) => string, rootFiles?: Set<string>,
+ *           owner?: () => string | null, rowBody?: (number: number, repo?: string) => string, rootFiles?: Set<string>,
+ *           code?: readonly { key: string, repo: string }[],
  *           out?: (line: string) => void, err?: (line: string) => void }} [deps]
  * @returns {number}
  */
 export function main(argv = process.argv.slice(2),
-  { run, git, prHead, runAcceptance, runMutation = runForReal, owner, rowBody, rootFiles, out = writeOut,
+  { run, git, prHead, runAcceptance, runMutation = runForReal, owner, rowBody, rootFiles, code, out = writeOut,
     err = writeErr } = {}) {
   const [mode, ...rest] = argv;
   if (mode !== "create" && mode !== "edit") {
@@ -566,7 +599,7 @@ export function main(argv = process.argv.slice(2),
     return EXIT_NOTHING_SENT;
   }
   // #2417: before checkBody for the same reason, and before anything is sent.
-  const outsideRegion = regionStep(body, rest, { git, rowBody, rootFiles, out, err });
+  const outsideRegion = regionStep(body, rest, { git, rowBody, rootFiles, code, out, err });
   if (outsideRegion !== null) return outsideRegion;
   const result = checkBody(body, { run: runAcceptance });
   for (const line of result.lines) out(`${line}\n`);

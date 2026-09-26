@@ -60,6 +60,7 @@
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { existsSync, realpathSync, readFileSync } from "node:fs";
+import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 // RELATIVE, NOT the `@a11ign/worker-fleet/cli-flags` package specifier: that export map
 // points at `dist/`, so it needs both `node_modules` AND a completed build. This file is reachable
@@ -67,6 +68,7 @@ import { fileURLToPath } from "node:url";
 // rather than naming it), and there it dies on startup with ERR_MODULE_NOT_FOUND.
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { REPO } from "./project-identity.mjs";
+import { homeProjectDeclaration, PROJECT_DECLARATION_PATH } from "./project-config.mjs";
 import { READY_LABEL, WAS_READY_LABEL } from "./ready-label-audit.mjs";
 import { gitCommonDir, appendJsonl } from "./merge-guard.mjs";
 import { withBoardSnapshot, PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapshot.mjs";
@@ -281,18 +283,20 @@ export function ensureLabelsExist(labels, { run = defaultRun } = {}) {
  * function does not recognise, throws -- it never falls through to an empty label list, which is
  * indistinguishable from "genuinely no labels" and would make every failure read as UNCLAIMED.
  *
+ * #2617: `repo` is the TRACKER the row lives in -- the one the project's declaration names for it (default the first).
+ *
  * @param {number} issueNumber
- * @param {{ run?: typeof defaultRun }} [deps]
+ * @param {{ run?: typeof defaultRun, repo?: string }} [deps]
  * @returns {IssueClaim}
  */
-export function fetchLabels(issueNumber, { run = defaultRun } = {}) {
+export function fetchLabels(issueNumber, { run = defaultRun, repo = REPO } = {}) {
   /** @type {string} */
   let raw;
   try {
-    raw = run("gh", ["issue", "view", String(issueNumber), "--repo", REPO,
+    raw = run("gh", ["issue", "view", String(issueNumber), "--repo", repo,
       "--json", "number,title,labels,state"]);
   } catch (cause) {
-    throw new Error(`row-claim: could not read issue #${issueNumber} from ${REPO} -- refusing to guess `
+    throw new Error(`row-claim: could not read issue #${issueNumber} from ${repo} -- refusing to guess `
       + `whether it is claimed. ${/** @type {Error} */ (cause).message}`, { cause });
   }
   /** @type {unknown} */
@@ -333,16 +337,16 @@ export function fetchLabels(issueNumber, { run = defaultRun } = {}) {
  * silently became "no worktree recorded" would skip the removal and report a clean decline -- unreadable
  * is not unrecorded, the same distinction `arm-pr`'s own label read already refuses to blur.
  * @param {number} issueNumber
- * @param {{ run?: typeof defaultRun }} [deps]
+ * @param {{ run?: typeof defaultRun, repo?: string }} [deps] `repo` is the tracker the row lives in
  * @returns {string[]}
  */
-export function fetchClaimComments(issueNumber, { run = defaultRun } = {}) {
+export function fetchClaimComments(issueNumber, { run = defaultRun, repo = REPO } = {}) {
   /** @type {string} */
   let raw;
   try {
-    raw = run("gh", ["issue", "view", String(issueNumber), "--repo", REPO, "--json", "comments"]);
+    raw = run("gh", ["issue", "view", String(issueNumber), "--repo", repo, "--json", "comments"]);
   } catch (cause) {
-    throw new Error(`row-claim: could not read issue #${issueNumber}'s comments from ${REPO} -- refusing `
+    throw new Error(`row-claim: could not read issue #${issueNumber}'s comments from ${repo} -- refusing `
       + `to guess what branch or worktree its claim recorded. ${/** @type {Error} */ (cause).message}`,
     { cause });
   }
@@ -549,20 +553,23 @@ export function moveProjectStatus(issueNumber, statusName,
  * through `merge-guard/lookups.mjs`'s own helper, so a fixture injecting `run` alone placed a real network
  * call. B2 now asks whether a ROW is in build and reads no check state at all, so the deps have no
  * subject; callers still passing them are simply ignored, which is why no test had to change for it.
+ * #2617: `repo` is the TRACKER the row lives in (default the first), and every read below that is about a ROW -- B2's held rows, the
+ * `blockedBy` edge, the Region -- reads it there. B4's pull-request read is NOT that repository's alone: it reads every code
+ * repository the project declares (`lookupOpenPrFiles`), and `repo` only tells it whose rows a `Closes` names.
  * @param {number} issueNumber the row about to be claimed -- excluded from B2's "other held rows" check
  * @param {string} mySession
- * @param {{ run?: typeof defaultRun,
- *           }} deps
+ * @param {{ run?: typeof defaultRun, repo?: string, repos?: readonly { key: string, repo: string }[],
+ *           }} deps `repos` is the code repositories B4 reads; absent, every one the project declares
  * @returns {string | null}
  */
-export function sessionEligibilityReason(issueNumber, mySession, { run = defaultRun } = {}) {
+export function sessionEligibilityReason(issueNumber, mySession, { run = defaultRun, repo = REPO, repos } = {}) {
   const ghRun = (/** @type {string[]} */ args) => run("gh", args);
 
   // #989: B2 asks whether a ROW is in build, not whether a PR is open. `null` from the lookup is
   // INCONCLUSIVE and returns no refusal, exactly as the PR-shaped version did -- a failed lookup must
   // never invent a block any more than it may invent a clearance.
-  const heldRows = lookupHeldRows(mySession, issueNumber, { run: ghRun });
-  const inBuild = heldRows === null ? null : inBuildReason(heldRows);
+  const heldRows = lookupHeldRows(mySession, issueNumber, { run: ghRun, repo });
+  const inBuild = heldRows === null ? null : inBuildReason(heldRows, Date.now(), { repo });
   if (inBuild) return inBuild;
 
   // #1886: THE ROW BEING CLAIMED may itself carry an open `blockedBy` edge -- a declared wait GitHub
@@ -574,18 +581,18 @@ export function sessionEligibilityReason(issueNumber, mySession, { run = default
   // known not to be blocking. Kept here rather than dropped: this function is called directly (#1886's own
   // Open-check), and its own contract -- "is THIS row startable at all right now" -- is not truthfully
   // answered without it.
-  const blockedRow = lookupBlockedByEdge(issueNumber, { run: ghRun });
+  const blockedRow = lookupBlockedByEdge(issueNumber, { run: ghRun, repo });
   const blocked = blockedByEdgeReason(blockedRow);
   if (blocked) return blocked;
 
-  const myFiles = lookupMyRegionFiles(issueNumber, { run: ghRun });
-  const otherPrFiles = lookupOpenPrFiles({ run: ghRun });
+  const myFiles = lookupMyRegionFiles(issueNumber, { run: ghRun, repo });
+  const otherPrFiles = lookupOpenPrFiles({ run: ghRun, trackerRepo: repo, repos });
   if (myFiles !== null && otherPrFiles !== null) {
     // #2101: the row's OWN pull request is not a competitor for its files. Without this number B4
     // refuses a row whose PR was opened before its claim -- against the very work that would finish it.
     const { reason, emptyOtherPrs } = fileOverlapReason(myFiles, otherPrFiles, { rowNumber: issueNumber });
     for (const prNumber of emptyOtherPrs) {
-      process.stderr.write(`row-claim: #${prNumber} is open and reports ZERO changed files -- not folded `
+      process.stderr.write(`row-claim: ${prLabel(prNumber)} is open and reports ZERO changed files -- not folded `
         + "into \"no overlap\", just nothing to compare against right now. Worth a look if that surprises "
         + "you (B4, #462).\n");
     }
@@ -1030,6 +1037,79 @@ export function dispatchRow(issueNumber, mySession, deps = {}) {
  */
 export function claimRow(issueNumber, mySession, deps = {}) {
   return writeRowLabels(issueNumber, mySession, [STARTED_LABEL], deps);
+}
+
+// --- #2617 (child 3b of #69): WHICH TRACKER A ROW IS IN, AND WHAT A NAME IS WHEN TWO TRACKERS BOTH HAVE A ROW 7 -----------------
+//
+// A project declares its trackers in `.agent-org/project.json` and each carries a KEY; the empty key is the primary project's first
+// tracker, so every name, ledger line and label that exists today keeps its meaning (ADR 0040, decision 2). `--tracker=<key>` says which
+// tracker a row number is in, and absent it is the empty key: a command written before this row is the same command.
+//
+// A NAME IS `<role>-<key>-<n>` FOR A NON-EMPTY KEY AND `<role>-<n>` FOR THE EMPTY ONE, which is what keeps `worker-7` and
+// `worker-agent-org-7` two sessions and `../wt-7` and `../wt-agent-org-7` two directories. `claimNames` is that grammar in ONE place.
+//
+// WHAT A CLAIM IN ANOTHER TRACKER CAN DO TODAY: `check` reads it in full. A `claim`, `dispatch`, `decline` or `conflict` there is REFUSED
+// BEFORE ANY WRITE, and says why: they write the row's labels and move its card on the Project board, and the tool's labels are #2619's
+// (3d) and its board snapshot is bound to the first tracker's board (`board-snapshot-scope.mjs`), so a write would land on the wrong
+// board or half-apply. A refusal that names its owner is the honest edge of this row, not a claim that the write is handled.
+
+/** @typedef {{ key: string, repo: string, board: { owner: string, number: number } }} Tracker */
+
+/**
+ * The tracker a key names, or a refusal that lists what IS declared -- never a fallback to the first, which is how a row number in the
+ * wrong repository would be read as the right one without an error.
+ * @param {string} key
+ * @param {{ tracker: readonly Tracker[] }} [declaration] the project's declaration; defaults to this checkout's
+ * @returns {{ ok: true, tracker: Tracker } | { ok: false, reason: string }}
+ */
+export function trackerFor(key, declaration = homeProjectDeclaration()) {
+  const found = declaration.tracker.find((tracker) => tracker.key === key);
+  if (found) return { ok: true, tracker: found };
+  const declared = declaration.tracker.map((tracker) => (tracker.key === "" ? "the empty key" : `\`${tracker.key}\``)).join(", ");
+  return { ok: false, reason: `no tracker with key \`${key}\` is declared in ${PROJECT_DECLARATION_PATH} (declared: ${declared}); `
+    + "nothing is defaulted to another tracker's row of the same number" };
+}
+
+/**
+ * The worktree directory name and the spawned session name for row `number` of the tracker `key` (decision 2's grammar):
+ * `wt-<n>` and `worker-<n>` for the empty key, byte for byte what the tool has always used, and `wt-<key>-<n>` and `worker-<key>-<n>` otherwise.
+ * @param {{ key: string, number: number }} row
+ * @returns {{ worktree: string, session: string }}
+ */
+export function claimNames({ key, number }) {
+  const qualified = key === "" ? "" : `${key}-`;
+  return { worktree: `wt-${qualified}${number}`, session: `worker-${qualified}${number}` };
+}
+
+/**
+ * Pure: is a claim in tracker `key` named the way decision 2 says, and may it write at all? `null` for the empty key -- every claim
+ * written before this row -- and otherwise the FIRST thing wrong, in the order a person fixes them: an undeclared key, a worktree
+ * whose directory name would be shared with the same-numbered row of another tracker, a session named as though it held that row in
+ * the first tracker, and last the edge above.
+ *
+ * ONLY THE ONE COLLIDING SESSION SHAPE IS REFUSED (`worker-<n>` for a row that is not the first tracker's): a standing seat is named by
+ * its seat (`worker-5`) and claims whatever row it is handed, so the rule is that the row's number is never the only thing telling two
+ * trackers' workers apart -- not that every session must spell its tracker.
+ * @param {{ mode: "dispatch" | "claim" | "decline" | "conflict", key: string, number: number, session?: string, worktree?: string }} claim
+ * @param {{ tracker: readonly Tracker[] }} [declaration]
+ * @returns {string | null}
+ */
+export function trackerClaimRefusal({ mode, key, number, session, worktree }, declaration = homeProjectDeclaration()) {
+  if (key === "") return null;
+  const found = trackerFor(key, declaration);
+  if (!found.ok) return found.reason;
+  const names = claimNames({ key, number });
+  if (worktree !== undefined && basename(worktree.replace(/\/+$/, "")) !== names.worktree) {
+    return `a claim in tracker \`${key}\` names its worktree \`${names.worktree}\`, not \`${worktree}\`: \`wt-${number}\` is the FIRST tracker's row ${number}'s directory, `
+      + "and two trackers both have a row of that number (ADR 0040, decision 2)";
+  }
+  if (session === claimNames({ key: "", number }).session) {
+    return `\`${session}\` is the name of the session that holds the FIRST tracker's row ${number}; a worker on tracker \`${key}\`'s row ${number} is `
+      + `\`${names.session}\` (ADR 0040, decision 2), or its \`session:\` label would name two rows`;
+  }
+  return `\`${mode}\` in tracker \`${key}\` writes the row's labels and moves its card on the Project board, and neither is built for a second `
+    + "tracker yet: the labels are the label row's (#2619, 3d) and the board snapshot is bound to the first tracker's board. "
+    + `\`check --tracker=${key}\` reads the row in full. Nothing was written.`;
 }
 
 // --- #1432: `claim` OWNS THE WORKTREE --------------------------------------------------------------------------------
@@ -1562,8 +1642,11 @@ export function checkLogPath() {
  * the log's DENOMINATOR (#226): without an entry for every ask, a reader can never tell "the tool has been
  * asked N times and wrong M of them" from "the tool has only ever been asked when someone suspected it".
  *
+ * #2617: `tracker` is the key of the tracker the row is in, present ONLY for a non-empty key -- so a first-tracker entry is the line it always
+ * was, and a second tracker's `check 7` cannot be read as the first's (`latestCheckFor`).
+ *
  * @param {string} logPath
- * @param {{ issueNumber: number, claimed: boolean, started: boolean, sessions: string[],
+ * @param {{ issueNumber: number, tracker?: string, claimed: boolean, started: boolean, sessions: string[],
  *           reachability: { code: number | null, output: string } | null }} entry
  */
 export function recordCheck(logPath, entry) {
@@ -1601,7 +1684,8 @@ export function latestCheckFor(logPath, issueNumber) {
     throw error;
   }
   const entries = text.split("\n").filter(Boolean).map((line) => JSON.parse(line))
-    .filter((entry) => entry.kind === "check" && entry.issueNumber === issueNumber);
+    // #2617: `conflict` is the first tracker's alone, so a `check` of ANOTHER tracker's row of this number is not its verdict.
+    .filter((entry) => entry.kind === "check" && entry.issueNumber === issueNumber && (entry.tracker ?? "") === "");
   return entries.length > 0 ? entries[entries.length - 1] : null;
 }
 
@@ -1610,8 +1694,7 @@ export function latestCheckFor(logPath, issueNumber) {
  * the same distinction `reportReachability`'s own doc draws for reachability. A full disk should not turn
  * a correctly-answered `check` into `COULD NOT DETERMINE`.
  *
- * @param {{ issueNumber: number, claimed: boolean, started: boolean, sessions: string[],
- *           reachability: { code: number | null, output: string } | null }} entry
+ * @param {Parameters<typeof recordCheck>[1]} entry
  */
 function recordCheckSafely(entry) {
   try {
@@ -1625,7 +1708,7 @@ function recordCheckSafely(entry) {
 function usage() {
   return "Usage:\n"
     + "  node packages/agent-org/src/row-claim.mjs --row=<issue-number>                       (status: three states)\n"
-    + "  node packages/agent-org/src/row-claim.mjs check <issue-number>                       (alias of --row=)\n"
+    + "  node packages/agent-org/src/row-claim.mjs check <issue-number> [--tracker=<key>]     (alias of --row=; #2617: --tracker= reads a row of that tracker of `.agent-org/project.json`, and claim/dispatch/decline/conflict there are refused before any write)\n"
     + "  node packages/agent-org/src/row-claim.mjs dispatch <issue-number> --session=<name>   (mark taken at dispatch)\n"
     + "  node packages/agent-org/src/row-claim.mjs claim <issue-number> --session=<name> [--branch=<name>] "
     + "[--worktree=<path>] [--adopt=<session>] [--blocked-by=#N]  (mark started; #2470: --adopt claims that session's EXISTING tree in place instead of creating one; #1432: given both, CREATES the worktree at <path> on new branch <name> from origin/main, refusing first if either exists; #656/#665: records the branch and worktree "
@@ -1694,6 +1777,16 @@ function renderStatus(issueNumber, title, status, { body, recorded }) {
 }
 
 /**
+ * #2617: A PULL REQUEST NAMED IN A LINE -- `#7` for the first repository's, which is a number and always was, and `owner/repo#7`
+ * (already a string) for another's, because two repositories both have a #7.
+ * @param {number | string} pr
+ * @returns {string}
+ */
+function prLabel(pr) {
+  return typeof pr === "number" ? `#${pr}` : pr;
+}
+
+/**
  * #1063: B4'S OWN VERDICT, ON THE READ PATH -- pure, so both outcomes are drivable.
  *
  * `check` used to say "IT DOES NOT RUN B4" and mean it: the overlap rule lived only on the claim path, so
@@ -1719,8 +1812,9 @@ function renderStatus(issueNumber, title, status, { body, recorded }) {
  * as a clean one. That conflation is the defect this file's own `startability` refuses one level up.
  *
  * @param {string[] | null} myFiles this row's declared Region, or null when it could not be read
- * @param {{ number: number, files: string[], changedFiles: number, closes?: number[] }[] | null} otherPrFiles every
- *   other open PR, its files, its count (#1419), and the rows it declares it closes (#2101), or null
+ * @param {{ number: number, files: string[], changedFiles: number, closes?: number[], repo?: string, repoKey?: string }[] | null} otherPrFiles every
+ *   other open PR, its files, its count (#1419), and the rows it declares it closes (#2101), or null. (#2617) `repo` and `repoKey` name a pull
+ *   request of a repository other than the first
  * @param {number | null} [rowNumber] the row this is being asked about (#2101), so its own pull request is
  *   excluded. `check` knows it and passes it; omitting it is the unconditional B4 of before.
  * @returns {string[]} lines to print -- NEVER empty. Three states, three sentences: refused,
@@ -1744,7 +1838,7 @@ export function b4Lines(myFiles, otherPrFiles, rowNumber = null) {
     ? `B4 REFUSES THIS CLAIM: ${reason}`
     : "B4: no open pull request holds any file in this row's Region.");
   if (emptyOtherPrs.length > 0) {
-    lines.push(`  NOTE: #${emptyOtherPrs.join(", #")} read as touching NO files. An open PR with an empty `
+    lines.push(`  NOTE: ${emptyOtherPrs.map(prLabel).join(", ")} read as touching NO files. An open PR with an empty `
       + "file list is a stale reading, not a clean one -- B4's own #462 finding.");
   }
   return lines;
@@ -1760,10 +1854,14 @@ export function b4Lines(myFiles, otherPrFiles, rowNumber = null) {
  * `renderStatus`'s call to this function. Each extraction moves the unheld surface up one level rather
  * than removing it, and saying which line is left is the honest end of that regress.
  *
+ * #2617: `repo` is the TRACKER the row lives in. It reaches the Region read and tells B4 whose rows a `Closes` names; the pull requests it
+ * compares against are every declared code repository's regardless.
+ *
  * @param {number} issueNumber
  * @param {{ write?: (s: string) => void,
- *   mine?: (n: number) => string[] | null,
- *   others?: () => { number: number, files: string[], changedFiles: number, closes?: number[] }[] | null }} [deps]
+ *   repo?: string,
+ *   mine?: (n: number, where?: { repo?: string }) => string[] | null,
+ *   others?: (where?: { trackerRepo?: string }) => { number: number, files: string[], changedFiles: number, closes?: number[] }[] | null }} [deps]
  */
 export function reportB4(issueNumber, deps = {}) {
   const write = deps.write ?? ((/** @type {string} */ text) => process.stdout.write(text));
@@ -1773,25 +1871,69 @@ export function reportB4(issueNumber, deps = {}) {
   // here until #1085's review: the `reportB4 never writes` mutation was 1 red and this `if` is what that
   // red would have been credited to, so the next person mutating here would conclude the empty case was
   // covered by a branch that can no longer be taken.
-  write(`${b4Lines(mine(issueNumber), others(), issueNumber).join("\n")}\n`);
+  write(`${b4Lines(mine(issueNumber, { repo: deps.repo }), others({ trackerRepo: deps.repo }), issueNumber).join("\n")}\n`);
 }
 
-/** @param {number} issueNumber */
-function runStatus(issueNumber) {
+/**
+ * #2617: the row is read in the tracker `trackerKey` names (default the first). ITS OWN FUNCTION for a second tracker rather than a
+ * parameter of `renderStatus`, because `renderStatus`'s unclaimed branch is pinned to call `reportB4(issueNumber)` literally
+ * (`row-claim.test.ts`) and that is the first tracker's read exactly as it was.
+ * @param {number} issueNumber @param {string} [trackerKey]
+ */
+function runStatus(issueNumber, trackerKey = "") {
+  const found = trackerFor(trackerKey);
+  if (!found.ok) {
+    process.stderr.write(`COULD NOT DETERMINE: ${found.reason}\n`);
+    process.exitCode = 2;
+    return;
+  }
+  const { repo } = found.tracker;
   try {
-    const { labels, title } = fetchLabels(issueNumber);
+    const { labels, title } = fetchLabels(issueNumber, { repo });
     // #771: same injected-`run` shape `writeRowLabels` already uses for the identical lookup.
     const ghRunForBody = (/** @type {string[]} */ args) => defaultRun("gh", args);
-    const body = lookupIssueBody(issueNumber, { run: ghRunForBody });
+    const body = lookupIssueBody(issueNumber, { run: ghRunForBody, repo });
     // #987: the recorded branch/worktree now live in a comment, so `check` reads the thread too. Same
     // `claimedObjects` resolution `declineRow` uses, so the two can never disagree about which directory
     // a claim is holding open.
-    const recorded = claimedObjects({ labels, comments: fetchClaimComments(issueNumber) });
+    const recorded = claimedObjects({ labels, comments: fetchClaimComments(issueNumber, { repo }) });
+    if (trackerKey !== "") {
+      renderTrackerStatus(found.tracker, { issueNumber, title, status: claimStatus(labels), body, recorded });
+      return;
+    }
     renderStatus(issueNumber, title, claimStatus(labels), { body, recorded });
   } catch (error) {
     process.stderr.write(`COULD NOT DETERMINE: ${/** @type {Error} */ (error).message}\n`);
     process.exitCode = 2;
   }
+}
+
+/**
+ * #2617: `renderStatus` for a row of a tracker that is not the first: the same three-state answer and the same B4, named `<key>#<n>` (decision 2)
+ * so two trackers' row 7 read as two rows, and with the reachability read left out and SAID to be -- `row-reachability.mjs` reads the first
+ * tracker's rows and would answer about the wrong one. The log entry carries the key, so it is never taken for the first tracker's `check`.
+ * @param {Tracker} tracker
+ * @param {{ issueNumber: number, title: string, status: ReturnType<typeof claimStatus>, body: string | null,
+ *   recorded: { branch: string | null, worktree: string | null } }} row
+ */
+function renderTrackerStatus(tracker, { issueNumber, title, status, body, recorded }) {
+  const name = `${tracker.key}#${issueNumber}`;
+  const filedBy = body === null ? "(could not read body)" : filedByLine(body) ?? "unrecorded";
+  if (!status.claimed) {
+    process.stdout.write(`UNCLAIMED -- ${name} "${title}" -- Filed-by: ${filedBy}\n`);
+    process.stdout.write(`REACHABILITY: not run for ${name} -- \`row-reachability.mjs\` reads the first tracker's rows only, so its answer would be about another row (#2617).\n`);
+    reportB4(issueNumber, { repo: tracker.repo });
+    process.exitCode = 0;
+    recordCheckSafely({ issueNumber, tracker: tracker.key, claimed: false, started: false, sessions: [], reachability: null });
+    return;
+  }
+  const by = status.sessions.length > 0 ? status.sessions.join(", ") : "someone (no session label yet)";
+  const state = status.started ? "STARTED" : "DISPATCHED (not started)";
+  const branchSuffix = recorded.branch ? `, branch ${recorded.branch}` : "";
+  const worktreeSuffix = recorded.worktree ? `, worktree ${recorded.worktree}` : "";
+  process.stdout.write(`${state} by ${by}${branchSuffix}${worktreeSuffix} -- ${name} "${title}" -- Filed-by: ${filedBy}\n`);
+  process.exitCode = 1;
+  recordCheckSafely({ issueNumber, tracker: tracker.key, claimed: true, started: status.started, sessions: status.sessions, reachability: null });
 }
 
 /**
@@ -1879,6 +2021,30 @@ function instanceNow(mySession, issueNumber) {
 }
 
 /**
+ * #2617: `decline` and `conflict`, BEFORE EITHER READS A THING -- a second tracker's row of this number must never be acted on as the first's.
+ * @param {"decline" | "conflict"} mode @param {number} issueNumber @param {string[]} rest
+ */
+function runDeclineOrConflict(mode, issueNumber, rest) {
+  const refusal = trackerClaimRefusal({ mode, key: trackerKeyOf(rest), number: issueNumber });
+  if (refusal) {
+    process.stdout.write(`NOT CLAIMED: ${refusal}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  if (mode === "decline") runDecline(issueNumber, rest);
+  else runConflict(issueNumber, rest);
+}
+
+/**
+ * #2617: the tracker key a command names with `--tracker=<key>`; the EMPTY key, the first tracker, when it names none.
+ * @param {string[]} args
+ * @returns {string}
+ */
+function trackerKeyOf(args) {
+  return args.find((a) => a.startsWith("--tracker="))?.slice("--tracker=".length) ?? "";
+}
+
+/**
  * @param {"dispatch" | "claim"} mode
  * @param {number} issueNumber
  * @param {string[]} rest
@@ -1909,6 +2075,13 @@ function runDispatchOrClaim(mode, issueNumber, rest) {
   if (flagsReason) {
     process.stderr.write(`row-claim claim: ${flagsReason}\n`);
     process.exitCode = 2;
+    return;
+  }
+  // #2617: A ROW OF ANOTHER TRACKER is named per decision 2 and, until its labels and board are built, refused before any write.
+  const trackerRefusal = trackerClaimRefusal({ mode, key: trackerKeyOf(rest), number: issueNumber, session: mySession, worktree });
+  if (trackerRefusal) {
+    process.stdout.write(`NOT CLAIMED: ${trackerRefusal}\n`);
+    process.exitCode = 1;
     return;
   }
   try {
@@ -2060,7 +2233,7 @@ async function main() {
   // own documented invocation. A flag guard that has not been merged forward is a guard that breaks the
   // thing it protects.
   refuseUnknownFlags(["--session", "--row=", "--found=", "--blocked=", "--branch=", "--worktree=",
-    "--blocked-by=", "--keep-worktree", "--answer=", "--adopt="], { entry: import.meta.url, command: "node packages/agent-org/src/row-claim.mjs" });
+    "--blocked-by=", "--keep-worktree", "--answer=", "--adopt=", "--tracker="], { entry: import.meta.url, command: "node packages/agent-org/src/row-claim.mjs" });
   // #1352: FIRST OF ALL, where it was launched. From the primary checkout or a plain clone this refuses before any read,
   // exit 2 -- the "could not determine at all" outcome every consumer already classifies, as the stale-rule guard does.
   if (launchGate("row-claim")) {
@@ -2093,7 +2266,7 @@ async function main() {
       process.exitCode = 2;
       return;
     }
-    runStatus(issueNumber);
+    runStatus(issueNumber, trackerKeyOf(argv));
     return;
   }
 
@@ -2106,19 +2279,15 @@ async function main() {
   }
 
   if (mode === "check") {
-    runStatus(issueNumber);
+    runStatus(issueNumber, trackerKeyOf(rest));
     return;
   }
   if (mode === "dispatch" || mode === "claim") {
     runDispatchOrClaim(mode, issueNumber, rest);
     return;
   }
-  if (mode === "decline") {
-    runDecline(issueNumber, rest);
-    return;
-  }
-  if (mode === "conflict") {
-    runConflict(issueNumber, rest);
+  if (mode === "decline" || mode === "conflict") {
+    runDeclineOrConflict(mode, issueNumber, rest);
     return;
   }
 

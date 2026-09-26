@@ -100,7 +100,7 @@ export function pathInProse() {
  */
 export function directoryReservations(body, countUnder = trackedFilesUnder) {
   return (declaredRegionFiles(body) ?? [])
-    .filter((entry) => entry.endsWith("/"))
+    .filter((entry) => entry.endsWith("/") && splitRegionEntry(entry).key === "") // #2617: another repository's tree is not counted here
     .map((entry) => ({ entry, files: countUnder(entry) }));
 }
 
@@ -125,7 +125,7 @@ export function directoryReservations(body, countUnder = trackedFilesUnder) {
  */
 export function slashlessDirectoryEntries(body, isDirectory = namesTrackedDirectory) {
   return (declaredRegionFiles(body) ?? []).filter(
-    (entry) => !entry.endsWith("/") && isDirectory(entry),
+    (entry) => !entry.endsWith("/") && splitRegionEntry(entry).key === "" && isDirectory(entry),
   );
 }
 
@@ -412,7 +412,7 @@ export function declaresNoCommit(body) {
  * `examples/`, `data/` and `.claude/skills/` as `[]` -- #941's own defect for three of the eight roots
  * the tree tracks (worker-judge's review of #945). `region-paths.test.ts` checks every tracked root.
  */
-const DIRECTORY_ITEM = /^(?:[-*+]\s+)?`?((?:[A-Za-z0-9_.-]+\/)+)`?$/;
+const DIRECTORY_ITEM = /^(?:[-*+]\s+)?`?((?:[a-z0-9][a-z0-9-]*:)?(?:[A-Za-z0-9_.-]+\/)+)`?$/;
 
 /**
  * #999: A FENCED LINE UNDER `## Region` IS A DECLARATION, NOT PROSE TO PATTERN-MATCH.
@@ -446,7 +446,10 @@ const DIRECTORY_ITEM = /^(?:[-*+]\s+)?`?((?:[A-Za-z0-9_.-]+\/)+)`?$/;
  * exactly the new files a Region exists to reserve.
  */
 const FENCE_LINE = /^\s*(?:```|~~~)/;
-const FENCED_PATH_ITEM = /^(?:[-*+]\s+)?`?([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+)`?$/;
+// #2617: AN ITEM MAY NAME ANOTHER REPOSITORY OF THE PROJECT, `nvda-worker:src/x.ts` -- the prefix is that repository's declared KEY (ADR
+// 0040, decision 2; `project-config.mjs`'s `code[].key`). A bare path is the project's FIRST repository's, so every Region written before
+// this row reads exactly as it did. The prefixed form needs a `/` or a `.` after the colon, so a fenced line like `npm:test` is not a path.
+const FENCED_PATH_ITEM = /^(?:[-*+]\s+)?`?((?:[a-z0-9][a-z0-9-]*:(?=[^:]*[/.])[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*|[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+))`?$/;
 
 /**
  * Every path declared by a line inside a fenced block of `section`. Lines outside a fence are left to the
@@ -465,7 +468,7 @@ function fencedPaths(section) {
   return out;
 }
 /** `.` and `..` name no directory in the tree: `../x/` is outside it and `./` is all of it. */
-const isTreePath = (/** @type {string} */ path) => !path.split("/").some((segment) => segment === "." || segment === "..");
+const isTreePath = (/** @type {string} */ entry) => !splitRegionEntry(entry).path.split("/").some((segment) => segment === "." || segment === "..");
 const LIST_SEPARATOR = /[,;]|\band\b|\bor\b/;
 
 /**
@@ -476,6 +479,30 @@ const LIST_SEPARATOR = /[,;]|\band\b|\bor\b/;
  */
 export function regionCovers(entry, file) {
   return entry.endsWith("/") ? file.startsWith(entry) : entry === file;
+}
+
+const REGION_KEY_PREFIX = /^([a-z0-9][a-z0-9-]*):(?=[^:]*[/.])/;
+
+/**
+ * #2617: A Region entry as `{ key, path }` -- `key` the declared repository key it is prefixed with, `""` for a bare path, which
+ * belongs to the project's first repository (the empty key, ADR 0040 decision 2). PURE, and the one place the prefix is read.
+ * @param {string} entry
+ * @returns {{ key: string, path: string }}
+ */
+export function splitRegionEntry(entry) {
+  const key = REGION_KEY_PREFIX.exec(entry)?.[1];
+  return key === undefined ? { key: "", path: entry } : { key, path: entry.slice(key.length + 1) };
+}
+
+/**
+ * #2617: does this Region entry cover `file` of the repository whose key is `repoKey`? The entry's own key must be that repository's
+ * -- `nvda-worker:src/x.ts` covers nothing in the first repository even when a file there has the same path -- and then it is
+ * {@link regionCovers}, so the directory rule is not stated twice.
+ * @param {string} entry @param {string} repoKey @param {string} file
+ */
+export function regionCoversIn(entry, repoKey, file) {
+  const { key, path } = splitRegionEntry(entry);
+  return key === repoKey && regionCovers(path, file);
 }
 
 /**

@@ -61,13 +61,15 @@ export function findMeasurementComment(comments) {
 }
 
 /**
+ * #2617: `repo` is the TRACKER the claimant's rows live in (default the first) -- the own pull request B2 found is one that tracker's
+ * `closedByPullRequestsReferences` named, so it is read where that lookup read it.
  * @param {number} prNumber
- * @param {{ run: (args: string[]) => string }} deps
+ * @param {{ run: (args: string[]) => string, repo?: string }} deps
  * @returns {string[] | null}
  */
-export function lookupOwnPrComments(prNumber, { run }) {
+export function lookupOwnPrComments(prNumber, { run, repo = REPO }) {
   return lookup(() => {
-    const raw = run(["pr", "view", String(prNumber), "--repo", REPO, "--json", "comments"]);
+    const raw = run(["pr", "view", String(prNumber), "--repo", repo, "--json", "comments"]);
     /** @type {{ comments: { body: string }[] }} */
     const parsed = JSON.parse(raw);
     return parsed.comments.map((c) => c.body);
@@ -76,12 +78,12 @@ export function lookupOwnPrComments(prNumber, { run }) {
 
 /**
  * @param {number} issueNumber
- * @param {{ run: (args: string[]) => string }} deps
+ * @param {{ run: (args: string[]) => string, repo?: string }} deps `repo` is the tracker the issue lives in
  * @returns {string | null}
  */
-export function lookupIssueOpenState(issueNumber, { run }) {
+export function lookupIssueOpenState(issueNumber, { run, repo = REPO }) {
   return lookup(() => {
-    const raw = run(["issue", "view", String(issueNumber), "--repo", REPO, "--json", "state"]);
+    const raw = run(["issue", "view", String(issueNumber), "--repo", repo, "--json", "state"]);
     /** @type {{ state: string }} */
     const parsed = JSON.parse(raw);
     return parsed.state;
@@ -94,11 +96,11 @@ export function lookupIssueOpenState(issueNumber, { run }) {
  * missing, per #741's own acceptance ("refuses ... naming what the comment must contain").
  * @param {{ number: number, state: "OPEN" | "MERGED" | "CLOSED", reasons: string[] } | null} ownPr
  * @param {string} blockedByFlagValue
- * @param {{ run: (args: string[]) => string }} deps
+ * @param {{ run: (args: string[]) => string, repo?: string }} deps `repo` is the tracker, threaded to both reads below
  * @returns {{ ok: true, blockedByIssueNumber: number, ownPrNumber: number, measurementComment: string }
  *   | { ok: false, reason: string }}
  */
-export function resolveBlockedByOverride(ownPr, blockedByFlagValue, { run }) {
+export function resolveBlockedByOverride(ownPr, blockedByFlagValue, { run, repo = REPO }) {
   const blockedByIssueNumber = parseBlockedByFlag(blockedByFlagValue);
   if (blockedByIssueNumber === null) {
     return { ok: false,
@@ -114,7 +116,7 @@ export function resolveBlockedByOverride(ownPr, blockedByFlagValue, { run }) {
         + "has none, which is what puts it in build. `--blocked-by` cannot excuse it: finish that row, or "
         + "`row-claim.mjs decline <n> --session=<name>` to give it back, then claim" };
   }
-  const comments = lookupOwnPrComments(ownPr.number, { run });
+  const comments = lookupOwnPrComments(ownPr.number, { run, repo });
   if (comments === null) {
     return { ok: false,
       reason: `could not read #${ownPr.number}'s comments -- refusing to override B2 without proof` };
@@ -126,7 +128,7 @@ export function resolveBlockedByOverride(ownPr, blockedByFlagValue, { run }) {
         + `starting with "${MEASUREMENT_MARKER}", naming every failing assertion (deduplicated across `
         + "jobs, read from the newest run per check name) and stating it lies outside the PR's diff" };
   }
-  const blockerState = lookupIssueOpenState(blockedByIssueNumber, { run });
+  const blockerState = lookupIssueOpenState(blockedByIssueNumber, { run, repo });
   if (blockerState === null) {
     return { ok: false,
       reason: `could not confirm #${blockedByIssueNumber}'s state -- refusing to override B2 on an `

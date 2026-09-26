@@ -76,7 +76,8 @@ import { localImports, importedNamesFor, stripComments } from "./lib/local-impor
 
 /** @typedef {{ verdict: "runnable" } | { verdict: "refused", reason: string } | { verdict: "prose", reason: string }} Classification */
 /** @typedef {{ kind: "missing" } | { kind: "none", reason: string } | { kind: "commands", commands: string[] } | { kind: "duplicate", occurrences: { line: number, text: string }[] }} Section */
-/** @typedef {{ kind: "missing" } | { kind: "malformed", detail: string } | { kind: "none", reason: string } | { kind: "closes", numbers: number[] }} ClosesDeclaration */
+/** @typedef {{ repo: string | null, number: number }} ClosesReference one row a body names: `repo` is `owner/name`, or null for a bare `#N` (the PR's own repository's) */
+/** @typedef {{ kind: "missing" } | { kind: "malformed", detail: string } | { kind: "none", reason: string } | { kind: "closes", numbers: number[], references?: ClosesReference[] }} ClosesDeclaration */
 // #621: `corpus` is OPTIONAL, deliberately -- every existing capabilities literal in this file's own test
 // suite (`NO_HISTORY`, `WITH_HISTORY`) predates it and names only three keys. `unmetRequirements`'s own
 // rule already reads an absent key as unmet, never as satisfied by default, so making the field optional
@@ -3072,7 +3073,19 @@ function runForReal(command) {
 // guess is wrong, and a wrongly-closed row is worse than an open one -- it leaves work that looks done.
 // The declaration is the author's, in the body, or this reports MISSING/MALFORMED and the job fails.
 const CLOSES_NONE_PATTERN = /\bCloses:\s*none\b([^\n]*)/i;
-const CLOSES_LIST_PATTERN = /\bCloses:?\s*(#\d+(?:\s*(?:,|and)\s*#\d+)*)/i;
+// #2617 (child 3b of #69): A ROW CAN BE NAMED ACROSS REPOSITORIES -- `Closes owner/repo#7`, the form a layer repository's
+// pull request uses for a row that lives in the project's tracker (ADR 0040, decision 2). Measured by RUNNING this parser on it
+// before the change: `Closes owner/repo#7` read MALFORMED, because the list pattern wanted `#` straight after the word, so a
+// layer PR could not have declared its row at all. The qualifier is `owner/name` exactly (the two halves `project-config.mjs`
+// accepts), and NOTHING ELSE is a qualifier: `owner#7`, `owner/#7`, `a/b/c#7` and `owner/repo#` are each still malformed.
+const REPO_QUALIFIER = "[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+";
+const CLOSES_REF = `(?:${REPO_QUALIFIER})?#\\d+`;
+const CLOSES_LIST_PATTERN = new RegExp(`\\bCloses:?\\s*(${CLOSES_REF}(?:\\s*(?:,|and)\\s*${CLOSES_REF})*)`, "i");
+const CLOSES_REF_GLOBAL = new RegExp(`(?:(${REPO_QUALIFIER}))?#(\\d+)`, "g");
+// What follows a list the pattern stopped at: a `,`/`and` and then something with a `#` in it that the pattern could not read is a
+// reference that was TRIED and got wrong (`Closes #7, a11ign#8`). Reading the list up to it and dropping it would report a row
+// fewer than the author named, silently; prose after a comma (`Closes #7, and updates the docs`) has no `#` and is left alone.
+const CLOSES_UNREAD_TAIL = /^\s*(?:,|and)\s*([A-Za-z0-9_./-]*#\S*)/i;
 // #527: GLOBAL, because an author writing `Closes #510` on one line and `Closes #497` on another -- a
 // form GitHub itself accepts and closes both for -- is a SECOND, independent match of the same pattern,
 // not a continuation of the first. `CLOSES_LIST_PATTERN` stays singular (`.exec()` reads naturally as
@@ -3107,9 +3120,16 @@ export function extractClosesDeclaration(body) {
   // never this regex), so the gate was silently under-reporting a fact GitHub and this file both see.
   const listMatches = [...text.matchAll(CLOSES_LIST_PATTERN_GLOBAL)];
   if (listMatches.length > 0) {
-    const numbers = listMatches.flatMap((match) =>
-      [...match[1].matchAll(/#(\d+)/g)].map((m) => Number(m[1])));
-    return { kind: "closes", numbers };
+    const unread = listMatches.map((match) => CLOSES_UNREAD_TAIL.exec(text.slice(match.index + match[0].length))?.[1]);
+    const first = unread.find((token) => token !== undefined);
+    if (first !== undefined) {
+      return { kind: "malformed", detail: `\`${first}\` is not a row reference: write \`#<number>\` or \`owner/repo#<number>\`` };
+    }
+    const references = listMatches.flatMap((match) =>
+      [...match[1].matchAll(CLOSES_REF_GLOBAL)].map((m) => ({ repo: m[1] ?? null, number: Number(m[2]) })));
+    const numbers = references.map((reference) => reference.number);
+    // A body that names only bare rows returns EXACTLY what it always did; `references` appears only when a repository was named.
+    return references.some((reference) => reference.repo !== null) ? { kind: "closes", numbers, references } : { kind: "closes", numbers };
   }
   if (CLOSES_MENTIONED_PATTERN.test(text)) {
     return { kind: "malformed",
@@ -3137,7 +3157,18 @@ export function closesDeclarationReport(body) {
   if (declaration.kind === "none") {
     return { ok: true, line: `CLOSES: NONE -> ${declaration.reason}` };
   }
-  return { ok: true, line: `CLOSES: #${declaration.numbers.join(", #")}` };
+  const named = (declaration.references ?? []).map((reference) => `${reference.repo ?? ""}#${reference.number}`);
+  return { ok: true, line: declaration.references ? `CLOSES: ${named.join(", ")}` : `CLOSES: #${declaration.numbers.join(", #")}` };
+}
+
+/**
+ * #2617: every row a `closes` declaration names, WITH the repository each lives in -- `repo` null for a bare `#N`, which is the pull
+ * request's OWN repository's. A declaration that never named a repository has no `references`, so they are built from `numbers`.
+ * @param {{ kind: "closes", numbers: number[], references?: ClosesReference[] }} declaration
+ * @returns {ClosesReference[]}
+ */
+export function closesReferences(declaration) {
+  return declaration.references ?? declaration.numbers.map((number) => ({ repo: null, number }));
 }
 
 // #2305: A PR THAT ADDS OR CHANGES A TEST MUST CARRY A `Mutation:` RECORD, or `Mutation: none -- <reason>`.
