@@ -3481,6 +3481,26 @@ function offerOrder(unclaimed) {
 }
 
 /**
+ * How a Ready row is CLAIMED, in words. The primary project's is exactly the sentence it always was.
+ *
+ * A row in another tracker is NOT claimable with a bare number: `row-claim.mjs claim 7` reads row 7 of the PRIMARY's tracker, so an
+ * engineer that ran it for `agent-org#7` would claim the wrong row. The claim-side readers of a non-primary key are child 3b (#2617),
+ * and until they exist this says so rather than handing over a command that does the wrong thing. The NAMES the claim must produce are
+ * ADR 0040 decision 2's, and are given here so 3b's command and this order cannot disagree about them.
+ * @param {{ number: number, repoKey?: string, repo?: string }} row
+ */
+function claimSentence(row) {
+  if (row.repoKey === undefined || row.repoKey === "") {
+    return "Claim it with "
+      + `\`node packages/agent-org/src/row-claim.mjs claim ${row.number} --session=<you> `
+      + `--branch=agent/<slug>-${row.number} --worktree=../wt-${row.number}\` and build it there.`;
+  }
+  return `It is row ${row.number} of \`${row.repo}\` (key \`${row.repoKey}\`), and \`row-claim.mjs claim ${row.number}\` would claim the PRIMARY's row ${row.number}, `
+    + "so do NOT run it: the claim for a non-primary tracker is child 3b (#2617) of #69. When it exists the names are "
+    + `\`agent/<slug>-${row.repoKey}-${row.number}\`, \`../wt-${row.repoKey}-${row.number}\` and \`session:<you>\`.`;
+}
+
+/**
  * One order per unclaimed Ready row, priority rows first then oldest first, capped.
  *
  * SPLIT OUT OF `decide` for the same reason `laneBacklogOrders` was: adding lane routing took that
@@ -3524,9 +3544,7 @@ function rowOrders(unclaimed) {
       // THE ROW IS THE DISCRIMINATOR NOW, not the queue depth. Keyed on the count, every claim rewrote
       // every remaining order's key and re-woke someone for rows already being offered.
       discriminator: subjectRef(row.repoKey, row.number),
-      prompt: `Ready row ${subjectMention(row)} is unclaimed${row.title ? `: ${row.title}` : ""}. Claim it with `
-        + `\`node packages/agent-org/src/row-claim.mjs claim ${row.number} --session=<you> `
-        + `--branch=agent/<slug>-${row.number} --worktree=../wt-${row.number}\` and build it there.\n`
+      prompt: `Ready row ${subjectMention(row)} is unclaimed${row.title ? `: ${row.title}` : ""}. ${claimSentence(row)}\n`
         // BOTH FLAGS OR NEITHER, and the primary refuses the work entirely: `row-claim` creates the
         // worktree from `--branch` AND `--worktree` together and refuses when given only one, and the
         // tooling will not run from the primary checkout at all. The first engineer woken by this
@@ -4964,9 +4982,12 @@ export function scopeTick(scope, drain, read = readLanes(scope), readings = { co
   const code = inRepo(read.codeRepo, () => readings.code(openPrs));
   const tracker = inRepo(read.trackerRepo, () => readings.tracker({ rows, allOpen }));
   const prFiles = comparablePrFiles(openPrs);
+  // WHAT THE TRACKER READINGS RETURN IS TAGGED HERE, not inside them: an epic or a closed row that carried no key would make `epic-7` and
+  // `answer-owed/row-7` the primary's, whatever the reading that produced it.
+  const mark = (/** @type {any[] | null} */ list) => tagged(list, scope.key, read.trackerRepo) ?? [];
   const orders = decide({ prs: code.prs, readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required: code.required, baseTip: code.baseTip,
-    epics: tracker.epics, answerOwed: rowsOwingAnswers({ openRows: allOpen, openPrs, closedRows: tracker.closedRows }),
+    epics: mark(tracker.epics), answerOwed: rowsOwingAnswers({ openRows: allOpen, openPrs, closedRows: mark(tracker.closedRows) }),
     openRows: allOpen, claimedComments: tracker.claimedComments, unarmed: code.unarmed, closings: tracker.closings,
     key: scope.key, repo: scope.code?.repo ?? scope.tracker?.repo });
   return { orders: orders.map((order) => ({ ...order, prompt: `${order.prompt}${repositoryNote(scope)}` })),

@@ -39,10 +39,9 @@ import { createHash } from "node:crypto";
 // `work-gate.mjs` and `org-watch.mjs` state at their own imports.
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { profileFor, agentArgs } from "./worker-profile.mjs";
-import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry }
+import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry, scopesOf }
   from "./work-gate.mjs";
 import { reviewerInstance, subjectMention } from "./review-attribution.mjs";
-import { scopesOf } from "./work-gate.mjs";
 import { homeProjectDeclaration } from "./project-config.mjs";
 import { REPO } from "./project-identity.mjs";
 import { inBuildReason, isInBuild, unansweredRefusal, lookupHeldRows, lookupOtherHeldIssues }

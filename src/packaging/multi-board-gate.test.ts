@@ -119,7 +119,7 @@ test("the collision holds over EVERY cause: the same fixture in two repositories
     openRows: tag(input.openRows, key), key, repo: `acme/${key}` });
   const primary = asOrders(decide(BUSY_INPUT));
   const other = asOrders(decide(asKey(BUSY_INPUT, "other") as Parameters<typeof decide>[0]));
-  assert.ok(primary.length >= 12, `POSITIVE CONTROL: the fixture emits ${primary.length} orders across many causes, not a handful`);
+  assert.equal(primary.length, RECORDED_BUSY.length, "POSITIVE CONTROL: the fixture emits exactly the recorded orders -- fourteen, across eight causes, not a handful");
   assert.equal(other.length, primary.length, "the same causes fire for the same facts, in either repository");
   const primaryKeys = new Set(primary.map((o) => o.causeKey));
   const shared = other.filter((o) => primaryKeys.has(o.causeKey)).map((o) => o.causeKey);
@@ -306,6 +306,29 @@ test("a row in the SECOND tracker reaches the ready queue and is offered -- unde
   // NEGATIVE: wake's row parser does NOT read the keyed key as the primary's row 7 -- claiming the wrong row would be worse than none.
   assert.equal(rowOfOrder({ causeKey: mine[0].causeKey }), 7);
   assert.equal(rowOfOrder({ causeKey: theirs[0].causeKey }), null);
+});
+
+test("the per-tick tracker readings are TAGGED by the scope, so an epic or a closed row that carried no key still lands under the other's key", () => {
+  const gh = fakeGh({ "acme/other": { ready: [] } });
+  const other = scopesOf([PRIMARY_DECLARATION, OTHER_DECLARATION])[1];
+  const untagged = { code: NO_READINGS.code,
+    tracker: () => ({ claimedComments: [], closings: null,
+      epics: [{ number: 601, title: "an epic", subIssuesSummary: { total: 0, completed: 0 } }],
+      closedRows: [{ number: 302, title: "closed", state: "CLOSED", labels: [{ name: "answer:ceo" }] }] }) };
+  const keys = asOrders(scopeTick(other, false, readLanes(other, gh.run), untagged).orders).map((o) => o.causeKey);
+  assert.ok(keys.includes("product-manager/epic-unfiled/epic-other#601"), `POSITIVE CONTROL: the epic order exists, keyed (${keys.join(", ")})`);
+  assert.ok(keys.includes("ceo/answer-owed/row-other#302"), "and so does the closed row's answer-owed order");
+  assert.deepEqual(keys.filter((k) => /(?:epic|row)-\d+/.test(k)), [], "and NO order of the other repository carries a bare number that the primary's could equal");
+});
+
+test("a row in another tracker is offered WITHOUT a command that would claim the primary's row of the same number; the primary's sentence is untouched", () => {
+  const rows = [row(7, { title: "mine" })];
+  const [mine] = asOrders(decide({ prs: [], readyRows: rows }));
+  const [theirs] = asOrders(decide({ prs: [], readyRows: rows.map((r) => ({ ...r, repoKey: "other", repo: "acme/other" })), key: "other", repo: "acme/other" }));
+  assert.match(mine.prompt, /Claim it with `node packages\/agent-org\/src\/row-claim\.mjs claim 7 --session=<you> --branch=agent\/<slug>-7 --worktree=\.\.\/wt-7` and build it there\./);
+  assert.doesNotMatch(theirs.prompt, /Claim it with/, "the keyed offer hands over no runnable claim");
+  assert.match(theirs.prompt, /would claim the PRIMARY's row 7, so do NOT run it/);
+  assert.match(theirs.prompt, /agent\/<slug>-other-7`, `\.\.\/wt-other-7` and `session:<you>`/, "and states the names ADR 0040 decision 2 gives, for 3b's command to agree with");
 });
 
 // --- A FAILED READ OF ONE REPOSITORY --------------------------------------------------------------------------------------------
