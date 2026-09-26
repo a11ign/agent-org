@@ -4111,6 +4111,8 @@ test("#2174: work-gate.mjs loads in a tree with NO node_modules, host-units edge
   assert.ok(closure.size > 10 && closure.has(join(REPO, "packages/agent-org/src/waiting-condition.mjs")),
     `the control: the closure must really be the gate's, got ${closure.size} file(s)`);
   const root = realpathSync(mkdtempSync(join(tmpdir(), "a11y-work-gate-no-modules-")));
+  // #2616: the tool now reads the project's declaration from beside it, so a copied tree must carry it or the reader REFUSES (correctly).
+  closure.add(join(REPO, ".agent-org/project.json"));
   for (const file of closure) {
     const target = join(root, relative(REPO, file));
     mkdirSync(dirname(target), { recursive: true });

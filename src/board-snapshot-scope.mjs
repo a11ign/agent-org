@@ -16,10 +16,14 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { REPO } from "../../../scripts/repo-identity.mjs";
+// #2616: the board is a field of the project's declaration, not a value derived from `REPO` and a constant.
+import { homeProjectDeclaration } from "./project-config.mjs";
 // #1425: the classifier the close path already uses. That module imports nothing, so this file stays free of `gh`.
 import { refusalCause, PROJECT_UNREADABLE } from "./settle-closed-status.mjs";
 
-export const PROJECT_OWNER = REPO.split("/")[0];
+// #2616: read from `.agent-org/project.json`, where it used to be `REPO.split("/")[0]` -- which was only ever true because the
+// board's owner and the repository's happened to agree, and a project whose board lives elsewhere could not say so.
+export const PROJECT_OWNER = homeProjectDeclaration().boardOwner;
 // THE PROJECT DOES NOT MOVE WITH THE REPOSITORY, so this is the ORG's board rather than the user-level
 // Project 2 that stayed behind with the pre-transfer account.
 //
@@ -31,7 +35,7 @@ export const PROJECT_OWNER = REPO.split("/")[0];
 // of 'a11ign'`, while `organization(login: "a11ign") { projectV2(number: 1) }` returns
 // `PVT_kwDOExeOA84Bj5SX "a11ign"`. So both the accessor AND the number had to move; changing one without
 // the other reads as an empty board rather than a refused one.
-export const PROJECT_NUMBER = 1;
+export const PROJECT_NUMBER = homeProjectDeclaration().boardNumber;
 /**
  * #1352: the filesystem reads `commonGitDirOf` and `primaryLaunchRefusal` make, injectable so a test drives them with
  * the shapes git writes. No spawn: git's worktree files are plain text, and reading them keeps this module free of

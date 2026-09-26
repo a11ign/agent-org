@@ -455,7 +455,8 @@ function removeFixture(dir: string): void {
 
 /** Copies the entry's import closure, the rule directory and `sessions.json` into `copyRoot`, as an up-to-date repo. */
 function copyClosureAsRepo(copyRoot: string): string {
-  const files = new Set<string>([join(REPO_ROOT, SESSIONS_JSON)]);
+// #2616: the tool now reads the project's declaration from beside it, so a copied tree must carry it or the reader REFUSES (correctly).
+  const files = new Set<string>([join(REPO_ROOT, SESSIONS_JSON), join(REPO_ROOT, ".agent-org/project.json")]);
   const visit = (file: string): void => {
     if (files.has(file)) return;
     files.add(file);
