@@ -54,7 +54,7 @@ const LIVE_FS = {
  * worktree of one repository. A `.git` DIRECTORY is the common dir itself: the primary checkout, or a plain clone.
  * A `.git` FILE is a linked worktree's `gitdir: <path>` line; that gitdir's `commondir` file names the common dir
  * relative to it (`../..` for `git worktree add`). Measured on this host: wt-1352's `.git` names
- * `…/a11y-witness/.git/worktrees/wt-1352`, whose `commondir` is `../..` -- `/home/agent/repos/a11y-witness/.git`,
+ * `…/<checkout>/.git/worktrees/wt-1352`, whose `commondir` is `../..` -- `<checkout>/.git`,
  * exactly what `git rev-parse --git-common-dir` answers from both trees. `null` when `root` holds no `.git` at all.
  * @param {string} root @param {GitFs} [fs]
  * @returns {string | null}

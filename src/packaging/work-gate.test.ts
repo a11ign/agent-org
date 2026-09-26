@@ -4124,7 +4124,9 @@ test("#2174: the history-requirement population is unchanged by this row", () =>
     }).sort();
   // PINNED AS A SET AND NOT A COUNT, for `fleetBatchOrders`'s reason: a count collides two different
   // populations of the same size, and the thing worth catching is a file JOINING this list.
-  assert.deepEqual(charged, ["host-units.test.ts", "pre-push-resolve-toward-main.test.ts",
+  // #2620 added `host-project-paths.test.ts`: checked, as this message asks -- it imports `host-units.mjs` for the rendered unit texts, the same
+  // edge `host-units.test.ts` has, and the row's own Acceptance names it, so its pull request declares `History: full` (#497).
+  assert.deepEqual(charged, ["host-project-paths.test.ts", "host-units.test.ts", "pre-push-resolve-toward-main.test.ts",
     "pre-push-stale-base.test.ts", "work-gate.test.ts"],
   "adding a `history` reader to the gate's import closure taxes every test file that reaches it -- if "
   + "this list grew, check what was imported rather than editing the list");

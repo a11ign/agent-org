@@ -19,14 +19,14 @@ Type=oneshot
 # linked worktree's is a text file -- so that it can skip it. Every tree in the list is a removal
 # candidate except the one it is standing in, so pointed at a linked worktree it would protect the wrong
 # tree and offer the fleet-driving checkout up for removal.
-WorkingDirectory=/home/agent/repos/a11y-witness
+WorkingDirectory=@@checkout@@
 
-# SAME REASON a11ign-work-tick.service AND a11ign-corpus-snapshot.service BOTH DECLARE THEIRS: a systemd
+# SAME REASON @@prefix@@work-tick.service AND a11ign-corpus-snapshot.service BOTH DECLARE THEIRS: a systemd
 # unit gets no login shell's PATH, and this one reaches `git` through `execFileSync` once per worktree.
 # Without this line every firing dies before it reads anything, quietly, while the timer looks healthy.
 # Verified on this host: node and npm at /usr/bin, git at /usr/bin.
-Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-Environment=HOME=/home/agent
+Environment=PATH=@@binDir@@:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=@@home@@
 
 # V8'S COMPILE CACHE GOES UNDER THE HOME, NOT /tmp -- #2458. `tsc`, `eslint`, `rstest` and `changeset` (all reached
 # through `npm run`) call `enableCompileCache()` with no directory, which writes `<tmpdir>/node-compile-cache`:
@@ -67,7 +67,7 @@ ExecStart=/usr/bin/npm run worktrees:prune -- --apply
 # I/O) and because what this timeout is really for is a hung `git`, not a slow one.
 TimeoutStartSec=900
 
-# NO `[Install]` SECTION, UNLIKE a11ign-work-tick.service AND a11ign-corpus-snapshot.service -- #1993's
+# NO `[Install]` SECTION, UNLIKE @@prefix@@work-tick.service AND a11ign-corpus-snapshot.service -- #1993's
 # shape, for a reason of this unit's own. `WantedBy=default.target` on a oneshot means "also run at boot",
 # and boot is the worst moment for this one: the sessions are coming back up, `herdr` is restoring them,
 # and a tree a session is about to resume in has by definition had no git activity for far longer than
@@ -76,7 +76,7 @@ TimeoutStartSec=900
 # WHICH IS NOT THE SAME AS SAYING EVERY PRUNE HAPPENS AT :07, and the difference is what #2011's review
 # caught twice. The timer declares `Requires=` on this service, so `host:install`'s own `enable --now`
 # starts one run there and then -- measured, and separated from the other two candidate directives, in
-# a11ign-worktree-prune.timer. Install and the calendar are the two entry points; boot is not one of them,
+# @@prefix@@worktree-prune.timer. Install and the calendar are the two entry points; boot is not one of them,
 # which is the whole of what leaving out `[Install]` buys.
 #
 # WHAT THIS DOES NOT BUY, stated because the first version of this unit claimed it and was wrong (#2011's

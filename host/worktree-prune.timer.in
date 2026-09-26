@@ -16,7 +16,7 @@ Description=a11ign: run the worktree prune hourly
 #
 # AND THE SHIPPED UNITS SAY THE SAME WITHOUT A PROBE, from the 21:03Z `host:install`: all four timers
 # declaring `Requires=` started their service in that second (work-tick, corpus-snapshot,
-# corpus-release-nightly and this one), while `a11ign-board-report.timer` -- the only shipped timer with no
+# corpus-release-nightly and this one), while `@@prefix@@board-report.timer` -- the only shipped timer with no
 # `Requires=` -- did not, though the same run reinstalled it. Reproduced at 22:27Z on a reinstall where
 # NO timer was newly started -- all five were already active, so `enable --now` was a no-op for the timer
 # units themselves -- and the same four services ran anyway. That is the dependency start job and nothing
@@ -27,7 +27,7 @@ Description=a11ign: run the worktree prune hourly
 # #2000 measured is the reason the unit exists and the tool's refusals do not depend on what started it;
 # and the line makes the timer fail to start if its service is missing instead of quietly scheduling
 # nothing. What was never defensible was this file asserting a cause it had not distinguished.
-Requires=a11ign-worktree-prune.service
+Requires=@@prefix@@worktree-prune.service
 
 [Timer]
 # HOURLY, CHOSEN FROM THE LEAK RATE AND THE RUN COST RATHER THAN BY FEEL.
@@ -50,7 +50,7 @@ OnCalendar=*-*-* *:07:00
 # (systemd.timer(5)). This timer's first version paired `Persistent=true` with `OnBootSec=`/
 # `OnUnitActiveSec=` only, so the directive was INERT: it claimed a catch-up after a missed window that
 # systemd was never going to perform, and a test that asserted the directive's text passed while the
-# behaviour was absent. `a11ign-work-tick.timer` carried the identical inert pairing, which is why the
+# behaviour was absent. `@@prefix@@work-tick.timer` carried the identical inert pairing, which is why the
 # check that now enforces this reads every shipped timer rather than this one.
 #
 # THE OTHER HALF -- why `OnBootSec=15min` is GONE rather than rearranged -- is that it never bought the
@@ -65,7 +65,7 @@ OnCalendar=*-*-* *:07:00
 Persistent=true
 
 # A missed window fires at the next opportunity instead of being silently skipped -- the property
-# a11ign-corpus-snapshot.timer and a11ign-board-report.timer both rely on, and which this timer only
+# a11ign-corpus-snapshot.timer and @@prefix@@board-report.timer both rely on, and which this timer only
 # genuinely has now that it is a calendar timer. A skipped prune is invisible: the backlog it leaves looks
 # exactly like the backlog a working prune refused.
 AccuracySec=1min

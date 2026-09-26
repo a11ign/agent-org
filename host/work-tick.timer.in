@@ -1,6 +1,6 @@
 [Unit]
 Description=a11ign: run the org's work tick
-Requires=a11ign-work-tick.service
+Requires=@@prefix@@work-tick.service
 
 [Timer]
 # TWO MINUTES IS CHOSEN FROM THE RATE LIMIT, NOT BY FEEL. `work-gate` costs two `gh` calls; at this
