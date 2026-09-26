@@ -2892,6 +2892,23 @@ const BLOCKING_REVIEW_STATES = Object.freeze([
   REVIEW_STATE.AWAITING_REVIEW, REVIEW_STATE.REFUSED, REVIEW_STATE.UNRECOGNISED]);
 
 /**
+ * PURE. The commit the newest `CHANGES_REQUESTED` review was posted at, or `null` when the payload names none.
+ *
+ * `reviews` AND NOT `latestReviews` for the reason `readPrs` records (#2365): `latestReviews[].commit.oid` comes
+ * back empty. `null` is "the payload cannot say", never "at no commit" -- the order then tells the reader to
+ * look rather than asserting a comparison nobody made. The LAST refusal is taken on the assumption that `gh` lists
+ * reviews oldest first, as GitHub's API does; that order was NOT confirmed here (the one PR read had a single review).
+ *
+ * @param {any} pr @returns {string | null}
+ */
+function refusalCommitOf(pr) {
+  if (!Array.isArray(pr?.reviews)) return null;
+  const refusals = pr.reviews.filter((/** @type {any} */ r) => r?.state === "CHANGES_REQUESTED");
+  const oid = refusals.at(-1)?.commit?.oid;
+  return oid ? String(oid) : null;
+}
+
+/**
  * PURE. #2084: the pull requests that LOOK like they should be merging and that GitHub's review
  * requirement is holding -- plus any whose decision could not be read at all.
  *
@@ -2902,13 +2919,20 @@ const BLOCKING_REVIEW_STATES = Object.freeze([
  * `pr-checks-failing`, and a held one is not merging BY DECISION. What is left is the state nothing in this
  * repository could see before -- not a draft, not held, green on every required check, and blocked anyway.
  *
+ * EACH ENTRY CARRIES THE FACTS ROUTING NEEDS (#2283): the PR's `session:` label (`null` when it has none), the
+ * head, and -- for a refusal -- the commit the refusing review was posted at. The label is what lets
+ * `reviewBlockedOrders` send a labelled pull request to its own session instead of to `product-manager`;
+ * the two commits let the order open with the comparison the #2084 diagnosis turns on.
+ *
  * @param {any[]} prs @param {string[] | null} [required]
- * @returns {{number: number, code: string, why: string}[]} ascending by PR number
+ * @returns {{number: number, code: string, why: string, session: string | null, head: string,
+ *            refusedAt: string | null}[]} ascending by PR number
  */
 export function reviewBlocked(prs, required = null) {
   const byNumber = new Map(prs.map((pr) => [Number(pr.number), pr]));
   return mergeCandidates(prs, required)
-    .map((pr) => ({ number: Number(pr.number), ...reviewStateOf(pr) }))
+    .map((pr) => ({ number: Number(pr.number), ...reviewStateOf(pr), session: sessionOf(pr),
+      head: String(pr.headRefOid ?? ""), refusedAt: refusalCommitOf(pr) }))
     .filter((r) => BLOCKING_REVIEW_STATES.includes(r.code))
     // #2416: `pr-review-blocked` is the third route into a review -- it tells `product-manager` to prompt the
     // reviewer for an AWAITING_REVIEW pull request. A labelled one is waiting for evidence, not a reviewer; a
