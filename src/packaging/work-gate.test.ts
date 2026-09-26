@@ -1728,13 +1728,15 @@ test("a SUPERSEDED red run does not wake anyone -- the newest run per name is wh
  * sentence. This test is why the next person inherits a checked number.
  */
 test("the gate's read count is counted, not remembered", () => {
+  // TEN since #2641 added the merged-or-closed pull request answer read (`readClosedAnswerRows`'s third call; one
+  // `label list` still serves both searches).
   // NINE since #2075 added the per-issue Project 1 membership read (`readRowsOffBoard`: one GraphQL call per 100 open rows).
   // EIGHT since #2202 added the closed-row answer read (two calls, both exact -- see `readClosedAnswerRows`).
   // SIX since #2356 added the trunk read (`readTrunkRed`: one REST call, core pool). It was FIVE since
   // `answer-owed` landed. This pin caught that read within a minute of it being added, which
   // is exactly why it exists: the number it replaced ("two `gh` calls") had been wrong for months
   // because three readers arrived and nobody re-counted.
-  assert.equal(GH_READS.unconditional.length, 9,
+  assert.equal(GH_READS.unconditional.length, 10,
     "if you add or remove an unconditional read, this number and every comment quoting it move together");
   // #1938 REMOVED THE SILENCE-CONDITIONAL READ ENTIRELY: the dead man's switch now derives its
   // answer from the rows the unconditional read already fetched. The key is GONE rather than empty,
@@ -2921,7 +2923,7 @@ test("#2161: decide() hands the cause the pull requests it already read", () => 
 });
 
 test("#2161: the narrowing spends no `gh` call -- it reads what `draftOrder` already has", () => {
-  assert.equal(GH_READS.unconditional.length, 9, "#2161 adds no unconditional read (8 since #2202, 9 since #2075)");
+  assert.equal(GH_READS.unconditional.length, 10, "#2161 adds no unconditional read (8 since #2202, 9 since #2075, 10 since #2641)");
   const gate = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
   const body = gate.slice(gate.indexOf("function rowsWithOpenPr"), gate.indexOf("export function blockerClearedOrders"));
   assert.ok(body.length > 0 && !/\brun\(|spawnSync|defaultRun/.test(body),
@@ -3484,7 +3486,7 @@ test("#2110: main pays for it only when something is actually claimed", () => {
     "exactly one call site, and it is inside the condition below -- a second is a second price");
   assert.match(gate, /const held = openRows\.some\(\(r\) => labelsOf\(r\)\.includes\(CLAIM_LABEL\)\);\s*\n\s*return held \? readClaimedRowComments\(\) : null;/,
     "the condition is answered from rows already in hand, so asking it costs no call of its own");
-  assert.equal(GH_READS.unconditional.length, 9,
+  assert.equal(GH_READS.unconditional.length, 10,
     "#2110 adds no UNCONDITIONAL read -- the comment page is conditional on a claim existing");
 });
 
@@ -3630,7 +3632,7 @@ test("#2003: the pool reading has ONE definition, and the gate pays for it only 
 
   // AND THE READ COUNT IS UNCHANGED, which is the other half of done-when 2: this row adds no
   // unconditional read, and `GH_READS` is the pin that would catch it if it ever did.
-  assert.equal(GH_READS.unconditional.length, 9,
+  assert.equal(GH_READS.unconditional.length, 10,
     "#2003 must not add an unconditional read -- the refusal path is where the extra call lives");
 
   // A SECOND COPY OF "HOW TO READ A POOL" IS REFUSED (#2003's Region says so). The header name is the
@@ -3854,7 +3856,7 @@ test("#2031: the detection makes NO `gh` call -- the pool is gone in the outage 
     + "the exhausted-pool outage that produces the staleness it detects");
   assert.deepEqual(found, [{ branch: BRANCH_2000, head: SHA_2000, row: 2000 }],
     "`main` is not a row branch: the trailing `-<digits>` is the whole match");
-  assert.equal(GH_READS.unconditional.length, 9, "#2031 adds NO gh read -- it is a local git call");
+  assert.equal(GH_READS.unconditional.length, 10, "#2031 adds NO gh read -- it is a local git call");
   assert.ok(GIT_READS.unconditional.some((r: string) => r.includes("ls-remote")),
     "and the free read is COUNTED rather than left out because it is free -- `GH_READS`'s own header "
     + "records what happened last time a read went unwritten-down");
@@ -4756,6 +4758,7 @@ test("#2202: readClosedAnswerRows asks for the CLOSED rows carrying the repo's o
   const run = (args: string[]) => {
     calls.push(args);
     if (args[0] === "label") return JSON.stringify([{ name: "answer:ceo" }, { name: "answer:orchestrator" }, { name: "answered" }]);
+    if (args[0] === "pr") return "[]"; // #2641: the pull-request half has its own file, `closed-pr-answer-owed.test.ts`
     return JSON.stringify([closedOwedRow(1936, "orchestrator"), { number: 8, state: "CLOSED", labels: [{ name: "backlog" }] }]);
   };
   const rows = readClosedAnswerRows(run);

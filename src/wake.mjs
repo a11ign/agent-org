@@ -3128,12 +3128,12 @@ export const RUN_IDLE_RESET_MS = 2 * JUDGMENT_TTL_MS;
  * the org's own "a named session owes an answer here": the `answer-owed` cause delivers it (`answerOrders`), removing
  * the label IS the act of answering, and `ESCALATION_LABEL` is set by nobody but this function.
  *
- * THE READER SEES AN OPEN ROW OR AN OPEN PULL REQUEST, and only those (`rowsOwingAnswers`: open issues, `readPrs`'s
- * open PRs, and closed ISSUES still owing). `gh issue edit` accepts a PR number for labels, so both subjects
- * `stuckRowOf` yields can be labelled. A MERGED pull request can be labelled and is read by nothing: `trunkRedOrders`
- * names the merged PR as its subject, so a red `main` nobody fixes lands its `answer:ceo` where `gh issue list` and
- * `gh pr list --state open` do not look. `needs:chairman` never reached that case either (`readChairmanBlocked` is
- * `issue list --state open`), so this is a gap kept, not made -- and it is `work-gate.mjs`'s to close.
+ * THE READER SEES EVERY PLACE THE LABEL CAN SIT (`rowsOwingAnswers`): open issues, `readPrs`'s open PRs, closed ISSUES still
+ * owing (#2202) and pull requests that are no longer open, merged or closed unmerged (#2641, `readClosedAnswerRows`).
+ * `gh issue edit` accepts a PR number for labels, so both subjects `stuckRowOf` yields can be labelled, and
+ * `trunkRedOrders` names the MERGED pull request as its subject: a red `main` nobody fixes lands its `answer:ceo` on a
+ * merged PR, which the reader now asks for by label name. Until #2641 that label was set and read by nothing;
+ * `needs:chairman` never reached that case either (`readChairmanBlocked` is `issue list --state open`).
  *
  * SUBJECT-DERIVED, because a causeKey is not a row. `row-1234` and `pr-1837` carry their number; a
  * subject like `chairman` or `ready-queue` names no row and cannot be labelled, so it is reported and
