@@ -19,7 +19,9 @@ import path from "node:path";
 // request. The declaration is ENFORCED rather than trusted: `declareWalkScope` observes what this
 // file actually reads and fails it here if anything lands outside the scope -- so a scope that is
 // too narrow is loud, never a guard that silently stopped running.
-export const WALK_SCOPE = ["docs"];
+// #2616: `.agent-org` IS IN THE SCOPE because importing `repo-identity.mjs` now reads the project's declaration, `.agent-org/project.json`;
+// the read is real, so a change to it correctly reaches this file.
+export const WALK_SCOPE = ["docs", ".agent-org"];
 await declareWalkScope(import.meta.url);
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");

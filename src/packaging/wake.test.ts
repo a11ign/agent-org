@@ -2015,6 +2015,8 @@ function copyWakeWithDrainedRoster(copyRoot: string): string {
     for (const next of localImports(file)) visit(next);
   };
   visit(entry);
+  // #2616: the tool now reads the project's declaration from beside it, so a copied tree must carry it or the reader REFUSES (correctly).
+  files.add(join(REPO_ROOT, ".agent-org/project.json"));
   for (const file of files) {
     const target = join(copyRoot, relative(REPO_ROOT, file));
     mkdirSync(dirname(target), { recursive: true });
