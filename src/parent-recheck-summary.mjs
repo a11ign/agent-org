@@ -15,7 +15,7 @@
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-import { refuseUnknownFlags } from "../../worker-fleet/src/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 
 /**
  * Pure. `text` is a `node:test` TAP log (`npm test`'s own stdout+stderr, redirected). Returns `fail` only
