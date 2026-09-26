@@ -24,7 +24,7 @@ import { armabilityOf, holdersOf, HOLD_PREFIX } from "../pr-hold-state.mjs";
 import { REPO } from "../../../../scripts/repo-identity.mjs";
 import { labelsOf, sessionOf, checksSettledGreen, conclusionOf, stillRunning, anyChecksRed, requiredCheckNames,
   blockingChecks, reviewableHead, verdictAmong, awaitingEvidence, AWAITING_EVIDENCE_LABEL,
-  AWAITING_EVIDENCE_QUIET_HOURS, AWAITING_EVIDENCE_QUIET_MS, HOUR_MS } from "../work-gate.mjs";
+  AWAITING_EVIDENCE_QUIET_HOURS, AWAITING_EVIDENCE_QUIET_MS, HOUR_MS, REVIEW_STATE } from "../work-gate.mjs";
 
 /**
  * PURE. Is every red among these blocking checks a CANCELLED one, while something else on the head still runs?
@@ -212,11 +212,41 @@ export function greenUnarmedOrders(unarmed) {
  * dismisses the review, the decision becomes `REVIEW_REQUIRED`, the key moves, and the order fires with
  * the state that now needs a reviewer.
  *
- * @param {{number: number, code: string, why: string}[]} blocked
+ * #2283, THE #2001 PRINCIPLE APPLIED TO THIS CAUSE: A PULL REQUEST THAT CARRIES A `session:` LABEL IS THAT
+ * SESSION'S ORDER, and only an unlabelled one stays in the set order below. `ceo`'s rule is that an order whose
+ * subject carries a machine-readable owner goes to that owner, and `failingChecksOrder` and `notConvincedOrder`
+ * already do it. It holds here because the reader has the label (`reviewBlocked` reads it off the same list) and
+ * the two states it routes are the author's to act on: an AWAITING_REVIEW pull request the author opened ready
+ * and that never entered the reviewer lane, and a REFUSED one whose rework the author owes.
+ *
+ * `UNRECOGNISED` STAYS AT `product-manager` WHOEVER OWNS THE PR (`ownedBy`). It is a value of GitHub's this gate
+ * has never seen -- a fact about the gate's vocabulary, which the author can neither read nor fix.
+ *
+ * KEYED ON THE STATE AND NEVER THE HEAD, for the set order and the per-PR ones alike (#2084): the per-PR key is
+ * `<session>/pr-review-blocked/pr-<n>/<CODE>`, so a push during a rework does not re-fire it. The head
+ * is in the PROMPT of a refusal instead, as its first fact, where it informs without re-waking.
+ *
+ * @param {{number: number, code: string, why: string, session?: string | null, head?: string,
+ *          refusedAt?: string | null}[]} blocked
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
  */
 export function reviewBlockedOrders(blocked) {
+  const owned = blocked.filter(ownedBy);
+  const unowned = blocked.filter((b) => !ownedBy(b));
+  return [...reviewBlockedSetOrder(unowned), ...owned.map(ownedReviewBlockedOrder)];
+}
+
+/** A pull request whose blocked state is its own session's to act on: labelled, and AWAITING_REVIEW or REFUSED. */
+function ownedBy(/** @type {{code: string, session?: string | null}} */ b) {
+  return Boolean(b.session) && (b.code === REVIEW_STATE.AWAITING_REVIEW || b.code === REVIEW_STATE.REFUSED);
+}
+
+/**
+ * The unlabelled set, and every UNRECOGNISED one: ONE order for `product-manager`, exactly as #2084 built it.
+ * @param {{number: number, code: string, why: string}[]} blocked
+ */
+function reviewBlockedSetOrder(blocked) {
   if (blocked.length === 0) return [];
   const key = blocked.map((b) => `${b.number}:${b.code}`).join(".");
   return [{
@@ -244,6 +274,66 @@ export function reviewBlockedOrders(blocked) {
       + "same predicate this order used. One you merely skip stays in the set.",
     causeKey: `product-manager/pr-review-blocked/${key}`,
   }];
+}
+
+/**
+ * One labelled pull request's order, to the session on its label. PER PULL REQUEST, where the set order is one
+ * for the set: this is one author's one branch, and a set order would wake them about work that is not theirs.
+ * @param {{number: number, code: string, session?: string | null, head?: string, refusedAt?: string | null}} b
+ */
+function ownedReviewBlockedOrder(b) {
+  const session = String(b.session);
+  const refused = b.code === REVIEW_STATE.REFUSED;
+  return {
+    session,
+    cause: "pr-review-blocked",
+    subject: `pr-${b.number}`,
+    discriminator: b.code,
+    prompt: refused ? refusedPrompt(b) : awaitingReviewPrompt(b),
+    causeKey: `${session}/pr-review-blocked/pr-${b.number}/${b.code}`,
+  };
+}
+
+/** @param {{number: number}} b */
+function awaitingReviewPrompt(b) {
+  return `#${b.number} is green on every required check and NOT held, and GitHub's own \`reviewDecision\` `
+    + "is REVIEW_REQUIRED: nobody has reviewed it, so it cannot merge.\n"
+    + "It carries your session label, so chasing it is yours. You opened it ready and it never entered the "
+    + `reviewer lane. Its reviewer is \`reviewer-${b.number}\`; since #2176 \`draft-awaiting-verdict\` has `
+    + "normally ordered it already (and started one, if none was live), so read the wake ledger before "
+    + `prompting: \`npm run prompt:session -- reviewer-${b.number} "#${b.number} ..."\`. A \`QUEUED\` exit 2 `
+    + "is delivery; do not retry it.\n"
+    + "IF THIS PR SHOULD NOT MERGE YET, a `hold:` label removes it from this cause at once. One you merely "
+    + "skip stays and this order returns unchanged.";
+}
+
+/**
+ * THE FIRST FACT IS THE COMPARISON, and it decides what the rest means (#2084: #2049 sat seven hours on a
+ * refusal posted at a head the author had already fixed). Three readings, and the third is not the first:
+ * the refusal is at the current head, at an OLDER head, or the payload named no commit at all.
+ * @param {{number: number, head?: string, refusedAt?: string | null}} b
+ */
+function refusedPrompt(b) {
+  const head = b.head ?? "";
+  const short = (/** @type {string} */ oid) => oid.slice(0, 8);
+  let fact;
+  if (!b.refusedAt || !head) {
+    fact = "The payload names no commit for the refusing review, or no head: read it with "
+      + `\`gh api repos/${REPO}/pulls/${b.number}/reviews\` and compare its \`commit_id\` against \`headRefOid\` `
+      + "before doing anything.";
+  } else if (b.refusedAt === head) {
+    fact = `The refusal was posted AT the current head \`${short(head)}\`: it is live and the rework is yours.`;
+  } else {
+    fact = `The refusal was posted at \`${short(b.refusedAt)}\` and the head is now \`${short(head)}\`: `
+      + "you pushed after it, and the refusal STILL STANDS. A push does not clear it; only a newer review "
+      + `does, so ask \`reviewer-${b.number}\` for a fresh look at the head (\`npm run prompt:session -- `
+      + `reviewer-${b.number} "#${b.number} ..."\`; a QUEUED exit 2 is delivery, do not retry).`;
+  }
+  return `#${b.number} is green on every required check and NOT held, and a reviewer's `
+    + "`CHANGES_REQUESTED` is holding it.\n"
+    + `${fact}\n`
+    + "It carries your session label, so the rework is yours. Read what the review names and fix that. "
+    + "If you believe the refusal is wrong, that is an escalation to `product-manager`, not a call you make here.";
 }
 
 /**

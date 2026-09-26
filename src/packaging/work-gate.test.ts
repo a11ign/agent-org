@@ -4220,6 +4220,84 @@ test("#2084: the key carries NO head, so a rework does not re-wake product-manag
   assert.equal(a[0].causeKey, b[0].causeKey, "the head moved and the state did not");
 });
 
+/**
+ * #2283: a labelled pull request in the two states the row routes. `ready()` plus a `session:` label and,
+ * for a refusal, the review's own commit -- `reviews[].commit.oid`, the field `readPrs` asks for (#2365).
+ */
+function labelled(n: number, session: string, decision: string, refusedAt?: string) {
+  const pr = ready(n, decision, [`session:${session}`]);
+  if (refusedAt !== undefined) pr.reviews = [{ state: "CHANGES_REQUESTED", commit: { oid: refusedAt } }];
+  return pr;
+}
+const blockedOrders = (prs: unknown[]) => reviewBlockedOrders(reviewBlocked(prs, ["gate"]));
+const OLD_HEAD = "0ldc0mm1t0000000000000000000000f";
+
+test("#2283 done-when 1: a labelled PR in AWAITING_REVIEW or REFUSED is ITS SESSION's order, keyed without a head", () => {
+  const orders = blockedOrders([labelled(2301, "worker-9", "REVIEW_REQUIRED"),
+    labelled(2302, "worker-4", "CHANGES_REQUESTED", HEAD)]);
+  assert.deepEqual(orders.map((o) => [o.session, o.causeKey]), [
+    ["worker-9", "worker-9/pr-review-blocked/pr-2301/AWAITING_REVIEW"],
+    ["worker-4", "worker-4/pr-review-blocked/pr-2302/REFUSED"]], "one order per labelled PR, to its own session");
+  for (const o of orders) {
+    assert.equal(o.cause, "pr-review-blocked");
+    assert.ok(!o.causeKey.includes(HEAD), "the key names the state and never the head (#2084)");
+  }
+  // Positive control: the SAME two states with NO label still make the ONE set order to product-manager,
+  // and the labelled and unlabelled orders are different keys, never swallowed as one.
+  const unlabelled = blockedOrders([ready(2301, "REVIEW_REQUIRED"), ready(2302, "CHANGES_REQUESTED")]);
+  assert.deepEqual(unlabelled.map((o) => [o.session, o.causeKey]),
+    [["product-manager", "product-manager/pr-review-blocked/2301:AWAITING_REVIEW.2302:REFUSED"]]);
+  const mixed = blockedOrders([labelled(2301, "worker-9", "REVIEW_REQUIRED"), ready(2302, "CHANGES_REQUESTED")]);
+  assert.deepEqual(mixed.map((o) => o.causeKey).sort(), [
+    "product-manager/pr-review-blocked/2302:REFUSED", "worker-9/pr-review-blocked/pr-2301/AWAITING_REVIEW"]);
+});
+
+test("#2283 done-when 2: the product-manager set order does not list a labelled PR", () => {
+  const orders = blockedOrders([labelled(2301, "worker-9", "REVIEW_REQUIRED"),
+    labelled(2303, "worker-9", "CHANGES_REQUESTED", HEAD), ready(2304, "REVIEW_REQUIRED")]);
+  const set = orders.filter((o) => o.session === "product-manager");
+  assert.equal(set.length, 1);
+  assert.match(set[0].prompt, /#2304\s+AWAITING_REVIEW/, "the unlabelled PR stays in the set");
+  assert.doesNotMatch(set[0].prompt, /#2301|#2303/, "a labelled PR is its session's, not the queue reader's");
+  assert.equal(set[0].causeKey, "product-manager/pr-review-blocked/2304:AWAITING_REVIEW");
+});
+
+test("#2283 done-when 3: a push to a labelled PR's head does not change its causeKey", () => {
+  for (const [decision, refusedAt] of [["REVIEW_REQUIRED", undefined], ["CHANGES_REQUESTED", HEAD]] as const) {
+    const before = blockedOrders([labelled(2305, "worker-9", decision, refusedAt)]);
+    const pushed = { ...labelled(2305, "worker-9", decision, refusedAt), headRefOid: "f".repeat(32) };
+    const after = blockedOrders([pushed]);
+    assert.equal(before.length, 1);
+    assert.equal(before[0].causeKey, after[0].causeKey, `${decision}: the head moved and the state did not`);
+  }
+});
+
+test("#2283: a refusal's FIRST FACT is the review's commit against headRefOid, in all three readings", () => {
+  const at = (refusedAt?: string) => blockedOrders([labelled(2306, "worker-9", "CHANGES_REQUESTED", refusedAt)])[0].prompt;
+  const live = at(HEAD);
+  assert.match(live.split("\n")[1], /posted AT the current head `abc12345`.*live/, "at the head: the refusal stands");
+  const stale = at(OLD_HEAD);
+  assert.match(stale.split("\n")[1], /posted at `0ldc0mm1` and the head is now `abc12345`.*STILL STANDS/,
+    "at an older head: the author pushed after it and only a newer review lifts it");
+  assert.match(stale, /reviewer-2306/, "and the remedy names the reviewer for that pull request");
+  assert.match(at().split("\n")[1], /names no commit/, "a payload that cannot say is not read as a match");
+  assert.match(live, /rework is yours/);
+});
+
+test("#2283: an UNRECOGNISED decision stays at product-manager even on a labelled PR", () => {
+  // The author can neither read nor fix a value of GitHub's this gate has never seen.
+  const orders = blockedOrders([labelled(2307, "worker-9", "A_STATE_GITHUB_HAS_NOT_SHIPPED_YET")]);
+  assert.deepEqual(orders.map((o) => [o.session, o.causeKey]),
+    [["product-manager", "product-manager/pr-review-blocked/2307:UNRECOGNISED"]]);
+});
+
+test("#2283: through `decide`, a labelled AWAITING_REVIEW PR reaches its session with the reviewer named", () => {
+  const orders = decide({ prs: [labelled(2308, "worker-9", "REVIEW_REQUIRED")], readyRows: [], required: ["gate"] });
+  assert.deepEqual(orders.map((o) => [o.cause, o.session]), [["pr-review-blocked", "worker-9"]]);
+  assert.match(orders[0].prompt, /prompt:session -- reviewer-2308/);
+  assert.match(orders[0].prompt, /never entered the reviewer lane/);
+});
+
 test("#2084: an ABSENT `reviewDecision` is UNREADABLE and emits NOTHING -- it is a fact about the gate", () => {
   // BOTH HALVES, because either alone is the wrong lesson. The state is named rather than folded into
   // "fine" -- that is the honest answer for a field nobody asked for -- and it emits no order, because an
