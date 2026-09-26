@@ -69,6 +69,9 @@ import { poolDiagnosis, refusalPoolLine } from "./api-pool.mjs";
 import { armedFromApi, openPullRequestsQueryArgs } from "./auto-arm-sweep.mjs";
 import { armabilityOf, holdersOf } from "./pr-hold-state.mjs";
 import { REPO } from "../../../scripts/repo-identity.mjs";
+// #2075: WHICH PROJECT A ROW MUST BE ON. `board-snapshot-scope.mjs` runs no `gh` and imports only `node:*`, the repo
+// identity and `settle-closed-status.mjs`, so the gate keeps the property its own header states.
+import { PROJECT_NUMBER } from "./board-snapshot-scope.mjs";
 // #2356: A RED `main` WAKES A FIXER. Imports only `node:*`, `parent-recheck-summary.mjs` and the repo identity,
 // so the gate keeps the property its own header states -- it runs before any `npm ci` or build.
 import { readTrunkRed, trunkRedOrders } from "./trunk-red.mjs";
@@ -108,7 +111,7 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
   "blocked-unexaminable", "fleet-batch-due", "blocker-cleared", "pr-green-unarmed",
   "claimed-row-amended", "row-branch-unshipped", "host-units-stale", "pr-review-blocked",
   "unclaimed-blocker-cleared", "pr-merge-conflict", "trunk-red", "verdict-comment-unreviewed",
-  "reviewer-auth-failed", "awaiting-evidence-stale", "disk-headroom-low", "claim-stalled"];
+  "reviewer-auth-failed", "awaiting-evidence-stale", "disk-headroom-low", "claim-stalled", "row-off-board"];
 
 /**
  * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
@@ -165,7 +168,8 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
 export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog-unpromoted",
   "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
   "blocked-unexaminable", "fleet-batch-due", "row-branch-unshipped", "claimed-row-amended",
-  "unclaimed-blocker-cleared", "reviewer-auth-failed", "awaiting-evidence-stale", "disk-headroom-low"]);
+  "unclaimed-blocker-cleared", "reviewer-auth-failed", "awaiting-evidence-stale", "disk-headroom-low",
+  "row-off-board"]);
 
 /**
  * The causes that START new work, as opposed to finishing work already begun.
@@ -218,6 +222,10 @@ export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog
  * session ALREADY HOLDS, which is the plainest case of work in flight there is; and the window where a stalled claim
  * costs most is a drain, which exists to LAND what is in flight. A release also returns the row to the pool and starts
  * nothing itself -- taking it on again is `ready-row-unclaimed`'s, and THAT is withheld by a drain.
+ *
+ * `row-off-board` is deliberately NOT here either (#2075), and it is a JUDGMENT cause. Boarding a row takes on no work: the
+ * row already exists and is already filed, and what is wrong is that the chairman's view cannot see it. A drain is no
+ * reason to leave a `ready` row invisible in every Status view, and rows are still filed during one.
  */
 export const START_CAUSES = Object.freeze(["ready-row-unclaimed", "ready-queue-empty",
   "lane-backlog-unpromoted", "org-stalled", "epic-unfiled", "epic-finished",
@@ -330,7 +338,10 @@ export const GH_READS = Object.freeze({
     "label list --search answer: (readClosedAnswerRows)",
     "issue list --state closed --search label:<answer labels> (readClosedAnswerRows -- answer-owed on a closed row)",
     // #2356: ONE REST CALL on the core pool -- the newest runs of `trunk.yml` on `main` (readTrunkRed).
-    "api actions/workflows/trunk.yml/runs (readTrunkRed -- trunk-red)"],
+    "api actions/workflows/trunk.yml/runs (readTrunkRed -- trunk-red)",
+    // #2075: ONE GRAPHQL CALL PER 100 OPEN ROWS (one, at 50 open), each row carrying ITS OWN `projectItems` -- never the board
+    // listing, which lags minutes behind an add (see `readRowsOffBoard`).
+    "api graphql repository.issues(states: OPEN) { projectItems } (readRowsOffBoard -- row-off-board)"],
   conditionalOnEmptyShelf: "issue list --label epic (readEpics)",
   // ONE call, and it needs no admin (#2331). It used to be two -- the admin-only protection endpoint, then
   // `branches/main` as the discriminator for its 404 (#2106, #2022) -- and the discriminator's only job
@@ -1197,6 +1208,160 @@ export function fleetBatchOrders(rows, clock = {}) {
       + "(`Fleet-hold-until:`, `--add-blocked-by`, or `Not-before:`) and it leaves this set until the "
       + "condition clears. A row you merely skip stays in the set and this order returns unchanged.",
     causeKey: `orchestrator/fleet-batch-due/${key}`,
+  }];
+}
+
+/**
+ * A ROW FILED WITHOUT `row-file` IS INVISIBLE ON PROJECT 1, AND THE CHECK THAT SEES IT WOKE NOBODY (#2075).
+ *
+ * `row-file` is the only path that boards a row and nothing requires it. Measured 2026-09-23: 9 of 50 open rows had no
+ * Project 1 item, two of them `ready` (claimable on the label, invisible in every Status view), and 28 of the 121 rows filed
+ * since 2026-09-22T00:00Z (23%) never reached the board. `ready-label-audit`'s `reportAbsentFromBoard` asked exactly this and
+ * answered correctly -- on a daily schedule, into a nightly that is red by design, so #1889 was still absent twenty hours
+ * after it printed `ABSENT`. This is that question asked where `agent-practices.md` says such a question belongs: in the
+ * gate, on an API call rather than a model turn and not a day late.
+ *
+ * IT ASKS EACH ROW FOR ITS OWN MEMBERSHIP AND NEVER READS THE BOARD LISTING, and that is the load-bearing choice. Measured
+ * 2026-09-23 (the row's own comment): `gh project item-list` did NOT contain #2075 and #2076 about four minutes after they
+ * were added, while `repository.issue(n).projectItems` reported both on the board seconds later. A tick runs every two
+ * minutes, so a listing-based cause would wake `product-manager` for rows `row-file` had just boarded correctly -- the
+ * noisiest possible false positive, on the one path that works. One connection query carries every open row's
+ * `projectItems` in a single call, so this costs no more than the listing would have.
+ *
+ * `onBoard` IS TRI-STATE: `true`, `false`, or `null` for "could not tell" -- a row with more items than the page returned and
+ * none of them Project 1, which is not the same claim as "not on the board" and is never reported as one.
+ *
+ * @typedef {{ number: number, title: string, createdMs: number, onBoard: boolean | null }} BoardFacts
+ */
+export const ROW_OFF_BOARD_QUERY = `
+  query($owner: String!, $name: String!, $after: String) {
+    repository(owner: $owner, name: $name) {
+      issues(states: OPEN, first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          number title createdAt
+          projectItems(first: 10) { totalCount nodes { project { number } } }
+        }
+      }
+    }
+  }
+`;
+
+/** The pages `readRowsOffBoard` will walk. Beyond this it returns `null`: a partial list is not a reading. */
+const ROW_OFF_BOARD_MAX_PAGES = 10;
+
+/**
+ * HOW YOUNG A ROW IS TOO YOUNG TO CALL OFF THE BOARD. Not a lag allowance -- the read above has none -- but the window in
+ * which `row-file` itself is between `gh issue create` and the board: the `item-add` of #2028 landed 3s after its creation and
+ * the Status and label 8s and 9s after it (a timeline read from GitHub, ONE observation, not a bound). Five minutes is thirty
+ * times that observation and one third of a wake's expiry window; a row genuinely left off is reported five minutes later than
+ * it could have been, which nobody can measure against a defect that ran for twenty hours. CHOSEN WITH MARGIN, NOT DERIVED --
+ * so it is a named constant beside its reason, and the freshness case in `work-gate.test.ts` pins that a row younger than
+ * it is not reported.
+ */
+export const ROW_OFF_BOARD_GRACE_MS = 5 * 60_000;
+
+/**
+ * One open issue's board facts, from its `repository.issues` node.
+ * @param {any} node
+ * @returns {BoardFacts}
+ */
+function boardFactsOf(node) {
+  const items = node?.projectItems;
+  const found = Array.isArray(items?.nodes) && items.nodes.some((/** @type {any} */ n) => n?.project?.number === PROJECT_NUMBER);
+  const complete = Array.isArray(items?.nodes) && items.nodes.length >= items.totalCount;
+  return { number: node.number, title: String(node.title ?? ""), createdMs: Date.parse(node.createdAt),
+    onBoard: found ? true : complete ? false : null };
+}
+
+/**
+ * Every open row's Project 1 membership, read PER ISSUE, or `null` when the read was refused or is not a whole list.
+ *
+ * `null` MEANS COULD NOT ASK, NEVER "NOTHING IS OFF THE BOARD" -- #1286's rule, for its reason: a refused `gh` exits non-zero
+ * with empty stdout, and an empty answer would read as a clean board. `errors` beside `data` is refused too (#555), and so is
+ * a list still paging at `ROW_OFF_BOARD_MAX_PAGES`.
+ *
+ * @param {(args: string[]) => string} [run]
+ * @returns {BoardFacts[] | null}
+ */
+export function readRowsOffBoard(run = defaultRun) {
+  const [owner, name] = REPO.split("/");
+  /** @type {BoardFacts[]} */
+  const facts = [];
+  try {
+    let after = null;
+    for (let page = 0; page < ROW_OFF_BOARD_MAX_PAGES; page++) {
+      const args = ["api", "graphql", "-f", `query=${ROW_OFF_BOARD_QUERY}`, "-F", `owner=${owner}`, "-F", `name=${name}`];
+      if (after !== null) args.push("-f", `after=${after}`);
+      const parsed = JSON.parse(run(args));
+      const issues = parsed?.errors ? null : parsed?.data?.repository?.issues;
+      if (!Array.isArray(issues?.nodes)) return null;
+      facts.push(...issues.nodes.map(boardFactsOf));
+      if (issues.pageInfo?.hasNextPage !== true) return facts;
+      after = issues.pageInfo.endCursor;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The open rows that are provably off Project 1, oldest number first: no item there, and old enough that `row-file` cannot
+ * still be on its way to adding one.
+ *
+ * @param {BoardFacts[]} facts
+ * @param {number} [nowMs]
+ * @returns {{ number: number, title: string }[]}
+ */
+export function rowsOffBoard(facts, nowMs = Date.now()) {
+  return facts
+    .filter((f) => f.onBoard === false && nowMs - f.createdMs >= ROW_OFF_BOARD_GRACE_MS)
+    .map(({ number, title }) => ({ number, title }))
+    .sort((a, b) => a.number - b.number);
+}
+
+/**
+ * THE CAUSE: an open row has no item on Project 1, and `product-manager` is asked to board it (#2075).
+ *
+ * KEYED ON THE SET OF ABSENT ROW NUMBERS, `fleetBatchOrders`'s shape and for its reason: the key changes when the set
+ * changes, so a row newly off the board is a new question, and it is the same string while the set is unchanged, so the wake
+ * ledger's dedupe does not re-ask a settled one (#1433/#1435's defect from the other side). An EMPTY set is no order: this org
+ * is normally clean, and a cause that could not go quiet would fire on every tick for ever. `null` (could not ask) is also no
+ * order -- silence that is NOT a clean board, which the tick says on stderr.
+ *
+ * PLACED BESIDE `hostDriftOrders` in `decide`, AND FOR ITS REASON: a tracker that has drifted from what was filed is finished work
+ * that has not taken effect (the row exists; nobody can see it) -- more urgent than a supply question, less urgent than a named
+ * red build, and not withheld by a drain (see `START_CAUSES`).
+ *
+ * IT DOES NOT BOARD THE ROW. Boarding carries a Status judgment (#1990 is `In progress`, #2068 is `Ready`) and this repository's
+ * audits report the debris rather than act on the tracker.
+ *
+ * @param {BoardFacts[] | null | undefined} facts `readRowsOffBoard`'s result; OMITTED AND `null` MEAN "NOT ASKED"
+ * @param {number} [nowMs]
+ * @returns {{session: string, cause: string, subject: string, discriminator: string,
+ *            prompt: string, causeKey: string}[]}
+ */
+export function rowOffBoardOrders(facts, nowMs = Date.now()) {
+  const absent = rowsOffBoard(facts ?? [], nowMs);
+  if (absent.length === 0) return [];
+  const key = absent.map((r) => r.number).join(".");
+  return [{
+    session: "product-manager",
+    cause: "row-off-board",
+    subject: "project-1",
+    discriminator: key,
+    prompt: `${absent.length} open row(s) have NO item on Project ${PROJECT_NUMBER}, so they are invisible in every Status view:\n`
+      + absent.map((r) => `  #${r.number} ${r.title}`).join("\n") + "\n"
+      + "A row filed with a bare `gh issue create` never reaches the board: only `row-file` boards one, and a board label applied "
+      + "AT CREATION (`ready` or `backlog` one second after the row exists) is the fingerprint of that path. Each was read from "
+      + "the ISSUE's own `projectItems`, not from a board listing (which lags minutes behind an add), and none is younger than "
+      + `${ROW_OFF_BOARD_GRACE_MS / 60_000} minutes.\n`
+      + "For each: add it to Project 1 at the Status its label says (`ready` -> Ready, `backlog` -> Backlog, `in-progress` -> "
+      + "In progress), and give it a release declaration (a milestone or `out-of-release`) if it has none -- `row-file` would have "
+      + "refused a filing without one. THIS ORDER DOES NOT BOARD THE ROW FOR YOU: the Status is a judgment and it is yours.\n"
+      + "THIS ARRIVES WHEN THE SET CHANGES. A row you leave off stays in the set and this order returns unchanged.",
+    causeKey: `product-manager/row-off-board/${key}`,
   }];
 }
 
@@ -3817,7 +3982,7 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *           hostDrift?: {unit: string, problem: string, detail: string}[] | null,
  *           closings?: Map<number, number> | null, trunkRed?: ReturnType<typeof readTrunkRed>,
  *           baseTip?: {sha: string, date: string} | null,
- *           claimStalls?: import("./claim-stall.mjs").StallOrder[] }} state
+ *           claimStalls?: import("./claim-stall.mjs").StallOrder[], offBoard?: BoardFacts[] | null }} state
  *        `claimStalls` is `claimStallTick`'s orders (#2470): a nudge to a holder whose claim has not moved, or a release
  *        `wake.mjs` performs. OMITTED MEANS NONE.
  *        `required` is the checks that can block a merge (`requiredCheckNames`), or `null` for
@@ -3857,12 +4022,15 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *        the API says nothing has armed. It DEFAULTS TO `null`, which is "not asked or refused" and
  *        emits no order: a caller that cannot make that read must never produce a false all-clear, and
  *        must never produce a false alarm either.
+ *        `offBoard` is `readRowsOffBoard()` -- every open row's Project 1 membership, or `null` (#2075). OMITTED AND `null` MEAN
+ *        THE SAME THING, "not asked or refused": no order is emitted. It carries no `= null` default for `rowBranches`'s
+ *        reason: `decide` sits exactly on its limit of 15.
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
-  claimedComments = [], rowBranches, hostDrift, closings, trunkRed, baseTip, claimStalls }) {
+  claimedComments = [], rowBranches, hostDrift, closings, trunkRed, baseTip, claimStalls, offBoard }) {
   // FIRST, BEFORE EVERY OTHER CAUSE (#2356): a red `main` outranks even `answer-owed` -- see `trunkRedOrders`.
   // `answer-owed` says another session is ALREADY STOPPED waiting on them, which outranks any standing question.
   const orders = [...trunkRedOrders(trunkRed), ...answerOrders(answerOwed)];
@@ -3939,7 +4107,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // reason applied to the machine rather than to a pull request. A stale host is finished work that has
   // not taken effect -- more urgent than a supply question, less urgent than a named red build. It is
   // deliberately NOT withheld by a drain: see `START_CAUSES`.
-  orders.push(...hostDriftOrders(hostDrift));
+  orders.push(...hostDriftOrders(hostDrift), ...rowOffBoardOrders(offBoard)); // #2075: beside it; see `rowOffBoardOrders`
 
   orders.push(...chairmanOrders(chairmanBlocked));
 
@@ -4450,6 +4618,20 @@ function hostUnitsEntry() {
 }
 
 /**
+ * `readRowsOffBoard`, saying on stderr when it could not ask (split out of `main`, which sits on `complexity`'s limit).
+ * A refused read emits no order and MUST NOT read as a clean board, so the difference is written where the tick log reads.
+ * @param {(line: string) => void} [log]
+ */
+export function rowsOffBoardOrSay(log = (line) => process.stderr.write(line)) {
+  const facts = readRowsOffBoard();
+  if (facts === null) {
+    log("CANNOT ASK which open rows are off Project 1: the read was refused. row-off-board was NOT evaluated "
+      + "this tick, and that silence is not a clean board.\n");
+  }
+  return facts;
+}
+
+/**
  * The closing times `unclaimedBlockerClearedOrders` backs off on, read ONLY when some unclaimed row has a
  * cleared blocker to ask about. `openRows` is already in hand, so the condition costs no call, and a quiet
  * tracker pays nothing (`GH_READS.conditionalOnClearedRows`). `null` when there is nothing to ask about
@@ -4496,6 +4678,7 @@ function main() {
   // #2031: A LOCAL git CALL, NOT AN API ONE -- it adds nothing to `GH_READS` and cannot be refused by an
   // exhausted pool, which is the whole reason the detection can exist. `GIT_READS` counts it.
   const rowBranches = readRowBranches();
+  const offBoard = rowsOffBoardOrSay();
   // #1969: NAMED RATHER THAN CALLED TWICE. `shouldBeMerging` needs the same answer `decide` does, and
   // `requiredWhenRed` makes a `gh` call when anything is red -- calling it inline in both places would
   // pay for it twice on exactly the red tick this row is about.
@@ -4524,7 +4707,9 @@ function main() {
     closings: closingsWhenRowsCleared(allOpen),
     // #2356: `null` for a refused read or a green `main`, and the two need no telling apart HERE -- both
     // emit nothing, and a refused read is not reported as health because nothing else reads "trunk is fine".
-    trunkRed: readTrunkRed() });
+    trunkRed: readTrunkRed(),
+    // #2075: ONE GRAPHQL CALL, READ PER ISSUE. `null` (refused) emits nothing and is said on stderr below.
+    offBoard });
   const { delivered: orders, performed } = performActions(decided);
   orders.push(...reviewerAuthTick({ orders }));
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so

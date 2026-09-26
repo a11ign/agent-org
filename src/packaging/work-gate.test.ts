@@ -48,7 +48,8 @@ import { MAX_ROW_ORDERS_PER_TICK, readCommitChain, withCommitChains, decide, che
   blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL,
   ANSWER_PREFIX, redOnlyBySupersededRun, cannotAskReport,
   readRowBranches, rowBranchOrders, GIT_READS,
-  reviewStateOf, reviewBlocked, reviewBlockedOrders, REVIEW_STATE, HOLD_RED_JOBS }
+  reviewStateOf, reviewBlocked, reviewBlockedOrders, REVIEW_STATE, HOLD_RED_JOBS,
+  readRowsOffBoard, rowsOffBoard, rowOffBoardOrders, rowsOffBoardOrSay, ROW_OFF_BOARD_GRACE_MS }
   from "../work-gate.mjs";
 // #2182: the SHIPPED reader that decides whether a delivered cause is still live, imported so this file
 // can assert what the membership BUYS rather than only that the name is in the list. `wake.mjs` runs
@@ -975,10 +976,12 @@ test("every cause is classified as START or FINISH -- a new one cannot default i
   // which a window that is landing in-flight work cares about, and it takes on nothing new.
   // #2470: `claim-stalled` is FINISH, and an ACTION cause (in `JUDGMENT_CAUSES` neither): its subject is a row a session already
   // holds, which a drain exists to land, and a release only returns the row to a pool that a drain already withholds.
+  // #2075: `row-off-board` is FINISH, and a JUDGMENT cause. Boarding a row takes on no work -- the row is already filed, and
+  // what is wrong is that the chairman's view cannot see it -- and rows are still filed during a drain.
   assert.deepEqual(finish, ["answer-owed", "awaiting-evidence-stale", "blocker-cleared", "chairman-blocked", "claim-stalled",
     "claimed-row-amended", "disk-headroom-low", "draft-awaiting-verdict", "draft-convinced-not-ready", "host-units-stale", "pr-checks-failing",
     "pr-green-unarmed", "pr-merge-conflict", "pr-review-blocked", "reviewer-auth-failed",
-    "row-branch-unshipped", "trunk-red", "verdict-comment-unreviewed", "verdict-not-convinced"]);
+    "row-branch-unshipped", "row-off-board", "trunk-red", "verdict-comment-unreviewed", "verdict-not-convinced"]);
   for (const cause of START_CAUSES) {
     assert.ok(CAUSES.includes(cause), `${cause} is withheld by a drain but no longer exists`);
   }
@@ -1706,12 +1709,13 @@ test("a SUPERSEDED red run does not wake anyone -- the newest run per name is wh
  * sentence. This test is why the next person inherits a checked number.
  */
 test("the gate's read count is counted, not remembered", () => {
+  // NINE since #2075 added the per-issue Project 1 membership read (`readRowsOffBoard`: one GraphQL call per 100 open rows).
   // EIGHT since #2202 added the closed-row answer read (two calls, both exact -- see `readClosedAnswerRows`).
   // SIX since #2356 added the trunk read (`readTrunkRed`: one REST call, core pool). It was FIVE since
   // `answer-owed` landed. This pin caught that read within a minute of it being added, which
   // is exactly why it exists: the number it replaced ("two `gh` calls") had been wrong for months
   // because three readers arrived and nobody re-counted.
-  assert.equal(GH_READS.unconditional.length, 8,
+  assert.equal(GH_READS.unconditional.length, 9,
     "if you add or remove an unconditional read, this number and every comment quoting it move together");
   // #1938 REMOVED THE SILENCE-CONDITIONAL READ ENTIRELY: the dead man's switch now derives its
   // answer from the rows the unconditional read already fetched. The key is GONE rather than empty,
@@ -2898,7 +2902,7 @@ test("#2161: decide() hands the cause the pull requests it already read", () => 
 });
 
 test("#2161: the narrowing spends no `gh` call -- it reads what `draftOrder` already has", () => {
-  assert.equal(GH_READS.unconditional.length, 8, "#2161 adds no unconditional read (8 since #2202)");
+  assert.equal(GH_READS.unconditional.length, 9, "#2161 adds no unconditional read (8 since #2202, 9 since #2075)");
   const gate = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
   const body = gate.slice(gate.indexOf("function rowsWithOpenPr"), gate.indexOf("export function blockerClearedOrders"));
   assert.ok(body.length > 0 && !/\brun\(|spawnSync|defaultRun/.test(body),
@@ -3461,7 +3465,7 @@ test("#2110: main pays for it only when something is actually claimed", () => {
     "exactly one call site, and it is inside the condition below -- a second is a second price");
   assert.match(gate, /const held = openRows\.some\(\(r\) => labelsOf\(r\)\.includes\(CLAIM_LABEL\)\);\s*\n\s*return held \? readClaimedRowComments\(\) : null;/,
     "the condition is answered from rows already in hand, so asking it costs no call of its own");
-  assert.equal(GH_READS.unconditional.length, 8,
+  assert.equal(GH_READS.unconditional.length, 9,
     "#2110 adds no UNCONDITIONAL read -- the comment page is conditional on a claim existing");
 });
 
@@ -3607,7 +3611,7 @@ test("#2003: the pool reading has ONE definition, and the gate pays for it only 
 
   // AND THE READ COUNT IS UNCHANGED, which is the other half of done-when 2: this row adds no
   // unconditional read, and `GH_READS` is the pin that would catch it if it ever did.
-  assert.equal(GH_READS.unconditional.length, 8,
+  assert.equal(GH_READS.unconditional.length, 9,
     "#2003 must not add an unconditional read -- the refusal path is where the extra call lives");
 
   // A SECOND COPY OF "HOW TO READ A POOL" IS REFUSED (#2003's Region says so). The header name is the
@@ -3831,7 +3835,7 @@ test("#2031: the detection makes NO `gh` call -- the pool is gone in the outage 
     + "the exhausted-pool outage that produces the staleness it detects");
   assert.deepEqual(found, [{ branch: BRANCH_2000, head: SHA_2000, row: 2000 }],
     "`main` is not a row branch: the trailing `-<digits>` is the whole match");
-  assert.equal(GH_READS.unconditional.length, 8, "#2031 adds NO gh read -- it is a local git call");
+  assert.equal(GH_READS.unconditional.length, 9, "#2031 adds NO gh read -- it is a local git call");
   assert.ok(GIT_READS.unconditional.some((r: string) => r.includes("ls-remote")),
     "and the free read is COUNTED rather than left out because it is free -- `GH_READS`'s own header "
     + "records what happened last time a read went unwritten-down");
@@ -4811,4 +4815,135 @@ test("#2492: rowsOwingAnswers carries a labelled PR beside the open and closed r
   assert.deepEqual(numbers([prWithLabels(2376, `${ANSWER_PREFIX}worker-tooling`)]), [2377, 2376, 1936]);
   assert.deepEqual(numbers([prWithLabels(2376, "in-progress")]), [2377, 1936], "the negative control: the label decides, not the PR");
   assert.deepEqual(numbers([]), [2377, 1936]);
+});
+
+// --- #2075: `row-off-board` -- an open row with no Project 1 item wakes product-manager ---
+
+const NOW_MS = Date.parse("2026-09-26T12:00:00Z");
+const MINUTE_MS = 60_000;
+
+/** One open row's facts as `readRowsOffBoard` reads them; `ageMs` is how long ago it was created. */
+function boardFacts(number: number, onBoard: boolean | null, ageMs = 60 * MINUTE_MS) {
+  return { number, title: `row ${number}`, createdMs: NOW_MS - ageMs, onBoard };
+}
+
+/** One `repository.issues` node as GitHub returns it: the projects an issue is an item of, by number. */
+function issueNode(number: number, projects: number[], { createdAt = "2026-09-26T08:00:00Z", totalCount = projects.length } = {}) {
+  return { number, title: `row ${number}`, createdAt,
+    projectItems: { totalCount, nodes: projects.map((n) => ({ project: { number: n } })) } };
+}
+
+/** A `gh` fake serving `pages` in order, recording every argv it was asked. */
+function graphqlPages(pages: unknown[]) {
+  const calls: string[][] = [];
+  const run = (args: string[]) => {
+    calls.push(args);
+    const page = pages[calls.length - 1];
+    if (page === undefined) throw new Error("asked for a page the fake does not have");
+    return JSON.stringify(page);
+  };
+  return { run, calls };
+}
+
+const page = (nodes: unknown[], next: string | null = null) => ({ data: { repository: { issues: { nodes,
+  pageInfo: { hasNextPage: next !== null, endCursor: next } } } } });
+
+test("#2075 DONE-WHEN 1: an open row with no Project 1 item yields ONE row-off-board order for product-manager naming it", () => {
+  const orders = rowOffBoardOrders([boardFacts(2068, false), boardFacts(2028, true)], NOW_MS);
+  assert.equal(orders.length, 1);
+  assert.equal(orders[0].session, "product-manager");
+  assert.equal(orders[0].cause, "row-off-board");
+  assert.match(orders[0].prompt, /#2068 row 2068/);
+  assert.doesNotMatch(orders[0].prompt, /#2028/, "the boarded row is not named: the order is about the absent one");
+  assert.match(orders[0].prompt, /DOES NOT BOARD THE ROW FOR YOU/, "it reports; the Status is a judgment and is not made here");
+});
+
+test("#2075 DONE-WHEN 2 (the half that matters): a board where every open row is boarded emits NO order", () => {
+  assert.deepEqual(rowOffBoardOrders([boardFacts(1, true), boardFacts(2, true)], NOW_MS), []);
+  assert.deepEqual(rowOffBoardOrders([], NOW_MS), [], "an empty tracker is not a finding either");
+  assert.deepEqual(rowOffBoardOrders(null, NOW_MS), [], "could not ask is silence, and the tick says so on stderr");
+  assert.deepEqual(rowOffBoardOrders(undefined, NOW_MS), [], "not asked at all is silence too");
+  // The positive control for the emptiness above: the SAME inputs with one row unboarded DO order.
+  assert.equal(rowOffBoardOrders([boardFacts(1, true), boardFacts(2, false)], NOW_MS).length, 1);
+});
+
+test("#2075 DONE-WHEN 3 (freshness): a row on the board that was added seconds ago is NOT reported, and neither is a row too young to have been boarded", () => {
+  // The read is PER ISSUE, so the lag of the board listing cannot reach it: this pins that by asserting what is asked.
+  const { run, calls } = graphqlPages([page([issueNode(2075, [1], { createdAt: "2026-09-26T11:59:30Z" })])]);
+  const facts = readRowsOffBoard(run);
+  assert.deepEqual(rowsOffBoard(facts!, NOW_MS), [], "the issue's own projectItems says it is on Project 1");
+  assert.ok(calls.every((argv) => argv[0] === "api" && argv[1] === "graphql" && !argv.join(" ").includes("item-list")),
+    "the board LISTING, which lagged ~4 minutes behind an add, is never read");
+  // And the window in which row-file is between `gh issue create` and the board: the grace.
+  const young = boardFacts(2100, false, ROW_OFF_BOARD_GRACE_MS - 1);
+  assert.deepEqual(rowsOffBoard([young], NOW_MS), [], "younger than the grace: row-file may still be about to add it");
+  assert.deepEqual(rowsOffBoard([{ ...young, createdMs: NOW_MS - ROW_OFF_BOARD_GRACE_MS }], NOW_MS).map((r) => r.number), [2100],
+    "POSITIVE CONTROL: at the grace it is reported, so the filter is a boundary and not a blanket");
+});
+
+test("#2075: the causeKey names the SET -- it changes when the set changes and does not when it does not", () => {
+  const key = (rows: [number, boolean][]) => rowOffBoardOrders(rows.map(([n, on]) => boardFacts(n, on)), NOW_MS)[0]?.causeKey;
+  assert.equal(key([[2068, false], [2070, false]]), "product-manager/row-off-board/2068.2070");
+  assert.equal(key([[2070, false], [2068, false]]), key([[2068, false], [2070, false]]), "order of the read does not mint a new key");
+  assert.equal(key([[2068, false], [2070, false], [9, true]]), key([[2068, false], [2070, false]]),
+    "boarded rows joining or leaving the population do not change it");
+  assert.notEqual(key([[2068, false], [2070, false]]), key([[2068, false]]), "a row boarded leaves the set: a new question");
+  assert.notEqual(key([[2068, false], [2070, false]]), key([[2068, false], [2071, false]]),
+    "same size, different rows: a count would collide (#1799)");
+});
+
+test("#2075: a row whose membership could not be told is neither reported off the board nor counted boarded", () => {
+  assert.deepEqual(rowsOffBoard([boardFacts(7, null)], NOW_MS), []);
+  // Read through the shipped reader: ten items, none of them Project 1, page shows fewer than its own total.
+  const truncated = issueNode(8, [5, 6], { totalCount: 11 });
+  const [f] = readRowsOffBoard(graphqlPages([page([truncated])]).run)!;
+  assert.equal(f.onBoard, null, "a partial item list is not proof of absence");
+});
+
+test("#2075: readRowsOffBoard reads membership of PROJECT 1 specifically, across pages", () => {
+  const { run, calls } = graphqlPages([
+    page([issueNode(1, [1]), issueNode(2, [])], "cursor-1"),
+    page([issueNode(3, [2]), issueNode(4, [2, 1])]),
+  ]);
+  const facts = readRowsOffBoard(run)!;
+  assert.deepEqual(facts.map((f) => [f.number, f.onBoard]), [[1, true], [2, false], [3, false], [4, true]],
+    "an item on some OTHER project (3) is not an item on Project 1");
+  assert.equal(calls.length, 2);
+  assert.ok(!calls[0].join(" ").includes("after="), "the first page has no cursor");
+  assert.ok(calls[1].includes("after=cursor-1"), "the second page is asked with the first's cursor");
+  assert.deepEqual(rowsOffBoard(facts, NOW_MS).map((r) => r.number), [2, 3]);
+});
+
+test("#2075: a refused, errored, malformed or never-ending read is `null` -- never an empty board", () => {
+  assert.equal(readRowsOffBoard(() => { throw new Error("HTTP 403"); }), null, "gh exited non-zero");
+  assert.equal(readRowsOffBoard(() => "not json"), null);
+  assert.equal(readRowsOffBoard(() => JSON.stringify({ data: { repository: null } })), null);
+  assert.equal(readRowsOffBoard(() => JSON.stringify({ ...page([issueNode(1, [1])]), errors: [{ message: "boom" }] })), null,
+    "errors beside data is refused before data is trusted (#555)");
+  const forever = () => JSON.stringify(page([issueNode(1, [1])], "more"));
+  assert.equal(readRowsOffBoard(forever), null, "a list still paging at the cap is not a whole list");
+  // The control: a healthy single page is an array, so `null` above is the refusal and not the shape.
+  assert.ok(Array.isArray(readRowsOffBoard(graphqlPages([page([issueNode(1, [1])])]).run)));
+});
+
+test("#2075: rowsOffBoardOrSay says on stderr when it could not ask, and is silent when it did", () => {
+  const lines: string[] = [];
+  // `rowsOffBoardOrSay` runs the real `gh`; a bare token-less host refuses it, so pin the SAY on both branches through the log.
+  const said = rowsOffBoardOrSay((line: string) => lines.push(line));
+  if (said === null) assert.match(lines.join(""), /CANNOT ASK which open rows are off Project 1.*not a clean board/);
+  else assert.deepEqual(lines, [], "a read that answered says nothing");
+});
+
+test("#2075: row-off-board is a JUDGMENT cause and FINISH, and `decide` emits it from `offBoard` and from nothing else", () => {
+  assert.ok(CAUSES.includes("row-off-board"));
+  assert.ok(JUDGMENT_CAUSES.includes("row-off-board"), "its answer is durable: an unchanged set is not re-asked on the action expiry");
+  assert.ok(!START_CAUSES.includes("row-off-board"), "boarding takes on no work");
+  const base = { prs: [], readyRows: [] };
+  const causes = (state: object) => (decide({ ...base, ...state }) as { cause: string }[]).map((o) => o.cause);
+  // `decide` reads the real clock, so the row's age is taken from it rather than from the fixed NOW_MS above.
+  const old = { ...boardFacts(2068, false), createdMs: Date.now() - 60 * MINUTE_MS };
+  assert.deepEqual(causes({ offBoard: [old] }), ["row-off-board"]);
+  assert.deepEqual(causes({}), [], "a caller that did not ask emits nothing");
+  assert.deepEqual(causes({ offBoard: null }), [], "a caller whose read was refused emits nothing");
+  assert.deepEqual(causes({ offBoard: [old], drain: true }), ["row-off-board"], "a drain does not withhold it");
 });
