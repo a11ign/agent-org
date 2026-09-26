@@ -245,9 +245,10 @@ function attributionParagraph(attribution) {
  *
  * THE SUBJECT IS THE MERGED PR WHEN KNOWN (`pr-<n>`), which is what lets `wake`'s STUCK breaker label it
  * `answer:ceo` if six offers do not clear the red (#2636) -- a fix-forward nobody picks up must reach the session
- * that unsticks it. THE MERGED PR IS CLOSED, and the `answer-owed` reader looks at open rows, open pull requests and
- * closed ISSUES: that label on a merged PR is set and not read. `needs:chairman` had the same blind spot; it is named
- * here so the escalation is not taken for a delivery it may not be.
+ * that unsticks it. THE MERGED PR IS NO LONGER OPEN, and the `answer-owed` reader asks for it by label name
+ * (`readClosedAnswerRows`, #2641: `pr list --state all` with `-is:open`), beside open rows, open pull requests and closed
+ * ISSUES, so that label is read and the session it names is woken. `needs:chairman` had a blind spot here that this does
+ * not repair (`readChairmanBlocked` is open issues only), which is why the escalation goes to `answer:ceo`.
  *
  * @param {ReturnType<typeof readTrunkRed> | undefined} red `null` or omitted when `main` is not red
  * @returns {{ session: string, fallback?: string, cause: string, subject: string, discriminator: string,

@@ -337,6 +337,10 @@ export const GH_READS = Object.freeze({
     // asks for the closed rows carrying any of them -- exact, so no window a row can fall out of silently.
     "label list --search answer: (readClosedAnswerRows)",
     "issue list --state closed --search label:<answer labels> (readClosedAnswerRows -- answer-owed on a closed row)",
+    // #2641: THE THIRD OF THEM, and the one that moved the count from 9 to 10. A pull request that is no longer open is
+    // not an `issue list` row and not a `readPrs` row, and a stuck cause whose subject is a MERGED one (`trunkRedOrders`)
+    // labels it `answer:ceo` where nothing looked. Same label names as the call above, so no second `label list`.
+    "pr list --state all --search 'label:<answer labels> -is:open' (readClosedAnswerRows -- answer-owed on a merged or closed pull request)",
     // #2356: ONE REST CALL on the core pool -- the newest runs of `trunk.yml` on `main` (readTrunkRed).
     "api actions/workflows/trunk.yml/runs (readTrunkRed -- trunk-red)",
     // #2075: ONE GRAPHQL CALL PER 100 OPEN ROWS (one, at 50 open), each row carrying ITS OWN `projectItems` -- never the board
@@ -1058,11 +1062,23 @@ export function readOpenRows(run = defaultRun) {
  * closed it, none of the three questions ever answered. The close path now KEEPS the label
  * (`labelsToStrip`) and says so; this is what keeps acting on it.
  *
- * TWO CALLS, AND BOTH ARE EXACT. `gh` matches one whole label name, and this is a PREFIX over one name per
- * session, so the repo's own `answer:` labels are listed first and the closed rows carrying any of them
- * are asked for by name (`label:"a","b"` is GitHub's OR). A window over the newest closed rows would be
- * one call, but a question older than the window would fall out of it -- the silent-void defect again,
- * one level down -- so this pays the second call to have no such edge.
+ * #2641: A MERGE CLOSES TWO THINGS, and this read chased only one. `trunkRedOrders` names the MERGED PULL REQUEST that
+ * turned `main` red as its subject, `stuckRowOf` turns that into a number and `escalateStuck` labels it `answer:ceo`; a
+ * pull request that is no longer open is no `gh issue list` row and no `readPrs` row, so that label was set and read by
+ * nothing. `gh pr list --state all` is asked with `-is:open` -- merged AND closed-unmerged, the open ones being
+ * `readPrs`'s -- so the same label names cost ONE more call and not a second `label list`. It asks for `isDraft`
+ * because that field is how `isPullRequest` knows the row came from a pull request, and so how `answerOrders` says
+ * "pull request" and not "row" to the session it wakes.
+ *
+ * THREE CALLS, AND EVERY ONE IS EXACT. `gh` matches one whole label name, and this is a PREFIX over one name per
+ * session, so the repo's own `answer:` labels are listed first and the closed rows and pull requests carrying any of
+ * them are asked for by name (`label:"a","b"` is GitHub's OR). A window over the newest closed rows or merged pull
+ * requests would be one call, but a question older than the window would fall out of it -- the silent-void defect
+ * again, one level down -- so this pays the calls to have no such edge. `-is:open` keeps the PR read's 100 for the
+ * population it is FOR: an open pull request carrying the label would otherwise spend the window.
+ *
+ * ALL OR NOTHING: a refusal of either read is `null` for the whole, so `closedAnswerRows` says it once rather than
+ * ordering the half that answered and staying silent about the half that did not.
  *
  * @param {(args: string[]) => string} [run]
  * @returns {any[] | null} `null` when refused, never `[]` -- "could not ask" is not "nobody owes anything"
@@ -1074,9 +1090,13 @@ export function readClosedAnswerRows(run = defaultRun) {
     if (!Array.isArray(labels)) return null;
     const names = labels.map((l) => l?.name).filter((n) => typeof n === "string" && n.startsWith(ANSWER_PREFIX));
     if (names.length === 0) return [];
-    const parsed = JSON.parse(run(["issue", "list", "--state", "closed", "--limit", "100",
-      "--search", `label:${names.map((n) => `"${n}"`).join(",")}`, "--json", "number,title,labels,state"]));
-    return Array.isArray(parsed) ? withAnswerLabel(parsed) : null;
+    const byLabel = `label:${names.map((n) => `"${n}"`).join(",")}`;
+    const closedIssues = JSON.parse(run(["issue", "list", "--state", "closed", "--limit", "100",
+      "--search", byLabel, "--json", "number,title,labels,state"]));
+    const closedPrs = JSON.parse(run(["pr", "list", "--state", "all", "--limit", "100",
+      "--search", `${byLabel} -is:open`, "--json", "number,title,labels,state,isDraft"]));
+    if (!Array.isArray(closedIssues) || !Array.isArray(closedPrs)) return null;
+    return withAnswerLabel([...closedIssues, ...closedPrs]);
   } catch {
     return null;
   }
@@ -1487,7 +1507,7 @@ function closedAnswerRows() {
   const rows = readClosedAnswerRows();
   if (rows === null) {
     process.stderr.write("NOTE: could not read the closed rows that still owe an answer -- a question on a row "
-      + "a merge already closed is NOT being chased this tick (#2202).\n");
+      + "a merge already closed -- or a pull request no longer open -- is NOT being chased this tick (#2202, #2641).\n");
     return [];
   }
   return withoutEndedAnswerSessions(rows);
@@ -1616,7 +1636,8 @@ export function withAnswerLabel(rows) {
  * EVERY place an `answer:<session>` label can sit, as the one list `decide` takes (#2492). Three reads, one
  * input: the open rows, the open pull requests the gate already holds (`gh issue list` never returns a PR,
  * which is why a label on #2376 woke nobody), and the closed rows still owing (#2202). Kept as one named
- * function so a fourth place is one line here, and a test can call it rather than read `main`'s text.
+ * function so a fourth place is one line here, and a test can call it rather than read `main`'s text. `closedRows`
+ * is every subject that is no longer open: closed ISSUES (#2202) and merged or closed pull requests (#2641).
  *
  * @param {{ openRows: any[], openPrs: any[], closedRows: any[] }} reads
  */
@@ -1786,6 +1807,21 @@ function isPullRequest(row) {
 }
 
 /**
+ * The sentence that says the subject is no longer open, or "" when it is. A MERGED pull request is its own case (#2641):
+ * `state` is `MERGED`, not `CLOSED`, and "a merge closed it" would be the wrong verb for one that was never closed.
+ * @param {any} row @param {string} subject `"row"` or `"pull request"`
+ */
+function closedNote(row, subject) {
+  if (row.state === "MERGED") {
+    return `THE ${subject.toUpperCase()} IS MERGED: it merged while your answer was still owed, and merging did not answer `
+      + "it (#2641). A merged pull request still takes a comment, so answer there.\n";
+  }
+  if (row.state !== "CLOSED") return "";
+  return `THE ${subject.toUpperCase()} IS CLOSED: ${subject === "row" ? "a merge closed it" : "it was closed"} while your answer `
+    + `was still owed, and closing did not answer it (#2202). A closed ${subject} takes a comment, so answer there.\n`;
+}
+
+/**
  * One order PER ROW that owes an answer, keyed on the row.
  *
  * PER ROW FOR #1799's REASON, applied before it could bite: each row carries a DIFFERENT question, so a
@@ -1820,8 +1856,7 @@ export function answerOrders(rows) {
         prompt: `#${row.number} ${isPullRequest(row) ? "IS A PULL REQUEST " : "IS "}WAITING ON AN ANSWER FROM YOU. `
           + `Another session asked you something there and cannot move until you reply -- read that ${subject}'s `
           + "most recent comments for the question.\n"
-          + (row.state === "CLOSED" ? "THE ROW IS CLOSED: a merge closed it while your answer was still owed, "
-            + "and closing did not answer it (#2202). A closed row takes a comment, so answer there.\n" : "")
+          + closedNote(row, subject)
           + `ANSWER ON THE ${subject.toUpperCase()}, then remove its \`${ANSWER_PREFIX}${session}\` label: taking the label `
           + "off IS the act of answering, and it is the only thing that stops this being asked again.\n"
           + "\"I cannot answer this\" is an answer -- say so, say who can, and re-label it to them. "
