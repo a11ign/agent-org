@@ -32,7 +32,8 @@ const ENDS_IN_DIGITS = /-\d+$/;
 /**
  * @typedef {{ key: string, repo: string }} CodeRepository
  * @typedef {{ key: string, repo: string, board: { owner: string, number: number } }} Tracker
- * @typedef {{ schema: number, tracker: Tracker[], code: CodeRepository[], repo: string, boardOwner: string, boardNumber: number }} ProjectDeclaration
+ * @typedef {{ name: string, pattern: string }} LeakPattern one thing this project's public prose must never carry: the name a refusal quotes, and a regular expression's SOURCE (no slashes, no flags)
+ * @typedef {{ schema: number, tracker: Tracker[], code: CodeRepository[], leakPatterns: LeakPattern[], repo: string, boardOwner: string, boardNumber: number }} ProjectDeclaration
  */
 
 /** A refusal that carries the field it is about, so a caller (and a test) can tell WHICH rule fired and not merely that one did. */
@@ -136,6 +137,34 @@ function readTracker(entry, at, source) {
 }
 
 /**
+ * The project's OWN leak patterns (#2658, child 3g): what its tracked prose and its tracker bodies must never carry, ON TOP OF the two the
+ * tool holds itself (`lib/leak-patterns.mjs`: a private LAN address, a named SSH key file). A declaration that names none is a project
+ * with none of its own, so an ABSENT field reads as an empty list -- and that is the one field here that does, because it adds to a floor the
+ * tool already enforces rather than answering a question about WHICH project this is. A present field is held to the same rule as every
+ * other: each entry needs a non-empty `name` and a `pattern` that compiles, and it is REFUSED naming the entry when it does not.
+ * @param {Record<string, unknown>} declaration @param {string} source
+ * @returns {LeakPattern[]}
+ */
+function readLeakPatterns(declaration, source) {
+  if (!Object.hasOwn(declaration, "leakPatterns")) return [];
+  const list = declaration.leakPatterns;
+  if (!Array.isArray(list)) throw new ProjectDeclarationRefusal("leakPatterns", `it must be a list, not ${describe(list)}`, source);
+  return list.map((entry, index) => {
+    const at = `leakPatterns[${index}]`;
+    if (!isObject(entry)) throw new ProjectDeclarationRefusal(at, `it must be an object, not ${describe(entry)}`, source);
+    const name = requiredString(entry, "name", `${at}.`, source);
+    if (name === "") throw new ProjectDeclarationRefusal(`${at}.name`, "it is empty", source);
+    const pattern = requiredString(entry, "pattern", `${at}.`, source);
+    try {
+      new RegExp(pattern);
+    } catch (cause) {
+      throw new ProjectDeclarationRefusal(`${at}.pattern`, "it is not a regular expression", source, { cause });
+    }
+    return { name, pattern };
+  });
+}
+
+/**
  * Parse one declaration's text. PURE: no file is read, so a test drives every refusal with a string.
  * The FIRST tracker and the FIRST code repository are the project's own (decision 2: the empty key belongs to the primary
  * project's first of each), so `repo`, `boardOwner` and `boardNumber` are those entries' values.
@@ -161,6 +190,7 @@ export function parseProjectDeclaration(text, source = PROJECT_DECLARATION_PATH)
     schema: SUPPORTED_SCHEMA,
     tracker,
     code,
+    leakPatterns: readLeakPatterns(parsed, source),
     repo: code[0].repo,
     boardOwner: tracker[0].board.owner,
     boardNumber: tracker[0].board.number,
