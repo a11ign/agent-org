@@ -1,3 +1,5 @@
+// no-token: VOIDED -- read only as a string, in `new RegExp(VOIDED)` and a template literal, to build a
+// real wake-ledger fixture line; never called or spawned, so this file never reaches `defaultGh`/`guardedGh`.
 /**
  * `shadow-gate.mjs` is the rehearsal instrument for ADR 0040 decision 5 (row #2622, child 4 of #69): a
  * read-only runner that feeds a live gate and a candidate gate the SAME reads and diffs their orders, tick
