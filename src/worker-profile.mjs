@@ -195,6 +195,17 @@ export const PROFILES = Object.freeze({
     why: "the act is one command; telling an unreviewed pull request from a refused one -- and a live "
       + "refusal from one posted at a head the author has already fixed -- is the judgment",
   }),
+  "pr-codeowner-review-missing": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // HIGH. The order names the pull request; deciding what to do with it is reading a pipeline diff and
+    // posting the review CODEOWNERS has been waiting on -- the one act `#1959` exists because nothing
+    // else asks `ceo` to do. A wrong approval here is a merge queue and trunk-health check waved through
+    // by the one reviewer #1756 makes load-bearing; a wrong refusal blocks the pipeline lane outright.
+    effort: "high",
+    why: "the order names the pull request, and the judgment is reading a pipeline diff before approving "
+      + "or refusing it -- the one review #1756 makes load-bearing for the whole merge queue",
+  }),
   "awaiting-evidence-stale": Object.freeze({
     kind: "claude",
     model: "sonnet",
