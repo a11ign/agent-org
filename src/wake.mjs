@@ -3567,8 +3567,9 @@ function recordCapped({ stuck, outaged }, order, already) {
  * between the two re-wakes rather than losing the wake. Re-waking is visible and costs one turn; losing one
  * is invisible and costs however long until someone notices -- the 2026-09-08 shape.
  *
- * @param {{session: string, causeKey: string, prompt: string, cause?: string, title?: string, resume?: boolean}[]} orders
- *   `resume` (#2470) sends the prompt WITHOUT the `/clear` a standing seat is otherwise given first
+ * @param {{session: string, causeKey: string, prompt: string, cause?: string, title?: string, resume?: boolean, outageNow?: boolean}[]} orders
+ *   `resume` (#2470) sends the prompt WITHOUT the `/clear` a standing seat is otherwise given first; `outageNow`
+ *   (#2685) is `work-gate.mjs`'s reading that GitHub itself refused several of THIS TICK's own reads together
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster
  * @param {{run?: (args: string[]) => string, record?: (key: string, recipient?: string, noClear?: boolean) => void,
