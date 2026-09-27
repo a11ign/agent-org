@@ -37,18 +37,27 @@ import { homeHostConfig } from "./host-config.mjs";
 
 /**
  * The `user:` `gh auth login` writes into a config directory's `hosts.yml` for `github.com`, or `null`
- * when the file is absent, unreadable, or names no such line.
+ * when the file is absent, unreadable, or names no such line FOR `github.com` SPECIFICALLY.
  *
- * READ BY REGEX, NOT A YAML LIBRARY, for the reason `lab-job.mjs` and `gh-token-jobs.test.ts`'s own CI
- * parser give theirs: a shared line this cheap does not owe itself a dependency. `hosts.yml`'s shape is
- * `gh`'s own and stable (`github.com:` at column 0, its scalar properties -- `git_protocol`, `oauth_token`,
- * `user` -- at one indent, and a `users:` map of every logged-in login at two indents beneath THAT). The
- * pattern anchors on `user:` with the colon immediately after, which a `users:` map key can never satisfy
- * (its own colon sits after the extra `s`), so the two can never be confused. The FIRST match is taken
- * because a single-host file -- the only shape this org's `gh auth login` ever produces -- carries at
- * most one.
+ * READ BY LINE, NOT A YAML LIBRARY, for the reason `lab-job.mjs` and `gh-token-jobs.test.ts`'s own CI
+ * parser give theirs: a shared read this cheap does not owe itself a dependency. `hosts.yml`'s shape is
+ * `gh`'s own and stable: EACH HOST gets its own top-level block, at column 0, with its scalar properties
+ * -- `git_protocol`, `oauth_token`, `user` -- at one indent, and a `users:` map of every logged-in login
+ * at two indents beneath THAT.
  *
- * THE OAUTH TOKEN IS NEVER READ. `oauth_token:` is one line above `user:` in every `hosts.yml` this repo
+ * SCOPED TO THE `github.com:` BLOCK, NOT THE FIRST `user:` LINE IN THE FILE (`reviewer-2692`'s finding on
+ * the first version of this function, 2026-09-27). `gh auth login --hostname <other>` appends a SECOND
+ * top-level block to the SAME `hosts.yml`, and a `user:` pattern with no notion of which block it is
+ * inside reads whichever host happens to come first on disk -- reporting a GitHub Enterprise host, or any
+ * other `gh`-managed remote, as though it were the `github.com` account this whole module exists to name.
+ * `loginForHost` finds `github.com:`'s own block first (its start line, ended by the next line that
+ * begins at column 0 or by the file's end) and only then looks for `user:` inside it.
+ *
+ * THE PATTERN STILL ANCHORS ON `user:` WITH THE COLON IMMEDIATELY AFTER, which a `users:` map key can
+ * never satisfy (its own colon sits after the extra `s`), so the two can never be confused within the
+ * block either.
+ *
+ * THE OAUTH TOKEN IS NEVER READ. `oauth_token:` sits one line above `user:` in every `hosts.yml` this repo
  * has seen, and reading it would mean a credential could reach a diagnostic line by accident; this
  * function has no path that can return one.
  * @param {string} configDir @param {typeof readFileSync} read
@@ -64,8 +73,26 @@ function loginInConfigDir(configDir, read) {
     // diagnostic -- there is nothing further to log here that the caller does not already say.
     return null;
   }
-  const match = /^[ \t]*user:[ \t]*(\S+)[ \t]*$/m.exec(text);
-  return match ? match[1] : null;
+  return loginForHost(text, "github.com");
+}
+
+/**
+ * The `user:` a `hosts.yml`'s OWN block for `host` names, or `null` when that host has no block or the
+ * block names no login. A block runs from its own `<host>:` line (column 0) up to, but not including,
+ * the next line that starts at column 0 -- another host's block, or nothing, at the file's end.
+ * @param {string} text @param {string} host @returns {string | null}
+ */
+function loginForHost(text, host) {
+  const lines = String(text).split(/\r?\n/);
+  const escaped = host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const start = lines.findIndex((line) => new RegExp(`^${escaped}:\\s*$`).test(line));
+  if (start === -1) return null;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^\S/.test(lines[i])) break; // the next top-level key -- this host's block has ended
+    const match = /^[ \t]+user:[ \t]*(\S+)[ \t]*$/.exec(lines[i]);
+    if (match) return match[1];
+  }
+  return null;
 }
 
 /**

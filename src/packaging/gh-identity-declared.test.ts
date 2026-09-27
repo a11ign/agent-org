@@ -149,6 +149,61 @@ test("#1984: GH_CONFIG_DIR naming a directory with no readable hosts.yml is UNKN
   }
 });
 
+test("#1984: a hosts.yml naming ANOTHER host before github.com never reports that host's login (reviewer-2692)", () => {
+  // THE FIX: `reviewer-2692` found the first version of `loginInConfigDir` took the first `user:` line
+  // ANYWHERE in the file, so `gh auth login --hostname <enterprise>` -- which appends a SECOND top-level
+  // block to the SAME hosts.yml -- could have its login read as though it were the github.com account.
+  // The fixture below is that exact shape: a non-github host's block, with its OWN `user:` line, sitting
+  // BEFORE github.com's in the file.
+  const root = mkdtempSync(join(tmpdir(), "gh-identity-"));
+  try {
+    const dir = join(root, "explicit");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "hosts.yml"), [
+      "git.example-enterprise.com:",
+      "    users:",
+      "        wrong-account:",
+      "            oauth_token: FAKE_TOKEN_FOR_TEST_DO_NOT_USE_AS_A_CREDENTIAL",
+      "    git_protocol: https",
+      "    oauth_token: FAKE_TOKEN_FOR_TEST_DO_NOT_USE_AS_A_CREDENTIAL",
+      "    user: wrong-account",
+      "github.com:",
+      "    users:",
+      "        a11ign-ai-workers:",
+      "            oauth_token: FAKE_TOKEN_FOR_TEST_DO_NOT_USE_AS_A_CREDENTIAL",
+      "    git_protocol: https",
+      "    oauth_token: FAKE_TOKEN_FOR_TEST_DO_NOT_USE_AS_A_CREDENTIAL",
+      "    user: a11ign-ai-workers",
+      "",
+    ].join("\n"));
+    const account = declaredGhAccount({ env: { GH_CONFIG_DIR: dir } });
+    assert.equal(account.login, "a11ign-ai-workers",
+      "the OTHER host's block sits first in the file and must never win");
+    assert.notEqual(account.login, "wrong-account");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("#1984: a hosts.yml with NO github.com block is UNKNOWN, even when another host names a login", () => {
+  const root = mkdtempSync(join(tmpdir(), "gh-identity-"));
+  try {
+    const dir = join(root, "explicit");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "hosts.yml"), [
+      "git.example-enterprise.com:",
+      "    git_protocol: https",
+      "    user: wrong-account",
+      "",
+    ].join("\n"));
+    const account = declaredGhAccount({ env: { GH_CONFIG_DIR: dir } });
+    assert.equal(account.login, null, "a login for a different host is not a login for github.com");
+    assert.match(account.source, /UNKNOWN/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("#1984: HERDR_WORKSPACE_ID on the leads list routes to the leads config, every other id to workers", () => {
   const root = mkdtempSync(join(tmpdir(), "gh-identity-"));
   try {
