@@ -46,6 +46,10 @@ import { reviewerInstance, subjectIdentity, subjectMention, subjectRef } from ".
 // property its own header states -- it runs before any `npm ci` or build.
 import { declaredRegionFiles } from "./region-paths.mjs";
 import { declaredClosedRows, fileOverlapReason } from "./row-claim/file-overlap-rule.mjs";
+// #1959: THE ONE READER OF `docs/lane-ownership.json`, imported rather than re-parsed -- a lane's `paths`
+// and `except` are `ceo`'s to move, and a second copy here would drift the way #939's nine spellings did.
+// Leaf-shaped and relative, so the gate keeps the property its own header states.
+import { loadLanes, inLane } from "./lane-ownership.mjs";
 // #2031, AND IMPORTED FOR THE SAME REASON THE TWO LINES ABOVE ARE. The trailing-`-<n>` rule is #2014's,
 // already exercised through `row-claim.mjs`'s own refusal; a second copy here is the drift that row's
 // filing named in so many words. `row-branch-rule.mjs` imports NOTHING, and `git-env.mjs` imports nothing
@@ -112,7 +116,10 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
   "blocked-unexaminable", "fleet-batch-due", "blocker-cleared", "pr-green-unarmed",
   "claimed-row-amended", "row-branch-unshipped", "host-units-stale", "pr-review-blocked",
   "unclaimed-blocker-cleared", "pr-merge-conflict", "trunk-red", "verdict-comment-unreviewed",
-  "reviewer-auth-failed", "awaiting-evidence-stale", "disk-headroom-low", "claim-stalled", "row-off-board"];
+  "reviewer-auth-failed", "awaiting-evidence-stale", "disk-headroom-low", "claim-stalled", "row-off-board",
+  // #1959: the gap `.claude/rules/main-review-requirement.md`'s flip (#1756) will turn into a hard merge
+  // block -- a pull request CODEOWNERS assigns to `ceo` with no APPROVED review from `ceo` at all.
+  "pr-codeowner-review-missing"];
 
 /**
  * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
@@ -3312,6 +3319,106 @@ export function reviewBlocked(prs, required = null) {
     .sort((a, b) => a.number - b.number);
 }
 
+// --- #1959: A PIPELINE PULL REQUEST WITH NO CODE-OWNER REVIEW ------------------------------------------
+
+/**
+ * `docs/lane-ownership.json`'s pipeline lane (`.github/workflows/`, owner `ceo`), or `null` when the file
+ * cannot be read.
+ *
+ * `null` IS CANNOT-ASK, NEVER "NOTHING OWNS THE PIPELINE" -- `loadLanes`'s own rule: a check that answers
+ * "clear" because it could not find its own rules is worse than no check, and `pipelineCodeownerReviewMissing`
+ * below reads this return the same way.
+ * @returns {{owner: string, paths: string[], except?: string[]} | null}
+ */
+function pipelineLane() {
+  return loadLanes()?.lanes.find((l) => l.lane === "the pipeline") ?? null;
+}
+
+/**
+ * A lane's role-name owner, spelled as the GitHub login CODEOWNERS names -- `codeowners-lane-sync.test.ts`'s
+ * own `ROLE_LOGIN`, deliberately re-asserted here rather than shared: `docs/lane-ownership.json` names the
+ * ROLE ("ceo") and never the account, and a shared module would make the mapping look derived from a file
+ * that does not carry it. `ceo`'s to move, same as that test's copy.
+ */
+const ROLE_LOGIN = Object.freeze({ ceo: "DanBeckDev" });
+
+/**
+ * Does this PR touch a path CODEOWNERS actually assigns to the lane's owner -- inside `paths` and outside
+ * every `except` entry, the same last-matching-pattern rule GitHub applies to the file itself. A PR
+ * touching ONLY an excepted path (`.github/workflows/consumer-gate.yml`) answers `false`.
+ * @param {string[]} files @param {{paths: string[], except?: string[]}} lane
+ */
+function touchesOwnedLanePath(files, lane) {
+  return files.some((f) => inLane(f, lane.paths) && !inLane(f, lane.except ?? []));
+}
+
+/**
+ * PURE. #1959: every open pull request CODEOWNERS assigns to the pipeline lane's owner and that owner has
+ * not approved -- the gap nothing asked about before this row. `reviewDecision` alone cannot say WHO
+ * approved, only that GitHub is satisfied, and measured 2026-09-22: `DanBeckDev` (`ceo`'s login) has never
+ * authored a formal GitHub review in this repository, so a pipeline PR could sit indefinitely on an
+ * unanswered CODEOWNERS request -- advisory today, a hard merge block the moment #1756's flip lands.
+ *
+ * EXCLUDES A PR THE OWNER AUTHORED. GitHub will not request a review from a pull request's own author, so
+ * no such request is ever outstanding for one, and the bypass allowance #2022 requires covers exactly this
+ * case -- checked explicitly rather than left to `reviews` staying empty, so a future change to how GitHub
+ * reports self-authored PRs cannot silently start firing this cause on `ceo`'s own work.
+ *
+ * `prFiles` IS `comparablePrFiles`'S OUTPUT, NOT `pr.files` RE-READ. That function already drops any PR
+ * whose file list does not match its `changedFiles` count (`gh pr list --json files` truncates at 100), so
+ * this cause inherits the same guarantee: it can be silent about a PR the gate cannot see the whole of, but
+ * it can never fire on a partial list and miss the path that mattered.
+ *
+ * @param {any[]} prs @param {{number: number, files: string[]}[]} prFiles
+ * @returns {{number: number, repoKey?: string, session: string | null}[]} ascending by PR number
+ */
+export function pipelineCodeownerReviewMissing(prs, prFiles) {
+  const lane = pipelineLane();
+  const login = lane && /** @type {Record<string, string>} */ (ROLE_LOGIN)[lane.owner];
+  if (!login) return [];
+  const filesByNumber = new Map(prFiles.map((p) => [Number(p.number), p.files]));
+  return prs
+    .filter((pr) => pr.author?.login !== login)
+    .filter((pr) => touchesOwnedLanePath(filesByNumber.get(Number(pr.number)) ?? [], lane))
+    .filter((pr) => !(pr.reviews ?? []).some(
+      (/** @type {any} */ r) => r?.state === "APPROVED" && r?.author?.login === login))
+    .map((pr) => ({ number: Number(pr.number), ...subjectIdentity(pr), session: sessionOf(pr) }))
+    .sort((a, b) => a.number - b.number);
+}
+
+/**
+ * ONE ORDER NAMING EVERY PULL REQUEST STILL MISSING ITS CODE-OWNER REVIEW -- `greenUnarmedOrders`'s shape
+ * and for its reason: the set is what makes the cause self-clearing, keyed on WHICH pull requests are
+ * still waiting rather than on any one push, so a review that clears one leaves it out of the next key.
+ *
+ * `ceo` ALWAYS, WHOEVER OPENED THE PULL REQUEST -- unlike `pr-review-blocked`'s owned/unowned split, the
+ * act this order asks for (`ceo` posting a formal review) is never a labelled session's to do; the label,
+ * when there is one, is named in the prompt only so `ceo` knows whose branch it is.
+ *
+ * @param {{number: number, repoKey?: string, session: string | null}[]} missing
+ * @returns {{session: string, cause: string, subject: string, discriminator: string, prompt: string,
+ *            causeKey: string}[]}
+ */
+function pipelineCodeownerReviewOrders(missing) {
+  if (missing.length === 0) return [];
+  const key = missing.map((m) => subjectRef(m.repoKey, m.number)).join(".");
+  const named = missing.map((m) => `${subjectMention(m)}${m.session ? ` (${m.session})` : ""}`).join(", ");
+  return [{
+    session: "ceo",
+    cause: "pr-codeowner-review-missing",
+    subject: "pr-codeowner-review-missing",
+    discriminator: key,
+    prompt: `${missing.length} open pull request(s) touch a \`.github/workflows/\` path CODEOWNERS `
+      + `assigns to you and carry NO APPROVED review from you: ${named}.\n`
+      + "Nothing asked for this review before #1959: `reviewDecision` alone cannot say the approval came "
+      + "from the code owner, and you have never authored a formal GitHub review in this repository. It is "
+      + "advisory today -- #1756 (still open) is what turns it into a hard merge block.\n"
+      + "Review each and post a formal GitHub review (approve or request changes) -- a comment on the "
+      + "pull request is not a review and does not satisfy CODEOWNERS.",
+    causeKey: `ceo/pr-codeowner-review-missing/${key}`,
+  }];
+}
+
 /**
  * Which of these candidates has NOTHING armed -- read from the API, and `null` when it could not be read.
  *
@@ -4327,6 +4434,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // #2209: `mergeCandidates` no longer holds a conflicting PR, so without this line it is reported nowhere
   // -- worse than before, when `pr-green-unarmed` at least named it. To its author; a drain keeps it.
   orders.push(...mergeConflictOrders(conflictedPrs(prs, required)));
+  orders.push(...pipelineCodeownerReviewOrders(pipelineCodeownerReviewMissing(prs, prFiles))); // #1959: beside the two above
 
   // #2174: AFTER the per-PR and per-row causes and BEFORE the chairman's, for `pr-green-unarmed`'s
   // reason applied to the machine rather than to a pull request. A stale host is finished work that has
