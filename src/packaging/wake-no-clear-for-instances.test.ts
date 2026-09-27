@@ -13,22 +13,46 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, chmodSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, chmodSync, readFileSync, existsSync, utimesSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deliver as settlingDeliver, deliverHandoffs as settlingDeliverHandoffs, isPerRowInstance, clearBeforeOrder, ledgerLine, ledgerKeyOf, readLedger,
-  NO_CLEAR_NOTE } from "../wake.mjs";
+  NO_CLEAR_NOTE, compactContext, instanceCacheRead, COMPACT_THRESHOLD_TOKENS } from "../wake.mjs";
 import { clearThenPrompt as settlingClearThenPrompt } from "../prompt-session.mjs";
 
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
-const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: noSettle });
+/**
+ * #2688: a fixed, EMPTY transcript root, so a test naming a real org label (`worker-4`, `worker-11`,
+ * `reviewer-2456` -- all of which are real, reused role names on a shared host) never picks up an
+ * unrelated live session's actual transcript and compacts on that account. A test ABOUT the compact check
+ * overrides this with {@link transcriptRootFor}'s own directory.
+ */
+const NO_TRANSCRIPTS = join(tmpdir(), "a11y-2688-no-transcripts");
+const deliver: typeof settlingDeliver = (orders, agents, roster, deps) =>
+  settlingDeliver(orders, agents, roster, { contextRoot: NO_TRANSCRIPTS, ...deps, sleep: noSettle });
 const deliverHandoffs: typeof settlingDeliverHandoffs = (handoffs, agents, roster, deps) =>
-  settlingDeliverHandoffs(handoffs, agents, roster, { ...deps, sleep: noSettle });
+  settlingDeliverHandoffs(handoffs, agents, roster, { contextRoot: NO_TRANSCRIPTS, ...deps, sleep: noSettle });
 const clearThenPrompt: typeof settlingClearThenPrompt = (run, label, text, options) =>
-  settlingClearThenPrompt(run, label, text, { ...options, sleep: noSettle });
+  settlingClearThenPrompt(run, label, text, { contextRoot: NO_TRANSCRIPTS, ...options, sleep: noSettle });
+
+/**
+ * #2688: a transcript root with ONE file naming `label`, whose last (and only) turn read `cacheRead`
+ * tokens -- the shape `claudeTurns` actually reads: the wake preamble's own words for {@link sessionOf} to
+ * find, and one usage record for the figure itself. The caller removes the directory.
+ */
+function transcriptRootFor(label: string, cacheRead: number): string {
+  const dir = mkdtempSync(join(tmpdir(), "compact-2688-"));
+  const lines = [
+    JSON.stringify({ type: "user", message: { role: "user", content: `You are \`${label}\`, an org session in this repository.` } }),
+    JSON.stringify({ type: "assistant", message: { id: "m1", model: "claude-sonnet-5",
+      usage: { input_tokens: 5, cache_read_input_tokens: cacheRead, cache_creation_input_tokens: 0, output_tokens: 12 } } }),
+  ];
+  writeFileSync(join(dir, "t.jsonl"), `${lines.join("\n")}\n`);
+  return dir;
+}
 
 const PROMPT_SESSION = fileURLToPath(new URL("../prompt-session.mjs", import.meta.url));
 const STUB_MODE = 0o755;
@@ -124,10 +148,10 @@ test("#2483 clearThenPrompt CONTROL: the standing seats are still cleared first"
 
 test("#2483 clearBeforeOrder says whether a clear was sent, and passes a refusal through for a standing seat", () => {
   const r = recorder();
-  assert.deepEqual(clearBeforeOrder(r.run, "reviewer-2456"), { sent: false, refusal: null });
-  assert.deepEqual(r.calls, [], "an instance is not even asked");
+  assert.deepEqual(clearBeforeOrder(r.run, "reviewer-2456", noSettle, NO_TRANSCRIPTS), { sent: false, refusal: null });
+  assert.deepEqual(r.calls, [], "an instance is not even asked, below #2688's threshold");
   const refusing = () => { throw new Error("no socket"); };
-  const got = clearBeforeOrder(refusing, "orchestrator");
+  const got = clearBeforeOrder(refusing, "orchestrator", noSettle, NO_TRANSCRIPTS);
   assert.equal(got.sent, true);
   assert.match(String(got.refusal), /orchestrator: \/clear refused/);
 });
@@ -173,4 +197,118 @@ test("#2483 the ledger line records no-clear after the recipient, and the key an
   assert.equal(ledgerKeyOf(`${key}\t\tno-clear`), key);
   const read = readLedger("x", (() => ledgerLine(at, key, undefined, true)) as never, at);
   assert.deepEqual([...read], [key], "the reader still counts it as one delivered cause");
+});
+
+// --- #2688: A PER-ROW INSTANCE OVER THRESHOLD IS `/compact`ED, NEVER `/clear`ED ---
+
+test("#2688 instanceCacheRead: the live proxy read straight from the instance's own transcript, null when none names it", () => {
+  const dir = transcriptRootFor("worker-11", 130_321);
+  try {
+    assert.equal(instanceCacheRead("worker-11", dir), 130_321);
+    assert.equal(instanceCacheRead("worker-4", dir), null, "a different session's transcript says nothing about this one");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  assert.equal(instanceCacheRead("worker-11", NO_TRANSCRIPTS), null, "no transcript at all is CANNOT TELL, never zero");
+});
+
+/** One transcript file naming `label`, reading `cacheRead`, written to `path` directly (no fresh temp dir). */
+function writeTranscript(path: string, label: string, cacheRead: number): void {
+  writeFileSync(path, `${[
+    JSON.stringify({ type: "user", message: { role: "user", content: `You are \`${label}\`, an org session in this repository.` } }),
+    JSON.stringify({ message: { id: "m", model: "x", usage: { cache_read_input_tokens: cacheRead } } }),
+  ].join("\n")}\n`);
+}
+
+test("#2688 instanceCacheRead: the MOST RECENTLY WRITTEN transcript naming this session wins", () => {
+  const dir = mkdtempSync(join(tmpdir(), "compact-2688-multi-"));
+  try {
+    const older = join(dir, "a.jsonl");
+    const newer = join(dir, "b.jsonl");
+    writeTranscript(older, "worker-11", 500_000);
+    writeTranscript(newer, "worker-11", 1_000);
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(older, past, past);
+    assert.equal(instanceCacheRead("worker-11", dir), 1_000, "the newer, smaller figure wins over the older, larger one");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#2688 compactContext: submits /compact, waits, and reports a refusal the same way clearContext does", () => {
+  const r = recorder();
+  assert.equal(compactContext(r.run, "worker-11", noSettle), null);
+  assert.deepEqual(r.typed(), ["worker-11: /compact"]);
+  const refusing = () => { throw new Error("gone"); };
+  assert.match(String(compactContext(refusing, "worker-11", noSettle)), /worker-11: \/compact refused \(gone\)/);
+});
+
+test("#2688 clearBeforeOrder: an instance over the threshold is sent /compact, never /clear", () => {
+  const dir = transcriptRootFor("worker-11", COMPACT_THRESHOLD_TOKENS + 1);
+  try {
+    const r = recorder();
+    assert.deepEqual(clearBeforeOrder(r.run, "worker-11", noSettle, dir), { sent: false, refusal: null });
+    assert.deepEqual(r.typed(), ["worker-11: /compact"]);
+    assert.deepEqual(r.cleared(), [], "never a /clear -- #2483 stands");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#2688 clearBeforeOrder CONTROL: AT the threshold (not over it), and no transcript at all, sends nothing", () => {
+  const dir = transcriptRootFor("worker-11", COMPACT_THRESHOLD_TOKENS);
+  try {
+    const r = recorder();
+    assert.deepEqual(clearBeforeOrder(r.run, "worker-11", noSettle, dir), { sent: false, refusal: null });
+    assert.deepEqual(r.calls, [], "AT the threshold is not OVER it");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const r2 = recorder();
+  assert.deepEqual(clearBeforeOrder(r2.run, "worker-11", noSettle, NO_TRANSCRIPTS), { sent: false, refusal: null });
+  assert.deepEqual(r2.calls, [], "cannot tell is never assumed large enough to compact");
+});
+
+test("#2688 clearBeforeOrder passes a refused /compact through, and the caller still sends the order (mirrors #2483's clear refusal)", () => {
+  const dir = transcriptRootFor("worker-11", COMPACT_THRESHOLD_TOKENS + 1);
+  try {
+    const refusing = () => { throw new Error("no socket"); };
+    const got = clearBeforeOrder(refusing, "worker-11", noSettle, dir);
+    assert.equal(got.sent, false);
+    assert.match(String(got.refusal), /worker-11: \/compact refused/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#2688 deliver: an over-threshold instance is compacted before its order; a standing seat is untouched by the check", () => {
+  const dir = transcriptRootFor("worker-11", COMPACT_THRESHOLD_TOKENS + 500);
+  try {
+    const r = recorder();
+    const recorded: [string, boolean | undefined][] = [];
+    const record = (key: string, _who?: string, noClear?: boolean) => recorded.push([key, noClear]);
+    const got = deliver([order("worker-11")], agents(["worker-11"]), ROSTER, { run: r.run, record, contextRoot: dir });
+    assert.deepEqual(got.refused, [], `delivered: ${JSON.stringify(got)}`);
+    const mine = r.typed().filter((t) => t.startsWith("worker-11: "));
+    assert.equal(mine[0], "worker-11: /compact", "compact is the FIRST thing typed");
+    assert.equal(mine.length, 2, "and the order follows it");
+    assert.deepEqual(r.cleared(), [], "never a /clear");
+    assert.deepEqual(recorded, [["worker-11/changes-requested/pr-2456/k", true]], "still recorded no-clear, exactly as an untouched instance would be");
+    assert.deepEqual(got.sent, [`worker-11 <- worker-11/changes-requested/pr-2456/k${NO_CLEAR_NOTE}`]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#2688 clearThenPrompt: an over-threshold instance is compacted, not cleared, before its text", () => {
+  const dir = transcriptRootFor("reviewer-2456", COMPACT_THRESHOLD_TOKENS + 1);
+  try {
+    const r = recorder();
+    assert.equal(clearThenPrompt(r.run, "reviewer-2456", "the check failed", { sender: "worker-5", contextRoot: dir }), null);
+    assert.deepEqual(r.cleared(), []);
+    assert.equal(r.typed()[0], "reviewer-2456: /compact");
+    assert.equal(r.typed().length, 2, "the compact, then the text");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
