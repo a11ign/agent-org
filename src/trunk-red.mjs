@@ -20,6 +20,8 @@
 import { execFileSync } from "node:child_process";
 import { summarizeTestLog, testIdentity } from "./parent-recheck-summary.mjs";
 import { REPO } from "./project-identity.mjs";
+// #2619 (child 3d of #69): the `session:` prefix, moved to the project's declared vocabulary.
+import { SESSION_PREFIX } from "./project-vocabulary.mjs";
 
 /** The workflow whose newest run on `main` says whether `main` is red. */
 export const TRUNK_WORKFLOW = "trunk.yml";
@@ -186,9 +188,9 @@ function readOriginPr(run, sha) {
   const pulls = tryParse(() => run(["api", `repos/${REPO}/commits/${sha}/pulls`]));
   if (!Array.isArray(pulls) || pulls.length === 0) return null;
   const labels = (pulls[0].labels ?? []).map((/** @type {{ name: string }} */ l) => String(l.name));
-  const session = labels.find((/** @type {string} */ n) => n.startsWith("session:"));
+  const session = labels.find((/** @type {string} */ n) => n.startsWith(SESSION_PREFIX));
   return { number: pulls[0].number, title: String(pulls[0].title ?? ""),
-    session: session ? session.slice("session:".length) : null };
+    session: session ? session.slice(SESSION_PREFIX.length) : null };
 }
 
 /**

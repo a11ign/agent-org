@@ -67,6 +67,7 @@ import { realpathSync } from "node:fs";
 // rather than naming it), and there it dies on startup with ERR_MODULE_NOT_FOUND.
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { REPO } from "./project-identity.mjs";
+import { SESSION_PREFIX } from "./project-vocabulary.mjs";
 
 import { reasonKind } from "./merge-guard/reason-kind.mjs";
 import { gh, lookup, lookupRequiredContexts, lookupBranchTip, lookupCheckRuns, lookupClosingIssues }
@@ -173,7 +174,7 @@ export function mergeSafetyVerdict({ pr, branchTip, prLabels = [] }) {
       `#${pr.number ?? "?"} IS HELD by ${holders.join(", ")}, so it must not merge.\n`
       + "  A hold is a decision somebody made by hand; releasing it is `npm run pr:release -- <n> "
       + `--session=<name>\`, which puts auto-merge back.\n  The label is \`${HOLD_PREFIX}<session>\`; a `
-      + "`session:<name>` label is OWNERSHIP and is deliberately not read here.",
+      + `\`${SESSION_PREFIX}<name>\` label is OWNERSHIP and is deliberately not read here.`,
     ] };
   }
   const reasons = headTipMismatchReason(pr, branchTip);

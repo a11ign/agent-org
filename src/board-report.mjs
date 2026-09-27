@@ -21,6 +21,7 @@
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { READY_LABEL, BACKLOG_LABEL, SESSION_PREFIX } from "./project-vocabulary.mjs";
 import {
   REPO, MILESTONE, HOURS_MS, MINUTE_MS, MEDIAN, READ_SET,
   gh, git, issues, milestone, mergeState, misAuthored, reported, daysUntil, readSetIsNotMain, countable,
@@ -342,7 +343,7 @@ export function readyToClaimWaits(byNumber, sinceMs) {
   const waitsMs = [];
   let unmeasurable = 0;
   for (const events of byNumber.values()) {
-    const readyAt = events.filter((e) => e.event === "labeled" && e.label === "ready")
+    const readyAt = events.filter((e) => e.event === "labeled" && e.label === READY_LABEL)
       .map((e) => Date.parse(e.at)).sort((a, b) => a - b);
     const claims = claimsFromEvents(events);
     claims.forEach((claim, i) => {
@@ -371,8 +372,8 @@ export function openRowAges(open, now) {
   const split = { ready: empty(), backlog: empty(), other: empty() };
   for (const r of open) {
     const ageDays = (now - Date.parse(r.createdAt ?? "")) / DAY_MS;
-    const group = r.labelNames.includes("ready") ? split.ready
-      : r.labelNames.includes("backlog") ? split.backlog : split.other;
+    const group = r.labelNames.includes(READY_LABEL) ? split.ready
+      : r.labelNames.includes(BACKLOG_LABEL) ? split.backlog : split.other;
     if (ageDays < YOUNG_DAYS) group.young += 1;
     else if (ageDays <= AGING_DAYS) group.aging += 1;
     else group.old += 1;
@@ -455,16 +456,16 @@ export function flowLatency(d, L) {
   } else if (latency.waitsMs.length === 0) {
     L.push(latency.unmeasurable === 0
       ? "**No claims in the window**, so there is no latency to report — not a latency of zero."
-      : `**No claim in the window could be timed** (${latency.unmeasurable} began, none with a \`ready\` event `
+      : `**No claim in the window could be timed** (${latency.unmeasurable} began, none with a \`${READY_LABEL}\` event `
         + "before it), so there is no latency to report — not a latency of zero.");
   } else {
     const sorted = [...latency.waitsMs].sort((a, b) => a - b);
     const median = nearestRank(sorted, MEDIAN);
     L.push(`**${sorted.length}** claim${sorted.length === 1 ? "" : "s"}: median **${duration(median)}**, `
       + `worst **${duration(sorted[sorted.length - 1])}**. Read from the repository's whole label-event log `
-      + "(paginated, not a sample): the time from a row's latest `ready` label to the `session:` label that "
+      + `(paginated, not a sample): the time from a row's latest \`${READY_LABEL}\` label to the \`${SESSION_PREFIX}\` label that `
       + `claimed it. ${latency.unmeasurable} claim${latency.unmeasurable === 1 ? "" : "s"} in the window `
-      + "had no `ready` event before them or no recorded start, and are left out of these figures, not counted as zero.");
+      + `had no \`${READY_LABEL}\` event before them or no recorded start, and are left out of these figures, not counted as zero.`);
   }
   if (capped && latency.status === "read") {
     L.push("**The row listing is at its cap, so a claim on a row older than the listing is also missed: the "

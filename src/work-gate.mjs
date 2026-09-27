@@ -74,6 +74,10 @@ import { armedFromApi, openPullRequestsQueryArgs } from "./auto-arm-sweep.mjs";
 import { armabilityOf, holdersOf } from "./pr-hold-state.mjs";
 import { REPO } from "./project-identity.mjs";
 import { homeProjectDeclaration } from "./project-config.mjs";
+// #2619 (child 3d of #69): the rest of this file's vocabulary -- `backlog`, `needs:chairman`,
+// `out-of-release`, `blocked`, the `lane:`/`session:` prefixes and `lane:any`.
+import { BACKLOG_LABEL, NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, OUT_OF_RELEASE_LABEL, BLOCKED_LABEL,
+  LANE_PREFIX, SESSION_PREFIX } from "./project-vocabulary.mjs";
 // #2075: WHICH PROJECT A ROW MUST BE ON. `board-snapshot-scope.mjs` runs no `gh` and imports only `node:*`, the repo
 // identity and `settle-closed-status.mjs`, so the gate keeps the property its own header states.
 import { PROJECT_NUMBER } from "./board-snapshot-scope.mjs";
@@ -535,7 +539,7 @@ export function readRowBranches(run = defaultSpawn) {
  * report thread) carried `backlog`+`meta` with no other `NOT_STARTABLE` label and kept re-triggering
  * `ready-queue-empty` on a judgment already settled five times that day.
  */
-export const NOT_PICKABLE = Object.freeze(["blocked", "fleet-gated", "epic", "disputed", "decision",
+export const NOT_PICKABLE = Object.freeze([BLOCKED_LABEL, "fleet-gated", "epic", "disputed", "decision",
   "awaiting-merge", "review-only", "meta", CLAIM_LABEL]);
 
 /**
@@ -588,7 +592,7 @@ export const NOT_STARTABLE = Object.freeze(
  * router (`wake.mjs` picks whoever is idle) and these do not -- a `lane:ceo` row belongs to `ceo` whether
  * or not `ceo` is free, because nobody else may take it.
  */
-export const LANE_OWNER = Object.freeze({ "lane:ceo": "ceo", "lane:orchestrator": "orchestrator" });
+export const LANE_OWNER = Object.freeze({ [`${LANE_PREFIX}ceo`]: "ceo", [`${LANE_PREFIX}orchestrator`]: "orchestrator" });
 
 /**
  * The session a row's lane assigns it to, or `null` for the engineer pool.
@@ -639,8 +643,11 @@ export function ownerOf(row) {
  *
  * NO EXISTING LABEL MEANT THIS. `blocked`, `publish-blocker` and `decision` all say WHAT blocks a row and
  * none says WHO must act, so a row waiting on org admin looked exactly like a row waiting on a capture.
+ *
+ * IMPORTED, NOT REDECLARED (#2619, child 3d of #69): `project-vocabulary.mjs`'s field, aliased to this
+ * file's own established name.
  */
-export const CHAIRMAN_LABEL = "needs:chairman";
+export { CHAIRMAN_LABEL };
 
 /**
  * The label for a row parked ON PURPOSE until its prerequisite phase is done (chairman, 2026-09-26): `ceo` schedules
@@ -721,7 +728,7 @@ export function readPromotableRows(run = defaultRun) {
     // `blockedBy` AND `body` RIDE THE CALL THAT WAS ALREADY BEING MADE. `blockedBy` is GitHub's own
     // dependency edge -- `gh issue create --blocked-by` writes it, the UI renders it, and this `--json`
     // returns it -- so reading a waiting condition costs nothing this tick did not already spend.
-    const out = run(["issue", "list", "--state", "open", "--label", "backlog", "--limit", "200",
+    const out = run(["issue", "list", "--state", "open", "--label", BACKLOG_LABEL, "--limit", "200",
       "--json", "number,labels,body,blockedBy"]);
     const parsed = JSON.parse(out);
     if (!Array.isArray(parsed)) return null;
@@ -1039,8 +1046,8 @@ export function stillRunning(c) {
  * @param {any} pr
  */
 export function sessionOf(pr) {
-  const label = labelsOf(pr).find((/** @type {string} */ n) => n.startsWith("session:"));
-  return label ? label.slice("session:".length) : null;
+  const label = labelsOf(pr).find((/** @type {string} */ n) => n.startsWith(SESSION_PREFIX));
+  return label ? label.slice(SESSION_PREFIX.length) : null;
 }
 
 /**
@@ -1451,11 +1458,11 @@ export function rowOffBoardOrders(facts, nowMs = Date.now()) {
     prompt: `${absent.length} open row(s) have NO item on Project ${PROJECT_NUMBER}, so they are invisible in every Status view:\n`
       + absent.map((r) => `  ${subjectMention(r)} ${r.title}`).join("\n") + "\n"
       + "A row filed with a bare `gh issue create` never reaches the board: only `row-file` boards one, and a board label applied "
-      + "AT CREATION (`ready` or `backlog` one second after the row exists) is the fingerprint of that path. Each was read from "
+      + `AT CREATION (\`${READY_LABEL}\` or \`${BACKLOG_LABEL}\` one second after the row exists) is the fingerprint of that path. Each was read from `
       + "the ISSUE's own `projectItems`, not from a board listing (which lags minutes behind an add), and none is younger than "
       + `${ROW_OFF_BOARD_GRACE_MS / 60_000} minutes.\n`
-      + "For each: add it to Project 1 at the Status its label says (`ready` -> Ready, `backlog` -> Backlog, `in-progress` -> "
-      + "In progress), and give it a release declaration (a milestone or `out-of-release`) if it has none -- `row-file` would have "
+      + `For each: add it to Project 1 at the Status its label says (\`${READY_LABEL}\` -> Ready, \`${BACKLOG_LABEL}\` -> Backlog, \`${CLAIM_LABEL}\` -> `
+      + `In progress), and give it a release declaration (a milestone or \`${OUT_OF_RELEASE_LABEL}\`) if it has none -- \`row-file\` would have `
       + "refused a filing without one. THIS ORDER DOES NOT BOARD THE ROW FOR YOU: the Status is a judgment and it is yours.\n"
       + "THIS ARRIVES WHEN THE SET CHANGES. A row you leave off stays in the set and this order returns unchanged.",
     causeKey: `product-manager/row-off-board/${key}`,
@@ -1605,7 +1612,7 @@ export function withoutEndedAnswerSessions(rows, { agents = liveWorkspaceLabels,
   if (owed.length === 0) return rows;
   const live = agents();
   if (live === null) {
-    say("NOTE: herdr did not answer, so no closed row's `answer:` label was classed as gone this tick -- every one "
+    say(`NOTE: herdr did not answer, so no closed row's \`${ANSWER_PREFIX}\` label was classed as gone this tick -- every one `
       + "still orders (#2609).\n");
     return rows;
   }
@@ -1613,7 +1620,7 @@ export function withoutEndedAnswerSessions(rows, { agents = liveWorkspaceLabels,
   try {
     gone = ended();
   } catch (err) {
-    say(`NOTE: the ended-session ledgers could not be read (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0]}) -- no closed row's \`answer:\` label was classed as gone this tick (#2609).\n`);
+    say(`NOTE: the ended-session ledgers could not be read (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0]}) -- no closed row's \`${ANSWER_PREFIX}\` label was classed as gone this tick (#2609).\n`);
     return rows;
   }
   return rows.map((row) => dropGoneLabels(row, (session) => session !== "engineers" && !live.includes(session)
@@ -1738,7 +1745,7 @@ export function rowsOwingAnswers({ openRows, openPrs, closedRows }) {
  * @param {any[]} rows @param {string} [today]
  */
 export function blockedWithoutReferent(rows, today = todayIso()) {
-  return (rows ?? []).filter((r) => labelsOf(r).includes("blocked")
+  return (rows ?? []).filter((r) => labelsOf(r).includes(BLOCKED_LABEL)
     && waitingOn(r, today) === null
     // `needs:chairman` IS A REFERENT, AND OMITTING IT MADE THIS CAUSE LOOP.
     //
@@ -1775,13 +1782,13 @@ export function blockedReferentOrders(rows, readyRows, today = todayIso()) {
       cause: "blocked-unexaminable",
       subject: `row-${subjectRef(r.repoKey, r.number)}`,
       discriminator: subjectRef(r.repoKey, r.number),
-      prompt: `${subjectMention(r)}${r.title ? ` (${r.title})` : ""} is labelled \`blocked\` and names NOTHING a `
+      prompt: `${subjectMention(r)}${r.title ? ` (${r.title})` : ""} is labelled \`${BLOCKED_LABEL}\` and names NOTHING a `
         + "machine can check -- no `blockedBy` edge, no `Not-before:` line. NOTHING IN THIS ORG CAN SEE "
-        + "IT: `blocked` is filtered out before any cause runs, so only a person re-reading the row can "
+        + `IT: \`${BLOCKED_LABEL}\` is filtered out before any cause runs, so only a person re-reading the row can `
         + "ever lift it.\n"
         + "Read it and do ONE of four things: record the real blocker as data "
         + "(`gh issue edit " + `${r.number}` + " --add-blocked-by <n>`, or a `Not-before: YYYY-MM-DD` "
-        + "line in the body); or REMOVE the `blocked` label if the condition has already become true; "
+        + `line in the body); or REMOVE the \`${BLOCKED_LABEL}\` label if the condition has already become true; `
         + `or, IF IT WAITS ON A PERSON, label it \`${CHAIRMAN_LABEL}\` -- that names a referent, `
         + "`chairman-blocked` already routes it, and taking the label off is the act of clearing it; "
         + "or, if the wait is real and none of those three can express it, say on the row IN ONE LINE "
@@ -2280,7 +2287,7 @@ function promotionOrder(row, cleared, suffix = "") {
       + "nobody holds this one; `lane-backlog-unpromoted` addresses a lane OWNER; `ready-queue-empty` "
       + "fires only when the Ready shelf is EMPTY, and a shelf with four rows on it is why six rows sat "
       + "runnable for up to 16h09m on 2026-09-23 with three engineers idle. Depth is not throughput.\n"
-      + "PROMOTE IT, OR RECORD WHY NOT AS DATA. A `ready` label is the promotion; anything else goes in a "
+      + `PROMOTE IT, OR RECORD WHY NOT AS DATA. A \`${READY_LABEL}\` label is the promotion; anything else goes in a `
       + `FIELD and not a comment -- \`gh issue edit ${row.number} --add-blocked-by <n>\`, a `
       + `\`Not-before: YYYY-MM-DDTHH:MM:SSZ\` line in the body, or \`${ANSWER_PREFIX}<session>\` if it `
       + "waits on a ruling. Each clears itself, each stops this being asked again, and nothing in this "
@@ -2289,7 +2296,7 @@ function promotionOrder(row, cleared, suffix = "") {
         ? `IT STILL CARRIES ${hiding.map((n) => `\`${n}\``).join(", ")}, AND THAT IS WHAT NOW HIDES IT `
           + "-- the edge cleared itself and the label did not. #1561's `blockedBy` cleared at "
           + "2026-09-23T08:28:00Z exactly as designed and the row sat another 4h30m behind a hand-set "
-          + "`blocked`. Take the label off if its condition has become true; if the wait is real, it is "
+          + `\`${BLOCKED_LABEL}\`. Take the label off if its condition has become true; if the wait is real, it is `
           + "one of the three fields above, which is the whole difference between a condition that "
           + "clears itself and one only a person re-reading the row can lift.\n"
         : "")
@@ -2671,12 +2678,12 @@ function readClaims({ held, byRow, openPrs, mergedPrs, io, repo, now, restart, b
   /** @type {{ facts: import("./claim-stall.mjs").ClaimFacts, reading: import("./claim-stall.mjs").Reading }[]} */
   const readings = [];
   for (const row of held) {
-    const sessions = labelsOf(row).filter((/** @type {string} */ n) => n.startsWith("session:"));
+    const sessions = labelsOf(row).filter((/** @type {string} */ n) => n.startsWith(SESSION_PREFIX));
     if (sessions.length !== 1) {
       log(`claim-stall: #${row.number} carries ${sessions.length} session labels -- not evaluated.\n`);
       continue;
     }
-    const session = sessions[0].slice("session:".length);
+    const session = sessions[0].slice(SESSION_PREFIX.length);
     const facts = claimFactsFrom({ row: row.number, title: row.title, session, waiting: declaredWait(row, session),
       blockedBy: openBlockers(row), comments: byRow.get(Number(row.number)) ?? [], openPrs, mergedPrs, repo }, io);
     if ("skip" in facts) {
@@ -3450,8 +3457,8 @@ export const ROW_CALL_COUNT_SPLIT_THRESHOLD = 100;
  * @param {any} row
  */
 export function claimedRowSession(row) {
-  const sessions = labelsOf(row).filter((/** @type {string} */ n) => n.startsWith("session:"));
-  return sessions.length === 1 ? sessions[0].slice("session:".length) : null;
+  const sessions = labelsOf(row).filter((/** @type {string} */ n) => n.startsWith(SESSION_PREFIX));
+  return sessions.length === 1 ? sessions[0].slice(SESSION_PREFIX.length) : null;
 }
 
 /**
@@ -3706,7 +3713,7 @@ function claimSentence(row) {
   }
   return `It is row ${row.number} of \`${row.repo}\` (key \`${row.repoKey}\`), and \`row-claim.mjs claim ${row.number}\` would claim the PRIMARY's row ${row.number}, `
     + "so do NOT run it: the claim for a non-primary tracker is child 3b (#2617) of #69. When it exists the names are "
-    + `\`agent/<slug>-${row.repoKey}-${row.number}\`, \`../wt-${row.repoKey}-${row.number}\` and \`session:<you>\`.`;
+    + `\`agent/<slug>-${row.repoKey}-${row.number}\`, \`../wt-${row.repoKey}-${row.number}\` and \`${SESSION_PREFIX}<you>\`.`;
 }
 
 /**
@@ -3845,11 +3852,11 @@ function unshippedOrder({ row, pushed }) {
     cause: "row-branch-unshipped",
     subject: `row-${subjectRef(row.repoKey, row.number)}`,
     discriminator: key,
-    prompt: `Row ${subjectMention(row)} reads \`ready\` and unclaimed, but ${branchesText(pushed)}.\n`
+    prompt: `Row ${subjectMention(row)} reads \`${READY_LABEL}\` and unclaimed, but ${branchesText(pushed)}.\n`
       + "THE BOARD IS SAYING SOMETHING THAT IS NOT TRUE, and until this is settled the gate has STOPPED "
       + `offering ${subjectMention(row)} as a fresh start -- so nobody will be routed into work that may already `
       + "exist. Measured 2026-09-22 on #2000: its branch sat pushed for 20 minutes while the row read "
-      + "`ready`, and a second session was routed into the same three Region paths.\n"
+      + `\`${READY_LABEL}\`, and a second session was routed into the same three Region paths.\n`
       + "READ THE BRANCH FIRST. Both of these spend NO API pool: "
       + `\`git fetch origin && git log --oneline origin/main..origin/${first}\` and `
       + `\`git diff origin/main...origin/${first}\`.\n`
@@ -4337,7 +4344,7 @@ export function stalledOrder({ orders, openRows, waiting = null }) {
       + "row(s) are open and could move, so every session is idle and will stay idle: no draft needs a "
       + "verdict, no row is claimable, no check is red, nothing is promotable.\n"
       + "That is NOT the org being finished. It means every one of those rows carries something that "
-      + "stops it -- `blocked`, `fleet-gated`, `epic`, a lane, a claim -- and no cause can see past it.\n"
+      + `stops it -- \`${BLOCKED_LABEL}\`, \`fleet-gated\`, \`epic\`, a lane, a claim -- and no cause can see past it.\n`
       + waitingParagraph(waiting, openRows)
       + "READ THE BACKLOG AND SAY WHY, then act. Shapes measured here in the last two days: a gate whose "
       + "condition became TRUE and nobody lifted the label; a row waiting on a capability that has since "

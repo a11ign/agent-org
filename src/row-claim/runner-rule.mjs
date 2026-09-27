@@ -2,6 +2,9 @@
 // @ts-check
 import { LIVE_SESSIONS, isLiveSession } from "../arm-pr.mjs";
 import { ROUTED_TO } from "../work-gate.mjs";
+// #2619 (child 3d of #69): the `lane:` prefix and the `lane:any` sentinel, moved to the project's
+// declared vocabulary.
+import { LANE_PREFIX } from "../project-vocabulary.mjs";
 
 // RULE: IS THIS ROW RESERVED FOR A SPECIFIC SESSION? -- #444.
 //
@@ -76,24 +79,27 @@ export function runnerReason(labels, mySession) {
  *
  * @param {string[]} labels
  * @param {string} mySession
- * @param {{ liveSessions?: readonly string[], pool?: readonly string[] }} [deps] injected so a test can state
- *   the roster it means rather than inheriting today's -- the retired case is only expressible against a known
- *   roster. `pool` is the same for the routed pool: #2506 left the shipped pool ONE name, and the exemption
- *   below needs two members to fire, so without this seam no test could reach it
+ * @param {{ liveSessions?: readonly string[], pool?: readonly string[], lanePrefix?: string }} [deps] injected so
+ *   a test can state the roster it means rather than inheriting today's -- the retired case is only expressible
+ *   against a known roster. `pool` is the same for the routed pool: #2506 left the shipped pool ONE name, and the
+ *   exemption below needs two members to fire, so without this seam no test could reach it. `lanePrefix`
+ *   (#2619, child 3d of #69) is a11ign's `LANE_PREFIX` by default, injectable so a test can state a fixture
+ *   project's own prefix and show this same rule, unchanged, reads THAT project's lane labels.
  * @returns {string | null} a refusal reason, or null if no live session's lane reserves this row
  */
 export function laneReason(labels, mySession, deps) {
   const live = deps?.liveSessions ?? LIVE_SESSIONS;
   const pool = labels.includes("fleet-gated") ? (deps?.pool ?? ROUTED_TO["fleet-gated"]) : [];
+  const lanePrefix = deps?.lanePrefix ?? LANE_PREFIX;
   const owners = labels
-    .filter((l) => l.startsWith("lane:"))
-    .map((l) => l.slice("lane:".length))
+    .filter((l) => l.startsWith(lanePrefix))
+    .map((l) => l.slice(lanePrefix.length))
     .filter((owner) => owner !== "any" && owner !== mySession && isLiveSession(owner, live))
     .filter((owner) => !(pool.includes(owner) && pool.includes(mySession)));
   if (owners.length === 0) return null;
-  return `this row is in ${owners.join(", ")}'s lane (a \`lane:\` label), and a lane is not a wall: ask `
+  return `this row is in ${owners.join(", ")}'s lane (a \`${lanePrefix}\` label), and a lane is not a wall: ask `
     + `${owners.join(" or ")} to assign it, and record the crossing as a \`Lane-exception:\` line in the `
-    + "PR body so it is in the log rather than in somebody's memory. `lane:any` reserves nothing; this "
+    + `PR body so it is in the log rather than in somebody's memory. \`${lanePrefix}any\` reserves nothing; this `
     + "label names an owner.";
 }
 

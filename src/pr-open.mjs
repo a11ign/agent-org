@@ -49,6 +49,7 @@ import { homeProjectDeclaration } from "./project-config.mjs";
 import { leakRefusalReason } from "./lib/leak-patterns.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { REPO } from "./project-identity.mjs";
+import { SESSION_PREFIX } from "./project-vocabulary.mjs";
 import { launchGate } from "./board-snapshot-scope.mjs";
 import { worktreeOwner } from "./worktree-owner.mjs";
 import { isLiveSession } from "./arm-pr.mjs";
@@ -494,7 +495,7 @@ export function sendToGitHub(mode, rest,
       run(args);
     } catch (error) {
       err(`pr-open: the PR was created but labelling it failed -- ${messageOf(error)}\n`
-        + `  It carries no \`session:*\` label, so a red check on it wakes product-manager rather than its `
+        + `  It carries no \`${SESSION_PREFIX}*\` label, so a red check on it wakes product-manager rather than its `
         + `author. Apply it by hand: \`gh pr edit <n> --add-label ${args[args.length - 1]}\`.\n`);
     }
   }
@@ -781,7 +782,7 @@ export function labelAfterCreate(mode, rest, owner) {
   if (mode !== "create" || owner === null) return [];
   if (!isLiveSession(owner)) return [];
   const head = flagAfter(rest, "--head");
-  return [["pr", "edit", ...(head ? [head] : []), "--add-label", `session:${owner}`]];
+  return [["pr", "edit", ...(head ? [head] : []), "--add-label", `${SESSION_PREFIX}${owner}`]];
 }
 
 /**

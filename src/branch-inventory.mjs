@@ -23,6 +23,7 @@
 // role with 14 branches outranked a live session with 9. **Grouping by the prefix is more useful than
 // UNKNOWN and the ORDER is what has to carry the distinction**: live owners, then retired roles, then
 // unknown. `source` is the key that decides the rank, never the owner string.
+import { SESSION_PREFIX } from "./project-vocabulary.mjs";
 
 /** A trailing `-<digits>` is the row the branch was cut for. `null` when the name carries none. */
 export function rowNumberFromBranch(branch) {
@@ -32,8 +33,8 @@ export function rowNumberFromBranch(branch) {
 
 /** The `session:<name>` label on a row, or null. A row may carry none -- that is a fact, not an error. */
 export function sessionFromLabels(labels = []) {
-  const found = labels.find((l) => l.startsWith("session:"));
-  return found === undefined ? null : found.slice("session:".length);
+  const found = labels.find((l) => l.startsWith(SESSION_PREFIX));
+  return found === undefined ? null : found.slice(SESSION_PREFIX.length);
 }
 
 /**
@@ -55,9 +56,9 @@ export function sessionFromLabels(labels = []) {
  * @param {{ event: string, label?: { name: string } }[]} timeline
  */
 export function sessionFromTimeline(timeline = []) {
-  const claims = timeline.filter((e) => e.event === "labeled" && (e.label?.name ?? "").startsWith("session:"));
+  const claims = timeline.filter((e) => e.event === "labeled" && (e.label?.name ?? "").startsWith(SESSION_PREFIX));
   const last = claims[claims.length - 1];
-  return last === undefined ? null : last.label.name.slice("session:".length);
+  return last === undefined ? null : last.label.name.slice(SESSION_PREFIX.length);
 }
 
 /** Roles that no longer run, so a branch carrying one has no owner who can answer for it today. */

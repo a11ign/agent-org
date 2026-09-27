@@ -33,6 +33,9 @@ import { dirname } from "node:path";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { clearBeforeOrder, isPerRowInstance, readAgents, WAKEABLE, queueHandoff, handoffQueuePath, ledgerPathFrom,
   handoffBacklog, readHandoffs, waitedFor, addressed } from "./wake.mjs";
+// #2619 (child 3d of #69): the `answer:` prefix these two advisory notes name, moved to the project's
+// declared vocabulary.
+import { ANSWER_PREFIX } from "./project-vocabulary.mjs";
 
 /**
  * `1` the order is LOST -- nothing holds it and nothing will retry it; `2` it was not delivered now and
@@ -278,7 +281,7 @@ export function queueDepthNote(label, path) {
   return `QUEUE DEPTH: this is order ${mine.waiting} waiting for "${label}", and the oldest has waited `
     + `${waitedFor(mine.oldestMs)}. A deep queue means that session is never between tasks, so it is not `
     + "reading its inbox -- if this order needs an answer, put it on the row where the org can see it "
-    + "(`answer:<session>`, a `blocked-by` edge, or the row body) rather than only here.\n";
+    + `(\`${ANSWER_PREFIX}<session>\`, a \`blocked-by\` edge, or the row body) rather than only here.\n`;
 }
 
 /**
@@ -384,7 +387,7 @@ export function parseStance(args) {
 export function stanceNote(stance) {
   if (stance === STANCE.DECISION) {
     return "DECLARED DECISION -- recorded on the queue entry, so the bundle header lists this order. "
-      + "Say in the text WHAT CLEARS IT: a row to label `answer:<session>`, or \"reply on #928\". Where a "
+      + `Say in the text WHAT CLEARS IT: a row to label \`${ANSWER_PREFIX}<session>\`, or "reply on #928". Where a `
       + "row exists, the label is the answer and this order only points at it.\n";
   }
   if (stance === STANCE.FYI) return "DECLARED FYI -- recorded: this order asks for no answer.\n";

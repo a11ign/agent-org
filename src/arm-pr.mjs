@@ -18,6 +18,7 @@ import { pathToFileURL } from "node:url";
 import { readFileSync, realpathSync } from "node:fs";
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { armabilityOf } from "./pr-hold-state.mjs";
+import { SESSION_PREFIX } from "./project-vocabulary.mjs";
 // #2046: THE ARMED PREDICATE, IMPORTED RATHER THAN RE-DECIDED -- the mirror of the `pr-hold-state.mjs`
 // line above, and for the reason this file's own header already gives about that one. Leaf-shaped:
 // `pr-armed-state.mjs` imports nothing at all, so the `actions/checkout`-only property holds.
@@ -184,7 +185,7 @@ export function closedRowNumbers(prBody) {
  * @returns {string[]}
  */
 export function sessionLabelsOf(rowLabels) {
-  return rowLabels.filter((l) => l.startsWith("session:"));
+  return rowLabels.filter((l) => l.startsWith(SESSION_PREFIX));
 }
 
 /**
@@ -279,8 +280,8 @@ export const RETIRED_SESSIONS = SESSIONS.retired.map((s) => s.name);
  */
 export function unknownSessionLabels(sessionLabels) {
   return sessionLabels
-    .filter((l) => !isLiveSession(l.slice("session:".length)))
-    .map((label) => ({ label, retired: RETIRED_SESSIONS.includes(label.slice("session:".length)) }));
+    .filter((l) => !isLiveSession(l.slice(SESSION_PREFIX.length)))
+    .map((label) => ({ label, retired: RETIRED_SESSIONS.includes(label.slice(SESSION_PREFIX.length)) }));
 }
 
 /**

@@ -114,6 +114,10 @@ import { loadLanes, inLane } from "./lane-ownership.mjs";
 // finding -- and that guard reads RAW source, so this note must not spell one out either. It caught this
 // very comment first.
 import { CLAIM_LABEL, READY_LABEL } from "./claim-labels.mjs";
+// #2619 (child 3d of #69): the rest of this file's vocabulary -- `backlog`, the release label and
+// milestone, the `lane:` prefix and the lanes-file path, and the template's own field/question names.
+import { BACKLOG_LABEL, OUT_OF_RELEASE_LABEL as OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE, LANE_PREFIX,
+  LANE_ANY_LABEL, LANES_FILE_PATH, ACCEPTANCE_FIELD, FLEET_QUESTION } from "./project-vocabulary.mjs";
 
 /** @type {(cmd: string, args: string[]) => string} */
 const defaultRun = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8" });
@@ -521,7 +525,7 @@ const REMEASURE_INSTRUCTION = /\bre-?measure\b|\breading at a (?:named )?commit\
  * @returns {string | null}
  */
 export function quotedTestCountWarning(body) {
-  const section = extractLabeledSection(body, "Acceptance");
+  const section = extractLabeledSection(body, ACCEPTANCE_FIELD);
   if (section === null || REMEASURE_INSTRUCTION.test(body)) return null;
   const quoted = QUOTED_COUNT_SPELLINGS.map((spelling) => spelling.exec(section)).find((hit) => hit !== null);
   if (!quoted) return null;
@@ -582,7 +586,7 @@ export function malformedAcceptanceCommandWarning(body, { classify = classifyCom
   const prose = section.commands.filter((command) => !namesAPath(command)
     && classify(command, { capabilities }).verdict === "prose");
   if (prose.length === 0) return null;
-  const raw = extractLabeledSection(body, "Acceptance") ?? "";
+  const raw = extractLabeledSection(body, ACCEPTANCE_FIELD) ?? "";
   const glued = prose.filter((line) => gluedToClosingFence(raw, line));
   const quoted = prose.map((line) => `\`${line.slice(0, QUOTED_LINE_LIMIT)}\``).join(", ");
   const remedy = glued.length > 0
@@ -724,8 +728,10 @@ const READY_FLAG = "--ready";
  * @returns {{ label: "backlog" | "ready", status: "Backlog" | "Ready" }}
  *
  * The label that says a row is deliberately outside the release, rather than missing its milestone.
+ * IMPORTED, NOT REDECLARED (#2619, child 3d of #69): `project-vocabulary.mjs`'s field, re-exported under
+ * this file's own established name so every existing importer keeps working unchanged.
  */
-export const OUT_OF_RELEASE = "out-of-release";
+export { OUT_OF_RELEASE };
 
 /**
  * The milestone that says the same thing as the label, created 2026-09-12 on `ceo`'s ruling so the board
@@ -739,16 +745,21 @@ export const OUT_OF_RELEASE = "out-of-release";
  * So `outOfReleaseArgv` gives the label path the milestone too. Filing can no longer produce a row where
  * the two disagree -- and `row-file.test.ts` pins them equal ACROSS THE TRACKER as well, because
  * filing-time agreement does not survive a hand-edit and a hand-edit is how `ready`/Status drifted across
- * 16 rows unseen.
+ * 16 rows unseen. IMPORTED, NOT REDECLARED (#2619, child 3d of #69): see `OUT_OF_RELEASE`, above.
  */
-export const OUT_OF_RELEASE_MILESTONE = "Out of release";
+export { OUT_OF_RELEASE_MILESTONE };
 
 /**
  * Is this the milestone that says "outside every release"? Case is folded for the same reason
  * `labelsOutOfRelease` folds it -- one fact, and a filer's capitalisation is not a second one.
- * @param {string | null} milestone @returns {boolean}
+ *
+ * EXPORTED WITH `outOfReleaseMilestone` INJECTABLE (#2619, child 3d of #69): a11ign's own value is the
+ * default, and a test states a fixture project's DIFFERENT milestone title to show this same comparison,
+ * unchanged, would refuse (or not) by that project's own word rather than a11ign's.
+ * @param {string | null} milestone @param {string} [outOfReleaseMilestone] @returns {boolean}
  */
-const saysOutOfRelease = (milestone) => milestone !== null && sameLabel(milestone, OUT_OF_RELEASE_MILESTONE);
+export const saysOutOfRelease = (milestone, outOfReleaseMilestone = OUT_OF_RELEASE_MILESTONE) =>
+  milestone !== null && sameLabel(milestone, outOfReleaseMilestone);
 
 /**
  * The argv to file with: unchanged, unless this row declares itself out of release by ONE of the two
@@ -823,10 +834,13 @@ export function milestoneFromArgv(argv) {
  * `--label=X`, `-l X`, `-l=X`, a comma list, any case (gh folds it). The ONE predicate `declaresRelease` and
  * `outOfReleaseArgv` both ask: each carried its own exact-spelling copy, so `--label out-of-release,docs` was
  * refused as declaring "no release", and fixing only the refusal would have filed the row with no milestone.
- * @param {string[]} argv @returns {boolean}
+ *
+ * `outOfReleaseLabel` INJECTABLE for the same reason `saysOutOfRelease`'s `outOfReleaseMilestone` is
+ * (#2619, child 3d of #69): a11ign's own value by default, a fixture project's own label in a test.
+ * @param {string[]} argv @param {string} [outOfReleaseLabel] @returns {boolean}
  */
-export function labelsOutOfRelease(argv) {
-  return labelValuesFromArgv(argv).some((label) => sameLabel(label, OUT_OF_RELEASE));
+export function labelsOutOfRelease(argv, outOfReleaseLabel = OUT_OF_RELEASE) {
+  return labelValuesFromArgv(argv).some((label) => sameLabel(label, outOfReleaseLabel));
 }
 
 /** @param {string[]} argv @returns {boolean} */
@@ -891,14 +905,14 @@ export function milestoneRefusal(milestones) {
  * starts in Backlog, matching this repo's own convention that `ready` is a judgement about pickability
  * a filer states on purpose, never a default.
  * @param {string[]} argv
- * @returns {{ label: "backlog" | "ready", status: "Backlog" | "Ready" }}
+ * @returns {{ label: string, status: "Backlog" | "Ready" }}
  */
 export function boardingFor(argv) {
   // #1322: a filer who writes `--label=ready` means `--ready`. Read as anything else it came out `backlog`
   // AND `ready` (#1315), a row saying "take me" and "not yet" at once.
   const ready = argv.includes(READY_FLAG)
     || labelValuesFromArgv(argv).some((label) => sameLabel(label, READY_LABEL));
-  return ready ? { label: "ready", status: "Ready" } : { label: "backlog", status: "Backlog" };
+  return ready ? { label: READY_LABEL, status: "Ready" } : { label: BACKLOG_LABEL, status: "Backlog" };
 }
 
 /**
@@ -910,17 +924,10 @@ export function boardingFor(argv) {
 const sameLabel = (a, b) => a.toLowerCase() === b.toLowerCase();
 
 /**
- * #2111: the OTHER board label, named -- the promote act below has to say it four times (remove it, read
- * it back, and name it in two refusals), and a literal repeated is how the third hand write went missing.
- *
- * `READY_LABEL` is IMPORTED from `claim-labels.mjs`, the leaf that owns it; this one is declared locally
- * because `backlog` is not a claim-lifecycle label and that file's header says it holds exactly four.
- * `ready-label-audit.mjs` declares its own for the same reason, and the alternative -- an import edge
- * between the filing tool and the audit for the sake of one string -- is the worse trade: it would pull
- * `row-file`'s whole rule-set graph into a check that runs nightly with no build. The trade is stated
- * rather than hidden; both files now say it ONCE each where they previously said it inline.
+ * #2111: the OTHER board label. IMPORTED FROM `project-vocabulary.mjs` (#2619, child 3d of #69) rather
+ * than declared locally: `READY_LABEL` still comes from `claim-labels.mjs`, the pinned leaf that owns it
+ * (`backlog` is not one of that file's four claim-lifecycle labels), and both now name the fact once.
  */
-const BACKLOG_LABEL = "backlog";
 
 /** The Project Status option a promoted row must end on -- the same name as its label, by #844's rule. */
 const READY_STATUS = "Ready";
@@ -998,17 +1005,17 @@ export function withoutLabels(argv, drop) {
  */
 export function labelRefusal(argv, laneLabels) {
   const given = labelValuesFromArgv(argv);
-  const stray = given.filter((label) => sameLabel(label.slice(0, "lane:".length), "lane:")
+  const stray = given.filter((label) => sameLabel(label.slice(0, LANE_PREFIX.length), LANE_PREFIX)
     && !laneLabels.some((derived) => sameLabel(derived, label)));
   if (stray.length > 0) {
     return `row-file: REFUSING to file -- --label ${stray.join(", ")} is not the lane this row's Region derives `
-      + `(${laneLabels.join(", ")}). The lane label is derived from docs/lane-ownership.json, the file the merge `
+      + `(${laneLabels.join(", ")}). The lane label is derived from ${LANES_FILE_PATH}, the file the merge `
       + "guard reads (#883), so a typed lane that differs would send the row to a lane that cannot merge it. Fix "
       + "the Region, or drop the --label. Nothing was filed.";
   }
-  if (boardingFor(argv).label === "ready" && given.some((label) => sameLabel(label, BACKLOG_LABEL))) {
-    return "row-file: REFUSING to file -- this filing says both `ready` and `backlog`. `--ready` (or "
-      + "`--label ready`) boards it Ready; no board flag boards it Backlog. Give one. Nothing was filed.";
+  if (boardingFor(argv).label === READY_LABEL && given.some((label) => sameLabel(label, BACKLOG_LABEL))) {
+    return `row-file: REFUSING to file -- this filing says both \`${READY_LABEL}\` and \`${BACKLOG_LABEL}\`. \`--ready\` (or `
+      + `\`--label ${READY_LABEL}\`) boards it Ready; no board flag boards it Backlog. Give one. Nothing was filed.`;
   }
   return null;
 }
@@ -1049,7 +1056,7 @@ export function laneLabelsFor(regionFiles, lanes) {
     .filter((lane) => regionFiles.some((f) => (f.endsWith("/") ? directoryTouchesLane(f, lane.paths)
       : inLane(f, lane.paths) && !inLane(f, lane.except ?? []))))
     .map((lane) => lane.owner);
-  return owners.length > 0 ? owners.map((owner) => `lane:${owner}`) : ["lane:any"];
+  return owners.length > 0 ? owners.map((owner) => `${LANE_PREFIX}${owner}`) : [LANE_ANY_LABEL];
 }
 
 /**
@@ -1169,7 +1176,7 @@ function spawnGhIssueCreate(argv) {
 function laneLabelsOrRefusal(body, loadLanesConfig, argv) {
   const lanes = loadLanesConfig();
   if (lanes === null) {
-    return { ok: false, message: "row-file: could not read docs/lane-ownership.json (absent, empty or "
+    return { ok: false, message: `row-file: could not read ${LANES_FILE_PATH} (absent, empty or `
       + "malformed) -- refusing to guess which lane this row belongs to. Nothing was filed." };
   }
   const regionFiles = /** @type {string[]} */ (declaredRegionFiles(body));
@@ -1199,8 +1206,9 @@ function laneLabelsOrRefusal(body, loadLanesConfig, argv) {
  */
 export function withAcceptanceLane(laneLabels, fleetReason) {
   if (!fleetReason) return [...laneLabels];
-  const owned = laneLabels.filter((label) => label !== "lane:any");
-  return owned.includes("lane:orchestrator") ? owned : [...owned, "lane:orchestrator"];
+  const owned = laneLabels.filter((label) => label !== LANE_ANY_LABEL);
+  const orchestratorLane = `${LANE_PREFIX}orchestrator`;
+  return owned.includes(orchestratorLane) ? owned : [...owned, orchestratorLane];
 }
 
 /**
@@ -1242,7 +1250,7 @@ function reportAcceptanceRouting(fleetReason, untrimmed, disagreement) {
  * @returns {string}
  */
 function disagreementLine({ declared, routed, reason }) {
-  const question = '"Does the acceptance need the fleet or the lab?"';
+  const question = `"${FLEET_QUESTION}?"`;
   if (declared === "yes") {
     return `row-file: lane:orchestrator added -- the row declares "Yes" to ${question}, though no pattern in `
       + "the Acceptance names the fleet or the lab. A declaration outranks a pattern (#2175); if the answer "
@@ -1697,7 +1705,7 @@ function promoteGate(issueNumber, { run, fetchLabels }) {
     return { refusal: `row-file: REFUSING to promote -- #${issueNumber} is already claimed (\`${CLAIM_LABEL}\`). `
       + `Promoting it would leave \`${READY_LABEL}\` beside \`${CLAIM_LABEL}\`, which \`ready-label-audit\` `
       + "reports as a HAND CLAIM: a claim made outside `row-claim.mjs`. That reading is strong evidence "
-      + "rather than proof -- the claim path removes `ready` in a SECOND call (#749), so a claim whose "
+      + `rather than proof -- the claim path removes \`${READY_LABEL}\` in a SECOND call (#749), so a claim whose `
       + "removal did not land leaves the same pair -- but a promote act that MINTED the state deliberately "
       + "would point the audit at the mechanism for something this command did. Decline the claim first "
       + "(`row-claim.mjs decline "

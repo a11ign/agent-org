@@ -43,6 +43,8 @@ import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { REPO } from "./project-identity.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { regionPathsFromBody, declaredRegionFiles, declaresNoCommit } from "./region-paths.mjs";
+// #2619 (child 3d of #69): the `blocked` label, moved to the project's declared vocabulary.
+import { BLOCKED_LABEL } from "./project-vocabulary.mjs";
 
 const EXIT = { STARTABLE: 0, BLOCKED: 1, CANNOT_ASK: 2 };
 
@@ -218,7 +220,7 @@ function startableLines(row, examined) {
     `#${row} is STARTABLE: every symbol it names is on \`main\`, ${regionClause} (${counted}).`,
     ...unsearchedPopulationNote(examined.refs ?? 0),
     ...unreadRegionNote(examined.region, examined.declaredNoCommit),
-    "  This checks SYMBOLS, this row's DECLARED region against unmerged branches, and the `blocked`",
+    `  This checks SYMBOLS, this row's DECLARED region against unmerged branches, and the \`${BLOCKED_LABEL}\``,
     "  label. It does NOT run B4 -- whether an OPEN PR already touches one of these files. `row-claim",
     "  check` runs that separately (#1063) and prints its refusal beside this verdict; run through",
     "  `row-claim`, not this script directly, or the B4 half is missing.",
@@ -664,7 +666,7 @@ function facts(row) {
   // #35's schema migration" and carries the `blocked` label -- and neither its region nor its symbols say
   // so. Reading the LABEL is not the prose-parsing this tool refuses elsewhere: it is the same
   // authoritative record `row-claim` already trusts for `in-progress`.
-  const blockedLabel = (issue.labels ?? []).some((/** @type {any} */ l) => l?.name === "blocked");
+  const blockedLabel = (issue.labels ?? []).some((/** @type {any} */ l) => l?.name === BLOCKED_LABEL);
   // THE ROW'S OWN STATE, and it was in this query's reach the whole time. See `startability`.
   const state = typeof issue.state === "string" ? issue.state : null;
   const closedAt = typeof issue.closedAt === "string" ? issue.closedAt : null;

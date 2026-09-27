@@ -3,6 +3,14 @@
  * of the claim check. See `packages/agent-org/src/row-claim/runner-rule.mjs` for the full account (#324's own shape:
  * a row needing a genuinely fresh agent, reserved by a comment nothing enforced).
  */
+// no-token: LIVE_SESSIONS
+//
+// `laneReason`'s default `deps?.liveSessions ?? LIVE_SESSIONS` puts `arm-pr.mjs`'s `LIVE_SESSIONS` (and,
+// through the same closure, its `gh`-calling helpers) in this file's import graph, but every case here
+// either passes its own `liveSessions`/`pool` fixture or drives `runnerReason`, which never reads it at
+// all. Nothing here calls `LIVE_SESSIONS` itself (#827: the whole-file over-charge this declaration
+// exists for -- `arm-pr.mjs` also defines functions that DO call `gh`, unrelated to this file's own
+// assertions).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runnerReason, laneReason } from "../row-claim/runner-rule.mjs";
