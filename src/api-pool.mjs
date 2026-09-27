@@ -60,7 +60,13 @@ export const GRAPHQL_POOL_PROBE = Object.freeze(["api", "graphql", "-f", "query=
  * So the login costs a SECOND call, and #2003's done-when 2 allows one. **The reset wins the single call**,
  * because "how long is the org deaf" is the question the row was filed to answer, and the account is then
  * reported UNREADABLE beside the user ID the dead response did name -- never guessed, never dropped.
- * `refusalPoolLine` renders it. Whether to buy the login back for one CORE point is #2003's to say.
+ * `refusalPoolLine` renders it.
+ *
+ * **ANSWERED, 2026-09-23** (`product-manager`'s ruling on #2003, comment 5791532987): no second call; the
+ * login is bought HERE, at zero calls -- `gh-identity.mjs` (#1984) derives it locally from the config `gh`
+ * is already routed to, and `work-gate.mjs` passes that DECLARED login into `refusalPoolLine` beside
+ * whatever this probe's own response carried, so a dead pool's line names an account without ever paying
+ * for a second request.
  */
 
 /**
@@ -242,10 +248,17 @@ export function poolDiagnosis({ run }) {
  * the journal line it replaces (`API rate limit already exceeded for user ID 328832207`) is what an
  * unqualified ID reads like to the session that has to act on it.
  *
+ * A LOGIN AND A USER ID CAN NOW BOTH ARRIVE (#1984), and neither may silently drop the other. `login` here
+ * may be the DECLARED identity -- which config `gh` is routed to, bought at zero calls -- while `userId` is
+ * who the refusing RESPONSE actually named; those are different questions, and printing only one throws
+ * away the other's answer. When they disagree, that disagreement IS #1974/#1967's confusion made visible,
+ * so both are kept rather than one replacing the other.
+ *
  * @param {string | null} login @param {string | null} userId
  * @returns {string}
  */
 function accountPhrase(login, userId) {
+  if (login !== null && userId !== null) return `account ${login} (user ID ${userId})`;
   if (login !== null) return `account ${login}`;
   return userId === null ? "account UNREADABLE" : `account UNREADABLE (user ID ${userId})`;
 }
@@ -274,6 +287,10 @@ function poolPhrase(pool) {
  * EACH FACT MAY BE UNREADABLE ON ITS OWN, and none of them is ever guessed. An instrument that cannot
  * answer must not answer zero: a missing pool prints UNREADABLE, never `0 remaining`, because a reader who
  * takes that for an exhausted pool waits for a reset that is not coming.
+ *
+ * `login` NEED NOT COME FROM THIS PROBE (#1984): a live response names one directly, and a dead one names
+ * none -- `work-gate.mjs` fills that second case with the DECLARED identity `gh-identity.mjs` reads off
+ * disk, at no extra call, and passes it here beside whatever `userId` the response itself carried.
  *
  * @param {{login: string | null, userId?: string | null, pool: Pool | null}} diagnosis
  * @returns {string}

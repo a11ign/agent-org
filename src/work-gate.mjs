@@ -59,6 +59,7 @@ import { sandboxGitEnv } from "./lib/git-env.mjs";
 // reader lived in `queue-table.mjs` until #2003; importing THAT would have pulled five modules into the
 // graph of a script that runs 720 times a day, to use a function it calls only when already refusing.
 import { poolDiagnosis, refusalPoolLine } from "./api-pool.mjs";
+import { declaredGhAccount } from "./gh-identity.mjs";
 // #1969, AND THE PREDICATE IS IMPORTED RATHER THAN RE-DECIDED. `armedFromApi` knows THREE armed states --
 // merged, a pending auto-merge, and SITTING IN THE MERGE QUEUE, where `autoMergeRequest` reads `null` on a
 // correctly armed pull request (#1729/#1727, and #2004 for the read that fed it). `ceo`'s ruling names
@@ -4779,20 +4780,25 @@ export function deadMansSwitch({ orders, drain, performed = 0, openRows,
  * names: this function is reached only when BOTH lanes have already refused, on a pool that by definition
  * has nothing left to protect, and `poolDiagnosis` spends a single probe whatever it finds there.
  *
- * A DEAD POOL BUYS THE RESET RATHER THAN THE LOGIN, because no one call buys both and "how long is the org
- * deaf" is the question the outage left unanswered; the account then reads `UNREADABLE (user ID ...)`.
- * `api-pool.mjs` records the alternatives that were measured and rejected.
+ * A DEAD POOL BOUGHT ONLY THE RESET, NOT THE LOGIN, because no one call buys both and "how long is the org
+ * deaf" was the question the 2026-09-22 outage left unanswered -- so the account used to read `UNREADABLE
+ * (user ID ...)` on exactly that path. #1984 closes that gap AT NO EXTRA CALL: `identity.login` is the
+ * DECLARED account `gh-identity.mjs` reads off disk (which config `gh` is routed to), and it fills in
+ * whenever the probe's own response names none, which is precisely the dead-pool case. When the probe DOES
+ * name one (a live pool), that response wins -- it is a confirmed account fact and `identity.login` is
+ * left unused, per `accountPhrase`'s own header in `api-pool.mjs`. `identity` is REQUIRED rather than
+ * defaulted, for the same reason `run` is (#1405): a defaulted read of `.agent-org/host.json` and a
+ * `hosts.yml` is still a real filesystem read, and a test reaching this function would make it against
+ * whatever this host happens to have installed.
  *
- * `run` IS REQUIRED, which is `apiBudget`'s rule (#1405) for its reason: a defaulted one is a live `gh`
- * call, and a test reaching this function would make it.
- *
- * @param {{run: (args: string[]) => string}} deps
+ * @param {{run: (args: string[]) => string, identity: import("./gh-identity.mjs").DeclaredAccount}} deps
  * @returns {string}
  */
-export function cannotAskReport({ run }) {
+export function cannotAskReport({ run, identity }) {
+  const diagnosis = poolDiagnosis({ run });
   return "CANNOT ASK: neither the pull-request list nor the Ready rows could be read. "
     + "Nothing was examined -- this is NOT a quiet queue, and no session has been woken.\n"
-    + `${refusalPoolLine(poolDiagnosis({ run }))}\n`;
+    + `${refusalPoolLine({ ...diagnosis, login: diagnosis.login ?? identity.login })}\n`;
 }
 
 /**
@@ -5054,7 +5060,7 @@ function main() {
 
   // BOTH LANES REFUSED IS `CANNOT_ASK`; ONE IS `PARTIAL`. Nothing here may report a refused read as quiet.
   if (prs === null && readyRows === null) {
-    process.stderr.write(cannotAskReport({ run: defaultRun }));
+    process.stderr.write(cannotAskReport({ run: defaultRun, identity: declaredGhAccount() }));
     process.exit(EXIT.CANNOT_ASK);
   }
 

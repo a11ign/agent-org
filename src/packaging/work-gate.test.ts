@@ -3585,9 +3585,21 @@ function recordingRun(reply: (args: string[]) => string) {
   };
 }
 
-test("#2003: a refusal on a DEAD pool names the pool and the reset, for ONE call", () => {
+// --- #1984: `identity` IS NOW REQUIRED, AND EVERY EXISTING FIXTURE HERE PICKS ONE ON PURPOSE -------------
+//
+// `cannotAskReport` no longer defaults it (the same reasoning `run` has carried since #1405): a defaulted
+// read of `.agent-org/host.json` and a real `hosts.yml` would make these tests depend on whatever THIS
+// host happens to have installed. `UNASKED_IDENTITY` is what every test below that is not ABOUT identity
+// passes, so `gh-identity-declared.test.ts` -- not this file -- owns proving the real function resolves an
+// account on this host.
+const UNASKED_IDENTITY = { login: null, source: "test: identity not exercised by this fixture" };
+
+/** A stand-in for what `HERDR_WORKSPACE_ID` routing to the workers config would have declared. */
+const DECLARED_WORKERS_IDENTITY = { login: "a11ign-ai-workers", source: "test: declared via HERDR_WORKSPACE_ID" };
+
+test("#2003/#1984: a refusal on a DEAD pool names the DECLARED account beside the user ID, for ONE call", () => {
   const { calls, run } = recordingRun(refusedWith(DEAD_GRAPHQL));
-  const report = cannotAskReport({ run });
+  const report = cannotAskReport({ run, identity: DECLARED_WORKERS_IDENTITY });
 
   assert.match(report, /CANNOT ASK: neither the pull-request list nor the Ready rows could be read/,
     "the original refusal is unchanged -- this row adds facts to it, it does not replace it");
@@ -3598,23 +3610,36 @@ test("#2003: a refusal on a DEAD pool names the pool and the reset, for ONE call
   assert.match(report, /THE POOL IS EXHAUSTED/, "the verdict is stated, not left to be inferred from a 0");
 
   // DONE-WHEN 2 IS THE BINDING LIMIT, AND THIS IS WHERE IT BITES. A rate-limited response names a user ID
-  // and no login, and no second call may be made to improve on that -- so the account is reported
-  // UNREADABLE with the ID the response did carry, which is done-when 3's rule applied to the account.
+  // and no login, and no second call may be made to improve on that.
   assert.equal(calls.length, 1,
     "AT MOST ONE extra request on the refusal path -- #2003 done-when 2, and the dead pool is the case "
     + "that tests it, because it is the one where a second call would buy something");
-  assert.match(report, /account UNREADABLE \(user ID 328832207\)/,
-    "not the login, and not silence: what the refusing response actually carried, marked as not the answer");
+  // #1984: the response alone named only a user ID -- BEFORE this row the line read
+  // `account UNREADABLE (user ID 328832207)`. The DECLARED identity (bought at zero calls, off disk) now
+  // fills the login, and the user ID stays beside it rather than being dropped: when the two disagree that
+  // IS #1974/#1967's confusion made visible, so nothing here may collapse to only one of them.
+  assert.match(report, /account a11ign-ai-workers \(user ID 328832207\)/,
+    "the declared login beside the user ID the refusing response actually carried -- neither replaces the other");
   assert.ok(!/account 328832207/.test(report),
     "a user ID must never be printed as though it were the account name -- that is the journal line this "
     + "row was filed to replace");
+});
+
+test("#1984: a dead pool with NO declared identity either still degrades to UNREADABLE, never a guess", () => {
+  // THE POSITIVE CONTROL FOR THE MERGE ITSELF: without it, `diagnosis.login ?? identity.login` could look
+  // like it always prints something, when a host that cannot declare an account (a fresh checkout, a
+  // workspace with no config installed) must still read UNREADABLE rather than inventing a name.
+  const { run } = recordingRun(refusedWith(DEAD_GRAPHQL));
+  const report = cannotAskReport({ run, identity: UNASKED_IDENTITY });
+  assert.match(report, /account UNREADABLE \(user ID 328832207\)/,
+    "with no declared identity to fall back on, the prior degradation is exactly what must still print");
 });
 
 test("#2003: a LIVE pool costs ONE probe and says the pool is not the cause -- the positive control", () => {
   // THE CONTROL THAT MATTERS. Without it, a refusalPoolLine that printed EXHAUSTED unconditionally would
   // satisfy the test above perfectly, and every network blip would be reported to the org as a dead pool.
   const { calls, run } = recordingRun(() => LIVE_GRAPHQL);
-  const report = cannotAskReport({ run });
+  const report = cannotAskReport({ run, identity: UNASKED_IDENTITY });
 
   assert.match(report, /account a11ign-ai-workers/);
   assert.match(report, /1660 used, 3340 remaining of 5000/);
@@ -3626,10 +3651,22 @@ test("#2003: a LIVE pool costs ONE probe and says the pool is not the cause -- t
   assert.equal(calls.length, 1, "one probe, the same one the dead-pool case pays -- #2003's done-when 2");
 });
 
+test("#1984: a LIVE pool's own login wins over a declared identity, not the other way round", () => {
+  // THE OTHER HALF OF THE MERGE: a response that already names an account is a CONFIRMED fact, and a
+  // declared identity must never override it -- if it did, a live probe naming a DIFFERENT account than
+  // this workspace's declaration would silently hide the very drift #1974/#1967 were about.
+  const { run } = recordingRun(() => LIVE_GRAPHQL);
+  const report = cannotAskReport({ run, identity: { login: "a-declared-account-that-must-not-appear",
+    source: "test: precedence check" } });
+  assert.match(report, /account a11ign-ai-workers/, "the response's own login still wins");
+  assert.ok(!report.includes("a-declared-account-that-must-not-appear"),
+    "a declared identity is a fallback for when the response names none, never an override of one it did");
+});
+
 test("#2003: an unreadable probe reports UNREADABLE and never invents a pool", () => {
   // DONE-WHEN 3, AND THE OLDEST RULE IN THIS FILE ONE LEVEL DOWN: an instrument that cannot answer must not
   // answer zero. `0 remaining` reads as an exhausted pool, and a reader waits for a reset that is not coming.
-  const noResponse = cannotAskReport({ run: () => "" });
+  const noResponse = cannotAskReport({ run: () => "", identity: UNASKED_IDENTITY });
   assert.match(noResponse, /account UNREADABLE/);
   assert.match(noResponse, /pool UNREADABLE/);
   assert.match(noResponse, /CANNOT say whether the pool is exhausted or something else refused/);
@@ -3637,7 +3674,9 @@ test("#2003: an unreadable probe reports UNREADABLE and never invents a pool", (
     "no count may be printed for a pool that was never read");
 
   // Headers present but unparseable is the same answer, and it is a DIFFERENT failure: a response arrived.
-  const garbled = cannotAskReport({ run: () => "HTTP/2.0 200 OK\r\nX-Ratelimit-Resource: graphql\r\n\r\n{}" });
+  const garbled = cannotAskReport({
+    run: () => "HTTP/2.0 200 OK\r\nX-Ratelimit-Resource: graphql\r\n\r\n{}", identity: UNASKED_IDENTITY,
+  });
   assert.match(garbled, /pool UNREADABLE/,
     "a resource name with no counts is not a pool reading -- remaining and limit are what make it one");
 
@@ -3651,6 +3690,7 @@ test("#2003: an unreadable probe reports UNREADABLE and never invents a pool", (
   const reworded = cannotAskReport({
     run: refusedWith(DEAD_GRAPHQL.replace("for user ID 328832207",
       "for this installation; try again in 3600 seconds")),
+    identity: UNASKED_IDENTITY,
   });
   assert.match(reworded, /account UNREADABLE(?! \()/,
     "no user ID in the message means no user ID in the line, and the pool facts still stand");
@@ -3669,8 +3709,9 @@ test("#2003: the pool reading has ONE definition, and the gate pays for it only 
   assert.equal(gate.match(/poolDiagnosis\(/g)?.length, 1,
     "poolDiagnosis is called once, inside cannotAskReport -- a second call site is a second price");
   const refusalBranch = /if \(prs === null && readyRows === null\) \{([\s\S]*?)\n {2}\}/.exec(gate)?.[1] ?? "";
-  assert.match(refusalBranch, /cannotAskReport\(\{ run: defaultRun \}\)/,
-    "the report is built inside the refusal branch; anywhere else and every healthy tick pays for it");
+  assert.match(refusalBranch, /cannotAskReport\(\{ run: defaultRun, identity: declaredGhAccount\(\) \}\)/,
+    "the report is built inside the refusal branch; anywhere else and every healthy tick pays for it. "
+    + "#1984: identity is read here too, at zero extra gh calls -- a local file read, not a network one");
   // The declaration spells the same call shape, so it is excluded by name rather than by counting matches.
   assert.equal(gate.match(/(?<!function )cannotAskReport\(\{/g)?.length, 1,
     "exactly one call site, and it is the one inside the refusal branch asserted above");
