@@ -94,8 +94,8 @@ import { STALL_STATE_FILE, claimFactsFrom, readClaim, claimStalledOrders, nextSt
 // `work-gate/pr-orders.mjs`, which imports the shared PR facts BACK from this file. The cycle is safe because
 // nothing there reads an import at load time (only inside a function), and this file stays the entry point:
 // every name that module exported is re-exported here, so no caller of `work-gate.mjs` changes.
-import { requiredWhenRed, perPullRequestOrders, mergeConflictOrders, greenUnarmedOrders, reviewBlockedOrders }
-  from "./work-gate/pr-orders.mjs";
+import { requiredWhenRed, perPullRequestOrders, mergeConflictOrders, greenUnarmedOrders, reviewBlockedOrders,
+  HOLD_RED_JOBS } from "./work-gate/pr-orders.mjs";
 export { redOnlyBySupersededRun, mergeConflictOrders, greenUnarmedOrders, reviewBlockedOrders, HOLD_RED_JOBS,
   awaitingEvidenceStaleOrders } from "./work-gate/pr-orders.mjs";
 // #2691: THE LIVE CALL-COUNT SIGNAL, reusing the parser rather than a second one -- `split-baseline.mjs`
@@ -3562,13 +3562,33 @@ export function readUnarmed(candidates, run = defaultRun) {
 }
 
 /**
+ * Is this pull request's red made ONLY of the hold's own manufactured jobs? A `hold:` label reddens
+ * exactly `HOLD_RED_JOBS` on purpose (`work-gate/pr-orders.mjs`'s own header), and the REVIEW question
+ * does not care who placed the hold -- unlike `redOnlyFromHoldOf`, which asks whether a hold answers a
+ * SPECIFIC session and is used to decide whether that session gets a "fix your build" order. Here the
+ * question is only "is this red manufactured or real", so any `hold:` label counts.
+ *
+ * A hold must keep stopping a MERGE (`armabilityOf`/`greenUnheldPrs`, unaffected -- neither calls this).
+ * It must stop blocking a REVIEW, which is the defect #2709 was filed for: PR #2649 carried a release
+ * condition needing a verdict, and the hold's own red checks made `reviewableHead` return `null` before
+ * anyone was ever asked for one.
+ * @param {any} pr @param {any[]} onHead every check on the head, narrowed by `newestPerName`
+ */
+function redOnlyFromAnyHold(pr, onHead) {
+  if (holdersOf(labelsOf(pr)).length === 0) return false;
+  const red = onHead.filter((c) => checksSettledGreen([c]) === false);
+  return red.length > 0 && red.every((c) => HOLD_RED_JOBS.includes(String(c?.name ?? c?.context)));
+}
+
+/**
  * The head this pull request's review question is asked at, or `null` when it is not asked: red, still
  * running, or headless. Shared by `draftOrder` and the enrichment that decides which pull requests are
  * worth a commit read, so the two can never disagree about who is being asked.
  * @param {any} pr @returns {string | null}
  */
 export function reviewableHead(pr) {
-  if (checksSettledGreen(newestPerName(pr?.statusCheckRollup)) !== true) return null;
+  const onHead = newestPerName(pr?.statusCheckRollup);
+  if (checksSettledGreen(onHead) !== true && !redOnlyFromAnyHold(pr, onHead)) return null;
   return String(pr.headRefOid ?? "") || null;
 }
 
