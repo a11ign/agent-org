@@ -168,18 +168,20 @@ export const PROMPT_REFUSED_PREFIX = "prompt refused: ";
 
 /**
  * Clear, then prompt -- the clear only for a standing seat ({@link clearBeforeOrder}; a per-row instance keeps its
- * context, #2483). Returns what to report, or `null` when the prompt landed.
+ * context, and may instead be `/compact`ed over threshold, #2483/#2688). Returns what to report, or `null`
+ * when the prompt landed.
  *
  * THE PROMPT IS {@link deliveredText}: clearing strips everything the session knew, so what it wakes to
  * must say who it is and who asked. `sender` is `null` (the default) for a caller that is not a known
  * session -- a systemd unit such as the nightly firing is named as unidentified, never guessed.
  *
  * @param {(args: string[]) => string} run @param {string} label @param {string} text
- * @param {{sender?: string | null, sleep?: (ms: number) => void}} [options] `sleep` is the clear's settle
- *   ({@link clearBeforeOrder}): real by default, injected only by a test that is not about the delay (#2546)
+ * @param {{sender?: string | null, sleep?: (ms: number) => void, contextRoot?: string}} [options] `sleep` is
+ *   the clear's settle ({@link clearBeforeOrder}): real by default, injected only by a test that is not about
+ *   the delay (#2546); `contextRoot` is the compact check's transcript root (#2688), same way
  */
-export function clearThenPrompt(run, label, text, { sender = null, sleep } = {}) {
-  const { sent, refusal: clearRefusal } = clearBeforeOrder(run, label, sleep);
+export function clearThenPrompt(run, label, text, { sender = null, sleep, contextRoot } = {}) {
+  const { sent, refusal: clearRefusal } = clearBeforeOrder(run, label, sleep, contextRoot);
   try {
     run(["--session", "org", "agent", "prompt", label, deliveredText(label, text, sender, { followUp: !sent })]);
   } catch (/** @type {any} */ err) {
