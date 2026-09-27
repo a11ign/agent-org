@@ -49,7 +49,8 @@ import { MAX_ROW_ORDERS_PER_TICK, readCommitChain, withCommitChains, decide, che
   ANSWER_PREFIX, redOnlyBySupersededRun, cannotAskReport,
   readRowBranches, rowBranchOrders, GIT_READS,
   reviewStateOf, reviewBlocked, reviewBlockedOrders, REVIEW_STATE, HOLD_RED_JOBS,
-  readRowsOffBoard, rowsOffBoard, rowOffBoardOrders, rowsOffBoardOrSay, ROW_OFF_BOARD_GRACE_MS }
+  readRowsOffBoard, rowsOffBoard, rowOffBoardOrders, rowsOffBoardOrSay, ROW_OFF_BOARD_GRACE_MS,
+  pipelineCodeownerReviewMissing }
   from "../work-gate.mjs";
 // #2182: the SHIPPED reader that decides whether a delivered cause is still live, imported so this file
 // can assert what the membership BUYS rather than only that the name is in the list. `wake.mjs` runs
@@ -978,9 +979,13 @@ test("every cause is classified as START or FINISH -- a new one cannot default i
   // holds, which a drain exists to land, and a release only returns the row to a pool that a drain already withholds.
   // #2075: `row-off-board` is FINISH, and a JUDGMENT cause. Boarding a row takes on no work -- the row is already filed, and
   // what is wrong is that the chairman's view cannot see it -- and rows are still filed during a drain.
+  // #1959: `pr-codeowner-review-missing` is FINISH, `pr-review-blocked`'s own argument one surface over: a
+  // pull request CODEOWNERS assigns to `ceo` with no approval from `ceo` is finished work that cannot land
+  // once #1756's flip turns the gap into a hard merge block, and a drain is the window where leaving it
+  // unreviewed would cost most. It starts no work: the pull request already exists.
   assert.deepEqual(finish, ["answer-owed", "awaiting-evidence-stale", "blocker-cleared", "chairman-blocked", "claim-stalled",
     "claimed-row-amended", "disk-headroom-low", "draft-awaiting-verdict", "draft-convinced-not-ready", "host-units-stale", "pr-checks-failing",
-    "pr-green-unarmed", "pr-merge-conflict", "pr-review-blocked", "reviewer-auth-failed",
+    "pr-codeowner-review-missing", "pr-green-unarmed", "pr-merge-conflict", "pr-review-blocked", "reviewer-auth-failed",
     "row-branch-unshipped", "row-off-board", "trunk-red", "verdict-comment-unreviewed", "verdict-not-convinced"]);
   for (const cause of START_CAUSES) {
     assert.ok(CAUSES.includes(cause), `${cause} is withheld by a drain but no longer exists`);
@@ -4404,6 +4409,89 @@ test("#2084: an EMPTY decision is NOT an approval -- the #1968 state has its own
     assert.match(v.why, /#1968 state/);
   }
   assert.equal(new Set(Object.values(REVIEW_STATE)).size, 6, "and the six are genuinely distinct");
+});
+
+// --- #1959: a pull request CODEOWNERS assigns to `ceo`'s pipeline lane, with no review from `ceo` --------
+
+const pipelinePr = (n: number, files: string[], extra: Record<string, unknown> = {}) =>
+  ({ number: n, files: files.map((path) => ({ path })), changedFiles: files.length,
+    author: { login: "a11ign-ai-workers" }, reviews: [], ...extra });
+
+test("#1959 (a): fires for an open PR touching a pipeline path with no code-owner approval", () => {
+  const pr = pipelinePr(10, [".github/workflows/release.yml"]);
+  assert.deepEqual(pipelineCodeownerReviewMissing([pr], comparablePrFiles([pr])).map((m) => m.number), [10]);
+});
+
+test("#1959 (b): does NOT fire for a PR touching ONLY the generated consumer-gate.yml", () => {
+  const pr = pipelinePr(11, [".github/workflows/consumer-gate.yml"]);
+  assert.deepEqual(pipelineCodeownerReviewMissing([pr], comparablePrFiles([pr])), [],
+    "CODEOWNERS carves this file out of the pipeline lane by its own last-matching-pattern rule");
+});
+
+test("#1959: a PR touching BOTH the carve-out and an owned path still fires, on the owned path", () => {
+  const pr = pipelinePr(12, [".github/workflows/consumer-gate.yml", ".github/workflows/ci.yml"]);
+  assert.deepEqual(pipelineCodeownerReviewMissing([pr], comparablePrFiles([pr])).map((m) => m.number), [12]);
+});
+
+test("#1959 (c): does NOT fire once the code owner has approved", () => {
+  const pr = pipelinePr(13, [".github/workflows/release.yml"],
+    { reviews: [{ state: "APPROVED", author: { login: "DanBeckDev" } }] });
+  assert.deepEqual(pipelineCodeownerReviewMissing([pr], comparablePrFiles([pr])), [],
+    "the owner has already reviewed; the gap this row names is closed for this PR");
+});
+
+test("#1959: an APPROVED review from anyone ELSE does not satisfy CODEOWNERS", () => {
+  const pr = pipelinePr(14, [".github/workflows/release.yml"],
+    { reviews: [{ state: "APPROVED", author: { login: "a11ign-bot" } }] });
+  assert.deepEqual(pipelineCodeownerReviewMissing([pr], comparablePrFiles([pr])).map((m) => m.number), [14],
+    "GitHub's own rule: only an approval BY a code owner satisfies the requirement");
+});
+
+test("#1959 (d): does NOT fire for a PR the code owner authored -- GitHub never requests it", () => {
+  const pr = pipelinePr(15, [".github/workflows/release.yml"], { author: { login: "DanBeckDev" } });
+  assert.deepEqual(pipelineCodeownerReviewMissing([pr], comparablePrFiles([pr])), [],
+    "GitHub will not request a review from a pull request's own author, and #2022's bypass allowance "
+    + "covers exactly this case");
+});
+
+test("#1959: a PR touching no pipeline path at all is not this cause's subject", () => {
+  const pr = pipelinePr(16, ["packages/lab/src/packaging/work-gate.test.ts"]);
+  assert.deepEqual(pipelineCodeownerReviewMissing([pr], comparablePrFiles([pr])), []);
+});
+
+test("#1959: a truncated file list (gh's 100-file cap) is dropped, never read short", () => {
+  // `comparablePrFiles` already refuses a PR whose `files.length` does not match `changedFiles` -- the
+  // same truncation guard B4 relies on -- so this cause inherits "silent about what it cannot see" rather
+  // than a false negative built on a partial read.
+  const pr = { number: 17, files: [{ path: "packages/lab/src/packaging/work-gate.test.ts" }],
+    changedFiles: 101, author: { login: "a11ign-ai-workers" }, reviews: [] };
+  assert.deepEqual(comparablePrFiles([pr]), [], "the truncation guard drops it before this cause ever reads it");
+  assert.deepEqual(pipelineCodeownerReviewMissing([pr], comparablePrFiles([pr])), []);
+});
+
+test("#1959: decide() wakes ceo with ONE order naming every PR still missing the review", () => {
+  const a = pipelinePr(20, [".github/workflows/release.yml"]);
+  const b = pipelinePr(21, [".github/workflows/auto-arm.yml"], { labels: [{ name: "session:worker-21" }] });
+  const orders = decide({ prs: [a, b], readyRows: [], prFiles: comparablePrFiles([a, b]) })
+    .filter((o) => o.cause === "pr-codeowner-review-missing");
+  assert.equal(orders.length, 1, "one set order, not one per pull request");
+  assert.equal(orders[0].session, "ceo");
+  assert.match(orders[0].prompt, /#20/);
+  assert.match(orders[0].prompt, /#21 \(worker-21\)/, "a labelled PR names whose branch it is, for context only");
+});
+
+test("#1959: it is FINISH (never withheld by a drain) and an ACTION cause (not in JUDGMENT_CAUSES)", () => {
+  assert.ok(CAUSES.includes("pr-codeowner-review-missing"),
+    "it must be in CAUSES or worker-profile refuses it at run time");
+  assert.ok(!START_CAUSES.includes("pr-codeowner-review-missing"),
+    "FINISH: the pull request already exists, and a drain is the window where leaving it unreviewed until "
+    + "#1756's flip lands would cost most");
+  assert.ok(!JUDGMENT_CAUSES.includes("pr-codeowner-review-missing"),
+    "ACTION: the causeKey already carries the waiting set, so a review that clears one PR mints a new key");
+  const a = pipelinePr(22, [".github/workflows/release.yml"]);
+  const orders = decide({ prs: [a], readyRows: [], prFiles: comparablePrFiles([a]), drain: true })
+    .filter((o) => o.cause === "pr-codeowner-review-missing");
+  assert.equal(orders.length, 1, "a drain stops the org taking on work, not finishing a review already owed");
 });
 
 /**
