@@ -88,30 +88,117 @@ export function attributionContext(session) {
 }
 
 /**
+ * THE NAMING GRAMMAR OF A REPOSITORY'S KEY (ADR 0040, decision 2; #2618, child 3c of #69), IN THE ONE PLACE A SEAT IS BUILT.
+ *
+ * A pull request number is only unique WITHIN a repository, so once the tool serves a second one `reviewer-7` names two
+ * pull requests. A repository or tracker carries a KEY -- `[a-z0-9-]+`, never ending in `-<digits>`, and the EMPTY key
+ * belongs to the primary project's first repository and tracker -- and:
+ *
+ *   - a NAME is `<role>-<n>` for the empty key (exactly today's) and `<role>-<key>-<n>` otherwise ({@link seatName});
+ *   - a LEDGER, MARKER or QUEUE key is the bare `<n>` for the empty key and `<key>#<n>` otherwise ({@link subjectRef}),
+ *     so the primary project's wake ledger, its `VOIDED` markers and the handoff queue are read by this code with no
+ *     conversion and by the old code unchanged, which is what makes a rollback a unit edit and not a state migration;
+ *   - a person is told `#<n>` for the empty key and `<key>#<n>` otherwise ({@link subjectMention}).
+ *
+ * `undefined` is the empty key on purpose: a pull request or row that no reader tagged is the primary project's, so
+ * every fixture and caller written before the second repository existed keeps meaning what it meant.
+ * @typedef {string | undefined} RepoKey
+ */
+
+/** @param {RepoKey} key @returns {boolean} */
+const isPrimary = (key) => key === undefined || key === "";
+
+/**
+ * The token a ledger, marker or queue key carries for subject `number` of repository `key`: `7`, or `agent-org#7`.
+ * @param {RepoKey} key @param {number | string} number @returns {string}
+ */
+export function subjectRef(key, number) {
+  return isPrimary(key) ? String(Number(number)) : `${key}#${Number(number)}`;
+}
+
+/**
+ * How a session or a person is TOLD about the subject: `#7`, or `agent-org#7`.
+ * @param {{ repoKey?: RepoKey, number: number | string }} subject @returns {string}
+ */
+export function subjectMention(subject) {
+  return isPrimary(subject.repoKey) ? `#${Number(subject.number)}` : subjectRef(subject.repoKey, subject.number);
+}
+
+/**
+ * The fields that say WHICH repository a pull request or row came from, to spread into a record built FROM one: nothing for
+ * the primary project (so its records are byte-for-byte what they were), `{ repoKey, repo }` for any other.
+ * @param {{ repoKey?: RepoKey, repo?: string }} subject @returns {{ repoKey?: string, repo?: string }}
+ */
+export function subjectIdentity(subject) {
+  return isPrimary(subject.repoKey) ? {} : { repoKey: subject.repoKey, repo: subject.repo };
+}
+
+/**
+ * A session name: `<role>-<n>` for the empty key, `<role>-<key>-<n>` otherwise.
+ * @param {string} role @param {RepoKey} key @param {number | string} number @returns {string}
+ */
+export function seatName(role, key, number) {
+  return isPrimary(key) ? `${role}-${Number(number)}` : `${role}-${key}-${Number(number)}`;
+}
+
+/**
  * The reviewing session that owns a pull request: `reviewer-<n>`, the herdr workspace the per-PR path
  * starts for it (#2401; `wake.mjs`'s `route` finds it by that label).
  *
  * THE ARITHMETIC LIVES HERE, beside the reader that checks whether a posted review obeyed it, since #2127:
  * a detector with its own copy would agree with a router that had drifted.
+ *
+ * ONE ARGUMENT, DELIBERATELY: callers pass it to `Array.prototype.map`, which hands a second argument (the index), and
+ * a `key` parameter here would turn every such call into a seat named for its position. The seat of a pull request in
+ * another repository is {@link reviewerSeat}.
  * @param {number | string} prNumber
  * @returns {string}
  */
 export function parityOwner(prNumber) {
-  return `reviewer-${Number(prNumber)}`;
+  return seatName("reviewer", "", prNumber);
 }
 
 /**
- * The pull request a reviewer INSTANCE label belongs to, or `null` when the label is not one.
+ * The reviewing session of pull request `pr.number` in repository `pr.repoKey`: `reviewer-<n>` for the primary project
+ * and `reviewer-<key>-<n>` for any other, so PR 7 in two repositories is two seats.
+ * @param {{ repoKey?: RepoKey, number: number | string }} pr @returns {string}
+ */
+export function reviewerSeat(pr) {
+  return seatName("reviewer", pr.repoKey, pr.number);
+}
+
+/**
+ * The repository key and pull request a reviewer INSTANCE label belongs to, or `null` when the label is not one.
+ * The key is read FROM THE RIGHT -- a name is `reviewer-<key>-<n>` and a key never ends in `-<digits>` -- so
+ * `reviewer-agent-org-12` is key `agent-org`, number 12 and never anything else.
  *
  * `reviewer-2` IS NOT ONE, though it matches the shape: it is the retired standing pane (`RETIRED_REVIEWERS`,
  * `sessions.json`'s `retired`), and treating it as PR 2's instance would let the teardown close a pane this
- * row promises to leave running and would count it against the ceiling. Pull request 2 closed long ago.
+ * row promises to leave running and would count it against the ceiling. Pull request 2 closed long ago. The
+ * retirement is of that ONE name: `reviewer-agent-org-2` is an ordinary instance.
+ * @param {string} label
+ * @returns {{ key: string, number: number } | null}
+ */
+export function reviewerInstance(label) {
+  const match = /^reviewer-(?:(.+)-)?([1-9][0-9]*)$/.exec(label);
+  if (match === null || RETIRED_REVIEWERS.includes(label)) return null;
+  const key = match[1] ?? "";
+  // A key that ends in `-<digits>` would make this name parse two ways (`project-config.mjs` refuses one at the only place a key
+  // enters), so a label of that shape is no instance of any declared repository.
+  if (key !== "" && (!/^[a-z0-9-]+$/.test(key) || /-[0-9]+$/.test(key))) return null;
+  return { key, number: Number(match[2]) };
+}
+
+/**
+ * The pull request number of a PRIMARY-project reviewer instance label, or `null` for anything else -- including
+ * `reviewer-agent-org-12`, whose number alone would name the wrong pull request. A caller that must act on the
+ * pull request asks {@link reviewerInstance}, which says which repository it is in.
  * @param {string} label
  * @returns {number | null}
  */
 export function reviewerInstanceNumber(label) {
-  const match = /^reviewer-([1-9][0-9]*)$/.exec(label);
-  return match === null || RETIRED_REVIEWERS.includes(label) ? null : Number(match[1]);
+  const instance = reviewerInstance(label);
+  return instance === null || instance.key !== "" ? null : instance.number;
 }
 
 /**

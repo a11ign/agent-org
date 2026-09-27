@@ -39,9 +39,10 @@ import { createHash } from "node:crypto";
 // `work-gate.mjs` and `org-watch.mjs` state at their own imports.
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { profileFor, agentArgs } from "./worker-profile.mjs";
-import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry }
+import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry, scopesOf }
   from "./work-gate.mjs";
-import { reviewerInstanceNumber } from "./review-attribution.mjs";
+import { reviewerInstance, subjectMention } from "./review-attribution.mjs";
+import { homeProjectDeclaration } from "./project-config.mjs";
 import { REPO } from "./project-identity.mjs";
 import { inBuildReason, isInBuild, unansweredRefusal, lookupHeldRows, lookupOtherHeldIssues }
   from "./row-claim/own-pr-health-rule.mjs";
@@ -945,7 +946,7 @@ export function reviewerEnvironment(session, override = {}, tree = reviewCheckou
  * @param {{session: string, cause?: string}} order
  */
 export function isReviewerOrder(order) {
-  return reviewerInstanceNumber(order.session) !== null && REVIEWER_CAUSES.includes(String(order.cause));
+  return reviewerInstance(order.session) !== null && REVIEWER_CAUSES.includes(String(order.cause));
 }
 
 /**
@@ -964,18 +965,29 @@ function hasNoAgent(agent) {
  * @param {{label: string}[]} agents @returns {string[]}
  */
 export function liveReviewers(agents) {
-  return agents.filter((a) => reviewerInstanceNumber(a.label) !== null).map((a) => a.label);
+  return agents.filter((a) => reviewerInstance(a.label) !== null).map((a) => a.label);
 }
 
 /**
- * The pull request an order is ABOUT, read from its cause key (`reviewer-<n>/<cause>/pr-<n>/<head>`), or `null`
- * when the key names none. The gate writes the number into the key of every order about a pull request, so this
+ * The pull request an order is ABOUT -- its repository's key and its number -- read from its cause key
+ * (`reviewer-<n>/<cause>/pr-<n>/<head>`, and `reviewer-<key>-<n>/<cause>/pr-<key>#<n>/<head>` for another repository), or
+ * `null` when the key names none. The gate writes the reference into the key of every order about a pull request, so this
  * reads the one fact an instance's exclusivity has to be judged on without asking GitHub.
+ * @param {{causeKey?: string}} order @returns {{ key: string, number: number } | null}
+ */
+export function orderPullRequestRef(order) {
+  const match = /(?:^|\/)pr-(?:([a-z0-9][a-z0-9-]*)#)?([1-9][0-9]*)(?:\/|$)/.exec(String(order.causeKey ?? ""));
+  return match === null ? null : { key: match[1] ?? "", number: Number(match[2]) };
+}
+
+/**
+ * The number of the PRIMARY project's pull request an order is about, or `null` -- including for an order about a pull
+ * request in another repository, whose bare number would name the wrong one. {@link orderPullRequestRef} says which.
  * @param {{causeKey?: string}} order @returns {number | null}
  */
 export function orderPullRequest(order) {
-  const match = /(?:^|\/)pr-([1-9][0-9]*)(?:\/|$)/.exec(String(order.causeKey ?? ""));
-  return match === null ? null : Number(match[1]);
+  const ref = orderPullRequestRef(order);
+  return ref === null || ref.key !== "" ? null : ref.number;
 }
 
 /**
@@ -984,18 +996,21 @@ export function orderPullRequest(order) {
  * none -- is refused even when the instance is idle and the only reviewer alive. FAIL CLOSED: an order whose key
  * names no pull request cannot be shown to be about this one.
  *
+ * THE REPOSITORY IS PART OF "THAT PULL REQUEST" (#2618): `reviewer-7` and `reviewer-agent-org-7` are two instances, and an
+ * order about PR 7 of the other repository is refused by each.
+ *
  * ASKED OF EVERY ROUTED TARGET, whatever the cause and whether the route was direct or a fallback, because the
  * guarantee is about the instance and not about the two causes that usually address it. A label that is not an
  * instance (an engineer, a standing session, the retired pane) answers `null`: this file does not judge them.
  * @param {{causeKey?: string}} order @param {string} label @returns {string | null}
  */
 export function reviewerMismatch(order, label) {
-  const owned = reviewerInstanceNumber(label);
+  const owned = reviewerInstance(label);
   if (owned === null) return null;
-  const pr = orderPullRequest(order);
-  if (pr === owned) return null;
-  return `"${label}" reviews PR #${owned} and nothing else, and this order is ${pr === null
-    ? "about no pull request" : `about PR #${pr}`} (${order.causeKey})`;
+  const pr = orderPullRequestRef(order);
+  if (pr !== null && pr.key === owned.key && pr.number === owned.number) return null;
+  return `"${label}" reviews PR ${subjectMention({ repoKey: owned.key, number: owned.number })} and nothing else, and this order is ${pr === null
+    ? "about no pull request" : `about PR ${subjectMention({ repoKey: pr.key, number: pr.number })}`} (${order.causeKey})`;
 }
 
 /**
@@ -1056,9 +1071,10 @@ export function reviewCheckoutPath(session, root = REVIEW_CHECKOUT_ROOT) {
  * The private ref pull request `pr`'s head is fetched into. NOT `FETCH_HEAD`: that file is shared by every session
  * that fetches in this checkout, and another fetch between ours and the read would hand the reviewer some other
  * pull request's commit.
- * @param {number} pr
+ * ANOTHER REPOSITORY'S pull request 7 is a different ref, so removing one instance's never deletes the other's (#2618).
+ * @param {number} pr @param {string} [key]
  */
-const reviewRef = (pr) => `refs/review/pr-${pr}`;
+const reviewRef = (pr, key = "") => (key === "" ? `refs/review/pr-${pr}` : `refs/review/${key}/pr-${pr}`);
 
 /**
  * @typedef {{git?: (cmd: string, args: string[], opts?: object) => string, exists?: (path: string) => boolean,
@@ -1163,15 +1179,15 @@ export function prepareReviewCheckout({ pr, session, git = defaultGit, exists = 
  * that outlives its pull request is the leak #2163 measured, and this row must not add instances of it.
  * A tree that is already gone is done, not an error.
  *
- * @param {{pr: number, session: string} & CheckoutDeps} args @returns {string | null}
+ * @param {{pr: number, session: string, key?: string} & CheckoutDeps} args @returns {string | null}
  */
-export function removeReviewCheckout({ pr, session, git = defaultGit, exists = existsSync,
+export function removeReviewCheckout({ pr, session, key = "", git = defaultGit, exists = existsSync,
   root = REVIEW_CHECKOUT_ROOT, repoRoot = REPO_ROOT }) {
   const path = reviewCheckoutPath(session, root);
   try {
     if (exists(path)) git("git", ["-C", repoRoot, "worktree", "remove", "--force", path]);
     if (exists(path)) return `${path} is still there after \`git worktree remove\``;
-    git("git", ["-C", repoRoot, "update-ref", "-d", reviewRef(pr)]);
+    git("git", ["-C", repoRoot, "update-ref", "-d", reviewRef(pr, key)]);
     return null;
   } catch (err) {
     return `could not remove ${path} (${firstLine(err)})`;
@@ -1232,6 +1248,21 @@ function spawnReviewer(order, agents, { run = defaultRun, env, cwd, registry }) 
  */
 
 /**
+ * WHY NO REVIEW CHECKOUT CAN BE MADE FOR THIS INSTANCE, or `null` when one can (#2618). A tree is made by fetching
+ * `refs/pull/<n>/head` from `origin` INTO THIS CHECKOUT, and this checkout's `origin` is the primary project's repository: for
+ * `reviewer-<key>-<n>` that fetch would put the primary's pull request `<n>` in front of a reviewer of another repository's --
+ * the wrong review, presented as the right one. Where another repository's clone lives is a host path, which is child 3f's
+ * (ADR 0040, decision 3), so until it exists the order is REFUSED, by name, and not sent.
+ * @param {string} session @returns {string | null}
+ */
+export function noReviewCheckoutFor(session) {
+  const instance = reviewerInstance(session);
+  if (instance === null || instance.key === "") return null;
+  return `no review checkout for "${session}": the tick's checkout serves repository \`${REPO}\` only, and where \`${instance.key}\`'s clone lives is a host path `
+    + "(ADR 0040, decision 3 -- child 3f); nothing is fetched and the order is not sent, because a tree of the WRONG repository's pull request would be reviewed as this one";
+}
+
+/**
  * WHERE A REVIEWER ORDER GOES, and what it carries: the instance for its pull request, started when none exists,
  * with its tree at the pull request's current head. NOTHING ELSE CAN RECEIVE IT -- no roster, no fallback, no
  * other instance (Done-when 8) -- so this asks {@link route} for the order's own session and for nothing more.
@@ -1249,6 +1280,8 @@ function spawnReviewer(order, agents, { run = defaultRun, env, cwd, registry }) 
 function reviewerTarget(order, live, deps) {
   const wrong = reviewerMismatch(order, order.session);
   if (wrong !== null) return { refusal: wrong };
+  const withoutTree = noReviewCheckoutFor(order.session);
+  if (withoutTree !== null) return { refusal: withoutTree };
   const routed = route(order.session, live, []);
   if ("refusal" in routed) {
     const may = spawnableReviewer(order, live, deps.registry?.());
@@ -1352,6 +1385,22 @@ export function observeOpenReviewer(entry, { listed, complete, agentless = false
 }
 
 /**
+ * The state of the pull request a reviewer instance reviews -- asked of ITS repository -- or `null`, saying so, when it could
+ * not be read (the instance is then left running: an unreadable state is never "closed").
+ * @param {string} session @param {{ key: string, number: number } | null} instance
+ * @param {{prState: (pr: number, key: string) => string | null, warn: (line: string) => void}} deps
+ * @returns {string | null}
+ */
+function reviewedPullRequestState(session, instance, deps) {
+  if (instance === null) return null;
+  const state = deps.prState(instance.number, instance.key);
+  if (state === null) {
+    deps.warn(`reviewer teardown: could not read PR ${subjectMention({ repoKey: instance.key, number: instance.number })}'s state -- leaving "${session}" running.`);
+  }
+  return state;
+}
+
+/**
  * END EVERY REVIEWER INSTANCE WHOSE PULL REQUEST HAS MERGED OR CLOSED, and write one ledger line for each ending.
  *
  * ONLY INSTANCES THIS PATH STARTED (the registry's keys), NEVER A WORKSPACE THAT MERELY LOOKS LIKE ONE: the two
@@ -1370,7 +1419,7 @@ export function observeOpenReviewer(entry, { listed, complete, agentless = false
  *
  * @param {{label: string, status: string}[]} agents
  * @param {{registry: Record<string, ReviewerInstance>, now: number, run: (args: string[]) => string,
- *   prState: (pr: number) => string | null, removeCheckout: (session: string, pr: number) => string | null,
+ *   prState: (pr: number, key: string) => string | null, removeCheckout: (session: string, pr: number, key: string) => string | null,
  *   record: (line: object) => void, warn: (line: string) => void, recordAbsence?: (line: object) => void}} deps
  * @returns {{ended: string[], cleared: string[], registry: Record<string, ReviewerInstance>}}
  */
@@ -1381,12 +1430,10 @@ export function endFinishedReviewers(agents, deps) {
   /** @type {string[]} */
   const cleared = [];
   for (const session of Object.keys(registry)) {
-    const pr = reviewerInstanceNumber(session);
-    const state = pr === null ? null : deps.prState(pr);
-    if (state === null) {
-      if (pr !== null) deps.warn(`reviewer teardown: could not read PR #${pr}'s state -- leaving "${session}" running.`);
-      continue;
-    }
+    const instance = reviewerInstance(session);
+    const pr = instance === null ? null : instance.number;
+    const state = reviewedPullRequestState(session, instance, deps);
+    if (state === null) continue;
     if (state === "open") {
       if (reconcileOpenReviewer({ session, pr: Number(pr), agents, registry }, deps)) cleared.push(session);
       continue;
@@ -1394,7 +1441,7 @@ export function endFinishedReviewers(agents, deps) {
     const agent = agents.find((a) => a.label === session);
     if (agent !== undefined && !WAKEABLE.includes(agent.status)) continue;
     if (agent !== undefined && !closeReviewer(session, deps)) continue;
-    const left = deps.removeCheckout(session, Number(pr));
+    const left = deps.removeCheckout(session, Number(pr), instance?.key ?? "");
     if (left !== null) {
       deps.warn(`reviewer teardown: "${session}" is finished but its checkout was not removed (${left}) -- retried next tick.`);
       continue;
@@ -1472,13 +1519,25 @@ function closeReviewer(session, deps) {
 }
 
 /**
- * `open`, `closed` (merged pulls are closed too) or `null` for anything GitHub would not say -- REST, so the
- * per-tick lookup spends the CORE pool and not the GRAPHQL one the gate already leans on.
- * @param {number} pr @returns {string | null}
+ * The code repository a KEY names in the project's declaration, or `null` for a key it does not declare -- which the caller
+ * reads as "cannot tell", never as the primary's repository.
+ * @param {string} key @returns {string | null}
  */
-function pullRequestState(pr) {
+export function codeRepositoryOf(key) {
+  return key === "" ? REPO : scopesOf([homeProjectDeclaration()]).find((scope) => scope.key === key)?.code?.repo ?? null;
+}
+
+/**
+ * `open`, `closed` (merged pulls are closed too) or `null` for anything GitHub would not say -- REST, so the
+ * per-tick lookup spends the CORE pool and not the GRAPHQL one the gate already leans on. A pull request of another
+ * repository is asked of THAT repository (`key`), and a key the declaration does not list is unreadable, not the primary's.
+ * @param {number} pr @param {string} [key] @returns {string | null}
+ */
+function pullRequestState(pr, key = "") {
   try {
-    const state = defaultGh(["api", `repos/${REPO}/pulls/${pr}`, "--jq", ".state"]).trim();
+    const repo = codeRepositoryOf(key);
+    if (repo === null) return null;
+    const state = defaultGh(["api", `repos/${repo}/pulls/${pr}`, "--jq", ".state"]).trim();
     return state === "open" || state === "closed" ? state : null;
   } catch {
     return null;
@@ -1501,7 +1560,7 @@ export function tearDownReviewers(agents, ledgerPath, say = (line) => process.st
     /** @param {string} path */
     const appendTo = (path) => (/** @type {object} */ line) => writeFileSync(path, `${JSON.stringify(line)}\n`, { flag: "a" });
     const { ended, cleared, registry } = endFinishedReviewers(agents, { registry: before, now: Date.now(),
-      run: defaultRun, prState: pullRequestState, removeCheckout: (session, pr) => removeReviewCheckout({ session, pr }),
+      run: defaultRun, prState: pullRequestState, removeCheckout: (session, pr, key) => removeReviewCheckout({ session, pr, key }),
       warn: (line) => say(`${line}\n`), record: appendTo(paths.endings), recordAbsence: appendTo(paths.absences) });
     writeFileSync(paths.registry, `${JSON.stringify(registry)}\n`);
     for (const session of ended) say(`ENDED ${session}: its pull request is no longer open\n`);
@@ -3356,13 +3415,13 @@ export function clearContext(run, label, sleep = sleepSync) {
  * IS THIS A SESSION WHOSE ONLY WORK IS ONE ROW (#2483) -- and so one that must never be cleared between orders.
  *
  * ONE PREDICATE, CALLING THE TWO READERS THAT ALREADY SAY SO, and no pattern of its own: {@link familyNumber} for
- * the roster's spare family (`worker-4` onward) and `reviewerInstanceNumber` for `reviewer-<n>`, which lives in
+ * the roster's spare family (`worker-4` onward) and `reviewerInstance` for `reviewer-<n>` and `reviewer-<key>-<n>`, which lives in
  * another module and also refuses the retired `reviewer-2`. `worker-capture`, `worker-tooling` and `worker-judge`
  * share the `worker-` prefix and answer `null` on both, so they stay standing seats and keep the clear.
  * @param {string} label
  */
 export function isPerRowInstance(label) {
-  return familyNumber(label) !== null || reviewerInstanceNumber(label) !== null;
+  return familyNumber(label) !== null || reviewerInstance(label) !== null;
 }
 
 /**
