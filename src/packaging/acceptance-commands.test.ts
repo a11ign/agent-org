@@ -19,6 +19,7 @@ import {
   hasFullHistoryDeclaration, jobCapabilities,
   deriveClosureRequirements, closureRequirementMessage, unmetClosureRequirements,
   unmetCommandClosureRequirements,
+  singleNodeInvocation,
   runsTheWholeSuite,
   suiteTestFiles,
   suiteScriptsFor,
@@ -1109,8 +1110,81 @@ test("#621 unmetClosureRequirements: refused against a job with no token, satisf
   assert.deepEqual(unmetClosureRequirements(BOARD_STYLE_FIXTURE, WITH_TOKEN), []);
 });
 
-test("#621 unmetCommandClosureRequirements: a non-`tsx --test` command is never inspected", () => {
+test("#621 unmetCommandClosureRequirements: a non-`tsx --test`, non-node-script command is never inspected", () => {
   assert.deepEqual(unmetCommandClosureRequirements("npm run lint", NO_TOKEN), []);
+});
+
+// #2724: `board:settle` (`node packages/agent-org/src/settle-closed-rows.mjs`) is the row's OWN worked
+// example -- an operational npm script whose module spawns `gh` directly (`execFileSync("gh", ...)` at its
+// own top level, not through a `.test.ts` entry), which nothing before this row's fix ever asked
+// `classifyCommand` to walk. Using the real script rather than an invented fixture keeps this test honest
+// about the actual defect: a temp-dir fixture cannot be named by a `package.json` script without touching
+// `package.json` itself, and the real instance already exists.
+const SPAWNS_GH_SCRIPT = "packages/agent-org/src/settle-closed-rows.mjs";
+
+test("#2724 unmetCommandClosureRequirements: `npm run board:settle` is now inspected, naming its own `gh` "
+  + "spawn -- the population `testFilesRunBy` alone could never see, because the command names no "
+  + "`.test.ts` file at all", () => {
+  assert.ok(existsSync(SPAWNS_GH_SCRIPT), "the fixture script itself must exist for this test to mean anything");
+  const unmet = unmetCommandClosureRequirements("npm run board:settle", NO_TOKEN);
+  assert.equal(unmet.length, 1, JSON.stringify(unmet));
+  assert.equal(unmet[0].requirement, "token");
+  assert.match(unmet[0].message, /settle-closed-rows\.mjs requires token, at settle-closed-rows\.mjs:\d+/);
+});
+
+test("#2724 ACCEPTANCE: classifyCommand REFUSES `npm run board:settle` for `token`, exactly as a bare "
+  + "`gh ...` line is refused today -- the shape #2724 was filed to close: `classifyCommand` used to fall "
+  + "through to `runnable` for this line, and the credential-less acceptance job would have executed it "
+  + "for real", () => {
+  const result = classifyCommand("npm run board:settle", { capabilities: NO_TOKEN });
+  assert.equal(result.verdict, "refused");
+  const reason = (/** @type {{reason:string}} */ (result)).reason;
+  assert.match(reason, /`token`/);
+  assert.match(reason, /settle-closed-rows\.mjs requires token, at settle-closed-rows\.mjs:\d+/);
+});
+
+test("#2724 MUTATION TARGET: the identical command RUNS once the job's capabilities carry a token -- "
+  + "proving the refusal above tracked the real capability, not a hard-coded no", () => {
+  const withToken = { ...NO_TOKEN, token: true };
+  const result = classifyCommand("npm run board:settle", { capabilities: withToken });
+  assert.equal(result.verdict, "runnable");
+});
+
+test("#2724: a chain naming the operational script anywhere is still refused (#2207's own shape, "
+  + "extended to a plain npm script name)", () => {
+  const result = classifyCommand("npm run lint && npm run board:settle", { capabilities: NO_TOKEN });
+  assert.equal(result.verdict, "refused");
+  assert.match((/** @type {{reason:string}} */ (result)).reason, /settle-closed-rows\.mjs/);
+});
+
+// #2724: `singleNodeInvocation` decides which `npm run <script>` bodies resolve to a single file at all --
+// crisp, falsifiable examples on the string itself, rather than leaning on whether some real script happens
+// to spawn `gh` (most do not, so a wrong resolution and a correct one would print the identical `[]`).
+test("#2724 singleNodeInvocation: a bare `node <file>` body resolves to the file", () => {
+  assert.equal(singleNodeInvocation("node packages/agent-org/src/settle-closed-rows.mjs"),
+    "packages/agent-org/src/settle-closed-rows.mjs");
+});
+
+test("#2724 singleNodeInvocation: trailing flags are ignored, leading env assignments are stripped -- the "
+  + "real shapes `training:check-signals:complete` and `eval:capture` are written in", () => {
+  assert.equal(singleNodeInvocation("node packages/lab/src/training/check-signals.mjs --require-complete"),
+    "packages/lab/src/training/check-signals.mjs");
+  assert.equal(
+    singleNodeInvocation("A11Y_PYTHON=.venv/bin/python node packages/lab/src/harnesses/capture-fixtures.mjs"),
+    "packages/lab/src/harnesses/capture-fixtures.mjs");
+});
+
+test("#2724 singleNodeInvocation: a script chaining a further command of its own resolves to nothing -- "
+  + "the real `guards:sweep` shape (`node a.mjs | xargs node b.mjs`), which this function must not guess "
+  + "at rather than picking either half", () => {
+  assert.equal(singleNodeInvocation("node packages/guards/src/tree-wide-guards.mjs | xargs node "
+    + "packages/guards/src/assert-glob-not-empty.mjs --min=1 --run --runner=rstest"), null);
+  assert.equal(singleNodeInvocation("node a.mjs && node b.mjs"), null);
+});
+
+test("#2724 singleNodeInvocation: a non-`node` executable resolves to nothing -- the real `lint` shape "
+  + "(`eslint .`)", () => {
+  assert.equal(singleNodeInvocation("eslint ."), null);
 });
 
 test("#621 ACCEPTANCE: classifyCommand REFUSES board-document-chrome-resolver.test.ts, named, naming the "
