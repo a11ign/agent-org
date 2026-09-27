@@ -1,3 +1,7 @@
+// no-token: defaultGh -- `wake.mjs`'s only `execFileSync("gh", ...)` (the escalation half's runner,
+// `escalateStuck`'s default `run`) lives at a private, unexported binding this file never calls: every
+// seam here is handed an injected `run`, including the three subprocess ticks at the foot of this file,
+// whose stuck array is always empty so `escalateStuck` never iterates into it.
 /**
  * `packages/agent-org/src/wake.mjs` -- #912's remaining half: work-gate says there is work, this says who
  * takes it.
