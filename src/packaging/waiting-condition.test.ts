@@ -5,7 +5,8 @@
 // org can act on what it is told and cannot act on anything it learns.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { waitingOn, notBeforeDate, todayIso, describeWaiting, proseBlockers, answerOwedBy, answersOwedBy, fleetWaitingOn }
+import { waitingOn, notBeforeDate, todayIso, describeWaiting, proseBlockers, answerOwedBy, answersOwedBy, fleetWaitingOn,
+  bareAnswerLabel }
   from "../waiting-condition.mjs";
 
 test("an OPEN blocker is a wait; a CLOSED one is a wait that has cleared", () => {
@@ -319,6 +320,57 @@ test("#2113: a fleet-gated row's two conditions are read against the SAME clock"
   const heldOnly = { body: "Fleet-hold-until: 2026-09-23T08:00:00Z" };
   assert.deepEqual(fleetWaitingOn(heldOnly, "2026-09-23", Date.parse("2026-09-23T07:14:00Z")),
     { kind: "fleet-hold", until: "2026-09-23T08:00:00Z" });
+});
+
+// --- #2711: a bare `answer:<session>` label carries no question, and nothing required one ---
+
+/**
+ * `PR #2649`'S OWN EVIDENCE: `worker-2632` added `answer:ceo` to its own PR twice with no comment either
+ * time, and `ceo` cleared it twice with nothing to answer. A waiting condition must name what it waits on
+ * (this module's whole point) -- but nothing said the LABEL had to carry the question, so the addressee
+ * had no way to tell a real question from a label applied by habit or by mistake except by going and
+ * looking, which is the cost every OTHER waiting condition in this file exists to save.
+ */
+test("#2711: a label with nothing posted since is bare, and names when it was applied", () => {
+  const timeline = [{ event: "labeled", label: { name: "answer:ceo" }, created_at: "2026-09-26T12:42:47Z" }];
+  assert.deepEqual(bareAnswerLabel(timeline, "ceo"), { labelledAt: "2026-09-26T12:42:47Z" });
+});
+
+test("#2711: a comment posted AT OR AFTER the label answers it -- presence, not content", () => {
+  // "Any wording" is the point: this asks whether anything was posted, never what it says.
+  for (const commentAt of ["2026-09-26T12:42:47Z", "2026-09-26T15:00:00Z"]) {
+    const timeline = [
+      { event: "labeled", label: { name: "answer:ceo" }, created_at: "2026-09-26T12:42:47Z" },
+      { event: "commented", created_at: commentAt },
+    ];
+    assert.equal(bareAnswerLabel(timeline, "ceo"), null, `a comment at ${commentAt} must clear it`);
+  }
+});
+
+test("#2711: a comment BEFORE the label does not answer it", () => {
+  // The comment answered whatever was outstanding before this application; it says nothing about THIS one.
+  const timeline = [
+    { event: "commented", created_at: "2026-09-26T10:00:00Z" },
+    { event: "labeled", label: { name: "answer:ceo" }, created_at: "2026-09-26T12:42:47Z" },
+  ];
+  assert.deepEqual(bareAnswerLabel(timeline, "ceo"), { labelledAt: "2026-09-26T12:42:47Z" });
+});
+
+test("#2711: a label removed and reapplied is a NEW wait -- the LAST application is what counts", () => {
+  const timeline = [
+    { event: "labeled", label: { name: "answer:ceo" }, created_at: "2026-09-26T12:42:47Z" },
+    { event: "unlabeled", label: { name: "answer:ceo" }, created_at: "2026-09-26T12:45:31Z" },
+    { event: "labeled", label: { name: "answer:ceo" }, created_at: "2026-09-26T15:00:19Z" },
+  ];
+  assert.deepEqual(bareAnswerLabel(timeline, "ceo"), { labelledAt: "2026-09-26T15:00:19Z" },
+    "the second application is a new wait even though the first was never answered either");
+});
+
+test("#2711: never applied, or a different session's label, is not bare -- there is nothing to be bare", () => {
+  assert.equal(bareAnswerLabel([], "ceo"), null);
+  assert.equal(bareAnswerLabel(undefined, "ceo"), null);
+  const forSomeoneElse = [{ event: "labeled", label: { name: "answer:orchestrator" }, created_at: "2026-09-26T12:42:47Z" }];
+  assert.equal(bareAnswerLabel(forSomeoneElse, "ceo"), null);
 });
 
 test("#2202: answersOwedBy lists EVERY owing session and answerOwedBy is its first -- one decision about a name", () => {

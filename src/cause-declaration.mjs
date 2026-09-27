@@ -507,6 +507,19 @@ export const TOOL_CAUSE_DECLARATIONS = Object.freeze([
     why: "the gate has already named the row and its call count; the output is a judgment about whether to "
       + "split it, over a number already in the prompt",
   }),
+  declareCause("answer-label-unexplained", GROUPS.ACTION, {
+    kind: "claude",
+    // SONNET AND MEDIUM, `claim-stalled`'s PROFILE (#2711): the recipient is the row's own holder, so this
+    // is the profile a spawned worker would take if one ever were, and the gate has already read the label,
+    // the timeline and which session set it. The woken turn does one of two one-command things -- post the
+    // question or remove the label -- a short judgment over a stated fact, not the multi-step build
+    // `blocker-cleared` asks for, and not diagnosis from an absence, so `org-stalled`'s `high` would be
+    // paid for nothing.
+    model: "sonnet",
+    effort: "medium",
+    why: "the gate has already named the bare label and when it was applied; the output is posting the "
+      + "question or removing the label, by a session that already holds the row",
+  }),
   declareCause("ready-row-unclaimed", GROUPS.ACTION_START, {
     kind: "claude",
     model: "sonnet",
