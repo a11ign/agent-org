@@ -308,13 +308,17 @@ test("#1984: the gh-spawning population is real -- a walk that matched nothing m
     + "population `declaredGhAccount` is answerable for");
 });
 
-test("#1984: declaredGhAccount answers a real login for the agent-host population, on THIS host, live", () => {
-  // NOT A FIXTURE: this reads the REAL `.agent-org/host.json` and the REAL `workers`/`leads` gh config
-  // directories on this machine (`homeHostConfig()`'s own default, `readFileSync`'s own default). That is
-  // the guarantee the agent-host population above actually depends on -- if either directory ever loses
-  // its `hosts.yml`, this test goes red, which is what "fails when a member cannot answer" means for a
-  // population with no per-file declaration mechanism of its own (`.claude/rules/guards-and-assertions.md`:
-  // an emptiness assertion needs a positive control it can point at; this is this guard's).
+test("#1984: declaredGhAccount resolves BOTH agent-host routing branches from this host's own leads list", () => {
+  // THE REAL `.agent-org/host.json`, WITH A FAKE `read` -- and that split is deliberate, not a shortcut.
+  // `host.json` is checked into the repository, so its `gh.leadsWorkspaces` list is the SAME fact on every
+  // machine that runs this suite (a developer checkout, CI, the agent host); reading it for real is what
+  // makes the leads/workers CLASSIFICATION below a fact about the tree rather than a fixture's opinion.
+  // The `workers`/`leads` gh CONFIG DIRECTORIES are a different kind of fact: host operational state that
+  // exists only on the machine `~/.local/bin/gh` actually runs on, and asserting on the REAL filesystem
+  // here was tried and measured WRONG -- it went red on GitHub's own runner, which has no
+  // `/home/agent/workers/gh` at all, exactly as a developer's laptop or a fresh clone would not. A CI-run
+  // unit test must hold on every machine it runs on, so the directory's PRESENCE is faked here; that this
+  // host's real directories are in fact populated is MEASURED, not asserted -- see the row's own PR body.
   const agentHost = ghSpawningScripts().filter((p) => p.environment === "agent-host");
   assert.ok(agentHost.length > 0, "positive control: see the population test above");
 
@@ -322,14 +326,19 @@ test("#1984: declaredGhAccount answers a real login for the agent-host populatio
   const leadsId = host.gh.leadsWorkspaces[0]?.id;
   assert.ok(leadsId, "host.json must name at least one leads workspace, or the leads branch below is untested");
 
+  const read = ((path: string) => {
+    if (path.endsWith("hosts.yml")) return hostsYaml("simulated-login");
+    throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+  }) as typeof readFileSync;
+
   for (const [label, env] of [
     ["a leads workspace", { HERDR_WORKSPACE_ID: leadsId }],
     ["a workers workspace", { HERDR_WORKSPACE_ID: "not-a-leads-workspace-id" }],
   ] as const) {
-    const account = declaredGhAccount({ env });
-    assert.notEqual(account.login, null,
-      `declaredGhAccount answered UNKNOWN for ${label} on this host (${account.source}) -- every one of the `
-      + `${agentHost.length} agent-host scripts in the population runs under exactly this routing, so the `
-      + "seam they would depend on does not currently work here");
+    const account = declaredGhAccount({ env, read });
+    assert.equal(account.login, "simulated-login",
+      `declaredGhAccount answered UNKNOWN for ${label} once its config directory exists (${account.source}) `
+      + `-- every one of the ${agentHost.length} agent-host scripts in the population runs under exactly `
+      + "this routing, so the seam they would depend on does not currently work here");
   }
 });
