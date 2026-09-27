@@ -31,7 +31,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { realpathSync, existsSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 // RELATIVE, not the package specifier -- this must run before any `npm ci`/build, the same constraint
 // `org-watch.mjs` and `build-packages.mjs` state at their own imports.
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
@@ -94,6 +94,10 @@ import { requiredWhenRed, perPullRequestOrders, mergeConflictOrders, greenUnarme
   from "./work-gate/pr-orders.mjs";
 export { redOnlyBySupersededRun, mergeConflictOrders, greenUnarmedOrders, reviewBlockedOrders, HOLD_RED_JOBS,
   awaitingEvidenceStaleOrders } from "./work-gate/pr-orders.mjs";
+// #2691: THE LIVE CALL-COUNT SIGNAL, reusing the parser rather than a second one -- `split-baseline.mjs`
+// already imports these two the same way. `token-audit.mjs` imports only `node:*` and `cli-flags.mjs`
+// (already here), so the gate keeps the property its own header states.
+import { claudeTurns, transcriptFiles, summarise } from "./token-audit.mjs";
 
 /**
  * FOUR STATES, AND THE POLARITY IS DELIBERATE.
@@ -120,7 +124,10 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
   "reviewer-auth-failed", "awaiting-evidence-stale", "disk-headroom-low", "claim-stalled", "row-off-board",
   // #1959: the gap `.claude/rules/main-review-requirement.md`'s flip (#1756) will turn into a hard merge
   // block -- a pull request CODEOWNERS assigns to `ceo` with no APPROVED review from `ceo` at all.
-  "pr-codeowner-review-missing"];
+  "pr-codeowner-review-missing",
+  // #2691: a claimed row whose session has passed the call-count split threshold on its OWN live
+  // transcript -- a signal, never an automatic split.
+  "row-call-count-signal"];
 
 /**
  * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
@@ -178,7 +185,12 @@ export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog
   "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
   "blocked-unexaminable", "fleet-batch-due", "row-branch-unshipped", "claimed-row-amended",
   "unclaimed-blocker-cleared", "reviewer-auth-failed", "awaiting-evidence-stale", "disk-headroom-low",
-  "row-off-board"]);
+  "row-off-board",
+  // #2691: durable in `JUDGMENT_CAUSES`'s own sense -- a call count that has not moved has not stopped
+  // being over the threshold, so a re-ask that finds the same count would buy a full model turn to reach
+  // the same conclusion. The causeKey carries the count, so a row that drops below it, or climbs further,
+  // is a new question and reaches `product-manager` immediately.
+  "row-call-count-signal"]);
 
 /**
  * The causes that START new work, as opposed to finishing work already begun.
@@ -235,6 +247,11 @@ export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog
  * `row-off-board` is deliberately NOT here either (#2075), and it is a JUDGMENT cause. Boarding a row takes on no work: the
  * row already exists and is already filed, and what is wrong is that the chairman's view cannot see it. A drain is no
  * reason to leave a `ready` row invisible in every Status view, and rows are still filed during one.
+ *
+ * `row-call-count-signal` is deliberately NOT here either (#2691), and it is a JUDGMENT cause. Its subject
+ * is a row a session ALREADY HOLDS -- the plainest case of work in flight there is -- and it starts
+ * nothing: `product-manager` reading it and deciding to split, or not, is a judgment over a row that
+ * already exists, not new work the drain exists to stop.
  */
 export const START_CAUSES = Object.freeze(["ready-row-unclaimed", "ready-queue-empty",
   "lane-backlog-unpromoted", "org-stalled", "epic-unfiled", "epic-finished",
@@ -3421,6 +3438,91 @@ function pipelineCodeownerReviewOrders(missing) {
 }
 
 /**
+ * #2691: A CLAIMED ROW'S SESSION PAST THIS MANY CALLS on its OWN live transcript is a split CANDIDATE for
+ * `product-manager`'s judgement, never an automatic split. The chairman's token-efficiency reading (#928,
+ * 2026-09-27) measured p90 147 calls/session against a filing target of about 60.
+ */
+export const ROW_CALL_COUNT_SPLIT_THRESHOLD = 100;
+
+/**
+ * The session a still-open row is claimed by, from its own single `session:` label -- `null` for zero or
+ * more than one, `readClaims`'s own refusal for the same reason: a row carrying an unexpected count is not
+ * guessed at.
+ * @param {any} row
+ */
+export function claimedRowSession(row) {
+  const sessions = labelsOf(row).filter((/** @type {string} */ n) => n.startsWith("session:"));
+  return sessions.length === 1 ? sessions[0].slice("session:".length) : null;
+}
+
+/**
+ * Every open row whose claimed session has passed `threshold` CALLS on its OWN live transcript -- the
+ * call count `token-audit.mjs`'s `summarise` already derives from `claudeTurns`, joined here by the
+ * session name rather than re-parsed.
+ *
+ * A SIGNAL, NOT A SPLIT (#2691): whether and how to split stays `product-manager`'s judgement, so this
+ * reports the count and stops there. A row with no session label, or one at or under the threshold, is
+ * left out entirely -- this names split CANDIDATES, not every claimed row.
+ *
+ * @param {any[]} openRows @param {import("./token-audit.mjs").Turn[]} turns every live turn, any session
+ * @param {number} [threshold]
+ * @returns {{ row: number, session: string, calls: number }[]} most calls first
+ */
+export function rowCallCountSignals(openRows, turns, threshold = ROW_CALL_COUNT_SPLIT_THRESHOLD) {
+  const bySession = summarise(turns, (t) => t.session);
+  const signals = [];
+  for (const row of openRows) {
+    const session = claimedRowSession(row);
+    if (session === null) continue;
+    const calls = bySession.get(session)?.turns ?? 0;
+    if (calls > threshold) signals.push({ row: Number(row.number), session, calls });
+  }
+  return signals.sort((a, b) => b.calls - a.calls);
+}
+
+/**
+ * ONE ORDER NAMING EVERY ROW PAST THE THRESHOLD -- `pipelineCodeownerReviewOrders`'s shape and for its
+ * reason: the set is what makes the cause self-clearing, keyed on WHICH rows are still over it, so a row
+ * that splits or closes leaves it out of the next key.
+ * @param {{ row: number, session: string, calls: number }[]} [signals]
+ * @returns {{session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string}[]}
+ */
+export function rowCallCountOrders(signals = []) {
+  if (signals.length === 0) return [];
+  const key = signals.map((s) => `${s.row}:${s.calls}`).join(",");
+  const named = signals.map((s) => `${subjectMention({ number: s.row })} (${s.session}, ${s.calls} calls)`).join(", ");
+  return [{
+    session: "product-manager",
+    cause: "row-call-count-signal",
+    subject: "row-call-count-signal",
+    discriminator: key,
+    prompt: `${signals.length} claimed row(s) have passed ${ROW_CALL_COUNT_SPLIT_THRESHOLD} calls on their `
+      + `own session's live transcript, per the chairman's token-efficiency reading (#928, #2691): ${named}.\n`
+      + "This is a signal, not an automatic split -- the work may genuinely be one unit. Read each row and "
+      + "decide whether to split it; a row that is one unit says so in its own body rather than being split "
+      + "to hit a number.",
+    causeKey: `product-manager/row-call-count-signal/${key}`,
+  }];
+}
+
+/**
+ * Every turn across every live `claude` transcript under `root` -- the SAME read `token-audit.mjs`'s own
+ * CLI and `split-baseline.mjs` make, reused rather than duplicated. `[]` for a missing root or an
+ * unreadable file: a session whose transcript cannot be read contributes no call to any row's count, which
+ * under-reports rather than guesses -- `claudeTurns`'s own rule (a partial line is skipped, not fatal)
+ * applied one level up.
+ * @param {string} [root]
+ */
+function liveClaudeTurns(root = join(process.env.HOME ?? "", ".claude", "projects")) {
+  const turns = [];
+  for (const file of transcriptFiles(root)) {
+    try { turns.push(...claudeTurns(readFileSync(file, "utf8"))); }
+    catch { /* unreadable: this row's count under-reports, never guessed at */ }
+  }
+  return turns;
+}
+
+/**
  * Which of these candidates has NOTHING armed -- read from the API, and `null` when it could not be read.
  *
  * THE COST, AND WHY IT IS A GRAPHQL CALL AND NOT A FIELD. `armedFromApi`'s third state is
@@ -4315,7 +4417,8 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *           hostDrift?: {unit: string, problem: string, detail: string}[] | null,
  *           closings?: Map<number, number> | null, trunkRed?: ReturnType<typeof readTrunkRed>,
  *           baseTip?: {sha: string, date: string} | null,
- *           claimStalls?: import("./claim-stall.mjs").StallOrder[], offBoard?: BoardFacts[] | null }} state
+ *           claimStalls?: import("./claim-stall.mjs").StallOrder[], offBoard?: BoardFacts[] | null,
+ *           callCountSignals?: { row: number, session: string, calls: number }[] }} state
  *        `claimStalls` is `claimStallTick`'s orders (#2470): a nudge to a holder whose claim has not moved, or a release
  *        `wake.mjs` performs. OMITTED MEANS NONE.
  *        `required` is the checks that can block a merge (`requiredCheckNames`), or `null` for
@@ -4358,12 +4461,15 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *        `offBoard` is `readRowsOffBoard()` -- every open row's Project 1 membership, or `null` (#2075). OMITTED AND `null` MEAN
  *        THE SAME THING, "not asked or refused": no order is emitted. It carries no `= null` default for `rowBranches`'s
  *        reason: `decide` sits exactly on its limit of 15.
+ *        `callCountSignals` is `rowCallCountSignals(openRows, turns)` (#2691) -- split candidates past the
+ *        threshold on their own live transcript. OMITTED MEANS NONE, and `rowCallCountOrders` carries its
+ *        own `= []` default rather than this signature carrying one, for `rowBranches`'s reason.
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
-  claimedComments = [], rowBranches, hostDrift, closings, trunkRed, baseTip, claimStalls, offBoard, key, repo }) {
+  claimedComments = [], rowBranches, hostDrift, closings, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals }) {
   // FIRST, BEFORE EVERY OTHER CAUSE (#2356): a red `main` outranks even `answer-owed` -- see `trunkRedOrders`.
   // `answer-owed` says another session is ALREADY STOPPED waiting on them, which outranks any standing question.
   const orders = [...trunkRedOrders(trunkRed), ...answerOrders(answerOwed)];
@@ -4416,7 +4522,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // AFTER the unfiled epics. An epic with NO children is work nobody has filed at all; one whose children
   // are all closed may only need closing. The more likely supply of real work goes first.
   orders.push(...finishedEpicOrders(epics, readyRows));
-  orders.push(...blockedReferentOrders(openRows, readyRows));
+  orders.push(...blockedReferentOrders(openRows, readyRows), ...rowCallCountOrders(callCountSignals)); // #2691 beside it: also a JUDGMENT over a row already claimed
   // THE BATCH THAT USED TO BE A 01:00 TIMER. Placed here rather than first: a named row to fix
   // outranks a standing sweep, and `orchestrator` gets one order per tick either way.
   orders.push(...fleetBatchOrders(openRows));
@@ -5223,7 +5329,8 @@ function main() {
     // emit nothing, and a refused read is not reported as health because nothing else reads "trunk is fine".
     trunkRed: readTrunkRed(),
     // #2075: ONE GRAPHQL CALL, READ PER ISSUE. `null` (refused) emits nothing and is said on stderr below.
-    offBoard });
+    // #2691's `callCountSignals` is beside it: a local read of transcripts already on disk, so it costs no `GH_READS`.
+    offBoard, callCountSignals: rowCallCountSignals(allOpen, liveClaudeTurns()) });
   const others = otherScopeTicks(drain); // #2618: the OTHER declared repositories -- none for one project, whose orders are what they were
   const { delivered: orders, performed } = performActions([...decided, ...others.flatMap((tick) => tick.orders)]);
   orders.push(...reviewerAuthTick({ orders }));

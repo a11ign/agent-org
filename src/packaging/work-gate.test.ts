@@ -983,10 +983,13 @@ test("every cause is classified as START or FINISH -- a new one cannot default i
   // pull request CODEOWNERS assigns to `ceo` with no approval from `ceo` is finished work that cannot land
   // once #1756's flip turns the gap into a hard merge block, and a drain is the window where leaving it
   // unreviewed would cost most. It starts no work: the pull request already exists.
+  // #2691: `row-call-count-signal` is FINISH, and a JUDGMENT cause. Its subject is a row a session already
+  // holds -- the plainest case of work in flight there is -- and reading the signal starts no new work:
+  // `product-manager` deciding to split, or not, is a judgment over a row that already exists.
   assert.deepEqual(finish, ["answer-owed", "awaiting-evidence-stale", "blocker-cleared", "chairman-blocked", "claim-stalled",
     "claimed-row-amended", "disk-headroom-low", "draft-awaiting-verdict", "draft-convinced-not-ready", "host-units-stale", "pr-checks-failing",
     "pr-codeowner-review-missing", "pr-green-unarmed", "pr-merge-conflict", "pr-review-blocked", "reviewer-auth-failed",
-    "row-branch-unshipped", "row-off-board", "trunk-red", "verdict-comment-unreviewed", "verdict-not-convinced"]);
+    "row-branch-unshipped", "row-call-count-signal", "row-off-board", "trunk-red", "verdict-comment-unreviewed", "verdict-not-convinced"]);
   for (const cause of START_CAUSES) {
     assert.ok(CAUSES.includes(cause), `${cause} is withheld by a drain but no longer exists`);
   }
