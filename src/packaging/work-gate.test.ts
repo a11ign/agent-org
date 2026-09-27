@@ -50,6 +50,7 @@ import { MAX_ROW_ORDERS_PER_TICK, readCommitChain, withCommitChains, decide, che
   readRowBranches, rowBranchOrders, GIT_READS,
   reviewStateOf, reviewBlocked, reviewBlockedOrders, REVIEW_STATE, HOLD_RED_JOBS,
   readRowsOffBoard, rowsOffBoard, rowOffBoardOrders, rowsOffBoardOrSay, ROW_OFF_BOARD_GRACE_MS,
+  refusedReadCount, SHARED_OUTAGE_READS, sharedReadOutage, markOutageReads,
   pipelineCodeownerReviewMissing }
   from "../work-gate.mjs";
 // #2182: the SHIPPED reader that decides whether a delivered cause is still live, imported so this file
@@ -312,6 +313,79 @@ test("#912: the exit contract keeps four states, and 0 is QUIET on purpose", () 
   assert.equal(EXIT.QUIET, 0, "flipping this makes a rate-limited gate look like a quiet queue");
   assert.notEqual(EXIT.CANNOT_ASK, EXIT.QUIET, "a refused read is never a quiet one");
   assert.notEqual(EXIT.PARTIAL, EXIT.QUIET, "a half-examined queue is never a quiet one");
+});
+
+// ---------------------------------------------------------------------------------------------------
+// #2685: AN OUTAGE THAT FAILS gh/GraphQL CALLS INDEPENDENTLY PER CAUSE MUST NOT DOUBLE-COUNT.
+//
+// `wake.mjs`'s `outageOf` already asks whether a causeKey's own addressed SESSION is unavailable
+// (#2256); #2031's pool-exhaustion guard asks about the POOL. Neither asks whether GITHUB ITSELF refused
+// THIS TICK's reads -- so, before this row, two causes stuck for the SAME shared connectivity reason each
+// reach `escalateStuck` on their own and label two DIFFERENT rows `answer:ceo` for what is really one
+// outage. `refusedReadCount`/`sharedReadOutage`/`markOutageReads` are `work-gate.mjs`'s half of the fix;
+// `deliver`'s `outaged` (wake.mjs) is the other.
+
+test("#2685: refusedReadCount counts nulls only -- an empty-but-successful read is not a refusal", () => {
+  assert.equal(refusedReadCount([[], [], []]), 0, "three quiet lanes, none of them refused");
+  assert.equal(refusedReadCount([null, [], null]), 2);
+  assert.equal(refusedReadCount([]), 0);
+});
+
+test("#2685: sharedReadOutage trips at SHARED_OUTAGE_READS, not before", () => {
+  assert.equal(SHARED_OUTAGE_READS, 2, "one lane's own trouble is not evidence of GitHub's -- a second, independent one is");
+  assert.equal(sharedReadOutage(SHARED_OUTAGE_READS - 1), false, "one refused read is that read's own trouble");
+  assert.equal(sharedReadOutage(SHARED_OUTAGE_READS), true, "a second refused read the SAME tick is the shared shape");
+  assert.equal(sharedReadOutage(SHARED_OUTAGE_READS + 3), true);
+});
+
+test("#2685: markOutageReads leaves an ordinary tick's orders untouched", () => {
+  const orders = [{ causeKey: "k1", session: "ceo", prompt: "p" }];
+  assert.deepEqual(markOutageReads(orders, false), orders);
+  assert.equal(markOutageReads(orders, false), orders, "the SAME array, not a copy -- nothing downstream sees a new shape");
+});
+
+test("#2685: markOutageReads tags every order alike, without disturbing what was already there", () => {
+  const orders = [{ causeKey: "k1", session: "ceo", prompt: "p1" }, { causeKey: "k2", session: "ceo", prompt: "p2" }];
+  assert.deepEqual(markOutageReads(orders, true),
+    [{ ...orders[0], outageNow: true }, { ...orders[1], outageNow: true }]);
+});
+
+/**
+ * THE FIXTURE ITSELF: two DIFFERENT causes, on two DIFFERENT rows, both at the delivery cap in the SAME
+ * run. `escalateStuck` and `stuckRowOf`'s own tests already prove ONE stuck cause labels ONE row; what
+ * neither proved is what happens to TWO, when the reason they are both stuck is one shared connectivity
+ * failure rather than two genuinely unrelated rows.
+ */
+const CAPPED_CAUSES = [
+  { session: "ceo", causeKey: "ceo/lane-backlog-unpromoted/row-101", prompt: "row #101 is not promoted" },
+  { session: "ceo", causeKey: "ceo/org-stalled/row-102", prompt: "row #102 is stalled" },
+];
+const bothAtCap = () => new Map(CAPPED_CAUSES.map((o) => [o.causeKey, MAX_DELIVERIES]));
+
+test("#2685 BEFORE: two causes capped for a shared reason still escalate as two, absent an outage reading", () => {
+  const { stuck, outaged } = deliver(CAPPED_CAUSES, [], [], { counts: bothAtCap() });
+  assert.equal(stuck.length, 2, "TODAY's shape: every capped cause is its own stuck entry");
+  assert.deepEqual(outaged, [], "nothing here recognises them as sharing one cause");
+
+  const calls: string[][] = [];
+  const labelled = escalateStuck(stuck, (a: string[]) => { calls.push(a); return ""; }, () => {});
+  assert.deepEqual(labelled, [101, 102], "TWO rows labelled answer:ceo for what may be one shared outage");
+});
+
+test("#2685 AFTER: work-gate's shared-outage reading collapses the SAME two causes to ONE signal", () => {
+  // THIS TICK'S OWN READS: three of four independent lanes refused together -- the shape `sharedReadOutage`
+  // exists to recognise, built from the SAME `refusedReadCount` `work-gate.mjs`'s `main` feeds it.
+  const outageNow = sharedReadOutage(refusedReadCount([null, [], null, null]));
+  assert.equal(outageNow, true, "three of four reads refused the same tick is GitHub's own outage, not one lane's");
+
+  const { stuck, outaged } = deliver(markOutageReads(CAPPED_CAUSES, outageNow), [], [], { counts: bothAtCap() });
+  assert.deepEqual(stuck, [], "NEITHER cause reaches escalateStuck's input -- the fix this row is about");
+  assert.deepEqual(outaged, CAPPED_CAUSES.map((o) => o.causeKey), "named together, as ONE outage");
+
+  const calls: string[][] = [];
+  const labelled = escalateStuck(stuck, (a: string[]) => { calls.push(a); return ""; }, () => {});
+  assert.deepEqual(labelled, [], "ZERO rows labelled -- collapsed to one outage signal, not two stuck rows");
+  assert.deepEqual(calls, [], "no `gh issue edit` was even attempted for either row");
 });
 
 // --- #1650: a red pull request is work, and nobody was asking about it (2026-09-17) ---
