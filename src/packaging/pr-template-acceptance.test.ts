@@ -24,7 +24,10 @@ import { extractAcceptanceSection, acceptanceReport } from "../acceptance-comman
 // request. The declaration is ENFORCED rather than trusted: `declareWalkScope` observes what this
 // file actually reads and fails it here if anything lands outside the scope -- so a scope that is
 // too narrow is loud, never a guard that silently stopped running.
-export const WALK_SCOPE = ["scripts",".github/PULL_REQUEST_TEMPLATE.md"];
+// #2619 (child 3d of #69): `.agent-org` joins the scope -- `acceptance-commands.mjs` now imports
+// `RESOURCES`/`FLEET_QUESTION`/`ACCEPTANCE_FIELD`/`CLOSES_FIELD` from `project-vocabulary.mjs`, which
+// reads `.agent-org/project.json` at import time.
+export const WALK_SCOPE = ["scripts",".github/PULL_REQUEST_TEMPLATE.md", ".agent-org"];
 await declareWalkScope(import.meta.url);
 
 const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
