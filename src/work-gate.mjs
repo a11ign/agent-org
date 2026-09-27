@@ -3479,21 +3479,53 @@ export function rowCallCountSignals(openRows, turns, claimedComments = [], thres
   for (const anchor of anchors) {
     const end = windowEnd(anchor, anchors);
     const calls = turns.filter((t) => t.session === anchor.session && t.at >= anchor.at && t.at < end).length;
-    if (calls > threshold) signals.push({ row: anchor.row, session: anchor.session, calls });
+    if (calls <= threshold) continue;
+    const assessedAt = rowCallCountAssessedCalls(byRow.get(anchor.row) ?? []);
+    if (assessedAt !== null && calls < 2 * assessedAt) continue;
+    signals.push({ row: anchor.row, session: anchor.session, calls });
   }
   return signals.sort((a, b) => b.calls - a.calls);
+}
+
+/** The comment `product-manager` posts to record a "not split" verdict, carrying the call count it was
+ * made at -- `CLAIM_RECORD_MARKER`'s shape, a structured marker rather than prose, because nothing
+ * re-parses every comment on every tick to recover a number written in English. */
+export const ROW_CALL_COUNT_ASSESSED_MARKER = "<!-- row-call-count-signal: split assessment -->";
+const ASSESSED_CALLS = /\bcalls=(\d+)\b/;
+
+/**
+ * The call count `product-manager` last assessed this row at, from the newest comment carrying
+ * `ROW_CALL_COUNT_ASSESSED_MARKER` -- `null` for no such comment, or one whose count cannot be read
+ * (`claimRecordOf`'s own rule: an assessment that cannot be read is never guessed at, so it signals again
+ * rather than staying silent).
+ * @param {any[]} comments
+ * @returns {number | null}
+ */
+function rowCallCountAssessedCalls(comments) {
+  const newest = comments.filter((c) => String(c?.body ?? "").includes(ROW_CALL_COUNT_ASSESSED_MARKER)).at(-1);
+  if (newest === undefined) return null;
+  const match = ASSESSED_CALLS.exec(String(newest.body));
+  if (match === null) return null;
+  const n = Number(match[1]);
+  return Number.isFinite(n) ? n : null;
 }
 
 /**
  * ONE ORDER NAMING EVERY ROW PAST THE THRESHOLD -- `pipelineCodeownerReviewOrders`'s shape and for its
  * reason: the set is what makes the cause self-clearing, keyed on WHICH rows are still over it, so a row
  * that splits or closes leaves it out of the next key.
+ *
+ * THE KEY NAMES THE SET, NOT THE COUNT (#2721). A claimed session's call count rises on nearly every one of
+ * its own turns, so keying on the counts (as this did before #2721) minted a new `causeKey` on almost every
+ * tick even though the SET of rows over threshold had not changed -- `product-manager` re-derived an
+ * identical "not split" verdict from scratch, repeatedly, on the same unchanged row. The call counts still
+ * reach the reader, in `prompt`; only the dedup key drops them.
  * @param {{ row: number, session: string, calls: number }[]} [signals]
  * @returns {{session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string}[]}
  */
 export function rowCallCountOrders(signals = []) {
   if (signals.length === 0) return [];
-  const key = signals.map((s) => `${s.row}:${s.calls}`).join(",");
+  const key = signals.map((s) => s.row).sort((a, b) => a - b).join(",");
   const named = signals.map((s) => `${subjectMention({ number: s.row })} (${s.session}, ${s.calls} calls)`).join(", ");
   return [{
     session: "product-manager",
