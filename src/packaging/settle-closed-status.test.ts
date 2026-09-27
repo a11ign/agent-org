@@ -464,6 +464,20 @@ test("#2081/#2719 an issue whose Project membership could not be read completely
     + "arriving through the per-issue read instead of the per-page one");
 });
 
+test("#2727 an issue node with no `projectItems` at all REFUSES rather than defaulting to an empty, complete list", () => {
+  // reviewer-2727's blocker: `closedRowsPageFromRead` used to default a missing `projectItems` to an empty
+  // `nodes` array and a `totalCount` of 0, which reads as `complete` with zero matches -- silently reporting
+  // "not on this board" for a row whose membership was never actually fetched, undercounting the floor.
+  const page = JSON.stringify({ data: { repository: { issues: {
+    pageInfo: { hasNextPage: false, endCursor: null },
+    nodes: [{ number: 300 }],
+  } } } });
+  assert.throws(() => closedRowsPageFromRead(page, PROJECT_NUMBER),
+    /#300's Project membership came back in an unexpected shape -- refusing to default it to an empty, complete list/,
+    "NAMED by row number: a missing `projectItems` must refuse, the same as one with fewer nodes than "
+    + "`totalCount` -- both are membership this read never actually established");
+});
+
 test("#2081/#2719 the floor refuses every response shape it would otherwise have to guess at", () => {
   assert.throws(() => closedRowsPageFromRead("not json at all", PROJECT_NUMBER),
     /was not JSON -- refusing to guess/);

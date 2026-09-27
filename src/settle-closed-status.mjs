@@ -367,10 +367,15 @@ export function closedRowsPageFromRead(raw, projectNumber) {
         + `Got: ${JSON.stringify(entry).slice(0, 300)}`);
     }
     const items = node.projectItems;
-    const itemNodes = Array.isArray(items?.nodes) ? items.nodes : [];
+    if (!items || !Array.isArray(items.nodes) || typeof items.totalCount !== "number") {
+      throw new Error(`settle-closed-rows: #${node.number}'s Project membership came back in an `
+        + `unexpected shape -- refusing to default it to an empty, complete list. Got: `
+        + `${JSON.stringify(items ?? null).slice(0, 300)}`);
+    }
+    const itemNodes = items.nodes;
     const onThisProject = itemNodes.some(
       (/** @type {{ project?: { number?: unknown } }} */ item) => item?.project?.number === projectNumber);
-    const complete = itemNodes.length >= (typeof items?.totalCount === "number" ? items.totalCount : 0);
+    const complete = itemNodes.length >= items.totalCount;
     if (!onThisProject && !complete) {
       throw new Error(`settle-closed-rows: #${node.number}'s Project membership could not be read `
         + `completely -- it carries more project items than this page fetched and none of the fetched `
