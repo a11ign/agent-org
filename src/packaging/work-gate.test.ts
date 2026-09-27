@@ -48,7 +48,7 @@ import { MAX_ROW_ORDERS_PER_TICK, readCommitChain, withCommitChains, decide, che
   blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL, PARKED_LABEL,
   ANSWER_PREFIX, redOnlyBySupersededRun, cannotAskReport,
   readRowBranches, rowBranchOrders, GIT_READS,
-  reviewStateOf, reviewBlocked, reviewBlockedOrders, REVIEW_STATE, HOLD_RED_JOBS,
+  reviewStateOf, reviewBlocked, reviewBlockedOrders, REVIEW_STATE, HOLD_RED_JOBS, reviewableHead,
   readRowsOffBoard, rowsOffBoard, rowOffBoardOrders, rowsOffBoardOrSay, ROW_OFF_BOARD_GRACE_MS,
   refusedReadCount, SHARED_OUTAGE_READS, sharedReadOutage, markOutageReads,
   pipelineCodeownerReviewMissing }
@@ -1362,6 +1362,44 @@ test("HOLD_RED_JOBS names the jobs ci.yml defines, so the exemption cannot go st
   const ci = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../../../.github/workflows/ci.yml"), "utf8");
   assert.deepEqual([...HOLD_RED_JOBS], ["deliberateRefusals", "gate"]);
   for (const job of HOLD_RED_JOBS) assert.match(ci, new RegExp(`\\n {2}${job}:\\n`), `${job} is a job in ci.yml`);
+});
+
+/**
+ * #2709: THE HOLD'S OWN RED MUST NOT BLOCK THE REVIEW QUESTION EITHER. `redOnlyFromHoldOf` (above) already
+ * excuses a hold's own manufactured red from `pr-checks-failing`, keyed to ONE session -- the addressee.
+ * `reviewableHead` asks a different question ("can anyone be asked for a verdict yet") and has no
+ * addressee, so it needs the unkeyed form: ANY `hold:` label, not just a session-matching one. The fixture
+ * is PR #2649's live shape: held by `orchestrator`, which is also its own `session:` label (so
+ * `failingChecksOrder` reads the hold as its own answer and stays out of the way, the same as #2400's
+ * fixture above), `deliberateRefusals` and `gate` red, everything else green.
+ */
+const holdOwnPr = (checks: [string, string][] = HELD_RED) => ({ number: 2649, isDraft: false,
+  headRefOid: "2649cafe00000000", author: { login: "x" },
+  labels: [{ name: "session:orchestrator" }, { name: "hold:orchestrator" }], comments: [],
+  statusCheckRollup: rollupOf(checks) });
+
+test("#2709: a hold's own manufactured red does not block the review question", () => {
+  assert.equal(reviewableHead(holdOwnPr()), "2649cafe00000000",
+    "settled green apart from the hold's own two jobs -- the review question can be asked");
+
+  const [order, ...rest] = decide({ prs: [holdOwnPr()], readyRows: [] }) as { cause: string, session: string }[];
+  assert.equal(rest.length, 0);
+  assert.equal(order?.cause, "draft-awaiting-verdict",
+    "end to end: draftOrder/perPullRequestOrders asks for a verdict rather than returning null at "
+    + "`if (!head) return null`");
+  assert.equal(order?.session, "reviewer-2649");
+
+  assert.deepEqual(shouldBeMergingPrs([holdOwnPr()], null), [],
+    "a hold must keep stopping the merge -- mergeCandidates/greenUnheldPrs are unaffected by this fix");
+});
+
+test("#2709: a hold does not excuse a REAL red check outside HOLD_RED_JOBS from the review question", () => {
+  const realRed: [string, string][] = [...HELD_RED, ["changeset", "FAILURE"]];
+  assert.equal(reviewableHead(holdOwnPr(realRed)), null,
+    "a genuine failure beside the hold's own two jobs still blocks the review question");
+  const orders = decide({ prs: [holdOwnPr(realRed)], readyRows: [] }) as { cause: string }[];
+  assert.ok(!orders.some((o) => o.cause === "draft-awaiting-verdict"),
+    "no reviewer is asked while a real check is red");
 });
 
 /**
