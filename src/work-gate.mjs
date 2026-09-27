@@ -3457,8 +3457,8 @@ export const ROW_CALL_COUNT_SPLIT_THRESHOLD = 100;
  * @param {any} row
  */
 export function claimedRowSession(row) {
-  const sessions = labelsOf(row).filter((/** @type {string} */ n) => n.startsWith("session:"));
-  return sessions.length === 1 ? sessions[0].slice("session:".length) : null;
+  const sessions = labelsOf(row).filter((/** @type {string} */ n) => n.startsWith(SESSION_PREFIX));
+  return sessions.length === 1 ? sessions[0].slice(SESSION_PREFIX.length) : null;
 }
 
 /**
