@@ -19,6 +19,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { armabilityOf } from "./pr-hold-state.mjs";
 import { SESSION_PREFIX } from "./project-vocabulary.mjs";
+import { roleBriefPath } from "./project-roles.mjs";
 // #2046: THE ARMED PREDICATE, IMPORTED RATHER THAN RE-DECIDED -- the mirror of the `pr-hold-state.mjs`
 // line above, and for the reason this file's own header already gives about that one. Leaf-shaped:
 // `pr-armed-state.mjs` imports nothing at all, so the `actions/checkout`-only property holds.
@@ -196,12 +197,13 @@ export function sessionLabelsOf(rowLabels) {
  * @param {string[][]} rowLabelLists
  * @returns {string[]}
  *
- * #1000/#913, #1453: THE SESSIONS THAT EXIST, READ FROM this package's own `docs/roles/sessions.json` -- `ceo`'s file, never typed here.
+ * #1000/#913, #1453: THE SESSIONS THAT EXIST, READ FROM the project's own declared roles directory (#2621, child
+ * 3e of #69: `.agent-org/roles/sessions.json` -- `ceo`'s file, never typed here.
  *
  * Four `session:*` labels are RETIRED BY DESCRIPTION rather than deleted -- `dispatcher`, `worker-audit`,
  * `worker-contracts`, `worker-config` -- because deleting one strips it from the merged PRs that carry it as
  * attribution, which `attributionFor` (`claim-provenance.mjs`) reads. A record of the past is never renamed. So the
- * labels that exist are not the live set, and neither is `packages/agent-org/docs/roles/README.md`'s roster, which records every role this
+ * labels that exist are not the live set, and neither is `.agent-org/roles/README.md`'s roster, which records every role this
  * org has had.
  *
  * #1453: THIS WAS A LITERAL, AND IT PREDATED THE THIRD ENGINEER. `worker-tooling` started at 19:13Z, and every PR whose
@@ -218,7 +220,7 @@ export function sessionLabelsOf(rowLabels) {
  * by LABEL), never this file's to remember -- which is why the type below names `name` and nothing else.
  */
 const SESSIONS = /** @type {{ live: { name: string, family?: SpareFamily }[], retired: { name: string }[] }} */ (
-  JSON.parse(readFileSync(new URL("../docs/roles/sessions.json", import.meta.url), "utf8")));
+  JSON.parse(readFileSync(roleBriefPath("sessions.json").absolute, "utf8")));
 /** The `live` entries that are ONE ADDRESS each -- a family entry (#2403) is a rule for many, listed in {@link SPARE_FAMILIES}. */
 export const LIVE_SESSIONS = SESSIONS.live.filter((s) => s.family === undefined).map((s) => s.name);
 
@@ -335,7 +337,7 @@ export function labelArmedPr({ number, repo, prBody, run = defaultRun }) {
         + "PRs carry it as attribution, but nothing new may be given it"
       : `${label} is not a session this repository knows`)).join("; ");
     console.error(`arm-pr: REFUSING to label #${number} -- ${why}.\n`
-      + `  The ${LIVE_SESSIONS.length} live sessions (packages/agent-org/docs/roles/sessions.json) are ${LIVE_SESSIONS.join(", ")}`
+      + `  The ${LIVE_SESSIONS.length} live sessions (${roleBriefPath("sessions.json").relative}) are ${LIVE_SESSIONS.join(", ")}`
       + `${SPARE_FAMILIES.map(({ prefix, from }) => `, and every ${prefix}<n> for n from ${from}`).join("")}.\n`
       + `  Fix the ROW's own label first: \`gh issue edit <row> --remove-label ${notLive[0].label} `
       + "--add-label session:<a live session>`, then re-run this.");

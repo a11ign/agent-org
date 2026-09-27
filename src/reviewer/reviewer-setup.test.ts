@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const ROLE_DOC = fileURLToPath(new URL("../../docs/roles/reviewer.md", import.meta.url));
+const ROLE_DOC = fileURLToPath(new URL("../../../../.agent-org/roles/reviewer.md", import.meta.url));
 const KNOWN_GAPS = fileURLToPath(new URL("../../../../docs/known-gaps.md", import.meta.url));
 
 /** Split a shell line into words, dropping quotes; enough for the `ln` lines a recipe carries. */

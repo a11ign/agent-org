@@ -242,15 +242,20 @@ function fixtures() {
  * field but the prompt and the prompt's SHA-256 and length (a prompt is thousands of characters and the digest is the same claim). A pinned digest
  * is only as good as the run that made it, so the recording script (`decide` from `git archive origin/main`, the same inputs) printed
  * these and the new code printed the same file, `cmp` identical.
+ *
+ * #2621 (child 3e of #69) RE-DERIVED the four `draft-awaiting-verdict` entries (pr-101/103/104/105): `ENGINEER_BRIEF`
+ * moved from the literal `packages/agent-org/docs/roles/engineer.md` to the project's declared `.agent-org/roles/engineer.md`,
+ * 13 bytes shorter, which is the entire diff in the four prompts that name it -- re-run against the new code, not restated
+ * by hand.
  */
 const RECORDED_BUSY = [
   { session: "ceo", cause: "answer-owed", subject: "row-301", discriminator: "301", causeKey: "ceo/answer-owed/row-301", promptSha256: "19dc374722c2083bccd5fa028196b6d0a4748cea5c41cb44a1ff0a2287e6af25", promptLength: 598 },
   { session: "product-manager", cause: "answer-owed", subject: "row-302", discriminator: "302", causeKey: "product-manager/answer-owed/row-302", promptSha256: "46129b1b1472975bb72ccb0d1fbd382f55ddbba3885110c1417e4c99330b102f", promptLength: 643 },
-  { session: "reviewer-101", cause: "draft-awaiting-verdict", subject: "pr-101", discriminator: "abc12345", causeKey: "reviewer-101/draft-awaiting-verdict/pr-101/abc12345", promptSha256: "4139ebb6ba237ac5d60499cbe7f51b8be4e9a924462963af48341fea0111180f", promptLength: 179 },
+  { session: "reviewer-101", cause: "draft-awaiting-verdict", subject: "pr-101", discriminator: "abc12345", causeKey: "reviewer-101/draft-awaiting-verdict/pr-101/abc12345", promptSha256: "39ebb471c3b4bc9287a48459d7d5c4bdb6936693ef03e0cea25687209613afff", promptLength: 166 },
   { session: "worker-x", cause: "pr-checks-failing", subject: "pr-102", discriminator: "abc12345", causeKey: "worker-x/pr-checks-failing/pr-102/abc12345", promptSha256: "4b867314bbbbbb5b63129a0cd85357157ec328118500592a7819f0da60438313", promptLength: 668 },
-  { session: "reviewer-103", cause: "draft-awaiting-verdict", subject: "pr-103", discriminator: "abc12345", causeKey: "reviewer-103/draft-awaiting-verdict/pr-103/abc12345", promptSha256: "e9edab747c388f9da70c5eff8b3e2c335fb5f9063da8e4b8ff3168350870cf68", promptLength: 193 },
-  { session: "reviewer-104", cause: "draft-awaiting-verdict", subject: "pr-104", discriminator: "abc12345", causeKey: "reviewer-104/draft-awaiting-verdict/pr-104/abc12345", promptSha256: "3b9fc8a9e5357634ab5561b570964fc37d11ecbcd45d16ea14201b5d89c57f6e", promptLength: 193 },
-  { session: "reviewer-105", cause: "draft-awaiting-verdict", subject: "pr-105", discriminator: "abc12345", causeKey: "reviewer-105/draft-awaiting-verdict/pr-105/abc12345", promptSha256: "55b2844e92c43f39f1ddb3fa7a5a6c603652130612d706d9972cb2f77c76f309", promptLength: 193 },
+  { session: "reviewer-103", cause: "draft-awaiting-verdict", subject: "pr-103", discriminator: "abc12345", causeKey: "reviewer-103/draft-awaiting-verdict/pr-103/abc12345", promptSha256: "0473ecf3537e3d9e7d53224f2307a80377c9c6242d9227b6849e82934844282e", promptLength: 180 },
+  { session: "reviewer-104", cause: "draft-awaiting-verdict", subject: "pr-104", discriminator: "abc12345", causeKey: "reviewer-104/draft-awaiting-verdict/pr-104/abc12345", promptSha256: "2cfd74cea471f3a9b8bba72b2b1c1376558a142580a3522f139fad2f59d7aa8c", promptLength: 180 },
+  { session: "reviewer-105", cause: "draft-awaiting-verdict", subject: "pr-105", discriminator: "abc12345", causeKey: "reviewer-105/draft-awaiting-verdict/pr-105/abc12345", promptSha256: "4c1bb79eb40777da555e29a8e29dad386c7567bc5c73b94bc6e29e231da78b86", promptLength: 180 },
   { session: "engineers", cause: "ready-row-unclaimed", subject: "row-202", discriminator: "202", causeKey: "engineers/ready-row-unclaimed/202", title: "row 202", promptSha256: "db0b62244a043edc9bf8e6a6188a20e0ed2b385346ac5d666c56c63f5aa600a5", promptLength: 339 },
   { session: "engineers", cause: "ready-row-unclaimed", subject: "row-201", discriminator: "201", causeKey: "engineers/ready-row-unclaimed/201", title: "row 201", promptSha256: "9bcbc1aa084c3433a3ccdf6e9caaeb94f854c32b807b939ca5b26f38864ead00", promptLength: 339 },
   { session: "ceo", cause: "ready-row-unclaimed", subject: "row-203", discriminator: "203", causeKey: "ceo/ready-row-unclaimed/203", title: "row 203", promptSha256: "0e18f3a9822097dcbc9d00096a326fbb9acfb7adae15a304f871bdcf96e256b6", promptLength: 339 },
