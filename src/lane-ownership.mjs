@@ -16,6 +16,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { LANES_FILE_PATH } from "./project-vocabulary.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -33,7 +34,7 @@ const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
  *
  * @returns {{lanes: Lane[]} | null}
  */
-export function loadLanes(path = resolve(REPO, "docs/lane-ownership.json")) {
+export function loadLanes(path = resolve(REPO, LANES_FILE_PATH)) {
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     if (!Array.isArray(parsed?.lanes) || parsed.lanes.length === 0) return null;

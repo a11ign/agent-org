@@ -67,6 +67,10 @@ import { labelsToStrip } from "./close-rows-for-merged-pr.mjs";
 import { OUT_OF_RELEASE_LABEL } from "./board-data.mjs";
 // #2190: the rule the CLAIM path refuses by, CALLED here and never re-derived -- see `unclaimableReadyRows`.
 import { REQUIRED_FIELDS, missingTemplateFields, templateFieldsReason } from "./row-claim/template-fields-rule.mjs";
+// #2619 (child 3d of #69): the remaining vocabulary this file names -- `backlog` is not a claim-lifecycle
+// label (`claim-labels.mjs`'s header says it holds exactly four), `blocked` is a mutex label nobody claims,
+// and `session:`/`Out of release` are read elsewhere too, so all four come from the one field module.
+import { BACKLOG_LABEL, SESSION_PREFIX, BLOCKED_LABEL, OUT_OF_RELEASE_MILESTONE } from "./project-vocabulary.mjs";
 
 // #804: READY_LABEL/WAS_READY_LABEL are IMPORTED (above) from the leaf claim-labels.mjs and re-exported
 // here, not declared in this file -- see claim-labels.mjs's own header for why. Every existing
@@ -74,14 +78,6 @@ import { REQUIRED_FIELDS, missingTemplateFields, templateFieldsReason } from "./
 // from` would forward the binding WITHOUT creating a local one, and this file's own code below needs the
 // local name -- hence import-then-export as two separate statements rather than one re-export line.
 export { READY_LABEL, WAS_READY_LABEL };
-
-/**
- * #2111: the OTHER board label, named here for the same reason `claim-labels.mjs` names the four claim
- * ones -- `bothBoardLabels` below says it five times, and a literal said five times is how the hand
- * promotion it reports lost one of its three writes. Declared here rather than in `claim-labels.mjs`
- * because `backlog` is not a claim-lifecycle label and that file's header says it holds exactly four.
- */
-const BACKLOG_LABEL = "backlog";
 
 /**
  * #2150: the Project Status option that says the same thing as the `ready` label -- the name
@@ -128,7 +124,7 @@ const READY_STATUS = "Ready";
  * the row is closed.
  */
 export const MUTEX_LABELS =
-  ["fleet-gated", "disputed", "decision", "awaiting-merge", "blocked", "review-only"];
+  ["fleet-gated", "disputed", "decision", "awaiting-merge", BLOCKED_LABEL, "review-only"];
 
 /**
  * @typedef {{ number: number, title: string, labels: string[] }} LabelledIssue
@@ -436,8 +432,8 @@ export function mutexViolations(issues) {
 export function handClaims(issues) {
   const claims = [];
   for (const { number, title, labels } of issues) {
-    if (!labels.includes(READY_LABEL) || !labels.includes("in-progress")) continue;
-    const sessions = labels.filter((l) => l.startsWith("session:"));
+    if (!labels.includes(READY_LABEL) || !labels.includes(CLAIM_LABEL)) continue;
+    const sessions = labels.filter((l) => l.startsWith(SESSION_PREFIX));
     claims.push({ number, title, sessions });
   }
   return claims;
@@ -589,7 +585,7 @@ export function readyRowsAlreadyMerged(readyIssues, closingRefsByIssue, latestRe
  * are falsified the same way: by the work already being on main.
  * @param {string[]} labels */
 export function livesStateLabels(labels) {
-  return labels.includes(READY_LABEL) || labels.includes("in-progress");
+  return labels.includes(READY_LABEL) || labels.includes(CLAIM_LABEL);
 }
 
 /**
@@ -637,7 +633,7 @@ export function claimsNobodyIsWorking(issues, activity, staleAfterMinutes = 240)
   const { hasOpenPr, lastPushMinutes, claimedMinutes, lastCommentMinutes } = activity;
   const stale = [];
   for (const issue of issues) {
-    if (!issue.labels.includes("in-progress")) continue;
+    if (!issue.labels.includes(CLAIM_LABEL)) continue;
     if (hasOpenPr.get(issue.number)) continue;
 
     // THE CLAIM'S OWN AGE IS THE CLOCK, not the branch's. A row claimed ten minutes ago has no branch
@@ -660,7 +656,7 @@ export function claimsNobodyIsWorking(issues, activity, staleAfterMinutes = 240)
     if (commentAge !== undefined && commentAge < staleAfterMinutes) continue;
 
     stale.push({ number: issue.number, title: issue.title,
-      sessions: issue.labels.filter((l) => l.startsWith("session:")),
+      sessions: issue.labels.filter((l) => l.startsWith(SESSION_PREFIX)),
       minutes: age ?? null, claimedMinutesAgo: claimAge ?? null });
   }
   return stale;
@@ -851,7 +847,7 @@ export const HAND_CLAIM_CAUSES = [
   { cause: "a claim made by hand (a label applied outside row-claim.mjs)",
     remedy: "route the claim through row-claim.mjs: `row-claim.mjs decline <n> --session=<holder>`, then "
       + "claim or dispatch it properly" },
-  { cause: "a `decline` whose one combined edit half-applied (`ready` came back, `in-progress` did not go)",
+  { cause: `a \`decline\` whose one combined edit half-applied (\`${READY_LABEL}\` came back, \`${CLAIM_LABEL}\` did not go)`,
     remedy: "the holder has released it and nobody works it: `row-claim.mjs decline <n> --session=<holder>` "
       + "again finishes the release; do not re-claim on its behalf" },
 ];
@@ -1201,15 +1197,15 @@ function reportInvisibleRows() {
   const rows = invisibleRows(issues);
   if (rows.length === 0) {
     process.stdout.write(`OK  ${issues.length} of ${reportedCount} open issue(s) checked, every one is `
-      + `reachable: it carries \`backlog\`, \`ready\`, \`epic\` or \`meta\`, or it is claimed `
+      + `reachable: it carries \`${BACKLOG_LABEL}\`, \`${READY_LABEL}\`, \`epic\` or \`meta\`, or it is claimed `
       + `(\`${CLAIM_LABEL}\`) and its owner is working it\n`);
     return 0;
   }
   for (const { number, title, labels } of rows) {
     process.stdout.write(`UNREACHABLE  #${number} "${title}" -- [${labels.join(", ")}] -- UNCLAIMED, and `
-      + "carries neither `backlog` nor `ready`, and `work-gate` reads both SERVER-SIDE by label, so no "
-      + "cause can see this row and no session will ever be ordered to touch it. Add `backlog` (or "
-      + "`ready` if it is genuinely startable), or close it -- on an unclaimed row that label is what "
+      + `carries neither \`${BACKLOG_LABEL}\` nor \`${READY_LABEL}\`, and \`work-gate\` reads both SERVER-SIDE by label, so no `
+      + `cause can see this row and no session will ever be ordered to touch it. Add \`${BACKLOG_LABEL}\` (or `
+      + `\`${READY_LABEL}\` if it is genuinely startable), or close it -- on an unclaimed row that label is what `
       + "makes a cause read it, so following this changes the row's reachability rather than only this "
       + "line\n");
   }
@@ -1313,7 +1309,7 @@ export function strandedByIncompleteDecline(issues) {
   return issues.filter((issue) =>
     issue.labels.includes(WAS_READY_LABEL)
     && !issue.labels.includes(READY_LABEL)
-    && !issue.labels.includes("in-progress"));
+    && !issue.labels.includes(CLAIM_LABEL));
 }
 
 /**
@@ -1325,7 +1321,7 @@ function reportClosedDebris() {
   const issues = fetchAllIssues();
   const debris = closedDebris(issues);
   if (debris.length === 0) {
-    process.stdout.write(`OK  no closed issue carries \`ready\`, \`in-progress\` or a \`session:*\` label\n`);
+    process.stdout.write(`OK  no closed issue carries \`${READY_LABEL}\`, \`${CLAIM_LABEL}\` or a \`${SESSION_PREFIX}*\` label\n`);
     return 0;
   }
   for (const { number, title, debris: labels } of debris) {
@@ -1338,13 +1334,13 @@ function reportClosedDebris() {
   // restored `ready`, turning one debris finding into another). A row carrying ONLY `ready`, with no
   // claim for `decline` to act on, has nothing for it to do -- named separately so the remediation never
   // sends a reader to a command that will refuse.
-  const claimedDebris = debris.filter((d) => d.debris.includes("in-progress"));
+  const claimedDebris = debris.filter((d) => d.debris.includes(CLAIM_LABEL));
   process.stderr.write(`\n${debris.length} closed row(s) still carry a pickable/claimed label -- nobody `
     + `will act on these, but a Ready count taken by label rather than by state is wrong by `
     + `${readyOnClosed} because of them. Stale bookkeeping, not a contradiction: ${claimedDebris.length} `
-    + `still carry \`in-progress\` and can be cleared with \`node packages/agent-org/src/row-claim.mjs decline <n> `
-    + `--session=<whoever holds it>\` (safe here -- a closed row is never returned to \`ready\`); the `
-    + `rest carry only \`ready\` or a stray \`session:\`/\`runner:\` label, which decline has no claim to `
+    + `still carry \`${CLAIM_LABEL}\` and can be cleared with \`node packages/agent-org/src/row-claim.mjs decline <n> `
+    + `--session=<whoever holds it>\` (safe here -- a closed row is never returned to \`${READY_LABEL}\`); the `
+    + `rest carry only \`${READY_LABEL}\` or a stray \`${SESSION_PREFIX}\`/\`runner:\` label, which decline has no claim to `
     + `release and the tracker owner clears by hand.\n`);
   return debris.length;
 }
@@ -1446,7 +1442,7 @@ export function fetchClaimActivity(numbers, { run = defaultRun } = {}) {
   for (const n of numbers) {
     try {
       const at = run("gh", ["api", `repos/${REPO}/issues/${n}/timeline`, "--paginate", "--jq",
-        '[.[]|select(.event=="labeled" and .label.name=="in-progress")]|last|.created_at']).trim();
+        `[.[]|select(.event=="labeled" and .label.name=="${CLAIM_LABEL}")]|last|.created_at`]).trim();
       if (at) claimedMinutes.set(n, Math.floor((Date.now() - Date.parse(at)) / 60000));
     } catch { /* a row whose timeline cannot be read is left absent, never assumed fresh */ }
   }
@@ -1508,11 +1504,11 @@ export function formatDeadClaimLine({ number, title, sessions, minutes }) {
 /** Reports the claims nobody is working. Returns the count, so the caller decides severity. */
 function reportDeadClaims() {
   const { issues, reportedCount } = fetchOpenIssuesChecked();
-  const claimed = issues.filter((i) => i.labels.includes("in-progress"));
+  const claimed = issues.filter((i) => i.labels.includes(CLAIM_LABEL));
   const stale = claimsNobodyIsWorking(claimed, fetchClaimActivity(claimed.map((i) => i.number)));
   if (stale.length === 0) {
     process.stdout.write(`OK  ${issues.length} of ${reportedCount} open issue(s) checked; every `
-      + "`in-progress` row has an open PR, a push, or a comment in the last four hours -- the same "
+      + `\`${CLAIM_LABEL}\` row has an open PR, a push, or a comment in the last four hours -- the same `
       + "three legs as `ceo`'s release rule (#723)\n");
     return 0;
   }
@@ -2103,21 +2099,21 @@ function reportReleaseDrift() {
   const rows = (/** @type {string[]} */ args) =>
     /** @type {{number: number}[]} */ (/** @type {unknown} */ (list(args)));
   const labelled = rows(["--label", OUT_OF_RELEASE_LABEL]);
-  const milestoned = rows(["--milestone", OUT_OF_RELEASE_MILESTONE_NAME]);
+  const milestoned = rows(["--milestone", OUT_OF_RELEASE_MILESTONE]);
   const { labelOnly, milestoneOnly } = releaseDeclarationDrift(labelled, milestoned);
 
   if (labelOnly.length === 0 && milestoneOnly.length === 0) {
     process.stdout.write(`OK  ${labelled.length} row(s) carry \`${OUT_OF_RELEASE_LABEL}\` and `
-      + `${milestoned.length} are in "${OUT_OF_RELEASE_MILESTONE_NAME}" -- the same set\n`);
+      + `${milestoned.length} are in "${OUT_OF_RELEASE_MILESTONE}" -- the same set\n`);
     return 0;
   }
   for (const n of labelOnly) {
     process.stdout.write(`RELEASE DRIFT  #${n} carries \`${OUT_OF_RELEASE_LABEL}\` and is NOT in the `
-      + `"${OUT_OF_RELEASE_MILESTONE_NAME}" milestone -- invisible to every milestone view, which is the `
+      + `"${OUT_OF_RELEASE_MILESTONE}" milestone -- invisible to every milestone view, which is the `
       + `state that milestone was created to end\n`);
   }
   for (const n of milestoneOnly) {
-    process.stdout.write(`RELEASE DRIFT  #${n} is in "${OUT_OF_RELEASE_MILESTONE_NAME}" and does NOT `
+    process.stdout.write(`RELEASE DRIFT  #${n} is in "${OUT_OF_RELEASE_MILESTONE}" and does NOT `
       + `carry \`${OUT_OF_RELEASE_LABEL}\` -- invisible to \`board-data.mjs\`'s \`outOfRelease()\`, which `
       + `reads the label, so the board's out-of-release figure undercounts it\n`);
   }
@@ -2126,9 +2122,6 @@ function reportReleaseDrift() {
     + `comparing them is what let \`ready\` and Ready-Status drift across 16 rows unseen.\n`);
   return 1;
 }
-
-/** The milestone that says what the label says -- one name, read by the check above. */
-const OUT_OF_RELEASE_MILESTONE_NAME = "Out of release";
 
 /**
  * #1163: THE CLAIMS SENTENCE 2 IS MADE OF, MATCHED AGAINST BOTH COPIES rather than either spelled twice.
@@ -2233,19 +2226,19 @@ function reportGuidanceDrift() {
   try {
     const milestones = JSON.parse(defaultRun("gh",
       ["api", `repos/${REPO}/milestones?state=all`, "--jq", "[.[]|{title,description}]"]));
-    description = milestones.find((/** @type {{title: string}} */ m) => m.title === "Out of release")
+    description = milestones.find((/** @type {{title: string}} */ m) => m.title === OUT_OF_RELEASE_MILESTONE)
       ?.description ?? null;
   } catch (cause) {
     void cause;
   }
   const drift = guidanceDrift(doc, description);
   if (!drift.readable) {
-    process.stdout.write(`  the \`Out of release\` milestone description could not be read, so whether it `
+    process.stdout.write(`  the \`${OUT_OF_RELEASE_MILESTONE}\` milestone description could not be read, so whether it `
       + `still carries ${ROW_FILING_DOC}'s rule is UNKNOWN -- not the same as agreeing with it\n`);
     return 1;
   }
   for (const [where, gone] of [[ROW_FILING_DOC, drift.missingFromDoc],
-    ["the `Out of release` milestone description", drift.missingFromMilestone]]) {
+    [`the \`${OUT_OF_RELEASE_MILESTONE}\` milestone description`, drift.missingFromMilestone]]) {
     for (const claim of gone) {
       process.stdout.write(`  ${where} no longer states "${claim}" -- the other copy still does, so one of `
         + `them has drifted and ${ROW_FILING_DOC} is the one a filer reads\n`);
