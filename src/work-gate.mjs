@@ -90,7 +90,8 @@ import { readTrunkRed, trunkRedOrders } from "./trunk-red.mjs";
 import { diskHeadroom, MIN_FREE_FRACTION } from "./disk-headroom.mjs";
 // #2470: A CLAIM THAT DOES NOT MOVE. A leaf, like every import above, so the gate keeps the property its own header states.
 import { STALL_STATE_FILE, claimFactsFrom, readClaim, claimStalledOrders, nextStallState, readStallState,
-  writeStallState, readHerdrRestart, gitRun, pathExists, statMtime, nudgeKey, nudgeDeliveredAt } from "./claim-stall.mjs";
+  writeStallState, readHerdrRestart, gitRun, pathExists, statMtime, nudgeKey, nudgeDeliveredAt,
+  claimRecordOf } from "./claim-stall.mjs";
 // #2542: THE PULL-REQUEST ORDERS -- the orders that ask a session to act on a pull request's state -- live in
 // `work-gate/pr-orders.mjs`, which imports the shared PR facts BACK from this file. The cycle is safe because
 // nothing there reads an import at load time (only inside a function), and this file stays the entry point:
@@ -102,7 +103,7 @@ export { redOnlyBySupersededRun, mergeConflictOrders, greenUnarmedOrders, review
 // #2691: THE LIVE CALL-COUNT SIGNAL, reusing the parser rather than a second one -- `split-baseline.mjs`
 // already imports these two the same way. `token-audit.mjs` imports only `node:*` and `cli-flags.mjs`
 // (already here), so the gate keeps the property its own header states.
-import { claudeTurns, transcriptFiles, summarise } from "./token-audit.mjs";
+import { claudeTurns, transcriptFiles } from "./token-audit.mjs";
 
 /**
  * FOUR STATES, AND THE POLARITY IS DELIBERATE.
@@ -3330,26 +3331,65 @@ export function claimedRowSession(row) {
 }
 
 /**
- * Every open row whose claimed session has passed `threshold` CALLS on its OWN live transcript -- the
- * call count `token-audit.mjs`'s `summarise` already derives from `claudeTurns`, joined here by the
- * session name rather than re-parsed.
- *
- * A SIGNAL, NOT A SPLIT (#2691): whether and how to split stays `product-manager`'s judgement, so this
- * reports the count and stops there. A row with no session label, or one at or under the threshold, is
- * left out entirely -- this names split CANDIDATES, not every claimed row.
- *
- * @param {any[]} openRows @param {import("./token-audit.mjs").Turn[]} turns every live turn, any session
- * @param {number} [threshold]
- * @returns {{ row: number, session: string, calls: number }[]} most calls first
+ * The `{ row, session, at }` a claim record gives for every open row that carries one -- the raw material
+ * `rowCallCountSignals` windows against, pulled out so that arithmetic has something to read rather than
+ * re-deriving it inline. A row with no session label, or whose newest claim-record comment cannot be read
+ * (none posted, or the newest one is a release) contributes nothing -- a window with nothing to anchor it
+ * is never guessed at, `claimedRowSession`'s own rule for an ambiguous label count applied one step further.
+ * @param {any[]} openRows @param {Map<number, any[]>} byRow
+ * @returns {{ row: number, session: string, at: number }[]}
  */
-export function rowCallCountSignals(openRows, turns, threshold = ROW_CALL_COUNT_SPLIT_THRESHOLD) {
-  const bySession = summarise(turns, (t) => t.session);
-  const signals = [];
+function claimedRowAnchors(openRows, byRow) {
+  const anchors = [];
   for (const row of openRows) {
     const session = claimedRowSession(row);
     if (session === null) continue;
-    const calls = bySession.get(session)?.turns ?? 0;
-    if (calls > threshold) signals.push({ row: Number(row.number), session, calls });
+    const record = claimRecordOf(byRow.get(Number(row.number)) ?? []);
+    if (record === null) continue;
+    anchors.push({ row: Number(row.number), session, at: record.at });
+  }
+  return anchors;
+}
+
+/**
+ * When `anchor`'s window closes: `Infinity`, unless the SAME session claims ANOTHER open row later, in
+ * which case that later claim ends this one's window. #2710's second half -- a standing seat holding row A
+ * and then claiming row B while still holding A must not keep charging A for calls made after B was
+ * claimed, or A and B never stop reporting overlapping totals for the same later work.
+ * @param {{ session: string, at: number }} anchor @param {{ session: string, at: number }[]} anchors
+ */
+function windowEnd(anchor, anchors) {
+  const laterOwnClaims = anchors.filter((a) => a.session === anchor.session && a.at > anchor.at).map((a) => a.at);
+  return laterOwnClaims.length > 0 ? Math.min(...laterOwnClaims) : Infinity;
+}
+
+/**
+ * Every open row whose claimed session has passed `threshold` CALLS made WHILE HOLDING THAT ROW -- from
+ * its own claim record's `createdAt` up to whichever comes first, now or the same session's NEXT claim,
+ * never the claiming session's whole lifetime (#2710). A spawned engineer's transcript IS its one row's
+ * work, so an unbounded, single-claim window changes nothing for it; a STANDING seat (`ceo`, `orchestrator`,
+ * `product-manager`) holds several rows in sequence or at once, and its lifetime total kept climbing
+ * regardless of which row it named -- the defect that reported the SAME figure on two different rows
+ * `orchestrator` held at once.
+ *
+ * A SIGNAL, NOT A SPLIT (#2691): whether and how to split stays `product-manager`'s judgement, so this
+ * reports the count and stops there. A row at or under the threshold is left out entirely -- this names
+ * split CANDIDATES, not every claimed row.
+ *
+ * @param {any[]} openRows @param {import("./token-audit.mjs").Turn[]} turns every live turn, any session
+ * @param {any[] | null} [claimedComments] the comments on every claimed row (`readClaimedRowComments`'s
+ *   own shape, `{ number, comments }[]`), read once by the caller and reused rather than re-fetched here
+ * @param {number} [threshold]
+ * @returns {{ row: number, session: string, calls: number }[]} most calls first
+ */
+export function rowCallCountSignals(openRows, turns, claimedComments = [], threshold = ROW_CALL_COUNT_SPLIT_THRESHOLD) {
+  const byRow = new Map((claimedComments ?? []).map((r) => [Number(r?.number), r?.comments ?? []]));
+  const anchors = claimedRowAnchors(openRows, byRow);
+  const signals = [];
+  for (const anchor of anchors) {
+    const end = windowEnd(anchor, anchors);
+    const calls = turns.filter((t) => t.session === anchor.session && t.at >= anchor.at && t.at < end).length;
+    if (calls > threshold) signals.push({ row: anchor.row, session: anchor.session, calls });
   }
   return signals.sort((a, b) => b.calls - a.calls);
 }
@@ -4335,9 +4375,10 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *        `offBoard` is `readRowsOffBoard()` -- every open row's Project 1 membership, or `null` (#2075). OMITTED AND `null` MEAN
  *        THE SAME THING, "not asked or refused": no order is emitted. It carries no `= null` default for `rowBranches`'s
  *        reason: `decide` sits exactly on its limit of 15.
- *        `callCountSignals` is `rowCallCountSignals(openRows, turns)` (#2691) -- split candidates past the
- *        threshold on their own live transcript. OMITTED MEANS NONE, and `rowCallCountOrders` carries its
- *        own `= []` default rather than this signature carrying one, for `rowBranches`'s reason.
+ *        `callCountSignals` is `rowCallCountSignals(openRows, turns, claimedComments)` (#2691, windowed
+ *        per row's own claim record since #2710) -- split candidates past the threshold on calls made
+ *        while holding their row. OMITTED MEANS NONE, and `rowCallCountOrders` carries its own `= []`
+ *        default rather than this signature carrying one, for `rowBranches`'s reason.
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
  */
@@ -5261,8 +5302,8 @@ function main() {
     // emit nothing, and a refused read is not reported as health because nothing else reads "trunk is fine".
     trunkRed: readTrunkRed(),
     // #2075: ONE GRAPHQL CALL, READ PER ISSUE. `null` (refused) emits nothing and is said on stderr below.
-    // #2691's `callCountSignals` is beside it: a local read of transcripts already on disk, so it costs no `GH_READS`.
-    offBoard, callCountSignals: rowCallCountSignals(allOpen, liveClaudeTurns()) });
+    // #2691's `callCountSignals` is beside it, costing no `GH_READS`; `claimedComments` (#2710's window anchor) is the SAME read made above.
+    offBoard, callCountSignals: rowCallCountSignals(allOpen, liveClaudeTurns(), claimedComments) });
   const others = otherScopeTicks(drain); // #2618: the OTHER declared repositories -- none for one project, whose orders are what they were
   const outageNow = outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows: openRowsRead, claimedComments, offBoard, others });
   const { delivered: orders, performed } = performActions(markOutageReads([...decided, ...others.flatMap((tick) => tick.orders)], outageNow));
