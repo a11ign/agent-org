@@ -51,8 +51,9 @@ import { MAX_ROW_ORDERS_PER_TICK, readCommitChain, withCommitChains, decide, che
   reviewStateOf, reviewBlocked, reviewBlockedOrders, REVIEW_STATE, HOLD_RED_JOBS,
   readRowsOffBoard, rowsOffBoard, rowOffBoardOrders, rowsOffBoardOrSay, ROW_OFF_BOARD_GRACE_MS,
   refusedReadCount, SHARED_OUTAGE_READS, sharedReadOutage, markOutageReads,
-  pipelineCodeownerReviewMissing }
+  pipelineCodeownerReviewMissing, bareAnswerLabelOrders, readRowTimeline }
   from "../work-gate.mjs";
+import { SESSION_PREFIX } from "../project-vocabulary.mjs";
 // #2182: the SHIPPED reader that decides whether a delivered cause is still live, imported so this file
 // can assert what the membership BUYS rather than only that the name is in the list. `wake.mjs` runs
 // nothing on import (its `main()` is behind an `import.meta.url` guard) and these three are pure, so this
@@ -1060,9 +1061,12 @@ test("every cause is classified as START or FINISH -- a new one cannot default i
   // #2691: `row-call-count-signal` is FINISH, and a JUDGMENT cause. Its subject is a row a session already
   // holds -- the plainest case of work in flight there is -- and reading the signal starts no new work:
   // `product-manager` deciding to split, or not, is a judgment over a row that already exists.
-  assert.deepEqual(finish, ["answer-owed", "awaiting-evidence-stale", "blocker-cleared", "chairman-blocked", "claim-stalled",
-    "claimed-row-amended", "disk-headroom-low", "draft-awaiting-verdict", "draft-convinced-not-ready", "host-units-stale", "pr-checks-failing",
-    "pr-codeowner-review-missing", "pr-green-unarmed", "pr-merge-conflict", "pr-review-blocked", "reviewer-auth-failed",
+  // #2711: `answer-label-unexplained` is FINISH, and an ACTION cause (in `JUDGMENT_CAUSES` neither):
+  // `claim-stalled`'s own argument -- its subject is a row a session already holds, which a drain exists to
+  // land, and the two remedies (post the question, remove the label) start no new work.
+  assert.deepEqual(finish, ["answer-label-unexplained", "answer-owed", "awaiting-evidence-stale", "blocker-cleared", "chairman-blocked",
+    "claim-stalled", "claimed-row-amended", "disk-headroom-low", "draft-awaiting-verdict", "draft-convinced-not-ready", "host-units-stale",
+    "pr-checks-failing", "pr-codeowner-review-missing", "pr-green-unarmed", "pr-merge-conflict", "pr-review-blocked", "reviewer-auth-failed",
     "row-branch-unshipped", "row-call-count-signal", "row-off-board", "trunk-red", "verdict-comment-unreviewed", "verdict-not-convinced"]);
   for (const cause of START_CAUSES) {
     assert.ok(CAUSES.includes(cause), `${cause} is withheld by a drain but no longer exists`);
@@ -2259,6 +2263,55 @@ test("answer-owed is a WAKE cause and a FINISH cause, unlike the other three", (
   // drain wants it to happen rather than withholding it.
   assert.ok(CAUSES.includes("answer-owed"));
   assert.ok(!START_CAUSES.includes("answer-owed"), "a drain must not withhold an answer someone waits on");
+});
+
+/**
+ * #2711: THE NATURAL NEIGHBOUR OF `answerOrders`. That cause wakes the NAMED session to answer; a bare
+ * label with nothing posted since gives the addressee no way to tell a real question from a mistake, so
+ * this wakes the row's own HOLDER instead, to post the question or remove the label. Live evidence:
+ * `worker-2632` added `answer:ceo` to its own PR #2649 twice with no comment either time.
+ */
+const holderRow = (n: number, holder: string, owed: string) => ({ number: n,
+  labels: [{ name: `${SESSION_PREFIX}${holder}` }, { name: `${ANSWER_PREFIX}${owed}` }] });
+const timelineOf = (...events: unknown[]) => () => events.map((e) => JSON.stringify(e)).join("\n");
+
+test("readRowTimeline parses NDJSON and refuses rather than reporting an empty timeline", () => {
+  const ok = timelineOf({ event: "labeled", label: { name: "answer:ceo" }, created_at: "2026-09-26T12:42:47Z" });
+  assert.deepEqual(readRowTimeline(2649, ok as never),
+    [{ event: "labeled", label: { name: "answer:ceo" }, created_at: "2026-09-26T12:42:47Z" }]);
+  assert.equal(readRowTimeline(2649, () => { throw new Error("HTTP 404"); }), null,
+    "a refused read is null, never [] -- [] would read every bare label on it as unexplained");
+});
+
+test("a bare `answer:` label wakes the row's own HOLDER, never the addressee named in it", () => {
+  const bare = timelineOf({ event: "labeled", label: { name: "answer:ceo" }, created_at: "2026-09-26T12:42:47Z" });
+  const [order] = bareAnswerLabelOrders([holderRow(2649, "worker-2632", "ceo")], bare as never) as
+    { session: string, cause: string, causeKey: string }[];
+  assert.equal(order.session, "worker-2632", "the holder is woken, never `ceo`, who has nothing to answer");
+  assert.equal(order.cause, "answer-label-unexplained");
+  assert.match(order.causeKey, /^worker-2632\/answer-label-unexplained\/row-2649\/ceo\//);
+});
+
+test("a comment posted at or after the label answers it, and nothing fires", () => {
+  const explained = timelineOf(
+    { event: "labeled", label: { name: "answer:ceo" }, created_at: "2026-09-26T12:42:47Z" },
+    { event: "commented", created_at: "2026-09-26T12:42:47Z" });
+  assert.deepEqual(bareAnswerLabelOrders([holderRow(2649, "worker-2632", "ceo")], explained as never), []);
+});
+
+test("a row nobody currently holds has nobody this cause can wake", () => {
+  const bare = timelineOf({ event: "labeled", label: { name: "answer:ceo" }, created_at: "2026-09-26T12:42:47Z" });
+  assert.deepEqual(
+    bareAnswerLabelOrders([{ number: 2649, labels: [{ name: "answer:ceo" }] }], bare as never), []);
+});
+
+test("answer-label-unexplained is FINISH and an ACTION cause, `claim-stalled`'s own classification", () => {
+  assert.ok(CAUSES.includes("answer-label-unexplained"));
+  assert.ok(!START_CAUSES.includes("answer-label-unexplained"),
+    "its subject is a row the holder already holds, which a drain exists to land");
+  assert.ok(!JUDGMENT_CAUSES.includes("answer-label-unexplained"),
+    "the two remedies -- post the question, remove the label -- are one command each, not a standing "
+    + "judgment to re-ask");
 });
 
 test("readOpenRows refuses rather than reporting an empty tracker", () => {

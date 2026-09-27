@@ -116,6 +116,40 @@ export function answersOwedBy(row) {
   return sessions;
 }
 
+/**
+ * Whether an `answer:<session>` label was applied to this row with NOTHING that looks like an attempt to
+ * satisfy it -- no comment posted at or after the label's own timeline event. `null` when the label was
+ * never applied at all (#2711): the row's own evidence is `answer:ceo` labelled and removed from PR #2649
+ * TWICE with no comment either time, so the addressee had no way to tell a real question from a label
+ * added by habit or by mistake except by going and looking -- the exact cost this module exists to save
+ * every OTHER waiting condition from.
+ *
+ * THE TIMELINE, NOT `issues/{n}/events`: the events endpoint carries label churn only and never a
+ * `commented` entry, so it cannot answer "was anything posted after" -- #2711's own Open-check read the
+ * timeline for exactly that reason, and this reads the same shape.
+ *
+ * THE LAST `labeled` EVENT FOR THIS NAME, because a label removed and reapplied is a NEW wait: a comment
+ * that predates the current application answered a question that is no longer the one outstanding.
+ *
+ * PRESENCE, NOT CONTENT: this asks whether ANYTHING was posted, never what it says. Judging whether a
+ * comment "plausibly names a question" is exactly the reasoning #2711 exists to save a human from doing
+ * by hand on every bare label, so it is left to the reader the resulting wake reaches, not guessed at here.
+ *
+ * @param {{event?: string, label?: {name?: string}, created_at?: string}[] | null | undefined} timeline
+ * @param {string} session
+ * @returns {{labelledAt: string} | null}
+ */
+export function bareAnswerLabel(timeline, session) {
+  const name = `${ANSWER_PREFIX}${session}`;
+  const events = timeline ?? [];
+  const labelEvents = events.filter((e) => e?.event === "labeled" && e?.label?.name === name);
+  if (labelEvents.length === 0) return null;
+  const labelledAt = String(labelEvents[labelEvents.length - 1]?.created_at ?? "");
+  if (!labelledAt) return null;
+  const answered = events.some((e) => e?.event === "commented" && String(e?.created_at ?? "") >= labelledAt);
+  return answered ? null : { labelledAt };
+}
+
 /** The length of `YYYY-MM-DD` -- what tells a date-only `Not-before:` value from a timestamped one. */
 const DATE_ONLY_LENGTH = 10;
 

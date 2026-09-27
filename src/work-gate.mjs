@@ -37,7 +37,8 @@ import { dirname, join } from "node:path";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { READY_LABEL, CLAIM_LABEL, CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
 import { verdictAtHead } from "./review-verdict.mjs";
-import { waitingOn, fleetWaitingOn, todayIso, describeWaiting, ANSWER_PREFIX } from "./waiting-condition.mjs";
+import { waitingOn, fleetWaitingOn, todayIso, describeWaiting, ANSWER_PREFIX, answersOwedBy, bareAnswerLabel }
+  from "./waiting-condition.mjs";
 import { newestPerName } from "./newest-check-run.mjs";
 import { reviewerInstance, subjectIdentity, subjectMention, subjectRef } from "./review-attribution.mjs";
 // B4, ASKED EARLY. These are the SAME two functions `row-claim.mjs` runs at claim time, imported
@@ -131,7 +132,10 @@ export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-c
   "pr-codeowner-review-missing",
   // #2691: a claimed row whose session has passed the call-count split threshold on its OWN live
   // transcript -- a signal, never an automatic split.
-  "row-call-count-signal"];
+  "row-call-count-signal",
+  // #2711: an `answer:<session>` label with nothing posted since it was applied -- the addressee cannot
+  // tell a real question from a bare label, so this wakes the row's own holder to post one or remove it.
+  "answer-label-unexplained"];
 
 /**
  * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
@@ -1945,6 +1949,95 @@ export function answerOrders(rows) {
   }
   return orders;
 }
+
+/**
+ * This row/PR's own `labeled` and `commented` timeline events, projected to the fields `bareAnswerLabel`
+ * reads -- never the whole payload, which on a long-lived row carries every review, commit and
+ * cross-reference too.
+ *
+ * `null` ON A REFUSED READ, NEVER `[]`: an empty timeline would read every outstanding `answer:` label on
+ * it as bare, which is the false-positive direction a refused read must not produce (`readCommitChain`'s
+ * own rule, applied here).
+ *
+ * @param {number} number @param {(args: string[]) => string} run
+ * @returns {{event: string, label?: {name: string}, created_at: string}[] | null}
+ */
+export function readRowTimeline(number, run = defaultRun) {
+  try {
+    const out = run(["api", `repos/${repoNow()}/issues/${number}/timeline`, "--paginate", "--jq",
+      '.[] | select(.event == "labeled" or .event == "commented") | '
+      + '{event: .event, label: {name: .label.name}, created_at: .created_at}']);
+    return out.split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One order: wake `holder` because `owed`'s `answer:` label has nothing said on `row` since `labelledAt`.
+ * @param {any} row @param {string} holder @param {string} owed @param {string} labelledAt
+ */
+function bareAnswerLabelOrder(row, holder, owed, labelledAt) {
+  const subject = isPullRequest(row) ? "pull request" : "row";
+  return {
+    session: holder,
+    cause: "answer-label-unexplained",
+    subject: `row-${subjectRef(row.repoKey, row.number)}`,
+    discriminator: `${owed}/${labelledAt}`,
+    prompt: `${subjectMention(row)} carries \`${ANSWER_PREFIX}${owed}\`, applied at ${labelledAt}, with `
+      + `NOTHING posted on this ${subject} since -- so ${owed} cannot tell a real question from a label `
+      + "applied out of habit or by mistake (#2711).\n"
+      + `POST THE QUESTION ${owed} is meant to answer, or remove the label if it no longer applies -- `
+      + "leaving it as it is asks the addressee to clear a label that means nothing.",
+    causeKey: `${holder}/answer-label-unexplained/row-${subjectRef(row.repoKey, row.number)}/${owed}/${labelledAt}`,
+  };
+}
+
+/**
+ * Every unexplained `answer:` label on ONE row/PR, turned into orders. PAID ONLY BY A ROW THAT ALREADY
+ * CARRIES THE LABEL AT ALL: the timeline read happens after both cheap checks below have already refused.
+ * @param {any} row @param {(args: string[]) => string} run
+ */
+function bareAnswerLabelOrdersForRow(row, run) {
+  const holder = sessionOf(row);
+  const owedSessions = answersOwedBy(row);
+  if (!holder || owedSessions.length === 0) return [];
+  const timeline = readRowTimeline(Number(row.number), run);
+  const orders = [];
+  for (const owed of owedSessions) {
+    const bare = bareAnswerLabel(timeline, owed);
+    if (bare) orders.push(bareAnswerLabelOrder(row, holder, owed, bare.labelledAt));
+  }
+  return orders;
+}
+
+/**
+ * `answerOrders`'s natural neighbour (#2711): that one wakes the NAMED session to answer; this wakes the
+ * LABELLING session, because the addressee has no way to tell a real question from a label applied out of
+ * habit or by mistake, and the label alone cannot say which. Live evidence: `worker-2632` added
+ * `answer:ceo` to its own PR #2649 twice with no comment either time, and `ceo` cleared it twice with
+ * nothing to answer.
+ *
+ * THE ROW'S OWN `session:` LABEL IS THE LABELLING SESSION, not the timeline's `actor.login`. Every org
+ * session shares one of a handful of GitHub accounts (`.claude/rules/gh-api-budget.md`), so the timeline
+ * can say which ACCOUNT wrote the label and never which SESSION -- but every observed case is the row's
+ * own holder setting `answer:` on the row they are stopped on, which `sessionOf` already names. A row with
+ * no holder has no session this cause can wake, so it is skipped rather than guessed at.
+ *
+ * @param {any[]} rowsOwingAnswers `withAnswerLabel`'s output -- open rows and open pull requests together
+ * @param {(args: string[]) => string} [run]
+ */
+export function bareAnswerLabelOrders(rowsOwingAnswers, run = defaultRun) {
+  const orders = [];
+  for (const row of rowsOwingAnswers ?? []) {
+    orders.push(...bareAnswerLabelOrdersForRow(row, run));
+    if (orders.length >= MAX_ROW_ORDERS_PER_TICK) return orders.slice(0, MAX_ROW_ORDERS_PER_TICK);
+  }
+  return orders;
+}
+
+/** @param {ReturnType<typeof bareAnswerLabelOrders> | undefined} orders */
+const bareAnswerOrdersOrNone = (orders) => orders ?? [];
 
 /**
  * #2161: the rows an open pull request DECLARES it closes -- the holders who have demonstrably acted.
@@ -4425,7 +4518,8 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *           closings?: Map<number, number> | null, trunkRed?: ReturnType<typeof readTrunkRed>,
  *           baseTip?: {sha: string, date: string} | null,
  *           claimStalls?: import("./claim-stall.mjs").StallOrder[], offBoard?: BoardFacts[] | null,
- *           callCountSignals?: { row: number, session: string, calls: number }[] }} state
+ *           callCountSignals?: { row: number, session: string, calls: number }[],
+ *           bareAnswerLabels?: ReturnType<typeof bareAnswerLabelOrders> }} state
  *        `claimStalls` is `claimStallTick`'s orders (#2470): a nudge to a holder whose claim has not moved, or a release
  *        `wake.mjs` performs. OMITTED MEANS NONE.
  *        `required` is the checks that can block a merge (`requiredCheckNames`), or `null` for
@@ -4471,12 +4565,16 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *        `callCountSignals` is `rowCallCountSignals(openRows, turns)` (#2691) -- split candidates past the
  *        threshold on their own live transcript. OMITTED MEANS NONE, and `rowCallCountOrders` carries its
  *        own `= []` default rather than this signature carrying one, for `rowBranches`'s reason.
+ *        `bareAnswerLabels` is `bareAnswerLabelOrders(...)` (#2711) -- already-built orders, because
+ *        building them means a per-row timeline call `decide` itself must not make. OMITTED MEANS NONE,
+ *        and it carries no `= []` default for `rowBranches`'s reason: `decide` sits exactly on its limit
+ *        of 15, and `bareAnswerOrdersOrNone` carries the `?? []` instead.
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
-  claimedComments = [], rowBranches, hostDrift, closings, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals }) {
+  claimedComments = [], rowBranches, hostDrift, closings, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels }) {
   // FIRST, BEFORE EVERY OTHER CAUSE (#2356): a red `main` outranks even `answer-owed` -- see `trunkRedOrders`.
   // `answer-owed` says another session is ALREADY STOPPED waiting on them, which outranks any standing question.
   const orders = [...trunkRedOrders(trunkRed), ...answerOrders(answerOwed)];
@@ -4492,8 +4590,8 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // is queued behind that row stopped with it. Ahead of every cause that offers NEW work: a row already
   // claimed and now runnable beats a row nobody has picked up.
   orders.push(...blockerClearedOrders(openRows, todayIso(), Date.now(), prs));
-  // #2470: A CLAIM THAT DOES NOT MOVE -- it addresses the session that holds a row, so it outranks every cause offering NEW work.
-  orders.push(...stallOrdersOrNone(claimStalls));
+  // #2470/#2711: A CLAIM THAT DOES NOT MOVE, OR A BARE `answer:` LABEL ON IT -- both address the row's own holder, so both outrank every cause offering NEW work.
+  orders.push(...stallOrdersOrNone(claimStalls), ...bareAnswerOrdersOrNone(bareAnswerLabels));
 
   orders.push(...perPullRequestOrders(prs, required, baseTip));
   // #2031: AHEAD OF THE OFFER, AND IT IS THE SAME READING THAT WITHHELD IT. `partitionUnclaimed` shelves
@@ -5395,7 +5493,7 @@ function main() {
     trunkRed: readTrunkRed(),
     // #2075: ONE GRAPHQL CALL, READ PER ISSUE. `null` (refused) emits nothing and is said on stderr below.
     // #2691's `callCountSignals` is beside it: a local read of transcripts already on disk, so it costs no `GH_READS`.
-    offBoard, callCountSignals: rowCallCountSignals(allOpen, liveClaudeTurns()) });
+    offBoard, callCountSignals: rowCallCountSignals(allOpen, liveClaudeTurns()), bareAnswerLabels: bareAnswerLabelOrders(withAnswerLabel([...allOpen, ...openPrs])) }); // #2711
   const others = otherScopeTicks(drain); // #2618: the OTHER declared repositories -- none for one project, whose orders are what they were
   const outageNow = outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows: openRowsRead, claimedComments, offBoard, others });
   const { delivered: orders, performed } = performActions(markOutageReads([...decided, ...others.flatMap((tick) => tick.orders)], outageNow));
