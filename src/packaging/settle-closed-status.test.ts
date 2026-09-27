@@ -1,3 +1,9 @@
+// no-token: settle-closed-rows.mjs -- #827, #2719. Two cases below `await import` this module for
+// `closedRowsOnProject`, whose default `gh` (execFileSync("gh", ...), settle-closed-rows.mjs:74) this
+// file never lets run: every call here hands it its own fake page-returning function instead, testing the
+// cursor-walk assembly as pure data, never a real `gh`. Measured -- both cases pass with `gh` off `PATH`
+// entirely and `GH_TOKEN`/`GITHUB_TOKEN`/`GH_CONFIG_DIR` unset. Without this the acceptance job refuses the
+// row's own declared command and verifies NOTHING (#2106 hit exactly that).
 /**
  * #1227: the close-side Status write, tested where no token is required.
  *
