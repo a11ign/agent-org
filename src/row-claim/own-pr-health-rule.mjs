@@ -155,6 +155,9 @@ import { headMatches, reviewVerdict } from "../review-verdict.mjs";
 // #2126: `answer:<session>` is the org's own spelling for "somebody owes this row an answer", and
 // removing the label IS the act of answering -- so the escalation needs nothing else to remember it.
 import { ANSWER_PREFIX, todayIso, waitingOn } from "../waiting-condition.mjs";
+// #2619 (child 3d of #69): the claim-lifecycle label and the `session:` prefix `lookupOtherHeldIssues`
+// searches by, moved to the project's declared vocabulary.
+import { CLAIM_LABEL, SESSION_PREFIX } from "../project-vocabulary.mjs";
 
 // NO `git` SPAWN HERE, deliberately -- every lookup in this file goes through `gh` (issue/PR/GraphQL
 // reads), which needs no `sandboxGitEnv()` scrub: that helper exists for `execFileSync("git", ...)`
@@ -332,7 +335,7 @@ function waitingRemedy(issueNumber) {
   return `\n  If #${issueNumber} is genuinely WAITING on something no commit of yours can hasten -- a machine run, `
     + "a date, another row, an answer -- declare it and this refusal lifts: a `Not-before: YYYY-MM-DDTHH:MM:SSZ` "
     + "line still in the future, `gh issue edit " + issueNumber + " --add-blocked-by <row>` on an OPEN row, or an "
-    + "`answer:<session>` label. It reads no such condition on #" + issueNumber + " now (a `Not-before:` that "
+    + `\`${ANSWER_PREFIX}<session>\` label. It reads no such condition on #` + issueNumber + " now (a `Not-before:` that "
     + "has passed, or one that is malformed, is not one), so the row counts as work you can do today.";
 }
 
@@ -656,7 +659,7 @@ export function lookupOpenPrReviewHealth({ run = gh, log = (line) => process.std
 export function lookupOtherHeldIssues(mySession, excludeIssueNumber, { run = gh, repo = REPO } = {}) {
   return lookup(() => {
     const raw = run(["issue", "list", "--repo", repo, "--state", "open",
-      "--label", "in-progress", "--label", `session:${mySession}`, "--json", "number"]);
+      "--label", CLAIM_LABEL, "--label", `${SESSION_PREFIX}${mySession}`, "--json", "number"]);
     /** @type {{ number: number }[]} */
     const parsed = JSON.parse(raw);
     return parsed.map((issue) => issue.number).filter((n) => n !== excludeIssueNumber);

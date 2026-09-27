@@ -22,6 +22,10 @@ import { reviewerSeat, subjectMention, subjectRef } from "../review-attribution.
 import { NO_VERDICT } from "../merge-guard/checks-rule.mjs";
 import { armabilityOf, holdersOf, HOLD_PREFIX } from "../pr-hold-state.mjs";
 import { REPO } from "../project-identity.mjs";
+// #2619 (child 3d of #69): the `session:` prefix and the `blocked` label, moved to the project's
+// declared vocabulary. (The `"ready"` action `kind` a few lines below is `gh pr ready`'s draft-status
+// flip -- a built-in GitHub PR field, not this project's `ready` row label -- so it stays a literal.)
+import { SESSION_PREFIX, BLOCKED_LABEL } from "../project-vocabulary.mjs";
 import { labelsOf, sessionOf, checksSettledGreen, conclusionOf, stillRunning, anyChecksRed, requiredCheckNames,
   blockingChecks, reviewableHead, verdictAmong, awaitingEvidence, AWAITING_EVIDENCE_LABEL,
   AWAITING_EVIDENCE_QUIET_HOURS, AWAITING_EVIDENCE_QUIET_MS, HOUR_MS, REVIEW_STATE } from "../work-gate.mjs";
@@ -170,7 +174,7 @@ export function greenUnarmedOrders(unarmed, scope = { key: "", repo: REPO }) {
       + "say on #1969 that it recurred, with the window.\n"
       + "ONE PR ONLY: it is likelier that PR never got an arming event (opened while conflicting, or "
       + "reopened). Arming it is the same command.\n"
-      + "IF A PR HERE SHOULD NOT MERGE, the answer is a `hold:` label or a `session:` label on the PR "
+      + `IF A PR HERE SHOULD NOT MERGE, the answer is a \`hold:\` label or a \`${SESSION_PREFIX}\` label on the PR `
       + "itself -- both are read by the same predicate this order used, so it leaves this set at once. A "
       + "PR you merely skip stays in the set and this order returns unchanged.",
     causeKey: `product-manager/pr-green-unarmed/${key}`,
@@ -268,7 +272,7 @@ function reviewBlockedSetOrder(blocked) {
       + "`npm run prompt:session -- reviewer-<n> \"#<n> ...\"`. A `QUEUED` exit 2 is delivery; do not "
       + "retry it.\n"
       + "REFUSED is a reviewer's `CHANGES_REQUESTED`, and it does NOT clear by being pushed past. Decide "
-      + "whether it stands: rework belongs to the session on the PR's `session:` label, and a newer "
+      + `whether it stands: rework belongs to the session on the PR's \`${SESSION_PREFIX}\` label, and a newer `
       + "review is the only thing that lifts it.\n"
       + "A REFUSAL AT A HEAD THE AUTHOR HAS ALREADY FIXED IS THE #2084 SHAPE -- compare the review's "
       + "commit against `headRefOid` before routing rework nobody owes.\n"
@@ -822,7 +826,7 @@ export function awaitingEvidenceStaleOrders(prs, now = Date.now()) {
       + "(`gh pr edit <n> --remove-label awaiting-evidence`) -- removing it IS posting the evidence -- or the "
       + "author says on the PR what it waits on and who owns that run. If nobody owns it, the label is hiding a "
       + "stalled PR: route it to the row's owner, or to `orchestrator` when the run is a fleet or lab one. "
-      + "It is NOT `blocked`, which has no referent.",
+      + `It is NOT \`${BLOCKED_LABEL}\`, which has no referent.`,
     causeKey: `product-manager/awaiting-evidence-stale/${key}`,
   }];
 }

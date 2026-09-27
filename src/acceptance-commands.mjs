@@ -99,9 +99,20 @@ import { RESOURCES, FLEET_QUESTION, ACCEPTANCE_FIELD, CLOSES_FIELD } from "./pro
 //
 // #2619 (child 3d of #69): THE VALUES ARE `RESOURCES`, a11ign's project declaration -- this file now
 // derives its two working lists from the `named` flag each entry carries, rather than choosing the patterns
-// itself. A second project's declaration can name a different resource ban, or none.
-const FLEET_LAB_PATTERNS = /** @type {[RegExp, string][]} */ (RESOURCES.map(({ pattern, reason }) => [pattern, reason]));
-const NAMED_NOT_INVOKED = new Set(RESOURCES.filter((resource) => resource.named).map((resource) => resource.pattern));
+// itself. A second project's declaration can name a different resource ban, or none. `resourcePatternsFrom`
+// is EXPORTED, pure, and takes `resources` as a parameter rather than closing over `RESOURCES`, so a test
+// can show a fixture project's OWN list (an empty one included) derives its own two working lists, without
+// swapping the module's own import-time binding of `RESOURCES`.
+/** @param {readonly { pattern: RegExp, reason: string, named: boolean }[]} resources
+ * @returns {{ patterns: [RegExp, string][], namedNotInvoked: Set<RegExp> }} */
+export function resourcePatternsFrom(resources) {
+  return {
+    patterns: resources.map(({ pattern, reason }) => [pattern, reason]),
+    namedNotInvoked: new Set(resources.filter((resource) => resource.named).map((resource) => resource.pattern)),
+  };
+}
+
+const { patterns: FLEET_LAB_PATTERNS, namedNotInvoked: NAMED_NOT_INVOKED } = resourcePatternsFrom(RESOURCES);
 
 // #1988: A PARAGRAPH DECLARING THE WORK **OUT** IS NOT THE ROW DOING IT. `extractLabeledSection` runs to
 // the next `##` heading, so the Acceptance span swallows every bold-labelled paragraph after it --

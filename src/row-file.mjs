@@ -752,9 +752,14 @@ export { OUT_OF_RELEASE_MILESTONE };
 /**
  * Is this the milestone that says "outside every release"? Case is folded for the same reason
  * `labelsOutOfRelease` folds it -- one fact, and a filer's capitalisation is not a second one.
- * @param {string | null} milestone @returns {boolean}
+ *
+ * EXPORTED WITH `outOfReleaseMilestone` INJECTABLE (#2619, child 3d of #69): a11ign's own value is the
+ * default, and a test states a fixture project's DIFFERENT milestone title to show this same comparison,
+ * unchanged, would refuse (or not) by that project's own word rather than a11ign's.
+ * @param {string | null} milestone @param {string} [outOfReleaseMilestone] @returns {boolean}
  */
-const saysOutOfRelease = (milestone) => milestone !== null && sameLabel(milestone, OUT_OF_RELEASE_MILESTONE);
+export const saysOutOfRelease = (milestone, outOfReleaseMilestone = OUT_OF_RELEASE_MILESTONE) =>
+  milestone !== null && sameLabel(milestone, outOfReleaseMilestone);
 
 /**
  * The argv to file with: unchanged, unless this row declares itself out of release by ONE of the two
@@ -829,10 +834,13 @@ export function milestoneFromArgv(argv) {
  * `--label=X`, `-l X`, `-l=X`, a comma list, any case (gh folds it). The ONE predicate `declaresRelease` and
  * `outOfReleaseArgv` both ask: each carried its own exact-spelling copy, so `--label out-of-release,docs` was
  * refused as declaring "no release", and fixing only the refusal would have filed the row with no milestone.
- * @param {string[]} argv @returns {boolean}
+ *
+ * `outOfReleaseLabel` INJECTABLE for the same reason `saysOutOfRelease`'s `outOfReleaseMilestone` is
+ * (#2619, child 3d of #69): a11ign's own value by default, a fixture project's own label in a test.
+ * @param {string[]} argv @param {string} [outOfReleaseLabel] @returns {boolean}
  */
-export function labelsOutOfRelease(argv) {
-  return labelValuesFromArgv(argv).some((label) => sameLabel(label, OUT_OF_RELEASE));
+export function labelsOutOfRelease(argv, outOfReleaseLabel = OUT_OF_RELEASE) {
+  return labelValuesFromArgv(argv).some((label) => sameLabel(label, outOfReleaseLabel));
 }
 
 /** @param {string[]} argv @returns {boolean} */

@@ -89,6 +89,8 @@ import { LS_REMOTE_ARGS, branchesForRow } from "./row-claim/row-branch-rule.mjs"
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { primaryWorktreeOf, unverifiedRecords } from "./prune-worktrees.mjs";
 import { CLAIM_LABEL, STARTED_LABEL, CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
+// #2619 (child 3d of #69): the rest of this file's vocabulary -- `blocked`, `answer:`, `session:`.
+import { BLOCKED_LABEL, ANSWER_PREFIX, SESSION_PREFIX } from "./project-vocabulary.mjs";
 import { worktreeOwner, stampWorktree } from "./worktree-owner.mjs";
 import { launchGate } from "./board-snapshot-scope.mjs";
 import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
@@ -99,9 +101,11 @@ import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
 // would forward the binding WITHOUT creating a local one, and this file's own code below needs the local
 // name -- hence import-then-export as two separate statements rather than one re-export line.
 export { CLAIM_LABEL, STARTED_LABEL };
-export const BLOCKED_LABEL = "blocked";
+// #2619 (child 3d of #69): IMPORTED, NOT REDECLARED -- `project-vocabulary.mjs`'s fields, re-exported
+// under this file's own established name so `BLOCKED_LABEL`'s existing importers keep working unchanged.
+export { BLOCKED_LABEL };
 /** #2470: `decline --answer=<session>` adds `answer:<session>`, the label `waiting-condition.mjs` reads as "that session owes an answer". */
-const ANSWER_LABEL_PREFIX = "answer:";
+const ANSWER_LABEL_PREFIX = ANSWER_PREFIX;
 
 /**
  * #771: the `Filed-by: <session>` line `row-file.mjs` writes, or `null` when absent -- a LITERAL line
@@ -401,7 +405,7 @@ export function claimStatus(labels) {
   return {
     claimed: labels.includes(CLAIM_LABEL),
     started: labels.includes(STARTED_LABEL),
-    sessions: labels.filter((l) => l.startsWith("session:")).map((l) => l.slice("session:".length)),
+    sessions: labels.filter((l) => l.startsWith(SESSION_PREFIX)).map((l) => l.slice(SESSION_PREFIX.length)),
     branch: branchLabel ? branchLabel.slice(BRANCH_LABEL_PREFIX.length) : null,
     worktree: worktreeLabel ? worktreeLabel.slice(WORKTREE_LABEL_PREFIX.length) : null,
   };
@@ -805,7 +809,7 @@ export function claimLabelSetArgs(issueNumber, labels) {
  * @returns {{ refusal: string | null }} a refusal means NOTHING was written
  */
 function applyClaimLabels(issueNumber, { run, mySession, extraLabels, landed }) {
-  const claimLabels = [CLAIM_LABEL, `session:${mySession}`, ...extraLabels];
+  const claimLabels = [CLAIM_LABEL, `${SESSION_PREFIX}${mySession}`, ...extraLabels];
   ensureLabelsExist([...claimLabels, WAS_READY_LABEL], { run });
   const fresh = fetchLabels(issueNumber, { run });
   const decision = decideClaim(fresh.labels, mySession);
@@ -894,7 +898,7 @@ function writeRowLabels(issueNumber, mySession, extraLabels,
     }
   }
 
-  const sessionLabel = `session:${mySession}`;
+  const sessionLabel = `${SESSION_PREFIX}${mySession}`;
   /** @type {string[]} */
   const landed = [];
   // #1399: FROM THE FIRST WRITE ON, A FAILURE IS A PARTIAL WRITE, never `COULD NOT DETERMINE` -- see
@@ -1105,7 +1109,7 @@ export function trackerClaimRefusal({ mode, key, number, session, worktree }, de
   }
   if (session === claimNames({ key: "", number }).session) {
     return `\`${session}\` is the name of the session that holds the FIRST tracker's row ${number}; a worker on tracker \`${key}\`'s row ${number} is `
-      + `\`${names.session}\` (ADR 0040, decision 2), or its \`session:\` label would name two rows`;
+      + `\`${names.session}\` (ADR 0040, decision 2), or its \`${SESSION_PREFIX}\` label would name two rows`;
   }
   return `\`${mode}\` in tracker \`${key}\` writes the row's labels and moves its card on the Project board, and neither is built for a second `
     + "tracker yet: the labels are the label row's (#2619, 3d) and the board snapshot is bound to the first tracker's board. "
@@ -1443,7 +1447,7 @@ export function removeClaimedWorktree(worktreePath, { run = defaultRun, hash } =
  * @returns {string[]}
  */
 function declineRemoveLabels(status, mySession, wasReady) {
-  return [CLAIM_LABEL, `session:${mySession}`, STARTED_LABEL,
+  return [CLAIM_LABEL, `${SESSION_PREFIX}${mySession}`, STARTED_LABEL,
     ...(status.branch ? [`${BRANCH_LABEL_PREFIX}${status.branch}`] : []),
     ...(status.worktree ? [`${WORKTREE_LABEL_PREFIX}${status.worktree}`] : []),
     ...(wasReady ? [WAS_READY_LABEL] : [])];
@@ -1719,7 +1723,7 @@ function usage() {
     + "  node packages/agent-org/src/row-claim.mjs decline <issue-number> --session=<name> [--keep-worktree] "
     + "[--answer=<session>]    (give it back; #665: also "
     + "removes the recorded worktree, refusing by name if it is dirty; #2470: --keep-worktree leaves it, with its work, and "
-    + "--answer= releases to that session's `answer:` label instead of `ready`)\n"
+    + `--answer= releases to that session's \`${ANSWER_PREFIX}\` label instead of \`${READY_LABEL}\`)\n`
     + "  node packages/agent-org/src/row-claim.mjs conflict <issue-number> --found=<text>     (#226: reality differed)\n";
 }
 
@@ -2160,11 +2164,11 @@ function runDecline(issueNumber, rest) {
       // human deciding what happens next: restored (pickable again), blocked (a finding, do not repick
       // yet), closed (done -- "restored to ready" would be false on its face), or neither (was never
       // `ready`, unclaimed and no more startable than that already implies).
-      const outcome = result.closed ? "; the row is CLOSED, so it is NOT returned to `ready`"
-        : answer ? `and labelled \`answer:${answer}\` (NOT returned to \`ready\`)`
-        : result.blocked ? "and marked `blocked`"
-        : result.restoredReady ? "and restored to `ready`"
-        : "(was not `ready` before the claim -- not restored)";
+      const outcome = result.closed ? `; the row is CLOSED, so it is NOT returned to \`${READY_LABEL}\``
+        : answer ? `and labelled \`${ANSWER_PREFIX}${answer}\` (NOT returned to \`${READY_LABEL}\`)`
+        : result.blocked ? `and marked \`${BLOCKED_LABEL}\``
+        : result.restoredReady ? `and restored to \`${READY_LABEL}\``
+        : `(was not \`${READY_LABEL}\` before the claim -- not restored)`;
       if (result.statusMoved) {
         process.stdout.write(`DECLINED -- #${issueNumber} is unclaimed again ${outcome}\n`);
         process.exitCode = 0;

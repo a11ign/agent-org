@@ -44,6 +44,9 @@ import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_F
 import { reviewerInstance, subjectMention } from "./review-attribution.mjs";
 import { homeProjectDeclaration } from "./project-config.mjs";
 import { REPO } from "./project-identity.mjs";
+// #2619 (child 3d of #69): `session:`/`ready` -- `answer:` already arrives via `work-gate.mjs`'s
+// re-export of `waiting-condition.mjs`'s own field, so it is not re-imported here.
+import { SESSION_PREFIX, READY_LABEL } from "./project-vocabulary.mjs";
 import { inBuildReason, isInBuild, unansweredRefusal, lookupHeldRows, lookupOtherHeldIssues }
   from "./row-claim/own-pr-health-rule.mjs";
 import { parseWorktreeList, isPrimaryWorktree, isWorkingTreeClean, mergeStatus, detachedMergeStatus }
@@ -2272,8 +2275,8 @@ function settle(order, outcome, deps) {
 export function holderOf(ref, run = defaultGh) {
   try {
     const read = JSON.parse(run(["api", `repos/${REPO}/issues/${ref}`, "--jq", "{state, labels: [.labels[].name]}"]));
-    const sessions = /** @type {string[]} */ (read.labels).filter((l) => l.startsWith("session:"))
-      .map((l) => l.slice("session:".length)).sort();
+    const sessions = /** @type {string[]} */ (read.labels).filter((l) => l.startsWith(SESSION_PREFIX))
+      .map((l) => l.slice(SESSION_PREFIX.length)).sort();
     return { open: read.state === "open", sessions };
   } catch (err) {
     return /HTTP 404|Not Found/.test(String(/** @type {any} */ (err)?.stderr ?? /** @type {any} */ (err)?.message))
@@ -2559,7 +2562,7 @@ export function decisionHeader(take) {
   if (numbers.length === 0) {
     return `DECISIONS DECLARED: none of these ${take.length} orders. A sender that gave no flag is counted `
       + "as FYI, so this is what was DECLARED, not proof that nothing here asks -- an ask that belongs to "
-      + "a row is on that row's `answer:` label.";
+      + `a row is on that row's \`${ANSWER_PREFIX}\` label.`;
   }
   const listed = numbers.slice(0, MAX_LISTED_DECISIONS).map((n) => `ORDER ${n}`).join(", ");
   const more = numbers.length > MAX_LISTED_DECISIONS
@@ -2922,7 +2925,7 @@ export function addressed(order, label,
     + "COMPLETE, EVIDENCED ROW DRAFT (two incidents, commit hashes, timestamps) and asking permission "
     + "to file it -- when filing is the first line of its own brief. The row did not get filed.\n"
     + "IF IT IS GENUINELY NOT YOURS, that is not a question either: say what you would do, name who "
-    + "owns it, and route it -- `answer:<session>` on the row for a ruling, or the row itself for work. "
+    + `owns it, and route it -- \`${ANSWER_PREFIX}<session>\` on the row for a ruling, or the row itself for work. `
     + "Then end your turn. The gate will bring you back when something changes; waiting is never your "
     + "job, and polling a pull request for a verdict that has its own cause is a turn spent on a "
     + "question the tick already answers.";
@@ -3804,7 +3807,7 @@ export function cycleVerdict({ role, rows, held, worktrees }) {
   for (const row of rows) {
     if (row.state !== "CLOSED") problems.push(`#${row.number} is ${row.state.toLowerCase()}, not closed`);
   }
-  if (held.length > 0) problems.push(`session:${role} still labels ${held.map((n) => `#${n}`).join(", ")}`);
+  if (held.length > 0) problems.push(`${SESSION_PREFIX}${role} still labels ${held.map((n) => `#${n}`).join(", ")}`);
   for (const tree of worktrees) {
     if (tree.clean === "unknown" || tree.merge === "unknown") problems.push(`${tree.path} could not be read`);
     else if (tree.clean === false) problems.push(`${tree.path} has uncommitted changes`);
@@ -4550,7 +4553,7 @@ function releasePlan(request, deps) {
   const repo = deps.host.primary;
   const holds = stillHolds(request, deps);
   if (holds !== true) {
-    return { refusal: holds === false ? `\`session:${request.session}\` is no longer on #${request.row} -- a stale order, nothing to release`
+    return { refusal: holds === false ? `\`${SESSION_PREFIX}${request.session}\` is no longer on #${request.row} -- a stale order, nothing to release`
       : `could not read #${request.row}'s labels -- not released, retried next tick` };
   }
   const work = workAtRisk(deps.io, { worktree: request.worktree, branch: request.branch, repo });
@@ -4572,7 +4575,7 @@ function releasePlan(request, deps) {
 function stillHolds(request, deps) {
   try {
     const labels = JSON.parse(deps.gh(["issue", "view", String(request.row), "--repo", REPO, "--json", "labels"]))?.labels;
-    return Array.isArray(labels) && labels.some((/** @type {any} */ l) => l?.name === `session:${request.session}`);
+    return Array.isArray(labels) && labels.some((/** @type {any} */ l) => l?.name === `${SESSION_PREFIX}${request.session}`);
   } catch {
     return null;
   }
@@ -4618,9 +4621,9 @@ function releaseComment(request, plan) {
       + `${plan.work.unpushed} commit(s) not on any remote): the next instance for this row starts in it and continues, and nothing was removed.`
     : "Nothing was left on this host worth keeping, so no worktree was kept.";
   const next = request.why === "merged"
-    ? `\`answer:${request.answer}\` is set: whether the row is finished, or needs re-scoping, is theirs to rule. If more work is needed a fresh \`worker-<row>\` is started.`
+    ? `\`${ANSWER_PREFIX}${request.answer}\` is set: whether the row is finished, or needs re-scoping, is theirs to rule. If more work is needed a fresh \`worker-<row>\` is started.`
     : plan.restored === false
-      ? "The row was NOT `ready` before it was claimed, so it is NOT back in the pool: `product-manager` promotes it again when it should be taken."
+      ? `The row was NOT \`${READY_LABEL}\` before it was claimed, so it is NOT back in the pool: \`product-manager\` promotes it again when it should be taken.`
       : plan.onOrigin
       ? "The row is back in the pool, BUT its branch is on `origin` with no pull request, so #2031's `row-branch-unshipped` holds it for `product-manager` "
         + "to read first (open the PR, delete the branch, or rename it); the kept worktree waits, and the respawn adopts it once the row is offered."
@@ -4692,7 +4695,7 @@ export function performRelease(request, deps) {
   if (!(/^DECLINED/m.test(ran.output) && CLAIM_LANDED.includes(Number(ran.status)))) {
     return { released: false, why: `decline of #${request.row} as ${request.session} did not land (${verdictLine(ran.output)})` };
   }
-  settleRelease(request, { ...plan, restored: /restored to `ready`/.test(ran.output) }, deps);
+  settleRelease(request, { ...plan, restored: new RegExp(`restored to \`${READY_LABEL}\``).test(ran.output) }, deps);
   recordReleaseCycle(request, deps, plan.keep);
   return { released: true, why: `#${request.row} (${request.session}, ${request.why}): ${plan.keep
     ? `worktree KEPT at ${request.worktree}` : "nothing kept"}` };
