@@ -12,15 +12,22 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { deliver as settlingDeliver } from "../wake.mjs";
 import { clearThenPrompt as settlingClearThenPrompt, deliveredText } from "../prompt-session.mjs";
 import { sessionOf } from "../token-audit.mjs";
 
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
-const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: noSettle });
+/** #2688: an EMPTY transcript root, so a per-row label this file reuses (`worker-2443`, `worker-4`, `reviewer-2537`,
+ * all real, reused org role names on a shared host) is never compacted by a coincidence of a live session's own
+ * transcript -- this file is not about the compact check, only about the header that follows the clear-skip. */
+const NO_TRANSCRIPTS = join(tmpdir(), "a11y-2538-no-transcripts");
+const deliver: typeof settlingDeliver = (orders, agents, roster, deps) =>
+  settlingDeliver(orders, agents, roster, { contextRoot: NO_TRANSCRIPTS, ...deps, sleep: noSettle });
 const clearThenPrompt: typeof settlingClearThenPrompt = (run, label, text, options) =>
-  settlingClearThenPrompt(run, label, text, { ...options, sleep: noSettle });
+  settlingClearThenPrompt(run, label, text, { contextRoot: NO_TRANSCRIPTS, ...options, sleep: noSettle });
 
 const PREAMBLE_PHRASES = ["Before you start", "Work autonomously", "ENDING YOUR TURN"];
 const ROSTER = ["worker-capture", "worker-judge", "worker-tooling"];

@@ -42,6 +42,9 @@ import { profileFor, agentArgs } from "./worker-profile.mjs";
 import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry, scopesOf }
   from "./work-gate.mjs";
 import { reviewerInstance, subjectMention } from "./review-attribution.mjs";
+// #2688: THE SAME INSTRUMENT #928's OFFLINE REPORT IS BUILT FROM, READ LIVE INSTEAD OF ONLY REPORTED --
+// no new metric, only this one read at delivery time.
+import { claudeTurns, transcriptFiles } from "./token-audit.mjs";
 import { homeProjectDeclaration } from "./project-config.mjs";
 import { REPO } from "./project-identity.mjs";
 import { inBuildReason, isInBuild, unansweredRefusal, lookupHeldRows, lookupOtherHeldIssues }
@@ -2622,18 +2625,19 @@ function batchedOrder(take, held, now) {
  * @param {string[]} roster
  * @param {{run?: (args: string[]) => string, queuePath?: string, drop?: typeof dropHandoffs,
  *          now?: number, budget?: number, unavailable?: (label: string) => string | null,
- *          sleep?: (ms: number) => void}} [deps] `sleep` is `deliver`'s clear settle, passed straight through (#2546)
+ *          sleep?: (ms: number) => void, contextRoot?: string}} [deps] `sleep` is `deliver`'s clear settle,
+ *   passed straight through (#2546); `contextRoot` is `deliver`'s compact-check transcript root, the same way (#2688)
  * @returns {{sent: string[], refused: string[], ids: string[], busied: Set<string>}} `ids` is every
  *   order a delivery CARRIED, which is what the caller subtracts before calling anything still stale.
  */
 export function deliverHandoffs(handoffs, agents, roster,
   { run = defaultRun, queuePath, drop = dropHandoffs, now = Date.now(),
-    budget = HANDOFF_BATCH_BYTES, unavailable, sleep } = {}) {
+    budget = HANDOFF_BATCH_BYTES, unavailable, sleep, contextRoot } = {}) {
   const batches = handoffBatches(handoffs, { now, budget, roster });
   /** @type {string[]} */
   const landed = [];
   const { sent, refused } = deliver(batches, agents, roster,
-    { run, record: (key) => landed.push(key), unavailable, sleep });
+    { run, record: (key) => landed.push(key), unavailable, sleep, contextRoot });
   // THE BATCH IS WHAT WAS ACCEPTED; THE IDS ARE WHAT IT COVERED. `record` fires on the causeKey, because
   // that is the seam `deliver` offers, so the ids to retire come back through the batch that carried
   // them -- and a batch nobody accepted retires nothing, which is the assertion this whole queue is for.
@@ -3328,6 +3332,68 @@ function sleepSync(ms) {
 const CLEAR_REFUSAL_EXCERPT = 80;
 
 /**
+ * `120,000` cache-read tokens on a per-row instance's own last turn (#2688, chairman via `ceo`,
+ * 2026-09-27) -- the `ceo`-chosen number the chairman's brief invited, and the done-when's own target: a
+ * mid-session compaction lands the running average under it for the calls that follow, not because it is
+ * a magic number.
+ *
+ * REVISIT FROM THE SAME MEASUREMENT THIS THRESHOLD'S OWN GUARD USES: move it down if a 120k-triggered
+ * compaction still leaves the post-rollout average over 120k (context keeps growing after a mid-session
+ * compact too, so one compaction per session may not be enough on the longest rows), and say so in the row
+ * that moves it, with the reading that justified it.
+ */
+export const COMPACT_THRESHOLD_TOKENS = 120_000;
+
+/**
+ * SUBMIT A COMMAND, SETTLE, RETURN -- the shape behind both `/clear` ({@link clearContext}) and `/compact`
+ * ({@link compactContext}), because the reason to wait is the same for either: neither moves the agent's
+ * status or its `state_change_seq`, so there is nothing to wait FOR but a bounded delay (see
+ * {@link clearContext}'s own comment for the measurement that set it).
+ * @param {(args: string[]) => string} run @param {string} label @param {string} command
+ * @param {(ms: number) => void} sleep
+ * @returns {string | null} a refusal to report, or `null` when the command landed
+ */
+function settleAfter(run, label, command, sleep) {
+  try {
+    // SUBMIT, SETTLE, THEN THE ORDER -- AND THE SETTLE IS A DELAY BECAUSE THERE IS NO SIGNAL.
+    //
+    // `agent prompt` SUBMITS text and returns without waiting for the agent to consume it. Sending the
+    // order straight after typed it into the same input the command was still sitting in, and `ceo`
+    // received one concatenated line:
+    //
+    //     Unknown command: /clearYou are `ceo`, an org session in this repository...
+    //
+    // TWO REPAIRS FAILED BEFORE THIS ONE, and each failed for its own reason:
+    //
+    //   `prompt --wait --until idle`   herdr's help: *"--wait first requires an observed state change
+    //                                  within 5000ms"*. A `/clear` to an already-`done` agent changes
+    //                                  nothing observable, so two of three live wakes returned
+    //                                  `agent_prompt_stalled`.
+    //   `agent wait --until idle`      an ALREADY-idle agent satisfies it instantly, before it has
+    //                                  consumed anything. Still mangled.
+    //
+    // `state_change_seq` does not move for `/clear` either -- measured, it sat at 6221 across one. Claude
+    // Code processes it without any transition herdr can see, and the same is true of `/compact` (#2688):
+    // there is nothing to wait FOR. A bounded delay is the honest mechanism, and calling it a delay rather
+    // than dressing it as a synchronisation primitive is the point: 2s and 5s both produced clean prompts
+    // on the live org, and 5s is the one with margin.
+    //
+    // The `agent wait` first is still worth its cost: it catches an agent that was mid-turn when the
+    // command arrived, where the delay alone would not be enough.
+    run(["--session", "org", "agent", "prompt", label, command]);
+    run(["--session", "org", "agent", "wait", label, "--until", "idle", "--until", "done",
+      "--timeout", String(CLEAR_TIMEOUT_MS)]);
+    sleep(CLEAR_SETTLE_MS);
+    return null;
+  } catch (err) {
+    // A REFUSED COMMAND IS NOT A REFUSED WAKE. The order still goes, on a context this command would have
+    // shrunk: expensive is strictly better than undelivered, and the refusal is reported rather than
+    // swallowed.
+    return `${label}: ${command} refused (${firstLine(err, CLEAR_REFUSAL_EXCERPT)})`;
+  }
+}
+
+/**
  * WHY EVERY DELIVERY CLEARS FIRST, and it is the largest single saving this system has made.
  *
  * A standing session's context only grows. Measured on the live org, 2026-09-18, within one session:
@@ -3368,47 +3434,66 @@ const CLEAR_REFUSAL_EXCERPT = 80;
  * order), the exact value, and ONE test with no injection that measures the real delay, so a default that quietly became
  * a no-op is caught there and not by a fast suite going green.
  *
+ * THE SUBMIT/SETTLE MECHANISM ITSELF IS {@link settleAfter}, shared with `/compact` ({@link compactContext},
+ * #2688): the incident that shaped it, and why the wait is a delay rather than a signal, are on that
+ * function rather than repeated here.
+ *
  * @param {(args: string[]) => string} run @param {string} label
  * @param {(ms: number) => void} [sleep] blocks for `ms`; real by default
  * @returns {string | null} a refusal to report, or `null` when the context was reset
  */
 export function clearContext(run, label, sleep = sleepSync) {
-  try {
-    // SUBMIT, SETTLE, THEN THE ORDER -- AND THE SETTLE IS A DELAY BECAUSE THERE IS NO SIGNAL.
-    //
-    // `agent prompt` SUBMITS text and returns without waiting for the agent to consume it. Sending the
-    // order straight after typed it into the same input the clear was still sitting in, and `ceo`
-    // received one concatenated line:
-    //
-    //     Unknown command: /clearYou are `ceo`, an org session in this repository...
-    //
-    // TWO REPAIRS FAILED BEFORE THIS ONE, and each failed for its own reason:
-    //
-    //   `prompt --wait --until idle`   herdr's help: *"--wait first requires an observed state change
-    //                                  within 5000ms"*. A `/clear` to an already-`done` agent changes
-    //                                  nothing observable, so two of three live wakes returned
-    //                                  `agent_prompt_stalled`.
-    //   `agent wait --until idle`      an ALREADY-idle agent satisfies it instantly, before it has
-    //                                  consumed anything. Still mangled.
-    //
-    // `state_change_seq` does not move for a clear either -- measured, it sat at 6221 across one. Claude
-    // Code processes `/clear` without any transition herdr can see, so there is nothing to wait FOR. A
-    // bounded delay is the honest mechanism, and calling it a delay rather than dressing it as a
-    // synchronisation primitive is the point: 2s and 5s both produced clean prompts on the live org,
-    // and 5s is the one with margin.
-    //
-    // The `agent wait` first is still worth its cost: it catches an agent that was mid-turn when the
-    // clear arrived, where the delay alone would not be enough.
-    run(["--session", "org", "agent", "prompt", label, "/clear"]);
-    run(["--session", "org", "agent", "wait", label, "--until", "idle", "--until", "done",
-      "--timeout", String(CLEAR_TIMEOUT_MS)]);
-    sleep(CLEAR_SETTLE_MS);
-    return null;
-  } catch (err) {
-    // A REFUSED CLEAR IS NOT A REFUSED WAKE. The order still goes, on a bloated context: expensive is
-    // strictly better than undelivered, and the refusal is reported rather than swallowed.
-    return `${label}: /clear refused (${firstLine(err, CLEAR_REFUSAL_EXCERPT)})`;
+  return settleAfter(run, label, "/clear", sleep);
+}
+
+/**
+ * `/compact` BEFORE AN OVER-THRESHOLD INSTANCE'S ORDER (#2688) -- the same submit/settle/order sequence as
+ * `clearContext`, and for the same reason: `/compact` returns to a prompt with no observable
+ * state-change signal either.
+ *
+ * NEVER FOR A STANDING SEAT, which is `/clear`ed to the floor at every delivery already and so has nothing
+ * to compact; only {@link clearBeforeOrder} calls this, and only past {@link isPerRowInstance}.
+ *
+ * COMPACTION KEEPS THE THREAD; A CLEAR DOES NOT. #2483 stands unchanged -- a per-row instance is still
+ * never `/clear`ed, because its one row is its whole life and a failing check on its own pull request is
+ * the same task, not an unrelated one. `/compact` summarises that same window rather than wiping it.
+ *
+ * @param {(args: string[]) => string} run @param {string} label
+ * @param {(ms: number) => void} [sleep] blocks for `ms`; real by default
+ * @returns {string | null} a refusal to report, or `null` when the command landed
+ */
+export function compactContext(run, label, sleep = sleepSync) {
+  return settleAfter(run, label, "/compact", sleep);
+}
+
+/**
+ * A PER-ROW INSTANCE'S OWN CONTEXT SIZE, RIGHT NOW (#2688) -- the live proxy #928's own offline report is
+ * built from, read live instead of only reported. `claudeTurns` and `transcriptFiles` are
+ * `token-audit.mjs`'s own readers; nothing here is a new metric, only this one read at delivery time.
+ *
+ * THE MOST RECENTLY WRITTEN TRANSCRIPT NAMING THIS SESSION WINS. More than one file can carry the session's
+ * name (a restarted process opens a fresh one), and only the newest describes the window the next order
+ * actually lands on.
+ *
+ * `null` IS "CANNOT TELL", NEVER ZERO: an instance whose transcript this cannot find or read is not
+ * assumed small, so it is never sent a `/compact` on that account.
+ *
+ * @param {string} label @param {string} [root] the instance's own transcripts; real `~/.claude/projects`
+ *   by default, injectable for a test
+ * @returns {number | null}
+ */
+export function instanceCacheRead(label, root = join(process.env.HOME ?? "", ".claude", "projects")) {
+  let tokens = null;
+  let newest = -Infinity;
+  for (const file of transcriptFiles(root)) {
+    let text;
+    try { text = readFileSync(file, "utf8"); } catch { continue; }
+    const last = claudeTurns(text).filter((t) => t.session === label).at(-1);
+    if (!last) continue;
+    const mtime = statMtime(file) ?? 0;
+    if (mtime > newest) { newest = mtime; tokens = last.cacheRead; }
   }
+  return tokens;
 }
 
 /**
@@ -3428,12 +3513,28 @@ export function isPerRowInstance(label) {
  * THE CLEAR BEFORE AN ORDER, FOR EVERY PATH THAT DELIVERS ONE (`deliver` here, `clearThenPrompt` in
  * `prompt-session.mjs`): sent to a standing seat, skipped for a per-row instance ({@link isPerRowInstance}).
  * Both callers go through it, because fixing one leaves the reviewer wiped by its own author.
+ *
+ * A PER-ROW INSTANCE MAY STILL BE `/compact`ED (#2688), never `/clear`ed: its own transcript's last turn
+ * is read for `cache_read_input_tokens` ({@link instanceCacheRead}) and, over
+ * {@link COMPACT_THRESHOLD_TOKENS}, sent `/compact` first ({@link compactContext}). Below the threshold, or
+ * when no transcript can be read for it ("cannot tell", never assumed small), nothing is sent -- exactly
+ * the #2483 behaviour this extends. `sent` still means "cleared", so a compacted instance reads the same
+ * as an untouched one to every caller that only asks whether to send the first-contact preamble.
+ *
  * @param {(args: string[]) => string} run @param {string} label
  * @param {(ms: number) => void} [sleep] `clearContext`'s settle, which is where the real default lives -- passed on as it came
- * @returns {{sent: boolean, refusal: string | null}} whether a clear was sent, and `clearContext`'s refusal
+ * @param {string} [contextRoot] {@link instanceCacheRead}'s transcript root, injectable for a test
+ * @returns {{sent: boolean, refusal: string | null}} whether a clear was sent, and `clearContext`'s
+ *   (or, for a compacted instance, `compactContext`'s) refusal
  */
-export function clearBeforeOrder(run, label, sleep) {
-  if (isPerRowInstance(label)) return { sent: false, refusal: null };
+export function clearBeforeOrder(run, label, sleep, contextRoot) {
+  if (isPerRowInstance(label)) {
+    const tokens = instanceCacheRead(label, contextRoot);
+    if (tokens !== null && tokens > COMPACT_THRESHOLD_TOKENS) {
+      return { sent: false, refusal: compactContext(run, label, sleep) };
+    }
+    return { sent: false, refusal: null };
+  }
   return { sent: true, refusal: clearContext(run, label, sleep) };
 }
 
@@ -3504,14 +3605,15 @@ function carriedOrder(order, target) {
 /**
  * The clear before an order (see {@link clearContext}), NOT for a session this tick started -- it has nothing to clear.
  * A refusal is reported into `refused` and the order still goes.
- * @param {{run: (args: string[]) => string, sleep?: (ms: number) => void}} herdr `run`, and the settle's seam ({@link clearContext})
+ * @param {{run: (args: string[]) => string, sleep?: (ms: number) => void, contextRoot?: string}} herdr `run`, the
+ *   settle's seam ({@link clearContext}), and {@link instanceCacheRead}'s transcript root (#2688)
  * @param {{label: string, profile?: object}} target
  * @param {string} causeKey @param {string[]} refused
  * @returns {boolean} true when an existing session was left uncleared because it is a per-row instance
  */
-function clearUnlessStarted({ run, sleep }, target, causeKey, refused) {
+function clearUnlessStarted({ run, sleep, contextRoot }, target, causeKey, refused) {
   if (target.profile) return false;
-  const clear = clearBeforeOrder(run, target.label, sleep);
+  const clear = clearBeforeOrder(run, target.label, sleep, contextRoot);
   if (clear.refusal) refused.push(`${causeKey}: ${clear.refusal} -- delivered anyway`);
   return !clear.sent;
 }
@@ -3520,12 +3622,12 @@ function clearUnlessStarted({ run, sleep }, target, causeKey, refused) {
  * The clear before an order, or NONE for a resume (#2470): its whole point is the context the session still has, and a clear would wipe
  * exactly what the interrupted turn had built. Same return as {@link clearUnlessStarted}: whether the session was left uncleared.
  * @param {{ causeKey: string, resume?: boolean }} order
- * @param {{ run: (args: string[]) => string, sleep?: (ms: number) => void, target: { label: string, profile?: object },
- *   refused: string[] }} ctx
+ * @param {{ run: (args: string[]) => string, sleep?: (ms: number) => void, contextRoot?: string,
+ *   target: { label: string, profile?: object }, refused: string[] }} ctx
  * @returns {boolean}
  */
-function clearedFirst(order, { run, sleep, target, refused }) {
-  return order.resume === true || clearUnlessStarted({ run, sleep }, target, order.causeKey, refused);
+function clearedFirst(order, { run, sleep, contextRoot, target, refused }) {
+  return order.resume === true || clearUnlessStarted({ run, sleep, contextRoot }, target, order.causeKey, refused);
 }
 
 /**
@@ -3564,8 +3666,9 @@ function whyUnavailable(target, unavailable) {
  *          env?: Record<string, string>, registerSpawn?: (role: string) => void, drained?: readonly string[],
  *          claimable?: (order: {causeKey: string}) => string | null, claimer?: SpawnClaimer,
  *          memory?: () => string | null, launch?: LaunchFacts, unavailable?: (label: string) => string | null,
- *          sleep?: (ms: number) => void} & Partial<ReviewerDeps>} [deps]
+ *          sleep?: (ms: number) => void, contextRoot?: string} & Partial<ReviewerDeps>} [deps]
  *   `sleep` is the clear's settle ({@link clearContext}): real by default, injected only by a test that is not about the delay (#2546);
+ *   `contextRoot` is {@link instanceCacheRead}'s transcript root (#2688), real `~/.claude/projects` by default, injected only by a test;
  *   `unavailable` says why a session cannot ANSWER now (`unavailableReason`), and an order to one is refused with that
  *   reason and neither sent nor recorded (#2256); `registerReviewer` is told of every reviewer instance this tick starts (#2401), for the auth detector;
  *   `checkout` and `registry` are the reviewer path's seams (its git, its filesystem, what it has started);
@@ -3579,7 +3682,7 @@ function whyUnavailable(target, unavailable) {
  */
 export function deliver(orders, agents, roster,
   { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer, memory,
-    launch, reviewerEnv, registerReviewer, checkout, registry, unavailable, sleep } = {}) {
+    launch, reviewerEnv, registerReviewer, checkout, registry, unavailable, sleep, contextRoot } = {}) {
   const sent = [];
   const refused = [];
   const stuck = [];
@@ -3619,7 +3722,7 @@ export function deliver(orders, agents, roster,
     // window is its one row.
     // A RESUME IS NEVER PRECEDED BY A CLEAR (#2470): its whole point is the context the session still has. Sent to a standing seat it
     // would wipe exactly what the interrupted turn had built, and the ledger says so with the same `no-clear` mark an instance's carries.
-    const noClear = clearedFirst(order, { run, sleep, target, refused });
+    const noClear = clearedFirst(order, { run, sleep, contextRoot, target, refused });
     try {
       run(["--session", "org", "agent", "prompt", target.label,
         addressed(carriedOrder(order, target), target.label,
