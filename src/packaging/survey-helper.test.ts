@@ -48,6 +48,14 @@ const FILES = {
   "b.txt": Array.from({ length: 20 }, (_unused, i) => `line ${i + 1}`).join("\n") + "\n",
 };
 
+/**
+ * A `run` explicitly INJECTED wherever a test wants survey.mjs's real `git` spawn -- never a bare omission
+ * that falls through to survey.mjs's own default. #1401's live-default-seams guard cannot tell "this call
+ * doesn't need gh" from "this call forgot to inject", so every call site here passes one explicitly.
+ */
+const execRun = (cmd: string, args: string[], opts: Parameters<typeof execFileSync>[2]): string =>
+  execFileSync(cmd, args, opts) as string;
+
 test("#2690: a batch of grep + read + gh returns the same content the three would separately, in one call", () => {
   const root = fixtureRepo(FILES);
   try {
@@ -80,7 +88,7 @@ test("#2690: a batch of grep + read + gh returns the same content the three woul
 test("#2690: grep's exit 1 (no match) is an ANSWER, not a failure -- ok:true with empty output", () => {
   const root = fixtureRepo(FILES);
   try {
-    const [result] = survey([{ kind: "grep", pattern: "NOPE_NOT_THERE_AT_ALL", paths: ["a.txt"] }], { cwd: root });
+    const [result] = survey([{ kind: "grep", pattern: "NOPE_NOT_THERE_AT_ALL", paths: ["a.txt"] }], { cwd: root, run: execRun });
     assert.deepEqual(result, { task: result.task, ok: true, output: "" });
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -106,7 +114,7 @@ test("#2690: an unrecognised task kind is refused as its OWN entry, and does not
   const results = survey([
     { kind: "read", path: "x" },
     { kind: "bogus" } as never,
-  ], { cwd: "/", readFile: (() => "hello\n") as never });
+  ], { cwd: "/", run: execRun, readFile: (() => "hello\n") as never });
   assert.equal(results[0].ok, true);
   assert.equal(results[1].ok, false);
   assert.match((results[1] as { error: string }).error, /unknown task kind/);
@@ -115,7 +123,7 @@ test("#2690: an unrecognised task kind is refused as its OWN entry, and does not
 test("#2690: a read task with no offset/limit defaults to the range engineer.md names (from line 1, 200 lines)", () => {
   const root = fixtureRepo({ "many.txt": `${Array.from({ length: 250 }, (_unused, i) => `L${i + 1}`).join("\n")}\n` });
   try {
-    const [result] = survey([{ kind: "read", path: "many.txt" }], { cwd: root });
+    const [result] = survey([{ kind: "read", path: "many.txt" }], { cwd: root, run: execRun });
     const lines = (result.ok ? result.output : "").split("\n");
     assert.equal(lines.length, DEFAULT_READ_LIMIT);
     assert.equal(lines[0], "1\tL1");
