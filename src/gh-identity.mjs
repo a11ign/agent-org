@@ -24,7 +24,7 @@
 // wrapper would itself refuse, or a shell with neither variable and no `~/.config/gh` either (a fresh
 // checkout, or a GitHub Actions runner, where `GH_TOKEN` decides instead and this question does not apply).
 // "Confirmed false" and "could not determine" are different states and must never share a value
-// (`packages/agent-org/docs/roles/engineer.md`).
+// (`.agent-org/roles/engineer.md`).
 //
 // A LEAF, like `api-pool.mjs` and `host-config.mjs`: `work-gate.mjs` reaches this on its refusal path,
 // which runs before any `npm ci` or build (`api-pool.mjs`'s header states the identical constraint for the

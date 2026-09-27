@@ -47,6 +47,7 @@ import { reviewerInstance, subjectMention } from "./review-attribution.mjs";
 import { claudeTurns, transcriptFiles } from "./token-audit.mjs";
 import { homeProjectDeclaration } from "./project-config.mjs";
 import { REPO } from "./project-identity.mjs";
+import { roleBriefPath } from "./project-roles.mjs";
 // #2619 (child 3d of #69): `session:`/`ready` -- `answer:` already arrives via `work-gate.mjs`'s
 // re-export of `waiting-condition.mjs`'s own field, so it is not re-imported here.
 import { SESSION_PREFIX, READY_LABEL } from "./project-vocabulary.mjs";
@@ -583,7 +584,7 @@ export const SPAWN_CAUSES = Object.freeze(["ready-row-unclaimed"]);
  * @param {string | URL} [path] the roster file; a parameter so a test can hand it a fixture
  * @returns {string[]}
  */
-export function engineerRoles(path = new URL("../docs/roles/sessions.json", import.meta.url)) {
+export function engineerRoles(path = roleBriefPath("sessions.json").absolute) {
   const { live } = /** @type {{ live: { name: string, role: string, family?: object }[] }} */ (
     JSON.parse(readFileSync(path, "utf8")));
   return live.filter((s) => s.role === "engineer" && s.family === undefined).map((s) => s.name);
@@ -2849,7 +2850,7 @@ function escalationFor(label) {
 }
 
 /** The one engineer brief, from the repository root: general lessons, the acceptance standard, the resource ban. */
-export const ENGINEER_BRIEF = "packages/agent-org/docs/roles/engineer.md";
+export const ENGINEER_BRIEF = roleBriefPath("engineer.md").relative;
 
 /**
  * The paragraph that tells an ENGINEER to read {@link ENGINEER_BRIEF}, or nothing for any other label.
@@ -3811,7 +3812,7 @@ export function spawnEnvironment(override = {}) {
  * @param {string | URL} [path] the roster file; a parameter so a test can hand it a fixture
  * @returns {string[]}
  */
-export function spareRoles(path = new URL("../docs/roles/sessions.json", import.meta.url)) {
+export function spareRoles(path = roleBriefPath("sessions.json").absolute) {
   return spareEntries(path).addresses;
 }
 
@@ -3839,7 +3840,7 @@ function spareEntries(path) {
  * @param {string | URL} [path] the roster file; a parameter so a test can hand it a fixture
  * @returns {string[]}
  */
-export function spareInstances(agents, path = new URL("../docs/roles/sessions.json", import.meta.url)) {
+export function spareInstances(agents, path = roleBriefPath("sessions.json").absolute) {
   const { addresses, families } = spareEntries(path);
   const labels = agents.map((a) => a.label);
   return [...new Set([...addresses, ...labels.filter((l) => familyNumber(l, families) !== null)])];
@@ -3854,7 +3855,7 @@ export function spareInstances(agents, path = new URL("../docs/roles/sessions.js
  * @param {string | URL} [path] the roster file; a parameter so a test can hand it a fixture
  * @returns {boolean}
  */
-export function isSpareRole(label, path = new URL("../docs/roles/sessions.json", import.meta.url)) {
+export function isSpareRole(label, path = roleBriefPath("sessions.json").absolute) {
   const { addresses, families } = spareEntries(path);
   return addresses.includes(label) || familyNumber(label, families) !== null;
 }
@@ -4024,7 +4025,7 @@ export function sparePathsFrom(/** @type {string} */ ledgerPath) {
 // #1950's 20 clean cycles build at full throughput. `sessions.json`'s `drain` mark is the fact, and it lifts
 // itself: see {@link drainInForce}.
 
-const SESSIONS_FILE = new URL("../docs/roles/sessions.json", import.meta.url);
+const SESSIONS_FILE = roleBriefPath("sessions.json").absolute;
 
 /** What `route`'s refusal calls a drained engineer -- short enough to sit in a `seen` list beside a status. */
 export const DRAINED_SEEN = "drained (#2324)";

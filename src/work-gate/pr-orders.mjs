@@ -719,7 +719,7 @@ function awaitingVerdictPrompt(pr, { head8, keyHead8 }) {
     : ` The last commit its author pushed is \`${keyHead8}\`; every commit after it merges \`main\`, so review the `
       + "author's work and write your verdict at the head you actually read.";
   return `${state} ${subjectMention(pr)} at \`${head8}\` has settled green checks and no verdict at that head.${moved} `
-    + "Review it per packages/agent-org/docs/roles/reviewer.md and leave one comment carrying your verdict.";
+    + "Review it per .agent-org/roles/reviewer.md and leave one comment carrying your verdict.";
 }
 
 /**

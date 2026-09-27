@@ -123,7 +123,7 @@ export function laneReason(labels, mySession, deps) {
  */
 export function drainReason(mySession, drained) {
   if (!drained.includes(mySession)) return null;
-  return `${mySession} is DRAINED (\`"drain": true\` in packages/agent-org/docs/roles/sessions.json, #2324): it `
+  return `${mySession} is DRAINED (\`"drain": true\` in .agent-org/roles/sessions.json, #2324): it `
     + "finishes the rows it holds and claims no NEW ones, so every new row goes through a spawned instance and "
     + "#1950's clean-cycle count is not fed by an engineer carrying history. Nothing is retired -- rework and "
     + "review orders on a row you hold still reach you. The drain lifts itself if the last `spare-cycles` line "

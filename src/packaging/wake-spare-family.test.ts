@@ -37,7 +37,7 @@ const ROW_ORDER = {
   causeKey: "engineers/ready-row-unclaimed/2403",
   prompt: "Ready row #2403 is unclaimed. Claim it with `--session=<you>`.",
 };
-const SESSIONS_JSON = new URL("../../../agent-org/docs/roles/sessions.json", import.meta.url);
+const SESSIONS_JSON = new URL("../../../../.agent-org/roles/sessions.json", import.meta.url);
 
 /** A `herdr` that records every call and answers `workspace create` as the live org did on 2026-09-23. */
 function recordingHerdr() {

@@ -563,7 +563,7 @@ export const OPEN_PR_LIMIT = 200;
 
 /**
  * #2126: HOW MUCH OF A SHA A MESSAGE PRINTS. Eight, because that is what this repository's review
- * convention writes (`packages/agent-org/docs/roles/reviewer.md`: a verdict matching ``at `<head8>` ``), so a
+ * convention writes (`.agent-org/roles/reviewer.md`: a verdict matching ``at `<head8>` ``), so a
  * reader can match the refusal against the verdict without re-deriving anything.
  */
 const HEAD_DISPLAY_CHARS = 8;
