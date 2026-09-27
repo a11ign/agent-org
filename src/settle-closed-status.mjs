@@ -256,10 +256,11 @@ export function shortReadRefusal(items, closedRowsOnBoard) {
  *
  * The board read is DEGRADED in CI: its cause is #546's unreadable Project, a ceiling no operator can
  * lift, and turning trunk red for it would make the repair's own arrival the outage. **The floor's
- * population is a plain issue search, which CI's token can make**, so nothing here is a ceiling and
- * nothing here may borrow that exit-0 bridge -- including the truncation refusal, whose whole purpose is
- * to be louder than a silent partial population. Exported rather than left inline in `main()` for
- * `boardReadRefusal`'s reason: a decision that lives only in an entry point is one no test holds.
+ * population is a plain `repository.issues` read, which CI's token can make**, so nothing here is a
+ * ceiling and nothing here may borrow that exit-0 bridge -- including a page it could not read to the
+ * end, whose whole purpose is to be louder than a silent partial population. Exported rather than left
+ * inline in `main()` for `boardReadRefusal`'s reason: a decision that lives only in an entry point is one
+ * no test holds.
  *
  * @param {string} message the message the population read threw
  * @returns {{ degraded: boolean, line: string }} `degraded` is always false, and that is the decision
@@ -270,7 +271,8 @@ export function floorReadRefusal(message) {
 }
 
 /**
- * #2081, ADDED ON REVIEW: THE FLOOR'S OWN POPULATION READ, AS THE ARGV `gh` IS GIVEN.
+ * #2081, ADDED ON REVIEW; #2719, REPLACED THE SEARCH ENTIRELY: THE FLOOR'S OWN POPULATION READ, AS THE
+ * GRAPHQL `gh` IS GIVEN.
  *
  * **The first version of this floor sampled, and called the sample a population.** It asked for the 100
  * most recently closed issues and filtered them by `projectItems` being non-empty, then checked those ids
@@ -279,77 +281,107 @@ export function floorReadRefusal(message) {
  * the pass reports a complete read over a row it never saw -- which is the defect the floor exists to
  * catch, arriving through the floor itself.
  *
- * **Measured 2026-09-23 15:2xZ, live, and it is not a corner:** `gh issue list --state closed --limit 100`
- * yielded **90** boarded rows reaching back to #1911, against **201** closed rows GitHub reports on this
- * Project. **111 of 201 -- 55% -- were outside the floor's population entirely**, the oldest being #21.
+ * **The second version fixed the sampling and reintroduced the same shape of ceiling one layer up (#2719).**
+ * `gh issue list --search "project:<owner>/<number>"` is a SEARCH, and every GitHub search is capped at
+ * 1,000 results whatever `--limit` asks for -- so `FLOOR_LIMIT` was a number this floor's own population
+ * would eventually cross, exactly as it crossed 500 four days after being measured at 201. Raising the
+ * number only moved the day it would fire again.
  *
- * So the read is now the population, and it is the SEARCH that narrows it rather than a client-side filter:
+ * **So the read is now a cursor walk of `repository.issues(states: CLOSED)`, which GitHub does not cap.**
+ * A `project:<owner>/<number>` qualifier does not exist on this connection, so membership is read PER
+ * ISSUE instead, the same way `readRowsOffBoard` (`work-gate.mjs`, #2075) already reads it for OPEN rows:
+ * each node carries its own `projectItems`, and `closedRowsPageFromRead` keeps only the ones naming this
+ * Project. **It is `gh issue list`'s replacement, never `gh pr list`** -- this pass's population must not
+ * depend on any PR existing, which is the whole of #2081.
  *
- * - **`project:<owner>/<number>` is evaluated by GitHub**, which answers the second review point too. The
- *   old read asked for `--json number,projectItems`, whose entries carry no project number at all, so
- *   "has any project item" was the only membership question it could ask -- an item on some OTHER board
- *   made this floor refuse a read that was complete for this one. The qualifier discriminates: measured
- *   the same minute, `project:a11ign/99` returns `[]` where `project:a11ign/1` returns 201.
- * - **The whole population comes back, and an exactly-full page is refused** rather than reported as
- *   complete -- `fetchReadyIssueNumbers`'s contract, imported as a rule rather than as code, because the
- *   two reads share the shape ("returning exactly `limit` rows is indistinguishable from a truncated
- *   result"). At 201 against a limit of 500 there is real headroom, and "raise the limit" is a remedy an
- *   operator can take **up to GitHub's own 1,000-result search ceiling**; past that the read has to become
- *   a cursor walk of `repository.issues(states: CLOSED)`, and the refusal says so rather than leaving the
- *   next reader to discover the ceiling.
- * - **It is `gh issue list`, never `gh pr list`** -- this pass's population must not depend on any PR
- *   existing, which is the whole of #2081.
- *
- * The identity is passed in rather than imported because `board-snapshot-scope.mjs` -- the one place that
- * declares it -- already imports `refusalCause` from this file, and a cycle between two modules whose
- * headers are both about placement is a worse trade than one argument. `settle-closed-rows.mjs` supplies
- * it from that declaration, and the test pins this argv against the same constants.
- *
- * @param {{ repo: string, owner: string, number: number, limit: number }} project
- * @returns {string[]} the argv, so the qualifier that names the Project is asserted rather than described
+ * @param {{ owner: string, name: string, after: string | null }} repo
+ * @returns {string[]} the argv, so the identity that names the repository is asserted rather than described
  */
-export function closedRowsQuery({ repo, owner, number, limit }) {
-  return ["issue", "list", "--repo", repo, "--state", "closed",
-    "--search", `project:${owner}/${number}`, "--limit", String(limit), "--json", "number"];
+export function closedRowsPageQuery({ owner, name, after }) {
+  const args = ["api", "graphql", "-f", `query=${CLOSED_ROWS_QUERY}`, "-F", `owner=${owner}`, "-F", `name=${name}`];
+  if (after !== null) args.push("-f", `after=${after}`);
+  return args;
 }
 
 /**
- * #2081: `closedRowsQuery`'s response, parsed -- and REFUSED rather than trusted when it came back
- * exactly full, which is the truncation contract the reviews asked for.
- *
- * THROWS on every shape it does not recognise, `fetchReadyIssueNumbers`'s discipline and for its reason:
- * this list is the only thing that can tell a complete board read from a partial one, so a list this
- * function had to guess at would make the floor report clean over a population it never established.
- *
- * @param {string} raw `gh`'s stdout
- * @param {number} limit the `--limit` the read asked for -- exactly this many rows is a refusal
- * @returns {number[]}
+ * #2719: the GraphQL query `closedRowsPageQuery` sends. `projectItems(first: 10)` is `readRowsOffBoard`'s
+ * own page size for the same question ("has this row ever carried more than ten Project memberships" is
+ * not a case this repo has), and `closedRowsPageFromRead` refuses rather than guesses when it is not enough.
  */
-export function closedRowsFromRead(raw, limit) {
+export const CLOSED_ROWS_QUERY = `
+  query($owner: String!, $name: String!, $after: String) {
+    repository(owner: $owner, name: $name) {
+      issues(states: CLOSED, first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          number
+          projectItems(first: 10) { totalCount nodes { project { number } } }
+        }
+      }
+    }
+  }
+`;
+
+/**
+ * #2719: `closedRowsPageQuery`'s response, parsed -- ONE PAGE, filtered to this Project and never trusted
+ * past the shape it declares.
+ *
+ * THROWS on every shape it does not recognise, `closedRowsFromRead`'s discipline before it and for the
+ * same reason: this list is the only thing that can tell a complete board read from a partial one, so a
+ * list this function had to guess at would make the floor report clean over a population it never
+ * established. That now includes PER-ISSUE membership: an issue whose `projectItems` page came back
+ * shorter than its `totalCount`, with none of the fetched entries naming this Project, is one this read
+ * cannot call either "on the board" or "not on the board" -- and guessing either way is the exact defect
+ * the floor exists to catch, so it refuses instead.
+ *
+ * @param {string} raw `gh`'s stdout for one page
+ * @param {number} projectNumber the Project this pass narrows to
+ * @returns {{ numbers: number[], hasNextPage: boolean, endCursor: string | null }}
+ */
+export function closedRowsPageFromRead(raw, projectNumber) {
   /** @type {unknown} */
   let parsed;
   try {
     parsed = JSON.parse(raw);
   } catch (cause) {
-    throw new Error(`settle-closed-rows: gh's closed-row list was not JSON -- refusing to guess whether `
+    throw new Error(`settle-closed-rows: gh's closed-row page was not JSON -- refusing to guess whether `
       + `the board read is complete. First 200 chars: ${raw.slice(0, 200)}`, { cause });
   }
-  if (!Array.isArray(parsed)) {
-    throw new Error(`settle-closed-rows: gh's closed-row list was not a list -- refusing to guess. `
-      + `Got: ${JSON.stringify(parsed).slice(0, 300)}`);
+  const errors = /** @type {{ errors?: unknown }} */ (parsed)?.errors;
+  if (errors) {
+    throw new Error(`settle-closed-rows: the closed-row page came back with errors -- refusing to guess. `
+      + `Got: ${JSON.stringify(errors).slice(0, 300)}`);
   }
-  if (parsed.length === limit) {
-    throw new Error(`settle-closed-rows: gh returned exactly the requested limit (${limit}) of closed rows `
-      + `on this Project -- indistinguishable from a truncated result, and a truncated population is one `
-      + `this floor would report complete over the rows it did not see. Raise the limit; past GitHub's `
-      + `1,000-result search ceiling, walk repository.issues(states: CLOSED) by cursor instead.`);
+  const issues = /** @type {{ data?: { repository?: { issues?: unknown } } }} */ (parsed)?.data?.repository?.issues;
+  const nodes = /** @type {{ nodes?: unknown, pageInfo?: { hasNextPage?: unknown, endCursor?: unknown } }} */
+    (issues);
+  if (!nodes || !Array.isArray(nodes.nodes) || typeof nodes.pageInfo?.hasNextPage !== "boolean") {
+    throw new Error(`settle-closed-rows: the closed-row page was not the expected shape -- refusing to `
+      + `guess. Got: ${JSON.stringify(parsed).slice(0, 300)}`);
   }
-  return parsed.map((/** @type {unknown} */ entry, /** @type {number} */ i) => {
-    const number = /** @type {{ number?: unknown }} */ (entry)?.number;
-    if (typeof number !== "number") {
-      throw new Error(`settle-closed-rows: closed-row list entry ${i} has no number -- refusing to guess. `
+  const numbers = nodes.nodes.map((/** @type {unknown} */ entry, /** @type {number} */ i) => {
+    const node = /** @type {{ number?: unknown, projectItems?: { totalCount?: unknown, nodes?: unknown } }} */
+      (entry);
+    if (typeof node?.number !== "number") {
+      throw new Error(`settle-closed-rows: closed-row page entry ${i} has no number -- refusing to guess. `
         + `Got: ${JSON.stringify(entry).slice(0, 300)}`);
     }
-    return number;
-  });
+    const items = node.projectItems;
+    const itemNodes = Array.isArray(items?.nodes) ? items.nodes : [];
+    const onThisProject = itemNodes.some(
+      (/** @type {{ project?: { number?: unknown } }} */ item) => item?.project?.number === projectNumber);
+    const complete = itemNodes.length >= (typeof items?.totalCount === "number" ? items.totalCount : 0);
+    if (!onThisProject && !complete) {
+      throw new Error(`settle-closed-rows: #${node.number}'s Project membership could not be read `
+        + `completely -- it carries more project items than this page fetched and none of the fetched `
+        + `ones name Project ${projectNumber}, so this read cannot tell whether it is on this board. `
+        + `Refusing to guess.`);
+    }
+    return onThisProject ? node.number : null;
+  }).filter(/** @returns {n is number} */ (n) => n !== null);
+  return {
+    numbers,
+    hasNextPage: nodes.pageInfo.hasNextPage === true,
+    endCursor: typeof nodes.pageInfo.endCursor === "string" ? nodes.pageInfo.endCursor : null,
+  };
 }

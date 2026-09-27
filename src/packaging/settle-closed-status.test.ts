@@ -13,12 +13,13 @@ import {
   settleClosedStatus, refusalCause, unsettledVerdict, PROJECT_UNREADABLE,
   // #2081: the board-keyed pass's pure pieces, in the same pure module and for the same reason.
   closedRowsToSettle, settleBoardRows, boardReadRefusal, shortReadRefusal,
-  closedRowsQuery, closedRowsFromRead, floorReadRefusal,
+  // #2719: the floor's population read, replaced end to end -- a cursor walk, never a capped search.
+  closedRowsPageQuery, closedRowsPageFromRead, floorReadRefusal, CLOSED_ROWS_QUERY,
 } from "../settle-closed-status.mjs";
-// The Project this repo actually has, from the one module that declares it -- so the search qualifier
-// below is pinned against the real identity rather than against a literal retyped in the assertion.
+// The Project this repo actually has, from the one module that declares it -- so the query below is
+// pinned against the real identity rather than against a literal retyped in the assertion.
 // Both are pure of `gh`, which is why a test whose Acceptance runs in a token-less job may import them.
-import { PROJECT_OWNER, PROJECT_NUMBER } from "../board-snapshot-scope.mjs";
+import { PROJECT_NUMBER } from "../board-snapshot-scope.mjs";
 import { REPO } from "../../../../scripts/repo-identity.mjs";
 // #1996: the resting state's single copy. Imported from the pure module that owns it, so this file's
 // closure still needs no token and the row's Acceptance stays runnable where Acceptance runs.
@@ -377,81 +378,152 @@ test("#2081 the floor credits nothing to a numberless item, and an empty populat
 });
 
 /**
- * #2081, ON REVIEW: THE FLOOR'S POPULATION IS A POPULATION, NOT A PAGE.
+ * #2081, ON REVIEW, THEN #2719 REPLACED THE READ ENTIRELY: THE FLOOR'S POPULATION IS A POPULATION, NOT A
+ * PAGE, AND NOT A CAPPED SEARCH EITHER.
  *
  * The first version asked for the 100 most recently closed issues and treated that as the complete set of
  * boarded closed rows. `reviewer-2` (09:17Z) and `reviewer` (14:39Z) found it independently, five and a
  * half hours and one push apart. Measured live 2026-09-23 15:2xZ: that read yielded **90** boarded rows
  * reaching back to #1911, against **201** closed rows GitHub reports on this Project -- so **111 of 201**
- * were outside the floor's population entirely, the oldest being #21. The cases below are the contract
- * that replaced it, and the cap boundary has a FAILING case because a floor with none cannot fail.
+ * were outside the floor's population entirely, the oldest being #21.
+ *
+ * The second version fixed the sampling with `gh issue list --search "project:<owner>/<number>"`, and that
+ * search is capped at 1,000 results **whatever `--limit` asks for** -- so it was the same defect one layer
+ * up: measured, the population crossed the 500 `FLOOR_LIMIT` four days after being read at 201 with "real
+ * headroom." #2719 replaces the search with a cursor walk of `repository.issues(states: CLOSED)`, which
+ * GitHub does not cap, so no number here can be outgrown the same way again -- only a per-run page-count
+ * safety valve remains, and that is a bug guard, never a population ceiling (`settle-closed-rows.mjs`'s
+ * own `CLOSED_ROWS_MAX_PAGES` comment says so).
  */
 
-/** `n` rows in the shape `--json number` returns them. */
-const closedRowRows = (n: number, from = 1000) =>
-  JSON.stringify(Array.from({ length: n }, (_, i) => ({ number: from + i })));
+/** One page of `closedRowsPageQuery`'s response, in the shape `gh api graphql` returns it. */
+const closedRowsPage = (
+  entries: { number: number; projectNumbers?: number[]; totalCount?: number }[],
+  { hasNextPage = false, endCursor = null as string | null } = {},
+) => JSON.stringify({
+  data: { repository: { issues: {
+    pageInfo: { hasNextPage, endCursor },
+    nodes: entries.map(({ number, projectNumbers = [PROJECT_NUMBER], totalCount }) => ({
+      number,
+      projectItems: { totalCount: totalCount ?? projectNumbers.length,
+        nodes: projectNumbers.map((n) => ({ project: { number: n } })) },
+    })),
+  } } },
+});
 
-test("#2081 the floor's population read names THIS Project in the query, and asks GitHub to narrow it", () => {
-  assert.deepEqual(closedRowsQuery({ repo: REPO, owner: PROJECT_OWNER, number: PROJECT_NUMBER, limit: 500 }), [
-    "issue", "list", "--repo", REPO, "--state", "closed",
-    "--search", `project:${PROJECT_OWNER}/${PROJECT_NUMBER}`, "--limit", "500", "--json", "number",
+test("#2081/#2719 the floor's population read names THIS repository, and walks by cursor", () => {
+  const [owner, name] = REPO.split("/");
+  assert.deepEqual(closedRowsPageQuery({ owner, name, after: null }), [
+    "api", "graphql", "-f", `query=${CLOSED_ROWS_QUERY}`, "-F", `owner=${owner}`, "-F", `name=${name}`,
   ]);
-  const query = closedRowsQuery({ repo: REPO, owner: PROJECT_OWNER, number: PROJECT_NUMBER, limit: 500 });
-  assert.equal(query.includes("projectItems"), false,
-    "THE SHOULD-FIX: the old read asked for `projectItems`, whose entries carry no project number, so "
-    + "'has any project item at all' was the only membership question it could ask -- an item on some "
-    + "OTHER board made this floor refuse a read that was complete for this one. The qualifier is "
-    + "evaluated by GitHub: measured 2026-09-23, `project:a11ign/99` returns [] where `project:a11ign/1` "
-    + "returns 201");
-  assert.equal(query[0], "issue",
-    "and it is an ISSUE list -- a PR list is what makes a hand-closed row invisible, which is all of #2081");
+  const withCursor = closedRowsPageQuery({ owner, name, after: "cursor-1" });
+  assert.deepEqual(withCursor.slice(-2), ["-f", "after=cursor-1"],
+    "a second page names its cursor, never re-asking for the first");
+  assert.match(withCursor.join(" "), /issues\(states: CLOSED/,
+    "CLOSED, never OPEN or ALL -- this pass's population is rows GitHub already reports closed");
+  assert.equal(withCursor.join(" ").includes("pullRequests"), false,
+    "and it is `repository.issues`, never `repository.pullRequests` -- a PR read is what makes a "
+    + "hand-closed row invisible, which is all of #2081");
 });
 
-test("#2081 CAP BOUNDARY: an exactly-full page is REFUSED, never reported as the whole population", () => {
-  assert.throws(() => closedRowsFromRead(closedRowRows(500), 500),
-    /returned exactly the requested limit \(500\)/,
-    "THE FAILING CASE THE REVIEWS ASKED FOR: 500 rows against a limit of 500 is indistinguishable from a "
-    + "truncated result, and a truncated population is one this floor would report complete over the rows "
-    + "it did not see");
-  assert.throws(() => closedRowsFromRead(closedRowRows(500), 500), /Raise the limit/,
-    "and the refusal names the remedy, including what to do past GitHub's 1,000-result search ceiling");
-  assert.throws(() => closedRowsFromRead(closedRowRows(7), 7), /exactly the requested limit \(7\)/,
-    "the contract is the CAP, not the number 500 -- it holds at whatever limit the caller sent");
+test("#2081/#2719 a page is narrowed to THIS Project, per issue, because the connection has no `project:` filter", () => {
+  const page = closedRowsPage([
+    { number: 100, projectNumbers: [PROJECT_NUMBER] },
+    { number: 101, projectNumbers: [99] },
+    { number: 102, projectNumbers: [] },
+  ]);
+  const result = closedRowsPageFromRead(page, PROJECT_NUMBER);
+  assert.deepEqual(result.numbers, [100],
+    "an item on some OTHER project, or on none, is excluded -- membership is read PER ISSUE because "
+    + "`repository.issues` carries no `project:` qualifier the way the old search did");
+  assert.equal(result.hasNextPage, false);
+  assert.equal(result.endCursor, null);
 });
 
-test("#2081 CAP BOUNDARY, the other side: one row short of the cap is the complete population", () => {
-  const rows = closedRowsFromRead(closedRowRows(499), 500);
-  assert.equal(rows.length, 499,
-    "the boundary is EXACT -- off by one in this direction and the floor refuses forever, which is the "
-    + "'a refusal no operator action can satisfy' shape this pass replaced #747's floor to escape");
-  assert.deepEqual(rows.slice(0, 3), [1000, 1001, 1002], "and the numbers are the rows, not their indices");
-  assert.deepEqual(closedRowsFromRead("[]", 500), [],
-    "an empty board is the empty population, stated rather than refused: nothing closed is not a short read");
+test("#2081/#2719 the walk's own cursor contract: `hasNextPage`/`endCursor` pass through untouched", () => {
+  const page = closedRowsPage([{ number: 1 }], { hasNextPage: true, endCursor: "abc123" });
+  const result = closedRowsPageFromRead(page, PROJECT_NUMBER);
+  assert.equal(result.hasNextPage, true);
+  assert.equal(result.endCursor, "abc123");
 });
 
-test("#2081 the floor refuses every response shape it would otherwise have to guess at", () => {
-  assert.throws(() => closedRowsFromRead("not json at all", 500), /was not JSON -- refusing to guess/);
-  assert.throws(() => closedRowsFromRead('{"number":1}', 500), /was not a list -- refusing to guess/);
-  assert.throws(() => closedRowsFromRead('[{"number":7},{"title":"x"}]', 500),
-    /entry 1 has no number -- refusing to guess/,
+test("#2081/#2719 an issue whose Project membership could not be read completely REFUSES rather than guesses", () => {
+  // `projectItems(first: 10)` came back with fewer nodes than `totalCount`, and none of the ones it did
+  // fetch name this Project -- the eleventh could, and guessing either way is the defect the floor exists
+  // to catch, arriving through its own per-issue read.
+  const page = closedRowsPage([{ number: 200, projectNumbers: [99], totalCount: 11 }]);
+  assert.throws(() => closedRowsPageFromRead(page, PROJECT_NUMBER),
+    /#200's Project membership could not be read completely/,
+    "NAMED by row number: a silent guess here is the same defect the old sample-vs-population bug was, "
+    + "arriving through the per-issue read instead of the per-page one");
+});
+
+test("#2081/#2719 the floor refuses every response shape it would otherwise have to guess at", () => {
+  assert.throws(() => closedRowsPageFromRead("not json at all", PROJECT_NUMBER),
+    /was not JSON -- refusing to guess/);
+  assert.throws(() => closedRowsPageFromRead(
+    JSON.stringify({ errors: [{ message: "rate limited" }] }), PROJECT_NUMBER),
+    /came back with errors -- refusing to guess/);
+  assert.throws(() => closedRowsPageFromRead(JSON.stringify({ data: {} }), PROJECT_NUMBER),
+    /was not the expected shape -- refusing to guess/);
+  assert.throws(() => closedRowsPageFromRead(
+    JSON.stringify({ data: { repository: { issues: {
+      pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ title: "no number" }],
+    } } } }), PROJECT_NUMBER),
+    /entry 0 has no number -- refusing to guess/,
     "NAMED by position: this list is the only thing that can tell a complete board read from a partial "
     + "one, so a list the parser had to guess at would make the floor report clean over a population it "
     + "never established");
 });
 
-test("#2081 the live wiring supplies the declared Project and a cap below GitHub's search ceiling", () => {
+test("#2719 THE ACCEPTANCE CASE: a population larger than any single page is read completely, paged rather than truncated or refused", async () => {
+  const { closedRowsOnProject } = await import("../settle-closed-rows.mjs");
+  // Three pages, 40 rows each -- bigger than the old FLOOR_LIMIT would have needed to fail at, and nothing
+  // here is a page the connection itself would ever cap: `repository.issues` pages until `hasNextPage` is
+  // false, however large the real population grows.
+  const pageOf = (from: number, hasNextPage: boolean, endCursor: string | null) => closedRowsPage(
+    Array.from({ length: 40 }, (_, i) => ({ number: from + i })), { hasNextPage, endCursor });
+  const pages = [pageOf(1000, true, "c1"), pageOf(1040, true, "c2"), pageOf(1080, false, null)];
+  let call = 0;
+  const numbers = closedRowsOnProject(() => pages[call++]);
+  assert.equal(numbers.length, 120, "all three pages' rows came back -- none dropped at any page boundary");
+  assert.deepEqual([numbers[0], numbers[119]], [1000, 1119],
+    "the full span is present, not just the first page's worth");
+  assert.equal(call, 3, "and the walk stopped as soon as `hasNextPage` was false -- no extra call spent");
+});
+
+test("#2719 a cursor that does not move REFUSES rather than reading the same page forever", async () => {
+  const { closedRowsOnProject } = await import("../settle-closed-rows.mjs");
+  const stuckPage = closedRowsPage([{ number: 1 }], { hasNextPage: true, endCursor: "same-cursor" });
+  assert.throws(() => closedRowsOnProject(() => stuckPage),
+    /gave no cursor to advance to -- refusing to guess/,
+    "a page that says there is more but hands back the SAME cursor (or none) cannot be walked, and "
+    + "walking it anyway is the infinite loop this contract exists to refuse instead of entering");
+});
+
+test("#2719 a population that never finishes paging REFUSES rather than looping forever", async () => {
+  const { closedRowsOnProject } = await import("../settle-closed-rows.mjs");
+  let call = 0;
+  // The cursor genuinely advances every call -- this is not the stuck-cursor case above -- and
+  // `hasNextPage` never turns false, so this is what a page-count safety valve exists to catch.
+  const neverEnds = () => closedRowsPage([{ number: 1 }], { hasNextPage: true, endCursor: `c${call++}` });
+  assert.throws(() => closedRowsOnProject(neverEnds),
+    /did not finish within \d+ pages -- refusing to report a population that might still be paging/,
+    "a bug that pages forever is a bug, not a bigger population -- and it must be LOUD, never a silent "
+    + "truncation the way the old FLOOR_LIMIT was until the reviews caught it");
+});
+
+test("#2081 the live wiring supplies the declared Project and a named page-count safety valve", () => {
   const wiring = codeOnly(source("settle-closed-rows.mjs"));
-  assert.match(wiring, /closedRowsQuery\(\{\s*repo: REPO, owner: PROJECT_OWNER, number: PROJECT_NUMBER/,
+  assert.match(wiring, /closedRowsPageFromRead\(raw, PROJECT_NUMBER\)/,
     "the one call site passes the DECLARED identity, never a literal retyped here -- the floor asking "
     + "about the wrong Project is the second review point one level up");
-  const cap = wiring.match(/const FLOOR_LIMIT = (\d+);/);
-  assert.ok(cap, "and the cap is a named constant, so the number the refusal quotes is the number sent");
-  assert.ok(Number(cap[1]) > 201 && Number(cap[1]) <= 1000,
-    `FLOOR_LIMIT is ${cap?.[1]}: it must exceed the live population (201 boarded closed rows, measured `
-    + "2026-09-23) or the pass refuses on every run, and must not exceed GitHub's 1,000-result search "
-    + "ceiling, past which 'raise the limit' stops being a remedy");
-  assert.equal(/const FLOOR_LIMIT = (\d+);/.test("const FLOOR_LIMIT = FLOOR_SAMPLE;"), false,
-    "CONTROL: the pattern above can fail -- it does not match a cap that is not a literal number");
+  const valve = wiring.match(/const CLOSED_ROWS_MAX_PAGES = (\d+);/);
+  assert.ok(valve, "and the valve is a named constant, so the number a stuck walk quotes is the number sent");
+  assert.ok(Number(valve[1]) * 100 > 288 * 4,
+    `CLOSED_ROWS_MAX_PAGES is ${valve?.[1]}, ${Number(valve?.[1]) * 100} rows at 100/page: it must clear `
+    + "the live population (288 boarded closed rows, measured 2026-09-27) with real headroom, unlike the "
+    + "search cap this replaced");
 });
 
 test("#2081 a failed FLOOR read is CANNOT ASK, and never borrows the board read's exit-0 bridge", () => {
@@ -461,13 +533,13 @@ test("#2081 a failed FLOOR read is CANNOT ASK, and never borrows the board read'
     + "NOT_FOUND (organization.projectV2): Could not resolve to a ProjectV2 with the number 1.";
   assert.equal(boardReadRefusal(ciRead).degraded, true, "CONTROL: the BOARD read forgives exactly this");
   assert.equal(floorReadRefusal(ciRead).degraded, false,
-    "and the floor never does, whatever the cause looks like -- its population is a plain issue search "
-    + "CI's token can make, so nothing reaching here is a ceiling");
-  const truncated = floorReadRefusal("settle-closed-rows: gh returned exactly the requested limit (500)");
-  assert.equal(truncated.degraded, false,
-    "least of all the truncation refusal, whose whole purpose is to be louder than a silent partial "
+    "and the floor never does, whatever the cause looks like -- its population is a plain "
+    + "`repository.issues` read CI's token can make, so nothing reaching here is a ceiling");
+  const stuck = floorReadRefusal("settle-closed-rows: the closed-row read did not finish within 50 pages");
+  assert.equal(stuck.degraded, false,
+    "least of all a stuck walk's refusal, whose whole purpose is to be louder than a silent partial "
     + "population -- exit 0 here would restore the defect two reviewers found");
-  assert.match(truncated.line, /SETTLE-BOARD: CANNOT ASK -- the floor's own population could not be read/);
-  assert.match(truncated.line, /exactly the requested limit \(500\)/,
+  assert.match(stuck.line, /SETTLE-BOARD: CANNOT ASK -- the floor's own population could not be read/);
+  assert.match(stuck.line, /did not finish within 50 pages/,
     "and it carries the cause rather than summarising it");
 });
