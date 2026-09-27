@@ -1952,6 +1952,51 @@ function testFilesRunBy(command) {
   return [...new Set([...scripts.flatMap((script) => suiteTestFiles(script)), ...named])];
 }
 
+// #2724: EVERY `npm run <script>` NAMED, whatever the script -- unlike `SUITE_COMMAND`, which only
+// recognises the four names in `SUITE_SCRIPTS`. `board:settle` matches this and not that: it names no
+// `*.test.ts` glob, so `testFilesRunBy` returns nothing for it and `unmetCommandClosureRequirements` never
+// walked its module at all. `g`/`matchAll` for the same reason #2207 gives `SUITE_COMMAND` a global flag: a
+// chain names more than one script.
+const NPM_RUN_SCRIPT = /(?:^|&&|\|\||;)\s*npm\s+run\s+([\w:-]+)(?![:\w-])/g;
+
+/**
+ * #2724: the ONE file `scriptBody` runs, when it is nothing but a bare `node <file>` invocation -- optional
+ * leading env assignments (the same shape `firstRealToken` already strips), optional trailing flags, but no
+ * `&&`/`||`/`|`/`;` of its own. `board:settle`'s body (`node packages/agent-org/src/settle-closed-rows.mjs`)
+ * is exactly this shape; a script that chains further commands, or does not invoke `node` at all, resolves
+ * to `null` -- this only ever ADDS a file to check, never guesses one where the shape is ambiguous.
+ * @param {string} scriptBody
+ * @returns {string | null}
+ */
+export function singleNodeInvocation(scriptBody) {
+  if (/&&|\|\||\||;/.test(scriptBody)) return null;
+  const tokens = scriptBody.trim().split(/\s+/).filter((token) => !ENV_ASSIGNMENT.test(token));
+  return tokens[0] === "node" && /\.[cm]?[jt]sx?$/.test(tokens[1] ?? "") ? tokens[1] : null;
+}
+
+/**
+ * #2724: every operational script's resolved entry file that `command` invokes via `npm run <script>` --
+ * the `SPAWNS_GH`-through-a-script-name population #621's closure walk could reach for a `.test.ts` entry
+ * but never for an arbitrary npm script name, because nothing before this asked `npm run <script>` what
+ * file it runs. `SUITE_SCRIPTS` is excluded: those name a `*.test.ts` glob, already walked by
+ * `testFilesRunBy`'s own suite-script branch, not a single module this function would resolve to one file.
+ * @param {string} command
+ * @returns {string[]}
+ */
+function operationalScriptEntries(command) {
+  let scripts;
+  try {
+    scripts = JSON.parse(readFileSync("package.json", "utf8")).scripts;
+  } catch {
+    return [];
+  }
+  const names = [...command.trim().matchAll(NPM_RUN_SCRIPT)].map((match) => match[1])
+    .filter((name) => !SUITE_SCRIPTS.includes(name));
+  return [...new Set(names)]
+    .map((name) => (typeof scripts[name] === "string" ? singleNodeInvocation(scripts[name]) : null))
+    .filter((entry) => entry !== null);
+}
+
 /** A file name a test runner is pointed at, whatever the runner: `x.test.ts`, `x.test.mjs`, `x.spec.tsx`. */
 const NAMED_TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
 
@@ -2021,6 +2066,10 @@ export function unmetCommandRequirements(command, capabilities) {
  * so it catches `board-style.test.ts` (no `// requires:` header at all) the same way it catches a file
  * that declared one honestly. Checked FIRST in `classifyCommand`, because a header that under-declares is
  * itself a refusal (#621's own framing): whatever the header says, the closure is what actually runs.
+ *
+ * #2724: `operationalScriptEntries` joins `testFilesRunBy` here, and ONLY here -- an operational script
+ * carries no `// requires:` header for `unmetCommandRequirements` to read, so widening that one too would
+ * add a population it can never say anything about.
  * @param {string} command
  * @param {JobCapabilities} capabilities
  * @returns {{ requirement: string, message: string }[]}
@@ -2028,7 +2077,7 @@ export function unmetCommandRequirements(command, capabilities) {
 export function unmetCommandClosureRequirements(command, capabilities) {
   /** @type {{ requirement: string, message: string }[]} */
   const out = [];
-  for (const fileArg of testFilesRunBy(command)) {
+  for (const fileArg of [...testFilesRunBy(command), ...operationalScriptEntries(command)]) {
     if (/[*?[{]/.test(fileArg) || !existsSync(fileArg)) continue;
     out.push(...unmetClosureRequirements(fileArg, capabilities));
     // SHORT-CIRCUIT ON THE FIRST, and only for the whole-suite case: `classifyCommand` prints one
