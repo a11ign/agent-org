@@ -21,6 +21,12 @@
  *      only thing that shows the reader is not a11ign's constants in a trench coat.
  *   4. each field is REFUSED naming it when missing or mistyped, never answered with a11ign's value.
  */
+// no-token: openMilestones
+//
+// This file imports `labelsOutOfRelease`/`saysOutOfRelease` from `row-file.mjs`, whose closure also
+// defines `openMilestones` (a `gh api` read, unrelated to either function) -- the whole-file over-charge
+// this declaration exists for (#827). Every call here is pure, with every input given directly; nothing
+// in this file calls or spawns `openMilestones`, and nothing else in the closure needs a token either.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
