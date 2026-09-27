@@ -338,7 +338,7 @@ test("#1952 ACCEPTANCE: deliver STARTS a process when no engineer exists, and th
     "the pane comes from a workspace created for the role, and `--no-focus` keeps the tick off the display");
   assert.deepEqual(h.said("agent start"),
     ["--session org agent start worker-capture --kind claude --pane wB:p1 -- --model sonnet --effort high "
-      + "--dangerously-skip-permissions --disallowedTools AskUserQuestion"],
+      + "--dangerously-skip-permissions --disallowedTools AskUserQuestion --autocompact 120000"],
     "the pane id is the one `workspace create` just answered with, and the model/effort are the CAUSE's -- "
     + "the standing six carry neither, which is the argument only spawning answers (#1950, correction 3)");
   assert.equal(h.said("agent prompt").length, 1, "the started process is given the order");

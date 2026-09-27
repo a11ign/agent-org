@@ -145,10 +145,26 @@ test("a FULL model id is allowed through, since the CLI takes those too", () => 
 test("agentArgs spells each product's flags its own way", () => {
   assert.deepEqual(agentArgs({ kind: "claude", model: "sonnet", effort: "high" }),
     ["--model", "sonnet", "--effort", "high", "--dangerously-skip-permissions",
-      "--disallowedTools", "AskUserQuestion"]);
+      "--disallowedTools", "AskUserQuestion", "--autocompact", "120000"]);
   assert.deepEqual(agentArgs({ kind: "codex", model: "gpt-5.6-luna", effort: "medium" }),
     ["-m", "gpt-5.6-luna", "-c", 'model_reasoning_effort="medium"',
      "-c", 'approval_policy="never"', "-c", 'sandbox_mode="workspace-write"']);
+});
+
+/**
+ * #2717: bounds a per-row Claude engineer's own compaction inside a turn, not only between orders.
+ * #2688's `/compact`-before-order only checks cache-read tokens at the seam where an order reaches a
+ * session; a turn that never returns for a new order is never checked there. This passes the same
+ * 120,000 #2688 already ruled to Claude Code's own `--autocompact` trigger, so a single long-running
+ * turn is bounded too -- and a codex worker, a different product, carries no such flag.
+ */
+test("bounds a per-row Claude engineer's own compaction inside a turn, not only between orders", () => {
+  const claude = agentArgs({ kind: "claude", model: "sonnet", effort: "high" });
+  assert.ok(claude.includes("--autocompact") && claude[claude.indexOf("--autocompact") + 1] === "120000",
+    "a claude worker must bound its own auto-compact trigger to #2688's 120,000, not the CLI's default");
+
+  const codex = agentArgs({ kind: "codex", model: "gpt-5.6-luna", effort: "medium" });
+  assert.ok(!codex.includes("--autocompact"), "codex is a different product and carries no such flag");
 });
 
 test("an effort valid for one product is REFUSED for the other", () => {

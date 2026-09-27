@@ -144,8 +144,16 @@ export function agentArgs(profile) {
   // instruction this org has repeatedly proved it cannot keep by habit. Removing the tool is the
   // mechanical version: a session that cannot ask must escalate, which is what the routing rule
   // already tells it to do.
+  //
+  // `--autocompact 120000` (#2717) bounds compaction to a TURN, not only to the gap between orders.
+  // #2688's `/compact`-before-order (`wake.mjs`'s `deliver()`, `prompt-session.mjs`'s `clearThenPrompt()`)
+  // only checks cache-read tokens at the seam where an order REACHES a session; a session that never
+  // returns for a new order on one long-running row (measured: 340 calls, peak context 479k in a single
+  // turn) is never checked. This is the same 120,000 #2688 already ruled, not a second threshold --
+  // passed to Claude Code's OWN auto-compact trigger, which otherwise fires wherever the model's default
+  // context window puts it. Codex reviewers are a different product and are untouched below.
   return ["--model", profile.model, "--effort", profile.effort, "--dangerously-skip-permissions",
-    "--disallowedTools", "AskUserQuestion"];
+    "--disallowedTools", "AskUserQuestion", "--autocompact", "120000"];
 }
 
 function main() {
