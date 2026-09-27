@@ -370,6 +370,16 @@ export const PROFILES = Object.freeze({
     why: "the gate has already named the rows with no Project 1 item; the output is adding each at the Status its "
       + "label says and declaring a release where none exists",
   }),
+  "row-call-count-signal": Object.freeze({
+    kind: "claude",
+    model: "sonnet",
+    // MEDIUM (#2691). The gate has already read each named row's session and its own call count; the work is
+    // deciding whether that row is genuinely one unit or should be split -- a short judgment over a stated
+    // number, not diagnosis from an absence, so `org-stalled`'s `high` would be paid for nothing.
+    effort: "medium",
+    why: "the gate has already named the row and its call count; the output is a judgment about whether to "
+      + "split it, over a number already in the prompt",
+  }),
   "claim-stalled": Object.freeze({
     kind: "claude",
     // SONNET AND MEDIUM, AND THE RECIPIENT IS THE HOLDER, so this is the profile a spawned worker would take if one ever were
