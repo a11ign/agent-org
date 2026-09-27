@@ -42,6 +42,9 @@
 // was simply never told, so every OTHER question -- is this promotable, is this offerable, is this
 // reachable -- was answered as if the row were free.
 
+// #2619 (child 3d of #69): the `answer:` prefix, moved to the project's declared vocabulary.
+import { ANSWER_PREFIX } from "./project-vocabulary.mjs";
+
 /**
  * The label prefix that says which session owes an answer on a row.
  *
@@ -52,8 +55,12 @@
  * re-exports this name, so every existing importer is untouched.
  *
  * @see `answerOwedBy` for why the label, and not an assignee, is the mechanism.
+ *
+ * IMPORTED, NOT REDECLARED (#2619, child 3d of #69): `project-vocabulary.mjs`'s field, re-exported under
+ * this file's own established name so every existing importer -- `work-gate.mjs` included -- keeps
+ * working unchanged.
  */
-export const ANSWER_PREFIX = "answer:";
+export { ANSWER_PREFIX };
 
 /**
  * The session that owes an answer on this row, or `null`.

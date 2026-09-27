@@ -54,6 +54,8 @@ import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { REPO } from "./project-identity.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
+// #2619 (child 3d of #69): the `blocked` label, moved to the project's declared vocabulary.
+import { BLOCKED_LABEL } from "./project-vocabulary.mjs";
 
 export const EXIT = { OK: 0, CANDIDATES: 1, CANNOT_ASK: 2, LANDED_THEN_FAILED: 3 };
 
@@ -305,8 +307,8 @@ export function decideForPR(pr, { maxAgeHours }) {
     return { action: "keep", why: `${age} old, under the ${maxAgeHours}h line` };
   }
   if (pr.isDraft) return { action: "keep", why: "a draft is not offered for merge, so its age says nothing" };
-  if ((pr.labels ?? []).includes("blocked")) {
-    return { action: "keep", why: "labelled `blocked` -- a person refused this, and a clock does not overrule it" };
+  if ((pr.labels ?? []).includes(BLOCKED_LABEL)) {
+    return { action: "keep", why: `labelled \`${BLOCKED_LABEL}\` -- a person refused this, and a clock does not overrule it` };
   }
   if (pr.checksGreen === true && (pr.behind ?? 0) > 0) {
     return { action: "keep",
