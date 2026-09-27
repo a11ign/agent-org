@@ -44,14 +44,14 @@ import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { settleBoardRows, settleClosedStatus, boardReadRefusal, shortReadRefusal,
-  closedRowsQuery, closedRowsFromRead, floorReadRefusal } from "./settle-closed-status.mjs";
+  closedRowsPageQuery, closedRowsPageFromRead, floorReadRefusal } from "./settle-closed-status.mjs";
 // The repository this pass reads, from the one place that names it.
 import { REPO } from "./project-identity.mjs";
 // The token-carrying halves, imported HERE (an entry point) and injected, so the decision module stays
 // pure -- #1009's rule, and the reason this command's Acceptance can run in the job with no token.
-// `PROJECT_OWNER`/`PROJECT_NUMBER` ride the import this file already makes: the floor's population
-// read names the Project from the ONE place that declares it, never from a literal here.
-import { fetchBoardItems, PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapshot.mjs";
+// `PROJECT_NUMBER` rides the import this file already makes: the floor's population read narrows to the
+// Project from the ONE place that declares it, never from a literal here.
+import { fetchBoardItems, PROJECT_NUMBER } from "./board-snapshot.mjs";
 // `EXIT` and `closeRowsExit` are the SAME contract both close paths take, imported rather than re-derived:
 // "a second copy of that decision is the exact 'fact stated twice' shape this repo keeps paying for."
 import { closeRowsExit, EXIT, LIVE_SETTLE_DEPS } from "./close-rows-for-merged-pr.mjs";
@@ -59,35 +59,53 @@ import { closeRowsExit, EXIT, LIVE_SETTLE_DEPS } from "./close-rows-for-merged-p
 export const LOG_PREFIX = "SETTLE-BOARD";
 
 /**
- * The cap on the floor's population read -- NOT a sample size, and the distinction is what two reviews
- * were about. 500 against a live population of 201 (measured 2026-09-23) leaves real headroom, and
- * `closedRowsFromRead` REFUSES an exactly-full page rather than reporting it complete, so the cap can
- * never silently become a sample again. The remedy is to raise it, up to GitHub's 1,000-result search
- * ceiling; the refusal names what to do past that.
- *
- * 500 is `fetchReadyIssueNumbers`'s own number, for the same read shape and the same contract.
+ * #2719: THE SAFETY VALVE ON THE FLOOR'S CURSOR WALK -- NOT A POPULATION CAP, and the distinction is the
+ * whole of this row. The search this replaced capped the POPULATION itself (GitHub refuses a search past
+ * 1,000 results whatever `--limit` asks), so raising its number only moved the day it would fire again --
+ * measured: it fired four days after being set at a number with "real headroom." `repository.issues` has
+ * no such ceiling; this only bounds how many PAGES one run will walk before refusing rather than looping
+ * forever on a page that never stops advancing. At 100 rows/page, 50 pages is 5,000 closed rows -- the
+ * live population (measured 2026-09-27: 288 boarded closed rows) has to grow more than 17x before this
+ * fires, and when it does the fix is to raise THIS number, never to reintroduce a search.
  */
-const FLOOR_LIMIT = 500;
+const CLOSED_ROWS_MAX_PAGES = 50;
 
 /** @param {string[]} args */
 const gh = (args) => execFileSync("gh", args, { encoding: "utf8" }).trim();
 
 /**
  * The floor's independent population: every CLOSED row GitHub itself reports as an item on THIS Project,
- * narrowed BY GITHUB through the `project:` search qualifier rather than by a client-side guess at what
- * `projectItems` means. `gh issue list`, never `gh pr list`: this pass's population must not depend on any
- * PR existing, which is the whole of #2081.
+ * walked page by page over `repository.issues(states: CLOSED)` -- narrowed to this Project PER ISSUE,
+ * because that connection carries no `project:` search qualifier -- rather than by a client-side guess at
+ * what `projectItems` means. `gh api graphql`, never `gh pr list`: this pass's population must not depend
+ * on any PR existing, which is the whole of #2081.
  *
- * `closedRowsQuery` and `closedRowsFromRead` are pure and carry the reasoning, the measurement and the
- * truncation contract; this function is the one call between them, and it is the only thing here that
- * spends a token.
+ * `closedRowsPageQuery` and `closedRowsPageFromRead` are pure and carry the reasoning, the measurement and
+ * the per-page contract; this function is the walk between them, and it is the only thing here that spends
+ * a token.
  *
  * @param {(args: string[]) => string} [gh_]
  * @returns {number[]}
  */
 export function closedRowsOnProject(gh_ = gh) {
-  const query = closedRowsQuery({ repo: REPO, owner: PROJECT_OWNER, number: PROJECT_NUMBER, limit: FLOOR_LIMIT });
-  return closedRowsFromRead(gh_(query), FLOOR_LIMIT);
+  const [owner, name] = REPO.split("/");
+  /** @type {number[]} */
+  const numbers = [];
+  /** @type {string | null} */
+  let after = null;
+  for (let page = 0; page < CLOSED_ROWS_MAX_PAGES; page++) {
+    const raw = gh_(closedRowsPageQuery({ owner, name, after }));
+    const result = closedRowsPageFromRead(raw, PROJECT_NUMBER);
+    numbers.push(...result.numbers);
+    if (!result.hasNextPage) return numbers;
+    if (!result.endCursor || result.endCursor === after) {
+      throw new Error("settle-closed-rows: the closed-row page said there was a next page but gave no "
+        + "cursor to advance to -- refusing to guess whether the board read is complete.");
+    }
+    after = result.endCursor;
+  }
+  throw new Error(`settle-closed-rows: the closed-row read did not finish within ${CLOSED_ROWS_MAX_PAGES} `
+    + `pages -- refusing to report a population that might still be paging. Raise CLOSED_ROWS_MAX_PAGES.`);
 }
 
 /**
