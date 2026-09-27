@@ -30,6 +30,7 @@
 import { execFileSync } from "node:child_process";
 import { REPO } from "./project-identity.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { SESSION_PREFIX } from "./project-vocabulary.mjs";
 
 // `maxBuffer` is RAISED because the projected event log is a few hundred KB today and grows with the
 // repository; the default 1 MB is a cliff that would turn a complete read into a thrown ENOBUFS on some
@@ -92,12 +93,12 @@ const EVENTS_JQ = '.[] | select(.event == "labeled" or .event == "unlabeled")'
  * @returns {Claim[]}
  */
 export function claimsFromEvents(events) {
-  const sorted = [...events].filter((e) => e.label.startsWith("session:"))
+  const sorted = [...events].filter((e) => e.label.startsWith(SESSION_PREFIX))
     .sort((a, b) => a.at.localeCompare(b.at));
   /** @type {Claim[]} */
   const claims = [];
   for (const { event, label, at } of sorted) {
-    const session = label.slice("session:".length);
+    const session = label.slice(SESSION_PREFIX.length);
     if (event === "labeled") {
       claims.push({ session, from: at, to: null });
       continue;
@@ -302,7 +303,7 @@ export function closingPrFromResponse(raw, number) {
     merged: pr.merged === true,
     createdAt: pr.createdAt,
     sessionLabels: (pr.labels?.nodes ?? []).map((/** @type {any} */ l) => l?.name)
-      .filter((/** @type {unknown} */ n) => typeof n === "string" && n.startsWith("session:")),
+      .filter((/** @type {unknown} */ n) => typeof n === "string" && n.startsWith(SESSION_PREFIX)),
   };
 }
 
@@ -412,7 +413,7 @@ export const ARM_LABELS_FROM = "2026-09-09T17:11:53Z";
 export function claimsWithNoEvent(openIssues, byNumber) {
   const missing = [];
   for (const { number, labels } of openIssues) {
-    const live = labels.filter((l) => l.startsWith("session:"));
+    const live = labels.filter((l) => l.startsWith(SESSION_PREFIX));
     if (live.length === 0) continue;
     const events = byNumber.get(number) ?? [];
     const seen = new Set(events.filter((e) => e.event === "labeled").map((e) => e.label));
@@ -457,7 +458,7 @@ export function fetchClosedRowEvents({ run = defaultRun, openIssues } = {}) {
   if (openIssues) {
     const missing = claimsWithNoEvent(openIssues, byNumber);
     if (missing.length > 0) {
-      throw new Error(`claim-provenance: ${missing.length} row(s) carry a \`session:\` label right now `
+      throw new Error(`claim-provenance: ${missing.length} row(s) carry a \`${SESSION_PREFIX}\` label right now `
         + `whose \`labeled\` event is not in the log read back (${missing.map((n) => `#${n}`).join(", ")}) `
         + `-- the log is SHORT, so every "unattributable" verdict drawn from it would be wrong. Refusing `
         + `to report a partial history as a complete one.`);

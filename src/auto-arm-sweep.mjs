@@ -81,6 +81,7 @@ import { pathToFileURL } from "node:url";
 import { armabilityOf, HOLD_PREFIX } from "./pr-hold-state.mjs";
 // A LEAF (no imports), so this job's `actions/checkout`-only bootstrap still resolves it.
 import { PARITY } from "./review-attribution.mjs";
+import { SESSION_PREFIX, BLOCKED_LABEL } from "./project-vocabulary.mjs";
 // #2046: ONE PLACE DECIDES WHETHER A PR IS ARMED, the way `pr-hold-state.mjs` above owns whether it is
 // held. The rule was written here and `arm-pr.mjs`'s refusal path did not call it, which is the third
 // row of the same shape (#1729, #2004, #2046) -- so it moved out to a module with no imports, and this
@@ -108,7 +109,7 @@ export const EXIT = { DRAINED: 0, COULD_NOT_ARM: 1, CANNOT_ASK: 2 };
  */
 export function holdLookalikes(labels) {
   return labels.filter((label) => !label.startsWith(HOLD_PREFIX)
-    && (["pr:hold", "hold", "held"].includes(label.toLowerCase()) || label.startsWith("session:")));
+    && (["pr:hold", "hold", "held"].includes(label.toLowerCase()) || label.startsWith(SESSION_PREFIX)));
 }
 
 /**
@@ -121,8 +122,8 @@ export function holdLookalikes(labels) {
  */
 export function decideAndWarn({ number, labels, checkRunCount }, { log = console.log } = {}) {
   for (const label of holdLookalikes(labels)) {
-    const why = label.startsWith("session:")
-      ? "a `session:` label is OWNERSHIP, not a hold, since 2026-09-09"
+    const why = label.startsWith(SESSION_PREFIX)
+      ? `a \`${SESSION_PREFIX}\` label is OWNERSHIP, not a hold, since 2026-09-09`
       : "no code reads it";
     log(`SWEEP: #${number} carries \`${label}\`, which looks like a hold but is not one (${why}) -- a hold is `
       + `\`npm run pr:hold -- ${number} --session=<name>\` (\`${HOLD_PREFIX}<name>\`)`);
@@ -149,8 +150,8 @@ export function decideAndWarn({ number, labels, checkRunCount }, { log = console
  * @returns {{ arm: boolean, reason: string }}
  */
 export function sweepDecision({ labels, checkRunCount, holdReason = null, parity, parityOwner, reviewedBy = [] }) {
-  if (labels.includes("blocked")) {
-    return { arm: false, reason: "labelled `blocked` -- a person refused this one, and a green `gate` does not answer that" };
+  if (labels.includes(BLOCKED_LABEL)) {
+    return { arm: false, reason: `labelled \`${BLOCKED_LABEL}\` -- a person refused this one, and a green \`gate\` does not answer that` };
   }
   // ONE PLACE DECIDES WHETHER A PR IS HELD (#645). This was written here and NOT in `auto-arm.yml`'s
   // per-PR `arm` job, so a held PR was refused by the sweep and re-armed by its own next event -- the

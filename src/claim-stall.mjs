@@ -23,6 +23,7 @@ import { dirname, resolve } from "node:path";
 // EVERY `git` SPAWN IN THIS REPO STRIPS `GIT_*` THROUGH ONE FUNCTION (`git-env.mjs`'s own header records the incident).
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
+import { ANSWER_PREFIX } from "./project-vocabulary.mjs";
 
 const MINUTE_MS = 60_000;
 
@@ -543,7 +544,7 @@ function nudgeOrder(facts, nudgedAt, lastMoveAt) {
       + "and nobody had touched it for seven hours while its holder worked another row).\n"
       + "IF YOU ARE WORKING ON IT, SAY SO IN ONE COMMAND: commit what you have, push the branch, or comment on the row. Any "
       + "of the three is a move and resets the clock. IF YOU CANNOT, say what stops you in a FIELD, not a sentence "
-      + "(`answer:<session>` for a ruling, `gh issue edit <n> --add-blocked-by <m>` for a row you wait on, "
+      + `(\`${ANSWER_PREFIX}<session>\` for a ruling, \`gh issue edit <n> --add-blocked-by <m>\` for a row you wait on, `
       + "`Not-before:` for a date) -- each clears itself.\n"
       + `IF NOTHING MOVES FOR ${minutes(STALL_INTERVAL_MS)} MINUTES AFTER THIS REACHES YOU the claim is RELEASED (the row is offered to `
       + "the pool again, or comes to `product-manager` if it was not Ready before you took it). Your worktree and everything unpushed in it "

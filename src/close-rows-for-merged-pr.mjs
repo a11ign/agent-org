@@ -95,6 +95,7 @@ import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 // shape this repo names as its own most expensive recurring defect -- three copies of four literals is
 // worse than the cycle either duplicate was solving. See claim-labels.mjs's own header for the full story.
 import { READY_LABEL, CLAIM_LABEL, STARTED_LABEL } from "./claim-labels.mjs";
+import { SESSION_PREFIX } from "./project-vocabulary.mjs";
 // #2202: `waiting-condition.mjs` imports NOTHING, so it is import-safe under this header's no-`npm ci`/no-build
 // constraint for the same reason `claim-labels.mjs` is: it cannot be part of a cycle.
 import { answersOwedBy, ANSWER_PREFIX } from "./waiting-condition.mjs";
@@ -219,7 +220,7 @@ export function closurePlan(issues, { prMergedAt = null } = {}) {
  */
 export function labelsToStrip(currentLabels) {
   return currentLabels.filter((label) => label === READY_LABEL || label === CLAIM_LABEL
-    || label === STARTED_LABEL || label.startsWith("session:"));
+    || label === STARTED_LABEL || label.startsWith(SESSION_PREFIX));
 }
 
 /**
