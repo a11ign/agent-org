@@ -42,10 +42,24 @@ export const EXIT = { REPORTED: 0, CANNOT_ASK: 2 };
  * read is the discount, a write is the premium paid to get it. Summing them into one "cache" number would
  * hide exactly the trade the two-minute tick is making.
  *
- * @typedef {{ session: string, model: string, day: string,
+ * `at` IS THE FULL INSTANT, `day` ITS OWN FIRST TEN CHARACTERS -- kept apart because a day string is all
+ * `main`'s reporting ever needed until #2710 asked a finer question: whether a call fell inside a row's
+ * own claim window, which a same-day session claiming two rows cannot answer from `day` alone.
+ *
+ * @typedef {{ session: string, model: string, day: string, at: number,
  *             fresh: number, cacheRead: number, cacheWrite: number,
  *             output: number, thinking: number }} Turn
  */
+
+/**
+ * A record's timestamp as epoch milliseconds, or `0` for one that will not parse -- never `NaN`, which
+ * would make every `>=` comparison against it false and silently drop the turn from every window.
+ * @param {unknown} timestamp
+ */
+function instantOf(timestamp) {
+  const at = Date.parse(String(timestamp ?? ""));
+  return Number.isFinite(at) ? at : 0;
+}
 
 /**
  * The org session a transcript belongs to, from the wake prompt's own words, or `null`.
@@ -144,10 +158,12 @@ function claudeTurn(d, session, seen) {
   if (!usage || typeof usage !== "object") return null;
   // `requestId` agrees with `message.id` on every line measured; either identifies the API call.
   if (alreadyCounted(seen, String(message?.id ?? d?.requestId ?? ""))) return null;
+  const timestamp = d?.timestamp;
   return {
     session,
     model: String(message?.model ?? "unknown"),
-    day: String(d?.timestamp ?? "").slice(0, 10) || "unknown",
+    day: String(timestamp ?? "").slice(0, 10) || "unknown",
+    at: instantOf(timestamp),
     fresh: num(usage, "input_tokens"),
     cacheRead: num(usage, "cache_read_input_tokens"),
     cacheWrite: num(usage, "cache_creation_input_tokens"),
@@ -195,6 +211,7 @@ function codexTurn(d, session, seen) {
     session,
     model: "codex",
     day: String(d.timestamp ?? "").slice(0, 10) || "unknown",
+    at: instantOf(d.timestamp),
     fresh: Math.max(0, num(u, "input_tokens") - cached),
     cacheRead: cached,
     cacheWrite: num(u, "cache_write_input_tokens"),
