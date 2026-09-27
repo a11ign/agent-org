@@ -18,8 +18,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { claudeTurns } from "../token-audit.mjs";
-import { claimedRowSession, rowCallCountSignals, rowCallCountOrders, ROW_CALL_COUNT_SPLIT_THRESHOLD }
-  from "../work-gate.mjs";
+import { claimedRowSession, rowCallCountSignals, rowCallCountOrders, ROW_CALL_COUNT_SPLIT_THRESHOLD,
+  ROW_CALL_COUNT_ASSESSED_MARKER } from "../work-gate.mjs";
 import { CLAIM_RECORD_MARKER } from "../claim-labels.mjs";
 
 /** One usage line, with a unique `id` so `claudeTurns`'s dedup (`message.id`) counts it once. */
@@ -47,6 +47,10 @@ const rowFixture = (number: number, session: string) =>
  * (`claim-stall.mjs`) to read: the marker, and "-- claimed by `<session>`" on the same body. */
 const claimRecordComment = (session: string, at: string) =>
   ({ body: `${CLAIM_RECORD_MARKER}\n**Claim record** -- claimed by \`${session}\`.`, createdAt: at });
+
+/** The comment `product-manager` posts for a "not split" verdict, carrying the count it was made at. */
+const assessmentComment = (calls: number, at: string) =>
+  ({ body: `${ROW_CALL_COUNT_ASSESSED_MARKER}\nOne unit, not split. calls=${calls}`, createdAt: at });
 
 /** `readClaimedRowComments`'s own shape (`{ number, comments }[]`) -- one entry per row, its claim record
  * comment among them, exactly what the gate hands `rowCallCountSignals` today. */
@@ -151,10 +155,51 @@ test("rowCallCountOrders: empty signals emit nothing, and the order addresses pr
   assert.match(order.prompt, /signal, not an automatic split/);
 });
 
-test("the causeKey carries the count, so a climbing or clearing row is a new question", () => {
+test("#2721: the causeKey is keyed on the SET of rows over threshold, never the count", () => {
   const first = rowCallCountOrders([{ row: 501, session: "worker-501", calls: 112 }])[0];
   const climbed = rowCallCountOrders([{ row: 501, session: "worker-501", calls: 130 }])[0];
-  const again = rowCallCountOrders([{ row: 501, session: "worker-501", calls: 112 }])[0];
-  assert.notEqual(first.causeKey, climbed.causeKey, "a changed count is a new question");
-  assert.equal(first.causeKey, again.causeKey, "an unchanged count mints the same key");
+  assert.equal(first.causeKey, climbed.causeKey,
+    "the same row, unchanged, with only its own count climbing, is NOT a new question");
+
+  const twoRows = rowCallCountOrders([
+    { row: 501, session: "worker-501", calls: 112 },
+    { row: 502, session: "worker-502", calls: 200 },
+  ])[0];
+  assert.notEqual(first.causeKey, twoRows.causeKey, "a new row joining the signalled set is a new question");
+
+  const rowLeft = rowCallCountOrders([{ row: 502, session: "worker-502", calls: 200 }])[0];
+  assert.notEqual(twoRows.causeKey, rowLeft.causeKey, "row 501 leaving the signalled set is a new question too");
+
+  const reordered = rowCallCountOrders([
+    { row: 502, session: "worker-502", calls: 999 },
+    { row: 501, session: "worker-501", calls: 1 },
+  ])[0];
+  assert.equal(twoRows.causeKey, reordered.causeKey,
+    "the key is the sorted row set -- signal order and count do not move it");
+});
+
+test("#2721: a posted 'not split' assessment exempts the row until its calls double from that reading", () => {
+  const claimedAt = "2026-09-27T09:00:00Z";
+  const assessedAt = "2026-09-27T09:30:00Z";
+  const assessedCalls = ROW_CALL_COUNT_SPLIT_THRESHOLD + 10;
+  const commentsWithAssessment = [{ number: 509, comments: [
+    claimRecordComment("worker-509", claimedAt),
+    assessmentComment(assessedCalls, assessedAt),
+  ] }];
+  const openRows = [rowFixture(509, "worker-509")];
+
+  const stillBelowDouble = claudeTurns(transcriptOf("worker-509", sameInstant(assessedCalls + 5)));
+  assert.deepEqual(rowCallCountSignals(openRows, stillBelowDouble, commentsWithAssessment), [],
+    "over threshold but under double the assessed reading: exempt");
+
+  const atDouble = claudeTurns(transcriptOf("worker-509", sameInstant(2 * assessedCalls)));
+  assert.deepEqual(rowCallCountSignals(openRows, atDouble, commentsWithAssessment),
+    [{ row: 509, session: "worker-509", calls: 2 * assessedCalls }],
+    "calls have doubled from the assessed reading: signals again");
+
+  const commentsNoAssessment = [{ number: 509, comments: [claimRecordComment("worker-509", claimedAt)] }];
+  assert.deepEqual(rowCallCountSignals(openRows, stillBelowDouble, commentsNoAssessment),
+    [{ row: 509, session: "worker-509", calls: assessedCalls + 5 }],
+    "no assessment marker at all: still signals past threshold -- the positive control the exemption "
+    + "could otherwise swallow silently");
 });
