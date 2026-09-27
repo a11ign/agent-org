@@ -4557,7 +4557,7 @@ test("#1959: a PR touching BOTH the carve-out and an owned path still fires, on 
 
 test("#1959 (c): does NOT fire once the code owner has approved", () => {
   const pr = pipelinePr(13, [".github/workflows/release.yml"],
-    { reviews: [{ state: "APPROVED", author: { login: "DanBeckDev" } }] });
+    { reviews: [{ state: "APPROVED", author: { login: "a11ign-ai-leads" } }] });
   assert.deepEqual(pipelineCodeownerReviewMissing([pr], comparablePrFiles([pr])), [],
     "the owner has already reviewed; the gap this row names is closed for this PR");
 });
@@ -4570,7 +4570,7 @@ test("#1959: an APPROVED review from anyone ELSE does not satisfy CODEOWNERS", (
 });
 
 test("#1959 (d): does NOT fire for a PR the code owner authored -- GitHub never requests it", () => {
-  const pr = pipelinePr(15, [".github/workflows/release.yml"], { author: { login: "DanBeckDev" } });
+  const pr = pipelinePr(15, [".github/workflows/release.yml"], { author: { login: "a11ign-ai-leads" } });
   assert.deepEqual(pipelineCodeownerReviewMissing([pr], comparablePrFiles([pr])), [],
     "GitHub will not request a review from a pull request's own author, and #2022's bypass allowance "
     + "covers exactly this case");
