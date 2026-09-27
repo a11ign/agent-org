@@ -750,6 +750,50 @@ test("a cause below the limit is still delivered", () => {
   assert.deepEqual(sent, ["reviewer <- k1"]);
 });
 
+/**
+ * #2685: A CAUSE `work-gate.mjs` MARKED `outageNow` IS AT THE CAP FOR A REASON IT SHARES WITH EVERY OTHER
+ * ONE MARKED THE SAME WAY THIS RUN -- so it is named in `outaged`, not `stuck`, and never reaches
+ * `finishTick`'s call into `escalateStuck`, which would otherwise label its row `answer:ceo` on its own,
+ * as if the cause were stuck for a reason unique to it.
+ */
+test("#2685: an outage-marked capped cause is named in `outaged`, never `stuck`", () => {
+  const counts = new Map([["k1", MAX_DELIVERIES]]);
+  const { sent, stuck, outaged } = deliver(
+    [{ session: "reviewer", causeKey: "k1", prompt: "p", outageNow: true }],
+    agents({ reviewer: "idle" }), ROSTER, { run: () => "", record: () => {}, counts });
+  assert.deepEqual(sent, []);
+  assert.deepEqual(stuck, [], "not handed to escalateStuck's input at all");
+  assert.deepEqual(outaged, ["k1"]);
+});
+
+test("#2685: an outage-marked cause is STILL not retried -- MAX_DELIVERIES caps it either way", () => {
+  const calls: string[][] = [];
+  const counts = new Map([["k1", MAX_DELIVERIES]]);
+  deliver([{ session: "reviewer", causeKey: "k1", prompt: "p", outageNow: true }],
+    agents({ reviewer: "idle" }), ROSTER,
+    { run: (a: string[]) => { calls.push(a); return ""; }, record: () => {}, counts });
+  assert.deepEqual(calls, [], "outageNow changes WHERE a capped cause is reported, never whether it is retried");
+});
+
+test("#2685: several DIFFERENT causes marked outageNow in the same run are named TOGETHER, not one stuck row each", () => {
+  const counts = new Map([["k1", MAX_DELIVERIES], ["k2", MAX_DELIVERIES]]);
+  const { stuck, outaged } = deliver(
+    [{ session: "reviewer", causeKey: "k1", prompt: "p1", outageNow: true },
+      { session: "ceo", causeKey: "k2", prompt: "p2", outageNow: true }],
+    agents({ reviewer: "idle" }), ROSTER, { run: () => "", record: () => {}, counts });
+  assert.deepEqual(stuck, [], "ZERO of them reach escalateStuck's input");
+  assert.deepEqual(outaged, ["k1", "k2"], "both named, as ONE outage batch rather than two stuck rows");
+});
+
+test("#2685: an unmarked cause at the cap is unaffected -- outageNow is opt-in, not a new default", () => {
+  const counts = new Map([["k1", MAX_DELIVERIES]]);
+  const { stuck, outaged } = deliver([{ session: "reviewer", causeKey: "k1", prompt: "p" }],
+    agents({ reviewer: "idle" }), ROSTER, { run: () => "", record: () => {}, counts });
+  assert.deepEqual(outaged, []);
+  assert.match(stuck[0], /k1: delivered 6 times and the cause is still true/,
+    "an ordinary capped cause reads exactly as it always has");
+});
+
 // --- the largest saving: a standing session's context only grows (2026-09-18) ---
 
 /**

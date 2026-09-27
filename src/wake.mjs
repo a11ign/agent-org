@@ -3549,6 +3549,18 @@ function whyUnavailable(target, unavailable) {
 }
 
 /**
+ * A capped cause (#2685): work-gate marked it `outageNow` when this run shares its reason with every other
+ * one marked the same way -- GitHub itself refusing reads, not this row's own trouble -- so it is named
+ * separately from `stuck`, which `finishTick` hands to `escalateStuck` one row at a time. Handing an
+ * outage-marked cause to `escalateStuck` too would label as many rows `answer:ceo` as there are causes.
+ * @param {{stuck: string[], outaged: string[]}} into @param {{causeKey: string, outageNow?: boolean}} order @param {number} already
+ */
+function recordCapped({ stuck, outaged }, order, already) {
+  if (order.outageNow) outaged.push(order.causeKey);
+  else stuck.push(`${order.causeKey}: delivered ${already} times and the cause is still true`);
+}
+
+/**
  * Deliver each order, and say what happened to every one of them.
  *
  * REPORTS BEFORE IT RECORDS. An order is written to the ledger only once herdr has accepted it, so a crash
@@ -3575,14 +3587,20 @@ function whyUnavailable(target, unavailable) {
  *   `claimer` claims the row for a spawn before its pane opens ({@link spawnClaimer}); `memory` is the hold
  *   for a host short of memory, asked before either kind of NEW process (#2508); `launch` is what `addressed`
  *   asks about a standing session's worktree
- * @returns {{sent: string[], refused: string[], stuck: string[]}}
+ * @returns {{sent: string[], refused: string[], stuck: string[], outaged: string[]}}
+ *   `outaged` (#2685) is `stuck`'s OWN shape -- capped at `MAX_DELIVERIES`, not retried -- for a causeKey work-gate
+ *   marked `outageNow`: several of THIS TICK's own reads were refused together, so several causes reaching the cap
+ *   in the same run share ONE reason and must not each reach `escalateStuck` as if they were N unrelated stuck rows.
  */
 export function deliver(orders, agents, roster,
   { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer, memory,
     launch, reviewerEnv, registerReviewer, checkout, registry, unavailable, sleep } = {}) {
   const sent = [];
   const refused = [];
+  /** @type {string[]} */
   const stuck = [];
+  /** @type {string[]} */
+  const outaged = [];
   const live = agents.map((a) => ({ ...a }));
   let spawned = 0;
   for (const order of orders) {
@@ -3591,7 +3609,7 @@ export function deliver(orders, agents, roster,
     // busy. Naming it and stopping is the only answer that reaches a person.
     const already = counts?.get(order.causeKey) ?? 0;
     if (already >= MAX_DELIVERIES) {
-      stuck.push(`${order.causeKey}: delivered ${already} times and the cause is still true`);
+      recordCapped({ stuck, outaged }, order, already);
       continue;
     }
     const target = targetFor(order, live, roster, { run, spawned, ineligibleReason, env, registerSpawn, drained,
@@ -3650,7 +3668,7 @@ export function deliver(orders, agents, roster,
       ? `${target.label} <- ${order.causeKey} (STARTED ${target.profile.model}/${target.profile.effort})`
       : `${target.label} <- ${order.causeKey}${noClear ? NO_CLEAR_NOTE : ""}`);
   }
-  return { sent, refused, stuck };
+  return { sent, refused, stuck, outaged };
 }
 
 // --- #2323: A SPAWNED INSTANCE ENDS WHEN ITS ROW DOES, AND EVERY ENDING IS A LEDGER LINE ---
@@ -5226,11 +5244,11 @@ function claimerFor(spares, ledgerPath, hostLayout) {
  * The tick's report and exit, after everything was delivered: the breaker's alarm for a cause offered `MAX_DELIVERIES` times and still true,
  * and the list of orders that had nowhere to go. THE BREAKER'S ALARM: printing `STUCK` and stopping is what let two of `ceo`'s causes go silent for
  * over half an hour with every session idle -- see `escalateStuck`.
- * @param {{ handed: ReturnType<typeof deliverHandoffs>, sent: string[], gateRefused: string[], stuck: string[], ledgerPath: string,
- *   unavailable: (label: string) => string | null }} outcome
+ * @param {{ handed: ReturnType<typeof deliverHandoffs>, sent: string[], gateRefused: string[], stuck: string[],
+ *   outaged: string[], ledgerPath: string, unavailable: (label: string) => string | null }} outcome
  * @returns {never}
  */
-function finishTick({ handed, sent, gateRefused, stuck, ledgerPath, unavailable }) {
+function finishTick({ handed, sent, gateRefused, stuck, outaged, ledgerPath, unavailable }) {
   const refused = [...handed.refused, ...gateRefused];
   for (const line of [...handed.sent, ...sent]) process.stdout.write(`WOKE ${line}\n`);
   for (const line of stuck) process.stderr.write(`STUCK ${line}\n`);
@@ -5239,6 +5257,16 @@ function finishTick({ handed, sent, gateRefused, stuck, ledgerPath, unavailable 
     process.stderr.write(`${stuck.length} cause(s) have been offered ${MAX_DELIVERIES}+ times and are `
       + "still true. They are NOT being retried: something about the row, the prompt or the session is "
       + "wrong, and another delivery would only make the log busier.\n");
+    process.exit(EXIT.ATTENTION);
+  }
+  if (outaged.length > 0) {
+    // #2685: ONE OUTAGE, REPORTED ONCE, NEVER HANDED TO `escalateStuck` -- which would otherwise label as
+    // many rows `answer:ceo` as there are causes, blaming each one for what is really GitHub's reads
+    // failing this run. Not retried either, for `MAX_DELIVERIES`' own reason: the run ends and offers
+    // them fresh once the cause stops being emitted, or the reads succeed and the causeKey changes.
+    process.stderr.write(`OUTAGE: ${outaged.length} cause(s) reached the delivery cap while this tick's `
+      + `own GitHub reads were refused -- ONE shared outage, not ${outaged.length} stuck rows: `
+      + `${outaged.join(", ")}.\n`);
     process.exit(EXIT.ATTENTION);
   }
   if (refused.length > 0) {
@@ -5314,13 +5342,13 @@ function main() {
 
   const spares = sparePathsFrom(ledgerPath);
   const drained = drainNow(spares.cycles);
-  const { sent, refused: gateRefused, stuck } = deliver(todo, free, roster, { record, unavailable,
+  const { sent, refused: gateRefused, stuck, outaged } = deliver(todo, free, roster, { record, unavailable,
     counts: deliveryCounts(ledgerPath), ineligibleReason: poolEngineerReason(poolEligibility(spares, drained), unavailable),
     registerSpawn: (role) => registerSpawn(spares, role), drained, claimable: spawnClaimability(),
     memory: spawnMemoryGate(), claimer: claimerFor(spares, ledgerPath, hostLayout), launch: hostLayout,
     registerReviewer: (session) => registerReviewer(reviewerPathsFrom(ledgerPath), session),
     registry: () => readReviewerRegistry(reviewerPathsFrom(ledgerPath).registry) });
-  finishTick({ handed, sent, gateRefused: [...gateRefused, ...releasesNotDone], stuck, ledgerPath, unavailable });
+  finishTick({ handed, sent, gateRefused: [...gateRefused, ...releasesNotDone], stuck, outaged, ledgerPath, unavailable });
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();

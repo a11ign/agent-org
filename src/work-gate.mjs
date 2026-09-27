@@ -5034,6 +5034,64 @@ export function unreadLanes({ prs, readyRows, others }) {
 }
 
 /**
+ * How many of THIS TICK's OWN reads GitHub refused. `readPrs`, `readReadyRows`, `readPromotableRows`,
+ * `readChairmanBlocked`, `readOpenRows`, the claimed-row comments and the board read each make their OWN
+ * call, sharing no socket and no endpoint with the others -- so one going quiet is that endpoint's own
+ * trouble, needing no shared story. Counted here rather than asked per read, because the question this
+ * answers is not "was THIS read refused" (every read already fails open at its own site: `promotableRows
+ * ?? []`, `offBoard`'s "emits nothing") but "how many were, in the SAME tick" (#2685).
+ * @param {(any[] | null)[]} reads
+ * @returns {number}
+ */
+export function refusedReadCount(reads) {
+  return reads.filter((read) => read === null).length;
+}
+
+/**
+ * TWO, chosen and not measured, and deliberately no higher. `deliver`'s own shared-resource shape
+ * (#2256) put ELEVEN causes at the cap over ONE session's unavailability -- the session was the only
+ * thing all eleven had in common, and nothing waited for a third before treating it as one outage. A bar
+ * set any higher here would miss the same shape for this shared resource.
+ */
+export const SHARED_OUTAGE_READS = 2;
+
+/**
+ * Did GitHub itself refuse THIS TICK's reads -- as opposed to one lane's own trouble? Neither `outageOf`
+ * (a causeKey's own addressed SESSION being unavailable, #2256) nor #2031's pool-exhaustion guard asks
+ * this: both ask about a SESSION or a POOL, never about the reads a tick itself just made.
+ * @param {number} refusedCount @returns {boolean}
+ */
+export function sharedReadOutage(refusedCount) {
+  return refusedCount >= SHARED_OUTAGE_READS;
+}
+
+/**
+ * Mark every order this tick emits with `outageNow` when this tick's own reads carry the shared-outage
+ * shape (`sharedReadOutage`) -- ONE fact, attached beside every order, so `wake.mjs`'s `deliver` can tell
+ * several causes reaching `MAX_DELIVERIES` in the SAME run for ONE shared reason apart from N causes each
+ * independently and truly stuck (#2685). Untouched when there is no outage, so an ordinary order stays
+ * byte-identical to what it always was.
+ * @param {any[]} orders @param {boolean} outage
+ * @returns {any[]}
+ */
+export function markOutageReads(orders, outage) {
+  return outage ? orders.map((order) => ({ ...order, outageNow: true })) : orders;
+}
+
+/**
+ * THIS TICK'S OWN SHARED-OUTAGE READING (#2685): every read whose refusal is distinguishable from "found
+ * nothing", from the primary scope and every other declared one (`others`' own `refused` already counts
+ * each of ITS unread lanes by name, the same way `unreadLanes` reports them).
+ * @param {{ prs: any[] | null, readyRows: any[] | null, promotableRows: any[] | null, chairmanBlocked: any[] | null,
+ *   openRows: any[] | null, claimedComments: any[] | null, offBoard: any[] | null, others: { refused: string[] }[] }} reads
+ * @returns {boolean}
+ */
+function outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows, claimedComments, offBoard, others }) {
+  return sharedReadOutage(refusedReadCount([prs, readyRows, promotableRows, chairmanBlocked, openRows, claimedComments, offBoard])
+    + others.reduce((n, tick) => n + tick.refused.length, 0));
+}
+
+/**
  * SAY WHICH LANES WENT UNREAD AND END THE TICK `PARTIAL` -- the orders already printed stay real, and none is dropped.
  * @param {string[]} unread @param {number} delivered @returns {never}
  */
@@ -5111,7 +5169,8 @@ function main() {
     // #2075: ONE GRAPHQL CALL, READ PER ISSUE. `null` (refused) emits nothing and is said on stderr below.
     offBoard });
   const others = otherScopeTicks(drain); // #2618: the OTHER declared repositories -- none for one project, whose orders are what they were
-  const { delivered: orders, performed } = performActions([...decided, ...others.flatMap((tick) => tick.orders)]);
+  const outageNow = outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows: openRowsRead, claimedComments, offBoard, others });
+  const { delivered: orders, performed } = performActions(markOutageReads([...decided, ...others.flatMap((tick) => tick.orders)], outageNow));
   orders.push(...reviewerAuthTick({ orders }));
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so
   // on a full disk the tick can end partway. The order that says the disk is full must not be the one behind it.
