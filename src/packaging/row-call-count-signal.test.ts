@@ -1,3 +1,6 @@
+// no-token: gh -- this file imports only `claimedRowSession`/`rowCallCountSignals`/`rowCallCountOrders`
+// from `work-gate.mjs`, three pure functions that never call or spawn `gh`; the token charge belongs to
+// the rest of that file's exports, which this test never reaches.
 // #2691: the chairman's token-efficiency reading (#928) asks for a LIVE signal, read from the transcripts
 // the org already writes, naming a claimed row whose session has passed ~100 calls -- a split CANDIDATE
 // for `product-manager`'s judgement, never an automatic split. The read reuses `token-audit.mjs`'s own
