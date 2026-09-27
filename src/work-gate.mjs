@@ -3365,7 +3365,7 @@ function pipelineLane() {
  * ROLE ("ceo") and never the account, and a shared module would make the mapping look derived from a file
  * that does not carry it. `ceo`'s to move, same as that test's copy.
  */
-const ROLE_LOGIN = Object.freeze({ ceo: "DanBeckDev" });
+const ROLE_LOGIN = Object.freeze({ ceo: "a11ign-ai-leads" });
 
 /**
  * Does this PR touch a path CODEOWNERS actually assigns to the lane's owner -- inside `paths` and outside
