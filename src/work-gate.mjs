@@ -76,6 +76,7 @@ import { armedFromApi, openPullRequestsQueryArgs } from "./auto-arm-sweep.mjs";
 import { armabilityOf, holdersOf } from "./pr-hold-state.mjs";
 import { REPO } from "./project-identity.mjs";
 import { homeProjectDeclaration } from "./project-config.mjs";
+import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "./cause-declaration.mjs";
 // #2619 (child 3d of #69): the rest of this file's vocabulary -- `backlog`, `needs:chairman`,
 // `out-of-release`, `blocked`, the `lane:`/`session:` prefixes and `lane:any`.
 import { BACKLOG_LABEL, NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, OUT_OF_RELEASE_LABEL, BLOCKED_LABEL,
@@ -120,151 +121,14 @@ import { claudeTurns, transcriptFiles } from "./token-audit.mjs";
  */
 export const EXIT = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3 };
 
-/** The causes this gate can emit. `wake.mjs` and the matrix validate against this list, never a copy. */
-export const CAUSES = ["draft-awaiting-verdict", "ready-row-unclaimed", "draft-convinced-not-ready",
-  "verdict-not-convinced", "pr-checks-failing", "ready-queue-empty", "lane-backlog-unpromoted",
-  "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
-  "blocked-unexaminable", "fleet-batch-due", "blocker-cleared", "pr-green-unarmed",
-  "claimed-row-amended", "row-branch-unshipped", "host-units-stale", "pr-review-blocked",
-  "unclaimed-blocker-cleared", "pr-merge-conflict", "trunk-red", "verdict-comment-unreviewed",
-  "reviewer-auth-failed", "awaiting-evidence-stale", "disk-headroom-low", "claim-stalled", "row-off-board",
-  // #1959: the gap `.claude/rules/main-review-requirement.md`'s flip (#1756) will turn into a hard merge
-  // block -- a pull request CODEOWNERS assigns to `ceo` with no APPROVED review from `ceo` at all.
-  "pr-codeowner-review-missing",
-  // #2691: a claimed row whose session has passed the call-count split threshold on its OWN live
-  // transcript -- a signal, never an automatic split.
-  "row-call-count-signal",
-  // #2711: an `answer:<session>` label with nothing posted since it was applied -- the addressee cannot
-  // tell a real question from a bare label, so this wakes the row's own holder to post one or remove it.
-  "answer-label-unexplained"];
-
-/**
- * Causes whose answer is a JUDGMENT about the current state, not an action on a named thing.
- *
- * THE DISTINCTION EXISTS BECAUSE ONE OF THEM MUST NOT BE RE-ASKED AND THE OTHER MUST.
- *
- * An ACTION cause names a thing to do -- claim row #1320, fix #1650's red build. If the wake does not
- * stick, nothing happens and nobody notices, so `wake`'s twenty-minute expiry re-offers it. That is the
- * defect the expiry was built for: rows #1433 and #1435 sat Ready overnight because a spent causeKey
- * silenced them for ever.
- *
- * A JUDGMENT cause asks somebody to LOOK and decide -- is anything here promotable? Its answer is
- * durable: if the state has not changed, the answer has not changed either, and asking again buys a full
- * model turn to reach the same conclusion. Measured 2026-09-18: `orchestrator` was woken for
- * `lane-backlog-unpromoted`, spent four shell commands establishing that #1564 is a research row with no
- * Acceptance waiting on a `ceo` ruling, answered "staying put" -- and the twenty-minute expiry would have
- * asked it again, and again, until the six-delivery STUCK cap stopped it two hours later.
- *
- * SO THESE ARE KEYED ON STATE AND NOT RE-ASKED UNTIL THE STATE MOVES. `wake` reads this and skips the
- * expiry for them; the causeKey already carries the state (a count, an age), so any real change is a new
- * question and reaches the owner immediately.
- *
- * `unclaimed-blocker-cleared` IS A JUDGMENT, AND IT IS THE SAME QUESTION `lane-backlog-unpromoted` ASKS
- * (#2139) -- "should this row be promoted?" -- narrowed to one row and one clearing. Its answer is
- * durable in the way that matters here: "it stays in backlog" does not stop being true twenty minutes
- * later, and an ACTION expiry would re-ask it every twenty minutes for ever, which is precisely the
- * treadmill measured on `lane-backlog-unpromoted` and #1564. The causeKey carries the cleared SET, so a
- * row blocked again and cleared again is a new question and reaches `product-manager` immediately.
- *
- * THE RISK, STATED: a judgment wake that never lands is never retried. That is a real cost and a smaller
- * one than the alternative -- the STUCK counter still catches a cause that keeps being emitted, and any
- * change to the underlying state produces a new key. An unasked question is cheaper than a question
- * asked forty times.
- *
- * `claimed-row-amended` JOINED ON 2026-09-23 (#2182), FOR `row-branch-unshipped`'S REASON EXACTLY.
- * Its answer is durable in this docblock's own sense: reading an amendment and accepting it changes
- * neither the row nor the marker, so a holder who has decided to wait reaches the same conclusion every
- * time it is asked. And it is safe to key on state because `amendedOrder` already keys on the WHOLE
- * marker set -- a second or replaced constraint is a different key and still reaches the holder on the
- * next tick, which is the half a careless fix would break.
- *
- * MEASURED ON #1955, whose only marker was an open `blockedBy` edge that was correct, acknowledged three
- * times and self-clearing: four offers in 71 minutes (intervals 31.0, 20.2, 20.2), each a full model turn
- * that produced a comment saying the wait was still right. `amendedOrder`'s own docblock already claimed
- * the property this membership gives it -- *"an unchanged row mints the identical key on every subsequent
- * tick and the ledger drops it"* -- which held for twenty minutes, not for the length of the wait.
- *
- * WHAT THIS DOES NOT FIX, STATED SO NOBODY READS IT AS MORE: a judgment cause is re-offered every two
- * hours rather than never, so a STANDING one still reaches `MAX_DELIVERIES` and escalates to `ceo`
- * (`answer:ceo`, #2636: a stuck row is the sessions' to unstick, and `needs:chairman` is for a wait only a person can end) -- later, not never, about ten hours after its first delivery. That used to turn on
- * `JUDGMENT_TTL_MS` and `RUN_IDLE_RESET_MS` being the same two hours (a regular tick grid escalated, a
- * drifting one never did); #2227 made the reset twice the TTL, so it now escalates on any grid.
- */
-export const JUDGMENT_CAUSES = Object.freeze(["ready-queue-empty", "lane-backlog-unpromoted",
-  "chairman-blocked", "org-stalled", "epic-unfiled", "epic-finished", "answer-owed",
-  "blocked-unexaminable", "fleet-batch-due", "row-branch-unshipped", "claimed-row-amended",
-  "unclaimed-blocker-cleared", "reviewer-auth-failed", "awaiting-evidence-stale", "disk-headroom-low",
-  "row-off-board",
-  // #2691: durable in `JUDGMENT_CAUSES`'s own sense -- a call count that has not moved has not stopped
-  // being over the threshold, so a re-ask that finds the same count would buy a full model turn to reach
-  // the same conclusion. The causeKey carries the count, so a row that drops below it, or climbs further,
-  // is a new question and reaches `product-manager` immediately.
-  "row-call-count-signal"]);
-
-/**
- * The causes that START new work, as opposed to finishing work already begun.
- *
- * WHY THE ORG NEEDS TO BE ABLE TO DRAIN, measured 2026-09-18. `ceo` announced a capture-free window
- * for #63's history purge on two readings -- the fleet idle, and no open pull requests -- and told
- * `orchestrator` to hold the fleet. Thirty minutes later two fresh agent branches had been pushed,
- * because NOBODY HELD THE ORG: the fleet has a hold and the work tick does not. Step 2 of that runbook
- * force-pushes a rewritten history, so every branch created after the rewrite is stranded.
- *
- * STOPPING THE TIMER IS NOT THE ANSWER, and that is the whole reason this is a partition rather than
- * an off switch. The two drafts already open still needed a reviewer verdict and a ready-marking to
- * land; a stopped tick strands them exactly as surely as the force-push would. What a window needs is
- * to stop TAKING ON work while continuing to finish what is in flight -- so the causes split by which
- * of those two things they do, and drain withholds only the first kind.
- *
- * `chairman-blocked` is deliberately NOT here. It is the only cause whose subject is the window
- * itself: during a transfer the chairman is the one doing the work, and silencing their brief would
- * silence the thing the drain exists to serve.
- *
- * `blocker-cleared` is deliberately NOT here either, and for the partition's own definition rather than
- * a preference: its subject is a row the session ALREADY HOLDS. A drain finishes work in flight and
- * starts none, and a claimed row is the plainest case of work in flight there is -- withholding it would
- * strand exactly the rows a transfer window needs landed, which is the failure `START_CAUSES` was split
- * out to prevent for the two open drafts.
- *
- * `unclaimed-blocker-cleared` IS here, and it is `blocker-cleared`'s own argument read the other way
- * (#2139). The partition turns on whether a row is work in flight, and the ONLY difference between those
- * two causes is the claim -- which is exactly the line the partition draws. Nobody holds this row, so
- * promoting it is the org TAKING ON work, which is the thing a transfer window exists to stop. A drain
- * that withheld `blocker-cleared` would strand a build half-done; one that withholds this withholds a
- * promotion, and the row is waiting either way.
- *
- * `claimed-row-amended` is out for the same reason and one sharper one (#2110). Its subject is also a row
- * the session already holds, so the sentence above applies unchanged -- but a drain is precisely the
- * window in which withholding it costs most. A drain exists to LAND what is in flight; a constraint that
- * arrives unread during one is a build finished against a rule nobody applied, which is the single thing
- * a landing window cannot afford. Measured on #2099: the ruling reached the row 6 minutes after the work
- * was done, and only a human reading the thread caused it to be honoured.
- *
- * `row-branch-unshipped` is deliberately NOT here either (#2031), and a drain is the window where it
- * matters MOST rather than least. Step 2 of #63's history-purge runbook force-pushes a rewritten history,
- * and every branch on `origin` at that moment that nobody has landed is stranded by it -- a drain exists
- * precisely so the org can find out what is still in flight before that happens. Withholding this cause
- * during one would hide, from the only person who can act on it, the exact population the window is for.
- * It also starts no work: its subject is work that ALREADY EXISTS on origin.
- *
- * `claim-stalled` is deliberately NOT here either (#2470), and it is an ACTION cause, not a judgment: the answer is a
- * nudge or a release, never a question, so it is in neither `JUDGMENT_CAUSES` nor this list. Its subject is a row a
- * session ALREADY HOLDS, which is the plainest case of work in flight there is; and the window where a stalled claim
- * costs most is a drain, which exists to LAND what is in flight. A release also returns the row to the pool and starts
- * nothing itself -- taking it on again is `ready-row-unclaimed`'s, and THAT is withheld by a drain.
- *
- * `row-off-board` is deliberately NOT here either (#2075), and it is a JUDGMENT cause. Boarding a row takes on no work: the
- * row already exists and is already filed, and what is wrong is that the chairman's view cannot see it. A drain is no
- * reason to leave a `ready` row invisible in every Status view, and rows are still filed during one.
- *
- * `row-call-count-signal` is deliberately NOT here either (#2691), and it is a JUDGMENT cause. Its subject
- * is a row a session ALREADY HOLDS -- the plainest case of work in flight there is -- and it starts
- * nothing: `product-manager` reading it and deciding to split, or not, is a judgment over a row that
- * already exists, not new work the drain exists to stop.
- */
-export const START_CAUSES = Object.freeze(["ready-row-unclaimed", "ready-queue-empty",
-  "lane-backlog-unpromoted", "org-stalled", "epic-unfiled", "epic-finished",
-  "blocked-unexaminable", "fleet-batch-due", "unclaimed-blocker-cleared"]);
+// #2621 (child 3e of #69): CAUSES, JUDGMENT_CAUSES AND START_CAUSES ARE COMPUTED, NOT SPELLED HERE. A
+// cause used to be added to these three arrays AND to `worker-profile.mjs`'s `PROFILES` separately --
+// four lists in two files a cause had to be added to together, and a cause added to one and not the
+// others is a recorded trap. `cause-declaration.mjs` is now the one place a cause is declared
+// (`{cause, group, profile}`), and these three names -- unchanged from here on -- are its computation.
+// See that file's own header for the general "action vs judgment" and "start vs finish" reasoning, and
+// its `TOOL_CAUSE_DECLARATIONS` for each cause's own.
+export { CAUSES, JUDGMENT_CAUSES, START_CAUSES };
 
 /** Where the drain marker lives. `touch` it to open a window; `rm` it to close one. */
 export const DRAIN_MARKER = `${process.env.HOME}/.cache/a11ign/drain`;
@@ -4521,7 +4385,7 @@ export function stalledOrder({ orders, openRows, waiting = null }) {
  * median open-to-merge was SIX MINUTES, so this was never a queue problem -- it was a model turn spent
  * relaying a machine-readable fact between two machines.
  *
- * AND THE ROLE DOC ALREADY SAID SO. `packages/agent-org/docs/roles/reviewer.md` line 129: "a provisional
+ * AND THE ROLE DOC ALREADY SAID SO. `.agent-org/roles/reviewer.md` line 129: "a provisional
  * `convinced` IS the verdict: **the author marks ready on it**". `product-manager` was never supposed to
  * be in this path; the gate put them there by having no way to act, only to wake.
  *

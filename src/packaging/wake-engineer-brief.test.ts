@@ -19,11 +19,11 @@ import { addressed, deliver, engineerRoles, ENGINEER_BRIEF } from "../wake.mjs";
 
 const ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const read = (repoPath: string) => readFileSync(`${ROOT}${repoPath}`, "utf8");
-const SESSIONS = JSON.parse(read("packages/agent-org/docs/roles/sessions.json")) as {
+const SESSIONS = JSON.parse(read(".agent-org/roles/sessions.json")) as {
   live: { name: string; role: string; brief: string | null; family?: { prefix: string; from: number } }[];
   retired: { name: string }[];
 };
-const ROLES_DIR = "packages/agent-org/docs/roles";
+const ROLES_DIR = ".agent-org/roles";
 const ORDER = { session: "engineers", prompt: "claim row 1 as `<you>`" };
 const BRIEF_LINE = new RegExp(ENGINEER_BRIEF.replaceAll(".", "\\."));
 
@@ -155,14 +155,14 @@ test("the engineer brief carries the ban with NO exception, and never the words 
 
 test("the family points at the engineer brief, and every live engineer's brief exists", () => {
   const brief = (name: string) => SESSIONS.live.find((s) => s.name === name)?.brief;
-  const shared = "docs/roles/engineer.md";
-  assert.ok(`packages/agent-org/${shared}` === ENGINEER_BRIEF, "the field's path is the one addressed() names");
+  const shared = `${ROLES_DIR}/engineer.md`;
+  assert.ok(shared === ENGINEER_BRIEF, "the field's path is the one addressed() names");
   // #2403: the spares are ONE family entry, `worker-<n>`, and not five addresses.
   assert.equal(brief("worker-<n>"), shared, "worker-<n>");
   assert.equal(SESSIONS.live.filter((s) => s.family !== undefined).length, 1,
     "the positive control: the family entry is the one `worker-<n>` was read from");
   for (const s of SESSIONS.live.filter((e) => e.role === "engineer")) {
-    assert.ok(s.brief !== null && existsSync(`${ROOT}packages/agent-org/${s.brief}`), `${s.name}'s brief exists`);
+    assert.ok(s.brief !== null && existsSync(`${ROOT}${s.brief}`), `${s.name}'s brief exists`);
   }
 });
 

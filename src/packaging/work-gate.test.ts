@@ -886,7 +886,7 @@ test("#2493 blockersFromRows answers from the open rows already read, and `null`
 
 /** #2493 done-when 5: the ready audit's line lives in the role brief, pinned so deleting it is red. */
 test("#2493: product-manager's brief says `SOLE HOLDER IS A HELD PR`, and what to read next, in ONE bullet", () => {
-  const brief = readFileSync(new URL("../../../agent-org/docs/roles/product-manager.md", import.meta.url), "utf8");
+  const brief = readFileSync(new URL("../../../../.agent-org/roles/product-manager.md", import.meta.url), "utf8");
   // THE BULLET, SLICED: a whole-file `includes` is satisfied by any second copy of the phrase elsewhere.
   const start = brief.indexOf("- **A ready audit that names a B4 holder");
   assert.ok(start >= 0, "the bullet is gone");
@@ -4376,6 +4376,10 @@ test("#2174: work-gate.mjs loads in a tree with NO node_modules, host-units edge
   const root = realpathSync(mkdtempSync(join(tmpdir(), "a11y-work-gate-no-modules-")));
   // #2616: the tool now reads the project's declaration from beside it, so a copied tree must carry it or the reader REFUSES (correctly).
   closure.add(join(REPO, ".agent-org/project.json"));
+  // #2621: the declaration now points at a PLUGIN (`.agent-org/plugins/causes.mjs`) that `cause-declaration.mjs`
+  // imports DYNAMICALLY, by a string `localImports`'s static walk cannot see -- so it is added here for the
+  // identical reason `project.json` is a line above.
+  closure.add(join(REPO, ".agent-org/plugins/causes.mjs"));
   for (const file of closure) {
     const target = join(root, relative(REPO, file));
     mkdirSync(dirname(target), { recursive: true });

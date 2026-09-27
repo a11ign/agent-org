@@ -14,7 +14,7 @@
 // **THE SCOPE DECISION (read this before touching the population test below):** the row's Region is five
 // files -- `gh-identity.mjs`, `api-pool.mjs`, `work-gate.mjs`, this file and `work-gate.test.ts` -- and does
 // NOT include any of the ~30 files that actually spawn `gh` today (`board-data.mjs`, `pr-open.mjs`,
-// `wake.mjs`, and so on). Editing them would be OUT OF REGION (`packages/agent-org/docs/roles/engineer.md`:
+// `wake.mjs`, and so on). Editing them would be OUT OF REGION (`.agent-org/roles/engineer.md`:
 // "a finding outside your row's Region goes to the row or the owner, never into your diff"), and there is
 // no shared `gh`-spawning helper today for the seam to reach through in one edit -- each of those files
 // defines its OWN local `const gh = (args) => execFileSync("gh", args, ...)`. So "a guard... that makes

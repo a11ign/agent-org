@@ -438,7 +438,7 @@ test("#2279 / #2505: the roster is sessions.json's engineer addresses -- NONE si
   assert.deepEqual(REAL_ROSTER, [],
     "#2505: the three standing engineers are retired, so no address is listed and every engineer is a spare");
   const live = (JSON.parse(readFileSync(
-    new URL("../../../../packages/agent-org/docs/roles/sessions.json", import.meta.url), "utf8",
+    new URL("../../../../.agent-org/roles/sessions.json", import.meta.url), "utf8",
   )) as { live: { name: string; role: string; brief: string | null; spare?: boolean;
     family?: { prefix: string; from: number } }[] }).live;
   const families = live.filter((s) => s.family !== undefined);
@@ -446,7 +446,7 @@ test("#2279 / #2505: the roster is sessions.json's engineer addresses -- NONE si
   // #2406: was `null` ("an address, not a briefed session"). A spare is still an address with no standing session,
   // but every engineer address is briefed by the ONE shared file, and `addressed()` tells it to read it.
   assert.deepEqual([families[0].role, families[0].spare, families[0].brief, families[0].family],
-    ["engineer", true, "docs/roles/engineer.md", { prefix: "worker-", from: 4 }],
+    ["engineer", true, ".agent-org/roles/engineer.md", { prefix: "worker-", from: 4 }],
     "a spare is an address, but every engineer address is briefed by the shared engineer brief");
   assert.equal(REAL_ROSTER.length, live.filter((s) => s.role === "engineer" && s.family === undefined).length,
     "no engineer address in the file is missing from what `wake` offers work to");
@@ -2045,7 +2045,7 @@ esac
 const FAILED_CYCLE = `${JSON.stringify({ role: "worker-4", row: 2131, at: 1, clean: false, why: "fixture" })}\n`;
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
-const SESSIONS_JSON = "packages/agent-org/docs/roles/sessions.json";
+const SESSIONS_JSON = ".agent-org/roles/sessions.json";
 
 /**
  * `wake.mjs` and its local-import closure, copied under `copyRoot` with a `sessions.json` that MARKS `worker-judge`
@@ -2065,6 +2065,10 @@ function copyWakeWithDrainedRoster(copyRoot: string): string {
   visit(entry);
   // #2616: the tool now reads the project's declaration from beside it, so a copied tree must carry it or the reader REFUSES (correctly).
   files.add(join(REPO_ROOT, ".agent-org/project.json"));
+  // #2621: the declaration now points at a PLUGIN (`.agent-org/plugins/causes.mjs`), imported DYNAMICALLY
+  // by `cause-declaration.mjs` -- invisible to `localImports`'s static walk, so it is added for the
+  // identical reason `project.json` is a line above.
+  files.add(join(REPO_ROOT, ".agent-org/plugins/causes.mjs"));
   for (const file of files) {
     const target = join(copyRoot, relative(REPO_ROOT, file));
     mkdirSync(dirname(target), { recursive: true });
@@ -2072,7 +2076,7 @@ function copyWakeWithDrainedRoster(copyRoot: string): string {
   }
   const sessions = JSON.parse(readFileSync(join(REPO_ROOT, SESSIONS_JSON), "utf8")) as { live: Record<string, unknown>[] };
   const standing = ["worker-capture", "worker-judge", "worker-tooling"]
-    .map((name) => ({ name, role: "engineer", drain: true, brief: "docs/roles/engineer.md" }));
+    .map((name) => ({ name, role: "engineer", drain: true, brief: ".agent-org/roles/engineer.md" }));
   sessions.live.splice(sessions.live.findIndex((e) => e.family !== undefined), 0, ...standing);
   mkdirSync(join(copyRoot, dirname(SESSIONS_JSON)), { recursive: true });
   writeFileSync(join(copyRoot, SESSIONS_JSON), JSON.stringify(sessions));
