@@ -331,15 +331,55 @@ export function waitingOn(row, today = todayIso(), nowMs = Date.now()) {
  * (reviewer, #1841). The direction of that error is what makes it a refusal here: a typo would silently
  * EXTEND a live sequence's window rather than failing open the way this function's own rule requires.
  *
+ * NARROWED TO NAMED WORKERS SINCE `ceo`'s #928 RULING (point 2), AND STILL PARSED HERE ONLY. The line may
+ * carry an optional trailing, comma-separated worker list -- `Fleet-hold-until: <timestamp>
+ * a11y-worker-2,a11y-worker-3` -- read by `fleetHoldWorkers` below, this function's own sibling. A line
+ * with no worker list is UNCHANGED: `fleetHoldUntil` still returns just the timestamp, and the row still
+ * holds the WHOLE FLEET, which is #928's own required back-compat for every row already carrying an
+ * unscoped field. The worker list is matched by THIS regex too (not left to a second, looser one), because
+ * a hold whose trailing text does not fit either shape must fail exactly as open as a bad timestamp does --
+ * see `fleetHoldWorkers`'s own comment for why a typo'd worker name is not read as "unscoped".
+ *
  * @param {string | null | undefined} body
  * @returns {string | null}
  */
 export function fleetHoldUntil(body) {
-  const m = /^[ \t]*#{0,6}[ \t]*Fleet-hold-until:[ \t]*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)[ \t]*$/im
-    .exec(String(body ?? ""));
+  const m = FLEET_HOLD_LINE.exec(String(body ?? ""));
   if (!m) return null;
   return roundTripsUtc(m[1]) ? m[1] : null;
 }
+
+/**
+ * The workers a `Fleet-hold-until:` line names, or `[]` when it names none -- `[]` MEANS "the whole
+ * fleet", the same default #928 requires of `fleetHoldUntil` itself, so a caller can treat an empty array
+ * and an absent list identically without a second branch.
+ *
+ * A TYPO'D WORKER NAME FAILS THE WHOLE LINE, NOT JUST THE SCOPE, because `FLEET_HOLD_LINE` matches the
+ * worker list or nothing at all -- there is no shape where the timestamp parses but a garbled worker list
+ * is silently dropped. That matches `fleetHoldUntil`'s own rule for a bad timestamp (a malformed field is
+ * not a hold; it fails OPEN) rather than inventing a second, looser failure mode for the half of the line
+ * this function reads: a hold that silently reverted to fleet-wide because of a typo would strand the rest
+ * of the fleet exactly the way #1839 was filed to stop.
+ *
+ * NO IMPORT OF THE WORKER-NAME PATTERN `fleet-playbook.mjs` OWNS (`LIMIT_PATTERN`'s atom): this package
+ * has no `node_modules` (ADR 0012) and this module is meant to stay a leaf other packages can pull in
+ * without dragging `control` along, so the same `a11y-worker-[0-9]{1,3}` shape is inlined here rather than
+ * shared. `fleet-playbook.test.ts` pins both against real worker names so the two cannot drift silently.
+ *
+ * @param {string | null | undefined} body
+ * @returns {string[]}
+ */
+export function fleetHoldWorkers(body) {
+  const m = FLEET_HOLD_LINE.exec(String(body ?? ""));
+  if (!m || !roundTripsUtc(m[1])) return [];
+  return m[2] ? m[2].split(",") : [];
+}
+
+/**
+ * `Fleet-hold-until:`'s own line, shared by `fleetHoldUntil` and `fleetHoldWorkers` so the two can never
+ * read a different timestamp, or agree on a match the other refuses, from the same body.
+ */
+const FLEET_HOLD_LINE = /^[ \t]*#{0,6}[ \t]*Fleet-hold-until:[ \t]*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)(?:[ \t]+(a11y-worker-[0-9]{1,3}(?:,a11y-worker-[0-9]{1,3})*))?[ \t]*$/im;
 
 /**
  * What a FLEET-GATED row is waiting on -- `waitingOn` plus the one condition only the fleet has.
