@@ -7,7 +7,7 @@
  * In its own file because it imports `board-data.mjs`, which spawns `gh`, and CI's acceptance job refuses
  * anything that does; it runs in the ordinary `ts` suite.
  */
-import { declareWalkScope } from "../../../guards/src/walk-scope.mjs";
+import { declareWalkScope } from "../lib/walk-scope.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
