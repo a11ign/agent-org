@@ -5,6 +5,13 @@
  * the web UI -- every row here is filed with `gh issue create --body`, which bypasses it entirely.
  * Measured 2026-09-09: 39 of ~65 open rows had no Open-check.
  */
+// no-token: gh
+//
+// template-fields-rule.mjs imports `gh` from `lookups.mjs`, so the acceptance classifier charges this
+// whole file for a token via `REQUIRED_FIELDS -> gh -> lookups.mjs:26` -- measured, refused this row's own
+// acceptance command as filed. No test here calls `gh`: every test passes a literal string body straight
+// into `missingTemplateFields`/`templateFieldsReason`, both pure functions over that string and
+// `REQUIRED_FIELDS` (a plain constant), so reaching `gh` is not part of what this file tests.
 import { declareWalkScope } from "../lib/walk-scope.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
