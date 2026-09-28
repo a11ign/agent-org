@@ -26,7 +26,7 @@ import {
 // pinned against the real identity rather than against a literal retyped in the assertion.
 // Both are pure of `gh`, which is why a test whose Acceptance runs in a token-less job may import them.
 import { PROJECT_NUMBER } from "../board-snapshot-scope.mjs";
-import { REPO } from "../../../../scripts/repo-identity.mjs";
+import { REPO } from "../project-identity.mjs";
 // #1996: the resting state's single copy. Imported from the pure module that owns it, so this file's
 // closure still needs no token and the row's Acceptance stays runnable where Acceptance runs.
 import { RESTING_STATUS } from "../board-status-health.mjs";

@@ -38,7 +38,7 @@ import { filingWarnings, malformedAcceptanceCommandWarning, quotedTestCountWarni
   from "../row-file.mjs";
 import { CLAIM_LABEL } from "../claim-labels.mjs";
 import { filedByLine } from "../row-claim.mjs";
-import { REPO } from "../../../../scripts/repo-identity.mjs";
+import { REPO } from "../project-identity.mjs";
 
 const CLI = fileURLToPath(new URL("../row-file.mjs", import.meta.url));
 /**

@@ -26,7 +26,7 @@ import {
   parseProjectDeclaration,
   readProjectDeclaration,
 } from "../project-config.mjs";
-import { CODE_REPOSITORIES, REPO, TRACKERS } from "../../../../scripts/repo-identity.mjs";
+import { REPO } from "../project-identity.mjs";
 import { PROJECT_NUMBER, PROJECT_OWNER } from "../board-snapshot-scope.mjs";
 
 const A11IGN_LITERAL = "a11ign/a11ign";
@@ -78,11 +78,12 @@ test("a11ign's own declaration, read through the reader, gives exactly today's v
 });
 
 test("the constants every importer reads are the declaration's values, and the same as before the seam", () => {
+  const declaration = readProjectDeclaration(HOME_CHECKOUT);
   assert.equal(REPO, A11IGN_LITERAL);
   assert.equal(PROJECT_OWNER, "a11ign");
   assert.equal(PROJECT_NUMBER, 1);
-  assert.equal(TRACKERS.length, 1);
-  assert.equal(CODE_REPOSITORIES.length, 1);
+  assert.equal(declaration.tracker.length, 1);
+  assert.equal(declaration.code.length, 1);
 });
 
 test("POSITIVE CONTROL: a11ign's declaration is non-empty and holds the empty key exactly once in each list", () => {
