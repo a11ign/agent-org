@@ -319,11 +319,11 @@ export const GH_READS = Object.freeze({
   // seen only after the gate was down for longer, is missed, not guessed.
   conditionalOnClaimedBranches: "pr list --state merged --limit 100 --json number,headRefName,mergedAt"
     + " (readMergedPrs -- claim-stalled's merged release)",
-  // #2286: ONE CALL FOR EVERY BLOCKER, paid only when some unclaimed row has a cleared blocker to ask
-  // about. `gh`'s `blockedBy` nodes carry no closing time, and a per-blocker read would make the tick's
-  // cost a function of how many rows are waiting.
+  // #2286, WIDENED BY #2741: ONE CALL FOR EVERY BLOCKER, paid only when some unclaimed row OR some
+  // claimed one has a cleared blocker to ask about. `gh`'s `blockedBy` nodes carry no closing time, and a
+  // per-blocker read would make the tick's cost a function of how many rows are waiting.
   conditionalOnClearedRows: "issue list --state closed --limit 100 --json number,closedAt"
-    + " (readRecentlyClosed -- unclaimed-blocker-cleared's backoff)",
+    + " (readRecentlyClosed -- unclaimed-blocker-cleared's and blocker-cleared's backoff)",
   // #2356: FOUR MORE REST CALLS, paid ONLY by a tick that found `main` red -- the run's jobs, the recheck
   // job's annotations, `run view --log-failed` for the failing test names, and the merged PR's session.
   // A healthy `main` pays none of them; a red one is rare and short-lived by the ruling this cause serves.
@@ -1973,15 +1973,28 @@ function rowsWithOpenPr(openPrs) {
  * clearing and then abandoned is exactly the holder this cause must still reach. `prs` is the read
  * `draftOrder` already made, so the narrowing spends no call and does not touch `GH_READS`.
  *
+ * #2741: A CLEARING THAT DOES NOT RECUR BACKS OFF THE SAME WAY `unclaimedBlockerClearedOrders` DOES.
+ * `closings` says when each blocker closed, and the causeKey then carries `promotionAskWindow`'s suffix
+ * exactly as that function's does -- one ask at once, again at 6h and 24h, then every 72h for ever. A
+ * `Not-before:`/`answer:`/`blockedBy` cycle that changes nothing about the row does not reopen the first
+ * window: #1756 escalated twice in one day because the pre-#2741 key never changed and this is an ACTION
+ * cause, so answering `answer:ceo` correctly reset the counter and the twenty-minute expiry rebuilt the
+ * same six deliveries from zero. WITHOUT `closings` (`null`, or an old caller) every ask is the unstaged
+ * first one, which is the behaviour before this backoff existed and what a refused read must fall back to.
+ *
  * @param {any[]} rows every open row
  * @param {string} [today]
  * @param {number} [nowMs] the clock a timestamped hold is read against, injected so a test moves time
- * @param {any[]} [openPrs] `readPrs`'s open pull requests. OMITTED MEANS "NOT ASKED", and the cause then
- *   behaves exactly as before #2161: it fails toward telling the holder, never toward silence
+ * @param {{openPrs?: any[], closings?: Map<number, number> | null}} [reads] the two reads this cause takes
+ *   BEYOND `rows` itself, bundled so a 5th positional parameter does not join `nowMs` (`max-params`).
+ *   `openPrs` is `readPrs`'s open pull requests. OMITTED MEANS "NOT ASKED", and the cause then behaves
+ *   exactly as before #2161: it fails toward telling the holder, never toward silence.
+ *   `closings` is `readRecentlyClosed`'s map, or `null` for "not asked or refused" -- see this function's
+ *   own header for what that falls back to.
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
  */
-export function blockerClearedOrders(rows, today = todayIso(), nowMs = Date.now(), openPrs = []) {
+export function blockerClearedOrders(rows, today = todayIso(), nowMs = Date.now(), { openPrs = [], closings = null } = {}) {
   const orders = [];
   const resumed = rowsWithOpenPr(openPrs);
   for (const row of rows ?? []) {
@@ -1993,6 +2006,8 @@ export function blockerClearedOrders(rows, today = todayIso(), nowMs = Date.now(
     // anything else, so passing here is what proves every number above is closed -- and it covers the
     // other conditions in the same breath, which is why `declaredBlockers` does not re-ask.
     if (fleetWaitingOn(row, today, nowMs)) continue;
+    const window = clearingAskWindow(cleared, nowMs, closings);
+    if (!window) continue;
     const key = cleared.join(".");
     orders.push({
       session,
@@ -2010,7 +2025,7 @@ export function blockerClearedOrders(rows, today = todayIso(), nowMs = Date.now(
         + `\`gh issue edit ${row.number} --add-blocked-by <n>\`, a \`Not-before: YYYY-MM-DD\` line, or `
         + `\`${ANSWER_PREFIX}<session>\` if you are waiting on somebody to decide. Each clears itself, `
         + "and each stops this being asked again.",
-      causeKey: `${session}/blocker-cleared/row-${subjectRef(row.repoKey, row.number)}/${key}`,
+      causeKey: `${session}/blocker-cleared/row-${subjectRef(row.repoKey, row.number)}/${key}${window.suffix}`,
     });
     if (orders.length >= MAX_ROW_ORDERS_PER_TICK) break;
   }
@@ -2089,6 +2104,17 @@ export function promotionAskWindow(age) {
  */
 function clearedAt(cleared, closings) {
   return Math.max(...cleared.map((n) => closings.get(n) ?? 0));
+}
+
+/**
+ * The backoff window a clearing is in, shared by `blockerClearedOrders` and `unclaimedBlockerClearedOrders`
+ * (#2741) so the "no `closings`, no backoff" fallback is written once rather than as two ternaries that
+ * could drift. `null` `closings` (not asked or refused) is the unstaged first ask, forever.
+ * @param {number[]} cleared @param {number} nowMs @param {Map<number, number> | null} closings
+ * @returns {{suffix: string} | null}
+ */
+function clearingAskWindow(cleared, nowMs, closings) {
+  return closings ? promotionAskWindow(nowMs - clearedAt(cleared, closings)) : { suffix: "" };
 }
 
 /** How many of the most recently closed rows `readRecentlyClosed` asks for: about two days of merges. */
@@ -2180,7 +2206,7 @@ export function readRecentlyClosed(run = defaultRun) {
 export function unclaimedBlockerClearedOrders(rows, today = todayIso(), { closings = null, now = Date.now() } = {}) {
   const orders = [];
   for (const { row, cleared } of unclaimedClearings(rows, today)) {
-    const window = closings ? promotionAskWindow(now - clearedAt(cleared, closings)) : { suffix: "" };
+    const window = clearingAskWindow(cleared, now, closings);
     if (window) orders.push(promotionOrder(row, cleared, window.suffix));
     if (orders.length >= MAX_ROW_ORDERS_PER_TICK) break;
   }
@@ -4546,7 +4572,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // closed is not waiting on a decision -- it is stopped on work it can resume this minute, with whatever
   // is queued behind that row stopped with it. Ahead of every cause that offers NEW work: a row already
   // claimed and now runnable beats a row nobody has picked up.
-  orders.push(...blockerClearedOrders(openRows, todayIso(), Date.now(), prs));
+  orders.push(...blockerClearedOrders(openRows, todayIso(), Date.now(), { openPrs: prs, closings })); // #2741 backoff
   // #2470/#2711: A CLAIM THAT DOES NOT MOVE, OR A BARE `answer:` LABEL ON IT -- both address the row's own holder, so both outrank every cause offering NEW work.
   orders.push(...stallOrdersOrNone(claimStalls), ...bareAnswerOrdersOrNone(bareAnswerLabels));
 
@@ -5139,15 +5165,33 @@ export function rowsOffBoardOrSay(log = (line) => process.stderr.write(line)) {
 }
 
 /**
- * The closing times `unclaimedBlockerClearedOrders` backs off on, read ONLY when some unclaimed row has a
- * cleared blocker to ask about. `openRows` is already in hand, so the condition costs no call, and a quiet
- * tracker pays nothing (`GH_READS.conditionalOnClearedRows`). `null` when there is nothing to ask about
- * OR the read was refused -- in both cases the caller's fallback is the unstaged first ask.
+ * A CLAIMED row `blockerClearedOrders` would ask about -- the same four conditions that function screens
+ * with EXCEPT `resumed`, which needs `openPrs` that this gate site does not carry (`main`/`trackerReadings`
+ * read `closings` before `code.prs` exists in a split-repo scope, #2618). Ignoring it makes this a
+ * SUPERSET of `blockerClearedOrders`' own population, never a narrower one: an already-resumed row pays
+ * for a `closings` read it turns out not to need, exactly as `unstaged first ask` already tolerates for a
+ * refused one.
+ *
+ * @param {any[]} rows @param {string} [today] @param {number} [nowMs]
+ * @returns {boolean}
+ */
+export function anyBlockerClearingCandidate(rows, today = todayIso(), nowMs = Date.now()) {
+  return (rows ?? []).some((row) => sessionOf(row) && labelsOf(row).includes(CLAIM_LABEL)
+    && declaredBlockers(row) !== null && !fleetWaitingOn(row, today, nowMs));
+}
+
+/**
+ * The closing times `blockerClearedOrders` and `unclaimedBlockerClearedOrders` back off on, read ONLY when
+ * some row -- claimed or not -- has a cleared blocker to ask about (#2286, widened by #2741). `openRows`
+ * is already in hand, so the condition costs no call, and a quiet tracker pays nothing
+ * (`GH_READS.conditionalOnClearedRows`). `null` when there is nothing to ask about OR the read was
+ * refused -- in both cases the caller's fallback is the unstaged first ask.
  *
  * @param {any[]} openRows
  */
 function closingsWhenRowsCleared(openRows) {
-  return unclaimedClearings(openRows).length > 0 ? readRecentlyClosed() : null;
+  return (unclaimedClearings(openRows).length > 0 || anyBlockerClearingCandidate(openRows))
+    ? readRecentlyClosed() : null;
 }
 
 // --- #2618 (child 3c of #69): EVERY REPOSITORY THE PROJECT DECLARES, NOT ONE ---------------------------------------------
