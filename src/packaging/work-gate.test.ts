@@ -39,8 +39,9 @@ import { MAX_ROW_ORDERS_PER_TICK, readCommitChain, withCommitChains, decide, che
   shouldBeMerging as shouldBeMergingPrs, conflictedPrs, conflictStateOf, mergeConflictOrders,
   unfiledEpics, epicOrders, finishedEpics, finishedEpicOrders, fleetBatchRows, fleetBatchOrders,
   partitionFleetBatch, FLEET_GATED_SELECTOR, blockersFromRows, blockerClearedOrders, unclaimedBlockerClearedOrders, unclaimedClearings,
+  anyBlockerClearingCandidate,
   promotionAskWindow, readRecentlyClosed, PROMOTION_ASK_OFFSETS_MS,
-  PROMOTION_ASK_PERIOD_MS, PROMOTION_ASK_WINDOW_MS,
+  PROMOTION_ASK_PERIOD_MS, PROMOTION_ASK_WINDOW_MS, HOUR_MS,
   claimedRowAmendedOrders, constraintsAfterClaim, amendmentsOn, readClaimedRowComments,
   CONSTRAINT_COMMENT_MARKER, CONSTRAINT_BODY_PREFIX,
   readEpics, answersOwed, answerOrders,
@@ -59,7 +60,7 @@ import { SESSION_PREFIX } from "../project-vocabulary.mjs";
 // nothing on import (its `main()` is behind an `import.meta.url` guard) and these three are pure, so this
 // costs the `no-token` promise at the top of this file nothing.
 import { readLedger, undelivered, addressed, WAKE_TTL_MS, JUDGMENT_TTL_MS, deliver, escalateStuck,
-  MAX_DELIVERIES } from "../wake.mjs";
+  MAX_DELIVERIES, deliveryCounts } from "../wake.mjs";
 // #2237: the decider that REFUSES a launch, so the order's named launch directory is checked against it
 // rather than read by a reviewer. Pure over an injected filesystem.
 import { primaryLaunchRefusal, launchCheckoutOf }
@@ -3052,13 +3053,13 @@ const openPr = (number: number, body: string) => ({ number, body, isDraft: true,
 
 test("#2161: the SAME row is announced with no pull request and screened once one names it -- both ways", () => {
   const row = heldRow(2031, "worker-capture", { blockedBy: { nodes: [{ number: 2014, state: "CLOSED" }] } });
-  const [unresumed] = blockerClearedOrders([row], TODAY, NOW, [openPr(2999, "Closes #1111")]);
+  const [unresumed] = blockerClearedOrders([row], TODAY, NOW, { openPrs: [openPr(2999, "Closes #1111")] });
   assert.equal(unresumed?.session, "worker-capture",
     "POSITIVE CONTROL: an open PR for ANOTHER row is not this holder's answer, so the order still goes");
   assert.equal(unresumed?.causeKey, "worker-capture/blocker-cleared/row-2031/2014");
-  assert.deepEqual(blockerClearedOrders([row], TODAY, NOW, []).map((o) => o.causeKey),
+  assert.deepEqual(blockerClearedOrders([row], TODAY, NOW, { openPrs: [] }).map((o) => o.causeKey),
     ["worker-capture/blocker-cleared/row-2031/2014"], "no open PR at all: the holder has not resumed");
-  assert.deepEqual(blockerClearedOrders([row], TODAY, NOW, [openPr(2156, "Closes #2031")]), [],
+  assert.deepEqual(blockerClearedOrders([row], TODAY, NOW, { openPrs: [openPr(2156, "Closes #2031")] }), [],
     "an open PR whose `Closes:` names the row proves the clearing was acted on -- and this is the SAME "
     + "row, session and blocker as the two assertions above");
 });
@@ -3076,26 +3077,29 @@ const heldPrOf = (number: number, body: string, labels: string[]) =>
 
 test("#2493: the holder of a row whose LAST blocker closed is woken although a HELD pull request names the row", () => {
   const waiting = heldRow(2359, "worker-9", { blockedBy: { nodes: [{ number: 2399, state: "OPEN" }] } });
-  assert.deepEqual(blockerClearedOrders([waiting], TODAY, NOW, [heldPrOf(2376, "Closes #2359", ["hold:worker-9"])]), [],
+  assert.deepEqual(blockerClearedOrders([waiting], TODAY, NOW,
+    { openPrs: [heldPrOf(2376, "Closes #2359", ["hold:worker-9"])] }), [],
     "while the edge is OPEN nobody is woken -- the positive control's other side");
   const cleared = heldRow(2359, "worker-9", { blockedBy: { nodes: [{ number: 2399, state: "CLOSED" }] } });
-  const [order] = blockerClearedOrders([cleared], TODAY, NOW, [heldPrOf(2376, "Closes #2359", ["hold:worker-9"])]);
+  const [order] = blockerClearedOrders([cleared], TODAY, NOW,
+    { openPrs: [heldPrOf(2376, "Closes #2359", ["hold:worker-9"])] });
   assert.equal(order?.session, "worker-9", "the edge is what wakes the owner: no other message is needed");
   assert.equal(order?.causeKey, "worker-9/blocker-cleared/row-2359/2399");
-  assert.deepEqual(blockerClearedOrders([cleared], TODAY, NOW, [heldPrOf(2376, "Closes #2359", ["session:worker-9"])]), [],
+  assert.deepEqual(blockerClearedOrders([cleared], TODAY, NOW,
+    { openPrs: [heldPrOf(2376, "Closes #2359", ["session:worker-9"])] }), [],
     "and an UNHELD open PR still screens, exactly as #2161 says: only the hold changes the reading");
 });
 
 test("#2161: it is the DECLARATION that screens, in every spelling the merge gate reads", () => {
   const row = heldRow(2170, "worker-judge", { ...blockedByClosed });
   for (const body of ["Closes #2170", "Closes: #2170", "Closes #2100, #2170", "Closes #2100\nCloses #2170"]) {
-    assert.deepEqual(blockerClearedOrders([row], TODAY, NOW, [openPr(2246, body)]), [], `\`${body}\``);
+    assert.deepEqual(blockerClearedOrders([row], TODAY, NOW, { openPrs: [openPr(2246, body)] }), [], `\`${body}\``);
   }
   // `Closes: none` and prose that merely mentions the number declare nothing, so they screen nothing --
   // the identical rule B4 applies (#2101), read from the same parser. A row claimed and then ABANDONED,
   // with an unrelated PR mentioning its number, is exactly the holder this cause must still reach.
   for (const body of ["Closes: none -- docs only", "see #2170 for context", "", null]) {
-    assert.equal(blockerClearedOrders([row], TODAY, NOW, [openPr(2246, body as string)]).length, 1,
+    assert.equal(blockerClearedOrders([row], TODAY, NOW, { openPrs: [openPr(2246, body as string)] }).length, 1,
       `${JSON.stringify(body)} names no row`);
   }
 });
@@ -3105,15 +3109,15 @@ test("#2161: a truncated file list does not withdraw the screen -- it reads `prs
   // an overlap comparison. The largest pull requests are the likeliest to be a row's whole build.
   const big = { number: 2246, body: "Closes #2170", files: [{ path: "a" }], changedFiles: 400 };
   assert.deepEqual(blockerClearedOrders([heldRow(2170, "worker-judge", { ...blockedByClosed })],
-    TODAY, NOW, [big]), []);
+    TODAY, NOW, { openPrs: [big] }), []);
 });
 
 test("#2161: the narrowing REMOVES nothing but the resumed row -- one orders, one does not, side by side", () => {
   const rows = [heldRow(2031, "worker-capture", { ...blockedByClosed }),
     heldRow(2145, "worker-5", { ...blockedByClosed })];
-  assert.deepEqual(blockerClearedOrders(rows, TODAY, NOW, [openPr(2156, "Closes #2031")]).map((o) => o.session),
+  assert.deepEqual(blockerClearedOrders(rows, TODAY, NOW, { openPrs: [openPr(2156, "Closes #2031")] }).map((o) => o.session),
     ["worker-5"], "the holder who has NOT resumed is still told, with #2027's prompt");
-  assert.match(blockerClearedOrders(rows, TODAY, NOW, [openPr(2156, "Closes #2031")])[0]?.prompt ?? "",
+  assert.match(blockerClearedOrders(rows, TODAY, NOW, { openPrs: [openPr(2156, "Closes #2031")] })[0]?.prompt ?? "",
     /PICK IT BACK UP/);
 });
 
@@ -3141,6 +3145,13 @@ test("#2027: blocker-cleared is a FINISH cause, because a claimed row is work in
     + "transfer window needs landed");
 });
 
+test("#2741: blocker-cleared is JUDGMENT, the same reclassification row-branch-unshipped got for the same reason", () => {
+  assert.ok(JUDGMENT_CAUSES.includes("blocker-cleared"),
+    "a clearing a holder has already answered does not become false again twenty minutes later -- an "
+    + "ACTION cause's WAKE_TTL_MS re-ask hit MAX_DELIVERIES inside its own first PROMOTION_ASK_WINDOW_MS "
+    + "and escalated #1756 twice in one day before the row's own backoff window ever went quiet");
+});
+
 test("#2027: decide() routes it, and ahead of the causes that offer new work", () => {
   const orders = decide({ prs: [], readyRows: [],
     openRows: [heldRow(1908, "worker-capture", { ...blockedByClosed })] });
@@ -3148,6 +3159,109 @@ test("#2027: decide() routes it, and ahead of the causes that offer new work", (
   assert.ok(causes.includes("blocker-cleared"),
     "the gate could see the row become runnable and, before this, had nobody to tell");
   assert.equal(orders.find((o) => o.cause === "blocker-cleared")?.session, "worker-capture");
+});
+
+// --- #2741: `blocker-cleared` backs off THE SAME WAY `unclaimed-blocker-cleared` already does ----------
+//
+// #1756 is `ceo`'s own claimed, no-PR row: `blockedBy` #1931 and #1959 closed, and the pre-fix causeKey
+// (`ceo/blocker-cleared/row-1756/1931.1959`) never changes again once they do. Because this was an ACTION
+// cause, `wake`'s twenty-minute expiry re-asked it six times inside `PROMOTION_ASK_WINDOW_MS`'s own first
+// two hours and escalated (`answer:ceo`) BEFORE any backoff schedule could ever go quiet. `ceo` answering
+// the escalation correctly -- reading the row, confirming nothing changed, removing the label -- is what
+// RESET the counter (`fleetWaitingOn` un-shelves on removal) and let the identical cycle restart from
+// zero: two full cycles on 2026-09-27 and a third overnight before `ceo` finally silenced #1756 with a
+// `Not-before:`, which is an answer this cause never needed reaching for.
+
+const T2741 = Date.parse("2026-09-27T19:00:00Z");
+/** #1756's own shape: `ceo` holds it, and both declared blockers closed at `T2741`. */
+const row1756 = () => heldRow(1756, "ceo",
+  { blockedBy: { nodes: [{ number: 1931, state: "CLOSED" }, { number: 1959, state: "CLOSED" }] } });
+const closedAt1756 = new Map([[1931, T2741], [1959, T2741]]);
+const FIRST_1756_KEY = "ceo/blocker-cleared/row-1756/1931.1959";
+
+test("#2741: a fresh clearing is asked at once under the pre-backoff key, then falls silent inside the window", () => {
+  const [first] = blockerClearedOrders([row1756()], TODAY, T2741 + 20 * 60_000, { closings: closedAt1756 });
+  assert.equal(first?.causeKey, FIRST_1756_KEY,
+    "POSITIVE CONTROL: shipping this does not re-fire every key already in the ledger");
+  assert.deepEqual(blockerClearedOrders([row1756()], TODAY, T2741 + 3 * HOUR_MS, { closings: closedAt1756 }), [],
+    "an unanswered clearing is NOT re-asked on the old twenty-minute or two-hour TTL");
+  const [second] = blockerClearedOrders([row1756()], TODAY, T2741 + 6 * HOUR_MS + 60_000, { closings: closedAt1756 });
+  assert.equal(second?.causeKey, `${FIRST_1756_KEY}@6h`,
+    "the same row IS asked again at the schedule's next horizon, under a NEW key");
+});
+
+test("#2741: with no closing times (an old caller, or a refused read), every ask is the unstaged first one", () => {
+  // The exact fallback `unclaimedBlockerClearedOrders` already documents for its own `closings`: absent
+  // or `null` behaves exactly as before this row, never toward silence.
+  for (const now of [T2741 + 20 * 60_000, T2741 + 3 * HOUR_MS, T2741 + 40 * HOUR_MS]) {
+    assert.deepEqual(blockerClearedOrders([row1756()], TODAY, now).map((o) => o.causeKey), [FIRST_1756_KEY],
+      `now=${now}`);
+  }
+});
+
+test("#2741: decide() passes the closing times through, and without them behaves as before", () => {
+  const state = { prs: [], readyRows: [], openRows: [row1756()] };
+  const asked = (closings?: Map<number, number> | null) =>
+    decide({ ...state, ...(closings === undefined ? {} : { closings }) })
+      .filter((o) => o.cause === "blocker-cleared").length;
+  assert.equal(asked(), 1, "a caller that passes nothing gets the unstaged ask");
+  assert.equal(asked(new Map([[1931, Date.now() - 30 * HOUR_MS], [1959, Date.now() - 30 * HOUR_MS]])), 0,
+    "and one that passes closing times gets the backoff: 30h after the clearing is between the 24h and 72h asks");
+  assert.equal(asked(new Map([[1931, Date.now() - 5 * 60_000], [1959, Date.now() - 5 * 60_000]])), 1,
+    "POSITIVE CONTROL: a fresh clearing is still asked");
+});
+
+test("#2741: THROUGH wake's ledger, no window's causeKey is delivered enough times on its own to escalate", () => {
+  // The shipped cadence (`work:tick`, every two minutes) over the span that held #1756's own first TWO
+  // escalate/RESET cycles -- long enough to cross the 0h, 6h and 24h rungs of the ladder.
+  const TICK = 2 * 60_000;
+  const judgment = new Set(JUDGMENT_CAUSES);
+  let ledger = "";
+  for (let now = T2741 + TICK; now <= T2741 + 30 * HOUR_MS; now += TICK) {
+    const live = readLedger("ledger", () => ledger, now, judgment);
+    const orders = undelivered(blockerClearedOrders([row1756()], TODAY, now, { closings: closedAt1756 }), live);
+    for (const o of orders) ledger += `${now}\t${o.causeKey}\n`;
+  }
+  const counts = deliveryCounts("ledger", () => ledger);
+  assert.deepEqual([...counts.keys()].sort(), [FIRST_1756_KEY, `${FIRST_1756_KEY}@24h`, `${FIRST_1756_KEY}@6h`],
+    "the ladder still asks three times over thirty hours -- it is a backoff, not a silence");
+  for (const [key, n] of counts) {
+    assert.ok(n < MAX_DELIVERIES, `${key} was delivered ${n} times on ONE unchanged key -- #1756 escalated `
+      + `at exactly ${MAX_DELIVERIES}, and a window that changes the key every time it re-asks cannot reach that cap`);
+  }
+});
+
+test("#2741: the SAME replay on the pre-#2741 key (no backoff) is what actually escalated #1756", () => {
+  // POSITIVE CONTROL on the test above: reclassifying the group alone changes the TTL from twenty minutes
+  // to two hours but not the fact that the key never changes, so the identical key keeps accumulating
+  // deliveries across the same span -- this is the shape the backoff exists to break.
+  const TICK = 2 * 60_000;
+  const judgment = new Set(JUDGMENT_CAUSES);
+  let ledger = "";
+  for (let now = T2741 + TICK; now <= T2741 + 30 * HOUR_MS; now += TICK) {
+    const live = readLedger("ledger", () => ledger, now, judgment);
+    const orders = undelivered(blockerClearedOrders([row1756()], TODAY, now), live);
+    for (const o of orders) ledger += `${now}\t${o.causeKey}\n`;
+  }
+  const counts = deliveryCounts("ledger", () => ledger);
+  assert.deepEqual([...counts.keys()], [FIRST_1756_KEY], "one key for the whole span, with no closing times");
+  assert.ok((counts.get(FIRST_1756_KEY) ?? 0) >= MAX_DELIVERIES,
+    "and delivered at least six times on it -- the run this row's #2741 backoff must not reproduce");
+});
+
+test("#2741: anyBlockerClearingCandidate is the gate `main` pays `readRecentlyClosed` on", () => {
+  assert.equal(anyBlockerClearingCandidate([row1756()], TODAY, T2741 + 60_000), true,
+    "POSITIVE CONTROL: a claimed row whose blockers just cleared is exactly what `closingsWhenRowsCleared` must pay for");
+  assert.equal(anyBlockerClearingCandidate([heldRow(1908, "worker-capture")], TODAY), false,
+    "a row that never declared a blocker is not a candidate");
+  assert.equal(anyBlockerClearingCandidate([heldRow(1908, "worker-capture",
+    { blockedBy: { nodes: [{ number: 1948, state: "CLOSED" }, { number: 1918, state: "OPEN" }] } })], TODAY), false,
+    "one still-open blocker is not a clearing -- the same positive control on the negative blockerClearedOrders pins");
+  assert.equal(anyBlockerClearingCandidate([{ number: 1908, labels: [{ name: "ready" }], ...blockedByClosed }], TODAY),
+    false, "an UNCLAIMED row is `unclaimedClearings`'s population, not this one");
+  const held = heldRow(2114, "worker-judge", { ...blockedByClosed, body: "Fleet-hold-until: 2026-09-23T22:00:00Z" });
+  assert.equal(anyBlockerClearingCandidate([held], TODAY, NOW), false,
+    "a row the FLEET holds is not a candidate until the hold passes, matching `blockerClearedOrders` itself");
 });
 
 // --- #2139, the other half of #2027: nobody was told when an UNCLAIMED row's last blocker closed ----

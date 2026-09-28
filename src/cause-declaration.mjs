@@ -270,7 +270,7 @@ export const TOOL_CAUSE_DECLARATIONS = Object.freeze([
     effort: "high",
     why: "judging whether a claim nobody can evaluate still holds is exactly the work a machine cannot do",
   }),
-  declareCause("blocker-cleared", GROUPS.ACTION, {
+  declareCause("blocker-cleared", GROUPS.JUDGMENT, {
     kind: "claude",
     model: "sonnet",
     // HIGH, and the reason is `ready-row-unclaimed`'s rather than a weaker version of it: what this order
@@ -278,6 +278,16 @@ export const TOOL_CAUSE_DECLARATIONS = Object.freeze([
     // claim. A cheaper tier would arrive at a row that has been parked for however long its blocker took
     // and has to re-establish what it was doing -- strictly more context to rebuild than a fresh claim,
     // not less. Measured 2026-09-22, #1908 sat with six rows queued behind it.
+    //
+    // THE GROUP MOVED TO JUDGMENT FOR A SEPARATE REASON FROM THE PROFILE ABOVE (#2741): a claimed, no-PR
+    // row whose declared blockers all close is a clearing that DOES NOT RECUR on its own -- the same shape
+    // `row-branch-unshipped` was reclassified for, "its answer is durable". `blockerClearedOrders` now
+    // backs its causeKey off the way `unclaimedBlockerClearedOrders` already does (`PROMOTION_ASK_OFFSETS_MS`),
+    // and that ladder is keyed to `JUDGMENT_TTL_MS`, not `WAKE_TTL_MS`: an ACTION cause redelivers the
+    // unstaged key every twenty minutes for the whole two-hour first window, hits `MAX_DELIVERIES` inside
+    // it and escalates before the ladder's own silence ever begins. #1756 escalated twice in one day this
+    // way, and answering `answer:ceo` correctly -- reading the row, confirming nothing changed, removing
+    // the label -- is what RESET the counter and let the identical two-hour cycle restart from zero.
     effort: "high",
     why: "resuming a parked claim is the same multi-step build as taking a fresh row, with the prior "
       + "state to re-establish on top of it",
