@@ -32,7 +32,7 @@ import {
   acceptancePathsReason, declaredNewFiles, unresolvedAcceptancePaths,
   declaredFleetAnswer,
 } from "../acceptance-commands.mjs";
-import { withGitSandbox, sandboxGitEnv } from "../../../../scripts/test-support/git-sandbox.ts";
+import { withGitSandbox, sandboxGitEnv } from "../lib/git-sandbox.ts";
 
 // A file known to exist, relative to the repo root -- where every real invocation of this command runs
 // from. This test file names itself, so it cannot go stale independently of being renamed.

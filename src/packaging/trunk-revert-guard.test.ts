@@ -46,7 +46,7 @@ import { dirname, resolve } from "node:path";
 import { readFileSync, rmSync } from "node:fs";
 // #2154: the clone (and the two empty directories below) go through the #2158 helper, so a full `/tmp`
 // reports the HOST as the cause instead of a bare `Disk quota exceeded` from inside `git clone`.
-import { buildSandbox, withSandbox } from "../../../guards/src/sandbox-exhaustion.mjs";
+import { buildSandbox, withSandbox } from "../lib/sandbox-exhaustion.mjs";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { parse as parseYaml } from "yaml";
 import {

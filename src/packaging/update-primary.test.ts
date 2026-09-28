@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { updatePrimary, lockfileMoved } from "../update-primary.mjs";
 import { changedFiles } from "../lib/changed-files.mjs";
-import { withGitSandbox } from "../../../../scripts/test-support/git-sandbox.ts";
+import { withGitSandbox } from "../lib/git-sandbox.ts";
 import { UPDATE_PRIMARY_VERBS } from "./update-primary-argv.mjs";
 
 /**
