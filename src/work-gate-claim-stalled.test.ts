@@ -477,15 +477,26 @@ test("#2470 claimFactsFrom reports a row it cannot evaluate rather than throwing
 // release WITHOUT `keepWorktree` removes the clean tree and refuses over the dirty one, which is exactly what the row measured.
 
 /** A board fake for `declineRow`: the row's labels, and a recording `run`. */
+/**
+ * #2746: REACTIVE, not a fixed response -- `writeDeclineLabels` re-reads the row after its edit to verify
+ * the write landed, so a `view` fake that always answers the PRE-decline labels would fail that verify on
+ * every one of these releases, which is a real write followed by a real re-read on the live board.
+ */
 function releaseBoard(labels: string[] = ["in-progress", "session:worker-7", "started", "was-ready"]) {
   const calls: string[][] = [];
+  const board = { labels: [...labels] };
   const run = (_cmd: string, args: string[]) => {
     calls.push(args);
-    return args[1] === "view" ? JSON.stringify({ number: 2416, title: "A row", state: "OPEN", labels: labels.map((name) => ({ name })) }) : "";
+    if (args[1] === "edit") {
+      const changed = (flag: string) => args.flatMap((a, i) => (a === flag ? [args[i + 1]] : []));
+      board.labels = [...board.labels.filter((l) => !changed("--remove-label").includes(l)), ...changed("--add-label")];
+      return "";
+    }
+    return args[1] === "view" ? JSON.stringify({ number: 2416, title: "A row", state: "OPEN", labels: board.labels.map((name) => ({ name })) }) : "";
   };
   const edits = () => calls.filter((a) => a[1] === "edit").map((a) => ({
     removed: a.flatMap((x, i) => (x === "--remove-label" ? [a[i + 1]] : [])), added: a.flatMap((x, i) => (x === "--add-label" ? [a[i + 1]] : [])) }));
-  return { run, calls, edits };
+  return { run, calls, edits, board };
 }
 const RECORD = [claimRecordComment({ session: "worker-7", branch: BRANCH, worktree: WT })];
 const NO_STATUS = () => ({ moved: true }) as const;
