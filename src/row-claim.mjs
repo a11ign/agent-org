@@ -60,7 +60,7 @@
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { existsSync, realpathSync, readFileSync } from "node:fs";
-import { basename } from "node:path";
+import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 // RELATIVE, NOT the `@a11ign/worker-fleet/cli-flags` package specifier: that export map
 // points at `dist/`, so it needs both `node_modules` AND a completed build. This file is reachable
@@ -74,6 +74,7 @@ import { gitCommonDir, appendJsonl } from "./merge-guard.mjs";
 import { withBoardSnapshot, PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapshot.mjs";
 import { runnerReason, laneReason, drainReason, oneRowReason } from "./row-claim/runner-rule.mjs";
 import { activeDrain, sparePathsFrom, ledgerPathFrom, isSpareRole, readSpareRegistry } from "./wake.mjs";
+import { readJsonObject, writeJsonObject } from "./claim-stall.mjs";
 import { inBuildReason, lookupHeldRows, lookupOtherHeldIssues } from "./row-claim/own-pr-health-rule.mjs";
 import { resolveBlockedByOverride, blockedByExceptionNote } from "./row-claim/blocked-by-rule.mjs";
 import { blockedByEdgeReason, lookupBlockedByEdge } from "./row-claim/blocked-by-edge-rule.mjs";
@@ -1313,14 +1314,51 @@ function headBranchOf(worktree, run) {
 }
 
 /**
- * #2748: the default answer to "is this session's predecessor instance confirmed gone" -- always "cannot
- * tell". #2747 builds the real herdr-backed read; until that lands (or a caller passes a real one in its
- * place), nothing can confirm a predecessor gone, so {@link implicitAdoptSession} never fires and the
- * ordinary refusal in `worktreeTargetReason` stands exactly as it did before this row (Done-when 2).
+ * #2748: the "cannot tell" answer to "is this session's predecessor instance confirmed gone" -- a pure
+ * stub, kept for tests and for any caller with no ledger to read. Production no longer uses it directly
+ * (see {@link predecessorGoneReading}): `adoptFor` reads a real record now, so the ordinary CLI claim can
+ * actually reach the adoption this row promises, not just the mechanism for it.
  * @returns {null}
  */
 export function predecessorLivenessUnknown() {
   return null;
+}
+
+/** #2748: where a decline's "predecessor confirmed gone" attestations live -- beside the wake ledger, one entry per session. */
+const PREDECESSOR_GONE_FILE = "declined-predecessors";
+
+/** @param {string} ledgerPath @returns {string} */
+function predecessorGonePath(ledgerPath) {
+  return `${dirname(ledgerPath)}/${PREDECESSOR_GONE_FILE}`;
+}
+
+/**
+ * #2748: RECORDS THAT THIS SESSION'S PREDECESSOR IS GONE, at the one moment something already knows it --
+ * a `--keep-worktree` decline. The trust placed here is the SAME trust `#2470`'s own `--adopt=<session>`
+ * flag already places in whoever types it: this file does not re-verify liveness with herdr (that
+ * general read is #2747's, and out of scope here, see the row's own "Not in this row"), it remembers that
+ * a decline already attested it -- run by a human confirming a predecessor gone by hand (#2623's own
+ * shape) or by #2470's automated stall release, which declines with `--keep-worktree` the same way.
+ * @param {string} mySession @param {{ ledgerPath?: string }} [deps]
+ */
+export function recordPredecessorGone(mySession, { ledgerPath = ledgerPathFrom(process.argv) } = {}) {
+  const path = predecessorGonePath(ledgerPath);
+  const all = readJsonObject(path);
+  all[mySession] = { at: Date.now() };
+  writeJsonObject(path, all);
+}
+
+/**
+ * #2748: THE REAL ANSWER `adoptFor` GIVES `implicitAdoptSession` IN PRODUCTION. `true` only when a decline
+ * recorded this exact session as gone ({@link recordPredecessorGone}); `null` ("cannot tell") for
+ * everything else, including a session this file has simply never heard of -- it has no way to attest
+ * "still alive", only "declared gone" or "nothing recorded", so it can never manufacture the `false` a
+ * live, contrary predecessor would need (Done-when 2's positive control).
+ * @param {string} session @param {{ ledgerPath?: string }} [deps]
+ * @returns {boolean | null}
+ */
+export function predecessorGoneReading(session, { ledgerPath = ledgerPathFrom(process.argv) } = {}) {
+  return readJsonObject(predecessorGonePath(ledgerPath))[session] ? true : null;
 }
 
 /**
@@ -1570,7 +1608,7 @@ function declineOwnershipReason(status, mySession) {
  *
  * @param {{ run?: typeof defaultRun, moveStatus?: typeof moveProjectStatus, blockedReason?: string,
  *           removeWorktree?: typeof removeClaimedWorktree, keepWorktree?: boolean, answer?: string,
- *           fetchComments?: typeof fetchClaimComments }} [deps]
+ *           fetchComments?: typeof fetchClaimComments, recordGone?: typeof recordPredecessorGone }} [deps]
  * @returns {{ declined: true, restoredReady: boolean, blocked: boolean, closed: boolean, statusMoved: true }
  *   | { declined: true, restoredReady: true, blocked: false, closed: false, statusMoved: false,
  *       notOnBoard: boolean, statusReason: string }
@@ -1578,7 +1616,7 @@ function declineOwnershipReason(status, mySession) {
  */
 export function declineRow(issueNumber, mySession,
   { run = defaultRun, moveStatus = moveProjectStatus, blockedReason, removeWorktree = removeClaimedWorktree,
-    fetchComments = fetchClaimComments, keepWorktree = false, answer } = {}) {
+    fetchComments = fetchClaimComments, keepWorktree = false, answer, recordGone = recordPredecessorGone } = {}) {
   if (blockedReason && answer) {
     return { declined: false, reason: "--blocked and --answer are two different releases (a finding vs. a ruling owed); give one" };
   }
@@ -1595,7 +1633,7 @@ export function declineRow(issueNumber, mySession,
   const landed = [];
   // #1399: as `writeRowLabels` -- from the worktree removal on, a failure reports what it already changed.
   return withLandedWrites(issueNumber, landed, () => releaseRow(issueNumber,
-    { run, moveStatus, blockedReason, removeWorktree, keepWorktree, answer, mySession, before, status, recorded, landed }));
+    { run, moveStatus, blockedReason, removeWorktree, keepWorktree, answer, mySession, before, status, recorded, landed, recordGone }));
 }
 
 /**
@@ -1604,16 +1642,19 @@ export function declineRow(issueNumber, mySession,
  * @param {{ run: typeof defaultRun, moveStatus: typeof moveProjectStatus, blockedReason?: string,
  *   removeWorktree: typeof removeClaimedWorktree, keepWorktree: boolean, answer?: string, mySession: string, before: IssueClaim,
  *   status: ReturnType<typeof claimStatus>, recorded: { branch: string | null, worktree: string | null },
- *   landed: string[] }} state
+ *   landed: string[], recordGone: typeof recordPredecessorGone }} state
  * @returns {ReturnType<typeof declineRow>}
  */
 function releaseRow(issueNumber,
-  { run, moveStatus, blockedReason, removeWorktree, keepWorktree, answer, mySession, before, status, recorded, landed }) {
+  { run, moveStatus, blockedReason, removeWorktree, keepWorktree, answer, mySession, before, status, recorded, landed, recordGone }) {
   // #665: THE WORKTREE COMES OFF FIRST, before any label is touched -- a dirty one refuses the WHOLE
   // decline (see this function's own header for why), so the claim record stays intact until an operator
   // has dealt with the uncommitted work by hand.
   if (recorded.worktree && keepWorktree) {
     landed.push(`KEPT the recorded worktree ${recorded.worktree} (#2470: it holds the released instance's work)`);
+    // #2748: THIS decline IS the confirmation -- record it so the next instance's ORDINARY claim (no
+    // --adopt typed) can find its own predecessor confirmed gone and adopt the tree it just kept.
+    recordGone(mySession);
   } else if (recorded.worktree) {
     const removal = removeWorktree(recorded.worktree, { run });
     if (!removal.removed) return { declined: false, reason: removal.reason };
@@ -2092,7 +2133,7 @@ function trackerKeyOf(args) {
 export function adoptFor(mode, mySession, { adoptFlag, branch, worktree }) {
   if (adoptFlag !== undefined) return adoptFlag;
   if (mode !== "claim" || !branch || !worktree) return undefined;
-  return implicitAdoptSession({ worktree, mySession, exists: existsSync, owner: worktreeOwner, predecessorGone: predecessorLivenessUnknown });
+  return implicitAdoptSession({ worktree, mySession, exists: existsSync, owner: worktreeOwner, predecessorGone: predecessorGoneReading });
 }
 
 /**
