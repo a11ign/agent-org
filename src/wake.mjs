@@ -75,6 +75,11 @@ import { workAtRisk, gitRun, pathExists, statMtime, KEPT_CLAIMS_FILE, RESTART_ST
   readHerdrRestart, paneInterrupted, paneThrashed, killedDeliveries, writeJsonObject, readJsonObject, INTERRUPTED_TEXT,
   INTERRUPTED_SETTLE_MS, THRASH_TEXT }
   from "./claim-stall.mjs";
+// THE WORKSPACE LISTING, SHARED WITH THE LEAF (#2747): moved here from this file so `claim-stall.mjs` can read it
+// too, without importing this file (which already imports `claim-stall.mjs` and would cycle). Re-exported below so
+// every existing importer of `readAgents`/`listingIsComplete` from "./wake.mjs" is unchanged.
+import { readAgents, listingIsComplete } from "./herdr-agents.mjs";
+export { readAgents, listingIsComplete };
 
 /**
  * `0` QUIET nothing to deliver; `1` ATTENTION an order had nowhere to go; `2` CANNOT_ASK herdr did not
@@ -330,32 +335,7 @@ const guardedGh = (args) => {
   return defaultGh(args);
 };
 
-/**
- * Every workspace herdr knows, as `{ label, status }`, or `null` when herdr could not be asked.
- *
- * `null` and `[]` are different answers and must stay different: `[]` is "herdr answered, and the org has
- * no workspaces", which is a real and reportable state; `null` is "herdr did not answer", which must never
- * read as an empty org -- that would report every order as undeliverable and, worse, read as quiet.
- *
- * @param {(args: string[]) => string} [run]
- * @returns {{label: string, status: string}[] | null}
- */
-export function readAgents(run = defaultRun) {
-  let raw;
-  try {
-    raw = run(["--session", "org", "workspace", "list"]);
-  } catch {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(raw);
-    const workspaces = parsed?.result?.workspaces;
-    if (!Array.isArray(workspaces)) return null;
-    return workspaces.map((w) => ({ label: String(w.label ?? ""), status: String(w.agent_status ?? "unknown") }));
-  } catch {
-    return null;
-  }
-}
+/** `readAgents` moved to `./herdr-agents.mjs` (#2747); imported above and re-exported below. */
 
 /**
  * Which concrete session takes this order, or `null` when none can.
@@ -1339,28 +1319,13 @@ export function registerReviewer(paths, session, now = Date.now()) {
  */
 export const REVIEWER_DEAD_AFTER_TICKS = 3;
 
-/** The two panes that are always running. A listing that shows neither of them is not a listing of the org. */
-const STANDING_PANES = Object.freeze(["ceo", "orchestrator"]);
-
 /**
  * @typedef {{spawnedAt: number, absentTicks?: number, absentNoted?: string}} ReviewerInstance
  * `absentTicks` counts complete listings that lacked it; `absentNoted` is the last thing written to the absences
  * ledger about it, so a state that does not change writes one line and not one per tick.
  */
 
-/**
- * IS THIS LISTING THE WHOLE ORG, as far as a listing can say so: it shows every standing pane. This is the test
- * that separates "herdr gave a complete list and this instance is not in it" from the partial list
- * {@link spawnableReviewer}'s refusal was written for, which reads EVERY instance as absent -- the standing panes
- * included. A listing missing `ceo` or `orchestrator` is missing things that exist, so what else it lacks is
- * unproven. WHAT IT DOES NOT PROVE: a listing that dropped only some workspaces and happened to keep both panes.
- * That is why one complete listing is never enough ({@link REVIEWER_DEAD_AFTER_TICKS}), and why an instance that
- * is LISTED even once starts the count again.
- * @param {{label: string}[]} agents
- */
-export function listingIsComplete(agents) {
-  return STANDING_PANES.every((pane) => agents.some((a) => a.label === pane));
-}
+/** `listingIsComplete` moved to `./herdr-agents.mjs` (#2747), which `claim-stall.mjs` needs too; imported above and re-exported below. */
 
 /**
  * What one tick's listing does to a registered reviewer whose pull request is still open: its next registry entry
@@ -3903,10 +3868,10 @@ export function spareDecision({ status, instance, held, now, claimBoundMs = SPAR
 /**
  * @typedef {{ path: string, clean: boolean | "unknown", merge: "merged" | "not-merged" | "unknown" }} SpareWorktree
  * @typedef {{ role: string, row: number | null, at: number, clean: boolean, why: string, rows?: number[],
- *   released?: "stalled" | "blocked" | "merged" }} SpareCycle
+ *   released?: "stalled" | "blocked" | "merged" | "gone" }} SpareCycle
  *   `rows` is EVERY row the instance held, oldest first (#2407), and its ABSENCE is what marks a legacy line: one
- *   written before the field existed, which {@link consecutiveClean} counts for nothing. `released` (#2470) marks a line the GATE
- *   wrote when it took a claim back from a stalled, blocked or merged holder: see {@link isReleaseLine}
+ *   written before the field existed, which {@link consecutiveClean} counts for nothing. `released` (#2470, #2747)
+ *   marks a line the GATE wrote when it took a claim back from a stalled, blocked, merged or gone holder: see {@link isReleaseLine}
  */
 
 /**
@@ -4667,7 +4632,9 @@ export function keptClaimsPath(ledgerPath) {
  * pushed is not kept -- there is nothing to lose, and leaving an empty one would only refuse the respawn's own claim.
  *
  * A BLOCKED or MERGED release is REFUSED when the holder now holds work: those two are decided on "the holder holds nothing", and it
- * may have started something since the gate looked. A STALLED release keeps whatever it finds -- unreadable included.
+ * may have started something since the gate looked. A STALLED release keeps whatever it finds -- unreadable included -- and so does a
+ * GONE one (#2747): a session confirmed absent from herdr's own listing is not coming back to finish anything it holds, so there is no
+ * "since the gate looked" to be fair to.
  *
  * @param {ReleaseRequest} request @param {ReleaseDeps} deps
  * @returns {{ keep: boolean, work: ReturnType<typeof workAtRisk>, onOrigin: boolean, restored?: boolean } | { refusal: string }}
@@ -4681,7 +4648,7 @@ function releasePlan(request, deps) {
       : `could not read #${request.row}'s labels -- not released, retried next tick` };
   }
   const work = workAtRisk(deps.io, { worktree: request.worktree, branch: request.branch, repo });
-  if (request.why !== "stalled" && work.state !== "none") {
+  if (request.why !== "stalled" && request.why !== "gone" && work.state !== "none") {
     return { refusal: `the holder now holds work (${work.state}: ${work.dirty} dirty, ${work.unpushed} unpushed) -- not released` };
   }
   const onOrigin = request.branch !== null
@@ -4731,6 +4698,7 @@ function releaseHeadline(request) {
   if (request.why === "blocked") {
     return `this row carries an open \`blockedBy\` edge on ${(request.edges ?? []).map((n) => `#${n}`).join(", ")} and the holder holds nothing built`;
   }
+  if (request.why === "gone") return `\`${request.session}\` no longer exists in herdr's own workspace listing (#2747), not merely quiet`;
   return `nothing on this row moved for ${request.idleMinutes} minutes (no commit, push, pull request, changed file or row comment) and the nudge was not answered`;
 }
 
