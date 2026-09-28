@@ -16,7 +16,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { stampWorktree, worktreeOwner, whoseWorktree, OWNER_FILE } from "../worktree-owner.mjs";
 
 const REPO = fileURLToPath(new URL("../../../../", import.meta.url));

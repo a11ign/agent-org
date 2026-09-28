@@ -30,7 +30,7 @@ import {
   heldByOwner, deliveredOwnCommit, mainLineCommits, hasOwnBranch,
 } from "../prune-worktrees.mjs";
 import { stampWorktree } from "../worktree-owner.mjs";
-import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.mjs";
 
 // The CLI is spawned as a real process below, so the argv path -- the only place `dryRun` is
 // decided -- is exercised rather than reasoned about.

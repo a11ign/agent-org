@@ -25,7 +25,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { carryBranch, branchCheckedOutLocally } from "../carry-branch.mjs";
 import { declareTreeWideGuard } from "../../../guards/src/tree-wide-guard.mjs";
 

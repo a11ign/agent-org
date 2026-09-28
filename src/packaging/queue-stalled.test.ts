@@ -31,7 +31,7 @@ import { newestConclusion, headQuietSeconds } from "../update-branch-sweep.mjs";
 // recurring shape, and the fix for a vocabulary split walked straight into it.
 // ---------------------------------------------------------------------------------------------------
 
-import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.mjs";
 
 const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "../queue-stalled.mjs");
 
