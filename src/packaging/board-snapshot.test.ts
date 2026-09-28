@@ -32,7 +32,7 @@ import { chmodSync, mkdtempSync, mkdirSync as mkdirOnDisk, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { dirname as dirOf, join as joinPath } from "node:path";
 import { fileURLToPath as pathOf } from "node:url";
-import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.mjs";
 
 /** One page of a real `gh api graphql` response, shaped exactly like the live schema returns it. */
 function page({ nodes, hasNextPage = false, endCursor = null, statusOptions }: {

@@ -11,7 +11,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { sandboxGitEnv } from "../../../guards/src/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { reasonKind } from "../merge-guard/reason-kind.mjs";
 
 const REPO = fileURLToPath(new URL("../../../../", import.meta.url));

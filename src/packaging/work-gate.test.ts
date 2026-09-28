@@ -29,7 +29,7 @@ import { spawnSync } from "node:child_process";
 import { join, relative, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { shippedUnits } from "../host-units.mjs";
-import { localImports } from "../../../guards/src/local-import-closure.mjs";
+import { localImports } from "../lib/local-import-closure.mjs";
 import { deriveClosureRequirements } from "../acceptance-commands.mjs";
 import { MAX_ROW_ORDERS_PER_TICK, readCommitChain, withCommitChains, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES,
   comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
