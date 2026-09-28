@@ -1,0 +1,8 @@
+{
+  "autoMemoryEnabled": false,
+  "enabledPlugins": {
+    "claude-code-setup@claude-plugins-official": false,
+    "claude-md-management@claude-plugins-official": false,
+    "code-simplifier@claude-plugins-official": false
+  }
+}
