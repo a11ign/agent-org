@@ -20,7 +20,7 @@ import { join } from "node:path";
 import {
   holdForMemory, parseMemAvailableKb, readMemAvailable, spawnMemoryGate, SPAWN_MEMORY_FLOOR_KB, MEMINFO_PATH, MEMINFO_ENV,
 } from "./spawn-memory-floor.mjs";
-import { DEFAULT_MEMORY_MAX } from "../../guards/src/test-memory-cap.mjs";
+import { DEFAULT_MEMORY_MAX } from "./lib/test-memory-cap.mjs";
 import { deliver } from "./wake.mjs";
 
 const KB_PER_MB = 1024;

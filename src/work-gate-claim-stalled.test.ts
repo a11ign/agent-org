@@ -29,7 +29,7 @@ import {
   claimFactsFrom, readClaim, nextStallState, claimStalledOrders, paneInterrupted, killedDeliveries, readHerdrRestart,
   RESTART_RESEND_WINDOW_MS, INTERRUPTED_TEXT, gitRun, gitInvocation, newestOwnCommit, statMtime, pathExists,
 } from "./claim-stall.mjs";
-import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
