@@ -42,6 +42,36 @@ export const MODELS = Object.freeze(["haiku", "sonnet", "opus", "fable"]);
 /** Effort vocabulary per agent kind -- the two products do not share one. */
 export const EFFORTS = Object.freeze({ claude: CLAUDE_EFFORTS, codex: CODEX_EFFORTS });
 
+// #2717's REGRESSION (2026-09-28, worker-2623). THE WINDOW PASSED TO `--autocompact` IS NOT THE TRIGGER --
+// Claude Code compacts roughly this far BELOW it. Measured directly: worker-2623's 139 auto-compactions
+// against a 120,000 window all fired at preTokens 86k-94k, never at 120k itself. Rounded up from the
+// worse (larger) margin observed, so a future measurement inside this range does not need a second fix.
+export const AUTO_COMPACT_TRIGGER_MARGIN_TOKENS = 35_000;
+
+// A FRESH per-row worker's own usage before it has done any work at all -- system prompt, tools,
+// CLAUDE.md, the rules files this org loads on every wake. Measured on worker-2623's first turn: 62,861
+// tokens. Rounded up, not trimmed to the exact reading: a rules file growing by a few hundred bytes
+// should not silently eat back the margin this constant exists to hold.
+export const MEASURED_FRESH_WORKER_BASE_TOKENS = 65_000;
+
+// Real working room a row needs ABOVE that base before Claude Code's own compaction fires -- enough to
+// read a large doc (ADR 0040, ~16k tokens) or a large module (layer-edges.mjs, ~11k) more than once in
+// one turn without immediately re-triggering. #2717's original 120,000 window cleared the trigger margin
+// and the base and left only ~22k here -- one such read away from the exact failure this constant now
+// names: 139 compactions, 5.4 hours, an estimated $95-125, for a copied LICENSE file and one package.json
+// field.
+export const MIN_WORKING_ROOM_TOKENS = 200_000;
+
+/**
+ * The `--autocompact` window for a per-row Claude engineer, DERIVED rather than picked so the next
+ * change to any of the three constants above re-lands this number rather than silently under-cutting it.
+ * Still far below the 479k-615k peaks #2717 set out to cap in the first place (see `worker-profile.mjs`'s
+ * own history), so a genuinely runaway row still compacts before reaching them -- the margin and the
+ * base are cleared FIRST, not assumed away.
+ */
+export const AUTOCOMPACT_WINDOW_TOKENS =
+  AUTO_COMPACT_TRIGGER_MARGIN_TOKENS + MEASURED_FRESH_WORKER_BASE_TOKENS + MIN_WORKING_ROOM_TOKENS;
+
 /**
  * CAUSE -> the worker that should take it.
  *
@@ -145,15 +175,21 @@ export function agentArgs(profile) {
   // mechanical version: a session that cannot ask must escalate, which is what the routing rule
   // already tells it to do.
   //
-  // `--autocompact 120000` (#2717) bounds compaction to a TURN, not only to the gap between orders.
-  // #2688's `/compact`-before-order (`wake.mjs`'s `deliver()`, `prompt-session.mjs`'s `clearThenPrompt()`)
-  // only checks cache-read tokens at the seam where an order REACHES a session; a session that never
-  // returns for a new order on one long-running row (measured: 340 calls, peak context 479k in a single
-  // turn) is never checked. This is the same 120,000 #2688 already ruled, not a second threshold --
-  // passed to Claude Code's OWN auto-compact trigger, which otherwise fires wherever the model's default
-  // context window puts it. Codex reviewers are a different product and are untouched below.
+  // `--autocompact` (#2717) bounds compaction to a TURN, not only to the gap between orders. #2688's
+  // `/compact`-before-order (`wake.mjs`'s `deliver()`, `prompt-session.mjs`'s `clearThenPrompt()`) only
+  // checks cache-read tokens at the seam where an order REACHES a session; a session that never returns
+  // for a new order on one long-running row (measured: 340 calls, peak context 479k in a single turn) is
+  // never checked there.
+  //
+  // #2717's FIRST CUT reused #2688's 120,000 outright and REGRESSED (2026-09-28): the window is not the
+  // trigger, and 120,000 minus Claude Code's own ~35k margin minus a fresh worker's own ~65k base left
+  // only ~22k of real working room -- worker-2623 thrashed on it for 5.4 hours across 139 compactions
+  // before delivering a copied LICENSE file and one package.json field. `AUTOCOMPACT_WINDOW_TOKENS` above
+  // is derived from the measured margin, the measured base and a real working-room floor instead of
+  // reusing a number chosen for a different seam; it is still far below the 479k-615k peaks #2717 set out
+  // to cap. Codex reviewers are a different product and are untouched below.
   return ["--model", profile.model, "--effort", profile.effort, "--dangerously-skip-permissions",
-    "--disallowedTools", "AskUserQuestion", "--autocompact", "120000"];
+    "--disallowedTools", "AskUserQuestion", "--autocompact", String(AUTOCOMPACT_WINDOW_TOKENS)];
 }
 
 function main() {
