@@ -1313,6 +1313,37 @@ function headBranchOf(worktree, run) {
 }
 
 /**
+ * #2748: the default answer to "is this session's predecessor instance confirmed gone" -- always "cannot
+ * tell". #2747 builds the real herdr-backed read; until that lands (or a caller passes a real one in its
+ * place), nothing can confirm a predecessor gone, so {@link implicitAdoptSession} never fires and the
+ * ordinary refusal in `worktreeTargetReason` stands exactly as it did before this row (Done-when 2).
+ * @returns {null}
+ */
+export function predecessorLivenessUnknown() {
+  return null;
+}
+
+/**
+ * #2748: the session to treat as `--adopt` when the claimant typed none. Live-discovered on #2623's own
+ * respawn: re-claiming a row under the SAME session name refused on that session's OWN leftovers (the
+ * worktree/branch it had stamped itself), a case #2470's `--adopt` already solves once the claimant knows
+ * to type it -- but nothing told the ordinary respawn path to. This is the ruling that lets the ORDINARY
+ * claim command find it: `undefined` unless the claim target is ALREADY the very session's own stamped
+ * tree AND that session's predecessor instance is independently confirmed gone (never merely "quiet" --
+ * see {@link predecessorLivenessUnknown}). Where either is not true, this answers `undefined` and
+ * `worktreeTargetReason` refuses precisely as it always has: this narrows that refusal, it does not
+ * remove the #1128 safety it was built for.
+ * @param {{ worktree: string, mySession: string, exists: (path: string) => boolean,
+ *   owner: (worktree: string) => string | null, predecessorGone: (session: string) => boolean | null }} args
+ * @returns {string | undefined}
+ */
+export function implicitAdoptSession({ worktree, mySession, exists, owner, predecessorGone }) {
+  if (!exists(worktree)) return undefined;
+  if (owner(worktree) !== mySession) return undefined;
+  return predecessorGone(mySession) === true ? mySession : undefined;
+}
+
+/**
  * A claim that did not win leaves nothing behind: the worktree and branch this call created a moment ago are removed.
  * A removal that fails is SAID, never swallowed.
  * @param {{ branch: string, worktree: string }} target @param {typeof defaultRun} run
@@ -1715,7 +1746,7 @@ function usage() {
     + "  node packages/agent-org/src/row-claim.mjs check <issue-number> [--tracker=<key>]     (alias of --row=; #2617: --tracker= reads a row of that tracker of `.agent-org/project.json`, and claim/dispatch/decline/conflict there are refused before any write)\n"
     + "  node packages/agent-org/src/row-claim.mjs dispatch <issue-number> --session=<name>   (mark taken at dispatch)\n"
     + "  node packages/agent-org/src/row-claim.mjs claim <issue-number> --session=<name> [--branch=<name>] "
-    + "[--worktree=<path>] [--adopt=<session>] [--blocked-by=#N]  (mark started; #2470: --adopt claims that session's EXISTING tree in place instead of creating one; #1432: given both, CREATES the worktree at <path> on new branch <name> from origin/main, refusing first if either exists; #656/#665: records the branch and worktree "
+    + "[--worktree=<path>] [--adopt=<session>] [--blocked-by=#N]  (mark started; #2470: --adopt claims that session's EXISTING tree in place instead of creating one; #2748: omitting --adopt still does this when the target is your OWN --session's already-stamped tree and your predecessor instance is independently confirmed gone, never merely quiet; #1432: given both, CREATES the worktree at <path> on new branch <name> from origin/main, refusing first if either exists; #656/#665: records the branch and worktree "
     + "-- #987: in a claim COMMENT, so a path of ANY length works, where a label capped it at 41 characters, "
     + "so a future escalation can tell portable from held, and decline can remove the worktree safely; "
     + "#741: --blocked-by releases B2 only with a measurement comment already on this session's own open "
@@ -2049,6 +2080,22 @@ function trackerKeyOf(args) {
 }
 
 /**
+ * #2748: the CLI's `--adopt=` value, resolving the implicit case -- pulled out of `runDispatchOrClaim` to keep
+ * that function's own complexity below the lint gate, same reason `drainedNow`/`instanceNow` were. Nobody types
+ * `--adopt=<name>` naming THEMSELVES -- a same-session respawn just runs the ordinary claim command, which is
+ * why it used to refuse on its own predecessor's leftovers. Resolved once, here, so both the claim and the
+ * printed line (`claimLineFor`) agree on what actually happened.
+ * @param {"dispatch" | "claim"} mode @param {string} mySession
+ * @param {{ adoptFlag?: string, branch?: string, worktree?: string }} flags
+ * @returns {string | undefined}
+ */
+export function adoptFor(mode, mySession, { adoptFlag, branch, worktree }) {
+  if (adoptFlag !== undefined) return adoptFlag;
+  if (mode !== "claim" || !branch || !worktree) return undefined;
+  return implicitAdoptSession({ worktree, mySession, exists: existsSync, owner: worktreeOwner, predecessorGone: predecessorLivenessUnknown });
+}
+
+/**
  * @param {"dispatch" | "claim"} mode
  * @param {number} issueNumber
  * @param {string[]} rest
@@ -2074,7 +2121,8 @@ function runDispatchOrClaim(mode, issueNumber, rest) {
   const blockedByFlag = rest.find((a) => a.startsWith("--blocked-by="));
   const blockedBy = blockedByFlag?.slice("--blocked-by=".length);
   // #2470: `--adopt=<session>` claims that session's EXISTING tree in place (the respawn of a released row starts in the work).
-  const adopt = rest.find((a) => a.startsWith("--adopt="))?.slice("--adopt=".length);
+  const adoptFlag = rest.find((a) => a.startsWith("--adopt="))?.slice("--adopt=".length);
+  const adopt = adoptFor(mode, mySession, { adoptFlag, branch, worktree });
   const flagsReason = mode === "claim" ? worktreeFlagsReason({ branch, worktree, adopt }) : null;
   if (flagsReason) {
     process.stderr.write(`row-claim claim: ${flagsReason}\n`);

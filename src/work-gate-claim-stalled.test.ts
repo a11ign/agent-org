@@ -22,7 +22,10 @@ import {
   cyclesReport, readLedger, deliveryCounts, readLedgerDeliveries, readDeliveredHandoffs, recoverInterruptedWork, recoverableWork,
   queueHandoff, readHandoffs, handoffBatches, recentlyVoidedKeys, sessionMoved, VOIDED, keptClaimsPath, ledgerLine,
 } from "./wake.mjs";
-import { claimRecordComment, declineRow, claimWithWorktree, worktreeTargetReason, worktreeFlagsReason } from "./row-claim.mjs";
+import {
+  claimRecordComment, declineRow, claimWithWorktree, worktreeTargetReason, worktreeFlagsReason,
+  implicitAdoptSession, predecessorLivenessUnknown, adoptFor,
+} from "./row-claim.mjs";
 import { CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
 import {
   CLAIM_STALLED, STALL_INTERVAL_MS, STALL_UNTOLD_RELEASE_MS, INTERRUPTED_SETTLE_MS, nudgeKey, nudgeDeliveredAt, claimRecordOf, commentMove, workAtRisk, fileMove, claimReading,
@@ -569,6 +572,72 @@ test("#2470 (7b) `--adopt` is refused without both --branch and --worktree, and 
   assert.match(String(worktreeFlagsReason({ adopt: "worker-7", branch: BRANCH })), /--adopt needs --branch and --worktree/);
   assert.equal(worktreeFlagsReason({ adopt: "worker-7", branch: BRANCH, worktree: WT }), null);
   assert.equal(worktreeFlagsReason({}), null, "and a claim naming neither is unchanged");
+});
+
+// --- #2748: re-claiming a row under the SAME session name -- the ordinary claim command, not `--adopt=`,
+// hitting its own predecessor's stamped tree ------------------------------------------------------------
+
+test("#2748 `implicitAdoptSession` -- the ruling: fires ONLY for the claimant's own tree AND a CONFIRMED-gone predecessor", () => {
+  const rule = (over: { exists?: boolean; owner?: string | null; gone?: boolean | null } = {}) => implicitAdoptSession({
+    worktree: WT, mySession: "worker-2623",
+    exists: () => over.exists ?? true,
+    owner: () => (over.owner === undefined ? "worker-2623" : over.owner),
+    predecessorGone: () => (over.gone === undefined ? true : over.gone),
+  });
+  assert.equal(rule(), "worker-2623", "CONTROL: the claimant's own stamped tree, predecessor confirmed gone -- implicit adopt fires");
+  assert.equal(rule({ exists: false }), undefined, "no tree, nothing to adopt");
+  assert.equal(rule({ owner: "worker-9" }), undefined, "a DIFFERENT session's tree is never auto-adopted -- #1432 stays");
+  assert.equal(rule({ owner: null }), undefined, "an UNSTAMPED tree is never auto-adopted either");
+  assert.equal(rule({ gone: false }), undefined, "predecessor confirmed STILL ALIVE -- refuses (a genuine collision, not a stale stamp)");
+  assert.equal(rule({ gone: null }), undefined,
+    "Done-when 2: liveness CANNOT be confirmed (herdr read unavailable / #2747 not yet wired in) -- the refusal stays");
+});
+
+test("#2748 `predecessorLivenessUnknown` -- the seam's default answers \"cannot tell\", so nothing changes until #2747 wires in a real read", () => {
+  assert.equal(predecessorLivenessUnknown(), null);
+  assert.equal(implicitAdoptSession({ worktree: WT, mySession: "worker-2623", exists: () => true, owner: () => "worker-2623",
+    predecessorGone: predecessorLivenessUnknown }), undefined, "the default seam never fires the implicit adopt");
+});
+
+test("#2748 reproduces the #2623 incident: a same-session-name reclaim of a stamped, gone predecessor's tree REUSES it -- and stays refused otherwise", () => {
+  const claimAs = (gone: boolean | null, claimed = true) => {
+    const stamped: [string, string][] = [];
+    const order: string[] = [];
+    const adopt = implicitAdoptSession({ worktree: WT, mySession: "worker-2623", exists: () => true, owner: () => "worker-2623",
+      predecessorGone: () => gone });
+    const result = claimWithWorktree(2416, "worker-2623", {
+      branch: BRANCH, worktree: WT, adopt,
+      run: ((cmd: string, args: string[]) => { order.push(`${cmd} ${args.join(" ")}`); return args.includes("symbolic-ref") ? `${BRANCH}\n` : ""; }) as never,
+      exists: () => true, owner: () => "worker-2623",
+      stamp: (w: string, sess: string) => { stamped.push([w, sess]); },
+      claim: (() => (claimed ? { claimed: true, statusMoved: true } : { claimed: false, reason: "B2 refused" })) as never,
+    });
+    return { result, stamped, order };
+  };
+  const reused = claimAs(true);
+  assert.equal(reused.result.claimed, true, "CONTROL: confirmed-gone predecessor -- the respawn's own claim succeeds");
+  assert.deepEqual(reused.stamped, [[WT, "worker-2623"]], "re-stamped to the new instance, same name");
+  assert.equal(reused.order.some((c) => /fetch|worktree add|worktree remove|branch -D/.test(c)), false,
+    "nothing created, nothing removed -- the tree and its uncommitted work are reused in place, exactly as #2470's `--adopt` does");
+
+  for (const gone of [false, null] as const) {
+    const refused = claimAs(gone);
+    assert.equal(refused.result.claimed, false, `liveness=${gone}: the ordinary #1432 refusal stays`);
+    assert.match((refused.result as { reason: string }).reason, /ALREADY EXISTS, stamped by `worker-2623`/,
+      "the incident's own refusal text -- unchanged when the predecessor is not CONFIRMED gone");
+  }
+});
+
+test("#2748 `adoptFor` (CLI wiring): an explicit `--adopt=` always wins, and the implicit ruling is asked ONLY for `claim` given both --branch and --worktree", () => {
+  const NOWHERE = "/home/agent/repos/does-not-exist-2748";
+  assert.equal(adoptFor("claim", "worker-2623", { adoptFlag: "worker-9", branch: BRANCH, worktree: NOWHERE }), "worker-9",
+    "an explicit flag is never overridden by the implicit ruling");
+  assert.equal(adoptFor("dispatch", "worker-2623", { branch: BRANCH, worktree: NOWHERE }), undefined,
+    "dispatch precedes any tree existing -- the implicit ruling is never asked");
+  assert.equal(adoptFor("claim", "worker-2623", { worktree: NOWHERE }), undefined, "no --branch -- never asked");
+  assert.equal(adoptFor("claim", "worker-2623", { branch: BRANCH }), undefined, "no --worktree -- never asked");
+  assert.equal(adoptFor("claim", "worker-2623", { branch: BRANCH, worktree: NOWHERE }), undefined,
+    "asked, but the tree does not exist on disk -- the real `existsSync` answers false, same as `implicitAdoptSession`'s own control");
 });
 
 test("#2470 (10) `decline --answer=<session>` releases to that session's `answer:` label, NOT to `ready`, and refuses to be a finding too", () => {
