@@ -27,7 +27,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { carryBranch, branchCheckedOutLocally } from "../carry-branch.mjs";
-import { declareTreeWideGuard } from "../../../guards/src/tree-wide-guard.mjs";
+import { declareTreeWideGuard } from "../lib/tree-wide-guard.mjs";
 
 // #716/#704: this file's own population is the whole tracked tree, not one file -- declared here
 // rather than inferred from its source, per ceo's ruling (2026-09-09) that the tree-wide-guard

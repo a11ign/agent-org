@@ -5,7 +5,7 @@
  * the web UI -- every row here is filed with `gh issue create --body`, which bypasses it entirely.
  * Measured 2026-09-09: 39 of ~65 open rows had no Open-check.
  */
-import { declareWalkScope } from "../../../guards/src/walk-scope.mjs";
+import { declareWalkScope } from "../lib/walk-scope.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {

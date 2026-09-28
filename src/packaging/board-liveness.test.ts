@@ -31,7 +31,7 @@
 //
 // The declaration is verified against the entry's own code, so if one of these functions ever starts
 // doing its own lookups this refuses rather than trusting the comment.
-import { declareWalkScope } from "../../../guards/src/walk-scope.mjs";
+import { declareWalkScope } from "../lib/walk-scope.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

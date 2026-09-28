@@ -4,7 +4,7 @@
  * `packages/agent-org/src/row-claim/waiting-language-rule.mjs` for the full account: a warning, never a
  * refusal, printed by `row-file.mjs` alongside `directoryRegionWarning` and `unrecognisedRegionWarning`.
  */
-import { declareWalkScope } from "../../../guards/src/walk-scope.mjs";
+import { declareWalkScope } from "../lib/walk-scope.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { waitingLanguageWarning } from "../row-claim/waiting-language-rule.mjs";
