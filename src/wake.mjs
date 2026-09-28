@@ -72,7 +72,8 @@ import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
 // #2470: THE PURE HALF OF A CLAIM THAT DOES NOT MOVE -- a leaf, so `work-gate.mjs` and this file both import it and neither imports the other's
 // half. What is performed here is the part that needs a pane, a process or a row: the release, the resume, the re-send.
 import { workAtRisk, gitRun, pathExists, statMtime, KEPT_CLAIMS_FILE, RESTART_STATE_FILE, RESTART_RESEND_WINDOW_MS,
-  readHerdrRestart, paneInterrupted, killedDeliveries, writeJsonObject, readJsonObject, INTERRUPTED_TEXT, INTERRUPTED_SETTLE_MS }
+  readHerdrRestart, paneInterrupted, paneThrashed, killedDeliveries, writeJsonObject, readJsonObject, INTERRUPTED_TEXT,
+  INTERRUPTED_SETTLE_MS, THRASH_TEXT }
   from "./claim-stall.mjs";
 
 /**
@@ -5006,20 +5007,23 @@ export function sessionMoved(timestamps) {
 }
 
 /**
- * What the tick recovers, decided from facts: the sessions whose pane reads `Interrupted`, and the deliveries a restart (or an interruption
- * with no restart in view) killed -- inside {@link RESTART_RESEND_WINDOW_MS} before it, to a target that made no move before it.
+ * What the tick recovers, decided from facts: the sessions whose pane reads `Interrupted`, the sessions whose pane reads the
+ * autocompact thrash guard (#2745), and the deliveries a restart (or an interruption with no restart in view) killed -- inside
+ * {@link RESTART_RESEND_WINDOW_MS} before it, to a target that made no move before it.
  *
  * A RESTART IS ACTED ON ONCE (`actedRestart`): the re-send is itself a delivery stamped AFTER the restart, so the window excludes it, and
  * the record of the last restart acted on keeps a second tick from re-deriving the same set. An INTERRUPTED pane with no restart in view
  * treats NOW as the moment of the interruption (its real time is unknown), and a session already re-sent inside one wake window is not
- * sent to again, so a pane that stays interrupted is not resent to on every tick.
+ * sent to again, so a pane that stays interrupted is not resent to on every tick. A THRASHED session shares the same idempotency (`quiet`,
+ * `resentAt`) so a pane that stays on the thrash message is not escalated again on every tick, but it never joins `killed`: nothing
+ * delivered to it was killed, its own turn ended on its own.
  *
  * @template {{ session: string, at: number }} D
  * @param {{ now: number, restartAt: number | null, actedRestart: number | null, agents: { label: string, status: string }[],
  *   paneText: (label: string) => string | null, lastActive: (label: string) => number | null, deliveries: () => D[],
  *   moved: (session: string, from: number, to: number) => boolean, resentAt: Record<string, number> }} facts
  *   `deliveries` is a thunk: it reads two ledgers, and is called only when a restart is fresh or a pane is interrupted
- * @returns {{ interrupted: string[], killed: D[], restartActed: number | null }}
+ * @returns {{ interrupted: string[], thrashed: string[], killed: D[], restartActed: number | null }}
  */
 export function recoverableWork({ now, restartAt, actedRestart, agents, paneText, lastActive, deliveries, moved, resentAt }) {
   const recent = restartAt !== null && restartAt > (actedRestart ?? 0) && now - restartAt <= RESTART_ACT_HORIZON_MS;
@@ -5027,14 +5031,18 @@ export function recoverableWork({ now, restartAt, actedRestart, agents, paneText
   // SETTLED: Claude Code prints the same sentence when a PERSON presses Esc, and a person who stopped a session is about to type. A pane is resumed
   // only once its session has been SILENT for `INTERRUPTED_SETTLE_MS`, and a session whose last activity cannot be established is left alone.
   const settled = (/** @type {string} */ label) => { const at = lastActive(label); return at !== null && now - at >= INTERRUPTED_SETTLE_MS; };
-  const interrupted = agents.filter((a) => WAKEABLE.includes(a.status) && paneInterrupted(paneText(a.label)) && !quiet(a.label) && settled(a.label))
-    .map((a) => a.label);
-  // THE LEDGERS ARE READ ONLY WHEN THERE IS SOMETHING TO RECOVER: the common tick has neither a fresh restart nor an interrupted pane.
-  if (!recent && interrupted.length === 0) return { interrupted, killed: [], restartActed: null };
+  // ONE PANE READ PER WAKEABLE, SETTLED, NOT-RECENTLY-RESENT-TO SESSION -- shared between the interrupted and the thrashed check, so
+  // adding the second reading does not double `herdr`'s per-session cost.
+  const wakeable = agents.filter((a) => WAKEABLE.includes(a.status) && !quiet(a.label) && settled(a.label));
+  const texts = new Map(wakeable.map((a) => /** @type {[string, string | null]} */ ([a.label, paneText(a.label)])));
+  const interrupted = wakeable.filter((a) => paneInterrupted(texts.get(a.label))).map((a) => a.label);
+  const thrashed = wakeable.filter((a) => paneThrashed(texts.get(a.label))).map((a) => a.label);
+  // THE LEDGERS ARE READ ONLY WHEN THERE IS SOMETHING TO RECOVER: the common tick has neither a fresh restart nor an interrupted or thrashed pane.
+  if (!recent && interrupted.length === 0 && thrashed.length === 0) return { interrupted, thrashed, killed: [], restartActed: null };
   const all = deliveries();
   const byRestart = recent ? killedDeliveries({ deliveries: all, at: /** @type {number} */ (restartAt), until: now, moved }) : [];
   const byPane = killedDeliveries({ deliveries: all.filter((d) => interrupted.includes(d.session)), at: now, moved });
-  return { interrupted, killed: [...new Set([...byRestart, ...byPane])], restartActed: recent ? restartAt : null };
+  return { interrupted, thrashed, killed: [...new Set([...byRestart, ...byPane])], restartActed: recent ? restartAt : null };
 }
 
 /**
@@ -5050,6 +5058,28 @@ export function resumePrompt() {
     + "OTHERWISE RESUME WHERE YOU LEFT OFF. This is a plain prompt and NOTHING WAS CLEARED: your context is intact. THE ROW IS THE STATE: re-read the "
     + "row you hold and its pull request, run `git status` and `git log origin/main..HEAD` in your worktree, then continue what you were "
     + "doing. If it is already finished, say so on the row and stop.";
+}
+
+/**
+ * The order a THRASHED session's own pane does NOT get, and `product-manager` gets instead -- THIS IS #2745's FIX. Before it, whatever
+ * next had something to say to a thrashed session said the SAME THING it always says, because nothing distinguished "finished a turn"
+ * from "the turn ended because Claude Code's own autocompact guard gave up on it" (#2743: worker-2623, 139 compactions, 5.4 hours, to a
+ * human's manual interruption -- no code-level stop). A plain resume (`resumePrompt`'s own shape) would very likely do exactly that
+ * again: whatever filled its context is still there, unread, and "continue where you left off" reopens it. So the thrashed session gets
+ * NOTHING here -- no resume, no order -- and the decision goes to `product-manager`, the routing rule's own reader for a report that
+ * needs one (`.claude/rules/org-routing-and-timers.md`).
+ * @param {string} label @returns {string}
+ */
+export function thrashEscalationPrompt(label) {
+  return `\`${label}\`'S PANE ENDED ITS LAST TURN IN CLAUDE CODE'S OWN AUTOCOMPACT THRASH GUARD, NOT AN ORDINARY FINISH: its last `
+    + `output reads \`${THRASH_TEXT}\` -- context refilled to the limit within 3 turns of a compaction, 3 times in a row, so Claude `
+    + "Code stopped the turn itself rather than compact a fourth time. `herdr` reports this pane exactly as it reports any other "
+    + "finished turn (`idle`/`done`), so nothing else in the org would have told you.\n"
+    + `${label} WAS NOT RESUMED: whatever filled its context is still there, unread, and "continue where you left off" would very `
+    + "likely refill it and trip the same guard again -- the defect this exists to stop, not repeat.\n"
+    + "READ ITS ROW AND ITS WORKTREE FIRST, then pick one: RELEASE the claim so a fresh instance starts clean in the same worktree "
+    + `(nothing built is lost); or, if it should keep the context it has, prompt it explicitly with \`npm run prompt:session -- `
+    + `${label} "/clear, then re-read the row and continue"\` rather than a bare resume.`;
 }
 
 /**
@@ -5095,7 +5125,7 @@ export function recoverInterruptedWork({ agents, ledgerPath, now = Date.now(), r
     const queuePath = handoffQueuePath(ledgerPath);
     const found = recoverableWork({ now, agents, actedRestart: state.restartAt ?? null, restartAt, moved, lastActive,
       paneText: paneReader(run), resentAt: state.resent ?? {}, deliveries: () => deliveriesOf(ledgerPath, queuePath) });
-    if (found.killed.length === 0 && found.interrupted.length === 0 && found.restartActed === null) return [];
+    if (found.killed.length === 0 && found.interrupted.length === 0 && found.thrashed.length === 0 && found.restartActed === null) return [];
     const lines = actOnKilledWork({ found, now, ledgerPath, queuePath });
     writeJsonObject(statePath, { restartAt: found.restartActed ?? state.restartAt ?? null, resent: resentAfter(state.resent ?? {}, found, now) });
     for (const line of lines) log(`${line}\n`);
@@ -5134,6 +5164,7 @@ function resentAfter(before, found, now) {
   const resent = Object.fromEntries(Object.entries(before).filter(([, at]) => now - Number(at) < RESTART_RESEND_WINDOW_MS));
   for (const d of found.killed) resent[d.session] = now;
   for (const label of found.interrupted) resent[label] = now;
+  for (const label of found.thrashed) resent[label] = now;
   return resent;
 }
 
@@ -5168,6 +5199,12 @@ function actOnKilledWork({ found, now, ledgerPath, queuePath }) {
   for (const label of found.interrupted) {
     queueHandoff(queuePath, { session: label, prompt: resumePrompt(), now, resume: true });
     lines.push(`RESUMING ${label}: its pane's last line reads Interrupted`);
+  }
+  // #2745: NOT A RESUME. A thrashed session is not told to continue -- see `thrashEscalationPrompt`'s own header for why -- and the
+  // decision goes to `product-manager` instead, once per thrash episode (idempotent through the same `resentAt`/`quiet` as `interrupted`).
+  for (const label of found.thrashed) {
+    queueHandoff(queuePath, { session: "product-manager", prompt: thrashEscalationPrompt(label), now });
+    lines.push(`ESCALATING ${label} to product-manager: its last turn ended in the autocompact thrash guard`);
   }
   return lines;
 }
