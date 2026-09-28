@@ -20,14 +20,14 @@ import { profileFor } from "./worker-profile.mjs";
 import {
   WAKE_TTL_MS, MAX_DELIVERIES, performRelease, spawnClaimer, spawnedPrompt, deliver, consecutiveClean, drainInForce, isReleaseLine,
   cyclesReport, readLedger, deliveryCounts, readLedgerDeliveries, readDeliveredHandoffs, recoverInterruptedWork, recoverableWork,
-  queueHandoff, readHandoffs, handoffBatches, recentlyVoidedKeys, sessionMoved, VOIDED, keptClaimsPath, ledgerLine,
+  queueHandoff, readHandoffs, handoffBatches, recentlyVoidedKeys, sessionMoved, VOIDED, keptClaimsPath, ledgerLine, thrashEscalationPrompt,
 } from "./wake.mjs";
 import { claimRecordComment, declineRow, claimWithWorktree, worktreeTargetReason, worktreeFlagsReason } from "./row-claim.mjs";
 import { CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
 import {
   CLAIM_STALLED, STALL_INTERVAL_MS, STALL_UNTOLD_RELEASE_MS, INTERRUPTED_SETTLE_MS, nudgeKey, nudgeDeliveredAt, claimRecordOf, commentMove, workAtRisk, fileMove, claimReading,
-  claimFactsFrom, readClaim, nextStallState, claimStalledOrders, paneInterrupted, killedDeliveries, readHerdrRestart,
-  RESTART_RESEND_WINDOW_MS, INTERRUPTED_TEXT, gitRun, gitInvocation, newestOwnCommit, statMtime, pathExists,
+  claimFactsFrom, readClaim, nextStallState, claimStalledOrders, paneInterrupted, paneThrashed, killedDeliveries, readHerdrRestart,
+  RESTART_RESEND_WINDOW_MS, INTERRUPTED_TEXT, THRASH_TEXT, gitRun, gitInvocation, newestOwnCommit, statMtime, pathExists,
 } from "./claim-stall.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { execFileSync } from "node:child_process";
@@ -891,6 +891,69 @@ test("#2470 (9) a RESUME is never behind a `/clear`, even to a standing seat; th
   deliver([{ ...order, resume: true }], [{ label: "worker-capture", status: "idle" }], ["worker-capture"], { run });
   assert.equal(sent.some((a) => a.includes("/clear")), false, "the resume goes straight in: the context is what it is for");
   assert.equal(sent.filter((a) => a.includes("prompt")).length, 1);
+});
+
+// --- #2745: a Claude Code thrash-guard stop reaches the gate as a DISTINCT signal, and is never answered with the same order ----------------
+
+// THE MESSAGE WRAPS (it is long enough that a single-line needle, as `INTERRUPTED_TEXT` uses, would never match any one rendered line), so
+// the fixture is built the way Claude Code actually wraps it rather than as one line -- and `THRASH_TEXT` is only the opening clause.
+const THRASH_MESSAGE = [
+  "● Autocompact is thrashing: the context refilled to the limit within 3 turns of the previous compact, 3 times in a",
+  "  row. A file being read or a tool output is likely too large for the context window. Try reading in smaller",
+  "  chunks, or use /clear to start fresh.",
+].join("\n");
+
+test("#2745 (1,2) a pane whose last TURN ended in the thrash guard is read as thrashed; an ordinary idle pane is not", () => {
+  assert.equal(paneThrashed(pane(THRASH_MESSAGE, "✻ Baked for 7s · done 9:56")), true);
+  assert.equal(paneThrashed(pane("● Done.", "", "✻ Cooked for 1m 52s · done 15:56")), false, "CONTROL: a finished turn's pane");
+  assert.equal(paneThrashed(pane("※ recap: Goal: land draft PR #2497", "new task? /clear to save 142.9k tokens")), false, "CONTROL: an ordinary idle pane");
+  assert.equal(paneThrashed(pane(INTERRUPTED_LINE)), false, "CONTROL: an interrupted pane is not a thrashed one");
+  assert.equal(paneThrashed(null), false);
+  assert.equal(paneThrashed(""), false);
+});
+
+test("#2745 (2) the needle is anchored to the LAST paragraph, past Claude Code's own completion footer, not the last line", () => {
+  // NO FOOTER: a pane with no input box (or one whose process ended before printing its own footer) is read from its own last paragraph.
+  assert.equal(paneThrashed(THRASH_MESSAGE), true, "a pane with NO input box, and no footer, is read from its own last paragraph");
+  assert.equal(paneThrashed(`${THRASH_MESSAGE}\n\n`), true, "trailing blank lines are not the paragraph");
+  // A SESSION DISCUSSING THIS ROW (this very file, read into its own pane) is not resumed for it: the quotation is not the FINAL paragraph
+  // once real commentary follows it, exactly the shape `paneInterrupted`'s own equivalent test guards.
+  assert.equal(paneThrashed(pane(`● The row says \`${THRASH_TEXT}\` is what the guard prints`, "", "● Done.")), false, "a quotation earlier in the output");
+  // A DRAFT TYPED INTO THE BOX does not hide it: the last paragraph is read ABOVE the top rule, not from the bottom of the pane.
+  const typing = [THRASH_MESSAGE, "", BOX, "❯ some half-typed prompt", BOX, "  status"].join("\n");
+  assert.equal(paneThrashed(typing), true);
+});
+
+test("#2745 (3,4) a thrashed pane is NEVER answered with the same order it just got: it is not resumed, and `product-manager` is told instead", () => {
+  withState((dir) => {
+    const ledger = join(dir, "wake-ledger");
+    const agents = [{ label: "worker-2623", status: "idle" }, { label: "worker-7", status: "idle" }, { label: "worker-9", status: "idle" }];
+    const lines = recoverInterruptedWork({ agents, ledgerPath: ledger, now: NOW, restartAt: null, moved: () => true, lastActive: () => NOW - 30 * MIN, log: () => {},
+      run: herdrReading({ "worker-2623": pane(THRASH_MESSAGE, "✻ Baked for 5h 24m · done 07:46"), "worker-7": pane(INTERRUPTED_LINE), "worker-9": pane("● Done.") }) });
+    assert.deepEqual(lines.filter((l) => l.startsWith("ESCALATING")),
+      ["ESCALATING worker-2623 to product-manager: its last turn ended in the autocompact thrash guard"]);
+    assert.equal(lines.some((l) => l.includes("RESUMING worker-2623")), false, "NOT a resume: the defect this exists to stop, not repeat");
+    // worker-7's ordinary interrupted-pane handling is unaffected: both readings share one pane fetch per session (`texts`), not two.
+    assert.deepEqual(lines.filter((l) => l.startsWith("RESUMING")), ["RESUMING worker-7: its pane's last line reads Interrupted"]);
+
+    const queued = readHandoffs(join(dir, "prompt-session-handoffs"));
+    const escalation = queued.find((h) => h.session === "product-manager");
+    assert.ok(escalation !== undefined);
+    assert.equal((escalation as { resume?: boolean }).resume, undefined, "an order to `product-manager`, not a resume of `worker-2623`");
+    assert.match(escalation!.prompt, /worker-2623/);
+    assert.match(escalation!.prompt, new RegExp(THRASH_TEXT.replace(/[:.]/g, "\\$&")));
+    assert.match(escalation!.prompt, /NOT RESUMED/);
+    assert.equal(queued.some((h) => h.session === "worker-2623"), false, "worker-2623 itself gets nothing");
+    assert.equal(escalation!.prompt, thrashEscalationPrompt("worker-2623"));
+
+    // IDEMPOTENT, exactly like the interrupted-pane case: not escalated again inside a wake window, and is once it has passed.
+    const again = recoverInterruptedWork({ agents: [agents[0]], ledgerPath: ledger, now: NOW + 2 * MIN, restartAt: null, moved: () => true, lastActive: () => NOW - 30 * MIN, log: () => {},
+      run: herdrReading({ "worker-2623": pane(THRASH_MESSAGE, "✻ Baked for 5h 24m · done 07:46") }) });
+    assert.deepEqual(again, [], "a pane that stays on the thrash message is not re-escalated on every tick");
+    const later = recoverInterruptedWork({ agents: [agents[0]], ledgerPath: ledger, now: NOW + WAKE_TTL_MS + MIN, restartAt: null, moved: () => true, lastActive: () => NOW - 30 * MIN, log: () => {},
+      run: herdrReading({ "worker-2623": pane(THRASH_MESSAGE, "✻ Baked for 5h 24m · done 07:46") }) });
+    assert.equal(later.filter((l) => l.startsWith("ESCALATING")).length, 1);
+  });
 });
 
 // --- Done-when 11: a delivery a restart killed is UNDELIVERED, and is re-sent ------------------------------------------------------------------
