@@ -937,7 +937,9 @@ test("#2747 a GONE release is NOT refused when the holder holds work -- unlike b
   const got = performRelease({ ...STALL, why: "gone", idleMinutes: null, nudgedAt: null }, r.deps);
   assert.equal(got.released, true, JSON.stringify(got));
   assert.equal(r.runs.some((a) => a.includes("close")), false, "already absent from herdr's own listing (that is the whole reason) -- nothing left to close");
-  assert.deepEqual(r.decline()!.args.slice(1), ["decline", "2407", "--session=worker-7", "--keep-worktree"], "dirty work is KEPT, exactly like a stalled release");
+  assert.deepEqual(r.decline()!.args.slice(1), ["decline", "2407", "--session=worker-7", "--keep-worktree", "--predecessor-gone"],
+    "dirty work is KEPT, exactly like a stalled release; #2748: herdr's own listing has no record of the session at all, which is "
+    + "the strongest of the two confirmed-gone readings, so the release may attest it");
   assert.match(r.comment(), /worker-7` no longer exists in herdr's own workspace listing \(#2747\), not merely quiet/);
 });
 
