@@ -11,7 +11,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { readLoadedRules } from "./rules-files.ts";
 import { PROFILES, EFFORTS, MODELS, profileFor, agentArgs, AUTOCOMPACT_WINDOW_TOKENS,
-  AUTO_COMPACT_TRIGGER_MARGIN_TOKENS, MEASURED_FRESH_WORKER_BASE_TOKENS }
+  AUTO_COMPACT_TRIGGER_MARGIN_TOKENS, MEASURED_FRESH_WORKER_BASE_TOKENS, PER_ROW_DISALLOWED_TOOLS,
+  WORKER_SETTINGS_PATH }
   from "../worker-profile.mjs";
 
 /** A `why` shorter than this is a label, not an argument. */
@@ -146,10 +147,29 @@ test("a FULL model id is allowed through, since the CLI takes those too", () => 
 test("agentArgs spells each product's flags its own way", () => {
   assert.deepEqual(agentArgs({ kind: "claude", model: "sonnet", effort: "high" }),
     ["--model", "sonnet", "--effort", "high", "--dangerously-skip-permissions",
-      "--disallowedTools", "AskUserQuestion", "--autocompact", String(AUTOCOMPACT_WINDOW_TOKENS)]);
+      "--disallowedTools", PER_ROW_DISALLOWED_TOOLS.join(","), "--autocompact", String(AUTOCOMPACT_WINDOW_TOKENS),
+      "--settings", WORKER_SETTINGS_PATH]);
   assert.deepEqual(agentArgs({ kind: "codex", model: "gpt-5.6-luna", effort: "medium" }),
     ["-m", "gpt-5.6-luna", "-c", 'model_reasoning_effort="medium"',
      "-c", 'approval_policy="never"', "-c", 'sandbox_mode="workspace-write"']);
+});
+
+/**
+ * #2750 (chairman's 2026-09-28 token-cost reading): the tools a per-row Claude engineer never needs are
+ * disallowed BY BARE NAME (which strips the tool's full definition from the system prompt, confirmed
+ * already by `AskUserQuestion`'s own absence from a fresh worker's 12 sent tools -- never a scoped rule
+ * like `Bash(rm *)`, which leaves the definition in place and only refuses matching calls). `Agent` is
+ * deliberately NOT in this list -- see `PER_ROW_DISALLOWED_TOOLS`'s own comment.
+ */
+test("the per-row disallowed-tools list strips cost, not judgment, and keeps Agent", () => {
+  assert.ok(!PER_ROW_DISALLOWED_TOOLS.some((t) => t.includes("(")),
+    "every entry must be a BARE tool name -- a scoped rule like `Bash(rm *)` leaves the definition loaded");
+  assert.ok(!PER_ROW_DISALLOWED_TOOLS.includes("Agent"),
+    "Agent stays available: agent-practices.md's own routing rule (haiku to gather, sonnet to digest) is "
+    + "a real remedy for a worker's own context growth, and engineer.md directs spawned engineers to use it");
+  for (const must of ["Artifact", "SendFeedback", "Workflow", "ReportFindings", "ListAgents"]) {
+    assert.ok(PER_ROW_DISALLOWED_TOOLS.includes(must), `${must} is one of the five #2750 adds`);
+  }
 });
 
 // #2717's regression thrashed on ~22k of headroom (120,000 minus the margin minus the base). This floor
@@ -211,7 +231,10 @@ test("an effort valid for one product is REFUSED for the other", () => {
  */
 test("no spawned worker of EITHER product can stop and ask a human", () => {
   const claude = agentArgs({ kind: "claude", model: "sonnet", effort: "high" });
-  assert.ok(claude.includes("--disallowedTools") && claude.includes("AskUserQuestion"),
+  // #2750 joined the disallowed-tools list into one comma-separated value (the CLI's own accepted
+  // spelling), so `AskUserQuestion` is a substring of that value now, not a standalone array element.
+  assert.ok(claude.includes("--disallowedTools")
+    && claude[claude.indexOf("--disallowedTools") + 1].split(",").includes("AskUserQuestion"),
     "a Claude worker that can raise a menu can block the whole session on a human");
 
   const codex = agentArgs({ kind: "codex", model: "gpt-5.6-luna", effort: "medium" }).join(" ");

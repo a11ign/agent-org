@@ -25,7 +25,7 @@
 // raise it HERE, in this table, with the run that showed it. That keeps the reason attached to the
 // number. A session quietly restarted on a bigger model is how the org got back to Opus-everywhere with
 // nobody able to say who decided it.
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import { realpathSync } from "node:fs";
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { PROFILES } from "./cause-declaration.mjs";
@@ -71,6 +71,27 @@ export const MIN_WORKING_ROOM_TOKENS = 200_000;
  */
 export const AUTOCOMPACT_WINDOW_TOKENS =
   AUTO_COMPACT_TRIGGER_MARGIN_TOKENS + MEASURED_FRESH_WORKER_BASE_TOKENS + MIN_WORKING_ROOM_TOKENS;
+
+// #2750 (chairman's 2026-09-28 token-cost reading, ceo's ruling): FIVE MORE TOOLS a per-row Claude
+// engineer never needs, disallowed the same way `AskUserQuestion` already is below. A bare tool name on
+// `--disallowedTools` removes that tool's FULL DEFINITION from the system prompt, not merely its calls --
+// measured directly: `AskUserQuestion` is disallowed and is absent from the 12 tools a fresh worker's
+// first turn actually sends. `Artifact`/`SendFeedback`/`Workflow`/`ReportFindings` cost ~13k tokens
+// between them (~$20/day across the org's own volume, 8,251 Claude calls in 24h at the $0.20/MTok
+// cache-read proxy) and are never a row's job: publishing a page, feedback on Claude Code itself,
+// orchestrating OTHER agents, and a code-review-specific report format, respectively -- none of it is
+// what a row's Region/Acceptance/Done-when ever asks for. `ListAgents` is cut for the same reason: this
+// org's inter-session channel is the GitHub row (labels, comments, `answer:<session>`), never live
+// Claude-Code-to-Claude-Code messaging for a spawned worker, so the tool has nothing of this org's to
+// list. `Agent` STAYS, deliberately: disallowing it would cut against `agent-practices.md`'s own routing
+// rule (haiku to gather, sonnet to digest), which is a real remedy for the SAME reading's other finding --
+// worker-2623 read `layer-edges.mjs` five times and ADR 0040 twice directly into its own context, growth a
+// subagent read would not have cost the holding session.
+export const PER_ROW_DISALLOWED_TOOLS =
+  Object.freeze(["AskUserQuestion", "Artifact", "SendFeedback", "Workflow", "ReportFindings", "ListAgents"]);
+
+/** `worker-settings.json`'s own absolute path, resolved from this file's rather than the caller's cwd. */
+export const WORKER_SETTINGS_PATH = fileURLToPath(new URL("./worker-settings.json", import.meta.url));
 
 /**
  * CAUSE -> the worker that should take it.
@@ -175,6 +196,9 @@ export function agentArgs(profile) {
   // mechanical version: a session that cannot ask must escalate, which is what the routing rule
   // already tells it to do.
   //
+  // #2750 extends this list and moves it to `PER_ROW_DISALLOWED_TOOLS` above -- see that constant's own
+  // comment for which tools joined it and why.
+  //
   // `--autocompact` (#2717) bounds compaction to a TURN, not only to the gap between orders. #2688's
   // `/compact`-before-order (`wake.mjs`'s `deliver()`, `prompt-session.mjs`'s `clearThenPrompt()`) only
   // checks cache-read tokens at the seam where an order REACHES a session; a session that never returns
@@ -188,8 +212,20 @@ export function agentArgs(profile) {
   // is derived from the measured margin, the measured base and a real working-room floor instead of
   // reusing a number chosen for a different seam; it is still far below the 479k-615k peaks #2717 set out
   // to cap. Codex reviewers are a different product and are untouched below.
+  //
+  // `--settings worker-settings.json` (#2750) carries the two remaining token-cost levers that are not
+  // tool-shaped: `autoMemoryEnabled: false` (the auto-memory index is git-repo-scoped, so every worktree
+  // of THIS repo shares the same one, and it loads in full -- ~9.4k tokens -- on every fresh worker
+  // regardless of relevance; a row that needs a specific past lesson cites it in its own body, the way
+  // rows already do, rather than a worker discovering it ambiently) and `enabledPlugins` turning off the
+  // three plugins that only ever matter to ORG PROCESS work a row's Region never covers
+  // (`claude-code-setup`, `claude-md-management`, `code-simplifier` -- each contributes to the skills
+  // listing a fresh worker pays for on every spawn whether or not the row ever touches CLAUDE.md or asks
+  // for a simplification pass). Layered on top of the host's own settings, per Claude Code's own
+  // precedence, not a replacement for it.
   return ["--model", profile.model, "--effort", profile.effort, "--dangerously-skip-permissions",
-    "--disallowedTools", "AskUserQuestion", "--autocompact", String(AUTOCOMPACT_WINDOW_TOKENS)];
+    "--disallowedTools", PER_ROW_DISALLOWED_TOOLS.join(","), "--autocompact", String(AUTOCOMPACT_WINDOW_TOKENS),
+    "--settings", WORKER_SETTINGS_PATH];
 }
 
 function main() {
