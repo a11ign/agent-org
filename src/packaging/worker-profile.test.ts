@@ -10,7 +10,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { readLoadedRules } from "./rules-files.ts";
-import { PROFILES, EFFORTS, MODELS, profileFor, agentArgs }
+import { PROFILES, EFFORTS, MODELS, profileFor, agentArgs, AUTOCOMPACT_WINDOW_TOKENS,
+  AUTO_COMPACT_TRIGGER_MARGIN_TOKENS, MEASURED_FRESH_WORKER_BASE_TOKENS }
   from "../worker-profile.mjs";
 
 /** A `why` shorter than this is a label, not an argument. */
@@ -145,23 +146,41 @@ test("a FULL model id is allowed through, since the CLI takes those too", () => 
 test("agentArgs spells each product's flags its own way", () => {
   assert.deepEqual(agentArgs({ kind: "claude", model: "sonnet", effort: "high" }),
     ["--model", "sonnet", "--effort", "high", "--dangerously-skip-permissions",
-      "--disallowedTools", "AskUserQuestion", "--autocompact", "120000"]);
+      "--disallowedTools", "AskUserQuestion", "--autocompact", String(AUTOCOMPACT_WINDOW_TOKENS)]);
   assert.deepEqual(agentArgs({ kind: "codex", model: "gpt-5.6-luna", effort: "medium" }),
     ["-m", "gpt-5.6-luna", "-c", 'model_reasoning_effort="medium"',
      "-c", 'approval_policy="never"', "-c", 'sandbox_mode="workspace-write"']);
 });
 
+// #2717's regression thrashed on ~22k of headroom (120,000 minus the margin minus the base). This floor
+// is this TEST's own, independent of `worker-profile.mjs`'s `MIN_WORKING_ROOM_TOKENS` -- asserting against
+// that constant would make the test tautological (it derives `AUTOCOMPACT_WINDOW_TOKENS`, so the computed
+// headroom always equals it exactly, whatever value it holds; a mutation check on this file, dropping
+// `MIN_WORKING_ROOM_TOKENS` to 20,000 to re-create #2717's own regression, confirmed this and still
+// passed 15/15 before this floor was made independent). Chosen well clear of the ~22k that actually
+// thrashed, and well under production's current 200k, so a deliberate future retune of the production
+// floor does not have to touch this assertion too.
+const MIN_ACCEPTABLE_HEADROOM_TOKENS = 150_000;
+
 /**
- * #2717: bounds a per-row Claude engineer's own compaction inside a turn, not only between orders.
- * #2688's `/compact`-before-order only checks cache-read tokens at the seam where an order reaches a
- * session; a turn that never returns for a new order is never checked there. This passes the same
- * 120,000 #2688 already ruled to Claude Code's own `--autocompact` trigger, so a single long-running
- * turn is bounded too -- and a codex worker, a different product, carries no such flag.
+ * #2717's REGRESSION (2026-09-28, worker-2623): the window passed to `--autocompact` is not the trigger.
+ * Claude Code's own compaction fires roughly `AUTO_COMPACT_TRIGGER_MARGIN_TOKENS` below whatever window is
+ * given, and a fresh worker already carries `MEASURED_FRESH_WORKER_BASE_TOKENS` before doing any work --
+ * #2717's first cut (120,000, reusing #2688's unrelated threshold) cleared both and left ~22k of real
+ * working room, which one large file read closes. THIS PINS THE HEADROOM, NOT A CONSTANT: a change to the
+ * window that does not also clear the margin and the base by `MIN_ACCEPTABLE_HEADROOM_TOKENS` should fail
+ * here, not be caught only by a live thrash days later.
  */
-test("bounds a per-row Claude engineer's own compaction inside a turn, not only between orders", () => {
+test("the autocompact window clears the measured base plus real working room, not just a bare number (#2717 regression)", () => {
   const claude = agentArgs({ kind: "claude", model: "sonnet", effort: "high" });
-  assert.ok(claude.includes("--autocompact") && claude[claude.indexOf("--autocompact") + 1] === "120000",
-    "a claude worker must bound its own auto-compact trigger to #2688's 120,000, not the CLI's default");
+  const window = Number(claude[claude.indexOf("--autocompact") + 1]);
+  const trigger = window - AUTO_COMPACT_TRIGGER_MARGIN_TOKENS; // where Claude Code itself compacts
+  const headroom = trigger - MEASURED_FRESH_WORKER_BASE_TOKENS; // real working room above a fresh worker's base
+  assert.ok(headroom >= MIN_ACCEPTABLE_HEADROOM_TOKENS,
+    `--autocompact ${window} leaves only ${headroom} tokens of headroom once Claude Code's own `
+    + `~${AUTO_COMPACT_TRIGGER_MARGIN_TOKENS}-token compaction margin and a fresh worker's own `
+    + `~${MEASURED_FRESH_WORKER_BASE_TOKENS}-token base are cleared -- a single large file read can `
+    + "thrash on that little room (#2717 regression, worker-2623: 139 compactions, 5.4 hours)");
 
   const codex = agentArgs({ kind: "codex", model: "gpt-5.6-luna", effort: "medium" });
   assert.ok(!codex.includes("--autocompact"), "codex is a different product and carries no such flag");
