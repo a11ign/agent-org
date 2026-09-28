@@ -93,6 +93,11 @@ import { diskHeadroom, MIN_FREE_FRACTION } from "./disk-headroom.mjs";
 import { STALL_STATE_FILE, claimFactsFrom, readClaim, claimStalledOrders, nextStallState, readStallState,
   writeStallState, readHerdrRestart, gitRun, pathExists, statMtime, nudgeKey, nudgeDeliveredAt,
   claimRecordOf } from "./claim-stall.mjs";
+// #2747: WHETHER A CLAIM'S SESSION STILL EXISTS AT ALL -- a DIFFERENT question from "who is free" (line 26-29
+// above): that is routing, `wake.mjs`'s job, and stays out of this file. This is a fact the STALL reading needs
+// (a claim held by nobody is not a stall to be nudged), read the same seamed way `readHerdrRestart` already reads
+// `systemctl` from here -- injectable, and `null` (never a live herdr call) unless the caller gives no `agents`.
+import { readAgents } from "./herdr-agents.mjs";
 // #2542: THE PULL-REQUEST ORDERS -- the orders that ask a session to act on a pull request's state -- live in
 // `work-gate/pr-orders.mjs`, which imports the shared PR facts BACK from this file. The cycle is safe because
 // nothing there reads an import at load time (only inside a function), and this file stays the entry point:
@@ -2606,8 +2611,12 @@ function declaredWait(row, holder) {
  * key, and the grace runs from the delivery it finds (`claimReading`). `ledger` is the seam for that read; an unreadable ledger reads as "not
  * delivered", which only DELAYS a release.
  *
+ * `agents` (#2747) is herdr's own workspace listing, read the same way `restartAt` is: the caller's reading when given, else a live one --
+ * and only when some row is claimed. `null` (herdr could not be asked) never releases a claim as "gone"; see `goneReading`'s own doc.
+ *
  * @param {{ rows: any[], claimedComments: any[] | null, openPrs: any[], mergedPrs: any[] | null,
  *   io?: import("./claim-stall.mjs").HostReads, repo?: string, now?: number, restartAt?: number | null,
+ *   agents?: {label: string, status: string}[] | null,
  *   stateDir?: string, log?: (line: string) => void, ledger?: () => string,
  *   read?: typeof readStallState, write?: typeof writeStallState }} args
  * @returns {import("./claim-stall.mjs").StallOrder[]}
@@ -2625,10 +2634,11 @@ export function claimStallTick({ io = { git: gitRun, exists: pathExists, mtime: 
 /**
  * `claimStallTick`'s body, with every default resolved by its caller. NEVER CALLED WITHOUT THE CATCH ABOVE: a throw here is the tick's to report.
  * @param {{ rows: any[], claimedComments: any[] | null, openPrs: any[], mergedPrs: any[] | null, restartAt?: number | null,
+ *   agents?: {label: string, status: string}[] | null,
  *   ledger?: () => string, io: import("./claim-stall.mjs").HostReads, repo: string, now: number, stateDir: string,
  *   log: (line: string) => void, read: typeof readStallState, write: typeof writeStallState }} args
  */
-function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, restartAt, ledger, io, repo, now, stateDir, log, read, write }) {
+function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, restartAt, agents, ledger, io, repo, now, stateDir, log, read, write }) {
   const held = rows.filter((r) => labelsOf(r).includes(CLAIM_LABEL));
   if (held.length > 0 && claimedComments === null) {
     log("claim-stall: the comments on the claimed rows could not be read -- NO claim was evaluated this tick.\n");
@@ -2638,7 +2648,8 @@ function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, restartAt, 
   const before = read(statePath);
   const byRow = new Map((claimedComments ?? []).map((r) => [Number(r?.number), r?.comments ?? []]));
   const readings = readClaims({ held, byRow, openPrs, mergedPrs, io, repo, now, before, log,
-    ledger: ledger ?? (() => ledgerText(`${stateDir}/wake-ledger`)), restart: restartFor(held, restartAt) });
+    ledger: ledger ?? (() => ledgerText(`${stateDir}/wake-ledger`)), restart: restartFor(held, restartAt),
+    agents: agentsFor(held, agents) });
   const after = nextStallState(before, readings, now);
   if (after !== before) write(statePath, after);
   return claimStalledOrders(readings, now);
@@ -2655,11 +2666,24 @@ function restartFor(held, given) {
 }
 
 /**
+ * The herdr workspace listing `goneReading` needs (#2747): the caller's reading when it has one, else a live `herdr
+ * workspace list` -- and only when some row is claimed, so a quiet org makes no herdr call either. Mirrors `restartFor`
+ * exactly, for the same testability reason this file's own header states about "who is free": a live default is a seam,
+ * never the only path, so the gate stays runnable from CI on a fixture alone.
+ * @param {any[]} held @param {{label: string, status: string}[] | null | undefined} given @returns {{label: string, status: string}[] | null}
+ */
+function agentsFor(held, given) {
+  if (given !== undefined) return given;
+  return held.length > 0 ? readAgents() : null;
+}
+
+/**
  * @param {{ held: any[], byRow: Map<number, any[]>, openPrs: any[], mergedPrs: any[] | null,
  *   io: import("./claim-stall.mjs").HostReads, repo: string, now: number, restart: number | null,
+ *   agents: {label: string, status: string}[] | null,
  *   before: import("./claim-stall.mjs").StallState, log: (line: string) => void, ledger: () => string }} ctx
  */
-function readClaims({ held, byRow, openPrs, mergedPrs, io, repo, now, restart, before, log, ledger }) {
+function readClaims({ held, byRow, openPrs, mergedPrs, io, repo, now, restart, agents, before, log, ledger }) {
   /** @type {{ facts: import("./claim-stall.mjs").ClaimFacts, reading: import("./claim-stall.mjs").Reading }[]} */
   const readings = [];
   for (const row of held) {
@@ -2675,13 +2699,17 @@ function readClaims({ held, byRow, openPrs, mergedPrs, io, repo, now, restart, b
       log(`claim-stall: ${facts.skip} -- not evaluated.\n`);
       continue;
     }
-    const remembered = before[facts.row];
-    const nudge = remembered?.session === session ? { nudgedAt: remembered.nudgedAt,
+    const remembered = before[facts.row]?.session === session ? before[facts.row] : undefined;
+    const nudge = remembered?.nudgedAt !== undefined ? { nudgedAt: remembered.nudgedAt,
       deliveredAt: nudgeDeliveredAt(ledger(), nudgeKey(session, facts.row, remembered.nudgedAt)) } : null;
-    const reading = readClaim(facts, { now, restartAt: restart, nudge });
+    const goneSince = remembered?.goneSince ?? null;
+    const reading = readClaim(facts, { now, restartAt: restart, nudge, agents, goneSince });
     // A HOLDER THAT HAS WORK AND A BLOCKER is the EXPECTED hold and is not said every tick; only a read that could not be made is.
     if (reading.kind === "holding" && reading.expected !== true) {
       log(`claim-stall: #${facts.row} (${session}) is HELD, not released: ${reading.why}.\n`);
+    }
+    if (reading.kind === "release" && reading.why === "gone") {
+      log(`claim-stall: #${facts.row} (${session}) is GONE from herdr's own listing -- releasing.\n`);
     }
     readings.push({ facts, reading });
   }

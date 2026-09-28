@@ -28,7 +28,7 @@ import {
 } from "./row-claim.mjs";
 import { CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
 import {
-  CLAIM_STALLED, STALL_INTERVAL_MS, STALL_UNTOLD_RELEASE_MS, INTERRUPTED_SETTLE_MS, nudgeKey, nudgeDeliveredAt, claimRecordOf, commentMove, workAtRisk, fileMove, claimReading,
+  CLAIM_STALLED, STALL_INTERVAL_MS, STALL_UNTOLD_RELEASE_MS, INTERRUPTED_SETTLE_MS, GONE_CONFIRM_MS, nudgeKey, nudgeDeliveredAt, claimRecordOf, commentMove, workAtRisk, fileMove, claimReading,
   claimFactsFrom, readClaim, nextStallState, claimStalledOrders, paneInterrupted, paneThrashed, killedDeliveries, readHerdrRestart,
   RESTART_RESEND_WINDOW_MS, INTERRUPTED_TEXT, THRASH_TEXT, gitRun, gitInvocation, newestOwnCommit, statMtime, pathExists,
 } from "./claim-stall.mjs";
@@ -48,7 +48,7 @@ const REPO = "/home/agent/repos/a11y-witness";
 const WT = "/home/agent/repos/wt-2407";
 
 type Comment = { body: string; createdAt: string; author: { login: string } };
-type Release = { row: number; session: string; why: string; edges?: number[]; answer?: string; mergedPr?: number };
+type Release = { row: number; session: string; why: string; idleMinutes?: number | null; edges?: number[]; answer?: string; mergedPr?: number };
 type Order = { session: string; cause: string; causeKey: string; prompt: string; release?: Release; resume?: boolean };
 type Facts = Parameters<typeof claimReading>[0];
 type Stalls = NonNullable<Parameters<typeof decide>[0]["claimStalls"]>;
@@ -103,15 +103,20 @@ function host(w: World = {}, ref = NOW) {
 const nudgeDelivered = (nudgedAt: number, deliveredAt: number, session = "worker-7") =>
   ledgerLine(deliveredAt, nudgeKey(session, 2407, nudgedAt));
 
+type Agent = { label: string; status: string };
+
 /** A whole tick over one claimed row, with the nudge memory in a map that survives between calls. */
 function tickWith(world: World, comments: Comment[], { rows = [row(2407)], memory = {} as Record<string, unknown>, prs = [] as object[],
-  merged = null as object[] | null, restartAt = null as number | null, now = NOW, blockedBy = [] as number[], ledger = "" } = {}) {
+  merged = null as object[] | null, restartAt = null as number | null, now = NOW, blockedBy = [] as number[], ledger = "",
+  // `null` by default, same as `restartAt`: the gate is asked about the row's SESSION only when a test gives a listing,
+  // never against the real `herdr` on whatever host runs the suite (`agentsFor`'s own doc says why -- CI must not depend on it).
+  agents = null as Agent[] | null } = {}) {
   const h = host(world, now);
   const log: string[] = [];
   const claimed = rows.map((r) => (r.number === 2407 && blockedBy.length > 0
     ? { ...r, blockedBy: { nodes: blockedBy.map((n) => ({ number: n, state: "OPEN" })) } } : r));
   const orders = claimStallTick({ rows: claimed, claimedComments: claimed.map((r) => ({ number: r.number, comments })), openPrs: prs,
-    mergedPrs: merged, io: h.io, repo: REPO, now, restartAt, stateDir: "/state", ledger: () => ledger,
+    mergedPrs: merged, io: h.io, repo: REPO, now, restartAt, agents, stateDir: "/state", ledger: () => ledger,
     log: (l: string) => log.push(l), read: () => JSON.parse(JSON.stringify(memory)), write: (_p: string, s: object) => {
       for (const k of Object.keys(memory)) delete memory[k];
       Object.assign(memory, s);
@@ -416,6 +421,64 @@ test("#2470 (10) POSITIVE CONTROLS: a second open PR, unpushed work, a PR merged
   assert.equal(tickWith({}, [claim(600)], { merged: [{ ...merged[0], mergedAt: iso(ago(700)) }] }).orders.filter((o) => o.release).length, 0, "merged before this claim");
   assert.equal(tickWith({}, [claim(600)], { merged: [{ ...merged[0], headRefName: "agent/other-1" }] }).orders.filter((o) => o.release).length, 0, "another branch's PR");
   assert.equal(tickWith({}, [claim(600)], { merged }).orders.filter((o) => o.release).length, 1, "control: the same fixture, clean, IS released");
+});
+
+// --- Done-when 1 & 3 (#2747): the session's EXISTENCE, read from herdr's own listing, as a fact the gate needs ---------------------------
+
+const CEO_ORCH = [{ label: "ceo", status: "idle" }, { label: "orchestrator", status: "idle" }];
+/** A COMPLETE listing (both standing panes) that does NOT carry `worker-7`: the #2747 fixture -- a closed workspace. */
+const GONE_LISTING = [...CEO_ORCH];
+/** The same listing, `worker-7` present: the ordinary case, unaffected. */
+const PRESENT_LISTING = [...CEO_ORCH, { label: "worker-7", status: "working" }];
+/** A PARTIAL listing (missing `orchestrator`): proves nothing about who else it left out (#2465). */
+const PARTIAL_LISTING = [{ label: "ceo", status: "idle" }];
+
+test("#2747 a session PRESENT in the listing is read exactly as if herdr were never asked: the same nudge, at the same clock", () => {
+  const asked = tickWith({ commit: null }, [claim(N_MIN + 10)], { agents: PRESENT_LISTING });
+  const unasked = tickWith({ commit: null }, [claim(N_MIN + 10)], { agents: null });
+  assert.equal(asked.orders.length, 1);
+  assert.deepEqual(asked.orders[0].prompt, unasked.orders[0].prompt, "presence changes nothing about the ordinary reading");
+  assert.deepEqual(asked.memory, unasked.memory, "the memory this tick writes (the nudge, not a goneSince) is identical either way");
+});
+
+test("#2747 a session ABSENT from a COMPLETE listing, first tick: no order yet, but the tick IS a claimed row -- and remembers when it first saw this", () => {
+  const first = tickWith({}, [claim(20)], { agents: GONE_LISTING });
+  assert.deepEqual(first.orders, [], "not yet -- GONE_CONFIRM_MS has not elapsed since NOW, the first tick that noticed");
+  assert.deepEqual(first.memory[2407], { session: "worker-7", goneSince: NOW }, "the FIRST tick's own clock is what gets carried forward");
+});
+
+test("#2747 still absent on a LATER tick, inside the confirm window: no order, and the ORIGINAL goneSince is kept, not bumped to now", () => {
+  const memory = { 2407: { session: "worker-7", goneSince: ago(9) } };
+  const still = tickWith({}, [claim(20)], { agents: GONE_LISTING, memory, now: NOW });
+  assert.deepEqual(still.orders, [], "9 minutes of 10 (GONE_CONFIRM_MS)");
+  assert.deepEqual(still.memory[2407], { session: "worker-7", goneSince: ago(9) }, "unchanged: this is not a fresh sighting");
+});
+
+test(`#2747 the GONE_CONFIRM_MS boundary: just under is still waiting, at or over releases (GONE_CONFIRM_MS = ${GONE_CONFIRM_MS}ms)`, () => {
+  const justUnder = tickWith({}, [claim(20)], { agents: GONE_LISTING, memory: { 2407: { session: "worker-7", goneSince: NOW - GONE_CONFIRM_MS + 1 } } });
+  assert.deepEqual(justUnder.orders, [], "one millisecond short");
+  const atBoundary = tickWith({}, [claim(20)], { agents: GONE_LISTING, memory: { 2407: { session: "worker-7", goneSince: NOW - GONE_CONFIRM_MS } } });
+  assert.equal(atBoundary.orders.length, 1);
+  assert.equal(atBoundary.orders[0].release!.why, "gone");
+  assert.equal(atBoundary.orders[0].release!.idleMinutes, null, "gone is not a measure of idleness: there is no one to idle");
+  assert.match(atBoundary.orders[0].prompt, /RELEASE the claim on #2407 held by worker-7: worker-7 no longer exists in herdr's own listing/);
+});
+
+test("#2747 a PARTIAL listing neither STARTS the confirm clock nor RESETS it, and never confirms a release no matter how stale the memory is", () => {
+  const noMemoryYet = tickWith({}, [claim(20)], { agents: PARTIAL_LISTING });
+  assert.deepEqual(noMemoryYet.orders, [], "a plain moving row, same as an unasked herdr");
+  assert.equal(noMemoryYet.memory[2407], undefined, "a partial listing writes nothing -- there is nothing to hold onto yet");
+  const staleMemory = { 2407: { session: "worker-7", goneSince: ago(999) } };
+  const stillPartial = tickWith({}, [claim(20)], { agents: PARTIAL_LISTING, memory: staleMemory });
+  assert.deepEqual(stillPartial.orders, [], "999 minutes past GONE_CONFIRM_MS, and STILL not released: a partial listing cannot confirm anything");
+  assert.deepEqual(stillPartial.memory[2407], { session: "worker-7", goneSince: ago(999) }, "carried forward untouched, not reset to now either");
+});
+
+test("#2747 the session REAPPEARING clears the memory: a complete listing that shows it again is definitive, whatever the stale goneSince said", () => {
+  const memory = { 2407: { session: "worker-7", goneSince: ago(5) } };
+  const back = tickWith({ commit: null }, [claim(20)], { agents: PRESENT_LISTING, memory });
+  assert.deepEqual(back.orders, [], "an ordinary moving row again");
+  assert.equal(back.memory[2407], undefined, "the goneSince memory is dropped: a stall (or a fresh disappearance) is a first reading again");
 });
 
 // --- the reading, directly ---------------------------------------------------------------------------------------------------------
@@ -866,6 +929,16 @@ test("#2470 (8/10) a blocked or merged release is REFUSED, before any write, whe
   }
   const stalled = releaseHost({ world: dirty });
   assert.equal(performRelease(STALL, stalled.deps).released, true, "CONTROL: a STALLED release is the one that KEEPS what it finds");
+});
+
+test("#2747 a GONE release is NOT refused when the holder holds work -- unlike blocked/merged, it behaves exactly like stalled -- and its workspace is already absent so nothing is closed", () => {
+  const dirty: World = { dirty: [{ file: "a.mjs", ago: 1 }] };
+  const r = releaseHost({ world: dirty, agents: [] });
+  const got = performRelease({ ...STALL, why: "gone", idleMinutes: null, nudgedAt: null }, r.deps);
+  assert.equal(got.released, true, JSON.stringify(got));
+  assert.equal(r.runs.some((a) => a.includes("close")), false, "already absent from herdr's own listing (that is the whole reason) -- nothing left to close");
+  assert.deepEqual(r.decline()!.args.slice(1), ["decline", "2407", "--session=worker-7", "--keep-worktree"], "dirty work is KEPT, exactly like a stalled release");
+  assert.match(r.comment(), /worker-7` no longer exists in herdr's own workspace listing \(#2747\), not merely quiet/);
 });
 
 test("#2470 (10) a merged release sets the answer at the merge (`--answer`), says which PR merged, and ends the instance", () => {
