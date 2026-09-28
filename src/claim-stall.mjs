@@ -118,6 +118,32 @@ export const RESTART_STATE_FILE = "restart-resends.json";
  */
 export const INTERRUPTED_TEXT = "Interrupted · What should Claude do instead?";
 
+/**
+ * What Claude Code prints when its OWN autocompact "rapid refill breaker" trips: the context refilled to the limit
+ * within 3 turns of a compaction, 3 times in a row, so it stops the turn itself with this message instead of
+ * compacting a fourth time (#2743's incident: worker-2623, 139 compactions, 5.4 hours, to a human's manual
+ * interruption -- no code-level stop). EXTRACTED 2026-09-28 from the shipped binary itself
+ * (`strings ~/.local/share/claude/versions/<version> | grep -A1 autocompact_thrashing`, the literal `apiError` code
+ * and its message), not guessed. Anchored to the OPENING CLAUSE, not the full sentence: the message is long enough
+ * to WRAP across several terminal lines and a single full-sentence needle (as {@link INTERRUPTED_TEXT} uses) would
+ * never match any one of them. NOT SEEN LIVE: three attempts to force a real one (2026-09-28) were each cut off by
+ * an unrelated safety classifier flagging the rapid mechanical repeated-file-read pattern as `[cyber]` before
+ * compaction could thrash three times in a row; the needle is the shipped string and the first real thrash is
+ * either matched by it or is a defect to report.
+ */
+export const THRASH_TEXT = "Autocompact is thrashing:";
+
+/**
+ * Claude Code's own turn-completion footer (`✻ Cooked for 1m 28s · done 9:57`, `✻ Baked for 7s · done 9:56`, one of
+ * several whimsical verbs behind a spinner glyph that is not worth enumerating) -- printed ABOVE the input box after
+ * a turn the process itself ended normally, unlike an interrupted (killed) pane's, which has nothing after its last
+ * line because the process never got to print one. A thrash ends the turn the same way an ordinary completion does
+ * (Claude Code's own query loop `yield`s the message, logs it, then returns -- the same shape as any other in-band
+ * error), so THIS is what actually sits last above the box, not the message itself; `paneThrashed` must look past it.
+ * The stable part is `done H:MM`, observed live in this same session multiple times -- not the verb, which varies.
+ */
+const DONE_FOOTER = /\bdone \d{1,2}:\d{2}\b/;
+
 // --- THE CLAIM RECORD, READ -----------------------------------------------------------------------------------------
 
 const CLAIMED_BRANCH = /^Claimed-branch:\s*(.+)$/m;
@@ -732,6 +758,30 @@ export function paneInterrupted(text) {
   const content = rules.length >= 2 ? lines.slice(0, rules[rules.length - 2]) : lines;
   const last = [...content].reverse().find((l) => l.trim() !== "");
   return last !== undefined && last.includes(INTERRUPTED_TEXT);
+}
+
+/**
+ * Did this pane's LAST TURN end in the autocompact thrash guard? Above the input box exactly as {@link paneInterrupted}
+ * reads it, but over the last PARAGRAPH (the trailing run of non-empty lines), not the last line: {@link THRASH_TEXT}'s
+ * message wraps, so one line is not enough. A trailing {@link DONE_FOOTER} line is Claude Code's own completion chrome,
+ * never the message, and is dropped first so the paragraph it belongs to is not mistaken for the one before it.
+ *
+ * Anchored to the last paragraph for the same reason `paneInterrupted` anchors to the last line: a session merely
+ * DISCUSSING this string (this very row, read into its own pane) is not this turn's.
+ * @param {string | null | undefined} text @returns {boolean}
+ */
+export function paneThrashed(text) {
+  const lines = String(text ?? "").split("\n").map((l) => l.trimEnd());
+  const rules = lines.flatMap((l, i) => (INPUT_BOX_RULE.test(l.trim()) ? [i] : []));
+  const content = rules.length >= 2 ? lines.slice(0, rules[rules.length - 2]) : lines;
+  let end = content.length;
+  while (end > 0 && content[end - 1].trim() === "") end--;
+  if (end > 0 && DONE_FOOTER.test(content[end - 1])) end--;
+  while (end > 0 && content[end - 1].trim() === "") end--;
+  let start = end;
+  while (start > 0 && content[start - 1].trim() !== "") start--;
+  const paragraph = content.slice(start, end).join(" ");
+  return paragraph.includes(THRASH_TEXT);
 }
 
 /**
