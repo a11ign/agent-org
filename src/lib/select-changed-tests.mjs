@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 // COPIED FROM `scripts/select-changed-tests.mjs` at 598e883cc (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
-// CHANGED FROM THE ORIGINAL, 5 NAMED LINES:
+// CHANGED FROM THE ORIGINAL, 7 NAMED LINES:
 // - its import of cli-flags.mjs, now the tool's own copy beside it
 // - its import of git-env.mjs, now the tool's own copy beside it
 // - its import of changed-files.mjs, now the tool's own copy beside it
 // - its import of walk-scope-declaration.mjs, now the tool's own copy beside it
 // - its import of @a11ign/evidence/source-text, now the tool's own copy beside it
+// - node:fs import, adding realpathSync (#1086: the entry guard below needs it)
+// - its entry guard, now realpath'd (#1086: the plain form is a known-bad ratchet baseline; a NEW file
+//   must not add to it, so this copy does not inherit the original's still-grandfathered form)
 // ==== end of copy header ====
 // @ts-check
 // command: pick only the test files that reference a changed file, narrower than package scoping
@@ -59,7 +62,7 @@
 // imported by a test three hops away, must still select that test -- `sourceClosure` below walks the
 // full reachable set from each test file, not one level of its own imports.
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { stripComments } from "./source-text.ts";
@@ -830,6 +833,6 @@ async function main() {
   writeOutputs({ ...result, broad: [], alwaysRun, narrowed });
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
   main();
 }

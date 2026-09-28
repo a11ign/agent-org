@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 // COPIED FROM `scripts/ci-changed.mjs` at 598e883cc (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
-// CHANGED FROM THE ORIGINAL, 5 NAMED LINES:
+// CHANGED FROM THE ORIGINAL, 7 NAMED LINES:
 // - its import of changed-files.mjs, now the tool's own copy beside it
 // - its import of cli-flags.mjs, now the tool's own copy beside it
 // - its import of git-env.mjs, now the tool's own copy beside it
 // - its import of changed-packages.mjs, now the tool's own copy beside it
 // - its import of isolation-gate.mjs, now the tool's own copy beside it
+// - node:fs import, adding realpathSync (#1086: the entry guard below needs it)
+// - its entry guard, now realpath'd (#1086: the plain form is a known-bad ratchet baseline; a NEW file
+//   must not add to it, so this copy does not inherit the original's still-grandfathered form)
 // ==== end of copy header ====
 // @ts-check
 // command: classify what a PR's diff touches, so CI's conditional jobs know whether to run
@@ -42,7 +45,7 @@
 // -- never a hand-written map, for this file's own stated reason: three independent hand-written copies
 // of "what changed" is the defect this file exists to end.
 import { execFileSync } from "node:child_process";
-import { readFileSync, appendFileSync } from "node:fs";
+import { readFileSync, appendFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { changedFiles } from "./changed-files.mjs";
 // RELATIVE, NOT `@a11ign/worker-fleet/cli-flags` — every other root script uses the package
@@ -617,6 +620,6 @@ async function main() {
 // that reports green. `entry-points.test.ts` has forbidden this form for a while and could not SEE this
 // file, because it discovered entry points from `package.json` and `ci.yml` invokes this one directly.
 // Widening that discovery is the rest of this change.
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
   main();
 }
