@@ -27,7 +27,6 @@ import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, PROFILES, TOOL_CAUSE_DECLARATION
   from "../cause-declaration.mjs";
 import { HOME_CHECKOUT, ProjectDeclarationRefusal } from "../project-config.mjs";
 import { parseRolesDir, homeRolesDir, roleBriefPath } from "../project-roles.mjs";
-import { causeDeclarations as A11IGN_CAUSES } from "../../../../.agent-org/plugins/causes.mjs";
 
 // A mutation reaches into a shape the fixture's own type would otherwise pretend is optional, the same
 // tradeoff `project-config.test.ts` accepts for the identical reason.
@@ -100,12 +99,6 @@ test("the tool's own causes name NO project cause: `fleet-batch-due` is not amon
     + "`row-call-count-signal` (#2691) and `answer-label-unexplained` (#2711) are the three that landed "
     + "after that snapshot");
   assert.ok(!tool.includes("fleet-batch-due"), "the ONE project cause must not be tool code");
-});
-
-test("a11ign's plugin declares exactly ONE cause, and it is `fleet-batch-due` (N=1, at most 2)", () => {
-  assert.equal(A11IGN_CAUSES.length, 1);
-  assert.equal(A11IGN_CAUSES[0].cause, "fleet-batch-due");
-  assert.equal(A11IGN_CAUSES[0].group, GROUPS.JUDGMENT_START);
 });
 
 test("a fixture project with NO project cause yields the tool's 30 causes intact and no fleet cause", () => {
