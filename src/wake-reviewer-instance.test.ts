@@ -30,7 +30,7 @@ import {
 } from "./wake.mjs";
 import { readReviewerRegistry, REVIEWER_REGISTRY_FILE } from "./work-gate.mjs";
 import { parityOwner } from "./review-attribution.mjs";
-import { sandboxGitEnv } from "../../guards/src/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
 
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));
