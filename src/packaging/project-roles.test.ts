@@ -125,8 +125,8 @@ const EXPECTED_CAUSES = ["answer-label-unexplained", "answer-owed", "awaiting-ev
   "row-call-count-signal", "row-off-board", "trunk-red", "unclaimed-blocker-cleared",
   "verdict-comment-unreviewed", "verdict-not-convinced"];
 
-const EXPECTED_JUDGMENT = ["answer-owed", "awaiting-evidence-stale", "blocked-unexaminable", "chairman-blocked",
-  "claimed-row-amended", "disk-headroom-low", "epic-finished", "epic-unfiled", "fleet-batch-due",
+const EXPECTED_JUDGMENT = ["answer-owed", "awaiting-evidence-stale", "blocked-unexaminable", "blocker-cleared",
+  "chairman-blocked", "claimed-row-amended", "disk-headroom-low", "epic-finished", "epic-unfiled", "fleet-batch-due",
   "lane-backlog-unpromoted", "org-stalled", "ready-queue-empty", "reviewer-auth-failed",
   "row-branch-unshipped", "row-call-count-signal", "row-off-board", "unclaimed-blocker-cleared"];
 
@@ -137,7 +137,7 @@ test("CAUSES (re-exported by work-gate.mjs) equals today's 32, by value", () => 
   assert.deepEqual([...CAUSES].sort(), [...EXPECTED_CAUSES].sort());
 });
 
-test("JUDGMENT_CAUSES (re-exported by work-gate.mjs) equals today's 17, by value", () => {
+test("JUDGMENT_CAUSES (re-exported by work-gate.mjs) equals today's 18, by value", () => {
   assert.deepEqual([...JUDGMENT_CAUSES].sort(), [...EXPECTED_JUDGMENT].sort());
 });
 

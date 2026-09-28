@@ -1523,6 +1523,39 @@ function declineRemoveLabels(status, mySession, wasReady) {
 }
 
 /**
+ * #2746: THE DECLINE LABEL WRITE, VERIFIED. `gh issue edit --remove-label ... --add-label ...` in one
+ * call is NOT one write -- #677's own live reproduction had the `--remove-label` apply while every
+ * `--add-label` did not, because a label named for the first time (`branch:`/`worktree:` there;
+ * `${ANSWER_LABEL_PREFIX}<session>` here is the identical PER-SESSION-UNIQUE shape) does not yet exist,
+ * and `gh` refuses to add a label it has never created. #749/#2151 fixed this for `claimRow`
+ * (`ensureLabelsExist` before the write, then a re-read `writeRowLabels`'s own header calls
+ * WRITE-THEN-VERIFY) -- `declineRow` never got either half, and #2623's row is the live cost: the gate's
+ * `claim-stall.mjs` released it at 03:44:09Z, `decline` exited clean and printed `DECLINED`, and the
+ * row's `in-progress`/`started`/`session:worker-2623` labels never moved on GitHub. A `gh` exit code is
+ * proof the COMMAND ran, never proof the EFFECT landed (`docs/operational-lessons.md`'s own standing
+ * rule, restated here because this call had never had to honour it): create what is about to be added,
+ * then read the row back and REFUSE to report a decline that did not durably change it.
+ * @param {number} issueNumber @param {string[]} removeLabels @param {string[]} addLabels
+ * @param {{ run: typeof defaultRun, landed: string[] }} deps
+ */
+function writeDeclineLabels(issueNumber, removeLabels, addLabels, { run, landed }) {
+  ensureLabelsExist(addLabels, { run });
+  run("gh", ["issue", "edit", String(issueNumber), "--repo", REPO,
+    ...removeLabels.flatMap((l) => ["--remove-label", l]),
+    ...addLabels.flatMap((l) => ["--add-label", l])]);
+  const after = fetchLabels(issueNumber, { run }).labels;
+  const stillThere = removeLabels.filter((l) => after.includes(l));
+  const stillMissing = addLabels.filter((l) => !after.includes(l));
+  if (stillThere.length > 0 || stillMissing.length > 0) {
+    throw new Error(`row-claim: #${issueNumber}'s decline edit did NOT durably land -- re-reading the row, `
+      + `it still carries ${stillThere.length > 0 ? stillThere.join(", ") : "(none)"} and is still missing `
+      + `${stillMissing.length > 0 ? stillMissing.join(", ") : "(none)"}. Refusing to report DECLINED over a `
+      + "write whose effect this call cannot confirm (#2746).");
+  }
+  landed.push(`removed labels ${removeLabels.join(", ")}${addLabels.length > 0 ? `; added ${addLabels.join(", ")}` : ""} (verified by re-read)`);
+}
+
+/**
  * Pure: what a decline's label EDIT should add, and whether that amounts to a `ready` restore -- pulled
  * out of `declineRow` to keep its own complexity below the lint gate, same reason `declineRemoveLabels`
  * was. `isClosed` wins over every other reason to add a label (#752): a closed row has no lane to go back
@@ -1665,10 +1698,7 @@ function releaseRow(issueNumber,
   const wasReady = before.labels.includes(WAS_READY_LABEL);
   const { restoreReady, addLabels } = declineAddLabels({ isClosed, wasReady, blockedReason, answer });
   const removeLabels = declineRemoveLabels(status, mySession, wasReady);
-  run("gh", ["issue", "edit", String(issueNumber), "--repo", REPO,
-    ...removeLabels.flatMap((l) => ["--remove-label", l]),
-    ...addLabels.flatMap((l) => ["--add-label", l])]);
-  landed.push(`removed labels ${removeLabels.join(", ")}${addLabels.length > 0 ? `; added ${addLabels.join(", ")}` : ""}`);
+  writeDeclineLabels(issueNumber, removeLabels, addLabels, { run, landed });
 
   // #987: AND THE RELEASE GOES ON THE RECORD, so the newest claim-record comment stops naming a worktree
   // this call has just removed.
