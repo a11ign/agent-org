@@ -1334,11 +1334,16 @@ function predecessorGonePath(ledgerPath) {
 
 /**
  * #2748: RECORDS THAT THIS SESSION'S PREDECESSOR IS GONE, at the one moment something already knows it --
- * a `--keep-worktree` decline. The trust placed here is the SAME trust `#2470`'s own `--adopt=<session>`
- * flag already places in whoever types it: this file does not re-verify liveness with herdr (that
- * general read is #2747's, and out of scope here, see the row's own "Not in this row"), it remembers that
- * a decline already attested it -- run by a human confirming a predecessor gone by hand (#2623's own
- * shape) or by #2470's automated stall release, which declines with `--keep-worktree` the same way.
+ * an EXPLICIT `--predecessor-gone` assertion on a `--keep-worktree` decline, never a `--keep-worktree`
+ * decline alone (reviewer-2754's second verdict, at `8396865b7`: a `--keep-worktree` decline is not proof
+ * of death by itself -- #2470 (6)'s own standing-engineer release keeps that session's process running,
+ * so a decline can land while the "predecessor" is still very much alive). The trust placed in the
+ * explicit flag is the SAME trust `#2470`'s own `--adopt=<session>` flag already places in whoever types
+ * it: this file does not re-verify liveness with herdr (that general read is #2747's, and out of scope
+ * here, see the row's own "Not in this row"), it remembers that a caller who actually knows already
+ * attested it -- a human confirming a predecessor gone by hand (#2623's own shape) or #2470's automated
+ * stall release, which passes the flag only when `closeHolder` truly closed the workspace or found it
+ * already absent, never when a standing seat's process was left running.
  * @param {string} mySession @param {{ ledgerPath?: string }} [deps]
  */
 export function recordPredecessorGone(mySession, { ledgerPath = ledgerPathFrom(process.argv) } = {}) {
@@ -1350,10 +1355,11 @@ export function recordPredecessorGone(mySession, { ledgerPath = ledgerPathFrom(p
 
 /**
  * #2748: THE REAL ANSWER `adoptFor` GIVES `implicitAdoptSession` IN PRODUCTION. `true` only when a decline
- * recorded this exact session as gone ({@link recordPredecessorGone}); `null` ("cannot tell") for
- * everything else, including a session this file has simply never heard of -- it has no way to attest
- * "still alive", only "declared gone" or "nothing recorded", so it can never manufacture the `false` a
- * live, contrary predecessor would need (Done-when 2's positive control).
+ * carrying an EXPLICIT `--predecessor-gone` assertion recorded this exact session as gone
+ * ({@link recordPredecessorGone}); `null` ("cannot tell") for everything else, including a session this
+ * file has simply never heard of and an ordinary `--keep-worktree` decline that made no such assertion --
+ * it has no way to attest "still alive", only "declared gone" or "nothing recorded", so it can never
+ * manufacture the `false` a live, contrary predecessor would need (Done-when 2's positive control).
  * @param {string} session @param {{ ledgerPath?: string }} [deps]
  * @returns {boolean | null}
  */
@@ -1640,7 +1646,7 @@ function declineOwnershipReason(status, mySession) {
  * the caller decides what becomes of the tree. `answer` releases to `answer:<session>` instead of `ready` -- see `declineAddLabels`.
  *
  * @param {{ run?: typeof defaultRun, moveStatus?: typeof moveProjectStatus, blockedReason?: string,
- *           removeWorktree?: typeof removeClaimedWorktree, keepWorktree?: boolean, answer?: string,
+ *           removeWorktree?: typeof removeClaimedWorktree, keepWorktree?: boolean, predecessorGone?: boolean, answer?: string,
  *           fetchComments?: typeof fetchClaimComments, recordGone?: typeof recordPredecessorGone }} [deps]
  * @returns {{ declined: true, restoredReady: boolean, blocked: boolean, closed: boolean, statusMoved: true }
  *   | { declined: true, restoredReady: true, blocked: false, closed: false, statusMoved: false,
@@ -1649,7 +1655,7 @@ function declineOwnershipReason(status, mySession) {
  */
 export function declineRow(issueNumber, mySession,
   { run = defaultRun, moveStatus = moveProjectStatus, blockedReason, removeWorktree = removeClaimedWorktree,
-    fetchComments = fetchClaimComments, keepWorktree = false, answer, recordGone = recordPredecessorGone } = {}) {
+    fetchComments = fetchClaimComments, keepWorktree = false, predecessorGone = false, answer, recordGone = recordPredecessorGone } = {}) {
   if (blockedReason && answer) {
     return { declined: false, reason: "--blocked and --answer are two different releases (a finding vs. a ruling owed); give one" };
   }
@@ -1666,28 +1672,29 @@ export function declineRow(issueNumber, mySession,
   const landed = [];
   // #1399: as `writeRowLabels` -- from the worktree removal on, a failure reports what it already changed.
   return withLandedWrites(issueNumber, landed, () => releaseRow(issueNumber,
-    { run, moveStatus, blockedReason, removeWorktree, keepWorktree, answer, mySession, before, status, recorded, landed, recordGone }));
+    { run, moveStatus, blockedReason, removeWorktree, keepWorktree, predecessorGone, answer, mySession, before, status, recorded, landed, recordGone }));
 }
 
 /**
  * #1399: `declineRow` from the worktree removal on -- every write recorded in `landed` as it succeeds.
  * @param {number} issueNumber
  * @param {{ run: typeof defaultRun, moveStatus: typeof moveProjectStatus, blockedReason?: string,
- *   removeWorktree: typeof removeClaimedWorktree, keepWorktree: boolean, answer?: string, mySession: string, before: IssueClaim,
- *   status: ReturnType<typeof claimStatus>, recorded: { branch: string | null, worktree: string | null },
+ *   removeWorktree: typeof removeClaimedWorktree, keepWorktree: boolean, predecessorGone: boolean, answer?: string, mySession: string,
+ *   before: IssueClaim, status: ReturnType<typeof claimStatus>, recorded: { branch: string | null, worktree: string | null },
  *   landed: string[], recordGone: typeof recordPredecessorGone }} state
  * @returns {ReturnType<typeof declineRow>}
  */
 function releaseRow(issueNumber,
-  { run, moveStatus, blockedReason, removeWorktree, keepWorktree, answer, mySession, before, status, recorded, landed, recordGone }) {
+  { run, moveStatus, blockedReason, removeWorktree, keepWorktree, predecessorGone, answer, mySession, before, status, recorded, landed, recordGone }) {
   // #665: THE WORKTREE COMES OFF FIRST, before any label is touched -- a dirty one refuses the WHOLE
   // decline (see this function's own header for why), so the claim record stays intact until an operator
   // has dealt with the uncommitted work by hand.
   if (recorded.worktree && keepWorktree) {
     landed.push(`KEPT the recorded worktree ${recorded.worktree} (#2470: it holds the released instance's work)`);
-    // #2748: THIS decline IS the confirmation -- record it so the next instance's ORDINARY claim (no
-    // --adopt typed) can find its own predecessor confirmed gone and adopt the tree it just kept.
-    recordGone(mySession);
+    // #2748 (reviewer-2754's second verdict): a --keep-worktree decline is NOT by itself proof the
+    // predecessor is gone -- a standing engineer's stalled release keeps its process running (#2470 (6)),
+    // so only an EXPLICIT --predecessor-gone assertion from a caller that actually knows writes the record.
+    if (predecessorGone) recordGone(mySession);
   } else if (recorded.worktree) {
     const removal = removeWorktree(recorded.worktree, { run });
     if (!removal.removed) return { declined: false, reason: removal.reason };
@@ -1823,8 +1830,10 @@ function usage() {
     + "#741: --blocked-by releases B2 only with a measurement comment already on this session's own open "
     + "PR, and only while #N is open)\n"
     + "  node packages/agent-org/src/row-claim.mjs decline <issue-number> --session=<name> [--keep-worktree] "
-    + "[--answer=<session>]    (give it back; #665: also "
+    + "[--predecessor-gone] [--answer=<session>]    (give it back; #665: also "
     + "removes the recorded worktree, refusing by name if it is dirty; #2470: --keep-worktree leaves it, with its work, and "
+    + "#2748: --predecessor-gone additionally attests --session's holder is confirmed gone (never implied by --keep-worktree "
+    + "alone), so an ordinary same-session reclaim can later adopt the tree it left; "
     + `--answer= releases to that session's \`${ANSWER_PREFIX}\` label instead of \`${READY_LABEL}\`)\n`
     + "  node packages/agent-org/src/row-claim.mjs conflict <issue-number> --found=<text>     (#226: reality differed)\n";
 }
@@ -2241,13 +2250,15 @@ function runDispatchOrClaim(mode, issueNumber, rest) {
 
 /**
  * #2470: `--keep-worktree` (leave the recorded tree in place) and `--answer=<session>` (release to that session's `answer:` label).
+ * #2748: `--predecessor-gone` is a SEPARATE, explicit assertion -- never implied by `--keep-worktree` alone (reviewer-2754's second
+ * verdict) -- that the session named by `--session=` is independently confirmed gone, not merely that its claim is being released.
  * @param {string[]} rest
- * @returns {{ keepWorktree: boolean, answer: string | undefined } | { refusal: string }}
+ * @returns {{ keepWorktree: boolean, predecessorGone: boolean, answer: string | undefined } | { refusal: string }}
  */
 function releaseFlags(rest) {
   const answer = rest.find((a) => a.startsWith("--answer="))?.slice("--answer=".length);
   if (rest.some((a) => a.startsWith("--answer=")) && !answer) return { refusal: "--answer=<session> needs a session, not an empty string" };
-  return { keepWorktree: rest.includes("--keep-worktree"), answer };
+  return { keepWorktree: rest.includes("--keep-worktree"), predecessorGone: rest.includes("--predecessor-gone"), answer };
 }
 
 /**
@@ -2275,9 +2286,9 @@ function runDecline(issueNumber, rest) {
     process.exitCode = 2;
     return;
   }
-  const { keepWorktree, answer } = release;
+  const { keepWorktree, predecessorGone, answer } = release;
   try {
-    const result = declineRow(issueNumber, mySession, { blockedReason, keepWorktree, answer });
+    const result = declineRow(issueNumber, mySession, { blockedReason, keepWorktree, predecessorGone, answer });
     if (result.declined) {
       // #449/#752: WHAT CAME BACK, NOT JUST THAT SOMETHING DID -- the four shapes read differently to a
       // human deciding what happens next: restored (pickable again), blocked (a finding, do not repick

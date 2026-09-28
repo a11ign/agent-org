@@ -4801,20 +4801,27 @@ function recordReleaseCycle(request, deps, kept) {
  * leaves a claimed row and no process, which the gate emits again next tick (the stall persists) and this finds `absent`, so the retry
  * closes nothing and declines. The cycle line is written LAST, once, only when the claim actually came off.
  *
+ * #2748 (reviewer-2754's second verdict): `--predecessor-gone` rides on the decline ONLY when `closeHolder` actually closed the
+ * workspace or found it already absent -- never for `"kept"` (#2470 (6)'s standing engineer, whose process is deliberately left
+ * running). A stalled release that never confirmed death must not let a later same-session claim adopt a tree still in use.
+ *
  * @param {ReleaseRequest} request @param {ReleaseDeps} deps
  * @returns {{ released: boolean, why: string }}
  */
 export function performRelease(request, deps) {
   const plan = releasePlan(request, deps);
   if ("refusal" in plan) return { released: false, why: plan.refusal };
-  if (closeHolder(request.session, deps) === "failed") {
+  const closed = closeHolder(request.session, deps);
+  if (closed === "failed") {
     return { released: false, why: `${request.session}'s workspace could not be closed -- nothing was changed` };
   }
+  const confirmedGone = closed === "closed" || closed === "absent";
   const launch = launchWorktree(request.session, { exec: deps.exec, exists: deps.host.exists,
     worktreesDir: deps.host.worktreesDir, primary: deps.host.primary });
   if ("refusal" in launch) return { released: false, why: `no launch worktree for ${request.session} (${launch.refusal})` };
   const ran = deps.exec("node", [ROW_CLAIM, "decline", String(request.row), `--session=${request.session}`,
-    ...(plan.keep ? ["--keep-worktree"] : []), ...(request.answer === undefined ? [] : [`--answer=${request.answer}`])],
+    ...(plan.keep ? ["--keep-worktree"] : []), ...(plan.keep && confirmedGone ? ["--predecessor-gone"] : []),
+    ...(request.answer === undefined ? [] : [`--answer=${request.answer}`])],
   { cwd: launch.dir, env: deps.env });
   if (!(/^DECLINED/m.test(ran.output) && CLAIM_LANDED.includes(Number(ran.status)))) {
     return { released: false, why: `decline of #${request.row} as ${request.session} did not land (${verdictLine(ran.output)})` };

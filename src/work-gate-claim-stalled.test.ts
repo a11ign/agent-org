@@ -638,7 +638,7 @@ test("#2748 a `--keep-worktree` decline writes the record `adoptFor` reads back 
     const declined = declineRow(2416, "worker-2623", {
       run: board.run as never, moveStatus: NO_STATUS as never,
       fetchComments: () => [claimRecordComment({ session: "worker-2623", branch: BRANCH, worktree: WT })],
-      keepWorktree: true,
+      keepWorktree: true, predecessorGone: true,
       removeWorktree: (() => { throw new Error("must not be called with keepWorktree"); }) as never,
       recordGone: (session: string) => recordPredecessorGone(session, { ledgerPath }),
     });
@@ -647,6 +647,29 @@ test("#2748 a `--keep-worktree` decline writes the record `adoptFor` reads back 
       predecessorGone: (session: string) => predecessorGoneReading(session, { ledgerPath }) });
     assert.equal(adopt, "worker-2623",
       "the ordinary respawn's implicit adopt fires from the RECORD the manual decline actually wrote, not a test double");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#2748 reviewer-2754's second verdict: a `--keep-worktree` decline WITHOUT `--predecessor-gone` never writes the record -- a live session's own release is not proof of death", () => {
+  const dir = mkdtempSync(join(tmpdir(), "a11y-2748-live-decline-"));
+  const ledgerPath = join(dir, "wake-ledger");
+  try {
+    const board = releaseBoard(["in-progress", "session:worker-2623", "started", "was-ready"]);
+    const declined = declineRow(2416, "worker-2623", {
+      run: board.run as never, moveStatus: NO_STATUS as never,
+      fetchComments: () => [claimRecordComment({ session: "worker-2623", branch: BRANCH, worktree: WT })],
+      keepWorktree: true, // no predecessorGone: true -- e.g. a still-running standing engineer releasing its own stalled claim
+      removeWorktree: (() => { throw new Error("must not be called with keepWorktree"); }) as never,
+      recordGone: (session: string) => recordPredecessorGone(session, { ledgerPath }),
+    });
+    assert.equal(declined.declined, true, "the release itself still lands -- only the attestation is withheld");
+    assert.equal(predecessorGoneReading("worker-2623", { ledgerPath }), null,
+      "CONFIRMED: nothing was recorded, so a same-name respawn cannot implicitly adopt a tree its still-live predecessor may still be using");
+    const adopt = implicitAdoptSession({ worktree: WT, mySession: "worker-2623", exists: () => true, owner: () => "worker-2623",
+      predecessorGone: (session: string) => predecessorGoneReading(session, { ledgerPath }) });
+    assert.equal(adopt, undefined, "the ordinary respawn's implicit adopt does NOT fire -- reviewer-2754's exact failure scenario, closed");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -769,7 +792,8 @@ test("#2470 (4) a stalled release ENDS the spare's workspace, declines the claim
   const closeAt = r.runs.findIndex((a) => a.includes("close"));
   assert.deepEqual(r.runs[closeAt], ["--session", "org", "workspace", "close", "w0"], "the instance is ended so a fresh one takes the row");
   const decline = r.decline()!;
-  assert.deepEqual(decline.args.slice(1), ["decline", "2407", "--session=worker-7", "--keep-worktree"], "as the holder, and the tree is KEPT");
+  assert.deepEqual(decline.args.slice(1), ["decline", "2407", "--session=worker-7", "--keep-worktree", "--predecessor-gone"],
+    "as the holder, and the tree is KEPT; #2748: the workspace was actually CLOSED above, so the release may attest the predecessor gone");
   assert.match(decline.cwd, /\/role-worker-7$/, "from the holder's own launch worktree, which launchGate accepts");
   assert.ok(r.execs.findIndex((e) => e === decline) > -1 && closeAt > -1, "and the close came first, so nothing the instance does can race the read");
   assert.match(r.comment(), /Claim released by the gate \(#2470\).*`worker-7`.*nothing on this row moved for 250 minutes.*KEPT/s);
@@ -805,6 +829,8 @@ test("#2470 (6) a claim by a role that is NOT a spare is released and NEVER ende
   assert.equal(r.cycles.length, 0, "and no cycle line: it is not an instance's ending");
   assert.deepEqual(r.dropped, []);
   assert.ok(r.decline()!.args.includes("--session=worker-capture"), "only the CLAIM is released");
+  assert.equal(r.decline()!.args.includes("--predecessor-gone"), false,
+    "#2748 (reviewer-2754's second verdict): worker-capture's process was never closed, so this release must NOT attest it is gone");
   // THE CONTROL: the same request for a spare closes it.
   const spare = releaseHost({ agents: [{ label: "worker-capture", status: "working" }], world: { unpushed: 1 }, labels: holdsRow });
   performRelease({ ...STALL, session: "worker-capture" }, spare.deps);
