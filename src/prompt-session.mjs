@@ -32,7 +32,7 @@ import { dirname } from "node:path";
 
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { clearBeforeOrder, isPerRowInstance, readAgents, WAKEABLE, queueHandoff, handoffQueuePath, ledgerPathFrom,
-  handoffBacklog, readHandoffs, waitedFor, addressed } from "./wake.mjs";
+  handoffBacklog, readHandoffs, waitedFor, addressed, repointedForReviewer } from "./wake.mjs";
 // #2619 (child 3d of #69): the `answer:` prefix these two advisory notes name, moved to the project's
 // declared vocabulary.
 import { ANSWER_PREFIX } from "./project-vocabulary.mjs";
@@ -495,11 +495,12 @@ export function recordDirectDelivery(queuePath, { label, text, sender, cleared, 
  * ({@link recordDirectDelivery}), never both, and the direct line is written only once the prompt landed.
  *
  * @param {{run: (args: string[]) => string, label: string, text: string, agents: {label: string, status: string}[] | null,
- *          path: string, stance: Stance, sender: string | null, sleep?: (ms: number) => void}} order
- *   `sleep` is the clear's settle, passed to {@link clearThenPrompt} (#2546)
+ *          path: string, stance: Stance, sender: string | null, sleep?: (ms: number) => void,
+ *          checkout?: import("./wake.mjs").CheckoutDeps}} order
+ *   `sleep` is the clear's settle, passed to {@link clearThenPrompt} (#2546); `checkout` is {@link repointedForReviewer}'s seams
  * @returns {number}
  */
-export function promptOrQueue({ run, label, text, agents, path, stance, sender, sleep }) {
+export function promptOrQueue({ run, label, text, agents, path, stance, sender, sleep, checkout }) {
   const why = promptable(label, agents);
   if (why) return queueOrLose({ label, text, why, agents, path, stance, sender });
 
@@ -507,7 +508,11 @@ export function promptOrQueue({ run, label, text, agents, path, stance, sender, 
   // tasks, so this order is DELIVERED rather than queued: it joins nothing, and a session that is idle is
   // a session whose queue the next tick will drain. The refusal is about JOINING A PILE, not about the
   // pile existing.
-  const report = clearThenPrompt(run, label, text, { sender, sleep });
+  // A REVIEWER'S TREE IS RE-POINTED WITH THE RE-REVIEW REQUEST, NOT LEFT AT THE HEAD IT WAS SPAWNED AT (#2771): this call is the
+  // one the routing rule tells an author to make after a push, and the reviewer's sandbox cannot move its own tree. Only here, on
+  // the idle path: a reviewer mid-turn keeps its files, and a QUEUED order moves nothing here (see `repointedForReviewer` for what the tick does with one).
+  const { prompt } = repointedForReviewer({ session: label, prompt: text }, checkout);
+  const report = clearThenPrompt(run, label, prompt, { sender, sleep });
   // A PROMPT REFUSED AT THE LAST MOMENT IS THE SAME LOSS ONE STEP LATER. `promptable` said idle and herdr
   // said no, which means the session went to work in between -- the race the queue exists for. A refused
   // CLEAR is not this: the text went, on a bloated context, and re-queueing it would deliver it twice.

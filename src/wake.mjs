@@ -41,7 +41,7 @@ import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { profileFor, agentArgs } from "./worker-profile.mjs";
 import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry, scopesOf }
   from "./work-gate.mjs";
-import { reviewerInstance, subjectMention } from "./review-attribution.mjs";
+import { reviewerInstance, reviewerInstanceNumber, subjectMention } from "./review-attribution.mjs";
 // #2688: THE SAME INSTRUMENT #928's OFFLINE REPORT IS BUILT FROM, READ LIVE INSTEAD OF ONLY REPORTED --
 // no new metric, only this one read at delivery time.
 import { claudeTurns, transcriptFiles } from "./token-audit.mjs";
@@ -1198,6 +1198,39 @@ export function withReviewCheckout(order, checkout, pr) {
     + `SIGN AS \`${order.session}\`: your pane may not hold \`A11Y_REVIEWER_SESSION\` (one started outside the tick does not), so `
     + `post the verdict as \`A11Y_REVIEWER_SESSION=${order.session} pr-review-verdict <n> <convinced|not-convinced> <file>\` `
     + "and the verdict line's `by` names you." };
+}
+
+/**
+ * THE TEXT FOR A LIVE REVIEWER, WITH ITS TREE RE-POINTED FIRST (#2771). `reviewerTarget` re-points a tree only for an order
+ * whose cause the tick generates, and that cause's key bakes in the head it was made at, so it is offered once per pull request:
+ * a `reviewer-<n>` already awaiting its verdict was never re-pointed by the second push, and the only path an author is told to
+ * use after one (`prompt:session`, a re-prompt or a queued handoff) carried prose alone. Measured on `reviewer-2754`: its tree
+ * stayed at the first head while the pull request moved through two more, and its verdict headers named heads its tree was not at.
+ *
+ * SO EVERY DELIVERY TO A REVIEWER INSTANCE ASKS FOR IT, from the two places one is typed -- `targetFor` for the tick (an order
+ * about the instance's own pull request whose cause is not a reviewer cause) and `promptOrQueue` for a direct prompt -- and it is
+ * asked when the text is DELIVERED, never when it is written, so a reviewer mid-turn does not have its files switched under a
+ * running Acceptance. NOT COVERED, AND NOT NEW: a QUEUED `prompt:session` order never reaches `targetFor`'s re-point, because
+ * `reviewerMismatch` refuses it first -- a handoff's cause key names no pull request -- so the tick never delivers one to a reviewer.
+ *
+ * A REFUSAL DOES NOT SWALLOW THE ORDER: the author's words may exist nowhere else. The text says instead that the tree may be
+ * STALE and how to tell, because the verdict header a reviewer writes from the network names the true head and is exactly what
+ * makes a stale tree look fine. A session that is no instance of the tick's own repository is returned unchanged
+ * ({@link noReviewCheckoutFor} says why: the tick's checkout serves one repository).
+ *
+ * @param {{session: string, prompt: string}} order @param {CheckoutDeps} [checkout]
+ * @returns {{prompt: string}}
+ */
+export function repointedForReviewer(order, checkout = {}) {
+  const pr = reviewerInstanceNumber(order.session);
+  if (pr === null) return { prompt: order.prompt };
+  const prepared = prepareReviewCheckout({ pr, session: order.session, ...checkout });
+  if ("refusal" in prepared) {
+    return { prompt: `${order.prompt}\n\nYOUR CHECKOUT WAS NOT RE-POINTED (${prepared.refusal}). It may be at an OLDER head than `
+      + "the pull request: run `git rev-parse HEAD` in it and compare with the head your verdict will name before you trust a run there." };
+  }
+  return { prompt: `${order.prompt}\n\nYour checkout of #${pr}, \`${prepared.path}\`, has just been re-pointed to the pull request's `
+    + `current head \`${prepared.head.slice(0, 8)}\`.` };
 }
 
 /**
@@ -3539,7 +3572,10 @@ function targetFor(order, live, roster, deps) {
   if (!("refusal" in routed)) {
     // AN INSTANCE TAKES ITS OWN PULL REQUEST'S ORDERS ONLY, whatever cause or fallback brought the order here.
     const wrong = reviewerMismatch(order, routed.label);
-    return wrong === null ? { label: routed.label } : { refusal: wrong };
+    if (wrong !== null) return { refusal: wrong };
+    // AN ORDER OF ANY OTHER CAUSE, ABOUT THE LIVE REVIEWER'S OWN PULL REQUEST, RE-POINTS ITS TREE TOO (#2771).
+    return reviewerInstance(routed.label) === null ? { label: routed.label }
+      : { label: routed.label, order: repointedForReviewer({ session: routed.label, prompt: order.prompt }, deps.checkout) };
   }
   if (!isPilotOrder(order)) return { refusal: routed.refusal };
   if (deps.spawned >= MAX_SPAWNS_PER_TICK) {

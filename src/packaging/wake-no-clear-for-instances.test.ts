@@ -31,8 +31,12 @@ const noSettle = () => {};
  * overrides this with {@link transcriptRootFor}'s own directory.
  */
 const NO_TRANSCRIPTS = join(tmpdir(), "a11y-2688-no-transcripts");
+/** #2771: a delivery to a `reviewer-<n>` re-points that reviewer's tree first, and the default seams are REAL git on the host's
+ * `~/reviews` and the primary's refs. A test that is not about the checkout injects this instead: every git call answers one head. */
+const FAKE_HEAD = "d".repeat(40);
+const FAKE_CHECKOUT = { git: () => `${FAKE_HEAD}\n`, exists: () => true, link: () => null, root: "/fake-reviews", repoRoot: "/fake-primary" };
 const deliver: typeof settlingDeliver = (orders, agents, roster, deps) =>
-  settlingDeliver(orders, agents, roster, { contextRoot: NO_TRANSCRIPTS, ...deps, sleep: noSettle });
+  settlingDeliver(orders, agents, roster, { contextRoot: NO_TRANSCRIPTS, checkout: FAKE_CHECKOUT, ...deps, sleep: noSettle });
 const deliverHandoffs: typeof settlingDeliverHandoffs = (handoffs, agents, roster, deps) =>
   settlingDeliverHandoffs(handoffs, agents, roster, { contextRoot: NO_TRANSCRIPTS, ...deps, sleep: noSettle });
 const clearThenPrompt: typeof settlingClearThenPrompt = (run, label, text, options) =>
@@ -167,6 +171,11 @@ function cli(label: string) {
     const workspaces = JSON.stringify({ result: { workspaces: [{ label, agent_status: "idle" }] } });
     writeFileSync(herdr, `#!/bin/sh\necho "$*" >> '${log}'\ncase "$*" in *"workspace list"*) echo '${workspaces}';; esac\n`);
     chmodSync(herdr, STUB_MODE);
+    // #2771: a reviewer's tree is re-pointed with real git before the order goes. A `git` that fails makes that a refusal,
+    // which this test is not about, and keeps it off the host's `~/reviews` and the primary's refs.
+    const git = join(dir, "git");
+    writeFileSync(git, "#!/bin/sh\nexit 1\n");
+    chmodSync(git, STUB_MODE);
     const res = spawnSync(process.execPath, [PROMPT_SESSION, label, "the check failed", "--ledger", join(dir, "ledger")], {
       encoding: "utf8", env: { PATH: `${dir}:${process.env.PATH}`, HOME: dir },
     });

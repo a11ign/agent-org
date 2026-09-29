@@ -24,8 +24,12 @@ const noSettle = () => {};
  * all real, reused org role names on a shared host) is never compacted by a coincidence of a live session's own
  * transcript -- this file is not about the compact check, only about the header that follows the clear-skip. */
 const NO_TRANSCRIPTS = join(tmpdir(), "a11y-2538-no-transcripts");
+/** #2771: a delivery to a `reviewer-<n>` re-points that reviewer's tree first, and the default seams are REAL git on the host's
+ * `~/reviews` and the primary's refs. A test that is not about the checkout injects this instead: every git call answers one head. */
+const FAKE_HEAD = "d".repeat(40);
+const FAKE_CHECKOUT = { git: () => `${FAKE_HEAD}\n`, exists: () => true, link: () => null, root: "/fake-reviews", repoRoot: "/fake-primary" };
 const deliver: typeof settlingDeliver = (orders, agents, roster, deps) =>
-  settlingDeliver(orders, agents, roster, { contextRoot: NO_TRANSCRIPTS, ...deps, sleep: noSettle });
+  settlingDeliver(orders, agents, roster, { contextRoot: NO_TRANSCRIPTS, checkout: FAKE_CHECKOUT, ...deps, sleep: noSettle });
 const clearThenPrompt: typeof settlingClearThenPrompt = (run, label, text, options) =>
   settlingClearThenPrompt(run, label, text, { contextRoot: NO_TRANSCRIPTS, ...options, sleep: noSettle });
 
@@ -87,9 +91,12 @@ test("#2538 an UNCLEARED instance's order is one header line and the order, and 
     const [typed] = r.ordered(label);
     assert.ok(typed, `${label}: the order WAS typed`);
     assert.deepEqual(counts(typed), [0, 0, 0], `${label}: the preamble is already in its window`);
-    assert.equal(typed, `You are \`${label}\` -- a follow-up order to your session: your first order and its brief still stand.\n\n${ORDER_TEXT}`,
+    // A reviewer's order also says its tree was re-pointed (#2771); nothing else rides along for anyone.
+    const repointed = label.startsWith("reviewer-")
+      ? `\n\nYour checkout of #2537, \`/fake-reviews/${label}\`, has just been re-pointed to the pull request's current head \`${FAKE_HEAD.slice(0, 8)}\`.` : "";
+    assert.equal(typed, `You are \`${label}\` -- a follow-up order to your session: your first order and its brief still stand.\n\n${ORDER_TEXT}${repointed}`,
       `${label}: exactly the header, a blank line and the order, pinned whole`);
-    assert.ok(typed.length < ORDER_TEXT.length + 150, `${label}: nothing else rode along (${typed.length} chars)`);
+    assert.ok(typed.length < ORDER_TEXT.length + repointed.length + 150, `${label}: nothing else rode along (${typed.length} chars)`);
   }
 });
 

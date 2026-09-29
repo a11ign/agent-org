@@ -15,7 +15,11 @@ import { promptOrQueue as settlingPromptOrQueue, recordDirectDelivery, directRec
 import { handoffQueuePath, readHandoffs, HANDOFF_QUEUE_FILE } from "../wake.mjs";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
-const promptOrQueue: typeof settlingPromptOrQueue = (order) => settlingPromptOrQueue({ ...order, sleep: noSettle });
+/** #2771: a delivery to a `reviewer-<n>` re-points that reviewer's tree first, and the default seams are REAL git on the host's
+ * `~/reviews` and the primary's refs. A test that is not about the checkout injects this instead: every git call answers one head. */
+const FAKE_HEAD = "d".repeat(40);
+const FAKE_CHECKOUT = { git: () => `${FAKE_HEAD}\n`, exists: () => true, link: () => null, root: "/fake-reviews", repoRoot: "/fake-primary" };
+const promptOrQueue: typeof settlingPromptOrQueue = (order) => settlingPromptOrQueue({ checkout: FAKE_CHECKOUT, ...order, sleep: noSettle });
 
 
 const agents = [{ label: "reviewer-2376", status: "idle" }, { label: "reviewer-2377", status: "working" },
