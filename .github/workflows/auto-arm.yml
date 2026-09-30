@@ -1,0 +1,46 @@
+name: auto-arm
+
+# ENABLE AUTO-MERGE ON EVERY NON-DRAFT PULL REQUEST AGAINST main, so nobody arms by hand (pared from a11ign/a11ign's auto-arm.yml,
+# a11ign/a11ign#2792). Arming only ARMS the merge: GitHub still withholds it until the required check `gate` is green and the ruleset's
+# approving review is present for the current head.
+#
+# WHICH TOKEN ARMS MATTERS, AND THE LOG SAYS WHICH RAN. GitHub does not trigger workflows from events created with GITHUB_TOKEN, so a merge
+# completed with it fires no `pull_request: closed` and no `push` (measured on a11ign/a11ign: 19 of 19 bot merges never ran close-rows). A
+# merge armed with A11IGN_BOT_TOKEN is attributed to that identity and fires them. When the secret is absent this arms with GITHUB_TOKEN and
+# prints a warning; the first `AUTO-ARM:` line of a run is the reading of which path ran (a11ign/a11ign#2623 Done-when 1).
+#
+# NOT COPIED, AND WHY: the sweep, the stalled report and update-branch jobs of the original call a11ign's own scripts and need its board; this
+# repository holds only the tool. They are added when something here needs them, not before.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, ready_for_review, reopened, synchronize]
+
+permissions:
+  pull-requests: write
+  contents: write
+
+jobs:
+  arm:
+    # A fork's pull request gets no secrets and a read-only token, so arming it would only fail; a fork's change is armed by a maintainer.
+    if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge (merge commit)
+        env:
+          A11IGN_BOT_TOKEN: ${{ secrets.A11IGN_BOT_TOKEN }}
+          FALLBACK_TOKEN: ${{ github.token }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if [ -n "$A11IGN_BOT_TOKEN" ]; then
+            export GH_TOKEN="$A11IGN_BOT_TOKEN"
+            token_name=A11IGN_BOT_TOKEN
+          else
+            echo "::warning::A11IGN_BOT_TOKEN is not set -- arming with GITHUB_TOKEN instead. A merge completed with it fires no workflow events."
+            export GH_TOKEN="$FALLBACK_TOKEN"
+            token_name=GITHUB_TOKEN
+          fi
+          echo "AUTO-ARM: arming #${PULL_REQUEST} in ${REPOSITORY} with ${token_name}"
+          gh pr merge "$PULL_REQUEST" --repo "$REPOSITORY" --auto --merge

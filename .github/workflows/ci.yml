@@ -1,0 +1,32 @@
+name: ci
+
+# THE REQUIRED CHECK IS `gate` (a11ign/a11ign#2792; ADR 0040 decision 6 step 6). A check name can be required only after it has run once,
+# and this file's first pull request is that run.
+#
+# WHAT `gate` DOES NOT RUN, ON PURPOSE: the tool's own test suite. Measured on the first commit of this repository (265c9d8, run with
+# tsx over every src/**/*.test.ts): 158 of 464 subtests failed and 60 of 125 modules did not import, all for the same reason -- the tool
+# reads `.agent-org/project.json` from a project checkout it is pointed at, and this repository is not one. The suite becomes runnable
+# here when the fixture project of ADR 0040 decision 8 lands; until then a step running it would be red on every pull request, and a
+# gate people learn to ignore is worse than a narrower one. What `gate` checks is what the bootstrap can be held to today.
+
+on:
+  pull_request:
+    branches: [main]
+  # A merge queue tests the queue's merge commit and waits for a check reporting on THIS event; without it a queued pull request never merges.
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Every path a workflow names exists in this repository
+        run: node .github/scripts/workflow-paths.mjs
+      - name: Leak scan -- refuses a private LAN IPv4 address or a named SSH key file anywhere in the tree
+        run: node .github/scripts/leak-scan.mjs
