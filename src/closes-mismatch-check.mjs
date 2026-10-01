@@ -56,7 +56,7 @@
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { extractClosesDeclaration } from "./acceptance-commands.mjs";
-import { lookupClosingIssues } from "./merge-guard/lookups.mjs";
+import { lookupClosingIssues, lookupRecentClosesPrs } from "./merge-guard/lookups.mjs";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 
 // GitHub's own documented closing keywords -- close/closes/closed, fix/fixes/fixed, resolve/resolves/
@@ -133,6 +133,86 @@ export function closesMismatchReport(declaration, resolved, body) {
   return { ok: false, reasons };
 }
 
+/** @typedef {{ number: number, resolved: number[] }} ClosesSibling */
+
+/** How many recent other open-or-merged PRs declaring a `Closes` must ALL resolve nothing before the fault is called repo-wide. */
+export const REPO_WIDE_SIBLINGS = 3;
+
+/**
+ * Pure. The newest `REPO_WIDE_SIBLINGS` OTHER open or merged PRs whose body declares a non-empty `Closes` (drafts
+ * included), each with the numbers GitHub resolved for it. `recentPrs` is newest first, as the lookup
+ * returns it. `null` in, `null` out: a lookup that could not ask has no siblings to name (#2810).
+ * @param {{ number: number, body: string, resolved: number[] }[] | null} recentPrs
+ * @param {number} prNumber the PR under test, never its own sibling
+ * @returns {ClosesSibling[] | null}
+ */
+export function recentClosesSiblings(recentPrs, prNumber) {
+  if (recentPrs === null) return null;
+  return recentPrs
+    .filter((pr) => pr.number !== prNumber)
+    .filter((pr) => {
+      const declaration = extractClosesDeclaration(pr.body);
+      return declaration.kind === "closes" && declaration.numbers.length > 0;
+    })
+    .slice(0, REPO_WIDE_SIBLINGS)
+    .map(({ number, resolved }) => ({ number, resolved }));
+}
+
+/**
+ * Pure. Is GitHub's failure to resolve a closing reference a REPO-WIDE condition rather than this body's
+ * fault (#2810)? Only when the PR under test declares at least one number and resolves none, and EVERY
+ * one of exactly `REPO_WIDE_SIBLINGS` recent siblings resolves none. `siblings: null` (could not ask) and
+ * fewer than three siblings are both "cannot say", which reads as NOT repo-wide: unread data is never
+ * evidence of a fault. #2822: it is the ONE condition `mismatchVerdict` passes on (with a warning); it decides nothing else.
+ * @param {{ declared: number[], resolved: number[] }} underTest
+ * @param {ClosesSibling[] | null} siblings
+ * @returns {boolean}
+ */
+export function isRepoWideResolutionFault(underTest, siblings) {
+  if (underTest.declared.length === 0 || underTest.resolved.length > 0) return false;
+  if (siblings === null || siblings.length < REPO_WIDE_SIBLINGS) return false;
+  return siblings.every((sibling) => sibling.resolved.length === 0);
+}
+
+/**
+ * The warning the repo-wide case PASSES with (#2822). It names the condition and the remedy: the post-merge closer
+ * closes the declared rows from the body, because GitHub will not.
+ */
+export const REPO_WIDE_WARNING = Object.freeze([
+  "CLOSES MISMATCH: WARNING -- GitHub resolved no closing reference for this PR or for the last "
+    + `${REPO_WIDE_SIBLINGS} open PRs that declare one, so the condition is repo-wide and not this body.`,
+  "  Passing: the post-merge closer (close-rows-for-merged-pr.mjs) will close the declared rows FROM THE BODY'S "
+    + "DECLARATION, because GitHub resolved none.",
+]);
+
+/**
+ * Pure. What a REFUSED report prints and exits with. The exit is the literal 1 for every refusal, and the words
+ * are today's for every one of them (#2810). The repo-wide case is not refused any more (#2822) -- see
+ * `repoWideWarning` -- so `refusal` is never asked about it and cannot turn a refusal into a pass.
+ * @param {{ ok: false, reasons: string[] }} report
+ * @returns {{ exit: 1, lines: string[] }}
+ */
+export function refusal(report) {
+  const head = "CLOSES MISMATCH: REFUSED -- what you declared and what GitHub will actually close disagree:";
+  return { exit: 1, lines: [head, ...report.reasons.map((reason) => `  ${reason}`)] };
+}
+
+/**
+ * Pure. What a mismatch prints and exits with (#2822). PASSES, with the warning, ONLY when
+ * `isRepoWideResolutionFault` holds: this PR declares a number, GitHub resolved none for it, and all
+ * `REPO_WIDE_SIBLINGS` recent siblings resolved none either. Every other mismatch -- an accidental closure even
+ * while the condition is repo-wide, a lone mismatch, too few siblings, an unreadable sibling lookup, a partial
+ * resolution -- is `refusal`, byte for byte. Absence of evidence never passes: `siblings: null` is refused.
+ * @param {{ ok: false, reasons: string[] }} report
+ * @param {{ declared: number[], resolved: number[] }} underTest
+ * @param {ClosesSibling[] | null} siblings
+ * @returns {{ exit: 0 | 1, lines: string[] }}
+ */
+export function mismatchVerdict(report, underTest, siblings) {
+  if (isRepoWideResolutionFault(underTest, siblings)) return { exit: 0, lines: [...REPO_WIDE_WARNING] };
+  return refusal(report);
+}
+
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/closes-mismatch-check.mjs" });
   const prNumber = Number(process.argv[2]);
@@ -167,9 +247,13 @@ function main() {
     process.exit(2);
   }
   if (!report.ok) {
-    console.log("CLOSES MISMATCH: REFUSED -- what you declared and what GitHub will actually close disagree:");
-    for (const reason of report.reasons) console.log(`  ${reason}`);
-    process.exit(1);
+    // The sibling query is asked only when this PR's own facts already fit, so a lone mismatch costs nothing extra.
+    const underTest = { declared: declaration.kind === "closes" ? declaration.numbers : [], resolved: resolved ?? [] };
+    const fits = underTest.declared.length > 0 && underTest.resolved.length === 0;
+    const siblings = fits ? recentClosesSiblings(lookupRecentClosesPrs(), prNumber) : null;
+    const { exit, lines } = mismatchVerdict(report, underTest, siblings);
+    for (const line of lines) console.log(line);
+    process.exit(exit);
   }
   console.log("CLOSES MISMATCH: ok -- declared and resolved agree");
   process.exit(0);

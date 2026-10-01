@@ -58,6 +58,12 @@ Environment=GH_CONFIG_DIR=@@workersDir@@/gh
 #
 # The `-` prefix makes a failed update NON-FATAL. A tick against a slightly stale checkout is worth far
 # more than no tick at all, and a network blip must not stop the org; the next tick tries again.
+#
+# BUT THE `-` MAKES A FAILED UPDATE INVISIBLE TO SYSTEMD, SO THE GATE IS THE ONLY REPORTER -- #2781. A dirty primary made
+# this step fail on every tick from 2026-09-28T12:01Z, 2,652 journal lines, and the gate gave orders from 22-hour-old code.
+# `work-gate.mjs` now reads the primary against `origin/main` AFTER this step (`update-primary.mjs --drift`), wakes `ceo`
+# with the dirty paths (`primary-stale`) and heads every other order with the sha and the count. Drop that reader and this
+# `-` becomes the silence again: `update-primary.test.ts` pins that the two travel together.
 ExecStartPre=-/usr/bin/npm run primary:update
 
 # `work-tick` exits 1 when an order had nowhere to go (nobody idle) and 2 when a read was refused.

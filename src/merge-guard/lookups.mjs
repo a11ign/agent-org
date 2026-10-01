@@ -110,3 +110,31 @@ export function lookupClosingIssues(number) {
       }));
   });
 }
+
+/** How many of the newest open-or-merged PRs `lookupRecentClosesPrs` reads: room for the 3 siblings the repo-wide check wants. */
+const RECENT_CLOSES_PRS = 30;
+
+/**
+ * The newest OPEN and MERGED PRs (drafts included), each with its body and the issue numbers GitHub resolved
+ * as closing references -- ONE query, for `closes-mismatch-check`'s repo-wide diagnostic (#2810). MERGED is
+ * read too because a merged PR keeps its `closingIssuesReferences`, and an open pre-outage PR that still
+ * resolves would otherwise sit in every newer PR's window and veto the repo-wide pass for good (#2830).
+ * `null` on failure, same as every other lookup here: unread data is never evidence of a repo-wide fault.
+ * @returns {{number: number, body: string, resolved: number[]}[] | null}
+ */
+export function lookupRecentClosesPrs() {
+  return lookup(() => {
+    const [owner, name] = REPO.split("/");
+    const query = "query($owner:String!,$name:String!,$count:Int!){"
+      + "repository(owner:$owner,name:$name){pullRequests(states:[OPEN,MERGED],first:$count,"
+      + "orderBy:{field:CREATED_AT,direction:DESC}){nodes{number body "
+      + "closingIssuesReferences(first:20){nodes{number}}}}}}";
+    const data = JSON.parse(gh(["api", "graphql", "-f", `query=${query}`,
+      "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `count=${RECENT_CLOSES_PRS}`]));
+    return data.data.repository.pullRequests.nodes.map(
+      (/** @type {{number: number, body: string | null, closingIssuesReferences: {nodes: {number: number}[]}}} */ pr) => ({
+        number: pr.number, body: pr.body ?? "",
+        resolved: pr.closingIssuesReferences.nodes.map((issue) => issue.number),
+      }));
+  });
+}

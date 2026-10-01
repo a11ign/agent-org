@@ -21,8 +21,7 @@
 // (`git-spawn-classification.test.ts`), including a read-only one: an inherited `GIT_DIR` would have this
 // module list another repository's root files and report on them as though they were ours.
 import { execFileSync } from "node:child_process";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { HOME_CHECKOUT } from "./project-config.mjs";
 
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 
@@ -253,7 +252,7 @@ let rootFilesReading = null;
  */
 export function rootFilesOnMain({ repoRoot } = {}) {
   if (rootFilesReading && repoRoot === undefined) return rootFilesReading;
-  const repo = repoRoot ?? resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+  const repo = repoRoot ?? HOME_CHECKOUT;
   for (const ref of /** @type {const} */ (["origin/main", "HEAD"])) {
     try {
       const listing = execFileSync("git", ["ls-tree", ref, "--"],

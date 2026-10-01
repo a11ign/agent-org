@@ -1,0 +1,67 @@
+[Unit]
+# ONE TICK OF THE SHADOW WINDOW -- #2867 (the split, child 5f of #69; ADR 0040, decision 5 (1)). `shadow-window.mjs` runs the CANDIDATE gate
+# over what the live tick recorded and appends one line to a diff record; see its header. THIS UNIT IS A SEPARATE PAIR FROM
+# @@prefix@@work-tick.service, deliberately: nothing here names the live tick (no `After=`, `Requires=`, `PartOf=`, `OnFailure=`), so a failing
+# shadow run fails THIS service and the live tick's exit status is not an input to it. `shadow-window-arm.test.ts` pins both halves.
+#
+# DORMANT UNTIL ARMED. Installing this pair starts a run every two minutes that reads `<state>/shadow-window-open`, finds none and exits 0. The
+# window opens when `shadow-window.mjs --arm` creates that marker (T0), and ENDS ITSELF at 1,440 recorded ticks or T0 plus 52 hours: it appends a
+# `stop` row, disables the timer and removes the marker. `ceo` sanctioned this arrangement on #2623 and NOT the cut-over, so nothing here touches
+# the live units, the host declaration or the monorepo gate.
+Description=a11ign: one tick of the shadow window -- run the candidate gate beside the live one and record the difference
+After=herdr.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=@@checkout@@
+
+Environment=PATH=@@binDir@@:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=@@home@@
+
+# V8'S COMPILE CACHE GOES UNDER THE HOME, NOT /tmp -- #2458; `host-units.test.ts` pins it on every shipped service.
+Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache
+
+# THE CANDIDATE RESOLVES ITS PROJECT FROM THE HOST DECLARATION, NAMED. The candidate runs from its own checkout, which holds no `.agent-org/host.json`,
+# so without this line it exits 1 at import on every tick (#2873 makes the tool honour it, per `worker-2846`'s real run on #2846). The runner and the
+# candidate it spawns read the same file, which is the primary checkout's, as every other unit's `WorkingDirectory` is.
+Environment=AGENT_ORG_HOST=@@checkout@@/.agent-org/host.json
+
+# THE WORKERS' ACCOUNT, DECLARED, though `decide` reads nothing from GitHub (the window's whole point is that it adds no calls): a unit with no
+# declaration falls back to the human's stored credentials (#1974), and a candidate that ever grew a read must not spend a person's pool.
+Environment=GH_CONFIG_DIR=@@workersDir@@/gh
+
+# THE RESOURCE CEILING (#2867, done-when 5). This host has had a 25 to 27 GB runaway node process, and a window that can do that to the box beside
+# the live tick has failed at the one thing it must not do. `MemoryMax` is the hard cgroup limit (the unit is killed, which fails THIS service and
+# nothing else); `MemoryHigh` throttles before it; `CPUQuota` is a share of ONE core; `TasksMax` bounds threads and children. The heap cap makes a
+# runaway node stop itself well inside the cgroup, and reaches the candidate child, which inherits the environment. The tick itself is a node start
+# and one JSON diff, so none of these is near a normal run.
+#
+# `MemorySwapMax=0` IS NOT OPTIONAL, AND `MemoryMax` ALONE DID NOT HOLD (measured 2026-10-01 on this host, `systemd-run --user -p MemoryMax=64M` over
+# a node loop allocating 8 MB buffers): the unit was killed only after 19 s, having put 7.9 GB into SWAP, which `MemoryMax` does not count. With
+# `-p MemorySwapMax=0` added the same loop was killed at 64 MB in 152 ms and used no swap. A cap that lets a runaway thrash the box's swap for
+# twenty seconds is the failure it exists to prevent.
+MemoryHigh=768M
+MemoryMax=1G
+MemorySwapMax=0
+CPUQuota=50%
+TasksMax=128
+Nice=10
+Environment=NODE_OPTIONS=--max-old-space-size=512
+
+# THE COPY AND THE RECORD LIVE IN THE SCRATCH AREA THE RUNNER OWNS, beside the live state directory (~/.cache/a11ign) and never inside it: the runner
+# REFUSES either path inside the live directory, because refreshing a copy there would be a write to the state the live tick reads. `.local/state` and
+# not `.cache`, because the record is the window's evidence and a cache is a thing a sweep may clear.
+#
+# THE CANDIDATE IS THE CLONE #2866 PLACED, and the clone is a one-time snapshot: `--arm` refuses unless its gate's import closure is byte-identical to
+# this checkout's, and `ceo`'s ruling on #2867 freezes merges to that closure for the window, so the two cannot drift apart while it runs.
+#
+# `--window-timer=` IS WHAT MAKES THIS A WINDOWED RUN: it names the timer the runner disables when the window ends, and without it the runner is the
+# bare #2846 tick with no marker, no count and no stop.
+ExecStart=/usr/bin/node packages/agent-org/src/shadow-window.mjs --window-timer=@@prefix@@shadow-window.timer --candidate=@@home@@/repos/agent-org/src/work-gate.mjs --copy-dir=@@home@@/.local/state/a11ign-shadow-window/state-copy --record=@@home@@/.local/state/a11ign-shadow-window/diff-record.jsonl
+
+# NO `SuccessExitStatus=`, UNLIKE @@prefix@@work-tick.service, AND THAT IS THE POINT: the runner exits 2 when a path was refused or an input could not be
+# read, and for the live tick 2 is "a read was refused", an ordinary state; here it is a tick the window lost, so it must show as a FAILED run. The
+# live unit's statuses are its own. The candidate has its own two-minute deadline inside the runner; this bounds the whole run.
+TimeoutStartSec=300
+
+# NO `[Install]` SECTION: the timer is what starts this, as for @@prefix@@worktree-prune.service.

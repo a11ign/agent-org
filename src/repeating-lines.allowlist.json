@@ -1,0 +1,22 @@
+{
+  "_what": "Lines the gate EXPECTS to see repeating (#2848). Each entry is a regex over the NORMALISED line (numbers -> N, timestamps -> T, shas -> H; see normaliseLine in repeating-lines.mjs -- so `a11ign` reads `aNign`) and carries the reason. An entry without a reason is refused at load.",
+  "_rule": "Add an entry only for a line that is the org working as designed. A line that reports a fault is fixed or filed `ready`; it is never allowlisted to make the offer stop.",
+  "allow": [
+    {
+      "pattern": "^SHELVED row #N: ",
+      "reason": "work the gate can see and is deliberately not offering (a declared blockedBy, Not-before, answer: or a file overlap with an open pull request). The line itself says it clears itself; 972 per day measured on 2026-10-01 and each is a row waiting on a field."
+    },
+    {
+      "pattern": "^primary checkout detached at origin/main \\(H\\)$",
+      "reason": "update-primary.mjs states where the checkout is on every tick it runs; it is a position reading, not a fault. A failed update prints a different line, which is not allowlisted."
+    },
+    {
+      "pattern": "^> (aNign-monorepo@N\\.N\\.N primary:update|node packages/agent-org/src/update-primary\\.mjs)$",
+      "reason": "npm's echo of the ExecStartPre command, written on every tick by npm itself."
+    },
+    {
+      "pattern": "^aNign-work-tick\\.service: Consumed ",
+      "reason": "systemd's per-run resource accounting line, written after every tick."
+    }
+  ]
+}

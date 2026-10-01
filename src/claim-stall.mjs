@@ -413,6 +413,14 @@ function mergedReading(facts) {
 }
 
 /**
+ * herdr's word for a workspace with no agent detected in it (#2534, `wake.mjs`'s `hasNoAgent`, which this leaf cannot import).
+ * @param {{status?: string}} agent
+ */
+function holdsNoAgent(agent) {
+  return agent.status === "unknown";
+}
+
+/**
  * (#2747) A claim whose SESSION no longer exists in herdr's own listing -- not merely quiet, GONE: nobody is coming
  * back to finish it, nudged or not (#2623: workspace closed by hand, row left `session:worker-2623` with nothing
  * behind it, and nothing but the multi-hour stall clock would ever have caught it).
@@ -429,13 +437,19 @@ function mergedReading(facts) {
  * a session seen even once in the meantime is not gone, and any tick it is seen resets the whole thing (`claimReading`
  * never calls this when the session IS listed, so there is no reading here to carry a stale `since` forward).
  *
+ * A holder whose workspace is listed but holds NO AGENT is read as absent too (#2863): herdr reports `unknown` for a pane
+ * where no agent is detected, which is what a crashed claude leaves behind (`worker-2845`'s Bun segfault), and the label
+ * survives it. Reading the label as presence offered the nudge every tick for hours to a session that could not receive
+ * it, when this clock exists to release such a claim after ten minutes (#2534 closed the same defect for reviewers).
+ * A holder listed WITH an agent is presence again, and resets the clock like any reappearance.
+ *
  * @param {ClaimFacts} facts @param {{ now: number, agents?: {label: string, status: string}[] | null, goneSince?: number | null }} ctx
  * @returns {Reading | null}
  */
 function goneReading(facts, ctx) {
   const agents = ctx.agents ?? null;
   if (agents === null) return null;
-  if (agents.some((a) => a.label === facts.session)) return null;
+  if (agents.some((a) => a.label === facts.session && !holdsNoAgent(a))) return null;
   const goneSince = ctx.goneSince ?? null;
   if (!listingIsComplete(agents)) return goneSince === null ? null : { kind: "vacating", since: goneSince };
   const since = goneSince ?? ctx.now;

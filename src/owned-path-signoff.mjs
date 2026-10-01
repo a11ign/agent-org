@@ -44,13 +44,13 @@
 import { readFileSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
+import { HOME_CHECKOUT } from "./project-config.mjs";
 
 const EXIT = { SIGNED: 0, REFUSED: 1, CANNOT_ASK: 2 };
-const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const REPO = HOME_CHECKOUT;
 
 /**
  * The owned paths and the facts a change to them must state, read from the file `orchestrator` owns.

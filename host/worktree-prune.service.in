@@ -34,20 +34,24 @@ Environment=HOME=@@home@@
 # file, so this line is the ONLY place a unit can get it; `host-units.test.ts` pins it on every shipped service.
 Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache
 
-# THERE IS NO `Environment=GH_CONFIG_DIR=` LINE, AND ITS ABSENCE IS DELIBERATE RATHER THAN FORGOTTEN.
+# THIS UNIT DECLARES AN ACCOUNT SINCE #2782, AND THE REASON IS ONE READ PER REMOVAL, NOT A CHANGE OF PURPOSE.
 #
-# #1974 added that line to every unit that can reach a `gh` spawn, because a unit has no
-# `HERDR_WORKSPACE_ID` and so falls back to a PERSON's stored credentials. This unit reaches no `gh`
-# spawn: `prune-worktrees.mjs` imports only `guards/src/git-env.mjs` and `worker-fleet/src/cli-flags.mjs`,
-# and its whole predicate is `git merge-base --is-ancestor` against `origin/main`. `unitsSpendingGh` is
-# the check that keeps that true -- it walks this unit's real import closure, and
-# `host-units.test.ts` pins the exact list of services it returns, so the day a `gh` call appears
-# anywhere under this entry point the suite names this unit rather than discovering it on a spent pool.
+# It used to carry no `Environment=GH_CONFIG_DIR=` line, deliberately: `prune-worktrees.mjs` reached no `gh` spawn, its whole
+# predicate was `git merge-base --is-ancestor` against `origin/main`, and `ceo`'s 2026-09-22 ruling on #1950 refused a
+# `work-gate.mjs` cause for this chore BECAUSE it cost no API budget and needed no judgment. `wt-2623` was then deleted
+# under its live claim twice, and #2020's `.a11y-owner` check could not have stopped it: the stamp is a COPY of the claim and
+# a claim's re-creation loses it. The row's `session:` label is the fact, so the prune now reads it (#2782, done-when 3) --
+# `gh issue view <row>` for a tree every other check has already passed for removal, and for no other.
 #
-# Copying the line in anyway would claim an API identity for a unit that spends none, and would quietly
-# break the only argument that lets this run on a clock at all: `ceo`'s 2026-09-22 ruling on #1950 refused
-# a `work-gate.mjs` cause for this chore BECAUSE it costs no API budget and needs no judgment. A unit that
-# declared an account would be asserting the opposite of the thing that got it scheduled.
+# WHAT THAT COSTS, MEASURED AS AN ORDER OF MAGNITUDE: about 15 trees a day accumulate (#2000), so about 15 reads a day on the
+# core pool, where one `work:tick` pass spends more than that. WHAT IT DOES NOT CHANGE: the clock. There is still no model
+# turn and no judgment in this unit, which is the part of #1950's ruling that put it on a timer rather than a wake cause;
+# what moved is only the premise that it costs nothing. A read that fails REFUSES the tree (`claimRefusal`), so a spent pool
+# stops the pruning rather than licensing it.
+#
+# THE ACCOUNT IS THE WORKERS', as `work-tick.service` declares: a unit has no `HERDR_WORKSPACE_ID`, so without the line the
+# `gh` wrapper falls back to a PERSON's stored credentials (#1974).
+Environment=GH_CONFIG_DIR=@@workersDir@@/gh
 
 # `--apply` OR THIS UNIT IS A REPORT NOBODY READS. The bare script is deliberately a DRY RUN, and for a
 # measured reason: on 2026-09-09 a session ran `npm run worktrees:prune` to READ the breakdown before

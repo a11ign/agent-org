@@ -55,6 +55,7 @@ import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { REPO } from "./project-identity.mjs";
 import { parseWorktreeList } from "./prune-worktrees.mjs";
 import { stampWorktree } from "./worktree-owner.mjs";
+import { recordRemoval } from "./worktree-removal.mjs"; // #2827
 // RELATIVE, not the `@a11ign/worker-fleet/cli-flags` package specifier -- see `row-claim.mjs`'s own
 // header for why: this needs `node_modules` and a completed build, and this file has neither guarantee.
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
@@ -95,6 +96,42 @@ export function branchCheckedOutLocally(branch, repoRoot, { run = defaultRun } =
 }
 
 /**
+ * #2827: remove the carry's throwaway detached worktree, WITH its line in #2782's removal log -- `removing` before the delete,
+ * `removed` or `failed` after -- so a later session can read who removed a tree.
+ *
+ * NO `claimRefusal`, on purpose: the scratch directory is a fresh `carry-branch-*` temp dir of this call's own making, never
+ * the worktree a row's claim created, so no row's `session:` label can name it.
+ *
+ * BEST-EFFORT, as the cleanup always was, and it must be: this runs in `carryBranch`'s `finally`, where a throw would replace
+ * the carry's own result. So a line that cannot be written leaves the tree in place (a delete nobody can see is the defect
+ * the log exists to end) and says so on stderr, and a removal git refuses is recorded as `failed` rather than swallowed.
+ * Nothing of value survives only in the scratch tree, since a successful carry has already pushed everything that mattered.
+ * @param {string} dir @param {string} repoRoot
+ * @param {{ run: typeof defaultRun, record: typeof recordRemoval }} deps
+ */
+function removeCarryScratch(dir, repoRoot, { run, record }) {
+  const line = { path: dir, caller: "carry-branch.mjs carryBranch", reason: "the carry's throwaway detached worktree (#656)" };
+  try {
+    record({ ...line, event: "removing" });
+  } catch (error) {
+    process.stderr.write(`carry-branch: the removal log could not be written, so ${dir} was left in place -- ${errMsg(error)}\n`);
+    return;
+  }
+  /** @type {{ event: "removed" | "failed", detail?: string }} */
+  let outcome = { event: "removed" };
+  try {
+    run("git", ["worktree", "remove", "--force", dir], { cwd: repoRoot });
+  } catch (error) {
+    outcome = { event: "failed", detail: errMsg(error) };
+  }
+  try {
+    record({ ...line, ...outcome });
+  } catch (error) {
+    process.stderr.write(`carry-branch: could not record that ${dir} was ${outcome.event} -- ${errMsg(error)}\n`);
+  }
+}
+
+/**
  * THE #656 CARRY. Opens a DETACHED worktree at `origin/<branch>`'s current tip (never the branch name
  * itself, so it cannot collide with a worktree that already has that branch checked out), merges
  * `origin/main` into it, and pushes the result straight back to `refs/heads/<branch>`.
@@ -113,13 +150,13 @@ export function branchCheckedOutLocally(branch, repoRoot, { run = defaultRun } =
  *
  * @param {string} repoRoot a real checkout of this repository to run `git worktree add` FROM
  * @param {string} branch bare branch name, e.g. "agent/pre-push-delete-583" -- no `origin/` prefix
- * @param {{ run?: typeof defaultRun, workDir?: string, stamp?: typeof stampWorktree }} [deps]
+ * @param {{ run?: typeof defaultRun, workDir?: string, stamp?: typeof stampWorktree, record?: typeof recordRemoval }} [deps]
  *   `workDir`: an existing directory to use
  *   instead of a fresh temp one, and skip the automatic cleanup of it -- for tests that want to inspect
- *   the carrying worktree afterward.
+ *   the carrying worktree afterward. `record` is #2827's removal log, a seam so a test can read the line.
  * @returns {{ carried: true, diffstat: string } | { carried: false, reason: string, diffstat?: string }}
  */
-export function carryBranch(repoRoot, branch, { run = defaultRun, workDir, stamp = stampWorktree } = {}) {
+export function carryBranch(repoRoot, branch, { run = defaultRun, workDir, stamp = stampWorktree, record = recordRemoval } = {}) {
   const dir = workDir ?? realpathSync(mkdtempSync(join(tmpdir(), "carry-branch-")));
   try {
     try {
@@ -163,14 +200,7 @@ export function carryBranch(repoRoot, branch, { run = defaultRun, workDir, stamp
     }
     return { carried: true, diffstat };
   } finally {
-    if (!workDir) {
-      try {
-        run("git", ["worktree", "remove", "--force", dir], { cwd: repoRoot });
-      } catch {
-        // Best-effort cleanup of a throwaway detached worktree -- nothing of value survives only in it,
-        // since a successful carry has already pushed everything that mattered.
-      }
-    }
+    if (!workDir) removeCarryScratch(dir, repoRoot, { run, record });
   }
 }
 

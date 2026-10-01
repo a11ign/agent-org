@@ -56,6 +56,13 @@ import { loadLanes, inLane } from "./lane-ownership.mjs";
 // filing named in so many words. `row-branch-rule.mjs` imports NOTHING, and `git-env.mjs` imports nothing
 // either, so the gate keeps the property its own header states -- it runs before any `npm ci` or build.
 import { LS_REMOTE_ARGS, rowBranchesInListing } from "./row-claim/row-branch-rule.mjs";
+// #2791: THE RULE `row-claim.mjs` REFUSES A CLAIM ON, imported unchanged as `row-file` already does -- a second
+// copy of "which sections must a row state" is the drift this whole family of imports exists to prevent.
+import { missingTemplateFields } from "./row-claim/template-fields-rule.mjs";
+// #2823: THE CLOSES RULE `closes-mismatch-check.mjs` PASSES A PULL REQUEST ON, imported and not retyped -- the gate and the
+// CI step must call the same condition "repo-wide", or a PR the check passes with a warning is one the gate never reports.
+import { isRepoWideResolutionFault, recentClosesSiblings } from "./closes-mismatch-check.mjs";
+import { extractClosesDeclaration } from "./acceptance-commands.mjs";
 // EVERY `git` SPAWN IN THIS REPO STRIPS `GIT_*` THROUGH ONE FUNCTION (`git-env.mjs`'s own header records
 // the 2026-09-06 incident where an inherited `GIT_DIR` landed fifteen commits in the wrong checkout).
 // This tick runs under systemd, where the environment is not the one a person typed.
@@ -65,6 +72,10 @@ import { sandboxGitEnv } from "./lib/git-env.mjs";
 // graph of a script that runs 720 times a day, to use a function it calls only when already refusing.
 import { poolDiagnosis, refusalPoolLine } from "./api-pool.mjs";
 import { declaredGhAccount } from "./gh-identity.mjs";
+import { stateEntryPath } from "./host-config.mjs"; // #2799
+// #2848: THE REPEATING-LINE QUESTION, in its own leaf for the reason `disk-headroom.mjs` is one: it reads the journal, not GitHub.
+import { repeatingLinesTick } from "./repeating-lines.mjs";
+import { tapShadowReads } from "./shadow-reads.mjs"; // #2849
 // #1969, AND THE PREDICATE IS IMPORTED RATHER THAN RE-DECIDED. `armedFromApi` knows THREE armed states --
 // merged, a pending auto-merge, and SITTING IN THE MERGE QUEUE, where `autoMergeRequest` reads `null` on a
 // correctly armed pull request (#1729/#1727, and #2004 for the read that fed it). `ceo`'s ruling names
@@ -75,7 +86,7 @@ import { declaredGhAccount } from "./gh-identity.mjs";
 import { armedFromApi, openPullRequestsQueryArgs } from "./auto-arm-sweep.mjs";
 import { armabilityOf, holdersOf } from "./pr-hold-state.mjs";
 import { REPO } from "./project-identity.mjs";
-import { homeProjectDeclaration } from "./project-config.mjs";
+import { HOME_CHECKOUT, homeProjectDeclaration } from "./project-config.mjs";
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "./cause-declaration.mjs";
 // #2619 (child 3d of #69): the rest of this file's vocabulary -- `backlog`, `needs:chairman`,
 // `out-of-release`, `blocked`, the `lane:`/`session:` prefixes and `lane:any`.
@@ -92,7 +103,9 @@ import { diskHeadroom, MIN_FREE_FRACTION } from "./disk-headroom.mjs";
 // #2470: A CLAIM THAT DOES NOT MOVE. A leaf, like every import above, so the gate keeps the property its own header states.
 import { STALL_STATE_FILE, claimFactsFrom, readClaim, claimStalledOrders, nextStallState, readStallState,
   writeStallState, readHerdrRestart, gitRun, pathExists, statMtime, nudgeKey, nudgeDeliveredAt,
-  claimRecordOf } from "./claim-stall.mjs";
+  claimRecordOf, KEPT_CLAIMS_FILE, readJsonObject, writeJsonObject } from "./claim-stall.mjs";
+// #2845: WHO STAMPED A WORKTREE -- the reading a refused claim names. Imports only `node:*` and `lib/`, like the rest.
+import { worktreeOwner } from "./worktree-owner.mjs";
 // #2747: WHETHER A CLAIM'S SESSION STILL EXISTS AT ALL -- a DIFFERENT question from "who is free" (line 26-29
 // above): that is routing, `wake.mjs`'s job, and stays out of this file. This is a fact the STALL reading needs
 // (a claim held by nobody is not a stall to be nudged), read the same seamed way `readHerdrRestart` already reads
@@ -106,6 +119,7 @@ import { requiredWhenRed, perPullRequestOrders, mergeConflictOrders, greenUnarme
   HOLD_RED_JOBS } from "./work-gate/pr-orders.mjs";
 export { redOnlyBySupersededRun, mergeConflictOrders, greenUnarmedOrders, reviewBlockedOrders, HOLD_RED_JOBS,
   awaitingEvidenceStaleOrders } from "./work-gate/pr-orders.mjs";
+import { labJobFinishedOrders, readLabJobRecords } from "./work-gate/lab-job-orders.mjs"; // #2729
 // #2691: THE LIVE CALL-COUNT SIGNAL, reusing the parser rather than a second one -- `split-baseline.mjs`
 // already imports these two the same way. `token-audit.mjs` imports only `node:*` and `cli-flags.mjs`
 // (already here), so the gate keeps the property its own header states.
@@ -136,7 +150,7 @@ export const EXIT = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3 };
 export { CAUSES, JUDGMENT_CAUSES, START_CAUSES };
 
 /** Where the drain marker lives. `touch` it to open a window; `rm` it to close one. */
-export const DRAIN_MARKER = `${process.env.HOME}/.cache/a11ign/drain`;
+export const DRAIN_MARKER = stateEntryPath("drain");
 
 /**
  * Is the org draining -- finishing what is in flight and taking on nothing new?
@@ -232,7 +246,10 @@ export function readPrs(run = defaultRun) {
       // `latestReviews[].commit.oid` comes back the EMPTY STRING and `reviews[].commit.oid` carries the sha the
       // review was posted at -- and "was this convinced verdict converted into a review AT THIS HEAD" is a
       // question about exactly that sha. `gh api .../pulls/N/reviews` `commit_id` agrees with it. No second call.
-      + "reviews"]);
+      + "reviews,"
+      // #2823: `closingIssuesReferences` (what GitHub will close) and `createdAt` (how long the condition has stood), on the
+      // same call, so `closesUnresolvedOrders` reads the Closes condition without a second request.
+      + "closingIssuesReferences,createdAt"]);
     const parsed = JSON.parse(out);
     return Array.isArray(parsed) ? parsed : null;
   } catch {
@@ -604,7 +621,7 @@ export function readPromotableRows(run = defaultRun) {
     // dependency edge -- `gh issue create --blocked-by` writes it, the UI renders it, and this `--json`
     // returns it -- so reading a waiting condition costs nothing this tick did not already spend.
     const out = run(["issue", "list", "--state", "open", "--label", BACKLOG_LABEL, "--limit", "200",
-      "--json", "number,labels,body,blockedBy"]);
+      "--json", "number,title,createdAt,labels,body,blockedBy"]);
     const parsed = JSON.parse(out);
     if (!Array.isArray(parsed)) return null;
     // `NOT_STARTABLE`, NOT `NOT_PICKABLE`: a routed row is kept here and removed again by `ownerOf` for
@@ -798,6 +815,20 @@ function branchesText(pushed) {
 }
 
 /**
+ * The template sections this row's body does not state, `[]` when it is complete OR WHEN THE BODY WAS NOT READ.
+ * A row with no string `body` is "not asked", never "asked and empty": `readReadyRows` always requests it, so a
+ * caller that lacks it (a fixture, a future read) must not shelve the whole queue on an absence.
+ * @param {any} row
+ * @returns {string[]}
+ */
+function missingFieldsOf(row) {
+  return typeof row?.body === "string" ? missingTemplateFields(row.body) : [];
+}
+
+/** @param {string[]} missing @returns {string} */
+const templateGapText = (missing) => `its body has no ${missing.map((f) => `\`## ${f}\``).join(", ")}`;
+
+/**
  * The unclaimed Ready rows, split into what a session could actually claim right now and what B4 would
  * refuse, with the reason and the row's lane owner.
  *
@@ -848,6 +879,16 @@ export function partitionUnclaimed(readyRows, prFiles, options) {
     // to a session other than the one already holding it" needed no expression -- a held row is not
     // offered to anybody, which is strictly stronger and was already true.
     if (labelsOf(row).includes(CLAIM_LABEL)) continue;
+    // #2791: A ROW THE CLAIM WILL REFUSE FOR A TEMPLATE DEFECT IS NOT STOCK. #2729 and #2730 read `ready` for ~38h
+    // with no `## Open-check`, so every offer ended in `NOT CLAIMED: ... is missing Open-check` while the pool
+    // counted them and `ready-queue-empty` stayed silent. SHELVED, like every reason here, and the reason
+    // names the section: `incompleteRowOrders` is what asks somebody to add it.
+    const missing = missingFieldsOf(row);
+    if (missing.length > 0) {
+      blocked.push({ number: Number(row.number), ...subjectIdentity(row), owner: laneOwnerOf(row),
+        reason: `${templateGapText(missing)} -- \`row-claim\` refuses it, and it clears when the section is added` });
+      continue;
+    }
     // #2031, AND AHEAD OF EVERY OTHER SHELVING REASON. The others say this row cannot be STARTED yet;
     // this one says it may already be FINISHED, and offering it as a fresh start is the one outcome
     // measured to cost a whole session's turn -- #2000 was offered throughout the 20 minutes its branch
@@ -1102,6 +1143,16 @@ export const FLEET_GATED_SELECTOR = Object.freeze({
  * silently is the failure `blocked` already is", so the shelved half is returned with its reason and
  * `main` prints it on the same `SHELVED row #N:` line the engineer pool's shelvings use.
  *
+ * `needs:chairman` IS THE FIFTH READER OF THE SAME GAP `waitingOn` deliberately does not close (after
+ * #2583/#2585, #2604 and #2653's `parked`): the label names a person and clears when removed, and
+ * `waitingOn`/`fleetWaitingOn` do not read it on purpose, so teaching it here rather than there keeps
+ * every OTHER reader of those functions unchanged. Without this, `fleet-batch-due` re-fired on #2728
+ * three minutes after `orchestrator` had already answered it -- a credential row that should never have
+ * carried `fleet-gated`, but whose re-firing this filter alone would have prevented: `needs:chairman` is
+ * not one of the order's own three machine-readable exits (`Fleet-hold-until:`, `--add-blocked-by`,
+ * `Not-before:`), so a row answered that way never left the set. The rule is the one #1899 applied to
+ * `answer:<session>`: a hold is an answer.
+ *
  * @param {any[]} rows
  * @param {{today?: string, nowMs?: number}} [clock] injected so a test moves time without a global stub
  * @returns {{batch: any[], waiting: {number: number, reason: string}[]}}
@@ -1114,13 +1165,21 @@ export function partitionFleetBatch(rows, clock = {}) {
     .filter(FLEET_GATED_SELECTOR.matches)
     .sort((a, b) => Number(a.number) - Number(b.number));
   for (const row of gated) {
-    const held = fleetWaitingOn(row, today, nowMs);
+    const held = labelsOf(row).includes(CHAIRMAN_LABEL)
+      ? `waiting on the chairman (${CHAIRMAN_LABEL})`
+      : fleetHeldPhrase(row, today, nowMs);
     if (held) {
       waiting.push({ number: Number(row.number),
-        reason: `${describeWaiting(held)} -- declared on the row, and it clears itself` });
+        reason: `${held} -- declared on the row, and it clears itself` });
     } else batch.push(row);
   }
   return { batch, waiting };
+}
+
+/** @param {any} row @param {string} today @param {number} nowMs @returns {string | null} */
+function fleetHeldPhrase(row, today, nowMs) {
+  const held = fleetWaitingOn(row, today, nowMs);
+  return held ? describeWaiting(held) : null;
 }
 
 /**
@@ -1447,6 +1506,82 @@ export function hostDriftOrders(drift) {
  * exception becomes the rule, and the wake ledger will show which session actually answers.
  */
 const HOST_DRIFT_SESSION = "orchestrator";
+
+/**
+ * A PRIMARY THAT IS NOT AT `origin/main` IS A SIGNAL, NOT A JOURNAL LINE (#2781).
+ *
+ * `a11ign-work-tick.service` runs `primary:update` as `ExecStartPre=-`, so when it fails the tick goes on -- and from
+ * 2026-09-28T12:01Z a dirty primary made it fail on every tick for 22 hours (2,652 journal lines) while the gate gave orders from
+ * `a5f407d4f`. Nothing told any session. `ceo` owns the primary (`.github/CLAUDE.md`), so `ceo` is told, with the dirty paths
+ * and how far behind, on the tick they appear.
+ *
+ * TWO CONDITIONS, NEITHER DERIVED FROM THE UPDATE'S FAILURE: tracked paths with uncommitted changes (a dirty primary is reported
+ * before a newer `origin/main` makes it conflict), or HEAD is not `origin/main` (behind, or carrying commits origin lacks).
+ *
+ * AN ACTION CAUSE, so `wake.mjs`'s twenty-minute expiry RE-DELIVERS it until it clears -- a wake that does not stick leaves the
+ * gate running stale with nobody told, which is the defect. KEYED ON THE TWO SHAS AND THE DIRTY SET, so a further merge or a
+ * further edit is a new question and an unchanged stale primary is not a new one every tick.
+ *
+ * `null`/omitted emit NOTHING and are not a clean reading: a linked worktree, CI or a repository with no `origin/main` cannot be asked.
+ *
+ * @param {import("./update-primary.mjs").PrimaryDrift | null | undefined} drift
+ * @returns {{session: string, cause: string, subject: string, discriminator: string,
+ *            prompt: string, causeKey: string}[]}
+ */
+export function primaryStaleOrders(drift) {
+  if (!drift || (drift.behind === 0 && drift.ahead === 0 && drift.dirty.length === 0)) return [];
+  const dirty = [...drift.dirty].sort();
+  const key = `${drift.sha.slice(0, 9)}.${drift.originSha.slice(0, 9)}.${createHash("sha256").update(dirty.join("\n")).digest("hex").slice(0, 8)}`;
+  return [{
+    session: "ceo",
+    cause: "primary-stale",
+    subject: "primary-checkout",
+    discriminator: key,
+    prompt: `The PRIMARY checkout is not at \`origin/main\`: it is at ${drift.sha.slice(0, 9)}, ${drift.behind} commit(s) behind `
+      + `${drift.originSha.slice(0, 9)}${drift.ahead > 0 ? ` and carrying ${drift.ahead} commit(s) origin lacks` : ""}. Every order this gate gives `
+      + "is given from THAT code, and every agent reads its role briefs and scripts out of it.\n"
+      + (dirty.length > 0 ? `${dirty.length} tracked path(s) carry uncommitted changes, which is what makes \`npm run primary:update\` refuse `
+        + `("would be overwritten by checkout"):\n${dirty.map((path) => `  ${path}`).join("\n")}\n` : "No tracked path is dirty, so the update itself "
+        + "is failing for another reason: run `npm run primary:update` and read its output.\n")
+      + "THE EDITS ARE NOT YOURS TO DISCARD UNREAD: an interactive session left them there (the 2026-09-28 cause), and no hook "
+      + "refuses an uncommitted edit. Save `git diff` to `" + stateEntryPath("salvage") + "/primary-<date>.patch` first and say on #2781 "
+      + "where it went, then clear the tracked paths and run `npm run primary:update`. This order repeats until the primary is at `origin/main`.",
+    causeKey: `ceo/primary-stale/${key}`,
+  }];
+}
+
+/**
+ * EVERY ORDER SAYS THE GATE IS RUNNING STALE WHEN IT IS (#2781, done-when 2), with the sha and the count, at the head of its prompt.
+ * The builder's choice between this and withholding: withholding would stall the whole org on a condition `ceo` can clear in one
+ * command, but an order presented as current from stale code is what cost 22 hours, so the orders go out and SAY WHAT THEY ARE.
+ * Applied to the tick's orders after `decide`, so no cause's own text or key changes; `primary-stale` already says it.
+ *
+ * @template {{cause: string, prompt: string}} T
+ * @param {T[]} orders @param {import("./update-primary.mjs").PrimaryDrift | null | undefined} drift @returns {T[]}
+ */
+export function withStalePrimaryNotice(orders, drift) {
+  if (!drift || drift.behind === 0) return orders;
+  const notice = `[THIS GATE IS RUNNING FROM A STALE PRIMARY: ${drift.sha.slice(0, 9)}, ${drift.behind} commit(s) behind origin/main ${drift.originSha.slice(0, 9)}. `
+    + "What this order asks may already be superseded on main; check before acting.]\n";
+  return orders.map((order) => (order.cause === "primary-stale" ? order : { ...order, prompt: notice + order.prompt }));
+}
+
+/**
+ * `update-primary.mjs --drift` -- SPAWNED, like `readHostDrift`, so the gate and `primary:update` read one question with one
+ * reader and the gate's import closure does not grow. `null` for every unreadable case (a spawn that failed, a non-zero exit,
+ * unparseable output, `asked: false`), which is silence and never a clean primary.
+ * @returns {import("./update-primary.mjs").PrimaryDrift | null}
+ */
+function readPrimaryDriftNow() {
+  const run = spawnSync(process.execPath, [fileURLToPath(new URL("./update-primary.mjs", import.meta.url)), "--drift"], { encoding: "utf8" });
+  if (run.status !== 0 || typeof run.stdout !== "string") return null;
+  try {
+    const parsed = JSON.parse(run.stdout);
+    return parsed?.asked === true && parsed.drift ? parsed.drift : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * #2202: `readClosedAnswerRows` with its refusal SAID. Every other reader here degrades to `[]` silently, and
@@ -1930,6 +2065,24 @@ function rowsWithOpenPr(openPrs) {
 }
 
 /**
+ * Whether a CLAIMED row is waiting on something, for the two readers that screen one (`blockerClearedOrders` and
+ * `anyBlockerClearingCandidate`), so the population that pays for a `closings` read cannot drift from the one that
+ * uses it. `fleetWaitingOn` is the declared-field waits (#2186); the two labels are the rest.
+ *
+ * `needs:chairman` AND `parked` ARE WAITS `waitingOn` DELIBERATELY DOES NOT READ, AND THIS IS THE FOURTH READER OF
+ * THAT GAP (#2780, after #2583/#2604/#2653 closed the three that reach an UNCLAIMED row). The order says "PICK IT
+ * BACK UP" to a holder whose row names a person or the schedule as the one thing it waits on: #2623
+ * (`needs:chairman` from 2026-09-28T16:06:31Z) was asked 19+ times in a day, and the prompt's own remedies never
+ * mention the label. Skipped here rather than taught to `waitingOn`, which every reader would then inherit.
+ *
+ * @param {any} row @param {string} today @param {number} nowMs
+ */
+function holderWaitingOn(row, today, nowMs) {
+  const labels = labelsOf(row);
+  return Boolean(fleetWaitingOn(row, today, nowMs)) || labels.includes(CHAIRMAN_LABEL) || labels.includes(PARKED_LABEL);
+}
+
+/**
  * THE GATE COULD SEE A ROW BECOME RUNNABLE AND HAD NOBODY TO TELL -- #2027.
  *
  * MEASURED 2026-09-22. PR #1957 merged at 21:26:01Z and closed #1948 one second later, leaving #1908 --
@@ -2010,7 +2163,7 @@ export function blockerClearedOrders(rows, today = todayIso(), nowMs = Date.now(
     // THE LINE THAT MAKES `cleared` MEAN CLEARED. `waitingOn` reports an OPEN `blockedBy` node before
     // anything else, so passing here is what proves every number above is closed -- and it covers the
     // other conditions in the same breath, which is why `declaredBlockers` does not re-ask.
-    if (fleetWaitingOn(row, today, nowMs)) continue;
+    if (holderWaitingOn(row, today, nowMs)) continue;
     const window = clearingAskWindow(cleared, nowMs, closings);
     if (!window) continue;
     const key = cleared.join(".");
@@ -2210,7 +2363,7 @@ export function readRecentlyClosed(run = defaultRun) {
  */
 export function unclaimedBlockerClearedOrders(rows, today = todayIso(), { closings = null, now = Date.now() } = {}) {
   const orders = [];
-  for (const { row, cleared } of unclaimedClearings(rows, today)) {
+  for (const { row, cleared } of unclaimedClearings(rows, today, now)) {
     const window = clearingAskWindow(cleared, now, closings);
     if (window) orders.push(promotionOrder(row, cleared, window.suffix));
     if (orders.length >= MAX_ROW_ORDERS_PER_TICK) break;
@@ -2223,10 +2376,14 @@ export function unclaimedBlockerClearedOrders(rows, today = todayIso(), { closin
  * `unclaimedBlockerClearedOrders` asks about, and the one `main` reads BEFORE deciding whether to pay for
  * `readRecentlyClosed` at all. Split out so those two callers cannot drift into two spellings of "cleared".
  *
- * @param {any[]} rows @param {string} [today]
+ * `nowMs` IS THE CLOCK THE HOUR-FORM `Not-before:` IS READ AGAINST (#2812). `today` only decides the date form, so a
+ * caller that injected `now` and not this left the hour to the real clock: a fixture naming 2026-09-30T00:00:00Z as
+ * the future went red on main when the wall clock passed it.
+ *
+ * @param {any[]} rows @param {string} [today] @param {number} [nowMs]
  * @returns {{row: any, cleared: number[]}[]}
  */
-export function unclaimedClearings(rows, today = todayIso()) {
+export function unclaimedClearings(rows, today = todayIso(), nowMs = Date.now()) {
   const found = [];
   for (const row of rows ?? []) {
     const labels = labelsOf(row);
@@ -2245,7 +2402,7 @@ export function unclaimedClearings(rows, today = todayIso()) {
     // unchanged: `waitingOn` reports an OPEN `blockedBy` node before anything else, so passing here is
     // what proves every number above is closed -- and it covers the `Not-before:` and `answer:` cases in
     // the same breath, which is why `declaredBlockers` does not re-ask.
-    if (waitingOn(row, today)) continue;
+    if (waitingOn(row, today, nowMs)) continue;
     found.push({ row, cleared });
   }
   return found;
@@ -2749,8 +2906,8 @@ export function claimStallsNow(rows, claimedComments, prs, { tick = claimStallTi
 /** @param {string[]} args */
 const systemctlRun = (args) => execFileSync("systemctl", args, { encoding: "utf8", timeout: 10_000 });
 
-/** The checkout this file runs from: where `../wt-<row>` claim records are resolved against. */
-const REPO_CHECKOUT = fileURLToPath(new URL("../../..", import.meta.url));
+/** The project checkout this tool serves (`HOME_CHECKOUT`, not `src` up three): where `../wt-<row>` claim records are resolved against. */
+export const REPO_CHECKOUT = HOME_CHECKOUT;
 
 /**
  * AN EPIC WITH NO CHILDREN IS NOT A CONTAINER -- IT IS WORK NOBODY HAS FILED.
@@ -3555,13 +3712,30 @@ const ASSESSED_CALLS = /\bcalls=(\d+)\b/;
  * @param {any[]} comments
  * @returns {number | null}
  */
-function rowCallCountAssessedCalls(comments) {
+export function rowCallCountAssessedCalls(comments) {
   const newest = comments.filter((c) => String(c?.body ?? "").includes(ROW_CALL_COUNT_ASSESSED_MARKER)).at(-1);
   if (newest === undefined) return null;
   const match = ASSESSED_CALLS.exec(String(newest.body));
   if (match === null) return null;
   const n = Number(match[1]);
   return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * The body of the verdict comment `product-manager` posts on a row-call-count signal (#2762): the WRITER the
+ * marker and `rowCallCountAssessedCalls` were specified without, so the marker and `calls=N` were typed by
+ * hand and a hand-typed verdict with neither left the doubling guard nothing to compare against.
+ *
+ * `calls=N` comes straight after the marker and BEFORE the free-text note: `ASSESSED_CALLS` takes the first
+ * match, so a note that happens to quote another `calls=` figure cannot displace the real one. A count that
+ * is not a non-negative integer throws rather than posting a comment the reader would read back as `null`.
+ * @param {{ calls: number, split: boolean, note?: string }} verdict `calls` is the figure named in the signal's prompt
+ * @returns {string}
+ */
+export function formatRowCallCountAssessment({ calls, split, note = "" }) {
+  if (!Number.isInteger(calls) || calls < 0) throw new RangeError(`calls must be a non-negative integer, got ${calls}`);
+  const head = `${ROW_CALL_COUNT_ASSESSED_MARKER}\ncalls=${calls}\n${split ? "Split" : "One unit, not split"}.`;
+  return note.trim() === "" ? head : `${head} ${note.trim()}`;
 }
 
 /**
@@ -3886,6 +4060,139 @@ function rowOrders(unclaimed) {
   return orders;
 }
 
+// --- #2845: A READY ROW THE CLAIM REFUSES, TICK AFTER TICK -------------------------------------------------------------------
+//
+// MEASURED 2026-10-01 from `a11ign-work-tick.service`'s journal: #2824 was offered every tick for 7.5 hours and refused at the
+// claim every time (`--worktree=../wt-2824 ALREADY EXISTS`) -- 211 `UNDELIVERED` lines, and `product-manager` was never
+// woken, because `ready-queue-empty` fires only on an EMPTY pool and the pool held that one row. A refusal that only logs
+// is read by nobody. THE GATE CANNOT SEE THE SPAWNER'S REFUSAL (a derived cause is not in the ledger and `wake.mjs` prints
+// it to stderr), so it asks the claim's own question itself and keeps its own streak: not a new "everyone is idle" probe, which
+// would have fired on a legitimately empty org too.
+
+/**
+ * N, THE TICKS A REFUSAL MUST REPEAT BEFORE IT IS REPORTED: 15, which is about 30 minutes at the tick's 2-minute cadence (the
+ * 211 lines over 7.5 hours above are ~28 a tick-hour). Long enough that the ordinary transient -- a claim that has just
+ * been declined and whose tree is on its way out, a release whose kept tree is about to be adopted -- clears first; short
+ * enough that a stuck row costs half an hour rather than the 7.5 it did.
+ */
+export const UNCLAIMABLE_AFTER_TICKS = 15;
+
+/** The streak memory, beside `claim-stalls.json` and the wake ledger: `{ "<row>": { reason, ticks } }`. */
+export const CLAIM_REFUSALS_FILE = "claim-refusals.json";
+
+/**
+ * The refusal the claim would give this row for a reason that does NOT depend on who claims: its target worktree already
+ * exists. The words are `row-claim.mjs`'s `worktreeTargetReason`, which this file cannot import (`row-claim` imports
+ * `wake`, which imports this), so a test pins the two to the same text. WHAT IT DOES NOT PREDICT: the exact-branch and
+ * origin-branch refusals (the second is `rowBranchOrders`' already) -- a row refused for one of those is not reported
+ * here, and says so by being offered without ever being reported.
+ *
+ * A TREE A RELEASE KEPT FOR THIS ROW IS NOT A REFUSAL: the spawner adopts it (`--adopt`, #2470), so the claim lands.
+ *
+ * @param {{ number: number }} row
+ * @param {{ worktreesDir: string, kept?: Record<string, { worktree?: string }>, exists?: (path: string) => boolean,
+ *   owner?: typeof worktreeOwner }} deps
+ * @returns {string | null}
+ */
+export function claimRefusalOf(row, { worktreesDir, kept = {}, exists = existsSync, owner = worktreeOwner }) {
+  const keptTree = kept[String(row.number)]?.worktree;
+  if (keptTree !== undefined && exists(keptTree)) return null;
+  const path = join(worktreesDir, `wt-${row.number}`);
+  if (!exists(path)) return null;
+  const who = owner(path);
+  return `--worktree=../wt-${row.number} ALREADY EXISTS, ${who ? `stamped by \`${who}\`` : "UNSTAMPED (nobody recorded an owner, which is not the same as free)"}. `
+    + "Refusing before any write: a claim that went on would act inside a tree it did not create.";
+}
+
+/**
+ * The streaks after one more tick. KEYED ON THE ROW AND THE REFUSAL TEXT: the same refusal extends the streak, a CHANGED
+ * one starts it again at 1, and a row with no refusal this tick (claimed, withdrawn, or its tree gone) is simply not carried.
+ * @param {Record<string, { reason: string, ticks: number }>} before
+ * @param {Record<string, string | null>} readings row -> this tick's refusal, or `null` for none
+ * @returns {Record<string, { reason: string, ticks: number }>}
+ */
+export function nextRefusalStreaks(before, readings) {
+  /** @type {Record<string, { reason: string, ticks: number }>} */
+  const after = {};
+  for (const [row, reason] of Object.entries(readings)) {
+    if (reason === null) continue;
+    after[row] = { reason, ticks: before[row]?.reason === reason ? before[row].ticks + 1 : 1 };
+  }
+  return after;
+}
+
+/**
+ * THE WHOLE OF THIS CAUSE'S MEMORY FOR ONE TICK: read each offered row's refusal, advance the streaks on disk, and return them.
+ * NEVER THROWS, and says so on stderr: a broken detector must not stop the orders behind it, and it returns NO streaks rather
+ * than stale ones, so nothing is reported on a tick that could not be read.
+ * @param {any[]} offerable the rows `partitionUnclaimed` judged offerable this tick
+ * @param {{ stateDir?: string, worktreesDir?: string, log?: (line: string) => void, exists?: (path: string) => boolean,
+ *   owner?: typeof worktreeOwner }} [host] every one a seam
+ * @returns {Record<string, { reason: string, ticks: number }>}
+ */
+export function claimRefusalStreaksNow(offerable, { stateDir = REVIEWER_STATE_DIR, worktreesDir = dirname(REPO_CHECKOUT),
+  log = (line) => process.stderr.write(line), ...seams } = {}) {
+  try {
+    const path = `${stateDir}/${CLAIM_REFUSALS_FILE}`;
+    const before = readJsonObject(path);
+    const kept = readJsonObject(`${stateDir}/${KEPT_CLAIMS_FILE}`);
+    /** @type {Record<string, string | null>} */
+    const readings = {};
+    for (const row of offerable) readings[subjectRef(row.repoKey, row.number)] = claimRefusalOf(row, { worktreesDir, kept, ...seams });
+    const after = nextRefusalStreaks(before, readings);
+    if (JSON.stringify(after) !== JSON.stringify(before)) writeJsonObject(path, after);
+    return after;
+  } catch (/** @type {any} */ err) {
+    log(`claim-refusals: could not run (${String(err?.message ?? err).split("\n")[0]}) -- no ready-row-unclaimable order this tick.\n`);
+    return {};
+  }
+}
+
+/**
+ * `claimRefusalStreaksNow` over the rows `decide` will OFFER -- the same `partitionUnclaimed` reading, so the streaks advance on
+ * those rows and on no others (a row shelved for B4 or a branch on `origin` is not being refused by the claim, it is not offered).
+ * @param {Parameters<typeof partitionUnclaimed>[0]} rows @param {Parameters<typeof partitionUnclaimed>[1]} prFiles
+ * @param {Parameters<typeof partitionUnclaimed>[2]} options
+ */
+function offeredRefusalStreaks(rows, prFiles, options) {
+  return claimRefusalStreaksNow(partitionUnclaimed(rows, prFiles, options).offerable);
+}
+
+/**
+ * One order to `product-manager` per offered row whose claim has been refused `UNCLAIMABLE_AFTER_TICKS` ticks running, QUOTING
+ * the refusal. THE DISCRIMINATOR CARRIES THE REFUSAL'S DIGEST, which is what `emptyShelfOrder`'s count is for it: the order
+ * stops repeating while the answer is unchanged, and a refusal that changes (a different owner stamped the tree) is a new
+ * question and re-fires. It stops altogether when the row is claimed or leaves the shelf, because `offerable` no longer holds it.
+ * `streaks` ABSENT MEANS NOT ASKED and carries no default here, for `rowBranches`'s reason: `decide` sits on its complexity limit.
+ *
+ * @param {any[]} offerable @param {Record<string, { reason: string, ticks: number }> | undefined} streaks
+ * @returns {{session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string}[]}
+ */
+export function unclaimableRowOrders(offerable, streaks) {
+  return offerable.flatMap((row) => {
+    const ref = subjectRef(row.repoKey, row.number);
+    const seen = streaks?.[ref];
+    if (seen === undefined || seen.ticks < UNCLAIMABLE_AFTER_TICKS) return [];
+    const discriminator = `${ref}-${digestOf(seen.reason)}`;
+    return [{
+      session: "product-manager",
+      cause: "ready-row-unclaimable",
+      subject: `row-${ref}`,
+      discriminator,
+      prompt: `Ready row ${subjectMention(row)} CANNOT BE CLAIMED: the gate has offered it to the engineers and the claim has `
+        + `refused it on ${seen.ticks} consecutive ticks. The refusal, quoted:\n\n> ${seen.reason}\n\n`
+        + "Nobody can act on this but whoever stocks the queue, and nothing else will tell you: an offer the claim refuses is "
+        + "logged and retried, and `ready-queue-empty` stays silent while the row sits in the pool.\n"
+        + "Find out whose tree it is (`npm run worktree:whose -- <path>`) and whether that session still holds the row. A "
+        + "live holder whose row lost its claim label needs the label back; a leftover tree whose work is merged and clean "
+        + "goes with `npm run worktrees:prune` (never `rm -rf`), which names and leaves any dirty one; a tree with unpushed "
+        + "work is that session's to finish. If none of that fits, take the row off the shelf (`" + BLOCKED_LABEL + "`, with what would "
+        + "clear it) so the engineers stop being offered it.",
+      causeKey: `product-manager/ready-row-unclaimable/${discriminator}`,
+    }];
+  }).slice(0, MAX_ROW_ORDERS_PER_TICK);
+}
+
 /**
  * A READY ROW WHOSE WORK IS ALREADY ON `origin`, SAID OUT LOUD -- #2031.
  *
@@ -3974,6 +4281,157 @@ function unshippedOrder({ row, pushed }) {
       + "Each clears itself.",
     causeKey: `${owner}/row-branch-unshipped/row-${subjectRef(row.repoKey, row.number)}/${key}`,
   };
+}
+
+/**
+ * One order per unclaimed Ready row whose body lacks a required template section (#2791) -- the SPOKEN half of
+ * what `partitionUnclaimed` withholds, so a shelved row is never a silent one.
+ *
+ * THE ROW IS THE STATE. The key carries the missing sections, so the order stops the moment the section is
+ * added and a second one appears if a different section is later removed. Routed to the lane owner, else
+ * `product-manager`, who owns filing, amendments and promotion: the remedy is one `## <Field>` heading
+ * with real content under it, and the claim refuses until it exists.
+ *
+ * A JUDGMENT CAUSE for `row-branch-unshipped`'s reason -- the answer is durable, so an action cause's expiry
+ * would re-ask an unchanged row.
+ *
+ * @param {any[]} readyRows the `ready` rows (`readReadyRows`)
+ * @returns {{session: string, cause: string, subject: string, discriminator: string,
+ *            prompt: string, causeKey: string}[]}
+ */
+export function incompleteRowOrders(readyRows) {
+  const orders = [];
+  const oldestFirst = [...readyRows].sort((a, b) => Number(a.number) - Number(b.number));
+  for (const row of oldestFirst) {
+    if (sessionOf(row) || labelsOf(row).includes(CLAIM_LABEL)) continue;
+    const missing = missingFieldsOf(row);
+    if (missing.length === 0) continue;
+    const owner = laneOwnerOf(row) ?? "product-manager";
+    const subject = `row-${subjectRef(row.repoKey, row.number)}`;
+    orders.push({
+      session: owner,
+      cause: "ready-row-incomplete",
+      subject,
+      discriminator: missing.join("+"),
+      prompt: `Row ${subjectMention(row)} reads \`${READY_LABEL}\` and unclaimed, but ${templateGapText(missing)}, `
+        + "so `row-claim` REFUSES every claim on it (`NOT CLAIMED: ... is missing <section>`). The gate has "
+        + "STOPPED offering it and no longer counts it as Ready stock -- measured 2026-09-30 on #2729 and #2730, "
+        + `which sat \`${READY_LABEL}\` for ~38h behind exactly that refusal while the queue read as stocked and `
+        + "`ready-queue-empty` never fired.\n"
+        + "ADD THE SECTION, or take the label off: a `## <Field>` heading with real content under it "
+        + "(`Region`, `Acceptance`, `Open-check`). This order stops by itself once the body is complete.",
+      causeKey: `${owner}/ready-row-incomplete/${subject}/${missing.join("+")}`,
+    });
+    if (orders.length >= MAX_ROW_ORDERS_PER_TICK) break;
+  }
+  return orders;
+}
+
+/**
+ * The open pull requests that declare a `Closes` number and that GitHub resolved NOTHING for -- but only while that is
+ * REPO-WIDE, by `isRepoWideResolutionFault`'s own three-sibling rule (#2823). `[]` when the condition does not hold,
+ * and a PR whose `closingIssuesReferences` was not read (a fixture, a refused field) is neither declared-and-unresolved
+ * nor a sibling: an absent field is "not asked", never "resolved nothing".
+ * @param {any[] | null} prs @returns {any[]}
+ */
+export function closesUnresolvedPrs(prs) {
+  const candidates = (prs ?? [])
+    .filter((pr) => Array.isArray(pr.closingIssuesReferences) && typeof pr.body === "string")
+    .map((pr) => ({ pr, declaration: extractClosesDeclaration(pr.body) }))
+    .flatMap(({ pr, declaration }) => declaration.kind === "closes" && declaration.numbers.length > 0
+      ? [{ pr, declared: declaration.numbers,
+        resolved: pr.closingIssuesReferences.map((/** @type {{number: number}} */ issue) => Number(issue.number)) }]
+      : []);
+  const newestFirst = [...candidates].sort((a, b) => Number(b.pr.number) - Number(a.pr.number));
+  const asLookup = newestFirst.map(({ pr, resolved }) => ({ number: Number(pr.number), body: pr.body, resolved }));
+  const held = newestFirst.filter(({ pr, declared, resolved }) =>
+    isRepoWideResolutionFault({ declared, resolved }, recentClosesSiblings(asLookup, Number(pr.number))));
+  return held.map(({ pr }) => pr).sort((a, b) => Number(a.number) - Number(b.number));
+}
+
+/** @param {number} ms @returns {string} */
+const standingText = (ms) => (ms >= 2 * 3_600_000 ? `${Math.floor(ms / 3_600_000)}h` : `${Math.max(1, Math.round(ms / 60_000))} min`);
+
+/**
+ * ONE order, to `product-manager`, while GitHub resolves no closing reference for the open pull requests that declare one
+ * (#2823). `closes-mismatch-check.mjs` used to print "Tell `product-manager`" into a CI log for this and nothing reads a
+ * CI log for an instruction: all 8 open PRs failed `gate` for ~2h on 2026-09-30 before the chairman noticed idle agents.
+ * It now PASSES with a warning (#2822), which is quieter still, so the gate says it. NOT `pr-checks-failing`: that tells an
+ * AUTHOR to fix a branch, and this fault is on no branch.
+ *
+ * KEYED ON THE SET OF PULL REQUESTS, so it is asked once per condition and stops the moment a PR resolves (the rule then
+ * no longer holds). JUDGMENT: the answer is durable, and an action cause's expiry would re-ask an unchanged set.
+ *
+ * @param {any[] | null} prs
+ * @param {number} [now]
+ * @returns {{session: string, cause: string, subject: string, discriminator: string,
+ *            prompt: string, causeKey: string}[]}
+ */
+export function closesUnresolvedOrders(prs, now = Date.now()) {
+  const held = closesUnresolvedPrs(prs);
+  if (held.length === 0) return [];
+  const numbers = held.map((pr) => Number(pr.number)).sort((a, b) => a - b);
+  const oldestMs = Math.min(...held.map((pr) => Date.parse(pr.createdAt)).filter((t) => Number.isFinite(t)));
+  const standing = Number.isFinite(oldestMs) ? `, the oldest open ${standingText(now - oldestMs)}` : "";
+  const discriminator = numbers.join("+");
+  return [{
+    session: "product-manager",
+    cause: "closes-unresolved-repo-wide",
+    subject: "closes-resolution",
+    discriminator,
+    prompt: `GitHub resolves NO closing reference for ${numbers.length} open pull requests that each declare a \`Closes\` `
+      + `row (${held.map((pr) => subjectMention(pr)).join(", ")}${standing}). `
+      + "GitHub resolved nothing for these, nor for the three newest siblings of each, so the fault is GitHub's or the "
+      + "repo's and is on no branch -- do NOT send their authors to fix a body.\n"
+      + "`closes-mismatch-check.mjs` PASSES them with a warning and the post-merge closer closes the declared rows from "
+      + "the body, so nothing is blocked; the reader is needed for the rest: check whether GitHub is degraded, that the "
+      + "closer ran for each merge since, and file a row if it persists. This order stops by itself when any of them "
+      + "resolves.",
+    causeKey: `product-manager/closes-unresolved-repo-wide/${discriminator}`,
+  }];
+}
+
+/** How long a promotable `backlog` row may sit with no promotion decision before `product-manager` is asked (#2848). */
+export const AGED_BACKLOG_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * BACKLOG ROWS OLDER THAN 24 HOURS WITH NO PROMOTION DECISION, to `product-manager` (#2848, the second question beside the
+ * repeating-line one: both are a thing that stays true and that nobody reads).
+ *
+ * "NO DECISION" IS READ OFF THE ROW, NEVER GUESSED: `promotableRows` already dropped every row that carries a decision in a
+ * FIELD -- a `blockedBy` edge, `Not-before:`, `answer:<session>`, `parked`, `needs:chairman`, and every `NOT_STARTABLE` label
+ * (blocked, epic, decision, meta, ...) -- so what is left is a row somebody could promote and nobody has, and its age is
+ * the time that has been true. The row's age is its `createdAt`: GitHub gives no date for when `backlog` was applied without a
+ * timeline call per row, and a row demoted again by a declined claim (`was-ready`) reads old, which errs toward asking.
+ *
+ * ONE ORDER PER ROW AND THE SET IN EVERY PROMPT, `laneBacklogOrders`' discipline (#1799): the key follows the row, so one row's
+ * answer is not re-litigated when another is filed, and a session is delivered one order per tick, so the prompt carries the
+ * rest. Oldest first, capped at `MAX_ROW_ORDERS_PER_TICK`.
+ *
+ * @param {any[]} promotableRows
+ * @param {number} [now]
+ * @returns {{session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string}[]}
+ */
+export function agedBacklogOrders(promotableRows, now = Date.now()) {
+  const aged = promotableRows
+    .map((row) => ({ row, ageMs: now - Date.parse(row?.createdAt) }))
+    .filter(({ ageMs }) => Number.isFinite(ageMs) && ageMs > AGED_BACKLOG_MS)
+    .sort((a, b) => b.ageMs - a.ageMs);
+  const named = aged.map(({ row, ageMs }) => `${subjectMention(row)} (${standingText(ageMs)}${row.title ? `, ${row.title}` : ""})`);
+  return aged.slice(0, MAX_ROW_ORDERS_PER_TICK).map(({ row, ageMs }, i) => ({
+    session: "product-manager",
+    cause: "backlog-aged-unpromoted",
+    subject: `row-${subjectRef(row.repoKey, row.number)}`,
+    discriminator: "aged",
+    prompt: `${subjectMention(row)}${row.title ? ` (${row.title})` : ""} HAS BEEN IN BACKLOG ${standingText(ageMs)} WITH NO PROMOTION DECISION. `
+      + `It carries no wait -- no \`blockedBy\` edge, \`Not-before:\`, \`${ANSWER_PREFIX}<session>\`, \`${PARKED_LABEL}\` or \`${CHAIRMAN_LABEL}\` -- and no unpickable `
+      + `label, so nothing says why it is not \`${READY_LABEL}\` and nothing else will ask: \`lane-backlog-unpromoted\` fires only when a lane `
+      + "owner has nothing Ready, and `ready-queue-empty` only on an empty shelf.\n"
+      + `PROMOTE IT, OR RECORD WHY NOT AS DATA: a \`${READY_LABEL}\` label is the promotion; a wait goes in a FIELD (\`--add-blocked-by <n>\`, `
+      + `\`Not-before: YYYY-MM-DDTHH:MM:SSZ\`, \`${ANSWER_PREFIX}<session>\`), which clears itself and stops this being asked.`
+      + (named.length > 1 ? `\nALSO AGED (${named.length - 1}): ${named.filter((_, j) => j !== i).slice(0, MAX_ROW_ORDERS_PER_TICK).join("; ")}.` : ""),
+    causeKey: `product-manager/backlog-aged-unpromoted/row-${subjectRef(row.repoKey, row.number)}`,
+  }));
 }
 
 /**
@@ -4215,7 +4673,7 @@ function emptyShelfOrder({ offerable, blocked, promotable, key }) {
         // what is true of every blocked row: promoting past it does not remove what is actually stopping it.
         ? "The blocked rows above are NOT rows to promote past: each names its own reason, and the work "
           + "that frees it belongs to whatever that reason names -- a pull request, a blocking issue, a "
-          + "date -- not necessarily a pull request. Promoting a row whose Region overlaps another open "
+          + "date, a missing template section -- not necessarily a pull request. Promoting a row whose Region overlaps another open "
           + "PR only moves that particular refusal.\n"
         : "")
       + "ASK OF EACH ROW: IS IT STILL TRUE? -- before asking whether it is promotable. A row can fail "
@@ -4525,11 +4983,14 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *           claimedComments?: {number?: number, comments?: {body?: string, id?: string}[]}[],
  *           rowBranches?: {branch: string, head: string, row: number}[] | null,
  *           hostDrift?: {unit: string, problem: string, detail: string}[] | null,
+ *           primaryDrift?: import("./update-primary.mjs").PrimaryDrift | null,
  *           closings?: Map<number, number> | null, trunkRed?: ReturnType<typeof readTrunkRed>,
  *           baseTip?: {sha: string, date: string} | null,
  *           claimStalls?: import("./claim-stall.mjs").StallOrder[], offBoard?: BoardFacts[] | null,
  *           callCountSignals?: { row: number, session: string, calls: number }[],
- *           bareAnswerLabels?: ReturnType<typeof bareAnswerLabelOrders> }} state
+ *           bareAnswerLabels?: ReturnType<typeof bareAnswerLabelOrders>,
+ *           labJobs?: import("./work-gate/lab-job-orders.mjs").LabJobRecord[] | null,
+ *           claimRefusals?: Record<string, { reason: string, ticks: number }> }} state
  *        `claimStalls` is `claimStallTick`'s orders (#2470): a nudge to a holder whose claim has not moved, or a release
  *        `wake.mjs` performs. OMITTED MEANS NONE.
  *        `required` is the checks that can block a merge (`requiredCheckNames`), or `null` for
@@ -4559,6 +5020,8 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *        default for `rowBranches`'s reason -- a default parameter is a branch `complexity` counts,
  *        and `decide` sits exactly on its limit of 15.
  *        It spends NO API pool: see `readHostDrift`.
+ *        `primaryDrift` is `readPrimaryDriftNow()` (#2781): where the primary stands against `origin/main`, or `null` for
+ *        "not asked". OMITTED AND `null` MEAN THE SAME, and it carries no default for the same `complexity` reason.
  *        `trunkRed` is `readTrunkRed()` -- the facts about a red `main`, or `null` when it is green or the
  *        read was refused. OMITTED AND `null` MEAN THE SAME THING and it carries no `= null` default, for
  *        `rowBranches`'s reason: `decide` sits exactly on its limit of 15.
@@ -4576,19 +5039,23 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *        per row's own claim record since #2710) -- split candidates past the threshold on calls made
  *        while holding their row. OMITTED MEANS NONE, and `rowCallCountOrders` carries its own `= []`
  *        default rather than this signature carrying one, for `rowBranches`'s reason.
+ *        `labJobs` is `labJobRecordsOrSay()` (#2729) -- the lab jobs that ended for a row, or `null` for a read that was
+ *        refused. OMITTED AND `null` MEAN THE SAME THING and it carries no `= []` default for `rowBranches`'s reason.
  *        `bareAnswerLabels` is `bareAnswerLabelOrders(...)` (#2711) -- already-built orders, because
  *        building them means a per-row timeline call `decide` itself must not make. OMITTED MEANS NONE,
  *        and it carries no `= []` default for `rowBranches`'s reason: `decide` sits exactly on its limit
  *        of 15, and `bareAnswerOrdersOrNone` carries the `?? []` instead.
+ *        `claimRefusals` is `claimRefusalStreaksNow(offerable)` (#2845) -- each offered row's consecutive-refusal streak. OMITTED MEANS
+ *        NOT ASKED, so no `ready-row-unclaimable` order, and `unclaimableRowOrders` carries the absence handling for `rowBranches`'s reason.
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
-  claimedComments = [], rowBranches, hostDrift, closings, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels }) {
+  claimedComments = [], rowBranches, hostDrift, primaryDrift, closings, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals }) {
   // FIRST, BEFORE EVERY OTHER CAUSE (#2356): a red `main` outranks even `answer-owed` -- see `trunkRedOrders`.
   // `answer-owed` says another session is ALREADY STOPPED waiting on them, which outranks any standing question.
-  const orders = [...trunkRedOrders(trunkRed), ...answerOrders(answerOwed)];
+  const orders = [...trunkRedOrders(trunkRed), ...primaryStaleOrders(primaryDrift), ...answerOrders(answerOwed)]; // #2781: a stale primary next, every order below is given from its code
   // SECOND, AND AHEAD OF `blocker-cleared` DELIBERATELY (#2110). Both address a session that already
   // holds a row, so both outrank every cause that offers new work -- but between the two, a constraint
   // the holder has not read is worse than a row they have not resumed. `blocker-cleared` says work can
@@ -4601,17 +5068,17 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // is queued behind that row stopped with it. Ahead of every cause that offers NEW work: a row already
   // claimed and now runnable beats a row nobody has picked up.
   orders.push(...blockerClearedOrders(openRows, todayIso(), Date.now(), { openPrs: prs, closings })); // #2741 backoff
-  // #2470/#2711: A CLAIM THAT DOES NOT MOVE, OR A BARE `answer:` LABEL ON IT -- both address the row's own holder, so both outrank every cause offering NEW work.
-  orders.push(...stallOrdersOrNone(claimStalls), ...bareAnswerOrdersOrNone(bareAnswerLabels));
+  // #2470/#2711/#2729: A CLAIM THAT DOES NOT MOVE, A BARE `answer:` LABEL ON IT, OR A LAB JOB IT DISPATCHED THAT HAS ENDED -- all address the row's own holder, so all outrank every cause offering NEW work.
+  orders.push(...stallOrdersOrNone(claimStalls), ...bareAnswerOrdersOrNone(bareAnswerLabels), ...labJobFinishedOrders(openRows, labJobs, Date.now()));
 
-  orders.push(...perPullRequestOrders(prs, required, baseTip));
+  orders.push(...perPullRequestOrders(prs, required, baseTip), ...closesUnresolvedOrders(prs)); // #2823 beside them
   // #2031: AHEAD OF THE OFFER, AND IT IS THE SAME READING THAT WITHHELD IT. `partitionUnclaimed` shelves
   // the row on `rowBranches` and this emits the cause that names the branch -- one condition, one read,
   // said once as a withholding and once as a question. Ahead of `rowOrders` for the ordering reason the
   // causes above use: work that already EXISTS outranks work nobody has started.
   const { offerable, blocked } = partitionUnclaimed(readyRows, prFiles, { rowBranches, openRows });
-  orders.push(...rowBranchOrders(readyRows, rowBranches));
-  orders.push(...rowOrders(offerable));
+  orders.push(...rowBranchOrders(readyRows, rowBranches), ...incompleteRowOrders(readyRows)); // #2791
+  orders.push(...rowOrders(offerable), ...unclaimableRowOrders(offerable, claimRefusals)); // #2845: the offer, and its refusal
 
   // #2139: AHEAD OF BOTH BACKLOG SURVEYS AND BEHIND EVERY OFFER, because it is neither. It names ONE row
   // and the exact set that cleared, which outranks `ready-queue-empty` and `lane-backlog-unpromoted`
@@ -4629,7 +5096,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   const shelf = emptyShelfOrder({ offerable, blocked, promotable: poolPromotable.length, key });
   if (shelf) orders.push(shelf);
 
-  orders.push(...laneBacklogOrders(promotableRows, readyRows));
+  orders.push(...laneBacklogOrders(promotableRows, readyRows), ...agedBacklogOrders(promotableRows)); // #2848: the same stock, aged
 
 
   // AFTER the lane orders and BEFORE the chairman's: an unfiled epic is a supply problem, which only
@@ -4700,7 +5167,7 @@ function reportWithheld({ drain, blocked }) {
 // --- #2401: A REVIEWER WHOSE CODEX FAILED TO AUTHENTICATE ---------------------------------------------------
 
 /** Where the org's runtime state lives -- beside `wake.mjs`'s ledger, which defaults to the same directory. */
-export const REVIEWER_STATE_DIR = `${process.env.HOME}/.cache/a11ign`;
+export const REVIEWER_STATE_DIR = stateEntryPath("");
 
 /** The instances `wake.mjs` STARTED and has not ended: `{ "reviewer-<n>": { spawnedAt } }`. `wake` writes, this reads. */
 export const REVIEWER_REGISTRY_FILE = "reviewer-instances.json";
@@ -5179,6 +5646,20 @@ function hostUnitsEntry() {
 }
 
 /**
+ * The lab jobs that ended for a row (#2729), or `null` when the directory exists and cannot be read -- SAID on stderr, and
+ * emitting nothing, since "could not look" is not "nothing ended". A local disk read: it adds nothing to `GH_READS`.
+ * @param {typeof readLabJobRecords} [read]
+ */
+export function labJobRecordsOrSay(read = readLabJobRecords) {
+  try {
+    return read({ skipped: (file) => process.stderr.write(`SKIPPED lab job record ${file}: unreadable or not schema 1\n`) });
+  } catch (err) {
+    process.stderr.write(`COULD NOT READ lab job records: ${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0]}\n`);
+    return null;
+  }
+}
+
+/**
  * `readRowsOffBoard`, saying on stderr when it could not ask (split out of `main`, which sits on `complexity`'s limit).
  * A refused read emits no order and MUST NOT read as a clean board, so the difference is written where the tick log reads.
  * @param {(line: string) => void} [log]
@@ -5193,7 +5674,7 @@ export function rowsOffBoardOrSay(log = (line) => process.stderr.write(line)) {
 }
 
 /**
- * A CLAIMED row `blockerClearedOrders` would ask about -- the same four conditions that function screens
+ * A CLAIMED row `blockerClearedOrders` would ask about -- the same conditions that function screens
  * with EXCEPT `resumed`, which needs `openPrs` that this gate site does not carry (`main`/`trackerReadings`
  * read `closings` before `code.prs` exists in a split-repo scope, #2618). Ignoring it makes this a
  * SUPERSET of `blockerClearedOrders`' own population, never a narrower one: an already-resumed row pays
@@ -5205,7 +5686,7 @@ export function rowsOffBoardOrSay(log = (line) => process.stderr.write(line)) {
  */
 export function anyBlockerClearingCandidate(rows, today = todayIso(), nowMs = Date.now()) {
   return (rows ?? []).some((row) => sessionOf(row) && labelsOf(row).includes(CLAIM_LABEL)
-    && declaredBlockers(row) !== null && !fleetWaitingOn(row, today, nowMs));
+    && declaredBlockers(row) !== null && !holderWaitingOn(row, today, nowMs));
 }
 
 /**
@@ -5455,6 +5936,18 @@ function exitPartial(unread, delivered) {
   process.exit(EXIT.PARTIAL);
 }
 
+/**
+ * #2849: `decide`, with the call RECORDED for the shadow-window runner (#2846): the arguments it was given and its RAW return, before
+ * `withStalePrimaryNotice`. A helper rather than three lines in `main`, which is at its physical-line limit. DORMANT unless
+ * `<stateDir>/shadow-window-open` exists, and a failed write is a stderr line, never a different tick (`shadow-reads.mjs`).
+ * @param {Parameters<typeof decide>[0]} args @returns {ReturnType<typeof decide>}
+ */
+function decideAndTap(args) {
+  const orders = decide(args);
+  tapShadowReads({ args, orders, stateDir: REVIEWER_STATE_DIR });
+  return orders;
+}
+
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/work-gate.mjs" });
   // READ BEFORE ANY GITHUB CALL (#2163), because it is the one reading a `CANNOT_ASK` exit must not hide: a tick
@@ -5490,13 +5983,13 @@ function main() {
   // #2031: A LOCAL git CALL, NOT AN API ONE -- it adds nothing to `GH_READS` and cannot be refused by an
   // exhausted pool, which is the whole reason the detection can exist. `GIT_READS` counts it.
   const rowBranches = readRowBranches();
-  const offBoard = rowsOffBoardOrSay();
+  const offBoard = rowsOffBoardOrSay(), primaryDrift = readPrimaryDriftNow(); // #2781: local git, once; it feeds `decide` and banners its orders
   // #1969: NAMED RATHER THAN CALLED TWICE. `shouldBeMerging` needs the same answer `decide` does, and
   // `requiredWhenRed` makes a `gh` call when anything is red -- calling it inline in both places would
   // pay for it twice on exactly the red tick this row is about.
   const required = requiredWhenRed(openPrs);
   const baseTip = baseTipWhenRed(openPrs);
-  const decided = decide({ prs: withEvidenceLabelAges(withCommitChains(openPrs)), readyRows: rows, promotableRows: promotableRows ?? [],
+  const decideArgs = { primaryDrift, prs: withEvidenceLabelAges(withCommitChains(openPrs)), readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required, baseTip,
     epics: epicsWhenShelfEmpty(rows),
     answerOwed: rowsOwingAnswers({ openRows: allOpen, openPrs, closedRows: closedAnswerRows() }),
@@ -5510,7 +6003,7 @@ function main() {
     // #1969: CONDITIONAL, and the condition is answered for free from the list already in hand.
     // `shouldBeMerging` reads `openPrs`; only if it finds a green, unheld, non-draft PR is the
     // merge-queue call made at all.
-    unarmed: readUnarmed(shouldBeMerging(openPrs, required)), rowBranches,
+    unarmed: readUnarmed(shouldBeMerging(openPrs, required)), rowBranches, claimRefusals: offeredRefusalStreaks(rows, prFiles, { rowBranches, openRows: allOpen }),
     // #2174: A LOCAL READ, NOT AN API ONE -- a `readdir`, some `readFileSync` and one `systemctl` spawn
     // per shipped timer. It adds nothing to `GH_READS` and cannot be refused by an exhausted pool, which
     // is what lets the detection exist at all.
@@ -5522,11 +6015,11 @@ function main() {
     trunkRed: readTrunkRed(),
     // #2075: ONE GRAPHQL CALL, READ PER ISSUE. `null` (refused) emits nothing and is said on stderr below.
     // #2691's `callCountSignals` is beside it, costing no `GH_READS`; `claimedComments` (#2710's window anchor) is the SAME read made above.
-    offBoard, callCountSignals: rowCallCountSignals(allOpen, liveClaudeTurns(), claimedComments), bareAnswerLabels: bareAnswerLabelOrders(withAnswerLabel([...allOpen, ...openPrs])) }); // #2711
+    offBoard, callCountSignals: rowCallCountSignals(allOpen, liveClaudeTurns(), claimedComments), bareAnswerLabels: bareAnswerLabelOrders(withAnswerLabel([...allOpen, ...openPrs])), labJobs: labJobRecordsOrSay() }; const decided = withStalePrimaryNotice(decideAndTap(decideArgs), primaryDrift); // #2711, #2729; `main` is at its 90-line limit
   const others = otherScopeTicks(drain); // #2618: the OTHER declared repositories -- none for one project, whose orders are what they were
   const outageNow = outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows: openRowsRead, claimedComments, offBoard, others });
   const { delivered: orders, performed } = performActions(markOutageReads([...decided, ...others.flatMap((tick) => tick.orders)], outageNow));
-  orders.push(...reviewerAuthTick({ orders }));
+  orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick()); // #2848: before the dead man's switch -- a repeating line is something found
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so
   // on a full disk the tick can end partway. The order that says the disk is full must not be the one behind it.
   orders.unshift(...diskOrders);
