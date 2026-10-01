@@ -8,6 +8,10 @@ name: ci
 # reads `.agent-org/project.json` from a project checkout it is pointed at, and this repository is not one. The suite becomes runnable
 # here when the fixture project of ADR 0040 decision 8 lands; until then a step running it would be red on every pull request, and a
 # gate people learn to ignore is worse than a narrower one. What `gate` checks is what the bootstrap can be held to today.
+#
+# ONE TEST DIRECTORY DOES RUN: `src/messaging/` (a11ign/a11ign#2900), a LEAF module that imports nothing from the tool, so it needs no
+# project checkout. The step passes a quoted glob and not the bare directory: on Node 22 `node --test src/messaging/` is read as a MODULE
+# to run and fails with "Cannot find module" (measured on 22.22.1), which would make the step red on its first run for no test's fault.
 
 on:
   pull_request:
@@ -30,3 +34,5 @@ jobs:
         run: node .github/scripts/workflow-paths.mjs
       - name: Leak scan -- refuses a private LAN IPv4 address or a named SSH key file anywhere in the tree
         run: node .github/scripts/leak-scan.mjs
+      - name: The messaging core's tests -- a leaf module, so they run here without a project checkout
+        run: node --test "src/messaging/**/*.test.mjs"
