@@ -93,6 +93,8 @@ export function queueable(label, agents) {
   return agents.some((a) => a.label === label);
 }
 
+const SESSION_NAME_SHAPE = /^[a-z][a-z0-9-]*$/;
+
 /**
  * PURE. The session name of the caller, from herdr's own workspace list -- or `null` when it is not there.
  *
@@ -100,6 +102,10 @@ export function queueable(label, agents) {
  * shell) or one herdr does not list is not any session, and naming it as one -- the nearest, the last to
  * prompt -- would send the reader's reply to somebody who never asked. `workspace_id` and `label` are on
  * every entry herdr returns, so no roster of our own is kept to drift from it.
+ *
+ * A LABEL IS CHOSEN BY WHOEVER CREATES THE WORKSPACE, so one that is not shaped like a session name is unknown
+ * too (#3060): a workspace labelled `chairman via Telegram` must not read as the chairman, whose queued messages
+ * (#2909) carry exactly that sender. Every real label is a bare role or `<role>-<key>-<n>`, lowercase with hyphens.
  *
  * @param {unknown} workspaces `result.workspaces` from `herdr workspace list`
  * @param {string | undefined} workspaceId
@@ -109,7 +115,7 @@ export function senderName(workspaces, workspaceId) {
   if (!workspaceId || !Array.isArray(workspaces)) return null;
   const found = workspaces.find((w) => String(w?.workspace_id ?? "") === workspaceId);
   const label = String(found?.label ?? "");
-  return label === "" ? null : label;
+  return SESSION_NAME_SHAPE.test(label) ? label : null;
 }
 
 /**
