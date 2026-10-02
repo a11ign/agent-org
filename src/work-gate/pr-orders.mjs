@@ -43,8 +43,7 @@ import { labelsOf, sessionOf, conflictStateOf, CONFLICT_STATE, reviewStateOf, BL
  *
  * ONLY WHILE SOMETHING ELSE STILL RUNS. A cancelled check that is genuinely the last word held #1605 BLOCKED;
  * with nothing in flight on the head it is still settled red and still reaches its author, never silence.
- * `NO_VERDICT` is IMPORTED: the rollup spells it in upper case, the REST read in lower (`update-branch-sweep.mjs`
- * #1100), and the concept is one ruling either way.
+ * `NO_VERDICT` is IMPORTED: the rollup spells it in upper case, the REST read in lower (#1100), and the concept is one ruling either way.
  *
  * @param {any[]} blocking the blocking checks, narrowed @param {any[]} head every check on the head, narrowed
  */
