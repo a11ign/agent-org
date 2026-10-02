@@ -16,61 +16,23 @@
 // (usage, config, secrets, no declared GitHub account): none of those mends itself by retrying.
 
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs, promisify } from "node:util";
 
-import { MessagingConfigRefusal, PROJECT_FILE, readMessagingConfig } from "./config.mjs";
+import { MessagingConfigRefusal, readMessagingConfig } from "./config.mjs";
 import { createLedger, describeError } from "./ledger.mjs";
 import { createGhReaders } from "./placeholders.mjs";
 import { createTelegramProvider } from "./providers/telegram/send.mjs";
 import { createReply } from "./reply.mjs";
-import { readSecretFile, secretFileProblem, SecretFileRefusal } from "./secret.mjs";
+import { readSecretFile, SecretFileRefusal } from "./secret.mjs";
+import { accountIsDeclared, defaultLedgerPath, readChairman, trackerRepo } from "./state.mjs";
 
 export const EXIT = Object.freeze({ ok: 0, failed: 1, refused: 2 });
 const GH_TIMEOUT_MS = 60_000;
 const GH_MAX_BUFFER = 8_000_000;
 const execFileAsync = promisify(execFile);
-
-// FOUR SMALL FUNCTIONS THAT BELONG TO `watch.mjs` AND `listen.mjs`, written out here and not imported: both import `host-config.mjs`, which resolves the
-// checkout and reads the project's whole declaration AT IMPORT, so a command that imports them cannot even load outside a configured host (the acceptance
-// command runs with no `AGENT_ORG_HOST`; `sources/readers.test.mjs`, which imports `watch.mjs`, does not load there either). `reply-cli.test.mjs` pins each
-// against the original's source, so a drift fails by name. Extracting them into a leaf both import is a row (the follow-up to #3071), and deletes this block.
-
-/** @param {string} home @returns {string} where the delivery log lives: the one `watch.mjs`'s `defaultLedgerPath` names */
-export function defaultLedgerPath(home) {
-  return join(home, ".local", "state", "agent-org", "messaging", "ledger.jsonl");
-}
-
-/** @param {Record<string, string | undefined>} env @returns {boolean} some account is DECLARED (`watch.mjs`'s `accountIsDeclared`), so `gh` will not fall back to a person's */
-export function accountIsDeclared(env) {
-  return Boolean(env.GH_CONFIG_DIR) || Boolean(env.HERDR_WORKSPACE_ID);
-}
-
-/** @param {string} root @returns {string} the first tracker's repository, as `watch.mjs`'s `trackerRepo` reads it */
-export function trackerRepo(root) {
-  const path = join(root, PROJECT_FILE);
-  const declared = JSON.parse(readFileSync(path, "utf8"))?.tracker?.[0]?.repo;
-  if (typeof declared !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(declared)) throw new Error(`${path}: tracker[0].repo is not an owner/name`);
-  return declared;
-}
-
-/** @param {string} path the file `messaging:pair` wrote @returns {number} the chairman's chat, which is where a reply goes (`listen.mjs`'s `readChairman`, the one id it needs) */
-export function readChairmanChat(path) {
-  const problem = secretFileProblem(path);
-  if (problem !== null) throw new SecretFileRefusal(path, `the chairman file is not usable (${problem}); has \`messaging:pair\` been run?`);
-  /** @type {any} */
-  let parsed;
-  try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
-  } catch (cause) {
-    throw new SecretFileRefusal(path, "it is not valid JSON; pair again", { cause });
-  }
-  if (!Number.isSafeInteger(parsed?.chatId)) throw new SecretFileRefusal(path, "it holds no integer chatId; pair again");
-  return parsed.chatId;
-}
 
 /** What `createGhReaders` is allowed to ask `gh`: a GET of a repository path, or a pull request's review decision. */
 const READ_PATH = /^repos\/[\w.-]+\/[\w.-]+\/[\w./?=&,%:-]+$/;
@@ -104,7 +66,7 @@ function guardedRunner(file, assertRead) {
 /** The providers this command can reach, keyed by `messaging.provider`. @type {Record<string, (config: import("./config.mjs").MessagingOn, deps: {fetch?: typeof fetch}) => any>} */
 const PROVIDERS = {
   telegram: (config, { fetch: fetchImpl }) => createTelegramProvider({
-    token: readSecretFile(config.tokenFile), chatId: readChairmanChat(config.chairmanFile), fetch: fetchImpl,
+    token: readSecretFile(config.tokenFile), chatId: readChairman(config.chairmanFile).chatId, fetch: fetchImpl,
   }),
 };
 

@@ -35,8 +35,8 @@ import { createGithubWriter } from "./github-writer.mjs";
 import { createInbound } from "./inbound.mjs";
 import { createLedger } from "./ledger.mjs";
 import { createOffsetStore, createTelegramPollingProvider, PollConflictError, runListener } from "./providers/telegram/poll.mjs";
-import { readSecretFile, secretFileProblem, SecretFileRefusal } from "./secret.mjs";
-import { accountIsDeclared, defaultLedgerPath } from "./watch.mjs";
+import { readSecretFile, SecretFileRefusal } from "./secret.mjs";
+import { accountIsDeclared, defaultLedgerPath, readChairman } from "./state.mjs";
 
 export const EXIT = Object.freeze({ ok: 0, failed: 1, refused: 2 });
 const LOCK_FILE = "listener.lock";
@@ -140,28 +140,6 @@ export function acquireLock(path, { pid = process.pid, exists = pidExists, start
 /** @param {string} path @param {number} pid removes the lock only while it is still this process's: a successor's is not ours to delete */
 function releaseLock(path, pid) {
   if (readLock(path)?.pid === pid) unlinkSync(path);
-}
-
-/** @param {string} path @returns {Record<string, unknown>} the file's JSON object, or a refusal: a file that is not JSON is not mended by a restart */
-function parsedIds(path) {
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8"));
-    return parsed !== null && typeof parsed === "object" ? parsed : {};
-  } catch (cause) {
-    throw new SecretFileRefusal(path, "it is not valid JSON; pair again", { cause });
-  }
-}
-
-/**
- * The chairman's ids, from the file `messaging:pair` wrote. Permissions are checked before the content is read.
- * @param {string} path @returns {{ userId: number, chatId: number }}
- */
-export function readChairman(path) {
-  const problem = secretFileProblem(path);
-  if (problem !== null) throw new SecretFileRefusal(path, `the chairman file is not usable (${problem}); has \`messaging:pair\` been run?`);
-  const { userId, chatId } = parsedIds(path);
-  if (!Number.isSafeInteger(userId) || !Number.isSafeInteger(chatId)) throw new SecretFileRefusal(path, "it holds no integer userId and chatId; pair again");
-  return { userId, chatId };
 }
 
 /** @param {string} home @returns {string} where the listener keeps its lock and offset: beside the ledger it shares with the watcher */
