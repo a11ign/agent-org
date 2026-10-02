@@ -3565,3 +3565,67 @@ test("#3026: the runner's own prefix is no file argument -- `pnpm exec tsx --tes
       { ok: false, missing: ["nothing-here.test.ts"] }, `${prefix}: positive control`);
   }
 });
+
+// ---- #3058: a leading `cd <dir> &&` is skipped by the first-token reading, so the TAIL is what is classified ---
+
+// `cd`'s own exit code proves nothing; the command after the `&&` is the thing that runs. Every tail below is
+// classified bare AND behind a `cd`, because "unchanged" is a reading to be made, not an absence to be assumed.
+const knownTools = new Set(["node", "npm", "echo"]);
+const exists = (token: string) => knownTools.has(token);
+const classifyBehindCd = (tail: string, deps: Parameters<typeof classifyCommand>[1] = {}) => ({
+  bare: classifyCommand(tail, { commandExists: exists, ...deps }),
+  behindCd: classifyCommand(afterCd(tmpdir(), tail), { commandExists: exists, ...deps }),
+});
+
+test("#3058: a runnable tail is runnable behind a `cd`, exactly as the bare line is", () => {
+  for (const tail of ["node --test x.test.ts", "npm run lint", "FOO=1 node --test x.test.ts"]) {
+    const { bare, behindCd } = classifyBehindCd(tail);
+    assert.deepEqual(bare, { verdict: "runnable" }, `positive control, the bare line: ${tail}`);
+    assert.deepEqual(behindCd, bare, tail);
+  }
+  assert.deepEqual(classifyCommand(afterCd(`"${tmpdir()}"`, "node --test x.test.ts"), { commandExists: exists }),
+    { verdict: "runnable" }, "a quoted directory is the same leading `cd`");
+});
+
+test("#3058: a refused tail keeps its refusal behind a `cd` -- the fleet, the corpus and the missing credential", () => {
+  const noToken = { capabilities: NO_CAPABILITIES };
+  for (const [tail, deps] of [
+    ["npm run fleet:status", {}],
+    ["npm run gate:stability", {}],
+    ["gh pr view 1", noToken],
+  ] as const) {
+    const { bare, behindCd } = classifyBehindCd(tail, deps);
+    assert.equal(bare.verdict, "refused", `positive control, the bare line: ${tail}`);
+    assert.deepEqual(behindCd, bare, tail);
+  }
+});
+
+test("#3058: a prose tail is prose behind a `cd`, and the reason names the TAIL's token, never `cd`", () => {
+  for (const [tail, reason] of [
+    ["echo done", "cannot verify anything -- `echo`'s exit code says nothing about whether the claim in this line is true"],
+    ["nonexistent-tool --flag", 'is not a command (no executable "nonexistent-tool")'],
+  ]) {
+    const { bare, behindCd } = classifyBehindCd(tail);
+    assert.deepEqual(bare, { verdict: "prose", reason }, `positive control, the bare line: ${tail}`);
+    assert.deepEqual(behindCd, bare, tail);
+    assert.doesNotMatch(behindCd.verdict === "prose" ? behindCd.reason : "", /"cd"/);
+  }
+});
+
+test("#3058: only a LEADING `cd <dir> &&` is skipped -- a mid-line `cd`, a `;`, and a `cd` with no `&&` are unchanged", () => {
+  const dir = tmpdir();
+  for (const [line, token] of [
+    [`true; cd ${dir}`, "true"], // the first token is `true`, as before: not a `cd` at all
+    [`cd ${dir} ; node --test x.test.ts`, "cd"], // `;` is no `&&`: the line still starts with a builtin
+    [`cd ${dir}`, "cd"], // a `cd` with nothing after it
+    [`cd ${dir} || node --test x.test.ts`, "cd"],
+  ]) {
+    const got = classifyCommand(line, { commandExists: exists });
+    assert.equal(got.verdict, "prose", line);
+    assert.match(got.verdict === "prose" ? got.reason : "", new RegExp(`\`?"?${token}"?\`?`), line);
+  }
+  // The skip is once: a second `cd` is the first token of what remains, which is the unchanged reading.
+  const twice = classifyCommand(afterCd(dir, afterCd(dir, "node --test x.test.ts")), { commandExists: exists });
+  assert.equal(twice.verdict, "prose");
+  assert.match(twice.verdict === "prose" ? twice.reason : "", /"cd"/);
+});
