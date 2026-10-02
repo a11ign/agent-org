@@ -3481,3 +3481,87 @@ test("#2175: the answer is read from ITS section only -- a body without the sect
     "and the heading without its question mark is still the heading -- the control for the nulls above");
   assert.equal(declaredFleetAnswer(undefined as unknown as string), null, "an absent body is undeclared, never a crash");
 });
+
+// ---- #3026: `cd <dir> && <runner> <file>` -- the directory is a `cd` argument, never a file to read -------
+
+// The fixtures' directories are throwaway temp directories, not the control plane's checkout, so the command is
+// assembled here rather than written as a literal `cd <dir>` that `control-plane-checkout-is-one-fact.test.ts`
+// reads as a second spelling of the checkout.
+const afterCd = (dir: string, command: string) => ["cd", dir, "&&", command].join(" ");
+
+test("#3026: classifyCommand does not throw on `cd <dir> && tsx --test <file>` -- the `cd` target was read as a "
+  + "test file, and a directory that exists reached readFileSync (EISDIR)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "acceptance-3026-"));
+  try {
+    const file = "packages/lab/src/packaging/host-units.test.ts";
+    for (const command of [
+      afterCd(dir, `pnpm exec tsx --test ${file}`),
+      afterCd(process.cwd(), `pnpm exec tsx --test ${file}`),
+      afterCd(tmpdir(), `pnpm exec tsx --test ${file}`),
+      afterCd(`"${dir}"`, `npx rstest run --include ${file}`),
+      `pnpm exec tsx --test ${file}`,
+    ]) {
+      assert.doesNotThrow(() => classifyCommand(command), command);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#3026: a directory is no entry to walk -- deriveClosureRequirements and the requirement readers return "
+  + "nothing for one, where a missing path and a directory used to differ by a throw", () => {
+  const dir = mkdtempSync(join(tmpdir(), "acceptance-3026-"));
+  try {
+    assert.deepEqual(deriveClosureRequirements(dir), []);
+    assert.deepEqual(deriveClosureRequirements(join(dir, "missing.test.ts")), []);
+    assert.deepEqual(unmetClosureRequirements(dir, NO_CAPABILITIES), []);
+    assert.deepEqual(unmetCommandRequirements(`npx rstest run --include ${dir}/x.test.ts`, NO_CAPABILITIES), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#3026 positive control: the file after a `cd` is the file the command runs -- resolved against the `cd` "
+  + "target and still charged its declared and derived requirements, so `returns nothing` is not `finds nothing`", () => {
+  const dir = mkdtempSync(join(tmpdir(), "acceptance-3026-"));
+  try {
+    writeFileSync(join(dir, "needs-history.test.mjs"), "// requires: history\nexport {};\n");
+    const absolute = join(dir, "needs-history.test.mjs");
+    for (const command of [
+      afterCd(dir, "npx tsx --test needs-history.test.mjs"),
+      afterCd(`"${dir}"`, "npx rstest run --include needs-history.test.mjs"),
+      `npx tsx --test ${absolute}`,
+    ]) {
+      assert.deepEqual(unmetCommandRequirements(command, NO_CAPABILITIES),
+        [{ requirement: "history", files: [absolute] }], command);
+    }
+    const [hit] = deriveClosureRequirements(BOARD_STYLE_FIXTURE);
+    assert.equal(hit.requirement, "token", "a real file entry's closure charge is still found");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#3026: the `cd` target is an argument to `cd`, never a test file -- even when it names a file that would "
+  + "be charged, so the strip is pinned by itself and not only by the isFile backstop", () => {
+  const dir = mkdtempSync(join(tmpdir(), "acceptance-3026-"));
+  try {
+    const decoy = join(dir, "decoy.test.mjs");
+    writeFileSync(decoy, "// requires: history\nexport {};\n");
+    assert.deepEqual(unmetCommandRequirements(afterCd(decoy, "npx tsx --test missing.test.mjs"), NO_CAPABILITIES), []);
+    assert.deepEqual(unmetCommandRequirements(`npx tsx --test ${decoy}`, NO_CAPABILITIES),
+      [{ requirement: "history", files: [decoy] }], "positive control: the same file as an argument IS charged");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#3026: the runner's own prefix is no file argument -- `pnpm exec tsx --test <file>` resolves exactly as "
+  + "`npx tsx --test <file>` does, and a file that is missing is still reported", () => {
+  const file = new URL(import.meta.url).pathname; // this file: it exists wherever the tool is checked out
+  for (const prefix of ["pnpm exec", "npx", "NODE_ENV=test pnpm exec"]) {
+    assert.deepEqual(testFileArgumentsResolve(`${prefix} tsx --test ${file}`), { ok: true }, prefix);
+    assert.deepEqual(testFileArgumentsResolve(`${prefix} tsx --test ${file} nothing-here.test.ts`),
+      { ok: false, missing: ["nothing-here.test.ts"] }, `${prefix}: positive control`);
+  }
+});
