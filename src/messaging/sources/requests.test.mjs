@@ -428,17 +428,26 @@ describe("chairman-watch makes only read calls (done-when 5)", () => {
     assert.equal(ran, 1, "the refused command was never run");
   });
 
-  test("the red filter keeps a failed check or status and nothing else", async () => {
+  test("the merged filter drops a merge older than the window even if the search returned it", async () => {
+    const since = Date.parse("2026-10-01T07:00:00Z");
+    const reader = createGhReader({ run: async () => JSON.stringify([{ number: 1, mergedAt: "2026-10-01T07:00:00Z" }, { number: 2, mergedAt: "2026-09-30T23:00:00Z" }]) });
+    assert.deepEqual((await reader.mergedPullsSince({ repo: REPO, sinceMs: since })).map((pull) => pull.number), [1]);
+  });
+});
+
+describe("the red-PR read decides red through the one decider (#3014, #2956)", () => {
+  test("the red filter keeps a failed check and nothing else: ACTION_REQUIRED is red, a failed commit STATUS is not (#3014)", async () => {
     const pulls = [
-      { number: 1, statusCheckRollup: [{ conclusion: "SUCCESS" }, { conclusion: "FAILURE" }] },
-      { number: 2, statusCheckRollup: [{ conclusion: "SUCCESS" }, { conclusion: "SKIPPED" }] },
-      { number: 3, statusCheckRollup: [{ state: "ERROR" }] },
+      { number: 1, statusCheckRollup: [{ name: "lint", conclusion: "SUCCESS" }, { name: "gate", conclusion: "FAILURE" }] },
+      { number: 2, statusCheckRollup: [{ name: "lint", conclusion: "SUCCESS" }, { name: "gate", conclusion: "SKIPPED" }] },
+      { number: 3, statusCheckRollup: [{ context: "ci/legacy", state: "ERROR" }, { context: "ci/other", state: "FAILURE" }] },
       { number: 4, statusCheckRollup: [] },
       { number: 5 },
-      { number: 6, statusCheckRollup: [{ conclusion: "TIMED_OUT" }] },
+      { number: 6, statusCheckRollup: [{ name: "gate", conclusion: "TIMED_OUT" }] },
+      { number: 7, statusCheckRollup: [{ name: "gate", conclusion: "ACTION_REQUIRED" }] },
     ];
     const reader = createGhReader({ run: async () => JSON.stringify(pulls) });
-    assert.deepEqual((await reader.redPulls({ repo: REPO })).map((pull) => pull.number), [1, 3, 6]);
+    assert.deepEqual((await reader.redPulls({ repo: REPO })).map((pull) => pull.number), [1, 6, 7]);
   });
 
   test("only the NEWEST attempt of each named check counts: a failure that was re-run green is not red", async () => {
@@ -446,16 +455,30 @@ describe("chairman-watch makes only read calls (done-when 5)", () => {
       { number: 1, statusCheckRollup: [{ name: "gate", conclusion: "FAILURE", completedAt: "2026-10-02T08:00:00Z" }, { name: "gate", conclusion: "SUCCESS", completedAt: "2026-10-02T08:30:00Z" }] },
       { number: 2, statusCheckRollup: [{ name: "gate", conclusion: "SUCCESS", completedAt: "2026-10-02T08:00:00Z" }, { name: "gate", conclusion: "FAILURE", completedAt: "2026-10-02T08:30:00Z" }] },
       { number: 3, statusCheckRollup: [{ name: "gate", conclusion: "FAILURE", completedAt: "2026-10-02T08:00:00Z" }, { name: "lint", conclusion: "SUCCESS", completedAt: "2026-10-02T08:30:00Z" }] },
-      { number: 4, statusCheckRollup: [{ context: "ci/legacy", state: "ERROR", startedAt: "2026-10-02T08:00:00Z" }] },
     ];
     const reader = createGhReader({ run: async () => JSON.stringify(pulls) });
-    assert.deepEqual((await reader.redPulls({ repo: REPO })).map((pull) => pull.number), [2, 3, 4]);
+    assert.deepEqual((await reader.redPulls({ repo: REPO })).map((pull) => pull.number), [2, 3]);
   });
 
-  test("the merged filter drops a merge older than the window even if the search returned it", async () => {
-    const since = Date.parse("2026-10-01T07:00:00Z");
-    const reader = createGhReader({ run: async () => JSON.stringify([{ number: 1, mergedAt: "2026-10-01T07:00:00Z" }, { number: 2, mergedAt: "2026-09-30T23:00:00Z" }]) });
-    assert.deepEqual((await reader.mergedPullsSince({ repo: REPO, sinceMs: since })).map((pull) => pull.number), [1]);
+  test("a HELD pull request is red only for a reason its hold does not explain (#3014, #2956's one decider)", async () => {
+    const holdJobs = [{ name: "deliberateRefusals", conclusion: "FAILURE" }, { name: "gate", conclusion: "FAILURE" }];
+    const hold = [{ name: "hold:ceo" }];
+    const pulls = [
+      { number: 1, labels: hold, statusCheckRollup: holdJobs },
+      { number: 2, labels: hold, statusCheckRollup: [...holdJobs, { name: "ts / run", conclusion: "FAILURE" }] },
+      { number: 3, labels: [{ name: "session:worker-7" }], statusCheckRollup: holdJobs },
+      { number: 4, statusCheckRollup: holdJobs },
+    ];
+    const reader = createGhReader({ run: async () => JSON.stringify(pulls) });
+    assert.deepEqual((await reader.redPulls({ repo: REPO })).map((pull) => pull.number), [2, 3, 4],
+      "1: the hold's own two jobs are a decision; 2: a real red under a hold still counts; 3 and 4: no hold, so deliberateRefusals/gate red is a breakage");
+  });
+
+  test("the red read ASKS for `labels`: without them no hold can be seen, and `gh` would not send them (#3014)", async () => {
+    const asked = [];
+    const reader = createGhReader({ run: async (argv) => { asked.push(argv); return "[]"; } });
+    await reader.redPulls({ repo: REPO });
+    assert.match(asked[0][asked[0].indexOf("--json") + 1], /(^|,)labels(,|$)/);
   });
 });
 
