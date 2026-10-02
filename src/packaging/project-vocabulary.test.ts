@@ -43,6 +43,10 @@ import { HOME_CHECKOUT, ProjectDeclarationRefusal } from "../project-config.mjs"
 import { labelsOutOfRelease, saysOutOfRelease } from "../row-file.mjs";
 import { laneReason } from "../row-claim/runner-rule.mjs";
 import { resourcePatternsFrom } from "../acceptance-commands.mjs";
+import { NEEDS_CHAIRMAN } from "../messaging/sources/requests.mjs";
+import {
+  IN_PROGRESS_LABEL as SUMMARY_IN_PROGRESS, NEEDS_CHAIRMAN_LABEL as SUMMARY_NEEDS_CHAIRMAN, READY_LABEL as SUMMARY_READY,
+} from "../messaging/sources/summary.mjs";
 
 // A mutation reaches into fields the fixture's own type would have to pretend are optional and mistyped,
 // which is the point of it -- the same tradeoff `project-config.test.ts` accepts for the identical reason.
@@ -145,6 +149,12 @@ test("POSITIVE CONTROL: a comment MENTIONING a vocabulary word is not a CODE hit
  * count with it, so the ceiling follows it down).
  */
 const KNOWN_NON_VOCABULARY_HITS: Record<string, number> = {
+  // `messaging/sources/requests.mjs` (1: `needs:chairman`) and `summary.mjs` (3: `ready`, `in-progress`, `needs:chairman`): these ARE vocabulary
+  // labels, listed for the claim-labels reason below. Both sources are declared LEAF modules (they import nothing from the tool, so the
+  // messenger runs where the tool's declaration is not read), so they keep their own copy, and the test "the messaging sources' label
+  // literals equal the vocabulary's" pins each value equal to the vocabulary's, which is what stops the copy drifting.
+  "packages/agent-org/src/messaging/sources/requests.mjs": 1,
+  "packages/agent-org/src/messaging/sources/summary.mjs": 3,
   // The four claim-lifecycle labels: `claim-labels.mjs` is a pinned, import-free LEAF (#804,
   // `ready-label-audit.test.ts`) -- the one file this row does NOT move them out of. See this file's own
   // header and `project-vocabulary.mjs`'s header for why: moving them would either break that leaf's
@@ -168,9 +178,23 @@ const KNOWN_NON_VOCABULARY_HITS: Record<string, number> = {
   "packages/agent-org/src/work-gate/pr-orders.mjs": 1,
 };
 
+test("the messaging sources' label literals equal the vocabulary's", () => {
+  assert.equal(NEEDS_CHAIRMAN, NEEDS_CHAIRMAN_LABEL);
+  assert.equal(SUMMARY_NEEDS_CHAIRMAN, NEEDS_CHAIRMAN_LABEL);
+  assert.equal(SUMMARY_READY, READY_LABEL);
+  assert.equal(SUMMARY_IN_PROGRESS, CLAIM_LABEL);
+});
+
+/**
+ * Files the walk skips whole, each with its reason. `project-vocabulary.mjs` is where the literals are declared. `prefix-pins.mjs` is the project's
+ * lab helper, which the gate copies in beside the tests (`rsync` from `packages/lab/src/packaging/`, ci.yml) so that `packaging/` tests that import it
+ * can run; it pins the `lane:` prefix for the project's own lab tests, is no part of the tool, and is not in this repository.
+ */
+const WALK_SKIPS = new Set(["project-vocabulary.mjs", "prefix-pins.mjs"]);
+
 test("#2619 ACCEPTANCE, MUTATION TARGET: a walk of packages/agent-org/src finds no vocabulary literal in "
   + "CODE outside project-vocabulary.mjs and the exact, reasoned exceptions above", () => {
-  const found = walkForVocabularyHits(join(HOME_CHECKOUT, "packages/agent-org/src"), new Set(["project-vocabulary.mjs"]));
+  const found = walkForVocabularyHits(join(HOME_CHECKOUT, "packages/agent-org/src"), WALK_SKIPS);
   const byRelativePath: Record<string, string[]> = {};
   for (const [path, hits] of Object.entries(found)) byRelativePath[relative(HOME_CHECKOUT, path)] = hits;
 

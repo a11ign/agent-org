@@ -38,8 +38,9 @@ import { createReaders } from "./sources/readers.mjs";
 import { observeStalls } from "./sources/stall.mjs";
 import { observeSummary } from "./sources/summary.mjs";
 import { parseRequestKey, readRequests } from "./sources/requests.mjs";
-import { readUnitsDeclaration } from "../host-config.mjs";
+import { readUnitsDeclaration, stateEntryPath } from "../host-config.mjs";
 import { readAgents } from "../herdr-agents.mjs";
+import { completionPath } from "../lib/tick-completion.mjs";
 import { isBrokenRed } from "../red-pr.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -351,6 +352,9 @@ function hostReaders({ root, home, now, err, github }) {
   return createReaders({
     github, repo: trackerRepo(root), stateDir: dirname(defaultLedgerPath(home)), fleetStatePath: join(root, FLEET_WATCH_STATE),
     unit: workTickUnit(root, err), now, systemctl: runSystemctl, readSeats: readAgents, log: err,
+    // Where the tick writes its record: beside the wake ledger, which with no `--ledger` (as the unit runs) is `wake.mjs`'s `ledgerPathFrom` default. NOT imported
+    // from `wake.mjs`: that module reads the project declaration at import, and a watcher that cannot import is the outage this row exists to see.
+    completionPath: completionPath(stateEntryPath("wake-ledger")),
   });
 }
 

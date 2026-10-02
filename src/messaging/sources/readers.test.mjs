@@ -18,6 +18,7 @@ import { after, describe, test } from "node:test";
 import { createFakeProvider } from "../fake-provider.mjs";
 import { createLedger } from "../ledger.mjs";
 import { HOST_SOURCES, assertReadOnlyGh, createGhReader, main, runWatch } from "../watch.mjs";
+import { COMPLETION_FILE, writeCompletion } from "../../lib/tick-completion.mjs";
 import { ciPermissionEvents, observeIncidents } from "./incidents.mjs";
 import {
   SYSTEMD_PROPERTIES, createReaders, readCiRuns, readFleetState, readGateUnit, readLastMerge, readTicks, readTrunkRuns, takeSample,
@@ -78,12 +79,14 @@ function healthy(more = {}) {
   ]);
 }
 
-/** @param {{ github: any, stateDir?: string, now?: () => number, seats?: any, unitText?: string | Error, fleetStatePath?: string }} input  `seats` may be a function, read at each sample */
-function readersFor({ github, stateDir = freshDirectory(), now = () => NOW, seats = seatsOf("idle"), unitText, fleetStatePath = join(stateDir, "fleet.json") }) {
+/** @param {{ github: any, stateDir?: string, now?: () => number, seats?: any, unitText?: string | Error, fleetStatePath?: string, completedAt?: number | null }} input  `seats` may be a function, read at each sample; `completedAt` is the tick record's time, `null` for none */
+function readersFor({ github, stateDir = freshDirectory(), now = () => NOW, seats = seatsOf("idle"), unitText, fleetStatePath = join(stateDir, "fleet.json"), completedAt = NOW - MINUTE }) {
   const systemctlCalls = /** @type {string[][]} */ ([]);
   const text = unitText ?? systemdShow({ ActiveState: "activating", StateChangeTimestamp: seconds(NOW - 1000), InactiveEnterTimestamp: seconds(NOW - 60_000) });
+  const completionPath = join(stateDir, COMPLETION_FILE);
+  if (completedAt !== null) writeCompletion(completionPath, { at: completedAt, exit: 0 });
   const readers = createReaders({
-    github, repo: REPO, stateDir, fleetStatePath, unit: "example-work-tick.service", now, readSeats: () => (typeof seats === "function" ? seats() : seats),
+    github, repo: REPO, stateDir, fleetStatePath, completionPath, unit: "example-work-tick.service", now, readSeats: () => (typeof seats === "function" ? seats() : seats),
     systemctl: async (argv) => { systemctlCalls.push(argv); if (text instanceof Error) throw text; return text; },
   });
   if (!existsSync(fleetStatePath)) {
@@ -206,21 +209,33 @@ describe("readCiRuns", () => {
 // ---- readGateUnit ------------------------------------------------------------------------------------------------------------------------
 
 describe("readGateUnit", () => {
-  const ask = (/** @type {string | Error} */ text, unit = "example-work-tick.service") => {
+  const RAN = 1790950909;
+  const COMPLETED = (RAN - 120) * 1000;
+  const recordIn = (/** @type {number | null} */ at, exit = 0) => {
+    const path = join(freshDirectory(), COMPLETION_FILE);
+    if (at !== null) writeCompletion(path, { at, exit });
+    return path;
+  };
+  const ask = (/** @type {string | Error} */ text, { unit = "example-work-tick.service", recordPath = recordIn(COMPLETED) } = {}) => {
     const calls = /** @type {string[][]} */ ([]);
-    const read = readGateUnit({ unit, systemctl: async (argv) => { calls.push(argv); if (text instanceof Error) throw text; return text; } });
+    const read = readGateUnit({ unit, recordPath, systemctl: async (argv) => { calls.push(argv); if (text instanceof Error) throw text; return text; } });
     return { read, calls };
   };
 
-  test("a unit that is running reads not failed, and its last record is when it last went inactive", async () => {
-    const { read, calls } = ask(systemdShow({ ActiveState: "activating", StateChangeTimestamp: "@1790950951", InactiveEnterTimestamp: "@1790950909" }));
-    assert.deepEqual(await read, { failed: false, lastRecordAt: 1790950909 * 1000 });
+  test("a unit that is running reads not failed: it last RAN when it went inactive, and a tick last COMPLETED when the record says", async () => {
+    const { read, calls } = ask(systemdShow({ ActiveState: "activating", StateChangeTimestamp: "@1790950951", InactiveEnterTimestamp: `@${RAN}` }));
+    assert.deepEqual(await read, { failed: false, lastRunAt: RAN * 1000, lastRecordAt: COMPLETED });
     assert.deepEqual(calls, [["--user", "show", "example-work-tick.service", "--timestamp=unix", "-p", SYSTEMD_PROPERTIES]]);
   });
 
   test("a failed unit reads failed, and when it entered that state", async () => {
-    const { read } = ask(systemdShow({ ActiveState: "failed", StateChangeTimestamp: "@1790951000", InactiveEnterTimestamp: "@1790950909" }));
-    assert.deepEqual(await read, { failed: true, failedAt: 1790951000 * 1000, lastRecordAt: 1790950909 * 1000 });
+    const { read } = ask(systemdShow({ ActiveState: "failed", StateChangeTimestamp: "@1790951000", InactiveEnterTimestamp: `@${RAN}` }));
+    assert.deepEqual(await read, { failed: true, failedAt: 1790951000 * 1000, lastRunAt: RAN * 1000, lastRecordAt: COMPLETED });
+  });
+
+  test("the record's time is what a tick that exited ATTENTION left, so the organisation waiting is not the gate crashing", async () => {
+    const { read } = ask(systemdShow({ ActiveState: "inactive", StateChangeTimestamp: `@${RAN}`, InactiveEnterTimestamp: `@${RAN}` }), { recordPath: recordIn(COMPLETED, 1) });
+    assert.equal((await read).lastRecordAt, COMPLETED);
   });
 
   test("a failing systemctl, a unit it knows no run of, no unit name and unparseable output all throw", async () => {
@@ -228,16 +243,44 @@ describe("readGateUnit", () => {
     await assert.rejects(ask(systemdShow({ ActiveState: "inactive", StateChangeTimestamp: "", InactiveEnterTimestamp: "" })).read, /no such time/);
     await assert.rejects(ask(systemdShow({ ActiveState: "inactive", StateChangeTimestamp: "@0", InactiveEnterTimestamp: "@0" })).read, /no such time/);
     await assert.rejects(ask("garbage").read, /no ActiveState/);
-    await assert.rejects(readGateUnit({ unit: undefined, systemctl: async () => "" }), /name is not known/);
+    await assert.rejects(readGateUnit({ unit: undefined, recordPath: recordIn(COMPLETED), systemctl: async () => "" }), /name is not known/);
   });
 
-  test("through the source: a tick that ended 3 minutes ago is quiet, 8 minutes ago is the gate down (the positive control)", async () => {
+  test("an ABSENT or UNREADABLE completion record is a thrown TypeError, never a clean reading", async () => {
+    const running = systemdShow({ ActiveState: "inactive", StateChangeTimestamp: `@${RAN}`, InactiveEnterTimestamp: `@${RAN}` });
+    await assert.rejects(ask(running, { recordPath: recordIn(null) }).read, (error) => error instanceof TypeError && /no work-tick completion record/.test(error.message));
+    for (const [content, why] of [["not json", /is not JSON/], ["{}", /numeric `at`/], ['{"at":"soon","exit":0}', /numeric `at`/], ['{"at":1}', /integer `exit`/]]) {
+      const recordPath = recordIn(null);
+      writeFileSync(recordPath, content);
+      await assert.rejects(ask(running, { recordPath }).read, (error) => error instanceof TypeError && why.test(error.message), content);
+    }
+  });
+
+  test("through the source: a tick that completed 3 minutes ago is quiet, 8 minutes ago is the gate down (the positive control)", async () => {
     for (const [age, expected] of [[3, 0], [8, 1]]) {
-      const unitText = systemdShow({ ActiveState: "active", StateChangeTimestamp: seconds(NOW - age * MINUTE), InactiveEnterTimestamp: seconds(NOW - age * MINUTE) });
-      const { readers } = readersFor({ github: healthy(), unitText });
+      const unitText = systemdShow({ ActiveState: "active", StateChangeTimestamp: seconds(NOW - MINUTE), InactiveEnterTimestamp: seconds(NOW - MINUTE) });
+      const { readers } = readersFor({ github: healthy(), unitText, completedAt: NOW - age * MINUTE });
       const { events } = await observeIncidents({ now: () => NOW, readers, log: () => {} });
       assert.equal(events.filter((event) => event.key === "incident:gate-crash" && event.resolved === false).length, expected, `${age} minutes`);
     }
+  });
+
+  test("through the source, the 2026-10-02 shape: the unit ran a minute ago and a tick last completed 2 hours ago is the gate down, and says so", async () => {
+    const unitText = systemdShow({ ActiveState: "inactive", StateChangeTimestamp: seconds(NOW - MINUTE), InactiveEnterTimestamp: seconds(NOW - MINUTE) });
+    const { readers } = readersFor({ github: healthy(), unitText, completedAt: NOW - 2 * 60 * MINUTE });
+    const { events } = await observeIncidents({ now: () => NOW, readers, log: () => {} });
+    const [down] = events.filter((event) => event.key === "incident:gate-crash");
+    assert.equal(down.resolved, false);
+    assert.match(String(down.text), /last tick that COMPLETED was at 2026-10-02T10:00:00\.000Z \(2h 00m ago\), and ticks are still starting/);
+  });
+
+  test("through the source: no record at all is cannot-ask for that kind and NO event, not an all-clear", async () => {
+    const lines = /** @type {string[]} */ ([]);
+    const { readers } = readersFor({ github: healthy(), completedAt: null });
+    const { events, cannotAsk } = await observeIncidents({ now: () => NOW, readers, log: (line) => lines.push(line) });
+    assert.equal(events.filter((event) => event.key === "incident:gate-crash").length, 0);
+    assert.deepEqual(cannotAsk.map(({ source }) => source), ["incident:gate-crash"]);
+    assert.match(cannotAsk[0].reason, /no work-tick completion record/);
   });
 });
 

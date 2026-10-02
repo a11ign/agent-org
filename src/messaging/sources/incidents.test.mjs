@@ -102,41 +102,95 @@ describe("trunk red, held down for 30 minutes (done-when 1)", () => {
 describe("the gate crashing (done-when 5)", () => {
   const config = DEFAULT_INCIDENT_CONFIG;
   const fresh = NOW - MINUTE;
+  const reading = (/** @type {Record<string, unknown>} */ more) => /** @type {any} */ ({ failed: false, lastRunAt: fresh, lastRecordAt: fresh, ...more });
 
   test("a failed unit produces the event, dated from its failure", () => {
-    const [event] = gateCrashEvents({ failed: true, failedAt: NOW - 45 * MINUTE, lastRecordAt: fresh }, NOW, config);
+    const [event] = gateCrashEvents(reading({ failed: true, failedAt: NOW - 45 * MINUTE }), NOW, config);
     assert.equal(event.key, "incident:gate-crash");
     assert.equal(event.resolved, false);
     assert.equal(event.firstSeenAt, NOW - 45 * MINUTE);
   });
 
-  test("a last record older than 3 intervals produces it too, dated from when the third interval passed", () => {
+  test("a last COMPLETED tick older than 3 intervals produces it too, dated from when the third interval passed", () => {
     const last = NOW - 10 * MINUTE;
-    const [event] = gateCrashEvents({ failed: false, lastRecordAt: last }, NOW, config);
+    const [event] = gateCrashEvents(reading({ lastRecordAt: last }), NOW, config);
     assert.equal(event.resolved, false);
     assert.equal(event.firstSeenAt, last + 3 * TICK_INTERVAL_MS);
   });
 
-  test("a healthy unit with a recent record does NOT, and a record just inside 3 intervals does not either", () => {
-    assert.equal(gateCrashEvents({ failed: false, lastRecordAt: fresh }, NOW, config)[0].resolved, true);
-    assert.equal(gateCrashEvents({ failed: false, lastRecordAt: NOW - 3 * TICK_INTERVAL_MS }, NOW, config)[0].resolved, true);
-    assert.equal(gateCrashEvents({ failed: false, lastRecordAt: NOW - 3 * TICK_INTERVAL_MS - 1 }, NOW, config)[0].resolved, false);
+  test("a healthy unit with a recent completion does NOT, and a completion just inside 3 intervals does not either", () => {
+    assert.equal(gateCrashEvents(reading({}), NOW, config)[0].resolved, true);
+    assert.equal(gateCrashEvents(reading({ lastRecordAt: NOW - 3 * TICK_INTERVAL_MS }), NOW, config)[0].resolved, true);
+    assert.equal(gateCrashEvents(reading({ lastRecordAt: NOW - 3 * TICK_INTERVAL_MS - 1 }), NOW, config)[0].resolved, false);
   });
 
-  test("a failed unit with no failure time, or a missing record time, cannot be read", () => {
-    assert.throws(() => gateCrashEvents({ failed: true, lastRecordAt: fresh }, NOW, config), /failedAt/);
-    assert.throws(() => gateCrashEvents(/** @type {any} */ ({ failed: false }), NOW, config), /lastRecordAt/);
-    assert.throws(() => gateCrashEvents(/** @type {any} */ ({ lastRecordAt: fresh }), NOW, config), /failed/);
+  test("a failed unit with no failure time, or a missing completion or run time, cannot be read", () => {
+    assert.throws(() => gateCrashEvents(reading({ failed: true }), NOW, config), /failedAt/);
+    assert.throws(() => gateCrashEvents(reading({ lastRecordAt: undefined }), NOW, config), /lastRecordAt/);
+    assert.throws(() => gateCrashEvents(reading({ lastRunAt: undefined }), NOW, config), /lastRunAt/);
+    assert.throws(() => gateCrashEvents(/** @type {any} */ ({ lastRunAt: fresh, lastRecordAt: fresh }), NOW, config), /failed/);
+  });
+
+  // THE 2026-10-02 OUTAGE (#3040): 63 ticks, each started and each died at import. The unit's own timestamp advanced on every one, so `lastRunAt` is
+  // always fresh, and nothing ever wrote a completion record, so `lastRecordAt` stays at the last good tick.
+  const TICKS = 63;
+  const CRASH_START_MS = 1000;
+  const OBSERVE_MS = 2000;
+
+  test("63 consecutive ticks that start and crash: the unit reads inactive and moving after each, and the incident fires within 3 intervals", () => {
+    const lastCompleted = NOW;
+    const outcomes = Array.from({ length: TICKS }, (_, index) => {
+      const started = lastCompleted + (index + 1) * TICK_INTERVAL_MS;
+      const [event] = gateCrashEvents(reading({ lastRunAt: started + CRASH_START_MS, lastRecordAt: lastCompleted }), started + OBSERVE_MS, config);
+      return { interval: index + 1, event };
+    });
+    const firstDown = outcomes.find(({ event }) => event.resolved === false);
+    assert.equal(firstDown?.interval, config.gateStaleTicks, "the third crashed tick is past three intervals of silence");
+    assert.ok(outcomes.slice(0, config.gateStaleTicks - 1).every(({ event }) => event.resolved === true), "two crashed ticks are still inside the allowance");
+    assert.ok(outcomes.slice(config.gateStaleTicks - 1).every(({ event }) => event.resolved === false), "and it stays open for every later tick");
+    assert.equal(outcomes[TICKS - 1].event.firstSeenAt, lastCompleted + config.gateStaleTicks * TICK_INTERVAL_MS, "dated from when the silence began, not from each look");
+  });
+
+  test("the text names the last COMPLETED tick and says ticks are still starting, not that the unit failed", () => {
+    const lastCompleted = Date.parse("2026-10-02T15:22:41Z");
+    const now = lastCompleted + 63 * TICK_INTERVAL_MS + OBSERVE_MS;
+    const [event] = gateCrashEvents(reading({ lastRunAt: now - OBSERVE_MS, lastRecordAt: lastCompleted }), now, config);
+    assert.equal(event.text, "The gate is down: the last tick that COMPLETED was at 2026-10-02T15:22:41.000Z (2h 12m ago), and ticks are still starting "
+      + "(the unit last ran 0m ago) and not finishing, so they are crashing.");
+    assert.doesNotMatch(String(event.text), /has failed/);
+  });
+
+  test("a unit that has not run either says the timer is not firing, and a failed one still says so", () => {
+    const last = NOW - HOUR;
+    const [silent] = gateCrashEvents(reading({ lastRunAt: last, lastRecordAt: last }), NOW, config);
+    assert.match(String(silent.text), /the unit has not run since either \(it last ran 1h 00m ago\), so the timer is not firing/);
+    const [failed] = gateCrashEvents(reading({ failed: true, failedAt: NOW - 45 * MINUTE, lastRecordAt: last, lastRunAt: fresh }), NOW, config);
+    assert.match(String(failed.text), /the work-tick unit has failed and the last tick that COMPLETED/);
+  });
+
+  test("POSITIVE CONTROL: 63 ticks that COMPLETE (the record moving with the unit) are never an incident", () => {
+    for (let index = 1; index <= TICKS; index += 1) {
+      const started = NOW + index * TICK_INTERVAL_MS;
+      const [event] = gateCrashEvents(reading({ lastRunAt: started + CRASH_START_MS, lastRecordAt: started + CRASH_START_MS }), started + OBSERVE_MS, config);
+      assert.equal(event.resolved, true, `interval ${index}`);
+    }
+  });
+
+  test("going green after the outage returns the same key resolved: the first completed tick closes it", () => {
+    const [down] = gateCrashEvents(reading({ lastRecordAt: NOW - HOUR }), NOW, config);
+    const [up] = gateCrashEvents(reading({ lastRecordAt: NOW }), NOW + 1000, config);
+    assert.equal(up.key, down.key);
+    assert.equal(up.resolved, true);
   });
 
   test("held down 30 minutes by the core: sends at 31, not at 29", async () => {
-    const down = { failed: true, failedAt: NOW, lastRecordAt: NOW - MINUTE };
+    const failedFromNow = (/** @type {number} */ at) => reading({ failed: true, failedAt: NOW, lastRunAt: at - MINUTE, lastRecordAt: at - MINUTE });
     const run = messenger();
     run.set(NOW + 29 * MINUTE);
-    await run.tick(gateCrashEvents({ ...down, lastRecordAt: NOW + 28 * MINUTE }, NOW + 29 * MINUTE, DEFAULT_INCIDENT_CONFIG));
+    await run.tick(gateCrashEvents(failedFromNow(NOW + 29 * MINUTE), NOW + 29 * MINUTE, DEFAULT_INCIDENT_CONFIG));
     assert.equal(run.provider.sent.length, 0);
     run.set(NOW + 31 * MINUTE);
-    await run.tick(gateCrashEvents({ ...down, lastRecordAt: NOW + 30 * MINUTE }, NOW + 31 * MINUTE, DEFAULT_INCIDENT_CONFIG));
+    await run.tick(gateCrashEvents(failedFromNow(NOW + 31 * MINUTE), NOW + 31 * MINUTE, DEFAULT_INCIDENT_CONFIG));
     assert.equal(run.provider.sent.length, 1);
   });
 });
@@ -226,7 +280,7 @@ describe("CI permission failures (done-when 5)", () => {
 describe("a reader that cannot read yields cannot-ask and NO event (done-when 4)", () => {
   const good = {
     readTrunkRuns: () => [trunkRun("failure", NOW - HOUR)],
-    readGateUnit: () => ({ failed: true, failedAt: NOW - HOUR, lastRecordAt: NOW - MINUTE }),
+    readGateUnit: () => ({ failed: true, failedAt: NOW - HOUR, lastRunAt: NOW - MINUTE, lastRecordAt: NOW - MINUTE }),
     readFleetState: () => ({ state: { "worker-a": NOW - HOUR } }),
     readCiRuns: () => [{ name: "pr-labels", status: "completed", created_at: iso(NOW - HOUR), updated_at: iso(NOW - HOUR), annotations: [{ message: "Resource not accessible by integration" }] }],
   };
