@@ -1,3 +1,4 @@
+// no-token: clearBeforeOrder -- the real queue is driven only through queueOrLose (an append to a temp file); nothing here clears or prompts a session
 // @ts-check
 // CONVERSATION IN (a11ign/a11ign#2909 done-whens 1-4): an accepted chairman message becomes ONE queue entry for `ceo` and ONE acknowledgement;
 // a queue refusal reaches the chairman unchanged; nothing in `src/messaging/` queues for anyone else; `resolveSender` never yields the chairman.
