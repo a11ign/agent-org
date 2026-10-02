@@ -14,7 +14,7 @@ import { after, describe, test } from "node:test";
 import { createMessenger } from "../core.mjs";
 import { createFakeProvider } from "../fake-provider.mjs";
 import { createLedger } from "../ledger.mjs";
-import { localClock, observeSummary, summaryDue, summaryKey } from "./summary.mjs";
+import { SUMMARY_LIST_LIMIT, localClock, observeSummary, summaryDue, summaryKey } from "./summary.mjs";
 
 const REPO = "a11ign/a11ign";
 const LONDON = { at: "08:00", timezone: "Europe/London" };
@@ -241,5 +241,15 @@ describe("every number is read, not typed (done-when 4)", () => {
     }, now);
     const { events } = await observeSummary({ github: github.github, repo: REPO, now, summary: LONDON });
     assert.match(String(events[0].text), /^Stalled .*: 1$/m);
+  });
+
+  test("a cut in-progress list is unread even when the 24 h filter brings it under the limit", async () => {
+    const now = at("2026-10-02T07:00:00Z");
+    const rows = (/** @type {number} */ n) => Array.from({ length: n }, (_, i) => ({ number: i, updatedAt: new Date(now - HOUR).toISOString() }));
+    const asRead = (/** @type {number} */ n) => reader({ issuesLabelled: async (query) => (query.label === "in-progress" ? rows(n) : []) }, now);
+    const cut = await observeSummary({ github: asRead(SUMMARY_LIST_LIMIT).github, repo: REPO, now, summary: LONDON });
+    assert.match(String(cut.events[0].text), /^Stalled .*: unread \(/m, "every row was touched within the day, so the filter leaves none, and it is still unread");
+    const whole = await observeSummary({ github: asRead(SUMMARY_LIST_LIMIT - 1).github, repo: REPO, now, summary: LONDON });
+    assert.match(String(whole.events[0].text), /^Stalled .*: 0$/m, "POSITIVE CONTROL: one row fewer is a complete read");
   });
 });

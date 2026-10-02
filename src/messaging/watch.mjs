@@ -2,10 +2,10 @@
 // `messaging:watch` (a11ign/a11ign#2903, done-when 5): THE ONE-SHOT PROGRAM THE `chairman-watch` TIMER RUNS. It reads GitHub, asks each
 // source what the chairman should be told, and hands the events to the core. A LEAF module, like the rest of `src/messaging/`.
 //
-// **IT MAKES READ CALLS AND NOTHING ELSE, AND THE BAN IS IN CODE, NOT IN A COMMENT.** The reader it is given has three methods and all of
-// them list; `createGhReader` builds its commands from an allowlist (`assertReadOnlyGh`) that refuses any `gh` verb but `issue list` and
-// `pr list` and any flag outside a short list, so a later edit that reaches for `gh issue comment` fails in the reader, before a process
-// is started. `watch.test.mjs`'s fixture reader throws on every method outside the three, and the run is asserted never to touch one.
+// **IT MAKES READ CALLS AND NOTHING ELSE, AND THE BAN IS IN CODE, NOT IN A COMMENT.** The reader it is given has four methods and all of
+// them read; `createGhReader` builds its commands from an allowlist (`assertReadOnlyGh`) that refuses any `gh` verb but `issue list`,
+// `issue view` and `pr list` and any flag outside a short list, so a later edit that reaches for `gh issue comment` fails in the reader, before a process
+// is started. the fixture reader in `sources/requests.test.mjs` throws on every method outside `READ_METHODS`, and the run is asserted never to touch one.
 //
 // **THE ACCOUNT IS THE UNIT'S, NEVER THE PERSON'S (#1967).** The service declares `GH_CONFIG_DIR`; an agent workspace reaches the workers'
 // account through the `gh` routing wrapper by its workspace id. With neither, `gh` would fall back to a person's stored credentials, so
@@ -41,9 +41,9 @@ const IDLE_ACTIONS = new Set(["duplicate", "held", "already-cleared", "resolved-
 const EXIT = Object.freeze({ ok: 0, failed: 1, refused: 2 });
 
 /** The only methods a reader has. A fixture reader that throws on every OTHER name is how the tests prove the run is read-only. */
-export const READ_METHODS = Object.freeze(["issuesLabelled", "mergedPullsSince", "redPulls"]);
+export const READ_METHODS = Object.freeze(["issuesLabelled", "issueComments", "mergedPullsSince", "redPulls"]);
 
-const ALLOWED_VERBS = new Set(["issue list", "pr list"]);
+const ALLOWED_VERBS = new Set(["issue list", "issue view", "pr list"]);
 const ALLOWED_FLAGS = new Set(["-R", "--label", "--state", "--search", "--json", "--limit"]);
 
 /**
@@ -103,11 +103,21 @@ export function createGhReader({ run = runGh } = {}) {
     assertReadOnlyGh(argv);
     return JSON.parse(await run(argv));
   }
+  /** @param {string[]} argv @returns {Promise<any>} */
+  async function view(argv) {
+    assertReadOnlyGh(argv);
+    return JSON.parse(await run(argv));
+  }
   return {
     /** @param {{ repo: string, label: string, comments?: boolean, limit?: number }} query */
     issuesLabelled({ repo, label, comments = false, limit = 100 }) {
       const fields = comments ? "number,title,url,updatedAt,comments" : "number,title,url,updatedAt";
       return list(["issue", "list", "-R", repo, "--label", label, "--state", "open", "--json", fields, "--limit", String(limit)]);
+    },
+    /** All of one row's comments: the list returns only the oldest hundred (see requests.mjs). @param {{ repo: string, number: number }} query */
+    async issueComments({ repo, number }) {
+      const row = await view(["issue", "view", String(number), "-R", repo, "--json", "comments"]);
+      return Array.isArray(row?.comments) ? row.comments : [];
     },
     /** @param {{ repo: string, sinceMs: number, limit?: number }} query */
     async mergedPullsSince({ repo, sinceMs, limit = 100 }) {

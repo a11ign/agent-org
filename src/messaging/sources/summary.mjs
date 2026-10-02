@@ -71,15 +71,17 @@ function reasonOf(error) {
 }
 
 /**
- * @param {() => Promise<unknown[]>} read @returns {Promise<Reading>}
+ * @template T
+ * @param {() => Promise<T[]>} read @param {(row: T) => boolean} [keep] which of the rows count; the cut-off test is on the list as READ, before this
+ * @returns {Promise<Reading>}
  *   The count is the LENGTH of what the reader returned, so a fixture returning three rows yields 3 and nothing here can type a number.
  */
-async function count(read) {
+async function count(read, keep = () => true) {
   try {
     const rows = await read();
     if (!Array.isArray(rows)) return { ok: false, reason: "the reader did not return a list" };
     if (rows.length >= SUMMARY_LIST_LIMIT) return { ok: false, reason: `${rows.length} or more, the limit of the read` };
-    return { ok: true, count: rows.length };
+    return { ok: true, count: rows.filter(keep).length };
   } catch (error) {
     return { ok: false, reason: reasonOf(error) };
   }
@@ -107,8 +109,7 @@ export async function readSummaryCounts({ github, repo, nowMs }) {
     count(() => github.issuesLabelled({ repo, label: READY_LABEL, limit })),
     count(() => github.mergedPullsSince({ repo, sinceMs, limit })),
     count(() => github.redPulls({ repo, limit })),
-    count(async () => (await github.issuesLabelled({ repo, label: IN_PROGRESS_LABEL, limit }))
-      .filter((row) => Date.parse(String(row.updatedAt)) < sinceMs)),
+    count(() => github.issuesLabelled({ repo, label: IN_PROGRESS_LABEL, limit }), (row) => Date.parse(String(row.updatedAt)) < sinceMs),
   ]);
   return { waiting, ready, merged, red, stalled };
 }

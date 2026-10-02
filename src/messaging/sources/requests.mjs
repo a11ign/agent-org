@@ -16,10 +16,17 @@
 // **THE TEXT IS QUOTED FROM A PUBLIC REPOSITORY, SO ONLY AN ORG ACCOUNT'S BRIEF IS QUOTED.** Anyone can comment on a public issue and write
 // "BRIEF for the chairman" at the top of it, and the line would arrive on the chairman's phone beside a real request. A brief counts only
 // when `authorAssociation` is OWNER, MEMBER or COLLABORATOR, which a commenter cannot claim for themselves.
+//
+// **THE LIST CARRIES THE FIRST 100 COMMENTS OF A ROW, NOT THE LAST 100.** A row with more than that would quote an old brief and never see a
+// re-brief, so its `state` would never change and the core would never send the update: silent, the failure this file exists to prevent. A
+// row whose list is AT the window has its comments read in full (`issueComments`, `gh issue view`); if that read fails, the source throws.
 
 export const NEEDS_CHAIRMAN = "needs:chairman";
 /** More rows than this waiting on one person is itself the finding; and a list this long may have been cut, so it is refused (see above). */
 export const REQUEST_LIST_LIMIT = 200;
+
+/** `gh issue list --json comments` returns the OLDEST this many comments, not the newest; a row at the window may have newer ones it cannot show. */
+export const COMMENT_WINDOW = 100;
 
 const BRIEF_MARKER = /brief for the chairman/i;
 const TRUSTED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
@@ -180,9 +187,23 @@ export function observeRequests({ repo, rows, openKeys, now }) {
 }
 
 /**
+ * @param {{ issueComments: (query: { repo: string, number: number }) => Promise<RowComment[]> }} github
+ * @param {string} repo @param {RequestRow} row @returns {Promise<RequestRow>} the row with every comment, when the list may have cut them
+ */
+async function withAllComments(github, repo, row) {
+  if ((row.comments ?? []).length < COMMENT_WINDOW) return row;
+  const comments = await github.issueComments({ repo, number: row.number });
+  if (!Array.isArray(comments) || comments.length < (row.comments ?? []).length) {
+    throw new RangeError(`${repo}#${row.number} has ${(row.comments ?? []).length} comments in the list and the full read did not return at least that many`);
+  }
+  return { ...row, comments };
+}
+
+/**
  * The impure half: one read, then `observeRequests`. THROWS when the read cannot be trusted (see the head of this file).
  *
- * @param {{ github: { issuesLabelled: (query: { repo: string, label: string, comments?: boolean, limit?: number }) => Promise<RequestRow[]> },
+ * @param {{ github: { issuesLabelled: (query: { repo: string, label: string, comments?: boolean, limit?: number }) => Promise<RequestRow[]>,
+ *                     issueComments: (query: { repo: string, number: number }) => Promise<RowComment[]> },
  *           repo: string, openKeys: Iterable<string>, now: number }} input
  */
 export async function readRequests({ github, repo, openKeys, now }) {
@@ -191,5 +212,6 @@ export async function readRequests({ github, repo, openKeys, now }) {
   if (rows.length >= REQUEST_LIST_LIMIT) {
     throw new RangeError(`${rows.length} rows carry ${NEEDS_CHAIRMAN}, the limit of the read: the list may be cut, and a cut list would resolve the rows past it`);
   }
-  return observeRequests({ repo, rows, openKeys, now });
+  const whole = await Promise.all(rows.map((row) => withAllComments(github, repo, row)));
+  return observeRequests({ repo, rows: whole, openKeys, now });
 }

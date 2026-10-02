@@ -188,6 +188,49 @@ describe("a read that cannot be trusted is not a loss (the false-resolution haza
     await readRequests({ github: { issuesLabelled: async (/** @type {any} */ query) => { asked = query; return []; } }, repo: REPO, openKeys: [], now: START });
     assert.deepEqual(asked, { repo: REPO, label: "needs:chairman", comments: true, limit: 200 });
   });
+
+  describe("a row whose comment list is at the window of 100", () => {
+    const old = brief("**ceo — BRIEF for the chairman: the OLD ask.**", { createdAt: "2026-09-20T10:00:00Z" });
+    const fresh = brief("**ceo — BRIEF for the chairman: the NEW ask.**", { createdAt: "2026-10-02T07:00:00Z" });
+    const filler = (/** @type {number} */ n) => Array.from({ length: n }, (_, i) => brief(`chatter ${i}`, { createdAt: "2026-09-21T10:00:00Z" }));
+    const cut = [old, ...filler(99)];
+    const whole = [...cut, ...filler(10), fresh];
+
+    test("quotes the NEWEST brief, read from the full comments, not the older one in the cut list", async () => {
+      const asked = /** @type {any[]} */ ([]);
+      const github = {
+        issuesLabelled: async () => [row(2623, { comments: cut })],
+        issueComments: async (/** @type {any} */ query) => { asked.push(query); return whole; },
+      };
+      const { events } = await readRequests({ github, repo: REPO, openKeys: [], now: START });
+      assert.deepEqual(asked, [{ repo: REPO, number: 2623 }]);
+      assert.match(String(events[0].text), /the NEW ask/);
+      assert.doesNotMatch(String(events[0].text), /OLD/);
+    });
+
+    test("a re-brief past the window changes the state, so the core sends the update", async () => {
+      const w = world();
+      assert.equal((await w.tick([row(2623, { comments: cut })])).decisions.map((entry) => entry.action).join(), "sent", "the cut list quotes the old brief");
+      const { decisions } = await w.tick([row(2623, { comments: whole })]);
+      assert.equal(decisions.map((entry) => entry.action).join(), "updated");
+    });
+
+    test("one at 99 comments is not re-read, and one at exactly 100 is (POSITIVE CONTROL for the threshold)", async () => {
+      let reads = 0;
+      const github = (/** @type {any[]} */ comments) => ({ issuesLabelled: async () => [row(7, { comments })], issueComments: async () => { reads += 1; return comments; } });
+      await readRequests({ github: github([old, ...filler(98)]), repo: REPO, openKeys: [], now: START });
+      assert.equal(reads, 0);
+      await readRequests({ github: github(cut), repo: REPO, openKeys: [], now: START });
+      assert.equal(reads, 1);
+    });
+
+    test("a failed full read throws rather than quoting the stale brief or resolving anything", async () => {
+      const github = { issuesLabelled: async () => [row(2623, { comments: cut })], issueComments: async () => { throw new Error("502 Bad Gateway"); } };
+      await assert.rejects(() => readRequests({ github, repo: REPO, openKeys: ["request:a11ign/a11ign#9"], now: START }), /502/);
+      const shorter = { issuesLabelled: async () => [row(2623, { comments: cut })], issueComments: async () => filler(3) };
+      await assert.rejects(() => readRequests({ github: shorter, repo: REPO, openKeys: [], now: START }), /did not return at least that many/);
+    });
+  });
 });
 
 describe("the options block (done-when 2)", () => {
@@ -312,6 +355,7 @@ function readOnlyFixture(/** @type {Record<string, (query: any) => Promise<any>>
 
 const goodReads = () => ({
   issuesLabelled: async (/** @type {any} */ query) => (query.label === "needs:chairman" ? [row(2885)] : []),
+  issueComments: async () => [],
   mergedPullsSince: async () => [],
   redPulls: async () => [],
 });
@@ -339,7 +383,7 @@ describe("chairman-watch makes only read calls (done-when 5)", () => {
     const w = watched({ github: fixture.github });
     const result = await w.pass();
     assert.deepEqual(result.failures, [], "no write was attempted: the fixture throws on one and the source would have failed");
-    assert.deepEqual([...new Set(fixture.touched)].sort(), [...READ_METHODS].sort(), "all three reads were used");
+    assert.deepEqual([...new Set(fixture.touched)].sort(), READ_METHODS.filter((name) => name !== "issueComments").sort(), "the three list reads were used, and no row was near the comment window");
     assert.equal(w.provider.sent.length, 2, "one request and one summary");
   });
 
@@ -350,18 +394,27 @@ describe("chairman-watch makes only read calls (done-when 5)", () => {
     await reader.issuesLabelled({ repo: REPO, label: "ready" });
     await reader.mergedPullsSince({ repo: REPO, sinceMs: Date.parse("2026-10-01T07:00:00Z") });
     await reader.redPulls({ repo: REPO });
-    assert.equal(commands.length, 4);
+    await reader.issueComments({ repo: REPO, number: 2623 });
+    assert.equal(commands.length, 5);
     for (const argv of commands) assert.doesNotThrow(() => assertReadOnlyGh(argv), argv.join(" "));
     assert.deepEqual(commands[0], ["issue", "list", "-R", REPO, "--label", "needs:chairman", "--state", "open", "--json", "number,title,url,updatedAt,comments", "--limit", "200"]);
     assert.ok(commands[2].includes("merged:>=2026-10-01T07:00:00.000Z"));
+    assert.deepEqual(commands[4], ["issue", "view", "2623", "-R", REPO, "--json", "comments"]);
+  });
+
+  test("the VERB is refused on its own, with every flag allowed (the flag check must not be what catches a write)", () => {
+    for (const verb of [["issue", "comment"], ["issue", "edit"], ["issue", "close"], ["issue", "create"], ["pr", "merge"], ["pr", "comment"], ["pr", "view"]]) {
+      assert.throws(() => assertReadOnlyGh([...verb, "1", "-R", REPO, "--state", "open", "--limit", "5"]), /is not an allowed command/, verb.join(" "));
+    }
   });
 
   test("assertReadOnlyGh refuses every verb that writes, and a list with a flag the readers do not use", () => {
     for (const argv of [
       ["issue", "comment", "1", "--body", "x"], ["issue", "edit", "1", "--add-label", "x"], ["issue", "close", "1"], ["pr", "merge", "1"],
       ["pr", "comment", "1"], ["api", "-X", "POST", "repos/a/b/issues"], ["api", "repos/a/b"], ["label", "create", "x"], ["issue", "create"], [],
-      ["issue", "list", "--web"], ["pr", "list", "--jq", ".[]"],
+      ["issue", "list", "--web"], ["pr", "list", "--jq", ".[]"], ["issue", "view", "1", "--web"], ["pr", "view", "1"],
     ]) assert.throws(() => assertReadOnlyGh(argv), /reads only/, argv.join(" "));
+    assert.doesNotThrow(() => assertReadOnlyGh(["issue", "view", "1", "-R", REPO, "--json", "comments"]), "POSITIVE CONTROL: the one view the reader needs");
     assert.doesNotThrow(() => assertReadOnlyGh(["pr", "list", "-R", REPO, "--state", "open", "--json", "number", "--limit", "5"]), "POSITIVE CONTROL");
   });
 
