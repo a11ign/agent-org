@@ -2760,10 +2760,21 @@ export function readMergedPrs(run = defaultRun) {
  * @param {any} row @param {string} holder @returns {string | null}
  */
 function declaredWait(row, holder) {
-  if (labelsOf(row).includes(CHAIRMAN_LABEL)) return `waiting on the chairman (${CHAIRMAN_LABEL})`;
+  return declaredWaitOf(row, holder)?.phrase ?? null;
+}
+
+/**
+ * `declaredWait`'s decision with its KIND, which is the `WAIT_FIELDS` key `idle-claimant.mjs` counts as a field (#2999): ONE decider for "this
+ * row has a wait field", so the idle reading and the clock reading cannot disagree about a row. `blocked` (the label) is not a kind: it names
+ * no referent. `fleet-hold` is a `Fleet-hold-until:` line, whose second meaning -- a claim on the workers -- nothing else reads.
+ * @param {any} row @param {string} holder @returns {{ kind: string, phrase: string } | null}
+ */
+function declaredWaitOf(row, holder) {
+  if (labelsOf(row).includes(CHAIRMAN_LABEL)) return { kind: "chairman", phrase: `waiting on the chairman (${CHAIRMAN_LABEL})` };
   const waiting = waitingOn({ ...row, blockedBy: { nodes: [] } }) ?? fleetWaitingOn(row);
   if (waiting === null || (waiting.kind === "answer" && waiting.session === holder)) return null;
-  return describeWaiting(waiting);
+  const kind = waiting.kind === "date" ? "not-before" : waiting.kind === "row" ? "blocked-by" : waiting.kind;
+  return { kind, phrase: describeWaiting(waiting) };
 }
 
 /**
@@ -2865,16 +2876,12 @@ function readClaims({ held, byRow, openPrs, mergedPrs, io, repo, now, restart, a
     }
     const session = sessions[0].slice(SESSION_PREFIX.length);
     const facts = claimFactsFrom({ row: row.number, title: row.title, session, waiting: declaredWait(row, session),
-      blockedBy: openBlockers(row), comments: byRow.get(Number(row.number)) ?? [], openPrs, mergedPrs, repo }, io);
+      waitKind: declaredWaitOf(row, session)?.kind ?? null, blockedBy: openBlockers(row), comments: byRow.get(Number(row.number)) ?? [], openPrs: withChecksPending(openPrs), mergedPrs, repo }, io);
     if ("skip" in facts) {
       log(`claim-stall: ${facts.skip} -- not evaluated.\n`);
       continue;
     }
-    const remembered = before[facts.row]?.session === session ? before[facts.row] : undefined;
-    const nudge = remembered?.nudgedAt !== undefined ? { nudgedAt: remembered.nudgedAt,
-      deliveredAt: nudgeDeliveredAt(ledger(), nudgeKey(session, facts.row, remembered.nudgedAt)) } : null;
-    const goneSince = remembered?.goneSince ?? null;
-    const reading = readClaim(facts, { now, restartAt: restart, nudge, agents, goneSince });
+    const reading = readClaim(facts, { now, restartAt: restart, agents, ...rememberedFor({ entry: before[facts.row], session, row: facts.row, ledger }) });
     // A HOLDER THAT HAS WORK AND A BLOCKER is the EXPECTED hold and is not said every tick; only a read that could not be made is.
     if (reading.kind === "holding" && reading.expected !== true) {
       log(`claim-stall: #${facts.row} (${session}) is HELD, not released: ${reading.why}.\n`);
@@ -2885,6 +2892,27 @@ function readClaims({ held, byRow, openPrs, mergedPrs, io, repo, now, restart, a
     readings.push({ facts, reading });
   }
   return readings;
+}
+
+/**
+ * Each open pull request with `checksPending`: a check of its NEWEST run per name is still running. The idle-claimant reading counts that as a wait
+ * (#2999), and it is decided HERE, through `newestPerName` and `stillRunning`, so there is one reader of the rollup and one meaning of "running".
+ * @param {any[]} prs
+ */
+function withChecksPending(prs) {
+  return prs.map((pr) => ({ ...pr, checksPending: newestPerName(pr?.statusCheckRollup ?? []).some(stillRunning) }));
+}
+
+/**
+ * What the memory says about ONE claim's holder, as the reading's context: the nudge it was sent (with its delivery, read from the wake ledger),
+ * the tick its session was first found gone, and the tick it was first found idle (#2999). A memory written for ANOTHER session is nobody's.
+ * @param {{ entry: import("./claim-stall.mjs").StallState[string] | undefined, session: string, row: number, ledger: () => string }} args
+ */
+function rememberedFor({ entry, session, row, ledger }) {
+  const remembered = entry?.session === session ? entry : undefined;
+  const nudge = remembered?.nudgedAt !== undefined ? { nudgedAt: remembered.nudgedAt, idle: remembered.idle === true,
+    deliveredAt: nudgeDeliveredAt(ledger(), nudgeKey(session, row, remembered.nudgedAt)) } : null;
+  return { nudge, goneSince: remembered?.goneSince ?? null, idleSince: remembered?.idleSince ?? null };
 }
 
 /** @param {import("./claim-stall.mjs").StallOrder[] | undefined} orders */

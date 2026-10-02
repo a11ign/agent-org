@@ -28,15 +28,15 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
-import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, systemdUserAvailable,
-  hostUnitDrift, permissionModeDrift, orphanedUnits, SHIPPED_DIR, REPO_ROOT, execCommands,
-  entriesFromCommand, ghSpawnReachedFrom, identityDrift, unitsSpendingGh, opaqueCommands,
+import { shippedUnits, unitState as real_unitState, unitDrift, driftReport, hostUnitsInstall as real_hostUnitsInstall, systemdUserAvailable,
+  hostUnitDrift as real_hostUnitDrift, permissionModeDrift, orphanedUnits, SHIPPED_DIR, REPO_ROOT, execCommands,
+  entriesFromCommand, ghSpawnReachedFrom, identityDrift as real_identityDrift, unitsSpendingGh as real_unitsSpendingGh, opaqueCommands,
   retiredHere, addedOnSomeRef, orphanOrigin, shellCommandWords, shellSpawnsGh, shippedHostScripts,
   supersededHostScripts, unitEntryPoints, missingUnitPrograms, workingDirectoryOf,
   programCandidates, hostIdentityDrift, hostIdentityNotes, hostIdentityInstall, ownedIdentityFiles, compileCacheNotes,
-  WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift, declaredCompileCache, PROJECT_UNITS_DIR, shippedUnitText,
+  WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift as real_compileCacheDrift, declaredCompileCache, PROJECT_UNITS_DIR, shippedUnitText as real_shippedUnitText,
   shippedScriptText, leadsListText, modelEffortDrift, sessionModelDrift, sessionModelNotes, lastModelIn,
-  liveClaudeSessions, OPTIONAL_UNITS, declaredProjectKeys, windowEnd, windowEndNotes } from "../host-units.mjs";
+  liveClaudeSessions, OPTIONAL_UNITS, declaredProjectKeys, windowEnd as real_windowEnd, windowEndNotes as real_windowEndNotes } from "../host-units.mjs";
 import { DECLARED_CLAUDE_MODELS, PROFILES, CLAUDE_EFFORTS } from "../worker-profile.mjs";
 import { homeHostConfig } from "../host-config.mjs";
 
@@ -50,6 +50,28 @@ const PLAIN_A11IGN_HOST = (() => {
   delete plain.tool;
   return Object.freeze(plain);
 })();
+
+/**
+ * The nine readers that consult the HOST's declaration, defaulted to the plain a11ign host. Once `host.json` names a `tool` the install form
+ * reads each project's `.agent-org/project.json` through the host's ABSOLUTE `checkout`, a path that exists on the agents host and on no CI
+ * runner (#3027: ten of these failed there and passed here). A test that passes its own `host` still wins.
+ */
+type HostDeps = { host?: unknown } & Record<string, unknown>;
+const onPlainHost = <F extends (...args: never[]) => unknown>(real: F, depsAt: number): F =>
+  ((...args: unknown[]) => {
+    const withHost = [...args];
+    withHost[depsAt] = { host: PLAIN_A11IGN_HOST, ...(args[depsAt] as HostDeps | undefined) };
+    return (real as unknown as (...a: unknown[]) => unknown)(...withHost);
+  }) as unknown as F;
+const hostUnitsInstall = onPlainHost(real_hostUnitsInstall, 0);
+const shippedUnitText = onPlainHost(real_shippedUnitText, 1);
+const identityDrift = onPlainHost(real_identityDrift, 0);
+const unitsSpendingGh = onPlainHost(real_unitsSpendingGh, 0);
+const hostUnitDrift = onPlainHost(real_hostUnitDrift, 0);
+const compileCacheDrift = onPlainHost(real_compileCacheDrift, 0);
+const unitState = onPlainHost(real_unitState, 1);
+const windowEnd = onPlainHost(real_windowEnd, 1);
+const windowEndNotes = onPlainHost(real_windowEndNotes, 0);
 
 /**
  * #2620: ONE SHIPPED UNIT AS IT INSTALLS -- the tool's three are rendered from `host/*.in` templates and the project's own are read

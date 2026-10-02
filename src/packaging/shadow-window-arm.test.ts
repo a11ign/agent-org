@@ -24,7 +24,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SHIPPED_DIR, TOOL_ENTRIES, hostUnitsInstall, shippedUnitText, shippedUnits } from "../host-units.mjs";
+import { SHIPPED_DIR, TOOL_ENTRIES, hostUnitsInstall, shippedUnitText as real_shippedUnitText, shippedUnits } from "../host-units.mjs";
 import { HARD_STOP_MS, WINDOW_TICKS, armWindow, readRecordRows, readWindowMarker, ticksRecorded, windowTick } from "../shadow-window.mjs";
 import { SHADOW_WINDOW_MARKER, tapShadowReads } from "../shadow-reads.mjs";
 import { homeHostConfig } from "../host-config.mjs";
@@ -45,6 +45,10 @@ const plainHost = (() => {
   delete plain.tool;
   return Object.freeze(plain);
 })() as never;
+
+/** `shippedUnitText` on the plain host by default: with `tool` set it reads the host's ABSOLUTE `checkout`, which no CI runner has (#3027). */
+const shippedUnitText = (unit: string, deps: Record<string, unknown> = {}): string | null =>
+  real_shippedUnitText(unit, { host: plainHost, ...deps });
 
 /** What systemd reads out of a unit's non-comment lines. */
 const directives = (unit: string) => unit.split("\n").filter((line) => line.trim() !== "" && !line.trimStart().startsWith("#"));
