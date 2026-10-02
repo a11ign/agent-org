@@ -658,7 +658,7 @@ export function ownerOfPr(pr) {
  */
 function nobodyBasis(pr, unlabelled) {
   if (!pr?.labelEnded) return unlabelled;
-  return `its \`session:\` label names \`${sessionOf(pr)}\`, which has ENDED (absent from herdr, and a teardown recorded its ending), `
+  return `its \`${SESSION_PREFIX}\` label names \`${sessionOf(pr)}\`, which has ENDED (absent from herdr, and a teardown recorded its ending), `
     + "and no live session holds a row it closes, its branch names or stamped its worktree";
 }
 

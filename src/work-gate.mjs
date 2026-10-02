@@ -4262,14 +4262,14 @@ export function withEndedLabels(prs, { agents = liveWorkspaceLabels, ended = end
   if (!prs.some((pr) => sessionOf(pr))) return prs;
   const live = agents();
   if (live === null) {
-    say("NOTE: herdr did not answer, so no pull request's `session:` label was classed as ended this tick -- every one still orders (#3093).\n");
+    say(`NOTE: herdr did not answer, so no pull request's \`${SESSION_PREFIX}\` label was classed as ended this tick -- every one still orders (#3093).\n`);
     return prs;
   }
   let gone;
   try {
     gone = ended();
   } catch (err) {
-    say(`NOTE: the ended-session ledgers could not be read (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0]}) -- no pull request's \`session:\` label was classed as ended this tick (#3093).\n`);
+    say(`NOTE: the ended-session ledgers could not be read (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0]}) -- no pull request's \`${SESSION_PREFIX}\` label was classed as ended this tick (#3093).\n`);
     return prs;
   }
   return prs.map((pr) => {
