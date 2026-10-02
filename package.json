@@ -1,10 +1,22 @@
 {
-  "name": "@a11ign/agent-org",
-  "version": "0.0.0",
-  "private": true,
+  "name": "agent-org",
+  "version": "0.1.0",
   "type": "module",
   "license": "Apache-2.0",
-  "description": "The AI agent organisation that develops this repo: rows, claims, the board, the merge queue and the wake gate. Ships nothing; runs nowhere but this project.",
+  "description": "An AI agent organisation as a tool: rows, claims, the board, the merge queue and the wake gate, run against the repository it is installed in.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/a11ign/agent-org.git"
+  },
+  "bin": {
+    "agent-org": "src/bin.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "typescript": "^6.0.3"
+  },
   "scripts": {
     "messaging:listen": "node src/messaging/listen.mjs",
     "messaging:watch": "node src/messaging/watch.mjs",
@@ -14,6 +26,10 @@
   },
   "files": [
     "src",
-    "LICENSE"
+    "!src/**/*.test.ts",
+    "!src/**/*.test.mjs",
+    "host",
+    "LICENSE",
+    "README.md"
   ]
 }

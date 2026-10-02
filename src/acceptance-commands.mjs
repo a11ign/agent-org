@@ -73,6 +73,7 @@ import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { changedFiles } from "./lib/changed-files.mjs";
 import { localImports, importedNamesFor, stripComments } from "./lib/local-import-closure.mjs";
+import { resolveTypescript } from "./lib/resolve-typescript.mjs";
 // #2619 (child 3d of #69): the shared-resource ban and the template's field/question names -- a
 // project's own values, moved out of this file's `FLEET_LAB_PATTERNS`/`FLEET_QUESTION`.
 import { RESOURCES, FLEET_QUESTION, ACCEPTANCE_FIELD, CLOSES_FIELD } from "./project-vocabulary.mjs";
@@ -884,7 +885,7 @@ let typescriptModule = undefined;
 function loadTypescript() {
   if (typescriptModule !== undefined) return typescriptModule;
   try {
-    typescriptModule = /** @type {typeof import("typescript")} */ (createRequire(import.meta.url)("typescript"));
+    typescriptModule = resolveTypescript();
   } catch (error) {
     void error; // pre-install: the caller falls back to the full-text scan, which over-charges
     typescriptModule = null;
