@@ -8,7 +8,7 @@
 // 250 comments and the newest brief is the 250th.
 
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
@@ -17,6 +17,7 @@ import { buttonData, createAnswers } from "./answers.mjs";
 import { createGithubWriter } from "./github-writer.mjs";
 import { createInbound } from "./inbound.mjs";
 import { createLedger, deliveryLine, STATUS } from "./ledger.mjs";
+import { createConverse } from "./converse.mjs";
 import { createForwarder } from "./listen.mjs";
 import { runListener } from "./providers/telegram/poll.mjs";
 import { latestBrief, NEEDS_CHAIRMAN } from "./sources/requests.mjs";
@@ -144,8 +145,12 @@ describe("a stream of updates through the listener's wiring (done-when 3)", () =
     { update_id: 3, message: { message_id: 903, from: { id: CHAIRMAN.userId }, chat: { id: CHAIRMAN.chatId, type: "private" }, text: "how is the queue today?" } },
   ];
 
-  /** @returns {Promise<{events: string[], rows: Map<number, any>}>} what happened, in order */
-  async function listen(/** @type {any[]} */ stream) {
+  /**
+   * @param {any[]} stream
+   * @param {(parts: {ledger: any, say: (text: string) => void}) => (accepted: Readonly<Record<string, any>>) => Promise<unknown> | void} [consumer] what takes what is not an answer: a recorder unless a test passes the real one
+   * @returns {Promise<{events: string[], rows: Map<number, any>}>} what happened, in order
+   */
+  async function listen(stream, consumer = ({ say }) => (accepted) => say(`converse ${accepted.text}`)) {
     const rows = new Map([ASK_A, ASK_B].map(({ row }) => [row, { state: "open", labels: ["ready", NEEDS_CHAIRMAN], comments: [{ ...manyComments(1)[0], body: brief(`Ask ${row}`) }] }]));
     /** @type {string[]} */
     const events = [];
@@ -164,9 +169,8 @@ describe("a stream of updates through the listener's wiring (done-when 3)", () =
       ledger.append(deliveryLine({ key: `request:${REPO}#${row}`, provider: "fake", status: STATUS.sent, providerMessageId: String(message), kind: "request", stateHash: "h" }));
     }
     const answers = createAnswers({ ledger, github: writer, chairman: CHAIRMAN, answerLabel: ANSWER_LABEL, now });
-    const onForward = createForwarder({
-      answers, send: async ({ text }) => { events.push(`send ${text}`); }, converse: (accepted) => { events.push(`converse ${accepted.text}`); }, log: (line) => events.push(`log ${line}`),
-    });
+    const send = async (/** @type {{text: string}} */ { text }) => { events.push(`send ${text}`); return { messageRef: "1" }; };
+    const onForward = createForwarder({ answers, send, converse: consumer({ ledger, say: (text) => events.push(text) }), log: (line) => events.push(`log ${line}`) });
     const stop = new AbortController();
     let served = false;
     const provider = {
@@ -195,6 +199,20 @@ describe("a stream of updates through the listener's wiring (done-when 3)", () =
     for (const row of [2885, 2886]) assert.deepEqual(rows.get(row).labels, ["ready", ANSWER_LABEL], `row ${row} is answered and ceo is woken`);
     assert.match(rows.get(2885).comments.at(-1).body, /A \(publish now\)/, "the press wrote the option the row offered");
     assert.match(rows.get(2886).comments.at(-1).body, /> hold it until Monday/, "the reply wrote the chairman's words, quoted");
+  });
+
+  test("with row 10's real `converse` taking the pass-through, the plain message is queued for ceo and the chairman is told so", async () => {
+    const queuePath = join(scratch, `queue-${Math.random().toString(36).slice(2)}`);
+    const { events } = await listen(updates, ({ ledger, say }) => {
+      const send = async (/** @type {{text: string}} */ { text }) => { say(`send ${text}`); return { messageRef: "2" }; };
+      return createConverse({ chairman: CHAIRMAN, queuePath, ledger, send, agents: () => [{ label: "ceo", status: "idle" }] }).forward;
+    });
+    assert.deepEqual(events.filter((event) => event.startsWith("send Recorded")), ["send Recorded on a11ign/a11ign#2885: ceo has it.", "send Recorded on a11ign/a11ign#2886: ceo has it."]);
+    assert.match(events.at(-1) ?? "", /^send queued for ceo, handoff handoff\/ceo\/[0-9a-f]{8}$/);
+    const queued = existsSync(queuePath) ? readFileSync(queuePath, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
+    assert.deepEqual(queued.map((entry) => entry.session), ["ceo"], "one order, for ceo, and the answered reply was not queued");
+    assert.match(queued[0].prompt, /how is the queue today\?/);
+    assert.doesNotMatch(queued[0].prompt, /hold it until Monday/);
   });
 
   test("the control: the same stream with the reply's target removed writes nothing for it and passes it through, so a value without the target fails above", async () => {

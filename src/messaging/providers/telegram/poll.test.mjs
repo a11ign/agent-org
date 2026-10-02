@@ -421,11 +421,14 @@ function mainHarness({ script, stopAfter = 1, updates = [], paired = true, withK
   /** @type {string[]} */
   const outputs = [];
   const state = join(home, ".local", "state", "agent-org", "messaging");
+  /** What `converse` was handed: the real one queues for `ceo` on this machine, which a unit test must never do. */
+  /** @type {number[]} */
+  const consumed = [];
   return {
-    home, state, telegram, errors, outputs,
+    home, state, telegram, errors, outputs, consumed,
     /** @param {{ env?: Record<string, string | undefined> }} [more] the environment the unit declares an account in, unless a test says otherwise */
     run: ({ env = { GH_CONFIG_DIR: "/the/unit/gh" } } = {}) => main({
-      root, home, env, fetch: telegram.fetch, signal: telegram.signal, sleep: async () => {}, out: (line) => outputs.push(line), err: (line) => errors.push(line),
+      root, home, env, converse: (accepted) => { consumed.push(accepted.updateId); }, fetch: telegram.fetch, signal: telegram.signal, sleep: async () => {}, out: (line) => outputs.push(line), err: (line) => errors.push(line),
     }),
   };
 }
@@ -437,7 +440,7 @@ describe("main", () => {
     assert.deepEqual(JSON.parse(readFileSync(join(harness.state, "offset.json"), "utf8")), { offset: 72 });
     assert.deepEqual(readLedgerLines(join(harness.state, "ledger.jsonl")).map((line) => line.updateId), [70, 71]);
     assert.ok(!existsSync(join(harness.state, "listener.lock")), "the lock was released");
-    assert.match(harness.errors.join("\n"), /update 70 is not an answer to a request and has no consumer yet/, "a message nothing consumes is said, never dropped silently");
+    assert.deepEqual(harness.consumed, [70, 71], "what is not an answer to a request is handed to `converse`, in order");
   });
 
   test("with the `messaging` key absent it is silent, exits 0, and constructs nothing", async () => {

@@ -13,7 +13,7 @@
 //
 // **NOTHING IS SENT TO A WORKER FROM HERE.** `handle` says `forward` for an accepted message and `createForwarder` hands it to `answers.mjs`
 // (#2908), which checks it with `isAccepted` and writes the chairman-attributed comment and the labels; the chairman is told what happened.
-// What is NOT an answer (a message that replies to nothing the organisation asked) goes to `converse` (row 10), and is only logged until it exists.
+// What is NOT an answer (a message that replies to nothing the organisation asked) goes to row 10's `converse`, which queues it for `ceo` and nobody else.
 //
 // **THE GITHUB WRITES ARE THE UNIT'S ACCOUNT, NEVER THE PERSON'S (#1967).** This is the one program here that writes to GitHub, so it refuses to
 // start where no account is declared, as `watch.mjs` does for its reads.
@@ -30,6 +30,7 @@ import { pathToFileURL } from "node:url";
 import { ANSWER_PREFIX } from "../project-vocabulary.mjs";
 import { createAnswers } from "./answers.mjs";
 import { MessagingConfigRefusal, readMessagingConfig } from "./config.mjs";
+import { createConverse } from "./converse.mjs";
 import { createGithubWriter } from "./github-writer.mjs";
 import { createInbound } from "./inbound.mjs";
 import { createLedger } from "./ledger.mjs";
@@ -216,11 +217,6 @@ export function createForwarder({ answers, send, converse, log }) {
   };
 }
 
-/** @param {(line: string) => void} log @returns {(accepted: Readonly<Record<string, any>>) => void} */
-function logUnconsumed(log) {
-  return (accepted) => log(`messaging:listen: update ${accepted.updateId} is not an answer to a request and has no consumer yet (row 10); it is in the ledger and nothing acts on it`);
-}
-
 /**
  * @param {Parameters<typeof main>[0]} deps @param {{ tokenFile: string, chairmanFile: string }} config @returns {Promise<void>}
  */
@@ -235,10 +231,12 @@ async function listen(deps, config) {
     const inbound = createInbound({ ledger, chairman });
     const provider = createTelegramPollingProvider({ token, chatId: chairman.chatId, fetch: fetchImpl, sleep, log: err });
     const answers = createAnswers({ ledger, github: github ?? createGithubWriter(), chairman, answerLabel: ANSWER_LABEL, now });
+    const send = (/** @type {{ text: string, replyTo?: string }} */ message) => provider.send(message);
+    // The queue is `prompt:session`'s own, at the path it and the gate resolve from no `--ledger`: a message for `ceo` lands where `ceo`'s next wake reads it.
+    const conversation = createConverse({ chairman, ledger, send, now });
     await runListener({
       provider, inbound, offsets: createOffsetStore(join(state, OFFSET_FILE), { log: err }), chairman, sleep, log: err, signal: stoppableBy(deps.signal),
-      // Until row 10 consumes what is not an answer, it is recorded in the ledger by `handle` and goes no further: say so, never drop it silently.
-      onForward: onForward ?? createForwarder({ answers, send: (message) => provider.send(message), converse: converse ?? logUnconsumed(err), log: err }),
+      onForward: onForward ?? createForwarder({ answers, send, converse: converse ?? conversation.forward, log: err }),
     });
   } finally {
     lock.release();

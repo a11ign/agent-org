@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -259,6 +259,25 @@ describe("real queue (prompt-session.mjs)", { skip: "reason" in real ? /** @type
   const { session, wake } = "port" in real ? real.port : { session: null, wake: null };
   const port = session && wake ? { queueOrLose: session.queueOrLose, attributed: session.attributed, EXIT: session.EXIT, STANCE: session.STANCE, handoffId: wake.handoffId, readHandoffs: wake.readHandoffs, realPort: true } : null;
   cases(/** @type {any} */ (port ?? fakeQueue), "real");
+});
+
+describe("the queue file, when the listener names none", () => {
+  test("the port's own path is used: an order lands there, and the acknowledgement is read back from it", async () => {
+    const run = harness({ queue: fakeQueue });
+    const path = join(dirname(run.queuePath), "the-port-names-this");
+    const lone = createConverse({ chairman: CHAIRMAN, ledger: createLedger({ path: join(dirname(path), "l.jsonl"), now: () => START }), send: (m) => run.provider.send(m),
+      agents: () => ROSTER, now: () => START, queue: { ...fakeQueue, defaultQueuePath: () => path } });
+    const outcome = await lone.forward(run.accept(chairmanUpdate(1)));
+    assert.equal(outcome.outcome, "queued");
+    assert.deepEqual(entries(path).map((entry) => entry.session), ["ceo"]);
+  });
+
+  test("with no path given and a port that names none, it throws rather than queueing nowhere", async () => {
+    const run = harness({ queue: fakeQueue });
+    const lone = createConverse({ chairman: CHAIRMAN, ledger: createLedger({ path: join(dirname(run.queuePath), "l2.jsonl"), now: () => START }), send: (m) => run.provider.send(m),
+      agents: () => ROSTER, now: () => START, queue: fakeQueue });
+    await assert.rejects(lone.forward(run.accept(chairmanUpdate(2))), /no queue path was given/);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------
