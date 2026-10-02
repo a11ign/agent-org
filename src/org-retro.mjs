@@ -12,12 +12,16 @@
 // is offered to `ceo` once per UTC date with these numbers ALREADY COMPUTED: no model reads a log, and `ceo` is woken with the
 // answer in its prompt rather than to go and look.
 //
+// THE REPORT HAS A YESTERDAY (#2955): the gate's offer appends one `{date, numbers}` line to `org-retro-readings.jsonl`, and the next report prints,
+// per number, the previous reading, the delta and `better | worse | same | no baseline | unknown`. `NUMBERS` is the ONE table that says what each number
+// is and which way is better, so a number the report prints with no direction cannot be written (and a fixture that has one goes red).
+//
 // A LEAF, RELATIVE IMPORTS ONLY, like `repeating-lines.mjs`: `work-gate.mjs` imports it and runs before any `npm ci`/build.
 //
 // EVERY READ CAN BE REFUSED, AND A REFUSED READ IS `unknown`, NEVER 0 (#1286). A retrospective that printed "0 red PRs" because
 // the PR list could not be read would be the org's own health reported as good by an absence, which is the defect it exists to find.
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { appendFileSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { stateEntryPath } from "./host-config.mjs";
@@ -232,13 +236,13 @@ export function tokenStats(turns, { since, until }) {
  * Every number, each `unknown` when its source was refused. `reads` holds the RAW reads (`null` for a refused one), so what is
  * computed here is pure and a test drives it with a fixture window whose answers are checked by hand.
  * @param {{ merged: any[] | null, openPrs: any[] | null, journal: string | null, ledger: string | null,
- *   turns: any[] | null, handFixes: ReturnType<typeof readHandFixLedger> | null }} reads
+ *   turns: any[] | null, handFixes: ReturnType<typeof readHandFixLedger> | null, readings?: Readings }} reads
  * @param {number} now
  */
 export function buildReport(reads, now) {
   const window = { since: now - WINDOW_MS, until: now };
   const lines = reads.journal === null ? null : journalLines(reads.journal, window);
-  return {
+  const report = {
     date: utcDate(now),
     window,
     merged: mergedStats(reads.merged, window),
@@ -249,6 +253,142 @@ export function buildReport(reads, now) {
     tokens: tokenStats(reads.turns, window),
     handFixes: reads.handFixes,
   };
+  // `readings` absent is a read nobody made, which says `unknown` and never `no baseline`: only a read that found no file may say that.
+  return { ...report, numbers: readingNumbers(report), previous: previousReading(reads.readings, report.date) };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// THE NUMBERS, their direction, and the comparison with the previous reading (#2955).
+
+/** The file the report keeps its own readings in, one JSON line per UTC date, beside the wake ledger. */
+export const READINGS_FILE = "org-retro-readings.jsonl";
+
+/** @param {number | null | undefined} n @returns {number | null} whole units, `null` staying `null` */
+const wholeOrNull = (n) => (n === null || n === undefined ? null : Math.round(n));
+
+/**
+ * THE ONE TABLE: every number the report trends, which way is better, and where it comes from. A number is `null` when its source was refused
+ * or has nothing to say (no merge, so no median), and `null` is never `0`. `of` takes the report as built before `numbers` is attached.
+ * @type {readonly { id: string, label: string, better: "lower" | "higher", of: (report: any) => number | null }[]}
+ */
+export const NUMBERS = Object.freeze([
+  { id: "prsMerged", label: "PRs merged", better: "higher", of: (r) => r.merged?.count ?? null },
+  { id: "medianOpenToMergeMinutes", label: "Median open-to-merge (minutes)", better: "lower", of: (r) => wholeOrNull(r.merged?.medianMinutes) },
+  { id: "idleMinutes", label: "Idle minutes while a claimable row existed", better: "lower", of: (r) => r.idle?.idleMinutes ?? null },
+  { id: "orgStalledWakes", label: "Stalls (org-stalled wakes)", better: "lower", of: (r) => r.stalls?.orgStalled ?? null },
+  { id: "claimStalledWakes", label: "Claim-stalled wakes", better: "lower", of: (r) => r.stalls?.claimStalled ?? null },
+  { id: "claimStallVoidings", label: "Claim-stall voidings", better: "lower", of: (r) => r.releases?.voided ?? null },
+  { id: "orgHealthOffers", label: "org-health offers", better: "lower",
+    of: (r) => (r.stalls ? Object.values(/** @type {Record<string, number>} */ (r.stalls.healthBySignal)).reduce((sum, n) => sum + n, 0) : null) },
+  { id: "redPrs", label: "Red PRs now", better: "lower", of: (r) => r.red?.count ?? null },
+  { id: "tokensPerMergedPr", label: "Tokens per merged PR", better: "lower",
+    of: (r) => (r.tokens && r.merged && r.merged.count > 0 ? Math.round(r.tokens.total / r.merged.count) : null) },
+  { id: "handFixes", label: "Hand fixes (last 14d)", better: "lower", of: (r) => r.handFixes?.count ?? null },
+]);
+
+/** @param {object} report the report before `numbers` is attached @returns {Record<string, number | null>} */
+export function readingNumbers(report) {
+  return Object.fromEntries(NUMBERS.map((n) => [n.id, n.of(report)]));
+}
+
+/** @param {Record<string, unknown>} numbers @returns {string[]} the ids in `numbers` the table gives no direction: a defect, never a default */
+export function undeclaredDirections(numbers) {
+  return Object.keys(numbers).filter((id) => !NUMBERS.some((n) => n.id === id));
+}
+
+/** @typedef {{ date: string, numbers: Record<string, number | null> }} Reading */
+/**
+ * What the readings file said: `none` is a file that is absent or empty (a first day), `unreadable` is one that could not be read or holds no line
+ * that parses, and the two NEVER share a verdict. `ioError` marks the unreadable that is the disk's, where appending could write a second line for a date.
+ * @typedef {{ status: "none" | "read" | "unreadable", entries: Reading[], ioError: boolean, text: string }} Readings
+ */
+
+/** @param {unknown} value @returns {value is Reading} */
+function isReading(value) {
+  const entry = /** @type {any} */ (value);
+  return typeof entry?.date === "string" && /^\d{4}-\d\d-\d\d$/.test(entry.date) && typeof entry.numbers === "object" && entry.numbers !== null;
+}
+
+/** @param {string} text @returns {Readings} */
+export function parseReadings(text) {
+  /** @type {Reading[]} */
+  const entries = [];
+  for (const line of text.split("\n")) {
+    if (line.trim() === "") continue;
+    try {
+      const parsed = JSON.parse(line);
+      if (isReading(parsed)) entries.push(parsed);
+    } catch { /* a line that is not JSON is skipped; a file where NO line reads is `unreadable` below */ }
+  }
+  if (text.trim() === "") return { status: "none", entries, ioError: false, text };
+  return { status: entries.length === 0 ? "unreadable" : "read", entries, ioError: false, text };
+}
+
+/** @param {string} path @returns {Readings} an absent file is a first day; any other failure to read is `unreadable`, never a first day */
+export function readReadings(path) {
+  try {
+    return parseReadings(readFileSync(path, "utf8"));
+  } catch (/** @type {any} */ err) {
+    return err?.code === "ENOENT" ? { status: "none", entries: [], ioError: false, text: "" } : { status: "unreadable", entries: [], ioError: true, text: "" };
+  }
+}
+
+/**
+ * The reading to compare against: the latest line from BEFORE `date`. A line for `date` itself is today's own (the offer repeating until it is
+ * delivered) and is never its own baseline.
+ * @param {Readings | undefined} readings @param {string} date
+ * @returns {{ status: "none" | "unreadable" } | { status: "read", date: string, numbers: Record<string, number | null> }}
+ */
+export function previousReading(readings, date) {
+  if (readings === undefined || readings.status === "unreadable") return { status: "unreadable" };
+  const earlier = readings.entries.filter((e) => e.date < date).sort((a, b) => (a.date < b.date ? -1 : 1));
+  const latest = earlier[earlier.length - 1];
+  return latest === undefined ? { status: "none" } : { status: "read", date: latest.date, numbers: latest.numbers };
+}
+
+/** @typedef {"better" | "worse" | "same" | "no baseline" | "unknown"} Verdict */
+
+/**
+ * `unknown` is a number or a previous file that could not be read; `no baseline` is a read that found nothing earlier. Neither is `same`, and
+ * neither is a delta against 0: a comparison needs two numbers that were READ.
+ * @param {{ better: "lower" | "higher", previous: { status: string, numbers?: Record<string, number | null> }, id: string, current: number | null }} input
+ * @returns {Verdict}
+ */
+export function verdictFor({ better, previous, id, current }) {
+  if (previous.status === "unreadable" || current === null) return "unknown";
+  const before = previous.numbers?.[id];
+  if (previous.status === "none" || before === null || before === undefined) return "no baseline";
+  if (current === before) return "same";
+  return (current < before) === (better === "lower") ? "better" : "worse";
+}
+
+/**
+ * Each number the report holds against the previous reading. The population is the REPORT's own `numbers`, so a number with no declared direction
+ * is found here, in the report, and printed as a defect.
+ * @param {Record<string, number | null>} numbers @param {ReturnType<typeof previousReading>} previous
+ */
+export function compareReadings(numbers, previous) {
+  return Object.entries(numbers).map(([id, current]) => {
+    const declared = NUMBERS.find((n) => n.id === id);
+    const before = previous.status === "read" ? (previous.numbers[id] ?? null) : null;
+    const verdict = declared === undefined ? /** @type {const} */ ("undeclared") : verdictFor({ better: declared.better, previous, id, current });
+    const delta = current !== null && before !== null ? current - before : null;
+    return { id, label: declared?.label ?? id, current, previous: before, delta, verdict };
+  });
+}
+
+/** @param {number | null} n @returns {string} */
+const shown = (n) => (n === null ? UNKNOWN : grouped(n));
+
+/** @param {ReturnType<typeof buildReport>} report @returns {string[]} */
+function trendLines({ numbers, previous }) {
+  const against = previous.status === "read" ? `the previous reading, ${previous.date}` : previous.status === "none" ? "the previous reading (none yet)" : `the previous reading (${UNKNOWN}: ${READINGS_FILE} could not be read)`;
+  const lines = compareReadings(numbers, previous).map((c) => {
+    if (c.verdict === "undeclared") return `- ${c.label}: NO DIRECTION DECLARED -- a defect in org-retro.mjs's NUMBERS table, not a reading (now ${shown(c.current)})`;
+    const was = c.previous === null || previous.status !== "read" ? "" : `, previous ${shown(c.previous)} on ${previous.date}${c.delta === null ? "" : `, delta ${c.delta > 0 ? "+" : ""}${grouped(c.delta)}`}`;
+    return `- ${c.label}: ${c.verdict} (now ${shown(c.current)}${was})`;
+  });
+  return ["", `Against ${against}:`, ...lines];
 }
 
 /** @param {Record<string, number>} counts @returns {string} `a x2, b x1`, or `none` */
@@ -333,7 +473,7 @@ export function renderReport(report) {
   const from = new Date(report.window.since).toISOString();
   const to = new Date(report.window.until).toISOString();
   return [`ORG RETROSPECTIVE ${report.date} -- the 24 hours ${from} to ${to}`, "",
-    ...mergedLines(report.merged), ...stallLines(report), ...journalDerivedLines(report), ...redLines(report.red), ...spendLines(report), ""].join("\n");
+    ...mergedLines(report.merged), ...stallLines(report), ...journalDerivedLines(report), ...redLines(report.red), ...spendLines(report), ...trendLines(report), ""].join("\n");
 }
 
 /**
@@ -381,7 +521,7 @@ export function retrospectiveOrder(date, reportText) {
     prompt: `THE DAILY RETROSPECTIVE for ${date} (UTC). Optimising the org is your scheduled duty, not a thing the chairman has to ask for. `
       + "The numbers below were computed by `node packages/agent-org/src/org-retro.mjs` from the GitHub, journal and ledger reads the gate "
       + "already makes; no model read a log, so do not re-derive them.\n\n"
-      + `${reportText}\n${CLASS_FIX_INSTRUCTION}\n`
+      + `${reportText}\n${CLASS_FIX_INSTRUCTION} The verdict beside each number is against the previous reading; \`no baseline\` and \`unknown\` are not good days.\n`
       + `Post the reading and every row you filed on ${RETRO_DESTINATION}. If nothing tripped, post "nothing tripped" WITH the numbers: a day with nothing to file is never silence. `
       + "An `unknown` is a source the script could not read, not a good day: say so, and file the unreadable source as the defect.",
     causeKey: retrospectiveKey(date),
@@ -455,26 +595,58 @@ export function readAll({ now, stateDir, unit = "a11ign-work-tick.service",
     journal: readJournal(unit),
     ledger: readText(`${stateDir}/wake-ledger`),
     turns: readTurns(since),
+    readings: readReadings(join(stateDir, READINGS_FILE)),
     handFixes: readHandFixes(now), // a refused read is a reading that says so (`status: "unknown"`), never a throw and never a 0
   };
+}
+
+/**
+ * APPENDS TODAY'S READING, ONCE PER UTC DATE: the offer repeats every tick until the wake delivers it, and the first reading of the date is the one
+ * kept. A readings file that is `unreadable` (the disk would not let us read it, or nothing in it parses) is left alone rather than appended to blind: a valid line added to
+ * corrupt content would make the file read as a baseline and mask the corruption (reviewer, #2985).
+ * @param {{ stateDir: string, date: string, numbers: Record<string, number | null> }} reading
+ * @returns {"recorded" | "already recorded" | "not recorded"}
+ */
+export function recordReading({ stateDir, date, numbers }) {
+  const path = join(stateDir, READINGS_FILE);
+  const existing = readReadings(path);
+  if (existing.status === "unreadable") return "not recorded"; // an I/O error or a file where no line reads: appending would turn corruption into a baseline
+  if (existing.entries.some((e) => e.date === date)) return "already recorded";
+  const lead = existing.text === "" || existing.text.endsWith("\n") ? "" : "\n";
+  appendFileSync(path, `${lead}${JSON.stringify({ date, numbers })}\n`);
+  return "recorded";
 }
 
 /**
  * THE GATE'S WHOLE CONTACT WITH THIS FILE: the retrospective's order if today's is still owed, else none. NEVER THROWS: a broken
  * report must not stop the orders behind it, and it says so on stderr rather than offering a half-built one. The ledger is read
  * BEFORE the report, so a day already delivered costs one file read and not the day of PR, journal and transcript reads.
- * @param {{ now?: number, stateDir?: string, log?: (line: string) => void, read?: typeof readAll, readLedger?: (stateDir: string) => string | null }} [seams]
+ * THE ONLY WRITER OF THE READINGS FILE (`main` below never writes): offering the retrospective IS recording today's reading.
+ * @param {{ now?: number, stateDir?: string, log?: (line: string) => void, read?: typeof readAll, readLedger?: (stateDir: string) => string | null,
+ *   record?: typeof recordReading }} [seams]
  * @returns {ReturnType<typeof retrospectiveOrder>[]}
  */
 export function retrospectiveTick({ now = Date.now(), stateDir = stateEntryPath(""), log = (line) => process.stderr.write(line), read = readAll,
-  readLedger = (dir) => readText(`${dir}/wake-ledger`) } = {}) {
+  readLedger = (dir) => readText(`${dir}/wake-ledger`), record = recordReading } = {}) {
   try {
     const date = retrospectiveDue(now, readLedger(stateDir));
     if (date === null) return [];
-    return [retrospectiveOrder(date, renderReport(buildReport(read({ now, stateDir }), now)))];
+    const report = buildReport(read({ now, stateDir }), now);
+    const text = renderReport(report);
+    keepReading(record, { stateDir, date, numbers: report.numbers }, log);
+    return [retrospectiveOrder(date, text)];
   } catch (/** @type {any} */ err) {
     log(`org-retro: could not build today's retrospective (${String(err?.message ?? err).split("\n")[0]}) -- no org-retrospective order this tick.\n`);
     return [];
+  }
+}
+
+/** A reading that could not be kept must not stop the offer: the report is still true, and tomorrow's comparison says `no baseline` rather than guessing. */
+function keepReading(/** @type {typeof recordReading} */ record, /** @type {Parameters<typeof recordReading>[0]} */ reading, /** @type {(line: string) => void} */ log) {
+  try {
+    if (record(reading) === "not recorded") log(`org-retro: ${READINGS_FILE} could not be read, so today's reading was not recorded.\n`);
+  } catch (/** @type {any} */ err) {
+    log(`org-retro: today's reading was not recorded (${String(err?.message ?? err).split("\n")[0]}).\n`);
   }
 }
 
