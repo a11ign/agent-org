@@ -3,21 +3,47 @@ name: ci
 # THE REQUIRED CHECK IS `gate` (a11ign/a11ign#2792; ADR 0040 decision 6 step 6). A check name can be required only after it has run once,
 # and this file's first pull request is that run.
 #
-# WHAT `gate` DOES NOT RUN, ON PURPOSE: the tool's own test suite. Measured on the first commit of this repository (265c9d8, run with
-# tsx over every src/**/*.test.ts): 158 of 464 subtests failed and 60 of 125 modules did not import, all for the same reason -- the tool
-# reads `.agent-org/project.json` from a project checkout it is pointed at, and this repository is not one. The suite becomes runnable
-# here when the fixture project of ADR 0040 decision 8 lands; until then a step running it would be red on every pull request, and a
-# gate people learn to ignore is worse than a narrower one. What `gate` checks is what the bootstrap can be held to today.
+# `gate` RUNS THE TOOL'S WHOLE TEST SUITE (a11ign/a11ign#2973, cut-over 2 of 6), because after the cut this repository is the only place the tool's
+# tests can run and "fix forward, no rollback copy" is safe only with a gate that can go red. The suite cannot run in this tree alone: the tool reads
+# `.agent-org/project.json` and walks the project it is pointed at, and when that was tried here without one, 158 of 464 subtests failed and 60 of
+# 125 modules did not import, all for that reason. So the job takes ROUTE (a) of the row: it checks out the project under test,
+# a11ign/a11ign (public) at $PROJECT_REF, into `project/`, puts this checkout's tool where the tool lives in a project (`project/packages/agent-org`)
+# and runs the suite from the project's root. Route (b), a fixture project inside this repository (ADR 0040 decision 8), does not exist yet, and the
+# suite reads the project's real tree (its rules files, its `.agent-org/`, its git history) in ways a fixture would have to reproduce.
 #
-# ONE TEST DIRECTORY DOES RUN: `src/messaging/` (a11ign/a11ign#2900), a LEAF module that imports nothing from the tool, so it needs no
-# project checkout. The step passes a quoted glob and not the bare directory: on Node 22 `node --test src/messaging/` is read as a MODULE
-# to run and fails with "Cannot find module" (measured on 22.22.1), which would make the step red on its first run for no test's fault.
+# WHAT `gate` CANNOT PROVE (decision 8's limit): it proves the tool against ONE project, a11ign, at the ref named below -- not against any other
+# project's declaration -- and the project moves on its own, so a red `gate` can be the project's change and not the pull request's. Pin
+# PROJECT_REF to a commit to separate the two.
+#
+# THE TESTS' SIBLINGS COME FROM THE PROJECT: the tool's tests were extracted from the project's lab package (`project/packages/lab/src/packaging/`), where they sat beside helper
+# modules and fixtures that were not extracted. The job copies those siblings (never a test) from the project beside the tests, without overwriting
+# anything this repository has.
+#
+# NAMING A PATH THAT LIVES IN THE PROJECT: `workflow-paths.mjs` refuses a workflow path (`packages/...`, `scripts/...`) that is not in THIS
+# repository, so a path in the project is written with the `project/` prefix, or carries the marker `# in-project` at the end of its line.
+#
+# EXCLUDED, BY NAME, EACH WITH ITS REASON (node's --test-skip-pattern, which drops a test from the run's `tests` count rather than reporting it skipped):
+#   - "#1449: this guard reads the token charge's ONE spawn regex": its regex asserts the import spelling `agent-org/src/acceptance-commands.mjs`,
+#     which the extraction rewrote to `../acceptance-commands.mjs`.
+#   - "the count of non-test files in": its recorded count predates `src/messaging/` (which this
+#     repository added) and counts the copied-in fixture `pr-584-body.md`.
+#   - "#2619 ACCEPTANCE, MUTATION TARGET": it walks the tool's source in the project and finds the copied-in sibling `prefix-pins.mjs`, which is a lab file.
+#   - "#2174: the history-requirement population is unchanged by this row": its expected list names lab tests that were not extracted.
+# Each is a test whose premise is the monorepo's directory layout and not a defect in the tool; the row that removes each exclusion is named on
+# a11ign/a11ign#2973.
+
+env:
+  # The project the tool is tested against. `main` follows the project; a commit hash holds it still.
+  PROJECT_REF: main
 
 on:
   pull_request:
     branches: [main]
   # A merge queue tests the queue's merge commit and waits for a check reporting on THIS event; without it a queued pull request never merges.
   merge_group:
+  # A run on `main` itself, so "green on main" is a run and not an inference from a pull request's merge ref.
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -34,5 +60,34 @@ jobs:
         run: node .github/scripts/workflow-paths.mjs
       - name: Leak scan -- refuses a private LAN IPv4 address or a named SSH key file anywhere in the tree
         run: node .github/scripts/leak-scan.mjs
-      - name: The messaging core's tests -- a leaf module, so they run here without a project checkout
-        run: node --test "src/messaging/**/*.test.mjs"
+      - name: The project under test -- a11ign/a11ign at PROJECT_REF, read-only, no token beyond the job's own read-only one
+        uses: actions/checkout@v4
+        with:
+          repository: a11ign/a11ign
+          ref: ${{ env.PROJECT_REF }}
+          path: project
+          # The suite reads the project's git history (merge-base, branch tips, recorded commits), so a shallow clone would fail it for the wrong reason.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install the tool's three dependencies where the project's root would hold them
+        run: |
+          npm install --no-save --no-package-lock "tsx@^4.22.4" "yaml@^2.9.0" "typescript@^6.0.3"
+          mv node_modules project/node_modules
+      - name: Put this checkout's tool where the tool lives in a project, and the tests' siblings beside the tests
+        run: |
+          rm -rf project/packages/agent-org
+          mkdir project/packages/agent-org
+          cp -r src host package.json LICENSE project/packages/agent-org/
+          rsync -a --ignore-existing --exclude='*.test.ts' --exclude='*.test.mjs' project/packages/lab/src/packaging/ project/packages/agent-org/src/packaging/
+      - name: The tool's whole suite -- every *.test.ts and *.test.mjs, run from the project's root
+        working-directory: project
+        run: |
+          skipped=(
+            "#1449: this guard reads the token charge's ONE spawn regex"
+            "the count of non-test files in"
+            "#2619 ACCEPTANCE, MUTATION TARGET"
+            "#2174: the history-requirement population is unchanged by this row"
+          )
+          flags=()
+          for name in "${skipped[@]}"; do flags+=("--test-skip-pattern=${name}"); done
+          node --import tsx --test "${flags[@]}" "packages/agent-org/src/**/*.test.ts" "packages/agent-org/src/**/*.test.mjs" # in-project
