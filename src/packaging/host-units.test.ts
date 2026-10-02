@@ -36,7 +36,7 @@ import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, syst
   programCandidates, hostIdentityDrift, hostIdentityNotes, hostIdentityInstall, ownedIdentityFiles, compileCacheNotes,
   WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift, declaredCompileCache, PROJECT_UNITS_DIR, shippedUnitText,
   shippedScriptText, leadsListText, modelEffortDrift, sessionModelDrift, sessionModelNotes, lastModelIn,
-  liveClaudeSessions, OPTIONAL_UNITS, declaredProjectKeys } from "../host-units.mjs";
+  liveClaudeSessions, OPTIONAL_UNITS, declaredProjectKeys, windowEnd, windowEndNotes } from "../host-units.mjs";
 import { DECLARED_CLAUDE_MODELS, PROFILES, CLAUDE_EFFORTS } from "../worker-profile.mjs";
 
 /**
@@ -2481,4 +2481,76 @@ test("#2901: the rendered pair holds the properties every other shipped unit is 
   assert.match(timer, /^Persistent=true$/m);
   assert.match(timer, /^\[Install\]\s*$/m);
   assert.doesNotMatch(service + timer, /@@/, "every placeholder was rendered");
+});
+
+// --- #2971: a timer that ENDED ITSELF is expected-disabled, read from the window's own record -------------------------------------------
+
+const WINDOW_TIMER = "a11ign-shadow-window.timer";
+const STOP_ROW = '{"kind":"stop","cause":"cancelled-by-chairman-ruling","ticks":355,"at":"2026-10-02T06:52:12.000Z"}';
+const TICK_ROW = '{"tickMs":1,"tick":"t","differences":[]}';
+const MARKER_PATH = "/nowhere/shadow-window-open";
+/** An installed directory that exists on no machine: the fixture serves the SHIPPED text for it, so the copy is current on a CI runner as on a host. */
+const FAKE_INSTALLED_DIR = "/nowhere/installed";
+
+/** The REAL shipped pair, with only the record and the marker faked: where the record lives is read off the rendered service, not typed here. */
+const windowHost = ({ record, marker, enabled }: { record: string | null; marker: string | null; enabled: "enabled" | "disabled" }) => {
+  const read = ((path: string) => {
+    if (String(path).endsWith("diff-record.jsonl")) { if (record === null) throw new Error("ENOENT"); return record; }
+    if (path === MARKER_PATH) { if (marker === null) throw new Error("ENOENT"); return marker; }
+    if (String(path).startsWith(`${FAKE_INSTALLED_DIR}/`)) return shippedUnitText(basename(String(path))) ?? "";
+    return readFileSync(path, "utf8");
+  }) as never;
+  return { read, markerPath: MARKER_PATH, installedDir: FAKE_INSTALLED_DIR, exists: (() => true) as never,
+    systemctl: systemctlStub({ "is-enabled": { [WINDOW_TIMER]: enabled }, "is-active": { [WINDOW_TIMER]: "active" } }) };
+};
+
+const REARMED = '{"schema":1,"t0":"2026-10-02T09:00:00.000Z"}';
+const STALE_MARKER = '{"schema":1,"t0":"2026-10-01T06:00:00.000Z"}';
+
+test("#2971: the cross product -- (stop | no stop | stop then re-armed) x (enabled | disabled) -- and only the DISABLED, ENDED one is quiet", () => {
+  const cases = [
+    { name: "no stop row, disabled: today's finding, the positive control", record: TICK_ROW, marker: null, enabled: "disabled", problem: "NOT ENABLED" },
+    { name: "no record at all, disabled", record: null, marker: null, enabled: "disabled", problem: "NOT ENABLED" },
+    { name: "stop row, disabled", record: `${TICK_ROW}\n${STOP_ROW}\n`, marker: null, enabled: "disabled", problem: undefined },
+    { name: "stop row, marker left over from the SAME window, disabled", record: `${STOP_ROW}\n`, marker: STALE_MARKER, enabled: "disabled", problem: undefined },
+    { name: "stop row then a LATER marker, disabled", record: `${STOP_ROW}\n`, marker: REARMED, enabled: "disabled", problem: "NOT ENABLED" },
+    { name: "no stop row, enabled", record: TICK_ROW, marker: null, enabled: "enabled", problem: undefined },
+    { name: "stop row, enabled", record: `${STOP_ROW}\n`, marker: null, enabled: "enabled", problem: undefined },
+    { name: "stop row then a LATER marker, enabled", record: `${STOP_ROW}\n`, marker: REARMED, enabled: "enabled", problem: undefined },
+  ] as const;
+  for (const c of cases) {
+    const found = unitDrift([unitState(WINDOW_TIMER, windowHost(c))]).map((f) => f.problem);
+    assert.deepEqual(found, c.problem === undefined ? [] : [c.problem], c.name);
+  }
+});
+
+test("#2971: it is NAMED, not silent -- the ended window is a note with its cause, and a re-armed one is not", () => {
+  const [note] = windowEndNotes(windowHost({ record: `${STOP_ROW}\n`, marker: null, enabled: "disabled" }));
+  assert.equal(note.unit, WINDOW_TIMER);
+  assert.equal(note.problem, "EXPECTED DISABLED -- ITS WINDOW ENDED");
+  assert.match(note.detail, /cancelled-by-chairman-ruling, 355 ticks/);
+  assert.deepEqual(windowEndNotes(windowHost({ record: `${STOP_ROW}\n`, marker: REARMED, enabled: "disabled" })), []);
+  assert.deepEqual(windowEndNotes(windowHost({ record: `${STOP_ROW}\n`, marker: null, enabled: "enabled" })), [],
+    "a timer that is enabled has nothing to explain");
+});
+
+test("#2971: a record or marker that cannot be read keeps the finding -- could-not-tell is not ended", () => {
+  const unparsable = windowHost({ record: `${STOP_ROW}\nnot json\n`, marker: null, enabled: "disabled" });
+  assert.equal(windowEnd(WINDOW_TIMER, unparsable), null, "a record with a line nobody can parse is not read");
+  const garbledMarker = windowHost({ record: `${STOP_ROW}\n`, marker: "{", enabled: "disabled" });
+  assert.equal(windowEnd(WINDOW_TIMER, garbledMarker), null, "a marker with no readable T0 may be a re-arm, so the stop is not trusted");
+  assert.deepEqual(unitDrift([unitState(WINDOW_TIMER, garbledMarker)]).map((f) => f.problem), ["NOT ENABLED"]);
+});
+
+test("#2971: no other timer is excused -- one that names no record reads NOT ENABLED whatever file exists, and the record is found, not named", () => {
+  const ended = windowHost({ record: `${STOP_ROW}\n`, marker: null, enabled: "disabled" });
+  const others = shippedUnits().filter((u: string) => u.endsWith(".timer") && u !== WINDOW_TIMER);
+  assert.ok(others.length > 0, "CONTROL: there are other shipped timers to check");
+  for (const unit of others) {
+    assert.equal(windowEnd(unit, ended), null, `${unit} names no window record`);
+    const disabled = { ...ended, systemctl: systemctlStub({ "is-enabled": { [unit]: "disabled" }, "is-active": { [unit]: "inactive" } }) };
+    assert.deepEqual(unitDrift([unitState(unit, disabled)]).map((f) => f.problem), ["NOT ENABLED"], unit);
+  }
+  assert.match(shippedText(WINDOW_TIMER), /^Requires=\S*shadow-window\.service$/m, "the pair is what the reader walks");
+  assert.match(shippedText("a11ign-shadow-window.service"), /--record=\S+diff-record\.jsonl/, "and the service is where the record is named");
 });

@@ -16,16 +16,22 @@
  * `board-snapshot-scope.mjs`, `host-units.mjs` and `update-primary.mjs`. #2875's census did not match it; the scan now does, and the
  * three modules take `HOME_CHECKOUT`. `host-units`'s `REPO_ROOT` is the PROJECT's checkout and not the tool's: what it reads there (`.agent-org/units`,
  * `package.json` scripts, git history) is the project's, and `SHIPPED_DIR` is the tool's own location and stays `import.meta.url`-relative.
+ *
+ * #2884 (child 5d-5): `lib/changed-packages.mjs` spelled the same thing from `src/lib`, where up three is `packages/` and not even the
+ * checkout; it works only because git walks up. The scan now reads `src/lib` too (every file there is a copy of a product file, and
+ * only that one spelled it), and a child proves its git calls run in the fixture checkout: `filesChangedAgainstOrigin()` answers with
+ * a file committed there, which a `cwd` of `packages/` or the directory above `tool` cannot.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HOST_ENV } from "../project-config.mjs";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { changedFiles } from "../lib/changed-files.mjs";
 import { snapshotDirFor } from "../board-snapshot-scope.mjs";
 
 const REPO = fileURLToPath(new URL("../../../../", import.meta.url)).replace(/\/$/, "");
@@ -45,8 +51,15 @@ function upThreeSpellings(source: string): boolean {
   return UP_THREE_FROM_URL.test(source);
 }
 
+/**
+ * Non-test `.mjs` under `src` AND `src/lib`, as paths relative to `src`. `lib/` holds the tool's copies of product files (#2623), and a copy
+ * keeps the product's spelling of the root unless its header names an edit: `changed-packages.mjs` did, and from `src/lib` that is
+ * `packages/`, not the checkout (#2884). None of the other `lib/` files spells it, so no `lib/` file needs an exemption.
+ */
 const nonTestModules = (): string[] =>
-  readdirSync(SRC).filter((name) => name.endsWith(".mjs") && !/\.test\./.test(name));
+  [".", "lib"].flatMap((dir) => readdirSync(join(SRC, dir))
+    .filter((name) => name.endsWith(".mjs") && !/\.test\./.test(name))
+    .map((name) => join(dir, name)));
 
 test("POSITIVE CONTROL: the scan flags a fixture string of each of the three shapes", () => {
   assert.equal(upThreeSpellings('const R = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");'), true);
@@ -64,9 +77,11 @@ test("the scan reads a real population, and it contains SELF (so SELF's exemptio
   assert.ok(modules.length > 50, `only ${modules.length} modules scanned`);
   assert.ok(modules.includes(SELF.file));
   assert.equal(upThreeSpellings(readFileSync(join(SRC, SELF.file), "utf8")), true, `SELF no longer spells it: ${SELF.reason}`);
+  assert.ok(modules.includes(join("lib", "changed-packages.mjs")), "the scan reaches lib/");
+  assert.ok(modules.some((name) => name.startsWith("lib/")) && modules.some((name) => !name.startsWith("lib/")), "both directories are read");
 });
 
-test("no non-test packages/agent-org/src/*.mjs resolves import.meta.url three levels up, except SELF", () => {
+test("no non-test packages/agent-org/src/*.mjs or src/lib/*.mjs resolves import.meta.url three levels up, except SELF", () => {
   const offenders = nonTestModules()
     .filter((name) => name !== SELF.file)
     .filter((name) => upThreeSpellings(readFileSync(join(SRC, name), "utf8")));
@@ -128,7 +143,32 @@ function writeHost(checkout: string): string {
 }
 
 /** One module's root-derived value, as the child prints it. `answer` runs in the child with the module imported as `m`. */
-type Module = { name: string; file: string; answer: string; expectedInFixture: (checkout: string) => unknown; expectedInTree: unknown };
+type Module = {
+  name: string; file: string; answer: string; expectedInFixture: (checkout: string) => unknown; expectedInTree: unknown;
+  /** Runs on the fixture checkout before the child reads it, for a module whose answer comes from git history. */
+  prepare?: (checkout: string) => void;
+};
+
+const FIXTURE_CHANGED_FILE = "FIXTURE-CHANGED-AFTER-ORIGIN.md";
+
+/** `origin/main` at the fixture's one commit, then one more commit: the diff `filesChangedAgainstOrigin` reads is that file alone. */
+function commitPastOriginMain(checkout: string): void {
+  const git = (...args: string[]) => execFileSync("git", ["-C", checkout, "-c", "user.name=t", "-c", "user.email=t@example.invalid", ...args], { env: sandboxGitEnv() });
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  writeFileSync(join(checkout, FIXTURE_CHANGED_FILE), "x\n");
+  git("add", "-A");
+  git("commit", "-q", "-m", "past origin/main");
+}
+
+/** The same question asked of this checkout in the parent, with the range spelled out, so the in-tree answer is not the module's own. */
+function inTreeChangedAgainstOrigin(): string[] {
+  try {
+    const base = execFileSync("git", ["merge-base", "HEAD", "origin/main"], { cwd: REPO, env: sandboxGitEnv(), encoding: "utf8" }).trim();
+    return changedFiles([base, "HEAD"], { repoRoot: REPO });
+  } catch {
+    return [];
+  }
+}
 
 const MODULES: Module[] = [
   { name: "board-data ROOT", file: "board-data.mjs", answer: "m.ROOT",
@@ -149,6 +189,8 @@ const MODULES: Module[] = [
     expectedInFixture: (checkout) => checkout, expectedInTree: REPO },
   { name: "update-primary PRIMARY_CHECKOUT", file: "update-primary.mjs", answer: "m.PRIMARY_CHECKOUT",
     expectedInFixture: (checkout) => checkout, expectedInTree: REPO },
+  { name: "lib/changed-packages filesChangedAgainstOrigin()", file: "lib/changed-packages.mjs", answer: "m.filesChangedAgainstOrigin()",
+    prepare: commitPastOriginMain, expectedInFixture: () => [FIXTURE_CHANGED_FILE], expectedInTree: inTreeChangedAgainstOrigin() },
 ];
 
 /** Import `<src>/<file>` in a child and print `answer` as JSON. `host` undefined removes `$AGENT_ORG_HOST` whatever this process holds. */
@@ -165,6 +207,7 @@ function readIn(src: string, module: Module, host: string | undefined): unknown 
 for (const module of MODULES) {
   test(`${module.name}: with $AGENT_ORG_HOST set, the fixture checkout and not the directory above tool/`, () => {
     const checkout = fixtureProject();
+    module.prepare?.(checkout);
     const { src, aboveTool } = standaloneTree();
     const got = readIn(src, module, writeHost(checkout));
     assert.deepEqual(got, module.expectedInFixture(checkout));
