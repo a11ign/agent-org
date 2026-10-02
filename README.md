@@ -31,3 +31,19 @@ The tool reads `.agent-org/project.json` of the project it serves, and never ans
 
 `typescript` is a peer dependency, resolved from the project's directory first and the tool's own tree second, so the tool parses the project's code
 with the project's compiler. Tested on Node 22.22.1.
+
+## Releases
+
+**A tag is the release.** `v<version>` on this repository, with a GitHub Release carrying the `CHANGELOG.md` entry, and nothing is published to a registry. **A tag is
+never moved or deleted once a project can have pinned it**: a moved tag changes what a pinned project gets, so a mistake is fixed by the next version.
+
+Cutting one:
+
+1. In a pull request, run `pnpm run changeset add` for the change and, when releasing, `pnpm run changeset version`. That bumps `package.json` and writes the
+   `CHANGELOG.md` entry; nobody writes either by hand. Merge it, and wait for `gate` on `main`.
+2. Dispatch **release** (Actions, or `gh workflow run release.yml`) on `main`. It defaults to a **dry run** that checks everything and says which tag it would cut.
+3. To cut it, dispatch with `dry-run` false and `confirm` set to `publish-for-real`. The workflow refuses if `gate` has not succeeded on that sha, if the tag exists,
+   or if `CHANGELOG.md` has no entry for the version. It holds `contents: write` and nothing else.
+
+A project bumps its pin by editing the range in its `package.json` (`github:a11ign/agent-org#semver:^0.1.0`) in an ordinary dependency pull request and reading the
+changelog it links. While the version is `0.x`, `^0.1.0` takes patches only, so a `minor` is the bump a project opts into.
