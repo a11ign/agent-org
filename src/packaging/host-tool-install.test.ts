@@ -44,7 +44,8 @@ const TODAYS_WORK_TICK_SHA = "9704e2c1c8371234816275a81cf32cbe591dbb679543b50765
  * template's `primary:update` line (npm -> the pnpm shim), the one text change the cut made to the plain form.
  */
 const plainA11ignHost = (() => {
-  const { tool: _tool, ...plain } = homeHostConfig();
+  const plain: Record<string, unknown> = { ...homeHostConfig() };
+  delete plain.tool;
   return Object.freeze(plain);
 })() as never;
 

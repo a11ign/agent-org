@@ -40,7 +40,8 @@ const host = homeHostConfig();
 const units = readUnitsDeclaration();
 /** a11ign's host with no `tool`: what the TEMPLATES render for it, whether or not the cut (#2974) has set the key. The tool form is asserted in `host-tool-install.test.ts`. */
 const plainHost = (() => {
-  const { tool: _tool, ...plain } = host;
+  const plain: Record<string, unknown> = { ...host };
+  delete plain.tool;
   return Object.freeze(plain);
 })() as never;
 

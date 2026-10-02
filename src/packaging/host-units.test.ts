@@ -46,7 +46,8 @@ import { homeHostConfig } from "../host-config.mjs";
  * and not the host's install form; `host-tool-install.test.ts` is where the tool form of every unit is asserted.
  */
 const PLAIN_A11IGN_HOST = (() => {
-  const { tool: _tool, ...plain } = homeHostConfig();
+  const plain: Record<string, unknown> = { ...homeHostConfig() };
+  delete plain.tool;
   return Object.freeze(plain);
 })();
 

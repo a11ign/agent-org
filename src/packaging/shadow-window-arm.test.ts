@@ -41,7 +41,8 @@ const sha256 = (text: string) => createHash("sha256").update(text).digest("hex")
 const TODAYS_WORK_TICK_SHA = "9704e2c1c8371234816275a81cf32cbe591dbb679543b50765a4adc581110a35"; // #2974: the pnpm line; the plain rendering, see `plainHost`
 /** a11ign's host with no `tool`, so the digest above is of the template whether or not the cut has set the key. */
 const plainHost = (() => {
-  const { tool: _tool, ...plain } = homeHostConfig();
+  const plain: Record<string, unknown> = { ...homeHostConfig() };
+  delete plain.tool;
   return Object.freeze(plain);
 })() as never;
 
