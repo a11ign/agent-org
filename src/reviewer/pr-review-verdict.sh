@@ -17,6 +17,12 @@
 # costs a reviewer's turn. So the attribution runs after the review, cannot abort it, and says on stderr
 # exactly what it could not record.
 #
+# ONE WRITE PER VERDICT (#3030). The review body is the verdict file's WHOLE text -- opener line, `Acceptance:`,
+# `Mutation:`, findings -- and no comment follows it. The door used to post only the first line as the review and
+# the brief had the reviewer post the file again as a comment, so the chairman saw two reviews for one head
+# (#3020: review 14:05:49Z, 63 characters; comment 14:06:28Z, 505). The gate reads a verdict from a review body as
+# well as a comment (`verdictBearers` in review-verdict.mjs), which is what made the second write unnecessary.
+#
 # Usage: pr-review-verdict <pr-number> <convinced|not-convinced> <verdict-comment-file>
 # Env:   A11Y_REVIEWER_SESSION  the org session name posting this review (`reviewer-<n>` for pull request n, #2401).
 #                               Unset, the door derives `reviewer-<n>` from the checkout it runs in when that checkout
@@ -46,8 +52,10 @@ case "$verdict" in
   *) echo "pr-review-verdict: verdict must be convinced or not-convinced, got '$verdict'" >&2; exit 2 ;;
 esac
 [[ -s "$file" ]] || { echo "pr-review-verdict: verdict comment file '$file' is missing or empty" >&2; exit 2; }
-body="$(head -n 1 "$file")"
-[[ "$body" == "**Review of #$n at "* ]] || { echo "pr-review-verdict: first line of '$file' is not the verdict line for #$n" >&2; exit 2; }
+body="$(<"$file")"
+# THE OPENER IS STILL THE FIRST LINE, and it is the only part validated: the clock and the authors' timers parse it.
+opener="$(head -n 1 "$file")"
+[[ "$opener" == "**Review of #$n at "* ]] || { echo "pr-review-verdict: first line of '$file' is not the verdict line for #$n" >&2; exit 2; }
 
 # THE NAME, WHEN THE PANE WAS NOT GIVEN ONE (#2528). A pane herdr restores itself is not started by the tick, so it holds
 # no `A11Y_REVIEWER_SESSION` (`herdr.service` restarted at 12:01:57Z on 2026-09-25 and `reviewer-2485`'s `codex resume`
@@ -82,7 +90,7 @@ attribute() {
   # so the review just posted has to be found again. The equality check is an ECHO of the string this
   # script sent one line ago, not a reading of what the sentence means -- if another review landed in
   # between, this refuses to attribute rather than labelling somebody else's.
-  local latest url sha posted
+  local latest url sha posted expected
   # `--paginate` AND `tail -n 1`, NOT `.[-1]`: a review list past 30 entries pages, and `.[-1]` would then
   # answer about the last review of the FIRST page. It would fail safe -- the body check below refuses --
   # but it would refuse for ever on a long-running pull request, and silently.
@@ -92,7 +100,13 @@ attribute() {
     return 1
   }
   IFS=$'\t' read -r url sha posted <<<"$latest"
-  if [[ "$posted" != "$body" ]]; then
+  # `@tsv` writes a backslash, a newline, a tab and a carriage return as `\\`, `\n`, `\t` and `\r`, so the whole body is
+  # compared in that spelling. Comparing the raw text would never match a multi-line body and nothing would be attributed.
+  expected="${body//\\/\\\\}"
+  expected="${expected//$'\n'/\\n}"
+  expected="${expected//$'\t'/\\t}"
+  expected="${expected//$'\r'/\\r}"
+  if [[ "$posted" != "$expected" ]]; then
     echo "pr-review-verdict: #$n's newest review is not the one just posted; not attributing it (#2127)." >&2
     return 1
   fi
