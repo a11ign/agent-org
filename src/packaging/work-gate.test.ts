@@ -628,6 +628,16 @@ const regionRow = (n: number, region: string, extra: string[] = []) =>
   ({ number: n, body: `## Region\n\n- \`${region}\`\n\n## Acceptance\n\nnone\n\n## Open-check\n\nnone\n`,
     labels: [{ name: "ready" }, ...extra.map((e) => ({ name: e }))] });
 
+/**
+ * The one file the B4 overlap tests contend over. It must sit under a top-level directory the tree it runs in tracks,
+ * and that is TWO trees: this repository (`docs`, `src`, `host`) and a11ign's, where CI copies the tool under
+ * `packages/agent-org` (`docs`, `packages`, `.claude`). `docs/` is the one both have. `declaredRegionFiles` derives its
+ * recognised prefixes from `git ls-files` (#1158), so a Region naming `.claude/...` or `packages/...` declares NOTHING
+ * when run from this repository, and a row declaring nothing overlaps nothing. The "offered" assertions then pass for
+ * that reason, and the "shelved" twins fail (#3073).
+ */
+const SHARED_FILE = "docs/messaging.md";
+
 const prTouching = (n: number, ...files: string[]) => ({ number: n, files, changedFiles: files.length });
 
 test("a row whose Region overlaps an open PR is NOT offered -- B4 would only refuse the claim", () => {
@@ -764,30 +774,30 @@ const prClosingRow = (n: number, closes: number[], ...files: string[]) =>
   ({ number: n, files, changedFiles: files.length, closes });
 
 test("#2101 a row is OFFERED although an open PR holds its whole Region, when that PR declares `Closes #<row>`", () => {
-  const orders = decide({ prs: [], readyRows: [regionRow(2076, ".claude/rules/agent-practices.md")],
-    prFiles: [prClosingRow(2077, [2076], ".claude/rules/agent-practices.md")] });
+  const orders = decide({ prs: [], readyRows: [regionRow(2076, SHARED_FILE)],
+    prFiles: [prClosingRow(2077, [2076], SHARED_FILE)] });
   assert.deepEqual(orders.map((o: { subject: string }) => o.subject), ["row-2076"],
     "a row and its own pull request are one piece of work, and one piece of work cannot collide with itself");
 });
 
 test("#2101 NEGATIVE: the same row is still SHELVED behind a PR declaring another row, and behind one " +
   "declaring nothing -- B4 stays unconditional about two SESSIONS in one file", () => {
-  const row = regionRow(2076, ".claude/rules/agent-practices.md");
+  const row = regionRow(2076, SHARED_FILE);
   const other = decide({ prs: [], readyRows: [row],
-    prFiles: [prClosingRow(2077, [2084], ".claude/rules/agent-practices.md")] });
+    prFiles: [prClosingRow(2077, [2084], SHARED_FILE)] });
   assert.deepEqual(other.filter((o: { cause: string }) => o.cause === "ready-row-unclaimed"), []);
   const undeclared = decide({ prs: [], readyRows: [row],
-    prFiles: [prTouching(2077, ".claude/rules/agent-practices.md")] });
+    prFiles: [prTouching(2077, SHARED_FILE)] });
   assert.deepEqual(undeclared.filter((o: { cause: string }) => o.cause === "ready-row-unclaimed"), []);
 });
 
 test("#2101 the shelving REPORT names the same two, and stops naming the row's own PR", () => {
-  const row = regionRow(2076, ".claude/rules/agent-practices.md");
+  const row = regionRow(2076, SHARED_FILE);
   assert.deepEqual(partitionUnclaimed([row],
-    [prClosingRow(2077, [2076], ".claude/rules/agent-practices.md")]).blocked, [],
+    [prClosingRow(2077, [2076], SHARED_FILE)]).blocked, [],
   "a row withheld with no session able to unblock it is the deadlock itself");
   const [withheld] = partitionUnclaimed([row],
-    [prTouching(2077, ".claude/rules/agent-practices.md")]).blocked;
+    [prTouching(2077, SHARED_FILE)]).blocked;
   assert.match(withheld.reason, /overlaps #2077/);
 });
 
@@ -815,7 +825,7 @@ test("#2101 `body` rides on readPrs's existing field list -- another field, neve
 // asking row. The gate must give the verdicts `fileOverlapReason` gives at claim time, or it shelves what the
 // claim would grant. Each "offered" assertion has a "shelved" twin, as in #2101 above.
 
-const HELD_REGION = ".claude/rules/agent-practices.md";
+const HELD_REGION = SHARED_FILE;
 const edgeRow = (n: number, ...blockers: number[]) =>
   ({ number: n, labels: [{ name: "in-progress" }], blockedBy: { nodes: blockers.map((number) => ({ number, state: "OPEN" })) } });
 /** #2376's shape: a HELD pull request on the region, closing `closes`. */
