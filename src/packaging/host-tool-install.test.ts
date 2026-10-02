@@ -26,7 +26,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SHIPPED_DIR, TOOL_UPDATE_EXEC, identityDrift, shippedUnitText, unitsSpendingGh, workTickToolForm } from "../host-units.mjs";
+import { REPO_ROOT, SHIPPED_DIR, TOOL_UPDATE_EXEC, identityDrift, shippedUnitText, unitsSpendingGh, workTickToolForm } from "../host-units.mjs";
 import { HostConfigRefusal, homeHostConfig, parseBeforeTick, parseHostConfig, renderTemplate, stateFilePath, templateValues }
   from "../host-config.mjs";
 import { handoffQueuePath, keptClaimsPath, ledgerPathFrom, reviewerPathsFrom, sparePathsFrom } from "../wake.mjs";
@@ -252,7 +252,8 @@ test("#2974: the prune and the board report take their project from the checkout
 test("#2974: the gh-identity check still SEES a unit in tool form -- the population does not lose its work-tick", () => {
   // `unitEntryPoints` resolved `node src/work-tick.mjs` against the project and found nothing, so the unit that spends the most rate limit
   // dropped out of `unitsSpendingGh` without a failure. a11ign's real host with a `tool` injected, so this holds before and after its host.json says one.
-  const toolHost = { ...homeHostConfig(), tool: "/home/agent/repos/agent-org" } as never;
+  // Its project is THIS run's checkout, not the host's absolute path, which a CI runner does not have: the tool form reads each project's `beforeTick`.
+  const toolHost = { ...homeHostConfig(), projects: [{ id: homeHostConfig().primary, checkout: REPO_ROOT.replace(/\/$/, "") }], tool: "/home/agent/repos/agent-org" } as never;
   const spending = unitsSpendingGh({ host: toolHost }).map((u) => u.unit);
   assert.ok(spending.includes("a11ign-work-tick.service"), `the tick is in the population: ${spending.join(", ")}`);
   assert.ok(spending.includes("a11ign-worktree-prune.service"), `and so is the prune: ${spending.join(", ")}`);
