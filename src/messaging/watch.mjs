@@ -293,7 +293,7 @@ export function defaultLedgerPath(home) {
 }
 
 /** @param {Record<string, string | undefined>} env @returns {boolean} some account is DECLARED, so `gh` will not fall back to a person's */
-function accountIsDeclared(env) {
+export function accountIsDeclared(env) {
   return Boolean(env.GH_CONFIG_DIR) || Boolean(env.HERDR_WORKSPACE_ID);
 }
 

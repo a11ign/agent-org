@@ -17,6 +17,7 @@
 // through `declaredWait`, never a second copy), the pull-request kinds are facts on the `pr list` payload and the herdr listing.
 import { listingIsComplete } from "./herdr-agents.mjs";
 import { ANSWER_PREFIX, NEEDS_CHAIRMAN_LABEL } from "./project-vocabulary.mjs";
+import { reviewerSeat } from "./review-attribution.mjs";
 
 const MINUTE_MS = 60_000;
 
@@ -69,7 +70,7 @@ export const WAIT_FIELDS = Object.freeze({
 });
 
 /** @typedef {{ label: string, status: string }} Agent */
-/** @typedef {{ number?: number, reviewDecision?: string | null, labels?: ({ name?: string } | string)[],
+/** @typedef {{ number?: number, repoKey?: string, reviewDecision?: string | null, labels?: ({ name?: string } | string)[],
  *   checksPending?: boolean }} IdlePr a `gh pr list --json` object, as `readPrs` returns it, plus `checksPending`, which THE GATE derives: the rollup is
  * read only where `stillRunning` and `newestPerName` live, so this leaf neither re-decides what a running check is nor reads a rollup unnarrowed */
 
@@ -87,7 +88,8 @@ function hasEvidenceLabel(pr) {
 function prWaitKinds(pr, agents) {
   /** @type {string[]} */
   const kinds = [];
-  if (agents.some((a) => a.label === `reviewer-${pr.number}` && a.status !== "unknown")) kinds.push("review-requested");
+  // #3075: `reviewer-7` and `reviewer-agent-org-7` are two seats, so a pull request in another tracked repository is asked for by ITS seat's name.
+  if (agents.some((a) => a.label === reviewerSeat({ number: Number(pr.number), repoKey: pr.repoKey }) && a.status !== "unknown")) kinds.push("review-requested");
   if (pr.checksPending === true) kinds.push("checks-pending");
   if (pr.reviewDecision === "APPROVED") kinds.push("review-approved");
   if (hasEvidenceLabel(pr)) kinds.push("awaiting-evidence");
