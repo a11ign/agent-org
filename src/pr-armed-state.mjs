@@ -101,3 +101,72 @@ export function armedReason(pr) {
   if (pr?.mergeQueueEntry != null) return "it is already queued to merge";
   return "auto-merge is already enabled on it";
 }
+
+/**
+ * ARMED AND THEN EJECTED IS NOT "NEVER ARMED" (#3019), and `armedFromApi` cannot tell them apart.
+ *
+ * Measured 2026-10-02T13:32Z on `a11ign/agent-org#16` and `#17`: both green on every required check, both
+ * approved, `mergeQueueEntry` null -- and `armedFromApi` false, so the gate called them UNARMED and sent
+ * `product-manager` an order to "arm it by hand". `auto-arm` had armed each (exit 0); each was
+ * `added_to_merge_queue` and then `removed_from_merge_queue` with `reason: "failed_checks"`, because the
+ * `merge_group` run of `gate` was red. Re-arming without a push re-enters the queue and fails the same
+ * way, and a failing entry makes the entries behind it rebuild.
+ *
+ * The three armed states above say what a PR IS NOW. This one is about what happened to it, so it reads
+ * the timeline: the LAST queue event is a removal for `failed_checks`, and nothing pushed to the head
+ * after it. Ordering decides "since", not a clock: the nodes come back chronologically, so a commit or a
+ * force-push AFTER the removal is a push since.
+ *
+ * Only the pushes this reads are new heads -- a manual dequeue (`reason` anything else) is somebody's
+ * decision and stays whatever it is today.
+ */
+const QUEUE_AND_PUSH_ITEMS = "[ADDED_TO_MERGE_QUEUE_EVENT,REMOVED_FROM_MERGE_QUEUE_EVENT,"
+  + "HEAD_REF_FORCE_PUSHED_EVENT,PULL_REQUEST_COMMIT]";
+
+/**
+ * LAST 10, NOT ALL. The question is only about what follows the newest queue event; a window holding no
+ * queue event at all is a PR that was pushed to since, or never queued, and both read as "not ejected".
+ */
+const EJECTION_WINDOW = 10;
+
+export const EJECTION_QUERY = "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r)"
+  + `{pullRequest(number:$n){mergeQueueEntry{state} timelineItems(last:${EJECTION_WINDOW},itemTypes:${QUEUE_AND_PUSH_ITEMS})`
+  + "{nodes{__typename ... on AddedToMergeQueueEvent{createdAt} "
+  + "... on RemovedFromMergeQueueEvent{createdAt reason}}}}}}";
+
+/**
+ * The `gh` argv that asks `EJECTION_QUERY` about one pull request -- `armedQueryArgs`'s shape, for the same reason.
+ * @param {{ number: string | number, repo: string }} pr
+ * @returns {string[]}
+ */
+export function ejectionQueryArgs({ number, repo }) {
+  const [owner, name] = String(repo).split("/");
+  return ["api", "graphql", "-f", `query=${EJECTION_QUERY}`, "-f", `o=${owner}`, "-f", `r=${name}`,
+    "-F", `n=${number}`, "--jq", ".data.repository.pullRequest"];
+}
+
+const QUEUE_EVENTS = ["AddedToMergeQueueEvent", "RemovedFromMergeQueueEvent"];
+
+/**
+ * PURE. Was this pull request ejected from the merge queue for a failed queue run, with its head unmoved since?
+ *
+ * `null` is "the API did not say" (no `timelineItems.nodes` array), and it is NEVER `{ ejected: false }`: a refused
+ * read must send no order, not a false all-clear (`greenUnarmedOrders`'s rule for the queue read).
+ *
+ * A PR that is IN the queue now (`mergeQueueEntry`) is armed, so it is not ejected whatever the history says.
+ *
+ * @param {{ mergeQueueEntry?: unknown, timelineItems?: { nodes?: unknown } } | null} pr
+ * @returns {{ ejected: boolean, removedAt: string | null } | null}
+ */
+export function queueEjectionOf(pr) {
+  /** @type {any} */
+  const nodes = pr?.timelineItems?.nodes;
+  if (!Array.isArray(nodes)) return null;
+  const notEjected = { ejected: false, removedAt: null };
+  if (pr?.mergeQueueEntry != null) return notEjected;
+  const lastQueueAt = nodes.map((n) => QUEUE_EVENTS.includes(n?.__typename)).lastIndexOf(true);
+  const last = nodes[lastQueueAt];
+  if (last?.__typename !== "RemovedFromMergeQueueEvent" || last.reason !== "failed_checks") return notEjected;
+  const pushedSince = lastQueueAt < nodes.length - 1;
+  return pushedSince ? notEjected : { ejected: true, removedAt: String(last.createdAt ?? "") || null };
+}

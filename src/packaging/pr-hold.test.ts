@@ -248,7 +248,13 @@ const flag = (name) => { const at = args.indexOf(name); return at < 0 ? null : a
 if (args[0] === "pr" && args[1] === "view") {
   const fields = flag("--json");
   if (fields === "labels") process.stdout.write(JSON.stringify({ labels: state.labels.map((name) => ({ name })) }));
+  else if (fields === "comments") process.stdout.write(JSON.stringify({ comments: (state.comments || []).map((body) => ({ body })) }));
   else process.stdout.write(JSON.stringify({ autoMergeRequest: null, state: "OPEN" }));
+  process.exit(0);
+}
+if (args[0] === "pr" && args[1] === "comment") {
+  state.comments = (state.comments || []).concat([flag("--body")]);
+  fs.writeFileSync(statePath, JSON.stringify(state));
   process.exit(0);
 }
 if (args[0] === "pr" && args[1] === "edit") {
@@ -272,10 +278,12 @@ function withStubbedHold(state: { labels: string[], failAdd?: boolean, failRemov
     writeFileSync(join(dir, "gh"), STUB_GH);
     chmodSync(join(dir, "gh"), EXECUTABLE);
     const r = spawnSync(process.execPath, [PR_HOLD_CLI, PR, ...argv],
-      { encoding: "utf8", env: { PATH: `${dir}:${process.env.PATH ?? ""}`, HOME: process.env.HOME ?? "" } });
-    const after = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as { labels: string[] };
+      { encoding: "utf8", env: { PATH: `${dir}:${process.env.PATH ?? ""}`, HOME: process.env.HOME ?? "",
+        // Without the host's declaration the CLI refuses before it ever calls `gh`, so the stub's argv.log is never written: a tool checkout has no project beside it.
+        ...(process.env.AGENT_ORG_HOST && { AGENT_ORG_HOST: process.env.AGENT_ORG_HOST }) } });
+    const after = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as { labels: string[]; comments?: string[] };
     const calls = readFileSync(join(dir, "argv.log"), "utf8").split("\n").filter(Boolean);
-    return { status: r.status, stdout: r.stdout, stderr: r.stderr, labels: after.labels, calls };
+    return { status: r.status, stdout: r.stdout, stderr: r.stderr, labels: after.labels, comments: after.comments ?? [], calls };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -317,6 +325,17 @@ test("#1481 CONTROL: every write succeeds -- exit 0, and the PR is held by this 
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(r.labels, ["hold:worker-judge"]);
   assert.match(r.stdout, /#9001 is now held by worker-judge, and dispatcher no longer holds it/);
+});
+
+test("#2996: a take records WHY as a marker comment, `--until` as a readable `Waiting-for:` line and no `--until` as an honest 'no condition' note", () => {
+  const until = withStubbedHold({ labels: [] }, "--session=ceo", "--until=closed #2867");
+  assert.equal(until.status, 0, until.stderr);
+  assert.equal(until.comments.length, 1);
+  assert.match(until.comments[0], /^<!-- pr-hold-until -->\nHeld by `ceo`\.\nWaiting-for: closed #2867$/);
+  const none = withStubbedHold({ labels: [] }, "--session=ceo");
+  assert.equal(none.status, 0, none.stderr);
+  assert.match(none.comments[0], /No condition was named/);
+  assert.doesNotMatch(none.comments[0], /Waiting-for:/, "a hold with no reason must not inherit one");
 });
 
 test("#1481: the header documents exit 3, DISPLACED_NOT_HELD", () => {
