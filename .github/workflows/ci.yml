@@ -26,15 +26,9 @@ name: ci
 # NAMING A PATH THAT LIVES IN THE PROJECT: `workflow-paths.mjs` refuses a workflow path (`packages/...`, `scripts/...`) that is not in THIS
 # repository, so a path in the project is written with the `project/` prefix, or carries the marker `# in-project` at the end of its line.
 #
-# EXCLUDED, BY NAME, EACH WITH ITS REASON (node's --test-skip-pattern; the run reports them as skipped, 5 in all with the one test that skips itself):
-#   - "#1449: this guard reads the token charge's ONE spawn regex": its regex asserts the import spelling `agent-org/src/acceptance-commands.mjs`,
-#     which the extraction rewrote to `../acceptance-commands.mjs`.
-#   - "the count of non-test files in": its recorded count predates `src/messaging/` (which this
-#     repository added) and counts the copied-in fixture `pr-584-body.md`.
-#   - "#2619 ACCEPTANCE, MUTATION TARGET": it walks the tool's source in the project and finds the copied-in sibling `prefix-pins.mjs`, which is a lab file.
-#   - "#2174: the history-requirement population is unchanged by this row": its expected list names lab tests that were not extracted.
-# Each is a test whose premise is the monorepo's directory layout and not a defect in the tool; the row that removes each exclusion is named on
-# a11ign/a11ign#2973.
+# NOTHING IS EXCLUDED: every test the suite holds runs, and the run reports `skipped 1` (the test that needs the `codex` binary, which skips itself).
+# Four tests whose premise was the monorepo's directory layout were once skipped by name (a11ign/a11ign#2973) and are now fixed in the tests (#3002):
+# an exclusion is a test that does not run, so a defect in what it guards would have gone unseen.
 
 env:
   # The project the tool is tested against. `main` follows the project; a commit hash holds it still.
@@ -85,13 +79,4 @@ jobs:
           rsync -a --ignore-existing --exclude='*.test.ts' --exclude='*.test.mjs' project/packages/lab/src/packaging/ project/packages/agent-org/src/packaging/
       - name: The tool's whole suite -- every *.test.ts and *.test.mjs, run from the project's root
         working-directory: project
-        run: |
-          skipped=(
-            "#1449: this guard reads the token charge's ONE spawn regex"
-            "the count of non-test files in"
-            "#2619 ACCEPTANCE, MUTATION TARGET"
-            "#2174: the history-requirement population is unchanged by this row"
-          )
-          flags=()
-          for name in "${skipped[@]}"; do flags+=("--test-skip-pattern=${name}"); done
-          node --import tsx --test "${flags[@]}" "packages/agent-org/src/**/*.test.ts" "packages/agent-org/src/**/*.test.mjs" # in-project
+        run: node --import tsx --test "packages/agent-org/src/**/*.test.ts" "packages/agent-org/src/**/*.test.mjs" # in-project

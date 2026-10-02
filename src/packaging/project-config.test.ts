@@ -209,6 +209,22 @@ test("a refusal for one field is not a refusal for another (each mutation fires 
 });
 
 /**
+ * Directories the walk does not enter: `node_modules`, and `fixtures/`, which holds recorded text the tests read (the gate also copies the
+ * project's own lab fixtures in beside the tests, e.g. `pr-584-body.md`, which quotes a repository URL). Neither is the tool reading its repository's name.
+ */
+const NOT_THE_TOOL_DIRECTORIES = ["node_modules", "fixtures"];
+
+/**
+ * A tracker reference (`a11ign/a11ign#2902`) points at a row on the project's board; it is not a place the tool reads the repository's name from
+ * (#2616's rule is about the latter), and the tool's own source cites rows this way in comments AND in message templates.
+ */
+const TRACKER_REFERENCE = /a11ign\/a11ign#\d+/g;
+
+function namesTheRepository(text: string): boolean {
+  return text.replace(TRACKER_REFERENCE, "").includes(A11IGN_LITERAL);
+}
+
+/**
  * The non-test files under `packages/agent-org/src` that carry the repository's name literally. A directory walk rather than
  * `git ls-files`, so the test spawns nothing and counts a file added in this very change before it is tracked.
  */
@@ -218,8 +234,8 @@ function filesCarryingTheLiteral(): string[] {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (entry.name !== "node_modules") walk(path);
-      } else if (!/\.test\./.test(entry.name) && readFileSync(path, "utf8").includes(A11IGN_LITERAL)) {
+        if (!NOT_THE_TOOL_DIRECTORIES.includes(entry.name)) walk(path);
+      } else if (!/\.test\./.test(entry.name) && namesTheRepository(readFileSync(path, "utf8"))) {
         found.push(relative(HOME_CHECKOUT, path));
       }
     }
