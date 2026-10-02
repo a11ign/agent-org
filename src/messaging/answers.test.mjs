@@ -11,12 +11,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { ANSWER_LABEL, answerComment, buttonData, createAnswers, STEPS } from "./answers.mjs";
+import { answerComment, buttonData, createAnswers, STEPS } from "./answers.mjs";
 import { createInbound } from "./inbound.mjs";
 import { createLedger, deliveryLine, foldLedger, readLedgerLines, STATUS } from "./ledger.mjs";
 import { NEEDS_CHAIRMAN, parseChairmanOptions } from "./sources/requests.mjs";
 
 const CHAIRMAN = Object.freeze({ userId: 4242, chatId: 4242 });
+/** The label the done-when names. In production the wiring builds it from the vocabulary's answer prefix; here it is spelled out so the order is pinned against the literal. */
+const ANSWER_LABEL = "answer:ceo";
 const REPO = "a11ign/a11ign";
 const ROW = 2885;
 const KEY = `request:${REPO}#${ROW}`;
@@ -78,7 +80,7 @@ function harness(initial = openRow()) {
   for (const [ref, kind] of [[ASK_REF, "request"], [REMINDER_REF, "reminder"]]) {
     seed.append(deliveryLine({ key: KEY, provider: "fake", status: STATUS.sent, providerMessageId: ref, kind, stateHash: "h" }));
   }
-  const build = () => ({ ledger: ledger(), github, chairman: CHAIRMAN, now });
+  const build = () => ({ ledger: ledger(), github, chairman: CHAIRMAN, answerLabel: ANSWER_LABEL, now });
   let inbound = createInbound({ ledger: ledger(), chairman: CHAIRMAN });
   let answers = createAnswers(build());
   return {
@@ -292,7 +294,14 @@ describe("the writer refuses what the inbound did not mint (done-when 5)", () =>
   test("a writer built without both of the chairman's ids is refused at construction", () => {
     const github = fixtureGithub();
     for (const chairman of [{ userId: 1 }, { chatId: 1 }, null, { userId: "1", chatId: 1 }]) {
-      assert.throws(() => createAnswers({ ledger: createLedger({ path: join(scratch, "x.jsonl"), now: Date.now }), github, chairman: /** @type {any} */ (chairman), now: Date.now }), TypeError);
+      assert.throws(() => createAnswers({ ledger: createLedger({ path: join(scratch, "x.jsonl"), now: Date.now }), github, chairman: /** @type {any} */ (chairman), answerLabel: ANSWER_LABEL, now: Date.now }), TypeError);
+    }
+  });
+
+  test("a writer built without a label to set is refused at construction, so it cannot answer without waking ceo", () => {
+    const github = fixtureGithub();
+    for (const answerLabel of [undefined, "", null, 7]) {
+      assert.throws(() => createAnswers({ ledger: createLedger({ path: join(scratch, "x.jsonl"), now: Date.now }), github, chairman: CHAIRMAN, answerLabel: /** @type {any} */ (answerLabel), now: Date.now }), TypeError);
     }
   });
 });

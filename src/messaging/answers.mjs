@@ -33,7 +33,6 @@ import { isAccepted } from "./inbound.mjs";
 import { describeError, STATUS } from "./ledger.mjs";
 import { latestBrief, NEEDS_CHAIRMAN, parseChairmanOptions, parseRequestKey } from "./sources/requests.mjs";
 
-export const ANSWER_LABEL = "answer:ceo";
 /** The three writes, in the order they are made. Pinned by the test: the label steps are last. */
 export const STEPS = Object.freeze(["comment", "remove-label", "set-answer"]);
 
@@ -101,11 +100,14 @@ function progressOn(lines, request, ref) {
 
 /**
  * @param {{ledger: {append: (entry: Record<string, unknown>) => Record<string, any>, read: () => Record<string, any>[]},
- *          github: GithubWriter, chairman: {userId: number, chatId: number}, now: () => number}} options
+ *          github: GithubWriter, chairman: {userId: number, chatId: number}, answerLabel: string, now: () => number}} options
+ *   `answerLabel` is the label that wakes `ceo` with the answer (the vocabulary's answer prefix + `ceo`). It is an INPUT, not a literal here,
+ *   because the messaging modules are leaves that do not read the tool's vocabulary and `project-vocabulary.test.ts` refuses a copy in code.
  */
-export function createAnswers({ ledger, github, chairman, now }) {
+export function createAnswers({ ledger, github, chairman, answerLabel, now }) {
   // Refuses ids that are not integers now, rather than at the first answer: `isAccepted` throws for them.
   isAccepted(null, chairman);
+  if (typeof answerLabel !== "string" || answerLabel === "") throw new TypeError("createAnswers needs the answerLabel to set (a non-empty string)");
 
   /** @param {Readonly<Record<string, any>>} accepted @param {string} reason @param {string | null} request @param {string} text @returns {Answered} */
   function reply(accepted, reason, request, text) {
@@ -135,7 +137,7 @@ export function createAnswers({ ledger, github, chairman, now }) {
     const writes = {
       comment: () => github.comment(row, answerComment({ ref, at: new Date(now()).toISOString(), option, text })),
       "remove-label": () => github.removeLabel(row, NEEDS_CHAIRMAN),
-      "set-answer": () => github.addLabel(row, ANSWER_LABEL),
+      "set-answer": () => github.addLabel(row, answerLabel),
     };
     for (const step of STEPS.filter((candidate) => !done.has(candidate))) {
       try {
@@ -186,7 +188,7 @@ export function createAnswers({ ledger, github, chairman, now }) {
      * @throws {TypeError} for a value `inbound.mjs` did not mint for this chairman
      */
     answer(accepted, { replyToMessageId = null } = {}) {
-      if (!isAccepted(accepted, chairman)) throw new TypeError("answer: only a value minted by createInbound for this chairman may write to a row");
+      if (!isAccepted(accepted, chairman)) throw new TypeError("only a value minted by createInbound for this chairman may write to a row");
       const value = /** @type {Readonly<Record<string, any>>} */ (accepted);
       // One at a time: two presses of one button must not both read "nothing done yet".
       const run = queue.then(() => resolve(value, Number.isSafeInteger(replyToMessageId) ? String(replyToMessageId) : null));
