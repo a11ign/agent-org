@@ -580,9 +580,12 @@ test("a pool shelf that is empty with NO unlaned backlog wakes nobody", () => {
 });
 
 // --- #63: the escalation path ended at ceo, and ceo's onward route was a sentence (2026-09-18) ---
+// The key and the window moved with #2989 and their tests with them: `packages/agent-org/src/work-gate-chairman-blocked.test.ts`.
 
 const blockedRow = (n: number, daysAgo: number) =>
   ({ number: n, title: `row ${n}`, updatedAt: new Date(Date.now() - daysAgo * 86_400_000).toISOString() });
+// The order is emitted only in the first two hours of a UTC day (#2989), so these pin a clock inside one.
+const IN_WINDOW = Date.parse("2026-10-02T00:30:00Z");
 
 /**
  * #63 sat four days with eight publish-gated rows behind it. `ceo` escalated correctly and
@@ -590,38 +593,18 @@ const blockedRow = (n: number, daysAgo: number) =>
  * the chairman happened to read a sweep in a terminal.
  */
 test("rows waiting on the chairman wake CEO, the only session that briefs one", () => {
-  const orders = decide({ prs: [], readyRows: [], chairmanBlocked: [blockedRow(63, 4)] });
+  const orders = decide({ prs: [], readyRows: [], chairmanBlocked: [blockedRow(63, 4)], nowMs: IN_WINDOW });
   assert.deepEqual(orders.map((o: { cause: string; session: string }) => [o.cause, o.session]),
     [["chairman-blocked", "ceo"]]);
-  assert.match(orders[0].prompt, /4 day\(s\)/);
   assert.match(orders[0].prompt, /#63/);
-  // `updatedAt` is LAST ACTIVITY, not time waiting: labelling #63 reset it to 0 the first time this ran.
-  // The prompt must not let a reader mistake one for the other.
-  assert.match(orders[0].prompt, /not time spent waiting/);
-});
-
-test("the discriminator is the AGE, so ceo is reminded once a DAY and the reminder grows", () => {
-  const today = decide({ prs: [], readyRows: [], chairmanBlocked: [blockedRow(63, 4)] })[0];
-  const tomorrow = decide({ prs: [], readyRows: [], chairmanBlocked: [blockedRow(63, 5)] })[0];
-  assert.notEqual(today.causeKey, tomorrow.causeKey, "a day older is a new question");
-  const again = decide({ prs: [], readyRows: [], chairmanBlocked: [blockedRow(63, 4)] })[0];
-  assert.equal(today.causeKey, again.causeKey,
-    "and the same day is the same question, or ceo is re-briefed every twenty minutes for days");
-});
-
-test("the AGE is the OLDEST row's, since the list arrives oldest first", () => {
-  const orders = decide({ prs: [], readyRows: [],
-    chairmanBlocked: [blockedRow(63, 9), blockedRow(64, 1)] });
-  assert.match(orders[0].prompt, /9 day\(s\)/, "reporting the newest would understate the stall");
-  assert.match(orders[0].prompt, /2 row\(s\)/);
 });
 
 test("nothing waiting on the chairman wakes nobody", () => {
-  assert.deepEqual(decide({ prs: [], readyRows: [], chairmanBlocked: [] }), []);
+  assert.deepEqual(decide({ prs: [], readyRows: [], chairmanBlocked: [], nowMs: IN_WINDOW }), []);
 });
 
 test("the order tells ceo to CLEAR a stale label, or the count stops meaning anything", () => {
-  const [order] = decide({ prs: [], readyRows: [], chairmanBlocked: [blockedRow(63, 4)] });
+  const [order] = decide({ prs: [], readyRows: [], chairmanBlocked: [blockedRow(63, 4)], nowMs: IN_WINDOW });
   assert.match(order.prompt, /take the label off/);
   assert.match(order.prompt, /four days unread/);
 });
@@ -991,7 +974,7 @@ test("a drain still delivers the FINISH causes -- work in flight must be able to
 });
 
 test("chairman-blocked survives a drain -- it is the WINDOW'S OWN subject", () => {
-  const orders = decide({ prs: [], readyRows: [], chairmanBlocked: [blockedRow(63, 4)], drain: true });
+  const orders = decide({ prs: [], readyRows: [], chairmanBlocked: [blockedRow(63, 4)], drain: true, nowMs: IN_WINDOW });
   assert.deepEqual(orders.map((o: { cause: string }) => o.cause), ["chairman-blocked"],
     "during a transfer the chairman is the one doing the work; silencing their brief silences the "
     + "thing the drain exists to serve");
@@ -1373,37 +1356,48 @@ test("a THIRD red job ends the exemption, so a real failure under a hold still r
     "a hold does not excuse a red gate whose cause is not the hold (deliberateRefusals is green here)");
 });
 
-test("only the ADDRESSEE's own hold is an answer from it -- #2400", () => {
-  // #2941: a PR NOBODY owns has no addressee with a stake, so a hold by ANY session answers it (#2376's own shape).
+test("ANY session's hold answers a PR red only from it, the owner's too -- #2993 narrows #2400's clause 1", () => {
+  // #2400 clause 1 ("a hold by anyone else is not an answer from the session being asked") was written for a hold the ADDRESSEE placed.
+  // For a hold the addressee is the SUBJECT of, the order asks "fix your build" and nothing in the build is broken (#2990, five orders).
   assert.deepEqual(failingOrders(heldPr(["hold:ceo"]), ["gate"]), [], "unowned and held by ceo, who is the last answer");
   assert.deepEqual(failingOrders(heldPr(["hold:worker-9"]), ["gate"]), [], "unowned and held by somebody: that is the answer");
-  const labelled = (...labels: string[]) => heldPr(["session:worker-5", ...labels]);
-  const [routed] = failingOrders(labelled("hold:product-manager"), ["gate"]);
-  assert.equal(routed?.session, "worker-5", "a PR with a session label is addressed to that session, and a hold by somebody else is no answer from it");
-  assert.deepEqual(failingOrders(labelled("hold:worker-5"), ["gate"]), [], "worker-5 holding its own PR");
-  assert.deepEqual(failingOrders(labelled("hold:ceo", "hold:worker-5"), ["gate"]), [],
-    "two holders, one of them the addressee");
+  const labelled = (labels: string[], checks: [string, string][] = HELD_RED) => heldPr(["session:worker-5", ...labels], checks);
+  const real: [string, string][] = [["deliberateRefusals", "FAILURE"], ["gate", "FAILURE"], ["ts / run", "FAILURE"]];
+  for (const required of [["gate"], null]) {
+    const where = `required=${JSON.stringify(required)}`;
+    // (1) a foreign hold, owner worker-5: no order
+    assert.deepEqual(failingOrders(labelled(["hold:ceo"]), required), [], `(1) worker-5's PR held by ceo ${where}`);
+    assert.deepEqual(failingOrders(labelled(["hold:product-manager"]), required), [], `(1) held by product-manager ${where}`);
+    assert.deepEqual(failingOrders(labelled(["hold:worker-5"]), required), [], `worker-5 holding its own PR ${where}`);
+    assert.deepEqual(failingOrders(labelled(["hold:ceo", "hold:worker-5"]), required), [], `two holders ${where}`);
+    // (2) a third red job under the same foreign hold still reaches the owner
+    const [order, ...rest] = failingOrders(labelled(["hold:ceo"], real), required);
+    assert.equal(rest.length, 0);
+    assert.equal(order?.session, "worker-5", `(2) a real ts / run failure under a foreign hold ${where}`);
+    // (3) the hold removed, same two red jobs: the null above is the exemption, not an empty rollup
+    assert.equal(failingOrders(labelled([]), required)[0]?.session, "worker-5", `(3) no hold ${where}`);
+  }
 });
 
 /**
- * #2935: A ROW-ROUTED ORDER ACCEPTS `hold:product-manager`. #2882 addressed an unlabelled red PR to the session holding
- * its row (`rowOwner`), so the hold of the session it went to before that change stopped matching and #2883 was
- * re-ordered every tick. The exemption still ends with either key, and a labelled PR keeps #2400's rule.
+ * #2935: A ROW-ROUTED ORDER IS QUIET UNDER A HOLD. #2882 addressed an unlabelled red PR to the session holding its row (`rowOwner`), so
+ * the hold of the session it went to before that change stopped matching and #2883 was re-ordered every tick. Since #2993 no hold has to
+ * match anybody: the exemption still ends with either key (a third red job, or the hold removed).
  */
-test("a rowOwner-routed PR held by product-manager generates no order; a third red job or no hold brings it back -- #2935", () => {
+test("a rowOwner-routed PR under any hold generates no order; a third red job or no hold brings it back -- #2935/#2993", () => {
   const routed = (labels: string[], checks: [string, string][] = HELD_RED) =>
     ({ ...heldPr(labels, checks), rowOwner: { session: "worker-2879", row: 2879, source: "closes" } });
   for (const required of [["gate"], null]) {
     assert.deepEqual(failingOrders(routed(["hold:product-manager"]), required), [],
       `hold:product-manager, row held by worker-2879 (required=${JSON.stringify(required)})`);
-    assert.deepEqual(failingOrders(routed(["hold:worker-2879"]), required), [], "the row holder's own hold still answers");
+    assert.deepEqual(failingOrders(routed(["hold:worker-2879"]), required), [], "the row holder's own hold");
+    assert.deepEqual(failingOrders(routed(["hold:ceo"]), required), [], "somebody else's hold (#2993)");
     const real: [string, string][] = [["deliberateRefusals", "FAILURE"], ["gate", "FAILURE"], ["ts / run", "FAILURE"]];
     assert.equal(failingOrders(routed(["hold:product-manager"], real), required)[0]?.session, "worker-2879", "third job red");
     assert.equal(failingOrders(routed([]), required)[0]?.session, "worker-2879", "hold removed");
-    assert.equal(failingOrders(routed(["hold:ceo"]), required)[0]?.session, "worker-2879", "somebody else's hold");
   }
   const labelled = { ...heldPr(["session:worker-5", "hold:product-manager"]), rowOwner: { session: "worker-2879", row: 2879, source: "closes" } };
-  assert.equal(failingOrders(labelled, ["gate"])[0]?.session, "worker-5", "a labelled PR: product-manager's hold is not its answer");
+  assert.deepEqual(failingOrders(labelled, ["gate"]), [], "a labelled PR under product-manager's hold: no order either (#2993)");
 });
 
 test("HOLD_RED_JOBS names the jobs ci.yml defines, so the exemption cannot go stale on a rename", () => {
@@ -1455,8 +1449,8 @@ test("#2709: a hold does not excuse a REAL red check outside HOLD_RED_JOBS from 
  * breaker at all. The wake half is driven with the ledger already at the cap, which is #2376's state.
  */
 test("a held PR at the cap stops appearing in stuck, and a real failure under the same hold still escalates -- #2400", () => {
-  const at = (checkNames: [string, string][]) => {
-    const orders = failingOrders(heldPr(["hold:product-manager"], checkNames), ["gate"]);
+  const at = (checkNames: [string, string][], labels = ["hold:product-manager"]) => {
+    const orders = failingOrders(heldPr(labels, checkNames), ["gate"]);
     const counts = new Map(orders.map((o) => [o.causeKey, MAX_DELIVERIES]));
     const calls: string[][] = [];
     const { sent, stuck } = deliver(orders, [], [], { counts, run: () => { throw new Error("nothing may be sent"); } });
@@ -1471,6 +1465,23 @@ test("a held PR at the cap stops appearing in stuck, and a real failure under th
   assert.equal(real.stuck.length, 1, "and at the cap it is stuck, by the ordinary count");
   assert.deepEqual(real.labelled, [2376]);
   assert.deepEqual(real.calls, [["issue", "edit", "2376", "--add-label", "answer:ceo"]]);
+});
+
+test("a PR held by SOMEBODY ELSE at the cap is not stuck and gets no needs:chairman -- #2993", () => {
+  const foreign = ["session:worker-5", "hold:ceo"];
+  const at = (checkNames: [string, string][]) => {
+    const orders = failingOrders(heldPr(foreign, checkNames), ["gate"]);
+    const counts = new Map(orders.map((o) => [o.causeKey, MAX_DELIVERIES]));
+    const calls: string[][] = [];
+    const { stuck } = deliver(orders, [], [], { counts, run: () => { throw new Error("nothing may be sent"); } });
+    const labelled = escalateStuck(stuck, (a: string[]) => { calls.push(a); return ""; }, () => {});
+    return { orders, stuck, labelled, calls };
+  };
+  const held = at(HELD_RED);
+  assert.deepEqual([held.orders, held.stuck, held.labelled, held.calls], [[], [], [], []], "(4) a foreign hold: nothing to escalate");
+  const real = at([["deliberateRefusals", "FAILURE"], ["gate", "FAILURE"], ["ts / run", "FAILURE"]]);
+  assert.equal(real.orders[0]?.session, "worker-5", "POSITIVE CONTROL: the owner is still ordered on a real failure");
+  assert.equal(real.stuck.length, 1, "and at the cap it is stuck, by the ordinary count");
 });
 
 test("the expensive question is asked only when something is red", () => {
@@ -1558,6 +1569,39 @@ test("the base having moved changes NO predicate: same session, subject, discrim
   // And the moved base does not SILENCE a genuine red, nor conjure an order for a green PR.
   const green = { ...RED_2087, statusCheckRollup: [{ ...RED_CI, conclusion: "SUCCESS" }] };
   assert.equal(redOrder(TIP_AFTER, green), undefined, "a green PR gets no red order however far main moved");
+});
+
+/**
+ * #3005: A RED PULL REQUEST THAT TURNS CONFLICTED AT THE SAME HEAD IS A NEW CAUSE. #2990 sat 63 minutes at one
+ * `pr-checks-failing` key (delivered six times, owner idle) because a conflicting branch gets no `pull_request` run, so
+ * the head and the red never changed while the work went from "fix the check" to "rebase".
+ */
+const MERGEABLE_2087 = { ...RED_2087, mergeStateStatus: "BLOCKED", mergeable: "MERGEABLE" };
+const CONFLICTING_2087 = { ...RED_2087, mergeStateStatus: "DIRTY", mergeable: "CONFLICTING" };
+const MERGEABLE_KEY = "worker-judge/pr-checks-failing/pr-2087/06a52308";
+
+test("#3005 a red CONFLICTING pull request is ordered with a prompt that names the conflict first", () => {
+  const order = redOrder(null, CONFLICTING_2087);
+  assert.equal(order.cause, "pr-checks-failing");
+  assert.equal(order.session, "worker-judge", "same owner: only the cause changed");
+  assert.match(order.prompt, /conflict/i);
+  assert.ok(order.prompt.indexOf("CONFLICTS") < order.prompt.indexOf("WHICH FIX"), "the rebase is named before the triage");
+  assert.doesNotMatch(redOrder(null, MERGEABLE_2087).prompt, /conflict/i, "POSITIVE CONTROL: a mergeable red PR says nothing of it");
+});
+
+test("#3005 the conflicted key differs from the mergeable key, and the mergeable key is today's literal", () => {
+  assert.equal(redOrder(null, MERGEABLE_2087).causeKey, MERGEABLE_KEY, "a conflict-free red PR keeps its key byte for byte");
+  assert.equal(redOrder(null, RED_2087).causeKey, MERGEABLE_KEY, "and so does one that carries no merge fields at all (UNKNOWN)");
+  assert.equal(redOrder(null, CONFLICTING_2087).causeKey, `${MERGEABLE_KEY}/conflicting`);
+});
+
+test("#3005 through deliver: an order sent at the mergeable key is sent again once the PR conflicts at the same head", () => {
+  const atCap = new Map([[MERGEABLE_KEY, MAX_DELIVERIES]]);
+  const quiet = () => { throw new Error("nothing may be typed into a session in this test"); };
+  const before = deliver([redOrder(null, MERGEABLE_2087)], [], [], { counts: atCap, run: quiet });
+  assert.equal(before.stuck.length, 1, "POSITIVE CONTROL: at the cap the mergeable key is stuck, as in #2990");
+  const after = deliver([redOrder(null, CONFLICTING_2087)], [], [], { counts: atCap, run: quiet });
+  assert.deepEqual(after.stuck, [], "the same head, now conflicted, is a fresh key with a fresh count");
 });
 
 test("the prompt names BOTH regimes and chooses neither", () => {
