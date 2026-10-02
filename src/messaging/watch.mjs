@@ -15,6 +15,10 @@
 // read the labelled rows must emit no "resolved" event (see requests.mjs), and a summary that could read nothing sends nothing. The
 // failure is logged and the exit code is 1, so the unit shows failed; the next tick starts clean.
 //
+// **THE STALL AND INCIDENT SOURCES RUN HERE TOO (a11ign/a11ign#3008)**, over the readers in `sources/readers.mjs`: `main` builds them for a real host (GitHub on
+// the core pool through `gh api`, systemd, herdr and the fleet-watch state file) and `runWatch` asks them after the two label sources. The `gh api` calls a
+// run makes are listed in `docs/messaging.md`; the allowlist admits only a GET of the six REST paths they use.
+//
 // **THE PROVIDER IS INJECTED, AND NONE IS REGISTERED YET.** The Telegram provider is row 3 (#2902) and its going live is row 6 (#2905). Until
 // then a configured `messaging` key names a provider this program cannot construct, and it says so and exits 1, which is what the
 // service template promised `host:check` would show.
@@ -22,15 +26,20 @@
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { MessagingConfigRefusal, PROJECT_FILE, readMessagingConfig } from "./config.mjs";
 import { createMessenger } from "./core.mjs";
 import { createLedger, describeError, foldLedger } from "./ledger.mjs";
+import { observeIncidents } from "./sources/incidents.mjs";
+import { createReaders } from "./sources/readers.mjs";
+import { observeStalls } from "./sources/stall.mjs";
 import { observeSummary } from "./sources/summary.mjs";
 import { parseRequestKey, readRequests } from "./sources/requests.mjs";
+import { readUnitsDeclaration } from "../host-config.mjs";
+import { readAgents } from "../herdr-agents.mjs";
 import { isBrokenRed } from "../red-pr.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -44,12 +53,23 @@ export const READ_METHODS = Object.freeze(["issuesLabelled", "issueComments", "m
 
 const ALLOWED_VERBS = new Set(["issue list", "issue view", "pr list"]);
 const ALLOWED_FLAGS = new Set(["-R", "--label", "--state", "--search", "--json", "--limit"]);
+/** The REST paths `gh api` may be given, after `repos/<owner>/<name>/`: the ones `sources/readers.mjs` reads, each a listing or a lookup. */
+const READ_API_PATH = /^repos\/[\w.-]+\/[\w.-]+\/(pulls|issues|actions\/runs|actions\/workflows\/[\w.-]+\/runs|actions\/runs\/\d+\/jobs|check-runs\/\d+\/annotations)(\?[\w=&.,%:-]*)?$/;
+
+/**
+ * `gh api <path>` and nothing after the path: a GET is the default and every flag that would change it (`-X`, `-f`, `-F`, `--input`) is a token this refuses.
+ * @param {readonly string[]} argv
+ */
+function assertReadOnlyApi(argv) {
+  if (argv.length !== 2 || !READ_API_PATH.test(argv[1])) throw new Error(`chairman-watch reads only: \`gh api ${argv.slice(1).join(" ")}\` is not an allowed read`);
+}
 
 /**
  * @param {readonly string[]} argv the arguments after `gh`
  * @throws {Error} when the command is anything but a list, or carries a flag the readers do not use
  */
 export function assertReadOnlyGh(argv) {
+  if (argv[0] === "api") return assertReadOnlyApi(argv);
   const verb = argv.slice(0, 2).join(" ");
   if (!ALLOWED_VERBS.has(verb)) throw new Error(`chairman-watch reads only: \`gh ${verb}\` is not an allowed command`);
   const stray = argv.slice(2).find((token) => token.startsWith("-") && !ALLOWED_FLAGS.has(token));
@@ -59,6 +79,12 @@ export function assertReadOnlyGh(argv) {
 /** @param {readonly string[]} argv @returns {Promise<string>} what `gh` printed; the environment (and so the account) is the process's own */
 async function runGh(argv) {
   const { stdout } = await execFileAsync("gh", [...argv], { timeout: GH_TIMEOUT_MS, maxBuffer: GH_MAX_BUFFER, encoding: "utf8" });
+  return stdout;
+}
+
+/** @param {string[]} argv @returns {Promise<string>} `systemctl <argv>`: only ever `--user show`, which `createReaders` builds and nothing else reaches */
+async function runSystemctl(argv) {
+  const { stdout } = await execFileAsync("systemctl", argv, { timeout: GH_TIMEOUT_MS, encoding: "utf8" });
   return stdout;
 }
 
@@ -105,12 +131,16 @@ export function createGhReader({ run = runGh } = {}) {
     async redPulls({ repo, limit = 100 }) {
       return (await list(["pr", "list", "-R", repo, "--state", "open", "--json", "number,labels,statusCheckRollup", "--limit", String(limit)])).filter(isBrokenRed);
     },
+    /** One REST GET, on the CORE pool (the lists above spend GraphQL): what the stall and incident readers use. @param {string} path */
+    api(path) {
+      return view(["api", path]);
+    },
   };
 }
 
 /** @typedef {{ reason: string, key?: string }} Note  A `key` marks a note about one thing, logged once per distinct reason and not once per tick. */
 
-/** @typedef {{ github: any, repo: string, now: number, openKeys: string[], summary: { at: string, timezone: string } }} SourceContext */
+/** @typedef {{ github: any, repo: string, now: number, openKeys: string[], summary: { at: string, timezone: string }, readers: Record<string, any> }} SourceContext */
 /** @typedef {{ name: string, observe: (context: SourceContext) => Promise<{ events: Record<string, unknown>[], notes: Note[] }> }} Source */
 
 /** @type {Source} */
@@ -131,8 +161,50 @@ const SUMMARY = {
   },
 };
 
-/** The sources this program asks, in order. Row 5 (#2904) adds its incident and stall readers here. */
+/**
+ * `fleet-watch` runs hourly (`OnCalendar=*:47`), so its state file is up to an hour old on a healthy host. `incidents.mjs`'s 30-minute default would read
+ * half of every hour as "the watcher stopped"; two missed firings and a margin is what a stopped watcher looks like.
+ */
+const FLEET_STATE_MAX_AGE_MS = 130 * 60_000;
+
+/** @param {{ events: Record<string, unknown>[], cannotAsk: { source: string, reason: string }[] }} observation @returns {{ events: Record<string, unknown>[], notes: Note[] }} */
+function observed({ events, cannotAsk }) {
+  return { events, notes: cannotAsk.map(({ source, reason }) => ({ reason: `cannot-ask ${source}: ${reason}` })) };
+}
+
+/**
+ * The stall kinds. THE SAMPLE IS TAKEN FIRST, so the history `readTicks` returns includes this run. A sample that could not be taken is a note and
+ * the source still runs: it then reads the history it has, and a history that stopped growing is `cannot-ask` by its own age.
+ * @type {Source}
+ */
+const STALLS = {
+  name: "stalls",
+  async observe({ now, readers }) {
+    /** @type {Note[]} */
+    const notes = [];
+    try {
+      await readers.takeSample?.();
+    } catch (error) {
+      notes.push({ reason: `stall sample not taken: ${describeError(error)}` });
+    }
+    const result = observed(await observeStalls({ now: () => now, readers, log: () => {} }));
+    return { events: result.events, notes: [...notes, ...result.notes] };
+  },
+};
+
+/** @type {Source} */
+const INCIDENTS = {
+  name: "incidents",
+  async observe({ now, readers }) {
+    return observed(await observeIncidents({ now: () => now, readers, config: { fleetStateMaxAgeMs: FLEET_STATE_MAX_AGE_MS }, log: () => {} }));
+  },
+};
+
+/** The sources this program asks, in order. */
 export const DEFAULT_SOURCES = Object.freeze([REQUESTS, SUMMARY]);
+
+/** The sources that read the host (systemd, herdr, files) as well as GitHub, asked only when the caller hands over the `readers` they need. */
+export const HOST_SOURCES = Object.freeze([STALLS, INCIDENTS]);
 
 /** @param {Map<string, import("./ledger.mjs").KeyRecord>} state @returns {string[]} the request keys the chairman has been told about and not told cleared */
 function openRequestKeys(state) {
@@ -188,14 +260,17 @@ async function gather(context, sources) {
  * One pass: observe, then tell. Everything it touches comes in as an argument, so a test owns the clock, the ledger, the reader and the
  * provider.
  *
- * @param {{ github: any, provider: any, ledger: ReturnType<typeof createLedger>, now: () => number, repo: string,
+ * `readers` is what the stall and incident sources read through (`sources/readers.mjs`). Given, they are asked after the label sources; absent, they are
+ * NOT asked, which is a caller that has no host to read (a test's), never a production run: `main` always hands them over.
+ *
+ * @param {{ github: any, provider: any, ledger: ReturnType<typeof createLedger>, now: () => number, repo: string, readers?: Record<string, any>,
  *           summary: { at: string, timezone: string }, log?: (line: string) => void, sources?: readonly Source[], coreConfig?: object }} input
  * @returns {Promise<{ decisions: { key: string, action: string }[], failures: string[] }>}
  */
-export async function runWatch({ github, provider, ledger, now, repo, summary, log = () => {}, sources = DEFAULT_SOURCES, coreConfig }) {
+export async function runWatch({ github, provider, ledger, now, repo, readers, summary, log = () => {}, sources = readers === undefined ? DEFAULT_SOURCES : [...DEFAULT_SOURCES, ...HOST_SOURCES], coreConfig }) {
   const history = ledger.read();
   const openKeys = openRequestKeys(foldLedger(history));
-  const { events, notes, failures } = await gather({ github, repo, now: now(), openKeys, summary }, sources);
+  const { events, notes, failures } = await gather({ github, repo, now: now(), openKeys, summary, readers: readers ?? {} }, sources);
   recordNotes({ notes, ledger, history, log });
   const messenger = createMessenger({ provider, ledger, now, config: /** @type {any} */ (coreConfig) });
   const decisions = await messenger.tick(events);
@@ -252,19 +327,46 @@ function refusalToStart({ config, env, github, providers }) {
   return null;
 }
 
+/** `fleet-watch`'s own default state path (`packages/control/src/fleet-watch.mjs`'s `DEFAULT_STATE_PATH`), relative to the checkout its unit runs in: the one this unit runs in. */
+const FLEET_WATCH_STATE = join("runs", "fleet-watch-state.json");
+
+/** @param {string} root @param {(line: string) => void} err @returns {string | undefined} the work-tick unit's name, or undefined after saying why not */
+function workTickUnit(root, err) {
+  try {
+    return `${readUnitsDeclaration(root).prefix}work-tick.service`;
+  } catch (error) {
+    err(`messaging:watch: the work-tick unit's name is unknown, so incident:gate-crash cannot ask: ${describeError(error)}`);
+    return undefined;
+  }
+}
+
+/**
+ * The reads the stall and incident sources run on, for a real host. An INJECTED `github` is a test's, and these reach systemd, herdr and files a test
+ * must not touch, so there are none for it unless the test brings its own.
+ *
+ * @param {{ root: string, home: string, now: () => number, err: (line: string) => void, github: any }} input
+ * @returns {ReturnType<typeof createReaders>}
+ */
+function hostReaders({ root, home, now, err, github }) {
+  return createReaders({
+    github, repo: trackerRepo(root), stateDir: dirname(defaultLedgerPath(home)), fleetStatePath: join(root, FLEET_WATCH_STATE),
+    unit: workTickUnit(root, err), now, systemctl: runSystemctl, readSeats: readAgents, log: err,
+  });
+}
+
 /** What a caller may leave out. A spread and not parameter defaults: each default is a branch, and `main` was past the complexity limit. */
 const DEFAULT_DEPS = () => ({
-  root: process.cwd(), env: process.env, home: homedir(), now: Date.now, github: /** @type {any} */ (undefined), providers: /** @type {Record<string, (config: any) => any>} */ ({}),
+  root: process.cwd(), env: process.env, home: homedir(), now: Date.now, github: /** @type {any} */ (undefined), readers: /** @type {any} */ (undefined), providers: /** @type {Record<string, (config: any) => any>} */ ({}),
   out: (/** @type {string} */ line) => console.log(line), err: (/** @type {string} */ line) => console.error(line),
 });
 
 /**
- * @param {{ root?: string, env?: Record<string, string | undefined>, home?: string, now?: () => number, github?: any,
+ * @param {{ root?: string, env?: Record<string, string | undefined>, home?: string, now?: () => number, github?: any, readers?: Record<string, any>,
  *           providers?: Record<string, (config: any) => any>, out?: (line: string) => void, err?: (line: string) => void }} [deps]
  * @returns {Promise<number>} the exit code: 0 done (or off), 1 something failed this tick, 2 refused to start
  */
 export async function main(deps = {}) {
-  const { root, env, home, now, github, providers, out, err } = { ...DEFAULT_DEPS(), ...deps };
+  const { root, env, home, now, github, readers, providers, out, err } = { ...DEFAULT_DEPS(), ...deps };
   const config = loadConfig(root, home, err);
   if (config === null) return EXIT.refused;
   // OFF IS SILENT AND CONSTRUCTS NOTHING: no reader, no provider, no ledger directory.
@@ -274,8 +376,10 @@ export async function main(deps = {}) {
     err(`messaging:watch: ${refusal.message}`);
     return refusal.code;
   }
+  const reader = github ?? createGhReader();
   const result = await runWatch({
-    github: github ?? createGhReader(), provider: await providers[config.provider](config), repo: trackerRepo(root), summary: config.summary,
+    github: reader, provider: await providers[config.provider](config), repo: trackerRepo(root), summary: config.summary,
+    readers: readers ?? (github === undefined ? hostReaders({ root, home, now, err, github: reader }) : undefined),
     ledger: createLedger({ path: defaultLedgerPath(home), now }), now, log: err,
   });
   for (const { key, action } of result.decisions) if (!IDLE_ACTIONS.has(action)) out(`${key}: ${action}`);

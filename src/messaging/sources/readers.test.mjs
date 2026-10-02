@@ -1,0 +1,471 @@
+// @ts-check
+// THE REAL READERS, AGAINST RECORDED OUTPUT (a11ign/a11ign#3008, row 5b of 13). Each of the six is handed what `gh api`, `systemctl show` or a file
+// held when it was recorded and must give the value its source expects; each is also handed a failing call and must THROW, which is what the source
+// turns into `cannot-ask`. The done-whens run through the real core and the in-memory provider on a clock the test owns.
+//
+// POSITIVE CONTROLS, because "no event" is what a source that never fires reports too: a green `main`, a single idle sample and an idle fleet with an
+// EMPTY queue each sit beside the fixture that differs in one field and DOES produce an event.
+//
+// The recordings are trimmed to the fields a reader uses. They were taken from the live API on 2026-10-02 (shapes only: every name, number and
+// host below is invented, and no private address is in this file).
+
+import assert from "node:assert/strict";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, describe, test } from "node:test";
+
+import { createFakeProvider } from "../fake-provider.mjs";
+import { createLedger } from "../ledger.mjs";
+import { HOST_SOURCES, assertReadOnlyGh, createGhReader, main, runWatch } from "../watch.mjs";
+import { ciPermissionEvents, observeIncidents } from "./incidents.mjs";
+import {
+  SYSTEMD_PROPERTIES, createReaders, readCiRuns, readFleetState, readGateUnit, readLastMerge, readTicks, readTrunkRuns, takeSample,
+} from "./readers.mjs";
+import { observeStalls } from "./stall.mjs";
+
+const REPO = "example/project";
+const MINUTE = 60_000;
+const NOW = Date.parse("2026-10-02T12:00:00Z");
+const iso = (/** @type {number} */ ms) => new Date(ms).toISOString();
+
+const scratch = mkdtempSync(join(tmpdir(), "messaging-readers-"));
+after(() => rmSync(scratch, { recursive: true, force: true }));
+let directories = 0;
+const freshDirectory = () => mkdtempSync(join(scratch, `d${(directories += 1)}-`));
+
+/** A GET-only GitHub: the first route whose pattern matches answers, an `Error` answer throws, and every path asked is kept. */
+function fakeGithub(/** @type {[RegExp, unknown][]} */ routes) {
+  const calls = /** @type {string[]} */ ([]);
+  return {
+    calls,
+    async api(/** @type {string} */ path) {
+      calls.push(path);
+      for (const [pattern, answer] of routes) {
+        if (!pattern.test(path)) continue;
+        if (answer instanceof Error) throw answer;
+        return typeof answer === "function" ? answer(path) : answer;
+      }
+      throw new Error(`no route for gh api ${path}`);
+    },
+  };
+}
+
+const DOWN = new Error("HTTP 502: Bad Gateway");
+
+// ---- recordings --------------------------------------------------------------------------------------------------------------------------
+
+const closedPulls = (/** @type {(string | null)[]} */ ...mergedAt) => mergedAt.map((merged_at, index) => ({ number: 900 - index, merged_at, updated_at: merged_at ?? "2026-10-01T00:00:00Z" }));
+
+const trunkRun = (/** @type {Record<string, unknown>} */ more) => ({
+  id: 1, name: "trunk", status: "completed", conclusion: "success", head_sha: "0123456789abcdef0123456789abcdef01234567", created_at: iso(NOW - 40 * MINUTE),
+  updated_at: iso(NOW - 31 * MINUTE), html_url: "https://github.example/example/project/actions/runs/1", event: "push", ...more,
+});
+
+const systemdShow = (/** @type {Record<string, string>} */ properties) => Object.entries(properties).map(([key, value]) => `${key}=${value}`).join("\n") + "\n";
+const seconds = (/** @type {number} */ ms) => `@${Math.floor(ms / 1000)}`;
+
+const waitingRow = (/** @type {number} */ number, /** @type {string[]} */ labels = ["ready", "lane:any"]) => ({ number, labels: labels.map((name) => ({ name })) });
+const seatsOf = (/** @type {string} */ state) => [{ label: "ceo", status: state }, { label: "worker-1", status: state }];
+
+/** Every read answering as a healthy host would; `more` replaces routes. @param {Partial<{ merged: string | null, trunk: unknown, seats: any, waiting: unknown, ci: unknown }>} [more] */
+function healthy(more = {}) {
+  return fakeGithub([
+    [/\/pulls\?/, closedPulls(more.merged === undefined ? iso(NOW - 10 * MINUTE) : more.merged)],
+    [/workflows\/trunk\.yml\/runs/, { workflow_runs: more.trunk ?? [trunkRun({ updated_at: iso(NOW - 10 * MINUTE) })] }],
+    [/actions\/runs\?/, { workflow_runs: more.ci ?? [trunkRun({ id: 7, name: "auto-arm" })] }],
+    [/\/issues\?/, more.waiting ?? []],
+  ]);
+}
+
+/** @param {{ github: any, stateDir?: string, now?: () => number, seats?: any, unitText?: string | Error, fleetStatePath?: string }} input  `seats` may be a function, read at each sample */
+function readersFor({ github, stateDir = freshDirectory(), now = () => NOW, seats = seatsOf("idle"), unitText, fleetStatePath = join(stateDir, "fleet.json") }) {
+  const systemctlCalls = /** @type {string[][]} */ ([]);
+  const text = unitText ?? systemdShow({ ActiveState: "activating", StateChangeTimestamp: seconds(NOW - 1000), InactiveEnterTimestamp: seconds(NOW - 60_000) });
+  const readers = createReaders({
+    github, repo: REPO, stateDir, fleetStatePath, unit: "example-work-tick.service", now, readSeats: () => (typeof seats === "function" ? seats() : seats),
+    systemctl: async (argv) => { systemctlCalls.push(argv); if (text instanceof Error) throw text; return text; },
+  });
+  if (!existsSync(fleetStatePath)) {
+    writeFileSync(fleetStatePath, "{}\n");
+    utimesSync(fleetStatePath, NOW / 1000, NOW / 1000);
+  }
+  return { readers, stateDir, systemctlCalls };
+}
+
+// ---- readLastMerge -----------------------------------------------------------------------------------------------------------------------
+
+describe("readLastMerge", () => {
+  test("is the newest merged_at, ignoring a closed-unmerged pull request that was updated more recently", async () => {
+    const github = fakeGithub([[/\/pulls\?state=closed&base=main/, closedPulls(null, "2026-10-02T09:00:00Z", "2026-10-02T11:30:00Z", "2026-10-01T08:00:00Z")]]);
+    assert.equal(await readLastMerge({ github, repo: REPO }), Date.parse("2026-10-02T11:30:00Z"));
+    assert.match(github.calls[0], /^repos\/example\/project\/pulls\?state=closed&base=main&sort=updated&direction=desc&per_page=30$/);
+  });
+
+  test("a failing call throws, and so does a window with no merge in it (no merge time is not 'a very old merge')", async () => {
+    await assert.rejects(readLastMerge({ github: fakeGithub([[/./, DOWN]]), repo: REPO }), /502/);
+    await assert.rejects(readLastMerge({ github: fakeGithub([[/./, closedPulls(null, null)]]), repo: REPO }), /no merge time is known/);
+    await assert.rejects(readLastMerge({ github: fakeGithub([[/./, { message: "Not Found" }]]), repo: REPO }), /array was expected/);
+  });
+
+  test("through the source: a merge 5h59m ago is quiet and one 6h01m ago is one stall:no-merge event (the positive control)", async () => {
+    for (const [age, expected] of [[5 * 60 + 59, 0], [6 * 60 + 1, 1]]) {
+      const { readers } = readersFor({ github: healthy({ merged: iso(NOW - age * MINUTE) }) });
+      const { events } = await observeStalls({ now: () => NOW, readers, log: () => {} });
+      assert.equal(events.filter((event) => event.key === "stall:no-merge" && event.resolved === false).length, expected, `${age} minutes`);
+    }
+  });
+});
+
+// ---- readTrunkRuns -----------------------------------------------------------------------------------------------------------------------
+
+describe("readTrunkRuns", () => {
+  test("is the workflow's runs on main, as the source reads them", async () => {
+    const runs = [trunkRun({ id: 2, conclusion: "failure" }), trunkRun({ id: 1 })];
+    const github = fakeGithub([[/workflows\/trunk\.yml\/runs\?branch=main/, { total_count: 2, workflow_runs: runs }]]);
+    assert.deepEqual(await readTrunkRuns({ github, repo: REPO }), runs);
+    assert.equal(github.calls.length, 1);
+  });
+
+  test("a failing call and a body with no runs both throw", async () => {
+    await assert.rejects(readTrunkRuns({ github: fakeGithub([[/./, DOWN]]), repo: REPO }), /502/);
+    await assert.rejects(readTrunkRuns({ github: fakeGithub([[/./, { message: "Not Found" }]]), repo: REPO }), /array was expected/);
+  });
+
+  test("DONE-WHEN 2 through the real core: a red main at 29 minutes sends nothing and at 31 sends ONE, and a green main sends nothing", async () => {
+    const redSince = NOW - 30 * MINUTE;
+    const red = [trunkRun({ id: 5, conclusion: "failure", updated_at: iso(redSince) }), trunkRun({ id: 4, updated_at: iso(redSince - 20 * MINUTE) })];
+    for (const [minutes, trunk, expected] of /** @type {[number, unknown[], number][]} */ ([[29, red, 0], [31, red, 1], [31, [trunkRun({ id: 6, updated_at: iso(redSince) })], 0]])) {
+      let now = redSince + minutes * MINUTE;
+      const { readers } = readersFor({ github: healthy({ trunk }), now: () => now });
+      const provider = createFakeProvider();
+      const ledger = createLedger({ path: join(freshDirectory(), "ledger.jsonl"), now: () => now });
+      const base = { github: {}, provider, ledger, now: () => now, repo: REPO, readers, summary: { at: "08:00", timezone: "Europe/London" }, sources: HOST_SOURCES };
+      await runWatch(base);
+      const trunkMessages = provider.sent.filter((message) => /main is red/.test(message.text));
+      assert.equal(trunkMessages.length, expected, `${minutes} minutes, ${trunk.length} run(s)`);
+      if (expected === 0) continue;
+      now += MINUTE;
+      await runWatch(base);
+      assert.equal(provider.sent.filter((message) => /main is red/.test(message.text)).length, 1, "a second pass sends nothing more");
+    }
+  });
+});
+
+// ---- readCiRuns --------------------------------------------------------------------------------------------------------------------------
+
+describe("readCiRuns", () => {
+  const failedRun = (/** @type {number} */ id, /** @type {string} */ name) => ({ ...trunkRun({ id, name, conclusion: "failure", updated_at: iso(NOW - id * MINUTE) }) });
+  const routes = (/** @type {unknown[]} */ runs, /** @type {string} */ message = "Error: Resource not accessible by integration") => /** @type {[RegExp, unknown][]} */ ([
+    [/actions\/runs\?status=completed/, { workflow_runs: runs }],
+    [/actions\/runs\/\d+\/jobs/, { jobs: [{ id: 5001, conclusion: "success" }, { id: 5002, conclusion: "failure" }] }],
+    [/check-runs\/5002\/annotations/, [{ message, annotation_level: "failure" }]],
+  ]);
+
+  test("gives every completed run its annotations, read only for a FAILED run and only from its FAILED jobs", async () => {
+    const github = fakeGithub(routes([failedRun(3, "deploy"), trunkRun({ id: 2, name: "auto-arm" })]));
+    const runs = await readCiRuns({ github, repo: REPO, stateDir: freshDirectory() });
+    assert.deepEqual(runs.map((run) => run.annotations.map((/** @type {any} */ note) => note.message)), [["Error: Resource not accessible by integration"], []]);
+    assert.deepEqual(github.calls.map((path) => path.replace(/^repos\/example\/project\//, "")), [
+      "actions/runs?status=completed&per_page=20", "actions/runs/3/jobs?per_page=100", "check-runs/5002/annotations?per_page=100",
+    ]);
+  });
+
+  test("through the source: a permission annotation is one incident:ci-permission event, and the same run with a different annotation is none", async () => {
+    for (const [message, expected] of /** @type {[string, number][]} */ ([["Error: Resource not accessible by integration", 1], ["Error: process exited with code 1", 0]])) {
+      const runs = await readCiRuns({ github: fakeGithub(routes([failedRun(3, "deploy")], message)), repo: REPO, stateDir: freshDirectory() });
+      assert.equal(ciPermissionEvents(runs, NOW).filter((event) => event.resolved === false).length, expected, message);
+    }
+  });
+
+  test("a completed run's annotations are read ONCE: the second pass costs the list and nothing else", async () => {
+    const stateDir = freshDirectory();
+    await readCiRuns({ github: fakeGithub(routes([failedRun(3, "deploy")])), repo: REPO, stateDir });
+    const second = fakeGithub(routes([failedRun(3, "deploy")]));
+    const runs = await readCiRuns({ github: second, repo: REPO, stateDir });
+    assert.equal(second.calls.length, 1);
+    assert.equal(runs[0].annotations.length, 1, "the kept annotations are still handed to the source");
+  });
+
+  test("a backlog of failed runs is read six at a time, and a run not yet read THROWS rather than reading as clean", async () => {
+    const stateDir = freshDirectory();
+    const failures = Array.from({ length: 8 }, (_, index) => failedRun(10 + index, "deploy"));
+    await assert.rejects(readCiRuns({ github: fakeGithub(routes(failures)), repo: REPO, stateDir }), /2 failed run\(s\) have no annotations read yet/);
+    const next = fakeGithub(routes(failures));
+    const runs = await readCiRuns({ github: next, repo: REPO, stateDir });
+    assert.equal(runs.length, 8);
+    assert.equal(next.calls.filter((path) => /\/jobs/.test(path)).length, 2, "the six already read are not read again");
+  });
+
+  test("a failing list or jobs call throws", async () => {
+    await assert.rejects(readCiRuns({ github: fakeGithub([[/./, DOWN]]), repo: REPO, stateDir: freshDirectory() }), /502/);
+    await assert.rejects(readCiRuns({ github: fakeGithub([[/\/jobs/, DOWN], ...routes([failedRun(3, "deploy")])]), repo: REPO, stateDir: freshDirectory() }), /502/);
+  });
+});
+
+// ---- readGateUnit ------------------------------------------------------------------------------------------------------------------------
+
+describe("readGateUnit", () => {
+  const ask = (/** @type {string | Error} */ text, unit = "example-work-tick.service") => {
+    const calls = /** @type {string[][]} */ ([]);
+    const read = readGateUnit({ unit, systemctl: async (argv) => { calls.push(argv); if (text instanceof Error) throw text; return text; } });
+    return { read, calls };
+  };
+
+  test("a unit that is running reads not failed, and its last record is when it last went inactive", async () => {
+    const { read, calls } = ask(systemdShow({ ActiveState: "activating", StateChangeTimestamp: "@1790950951", InactiveEnterTimestamp: "@1790950909" }));
+    assert.deepEqual(await read, { failed: false, lastRecordAt: 1790950909 * 1000 });
+    assert.deepEqual(calls, [["--user", "show", "example-work-tick.service", "--timestamp=unix", "-p", SYSTEMD_PROPERTIES]]);
+  });
+
+  test("a failed unit reads failed, and when it entered that state", async () => {
+    const { read } = ask(systemdShow({ ActiveState: "failed", StateChangeTimestamp: "@1790951000", InactiveEnterTimestamp: "@1790950909" }));
+    assert.deepEqual(await read, { failed: true, failedAt: 1790951000 * 1000, lastRecordAt: 1790950909 * 1000 });
+  });
+
+  test("a failing systemctl, a unit it knows no run of, no unit name and unparseable output all throw", async () => {
+    await assert.rejects(ask(new Error("Failed to connect to bus")).read, /bus/);
+    await assert.rejects(ask(systemdShow({ ActiveState: "inactive", StateChangeTimestamp: "", InactiveEnterTimestamp: "" })).read, /no such time/);
+    await assert.rejects(ask(systemdShow({ ActiveState: "inactive", StateChangeTimestamp: "@0", InactiveEnterTimestamp: "@0" })).read, /no such time/);
+    await assert.rejects(ask("garbage").read, /no ActiveState/);
+    await assert.rejects(readGateUnit({ unit: undefined, systemctl: async () => "" }), /name is not known/);
+  });
+
+  test("through the source: a tick that ended 3 minutes ago is quiet, 8 minutes ago is the gate down (the positive control)", async () => {
+    for (const [age, expected] of [[3, 0], [8, 1]]) {
+      const unitText = systemdShow({ ActiveState: "active", StateChangeTimestamp: seconds(NOW - age * MINUTE), InactiveEnterTimestamp: seconds(NOW - age * MINUTE) });
+      const { readers } = readersFor({ github: healthy(), unitText });
+      const { events } = await observeIncidents({ now: () => NOW, readers, log: () => {} });
+      assert.equal(events.filter((event) => event.key === "incident:gate-crash" && event.resolved === false).length, expected, `${age} minutes`);
+    }
+  });
+});
+
+// ---- readFleetState ----------------------------------------------------------------------------------------------------------------------
+
+describe("readFleetState", () => {
+  const stateFile = (/** @type {unknown} */ content, /** @type {number} */ writtenAt = NOW) => {
+    const path = join(freshDirectory(), "fleet-watch-state.json");
+    writeFileSync(path, typeof content === "string" ? content : JSON.stringify(content));
+    utimesSync(path, writtenAt / 1000, writtenAt / 1000);
+    return path;
+  };
+
+  test("is the state fleet-watch wrote and the time it wrote it, KEEPING ONLY THE WORKER'S NAME, never its address", () => {
+    const path = stateFile({ "worker-a  host-a.example:8765": 1790750850944, "worker-b  host-b.example:8765": 1790750860000 }, NOW - 20 * MINUTE);
+    const reading = readFleetState({ path });
+    assert.deepEqual(reading.state, { "worker-a": 1790750850944, "worker-b": 1790750860000 });
+    assert.equal(reading.writtenAt, NOW - 20 * MINUTE);
+    assert.doesNotMatch(JSON.stringify(reading), /example|8765/);
+  });
+
+  test("a missing file and a file that is not an object both throw (fleet-watch's own reader calls them empty, which would be a false all-clear here)", () => {
+    assert.throws(() => readFleetState({ path: join(freshDirectory(), "absent.json") }), /ENOENT/);
+    assert.throws(() => readFleetState({ path: stateFile("[1, 2]") }), /an object of worker to time/);
+    assert.throws(() => readFleetState({ path: stateFile("not json at all") }), SyntaxError);
+  });
+
+  test("through the source: a worker not ready for 11 minutes is one incident:fleet-down, 9 minutes is none, and a file 3 hours old is cannot-ask", async () => {
+    for (const [minutes, expected] of [[9, 0], [11, 1]]) {
+      const path = stateFile({ "worker-a  host-a.example:8765": NOW - minutes * MINUTE });
+      const { readers } = readersFor({ github: healthy(), fleetStatePath: path });
+      const { events } = await observeIncidents({ now: () => NOW, readers, log: () => {} });
+      assert.equal(events.filter((event) => event.key === "incident:fleet-down" && event.resolved === false).length, expected, `${minutes} minutes`);
+    }
+    const stale = stateFile({ "worker-a  host-a.example:8765": NOW - 5 * 60 * MINUTE }, NOW - 3 * 60 * MINUTE);
+    const { readers } = readersFor({ github: healthy(), fleetStatePath: stale });
+    const result = await observeIncidents({ now: () => NOW, config: { fleetStateMaxAgeMs: 130 * MINUTE }, readers, log: () => {} });
+    assert.deepEqual(result.cannotAsk.map(({ source }) => source), ["incident:fleet-down"]);
+  });
+});
+
+// ---- readTicks and the samples -----------------------------------------------------------------------------------------------------------
+
+describe("readTicks and takeSample", () => {
+  /** Samples every minute for `minutes`, the first at `NOW`, then asks the stall source at the last one. */
+  async function idleFor(/** @type {number} */ minutes, /** @type {unknown[]} */ waiting) {
+    const stateDir = freshDirectory();
+    let now = NOW;
+    const { readers } = readersFor({ github: healthy({ waiting }), stateDir, now: () => now, seats: seatsOf("idle") });
+    for (let elapsed = 0; elapsed <= minutes; elapsed += 1) {
+      now = NOW + elapsed * MINUTE;
+      await readers.takeSample();
+    }
+    const { events } = await observeStalls({ now: () => now, readers, log: () => {} });
+    return events.filter((event) => event.key === "stall:all-idle" && event.resolved === false);
+  }
+
+  test("DONE-WHEN 3: 9 minutes of all-idle samples with rows waiting is no event, 11 minutes is one", async () => {
+    assert.equal((await idleFor(9, [waitingRow(1)])).length, 0, "samples at every minute 0..9: a streak of 9 minutes");
+    const fired = await idleFor(11, [waitingRow(1)]);
+    assert.equal(fired.length, 1, "samples at every minute 0..11");
+    assert.match(String(fired[0].text), /idle for 11m with 1 row waiting \(2 seats\)/);
+  });
+
+  test("POSITIVE CONTROLS: ONE sample alone never makes an event, and an idle fleet with an EMPTY queue makes none however long it is idle", async () => {
+    assert.equal((await idleFor(0, [waitingRow(1)])).length, 0, "a single sample");
+    assert.equal((await idleFor(60, [])).length, 0, "an hour idle, nothing waiting");
+    assert.equal((await idleFor(60, [waitingRow(1, ["ready", "blocked"]), waitingRow(2, ["ready", "hold:worker-9"]), waitingRow(3, ["ready", "answer:ceo"])])).length, 0, "held rows are not waiting");
+    assert.equal((await idleFor(60, [{ ...waitingRow(4), pull_request: {} }])).length, 0, "the issues listing returns pull requests too, and they are not rows");
+  });
+
+  test("a seat that is working breaks the streak: the event counts from the minute it went idle again", async () => {
+    const stateDir = freshDirectory();
+    let now = NOW;
+    let seats = seatsOf("idle");
+    const { readers } = readersFor({ github: healthy({ waiting: [waitingRow(1)] }), stateDir, now: () => now, seats: () => seats });
+    for (let elapsed = 0; elapsed <= 22; elapsed += 1) {
+      now = NOW + elapsed * MINUTE;
+      seats = seatsOf(elapsed === 8 ? "working" : "idle");
+      await readers.takeSample();
+    }
+    const { events } = await observeStalls({ now: () => now, readers, log: () => {} });
+    assert.match(String(events[0].text), /idle for 13m /, "idle since minute 9, not since minute 0 (which would be 22m)");
+    assert.equal(readers.readTicks().length, 23, "newest first");
+    assert.equal(readers.readTicks()[0].at, now);
+  });
+
+});
+
+describe("the samples file", () => {
+  test("the history is newest first, one line per run, and bounded: the newest `limit` are read and the file is compacted only past a day's slack", async () => {
+    const stateDir = freshDirectory();
+    let now = NOW;
+    const github = healthy();
+    const limit = 10;
+    const lines = () => readFileSync(join(stateDir, "samples.jsonl"), "utf8").split("\n").filter(Boolean).length;
+    for (let index = 0; index < limit + 5; index += 1) {
+      now = NOW + index * MINUTE;
+      await takeSample({ github, repo: REPO, stateDir, now: () => now, readSeats: () => seatsOf("idle"), limit });
+    }
+    const ticks = readTicks({ stateDir, limit });
+    assert.equal(ticks.length, limit);
+    assert.equal(ticks[0].at, NOW + (limit + 4) * MINUTE);
+    assert.equal(ticks[limit - 1].at, NOW + 5 * MINUTE, "the oldest five are not read");
+    assert.equal(lines(), limit + 5, "appended, not rewritten, inside the slack");
+    assert.deepEqual(ticks[0].seats, [{ session: "ceo", state: "idle" }, { session: "worker-1", state: "idle" }]);
+    assert.equal(readTicks({ stateDir }).length, limit + 5, "the default limit is a week of samples and holds all of them");
+  });
+
+  test("past the slack the file is compacted to `limit` and the newest sample survives", async () => {
+    const stateDir = freshDirectory();
+    const github = healthy();
+    const limit = 3;
+    writeFileSync(join(stateDir, "samples.jsonl"), Array.from({ length: limit + 288 }, (_, index) => JSON.stringify({ at: NOW + index, seats: [], orders: [] })).join("\n") + "\n");
+    await takeSample({ github, repo: REPO, stateDir, now: () => NOW + 99_999, readSeats: () => seatsOf("idle"), limit });
+    const kept = readFileSync(join(stateDir, "samples.jsonl"), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line).at);
+    assert.deepEqual(kept, [NOW + limit + 286, NOW + limit + 287, NOW + 99_999]);
+  });
+
+  test("a sample whose seats cannot be read, or whose rows cannot be listed, THROWS and appends nothing (an empty roster would read as 'every seat idle')", async () => {
+    const stateDir = freshDirectory();
+    await assert.rejects(takeSample({ github: healthy(), repo: REPO, stateDir, now: () => NOW, readSeats: () => null }), /herdr could not be asked/);
+    await assert.rejects(takeSample({ github: fakeGithub([[/./, DOWN]]), repo: REPO, stateDir, now: () => NOW, readSeats: () => seatsOf("idle") }), /502/);
+    assert.deepEqual(readTicks({ stateDir }), []);
+  });
+
+  test("a line that is not JSON is skipped and SAID, so one bad line does not blind the source", async () => {
+    const stateDir = freshDirectory();
+    await takeSample({ github: healthy(), repo: REPO, stateDir, now: () => NOW, readSeats: () => seatsOf("idle") });
+    writeFileSync(join(stateDir, "samples.jsonl"), `{ torn\n${readFileSync(join(stateDir, "samples.jsonl"), "utf8")}`);
+    const logged = /** @type {string[]} */ ([]);
+    assert.equal(readTicks({ stateDir, log: (line) => logged.push(line) }).length, 1);
+    assert.match(logged.join("\n"), /1 line\(s\) .* not JSON/);
+  });
+
+  test("no samples yet is an empty history, which the source reports as cannot-ask", async () => {
+    const { readers } = readersFor({ github: healthy() });
+    const result = await observeStalls({ now: () => NOW, readers, log: () => {} });
+    assert.ok(result.cannotAsk.some(({ source, reason }) => source === "stall:all-idle" && /no tick has been recorded/.test(reason)));
+  });
+});
+
+// ---- the allowlist, the account's calls, and `main` --------------------------------------------------------------------------------------
+
+describe("the read-only gh allowlist covers `gh api`", () => {
+  const READS = [
+    "repos/example/project/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=30",
+    "repos/example/project/issues?labels=ready&state=open&per_page=100",
+    "repos/example/project/actions/runs?status=completed&per_page=20",
+    "repos/example/project/actions/workflows/trunk.yml/runs?branch=main&per_page=20",
+    "repos/example/project/actions/runs/37018902747/jobs?per_page=100",
+    "repos/example/project/check-runs/5002/annotations?per_page=100",
+  ];
+
+  test("every path the readers use is allowed", () => {
+    for (const path of READS) assert.doesNotThrow(() => assertReadOnlyGh(["api", path]), path);
+  });
+
+  test("a method flag, a field, an input, another path and another verb are each refused", () => {
+    const path = READS[0];
+    for (const argv of [["api", path, "-X", "POST"], ["api", "-X", "DELETE", path], ["api", path, "-f", "state=closed"], ["api", path, "--input", "x.json"],
+      ["api", "repos/example/project/issues/1/comments"], ["api", "repos/example/project/git/refs"], ["api", "user"], ["api", "graphql"], ["api", "repos/example/project/pulls/1/merge"]]) {
+      assert.throws(() => assertReadOnlyGh(argv), /reads only/, argv.join(" "));
+    }
+  });
+
+  test("the real reader's `api` builds `gh api <path>` and parses what it printed", async () => {
+    const commands = /** @type {string[][]} */ ([]);
+    const reader = createGhReader({ run: async (argv) => { commands.push([...argv]); return '{"workflow_runs": []}'; } });
+    assert.deepEqual(await reader.api(READS[3]), { workflow_runs: [] });
+    assert.deepEqual(commands, [["api", READS[3]]]);
+    await assert.rejects(reader.api("repos/example/project/issues/1/comments"), /reads only/);
+  });
+});
+
+describe("what one run costs and what `main` does with the readers", () => {
+  test("DONE-WHEN 4: a run with nothing failing makes FOUR gh api calls on the core pool, one per reader that asks GitHub", async () => {
+    const github = healthy({ waiting: [waitingRow(1)] });
+    const { readers } = readersFor({ github });
+    const provider = createFakeProvider();
+    const ledger = createLedger({ path: join(freshDirectory(), "ledger.jsonl"), now: () => NOW });
+    await runWatch({ github: {}, provider, ledger, now: () => NOW, repo: REPO, readers, summary: { at: "08:00", timezone: "Europe/London" }, sources: HOST_SOURCES });
+    assert.deepEqual(github.calls.map((path) => path.replace(/\?.*$/, "").replace(/^repos\/example\/project\//, "")), [
+      "issues", "pulls", "actions/workflows/trunk.yml/runs", "actions/runs",
+    ]);
+  });
+
+  test("fleet-watch runs HOURLY, so a state file 59 minutes old is a reading and one 3 hours old is cannot-ask (the margin lives in watch.mjs)", async () => {
+    for (const [ageMinutes, expectedCannotAsk] of [[59, 0], [180, 1]]) {
+      const path = join(freshDirectory(), "fleet-watch-state.json");
+      writeFileSync(path, "{}\n");
+      utimesSync(path, (NOW - ageMinutes * MINUTE) / 1000, (NOW - ageMinutes * MINUTE) / 1000);
+      const { readers } = readersFor({ github: healthy(), fleetStatePath: path });
+      const logged = /** @type {string[]} */ ([]);
+      const ledger = createLedger({ path: join(freshDirectory(), "ledger.jsonl"), now: () => NOW });
+      await runWatch({ github: {}, provider: createFakeProvider(), ledger, now: () => NOW, repo: REPO, readers, summary: { at: "08:00", timezone: "Europe/London" }, sources: HOST_SOURCES, log: (line) => logged.push(line) });
+      assert.equal(logged.filter((line) => /cannot-ask incident:fleet-down/.test(line)).length, expectedCannotAsk, `${ageMinutes} minutes old`);
+    }
+  });
+
+  test("runWatch without readers does not ask the host sources, and with them it does (and a missing reader is cannot-ask, not a crash)", async () => {
+    const ask = async (/** @type {any} */ readers) => {
+      const logged = /** @type {string[]} */ ([]);
+      const reads = { issuesLabelled: async () => [], issueComments: async () => [], mergedPullsSince: async () => [], redPulls: async () => [] };
+      const ledger = createLedger({ path: join(freshDirectory(), "ledger.jsonl"), now: () => NOW });
+      const result = await runWatch({ github: reads, provider: createFakeProvider(), ledger, now: () => NOW, repo: REPO, readers, summary: { at: "23:59", timezone: "UTC" }, log: (line) => logged.push(line) });
+      return { logged, result };
+    };
+    assert.deepEqual((await ask(undefined)).logged, []);
+    const partial = await ask({});
+    assert.deepEqual(partial.result.failures, []);
+    assert.ok(partial.logged.some((line) => /cannot-ask stall:no-merge: .*no reader named `readLastMerge`/.test(line)), partial.logged.join("\n"));
+    assert.ok(partial.logged.some((line) => /cannot-ask incident:trunk-red/.test(line)));
+  });
+
+  test("`main` hands a real host's readers to the run only when it builds its own reader, so an injected one never reaches systemd or herdr", async () => {
+    const root = mkdtempSync(join(scratch, "root-"));
+    mkdirSync(join(root, ".agent-org"));
+    writeFileSync(join(root, ".agent-org", "project.json"), JSON.stringify({
+      tracker: [{ key: "", repo: REPO }], messaging: { provider: "telegram", tokenFile: "~/.config/agent-org/t", chairmanFile: "~/.config/agent-org/c" },
+    }));
+    const err = /** @type {string[]} */ ([]);
+    const reads = { issuesLabelled: async () => [], issueComments: async () => [], mergedPullsSince: async () => [], redPulls: async () => [] };
+    const code = await main({ root, home: freshDirectory(), env: { GH_CONFIG_DIR: "/x/gh" }, github: reads, now: () => NOW, providers: { telegram: () => createFakeProvider() }, out: () => {}, err: (line) => err.push(line) });
+    assert.equal(code, 0);
+    assert.deepEqual(err.filter((line) => /cannot-ask|work-tick unit/.test(line)), []);
+    const asked = /** @type {string[]} */ ([]);
+    await main({ root, home: freshDirectory(), env: { GH_CONFIG_DIR: "/x/gh" }, github: reads, readers: {}, now: () => NOW, providers: { telegram: () => createFakeProvider() }, out: () => {}, err: (line) => asked.push(line) });
+    assert.ok(asked.some((line) => /cannot-ask stall:no-merge/.test(line)), "POSITIVE CONTROL: with readers handed over the host sources ARE asked");
+  });
+});
