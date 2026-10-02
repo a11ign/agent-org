@@ -14,7 +14,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, chmodSync, readFileSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -277,7 +277,7 @@ test("POSITIVE CONTROL: the #2880 shape, a red PR NO SESSION CAN BE NAMED FOR th
   const prs = withPrOwners([{ ...redHead, comments: [{ author: { login: "a11ign-ai-workers" }, createdAt: "2026-10-01T15:00:00Z" }] }], ROWS, () => null);
   const decided = decide({ prs, readyRows: [], openRows: ROWS });
   assert.equal(decided.find((o: Order) => o.cause === "pr-checks-failing")!.session, "ceo", "the precondition: nobody could be named");
-  const facts = redPrFacts(prs, null, decided);
+  const facts = redPrFacts(prs, decided);
   assert.deepEqual(facts, [{ number: 2880, owner: null, redSince: Date.parse("2026-10-01T14:40:00Z"), ownerCommentAts: [Date.parse("2026-10-01T15:00:00Z")] }],
     "red since the FIRST failing check FINISHED, when the first order was given");
   const at = (iso: string) => (orgHealthOrders(orgHealthReadings(quiet({ now: Date.parse(iso), lastMergedAt: Date.parse(iso) - HOUR_MS, redPrs: facts }) as never)) as Order[]);
@@ -293,9 +293,99 @@ test("redPrFacts consumes the orders `pr-checks-failing` gave: a PR whose red th
   const green = { ...redHead, number: 2882, statusCheckRollup: [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }] };
   const prs = withPrOwners([owned, green], ROWS, () => null);
   const decided = decide({ prs, readyRows: [], openRows: ROWS });
-  assert.deepEqual(redPrFacts(prs, null, decided), [{ number: 2881, owner: "worker-7", redSince: Date.parse("2026-10-01T14:40:00Z"),
+  assert.deepEqual(redPrFacts(prs, decided), [{ number: 2881, owner: "worker-7", redSince: Date.parse("2026-10-01T14:40:00Z"),
     ownerCommentAts: [Date.parse("2026-10-01T15:00:00Z")] }]);
-  assert.deepEqual(redPrFacts(prs, null, []), [], "no pr-checks-failing order, no listing: the exclusions are the order's, not a second copy here");
+  assert.deepEqual(redPrFacts(prs, []), [], "no pr-checks-failing order, no listing: the exclusions are the order's, not a second copy here");
+});
+
+// --- #2956: red is decided ONCE (`red-pr.mjs`'s `isBrokenRed`), so a hold's red is never offered to ceo ----------------------------------------
+
+const rollupCheck = (name: string, conclusion: string, completedAt: string) => ({ name, status: "COMPLETED", conclusion, startedAt: completedAt, completedAt });
+const HOLD_RED = [rollupCheck("deliberateRefusals", "FAILURE", "2026-10-01T18:27:00Z"), rollupCheck("gate", "FAILURE", "2026-10-01T18:30:00Z")];
+/** #2883's shape: an OWNED PR (`session:worker-7`) that `ceo` holds, so `redOnlyFromHoldOf` still orders its owner (a hold by somebody else is no answer, #2400). */
+const heldByCeo = (extra: unknown[] = [], over: Record<string, unknown> = {}) => ({ ...redHead, number: 2883, labels: [{ name: "session:worker-7" }, { name: "hold:ceo" }],
+  statusCheckRollup: [...HOLD_RED, ...extra], ...over });
+
+/** The facts the gate builds for `org-health`, and whether the signal is OFFERED three hours after the first red. */
+function offeredFor(pr: object) {
+  const prs = withPrOwners([pr], ROWS, () => null);
+  const decided = decide({ prs, readyRows: [], openRows: ROWS });
+  const facts = redPrFacts(prs, decided);
+  const now = Date.parse("2026-10-01T21:45:00Z");
+  const orders = orgHealthOrders(orgHealthReadings(quiet({ now, lastMergedAt: now - HOUR_MS, redPrs: facts }) as never)) as Order[];
+  return { ordered: decided.some((o: Order) => o.cause === "pr-checks-failing"), facts, orders };
+}
+
+test("#2956 PRECONDITION: a PR held by `ceo` and owned by a worker IS still ordered by `pr-checks-failing` -- the hold is not its addressee's, so the order's own excuse does not cover it", () => {
+  assert.equal(offeredFor(heldByCeo()).ordered, true, "if this goes false the order learned the hold, and the test below no longer proves org-health's own decider");
+});
+
+test("#2956: org-health does NOT offer a held PR whose only red is the hold's; it DOES offer a held PR with a REAL red, dated by THAT check; and still a PR with no owner", () => {
+  const held = offeredFor(heldByCeo());
+  assert.deepEqual(held.facts, [], "not even LISTED: listed with no time it would be an UNKNOWN said on stderr every tick, a repeating line about a decision");
+  assert.deepEqual(held.orders, [], "the hold's deliberateRefusals + gate: a decision, not a breakage");
+  const real = offeredFor(heldByCeo([rollupCheck("ts / run", "FAILURE", "2026-10-01T19:00:00Z")]));
+  assert.equal(real.facts[0].redSince, Date.parse("2026-10-01T19:00:00Z"), "red since the REAL check, not the hold's gate at 18:30");
+  assert.match(real.orders[0].prompt, /#2883 \(red 3 h, owner worker-7\)/);
+  const ownerless = offeredFor({ ...redHead, number: 2880, statusCheckRollup: [rollupCheck("gate", "FAILURE", "2026-10-01T18:00:00Z")] });
+  assert.match(ownerless.orders[0].prompt, /#2880 \(red 4 h, NO OWNER\)/, "the #2936 control, unchanged");
+});
+
+// --- #2956: one decider, found from the TREE, with its own positive controls -------------------------------------------------------------------
+
+const AGENT_ORG_SRC = fileURLToPath(new URL("../", import.meta.url));
+/** The decider, which defines red and so cannot be asked to import itself -- excluded in CODE, with the reason beside it. */
+const SELF = "red-pr.mjs";
+/**
+ * Modules that read the rollup and decide something that is NOT "how many PRs are red, or for how long", each with the reason. SHRINK-ONLY:
+ * the ceiling is today's length, a stale entry fails below, and a module that starts counting red PRs belongs on `isBrokenRed`, not here.
+ */
+const EXEMPT: Record<string, string> = {
+  "merge-queue.mjs": "decides whether ONE queued PR may merge from its required checks; counts and ages nothing",
+  "queue-stalled.mjs": "reads the gate verdict of an ARMED PR to tell a stalled queue from a slow one",
+  "update-branch-sweep.mjs": "skips a PR whose gate is failing when deciding whom to update; a gate verdict, not a red count",
+  "queue-table.mjs": "THE KNOWN FOURTH DECIDER (found by this scan, #2956): its own `isRed` over REST check runs feeds the stalled-PR table's `red` and `absorbed`, so a held PR reads red there too. Outside this row's Region; #2981 moves it onto `isBrokenRed` and deletes this entry",
+  "messaging/watch.mjs": "THE KNOWN SIXTH DECIDER (found by agent-org's own gate running this scan, a11ign/a11ign#2973): `redPulls` has its own `isRed` and `newestPerName` feeding the chairman's daily-summary red count, and it differs from `isBrokenRed` in three ways each of which moves that number (a hold's red is counted, a status context's `state` is read, `ACTION_REQUIRED` is not). Not a mechanical swap, so a11ign/a11ign#3014 decides it and deletes this entry",
+  "work-gate/pr-orders.mjs": "ADDRESSEE-relative order logic (`redOnlyFromHoldOf`, #2400: who is asked, not how many are red), `HOLD_RED_JOBS` pinned equal to red-pr.mjs's in org-retro.test.ts",
+};
+const EXEMPT_CEILING = 6;
+
+/** Code with every `//`, `/* *\/` comment removed, so a header that NAMES `statusCheckRollup` does not enlist its file. */
+const codeOf = (source: string) => source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/\s\/\/\s.*$/gm, "");
+/** What makes a module a reader of red: the rollup itself, a red conclusion spelt out, or the decider's own vocabulary. */
+const READS_RED = /\bstatusCheckRollup\b|["'](?:FAILURE|TIMED_OUT|STARTUP_FAILURE)["']|\b(?:redChecks|brokenChecks|isBrokenRed)\b/;
+/** `brokenChecks` IS the decider (`isBrokenRed` is its `.length > 0`), so importing either is asking `red-pr.mjs` rather than re-deciding. */
+const IMPORTS_DECIDER = /import\s*\{[^}]*\b(?:isBrokenRed|brokenChecks)\b[^}]*\}\s*from\s*["'][^"']*red-pr\.mjs["']/;
+
+/** `null` when the module is not a reader of red or is on the decider; otherwise WHY it is an offender. */
+function redOffence(file: string, source: string): string | null {
+  const code = codeOf(source);
+  if (!READS_RED.test(code) || IMPORTS_DECIDER.test(code) || file in EXEMPT) return null;
+  return `${file} reads red state and neither imports isBrokenRed from red-pr.mjs nor is exempt with a reason`;
+}
+
+function agentOrgModules(): { file: string; source: string }[] {
+  const listed = readdirSync(AGENT_ORG_SRC, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".mjs") && !f.includes("node_modules"));
+  return listed.filter((f) => !/\.test\.mjs$/.test(f) && f !== SELF).map((file) => ({ file, source: readFileSync(join(AGENT_ORG_SRC, file), "utf8") }));
+}
+
+test("#2956 ONE DECIDER: every agent-org module that reads red PR state imports `isBrokenRed` or is exempt WITH A REASON; the exemptions only shrink", () => {
+  const modules = agentOrgModules();
+  const readers = modules.filter((m) => READS_RED.test(codeOf(m.source))).map((m) => m.file);
+  for (const control of ["org-retro.mjs", "org-health.mjs"]) assert.ok(readers.includes(control), `POSITIVE CONTROL: ${control} must be in the scanned population (${readers.join(", ")})`);
+  assert.deepEqual(modules.flatMap((m) => redOffence(m.file, m.source) ?? []), []);
+  assert.deepEqual(Object.keys(EXEMPT).filter((f) => !readers.includes(f)), [], "a stale exemption: that module no longer reads red state, so remove the entry");
+  assert.ok(Object.values(EXEMPT).every((why) => why.length > 20), "every exemption names its reason");
+  assert.ok(Object.keys(EXEMPT).length <= EXEMPT_CEILING, `the exemption list may shrink, never grow: ${EXEMPT_CEILING}`);
+});
+
+test("#2956 ONE DECIDER, both directions: a fixture module with its own FAILURE set is an offender, and the same module importing the decider is not", () => {
+  const own = `const RED = new Set(["FAILURE", "TIMED_OUT"]);\nexport const count = (prs) => prs.filter((p) => p.statusCheckRollup.some((c) => RED.has(c.conclusion))).length;\n`;
+  assert.match(redOffence("fixture-own-set.mjs", own) ?? "", /fixture-own-set\.mjs reads red state/);
+  const comment = `// statusCheckRollup is read by org-health, "FAILURE" is its conclusion\nexport const x = 1;\n`;
+  assert.equal(redOffence("fixture-comment-only.mjs", comment), null, "a comment that NAMES the rollup does not enlist the file");
+  const decided = `import { isBrokenRed } from "./red-pr.mjs";\nexport const count = (prs) => prs.filter(isBrokenRed).length; // statusCheckRollup\n`;
+  assert.equal(redOffence("fixture-decided.mjs", decided), null, "the remedy, applied, stops the complaint");
 });
 
 // --- the gate as a process ------------------------------------------------------------------------------------------

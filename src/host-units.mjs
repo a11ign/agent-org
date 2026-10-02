@@ -43,7 +43,7 @@ import { SPAWNS_GH } from "./acceptance-commands.mjs";
 import { HOME_CHECKOUT } from "./project-config.mjs";
 import { CLAUDE_EFFORTS, DECLARED_CLAUDE_MODELS } from "./worker-profile.mjs";
 import { HostConfigRefusal, TEMPLATE_SUFFIX, homeHostConfig, leadsWorkspacesText, readBeforeTick, readUnitsDeclaration,
-  renderTemplate, renderedName, templateValues } from "./host-config.mjs";
+  renderTemplate, renderedName, stateEntryPath, templateValues } from "./host-config.mjs";
 
 /**
  * Where the TOOL keeps the units and scripts it ships: four unit templates (each a service and a timer; the fourth, the shadow window's, is #2867), the
@@ -871,7 +871,7 @@ export function compileCacheDrift(deps = {}) {
  *           read?: typeof readFileSync, exists?: typeof existsSync,
  *           systemctl?: (args: string[]) => string }} [deps]
  * @returns {{ unit: string, present: boolean, current: boolean | null, identityRevert: string[],
- *             enabled: string | null, active: string | null }}
+ *             enabled: string | null, active: string | null, windowEnded?: WindowEnd | null }}
  */
 export function unitState(unit, deps = {}) {
   const { installedDir = INSTALLED_DIR, read = readFileSync, exists = existsSync, systemctl = defaultSystemctl } = deps;
@@ -887,8 +887,69 @@ export function unitState(unit, deps = {}) {
     return { unit, present, current, identityRevert, enabled: null, active: null };
   }
   return { unit, present, current, identityRevert, enabled: ask(systemctl, "is-enabled", unit),
-    active: ask(systemctl, "is-active", unit) };
+    active: ask(systemctl, "is-active", unit), windowEnded: windowEnd(unit, deps) };
 }
+
+/**
+ * @typedef {{ cause: string, ticks: number, at: string }} WindowEnd
+ */
+
+/**
+ * THE END A TIMER WAS DESIGNED TO COME TO (#2971), read from the window's own record rather than from the timer's name.
+ *
+ * `a11ign-shadow-window.timer` disables ITSELF (`shadow-window.mjs`'s `endWindow`) after appending a `stop` row to the diff record its
+ * service names with `--record=`, and `disable --now` is also how it is kept stopped on purpose. Reading that as `NOT ENABLED` woke
+ * `orchestrator` every tick and offered `host:install` (`enable --now`) as the remedy for a timer somebody stopped.
+ *
+ * NO FALLBACK AND NO NAME (chairman, 2026-09-24): the record is found through the timer's `Requires=` service and that service's
+ * `ExecStart`, so a timer that names no record is never excused, and a window that is armed again is seen again -- a marker whose T0 is
+ * LATER than the stop means the stop is history. `null` is "not ended", and also "could not tell": an unreadable or unparsable record or
+ * marker keeps the finding, because excusing a timer on a reading nobody could make is the substitution this file warns about.
+ * @param {string} unit @param {ShippedDeps & { read?: typeof readFileSync, markerPath?: string }} deps @returns {WindowEnd | null}
+ */
+export function windowEnd(unit, deps = {}) {
+  const { read = readFileSync, markerPath = stateEntryPath(SHADOW_WINDOW_MARKER_NAME) } = deps;
+  const recordPath = windowRecordPath(unit, deps);
+  const recordText = recordPath === null ? null : textOf(recordPath, read);
+  const stop = recordText === null ? null : lastStopRow(recordText);
+  if (stop === null) return null;
+  const markerText = textOf(markerPath, read);
+  if (markerText === null) return stop;
+  const t0 = Date.parse(parsedOrNull(markerText)?.t0);
+  return Number.isNaN(t0) || t0 > Date.parse(stop.at) ? null : stop;
+}
+
+/** The `--record=` of the service a timer `Requires=`, or null when the unit is no timer or names none. @param {string} unit @param {ShippedDeps} deps @returns {string | null} */
+function windowRecordPath(unit, deps) {
+  if (!unit.endsWith(".timer")) return null;
+  const service = /^Requires\s*=\s*(\S+\.service)\s*$/m.exec(String(shippedUnitText(unit, deps) ?? ""))?.[1];
+  if (service === undefined) return null;
+  return /--record=(\S+)/.exec(execCommands(String(shippedUnitText(service, deps) ?? "")).join("\n"))?.[1] ?? null;
+}
+
+/** The marker `shadow-window.mjs --arm` creates, by name; `shadow-reads.mjs` owns the constant and this file does not import it (its closure is the candidate's). */
+const SHADOW_WINDOW_MARKER_NAME = "shadow-window-open";
+
+/** @param {string} text @returns {any} the parsed JSON, or null when it is not JSON */
+function parsedOrNull(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/** The LAST `stop` row of a JSONL record, or null when there is none or a line is not JSON (a record that cannot be counted is not read). @param {string} text @returns {WindowEnd | null} */
+function lastStopRow(text) {
+  const rows = text.split("\n").filter((line) => line.trim() !== "").map(parsedOrNull);
+  if (rows.includes(null)) return null;
+  const stop = rows.filter((row) => row?.kind === "stop").pop();
+  return stop === undefined || Number.isNaN(Date.parse(stop.at)) ? null
+    : { cause: String(stop.cause), ticks: Number(stop.ticks), at: String(stop.at) };
+}
+
+/** A timer systemd reports `disabled` whose window record says it ended itself: expected, so not a finding (#2971). @param {{ enabled: string | null, windowEnded?: WindowEnd | null }} state */
+const endedOnPurpose = (state) => state.enabled === "disabled" && Boolean(state.windowEnded);
 
 /**
  * `systemctl` answers on stdout AND exits non-zero for the interesting answers -- `is-active` exits 3 for
@@ -980,6 +1041,7 @@ export function unitDrift(states) {
     }
     if (!s.unit.endsWith(".timer")) return [];
     if (s.enabled === null && s.active === null) return [];
+    if (endedOnPurpose(s)) return [];
     if (s.enabled !== "enabled") {
       return [{ unit: s.unit, problem: "NOT ENABLED",
         detail: `systemd says \`${s.enabled}\` -- it will not come back after a reboot.` }];
@@ -1338,7 +1400,19 @@ function zshenvNote(unit, why) {
 
 /** Every note `host:check` reports beside its findings; none of them is a failure. @returns {Finding[]} */
 function hostNotes() {
-  return [...hostIdentityNotes(), ...compileCacheNotes(), ...sessionModelNotes()];
+  return [...hostIdentityNotes(), ...compileCacheNotes(), ...sessionModelNotes(), ...windowEndNotes()];
+}
+
+/**
+ * WHY A DISABLED TIMER IS QUIET (#2971): `unitDrift` says nothing about it, and silence would read the same as a timer nobody looked at.
+ * @param {Parameters<typeof unitState>[1]} [deps] @returns {Finding[]}
+ */
+export function windowEndNotes(deps = {}) {
+  return shippedUnitNames(deps).filter((unit) => unit.endsWith(".timer")).map((unit) => unitState(unit, deps))
+    .filter(endedOnPurpose).map((s) => ({ unit: s.unit, problem: "EXPECTED DISABLED -- ITS WINDOW ENDED",
+      detail: `its window record holds a \`stop\` row (${s.windowEnded?.cause}, ${s.windowEnded?.ticks} ticks, ${s.windowEnded?.at}) `
+        + "and no marker newer than it, so `disabled` is where it was meant to end. Not a failure: `host:install` would restart it, "
+        + "and it is armed again by `shadow-window.mjs --arm`, after which this note goes and `NOT ENABLED` returns if it is still off." }));
 }
 
 /**

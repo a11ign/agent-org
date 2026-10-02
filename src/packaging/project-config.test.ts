@@ -73,7 +73,7 @@ test("a11ign's own declaration, read through the reader, gives exactly today's v
   assert.equal(declaration.repo, A11IGN_LITERAL);
   assert.equal(declaration.boardOwner, "a11ign");
   assert.equal(declaration.boardNumber, 1);
-  assert.deepEqual(declaration.code, [{ key: "", repo: A11IGN_LITERAL }]);
+  assert.deepEqual(declaration.code, [{ key: "", repo: A11IGN_LITERAL }, { key: "agent-org", repo: "a11ign/agent-org" }]); // #2969: the second is a repository the gate must read
   assert.deepEqual(declaration.tracker, [{ key: "", repo: A11IGN_LITERAL, board: { owner: "a11ign", number: 1 } }]);
 });
 
@@ -83,7 +83,7 @@ test("the constants every importer reads are the declaration's values, and the s
   assert.equal(PROJECT_OWNER, "a11ign");
   assert.equal(PROJECT_NUMBER, 1);
   assert.equal(declaration.tracker.length, 1);
-  assert.equal(declaration.code.length, 1);
+  assert.equal(declaration.code.length, 2, "the primary's repository and `agent-org` (#2969)");
 });
 
 test("POSITIVE CONTROL: a11ign's declaration is non-empty and holds the empty key exactly once in each list", () => {

@@ -12,11 +12,14 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildReport, renderReport, retrospectiveDue, retrospectiveOrder, retrospectiveKey, retrospectiveTick, ledgerEntries, ledgerStats,
   idleStats, journalLines, releaseStats, redPrStats, mergedStats, tokenStats, CLASS_FIX_INSTRUCTION, RETRO_CAUSE, RETRO_DESTINATION, UNKNOWN,
-  utcDate } from "../org-retro.mjs";
+  utcDate, NUMBERS, READINGS_FILE, compareReadings, previousReading, parseReadings, readReadings, recordReading, undeclaredDirections,
+  verdictFor } from "../org-retro.mjs";
 import { isBrokenRed, isHeldRed, HOLD_OWN_JOBS } from "../red-pr.mjs";
 import { readLedger as readHandFixLedger, ledgerLine as handFixLine } from "../hand-fix-ledger.mjs";
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, HOLD_RED_JOBS } from "../work-gate.mjs";
@@ -271,7 +274,7 @@ test("POSITIVE CONTROL: the 2026-10-01 window (zero merges, #2824 refused for 21
 const OFFER_NOW = at("2026-10-02T01:00:00Z");
 const LATER_SAME_DATE = at("2026-10-02T17:30:00Z");
 const NEXT_DATE = at("2026-10-03T00:05:00Z");
-const fixtureRead = () => ({ merged: [], openPrs: [], journal: "", ledger: "", turns: [], handFixes: HAND_FIXES_ONE });
+const fixtureRead = () => ({ merged: [], openPrs: [], journal: "", ledger: "", turns: [], handFixes: HAND_FIXES_ONE, readings: parseReadings("") });
 
 test("the order is keyed on the UTC DATE: one key for the whole day, a new one at the next midnight", () => {
   assert.equal(retrospectiveKey("2026-10-02"), "ceo/org-retrospective/2026-10-02");
@@ -353,9 +356,158 @@ test("ceo.md names the duty IN ITS OWN SECTION, not merely somewhere in the file
   assert.equal(section("## Other\nfind the CLASS and file a `ready` row for the class fix\n", "The daily retrospective"), null);
 });
 
+test("ceo.md states a bound for EVERY number the report trends, citing the 2026-10-02 baseline on #928", () => {
+  const own = section(CEO_ROLE, "The daily retrospective");
+  assert.notEqual(own, null);
+  const missing = NUMBERS.filter((n) => !own!.includes(`\`${n.id}\``)).map((n) => n.id);
+  assert.deepEqual(missing, [], "a number added to NUMBERS without a bound in the role text goes red here");
+  assert.ok(NUMBERS.some((n) => n.id === "idleMinutes"), "POSITIVE CONTROL: the loop above ran over a real population, the idle-minutes number among it");
+  assert.match(own!, /2026-10-02 reading on #928/);
+  assert.match(own!, /org-retro-readings\.jsonl/);
+});
+
 test("`org-retrospective` is a declared JUDGMENT cause with a profile, and not a start", () => {
   assert.ok(CAUSES.includes(RETRO_CAUSE));
   assert.ok(JUDGMENT_CAUSES.includes(RETRO_CAUSE), "a drain must not withhold the org looking at itself");
   assert.ok(!START_CAUSES.includes(RETRO_CAUSE));
   assert.equal(PROFILES[RETRO_CAUSE]?.kind, "claude");
+});
+
+// --- #2955: THE REPORT HAS A YESTERDAY -----------------------------------------------------------------------------------------------------------
+
+/** The hand-checked yesterday: `ceo`'s 2026-10-02 retrospective numbers (#928), every one a literal. */
+const YESTERDAY = { date: "2026-10-01", numbers: { prsMerged: 46, medianOpenToMergeMinutes: 37, idleMinutes: 470, orgStalledWakes: 1, claimStalledWakes: 4, claimStallVoidings: 4,
+  orgHealthOffers: 0, redPrs: 1, tokensPerMergedPr: 10_393_972, handFixes: 0 } };
+const readingsText = (...entries: object[]) => entries.map((e) => JSON.stringify(e)).join("\n") + "\n";
+
+/** `n` ticks that each offered a Ready row nobody could take, so idle minutes are `2 * n` (the literal tick length), and `merged` PRs merged inside the window. */
+function reportWith({ idleTicks, merged, readings }: { idleTicks: number; merged: number; readings: ReturnType<typeof parseReadings> | undefined }) {
+  const journal = Array.from({ length: idleTicks }, (_, i) => tick(`${new Date(SINCE + (i + 1) * 60_000).toISOString().slice(0, 19)}+00:00`, [IDLE_OFFER(2824)])).join("\n");
+  const prs = Array.from({ length: merged }, (_, i) => ({ number: i + 1, createdAt: "2026-10-01T10:00:00Z", mergedAt: "2026-10-01T10:30:00Z" }));
+  return buildReport({ merged: prs, openPrs: [], journal, ledger: "", turns: [], handFixes: HAND_FIXES_ONE, readings }, NOW);
+}
+
+test("POPULATION FROM THE REPORT: every number it carries has a declared direction, and a number it carries with none is a defect, printed as one", () => {
+  const report = reportWith({ idleTicks: 5, merged: 3, readings: parseReadings(readingsText(YESTERDAY)) });
+  const ids = Object.keys(report.numbers);
+  const EIGHT = ["prsMerged", "medianOpenToMergeMinutes", "idleMinutes", "orgStalledWakes", "claimStalledWakes", "claimStallVoidings", "redPrs", "tokensPerMergedPr"];
+  assert.deepEqual(EIGHT.filter((id) => !ids.includes(id)), [], "POSITIVE CONTROL: the report carries the eight numbers the 2026-10-02 reading named, so the population is not empty");
+  assert.deepEqual(undeclaredDirections(report.numbers), [], "every number the report carries is in the direction table");
+  for (const id of ids) assert.match(NUMBERS.find((n) => n.id === id)?.better ?? "", /^(lower|higher)$/, `${id} declares which way is better`);
+  assert.deepEqual(NUMBERS.map((n) => n.id).filter((id) => !ids.includes(id)), [], "and no table entry is dead: each one is a number the report carries");
+  // The population is also read back from the PRINTED report, so a number that was computed and never shown cannot pass.
+  const printed = renderReport(report).split("\nAgainst ")[1].split("\n").filter((l) => l.startsWith("- "));
+  assert.equal(printed.length, ids.length, "one verdict line per number the report carries");
+  for (const { label } of NUMBERS) assert.ok(printed.some((l) => l.startsWith(`- ${label}: `)), `${label} is printed with a verdict`);
+
+  const extra = { ...report, numbers: { ...report.numbers, queueDepth: 3 } };
+  assert.deepEqual(undeclaredDirections(extra.numbers), ["queueDepth"], "a fixture report with one more number, and no direction for it, goes red");
+  assert.match(renderReport(extra), /^- queueDepth: NO DIRECTION DECLARED -- a defect/m, "and the report says so rather than defaulting to a verdict");
+});
+
+test("verdicts on a pair of consecutive days: idle 470 -> 100 is better, 100 -> 470 is worse, PRs merged 46 -> 10 is worse, 10 -> 46 is better", () => {
+  const yesterday = (numbers: object) => parseReadings(readingsText({ date: "2026-10-01", numbers: { ...YESTERDAY.numbers, ...numbers } }));
+  const better = renderReport(reportWith({ idleTicks: 50, merged: 46, readings: yesterday({}) }));
+  assert.match(better, /^- Idle minutes while a claimable row existed: better \(now 100, previous 470 on 2026-10-01, delta -370\)/m, "470 -> 100");
+  assert.match(better, /^- PRs merged: same \(now 46, previous 46 on 2026-10-01, delta 0\)/m, "46 -> 46 is same");
+  const worse = renderReport(reportWith({ idleTicks: 235, merged: 10, readings: yesterday({ idleMinutes: 100 }) }));
+  assert.match(worse, /^- Idle minutes while a claimable row existed: worse \(now 470, previous 100 on 2026-10-01, delta \+370\)/m, "100 -> 470");
+  assert.match(worse, /^- PRs merged: worse \(now 10, previous 46 on 2026-10-01, delta -36\)/m, "46 -> 10: HIGHER is better for merges");
+  const recovered = renderReport(reportWith({ idleTicks: 235, merged: 46, readings: yesterday({ prsMerged: 10 }) }));
+  assert.match(recovered, /^- PRs merged: better \(now 46, previous 10/m, "10 -> 46");
+});
+
+test("verdictFor is decided by the declared direction alone: the same pair reads the opposite way for the opposite direction", () => {
+  const previous = { status: "read", numbers: { x: 5 } };
+  assert.equal(verdictFor({ better: "lower", previous, id: "x", current: 3 }), "better");
+  assert.equal(verdictFor({ better: "higher", previous, id: "x", current: 3 }), "worse");
+  assert.equal(verdictFor({ better: "lower", previous, id: "x", current: 5 }), "same");
+  assert.equal(verdictFor({ better: "lower", previous, id: "x", current: 0 }), "better", "a real zero is a number");
+});
+
+test("no previous line, or a readings file that cannot be read, prints `no baseline` / `unknown`: never `same`, never a delta against 0", () => {
+  const dir = mkdtempSync(join(tmpdir(), "org-retro-"));
+  const unreadable = [
+    ["an absent file is a first day", readReadings(join(dir, "absent.jsonl")), "no baseline"],
+    ["an empty file is a first day", parseReadings(""), "no baseline"],
+    ["a file holding no line that reads", parseReadings("not json\n{\"date\":1}\n"), "unknown"],
+    ["a path the disk will not read as a file", readReadings(dir), "unknown"],
+    ["no read made at all", undefined, "unknown"],
+    ["only TODAY's own line (the offer repeating): today is not its own baseline", parseReadings(readingsText({ date: "2026-10-02", numbers: YESTERDAY.numbers })), "no baseline"],
+  ] as const;
+  for (const [why, readings, verdict] of unreadable) {
+    const text = renderReport(reportWith({ idleTicks: 5, merged: 3, readings }));
+    const verdicts = text.split("\nAgainst ")[1].split("\n").filter((l) => l.startsWith("- "));
+    assert.equal(verdicts.length, NUMBERS.length, why);
+    for (const l of verdicts) assert.match(l, new RegExp(`: (${verdict}|unknown) \\(now`), `${why}: ${l}`);
+    assert.doesNotMatch(text.split("\nAgainst ")[1], /: same|delta/, `${why}: never same, never a delta`);
+  }
+  const partial = previousReading(parseReadings(readingsText({ date: "2026-10-01", numbers: { prsMerged: null } })), "2026-10-02");
+  assert.equal(compareReadings({ prsMerged: 3 }, partial)[0].verdict, "no baseline", "a previous number that was itself unknown is no baseline");
+  assert.equal(compareReadings({ prsMerged: null }, previousReading(parseReadings(readingsText(YESTERDAY)), "2026-10-02"))[0].verdict, "unknown", "a number unknown now is unknown, not 0");
+});
+
+test("the baseline is the latest line BEFORE today, however old, and a corrupt line does not hide the good ones", () => {
+  const text = readingsText({ date: "2026-09-28", numbers: { prsMerged: 1 } }, { date: "2026-09-30", numbers: { prsMerged: 2 } }) + "garbage\n" + readingsText({ date: "2026-10-02", numbers: { prsMerged: 9 } });
+  const previous = previousReading(parseReadings(text), "2026-10-02");
+  assert.deepEqual(previous, { status: "read", date: "2026-09-30", numbers: { prsMerged: 2 } });
+});
+
+test("delivering the offer appends exactly one line per UTC date, and a manual run appends none", () => {
+  const dir = mkdtempSync(join(tmpdir(), "org-retro-"));
+  const path = join(dir, READINGS_FILE);
+  const read = ({ now, stateDir }: { now: number; stateDir: string }) => ({ ...fixtureRead(), readings: readReadings(join(stateDir, READINGS_FILE)), now });
+  const tickAt = (now: number) => retrospectiveTick({ now, stateDir: dir, read: read as never, log: () => undefined, readLedger: () => "" });
+  const lines = () => readFileSync(path, "utf8").split("\n").filter((l) => l !== "");
+  assert.equal(tickAt(OFFER_NOW).length, 1);
+  assert.equal(lines().length, 1, "the first offer of the date writes one line");
+  assert.deepEqual(Object.keys(JSON.parse(lines()[0])), ["date", "numbers"]);
+  assert.equal(JSON.parse(lines()[0]).date, "2026-10-02");
+  assert.equal(tickAt(LATER_SAME_DATE).length, 1, "the offer repeats until the ledger shows it delivered");
+  assert.equal(lines().length, 1, "and the same date does not write a second line");
+  assert.equal(tickAt(NEXT_DATE).length, 1);
+  assert.deepEqual(lines().map((l) => JSON.parse(l).date), ["2026-10-02", "2026-10-03"], "the next UTC date writes its own");
+  assert.match(retrospectiveTick({ now: NEXT_DATE, stateDir: dir, read: read as never, log: () => undefined, readLedger: () => "" })[0].prompt, /Against the previous reading, 2026-10-02:/,
+    "and the order the model reads carries the comparison with the line just written");
+  // The writer and the reader share ONE path: the scan above cannot see `join(stateDir, READINGS_FILE)`, so this round trip is what proves someone writes what is read.
+  assert.equal(readReadings(path).entries.length, 2);
+  assert.equal(recordReading({ stateDir: dir, date: "2026-10-03", numbers: {} }), "already recorded");
+  // A file the disk would not read is left alone, never appended to blind: here the "file" is a directory, which reads as EISDIR and not as a first day.
+  const blocked = mkdtempSync(join(tmpdir(), "org-retro-"));
+  mkdirSync(join(blocked, READINGS_FILE));
+  assert.equal(recordReading({ stateDir: blocked, date: "2026-10-09", numbers: {} }), "not recorded");
+});
+
+test("a readings file with no line that parses is left as it is, not appended to (#2985)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "org-retro-"));
+  const path = join(dir, READINGS_FILE);
+  writeFileSync(path, "not json\n");
+  assert.equal(recordReading({ stateDir: dir, date: "2026-10-09", numbers: { prsMerged: 1 } }), "not recorded");
+  assert.equal(readFileSync(path, "utf8"), "not json\n", "the corruption is not masked by a valid line beside it");
+  assert.equal(readReadings(path).status, "unreadable", "so the next report still says unknown, never a baseline built on the line we wrote");
+  // The other side: one bad line among good ones is still a file that reads, and today's line is appended.
+  writeFileSync(path, `not json\n${JSON.stringify({ date: "2026-10-01", numbers: { prsMerged: 5 } })}\n`);
+  assert.equal(recordReading({ stateDir: dir, date: "2026-10-09", numbers: { prsMerged: 1 } }), "recorded");
+});
+
+test("a failing write does not stop the offer, and says so", () => {
+  const said: string[] = [];
+  const orders = retrospectiveTick({ now: OFFER_NOW, stateDir: "/nonexistent", read: fixtureRead as never, log: (l) => said.push(l), readLedger: () => "",
+    record: () => { throw new Error("ENOSPC: no space left\nsecond line"); } });
+  assert.equal(orders.length, 1, "the order still goes out");
+  assert.match(said.join(""), /today's reading was not recorded \(ENOSPC: no space left\)/);
+});
+
+test("a manual run of the CLI reads the previous line and writes nothing", () => {
+  const home = mkdtempSync(join(tmpdir(), "org-retro-home-"));
+  const stateDir = join(home, ".cache", "a11ign");
+  mkdirSync(stateDir, { recursive: true });
+  const path = join(stateDir, READINGS_FILE);
+  writeFileSync(path, readingsText(YESTERDAY));
+  // PATH is empty so `gh`, `journalctl` and `git` cannot be found: every read is refused, which is `unknown`, and nothing real is reached.
+  const out = execFileSync(process.execPath, [new URL("../org-retro.mjs", import.meta.url).pathname, "--now=2026-10-02T00:00:00Z"],
+    { encoding: "utf8", env: { HOME: home, PATH: "" } });
+  assert.match(out, /Against the previous reading, 2026-10-01:/, "it compared against the line");
+  assert.equal(readFileSync(path, "utf8"), readingsText(YESTERDAY), "and wrote nothing");
+  assert.deepEqual(readdirSync(stateDir), [READINGS_FILE], "not even another file");
 });

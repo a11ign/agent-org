@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join, dirname, relative } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { homeProjectDeclaration } from "../project-config.mjs";
 import { localImports } from "../lib/local-import-closure.mjs";
 import { deliver as settlingDeliver, route, withSpareInstances, engineerRoles, engineerEligibility, spawnableRole, EXIT }
   from "../wake.mjs";
@@ -277,7 +278,10 @@ test("#2324: the open-PR list is read ONCE per tick however many rows are asked,
   const check = spawnClaimability({ run: gh.run });
   assert.equal(check({ causeKey: "engineers/ready-row-unclaimed/2131" }), null);
   assert.equal(check({ causeKey: "engineers/ready-row-unclaimed/2132" }), null);
-  assert.equal(gh.calls.filter((c) => c === "pr list").length, 1);
+  // ONE READ PER DECLARED CODE REPOSITORY, and still not one per row: two rows asked, so a per-row read would make four (#2969 declared a second).
+  const repositories = homeProjectDeclaration().code.length;
+  assert.ok(repositories >= 2, "POSITIVE CONTROL: with one repository this assertion could not tell a per-row read from a per-tick one");
+  assert.equal(gh.calls.filter((c) => c === "pr list").length, repositories);
   const none = claimGh({ edge: "NONE", region: "" });
   assert.equal(spawnClaimability({ run: none.run })({ causeKey: "engineers/ready-row-unclaimed/2131" }), null);
   assert.equal(none.calls.filter((c) => c === "pr list").length, 0, "no Region to compare, so the expensive read is skipped");

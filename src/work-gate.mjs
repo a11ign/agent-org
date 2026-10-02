@@ -76,9 +76,10 @@ import { stateEntryPath } from "./host-config.mjs"; // #2799
 // #2848: THE REPEATING-LINE QUESTION, in its own leaf for the reason `disk-headroom.mjs` is one: it reads the journal, not GitHub.
 import { repeatingLinesTick } from "./repeating-lines.mjs";
 // #2936: THE ORG-HEALTH QUESTION, in its own leaf for the same reason: relative imports only, so the gate keeps the property its own header states.
-import { orgHealthTick, readLastMergedAt, primaryStandingSince } from "./org-health.mjs";
+import { orgHealthTick, readLastMergedAt, primaryStandingSince, redSinceOf } from "./org-health.mjs";
 // #2938: THE DAILY RETROSPECTIVE, in its own leaf for the same reason: it reads the journal, the ledger and a day of PRs once, and says what it found.
 import { retrospectiveTick } from "./org-retro.mjs";
+import { isBrokenRed } from "./red-pr.mjs";
 import { tapShadowReads } from "./shadow-reads.mjs"; // #2849
 // #1969, AND THE PREDICATE IS IMPORTED RATHER THAN RE-DECIDED. `armedFromApi` knows THREE armed states --
 // merged, a pending auto-merge, and SITTING IN THE MERGE QUEUE, where `autoMergeRequest` reads `null` on a
@@ -6118,20 +6119,19 @@ function decideAndTap(args) {
 /**
  * The open pull requests whose required check has settled red AND which `pr-checks-failing` is already ordering this tick, as
  * `org-health.mjs` reads them. THE ORDERS ARE CONSUMED RATHER THAN THE PREDICATE REPEATED: `failingChecksOrder` also excuses a
- * red made only of a hold's own jobs and a red that is only a superseded run, and a second copy of those exclusions is how a
- * PR is called red by one cause and healthy by another (`mergeCandidates`' argument). `redSince` is the EARLIEST failing check's
- * finish on the current head, which is when that order was first given, to within a tick.
- * @param {any[]} prs @param {string[] | null} required @param {{ cause: string, subject: string }[]} decided
+ * red made only of a superseded run, and a second copy of those exclusions is how a PR is called red by one cause and healthy by
+ * another (`mergeCandidates`' argument). BUT THE HOLD'S EXCUSE IS THE ORDER'S AND IS ADDRESSEE-RELATIVE (#2400), so a PR a worker owns
+ * and `ceo` holds is still ordered; WHETHER IT IS RED AT ALL is `red-pr.mjs`'s `isBrokenRed`, asked here too (#2956), and `redSince`
+ * is the EARLIEST BROKEN check's finish (`redSinceOf`), which is when its breakage began.
+ * @param {any[]} prs @param {{ cause: string, subject: string }[]} decided
  */
-export function redPrFacts(prs, required, decided) {
+export function redPrFacts(prs, decided) {
   const ordered = new Set(decided.filter((order) => order.cause === "pr-checks-failing").map((order) => order.subject));
-  return prs.filter((pr) => ordered.has(`pr-${subjectRef(pr.repoKey, pr.number)}`)).map((pr) => {
-    const red = blockingChecks(newestPerName(pr.statusCheckRollup ?? []), required).filter((/** @type {any} */ c) => checksSettledGreen([c]) === false);
-    const times = red.map((/** @type {any} */ c) => Date.parse(String(c?.completedAt || c?.startedAt || ""))).filter(Number.isFinite);
+  return prs.filter((pr) => ordered.has(`pr-${subjectRef(pr.repoKey, pr.number)}`) && isBrokenRed(pr)).map((pr) => {
     const owner = ownerOfPr(pr);
     const login = pr.author?.login;
     return { number: pr.number, owner: owner.source === "ceo" ? null : owner.session,
-      redSince: times.length > 0 ? Math.min(...times) : null,
+      redSince: redSinceOf(pr),
       // The shared account opens every PR, so "its owner's comment" is a comment by the account that opened it.
       ownerCommentAts: (pr.comments ?? []).filter((/** @type {any} */ c) => login && c?.author?.login === login).map((/** @type {any} */ c) => Date.parse(c?.createdAt)).filter(Number.isFinite) };
   });
@@ -6153,7 +6153,7 @@ function orgHealthNow({ prsRead, readyRead, decideArgs, decided }) {
     lastMergedAt: readLastMergedAt(defaultRun, repoNow()),
     work: asked ? { greenPrs: shouldBeMerging(prs, required).length,
       claimableRows: partitionUnclaimed(readyRows, prFiles, { rowBranches, openRows }).offerable.length } : null,
-    redPrs: prsRead === null ? null : redPrFacts(prs, required, decided),
+    redPrs: prsRead === null ? null : redPrFacts(prs, decided),
     refusals: claimRefusals ?? null,
     drift: primaryDrift ?? null,
     primarySince: primaryStandingSince(primaryDrift ?? null, { root: REPO_CHECKOUT }),

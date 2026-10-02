@@ -11,12 +11,23 @@
 // WITH the answer, never a cron and never a standing model turn.
 //
 // THE FOUR SIGNALS AND THEIR THRESHOLDS, EACH FROM THE 14-DAY TABLE POSTED ON #2936 (2026-09-17..10-01), NOT GUESSED. A reading at
-// a moment: re-derive before quoting.
+// a moment: re-derive before quoting. #2937 ADDS TWO MORE (the idle fleet, the drifting copies), described below the four.
 //   no-merge-while-work-exists  N = 3 h     p97.7 of 647 merge gaps; 1.07 gaps/day over N, 0.57/day with a PR already open
 //   red-pr-unattended           M = 120 min p95.7 of 462 red->next-run ages; at most 2.50 episodes/day (an upper bound)
 //   ready-row-refused           75 ticks    NOT A PERCENTILE: the #2845 counter is 13 hours old, so it is structural -- 15 ticks for
 //                                           `product-manager` plus one 2-hour judgment window; the row says to re-measure
 //   primary-not-at-main         60 min      9 episodes in 14 days: seven of one tick and two of 20 h and 24 h (0.14/day)
+//
+// THE TWO ADDED BY #2937 (the chairman's own list):
+//   fleet-idle-while-work-waits  24 h        zero captures for a day while a `fleet-gated` row or a lab job waits for the fleet. THE
+//                                            24 h IS THE CHAIRMAN'S, not a percentile: the 2026-09 incidents of a worker unable to
+//                                            capture ran 4.9 days and were found by a human reading a terminal.
+//   copies-drifted               any         a declared copy (every file in `packages/agent-org/src/lib`, each headed `COPIED FROM <original>`) whose
+//                                            body no longer matches its original beyond the lines its own header names
+// WHAT `host-units-stale` AND `primary-not-at-main` ALREADY COVER, so this does not repeat them: the first asks about the systemd UNIT
+// files against the installed ones, the second about the primary checkout the work-tick unit runs from (its code IS that working
+// tree) against `origin/main`. NEITHER READS A DECLARED COPY. The extracted `a11ign/agent-org` repo is a third thing and is NOT read
+// here: it is a shadow-window snapshot that lags by design (`shadow-window.service.in`), so reading it would be a standing false alarm.
 //
 // NO STATE OF ITS OWN. Every "first tripped" time is DERIVED from a fact the tick reads (the last merge plus N hours, the failing
 // check's own time plus M minutes, the oldest commit the primary lacks plus 60 minutes), so the discriminator is stable across
@@ -28,10 +39,15 @@
 //
 // A LEAF, RELATIVE IMPORTS ONLY, like `repeating-lines.mjs`: `work-gate.mjs` imports this, and it runs before any `npm ci`/build.
 import { execFileSync } from "node:child_process";
-import { statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 // A LEAF (`claim-labels.mjs` imports nothing), so the label is read from where it is declared, as `repeating-lines.mjs` does.
 import { READY_LABEL } from "./claim-labels.mjs";
+// The checkout the tool serves and the project's own words are read from where they are declared (`standalone-roots.test.ts`, `project-vocabulary.test.ts`).
+import { HOME_CHECKOUT } from "./project-config.mjs";
+import { ANSWER_PREFIX } from "./project-vocabulary.mjs";
+// A LEAF too (it imports `newest-check-run.mjs` and `pr-hold-state.mjs`, which import nothing): the ONE decider of what counts as red.
+import { brokenChecks } from "./red-pr.mjs";
 
 /** No PR merged for this long, with work that could merge, is the idle org the chairman found. See the table above. */
 export const NO_MERGE_HOURS = 3;
@@ -54,6 +70,16 @@ const MAX_REASON_CHARS = 160;
 const MINUTES_PER_TICK = 2.1;
 /** How many PRs or rows one prompt names before it says "and N more". */
 const MAX_NAMED = 5;
+/** No capture on the fleet for this long, with work that needs it waiting, is the idle fleet the chairman found (#2937). */
+export const FLEET_IDLE_HOURS = 24;
+/** Where the declared copies sit, relative to the checkout: the tool's own `lib/`, each file headed by what it was copied from. */
+const COPIES_DIR = "packages/agent-org/src/lib";
+/** The checkout the tool serves, when the caller names none. Where it holds no `COPIES_DIR` no copy is found, and the reading says so. */
+const DEFAULT_ROOT = HOME_CHECKOUT;
+const COPY_HEADER_START = /^\/\/ COPIED FROM `([^`]+)` at /;
+const COPY_HEADER_END = "// ==== end of copy header ====";
+/** What a header says it changed: `NOTHING`, `ONE LINE`, or `N NAMED LINES`. */
+const COPY_HEADER_CHANGES = /CHANGED FROM THE ORIGINAL(?:,\s*(?:(\d+) NAMED LINES?|ONE LINE)|:\s*NOTHING)/;
 /** The session every signal is offered to. */
 const OFFERED_TO = "ceo";
 /** How many merged PRs the last-merge read looks at: the newest-updated, which holds every merge of the last day or two. */
@@ -64,6 +90,8 @@ export const SIGNALS = Object.freeze({
   RED_PR: "red-pr-unattended",
   REFUSED_ROW: "ready-row-refused",
   PRIMARY: "primary-not-at-main",
+  FLEET_IDLE: "fleet-idle-while-work-waits",
+  COPIES: "copies-drifted",
 });
 
 /**
@@ -120,6 +148,20 @@ export function noMergeReading({ now, lastMergedAt, work }) {
  * `redSince` is when the head's first failing check finished, `null` when no check carried a time. `ownerCommentAts` are the
  * times of comments from the account that opened the PR, all of them: the leaf asks which fall after the red began.
  */
+
+/**
+ * WHEN DID THIS PULL REQUEST'S BREAKAGE BEGIN, or `null` when it has none to date (#2956). RED IS DECIDED ONCE, BY `red-pr.mjs`
+ * (`isBrokenRed`, #2954), and the question is asked of it here and not re-answered: `pr-checks-failing` excuses a hold only when the
+ * hold is its ADDRESSEE's own (#2400), so a PR a worker owns and `ceo` holds is still ordered, and a count built from those orders
+ * alone offered `ceo` its own freeze every day of it (#2883). THE HOLD'S OWN TWO JOBS ARE LEFT OUT and every other red is dated by
+ * ITSELF: a held PR with a real `ts / run` failure is red since THAT check finished, not since the hold's `gate` did.
+ * @param {{ labels?: any[], statusCheckRollup?: any[] }} pr
+ * @returns {number | null} epoch ms of the earliest broken check, `null` for none or for a broken check GitHub gave no time
+ */
+export function redSinceOf(pr) {
+  const times = brokenChecks(pr).map((check) => check.failedAt).filter(Number.isFinite);
+  return times.length > 0 ? Math.min(...times) : null;
+}
 
 /**
  * Is this red PR UNATTENDED once `RED_PR_MINUTES` have passed?
@@ -200,6 +242,164 @@ export function primaryReading({ now, drift, since }) {
 }
 
 /**
+ * @typedef {{ captures24h: number, lastCaptureAt: number | null }} FleetCaptures
+ * What the fleet did in the last `FLEET_IDLE_HOURS`: how many captures, and when the last one finished (`null` when none is known).
+ * @typedef {{ rows: (number | string)[], labJobs: string[] }} FleetWaiting
+ * What is waiting for the fleet: open `fleet-gated` rows nothing else stops, and lab jobs queued for it.
+ */
+
+/**
+ * SIGNAL 5: THE FLEET HAS CAPTURED NOTHING FOR `FLEET_IDLE_HOURS` WHILE SOMETHING IS WAITING FOR IT (#2937).
+ *
+ * AN IDLE FLEET NOBODY NEEDS IS HEALTHY, so the idleness alone is never a trip: it needs a `fleet-gated` row or a lab job to be
+ * waiting. THE IDLENESS IS TESTED FIRST, as `noMergeReading` tests its gap: a capture inside the window is clear whatever the waiting
+ * read says. `fleet === null` is a read that was refused or never made, and IT IS NEVER "IDLE": a fleet that could not be asked
+ * says nothing about captures. A count of zero beside a last capture INSIDE the window contradicts itself, and is stated as unknown
+ * rather than believed either way.
+ *
+ * @param {{ now: number, fleet: FleetCaptures | null, waiting: FleetWaiting | null }} input
+ * @returns {Reading}
+ */
+export function fleetIdleReading({ now, fleet, waiting }) {
+  if (fleet === null) return unknown(SIGNALS.FLEET_IDLE, "the fleet's captures could not be read, so it is not known to be idle");
+  if (fleet.captures24h > 0) return clear(SIGNALS.FLEET_IDLE);
+  const windowMs = FLEET_IDLE_HOURS * MS_PER_HOUR;
+  if (fleet.lastCaptureAt !== null && now - fleet.lastCaptureAt < windowMs) {
+    return unknown(SIGNALS.FLEET_IDLE, "the fleet reports zero captures in the window and a last capture inside it");
+  }
+  if (waiting === null) return unknown(SIGNALS.FLEET_IDLE, "the fleet has captured nothing for over the threshold, but what waits for it was not read");
+  const waits = waiting.rows.length + waiting.labJobs.length;
+  if (waits === 0) return clear(SIGNALS.FLEET_IDLE);
+  const last = fleet.lastCaptureAt;
+  const first = last === null ? null : last + windowMs;
+  const named = [...waiting.rows.slice(0, MAX_NAMED).map((row) => `#${row}`), ...waiting.labJobs.slice(0, MAX_NAMED)].join(", ");
+  const key = last === null ? [...waiting.rows, ...waiting.labJobs].sort().join(",") : hourOf(/** @type {number} */ (first));
+  return { signal: SIGNALS.FLEET_IDLE, status: "tripped", firstTrippedAt: first, discriminator: `${SIGNALS.FLEET_IDLE}@${key}`,
+    detail: `${fleet.captures24h} captures in the last ${FLEET_IDLE_HOURS} h; the last was `
+      + `${last === null ? "never recorded" : `${isoOf(last)} (${ageText(last, now)} ago)`}; ${waits} thing(s) wait for the fleet: ${named}` };
+}
+
+/**
+ * @typedef {{ original: string, copy: string, allowedLines: number | null, originalText: string | null, copyText: string }} CopyPair
+ * One declared copy: where it came from and where it sits (both relative to the checkout), how many lines its own header says it
+ * changed (`null` when the header says none), the original's text (`null` when it could not be read) and the copy's text.
+ */
+
+/** @param {string} text @returns {{ body: string, complete: boolean }} the text with the copy header block removed, wherever it sits */
+function withoutCopyHeader(text) {
+  const lines = text.split("\n");
+  const start = lines.findIndex((line) => COPY_HEADER_START.test(line));
+  const end = lines.indexOf(COPY_HEADER_END);
+  if (start < 0 || end < start) return { body: text, complete: false };
+  return { body: [...lines.slice(0, start), ...lines.slice(end + 1)].join("\n"), complete: true };
+}
+
+/**
+ * How many lines of `lines` have no counterpart left in `against`, counted as a MULTISET so a moved or duplicated line is not
+ * mistaken for an edit and an edit is one line on each side.
+ * @param {string[]} lines @param {string[]} against @returns {number}
+ */
+function linesWithoutCounterpart(lines, against) {
+  const left = new Map();
+  for (const line of against) left.set(line, (left.get(line) ?? 0) + 1);
+  let without = 0;
+  for (const line of lines) {
+    const available = left.get(line) ?? 0;
+    if (available > 0) left.set(line, available - 1);
+    else without += 1;
+  }
+  return without;
+}
+
+/**
+ * @param {CopyPair} pair
+ * @returns {{ verdict: "same" | "drifted" | "unknown", why: string }}
+ * A copy drifts when more of the ORIGINAL'S lines are changed or gone than its OWN HEADER names, or when a header that names NOTHING
+ * sits above a copy with lines the original lacks. THE HEADER'S COUNT IS THE ALLOWANCE, which is what lets the pair list be discovered
+ * rather than declared a second time -- and its price is stated here: a one-byte change ON a line the header already names is inside
+ * the allowance, and so are the copy's own extra lines once the header names any change, because the header counts the original's
+ * lines it changed and ONE of them can become several (`changed-packages.mjs`'s `REPO` became four lines under "3 NAMED LINES", #2884). `agent-org-outward-edges.test.ts` applies each sanctioned edit exactly and
+ * is the exact check; this is the cheap one that runs on every tick.
+ */
+function judgePair(pair) {
+  if (pair.originalText === null) return { verdict: "unknown", why: `${pair.original} could not be read` };
+  const { body, complete } = withoutCopyHeader(pair.copyText);
+  if (!complete) return { verdict: "drifted", why: "the copy has no complete header" };
+  if (pair.allowedLines === null) return { verdict: "unknown", why: "its header does not say how many lines it changed" };
+  const copyLines = body.split("\n");
+  const originalLines = pair.originalText.split("\n");
+  const extra = linesWithoutCounterpart(copyLines, originalLines);
+  const missing = linesWithoutCounterpart(originalLines, copyLines);
+  if (missing <= pair.allowedLines && (extra === 0 || pair.allowedLines > 0)) return { verdict: "same", why: "" };
+  return { verdict: "drifted", why: `${extra} line(s) only in the copy, ${missing} only in the original, and its header names ${pair.allowedLines}` };
+}
+
+/**
+ * SIGNAL 6: A DECLARED COPY NO LONGER MATCHES ITS ORIGINAL (#2937). `packages/guards/src/isolation-gate.mjs` and
+ * `packages/agent-org/src/lib/isolation-gate.mjs` were edited identically BY HAND in #2921: a drift waiting to happen unless a question
+ * reads it. `pairs` is `null` for a read that could not run; an EMPTY list is stated as unknown too, because a discovery that finds
+ * no copy in a tree that holds nineteen has not found a clean tree.
+ * @param {{ pairs: CopyPair[] | null }} input
+ * @returns {Reading}
+ */
+export function copyDriftReading({ pairs }) {
+  if (pairs === null) return unknown(SIGNALS.COPIES, "the declared copies could not be read");
+  if (pairs.length === 0) return unknown(SIGNALS.COPIES, "no declared copy was found, so none was compared");
+  const judged = pairs.map((pair) => ({ pair, ...judgePair(pair) }));
+  const drifted = judged.filter((j) => j.verdict === "drifted");
+  if (drifted.length === 0) {
+    const unread = judged.filter((j) => j.verdict === "unknown");
+    return unread.length === 0 ? clear(SIGNALS.COPIES)
+      : unknown(SIGNALS.COPIES, `${unread.length} declared copy(ies) could not be compared: ${unread[0].pair.copy} (${unread[0].why})`);
+  }
+  const named = drifted.slice(0, MAX_NAMED).map(({ pair, why }) => `${pair.copy} against ${pair.original}: ${why}`);
+  const more = drifted.length > MAX_NAMED ? `, and ${drifted.length - MAX_NAMED} more` : "";
+  return { signal: SIGNALS.COPIES, status: "tripped", firstTrippedAt: null,
+    discriminator: `${SIGNALS.COPIES}@${drifted.map(({ pair }) => pair.copy).sort().join(",")}`,
+    detail: `${drifted.length} declared cop${drifted.length === 1 ? "y" : "ies"} drifted from the original: ${named.join("; ")}${more}` };
+}
+
+/** @param {(path: string) => string} read @param {string} path @returns {string | null} the text, or `null` for a file that cannot be read: absent is not empty */
+function readOrNull(read, path) {
+  try {
+    return read(path);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * THE DECLARED COPIES OF A CHECKOUT, discovered from the headers: every file in `COPIES_DIR` whose header names its original. `null`
+ * when the directory cannot be listed. Each pair's original is read here and is `null` in the pair when it cannot be.
+ * @param {{ root?: string, list?: (dir: string) => string[], read?: (path: string) => string }} [where]
+ * @returns {CopyPair[] | null}
+ */
+export function readDeclaredCopies({ root = DEFAULT_ROOT, list = (dir) => readdirSync(dir), read = (path) => readFileSync(path, "utf8") } = {}) {
+  let names;
+  try {
+    names = list(`${root}/${COPIES_DIR}`).sort();
+  } catch {
+    return null; // an unlistable directory is not an empty one
+  }
+  /** @type {CopyPair[]} */
+  const pairs = [];
+  for (const name of names) {
+    const copy = `${COPIES_DIR}/${name}`;
+    let copyText;
+    try {
+      copyText = read(`${root}/${copy}`);
+    } catch {
+      continue; // a directory or a file that vanished between the list and the read is not a copy
+    }
+    const original = copyText.split("\n").map((line) => COPY_HEADER_START.exec(line)?.[1]).find(Boolean);
+    if (original === undefined) continue;
+    const changed = COPY_HEADER_CHANGES.exec(copyText);
+    pairs.push({ original, copy, originalText: readOrNull(read, `${root}/${original}`), copyText, allowedLines: changed === null ? null : Number(changed[1] ?? (/ONE LINE/.test(changed[0]) ? 1 : 0)) });
+  }
+  return pairs;
+}
+
+/**
  * WHEN THE PRIMARY STOPPED BEING CURRENT: the committer date of the oldest commit `origin/main` has that HEAD lacks, else the
  * oldest modified time among its dirty tracked files. INFERRED from git and the filesystem, not logged: nothing records the moment
  * `primary:update` first failed. `null` when neither can be read.
@@ -241,15 +441,21 @@ export function readLastMergedAt(run, repo) {
 }
 
 /**
- * ALL FOUR READINGS, in a fixed order.
+ * THE READINGS, in a fixed order: the four of #2936, then the two of #2937 WHEN THEIR FACT IS GIVEN. An OMITTED fact (`undefined`) is
+ * "this caller does not ask", which is silent; `null` is "asked and refused", which is a stated unknown. The two must not share a
+ * value, or a gate that never wired the fleet read would log an unknown every tick for a fault nobody can fix from the log.
  * @param {{ now: number, lastMergedAt: number | null, work: { greenPrs: number, claimableRows: number } | null, redPrs: RedPr[] | null,
  *           refusals: Record<string, { reason: string, ticks: number }> | null,
- *           drift: { behind: number, ahead: number, dirty: string[] } | null, primarySince: number | null }} facts
+ *           drift: { behind: number, ahead: number, dirty: string[] } | null, primarySince: number | null,
+ *           fleet?: FleetCaptures | null, waiting?: FleetWaiting | null, copies?: CopyPair[] | null }} facts
  * @returns {Reading[]}
  */
 export function orgHealthReadings(facts) {
-  return [noMergeReading(facts), redPrReading(facts), refusedRowReading(facts),
+  const readings = [noMergeReading(facts), redPrReading(facts), refusedRowReading(facts),
     primaryReading({ now: facts.now, drift: facts.drift, since: facts.primarySince })];
+  if (facts.fleet !== undefined) readings.push(fleetIdleReading({ now: facts.now, fleet: facts.fleet, waiting: facts.waiting ?? null }));
+  if (facts.copies !== undefined) readings.push(copyDriftReading({ pairs: facts.copies }));
+  return readings;
 }
 
 /** What a prompt says about each signal, in the chairman's words where they have them. */
@@ -262,6 +468,12 @@ const REMEDY = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
     + "it is (`pnpm run worktree:whose -- <path>`), and free the row or take it off the shelf.",
   [SIGNALS.PRIMARY]: "`primary-stale` told you when this began and the primary is still behind. Every order the gate gives is given from the "
     + "primary's code, so the org has been running stale for this long: follow `primary-stale`'s own steps (save the diff first).",
+  [SIGNALS.FLEET_IDLE]: "The fleet has captured nothing for a day and something needs it. Read why before anything else (`pnpm run fleet:status` is "
+    + "`orchestrator`'s to run, not yours): a worker that cannot capture, a lab job that never started, or a row nobody dispatched. "
+    + "`orchestrator` owns fleet and lab questions, so put the finding on the row and `" + ANSWER_PREFIX + "orchestrator` on it rather than running the fleet yourself.",
+  [SIGNALS.COPIES]: "A declared copy no longer matches its original. Neither is known to be the right one: read both (`git log -3 -- <path>` for each), "
+    + "then carry the change to the other side and move the commit in the copy's header. `agent-org-outward-edges.test.ts` is the exact check "
+    + "and will go red on `main`'s next PR until you do.",
 }));
 
 /**
@@ -290,15 +502,29 @@ export function orgHealthOrders(readings) {
 }
 
 /**
+ * A tree that holds copy headers but NONE of their originals is an extracted tool, not a product checkout, and there is nothing to
+ * compare it against: no reading, which is not "clear" and not "unknown" (a stated unknown here would repeat every tick forever).
+ * @param {CopyPair[] | null} pairs @returns {CopyPair[] | null | undefined}
+ */
+function copiesToCompare(pairs) {
+  if (pairs !== null && pairs.length > 0 && pairs.every((pair) => pair.originalText === null)) return undefined;
+  return pairs;
+}
+
+/**
  * THE WHOLE TICK: say each unknown on stderr, return the orders. NEVER THROWS -- a detector that can crash the gate stops every
  * order behind it (`repeatingLinesTick`'s rule). Only unknowns are written: a tripped signal's report is its order, and a
  * line written every tick for a standing condition would be offered by `repeating-lines.mjs` as a fault of its own.
+ * THE COPIES ARE READ HERE, from disk, when the caller gives none: they are files of the checkout the tick runs from, so no
+ * caller has them already, and a leaf that reads them keeps `work-gate.mjs` out of it. In an extracted tree no original is
+ * found, so the reading is left out rather than stated unknown every tick (`copiesToCompare`).
  * @param {Parameters<typeof orgHealthReadings>[0]} facts
- * @param {{ log?: (line: string) => void }} [io]
+ * @param {{ log?: (line: string) => void, readCopies?: () => CopyPair[] | null }} [io]
  */
-export function orgHealthTick(facts, { log = (line) => process.stderr.write(line) } = {}) {
+export function orgHealthTick(facts, { log = (line) => process.stderr.write(line), readCopies = () => readDeclaredCopies() } = {}) {
   try {
-    const readings = orgHealthReadings(facts);
+    const copies = facts.copies !== undefined ? facts.copies : copiesToCompare(readCopies());
+    const readings = orgHealthReadings(copies === undefined ? facts : { ...facts, copies });
     for (const r of readings) if (r.status === "unknown") log(`org-health: ${r.signal} UNKNOWN -- ${r.detail}; it is not read as clear.\n`);
     return orgHealthOrders(readings);
   } catch (err) {
