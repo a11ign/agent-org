@@ -250,6 +250,48 @@ test("#2974: the prune and the board report take their project from the checkout
   });
 });
 
+// --- 2c. #2974: THE TOOL AIMS EVERY AMBIENT `gh` AT ITS PROJECT, because its working directory is no longer the project's ---------------
+// Measured 2026-10-02 15:01Z, the first tick after the cut: `gh label list` run from the tool's checkout asked `a11ign/agent-org` and found no
+// `answer:` label, so the gate printed 1 order where the same gate from the project's directory printed 12. `GH_REPO` is the line that fixes it.
+
+const declareRepo = (dir: string, repo: unknown) =>
+  writeFileSync(join(dir, ".agent-org/project.json"), JSON.stringify({ schema: 1, code: [{ key: "", repo }] }));
+
+test("#2974: every shipped service in tool form says which repository `gh` asks about, and a plain one does not", () => {
+  withProjects((dirs) => {
+    const plainHost = hostAt(dirs, {});
+    const toolHost = hostAt(dirs, { tool: dirs.tool });
+    for (const name of TOOL_SERVICES) {
+      assert.equal(nonComment(serviceOf(toolHost, name)).some((line) => line.startsWith("Environment=GH_REPO=")), false,
+        `CONTROL: ${name} for a project whose declaration names no repository gets no line, since there is nothing to aim at`);
+    }
+    declareRepo(dirs.widgets, "acme/widgets");
+    for (const name of TOOL_SERVICES) {
+      assert.ok(nonComment(serviceOf(toolHost, name)).includes("Environment=GH_REPO=acme/widgets"),
+        `${name}: a tool run from its own checkout would otherwise ask the checkout's repository: ${nonComment(serviceOf(toolHost, name)).join(" | ")}`);
+      assert.equal(nonComment(serviceOf(plainHost, name)).some((line) => line.startsWith("Environment=GH_REPO=")), false,
+        `${name}: a host with no tool runs from the project, where gh already finds it, and its bytes do not change`);
+    }
+  });
+});
+
+test("#2974: a repository that is not owner/name is refused naming the field, because it is written into a unit line", () => {
+  withProjects((dirs) => {
+    for (const bad of ["acme", "acme/widgets extra", "acme/widgets\nExecStartPre=/bin/false", "", 7]) {
+      declareRepo(dirs.widgets, bad);
+      assert.equal(refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))).field, "code[0].repo", `${JSON.stringify(bad)} must be refused`);
+    }
+  });
+});
+
+test("#2974: a11ign's own declaration puts `GH_REPO=a11ign/a11ign` on all four services it installs from the tool", () => {
+  const toolHost = { ...homeHostConfig(), projects: [{ id: homeHostConfig().primary, checkout: REPO_ROOT.replace(/\/$/, "") }], tool: "/home/agent/repos/agent-org" } as never;
+  for (const name of TOOL_SERVICES) {
+    const lines = nonComment(shippedUnitText(`a11ign-${name}.service`, { host: toolHost }) ?? "");
+    assert.ok(lines.includes("Environment=GH_REPO=a11ign/a11ign"), `a11ign-${name}.service: ${lines.join(" | ")}`);
+  }
+});
+
 test("#2974: the gh-identity check still SEES a unit in tool form -- the population does not lose its work-tick", () => {
   // `unitEntryPoints` resolved `node src/work-tick.mjs` against the project and found nothing, so the unit that spends the most rate limit
   // dropped out of `unitsSpendingGh` without a failure. a11ign's real host with a `tool` injected, so this holds before and after its host.json says one.
