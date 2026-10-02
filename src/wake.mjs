@@ -75,7 +75,7 @@ import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
 // half. What is performed here is the part that needs a pane, a process or a row: the release, the resume, the re-send.
 import { workAtRisk, gitRun, pathExists, statMtime, KEPT_CLAIMS_FILE, RESTART_STATE_FILE, RESTART_RESEND_WINDOW_MS,
   readHerdrRestart, paneInterrupted, paneThrashed, killedDeliveries, writeJsonObject, readJsonObject, INTERRUPTED_TEXT,
-  INTERRUPTED_SETTLE_MS, THRASH_TEXT }
+  INTERRUPTED_SETTLE_MS, THRASH_TEXT, mergedPrMention, openPrMentions }
   from "./claim-stall.mjs";
 // THE WORKSPACE LISTING, SHARED WITH THE LEAF (#2747): moved here from this file so `claim-stall.mjs` can read it
 // too, without importing this file (which already imports `claim-stall.mjs` and would cycle). Re-exported below so
@@ -5141,7 +5141,7 @@ function closeHolder(session, deps) {
 
 /** @param {ReleaseRequest} request @returns {string} the sentence the release comment opens with */
 function releaseHeadline(request) {
-  if (request.why === "merged") return `#${request.mergedPr} MERGED and this row stayed open, so the work landed and the holder has nothing left on it`;
+  if (request.why === "merged") return `${mergedPrMention(request)} MERGED and this row stayed open, so the work landed and the holder has nothing left on it`;
   if (request.why === "blocked") {
     return `this row carries an open \`blockedBy\` edge on ${(request.edges ?? []).map((n) => `#${n}`).join(", ")} and the holder holds nothing built`;
   }
@@ -5155,11 +5155,10 @@ function releaseHeadline(request) {
  * @param {ReleaseRequest} request @returns {string}
  */
 function notInThePool(request) {
-  const prs = request.openPrs ?? [];
-  if (prs.length === 0) {
+  if ((request.openPrs ?? []).length === 0) {
     return `The row was NOT \`${READY_LABEL}\` before it was claimed, so it is NOT back in the pool: \`product-manager\` promotes it again when it should be taken.`;
   }
-  return `${prs.map((n) => `#${n}`).join(", ")} is OPEN and carries the work, so the row is NOT back in the pool (a fresh instance would build it beside that pull request): `
+  return `${openPrMentions(request)} is OPEN and carries the work, so the row is NOT back in the pool (a fresh instance would build it beside that pull request): `
     + `\`${ANSWER_PREFIX}${request.answer}\` is set, and \`${request.answer}\` reads the pull request and rules -- adopt it (a fresh \`worker-<row>\` is `
     + "started on the existing branch) or close it and re-promote the row.";
 }
