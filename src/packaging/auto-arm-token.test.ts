@@ -156,8 +156,9 @@ function secretsRead(workflow: string): string[] {
 }
 
 test("#2358: the workflows that act as the arming identity read `secrets.A11IGN_BOT_TOKEN` and no other "
-  + "credential, at the counts measured 2026-09-24 (auto-arm.yml 3, nightly.yml 2)", () => {
-  for (const [workflow, uses] of [["auto-arm.yml", 3], ["nightly.yml", 2]] as const) {
+  + "credential, at the counts measured 2026-10-02 (auto-arm.yml 2, nightly.yml 2)", () => {
+  // auto-arm.yml was 3 until #3046 deleted its `update-branch` job, the third reader (#3070).
+  for (const [workflow, uses] of [["auto-arm.yml", 2], ["nightly.yml", 2]] as const) {
     assert.deepEqual(secretsRead(workflow), Array(uses).fill(SECRET_NAME),
       `${workflow} must read exactly ${uses} x secrets.${SECRET_NAME} and nothing else. A rename moves CI onto `
       + `another credential without a red test; \`${SECRET_HOLDER}\` holds ${SECRET_NAME} (#2358), so a `
