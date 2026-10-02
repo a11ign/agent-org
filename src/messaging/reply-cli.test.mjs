@@ -18,7 +18,8 @@ import { fileURLToPath } from "node:url";
 
 import { createFakeProvider } from "./fake-provider.mjs";
 import { readLedgerLines } from "./ledger.mjs";
-import { EXIT, accountIsDeclared, assertReadOnlyGh, assertReadOnlySystemctl, defaultLedgerPath, main } from "./reply-cli.mjs";
+import { EXIT, assertReadOnlyGh, assertReadOnlySystemctl, main } from "./reply-cli.mjs";
+import { defaultLedgerPath } from "./state.mjs";
 
 const NOW = Date.parse("2026-10-02T14:05:30Z");
 const STAMP = "as of 14:05Z";
@@ -27,8 +28,6 @@ const TOKEN = "123456:fixture-token";
 const CHAT_ID = 4242;
 const PRIVATE_MODE = 0o600;
 const SOURCE = fileURLToPath(new URL("./reply-cli.mjs", import.meta.url));
-const WATCH_SOURCE = fileURLToPath(new URL("./watch.mjs", import.meta.url));
-const LISTEN_SOURCE = fileURLToPath(new URL("./listen.mjs", import.meta.url));
 
 const scratch = mkdtempSync(join(tmpdir(), "messaging-reply-cli-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -245,15 +244,20 @@ describe("the real Telegram provider, built from the configured secret files, wi
   });
 });
 
+const SHARED_HELPERS = ["defaultLedgerPath", "accountIsDeclared", "trackerRepo", "readChairman"];
+
 describe("done-when 4: the command reaches no provider but the configured one, and no reader but `createGhReaders`", () => {
   const ALLOWED_IMPORTS = new Set(["node:child_process", "node:fs", "node:os", "node:path", "node:url", "node:util", "./config.mjs", "./ledger.mjs", "./placeholders.mjs",
-    "./providers/telegram/send.mjs", "./reply.mjs", "./secret.mjs"]);
+    "./providers/telegram/send.mjs", "./reply.mjs", "./secret.mjs", "./state.mjs"]);
 
   /** @param {string} source @returns {string[]} what breaks the done-when, one string per rule broken */
   function scanProblems(source) {
     const imports = [...source.matchAll(/^import .* from "([^"]+)";$/gm)].map((match) => match[1]);
     const problems = imports.filter((specifier) => !ALLOWED_IMPORTS.has(specifier)).map((specifier) => `imports ${specifier}`);
     const code = source.split("\n").filter((line) => !line.trimStart().startsWith("//") && !line.trimStart().startsWith("*") && !line.trimStart().startsWith("/**")).join("\n");
+    for (const name of SHARED_HELPERS) {
+      if (new RegExp(`\\bfunction ${name}\\b`).test(code)) problems.push(`defines ${name} itself, which state.mjs owns`);
+    }
     if (!/createGhReaders\(\{ gh, systemctl, repo:/.test(code)) problems.push("does not build its readers with createGhReaders");
     if (/\bcreateGhReader\b/.test(code) || /\bcreateReaders\b/.test(code)) problems.push("builds a reader that is not createGhReaders");
     if (/\bfetch\(|globalThis\.fetch\(|https?:\/\//.test(code)) problems.push("calls the network itself");
@@ -277,6 +281,7 @@ describe("done-when 4: the command reaches no provider but the configured one, a
       ["another provider", `import { createFakeProvider } from "./fake-provider.mjs";\n${real}`, /imports \.\/fake-provider\.mjs/],
       ["another reader", `import { createGhReader } from "./watch.mjs";\n${real}`, /imports \.\/watch\.mjs/],
       ["the watcher's reader", real.replace("createGhReaders({ gh,", "createGhReader({ gh,"), /does not build its readers with createGhReaders/],
+      ["a local copy of a shared helper", `${real}\nfunction trackerRepo(root) { return root; }\n`, /defines trackerRepo itself/],
       ["its own network call", `${real}\nawait fetch("https://example.com");\n`, /calls the network itself/],
       ["its own command", `${real}\nexecSync("gh pr merge 1");\n`, /runs a command outside/],
       ["an unguarded gh", real.replace('guardedRunner("gh", assertReadOnlyGh)', 'guardedRunner("gh", () => {})'), /default runner guardedRunner\("gh"/],
@@ -301,28 +306,33 @@ describe("done-when 4: the command reaches no provider but the configured one, a
   });
 });
 
-describe("the helpers written out here are the ones `watch.mjs` and `listen.mjs` have, until a leaf module replaces both", () => {
-  const [mine, watch] = [readFileSync(SOURCE, "utf8"), readFileSync(WATCH_SOURCE, "utf8")];
-  const pins = [
-    'join(home, ".local", "state", "agent-org", "messaging", "ledger.jsonl")',
-    "Boolean(env.GH_CONFIG_DIR) || Boolean(env.HERDR_WORKSPACE_ID)",
-    "JSON.parse(readFileSync(path, \"utf8\"))?.tracker?.[0]?.repo",
-    "/^[\\w.-]+\\/[\\w.-]+$/.test(declared)",
-  ];
-  for (const pin of pins) {
-    test(`both hold ${pin}`, () => {
-      assert.ok(watch.includes(pin), "watch.mjs no longer holds it: the copy here is the one that drifted");
-      assert.ok(mine.includes(pin), "reply-cli.mjs no longer holds it");
+describe("state.mjs is a leaf: nothing it loads resolves the checkout or reads the project declaration", () => {
+  const FORBIDDEN = /(?:^|\/)(?:host-config|project-config)\.mjs$/;
+
+  /** @param {string} file @param {Set<string>} seen @returns {string[]} every module reachable from `file` through relative imports that is forbidden */
+  function forbiddenReachableFrom(file, seen = new Set()) {
+    if (seen.has(file)) return [];
+    seen.add(file);
+    const source = readFileSync(file, "utf8");
+    const specifiers = [...source.matchAll(/^(?:import|export)\s+(?:.*?\s+from\s+)?"(\.[^"]+)";$/gm)].map((match) => match[1]);
+    return specifiers.flatMap((specifier) => {
+      const target = fileURLToPath(new URL(specifier, `file://${file}`));
+      return FORBIDDEN.test(target) ? [target] : forbiddenReachableFrom(target, seen);
     });
   }
 
-  test("the chairman file is read for the chat id the way `listen.mjs` reads it", () => {
-    const listen = readFileSync(LISTEN_SOURCE, "utf8");
-    for (const pin of ["secretFileProblem(path)", "Number.isSafeInteger(chatId)", "pair again"]) assert.ok(listen.includes(pin), `listen.mjs no longer holds ${pin}`);
-    for (const pin of ["secretFileProblem(path)", "Number.isSafeInteger(parsed?.chatId)", "pair again"]) assert.ok(mine.includes(pin), `reply-cli.mjs no longer holds ${pin}`);
+  const STATE = fileURLToPath(new URL("./state.mjs", import.meta.url));
+
+  test("state.mjs reaches neither host-config.mjs nor project-config.mjs", () => {
+    assert.deepEqual(forbiddenReachableFrom(STATE), []);
   });
 
-  test("the accountIsDeclared copy answers as the original does", () => {
-    assert.deepEqual([{}, { GH_CONFIG_DIR: "x" }, { HERDR_WORKSPACE_ID: "w6" }, { GH_CONFIG_DIR: "" }].map((env) => accountIsDeclared(env)), [false, true, true, false]);
+  test("positive control: the walk finds a forbidden module one hop away, and sees through a re-export and a bare side-effect import", () => {
+    const dir = mkdtempSync(join(scratch, "leaf-"));
+    writeFileSync(join(dir, "host-config.mjs"), "export const x = 1;\n");
+    writeFileSync(join(dir, "middle.mjs"), 'export { x } from "./host-config.mjs";\n');
+    writeFileSync(join(dir, "top.mjs"), 'import { x } from "./middle.mjs";\n');
+    writeFileSync(join(dir, "bare.mjs"), 'import "./host-config.mjs";\n');
+    for (const entry of ["top.mjs", "bare.mjs"]) assert.deepEqual(forbiddenReachableFrom(join(dir, entry)).map((path) => path.split("/").pop()), ["host-config.mjs"], entry);
   });
 });
