@@ -33,7 +33,7 @@ export const WATCHED_MOUNTS = Object.freeze(["/", "/tmp"]);
  * merely busy. The number is a judgement, and only the SEPARATION of the two resources is taken from the
  * outage.
  */
-export const MIN_FREE_FRACTION = 0.10;
+export const MIN_FREE_FRACTION = 0.20;
 
 /** @typedef {"bytes" | "inodes"} Resource */
 
