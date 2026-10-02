@@ -608,6 +608,15 @@ const MS_PER_MINUTE = 60_000;
 export const UNOWNED_PR_SESSION = "ceo";
 
 /**
+ * WHERE A RED PULL REQUEST GOES WHEN ITS OWNER'S SESSION NO LONGER EXISTS (#3078). `ownerOfPr`'s `label` rung never outranks, so a
+ * label naming a released session kept addressing the order to a workspace that was not there: `route` refused it on every tick
+ * (30 ticks, 63 minutes, three PRs) and the PR it blocked held other rows out of the pool. `product-manager`, because the way out
+ * is process -- put the label of a session that can on the PR -- and its brief already covers that. It is NOT `UNOWNED_PR_SESSION`:
+ * that rung answers a PR nobody could name, and `ceo` is told so; here the order names the dead owner.
+ */
+export const DEAD_OWNER_FALLBACK = "product-manager";
+
+/**
  * WHO A PULL REQUEST BELONGS TO, BY A TOTAL FUNCTION (#2941): every pull request has exactly one answer, and the
  * last rung is a session that can act. A NEW NAME on purpose -- `work-gate.mjs`'s `ownerOf(row)` answers a
  * different question (who a ROW is routed to).
@@ -713,12 +722,27 @@ function failingChecksOrder(pr, required = null, baseTip = null) {
   const conflicting = conflictStateOf(pr) === CONFLICT_STATE.CONFLICTING;
   return {
     session,
+    ...(session === DEAD_OWNER_FALLBACK ? {}
+      : { fallback: DEAD_OWNER_FALLBACK, fallbackOnlyIfAbsent: true, fallbackPrompt: deadOwnerPrompt({ pr, head8, session, conflicting }) }),
     cause: "pr-checks-failing",
     subject: `pr-${subjectRef(pr.repoKey, pr.number)}`,
     discriminator: head8,
     prompt: failingChecksPrompt({ pr, head8, blocking, baseTip, conflicting, nowMs: Date.now() }),
     causeKey: `${session}/pr-checks-failing/pr-${subjectRef(pr.repoKey, pr.number)}/${head8}${conflicting ? "/conflicting" : ""}`,
   };
+}
+
+/**
+ * The words the FALLBACK is typed instead of the owner's (#3078): `wake.mjs` swaps this in for `prompt` only when the order is
+ * delivered to {@link DEAD_OWNER_FALLBACK}. The owner's `prompt` reads as though its addressee were alive and says "yours to fix",
+ * which would send the fallback to fix code it does not own; so this one says the session is gone and what the receiver does.
+ * @param {{pr: any, head8: string, session: string, conflicting: boolean}} facts
+ */
+function deadOwnerPrompt({ pr, head8, session, conflicting }) {
+  return `${subjectMention(pr)} at \`${head8}\` has FAILING checks${conflicting ? " and also CONFLICTS with `main`" : ""}, and the session that owns it, `
+    + `\`${session}\`, NO LONGER EXISTS (no workspace carries that label), so nobody is fixing it and this order reached you instead. The fix is NOT yours. `
+    + `Read why it is red (\`gh pr checks\` on it) and re-lane it by putting the label of a session that can fix it (\`${SESSION_PREFIX}<name>\`) on the pull request, `
+    + "or close it if it is abandoned. A red pull request whose owner is gone keeps other rows out of the pool until someone does.";
 }
 
 /**

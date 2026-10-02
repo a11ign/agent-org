@@ -417,7 +417,10 @@ export function route(session, agents, roster, ineligibleReason = () => null) {
  * carrying `fallback` names WHERE ELSE it may go, and only a refusal from the first choice reaches it, so
  * a session that CAN be woken is never bypassed. The refusal reported when both fail names both.
  *
- * @param {{session: string, fallback?: string}} order
+ * `fallbackOnlyIfAbsent` NARROWS "refused" to "no workspace carries the label" (#3078): a `pr-checks-failing` owner that is merely
+ * WORKING is mid-turn on its own pull request and must not be bypassed, because the fallback's prompt says the owner is gone.
+ *
+ * @param {{session: string, fallback?: string, fallbackOnlyIfAbsent?: boolean}} order
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster
  * @param {(label: string) => string | null} [ineligibleReason]
@@ -426,6 +429,7 @@ export function route(session, agents, roster, ineligibleReason = () => null) {
 export function routeWithFallback(order, agents, roster, ineligibleReason) {
   const first = route(order.session, agents, roster, ineligibleReason);
   if (!("refusal" in first) || typeof order.fallback !== "string") return first;
+  if (order.fallbackOnlyIfAbsent === true && agents.some((a) => a.label === order.session)) return first;
   const second = route(order.fallback, agents, roster, ineligibleReason);
   if (!("refusal" in second)) return second;
   return { refusal: `${first.refusal}; and the fallback "${order.fallback}": ${second.refusal}` };
@@ -3874,7 +3878,8 @@ export function clearBeforeOrder(run, label, sleep, contextRoot) {
  * fact that a spawn was attempted and why it did not happen, which is precisely the question a pilot exists
  * to answer.
  *
- * @param {{session: string, causeKey: string, prompt: string, cause?: string, title?: string}} order
+ * @param {{session: string, causeKey: string, prompt: string, cause?: string, title?: string, fallback?: string,
+ *   fallbackPrompt?: string}} order `fallbackPrompt` is the `prompt` typed INSTEAD when `fallback` is who receives it
  * @param {{label: string, status: string}[]} live
  * @param {string[]} roster
  * @param {{run: (args: string[]) => string, spawned: number, ineligibleReason?: (label: string) => string | null,
@@ -3892,6 +3897,10 @@ function targetFor(order, live, roster, deps) {
   if (isReviewerOrder(order)) return reviewerTarget(order, live, deps);
   const routed = routeWithFallback(order, live, withSpareInstances(roster, live), deps.ineligibleReason);
   if (!("refusal" in routed)) {
+    // THE FALLBACK IS TYPED ITS OWN WORDS (#3078): the order's `prompt` is written to the owner, and says the fix is theirs.
+    if (routed.label === order.fallback && typeof order.fallbackPrompt === "string") {
+      return { label: routed.label, order: { prompt: order.fallbackPrompt } };
+    }
     // AN INSTANCE TAKES ITS OWN PULL REQUEST'S ORDERS ONLY, whatever cause or fallback brought the order here.
     const wrong = reviewerMismatch(order, routed.label);
     if (wrong !== null) return { refusal: wrong };
