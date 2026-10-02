@@ -4,16 +4,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { staleRuleReason, ruleFiles, rulePathspec }
+import { staleRuleReason, ruleFiles, rulePathspec, ruleDirOf, workTreeOf }
   from "../row-claim/stale-rule-guard.mjs";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 
-const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+/**
+ * THE TOOL'S ROOT AND ITS REPOSITORY, found from this file's own location and git, never by counting directories (#3041). `src/packaging/..` is
+ * the tool root in the standalone `agent-org` repository AND in the project's `packages/agent-org/`; `PREFIX` is what lies between it and the
+ * repository root: empty in the first, `packages/agent-org` in the second.
+ */
+const TOOL_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const REPO = workTreeOf(TOOL_ROOT) as string;
+const PREFIX = relative(REPO, TOOL_ROOT).split(sep).join("/");
+const at = (path: string) => (PREFIX === "" ? path : `${PREFIX}/${path}`);
 
 /**
  * A REAL GIT REPOSITORY, not a stubbed `run`. The thing under test is a claim about what `git rev-list`
@@ -133,13 +141,13 @@ test("#1014: MUTATION TARGET -- comparing the checkout against ITSELF must stop 
 // --- the file list: derived from THIS repository, and what happens when the derivation fails ---
 
 test("#1014: the rule-file list is DERIVED from row-claim's own import closure, not typed", () => {
-  const derived = ruleFiles(resolve(REPO, "packages/agent-org/src/row-claim.mjs"), REPO);
-  assert.ok(derived.includes("packages/agent-org/src/row-claim.mjs"), "the entry itself");
-  assert.ok(derived.includes("packages/agent-org/src/row-claim/own-pr-health-rule.mjs"),
+  const derived = ruleFiles(resolve(TOOL_ROOT, "src/row-claim.mjs"), REPO);
+  assert.ok(derived.includes(at("src/row-claim.mjs")), "the entry itself");
+  assert.ok(derived.includes(at("src/row-claim/own-pr-health-rule.mjs")),
     "and the module whose replacement by #989/#1012 produced half the refusal this row was filed for");
   assert.ok(derived.length >= 5,
     `expected the rule modules beside row-claim.mjs, got ${derived.length}: ${derived.join(", ")}`);
-  assert.ok(derived.every((f) => f === "packages/agent-org/src/row-claim.mjs" || f.startsWith("packages/agent-org/src/row-claim/")),
+  assert.ok(derived.every((f) => f === at("src/row-claim.mjs") || f.startsWith(at("src/row-claim/"))),
     "and NOTHING else -- the closure reaches merge-guard.mjs and board-snapshot.mjs, real dependencies of "
     + "the TOOL whose movement says nothing about whether the RULE changed. Folding those in would make "
     + "this the blanket staleness refusal the row rules out");
@@ -151,12 +159,13 @@ test("#1014: a BLINDED closure walker still refuses -- the one tree this guard i
   // `stripComments`: `localImports("packages/agent-org/src/row-claim.mjs")` returned 0 there, so the derivation produced
   // ONLY the entry and five rule modules were invisible. The error runs toward NOT refusing, which is this
   // row's own defect arriving inside this row's own fix.
-  const blinded = rulePathspec(resolve(REPO, "packages/agent-org/src/row-claim.mjs"), REPO, { imports: () => [] });
-  assert.deepEqual(blinded, ["packages/agent-org/src/row-claim.mjs", "packages/agent-org/src/row-claim/"],
+  const blinded = rulePathspec(resolve(TOOL_ROOT, "src/row-claim.mjs"), REPO, { imports: () => [] });
+  assert.deepEqual(blinded, [at("src/row-claim.mjs"), at("src/row-claim/")],
     "the derivation collapses to the entry, and the RULE DIRECTORY is what is left holding it");
 
   const { root, commit } = syntheticRepo();
   try {
+    commit("packages/agent-org/src/row-claim.mjs", "export const claim = () => null;\n"); // tracked, so the entry-only pathspec below is one that matches (#3041)
     const base = commit("packages/agent-org/src/row-claim/template-fields-rule.mjs", "export const templateFieldsReason = () => null;\n");
     setRef(root, "refs/remotes/origin/main", base);
     const moved = commit("packages/agent-org/src/row-claim/template-fields-rule.mjs", "export const templateFieldsReason = () => 'x';\n");
@@ -173,31 +182,76 @@ test("#1014: a BLINDED closure walker still refuses -- the one tree this guard i
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("#1014: `staleRuleReason` WITHOUT `files` derives its own pathspec -- the call, not just the callee",
-  () => {
-    // worker-judge's blocker, and they were right: every test above supplies `files:`, so `rulePathspec`
-    // was driven and THE THING THAT CALLS IT WAS NOT. Replacing the `files ?? rulePathspec(...)` fallback
-    // with `[entry]` -- the exact collapse measured in a real stale tree -- turned nothing red. The union
-    // exists for the checkout whose walker is broken, and that is precisely the checkout no fixture
-    // supplies a file list for.
-    const { root, commit } = syntheticRepo();
-    try {
-      // A real entry with a real local import, so the derivation has something to walk.
-      commit("packages/agent-org/src/row-claim/own-pr-health-rule.mjs", "export const inBuildReason = () => null;\n");
-      const base = commit("packages/agent-org/src/row-claim.mjs",
-        'import { inBuildReason } from "./row-claim/own-pr-health-rule.mjs";\nexport { inBuildReason };\n');
-      setRef(root, "refs/remotes/origin/main", base);
-      const moved = commit("packages/agent-org/src/row-claim/own-pr-health-rule.mjs", "export const inBuildReason = () => 'B2';\n");
-      setRef(root, "refs/remotes/origin/main", moved);
-      detach(root, base);
+/**
+ * THE GUARD, AS IT LIVES IN A TOOL CHECKOUT: this repository's own `stale-rule-guard.mjs` (and the two leaf modules it imports) committed into a
+ * throwaway repository at `<prefix>src/row-claim/`, then IMPORTED FROM THERE, so `import.meta.url` is the fixture's and `staleRuleReason()` is
+ * called with no options -- exactly how `row-claim.mjs` calls it. A test that passes `repoRoot` or `files` never reaches the layout decision, which
+ * is the one #3041 got wrong (the claim of a spawned engineer died on `ENOENT ... /home/agent/packages/agent-org/src/row-claim.mjs`).
+ */
+async function guardInTool(prefix: string) {
+  const { root, commit } = syntheticRepo();
+  const source = (rel: string) => readFileSync(join(TOOL_ROOT, rel), "utf8");
+  for (const rel of ["src/row-claim/stale-rule-guard.mjs", "src/lib/local-import-closure.mjs", "src/lib/git-env.mjs"]) commit(`${prefix}${rel}`, source(rel));
+  commit(`${prefix}src/row-claim/own-pr-health-rule.mjs`, "export const inBuildReason = () => null;\n");
+  const base = commit(`${prefix}src/row-claim.mjs`, 'import { inBuildReason } from "./row-claim/own-pr-health-rule.mjs";\nexport { inBuildReason };\n');
+  setRef(root, "refs/remotes/origin/main", base);
+  const guard = await import(`${join(root, prefix, "src/row-claim/stale-rule-guard.mjs")}?fixture=${encodeURIComponent(root)}`);
+  return { root, commit, base, guard, rule: `${prefix}src/row-claim/own-pr-health-rule.mjs` };
+}
 
-      const reason = staleRuleReason({ repoRoot: root });
-      assert.ok(reason,
-        "no `files`, no `entry` -- the default path must derive the pathspec and refuse, because this is "
-        + "how `row-claim.mjs` actually calls it and the only call that ever mattered");
-      assert.match(reason, /own-pr-health-rule\.mjs/, "and name the rule module that moved");
-    } finally { rmSync(root, { recursive: true, force: true }); }
-  });
+test("#3041: a guard in the STANDALONE layout (`<root>/src/row-claim/`) derives its own root and refuses BEHIND, never an ENOENT", async () => {
+  const { root, commit, base, guard, rule } = await guardInTool("");
+  try {
+    assert.equal(guard.staleRuleReason(), null, "POSITIVE CONTROL: origin/main equal to HEAD is the PASS, and it is reachable");
+    const moved = commit(rule, "export const inBuildReason = () => 'B2';\n");
+    setRef(root, "refs/remotes/origin/main", moved);
+    detach(root, base);
+
+    const reason = guard.staleRuleReason();
+    assert.ok(reason, "the checkout is one commit behind on a rule module and must say so");
+    assert.match(reason, /1 COMMIT\(S\) BEHIND/);
+    assert.match(reason, /src\/row-claim\/own-pr-health-rule\.mjs/, "naming what moved");
+    assert.doesNotMatch(reason, /ENOENT|packages\/agent-org/, "and nothing of the monorepo's layout");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#3041: a guard in the MONOREPO layout (`<root>/packages/agent-org/src/row-claim/`) still resolves to the same root and refuses BEHIND", async () => {
+  const { root, commit, base, guard, rule } = await guardInTool("packages/agent-org/");
+  try {
+    assert.equal(guard.staleRuleReason(), null, "the PASS is reachable here too");
+    setRef(root, "refs/remotes/origin/main", commit(rule, "export const inBuildReason = () => 'B2';\n"));
+    detach(root, base);
+    assert.match(guard.staleRuleReason(), /packages\/agent-org\/src\/row-claim\/own-pr-health-rule\.mjs/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#3041: the rule directory is the one BESIDE the entry, whatever the layout", () => {
+  assert.equal(ruleDirOf("/r/src/row-claim.mjs", "/r"), "src/row-claim/");
+  assert.equal(ruleDirOf("/r/packages/agent-org/src/row-claim.mjs", "/r"), "packages/agent-org/src/row-claim/");
+});
+
+test("#3041: a pathspec that matches NO tracked file is CANNOT ASK by name, never 'up to date' -- an empty list and a list of untracked paths alike", () => {
+  const { root, commit } = syntheticRepo();
+  try {
+    const base = commit("src/elsewhere.mjs", "export {};\n");
+    setRef(root, "refs/remotes/origin/main", base);
+    for (const files of [[], ["packages/agent-org/src/row-claim.mjs", "packages/agent-org/src/row-claim/"]]) {
+      const reason = staleRuleReason({ repoRoot: root, files });
+      assert.ok(reason, `files ${JSON.stringify(files)} must not read as up to date`);
+      assert.match(reason, /CANNOT ASK/);
+      assert.match(reason, /matches no tracked file/);
+    }
+    assert.equal(staleRuleReason({ repoRoot: root, files: ["src/elsewhere.mjs"] }), null,
+      "POSITIVE CONTROL: the same repository with a pathspec that DOES match is up to date, so the refusals above are the pathspec's and not the repository's");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#3041: a directory that is not a git work tree is CANNOT ASK by name, not a Node error", () => {
+  const dir = mkdtempSync(join(tmpdir(), "a11y-not-a-tree-"));
+  try {
+    assert.equal(workTreeOf(dir), null);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test("#1014: the refusal names what ORIGIN/MAIN moved, never the author's own edit to a rule file", () => {
   // worker-judge, reviewing #1044: a two-dot diff includes the author's commits, so a branch that
