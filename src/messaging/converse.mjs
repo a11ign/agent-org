@@ -10,8 +10,8 @@
 // queue did not make.
 //
 // **THE SENDER IS ONE NOBODY ELSE CAN DERIVE.** `resolveSender` builds every other sender from a herdr workspace id, so a session cannot
-// produce `CHAIRMAN_SENDER` by being a workspace; only this module passes it. (One thing the test cannot close from here: a workspace
-// LABELLED with that exact text would be returned by `resolveSender`, which is a11ign/a11ign#3060's to close in `prompt-session.mjs`.)
+// produce `CHAIRMAN_SENDER` by being a workspace; only this module passes it. (A workspace LABELLED with that exact text used to be
+// returned by `resolveSender`; a11ign/a11ign#3060 closed it in `prompt-session.mjs`, which now yields null for a label no session name looks like.)
 //
 // **THE ACKNOWLEDGEMENT IS A FACT THE CORE VERIFIED.** "queued for ceo, handoff <id>" is sent only after reading the entry back from the
 // queue file; a queue that said it wrote and did not is reported as that, never as success.

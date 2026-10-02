@@ -312,14 +312,19 @@ describe("done-when 3: no queue entry is ever addressed to a worker or reviewer 
 describe("done-when 4: resolveSender never yields the chairman sender", { skip: "reason" in real ? /** @type {{reason: string}} */ (real).reason : false }, () => {
   const WORKSPACES = [["w1", "ceo"], ["w2", "product-manager"], ["w3", "orchestrator"], ["w4", "worker-2909"], ["w5", "reviewer-3"], ["w6", "chairman"], ["w7", "chairman via telegram"]]
     .map(([workspace_id, label]) => ({ workspace_id, label, agent_status: "idle" }));
+  const LOOKALIKE = "w7";
   const run = () => JSON.stringify({ result: { workspaces: WORKSPACES } });
   const resolve = (/** @type {string | undefined} */ id) => /** @type {any} */ (real).port.session.resolveSender(run, id);
 
   test("every id in the fixture resolves to ITS OWN label (the positive control: a resolver that returns null for all would pass the next assertion), and none is the chairman's", () => {
-    for (const { workspace_id, label } of WORKSPACES) {
+    for (const { workspace_id, label } of WORKSPACES.filter((w) => w.workspace_id !== LOOKALIKE)) {
       assert.equal(resolve(workspace_id), label);
       assert.notEqual(resolve(workspace_id), CHAIRMAN_SENDER);
     }
+  });
+
+  test("a workspace LABELLED with the chairman's sender resolves to nobody, not to the chairman (a11ign/a11ign#3060)", () => {
+    assert.equal(resolve(LOOKALIKE), null);
   });
 
   test("an id herdr does not list, or no id at all, resolves to nobody rather than to the chairman", () => {
