@@ -195,8 +195,7 @@ export function redSinceOf(pr, options) {
  * Is this red PR UNATTENDED once `RED_PR_MINUTES` have passed?
  *
  * NO PUSH IS ASSUMED BY CONSTRUCTION, and the reason is a fact about this repo: the head is the one that went red, and a push
- * makes a new head with a new run, so a PR still red on its head has had none (`update-branch-sweep.mjs` leaves a failing PR
- * alone, so a sweep cannot refresh it). THE OWNER'S COMMENT IS WHAT IS LEFT TO ASK. A PR WITH NO OWNER IS ALWAYS UNATTENDED: no
+ * makes a new head with a new run, so a PR still red on its head has had none. THE OWNER'S COMMENT IS WHAT IS LEFT TO ASK. A PR WITH NO OWNER IS ALWAYS UNATTENDED: no
  * account is "its owner's", so a comment on it is not an owner's act and cannot excuse it (the 2026-10-01 case, #2941).
  * @param {RedPr} pr @param {number} now
  */

@@ -41,6 +41,16 @@ test("#2999 (1) a holder idle 50 min whose PR is green with a reviewer requested
   assert.equal((none as { idleMs: number }).idleMs, 50 * MIN);
 });
 
+test("#3075 a pull request in ANOTHER tracked repository is waiting on ITS reviewer seat (`reviewer-<key>-<n>`), not on `reviewer-<n>` of the home repository", () => {
+  const elsewhere = { ...GREEN_PR, number: 38, repoKey: "agent-org" };
+  const seated = reading({ prs: [elsewhere], agents: listing("idle", [{ label: "reviewer-agent-org-38", status: "working" }]) });
+  assert.deepEqual(seated, { kind: "waiting", fields: ["review-requested"] });
+  const wrongSeat = reading({ prs: [elsewhere], agents: listing("idle", [{ label: "reviewer-38", status: "working" }]) });
+  assert.equal(wrongSeat.kind, "stall", "a home PR 38's reviewer is nobody's for a pull request in the other repository");
+  const home = reading({ prs: [{ ...GREEN_PR, number: 38 }], agents: listing("idle", [{ label: "reviewer-38", status: "working" }]) });
+  assert.equal(home.kind, "waiting", "CONTROL: an unkeyed pull request is still read by `reviewer-<n>`");
+});
+
 test("#2999 (1) a holder with no PR and a row carrying no field IS a stall, and a `done` holder reads like an `idle` one", () => {
   assert.equal(reading().kind, "stall");
   assert.equal(reading({ agents: listing("done") }).kind, "stall");

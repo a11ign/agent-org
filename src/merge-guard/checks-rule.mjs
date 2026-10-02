@@ -39,9 +39,9 @@ export const SATISFIED = new Set(["success", "skipped", "neutral"]);
  * run should report nothing rather than a red. This is that same ruling applied to the READER, for the
  * cancelled conclusions already sitting on heads.
  */
-// EXPORTED for #1100: `update-branch-sweep.mjs` reads the same conclusion and must mean the same thing by
-// it. Two predicates in this repository disagreeing about the literal string `cancelled` is the
-// fact-stated-twice shape on a value that decides whether a pull request is pushed.
+// EXPORTED for #1100, when the since-retired update-branch sweep read the same conclusion and had to mean the
+// same thing by it. Two predicates disagreeing about the literal string `cancelled` is the fact-stated-twice
+// shape, and `work-gate/pr-orders.mjs` still imports it.
 export const NO_VERDICT = "cancelled";
 
 /**

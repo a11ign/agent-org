@@ -553,10 +553,33 @@ function blockedReading(facts) {
 // --- THE FACTS OF ONE ROW ---------------------------------------------------------------------------------------------
 
 /**
+ * @typedef {import("./idle-claimant.mjs").IdlePr & { headRefName?: string }} OpenPr
+ * @typedef {{ number: number, headRefName?: string, mergedAt?: string }} MergedPr
+ * @typedef {{ open: OpenPr[] | null, merged: MergedPr[] | null }} ElsewherePrs the OTHER tracked code repositories' lists (#3075), each member
+ *   tagged with the `repoKey` it came from. `open: null` is a read that was refused, and is never "none open".
  * @typedef {{ row: number, title?: string, session: string, waiting: string | null, blockedBy: number[],
- *   comments: RowComment[], openPrs: (import("./idle-claimant.mjs").IdlePr & { headRefName?: string })[],
- *   mergedPrs: { number: number, headRefName?: string, mergedAt?: string }[] | null, repo: string, waitKind?: string | null }} ClaimInput
+ *   comments: RowComment[], openPrs: OpenPr[], mergedPrs: MergedPr[] | null, elsewhere?: ElsewherePrs, repo: string,
+ *   waitKind?: string | null }} ClaimInput `openPrs` and `mergedPrs` are the HOME repository's; `elsewhere` is absent for a project with one code repository
  */
+
+/**
+ * (#3075) THE PULL REQUESTS A ROW'S WORK CAN BE IN, from every tracked code repository, by the ONE function every reader of "has this row got a pull
+ * request" goes through: (8)'s `canRelease`, `pr-owned`, the second reading's guard, the gone-holder release and the merged release (10) all read
+ * `facts.openPrs`, `facts.ownPrs` and `facts.mergedPr`, and all three are built from what this returns. `#3039`'s code was in `a11ign/agent-org`, its pull
+ * request approved there, and the claim was released as "holds nothing built" because only THIS repository's list was read.
+ *
+ * `null` when an OPEN list could not be read, and the caller skips the claim: a read that could not be made is not a count of zero, and "zero" is what
+ * (8) and the stalled release act on. A MERGED list only ever supplies positive evidence (the release (10) needs a hit), so one that is missing costs a
+ * release and cannot cause one: the lists that WERE read are used, and it is `null` only when none was.
+ * @param {ClaimInput} input @returns {{ open: OpenPr[], merged: MergedPr[] | null } | null}
+ */
+function pullRequestsAcrossRepos(input) {
+  const { elsewhere } = input;
+  if (elsewhere === undefined) return { open: input.openPrs, merged: input.mergedPrs };
+  if (elsewhere.open === null) return null;
+  const merged = input.mergedPrs === null && elsewhere.merged === null ? null : [...(input.mergedPrs ?? []), ...(elsewhere.merged ?? [])];
+  return { open: [...input.openPrs, ...elsewhere.open], merged };
+}
 
 /**
  * One claimed row's facts, or `{ skip }` saying why it is NOT EVALUATED this tick -- a row with no claim record cannot say
@@ -571,12 +594,17 @@ function blockedReading(facts) {
 export function claimFactsFrom(input, io) {
   const record = claimRecordOf(input.comments);
   if (record === null) return { skip: `#${input.row} carries session:${input.session} but no claim record names when or where` };
+  const prs = pullRequestsAcrossRepos(input);
+  if (prs === null) {
+    return { skip: `#${input.row}: the other tracked repository's open pull requests could not be read, so a holder with nothing built here cannot be told from one whose work is there` };
+  }
   const worktree = record.worktree === null ? null : resolve(input.repo, record.worktree);
   const dir = worktree !== null && io.exists(worktree) ? worktree : input.repo;
   try {
     const branch = record.branch;
     const own = (/** @type {string | undefined} */ head) => head !== undefined && (head === branch || head.endsWith(`-${input.row}`));
-    const merged = branch === null ? null : newestMergedAfter(input.mergedPrs ?? [], branch, record.at);
+    const ownPrs = prs.open.filter((p) => own(p.headRefName));
+    const merged = branch === null ? null : newestMergedAfter(prs.merged ?? [], branch, record.at);
     return { row: input.row, session: input.session, claimedAt: record.at, branch, worktree,
       ...(input.title === undefined ? {} : { title: input.title }),
       comment: commentMove(input.comments, record),
@@ -584,11 +612,11 @@ export function claimFactsFrom(input, io) {
       push: branch === null ? null : newestOwnCommit(io.git, dir, `origin/${branch}`),
       file: () => (worktree !== null && io.exists(worktree) ? fileMove(io, worktree) : null),
       work: () => workAtRisk(io, { worktree, branch, repo: input.repo }),
-      openPrs: input.openPrs.filter((p) => own(p.headRefName)).length,
+      openPrs: ownPrs.length,
       mergedPr: merged === null ? null : { number: merged.number, mergedAt: Date.parse(String(merged.mergedAt)) },
       waiting: input.waiting, blockedBy: input.blockedBy,
       ...(input.waitKind === undefined ? {} : { waitKind: input.waitKind }),
-      ownPrs: input.openPrs.filter((p) => own(p.headRefName)) };
+      ownPrs };
   } catch (err) {
     if (err instanceof Unreadable) return { skip: `#${input.row}: ${err.message}` };
     throw err;

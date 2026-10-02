@@ -1,4 +1,5 @@
 // command: (not a command) the ONE parser for a review verdict comment; imported, never retyped.
+import { createHash } from "node:crypto";
 
 /**
  * #1245: READ A REVIEW VERDICT, IN ONE PLACE.
@@ -178,8 +179,8 @@ export function verdictBearers(pr) {
  * an ARM gate must fail CLOSED on an unattributed verdict (merging on the author's own word is the
  * silent-wrong-thing direction this file opens by naming), while a WAKE gate should fail toward WAKING
  * (a needless wake costs one turn and is visible; a missed one stalls a draft and is not). The wake side
- * is safe to default that way only because its order ledger dedupes on the head sha, so "wake anyway"
- * costs one turn per head rather than one per tick.
+ * is safe to default that way only because its order ledger dedupes on the PATCH id (#3045), so "wake anyway"
+ * costs one turn per patch rather than one per tick.
  *
  * HEADS COMPARE BY PREFIX because the convention writes eight characters (`.agent-org/roles/reviewer.md`: a
  * comment matching ``at `<head8>` ``) while the API returns forty, and `reviewVerdict` accepts 7-40. The
@@ -226,9 +227,9 @@ export function headMatches(stated, actual) {
 }
 
 /**
- * The verdict this pull request carries, looked for at EVERY head an update-branch made equivalent, newest
- * first. A reviewer who wrote `at <head8>` after the last update-branch wrote it at THAT sha, so reading
- * only the authored one would re-summon a reviewer who had answered.
+ * The verdict this pull request carries, looked for at EVERY head whose patch equals the current one's
+ * (`equivalentHeads`, #3045). A reviewer who wrote `at <head8>` before an update-branch or a rebase wrote it at
+ * THAT sha, so reading only the current one would re-summon a reviewer who had answered.
  * @param {any} pr @param {string[]} heads
  */
 export function verdictAmong(pr, heads) {
@@ -240,4 +241,79 @@ export function verdictAmong(pr, heads) {
     found = verdictAtHead({ comments: bearers, head, prAuthor: pr.author?.login ?? null });
   }
   return found;
+}
+
+/** The lines of a file's header that say WHICH file and what happened to it -- the part of a diff outside a hunk that is content. */
+const FILE_HEADER_LINE = /^(diff --git |rename |new file mode|deleted file mode|old mode|new mode|Binary files)/;
+
+/**
+ * #3045: THE PATCH ID of a unified diff -- what a pull request CHANGES, and nothing about where it sits.
+ *
+ * A VERDICT IS VALID FOR A PATCH, NOT FOR A HEAD SHA. A merge from `main`, a rebase and an amend each make a new head with the
+ * same work, and a gate keyed on the sha ordered a reviewer again for each (a11ign#3033: four merges, six reviews, five of them
+ * redundant). `git patch-id --stable` is the idea; the gate has no checkout, so this hashes the compare API's diff the same way.
+ *
+ * ONLY WHAT THE PATCH ADDS AND REMOVES IS HASHED, with the file it touches: no hunk header (its line numbers move whenever `main`
+ * edits above the change), no `index` line (it names blobs), no context (a neighbour's edit is not this PR's work). A merge whose
+ * conflict resolution rewrote a line of the PR's own therefore reads as a DIFFERENT patch, which is the case a headline regex
+ * could not see. Inside a hunk every `+`/`-` line is content, including `--- x` and `+++ x`, which are headers only before the
+ * first `@@` of a file.
+ *
+ * `null` for anything that is not text, which is "could not read", never "the empty patch": an empty string is a real diff
+ * (head equal to base) and hashes to its own id.
+ *
+ * @param {unknown} diff @returns {string | null} 64 hex characters
+ */
+export function patchIdOfDiff(diff) {
+  if (typeof diff !== "string") return null;
+  const hash = createHash("sha256");
+  let inHunk = false;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("@@")) {
+      inHunk = true;
+      continue;
+    }
+    if (line.startsWith("diff --git ")) inHunk = false;
+    if (inHunk ? /^[+-]/.test(line) : FILE_HEADER_LINE.test(line)) hash.update(`${line}\n`);
+  }
+  return hash.digest("hex");
+}
+
+/**
+ * #3045: HOW MANY OLDER HEADS A PULL REQUEST'S PATCH IS COMPARED AGAINST. Each is one `gh api` call on the CORE pool, once per
+ * tick, so a pull request with forty reviews must not cost forty. The newest verdict at an equal patch wins, so the newest
+ * few are the ones that can matter; 6 is #3033's own worst case (six reviews, one authored commit).
+ */
+export const MAX_EVIDENCE_HEADS = 6;
+
+/**
+ * #3045: THE OLDER HEADS WHOSE PATCH IS WORTH READING, newest last, none of them the current head: where a review was posted
+ * (`reviews[].commit.oid`, a full sha) and where a verdict says it was written (the opener's `at <head8>`, an abbreviation the
+ * compare API resolves). A head nobody reviewed or answered at cannot carry a verdict, so reading it would be a call for nothing.
+ *
+ * @param {any} pr @returns {string[]}
+ */
+export function evidenceHeads(pr) {
+  const head = String(pr?.headRefOid ?? "");
+  const reviewed = (pr?.reviews ?? []).map((/** @type {any} */ r) => String(r?.commit?.oid ?? ""));
+  const stated = verdictBearers(pr).map((b) => reviewVerdict(b.body).head ?? "");
+  const older = [...new Set([...reviewed, ...stated])].filter((oid) => oid !== "" && !headMatches(oid, head));
+  return older.slice(-MAX_EVIDENCE_HEADS);
+}
+
+/**
+ * #3045: THE HEADS THAT ARE THE SAME WORK AS THE CURRENT ONE -- the current head first, then every other head whose patch id
+ * (`pr.patchIds`, oid -> id, attached by `withPatchIds`) equals its own. A verdict at any of them STANDS.
+ *
+ * AN UNREAD PATCH IS NEVER AN EQUAL ONE: when the current head's id is missing the answer is the current head alone, which is what
+ * a gate without this read did, and a head whose own id is missing is left out. Absence of a reading is not a reading of equality.
+ *
+ * @param {any} pr @returns {string[]}
+ */
+export function equivalentHeads(pr) {
+  const head = String(pr?.headRefOid ?? "");
+  const ids = pr?.patchIds ?? {};
+  if (head === "") return [];
+  if (typeof ids[head] !== "string") return [head];
+  return [head, ...Object.keys(ids).filter((oid) => oid !== head && ids[oid] === ids[head])];
 }
