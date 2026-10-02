@@ -68,7 +68,7 @@ import {
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { existsSync, globSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { changedFiles } from "./lib/changed-files.mjs";
@@ -1982,41 +1982,83 @@ const NPM_RUN_SCRIPT = /(?:^|&&|\|\||;)\s*npm\s+run\s+([\w:-]+)(?![:\w-])/g;
  * is exactly this shape; a script that chains further commands, or does not invoke `node` at all, resolves
  * to `null` -- this only ever ADDS a file to check, never guesses one where the shape is ambiguous.
  *
- * #3063: `node scripts/agent-org.mjs <program>.mjs` is the one exception to "the file named is the file run":
- * it resolves to the PROGRAM, under the tool's `src/`, because the launcher is only the way in.
+ * #3063: `agent-org <command> [flags]` (also `pnpm exec agent-org`, `npx agent-org`) is the one exception to "the
+ * file named is the file run": the project runs the tool through its `bin`, so the file is the PROGRAM the tool's
+ * command table names for `<command>`, under the tool's `src/`. `commands` is that table (`commandTable`); a
+ * command it does not name, or no table, resolves to `null`.
  * @param {string} scriptBody
+ * @param {CommandTable | null} [commands]
  * @returns {string | null}
  */
-export function singleNodeInvocation(scriptBody) {
+export function singleNodeInvocation(scriptBody, commands = commandTable()) {
   if (/&&|\|\||\||;/.test(scriptBody)) return null;
   const tokens = scriptBody.trim().split(/\s+/).filter((token) => !ENV_ASSIGNMENT.test(token));
-  if (tokens[0] !== "node" || !SCRIPT_FILE.test(tokens[1] ?? "")) return null;
-  return LAUNCHER.test(tokens[1]) ? launchedProgram(tokens[2]) : tokens[1];
+  const command = agentOrgCommand(tokens);
+  if (command !== null) return commands && Object.hasOwn(commands, command) ? programFile(commands[command]) : null;
+  return tokens[0] === "node" && SCRIPT_FILE.test(tokens[1] ?? "") ? tokens[1] : null;
 }
 
 const SCRIPT_FILE = /\.[cm]?[jt]sx?$/;
 
-// #3063: the project's `scripts/agent-org.mjs <program>.mjs [args...]` -- how every `package.json` script runs the
-// tool once it has left the monorepo (#2975). The launcher spawns nothing of its own, so resolving a script to IT
-// charges `npm run <script>` for nothing the script actually does.
-const LAUNCHER = /^(?:\.\/)?scripts\/agent-org\.mjs$/;
+/**
+ * The command name when `tokens` run the tool through its `bin` (`agent-org <command>`, `pnpm exec agent-org
+ * <command>`, `npx agent-org <command>`), else null. A flag where the command should be is no command.
+ * @param {string[]} tokens
+ * @returns {string | null}
+ */
+function agentOrgCommand(tokens) {
+  const at = tokens[0] === "agent-org" ? 0
+    : tokens[0] === "npx" && tokens[1] === "agent-org" ? 1
+      : tokens[0] === "pnpm" && tokens[1] === "exec" && tokens[2] === "agent-org" ? 2 : -1;
+  const command = tokens[at + 1];
+  return at === -1 || command === undefined || command.startsWith("-") ? null : command;
+}
 
-// The tool's own `src/`, which is where the launcher looks a program up: this module sits in it, so the directory
-// is known from where the classifier is running rather than read from the host declaration the launcher uses.
+/**
+ * A command name -> the program under the tool's `src/` that runs it: `src/commands.mjs`'s `COMMANDS` (#3068).
+ * @typedef {Record<string, string>} CommandTable
+ */
+
+// The tool's own `src/`, where the table's programs live: this module sits in it, so the directory is known from
+// where the classifier is running rather than read from any declaration.
 const TOOL_SRC = dirname(fileURLToPath(import.meta.url));
 
 /**
- * #3063: the file the launcher runs for `program`, as an absolute path under the tool's `src/` -- or null when
- * it names no script file or climbs out of `src/` (a `..` segment, or an absolute path), since a file the
- * launcher would not run is no file this should charge.
- * @param {string | undefined} program
+ * The tool's command table: `COMMANDS` exported by `./commands.mjs`, which a11ign/a11ign#3068 adds. NULL while
+ * that file does not exist -- the one state this reads as "no table" -- and a THROW when it exists without a
+ * `COMMANDS` object, because a table this cannot read would resolve every `agent-org <command>` to nothing,
+ * which is the silent weakening this exists to prevent. Read with `require`, which loads an ES module
+ * synchronously, since the classifier is synchronous all the way up.
+ * @returns {CommandTable | null}
+ */
+function commandTable() {
+  let loaded;
+  try {
+    loaded = createRequire(import.meta.url)("./commands.mjs");
+  } catch (cause) {
+    const absent = /** @type {{ code?: string, message?: string }} */ (cause).code === "MODULE_NOT_FOUND"
+      && String(/** @type {Error} */ (cause).message).includes("commands.mjs");
+    if (absent) return null;
+    throw cause;
+  }
+  if (loaded === null || typeof loaded.COMMANDS !== "object" || loaded.COMMANDS === null) {
+    throw new Error("src/commands.mjs exists but exports no `COMMANDS` object (command name -> program file under "
+      + "src/), which is what the acceptance classifier reads `agent-org <command>` through (a11ign/a11ign#3063)");
+  }
+  return loaded.COMMANDS;
+}
+
+/**
+ * The absolute path under the tool's `src/` of `program`, or null when it names no script file or climbs out of
+ * `src/` (a `..` segment, or an absolute path): a file the tool would not run is no file this should charge.
+ * @param {unknown} program
  * @returns {string | null}
  */
-function launchedProgram(program) {
-  if (!SCRIPT_FILE.test(program ?? "")) return null;
-  const file = resolve(TOOL_SRC, /** @type {string} */ (program));
+function programFile(program) {
+  if (typeof program !== "string" || !SCRIPT_FILE.test(program)) return null;
+  const file = resolve(TOOL_SRC, program);
   const fromSrc = relative(TOOL_SRC, file);
-  return fromSrc.startsWith("..") || isAbsolute(fromSrc) ? null : file;
+  return fromSrc === ".." || fromSrc.startsWith(`..${sep}`) || isAbsolute(fromSrc) ? null : file;
 }
 
 /**
@@ -2026,9 +2068,10 @@ function launchedProgram(program) {
  * file it runs. `SUITE_SCRIPTS` is excluded: those name a `*.test.ts` glob, already walked by
  * `testFilesRunBy`'s own suite-script branch, not a single module this function would resolve to one file.
  * @param {string} command
+ * @param {CommandTable | null} commands
  * @returns {string[]}
  */
-function operationalScriptEntries(command) {
+function operationalScriptEntries(command, commands) {
   let scripts;
   try {
     scripts = JSON.parse(readFileSync("package.json", "utf8")).scripts;
@@ -2038,7 +2081,7 @@ function operationalScriptEntries(command) {
   const names = [...command.trim().matchAll(NPM_RUN_SCRIPT)].map((match) => match[1])
     .filter((name) => !SUITE_SCRIPTS.includes(name));
   return [...new Set(names)]
-    .map((name) => (typeof scripts[name] === "string" ? singleNodeInvocation(scripts[name]) : null))
+    .map((name) => (typeof scripts[name] === "string" ? singleNodeInvocation(scripts[name], commands) : null))
     .filter((entry) => entry !== null);
 }
 
@@ -2153,12 +2196,13 @@ export function unmetCommandRequirements(command, capabilities) {
  * add a population it can never say anything about.
  * @param {string} command
  * @param {JobCapabilities} capabilities
+ * @param {CommandTable | null} [commands] the tool's command table, for an `agent-org <command>` script body
  * @returns {{ requirement: string, message: string }[]}
  */
-export function unmetCommandClosureRequirements(command, capabilities) {
+export function unmetCommandClosureRequirements(command, capabilities, commands = commandTable()) {
   /** @type {{ requirement: string, message: string }[]} */
   const out = [];
-  for (const fileArg of [...testFilesRunBy(command), ...operationalScriptEntries(command)]) {
+  for (const fileArg of [...testFilesRunBy(command), ...operationalScriptEntries(command, commands)]) {
     if (/[*?[{]/.test(fileArg) || !isFile(fileArg)) continue;
     out.push(...unmetClosureRequirements(fileArg, capabilities));
     // SHORT-CIRCUIT ON THE FIRST, and only for the whole-suite case: `classifyCommand` prints one
@@ -2249,11 +2293,11 @@ function proseFirstToken(token, exists) {
  *
  * @param {string} command
  * @param {{ commandExists?: (token: string) => boolean, capabilities?: JobCapabilities,
- *           section?: "ACCEPTANCE" | "REFUTATION" }} [deps]
+ *           section?: "ACCEPTANCE" | "REFUTATION", commands?: CommandTable | null }} [deps]
  * @returns {Classification}
  */
 export function classifyCommand(command,
-  { commandExists: exists = commandExists, capabilities = FULL_CAPABILITIES, section } = {}) {
+  { commandExists: exists = commandExists, capabilities = FULL_CAPABILITIES, section, commands } = {}) {
   if (section === "REFUTATION" && MUTATE_PATTERN.test(command) && !/^!\s/.test(command.trim())) {
     return { verdict: "refused",
       reason: "inverts the Refutation: verdict -- mutate's exit 0 means the guard BITES, but Refutation: "
@@ -2277,7 +2321,7 @@ export function classifyCommand(command,
   // `// requires:` header at all and is refused here regardless; a file that DOES declare one correctly
   // is refused here too, on the identical evidence, so declaring honestly never changes which branch a
   // command takes -- only whether the message happens to also match a hand-written comma list.
-  const [firstUnmetClosure] = unmetCommandClosureRequirements(command, capabilities);
+  const [firstUnmetClosure] = unmetCommandClosureRequirements(command, capabilities, commands);
   if (firstUnmetClosure) {
     return { verdict: "refused",
       reason: `needs \`${firstUnmetClosure.requirement}\`, which this job does not have -- `
