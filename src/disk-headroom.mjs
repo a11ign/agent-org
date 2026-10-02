@@ -103,7 +103,7 @@ export function lowResources(reading, minFraction = MIN_FREE_FRACTION) {
     ["inodes", reading.inodesFree, reading.inodesTotal]])) {
     if (total === null || !Number.isFinite(free) || !Number.isFinite(total) || total <= 0) continue;
     const fraction = free / total;
-    if (fraction <= minFraction) found.push({ mounts: reading.mounts, resource, free, total, fraction });
+    if (fraction < minFraction) found.push({ mounts: reading.mounts, resource, free, total, fraction });
   }
   return found;
 }
