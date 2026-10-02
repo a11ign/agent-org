@@ -129,12 +129,15 @@ test("the reviewer role document says the rules stop accident, not a wall, and p
 const DOOR = fileURLToPath(new URL("./pr-review-verdict.sh", import.meta.url));
 const DEFAULT_REPO = "a11ign/a11ign";
 const OTHER_REPO = "a11ign/agent-org";
+/** Pull request read, reviews read, the review, the read-back, the attribution status. */
+const DOOR_CALLS = 5;
 const VERDICT_LINE = "**Review of #7 at abc123: convinced**";
 
 /**
  * Runs the door with a `gh` stub first on PATH that appends one line of argv per call to a log. The stub answers the
- * review read-back with the body the door just sent, so the attribution `statuses` POST is reached: all THREE calls
- * (`pr review`, `reviews` read, `statuses` POST) happen, and each can be checked for the repository it names.
+ * review read-back with the body the door just sent, so the attribution `statuses` POST is reached: all FIVE calls
+ * (the two reads before posting, `pr review`, `reviews` read, `statuses` POST) happen, and each can be checked for the repository it names. Since a11ign#3050 the door
+ * also reads the pull request and its reviews BEFORE posting, so the stub answers those too: a pull request nobody has reviewed yet.
  */
 function runDoor(ghRepo: string | undefined): { status: number | null; calls: string[]; stderr: string } {
   const dir = mkdtempSync(join(tmpdir(), "door-"));
@@ -147,6 +150,8 @@ function runDoor(ghRepo: string | undefined): { status: number | null; calls: st
       // The review body is the WHOLE verdict file since #3030: one call stays one log line (newlines logged as spaces), and the
       // read-back answers as `gh --jq @tsv` does, with the body's newlines spelled `\n`.
       `#!/usr/bin/env bash\na="$*"; printf '%s\\n' "\${a//$'\\n'/ }" >> "${log}"\n` +
+        `[[ "$*" == *"/pulls/7 "* ]] && printf 'abc123\\tmain\\n'\n` +
+        `[[ "$*" == *"select("* ]] && exit 0\n` +
         `[[ "$*" == *"/reviews?"* ]] && printf 'https://example/review/1\\tdeadbeef\\t%s\\n' '${VERDICT_LINE}\\n\\nbody'\nexit 0\n`,
       { mode: 0o755 },
     );
@@ -166,18 +171,18 @@ function reposNamed(calls: string[]): string[] {
   return calls.map((c) => c.match(/--repo (\S+)|repos\/([^/]+\/[^/]+)\//)?.slice(1).find(Boolean) ?? "(none)");
 }
 
-test("unset GH_REPO: all three gh calls name a11ign/a11ign (the default is unchanged, and the control for the next test)", () => {
+test("unset GH_REPO: every gh call names a11ign/a11ign (the default is unchanged, and the control for the next test)", () => {
   const { status, calls } = runDoor(undefined);
   assert.equal(status, 0);
-  assert.equal(calls.length, 3, calls.join("\n"));
-  assert.deepEqual(reposNamed(calls), [DEFAULT_REPO, DEFAULT_REPO, DEFAULT_REPO]);
+  assert.equal(calls.length, DOOR_CALLS, calls.join("\n"));
+  assert.deepEqual(reposNamed(calls), Array(DOOR_CALLS).fill(DEFAULT_REPO));
 });
 
-test("GH_REPO=a11ign/agent-org: all three gh calls name that repository and none names the default", () => {
+test("GH_REPO=a11ign/agent-org: every gh call names that repository and none names the default", () => {
   const { status, calls } = runDoor(OTHER_REPO);
   assert.equal(status, 0);
-  assert.equal(calls.length, 3, calls.join("\n"));
-  assert.deepEqual(reposNamed(calls), [OTHER_REPO, OTHER_REPO, OTHER_REPO]);
+  assert.equal(calls.length, DOOR_CALLS, calls.join("\n"));
+  assert.deepEqual(reposNamed(calls), Array(DOOR_CALLS).fill(OTHER_REPO));
   assert.ok(calls.every((c) => !c.includes(DEFAULT_REPO)), calls.join("\n"));
 });
 
