@@ -2,7 +2,7 @@
 // THE INCIDENT SOURCES (a11ign/a11ign#2904, row 5 of 13; design #2899): what has BROKEN, as opposed to what has stopped (`stall.mjs`).
 //
 //   incident:trunk-red       the newest verdict on `main` (trunk.yml) is a failure
-//   incident:gate-crash      the work-tick unit failed, or its last record is older than 3 ticks
+//   incident:gate-crash      the work-tick unit failed, or no tick has COMPLETED for 3 intervals (the tick's own completion record, #3040)
 //   incident:fleet-down      a worker has been non-ready past fleet-watch's own threshold, from the state fleet-watch already writes
 //   incident:ci-permission   a workflow's newest run carries a `Resource not accessible` annotation
 //
@@ -83,13 +83,15 @@ export function trunkRedEvents(runs, now) {
 }
 
 /**
- * @typedef {{ failed: boolean, failedAt?: number | string, lastRecordAt: number | string }} GateUnitReading
- *   `failed` is the unit's own failed state and `failedAt` when it entered it; `lastRecordAt` is the newest tick the gate recorded
+ * @typedef {{ failed: boolean, failedAt?: number | string, lastRecordAt: number | string, lastRunAt: number | string }} GateUnitReading
+ *   `failed` is the unit's own failed state and `failedAt` when it entered it; `lastRecordAt` is when a tick last COMPLETED (the record the tick writes at the
+ *   end of `main()`), and `lastRunAt` when the unit last RAN, which a tick that died moves as well as one that finished
  */
 
 /**
- * The gate crashing: the unit reads failed, or it has not recorded a tick for N intervals (a unit that is "active" and writes nothing
- * is the quiet kind of crash). Either alone is enough, and the event's start is the earlier of the two.
+ * The gate crashing: the unit reads failed, or no tick has COMPLETED for N intervals. The second is the dead-man's switch, and it reads the completion
+ * record and not the unit's own timestamp, which a crashed tick moves exactly as a good one (#3040). Either alone is enough, and the event's start is the
+ * earlier of the two. The text says which kind of silence it is: ticks still starting and not finishing (a crash), or no tick starting at all.
  *
  * @param {GateUnitReading} unit @param {number} now @param {typeof DEFAULT_INCIDENT_CONFIG} config
  * @returns {Record<string, unknown>[]}
@@ -97,10 +99,17 @@ export function trunkRedEvents(runs, now) {
 export function gateCrashEvents(unit, now, config) {
   if (unit === null || typeof unit !== "object" || typeof unit.failed !== "boolean") throw new TypeError("the unit reading needs a boolean `failed`");
   const lastRecordAt = instant(unit.lastRecordAt, "lastRecordAt");
+  const lastRunAt = instant(unit.lastRunAt, "lastRunAt");
   const staleAfter = config.gateStaleTicks * config.tickIntervalMs;
   const reasons = [];
   if (unit.failed) reasons.push({ at: instant(unit.failedAt, "failedAt"), why: "the work-tick unit has failed" });
-  if (now - lastRecordAt > staleAfter) reasons.push({ at: lastRecordAt + staleAfter, why: `the last tick was recorded ${span(now - lastRecordAt)} ago` });
+  if (now - lastRecordAt > staleAfter) {
+    const completed = `the last tick that COMPLETED was at ${new Date(lastRecordAt).toISOString()} (${span(now - lastRecordAt)} ago)`;
+    const since = now - lastRunAt <= staleAfter
+      ? `ticks are still starting (the unit last ran ${span(now - lastRunAt)} ago) and not finishing, so they are crashing`
+      : `the unit has not run since either (it last ran ${span(now - lastRunAt)} ago), so the timer is not firing`;
+    reasons.push({ at: lastRecordAt + staleAfter, why: `${completed}, and ${since}` });
+  }
   const base = { key: "incident:gate-crash", kind: "incident", severity: "critical", links: [] };
   if (reasons.length === 0) return [{ ...base, firstSeenAt: now, text: "The gate is ticking again.", resolved: true }];
   return [{ ...base, firstSeenAt: Math.min(...reasons.map((reason) => reason.at)), resolved: false,

@@ -10,13 +10,13 @@
 //   readFleetState  the state file `fleet-watch` writes, and when it was written         -> incident:fleet-down
 //   readTicks       THIS WATCHER'S OWN SAMPLES, newest first                             -> stall:all-idle
 //
-// A LEAF: node's own modules only. Everything that reaches outside the process is a dependency a test replaces (`github.api`, `systemctl`,
+// A LEAF: node's own modules only (and `lib/tick-completion.mjs`, which is the same). Everything that reaches outside the process is a dependency a test replaces (`github.api`, `systemctl`,
 // `readSeats`), and the files it keeps are under a directory the caller names, so a test gives it a temporary one.
 //
-// **THERE IS NO TICK RECORD TO READ, AND THIS FILE DOES NOT PRETEND THERE IS ONE.** The row asked for "the newest tick record's time"; the work
-// tick writes nothing a reader could use (`wake-ledger` is the delivery log, one line per order sent, and a quiet tick appends none), and
-// `work-gate.mjs` / `wake.mjs` may not be edited (#2867). So the gate's last run is the unit's own `InactiveEnterTimestamp`, which systemd
-// keeps for free and which a quiet tick moves as surely as a busy one; `failed` is its `ActiveState`.
+// **THE GATE'S LAST COMPLETED TICK IS A RECORD THE TICK WRITES (#3040), NOT THE UNIT'S TIMESTAMP.** `InactiveEnterTimestamp` answers "did the unit run" and a tick
+// that died at import moves it as surely as a good one (2026-10-02: 63 crashed ticks). `work-tick.mjs` writes `lib/tick-completion.mjs`'s record only when
+// it reaches the end of `main()`; `readGateUnit` takes `lastRecordAt` from it and keeps the unit's timestamp as `lastRunAt`, so the incident can say the ticks
+// are still starting and not finishing. `failed` is the unit's `ActiveState`.
 //
 // **`readTicks` NEEDS A HISTORY AND NO SOURCE HOLDS ONE**, so each run appends a SAMPLE (`takeSample`) to a bounded file (a week): the time, every seat's
 // state, and the rows waiting. One sample alone never makes `stall:all-idle` (it fires only after a streak of `allIdleAfterMs`), which is why
@@ -29,6 +29,8 @@
 
 import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+
+import { readCompletion } from "../../lib/tick-completion.mjs";
 
 /**
  * Kept: a week at the timer's five minutes. The streak the stall source needs is ten minutes, so the rest is for the READING: row 13 counts how many
@@ -166,19 +168,23 @@ function unixMilliseconds(text, field) {
 }
 
 /**
- * The work-tick unit, from systemd: `failed` is its own state and `failedAt` when it entered it; `lastRecordAt` is when its last run ended.
- * `work-tick.service` declares `SuccessExitStatus=0 1 2`, so a quiet or partial tick is not a failure and `failed` means the gate really crashed.
- * @param {{ unit: string | undefined, systemctl: (argv: string[]) => Promise<string> }} deps
+ * The work-tick unit: `failed` is systemd's own state and `failedAt` when it entered it; `lastRunAt` is when the unit last RAN (systemd's
+ * `InactiveEnterTimestamp`, which a tick that died moves exactly as a good one -- the 2026-10-02 outage); `lastRecordAt` is when a tick last COMPLETED,
+ * from the record `work-tick.mjs` writes only at the end of `main()` (#3040). A record that is absent or unreadable THROWS: no tick known to have
+ * completed is not a clean reading. `work-tick.service` declares `SuccessExitStatus=0 1 2`, so a quiet or partial tick is not a failure and `failed`
+ * means the gate really crashed (exit 70, #3038).
+ * @param {{ unit: string | undefined, systemctl: (argv: string[]) => Promise<string>, recordPath: string }} deps
  * @returns {Promise<import("./incidents.mjs").GateUnitReading>}
  */
-export async function readGateUnit({ unit, systemctl }) {
+export async function readGateUnit({ unit, systemctl, recordPath }) {
   if (unit === undefined) throw new TypeError("the work-tick unit's name is not known (no `units.prefix` in the project declaration)");
   const text = await systemctl(["--user", "show", unit, "--timestamp=unix", "-p", SYSTEMD_PROPERTIES]);
   const properties = parseProperties(text);
   if (properties.ActiveState === undefined) throw new TypeError(`systemctl show ${unit} printed no ActiveState`);
   const failed = properties.ActiveState === "failed";
-  const lastRecordAt = unixMilliseconds(properties.InactiveEnterTimestamp, "InactiveEnterTimestamp");
-  return failed ? { failed, failedAt: unixMilliseconds(properties.StateChangeTimestamp, "StateChangeTimestamp"), lastRecordAt } : { failed, lastRecordAt };
+  const lastRunAt = unixMilliseconds(properties.InactiveEnterTimestamp, "InactiveEnterTimestamp");
+  const lastRecordAt = readCompletion(recordPath).at;
+  return failed ? { failed, failedAt: unixMilliseconds(properties.StateChangeTimestamp, "StateChangeTimestamp"), lastRunAt, lastRecordAt } : { failed, lastRunAt, lastRecordAt };
 }
 
 /**
@@ -267,14 +273,15 @@ export function readTicks({ stateDir, log = () => {}, limit = SAMPLE_LIMIT }) {
  * The six readers, bound to one repository, one state directory and one set of outside reads, plus `takeSample`, which the stall source runs first.
  *
  * @param {{ github: Github, repo: string, stateDir: string, fleetStatePath: string, unit: string | undefined, now: () => number,
- *   systemctl: (argv: string[]) => Promise<string>, readSeats: () => { label: string, status: string }[] | null, log?: (line: string) => void }} deps
+ *   systemctl: (argv: string[]) => Promise<string>, readSeats: () => { label: string, status: string }[] | null, log?: (line: string) => void,
+ *   completionPath: string }} deps `completionPath` is where `work-tick.mjs` records a completed tick
  */
-export function createReaders({ github, repo, stateDir, fleetStatePath, unit, now, systemctl, readSeats, log }) {
+export function createReaders({ github, repo, stateDir, fleetStatePath, unit, now, systemctl, readSeats, log, completionPath }) {
   return {
     readLastMerge: () => readLastMerge({ github, repo }),
     readTrunkRuns: () => readTrunkRuns({ github, repo }),
     readCiRuns: () => readCiRuns({ github, repo, stateDir }),
-    readGateUnit: () => readGateUnit({ unit, systemctl }),
+    readGateUnit: () => readGateUnit({ unit, systemctl, recordPath: completionPath }),
     readFleetState: () => readFleetState({ path: fleetStatePath }),
     readTicks: () => readTicks({ stateDir, log }),
     takeSample: () => takeSample({ github, repo, stateDir, now, readSeats }),
