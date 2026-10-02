@@ -11,8 +11,8 @@
  *   1. a host file whose primary holds a fixture `project.json` gives THE FIXTURE's labels and none of a11ign's;
  *   2. a host path that does not exist, a file that is not JSON, and a primary naming no project each REFUSE naming the path;
  *   3. `$AGENT_ORG_HOST` unset, in the product tree, still gives a11ign's own labels (nothing moved for the live units).
- * Positive controls: the SAME scratch tree with the variable unset fails with the `ENOENT` refusal (the failure is reachable, not
- * described), and a host file whose primary IS a11ign's checkout gives a11ign's labels from that tree (the green path is not a
+ * Positive controls: the SAME scratch tree with the variable unset REFUSES naming `AGENT_ORG_HOST` (#3039; it was an `ENOENT` on a file
+ * nobody wrote -- the failure is reachable, not described), and a host file whose primary IS a11ign's checkout gives a11ign's labels from that tree (the green path is not a
  * fixture agreeing with itself).
  */
 import { test } from "node:test";

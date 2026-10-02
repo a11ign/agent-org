@@ -17,9 +17,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const scratchDirs: string[] = [];
 function scratch(): string {
@@ -187,4 +189,21 @@ test("POSITIVE CONTROLS: the same unit with the variable in the unit file, or in
     assert.deepEqual(run(), [UNIT]);
     assert.ok(effects.includes(`write ${join(dir.installedDir, UNIT)}`), effects.join("\n"));
   }
+});
+
+test("the leak scan's patterns import in a tree that holds no project and no project-config: `gate` scans BEFORE any project exists", () => {
+  const dir = scratch();
+  copyFileSync(fileURLToPath(new URL("../lib/generic-leak-patterns.mjs", import.meta.url)), join(dir, "generic-leak-patterns.mjs"));
+  const env = { ...process.env };
+  delete env[HOST_VARIABLE];
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e", `const { GENERIC_LEAK_PATTERNS } = await import(${JSON.stringify(join(dir, "generic-leak-patterns.mjs"))}); console.log(GENERIC_LEAK_PATTERNS.length);`],
+    { env, encoding: "utf8", timeout: 30_000 });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stdout.trim(), "2");
+});
+
+test("`leak-patterns.mjs` still answers the same two patterns, so no importer of it changed", async () => {
+  const { GENERIC_LEAK_PATTERNS } = await import("../lib/leak-patterns.mjs");
+  const { GENERIC_LEAK_PATTERNS: own } = await import("../lib/generic-leak-patterns.mjs");
+  assert.equal(GENERIC_LEAK_PATTERNS, own);
 });
