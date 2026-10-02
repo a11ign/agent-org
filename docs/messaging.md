@@ -203,8 +203,11 @@ the events are the delivery log's `stall:no-merge` lines. **Read it from the hos
 
 **Limits of what this row can show:** the tests hand each reader a recording and a failure; none runs `gh`, `systemctl` or `herdr`. The live reading was one
 hand-run of the readers against this host (read-only), not a unit run, because the unit is row 6's. On that run `incident:fleet-down` was open with 15
-workers not ready, the oldest since 2026-09-30 per `fleet-watch`'s own file, so the first thing row 6 will send is that incident unless it is expected (a fleet switched
-off on purpose reads as non-ready to `fleet-watch`); whether it should is `orchestrator`'s to say.
+workers not ready, the oldest since 2026-09-30 per `fleet-watch`'s own file. **That was a false alarm, and the reader was right to report it:** the fleet is switched
+off on purpose (`orchestrator`, ruling on #3008, 2026-10-02), and `fleet-watch` counts an `unreachable` box as non-ready. The fix is in the writer, a11ign/a11ign#3023,
+and row 6 is blocked by it, so the unit is not installed while the alarm would fire. After it lands the state file lists no worker while the fleet is off.
+**What stays uncovered, for row 13's first-week reading to look for:** a fleet that is genuinely dead (power cut, switch down) reads the same as one that is off, so
+`incident:fleet-down` will not fire for it. `fleet:wake` is the cover, at the next capture window; catching a dead fleet between windows needs a different signal and its own row.
 
 ## Stage 2, the inbound core (row 7 of 13)
 
