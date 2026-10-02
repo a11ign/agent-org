@@ -65,10 +65,10 @@ import { execFileSync, execSync } from "node:child_process";
 import {
   declaredRegionFiles, extractLabeledSection, regionCovers, trackedTopLevelDirs,
 } from "./region-paths.mjs";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { existsSync, globSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import { basename, delimiter, isAbsolute, join, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { changedFiles } from "./lib/changed-files.mjs";
@@ -1981,13 +1981,42 @@ const NPM_RUN_SCRIPT = /(?:^|&&|\|\||;)\s*npm\s+run\s+([\w:-]+)(?![:\w-])/g;
  * `&&`/`||`/`|`/`;` of its own. `board:settle`'s body (`node packages/agent-org/src/settle-closed-rows.mjs`)
  * is exactly this shape; a script that chains further commands, or does not invoke `node` at all, resolves
  * to `null` -- this only ever ADDS a file to check, never guesses one where the shape is ambiguous.
+ *
+ * #3063: `node scripts/agent-org.mjs <program>.mjs` is the one exception to "the file named is the file run":
+ * it resolves to the PROGRAM, under the tool's `src/`, because the launcher is only the way in.
  * @param {string} scriptBody
  * @returns {string | null}
  */
 export function singleNodeInvocation(scriptBody) {
   if (/&&|\|\||\||;/.test(scriptBody)) return null;
   const tokens = scriptBody.trim().split(/\s+/).filter((token) => !ENV_ASSIGNMENT.test(token));
-  return tokens[0] === "node" && /\.[cm]?[jt]sx?$/.test(tokens[1] ?? "") ? tokens[1] : null;
+  if (tokens[0] !== "node" || !SCRIPT_FILE.test(tokens[1] ?? "")) return null;
+  return LAUNCHER.test(tokens[1]) ? launchedProgram(tokens[2]) : tokens[1];
+}
+
+const SCRIPT_FILE = /\.[cm]?[jt]sx?$/;
+
+// #3063: the project's `scripts/agent-org.mjs <program>.mjs [args...]` -- how every `package.json` script runs the
+// tool once it has left the monorepo (#2975). The launcher spawns nothing of its own, so resolving a script to IT
+// charges `npm run <script>` for nothing the script actually does.
+const LAUNCHER = /^(?:\.\/)?scripts\/agent-org\.mjs$/;
+
+// The tool's own `src/`, which is where the launcher looks a program up: this module sits in it, so the directory
+// is known from where the classifier is running rather than read from the host declaration the launcher uses.
+const TOOL_SRC = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * #3063: the file the launcher runs for `program`, as an absolute path under the tool's `src/` -- or null when
+ * it names no script file or climbs out of `src/` (a `..` segment, or an absolute path), since a file the
+ * launcher would not run is no file this should charge.
+ * @param {string | undefined} program
+ * @returns {string | null}
+ */
+function launchedProgram(program) {
+  if (!SCRIPT_FILE.test(program ?? "")) return null;
+  const file = resolve(TOOL_SRC, /** @type {string} */ (program));
+  const fromSrc = relative(TOOL_SRC, file);
+  return fromSrc.startsWith("..") || isAbsolute(fromSrc) ? null : file;
 }
 
 /**

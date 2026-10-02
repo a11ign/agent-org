@@ -11,7 +11,8 @@ import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   classifyCommand, extractAcceptanceSection, acceptanceReport, testFileArgumentsResolve,
@@ -1185,6 +1186,61 @@ test("#2724 singleNodeInvocation: a script chaining a further command of its own
 test("#2724 singleNodeInvocation: a non-`node` executable resolves to nothing -- the real `lint` shape "
   + "(`eslint .`)", () => {
   assert.equal(singleNodeInvocation("eslint ."), null);
+});
+
+// #3063: the launcher form (`node scripts/agent-org.mjs <program>.mjs`) is how a project's `package.json` runs the
+// tool once it has left the monorepo (#2975). The launcher spawns nothing, so a script resolved to IT would be
+// charged for nothing: `npm run board:settle` would read `runnable` against a job with no token.
+const TOOL_SRC = resolve(fileURLToPath(import.meta.url), "..", "..");
+const LAUNCHER_BODY = "node scripts/agent-org.mjs settle-closed-rows.mjs";
+
+/** Classify `command` from a directory whose `package.json` has the one script `board:settle` = `body`. */
+function classifyAgainstScript(body: string, command = "npm run board:settle") {
+  const project = mkdtempSync(join(tmpdir(), "launcher-script-"));
+  const before = process.cwd();
+  try {
+    writeFileSync(join(project, "package.json"), JSON.stringify({ scripts: { "board:settle": body } }));
+    process.chdir(project);
+    return classifyCommand(command, { capabilities: NO_TOKEN });
+  } finally {
+    process.chdir(before);
+    rmSync(project, { recursive: true, force: true });
+  }
+}
+
+test("#3063 singleNodeInvocation: the launcher form resolves to the PROGRAM's file under the tool's src/, "
+  + "with flags ignored and a subdirectory program kept", () => {
+  assert.equal(singleNodeInvocation(LAUNCHER_BODY), join(TOOL_SRC, "settle-closed-rows.mjs"));
+  assert.equal(singleNodeInvocation("node ./scripts/agent-org.mjs settle-closed-rows.mjs --dry-run"),
+    join(TOOL_SRC, "settle-closed-rows.mjs"));
+  assert.equal(singleNodeInvocation("node scripts/agent-org.mjs messaging/listen.mjs"),
+    join(TOOL_SRC, "messaging", "listen.mjs"));
+  assert.ok(existsSync(join(TOOL_SRC, "settle-closed-rows.mjs")),
+    "the program the cases above resolve to must exist, or the classify case below proves nothing");
+});
+
+test("#3063 singleNodeInvocation: a program outside src/, or none, resolves to nothing -- like any ambiguous shape", () => {
+  assert.equal(singleNodeInvocation("node scripts/agent-org.mjs ../package.json.mjs"), null);
+  assert.equal(singleNodeInvocation("node scripts/agent-org.mjs messaging/../../x.mjs"), null);
+  assert.equal(singleNodeInvocation("node scripts/agent-org.mjs /etc/x.mjs"), null);
+  assert.equal(singleNodeInvocation("node scripts/agent-org.mjs"), null);
+  assert.equal(singleNodeInvocation("node scripts/agent-org.mjs --help"), null);
+  assert.equal(singleNodeInvocation("node scripts/agent-org.mjs notes.txt"), null);
+  assert.equal(singleNodeInvocation("node scripts/agent-org.mjs a.mjs && node b.mjs"), null);
+});
+
+test("#3063 ACCEPTANCE: `npm run board:settle` is REFUSED for `token` when the script is the launcher form -- the "
+  + "positive control is the same command against the direct form, which is refused today", () => {
+  const direct = classifyAgainstScript(`node ${join(TOOL_SRC, "settle-closed-rows.mjs")}`);
+  assert.equal(direct.verdict, "refused", "control: the direct form must refuse, or the launcher case proves nothing");
+  const launched = classifyAgainstScript(LAUNCHER_BODY);
+  assert.equal(launched.verdict, "refused");
+  assert.match((/** @type {{reason:string}} */ (launched)).reason, /settle-closed-rows\.mjs requires token/);
+});
+
+test("#3063 a launcher script naming a program that spawns nothing stays RUNNABLE -- the refusal tracks the "
+  + "program, not the launcher's name", () => {
+  assert.equal(classifyAgainstScript("node scripts/agent-org.mjs ../package.json.mjs").verdict, "runnable");
 });
 
 test("#621 ACCEPTANCE: classifyCommand REFUSES board-document-chrome-resolver.test.ts, named, naming the "
