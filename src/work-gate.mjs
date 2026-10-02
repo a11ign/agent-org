@@ -36,7 +36,9 @@ import { dirname, join } from "node:path";
 // `org-watch.mjs` and `build-packages.mjs` state at their own imports.
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { READY_LABEL, CLAIM_LABEL, CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
-import { verdictAtHead } from "./review-verdict.mjs";
+import { verdictAmong } from "./review-verdict.mjs";
+// `verdictAmong` lives in review-verdict.mjs (#3030), so a test of the verdict reader need not import this file and its token.
+export { verdictAmong };
 import { waitingOn, fleetWaitingOn, todayIso, describeWaiting, ANSWER_PREFIX, answersOwedBy, bareAnswerLabel }
   from "./waiting-condition.mjs";
 import { newestPerName } from "./newest-check-run.mjs";
@@ -3977,22 +3979,6 @@ export function reviewableHead(pr) {
   const onHead = newestPerName(pr?.statusCheckRollup);
   if (checksSettledGreen(onHead) !== true && !redOnlyFromAnyHold(pr, onHead)) return null;
   return String(pr.headRefOid ?? "") || null;
-}
-
-/**
- * The verdict this pull request carries, looked for at EVERY head an update-branch made equivalent, newest
- * first. A reviewer who wrote `at <head8>` after the last update-branch wrote it at THAT sha, so reading
- * only the authored one would re-summon a reviewer who had answered.
- * @param {any} pr @param {string[]} heads
- */
-export function verdictAmong(pr, heads) {
-  const comments = (pr.comments ?? []).map((/** @type {any} */ c) => ({ body: c?.body ?? "", id: c?.id }));
-  let found = verdictAtHead({ comments, head: heads[0], prAuthor: pr.author?.login ?? null });
-  for (const head of heads.slice(1)) {
-    if (found.verdict !== null) break;
-    found = verdictAtHead({ comments, head, prAuthor: pr.author?.login ?? null });
-  }
-  return found;
 }
 
 /**

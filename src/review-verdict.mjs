@@ -129,6 +129,36 @@ function verdictHereAt(comment, head) {
 }
 
 /**
+ * #3030: THE PLACES A VERDICT LIVES, as ONE list oldest first -- the PR's comments AND its review bodies.
+ *
+ * The door (`reviewer/pr-review-verdict.sh`) now posts the verdict file's whole text as the review body and
+ * no comment, so a gate reading `comments` alone would call every such PR verdictless and re-summon a
+ * reviewer who had answered. Comments stay in the list: every PR already open carries its verdict there,
+ * and a PR carrying it in both places still reads as ONE verdict, because `verdictAtHead` returns the
+ * newest match and never counts.
+ *
+ * ORDER IS BY TIME, NOT BY SOURCE: a `not convinced` review followed by a `convinced` comment (or the
+ * reverse) is a reviewer changing their mind, and "newest wins" has to hold across the two. An item with
+ * no readable time sorts OLDEST and keeps its place among its peers (the sort is stable), so a list with
+ * no times at all reads in the order it was given, as `verdictAtHead` did before.
+ *
+ * @param {{ comments?: any[] | null, reviews?: any[] | null }} pr
+ * @returns {{ body: string, id?: number | string }[]}
+ */
+export function verdictBearers(pr) {
+  const timed = (/** @type {any} */ item, /** @type {string} */ field) =>
+    ({ at: Date.parse(item?.[field] ?? ""), body: item?.body ?? "", id: item?.id });
+  const items = [
+    ...(pr?.comments ?? []).map((/** @type {any} */ c) => timed(c, "createdAt")),
+    ...(pr?.reviews ?? []).map((/** @type {any} */ r) => timed(r, "submittedAt")),
+  ];
+  const key = (/** @type {{ at: number }} */ item) => (Number.isFinite(item.at) ? item.at : -Infinity);
+  return items
+    .sort((a, b) => (key(a) === key(b) ? 0 : key(a) < key(b) ? -1 : 1))
+    .map(({ body, id }) => ({ body, id }));
+}
+
+/**
  * #912: THE VERDICT AT ONE HEAD, AND WHO WROTE IT -- the question a wake gate actually asks.
  *
  * `reviewVerdict` answers "what verdict does THIS COMMENT carry". The clock's question is one level up and
@@ -193,4 +223,21 @@ export function headMatches(stated, actual) {
   const a = stated.toLowerCase();
   const b = actual.toLowerCase();
   return a.startsWith(b) || b.startsWith(a);
+}
+
+/**
+ * The verdict this pull request carries, looked for at EVERY head an update-branch made equivalent, newest
+ * first. A reviewer who wrote `at <head8>` after the last update-branch wrote it at THAT sha, so reading
+ * only the authored one would re-summon a reviewer who had answered.
+ * @param {any} pr @param {string[]} heads
+ */
+export function verdictAmong(pr, heads) {
+  // #3030: comments AND review bodies, since the door posts the verdict as a review alone.
+  const bearers = verdictBearers(pr);
+  let found = verdictAtHead({ comments: bearers, head: heads[0], prAuthor: pr.author?.login ?? null });
+  for (const head of heads.slice(1)) {
+    if (found.verdict !== null) break;
+    found = verdictAtHead({ comments: bearers, head, prAuthor: pr.author?.login ?? null });
+  }
+  return found;
 }
