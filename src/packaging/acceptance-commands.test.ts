@@ -2160,7 +2160,7 @@ test("#1116: the remedy is offered only when it would HOLD — advice a reader c
   // #1059's shape: `doctor`'s `next:` line once sent a reader to a script that had just refused them.
   // The suggestion is checked against the entry's own comment-stripped code before it is made, so a file
   // that really does call the function is never told to declare that it does not.
-  const already = deriveClosureRequirements("packages/lab/src/packaging/update-branch-sweep.test.ts");
+  const already = deriveClosureRequirements("packages/agent-org/src/wake-orphaned-handoff.test.ts");
   assert.deepEqual(already, [],
     "this file already declares `// no-token: gh`, so it has no token requirement to be advised about -- "
     + "the control that the advice is not simply appended to everything");
