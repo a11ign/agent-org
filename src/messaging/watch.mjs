@@ -43,9 +43,6 @@ import { readAgents } from "../herdr-agents.mjs";
 import { completionPath } from "../lib/tick-completion.mjs";
 import { isBrokenRed } from "../red-pr.mjs";
 
-// `sources/requests.test.mjs` still imports it from here; the definition is `state.mjs`'s.
-export { defaultLedgerPath };
-
 const execFileAsync = promisify(execFile);
 const GH_TIMEOUT_MS = 60_000;
 const GH_MAX_BUFFER = 64_000_000;
