@@ -9,7 +9,8 @@
     "messaging:listen": "node src/messaging/listen.mjs",
     "messaging:watch": "node src/messaging/watch.mjs",
     "messaging:pair": "node src/messaging/providers/telegram/pair.mjs",
-    "ruling:record": "node src/ruling-record.mjs"
+    "ruling:record": "node src/ruling-record.mjs",
+    "chairman:reply": "node src/messaging/reply-cli.mjs"
   },
   "files": [
     "src",
