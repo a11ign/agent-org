@@ -15,6 +15,8 @@ import { declaredRegionFiles } from "../region-paths.mjs";
 
 /** An open PR whose list is COMPLETE: its count is its list's length (#1419 compares the two). */
 const pr = (number: number, files: string[]) => ({ number, files, changedFiles: files.length });
+/** These tests are about the lookup's MECHANICS over ONE repository; the declaration now lists two (#2969), and `keyed-repo-review.test.ts` pins that the real lookup reads both. */
+const ONE_REPOSITORY = [{ key: "", repo: "a11ign/a11ign" }];
 
 // --- fileOverlapReason: THE VERDICT, PURE ---
 
@@ -156,7 +158,7 @@ test("lookupOpenPrFiles reads every open PR's files AND their count in one call,
       { number: 472, changedFiles: 1, files: [{ path: "packages/lab/src/gates/corpus-snapshot-scope.test.ts" }] },
     ]);
   };
-  const files = lookupOpenPrFiles({ run, log: () => {} });
+  const files = lookupOpenPrFiles({ run, log: () => {}, repos: ONE_REPOSITORY });
   assert.deepEqual(calls, [["pr", "list", "--repo", "a11ign/a11ign", "--state", "open",
     "--json", "number,changedFiles,files,body,labels,headRefName"]], "one bulk call, and no REST page for a complete list");
   assert.deepEqual(files, [
@@ -170,7 +172,7 @@ test("lookupOpenPrFiles reads every open PR's files AND their count in one call,
 
 test("lookupOpenPrFiles returns null, never [], on a failed lookup", () => {
   const run = (): string => { throw new Error("network error"); };
-  assert.equal(lookupOpenPrFiles({ run }), null);
+  assert.equal(lookupOpenPrFiles({ run, repos: ONE_REPOSITORY }), null);
 });
 
 // --- #1419: a PR's list is compared with its OWN count before it is compared with the Region ---
@@ -241,7 +243,7 @@ test("#1419 THE LOOKUP PAGES A SHORT LIST through REST, once and only for that P
     }
     return [...CHANGESETS_100, ...REAL_13].join("\n") + "\n";
   };
-  const others = lookupOpenPrFiles({ run, log: () => {} });
+  const others = lookupOpenPrFiles({ run, log: () => {}, repos: ONE_REPOSITORY });
   const rest = calls.filter((args) => args[0] === "api");
   assert.deepEqual(rest, [["api", "--paginate", "repos/a11ign/a11ign/pulls/1412/files?per_page=100", "--jq", ".[].filename"]],
     "exactly one REST page-through, for the short PR only");
@@ -256,7 +258,7 @@ test("#1419 a FAILED page keeps the short list and says so -- the rule then refu
     if (args[0] === "pr") return JSON.stringify([{ number: 1412, changedFiles: 113, files: CHANGESETS_100.map((path) => ({ path })) }]);
     throw new Error("HTTP 502");
   };
-  const others = lookupOpenPrFiles({ run, log: (line) => said.push(line) });
+  const others = lookupOpenPrFiles({ run, log: (line) => said.push(line), repos: ONE_REPOSITORY });
   assert.notEqual(others, null, "a null read skips B4 entirely, which is this row's defect by another door");
   assert.equal(others?.[0].files.length, 100);
   assert.match(said.join("\n"), /could not page #1412's files past 100 \(HTTP 502\)/);
@@ -360,7 +362,7 @@ test("#2101 THE LOOKUP READS `body` ON THE CALL IT ALREADY MAKES, never a second
       { number: 2084, changedFiles: 1, files: [{ path: REGION_FILE }], body: "Closes: none -- unrelated" },
     ]);
   };
-  const others = lookupOpenPrFiles({ run, log: () => {} });
+  const others = lookupOpenPrFiles({ run, log: () => {}, repos: ONE_REPOSITORY });
   assert.equal(calls.length, 1, "one `gh pr list`, `body` among its fields");
   assert.ok(calls[0].join(" ").includes("number,changedFiles,files,body"));
   assert.deepEqual(others?.map((o) => o.closes), [[2076], []]);
@@ -464,7 +466,7 @@ test("#2493 lookupOpenPrFiles reads `held` from a `hold:<session>` label and fro
     { number: 2, changedFiles: 1, files: [{ path: "b" }], labels: [{ name: "session:worker-1" }] },
     { number: 3, changedFiles: 1, files: [{ path: "c" }], labels: [] },
   ]);
-  assert.deepEqual(lookupOpenPrFiles({ run, log: () => {} })?.map((p) => [p.number, p.held]),
+  assert.deepEqual(lookupOpenPrFiles({ run, log: () => {}, repos: ONE_REPOSITORY })?.map((p) => [p.number, p.held]),
     [[1, true], [2, false], [3, false]]);
 });
 
@@ -493,7 +495,7 @@ test("#2493 END TO END through the claim's own lookup: a held PR waiting on the 
       { number: 2378, changedFiles: 1, files: [{ path: REGION_FILE }], body: "Closes #2401", labels: [] },
     ]);
   };
-  const prs = lookupOpenPrFiles({ run, log: () => {} }) ?? [];
+  const prs = lookupOpenPrFiles({ run, log: () => {}, repos: ONE_REPOSITORY }) ?? [];
   assert.deepEqual(calls.map((c) => c[0]), ["pr"], "the lookup itself makes no per-row call");
   assert.match(fileOverlapReason([REGION_FILE], prs, { rowNumber: ASKING }).reason as string, /overlaps #2378/,
     "the held PR waiting on the row is skipped; the UNHELD one on the same file still refuses");
@@ -557,7 +559,7 @@ test("#2769 THE LOOKUP READS `headRefName` ON THE CALL IT ALREADY MAKES and hand
       { number: 2790, changedFiles: 1, files: [{ path: REGION_FILE }], body: "" },
     ]);
   };
-  const others = lookupOpenPrFiles({ run, log: () => {} }) ?? [];
+  const others = lookupOpenPrFiles({ run, log: () => {}, repos: ONE_REPOSITORY }) ?? [];
   assert.equal(calls.length, 1, "one `gh pr list`, `headRefName` among its fields");
   assert.ok(calls[0].join(" ").includes("headRefName"));
   assert.deepEqual(others.map((o) => o.branch), [ADOPTED, undefined]);

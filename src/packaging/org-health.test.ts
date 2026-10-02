@@ -345,9 +345,10 @@ const EXEMPT: Record<string, string> = {
   "queue-stalled.mjs": "reads the gate verdict of an ARMED PR to tell a stalled queue from a slow one",
   "update-branch-sweep.mjs": "skips a PR whose gate is failing when deciding whom to update; a gate verdict, not a red count",
   "queue-table.mjs": "THE KNOWN FOURTH DECIDER (found by this scan, #2956): its own `isRed` over REST check runs feeds the stalled-PR table's `red` and `absorbed`, so a held PR reads red there too. Outside this row's Region; #2981 moves it onto `isBrokenRed` and deletes this entry",
+  "messaging/watch.mjs": "THE KNOWN SIXTH DECIDER (found by agent-org's own gate running this scan, a11ign/a11ign#2973): `redPulls` has its own `isRed` and `newestPerName` feeding the chairman's daily-summary red count, and it differs from `isBrokenRed` in three ways each of which moves that number (a hold's red is counted, a status context's `state` is read, `ACTION_REQUIRED` is not). Not a mechanical swap, so a11ign/a11ign#3014 decides it and deletes this entry",
   "work-gate/pr-orders.mjs": "ADDRESSEE-relative order logic (`redOnlyFromHoldOf`, #2400: who is asked, not how many are red), `HOLD_RED_JOBS` pinned equal to red-pr.mjs's in org-retro.test.ts",
 };
-const EXEMPT_CEILING = 5;
+const EXEMPT_CEILING = 6;
 
 /** Code with every `//`, `/* *\/` comment removed, so a header that NAMES `statusCheckRollup` does not enlist its file. */
 const codeOf = (source: string) => source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/\s\/\/\s.*$/gm, "");

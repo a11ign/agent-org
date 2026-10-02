@@ -18,9 +18,15 @@ const OWN_DIRECTORIES = ["\\.github", "src", "host"];
 const PRODUCT_ONLY_DIRECTORIES = ["packages", "scripts", "docs"];
 const NAMED_PATH = new RegExp(`(?<![\\w./-])((?:${[...OWN_DIRECTORIES, ...PRODUCT_ONLY_DIRECTORIES].join("|")})/[\\w./-]*\\w)`, "g");
 
+// A line ending in this marker names paths in ANOTHER checkout (the gate's project under test, `project/`), which are not claims about this
+// repository's tree. A path written `project/packages/...` needs no marker: NAMED_PATH refuses a match preceded by `/`. The marker is for the one
+// place a command must run from inside that checkout and so cannot spell the prefix; it exempts its own line and nothing else.
+const IN_PROJECT_MARKER = /#\s*in-project\s*$/;
+
 /** @param {string} text @returns {string[]} */
 export function pathsNamedIn(text) {
-  return [...new Set([...text.matchAll(NAMED_PATH)].map((match) => match[1] ?? ""))];
+  const claimed = text.split("\n").filter((line) => !IN_PROJECT_MARKER.test(line)).join("\n");
+  return [...new Set([...claimed.matchAll(NAMED_PATH)].map((match) => match[1] ?? ""))];
 }
 
 /** @param {string} root @returns {{ examined: number; named: number; missing: string[] }} */
