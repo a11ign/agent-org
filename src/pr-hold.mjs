@@ -7,6 +7,9 @@
  *   npm run pr:hold -- <n> --session=<name>       # take it; prints who held it before
  *   npm run pr:release -- <n> --session=<name>    # give it back
  *   npm run pr:hold -- <n>                        # no --session: REPORTS who holds it, writes nothing
+ *   npm run pr:hold -- <n> --session=<name> --until="closed #2867"
+ *                                                 # take it AND say what it waits for: closed|merged <ref>,
+ *                                                 # labelled|unlabelled <label> <ref>, or `manual` (#2996)
  *
  * **THERE IS NO `pr-release.mjs`.** `pr:release` is this file with `--release` (see `package.json`), and
  * the two being named as a pair everywhere else makes a sibling script the natural thing to go looking
@@ -52,7 +55,9 @@ import { pathToFileURL } from "node:url";
 
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { disarmVerdict, armVerdict, REARM_LABEL, HOLD_PREFIX, holdersOf } from "./pr-hold-state.mjs";
+import { parseWaits, WAIT_MARKER } from "./wait-condition.mjs";
 import { REPO } from "./project-identity.mjs";
+import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
 
 const EXIT = { DONE: 0, REFUSED: 1, CANNOT_ASK: 2, DISPLACED_NOT_HELD: 3 };
 
@@ -146,17 +151,22 @@ function readAutoMerge(number) {
 }
 
 function usage() {
-  return "usage: pr-hold.mjs <pr-number> [--session=<name>] [--release] [--steal]\n"
+  return "usage: pr-hold.mjs <pr-number> [--session=<name>] [--release] [--steal] [--until=<state> <ref> | manual]\n"
     + "  with --session: takes the hold (or releases it with --release)\n"
     + "  without       : reports who holds it and writes nothing\n";
 }
 
 function main() {
-  refuseUnknownFlags(["--session=", "--release", "--steal"],
+  refuseUnknownFlags(["--session=", "--release", "--steal", "--until="],
     { entry: import.meta.url, command: "npm run pr:hold" });
   const number = Number(process.argv.slice(2).find((a) => /^\d+$/.test(a)));
   if (!Number.isInteger(number) || number <= 0) {
     process.stderr.write(usage());
+    process.exit(EXIT.CANNOT_ASK);
+  }
+  const until = untilOf(process.argv);
+  if (until.error) {
+    process.stderr.write(`${until.error}\n`);
     process.exit(EXIT.CANNOT_ASK);
   }
   const labels = prLabels(number);
@@ -180,7 +190,42 @@ function main() {
 
   process.exit(process.argv.includes("--release")
     ? releaseHold(number, session, holders)
-    : takeHold(number, session, holders, process.argv.includes("--steal")));
+    : takeHold(number, session, holders, { steal: process.argv.includes("--steal"), until: until.value }));
+}
+
+/**
+ * WHAT THE HOLD WAITS FOR, validated BEFORE anything is written (#2996): `--until=closed #2867`, or `manual`, or nothing. A value outside the grammar is
+ * refused, because `Waiting-for: soon` is the sentence the grammar exists to end, and a refusal after the label was taken would leave a hold nobody can read.
+ * @param {readonly string[]} argv
+ * @returns {{ value: string | null, error?: string }}
+ */
+function untilOf(argv) {
+  const value = flagValue(argv, "until");
+  if (value === undefined) return { value: null };
+  const [wait, ...extra] = parseWaits(`Waiting-for: ${value}`);
+  if (extra.length === 0 && wait && wait.state !== "unreadable") return { value };
+  return { value: null, error: `REFUSING --until=${JSON.stringify(value)}: it is not a condition the gate can read. Use \`closed #<n>\`, \`merged #<n>\`, `
+    + "`labelled <label> #<n>`, `unlabelled <label> #<n>` (a reference is `#n` or `owner/repo#n`), or `manual`, which is counted and expires after 4 hours." };
+}
+
+/**
+ * RECORD WHY THE PR IS HELD, as a comment, because a label holds no text. THE MARKER IS WRITTEN FOR EVERY TAKE, with or without \`--until\`: the
+ * newest marker is the hold's reason, so a hold taken with none must supersede an older hold's condition rather than inherit it. Read back, like
+ * every write here.
+ * @param {number} number @param {string} session @param {string | null} until @returns {boolean} whether the marker is on the PR
+ */
+function writeUntilMarker(number, session, until) {
+  const body = [WAIT_MARKER, `Held by \`${session}\`.`,
+    until === null ? "No condition was named, so nothing says when this hold ends." : `Waiting-for: ${until}`].join("\n");
+  try {
+    const write = ["pr", "comment", String(number), "--repo", REPO, "--body", body];
+    assertNoLeakInArgv("gh", write); // #1053: every script that sends a body to GitHub is declared in `TRACKER_WRITERS` and guarded
+    gh(write);
+    const comments = JSON.parse(gh(["pr", "view", String(number), "--repo", REPO, "--json", "comments"])).comments ?? [];
+    return comments.some((/** @type {{ body?: string }} */ c) => String(c?.body ?? "").trim() === body);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -315,10 +360,11 @@ function displaceThenTake(number, session, displaces) {
  * is visible and recoverable; two holders is the state that had `merge-guard` refusing the very session
  * that had just been told it succeeded.
  *
- * @param {number} number @param {string} session @param {string[]} holders @param {boolean} steal
+ * @param {number} number @param {string} session @param {string[]} holders
+ * @param {{ steal: boolean, until: string | null }} options `until` is what the hold waits for (#2996), `null` for no stated reason
  * @returns {number} the exit code
  */
-function takeHold(number, session, holders, steal) {
+function takeHold(number, session, holders, { steal, until }) {
   const decision = holdDecision({ holders, session, steal });
   process.stdout.write(`#${number}: ${decision.message}\n`);
   if (!decision.act) return decision.code;
@@ -330,6 +376,11 @@ function takeHold(number, session, holders, steal) {
   const landed = holdLanded(number, session);
   if (landed !== null) {
     process.stderr.write(landed);
+    return EXIT.CANNOT_ASK;
+  }
+  if (!writeUntilMarker(number, session, until)) {
+    process.stderr.write(`#${number}: HELD, but the hold's reason did not land as a comment, so the gate reads it as a hold with NO reason. `
+      + "Post a `Waiting-for:` line on the PR by hand, or release and take it again.\n");
     return EXIT.CANNOT_ASK;
   }
   // READ BEFORE DISARMING, because after the disarm the two states the release has to tell apart are the

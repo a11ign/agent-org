@@ -59,6 +59,8 @@ import { HOME_CHECKOUT } from "./project-config.mjs";
 import { ANSWER_PREFIX } from "./project-vocabulary.mjs";
 // A LEAF too (it imports `newest-check-run.mjs` and `pr-hold-state.mjs`, which import nothing): the ONE decider of what counts as red.
 import { brokenChecks } from "./red-pr.mjs";
+// A LEAF too: the closed grammar of what a declared wait is waiting FOR (#2996), and the two ages that bound how long one may stand unexplained.
+import { MANUAL_WAIT_HOURS, STALE_WAIT_GRACE_MINUTES, pastGrace } from "./wait-condition.mjs";
 
 /** No PR merged for this long, with work that could merge, is the idle org the chairman found. See the table above. */
 export const NO_MERGE_HOURS = 3;
@@ -114,6 +116,8 @@ export const SIGNALS = Object.freeze({
   FLEET_IDLE: "fleet-idle-while-work-waits",
   COPIES: "copies-drifted",
   PR_NOT_PROGRESSING: "pr-not-progressing",
+  STALE_WAIT: "stale-wait",
+  WAIT_WITHOUT_REASON: "wait-without-reason",
 });
 
 /**
@@ -177,11 +181,13 @@ export function noMergeReading({ now, lastMergedAt, work }) {
  * hold is its ADDRESSEE's own (#2400), so a PR a worker owns and `ceo` holds is still ordered, and a count built from those orders
  * alone offered `ceo` its own freeze every day of it (#2883). THE HOLD'S OWN TWO JOBS ARE LEFT OUT and every other red is dated by
  * ITSELF: a held PR with a real `ts / run` failure is red since THAT check finished, not since the hold's `gate` did.
+ * `options.holdStands` is `red-pr.mjs`'s: whether the hold still EXCUSES (#2996), so a hold whose reason is gone dates the red it caused.
  * @param {{ labels?: any[], statusCheckRollup?: any[] }} pr
+ * @param {{ holdStands?: (pr: any) => boolean }} [options]
  * @returns {number | null} epoch ms of the earliest broken check, `null` for none or for a broken check GitHub gave no time
  */
-export function redSinceOf(pr) {
-  const times = brokenChecks(pr).map((check) => check.failedAt).filter(Number.isFinite);
+export function redSinceOf(pr, options) {
+  const times = brokenChecks(pr, options).map((check) => check.failedAt).filter(Number.isFinite);
   return times.length > 0 ? Math.min(...times) : null;
 }
 
@@ -340,6 +346,58 @@ export function prNotProgressingReading({ now, stalledPrs }) {
   const key = quiet.map((pr) => `${pr.number}:${pr.reason}`).sort().join(",");
   return { signal: SIGNALS.PR_NOT_PROGRESSING, status: "tripped", firstTrippedAt: first, discriminator: `${SIGNALS.PR_NOT_PROGRESSING}@${key}`,
     detail: `${oldestFirst.length} open PR(s) neither merged nor held, with no push, review or comment for over ${PR_NOT_PROGRESSING_MINUTES} min: ${named.join("; ")}${more}` };
+}
+
+/**
+ * SIGNAL 8: A WAIT STANDS ALTHOUGH THE CONDITION IT NAMES IS TRUE (#2996). The setter was ordered by the gate on the first tick the condition
+ * held (`staleWaitOrders`); this is the question of whether that produced a removal, asked `STALE_WAIT_GRACE_MINUTES` later. `stale` is
+ * `null` for a refused read of the rows and PRs. A wait whose condition could not be dated makes the answer unknown unless another trips.
+ * @param {{ now: number, stale: { item: { kind: string, number: number, repoKey?: string }, wait: { text: string, key: string }, setter: string,
+ *           resolvedAt: number | null }[] | null }} input
+ * @returns {Reading}
+ */
+export function staleWaitReading({ now, stale }) {
+  if (stale === null) return unknown(SIGNALS.STALE_WAIT, "the rows and pull requests carrying waits could not be read");
+  const over = stale.filter((s) => s.resolvedAt !== null && pastGrace(s.resolvedAt, now))
+    .sort((a, b) => /** @type {number} */ (a.resolvedAt) - /** @type {number} */ (b.resolvedAt));
+  if (over.length === 0) {
+    const undated = stale.filter((s) => s.resolvedAt === null);
+    return undated.length === 0 ? clear(SIGNALS.STALE_WAIT)
+      : unknown(SIGNALS.STALE_WAIT, `${undated.length} wait(s) have a true condition that nothing dated, so how long they have stood is not known`);
+  }
+  const first = /** @type {number} */ (over[0].resolvedAt) + STALE_WAIT_GRACE_MINUTES * MS_PER_MINUTE;
+  const named = over.slice(0, MAX_NAMED).map((s) => `${s.item.repoKey ?? ""}#${s.item.number} (\`Waiting-for: ${s.wait.text}\` true for `
+    + `${ageText(/** @type {number} */ (s.resolvedAt), now)}, setter ${s.setter})`);
+  const more = over.length > MAX_NAMED ? `, and ${over.length - MAX_NAMED} more` : "";
+  const key = over.map((s) => `${s.item.repoKey ?? ""}#${s.item.number}:${s.wait.key}`).sort().join(",");
+  return { signal: SIGNALS.STALE_WAIT, status: "tripped", firstTrippedAt: first, discriminator: `${SIGNALS.STALE_WAIT}@${key}`,
+    detail: `${over.length} wait(s) still stand over ${STALE_WAIT_GRACE_MINUTES} min after the condition they name became true: ${named.join("; ")}${more}` };
+}
+
+/**
+ * SIGNAL 9: A WAIT THAT NAMES NO REASON, QUIET FOR `MANUAL_WAIT_HOURS` (#2996). `hold:*`, `answer:*` and the blocked label do not clear themselves, so with
+ * no readable `Waiting-for:` nothing can ever say they are over. THE AGE IS TIME SINCE THE ITEM'S LAST ACTIVITY, as `pr-not-progressing`'s is: an item somebody
+ * is working on is not stalled, and the wait's own start is not on the list read. A wait on `manual` is not here -- it is COUNTED in the detail.
+ * @param {{ now: number, bare: { item: { kind: string, number: number, repoKey?: string }, fields: string[], quietSince: number | null }[] | null, manual?: number }} input
+ * @returns {Reading}
+ */
+export function waitWithoutReasonReading({ now, bare, manual = 0 }) {
+  if (bare === null) return unknown(SIGNALS.WAIT_WITHOUT_REASON, "the rows and pull requests carrying waits could not be read");
+  const quiet = bare.filter((b) => b.quietSince !== null && now - b.quietSince >= MANUAL_WAIT_HOURS * MS_PER_HOUR)
+    .sort((a, b) => /** @type {number} */ (a.quietSince) - /** @type {number} */ (b.quietSince));
+  if (quiet.length === 0) {
+    const undated = bare.filter((b) => b.quietSince === null);
+    return undated.length === 0 ? clear(SIGNALS.WAIT_WITHOUT_REASON)
+      : unknown(SIGNALS.WAIT_WITHOUT_REASON, `${undated.length} wait(s) with no reason carried no activity time, so how long they have stood is not known`);
+  }
+  const first = /** @type {number} */ (quiet[0].quietSince) + MANUAL_WAIT_HOURS * MS_PER_HOUR;
+  const named = quiet.slice(0, MAX_NAMED).map((b) => `${b.item.repoKey ?? ""}#${b.item.number} (${b.fields.join(", ")}, quiet `
+    + `${ageText(/** @type {number} */ (b.quietSince), now)})`);
+  const more = quiet.length > MAX_NAMED ? `, and ${quiet.length - MAX_NAMED} more` : "";
+  const key = quiet.map((b) => `${b.item.repoKey ?? ""}#${b.item.number}`).sort().join(",");
+  return { signal: SIGNALS.WAIT_WITHOUT_REASON, status: "tripped", firstTrippedAt: first, discriminator: `${SIGNALS.WAIT_WITHOUT_REASON}@${key}`,
+    detail: `${quiet.length} wait(s) name no readable condition and have been quiet over ${MANUAL_WAIT_HOURS} h: ${named.join("; ")}${more}; `
+      + `${manual} further wait(s) are \`manual\`, which is allowed and counted` };
 }
 
 /**
@@ -511,7 +569,8 @@ export function readLastMergedAt(run, repo) {
  * @param {{ now: number, lastMergedAt: number | null, work: { greenPrs: number, claimableRows: number } | null, redPrs: RedPr[] | null,
  *           refusals: Record<string, { reason: string, ticks: number }> | null,
  *           drift: { behind: number, ahead: number, dirty: string[] } | null, primarySince: number | null,
- *           fleet?: FleetCaptures | null, waiting?: FleetWaiting | null, copies?: CopyPair[] | null, stalledPrs?: QuietPr[] | null }} facts
+ *           fleet?: FleetCaptures | null, waiting?: FleetWaiting | null, copies?: CopyPair[] | null, stalledPrs?: QuietPr[] | null,
+ *           waits?: { stale: Parameters<typeof staleWaitReading>[0]["stale"], bare: Parameters<typeof waitWithoutReasonReading>[0]["bare"], manual: number } | null }} facts
  * @returns {Reading[]}
  */
 export function orgHealthReadings(facts) {
@@ -520,6 +579,10 @@ export function orgHealthReadings(facts) {
   if (facts.fleet !== undefined) readings.push(fleetIdleReading({ now: facts.now, fleet: facts.fleet, waiting: facts.waiting ?? null }));
   if (facts.copies !== undefined) readings.push(copyDriftReading({ pairs: facts.copies }));
   if (facts.stalledPrs !== undefined) readings.push(prNotProgressingReading({ now: facts.now, stalledPrs: facts.stalledPrs }));
+  if (facts.waits !== undefined) {
+    readings.push(staleWaitReading({ now: facts.now, stale: facts.waits?.stale ?? null }),
+      waitWithoutReasonReading({ now: facts.now, bare: facts.waits?.bare ?? null, manual: facts.waits?.manual }));
+  }
   return readings;
 }
 
@@ -543,6 +606,12 @@ const REMEDY = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
     + "`conflicted` and `red` are its owner's to fix, `awaiting-review` needs a verdict (`reviewer-<n>`, or `product-manager` when the PR has none), "
     + "`awaiting-author-draft` is its author's to mark ready, `unarmed` is `product-manager`'s. The owner may already have been ordered and nothing came of it: "
     + "READ WHY (`gh pr view <n>`), then unstick it, re-lane it by putting the label of a session that can on the PR, or close it if it is abandoned.",
+  [SIGNALS.STALE_WAIT]: "Each wait named still stands although the condition it declared is true: the reason is gone and the wait is a stall, not "
+    + "health. The setter was ordered with the exact field to remove and did not. Remove it yourself (`pnpm run pr:hold -- <n> --session=<s> --release` "
+    + "for a hold, `gh issue edit <n> --remove-label <label>` for a label, or the `Waiting-for:` line), or re-lane the item to a session that will.",
+  [SIGNALS.WAIT_WITHOUT_REASON]: "Each item named holds a wait (`hold:*`, `" + ANSWER_PREFIX + "*` or the blocked label) that says nothing about what it waits for, and nothing "
+    + "has moved on it for hours. A wait nobody can check is how the 2026-10-02 freeze stood four hours after it ended. Ask its setter what ends it and write "
+    + "`Waiting-for: <closed|merged|labelled <label>|unlabelled <label>> <#n>` on it, or remove the wait.",
 }));
 
 /**

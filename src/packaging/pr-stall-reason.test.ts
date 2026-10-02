@@ -60,20 +60,24 @@ const CELLS: Cell[] = crossProduct([DRAFT, MERGE_STATES, CHECKS as unknown as un
 
 const REASONS: string[] = Object.values(STALL_REASON);
 const NOT_STALLS: string[] = [STALL_REASON.PROGRESSING, STALL_REASON.HELD_ON_PURPOSE];
+// #3019: `ejected` IS NOT A CELL OF THE CROSS PRODUCT. It is decided by `pr.ejection`, which the gate stamps from a queue-timeline
+// read and which none of the seven dimensions above models, so the cells can never reach it. ITS POSITIVE CONTROL IS
+// `queue-stalled.test.ts`'s #16 fixture, which classifies a PR as `ejected` and the same PR without the events as `unarmed`.
+const REASONS_OF_THE_CELLS: string[] = REASONS.filter((r) => r !== STALL_REASON.EJECTED);
 
 test("#2968 the population is the whole cross product, and it is not empty", () => {
   const size = DRAFT.length * MERGE_STATES.length * CHECKS.length * REVIEWS.length * HOLDS.length * ARMED.length * OWNERS.length;
   assert.equal(size, 2240, "the domain: 2 x 7 x 4 x 5 x 2 x 2 x 2");
   assert.equal(CELLS.length, size, "every cell was built; a loop that skipped one would pass every assertion below");
   assert.equal(STALL_REASON.PROGRESSING, "progressing");
-  assert.equal(REASONS.length, 7, "the seven answers the row names");
+  assert.equal(REASONS.length, 8, "the seven answers #2968 names, and `ejected` (#3019)");
 });
 
 test("#2968 EVERY cell returns exactly one reason, and every stall has an order to its owner", () => {
   const seen = new Set<string>();
   for (const { pr: p } of CELLS) {
     const reason = stallReasonOf(p, REQUIRED);
-    assert.ok(REASONS.includes(reason), `#${p.number} returned ${JSON.stringify(reason)}, not one of the seven`);
+    assert.ok(REASONS.includes(reason), `#${p.number} returned ${JSON.stringify(reason)}, not one of the answers`);
     seen.add(reason);
     const order = stallOrderOf(p, REQUIRED);
     if (NOT_STALLS.includes(reason)) {
@@ -85,8 +89,8 @@ test("#2968 EVERY cell returns exactly one reason, and every stall has an order 
     assert.ok(CAUSES.includes(order.cause), `${order.cause} is not a declared cause`);
     assert.match(order.prompt, new RegExp(`#${p.number}\\b`), "an order a session is woken with names the pull request");
   }
-  assert.deepEqual([...seen].sort(), [...REASONS].sort(),
-    "THE POSITIVE CONTROL for the loop above: all seven reasons occur, so no answer is vacuously absent");
+  assert.deepEqual([...seen].sort(), [...REASONS_OF_THE_CELLS].sort(),
+    "THE POSITIVE CONTROL for the loop above: every reason a cell can reach occurs, so no answer is vacuously absent");
 });
 
 test("#2968 the reasons follow the domain, cell by cell (an oracle written from the row, not from the code)", () => {
@@ -152,7 +156,7 @@ test("#2968 an UNREAD arming or review decision is never an accusation", () => {
 });
 
 test("#2968 `decide` sends only the reason that has no cause of its own, so no session is woken twice for one fact", () => {
-  assert.deepEqual([...STALL_REASONS_WITHOUT_A_CAUSE], [STALL_REASON.CONFLICTED]);
+  assert.deepEqual([...STALL_REASONS_WITHOUT_A_CAUSE], [STALL_REASON.CONFLICTED, STALL_REASON.EJECTED]);
   const red = { number: 4, isDraft: false, headRefOid: HEAD, mergeStateStatus: "BLOCKED", statusCheckRollup: ROLLUPS.red, labels: [{ name: "session:worker-4" }] };
   const orders = decide({ prs: [red], readyRows: [], required: REQUIRED }) as { cause: string }[];
   assert.deepEqual(orders.map((o) => o.cause), ["pr-checks-failing"], "the red order is the existing one, once");
