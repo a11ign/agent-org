@@ -31,6 +31,9 @@ import { ANSWER_PREFIX } from "./project-vocabulary.mjs";
 // this file stays one. A listing that lacks `ceo`/`orchestrator` is a PARTIAL one and proves nothing about who else
 // it left out; a session absent from a COMPLETE listing is real evidence, not yet a verdict (see `goneReading`).
 import { listingIsComplete } from "./herdr-agents.mjs";
+// #2999: THE IDLE-CLAIMANT READING, a sibling leaf. It decides whether an idle holder has a wait the org can read; this file carries the
+// decision as the nudge and, a second reading later, as the release it already owned.
+import { idleClaimantReading, idleNudgePrompt, IDLE_CLAIMANT_MS } from "./idle-claimant.mjs";
 
 const MINUTE_MS = 60_000;
 
@@ -329,14 +332,16 @@ export function workAtRisk(io, { worktree, branch, repo }) {
  *   work: () => ReturnType<typeof workAtRisk>,
  *   openPrs: number, mergedPr: { number: number, mergedAt: number } | null,
  *   waiting: string | null, blockedBy: number[],
+ *   waitKind?: string | null, ownPrs?: import("./idle-claimant.mjs").IdlePr[],
  * }} ClaimFacts
  *
  * @typedef {{ kind: "moving", lastMoveAt: number } | { kind: "pr-owned" } | { kind: "waiting", waiting: string }
- *   | { kind: "nudge", lastMoveAt: number, idleMs: number }
- *   | { kind: "nudged", nudgedAt: number, deliveredAt: number | null, lastMoveAt: number }
+ *   | { kind: "nudge", lastMoveAt: number, idleMs: number, idle?: boolean }
+ *   | { kind: "nudged", nudgedAt: number, deliveredAt: number | null, lastMoveAt: number, idle?: boolean }
+ *   | { kind: "idle-watch", since: number }
  *   | { kind: "vacating", since: number }
  *   | { kind: "release", why: "stalled" | "blocked" | "merged" | "gone", lastMoveAt: number | null, idleMs: number | null,
- *       nudgedAt: number | null, edges?: number[], mergedPr?: number, since?: number }
+ *       nudgedAt: number | null, edges?: number[], mergedPr?: number, since?: number, idle?: boolean }
  *   | { kind: "holding", why: string, expected?: boolean }} Reading
  */
 
@@ -347,7 +352,47 @@ function latest(times) {
 }
 
 /**
- * The reading of one claim, or why it is left alone.
+ * The reading of one claim, or why it is left alone: {@link clockReading}'s, and then -- for a claim it called `pr-owned` or `moving` -- the
+ * IDLE-CLAIMANT overlay (#2999). Those two are the only readings that never asked what the holder is waiting for: every other reading
+ * (a nudge, a release, a declared wait, a hold, a vacating session) has already decided.
+ *
+ * THE OVERLAY'S ORDER, AND WHY. A DECLARED FIELD ANSWERS EVERYTHING, so a holder carrying one is left on the clock's reading (which also drops
+ * a remembered nudge: the holder answered it). Otherwise a remembered nudge that nothing has moved since is the SECOND reading, whatever the
+ * holder's status is NOW -- a nudge wakes its holder, so by the next tick it is `working`, and a memory dropped on that tick would never reach
+ * a release. Only then the idle clock: a first stall is the nudge, and a holder idle but short of N is `idle-watch`, which is how the first
+ * idle tick is remembered (`herdr` reports a status and never since when).
+ *
+ * @param {ClaimFacts} facts
+ * @param {{ now: number, restartAt: number | null, nudge: { nudgedAt: number, deliveredAt: number | null, idle?: boolean } | null,
+ *   agents?: {label: string, status: string}[] | null, goneSince?: number | null, idleSince?: number | null, intervalMs?: number }} ctx
+ * @returns {Reading}
+ */
+export function claimReading(facts, ctx) {
+  const base = clockReading(facts, ctx);
+  if (base.kind !== "pr-owned" && base.kind !== "moving") return base;
+  const idle = idleClaimantReading({ session: facts.session, prs: facts.ownPrs ?? [],
+    waitKinds: [...(facts.waitKind ? [facts.waitKind] : []), ...(facts.blockedBy.length > 0 ? ["blocked-by"] : [])] }, ctx);
+  if (idle.kind === "waiting") return base;
+  const held = ctx.nudge === null ? null : rememberedNudge(facts, ctx);
+  if (held !== null) return held;
+  if (idle.kind === "stall") return { kind: "nudge", idle: true, lastMoveAt: ctx.now - idle.idleMs, idleMs: idle.idleMs };
+  if (idle.kind === "watching") return { kind: "idle-watch", since: idle.since };
+  if (idle.kind === "unknown" && ctx.idleSince != null) return { kind: "idle-watch", since: ctx.idleSince };
+  return base;
+}
+
+/**
+ * The second reading of a REMEMBERED nudge, for a claim the clock called quiet-but-fine. The worktree is read HERE and only here: a row with no
+ * nudge outstanding that is plainly moving costs no `git status` (`work-gate-claim-stalled.test.ts` pins it), and the overlay must not change that.
+ * @param {ClaimFacts} facts @param {Parameters<typeof claimReading>[1]} ctx @returns {Reading | null}
+ */
+function rememberedNudge(facts, ctx) {
+  const lastMoveAt = /** @type {number} */ (latest([facts.claimedAt, facts.comment, facts.commit, facts.push, ctx.restartAt, facts.file()]));
+  return secondReading(facts, ctx, lastMoveAt);
+}
+
+/**
+ * The CLOCK'S reading of one claim (#2470), or why it is left alone; {@link claimReading} adds the idle-claimant overlay (#2999) on top.
  *
  * ORDER IS THE DESIGN. A row with an OPEN PULL REQUEST is not this cause's: the PR-stage causes (`draft-awaiting-verdict`,
  * `pr-review-blocked`, `pr-green-unarmed`, `pr-merge-conflict`, `awaiting-evidence-stale`) each wake the author for an
@@ -366,11 +411,10 @@ function latest(times) {
  * specific, positive outcome that deserves its own message even from a holder that has since closed its workspace.
  *
  * @param {ClaimFacts} facts
- * @param {{ now: number, restartAt: number | null, nudge: { nudgedAt: number, deliveredAt: number | null } | null,
- *   agents?: {label: string, status: string}[] | null, goneSince?: number | null, intervalMs?: number }} ctx
+ * @param {Parameters<typeof claimReading>[1]} ctx
  * @returns {Reading}
  */
-export function claimReading(facts, ctx) {
+function clockReading(facts, ctx) {
   const interval = ctx.intervalMs ?? STALL_INTERVAL_MS;
   if (facts.openPrs > 0) return { kind: "pr-owned" };
   const landed = mergedReading(facts);
@@ -383,18 +427,29 @@ export function claimReading(facts, ctx) {
   if (ctx.now - cheap < interval) return { kind: "moving", lastMoveAt: cheap };
   const lastMoveAt = /** @type {number} */ (latest([cheap, facts.file()]));
   if (ctx.now - lastMoveAt < interval) return { kind: "moving", lastMoveAt };
-  // THE SECOND READING: a nudge nothing has moved since. A move after the nudge, or a restart after it, is not "nothing". IT IS FAIR ONLY TO A
-  // HOLDER THAT WAS TOLD: the grace runs from the nudge's DELIVERY, and a nudge that never reached its holder (working, out of allowance, gone)
-  // releases after `STALL_UNTOLD_RELEASE_MS` from the nudge instead -- the work is kept either way.
-  if (ctx.nudge !== null && ctx.nudge.nudgedAt > lastMoveAt) {
-    const { nudgedAt, deliveredAt } = ctx.nudge;
-    const told = deliveredAt !== null && ctx.now - deliveredAt >= interval;
-    if (told || (deliveredAt === null && ctx.now - nudgedAt >= STALL_UNTOLD_RELEASE_MS)) {
-      return { kind: "release", why: "stalled", lastMoveAt, idleMs: ctx.now - lastMoveAt, nudgedAt };
-    }
-    return { kind: "nudged", nudgedAt, deliveredAt, lastMoveAt };
-  }
+  const second = secondReading(facts, ctx, lastMoveAt);
+  if (second !== null) return second;
   return { kind: "nudge", lastMoveAt, idleMs: ctx.now - lastMoveAt };
+}
+
+/**
+ * THE SECOND READING: a nudge nothing has moved since. A move after the nudge, or a restart after it, is not "nothing", and the answer is then `null`.
+ * IT IS FAIR ONLY TO A HOLDER THAT WAS TOLD: the grace runs from the nudge's DELIVERY, and a nudge that never reached its holder (working, out of
+ * allowance, gone) releases after `STALL_UNTOLD_RELEASE_MS` from the nudge instead -- the work is kept either way. A holder with an OPEN PULL
+ * REQUEST is never released (#2999): the release closes a spare's workspace, and a pull request whose author was closed under it is an
+ * ownerless one -- so it stays `nudged`, and the nudge is not sent twice.
+ * @param {ClaimFacts} facts @param {Parameters<typeof claimReading>[1]} ctx @param {number} lastMoveAt @returns {Reading | null}
+ */
+function secondReading(facts, ctx, lastMoveAt) {
+  if (ctx.nudge === null || ctx.nudge.nudgedAt <= lastMoveAt) return null;
+  const interval = ctx.intervalMs ?? STALL_INTERVAL_MS;
+  const { nudgedAt, deliveredAt } = ctx.nudge;
+  const idle = ctx.nudge.idle === true;
+  const told = deliveredAt !== null && ctx.now - deliveredAt >= interval;
+  if (facts.openPrs === 0 && (told || (deliveredAt === null && ctx.now - nudgedAt >= STALL_UNTOLD_RELEASE_MS))) {
+    return { kind: "release", why: "stalled", lastMoveAt, idleMs: ctx.now - lastMoveAt, nudgedAt, ...(idle ? { idle } : {}) };
+  }
+  return { kind: "nudged", nudgedAt, deliveredAt, lastMoveAt, ...(idle ? { idle } : {}) };
 }
 
 /**
@@ -477,8 +532,8 @@ function blockedReading(facts) {
 
 /**
  * @typedef {{ row: number, title?: string, session: string, waiting: string | null, blockedBy: number[],
- *   comments: RowComment[], openPrs: { headRefName?: string }[],
- *   mergedPrs: { number: number, headRefName?: string, mergedAt?: string }[] | null, repo: string }} ClaimInput
+ *   comments: RowComment[], openPrs: (import("./idle-claimant.mjs").IdlePr & { headRefName?: string })[],
+ *   mergedPrs: { number: number, headRefName?: string, mergedAt?: string }[] | null, repo: string, waitKind?: string | null }} ClaimInput
  */
 
 /**
@@ -509,7 +564,9 @@ export function claimFactsFrom(input, io) {
       work: () => workAtRisk(io, { worktree, branch, repo: input.repo }),
       openPrs: input.openPrs.filter((p) => own(p.headRefName)).length,
       mergedPr: merged === null ? null : { number: merged.number, mergedAt: Date.parse(String(merged.mergedAt)) },
-      waiting: input.waiting, blockedBy: input.blockedBy };
+      waiting: input.waiting, blockedBy: input.blockedBy,
+      ...(input.waitKind === undefined ? {} : { waitKind: input.waitKind }),
+      ownPrs: input.openPrs.filter((p) => own(p.headRefName)) };
   } catch (err) {
     if (err instanceof Unreadable) return { skip: `#${input.row}: ${err.message}` };
     throw err;
@@ -543,7 +600,11 @@ export function readClaim(facts, ctx) {
 
 // --- THE NUDGE MEMORY -----------------------------------------------------------------------------------------------
 
-/** @typedef {Record<string, { session: string, nudgedAt?: number, goneSince?: number }>} StallState keyed by row number, one memory or the other per row */
+/**
+ * @typedef {Record<string, { session: string, nudgedAt?: number, goneSince?: number, idleSince?: number, idle?: boolean }>} StallState
+ * keyed by row number, one memory or the other per row: a nudge (`idle` when it was the idle-claimant's, #2999), the tick a session was first
+ * found gone, or the tick a holder was first found idle.
+ */
 
 /**
  * A JSON object kept in a file beside the wake ledger, or `{}`. A missing file is EMPTY and an unparseable one is empty too:
@@ -583,20 +644,32 @@ export function nextStallState(before, readings, now) {
   /** @type {StallState} */
   const after = {};
   for (const { facts, reading } of readings) {
-    if (reading.kind === "nudge") after[facts.row] = { session: facts.session, nudgedAt: now };
-    else if (reading.kind === "nudged") after[facts.row] = { session: facts.session, nudgedAt: reading.nudgedAt };
-    // A STALL RELEASE THAT HAS NOT YET BEEN PERFORMED KEEPS ITS MEMORY: `wake.mjs` performs it after this tick, may fail (a workspace that will
-    // not close, a decline that is refused), and the gate emits the order again next tick -- which must read as the SECOND reading again, not
-    // forget the nudge and start a fresh two hours. Once performed the row is no longer claimed and the entry goes with it.
-    else if (reading.kind === "release" && reading.why === "stalled" && reading.nudgedAt !== null) {
-      after[facts.row] = { session: facts.session, nudgedAt: reading.nudgedAt };
-    } else if (reading.kind === "vacating") after[facts.row] = { session: facts.session, goneSince: reading.since };
-    // A GONE RELEASE THAT HAS NOT YET BEEN PERFORMED, same reasoning as the stalled one above.
-    else if (reading.kind === "release" && reading.why === "gone" && reading.since !== undefined) {
-      after[facts.row] = { session: facts.session, goneSince: reading.since };
-    }
+    const memory = memoryOf(reading, now);
+    if (memory !== null) after[facts.row] = { session: facts.session, ...memory };
   }
   return JSON.stringify(after) === JSON.stringify(before) ? before : after;
+}
+
+/**
+ * What one reading leaves in the memory, or `null` for nothing. A NUDGE is recorded at `now` (`idle` when it was the idle-claimant's, #2999), a
+ * `nudged` one keeps its record, an `idle-watch` the tick the holder was first found idle, a `vacating` one the tick it was first found gone.
+ *
+ * A STALL RELEASE THAT HAS NOT YET BEEN PERFORMED KEEPS ITS MEMORY: `wake.mjs` performs it after this tick, may fail (a workspace that will
+ * not close, a decline that is refused), and the gate emits the order again next tick -- which must read as the SECOND reading again, not
+ * forget the nudge and start a fresh two hours. Once performed the row is no longer claimed and the entry goes with it. A GONE RELEASE THAT HAS
+ * NOT YET BEEN PERFORMED keeps its `goneSince` for the same reason.
+ * @param {Reading} reading @param {number} now @returns {{ nudgedAt?: number, goneSince?: number, idleSince?: number, idle?: boolean } | null}
+ */
+function memoryOf(reading, now) {
+  const idle = "idle" in reading && reading.idle ? { idle: true } : {};
+  if (reading.kind === "nudge") return { nudgedAt: now, ...idle };
+  if (reading.kind === "nudged") return { nudgedAt: reading.nudgedAt, ...idle };
+  if (reading.kind === "idle-watch") return { idleSince: reading.since };
+  if (reading.kind === "vacating") return { goneSince: reading.since };
+  if (reading.kind !== "release") return null;
+  if (reading.why === "stalled" && reading.nudgedAt !== null) return { nudgedAt: reading.nudgedAt, ...idle };
+  if (reading.why === "gone" && reading.since !== undefined) return { goneSince: reading.since };
+  return null;
 }
 
 /**
@@ -629,6 +702,22 @@ const minutes = (ms) => Math.round(ms / MINUTE_MS);
  * @typedef {{ session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string,
  *   title?: string, release?: ReleaseRequest, resume?: boolean }} StallOrder
  */
+
+/**
+ * The nudge to an IDLE holder (#2999): the same cause, key and delivery as {@link nudgeOrder}'s -- so the ledger, the offer window and the
+ * second reading's release are ONE mechanism -- with the text that spells the wait fields. A holder re-offered the nudge (not yet delivered)
+ * is told the floor, `IDLE_CLAIMANT_MINUTES`, because only the first reading knew how long it had been idle.
+ * @param {ClaimFacts} facts @param {number} nudgedAt @param {number} idleMs @returns {StallOrder}
+ */
+function idleNudgeOrder(facts, nudgedAt, idleMs) {
+  return {
+    session: facts.session, cause: "claim-stalled", subject: `row-${facts.row}`, discriminator: `idle-nudge-${nudgedAt}`,
+    prompt: idleNudgePrompt({ row: facts.row, branch: facts.branch, idleMinutes: minutes(idleMs), releaseMinutes: minutes(STALL_INTERVAL_MS),
+      canRelease: facts.openPrs === 0 }),
+    causeKey: nudgeKey(facts.session, facts.row, nudgedAt), resume: true,
+    ...(facts.title === undefined ? {} : { title: facts.title }),
+  };
+}
 
 /**
  * The nudge, to the holder: NAMES THE ROW AND THE INTERVAL (Acceptance 1), says what counts as a move so it can be
@@ -702,7 +791,8 @@ function releaseOrder(facts, reading) {
     idleMinutes: reading.idleMs === null ? null : minutes(reading.idleMs), nudgedAt: reading.nudgedAt,
     ...(reading.edges === undefined ? {} : { edges: reading.edges }),
     ...(reading.mergedPr === undefined ? {} : { mergedPr: reading.mergedPr, answer: "product-manager" }) };
-  const said = reading.why === "stalled" ? `nothing moved for ${release.idleMinutes} minutes and the nudge was not answered`
+  const said = reading.why === "stalled" && reading.idle ? `idle with no wait field and nothing moved for ${release.idleMinutes} minutes, and the nudge was not answered`
+    : reading.why === "stalled" ? `nothing moved for ${release.idleMinutes} minutes and the nudge was not answered`
     : reading.why === "blocked" ? `blocked by ${(reading.edges ?? []).map((n) => `#${n}`).join(", ")} and the holder holds nothing`
     : reading.why === "gone" ? `${facts.session} no longer exists in herdr's own listing`
     : `#${reading.mergedPr} merged and the row stayed open`;
@@ -724,11 +814,12 @@ export function claimStalledOrders(readings, now) {
   /** @type {StallOrder[]} */
   const orders = [];
   for (const { facts, reading } of readings ?? []) {
-    if (reading.kind === "nudge") orders.push(nudgeOrder(facts, now, reading.lastMoveAt));
+    if (reading.kind === "nudge" && reading.idle) orders.push(idleNudgeOrder(facts, now, reading.idleMs));
+    else if (reading.kind === "nudge") orders.push(nudgeOrder(facts, now, reading.lastMoveAt));
     // OFFERED UNTIL DELIVERED, and then never again: the ledger holds a delivered key for one wake window only, so an offer that outlived the
     // delivery would send it a second time.
     else if (reading.kind === "nudged" && reading.deliveredAt === null) {
-      orders.push(nudgeOrder(facts, reading.nudgedAt, reading.lastMoveAt));
+      orders.push(reading.idle ? idleNudgeOrder(facts, reading.nudgedAt, IDLE_CLAIMANT_MS) : nudgeOrder(facts, reading.nudgedAt, reading.lastMoveAt));
     } else if (reading.kind === "release") orders.push(releaseOrder(facts, reading));
   }
   return orders;
