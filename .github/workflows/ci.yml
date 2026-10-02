@@ -26,7 +26,7 @@ name: ci
 # NAMING A PATH THAT LIVES IN THE PROJECT: `workflow-paths.mjs` refuses a workflow path (`packages/...`, `scripts/...`) that is not in THIS
 # repository, so a path in the project is written with the `project/` prefix, or carries the marker `# in-project` at the end of its line.
 #
-# EXCLUDED, BY NAME, EACH WITH ITS REASON (node's --test-skip-pattern; the run reports them skipped or leaves them out of its count, by node version):
+# EXCLUDED, BY NAME, EACH WITH ITS REASON (node's --test-skip-pattern; the run reports them as skipped, 5 in all with the one test that skips itself):
 #   - "#1449: this guard reads the token charge's ONE spawn regex": its regex asserts the import spelling `agent-org/src/acceptance-commands.mjs`,
 #     which the extraction rewrote to `../acceptance-commands.mjs`.
 #   - "the count of non-test files in": its recorded count predates `src/messaging/` (which this
