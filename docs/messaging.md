@@ -160,15 +160,18 @@ throw into `cannot-ask`: no event, one log line, never a "cleared".
 | `readLastMerge` | the newest `merged_at` among the 30 most recently updated closed pull requests into `main` (not the newest commit: `main` carries "Merge origin/main into <branch>" commits) | `stall:no-merge` |
 | `readTrunkRuns` | the last 20 runs of `trunk.yml` on `main` | `incident:trunk-red` |
 | `readCiRuns` | the last 20 completed runs of every workflow, each failed run with its failed jobs' annotations | `incident:ci-permission` |
-| `readGateUnit` | `systemctl --user show <prefix>work-tick.service`: `ActiveState`, and `InactiveEnterTimestamp` as the gate's last run | `incident:gate-crash` |
+| `readGateUnit` | `systemctl --user show <prefix>work-tick.service`: `ActiveState` and `InactiveEnterTimestamp` (when the unit last RAN), and the tick's own completion record (when a tick last COMPLETED) | `incident:gate-crash` |
 | `readFleetState` | `runs/fleet-watch-state.json` in the project checkout, and its modification time; **only the worker's name is kept, never its address** | `incident:fleet-down` |
 | `readTicks` | this watcher's own samples, newest first | `stall:all-idle` |
 
 **Decisions this row made that the design did not spell out:**
 
-- **There is no tick record, so the gate's last run is systemd's.** The row asked for "the newest tick record's time"; the work tick writes nothing a
-  reader can use (`wake-ledger` is one line per order delivered, and a quiet tick appends none) and `work-gate.mjs` / `wake.mjs` may not be edited
-  (#2867). A unit that is `failed`, or whose last run ended more than three ticks ago, is the incident.
+- **The gate's last COMPLETED tick is a record the tick writes, not systemd's timestamp (#3040).** `InactiveEnterTimestamp` answers "did the unit run", and a tick
+  that died at import moves it exactly as a good one: on 2026-10-02 it advanced on every one of 63 crashed ticks. `work-tick.mjs` writes
+  `work-tick-completion.json` (time and exit code) beside the wake ledger only when it reaches the end of `main()`, so a tick that threw writes nothing and a
+  tick that exited 1 (orders with nowhere to go) still does. `readGateUnit` takes `lastRecordAt` from it and THROWS when it is absent or unreadable, which the source
+  turns into `cannot-ask`. A unit that is `failed`, or whose last COMPLETED tick is more than three intervals old, is the incident, and its text says which
+  silence it is: ticks still starting and not finishing, or no tick starting at all.
 - **`readTicks` is a history the watcher keeps.** Each run first takes a SAMPLE (the time, every seat's state from `herdr --session org workspace list`,
   the rows waiting) and appends it to `~/.local/state/agent-org/messaging/samples.jsonl`: a week of them (2,016), compacted once a day. One sample alone
   never makes `stall:all-idle`; it needs a streak of ten minutes, so **the timer's period (five minutes) must stay under that**. A sample whose seats or rows

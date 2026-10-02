@@ -21,6 +21,7 @@ import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { completionPath, writeCompletion } from "./lib/tick-completion.mjs";
 // THE ONE THING THIS FILE ASKS THAT IS NOT ABOUT DELIVERY. A session herdr reports as `blocked` is
 // stopped on a question nobody will answer, and `wake.mjs`'s `WAKEABLE` is `idle`/`done` -- so it is
 // never offered another cause and never mentioned anywhere. It has to be reported from HERE rather than
@@ -106,6 +107,27 @@ function queuedOrderCount(path) {
   }
 }
 
+/**
+ * THE ONE WAY OUT OF `main()`, so that REACHING IT is what the completion record means (#3040). A tick that decided an exit -- quiet, orders with nowhere
+ * to go, a refused read -- COMPLETED, and the organisation waiting is not the gate crashing, so every one of those is recorded. A tick that threw
+ * never gets here (the preload exits it with `CRASH`), and a tick ending with `CRASH` because a child crashed is not recorded either.
+ *
+ * A record that cannot be written is said on stderr and does not change the exit: the watcher then reads a stale record and says so, which is the
+ * outcome that counts, and a tick that did its work must not be turned into a failure by the file that reports on it.
+ *
+ * @param {number} code @param {string} recordPath @returns {never}
+ */
+function finish(code, recordPath) {
+  if (code !== EXIT.CRASH) {
+    try {
+      writeCompletion(recordPath, { at: Date.now(), exit: code });
+    } catch (err) {
+      process.stderr.write(`COMPLETION NOT RECORDED at ${recordPath}: ${String(/** @type {any} */ (err)?.message ?? err)}. incident:gate-crash will read this tick as not having completed.\n`);
+    }
+  }
+  process.exit(code);
+}
+
 function main() {
   refuseUnknownFlags(["--ledger", "--roster"], {
     entry: import.meta.url, command: "node packages/agent-org/src/work-tick.mjs",
@@ -113,11 +135,12 @@ function main() {
   /** @param {string} name */
   const here = (name) => fileURLToPath(new URL(name, import.meta.url));
   const passthrough = process.argv.slice(2);
+  const recordPath = completionPath(ledgerPathFrom(passthrough));
 
   const gate = spawnSync(process.execPath, [...CRASH_PRELOAD, here("./work-gate.mjs")], { encoding: "utf8" });
   if (gate.error) {
     process.stderr.write(`CANNOT ASK: could not run work-gate (${gate.error.message}).\n`);
-    process.exit(EXIT.CANNOT_ASK);
+    finish(EXIT.CANNOT_ASK, recordPath);
   }
   if (gate.stderr) process.stderr.write(gate.stderr);
 
@@ -146,19 +169,19 @@ function main() {
   const next = afterGate(gate.status ?? EXIT.CANNOT_ASK,
     { queued: queuedOrderCount(handoffQueuePath(ledgerPathFrom(passthrough))) });
   if (next.why) process.stderr.write(`${next.why}\n`);
-  if (!next.deliver) process.exit(next.exit ?? EXIT.CANNOT_ASK);
+  if (!next.deliver) finish(next.exit ?? EXIT.CANNOT_ASK, recordPath);
 
   const wake = spawnSync(process.execPath, [...CRASH_PRELOAD, here("./wake.mjs"), ...passthrough],
     { encoding: "utf8", input: gate.stdout });
   if (wake.error) {
     process.stderr.write(`CANNOT ASK: could not run wake (${wake.error.message}). The gate found work and `
       + "it was NOT delivered.\n");
-    process.exit(EXIT.CANNOT_ASK);
+    finish(EXIT.CANNOT_ASK, recordPath);
   }
   if (wake.stdout) process.stdout.write(wake.stdout);
   if (wake.stderr) process.stderr.write(wake.stderr);
   if (wake.status === EXIT.CRASH) process.stderr.write("wake CRASHED (its stack is above): the orders the gate found were NOT delivered.\n");
-  process.exit(wake.status ?? EXIT.CANNOT_ASK);
+  finish(wake.status ?? EXIT.CANNOT_ASK, recordPath);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();
