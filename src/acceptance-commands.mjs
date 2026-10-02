@@ -68,7 +68,7 @@ import {
 import { pathToFileURL } from "node:url";
 import { existsSync, globSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import { basename, delimiter, join } from "node:path";
+import { basename, delimiter, isAbsolute, join, resolve } from "node:path";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { changedFiles } from "./lib/changed-files.mjs";
@@ -1134,6 +1134,18 @@ function reachedNames(file, next, referenced) {
 }
 
 /**
+ * Is `path` a FILE -- the question every closure read asks, where `existsSync` answered a different one.
+ * A directory exists, so `existsSync(dir)` is true and `readFileSync(dir)` throws `EISDIR` (#3026): a
+ * directory is "no entry to walk", exactly as a missing path is, never a file to read and never an error to
+ * swallow. `throwIfNoEntry: false` so a missing path answers false rather than throwing `ENOENT`.
+ * @param {string} path
+ * @returns {boolean}
+ */
+function isFile(path) {
+  return statSync(path, { throwIfNoEntry: false })?.isFile() ?? false;
+}
+
+/**
  * Every requirement reachable from `entry`'s local-import closure, each named by the FIRST file (in walk
  * order) that proves it, the line it was found on, and the full chain of files from `entry` down to it --
  * #621's own stated acceptance is naming the HOP, not just the capability: "this test needs a token" sends
@@ -1165,7 +1177,7 @@ export function deriveClosureRequirements(entry) {
   // #827: the `token` counterpart, decided ONCE before the walk starts (see `NO_TOKEN_DECLARATION`'s header for
   // why token's declaration is checked at the entry rather than incrementally like `// writes:` is).
   let exemptToken = false;
-  if (existsSync(entry)) {
+  if (isFile(entry)) {
     const entryText = readFileSync(entry, "utf8");
     const entryCodeOnly = stripComments(entryText);
     const headers = noTokenHeaders(entryText);
@@ -1201,7 +1213,7 @@ export function deriveClosureRequirements(entry) {
   /** @param {string} file @param {string[]} chain @param {Map<string, Set<string>>} seen @param {Set<string>} names */
   const walk = (file, chain, seen, names) => {
     const prior = seen.get(file);
-    if ((prior && [...names].every((name) => prior.has(name))) || !existsSync(file)) return;
+    if ((prior && [...names].every((name) => prior.has(name))) || !isFile(file)) return;
     const union = new Set([...(prior ?? []), ...names]);
     seen.set(file, union);
     const text = readFileSync(file, "utf8");
@@ -1305,7 +1317,7 @@ function noTokenRemedy(hit, hops) {
   if (hit.requirement !== "token" || hit.wrongDeclaration || hit.malformedDeclaration) return "";
   const fn = hops[hops.length - 1];
   const entry = hit.chain[0];
-  if (!fn || !existsSync(entry)) return "";
+  if (!fn || !isFile(entry)) return "";
   const text = readFileSync(entry, "utf8");
   if (noTokenHeaders(text).length > 0) return "";
   if (!noTokenDeclarationHolds(stripComments(text), fn)) return "";
@@ -2013,11 +2025,43 @@ const NAMED_TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
  * @returns {string[]}
  */
 function namedTestFiles(command) {
-  if (/\btsx\s+--test\b/.test(command)) return tsxTestFileArgs(command);
-  const withoutTrailingComment = command.replace(/(?:^|\s)#.*$/, "");
+  const base = leadingCdTarget(command);
+  const files = /\btsx\s+--test\b/.test(command) ? tsxTestFileArgs(command) : otherRunnerTestFiles(command);
+  return base === null ? files : files.map((file) => (isAbsolute(file) ? file : resolve(base, file)));
+}
+
+/** @param {string} command @returns {string[]} the tokens of a non-`tsx` command that look like a test file */
+function otherRunnerTestFiles(command) {
+  const withoutTrailingComment = stripLeadingCd(command).replace(/(?:^|\s)#.*$/, "");
   return withoutTrailingComment.split(/\s+/).filter(Boolean)
     .map((token) => token.replace(/^--?[\w-]+=/, "").replace(/^['"]|['"]$/g, ""))
     .filter((token) => NAMED_TEST_FILE.test(token));
+}
+
+// #3026: `cd <dir> &&` AT THE START OF A COMMAND -- the one shape the org's own rows use to run a test from
+// another checkout (#2907). Its directory is an argument to `cd`, never to the runner.
+const LEADING_CD = /^\s*cd\s+(?:"([^"]*)"|'([^']*)'|([^\s&;|]+))\s*&&\s*/;
+
+/**
+ * The directory a leading `cd <dir> &&` moves to, or null. The runner's file arguments are relative to it,
+ * so `namedTestFiles` resolves them there rather than against this process's own directory -- a file
+ * named after a `cd` is the file the command runs, not the same relative path somewhere else.
+ * @param {string} command
+ * @returns {string | null}
+ */
+function leadingCdTarget(command) {
+  const match = LEADING_CD.exec(command);
+  return match === null ? null : (match[1] ?? match[2] ?? match[3]);
+}
+
+/**
+ * `command` without a leading `cd <dir> &&`. Before #3026 the `tsx --test` arm took EVERY non-flag token, so
+ * the `cd` target was read as a test file, and a directory that exists reached `readFileSync` (`EISDIR`).
+ * @param {string} command
+ * @returns {string}
+ */
+function stripLeadingCd(command) {
+  return command.replace(LEADING_CD, "");
 }
 
 /**
@@ -2029,10 +2073,14 @@ function namedTestFiles(command) {
  * @returns {string[]}
  */
 function tsxTestFileArgs(command) {
-  const withoutTrailingComment = command.replace(/(?:^|\s)#.*$/, "");
+  const withoutTrailingComment = stripLeadingCd(command).replace(/(?:^|\s)#.*$/, "");
   const tokens = withoutTrailingComment.split(/\s+/).filter(Boolean);
-  return tokens
-    .filter((token) => token !== "npx" && token !== "tsx" && token !== "--test" && !token.startsWith("-"))
+  // #3026: ONLY WHAT FOLLOWS `--test` IS THE RUNNER'S ARGUMENTS. The runner's own prefix (`pnpm exec`, `npx`, an
+  // env assignment) is no file, and `testFileArgumentsResolve` reported `pnpm, exec` as "matched no file" for
+  // the very spelling the engineer brief tells a row to use.
+  const afterRunner = tokens.slice(tokens.indexOf("--test") + 1);
+  return afterRunner
+    .filter((token) => !token.startsWith("-"))
     .map((token) => token.replace(/^['"]|['"]$/g, ""));
 }
 
@@ -2051,7 +2099,7 @@ export function unmetCommandRequirements(command, capabilities) {
   /** @type {Map<string, string[]>} */
   const byRequirement = new Map();
   for (const fileArg of testFilesRunBy(command)) {
-    if (/[*?[{]/.test(fileArg) || !existsSync(fileArg)) continue;
+    if (/[*?[{]/.test(fileArg) || !isFile(fileArg)) continue;
     const text = readFileSync(fileArg, "utf8");
     for (const req of unmetRequirements(testFileRequirements(text), capabilities)) {
       if (!byRequirement.has(req)) byRequirement.set(req, []);
@@ -2078,7 +2126,7 @@ export function unmetCommandClosureRequirements(command, capabilities) {
   /** @type {{ requirement: string, message: string }[]} */
   const out = [];
   for (const fileArg of [...testFilesRunBy(command), ...operationalScriptEntries(command)]) {
-    if (/[*?[{]/.test(fileArg) || !existsSync(fileArg)) continue;
+    if (/[*?[{]/.test(fileArg) || !isFile(fileArg)) continue;
     out.push(...unmetClosureRequirements(fileArg, capabilities));
     // SHORT-CIRCUIT ON THE FIRST, and only for the whole-suite case: `classifyCommand` prints one
     // refusal, and walking ~700 files' import closures to collect the other 699 is time spent producing
@@ -2106,7 +2154,7 @@ export function unmetCommandClosureRequirements(command, capabilities) {
 function anyCommandUsesHistory(commands) {
   return commands.some((command) => {
     return namedTestFiles(command).some((fileArg) => {
-      if (/[*?[{]/.test(fileArg) || !existsSync(fileArg)) return false;
+      if (/[*?[{]/.test(fileArg) || !isFile(fileArg)) return false;
       if (testFileRequirements(readFileSync(fileArg, "utf8")).includes("history")) return true;
       return deriveClosureRequirements(fileArg).some((hit) => hit.requirement === "history");
     });
