@@ -3531,11 +3531,36 @@ export const RUN_IDLE_RESET_MS = 2 * JUDGMENT_TTL_MS;
  * subject like `chairman` or `ready-queue` names no row and cannot be labelled, so it is reported and
  * skipped rather than guessed at -- labelling the wrong row would be worse than labelling none.
  *
+ * A DECLARED CODE REPOSITORY'S RED ESCALATES BY A ROW FILED IN THE PRIMARY'S TRACKER, NOT BY A LABEL (#3086). Its subject
+ * carries the repository's key (`pr-agent-org#56`, or `trunk-agent-org-<sha8>` when no merged pull request is known:
+ * `trunkRedOrders`, #3079), and the bare number would label the primary's own #56, so {@link stuckRowOf} still answers
+ * `null` for it. The place the escalation must land is one `ceo` READS, and the two candidates were measured against
+ * the reader: a label on the merged agent-org pull request sits where `readClosedAnswerRows` never looks (it asks the
+ * primary's repository only, for a code-only scope as for any other), so it would be set and read by nobody, which is the
+ * state #2641 ended for the primary. An OPEN ISSUE carrying `answer:ceo` in the primary's tracker is read by every
+ * tick's `answer-owed` cause with no change to the reader. Filing costs one issue per stuck red, once (the ledger, and
+ * {@link fileRepositoryRow}'s own look for an open one when the ledger could not be written), and it is the only
+ * half that works for the `trunk-<key>-<sha8>` subject, which names no pull request at all.
+ *
  * @param {string} causeKey @returns {number | null} the row to label, or `null` when the key names none
  */
 export function stuckRowOf(causeKey) {
-  const m = /\/(?:row|pr)-(\d+)(?:\/|$)/.exec(String(causeKey ?? ""));
-  return m ? Number(m[1]) : null;
+  const subject = stuckSubjectOf(causeKey);
+  return subject?.repoKey === "" ? subject.number : null;
+}
+
+/** `row-<n>`, `pr-<n>` or `pr-<key>#<n>` (a pull request or row), or `trunk-<key>-<sha8>` (a red with no merged pull request known). */
+const STUCK_SUBJECT = /\/(?:(?:row|pr)-(?:([a-z][\w-]*)#)?(\d+)|trunk-([a-z][\w-]*)-([0-9a-f]{8}))(?:\/|$)/;
+
+/**
+ * What a cause key's subject names: the primary's row (`repoKey` empty), a pull request of a keyed repository, or a keyed
+ * repository's red with no pull request. `null` when it names none.
+ * @param {string} causeKey @returns {{ repoKey: string, number: number | null, sha8: string | null } | null}
+ */
+export function stuckSubjectOf(causeKey) {
+  const m = STUCK_SUBJECT.exec(String(causeKey ?? ""));
+  if (m === null) return null;
+  return { repoKey: m[1] ?? m[3] ?? "", number: m[2] === undefined ? null : Number(m[2]), sha8: m[4] ?? null };
 }
 
 /**
@@ -3570,36 +3595,77 @@ export const ESCALATION_LABEL = `${ANSWER_PREFIX}ceo`;
  *
  * @param {{escalated?: Set<string>, record?: (key: string) => void, unavailable?: (label: string) => string | null}} [memory]
  */
-export function escalateStuck(stuck, run = defaultGh, log = (l) => process.stderr.write(l),
-  { escalated = new Set(), record = () => {}, unavailable = () => null } = {}) {
+export function escalateStuck(stuck, run = guardedGh, log = (l) => process.stderr.write(l),
+  { escalated = new Set(), record = () => {}, unavailable = () => null, repoOf = codeRepositoryOf } = {}) {
   const labelled = [];
   for (const line of stuck ?? []) {
     const key = String(line).split(":")[0];
-    const row = stuckRowOf(key);
-    if (row === null) {
-      log(`STUCK ${line} -- names no row, so it cannot be escalated by label; read the key\n`);
+    const target = escalationTargetOf(key, repoOf);
+    if (target === null) {
+      log(`STUCK ${line} -- names no row of a repository this project declares, so it cannot be escalated; read the key\n`);
       continue;
     }
+    const ref = target.ref;
     if (escalated.has(key)) {
-      log(`ALREADY ESCALATED #${row} (${key}) -- a removed label is an answer; it stays off until the cause changes\n`);
+      log(`ALREADY ESCALATED ${ref} (${key}) -- a removed label is an answer; it stays off until the cause changes\n`);
       continue;
     }
     const outage = outageOf(key, unavailable);
     if (outage !== null) {
-      log(`NOT ESCALATED #${row} (${key}) -- ${outage}; a session that cannot answer is not a stuck row\n`);
+      log(`NOT ESCALATED ${ref} (${key}) -- ${outage}; a session that cannot answer is not a stuck row\n`);
       continue;
     }
     try {
-      run(["issue", "edit", String(row), "--add-label", ESCALATION_LABEL]);
-      labelled.push(row);
-      log(`ESCALATED #${row} -> ${ESCALATION_LABEL} (cause offered ${MAX_DELIVERIES}+ times, still true)\n`);
+      const row = target.place(run);
+      if (row !== null) labelled.push(row);
+      log(`ESCALATED ${ref} -> ${ESCALATION_LABEL} (cause offered ${MAX_DELIVERIES}+ times, still true)\n`);
     } catch (/** @type {any} */ err) {
-      log(`COULD NOT ESCALATE #${row}: ${String(err?.message ?? err).split("\n")[0].slice(0, 90)}\n`);
+      log(`COULD NOT ESCALATE ${ref}: ${String(err?.message ?? err).split("\n")[0].slice(0, 90)}\n`);
       continue;
     }
-    recordEscalation(key, row, record, log);
+    recordEscalation(key, ref, record, log);
   }
   return labelled;
+}
+
+/**
+ * Where a stuck cause's escalation lands, or `null` when it cannot (#3086): the primary's row is LABELLED, and a declared code
+ * repository's red is FILED as a row in the primary's tracker (see {@link stuckRowOf} for why a label cannot reach `ceo` there).
+ * A keyed subject the project's declaration does not list is `null`: it is not the primary's and is not known to be anyone's.
+ * `place` answers the row number it labelled or filed, or `null` when `gh` did not say.
+ * @param {string} key @param {(repoKey: string) => string | null} repoOf
+ * @returns {{ ref: string, place: (run: (args: string[]) => string) => number | null } | null}
+ */
+function escalationTargetOf(key, repoOf) {
+  const subject = stuckSubjectOf(key);
+  if (subject === null) return null;
+  if (subject.repoKey === "") {
+    const row = /** @type {number} */ (subject.number);
+    return { ref: `#${row}`, place: (run) => { run(["issue", "edit", String(row), "--add-label", ESCALATION_LABEL]); return row; } };
+  }
+  const repo = repoOf(subject.repoKey);
+  if (repo === null) return null;
+  const ref = subject.number === null ? `${subject.repoKey}@${subject.sha8}` : subjectMention({ repoKey: subject.repoKey, number: subject.number });
+  return { ref, place: (run) => fileRepositoryRow({ ref, repo, key }, run) };
+}
+
+/**
+ * File the row `ceo` reads for a red in another repository, once: an OPEN `answer:ceo` issue already titled for `ref` is the
+ * row (the ledger could not be written, or another tick got there first), so a second is not filed.
+ * @param {{ ref: string, repo: string, key: string }} red @param {(args: string[]) => string} run
+ * @returns {number | null} the row's number, or `null` when `gh` printed none
+ */
+function fileRepositoryRow({ ref, repo, key }, run) {
+  const title = `Stuck trunk-red: ${ref} -- \`main\` of ${repo} is red and nothing has fixed it`;
+  const open = JSON.parse(run(["issue", "list", "--state", "open", "--label", ESCALATION_LABEL, "--limit", "100", "--json", "number,title"]));
+  const existing = open.find((/** @type {{ title: string }} */ row) => row.title === title);
+  if (existing !== undefined) return existing.number;
+  const body = `A \`trunk-red\` order for \`${repo}\` was offered ${MAX_DELIVERIES} times and is still true (\`${key}\`), so it is `
+    + "escalated here, the one place `ceo` reads for a repository whose pull requests are not in this tracker (#3086).\n\n"
+    + `Fix \`main\` of ${repo}, or say why it should stay red. Removing \`${ESCALATION_LABEL}\` is the answer.\n`;
+  const made = run(["issue", "create", "--title", title, "--body", body, "--label", ESCALATION_LABEL]);
+  const number = /\/issues\/(\d+)\s*$/.exec(made);
+  return number === null ? null : Number(number[1]);
 }
 
 /**
@@ -3615,13 +3681,13 @@ function outageOf(key, unavailable) {
 /**
  * Write down that `key` was escalated. A ledger that cannot be written (ENOSPC took the host's tools for three hours
  * on 2026-09-25) means the next tick labels again, so that is said rather than swallowed.
- * @param {string} key @param {number} row @param {(key: string) => void} record @param {(line: string) => void} log
+ * @param {string} key @param {string} ref @param {(key: string) => void} record @param {(line: string) => void} log
  */
-function recordEscalation(key, row, record, log) {
+function recordEscalation(key, ref, record, log) {
   try {
     record(key);
   } catch (/** @type {any} */ err) {
-    log(`COULD NOT RECORD the escalation of #${row}, so the next tick labels it again: `
+    log(`COULD NOT RECORD the escalation of ${ref}, so the next tick labels it again: `
       + `${String(err?.message ?? err).split("\n")[0].slice(0, 90)}\n`);
   }
 }
