@@ -91,6 +91,9 @@ import { armedFromApi, openPullRequestsQueryArgs } from "./auto-arm-sweep.mjs";
 import { armabilityOf, holdersOf } from "./pr-hold-state.mjs";
 import { REPO } from "./project-identity.mjs";
 import { HOME_CHECKOUT, homeProjectDeclaration } from "./project-config.mjs";
+import { completeCrossRepoRows, liveEffects as crossRepoEffects } from "./cross-repo-row-completion.mjs"; // #2995
+import { stripClaimLabels, LIVE_SETTLE_DEPS } from "./close-rows-for-merged-pr.mjs";
+import { settleClosedStatus } from "./settle-closed-status.mjs";
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "./cause-declaration.mjs";
 // #2619 (child 3d of #69): the rest of this file's vocabulary -- `backlog`, `needs:chairman`,
 // `out-of-release`, `blocked`, the `lane:`/`session:` prefixes and `lane:any`.
@@ -5997,6 +6000,22 @@ function trackerReadings({ rows, allOpen }) {
 }
 
 /**
+ * #2995: A ROW FINISHED IN ANOTHER REPOSITORY IS CLOSED HERE, ON THE MERGE (`cross-repo-row-completion.mjs` holds the rule and its
+ * reasons). ONLY rows naming a `Finished-in:` line are handed over, so a tick that has none pays no call; a refused row read
+ * (`null`) closes nothing. The primary tracker's rows only: `readOpenRows` reads that one, and a close is aimed at it by name.
+ * `performed` is what the gate did itself, and counts as work in the exit code like `performActions`'s.
+ * @param {any[] | null} openRows @returns {{ performed: number }}
+ */
+function crossRepoCompletionTick(openRows) {
+  const named = (openRows ?? []).filter((row) => /finished-in:/i.test(row.body ?? ""));
+  if (named.length === 0) return { performed: 0 };
+  const declaration = homeProjectDeclaration();
+  const tracker = declaration.tracker[0].repo;
+  const effects = crossRepoEffects({ tracker, strip: (n, labels) => stripClaimLabels(n, labels, tracker, "CROSS-REPO"), settle: (n) => { settleClosedStatus(n, LIVE_SETTLE_DEPS); } });
+  return completeCrossRepoRows({ openRows: named, declared: declaration.code.map((entry) => entry.repo) }, effects);
+}
+
+/**
  * Every NON-PRIMARY scope the declaration lists, ticked. Empty for one project, which is what keeps one project's orders
  * identical to what they were.
  * @param {boolean} drain
@@ -6211,7 +6230,8 @@ function main() {
     offBoard, callCountSignals: rowCallCountSignals(allOpen, liveClaudeTurns(), claimedComments), bareAnswerLabels: bareAnswerLabelOrders(withAnswerLabel([...allOpen, ...openPrs])), labJobs: labJobRecordsOrSay() }; const decided = withStalePrimaryNotice(decideAndTap(decideArgs), primaryDrift); // #2711, #2729; `main` is at its 90-line limit
   const others = otherScopeTicks(drain); // #2618: the OTHER declared repositories -- none for one project, whose orders are what they were
   const outageNow = outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows: openRowsRead, claimedComments, offBoard, others });
-  const { delivered: orders, performed } = performActions(markOutageReads([...decided, ...others.flatMap((tick) => tick.orders)], outageNow));
+  const { delivered: orders, performed: acted } = performActions(markOutageReads([...decided, ...others.flatMap((tick) => tick.orders)], outageNow));
+  const performed = acted + crossRepoCompletionTick(openRowsRead).performed; // #2995: after the orders, so a close the gate makes is never an order's input
   orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick(), ...orgHealthNow({ prsRead: prs, readyRead: readyRows, decideArgs, decided })); // #2848, #2936: before the dead man's switch -- a repeating line, a stuck org: something found
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so
   // on a full disk the tick can end partway. The order that says the disk is full must not be the one behind it.
