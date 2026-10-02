@@ -27,8 +27,9 @@ name: ci
 # repository, so a path in the project is written with the `project/` prefix, or carries the marker `# in-project` at the end of its line.
 #
 # NOTHING IS EXCLUDED BY NAME: an exclusion is a test that does not run, and the four that were (an import spelling, a recorded count, a walked directory
-# and an expected file list, each premised on the monorepo's layout) were fixed in the tests instead (a11ign/a11ign#3002). The run reports `skipped 1`:
-# the one test that skips itself when no Chrome is installed, which is not an exclusion.
+# and an expected file list, each premised on the monorepo's layout) were fixed in the tests instead (a11ign/a11ign#3002). The run reports `skipped 1`: the one
+# test that skips itself when no `codex` binary is installed (its reading was taken on the agent host), which is not an exclusion. It reported 5 before the
+# step that fetches the two fixture merges: those four skips were never the exclusions, which node does not count, but a project history that lacks them.
 
 env:
   # The project the tool is tested against. `main` follows the project; a commit hash holds it still.
@@ -67,6 +68,14 @@ jobs:
           # The suite reads the project's git history (merge-base, branch tips, recorded commits), so a shallow clone would fail it for the wrong reason.
           fetch-depth: 0
           persist-credentials: false
+      - name: The two real merges `trunk-revert-guard.test.ts` runs the guard against -- on GitHub, but not on the project's main
+        working-directory: project
+        # `f2cdfaf3` (the incident) and `fc9b89d2` (#354's legitimate deletion) are merges from before the project's history was rewritten, so a full-depth
+        # clone of `main` does not hold them and four of that file's tests skip by name. Fetched by hash under a ref, so the test's `git clone --local` finds them.
+        run: |
+          git fetch --no-tags origin \
+            f2cdfaf300e54ad534935d8e1f4f9e250e3ecd0a:refs/fixture-merges/f2cdfaf3 \
+            fc9b89d2cdeed285f289724c4245a12c36344d76:refs/fixture-merges/fc9b89d2
       - name: Install the tool's three dependencies where the project's root would hold them
         run: |
           npm install --no-save --no-package-lock "tsx@^4.22.4" "yaml@^2.9.0" "typescript@^6.0.3"
