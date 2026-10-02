@@ -178,9 +178,25 @@ const PRELOAD = "const fs = require('node:fs');\n"
   + "fs.statfsSync = () => ({ bsize: 4096, blocks: 1000, bavail: 700, files: 1000, ffree: 0 });\n"
   + "require('node:module').syncBuiltinESMExports();\n";
 
+/**
+ * A `journalctl` that reports one line repeating for 35 complete ticks, so the real gate has a SECOND order that does not depend on the
+ * machine it runs on. The first version of the "first of several" test counted on whatever else the host happened to offer: on the
+ * agent host that was the real journal, and in CI it was a dirty or behind checkout (`primary-stale`) -- which a push to main with
+ * nothing after it does not have, so the run at 471c753f6 (#3027) saw one order and failed. Only the repeating-line order is stubbed;
+ * the disk order under test is still the gate's own.
+ */
+const JOURNAL_TICKS = 35;
+const JOURNALCTL = "#!/bin/sh\ni=0\nwhile [ $i -lt " + JOURNAL_TICKS + " ]; do\n"
+  + "  printf '2026-10-02T10:%02d:00+00:00 host systemd[1]: Starting a11ign-work-tick.service - one tick of the org.\\n' $i\n"
+  + "  printf '2026-10-02T10:%02d:01+00:00 host node[1]: a standing fault the stub repeats every tick\\n' $i\n"
+  + "  printf '2026-10-02T10:%02d:02+00:00 host systemd[1]: Finished a11ign-work-tick.service - one tick of the org.\\n' $i\n"
+  + "  i=$((i+1))\ndone\n";
+
 function gateProcess({ ghWorks }: { ghWorks: boolean }) {
   const dir = mkdtempSync(join(tmpdir(), "disk-gate-"));
   try {
+    writeFileSync(join(dir, "journalctl"), JOURNALCTL);
+    chmodSync(join(dir, "journalctl"), STUB_MODE);
     writeFileSync(join(dir, "gh"), ghWorks
       ? "#!/bin/sh\ncase \"$*\" in\n  \"pr list\"*|\"issue list\"*) printf '%s' '[]' ;;\n  *) exit 1 ;;\nesac\n"
       : "#!/bin/sh\nexit 1\n");
