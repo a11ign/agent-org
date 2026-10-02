@@ -108,6 +108,7 @@ import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 // worse than the cycle either duplicate was solving. See claim-labels.mjs's own header for the full story.
 import { READY_LABEL, CLAIM_LABEL, STARTED_LABEL } from "./claim-labels.mjs";
 import { SESSION_PREFIX } from "./project-vocabulary.mjs";
+import { REPO } from "./project-identity.mjs";
 // #2202: `waiting-condition.mjs` imports NOTHING, so it is import-safe under this header's no-`npm ci`/no-build
 // constraint for the same reason `claim-labels.mjs` is: it cannot be part of a cycle.
 import { answersOwedBy, ANSWER_PREFIX } from "./waiting-condition.mjs";
@@ -308,9 +309,9 @@ export function orphanedRowReport({ row, prNumber, sha, branch, declaration }) {
   // Open but UNCLAIMED is a row nobody is holding: the PR was built for it by somebody who has since let
   // it go, or the number is a coincidence. Reporting there would speak into an empty room.
   if (!row.labels.includes(CLAIM_LABEL)) return null;
-  return { number: row.number, comment: `**PR #${prNumber} was built for this row and has merged, but it `
+  return { number: row.number, comment: `**PR ${prName(prNumber)} was built for this row and has merged, but it `
     + `closed no row -- so this row is still open and still \`${CLAIM_LABEL}\`.**\n\n`
-    + `- PR: #${prNumber}, merged as \`${sha}\`\n`
+    + `- PR: ${prName(prNumber)}, merged as \`${sha}\`\n`
     + `- Branch: \`${branch}\`, which names this row\n`
     + `- Its declaration: ${declaration}\n\n`
     + "`Closes: none` is legitimate and common -- a row that takes several PRs declares it on every PR "
@@ -448,6 +449,10 @@ export function owedNote(owedBy) {
     + "(#2202).";
 }
 
+// #2995: a PR of ANOTHER repository arrives named `owner/repo#N`, and the row it closes is then named in the full form too (a bare `#N` reads as the row's own repository's).
+const prName = (/** @type {string} */ prNumber) => (prNumber.includes("#") ? prNumber : `#${prNumber}`);
+const rowName = (/** @type {number} */ n, /** @type {string} */ prNumber) => (prNumber.includes("#") ? `${REPO}#${n}` : `#${n}`);
+
 /**
  * #2822: THE SENTENCE A CLOSING COMMENT OPENS WITH. A closure made from the body's declaration says so, and
  * says why, because a reader of the row would otherwise take GitHub's silence for a closure GitHub made.
@@ -456,12 +461,12 @@ export function owedNote(owedBy) {
  */
 function openingSentence(n, prNumber, sha, basis) {
   if (basis === "body") {
-    return `Closed by the pipeline FROM THE PR BODY'S DECLARATION: PR #${prNumber} merged as \`${sha}\` and `
-      + `declared \`Closes #${n}\`, but GitHub resolved NO closing reference for it (a repo-wide condition from `
+    return `Closed by the pipeline FROM THE PR BODY'S DECLARATION: PR ${prName(prNumber)} merged as \`${sha}\` and `
+      + `declared \`Closes ${rowName(n, prNumber)}\`, but GitHub resolved NO closing reference for it (a repo-wide condition from `
       + `2026-09-30, #2822), so this closure is that declaration read directly from the body rather than GitHub's `
       + "answer.\n\n";
   }
-  return `Closed by the pipeline: PR #${prNumber} merged as \`${sha}\` and declared \`Closes #${n}\`.\n\n`
+  return `Closed by the pipeline: PR ${prName(prNumber)} merged as \`${sha}\` and declared \`Closes ${rowName(n, prNumber)}\`.\n\n`
     + `GitHub does not apply a closing reference when the merge is performed by `
     + `\`github-actions[bot]\` -- measured on #310, #321 and #344 (see #298), where three of three bot `
     + `merges left their rows open while two of two human merges closed theirs. This comment and this `
@@ -493,7 +498,7 @@ function closeOneRow(n, { prNumber, sha, repo, owedBy = [], basis = "github" }) 
   const sentence = closingComment(n, { prNumber, sha, owedBy, basis });
   try {
     gh(["issue", "close", String(n), "--repo", repo, "--comment", sentence, "--reason", "completed"]);
-    console.log(`CLOSE-ROWS: #${n} CLOSED${basis === "body" ? " FROM THE BODY'S DECLARATION" : ""} (PR #${prNumber}, merge ${sha}).`);
+    console.log(`CLOSE-ROWS: #${n} CLOSED${basis === "body" ? " FROM THE BODY'S DECLARATION" : ""} (PR ${prName(prNumber)}, merge ${sha}).`);
     return true;
   } catch (cause) {
     console.log(`CLOSE-ROWS: #${n} COULD NOT CLOSE -- ${cause instanceof Error ? cause.message : cause}`);
@@ -649,7 +654,7 @@ export function applyClosurePlan({ close, already, skip = [], owed = [], unreada
 
   // #1877: reported, never silently dropped -- the same reason `already`/`none` are their own outcomes.
   const skipped = skip.map(({ number: n }) => {
-    console.log(`CLOSE-ROWS: #${n} SKIPPED -- reopened after PR #${ctx.prNumber} merged; left alone (#1877).`);
+    console.log(`CLOSE-ROWS: #${n} SKIPPED -- reopened after PR ${prName(ctx.prNumber)} merged; left alone (#1877).`);
     return n;
   });
 
@@ -767,7 +772,7 @@ function main() {
     // the branch was built for and quote the declaration that closed nothing. No extra round trip: this
     // is the lookup that already runs on every merge.
     const query = `{repository(owner:"${owner}",name:"${name}"){pullRequest(number:${number}){`
-      + `merged baseRefName mergedAt headRefName body mergeCommit{oid} closingIssuesReferences(first:20){nodes{number state `
+      + `merged baseRefName mergedAt headRefName body mergeCommit{oid} closingIssuesReferences(first:20){nodes{number state repository{nameWithOwner} `
       + `labels(first:20){nodes{name}} timelineItems(itemTypes:[REOPENED_EVENT],last:1){nodes{`
       + `... on ReopenedEvent{createdAt}}}}}}}}`;
     const pr = JSON.parse(gh(["api", "graphql", "-f", `query=${query}`,
@@ -786,10 +791,11 @@ function main() {
       console.error(`CANNOT ASK: #${number} merged into \`${pr.baseRefName}\`, not \`main\` -- refusing.`);
       exitAfterSweep(EXIT.CANNOT_ASK);
     }
-    /** @type {{ number: number, state: string, labels: { nodes: { name: string }[] },
+    /** @type {{ number: number, state: string, repository?: { nameWithOwner: string }, labels: { nodes: { name: string }[] },
      *   timelineItems: { nodes: { createdAt: string }[] } }[]} */
     const nodes = pr.closingIssuesReferences.nodes;
-    issues = nodes.map((i) => ({
+    // #2995: only the tracker's rows are ours to close; a pull request of another repository names one in the full form.
+    issues = nodes.filter((i) => (i.repository?.nameWithOwner ?? repo) === REPO).map((i) => ({
       number: i.number, state: i.state, labels: (i.labels?.nodes ?? []).map((l) => l.name),
       reopenedAt: i.timelineItems?.nodes?.[0]?.createdAt ?? null,
     }));
@@ -803,21 +809,23 @@ function main() {
     exitAfterSweep(EXIT.CANNOT_ASK);
   }
 
-  const { plan, basis, declared, unreadable } = planForMergedPr({ issues, prMergedAt, prBody },
-    (n) => liveLookupDeclaredRow(n, repo));
+  // #2995: from another repository a bare `Closes #N` is not a tracker row, so the body fallback is not asked.
+  const prRef = repo === REPO ? number : `${repo}#${number}`;
+  const { plan, basis, declared, unreadable } = planForMergedPr({ issues, prMergedAt, prBody: repo === REPO ? prBody : "" },
+    (n) => liveLookupDeclaredRow(n, REPO));
 
   if (plan.none && declared.length === 0) {
     // NOT a failure, and not silence either. Most PRs declare nothing.
     console.log(`CLOSE-ROWS: #${number} declared NO closing references. Nothing to close.`);
     // #2036: ...but if the BRANCH names a row that is still open and still claimed, say so on it. This is
     // the one place that can: everything else in the pipeline reads this PR as healthy, correctly.
-    reportOrphanedRow({ branch: headRefName, prNumber: number, sha,
-      declaration: declarationLine(prBody) }, liveOrphanEffects(repo));
+    reportOrphanedRow({ branch: headRefName, prNumber: prRef, sha,
+      declaration: declarationLine(prBody) }, liveOrphanEffects(REPO));
     exitAfterSweep(EXIT.DONE);
   }
   announceBodyPlan(number, { basis, declared, unreadable });
 
-  const { code, lines } = closeRowsExit(applyClosurePlan(plan, { prNumber: number, sha, repo, basis }, liveClosureEffects()),
+  const { code, lines } = closeRowsExit(applyClosurePlan(plan, { prNumber: prRef, sha, repo: REPO, basis }, liveClosureEffects()),
     "CLOSE-ROWS");
   for (const line of lines) console.error(line);
   exitAfterSweep(code);

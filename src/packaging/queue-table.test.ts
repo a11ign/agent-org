@@ -1076,6 +1076,57 @@ test("#2245 a failing REST list is still `null` -- the queue call does not paper
   assert.equal(openPRs({ run }), null);
 });
 
+// ---------------------------------------------------------------------------------------------------
+// #2981: THE TABLE'S `red` AND `absorbed` ARE DECIDED BY red-pr.mjs, THROUGH THE REAL openPRs READ.
+// ---------------------------------------------------------------------------------------------------
+
+/** What `checksOnSha`'s `--jq` prints: REST check runs, one JSON object a line, `conclusion` LOWER-CASE. */
+const checkRuns = (...runs: [string, string][]) =>
+  runs.map(([name, conclusion]) => JSON.stringify({ name, conclusion, completedAt: "2026-10-02T08:00:00Z" })).join("\n");
+/** `openPRs` over one PR carrying `labels` whose head has `runs`, returning its row at `behind` commits behind. */
+function tableRow(labels: string[], runs: [string, string][], behind = 5) {
+  const run = (args: string[]) => {
+    if (args[1] === "graphql") return JSON.stringify([plainNode(2239)]);
+    if (/check-runs/.test(args[1])) return checkRuns(...runs);
+    return JSON.stringify([restPr({ labels: labels.map((name) => ({ name })) })]);
+  };
+  return prRow(openPRs({ run })![0], behind, NOW);
+}
+const HOLD_ONLY: [string, string][] = [["deliberateRefusals", "failure"], ["gate", "failure"], ["check", "success"]];
+
+test("#2981 a HELD PR whose only red is the hold's own two jobs carries no `red` and is NOT absorbed", () => {
+  const row = tableRow(["hold:ceo"], HOLD_ONLY);
+  assert.deepEqual(row.red, [], "deliberateRefusals and gate fail BY DESIGN on a hold (#2883, #2954)");
+  assert.equal(row.absorbed, false, "behind and held is a decision somebody made, not a red its owner is fixing");
+});
+
+test("#2981 a HELD PR with a REAL red is still absorbed, and the table names the real one", () => {
+  const row = tableRow(["hold:ceo"], [...HOLD_ONLY, ["docs", "failure"]]);
+  assert.deepEqual(row.red, ["docs"], "the hold's own jobs are left out, the real failure is not");
+  assert.equal(row.absorbed, true);
+});
+
+test("#2981 POSITIVE CONTROL: the same two jobs on an UNHELD PR are a breakage, and absorbed when behind", () => {
+  // `deliberateRefusals` failing with no hold is #294's head-vs-tip race or #549's `Closes` mismatch.
+  const row = tableRow([], HOLD_ONLY);
+  assert.deepEqual([...row.red!].sort(), ["deliberateRefusals", "gate"]);
+  assert.equal(row.absorbed, true);
+});
+
+test("#2981 an unreadable check list stays `null` through the adapter, never an empty list of reds", () => {
+  const run = (args: string[]) => {
+    if (args[1] === "graphql") return JSON.stringify([plainNode(2239)]);
+    if (/check-runs/.test(args[1])) throw new Error("check-runs refused");
+    return JSON.stringify([restPr({ labels: [{ name: "hold:ceo" }] })]);
+  };
+  assert.equal(openPRs({ run })![0].redChecks, null);
+});
+
+test("#2981 a running, skipped or cancelled check is not red for the table either", () => {
+  const row = tableRow([], [["a", "cancelled"], ["b", "skipped"], ["c", "neutral"], ["d", "success"]]);
+  assert.deepEqual(row.red, []);
+});
+
 // #2245, reviewer-2's blocker at 6a19cbf3: the row's source-shape command matched the SPELLING
 // `armed = Boolean(pr.auto_merge)`, so `rawArmed = Boolean(pr.auto_merge)` beside the shared import
 // restored the defect and still exited 0. This scan reads no variable name: the three spellings of the

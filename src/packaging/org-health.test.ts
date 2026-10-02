@@ -20,8 +20,8 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NO_MERGE_HOURS, RED_PR_MINUTES, REFUSED_TICKS, PRIMARY_STALE_MINUTES, SIGNALS, noMergeReading, redPrReading, refusedRowReading,
-  primaryReading, primaryStandingSince, readLastMergedAt, orgHealthReadings, orgHealthOrders, orgHealthTick } from "../org-health.mjs";
-import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, GH_READS, UNCLAIMABLE_AFTER_TICKS, decide, withPrOwners, redPrFacts } from "../work-gate.mjs";
+  primaryReading, primaryStandingSince, readLastMergedAt, PR_NOT_PROGRESSING_MINUTES, REASONS_THAT_ARE_NOT_A_STALL, prNotProgressingReading, orgHealthReadings, orgHealthOrders, orgHealthTick } from "../org-health.mjs";
+import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, GH_READS, UNCLAIMABLE_AFTER_TICKS, decide, withPrOwners, redPrFacts, stalledPrFacts, stallReasonOf, STALL_REASON } from "../work-gate.mjs";
 import { profileFor } from "../worker-profile.mjs";
 
 const GATE_ENTRY = fileURLToPath(new URL("../work-gate.mjs", import.meta.url));
@@ -302,7 +302,7 @@ test("redPrFacts consumes the orders `pr-checks-failing` gave: a PR whose red th
 
 const rollupCheck = (name: string, conclusion: string, completedAt: string) => ({ name, status: "COMPLETED", conclusion, startedAt: completedAt, completedAt });
 const HOLD_RED = [rollupCheck("deliberateRefusals", "FAILURE", "2026-10-01T18:27:00Z"), rollupCheck("gate", "FAILURE", "2026-10-01T18:30:00Z")];
-/** #2883's shape: an OWNED PR (`session:worker-7`) that `ceo` holds, so `redOnlyFromHoldOf` still orders its owner (a hold by somebody else is no answer, #2400). */
+/** #2883's shape: an OWNED PR (`session:worker-7`) that `ceo` holds, a hold by somebody else WAS no answer from the owner (#2400 clause 1) until #2993, which made it one. */
 const heldByCeo = (extra: unknown[] = [], over: Record<string, unknown> = {}) => ({ ...redHead, number: 2883, labels: [{ name: "session:worker-7" }, { name: "hold:ceo" }],
   statusCheckRollup: [...HOLD_RED, ...extra], ...over });
 
@@ -316,8 +316,12 @@ function offeredFor(pr: object) {
   return { ordered: decided.some((o: Order) => o.cause === "pr-checks-failing"), facts, orders };
 }
 
-test("#2956 PRECONDITION: a PR held by `ceo` and owned by a worker IS still ordered by `pr-checks-failing` -- the hold is not its addressee's, so the order's own excuse does not cover it", () => {
-  assert.equal(offeredFor(heldByCeo()).ordered, true, "if this goes false the order learned the hold, and the test below no longer proves org-health's own decider");
+test("#2956/#2993 PRECONDITION: a PR held by `ceo` and owned by a worker is NOT ordered by `pr-checks-failing` while only the hold is red, and IS once a real job is -- org-health's decider is asked on its own", () => {
+  // Before #2993 this asserted `true`: a hold by somebody else was no answer from the owner (#2400 clause 1), so the order still went and the
+  // test below could only prove org-health's decider by contrast. The order now asks `isHeldRed` too, so the contrast is gone and the control
+  // moves to the real red, which must still reach the owner.
+  assert.equal(offeredFor(heldByCeo()).ordered, false, "the hold's own red is an answer, whoever placed it");
+  assert.equal(offeredFor(heldByCeo([rollupCheck("ts / run", "FAILURE", "2026-10-01T19:00:00Z")])).ordered, true, "a real red under the same hold still orders its owner");
 });
 
 test("#2956: org-health does NOT offer a held PR whose only red is the hold's; it DOES offer a held PR with a REAL red, dated by THAT check; and still a PR with no owner", () => {
@@ -344,11 +348,9 @@ const EXEMPT: Record<string, string> = {
   "merge-queue.mjs": "decides whether ONE queued PR may merge from its required checks; counts and ages nothing",
   "queue-stalled.mjs": "reads the gate verdict of an ARMED PR to tell a stalled queue from a slow one",
   "update-branch-sweep.mjs": "skips a PR whose gate is failing when deciding whom to update; a gate verdict, not a red count",
-  "queue-table.mjs": "THE KNOWN FOURTH DECIDER (found by this scan, #2956): its own `isRed` over REST check runs feeds the stalled-PR table's `red` and `absorbed`, so a held PR reads red there too. Outside this row's Region; #2981 moves it onto `isBrokenRed` and deletes this entry",
-  "messaging/watch.mjs": "THE KNOWN SIXTH DECIDER (found by agent-org's own gate running this scan, a11ign/a11ign#2973): `redPulls` has its own `isRed` and `newestPerName` feeding the chairman's daily-summary red count, and it differs from `isBrokenRed` in three ways each of which moves that number (a hold's red is counted, a status context's `state` is read, `ACTION_REQUIRED` is not). Not a mechanical swap, so a11ign/a11ign#3014 decides it and deletes this entry",
-  "work-gate/pr-orders.mjs": "ADDRESSEE-relative order logic (`redOnlyFromHoldOf`, #2400: who is asked, not how many are red), `HOLD_RED_JOBS` pinned equal to red-pr.mjs's in org-retro.test.ts",
+  "work-gate/pr-orders.mjs": "the order logic (`redOnlyFromAHold` asks `isHeldRed`, #2993; the rest is who is asked, not how many are red), `HOLD_RED_JOBS` pinned equal to red-pr.mjs's in org-retro.test.ts",
 };
-const EXEMPT_CEILING = 6;
+const EXEMPT_CEILING = 4;
 
 /** Code with every `//`, `/* *\/` comment removed, so a header that NAMES `statusCheckRollup` does not enlist its file. */
 const codeOf = (source: string) => source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/\s\/\/\s.*$/gm, "");
@@ -410,4 +412,153 @@ test("THE GATE AS A PROCESS runs the question: a refused merge read is said on s
   const orders = ran.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l) as Order);
   assert.deepEqual(orders.filter((o) => o.cause === "org-health"), [], "a refusal is not evidence of a stall");
   assert.deepEqual(SIGNALS.NO_MERGE, "no-merge-while-work-exists");
+});
+
+// --- 7. pr-not-progressing: an open PR with no push, review or comment for 180 min, whatever the reason (#2970) ------------------------
+
+const REQUIRED = ["gate"];
+const HEAD = "0123456789abcdef0123456789abcdef01234567";
+const GREEN = [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }];
+const RED = [{ name: "gate", status: "COMPLETED", conclusion: "FAILURE" }];
+const iso = (ms: number) => new Date(ms).toISOString();
+const label = (...names: string[]) => names.map((name) => ({ name }));
+
+/** #2950 as the row records it: a DRAFT, `DIRTY`, no checks, owned by worker-2936, created before its last push. */
+const INSTANCE_2950 = { number: 2950, isDraft: true, mergeStateStatus: "DIRTY", mergeable: "CONFLICTING", statusCheckRollup: [], headRefOid: HEAD,
+  headRefName: "agent/org-health-1-the-2936", labels: label("session:worker-2936"), createdAt: iso(NOW - 9 * HOUR_MS), comments: [], reviews: [] };
+
+/** The `gh api` seam of `readHeadCommittedAt`: every call is recorded and answers the head's committer date. */
+function headCommittedAt(ms: number | "refuse") {
+  const calls: string[][] = [];
+  const run = (args: string[]) => {
+    calls.push(args);
+    if (ms === "refuse") throw new Error("HTTP 403");
+    return `${iso(ms)}\n`;
+  };
+  return { run, calls };
+}
+
+/** What the gate hands the tick for these PRs, through the real classifier and the real fact reader, and what it offers. */
+function stallOffer(prs: Record<string, unknown>[], seam: ReturnType<typeof headCommittedAt>) {
+  const stalledPrs = stalledPrFacts(prs, REQUIRED, { now: NOW, run: seam.run });
+  const orders = orgHealthTick(quiet({ stalledPrs }) as never, { log: () => undefined }) as Order[];
+  return { stalledPrs, orders: orders.filter((o) => o.subject === "pr-not-progressing") };
+}
+
+test("pr-not-progressing: THE INSTANCE (#2950, a conflicted draft with no checks, quiet 7.5 h) IS OFFERED to ceo, naming the PR, reason, owner and age", () => {
+  const { orders } = stallOffer([INSTANCE_2950], headCommittedAt(NOW - 7.5 * HOUR_MS));
+  assert.equal(orders.length, 1, "the red signal could not see this PR; this one must");
+  assert.equal(orders[0].session, "ceo");
+  assert.equal(orders[0].cause, "org-health");
+  assert.match(orders[0].prompt, /#2950 \(conflicted, quiet 7\.5 h, owner worker-2936\)/);
+  assert.match(orders[0].prompt, /first tripped at 2026-10-01T07:30:00Z/, "the newest push (04:30Z) plus 180 min, derived and not remembered");
+});
+
+test("pr-not-progressing: the SAME PR 10 minutes after its last push is NOT offered", () => {
+  assert.deepEqual(stallOffer([INSTANCE_2950], headCommittedAt(NOW - 10 * MINUTE_MS)).orders, []);
+});
+
+test("pr-not-progressing: a comment or a review inside the window excuses a PR whose push is old -- and costs no read, because it needs none", () => {
+  const commented = { ...INSTANCE_2950, comments: [{ createdAt: iso(NOW - 10 * MINUTE_MS), author: { login: "someone" } }] };
+  const reviewed = { ...INSTANCE_2950, reviews: [{ submittedAt: iso(NOW - 10 * MINUTE_MS) }] };
+  for (const pr of [commented, reviewed]) {
+    const seam = headCommittedAt(NOW - 7.5 * HOUR_MS);
+    assert.deepEqual(stallOffer([pr], seam).orders, []);
+    assert.deepEqual(seam.calls, [], "a PR already recent by what `pr list` carries is not asked for its head commit");
+  }
+});
+
+test("pr-not-progressing: the threshold is 180 minutes exactly -- trips AT it and not one millisecond under", () => {
+  assert.equal(PR_NOT_PROGRESSING_MINUTES, 180, "the p94.9 of 651 PR open-to-merge times, 2026-09-18..10-01 (measured with `gh pr list --state merged`)");
+  const reading = (quietMs: number) => prNotProgressingReading({ now: NOW, stalledPrs: [{ number: 1, reason: "conflicted", owner: null, lastActivityAt: NOW - quietMs }] });
+  assert.equal(reading(180 * MINUTE_MS).status, "tripped");
+  assert.equal(reading(180 * MINUTE_MS - 1).status, "clear");
+});
+
+test("pr-not-progressing: a PR held on purpose is NOT offered however old (hold:* and awaiting-evidence), and is not asked about", () => {
+  const old = { ...INSTANCE_2950, createdAt: iso(NOW - 99 * HOUR_MS) };
+  const seam = headCommittedAt(NOW - 98 * HOUR_MS);
+  const held = [{ ...old, number: 1, labels: label("session:worker-2936", "hold:ceo") }, { ...old, number: 2, labels: label("session:worker-2936", "awaiting-evidence") }];
+  held.forEach((pr) => assert.equal(stallReasonOf(pr, REQUIRED), "held-on-purpose"));
+  const { stalledPrs, orders } = stallOffer(held, seam);
+  assert.deepEqual(orders, []);
+  assert.deepEqual(stalledPrs, [], "the freeze is a decision (#2956): it is not even a candidate");
+  assert.deepEqual(seam.calls, []);
+});
+
+test("pr-not-progressing: a GREEN, READY, UNREVIEWED PR is offered as `awaiting-review` (the agent-org#6 shape) -- and a red one as `red`", () => {
+  const unreviewed = { number: 6, isDraft: false, statusCheckRollup: GREEN, reviewDecision: "REVIEW_REQUIRED", mergeStateStatus: "BLOCKED", headRefOid: HEAD,
+    headRefName: "agent/x-6", labels: label("session:worker-6"), createdAt: iso(NOW - 5 * HOUR_MS), comments: [], reviews: [] };
+  const red = { ...unreviewed, number: 7, statusCheckRollup: RED, reviewDecision: "", labels: label("session:worker-7") };
+  const { orders } = stallOffer([unreviewed, red], headCommittedAt(NOW - 4 * HOUR_MS));
+  assert.equal(orders.length, 1, "ONE order for the set");
+  assert.match(orders[0].prompt, /#6 \(awaiting-review, quiet 4 h, owner worker-6\)/);
+  assert.match(orders[0].prompt, /#7 \(red, quiet 4 h, owner worker-7\)/);
+});
+
+test("pr-not-progressing: THE POPULATION IS THE CLASSIFIER'S -- every reason but `progressing` and `held-on-purpose` has a case that trips, and the set is asserted", () => {
+  assert.deepEqual([...REASONS_THAT_ARE_NOT_A_STALL].sort(), [STALL_REASON.HELD_ON_PURPOSE, STALL_REASON.PROGRESSING].sort(),
+    "the leaf's two strings are the classifier's two values");
+  const base = { isDraft: false, statusCheckRollup: GREEN, headRefOid: HEAD, labels: label("session:worker-9"), createdAt: iso(NOW - 5 * HOUR_MS), comments: [], reviews: [] };
+  const byReason: Record<string, Record<string, unknown>> = {
+    [STALL_REASON.RED]: { ...base, statusCheckRollup: RED },
+    [STALL_REASON.CONFLICTED]: { ...base, isDraft: true, statusCheckRollup: [], mergeStateStatus: "DIRTY" },
+    [STALL_REASON.AWAITING_AUTHOR_DRAFT]: { ...base, isDraft: true },
+    [STALL_REASON.AWAITING_REVIEW]: { ...base, reviewDecision: "REVIEW_REQUIRED" },
+    [STALL_REASON.UNARMED]: { ...base, armed: false },
+    [STALL_REASON.PROGRESSING]: { ...base, statusCheckRollup: [] },
+    [STALL_REASON.HELD_ON_PURPOSE]: { ...base, labels: label("hold:ceo") },
+  };
+  assert.deepEqual(Object.keys(byReason).sort(), Object.values(STALL_REASON).sort(), "a reason added to the classifier has no case here until one is written");
+  for (const [reason, pr] of Object.entries(byReason)) {
+    assert.equal(stallReasonOf(pr, REQUIRED), reason, `the fixture for ${reason} is really ${reason}`);
+    const offered = stallOffer([{ ...pr, number: 100 }], headCommittedAt(NOW - 4 * HOUR_MS)).orders.length;
+    assert.equal(offered, REASONS_THAT_ARE_NOT_A_STALL.includes(reason) ? 0 : 1, `${reason}`);
+  }
+});
+
+test("pr-not-progressing: a refused read is an UNKNOWN, never a clear and never a trip -- the PR read, the head commit read, and a PR nothing dates", () => {
+  assert.equal(prNotProgressingReading({ now: NOW, stalledPrs: null }).status, "unknown");
+  const refused = stalledPrFacts([{ ...INSTANCE_2950, createdAt: undefined }], REQUIRED, { now: NOW, run: headCommittedAt("refuse").run });
+  assert.equal(refused[0].lastActivityAt, null, "no creation time and no push time is no age");
+  const reading = prNotProgressingReading({ now: NOW, stalledPrs: refused });
+  assert.equal(reading.status, "unknown");
+  assert.match(reading.detail, /carried no activity time/);
+  assert.equal(prNotProgressingReading({ now: NOW, stalledPrs: [] }).status, "clear");
+});
+
+test("pr-not-progressing: keyed on the SET of `number:reason`, so it holds while unchanged and re-asks when a PR joins or leaves", () => {
+  const at = (n: number, reason: string) => ({ number: n, reason, owner: null, lastActivityAt: NOW - 4 * HOUR_MS });
+  const key = (prs: ReturnType<typeof at>[]) => prNotProgressingReading({ now: NOW, stalledPrs: prs }).discriminator;
+  assert.equal(key([at(1, "red"), at(2, "conflicted")]), key([at(2, "conflicted"), at(1, "red")]));
+  assert.notEqual(key([at(1, "red")]), key([at(1, "red"), at(2, "conflicted")]));
+  assert.notEqual(key([at(1, "red")]), key([at(1, "conflicted")]));
+});
+
+test("pr-not-progressing: the one read it adds is counted in GH_READS, and a PR with no owner is named as having none", () => {
+  assert.match(GH_READS.conditionalOnQuietStalledPr, /readHeadCommittedAt/);
+  const orphan = { ...INSTANCE_2950, labels: [], headRefName: "main-ish" };
+  const { orders } = stallOffer([orphan], headCommittedAt(NOW - 4 * HOUR_MS));
+  assert.match(orders[0].prompt, /NO OWNER/);
+});
+
+test("pr-not-progressing: THE GATE AS A PROCESS offers #2950's shape to ceo, from a stub `gh` that serves it and its head commit", () => {
+  const dir = mkdtempSync(join(tmpdir(), "org-health-stalled-"));
+  try {
+    const pr = { ...INSTANCE_2950, createdAt: iso(Date.now() - 9 * HOUR_MS), author: { login: "a11ign-ai-workers" } };
+    writeFileSync(join(dir, "pr.json"), JSON.stringify([pr]));
+    writeFileSync(join(dir, "gh"), `#!/bin/sh\ncase "$*" in\n  "pr list --state open"*) cat "${dir}/pr.json" ;;\n  "pr list"*|"issue list"*) printf '%s' '[]' ;;\n`
+      + `  "api repos/"*"/commits/${HEAD}"*) printf '%s\\n' '${iso(Date.now() - 7.5 * HOUR_MS)}' ;;\n  *) exit 1 ;;\nesac\n`);
+    writeFileSync(join(dir, "journalctl"), "#!/bin/sh\nexit 1\n");
+    chmodSync(join(dir, "gh"), STUB_MODE);
+    chmodSync(join(dir, "journalctl"), STUB_MODE);
+    const ran = spawnSync(process.execPath, [GATE_ENTRY], { encoding: "utf8", env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
+    const orders = ran.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l) as Order);
+    const offered = orders.filter((o) => o.cause === "org-health" && o.subject === "pr-not-progressing");
+    assert.equal(offered.length, 1, ran.stderr);
+    assert.match(offered[0].prompt, /#2950 \(conflicted, quiet 7\.5 h, owner worker-2936\)/);
+    assert.ok(orders.some((o) => o.cause === "pr-merge-conflict" && o.session === "worker-2936"), "the owner is ordered too (#2968): ceo is the second reader, not the first");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

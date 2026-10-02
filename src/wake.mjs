@@ -41,12 +41,12 @@ import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { profileFor, agentArgs } from "./worker-profile.mjs";
 import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry, scopesOf }
   from "./work-gate.mjs";
-import { reviewerInstance, reviewerInstanceNumber, subjectMention } from "./review-attribution.mjs";
+import { reviewerInstance, subjectMention } from "./review-attribution.mjs";
 // #2688: THE SAME INSTRUMENT #928's OFFLINE REPORT IS BUILT FROM, READ LIVE INSTEAD OF ONLY REPORTED --
 // no new metric, only this one read at delivery time.
 import { claudeTurns, transcriptFiles } from "./token-audit.mjs";
 import { HOME_CHECKOUT, homeProjectDeclaration } from "./project-config.mjs";
-import { stateEntryPath } from "./host-config.mjs"; // #2799
+import { stateEntryPath, hostConfigPath, readHostConfig } from "./host-config.mjs"; // #2799; the other two for #2969's `clones`, read by host-config since #2991
 import { REPO } from "./project-identity.mjs";
 import { roleBriefPath } from "./project-roles.mjs";
 // #2619 (child 3d of #69): `session:`/`ready` -- `answer:` already arrives via `work-gate.mjs`'s
@@ -926,8 +926,20 @@ export const REVIEWER_GH_CONFIG_DIR = "/home/agent/reviewer/gh";
  * @returns {Record<string, string>}
  */
 export function reviewerEnvironment(session, override = {}, tree = reviewCheckoutPath(session)) {
+  const repo = reviewedRepositoryOf(session);
   return { GH_CONFIG_DIR: REVIEWER_GH_CONFIG_DIR, A11Y_REVIEWER_SESSION: session, npm_config_cache: `${tree}/node_modules/.cache/npm`,
-    ...override };
+    ...(repo === null ? {} : { GH_REPO: repo }), ...override };
+}
+
+/**
+ * The repository a KEYED instance's pull request lives in, or `null` for the primary's instance (and for a session that is none):
+ * `pr-review-verdict` (the verdict door) defaults to the primary's repository and reads `GH_REPO` for any other (#2952), so a
+ * verdict posted without it would be refused or, worse, land on the primary's pull request of the same number (#2969).
+ * @param {string} session @returns {string | null}
+ */
+export function reviewedRepositoryOf(session) {
+  const instance = reviewerInstance(session);
+  return instance === null || instance.key === "" ? null : codeRepositoryOf(instance.key);
 }
 
 /**
@@ -1067,6 +1079,83 @@ export function reviewCheckoutPath(session, root = REVIEW_CHECKOUT_ROOT) {
 const reviewRef = (pr, key = "") => (key === "" ? `refs/review/pr-${pr}` : `refs/review/${key}/pr-${pr}`);
 
 /**
+ * #2969: WHERE A DECLARED KEY'S CLONE LIVES, from `host.json`'s `clones` (`{ "<key>": "<absolute path>" }`), or why it cannot be said.
+ * A clone is a machine fact no repository can know (ADR 0040, decision 3), and it is NOT a `projects` entry: a project there is one
+ * with a declaration of its own that `host-units.mjs` reads a `beforeTick` from, and a keyed code repository has none. EVERY failure
+ * is a refusal naming the host file and what is wrong -- an unreadable file is never read as "no clone declared", and a clone is
+ * never defaulted to the primary's checkout, whose `origin` would put the wrong repository's pull request in front of a reviewer.
+ * The reading is `host-config.mjs`'s (#2991), so a relative clone is refused with the whole file, naming `clones.<key>`.
+ * @param {string} key @param {{ path?: string, read?: typeof readFileSync }} [from]
+ * @returns {{ clone: string } | { refusal: string }}
+ */
+export function reviewCloneOf(key, { path = hostConfigPath(), read = readFileSync } = {}) {
+  /** @type {Readonly<import("./host-config.mjs").HostConfig>} */
+  let host;
+  try {
+    host = readHostConfig(path, read);
+  } catch (err) {
+    return { refusal: `${path} cannot be read as the host declaration (${firstLine(err)})` };
+  }
+  const clone = host.clones !== undefined && Object.hasOwn(host.clones, key) ? host.clones[key] : undefined;
+  return clone === undefined ? { refusal: `${path} declares no absolute \`clones.${key}\` path` } : { clone };
+}
+
+/**
+ * The repository root a review tree of `session` is made in and fetched from: the tick's own checkout for the primary's instance,
+ * the declared clone for a keyed one whose key the project declares AND the host gives a clone, and a refusal otherwise. THE KEY
+ * MUST BE DECLARED TOO: a clone the host names for a repository the project does not declare is a clone the gate never reads.
+ * @param {string} session @returns {{ repoRoot: string } | { refusal: string }}
+ */
+function reviewRepoRootOf(session) {
+  const instance = reviewerInstance(session);
+  if (instance === null || instance.key === "") return { repoRoot: REPO_ROOT };
+  const declared = codeRepositoryOf(instance.key);
+  const cloned = reviewCloneOf(instance.key);
+  if (declared === null || "refusal" in cloned) {
+    const why = declared === null ? `the project declares no code repository for key \`${instance.key}\`` : String(/** @type {any} */ (cloned).refusal);
+    return { refusal: `no review checkout for "${session}": ${why}. The tick's checkout serves repository \`${REPO}\` only, and where `
+      + `\`${instance.key}\`'s clone lives is a host path (ADR 0040, decision 3 -- child 3f); nothing is fetched and the order is not sent, `
+      + "because a tree of the WRONG repository's pull request would be reviewed as this one" };
+  }
+  return { repoRoot: cloned.clone };
+}
+
+/**
+ * WHERE `session`'s tree comes from and how it is made ready: the repository root (an explicit one wins, as it always did), the private
+ * ref a pull request's head is fetched into (keyed for a keyed instance), and the dependency step -- or why no tree can be made.
+ * @param {string} session @param {string | undefined} given @param {CheckoutDeps["link"]} link
+ * @returns {{ repoRoot: string, ref: (pr: number) => string, linkDependencies: NonNullable<CheckoutDeps["link"]> } | { refusal: string }}
+ */
+function reviewTreeSource(session, given, link) {
+  const where = given === undefined ? reviewRepoRootOf(session) : { repoRoot: given };
+  if ("refusal" in where) return where;
+  const key = reviewerInstance(session)?.key ?? "";
+  return { repoRoot: where.repoRoot, ref: (pr) => reviewRef(pr, key),
+    linkDependencies: link ?? (key === "" ? linkReviewDependencies : linkKeyedDependencies) };
+}
+
+/**
+ * A KEYED review tree has no dependencies to link, and says so. {@link linkReviewDependencies} hybrid-links the primary's `node_modules`
+ * and this tree's `packages/*`, which is a11ign's shape; a keyed repository declares its own, and `a11ign/agent-org`'s `package.json`
+ * carries none (measured 2026-10-02: no `dependencies`, no `devDependencies`, and a clone with no `node_modules`). So a clone that HAS a
+ * `node_modules` is linked the plain way -- every entry, nothing of this tree's own replaced -- and one that has none needs nothing.
+ * @param {{path: string, repoRoot: string, fs?: LinkFs}} args @returns {string | null}
+ */
+export function linkKeyedDependencies({ path, repoRoot, fs = REAL_LINK_FS }) {
+  const modules = `${repoRoot}/node_modules`;
+  if (!fs.existsSync(modules)) return null;
+  try {
+    fs.mkdirSync(`${path}/node_modules`, { recursive: true });
+    for (const entry of fs.readdirSync(modules)) {
+      if (entry === ".bin" || !entry.startsWith(".")) relink(fs, `${modules}/${entry}`, `${path}/node_modules/${entry}`);
+    }
+    return null;
+  } catch (err) {
+    return `could not link dependencies into ${path}/node_modules: ${firstLine(err)}`;
+  }
+}
+
+/**
  * @typedef {{git?: (cmd: string, args: string[], opts?: object) => string, exists?: (path: string) => boolean,
  *   root?: string, repoRoot?: string, link?: (args: {path: string, repoRoot: string}) => string | null,
  *   record?: typeof recordRemoval}} CheckoutDeps `record` is #2827's removal log, a seam so a test can read the line or refuse it
@@ -1142,21 +1231,29 @@ export function linkReviewDependencies({ path, repoRoot, fs = REAL_LINK_FS }) {
  * AND A TREE WITH NO DEPENDENCIES IS A REFUSAL TOO (#2498): the last step is {@link linkReviewDependencies}, so a tree
  * the order names is one whose Acceptance can run. It stays where it is on a refusal and the next tick retries.
  *
+ * #2969: FOR A KEYED INSTANCE the repository is its declared CLONE ({@link reviewCloneOf}), so `origin` is THAT repository's, the ref
+ * is {@link reviewRef}'s keyed one, and there is no `packages/` to hybrid-link ({@link linkKeyedDependencies}). A keyed instance with
+ * no declared clone is a refusal, never the primary's tree. An explicit `repoRoot` wins, as it always did, so a test names its own.
+ *
  * @param {{pr: number, session: string} & CheckoutDeps} args
  * @returns {{path: string, head: string} | {refusal: string}}
  */
-export function prepareReviewCheckout({ pr, session, git = defaultGit, exists = existsSync,
-  root = REVIEW_CHECKOUT_ROOT, repoRoot = REPO_ROOT, link = linkReviewDependencies }) {
+export function prepareReviewCheckout({ pr, session, git = defaultGit, exists = existsSync, root = REVIEW_CHECKOUT_ROOT,
+  repoRoot: given, link }) {
   const path = reviewCheckoutPath(session, root);
+  const where = reviewTreeSource(session, given, link);
+  if ("refusal" in where) return where;
+  const { repoRoot, ref: refOf, linkDependencies } = where;
+  const ref = refOf(pr);
   try {
-    git("git", ["-C", repoRoot, "fetch", "--quiet", "origin", `+refs/pull/${pr}/head:${reviewRef(pr)}`]);
-    const head = git("git", ["-C", repoRoot, "rev-parse", "--verify", reviewRef(pr)]).trim();
+    git("git", ["-C", repoRoot, "fetch", "--quiet", "origin", `+refs/pull/${pr}/head:${ref}`]);
+    const head = git("git", ["-C", repoRoot, "rev-parse", "--verify", ref]).trim();
     if (exists(path)) git("git", ["-C", path, "checkout", "--quiet", "--detach", head]);
     // `worktree add` makes the missing parents of `path`, so the first tree needs no directory made for it.
     else git("git", ["-C", repoRoot, "worktree", "add", "--quiet", "--force", "--detach", path, head]);
     const at = git("git", ["-C", path, "rev-parse", "HEAD"]).trim();
     if (at !== head || !exists(path)) return { refusal: `no review checkout: ${path} is at ${at || "nothing"}, not PR #${pr}'s head ${head}` };
-    const unlinked = link({ path, repoRoot });
+    const unlinked = linkDependencies({ path, repoRoot });
     if (unlinked !== null) return { refusal: `no review dependencies for PR #${pr} at ${path} (${unlinked})` };
     return { path, head };
   } catch (err) {
@@ -1195,8 +1292,12 @@ function removeLoggedCheckout({ path, session, git, repoRoot, record }) {
  * @param {{pr: number, session: string, key?: string} & CheckoutDeps} args @returns {string | null}
  */
 export function removeReviewCheckout({ pr, session, key = "", git = defaultGit, exists = existsSync,
-  root = REVIEW_CHECKOUT_ROOT, repoRoot = REPO_ROOT, record = recordRemoval }) {
+  root = REVIEW_CHECKOUT_ROOT, repoRoot: given, record = recordRemoval }) {
   const path = reviewCheckoutPath(session, root);
+  // #2969: a keyed tree is a worktree of its CLONE, so it is removed from there; the primary's `git worktree remove` would not know it.
+  const where = given === undefined ? reviewRepoRootOf(session) : { repoRoot: given };
+  if ("refusal" in where) return `could not remove ${path} (${where.refusal})`;
+  const { repoRoot } = where;
   try {
     if (exists(path)) removeLoggedCheckout({ path, session, git, repoRoot, record });
     if (exists(path)) return `${path} is still there after \`git worktree remove\``;
@@ -1221,8 +1322,21 @@ export function withReviewCheckout(order, checkout, pr) {
     + "request's Acceptance runs there as written, after `npm run build` when it needs `dist`. Your npm cache is "
     + `\`${checkout.path}/node_modules/.cache/npm\`, the one place npm can write: set \`npm_config_cache\` to it if your pane does not.\n\n`
     + `SIGN AS \`${order.session}\`: your pane may not hold \`A11Y_REVIEWER_SESSION\` (one started outside the tick does not), so `
-    + `post the verdict as \`A11Y_REVIEWER_SESSION=${order.session} pr-review-verdict <n> <convinced|not-convinced> <file>\` `
-    + "and the verdict line's `by` names you." };
+    + `post the verdict as \`${doorEnvironment(order.session)} pr-review-verdict <n> <convinced|not-convinced> <file>\` `
+    + "and the verdict line's `by` names you." + doorRepositoryNote(order.session) };
+}
+
+/** The variables the verdict door is run with for `session`: its signature, and for a keyed instance the repository too (#2969). @param {string} session */
+function doorEnvironment(session) {
+  const repo = reviewedRepositoryOf(session);
+  return `${repo === null ? "" : `GH_REPO=${repo} `}A11Y_REVIEWER_SESSION=${session}`;
+}
+
+/** The sentence that says WHY a keyed instance's door line carries `GH_REPO`; empty for the primary's, whose order is unchanged. @param {string} session */
+function doorRepositoryNote(session) {
+  const repo = reviewedRepositoryOf(session);
+  return repo === null ? "" : `\n\nThis pull request is in \`${repo}\`, not the primary's repository: every \`gh\` call and the door itself `
+    + `need \`GH_REPO=${repo}\`, or they act on the primary's pull request of the same number.`;
 }
 
 /**
@@ -1240,15 +1354,17 @@ export function withReviewCheckout(order, checkout, pr) {
  *
  * A REFUSAL DOES NOT SWALLOW THE ORDER: the author's words may exist nowhere else. The text says instead that the tree may be
  * STALE and how to tell, because the verdict header a reviewer writes from the network names the true head and is exactly what
- * makes a stale tree look fine. A session that is no instance of the tick's own repository is returned unchanged
- * ({@link noReviewCheckoutFor} says why: the tick's checkout serves one repository).
+ * makes a stale tree look fine. A session that is no instance of a repository the project DECLARES is returned unchanged: nothing
+ * is fetched for it, because no tree of it was ever made (#2991: a KEYED instance of a declared key IS re-pointed, from its clone
+ * into its keyed ref, and a declared key whose clone the host does not name gets the refusal text, not silence).
  *
  * @param {{session: string, prompt: string}} order @param {CheckoutDeps} [checkout]
  * @returns {{prompt: string}}
  */
 export function repointedForReviewer(order, checkout = {}) {
-  const pr = reviewerInstanceNumber(order.session);
-  if (pr === null) return { prompt: order.prompt };
+  const instance = reviewerInstance(order.session);
+  if (instance === null || (instance.key !== "" && codeRepositoryOf(instance.key) === null)) return { prompt: order.prompt };
+  const pr = instance.number;
   const prepared = prepareReviewCheckout({ pr, session: order.session, ...checkout });
   if ("refusal" in prepared) {
     return { prompt: `${order.prompt}\n\nYOUR CHECKOUT WAS NOT RE-POINTED (${prepared.refusal}). It may be at an OLDER head than `
@@ -1294,18 +1410,16 @@ function spawnReviewer(order, agents, { run = defaultRun, env, cwd, registry }) 
  */
 
 /**
- * WHY NO REVIEW CHECKOUT CAN BE MADE FOR THIS INSTANCE, or `null` when one can (#2618). A tree is made by fetching
- * `refs/pull/<n>/head` from `origin` INTO THIS CHECKOUT, and this checkout's `origin` is the primary project's repository: for
- * `reviewer-<key>-<n>` that fetch would put the primary's pull request `<n>` in front of a reviewer of another repository's --
- * the wrong review, presented as the right one. Where another repository's clone lives is a host path, which is child 3f's
- * (ADR 0040, decision 3), so until it exists the order is REFUSED, by name, and not sent.
+ * WHY NO REVIEW CHECKOUT CAN BE MADE FOR THIS INSTANCE, or `null` when one can (#2618, lifted for a declared key by #2969). A tree is
+ * made by fetching `refs/pull/<n>/head` from `origin` of a repository root, and the tick's own checkout's `origin` is the primary
+ * project's repository: for `reviewer-<key>-<n>` that fetch would put the primary's pull request `<n>` in front of a reviewer of
+ * another repository's -- the wrong review, presented as the right one. So the root of a keyed instance is its DECLARED CLONE
+ * ({@link reviewRepoRootOf}); a key the project does not declare, or one the host gives no clone, is still REFUSED, by name, and not sent.
  * @param {string} session @returns {string | null}
  */
 export function noReviewCheckoutFor(session) {
-  const instance = reviewerInstance(session);
-  if (instance === null || instance.key === "") return null;
-  return `no review checkout for "${session}": the tick's checkout serves repository \`${REPO}\` only, and where \`${instance.key}\`'s clone lives is a host path `
-    + "(ADR 0040, decision 3 -- child 3f); nothing is fetched and the order is not sent, because a tree of the WRONG repository's pull request would be reviewed as this one";
+  const where = reviewRepoRootOf(session);
+  return "refusal" in where ? where.refusal : null;
 }
 
 /**
@@ -1339,7 +1453,8 @@ function reviewerTarget(order, live, deps) {
     const held = deps.memory?.() ?? null;
     if (held !== null) return { refusal: `${routed.refusal}; no spawn: ${held}` };
   }
-  const pr = Number(orderPullRequest(order));
+  // THE REF, NOT `orderPullRequest`: that answers `null` for another repository's pull request, and `Number(null)` is 0 (#2969).
+  const pr = Number(orderPullRequestRef(order)?.number);
   const checkout = prepareReviewCheckout({ pr, session: order.session, ...deps.checkout });
   if ("refusal" in checkout) return checkout;
   const carried = withReviewCheckout(order, checkout, pr);
