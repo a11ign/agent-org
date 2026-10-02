@@ -2033,13 +2033,15 @@ test("#2226 (5): the recipient rides AFTER the key, so no reader counts it as a 
 
 // THE WIRING, AS A PROCESS: `deliver` is handed `engineerEligibility()` by `main`, and an injected seam is
 // exactly what a deleted call goes around (see the header of the tick section above). `gh` and `herdr` are
-// stubs on PATH; `worker-judge` is the only engineer, idle, holding #1926 -- a row in build.
+// stubs on PATH; `worker-judge` is the only engineer, idle, holding #1926 -- a row in build. The Region names a path under `docs/`,
+// a directory both this repository and a11ign's tree track: `declaredRegionFiles` recognises only tracked ones, and a row
+// declaring no file is not in build (#3073).
 const GH_STUB = `#!/bin/sh
 case "$*" in
   "issue list"*"session:worker-judge"*) printf '%s' '[{"number":1926}]' ;;
   "issue list"*) printf '%s' '[]' ;;
   "api graphql"*) printf '%s' '{"data":{"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":[]}}}}}' ;;
-  "issue view"*) printf '%s' '{"body":"## Region\\n\\n- packages/agent-org/src/wake.mjs\\n"}' ;;
+  "issue view"*) printf '%s' '{"body":"## Region\\n\\n- docs/messaging.md\\n"}' ;;
   "api repos/"*"/sub_issues") printf '%s' '[]' ;;
   *) exit 1 ;;
 esac
