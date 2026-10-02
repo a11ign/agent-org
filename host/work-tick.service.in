@@ -64,7 +64,7 @@ Environment=GH_CONFIG_DIR=@@workersDir@@/gh
 # `work-gate.mjs` now reads the primary against `origin/main` AFTER this step (`update-primary.mjs --drift`), wakes `ceo`
 # with the dirty paths (`primary-stale`) and heads every other order with the sha and the count. Drop that reader and this
 # `-` becomes the silence again: `update-primary.test.ts` pins that the two travel together.
-ExecStartPre=-/usr/bin/npm run primary:update
+ExecStartPre=-%h/.local/bin/pnpm run primary:update
 
 # `work-tick` exits 1 when an order had nowhere to go (nobody idle) and 2 when a read was refused.
 # Neither is a crash and neither should mark the unit failed -- both are ordinary states of a queue that
