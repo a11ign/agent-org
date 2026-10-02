@@ -323,6 +323,24 @@ function firstLine(err, max = REFUSAL_EXCERPT) {
   return String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, max);
 }
 
+/**
+ * WHY a failed `herdr` command failed (#3032): its own stderr's first non-empty line, bounded, else {@link firstLine}.
+ *
+ * `execFileSync` puts `Command failed: <argv>` on the first line of `err.message` and the child's stderr on
+ * `err.stderr`, so {@link firstLine} alone quoted the command we had just sent -- and a reviewer start herdr refused
+ * repeated for an hour (28 `UNDELIVERED` lines, 2026-10-02) without one of them saying whether herdr was down, the
+ * flag was bad or the model was rejected. An error with no stderr (a timeout, a spawn failure, a test's plain
+ * `Error`) falls back to its first message line, which for those IS the reason.
+ *
+ * @param {unknown} err @param {number} [max]
+ */
+function herdrReason(err, max = REFUSAL_EXCERPT) {
+  const stderr = /** @type {any} */ (err)?.stderr;
+  const line = (typeof stderr === "string" || Buffer.isBuffer(stderr) ? String(stderr) : "")
+    .split("\n").map((l) => l.trim()).find((l) => l !== "");
+  return line === undefined ? firstLine(err, max) : line.slice(0, max);
+}
+
 /** `gh`, for the escalation half -- a different binary from `herdr`, so a different runner. */
 const defaultGh = (/** @type {string[]} */ args) =>
   execFileSync("gh", args, { encoding: "utf8", timeout: 30_000 });
@@ -777,7 +795,7 @@ function openPane(run, label, env, cwd) {
       ...(cwd === undefined ? [] : ["--cwd", cwd]),
       ...Object.entries(env).flatMap(([key, value]) => ["--env", `${key}=${value}`])]));
   } catch (err) {
-    return { refusal: `herdr could not open a pane for "${label}" (${firstLine(err)})` };
+    return { refusal: `herdr could not open a pane for "${label}" (${herdrReason(err)})` };
   }
   const pane = created?.result?.root_pane?.pane_id;
   const workspace = created?.result?.workspace?.workspace_id;
@@ -818,7 +836,7 @@ function closedNote(run, workspace) {
     run(["--session", "org", "workspace", "close", workspace]);
     return ` -- the workspace it opened (${workspace}) was closed`;
   } catch (err) {
-    return ` -- AND the workspace it opened (${workspace}) could NOT be closed (${firstLine(err)}): close `
+    return ` -- AND the workspace it opened (${workspace}) could NOT be closed (${herdrReason(err)}): close `
       + "it by hand, or that role reads `unknown` to every tick and is never woken again";
   }
 }
@@ -890,7 +908,7 @@ function spawnWorker(order, agents, roster, { run = defaultRun, env = spawnEnvir
   try {
     run(invocation.args);
   } catch (err) {
-    return { refusal: unwound(`herdr refused to start "${role.role}" (${firstLine(err)})`, pane.workspace) };
+    return { refusal: unwound(`herdr refused to start "${role.role}" (${herdrReason(err)})`, pane.workspace) };
   }
   return { label: role.role, workspace: pane.workspace, profile: invocation.profile, claimed };
 }
@@ -1398,7 +1416,7 @@ function spawnReviewer(order, agents, { run = defaultRun, env, cwd, registry }) 
   try {
     run(invocation.args);
   } catch (err) {
-    return { refusal: `herdr refused to start "${reviewer.session}" (${firstLine(err)})${closedNote(run, pane.workspace)}` };
+    return { refusal: `herdr refused to start "${reviewer.session}" (${herdrReason(err)})${closedNote(run, pane.workspace)}` };
   }
   return { label: reviewer.session, workspace: pane.workspace, profile: invocation.profile };
 }
