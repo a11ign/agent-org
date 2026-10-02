@@ -12,10 +12,10 @@ import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { join, dirname, relative } from "node:path";
+import { join, dirname } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
-import { homeProjectDeclaration } from "../project-config.mjs";
-import { localImports } from "../lib/local-import-closure.mjs";
+import { HOME_CHECKOUT, homeProjectDeclaration } from "../project-config.mjs";
+import { copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";
 import { deliver as settlingDeliver, route, withSpareInstances, engineerRoles, engineerEligibility, spawnableRole, EXIT }
   from "../wake.mjs";
 import { activeDrain, drainedRoles, drainInForce, cyclesReport, spawnClaimability, rowOfOrder, DRAINED_SEEN,
@@ -63,7 +63,7 @@ const NOBODY = agents({ ceo: "working", "product-manager": "working" });
 // fixture with ONE thing changed each -- the field, the ledger line, the edge -- so the thing that flipped the
 // outcome is named by the test and not inferred from it.
 
-const REAL_SESSIONS = new URL("../../../../.agent-org/roles/sessions.json", import.meta.url);
+const REAL_SESSIONS = join(HOME_CHECKOUT, ".agent-org/roles/sessions.json");
 
 /**
  * THE ROSTER AS IT WAS BEFORE #2505, AS A FIXTURE. The drain mechanism outlived its only user: #2505 retired the three
@@ -351,10 +351,11 @@ test("#2324 (6): THE COMMAND -- `wake.mjs --cycles` on an empty ledger exits non
   }
 });
 
+// The script is the PROJECT's (its `package.json`), and where the project keeps the tool is moving (#2974), so the path before `wake.mjs` is not pinned.
 test("#2324: `npm run spawn:cycles` is wired to that command", () => {
-  const scripts = (JSON.parse(readFileSync(new URL("../../../../package.json", import.meta.url), "utf8")) as
+  const scripts = (JSON.parse(readFileSync(join(HOME_CHECKOUT, "package.json"), "utf8")) as
     { scripts: Record<string, string> }).scripts;
-  assert.equal(scripts["spawn:cycles"], "node packages/agent-org/src/wake.mjs --cycles");
+  assert.match(scripts["spawn:cycles"] ?? "", /^node \S*wake\.mjs --cycles$/);
 });
 
 // --- #2324: A DRAINED ROLE IS REFUSED A NEW ROW, WITH A REASON THAT NAMES THE DRAIN ---
@@ -426,7 +427,6 @@ test("#2324 (3) POSITIVE CONTROLS through `claimRow`: a spare claims, an empty d
 // (so a mutation made there is the one under test), is its own one-commit repo, and its `origin/main` is that
 // commit -- a truthful "up to date", made in a directory nothing else reads.
 const ROW_CLAIM_ENTRY = fileURLToPath(new URL("../row-claim.mjs", import.meta.url));
-const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const SESSIONS_JSON = ".agent-org/roles/sessions.json";
 const GH_READY_ROW = `#!/bin/sh
 case "$*" in
@@ -458,30 +458,14 @@ function removeFixture(dir: string): void {
 }
 
 /** Copies the entry's import closure, the rule directory and `sessions.json` into `copyRoot`, as an up-to-date repo. */
-function copyClosureAsRepo(copyRoot: string): string {
-// #2616: the tool now reads the project's declaration from beside it, so a copied tree must carry it or the reader REFUSES (correctly).
-// #2621: the declaration now points at a PLUGIN (`.agent-org/plugins/causes.mjs`), imported DYNAMICALLY by
-// `cause-declaration.mjs` -- invisible to `localImports`'s static walk, so it is carried for the same reason.
-// #2799: and the host's, because the drain marker, the reviewer state and the ledger default now read its `stateDir` at import.
-  const files = new Set<string>([join(REPO_ROOT, SESSIONS_JSON), join(REPO_ROOT, ".agent-org/project.json"),
-    join(REPO_ROOT, ".agent-org/plugins/causes.mjs"), join(REPO_ROOT, ".agent-org/host.json")]);
-  const visit = (file: string): void => {
-    if (files.has(file)) return;
-    files.add(file);
-    for (const next of localImports(file)) visit(next);
-  };
-  visit(ROW_CLAIM_ENTRY);
-  for (const name of readdirSync(join(REPO_ROOT, "packages/agent-org/src/row-claim"))) {
-    visit(join(REPO_ROOT, "packages/agent-org/src/row-claim", name));
-  }
-  for (const file of files) {
-    const target = join(copyRoot, relative(REPO_ROOT, file));
-    mkdirSync(dirname(target), { recursive: true });
-    copyFileSync(file, target);
-  }
+function copyClosureAsRepo(copyRoot: string): { entry: string; env: Record<string, string> } {
+  // The rule directory is reached by a string `localImports` cannot read (see `copied-tool-fixture.ts` for the project's side).
+  const rules = readdirSync(toolFile("src/row-claim")).map((name) => toolFile(`src/row-claim/${name}`));
+  const copy = copyToolAndProject(ROW_CLAIM_ENTRY, importClosure(ROW_CLAIM_ENTRY, rules), copyRoot);
   const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args],
     { cwd: copyRoot, env: sandboxGitEnv(), stdio: "pipe" });
   // The COPY's roster is the fixture, so the CLI reads a file that marks the standing three drained (see the top).
+  mkdirSync(join(copyRoot, dirname(SESSIONS_JSON)), { recursive: true });
   writeFileSync(join(copyRoot, SESSIONS_JSON), DRAINED_SESSIONS_TEXT);
   git("init", "--quiet");
   git("config", "maintenance.auto", "false");
@@ -489,7 +473,7 @@ function copyClosureAsRepo(copyRoot: string): string {
   git("add", "-A");
   git("commit", "--quiet", "-m", "copy");
   git("update-ref", "refs/remotes/origin/main", "HEAD");
-  return join(copyRoot, relative(REPO_ROOT, ROW_CLAIM_ENTRY));
+  return copy;
 }
 
 function claimProcess(session: string, ledger: string | null) {
@@ -502,10 +486,10 @@ function claimProcess(session: string, ledger: string | null) {
       mkdirSync(join(dir, ".cache/a11ign"), { recursive: true });
       writeFileSync(path, ledger);
     }
-    const entry = copyClosureAsRepo(join(dir, "checkout"));
+    const { entry, env } = copyClosureAsRepo(join(dir, "checkout"));
     return spawnSync(process.execPath, [entry, "claim", "2324", `--session=${session}`], {
       encoding: "utf8",
-      env: { ...sandboxGitEnv(), HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, A11Y_POLICY_LAUNCH_REASON: "#2324 drives the CLI" },
+      env: { ...sandboxGitEnv(), ...env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, A11Y_POLICY_LAUNCH_REASON: "#2324 drives the CLI" },
     });
   } finally {
     removeFixture(dir);
@@ -544,7 +528,7 @@ test("#2606 POSITIVE CONTROL: teardown completes while a writer is still creatin
 test("#2606: the fixture repo is created with auto-maintenance OFF, so no detached git child outlives its commit", () => {
   const dir = mkdtempSync(join(tmpdir(), "row-claim-drain-"));
   try {
-    const entry = copyClosureAsRepo(join(dir, "checkout"));
+    const { entry } = copyClosureAsRepo(join(dir, "checkout"));
     const config = (key: string) => execFileSync("git", ["config", "--get", key], { cwd: join(dir, "checkout"), env: sandboxGitEnv(), encoding: "utf8" }).trim();
     assert.ok(entry.startsWith(dir), "the copy is the one this test built");
     assert.equal(config("maintenance.auto"), "false");

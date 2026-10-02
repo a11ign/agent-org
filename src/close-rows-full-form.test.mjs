@@ -16,7 +16,8 @@ import { fileURLToPath } from "node:url";
 
 const SRC = dirname(fileURLToPath(import.meta.url));
 const PROJECT = process.env.A11IGN_CHECKOUT ?? "/home/agent/repos/a11y-witness";
-if (!process.env.AGENT_ORG_HOST && !existsSync(resolve(SRC, "../../../.agent-org/project.json"))) {
+// The project is found through the host file, never by counting directories up from `src`, which is the HOME directory in this repository.
+if (!process.env.AGENT_ORG_HOST) {
   process.env.AGENT_ORG_HOST = join(PROJECT, ".agent-org/host.json");
 }
 const { closesMismatchReport } = await import("./closes-mismatch-check.mjs");
