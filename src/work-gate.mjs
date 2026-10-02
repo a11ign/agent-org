@@ -4192,7 +4192,7 @@ export function withClosingRowOwners(prs, openRows) {
   const held = new Map(openRows.filter((row) => labelsOf(row).includes(CLAIM_LABEL) && sessionOf(row))
     .map((row) => [Number(row.number), { session: String(sessionOf(row)), row: Number(row.number) }]));
   return prs.map((pr) => {
-    if (sessionOf(pr)) return pr;
+    if (labelStands(pr)) return pr;
     const closing = closingRowOwner(pr, held);
     if (closing === "split") return pr;
     const owner = closing ?? branchRowOwner(pr, held);
@@ -4216,7 +4216,7 @@ export function withClosingRowOwners(prs, openRows) {
 export function withNamedOwners(prs, openRows, stampOf = () => null) {
   const live = new Set(openRows.filter((row) => labelsOf(row).includes(CLAIM_LABEL) && sessionOf(row)).map((row) => String(sessionOf(row))));
   return prs.map((pr) => {
-    if (sessionOf(pr) || pr.rowOwner) return pr;
+    if (labelStands(pr) || pr.rowOwner) return pr;
     const named = sessionNamedByBranch(pr.headRefName, live);
     if (named) return { ...pr, branchOwner: { session: named } };
     const stamped = stampOf(String(pr.headRefName ?? ""));
@@ -4225,11 +4225,57 @@ export function withNamedOwners(prs, openRows, stampOf = () => null) {
 }
 
 /**
- * THE WHOLE LADDER BELOW A PR'S OWN LABEL, in the one order `main` and the test share, so neither can drift from the other.
+ * THE WHOLE LADDER BELOW A PR'S OWN LABEL (a label naming an ENDED session is not one, #3093), in the one order `main` and the test share, so neither can drift from the other.
  * @param {any[]} prs @param {any[]} openRows @param {(branch: string) => string | null} [stampOf]
+ * @param {Parameters<typeof withEndedLabels>[1] | null} [io] where `withEndedLabels` reads herdr and the ending ledgers (#3093). ABSENT
+ *        MEANS NOT ASKED, on purpose: a caller that names no source must not be answered by this host's herdr and ledgers, so `main`
+ *        passes the live ones and every other caller stays pure.
  */
-export function withPrOwners(prs, openRows, stampOf) {
-  return withNamedOwners(withClosingRowOwners(prs, openRows), openRows, stampOf);
+export function withPrOwners(prs, openRows, stampOf, io = null) {
+  return withNamedOwners(withClosingRowOwners(io ? withEndedLabels(prs, io) : prs, openRows), openRows, stampOf);
+}
+
+/**
+ * Whether the PR's own `session:` label is one the ladder must honour: it carries one and `withEndedLabels` did not find it dead.
+ * @param {any} pr
+ */
+function labelStands(pr) {
+  return Boolean(sessionOf(pr)) && !pr.labelEnded;
+}
+
+/**
+ * #3093: `labelEnded` ON A PULL REQUEST WHOSE `session:` LABEL NAMES A SESSION THAT HAS ENDED, so `ownerOfPr` reads the PR as
+ * unlabelled and falls to a lower rung, ending at `ceo`, which can re-lane. Without it the label rung ("never outranked") ordered
+ * the PR to the dead seat on every tick: four agent-org PRs, 60 `UNDELIVERED` lines for #55 in three hours.
+ *
+ * THE TEST IS #2609's, UNCHANGED, because it is the same reading (see `withoutEndedAnswerSessions`): absent from a COMPLETE herdr
+ * listing AND recorded by a teardown. Absent WITHOUT a record keeps the label (`reviewer-<n>` is started after its order can
+ * exist), and a herdr that does not answer or a ledger that cannot be read classifies NOTHING. Neither source is asked unless a
+ * pull request carries a `session:` label at all, so a quiet tick pays nothing. Only the label is read: a PR's other facts stay.
+ *
+ * @param {any[]} prs
+ * @param {{agents?: () => string[] | null, ended?: () => Map<string, number>, say?: (line: string) => void}} [io]
+ * @returns {any[]}
+ */
+export function withEndedLabels(prs, { agents = liveWorkspaceLabels, ended = endedSessionLabels,
+  say = (line) => process.stderr.write(line) } = {}) {
+  if (!prs.some((pr) => sessionOf(pr))) return prs;
+  const live = agents();
+  if (live === null) {
+    say("NOTE: herdr did not answer, so no pull request's `session:` label was classed as ended this tick -- every one still orders (#3093).\n");
+    return prs;
+  }
+  let gone;
+  try {
+    gone = ended();
+  } catch (err) {
+    say(`NOTE: the ended-session ledgers could not be read (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0]}) -- no pull request's \`session:\` label was classed as ended this tick (#3093).\n`);
+    return prs;
+  }
+  return prs.map((pr) => {
+    const label = sessionOf(pr);
+    return label && label !== "engineers" && !live.includes(label) && gone.has(label) ? { ...pr, labelEnded: true } : pr;
+  });
 }
 
 /**
@@ -6742,7 +6788,7 @@ function main() {
   // pay for it twice on exactly the red tick this row is about.
   const required = requiredWhenRed(openPrs);
   const baseTip = baseTipWhenRed(openPrs), armingSplit = readEjections(readUnarmed(shouldBeMerging(openPrs, required))); // #3019: BEFORE the arguments -- ejected PRs are stamped onto `prs` and leave `unarmed`
-  const decideArgs = { primaryDrift, prs: withEjections(withPrOwners(withEvidenceLabelAges(withPatchIds(openPrs)), allOpen, stampLookup()), armingSplit?.ejections), readyRows: rows, promotableRows: promotableRows ?? [],
+  const decideArgs = { primaryDrift, prs: withEjections(withPrOwners(withEvidenceLabelAges(withPatchIds(openPrs)), allOpen, stampLookup(), { agents: liveWorkspaceLabels, ended: endedSessionLabels }), armingSplit?.ejections), readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required, baseTip,
     epics: epicsWhenShelfEmpty(rows),
     answerOwed: rowsOwingAnswers({ openRows: allOpen, openPrs, closedRows: closedAnswerRows() }),
