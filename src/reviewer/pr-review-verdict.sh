@@ -22,9 +22,18 @@
 #                               Unset, the door derives `reviewer-<n>` from the checkout it runs in when that checkout
 #                               IS `.../reviews/reviewer-<n>` for THIS pull request (#2528); where it cannot, the review
 #                               still posts, UNATTRIBUTED and loudly.
+#        GH_REPO                the repository the pull request lives in, `owner/name` (#2952). Unset or empty, the door
+#                               keeps `a11ign/a11ign`, so every existing caller is unchanged. It names the review, the
+#                               attribution status and the review read-back alike; anything not `owner/name` is refused.
 set -euo pipefail
 
-REPO=a11ign/a11ign
+# ONE REPOSITORY FOR ALL THREE `gh` CALLS, FROM THE SAME ENVIRONMENT VARIABLE `gh` ITSELF READS. The org now opens pull
+# requests in `a11ign/agent-org` as well, and a door that posts to a literal could only ever review the first
+# repository (#2952). REFUSED BEFORE ANY `gh` CALL when it is not `owner/name`: a typo here would post an approval
+# to a repository nobody meant, and a review cannot be taken back.
+REPO="${GH_REPO:-a11ign/a11ign}"
+[[ "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
+  echo "pr-review-verdict: GH_REPO must be owner/name, got '$REPO'" >&2; exit 2; }
 # ONE SPELLING WITH `attributionContext` IN review-attribution.mjs. A shell writer and a JS reader cannot
 # share a constant, so `review-attribution.test.ts` reads this line and compares the two.
 ATTRIBUTION_CONTEXT_PREFIX=review/

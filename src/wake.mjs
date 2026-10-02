@@ -45,7 +45,8 @@ import { reviewerInstance, reviewerInstanceNumber, subjectMention } from "./revi
 // #2688: THE SAME INSTRUMENT #928's OFFLINE REPORT IS BUILT FROM, READ LIVE INSTEAD OF ONLY REPORTED --
 // no new metric, only this one read at delivery time.
 import { claudeTurns, transcriptFiles } from "./token-audit.mjs";
-import { homeProjectDeclaration } from "./project-config.mjs";
+import { HOME_CHECKOUT, homeProjectDeclaration } from "./project-config.mjs";
+import { stateEntryPath } from "./host-config.mjs"; // #2799
 import { REPO } from "./project-identity.mjs";
 import { roleBriefPath } from "./project-roles.mjs";
 // #2619 (child 3d of #69): `session:`/`ready` -- `answer:` already arrives via `work-gate.mjs`'s
@@ -56,6 +57,7 @@ import { inBuildReason, isInBuild, unansweredRefusal, lookupHeldRows, lookupOthe
 import { parseWorktreeList, isPrimaryWorktree, isWorkingTreeClean, mergeStatus, detachedMergeStatus }
   from "./prune-worktrees.mjs";
 import { worktreeOwner } from "./worktree-owner.mjs";
+import { recordRemoval } from "./worktree-removal.mjs"; // #2827
 import { spawnMemoryGate } from "./spawn-memory-floor.mjs";
 // THE FAMILY IS THE ROSTER'S, READ BY ONE MODULE (#2403): `worker-<n>` for n from 4 is a spare engineer role, and
 // `arm-pr.mjs` is where every other reader of a `session:<name>` label already asks whether a name is one.
@@ -1044,8 +1046,8 @@ export function spawnableReviewer(order, agents, registry = {}) {
  */
 export const REVIEW_CHECKOUT_ROOT = `${process.env.HOME}/reviews`;
 
-/** The tick's own checkout, where every review tree's git metadata lives (a linked worktree keeps it there). */
-const REPO_ROOT = new URL("../../..", import.meta.url).pathname;
+/** The project checkout the tick serves (`HOME_CHECKOUT`), where every review tree's git metadata lives (a linked worktree keeps it there). */
+export const REPO_ROOT = HOME_CHECKOUT;
 
 /**
  * The path of `session`'s tree: named for the instance, and so for the pull request it may never leave.
@@ -1066,7 +1068,8 @@ const reviewRef = (pr, key = "") => (key === "" ? `refs/review/pr-${pr}` : `refs
 
 /**
  * @typedef {{git?: (cmd: string, args: string[], opts?: object) => string, exists?: (path: string) => boolean,
- *   root?: string, repoRoot?: string, link?: (args: {path: string, repoRoot: string}) => string | null}} CheckoutDeps
+ *   root?: string, repoRoot?: string, link?: (args: {path: string, repoRoot: string}) => string | null,
+ *   record?: typeof recordRemoval}} CheckoutDeps `record` is #2827's removal log, a seam so a test can read the line or refuse it
  */
 
 /**
@@ -1162,6 +1165,28 @@ export function prepareReviewCheckout({ pr, session, git = defaultGit, exists = 
 }
 
 /**
+ * #2827: {@link removeReviewCheckout}'s one `git worktree remove`, WITH its line -- `removing` BEFORE the delete, `removed` or
+ * `failed` after, in the log #2782 introduced -- so a later session can read who removed a tree. A line that cannot be
+ * written is a removal that does not happen (it throws, and the caller reports it): a delete nobody can see is the defect.
+ *
+ * NO `claimRefusal`, on purpose: a review checkout lives under {@link REVIEW_CHECKOUT_ROOT} and is named for a `reviewer-<n>`
+ * instance, which no row claims, so it is never a claimed row's tree and the row's `session:` label has nothing to say here.
+ * @param {{path: string, session: string, git: NonNullable<CheckoutDeps["git"]>, repoRoot: string,
+ *   record: typeof recordRemoval}} args
+ */
+function removeLoggedCheckout({ path, session, git, repoRoot, record }) {
+  const line = { path, caller: "wake.mjs removeReviewCheckout", reason: `the reviewer instance ${session} ended (#2401)` };
+  record({ ...line, event: "removing" });
+  try {
+    git("git", ["-C", repoRoot, "worktree", "remove", "--force", path]);
+  } catch (cause) {
+    record({ ...line, event: "failed", detail: firstLine(cause) });
+    throw cause;
+  }
+  record({ ...line, event: "removed" });
+}
+
+/**
  * REMOVE `session`'s tree and its private ref, and answer `null` when nothing is left, or WHY it could not.
  * The counterpart of {@link prepareReviewCheckout}, called when the instance is ended (#2401, Done-when 7): a tree
  * that outlives its pull request is the leak #2163 measured, and this row must not add instances of it.
@@ -1170,10 +1195,10 @@ export function prepareReviewCheckout({ pr, session, git = defaultGit, exists = 
  * @param {{pr: number, session: string, key?: string} & CheckoutDeps} args @returns {string | null}
  */
 export function removeReviewCheckout({ pr, session, key = "", git = defaultGit, exists = existsSync,
-  root = REVIEW_CHECKOUT_ROOT, repoRoot = REPO_ROOT }) {
+  root = REVIEW_CHECKOUT_ROOT, repoRoot = REPO_ROOT, record = recordRemoval }) {
   const path = reviewCheckoutPath(session, root);
   try {
-    if (exists(path)) git("git", ["-C", repoRoot, "worktree", "remove", "--force", path]);
+    if (exists(path)) removeLoggedCheckout({ path, session, git, repoRoot, record });
     if (exists(path)) return `${path} is still there after \`git worktree remove\``;
     git("git", ["-C", repoRoot, "update-ref", "-d", reviewRef(pr, key)]);
     return null;
@@ -1673,7 +1698,7 @@ export function handoffQueuePath(ledgerPath) {
  * @param {string[]} argv @returns {string}
  */
 export function ledgerPathFrom(argv) {
-  return flagValue(argv, "ledger") ?? `${process.env.HOME}/.cache/a11ign/wake-ledger`;
+  return flagValue(argv, "ledger") ?? stateEntryPath("wake-ledger");
 }
 
 /**
@@ -2158,19 +2183,31 @@ const MAX_REFS_LOOKED_UP = 3;
  * A LOOKUP THAT CANNOT ASK ENDS NOTHING: `holder` answers `null` for a GitHub that would not say, and that is
  * `unknown`, never `none` -- an order is dropped only when GitHub said nobody holds what it names.
  *
+ * THE AUTHOR IS NOT AN ADDRESSEE (#2853): an order whose only live holder is the session that WROTE it is `author`,
+ * and is dropped -- `worker-2783` wrote an order for `reviewer-2826`, the reviewer ended, and the "holder of #2783"
+ * was `worker-2783` itself, so the order was queued back to its author for ever. An author does not need to be told
+ * what it wrote; another live holder, on this reference or a LATER one, still wins.
+ *
  * @param {{session: string, prompt: string}} order @param {readonly {label: string}[]} agents
  * @param {(ref: number) => {open: boolean, sessions: string[]} | null} holder
- * @returns {{to: string, ref: number} | {none: true, looked: number[]} | {unknown: string}}
+ * @returns {{to: string, ref: number} | {author: string, ref: number} | {none: true, looked: number[]}
+ *   | {unknown: string}}
  */
 function readdress(order, agents, holder) {
   const refs = namedRefs(order.prompt).slice(0, MAX_REFS_LOOKED_UP);
+  const author = authorOf(order.prompt);
+  /** @type {{author: string, ref: number} | undefined} */
+  let authorOnly;
   for (const ref of refs) {
     const facts = holder(ref);
     if (facts === null) return { unknown: `could not read who holds #${ref}` };
-    const to = facts.open ? facts.sessions.find((s) => s !== order.session && !isAbsent(s, agents)) : undefined;
+    const live = facts.open ? facts.sessions.filter((s) => s !== order.session && !isAbsent(s, agents)) : [];
+    const to = live.find((s) => s !== author);
     if (to !== undefined) return { to, ref };
+    // ONLY THE AUTHOR HOLDS THIS REFERENCE: remembered, not returned -- a later reference may have another live holder.
+    if (live.length > 0 && authorOnly === undefined) authorOnly = { author: /** @type {string} */ (author), ref };
   }
-  return { none: true, looked: refs };
+  return authorOnly ?? { none: true, looked: refs };
 }
 
 /**
@@ -2226,13 +2263,43 @@ export function resolveEndedHandoffs(handoffs, deps) {
   /** @type {string[]} */
   const lines = [];
   for (const order of handoffs) {
-    if (targetState(order.session, deps.agents, deps.ended) !== "ended") continue;
-    const outcome = readdress(order, deps.agents, holder);
-    const line = settle(order, outcome, deps);
+    const state = targetState(order.session, deps.agents, deps.ended);
+    const line = state === "ended" ? settle(order, readdress(order, deps.agents, holder), deps)
+      : state === "absent" ? settleOrphan(order, holder, deps) : null;
+    if (line === null) continue;
     lines.push(line.said);
     if (line.done) settled.push(order.id);
   }
   return { settled, lines };
+}
+
+/** The row an engineer instance is named for: `worker-2783` -> 2783. Anything else is `null`. @param {string} session @returns {number | null} */
+function engineerRow(session) {
+  const found = /^worker-([1-9][0-9]*)$/.exec(session);
+  return found === null ? null : Number(found[1]);
+}
+
+/**
+ * AN ORDER FOR AN ENGINEER INSTANCE THAT IS GONE AND WHOSE ROW IS CLOSED HAS NOBODY TO WAIT FOR (#2853). `absent` is
+ * kept in general ({@link targetState}) because the tick has no record of an ending -- and `worker-2783` left without
+ * the teardown, so it never gets one. An engineer instance is named for its row (#2469) and never started twice, so
+ * once GitHub says the row is closed nothing will ever start under that name. A row that is open keeps its order (an
+ * instance may yet start), and a row GitHub would not read keeps it too: dropped only on a reading that was made.
+ * @param {{id: string, session: string, prompt: string, queuedAt?: number}} order
+ * @param {(ref: number) => {open: boolean, sessions: string[]} | null} holder @param {EndedDeps} deps
+ * @returns {{done: boolean, said: string} | null} `null` when the order is none of this function's business
+ */
+function settleOrphan(order, holder, deps) {
+  const row = engineerRow(order.session);
+  if (row === null) return null;
+  const facts = holder(row);
+  if (facts === null || facts.open) return null;
+  const now = deps.now ?? Date.now();
+  const author = authorOf(order.prompt);
+  recordDrop(deps.queuePath, order, { reason: `target has no workspace and its row #${row} is closed` }, { write: deps.write, now });
+  return { done: true, said: `DROPPED ${order.id}: "${order.session}" has no workspace and its row #${row} is closed, so order `
+    + `${order.id}${author === null ? "" : ` from "${author}"`} (waited ${waitedFor(now - Number(order.queuedAt ?? now))}) has no `
+    + "addressee and never will. It is retired with a record (`dropped`, carrying its text), not as a delivery.\n" };
 }
 
 /**
@@ -2260,6 +2327,11 @@ function settle(order, outcome, deps) {
       reroutedTo: outcome.to }, io);
     return { done: true, said: `RE-ADDRESSED ${order.id}: ${gone}. #${outcome.ref} is held by live "${outcome.to}", `
       + `so it now waits there as ${entry.id}.\n` };
+  }
+  if ("author" in outcome) {
+    recordDrop(deps.queuePath, order, { reason: `target ended; the only live holder of #${outcome.ref} is its own author "${outcome.author}"` }, io);
+    return { done: true, said: `DROPPED ${order.id}: ${gone}, and the only live holder of #${outcome.ref} is "${outcome.author}", `
+      + "who wrote it. An author is not told what it wrote; it is retired with a record (`dropped`, carrying its text).\n" };
   }
   const named = outcome.looked.length === 0 ? "names no row or pull request"
     : `names ${outcome.looked.map((n) => `#${n}`).join(", ")}, none open and held by a live session`;
@@ -4325,7 +4397,8 @@ export function spawnClaimer({ exec = defaultExec, exists = existsSync, worktree
       settle(role);
       const launch = launchWorktree(role, { exec, exists, worktreesDir, primary });
       if ("refusal" in launch) return launch;
-      const { claimed, args } = claimTarget({ row, order, role, launchDir: launch.dir, worktreesDir, left: kept(row), exists });
+      const left = settleGoneKept(kept(row), { exists, exec, primary, env, forget: () => { forget(row); } }).left;
+      const { claimed, args } = claimTarget({ row, order, role, launchDir: launch.dir, worktreesDir, left, exists });
       const ran = exec("node", [ROW_CLAIM, ...args], { cwd: launch.dir, env });
       const landed = /^STARTED/m.test(ran.output) && CLAIM_LANDED.includes(Number(ran.status));
       if (landed && exists(claimed.worktree)) {
@@ -4339,6 +4412,48 @@ export function spawnClaimer({ exec = defaultExec, exists = existsSync, worktree
     },
     release: (claimed, role, env) => releaseClaim(claimed, role, env, exec),
   };
+}
+
+/**
+ * A KEPT RECORD WHOSE TREE IS GONE IS NO RECORD (#2864). A release keeps a tree "for the next instance" and records it; whoever later removes the
+ * tree (a merge-cleanup sweep, `endFinishedSpares`, a person) removes the tree and nothing else, so the record outlived it and the branch stayed
+ * behind -- and the claim that should have started afresh refused over that leftover local branch (`--branch=... ALREADY EXISTS locally`) every
+ * tick, for over an hour on #2846. The record is dropped and the branch deleted with `-d`, never `-D`: git refuses a branch holding commits found
+ * nowhere else, and that refusal STANDS -- the claim then names the branch, and a person decides.
+ *
+ * @param {KeptClaim | null} left
+ * @param {{ exists: (path: string) => boolean, exec: Exec, primary: string, env: Record<string, string>, forget: () => void }} host
+ * @returns {{ left: KeptClaim | null, note: string | null }} `left` is the record still good to adopt; `note` says what a dropped one cost
+ */
+function settleGoneKept(left, { exists, exec, primary, env, forget }) {
+  if (left === null || exists(left.worktree)) return { left, note: null };
+  forget();
+  const deleted = exec("git", ["branch", "-d", left.branch], { cwd: primary, env });
+  const branch = deleted.status === 0 ? `deleted its merged branch ${left.branch}`
+    : `left the branch ${left.branch}, which git would not delete with -d (${verdictLine(deleted.output)})`;
+  return { left: null, note: `DROPPED the kept record for ${left.worktree}: the tree is gone; ${branch}` };
+}
+
+/**
+ * Every kept record whose tree is gone, dropped (#2864): the claim only reads the record of the row it is claiming, so a record for a row nobody
+ * offers would stay for ever, and the file's own claim -- every record names a tree that exists -- would stay false. A record whose tree exists is
+ * never touched. One line per record dropped, so the tick says it ONCE (the record is gone after it).
+ *
+ * @param {string} keptPath
+ * @param {{ exists?: (path: string) => boolean, exec?: Exec, primary?: string, env?: Record<string, string> }} [host]
+ * @returns {string[]}
+ */
+export function pruneGoneKeptClaims(keptPath, { exists = existsSync, exec = defaultExec, primary = PRIMARY_CHECKOUT, env = spawnEnvironment() } = {}) {
+  const lines = [];
+  for (const [row, record] of Object.entries(readKeptClaims(keptPath))) {
+    const { note } = settleGoneKept(record, { exists, exec, primary, env, forget: () => {
+      const all = readKeptClaims(keptPath);
+      delete all[row];
+      writeKeptClaims(keptPath, all);
+    } });
+    if (note !== null) lines.push(`${note} (#${row})`);
+  }
+  return lines;
 }
 
 /**
@@ -4494,6 +4609,10 @@ const defaultGit = (cmd, args, opts) =>
  * working engineer. And a workspace that will not close is left, said, and retried -- no line is written for
  * an ending that did not happen.
  *
+ * A REGISTERED INSTANCE WITH NO WORKSPACE IS SETTLED HERE TOO (#2860, {@link settleGoneInstances}): since #2469 a
+ * spare is named `worker-<row>`, so an address is never spawned twice and the settle that `registerSpawn` runs for the
+ * SAME address never fires -- the registry grew a stale entry per finished engineer.
+ *
  * @param {{label: string, status: string}[]} agents
  * @param {TeardownDeps} deps
  * @returns {{ ended: SpareCycle[], registry: Record<string, SpareInstance> }}
@@ -4520,7 +4639,39 @@ export function endFinishedSpares(agents, deps) {
     ended.push(cycle);
     delete registry[role];
   }
+  ended.push(...settleGoneInstances(agents, registry, deps));
   return { ended, registry };
+}
+
+/**
+ * SETTLE EVERY REGISTRY ENTRY WHOSE WORKSPACE IS GONE AND WHOSE ROWS GITHUB SAYS ARE ALL CLOSED (#2860), as a failed
+ * cycle through {@link absentInstanceCycle} (the line {@link settleAbsentInstance} writes). Deletes from `registry`
+ * (the caller's copy) and returns the cycles written.
+ *
+ * THREE READINGS MUST AGREE, AND ANY ONE MISSING LEAVES THE ENTRY: the role is absent from a listing that
+ * {@link listingIsComplete} calls complete (a partial one reads every instance absent, #2465); the entry names at
+ * least one row (an entry that recorded none has nothing to ask GitHub); and every row's state READ as `CLOSED`
+ * (`null`, an open row and any other state keep it). The closed rows are what a single complete listing lacks:
+ * it cannot prove a workspace is really gone, but a spare whose every row is closed has no work left to lose.
+ *
+ * @param {{label: string, status: string}[]} agents
+ * @param {Record<string, SpareInstance>} registry
+ * @param {TeardownDeps} deps
+ * @returns {SpareCycle[]}
+ */
+function settleGoneInstances(agents, registry, deps) {
+  if (!listingIsComplete(agents)) return [];
+  /** @type {SpareCycle[]} */
+  const settled = [];
+  for (const [role, instance] of Object.entries(registry)) {
+    if (agents.some((a) => a.label === role)) continue;
+    if (instance.rows.length === 0 || !instance.rows.every((row) => deps.rowState(row) === "CLOSED")) continue;
+    const cycle = absentInstanceCycle(role, instance, deps.now);
+    deps.record(cycle);
+    settled.push(cycle);
+    delete registry[role];
+  }
+  return settled;
 }
 
 /**
@@ -4590,12 +4741,22 @@ export function registerSpawn(paths, role, now = Date.now()) {
 export function settleAbsentInstance(paths, role, now = Date.now()) {
   const registry = readSpareRegistry(paths.registry);
   if (registry[role] === undefined) return registry;
-  const rows = registry[role].rows;
-  appendSpareCycle(paths.cycles, { role, row: rows.length > 0 ? rows[rows.length - 1] : null, at: now,
-    clean: false, rows, why: "the previous instance left without the teardown (closed by hand or crashed)" });
+  appendSpareCycle(paths.cycles, absentInstanceCycle(role, registry[role], now));
   delete registry[role];
   writeFileSync(paths.registry, `${JSON.stringify(registry)}\n`);
   return registry;
+}
+
+/**
+ * The failed cycle for an instance that left without the teardown, shared by {@link settleAbsentInstance} (a spawn
+ * finds the leftover) and {@link settleGoneInstances} (the tick finds it, #2860).
+ * @param {string} role @param {SpareInstance} instance @param {number} now
+ * @returns {SpareCycle}
+ */
+function absentInstanceCycle(role, instance, now) {
+  const { rows } = instance;
+  return { role, row: rows.length > 0 ? rows[rows.length - 1] : null, at: now, clean: false, rows,
+    why: "the previous instance left without the teardown (closed by hand or crashed)" };
 }
 
 /** @param {string} path @param {SpareCycle} cycle */
@@ -4616,7 +4777,7 @@ export function tearDownSpares(agents, ledgerPath, say = (line) => process.stder
   try {
     const paths = sparePathsFrom(ledgerPath);
     mkdirSync(dirname(ledgerPath), { recursive: true });
-    const repoRoot = new URL("../../..", import.meta.url).pathname;
+    const repoRoot = HOME_CHECKOUT;
     const { ended, registry } = endFinishedSpares(agents, {
       spares: spareInstances(agents), registry: readSpareRegistry(paths.registry), now: Date.now(), run: defaultRun,
       heldRows: (role) => lookupOtherHeldIssues(role, 0),
@@ -5448,6 +5609,10 @@ function main() {
   // WHERE THE LINKED WORKTREES LIVE (#2405): the host's own directory unless a run names another, which is what lets a
   // test drive this entry through PATH stubs without the claim creating `role-<name>` beside the real checkout.
   const hostLayout = layoutUnder(flagValue(process.argv, "worktrees-dir") ?? HOST_REPOS);
+
+  // BEFORE THE QUIET EXIT BELOW, NOT AFTER (#2864, review of 343594ad): the tick that has nothing to deliver is the commonest one, and a record
+  // for a row nobody is offering is only ever reached by a prune that runs on it. It reads no order and delivers nothing.
+  for (const line of pruneGoneKeptClaims(keptClaimsPath(ledgerPath), { primary: hostLayout.primary })) process.stdout.write(`${line}\n`);
 
   const gateOrders = parseOrders(readFileSync(0, "utf8"));
   // A QUEUED ORDER IS WORK EVEN WHEN THE GATE FOUND NONE, and this is the line that makes it so. The

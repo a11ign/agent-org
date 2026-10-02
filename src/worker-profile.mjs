@@ -39,6 +39,21 @@ export const CODEX_EFFORTS = Object.freeze(["minimal", "low", "medium", "high"])
 /** The model aliases the `claude` CLI accepts. Full model IDs are allowed too; these are the shorthands. */
 export const MODELS = Object.freeze(["haiku", "sonnet", "opus", "fable"]);
 
+/**
+ * THE CLAUDE MODELS THE ORG RUNS, and the effort the org depends on for each (#2783). Keyed by the alias `PROFILES` and
+ * the host's `settings.json` `model` use; `id` is what a session's transcript records, which is how a live session is
+ * checked against this table.
+ *
+ * WHY `effortLevel` IS DECLARED HERE. Claude Code's `modelSettings.<id>.effortLevel` in the host's
+ * `~/.claude/settings.json` is per MODEL ID, so a model change silently drops effort to that model's default unless
+ * somebody adds the entry. 2026-09-29: the chairman moved the org to `claude-sonnet-5-5` and added
+ * `modelSettings.claude-sonnet-5-5.effortLevel: high` by hand -- host state no repo file recorded. `modelEffortDrift`
+ * (host-units.mjs) reads the host against this table. It is the FLOOR: the highest effort any `PROFILES` entry on the alias asks for.
+ */
+export const DECLARED_CLAUDE_MODELS = Object.freeze({
+  sonnet: Object.freeze({ id: "claude-sonnet-5-5", effortLevel: "high" }),
+});
+
 /** Effort vocabulary per agent kind -- the two products do not share one. */
 export const EFFORTS = Object.freeze({ claude: CLAUDE_EFFORTS, codex: CODEX_EFFORTS });
 

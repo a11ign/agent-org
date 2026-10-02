@@ -49,6 +49,14 @@
 // declares NOTHING, or declares ANOTHER row, still collides exactly as before: B4's value is that it is
 // unconditional about two SESSIONS touching one file, and this row is one `if` away from disabling it.
 //
+// #2769: `--adopt` NAMES THE BRANCH IT IS RE-STAMPING, AND A PR OPENED FROM THAT BRANCH IS THE ROW'S OWN WORK WHATEVER ITS `Closes` SAYS.
+// A sanctioned split PR declares `Closes: none -- <reason>` because a later Done-when is still open, so `declaredClosedRows` reads it
+// as `[]` and it looked like a stranger to the very claimant resuming it: measured on #2760 / #2766 (2026-09-28), the released claim's
+// PR could not get a fresh CI run because nobody could take the row that owned it. The fact is the ADOPTER'S, passed as `adoptedBranch`
+// by `adoptWorktree` alone -- a FRESH claim creates its branch, so no open PR can hold it -- and it matches ONLY a PR of the first
+// repository (the tree being adopted is this one's), by head-branch equality, with no extra `gh` call (`headRefName` rides the
+// `pr list` already made). A stranger's PR on the same file still refuses, and still needs `Closes #<row>` to be excused.
+//
 // #2493: A HELD PR THAT IS WAITING ON THIS ROW CANNOT MERGE FIRST, SO IT IS NOT A COMPETITOR EITHER. #2399 was
 // refused for a file #2376 held, and #2376 was waiting on #2399: it declared `Closes #2359`, so it was a stranger
 // to the asking row, and the wait lived in a comment nothing reads. The exclusion needs BOTH facts (`ceo`, #2400
@@ -115,15 +123,21 @@ function closedRowsOf(other) {
 }
 
 /**
- * #2101: is this open PR the row's OWN work? Only a declaration says so, and only about a row we were
+ * #2101: is this open PR the row's OWN work? A declaration says so, and only about a row we were
  * actually told the number of -- an absent `rowNumber` excludes nothing, which is what keeps every caller
  * that does not know its row (and every existing test) refusing exactly as it did.
  *
- * @param {{ number: number, closes?: number[] | number | null }} other
+ * #2769: OR its head branch is the one `--adopt` is re-stamping (`adoptedBranch`), which a `Closes: none` split PR needs because it
+ * declares no row at all. Absent `adoptedBranch` excludes nothing, and a PR of another repository is never matched: a branch NAME
+ * is not unique across repositories.
+ *
+ * @param {{ number: number, closes?: number[] | number | null, branch?: string, repo?: string }} other
  * @param {number | null | undefined} rowNumber
+ * @param {string | null | undefined} [adoptedBranch]
  * @returns {boolean}
  */
-function isOwnPrOf(other, rowNumber) {
+function isOwnPrOf(other, rowNumber, adoptedBranch) {
+  if (typeof adoptedBranch === "string" && adoptedBranch !== "" && other.repo === undefined && other.branch === adoptedBranch) return true;
   if (!Number.isInteger(rowNumber)) return false;
   return closedRowsOf(other).includes(Number(rowNumber));
 }
@@ -165,18 +179,19 @@ function isHeldPrWaitingOn(other, rowNumber, blockersOf) {
  *   ending in `/` (changeset entries already excluded by
  *   the caller is NOT required -- this function excludes them itself, so either side can pass a raw list)
  * @param {{ number: number, files: string[], changedFiles: number, closes?: number[] | number | null,
- *   held?: boolean, blockersOf?: (row: number) => number[] | null, repo?: string, repoKey?: string }[]} otherPrFiles
+ *   held?: boolean, blockersOf?: (row: number) => number[] | null, repo?: string, repoKey?: string, branch?: string }[]} otherPrFiles
  *   every OTHER open PR, its changed files, the count GitHub reports for them -- #1419: the list is only
  *   comparable when it matches the count -- (#2101) the rows its body declares it closes, and (#2493)
  *   whether it carries a `hold:` label. (#2617) `repo` and `repoKey` are on a pull request of any repository but the first: ABSENT
  *   IS THE FIRST'S (the empty key), and a Region entry is compared only with the files of the repository it is prefixed for
- * @param {{ rowNumber?: number | null, blockersOf?: (row: number) => number[] | null }} [options] the number
+ * @param {{ rowNumber?: number | null, blockersOf?: (row: number) => number[] | null, adoptedBranch?: string | null }} [options] the number
  *   of the row being asked about, so its OWN pull request can be excluded (#2101). ABSENT EXCLUDES NOTHING: a
- *   caller that does not know which row it is comparing for gets the unconditional B4 of before.
+ *   caller that does not know which row it is comparing for gets the unconditional B4 of before. `adoptedBranch` (#2769) is the
+ *   branch of the tree `--adopt` is resuming: an open PR from it is this row's own work even when it declares `Closes: none`.
  *   `blockersOf` (#2493) is asked ONLY for a held PR that overlaps, and ABSENT EXCLUDES NOTHING likewise.
  * @returns {{ reason: string | null, emptyOtherPrs: (number | string)[] }} a number for a pull request of the first repository, `owner/repo#N` for another's
  */
-export function fileOverlapReason(myFiles, otherPrFiles, { rowNumber = null, blockersOf } = {}) {
+export function fileOverlapReason(myFiles, otherPrFiles, { rowNumber = null, blockersOf, adoptedBranch = null } = {}) {
   const mine = new Set(myFiles.filter((p) => !isChangeset(splitRegionEntry(p).path)));
   /** @type {(number | string)[]} */
   const emptyOtherPrs = [];
@@ -186,7 +201,7 @@ export function fileOverlapReason(myFiles, otherPrFiles, { rowNumber = null, blo
     // #2101: BEFORE THE COMPARABILITY CHECK, not after. A row's own PR with a truncated file list would
     // otherwise be refused as NOT COMPARABLE -- the same deadlock arriving through #1419's door -- and
     // there is nothing to compare either way: this is the row's own work.
-    if (isOwnPrOf(other, rowNumber)) continue;
+    if (isOwnPrOf(other, rowNumber, adoptedBranch)) continue;
     if (!Number.isInteger(other.changedFiles) || other.files.length !== other.changedFiles) {
       return { emptyOtherPrs, reason: notComparableReason(other) };
     }
@@ -287,7 +302,9 @@ export function lookupMyRegionFiles(issueNumber, { run = gh, repo = REPO } = {})
  * from here can ask the one question the exclusion needs and no caller has to remember to pass it. It is CALLED only
  * for a held PR that overlaps (`fileOverlapReason`); merely carrying it costs nothing.
  *
- * @returns {{ number: number, files: string[], changedFiles: number, closes: number[], held: boolean,
+ * #2769: and `headRefName`, on that same call, as `branch` -- what `--adopt` matches its own PR by.
+ *
+ * @returns {{ number: number, files: string[], changedFiles: number, closes: number[], held: boolean, branch?: string,
  *   blockersOf?: (row: number) => number[] | null }[] | null}
  */
 export function lookupOpenPrFiles({ run = gh, log = (line) => process.stderr.write(`${line}\n`),
@@ -306,20 +323,21 @@ function openPrsOf({ key, repo }, { run, log, trackerRepo }) {
   /** @type {string} */
   let raw;
   try {
-    raw = run(["pr", "list", "--repo", repo, "--state", "open", "--json", "number,changedFiles,files,body,labels"]);
+    raw = run(["pr", "list", "--repo", repo, "--state", "open", "--json", "number,changedFiles,files,body,labels,headRefName"]);
   } catch (error) {
     log(`row-claim: could not read ${repo}'s open pull requests (${String(/** @type {Error} */ (error).message).split("\n")[0]}) `
       + "-- B4 is INCONCLUSIVE, never \"no overlap\" (#2617).");
     throw error;
   }
-  /** @type {{ number: number, changedFiles: number, files: { path: string }[], body?: string, labels?: { name: string }[] }[]} */
+  /** @type {{ number: number, changedFiles: number, files: { path: string }[], body?: string, labels?: { name: string }[], headRefName?: string }[]} */
   const parsed = JSON.parse(raw);
   return parsed.map((pr) => {
     const listed = pr.files.map((f) => f.path);
     const files = listed.length < pr.changedFiles ? pagedPrFiles(pr.number, listed, { run, log, repo }) : listed;
     const held = holdersOf((pr.labels ?? []).map((l) => l.name)).length > 0;
     const entry = { number: pr.number, files, changedFiles: pr.changedFiles,
-      closes: declaredClosedRows(pr.body, { prRepo: repo, trackerRepo }), held };
+      closes: declaredClosedRows(pr.body, { prRepo: repo, trackerRepo }), held,
+      ...(pr.headRefName ? { branch: pr.headRefName } : {}) };
     const located = key === "" ? entry : { ...entry, repo, repoKey: key };
     return held ? { ...located, blockersOf: lookupBlockersOf({ run, repo: trackerRepo }) } : located;
   });

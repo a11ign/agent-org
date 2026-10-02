@@ -27,13 +27,14 @@
 // the live directory learns that before a single tick's reads are touched, not after.
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { stateEntryPath } from "./host-config.mjs"; // #2799
 
 /**
  * Decision 5's live state directory -- the ONE directory this instrument must never operate against,
- * whether named directly or reached through a symlink. `~/.cache/a11ign`, measured live in decision 5's
- * reading 1 (`ls ~/.cache/a11ign`): 13 state entries, all under this one path.
+ * whether named directly or reached through a symlink. It is THE HOST'S `stateDir` (#2799), and a host that declares none
+ * gets `~/.cache/a11ign`, measured live in decision 5's reading 1 (`ls ~/.cache/a11ign`): 13 state entries, all under this one path.
  */
-export const LIVE_STATE_DIR = `${process.env.HOME}/.cache/a11ign`;
+export const LIVE_STATE_DIR = stateEntryPath("");
 
 /**
  * `dir`'s resolved real path, or its plain resolved (unresolved-symlink) path when it does not exist.

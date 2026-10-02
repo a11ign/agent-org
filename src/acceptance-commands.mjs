@@ -1868,7 +1868,7 @@ const suiteFilesCache = new Map();
 /**
  * Every `.test.ts` glob a `package.json` script runs, INCLUDING the ones it delegates to.
  *
- * `test` carries no glob of its own -- it is `npm run test:ts && npm run test:python` -- so resolving it
+ * `test` carries no glob of its own -- it is `pnpm run test:ts && pnpm run test:python` -- so resolving it
  * means following what it invokes. Doing that here rather than hard-wiring `test -> test:ts` keeps the
  * mapping where `package.json` already states it: the day `test` stops delegating to `test:ts`, this
  * follows, and a retyped pair would not. A delegate with no glob (`test:python`, whose population is the
@@ -1886,7 +1886,7 @@ function suiteGlobsOf(scripts, name, seen = new Set()) {
   const script = scripts?.[name];
   if (typeof script !== "string") return [];
   const own = [...script.matchAll(/"([^"]*\*[^"]*\.test\.ts)"/g)].map((match) => match[1]);
-  const delegated = [...script.matchAll(/npm\s+run\s+([\w:-]+)/g)]
+  const delegated = [...script.matchAll(/\bp?npm\s+run\s+([\w:-]+)/g)]
     .flatMap((match) => suiteGlobsOf(scripts, match[1], seen));
   return [...own, ...delegated];
 }

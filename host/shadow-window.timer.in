@@ -1,0 +1,17 @@
+[Unit]
+Description=a11ign: run the shadow window's tick every two minutes, until the window ends itself
+
+# `Requires=` AS EVERY OTHER SHIPPED TIMER CARRIES IT (`host-units.test.ts` pins the partition): the timer fails to start if its service is missing
+# rather than quietly scheduling nothing, and `enable --now` runs one tick at install, which is a dormant no-op until the window is armed.
+Requires=@@prefix@@shadow-window.service
+
+[Timer]
+# TWO MINUTES, THE LIVE TIMER'S OWN CADENCE (@@prefix@@work-tick.timer): ADR 0040 decision 5 counts 1,440 ticks as 48 hours at that tick, and the runner
+# takes the OLDEST unrecorded tick each run, so a run late by a few seconds records the same tick and a tick missed by the shadow is recorded late
+# and not lost, until the live tap's hour of files is pruned.
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

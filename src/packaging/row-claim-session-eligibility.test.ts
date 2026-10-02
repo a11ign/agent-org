@@ -25,7 +25,7 @@ interface Routes {
 }
 
 /** The CLAIMED row's own body (B4 reads its Region); any other issue is a row this session HOLDS (#989). */
-const CLAIMED_ROWS = ["455", "705"];
+const CLAIMED_ROWS = ["455", "705", "2760"];
 
 /** #2151: a claim's labels are ONE `PUT .../labels` (or, for a back-off or a decline, an `issue edit`), so a
  * test that asks "did the claim write?" must read both -- watching only `issue edit` would call a claim that
@@ -596,4 +596,43 @@ test("#2126: a FAILED review-health read refuses nothing, the way every lookup h
   };
   assert.equal(sessionEligibilityReason(455, "worker-tooling", { run }), null,
     "this clause can only ever CREATE a refusal, so an unanswerable read must not manufacture one");
+});
+
+// --- #2769: `--adopt` TELLS B4 WHICH BRANCH IT IS RE-STAMPING, so the row's own `Closes: none` split PR is not a competitor ---
+
+const SPLIT_REGION_FILE = "packages/agent-org/src/row-claim.mjs";
+const SPLIT_BRANCH = "agent/reachable-region-2760";
+/** #2766's real shape: an open PR on the row's Region file that declares `Closes: none`, from the branch being adopted. */
+const splitPrList = JSON.stringify([{ number: 2766, changedFiles: 1, files: [{ path: SPLIT_REGION_FILE }],
+  body: "Closes: none -- Done-when 3 on #2760 is still open", labels: [], headRefName: SPLIT_BRANCH }]);
+/** All three template fields, because `claimRow` refuses a body missing any before it ever reaches B4. */
+const splitBody = `## Region\n\n\`\`\`\n${SPLIT_REGION_FILE}\n\`\`\`\n\n## Acceptance\n\n\`\`\`\nnpx tsx --test x.test.ts\n\`\`\`\n\n`
+  + "## Open-check\n\n```\ngit worktree list\n```\n";
+const splitRoutes = { issueViewBody: splitBody, prList: splitPrList };
+
+test("#2769 sessionEligibilityReason: the `Closes: none` PR from the adopted branch is not a collision; without the branch it is", () => {
+  const run = routedRun(splitRoutes);
+  assert.match(sessionEligibilityReason(2760, "worker-2760", { run }) as string, /overlaps #2766/, "CONTROL: a fresh claim still refuses");
+  assert.equal(sessionEligibilityReason(2760, "worker-2760", { run, adoptedBranch: SPLIT_BRANCH }), null);
+  assert.match(sessionEligibilityReason(2760, "worker-2760", { run, adoptedBranch: "agent/other-1" }) as string, /overlaps #2766/);
+});
+
+/** `routedRun` answers `sessionEligibilityReason`'s reads; `claimRow` first reads the row's labels, which it does not. */
+function splitClaimRun() {
+  const routed = routedRun(splitRoutes);
+  return (cmd: string, args: string[]): string => {
+    const fields = args[args.indexOf("--json") + 1] ?? "";
+    if (args[0] === "issue" && args[1] === "view" && /labels/.test(fields)) {
+      return JSON.stringify({ number: 2760, title: "A row", labels: [] });
+    }
+    return routed(cmd, args);
+  };
+}
+
+test("#2769 claimRow FORWARDS `adoptedBranch` to B4 -- the flag reaches the check that reads it, not only the function that owns it", () => {
+  const refused = claimRow(2760, "worker-2760", { run: splitClaimRun(), moveStatus: () => ({ moved: true }) });
+  assert.equal(refused.claimed, false);
+  assert.match((refused as { reason: string }).reason, /overlaps #2766/, "CONTROL: without it the claim is refused by B4");
+  const adopted = claimRow(2760, "worker-2760", { run: splitClaimRun(), moveStatus: () => ({ moved: true }), adoptedBranch: SPLIT_BRANCH });
+  assert.doesNotMatch(String((adopted as { reason?: string }).reason ?? ""), /overlaps|B4/, "B4 no longer refuses the adopted branch's own PR");
 });

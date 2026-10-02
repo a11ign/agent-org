@@ -22,12 +22,16 @@
 import { test, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, realpathSync } from "node:fs";
+import { mkdtempSync, rmSync, realpathSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { carryBranch, branchCheckedOutLocally } from "../carry-branch.mjs";
 import { declareTreeWideGuard } from "../lib/tree-wide-guard.mjs";
+import { REMOVAL_LOG_ENV } from "../worktree-removal.mjs";
+
+// #2827: `carryBranch` now writes #2782's removal log, and a test must not write the host's real record.
+process.env[REMOVAL_LOG_ENV] = join(mkdtempSync(join(tmpdir(), "carry-removal-log-")), "worktree-removals");
 
 // #716/#704: this file's own population is the whole tracked tree, not one file -- declared here
 // rather than inferred from its source, per ceo's ruling (2026-09-09) that the tree-wide-guard
@@ -222,6 +226,42 @@ test("carryBranch cleans up its own throwaway detached worktree after a successf
   // Exactly the pre-carry set plus the pre-existing `owner` worktree -- no new entry lingers.
   assert.equal(after.split("worktree ").length, before.split("worktree ").length,
     `a carry must not leave its own temp worktree registered. before:\n${before}\nafter:\n${after}`);
+});
+
+test("#2827 (done-when 1, 2): the carry's scratch removal WRITES THE REMOVAL LOG -- `removing` while the tree still exists, "
+  + "`removed` once it is gone, naming the path, the caller and the reason", () => {
+  const { primary, branch } = topo;
+  const lines: { event: string; path: string; caller: string; reason: string; onDisk: boolean }[] = [];
+  const result = carryBranch(primary, branch, { record: (line) => { lines.push({ ...line, onDisk: existsSync(line.path) }); } });
+  assert.equal(result.carried, true);
+  assert.deepEqual(lines.map((line) => [line.event, line.onDisk]), [["removing", true], ["removed", false]],
+    "the line is written BEFORE the delete, so the tree is still there; the outcome after, so it is not");
+  assert.equal(new Set(lines.map((line) => line.path)).size, 1, "both lines name the one scratch tree");
+  assert.match(lines[0].path, /carry-branch-/);
+  assert.equal(lines[0].caller, "carry-branch.mjs carryBranch");
+  assert.match(lines[0].reason, /throwaway detached worktree/);
+});
+
+test("#2827 (done-when 1): a LOG THAT CANNOT BE WRITTEN leaves the scratch tree in place and does NOT change the carry's "
+  + "result -- a delete nobody can see is refused, and a throw in the `finally` would replace what the carry returned", () => {
+  const { primary, branch } = topo;
+  let scratch = "";
+  const result = carryBranch(primary, branch, { record: (line) => { scratch = line.path; throw new Error("ENOSPC: no space left on device"); } });
+  try {
+    assert.equal(result.carried, true, "the carry's own verdict survives the log failing");
+    assert.equal(existsSync(scratch), true, "the tree was NOT removed, because its removal could not be recorded");
+  } finally {
+    git(primary, ["worktree", "remove", "--force", scratch]);
+  }
+});
+
+test("#2827 (done-when 2): with NO seam, the default writes the line to the real log file `A11Y_WORKTREE_REMOVAL_LOG` names", () => {
+  const log = process.env[REMOVAL_LOG_ENV] as string;
+  const before = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").length : 0;
+  assert.equal(carryBranch(topo.primary, topo.branch).carried, true);
+  const written = readFileSync(log, "utf8").trim().split("\n").slice(before).map((line) => JSON.parse(line));
+  assert.deepEqual(written.map((line) => [line.event, line.caller]),
+    [["removing", "carry-branch.mjs carryBranch"], ["removed", "carry-branch.mjs carryBranch"]]);
 });
 
 test("#716 ACCEPTANCE: the shared fixture is genuinely reset between tests -- state from an earlier "

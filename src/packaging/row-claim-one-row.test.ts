@@ -128,8 +128,9 @@ function copyClosureAsRepo(copyRoot: string): string {
 // #2616: the tool now reads the project's declaration from beside it, so a copied tree must carry it or the reader REFUSES (correctly).
 // #2621: the declaration now points at a PLUGIN (`.agent-org/plugins/causes.mjs`), imported DYNAMICALLY by
 // `cause-declaration.mjs` -- invisible to `localImports`'s static walk, so it is carried for the same reason.
+// #2799: and the host's, because the drain marker, the reviewer state and the ledger default now read its `stateDir` at import.
   const files = new Set<string>([join(REPO_ROOT, SESSIONS_JSON), join(REPO_ROOT, ".agent-org/project.json"),
-    join(REPO_ROOT, ".agent-org/plugins/causes.mjs")]);
+    join(REPO_ROOT, ".agent-org/plugins/causes.mjs"), join(REPO_ROOT, ".agent-org/host.json")]);
   const visit = (file: string): void => {
     if (files.has(file)) return;
     files.add(file);

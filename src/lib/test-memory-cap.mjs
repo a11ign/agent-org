@@ -32,7 +32,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { npmCliInvocation } from "./npm-cli-executable.mjs";
+import { pnpmCliInvocation } from "./npm-cli-executable.mjs";
 
 /**
  * CHOSEN, NOT MEASURED (`ceo`, #2470/#2507): the largest peak of a green full-suite run has not been read yet, so 4G is
@@ -242,12 +242,15 @@ export function splitAtDoubleDash(argv) {
 }
 
 /**
- * `npx`/`npm` are resolved through npm's own CLI script, never spawned by name: a bare `npx` spawn fails on Windows
- * (CVE-2024-27980) and the repo's own guard refuses one. The pre-push hook names `npx`, so it is resolved here.
+ * Every package-manager spelling resolves to `pnpm`, through its own CLI script and never by name: a bare `pnpm` spawn
+ * fails on Windows (CVE-2024-27980) and the repo's own guard refuses one. The pre-push hook still names `npx`, so that
+ * is `pnpm exec` here and `npm` is `pnpm`: no spelling of the old tool is ever spawned. The name stays `resolveNpmCommand`
+ * because it resolves the npm-family spellings, and `pre-push`'s resolve-toward-main check pins exported names.
  * @param {string} command @param {string[]} args
  */
 export function resolveNpmCommand(command, args) {
-  return command === "npx" || command === "npm" ? npmCliInvocation(command, args) : { command, args };
+  if (command === "npx") return pnpmCliInvocation(["exec", ...args]);
+  return command === "npm" || command === "pnpm" ? pnpmCliInvocation(args) : { command, args };
 }
 
 async function main() {

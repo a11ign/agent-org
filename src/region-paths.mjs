@@ -21,8 +21,7 @@
 // (`git-spawn-classification.test.ts`), including a read-only one: an inherited `GIT_DIR` would have this
 // module list another repository's root files and report on them as though they were ours.
 import { execFileSync } from "node:child_process";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { HOME_CHECKOUT } from "./project-config.mjs";
 
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 
@@ -202,8 +201,14 @@ export function unrecognisedRegionPaths(body) {
  * of that name at the root, so `evidence.json` in prose about a capture declares nothing, while
  * `eslint.config.js` does. That is the same discipline `DIRECTORY_ITEM` has: a rule a person can check against
  * something real, rather than a shape that happens to look like a path.
+ *
+ * #2959: A ROOT DOTFILE (`.gitignore`, `.npmrc`, `.pnpmfile.cjs`) IS A CANDIDATE TOO. The first alternative
+ * takes a leading dot with NO extension required (`.gitignore` has none), and ends on a word character so a
+ * sentence's closing full stop is not swallowed into the name. Measured on #2897: the Region listed `.gitignore`,
+ * the old shape could not begin with a dot, and `pr:open` refused the row's own file. A dotfile one level down
+ * (`scripts/.gitignore`) and `./.gitignore` still do not match: the character before the dot must be a delimiter.
  */
-const ROOT_FILE_CANDIDATE = /(?:^|[\s`"'([])([A-Za-z0-9_][A-Za-z0-9_.-]*\.[A-Za-z0-9]{1,10})(?=$|[\s`"',.;:)\]])/g;
+const ROOT_FILE_CANDIDATE = /(?:^|[\s`"'([])(\.[A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_])?|[A-Za-z0-9_][A-Za-z0-9_.-]*\.[A-Za-z0-9]{1,10})(?=$|[\s`"',.;:)\]])/g;
 
 /** @typedef {{ files: Set<string>, source: "origin/main" | "HEAD" | null }} RootFileReading */
 
@@ -253,7 +258,7 @@ let rootFilesReading = null;
  */
 export function rootFilesOnMain({ repoRoot } = {}) {
   if (rootFilesReading && repoRoot === undefined) return rootFilesReading;
-  const repo = repoRoot ?? resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+  const repo = repoRoot ?? HOME_CHECKOUT;
   for (const ref of /** @type {const} */ (["origin/main", "HEAD"])) {
     try {
       const listing = execFileSync("git", ["ls-tree", ref, "--"],

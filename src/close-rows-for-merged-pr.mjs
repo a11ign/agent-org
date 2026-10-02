@@ -43,7 +43,8 @@
 //
 // ## Reporting
 //
-// Four outcomes and they must never collapse. `NONE DECLARED` is not a failure -- most PRs close nothing
+// Five outcomes and they must never collapse (the fifth, #2822, is `closed FROM THE BODY'S DECLARATION`, below).
+// `NONE DECLARED` is not a failure -- most PRs close nothing
 // -- but it must be distinguishable from `declared and closed`, or a job that resolved no references
 // would report success having done nothing, which is this repository's most-recorded defect. An issue
 // somebody already closed by hand is reported as `ALREADY CLOSED` rather than silently skipped.
@@ -66,6 +67,17 @@
 //
 // So `already`'s rows are stripped too now, exactly like `close`'s -- a row's claim is exactly as stale
 // whether GitHub closed it natively one second before this script asked, or this script closed it itself.
+//
+// ## #2822: WHEN GITHUB RESOLVED NOTHING, THE BODY'S OWN DECLARATION IS THE PLAN
+//
+// From 2026-09-30T09:12Z GitHub stopped resolving `closingIssuesReferences` for every new PR, and
+// `closes-mismatch-check.mjs` was made to PASS that repo-wide case with a warning (the chairman's ruling) on
+// the promise that THIS job closes the declared rows anyway. A guard that passes while this job still read
+// only GitHub's answer would merge every PR and close no row -- the #298 failure again. So: when
+// `closingIssuesReferences` is EMPTY and the body has line-start `Closes #N` lines, those are the plan
+// (`declaredRowsFromBody`), each closure says it was closed FROM THE DECLARATION because GitHub resolved
+// none, and it is reported as its own outcome. It never fires when GitHub resolved ANY row (a partial
+// resolution is GitHub's answer, not an outage), and `Closes: none` and prose mentions close nothing.
 //
 // Exit codes are the contract:
 //   0  every declared row is closed -- by this run or already
@@ -191,6 +203,30 @@ export function closurePlan(issues, { prMergedAt = null } = {}) {
   const owed = [...close, ...already]
     .flatMap((row) => answersOwedBy(row).map((session) => ({ number: row.number, session })));
   return { close, already, skip, none: issues.length === 0, owed };
+}
+
+/**
+ * #2822: THE ROWS A MERGED PR'S BODY DECLARES, for the one case where GitHub resolved none. LINE-ANCHORED and
+ * deliberately STRICTER than `extractClosesDeclaration`, which this file cannot import (`acceptance-commands.mjs`
+ * pulls `region-paths.mjs` and more behind it, and this job runs with `actions/checkout` and nothing else):
+ * that parser reads `closes #494` mid-sentence, and a closer acting on a prose mention would close a row the
+ * author only talked about (#549). Here a row is declared only by a LINE that starts with `Closes` (or `Closes:`)
+ * and then `#N`, `#N, #M` or `#N and #M`. Text after the list is ignored, as the real parser ignores it, EXCEPT
+ * a tail the real parser calls MALFORMED (`Closes #7, a11ign#8`): such a line closes nothing here, because a
+ * half-read list closes fewer rows than the author named, silently. A repository-qualified reference
+ * (`Closes owner/repo#7`) is not a row of THIS repository and is never closed from here.
+ * `close-rows-on-merge.test.ts` pins this against `extractClosesDeclaration` on the same fixtures, so the two
+ * cannot drift.
+ * @param {string | null | undefined} body
+ * @returns {number[]} distinct, in the order written
+ */
+export function declaredRowsFromBody(body) {
+  const numbers = (body ?? "").split(/\r?\n/).flatMap((line) => {
+    const match = /^\s*closes:?\s*(#\d+(?:\s*(?:,|and)\s*#\d+)*)(.*)$/i.exec(line);
+    if (!match || /^\s*(?:,|and)\s*[A-Za-z0-9_./-]*#/i.test(match[2])) return [];
+    return [...match[1].matchAll(/#(\d+)/g)].map((m) => Number(m[1]));
+  });
+  return [...new Set(numbers)];
 }
 
 /**
@@ -413,23 +449,51 @@ export function owedNote(owedBy) {
 }
 
 /**
+ * #2822: THE SENTENCE A CLOSING COMMENT OPENS WITH. A closure made from the body's declaration says so, and
+ * says why, because a reader of the row would otherwise take GitHub's silence for a closure GitHub made.
+ * @param {number} n @param {string} prNumber @param {string} sha @param {"github" | "body"} basis
+ * @returns {string}
+ */
+function openingSentence(n, prNumber, sha, basis) {
+  if (basis === "body") {
+    return `Closed by the pipeline FROM THE PR BODY'S DECLARATION: PR #${prNumber} merged as \`${sha}\` and `
+      + `declared \`Closes #${n}\`, but GitHub resolved NO closing reference for it (a repo-wide condition from `
+      + `2026-09-30, #2822), so this closure is that declaration read directly from the body rather than GitHub's `
+      + "answer.\n\n";
+  }
+  return `Closed by the pipeline: PR #${prNumber} merged as \`${sha}\` and declared \`Closes #${n}\`.\n\n`
+    + `GitHub does not apply a closing reference when the merge is performed by `
+    + `\`github-actions[bot]\` -- measured on #310, #321 and #344 (see #298), where three of three bot `
+    + `merges left their rows open while two of two human merges closed theirs. This comment and this `
+    + `closure are that step, performed explicitly.\n\n`;
+}
+
+/**
+ * The whole closing comment, PURE so a test reads the words a row will carry. The `github` basis is the comment
+ * this job has always posted, byte for byte.
+ * @param {number} n
+ * @param {{ prNumber: string, sha: string, owedBy?: string[], basis?: "github" | "body" }} ctx
+ * @returns {string}
+ */
+export function closingComment(n, { prNumber, sha, owedBy = [], basis = "github" }) {
+  return `${openingSentence(n, prNumber, sha, basis)}If the work did not land, reopen and say so on `
+    + `the row: \`git show ${sha}\` is what actually merged.${owedNote(owedBy)}`;
+}
+
+/**
  * Closes one row with the standard sentence. Returns whether it succeeded -- never throws, so the caller
  * can decide what to do next (and, for #754, whether the label strip below should even be attempted).
  * #2202: `owedBy` names the sessions still owing an answer on this row, and the closing comment says so IN THE
  * SAME ACT as the close -- the row's own record that the question survived it and who still owes it.
- * @param {number} n @param {{ prNumber: string, sha: string, repo: string, owedBy?: string[] }} ctx
+ * @param {number} n
+ * @param {{ prNumber: string, sha: string, repo: string, owedBy?: string[], basis?: "github" | "body" }} ctx
  * @returns {boolean}
  */
-function closeOneRow(n, { prNumber, sha, repo, owedBy = [] }) {
-  const sentence = `Closed by the pipeline: PR #${prNumber} merged as \`${sha}\` and declared `
-    + `\`Closes #${n}\`.\n\nGitHub does not apply a closing reference when the merge is performed by `
-    + `\`github-actions[bot]\` -- measured on #310, #321 and #344 (see #298), where three of three bot `
-    + `merges left their rows open while two of two human merges closed theirs. This comment and this `
-    + `closure are that step, performed explicitly.\n\nIf the work did not land, reopen and say so on `
-    + `the row: \`git show ${sha}\` is what actually merged.${owedNote(owedBy)}`;
+function closeOneRow(n, { prNumber, sha, repo, owedBy = [], basis = "github" }) {
+  const sentence = closingComment(n, { prNumber, sha, owedBy, basis });
   try {
     gh(["issue", "close", String(n), "--repo", repo, "--comment", sentence, "--reason", "completed"]);
-    console.log(`CLOSE-ROWS: #${n} CLOSED (PR #${prNumber}, merge ${sha}).`);
+    console.log(`CLOSE-ROWS: #${n} CLOSED${basis === "body" ? " FROM THE BODY'S DECLARATION" : ""} (PR #${prNumber}, merge ${sha}).`);
     return true;
   } catch (cause) {
     console.log(`CLOSE-ROWS: #${n} COULD NOT CLOSE -- ${cause instanceof Error ? cause.message : cause}`);
@@ -544,8 +608,8 @@ export function liveOrphanEffects(repo) {
  * and in the job log (for every row, including one GitHub closed natively first).
  *
  * @param {{ close: {number:number, labels:string[]}[], already: {number:number, labels:string[]}[],
- *   skip?: {number:number, labels:string[]}[], owed?: {number:number, session:string}[] }} plan
- * @param {{ prNumber: string, sha: string, repo: string }} ctx
+ *   skip?: {number:number, labels:string[]}[], owed?: {number:number, session:string}[], unreadable?: number[] }} plan
+ * @param {{ prNumber: string, sha: string, repo: string, basis?: "github" | "body" }} ctx
  * @param {ClosureEffects} effects
  * @returns {{ failed: number[], unsettled: import("./settle-closed-status.mjs").Refusal[], skipped: number[],
  *   owed: { number: number, session: string }[] }}
@@ -553,7 +617,7 @@ export function liveOrphanEffects(repo) {
  *   rows left alone because they were reopened after this PR merged (#1877) -- all empty on a clean run --
  *   and the rows that left the open population still owing an answer (#2202), empty on an ordinary one
  */
-export function applyClosurePlan({ close, already, skip = [], owed = [] }, ctx, effects) {
+export function applyClosurePlan({ close, already, skip = [], owed = [], unreadable = [] }, ctx, effects) {
   const missing = CLOSURE_EFFECTS.filter((name) => typeof effects?.[name] !== "function");
   if (missing.length > 0) {
     throw new Error(`applyClosurePlan: no ${missing.join(", ")} given -- every effect is required, because a `
@@ -589,8 +653,9 @@ export function applyClosurePlan({ close, already, skip = [], owed = [] }, ctx, 
     return n;
   });
 
+  // #2822: a declared row that could not be READ was never planned, and is a row that was not closed: named as such.
   /** @type {number[]} */
-  const failed = [];
+  const failed = [...unreadable];
   for (const { number: n, labels } of close) {
     const closed = closeOne(n, { ...ctx, owedBy: owedBy(n) });
     if (!closed) { failed.push(n); continue; }
@@ -599,6 +664,64 @@ export function applyClosurePlan({ close, already, skip = [], owed = [] }, ctx, 
     record(n);
   }
   return { failed, unsettled, skipped, owed: owed.filter((o) => !failed.includes(o.number)) };
+}
+
+/**
+ * #2822: READS ONE DECLARED ROW THE WAY THE MAIN LOOKUP READS A RESOLVED ONE -- state, labels and the last
+ * `ReopenedEvent` -- so a row reopened after the merge is still `skip`, whatever produced the plan. `null` for
+ * a number that is no issue here (a PR number, a typo) or a read that failed: "could not read" is never "closed".
+ * @param {number} n @param {string} repo
+ * @returns {{ number: number, state: string, labels: string[], reopenedAt: string | null } | null}
+ */
+export function liveLookupDeclaredRow(n, repo) {
+  const [owner, name] = repo.split("/");
+  const query = `{repository(owner:"${owner}",name:"${name}"){issue(number:${n}){number state `
+    + `labels(first:20){nodes{name}} timelineItems(itemTypes:[REOPENED_EVENT],last:1){nodes{`
+    + `... on ReopenedEvent{createdAt}}}}}}`;
+  try {
+    const issue = JSON.parse(gh(["api", "graphql", "-f", `query=${query}`, "--jq", ".data.repository.issue"]));
+    if (issue === null) return null;
+    return { number: issue.number, state: issue.state, labels: (issue.labels?.nodes ?? []).map((/** @type {{name:string}} */ l) => l.name),
+      reopenedAt: issue.timelineItems?.nodes?.[0]?.createdAt ?? null };
+  } catch (cause) {
+    console.log(`CLOSE-ROWS: could not read declared #${n} -- ${cause instanceof Error ? cause.message : cause}`);
+    return null;
+  }
+}
+
+/**
+ * #2822: WHICH PLAN A MERGED PR GETS, AND ON WHOSE WORD. GitHub's answer wins whenever it is non-empty -- so the
+ * fallback never fires beside a resolved row, and never double-closes one. Only when GitHub resolved NOTHING
+ * does the body's own `Closes` lines become the plan, tagged `basis: "body"` so the closure says so. A declared
+ * number that cannot be read is returned in `unreadable` and never planned: it is named, not skipped.
+ * @param {{ issues: { number: number, state: string, labels?: string[], reopenedAt?: string | null }[],
+ *   prMergedAt: string | null, prBody: string }} merged
+ * @param {(n: number) => { number: number, state: string, labels: string[], reopenedAt: string | null } | null} lookupRow
+ * @returns {{ plan: ReturnType<typeof closurePlan> & { unreadable?: number[] }, basis: "github" | "body",
+ *   declared: number[], unreadable: number[] }}
+ */
+export function planForMergedPr({ issues, prMergedAt, prBody }, lookupRow) {
+  const fromGitHub = closurePlan(issues, { prMergedAt });
+  const declared = fromGitHub.none ? declaredRowsFromBody(prBody) : [];
+  if (declared.length === 0) return { plan: fromGitHub, basis: "github", declared, unreadable: [] };
+  const rows = declared.map((n) => ({ n, row: lookupRow(n) }));
+  const readable = rows.flatMap(({ row }) => (row === null ? [] : [row]));
+  const unreadable = rows.filter(({ row }) => row === null).map(({ n }) => n);
+  return { plan: { ...closurePlan(readable, { prMergedAt }), unreadable }, basis: "body", declared, unreadable };
+}
+
+/**
+ * #2822: the FIFTH reported outcome, distinct from NONE DECLARED and from `declared and closed`: GitHub resolved
+ * nothing and the plan is the body's own declaration. A declared row that could not be read is named here too.
+ * Says nothing for a plan GitHub made.
+ * @param {string} number
+ * @param {{ basis: "github" | "body", declared: number[], unreadable: number[] }} planned
+ */
+function announceBodyPlan(number, { basis, declared, unreadable }) {
+  if (basis !== "body") return;
+  console.log(`CLOSE-ROWS: #${number} GitHub resolved NO closing reference, but the body declares `
+    + `#${declared.join(", #")} -- closing FROM THE BODY'S DECLARATION (#2822).`);
+  for (const n of unreadable) console.log(`CLOSE-ROWS: #${n} COULD NOT BE READ -- declared, not closed.`);
 }
 
 /**
@@ -680,9 +803,10 @@ function main() {
     exitAfterSweep(EXIT.CANNOT_ASK);
   }
 
-  const plan = closurePlan(issues, { prMergedAt });
+  const { plan, basis, declared, unreadable } = planForMergedPr({ issues, prMergedAt, prBody },
+    (n) => liveLookupDeclaredRow(n, repo));
 
-  if (plan.none) {
+  if (plan.none && declared.length === 0) {
     // NOT a failure, and not silence either. Most PRs declare nothing.
     console.log(`CLOSE-ROWS: #${number} declared NO closing references. Nothing to close.`);
     // #2036: ...but if the BRANCH names a row that is still open and still claimed, say so on it. This is
@@ -691,8 +815,9 @@ function main() {
       declaration: declarationLine(prBody) }, liveOrphanEffects(repo));
     exitAfterSweep(EXIT.DONE);
   }
+  announceBodyPlan(number, { basis, declared, unreadable });
 
-  const { code, lines } = closeRowsExit(applyClosurePlan(plan, { prNumber: number, sha, repo }, liveClosureEffects()),
+  const { code, lines } = closeRowsExit(applyClosurePlan(plan, { prNumber: number, sha, repo, basis }, liveClosureEffects()),
     "CLOSE-ROWS");
   for (const line of lines) console.error(line);
   exitAfterSweep(code);

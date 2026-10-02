@@ -31,6 +31,7 @@ import { fileURLToPath } from "node:url";
 import { OUT_OF_RELEASE_LABEL } from "./project-vocabulary.mjs";
 import path from "node:path";
 import { REPO } from "./project-identity.mjs";
+import { HOME_CHECKOUT } from "./project-config.mjs";
 // A LEAF module with no imports of its own (#804), so this cannot form a cycle -- the same property that
 // let `close-rows-for-merged-pr.mjs` import it under the no-`npm ci` constraint.
 import { READY_LABEL } from "./claim-labels.mjs";
@@ -44,7 +45,7 @@ export { gateVerdicts, isConformanceGate, latestVerdictGate, worstVerdict } from
 // at this path; `repo-identity.mjs` is the single declared value now, and this is one of its callers.
 export { REPO };
 export const MILESTONE = "v0.1.0 — first publish";
-export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+export const ROOT = HOME_CHECKOUT;
 export const HOURS_MS = 3600_000;
 export const MINUTE_MS = 60_000;
 export const MEDIAN = 0.5;
@@ -67,8 +68,10 @@ export const P90 = 0.9;
 // file that spawns, and it is right to: this list is handed to git as a pathspec relative to ROOT, so a
 // literal would be wrong the moment the file moves -- which is exactly what just happened when the org
 // tooling became a package. Derived, it follows the file.
-export const READ_SET = ["docs/board/reported",
-  path.relative(ROOT, fileURLToPath(new URL("./board-report.mjs", import.meta.url)))];
+// The report's own file is the TOOL's location, not the project's: installed beside the project (#2875) it is outside `ROOT`, its
+// relative path starts `..`, and git refuses a pathspec outside the repository. It is then not a file of this tree to be dirty.
+const REPORT_SOURCE = path.relative(ROOT, fileURLToPath(new URL("./board-report.mjs", import.meta.url)));
+export const READ_SET = ["docs/board/reported", ...(REPORT_SOURCE.startsWith("..") ? [] : [REPORT_SOURCE])];
 
 // EVERY SPAWN SCRUBS `GIT_*`, and this file is the one where getting it wrong is worst.
 //

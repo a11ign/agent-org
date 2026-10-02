@@ -14,10 +14,9 @@
 // the ready-issue list, and the account's GraphQL budget ran out twice on 2026-09-13.
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { REPO } from "./project-identity.mjs";
 // #2616: the board is a field of the project's declaration, not a value derived from `REPO` and a constant.
-import { homeProjectDeclaration } from "./project-config.mjs";
+import { HOME_CHECKOUT, homeProjectDeclaration } from "./project-config.mjs";
 // #1425: the classifier the close path already uses. That module imports nothing, so this file stays free of `gh`.
 import { refusalCause, PROJECT_UNREADABLE } from "./settle-closed-status.mjs";
 
@@ -85,8 +84,8 @@ export function snapshotDirFor(root, fs = LIVE_FS) {
   return join(common === null ? root : dirname(common), "runs", "board-snapshots");
 }
 
-/** Resolved once, from THIS script's own checkout -- never from the directory a caller happened to launch in. */
-export const SNAPSHOT_DIR = snapshotDirFor(fileURLToPath(new URL("../../../", import.meta.url)));
+/** Resolved once, from the PROJECT's checkout (`HOME_CHECKOUT`) -- never from the directory a caller happened to launch in. */
+export const SNAPSHOT_DIR = snapshotDirFor(HOME_CHECKOUT);
 
 /** #1352: the local git config key `npm run primary:mark` sets on the fleet-driving checkout. */
 export const PRIMARY_MARK_KEY = "a11y.primaryCheckout";

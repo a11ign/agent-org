@@ -82,6 +82,10 @@ import { sandboxGitEnv } from "./lib/git-env.mjs";
 // RELATIVE for the same reason as `cli-flags.mjs` below (#1373): `row-claim.mjs` imports this file before
 // `npm ci`, where a package specifier dies.
 import { worktreeOwner } from "./worktree-owner.mjs";
+import { claimRefusal, recordRemoval } from "./worktree-removal.mjs";
+
+/** What the removal log names as the asker: this file's own CLI, run hourly by `a11ign-worktree-prune.service`. */
+const CALLER = "prune-worktrees.mjs";
 
 /** @type {(cmd: string, args: string[], opts: { cwd: string }) => string} */
 const defaultRun = (cmd, args, opts) =>
@@ -558,8 +562,9 @@ export function unverifiedRecords(worktreePath, primaryPath, { hash = sha256OfFi
  * the role trees of two running sessions, and the ten minutes was luck.
  *
  * THE FACT THAT SEPARATES A HELD TREE FROM A FINISHED ONE IS WHETHER IT HAS DELIVERED ANYTHING, and both
- * halves are on disk, so this spends NO API budget (#1950: `a11ign-worktree-prune.service` reaches no
- * `gh` spawn, and asking GitHub whether a row is open would break that argument):
+ * halves are on disk, so THIS CHECK spends no API budget (#1950 ruled the prune unit gh-free on that ground; #2782 later added
+ * ONE `gh issue view` per otherwise-removable tree in `claimThenRemove`, after the wt-2623 incident showed that this check reads
+ * only the COPY of a claim -- see that function and `worktree-prune.service.in`):
  *   - it is STAMPED -- some session said this tree is theirs;
  *   - and its HEAD is a commit on `origin/main`'s OWN FIRST-PARENT LINE, so the branch has produced no
  *     commit of its own. A branch whose work landed is reached by main only THROUGH the merge that
@@ -941,6 +946,33 @@ function removeWorktree(worktreePath, ignorable, { run, remove }) {
 }
 
 /**
+ * #2782: THE REMOVAL, WITH ITS LINE. One `removing` line BEFORE the delete and one `removed` or `failed` after it, so the
+ * log names a tree whose removal was begun and never finished, and so a crash mid-delete is still a line. A log that cannot be
+ * written REFUSES the removal (`logged: false`): a delete nobody can see is the defect this row exists to end.
+ *
+ * @param {ReportedWorktree} reported @param {string[]} ignorable
+ * @param {{ run: typeof defaultRun, remove: (path: string, deps: { run: typeof defaultRun }) => void,
+ *   record: typeof recordRemoval }} deps
+ * @returns {{ done: true } | { done: false, logged: boolean }}
+ */
+function removeAndRecord(reported, ignorable, { run, remove, record }) {
+  const line = { path: reported.path, branch: reported.branch, caller: CALLER, reason: "merged, clean, inactive and not held" };
+  try {
+    record({ ...line, event: "removing" });
+  } catch {
+    return { done: false, logged: false };
+  }
+  try {
+    const cleared = removeWorktree(reported.path, ignorable, { run, remove });
+    record({ ...line, event: cleared ? "removed" : "refused", detail: cleared ? undefined : "could not clear the ignored entries" });
+    return cleared ? { done: true } : { done: false, logged: true };
+  } catch (cause) {
+    record({ ...line, event: "failed", detail: /** @type {Error} */ (cause).message });
+    throw cause;
+  }
+}
+
+/**
  * Which `PruneReport` bucket a `classify` verdict other than `"remove"` lands in.
  * @type {Record<"dirty" | "cherry-picked" | "inconclusive" | "active",
  *   "dirty" | "cherryPicked" | "inconclusive" | "active">}
@@ -950,16 +982,53 @@ const VERDICT_BUCKET = {
 };
 
 /**
+ * #2782: THE ROW'S CLAIM, LAST OF THE REFUSALS BECAUSE IT IS THE ONLY ONE THAT COSTS AN API CALL and is asked only of a tree every
+ * other check has passed; then the removal itself, with its log line. `.a11y-owner` (read by `heldByOwner`) is the COPY of the claim
+ * that a claim's re-creation can lose; the `session:` label on the row is the fact itself.
+ *
+ * @param {ReportedWorktree} reported @param {string[]} ignorable
+ * @param {{ claim?: typeof claimRefusal, dryRun: boolean, run: typeof defaultRun, record?: typeof recordRemoval,
+ *   remove: (path: string, deps: { run: typeof defaultRun }) => void }} deps `claim` and `record` default to the real ones
+ * @returns {{ into: "removed" } | { into: "dirty" } | { into: "held", reason: string }}
+ */
+function claimThenRemove(reported, ignorable, { claim = claimRefusal, dryRun, run, remove, record = recordRemoval }) {
+  const claimed = claim(reported);
+  if (claimed.refused) return { into: "held", reason: claimed.reason };
+  // `dryRun` SKIPS THE REMOVAL AND NOTHING ELSE -- same walk, same predicate, same buckets. The
+  // listing has to come from the tool that owns the decision, because the alternative was measured:
+  // a hand-rolled re-implementation of this predicate reported 99 of 114 worktrees "unmerged" on a
+  // tree where a directly-tested branch was merged. A uniform answer across a varied set is a broken
+  // checker, and re-implementing a predicate beside the thing that owns it is this repository's
+  // fact-stated-twice shape, arriving through a listing.
+  //
+  // AND THE TOOL'S SAFETY AND THE HAZARD ARE ABOUT DIFFERENT THINGS. This guarantees the BRANCH is
+  // merged and the TREE is clean. The hazard is about the SESSION: whether anyone is standing in that
+  // directory. A merged, clean worktree can still be somebody's current working directory, and no
+  // branch-level check can see that -- their next `cd` fails and the command runs in the PRIMARY
+  // checkout instead, which is the fleet-driving tree `assertFleetRunsThisCheckout` hashes.
+  // #2012: the paths today's `main` ignores go first, or git's own check refuses the removal. A tree
+  // that cannot be cleared is DIRTY -- the refusal this replaces, reached by measurement rather than
+  // by a stale rule.
+  if (dryRun) return { into: "removed" };
+  const removal = removeAndRecord(reported, ignorable, { run, remove, record });
+  if (removal.done) return { into: "removed" };
+  return removal.logged ? { into: "dirty" }
+    : { into: "held", reason: "the removal log could not be written -- a delete nobody can see is refused (#2782)" };
+}
+
+/**
  * The whole flow: list, classify, remove the clean+merged, name the rest, never touch the primary.
  *
  * @param {string} repoRoot the repository whose `git worktree list` is authoritative
  * @param {{ run?: typeof defaultRun, remove?: (path: string, deps: { run: typeof defaultRun }) => void,
- *   now?: number, dryRun?: boolean, hash?: (file: string) => string }} [deps] `dryRun` skips the removal
+ *   now?: number, dryRun?: boolean, hash?: (file: string) => string, claim?: typeof claimRefusal,
+ *   record?: typeof recordRemoval }} [deps] `dryRun` skips the removal
  *   and nothing else -- same walk, same predicate, same buckets, so the listing is the tool's own answer
- *   rather than a second one. `hash` reads a `runs/` record's sha256 (#1373).
+ *   rather than a second one. `hash` reads a `runs/` record's sha256 (#1373). `claim` reads the ROW's claim
+ *   (#2782) and `record` writes the removal's log line.
  * @returns {PruneReport}
  */
-export function pruneWorktrees(repoRoot, { run = defaultRun, remove, now = Date.now(), dryRun = false, hash } = {}) {
+export function pruneWorktrees(repoRoot, { run = defaultRun, remove, now = Date.now(), dryRun = false, hash, claim, record } = {}) {
   const porcelain = run("git", ["worktree", "list", "--porcelain"], { cwd: repoRoot });
   const entries = parseWorktreeList(porcelain);
   const primaryPath = entries.find((entry) => isPrimaryWorktree(entry.path))?.path ?? null;
@@ -997,26 +1066,10 @@ export function pruneWorktrees(repoRoot, { run = defaultRun, remove, now = Date.
         report.records.push({ ...reported, reason: held.reason });
         continue;
       }
-      // `dryRun` SKIPS THE REMOVAL AND NOTHING ELSE -- same walk, same predicate, same buckets. The
-      // listing has to come from the tool that owns the decision, because the alternative was measured:
-      // a hand-rolled re-implementation of this predicate reported 99 of 114 worktrees "unmerged" on a
-      // tree where a directly-tested branch was merged. A uniform answer across a varied set is a broken
-      // checker, and re-implementing a predicate beside the thing that owns it is this repository's
-      // fact-stated-twice shape, arriving through a listing.
-      //
-      // AND THE TOOL'S SAFETY AND THE HAZARD ARE ABOUT DIFFERENT THINGS. This guarantees the BRANCH is
-      // merged and the TREE is clean. The hazard is about the SESSION: whether anyone is standing in that
-      // directory. A merged, clean worktree can still be somebody's current working directory, and no
-      // branch-level check can see that -- their next `cd` fails and the command runs in the PRIMARY
-      // checkout instead, which is the fleet-driving tree `assertFleetRunsThisCheckout` hashes.
-      // #2012: the paths today's `main` ignores go first, or git's own check refuses the removal. A tree
-      // that cannot be cleared is DIRTY -- the refusal this replaces, reached by measurement rather than
-      // by a stale rule.
-      if (!dryRun && !removeWorktree(entry.path, assessment.ignorable, { run, remove: doRemove })) {
-        report.dirty.push(reported);
-        continue;
-      }
-      report.removed.push({ ...reported, cleared: assessment.ignorable });
+      const outcome = claimThenRemove(reported, assessment.ignorable, { claim, dryRun, run, remove: doRemove, record });
+      if (outcome.into === "held") report.held.push({ ...reported, reason: outcome.reason });
+      else if (outcome.into === "dirty") report.dirty.push(reported);
+      else report.removed.push({ ...reported, cleared: assessment.ignorable });
     } else {
       report[VERDICT_BUCKET[verdict]].push(reported);
     }

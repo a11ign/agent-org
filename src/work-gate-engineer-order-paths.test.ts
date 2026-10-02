@@ -12,8 +12,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { decide, LAUNCH_PLACEHOLDER } from "./work-gate.mjs";
+import { readFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { decide, LAUNCH_PLACEHOLDER, CAUSES, JUDGMENT_CAUSES, START_CAUSES, UNCLAIMABLE_AFTER_TICKS, claimRefusalOf,
+  claimRefusalStreaksNow, nextRefusalStreaks, unclaimableRowOrders } from "./work-gate.mjs";
+import { profileFor } from "./worker-profile.mjs";
+import { worktreeTargetReason } from "./row-claim.mjs";
 import { addressed, engineerRoles, launchAdvice, HOST_REPOS, PRIMARY_CHECKOUT } from "./wake.mjs";
 import { SPARE_FAMILIES } from "./arm-pr.mjs";
 
@@ -109,4 +114,119 @@ test("#2405 an order that carries no placeholder is delivered unchanged (only th
   const order = { session: "reviewer", prompt: "Review PR #12 at abc." };
   assert.match(addressed(order, "reviewer", { exists: () => false }), /\n\nReview PR #12 at abc\.\n\n/);
   assert.doesNotMatch(addressed(order, "reviewer", { exists: () => false }), /worktree/);
+});
+
+// --- #2845: A READY ROW THE CLAIM REFUSES, TICK AFTER TICK, WAKES `product-manager` -------------------------------------------
+
+const N = UNCLAIMABLE_AFTER_TICKS;
+const ROW = { number: 2824, title: "t", labels: [{ name: "ready" }] };
+const TREE = /wt-2824$/;
+type Seams = { exists: (p: string) => boolean; owner: (p: string) => string | null };
+/** A host where `../wt-2824` exists and `worker-2824` stamped it -- the refusal the journal recorded 211 times. */
+const treeStamped: Seams = { exists: (p) => TREE.test(p), owner: () => "worker-2824" };
+
+/** `ticks` consecutive gate ticks over `rows`, in a scratch state directory, returning the orders of the LAST one. */
+const tickNTimes = (ticks: number, rows: unknown[], host: Seams, dir: string) => {
+  let streaks: Record<string, unknown> = {};
+  for (let i = 0; i < ticks; i++) streaks = claimRefusalStreaksNow(rows, { stateDir: dir, worktreesDir: "/w", log: () => {}, ...host });
+  const orders = decide({ prs: [], readyRows: rows as never[], claimRefusals: streaks as never }) as { cause: string }[];
+  return orders.filter((o) => o.cause === "ready-row-unclaimable") as unknown as
+    { session: string; prompt: string; causeKey: string; discriminator: string }[];
+};
+
+const scratch = (body: (dir: string) => void) => {
+  const dir = mkdtempSync(join(tmpdir(), "a11y-2845-"));
+  try { body(dir); } finally { rmSync(dir, { recursive: true, force: true }); }
+};
+
+test("#2845 a Ready row refused N ticks running makes ONE order to product-manager, quoting the refusal and naming the row", () => {
+  scratch((dir) => {
+    const [order, ...rest] = tickNTimes(N, [ROW], treeStamped, dir);
+    assert.ok(order !== undefined, "POSITIVE CONTROL: the order exists -- every absence below is judged against it");
+    assert.equal(rest.length, 0);
+    assert.equal(order.session, "product-manager");
+    assert.match(order.prompt, /2824/);
+    assert.ok(order.prompt.includes("--worktree=../wt-2824 ALREADY EXISTS, stamped by `worker-2824`"), "the refusal is quoted");
+    assert.match(order.causeKey, /^product-manager\/ready-row-unclaimable\/2824-[0-9a-f]{12}$/);
+  });
+});
+
+test("#2845 the same row refused N-1 ticks makes none -- and the offer itself is still made", () => {
+  scratch((dir) => {
+    assert.deepEqual(tickNTimes(N - 1, [ROW], treeStamped, dir), []);
+  });
+  const offered = decide({ prs: [], readyRows: [ROW] }) as { cause: string }[];
+  assert.ok(offered.some((o) => o.cause === "ready-row-unclaimed"), "the row is still on offer to the engineers");
+});
+
+test("#2845 a row refused and then CLAIMED makes none: the streak is not carried past the tick the refusal stopped", () => {
+  scratch((dir) => {
+    tickNTimes(N - 1, [ROW], treeStamped, dir);
+    const freed = tickNTimes(1, [ROW], { exists: () => false, owner: () => null }, dir);
+    assert.deepEqual(freed, [], "the tree is gone: no refusal");
+    // and one more refused tick afterwards starts at 1, not at N: the claim that cleared it reset the count
+    assert.deepEqual(tickNTimes(1, [ROW], treeStamped, dir), []);
+    // a row that LEAVES Ready (claimed, so no longer offerable) is dropped from the memory altogether
+    tickNTimes(N - 1, [ROW], treeStamped, dir);
+    assert.deepEqual(tickNTimes(1, [], treeStamped, dir), []);
+    assert.deepEqual(tickNTimes(1, [ROW], treeStamped, dir), []);
+  });
+});
+
+test("#2845 it does not nag: the key is the same for as long as the refusal is, and CHANGES when the refusal does", () => {
+  scratch((dir) => {
+    const first = tickNTimes(N, [ROW], treeStamped, dir)[0];
+    const later = tickNTimes(1, [ROW], treeStamped, dir)[0];
+    assert.equal(later.causeKey, first.causeKey, "a longer streak of the same refusal is the same question");
+    const otherOwner = tickNTimes(N, [ROW], { ...treeStamped, owner: () => "worker-9" }, dir)[0];
+    assert.notEqual(otherOwner.causeKey, first.causeKey, "a different owner stamped the tree: a new question");
+    assert.match(otherOwner.prompt, /stamped by `worker-9`/);
+  });
+});
+
+test("#2845 the refusal's WORDS are row-claim's own, for a stamped tree and for an unstamped one", () => {
+  for (const owner of ["worker-2824", null]) {
+    const ours = claimRefusalOf(ROW, { worktreesDir: "/w", exists: () => true, owner: () => owner });
+    const theirs = worktreeTargetReason({ branch: "agent/t-2824", worktree: "../wt-2824", issueNumber: 2824 },
+      { exists: () => true, owner: () => owner, run: () => "" });
+    assert.equal(ours, theirs, `owner ${owner}`);
+  }
+});
+
+test("#2845 a tree a release KEPT for the row is adoptable, so it is not a refusal; an absent tree is not either", () => {
+  const kept = { "2824": { worktree: "/w/wt-2824" } };
+  assert.equal(claimRefusalOf(ROW, { worktreesDir: "/w", kept, exists: () => true, owner: () => "worker-2824" }), null);
+  assert.ok(claimRefusalOf(ROW, { worktreesDir: "/w", kept: {}, exists: () => true, owner: () => "worker-2824" }) !== null,
+    "POSITIVE CONTROL: without the kept record the same tree IS a refusal");
+  assert.equal(claimRefusalOf(ROW, { worktreesDir: "/w", exists: () => false }), null);
+});
+
+test("#2845 nextRefusalStreaks counts a repeated refusal, restarts a changed one and drops a cleared one", () => {
+  const a = nextRefusalStreaks({}, { "1": "x", "2": "y" });
+  assert.deepEqual(a, { "1": { reason: "x", ticks: 1 }, "2": { reason: "y", ticks: 1 } });
+  const b = nextRefusalStreaks(a, { "1": "x", "2": "z", "3": null });
+  assert.deepEqual(b, { "1": { reason: "x", ticks: 2 }, "2": { reason: "z", ticks: 1 } });
+  assert.deepEqual(nextRefusalStreaks(b, {}), {}, "a row not offered this tick is not carried");
+  assert.deepEqual(unclaimableRowOrders([ROW], undefined), [], "NOT ASKED is not an order");
+});
+
+test("#2845 a state directory that cannot be written reports no streaks, says so, and does not throw", () => {
+  scratch((dir) => {
+    const blocker = join(dir, "a-file");
+    writeFileSync(blocker, "");
+    const lines: string[] = [];
+    // A directory path UNDER A REGULAR FILE: `mkdirSync` refuses it with ENOTDIR, on any host and as any user.
+    const got = claimRefusalStreaksNow([ROW], { stateDir: join(blocker, "state"), worktreesDir: "/w", log: (l) => lines.push(l), ...treeStamped });
+    assert.deepEqual(got, {});
+    assert.match(lines.join(""), /claim-refusals: could not run/);
+  });
+});
+
+test("#2845 the cause is declared everywhere a cause is: CAUSES, JUDGMENT (never START), and a PROFILE", () => {
+  assert.ok(CAUSES.includes("ready-row-unclaimable"));
+  assert.ok(JUDGMENT_CAUSES.includes("ready-row-unclaimable"), "durable, so wake's expiry does not re-ask it");
+  assert.ok(!START_CAUSES.includes("ready-row-unclaimable"), "it starts no work, so a drain does not withhold it");
+  const profile = profileFor("ready-row-unclaimable");
+  assert.ok("model" in profile, "a refused lookup would carry `refusal`, not a profile");
+  assert.equal(profile.model, "sonnet");
 });

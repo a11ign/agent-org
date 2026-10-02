@@ -53,7 +53,7 @@ const sha256 = (text: string) => createHash("sha256").update(text).digest("hex")
 
 test("#2620: no home-directory literal remains in the tool's sources, its templates or its scripts", () => {
   const files = toolFiles();
-  assert.equal(files.length, 3 + 8, "POSITIVE CONTROL: eleven files are scanned (three sources, eight host entries), so an emptiness below is not a scan of nothing");
+  assert.equal(files.length, 3 + 12, "POSITIVE CONTROL: fifteen files are scanned (three sources, twelve host entries -- the two the shadow window added, #2867, and the two chairman-watch templates, #2901, included), so an emptiness below is not a scan of nothing");
   const offenders = files.filter((file) => HOME_LITERAL.test(readFileSync(file, "utf8")));
   assert.deepEqual(offenders, [], "each of these names a host path the tool must read from host.json instead");
 });
@@ -85,9 +85,13 @@ test("#2620: the constants `wake.mjs` still spells out (rows 3b and 3c) equal wh
 // Sha-256 of the texts as they stood at commit 1b5176697, BEFORE the row: the bytes `host:check` compares the live host against. A
 // rendering that differs by one byte reports every installed unit STALE, so this is the guard on "a11ign's values are unchanged".
 const TODAYS_TEXT = {
-  "a11ign-work-tick.service": "e80119ea128ee2f171b6250eba41f62bb048bb55cd0b5d990205d325780f7c48",
+  // #2781 MOVED THIS ONE, deliberately: the unit gained a comment saying the `-` on `primary:update` is covered by the gate reading the primary.
+  "a11ign-work-tick.service": "b566128df67e75cf012540a9aa8d75a7d9a2fb91d32e12ad901f7b8bce8a171e",
   "a11ign-work-tick.timer": "c47470e624dc884515212badc11c82890fa864b7181175a2ab3570fe182e72ec",
-  "a11ign-worktree-prune.service": "e91af3cc77a7183e9028903fbd87f43ed263de6788f859f4a823c3dead28f2c2",
+  // #2782 MOVED THIS ONE, deliberately: the prune unit now declares `GH_CONFIG_DIR` (it reads a row's claim before removing a tree). The
+  // installed copy reads STALE until `host:install` runs, which is a host action and not this row's.
+  // #2892 MOVED IT AGAIN, deliberately: `ExecStart` runs `%h/.local/bin/pnpm` instead of `/usr/bin/npm`. Same staleness, same remedy.
+  "a11ign-worktree-prune.service": "c88a8bb1f9fb44cad7b312d6064fe334cb58c607d2bce59572887536ebc4809a",
   "a11ign-worktree-prune.timer": "ecae95090a7608f86b01df84f5b79eeeb76beec48a28310b90c7c7e1d2b766eb",
   "a11ign-board-report.service": "3e7791d9f24ae9aa3519898259f1ea68c1f8b4cd721f97b62916c9f81835b0c1",
   "a11ign-board-report.timer": "6edd74ab8a7d4117197dddd448e30a2ab63ab9972799dd90f5f500c067f033f1",
@@ -104,13 +108,14 @@ test("#2620: the three tool units, the wrapper and the leads list render to TODA
   assert.equal(sha256(leadsListText()), TODAYS_LEADS_LIST, "the leads list installed at ~/leads/workspaces.txt");
 });
 
-test("#2620: NO UNIT IS RENAMED -- the installed names are the fourteen there were", () => {
+test("#2620: NO UNIT IS RENAMED -- the installed names are the fourteen there were, and the shadow window's two (#2867)", () => {
   assert.deepEqual(shippedUnits(), [
     "a11ign-board-report.service", "a11ign-board-report.timer",
     "a11ign-corpus-release-nightly.service", "a11ign-corpus-release-nightly.timer",
     "a11ign-corpus-snapshot.service", "a11ign-corpus-snapshot.timer",
     "a11ign-fleet-watch.service", "a11ign-fleet-watch.timer",
     "a11ign-lab-watch.service", "a11ign-lab-watch.timer",
+    "a11ign-shadow-window.service", "a11ign-shadow-window.timer",
     "a11ign-work-tick.service", "a11ign-work-tick.timer",
     "a11ign-worktree-prune.service", "a11ign-worktree-prune.timer",
   ]);
@@ -118,14 +123,18 @@ test("#2620: NO UNIT IS RENAMED -- the installed names are the fourteen there we
 
 // --- 3. the partition of the seventeen ---------------------------------------------------------------------------------------------
 
-test("#2620: the 17 entries are classified 8 tool, 8 project, 1 host data -- asserted against the files", () => {
+test("#2620: the 17 entries are classified 8 tool, 8 project, 1 host data -- asserted against the files, plus the shadow window's two tool entries (#2867) and the chairman watcher's two (#2901)", () => {
   const inTool = readdirSync(SHIPPED_DIR).sort();
   const inProject = readdirSync(PROJECT_UNITS_DIR).sort();
   const hostData = Object.keys(HOST_DATA_ENTRIES);
-  assert.equal(inTool.length, 8, "POSITIVE CONTROL: eight entries stay in the tool's host directory");
+  const shadowPair = inTool.filter((name) => name.startsWith("shadow-window."));
+  assert.equal(shadowPair.length, 2, "POSITIVE CONTROL: #2867's pair is two of them, so the 8 below is the original eight and the pair");
+  const chairmanPair = inTool.filter((name) => name.startsWith("chairman-watch."));
+  assert.equal(chairmanPair.length, 2, "POSITIVE CONTROL: #2901's optional pair is two more, so the 8 below is still the original eight");
+  assert.equal(inTool.length - shadowPair.length - chairmanPair.length, 8, "POSITIVE CONTROL: eight entries stay in the tool's host directory");
   assert.equal(inProject.length, 8, "POSITIVE CONTROL: eight moved to the project's `.agent-org/units/`");
   assert.equal(hostData.length, 1, "POSITIVE CONTROL: one is host data");
-  assert.equal(inTool.length + inProject.length + hostData.length, 17, "the host directory held seventeen entries");
+  assert.equal(inTool.length - shadowPair.length - chairmanPair.length + inProject.length + hostData.length, 17, "the host directory held seventeen entries");
   assert.deepEqual(inTool, [...TOOL_ENTRIES].sort(), "the tool's directory holds exactly what the tool records");
   assert.deepEqual(inProject, [...units.own].sort(), "the project's directory holds exactly what its declaration lists");
   for (const name of hostData) {
@@ -193,7 +202,7 @@ test("#2620: a fixture project's paths and prefix change the units, the wrapper 
   assert.match(work, /^Environment=HOME=\/srv\/ci$/m);
   assert.match(shippedUnitText("acme-work-tick.timer", ACME) ?? "", /^Requires=acme-work-tick\.service$/m);
   assert.deepEqual(shippedUnits(SHIPPED_DIR, { projectUnitsDir: null, prefix: "acme-" }).filter((u) => u.endsWith(".service")),
-    ["acme-board-report.service", "acme-work-tick.service", "acme-worktree-prune.service"], "the prefix names the tool's units");
+    ["acme-board-report.service", "acme-shadow-window.service", "acme-work-tick.service", "acme-worktree-prune.service"], "the prefix names the tool's units");
   for (const text of [work, shippedScriptText("gh", ACME) ?? ""]) assert.doesNotMatch(text, /\/home\/agent/, "and none of a11ign's host survives");
   assert.match(shippedScriptText("gh", ACME) ?? "", /A11Y_GH_REAL:-\/srv\/ci\/bin\/gh-real/);
   const files = ownedIdentityFiles(ACME);

@@ -10,7 +10,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROLE_DOC = fileURLToPath(new URL("../../../../.agent-org/roles/reviewer.md", import.meta.url));
@@ -119,4 +122,68 @@ test("the reviewer role document says the rules stop accident, not a wall, and p
   assert.match(section, /ACCEPTED rather than walled/);
   assert.match(section, /known-gaps\.md` §48/);
   assert.match(section, /pr-review-verdict/);
+});
+
+// ---- The verdict door's repository (#2952) ----------------------------------------------------------------
+
+const DOOR = fileURLToPath(new URL("./pr-review-verdict.sh", import.meta.url));
+const DEFAULT_REPO = "a11ign/a11ign";
+const OTHER_REPO = "a11ign/agent-org";
+const VERDICT_LINE = "**Review of #7 at abc123: convinced**";
+
+/**
+ * Runs the door with a `gh` stub first on PATH that appends one line of argv per call to a log. The stub answers the
+ * review read-back with the body the door just sent, so the attribution `statuses` POST is reached: all THREE calls
+ * (`pr review`, `reviews` read, `statuses` POST) happen, and each can be checked for the repository it names.
+ */
+function runDoor(ghRepo: string | undefined): { status: number | null; calls: string[]; stderr: string } {
+  const dir = mkdtempSync(join(tmpdir(), "door-"));
+  try {
+    const log = join(dir, "gh.log");
+    const verdictFile = join(dir, "verdict.md");
+    writeFileSync(verdictFile, `${VERDICT_LINE}\n\nbody\n`);
+    writeFileSync(
+      join(dir, "gh"),
+      `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "${log}"\n` +
+        `[[ "$*" == *"/reviews?"* ]] && printf 'https://example/review/1\\tdeadbeef\\t%s\\n' "${VERDICT_LINE}"\nexit 0\n`,
+      { mode: 0o755 },
+    );
+    const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${dir}:${process.env.PATH}`, A11Y_REVIEWER_SESSION: "reviewer-7" };
+    delete env.GH_REPO;
+    if (ghRepo !== undefined) env.GH_REPO = ghRepo;
+    const run = spawnSync("bash", [DOOR, "7", "convinced", verdictFile], { env, encoding: "utf8" });
+    const calls = existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [];
+    return { status: run.status, calls, stderr: run.stderr };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** The repository each of the door's three `gh` calls names, in the order they ran. */
+function reposNamed(calls: string[]): string[] {
+  return calls.map((c) => c.match(/--repo (\S+)|repos\/([^/]+\/[^/]+)\//)?.slice(1).find(Boolean) ?? "(none)");
+}
+
+test("unset GH_REPO: all three gh calls name a11ign/a11ign (the default is unchanged, and the control for the next test)", () => {
+  const { status, calls } = runDoor(undefined);
+  assert.equal(status, 0);
+  assert.equal(calls.length, 3, calls.join("\n"));
+  assert.deepEqual(reposNamed(calls), [DEFAULT_REPO, DEFAULT_REPO, DEFAULT_REPO]);
+});
+
+test("GH_REPO=a11ign/agent-org: all three gh calls name that repository and none names the default", () => {
+  const { status, calls } = runDoor(OTHER_REPO);
+  assert.equal(status, 0);
+  assert.equal(calls.length, 3, calls.join("\n"));
+  assert.deepEqual(reposNamed(calls), [OTHER_REPO, OTHER_REPO, OTHER_REPO]);
+  assert.ok(calls.every((c) => !c.includes(DEFAULT_REPO)), calls.join("\n"));
+});
+
+test("a GH_REPO that is not owner/name is refused with exit 2 before any gh call", () => {
+  for (const bad of ["agent-org", "a11ign/", "/agent-org", "a11ign/agent-org/extra", "a11ign/agent org", "a11ign/a;b", "https://github.com/a11ign/agent-org"]) {
+    const { status, calls, stderr } = runDoor(bad);
+    assert.equal(status, 2, bad);
+    assert.deepEqual(calls, [], `${bad} reached gh`);
+    assert.match(stderr, /GH_REPO must be owner\/name/, bad);
+  }
 });

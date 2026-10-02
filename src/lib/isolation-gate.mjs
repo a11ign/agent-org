@@ -72,6 +72,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // `ci.yml`'s `changed` job runs no `npm ci` — it decides whether anything else installs at all. A package
 // specifier here dies before the workflow starts.
 import { refuseUnknownFlags } from "./cli-flags.mjs";
+// STAYS npm for the consumer half (`no-npm-spawn.test.ts` pins this file by name; the header's "Two package managers, on purpose" says why):
+// the tarballs are installed as `npm install a11ign` would, outside any workspace.
 import { npmCliInvocation, pnpmCliInvocation } from "./npm-cli-executable.mjs";
 
 export const SMOKE = "isolation-smoke.mjs";
@@ -256,10 +258,19 @@ export function internalDependencies(packageDir, seen = new Set()) {
   return dirs;
 }
 
-/** `@a11ign/foo` lives at `packages/foo`, beside the package asking for it.
+/** The directory beside the package asking whose manifest NAMES `dependency`. Found by name, not spelled from
+ * it: `packages/pdf` is `@a11ign/documents` (#2705), and a directory spelled from the name did not exist. A
+ * name matching no directory falls back to the spelled one, so the caller's "not a package in this repo"
+ * refusal still fires with the path it would have looked at.
  * @type {(packageDir: string, dependency: string) => string} */
-const siblingDir = (packageDir, dependency) =>
-  join(resolve(packageDir), "..", dependency.slice("@a11ign/".length));
+const siblingDir = (packageDir, dependency) => {
+  const packagesDir = join(resolve(packageDir), "..");
+  const named = readdirSync(packagesDir).find((entry) => {
+    const manifest = join(packagesDir, entry, "package.json");
+    return existsSync(manifest) && JSON.parse(readFileSync(manifest, "utf8")).name === dependency;
+  });
+  return join(packagesDir, named ?? dependency.slice("@a11ign/".length));
+};
 
 
 /**
