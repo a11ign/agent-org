@@ -4596,12 +4596,15 @@ test("#2174: the gate does NOT import host-units.mjs -- the spawn is the fence, 
     "the same walker DOES find host-units.mjs's own edges");
 });
 
+const PINNED_HISTORY_POPULATION = ["documents-extraction.test.ts", "host-project-paths.test.ts", "host-tool-install.test.ts", "host-units.test.ts",
+  "pre-push-resolve-toward-main.test.ts", "pre-push-stale-base.test.ts", "shadow-window-arm.test.ts", "work-gate.test.ts"];
+
 test("#2174: the history-requirement population is unchanged by this row", () => {
   const dir = fileURLToPath(new URL("./", import.meta.url));
   const charged = readdirSync(dir).filter((f) => f.endsWith(".test.ts"))
     .filter((f) => {
       try {
-        return deriveClosureRequirements(join("packages/lab/src/packaging", f))
+        return deriveClosureRequirements(join(dir, f))
           .some((r: { requirement: string }) => r.requirement === "history");
       } catch { return false; }
     }).sort();
@@ -4616,8 +4619,13 @@ test("#2174: the history-requirement population is unchanged by this row", () =>
   // #2705 added `documents-extraction.test.ts`: checked -- it asks `--is-shallow-repository` before reading `git log -p` over `packages/pdf`
   // (the history `filter-repo` carries across is part of the first commit's leak scan), so it genuinely needs history, and its pull request
   // declares `History: full`.
-  assert.deepEqual(charged, ["documents-extraction.test.ts", "host-project-paths.test.ts", "host-tool-install.test.ts", "host-units.test.ts",
-    "pre-push-resolve-toward-main.test.ts", "pre-push-stale-base.test.ts", "shadow-window-arm.test.ts", "work-gate.test.ts"],
+  // The population is the pinned names THIS directory holds: the tool's tests were extracted from the project's lab package, and three of the
+  // pinned names (`documents-extraction`, `pre-push-resolve-toward-main`, `pre-push-stale-base`) are lab tests that stayed there, so a directory
+  // that does not hold one cannot charge it. A file JOINING the list still fails, which is what the pin is for.
+  const held = PINNED_HISTORY_POPULATION.filter((f) => existsSync(join(dir, f)));
+  // Positive control: the filter keeps the tests the directory holds, so an emptied list cannot pass for "unchanged".
+  assert.ok(held.includes("work-gate.test.ts"), "this very file is in the population, and the filter dropped it");
+  assert.deepEqual(charged, held,
   "adding a `history` reader to the gate's import closure taxes every test file that reaches it -- if "
   + "this list grew, check what was imported rather than editing the list");
 });
