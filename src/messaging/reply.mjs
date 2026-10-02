@@ -85,7 +85,7 @@ function couldNotCheck(placeholders) {
 
 /**
  * @typedef {{outcome: "refused", problems: Problem[], sendable?: string}
- *   | {outcome: "ready", text: string, values: Record<string, string>, at: number}} Prepared
+ *   | {outcome: "checked", text: string, values: Record<string, string>, at: number}} Prepared
  */
 
 /**
@@ -110,7 +110,7 @@ export async function prepareReply(text, { readers, now, maxText = DEFAULT_MAX_T
   if (stamped.length > maxText) {
     return { outcome: "refused", problems: [{ placeholder: null, reason: `the reply is ${stamped.length} characters once the facts are in, over the ${maxText} the provider carries` }] };
   }
-  return { outcome: "ready", text: stamped, values: Object.fromEntries(values), at };
+  return { outcome: "checked", text: stamped, values: Object.fromEntries(values), at };
 }
 
 /**

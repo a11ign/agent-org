@@ -387,7 +387,7 @@ describe("the free-text rules, each side of each pattern", () => {
   test("prepareReply alone sends nothing and reports the facts and the time", async () => {
     const { readers } = fixtureReaders();
     const prepared = /** @type {any} */ (await prepareReply("{{pr:1.state}}", { readers, now: () => NOW }));
-    assert.deepEqual([prepared.outcome, prepared.at, prepared.values], ["ready", NOW, { "{{pr:1.state}}": "merged" }]);
+    assert.deepEqual([prepared.outcome, prepared.at, prepared.values], ["checked", NOW, { "{{pr:1.state}}": "merged" }]);
   });
 });
 
