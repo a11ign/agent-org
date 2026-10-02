@@ -26,7 +26,7 @@
 // `row-claim.mjs` is reachable from a pre-install entry, so a package specifier here would die with
 // ERR_MODULE_NOT_FOUND before `npm ci` -- `pre-install-import-graph.test.ts` is what proves it.
 import { execFileSync } from "node:child_process";
-import { dirname, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { localImports } from "../lib/local-import-closure.mjs";
@@ -44,13 +44,40 @@ const gitIn = (repoRoot) => (args) =>
   execFileSync("git", args,
     { cwd: repoRoot, encoding: "utf8", env: sandboxGitEnv(), stdio: ["ignore", "pipe", "pipe"] });
 
-/** Where the rule modules live. A file outside this directory is the tool, not the verdict. */
-const RULE_DIR = "packages/agent-org/src/row-claim/";
+/**
+ * Where the rule modules live, repo-relative with a trailing slash: the `row-claim/` directory BESIDE `entry`.
+ *
+ * DERIVED FROM THE ENTRY'S OWN PATH, never typed (#3041). This was the literal `packages/agent-org/src/row-claim/`, the monorepo's layout, and in the
+ * standalone `agent-org` checkout (`src/row-claim/`) it named a directory that does not exist: the guard then asked git about a pathspec that
+ * matches nothing and read "0 commits behind" off it, which is the other way to be wrong and the quieter one.
+ * @param {string} entry absolute path to `row-claim.mjs`
+ * @param {string} repoRoot
+ * @returns {string}
+ */
+export function ruleDirOf(entry, repoRoot) {
+  return `${relative(repoRoot, join(dirname(entry), "row-claim")).split(sep).join("/")}/`;
+}
+
+/**
+ * The work tree this module lives in, by asking git from the module's own directory -- NOT by counting directories up, which is a statement
+ * about ONE layout (#3041: four up from `packages/agent-org/src/row-claim/` is the product root; from `src/row-claim/` it is the parent of the
+ * checkout, `/home/agent`). `null` when the module is not inside a git work tree.
+ * @param {string} dir
+ * @returns {string | null}
+ */
+export function workTreeOf(dir) {
+  try {
+    return gitIn(dir)(["rev-parse", "--show-toplevel"]).trim() || null;
+  } catch (error) {
+    void error; // not a work tree: the caller says so by name
+    return null;
+  }
+}
 
 /**
  * The files this tool's VERDICT is computed from, repo-relative and sorted.
  *
- * Derived from `entry`'s own local-import closure and narrowed to `packages/agent-org/src/row-claim/` plus the entry
+ * Derived from `entry`'s own local-import closure and narrowed to the `row-claim/` directory beside it plus the entry
  * itself. Narrowed rather than taken whole because the closure reaches `merge-guard.mjs`,
  * `board-snapshot.mjs` and more -- real dependencies of the TOOL whose movement says nothing about whether
  * the RULE changed, and folding them in would turn this into the blanket refusal the row rules out.
@@ -71,7 +98,7 @@ export function ruleFiles(entry, repoRoot, deps) {
   visit(entry);
   return [...seen]
     .map((file) => relative(repoRoot, file))
-    .filter((rel) => rel.startsWith(RULE_DIR) || rel === relative(repoRoot, entry))
+    .filter((rel) => rel.startsWith(ruleDirOf(entry, repoRoot)) || rel === relative(repoRoot, entry))
     .sort();
 }
 
@@ -90,7 +117,7 @@ export function ruleFiles(entry, repoRoot, deps) {
  * moved, that checkout would have answered "up to date" with a retired rule in its hands -- this row's own
  * defect, inside this row's own fix.
  *
- * `RULE_DIR` is a constant, so it cannot go stale with the tree, and `git` resolves a trailing-slash
+ * The rule directory is derived from the entry's PATH and not from the tree's contents, so it cannot go stale with the tree, and `git` resolves a trailing-slash
  * pathspec as a directory prefix -- covering every rule module including ones the walker never saw. The
  * derivation is kept beside it because the prefix has the opposite gap: a rule module that lands OUTSIDE
  * this directory tomorrow is invisible to the prefix and obvious to the closure. Neither alone holds it.
@@ -100,7 +127,7 @@ export function ruleFiles(entry, repoRoot, deps) {
  * @returns {string[]}
  */
 export function rulePathspec(entry, repoRoot, deps) {
-  return [...new Set([...ruleFiles(entry, repoRoot, deps), RULE_DIR])].sort();
+  return [...new Set([...ruleFiles(entry, repoRoot, deps), ruleDirOf(entry, repoRoot)])].sort();
 }
 
 /**
@@ -127,6 +154,33 @@ export function commitsBehindOn({ repoRoot, files, run }) {
 }
 
 /**
+ * How many tracked files at HEAD the pathspec matches, or `null` when git cannot say (the next step then reports that, by its own name).
+ * @param {{ repoRoot: string, files: string[], run?: (args: string[]) => string }} options
+ * @returns {number | null}
+ */
+export function trackedFileCount({ repoRoot, files, run }) {
+  const git = run ?? gitIn(repoRoot);
+  try {
+    return git(["ls-files", "--", ...files]).split("\n").filter(Boolean).length;
+  } catch (error) {
+    void error; // not a work tree, or git is absent: `commitsBehindOn` is asked next and says CANNOT ASK itself
+    return null;
+  }
+}
+
+/** @param {string} dir */
+const cannotAskNoTree = (dir) => `CANNOT ASK whether this checkout's copy of the rule is current: ${dir} is not inside a git work tree, so there is\n`
+  + "  no repository to compare against `origin/main`. This refuses rather than assuming it is up to date.";
+
+/**
+ * @param {string} root
+ * @param {string[]} spec
+ */
+const cannotAskNothingTracked = (root, spec) => `CANNOT ASK whether this checkout's copy of the rule is current: the rule pathspec `
+  + `(${spec.length === 0 ? "empty" : spec.join(", ")}) matches no tracked file in ${root}, so a count of "0 commits behind" would be read off\n`
+  + "  nothing. The tool's own layout is not the one this guard was asked about; this refuses rather than assuming it is up to date.";
+
+/**
  * The refusal, or `null` when this checkout's copy of the rule is the current one.
  *
  * @param {{ repoRoot?: string, entry?: string, run?: (args: string[]) => string,
@@ -134,8 +188,13 @@ export function commitsBehindOn({ repoRoot, files, run }) {
  * @returns {string | null}
  */
 export function staleRuleReason({ repoRoot, entry, run, files } = {}) {
-  const root = repoRoot ?? resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
-  const spec = files ?? rulePathspec(entry ?? resolve(root, "packages/agent-org/src/row-claim.mjs"), root);
+  const here = dirname(fileURLToPath(import.meta.url));
+  const root = repoRoot ?? workTreeOf(here);
+  if (root === null) return cannotAskNoTree(here);
+  const spec = files ?? rulePathspec(entry ?? resolve(here, "..", "row-claim.mjs"), root);
+  // A PATHSPEC THAT MATCHES NO TRACKED FILE CANNOT SAY "UP TO DATE": `git rev-list HEAD..origin/main -- <nothing>` counts 0 and that zero is not a
+  // reading of anything (#3041, the same conflation `commitsBehindOn` already refuses for a missing `origin/main`).
+  if (spec.length === 0 || trackedFileCount({ repoRoot: root, files: spec, run }) === 0) return cannotAskNothingTracked(root, spec);
   const behind = commitsBehindOn({ repoRoot: root, files: spec, run });
   if (behind === null) {
     return "CANNOT ASK whether this checkout's copy of the rule is current: `origin/main` is not\n"

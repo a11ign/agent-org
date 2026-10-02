@@ -49,6 +49,8 @@
 // A LEAF, RELATIVE IMPORTS ONLY, like `repeating-lines.mjs`: `work-gate.mjs` imports this, and it runs before any `npm ci`/build.
 import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, statSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 // A LEAF (`claim-labels.mjs` imports nothing), so the label is read from where it is declared, as `repeating-lines.mjs` does.
 import { READY_LABEL } from "./claim-labels.mjs";
@@ -81,8 +83,10 @@ const MINUTES_PER_TICK = 2.1;
 const MAX_NAMED = 5;
 /** No capture on the fleet for this long, with work that needs it waiting, is the idle fleet the chairman found (#2937). */
 export const FLEET_IDLE_HOURS = 24;
-/** Where the declared copies sit, relative to the checkout: the tool's own `lib/`, each file headed by what it was copied from. */
-const COPIES_DIR = "packages/agent-org/src/lib";
+/** Where the declared copies sit, relative to the TOOL's root: its own `lib/`, each file headed by what it was copied from (#3041: this was the monorepo's `packages/agent-org/src/lib`, which in the standalone tool is `src/lib`). */
+const COPIES_DIR = "src/lib";
+/** The tool's root, by its own location: `src/` is this file's directory, so the root is one up. Neither the project's layout nor a count of directories above it. */
+const TOOL_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 /** The checkout the tool serves, when the caller names none. Where it holds no `COPIES_DIR` no copy is found, and the reading says so. */
 const DEFAULT_ROOT = HOME_CHECKOUT;
 const COPY_HEADER_START = /^\/\/ COPIED FROM `([^`]+)` at /;
@@ -430,13 +434,14 @@ function readOrNull(read, path) {
 /**
  * THE DECLARED COPIES OF A CHECKOUT, discovered from the headers: every file in `COPIES_DIR` whose header names its original. `null`
  * when the directory cannot be listed. Each pair's original is read here and is `null` in the pair when it cannot be.
- * @param {{ root?: string, list?: (dir: string) => string[], read?: (path: string) => string }} [where]
+ * `root` is the PROJECT, where each copy's original is read; `toolRoot` is where the copies themselves are.
+ * @param {{ root?: string, toolRoot?: string, list?: (dir: string) => string[], read?: (path: string) => string }} [where]
  * @returns {CopyPair[] | null}
  */
-export function readDeclaredCopies({ root = DEFAULT_ROOT, list = (dir) => readdirSync(dir), read = (path) => readFileSync(path, "utf8") } = {}) {
+export function readDeclaredCopies({ root = DEFAULT_ROOT, toolRoot = TOOL_ROOT, list = (dir) => readdirSync(dir), read = (path) => readFileSync(path, "utf8") } = {}) {
   let names;
   try {
-    names = list(`${root}/${COPIES_DIR}`).sort();
+    names = list(`${toolRoot}/${COPIES_DIR}`).sort();
   } catch {
     return null; // an unlistable directory is not an empty one
   }
@@ -446,7 +451,7 @@ export function readDeclaredCopies({ root = DEFAULT_ROOT, list = (dir) => readdi
     const copy = `${COPIES_DIR}/${name}`;
     let copyText;
     try {
-      copyText = read(`${root}/${copy}`);
+      copyText = read(`${toolRoot}/${copy}`);
     } catch {
       continue; // a directory or a file that vanished between the list and the read is not a copy
     }

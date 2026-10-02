@@ -16,14 +16,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { fileURLToPath } from "node:url";
 import {
   FLEET_IDLE_HOURS, SIGNALS, fleetIdleReading, copyDriftReading, readDeclaredCopies, orgHealthReadings, orgHealthOrders, orgHealthTick,
 } from "../org-health.mjs";
 
 const HOUR_MS = 3_600_000;
 const NOW = Date.parse("2026-10-02T12:00:00Z");
-const ISOLATION = "packages/agent-org/src/lib/isolation-gate.mjs";
+const ISOLATION = "src/lib/isolation-gate.mjs";
+/** The tool's own `lib/`, found from THIS file's location and not from a layout (#3041): `src/packaging/../lib` in the tool, in the project's tree and in the standalone repository alike. */
+const TOOL_LIB = fileURLToPath(new URL("../lib/", import.meta.url));
 
 const WAITING = { rows: [2870], labJobs: [] as string[] };
 const NOTHING_WAITING = { rows: [] as (number | string)[], labJobs: [] as string[] };
@@ -151,7 +153,7 @@ test("copies: an unreadable original, an unreadable directory and an EMPTY disco
 test("control: the real tree's declared copies are discovered, every original is readable, and the pair set is CLEAN", () => {
   const pairs = realPairs();
   // The count is derived a second way, by a plain scan for a line opening with the header's first words, and asserted EQUAL: a floor is satisfied by 19, by 58 and by 157 (reported-counts.test.ts).
-  const headed = readdirSync(join(HOME_CHECKOUT, "packages/agent-org/src/lib")).filter((name) => readFileSync(join(HOME_CHECKOUT, "packages/agent-org/src/lib", name), "utf8").match(/^\/\/ COPIED FROM `/m));
+  const headed = readdirSync(TOOL_LIB).filter((name) => readFileSync(join(TOOL_LIB, name), "utf8").match(/^\/\/ COPIED FROM `/m));
   assert.equal(pairs.length, headed.length, `discovery found ${pairs.length} pairs and a scan of lib/ finds ${headed.length} headed files`);
   assert.ok(headed.length > 0, "the scan is not empty: the tree's copies are what the control compares");
   assert.ok(pairs.some((pair) => pair.copy === ISOLATION && pair.original === "packages/guards/src/isolation-gate.mjs"), "the pair #2921 edited by hand");
@@ -167,7 +169,7 @@ test("control: the REAL isolation-gate pair with ONE BYTE changed in the origina
   const changedOriginal = pairs.map((pair) => (pair === real ? { ...pair, originalText: original.replace("const ", "cnst ") } : pair));
   const reading = copyDriftReading({ pairs: changedOriginal });
   assert.equal(reading.status, "tripped");
-  assert.match(reading.detail, /packages\/agent-org\/src\/lib\/isolation-gate\.mjs against packages\/guards\/src\/isolation-gate\.mjs/);
+  assert.match(reading.detail, /src\/lib\/isolation-gate\.mjs against packages\/guards\/src\/isolation-gate\.mjs/);
   const changedCopy = pairs.map((pair) => (pair === real ? { ...pair, copyText: pair.copyText.replace("const ", "cnst ") } : pair));
   assert.equal(copyDriftReading({ pairs: changedCopy }).status, "tripped");
   assert.equal(copyDriftReading({ pairs: changedCopy.filter((pair) => pair !== changedCopy.find((p) => p.copy === ISOLATION)) }).status, "clear",
@@ -177,16 +179,16 @@ test("control: the REAL isolation-gate pair with ONE BYTE changed in the origina
 // --- discovery ------------------------------------------------------------------------------------------------------------
 
 test("discovery: an unlistable directory is null, a file with no copy header is skipped, and a header's count is read as NOTHING, ONE LINE or N", () => {
-  assert.equal(readDeclaredCopies({ root: "/r", list: () => { throw new Error("EACCES"); } }), null);
+  assert.equal(readDeclaredCopies({ root: "/r", toolRoot: "/tool", list: () => { throw new Error("EACCES"); } }), null);
   const files: Record<string, string> = {
-    "/r/packages/agent-org/src/lib/plain.mjs": "export {};\n",
-    "/r/packages/agent-org/src/lib/none.mjs": `${header(": NOTHING but this header.")}x\n`,
-    "/r/packages/agent-org/src/lib/one.mjs": `${header(", ONE LINE: an import.")}x\n`,
-    "/r/packages/agent-org/src/lib/three.mjs": `${header(", 3 NAMED LINES:")}x\n`,
+    "/tool/src/lib/plain.mjs": "export {};\n",
+    "/tool/src/lib/none.mjs": `${header(": NOTHING but this header.")}x\n`,
+    "/tool/src/lib/one.mjs": `${header(", ONE LINE: an import.")}x\n`,
+    "/tool/src/lib/three.mjs": `${header(", 3 NAMED LINES:")}x\n`,
     "/r/a/orig.mjs": "x\n",
   };
   const pairs = readDeclaredCopies({
-    root: "/r", list: () => ["three.mjs", "plain.mjs", "one.mjs", "none.mjs"],
+    root: "/r", toolRoot: "/tool", list: () => ["three.mjs", "plain.mjs", "one.mjs", "none.mjs"],
     read: (path) => { if (path in files) return files[path]; throw new Error(`ENOENT ${path}`); },
   }) as Pair[];
   assert.deepEqual(pairs.map((pair) => [pair.copy.split("/").pop(), pair.allowedLines]), [["none.mjs", 0], ["one.mjs", 1], ["three.mjs", 3]].sort(),
