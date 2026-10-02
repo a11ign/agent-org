@@ -84,7 +84,6 @@ export const COMMANDS = {
   "token-audit": "token-audit.mjs",
   "trunk-revert-guard": "trunk-revert-guard.mjs",
   "trunk-sweep": "trunk-sweep.mjs",
-  "update-branch-sweep": "update-branch-sweep.mjs",
   "update-tool": "update-tool.mjs",
 };
 
