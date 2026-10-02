@@ -93,7 +93,8 @@ test("#2620: the constants `wake.mjs` still spells out (rows 3b and 3c) equal wh
 const TODAYS_TEXT = {
   // #2781 MOVED THIS ONE, deliberately: the unit gained a comment saying the `-` on `primary:update` is covered by the gate reading the primary.
   // #2974 MOVED THIS ONE, deliberately: the cut-over moved its `primary:update` line from `/usr/bin/npm` to the pnpm shim and its header comment off the monorepo path (`units-run-pnpm.test.ts`).
-  "a11ign-work-tick.service": "1c388b269625507de8067d4620f3bd5a92dd7f94ea06a21516b18061352aa7dd",
+  // #3038 MOVED THIS ONE, deliberately: `ExecStart` runs under the crash-exit preload and the header says why `SuccessExitStatus` lists 1.
+  "a11ign-work-tick.service": "d8491bba933fc01de08375aafc8a9666a18aac93ceb488e345f2e22929a9ede8",
   "a11ign-work-tick.timer": "c47470e624dc884515212badc11c82890fa864b7181175a2ab3570fe182e72ec",
   // #2782 MOVED THIS ONE, deliberately: the prune unit now declares `GH_CONFIG_DIR` (it reads a row's claim before removing a tree). The
   // installed copy reads STALE until `host:install` runs, which is a host action and not this row's.

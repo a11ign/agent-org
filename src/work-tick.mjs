@@ -31,8 +31,20 @@ import { readAgents, blockedSessions, readHandoffs, handoffQueuePath, ledgerPath
   tearDownReviewers, recoverNow }
   from "./wake.mjs";
 
-/** `0` the tick completed (quiet or delivered); `1` orders had nowhere to go; `2` a read was refused. */
-export const EXIT = { QUIET: 0, ATTENTION: 1, CANNOT_ASK: 2 };
+/**
+ * `0` the tick completed (quiet or delivered); `1` orders had nowhere to go; `2` a read was refused; `70` it CRASHED (#3038).
+ *
+ * `CRASH` is `src/lib/crash-exit.mjs`'s code, and is the one the unit does NOT declare a success. It is a code of its own because `node`
+ * exits `1` on any uncaught exception and `1` is ATTENTION here, so a crash used to read as "orders had nowhere to go".
+ */
+export const EXIT = { QUIET: 0, ATTENTION: 1, CANNOT_ASK: 2, CRASH: 70 };
+
+/**
+ * THE PRELOAD EVERY CHILD THE TICK STARTS RUNS UNDER, whatever started the tick. `work-gate` exits `1` for "found work" (`GATE.WORK`), so a
+ * gate that threw would be read as a busy org whose orders were handed to `wake` with nothing on stdin, and `wake` exits `1` for ATTENTION.
+ * The unit's own `--import` covers the tick itself and cannot reach a child, so the tick passes it down.
+ */
+const CRASH_PRELOAD = ["--import", new URL("./lib/crash-exit.mjs", import.meta.url).href];
 
 /** work-gate's own contract, named here so the mapping below reads as a mapping and not as magic numbers. */
 export const GATE = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3 };
@@ -56,6 +68,11 @@ export const GATE = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3 };
  * @returns {{ deliver: boolean, exit?: number, why?: string }}
  */
 export function afterGate(code, { queued = 0 } = {}) {
+  // BEFORE THE `WORK` BRANCH, which a crash used to land in: node's own exit for a throw is 1, and the preload moves it to 70.
+  if (code === EXIT.CRASH) {
+    return { deliver: false, exit: EXIT.CRASH,
+      why: `work-gate CRASHED (exit ${code}; its stack is above) -- nothing was examined, so NOTHING was woken. This is not a quiet org and not a busy one.` };
+  }
   if (code === GATE.QUIET) {
     if (queued === 0) return { deliver: false, exit: EXIT.QUIET };
     return { deliver: true,
@@ -97,7 +114,7 @@ function main() {
   const here = (name) => fileURLToPath(new URL(name, import.meta.url));
   const passthrough = process.argv.slice(2);
 
-  const gate = spawnSync(process.execPath, [here("./work-gate.mjs")], { encoding: "utf8" });
+  const gate = spawnSync(process.execPath, [...CRASH_PRELOAD, here("./work-gate.mjs")], { encoding: "utf8" });
   if (gate.error) {
     process.stderr.write(`CANNOT ASK: could not run work-gate (${gate.error.message}).\n`);
     process.exit(EXIT.CANNOT_ASK);
@@ -131,7 +148,7 @@ function main() {
   if (next.why) process.stderr.write(`${next.why}\n`);
   if (!next.deliver) process.exit(next.exit ?? EXIT.CANNOT_ASK);
 
-  const wake = spawnSync(process.execPath, [here("./wake.mjs"), ...passthrough],
+  const wake = spawnSync(process.execPath, [...CRASH_PRELOAD, here("./wake.mjs"), ...passthrough],
     { encoding: "utf8", input: gate.stdout });
   if (wake.error) {
     process.stderr.write(`CANNOT ASK: could not run wake (${wake.error.message}). The gate found work and `
@@ -140,6 +157,7 @@ function main() {
   }
   if (wake.stdout) process.stdout.write(wake.stdout);
   if (wake.stderr) process.stderr.write(wake.stderr);
+  if (wake.status === EXIT.CRASH) process.stderr.write("wake CRASHED (its stack is above): the orders the gate found were NOT delivered.\n");
   process.exit(wake.status ?? EXIT.CANNOT_ASK);
 }
 
