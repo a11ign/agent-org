@@ -56,7 +56,7 @@ import { REPO } from "./project-identity.mjs";
 import { parseWorktreeList } from "./prune-worktrees.mjs";
 import { stampWorktree } from "./worktree-owner.mjs";
 import { recordRemoval } from "./worktree-removal.mjs"; // #2827
-// RELATIVE, not the `@a11ign/worker-fleet/cli-flags` package specifier -- see `row-claim.mjs`'s own
+// RELATIVE, not the `@a11ign/screenreader-fleet/cli-flags` package specifier -- see `row-claim.mjs`'s own
 // header for why: this needs `node_modules` and a completed build, and this file has neither guarantee.
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";

@@ -213,6 +213,9 @@ export const TOOL_UPDATE_EXEC = "/usr/bin/node src/update-tool.mjs";
  * (`host:check` compares them) and a template that gained a placeholder would have changed the file those bytes come from. An anchor
  * that does not match exactly once REFUSES: a template edited out from under this function is a defect to hear about, not a unit
  * that quietly stayed in the old form.
+ *
+ * THESE THREE LINES ARE NOT SUFFICIENT ON THEIR OWN (#2974, found before the cut by running the tool from its own checkout): a tool
+ * that lives in `<tool>/src` resolves its project from `$AGENT_ORG_HOST` and REFUSES without it, so `toolForm` adds that variable.
  * @param {string} rendered the unit as it renders for a host with no `tool` @param {string} tool @param {BeforeTick[]} beforeTicks
  */
 export function workTickToolForm(rendered, tool, beforeTicks) {
@@ -229,11 +232,52 @@ export function workTickToolForm(rendered, tool, beforeTicks) {
   ].reduce((text, [anchor, line]) => replaceOnce(text, /** @type {RegExp} */ (anchor), /** @type {string} */ (line)), rendered);
 }
 
+/** The variable a tool run from its own checkout reads to find the host's declaration, and from it the project (`project-config.mjs`'s `HOST_ENV`). */
+const HOST_VARIABLE = "AGENT_ORG_HOST";
+
+/**
+ * THE OTHER SHIPPED SERVICES' TOOL FORM (#2974: cut-over 3 of 6, "every unit the tool ships names the `agent-org` checkout and no
+ * `packages/agent-org` path"): template -> the anchored lines that change. Each is a one-line pattern that must match exactly once, and
+ * `$CHECKOUT` stands for the primary project's checkout in the replacement, because `prune-worktrees.mjs` takes the repository it
+ * prunes as an argument (its cwd is now the tool's, not the project's) and the board dispatcher reads `$AGENT_ORG_PROJECT`.
+ * `WorkingDirectory` is handled for all of them, below; the work-tick unit has its own function (`workTickToolForm`).
+ * @type {Readonly<Record<string, ReadonlyArray<readonly [RegExp, string]>>>}
+ */
+const OTHER_TOOL_FORMS = Object.freeze({
+  "worktree-prune.service.in": [
+    [/^ExecStart=%h\/\.local\/bin\/pnpm run worktrees:prune -- --apply$/m, "ExecStart=/usr/bin/node src/prune-worktrees.mjs --apply $CHECKOUT"],
+  ],
+  "board-report.service.in": [
+    [/^ExecStart=\/usr\/bin\/bash packages\/agent-org\/host\/board-report-dispatch\.sh$/m,
+      "Environment=AGENT_ORG_PROJECT=$CHECKOUT/.agent-org/project.json\nExecStart=/usr/bin/bash host/board-report-dispatch.sh"],
+  ],
+  "shadow-window.service.in": [
+    [/^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/shadow-window\.mjs /m, "ExecStart=/usr/bin/node src/shadow-window.mjs "],
+  ],
+});
+
+/**
+ * THE UNIT AS IT IS INSTALLED WHEN `host.json` NAMES A `tool`: the template's rendering with decision 3's lines changed. Every service
+ * runs from the tool's checkout and is told where the host's declaration is, because the tool resolves its project from that and
+ * REFUSES without it (measured 2026-10-02: `node src/work-gate.mjs` from the checkout, with no `AGENT_ORG_HOST`, died on
+ * `<home>/.agent-org/project.json`). A template this does not know is returned as it rendered: a timer names no path of its own.
+ * @param {string} shipped the template's name @param {string} rendered @param {{ tool: string, checkout: string, beforeTicks: BeforeTick[] }} where
+ */
+export function toolForm(shipped, rendered, { tool, checkout, beforeTicks }) {
+  const body = shipped === WORK_TICK_TEMPLATE ? workTickToolForm(rendered, tool, beforeTicks)
+    : Object.hasOwn(OTHER_TOOL_FORMS, shipped)
+      ? OTHER_TOOL_FORMS[shipped].reduce((text, [anchor, line]) => replaceOnce(text, anchor, line.replaceAll("$CHECKOUT", checkout)),
+        replaceOnce(rendered, /^WorkingDirectory=.*$/m, `WorkingDirectory=${tool}`))
+      : rendered;
+  if (body === rendered || new RegExp(`^Environment=${HOST_VARIABLE}=`, "m").test(body)) return body;
+  return replaceOnce(body, /^WorkingDirectory=.*$/m, `WorkingDirectory=${tool}\nEnvironment=${HOST_VARIABLE}=${checkout}/.agent-org/host.json`);
+}
+
 /** @param {string} text @param {RegExp} anchor a one-line, multiline-flag pattern @param {string} line */
 function replaceOnce(text, anchor, line) {
   const found = text.match(new RegExp(anchor.source, "gm")) ?? [];
   if (found.length !== 1) {
-    throw new HostConfigRefusal(anchor.source, `matches ${found.length} lines of the ${WORK_TICK_TEMPLATE} it renders, not one; decision 3's three lines cannot be placed`, WORK_TICK_TEMPLATE);
+    throw new HostConfigRefusal(anchor.source, `matches ${found.length} lines of the unit it renders, not one; decision 3's tool form cannot be placed`, "the unit template");
   }
   return text.replace(anchor, () => line);
 }
@@ -279,7 +323,7 @@ export function shippedUnitText(unit, deps = {}) {
   if (template === null) return projectDir === null ? null : textOf(join(projectDir, unit), read);
   const rendered = renderTemplate(template, values(), unit);
   const { tool } = host();
-  return shipped === WORK_TICK_TEMPLATE && tool !== undefined ? workTickToolForm(rendered, tool, beforeTicks()) : rendered;
+  return tool === undefined ? rendered : toolForm(shipped, rendered, { tool, checkout: values().checkout, beforeTicks: beforeTicks() });
 }
 
 /**
@@ -461,12 +505,12 @@ export function packageScripts(repoRoot = REPO_ROOT, read = readFileSync) {
  * `WorkingDirectory` the unit names -- which is what makes the answer the same in the primary checkout,
  * in a worktree and in CI. `bash -c '...'` resolves to nothing and is correctly left unread.
  * @param {string} command
- * @param {{ repoRoot?: string, scripts?: Record<string, string>, exists?: typeof existsSync }} [deps]
+ * @param {{ repoRoot?: string, scripts?: Record<string, string>, exists?: typeof existsSync, cwd?: string }} [deps]
  * @returns {string[]} absolute paths, deduplicated, that exist
  */
-export function entriesFromCommand(command, { repoRoot = REPO_ROOT, scripts = packageScripts(repoRoot),
+export function entriesFromCommand(command, { repoRoot = REPO_ROOT, scripts = packageScripts(repoRoot), cwd,
   exists = existsSync } = {}) {
-  return programCandidates(command, { repoRoot, scripts }).filter((entry) => exists(entry));
+  return programCandidates(command, { repoRoot, scripts, cwd }).filter((entry) => exists(entry));
 }
 
 /**
@@ -482,12 +526,14 @@ export function entriesFromCommand(command, { repoRoot = REPO_ROOT, scripts = pa
  * EXTRACTED RATHER THAN RETYPED, and that is the point: a second copy of this resolution would be a
  * second answer to "what does this unit run", and `regionRefusalReason`'s own header already records
  * what a hand-written second reader cost when it disagreed with the shared one in BOTH directions.
+ * A unit run from the TOOL'S checkout (`toolForm`, #2974) starts `node src/work-tick.mjs`, which is relative to the tool and not to the
+ * project, so a `cwd` adds that base as a SECOND candidate; the caller's `exists` keeps the real one.
  * @param {string} command
- * @param {{ repoRoot?: string, scripts?: Record<string, string> }} [deps]
+ * @param {{ repoRoot?: string, scripts?: Record<string, string>, cwd?: string }} [deps]
  * @returns {string[]} absolute paths, deduplicated, WHETHER OR NOT THEY EXIST
  */
 export function programCandidates(command, { repoRoot = REPO_ROOT,
-  scripts = packageScripts(repoRoot) } = {}) {
+  scripts = packageScripts(repoRoot), cwd } = {}) {
   /** @type {string[]} */
   const entries = [];
   const seen = new Set();
@@ -496,7 +542,10 @@ export function programCandidates(command, { repoRoot = REPO_ROOT,
     for (const stage of String(text).split(/\|\||&&|[|;]/)) {
       const argv = stage.trim().split(/\s+/).filter(Boolean);
       const tool = basename(argv[0] ?? "");
-      if ((tool === "node" || SHELLS.has(tool)) && isPath(argv[1])) entries.push(resolve(repoRoot, argv[1]));
+      if ((tool === "node" || SHELLS.has(tool)) && isPath(argv[1])) {
+        entries.push(resolve(repoRoot, argv[1]));
+        if (cwd !== undefined) entries.push(resolve(cwd, argv[1]));
+      }
       else if (PACKAGE_RUNNERS.has(tool) && argv[1] === "run" && argv[2]) followScript(argv[2]);
     }
   };
@@ -538,7 +587,23 @@ function isPath(arg) {
  * @param {string} unitText @param {Parameters<typeof entriesFromCommand>[1]} [deps] @returns {string[]}
  */
 export function unitEntryPoints(unitText, deps = {}) {
-  return [...new Set(execCommands(unitText).flatMap((command) => entriesFromCommand(command, deps)))];
+  const withBase = { ...deps, cwd: toolBaseOf(unitText, deps.repoRoot) };
+  return [...new Set(execCommands(unitText).flatMap((command) => entriesFromCommand(command, withBase)))];
+}
+
+/** The tool's own root: where a unit run from the tool's checkout finds the `src/` and `host/` paths it names. */
+const TOOL_ROOT = resolve(SHIPPED_DIR, "..");
+
+/**
+ * THE BASE A UNIT'S RELATIVE PATHS ARE ALSO READ AGAINST: the tool's root when the unit declares a `WorkingDirectory` other than the
+ * project's checkout, and nothing otherwise. A unit in tool form (#2974) says `WorkingDirectory=<tool>` and `ExecStart=node src/...`;
+ * resolved against the project only, it names no file, falls out of `unitsSpendingGh`'s population, and a unit that spends a rate limit is
+ * no longer checked for whose. The project-relative answer stays first, so a unit in the old form is read exactly as it was.
+ * @param {string} unitText @param {string} [repoRoot] @returns {string | undefined}
+ */
+function toolBaseOf(unitText, repoRoot = REPO_ROOT) {
+  const declared = logicalLines(unitText).map((line) => /^WorkingDirectory\s*=\s*(\/\S*)$/.exec(line)?.[1]).filter(Boolean).at(-1);
+  return declared !== undefined && declared !== repoRoot ? TOOL_ROOT : undefined;
 }
 
 /**
@@ -581,9 +646,10 @@ const SHELLS = new Set(["bash", "sh", "dash"]);
  * @param {string} unitText @param {Parameters<typeof entriesFromCommand>[1]} [deps] @returns {string[]}
  */
 export function opaqueCommands(unitText, deps = {}) {
+  const withBase = { ...deps, cwd: toolBaseOf(unitText, deps.repoRoot) };
   return execCommands(unitText).filter((command) =>
     !ANALYSABLE_TOOLS.has(basename(command.split(/\s+/).filter(Boolean)[0] ?? ""))
-    && entriesFromCommand(command, deps).length === 0);
+    && entriesFromCommand(command, withBase).length === 0);
 }
 
 /**

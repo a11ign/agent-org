@@ -48,7 +48,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, appendFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { changedFiles } from "./changed-files.mjs";
-// RELATIVE, NOT `@a11ign/worker-fleet/cli-flags` — every other root script uses the package
+// RELATIVE, NOT `@a11ign/screenreader-fleet/cli-flags` — every other root script uses the package
 // specifier, and every other root script runs after `npm run build`. This one gates whether ANYTHING
 // else in the workflow builds at all, so it cannot depend on a build having already happened; the file
 // itself is plain JS with no TypeScript syntax, so importing straight from `src` costs nothing.
