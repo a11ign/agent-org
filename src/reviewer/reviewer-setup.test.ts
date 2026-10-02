@@ -144,8 +144,10 @@ function runDoor(ghRepo: string | undefined): { status: number | null; calls: st
     writeFileSync(verdictFile, `${VERDICT_LINE}\n\nbody\n`);
     writeFileSync(
       join(dir, "gh"),
-      `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "${log}"\n` +
-        `[[ "$*" == *"/reviews?"* ]] && printf 'https://example/review/1\\tdeadbeef\\t%s\\n' "${VERDICT_LINE}"\nexit 0\n`,
+      // The review body is the WHOLE verdict file since #3030: one call stays one log line (newlines logged as spaces), and the
+      // read-back answers as `gh --jq @tsv` does, with the body's newlines spelled `\n`.
+      `#!/usr/bin/env bash\na="$*"; printf '%s\\n' "\${a//$'\\n'/ }" >> "${log}"\n` +
+        `[[ "$*" == *"/reviews?"* ]] && printf 'https://example/review/1\\tdeadbeef\\t%s\\n' '${VERDICT_LINE}\\n\\nbody'\nexit 0\n`,
       { mode: 0o755 },
     );
     const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${dir}:${process.env.PATH}`, A11Y_REVIEWER_SESSION: "reviewer-7" };
