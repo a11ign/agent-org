@@ -11,6 +11,10 @@
       "reason": "work the gate can see and is deliberately not offering (a declared blockedBy, Not-before, answer: or a file overlap with an open pull request). The line itself says it clears itself; 972 per day measured on 2026-10-01 and each is a row waiting on a field."
     },
     {
+      "pattern": "^tool checkout detached at origin/main \\(H\\)$",
+      "reason": "update-tool.mjs states where the tool's own checkout is on every tick it runs (the work-tick unit's first ExecStartPre); it is a position reading, the twin of the primary's line below, and was offered to orchestrator after 30 ticks on 2026-10-02. A failed update throws and prints a different line (`has uncommitted changes to tracked files`, `is not a primary checkout`), which is not allowlisted."
+    },
+    {
       "pattern": "^primary checkout detached at origin/main \\(H\\)$",
       "reason": "update-primary.mjs states where the checkout is on every tick it runs; it is a position reading, not a fault. A failed update prints a different line, which is not allowlisted."
     },

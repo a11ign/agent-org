@@ -44,3 +44,13 @@ test("40 ticks of the pnpm echo are not offered; the control: without the entry 
   assert.deepEqual(repeatingLines({ ticks: ticksOf(PNPM_ECHO), allow: loadAllowlist() }), []);
   assert.equal(repeatingLines({ ticks: ticksOf(PNPM_ECHO), allow: [] }).length, 1);
 });
+
+const TOOL_LINE = "tool checkout detached at origin/main (9ef0eaac5ad034123f8a040e838b5f877f31c491)";
+
+test("the tool checkout's position line is not offered at 40 ticks (it moves, and the sha is one line); the control: without the entry it is", () => {
+  const allow = loadAllowlist();
+  assert.deepEqual(repeatingLines({ ticks: ticksOf(TOOL_LINE), allow }), []);
+  assert.equal(repeatingLines({ ticks: ticksOf(TOOL_LINE), allow: [] }).length, 1, "the positive control: the line repeats and IS offered without the entry");
+  const failure = "/home/agent/repos/agent-org has uncommitted changes to tracked files, so it was NOT moved:";
+  assert.equal(repeatingLines({ ticks: ticksOf(failure), allow }).length, 1, "a failed update is a different line and stays a fault");
+});
