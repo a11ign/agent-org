@@ -1864,10 +1864,10 @@ test("THE TICK PRINTS THE BACKLOG -- the entry point, not the two functions it c
   assert.match(ran.stderr, /oldest 9\.5h/, "with the age that made this row worth filing");
   assert.match(ran.stderr, /3 over 2h/);
   assert.match(ran.stderr, /BETWEEN TASKS/, "and the stalled-inbox warning, because all three are stale");
-  assert.match(ran.stderr, /UNDELIVERED .*"product-manager" is working/,
+  assert.match(ran.stderr, /DEFERRED .*"product-manager" is working/,
     "and the tick really did run to its end: the stub says the target is mid-turn, so the batch is "
-    + "refused and stays queued -- the backlog is reported BEFORE that and regardless of it");
-  assert.equal(ran.status, 1, "an order with nowhere to go is ATTENTION, not a quiet tick");
+    + "deferred and stays queued -- the backlog is reported BEFORE that and regardless of it");
+  assert.equal(ran.status, 0, "a seat mid-turn is waiting its turn (#3029), not an order with nowhere to go");
 });
 
 test("THE CONTROL: A REAL TICK OVER A QUIET QUEUE SAYS NOTHING ABOUT A BACKLOG", () => {
@@ -1879,7 +1879,7 @@ test("THE CONTROL: A REAL TICK OVER A QUIET QUEUE SAYS NOTHING ABOUT A BACKLOG",
   const ran = runTick({ queued: [], stdin: `${order}\n` });
 
   assert.doesNotMatch(ran.stderr, /QUEUE BACKLOG/, "nothing is waiting, so nothing is said");
-  assert.match(ran.stderr, /UNDELIVERED row\/1/,
+  assert.match(ran.stderr, /DEFERRED row\/1/,
     "and the tick reached its delivery, so the silence above is a quiet queue rather than a tick that "
     + "stopped before the report");
 });

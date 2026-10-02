@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { REPEAT_TICKS, normaliseLine, parseTicks, parseAllowlist, loadAllowlist, repeatingLines, repeatingLineOrders,
   repeatingLinesTick } from "../repeating-lines.mjs";
+import { refusalReport } from "../wake.mjs";
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, AGED_BACKLOG_MS, agedBacklogOrders, decide, readPromotableRows } from "../work-gate.mjs";
 
 const GATE_ENTRY = fileURLToPath(new URL("../work-gate.mjs", import.meta.url));
@@ -160,6 +161,36 @@ test("#2848: the SHIPPED allowlist loads, every entry has a reason, and it names
   for (const fault of [NOT_RELEASED(1), UNDELIVERED(1), "2 order(s) had nowhere to go. A derived cause is NOT in the ledger"]) {
     assert.ok(!allow.some((a) => a.pattern.test(normaliseLine(fault))), `${fault.slice(0, 40)} must not be allowlisted`);
   }
+});
+
+// --- #3029: the lines `wake.mjs` writes for a refusal, run through the detector as the journal would hold them ------
+
+/** The stderr lines `finishTick` writes for these refusals at this wait, which is what the journal carries. */
+const refusalLines = (refused: string[], waitMinutes: number) => {
+  const report = refusalReport(refused, (keys) => new Map(keys.map((k) => [k, waitMinutes * 60_000])));
+  return [...report.deferred.map((l) => `DEFERRED ${l}`), ...report.undelivered.map((l) => `UNDELIVERED ${l}`), ...(report.summary === null ? [] : [report.summary.trim()])];
+};
+const BUSY_CEO = `handoff/ceo/07ed9f53: "ceo" is working`;
+const NOT_STARTED = `reviewer-agent-org-16/pr-review-due/pr-16/0a1b2c3d: herdr refused to start "reviewer-agent-org-16" (the workspace it opened was closed)`;
+
+test("#3029: 30 ticks of a busy seat WAITING ITS TURN produce no repeating group, while the SAME 30 ticks of a refused-to-start order still do", () => {
+  const allow = loadAllowlist();
+  // The wait grows by one tick each time, so the numbers differ per copy -- the normaliser must make them one line, or this proves nothing.
+  const busy = ticksOf(run(30, (i) => refusalLines([BUSY_CEO], 2 * (i + 1))));
+  assert.equal([...(busy.at(-1)?.lines.values() ?? [])].filter((l) => l.startsWith("DEFERRED ")).length, 1, "the control: the lines are there, and the detector reads them");
+  assert.deepEqual(repeatingLines({ ticks: busy, allow }), [], "waiting its turn is the queue working as designed");
+  const stuck = repeatingLines({ ticks: ticksOf(run(30, (i) => refusalLines([NOT_STARTED], 2 * i))), allow });
+  assert.equal(stuck.length, 1, "POSITIVE CONTROL: a dead end repeating 30 ticks is still a repeating group");
+  assert.ok(stuck[0].lines.some((l) => /^\d+ order\(s\) had nowhere to go\./.test(l)), "and the summary line is in it");
+});
+
+test("#3029: a busy seat that stays busy PAST THE LIMIT is a fault again -- its UNDELIVERED line and the summary are not allowlisted", () => {
+  const allow = loadAllowlist();
+  const groups = repeatingLines({ ticks: ticksOf(run(30, (i) => refusalLines([BUSY_CEO], 61 + 2 * i))), allow });
+  assert.equal(groups.length, 1);
+  assert.ok(groups[0].lines.some((l) => l.startsWith("UNDELIVERED handoff/ceo/")), groups[0].lines.join(" | "));
+  assert.ok(allow.some((a) => a.pattern.test(normaliseLine(`DEFERRED ${BUSY_CEO} (waiting 12 min; retried next tick)`))), "the DEFERRED line IS the allowlisted one");
+  assert.ok(!allow.some((a) => a.pattern.test(normaliseLine(`UNDELIVERED ${BUSY_CEO} (deferred 61 min, over the 60-minute limit for a seat mid-turn)`))));
 });
 
 test("#2848: an allowlist entry with NO REASON, or no pattern, is refused at load: an exemption nobody explained is a silence", () => {

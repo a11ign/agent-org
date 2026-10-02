@@ -3,6 +3,10 @@
   "_rule": "Add an entry only for a line that is the org working as designed. A line that reports a fault is fixed or filed `ready`; it is never allowlisted to make the offer stop.",
   "allow": [
     {
+      "pattern": "^DEFERRED ",
+      "reason": "wake.mjs's report of an order whose seat is mid-turn (#3029): the queue waiting for a turn to end, which it exists to do. It is written until the seat is idle and carries its own age; past one hour (BUSY_SEAT_DEFERRAL_MS) the order is written as UNDELIVERED with the `nowhere to go` summary instead, and neither of those is allowlisted."
+    },
+    {
       "pattern": "^SHELVED row #N: ",
       "reason": "work the gate can see and is deliberately not offering (a declared blockedBy, Not-before, answer: or a file overlap with an open pull request). The line itself says it clears itself; 972 per day measured on 2026-10-01 and each is a row waiting on a field."
     },
