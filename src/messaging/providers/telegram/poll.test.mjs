@@ -12,13 +12,14 @@
 // Ids are made-up integers, and the token is a made-up string shaped like one.
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { acquireLock, ListenerLockHeld, main, EXIT } from "../../listen.mjs";
+import { acquireLock, ListenerLockHeld, main, processStart, EXIT } from "../../listen.mjs";
 import { createInbound } from "../../inbound.mjs";
 import { createLedger, readLedgerLines } from "../../ledger.mjs";
 import { runProviderConformance } from "../../provider-contract.mjs";
@@ -245,6 +246,20 @@ describe("the 409 and the lock (done-when 2)", () => {
     const next = acquireLock(path, { pid: 8765, exists: () => true, startOf: (pid) => (pid === 4321 ? "999" : "100") });
     assert.match(readFileSync(path, "utf8"), /^8765 /);
     next.release();
+  });
+
+  // EVERY TEST ABOVE INJECTS `startOf`, so none of them read the kernel: the real read was off by one field (23, the virtual size, for 22) and passed all of them.
+  // The oracle is not a second parse of the same line: field 22 counts clock ticks since boot, so for this very process it is a positive number whose
+  // age against /proc/uptime is small, where the virtual size beside it, in bytes, puts the start before the boot and a field before it is zero.
+  test("processStart reads field 22 of the real /proc/<pid>/stat: this process started moments ago, by the kernel's own clock", { skip: !existsSync("/proc/self/stat") }, () => {
+    const start = Number(processStart(process.pid));
+    const ticksPerSecond = Number(execFileSync("getconf", ["CLK_TCK"], { encoding: "utf8" }));
+    const uptimeSeconds = Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]);
+    assert.ok(start > 0, `a start time is a positive count of ticks, not ${start}`);
+    const ageSeconds = uptimeSeconds - start / ticksPerSecond;
+    assert.ok(ageSeconds >= 0 && ageSeconds < 3600, `this test process is minutes old at most, by the clock the kernel keeps; got ${ageSeconds}s (a neighbouring field would not give that)`);
+    assert.equal(processStart(process.pid), processStart(process.pid), "and it is stable for the life of the process");
+    assert.equal(processStart(2 ** 22 + 1), null, "no such process: null, so the pid alone decides");
   });
 
   test("a release by a process that no longer holds the lock does not delete its successor's", () => {

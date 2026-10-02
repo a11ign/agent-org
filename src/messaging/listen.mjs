@@ -36,8 +36,9 @@ const LOCK_FILE = "listener.lock";
 const OFFSET_FILE = "offset.json";
 const LOCK_FILE_MODE = 0o600;
 const STATE_DIRECTORY_MODE = 0o700;
-/** Field 22 of `/proc/<pid>/stat` is the start time; the fields before the command's closing parenthesis are skipped, since a command may hold spaces. */
-const START_TIME_FIELD = 20;
+/** Field 22 of `/proc/<pid>/stat` is the start time. Everything up to the command's closing parenthesis is skipped, since a command may hold spaces, so the
+ * array begins at field 3 (the state) and field 22 is index 22 - 3 = 19. It was 20, which is field 23, the virtual size: a different number that passed every test that injects it. */
+const START_TIME_FIELD = 19;
 
 /** The lock is held by a live listener. `holder` is its pid. */
 export class ListenerLockHeld extends Error {
