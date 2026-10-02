@@ -2810,7 +2810,7 @@ function declaredWaitOf(row, holder) {
  * and only when some row is claimed. `null` (herdr could not be asked) never releases a claim as "gone"; see `goneReading`'s own doc.
  *
  * @param {{ rows: any[], claimedComments: any[] | null, openPrs: any[], mergedPrs: any[] | null,
- *   io?: import("./claim-stall.mjs").HostReads, repo?: string, now?: number, restartAt?: number | null,
+ *   elsewhere?: import("./claim-stall.mjs").ElsewherePrs, io?: import("./claim-stall.mjs").HostReads, repo?: string, now?: number, restartAt?: number | null,
  *   agents?: {label: string, status: string}[] | null,
  *   stateDir?: string, log?: (line: string) => void, ledger?: () => string,
  *   read?: typeof readStallState, write?: typeof writeStallState }} args
@@ -2829,11 +2829,11 @@ export function claimStallTick({ io = { git: gitRun, exists: pathExists, mtime: 
 /**
  * `claimStallTick`'s body, with every default resolved by its caller. NEVER CALLED WITHOUT THE CATCH ABOVE: a throw here is the tick's to report.
  * @param {{ rows: any[], claimedComments: any[] | null, openPrs: any[], mergedPrs: any[] | null, restartAt?: number | null,
- *   agents?: {label: string, status: string}[] | null,
+ *   elsewhere?: import("./claim-stall.mjs").ElsewherePrs, agents?: {label: string, status: string}[] | null,
  *   ledger?: () => string, io: import("./claim-stall.mjs").HostReads, repo: string, now: number, stateDir: string,
  *   log: (line: string) => void, read: typeof readStallState, write: typeof writeStallState }} args
  */
-function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, restartAt, agents, ledger, io, repo, now, stateDir, log, read, write }) {
+function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, elsewhere, restartAt, agents, ledger, io, repo, now, stateDir, log, read, write }) {
   const held = rows.filter((r) => labelsOf(r).includes(CLAIM_LABEL));
   if (held.length > 0 && claimedComments === null) {
     log("claim-stall: the comments on the claimed rows could not be read -- NO claim was evaluated this tick.\n");
@@ -2842,7 +2842,7 @@ function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, restartAt, 
   const statePath = `${stateDir}/${STALL_STATE_FILE}`;
   const before = read(statePath);
   const byRow = new Map((claimedComments ?? []).map((r) => [Number(r?.number), r?.comments ?? []]));
-  const readings = readClaims({ held, byRow, openPrs, mergedPrs, io, repo, now, before, log,
+  const readings = readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now, before, log,
     ledger: ledger ?? (() => ledgerText(`${stateDir}/wake-ledger`)), restart: restartFor(held, restartAt),
     agents: agentsFor(held, agents) });
   const after = nextStallState(before, readings, now);
@@ -2874,11 +2874,11 @@ function agentsFor(held, given) {
 
 /**
  * @param {{ held: any[], byRow: Map<number, any[]>, openPrs: any[], mergedPrs: any[] | null,
- *   io: import("./claim-stall.mjs").HostReads, repo: string, now: number, restart: number | null,
+ *   elsewhere?: import("./claim-stall.mjs").ElsewherePrs, io: import("./claim-stall.mjs").HostReads, repo: string, now: number, restart: number | null,
  *   agents: {label: string, status: string}[] | null,
  *   before: import("./claim-stall.mjs").StallState, log: (line: string) => void, ledger: () => string }} ctx
  */
-function readClaims({ held, byRow, openPrs, mergedPrs, io, repo, now, restart, agents, before, log, ledger }) {
+function readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now, restart, agents, before, log, ledger }) {
   /** @type {{ facts: import("./claim-stall.mjs").ClaimFacts, reading: import("./claim-stall.mjs").Reading }[]} */
   const readings = [];
   for (const row of held) {
@@ -2889,7 +2889,8 @@ function readClaims({ held, byRow, openPrs, mergedPrs, io, repo, now, restart, a
     }
     const session = sessions[0].slice(SESSION_PREFIX.length);
     const facts = claimFactsFrom({ row: row.number, title: row.title, session, waiting: declaredWait(row, session),
-      waitKind: declaredWaitOf(row, session)?.kind ?? null, blockedBy: openBlockers(row), comments: byRow.get(Number(row.number)) ?? [], openPrs: withChecksPending(openPrs), mergedPrs, repo }, io);
+      waitKind: declaredWaitOf(row, session)?.kind ?? null, blockedBy: openBlockers(row), comments: byRow.get(Number(row.number)) ?? [], openPrs: withChecksPending(openPrs), mergedPrs,
+      ...(elsewhere === undefined ? {} : { elsewhere: { ...elsewhere, open: elsewhere.open === null ? null : withChecksPending(elsewhere.open) } }), repo }, io);
     if ("skip" in facts) {
       log(`claim-stall: ${facts.skip} -- not evaluated.\n`);
       continue;
@@ -2946,16 +2947,36 @@ function ledgerText(path) {
  * missing nothing is evaluated and nothing is written. A refused pull-request read coalesced to "none open" would read a holder whose PR is in
  * review as one with no PR at all (nudged, or, with a `blockedBy` edge, released), and a refused row read would empty the nudge memory.
  * @param {any[] | null} rows @param {any[] | null} claimedComments @param {any[] | null} prs
- * @param {{ tick?: typeof claimStallTick, merged?: typeof readMergedPrs, log?: (line: string) => void }} [deps]
+ * @param {{ tick?: typeof claimStallTick, merged?: typeof readMergedPrs, elsewhere?: typeof readElsewherePrs, log?: (line: string) => void }} [deps]
  */
-export function claimStallsNow(rows, claimedComments, prs, { tick = claimStallTick, merged = readMergedPrs,
+export function claimStallsNow(rows, claimedComments, prs, { tick = claimStallTick, merged = readMergedPrs, elsewhere = readElsewherePrs,
   log = (line) => process.stderr.write(line) } = {}) {
   if (rows === null || prs === null) {
     log(`claim-stall: the ${rows === null ? "open rows" : "open pull requests"} could not be read -- NO claim was evaluated this tick.\n`);
     return [];
   }
   const anyClaimed = rows.some((r) => labelsOf(r).includes(CLAIM_LABEL));
-  return tick({ rows, claimedComments, openPrs: prs, mergedPrs: anyClaimed ? merged() : null });
+  return tick({ rows, claimedComments, openPrs: prs, mergedPrs: anyClaimed ? merged() : null, ...(anyClaimed ? { elsewhere: elsewhere() } : {}) });
+}
+
+/**
+ * (#3075) THE OTHER TRACKED CODE REPOSITORIES' OPEN AND MERGED PULL REQUESTS, for `claimFactsFrom`: a claim's work can be in a repository other than the
+ * one holding the row (`a11ign/agent-org`'s #38 for #3039), and a list of this repository's alone reads that holder as one with nothing built. Each lane
+ * is read by the readers the scope enumeration already uses (`readPrs`, `readMergedPrs`), aimed at the repository, and its members are tagged with the key.
+ * `undefined` for a project with one code repository, so its reads are exactly what they were. An OPEN list is `null` when ANY repository's was refused (the
+ * claim is then skipped); a merged one only when EVERY repository's was.
+ * @param {readonly Scope[]} [scopes] @param {(args: string[], repo?: string) => string} [run]
+ * @returns {{ open: any[] | null, merged: any[] | null } | undefined}
+ */
+export function readElsewherePrs(scopes = scopesOf([homeProjectDeclaration()]), run = defaultRun) {
+  const lanes = scopes.filter((scope) => scope.key !== "" && scope.code !== null).map((scope) => {
+    const repo = /** @type {ScopeRepository} */ (scope.code).repo;
+    const aimed = (/** @type {string[]} */ args) => run(args, repo);
+    return { open: tagged(readPrs(aimed), scope.key, repo), merged: tagged(readMergedPrs(aimed), scope.key, repo) };
+  });
+  if (lanes.length === 0) return undefined;
+  return { open: lanes.some((lane) => lane.open === null) ? null : lanes.flatMap((lane) => lane.open ?? []),
+    merged: lanes.every((lane) => lane.merged === null) ? null : lanes.flatMap((lane) => lane.merged ?? []) };
 }
 
 /** @param {string[]} args */

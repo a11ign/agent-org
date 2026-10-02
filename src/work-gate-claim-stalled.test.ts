@@ -15,7 +15,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import assert from "node:assert/strict";
-import { decide, claimStallTick, claimStallsNow, CAUSES, START_CAUSES, JUDGMENT_CAUSES, GH_READS } from "./work-gate.mjs";
+import { decide, claimStallTick, claimStallsNow, readElsewherePrs, CAUSES, START_CAUSES, JUDGMENT_CAUSES, GH_READS } from "./work-gate.mjs";
 import { profileFor } from "./worker-profile.mjs";
 import {
   WAKE_TTL_MS, MAX_DELIVERIES, performRelease, spawnClaimer, spawnedPrompt, deliver, consecutiveClean, drainInForce, isReleaseLine,
@@ -111,6 +111,8 @@ type Agent = { label: string; status: string };
 /** A whole tick over one claimed row, with the nudge memory in a map that survives between calls. */
 function tickWith(world: World, comments: Comment[], { rows = [row(2407)], memory = {} as Record<string, unknown>, prs = [] as object[],
   merged = null as object[] | null, restartAt = null as number | null, now = NOW, blockedBy = [] as number[], ledger = "",
+  // #3075: the OTHER tracked code repository's lists. Absent is a project with ONE code repository, which is every test above this line.
+  elsewhere = undefined as { open: object[] | null; merged: object[] | null } | undefined,
   // `null` by default, same as `restartAt`: the gate is asked about the row's SESSION only when a test gives a listing,
   // never against the real `herdr` on whatever host runs the suite (`agentsFor`'s own doc says why -- CI must not depend on it).
   agents = null as Agent[] | null } = {}) {
@@ -119,7 +121,7 @@ function tickWith(world: World, comments: Comment[], { rows = [row(2407)], memor
   const claimed = rows.map((r) => (r.number === 2407 && blockedBy.length > 0
     ? { ...r, blockedBy: { nodes: blockedBy.map((n) => ({ number: n, state: "OPEN" })) } } : r));
   const orders = claimStallTick({ rows: claimed, claimedComments: claimed.map((r) => ({ number: r.number, comments })), openPrs: prs,
-    mergedPrs: merged, io: h.io, repo: REPO, now, restartAt, agents, stateDir: "/state", ledger: () => ledger,
+    mergedPrs: merged, ...(elsewhere === undefined ? {} : { elsewhere }), io: h.io, repo: REPO, now, restartAt, agents, stateDir: "/state", ledger: () => ledger,
     log: (l: string) => log.push(l), read: () => JSON.parse(JSON.stringify(memory)), write: (_p: string, s: object) => {
       for (const k of Object.keys(memory)) delete memory[k];
       Object.assign(memory, s);
@@ -1661,16 +1663,17 @@ test("#2470 a NUDGE is a plain prompt: it carries `resume`, and a standing seat 
 test("#2470 with the open ROWS or the open PULL REQUESTS unread, NOTHING is evaluated and nothing is written (a refusal is not 'none open')", () => {
   const calls: string[] = [];
   const log: string[] = [];
-  const deps = { tick: (() => { calls.push("tick"); return []; }) as never, merged: (() => { calls.push("merged"); return null; }) as never, log: (l: string) => log.push(l) };
+  const deps = { tick: (() => { calls.push("tick"); return []; }) as never, merged: (() => { calls.push("merged"); return null; }) as never,
+    elsewhere: (() => { calls.push("elsewhere"); return undefined; }) as never, log: (l: string) => log.push(l) };
   assert.deepEqual(claimStallsNow(null, [], [], deps), []);
   assert.deepEqual(claimStallsNow([row(2407)], [], null, deps), []);
   assert.deepEqual(calls, [], "neither the tick nor the merged-PR read ran");
   assert.match(log.join(""), /open rows could not be read.*open pull requests could not be read/s);
   claimStallsNow([row(2407)], [], [], deps);
-  assert.deepEqual(calls, ["merged", "tick"], "CONTROL: with both read, a claimed row asks for the merged list and runs the tick");
+  assert.deepEqual(calls, ["merged", "elsewhere", "tick"], "CONTROL: with both read, a claimed row asks for the merged list and the other repository's, and runs the tick");
   calls.length = 0;
   claimStallsNow([{ number: 1, labels: [] }], [], [], deps);
-  assert.deepEqual(calls, ["tick"], "and a tick with nothing claimed does not pay for the merged-PR read");
+  assert.deepEqual(calls, ["tick"], "and a tick with nothing claimed pays for neither the merged-PR read nor the other repository's");
 });
 
 test("#2470 an EXPECTED hold (a blocked holder with work) is not said every tick; a read that could not be made is", () => {
@@ -1812,4 +1815,70 @@ test("#2864 the wake ENTRY prunes a gone tree's kept record on a QUIET tick -- e
     const again = tick();
     assert.deepEqual([again.status, again.stdout], [0, ""]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// --- #3075: a claim whose pull request is open in ANOTHER tracked repository is not one that holds nothing built -----------------------------------
+
+/** `a11ign/agent-org`'s #38 for #3039: the row is in one repository, the work and its pull request in the other. */
+const ELSEWHERE_PR = { number: 38, headRefName: BRANCH, repoKey: "agent-org", repo: "a11ign/agent-org", reviewDecision: "APPROVED" };
+const CLEAN = { commit: null, refExists: false, worktreeExists: false } as const;
+
+test("#3075 (8) an OPEN edge and an empty home list do NOT release a claim whose branch has an open PR in the OTHER repository: it reads `pr-owned`", () => {
+  const held = tickWith(CLEAN, [claim(20)], { blockedBy: [2258], elsewhere: { open: [ELSEWHERE_PR], merged: [] } });
+  assert.deepEqual(held.orders, []);
+  const facts = claimFactsFrom({ row: 2407, session: "worker-7", waiting: null, blockedBy: [2258], comments: [claim(20)], openPrs: [], mergedPrs: [],
+    elsewhere: { open: [ELSEWHERE_PR], merged: [] }, repo: REPO }, host(CLEAN).io) as Facts;
+  assert.equal(readClaim(facts, { now: NOW, restartAt: null, nudge: null }).kind, "pr-owned");
+  assert.deepEqual(facts.ownPrs, [ELSEWHERE_PR], "the idle-claimant overlay is handed the pull request too, whichever repository it is in");
+});
+
+test("#3075 (8) POSITIVE CONTROLS: no PR in either repository IS still released; a PR in THIS repository is unchanged; another row's PR over there is nobody's", () => {
+  const none = tickWith(CLEAN, [claim(20)], { blockedBy: [2258], elsewhere: { open: [], merged: [] } });
+  assert.equal(none.orders[0].release!.why, "blocked", "the rule keeps firing for its real subject");
+  assert.deepEqual(none.orders[0].release!.edges, [2258]);
+  const home = { number: 9, headRefName: BRANCH };
+  assert.deepEqual(tickWith(CLEAN, [claim(20)], { blockedBy: [2258], prs: [home], elsewhere: { open: [], merged: [] } }).orders, [], "home PR, other repo empty");
+  assert.deepEqual(tickWith(CLEAN, [claim(20)], { blockedBy: [2258], prs: [home] }).orders, [], "home PR, a project with one code repository: exactly as before");
+  const other = { ...ELSEWHERE_PR, headRefName: "agent/some-other-row-2500" };
+  assert.equal(tickWith(CLEAN, [claim(20)], { blockedBy: [2258], elsewhere: { open: [other], merged: [] } }).orders[0].release!.why, "blocked");
+  assert.equal(tickWith(CLEAN, [claim(20)], { blockedBy: [2258] }).orders[0].release!.why, "blocked", "no `elsewhere` at all: the single-repository project");
+});
+
+test("#3075 an OTHER repository whose open list could not be read SKIPS the claim with a reason, and never releases it", () => {
+  const unread = tickWith(CLEAN, [claim(20)], { blockedBy: [2258], elsewhere: { open: null, merged: [] } });
+  assert.deepEqual(unread.orders, []);
+  assert.match(unread.log.join(""), /#2407: the other tracked repository's open pull requests could not be read.* -- not evaluated\./);
+  assert.equal(tickWith(CLEAN, [claim(20)], { blockedBy: [2258], elsewhere: { open: [], merged: [] } }).orders.length, 1,
+    "CONTROL: the same claim with the list read as empty IS released, so the skip is the unread list's and nothing else's");
+  const stalled = tickWith({ commit: 40, push: 40 }, [claim(600)], { elsewhere: { open: null, merged: null } });
+  assert.deepEqual(stalled.orders, [], "and a quiet claim is not nudged on a list it could not read either");
+});
+
+test("#3075 (10) a PR MERGED in the other repository releases like a home one, and an unread merged list there costs a release, never causes one", () => {
+  const merged = [{ number: 38, headRefName: BRANCH, mergedAt: iso(ago(30)), repoKey: "agent-org", repo: "a11ign/agent-org" }];
+  const { orders } = tickWith({ commit: 40, push: 40 }, [claim(600)], { merged: [], elsewhere: { open: [], merged } });
+  assert.equal(orders[0].release!.why, "merged");
+  assert.equal(orders[0].release!.mergedPr, 38);
+  assert.equal(tickWith({ commit: 40, push: 40 }, [claim(600)], { merged: [], elsewhere: { open: [ELSEWHERE_PR], merged } }).orders.length, 0,
+    "CONTROL: with a second open PR for the row over there it is not released, as for a home one");
+  assert.equal(tickWith({ commit: 40, push: 40 }, [claim(600)], { merged: [], elsewhere: { open: [], merged: null } }).orders.length, 0, "unread: no release");
+  const homeMerged = [{ number: 2497, headRefName: BRANCH, mergedAt: iso(ago(30)) }];
+  assert.equal(tickWith({ commit: 40, push: 40 }, [claim(600)], { merged: homeMerged, elsewhere: { open: [], merged: null } }).orders[0].release!.mergedPr, 2497,
+    "and the home list that WAS read still counts when the other one was not");
+});
+
+test("#3075 the gate reads the other repositories ONCE, by the scope enumeration's own readers, tagged with the key, and `null` when one was refused", () => {
+  const scopes = [{ key: "", code: { repo: "a11ign/a11ign" }, tracker: { repo: "a11ign/a11ign" } }, { key: "agent-org", code: { repo: "a11ign/agent-org" }, tracker: null }];
+  const asked: (string | undefined)[] = [];
+  const run = (args: string[], repo?: string) => {
+    asked.push(repo);
+    return args.includes("merged") ? JSON.stringify([{ number: 7, headRefName: "agent/x-1", mergedAt: iso(NOW) }]) : JSON.stringify([{ number: 38, headRefName: BRANCH }]);
+  };
+  const read = readElsewherePrs(scopes, run as never)!;
+  assert.deepEqual(asked, ["a11ign/agent-org", "a11ign/agent-org"], "only the OTHER repository is asked, once per list");
+  assert.deepEqual(read.open, [{ number: 38, headRefName: BRANCH, repoKey: "agent-org", repo: "a11ign/agent-org" }]);
+  assert.equal(read.merged![0].repoKey, "agent-org");
+  assert.equal(readElsewherePrs([scopes[0]], run as never), undefined, "CONTROL: a project with one code repository has no `elsewhere`, and asks nothing");
+  const refused = readElsewherePrs(scopes, (() => { throw new Error("HTTP 403"); }) as never)!;
+  assert.deepEqual([refused.open, refused.merged], [null, null], "a refusal is `null`, never `[]`");
 });
