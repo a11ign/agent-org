@@ -2362,7 +2362,7 @@ test("#2035 warning 3: it ASKS `classifyCommand` -- a stubbed decider moves the 
 test("#2035: the three reach the author through createIssue, and the row is still FILED", () => {
   // An exported function nobody calls is not surfaced (#1085): drive the real caller and read stderr.
   const trips = acceptanceBody(CORPUS_ENTRY,
-    `\`\`\`\nnpx tsx --test packages/lab/src/packaging/row-file.test.ts\n\`\`\`\nThe command above passes, 153 tests, 0 failed.`);
+    `\`\`\`\nnpx tsx --test packages/agent-org/src/packaging/row-file.test.ts\n\`\`\`\nThe command above passes, 153 tests, 0 failed.`);
   assert.equal(fileRefusalReason(trips), null, "a fixture that is refused proves nothing about warnings");
   let stderr = "";
   const original = process.stderr.write;
