@@ -1252,14 +1252,22 @@ test("#621 local-import-closure.mjs's own JSDoc example is not read as a real im
 });
 
 test("#621 anyCommandUsesHistory (via acceptanceReport): a closure-derived history need is recognised as "
-  + "\"used\" even with no `// requires:` header -- pre-push-stale-base.test.ts needs history (its own "
-  + "REAL ARTEFACT test asks the shallow-checkout question) but declares no header; `History: full` "
-  + "naming it must not warn as unused", () => {
-  const body = "Closes #1\nAcceptance: npx tsx --test "
-    + "packages/lab/src/packaging/pre-push-stale-base.test.ts\nHistory: full\n";
-  const report = acceptanceReport(body, () => 0);
-  assert.ok(!report.lines.some((l) => /WARNING/.test(l)),
-    `expected no unused-History warning; got: ${report.lines.join(" | ")}`);
+  + "\"used\" even with no `// requires:` header -- a test that asks the shallow-checkout question (the idiom "
+  + "pre-push-resolve-toward-main.test.ts uses) but declares no header; `History: full` naming it must not warn "
+  + "as unused", () => {
+  // BUILT BY THE TEST, not borrowed from the tree (#3070): this named `pre-push-stale-base.test.ts`, which #3046
+  // rewrote to stop asking the shallow question, so the fixture stayed on disk and the test went red the day the
+  // project moved. A tree file is a reader that happens to ask today; the classifier's behaviour is the subject.
+  const dir = mkdtempSync(join(tmpdir(), "acceptance-history-"));
+  try {
+    const entry = join(dir, "asks-history.test.mjs");
+    writeFileSync(entry, `export const q = ["rev-parse", "${spell("--is-shallow-repo", "sitory")}"];\n`);
+    const report = acceptanceReport(`Closes #1\nAcceptance: npx tsx --test ${entry}\nHistory: full\n`, () => 0);
+    assert.ok(!report.lines.some((l) => /WARNING/.test(l)),
+      `expected no unused-History warning; got: ${report.lines.join(" | ")}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // --- #731: `runsRoot` (the corpus-location resolver) means TWO things -- reading evidence, and choosing a
