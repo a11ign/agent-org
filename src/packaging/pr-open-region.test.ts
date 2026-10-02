@@ -264,3 +264,50 @@ test("#2417 WIRING: the shipped entry hands `main` the real row reader, and `mai
   const check = PR_OPEN_SOURCE.indexOf("checkBody(body", start);
   assert.ok(region > 0 && check > region, "the region step precedes checkBody inside main()");
 });
+
+// --- #3083: a row that STATES its repository is read in that repository's tree -------------------------------------
+
+/** The row #3078 and #3083 were filed as: the Region spelled bare, and a sentence saying whose root the paths are relative to. */
+const AGENT_ORG_ROW_PATHS = ["src/pr-open.mjs", "src/packaging/pr-open-region.test.ts"];
+const agentOrgRow = (stated: string) => `The repository is **\`${stated}\`**; paths are relative to its root.\n\n${regionBody(AGENT_ORG_ROW_PATHS)}`;
+const CLOSES_3083 = prBody("Closes a11ign/a11ign#3083");
+const inAgentOrg = (body: string) => ["create", "--draft", "--repo", "a11ign/agent-org", "--body", body];
+
+test("#3083 done-when 1: a PR opened in agent-org whose diff is exactly the paths the row names reads them all INSIDE, with no Outside-Region line", () => {
+  const r = drive(inAgentOrg(CLOSES_3083), { rows: { 3083: agentOrgRow("a11ign/agent-org") }, changed: AGENT_ORG_ROW_PATHS });
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /REGION: 2 changed path\(s\) .*2 inside, 0 exempt, 0 cleared by an Outside-Region line\./);
+});
+
+test("#3083 done-when 1: a path the row does NOT name is still refused, and it is the only one", () => {
+  const r = drive(inAgentOrg(CLOSES_3083), { rows: { 3083: agentOrgRow("a11ign/agent-org") }, changed: [...AGENT_ORG_ROW_PATHS, "src/wake.mjs"] });
+  assert.equal(r.code, EXIT_NOTHING_SENT);
+  assert.match(r.err, /^ {2}src\/wake\.mjs$/m);
+  assert.doesNotMatch(r.err, /^ {2}src\/pr-open\.mjs$/m, "a path the row names is not listed as an offender");
+  assert.match(r.err, /1 path\(s\) changed outside/);
+});
+
+test("#3083 done-when 1: the sentence is read for the repository the PR is opened in -- a row stating ANOTHER repository does not widen this tree", () => {
+  const r = drive(inAgentOrg(CLOSES_3083), { rows: { 3083: agentOrgRow("a11ign/a11ign") }, changed: AGENT_ORG_ROW_PATHS });
+  assert.equal(r.code, EXIT_NOTHING_SENT, "bare paths of a row that states the first repository are that repository's, as before");
+  assert.match(r.err, /2 path\(s\) changed outside/);
+});
+
+test("#3083 done-when 1: a row stating agent-org, opened WITHOUT --repo (the home tree), reads exactly as it did before", () => {
+  const r = drive(create(CLOSES_3083), { rows: { 3083: agentOrgRow("a11ign/agent-org") }, changed: AGENT_ORG_ROW_PATHS });
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /2 inside, 0 exempt, 0 cleared/, "a bare entry is the first repository's tree here, as #2617 pinned");
+});
+
+test("#3083 done-when 1: a row of the home repository is read byte for byte as before, with or without the sentence", () => {
+  const plain = drive(create(prBody("Closes #2417")), { rows: ROW, changed: IN_REGION });
+  const stating = drive(create(prBody("Closes #2417")), { rows: { 2417: `The repository is **\`a11ign/a11ign\`**.\n\n${ROW[2417]}` }, changed: IN_REGION });
+  assert.equal(plain.code, 0, plain.err);
+  assert.equal(stating.out, plain.out);
+  assert.deepEqual(stating.sent, plain.sent);
+});
+
+test("#3083 WIRING: the sentence is read by the one `statedRepository` in row-file.mjs, never a second copy of its pattern in pr-open", () => {
+  assert.match(PR_OPEN_SOURCE, /statedRepository/);
+  assert.doesNotMatch(PR_OPEN_SOURCE, /repository is\\s/i, "no second reading of the sentence");
+});
