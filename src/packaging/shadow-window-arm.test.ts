@@ -38,7 +38,7 @@ const T0 = Date.parse("2026-10-02T12:00:00Z");
 const TIMER = "a11ign-shadow-window.timer";
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 /** The digest of the work-tick unit the host runs today, restated from `host-tool-install.test.ts` so this file's claim is checkable alone. */
-const TODAYS_WORK_TICK_SHA = "9704e2c1c8371234816275a81cf32cbe591dbb679543b50765a4adc581110a35"; // #2974: the pnpm line; the plain rendering, see `plainHost`
+const TODAYS_WORK_TICK_SHA = "1c388b269625507de8067d4620f3bd5a92dd7f94ea06a21516b18061352aa7dd"; // #2974: the pnpm line; the plain rendering, see `plainHost`
 /** a11ign's host with no `tool`, so the digest above is of the template whether or not the cut has set the key. */
 const plainHost = (() => {
   const plain: Record<string, unknown> = { ...homeHostConfig() };

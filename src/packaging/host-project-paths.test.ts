@@ -92,8 +92,8 @@ test("#2620: the constants `wake.mjs` still spells out (rows 3b and 3c) equal wh
 // rendering that differs by one byte reports every installed unit STALE, so this is the guard on "a11ign's values are unchanged".
 const TODAYS_TEXT = {
   // #2781 MOVED THIS ONE, deliberately: the unit gained a comment saying the `-` on `primary:update` is covered by the gate reading the primary.
-  // #2974 MOVED THIS ONE, deliberately: the cut-over moved its `primary:update` line from `/usr/bin/npm` to the pnpm shim (`units-run-pnpm.test.ts`).
-  "a11ign-work-tick.service": "9704e2c1c8371234816275a81cf32cbe591dbb679543b50765a4adc581110a35",
+  // #2974 MOVED THIS ONE, deliberately: the cut-over moved its `primary:update` line from `/usr/bin/npm` to the pnpm shim and its header comment off the monorepo path (`units-run-pnpm.test.ts`).
+  "a11ign-work-tick.service": "1c388b269625507de8067d4620f3bd5a92dd7f94ea06a21516b18061352aa7dd",
   "a11ign-work-tick.timer": "c47470e624dc884515212badc11c82890fa864b7181175a2ab3570fe182e72ec",
   // #2782 MOVED THIS ONE, deliberately: the prune unit now declares `GH_CONFIG_DIR` (it reads a row's claim before removing a tree). The
   // installed copy reads STALE until `host:install` runs, which is a host action and not this row's.
