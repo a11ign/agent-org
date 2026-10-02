@@ -15,9 +15,10 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
-const ROLE_DOC = fileURLToPath(new URL("../../../../.agent-org/roles/reviewer.md", import.meta.url));
-const KNOWN_GAPS = fileURLToPath(new URL("../../../../docs/known-gaps.md", import.meta.url));
+const ROLE_DOC = join(HOME_CHECKOUT, ".agent-org/roles/reviewer.md");
+const KNOWN_GAPS = join(HOME_CHECKOUT, "docs/known-gaps.md");
 
 /** Split a shell line into words, dropping quotes; enough for the `ln` lines a recipe carries. */
 function words(line: string): string[] {

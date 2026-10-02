@@ -22,14 +22,15 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, mkdtempSync, mkdirSync, copyFileSync, realpathSync,
+import { readFileSync, readdirSync, mkdtempSync, realpathSync,
   existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { join, relative, dirname } from "node:path";
+import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { shippedUnits } from "../host-units.mjs";
-import { localImports } from "../lib/local-import-closure.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
+import { copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";
 import { deriveClosureRequirements } from "../acceptance-commands.mjs";
 import { patchIdOfDiff } from "../review-verdict.mjs";
 import { MAX_ROW_ORDERS_PER_TICK, readCommitShas, readPatchId, withPatchIds, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES,
@@ -873,7 +874,7 @@ test("#2493 blockersFromRows answers from the open rows already read, and `null`
 
 /** #2493 done-when 5: the ready audit's line lives in the role brief, pinned so deleting it is red. */
 test("#2493: product-manager's brief says `SOLE HOLDER IS A HELD PR`, and what to read next, in ONE bullet", () => {
-  const brief = readFileSync(new URL("../../../../.agent-org/roles/product-manager.md", import.meta.url), "utf8");
+  const brief = readFileSync(join(HOME_CHECKOUT, ".agent-org/roles/product-manager.md"), "utf8");
   // THE BULLET, SLICED: a whole-file `includes` is satisfied by any second copy of the phrase elsewhere.
   const start = brief.indexOf("- **A ready audit that names a B4 holder");
   assert.ok(start >= 0, "the bullet is gone");
@@ -1402,7 +1403,7 @@ test("a rowOwner-routed PR under any hold generates no order; a third red job or
 });
 
 test("HOLD_RED_JOBS names the jobs ci.yml defines, so the exemption cannot go stale on a rename", () => {
-  const ci = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../../../.github/workflows/ci.yml"), "utf8");
+  const ci = readFileSync(join(HOME_CHECKOUT, ".github/workflows/ci.yml"), "utf8");
   assert.deepEqual([...HOLD_RED_JOBS], ["deliberateRefusals", "gate"]);
   for (const job of HOLD_RED_JOBS) assert.match(ci, new RegExp(`\\n {2}${job}:\\n`), `${job} is a job in ci.yml`);
 });
@@ -4577,23 +4578,12 @@ test("#2174: decide() routes it, and only when it is handed drift", () => {
  */
 test("#2174: the gate does NOT import host-units.mjs -- the spawn is the fence, not a preference", () => {
   const SRC = fileURLToPath(new URL("../", import.meta.url));
-  const closure = (entry: string): Set<string> => {
-    const seen = new Set<string>();
-    const stack = [entry];
-    while (stack.length) {
-      const file = stack.pop() as string;
-      if (seen.has(file)) continue;
-      seen.add(file);
-      for (const next of localImports(file)) stack.push(next);
-    }
-    return seen;
-  };
-  assert.ok(!closure(join(SRC, "work-gate.mjs")).has(join(SRC, "host-units.mjs")),
+  assert.ok(!importClosure(join(SRC, "work-gate.mjs")).has(join(SRC, "host-units.mjs")),
     "importing it drags `git log --all` into the gate's capability closure and taxes 24 unrelated test "
     + "files with `History: full`; the gate runs `host-units.mjs --json` as a child process instead");
   // THE CONTROL: the walker really can see this edge when it exists, so the assertion above is a fact
   // about the gate rather than about a walker that finds nothing.
-  assert.ok(closure(join(SRC, "host-units.mjs")).has(join(SRC, "acceptance-commands.mjs")),
+  assert.ok(importClosure(join(SRC, "host-units.mjs")).has(join(SRC, "acceptance-commands.mjs")),
     "the same walker DOES find host-units.mjs's own edges");
 });
 
@@ -4648,40 +4638,21 @@ test("#2174: the history-requirement population is unchanged by this row", () =>
  * chain, mirroring `pre-commit-hook.test.ts`'s own technique for the identical bind.
  */
 test("#2174: work-gate.mjs loads in a tree with NO node_modules, host-units edge included", () => {
-  const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
-  const entry = join(REPO, "packages/agent-org/src/work-gate.mjs");
-  const closure = new Set<string>();
-  const stack = [entry];
-  while (stack.length) {
-    const file = stack.pop() as string;
-    if (closure.has(file)) continue;
-    closure.add(file);
-    for (const next of localImports(file)) stack.push(next);
-  }
+  const entry = toolFile("src/work-gate.mjs");
+  const closure = importClosure(entry);
   // THE CONTROL IS THE GATE ITSELF, not the host-units edge -- there is deliberately no such edge (see
   // the capability test above). What must hold is that the closure copied here is really the gate's:
   // an empty or truncated one would make the import below pass by having nothing to resolve.
-  assert.ok(closure.size > 10 && closure.has(join(REPO, "packages/agent-org/src/waiting-condition.mjs")),
+  assert.ok(closure.size > 10 && closure.has(toolFile("src/waiting-condition.mjs")),
     `the control: the closure must really be the gate's, got ${closure.size} file(s)`);
   const root = realpathSync(mkdtempSync(join(tmpdir(), "a11y-work-gate-no-modules-")));
-  // #2616: the tool now reads the project's declaration from beside it, so a copied tree must carry it or the reader REFUSES (correctly).
-  closure.add(join(REPO, ".agent-org/project.json"));
-  // #2799: and the host's, because the drain marker, the reviewer state and the ledger default now read its `stateDir` at import.
-  closure.add(join(REPO, ".agent-org/host.json"));
-  // #2621: the declaration now points at a PLUGIN (`.agent-org/plugins/causes.mjs`) that `cause-declaration.mjs`
-  // imports DYNAMICALLY, by a string `localImports`'s static walk cannot see -- so it is added here for the
-  // identical reason `project.json` is a line above.
-  closure.add(join(REPO, ".agent-org/plugins/causes.mjs"));
-  for (const file of closure) {
-    const target = join(root, relative(REPO, file));
-    mkdirSync(dirname(target), { recursive: true });
-    copyFileSync(file, target);
-  }
+  // The project's declaration, its cause plugin and the host file the copy is told to use come with it (`copied-tool-fixture.ts`).
+  const copy = copyToolAndProject(entry, closure, root);
   assert.ok(!existsSync(join(root, "node_modules")), "the tree really has none -- the premise");
   const run = spawnSync(process.execPath, ["--input-type=module", "-e",
-    `import(${JSON.stringify(pathToFileURL(join(root, "packages/agent-org/src/work-gate.mjs")).href)})`
+    `import(${JSON.stringify(pathToFileURL(copy.entry).href)})`
     + ".then(m => { if (!m.CAUSES.includes('host-units-stale')) throw new Error('cause missing'); })"],
-  { encoding: "utf8", cwd: root });
+  { encoding: "utf8", cwd: root, env: { ...process.env, ...copy.env } });
   assert.equal(run.status, 0,
     `the gate must load with no node_modules anywhere above it: ${run.stderr}`);
 });
