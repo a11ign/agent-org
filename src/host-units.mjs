@@ -82,6 +82,8 @@ export const TOOL_ENTRIES = Object.freeze([
   "shadow-window.service.in", "shadow-window.timer.in",
   // #2901: the chairman-messaging watcher's pair, OPTIONAL (`OPTIONAL_UNITS`): classified here so it is never "unclassified", listed and installed only when asked for.
   "chairman-watch.service.in", "chairman-watch.timer.in",
+  // #2907: the listener's service, the watcher's long-running half. Optional on the same key; it has no timer, because it is never started by a clock.
+  "chairman-listen.service.in",
 ]);
 
 /**
@@ -92,6 +94,7 @@ export const TOOL_ENTRIES = Object.freeze([
  */
 export const OPTIONAL_UNITS = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
   "chairman-watch.service.in": "messaging", "chairman-watch.timer.in": "messaging",
+  "chairman-listen.service.in": "messaging",
 }));
 
 /**

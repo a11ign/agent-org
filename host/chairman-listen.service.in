@@ -1,0 +1,45 @@
+[Unit]
+# THE CHAIRMAN-MESSAGING LISTENER -- a11ign/a11ign#2907, row 8 of 13 (design: #2899, docs/messaging.md decision 1, "Long polling"). The long-running
+# half of the pair: `chairman-watch` TELLS the chairman on a clock, this one HEARS them, and the two share a ledger and nothing else.
+#
+# **OPTIONAL, AND OFF BY DEFAULT**, on the same switch as `chairman-watch`: installed ONLY when `.agent-org/project.json` carries a `messaging` key.
+# Deleting the key is how the chairman turns this off too.
+#
+# **NO INBOUND PORT.** The listener asks Telegram for updates (`getUpdates`, a long poll) and Telegram never calls it, so this unit has no `ListenStream`,
+# no `Port`, no socket and opens nothing. A second poller is refused twice over: by the lock file in the state directory and by Telegram's own 409.
+Description=a11ign: hear what the chairman says to the bot, and hand it to the inbound core (chairman messaging, #2899)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@@checkout@@
+
+# SAME REASON EVERY OTHER SHIPPED SERVICE DECLARES THEM: a systemd unit gets no login shell's PATH and no HOME.
+Environment=PATH=@@binDir@@:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=@@home@@
+
+# V8'S COMPILE CACHE GOES UNDER THE HOME, NOT /tmp -- #2458; `host-units.test.ts` pins it on every shipped service.
+Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache
+
+# THE WORKERS ACCOUNT, AND NEVER THE PERSON'S (#1974, #1950): the answers rows 9 and 10 write go to GitHub, and a unit with no `HERDR_WORKSPACE_ID`
+# falls back to a person's stored credentials unless it says otherwise.
+Environment=GH_CONFIG_DIR=@@workersDir@@/gh
+
+# **NO SECRET APPEARS IN THIS FILE, AND NONE IS PASSED IN THE ENVIRONMENT.** The bot token and the chairman's ids are read by REFERENCE from the files
+# `messaging.tokenFile` and `messaging.chairmanFile` name (mode 0600, under ~/.config/agent-org/); a unit file is world readable and `systemctl show`
+# prints an `Environment=` line. There is deliberately no `EnvironmentFile=` either: the program opens the file itself and checks its mode first.
+ExecStart=%h/.local/bin/pnpm run messaging:listen
+
+# RESTART WHAT FAILED, NOT WHAT REFUSED. Exit 1 is a failure while running and is restarted after the pause; exit 2 is a refusal (config, a secret, no
+# chairman paired yet, the lock held, a 409 from Telegram) and does not mend itself, and restarting a 409 makes this the second poller in a fight.
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=2
+
+# A LONG POLL IS HELD OPEN FOR ABOUT 50 SECONDS, so a stop is answered by the program's own abort (SIGTERM ends the poll at once), and this is only the
+# bound for one that does not.
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target
