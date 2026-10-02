@@ -421,9 +421,16 @@ function mainHarness({ script, stopAfter = 1, updates = [], paired = true, withK
   /** @type {string[]} */
   const outputs = [];
   const state = join(home, ".local", "state", "agent-org", "messaging");
+  // Recorders, never the real consumers: those queue to `ceo` through the HOST's queue file (`stateEntryPath`), which no `home` here redirects.
+  /** @type {Record<string, any>[]} */
+  const forwarded = [];
+  const consumers = {
+    converse: { forward: async (/** @type {Record<string, any>} */ accepted) => { forwarded.push(accepted); } },
+    answers: { answer: async (/** @type {Record<string, any>} */ accepted) => { forwarded.push(accepted); return {}; } },
+  };
   return {
-    home, state, telegram, errors, outputs,
-    run: () => main({ root, home, fetch: telegram.fetch, signal: telegram.signal, sleep: async () => {}, out: (line) => outputs.push(line), err: (line) => errors.push(line) }),
+    home, state, telegram, errors, outputs, forwarded,
+    run: () => main({ root, home, fetch: telegram.fetch, signal: telegram.signal, consumers, sleep: async () => {}, out: (line) => outputs.push(line), err: (line) => errors.push(line) }),
   };
 }
 
@@ -434,7 +441,7 @@ describe("main", () => {
     assert.deepEqual(JSON.parse(readFileSync(join(harness.state, "offset.json"), "utf8")), { offset: 72 });
     assert.deepEqual(readLedgerLines(join(harness.state, "ledger.jsonl")).map((line) => line.updateId), [70, 71]);
     assert.ok(!existsSync(join(harness.state, "listener.lock")), "the lock was released");
-    assert.match(harness.errors.join("\n"), /update 70 \(message\) was accepted and has no consumer yet/, "an accepted message with no consumer is said, never dropped silently");
+    assert.deepEqual(harness.forwarded.map((accepted) => [accepted.updateId, accepted.kind]), [[70, "message"], [71, "message"]], "each accepted message reached a consumer, never dropped silently");
   });
 
   test("with the `messaging` key absent it is silent, exits 0, and constructs nothing", async () => {
