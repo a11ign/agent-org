@@ -413,13 +413,17 @@ const SHELL_BLOCK_KEYWORDS = new Set(["for", "while", "until", "if", "case", "se
   "do", "then", "else", "elif", "fi", "done", "esac", "{", "}"]);
 
 /**
- * The first token of a command that could plausibly BE the command -- skipping any leading `VAR=value`
- * assignments (#446). `undefined` for an empty or whitespace-only line.
+ * The first token of a command that could plausibly BE the command -- skipping a leading `cd <dir> &&` (#3058)
+ * and any leading `VAR=value` assignments (#446). `undefined` for an empty or whitespace-only line.
+ *
+ * `cd` IS NOT THE COMMAND: its exit code proves nothing and the command after the `&&` is what runs, so that
+ * is the token whose executable, refusal or prose reading the line gets. `UNVERIFIABLE_BUILTINS` is the
+ * opposite case -- `echo` IS the command and says nothing -- which is why `cd` is skipped, not listed there.
  * @param {string} command
  * @returns {string | undefined}
  */
 function firstRealToken(command) {
-  const tokens = command.trim().split(/\s+/).filter(Boolean);
+  const tokens = stripLeadingCd(command).trim().split(/\s+/).filter(Boolean);
   return tokens.find((token) => !ENV_ASSIGNMENT.test(token));
 }
 

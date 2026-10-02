@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { reviewVerdict } from "../review-verdict.mjs";
+import { reviewVerdict, verdictAtHead, verdictAmong } from "../review-verdict.mjs";
 
 test("#1245: all five spellings, in one test, positives and negatives together", () => {
   const cases: [string, string][] = [
@@ -157,4 +157,85 @@ test("#1324: the FIRST `, by <name>:` is the author when the opener line quotes 
   assert.deepEqual(reviewVerdict(line),
     { verdict: "convinced", word: "CONVINCED", head: "55c92b7f", author: "worker-capture" },
     "the second `, by <name>:` belongs to the verdict this one supersedes");
+});
+
+// --- #3030: A VERDICT LIVES IN A REVIEW BODY AS WELL AS A COMMENT -------------------------------------
+//
+// The door posts the whole verdict as the review and no comment. `verdictAmong` used to read `pr.comments` alone, so a
+// PR carrying its verdict in the review read as ABSENT and the gate re-summoned a reviewer who had answered.
+
+const HEAD_3020 = "96f6958d0000000000000000000000000000abcd";
+const BODY_3020 = "**Review of #3020 at `96f6958d`, by reviewer-3020: convinced.**\n\nAcceptance: pnpm test — 12/0\n";
+const review = (state: string, submittedAt: string, body: string) => ({ id: `R-${submittedAt}`, state, submittedAt, body });
+const comment = (createdAt: string, body: string) => ({ id: `C-${createdAt}`, createdAt, body });
+const PR_AUTHOR = { login: "worker-1" };
+
+test("#3030 POSITIVE CONTROL: #3020's real shape -- an APPROVED review with the whole body and NO comment -- "
+  + "reads convinced now and ABSENT under the old comments-only reader", () => {
+  const pr = { author: PR_AUTHOR, comments: [], reviews: [review("APPROVED", "2026-10-02T14:05:49Z", BODY_3020)] };
+  const found = verdictAmong(pr, [HEAD_3020]);
+  assert.equal(found.verdict, "convinced");
+  assert.equal(found.by, "reviewer-3020");
+  // The old reader: the same call over `comments` only. If this were not null the case above would prove nothing
+  // about the new branch, which could then pass by never being reached.
+  assert.equal(verdictAtHead({ comments: pr.comments, head: HEAD_3020 }).verdict, null,
+    "the comments-only reader must see nothing here, or the review branch is not what answered");
+});
+
+test("#3030: a verdict in the review, the comment, or BOTH is ONE verdict at that head", () => {
+  const r = review("APPROVED", "2026-10-02T14:05:49Z", BODY_3020);
+  const c = comment("2026-10-02T14:06:28Z", BODY_3020);
+  for (const [name, pr] of [
+    ["review only", { author: PR_AUTHOR, comments: [], reviews: [r] }],
+    ["comment only", { author: PR_AUTHOR, comments: [c], reviews: [] }],
+    ["both", { author: PR_AUTHOR, comments: [c], reviews: [r] }],
+  ] as const) {
+    const found = verdictAmong(pr, [HEAD_3020]);
+    assert.equal(found.verdict, "convinced", name);
+    assert.equal(found.examined, pr.comments.length + pr.reviews.length, `${name}: examined counts what was read`);
+  }
+  assert.equal(verdictAmong({ author: PR_AUTHOR, comments: [c], reviews: [r] }, [HEAD_3020]).id, c.id,
+    "both present: the newest is the one reported, once");
+});
+
+test("#3030: newest at the head wins ACROSS review bodies and comments, in both directions", () => {
+  const no = "**Review of #9 at `aaaaaaaa`, by reviewer-9: not convinced — the blocker.**";
+  const yes = "**Review of #9 at `aaaaaaaa`, by reviewer-9: convinced.**";
+  const head = "aaaaaaaa0000000000000000000000000000abcd";
+  const cases: [string, { reviews?: unknown[]; comments?: unknown[] }, string][] = [
+    ["not convinced review, then convinced review", { reviews: [
+      review("CHANGES_REQUESTED", "2026-10-02T10:00:00Z", no), review("APPROVED", "2026-10-02T11:00:00Z", yes)] }, "convinced"],
+    ["convinced review, then not convinced review", { reviews: [
+      review("APPROVED", "2026-10-02T10:00:00Z", yes), review("CHANGES_REQUESTED", "2026-10-02T11:00:00Z", no)] }, "not-convinced"],
+    ["not convinced review, then convinced COMMENT", { reviews: [review("CHANGES_REQUESTED", "2026-10-02T10:00:00Z", no)],
+      comments: [comment("2026-10-02T11:00:00Z", yes)] }, "convinced"],
+    ["convinced COMMENT, then not convinced review", { comments: [comment("2026-10-02T10:00:00Z", yes)],
+      reviews: [review("CHANGES_REQUESTED", "2026-10-02T11:00:00Z", no)] }, "not-convinced"],
+  ];
+  for (const [name, pr, expected] of cases) {
+    assert.equal(verdictAmong({ author: PR_AUTHOR, comments: [], reviews: [], ...pr }, [head]).verdict, expected, name);
+  }
+});
+
+test("#3030: the verdict is read AT ITS HEAD -- a review at an older head is not a verdict at the new one", () => {
+  const pr = { author: PR_AUTHOR, comments: [], reviews: [review("APPROVED", "2026-10-02T14:05:49Z", BODY_3020)] };
+  assert.equal(verdictAmong(pr, ["bbbbbbbb0000000000000000000000000000abcd"]).verdict, null);
+});
+
+test("#3030: a refusal is never read as an approval in a review body -- the parser's own cases, over reviews", () => {
+  const head = "cccccccc0000000000000000000000000000abcd";
+  for (const word of ["not convinced yet", "UNCONVINCED", "not yet convinced", "I am not entirely convinced"]) {
+    const body = `**Review of #9 at \`cccccccc\`, by reviewer-9: ${word}.**`;
+    const pr = { author: PR_AUTHOR, comments: [], reviews: [review("CHANGES_REQUESTED", "2026-10-02T10:00:00Z", body)] };
+    assert.equal(verdictAmong(pr, [head]).verdict, "not-convinced", `"${word}" in a review body is a refusal`);
+  }
+});
+
+test("#3030: a review with no body (a bare approval) is not a verdict, and a PR with no reviews field still reads", () => {
+  const head = "cccccccc0000000000000000000000000000abcd";
+  assert.equal(verdictAmong({ author: PR_AUTHOR, comments: [], reviews: [review("APPROVED", "2026-10-02T10:00:00Z", "")] },
+    [head]).verdict, null);
+  assert.equal(verdictAmong({ author: PR_AUTHOR, comments: [comment("2026-10-02T10:00:00Z",
+    "**Review of #9 at `cccccccc`, by reviewer-9: convinced.**")] }, [head]).verdict, "convinced",
+  "a pull request read without `reviews` keeps working off its comments");
 });

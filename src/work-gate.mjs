@@ -36,7 +36,9 @@ import { dirname, join } from "node:path";
 // `org-watch.mjs` and `build-packages.mjs` state at their own imports.
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { READY_LABEL, CLAIM_LABEL, CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
-import { verdictAtHead } from "./review-verdict.mjs";
+import { verdictAmong } from "./review-verdict.mjs";
+// `verdictAmong` lives in review-verdict.mjs (#3030), so a test of the verdict reader need not import this file and its token.
+export { verdictAmong };
 import { waitingOn, fleetWaitingOn, todayIso, describeWaiting, ANSWER_PREFIX, answersOwedBy, bareAnswerLabel }
   from "./waiting-condition.mjs";
 import { newestPerName } from "./newest-check-run.mjs";
@@ -80,7 +82,8 @@ import { orgHealthTick, readLastMergedAt, primaryStandingSince, redSinceOf, FLEE
 // #2938: THE DAILY RETROSPECTIVE, in its own leaf for the same reason: it reads the journal, the ledger and a day of PRs once, and says what it found.
 import { retrospectiveTick } from "./org-retro.mjs";
 import { isBrokenRed, withoutHold } from "./red-pr.mjs";
-import { waitItemOf, referencesOf, staleWaits, bareWaits, manualWaits } from "./wait-condition.mjs";
+import { waitItemOf, referencesOf, parseWaits, staleWaits, bareWaits, manualWaits } from "./wait-condition.mjs";
+import { readRulings, rulingTick, unreadableLine } from "./ruling-record.mjs"; // #2997
 import { tapShadowReads } from "./shadow-reads.mjs"; // #2849
 // #1969, AND THE PREDICATE IS IMPORTED RATHER THAN RE-DECIDED. `armedFromApi` knows THREE armed states --
 // merged, a pending auto-merge, and SITTING IN THE MERGE QUEUE, where `autoMergeRequest` reads `null` on a
@@ -3980,22 +3983,6 @@ export function reviewableHead(pr) {
 }
 
 /**
- * The verdict this pull request carries, looked for at EVERY head an update-branch made equivalent, newest
- * first. A reviewer who wrote `at <head8>` after the last update-branch wrote it at THAT sha, so reading
- * only the authored one would re-summon a reviewer who had answered.
- * @param {any} pr @param {string[]} heads
- */
-export function verdictAmong(pr, heads) {
-  const comments = (pr.comments ?? []).map((/** @type {any} */ c) => ({ body: c?.body ?? "", id: c?.id }));
-  let found = verdictAtHead({ comments, head: heads[0], prAuthor: pr.author?.login ?? null });
-  for (const head of heads.slice(1)) {
-    if (found.verdict !== null) break;
-    found = verdictAtHead({ comments, head, prAuthor: pr.author?.login ?? null });
-  }
-  return found;
-}
-
-/**
  * The commits of one pull request, oldest first, or `null` when the read was refused.
  *
  * REST, NOT THE LIST CALL, AND MEASURED: `commits` on `gh pr list --limit 100` is refused outright by
@@ -6465,6 +6452,16 @@ export function readWaitRef(ref, run = defaultRun) {
  * @returns {import("./wait-condition.mjs").WaitFacts}
  */
 export function readWaitFacts({ items, open, run, limit = MAX_WAIT_READS }) {
+  return readRefFacts({ refs: referencesOf(items), open, run, limit });
+}
+
+/**
+ * #2997: THE FACTS FOR A LIST OF REFERENCES, whoever named them -- a wait (#2996) or a ruling's check. The lookup is `readWaitFacts`'s own: the open lists first,
+ * then one `gh api` call each up to `limit`; a reference neither held nor read is left OUT, which `conditionHolds` calls unknown.
+ * @param {{ refs: { key: string, repo: string | null, number: number }[], open: any[], run: (args: string[]) => string, limit?: number }} input
+ * @returns {import("./wait-condition.mjs").WaitFacts}
+ */
+export function readRefFacts({ refs, open, run, limit = MAX_WAIT_READS }) {
   /** @type {Record<string, import("./wait-condition.mjs").RefFact>} */
   const known = {};
   for (const raw of open) known[`#${Number(raw.number)}`] = { state: "open", labels: (raw.labels ?? []).map((/** @type {any} */ l) => String(l?.name ?? l)),
@@ -6472,7 +6469,7 @@ export function readWaitFacts({ items, open, run, limit = MAX_WAIT_READS }) {
   /** @type {Record<string, import("./wait-condition.mjs").RefFact>} */
   const items_ = {};
   let spent = 0;
-  for (const ref of referencesOf(items)) {
+  for (const ref of refs) {
     const held = ref.repo === null && Object.hasOwn(known, ref.key) ? known[ref.key] : null;
     const fact = held ?? (spent++ < limit ? readWaitRef(ref, run) : null);
     if (fact) items_[ref.key] = fact;
@@ -6519,6 +6516,25 @@ function greenCountWithLapsedHoldsLifted(prs, required, holdStands) {
 }
 
 /**
+ * #2997: THE RULINGS THE TICK RE-READS. Cheap first: no unresolved ruling means NO read at all, so a quiet record costs the tick nothing. A ruling's single-reference
+ * checks are read through `readRefFacts` (the open lists, then `gh api`), its population checks from the two lists the tick already holds; a refused list is `null`, which
+ * a check reads as unknown and never as a pass. The line posted on the ruling's issue is the tick's one write besides the record.
+ * @param {{ prsRead: any[] | null, openRowsRead: any[] | null, now: number }} tick
+ * @param {{ stateDir?: string, run?: (args: string[]) => string, log?: (line: string) => void }} [io]
+ */
+export function rulingOrdersNow({ prsRead, openRowsRead, now }, { stateDir = REVIEWER_STATE_DIR, run = defaultRun, log = (line) => process.stderr.write(`${line}\n`) } = {}) {
+  const record = readRulings(stateDir);
+  if (record.status === "unreadable") { log(unreadableLine(stateDir)); return []; } // never "no rulings": a record that cannot be read abandons every ruling in it
+  const pending = record.rulings.filter((r) => !r.resolved);
+  if (pending.length === 0) return [];
+  const refs = pending.flatMap((r) => r.checks.flatMap((text) => parseWaits(`Waiting-for: ${text}`)))
+    .filter((w) => w.state !== "manual" && w.state !== "unreadable").map((w) => ({ key: w.key, repo: w.repo, number: w.number }));
+  const facts = readRefFacts({ refs, open: [...(prsRead ?? []), ...(openRowsRead ?? [])], run });
+  const world = { rows: openRowsRead && openRowsRead.map((row) => waitItemOf(row, "row")), prs: prsRead && prsRead.map((pr) => waitItemOf(pr, "pr")), facts };
+  return rulingTick({ stateDir, world, now, log, comment: (issue, line) => { run(["issue", "comment", String(issue), "--body", line]); } });
+}
+
+/**
  * #2936: THE ORG-HEALTH TICK over what `main` already holds. Reads ONE new thing, the last merge (`GH_READS`); every other fact is a
  * value the tick computed for `decide`: the PRs with their owners, `required`, the offered rows, the #2845 streaks and the primary's
  * drift. `prsRead`/`readyRead` are the RAW reads, `null` for a refusal, because `decideArgs` carries them coalesced to `[]` and
@@ -6531,7 +6547,7 @@ function greenCountWithLapsedHoldsLifted(prs, required, holdStands) {
  * @param {{ prsRead: any[] | null, readyRead: any[] | null, openRowsRead: any[] | null, decideArgs: any, decided: any[] }} tick
  * @param {{ now?: number, lastMergedAt?: () => number | null, readCaptures?: (now: number) => ReturnType<typeof readFleetCaptures>,
  *           log?: (line: string) => void, readCopies?: () => null, readLabJobs?: () => string[] | null, readWaits?: typeof waitTickFacts }} [io] `readWaits` (#2996) is the test's seam for the
- *           the test's seam for the referenced items, so nothing here needs a token
+ *           referenced items, so nothing here needs a token
  */
 export function orgHealthNow({ prsRead, readyRead, openRowsRead, decideArgs, decided },
   { now = Date.now(), lastMergedAt = () => readLastMergedAt(defaultRun, repoNow()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies,
@@ -6652,7 +6668,8 @@ function main() {
   const others = otherScopeTicks(drain); // #2618: the OTHER declared repositories -- none for one project, whose orders are what they were
   const outageNow = outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows: openRowsRead, claimedComments, offBoard, others });
   const { delivered: orders, performed } = performActions(markOutageReads([...decided, ...others.flatMap((tick) => tick.orders)], outageNow));
-  orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick(), ...orgHealthNow({ prsRead: prs, readyRead: readyRows, openRowsRead, decideArgs, decided })); // #2848, #2936: before the dead man's switch -- a repeating line, a stuck org: something found
+  orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick(), ...orgHealthNow({ prsRead: prs, readyRead: readyRows, openRowsRead, decideArgs, decided }),
+    ...rulingOrdersNow({ prsRead: prs, openRowsRead, now: Date.now() })); // #2848, #2936, #2997: before the dead man's switch -- a repeating line, a stuck org: something found
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so
   // on a full disk the tick can end partway. The order that says the disk is full must not be the one behind it.
   orders.unshift(...diskOrders);

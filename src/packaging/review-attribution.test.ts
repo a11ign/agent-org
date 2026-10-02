@@ -204,7 +204,8 @@ function fakeGh(bin: string, tsvLine: string, { failStatus = false } = {}) {
   writeFileSync(answer, `${tsvLine}\n`);
   writeFileSync(join(bin, "gh"), [
     "#!/usr/bin/env bash",
-    `printf '%s\\n' "$*" >> ${JSON.stringify(log)}`,
+    // A multi-line review body must stay ONE log line, so a newline is logged as `\u23ce` (#3030).
+    `a="$*"; printf '%s\\n' "\${a//$'\\n'/\u23ce}" >> ${JSON.stringify(log)}`,
     `if [[ "$1" == "api" && "$2" == --method ]]; then exit ${failStatus ? 1 : 0}; fi`,
     `if [[ "$1" == "api" ]]; then cat ${JSON.stringify(answer)}; fi`,
     "exit 0",
@@ -223,17 +224,18 @@ function runDoor(session: string | null, tsvLine: string, options: { failStatus?
   const file = join(dir, "verdict.md");
   const body = "**Review of #2105 at `e1b8b7bc`, by reviewer: not convinced — the blocker.**";
   writeFileSync(file, `${body}\n\nAcceptance: npm test — 3/0\n`);
+  const whole = `${body}\n\nAcceptance: npm test — 3/0`;
   const env: Record<string, string> = { ...process.env as Record<string, string>,
     PATH: `${bin}:${process.env.PATH}` };
   delete env.A11Y_REVIEWER_SESSION;
   if (session !== null) env.A11Y_REVIEWER_SESSION = session;
   const result = spawnSync("bash", [DOOR, "2105", "not-convinced", file], { env, cwd, encoding: "utf8" });
-  return { result, calls: existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [], body };
+  return { result, calls: existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [], body, whole };
 }
 
 const TSV = "https://github.com/a11ign/a11ign/pull/2105#pullrequestreview-5290399999\t"
   + "e1b8b7bc0000000000000000000000000000abcd\t"
-  + "**Review of #2105 at `e1b8b7bc`, by reviewer: not convinced — the blocker.**";
+  + "**Review of #2105 at `e1b8b7bc`, by reviewer: not convinced — the blocker.**\\n\\nAcceptance: npm test — 3/0";
 
 test("#2127: the door posts the review AND a `review/<session>` status pointing at that review", () => {
   const { result, calls } = runDoor("reviewer", TSV);
@@ -247,6 +249,47 @@ test("#2127: the door posts the review AND a `review/<session>` status pointing 
     status!);
   assert.ok(status!.includes("state=success"),
     "ALWAYS success: this records who reviewed, never whether the review passed");
+});
+
+// --- #3030: ONE WRITE PER VERDICT -------------------------------------------------------------------
+//
+// #3020's verdict was a 63-character review and then a 505-character comment, so the chairman saw two reviews for one
+// head. `TSV` above is the review as `gh api ... --jq @tsv` returns it: the WHOLE body, newlines spelled `\n`.
+
+test("#3030 (1): the door posts the verdict file's WHOLE text as the review body, and posts no comment", () => {
+  const { result, calls, whole } = runDoor("reviewer", TSV);
+  assert.equal(result.status, 0, result.stderr);
+  const reviews = calls.filter((c) => c.startsWith("pr review "));
+  assert.equal(reviews.length, 1, `exactly one review: ${calls.join(" | ")}`);
+  assert.ok(reviews[0].includes(`--body ${whole.replaceAll("\n", "\u23ce")}`),
+    `the review body must be the whole file, not its first line: ${reviews[0]}`);
+  assert.ok(reviews[0].includes("Acceptance: npm test"), "the evidence rides in the review");
+  assert.equal(calls.filter((c) => /^pr comment|\/comments|issues\/\d+\/comments/.test(c)).length, 0,
+    `a second write is the defect: ${calls.join(" | ")}`);
+});
+
+test("#3030 (1): the attribution read-back proves the newest review is ours by equality over the WHOLE body", () => {
+  const { calls } = runDoor("reviewer", TSV);
+  assert.ok(statusOf(calls), "a multi-line body must still match its own `@tsv` read-back, or nothing is attributed");
+  // The old first-line-only echo is now a DIFFERENT body, so it is somebody else's review and is not attributed.
+  const firstLineOnly = "https://github.com/a11ign/a11ign/pull/2105#pullrequestreview-5290399999\te1b8b7bc00\t"
+    + "**Review of #2105 at `e1b8b7bc`, by reviewer: not convinced — the blocker.**";
+  const { result, calls: other } = runDoor("reviewer", firstLineOnly);
+  assert.equal(statusOf(other), undefined, "it would have labelled a review that is not the one just posted");
+  assert.match(result.stderr, /not the one just posted/);
+});
+
+test("#3030 (1): the first line is STILL validated as the verdict opener, and nothing is posted when it is not", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pr-review-verdict-"));
+  const bin = join(dir, "bin");
+  const log = fakeGh(bin, TSV);
+  const file = join(dir, "verdict.md");
+  writeFileSync(file, "Looks fine to me.\n\n**Review of #2105 at `e1b8b7bc`, by reviewer: convinced.**\n");
+  const result = spawnSync("bash", [DOOR, "2105", "convinced", file],
+    { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, encoding: "utf8" });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /first line .* is not the verdict line/);
+  assert.equal(existsSync(log), false, "a refused opener must post nothing");
 });
 
 test("#2127: the door writes `reviewer-2`'s own name, not a constant -- the mutation that would make "
