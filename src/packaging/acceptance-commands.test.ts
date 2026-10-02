@@ -11,7 +11,8 @@ import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   classifyCommand, extractAcceptanceSection, acceptanceReport, testFileArgumentsResolve,
@@ -1185,6 +1186,82 @@ test("#2724 singleNodeInvocation: a script chaining a further command of its own
 test("#2724 singleNodeInvocation: a non-`node` executable resolves to nothing -- the real `lint` shape "
   + "(`eslint .`)", () => {
   assert.equal(singleNodeInvocation("eslint ."), null);
+});
+
+// #3063: the monorepo runs the tool through its `bin` (`agent-org <command>`, #3068/#3069), not `node <file>`. The
+// bin spawns nothing itself, so a script resolved to it would be charged for nothing: `npm run board:settle` would
+// read `runnable` against a job with no token. The command -> program mapping is the tool's command table
+// (`src/commands.mjs`, #3068, not built yet), so these cases hand the resolver a table of THE SHAPE IT READS.
+const TOOL_SRC = resolve(fileURLToPath(import.meta.url), "..", "..");
+const TABLE = { "board:settle": "settle-closed-rows.mjs", "messaging:listen": "messaging/listen.mjs",
+  "escapes": "../package.json.mjs", "no-file": "notes.txt" };
+const COMMAND_BODY = "agent-org board:settle";
+
+/** Classify `command` from a directory whose `package.json` has the one script `board:settle` = `body`. */
+function classifyAgainstScript(body: string, commands: Record<string, string> | null = TABLE,
+  command = "npm run board:settle") {
+  const project = mkdtempSync(join(tmpdir(), "command-script-"));
+  const before = process.cwd();
+  try {
+    writeFileSync(join(project, "package.json"), JSON.stringify({ scripts: { "board:settle": body } }));
+    process.chdir(project);
+    return classifyCommand(command, { capabilities: NO_TOKEN, commands });
+  } finally {
+    process.chdir(before);
+    rmSync(project, { recursive: true, force: true });
+  }
+}
+
+test("#3063 singleNodeInvocation: `agent-org <command>` resolves to the PROGRAM the table names, under the tool's "
+  + "src/, in every spelling a project runs the bin by, flags ignored, a subdirectory program kept", () => {
+  const settle = join(TOOL_SRC, "settle-closed-rows.mjs");
+  assert.equal(singleNodeInvocation(COMMAND_BODY, TABLE), settle);
+  assert.equal(singleNodeInvocation("pnpm exec agent-org board:settle --dry-run", TABLE), settle);
+  assert.equal(singleNodeInvocation("npx agent-org board:settle", TABLE), settle);
+  assert.equal(singleNodeInvocation("FOO=1 agent-org board:settle", TABLE), settle);
+  assert.equal(singleNodeInvocation("agent-org messaging:listen", TABLE), join(TOOL_SRC, "messaging", "listen.mjs"));
+  assert.ok(existsSync(settle), "the program the cases above resolve to must exist, or the classify case proves nothing");
+});
+
+test("#3063 singleNodeInvocation: a command the table does not name, no table, a program outside src/ or no script "
+  + "file, no command, a flag for a command, and a chain all resolve to nothing", () => {
+  assert.equal(singleNodeInvocation("agent-org no-such-command", TABLE), null);
+  assert.equal(singleNodeInvocation("agent-org board:settle", null), null);
+  assert.equal(singleNodeInvocation("agent-org board:settle", {}), null);
+  assert.equal(singleNodeInvocation("agent-org escapes", TABLE), null);
+  assert.equal(singleNodeInvocation("agent-org no-file", TABLE), null);
+  assert.equal(singleNodeInvocation("agent-org", TABLE), null);
+  assert.equal(singleNodeInvocation("agent-org --help", TABLE), null);
+  assert.equal(singleNodeInvocation("agent-org board:settle && node b.mjs", TABLE), null);
+  assert.equal(singleNodeInvocation("agent-org-other board:settle", TABLE), null);
+  assert.equal(singleNodeInvocation("agent-org toString", TABLE), null, "an inherited property is not a command");
+});
+
+test("#3063 singleNodeInvocation: the tool's OWN table, read by default, never throws -- absent (#3068 not landed) "
+  + "reads as no table, present reads as its COMMANDS", () => {
+  const resolved = singleNodeInvocation("agent-org board:settle");
+  assert.ok(resolved === null || resolved.startsWith(TOOL_SRC), String(resolved));
+});
+
+test("#3063 singleNodeInvocation: the `node <file>` form is untouched", () => {
+  assert.equal(singleNodeInvocation("node packages/agent-org/src/settle-closed-rows.mjs", TABLE),
+    "packages/agent-org/src/settle-closed-rows.mjs");
+});
+
+test("#3063 ACCEPTANCE: `npm run board:settle` is REFUSED for `token` when the script is `agent-org board:settle` -- "
+  + "the positive control is the same command against the direct form, which is refused today", () => {
+  const direct = classifyAgainstScript(`node ${join(TOOL_SRC, "settle-closed-rows.mjs")}`);
+  assert.equal(direct.verdict, "refused", "control: the direct form must refuse, or the bin case proves nothing");
+  const viaBin = classifyAgainstScript(COMMAND_BODY);
+  assert.equal(viaBin.verdict, "refused");
+  assert.match((/** @type {{reason:string}} */ (viaBin)).reason, /settle-closed-rows\.mjs requires token/);
+});
+
+test("#3063 a bin script whose command the table does not name stays RUNNABLE, and one whose program spawns "
+  + "nothing does too -- the refusal tracks the program the table names, not the bin's name", () => {
+  assert.equal(classifyAgainstScript("agent-org no-such-command").verdict, "runnable");
+  assert.equal(classifyAgainstScript("agent-org board:settle", { "board:settle": "lib/git-env.mjs" }).verdict,
+    "runnable");
 });
 
 test("#621 ACCEPTANCE: classifyCommand REFUSES board-document-chrome-resolver.test.ts, named, naming the "
