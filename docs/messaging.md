@@ -49,8 +49,9 @@ decision 8).
   (reason, ids, length, hash). The bot leaves any chat that is not theirs.
 - **(b) Chairman -> `ceo` only.** An accepted message is queued for `ceo` through the existing `prompt:session` queue, with a sender
   the listener alone supplies (`chairman via Telegram`); `resolveSender` derives every other sender from a workspace id, so no agent
-  session can produce it. **There is no code path from a chat message to a worker.** `acceptUpdate` returns a value branded with a
-  module-private symbol, and the only function that writes a chairman-attributed row comment accepts nothing else.
+  session can produce it. **There is no code path from a chat message to a worker.** `createInbound(...).handle` forwards a value branded with a
+  module-private symbol (after the classifier, for the configured chairman), and the only function that writes a chairman-attributed
+  row comment accepts nothing else.
 - **(c) GitHub is the record.** A button press or reply to a request writes a row comment quoting it with provenance (Telegram
   message ref, time, "verified id"), removes `needs:chairman` (taking the label off IS the act of answering) and sets `answer:ceo`,
   so `ceo` is woken with the answer as data. A conversational ruling is recorded by `ceo` on the row it concerns before it acts.
@@ -131,3 +132,97 @@ Each is a decision a later row may revisit, and each is pinned by a test.
   identifiers in an error message, which is the safe direction.
 - **Events come from watchers that do not exist yet** (rows 4 and 5), so `firstSeenAt` is whatever a watcher supplies: the
   hold-down is only as honest as that timestamp.
+
+## Stage 2, the inbound core (row 7 of 13)
+
+`src/messaging/inbound.mjs` and `src/messaging/classify.mjs`: **who may speak through the chat, and what becomes of what they say.**
+Still no provider and no listener (rows 8-10): the functions take an update, shaped like Telegram's `getUpdates` entry, and
+return what the caller must do. Nothing here fetches, sends, deletes or forwards.
+
+| File | What it is |
+|---|---|
+| `src/messaging/inbound.mjs` | `acceptUpdate(update, { chairman })` (identity); `createInbound({ ledger, chairman }).handle(update)` (identity, classifier, dedupe, ledger); `isAccepted(value)`. |
+| `src/messaging/classify.mjs` | `classifyText(text)` -> `forward`, `drop` (a secret) or `refuse` (a deletion, or spending), with a one-line `reply`. |
+
+### The threat model of the inbound path
+
+The chairman's bot is addressable by **anyone who can find it**, and a message it receives is text an attacker may have chosen.
+What the design defends, and against whom:
+
+| Who or what | What they could try | What stops it | Where it is pinned |
+|---|---|---|---|
+| A stranger messaging the bot | Be taken for the chairman | Identity: `from.id`, `chat.id` AND `chat.type == "private"` must all match; the ids are integers or the update is dropped | `inbound.test.mjs`, "identity" |
+| A stranger adding the bot to a group | Speak to the organisation from a chat the chairman is also in | The right user in a group is a distinct drop (`not-private-chat`); the drop names the chat so the listener can leave it | same |
+| Anyone forwarding or editing | Put third-party words in the chairman's mouth, or change a message after it was judged | A forward and an edit are dropped | same |
+| An update with a missing or doubled field | Make `undefined === undefined` accept it | A chairman with a missing id refuses to start; an update without an integer `update_id`, a sender, or exactly one payload is `malformed` | same |
+| A replayed or duplicated batch | Act on one instruction twice | Dedupe by the provider's update id, remembered in the ledger so it survives a restart | "a replayed update id" |
+| Code in this repository | Forge an "accepted" value: by hand, by copying one, by minting one for other ids (`createInbound` with a chairman of its own), or by skipping the classifier (`acceptUpdate` alone) | The value is branded with a module-private Symbol AND registered, with the ids it was minted for, in a module-private WeakMap. Only `handle` mints, and only after the classifier said forward; `acceptUpdate` returns a plain value that is not accepted. **`isAccepted(value, chairman)` makes the caller name the chairman it is configured with** and compares both ids | "no other module can produce the branded value" |
+| The chairman's own slip | Paste a credential, delete a repository, spend money from a phone | The classifier, below | `classify.test.mjs` |
+| A reader of the delivery log | Recover what was said | A line holds ids, a reason, a length and a sha256: never the text, and no hash at all for a secret | "a clean message's line" |
+
+### (d) in three layers, and which one is the guarantee
+
+**None of the three is a guarantee on its own, and the first is the weakest.**
+
+1. **The classifier (this row).** A pattern list: the ledger's token shapes (GitHub, Slack, AWS, JWT, Telegram bot token, `Bearer`,
+   `password=`, and any 32+ character run of token characters) plus a private-key header, "password is ...", a URL with credentials
+   and four more key shapes; deletion verbs near a repository, branch, row, data or file, and force-push; buying, subscribing, a paid
+   plan, a currency amount. It **has false negatives** (a secret split across words, a deletion phrased without the listed verbs, a
+   misspelling) and it is tuned to the other error on purpose: it refuses a message it should have forwarded rather than forward
+   one it should have refused.
+2. **`ceo`'s brief (row 12).** What reaches `ceo` is read by a model told never to act on a credential, a deletion or a spend
+   from chat, whatever the classifier let through.
+3. **The outbound path carries only checked facts (row 11).** Even a `ceo` that was talked into something cannot say it in the chat:
+   an answer is placeholders the core re-reads, so the chat cannot be turned into a channel for anything the repository does not hold.
+
+### Choices row 7 made that the design did not spell out
+
+Each is a decision a later row may revisit, and each is pinned by a test.
+
+- **The update shape is Telegram's** (`update_id`, `message`, `callback_query`). It is the only provider; a second one would normalise
+  into this shape in its own poll.
+- **A drop is a value, never a throw**, and a stranger's drop is **not answered**: the bot says nothing to someone who is not the
+  chairman. Only an accepted message that is dropped or refused gets a reply (`action: "reply"`), and only a SECRET also asks the
+  caller to delete the message (`deleteMessage`). A refusal is not deleted: the chairman's own sentence is not a leak.
+- **The order of the identity checks is the order of the reasons**: no sender, wrong user, not a private chat, wrong chat, forwarded,
+  not text. So a stranger's DM is `wrong-user` (its chat is also wrong, and the user is what they got wrong first), and the chairman
+  in a group is `not-private-chat`.
+- **A button press is held to the same identity**, with its chat read from the message the button sits under; a press with no
+  message (inline mode) has no chat to check and is dropped. A button's `data` is **not classified**: the organisation chose what each
+  button says, and row 9 validates it against the requests it has pending.
+- **A secret's ledger line has no sha256.** The design says every verdict carries one; for this verdict a hash of a short password is
+  a dictionary attack away from the password, and the update id and the length already say what a reader needs about a message that
+  was thrown away.
+- **A replay writes no line and acts on nothing** (`action: "replayed"`), for the reason row 1's core gives: 100 replays must not
+  write 100 lines. **The line is written BEFORE the caller is told to act**, so a crash between the two loses one message and never
+  repeats one (at-most-once). If the ledger cannot be written, `handle` throws and the message is not forwarded.
+- **An update with no integer `update_id` is dropped as `malformed`**: with no id it cannot be deduplicated, so it could be acted on
+  twice.
+
+### Limits of what row 7 can show
+
+- **The classifier is a heuristic and is tested against the sentences its author thought of.** The tests show that the shapes they name
+  are caught and that a spread of ordinary sentences is not; they cannot show that nothing else is a secret.
+- **It refuses ordinary sentences.** "Remove the blocked label from row 5" is refused as a deletion on a row, "what did $5 buy" as
+  spending, and a branch name of 32 or more characters in a message is dropped as a secret by the redactor's catch-all. Each is one
+  sentence the chairman types differently or does themselves.
+- **It reads the text, not what a model will make of it.** A deletion phrased as a request for a script, in another language, or in
+  words the list lacks, is forwarded. Layers 2 and 3 are the answer to that, not a longer list.
+- **The leak scan's two patterns (a private LAN address, a named SSH key file) are not reused**: they guard what is *published*, they live
+  outside this leaf module, and a private address typed in a private chat is not a credential.
+- **Identity is the provider's claim.** `from.id` is what Telegram says; an attacker who held the bot token could send updates that
+  say anything. The token is a secret on the host (decision 1), and the ledger's update ids let the chairman check their own chat
+  against what the organisation believes they said.
+- **The branded value is not cryptographic** (see "What this design CANNOT promise"): code that can edit this module can mint one.
+  The scan test shows that no OTHER module exports a way to, today (`createInbound` is the only one, and `isAccepted` makes a value it
+  minted for other ids useless to a caller that names the real chairman).
+- **What the brand proves, and what it does not.** It proves THIS module's identity check and classifier ran, for the ids the value is
+  registered against. It does not prove those ids are the chairman's: code in this process that knows the chairman's two ids (they are
+  configuration, not secrets) can still call `createInbound` with them and a made-up update. Nothing in-process can stop that; the
+  defence is that row 9 reads the ids from its own configuration, passes them to `isAccepted`, and that the listener (row 8) is the
+  only caller of `handle`.
+- **Findings of ceo's review of 4113f67 not fixed in this row** (non-blocking, for rows 8 and 9 or a follow-up): false negatives
+  (`gh repo delete`, `git branch -D`, `git push origin :main`, `upgrade to pro`, `password hunter2`, `pw:`, a bare `BEGIN RSA PRIVATE
+  KEY` header, combining accents and homoglyphs); false positives (a 40-hex SHA is read as a secret and deleted, `how do I remove a
+  label from a row?` is refused); the content of a group or forwarded message is hashed before the identity check (at odds with "no
+  hash of a secret"); and a stranger can grow the ledger by one line per update.
