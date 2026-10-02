@@ -40,7 +40,7 @@ import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { localImports, stripComments } from "./lib/local-import-closure.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { SPAWNS_GH } from "./acceptance-commands.mjs";
-import { HOME_CHECKOUT } from "./project-config.mjs";
+import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "./project-config.mjs";
 import { CLAUDE_EFFORTS, DECLARED_CLAUDE_MODELS } from "./worker-profile.mjs";
 import { HostConfigRefusal, TEMPLATE_SUFFIX, homeHostConfig, leadsWorkspacesText, readBeforeTick, readUnitsDeclaration,
   renderTemplate, renderedName, stateEntryPath, templateValues } from "./host-config.mjs";
@@ -239,6 +239,34 @@ export function workTickToolForm(rendered, tool, beforeTicks) {
 const HOST_VARIABLE = "AGENT_ORG_HOST";
 
 /**
+ * THE REPOSITORY EVERY AMBIENT `gh` CALL ASKS ABOUT, stated by the unit because the tool no longer runs inside the project (#2974, measured
+ * 2026-10-02 15:01Z on the first tick after the cut). `gh` without `--repo` reads the repository of its working directory, and the tool's
+ * is now `agent-org`: the gate printed 1 order where the same gate from the project's directory printed 12, and `label list` found no
+ * `answer:` label at all. `GH_REPO` is what `gh` itself honours, it is inherited by every child the tick spawns, and a call that scopes to
+ * another repository (`defaultRun`'s own `GH_REPO`) overrides it, so the one line aims every read at the project and breaks no scoped one.
+ */
+const GH_REPO_VARIABLE = "GH_REPO";
+const REPO_SLUG = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+
+/**
+ * The repository a project declares as its own (the first `code` entry, as `parseProjectDeclaration` reads it), or `null` when its
+ * declaration names none. Lenient about the REST of the file on purpose: this is read beside `beforeTick` and must not be the second place
+ * a half-written declaration is refused for an unrelated field; a value that IS there but is not a `owner/name` slug is refused, since it
+ * is written into a unit line.
+ * @param {string} checkout @param {typeof readFileSync} read @returns {string | null}
+ */
+export function readProjectRepo(checkout, read) {
+  const path = join(checkout, PROJECT_DECLARATION_PATH);
+  const parsed = JSON.parse(/** @type {(p: string, e: "utf8") => string} */ (read)(path, "utf8"));
+  const repo = Array.isArray(parsed?.code) ? parsed.code[0]?.repo : undefined;
+  if (repo === undefined) return null;
+  if (typeof repo !== "string" || !REPO_SLUG.test(repo)) {
+    throw new HostConfigRefusal("code[0].repo", `it is written into a unit line, so it must be owner/name, not ${JSON.stringify(repo)}`, path);
+  }
+  return repo;
+}
+
+/**
  * THE OTHER SHIPPED SERVICES' TOOL FORM (#2974: cut-over 3 of 6, "every unit the tool ships names the `agent-org` checkout and no
  * `packages/agent-org` path"): template -> the anchored lines that change. Each is a one-line pattern that must match exactly once, and
  * `$CHECKOUT` stands for the primary project's checkout in the replacement, because `prune-worktrees.mjs` takes the repository it
@@ -262,18 +290,24 @@ const OTHER_TOOL_FORMS = Object.freeze({
 /**
  * THE UNIT AS IT IS INSTALLED WHEN `host.json` NAMES A `tool`: the template's rendering with decision 3's lines changed. Every service
  * runs from the tool's checkout and is told where the host's declaration is, because the tool resolves its project from that and
- * REFUSES without it (measured 2026-10-02: `node src/work-gate.mjs` from the checkout, with no `AGENT_ORG_HOST`, died on
+ * REFUSES without it, and which repository `gh` asks about (`GH_REPO`), because its working directory is no longer the project's (measured 2026-10-02: `node src/work-gate.mjs` from the checkout, with no `AGENT_ORG_HOST`, died on
  * `<home>/.agent-org/project.json`). A template this does not know is returned as it rendered: a timer names no path of its own.
  * @param {string} shipped the template's name @param {string} rendered @param {{ tool: string, checkout: string, beforeTicks: BeforeTick[] }} where
  */
-export function toolForm(shipped, rendered, { tool, checkout, beforeTicks }) {
+export function toolForm(shipped, rendered, { tool, checkout, beforeTicks, repo = null }) {
   const body = shipped === WORK_TICK_TEMPLATE ? workTickToolForm(rendered, tool, beforeTicks)
     : Object.hasOwn(OTHER_TOOL_FORMS, shipped)
       ? OTHER_TOOL_FORMS[shipped].reduce((text, [anchor, line]) => replaceOnce(text, anchor, line.replaceAll("$CHECKOUT", checkout)),
         replaceOnce(rendered, /^WorkingDirectory=.*$/m, `WorkingDirectory=${tool}`))
       : rendered;
-  if (body === rendered || new RegExp(`^Environment=${HOST_VARIABLE}=`, "m").test(body)) return body;
-  return replaceOnce(body, /^WorkingDirectory=.*$/m, `WorkingDirectory=${tool}\nEnvironment=${HOST_VARIABLE}=${checkout}/.agent-org/host.json`);
+  if (body === rendered) return body;
+  const workingDirectory = `WorkingDirectory=${tool}`;
+  const has = (/** @type {string} */ variable) => new RegExp(`^Environment=${variable}=`, "m").test(body);
+  const added = [
+    ...(has(HOST_VARIABLE) ? [] : [`Environment=${HOST_VARIABLE}=${checkout}/.agent-org/host.json`]),
+    ...(repo === null || has(GH_REPO_VARIABLE) ? [] : [`Environment=${GH_REPO_VARIABLE}=${repo}`]),
+  ];
+  return added.length === 0 ? body : replaceOnce(body, /^WorkingDirectory=.*$/m, [workingDirectory, ...added].join("\n"));
 }
 
 /** @param {string} text @param {RegExp} anchor a one-line, multiline-flag pattern @param {string} line */
@@ -326,7 +360,9 @@ export function shippedUnitText(unit, deps = {}) {
   if (template === null) return projectDir === null ? null : textOf(join(projectDir, unit), read);
   const rendered = renderTemplate(template, values(), unit);
   const { tool } = host();
-  return tool === undefined ? rendered : toolForm(shipped, rendered, { tool, checkout: values().checkout, beforeTicks: beforeTicks() });
+  if (tool === undefined) return rendered;
+  const { checkout } = values();
+  return toolForm(shipped, rendered, { tool, checkout, beforeTicks: beforeTicks(), repo: readProjectRepo(checkout, read) });
 }
 
 /**
