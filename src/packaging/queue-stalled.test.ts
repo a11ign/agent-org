@@ -32,6 +32,8 @@ import { newestConclusion, headQuietSeconds } from "../update-branch-sweep.mjs";
 // ---------------------------------------------------------------------------------------------------
 
 import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { queueEjectionOf, ejectionQueryArgs, armedFromApi } from "../pr-armed-state.mjs";
+import { readEjections, decide, stallReasonOf, greenUnarmedOrders, STALL_REASON } from "../work-gate.mjs";
 
 const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "../queue-stalled.mjs");
 
@@ -646,3 +648,130 @@ test("#1623, #1631's review: the report's per-PR examination does not name an un
     assert.equal(result.examined, false, label);
   }
 });
+
+// ---------------------------------------------------------------------------------------------------
+// #3019: A PR THE QUEUE EJECTED FOR A RED QUEUE RUN IS NOT "UNARMED".
+//
+// The fixture is `a11ign/agent-org#16`'s real timeline, read 2026-10-02 from `timelineItems(last:10, ...)`: five commits, then
+// ADDED 13:01:28Z, REMOVED failed_checks 13:03:59Z, ADDED 13:09:38Z, REMOVED failed_checks 13:15:05Z, `mergeQueueEntry` null.
+// ---------------------------------------------------------------------------------------------------
+
+const commit = (committedDate: string) => ({ __typename: "PullRequestCommit", commit: { committedDate } });
+const added = (createdAt: string) => ({ __typename: "AddedToMergeQueueEvent", createdAt });
+const removed = (createdAt: string, reason: string) => ({ __typename: "RemovedFromMergeQueueEvent", createdAt, reason });
+
+const COMMITS_OF_16 = ["10:54:07", "10:58:42", "11:14:57", "11:34:17", "11:39:15"].map((t) => commit(`2026-10-02T${t}Z`));
+const QUEUE_EVENTS_OF_16 = [
+  added("2026-10-02T13:01:28Z"), removed("2026-10-02T13:03:59Z", "failed_checks"),
+  added("2026-10-02T13:09:38Z"), removed("2026-10-02T13:15:05Z", "failed_checks"),
+];
+/** `#16` as the API returned it, and the same pull request with its queue events deleted (the control). */
+const EJECTED_16 = { mergeQueueEntry: null, timelineItems: { nodes: [...COMMITS_OF_16, ...QUEUE_EVENTS_OF_16] } };
+const NEVER_QUEUED_16 = { mergeQueueEntry: null, timelineItems: { nodes: [...COMMITS_OF_16] } };
+
+test("#3019 done-when 1: a PR whose newest queue event is a failed_checks removal, head unmoved, is EJECTED", () => {
+  assert.deepEqual(queueEjectionOf(EJECTED_16), { ejected: true, removedAt: "2026-10-02T13:15:05Z" },
+    "the NEWEST removal, not the first of the two");
+  assert.equal(armedFromApi(EJECTED_16), false, "and `armed` still reads false -- which is exactly why it was called unarmed");
+});
+
+test("#3019 done-when 3, THE CONTROL: the same fixture with the events deleted is NOT ejected, so the branch is reachable and not vacuous", () => {
+  assert.deepEqual(queueEjectionOf(NEVER_QUEUED_16), { ejected: false, removedAt: null });
+  // End to end through the reader: the pair splits, one each way.
+  const answers: Record<string, unknown> = { "16": EJECTED_16, "17": NEVER_QUEUED_16 };
+  const run = fakeGh(answers);
+  const split = readEjections([16, 17], run);
+  assert.deepEqual(split?.unarmed, [17], "the never-queued PR stays unarmed, and goes where it always went");
+  assert.deepEqual([...(split?.ejections.keys() ?? [])], [16], "and the ejected one leaves the unarmed set");
+});
+
+test("#3019 done-when 2: no events, another removal reason, or a removal followed by a push are classified exactly as today", () => {
+  const manual = { mergeQueueEntry: null, timelineItems: { nodes: [...COMMITS_OF_16, added("2026-10-02T13:01:28Z"), removed("2026-10-02T13:03:59Z", "dequeued")] } };
+  const pushedSince = { mergeQueueEntry: null, timelineItems: { nodes: [...COMMITS_OF_16, ...QUEUE_EVENTS_OF_16, commit("2026-10-02T13:30:00Z")] } };
+  const forcePushedSince = { mergeQueueEntry: null, timelineItems: { nodes: [...COMMITS_OF_16, ...QUEUE_EVENTS_OF_16, { __typename: "HeadRefForcePushedEvent" }] } };
+  const reQueued = { mergeQueueEntry: { state: "AWAITING_CHECKS" }, timelineItems: { nodes: [...COMMITS_OF_16, ...QUEUE_EVENTS_OF_16, added("2026-10-02T13:40:00Z")] } };
+  const stillInTheQueue = { ...EJECTED_16, mergeQueueEntry: { state: "AWAITING_CHECKS" } };
+  for (const [what, pr] of Object.entries({ manual, pushedSince, forcePushedSince, reQueued, stillInTheQueue })) {
+    assert.equal(queueEjectionOf(pr)?.ejected, false, `${what} is not an ejection to answer`);
+  }
+  assert.equal(queueEjectionOf({ mergeQueueEntry: null, timelineItems: { nodes: [] } })?.ejected, false, "no queue history at all");
+});
+
+test("#3019 done-when 4: a refused read yields no order -- null, never an all-clear and never an accusation", () => {
+  assert.equal(queueEjectionOf(null), null);
+  assert.equal(queueEjectionOf({ mergeQueueEntry: null }), null, "an answer carrying no timeline is unreadable, not empty");
+  assert.equal(readEjections(null), null, "the candidates themselves were refused: the existing `null` rule");
+  const refused = () => { throw new Error("HTTP 403: rate limit exceeded"); };
+  const split = readEjections([16], refused);
+  assert.deepEqual(split?.unarmed, [], "a candidate whose own read was refused is not called unarmed either");
+  assert.equal(split?.ejections.size, 0, "and not called ejected");
+  assert.deepEqual(decide({ prs: [], readyRows: [], unarmed: null }).filter((o: { cause: string }) => o.cause === "pr-green-unarmed"), []);
+  assert.deepEqual(greenUnarmedOrders(split?.unarmed ?? null), [], "an empty remainder sends no order");
+});
+
+const GREEN_16 = { number: 16, isDraft: false, headRefOid: "b7143468da00ec074d40d3c512c69c48b8606dea", mergeStateStatus: "CLEAN",
+  reviewDecision: "APPROVED", statusCheckRollup: [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }],
+  labels: [{ name: "session:worker-16" }] };
+
+test("#3019 done-when 1, the ORDER: it goes to the PR's owner, names the failed run and its subtests, and is NOT pr-green-unarmed", () => {
+  const split = readEjections([16], fakeGh({ "16": EJECTED_16 }));
+  const ejection = split?.ejections.get(16);
+  assert.deepEqual(ejection, { removedAt: "2026-10-02T13:15:05Z", runId: 37011501222,
+    failingTests: ["#2174: work-gate.mjs loads in a tree with NO node_modules", "the count of non-test files carrying the literal"] },
+  "the run is the newest failed merge_group run no later than the removal (13:12:50Z, not the 13:09:54Z one)");
+  const pr = { ...GREEN_16, armed: false, ejection };
+  assert.equal(stallReasonOf(pr, ["gate"]), STALL_REASON.EJECTED);
+  assert.equal(stallReasonOf({ ...pr, ejection: undefined }, ["gate"]), STALL_REASON.UNARMED, "THE CONTROL: without the stamp it is `unarmed` as before");
+  const orders = decide({ prs: [pr], readyRows: [], required: ["gate"], unarmed: split?.unarmed }) as { session: string, cause: string, prompt: string }[];
+  const [order, ...rest] = orders.filter((o) => o.cause === "pr-checks-failing" || o.cause === "pr-green-unarmed");
+  assert.ok(orders.length > 0, "THE CONTROL on the population: the PR was ordered at all, so `rest` below is not empty for want of an order");
+  assert.deepEqual(rest, [], "one order, and none of it is pr-green-unarmed");
+  assert.equal(order?.cause, "pr-checks-failing");
+  assert.equal(order?.session, "worker-16", "the PR's owner (`ownerOfPr`), never product-manager");
+  assert.match(order?.prompt ?? "", /run 37011501222/);
+  assert.match(order?.prompt ?? "", /#2174: work-gate\.mjs loads in a tree with NO node_modules/);
+  assert.match(order?.prompt ?? "", /RE-ARMING IT WITHOUT A PUSH WILL FAIL THE SAME WAY/);
+});
+
+test("#3019 the order says so when the run or the subtests could not be read, and never invents them", () => {
+  const unreadable = fakeGh({ "16": EJECTED_16 }, { runs: "throw" });
+  const ejection = readEjections([16], unreadable)?.ejections.get(16);
+  assert.deepEqual(ejection, { removedAt: "2026-10-02T13:15:05Z", runId: null, failingTests: null });
+  const orders = decide({ prs: [{ ...GREEN_16, armed: false, ejection }], readyRows: [], required: ["gate"] }) as { cause: string, prompt: string }[];
+  const order = orders.find((o) => o.cause === "pr-checks-failing");
+  assert.match(order?.prompt ?? "", /run id could NOT be read/);
+  assert.match(order?.prompt ?? "", /failing subtests could NOT be read/);
+});
+
+test("#3019 the query names the three things the reading depends on", () => {
+  const query = ejectionQueryArgs({ number: 16, repo: "a11ign/agent-org" }).join(" ");
+  for (const needle of ["REMOVED_FROM_MERGE_QUEUE_EVENT", "PULL_REQUEST_COMMIT", "HEAD_REF_FORCE_PUSHED_EVENT", "reason"]) {
+    assert.ok(query.includes(needle), `without ${needle} the reading cannot tell an ejection from a push or a manual dequeue`);
+  }
+});
+
+/** A fake `gh` for the three reads an ejection costs: the timeline, the merge_group runs, and the failed run's log. */
+function fakeGh(timelines: Record<string, unknown>, { runs = "ok" }: { runs?: "ok" | "throw" } = {}) {
+  return (args: string[]) => {
+    if (args[0] === "api" && args[1] === "graphql") {
+      const n = args[args.indexOf("-F") + 1].replace("n=", "");
+      return JSON.stringify(timelines[n]);
+    }
+    if (args[0] === "api" && args[1].includes("actions/runs")) {
+      if (runs === "throw") throw new Error("HTTP 403");
+      return JSON.stringify([
+        { id: 37011501222, head_branch: "gh-readonly-queue/main/pr-16-474b45f", conclusion: "failure", created_at: "2026-10-02T13:12:50Z" },
+        { id: 37011180948, head_branch: "gh-readonly-queue/main/pr-16-ccea9e5", conclusion: "failure", created_at: "2026-10-02T13:09:54Z" },
+        { id: 37010289767, head_branch: "gh-readonly-queue/main/pr-16-474b45f", conclusion: "failure", created_at: "2026-10-02T13:16:00Z" },
+        { id: 99, head_branch: "gh-readonly-queue/main/pr-17-aaa", conclusion: "failure", created_at: "2026-10-02T13:14:00Z" },
+      ]);
+    }
+    if (args[0] === "run" && args[1] === "view") {
+      return ["gate\tTest\t2026-10-02T13:14:00Z # Subtest: x",
+        "gate\tTest\t2026-10-02T13:14:01Z not ok 301 - #2174: work-gate.mjs loads in a tree with NO node_modules",
+        "gate\tTest\t2026-10-02T13:14:02Z not ok 302 - the count of non-test files carrying the literal",
+        "gate\tTest\t2026-10-02T13:14:03Z # fail 2"].join("\n");
+    }
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+}

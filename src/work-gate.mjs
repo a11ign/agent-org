@@ -79,7 +79,8 @@ import { repeatingLinesTick } from "./repeating-lines.mjs";
 import { orgHealthTick, readLastMergedAt, primaryStandingSince, redSinceOf, FLEET_IDLE_HOURS, PR_NOT_PROGRESSING_MINUTES, REASONS_THAT_ARE_NOT_A_STALL } from "./org-health.mjs";
 // #2938: THE DAILY RETROSPECTIVE, in its own leaf for the same reason: it reads the journal, the ledger and a day of PRs once, and says what it found.
 import { retrospectiveTick } from "./org-retro.mjs";
-import { isBrokenRed } from "./red-pr.mjs";
+import { isBrokenRed, withoutHold } from "./red-pr.mjs";
+import { waitItemOf, referencesOf, staleWaits, bareWaits, manualWaits } from "./wait-condition.mjs";
 import { tapShadowReads } from "./shadow-reads.mjs"; // #2849
 // #1969, AND THE PREDICATE IS IMPORTED RATHER THAN RE-DECIDED. `armedFromApi` knows THREE armed states --
 // merged, a pending auto-merge, and SITTING IN THE MERGE QUEUE, where `autoMergeRequest` reads `null` on a
@@ -89,7 +90,11 @@ import { tapShadowReads } from "./shadow-reads.mjs"; // #2849
 // Both are leaf-shaped: `auto-arm-sweep.mjs` imports only `node:*`, `cli-flags.mjs` (already here) and
 // `pr-hold-state.mjs` (no imports at all), so the gate keeps the property its own header states.
 import { armedFromApi, openPullRequestsQueryArgs } from "./auto-arm-sweep.mjs";
-import { armabilityOf, holdersOf } from "./pr-hold-state.mjs";
+import { armabilityOf, holdersOf, holdExcused } from "./pr-hold-state.mjs";
+// #3019: ARMED-AND-EJECTED IS READ WHERE `armed` IS DECIDED. `pr-armed-state.mjs` is the leaf `armedFromApi` lives in; the
+// timeline reading is its sibling and this file only RUNS the query it builds, so there is still one place deciding it.
+import { ejectionQueryArgs, queueEjectionOf } from "./pr-armed-state.mjs";
+import { summarizeTestLog, testIdentity } from "./parent-recheck-summary.mjs";
 import { REPO } from "./project-identity.mjs";
 import { HOME_CHECKOUT, homeProjectDeclaration } from "./project-config.mjs";
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "./cause-declaration.mjs";
@@ -255,7 +260,8 @@ export function readPrs(run = defaultRun) {
       + "reviews,"
       // #2823: `closingIssuesReferences` (what GitHub will close) and `createdAt` (how long the condition has stood), on the
       // same call, so `closesUnresolvedOrders` reads the Closes condition without a second request.
-      + "closingIssuesReferences,createdAt"]);
+      // #2996: `updatedAt`, the QUIET SINCE of a wait with no stated reason, on the same call.
+      + "closingIssuesReferences,createdAt,updatedAt"]);
     const parsed = JSON.parse(out);
     return Array.isArray(parsed) ? parsed : null;
   } catch {
@@ -329,6 +335,9 @@ export const GH_READS = Object.freeze({
   // request carries it -- the label's age is not on `pr list`, so the labelled ones are asked and only those.
   conditionalOnAwaitingEvidenceLabel: "api repos/{repo}/issues/{n}/events (readEvidenceLabelledAt -- awaiting-evidence-stale)",
   conditionalOnGreenUnheldPr: "api graphql (open PRs' mergeQueueEntry -- readUnarmed)",
+  // #3019: ONE GRAPHQL CALL PER UNARMED CANDIDATE (the timeline's queue events, readEjections), and for one the queue EJECTED, one REST
+  // call for the failed `merge_group` run and one `run view --log-failed`. A healthy tick has no unarmed candidate and pays none of it.
+  conditionalOnUnarmedPr: "api graphql timelineItems (readEjections); api actions/runs?event=merge_group; run view --log-failed (readEjectionRun)",
   // #2970: ONE REST CALL PER OPEN PULL REQUEST that is neither progressing nor held AND whose newest comment, review or creation is already
   // older than org-health's threshold -- the only ones whose push time could change the answer. `commits` cannot ride on `pr list`.
   conditionalOnQuietStalledPr: "api repos/{repo}/commits/{headRefOid} (readHeadCommittedAt -- org-health's pr-not-progressing)",
@@ -1052,7 +1061,7 @@ export function readOpenRows(run = defaultRun) {
     // `body` and `blockedBy` as well; asking once and filtering twice keeps the unconditional call
     // count where `GH_READS` says it is.
     const parsed = JSON.parse(run(["issue", "list", "--state", "open", "--limit", "500",
-      "--json", "number,title,labels,body,blockedBy,milestone"]));
+      "--json", "number,title,labels,body,blockedBy,milestone,updatedAt"]));
     return Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
@@ -3861,6 +3870,85 @@ export function readUnarmed(candidates, run = defaultRun) {
 }
 
 /**
+ * #3019: WHICH OF THE UNARMED CANDIDATES WERE ARMED AND THEN EJECTED, split out before `greenUnarmedOrders` sees them.
+ *
+ * `readUnarmed` says "nothing is armed NOW"; that is also what a PR the queue removed for a red `merge_group` run looks like,
+ * and the order built from it told `product-manager` to re-arm it into a third red run. Each candidate's timeline is read
+ * (one call each -- the candidates are the few PRs a tick found green and unarmed) and an ejected one is returned with what
+ * the owner needs: when, which run, which subtests.
+ *
+ * `null` WHEN THE CANDIDATES THEMSELVES WERE REFUSED, and a candidate whose OWN timeline read is refused or unreadable is
+ * DROPPED FROM BOTH SIDES: it is neither called unarmed nor called ejected, because either would be a guess and an order
+ * built on a guess is the defect this fixes. A refused read sends no order, never a false all-clear.
+ *
+ * @param {number[] | null} unarmed `readUnarmed`'s answer
+ * @param {(args: string[]) => string} [run]
+ * @returns {{ unarmed: number[], ejections: Map<number, {removedAt: string | null, runId: number | null, failingTests: string[] | null}> } | null}
+ */
+export function readEjections(unarmed, run = defaultRun) {
+  if (unarmed === null) return null;
+  const ejections = new Map();
+  const stillUnarmed = [];
+  for (const number of unarmed) {
+    const ejection = readEjection(number, run);
+    if (ejection === null) continue;
+    if (ejection.ejected) ejections.set(number, readEjectionRun(number, ejection.removedAt, run));
+    else stillUnarmed.push(number);
+  }
+  return { unarmed: stillUnarmed, ejections };
+}
+
+/** @param {number} number @param {(args: string[]) => string} run */
+function readEjection(number, run) {
+  try {
+    return queueEjectionOf(JSON.parse(run(ejectionQueryArgs({ number, repo: repoNow() }))));
+  } catch {
+    return null; // refused or not JSON: `queueEjectionOf(null)`'s own answer for "the API did not say"
+  }
+}
+
+/**
+ * The failed `merge_group` run behind one ejection and the subtests it failed -- each fact `null` when it could not be read,
+ * because an order that names an ejection without its run is still better than none, and one that INVENTS a run is worse.
+ *
+ * The run is found by its branch (`gh-readonly-queue/main/pr-<n>-<sha>`, measured on `agent-org#16`): the newest failed
+ * `merge_group` run for this PR created no later than the removal. A PR ejected twice has two, and the removal time picks.
+ *
+ * @param {number} number @param {string | null} removedAt @param {(args: string[]) => string} run
+ */
+function readEjectionRun(number, removedAt, run) {
+  const found = { removedAt, runId: /** @type {number | null} */ (null), failingTests: /** @type {string[] | null} */ (null) };
+  try {
+    /** @type {{ id: number, head_branch: string, conclusion: string, created_at: string }[]} */
+    const runs = JSON.parse(run(["api", `repos/${repoNow()}/actions/runs?event=merge_group&per_page=50`, "--jq", "[.workflow_runs[] | {id, head_branch, conclusion, created_at}]"]));
+    const failed = runs
+      .filter((r) => String(r.head_branch).includes(`/pr-${number}-`) && r.conclusion === "failure"
+        && (removedAt === null || String(r.created_at) <= removedAt))
+      .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))[0];
+    if (!failed) return found;
+    found.runId = Number(failed.id);
+    found.failingTests = failingSubtestsOf(run(["run", "view", String(failed.id), "--repo", repoNow(), "--log-failed"]));
+  } catch {
+    /* the facts read so far stand; the order says the rest could not be read */
+  }
+  return found;
+}
+
+/**
+ * The failing subtest identities in a `--log-failed` dump, capped so a mass failure does not become the order.
+ * `null` when the log names none: "the log did not say" is a different report from "no subtest failed".
+ * @param {string} log
+ * @returns {string[] | null}
+ */
+function failingSubtestsOf(log) {
+  const lines = log.split("\n").map((l) => l.replace(/^.*?\t.*?\t/, "").replace(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z /, ""));
+  const { notOkLines } = summarizeTestLog(lines.join("\n"));
+  const names = [...new Set(notOkLines.map(testIdentity))];
+  return names.length === 0 ? null : names.slice(0, MAX_EJECTION_SUBTESTS);
+}
+const MAX_EJECTION_SUBTESTS = 5;
+
+/**
  * Is this pull request's red made ONLY of the hold's own manufactured jobs? A `hold:` label reddens
  * exactly `HOLD_RED_JOBS` on purpose (`work-gate/pr-orders.mjs`'s own header), and the REVIEW question
  * does not care who placed the hold -- unlike `redOnlyFromHoldOf`, which asks whether a hold answers a
@@ -6063,8 +6151,19 @@ export function scopeTick(scope, drain, read = readLanes(scope), readings = { co
  */
 function codeReadings(openPrs) {
   const required = requiredWhenRed(openPrs);
-  return { prs: withEvidenceLabelAges(withCommitChains(openPrs)), required, baseTip: baseTipWhenRed(openPrs),
-    unarmed: readUnarmed(shouldBeMerging(openPrs, required)) };
+  const split = readEjections(readUnarmed(shouldBeMerging(openPrs, required)));
+  return { prs: withEjections(withEvidenceLabelAges(withCommitChains(openPrs)), split?.ejections), required, baseTip: baseTipWhenRed(openPrs),
+    unarmed: split === null ? null : split.unarmed };
+}
+
+/**
+ * #3019: STAMP `ejection` ON THE PULL REQUESTS THE QUEUE EJECTED, so `stallReasonOf` -- which reads only the pull request --
+ * can classify them. Absent is not `null`: a pull request nobody read stays unstamped and is never accused.
+ * @param {any[]} prs @param {Map<number, unknown> | undefined} ejections
+ */
+function withEjections(prs, ejections) {
+  if (!ejections || ejections.size === 0) return prs;
+  return prs.map((pr) => (ejections.has(Number(pr?.number)) ? { ...pr, ejection: ejections.get(Number(pr.number)) } : pr));
 }
 
 /**
@@ -6183,15 +6282,20 @@ function decideAndTap(args) {
  * another (`mergeCandidates`' argument). BUT THE HOLD'S EXCUSE IS THE ORDER'S AND IS ADDRESSEE-RELATIVE (#2400), so a PR a worker owns
  * and `ceo` holds is still ordered; WHETHER IT IS RED AT ALL is `red-pr.mjs`'s `isBrokenRed`, asked here too (#2956), and `redSince`
  * is the EARLIEST BROKEN check's finish (`redSinceOf`), which is when its breakage began.
- * @param {any[]} prs @param {{ cause: string, subject: string }[]} decided
+ *
+ * #2996: `holdStands` IS WHETHER A HOLD STILL EXCUSES (`holdExcused`), so a PR whose hold has outlived its reason is red for ITS
+ * OWN jobs and is read here even though `failingChecksOrder` excused it: the order excuses the addressee's own hold, which is the
+ * label trusted, and a freeze that ended is the case this exists for. A PR with a hold and no order is read only when the hold lapsed.
+ * @param {any[]} prs @param {{ cause: string, subject: string }[]} decided @param {{ holdStands?: (pr: any) => boolean }} [options]
  */
-export function redPrFacts(prs, decided) {
+export function redPrFacts(prs, decided, options = {}) {
   const ordered = new Set(decided.filter((order) => order.cause === "pr-checks-failing").map((order) => order.subject));
-  return prs.filter((pr) => ordered.has(`pr-${subjectRef(pr.repoKey, pr.number)}`) && isBrokenRed(pr)).map((pr) => {
+  const asked = (/** @type {any} */ pr) => ordered.has(`pr-${subjectRef(pr.repoKey, pr.number)}`) || holdersOf(labelsOf(pr)).length > 0;
+  return prs.filter((pr) => asked(pr) && isBrokenRed(pr, options)).map((pr) => {
     const owner = ownerOfPr(pr);
     const login = pr.author?.login;
     return { number: pr.number, owner: owner.source === "ceo" ? null : owner.session,
-      redSince: redSinceOf(pr),
+      redSince: redSinceOf(pr, options),
       // The shared account opens every PR, so "its owner's comment" is a comment by the account that opened it.
       ownerCommentAts: (pr.comments ?? []).filter((/** @type {any} */ c) => login && c?.author?.login === login).map((/** @type {any} */ c) => Date.parse(c?.createdAt)).filter(Number.isFinite) };
   });
@@ -6317,6 +6421,104 @@ function lastActivityOf(pr, { now, run }) {
 }
 
 /**
+ * How many referenced items one tick reads that the open lists do not already hold. A BOUND ON THE API SPEND, NOT A TARGET: a wait cites a
+ * few anchors, and the incident that filed #2996 had about ten. A reference past the bound is simply unread -- an unknown, never closed.
+ */
+export const MAX_WAIT_READS = 30;
+
+/** @param {unknown} iso @returns {number | null} */
+const epochOrNull = (iso) => {
+  const at = Date.parse(String(iso ?? ""));
+  return Number.isFinite(at) ? at : null;
+};
+
+/**
+ * One item as `gh api repos/<r>/issues/<n>` states it, as a `RefFact`, or `null` for a state it does not know. `merged_at` is on a PULL
+ * REQUEST's issue record only, and it is what tells a merge from a close.
+ * @param {any} raw @returns {import("./wait-condition.mjs").RefFact | null}
+ */
+export function refFactOf(raw) {
+  const labels = (raw?.labels ?? []).map((/** @type {any} */ l) => String(l?.name ?? l));
+  const changedAt = epochOrNull(raw?.updated_at);
+  if (raw?.state === "open") return { state: "open", labels, resolvedAt: null, changedAt };
+  if (raw?.state !== "closed") return null;
+  return { state: raw.merged_at ? "merged" : "closed", labels, resolvedAt: epochOrNull(raw.merged_at) ?? epochOrNull(raw.closed_at), changedAt };
+}
+
+/**
+ * ONE REFERENCED ITEM'S STATE, or `null` when it could not be read: NEVER "closed" -- a refused read says nothing about the item.
+ * @param {{ repo: string | null, number: number }} ref @param {(args: string[]) => string} run
+ */
+export function readWaitRef(ref, run = defaultRun) {
+  try {
+    return refFactOf(JSON.parse(run(["api", `repos/${ref.repo ?? repoNow()}/issues/${ref.number}`, "--jq",
+      "{state, closed_at, updated_at, merged_at: .pull_request.merged_at, labels: [.labels[].name]}"])));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * WHAT THE WAITS' CONDITIONS REFER TO. An item in the open lists the tick already holds is read from them (open, with its labels); any other is
+ * one `gh api` call, up to `MAX_WAIT_READS`. A reference neither held nor read is left OUT of the facts, which `conditionHolds` calls unknown.
+ * @param {{ items: import("./wait-condition.mjs").WaitItem[], open: any[], run: (args: string[]) => string, limit?: number }} input
+ * @returns {import("./wait-condition.mjs").WaitFacts}
+ */
+export function readWaitFacts({ items, open, run, limit = MAX_WAIT_READS }) {
+  /** @type {Record<string, import("./wait-condition.mjs").RefFact>} */
+  const known = {};
+  for (const raw of open) known[`#${Number(raw.number)}`] = { state: "open", labels: (raw.labels ?? []).map((/** @type {any} */ l) => String(l?.name ?? l)),
+    resolvedAt: null, changedAt: epochOrNull(raw.updatedAt) };
+  /** @type {Record<string, import("./wait-condition.mjs").RefFact>} */
+  const items_ = {};
+  let spent = 0;
+  for (const ref of referencesOf(items)) {
+    const held = ref.repo === null && Object.hasOwn(known, ref.key) ? known[ref.key] : null;
+    const fact = held ?? (spent++ < limit ? readWaitRef(ref, run) : null);
+    if (fact) items_[ref.key] = fact;
+  }
+  return { items: items_ };
+}
+
+/**
+ * #2996: EVERY WAIT THE OPEN ROWS AND PULL REQUESTS DECLARE, RE-READ AGAINST WHAT THEY WAIT FOR: the facts, the waits that stand although
+ * their condition is true, the ones that name no reason, and the count that say `manual`. `null` when either list was refused.
+ * @param {{ prsRead: any[] | null, openRowsRead: any[] | null, now: number, run?: (args: string[]) => string }} input
+ */
+export function waitTickFacts({ prsRead, openRowsRead, now, run = defaultRun }) {
+  if (prsRead === null || openRowsRead === null) return null;
+  const items = [...prsRead.map((pr) => waitItemOf(pr, "pr")), ...openRowsRead.map((row) => waitItemOf(row, "row"))];
+  const facts = readWaitFacts({ items, open: [...prsRead, ...openRowsRead], run });
+  return { facts, stale: staleWaits({ items, facts, now }), bare: bareWaits({ items, now }), manual: manualWaits({ items, now }) };
+}
+
+/**
+ * THE SETTER'S ORDER, one per stale wait (capped like every row order): the item, the condition that is now true, and the exact fields to
+ * remove. IT IS THE `org-health` CAUSE, addressed to the setter and not to `ceo`: a cause of its own would be declared in
+ * `cause-declaration.mjs`, outside #2996's Region, and the profile (judgment, high) is the right one for an order to look and remove.
+ * @param {import("./wait-condition.mjs").StaleWait[]} stale
+ */
+export function staleWaitOrders(stale) {
+  return stale.slice(0, MAX_ROW_ORDERS_PER_TICK).map(({ item, wait, setter, remove }) => {
+    const discriminator = `${subjectRef(item.repoKey, item.number)}:${wait.key}`;
+    return { session: setter, cause: "org-health", subject: `stale-wait-${subjectRef(item.repoKey, item.number)}`, discriminator,
+      prompt: `A WAIT YOU SET HAS OUTLIVED ITS REASON. ${subjectMention(item)} declares \`Waiting-for: ${wait.text}\` and that condition is now TRUE, `
+        + `so nothing is being waited for -- and the wait still stands. REMOVE: ${remove.join("; ")}. A wait whose reason is gone is a stall, not `
+        + "proof of health (the chairman, 2026-10-02: a freeze ended at 06:50Z and its waits stood four hours). If the wait should stand for "
+        + "a different reason, say so by writing the new `Waiting-for:` condition on it. Unanswered, `ceo` is told after 30 minutes.",
+      causeKey: `${setter}/org-health/stale-wait-order@${discriminator}` };
+  });
+}
+
+/**
+ * #2996: THE GREEN PULL REQUESTS, counting a PR whose hold has stopped excusing as the mergeable PR it would be with the hold lifted.
+ * @param {any[]} prs @param {string[] | null} required @param {(pr: any) => boolean} holdStands
+ */
+function greenCountWithLapsedHoldsLifted(prs, required, holdStands) {
+  return shouldBeMerging(prs.map((pr) => (holdersOf(labelsOf(pr)).length > 0 && !holdStands(pr) ? withoutHold(pr) : pr)), required).length;
+}
+
+/**
  * #2936: THE ORG-HEALTH TICK over what `main` already holds. Reads ONE new thing, the last merge (`GH_READS`); every other fact is a
  * value the tick computed for `decide`: the PRs with their owners, `required`, the offered rows, the #2845 streaks and the primary's
  * drift. `prsRead`/`readyRead` are the RAW reads, `null` for a refusal, because `decideArgs` carries them coalesced to `[]` and
@@ -6328,26 +6530,55 @@ function lastActivityOf(pr, { now, run }) {
  * same reason as `prsRead`. `io` is for the test: the clock, the last merge, the ledger and the log, so nothing here needs a token.
  * @param {{ prsRead: any[] | null, readyRead: any[] | null, openRowsRead: any[] | null, decideArgs: any, decided: any[] }} tick
  * @param {{ now?: number, lastMergedAt?: () => number | null, readCaptures?: (now: number) => ReturnType<typeof readFleetCaptures>,
- *           log?: (line: string) => void, readCopies?: () => null, readLabJobs?: () => string[] | null }} [io]
+ *           log?: (line: string) => void, readCopies?: () => null, readLabJobs?: () => string[] | null, readWaits?: typeof waitTickFacts }} [io] `readWaits` (#2996) is the test's seam for the
+ *           the test's seam for the referenced items, so nothing here needs a token
  */
 export function orgHealthNow({ prsRead, readyRead, openRowsRead, decideArgs, decided },
   { now = Date.now(), lastMergedAt = () => readLastMergedAt(defaultRun, repoNow()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies,
-    readLabJobs = dispatchedLabJobsOrSay } = {}) {
-  const { prs, required, readyRows, prFiles, rowBranches, openRows, primaryDrift, claimRefusals } = decideArgs;
-  const asked = prsRead !== null && readyRead !== null;
-  return orgHealthTick({
+    readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts } = {}) {
+  const { prs, required, primaryDrift, claimRefusals } = decideArgs;
+  // #2996: THE WAITS ARE READ BEFORE THE READINGS, because a hold's excuse is now a question about its condition. `null` is a refused
+  // list: the hold then keeps its label-only excuse (the old behaviour) and the two wait readings say unknown.
+  const waits = readWaits({ prsRead, openRowsRead, now });
+  const { holdStands, stale } = waitStanding(waits, now);
+  const readings = orgHealthTick({
     now,
     lastMergedAt: lastMergedAt(),
-    work: asked ? { greenPrs: shouldBeMerging(prs, required).length,
-      claimableRows: partitionUnclaimed(readyRows, prFiles, { rowBranches, openRows }).offerable.length } : null,
-    redPrs: prsRead === null ? null : redPrFacts(prs, decided),
+    work: prsRead !== null && readyRead !== null ? workThatCouldLand(decideArgs, { holdStands, stale }) : null,
+    redPrs: prsRead === null ? null : redPrFacts(prs, decided, { holdStands }),
     stalledPrs: prsRead === null ? null : stalledPrFacts(prs, required, { now }),
     refusals: claimRefusals ?? null,
     drift: primaryDrift ?? null,
     primarySince: primaryStandingSince(primaryDrift ?? null, { root: REPO_CHECKOUT }),
     fleet: readCaptures(now),
     waiting: fleetWaitingFacts(openRowsRead, readLabJobs()),
+    waits,
   }, { ...(log && { log }), ...(readCopies && { readCopies }) });
+  return [...readings, ...staleWaitOrders(stale)];
+}
+
+/**
+ * WHAT THE TICK'S WAIT READ SAYS TO THE REST OF IT: whether a hold still excuses (`undefined` when the read was refused, which leaves the label's own excuse
+ * as it was) and the waits that stand although their condition is true.
+ * @param {ReturnType<typeof waitTickFacts>} waits @param {number} now
+ */
+function waitStanding(waits, now) {
+  if (waits === null) return { holdStands: undefined, stale: [] };
+  return { holdStands: (/** @type {any} */ pr) => holdExcused(pr, { facts: waits.facts, now }), stale: waits.stale };
+}
+
+/**
+ * WHAT COULD LAND, for `no-merge-while-work-exists`: the green PRs (a PR whose hold has stopped excusing counts as the mergeable one it would be with the hold
+ * lifted, #2996) and the claimable Ready rows (a Ready row whose wait is stale counts as one the wait is hiding).
+ * @param {any} decideArgs @param {{ holdStands?: (pr: any) => boolean, stale: import("./wait-condition.mjs").StaleWait[] }} waits
+ * @returns {{ greenPrs: number, claimableRows: number }}
+ */
+function workThatCouldLand({ prs, required, readyRows, prFiles, rowBranches, openRows }, { holdStands, stale }) {
+  const staleReadyRows = stale.filter((s) => s.item.kind === "row" && s.item.labels.includes(READY_LABEL)).length;
+  return {
+    greenPrs: holdStands ? greenCountWithLapsedHoldsLifted(prs, required, holdStands) : shouldBeMerging(prs, required).length,
+    claimableRows: partitionUnclaimed(readyRows, prFiles, { rowBranches, openRows }).offerable.length + staleReadyRows,
+  };
 }
 
 function main() {
@@ -6390,8 +6621,8 @@ function main() {
   // `requiredWhenRed` makes a `gh` call when anything is red -- calling it inline in both places would
   // pay for it twice on exactly the red tick this row is about.
   const required = requiredWhenRed(openPrs);
-  const baseTip = baseTipWhenRed(openPrs);
-  const decideArgs = { primaryDrift, prs: withPrOwners(withEvidenceLabelAges(withCommitChains(openPrs)), allOpen, stampLookup()), readyRows: rows, promotableRows: promotableRows ?? [],
+  const baseTip = baseTipWhenRed(openPrs), armingSplit = readEjections(readUnarmed(shouldBeMerging(openPrs, required))); // #3019: BEFORE the arguments -- ejected PRs are stamped onto `prs` and leave `unarmed`
+  const decideArgs = { primaryDrift, prs: withEjections(withPrOwners(withEvidenceLabelAges(withCommitChains(openPrs)), allOpen, stampLookup()), armingSplit?.ejections), readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required, baseTip,
     epics: epicsWhenShelfEmpty(rows),
     answerOwed: rowsOwingAnswers({ openRows: allOpen, openPrs, closedRows: closedAnswerRows() }),
@@ -6405,7 +6636,7 @@ function main() {
     // #1969: CONDITIONAL, and the condition is answered for free from the list already in hand.
     // `shouldBeMerging` reads `openPrs`; only if it finds a green, unheld, non-draft PR is the
     // merge-queue call made at all.
-    unarmed: readUnarmed(shouldBeMerging(openPrs, required)), rowBranches, claimRefusals: offeredRefusalStreaks(rows, prFiles, { rowBranches, openRows: allOpen }),
+    unarmed: armingSplit === null ? null : armingSplit.unarmed, rowBranches, claimRefusals: offeredRefusalStreaks(rows, prFiles, { rowBranches, openRows: allOpen }),
     // #2174: A LOCAL READ, NOT AN API ONE -- a `readdir`, some `readFileSync` and one `systemctl` spawn
     // per shipped timer. It adds nothing to `GH_READS` and cannot be refused by an exhausted pool, which
     // is what lets the detection exist at all.

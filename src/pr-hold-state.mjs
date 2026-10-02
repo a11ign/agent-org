@@ -26,6 +26,10 @@
  * predicate must not live in `run:` bash. So both callers read this.
  */
 
+import { conditionHolds, declaredWaitsOf, hoursSince, waitItemOf, MANUAL_WAIT_HOURS } from "./wait-condition.mjs";
+
+/** @typedef {import("./wait-condition.mjs").Wait} Wait @typedef {import("./wait-condition.mjs").WaitFacts} WaitFacts */
+
 /**
  * THE LABEL PREFIX THAT IS A HOLD ON A PR. Exported, because it is now the ONLY spelling: three copies
  * of the old one were what made this rename a rename rather than an edit.
@@ -57,6 +61,41 @@ export const HOLD_PREFIX = "hold:";
  */
 export function holdersOf(labels) {
   return labels.filter((l) => l.startsWith(HOLD_PREFIX));
+}
+
+/**
+ * WHY IS THIS PR HELD, AS THE HOLD SAID AT THE TIME? `{ reason: "until", waits }` when it names a condition (`pr:hold --until
+ * "closed #2867"`, or a `Waiting-for:` line in the body), `"manual"` when it said so out loud, `"none"` when it said nothing --
+ * every hold taken before #2996 is `none`. `since` is when the marker comment was posted, the only date a hold carries.
+ * `holdersOf` is unchanged: WHETHER a PR is held is the label's, WHY it is held is this.
+ * @param {{ body?: string, comments?: any[], labels?: any[] }} pr
+ * @returns {{ reason: "until" | "manual" | "none", waits: Wait[], since: number | null }}
+ */
+export function holdReasonOf(pr) {
+  const { waits, markedAt } = declaredWaitsOf(waitItemOf(pr, "pr"));
+  if (waits.some((w) => w.state === "manual")) return { reason: "manual", waits, since: markedAt };
+  if (waits.some((w) => w.state !== "unreadable")) return { reason: "until", waits, since: markedAt };
+  return { reason: "none", waits, since: markedAt };
+}
+
+/**
+ * IS THIS HELD PR STILL EXCUSED? THE LABEL ALONE NO LONGER SAYS SO (#2996): `red-pr.mjs`, `org-health.mjs` and the claim treated
+ * `hold:*` as proof of health and a freeze that ended stood for four hours. A hold is excused while a condition it names is
+ * UNRESOLVED OR UNKNOWN, while a `manual` hold is younger than `MANUAL_WAIT_HOURS`, and while a hold with NO reason has been quiet
+ * for less than that. A PR that is not held is not excused: there is nothing to excuse.
+ *
+ * A condition that cannot be read is excused, not released: a refused read must not end a freeze (#1286). The age of a hold with no
+ * date is likewise unknown and excused.
+ * @param {{ body?: string, comments?: any[], labels?: any[], updatedAt?: string }} pr
+ * @param {{ facts: WaitFacts, now: number }} context
+ * @returns {boolean}
+ */
+export function holdExcused(pr, { facts, now }) {
+  if (holdersOf((pr.labels ?? []).map((l) => String(l?.name ?? l))).length === 0) return false;
+  const hold = holdReasonOf(pr);
+  if (hold.reason === "until") return !hold.waits.some((w) => conditionHolds(w, facts) === true);
+  const quietSince = hold.reason === "manual" ? hold.since : waitItemOf(pr, "pr").updatedAt;
+  return quietSince === null || hoursSince(quietSince, now) < MANUAL_WAIT_HOURS;
 }
 
 /**

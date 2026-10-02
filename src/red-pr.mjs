@@ -1,5 +1,5 @@
 // @ts-check
-// A LEAF (`pr-hold-state.mjs` and `newest-check-run.mjs` import nothing): `org-retro.mjs` is a leaf `work-gate.mjs` imports before any
+// A LEAF (`pr-hold-state.mjs` imports only the leaf `wait-condition.mjs`, and `newest-check-run.mjs` nothing): `org-retro.mjs` is a leaf `work-gate.mjs` imports before any
 // build, so this file may not reach `work-gate/pr-orders.mjs`, which imports `work-gate.mjs` back.
 //
 // IS THIS PULL REQUEST BROKEN, OR RED ON PURPOSE? (#2954, ceo's retrospective of 2026-10-02). `deliberateRefusals` fails BY DESIGN on a PR
@@ -47,16 +47,29 @@ export function redChecks(pr) {
  * The red checks that are a BREAKAGE. A held PR's own two jobs are the hold speaking, so they are left out; every other red on it is real, and
  * the hold does not hide it. Without a hold nothing is left out: `deliberateRefusals` failing on an unheld PR is #294's head-vs-tip race or
  * #549's `Closes` mismatch, and that is a broken PR.
+ *
+ * `holdStands` IS WHETHER THE HOLD STILL EXCUSES (#2996). Its default is the label alone, which is what every caller before #2996
+ * got and what `org-retro.mjs` and `queue-table.mjs` still ask; `org-health.mjs`'s reading passes `holdExcused`, so a hold whose
+ * reason is gone stops hiding the red it caused.
  * @param {{ labels?: any[], statusCheckRollup?: any[] }} pr
+ * @param {{ holdStands?: (pr: any) => boolean }} [options]
  */
-export function brokenChecks(pr) {
-  const held = holdersOf(labelNames(pr)).length > 0;
+export function brokenChecks(pr, { holdStands = hasHolder } = {}) {
+  const held = holdStands(pr);
   return redChecks(pr).filter((c) => !(held && HOLD_OWN_JOBS.includes(c.name)));
 }
 
-/** @param {{ labels?: any[], statusCheckRollup?: any[] }} pr @returns {boolean} red for a reason a hold does not explain */
-export function isBrokenRed(pr) {
-  return brokenChecks(pr).length > 0;
+/** @param {{ labels?: any[] }} pr @returns {boolean} the label alone: a `hold:*` is on it */
+const hasHolder = (pr) => holdersOf(labelNames(pr)).length > 0;
+
+/**
+ * @param {{ labels?: any[], statusCheckRollup?: any[] }} pr
+ * @param {any} [options] `{ holdStands }` as `brokenChecks` takes it (#2996). TYPED `any` BECAUSE `.filter(isBrokenRed)` (`org-retro.mjs`) hands a function its
+ *   index second, and a number has no `holdStands`: the default is the label, which is what that caller asked before.
+ * @returns {boolean} red for a reason a hold does not explain
+ */
+export function isBrokenRed(pr, options) {
+  return brokenChecks(pr, options?.holdStands ? options : undefined).length > 0;
 }
 
 /**
@@ -71,4 +84,15 @@ export function isHeldRed(pr) {
 /** @param {{ labels?: any[] }} pr @returns {string[]} the `hold:<session>` labels, whole */
 export function holdsOn(pr) {
   return holdersOf(labelNames(pr));
+}
+
+/**
+ * THE PR AS IT WOULD STAND WITH ITS HOLD LIFTED: no `hold:*` label and without the hold's own two jobs, which are red only because of the label. For a
+ * hold that no longer excuses (#2996), so "could this merge" is asked of the PR a person would find once they removed it.
+ * @param {{ labels?: any[], statusCheckRollup?: any[] }} pr
+ */
+export function withoutHold(pr) {
+  return { ...pr,
+    labels: (pr.labels ?? []).filter((/** @type {any} */ l) => !holdersOf([String(l?.name ?? l)]).length),
+    statusCheckRollup: newestPerName(pr.statusCheckRollup ?? []).filter((/** @type {any} */ c) => !HOLD_OWN_JOBS.includes(nameOf(c))) };
 }
