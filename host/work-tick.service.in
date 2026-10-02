@@ -1,5 +1,5 @@
 [Unit]
-# ONE TICK OF THE ORG -- #912. See packages/agent-org/src/work-tick.mjs for why this exists at all.
+# ONE TICK OF THE ORG -- #912. See src/work-tick.mjs in the tool's checkout for why this exists at all.
 #
 # The tick costs two `gh` calls and NO model turn. That is the whole point: the six sessions this
 # replaces each held a standing cron that woke a MODEL every 10-30 minutes to ask a question a script
@@ -64,7 +64,7 @@ Environment=GH_CONFIG_DIR=@@workersDir@@/gh
 # `work-gate.mjs` now reads the primary against `origin/main` AFTER this step (`update-primary.mjs --drift`), wakes `ceo`
 # with the dirty paths (`primary-stale`) and heads every other order with the sha and the count. Drop that reader and this
 # `-` becomes the silence again: `update-primary.test.ts` pins that the two travel together.
-ExecStartPre=-/usr/bin/npm run primary:update
+ExecStartPre=-%h/.local/bin/pnpm run primary:update
 
 # `work-tick` exits 1 when an order had nowhere to go (nobody idle) and 2 when a read was refused.
 # Neither is a crash and neither should mark the unit failed -- both are ordinary states of a queue that

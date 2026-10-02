@@ -26,7 +26,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SHIPPED_DIR, TOOL_UPDATE_EXEC, shippedUnitText, workTickToolForm } from "../host-units.mjs";
+import { REPO_ROOT, SHIPPED_DIR, TOOL_UPDATE_EXEC, identityDrift, shippedUnitText, unitsSpendingGh, workTickToolForm } from "../host-units.mjs";
 import { HostConfigRefusal, homeHostConfig, parseBeforeTick, parseHostConfig, renderTemplate, stateFilePath, templateValues }
   from "../host-config.mjs";
 import { handoffQueuePath, keptClaimsPath, ledgerPathFrom, reviewerPathsFrom, sparePathsFrom } from "../wake.mjs";
@@ -36,7 +36,18 @@ import { sandboxGitEnv, withGitSandbox } from "../lib/git-sandbox.ts";
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
 /** The digest of the `work-tick` unit the host runs today: the one `host-project-paths.test.ts` pins as `TODAYS_TEXT`, restated so this file's claim is checkable alone. */
-const TODAYS_WORK_TICK_SHA = "b566128df67e75cf012540a9aa8d75a7d9a2fb91d32e12ad901f7b8bce8a171e";
+const TODAYS_WORK_TICK_SHA = "1c388b269625507de8067d4620f3bd5a92dd7f94ea06a21516b18061352aa7dd";
+
+/**
+ * a11ign's host with its `tool` taken out. #2974 (cut-over 3 of 6) SET `tool` in a11ign's `host.json`, so the real host now renders the tool
+ * form, and "the template's plain text for a11ign's values" has to be asked of the same host without the key. The digest above moved with the
+ * template's `primary:update` line (npm -> the pnpm shim), the one text change the cut made to the plain form.
+ */
+const plainA11ignHost = (() => {
+  const plain: Record<string, unknown> = { ...homeHostConfig() };
+  delete plain.tool;
+  return Object.freeze(plain);
+})() as never;
 
 /** A host that is nothing like a11ign's: a different account, prefix, home, state directory and project set. */
 const acmeHost = (extra: Record<string, unknown> = {}) => ({
@@ -137,9 +148,9 @@ const workTickOf = (host: ReturnType<typeof parse>) => shippedUnitText("acme-wor
 const linesOnlyIn = (a: string, b: string) => a.split("\n").filter((line) => line !== "" && !line.startsWith("#") && !b.split("\n").includes(line));
 
 test("#2793: with NO `tool` the work-tick unit is today's text BYTE FOR BYTE -- a11ign's, and any host's", () => {
-  assert.equal(homeHostConfig().tool, undefined, "POSITIVE CONTROL: a11ign's host.json names no tool, so this is the running unit");
-  assert.equal(homeHostConfig().stateDir, undefined, "and no stateDir: a11ign's host.json is not edited by this row (#2623 does)");
-  assert.equal(sha256(shippedUnitText("a11ign-work-tick.service") ?? ""), TODAYS_WORK_TICK_SHA, "the unit the host runs, unchanged");
+  assert.equal(Object.hasOwn(plainA11ignHost as object, "tool"), false, "POSITIVE CONTROL: the host asked here names no tool, so this is the plain render");
+  assert.equal(homeHostConfig().stateDir, undefined, "and no stateDir: a11ign's host.json declares none");
+  assert.equal(sha256(shippedUnitText("a11ign-work-tick.service", { host: plainA11ignHost }) ?? ""), TODAYS_WORK_TICK_SHA, "the unit's plain render, unchanged");
   withProjects((dirs) => {
     const host = hostAt(dirs, {});
     const template = readFileSync(join(SHIPPED_DIR, "work-tick.service.in"), "utf8");
@@ -148,18 +159,19 @@ test("#2793: with NO `tool` the work-tick unit is today's text BYTE FOR BYTE -- 
   });
 });
 
-test("#2793: with `tool` set, EXACTLY THREE lines are decision 3's and the rest of the text is today's", () => {
+test("#2793 + #2974: with `tool` set, THREE lines are decision 3's, ONE is the host variable the tool needs, and the rest is today's", () => {
   withProjects((dirs) => {
     const plain = workTickOf(hostAt(dirs, {}));
     const installed = workTickOf(hostAt(dirs, { tool: dirs.tool }));
     assert.notEqual(installed, plain, "POSITIVE CONTROL: the two renderings differ, so `equal` above is not one text compared to itself");
     assert.deepEqual(linesOnlyIn(plain, installed), [
       "WorkingDirectory=" + dirs.widgets,
-      "ExecStartPre=-/usr/bin/npm run primary:update",
+      "ExecStartPre=-%h/.local/bin/pnpm run primary:update",
       "ExecStart=/usr/bin/node packages/agent-org/src/work-tick.mjs",
     ], "the three lines that leave");
     assert.deepEqual(linesOnlyIn(installed, plain), [
       "WorkingDirectory=" + dirs.tool,
+      `Environment=AGENT_ORG_HOST=${dirs.widgets}/.agent-org/host.json`,
       "ExecStartPre=-" + TOOL_UPDATE_EXEC,
       `ExecStartPre=-/usr/bin/env -C ${dirs.widgets} npm run widgets:update`,
       "ExecStart=/usr/bin/node src/work-tick.mjs",
@@ -195,6 +207,58 @@ test("#2793: a project whose declaration cannot be read, or holds a bad beforeTi
     assert.equal(refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))).field, "(file)",
       "an unreadable declaration is a refusal, not a skipped project whose checkout would go stale unseen");
   });
+});
+
+// --- 2b. #2974: EVERY SERVICE THE TOOL SHIPS RUNS FROM THE TOOL, and the tool is told where its project is -----------------------------
+
+/** The services the tool ships and a11ign installs (the work-tick, the worktree prune, the board report, the dormant shadow window). */
+const TOOL_SERVICES = ["work-tick", "worktree-prune", "board-report", "shadow-window"] as const;
+const serviceOf = (host: ReturnType<typeof parse>, name: string) => shippedUnitText(`acme-${name}.service`, { host, units: ACME_UNITS }) ?? "";
+const nonComment = (text: string) => text.split("\n").filter((line) => line.trim() !== "" && !line.trimStart().startsWith("#"));
+
+test("#2974: with `tool` set, every shipped service runs from the tool's checkout and names no `packages/agent-org` path", () => {
+  withProjects((dirs) => {
+    const plainHost = hostAt(dirs, {});
+    const toolHost = hostAt(dirs, { tool: dirs.tool });
+    for (const name of TOOL_SERVICES) {
+      const plain = nonComment(serviceOf(plainHost, name));
+      const installed = nonComment(serviceOf(toolHost, name));
+      assert.notDeepEqual(installed, plain, `POSITIVE CONTROL: ${name} renders differently under a tool, so the checks below are of the tool form`);
+      assert.ok(installed.includes(`WorkingDirectory=${dirs.tool}`), `${name} runs from the tool: ${installed.join(" | ")}`);
+      assert.deepEqual(installed.filter((line) => line.includes("packages/agent-org")), [], `${name} names a path inside the monorepo copy`);
+      assert.doesNotMatch(serviceOf(toolHost, name), /packages\/agent-org/, `${name}: not even in a comment, because \`systemctl cat\` shows comments and #2974's done-when 1 reads it`);
+      assert.ok(installed.includes(`Environment=AGENT_ORG_HOST=${dirs.widgets}/.agent-org/host.json`),
+        `${name} must say where the host's declaration is: a tool run from its own checkout refuses without it`);
+    }
+    assert.ok(nonComment(serviceOf(plainHost, "work-tick")).some((line) => line.includes("packages/agent-org")),
+      "POSITIVE CONTROL: the plain work-tick DOES name the path, so an empty filter above means the tool form removed it");
+  });
+});
+
+test("#2974: the prune and the board report take their project from the checkout the host names, not from a working directory", () => {
+  withProjects((dirs) => {
+    const toolHost = hostAt(dirs, { tool: dirs.tool });
+    const prune = nonComment(serviceOf(toolHost, "worktree-prune"));
+    assert.ok(prune.includes(`ExecStart=/usr/bin/node src/prune-worktrees.mjs --apply ${dirs.widgets}`),
+      `the prune is handed the repository it prunes (its cwd is the tool's now): ${prune.join(" | ")}`);
+    const report = nonComment(serviceOf(toolHost, "board-report"));
+    assert.ok(report.includes("ExecStart=/usr/bin/bash host/board-report-dispatch.sh"));
+    assert.ok(report.includes(`Environment=AGENT_ORG_PROJECT=${dirs.widgets}/.agent-org/project.json`),
+      "the dispatcher reads the project's declaration from $AGENT_ORG_PROJECT, which its default would otherwise look for in the tool's directory");
+    const timer = shippedUnitText("acme-work-tick.timer", { host: toolHost, units: ACME_UNITS });
+    assert.equal(timer, shippedUnitText("acme-work-tick.timer", { host: hostAt(dirs, {}), units: ACME_UNITS }), "a timer names no path of its own, so the tool form leaves it alone");
+  });
+});
+
+test("#2974: the gh-identity check still SEES a unit in tool form -- the population does not lose its work-tick", () => {
+  // `unitEntryPoints` resolved `node src/work-tick.mjs` against the project and found nothing, so the unit that spends the most rate limit
+  // dropped out of `unitsSpendingGh` without a failure. a11ign's real host with a `tool` injected, so this holds before and after its host.json says one.
+  // Its project is THIS run's checkout, not the host's absolute path, which a CI runner does not have: the tool form reads each project's `beforeTick`.
+  const toolHost = { ...homeHostConfig(), projects: [{ id: homeHostConfig().primary, checkout: REPO_ROOT.replace(/\/$/, "") }], tool: "/home/agent/repos/agent-org" } as never;
+  const spending = unitsSpendingGh({ host: toolHost }).map((u) => u.unit);
+  assert.ok(spending.includes("a11ign-work-tick.service"), `the tick is in the population: ${spending.join(", ")}`);
+  assert.ok(spending.includes("a11ign-worktree-prune.service"), `and so is the prune: ${spending.join(", ")}`);
+  assert.deepEqual(identityDrift({ host: toolHost }), [], "and every one of them still declares whose account it spends");
 });
 
 // --- 3. stateDir: a different one changes every path the readers use --------------------------------------------------------------

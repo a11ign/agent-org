@@ -125,7 +125,7 @@ import { requiredWhenRed, perPullRequestOrders, greenUnarmedOrders, reviewBlocke
 export { redOnlyBySupersededRun, mergeConflictOrders, greenUnarmedOrders, reviewBlockedOrders, HOLD_RED_JOBS,
   stallReasonOf, stallOrderOf, stalledPrOrders, STALL_REASON, STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr,
   awaitingEvidenceStaleOrders } from "./work-gate/pr-orders.mjs";
-import { labJobFinishedOrders, readLabJobRecords } from "./work-gate/lab-job-orders.mjs"; // #2729
+import { labJobFinishedOrders, readLabJobRecords, readDispatchedLabJobs } from "./work-gate/lab-job-orders.mjs"; // #2729, #3007
 // #2691: THE LIVE CALL-COUNT SIGNAL, reusing the parser rather than a second one -- `split-baseline.mjs`
 // already imports these two the same way. `token-audit.mjs` imports only `node:*` and `cli-flags.mjs`
 // (already here), so the gate keeps the property its own header states.
@@ -5846,6 +5846,20 @@ export function labJobRecordsOrSay(read = readLabJobRecords) {
 }
 
 /**
+ * The lab jobs dispatched and not yet ended (#3007), or `null` when the read was refused -- SAID on stderr, and `null`, never `[]`: an
+ * empty list reads as "nothing waits". A local `ps`: it adds nothing to `GH_READS`.
+ * @param {typeof readDispatchedLabJobs} [read]
+ */
+export function dispatchedLabJobsOrSay(read = readDispatchedLabJobs) {
+  try {
+    return read();
+  } catch (err) {
+    process.stderr.write(`COULD NOT READ dispatched lab jobs: ${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0]}\n`);
+    return null;
+  }
+}
+
+/**
  * `readRowsOffBoard`, saying on stderr when it could not ask (split out of `main`, which sits on `complexity`'s limit).
  * A refused read emits no order and MUST NOT read as a clean board, so the difference is written where the tick log reads.
  * @param {(line: string) => void} [log]
@@ -6202,13 +6216,18 @@ export function readFleetCaptures({ now, path = join(REPO_CHECKOUT, FLEET_CAPTUR
  * selection, so this and `fleet-batch-due` cannot disagree about which rows are waiting. `openRows` is the RAW read, `null` for a
  * refusal, and that is `null` here: an empty list would read as "nobody is waiting".
  *
- * `labJobs` IS ALWAYS EMPTY, AND THAT IS A GAP, NOT A FINDING. The gate reads the lab jobs that ENDED (`labJobRecordsOrSay`), and
- * nothing in it reads which are queued for the fleet, so a fleet idle with only a lab job waiting does not trip.
+ * #3007: `labJobs` IS THE LAB JOBS DISPATCHED AND NOT YET ENDED (`dispatchedLabJobsOrSay`), `null` for a refused read. It was always `[]` while
+ * the gate read only the jobs that ENDED, so a fleet idle with only a lab job waiting never tripped. A refused job read is not "no
+ * jobs": with rows waiting the answer is still known (they trip alone, and the jobs are not claimed empty), and with none it is `null`,
+ * unknown. OMITTED is `[]`, the one-argument form the row-only callers use.
  * @param {any[] | null} openRows
+ * @param {string[] | null} [labJobs]
  * @returns {{ rows: number[], labJobs: string[] } | null}
  */
-export function fleetWaitingFacts(openRows) {
-  return openRows === null ? null : { rows: fleetBatchRows(openRows).map((row) => Number(row.number)), labJobs: [] };
+export function fleetWaitingFacts(openRows, labJobs = []) {
+  if (openRows === null) return null;
+  const rows = fleetBatchRows(openRows).map((row) => Number(row.number));
+  return labJobs === null && rows.length === 0 ? null : { rows, labJobs: labJobs ?? [] };
 }
 
 /**
@@ -6281,10 +6300,11 @@ function lastActivityOf(pr, { now, run }) {
  * same reason as `prsRead`. `io` is for the test: the clock, the last merge, the ledger and the log, so nothing here needs a token.
  * @param {{ prsRead: any[] | null, readyRead: any[] | null, openRowsRead: any[] | null, decideArgs: any, decided: any[] }} tick
  * @param {{ now?: number, lastMergedAt?: () => number | null, readCaptures?: (now: number) => ReturnType<typeof readFleetCaptures>,
- *           log?: (line: string) => void, readCopies?: () => null }} [io]
+ *           log?: (line: string) => void, readCopies?: () => null, readLabJobs?: () => string[] | null }} [io]
  */
 export function orgHealthNow({ prsRead, readyRead, openRowsRead, decideArgs, decided },
-  { now = Date.now(), lastMergedAt = () => readLastMergedAt(defaultRun, repoNow()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies } = {}) {
+  { now = Date.now(), lastMergedAt = () => readLastMergedAt(defaultRun, repoNow()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies,
+    readLabJobs = dispatchedLabJobsOrSay } = {}) {
   const { prs, required, readyRows, prFiles, rowBranches, openRows, primaryDrift, claimRefusals } = decideArgs;
   const asked = prsRead !== null && readyRead !== null;
   return orgHealthTick({
@@ -6298,7 +6318,7 @@ export function orgHealthNow({ prsRead, readyRead, openRowsRead, decideArgs, dec
     drift: primaryDrift ?? null,
     primarySince: primaryStandingSince(primaryDrift ?? null, { root: REPO_CHECKOUT }),
     fleet: readCaptures(now),
-    waiting: fleetWaitingFacts(openRowsRead),
+    waiting: fleetWaitingFacts(openRowsRead, readLabJobs()),
   }, { ...(log && { log }), ...(readCopies && { readCopies }) });
 }
 

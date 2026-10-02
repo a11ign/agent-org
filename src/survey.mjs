@@ -19,7 +19,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-// RELATIVE, not `@a11ign/worker-fleet/cli-flags` or `@a11ign/guards/git-env`: `agent-org` imports nothing
+// RELATIVE, not `@a11ign/screenreader-fleet/cli-flags` or `@a11ign/guards/git-env`: `agent-org` imports nothing
 // outside its own package (#2658, ADR 0040 decision 4) -- these are its own copies, in `lib/`.
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";

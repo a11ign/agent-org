@@ -1187,7 +1187,7 @@ async function main() {
 
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-// #1373: RELATIVE, not `@a11ign/worker-fleet/cli-flags` -- `row-claim.mjs` imports this file now, and
+// #1373: RELATIVE, not `@a11ign/screenreader-fleet/cli-flags` -- `row-claim.mjs` imports this file now, and
 // `close-rows-for-merged-pr.mjs`, `close-rows-sweep.mjs` and `workflow-run-liveness.mjs` run it before
 // `npm ci`, where a package specifier dies (`pre-install-import-graph.test.ts`).
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
