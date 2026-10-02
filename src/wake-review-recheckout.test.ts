@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deliver, deliverHandoffs, repointedForReviewer } from "./wake.mjs";
+import { deliver, deliverHandoffs, handoffId, repointedForReviewer } from "./wake.mjs";
 import { promptOrQueue, STANCE, EXIT } from "./prompt-session.mjs";
 
 const REVIEW_ROOT = "/reviews-root";
@@ -81,8 +81,8 @@ test("#2771 (1a): a tick-delivered order about an ALREADY-LIVE reviewer's own pu
   assert.match(prompts[1], /Re-review at the new head\./, "the author's own words still go");
 });
 
-test("#2771 (1c): a direct prompt that is QUEUED (the reviewer is mid-turn) moves no tree; and the tick refuses a queued order to a "
-  + "reviewer outright (`reviewerMismatch`: a handoff's key names no pull request) -- PINNED AS THE CURRENT STATE, a separate defect", () => {
+test("#2771 (1c) / #3031: a direct prompt that is QUEUED (the reviewer is mid-turn) moves no tree then; the tick delivers it once the "
+  + "reviewer is idle, re-pointing first", () => {
   const co = fakeCheckout();
   reviewerAtFirstHead(2754, co);
   co.push(2754);
@@ -92,11 +92,16 @@ test("#2771 (1c): a direct prompt that is QUEUED (the reviewer is mid-turn) move
     const code = promptOrQueue({ run: () => "{}", label: "reviewer-2754", text: "Pushed a fix.", agents: agents({ "reviewer-2754": "working" }),
       path: join(dir, "queue"), stance: STANCE.UNDECLARED, sender: null, sleep: () => {}, checkout: co.seams });
     assert.equal(code, EXIT.QUEUED);
-    const tick = deliverHandoffs([{ id: "h1", session: "reviewer-2754", prompt: "Pushed a fix.", queuedAt: Date.now() }],
-      agents({ "reviewer-2754": "idle" }), [], { run: () => "{}" });
-    assert.match(tick.refused.join(), /reviews PR #2754 and nothing else, and this order is about no pull request/);
-    assert.deepEqual(co.events.slice(before), [], "no git call: a running Acceptance keeps its files");
+    assert.deepEqual(co.events.slice(before), [], "no git call while it is mid-turn: a running Acceptance keeps its files");
     assert.equal(treeOf(co, 2754), headOf(2754, 1));
+    const typed: string[] = [];
+    const id = handoffId("reviewer-2754", "Pushed a fix.");
+    const tick = deliverHandoffs([{ id, session: "reviewer-2754", prompt: "Pushed a fix.", queuedAt: Date.now() }],
+      agents({ "reviewer-2754": "idle" }), [], { run: (args) => { typed.push(args[args.length - 1]); return "{}"; }, sleep: () => {}, checkout: co.seams });
+    assert.deepEqual(tick.refused, []);
+    assert.deepEqual(tick.ids, [id]);
+    assert.equal(treeOf(co, 2754), headOf(2754, 2), "delivered, and the tree is at the head the pull request is now at");
+    assert.match(typed[typed.length - 1], /re-pointed to the pull request's current head/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

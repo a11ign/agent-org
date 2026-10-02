@@ -1011,6 +1011,17 @@ export function orderPullRequest(order) {
 }
 
 /**
+ * IS THIS ORDER AN AUTHORED HANDOFF ADDRESSED TO `label` ITSELF (#3031)? A handoff's cause key is `handoff/<session>/<id>`
+ * ({@link handoffId}, and `batch-of-<n>` for a batch), written by the queue for the one session the author named, so it carries
+ * no pull request and does not need one: the addressee IS the subject. The prefix is compared whole, `label` plus the slash,
+ * so `handoff/reviewer-70/x` is not addressed to `reviewer-7`.
+ * @param {{causeKey?: string}} order @param {string} label @returns {boolean}
+ */
+function isHandoffTo(order, label) {
+  return String(order.causeKey ?? "").startsWith(`handoff/${label}/`);
+}
+
+/**
  * WHY THIS ORDER MAY NOT REACH THIS SESSION, or `null` when it may (#2401, Done-when 8). `reviewer-<n>` reviews
  * pull request n AND NOTHING ELSE: it belongs to no pool, so an order about any other pull request -- or about
  * none -- is refused even when the instance is idle and the only reviewer alive. FAIL CLOSED: an order whose key
@@ -1020,13 +1031,19 @@ export function orderPullRequest(order) {
  * order about PR 7 of the other repository is refused by each.
  *
  * ASKED OF EVERY ROUTED TARGET, whatever the cause and whether the route was direct or a fallback, because the
- * guarantee is about the instance and not about the two causes that usually address it. A label that is not an
- * instance (an engineer, a standing session, the retired pane) answers `null`: this file does not judge them.
+ * guarantee is about the instance and not about the two causes that usually address it.
+ *
+ * A HANDOFF TO THE INSTANCE IS JUDGED AS ABOUT ITS OWN PULL REQUEST (#3031). Its key names none, and "fail closed" refused
+ * it on every tick for as long as the reviewer lived, so the re-prompt the routing rule tells an author to send
+ * (`prompt:session -- reviewer-<n>`) never landed once the seat was idle. Only an order the queue addressed TO this label
+ * is excused: a handoff to another session, or any derived order about another pull request, is refused as before.
+ * A label that is not an instance (an engineer, a standing session, the retired pane) answers `null`: this file does not judge them.
  * @param {{causeKey?: string}} order @param {string} label @returns {string | null}
  */
 export function reviewerMismatch(order, label) {
   const owned = reviewerInstance(label);
   if (owned === null) return null;
+  if (isHandoffTo(order, label)) return null;
   const pr = orderPullRequestRef(order);
   if (pr !== null && pr.key === owned.key && pr.number === owned.number) return null;
   return `"${label}" reviews PR ${subjectMention({ repoKey: owned.key, number: owned.number })} and nothing else, and this order is ${pr === null
@@ -1367,8 +1384,8 @@ function doorRepositoryNote(session) {
  * SO EVERY DELIVERY TO A REVIEWER INSTANCE ASKS FOR IT, from the two places one is typed -- `targetFor` for the tick (an order
  * about the instance's own pull request whose cause is not a reviewer cause) and `promptOrQueue` for a direct prompt -- and it is
  * asked when the text is DELIVERED, never when it is written, so a reviewer mid-turn does not have its files switched under a
- * running Acceptance. NOT COVERED, AND NOT NEW: a QUEUED `prompt:session` order never reaches `targetFor`'s re-point, because
- * `reviewerMismatch` refuses it first -- a handoff's cause key names no pull request -- so the tick never delivers one to a reviewer.
+ * running Acceptance. A QUEUED `prompt:session` order reaches `targetFor`'s re-point too (#3031): `reviewerMismatch` used to refuse it first,
+ * because a handoff's cause key names no pull request, and the tick never delivered one to a reviewer.
  *
  * A REFUSAL DOES NOT SWALLOW THE ORDER: the author's words may exist nowhere else. The text says instead that the tree may be
  * STALE and how to tell, because the verdict header a reviewer writes from the network names the true head and is exactly what
@@ -2833,19 +2850,20 @@ function batchedOrder(take, held, now) {
  * @param {string[]} roster
  * @param {{run?: (args: string[]) => string, queuePath?: string, drop?: typeof dropHandoffs,
  *          now?: number, budget?: number, unavailable?: (label: string) => string | null,
- *          sleep?: (ms: number) => void, contextRoot?: string}} [deps] `sleep` is `deliver`'s clear settle,
- *   passed straight through (#2546); `contextRoot` is `deliver`'s compact-check transcript root, the same way (#2688)
+ *          sleep?: (ms: number) => void, contextRoot?: string, checkout?: CheckoutDeps}} [deps] `sleep` is `deliver`'s clear settle,
+ *   passed straight through (#2546); `contextRoot` is `deliver`'s compact-check transcript root, the same way (#2688);
+ *   `checkout` is the seam a live reviewer's re-point reads, the same way (#3031: a handoff now reaches one)
  * @returns {{sent: string[], refused: string[], ids: string[], busied: Set<string>}} `ids` is every
  *   order a delivery CARRIED, which is what the caller subtracts before calling anything still stale.
  */
 export function deliverHandoffs(handoffs, agents, roster,
   { run = defaultRun, queuePath, drop = dropHandoffs, now = Date.now(),
-    budget = HANDOFF_BATCH_BYTES, unavailable, sleep, contextRoot } = {}) {
+    budget = HANDOFF_BATCH_BYTES, unavailable, sleep, contextRoot, checkout } = {}) {
   const batches = handoffBatches(handoffs, { now, budget, roster });
   /** @type {string[]} */
   const landed = [];
   const { sent, refused } = deliver(batches, agents, roster,
-    { run, record: (key) => landed.push(key), unavailable, sleep, contextRoot });
+    { run, record: (key) => landed.push(key), unavailable, sleep, contextRoot, checkout });
   // THE BATCH IS WHAT WAS ACCEPTED; THE IDS ARE WHAT IT COVERED. `record` fires on the causeKey, because
   // that is the seam `deliver` offers, so the ids to retire come back through the batch that carried
   // them -- and a batch nobody accepted retires nothing, which is the assertion this whole queue is for.
