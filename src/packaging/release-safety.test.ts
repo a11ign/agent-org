@@ -118,6 +118,24 @@ function gateProblems(text: string): string[] {
   return problems;
 }
 
+/**
+ * What a YAML parser would refuse that this file's text reader would not: a plain (unquoted, not block) scalar holding `: `. GitHub treats the file as invalid, runs
+ * nothing from it and lists the workflow by its path; PR #70 merged with exactly this in a `run:` and no dispatch was possible. Lines inside a `|` or `>` block are skipped.
+ */
+function yamlProblems(text: string): string[] {
+  const problems: string[] = [];
+  let blockIndent = -1;
+  text.split("\n").forEach((line, i) => {
+    if (blockIndent >= 0 && (line.trim() === "" || indentOf(line) > blockIndent)) return;
+    blockIndent = -1;
+    if (line.trim().startsWith("#")) return;
+    if (/:\s+[|>][-+]?$/.test(line)) blockIndent = indentOf(line.replace(/^(\s*)- /, "$1  "));
+    const value = /^\s*(?:- )?[\w-]+:\s+([^'"|>[{\s].*)$/.exec(line)?.[1];
+    if (value?.includes(": ")) problems.push(`line ${i + 1}: a plain scalar holds ": " (${value.slice(0, 40)}...)`);
+  });
+  return problems;
+}
+
 const mutate = (from: string | RegExp, to: string): string => {
   const changed = WORKFLOW.replace(from, to);
   assert.notEqual(changed, WORKFLOW, `the mutation ${from} found nothing to change`);
@@ -128,6 +146,13 @@ test("the real release.yml has no structural, reach or gate problem", () => {
   assert.deepEqual(structuralProblems(WORKFLOW), []);
   assert.deepEqual(reachProblems(WORKFLOW), []);
   assert.deepEqual(gateProblems(WORKFLOW), []);
+  assert.deepEqual(yamlProblems(WORKFLOW), []);
+});
+
+test("positive control: a plain scalar holding `: ` is seen, a block scalar and a quoted one holding it are not", () => {
+  const plain = mutate(/ {8}run: \|\n {10}echo "dry-run=\$DRY_RUN: the tag/, '        run: echo "dry-run=$DRY_RUN: the tag');
+  assert.equal(yamlProblems(plain).length, 1, "the plain-scalar mutant is not seen");
+  assert.deepEqual(yamlProblems(`a:\n  - run: |\n      echo "x: y"\n  - name: 'p: q'\n`), []);
 });
 
 test("positive control: each mutation of release.yml is seen, and by the check that owns it", () => {
