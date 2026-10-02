@@ -113,7 +113,9 @@ jobs:
         env:
           TAG: ${{ steps.version.outputs.tag }}
           DRY_RUN: ${{ inputs.dry-run }}
-        run: echo "dry-run=$DRY_RUN: the tag $TAG at $GITHUB_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+        # A block scalar: a plain `run: echo "...: ..."` holds a `: ` and GitHub refuses the whole file as invalid YAML (the first merge of this workflow did).
+        run: |
+          echo "dry-run=$DRY_RUN: the tag $TAG at $GITHUB_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Cut the tag and the Release
         if: inputs.confirm == 'publish-for-real' && inputs.dry-run == false
         env:
