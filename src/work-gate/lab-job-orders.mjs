@@ -15,6 +15,7 @@
 //
 // THE RECORD FORMAT IS A CONTRACT WITH `run-job.yml`, WHICH CANNOT BE IMPORTED (`packages/control` has no dependencies and
 // runs from a raw checkout). `lab-job.test.ts` pins the field names this file reads against that playbook's text.
+import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { CLAIM_LABEL } from "../claim-labels.mjs";
 import { subjectMention, subjectRef } from "../review-attribution.mjs";
@@ -130,4 +131,40 @@ function finishedOrder({ row, session, ended }) {
       + "`orchestrator`'s to run, not yours.",
     causeKey: `${session}/lab-job-finished/row-${ref}/${key}`,
   };
+}
+
+/**
+ * PURE. The lab jobs a `ps` listing shows DISPATCHED AND NOT YET ENDED (#3007), as sorted unique names.
+ *
+ * WHY THE PROCESS TABLE. A job's unit runs on the lab, and the only thing on THIS host that lives exactly as long as a dispatch is
+ * the `ansible-playbook ... lab-job.yml` that `lab-job.mjs` spawned: `run-job.yml` polls inside it until the unit leaves `running`,
+ * then writes the record `readLabJobRecords` reads. So a process still listed is a job not yet ended, and one gone has either written
+ * its record or was killed (the hole `run-job.yml` names: nothing is written, and nothing here sees it either, which is the honest
+ * reading of a dispatch that no longer runs). A timer-started job (`a11y-corpus-snapshot.service`) has no controller process and is
+ * not seen; that is stated here and not hidden.
+ *
+ * Ansible forks one child per host that carries the parent's command line, so the same dispatch is listed several times: the names are
+ * a set. A `-e describe=...` dispatch only prints the catalogue and starts nothing. A dispatch whose job name cannot be read is still
+ * a dispatch and is named `unnamed`, so it is counted rather than dropped.
+ * @param {string} psOutput one command line per line, as `ps -eo args=` prints them
+ * @returns {string[]}
+ */
+export function dispatchedJobNames(psOutput) {
+  const names = new Set();
+  for (const line of psOutput.split("\n")) {
+    if (!/^\s*(\S*python\S*\s+)?\S*ansible-playbook\s.*\blab-job\.yml(\s|$)/.test(line) || /\bdescribe=/.test(line)) continue;
+    names.add(/\bjob=([a-z][a-z0-9-]*)/.exec(line)?.[1] ?? /"job"\s*:\s*"([a-z][a-z0-9-]*)"/.exec(line)?.[1] ?? "unnamed");
+  }
+  return [...names].sort();
+}
+
+/**
+ * The lab jobs dispatched from this host and not yet ended (#3007): `waiting.labJobs` for `fleetIdleReading`. READ-ONLY: one `ps`,
+ * which touches neither the lab nor the fleet. A `ps` that cannot run THROWS, so a caller never reads "could not look" as "nothing
+ * waits"; an empty list is a fact, an exception is not an answer.
+ * @param {{ run?: () => string }} [io] `run` is the process listing, for the test
+ * @returns {string[]}
+ */
+export function readDispatchedLabJobs({ run = () => String(execFileSync("ps", ["-eo", "args="], { encoding: "utf8" })) } = {}) {
+  return dispatchedJobNames(run());
 }

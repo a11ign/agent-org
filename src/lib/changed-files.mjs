@@ -31,7 +31,7 @@ import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 import { sandboxGitEnv } from "./git-env.mjs";
-// RELATIVE, NOT `@a11ign/worker-fleet/cli-flags`, for the reason `ci-changed.mjs` records above its own:
+// RELATIVE, NOT `@a11ign/screenreader-fleet/cli-flags`, for the reason `ci-changed.mjs` records above its own:
 // this module is reachable from a pre-install entry, and a package specifier there dies with
 // ERR_MODULE_NOT_FOUND before `npm ci` finishes. `cli-flags.mjs` imports only `node:` builtins, so the
 // leaf property above survives the import -- `pre-install-import-graph.test.ts` is what checks that, and
