@@ -269,23 +269,33 @@ test("#1984: with neither variable set and no human config either, declaredGhAcc
 test("#1984: an unreadable host declaration degrades to UNKNOWN rather than crashing the caller", () => {
   // ISOLATED IN A SUBPROCESS, DELIBERATELY: `homeHostConfig()` memoises its read for the LIFE OF THE
   // PROCESS, so provoking its refusal in-process would either race whichever test runs first here or
-  // poison every later test in this worker with a cached failure. `AGENT_ORG_HOST` pointed at a path with
-  // no file is the one way to make the REAL default path (no `host` override) refuse, which is what
-  // `work-gate.mjs`'s own call site (`declaredGhAccount()`, no arguments) actually exercises in production.
+  // poison every later test in this worker with a cached failure. `AGENT_ORG_HOST` naming a file the host reader refuses is the
+  // one way to make the REAL default path (no `host` override) refuse, which is what `work-gate.mjs`'s own call site
+  // (`declaredGhAccount()`, no arguments) actually exercises in production. The file must still name a primary project that
+  // exists (#2873): `project-config.mjs` reads that first, and a path with no file at all is refused THERE, at import, before
+  // this module is reached -- covered by `standalone-candidate.test.ts`.
   const script = `
     import(${JSON.stringify(pathToFileURL(join(REPO, "packages/agent-org/src/gh-identity.mjs")).href)}).then((m) => {
       const account = m.declaredGhAccount({ env: {} });
       process.stdout.write(JSON.stringify(account));
     });
   `;
-  const out = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
-    encoding: "utf8",
-    env: { ...process.env, AGENT_ORG_HOST: "/nonexistent-host-declaration-for-this-test.json" },
-  });
-  const account = JSON.parse(out);
-  assert.equal(account.login, null);
-  assert.match(account.source, /UNKNOWN/);
-  assert.match(account.source, /host declaration could not be read/);
+  const dir = mkdtempSync(join(tmpdir(), "gh-identity-bad-host-"));
+  try {
+    const hostFile = join(dir, "host.json");
+    // A primary the project reader accepts and none of the fields (`home`, `gh`, ...) the host reader requires.
+    writeFileSync(hostFile, JSON.stringify({ schema: 1, primary: "a11ign", projects: [{ id: "a11ign", checkout: REPO }] }));
+    const out = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+      encoding: "utf8",
+      env: { ...process.env, AGENT_ORG_HOST: hostFile },
+    });
+    const account = JSON.parse(out);
+    assert.equal(account.login, null);
+    assert.match(account.source, /UNKNOWN/);
+    assert.match(account.source, /host declaration could not be read/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // --- done-when 3: THE POPULATION, AND THE LIVE GUARD -------------------------------------------------

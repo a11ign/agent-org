@@ -16,21 +16,33 @@
  * elsewhere today, caught here by `git-spawn-classification.test.ts`'s own discovery before this file
  * ever shipped.
  */
+// no-token: gh -- every `pruneWorktrees` call passes its own `claim`, and the tests of `claimRefusal` hand it a stub `gh`; proven by running this file with `gh` shimmed to exit 4.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, realpathSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, realpathSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   parseWorktreeList, isPrimaryWorktree, classify, detachedMergeStatus, mergeStatus, isContentMerged,
-  isWorkingTreeClean, pruneWorktrees, recentGitActivity, ACTIVITY_WINDOW_MS,
+  isWorkingTreeClean, pruneWorktrees as pruneWorktreesWithClaims, recentGitActivity, ACTIVITY_WINDOW_MS,
   cleanliness, ignoredByAuthority,
   strandedWork, formatStranded, trackedChanges, unverifiedRecords, formatReport,
   heldByOwner, deliveredOwnCommit, mainLineCommits, hasOwnBranch,
 } from "../prune-worktrees.mjs";
 import { stampWorktree } from "../worktree-owner.mjs";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
+import {
+  claimRefusal, nestedWorktrees, recordRemoval, removalLogPath, REMOVAL_LOG_ENV, rowCandidates, worktreeBranch,
+} from "../worktree-removal.mjs";
+
+// #2782: EVERY REMOVAL WRITES A LINE AND READS THE ROW'S CLAIM, and a fixture must do neither to the host: a fixture branch
+// named `agent/delivered-1948` would otherwise read the real #1948 over `gh`, and every removal would land in the real log.
+// The tests that ARE about either pass their own `claim` and `record` and read the log they pointed this at.
+process.env[REMOVAL_LOG_ENV] = join(mkdtempSync(join(tmpdir(), "prune-removal-log-")), "worktree-removals");
+const NOBODY_CLAIMS: () => { refused: false } = () => ({ refused: false });
+const pruneWorktrees = (root: string, deps: NonNullable<Parameters<typeof pruneWorktreesWithClaims>[1]> = {}) =>
+  pruneWorktreesWithClaims(root, { claim: NOBODY_CLAIMS, ...deps });
 
 // The CLI is spawned as a real process below, so the argv path -- the only place `dryRun` is
 // decided -- is exercised rather than reasoned about.
@@ -1191,4 +1203,191 @@ test("#2012: a tree whose ignorable paths could NOT be cleared is DIRTY, never r
     assert.equal(existsSync(pinned), true);
     assert.equal(existsSync(join(pinned, "node_modules")), true, "and its untracked path is still there");
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// --- #2782: WHO DELETED IT, AND WAS ITS ROW STILL CLAIMED? `wt-2623` was deleted under a live claim twice and the prune's own
+// journal could neither convict nor clear it. The fixture is #2020's: `wt-delivered` (row 1948) removes, and `wt-unstamped`
+// (row 1908) is the tree whose `.a11y-owner` a claim's re-creation lost -- the exact shape #2020's check cannot see. ---
+
+/** A `gh issue view` answering from a table: rows 1908 and 1948 by default carry whatever the test says. */
+const ghRows = (rows: Record<number, string[]>) => (args: string[]) => {
+  const labels = rows[Number(args[2])];
+  if (labels === undefined) throw new Error("gh: row not found");
+  return JSON.stringify({ state: "OPEN", labels: labels.map((name) => ({ name })) });
+};
+const logLines = (file: string) => (existsSync(file) ? readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+
+test("#2782 DONE-WHEN 3: an UNSTAMPED tree whose row still carries a session label is REFUSED, and the delivered tree beside it is still removed", () => {
+  const { root, delivered, unstamped } = buildHeldFixture();
+  const log = join(root, "..", `removal-${Date.now()}.log`);
+  try {
+    const gh = ghRows({ 1908: ["in-progress", "session:worker-1908"], 1948: [] });
+    const report = pruneWorktrees(root, { now: LONG_AFTER(), claim: (tree) => claimRefusal(tree, { gh }),
+      record: (line) => recordRemoval(line, { env: { [REMOVAL_LOG_ENV]: log } }) });
+    assert.ok(report.held.some((r) => r.path === unstamped && /still carries session:worker-1908/.test(r.reason)),
+      "the row's claim is the source of truth: #2020's owner-file check answered `unstamped`, which it reads as nobody's");
+    assert.ok(existsSync(unstamped), "and the tree is still on disk");
+    // THE OTHER HALF: without it, "refuse everything" passes.
+    assert.ok(report.removed.some((r) => r.path === delivered), "an unclaimed row's delivered tree must still be removed");
+    assert.equal(logLines(log).some((l) => l.path === unstamped), false, "a refused tree is not a removal, so it writes no removal line");
+  } finally { rmSync(root, { recursive: true, force: true }); rmSync(log, { force: true }); }
+});
+
+test("#2782: a row the prune could not READ refuses the tree -- it never reads as unclaimed", () => {
+  const { root, delivered } = buildHeldFixture();
+  try {
+    const gh = ghRows({ 1908: [] });
+    const report = pruneWorktrees(root, { now: LONG_AFTER(), claim: (tree) => claimRefusal(tree, { gh }) });
+    assert.ok(report.held.some((r) => r.path === delivered && /claim could not be read/.test(r.reason)));
+    assert.ok(existsSync(delivered));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2782 DONE-WHEN 1: a removal writes `removing` BEFORE the delete and `removed` after, naming the tree, branch, caller and owner file", () => {
+  const { root, delivered } = buildHeldFixture();
+  const log = join(root, "..", `removal-${Date.now()}-b.log`);
+  try {
+    const seenBeforeDelete: string[] = [];
+    pruneWorktrees(root, { now: LONG_AFTER(),
+      record: (line) => recordRemoval(line, { env: { [REMOVAL_LOG_ENV]: log } }),
+      remove: (path, { run }) => { seenBeforeDelete.push(...logLines(log).map((l) => l.event)); run("git", ["worktree", "remove", path], { cwd: root }); } });
+    const mine = logLines(log).filter((l) => l.path === delivered);
+    assert.deepEqual(mine.map((l) => l.event), ["removing", "removed"]);
+    assert.deepEqual(seenBeforeDelete.filter((e) => e === "removing").length > 0, true, "the line exists when the delete begins, so a crash mid-delete is still a line");
+    assert.equal(mine[0].owner, "worker-capture", "the owner file is read at the moment of removal, while it still exists");
+    assert.equal(mine[0].branch, "agent/delivered-1948");
+    assert.equal(mine[0].caller, "prune-worktrees.mjs");
+    assert.match(mine[0].reason, /merged, clean, inactive and not held/);
+  } finally { rmSync(root, { recursive: true, force: true }); rmSync(log, { force: true }); }
+});
+
+test("#2782: a log that cannot be written REFUSES the removal -- a delete nobody can see is the defect", () => {
+  const { root, delivered } = buildHeldFixture();
+  try {
+    const report = pruneWorktrees(root, { now: LONG_AFTER(), record: () => { throw new Error("ENOSPC"); } });
+    assert.ok(existsSync(delivered), "nothing was deleted");
+    assert.ok(report.held.some((r) => r.path === delivered && /removal log could not be written/.test(r.reason)));
+    assert.equal(report.removed.length, 0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#2782: the DRY RUN reads the same claim and writes no removal line", () => {
+  const { root, unstamped } = buildHeldFixture();
+  try {
+    const lines: unknown[] = [];
+    const gh = ghRows({ 1908: ["session:worker-1908"], 1948: [] });
+    const report = pruneWorktrees(root, { now: LONG_AFTER(), dryRun: true, claim: (tree) => claimRefusal(tree, { gh }),
+      record: (line) => { lines.push(line); } });
+    assert.ok(report.held.some((r) => r.path === unstamped), "the listing is the tool's own answer, claim included");
+    assert.deepEqual(lines, [], "nothing was removed, so nothing is logged as removed");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// --- #2782: THE SHARED PREDICATES (`worktree-removal.mjs`), which all three removers ask. Pinned here rather than in a file of their
+// own: a new test file importing `agent-org/src` moves `agent-org-extraction.test.ts`'s decision-4 count, which is #2623's to amend. THE
+// HALF THAT MATTERS IS THE NEGATIVE ONE -- a claim that refuses everything is `stop pruning` wearing a better name, so each refusal
+// sits beside a case that must NOT refuse. ---
+
+/** A `gh issue view <n>` that answers from a table, and records which rows it was asked about. */
+function fakeRowsGh(rows: Record<number, { state?: string; labels: string[] }>) {
+  const asked: number[] = [];
+  const gh = (args: string[]) => {
+    const row = Number(args[2]);
+    asked.push(row);
+    const found = rows[row];
+    if (found === undefined) throw new Error(`gh issue view ${row} exited 1: not found`);
+    return JSON.stringify({ state: found.state ?? "OPEN", labels: found.labels.map((name) => ({ name })) });
+  };
+  return { gh, asked };
+}
+
+const scratchDir = () => mkdtempSync(join(tmpdir(), "worktree-removal-"));
+
+test("rowCandidates reads the row off every spelling this repo has used, and off nothing else", () => {
+  assert.deepEqual(rowCandidates({ path: "/r/wt-2623", branch: "agent/2623-followup-walkscope-treewide" }), [2623],
+    "the prefix spelling wt-2623 actually had, and the directory, name ONE row between them");
+  assert.deepEqual(rowCandidates({ path: "/r/wt-2782", branch: "agent/a-claimed-row-s-2782" }), [2782]);
+  assert.deepEqual(rowCandidates({ path: "/r/wt-100", branch: "agent/other-200" }).sort(), [100, 200],
+    "a tree whose two names disagree asks about both, and any claimed one refuses");
+  assert.deepEqual(rowCandidates({ path: "/r/wt-2623", branch: null }), [2623], "a detached tree still has its directory");
+  assert.deepEqual(rowCandidates({ path: "/r/role-engineer", branch: "dispatcher/merge" }), [],
+    "a standing tree names no row, so there is no claim to read");
+});
+
+test("claimRefusal REFUSES a tree whose open row carries a session label -- the copy in .a11y-owner is not consulted", () => {
+  const { gh, asked } = fakeRowsGh({ 2623: { labels: ["in-progress", "session:worker-2623"] } });
+  const refusal = claimRefusal({ path: "/r/wt-2623", branch: null }, { gh });
+  assert.equal(refusal.refused, true);
+  assert.match((refusal as { reason: string }).reason, /row #2623, which still carries session:worker-2623/);
+  assert.deepEqual(asked, [2623]);
+});
+
+test("claimRefusal does NOT refuse an unclaimed row, a CLOSED row that kept debris labels, or the session removing its own tree", () => {
+  const open = fakeRowsGh({ 10: { labels: ["ready"] } });
+  assert.deepEqual(claimRefusal({ path: "/r/wt-10", branch: null }, { gh: open.gh }), { refused: false });
+  const closed = fakeRowsGh({ 11: { state: "CLOSED", labels: ["session:worker-11"] } });
+  assert.deepEqual(claimRefusal({ path: "/r/wt-11", branch: null }, { gh: closed.gh }), { refused: false },
+    "a closed row's leftover label is debris (ready-label-audit says so); refusing on it would leak every finished tree");
+  const own = fakeRowsGh({ 12: { labels: ["session:worker-12"] } });
+  assert.deepEqual(claimRefusal({ path: "/r/wt-12", branch: null }, { gh: own.gh, except: "worker-12" }), { refused: false });
+  const other = fakeRowsGh({ 12: { labels: ["session:worker-99"] } });
+  assert.equal(claimRefusal({ path: "/r/wt-12", branch: null }, { gh: other.gh, except: "worker-12" }).refused, true,
+    "`except` names ONE session; somebody else's claim on the same row still refuses");
+});
+
+test("claimRefusal: a row it could not READ is refused, never read as unclaimed -- and a tree naming no row asks nothing", () => {
+  const { gh } = fakeRowsGh({});
+  const refusal = claimRefusal({ path: "/r/wt-404", branch: null }, { gh });
+  assert.equal(refusal.refused, true);
+  assert.match((refusal as { reason: string }).reason, /claim could not be read.*unanswered question/s);
+  const none = fakeRowsGh({});
+  assert.deepEqual(claimRefusal({ path: "/r/role-x", branch: null }, { gh: none.gh }), { refused: false });
+  assert.deepEqual(none.asked, [], "a standing tree spends no API call");
+});
+
+test("recordRemoval appends one JSON line naming the tree, the asker, the reason and the owner file's content", () => {
+  const dir = scratchDir();
+  try {
+    const tree = join(dir, "wt-2623");
+    mkdirSync(tree);
+    writeFileSync(join(tree, ".a11y-owner"), "worker-2623\n");
+    const env = { [REMOVAL_LOG_ENV]: join(dir, "logs", "worktree-removals") };
+    recordRemoval({ path: tree, caller: "prune-worktrees.mjs", reason: "merged", event: "removing", branch: "agent/x-2623" }, { env });
+    recordRemoval({ path: tree, caller: "prune-worktrees.mjs", reason: "merged", event: "removed" }, { env });
+    const lines = readFileSync(removalLogPath(env), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(lines.length, 2, "appended, never overwritten");
+    assert.deepEqual(lines.map((l) => l.event), ["removing", "removed"]);
+    assert.equal(lines[0].owner, "worker-2623");
+    assert.equal(lines[0].path, tree);
+    assert.equal(lines[0].caller, "prune-worktrees.mjs");
+    assert.match(lines[0].at, /^\d{4}-\d{2}-\d{2}T/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("recordRemoval THROWS when the line cannot be written, so the caller can refuse the delete", () => {
+  const dir = scratchDir();
+  try {
+    assert.throws(() => recordRemoval({ path: "/r/wt-1", caller: "x", reason: "y", event: "removing" },
+      { env: { [REMOVAL_LOG_ENV]: join(dir, "log") }, append: () => { throw new Error("ENOSPC"); } }), /ENOSPC/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("nestedWorktrees finds a worktree at any depth a scratchpad nests it, skips node_modules, and worktreeBranch reads its branch", () => {
+  const dir = scratchDir();
+  try {
+    const tree = join(dir, "scratchpad", "wt-2623");
+    const gitdir = join(dir, "gitdirs", "wt-2623");
+    mkdirSync(tree, { recursive: true });
+    mkdirSync(gitdir, { recursive: true });
+    writeFileSync(join(tree, ".git"), `gitdir: ${gitdir}\n`);
+    writeFileSync(join(gitdir, "HEAD"), "ref: refs/heads/agent/2623-followup\n");
+    mkdirSync(join(dir, "scratchpad", "node_modules", "pkg"), { recursive: true });
+    writeFileSync(join(dir, "scratchpad", "node_modules", "pkg", ".git"), "gitdir: nowhere\n");
+    mkdirSync(join(dir, "plain"), { recursive: true });
+    assert.deepEqual(nestedWorktrees(dir), [tree], "the worktree is found; a `.git` under node_modules and a plain directory are not");
+    assert.equal(worktreeBranch(tree), "agent/2623-followup");
+    writeFileSync(join(gitdir, "HEAD"), "0123456789012345678901234567890123456789\n");
+    assert.equal(worktreeBranch(tree), null, "a detached HEAD names no branch");
+    assert.equal(worktreeBranch(join(dir, "plain")), null, "a directory that is not a worktree names none either");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

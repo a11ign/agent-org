@@ -13,7 +13,7 @@ import { test } from "node:test";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, chmodSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import assert from "node:assert/strict";
 import { decide, claimStallTick, claimStallsNow, CAUSES, START_CAUSES, JUDGMENT_CAUSES, GH_READS } from "./work-gate.mjs";
 import { profileFor } from "./worker-profile.mjs";
@@ -21,11 +21,13 @@ import {
   WAKE_TTL_MS, MAX_DELIVERIES, performRelease, spawnClaimer, spawnedPrompt, deliver, consecutiveClean, drainInForce, isReleaseLine,
   cyclesReport, readLedger, deliveryCounts, readLedgerDeliveries, readDeliveredHandoffs, recoverInterruptedWork, recoverableWork,
   queueHandoff, readHandoffs, handoffBatches, recentlyVoidedKeys, sessionMoved, VOIDED, keptClaimsPath, ledgerLine, thrashEscalationPrompt,
+  pruneGoneKeptClaims, readKeptClaims, writeKeptClaims, PRIMARY_CHECKOUT,
 } from "./wake.mjs";
 import {
   claimRecordComment, declineRow, claimWithWorktree, worktreeTargetReason, worktreeFlagsReason,
-  implicitAdoptSession, predecessorLivenessUnknown, predecessorGoneReading, recordPredecessorGone, adoptFor,
+  implicitAdoptSession, worktreeCleanliness, predecessorLivenessUnknown, predecessorGoneReading, recordPredecessorGone, adoptFor, ROW_CLAIM_FLAGS,
 } from "./row-claim.mjs";
+import { unknownFlags } from "./lib/cli-flags.mjs";
 import { CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
 import {
   CLAIM_STALLED, STALL_INTERVAL_MS, STALL_UNTOLD_RELEASE_MS, INTERRUPTED_SETTLE_MS, GONE_CONFIRM_MS, nudgeKey, nudgeDeliveredAt, claimRecordOf, commentMove, workAtRisk, fileMove, claimReading,
@@ -481,6 +483,49 @@ test("#2747 the session REAPPEARING clears the memory: a complete listing that s
   assert.equal(back.memory[2407], undefined, "the goneSince memory is dropped: a stall (or a fresh disappearance) is a first reading again");
 });
 
+// --- (#2863) a holder LISTED but holding no agent reads as absent ---------------------------------------------------------------------
+
+/** A COMPLETE listing in which `worker-7`'s workspace survives its agent: herdr's `unknown` is "no agent detected". */
+const AGENTLESS_LISTING = [...CEO_ORCH, { label: "worker-7", status: "unknown" }];
+
+test("#2863 a holder listed with status `unknown` reads as absent: vacating on the first tick, released as gone after GONE_CONFIRM_MS", () => {
+  const first = tickWith({}, [claim(300)], { agents: AGENTLESS_LISTING });
+  assert.deepEqual(first.orders, [], "not yet -- the clock starts now");
+  assert.deepEqual(first.memory[2407], { session: "worker-7", goneSince: NOW }, "the same memory a closed workspace writes");
+  const memory = { 2407: { session: "worker-7", goneSince: NOW - GONE_CONFIRM_MS } };
+  const matured = tickWith({}, [claim(300)], { agents: AGENTLESS_LISTING, memory });
+  assert.equal(matured.orders.length, 1);
+  assert.equal(matured.orders[0].release!.why, "gone");
+});
+
+test("#2863 POSITIVE CONTROL: the same fixture with the holder idle/working/done stays a nudge, never gone", () => {
+  for (const status of ["idle", "working", "done"]) {
+    const memory = { 2407: { session: "worker-7", goneSince: NOW - GONE_CONFIRM_MS } };
+    const live = tickWith({ commit: null }, [claim(N_MIN + 10)], { agents: [...CEO_ORCH, { label: "worker-7", status }], memory });
+    assert.equal(live.orders.length, 1, status);
+    assert.equal(live.orders[0].release, undefined, `${status}: a live session is nudged, not released`);
+    assert.equal((live.memory[2407] as { goneSince?: number } | undefined)?.goneSince, undefined, `${status}: reappearing with an agent drops the clock`);
+  }
+});
+
+test("#2863 a holder that goes `unknown` and then returns to a live status resets the clock", () => {
+  const memory = { 2407: { session: "worker-7", goneSince: ago(9) } };
+  const back = tickWith({}, [claim(20)], { agents: [...CEO_ORCH, { label: "worker-7", status: "working" }], memory });
+  assert.deepEqual(back.orders, []);
+  assert.equal(back.memory[2407], undefined, "the goneSince is dropped");
+  const again = tickWith({}, [claim(20)], { agents: AGENTLESS_LISTING, memory: back.memory });
+  assert.deepEqual(again.memory[2407], { session: "worker-7", goneSince: NOW }, "a fresh first sighting, not the old clock");
+});
+
+test("#2863 a PARTIAL listing with the holder agentless still proves nothing: listingIsComplete is asked first", () => {
+  const partial = [{ label: "ceo", status: "idle" }, { label: "worker-7", status: "unknown" }];
+  const none = tickWith({}, [claim(20)], { agents: partial });
+  assert.deepEqual(none.orders, []);
+  assert.equal(none.memory[2407], undefined, "nothing started");
+  const stale = tickWith({}, [claim(20)], { agents: partial, memory: { 2407: { session: "worker-7", goneSince: ago(999) } } });
+  assert.deepEqual(stale.orders, [], "and nothing confirmed either");
+});
+
 // --- the reading, directly ---------------------------------------------------------------------------------------------------------
 
 test("#2470 claimReading is pure in its inputs: an UNDELIVERED `nudged` row keeps offering its key, a delivered one goes quiet", () => {
@@ -605,19 +650,20 @@ test("#2470 (7a) a DIRTY tree is neither removed nor refused into a stuck claim"
 test("#2470 (7b) the respawn's claim ADOPTS the kept tree: nothing is created, nothing is removed, and it is re-stamped to the new instance", () => {
   const order: string[] = [];
   const stamped: [string, string][] = [];
-  const claims: { worktree?: string; branch?: string }[] = [];
+  const claims: { worktree?: string; branch?: string; adoptedBranch?: string }[] = [];
   const adopt = (over: { owner?: string | null; head?: string; exists?: boolean; claimed?: boolean } = {}) => claimWithWorktree(2416, "worker-2416", {
     branch: BRANCH, worktree: WT, adopt: "worker-7",
     run: ((cmd: string, args: string[]) => { order.push(`${cmd} ${args.join(" ")}`); return args.includes("symbolic-ref") ? `${over.head ?? BRANCH}\n` : ""; }) as never,
     exists: () => over.exists ?? true, owner: () => (over.owner === undefined ? "worker-7" : over.owner),
     stamp: (w: string, sess: string) => { stamped.push([w, sess]); },
-    claim: ((_n: number, _s: string, deps: { worktree?: string; branch?: string }) => { claims.push(deps); return over.claimed === false ? { claimed: false, reason: "B2 refused" } : { claimed: true, statusMoved: true }; }) as never });
+    claim: ((_n: number, _s: string, deps: { worktree?: string; branch?: string; adoptedBranch?: string }) => { claims.push(deps); return over.claimed === false ? { claimed: false, reason: "B2 refused" } : { claimed: true, statusMoved: true }; }) as never });
   const won = adopt();
   assert.equal(won.claimed, true);
   assert.deepEqual(stamped, [[WT, "worker-2416"]], "the tree becomes the new instance's");
   assert.deepEqual(claims.map(({ branch, worktree }) => ({ branch, worktree })), [{ branch: BRANCH, worktree: WT }],
     "the claim RECORDS the existing branch and worktree");
   assert.equal(order.some((c) => /fetch|worktree add|worktree remove/.test(c)), false, "it creates nothing and removes nothing");
+  assert.deepEqual(claims.map((c) => c.adoptedBranch), [BRANCH], "#2769: the adopted branch reaches the claim, so B4 can tell its own PR");
 
   // A claim that LOSES leaves the tree exactly where it was, re-stamped to its previous owner: it holds another instance's work.
   order.length = 0; stamped.length = 0;
@@ -777,6 +823,110 @@ test("#2748 `adoptFor` (CLI wiring): an explicit `--adopt=` always wins, and the
   assert.equal(adoptFor("claim", "worker-2623", { branch: BRANCH }), undefined, "no --worktree -- never asked");
   assert.equal(adoptFor("claim", "worker-2623", { branch: BRANCH, worktree: NOWHERE }), undefined,
     "asked, but the tree does not exist on disk -- the real `existsSync` answers false, same as `implicitAdoptSession`'s own control");
+});
+
+// --- #2842: the SAME-NAME respawn over its predecessor's CLEAN tree needs no predecessor-gone record --------------------------------
+// REAL git on a scratch origin + clone + worktree, because a clean-check that reads only one of the four ways is exactly what a fake
+// `run` cannot catch: each way below is broken alone, and each must be refused for ITS OWN named reason and no other.
+
+const CLEAN_BRANCH = "agent/clean-respawn-2842";
+
+/** real git, but only ever pointed at the scratch tree; injected so no call reaches a live default seam (#1401) */
+const scratchRun = (cmd: string, args: string[]) => execFileSync(cmd, args, { env: sandboxGitEnv(), encoding: "utf8" });
+
+function scratchTree() {
+  const root = mkdtempSync(join(tmpdir(), "a11y-clean-tree-"));
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { env: sandboxGitEnv(), encoding: "utf8" });
+  git(root, "init", "--quiet", "--bare", "-b", "main", "origin.git");
+  git(root, "clone", "--quiet", "origin.git", "main-clone");
+  const clone = join(root, "main-clone");
+  git(clone, "config", "user.email", "t@example.invalid");
+  git(clone, "config", "user.name", "t");
+  writeFileSync(join(clone, "tracked.txt"), "one\n");
+  git(clone, "add", "tracked.txt");
+  git(clone, "commit", "--quiet", "-m", "base");
+  git(clone, "push", "--quiet", "origin", "HEAD:main");
+  git(clone, "fetch", "--quiet", "origin");
+  const tree = join(root, "wt-2842");
+  git(clone, "worktree", "add", "--quiet", "-b", CLEAN_BRANCH, tree, "origin/main");
+  writeFileSync(join(tree, ".a11y-owner"), "worker-2842\n");
+  return { root, tree, git: (...args: string[]) => git(tree, ...args) };
+}
+
+test("#2842 `worktreeCleanliness` reads FOUR ways, and each one alone is refused under its own name (a one-way check is caught)", () => {
+  const fx = scratchTree();
+  try {
+    assert.deepEqual(worktreeCleanliness({ worktree: fx.tree, branch: CLEAN_BRANCH }), { clean: true },
+      "CONTROL: a fresh tree at origin/main, stamped, is clean -- the stamp is this tree's marker (the scratch repo has no .gitignore for it) and is not dirt");
+    const why = () => (worktreeCleanliness({ worktree: fx.tree, branch: CLEAN_BRANCH }) as { why?: string }).why;
+
+    writeFileSync(join(fx.tree, "tracked.txt"), "two\n");
+    assert.match(String(why()), /uncommitted changes to tracked files \(.*tracked\.txt/, "way 1: a tracked file modified");
+    fx.git("checkout", "--quiet", "--", "tracked.txt");
+
+    writeFileSync(join(fx.tree, "new.txt"), "x\n");
+    assert.match(String(why()), /untracked files \(\?\? new\.txt/, "way 2: an untracked file");
+    rmSync(join(fx.tree, "new.txt"));
+    assert.equal(why(), undefined, "CONTROL: both dirt readings clear when the dirt does");
+
+    writeFileSync(join(fx.tree, "tracked.txt"), "three\n");
+    fx.git("-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "--quiet", "-am", "unpushed");
+    assert.match(String(why()), /HEAD is 1 commit\(s\) ahead of origin\/main/, "way 3: a commit ahead of origin/main");
+
+    // way 4 ALONE: HEAD detached back at origin/main (not ahead), the branch still holding the unpushed commit.
+    fx.git("checkout", "--quiet", "--detach", "origin/main");
+    assert.match(String(why()), /branch `agent\/clean-respawn-2842`'s tip is not an ancestor of origin\/main/,
+      "way 4: a HEAD-only reading calls this tree clean; the branch tip says otherwise");
+    // and with NO branch to name, the same tree reads clean: the fourth reading is the branch's, not HEAD's.
+    assert.deepEqual(worktreeCleanliness({ worktree: fx.tree }), { clean: true }, "no branch named and none attached -- nothing to read");
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test("#2842 `worktreeCleanliness` -- a git that cannot answer is NOT clean, and says so", () => {
+  const out = worktreeCleanliness({ worktree: "/nonexistent/wt" }, { run: (() => { throw new Error("fatal: cannot change to '/nonexistent/wt'"); }) as never });
+  assert.equal(out.clean, false);
+  assert.match((out as { why: string }).why, /git could not answer \(fatal: cannot change.*"could not ask" is not "clean"/);
+});
+
+test("#2842 `implicitAdoptSession`: a CLEAN own tree is adopted with NO predecessor-gone record; a dirty one, a stranger's, and a live predecessor are not", () => {
+  const rule = (over: { clean?: boolean; gone?: boolean | null; owner?: string | null } = {}) => implicitAdoptSession({
+    worktree: WT, mySession: "worker-2842", exists: () => true,
+    owner: () => (over.owner === undefined ? "worker-2842" : over.owner),
+    predecessorGone: () => (over.gone === undefined ? null : over.gone),
+    clean: () => over.clean ?? true,
+  });
+  assert.equal(rule(), "worker-2842", "the row's Open-check: own stamped tree, clean, NO record (gone is null) -- adopted");
+  assert.equal(rule({ clean: false }), undefined, "CONTROL: the same tree dirty and no record -- refused as before");
+  assert.equal(rule({ clean: false, gone: true }), "worker-2842", "CONTROL: dirty with the record is #2748's path, unchanged");
+  assert.equal(rule({ owner: "worker-9" }), undefined, "a clean tree stamped by someone else is never adopted");
+  assert.equal(rule({ owner: null }), undefined, "nor an unstamped one");
+  assert.equal(rule({ gone: false }), undefined, "a reading that the predecessor is ALIVE outranks a clean tree");
+});
+
+test("#2842 through `claimWithWorktree` over a real scratch tree: clean proceeds with no record and creates nothing; each dirt is refused, naming it", () => {
+  const fx = scratchTree();
+  try {
+    const claims: string[] = [];
+    const claim = (() => { claims.push("claimed"); return { claimed: true, statusMoved: true }; }) as never;
+    const ledgerPath = join(fx.root, "wake-ledger");
+    const attempt = () => {
+      const adopt = implicitAdoptSession({ worktree: fx.tree, mySession: "worker-2842", exists: existsSync, owner: (w) => readFileSync(join(w, ".a11y-owner"), "utf8").trim(),
+        predecessorGone: (s: string) => predecessorGoneReading(s, { ledgerPath }), clean: (w) => worktreeCleanliness({ worktree: w, branch: CLEAN_BRANCH }).clean });
+      return claimWithWorktree(2842, "worker-2842", { branch: CLEAN_BRANCH, worktree: fx.tree, adopt, claim, run: scratchRun });
+    };
+    assert.equal(predecessorGoneReading("worker-2842", { ledgerPath }), null, "no predecessor-gone record exists, and the claim must not need one");
+    assert.equal(attempt().claimed, true, "the clean tree is adopted");
+    assert.deepEqual(claims, ["claimed"]);
+    assert.equal(existsSync(join(fx.tree, "tracked.txt")), true, "and nothing was removed or recreated");
+
+    writeFileSync(join(fx.tree, "new.txt"), "x\n");
+    const refused = attempt() as { claimed: false; reason: string };
+    assert.equal(refused.claimed, false);
+    assert.match(refused.reason, /ALREADY EXISTS, stamped by `worker-2842`/);
+    assert.match(refused.reason, /YOUR OWN tree.*because it has untracked files \(\?\? new\.txt\).*--adopt=worker-2842/,
+      "the refusal names the reading that failed and the exit, instead of only ALREADY EXISTS");
+    assert.deepEqual(claims, ["claimed"], "and no claim was written for the refused one");
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
 });
 
 test("#2470 (10) `decline --answer=<session>` releases to that session's `answer:` label, NOT to `ready`, and refuses to be a finding too", () => {
@@ -1016,7 +1166,7 @@ test("#2470 (7b) a kept record whose tree is GONE falls back to a fresh claim, a
   gone.claimer.claim(SPAWN_ORDER, "worker-2407", {});
   assert.deepEqual(gone.claimArgs(), ["claim", "2407", "--session=worker-2407", "--branch=agent/one-instance-one-row-2407", "--worktree=../wt-2407"],
     "a record naming a path that no longer exists must not send the claim to adopt nothing");
-  assert.deepEqual(gone.forgotten, [], "and the stale record is not 'used'");
+  assert.deepEqual(gone.forgotten, [2407], "and the stale record is DROPPED (#2864), not left to be read again next tick");
   const refused = spawnHost({ kept: KEPT, claimStatus: 1 });
   const got = refused.claimer.claim(SPAWN_ORDER, "worker-2407", {});
   assert.ok("refusal" in got);
@@ -1470,4 +1620,125 @@ test("#2470 (9) a pane interrupted for LESS than the settle time is left alone (
   assert.deepEqual(seen(null), [], "a session whose last activity cannot be established is left alone");
   assert.match(readFileSync(new URL("./wake.mjs", import.meta.url), "utf8"), /if you were stopped on purpose, say so on the row and stop/,
     "and the prompt itself tells a deliberately stopped session what to do");
+});
+
+test("#2841 every argv wake.mjs sends to row-claim.mjs passes row-claim's REAL flag guard, and the guard refuses one flag short of that", () => {
+  // Callers covered: `performRelease` (decline: --keep-worktree, --predecessor-gone, --answer=), `spawnClaimer.claim` (claim: fresh and --adopt=),
+  // and `releaseClaim`'s undo (decline, plain and --keep-worktree). Those are every `ROW_CLAIM` spawn in wake.mjs; no other src/ file spawns it.
+  const argvs: { from: string; args: string[] }[] = [];
+  const release = (o: { answer?: string; spare?: boolean }, from: string) => {
+    const r = releaseHost({ world: { dirty: [{ file: "a.mjs", ago: 900 }], unpushed: 2 } });
+    performRelease({ ...STALL, ...(o.answer === undefined ? {} : { answer: o.answer }) }, r.deps);
+    argvs.push({ from, args: r.decline()!.args.slice(1) });
+  };
+  release({}, "performRelease, gone worker, tree kept");
+  release({ answer: "product-manager" }, "performRelease with --answer=");
+  const adopt = spawnHost({ kept: KEPT });
+  adopt.claimer.claim(SPAWN_ORDER, "worker-2407", {});
+  argvs.push({ from: "spawnClaimer.claim --adopt=", args: adopt.claimArgs() });
+  const fresh = spawnHost({ kept: null });
+  fresh.claimer.claim(SPAWN_ORDER, "worker-2407", {});
+  argvs.push({ from: "spawnClaimer.claim fresh", args: fresh.claimArgs() });
+  const undone = spawnHost({ kept: KEPT, vanish: true });
+  undone.claimer.claim(SPAWN_ORDER, "worker-2407", {});
+  argvs.push({ from: "releaseClaim undo, adopted", args: undone.execs.find((e) => e.args[1] === "decline")!.args.slice(1) });
+
+  assert.ok(argvs.some((a) => a.args.includes("--predecessor-gone")), "the population includes the flag this row is about");
+  for (const { from, args } of argvs) {
+    assert.deepEqual(unknownFlags(args.slice(1), ROW_CLAIM_FLAGS), [], `${from}: ${args.join(" ")}`);
+  }
+  // THE POSITIVE CONTROL: the same argv against the list WITHOUT `--predecessor-gone` is refused, as it was on main since #2748.
+  const without = ROW_CLAIM_FLAGS.filter((f: string) => f !== "--predecessor-gone");
+  const gone = argvs.find((a) => a.args.includes("--predecessor-gone"))!;
+  assert.deepEqual(unknownFlags(gone.args.slice(1), without), ["--predecessor-gone"]);
+});
+
+// --- #2864: a kept record whose tree was later removed is dropped, and a merged leftover branch with it ---------------------------------
+
+test("#2864 the claim DROPS a kept record whose tree is gone and deletes its leftover branch with `-d` BEFORE claiming; a record whose tree exists is untouched", () => {
+  const gone = spawnHost({ kept: KEPT, treeGone: true });
+  gone.claimer.claim(SPAWN_ORDER, "worker-2407", {});
+  const deletes = gone.execs.filter((e) => e.args[0] === "git" && e.args[1] === "branch");
+  assert.deepEqual(deletes.map((e) => e.args), [["git", "branch", "-d", BRANCH]], "`-d`, never `-D`, on the recorded branch");
+  assert.ok(gone.execs.indexOf(deletes[0]) < gone.execs.findIndex((e) => e.args[1] === "claim"), "before the claim that would refuse over it");
+  // THE CONTROL: the tree exists, so the record is adopted and nothing is deleted.
+  const kept = spawnHost({ kept: KEPT });
+  kept.claimer.claim(SPAWN_ORDER, "worker-2407", {});
+  assert.equal(kept.execs.some((e) => e.args[0] === "git" && e.args[1] === "branch"), false);
+});
+
+/** A scratch `origin`/primary pair: `main` published, plus one local branch that is MERGED into main and one holding a commit nowhere else. */
+function keptScratch() {
+  const root = mkdtempSync(join(tmpdir(), "a11y-2864-"));
+  const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { env: sandboxGitEnv(), encoding: "utf8" });
+  git("init", "-q", "-b", "main");
+  git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base");
+  git("branch", "agent/merged-9");
+  git("checkout", "-q", "-b", "agent/unmerged-8");
+  git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "work only here");
+  git("checkout", "-q", "main");
+  const keptPath = join(root, "kept-claims.json");
+  const record = (branch: string, worktree: string) => ({ worktree, branch, from: "worker-1", at: NOW, why: "merged", dirty: 0, unpushed: 0 });
+  const branches = () => git("branch", "--format=%(refname:short)").split("\n").filter(Boolean);
+  return { root, keptPath, git, record, branches };
+}
+
+test("#2864 pruneGoneKeptClaims over a REAL repo: a gone tree's record goes and its MERGED branch with it; an UNMERGED branch stays and is named; an existing tree's record is untouched", () => {
+  const s = keptScratch();
+  try {
+    const live = join(s.root, "live-tree");
+    writeFileSync(s.keptPath, JSON.stringify({
+      9: s.record("agent/merged-9", join(s.root, "gone-a")),
+      8: s.record("agent/unmerged-8", join(s.root, "gone-b")),
+      7: s.record("agent/live-7", live),
+    }));
+    // The kept tree for #7 exists on disk; the other two were removed.
+    execFileSync("mkdir", [live]);
+    const lines = pruneGoneKeptClaims(s.keptPath, { primary: s.root, env: {} });
+    assert.deepEqual(Object.keys(readKeptClaims(s.keptPath)), ["7"], "exactly the records whose trees are gone are dropped");
+    assert.deepEqual(s.branches().sort(), ["agent/unmerged-8", "main"], "the merged branch is deleted; the unmerged one is NEVER deleted");
+    assert.equal(lines.length, 2);
+    assert.match(lines.find((l) => l.includes("#9")) ?? "", /deleted its merged branch agent\/merged-9/);
+    assert.match(lines.find((l) => l.includes("#8")) ?? "", /left the branch agent\/unmerged-8/);
+    // IDEMPOTENT: the second tick has nothing left to say.
+    assert.deepEqual(pruneGoneKeptClaims(s.keptPath, { primary: s.root, env: {} }), []);
+    assert.deepEqual(Object.keys(readKeptClaims(s.keptPath)), ["7"]);
+  } finally { rmSync(s.root, { recursive: true, force: true }); }
+});
+
+test("#2864 a record is dropped even when git REFUSES the branch, so the refusal that follows is the claim's own and names the branch", () => {
+  const s = keptScratch();
+  try {
+    writeKeptClaims(s.keptPath, { 8: s.record("agent/unmerged-8", join(s.root, "gone")) });
+    pruneGoneKeptClaims(s.keptPath, { primary: s.root, env: {} });
+    assert.deepEqual(readKeptClaims(s.keptPath), {});
+    assert.ok(s.branches().includes("agent/unmerged-8"));
+  } finally { rmSync(s.root, { recursive: true, force: true }); }
+});
+
+test("#2864 the wake ENTRY prunes a gone tree's kept record on a QUIET tick -- empty stdin, nothing queued -- and a record whose tree exists survives it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "a11y-2864-tick-"));
+  try {
+    // The tick's primary under `--worktrees-dir=<dir>` is `<dir>/<basename of the real primary>`: make THAT a real repo with a merged branch.
+    const primary = join(dir, basename(PRIMARY_CHECKOUT));
+    execFileSync("mkdir", [primary]);
+    const git = (...args: string[]) => execFileSync("git", ["-C", primary, ...args], { env: sandboxGitEnv(), encoding: "utf8" });
+    git("init", "-q", "-b", "main");
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base");
+    git("branch", "agent/merged-9");
+    const live = join(dir, "live-tree");
+    execFileSync("mkdir", [live]);
+    const record = (branch: string, worktree: string) => ({ worktree, branch, from: "worker-1", at: NOW, why: "merged", dirty: 0, unpushed: 0 });
+    writeFileSync(join(dir, "kept-claims.json"), JSON.stringify({ 9: record("agent/merged-9", join(dir, "gone")), 7: record("agent/live-7", live) }));
+    const tick = () => spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${join(dir, "wake-ledger")}`, `--worktrees-dir=${dir}`], {
+      input: "", encoding: "utf8", env: { ...process.env, HOME: dir, PATH: process.env.PATH ?? "" } });
+    const ran = tick();
+    assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+    assert.match(ran.stdout, /DROPPED the kept record .*deleted its merged branch agent\/merged-9 \(#9\)/);
+    assert.deepEqual(Object.keys(readKeptClaims(join(dir, "kept-claims.json"))), ["7"]);
+    assert.equal(git("branch", "--list", "agent/merged-9").trim(), "", "the merged leftover branch went with it");
+    // A SECOND quiet tick has nothing to say: the exit is the same and the output is empty.
+    const again = tick();
+    assert.deepEqual([again.status, again.stdout], [0, ""]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

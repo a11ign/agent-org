@@ -31,6 +31,10 @@ import {
 import { readReviewerRegistry, REVIEWER_REGISTRY_FILE } from "./work-gate.mjs";
 import { parityOwner } from "./review-attribution.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { REMOVAL_LOG_ENV } from "./worktree-removal.mjs";
+
+// #2827: `removeReviewCheckout` now writes #2782's removal log, and a test must not write the host's real record.
+process.env[REMOVAL_LOG_ENV] = join(mkdtempSync(join(tmpdir(), "review-removal-log-")), "worktree-removals");
 
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));
@@ -300,6 +304,55 @@ test("#2401 (7d): `prepareReviewCheckout` and `removeReviewCheckout` are a pair 
   const stuck = fakeCheckout([], { failRemove: true });
   prepareReviewCheckout({ pr: 7, session: "reviewer-7", ...stuck.seams });
   assert.match(String(removeReviewCheckout({ pr: 7, session: "reviewer-7", ...stuck.seams })), /could not remove \/reviews-root\/reviewer-7 \(fatal: cannot remove: locked\)/);
+});
+
+/** The removal log's lines, parsed; `[]` when nothing was ever written. */
+const removalLines = (file: string): Record<string, unknown>[] =>
+  existsSync(file) ? readFileSync(file, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];
+
+test("#2827 (done-when 1, 2): `removeReviewCheckout` WRITES THE REMOVAL LOG -- `removing` BEFORE the delete, `removed` after, "
+  + "naming the path, the caller and the reason, and nothing when the tree is already gone", () => {
+  const events: Events = [];
+  const co = fakeCheckout(events);
+  const lines: Record<string, unknown>[] = [];
+  const record = (line: Record<string, unknown>) => { events.push(`record ${line.event}`); lines.push(line); };
+  prepareReviewCheckout({ pr: 7, session: "reviewer-7", ...co.seams });
+  assert.equal(removeReviewCheckout({ pr: 7, session: "reviewer-7", ...co.seams, record }), null);
+  assert.deepEqual(lines, ["removing", "removed"].map((event) => ({ event, path: `${REVIEW_ROOT}/reviewer-7`,
+    caller: "wake.mjs removeReviewCheckout", reason: "the reviewer instance reviewer-7 ended (#2401)" })));
+  const at = (needle: string) => events.findIndex((event) => event.includes(needle));
+  assert.ok(at("record removing") < at("worktree remove") && at("worktree remove") < at("record removed"),
+    `the line is written BEFORE the delete and the outcome after it: ${events.join(" | ")}`);
+  lines.length = 0;
+  assert.equal(removeReviewCheckout({ pr: 7, session: "reviewer-7", ...co.seams, record }), null);
+  assert.deepEqual(lines, [], "a tree that is already gone is not a removal, so it writes no line");
+});
+
+test("#2827 (done-when 1): a removal git refuses is recorded `failed` with its reason, and a LOG THAT CANNOT BE WRITTEN "
+  + "REFUSES THE REMOVAL -- a delete nobody can see is the defect #2782 ended", () => {
+  const stuck = fakeCheckout([], { failRemove: true });
+  prepareReviewCheckout({ pr: 7, session: "reviewer-7", ...stuck.seams });
+  const lines: Record<string, unknown>[] = [];
+  removeReviewCheckout({ pr: 7, session: "reviewer-7", ...stuck.seams, record: (line) => { lines.push(line); } });
+  assert.deepEqual(lines.map((line) => [line.event, line.detail]), [["removing", undefined], ["failed", "fatal: cannot remove: locked"]]);
+
+  const co = fakeCheckout();
+  prepareReviewCheckout({ pr: 7, session: "reviewer-7", ...co.seams });
+  const refusal = removeReviewCheckout({ pr: 7, session: "reviewer-7", ...co.seams,
+    record: () => { throw new Error("ENOSPC: no space left on device"); } });
+  assert.match(String(refusal), /could not remove \/reviews-root\/reviewer-7 \(ENOSPC: no space left on device\)/);
+  assert.deepEqual([co.trees.size, co.refs.has(7)], [1, true], "the tree and its ref are both still there");
+});
+
+test("#2827 (done-when 2): with NO seam, the default writes the line to the real log file `A11Y_WORKTREE_REMOVAL_LOG` names", () => {
+  const log = process.env[REMOVAL_LOG_ENV] as string;
+  const before = removalLines(log).length;
+  const co = fakeCheckout();
+  prepareReviewCheckout({ pr: 8, session: "reviewer-8", ...co.seams });
+  assert.equal(removeReviewCheckout({ pr: 8, session: "reviewer-8", ...co.seams }), null);
+  const written = removalLines(log).slice(before);
+  assert.deepEqual(written.map((line) => [line.event, line.path, line.caller]),
+    [["removing", `${REVIEW_ROOT}/reviewer-8`, "wake.mjs removeReviewCheckout"], ["removed", `${REVIEW_ROOT}/reviewer-8`, "wake.mjs removeReviewCheckout"]]);
 });
 
 test("#2401 (7e): the checkout is REAL git, not only a fake -- fetched from `refs/pull/<n>/head`, re-pointed on a push, "

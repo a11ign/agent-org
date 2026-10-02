@@ -1,3 +1,4 @@
+// no-token: claimRefusal -- updatePrimary and readPrimaryDrift reach prune-worktrees.mjs only for `isPrimaryWorktree`, a `.git`-is-a-directory check; nothing here asks GitHub, and the gate's cases live in work-gate.test.ts
 /**
  * `primary:update` is the ONE sanctioned way to move the primary checkout (#126), which makes it the only
  * place a rebuild can live and be reached every time.
@@ -6,9 +7,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { updatePrimary, lockfileMoved } from "../update-primary.mjs";
+import { updatePrimary, lockfileMoved, readPrimaryDrift } from "../update-primary.mjs";
 import { changedFiles } from "../lib/changed-files.mjs";
 import { withGitSandbox } from "../lib/git-sandbox.ts";
 import { UPDATE_PRIMARY_VERBS } from "./update-primary-argv.mjs";
@@ -292,4 +295,114 @@ test("#1384 lockfileMoved through the REAL changed-files helper: the root lockfi
       + "the flag removed from changed-files.mjs, because the pathspec excludes the destination. What keeps this "
       + "read on the helper is changed-files-renames.test.ts and the ACCEPTANCE test's no-diff-through-run line");
   });
+});
+
+// --- #2781: a dirty primary is a SIGNAL ---------------------------------------------------------------------------------
+//
+// `a11ign-work-tick.service` runs `primary:update` as `ExecStartPre=-`, so a failed update is invisible to systemd. On
+// 2026-09-28T12:01Z a tracked edit in the primary began refusing every checkout and the gate ran 22 hours on old code.
+// These drive REAL repositories: an origin, a clone that is the "primary" (its `.git` is a directory), and the exact scenario.
+
+const git = (cwd: string, ...args: string[]) =>
+  execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd, env: sandboxGitEnv(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+
+/** An origin with `a.txt`, and a clone of it standing at `origin/main`. `advance()` lands a newer commit on origin and fetches it. */
+function primaryAndOrigin() {
+  const base = mkdtempSync(join(tmpdir(), "a11y-primary-drift-"));
+  const origin = join(base, "origin");
+  const primary = join(base, "primary");
+  mkdirSync(origin);
+  git(origin, "init", "-q", "-b", "main");
+  writeFileSync(join(origin, "a.txt"), "one\n");
+  git(origin, "add", "a.txt");
+  git(origin, "commit", "-q", "-m", "first");
+  git(base, "clone", "-q", origin, primary);
+  const advance = () => {
+    writeFileSync(join(origin, "a.txt"), `${readFileSync(join(origin, "a.txt"), "utf8")}more\n`);
+    git(origin, "commit", "-q", "-am", "newer");
+    git(primary, "fetch", "-q", "origin");
+  };
+  return { base, origin, primary, advance };
+}
+
+test("#2781 a CLEAN primary at origin/main reads current -- the control every signal below is measured against", () => {
+  const { base, primary } = primaryAndOrigin();
+  try {
+    const drift = readPrimaryDrift(primary)!;
+    assert.deepEqual({ behind: drift.behind, ahead: drift.ahead, dirty: drift.dirty }, { behind: 0, ahead: 0, dirty: [] });
+  } finally { rmSync(base, { recursive: true, force: true }); }
+});
+
+test("#2781 ACCEPTANCE: a tracked edit that CONFLICTS with a newer origin/main makes updatePrimary fail, and the read then names the path", () => {
+  const { base, primary, advance } = primaryAndOrigin();
+  try {
+    writeFileSync(join(primary, "a.txt"), "an interactive session's edit\n");
+    advance();
+    assert.throws(() => updatePrimary(primary, undefined, () => {}), /would be overwritten|local changes/i,
+      "the failure the journal recorded 2,652 times is reproduced, not assumed");
+    const drift = readPrimaryDrift(primary)!;
+    assert.deepEqual({ behind: drift.behind, dirty: drift.dirty }, { behind: 1, dirty: ["a.txt"] });
+  } finally { rmSync(base, { recursive: true, force: true }); }
+});
+
+test("#2781 done-when 4: a dirty primary is read BEFORE any update fails -- no newer origin/main is needed", () => {
+  const { base, primary } = primaryAndOrigin();
+  try {
+    writeFileSync(join(primary, "a.txt"), "edited\n");
+    const drift = readPrimaryDrift(primary)!;
+    assert.equal(drift.behind, 0, "origin has not moved, so the update would still succeed");
+    assert.deepEqual(drift.dirty, ["a.txt"]);
+  } finally { rmSync(base, { recursive: true, force: true }); }
+});
+
+test("#2781 an UNTRACKED file is not a dirty path: the build writes them here and the checkout never refuses over one", () => {
+  const { base, primary } = primaryAndOrigin();
+  try {
+    writeFileSync(join(primary, "scratch.log"), "x\n");
+    assert.deepEqual(readPrimaryDrift(primary)!.dirty, []);
+  } finally { rmSync(base, { recursive: true, force: true }); }
+});
+
+test("#2781 a primary AHEAD of origin/main (an unpushed commit) is reported as ahead", () => {
+  const { base, primary } = primaryAndOrigin();
+  try {
+    writeFileSync(join(primary, "b.txt"), "local\n");
+    git(primary, "add", "b.txt");
+    git(primary, "commit", "-q", "-m", "local only");
+    assert.equal(readPrimaryDrift(primary)!.ahead, 1);
+  } finally { rmSync(base, { recursive: true, force: true }); }
+});
+
+test("#2781 UNASKABLE is null, never a clean reading: a linked worktree, and a repository with no origin/main", () => {
+  const { base, primary } = primaryAndOrigin();
+  try {
+    mkdirSync(join(base, "not-primary"));
+    writeFileSync(join(base, "not-primary", ".git"), "gitdir: elsewhere\n");
+    assert.equal(readPrimaryDrift(join(base, "not-primary")), null, "its .git is a file, as in a linked worktree");
+    git(primary, "update-ref", "-d", "refs/remotes/origin/main");
+    assert.equal(readPrimaryDrift(primary), null, "no origin/main to compare against");
+  } finally { rmSync(base, { recursive: true, force: true }); }
+});
+
+test("#2781 the CLI `--drift` only READS: from a worktree it answers asked:false and moves nothing", () => {
+  const entry = fileURLToPath(new URL("../update-primary.mjs", import.meta.url));
+  const run = spawnSync(process.execPath, [entry, "--drift"], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  const parsed = JSON.parse(run.stdout);
+  assert.equal(typeof parsed.asked, "boolean");
+  assert.equal(parsed.asked, parsed.drift !== null, "asked and the reading agree");
+  const refused = spawnSync(process.execPath, [entry, "--nonsense"], { encoding: "utf8" });
+  assert.notEqual(refused.status, 0, "an unknown flag is still refused (#164)");
+});
+
+test("#2781 done-when 3: the `-` on ExecStartPre may stay ONLY while the gate reads the primary and has a cause for it", () => {
+  const unit = readFileSync(fileURLToPath(new URL("../../../agent-org/host/work-tick.service.in", import.meta.url)), "utf8");
+  const silent = /^ExecStartPre=-.*primary:update/m.test(unit);
+  const gate = readFileSync(fileURLToPath(new URL("../work-gate.mjs", import.meta.url)), "utf8");
+  assert.ok(/^ExecStartPre=.*primary:update/m.test(unit), "control: the unit still runs the update, so this test is asking about something");
+  if (silent) {
+    assert.match(gate, /readPrimaryDriftNow\(\)/, "a silent update with no reader is the 22 hours");
+    assert.match(gate, /cause: "primary-stale"/);
+    assert.match(unit, /primary-stale/, "and the unit says where its failure is reported");
+  }
 });

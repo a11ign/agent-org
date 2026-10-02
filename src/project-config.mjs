@@ -18,7 +18,7 @@
 // The module imports only `node:fs` and `node:path`: `scripts/repo-identity.mjs` imports it, and it in turn is imported by 31
 // files of this package, so anything heavier here is paid by every one of them (`api-pool.mjs` says why that matters).
 import { readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const PROJECT_DECLARATION_PATH = ".agent-org/project.json";
@@ -215,10 +215,51 @@ export function readProjectDeclaration(root) {
 }
 
 /**
- * The checkout this module lives in. Until `host.json` says where each project is (ADR 0040, decision 3, a later row) the
- * tool runs from inside the product's own tree, so the declaration is the one beside it: `packages/agent-org/src` up three.
+ * The variable that names the host file. `host-config.mjs` owns it (`HOST_CONFIG_ENV`) and imports THIS module, so this one
+ * cannot import it back: the name is written here too, and `standalone-candidate.test.ts` pins that the two agree.
  */
-export const HOME_CHECKOUT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+export const HOST_ENV = "AGENT_ORG_HOST";
+
+/**
+ * The `checkout` of the host file's `primary` project. Read here, minimally, and not through `host-config.mjs` (a cycle, and
+ * that reader checks far more than a checkout needs). EVERY failure REFUSES naming the host file and what is wrong: a host
+ * file that is set and unusable is never answered with the directory three levels up (chairman, 2026-09-24: no fallback).
+ * @param {string} hostPath @returns {string}
+ */
+function primaryCheckout(hostPath) {
+  /** @type {unknown} */
+  let host;
+  try {
+    host = JSON.parse(readFileSync(hostPath, "utf8"));
+  } catch (cause) {
+    const unreadable = cause instanceof Error && "code" in cause;
+    throw new ProjectDeclarationRefusal(HOST_ENV, unreadable ? "the host file cannot be read" : "the host file is not valid JSON", hostPath, { cause });
+  }
+  if (!isObject(host)) throw new ProjectDeclarationRefusal("primary", `the host file must be a JSON object, not ${describe(host)}`, hostPath);
+  const primary = requiredString(host, "primary", "", hostPath);
+  const projects = Array.isArray(host.projects) ? host.projects : [];
+  const entry = projects.find((project) => isObject(project) && project.id === primary);
+  if (!isObject(entry)) throw new ProjectDeclarationRefusal("primary", `\`${primary}\` is not one of \`projects\``, hostPath);
+  const checkout = requiredString(entry, "checkout", `projects[${primary}].`, hostPath);
+  if (!isAbsolute(checkout)) throw new ProjectDeclarationRefusal("checkout", `it must be an absolute path, not ${JSON.stringify(checkout)}`, hostPath);
+  return checkout;
+}
+
+/**
+ * The checkout the tool serves. `$AGENT_ORG_HOST` set (and non-empty, as `hostConfigPath` reads it) names the host file, and the
+ * answer is its primary project's checkout (ADR 0040, decision 3): the only form that works once the tool is installed beside the
+ * projects it serves, where `src` up three is not one. UNSET is the form every live unit still runs in: the product's own tree,
+ * so the declaration is the one beside it, `packages/agent-org/src` up three.
+ * @param {{ env?: Record<string, string | undefined>, beside?: string }} [where]
+ * @returns {string}
+ */
+export function resolveHomeCheckout({ env = process.env, beside = resolve(dirname(fileURLToPath(import.meta.url)), "../../..") } = {}) {
+  const host = env[HOST_ENV];
+  return host !== undefined && host !== "" ? primaryCheckout(host) : beside;
+}
+
+/** The checkout this process serves, resolved once at import (see `resolveHomeCheckout`). */
+export const HOME_CHECKOUT = resolveHomeCheckout();
 
 /** @type {Readonly<ProjectDeclaration> | undefined} */
 let homeProject;

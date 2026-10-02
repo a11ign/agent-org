@@ -317,7 +317,7 @@ const REUSABLE = parseYaml(readFileSync(path.join(WORKFLOWS, "reusable-build-tes
 
 /** The commands `trunkBuildTest` runs for its verdict, read from the workflow it calls, not retyped here. */
 const RED_JOB_BATTERY = Object.values(REUSABLE.jobs).flatMap((j) => j.steps).map((s) => (s.run ?? "").trim())
-  .filter((run) => /^(npm run (lint|typecheck|test:all)|PYTHONDONTWRITEBYTECODE=1 pytest\b.*)$/.test(run));
+  .filter((run) => /^(pnpm run (lint|typecheck|test:all)|PYTHONDONTWRITEBYTECODE=1 pytest\b.*)$/.test(run));
 
 /** lint, typecheck, the unscoped suite, pytest. */
 const RED_JOB_COMMAND_COUNT = 4;
@@ -328,7 +328,7 @@ const PARENT_COMMANDS = PARENT_STEP.split("\n").filter((line) => !line.trim().st
 
 test("POSITIVE CONTROL: the red job's battery was found, all four commands, and so was the parent step", () => {
   assert.equal(RED_JOB_BATTERY.length, RED_JOB_COMMAND_COUNT, `found: ${JSON.stringify(RED_JOB_BATTERY)}`);
-  assert.ok(RED_JOB_BATTERY.includes("npm run test:all"), "the unscoped suite is the one that covers agent-org and lab");
+  assert.ok(RED_JOB_BATTERY.includes("pnpm run test:all"), "the unscoped suite is the one that covers agent-org and lab");
   assert.ok(PARENT_STEP.length > 0);
 });
 
@@ -336,12 +336,12 @@ test("the parent re-check runs EVERY command the red job ran, so a red in agent-
   for (const command of RED_JOB_BATTERY) {
     assert.ok(PARENT_COMMANDS.includes(command), `the parent re-check does not run \`${command}\` -- it would answer a narrower question`);
   }
-  assert.doesNotMatch(PARENT_COMMANDS, /npm test\b/, "`npm test` is `test:ts`, whose glob excludes packages/agent-org and packages/lab");
+  assert.doesNotMatch(PARENT_COMMANDS, /\bp?npm test\b/, "`pnpm test` is `test:ts`, whose glob excludes packages/agent-org and packages/lab");
 });
 
 test("a parent that does not build is UNKNOWN, never a pass: the build's failure is not swallowed", () => {
-  assert.match(PARENT_COMMANDS, /if ! npm run build[^\n]*; then[\s\S]*?result=unknown/);
-  assert.doesNotMatch(PARENT_COMMANDS, /npm run build[^\n]*\|\| true/);
+  assert.match(PARENT_COMMANDS, /if ! pnpm run build[^\n]*; then[\s\S]*?result=unknown/);
+  assert.doesNotMatch(PARENT_COMMANDS, /pnpm run build[^\n]*\|\| true/);
 });
 
 // --- 4. the policy asked for on the row, pinned ---

@@ -53,6 +53,7 @@ import { SESSION_PREFIX } from "./project-vocabulary.mjs";
 import { launchGate } from "./board-snapshot-scope.mjs";
 import { worktreeOwner } from "./worktree-owner.mjs";
 import { isLiveSession } from "./arm-pr.mjs";
+import { declarationRefusal } from "./hand-fix-ledger.mjs";
 
 // The header's EXIT CODES, named because 1 and 3 ask a caller for opposite next steps.
 export const EXIT_NOTHING_SENT = 1;
@@ -430,6 +431,21 @@ function landedThenFailedLine({ mode, branch, head, step, message }) {
     + `\`${command}\` once the cause below is gone.\n  ${message.split("\n")[0]}`;
 }
 
+/**
+ * #2929: SAID AT THE MOMENT OF OPENING, because that is the only place every author is certain to be reading. A recap
+ * ended "PR #2925 is open with its test passing" while `acceptance / run` and `gate` were red on that head: the author
+ * had run a subset locally and the claim "passing" was that subset wearing CI's name. The author's turn cannot be held
+ * open to wait for the checks, so the wording is fixed here, before the turn ends. It carries no judgment and changes
+ * no exit code.
+ * @param {{ head: string }} at the short head that was opened
+ * @returns {string}
+ */
+export function ciPendingLine({ head }) {
+  return `pr-open: opened \`${head}\` -- CI has NOT run on it. If a check goes red the gate wakes you with the result; `
+    + `until then your recap must say \`opened, CI pending on ${head}\` and never "passing" until the checks on that head `
+    + `are green. A local run of a subset (a test file, \`test:changed\`) is reported as that subset, not as passing.\n`;
+}
+
 /** @param {unknown} error */
 function messageOf(error) {
   return error instanceof Error ? error.message : String(error);
@@ -466,6 +482,7 @@ export function sendToGitHub(mode, rest,
   /** @type {(args: string[], fallback: string) => string} */
   const fact = (args, fallback) => { try { return git(args) || fallback; } catch { return fallback; } };
   const head = () => fact(["rev-parse", "--short", "HEAD"], "(unknown)");
+  const head8 = () => fact(["rev-parse", "--short=8", "HEAD"], "(unknown)");
   try {
     run(["pr", mode, ...rest]);
   } catch (error) {
@@ -499,6 +516,9 @@ export function sendToGitHub(mode, rest,
         + `author. Apply it by hand: \`gh pr edit <n> --add-label ${args[args.length - 1]}\`.\n`);
     }
   }
+  // #2929: only a create that LANDED and was armed -- the failed create and the failed arm returned above with their
+  // own line, and this one never stands in for either. Last, so it is the line still on screen when the turn ends.
+  if (mode === "create") err(ciPendingLine({ head: head8() }));
   return 0;
 }
 
@@ -544,6 +564,15 @@ const defaultRowBody = (number, repo = REPO) =>
 /** `sandboxGitEnv()` CALLED: git exports GIT_DIR into every hook environment. @param {string[]} args */
 const defaultGit = (args) =>
   execFileSync("git", args, { encoding: "utf8", env: sandboxGitEnv() }).trim();
+
+/**
+ * #2307's mutation report, printed for a body that will be SENT. Its own function only to keep `main` under the
+ * complexity ceiling the #2939 declaration check pushed it past.
+ * @param {string} body @param {(command: string) => number} runMutation @param {(line: string) => void} out
+ */
+function printMutationReport(body, runMutation, out) {
+  for (const line of mutationReport(body, runMutation).lines) out(`${line}\n`);
+}
 
 /**
  * #2417: `checkRegion` in `main`'s terms: prints its note, or its refusal, and returns the exit code only for a refusal.
@@ -594,7 +623,9 @@ export function main(argv = process.argv.slice(2),
     return EXIT_USAGE;
   }
   // #1344: BEFORE checkBody, because checkBody RUNS the Acceptance -- in this working tree, whatever --head says.
-  const headRefused = headTreeRefusal(mode, rest, { git }) ?? editTreeRefusal(mode, rest, { git, prHead });
+  // #2939: and a `Hand-fix:` line the ledger could not read, which it would silently not count. Pure, like the heads.
+  const headRefused = headTreeRefusal(mode, rest, { git }) ?? editTreeRefusal(mode, rest, { git, prHead })
+    ?? declarationRefusal(body);
   if (headRefused) {
     err(`${headRefused}\n`);
     return EXIT_NOTHING_SENT;
@@ -610,7 +641,7 @@ export function main(argv = process.argv.slice(2),
     return EXIT_NOTHING_SENT;
   }
   // #2307: only for a body that will be SENT, and never a reason not to send it.
-  for (const line of mutationReport(body, runMutation).lines) out(`${line}\n`);
+  printMutationReport(body, runMutation, out);
   return sendToGitHub(mode, rest, { run, git, err, owner });
 }
 

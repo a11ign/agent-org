@@ -1,0 +1,18 @@
+[Unit]
+Description=a11ign: run the chairman-messaging watcher every five minutes (optional: only when `messaging` is configured)
+
+# NO `Requires=` ON THE SERVICE, ON PURPOSE -- the shape of @@prefix@@fleet-watch.timer, not of @@prefix@@worktree-prune.timer. `host:install` runs
+# `enable --now` on every shipped timer, and a `Requires=` would start this service once at every install; this one MESSAGES A PERSON, so a
+# firing at an operator's keystroke rather than on the clock would be a notification nobody scheduled.
+
+[Timer]
+# EVERY FIVE MINUTES, AT :03, :08, :13 ... -- A REQUEST IS SENT AT ONCE (decision 1), so the clock is the latency; the hold-down for incidents
+# is 30 minutes and the reminder spacing 24 hours, so nothing the design asks for needs a finer clock. Not :00 or :05, for the reason #965
+# moved the board workflow's schedule off the top of the hour: it is where every other clock fires. Rows 4 and 5 own the cadence once the
+# watcher exists and its API cost is measured (`.claude/rules/gh-api-budget.md`).
+OnCalendar=*-*-* *:03/5:00
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

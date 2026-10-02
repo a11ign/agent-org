@@ -2068,6 +2068,8 @@ function copyWakeWithDrainedRoster(copyRoot: string): string {
   visit(entry);
   // #2616: the tool now reads the project's declaration from beside it, so a copied tree must carry it or the reader REFUSES (correctly).
   files.add(join(REPO_ROOT, ".agent-org/project.json"));
+  // #2799: and the host's, because the drain marker, the reviewer state and the ledger default now read its `stateDir` at import.
+  files.add(join(REPO_ROOT, ".agent-org/host.json"));
   // #2621: the declaration now points at a PLUGIN (`.agent-org/plugins/causes.mjs`), imported DYNAMICALLY
   // by `cause-declaration.mjs` -- invisible to `localImports`'s static walk, so it is added for the
   // identical reason `project.json` is a line above.

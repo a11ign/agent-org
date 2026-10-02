@@ -33,24 +33,30 @@
 // command either way.
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, mkdirSync, rmSync, existsSync, realpathSync, writeFileSync,
-  renameSync, chmodSync } from "node:fs";
+  renameSync, chmodSync, openSync, fstatSync, readSync, closeSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { localImports, stripComments } from "./lib/local-import-closure.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { SPAWNS_GH } from "./acceptance-commands.mjs";
-import { TEMPLATE_SUFFIX, homeHostConfig, leadsWorkspacesText, readUnitsDeclaration, renderTemplate, renderedName,
-  templateValues } from "./host-config.mjs";
+import { HOME_CHECKOUT } from "./project-config.mjs";
+import { CLAUDE_EFFORTS, DECLARED_CLAUDE_MODELS } from "./worker-profile.mjs";
+import { HostConfigRefusal, TEMPLATE_SUFFIX, homeHostConfig, leadsWorkspacesText, readBeforeTick, readUnitsDeclaration,
+  renderTemplate, renderedName, templateValues } from "./host-config.mjs";
 
 /**
- * Where the TOOL keeps the units and scripts it ships: three unit templates (each a service and a timer), the board-report
- * dispatcher and the `gh` routing wrapper (#2620, child 3f of #69).
+ * Where the TOOL keeps the units and scripts it ships: four unit templates (each a service and a timer; the fourth, the shadow window's, is #2867), the
+ * board-report dispatcher and the `gh` routing wrapper (#2620, child 3f of #69).
  */
 export const SHIPPED_DIR = fileURLToPath(new URL("../host/", import.meta.url));
 
-/** The checkout every shipped unit names as its `WorkingDirectory`, so an `ExecStart` path resolves. */
-export const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
+/**
+ * The checkout every shipped unit names as its `WorkingDirectory`, so an `ExecStart` path resolves. It is the PROJECT's (`HOME_CHECKOUT`), not
+ * the tool's: the units, the `package.json` scripts and the git history it reads all live there, and they are where the tool is installed
+ * beside the project it serves only when `$AGENT_ORG_HOST` says so (#2879).
+ */
+export const REPO_ROOT = HOME_CHECKOUT;
 
 /**
  * Where the PROJECT keeps the units that are its own -- a11ign's corpus and fleet clocks -- read beside the tool's, so `host:check`
@@ -63,7 +69,7 @@ export const PROJECT_UNITS_DIR = join(REPO_ROOT, ".agent-org/units");
 // SEVENTEEN entries were in `packages/agent-org/host/` before this row, and every one is now classified as exactly one of three
 // things, so an eighteenth that is none of them is REFUSED (`unclassifiedEntries`) and not adopted by whichever glob it happens to
 // match:
-//   the TOOL's     eight files that stay in `host/`: the three unit templates (service + timer), the dispatcher, the `gh` wrapper;
+//   the TOOL's     eight files that stay in `host/`: the three unit templates (service + timer), the dispatcher, the `gh` wrapper -- TEN since #2867's shadow-window pair;
 //   the PROJECT's  eight that moved to `.agent-org/units/` -- the project's declaration (`units.own`) names them, because the tool
 //                  cannot name a11ign's units in its own source without being a11ign's tool;
 //   HOST DATA      one, `gh-leads-workspaces.txt`, which is now `host.json`'s `gh.leadsWorkspaces` and is rendered, not shipped.
@@ -72,7 +78,36 @@ export const PROJECT_UNITS_DIR = join(REPO_ROOT, ".agent-org/units");
 export const TOOL_ENTRIES = Object.freeze([
   "board-report-dispatch.sh", "board-report.service.in", "board-report.timer.in", "gh",
   "work-tick.service.in", "work-tick.timer.in", "worktree-prune.service.in", "worktree-prune.timer.in",
+  // #2867: the shadow window's own pair, installed BESIDE the work-tick unit and sharing none of its text.
+  "shadow-window.service.in", "shadow-window.timer.in",
+  // #2901: the chairman-messaging watcher's pair, OPTIONAL (`OPTIONAL_UNITS`): classified here so it is never "unclassified", listed and installed only when asked for.
+  "chairman-watch.service.in", "chairman-watch.timer.in",
 ]);
+
+/**
+ * TEMPLATES THAT SHIP ONLY FOR A PROJECT THAT ASKS FOR THEM (#2901; docs/messaging.md decision 1, "Optional and off by default"): template -> the
+ * top-level key of `.agent-org/project.json` whose PRESENCE turns it on. Absent, the unit is not in `shippedUnits`, so `host:check` neither lists
+ * nor misses it, `host:install` does not write it, and an installed copy is an orphan that the install removes -- deleting the key is the off switch.
+ * Presence only: whether the key is VALID is `messaging/config.mjs`'s refusal, and an invalid one still installs the clock, which then refuses.
+ */
+export const OPTIONAL_UNITS = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
+  "chairman-watch.service.in": "messaging", "chairman-watch.timer.in": "messaging",
+}));
+
+/**
+ * The top-level keys the project's declaration holds. UNREADABLE IS A THROW, never "none": an optional unit silently dropped because the file that
+ * says whether to install it could not be read is the failure this module exists to refuse.
+ * @param {string} [root] @param {typeof readFileSync} [read] @returns {Set<string>}
+ */
+export function declaredProjectKeys(root = REPO_ROOT, read = readFileSync) {
+  const path = join(root, ".agent-org/project.json");
+  try {
+    const parsed = JSON.parse(String(read(path, "utf8")));
+    return new Set(typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? Object.keys(parsed) : []);
+  } catch (cause) {
+    throw new Error(`${path}: cannot tell which optional units it asks for (${/** @type {Error} */ (cause).message})`, { cause });
+  }
+}
 
 /** The host-data entry that is no longer a file, and where its content lives now. */
 export const HOST_DATA_ENTRIES = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({ "gh-leads-workspaces.txt": "gh.leadsWorkspaces" }));
@@ -84,8 +119,8 @@ export const INSTALLED_DIR = `${process.env.HOME ?? ""}/.config/systemd/user`;
 
 /**
  * @typedef {{ shippedDir?: string, projectUnitsDir?: string | null, readDir?: typeof readdirSync, read?: typeof readFileSync,
- *   host?: HostConfig, units?: UnitsDeclaration }} ShippedDeps
- * `projectUnitsDir` is the project's own units: the real one when `shippedDir` is left to default, and NONE when a test hands its own
+ *   host?: HostConfig, units?: UnitsDeclaration, declaredKeys?: ReadonlySet<string> }} ShippedDeps
+ * `declaredKeys` stands in for the project's top-level keys, which decide `OPTIONAL_UNITS`; a fixture directory declares none. `projectUnitsDir` is the project's own units: the real one when `shippedDir` is left to default, and NONE when a test hands its own
  * `shippedDir`, so a fixture directory is never silently joined by a11ign's eight units. `host` and `units` stand in for the two
  * declarations a template is rendered from.
  */
@@ -93,12 +128,21 @@ export const INSTALLED_DIR = `${process.env.HOME ?? ""}/.config/systemd/user`;
 /**
  * The unit files this repository ships, sorted so a report reads the same way twice: the tool's (templates listed under the name
  * they install as) and, when there is one, the project's.
- * @param {string} [dir] @param {{ read?: typeof readdirSync, projectUnitsDir?: string | null, prefix?: string }} [deps]
+ * An `OPTIONAL_UNITS` template is listed only when `declaredKeys` holds its key: the real project's, read on first need, for the real directory,
+ * and none for a fixture's, so a test directory is never switched on by a11ign's own declaration.
+ * @param {string} [dir] @param {{ read?: typeof readdirSync, projectUnitsDir?: string | null, prefix?: string, declaredKeys?: ReadonlySet<string> }} [deps]
  * @returns {string[]}
  */
-export function shippedUnits(dir = SHIPPED_DIR, { read = readdirSync, projectUnitsDir, prefix } = {}) {
+export function shippedUnits(dir = SHIPPED_DIR, { read = readdirSync, projectUnitsDir, prefix, declaredKeys } = {}) {
   const projectDir = projectUnitsDir !== undefined ? projectUnitsDir : dir === SHIPPED_DIR ? PROJECT_UNITS_DIR : null;
-  const own = namesIn(dir, read).flatMap((name) => {
+  /** @type {ReadonlySet<string> | undefined} */
+  let keys = declaredKeys;
+  const asked = (/** @type {string} */ name) => {
+    if (!Object.hasOwn(OPTIONAL_UNITS, name)) return true;
+    keys ??= dir === SHIPPED_DIR ? declaredProjectKeys() : new Set();
+    return keys.has(OPTIONAL_UNITS[name]);
+  };
+  const own = namesIn(dir, read).filter(asked).flatMap((name) => {
     if (!name.endsWith(TEMPLATE_SUFFIX)) return isUnit(name) ? [name] : [];
     const rendered = renderedName(name, prefix ?? readUnitsDeclaration().prefix);
     return isUnit(rendered) ? [rendered] : [];
@@ -121,7 +165,8 @@ function namesIn(dir, read) {
 
 /**
  * @param {ShippedDeps} deps
- * @returns {{ toolDir: string, projectDir: string | null, read: typeof readFileSync, values: () => Record<string, string>, host: () => HostConfig }}
+ * @returns {{ toolDir: string, projectDir: string | null, read: typeof readFileSync, values: () => Record<string, string>, host: () => HostConfig,
+ *   beforeTicks: () => BeforeTick[] }}
  */
 function shippedContext({ shippedDir, projectUnitsDir, read = readFileSync, host, units } = {}) {
   /** @type {Record<string, string> | undefined} */
@@ -133,15 +178,72 @@ function shippedContext({ shippedDir, projectUnitsDir, read = readFileSync, host
     read,
     host: () => host ?? homeHostConfig(),
     values: () => (values ??= templateValues(host ?? homeHostConfig(), units ?? readUnitsDeclaration())),
+    beforeTicks: () => beforeTicksOf(host ?? homeHostConfig(), read),
   };
+}
+
+/** @typedef {{ checkout: string, command: string }} BeforeTick */
+
+/**
+ * What each project the host serves asks to have run before a tick, in the order `host.json` lists them. A project that declares
+ * none is skipped (it may need none), and a declaration that cannot be read REFUSES: a tick that silently skipped a project's
+ * `beforeTick` would leave that project's checkout stale for as long as nobody looked.
+ * @param {HostConfig} host @param {typeof readFileSync} read @returns {BeforeTick[]}
+ */
+function beforeTicksOf(host, read) {
+  return host.projects.flatMap(({ checkout }) => {
+    const command = readBeforeTick(checkout, /** @type {(path: string, encoding: "utf8") => string} */ (read));
+    return command === null ? [] : [{ checkout, command }];
+  });
+}
+
+/** The template whose three lines change when `host.json` names a `tool` (ADR 0040, decision 3; #2793). */
+const WORK_TICK_TEMPLATE = "work-tick.service.in";
+
+/** The tool checkout's own update command, run from its `WorkingDirectory`: the analogue of `npm run primary:update`. */
+export const TOOL_UPDATE_EXEC = "/usr/bin/node src/update-tool.mjs";
+
+/**
+ * DECISION 3'S FORM OF THE `work-tick` UNIT: exactly three lines change, and nothing else in the text does. `WorkingDirectory` becomes
+ * the tool's path, `ExecStart` loses its `packages/agent-org/` prefix, and the one `ExecStartPre` becomes the tool's update followed
+ * by each project's declared `beforeTick`, run IN that project's checkout (`env -C`, since a unit cannot set a directory per line).
+ * Each keeps the leading `-` the line it replaces had: a failed update must not stop the tick.
+ *
+ * DONE ON THE RENDERED TEXT, BY ANCHOR, and not as more placeholders, because a host without `tool` must render today's bytes
+ * (`host:check` compares them) and a template that gained a placeholder would have changed the file those bytes come from. An anchor
+ * that does not match exactly once REFUSES: a template edited out from under this function is a defect to hear about, not a unit
+ * that quietly stayed in the old form.
+ * @param {string} rendered the unit as it renders for a host with no `tool` @param {string} tool @param {BeforeTick[]} beforeTicks
+ */
+export function workTickToolForm(rendered, tool, beforeTicks) {
+  const steps = [
+    "# TOOL FORM (ADR 0040, decision 3; #2793): the tool runs from its own checkout, so the update above is of THAT checkout, and each",
+    "# project's declared `beforeTick` follows, run in the project's checkout, so the project keeps moving as its primary always did.",
+    `ExecStartPre=-${TOOL_UPDATE_EXEC}`,
+    ...beforeTicks.map(({ checkout, command }) => `ExecStartPre=-/usr/bin/env -C ${checkout} ${command}`),
+  ];
+  return [
+    [/^WorkingDirectory=.*$/m, `WorkingDirectory=${tool}`],
+    [/^ExecStartPre=.*$/m, steps.join("\n")],
+    [/^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/work-tick\.mjs$/m, "ExecStart=/usr/bin/node src/work-tick.mjs"],
+  ].reduce((text, [anchor, line]) => replaceOnce(text, /** @type {RegExp} */ (anchor), /** @type {string} */ (line)), rendered);
+}
+
+/** @param {string} text @param {RegExp} anchor a one-line, multiline-flag pattern @param {string} line */
+function replaceOnce(text, anchor, line) {
+  const found = text.match(new RegExp(anchor.source, "gm")) ?? [];
+  if (found.length !== 1) {
+    throw new HostConfigRefusal(anchor.source, `matches ${found.length} lines of the ${WORK_TICK_TEMPLATE} it renders, not one; decision 3's three lines cannot be placed`, WORK_TICK_TEMPLATE);
+  }
+  return text.replace(anchor, () => line);
 }
 
 /**
  * The shipped unit names, for a caller holding the whole `deps` bag its own function takes.
  * @param {ShippedDeps} [deps]
  */
-function shippedUnitNames({ shippedDir = SHIPPED_DIR, readDir = readdirSync, projectUnitsDir, units } = {}) {
-  return shippedUnits(shippedDir, { read: readDir, projectUnitsDir, prefix: units?.prefix });
+function shippedUnitNames({ shippedDir = SHIPPED_DIR, readDir = readdirSync, projectUnitsDir, units, declaredKeys } = {}) {
+  return shippedUnits(shippedDir, { read: readDir, projectUnitsDir, prefix: units?.prefix, declaredKeys });
 }
 
 /** The unit-name prefix of the project this tool serves: the project's own declaration says it. @param {ShippedDeps} [deps] */
@@ -168,13 +270,16 @@ function leadsDirectory({ host } = {}) {
  * @param {string} unit @param {ShippedDeps} [deps] @returns {string | null}
  */
 export function shippedUnitText(unit, deps = {}) {
-  const { toolDir, projectDir, read, values } = shippedContext(deps);
+  const { toolDir, projectDir, read, values, host, beforeTicks } = shippedContext(deps);
   const plain = textOf(join(toolDir, unit), read);
   if (plain !== null) return plain;
   const prefix = values().prefix;
-  const template = unit.startsWith(prefix) ? textOf(join(toolDir, `${unit.slice(prefix.length)}${TEMPLATE_SUFFIX}`), read) : null;
-  if (template !== null) return renderTemplate(template, values(), unit);
-  return projectDir === null ? null : textOf(join(projectDir, unit), read);
+  const shipped = `${unit.slice(prefix.length)}${TEMPLATE_SUFFIX}`;
+  const template = unit.startsWith(prefix) ? textOf(join(toolDir, shipped), read) : null;
+  if (template === null) return projectDir === null ? null : textOf(join(projectDir, unit), read);
+  const rendered = renderTemplate(template, values(), unit);
+  const { tool } = host();
+  return shipped === WORK_TICK_TEMPLATE && tool !== undefined ? workTickToolForm(rendered, tool, beforeTicks()) : rendered;
 }
 
 /**
@@ -392,7 +497,7 @@ export function programCandidates(command, { repoRoot = REPO_ROOT,
       const argv = stage.trim().split(/\s+/).filter(Boolean);
       const tool = basename(argv[0] ?? "");
       if ((tool === "node" || SHELLS.has(tool)) && isPath(argv[1])) entries.push(resolve(repoRoot, argv[1]));
-      else if ((tool === "npm" || tool === "npx") && argv[1] === "run" && argv[2]) followScript(argv[2]);
+      else if (PACKAGE_RUNNERS.has(tool) && argv[1] === "run" && argv[2]) followScript(argv[2]);
     }
   };
   /** @param {string} name */
@@ -436,8 +541,15 @@ export function unitEntryPoints(unitText, deps = {}) {
   return [...new Set(execCommands(unitText).flatMap((command) => entriesFromCommand(command, deps)))];
 }
 
-/** The only three tools `entriesFromCommand` can follow into a repository file WITHOUT a path to check. */
-const ANALYSABLE_TOOLS = new Set(["node", "npm", "npx"]);
+/**
+ * The package managers whose `<tool> run <script>` is followed through package.json. `pnpm` is here since
+ * #2892 moved the host's units onto it: a unit that spelled it and a parser that did not know it would
+ * have scored every one of them OPAQUE, and `unitsSpendingGh` would have lost them without a failure.
+ */
+const PACKAGE_RUNNERS = new Set(["npm", "npx", "pnpm"]);
+
+/** The only tools `entriesFromCommand` can follow into a repository file WITHOUT a path to check. */
+const ANALYSABLE_TOOLS = new Set(["node", ...PACKAGE_RUNNERS]);
 
 /**
  * The interpreters that take the file to run as their first argument. NOT in `ANALYSABLE_TOOLS`, and the
@@ -529,10 +641,11 @@ export function shellSpawnsGh(text) {
 
 /**
  * `npm run <script>` SPAWNED FROM CODE, which no import edge carries.
- * `corpus-release-nightly.mjs` reaches `gh` only through `npmCliInvocation("npm", ["run",
- * "corpus:release"])` -- an import-closure walk alone reports it clean, and it is not.
+ * `corpus-release-nightly.mjs` reaches `gh` only through `pnpmCliInvocation(["run", "corpus:release", ...])`
+ * (`npmCliInvocation("npm", ["run", ...])` before #2889, and still the spelling in this package) -- an
+ * import-closure walk alone reports it clean, and it is not. A `--silent` between `run` and the script is not handled.
  */
-const RUNS_NPM_SCRIPT = /["'`]npm["'`]\s*,\s*\[\s*["'`]run["'`]\s*,\s*["'`]([^"'`]+)["'`]/g;
+const RUNS_NPM_SCRIPT = /(?:["'`]npm["'`]\s*,\s*|pnpmCliInvocation\(\s*)\[\s*["'`]run["'`]\s*,\s*["'`]([^"'`]+)["'`]/g;
 
 /**
  * DOES STARTING THIS FILE REACH A `gh` SPAWN? Two edge kinds, because the repository uses both: local
@@ -657,7 +770,7 @@ function undeclaredIdentity(deps) {
       detail: `${opaque
         ? `it starts \`${via}\`, which this repository does not ship and cannot read, so whether it `
           + "spawns `gh` is UNKNOWN rather than no (#1993)"
-        : `it reaches a \`gh\` spawn (via ${via.replace(REPO_ROOT, "")})`}`
+        : `it reaches a \`gh\` spawn (via ${via.replace(`${REPO_ROOT}/`, "")})`}`
         + " and carries no `Environment=GH_CONFIG_DIR=...` line. A systemd unit has no "
         + "`HERDR_WORKSPACE_ID`, so the `gh` wrapper falls back to `~/.config/gh` -- a person's "
         + "account -- and the unit spends a human's rate limit until it runs out, then refuses "
@@ -1225,7 +1338,7 @@ function zshenvNote(unit, why) {
 
 /** Every note `host:check` reports beside its findings; none of them is a failure. @returns {Finding[]} */
 function hostNotes() {
-  return [...hostIdentityNotes(), ...compileCacheNotes()];
+  return [...hostIdentityNotes(), ...compileCacheNotes(), ...sessionModelNotes()];
 }
 
 /**
@@ -1659,7 +1772,7 @@ export function hostUnitDrift(deps = {}) {
   // ignore this command, which would lose the timer finding along with it.
   return [...unclassifiedInLiveTree(deps), ...unitDrift(shippedUnitNames(deps).map((u) => unitState(u, deps))),
     ...orphanedUnits(deps), ...supersededHostScripts(deps), ...missingUnitPrograms(deps),
-    ...hostIdentityDrift(deps), ...identityDrift(deps), ...permissionModeDrift(deps)];
+    ...hostIdentityDrift(deps), ...identityDrift(deps), ...permissionModeDrift(deps), ...modelEffortDrift(deps)];
 }
 
 /** @param {string[]} args */
@@ -1780,6 +1893,151 @@ export function permissionModeDrift({ settingsPath = `${process.env.HOME ?? ""}/
     detail: `permissions.defaultMode is ${mode === null ? "unset" : `\`${mode}\``}. Sessions cannot act `
       + "on shared resources and cannot ask either (AskUserQuestion is removed by agentArgs, #1744), so "
       + `they stop mid-task with no signal. ${remedy}` }];
+}
+
+/**
+ * THE EFFORT SETTING THAT GOES WITH A MODEL IS HOST STATE TOO (#2783). `modelSettings.<model id>.effortLevel` in
+ * `~/.claude/settings.json` is keyed by the exact model id, so moving the org to a new model drops every session to that
+ * model's default effort until somebody adds the entry -- and nothing in the repository recorded that anybody had.
+ * Checked against `DECLARED_CLAUDE_MODELS`: a declared model whose entry is missing, unrecognised or LOWER is a finding;
+ * higher is not (nobody is hurt by more effort than the org asked for).
+ *
+ * CHECKS AND CANNOT FIX, for `permissionModeDrift`'s reason: the file is outside the repository. An absent or
+ * unparseable file is `permissionModeDrift`'s finding and is not repeated here -- it already says the posture is
+ * unknown, and a second copy would only send a reader to the same file twice.
+ * @param {{ settingsPath?: string, read?: typeof readFileSync, exists?: typeof existsSync,
+ *   declared?: Record<string, { id: string, effortLevel: string }> }} [deps]
+ * @returns {Finding[]}
+ */
+export function modelEffortDrift({ settingsPath = `${process.env.HOME ?? ""}/.claude/settings.json`,
+  read = readFileSync, exists = existsSync, declared = DECLARED_CLAUDE_MODELS } = {}) {
+  if (!exists(settingsPath)) return [];
+  let entries;
+  try {
+    entries = JSON.parse(String(read(settingsPath)))?.modelSettings ?? {};
+  } catch {
+    return [];
+  }
+  const rank = (/** @type {unknown} */ level) => CLAUDE_EFFORTS.indexOf(/** @type {never} */ (level));
+  return Object.entries(declared).flatMap(([alias, { id, effortLevel }]) => {
+    const has = entries?.[id]?.effortLevel;
+    if (rank(has) >= rank(effortLevel)) return [];
+    const found = has === undefined ? "has no entry" : `is ${JSON.stringify(has)}`;
+    return [{ unit: "~/.claude/settings.json", problem: `EFFORT NOT SET FOR ${id}`,
+      detail: `modelSettings.${id}.effortLevel ${found}, and the org declares \`${effortLevel}\` for \`${alias}\` `
+        + "(worker-profile.mjs `DECLARED_CLAUDE_MODELS`), so sessions on it run at the model's default effort. "
+        + `Add \`"modelSettings": { "${id}": { "effortLevel": "${effortLevel}" } }\` by hand: this check cannot fix a `
+        + "file outside the repository." }];
+  });
+}
+
+/**
+ * The transcript directory Claude Code keeps for a working directory: every `/` and `.` becomes `-`.
+ * @param {string} cwd
+ */
+const transcriptDir = (cwd) => cwd.replace(/[/.]/g, "-");
+
+/** The tail of a transcript is enough to say what model answered last, and a transcript can run to megabytes. */
+const TRANSCRIPT_TAIL_BYTES = 262_144;
+
+/** @param {string} path @returns {string} the last {@link TRANSCRIPT_TAIL_BYTES} bytes */
+function readTail(path) {
+  const fd = openSync(path, "r");
+  try {
+    const { size } = fstatSync(fd);
+    const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
+    const buffer = Buffer.alloc(length);
+    readSync(fd, buffer, 0, length, size - length);
+    return buffer.toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * The model a transcript's LAST assistant message names, or `null` when none can be read. `<synthetic>` is Claude
+ * Code's own placeholder for a message no model produced, so it never counts as the model that is running.
+ * @param {string} text the tail of a `.jsonl` transcript
+ * @returns {string | null}
+ */
+export function lastModelIn(text) {
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const model = JSON.parse(lines[i])?.message?.model;
+      if (typeof model === "string" && model !== "<synthetic>") return model;
+    } catch {
+      // The first line of a tail can start mid-record, and a line being written may be cut short: neither is a model.
+    }
+  }
+  return null;
+}
+
+/**
+ * Every live Claude session herdr knows, as `{ name, cwd, sessionId }`, or `null` when herdr could not be asked --
+ * never `[]`, which would read as "nothing is running". Codex reviewers are a different product and are left out.
+ * @param {(args: string[]) => string} [run]
+ * @returns {{ name: string, cwd: string, sessionId: string }[] | null}
+ */
+export function liveClaudeSessions(run = (args) => execFileSync("herdr", args, { encoding: "utf8", timeout: 30_000 })) {
+  try {
+    const agents = JSON.parse(run(["--session", "org", "agent", "list"]))?.result?.agents;
+    if (!Array.isArray(agents)) return null;
+    return agents.filter((a) => a.agent === "claude" && a.agent_session?.value)
+      .map((a) => ({ name: String(a.name ?? a.pane_id), cwd: String(a.cwd ?? ""), sessionId: String(a.agent_session.value) }));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A RESUMED SESSION KEEPS ITS SAVED MODEL (#2783). 2026-09-29: the chairman moved the org to Sonnet 5.5 and the three
+ * standing sessions, restarted with `--resume`, came back on Sonnet 5 -- `settings.json`'s `model` is read for a FRESH
+ * session and herdr resumes as a bare `claude --resume <uuid>`, so no launch flag can hold it (the wall `permissionModeDrift`
+ * met). The org launches no resume of its own (`git grep -e --resume -- packages/agent-org` finds only comments and
+ * the tmp pruner's read of one), so there is no `--model` to add.
+ *
+ * SO IT READS, AND SAYS SO: each live Claude session's transcript (`~/.claude/projects/<cwd>/<session id>.jsonl`) names
+ * the model of its last answer. A session whose model is not one `DECLARED_CLAUDE_MODELS` names is a finding. THE REMEDY
+ * IS `/model <alias>` IN THAT SESSION, which this cannot do.
+ *
+ * TWO LIMITS, STATED. A session switched with `/model` still reads as its old model until its next answer, so a finding
+ * on a session that has just been switched clears itself on the next turn. A session with no assistant message yet (one
+ * just cleared, as `product-manager` was when this was first run against the live host) is NOT a finding -- the gate wakes
+ * a session on any finding, and "has not answered yet" is nothing to wake anybody for -- but it is reported as a NOTE
+ * ({@link sessionModelNotes}), because absence of a reading is not a clean one.
+ * @typedef {{ sessions?: ReturnType<typeof liveClaudeSessions>, projectsDir?: string,
+ *   tail?: (path: string) => string, declared?: Record<string, { id: string }> }} SessionModelDeps
+ * @param {SessionModelDeps} [deps]
+ * @returns {{ name: string, path: string, model: string | null }[]}
+ */
+function readSessionModels({ sessions = liveClaudeSessions(), projectsDir = `${process.env.HOME ?? ""}/.claude/projects`,
+  tail = readTail } = {}) {
+  return (sessions ?? []).map(({ name, cwd, sessionId }) => {
+    const path = join(projectsDir, transcriptDir(cwd), `${sessionId}.jsonl`);
+    try {
+      return { name, path, model: lastModelIn(tail(path)) };
+    } catch {
+      return { name, path, model: null };  // no transcript yet: the same state as one with no answer in it
+    }
+  });
+}
+
+/** @param {SessionModelDeps} [deps] @returns {Finding[]} */
+export function sessionModelDrift(deps = {}) {
+  const ids = Object.values(deps.declared ?? DECLARED_CLAUDE_MODELS).map((m) => m.id);
+  return readSessionModels(deps).flatMap(({ name, model }) => model === null || ids.includes(model) ? [] : [{
+    unit: `session ${name}`, problem: "SESSION ON AN UNDECLARED MODEL",
+    detail: `its last answer came from \`${model}\`; the org declares ${ids.map((i) => `\`${i}\``).join(", ")}. `
+      + "A resumed session keeps its saved model, not settings.json's. Run `/model <alias>` in that session: "
+      + "this check reads and cannot switch it." }]);
+}
+
+/** Sessions whose model could not be read: reported, never counted. @param {SessionModelDeps} [deps] @returns {Finding[]} */
+export function sessionModelNotes(deps = {}) {
+  return readSessionModels(deps).filter((r) => r.model === null).map(({ name, path }) => ({
+    unit: `session ${name}`, problem: "MODEL UNKNOWN",
+    detail: `no assistant message could be read from ${path}, so its model is unknown rather than correct.` }));
 }
 
 /**
@@ -1905,8 +2163,16 @@ function jsonReport() {
   const asked = systemdUserAvailable();
   // `notes` ARE NOT `findings`: the gate wakes a session on any finding, and a global `user.name` is not
   // something to wake anybody for (#2332).
-  return `${JSON.stringify({ asked, findings: asked ? hostUnitDrift() : [],
+  return `${JSON.stringify({ asked, findings: asked ? hostFindings() : [],
     notes: asked ? hostNotes() : [] })}\n`;
+}
+
+/**
+ * `hostUnitDrift` PLUS THE LIVE SESSIONS' MODELS (#2783), asked of herdr. It is here and not inside `hostUnitDrift` because
+ * that function is pure of the running org -- twenty tests hand it a fixture host -- while this one reads whoever is running.
+ */
+function hostFindings() {
+  return [...hostUnitDrift(), ...sessionModelDrift()];
 }
 
 function main() {
@@ -1919,10 +2185,10 @@ function main() {
   if (process.argv.slice(2).includes("--install")) {
     hostUnitsInstall();
     hostIdentityInstall();
-    process.stdout.write(driftReport(hostUnitDrift(), asked, asked ? hostNotes() : []));
+    process.stdout.write(driftReport(hostFindings(), asked, asked ? hostNotes() : []));
     return;
   }
-  const drift = hostUnitDrift();
+  const drift = hostFindings();
   process.stdout.write(driftReport(drift, asked, asked ? hostNotes() : []));
   if (drift.length > 0) process.exitCode = 1;
 }

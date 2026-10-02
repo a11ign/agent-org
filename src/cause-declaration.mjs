@@ -333,6 +333,33 @@ export const TOOL_CAUSE_DECLARATIONS = Object.freeze([
     why: "reading one branch's diff and choosing between three named one-command exits -- the work "
       + "already exists on origin, so nothing here is built and nothing is diagnosed from an absence",
   }),
+  declareCause("ready-row-incomplete", GROUPS.JUDGMENT, {
+    kind: "claude",
+    // SONNET AND LOW, AND THE ORDER NAMES THE ROW AND THE MISSING SECTION: the woken turn adds one `## <Field>`
+    // heading (or takes `ready` off), which is amending a row, not building one (#2791).
+    model: "sonnet",
+    effort: "low",
+    why: "adding one named template section to a row, or taking the label off -- the gate hands over the "
+      + "row and the section, so nothing is diagnosed and nothing is built",
+  }),
+  declareCause("closes-unresolved-repo-wide", GROUPS.JUDGMENT, {
+    kind: "claude",
+    // SONNET AND LOW: the gate hands over the PR set and how long it has stood; the turn reads GitHub's status and the
+    // closer's last runs, and files a row or does not (#2823). Nothing is diagnosed from an absence.
+    model: "sonnet",
+    effort: "low",
+    why: "reading whether GitHub is degraded and whether the post-merge closer ran, over a named set of pull "
+      + "requests -- the gate hands over the set and its age, so nothing is built and nothing is inferred",
+  }),
+  declareCause("primary-stale", GROUPS.ACTION, {
+    kind: "claude",
+    // SONNET AND MEDIUM: the gate hands over the dirty paths and the shas (#2781); the turn decides whether the edits are
+    // somebody's work to salvage before clearing them, which is judgment over gathered material, then runs one command.
+    model: "sonnet",
+    effort: "medium",
+    why: "salvaging or clearing a named set of uncommitted edits in the primary and re-running `primary:update` -- the "
+      + "gate hands over the paths and the commit distance, so nothing is diagnosed from an absence",
+  }),
   declareCause("host-units-stale", GROUPS.ACTION, {
     kind: "claude",
     model: "sonnet",
@@ -471,6 +498,26 @@ export const TOOL_CAUSE_DECLARATIONS = Object.freeze([
     why: "the gate has already read the filesystem and named the low resource; the output is a decision about "
       + "what to remove, and a full disk is the one fault that stops every session at once",
   }),
+  declareCause("repeating-log-line", GROUPS.JUDGMENT, {
+    kind: "claude",
+    model: "sonnet",
+    // MEDIUM (#2848), and the recipient is `orchestrator`, so this is the profile a spawned worker would take if one ever were.
+    // The gate has already normalised the journal, counted the run and quoted the line; the work is reading what the line
+    // reports, then FIXING it or filing it `ready` or allowlisting it with a reason -- a short diagnosis from a stated line, and
+    // not the diagnosis from an absence that `org-stalled`'s `high` is paid for.
+    effort: "medium",
+    why: "the gate has already counted the run and quoted the line; the output is a fix, a row filed ready, or an allowlist entry "
+      + "with its reason, chosen by reading what one stated line reports",
+  }),
+  declareCause("backlog-aged-unpromoted", GROUPS.JUDGMENT, {
+    kind: "claude",
+    model: "sonnet",
+    // MEDIUM (#2848). The gate has already established that the row carries no wait and no unpickable label and how long that
+    // has been true; the act is promoting it or recording the wait as a field, a short judgment over one stated row.
+    effort: "medium",
+    why: "the gate has already established that the row carries no wait and named its age; the output is a promotion or a "
+      + "declared wait, a short judgment over one stated row",
+  }),
   declareCause("claim-stalled", GROUPS.ACTION, {
     kind: "claude",
     // SONNET AND MEDIUM, AND THE RECIPIENT IS THE HOLDER, so this is the profile a spawned worker would take if one ever were
@@ -539,6 +586,43 @@ export const TOOL_CAUSE_DECLARATIONS = Object.freeze([
     // such measurement exists for this cause. Raise it here when one does, naming the run.
     why: "building a row is multi-step, but no measurement shows sonnet failing it -- agent-practices "
       + "reserves opus for a cheaper tier measurably getting it wrong, and that evidence does not exist",
+  }),
+  declareCause("ready-row-unclaimable", GROUPS.JUDGMENT, {
+    kind: "claude",
+    model: "sonnet",
+    // MEDIUM (#2845). The gate has already read the refusal and quoted it; the work is deciding whose tree it is and
+    // whether the row should be claimed, re-laned or the tree released -- a short judgment over a stated fact, not
+    // diagnosis from an absence. NOT `ready-row-unclaimed`'s `high`: that is a build, this is a queue-state decision.
+    // JUDGMENT, NOT ACTION_START: it asks `product-manager` to look and decide, it starts no work, and a drain
+    // (which withholds starts) is exactly when a stuck row should still be seen.
+    effort: "medium",
+    why: "the gate has already read and quoted the claim's refusal; the output is a decision about whose "
+      + "tree it is, over a fact already in the prompt",
+  }),
+  declareCause("org-health", GROUPS.JUDGMENT, {
+    kind: "claude",
+    model: "sonnet",
+    // HIGH (#2936), for `org-stalled`'s reason: three of the four signals hand the session a NUMBER that says something is not
+    // happening (no merge in 3 h, a PR red for 2 h, a row refused for 2.6 h) and the work is finding which link is stuck. That
+    // is diagnosis from an absence, and a wrong reading leaves the org idle with the signal already spent on it.
+    // JUDGMENT, NOT JUDGMENT_START: it asks `ceo` to look, it starts no work, and a drain (which withholds starts) is exactly
+    // when an org that is not landing anything should still be told.
+    effort: "high",
+    why: "the gate read a number that says nothing is landing, a red PR is unattended, a row is refused or the primary is stale; "
+      + "the output is which link is stuck and a fix or a ready row, diagnosed from an absence",
+  }),
+  declareCause("org-retrospective", GROUPS.JUDGMENT, {
+    kind: "claude",
+    model: "sonnet",
+    // HIGH (#2938). The gate has already computed every number; what is left is the part no script can do -- reading a number that is
+    // worse than yesterday's and finding the CLASS behind it, then writing a row whose Acceptance is a test over a population rather
+    // than over the instance (#2912 fixed one closed row and left every PR with no row going to the wrong reader). That is multi-step
+    // reasoning, the same grade as `org-stalled`'s diagnosis, and it runs once a day, so the effort costs one turn rather than a stream.
+    // JUDGMENT, NOT JUDGMENT_START: it starts no work itself, and a drain (which withholds starts) is exactly when the org should
+    // still look at how it is doing.
+    effort: "high",
+    why: "the gate has computed the numbers; the output is finding the class behind each one that worsened and filing a "
+      + "row whose test covers the class -- reasoning no script does, once a day",
   }),
 ]);
 

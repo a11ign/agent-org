@@ -158,7 +158,7 @@ test("lookupOpenPrFiles reads every open PR's files AND their count in one call,
   };
   const files = lookupOpenPrFiles({ run, log: () => {} });
   assert.deepEqual(calls, [["pr", "list", "--repo", "a11ign/a11ign", "--state", "open",
-    "--json", "number,changedFiles,files,body,labels"]], "one bulk call, and no REST page for a complete list");
+    "--json", "number,changedFiles,files,body,labels,headRefName"]], "one bulk call, and no REST page for a complete list");
   assert.deepEqual(files, [
     // #2101: `closes` is `[]` for a body that declares nothing -- and for no body at all, which is what
     // these two fixtures have. It is another FIELD on this one call, never another call.
@@ -502,4 +502,65 @@ test("#2493 END TO END through the claim's own lookup: a held PR waiting on the 
   // The control: the same PRs with the edge absent refuse on #2376 first.
   edgesOf["2359"] = [];
   assert.match(fileOverlapReason([REGION_FILE], prs, { rowNumber: ASKING }).reason as string, /overlaps #2376/);
+});
+
+// --- #2769: `--adopt` RECOGNISES THE TREE IT IS RE-STAMPING AS ITS OWN, EVEN WHEN ITS PR DECLARES `Closes: none` ---
+//
+// The row's Open-check: a PR overlapping the Region, `closes: []` (the sanctioned split shape), whose branch is the one being adopted.
+// Each NEGATIVE breaks one half of the exclusion (the branch, the flag, the repository), so a guard that always fires or never fires
+// cannot pass all of them.
+
+const ADOPTED = "agent/reachable-region-2760";
+const splitPr = (over: Record<string, unknown> = {}) => ({ ...prClosing(2766, [REGION_FILE], []), branch: ADOPTED, ...over });
+
+test("#2769 THE POSITIVE: a `Closes: none` PR from the adopted branch does NOT block the adopting claim", () => {
+  const { reason } = fileOverlapReason([REGION_FILE], [splitPr()], { rowNumber: 2760, adoptedBranch: ADOPTED });
+  assert.equal(reason, null, "#2766 WAS #2760's work; the released claim's PR could not get a fresh CI run without this");
+});
+
+test("#2769 CONTROL: the same PR with NO `adoptedBranch` still refuses -- a fresh claim is unchanged (#2101 stands)", () => {
+  assert.match(fileOverlapReason([REGION_FILE], [splitPr()], { rowNumber: 2760 }).reason as string, /overlaps #2766/);
+  assert.match(fileOverlapReason([REGION_FILE], [splitPr()], { rowNumber: 2760, adoptedBranch: null }).reason as string, /overlaps #2766/);
+});
+
+test("#2769 NEGATIVE: a PR from ANOTHER branch on the same file still refuses, adopting or not", () => {
+  const stranger = splitPr({ number: 2790, branch: "agent/someone-else-2790" });
+  assert.match(fileOverlapReason([REGION_FILE], [stranger], { rowNumber: 2760, adoptedBranch: ADOPTED }).reason as string, /overlaps #2790/);
+  const unnamed = { ...prClosing(2791, [REGION_FILE], []) };
+  assert.match(fileOverlapReason([REGION_FILE], [unnamed], { rowNumber: 2760, adoptedBranch: ADOPTED }).reason as string, /overlaps #2791/,
+    "a PR whose branch was not read is not matched by an empty-vs-empty accident");
+});
+
+test("#2769 NEGATIVE: an empty `adoptedBranch` matches nothing, and a same-named branch in ANOTHER repository is not this row's", () => {
+  assert.match(fileOverlapReason([REGION_FILE], [splitPr({ branch: "" })], { rowNumber: 2760, adoptedBranch: "" }).reason as string, /overlaps #2766/);
+  const layer = splitPr({ repo: "a11ign/nvda-worker", repoKey: "nvda-worker" });
+  assert.match(fileOverlapReason([`nvda-worker:${REGION_FILE}`], [layer], { rowNumber: 2760, adoptedBranch: ADOPTED }).reason as string,
+    /overlaps #2766 in a11ign\/nvda-worker/);
+});
+
+test("#2769 the exclusion is PER PR: the adopted branch's PR is skipped and a THIRD party's overlap is still found", () => {
+  const third = splitPr({ number: 2792, branch: "agent/third-2792" });
+  assert.match(fileOverlapReason([REGION_FILE], [splitPr(), third], { rowNumber: 2760, adoptedBranch: ADOPTED }).reason as string, /overlaps #2792/);
+});
+
+test("#2769 the adopted PR is excluded BEFORE #1419's comparability refusal -- a truncated list on its own PR is not a reason to refuse", () => {
+  const truncated = splitPr({ files: [REGION_FILE], changedFiles: 113 });
+  assert.equal(fileOverlapReason([REGION_FILE], [truncated], { rowNumber: 2760, adoptedBranch: ADOPTED }).reason, null);
+});
+
+test("#2769 THE LOOKUP READS `headRefName` ON THE CALL IT ALREADY MAKES and hands the rule `branch`, absent when not read", () => {
+  const calls: string[][] = [];
+  const run = (args: string[]) => {
+    calls.push(args);
+    return JSON.stringify([
+      { number: 2766, changedFiles: 1, files: [{ path: REGION_FILE }], body: "Closes: none -- Done-when 3 is still open", headRefName: ADOPTED },
+      { number: 2790, changedFiles: 1, files: [{ path: REGION_FILE }], body: "" },
+    ]);
+  };
+  const others = lookupOpenPrFiles({ run, log: () => {} }) ?? [];
+  assert.equal(calls.length, 1, "one `gh pr list`, `headRefName` among its fields");
+  assert.ok(calls[0].join(" ").includes("headRefName"));
+  assert.deepEqual(others.map((o) => o.branch), [ADOPTED, undefined]);
+  assert.match(fileOverlapReason([REGION_FILE], others, { rowNumber: 2760, adoptedBranch: ADOPTED }).reason as string, /overlaps #2790/,
+    "END TO END from the lookup's own shape: #2766 is skipped by branch, the branchless #2790 is not");
 });

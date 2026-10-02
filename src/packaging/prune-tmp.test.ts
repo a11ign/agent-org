@@ -34,15 +34,22 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   ACTIVITY_WINDOW_MS, REVIEW_PREFIXES, SCRATCHPAD_ROOT,
   classifyEntry, familyOf, formatReport, heldEntries, newestMtimeMs, openPullRequests,
-  processStrings, pruneTmp, removePath, selfSessions, sweepablePaths,
+  processStrings, pruneTmp as pruneTmpWithClaims, removePath, selfSessions, sweepablePaths,
 } from "../prune-tmp.mjs";
+import { claimRefusal, recordRemoval, REMOVAL_LOG_ENV } from "../worktree-removal.mjs";
+
+// #2782: EVERY REMOVAL WRITES A LINE AND READS THE ROW'S CLAIM, and a fixture must do neither to the host. The tests that ARE about
+// either pass their own `claim` and `record` and read the log they pointed this at.
+process.env[REMOVAL_LOG_ENV] = join(mkdtempSync(join(tmpdir(), "removal-log-")), "worktree-removals");
+const pruneTmp = (root: string, deps: NonNullable<Parameters<typeof pruneTmpWithClaims>[1]> = {}) =>
+  pruneTmpWithClaims(root, { claim: () => ({ refused: false }), ...deps });
 
 const CLI = fileURLToPath(new URL("../prune-tmp.mjs", import.meta.url));
 
@@ -480,3 +487,86 @@ function waitFor(ready: () => boolean, timeoutMs = 10_000): void {
   }
   assert.fail("the child process never appeared in /proc holding its fd");
 }
+
+// --- #2782: A WHOLE SCRATCHPAD GOES, AND ANY WORKTREE INSIDE IT GOES TOO. `wt-2623` was deleted under a live claim and this sweep
+// writes no line at all. So each removal is logged BEFORE the delete, names the worktrees it takes, and a worktree whose ROW
+// still carries a `session:` label refuses the whole path. ---
+
+/** A worktree planted inside `dir`, with the gitdir pointer and `HEAD` that `worktreeBranch` reads, and an owner file. */
+function plantWorktree(dir: string, name: string, branch: string, owner: string | null): string {
+  const tree = join(dir, "scratchpad", name);
+  const gitdir = join(dir, "scratchpad", ".gitdirs", name);
+  mkdirSync(tree, { recursive: true });
+  mkdirSync(gitdir, { recursive: true });
+  writeFileSync(join(tree, ".git"), `gitdir: ${gitdir}\n`);
+  writeFileSync(join(gitdir, "HEAD"), `ref: refs/heads/${branch}\n`);
+  if (owner !== null) writeFileSync(join(tree, ".a11y-owner"), `${owner}\n`);
+  return tree;
+}
+const rowsGh = (rows: Record<number, string[]>) => (args: string[]) => {
+  const labels = rows[Number(args[2])];
+  if (labels === undefined) throw new Error("gh: row not found");
+  return JSON.stringify({ state: "OPEN", labels: labels.map((name) => ({ name })) });
+};
+
+test("#2782 DONE-WHEN 3: a dead scratchpad HOLDING a worktree whose row is claimed is REFUSED whole; one holding an unclaimed row's is removed", () => {
+  const root = makeRoot();
+  const claimed = scratchpad(root, DEAD_SESSION);
+  const free = scratchpad(root, "9a1f2b3c-4d5e-4f60-8a7b-0c1d2e3f4a5b");
+  plantWorktree(claimed, "wt-2623", "agent/2623-followup", null);
+  plantWorktree(free, "wt-2000", "agent/done-2000", "worker-2000");
+  for (const path of [claimed, free]) age(path, 100);
+  const gh = rowsGh({ 2623: ["in-progress", "session:worker-2623"], 2000: [] });
+  const log = join(root, "removals.log");
+  const report = pruneTmp(root, { dryRun: false, procRoot: "/proc", env: {}, run: () => "[]",
+    claim: (tree) => claimRefusal(tree, { gh }), record: (line) => recordRemoval(line, { env: { [REMOVAL_LOG_ENV]: log } }) });
+  assert.ok(existsSync(claimed), "the scratchpad holding a claimed row's worktree is still there: with a nested `.git` file its delete takes the tree with it");
+  assert.ok(report.refused.some((entry) => entry.path === claimed && /row #2623, which still carries session:worker-2623/.test(entry.reason)));
+  // THE OTHER HALF: without it, "refuse everything" passes.
+  assert.equal(existsSync(free), false, "an unclaimed row's scratchpad must still be removed");
+  assert.deepEqual(report.removed, [free]);
+});
+
+test("#2782 DONE-WHEN 1: a removal is logged BEFORE the delete, names the worktrees inside it and what their owner files read", () => {
+  const root = makeRoot();
+  const dead = scratchpad(root, DEAD_SESSION);
+  const tree = plantWorktree(dead, "wt-2000", "agent/done-2000", "worker-2000");
+  age(dead, 100);
+  const log = join(root, "removals.log");
+  const linesAtDelete: string[] = [];
+  pruneTmp(root, { dryRun: false, procRoot: "/proc", env: {}, run: () => "[]",
+    record: (line) => recordRemoval(line, { env: { [REMOVAL_LOG_ENV]: log } }),
+    remove: () => { linesAtDelete.push(readFileSync(log, "utf8")); } });
+  const lines = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.deepEqual(lines.map((l) => l.event), ["removing", "removed"]);
+  assert.equal(lines[0].path, dead);
+  assert.equal(lines[0].caller, "prune-tmp.mjs");
+  assert.match(lines[0].owner, new RegExp(`${tree}=worker-2000`), "the owner file is read before the tree is gone");
+  assert.match(lines[0].detail, /holds worktree\(s\)/);
+  assert.match(linesAtDelete[0], /"event":"removing"/, "the line was already on disk when the delete ran");
+});
+
+test("#2782: a log that cannot be written refuses the removal", () => {
+  const root = makeRoot();
+  const dead = scratchpad(root, DEAD_SESSION);
+  age(dead, 100);
+  const refused = pruneTmp(root, { dryRun: false, procRoot: "/proc", env: {}, run: () => "[]",
+    record: () => { throw new Error("ENOSPC"); } });
+  assert.ok(existsSync(dead), "nothing was deleted");
+  assert.deepEqual(refused.removed, []);
+  assert.match(refused.failed[0].reason, /removal log could not be written/);
+});
+
+test("#2782: the DRY RUN lists a claimed row's scratchpad as REFUSED -- a path it calls removable is one --apply removes -- and writes no line", () => {
+  const root = makeRoot();
+  const claimed = scratchpad(root, DEAD_SESSION);
+  plantWorktree(claimed, "wt-2623", "agent/2623-followup", null);
+  age(claimed, 100);
+  const lines: unknown[] = [];
+  const gh = rowsGh({ 2623: ["session:worker-2623"] });
+  const report = pruneTmp(root, { dryRun: true, procRoot: "/proc", env: {}, run: () => "[]",
+    claim: (tree) => claimRefusal(tree, { gh }), record: (line) => { lines.push(line); } });
+  assert.deepEqual(report.removable, []);
+  assert.ok(report.refused.some((entry) => entry.path === claimed && /session:worker-2623/.test(entry.reason)));
+  assert.deepEqual(lines, [], "a listing removes nothing, so it logs no removal");
+});

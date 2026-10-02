@@ -35,7 +35,9 @@ import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, syst
   supersededHostScripts, unitEntryPoints, missingUnitPrograms, workingDirectoryOf,
   programCandidates, hostIdentityDrift, hostIdentityNotes, hostIdentityInstall, ownedIdentityFiles, compileCacheNotes,
   WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift, declaredCompileCache, PROJECT_UNITS_DIR, shippedUnitText,
-  shippedScriptText, leadsListText } from "../host-units.mjs";
+  shippedScriptText, leadsListText, modelEffortDrift, sessionModelDrift, sessionModelNotes, lastModelIn,
+  liveClaudeSessions, OPTIONAL_UNITS, declaredProjectKeys } from "../host-units.mjs";
+import { DECLARED_CLAUDE_MODELS, PROFILES, CLAUDE_EFFORTS } from "../worker-profile.mjs";
 
 /**
  * #2620: ONE SHIPPED UNIT AS IT INSTALLS -- the tool's three are rendered from `host/*.in` templates and the project's own are read
@@ -200,6 +202,10 @@ test("#1858: every unit this repository ships is discovered -- against the real 
 // existing session as a bare `claude --resume <uuid>`, and re-resumes all of them when it restarts: six
 // came back at 18:47:27 in one instant, in auto mode. A launch flag cannot hold a posture across a resume.
 
+/** A host `settings.json` that satisfies EVERY settings check: the permission posture and the declared effort entries (#2783). */
+const SATISFIED_SETTINGS = JSON.stringify({ permissions: { defaultMode: "bypassPermissions" },
+  modelSettings: Object.fromEntries(Object.values(DECLARED_CLAUDE_MODELS).map((m) => [m.id, { effortLevel: m.effortLevel }])) });
+
 const settings = (json: string) => ({
   settingsPath: "/home/agent/.claude/settings.json",
   exists: (() => true) as never,
@@ -228,6 +234,157 @@ test("#1863: an ABSENT key and an absent FILE are both findings, neither silentl
   const [absent] = permissionModeDrift({ settingsPath: "/nope", exists: (() => false) as never });
   assert.equal(absent.problem, "NO SETTINGS FILE");
 });
+
+// ---------------------------------------------------------------------------------------------------------------------
+// #2783: A MODEL CHANGE REACHES ONLY FRESH SESSIONS, AND THE EFFORT THAT GOES WITH IT IS HOST STATE.
+//
+// 2026-09-29: the chairman moved the org to Sonnet 5.5. `ceo`, `product-manager` and `orchestrator`, restarted with
+// `--resume`, came back on Sonnet 5 (a resume keeps the SAVED model; herdr resumes as a bare `claude --resume <uuid>`, so
+// no flag holds it), and `modelSettings.claude-sonnet-5-5.effortLevel: high` existed only because it was added by hand.
+// ---------------------------------------------------------------------------------------------------------------------
+
+const withEffort = (entries: Record<string, { effortLevel: string }>) =>
+  settings(JSON.stringify({ permissions: { defaultMode: "bypassPermissions" }, modelSettings: entries }));
+
+test("#2783: the repo records the effort the org depends on for the CURRENT model (the row's open-check)", () => {
+  assert.deepEqual(DECLARED_CLAUDE_MODELS.sonnet, { id: "claude-sonnet-5-5", effortLevel: "high" });
+});
+
+test("#2783: a host with the declared entry is clean, and MORE effort than declared is not a finding either", () => {
+  assert.deepEqual(modelEffortDrift(withEffort({ "claude-sonnet-5-5": { effortLevel: "high" } })), [],
+    "the positive control -- this check must be capable of passing");
+  assert.deepEqual(modelEffortDrift(withEffort({ "claude-sonnet-5-5": { effortLevel: "xhigh" } })), []);
+});
+
+test("#2783: a MISSING entry is the finding, and it names the model, the value to add and that it cannot fix", () => {
+  // The 2026-09-29 state before the chairman's hand edit: entries for the OLD models only.
+  const [f] = modelEffortDrift(withEffort({ "claude-sonnet-5": { effortLevel: "high" } }));
+  assert.equal(f.problem, "EFFORT NOT SET FOR claude-sonnet-5-5");
+  assert.match(f.detail, /has no entry/);
+  assert.match(f.detail, /"claude-sonnet-5-5": \{ "effortLevel": "high" \}/, "the line to add, not only the complaint");
+  assert.match(f.detail, /cannot fix/, "it says it only checks");
+});
+
+test("#2783: a LOWER or unrecognised effort is a finding, and a file with no modelSettings at all is a missing one", () => {
+  const [lower] = modelEffortDrift(withEffort({ "claude-sonnet-5-5": { effortLevel: "medium" } }));
+  assert.match(lower.detail, /is "medium"/);
+  const [typo] = modelEffortDrift(withEffort({ "claude-sonnet-5-5": { effortLevel: "hgih" } }));
+  assert.match(typo.detail, /is "hgih"/, "a value outside the vocabulary must not compare as 'not lower'");
+  const [none] = modelEffortDrift(settings('{"model":"sonnet"}'));
+  assert.match(none.detail, /has no entry/);
+});
+
+test("#2783: an absent or unparseable file is permissionModeDrift's finding and is NOT repeated here", () => {
+  assert.deepEqual(modelEffortDrift({ settingsPath: "/nope", exists: (() => false) as never }), []);
+  assert.deepEqual(modelEffortDrift(settings("{ this is not json")), []);
+  assert.equal(permissionModeDrift(settings("{ this is not json"))[0].problem, "UNREADABLE",
+    "the emptiness above is only honest because the sibling check DOES report the same fixture");
+});
+
+test("#2783: the declaration is tied to PROFILES -- every claude alias the org runs is declared, at the highest effort asked", () => {
+  const asked = new Map<string, number>();
+  for (const p of Object.values(PROFILES) as { kind: string, model: string, effort: string }[]) {
+    if (p.kind !== "claude") continue;
+    asked.set(p.model, Math.max(asked.get(p.model) ?? -1, CLAUDE_EFFORTS.indexOf(p.effort)));
+  }
+  assert.ok(asked.size > 0, "the population is not empty: PROFILES has claude causes");
+  for (const [alias, rank] of asked) {
+    const declared = (DECLARED_CLAUDE_MODELS as Record<string, { effortLevel: string }>)[alias];
+    assert.ok(declared, `PROFILES runs \`${alias}\` and DECLARED_CLAUDE_MODELS does not declare it`);
+    assert.ok(CLAUDE_EFFORTS.includes(declared.effortLevel),
+      "a declared effort outside the vocabulary would rank -1 and make every host entry compare as satisfying it");
+    assert.ok(CLAUDE_EFFORTS.indexOf(declared.effortLevel) >= rank,
+      `${alias} is declared at ${declared.effortLevel}, below an effort a PROFILES cause asks for`);
+  }
+});
+
+test("#2783: hostUnitDrift carries it -- a host with the permission posture but no effort entry has the finding", () => {
+  const host = hostWithOneUnit("");
+  const clean = hostUnitDrift(host).filter((d) => /EFFORT/.test(d.problem));
+  assert.deepEqual(clean, [], "SATISFIED_SETTINGS satisfies it");
+  writeFileSync(host.settingsPath, '{"permissions":{"defaultMode":"bypassPermissions"}}');
+  assert.deepEqual(hostUnitDrift(host).filter((d) => /EFFORT/.test(d.problem)).map((d) => d.problem),
+    ["EFFORT NOT SET FOR claude-sonnet-5-5"]);
+});
+
+/** One transcript line as Claude Code writes it: an assistant message carries the model that produced it. */
+const answered = (model: string) => JSON.stringify({ type: "assistant", message: { model, role: "assistant" } });
+
+test("#2783: lastModelIn reads the LAST assistant answer, ignores <synthetic>, and survives a record cut in half", () => {
+  const text = ["}, cut mid-record", answered("claude-sonnet-5"), '{"type":"user","message":{"role":"user"}}',
+    answered("claude-sonnet-5-5"), answered("<synthetic>"), '{"type":"last-prompt"}', '{"half":'].join("\n");
+  assert.equal(lastModelIn(text), "claude-sonnet-5-5", "the newest real model, not the first and not the placeholder");
+  assert.equal(lastModelIn('{"type":"user"}\n'), null, "no answer is null, never a guess");
+});
+
+const sessionsDir = (files: Record<string, string>) => {
+  const root = mkdtempSync(join(tmpdir(), "host-units-2783-"));
+  for (const [rel, text] of Object.entries(files)) {
+    mkdirSync(join(root, rel, ".."), { recursive: true });
+    writeFileSync(join(root, rel), text);
+  }
+  return root;
+};
+
+test("#2783: a session on the declared model is clean; one still on the OLD model is the finding, with its remedy", () => {
+  const projectsDir = sessionsDir({
+    "-home-agent-repos-a11y-witness/aaa.jsonl": `${answered("claude-sonnet-5-5")}\n`,
+    "-home-agent-repos-a11y-witness/bbb.jsonl": `${answered("claude-sonnet-5")}\n`,
+    "-home-agent-repos-wt-2783/ccc.jsonl": `${answered("claude-sonnet-5-5")}\n`,
+  });
+  try {
+    const sessions = [
+      { name: "ceo", cwd: "/home/agent/repos/a11y-witness", sessionId: "aaa" },
+      { name: "product-manager", cwd: "/home/agent/repos/a11y-witness", sessionId: "bbb" },
+      { name: "worker-2783", cwd: "/home/agent/repos/wt-2783", sessionId: "ccc" },
+    ];
+    const drift = sessionModelDrift({ sessions, projectsDir });
+    assert.deepEqual(drift.map((d) => d.unit), ["session product-manager"],
+      "only the resumed one; the transcript directory is the cwd with `/` and `.` turned into `-`");
+    assert.equal(drift[0].problem, "SESSION ON AN UNDECLARED MODEL");
+    assert.match(drift[0].detail, /`claude-sonnet-5`/, "it names what it found");
+    assert.match(drift[0].detail, /\/model <alias>/, "and the in-place remedy");
+    assert.match(drift[0].detail, /cannot switch/, "and says it only reads");
+  } finally { rmSync(projectsDir, { recursive: true, force: true }); }
+});
+
+test("#2783: a session with no answer yet is a NOTE, never a finding and never silently clean", () => {
+  const projectsDir = sessionsDir({ "-home-agent-repos-a11y-witness/fresh.jsonl": '{"type":"mode"}\n' });
+  try {
+    const sessions = [{ name: "orchestrator", cwd: "/home/agent/repos/a11y-witness", sessionId: "fresh" },
+      { name: "no-file", cwd: "/home/agent/repos/a11y-witness", sessionId: "missing" }];
+    assert.deepEqual(sessionModelDrift({ sessions, projectsDir }), [],
+      "the gate wakes a session on any finding, and 'has not answered yet' is nothing to wake anybody for");
+    assert.deepEqual(sessionModelNotes({ sessions, projectsDir }).map((n) => [n.unit, n.problem]),
+      [["session orchestrator", "MODEL UNKNOWN"], ["session no-file", "MODEL UNKNOWN"]]);
+  } finally { rmSync(projectsDir, { recursive: true, force: true }); }
+});
+
+test("#2783: only the TAIL of a transcript is read, so a multi-megabyte one costs a bounded read", () => {
+  const filler = `${JSON.stringify({ type: "user", pad: "x".repeat(1000) })}\n`.repeat(600);  // ~600 KB, past the tail
+  const projectsDir = sessionsDir({
+    "-home-agent-repos-a11y-witness/big.jsonl": `${answered("claude-sonnet-5")}\n${filler}${answered("claude-sonnet-5-5")}\n`,
+  });
+  try {
+    const sessions = [{ name: "ceo", cwd: "/home/agent/repos/a11y-witness", sessionId: "big" }];
+    assert.deepEqual(sessionModelDrift({ sessions, projectsDir }), [], "the newest answer wins across the real file read");
+  } finally { rmSync(projectsDir, { recursive: true, force: true }); }
+});
+
+test("#2783: liveClaudeSessions takes herdr's listing, drops codex, and answers null -- not [] -- when herdr cannot be asked", () => {
+  const listing = JSON.stringify({ result: { agents: [
+    { agent: "claude", name: "ceo", cwd: "/x", agent_session: { value: "u1" } },
+    { agent: "codex", name: "reviewer-9", cwd: "/y", agent_session: { value: "u2" } },
+    { agent: "claude", name: "no-session", cwd: "/z" },
+  ] } });
+  assert.deepEqual(liveClaudeSessions(() => listing), [{ name: "ceo", cwd: "/x", sessionId: "u1" }]);
+  assert.equal(liveClaudeSessions(() => { throw new Error("herdr: not running"); }), null);
+  assert.equal(liveClaudeSessions(() => "not json"), null);
+  assert.equal(liveClaudeSessions(() => "{}"), null);
+  assert.deepEqual(sessionModelDrift({ sessions: null }), [], "not asked reads as no findings, and the caller knows it was not asked");
+});
+
+
 
 test("#1863: UNREADABLE is its own verdict -- unknown is not the same as wrong", () => {
   // Reporting broken JSON as "auto mode" would send a reader to change a key in a file that will not
@@ -275,7 +432,8 @@ test("#2458: every shipped service puts the compile cache under a home's .cache"
   // THE POPULATION, NAMED: emptiness below is worth what this says about its input. The directory is read
   // two ways (a plain listing, and `shippedUnits`, which is what `compileCacheDrift` walks) and they must
   // agree on a non-empty list; the positive control for "a unit lacking the line is a finding" is the next test.
-  const listed = [...readdirSync(SHIPPED_DIR).filter((f) => f.endsWith(".service.in")).map((f) => `a11ign-${f.slice(0, -".in".length)}`),
+  // An OPTIONAL template (#2901) is not shipped unless the project asks, so it is not this population; its own test is below.
+  const listed = [...readdirSync(SHIPPED_DIR).filter((f) => f.endsWith(".service.in") && !Object.hasOwn(OPTIONAL_UNITS, f)).map((f) => `a11ign-${f.slice(0, -".in".length)}`),
     ...readdirSync(PROJECT_UNITS_DIR).filter((f) => f.endsWith(".service"))].sort();
   const services = listed;
   assert.deepEqual(services, shippedUnits().filter((unit) => unit.endsWith(".service")));
@@ -686,7 +844,8 @@ test("#1974: every shipped unit that spawns `gh` declares which account -- over 
   // members.
   assert.deepEqual(spending.map((u) => u.unit).sort(),
     ["a11ign-board-report.service", "a11ign-corpus-release-nightly.service",
-      "a11ign-fleet-watch.service", "a11ign-lab-watch.service", "a11ign-work-tick.service"],
+      "a11ign-fleet-watch.service", "a11ign-lab-watch.service", "a11ign-work-tick.service",
+      "a11ign-worktree-prune.service"],
     "every shipped .service that can reach `gh` -- including the one whose ExecStart this repository "
     + "cannot read, which is charged on UNKNOWN rather than excused on it");
   assert.deepEqual(identityDrift(), [],
@@ -752,6 +911,21 @@ test("#1974: `npm run <script>` is followed through package.json to the file it 
   "an unknown script resolves to nothing rather than to a guess");
 });
 
+test("#2892: `pnpm run <script>` is followed exactly as `npm run` is, so a unit that moved is not scored opaque", () => {
+  // The host's units moved from `/usr/bin/npm run` to `%h/.local/bin/pnpm run`. A parser that knew only the
+  // first would return no entry point for all four, and `unitsSpendingGh` reads no entry point as "spends
+  // nothing" -- the unit leaves the population and every suite stays green.
+  const deps = { repoRoot: "/repo", scripts: { "lab:watch": "node packages/lab/scripts/lab-watch.mjs" },
+    exists: (() => true) as never };
+  assert.deepEqual(entriesFromCommand("%h/.local/bin/pnpm run lab:watch -- --post", deps),
+    ["/repo/packages/lab/scripts/lab-watch.mjs"]);
+  assert.deepEqual(opaqueCommands("[Service]\nExecStart=%h/.local/bin/pnpm run lab:watch -- --post\n", deps), [],
+    "a followable pnpm command is not opaque");
+  assert.deepEqual(opaqueCommands("[Service]\nExecStart=%h/.local/bin/yarn run lab:watch\n", deps),
+    ["%h/.local/bin/yarn run lab:watch"],
+    "NEGATIVE CONTROL: a package manager the parser does not know stays opaque, so the answer above is pnpm's alone");
+});
+
 test("#1974: the `npm run` edge inside CODE is followed -- an import walk alone reports this unit clean", () => {
   // corpus-release-nightly.mjs reaches `gh` ONLY through `npmCliInvocation("npm", ["run",
   // "corpus:release"])`. There is no import edge to follow, so a closure walk that knew only about
@@ -762,7 +936,7 @@ test("#1974: the `npm run` edge inside CODE is followed -- an import walk alone 
   assert.ok(hit, "the nightly reaches a `gh` spawn");
   assert.match(String(hit), /corpus-release\.mjs$/,
     "through the script it SPAWNS, which no import of its own names");
-  assert.equal(ghSpawnReachedFrom(join(REPO_ROOT, "packages/agent-org/src/update-primary.mjs")), null,
+  assert.equal(ghSpawnReachedFrom(join(REPO_ROOT, "packages/agent-org/src/worktree-owner.mjs")), null,
     "POSITIVE CONTROL: a unit entry point that does NOT touch `gh` is not charged for one");
 });
 
@@ -969,7 +1143,7 @@ test("#2000: the unit passes `--apply`, or the clock runs a REPORT and the backl
   // the breakdown before writing a row about worktree accounting, and removed three other sessions'
   // trees), so the flag has to be in the unit, and something has to say that it is.
   const service = shippedText("a11ign-worktree-prune.service");
-  assert.match(service, /^ExecStart=\/usr\/bin\/npm run worktrees:prune -- --apply$/m);
+  assert.match(service, /^ExecStart=%h\/\.local\/bin\/pnpm run worktrees:prune -- --apply$/m);
   assert.deepEqual(entriesFromCommand(execCommands(service)[0]),
     [join(REPO_ROOT, "packages/agent-org/src/prune-worktrees.mjs")],
     "and the command resolves through package.json to the script itself -- a renamed npm script leaves "
@@ -984,40 +1158,27 @@ test("#2000: the unit passes `--apply`, or the clock runs a REPORT and the backl
     + "ACTIVITY_WINDOW_MS. Install and the calendar are the two entry points; boot is not one of them");
 });
 
-test("#2000: the prune spends no API budget, and that is READ rather than assumed", () => {
-  // ceo's 2026-09-22 ruling on #1950 refused a `work-gate.mjs` cause for this chore BECAUSE it costs no
-  // API budget and needs no judgment -- a gate cause exists to WAKE somebody. So "it makes zero `gh`
-  // calls" is not a remark about this unit, it is the premise that lets it run on a clock at all, and it
-  // has to be checked rather than restated.
+test("#2782: the prune's API spend is ONE claim read per removable tree, declared under the workers' account, and READ rather than assumed", () => {
+  // `ceo`'s 2026-09-22 ruling on #1950 refused a `work-gate.mjs` cause for this chore because it cost no API budget and needed
+  // no judgment. THE FIRST HALF STOPPED BEING TRUE ON #2782: `wt-2623` was deleted under its live claim twice, and the only
+  // fact that could have stopped it is the `session:` label on the row, which is on GitHub. The second half stands -- no model
+  // turn, no judgment -- and that is the half that puts it on a clock. This test is the collision the previous version of
+  // itself predicted ("THIS ASSERTION IS MEANT TO COLLIDE"), resolved by reading what the spend IS instead of deleting the check.
   const entry = join(REPO_ROOT, "packages/agent-org/src/prune-worktrees.mjs");
-  // THE POSITIVE CONTROL, and it is the whole reason the null below means anything. `ghSpawnReachedFrom`
-  // returns null for a file it cannot read exactly as it does for a file whose closure is clean, so the
-  // assertion that follows would pass against a wrong path, a broken import walk, or a typo. This names
-  // where the control lives: the same function, the same checkout, on a file that does reach `gh`.
-  assert.equal(ghSpawnReachedFrom(join(REPO_ROOT, "packages/agent-org/src/work-tick.mjs")) !== null, true,
-    "control: the import walk can find a `gh` spawn in this checkout, so a null is a reading");
-  assert.equal(ghSpawnReachedFrom(entry), null,
-    "the predicate is `git merge-base --is-ancestor` against origin/main; the closure is `git-env.mjs` "
-    + "and `cli-flags.mjs` and reaches no `gh`");
-  const spending = unitsSpendingGh();
-  assert.ok(spending.length >= 3,
-    `control: the population must not be empty, or absence from it is vacuous; got ${JSON.stringify(spending)}`);
-  assert.ok(!spending.some((u) => u.unit === "a11ign-worktree-prune.service"),
-    "so it must not appear among the units charged for an identity");
-  // AND THE UNIT MUST NOT CARRY THE LINE ANYWAY. `identityDrift` only ever ASKS for a `GH_CONFIG_DIR`
-  // line; nothing anywhere objects to a spurious one, so three units having it makes copying it into a
-  // fourth the obvious edit -- and that line would assert this unit spends an API pool, which is the exact
-  // opposite of the fact that got it scheduled.
-  //
-  // THIS ASSERTION IS MEANT TO COLLIDE. The day a `gh` call appears under this entry point, `identityDrift`
-  // will demand the line and this will refuse it, and the collision is the point: it forces whoever made
-  // that change back to #1950's ruling, which put this chore on a clock instead of a wake-cause precisely
-  // because it spends nothing. A unit that quietly grew an API identity would keep the clock and lose the
-  // argument for it.
+  // THE POSITIVE CONTROL, and it is the whole reason a non-null below means anything: the same function, on a file known not
+  // to reach `gh`, answers null -- so the walk can tell the two apart.
+  assert.equal(ghSpawnReachedFrom(join(REPO_ROOT, "packages/agent-org/src/worktree-owner.mjs")), null,
+    "control: the import walk answers null for a closure that is clean, so the answer below is a reading");
+  assert.match(String(ghSpawnReachedFrom(entry)), /worktree-removal\.mjs$/,
+    "the spend is in the ONE file every remover asks, so it is a single, nameable read rather than a scatter of `gh` calls");
+  const spending = unitsSpendingGh().find((u) => u.unit === "a11ign-worktree-prune.service");
+  assert.ok(spending, "the unit is charged for an identity, so it cannot quietly spend the person's pool");
+  assert.equal(spending.declared, true, "and it declares which account");
+  // AND THE ACCOUNT IS THE WORKERS', never the person's: the same line `work-tick.service` carries.
   const service = shippedText("a11ign-worktree-prune.service");
-  assert.doesNotMatch(service, /^Environment=GH_CONFIG_DIR=/m,
-    "no identity line: this unit spends no pool, and saying it spends one would be false as well as "
-    + "unnecessary");
+  const accountOf = (text: string) => /^Environment=GH_CONFIG_DIR=(\S+)$/m.exec(text)?.[1];
+  assert.ok(accountOf(service), "control: the line is found in the prune unit at all, so the comparison below is not undefined === undefined");
+  assert.equal(accountOf(service), accountOf(shippedText("a11ign-work-tick.service")));
 });
 
 test("#2000: the prune timer is a CALENDAR timer, so `Persistent=` is not inert", () => {
@@ -1108,11 +1269,14 @@ test("#2000: which shipped timers run their service at `host:install`, and which
   assert.deepEqual(requiring, [
     "a11ign-corpus-release-nightly.timer",
     "a11ign-corpus-snapshot.timer",
+    // #2867: the shadow window's timer. Its service runs once at `host:install` and is a DORMANT NO-OP until `shadow-window.mjs --arm` creates the
+    // marker (no marker, nothing read, exit 0), which the unit's own comments say; that is why a fifth entry here is a decision made and not one missed.
+    "a11ign-shadow-window.timer",
     "a11ign-work-tick.timer",
     "a11ign-worktree-prune.timer",
   ], "`Requires=` in a timer's [Unit] is an ordinary start dependency, so `enable --now` on the timer "
     + "starts the service too -- once, at install time, whether or not the timer was already running. "
-    + "Adding a fifth entry here means that service now runs during `host:install`: say so in the unit, "
+    + "Adding another entry here means that service now runs during `host:install`: say so in the unit, "
     + "and check it is a run you want unattended at an operator's keystroke");
   assert.deepEqual(timers.filter((u) => !requiring.includes(u)), [
     "a11ign-board-report.timer",
@@ -1166,7 +1330,7 @@ test("#2230: each service runs its watcher WITH `--post`, and the command resolv
   const expected = { lab: "packages/control/src/lab-watch.mjs", fleet: "packages/control/src/fleet-watch.mjs" };
   for (const [name, script] of Object.entries(expected)) {
     const service = shippedText(`a11ign-${name}-watch.service`);
-    assert.match(service, new RegExp(`^ExecStart=/usr/bin/npm run ${name}:watch -- --post$`, "m"));
+    assert.match(service, new RegExp(`^ExecStart=%h/\\.local/bin/pnpm run ${name}:watch -- --post$`, "m"));
     assert.deepEqual(entriesFromCommand(execCommands(service).find((c) => c.includes("watch")) as string),
       [join(REPO_ROOT, script)],
       "a renamed or missing npm script leaves the unit syntactically perfect and starting nothing");
@@ -1556,7 +1720,7 @@ const hostWithOneUnit = (installedSuffix: string) => {
   for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true });
   const settingsPath = join(root, "settings.json");
   // PINNED SATISFIED, so the drift under test is exactly the pair and not three findings deep.
-  writeFileSync(settingsPath, '{"permissions":{"defaultMode":"bypassPermissions"}}');
+  writeFileSync(settingsPath, SATISFIED_SETTINGS);
   const unit = "a11ign-board-report.service";
   writeFileSync(join(dirs.shipped, unit), UNIT_BODY(dirs.repo));
   // THE SAME `ExecStart`, so the missing program is not an artefact of the staleness -- the only
@@ -2231,4 +2395,90 @@ test("#2332: a shipped unit that changes the account is a reviewed change, NOT '
   assert.equal(unitDrift([state])[0].problem, "STALE");
   // CONTROL: the original direction still fires -- shipped declares NOTHING, so the install would delete it.
   assert.deepEqual(staleWithIdentity().identityRevert, ["Environment=GH_CONFIG_DIR=/home/agent/workers/gh"]);
+});
+
+// --- #2901: THE CHAIRMAN-MESSAGING WATCHER IS OPTIONAL, AND OFF BY DEFAULT ----------------------------------------------------------
+//
+// A template that ships only when `.agent-org/project.json` carries the key that asks for it. Absent, `host:check` is silent about it and
+// `host:install` writes nothing; present, it is installed like any other. EVERY TEST BELOW HANDS `declaredKeys` RATHER THAN READING THE REAL
+// PROJECT, so the day `messaging` is configured here (row 6) none of them goes red: the one assertion about the real project is a biconditional.
+
+const isChairmanWatch = (unit: string) => unit.startsWith("a11ign-chairman-watch.");
+const WITHOUT_MESSAGING = new Set(["causes", "units"]);
+const WITH_MESSAGING = new Set(["causes", "units", "messaging"]);
+
+test("#2901: the chairman-watch pair is listed only when the project declares `messaging`, and nothing else moves", () => {
+  const without = shippedUnits(SHIPPED_DIR, { declaredKeys: WITHOUT_MESSAGING });
+  const withKey = shippedUnits(SHIPPED_DIR, { declaredKeys: WITH_MESSAGING });
+  assert.deepEqual(withKey.filter(isChairmanWatch), ["a11ign-chairman-watch.service", "a11ign-chairman-watch.timer"],
+    "POSITIVE CONTROL: with the key the pair IS listed, so the absence below is the key's doing and not a pair that never ships");
+  assert.deepEqual(without.filter(isChairmanWatch), []);
+  assert.deepEqual(withKey.filter((unit) => !isChairmanWatch(unit)), without, "the key adds the pair and changes nothing else");
+  assert.deepEqual(Object.values(OPTIONAL_UNITS), ["messaging", "messaging"], "both templates are asked for by the one key");
+  assert.equal(shippedUnits().some(isChairmanWatch), declaredProjectKeys().has("messaging"),
+    "and the real project gets the pair exactly when its declaration holds the key");
+});
+
+test("#2901: `declaredProjectKeys` reads presence, and an unreadable declaration is a throw, never 'none'", () => {
+  assert.deepEqual([...declaredProjectKeys("/x", (() => JSON.stringify({ schema: 1, messaging: {} })) as never)].sort(), ["messaging", "schema"]);
+  assert.deepEqual([...declaredProjectKeys("/x", (() => "[]") as never)], []);
+  assert.throws(() => declaredProjectKeys("/x", (() => "{ not json") as never), /cannot tell which optional units it asks for/);
+  assert.throws(() => declaredProjectKeys("/x", (() => { throw new Error("EACCES"); }) as never), /EACCES/);
+});
+
+test("#2901: `host:check` does not report the pair as NOT INSTALLED when `messaging` is absent, and does when it is present", () => {
+  const nothingInstalled = (declaredKeys: Set<string>) => unitDrift(shippedUnits(SHIPPED_DIR, { declaredKeys }).map((unit) =>
+    unitState(unit, { exists: (() => false) as never, systemctl: systemctlStub({ "is-enabled": {}, "is-active": {} }) })));
+  const absent = nothingInstalled(WITHOUT_MESSAGING);
+  assert.ok(absent.length >= 10, "POSITIVE CONTROL: every other shipped unit IS reported on this empty host, so silence about the pair is not a check that reports nothing");
+  assert.deepEqual(absent.filter((finding) => isChairmanWatch(finding.unit)), []);
+  assert.deepEqual(nothingInstalled(WITH_MESSAGING).filter((finding) => isChairmanWatch(finding.unit)).map((finding) => finding.problem),
+    ["NOT INSTALLED", "NOT INSTALLED"]);
+});
+
+test("#2901: `host:install` writes and enables the pair only when `messaging` is declared", () => {
+  const install = (declaredKeys: Set<string>) => {
+    const written: string[] = [];
+    const calls: string[][] = [];
+    hostUnitsInstall({
+      declaredKeys, installedDir: "/installed",
+      systemctl: ((args: string[]) => { calls.push(args); return ""; }) as never,
+      write: ((to: string) => { written.push(basename(String(to))); }) as never,
+      mkdir: (() => undefined) as never,
+      out: () => undefined,
+    });
+    return { written, enabled: calls.filter((call) => call[0] === "enable").map((call) => call[2]) };
+  };
+  const off = install(WITHOUT_MESSAGING);
+  assert.ok(off.written.length >= 10, "POSITIVE CONTROL: the other units are written");
+  assert.deepEqual([...off.written, ...off.enabled].filter(isChairmanWatch), []);
+  const on = install(WITH_MESSAGING);
+  assert.deepEqual(on.written.filter(isChairmanWatch), ["a11ign-chairman-watch.service", "a11ign-chairman-watch.timer"]);
+  assert.deepEqual(on.enabled.filter(isChairmanWatch), ["a11ign-chairman-watch.timer"], "`enable --now` on the timer only");
+});
+
+test("#2901: an installed pair is an ORPHAN once the key is removed, so deleting the key is the off switch", () => {
+  const installed = ["a11ign-chairman-watch.service", "a11ign-chairman-watch.timer", "a11ign-work-tick.timer"];
+  const orphans = (declaredKeys: Set<string>) => orphanedUnits({
+    declaredKeys, installedDir: "/installed", readDir: ((dir: string) => (dir === "/installed" ? installed : readdirSync(dir))) as never,
+    git: (() => "") as never,
+  }).map((finding) => finding.unit);
+  assert.deepEqual(orphans(WITHOUT_MESSAGING), ["a11ign-chairman-watch.service", "a11ign-chairman-watch.timer"]);
+  assert.deepEqual(orphans(WITH_MESSAGING), [], "CONTROL: declared, the same installed pair is the shipped one and not an orphan");
+});
+
+test("#2901: the rendered pair holds the properties every other shipped unit is held to, and no secret", () => {
+  // The universal guards above read `shippedUnits()`, which does not include the pair while `messaging` is absent, so they are restated for it here.
+  const service = shippedUnitText("a11ign-chairman-watch.service") ?? "";
+  const timer = shippedUnitText("a11ign-chairman-watch.timer") ?? "";
+  assert.notEqual(service, "", "the service renders");
+  assert.equal(declaredCompileCache(service), "%h/.cache/node-compile-cache");
+  assert.match(service, /^Environment=GH_CONFIG_DIR=\/home\/agent\/workers\/gh$/m, "the workers account, never the person's");
+  assert.doesNotMatch(service, /^\[Install\]/m, "the timer starts it");
+  assert.doesNotMatch(service + timer, /^(Environment|EnvironmentFile)=.*(TOKEN|SECRET|PASSWORD)/im, "no secret is passed in a unit; the program reads the file by reference");
+  assert.doesNotMatch(timer, /^Requires=/m, "no install-time start: this unit messages a person");
+  assert.match(timer, /^OnCalendar=/m);
+  assert.match(timer, /^Persistent=true$/m);
+  assert.match(timer, /^\[Install\]\s*$/m);
+  assert.doesNotMatch(service + timer, /@@/, "every placeholder was rendered");
 });

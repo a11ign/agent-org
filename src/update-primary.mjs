@@ -13,13 +13,15 @@
 import { execFileSync } from "node:child_process";
 import { isPrimaryWorktree } from "./prune-worktrees.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { npmCliInvocation, pnpmCliInvocation } from "./lib/npm-cli-executable.mjs";
 import { changedFiles } from "./lib/changed-files.mjs";
+import { HOME_CHECKOUT } from "./project-config.mjs";
 
-const REPO = fileURLToPath(new URL("../../../", import.meta.url));
+/** The checkout `primary:update` moves: the PROJECT's (`HOME_CHECKOUT`), which is the tool's own `src` up three only when `$AGENT_ORG_HOST` is unset (#2879). */
+export const PRIMARY_CHECKOUT = HOME_CHECKOUT;
 
 /**
  * FAST-FORWARD THE LOCAL `main` BRANCH TOO, because every worktree shares it and this is the only
@@ -100,7 +102,7 @@ export function lockfileMoved(changed, before, after) {
  * @param {(root: string, argv: string[]) => void} [runAt] runs `argv` (its first element names the tool, `npm` or `pnpm`) in `root`; throws on a non-zero exit
  * @param {(range: string[], pathspec: string[]) => string[]} [changed] the paths a range touched
  */
-export function updatePrimary(root = REPO, run = (args) =>
+export function updatePrimary(root = PRIMARY_CHECKOUT, run = (args) =>
   execFileSync("git", args, { cwd: root, env: sandboxGitEnv(), encoding: "utf8" }), runAt = runTool,
 changed = (range, pathspec) => changedFiles(range, { repoRoot: root, pathspec })) {
   if (!isPrimaryWorktree(root)) {
@@ -119,6 +121,48 @@ changed = (range, pathspec) => changedFiles(range, { repoRoot: root, pathspec })
   if (lockfileMoved(changed, before, sha)) installAt(root, runAt);
   buildAt(root, runAt);
   return sha;
+}
+
+/**
+ * @typedef {{sha: string, originSha: string, behind: number, ahead: number, dirty: string[]}} PrimaryDrift
+ *   `dirty` is the TRACKED paths with uncommitted changes, `behind`/`ahead` the commits `origin/main` has that HEAD lacks and the reverse.
+ */
+
+/**
+ * WHERE THE PRIMARY STANDS AGAINST `origin/main`, READ BY THE GATE EVERY TICK (#2781).
+ *
+ * `primary:update` runs as `ExecStartPre=-`, so a failure is invisible to systemd and the tick goes on. From 2026-09-28T12:01Z an
+ * interactive session's uncommitted edits made every `git checkout --detach origin/main` refuse ("would be overwritten"), and the
+ * gate gave orders from 22-hour-old code: 2,652 journal lines and not one signal. The update cannot report its own failure to
+ * anyone, so this is a SECOND reader, asked of the checkout rather than of the command, and it covers the case the failure
+ * does not: tracked edits that do not conflict yet leave the primary dirty (done-when 4).
+ *
+ * TRACKED PATHS ONLY (`--untracked-files=no`): the build writes untracked output here and the checkout never refuses over it.
+ * NO FETCH: `updatePrimary` fetched a moment ago, and a read that fetches is a second network call per tick. If that fetch
+ * failed, HEAD equals the old `origin/main` and this says "current", which is a network blip and not a dirty primary.
+ *
+ * `null` FOR EVERY UNASKABLE CASE, NEVER A CLEAN READING -- a linked worktree (CI, a reviewer's clone), a repository with no
+ * `origin/main`, a git that failed. "Could not look" and "looked and it is current" must not share a value.
+ *
+ * @param {string} [root]
+ * @param {(args: string[]) => string} [run]
+ * @returns {PrimaryDrift | null}
+ */
+export function readPrimaryDrift(root = PRIMARY_CHECKOUT, run = (args) =>
+  execFileSync("git", args, { cwd: root, env: sandboxGitEnv(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })) {
+  if (!isPrimaryWorktree(root)) return null;
+  try {
+    const sha = run(["rev-parse", "HEAD"]).trim();
+    const originSha = run(["rev-parse", "refs/remotes/origin/main"]).trim();
+    const count = (/** @type {string} */ range) => Number(run(["rev-list", "--count", range]).trim());
+    const behind = count(`${sha}..${originSha}`);
+    const ahead = count(`${originSha}..${sha}`);
+    const dirty = run(["status", "--porcelain", "--untracked-files=no"]).split("\n").filter(Boolean)
+      .map((line) => line.slice(3));
+    return Number.isInteger(behind) && Number.isInteger(ahead) ? { sha, originSha, behind, ahead, dirty } : null;
+  } catch {
+    return null; // not asked: the caller must treat this as unreadable, never as current
+  }
 }
 
 /** @param {unknown} error @returns {string} the child's exit status, or `?` when it has none */
@@ -212,8 +256,13 @@ function runTool(root, argv) {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
-  // Guarded per #164: takes no flags; --detach/--quiet go to git.
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/update-primary.mjs" });
+  // Guarded per #164: `--drift` only READS (the gate spawns it, #2781); --detach/--quiet go to git.
+  refuseUnknownFlags(["--drift"], { entry: import.meta.url, command: "node packages/agent-org/src/update-primary.mjs" });
+  if (process.argv.slice(2).includes("--drift")) {
+    const drift = readPrimaryDrift();
+    process.stdout.write(`${JSON.stringify({ asked: drift !== null, drift })}\n`);
+    process.exit(0);
+  }
   const sha = updatePrimary();
   console.log(`primary checkout detached at origin/main (${sha})`);
 }

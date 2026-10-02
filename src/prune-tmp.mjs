@@ -64,6 +64,8 @@ import { join, sep } from "node:path";
 // RELATIVE rather than `@a11ign/worker-fleet/cli-flags` for the reason `prune-worktrees.mjs` records:
 // files in this package run before `npm ci`, where a package specifier dies.
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { worktreeOwner } from "./worktree-owner.mjs";
+import { claimRefusal, nestedWorktrees, recordRemoval, worktreeBranch } from "./worktree-removal.mjs";
 
 /**
  * How long after its newest write a path stops counting as somebody's current work.
@@ -87,6 +89,9 @@ import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
  * trade, and it is why widening is a decision rather than a tidy-up.
  */
 const MS_PER_HOUR = 60 * 60 * 1000;
+
+/** What the removal log names as the asker. */
+const CALLER = "prune-tmp.mjs";
 export const ACTIVITY_WINDOW_MS = 24 * MS_PER_HOUR;
 
 /** Where session scratchpads live, relative to the tmp root: `<tmp>/claude-1000/<project>/<uuid>`. */
@@ -451,11 +456,14 @@ export function selfSessions(env) {
  *
  * @param {string} tmpRoot
  * @param {{ dryRun?: boolean, now?: number, windowMs?: number, env?: NodeJS.ProcessEnv,
- *   run?: typeof defaultRun, procRoot?: string, remove?: (path: string) => void }} [deps]
+ *   run?: typeof defaultRun, procRoot?: string, remove?: (path: string) => void,
+ *   claim?: typeof claimRefusal, record?: typeof recordRemoval }} [deps] `claim` and `record` are #2782's: the ROW's claim
+ *   on any worktree inside a path, and the removal's log line
  * @returns {PruneReport}
  */
 export function pruneTmp(tmpRoot, deps = {}) {
-  const { dryRun = true, now = Date.now(), windowMs, env = process.env, run, procRoot, remove } = deps;
+  const { dryRun = true, now = Date.now(), windowMs, env = process.env, run, procRoot, remove,
+    claim = claimRefusal, record = recordRemoval } = deps;
   const paths = sweepablePaths(tmpRoot);
   /** @type {Authorities} */
   const authorities = {
@@ -467,12 +475,50 @@ export function pruneTmp(tmpRoot, deps = {}) {
   for (const path of paths) {
     const verdict = classifyEntry(path, tmpRoot, authorities);
     if (verdict.verdict === "refuse") { report.refused.push(verdict); continue; }
+    // #2782: a whole directory goes, and any worktree inside it goes too -- so the ROW of each is read first, in the dry run
+    // as well, because the listing is this tool's own answer and a path it lists as removable must be one `--apply` removes.
+    const claimed = claimOnTrees(path, claim);
+    if (claimed.refused) { report.refused.push({ ...verdict, verdict: "refuse", reason: claimed.reason }); continue; }
     report.removable.push(verdict);
     if (dryRun) continue;
-    const failure = removePath(path, tmpRoot, remove);
+    const failure = removeRecorded(path, tmpRoot, { remove, record });
     if (failure === null) report.removed.push(path); else report.failed.push({ path, reason: failure });
   }
   return report;
+}
+
+/**
+ * #2782: the first refusal among the worktrees a path holds, by the ROW's claim. A path holding none has no claim to read.
+ * @param {string} path @param {typeof claimRefusal} claim
+ * @returns {{ refused: false } | { refused: true, reason: string }}
+ */
+function claimOnTrees(path, claim) {
+  for (const tree of nestedWorktrees(path)) {
+    const refusal = claim({ path: tree, branch: worktreeBranch(tree) });
+    if (refusal.refused) return refusal;
+  }
+  return { refused: false };
+}
+
+/**
+ * #2782: {@link removePath} with its line -- `removing` BEFORE the delete, `removed` or `failed` after -- naming every worktree
+ * inside the path and what its owner file read. A line that cannot be written is a removal that does not happen.
+ * @param {string} path @param {string} tmpRoot
+ * @param {{ remove?: (path: string) => void, record: typeof recordRemoval }} deps
+ * @returns {string | null} the failure, or `null` on success
+ */
+function removeRecorded(path, tmpRoot, { remove, record }) {
+  const trees = nestedWorktrees(path);
+  const line = { path, caller: CALLER, reason: "a classified leftover no live session claims",
+    detail: trees.length > 0 ? `holds worktree(s): ${trees.join(", ")}` : undefined };
+  try {
+    record({ ...line, event: "removing", owner: trees.map((tree) => `${tree}=${worktreeOwner(tree)}`).join(" ") || null });
+  } catch (cause) {
+    return `the removal log could not be written, so nothing was removed (#2782): ${/** @type {Error} */ (cause).message}`;
+  }
+  const failure = removePath(path, tmpRoot, remove);
+  record({ ...line, event: failure === null ? "removed" : "failed", detail: failure ?? line.detail });
+  return failure;
 }
 
 /**

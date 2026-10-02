@@ -349,6 +349,9 @@ function refusedPrompt(b) {
  */
 export const HOLD_RED_JOBS = ["deliberateRefusals", "gate"];
 
+/** The session that places a hold on a PR it does not own: before #2882 an unlabelled PR was addressed to it. */
+const HOLDING_SESSION = "product-manager";
+
 /**
  * PURE. Is this pull request red ONLY because its addressee holds it?
  *
@@ -364,20 +367,102 @@ export const HOLD_RED_JOBS = ["deliberateRefusals", "gate"];
  * `head`, not the blocking set: with `gate` the only required check the blocking set is `[gate]` whatever else is
  * red, so a real `ts / run` failure would have read as the hold's own. (2) The hold is the ADDRESSEE's own
  * (`hold:<session>`): a hold by somebody else is not an answer from the session being asked, so the order still
- * goes. THE EXEMPTION ENDS WITH EITHER KEY: remove the hold or let a third job go red and the order is emitted
+ * goes. #2941: FOR A PR NOBODY OWNS (`ownerOfPr`'s `ceo` rung) THERE IS NO ADDRESSEE WITH A STAKE, so a hold by ANY session is
+ * the answer -- the hold is the only statement of who is dealing with it, and #2376's `hold:product-manager` must stay quiet
+ * now that its order goes to `ceo` and not to the session that placed the hold. THE EXEMPTION ENDS WITH EITHER KEY: remove the hold or let a third job go red and the order is emitted
  * again, and the run of deliveries it earned while suppressed starts from nothing (`endedRuns` writes `RESET` for
  * the key that stopped being emitted).
+ *
+ * A ROW-ROUTED ORDER ACCEPTS THE FALLBACK'S HOLD TOO (#2935). #2882 addressed an unlabelled red PR to the session
+ * holding its row, so `hold:product-manager` -- the hold of the session the order went to BEFORE that change -- stopped
+ * matching: five identical orders in an hour for #2883, each answered "nothing to fix: held". When the addressee came
+ * from a row, a branch or a stamp and not from a `session:` label, the PR names nobody, and `product-manager`'s hold is an
+ * answer as well. A labelled PR keeps #2400's rule: a hold by somebody else still goes.
  *
  * WHAT IT CANNOT SEE: `deliberateRefusals` also carries #549's `Closes` comparison, and a rollup names the JOB, not
  * the step. A held PR whose body ALSO declares the wrong `Closes` is red for two reasons and silent about one of
  * them until the hold is released, when the refusal reappears with nothing else red.
  *
- * @param {any} pr @param {any[]} onHead every check on the head, narrowed @param {string} session the addressee
+ * @param {any} pr @param {any[]} onHead every check on the head, narrowed
+ * @param {ReturnType<typeof ownerOfPr>} addressee who the order would go to, and on which rung
  */
-function redOnlyFromHoldOf(pr, onHead, session) {
-  if (!holdersOf(labelsOf(pr)).includes(`${HOLD_PREFIX}${session}`)) return false;
+function redOnlyFromHoldOf(pr, onHead, { session, source }) {
+  const holders = holdersOf(labelsOf(pr));
+  const answerers = source === "label" ? [session] : [session, HOLDING_SESSION];
+  const answered = source === "ceo" ? holders.length > 0 : answerers.some((a) => holders.includes(`${HOLD_PREFIX}${a}`));
+  if (!answered) return false;
   const red = onHead.filter((c) => checksSettledGreen([c]) === false);
   return red.length > 0 && red.every((c) => HOLD_RED_JOBS.includes(String(c?.name ?? c?.context)));
+}
+
+const MS_PER_MINUTE = 60_000;
+
+/**
+ * THE SESSION OF LAST RESORT FOR A RED PULL REQUEST (#2941). It can act: it holds the publish order, the rulings
+ * and the freeze, and it is the one reader that may re-lane a PR to somebody. `product-manager` could not -- it
+ * does not fix code, so every order that fell back to it was a turn spent finding out whose the PR was.
+ */
+export const UNOWNED_PR_SESSION = "ceo";
+
+/**
+ * WHO A PULL REQUEST BELONGS TO, BY A TOTAL FUNCTION (#2941): every pull request has exactly one answer, and the
+ * last rung is a session that can act. A NEW NAME on purpose -- `work-gate.mjs`'s `ownerOf(row)` answers a
+ * different question (who a ROW is routed to).
+ *
+ * THE ORDER, and each rung reads a fact somebody else put on the PR object (`withPrOwners`), so this is pure:
+ *   1. `label`        its own `session:` label. Never outranked.
+ *   2. `closing-row`  the live session holding the one row it closes (#2882).
+ *   3. `branch-row`   the live session holding the row its branch suffix `agent/<slug>-<n>` names (#2928).
+ *   4. `branch-name`  a live session the head ref itself names: `agent/<session>` or a `worker-<n>` token.
+ *   5. `stamp`        the live session that stamped the worktree the branch is checked out in (`.a11y-owner`).
+ *   6. `ceo`          nobody could be named. Never `product-manager`.
+ * "Live" in rungs 2-5 is the same test #2912 made: the session still HOLDS A CLAIM on an open row. `isLiveSession`
+ * is not asked, because `arm-pr.mjs` reads `sessions.json` at load and the gate must load without
+ * `.agent-org/roles` (#2174) -- so a live session holding NO claim is answered by `ceo`, which can act.
+ *
+ * @param {any} pr
+ * @returns {{ session: string, source: "label" | "closing-row" | "branch-row" | "branch-name" | "stamp" | "ceo" }}
+ */
+export function ownerOfPr(pr) {
+  const label = sessionOf(pr);
+  if (label) return { session: label, source: "label" };
+  if (pr?.rowOwner) return { session: pr.rowOwner.session, source: pr.rowOwner.source === "branch" ? "branch-row" : "closing-row" };
+  if (pr?.branchOwner) return { session: pr.branchOwner.session, source: "branch-name" };
+  if (pr?.stampOwner) return { session: pr.stampOwner.session, source: "stamp" };
+  return { session: UNOWNED_PR_SESSION, source: "ceo" };
+}
+
+/**
+ * The sentence of `failingChecksPrompt` that says whose the fix is, and on whose authority.
+ * @param {any} pr @param {{ blocking: any[], nowMs: number }} red
+ */
+function ownershipSentence(pr, { blocking, nowMs }) {
+  const { source } = ownerOfPr(pr);
+  const branch = `\`${pr.headRefName}\``;
+  const sentences = {
+    label: "It carries your session label, so it is yours to fix.",
+    "closing-row": `It carries no session label, but the row it closes (#${pr?.rowOwner?.row}) is held by you, so it is yours to fix.`,
+    "branch-row": `It carries no session label and closes no row you hold, but its branch ${branch} was claimed for row #${pr?.rowOwner?.row}, which is held by you, so it is yours to fix.`,
+    "branch-name": `It carries no session label and closes no row you hold, but its branch ${branch} names you, so it is yours to fix.`,
+    stamp: `It carries no session label and closes no row you hold, but the worktree its branch ${branch} is checked out in was stamped by you, so it is yours to fix.`,
+    ceo: unownedSentence(pr, { blocking, nowMs }),
+  };
+  return sentences[source];
+}
+
+/**
+ * THE LAST RUNG'S WORDS: the PR number, the red checks and how long they have been red, because nothing else
+ * names the PR to a session that was handed it with no history.
+ * @param {any} pr @param {{ blocking: any[], nowMs: number }} red
+ */
+function unownedSentence(pr, { blocking, nowMs }) {
+  const names = blocking.filter((c) => checksSettledGreen([c]) === false).map((c) => String(c?.name ?? c?.context)).join(", ");
+  const started = failingRunStartedAt(blocking);
+  const age = started === null ? "for an UNKNOWN time (no check carried a start time)"
+    : `since ${started} (${Math.max(0, Math.round((nowMs - Date.parse(started)) / MS_PER_MINUTE))} min ago)`;
+  return `NOBODY COULD BE NAMED as its owner: no session label, no live session holding a row it closes or its branch \`${pr.headRefName}\` `
+    + `names, and no live session stamped its worktree. You are the last answer, so it is yours to route. ${subjectMention(pr)} is red on ${names || "an unnamed check"} ${age}. `
+    + `Re-lane it to the session that should fix it (\`${SESSION_PREFIX}<name>\` on the PR), or close it if it is abandoned.`;
 }
 
 /**
@@ -413,16 +498,16 @@ function failingChecksOrder(pr, required = null, baseTip = null) {
   const head = String(pr.headRefOid ?? "");
   if (!head) return null;
   const head8 = head.slice(0, 8);
-  // ITS OWN SESSION FIRST. Falling back to `product-manager` rather than dropping the order: an unlabelled
-  // red PR is still a stalled PR, and the queue's first reader can find out whose it is.
-  const session = sessionOf(pr) ?? "product-manager";
-  if (redOnlyFromHoldOf(pr, onHead, session)) return null;
+  // `ownerOfPr` IS TOTAL (#2941): an unlabelled red PR is still a stalled PR, and its last answer is a session that can act.
+  const owner = ownerOfPr(pr);
+  const { session } = owner;
+  if (redOnlyFromHoldOf(pr, onHead, owner)) return null;
   return {
     session,
     cause: "pr-checks-failing",
     subject: `pr-${subjectRef(pr.repoKey, pr.number)}`,
     discriminator: head8,
-    prompt: failingChecksPrompt({ pr, head8, blocking, baseTip }),
+    prompt: failingChecksPrompt({ pr, head8, blocking, baseTip, nowMs: Date.now() }),
     causeKey: `${session}/pr-checks-failing/pr-${subjectRef(pr.repoKey, pr.number)}/${head8}`,
   };
 }
@@ -438,11 +523,11 @@ function failingChecksOrder(pr, required = null, baseTip = null) {
  * whether the failing assertion names a defect or a refusal. #2087 (2026-09-23) cost two sessions a cycle
  * each, and they reached opposite readings of one PR.
  *
- * @param {{pr: any, head8: string, blocking: any[], baseTip: {sha: string, date: string} | null}} facts
+ * @param {{pr: any, head8: string, blocking: any[], baseTip: {sha: string, date: string} | null, nowMs: number}} facts
  */
-function failingChecksPrompt({ pr, head8, blocking, baseTip }) {
+function failingChecksPrompt({ pr, head8, blocking, baseTip, nowMs }) {
   return `${subjectMention(pr)} at \`${head8}\` has FAILING checks and is blocked. `
-    + `${sessionOf(pr) ? "It carries your session label, so it is yours to fix." : "It names no session."} `
+    + `${ownershipSentence(pr, { blocking, nowMs })} `
     + `${baseMovedSentence(failingRunStartedAt(blocking), baseTip)} `
     + "WHICH FIX is decided by what the failing assertion names, and this order does not choose: "
     + "(a) a real defect on your branch -- fix it and push; "
@@ -512,17 +597,17 @@ function baseMovedSentence(startedAt, baseTip) {
  *        byIsAuthor: boolean | null}} found @param {ReviewHeads} heads
  */
 function notConvincedOrder(pr, found, { head8, keyHead8 }) {
-  const owner = sessionOf(pr);
-  const session = owner ?? "product-manager";
+  const { session, source } = ownerOfPr(pr);
   const from = found.by ? ` from ${found.by}` : "";
-  const prompt = owner
-    ? `${subjectMention(pr)} at \`${head8}\` carries a NOT CONVINCED verdict${from} and it carries your session `
-      + "label, so the rework is yours. Read the verdict, fix what it names on that branch and push. If "
+  const verdict = `${subjectMention(pr)} at \`${head8}\` carries a NOT CONVINCED verdict${from}`;
+  const prompt = source === "ceo"
+    ? `${verdict} and NOBODY COULD BE NAMED as its owner (no session label, no live session holding a row it closes, `
+      + "its branch names or stamped its worktree). You are the last answer: read the verdict, route the rework to the "
+      + `session that should do it (\`${SESSION_PREFIX}<name>\` on the PR), or close the PR if the work was abandoned.`
+    : `${verdict} and ${notConvincedBasis(pr, source)}, `
+      + "so the rework is yours. Read the verdict, fix what it names on that branch and push. If "
       + "you believe the verdict is wrong, that is a DISPUTE rather than rework: say so on the PR and "
-      + "product-manager decides."
-    : `${subjectMention(pr)} at \`${head8}\` carries a NOT CONVINCED verdict${from} and nothing has moved since. `
-      + "Read the verdict, decide whether it stands, and route the rework to the session holding that "
-      + "row -- or close the PR if the row was wrong.";
+      + "product-manager decides.";
   return {
     session,
     cause: "verdict-not-convinced",
@@ -531,6 +616,18 @@ function notConvincedOrder(pr, found, { head8, keyHead8 }) {
     prompt,
     causeKey: `${session}/verdict-not-convinced/pr-${subjectRef(pr.repoKey, pr.number)}/${keyHead8}`,
   };
+}
+
+/**
+ * Why the NOT CONVINCED rework is this session's, in the clause `notConvincedOrder` splices in.
+ * @param {any} pr @param {string} source one of `ownerOfPr`'s sources but `ceo`
+ */
+function notConvincedBasis(pr, source) {
+  if (source === "label") return "it carries your session label";
+  if (source === "closing-row") return `the row it closes (#${pr?.rowOwner?.row}) is held by you`;
+  if (source === "branch-row") return `its branch \`${pr.headRefName}\` was claimed for row #${pr?.rowOwner?.row}, which is held by you`;
+  if (source === "branch-name") return `its branch \`${pr.headRefName}\` names you`;
+  return `the worktree its branch \`${pr.headRefName}\` is checked out in was stamped by you`;
 }
 
 /**

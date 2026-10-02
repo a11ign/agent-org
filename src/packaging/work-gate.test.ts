@@ -68,6 +68,7 @@ import { primaryLaunchRefusal, launchCheckoutOf }
 
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
 // without one is dropped, and the gate would read every PR as having no checks at all.
+import { closesUnresolvedOrders, closesUnresolvedPrs, primaryStaleOrders, withStalePrimaryNotice } from "../work-gate.mjs";
 const GREEN = [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }];
 const RED = [{ name: "ci", status: "COMPLETED", conclusion: "FAILURE" }];
 const PENDING = [{ name: "ci", status: "IN_PROGRESS", conclusion: null }];
@@ -171,18 +172,19 @@ test("#2001: a NOT CONVINCED verdict is routed by the PR's own session label, ca
   assert.match(order.prompt, /product-manager decides/, "which still lands on the queue's first reader");
 });
 
-test("#2001: a NOT CONVINCED verdict on a PR naming no session is unchanged", () => {
-  // THE NEGATIVE CONTROL, and not a formality: with no label there is nobody to route to, and both the
-  // lookup and the decision are genuinely product-manager's. The prompt is pinned WORD FOR WORD because
-  // "unchanged" is the claim -- a branch that quietly rewrote this one would pass a looser assertion.
+test("#2001/#2941: a NOT CONVINCED verdict on a PR NOBODY owns goes to ceo, the last rung, and says so", () => {
+  // THE NEGATIVE CONTROL, and not a formality: with no label, no row, no branch and no stamp there is nobody to route to.
+  // It was `product-manager`, who does not fix code (#2941); the last answer is `ceo`. The prompt is pinned WORD FOR WORD
+  // because a branch that quietly rewrote this one would pass a looser assertion.
   const refused = [{ body: "Review of #13 at `abc12345`, by `reviewer`: not convinced." }];
   const [order] = decide({ prs: [draft(13, GREEN, refused)], readyRows: [] }) as { session: string,
     causeKey: string, prompt: string }[];
-  assert.equal(order.session, "product-manager");
-  assert.equal(order.causeKey, "product-manager/verdict-not-convinced/pr-13/abc12345");
-  assert.equal(order.prompt, "#13 at `abc12345` carries a NOT CONVINCED verdict from reviewer and "
-    + "nothing has moved since. Read the verdict, decide whether it stands, and route the rework to the "
-    + "session holding that row -- or close the PR if the row was wrong.");
+  assert.equal(order.session, "ceo");
+  assert.equal(order.causeKey, "ceo/verdict-not-convinced/pr-13/abc12345");
+  assert.equal(order.prompt, "#13 at `abc12345` carries a NOT CONVINCED verdict from reviewer and NOBODY COULD BE NAMED "
+    + "as its owner (no session label, no live session holding a row it closes, its branch names or stamped its worktree). "
+    + "You are the last answer: read the verdict, route the rework to the session that should do it "
+    + "(`session:<name>` on the PR), or close the PR if the work was abandoned.");
 });
 
 test("#912: a claimed row is not work, and an unclaimed one names no session", () => {
@@ -407,10 +409,10 @@ test("a RED DRAFT counts too -- it can never reach the reviewer lane, which requ
     "a red draft is not 'not ready yet', it is a branch whose author stopped");
 });
 
-test("an unlabelled red pull request falls back to product-manager rather than being dropped", () => {
+test("an unlabelled red pull request falls to ceo, the last rung of ownerOfPr, rather than being dropped", () => {
   const pr = { ...draft(52, RED), isDraft: false, labels: [] };
   assert.deepEqual(decide({ prs: [pr], readyRows: [] })
-    .map((o: { session: string }) => o.session), ["product-manager"]);
+    .map((o: { session: string }) => o.session), ["ceo"]);
 });
 
 test("checks still RUNNING are not red -- an unsettled build is nobody's job yet", () => {
@@ -638,7 +640,7 @@ test("the order tells ceo to CLEAR a stale label, or the count stops meaning any
  * turn, and a gate that shelves when it cannot actually tell would starve a queue in silence.
  */
 const regionRow = (n: number, region: string, extra: string[] = []) =>
-  ({ number: n, body: `## Region\n\n- \`${region}\`\n\n## Acceptance\n\nnone\n`,
+  ({ number: n, body: `## Region\n\n- \`${region}\`\n\n## Acceptance\n\nnone\n\n## Open-check\n\nnone\n`,
     labels: [{ name: "ready" }, ...extra.map((e) => ({ name: e }))] });
 
 const prTouching = (n: number, ...files: string[]) => ({ number: n, files, changedFiles: files.length });
@@ -1065,9 +1067,27 @@ test("every cause is classified as START or FINISH -- a new one cannot default i
   // #2711: `answer-label-unexplained` is FINISH, and an ACTION cause (in `JUDGMENT_CAUSES` neither):
   // `claim-stalled`'s own argument -- its subject is a row a session already holds, which a drain exists to
   // land, and the two remedies (post the question, remove the label) start no new work.
-  assert.deepEqual(finish, ["answer-label-unexplained", "answer-owed", "awaiting-evidence-stale", "blocker-cleared", "chairman-blocked",
-    "claim-stalled", "claimed-row-amended", "disk-headroom-low", "draft-awaiting-verdict", "draft-convinced-not-ready", "host-units-stale",
-    "pr-checks-failing", "pr-codeowner-review-missing", "pr-green-unarmed", "pr-merge-conflict", "pr-review-blocked", "reviewer-auth-failed",
+  // #2791: `ready-row-incomplete` is FINISH, and a JUDGMENT cause. It starts no work -- it asks `product-manager` to
+  // AMEND a row so a later claim can succeed, which a window has no reason to hold back.
+  // #2729: `lab-job-finished` is FINISH, and a JUDGMENT cause. Its subject is a row a session already holds and the
+  // result of a job that session already dispatched -- the plainest work in flight there is -- and it starts nothing:
+  // it replaces the holder polling `lab:status`. A window that withheld it would leave the holder to poll again.
+  // #2781: `primary-stale` is FINISH, and an ACTION cause: it starts no work, it tells `ceo` the gate is running from old code, and
+  // a drain is when withholding it would cost most (the drain window ends in a force-push to this very checkout).
+  // #2823: `closes-unresolved-repo-wide` is FINISH, and a JUDGMENT cause. Its subject is pull requests already open whose
+  // declared rows GitHub will not close, which the post-merge closer covers -- it starts no work, it names a fault to a reader.
+  // #2848: `repeating-log-line` and `backlog-aged-unpromoted` are FINISH, and JUDGMENT causes. Neither starts work: one names a fault
+  // in the tick's own journal and the other asks `product-manager` to decide about a row already filed, and a drain is when
+  // nobody reads the journal.
+  // #2938: `org-retrospective` is FINISH too. It starts no work -- it asks `ceo` to LOOK at how the org is doing, and a drain is when
+  // that is most worth doing, so a window must not withhold it.
+  // #2845: `ready-row-unclaimable` is FINISH too. It starts no work -- it asks `product-manager` to unstick a row the claim keeps
+  // refusing -- and a drain is when a stuck row most needs to be seen, since the pool's engineers are withheld anyway.
+  // #2936: `org-health` is FINISH, and a JUDGMENT cause. It starts no work -- it tells `ceo` that nothing is landing, a red PR is unattended, a row
+  // is refused or the primary is stale -- and a drain is exactly when an org that is not landing anything should be told.
+  assert.deepEqual(finish, ["answer-label-unexplained", "answer-owed", "awaiting-evidence-stale", "backlog-aged-unpromoted", "blocker-cleared", "chairman-blocked",
+    "claim-stalled", "claimed-row-amended", "closes-unresolved-repo-wide", "disk-headroom-low", "draft-awaiting-verdict", "draft-convinced-not-ready", "host-units-stale",
+    "lab-job-finished", "org-health", "org-retrospective", "pr-checks-failing", "pr-codeowner-review-missing", "pr-green-unarmed", "pr-merge-conflict", "pr-review-blocked", "primary-stale", "ready-row-incomplete", "ready-row-unclaimable", "repeating-log-line", "reviewer-auth-failed",
     "row-branch-unshipped", "row-call-count-signal", "row-off-board", "trunk-red", "verdict-comment-unreviewed", "verdict-not-convinced"]);
   for (const cause of START_CAUSES) {
     assert.ok(CAUSES.includes(cause), `${cause} is withheld by a drain but no longer exists`);
@@ -1310,7 +1330,8 @@ test("a real FAILURE beside a CANCELLED one is red even while something runs -- 
 /**
  * #2400: A HOLD IS AN ANSWER. #2376 carried `hold:product-manager` on purpose; the hold turned `deliberateRefusals`
  * red and `gate` with it, and the gate ordered `product-manager` to fix a cause it had itself placed -- 35 times,
- * then `needs:chairman`. The fixture is that PR's shape: no `session:` label, so the addressee is `product-manager`.
+ * then `needs:chairman`. The fixture is that PR's shape: no `session:` label and nobody else to name, so (#2941) the order would go to `ceo` -- and a hold
+ * by ANY session is the answer for a PR nobody owns, which is what keeps #2376 quiet now that `product-manager` is not the addressee.
  */
 const HELD_RED = [["deliberateRefusals", "FAILURE"], ["gate", "FAILURE"], ["ts / run", "SUCCESS"]] as [string, string][];
 const heldPr = (labels: string[], checks: [string, string][] = HELD_RED) => ({ number: 2376, isDraft: true,
@@ -1334,8 +1355,8 @@ test("the same two red jobs WITHOUT the hold still order -- the null is the exem
   for (const required of [["gate"], null]) {
     const [order, ...rest] = failingOrders(heldPr([]), required);
     assert.equal(rest.length, 0);
-    assert.equal(order?.session, "product-manager");
-    assert.equal(order?.causeKey, "product-manager/pr-checks-failing/pr-2376/b7fd42fe");
+    assert.equal(order?.session, "ceo");
+    assert.equal(order?.causeKey, "ceo/pr-checks-failing/pr-2376/b7fd42fe");
   }
 });
 
@@ -1343,7 +1364,7 @@ test("a THIRD red job ends the exemption, so a real failure under a hold still r
   const real: [string, string][] = [["deliberateRefusals", "FAILURE"], ["gate", "FAILURE"], ["ts / run", "FAILURE"]];
   for (const required of [["gate"], null]) {
     const [order] = failingOrders(heldPr(["hold:product-manager"], real), required);
-    assert.equal(order?.causeKey, "product-manager/pr-checks-failing/pr-2376/b7fd42fe",
+    assert.equal(order?.causeKey, "ceo/pr-checks-failing/pr-2376/b7fd42fe",
       `required=${JSON.stringify(required)}: with gate the only REQUIRED check, reading the blocking set alone `
       + "would have called this the hold's doing");
   }
@@ -1353,14 +1374,36 @@ test("a THIRD red job ends the exemption, so a real failure under a hold still r
 });
 
 test("only the ADDRESSEE's own hold is an answer from it -- #2400", () => {
-  assert.equal(failingOrders(heldPr(["hold:ceo"]), ["gate"]).length, 1,
-    "held by ceo, addressed to product-manager: product-manager has answered nothing");
+  // #2941: a PR NOBODY owns has no addressee with a stake, so a hold by ANY session answers it (#2376's own shape).
+  assert.deepEqual(failingOrders(heldPr(["hold:ceo"]), ["gate"]), [], "unowned and held by ceo, who is the last answer");
+  assert.deepEqual(failingOrders(heldPr(["hold:worker-9"]), ["gate"]), [], "unowned and held by somebody: that is the answer");
   const labelled = (...labels: string[]) => heldPr(["session:worker-5", ...labels]);
   const [routed] = failingOrders(labelled("hold:product-manager"), ["gate"]);
-  assert.equal(routed?.session, "worker-5", "a PR with a session label is addressed to that session");
+  assert.equal(routed?.session, "worker-5", "a PR with a session label is addressed to that session, and a hold by somebody else is no answer from it");
   assert.deepEqual(failingOrders(labelled("hold:worker-5"), ["gate"]), [], "worker-5 holding its own PR");
   assert.deepEqual(failingOrders(labelled("hold:ceo", "hold:worker-5"), ["gate"]), [],
     "two holders, one of them the addressee");
+});
+
+/**
+ * #2935: A ROW-ROUTED ORDER ACCEPTS `hold:product-manager`. #2882 addressed an unlabelled red PR to the session holding
+ * its row (`rowOwner`), so the hold of the session it went to before that change stopped matching and #2883 was
+ * re-ordered every tick. The exemption still ends with either key, and a labelled PR keeps #2400's rule.
+ */
+test("a rowOwner-routed PR held by product-manager generates no order; a third red job or no hold brings it back -- #2935", () => {
+  const routed = (labels: string[], checks: [string, string][] = HELD_RED) =>
+    ({ ...heldPr(labels, checks), rowOwner: { session: "worker-2879", row: 2879, source: "closes" } });
+  for (const required of [["gate"], null]) {
+    assert.deepEqual(failingOrders(routed(["hold:product-manager"]), required), [],
+      `hold:product-manager, row held by worker-2879 (required=${JSON.stringify(required)})`);
+    assert.deepEqual(failingOrders(routed(["hold:worker-2879"]), required), [], "the row holder's own hold still answers");
+    const real: [string, string][] = [["deliberateRefusals", "FAILURE"], ["gate", "FAILURE"], ["ts / run", "FAILURE"]];
+    assert.equal(failingOrders(routed(["hold:product-manager"], real), required)[0]?.session, "worker-2879", "third job red");
+    assert.equal(failingOrders(routed([]), required)[0]?.session, "worker-2879", "hold removed");
+    assert.equal(failingOrders(routed(["hold:ceo"]), required)[0]?.session, "worker-2879", "somebody else's hold");
+  }
+  const labelled = { ...heldPr(["session:worker-5", "hold:product-manager"]), rowOwner: { session: "worker-2879", row: 2879, source: "closes" } };
+  assert.equal(failingOrders(labelled, ["gate"])[0]?.session, "worker-5", "a labelled PR: product-manager's hold is not its answer");
 });
 
 test("HOLD_RED_JOBS names the jobs ci.yml defines, so the exemption cannot go stale on a rename", () => {
@@ -1884,6 +1927,7 @@ test("a SUPERSEDED red run does not wake anyone -- the newest run per name is wh
  * sentence. This test is why the next person inherits a checked number.
  */
 test("the gate's read count is counted, not remembered", () => {
+  // ELEVEN since #2936 added the last-merge read (`readLastMergedAt`: one REST call, core pool) that `org-health.mjs`'s no-merge signal needs.
   // TEN since #2641 added the merged-or-closed pull request answer read (`readClosedAnswerRows`'s third call; one
   // `label list` still serves both searches).
   // NINE since #2075 added the per-issue Project 1 membership read (`readRowsOffBoard`: one GraphQL call per 100 open rows).
@@ -1892,7 +1936,7 @@ test("the gate's read count is counted, not remembered", () => {
   // `answer-owed` landed. This pin caught that read within a minute of it being added, which
   // is exactly why it exists: the number it replaced ("two `gh` calls") had been wrong for months
   // because three readers arrived and nobody re-counted.
-  assert.equal(GH_READS.unconditional.length, 10,
+  assert.equal(GH_READS.unconditional.length, 11,
     "if you add or remove an unconditional read, this number and every comment quoting it move together");
   // #1938 REMOVED THE SILENCE-CONDITIONAL READ ENTIRELY: the dead man's switch now derives its
   // answer from the rows the unconditional read already fetched. The key is GONE rather than empty,
@@ -2959,6 +3003,34 @@ test("#2027: a shelved fleet row is REPORTED, never silently dropped", () => {
     + "failure `blocked` already is");
 });
 
+// A row answered with `needs:chairman` re-fired: #2728 (a credential-only row, wrongly carrying
+// `fleet-gated`) came back three minutes after `orchestrator` had already answered it, because the
+// label names a person rather than one of the order's three machine-readable exits
+// (`Fleet-hold-until:`, `--add-blocked-by`, `Not-before:`). `waitingOn`/`fleetWaitingOn` deliberately
+// do not read this label (#2583/#2604/#2653 all made the same choice for their own populations), so
+// the fifth reader lives here, in the fleet batch's own filter (#2730).
+test("#2730: `needs:chairman` takes a row out of the fleet batch -- and removing it puts the row back", () => {
+  const asked = gatedRow(2728, { labels: [{ name: "fleet-gated" }, { name: CHAIRMAN_LABEL }] });
+  assert.deepEqual(fleetBatchRows([asked], CLOCK), [],
+    "#2728 is a credential row answered `needs:chairman`; re-dispatching it is re-asking it");
+  assert.deepEqual(fleetBatchRows([gatedRow(2728)], CLOCK).map((r) => r.number), [2728],
+    "POSITIVE CONTROL: removing the label IS the act of answering, and the row returns on that alone");
+});
+
+test("#2730: a `needs:chairman` row is REPORTED as waiting, in the sentence the other conditions get", () => {
+  const asked = gatedRow(2728, { labels: [{ name: "fleet-gated" }, { name: CHAIRMAN_LABEL }] });
+  const { batch, waiting } = partitionFleetBatch([asked, gatedRow(1908)], CLOCK);
+  assert.deepEqual(batch.map((r) => r.number), [1908]);
+  assert.deepEqual(waiting, [{ number: 2728,
+    reason: "waiting on the chairman (needs:chairman) -- declared on the row, and it clears itself" }]);
+});
+
+test("#2730: a whole batch answered `needs:chairman` produces NO ORDER, rather than re-firing on it", () => {
+  const asked = gatedRow(2728, { labels: [{ name: "fleet-gated" }, { name: CHAIRMAN_LABEL }] });
+  assert.deepEqual(fleetBatchOrders([asked], CLOCK), [],
+    "the answer is already recorded in the label; re-reporting it is the treadmill #2027 exists to prevent");
+});
+
 // --- #2027, second half: nothing woke a claim holder when their blocker cleared --------------------
 //
 // PR #1957 merged 2026-09-22T21:26:01Z and closed #1948 at 21:26:02Z, leaving #1908 -- `in-progress`,
@@ -3131,7 +3203,7 @@ test("#2161: decide() hands the cause the pull requests it already read", () => 
 });
 
 test("#2161: the narrowing spends no `gh` call -- it reads what `draftOrder` already has", () => {
-  assert.equal(GH_READS.unconditional.length, 10, "#2161 adds no unconditional read (8 since #2202, 9 since #2075, 10 since #2641)");
+  assert.equal(GH_READS.unconditional.length, 11, "#2161 adds no unconditional read (8 since #2202, 9 since #2075, 10 since #2641, 11 since #2936)");
   const gate = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
   const body = gate.slice(gate.indexOf("function rowsWithOpenPr"), gate.indexOf("export function blockerClearedOrders"));
   assert.ok(body.length > 0 && !/\brun\(|spawnSync|defaultRun/.test(body),
@@ -3262,6 +3334,37 @@ test("#2741: anyBlockerClearingCandidate is the gate `main` pays `readRecentlyCl
   const held = heldRow(2114, "worker-judge", { ...blockedByClosed, body: "Fleet-hold-until: 2026-09-23T22:00:00Z" });
   assert.equal(anyBlockerClearingCandidate([held], TODAY, NOW), false,
     "a row the FLEET holds is not a candidate until the hold passes, matching `blockerClearedOrders` itself");
+});
+
+// --- #2780: the CLAIMED-row reader of the `needs:chairman` / `parked` gap ---------------------------
+// #2583, #2604 and #2653 taught the three readers that reach an UNCLAIMED row; `blockerClearedOrders` addresses the
+// holder of a CLAIMED one and was never taught either. #2623 (`needs:chairman`, still claimed) was asked 19+ times in a day.
+
+test("#2780: a CLAIMED row labelled `needs:chairman` is WAITING, so its cleared blockers order no pick-up", () => {
+  const waiting = heldRow(2623, "worker-2623", { ...blockedByClosed,
+    labels: [{ name: "in-progress" }, { name: "session:worker-2623" }, { name: CHAIRMAN_LABEL }] });
+  assert.deepEqual(blockerClearedOrders([waiting], TODAY), [],
+    "#2623 was told to PICK IT BACK UP at every re-ask for a row whose one remaining step was the chairman's");
+  assert.equal(anyBlockerClearingCandidate([waiting], TODAY), false,
+    "`main` pays `readRecentlyClosed` on this predicate, so it must not count the row either");
+  // THE CONTROL: the same row minus the label, so an empty result above is the label's doing.
+  const control = heldRow(2623, "worker-2623", blockedByClosed);
+  assert.equal(blockerClearedOrders([control], TODAY).length, 1,
+    "POSITIVE CONTROL: without `needs:chairman` the same claimed row still reaches its holder");
+  assert.equal(anyBlockerClearingCandidate([control], TODAY), true, "and is still a candidate");
+});
+
+test("#2780: a CLAIMED row labelled `parked` is WAITING on `ceo`, so its cleared blockers order no pick-up", () => {
+  const parked = heldRow(2568, "worker-2568", { ...blockedByClosed,
+    labels: [{ name: "in-progress" }, { name: "session:worker-2568" }, { name: PARKED_LABEL }] });
+  assert.deepEqual(blockerClearedOrders([parked], TODAY), [],
+    "a parked claimed row is scheduled by `ceo`, and a cleared blocker is not the event that resumes it");
+  assert.equal(anyBlockerClearingCandidate([parked], TODAY), false, "nor is it a candidate for the closings read");
+  const control = heldRow(2568, "worker-2568", blockedByClosed);
+  assert.equal(blockerClearedOrders([control], TODAY).length, 1,
+    "POSITIVE CONTROL: without `parked` the same claimed row still reaches its holder");
+  assert.equal(blockerClearedOrders([parked, heldRow(2569, "worker-2569", blockedByClosed)], TODAY)
+    .map((o) => o.session).join(), "worker-2569", "only the labelled row of a mixed set is dropped");
 });
 
 // --- #2139, the other half of #2027: nobody was told when an UNCLAIMED row's last blocker closed ----
@@ -3483,7 +3586,13 @@ test("#2286: a row whose ANSWER has been written is not asked at all, even insid
   const inside = (extra: Record<string, unknown>) => askKeys([{ ...clearedRow(2161), ...extra }], now);
   assert.equal(inside({}).length, 1, "POSITIVE CONTROL: the same row, unanswered, is inside its first window");
   assert.deepEqual(inside({ labels: [{ name: "ready" }] }), [], "`ready` is the promotion");
-  assert.deepEqual(inside({ body: "Not-before: 2026-09-30T00:00:00Z" }), [], "a `Not-before:` is an answer");
+  assert.deepEqual(inside({ body: "Not-before: 2099-01-01T00:00:00Z" }), [], "a `Not-before:` is an answer");
+  // #2812: the hour is read against the INJECTED clock, so this is 100 minutes after `now` on any wall-clock day.
+  // Before the fix it was read against the real one, where 2026-09-24T00:00Z is long past and the row was asked.
+  const hourAfterNow = new Date(now + 100 * 60_000).toISOString().replace(".000Z", "Z");
+  assert.deepEqual(inside({ body: `Not-before: ${hourAfterNow}` }), [], "an HOUR-form `Not-before:` is read at `now`");
+  assert.equal(inside({ body: `Not-before: ${new Date(now - 60_000).toISOString().replace(".000Z", "Z")}` }).length, 1,
+    "POSITIVE CONTROL: the same wait a minute in the past has lapsed at `now`, so the row IS asked");
   assert.deepEqual(inside({ labels: [{ name: "backlog" }, { name: `${ANSWER_PREFIX}ceo` }] }), [],
     "`answer:<session>` is an answer");
   assert.deepEqual(inside({ blockedBy: { nodes: [{ number: 2139, state: "CLOSED" },
@@ -3818,7 +3927,7 @@ test("#2110: main pays for it only when something is actually claimed", () => {
     "exactly one call site, and it is inside the condition below -- a second is a second price");
   assert.match(gate, /const held = openRows\.some\(\(r\) => labelsOf\(r\)\.includes\(CLAIM_LABEL\)\);\s*\n\s*return held \? readClaimedRowComments\(\) : null;/,
     "the condition is answered from rows already in hand, so asking it costs no call of its own");
-  assert.equal(GH_READS.unconditional.length, 10,
+  assert.equal(GH_READS.unconditional.length, 11,
     "#2110 adds no UNCONDITIONAL read -- the comment page is conditional on a claim existing");
 });
 
@@ -4005,7 +4114,7 @@ test("#2003: the pool reading has ONE definition, and the gate pays for it only 
 
   // AND THE READ COUNT IS UNCHANGED, which is the other half of done-when 2: this row adds no
   // unconditional read, and `GH_READS` is the pin that would catch it if it ever did.
-  assert.equal(GH_READS.unconditional.length, 10,
+  assert.equal(GH_READS.unconditional.length, 11,
     "#2003 must not add an unconditional read -- the refusal path is where the extra call lives");
 
   // A SECOND COPY OF "HOW TO READ A POOL" IS REFUSED (#2003's Region says so). The header name is the
@@ -4173,6 +4282,8 @@ const LISTING = `${SHA_2000}\trefs/heads/${BRANCH_2000}\n`
 /** A Ready row as `readReadyRows` returns it: `ready`, no `session:`, no `in-progress`. */
 const readyRow = (n: number, extra: Record<string, unknown> = {}) =>
   ({ number: n, title: `row ${n}`, labels: [{ name: "ready" }], ...extra });
+/** A body stating all three template sections (#2791): a row with a `body` and any of them missing is not stock. */
+const COMPLETE_BODY = "## Region\n\nx.mjs\n\n## Acceptance\n\nnpm test\n\n## Open-check\n\nfalse today\n";
 
 test("#2031: a Ready row whose branch is on origin gets its own cause, and is no longer offered fresh", () => {
   // THE POSITIVE FIRST, and it is the whole row: without it every silence assertion below is satisfied
@@ -4229,7 +4340,7 @@ test("#2031: the detection makes NO `gh` call -- the pool is gone in the outage 
     + "the exhausted-pool outage that produces the staleness it detects");
   assert.deepEqual(found, [{ branch: BRANCH_2000, head: SHA_2000, row: 2000 }],
     "`main` is not a row branch: the trailing `-<digits>` is the whole match");
-  assert.equal(GH_READS.unconditional.length, 10, "#2031 adds NO gh read -- it is a local git call");
+  assert.equal(GH_READS.unconditional.length, 11, "#2031 adds NO gh read -- it is a local git call");
   assert.ok(GIT_READS.unconditional.some((r: string) => r.includes("ls-remote")),
     "and the free read is COUNTED rather than left out because it is free -- `GH_READS`'s own header "
     + "records what happened last time a read went unwritten-down");
@@ -4454,8 +4565,15 @@ test("#2174: the history-requirement population is unchanged by this row", () =>
   // populations of the same size, and the thing worth catching is a file JOINING this list.
   // #2620 added `host-project-paths.test.ts`: checked, as this message asks -- it imports `host-units.mjs` for the rendered unit texts, the same
   // edge `host-units.test.ts` has, and the row's own Acceptance names it, so its pull request declares `History: full` (#497).
-  assert.deepEqual(charged, ["host-project-paths.test.ts", "host-units.test.ts", "pre-push-resolve-toward-main.test.ts",
-    "pre-push-stale-base.test.ts", "work-gate.test.ts"],
+  // #2793 added `host-tool-install.test.ts`: checked -- it imports `host-units.mjs` for the rendered `work-tick` unit, the same edge, and the
+  // row's Acceptance names it, so its pull request declares `History: full`.
+  // #2867 added `shadow-window-arm.test.ts`: checked -- it imports `host-units.mjs` for the rendered shadow-window unit texts and the installer, the same
+  // edge, and its pull request declares `History: full`.
+  // #2705 added `documents-extraction.test.ts`: checked -- it asks `--is-shallow-repository` before reading `git log -p` over `packages/pdf`
+  // (the history `filter-repo` carries across is part of the first commit's leak scan), so it genuinely needs history, and its pull request
+  // declares `History: full`.
+  assert.deepEqual(charged, ["documents-extraction.test.ts", "host-project-paths.test.ts", "host-tool-install.test.ts", "host-units.test.ts",
+    "pre-push-resolve-toward-main.test.ts", "pre-push-stale-base.test.ts", "shadow-window-arm.test.ts", "work-gate.test.ts"],
   "adding a `history` reader to the gate's import closure taxes every test file that reaches it -- if "
   + "this list grew, check what was imported rather than editing the list");
 });
@@ -4490,6 +4608,8 @@ test("#2174: work-gate.mjs loads in a tree with NO node_modules, host-units edge
   const root = realpathSync(mkdtempSync(join(tmpdir(), "a11y-work-gate-no-modules-")));
   // #2616: the tool now reads the project's declaration from beside it, so a copied tree must carry it or the reader REFUSES (correctly).
   closure.add(join(REPO, ".agent-org/project.json"));
+  // #2799: and the host's, because the drain marker, the reviewer state and the ledger default now read its `stateDir` at import.
+  closure.add(join(REPO, ".agent-org/host.json"));
   // #2621: the declaration now points at a PLUGIN (`.agent-org/plugins/causes.mjs`) that `cause-declaration.mjs`
   // imports DYNAMICALLY, by a string `localImports`'s static walk cannot see -- so it is added here for the
   // identical reason `project.json` is a line above.
@@ -4834,7 +4954,7 @@ test("#1959: it is FINISH (never withheld by a drain) and an ACTION cause (not i
  * one.
  */
 test("#2113: a Ready row waiting on an HOUR is shelved before it and offered after, on one date", () => {
-  const dated = readyRow(2002, { body: "## Not-before: 2026-09-23T06:10:00Z" });
+  const dated = readyRow(2002, { body: `${COMPLETE_BODY}\n## Not-before: 2026-09-23T06:10:00Z` });
   const clock = (iso: string) => ({ today: "2026-09-23", nowMs: Date.parse(iso) });
 
   // 00:20Z: the date has arrived and the 06:10Z run has not. Before #2113 this row was OFFERABLE, and a
@@ -4860,7 +4980,7 @@ test("#2113: a date-only Ready row is offered and shelved exactly as it was befo
   // any date-only row's answer would be a behaviour change dressed as a widening. A date-only value is
   // measured against `today` at midnight UTC, and the clock is moved across the whole day to show it
   // does not enter that path at all.
-  const dated = readyRow(2002, { body: "Not-before: 2026-09-24" });
+  const dated = readyRow(2002, { body: `${COMPLETE_BODY}\nNot-before: 2026-09-24` });
   for (const at of ["2026-09-23T00:00:00Z", "2026-09-23T23:59:59Z"]) {
     const { offerable, blocked } = partitionUnclaimed([dated], [],
       { clock: { today: "2026-09-23", nowMs: Date.parse(at) } });
@@ -5507,4 +5627,210 @@ test("#2075: row-off-board is a JUDGMENT cause and FINISH, and `decide` emits it
   assert.deepEqual(causes({}), [], "a caller that did not ask emits nothing");
   assert.deepEqual(causes({ offBoard: null }), [], "a caller whose read was refused emits nothing");
   assert.deepEqual(causes({ offBoard: [old], drain: true }), ["row-off-board"], "a drain does not withhold it");
+});
+
+// --- #2791: a Ready row the claim refuses for a template defect is not stock -------------------------------
+
+/**
+ * #2729 and #2730 read `ready` for ~38h with no `## Open-check`, and `row-claim` refused both
+ * (`NOT CLAIMED: ... is missing Open-check`). The pool counted them, so `ready-queue-empty` never fired and
+ * every engineer waited on a queue with nothing takeable. `missingTemplateFields` is the rule the claim
+ * applies, imported unchanged -- so the gate and the claim cannot disagree about what is claimable.
+ */
+const NO_OPEN_CHECK = "## Region\n\nx.mjs\n\n## Acceptance\n\nnpm test\n";
+const BACKLOG = [{ number: 800, labels: [{ name: "backlog" }] }];
+const shelfCauses = (orders: { cause: string }[]) => orders.map((o) => o.cause).sort();
+
+test("#2791: two unclaimable Ready rows and a promotable backlog -- ready-queue-empty FIRES; completed, it does not", () => {
+  const incomplete = [readyRow(2729, { body: NO_OPEN_CHECK }), readyRow(2730, { body: "" })];
+  const orders = decide({ prs: [], readyRows: incomplete, promotableRows: BACKLOG, prFiles: [] });
+  // THE POSITIVE FIRST: the only thing that changed against the control below is the body.
+  const [shelf] = orders.filter((o: { cause: string }) => o.cause === "ready-queue-empty");
+  assert.ok(shelf, "the pool has nothing an engineer can claim, so product-manager is asked to promote");
+  assert.match(shelf.prompt, /#2729: its body has no `## Open-check`/);
+  assert.match(shelf.prompt, /#2730: its body has no `## Region`, `## Acceptance`, `## Open-check`/);
+  assert.equal(orders.filter((o: { cause: string }) => o.cause === "ready-row-unclaimed").length, 0,
+    "and neither is offered: that order ends in a refused claim");
+  const complete = incomplete.map((r) => ({ ...r, body: COMPLETE_BODY }));
+  const control = decide({ prs: [], readyRows: complete, promotableRows: BACKLOG, prFiles: [] });
+  assert.deepEqual(shelfCauses(control), ["ready-row-unclaimed", "ready-row-unclaimed"],
+    "the same rows with the sections present are offered and the shelf is not empty");
+});
+
+test("#2791: it is not silent -- one order per row naming the missing sections, keyed so it stops when they are added", () => {
+  const rows = [readyRow(2730, { body: "" }), readyRow(2729, { body: NO_OPEN_CHECK })];
+  const orders = decide({ prs: [], readyRows: rows }).filter((o: { cause: string }) => o.cause === "ready-row-incomplete");
+  assert.deepEqual(orders.map((o: { subject: string }) => o.subject), ["row-2729", "row-2730"], "oldest first");
+  assert.ok(orders.every((o: { session: string }) => o.session === "product-manager"));
+  assert.match(orders[0].prompt, /no `## Open-check`/);
+  assert.doesNotMatch(orders[0].prompt, /`## Region`|`## Acceptance`/, "only what is MISSING is named");
+  assert.equal(orders[0].discriminator, "Open-check");
+  assert.match(orders[1].causeKey, /row-2730\/Region\+Acceptance\+Open-check$/);
+  // THE ROW IS THE STATE: completing it removes the order, and a different gap is a different key.
+  assert.deepEqual(decide({ prs: [], readyRows: [readyRow(2729, { body: COMPLETE_BODY })] })
+    .filter((o: { cause: string }) => o.cause === "ready-row-incomplete"), []);
+  const other = decide({ prs: [], readyRows: [readyRow(2729, { body: "## Region\n\nx\n\n## Open-check\n\ny\n" })] })
+    .filter((o: { cause: string }) => o.cause === "ready-row-incomplete");
+  assert.notEqual(other[0].causeKey, orders[0].causeKey);
+});
+
+test("#2791: the shelved row is SHELVED with its reason, and a row whose body was never read is left alone", () => {
+  const { offerable, blocked } = partitionUnclaimed([readyRow(2729, { body: NO_OPEN_CHECK }), readyRow(2731)], [], {});
+  assert.deepEqual(offerable.map((r: { number: number }) => r.number), [2731],
+    "no `body` key is 'not asked', never 'asked and empty' -- otherwise every body-less caller shelves its whole queue");
+  assert.equal(blocked.length, 1);
+  assert.match(blocked[0].reason, /no `## Open-check` -- `row-claim` refuses it/);
+  const claimed = readyRow(2732, { body: "", labels: [{ name: "ready" }, { name: "in-progress" }] });
+  assert.deepEqual(decide({ prs: [], readyRows: [claimed] }).filter((o: { cause: string }) => o.cause === "ready-row-incomplete"), [],
+    "a held row is its holder's, and the claim it went through already required the sections");
+});
+
+test("#2791: readReadyRows asks for `body`, so the gate reads the same field the claim does", () => {
+  const calls: string[][] = [];
+  readReadyRows((args: string[]) => { calls.push(args); return "[]"; });
+  assert.ok(String(calls[0][calls[0].indexOf("--json") + 1]).split(",").includes("body"));
+});
+
+// ---- #2823: THE REPO-WIDE CLOSES CONDITION IS A GATE CAUSE ----
+
+const CLOSES_NOW = Date.parse("2026-09-30T13:00:00Z");
+/** An open PR declaring `Closes #<n+1000>`; `resolved` is what GitHub answered (`null` = the field was not read). */
+function closesPr(n: number, resolved: number[] | null, body = `Closes #${n + 1000}`) {
+  return { ...draft(n, GREEN), body, createdAt: "2026-09-30T10:00:00Z",
+    ...(resolved === null ? {} : { closingIssuesReferences: resolved.map((number) => ({ number })) }) };
+}
+const FOUR_UNRESOLVED = [closesPr(1, []), closesPr(2, []), closesPr(3, []), closesPr(4, [])];
+
+test("#2823: four open PRs declaring a Closes that GitHub resolved nothing for wake `product-manager` ONCE, with the answer", () => {
+  const orders = closesUnresolvedOrders(FOUR_UNRESOLVED, CLOSES_NOW);
+  assert.equal(orders.length, 1, "one order for the condition, not one per pull request");
+  const [order] = orders;
+  assert.equal(order.session, "product-manager");
+  assert.equal(order.cause, "closes-unresolved-repo-wide");
+  assert.ok(CAUSES.includes(order.cause) && JUDGMENT_CAUSES.includes(order.cause) && !START_CAUSES.includes(order.cause));
+  for (const n of [1, 2, 3, 4]) assert.ok(order.prompt.includes(`#${n}`), `the order names #${n}`);
+  assert.match(order.prompt, /oldest open 3h/, "and says how long the condition has stood");
+  assert.equal(order.causeKey, "product-manager/closes-unresolved-repo-wide/1+2+3+4", "keyed on the SET of pull requests");
+  assert.deepEqual(closesUnresolvedOrders([...FOUR_UNRESOLVED].reverse(), CLOSES_NOW)[0].causeKey, order.causeKey,
+    "and the read order does not change the key");
+  assert.deepEqual(decide({ prs: FOUR_UNRESOLVED, readyRows: [] }).filter((o) => o.cause === order.cause).length, 1,
+    "`decide` emits it -- a builder nobody calls wakes nobody");
+});
+
+test("#2823: the order clears when ANY of them resolves, and is silent on every non-repo-wide shape", () => {
+  const key = (prs: unknown[]) => closesUnresolvedOrders(prs, CLOSES_NOW).map((o) => o.causeKey);
+  assert.deepEqual(key([closesPr(1, []), closesPr(2, []), closesPr(3, []), closesPr(4, [999])]), [],
+    "the newest PR resolved -- GitHub is resolving, so it is not repo-wide");
+  assert.deepEqual(key([closesPr(1, []), closesPr(2, []), closesPr(3, [998]), closesPr(4, [])]), [],
+    "a sibling resolved");
+  assert.deepEqual(key(FOUR_UNRESOLVED.slice(0, 3)), [], "one under test plus only two siblings is 'cannot say', not a fault");
+  assert.deepEqual(key([closesPr(1, []), closesPr(2, []), closesPr(3, []), closesPr(4, [], "Closes: none -- docs")]), [],
+    "a PR declaring `none` is no sibling and no subject");
+  assert.deepEqual(key(FOUR_UNRESOLVED.map((pr) => closesPr(pr.number, null))), [],
+    "an unread `closingIssuesReferences` is not asked, and never reads as 'resolved nothing'");
+  assert.deepEqual(closesUnresolvedOrders(null, CLOSES_NOW), [], "a refused PR read has no PRs to name");
+  assert.equal(closesUnresolvedPrs(FOUR_UNRESOLVED).length, 4, "the positive control for every emptiness above");
+});
+
+test("#2823: a fifth PR changes the key (a new set is a new condition), and a missing createdAt drops only the age", () => {
+  const five = [...FOUR_UNRESOLVED, closesPr(5, [])];
+  assert.equal(closesUnresolvedOrders(five, CLOSES_NOW)[0].causeKey, "product-manager/closes-unresolved-repo-wide/1+2+3+4+5");
+  const undated = FOUR_UNRESOLVED.map((pr) => ({ ...pr, createdAt: undefined }));
+  const [order] = closesUnresolvedOrders(undated, CLOSES_NOW);
+  assert.ok(order && !order.prompt.includes("oldest open"));
+});
+
+test("#2823: readPrs asks for `closingIssuesReferences` and `createdAt`, the two fields the Closes cause reads", () => {
+  const calls: string[][] = [];
+  readPrs((args: string[]) => { calls.push(args); return "[]"; });
+  const fields = String(calls[0][calls[0].indexOf("--json") + 1]).split(",");
+  assert.ok(fields.includes("closingIssuesReferences") && fields.includes("createdAt"));
+});
+
+// THE SWEEP that used to sit here (every refusal that names a session) moved to `refusal-sweep.test.ts` (#2940): this file's
+// import closure needs `history`, which the acceptance job lacks, so a test command naming it is refused.
+
+// --- #2781: a primary that is not at origin/main is a signal, not a journal line -----------------------------------------
+//
+// POSITIVE CONTROL FOR THE EMPTINESS ASSERTIONS BELOW is the first test: the same reader over a dirty, behind primary, asserted
+// to name the paths. Without it, every silence test passes against a `primaryStaleOrders` that returns `[]` for everything.
+const PRIMARY_DIRTY_BEHIND = { sha: "a5f407d4f0000000", originSha: "9c6ab24630000000", behind: 41, ahead: 0,
+  dirty: ["packages/lab/src/capture-screenreader-dataset.mjs", "packages/lab/src/packaging/wake-by-hand.test.ts"] };
+const PRIMARY_CURRENT = { sha: "9c6ab24630000000", originSha: "9c6ab24630000000", behind: 0, ahead: 0, dirty: [] };
+
+test("#2781 POSITIVE CONTROL: a dirty, behind primary wakes ceo naming the dirty paths, the shas and the distance", () => {
+  const orders = primaryStaleOrders(PRIMARY_DIRTY_BEHIND);
+  assert.equal(orders.length, 1);
+  const [order] = orders;
+  assert.equal(order.session, "ceo", "ceo owns the primary (.github/CLAUDE.md)");
+  assert.equal(order.cause, "primary-stale");
+  assert.match(order.prompt, /capture-screenreader-dataset\.mjs/);
+  assert.match(order.prompt, /wake-by-hand\.test\.ts/);
+  assert.match(order.prompt, /41 commit\(s\) behind/);
+  assert.match(order.prompt, /a5f407d4f/);
+  assert.match(order.prompt, /9c6ab2463/);
+  assert.match(order.prompt, /salvage/, "the edits are someone's work: save before clearing");
+});
+
+test("#2781 done-when 4: a DIRTY primary already AT origin/main is reported the tick the edit appears, before any update fails", () => {
+  const [order] = primaryStaleOrders({ ...PRIMARY_CURRENT, dirty: ["package.json"] });
+  assert.ok(order, "dirty alone is enough");
+  assert.match(order.prompt, /package\.json/);
+  assert.match(order.prompt, /0 commit\(s\) behind/);
+});
+
+test("#2781: a BEHIND primary that is clean is still a signal, and says to read the update's own output", () => {
+  const [order] = primaryStaleOrders({ ...PRIMARY_CURRENT, sha: "1111111110000000", behind: 3 });
+  assert.match(order.prompt, /No tracked path is dirty/);
+  assert.match(order.prompt, /3 commit\(s\) behind/);
+});
+
+test("#2781: a primary CARRYING commits origin lacks is a signal too", () => {
+  const [order] = primaryStaleOrders({ ...PRIMARY_CURRENT, sha: "2222222220000000", ahead: 2 });
+  assert.match(order.prompt, /carrying 2 commit\(s\) origin lacks/);
+});
+
+test("#2781: a current primary, and an UNASKABLE one, emit nothing -- two different claims, asserted apart", () => {
+  assert.deepEqual(primaryStaleOrders(PRIMARY_CURRENT), [], "looked at, and current");
+  assert.deepEqual(primaryStaleOrders(null), [], "not asked (a linked worktree, CI): never a false alarm");
+  assert.deepEqual(primaryStaleOrders(undefined), [], "omitted is the same claim as null");
+});
+
+test("#2781: the causeKey is stable while nothing changes and new when a merge lands or the dirty set changes", () => {
+  const key = primaryStaleOrders(PRIMARY_DIRTY_BEHIND)[0].causeKey;
+  assert.equal(primaryStaleOrders({ ...PRIMARY_DIRTY_BEHIND, dirty: [...PRIMARY_DIRTY_BEHIND.dirty].reverse() })[0].causeKey, key,
+    "the reader's order is not a new question");
+  assert.notEqual(primaryStaleOrders({ ...PRIMARY_DIRTY_BEHIND, originSha: "3333333330000000" })[0].causeKey, key, "another merge");
+  assert.notEqual(primaryStaleOrders({ ...PRIMARY_DIRTY_BEHIND, dirty: ["one-more.mjs", ...PRIMARY_DIRTY_BEHIND.dirty] })[0].causeKey, key,
+    "another edited file");
+});
+
+test("#2781: it is an ACTION cause (re-offered on the expiry), FINISH not START, and decide() routes it only when handed a drift", () => {
+  assert.ok(CAUSES.includes("primary-stale"), "or worker-profile refuses it at run time");
+  assert.ok(!JUDGMENT_CAUSES.includes("primary-stale"), "a judgment cause is never re-offered; a stale primary must be");
+  assert.ok(!START_CAUSES.includes("primary-stale"), "a drain must not withhold it");
+  assert.ok(decide({ prs: [], readyRows: [], primaryDrift: PRIMARY_DIRTY_BEHIND }).some((o) => o.cause === "primary-stale"));
+  assert.deepEqual(decide({ prs: [], readyRows: [] }).filter((o) => o.cause === "primary-stale"), [], "not asked -> no order");
+  assert.deepEqual(decide({ prs: [], readyRows: [], primaryDrift: PRIMARY_CURRENT }).filter((o) => o.cause === "primary-stale"), []);
+});
+
+test("#2781 done-when 2: every other order is headed with the stale sha and the count; the current primary's orders are untouched", () => {
+  const orders = [{ cause: "host-units-stale", prompt: "run host:install" }, { cause: "primary-stale", prompt: "own text" }];
+  const [other, own] = withStalePrimaryNotice(orders, PRIMARY_DIRTY_BEHIND);
+  assert.match(other.prompt, /^\[THIS GATE IS RUNNING FROM A STALE PRIMARY: a5f407d4f, 41 commit\(s\) behind origin\/main 9c6ab2463/);
+  assert.match(other.prompt, /run host:install$/, "the original text follows, unchanged");
+  assert.equal(own.prompt, "own text", "primary-stale already says it");
+  assert.deepEqual(withStalePrimaryNotice(orders, PRIMARY_CURRENT), orders, "current: not one byte changed");
+  assert.deepEqual(withStalePrimaryNotice(orders, null), orders, "not asked: not one byte changed");
+  assert.deepEqual(withStalePrimaryNotice(orders, { ...PRIMARY_CURRENT, dirty: ["x"] }), orders,
+    "dirty but AT origin/main: the orders ARE current, so they are not bannered");
+});
+
+test("#2781 the tick READS the primary and WIRES it: main() reads it once, feeds decide, and banners the decided orders", () => {
+  const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../work-gate.mjs"), "utf8");
+  assert.match(source, /primaryDrift = readPrimaryDriftNow\(\)/);
+  // #2849: the argument object is NAMED so the shadow tap can record it, and `decide` is reached through `decideAndTap`.
+  assert.match(source, /const decideArgs = \{ primaryDrift,/);
+  assert.match(source, /withStalePrimaryNotice\(decideAndTap\(decideArgs\), primaryDrift\)/, "the SAME reading banners the orders");
+  assert.match(source, /const orders = decide\(args\);/, "and `decideAndTap` still calls `decide` with the object it was given");
 });

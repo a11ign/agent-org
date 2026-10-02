@@ -1,4 +1,4 @@
-// no-token: gh -- this file imports only `claimedRowSession`/`rowCallCountSignals`/`rowCallCountOrders`
+// no-token: gh -- this file imports only `claimedRowSession`/`rowCallCountSignals`/`rowCallCountOrders`/formatter
 // from `work-gate.mjs`, three pure functions that never call or spawn `gh`; `claudeTurns` from
 // `token-audit.mjs` and `CLAIM_RECORD_MARKER` from `claim-labels.mjs` are pure, leaf modules for the same
 // reason. The token charge belongs to the rest of `work-gate.mjs`'s exports, which this test never reaches.
@@ -19,7 +19,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { claudeTurns } from "../token-audit.mjs";
 import { claimedRowSession, rowCallCountSignals, rowCallCountOrders, ROW_CALL_COUNT_SPLIT_THRESHOLD,
-  ROW_CALL_COUNT_ASSESSED_MARKER } from "../work-gate.mjs";
+  ROW_CALL_COUNT_ASSESSED_MARKER, formatRowCallCountAssessment, rowCallCountAssessedCalls } from "../work-gate.mjs";
 import { CLAIM_RECORD_MARKER } from "../claim-labels.mjs";
 
 /** One usage line, with a unique `id` so `claudeTurns`'s dedup (`message.id`) counts it once. */
@@ -202,4 +202,41 @@ test("#2721: a posted 'not split' assessment exempts the row until its calls dou
     [{ row: 509, session: "worker-509", calls: assessedCalls + 5 }],
     "no assessment marker at all: still signals past threshold -- the positive control the exemption "
     + "could otherwise swallow silently");
+});
+
+test("#2762: the verdict formatter round-trips through rowCallCountAssessedCalls", () => {
+  for (const split of [false, true]) {
+    const body = formatRowCallCountAssessment({ calls: 173, split, note: "Re-read at calls=999 in the prompt." });
+    assert.equal(rowCallCountAssessedCalls([{ body }]), 173,
+      "the count the formatter was given comes back, even when the note quotes another calls= figure");
+  }
+  assert.equal(rowCallCountAssessedCalls([{ body: formatRowCallCountAssessment({ calls: 0, split: false }) }]), 0);
+  assert.throws(() => formatRowCallCountAssessment({ calls: 1.5, split: false }), RangeError);
+  assert.throws(() => formatRowCallCountAssessment({ calls: -1, split: false }), RangeError);
+});
+
+test("#2762: positive control -- the hand-typed prose posted on #1756/#2623 reads back as null", () => {
+  // The shape of the verdicts posted before the writer existed: English only, no marker, no `calls=N`.
+  const handTyped = [
+    "product-manager, 2026-09-28: re-audited at 141 calls. One unit, not split. Region is one file.",
+    "Not split -- calls: 173, single unit, no seam to cut along.",
+  ];
+  for (const body of handTyped) {
+    assert.equal(rowCallCountAssessedCalls([{ body }]), null, "prose alone gives the doubling guard nothing");
+  }
+  assert.equal(rowCallCountAssessedCalls([{ body: `${ROW_CALL_COUNT_ASSESSED_MARKER}\nNot split.` }]), null,
+    "a marker without a count is unreadable and re-signals rather than guessing");
+});
+
+test("#2762: a formatted verdict engages the doubling dedup that a hand-typed one left inert", () => {
+  const over = ROW_CALL_COUNT_SPLIT_THRESHOLD + 10;
+  const turns = claudeTurns(transcriptOf("worker-510", sameInstant(over + 5)));
+  const openRows = [rowFixture(510, "worker-510")];
+  const withComments = (body: string) => [{ number: 510, comments: [
+    claimRecordComment("worker-510", "2026-09-27T09:00:00Z"), { body, createdAt: "2026-09-27T09:30:00Z" }] }];
+  assert.deepEqual(
+    rowCallCountSignals(openRows, turns, withComments(formatRowCallCountAssessment({ calls: over, split: false }))), [],
+    "formatted verdict: exempt until the count doubles");
+  assert.equal(rowCallCountSignals(openRows, turns, withComments("One unit, not split.")).length, 1,
+    "hand-typed verdict: re-signals, which is the incident");
 });

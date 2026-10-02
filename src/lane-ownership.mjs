@@ -14,11 +14,11 @@
 // refusal goes. A lane is still a recorded fact about who owns a path; it is no longer a wall in CI.
 
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
+import { HOME_CHECKOUT } from "./project-config.mjs";
 import { LANES_FILE_PATH } from "./project-vocabulary.mjs";
 
-const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const REPO = HOME_CHECKOUT;
 
 /**
  * @typedef {{lane: string, owner: string, branchPrefixes: string[], paths: string[], why: string,
