@@ -76,7 +76,7 @@ import { stateEntryPath } from "./host-config.mjs"; // #2799
 // #2848: THE REPEATING-LINE QUESTION, in its own leaf for the reason `disk-headroom.mjs` is one: it reads the journal, not GitHub.
 import { repeatingLinesTick } from "./repeating-lines.mjs";
 // #2936: THE ORG-HEALTH QUESTION, in its own leaf for the same reason: relative imports only, so the gate keeps the property its own header states.
-import { orgHealthTick, readLastMergedAt, primaryStandingSince, redSinceOf } from "./org-health.mjs";
+import { orgHealthTick, readLastMergedAt, primaryStandingSince, redSinceOf, FLEET_IDLE_HOURS, PR_NOT_PROGRESSING_MINUTES, REASONS_THAT_ARE_NOT_A_STALL } from "./org-health.mjs";
 // #2938: THE DAILY RETROSPECTIVE, in its own leaf for the same reason: it reads the journal, the ledger and a day of PRs once, and says what it found.
 import { retrospectiveTick } from "./org-retro.mjs";
 import { isBrokenRed } from "./red-pr.mjs";
@@ -120,9 +120,10 @@ import { readAgents } from "./herdr-agents.mjs";
 // `work-gate/pr-orders.mjs`, which imports the shared PR facts BACK from this file. The cycle is safe because
 // nothing there reads an import at load time (only inside a function), and this file stays the entry point:
 // every name that module exported is re-exported here, so no caller of `work-gate.mjs` changes.
-import { requiredWhenRed, perPullRequestOrders, mergeConflictOrders, greenUnarmedOrders, reviewBlockedOrders,
-  HOLD_RED_JOBS, ownerOfPr } from "./work-gate/pr-orders.mjs";
+import { requiredWhenRed, perPullRequestOrders, greenUnarmedOrders, reviewBlockedOrders,
+  stalledPrOrders, stallReasonOf, STALL_REASONS_WITHOUT_A_CAUSE, HOLD_RED_JOBS, ownerOfPr } from "./work-gate/pr-orders.mjs";
 export { redOnlyBySupersededRun, mergeConflictOrders, greenUnarmedOrders, reviewBlockedOrders, HOLD_RED_JOBS,
+  stallReasonOf, stallOrderOf, stalledPrOrders, STALL_REASON, STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr,
   awaitingEvidenceStaleOrders } from "./work-gate/pr-orders.mjs";
 import { labJobFinishedOrders, readLabJobRecords } from "./work-gate/lab-job-orders.mjs"; // #2729
 // #2691: THE LIVE CALL-COUNT SIGNAL, reusing the parser rather than a second one -- `split-baseline.mjs`
@@ -328,6 +329,9 @@ export const GH_READS = Object.freeze({
   // request carries it -- the label's age is not on `pr list`, so the labelled ones are asked and only those.
   conditionalOnAwaitingEvidenceLabel: "api repos/{repo}/issues/{n}/events (readEvidenceLabelledAt -- awaiting-evidence-stale)",
   conditionalOnGreenUnheldPr: "api graphql (open PRs' mergeQueueEntry -- readUnarmed)",
+  // #2970: ONE REST CALL PER OPEN PULL REQUEST that is neither progressing nor held AND whose newest comment, review or creation is already
+  // older than org-health's threshold -- the only ones whose push time could change the answer. `commits` cannot ride on `pr list`.
+  conditionalOnQuietStalledPr: "api repos/{repo}/commits/{headRefOid} (readHeadCommittedAt -- org-health's pr-not-progressing)",
   // #2110, AND IT IS ONE CALL FOR THE WHOLE CLAIMED POPULATION RATHER THAN ONE PER ROW. `--label
   // in-progress` filters server-side, so the page is the claimed rows and nothing else -- 8 of them on
   // 2026-09-23 against 500 open rows -- and asking every one of them for its comments in a single
@@ -3470,7 +3474,7 @@ export const REVIEW_STATE = Object.freeze({
 });
 
 /** The states that stop a pull request merging, however green and armed it looks. @type {readonly string[]} */
-const BLOCKING_REVIEW_STATES = Object.freeze([
+export const BLOCKING_REVIEW_STATES = Object.freeze([
   REVIEW_STATE.AWAITING_REVIEW, REVIEW_STATE.REFUSED, REVIEW_STATE.UNRECOGNISED]);
 
 /**
@@ -4707,6 +4711,35 @@ function backlogOrders(owner, mine) {
   })));
 }
 
+/** The chairman reminder's grid: one window opens at each multiple of this since the epoch (the UTC day). */
+export const CHAIRMAN_REMINDER_PERIOD_MS = 24 * HOUR_MS;
+
+/**
+ * PURE. The UTC day the chairman reminder is open in at `nowMs`, or `null` outside its window -- #2989.
+ *
+ * WHY THE KEY IS THE CALENDAR DAY AND NOT AN AGE READ OFF THE ROWS. The order used to key on
+ * `daysSince(oldest updatedAt)`, and `ceo` answers it by COMMENTING on the rows, which writes `updatedAt`: the
+ * age read 0 for ever, the key never moved, `wake` re-delivered it every `JUDGMENT_TTL_MS` until
+ * `MAX_DELIVERIES`, and then the tick printed `STUCK ceo/chairman-blocked/0` on every run (31 ticks in an hour;
+ * 89 by the time an engineer picked the row up). A discriminator derived from a field the ANSWER writes cannot
+ * advance, so the cap was reached by the answerer's own diligence. The label's own time would fix that but costs
+ * a timeline read per row; the grid costs nothing and is not written by anybody.
+ *
+ * A DAILY KEY ALONE WOULD NOT HAVE BEEN ENOUGH: `wake` re-delivers an unchanged key every two hours, so one day's
+ * key reaches the cap of six in ten hours and is `STUCK` for the other fourteen. So the order is emitted only
+ * inside a window exactly `PROMOTION_ASK_WINDOW_MS` (= `JUDGMENT_TTL_MS`) long at the start of each day --
+ * `promotionAskWindow`'s mechanism (#2286): one delivery per window with no state kept, and the cause going
+ * unemitted between windows is what lets the ledger write its `RESET`. A window whose order was never
+ * delivered is retried every tick until it closes, then not until tomorrow: the stated cost.
+ *
+ * @param {number} nowMs @returns {{day: number} | null} `day` is whole days since the epoch
+ */
+export function chairmanReminderWindow(nowMs) {
+  const day = Math.floor(Math.max(0, nowMs) / CHAIRMAN_REMINDER_PERIOD_MS);
+  const opened = day * CHAIRMAN_REMINDER_PERIOD_MS;
+  return nowMs - opened >= PROMOTION_ASK_WINDOW_MS ? null : { day };
+}
+
 /**
  * The one order for work only the chairman can do, or none.
  *
@@ -4715,32 +4748,35 @@ function backlogOrders(owner, mine) {
  * queue needs, each helper asks one narrower question.
  *
  * @param {any[]} chairmanBlocked rows waiting on the chairman, oldest first
+ * @param {number} [nowMs] injectable so a test is not wall-clock dependent
  */
-function chairmanOrders(chairmanBlocked) {
+function chairmanOrders(chairmanBlocked, nowMs = Date.now()) {
   // THE ORG CANNOT WAKE A HUMAN, so this wakes the session whose brief says it briefs one. `ceo` is the
   // only onward route the escalation path has, and until now that route was a sentence rather than a
   // mechanism -- #63 sat four days blocking eight publish-gated rows because nothing carried it.
   //
-  // THE DISCRIMINATOR IS THE AGE IN DAYS, which is what makes this bearable. Keyed on the row set it
-  // would fire once and fall silent for ever -- the permanent-ledger bug again. Keyed on the age, `ceo`
-  // is reminded once a DAY and the reminder grows, which is the right cadence for a question only a
-  // person outside the org can answer and the wrong one to repeat every twenty minutes.
-  if (chairmanBlocked.length === 0) return [];
-  const oldest = daysSince(chairmanBlocked[0]?.updatedAt);
+  // A STANDING DAILY REMINDER, keyed on the UTC day and emitted only in that day's window
+  // (`chairmanReminderWindow`). Keyed on the row set it would fire once and fall silent for ever -- the
+  // permanent-ledger bug again; keyed on the rows' `updatedAt` it never advanced (#2989).
+  const open = chairmanBlocked.length === 0 ? null : chairmanReminderWindow(nowMs);
+  if (!open) return [];
   const rows = chairmanBlocked.slice(0, 6).map((/** @type {any} */ r) => subjectMention(r)).join(", ");
+  const date = new Date(open.day * CHAIRMAN_REMINDER_PERIOD_MS).toISOString().slice(0, 10);
   return [{
     session: "ceo",
     cause: "chairman-blocked",
     subject: "chairman",
-    discriminator: subjectRef(chairmanBlocked[0].repoKey, oldest),
+    discriminator: `day-${open.day}`,
     prompt: `${chairmanBlocked.length} row(s) are labelled \`${CHAIRMAN_LABEL}\` and can only move by the `
-      + `chairman's own hands: ${rows}${chairmanBlocked.length > 6 ? ", ..." : ""}. The quietest has had `
-      + `NO ACTIVITY OF ANY KIND for ${oldest} day(s) -- not time spent waiting, which is longer: any `
-      + "comment or label resets this, so read the row for when the chairman was last actually asked.\n"
+      + `chairman's own hands: ${rows}${chairmanBlocked.length > 6 ? ", ..." : ""}.\n`
+      + `This is the STANDING DAILY REMINDER for ${date} (UTC), sent once a day for as long as the label `
+      + "stands: it does not say anything new happened, and it is NOT keyed on the rows' activity -- your own "
+      + "comments on them do not silence or repeat it. Read each row for when the chairman was last "
+      + "actually asked.\n"
       + "Brief the chairman: what is waiting, what it blocks downstream, and the single next action in "
       + "their hands. If a row no longer needs them, take the label off -- a stale one here makes the "
       + "count meaningless, which is how the last escalation went four days unread.",
-    causeKey: `ceo/chairman-blocked/${subjectRef(chairmanBlocked[0].repoKey, oldest)}`,
+    causeKey: `ceo/chairman-blocked/day-${open.day}`,
   }];
 }
 
@@ -5124,7 +5160,7 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  * at that head" rather than "check whether there is work" -- a woken turn that has to survey the queue is
  * a tick with extra steps, which is the cost this file exists to remove.
  *
- * @param {{ prs: any[], readyRows: any[], promotableRows?: any[], chairmanBlocked?: any[],
+ * @param {{ prs: any[], readyRows: any[], promotableRows?: any[], chairmanBlocked?: any[], nowMs?: number,
  *           prFiles?: { number: number, files: string[], changedFiles: number }[],
  *           drain?: boolean, required?: string[] | null, epics?: any[], answerOwed?: any[],
  *           key?: string, repo?: string, openRows?: any[], unarmed?: number[] | null,
@@ -5195,12 +5231,13 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *        of 15, and `bareAnswerOrdersOrNone` carries the `?? []` instead.
  *        `claimRefusals` is `claimRefusalStreaksNow(offerable)` (#2845) -- each offered row's consecutive-refusal streak. OMITTED MEANS
  *        NOT ASKED, so no `ready-row-unclaimable` order, and `unclaimableRowOrders` carries the absence handling for `rowBranches`'s reason.
+ *        `nowMs` is the clock `chairmanOrders` windows on (#2989); omitted is `Date.now()`, so only a test passes it.
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
-  claimedComments = [], rowBranches, hostDrift, primaryDrift, closings, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals }) {
+  claimedComments = [], rowBranches, hostDrift, primaryDrift, closings, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs }) {
   // FIRST, BEFORE EVERY OTHER CAUSE (#2356): a red `main` outranks even `answer-owed` -- see `trunkRedOrders`.
   // `answer-owed` says another session is ALREADY STOPPED waiting on them, which outranks any standing question.
   const orders = [...trunkRedOrders(trunkRed), ...primaryStaleOrders(primaryDrift), ...answerOrders(answerOwed)]; // #2781: a stale primary next, every order below is given from its code
@@ -5269,9 +5306,9 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // supply question, less urgent than a named red build, and never withheld by a drain, because a drain
   // stops the org TAKING ON work rather than finishing what is in flight.
   orders.push(...reviewBlockedOrders(reviewBlocked(prs, required)));
-  // #2209: `mergeCandidates` no longer holds a conflicting PR, so without this line it is reported nowhere
-  // -- worse than before, when `pr-green-unarmed` at least named it. To its author; a drain keeps it.
-  orders.push(...mergeConflictOrders(conflictedPrs(prs, required)));
+  // #2209: a conflicting PR is in no other cause's population, so it is told to its author here; a drain keeps it.
+  // #2968: FED BY THE TOTAL CLASSIFIER, NOT BY "GREEN AND UNHELD": #2950, a conflicted draft, sat 7.5 h unheard.
+  orders.push(...stalledPrOrders(prs, { required, reasons: STALL_REASONS_WITHOUT_A_CAUSE }));
   orders.push(...pipelineCodeownerReviewOrders(pipelineCodeownerReviewMissing(prs, prFiles))); // #1959: beside the two above
 
   // #2174: AFTER the per-PR and per-row causes and BEFORE the chairman's, for `pr-green-unarmed`'s
@@ -5280,7 +5317,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // deliberately NOT withheld by a drain: see `START_CAUSES`.
   orders.push(...hostDriftOrders(hostDrift), ...rowOffBoardOrders(offBoard)); // #2075: beside it; see `rowOffBoardOrders`
 
-  orders.push(...chairmanOrders(chairmanBlocked));
+  orders.push(...chairmanOrders(chairmanBlocked, nowMs));
 
 
   // DRAIN WITHHOLDS, IT DOES NOT STOP. Filtering here rather than at each producer keeps the partition
@@ -6118,27 +6155,151 @@ export function redPrFacts(prs, decided) {
   });
 }
 
+/** Where the fleet watch writes the capture ledger (#2979), under the project checkout: `packages/control/src/fleet-watch.mjs`'s `DEFAULT_CAPTURES_STATE_PATH`. */
+export const FLEET_CAPTURES_LEDGER = "runs/fleet-captures-state.json";
+
+/** @param {any} worker */
+const isLedgerWorker = (worker) => Boolean(worker) && Array.isArray(worker.rises)
+  && (worker.lastRoseAt === null || Number.isFinite(worker.lastRoseAt))
+  && worker.rises.every((/** @type {any} */ rise) => Boolean(rise) && Number.isFinite(rise.at) && Number.isFinite(rise.by));
+
+/**
+ * #2980: WHAT THE FLEET CAPTURED IN THE LAST `FLEET_IDLE_HOURS`, read from the ledger `fleet-watch.mjs` keeps (#2979), as
+ * `{ captures24h, lastCaptureAt }`.
+ *
+ * READ HERE, NOT IMPORTED: `readCaptureTimes` lives in `packages/control`, and `agent-org-outward-edges.test.ts` (#2658) forbids the
+ * tool importing the product tree. The ledger's field names are therefore a contract between two files, and
+ * `org-health-fleet-wiring.test.ts` runs both over the same ledger so a rename on either side is red.
+ *
+ * THREE ANSWERS, AND THE TWO NON-VALUES ARE NOT THE SAME. `null` is a stated unknown: the file is missing or corrupt (one bad worker
+ * entry makes the whole file null, as in the writer, because an empty ledger would answer "zero captures", a claim about the fleet nobody
+ * read). `undefined` is NO READING: the ledger is YOUNGER than the window and holds no capture, and a zero from a ledger started a
+ * minute ago is not a day of idleness -- but it is not a fault either, and `orgHealthReadings` reads an omitted fleet as silent, so
+ * the first day does not log an UNKNOWN every tick for `repeating-lines.mjs` to offer at 30 ticks (`copiesToCompare`'s reason). A capture
+ * inside a young ledger is still a capture.
+ * @param {{ now: number, path?: string, read?: (path: string, encoding: "utf8") => string }} io
+ * @returns {{ captures24h: number, lastCaptureAt: number | null } | null | undefined}
+ */
+export function readFleetCaptures({ now, path = join(REPO_CHECKOUT, FLEET_CAPTURES_LEDGER), read = readFileSync }) {
+  try {
+    const ledger = JSON.parse(read(path, "utf8"));
+    const workers = ledger?.workers;
+    if (!Number.isFinite(ledger?.since) || !workers || typeof workers !== "object" || Array.isArray(workers)
+      || !Object.values(workers).every(isLedgerWorker)) return null;
+    const windowMs = FLEET_IDLE_HOURS * HOUR_MS;
+    const all = /** @type {any[]} */ (Object.values(workers));
+    const captures24h = all.flatMap((w) => w.rises).filter((rise) => now - rise.at < windowMs).reduce((sum, rise) => sum + rise.by, 0);
+    const rose = all.flatMap((w) => (w.lastRoseAt === null ? [] : [w.lastRoseAt]));
+    if (captures24h === 0 && now - ledger.since < windowMs) return undefined;
+    return { captures24h, lastCaptureAt: rose.length ? Math.max(...rose) : null };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #2980: WHAT WAITS FOR THE FLEET, for `fleetIdleReading`: the open `fleet-gated` rows nothing else stops -- `fleetBatchRows`' own
+ * selection, so this and `fleet-batch-due` cannot disagree about which rows are waiting. `openRows` is the RAW read, `null` for a
+ * refusal, and that is `null` here: an empty list would read as "nobody is waiting".
+ *
+ * `labJobs` IS ALWAYS EMPTY, AND THAT IS A GAP, NOT A FINDING. The gate reads the lab jobs that ENDED (`labJobRecordsOrSay`), and
+ * nothing in it reads which are queued for the fleet, so a fleet idle with only a lab job waiting does not trip.
+ * @param {any[] | null} openRows
+ * @returns {{ rows: number[], labJobs: string[] } | null}
+ */
+export function fleetWaitingFacts(openRows) {
+  return openRows === null ? null : { rows: fleetBatchRows(openRows).map((row) => Number(row.number)), labJobs: [] };
+}
+
+/**
+ * WHEN THIS COMMIT WAS COMMITTED, as epoch ms, or `null`. The PR's PUSH TIME is not on `pr list` (`commits` is refused by GraphQL, see
+ * `readCommitChain`), and the committer date of the head is the best REST has: a rebase, a merge of `main` and GitHub's "Update branch"
+ * all make a head whose committer date is the push. `null` for a refused read, never "long ago".
+ * @param {string} oid @param {(args: string[]) => string} run @returns {number | null}
+ */
+export function readHeadCommittedAt(oid, run = defaultRun) {
+  try {
+    const at = Date.parse(run(["api", `repos/${repoNow()}/commits/${oid}`, "--jq", ".commit.committer.date"]).trim());
+    return Number.isFinite(at) ? at : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * THE NEWEST ACTIVITY ON A PR THAT `pr list` ALREADY CARRIES: its creation, its comments and its reviews. A push is not here (see
+ * `readHeadCommittedAt`), so this is a FLOOR on the PR's last activity, and a PR it already calls recent needs no further read.
+ * @param {any} pr @returns {number}
+ */
+function listedActivityAt(pr) {
+  const times = [pr.createdAt, ...(pr.comments ?? []).map((/** @type {any} */ c) => c?.createdAt), ...(pr.reviews ?? []).map((/** @type {any} */ r) => r?.submittedAt)]
+    .map((at) => Date.parse(at)).filter(Number.isFinite);
+  return times.length > 0 ? Math.max(...times) : NaN;
+}
+
+/**
+ * #2970: EVERY OPEN PR THE CLASSIFIER DOES NOT CALL `progressing` OR `held-on-purpose`, with the time of its last push, review or
+ * comment, for `org-health.mjs`. THE REASON IS `stallReasonOf`'s -- the same function that decides who is ordered -- so the two cannot
+ * disagree about which PRs are stuck. A PR whose listed activity is already recent pays NO read; only a quiet one is asked for its head
+ * commit's date, which is the push. A PR with nothing dated at all is `lastActivityAt: null`, an unknown and not an age.
+ * @param {any[]} prs @param {string[] | null} required @param {{ now: number, run?: (args: string[]) => string }} io
+ * @returns {{ number: any, reason: string, owner: string | null, lastActivityAt: number | null }[]}
+ */
+export function stalledPrFacts(prs, required, { now, run = defaultRun }) {
+  return prs.map((pr) => ({ pr, reason: stallReasonOf(pr, required) }))
+    .filter(({ reason }) => !REASONS_THAT_ARE_NOT_A_STALL.includes(reason))
+    .map(({ pr, reason }) => {
+      const owner = ownerOfPr(pr);
+      return { number: pr.number, reason, owner: owner.source === "ceo" ? null : owner.session, lastActivityAt: lastActivityOf(pr, { now, run }) };
+    });
+}
+
+/**
+ * THE NEWEST ACTIVITY ON ONE PR, as epoch ms, or `null` when the answer is not known. A PR whose listed activity is already recent pays no
+ * read. A quiet one is asked for its head commit's date, and IF THAT READ IS REFUSED THE ANSWER IS `null`, NOT THE LISTED TIME: the listed
+ * time is a FLOOR (a push is not in it), so a PR pushed ten minutes ago whose creation was nine hours ago would otherwise read as nine hours
+ * quiet and trip `pr-not-progressing` on a 403 -- the unknown `org-health.mjs` says a refused read must be.
+ * @param {any} pr @param {{ now: number, run: (args: string[]) => string }} io @returns {number | null}
+ */
+function lastActivityOf(pr, { now, run }) {
+  const listed = listedActivityAt(pr);
+  if (Number.isFinite(listed) && now - listed < PR_NOT_PROGRESSING_MINUTES * MS_PER_MINUTE) return listed;
+  const pushed = readHeadCommittedAt(String(pr.headRefOid ?? ""), run);
+  if (pushed === null) return null;
+  return Number.isFinite(listed) ? Math.max(listed, pushed) : pushed;
+}
+
 /**
  * #2936: THE ORG-HEALTH TICK over what `main` already holds. Reads ONE new thing, the last merge (`GH_READS`); every other fact is a
  * value the tick computed for `decide`: the PRs with their owners, `required`, the offered rows, the #2845 streaks and the primary's
  * drift. `prsRead`/`readyRead` are the RAW reads, `null` for a refusal, because `decideArgs` carries them coalesced to `[]` and
  * a refused read must reach the detector as an unknown. A refusal of the streak read is the counter's own stderr line
  * (`claim-refusals: could not run`), which `repeating-lines.mjs` offers if it persists; it reaches here as no streaks.
- * @param {{ prsRead: any[] | null, readyRead: any[] | null, decideArgs: any, decided: any[] }} tick
+ *
+ * #2980: THE FLEET FACTS ARE PASSED, because `orgHealthReadings` reads an OMITTED `fleet` as "this caller does not ask" -- silent -- so
+ * a gate that never passed them had the idle-fleet signal dead for as long as nobody noticed. `openRowsRead` is the raw read for the
+ * same reason as `prsRead`. `io` is for the test: the clock, the last merge, the ledger and the log, so nothing here needs a token.
+ * @param {{ prsRead: any[] | null, readyRead: any[] | null, openRowsRead: any[] | null, decideArgs: any, decided: any[] }} tick
+ * @param {{ now?: number, lastMergedAt?: () => number | null, readCaptures?: (now: number) => ReturnType<typeof readFleetCaptures>,
+ *           log?: (line: string) => void, readCopies?: () => null }} [io]
  */
-function orgHealthNow({ prsRead, readyRead, decideArgs, decided }) {
+export function orgHealthNow({ prsRead, readyRead, openRowsRead, decideArgs, decided },
+  { now = Date.now(), lastMergedAt = () => readLastMergedAt(defaultRun, repoNow()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies } = {}) {
   const { prs, required, readyRows, prFiles, rowBranches, openRows, primaryDrift, claimRefusals } = decideArgs;
   const asked = prsRead !== null && readyRead !== null;
   return orgHealthTick({
-    now: Date.now(),
-    lastMergedAt: readLastMergedAt(defaultRun, repoNow()),
+    now,
+    lastMergedAt: lastMergedAt(),
     work: asked ? { greenPrs: shouldBeMerging(prs, required).length,
       claimableRows: partitionUnclaimed(readyRows, prFiles, { rowBranches, openRows }).offerable.length } : null,
     redPrs: prsRead === null ? null : redPrFacts(prs, decided),
+    stalledPrs: prsRead === null ? null : stalledPrFacts(prs, required, { now }),
     refusals: claimRefusals ?? null,
     drift: primaryDrift ?? null,
     primarySince: primaryStandingSince(primaryDrift ?? null, { root: REPO_CHECKOUT }),
-  });
+    fleet: readCaptures(now),
+    waiting: fleetWaitingFacts(openRowsRead),
+  }, { ...(log && { log }), ...(readCopies && { readCopies }) });
 }
 
 function main() {
@@ -6212,7 +6373,7 @@ function main() {
   const others = otherScopeTicks(drain); // #2618: the OTHER declared repositories -- none for one project, whose orders are what they were
   const outageNow = outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows: openRowsRead, claimedComments, offBoard, others });
   const { delivered: orders, performed } = performActions(markOutageReads([...decided, ...others.flatMap((tick) => tick.orders)], outageNow));
-  orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick(), ...orgHealthNow({ prsRead: prs, readyRead: readyRows, decideArgs, decided })); // #2848, #2936: before the dead man's switch -- a repeating line, a stuck org: something found
+  orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick(), ...orgHealthNow({ prsRead: prs, readyRead: readyRows, openRowsRead, decideArgs, decided })); // #2848, #2936: before the dead man's switch -- a repeating line, a stuck org: something found
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so
   // on a full disk the tick can end partway. The order that says the disk is full must not be the one behind it.
   orders.unshift(...diskOrders);

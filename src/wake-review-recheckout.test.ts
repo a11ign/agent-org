@@ -137,9 +137,10 @@ test("#2771 (2): NEGATIVE CONTROL -- an order for another pull request's reviewe
   const out = deliver([{ session: "reviewer-2754", cause: "draft-awaiting-verdict", causeKey: "reviewer-2754/draft-awaiting-verdict/pr-2755/abc12345",
     prompt: "wrong PR" }], agents({ "reviewer-2754": "idle" }), [], { run: () => "{}", checkout: co.seams });
   assert.equal(out.refused.length, 1);
-  // a non-reviewer session and a reviewer of ANOTHER repository never reach `prepareReviewCheckout`.
+  // a non-reviewer session and a reviewer of a repository the project does NOT declare never reach `prepareReviewCheckout` (#2991: a
+  // DECLARED key now does, and `keyed-repo-review.test.ts` pins that; the undeclared key is the positive control that this still holds).
   assert.deepEqual(repointedForReviewer({ session: "ceo", prompt: "p" }, co.seams), { prompt: "p" });
-  assert.deepEqual(repointedForReviewer({ session: "reviewer-agent-org-9", prompt: "p" }, co.seams), { prompt: "p" });
+  assert.deepEqual(repointedForReviewer({ session: "reviewer-undeclared-9", prompt: "p" }, co.seams), { prompt: "p" });
   assert.deepEqual(co.events.slice(before), []);
   assert.equal(treeOf(co, 2754), headOf(2754, 1), "PR 2754's tree did not move for another pull request's order");
   // and prompting reviewer-2755 re-points 2755 only.
