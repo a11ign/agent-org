@@ -36,7 +36,7 @@ import { shippedUnits, unitState as real_unitState, unitDrift, driftReport, host
   programCandidates, hostIdentityDrift, hostIdentityNotes, hostIdentityInstall, ownedIdentityFiles, compileCacheNotes,
   WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift as real_compileCacheDrift, declaredCompileCache, PROJECT_UNITS_DIR, shippedUnitText as real_shippedUnitText,
   shippedScriptText, leadsListText, modelEffortDrift, sessionModelDrift, sessionModelNotes, lastModelIn,
-  liveClaudeSessions, OPTIONAL_UNITS, declaredProjectKeys, windowEnd as real_windowEnd, windowEndNotes as real_windowEndNotes } from "../host-units.mjs";
+  liveClaudeSessions, OPTIONAL_UNITS, TOOL_ENTRIES, LONG_RUNNING_TEMPLATES, unclassifiedEntries, declaredProjectKeys, windowEnd as real_windowEnd, windowEndNotes as real_windowEndNotes } from "../host-units.mjs";
 import { DECLARED_CLAUDE_MODELS, PROFILES, CLAUDE_EFFORTS } from "../worker-profile.mjs";
 import { homeHostConfig } from "../host-config.mjs";
 
@@ -2505,6 +2505,121 @@ test("#2901: an installed pair is an ORPHAN once the key is removed, so deleting
   }).map((finding) => finding.unit);
   assert.deepEqual(orphans(WITHOUT_MESSAGING), ["a11ign-chairman-watch.service", "a11ign-chairman-watch.timer"]);
   assert.deepEqual(orphans(WITH_MESSAGING), [], "CONTROL: declared, the same installed pair is the shipped one and not an orphan");
+});
+
+// --- #3025: THE LISTENER IS A SERVICE NO CLOCK STARTS, SO `host:install` ENABLES THE SERVICE AND `host:check` ASKS IT BOTH QUESTIONS ----------
+//
+// Every case runs on a TEMP HOME (a shipped directory, an installed directory) and a `systemctl` that REMEMBERS what it was told, so "started" is
+// something the fake answers for afterwards and not a call count. The template here is a stand-in: the real one ships from `a11ign/agent-org`
+// (#2907), and these tests must pass the day it is, and the day before.
+
+const LISTENER = "a11ign-chairman-listen.service";
+const LISTENER_TEMPLATE = "[Unit]\nDescription=stand-in listener\n[Service]\nType=simple\nExecStart=/bin/true\nRestart=on-failure\n[Install]\nWantedBy=default.target\n";
+const PRUNE_TIMER = "a11ign-worktree-prune.timer";
+const PRUNE_TIMER_TEMPLATE = "[Unit]\nDescription=stand-in timer\n[Timer]\nOnCalendar=daily\n[Install]\nWantedBy=timers.target\n";
+
+/** A `systemctl` that keeps what `enable`/`disable` did, and answers `is-enabled` and `is-active` from it the way the real one does (non-zero, word on stdout). */
+function rememberingSystemctl() {
+  const calls: string[][] = [];
+  const enabled = new Set<string>();
+  const active = new Set<string>();
+  const run = (args: string[]) => {
+    calls.push(args);
+    const [verb, ...rest] = args;
+    const unit = rest[rest.length - 1];
+    const now = rest.includes("--now");
+    if (verb === "enable") { enabled.add(unit); if (now) active.add(unit); return ""; }
+    if (verb === "disable") { enabled.delete(unit); if (now) active.delete(unit); return ""; }
+    if (verb !== "is-enabled" && verb !== "is-active") return "";
+    const answers = (members: Set<string>, word: string) => Object.fromEntries([...members].map((member) => [member, word]));
+    return systemctlStub({ "is-enabled": answers(enabled, "enabled"), "is-active": answers(active, "active") })(args);
+  };
+  return { run, calls, enabled, active };
+}
+
+function withListenerHome(body: (home: { shippedDir: string, installedDir: string, install: (keys: Set<string>) => string[],
+  deps: (keys: Set<string>) => Record<string, unknown>, systemctl: ReturnType<typeof rememberingSystemctl> }) => void) {
+  const root = mkdtempSync(join(tmpdir(), "host-units-3025-"));
+  try {
+    const shippedDir = join(root, "host");
+    const installedDir = join(root, ".config/systemd/user");
+    mkdirSync(shippedDir, { recursive: true });
+    writeFileSync(join(shippedDir, "chairman-listen.service.in"), LISTENER_TEMPLATE);
+    writeFileSync(join(shippedDir, "worktree-prune.timer.in"), PRUNE_TIMER_TEMPLATE);
+    const systemctl = rememberingSystemctl();
+    const deps = (declaredKeys: Set<string>) => ({ shippedDir, installedDir, declaredKeys, projectUnitsDir: null, systemctl: systemctl.run as never,
+      git: (() => "") as never, out: () => undefined });
+    body({ shippedDir, installedDir, systemctl, deps, install: (keys) => hostUnitsInstall(deps(keys) as never) });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("#3025: the listener's template is classified as the tool's and optional on `messaging`, so it is never UNCLASSIFIED", () => {
+  assert.ok(TOOL_ENTRIES.includes("chairman-listen.service.in"));
+  assert.equal(OPTIONAL_UNITS["chairman-listen.service.in"], "messaging");
+  assert.deepEqual(LONG_RUNNING_TEMPLATES, ["chairman-listen.service.in"]);
+  withListenerHome(({ shippedDir }) => {
+    assert.deepEqual(unclassifiedEntries({ shippedDir, projectUnitsDir: null }), []);
+    writeFileSync(join(shippedDir, "stray-listener.service.in"), LISTENER_TEMPLATE);
+    assert.deepEqual(unclassifiedEntries({ shippedDir, projectUnitsDir: null }).map((finding) => finding.unit), ["stray-listener.service.in"],
+      "POSITIVE CONTROL: the same directory with a file nobody classified IS refused, so the empty list above is a classification and not a check that reads nothing");
+  });
+});
+
+test("#3025: `host:install` with `messaging` writes the listener and runs `enable --now` on the SERVICE; without it, none of the three happens", () => {
+  withListenerHome(({ installedDir, install, systemctl }) => {
+    const absent = install(WITHOUT_MESSAGING);
+    assert.deepEqual(absent, [PRUNE_TIMER], "POSITIVE CONTROL: the timer next to it IS installed, so the listener's absence is the key's doing");
+    assert.equal(existsSync(join(installedDir, LISTENER)), false);
+    assert.deepEqual(systemctl.calls.filter((call) => call.includes(LISTENER)), []);
+    assert.deepEqual([...systemctl.enabled], [PRUNE_TIMER]);
+
+    const present = install(WITH_MESSAGING);
+    assert.deepEqual(present, [LISTENER, PRUNE_TIMER].sort());
+    assert.equal(readFileSync(join(installedDir, LISTENER), "utf8"), LISTENER_TEMPLATE, "written as the template renders it");
+    assert.ok(systemctl.calls.some((call) => call.join(" ") === `enable --now ${LISTENER}`), "`enable --now` on the SERVICE");
+    assert.ok(systemctl.calls.filter((call) => call[0] === "enable").every((call) => call[1] === "--now"), "never a bare `enable`");
+    assert.ok(systemctl.enabled.has(LISTENER) && systemctl.active.has(LISTENER), "and the fake systemd now says it is enabled and running");
+  });
+});
+
+test("#3025: `host:check` reads an installed listener that is not enabled, or enabled and not running, as findings in their own words", () => {
+  withListenerHome(({ shippedDir, installedDir, install, systemctl, deps }) => {
+    const findings = (keys: Set<string>) => unitDrift(shippedUnits(shippedDir, { declaredKeys: keys, projectUnitsDir: null })
+      .map((unit) => unitState(unit, deps(keys) as never))).filter((finding) => finding.unit === LISTENER);
+    assert.deepEqual(findings(WITH_MESSAGING).map((finding) => finding.problem), ["NOT INSTALLED"]);
+    assert.deepEqual(findings(WITHOUT_MESSAGING), [], "no key: not listed, so not missed");
+
+    install(WITH_MESSAGING);
+    assert.deepEqual(findings(WITH_MESSAGING), [], "POSITIVE CONTROL: installed, enabled --now and running is the healthy host, and says nothing");
+
+    systemctl.enabled.delete(LISTENER);
+    systemctl.active.delete(LISTENER);
+    const [notEnabled] = findings(WITH_MESSAGING);
+    assert.equal(notEnabled.problem, "LISTENER NOT ENABLED");
+    assert.match(notEnabled.detail, /no clock starts this service/);
+
+    systemctl.enabled.add(LISTENER);
+    const [notRunning] = findings(WITH_MESSAGING);
+    assert.equal(notRunning.problem, "LISTENER ENABLED BUT NOT RUNNING");
+    assert.match(notRunning.detail, /journalctl --user -u a11ign-chairman-listen\.service/, "and it says where the reason is");
+    assert.equal(existsSync(join(installedDir, LISTENER)), true);
+  });
+});
+
+test("#3025: an installed listener is an ORPHAN once the key is removed, and the install removes it AND disables it", () => {
+  withListenerHome(({ installedDir, install, systemctl, deps }) => {
+    install(WITH_MESSAGING);
+    assert.deepEqual(orphanedUnits(deps(WITH_MESSAGING) as never), [], "CONTROL: declared, the installed listener is the shipped one");
+    assert.deepEqual(orphanedUnits(deps(WITHOUT_MESSAGING) as never).map((finding) => finding.unit), [LISTENER]);
+
+    install(WITHOUT_MESSAGING);
+    assert.equal(existsSync(join(installedDir, LISTENER)), false, "removed");
+    assert.ok(systemctl.calls.some((call) => call.join(" ") === `disable --now ${LISTENER}`), "disabled and stopped, not left running on a deleted file");
+    assert.equal(systemctl.enabled.has(LISTENER) || systemctl.active.has(LISTENER), false);
+    assert.ok(systemctl.enabled.has(PRUNE_TIMER), "and the timer beside it is untouched");
+  });
 });
 
 test("#2901: the rendered pair holds the properties every other shipped unit is held to, and no secret", () => {
