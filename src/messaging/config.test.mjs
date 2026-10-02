@@ -108,7 +108,7 @@ describe("a malformed key is a NAMED refusal, never a silent off", () => {
   test("a missing tokenFile is refused", () => refusedAt(documentWith({ provider: "telegram", chairmanFile: VALID.chairmanFile }), /^messaging\.tokenFile$/));
   test("a missing chairmanFile is refused", () => refusedAt(documentWith({ provider: "telegram", tokenFile: VALID.tokenFile }), /^messaging\.chairmanFile$/));
 
-  for (const where of ["/etc/shadow", "~/.ssh/id_ed25519", "~/.config/agent-org/../../.ssh/id_ed25519", "relative/token", "~/.config/agent-org-evil/t"]) {
+  for (const where of ["/etc/shadow", "~/.profile", "~/.config/agent-org/../../.profile", "relative/token", "~/.config/agent-org-evil/t"]) {
     test(`a reference outside the secret directory is refused: ${where}`, () => refusedAt(documentWith({ ...VALID, tokenFile: where }), /^messaging\.tokenFile$/));
   }
 
