@@ -81,7 +81,7 @@ import { orgHealthTick, readLastMergedAt, primaryStandingSince, redSinceOf, FLEE
 import { retrospectiveTick } from "./org-retro.mjs";
 import { isBrokenRed, withoutHold } from "./red-pr.mjs";
 import { waitItemOf, referencesOf, parseWaits, staleWaits, bareWaits, manualWaits } from "./wait-condition.mjs";
-import { readRulings, rulingTick } from "./ruling-record.mjs"; // #2997
+import { readRulings, rulingTick, unreadableLine } from "./ruling-record.mjs"; // #2997
 import { tapShadowReads } from "./shadow-reads.mjs"; // #2849
 // #1969, AND THE PREDICATE IS IMPORTED RATHER THAN RE-DECIDED. `armedFromApi` knows THREE armed states --
 // merged, a pending auto-merge, and SITTING IN THE MERGE QUEUE, where `autoMergeRequest` reads `null` on a
@@ -6537,7 +6537,9 @@ function greenCountWithLapsedHoldsLifted(prs, required, holdStands) {
  * @param {{ stateDir?: string, run?: (args: string[]) => string, log?: (line: string) => void }} [io]
  */
 export function rulingOrdersNow({ prsRead, openRowsRead, now }, { stateDir = REVIEWER_STATE_DIR, run = defaultRun, log = (line) => process.stderr.write(`${line}\n`) } = {}) {
-  const pending = readRulings(stateDir).rulings.filter((r) => !r.resolved);
+  const record = readRulings(stateDir);
+  if (record.status === "unreadable") { log(unreadableLine(stateDir)); return []; } // never "no rulings": a record that cannot be read abandons every ruling in it
+  const pending = record.rulings.filter((r) => !r.resolved);
   if (pending.length === 0) return [];
   const refs = pending.flatMap((r) => r.checks.flatMap((text) => parseWaits(`Waiting-for: ${text}`)))
     .filter((w) => w.state !== "manual" && w.state !== "unreadable").map((w) => ({ key: w.key, repo: w.repo, number: w.number }));

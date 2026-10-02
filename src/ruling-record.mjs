@@ -62,6 +62,9 @@ function foldInto(byId, entry) {
   if (entry.event === "offered") ruling.offeredAt = Date.parse(entry.at);
 }
 
+/** @param {string} stateDir @returns {string} what the tick says when it cannot read the record: ONE sentence, for the gate and for `rulingTick` */
+export const unreadableLine = (stateDir) => `rulings: ${join(stateDir, RULINGS_FILE)} could not be read, so no ruling was checked this tick`;
+
 /** @param {string} stateDir @param {object} line */
 function append(stateDir, line) {
   mkdirSync(stateDir, { recursive: true });
@@ -98,7 +101,7 @@ export function recordRuling({ stateDir, by, on, checks, at, grace = DEFAULT_GRA
 export function rulingTick({ stateDir, world, now, comment, log = () => {} }) {
   const record = readRulings(stateDir);
   if (record.status === "unreadable") {
-    log(`rulings: ${join(stateDir, RULINGS_FILE)} could not be read, so no ruling was checked this tick`);
+    log(unreadableLine(stateDir));
     return [];
   }
   return settleRulings(record.rulings, world, now).flatMap(({ ruling, action, reading }) => {

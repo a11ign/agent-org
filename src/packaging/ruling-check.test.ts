@@ -192,6 +192,17 @@ test("#2997 THE GATE: no unresolved ruling is NO read; a pending one reads its r
   assert.equal(calls[1][2], "2988");
 }));
 
+test("#2997 THE GATE: a rulings.jsonl it cannot read is SAID (through `rulingOrdersNow`), reads no reference and posts nothing -- never 'no rulings'", () => scratch((dir) => {
+  recordRuling({ stateDir: dir, by: "ceo", on: 2988, checks: ["closed #2867"], at: RULED_AT });
+  appendFileSync(join(dir, RULINGS_FILE), "{not json\n");
+  const calls: string[][] = [];
+  const lines: string[] = [];
+  const run = (args: string[]) => { calls.push(args); return ""; };
+  assert.deepEqual(rulingOrdersNow({ prsRead: [], openRowsRead: [], now: at("2026-10-02T12:00:00Z") }, { stateDir: dir, run, log: (l) => lines.push(l) }), []);
+  assert.match(lines.join("\n"), /could not be read, so no ruling was checked/);
+  assert.deepEqual(calls, []);
+}));
+
 test("#2997 THE CLI: `--on 2988 --check ...` records; no check is refused with exit 1 and nothing written", () => scratch((home) => {
   const env = { PATH: process.env.PATH ?? "", HOME: home, ...(process.env.AGENT_ORG_HOST && { AGENT_ORG_HOST: process.env.AGENT_ORG_HOST }) };
   const state = join(home, ".cache", "a11ign");
