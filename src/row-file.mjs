@@ -106,7 +106,8 @@ import { moveProjectStatus, filedByLine, fetchLabels as fetchIssueLabels, ensure
 import { PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapshot.mjs";
 import { launchGate } from "./board-snapshot-scope.mjs";
 import { REPO } from "./project-identity.mjs";
-import { declaredRegionFiles, declaresNoCommit, directoryReservations, extractLabeledSection, slashlessDirectoryEntries, unrecognisedRegionPaths } from "./region-paths.mjs";
+import { declaredRegionFiles, declaresNoCommit, directoryReservations, extractLabeledSection, slashlessDirectoryEntries, splitRegionEntry, unrecognisedRegionPaths } from "./region-paths.mjs";
+import { homeProjectDeclaration } from "./project-config.mjs";
 import { loadLanes, inLane } from "./lane-ownership.mjs";
 // #2111: both labels from the leaf module that OWNS them (#804), never the strings retyped -- a promotion
 // must refuse a row that is already claimed, and it writes `ready` four times. `ready-label-audit.test.ts`
@@ -301,6 +302,38 @@ export function regionRefusalReason(body) {
     + "this row will change, or write `its deliverable is not a commit` in the Region section -- which is "
     + "the sentence #989's in-build rule already uses for a settings change, a ruling, or a measurement "
     + "posted on the row.";
+}
+
+/** The sentence a row uses to say which repository its paths are relative to (``The repository is **`a11ign/agent-org`**``). */
+const STATED_REPOSITORY = /\brepository is\s+\*{0,2}`([\w.-]+\/[\w.-]+)`/i;
+
+/**
+ * #3056: A REGION IN A KEYED REPOSITORY MUST SPELL ITS KEY, or `pr-open` refuses every path of the PR that finishes the row.
+ *
+ * `splitRegionEntry` reads a bare path as the project's FIRST repository's tree (ADR 0040, decision 2), so a row that says
+ * "the repository is `a11ign/agent-org`" and then lists `src/x.mjs` declares a path of the OTHER repository, and the PR in
+ * agent-org read all 13 of its changed paths as outside the Region (a11ign/agent-org#35) -- passed only by one
+ * `Outside-Region:` line per file, a declaration saying the opposite of what the check is for. Said here, where the
+ * filer still holds the row, rather than at the PR, where it costs a line per file.
+ *
+ * ONLY A STATED REPOSITORY IS READ: a body that names none is the project's own, whose bare paths are right, and the
+ * sentence is matched on a DECLARED code repository with a non-empty key, so a prose mention of some other repository
+ * never refuses. The Region is read through `declaredRegionFiles` and `splitRegionEntry`, the one parser and the one
+ * place the prefix is read, so "bare" means here what it means to `pr-open`.
+ * @param {string} body
+ * @param {{ code?: readonly { key: string, repo: string }[] }} [declared] the project's code repositories; absent, the declaration's
+ * @returns {string | null}
+ */
+export function bareKeyedRegionReason(body, { code = homeProjectDeclaration().code } = {}) {
+  const stated = STATED_REPOSITORY.exec(body)?.[1];
+  const keyed = code.find((entry) => entry.key !== "" && entry.repo === stated);
+  if (keyed === undefined) return null;
+  const bare = (declaredRegionFiles(body) ?? []).filter((entry) => splitRegionEntry(entry).key === "");
+  if (bare.length === 0) return null;
+  const example = `${keyed.key}:${bare[0]}`;
+  return `REFUSING to file -- the body says its repository is ${keyed.repo}, but ${bare.length} \`## Region\` entr(ies) are spelled bare: `
+    + `${bare.join(", ")}. A bare path is the project's FIRST repository's tree, so \`pr-open --repo ${keyed.repo}\` would read every `
+    + `changed path of the PR as outside the Region. Prefix each with the repository's key: \`${example}\` (#3056).`;
 }
 
 /**
@@ -639,6 +672,8 @@ export function fileRefusalReason(body) {
   }
   const region = regionRefusalReason(body);
   if (region) return `row-file: ${region}`;
+  const bareKeyed = bareKeyedRegionReason(body);
+  if (bareKeyed) return `row-file: ${bareKeyed}`;
   const openCheck = openCheckTranscriptRefusal(body);
   if (openCheck) return `row-file: ${openCheck}`;
   // PRESENCE FIRST, THEN CONTENT. A row with no Acceptance section is refused above for that reason; a
