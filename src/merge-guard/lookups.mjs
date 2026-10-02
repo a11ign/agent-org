@@ -92,20 +92,21 @@ export function lookupCheckRuns(sha) {
 /**
  * Which issues arming PR `number` would close, resolved by GitHub itself (never a `Closes #N` regex over
  * the PR body) -- #249. `null` on failure, same as every other lookup here.
- * @param {number} number
- * @returns {{number: number, title?: string, labels: string[]}[] | null}
+ * #2995: `repo` is the PR's own repository, and each issue says which repository IT is in (a PR of another repository closes a row by the full form).
+ * @param {number} number @param {string} [repo]
+ * @returns {{number: number, repo?: string, title?: string, labels: string[]}[] | null}
  */
-export function lookupClosingIssues(number) {
+export function lookupClosingIssues(number, repo = REPO) {
   return lookup(() => {
-    const [owner, name] = REPO.split("/");
+    const [owner, name] = repo.split("/");
     const query = "query($owner:String!,$name:String!,$number:Int!){"
       + "repository(owner:$owner,name:$name){pullRequest(number:$number){"
-      + "closingIssuesReferences(first:20){nodes{number title labels(first:20){nodes{name}}}}}}}";
+      + "closingIssuesReferences(first:20){nodes{number title repository{nameWithOwner} labels(first:20){nodes{name}}}}}}}";
     const data = JSON.parse(gh(["api", "graphql", "-f", `query=${query}`,
       "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `number=${number}`]));
     return data.data.repository.pullRequest.closingIssuesReferences.nodes.map(
-      (/** @type {{number: number, title: string, labels: {nodes: {name: string}[]}}} */ issue) => ({
-        number: issue.number, title: issue.title,
+      (/** @type {{number: number, title: string, repository?: {nameWithOwner: string}, labels: {nodes: {name: string}[]}}} */ issue) => ({
+        number: issue.number, repo: issue.repository?.nameWithOwner, title: issue.title,
         labels: issue.labels.nodes.map((/** @type {{name: string}} */ l) => l.name),
       }));
   });
