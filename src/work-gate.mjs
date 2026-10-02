@@ -93,8 +93,7 @@ import { armabilityOf, holdersOf } from "./pr-hold-state.mjs";
 import { REPO } from "./project-identity.mjs";
 import { HOME_CHECKOUT, homeProjectDeclaration } from "./project-config.mjs";
 import { completeCrossRepoRows, liveEffects as crossRepoEffects } from "./cross-repo-row-completion.mjs"; // #2995
-import { stripClaimLabels, LIVE_SETTLE_DEPS } from "./close-rows-for-merged-pr.mjs";
-import { settleClosedStatus } from "./settle-closed-status.mjs";
+import { labelsToStrip } from "./claim-label-strip.mjs"; // #2995: NOT close-rows-for-merged-pr.mjs -- its closure reaches arm-pr.mjs, and #2174 forbids that here
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "./cause-declaration.mjs";
 // #2619 (child 3d of #69): the rest of this file's vocabulary -- `backlog`, `needs:chairman`,
 // `out-of-release`, `blocked`, the `lane:`/`session:` prefixes and `lane:any`.
@@ -6012,8 +6011,33 @@ function crossRepoCompletionTick(openRows) {
   if (named.length === 0) return { performed: 0 };
   const declaration = homeProjectDeclaration();
   const tracker = declaration.tracker[0].repo;
-  const effects = crossRepoEffects({ tracker, strip: (n, labels) => stripClaimLabels(n, labels, tracker, "CROSS-REPO"), settle: (n) => { settleClosedStatus(n, LIVE_SETTLE_DEPS); } });
-  return completeCrossRepoRows({ openRows: named, declared: declaration.code.map((entry) => entry.repo) }, effects);
+  const closed = [];
+  const effects = crossRepoEffects({ tracker, strip: (n, labels) => stripClosedRowLabels(n, labels, tracker), settle: (n) => { closed.push(n); } });
+  const result = completeCrossRepoRows({ openRows: named, declared: declaration.code.map((entry) => entry.repo) }, effects);
+  if (closed.length > 0) settleClosedStatuses(closed);
+  return result;
+}
+
+/** The claim labels a row this gate just closed should not keep (#754's rule, `labelsToStrip`). Never throws: the close already happened. */
+function stripClosedRowLabels(n, labels, tracker) {
+  const toStrip = labelsToStrip(labels);
+  if (toStrip.length === 0) return;
+  try {
+    execFileSync("gh", ["issue", "edit", String(n), "--repo", tracker, ...toStrip.flatMap((label) => ["--remove-label", label])], { encoding: "utf8" });
+  } catch (cause) {
+    process.stderr.write(`CROSS-REPO: #${n} closed but COULD NOT STRIP ${toStrip.join(", ")} -- ${cause instanceof Error ? cause.message : cause}\n`);
+  }
+}
+
+/**
+ * SPAWNED, NOT IMPORTED (#2174's fence, as for `host-units.mjs`): the Project Status move lives behind `row-claim.mjs`, whose closure the gate
+ * must not carry. `settle-closed-rows.mjs` settles every closed row the board still shows at a live Status, so the rows just closed are in
+ * its population by construction. A failure is a line and nothing more -- the close is done, and the row stays in that command's population until some pass settles it.
+ * @param {number[]} closed
+ */
+function settleClosedStatuses(closed) {
+  const run = spawnSync(process.execPath, [fileURLToPath(new URL("./settle-closed-rows.mjs", import.meta.url))], { encoding: "utf8" });
+  if (run.status !== 0) process.stderr.write(`CROSS-REPO: Status settle for ${closed.map((n) => `#${n}`).join(", ")} exited ${run.status}; the row stays in settle-closed-rows.mjs's population\n`);
 }
 
 /**
