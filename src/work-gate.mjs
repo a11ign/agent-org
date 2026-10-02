@@ -36,7 +36,7 @@ import { dirname, join } from "node:path";
 // `org-watch.mjs` and `build-packages.mjs` state at their own imports.
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { READY_LABEL, CLAIM_LABEL, CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
-import { verdictAmong } from "./review-verdict.mjs";
+import { verdictAmong, patchIdOfDiff, evidenceHeads } from "./review-verdict.mjs";
 // `verdictAmong` lives in review-verdict.mjs (#3030), so a test of the verdict reader need not import this file and its token.
 export { verdictAmong };
 import { waitingOn, fleetWaitingOn, todayIso, describeWaiting, ANSWER_PREFIX, answersOwedBy, bareAnswerLabel }
@@ -229,7 +229,7 @@ const defaultRun = (args, repo = activeRepo) => execFileSync("gh", args,
 export function readPrs(run = defaultRun) {
   try {
     const out = run(["pr", "list", "--state", "open", "--limit", "100", "--json",
-      "number,isDraft,headRefOid,statusCheckRollup,author,comments,labels,files,changedFiles,body,"
+      "number,isDraft,headRefOid,baseRefName,statusCheckRollup,author,comments,labels,files,changedFiles,body,"
       // #2084: `reviewDecision` IS WHAT GITHUB ITSELF MERGES ON, AND NO QUEUE READ HERE TOUCHED IT.
       // Measured at `468a74f1b`: `git grep -l reviewDecision -- '*.mjs'` returns exactly ONE file, and it
       // is not a queue read -- `row-claim/own-pr-health-rule.mjs` (#2126, merged the same day #2084 was
@@ -331,9 +331,10 @@ export const GH_READS = Object.freeze({
   // sites to find it. The condition is `shouldBeMerging` finding a green, unheld, non-draft PR -- which
   // on a healthy queue is the COMMON case, so unlike the two above this one is usually paid. It is still
   // conditional rather than unconditional: a tick with nothing green and unheld makes no call at all.
-  // #2176: ONE REST CALL PER GREEN PULL REQUEST WITH NO VERDICT AT ITS HEAD -- the ones the review question
-  // is genuinely asked of -- on the CORE pool. `commits` cannot ride on `pr list`: GraphQL refuses it.
-  conditionalOnUnreviewedGreenPr: "api repos/{repo}/pulls/{n}/commits (withCommitChains -- the last authored head)",
+  // #3045 (was #2176's commit chain): ONE REST CALL PER PULL REQUEST THE REVIEW QUESTION IS ASKED OF, plus one per older head a review or
+  // verdict names (at most MAX_EVIDENCE_HEADS), on the CORE pool; a pull request whose checks are running adds the commit list. `commits`
+  // cannot ride on `pr list`: GraphQL refuses it.
+  conditionalOnUnreviewedGreenPr: "api repos/{repo}/compare/{base}...{head} (withPatchIds -- the patch id), and pulls/{n}/commits while checks run",
   // #2416: ONE REST CALL PER OPEN PULL REQUEST CARRYING `awaiting-evidence`, and NONE when no open pull
   // request carries it -- the label's age is not on `pr list`, so the labelled ones are asked and only those.
   conditionalOnAwaitingEvidenceLabel: "api repos/{repo}/issues/{n}/events (readEvidenceLabelledAt -- awaiting-evidence-stale)",
@@ -1987,7 +1988,7 @@ export function answerOrders(rows) {
  * cross-reference too.
  *
  * `null` ON A REFUSED READ, NEVER `[]`: an empty timeline would read every outstanding `answer:` label on
- * it as bare, which is the false-positive direction a refused read must not produce (`readCommitChain`'s
+ * it as bare, which is the false-positive direction a refused read must not produce (`readCommitShas`'s
  * own rule, applied here).
  *
  * @param {number} number @param {(args: string[]) => string} run
@@ -3535,6 +3536,18 @@ function refusalCommitOf(pr) {
 }
 
 /**
+ * PURE. #3045: whether a pull request's patch at its current head equals its patch at `oid` -- the head a review was posted at. `null`
+ * when `oid` is absent or either patch was not read (`withPatchIds`), because absence of a reading is not a reading of change.
+ * @param {any} pr @param {string | null} oid @returns {boolean | null}
+ */
+function patchUnchangedSince(pr, oid) {
+  const ids = pr?.patchIds ?? {};
+  const now = ids[String(pr?.headRefOid ?? "")];
+  const then = oid ? ids[oid] : undefined;
+  return typeof now === "string" && typeof then === "string" ? now === then : null;
+}
+
+/**
  * PURE. #2084: the pull requests that LOOK like they should be merging and that GitHub's review
  * requirement is holding -- plus any whose decision could not be read at all.
  *
@@ -3551,14 +3564,17 @@ function refusalCommitOf(pr) {
  * the two commits let the order open with the comparison the #2084 diagnosis turns on.
  *
  * @param {any[]} prs @param {string[] | null} [required]
+ * `patchUnchanged` (#3045) is whether the pull request's patch is the one the refusing review was posted at: `true`, or `false`, or `null` when
+ * either patch was not read -- unread is not changed, and is not unchanged either.
+ *
  * @returns {{number: number, code: string, why: string, session: string | null, head: string,
- *            refusedAt: string | null}[]} ascending by PR number
+ *            refusedAt: string | null, patchUnchanged: boolean | null}[]} ascending by PR number
  */
 export function reviewBlocked(prs, required = null) {
   const byNumber = new Map(prs.map((pr) => [Number(pr.number), pr]));
   return mergeCandidates(prs, required)
     .map((pr) => ({ number: Number(pr.number), ...subjectIdentity(pr), ...reviewStateOf(pr), session: sessionOf(pr),
-      head: String(pr.headRefOid ?? ""), refusedAt: refusalCommitOf(pr) }))
+      head: String(pr.headRefOid ?? ""), refusedAt: refusalCommitOf(pr), patchUnchanged: patchUnchangedSince(pr, refusalCommitOf(pr)) }))
     .filter((r) => BLOCKING_REVIEW_STATES.includes(r.code))
     // #2416: `pr-review-blocked` is the third route into a review -- it tells `product-manager` to prompt the
     // reviewer for an AWAITING_REVIEW pull request. A labelled one is waiting for evidence, not a reviewer; a
@@ -3983,45 +3999,90 @@ export function reviewableHead(pr) {
 }
 
 /**
- * The commits of one pull request, oldest first, or `null` when the read was refused.
+ * #3045: THE PATCH ID OF ONE HEAD -- what the pull request changes relative to its base, hashed -- or `null` when the read was refused.
  *
- * REST, NOT THE LIST CALL, AND MEASURED: `commits` on `gh pr list --limit 100` is refused outright by
- * GraphQL ("requesting up to 1,000,000 possible nodes which exceeds the maximum limit of 500,000",
- * 2026-09-24) even with no other field beside it, so it cannot ride on `readPrs` however cheap it looks.
- * REST also spends the CORE pool, not the GRAPHQL one the list call already leans on, and returns every
- * commit rather than the first hundred -- `reviewChainOf` reads the END of the list.
+ * THE COMPARE API'S DIFF, `base...head`, because that is `merge-base(base, head)..head` and the gate holds no checkout. Reading it
+ * as a diff (not the JSON's per-file `patch`) is what keeps a large change whole: the JSON truncates a file's patch silently, and a
+ * truncated patch would hash two different changes to one id. A refusal -- including GitHub's own "diff too large" -- is `null`,
+ * which every caller reads as "the patch is not known", never as "the patch is empty".
  *
- * @param {number} number @param {(args: string[]) => string} run
- * @returns {{oid: string, messageHeadline: string, parents: number}[] | null}
+ * `head` MAY BE AN ABBREVIATION (a verdict's `at <head8>`): the compare API resolves it.
+ *
+ * @param {string} head @param {string} base @param {(args: string[]) => string} run @returns {string | null}
  */
-export function readCommitChain(number, run = defaultRun) {
+export function readPatchId(head, base, run = defaultRun) {
   try {
-    const out = run(["api", `repos/${repoNow()}/pulls/${number}/commits`, "--paginate", "--jq",
-      ".[] | {oid: .sha, parents: (.parents | length), messageHeadline: (.commit.message | split(\"\\n\")[0])}"]);
-    const commits = out.split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l));
-    return commits.length > 0 ? commits : null;
+    return patchIdOfDiff(run(["api", "-H", "Accept: application/vnd.github.diff", `repos/${repoNow()}/compare/${base}...${head}`]));
   } catch {
-    // A REFUSED READ LEAVES THE PULL REQUEST UNENRICHED, and `draftOrder` then reads the current head alone
-    // -- this gate's behaviour before #2176. Never an empty chain: that would claim "no commits".
     return null;
   }
 }
 
 /**
- * The pull requests, each with its `commits` attached WHERE THE REVIEW QUESTION NEEDS THEM -- green, and
- * with no verdict at the current head. Everything else is returned untouched, so a quiet queue pays no call
- * and a busy one pays one per unreviewed green pull request, not one per open one.
+ * #3045: The shas of one pull request's commits, oldest first, or `null` when the read was refused. REST, not the list call: `commits`
+ * on `gh pr list --limit 100` is refused outright by GraphQL ("requesting up to 1,000,000 possible nodes which exceeds the maximum
+ * limit of 500,000", 2026-09-24), and REST returns every commit rather than the first hundred.
+ *
+ * @param {number} number @param {(args: string[]) => string} run @returns {string[] | null}
+ */
+export function readCommitShas(number, run = defaultRun) {
+  try {
+    const out = run(["api", `repos/${repoNow()}/pulls/${number}/commits`, "--paginate", "--jq", ".[].sha"]);
+    const shas = out.split("\n").map((l) => l.trim()).filter((l) => l !== "");
+    return shas.length > 0 ? shas : null;
+  } catch {
+    // A REFUSED READ LEAVES THE PULL REQUEST UNENRICHED: the gate then reads the current head alone. Never an empty list, which would claim "no commits".
+    return null;
+  }
+}
+
+/**
+ * #3045: HOW THE REVIEW QUESTION STANDS FOR A PULL REQUEST -- `"settled"` (green, so a reviewer is asked now), `"running"` (checks not
+ * finished, which an update-branch causes on a head with no new work), or `null` (red or headless: not this question's). The one place
+ * the two readers of it, `withPatchIds` and `draftOrder`, can agree. The `awaiting-evidence` label is NOT read here: `draftOrder` still
+ * reads a verdict somebody posted on a labelled pull request, and only `withPatchIds` declines to spend calls on one.
+ *
+ * @param {any} pr @returns {"settled" | "running" | null}
+ */
+export function reviewWait(pr) {
+  if (!pr?.headRefOid) return null;
+  if (reviewableHead(pr)) return "settled";
+  return checksSettledGreen(newestPerName(pr?.statusCheckRollup)) === null ? "running" : null;
+}
+
+/**
+ * #3045: THE PULL REQUESTS, each with `patchIds` (oid -> patch id) WHERE THE REVIEW QUESTION NEEDS THEM, so a verdict, a review and a
+ * refusal can stand for the PATCH rather than for the head they were posted at. Everything else is returned untouched, so a red or
+ * labelled pull request pays no call.
+ *
+ * A `"settled"` pull request is read at its head and at every older head a review or verdict names (`evidenceHeads`). A `"running"`
+ * one is read at its head and its PREDECESSOR only: the question is whether the checks now running are for a head that adds nothing
+ * (an update-branch), and if so `draftOrder` keeps the order it already had instead of dropping it for the minutes CI takes -- which
+ * is what wrote a `RESET` and re-armed the order after each of #3033's four merges. A refused read leaves a pull request unenriched.
  *
  * @param {any[]} prs @param {(args: string[]) => string} [run]
  */
-export function withCommitChains(prs, run = defaultRun) {
+export function withPatchIds(prs, run = defaultRun) {
   return prs.map((pr) => {
-    const head = reviewableHead(pr);
-    // #2416: NO VERDICT WILL BE ASKED OF A LABELLED PULL REQUEST, so its commit chain is a call for nothing.
-    if (!head || awaitingEvidence(pr) || verdictAmong(pr, [head]).verdict !== null) return pr;
-    const commits = readCommitChain(Number(pr.number), run);
-    return commits ? { ...pr, commits } : pr;
+    const wait = awaitingEvidence(pr) ? null : reviewWait(pr);
+    if (wait === null) return pr;
+    const base = String(pr.baseRefName ?? "main");
+    const head = String(pr.headRefOid);
+    const others = wait === "settled" ? evidenceHeads(pr) : predecessorOf(pr, run);
+    const entries = [head, ...others].map((oid) => /** @type {const} */ ([oid, readPatchId(oid, base, run)]));
+    const known = entries.filter(([, id]) => id !== null);
+    return known.length > 0 ? { ...pr, patchIds: Object.fromEntries(known) } : pr;
   });
+}
+
+/**
+ * The commit before a pull request's head, as a one-element list, or none when the commits could not be read or do not end at the
+ * head (a push landed between the list and the commits).
+ * @param {any} pr @param {(args: string[]) => string} run @returns {string[]}
+ */
+function predecessorOf(pr, run) {
+  const shas = readCommitShas(Number(pr.number), run);
+  return shas && shas.length >= 2 && shas[shas.length - 1] === String(pr.headRefOid) ? [shas[shas.length - 2]] : [];
 }
 
 /** #2416: the PR label meaning "my done-when needs an external run, and the evidence is not posted yet". */
@@ -6139,7 +6200,7 @@ export function scopeTick(scope, drain, read = readLanes(scope), readings = { co
 function codeReadings(openPrs) {
   const required = requiredWhenRed(openPrs);
   const split = readEjections(readUnarmed(shouldBeMerging(openPrs, required)));
-  return { prs: withEjections(withEvidenceLabelAges(withCommitChains(openPrs)), split?.ejections), required, baseTip: baseTipWhenRed(openPrs),
+  return { prs: withEjections(withEvidenceLabelAges(withPatchIds(openPrs)), split?.ejections), required, baseTip: baseTipWhenRed(openPrs),
     unarmed: split === null ? null : split.unarmed };
 }
 
@@ -6351,7 +6412,7 @@ export function fleetWaitingFacts(openRows, labJobs = []) {
 
 /**
  * WHEN THIS COMMIT WAS COMMITTED, as epoch ms, or `null`. The PR's PUSH TIME is not on `pr list` (`commits` is refused by GraphQL, see
- * `readCommitChain`), and the committer date of the head is the best REST has: a rebase, a merge of `main` and GitHub's "Update branch"
+ * `readCommitShas`), and the committer date of the head is the best REST has: a rebase, a merge of `main` and GitHub's "Update branch"
  * all make a head whose committer date is the push. `null` for a refused read, never "long ago".
  * @param {string} oid @param {(args: string[]) => string} run @returns {number | null}
  */
@@ -6638,7 +6699,7 @@ function main() {
   // pay for it twice on exactly the red tick this row is about.
   const required = requiredWhenRed(openPrs);
   const baseTip = baseTipWhenRed(openPrs), armingSplit = readEjections(readUnarmed(shouldBeMerging(openPrs, required))); // #3019: BEFORE the arguments -- ejected PRs are stamped onto `prs` and leave `unarmed`
-  const decideArgs = { primaryDrift, prs: withEjections(withPrOwners(withEvidenceLabelAges(withCommitChains(openPrs)), allOpen, stampLookup()), armingSplit?.ejections), readyRows: rows, promotableRows: promotableRows ?? [],
+  const decideArgs = { primaryDrift, prs: withEjections(withPrOwners(withEvidenceLabelAges(withPatchIds(openPrs)), allOpen, stampLookup()), armingSplit?.ejections), readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required, baseTip,
     epics: epicsWhenShelfEmpty(rows),
     answerOwed: rowsOwingAnswers({ openRows: allOpen, openPrs, closedRows: closedAnswerRows() }),
