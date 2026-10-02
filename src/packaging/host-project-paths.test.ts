@@ -38,6 +38,12 @@ import { HostConfigRefusal, homeHostConfig, hostConfigPath, leadsWorkspacesText,
 const checkout = REPO_ROOT.replace(/\/$/, "");
 const host = homeHostConfig();
 const units = readUnitsDeclaration();
+/** a11ign's host with no `tool`: what the TEMPLATES render for it, whether or not the cut (#2974) has set the key. The tool form is asserted in `host-tool-install.test.ts`. */
+const plainHost = (() => {
+  const plain: Record<string, unknown> = { ...host };
+  delete plain.tool;
+  return Object.freeze(plain);
+})() as never;
 
 /** A home-directory path, however it continues: what "the tool names a host" means in text. */
 const HOME_LITERAL = /\/home\/[A-Za-z_][\w.-]*/;
@@ -86,7 +92,8 @@ test("#2620: the constants `wake.mjs` still spells out (rows 3b and 3c) equal wh
 // rendering that differs by one byte reports every installed unit STALE, so this is the guard on "a11ign's values are unchanged".
 const TODAYS_TEXT = {
   // #2781 MOVED THIS ONE, deliberately: the unit gained a comment saying the `-` on `primary:update` is covered by the gate reading the primary.
-  "a11ign-work-tick.service": "b566128df67e75cf012540a9aa8d75a7d9a2fb91d32e12ad901f7b8bce8a171e",
+  // #2974 MOVED THIS ONE, deliberately: the cut-over moved its `primary:update` line from `/usr/bin/npm` to the pnpm shim and its header comment off the monorepo path (`units-run-pnpm.test.ts`).
+  "a11ign-work-tick.service": "1c388b269625507de8067d4620f3bd5a92dd7f94ea06a21516b18061352aa7dd",
   "a11ign-work-tick.timer": "c47470e624dc884515212badc11c82890fa864b7181175a2ab3570fe182e72ec",
   // #2782 MOVED THIS ONE, deliberately: the prune unit now declares `GH_CONFIG_DIR` (it reads a row's claim before removing a tree). The
   // installed copy reads STALE until `host:install` runs, which is a host action and not this row's.
@@ -102,7 +109,7 @@ const TODAYS_LEADS_LIST = "e0843e1aa26def5bd9a447839ba242c57a011a5612715d21300f8
 test("#2620: the three tool units, the wrapper and the leads list render to TODAY'S text for a11ign's values", () => {
   assert.equal(Object.keys(TODAYS_TEXT).length, 6, "POSITIVE CONTROL: six units (three services, three timers), not a subset");
   for (const [unit, digest] of Object.entries(TODAYS_TEXT)) {
-    assert.equal(sha256(shippedUnitText(unit) ?? ""), digest, `${unit} is not byte-identical to the unit the host runs`);
+    assert.equal(sha256(shippedUnitText(unit, { host: plainHost }) ?? ""), digest, `${unit} is not byte-identical to the unit the host runs`);
   }
   assert.equal(sha256(shippedScriptText("gh") ?? ""), TODAYS_GH_WRAPPER, "the wrapper installed at ~/.local/bin/gh");
   assert.equal(sha256(leadsListText()), TODAYS_LEADS_LIST, "the leads list installed at ~/leads/workspaces.txt");
@@ -155,7 +162,7 @@ function classifiedFixture() {
   mkdirSync(project);
   for (const name of TOOL_ENTRIES) writeFileSync(join(tool, name), "");
   for (const name of units.own) writeFileSync(join(project, name), "");
-  return { root, tool, project, deps: { shippedDir: tool, projectUnitsDir: project, units } };
+  return { root, tool, project, deps: { shippedDir: tool, projectUnitsDir: project, units, host: plainHost } };
 }
 
 test("#2620: an EIGHTEENTH entry classified nowhere is REFUSED, in either directory, and the classified fixture reads clean", () => {

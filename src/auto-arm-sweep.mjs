@@ -63,7 +63,7 @@
 // for the same reason. An argument handed to this sweep means the caller wanted something other than
 // "arm the standing queue", and running the sweep anyway would answer a question nobody asked.
 //
-// THE IMPORT IS RELATIVE, never `@a11ign/worker-fleet/cli-flags`. The package specifier resolves to
+// THE IMPORT IS RELATIVE, never `@a11ign/screenreader-fleet/cli-flags`. The package specifier resolves to
 // `dist/cli-flags.mjs`, so it needs `npm ci` AND a build to have happened -- and this job deliberately has
 // neither, only `actions/checkout`. #330 and #331 are what that circular bootstrap costs: a top-level
 // workspace import in `build-packages.mjs` took `main` down, and every worktree symlinking `node_modules`

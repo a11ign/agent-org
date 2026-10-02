@@ -31,8 +31,8 @@ export const TEMPLATE_SUFFIX = ".in";
  * @typedef {{ workers: string, leads: string, leadsHeader: string[], leadsWorkspaces: LeadsWorkspace[] }} GhDirectories
  * @typedef {{ id: string, checkout: string }} HostProject
  * @typedef {{ schema: number, home: string, binDir: string, primary: string, projects: HostProject[], gh: GhDirectories,
- *   tool?: string, stateDir?: string }} HostConfig
- * `tool` and `stateDir` are ABSENT (the key is not there, never `undefined`) on a host that has not moved to decision 3's installed
+ *   tool?: string, stateDir?: string, clones?: Readonly<Record<string, string>> }} HostConfig
+ * `tool`, `stateDir` and `clones` are ABSENT (the key is not there, never `undefined`) on a host that has not moved to decision 3's installed
  * form, and a11ign's `host.json` is exactly that host until #2623 cuts over.
  * @typedef {{ prefix: string, boardReportWorkflow: string, own: string[] }} UnitsDeclaration
  */
@@ -137,6 +137,18 @@ function readGh(host, source) {
 }
 
 /**
+ * `clones` (#2969, read here by #2991 so `host.json` has one reader): where the clone of each KEYED code repository lives, by key. A
+ * clone is a machine fact no repository can know, and it is not a `projects` entry. ABSENT is a host with no keyed repository; a
+ * declared one is refused like any path, so a relative clone never reaches a `git -C`.
+ * @param {Record<string, unknown>} host @param {string} source @returns {Readonly<Record<string, string>> | undefined}
+ */
+function readClones(host, source) {
+  if (!Object.hasOwn(host, "clones")) return undefined;
+  const clones = requiredObject(host.clones, "clones", source);
+  return Object.freeze(Object.fromEntries(Object.keys(clones).map((key) => [key, requiredPath(clones, key, "clones.", source)])));
+}
+
+/**
  * Parse the host's declaration. PURE: no file is read, so a test drives every refusal with a string.
  * @param {string} text @param {string} [source] what to call it in a refusal
  * @returns {Readonly<HostConfig>}
@@ -160,6 +172,7 @@ export function parseHostConfig(text, source = HOST_DECLARATION_PATH) {
   }
   const tool = optionalPath(host, "tool", "", source);
   const stateDir = optionalPath(host, "stateDir", "", source);
+  const clones = readClones(host, source);
   if (tool !== undefined) checkToolForm(tool, projects, source);
   return Object.freeze({
     schema: SUPPORTED_SCHEMA,
@@ -170,6 +183,7 @@ export function parseHostConfig(text, source = HOST_DECLARATION_PATH) {
     gh: readGh(host, source),
     ...(tool === undefined ? {} : { tool }),
     ...(stateDir === undefined ? {} : { stateDir }),
+    ...(clones === undefined ? {} : { clones }),
   });
 }
 

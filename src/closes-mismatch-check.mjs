@@ -55,7 +55,8 @@
  */
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-import { extractClosesDeclaration } from "./acceptance-commands.mjs";
+import { extractClosesDeclaration, closesReferences } from "./acceptance-commands.mjs";
+import { REPO } from "./project-identity.mjs";
 import { lookupClosingIssues, lookupRecentClosesPrs } from "./merge-guard/lookups.mjs";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 
@@ -73,10 +74,11 @@ const CLOSING_KEYWORDS = "close|closes|closed|fix|fixes|fixed|resolve|resolves|r
  * caller's message rather than treated as "not found, so nothing to report".
  * @param {string} body
  * @param {number} number
+ * @param {string | null} [repo] #2995: set, looks for the FULL form (`owner/name#N`)
  * @returns {{ line: number, text: string } | null}
  */
-export function findClosingPhrase(body, number) {
-  const pattern = new RegExp(`\\b(?:${CLOSING_KEYWORDS})\\s+#${number}\\b`, "i");
+export function findClosingPhrase(body, number, repo = null) {
+  const pattern = new RegExp(`\\b(?:${CLOSING_KEYWORDS})\\s+${(repo ?? "").replace(/\./g, "\\.")}#${number}\\b`, "i");
   const lines = (body ?? "").split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
     if (pattern.test(lines[i])) return { line: i + 1, text: lines[i].trim() };
@@ -85,6 +87,7 @@ export function findClosingPhrase(body, number) {
 }
 
 /** @typedef {{ ok: true } | { ok: false, reasons: string[] } | { ok: null, reason: string }} MismatchReport */
+/** @typedef {number | { repo?: string, number: number }} ResolvedIssue a bare number is the PR's own repository's */
 
 /**
  * Pure. Compares what `declaration` DECLARED against what `resolved` GitHub actually RESOLVED, and
@@ -94,41 +97,51 @@ export function findClosingPhrase(body, number) {
  *
  * `declaration.kind` of `"missing"`/`"malformed"` is treated as declaring NOTHING for this comparison --
  * see this file's own header for why those are `closesDeclarationReport`'s question, not this one's.
+ *
+ * #2995: A ROW IS A REPOSITORY AND A NUMBER: both sides are compared as `owner/repo#N`, a bare `#N` taking `prRepo` (the tracker's by default).
+ * A bare `#N` in a PR of any other repository is refused even when GitHub resolved it: it names an issue of THAT repository, never the row.
  * @param {import("./acceptance-commands.mjs").ClosesDeclaration} declaration
- * @param {number[] | null} resolved
+ * @param {ResolvedIssue[] | null} resolved
  * @param {string} body
+ * @param {string} [prRepo]
  * @returns {MismatchReport}
  */
-export function closesMismatchReport(declaration, resolved, body) {
+export function closesMismatchReport(declaration, resolved, body, prRepo = REPO) {
   if (resolved === null) {
     return { ok: null,
       reason: "could not ask GitHub which issues this PR would close (the closingIssuesReferences lookup failed)" };
   }
-  const declaredNumbers = declaration.kind === "closes" ? declaration.numbers : [];
-  const declaredSet = new Set(declaredNumbers);
-  const resolvedSet = new Set(resolved);
-  const declaredLabel = declaredNumbers.length === 0 ? "none" : `#${declaredNumbers.join(", #")}`;
+  const declared = declaration.kind === "closes"
+    ? closesReferences(declaration).map((ref) => ({ repo: ref.repo ?? prRepo, number: ref.number, bare: ref.repo === null })) : [];
+  const got = resolved.map((issue) => (typeof issue === "number" ? { repo: prRepo, number: issue } : { repo: issue.repo ?? prRepo, number: issue.number }));
+  const named = (/** @type {{ repo: string, number: number }} */ ref) => (ref.repo === prRepo ? `#${ref.number}` : `${ref.repo}#${ref.number}`);
+  const sameRow = (/** @type {{ repo: string, number: number }} */ a) => (/** @type {{ repo: string, number: number }} */ b) => a.repo === b.repo && a.number === b.number;
+  const declaredLabel = declared.length === 0 ? "none" : declared.map(named).join(", ");
 
-  const accidentalClosures = resolved.filter((n) => !declaredSet.has(n));
-  const unresolvedDeclarations = declaredNumbers.filter((n) => !resolvedSet.has(n));
+  const accidentalClosures = got.filter((issue) => !declared.some(sameRow(issue)));
+  const wrongRepository = prRepo === REPO ? [] : declared.filter((ref) => ref.bare);
+  const unresolvedDeclarations = declared.filter((ref) => !got.some(sameRow(ref)) && !wrongRepository.includes(ref));
 
-  if (accidentalClosures.length === 0 && unresolvedDeclarations.length === 0) {
+  if (accidentalClosures.length === 0 && unresolvedDeclarations.length === 0 && wrongRepository.length === 0) {
     return { ok: true };
   }
 
   const reasons = [];
-  for (const n of accidentalClosures) {
-    const phrase = findClosingPhrase(body, n);
+  for (const issue of accidentalClosures) {
+    const phrase = findClosingPhrase(body, issue.number, issue.repo === prRepo ? null : issue.repo);
     reasons.push(phrase
-      ? `you declared ${declaredLabel}, but GitHub will close #${n} anyway -- the phrase "${phrase.text}" `
+      ? `you declared ${declaredLabel}, but GitHub will close ${named(issue)} anyway -- the phrase "${phrase.text}" `
         + `on line ${phrase.line} is what does it`
-      : `you declared ${declaredLabel}, but GitHub will close #${n} anyway, for a phrase this scan could `
+      : `you declared ${declaredLabel}, but GitHub will close ${named(issue)} anyway, for a phrase this scan could `
         + "not locate in the body text (check for a cross-reference to a commit, or a different repo)");
   }
-  for (const n of unresolvedDeclarations) {
-    reasons.push(`you declared #${n}, but GitHub will NOT close it -- the declaration did not produce a `
-      + `real closing reference (confirm #${n} exists in this repo, and that the line reads exactly `
-      + `"Closes #${n}")`);
+  for (const ref of unresolvedDeclarations) {
+    reasons.push(`you declared ${named(ref)}, but GitHub will NOT close it -- the declaration did not produce a `
+      + `real closing reference (confirm ${named(ref)} exists in ${ref.repo === prRepo ? "this repo" : ref.repo}, and that the line reads exactly `
+      + `"Closes ${named(ref)}")`);
+  }
+  for (const ref of wrongRepository) {
+    reasons.push(`you wrote \`Closes #${ref.number}\`, which names issue ${ref.number} of ${prRepo}, not a row of ${REPO} -- write \`Closes ${REPO}#${ref.number}\``);
   }
   return { ok: false, reasons };
 }
@@ -217,7 +230,7 @@ function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/closes-mismatch-check.mjs" });
   const prNumber = Number(process.argv[2]);
   if (!prNumber) {
-    console.error("usage: closes-mismatch-check.mjs <pr-number>  (the PR body is read from PR_BODY)");
+    console.error("usage: closes-mismatch-check.mjs <pr-number> [owner/repo]  (the PR body is read from PR_BODY)");
     process.exit(2);
   }
   // FROM AN ENV VAR, NEVER ARGV -- identical reasoning to `acceptance-commands.mjs`'s own `main()`: a PR
@@ -229,9 +242,9 @@ function main() {
       + "which the acceptance job's own closesDeclarationReport gate already refuses.");
     process.exit(0);
   }
-  const closing = lookupClosingIssues(prNumber);
-  const resolved = closing === null ? null : closing.map((issue) => issue.number);
-  const report = closesMismatchReport(declaration, resolved, body);
+  const prRepo = process.argv[3] ?? REPO; // #2995
+  const resolved = lookupClosingIssues(prNumber, prRepo);
+  const report = closesMismatchReport(declaration, resolved, body, prRepo);
   if (report.ok === null) {
     // FAIL CLOSED, DELIBERATELY, ON A LOOKUP FAILURE -- "could not ask" must never read as "they
     // matched". This job runs in `mergeSafety`, a required `gate` context, so this blocks every merge on
@@ -249,7 +262,7 @@ function main() {
   if (!report.ok) {
     // The sibling query is asked only when this PR's own facts already fit, so a lone mismatch costs nothing extra.
     const underTest = { declared: declaration.kind === "closes" ? declaration.numbers : [], resolved: resolved ?? [] };
-    const fits = underTest.declared.length > 0 && underTest.resolved.length === 0;
+    const fits = underTest.declared.length > 0 && underTest.resolved.length === 0 && prRepo === REPO;
     const siblings = fits ? recentClosesSiblings(lookupRecentClosesPrs(), prNumber) : null;
     const { exit, lines } = mismatchVerdict(report, underTest, siblings);
     for (const line of lines) console.log(line);

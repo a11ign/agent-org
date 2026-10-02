@@ -279,6 +279,9 @@ export function checkRegion(body, rest, { git = defaultGit, rowBody, rootFiles, 
   }
   if (closes.kind !== "closes") return { refusal: null, note: null };
   const references = closesReferences(closes);
+  const prRepo = flagAfter(rest, "--repo") ?? REPO; // #2995: a bare `Closes #N` in another repository's PR names THAT repository's issue
+  const bare = prRepo === REPO ? undefined : references.find((reference) => reference.repo === null);
+  if (bare) return { refusal: `pr-open: REFUSED -- \`Closes #${bare.number}\` names an issue of ${prRepo}, not a row of ${REPO}. Write \`Closes ${REPO}#${bare.number}\`. Nothing was sent (#2995).`, note: null };
   const rows = references.map(referenceName).join(", ");
   const read = readRegions(references, { rowBody, rootFiles });
   if (read.kind === "no-section") {

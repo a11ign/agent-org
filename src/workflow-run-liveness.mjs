@@ -35,7 +35,7 @@
 //                   in the one place it would be most expensive -- the record of what actually shipped.
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-// RELATIVE, NOT the `@a11ign/worker-fleet/cli-flags` package specifier: that export map
+// RELATIVE, NOT the `@a11ign/screenreader-fleet/cli-flags` package specifier: that export map
 // points at `dist/`, so it needs both `node_modules` AND a completed build. This file is reachable
 // from a pre-install entry (see `pre-install-import-graph.test.ts`, which derives that population
 // rather than naming it), and there it dies on startup with ERR_MODULE_NOT_FOUND.

@@ -277,7 +277,7 @@ const siblingDir = (packageDir, dependency) => {
  * The names `npm` will put on a consumer's PATH, for either spelling of `bin`.
  *
  * The string shorthand (`"bin": "./cli.mjs"`) links ONE name — the package name with any scope dropped —
- * so `@a11ign/worker-fleet` would link `worker-fleet`. Reading only the object form would report a package
+ * so `@a11ign/screenreader-fleet` would link `worker-fleet`. Reading only the object form would report a package
  * with the shorthand as declaring no bins at all, which is the same "an absence reads as a pass" shape the
  * missing-smoke-test branch above exists to refuse.
  *
@@ -484,7 +484,7 @@ function packAndInstall(dir, consumer, manifest) {
   // BEFORE the smoke test, because a bin a consumer cannot reach is a packaging defect whether or not
   // the library half works — and because most smoke tests import the package rather than spawning it,
   // so a green smoke run says nothing about `bin` at all. Measured on this repo the day the check was
-  // written: pointing all five of `@a11ign/worker-fleet`'s bins at a file that does not exist left the
+  // written: pointing all five of `@a11ign/screenreader-fleet`'s bins at a file that does not exist left the
   // gate reporting `ok: true`.
   return { note, refused: unreachableBinVerdict(consumer, manifest, manifest.name ?? "") };
 }

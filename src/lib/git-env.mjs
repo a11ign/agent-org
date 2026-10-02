@@ -17,7 +17,7 @@
 // "a fact stated twice, and the copies drifted": one copy missing one variable is silent until the day
 // that variable is the one set.
 //
-// `@a11ign/worker-fleet` publishes `check-worker-code.mjs`/`deploy-worker.mjs` as `bin` entries, so
+// `@a11ign/screenreader-fleet` publishes `check-worker-code.mjs`/`deploy-worker.mjs` as `bin` entries, so
 // its own git-spawning files (`code-drift.mjs` among them) cannot import anything outside their own
 // package -- a published tarball does not carry this repo's top-level `scripts/`. `packages/worker-fleet/
 // src/git-safe-env.mjs` is therefore a DELIBERATE, disclosed duplicate of this file for that one package,

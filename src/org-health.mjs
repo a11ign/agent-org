@@ -24,6 +24,15 @@
 //                                            capture ran 4.9 days and were found by a human reading a terminal.
 //   copies-drifted               any         a declared copy (every file in `packages/agent-org/src/lib`, each headed `COPIED FROM <original>`) whose
 //                                            body no longer matches its original beyond the lines its own header names
+// THE SEVENTH, #2970 (the chairman, 2026-10-02: "an open PR is not progressing towards merge for N minutes, whatever the reason"):
+//   pr-not-progressing           180 min     an open PR the classifier (`stallReasonOf`, #2968) puts in NEITHER `progressing` NOR
+//                                            `held-on-purpose`, with no push, review or comment for that long. N IS THE p94.9 OF PR
+//                                            OPEN-TO-MERGE: 651 PRs merged 2026-09-18..10-01 (`gh pr list --state merged`, createdAt to
+//                                            mergedAt) had p50/p75/p90/p95 = 29 / 59 / 121 / 181 minutes and 618 of them merged within
+//                                            180, so a PR quiet for longer than 95% of PRs take to merge ENTIRELY is not on its way.
+//                                            A reading at a moment: the command is under `## Measured` on #3001.
+// THE SUBJECT IS TIME WITHOUT A STATE CHANGE, NOT A CHECK STATE: #2950 sat a conflicted DRAFT with no checks for 7.5 h and the red
+// signal could not see it, a green PR nobody reviews has no red either, and the detector for it was the PR that was stuck.
 // WHAT `host-units-stale` AND `primary-not-at-main` ALREADY COVER, so this does not repeat them: the first asks about the systemd UNIT
 // files against the installed ones, the second about the primary checkout the work-tick unit runs from (its code IS that working
 // tree) against `origin/main`. NEITHER READS A DECLARED COPY. The extracted `a11ign/agent-org` repo is a third thing and is NOT read
@@ -80,6 +89,14 @@ const COPY_HEADER_START = /^\/\/ COPIED FROM `([^`]+)` at /;
 const COPY_HEADER_END = "// ==== end of copy header ====";
 /** What a header says it changed: `NOTHING`, `ONE LINE`, or `N NAMED LINES`. */
 const COPY_HEADER_CHANGES = /CHANGED FROM THE ORIGINAL(?:,\s*(?:(\d+) NAMED LINES?|ONE LINE)|:\s*NOTHING)/;
+/** An open PR quiet this long, and neither progressing nor held on purpose, is not on its way to merge. See the table above. */
+export const PR_NOT_PROGRESSING_MINUTES = 180;
+/**
+ * The two `stallReasonOf` answers that are NOT a stall (`STALL_REASON.PROGRESSING`, `STALL_REASON.HELD_ON_PURPOSE`), written as the
+ * strings because this is a leaf and `pr-orders.mjs` is not one. `org-health.test.ts` pins them to the classifier's own values and
+ * to its whole reason set, so a reason added there is either covered or named here, never silently dropped.
+ */
+export const REASONS_THAT_ARE_NOT_A_STALL = Object.freeze(["progressing", "held-on-purpose"]);
 /** The session every signal is offered to. */
 const OFFERED_TO = "ceo";
 /** How many merged PRs the last-merge read looks at: the newest-updated, which holds every merge of the last day or two. */
@@ -92,6 +109,7 @@ export const SIGNALS = Object.freeze({
   PRIMARY: "primary-not-at-main",
   FLEET_IDLE: "fleet-idle-while-work-waits",
   COPIES: "copies-drifted",
+  PR_NOT_PROGRESSING: "pr-not-progressing",
 });
 
 /**
@@ -280,6 +298,47 @@ export function fleetIdleReading({ now, fleet, waiting }) {
 }
 
 /**
+ * @typedef {{ number: number | string, reason: string, owner: string | null, lastActivityAt: number | null }} QuietPr
+ * One open PR the classifier gave a reason. `reason` is `stallReasonOf`'s answer, `owner` is `null` when NOBODY could be named, and
+ * `lastActivityAt` is the newest of its push, review and comment times (epoch ms), `null` when a read it needed was refused.
+ */
+
+/** @param {number} minutes @returns {string} how long a PR has been quiet: minutes under two hours, hours to one decimal after */
+const quietFor = (minutes) => (minutes >= HOURS_FROM_MINUTES ? `${hoursOf(minutes)} h` : `${minutes} min`);
+
+/**
+ * SIGNAL 7: AN OPEN PULL REQUEST IS NOT PROGRESSING TOWARDS MERGE, WHATEVER THE REASON (#2970). The reason is the CLASSIFIER'S
+ * (`stallReasonOf`), asked of every open PR by the caller, and ANY reason but the two that are not a stall counts: that is what
+ * keeps this and the owner's order from disagreeing about which PRs are stuck, and it is what a new reason falls into by default.
+ * THE AGE IS TIME SINCE THE NEWEST PUSH, REVIEW OR COMMENT, so a PR somebody is working on is never offered and a held one never is
+ * however old (a freeze is a decision, #2956). `stalledPrs` is `null` for a refused PR read; a PR whose activity could not be dated
+ * makes the answer unknown unless another PR trips, and is never read as old.
+ *
+ * KEYED ON THE SET OF `number:reason`, not an hour: a push or a comment takes a PR out of the set, a new stall adds to it, and
+ * an unchanged set holds for the two hours the cause holds for.
+ * @param {{ now: number, stalledPrs: QuietPr[] | null }} input
+ * @returns {Reading}
+ */
+export function prNotProgressingReading({ now, stalledPrs }) {
+  if (stalledPrs === null) return unknown(SIGNALS.PR_NOT_PROGRESSING, "the open pull requests could not be read");
+  const stalled = stalledPrs.filter((pr) => !REASONS_THAT_ARE_NOT_A_STALL.includes(pr.reason));
+  const quiet = stalled.filter((pr) => pr.lastActivityAt !== null && now - pr.lastActivityAt >= PR_NOT_PROGRESSING_MINUTES * MS_PER_MINUTE);
+  if (quiet.length === 0) {
+    const undated = stalled.filter((pr) => pr.lastActivityAt === null);
+    return undated.length === 0 ? clear(SIGNALS.PR_NOT_PROGRESSING)
+      : unknown(SIGNALS.PR_NOT_PROGRESSING, `${undated.length} stalled PR(s) carried no activity time, so how long they have been quiet is not known`);
+  }
+  const oldestFirst = [...quiet].sort((a, b) => /** @type {number} */ (a.lastActivityAt) - /** @type {number} */ (b.lastActivityAt));
+  const first = /** @type {number} */ (oldestFirst[0].lastActivityAt) + PR_NOT_PROGRESSING_MINUTES * MS_PER_MINUTE;
+  const named = oldestFirst.slice(0, MAX_NAMED).map((pr) => `#${pr.number} (${pr.reason}, quiet `
+    + `${quietFor(Math.round((now - /** @type {number} */ (pr.lastActivityAt)) / MS_PER_MINUTE))}, ${pr.owner === null ? "NO OWNER" : `owner ${pr.owner}`})`);
+  const more = oldestFirst.length > MAX_NAMED ? `, and ${oldestFirst.length - MAX_NAMED} more` : "";
+  const key = quiet.map((pr) => `${pr.number}:${pr.reason}`).sort().join(",");
+  return { signal: SIGNALS.PR_NOT_PROGRESSING, status: "tripped", firstTrippedAt: first, discriminator: `${SIGNALS.PR_NOT_PROGRESSING}@${key}`,
+    detail: `${oldestFirst.length} open PR(s) neither merged nor held, with no push, review or comment for over ${PR_NOT_PROGRESSING_MINUTES} min: ${named.join("; ")}${more}` };
+}
+
+/**
  * @typedef {{ original: string, copy: string, allowedLines: number | null, originalText: string | null, copyText: string }} CopyPair
  * One declared copy: where it came from and where it sits (both relative to the checkout), how many lines its own header says it
  * changed (`null` when the header says none), the original's text (`null` when it could not be read) and the copy's text.
@@ -441,13 +500,13 @@ export function readLastMergedAt(run, repo) {
 }
 
 /**
- * THE READINGS, in a fixed order: the four of #2936, then the two of #2937 WHEN THEIR FACT IS GIVEN. An OMITTED fact (`undefined`) is
+ * THE READINGS, in a fixed order: the four of #2936, then the two of #2937 and the one of #2970 WHEN THEIR FACT IS GIVEN. An OMITTED fact (`undefined`) is
  * "this caller does not ask", which is silent; `null` is "asked and refused", which is a stated unknown. The two must not share a
  * value, or a gate that never wired the fleet read would log an unknown every tick for a fault nobody can fix from the log.
  * @param {{ now: number, lastMergedAt: number | null, work: { greenPrs: number, claimableRows: number } | null, redPrs: RedPr[] | null,
  *           refusals: Record<string, { reason: string, ticks: number }> | null,
  *           drift: { behind: number, ahead: number, dirty: string[] } | null, primarySince: number | null,
- *           fleet?: FleetCaptures | null, waiting?: FleetWaiting | null, copies?: CopyPair[] | null }} facts
+ *           fleet?: FleetCaptures | null, waiting?: FleetWaiting | null, copies?: CopyPair[] | null, stalledPrs?: QuietPr[] | null }} facts
  * @returns {Reading[]}
  */
 export function orgHealthReadings(facts) {
@@ -455,6 +514,7 @@ export function orgHealthReadings(facts) {
     primaryReading({ now: facts.now, drift: facts.drift, since: facts.primarySince })];
   if (facts.fleet !== undefined) readings.push(fleetIdleReading({ now: facts.now, fleet: facts.fleet, waiting: facts.waiting ?? null }));
   if (facts.copies !== undefined) readings.push(copyDriftReading({ pairs: facts.copies }));
+  if (facts.stalledPrs !== undefined) readings.push(prNotProgressingReading({ now: facts.now, stalledPrs: facts.stalledPrs }));
   return readings;
 }
 
@@ -474,6 +534,10 @@ const REMEDY = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
   [SIGNALS.COPIES]: "A declared copy no longer matches its original. Neither is known to be the right one: read both (`git log -3 -- <path>` for each), "
     + "then carry the change to the other side and move the commit in the copy's header. `agent-org-outward-edges.test.ts` is the exact check "
     + "and will go red on `main`'s next PR until you do.",
+  [SIGNALS.PR_NOT_PROGRESSING]: "Each PR named has had no push, review or comment for hours and is not held. The reason says who owes the next move: "
+    + "`conflicted` and `red` are its owner's to fix, `awaiting-review` needs a verdict (`reviewer-<n>`, or `product-manager` when the PR has none), "
+    + "`awaiting-author-draft` is its author's to mark ready, `unarmed` is `product-manager`'s. The owner may already have been ordered and nothing came of it: "
+    + "READ WHY (`gh pr view <n>`), then unstick it, re-lane it by putting the label of a session that can on the PR, or close it if it is abandoned.",
 }));
 
 /**

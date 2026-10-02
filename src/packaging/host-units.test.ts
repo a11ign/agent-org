@@ -38,13 +38,25 @@ import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, syst
   shippedScriptText, leadsListText, modelEffortDrift, sessionModelDrift, sessionModelNotes, lastModelIn,
   liveClaudeSessions, OPTIONAL_UNITS, declaredProjectKeys, windowEnd, windowEndNotes } from "../host-units.mjs";
 import { DECLARED_CLAUDE_MODELS, PROFILES, CLAUDE_EFFORTS } from "../worker-profile.mjs";
+import { homeHostConfig } from "../host-config.mjs";
+
+/**
+ * a11ign's host AS THE TEMPLATES RENDER FOR IT, whether or not its `host.json` names a `tool` (#2974: the cut sets it). The tests below that
+ * pin what a template says -- its `ExecStart`, its working directory, its schedule -- read it through this, so they keep asking the template
+ * and not the host's install form; `host-tool-install.test.ts` is where the tool form of every unit is asserted.
+ */
+const PLAIN_A11IGN_HOST = (() => {
+  const plain: Record<string, unknown> = { ...homeHostConfig() };
+  delete plain.tool;
+  return Object.freeze(plain);
+})();
 
 /**
  * #2620: ONE SHIPPED UNIT AS IT INSTALLS -- the tool's three are rendered from `host/*.in` templates and the project's own are read
  * verbatim from `.agent-org/units/`, so a test that wants a unit's text asks for it by its installed name and not by a directory.
  */
 const shippedText = (unit: string): string => {
-  const text = shippedUnitText(unit);
+  const text = shippedUnitText(unit, { host: PLAIN_A11IGN_HOST as never });
   assert.ok(text !== null, `nothing ships a unit named ${unit}`);
   return text;
 };

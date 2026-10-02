@@ -45,6 +45,7 @@ import { REPO } from "./project-identity.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { newestPerName } from "./newest-check-run.mjs";
 import { holdersOf } from "./pr-hold-state.mjs";
+import { brokenChecks } from "./red-pr.mjs";
 import { armedFromApi } from "./pr-armed-state.mjs";
 // `poolFromHeaders` WAS DEFINED HERE until #2003, and its `Pool` shape with it. `work-gate.mjs` needs the
 // same reading on its refusal path and may not import this file, so the reader is a leaf now.
@@ -75,7 +76,11 @@ export const EXIT = { EXAMINED: 0, INCOMPLETE: 2 };
  */
 export const NOT_RED = ["SUCCESS", "SKIPPED", "NEUTRAL", "CANCELLED", ""];
 
-/** @param {{conclusion?: string | null}} check */
+/**
+ * SECTION 4's decider only (merged commits on `main`, which carry no `hold:` label). Section 2's open-PR `red` is `brokenCheckNames` since
+ * #2981: a hold turns two jobs red on purpose, and this predicate cannot say so.
+ * @param {{conclusion?: string | null}} check
+ */
 export function isRed(check) {
   return !NOT_RED.includes((check.conclusion ?? "").toUpperCase());
 }
@@ -284,7 +289,7 @@ export function nonSuccessByName(merged) {
   for (const pr of merged) {
     if (pr.checks === null) { unreadable.push(pr.number); continue; }
     for (const check of pr.checks) {
-      if (!isRed(check)) continue;  // NOT_RED above states why, once, for both readers.
+      if (!isRed(check)) continue;  // NOT_RED above states why.
       if (!byName.has(check.name)) byName.set(check.name, []);
       byName.get(check.name).push(pr.number);
     }
@@ -453,8 +458,28 @@ export function openPRs({ run = gh } = {}) {
     // rather than by somebody remembering, and it agrees with `arm-pr`/`auto-arm-sweep` at every instant
     // including the one where main has the rename and this branch has not been carried yet.
     holders: holdersOf((pr.labels ?? []).map((/** @type {any} */ l) => String(l?.name ?? ""))),
-    redChecks: checksOnSha(pr.head?.sha ?? "", run)?.filter(isRed).map((c) => c.name) ?? null,
+    redChecks: brokenCheckNames(pr.labels, checksOnSha(pr.head?.sha ?? "", run)),
   }));
+}
+
+/**
+ * THE TABLE'S `red` AND `absorbed` ARE DECIDED BY `red-pr.mjs`, NOT BY `isRed` (#2981, the fourth consumer #2956's scan found). A PR held
+ * with `hold:*` is red in `deliberateRefusals` and `gate` BY DESIGN (#2883, #2954), so `isRed` over its check runs read a hold as a
+ * breakage and called a held, behind PR "absorbed" -- a state that says its owner is fixing a red nobody is fixing. `brokenChecks` leaves a
+ * hold's own two jobs out and keeps every other red, so a held PR with a real failure is still named.
+ *
+ * ADAPTER ONLY: this file reads REST check runs (`conclusion` lower-case, `completed_at`), the decider reads `statusCheckRollup` (upper-case,
+ * `completedAt`). The mapping happens here so `HOLD_OWN_JOBS` is never copied into a second file. `null` stays `null`: an unreadable sha is
+ * not an empty list of reds.
+ *
+ * @param {{name?: string}[] | undefined} labels
+ * @param {{name: string, conclusion: string}[] | null} checks
+ * @returns {string[] | null}
+ */
+export function brokenCheckNames(labels, checks) {
+  if (checks === null) return null;
+  const statusCheckRollup = checks.map((c) => ({ name: c.name, conclusion: c.conclusion.toUpperCase() }));
+  return brokenChecks({ labels, statusCheckRollup }).map((c) => c.name);
 }
 
 
