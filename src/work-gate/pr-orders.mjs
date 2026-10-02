@@ -23,12 +23,13 @@ import { NO_VERDICT } from "../merge-guard/checks-rule.mjs";
 import { armabilityOf } from "../pr-hold-state.mjs";
 import { isHeldRed } from "../red-pr.mjs";
 import { REPO } from "../project-identity.mjs";
+import { equivalentHeads } from "../review-verdict.mjs";
 // #2619 (child 3d of #69): the `session:` prefix and the `blocked` label, moved to the project's
 // declared vocabulary. (The `"ready"` action `kind` a few lines below is `gh pr ready`'s draft-status
 // flip -- a built-in GitHub PR field, not this project's `ready` row label -- so it stays a literal.)
 import { SESSION_PREFIX, BLOCKED_LABEL } from "../project-vocabulary.mjs";
 import { labelsOf, sessionOf, conflictStateOf, CONFLICT_STATE, reviewStateOf, BLOCKING_REVIEW_STATES, checksSettledGreen, conclusionOf, stillRunning, anyChecksRed, requiredCheckNames,
-  blockingChecks, reviewableHead, verdictAmong, awaitingEvidence, AWAITING_EVIDENCE_LABEL,
+  blockingChecks, reviewableHead, reviewWait, verdictAmong, awaitingEvidence, AWAITING_EVIDENCE_LABEL,
   AWAITING_EVIDENCE_QUIET_HOURS, AWAITING_EVIDENCE_QUIET_MS, HOUR_MS, REVIEW_STATE } from "../work-gate.mjs";
 
 /**
@@ -508,7 +509,7 @@ function reviewBlockedSetOrder(blocked) {
 /**
  * One labelled pull request's order, to the session on its label. PER PULL REQUEST, where the set order is one
  * for the set: this is one author's one branch, and a set order would wake them about work that is not theirs.
- * @param {{number: number, repoKey?: string, code: string, session?: string | null, head?: string, refusedAt?: string | null}} b
+ * @param {{number: number, repoKey?: string, code: string, session?: string | null, head?: string, refusedAt?: string | null, patchUnchanged?: boolean | null}} b
  */
 function ownedReviewBlockedOrder(b) {
   const session = String(b.session);
@@ -540,7 +541,7 @@ function awaitingReviewPrompt(b) {
  * THE FIRST FACT IS THE COMPARISON, and it decides what the rest means (#2084: #2049 sat seven hours on a
  * refusal posted at a head the author had already fixed). Three readings, and the third is not the first:
  * the refusal is at the current head, at an OLDER head, or the payload named no commit at all.
- * @param {{number: number, repo?: string, repoKey?: string, head?: string, refusedAt?: string | null}} b
+ * @param {{number: number, repo?: string, repoKey?: string, head?: string, refusedAt?: string | null, patchUnchanged?: boolean | null}} b
  */
 function refusedPrompt(b) {
   const head = b.head ?? "";
@@ -552,6 +553,12 @@ function refusedPrompt(b) {
       + "before doing anything.";
   } else if (b.refusedAt === head) {
     fact = `The refusal was posted AT the current head \`${short(head)}\`: it is live and the rework is yours.`;
+  } else if (b.patchUnchanged === true) {
+    // #3045: A HEAD WITH THE SAME PATCH IS THE SAME WORK. The refusal stands at it exactly as at the head it was posted at, so there is no
+    // new work for `reviewer-<n>` to look at and nothing to ask for: the rework is the author's.
+    fact = `The refusal was posted at \`${short(b.refusedAt)}\` and the head is now \`${short(head)}\`, but the PATCH is unchanged since: `
+      + "what the review refused is still what this pull request does, so the refusal stands at the same work, the rework is yours, "
+      + `and a re-ask of \`${reviewerSeat(b)}\` is not owed. Only a changed patch earns a fresh look.`;
   } else {
     fact = `The refusal was posted at \`${short(b.refusedAt)}\` and the head is now \`${short(head)}\`: `
       + "you pushed after it, and the refusal STILL STANDS. A push does not clear it; only a newer review "
@@ -814,7 +821,7 @@ function baseMovedSentence(startedAt, baseTip) {
  * @param {any} pr @param {{verdict: string | null, by: string | null,
  *        byIsAuthor: boolean | null}} found @param {ReviewHeads} heads
  */
-function notConvincedOrder(pr, found, { head8, keyHead8 }) {
+function notConvincedOrder(pr, found, { head8, key }) {
   const { session, source } = ownerOfPr(pr);
   const from = found.by ? ` from ${found.by}` : "";
   const verdict = `${subjectMention(pr)} at \`${head8}\` carries a NOT CONVINCED verdict${from}`;
@@ -830,9 +837,9 @@ function notConvincedOrder(pr, found, { head8, keyHead8 }) {
     session,
     cause: "verdict-not-convinced",
     subject: `pr-${subjectRef(pr.repoKey, pr.number)}`,
-    discriminator: keyHead8,
+    discriminator: key,
     prompt,
-    causeKey: `${session}/verdict-not-convinced/pr-${subjectRef(pr.repoKey, pr.number)}/${keyHead8}`,
+    causeKey: `${session}/verdict-not-convinced/pr-${subjectRef(pr.repoKey, pr.number)}/${key}`,
   };
 }
 
@@ -857,8 +864,8 @@ function notConvincedBasis(pr, source) {
  * as an answer would silence the order for exactly a stale approval, so the answer comes from the reviews'
  * own commit oids. (`pr-review-blocked` keeps reading the field; the two ask different questions.)
  *
- * ANY equivalent head counts, not only the current one: an approval at the authored head is the same work
- * as the merge-from-main after it, exactly as `verdictAmong` treats a verdict.
+ * ANY head with the same patch counts, not only the current one: an approval at an earlier head is the same
+ * work as the head after an update-branch or a rebase, exactly as `verdictAmong` treats a verdict (#3045).
  * @param {any} pr @param {string[]} heads @returns {boolean | null}
  */
 function approvedAtHead(pr, heads) {
@@ -896,7 +903,7 @@ function unreviewedConvincedOrder(pr, found, heads) {
   if (pr.isDraft) return null;
   if (!armabilityOf({ labels: labelsOf(pr) }).arm) return null;
   if (approvedAtHead(pr, heads.all ?? []) !== false) return null;
-  const { head8, keyHead8 } = heads;
+  const { head8, key } = heads;
   const session = reviewerSeat(pr);
   const authored = found.byIsAuthor === true
     ? " That comment is signed by the pull request's own author, so it is not a review of anything: "
@@ -906,7 +913,7 @@ function unreviewedConvincedOrder(pr, found, heads) {
     session,
     cause: "verdict-comment-unreviewed",
     subject: `pr-${subjectRef(pr.repoKey, pr.number)}`,
-    discriminator: keyHead8,
+    discriminator: key,
     prompt: `Ready ${subjectMention(pr)} at \`${head8}\` is green and carries a CONVINCED verdict`
       + `${found.by ? ` from ${found.by}` : ""} as a COMMENT, and no APPROVED review at that head -- `
       + "so GitHub's `reviewDecision` is not APPROVED and it cannot merge. The comment did not become a "
@@ -914,7 +921,7 @@ function unreviewedConvincedOrder(pr, found, heads) {
       + `must begin "**Review of #${pr.number} at " or the script refuses (after any comment was posted). `
       + "This is not a new review round: if your verdict stands, re-post it; do not re-read the diff."
       + authored,
-    causeKey: `${session}/verdict-comment-unreviewed/pr-${subjectRef(pr.repoKey, pr.number)}/${keyHead8}`,
+    causeKey: `${session}/verdict-comment-unreviewed/pr-${subjectRef(pr.repoKey, pr.number)}/${key}`,
   };
 }
 
@@ -944,18 +951,18 @@ function unreviewedConvincedOrder(pr, found, heads) {
  *        byIsAuthor: boolean | null}} found @param {ReviewHeads} heads
  */
 function settledVerdictOrder(pr, found, heads) {
-  const { head8, keyHead8 } = heads;
+  const { head8, key } = heads;
   if (found.verdict === "convinced" && pr.isDraft) {
     return {
       session: "product-manager",
       cause: "draft-convinced-not-ready",
       subject: `pr-${subjectRef(pr.repoKey, pr.number)}`,
-      discriminator: keyHead8,
+      discriminator: key,
       prompt: `Draft ${subjectMention(pr)} at \`${head8}\` is green and carries a CONVINCED verdict`
         + `${found.by ? ` from ${found.by}` : ""}, and is still a draft. Per agent-practices a product `
         + "PR is marked ready once the reviewer is convinced. Mark it ready for review, or say on the PR "
         + "why it must stay a draft -- an unexplained convinced draft is work nobody is finishing.",
-      causeKey: `product-manager/draft-convinced-not-ready/pr-${subjectRef(pr.repoKey, pr.number)}/${keyHead8}`,
+      causeKey: `product-manager/draft-convinced-not-ready/pr-${subjectRef(pr.repoKey, pr.number)}/${key}`,
       // THE GATE ALREADY KNOWS THE ANSWER, SO IT DOES THIS ONE ITSELF (see `performActions`). Every
       // condition for a safe ready-flip has been checked by the time we are here: not red, still a
       // draft, checks SETTLED green, and a convinced verdict AT THIS HEAD. The order stays attached as
@@ -976,50 +983,22 @@ function settledVerdictOrder(pr, found, heads) {
 }
 
 /**
- * @typedef {{head8: string, keyHead8: string, all?: string[]}} ReviewHeads
- * `head8` is the head a reviewer would be reading; `keyHead8` is the head the ORDER is keyed on -- the last
- * one the AUTHOR produced (#2176). They are the same string unless an update-branch has moved the head.
- * `all` is every full head that update-branches made equivalent, newest first (`reviewChainOf`'s `heads`).
+ * @typedef {{head8: string, key: string, all: string[], wait: "settled" | "running"}} ReviewHeads
+ * `head8` is the head a reviewer would be reading; `key` is what the ORDER is keyed on -- the first eight characters of the PATCH id
+ * (#3045), so an update-branch, a rebase or an amend, which make a new head with the same work, keep the key. It is `head8` only when
+ * the patch could not be read. `all` is every full head whose patch equals the current head's, current first (`equivalentHeads`). `wait` is
+ * `reviewWait`'s: `running` is a head whose checks an update-branch restarted, kept in the question because it adds no work.
  */
-
-/** GitHub's update-branch headline (`Merge branch 'main' into <branch>`) and a session's own merge of it
- * (`Merge remote-tracking branch 'origin/main'`), which are produced by two different actors. Both are
- * a merge FROM `main`, and neither is work to review. */
-const MERGE_FROM_MAIN = /^Merge (?:branch|remote-tracking branch) '(?:origin\/)?main'/;
 
 /**
- * Whether a commit is a merge of `main` into the branch. TWO CONDITIONS: the headline names `main`, AND the
- * commit has two parents when that is known -- so a one-parent commit that merely reuses the words is
- * authored work. THE LIMIT, STATED: this cannot see a tree change, so a merge-from-main whose conflicts
- * were resolved by hand still reads as no new work. `gh` offers no diff on the list call, and a headline
- * is what both actors write; `parents` is absent on fixtures and never blocks the headline test alone.
- *
- * @param {{messageHeadline?: string, parents?: number} | null | undefined} commit
+ * The key a pull request's review orders carry, and the heads a verdict may sit at (#3045). A VERDICT IS VALID FOR A PATCH, NOT A SHA:
+ * `key` is the patch id when `withPatchIds` read it and the head otherwise, which is this gate's behaviour before #2176.
+ * @param {any} pr @param {string} head @param {"settled" | "running"} wait
+ * @returns {ReviewHeads}
  */
-function isMergeFromMain(commit) {
-  if (typeof commit?.messageHeadline !== "string" || !MERGE_FROM_MAIN.test(commit.messageHeadline)) return false;
-  return typeof commit.parents !== "number" || commit.parents >= 2;
-}
-
-/**
- * The heads a reviewer's verdict on this pull request may sit at, NEWEST FIRST, and the last one the AUTHOR
- * produced. `commits` is oldest-first, as the REST list returns it; the authored head is the newest commit
- * that is not a merge of `main`, and every merge after it is the same work at a later sha.
- *
- * `null` when the chain was not read, does not end at `headRefOid` (the list and the chain were read a few
- * seconds apart and a push landed between them), or is all merges -- and the caller then treats the current
- * head as the only head, which is what this gate did before #2176.
- *
- * @param {any} pr @returns {{authored: string, heads: string[]} | null}
- */
-function reviewChainOf(pr) {
-  const commits = Array.isArray(pr?.commits) ? pr.commits : [];
-  const oids = commits.map((/** @type {any} */ c) => String(c?.oid ?? ""));
-  if (oids.length === 0 || oids[oids.length - 1] !== String(pr.headRefOid ?? "")) return null;
-  let i = commits.length - 1;
-  while (i >= 0 && isMergeFromMain(commits[i])) i -= 1;
-  if (i < 0) return null;
-  return { authored: oids[i], heads: oids.slice(i).reverse() };
+function reviewHeadsOf(pr, head, wait) {
+  const patch = pr?.patchIds?.[head];
+  return { head8: head.slice(0, 8), key: typeof patch === "string" ? patch.slice(0, 8) : head.slice(0, 8), all: equivalentHeads(pr), wait };
 }
 
 /**
@@ -1028,13 +1007,26 @@ function reviewChainOf(pr) {
  * cause now reaches.
  * @param {any} pr @param {ReviewHeads} heads
  */
-function awaitingVerdictPrompt(pr, { head8, keyHead8 }) {
+function awaitingVerdictPrompt(pr, { head8, key, all, wait }) {
   const state = pr.isDraft ? "Draft" : "Ready (not a draft)";
-  const moved = head8 === keyHead8 ? ""
-    : ` The last commit its author pushed is \`${keyHead8}\`; every commit after it merges \`main\`, so review the `
-      + "author's work and write your verdict at the head you actually read.";
-  return `${state} ${subjectMention(pr)} at \`${head8}\` has settled green checks and no verdict at that head.${moved} `
+  const checks = wait === "settled" ? "has settled green checks and no verdict at that head"
+    : "has no verdict at that head, and its checks are re-running on a head that adds no work to the one before it";
+  const same = all.length > 1
+    ? ` Its patch (\`${key}\`) is the same at ${all.length} heads: a verdict at any of them stands, `
+      + "so write yours at the head you actually read and do not re-review work you have already answered."
+    : "";
+  return `${state} ${subjectMention(pr)} at \`${head8}\` ${checks}.${same} `
     + "Review it per .agent-org/roles/reviewer.md and leave one comment carrying your verdict.";
+}
+
+/**
+ * The head of a pull request whose checks are RUNNING when it adds no work to its predecessor, else `null` (#3045). Both patch ids must
+ * have been read (`withPatchIds` reads them for a running head only): an unread patch is not an equal one, so a refused read falls back to
+ * asking nothing until the checks settle, which is what this gate did before.
+ * @param {any} pr @param {"settled" | "running" | null} wait @returns {string | null}
+ */
+function unchangedRunningHead(pr, wait) {
+  return wait === "running" && equivalentHeads(pr).length > 1 ? String(pr.headRefOid) : null;
 }
 
 /**
@@ -1052,9 +1044,14 @@ function awaitingVerdictPrompt(pr, { head8, keyHead8 }) {
  * 5h47m while 171 other pull requests were ordered about. The draft-only test now lives where it belongs,
  * on `draft-convinced-not-ready` in `settledVerdictOrder`.
  *
- * KEYED ON THE LAST AUTHORED HEAD, because `causeKey` moves with the head and an update-branch is a new
- * head with no new work: extending the read alone would have turned #2104 into a reviewer order every
- * ten minutes. See `reviewChainOf` for the test and its limit.
+ * KEYED ON THE PATCH, NOT THE HEAD (#3045), because `causeKey` moves with the head and an update-branch, a rebase and an amend are each a
+ * new head with no new work: extending the read alone would have turned #2104 into a reviewer order every ten minutes. The heads are
+ * the same work when `git patch-id`-equivalent diffs say so (`withPatchIds` reads them, `equivalentHeads` compares them) -- not when a
+ * headline says "Merge branch 'main'", which could not see a conflict resolved by hand and could not see a rebase.
+ *
+ * A HEAD WHOSE CHECKS ARE RE-RUNNING STAYS IN THE QUESTION WHEN IT ADDS NO WORK, and is asked of nobody else: dropping the order for
+ * the minutes CI takes is what wrote a `RESET` and re-armed it after each of #3033's four merges. Only `draft-awaiting-verdict` is
+ * emitted from that state -- a settled verdict's follow-ups, `draft-convinced-not-ready`'s ready-flip above all, wait for settled checks.
  *
  * @param {any} pr @param {string[] | null} [required] @param {{sha: string, date: string} | null} [baseTip]
  */
@@ -1063,17 +1060,17 @@ function draftOrder(pr, required = null, baseTip = null) {
   // never reach the reviewer lane below, which requires green.
   const red = failingChecksOrder(pr, required, baseTip);
   if (red) return red;
-  const head = reviewableHead(pr);
-  if (!head) return null;
-  const chain = reviewChainOf(pr) ?? { authored: head, heads: [head] };
-  const heads = { head8: head.slice(0, 8), keyHead8: chain.authored.slice(0, 8), all: chain.heads };
-  const found = verdictAmong(pr, chain.heads);
+  const wait = reviewWait(pr);
+  const head = wait === "settled" ? reviewableHead(pr) : unchangedRunningHead(pr, wait);
+  if (!head || !wait) return null;
+  const heads = reviewHeadsOf(pr, head, wait);
+  const found = verdictAmong(pr, heads.all);
   // A VERDICT THE OPENER DID NOT ATTRIBUTE COUNTS AS SETTLED, and that is the wake side's default rather
   // than a reading of the comment: `verdictAtHead` returns `byIsAuthor: null` for it and refuses to guess
   // (#1244). Waking anyway would re-prompt a reviewer who has already answered; the cost of being wrong
   // the other way is one author-written verdict going unchallenged, which `ceo`'s spot-check of one
   // verdict in five is the control for.
-  if (found.verdict !== null) return settledVerdictOrder(pr, found, heads);
+  if (found.verdict !== null) return wait === "settled" ? settledVerdictOrder(pr, found, heads) : null;
   // #2416: A PULL REQUEST WAITING FOR AN EXTERNAL RUN IS NOT ASKED FOR A VERDICT, and this is the gate's half of
   // the two routes into a review (the author's is a sentence in `org-routing-and-timers.md`). It sits AFTER
   // the settled-verdict read on purpose: a verdict somebody prompted by hand is still read and acted on, so
@@ -1090,9 +1087,9 @@ function draftOrder(pr, required = null, baseTip = null) {
     session,
     cause: "draft-awaiting-verdict",
     subject: `pr-${subjectRef(pr.repoKey, pr.number)}`,
-    discriminator: heads.keyHead8,
+    discriminator: heads.key,
     prompt: awaitingVerdictPrompt(pr, heads),
-    causeKey: `${session}/draft-awaiting-verdict/pr-${subjectRef(pr.repoKey, pr.number)}/${heads.keyHead8}`,
+    causeKey: `${session}/draft-awaiting-verdict/pr-${subjectRef(pr.repoKey, pr.number)}/${heads.key}`,
   };
 }
 

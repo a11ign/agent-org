@@ -31,7 +31,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { shippedUnits } from "../host-units.mjs";
 import { localImports } from "../lib/local-import-closure.mjs";
 import { deriveClosureRequirements } from "../acceptance-commands.mjs";
-import { MAX_ROW_ORDERS_PER_TICK, readCommitChain, withCommitChains, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES,
+import { patchIdOfDiff } from "../review-verdict.mjs";
+import { MAX_ROW_ORDERS_PER_TICK, readCommitShas, readPatchId, withPatchIds, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES,
   comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
   blockingChecks, anyChecksRed, requiredCheckNames, readBaseTip, baseTipWhenRed, ownerOf, NOT_PICKABLE, NOT_STARTABLE,
   ROUTED_TO, readPromotableRows, GH_READS, partitionUnclaimed, openRowState, waitingBreakdown,
@@ -5148,9 +5149,10 @@ const AUTHORED = "a".repeat(40);
 const AUTHORED_2 = "d".repeat(40);
 const MERGE_UI = "b".repeat(40);
 const MERGE_SESSION = "c".repeat(40);
-const commit = (oid: string, messageHeadline: string, parents = 1) => ({ oid, messageHeadline, parents });
-const UPDATE_BRANCH = (oid: string) => commit(oid, "Merge branch 'main' into agent/x-2104", 2);
-const SESSION_MERGE = (oid: string) => commit(oid, "Merge remote-tracking branch 'origin/main' into agent/x-2104", 2);
+// #3045: a head is the same work as another when its PATCH ID is equal, which `withPatchIds` reads and a fixture states.
+const PATCH_A = "1".repeat(64);
+const PATCH_B = "2".repeat(64);
+const patched = (ids: Record<string, string>) => ({ patchIds: ids });
 const verdictAt = (n: number, oid: string, word: string) =>
   ({ body: `Review of #${n} at \`${oid.slice(0, 8)}\`, by \`reviewer\`: ${word}.` });
 
@@ -5196,87 +5198,70 @@ test("#2176 a green NON-DRAFT with a CONVINCED verdict produces NO order -- draf
   assert.deepEqual(ordersFor({ ...convinced, isDraft: true }).map((o) => o.cause), ["draft-convinced-not-ready"]);
 });
 
-test("#2176 a head advanced only by a merge from main keeps the SAME causeKey -- both spellings", () => {
+test("#3045 a head with the same PATCH keeps the SAME causeKey, whoever pushed it; a changed patch moves it", () => {
   const keyOf = (pr: unknown) => ordersFor(pr)[0].causeKey;
-  const alone = readyPr(2104, AUTHORED, { commits: [commit(AUTHORED, "Fix the thing")] });
-  const base = keyOf(alone);
-  assert.match(base, new RegExp(`/pr-2104/${AUTHORED.slice(0, 8)}$`));
-  const viaUi = readyPr(2104, MERGE_UI, { commits: [commit(AUTHORED, "Fix the thing"), UPDATE_BRANCH(MERGE_UI)] });
-  assert.equal(keyOf(viaUi), base, "GitHub's update-branch: `Merge branch 'main' into ...`");
-  const viaSession = readyPr(2104, MERGE_SESSION,
-    { commits: [commit(AUTHORED, "Fix the thing"), SESSION_MERGE(MERGE_SESSION)] });
-  assert.equal(keyOf(viaSession), base, "a session's push: `Merge remote-tracking branch 'origin/main'`");
-  const both = readyPr(2104, MERGE_SESSION, { commits: [commit(AUTHORED, "Fix the thing"),
-    UPDATE_BRANCH(MERGE_UI), SESSION_MERGE(MERGE_SESSION)] });
-  assert.equal(keyOf(both), base, "21 update-branches is still one piece of work");
-  // THE CONTROL: an AUTHORED commit after the merge moves the key, or the assertions above are a constant.
-  const authoredAfter = readyPr(2104, AUTHORED_2, { commits: [commit(AUTHORED, "Fix the thing"),
-    UPDATE_BRANCH(MERGE_UI), commit(AUTHORED_2, "Address the review")] });
-  assert.notEqual(keyOf(authoredAfter), base);
-  assert.match(keyOf(authoredAfter), new RegExp(`/pr-2104/${AUTHORED_2.slice(0, 8)}$`));
-  // A ONE-PARENT COMMIT THAT REUSES THE WORDS IS AUTHORED WORK, not a merge.
-  const lookalike = readyPr(2104, MERGE_UI, { commits: [commit(AUTHORED, "Fix the thing"),
-    commit(MERGE_UI, "Merge branch 'main' into agent/x-2104", 1)] });
-  assert.notEqual(keyOf(lookalike), base);
+  const base = keyOf(readyPr(2104, AUTHORED, patched({ [AUTHORED]: PATCH_A })));
+  assert.match(base, new RegExp(`/pr-2104/${PATCH_A.slice(0, 8)}$`), "keyed on the patch id, not the head");
+  const merged = readyPr(2104, MERGE_UI, patched({ [AUTHORED]: PATCH_A, [MERGE_UI]: PATCH_A }));
+  assert.equal(keyOf(merged), base, "an update-branch is a new head with no new work");
+  const rebased = readyPr(2104, MERGE_SESSION, patched({ [MERGE_SESSION]: PATCH_A }));
+  assert.equal(keyOf(rebased), base, "a rebased head is read as the same work with NO ancestor in common");
+  // THE CONTROL: a changed patch moves the key, or the equalities above are a constant.
+  const resolved = readyPr(2104, MERGE_UI, patched({ [AUTHORED]: PATCH_A, [MERGE_UI]: PATCH_B }));
+  assert.notEqual(keyOf(resolved), base, "a merge whose conflict resolution CHANGED the patch is new work");
+  // UNREAD IS NOT EQUAL: with no patch id the key is the head, which is this gate's behaviour before #3045.
+  assert.match(keyOf(readyPr(2104, MERGE_UI)), new RegExp(`/pr-2104/${MERGE_UI.slice(0, 8)}$`));
 });
 
-test("#2176 #2104's shape: a verdict at the AUTHORED head still stands after update-branch moved the head", () => {
-  const chain = [commit(AUTHORED, "Fix the thing"), UPDATE_BRANCH(MERGE_UI), SESSION_MERGE(MERGE_SESSION)];
-  const refused = readyPr(2104, MERGE_SESSION,
-    { commits: chain, comments: [verdictAt(2104, AUTHORED, "not convinced")] });
+test("#3045 #2104's shape: a verdict at an EARLIER head stands while the patch is equal, and not when it is not", () => {
+  const same = patched({ [AUTHORED]: PATCH_A, [MERGE_SESSION]: PATCH_A });
+  const refused = readyPr(2104, MERGE_SESSION, { ...same, comments: [verdictAt(2104, AUTHORED, "not convinced")] });
   const [order] = ordersFor(refused);
   assert.equal(order.cause, "verdict-not-convinced", "rework is owed, however many merges came after");
-  assert.equal(order.causeKey, `worker-judge/verdict-not-convinced/pr-2104/${AUTHORED.slice(0, 8)}`);
-  // Without the chain the verdict is at a head that no longer exists, and the reviewer is summoned again:
-  // the failure this row is written to prevent, kept as the control that the chain is what settles it.
-  assert.equal(ordersFor({ ...refused, commits: undefined })[0].cause, "draft-awaiting-verdict");
+  assert.equal(order.causeKey, `worker-judge/verdict-not-convinced/pr-2104/${PATCH_A.slice(0, 8)}`);
+  // The controls: without the equality the verdict is at a head that is NOT this work, and the reviewer is summoned again.
+  assert.equal(ordersFor({ ...refused, patchIds: { [AUTHORED]: PATCH_A, [MERGE_SESSION]: PATCH_B } })[0].cause, "draft-awaiting-verdict");
+  assert.equal(ordersFor({ ...refused, patchIds: undefined })[0].cause, "draft-awaiting-verdict");
   // A verdict written AFTER an update-branch names the merge head, and it settles the pull request too.
-  const answeredAtMerge = readyPr(2104, MERGE_SESSION,
-    { commits: chain, comments: [verdictAt(2104, MERGE_UI, "convinced")] });
-  assert.deepEqual(ordersFor(answeredAtMerge), []);
+  assert.deepEqual(ordersFor(readyPr(2104, MERGE_SESSION, { ...same, comments: [verdictAt(2104, MERGE_UI, "convinced")],
+    patchIds: { ...same.patchIds, [MERGE_UI]: PATCH_A } })), []);
 });
 
-test("#2176 the reviewer's prompt names the authored head when an update-branch moved the head", () => {
-  const pr = readyPr(2104, MERGE_UI, { commits: [commit(AUTHORED, "Fix the thing"), UPDATE_BRANCH(MERGE_UI)] });
-  assert.match(ordersFor(pr)[0].prompt, new RegExp(`at \`${MERGE_UI.slice(0, 8)}\`.*${AUTHORED.slice(0, 8)}`));
-  assert.doesNotMatch(ordersFor(readyPr(2104, AUTHORED, { commits: [commit(AUTHORED, "x")] }))[0].prompt,
-    /every commit after it merges/, "nothing to explain when the head is the authored one");
+test("#3045 the reviewer's prompt says a verdict at an equal-patch head stands, and only when there is one", () => {
+  const pr = readyPr(2104, MERGE_UI, patched({ [AUTHORED]: PATCH_A, [MERGE_UI]: PATCH_A }));
+  assert.match(ordersFor(pr)[0].prompt, new RegExp(`patch \\(\`${PATCH_A.slice(0, 8)}\`\\) is the same at 2 heads`));
+  assert.doesNotMatch(ordersFor(readyPr(2104, AUTHORED, patched({ [AUTHORED]: PATCH_A })))[0].prompt, /is the same at/);
 });
 
-test("#2176 a chain that does not end at the current head is ignored, never trusted", () => {
-  // The list and the chain are read seconds apart; a push between them must not key the order on a stale head.
-  const stale = readyPr(2104, AUTHORED_2, { commits: [commit(AUTHORED, "Fix the thing"), UPDATE_BRANCH(MERGE_UI)] });
-  assert.match(ordersFor(stale)[0].causeKey, new RegExp(`/pr-2104/${AUTHORED_2.slice(0, 8)}$`));
-});
-
-test("#2176 withCommitChains reads commits ONLY where the review question is genuinely open", () => {
+test("#3045 withPatchIds reads patches ONLY where the review question is genuinely open", () => {
   const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    return [commit(AUTHORED, "Fix"), UPDATE_BRANCH(MERGE_UI)].map((c) => JSON.stringify(c)).join("\n");
-  };
+  const run = (args: string[]) => { calls.push(args); return "diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+b\n"; };
   const open = readyPr(1, MERGE_UI);
-  const settled = readyPr(2, MERGE_UI, { comments: [verdictAt(2, MERGE_UI, "convinced")] });
+  const settled = readyPr(2, MERGE_UI, { comments: [verdictAt(2, AUTHORED, "convinced")] });
   const red = readyPr(3, MERGE_UI, { statusCheckRollup: RED });
-  const pending = readyPr(4, MERGE_UI, { statusCheckRollup: PENDING });
-  const out = withCommitChains([open, settled, red, pending], run) as { commits?: unknown[] }[];
-  assert.equal(calls.length, 1, "one REST call: the unreviewed green pull request, and no other");
-  assert.deepEqual(calls[0].slice(0, 2), ["api", "repos/a11ign/a11ign/pulls/1/commits"]);
-  assert.equal(out[0].commits?.length, 2, "the positive control: the open one WAS enriched");
-  assert.deepEqual(out.slice(1).map((p) => p.commits), [undefined, undefined, undefined]);
+  const labelled = readyPr(5, MERGE_UI, { labels: [{ name: "awaiting-evidence" }] });
+  const out = withPatchIds([open, settled, red, labelled], run) as { patchIds?: Record<string, string> }[];
+  assert.deepEqual(calls.map((c) => c[c.length - 1]),
+    [`repos/a11ign/a11ign/compare/main...${MERGE_UI}`, `repos/a11ign/a11ign/compare/main...${MERGE_UI}`, `repos/a11ign/a11ign/compare/main...${AUTHORED.slice(0, 8)}`],
+    "the open one at its head; the answered one at its head AND the head its verdict names; red and labelled: no call");
+  assert.deepEqual(Object.keys(out[0].patchIds ?? {}), [MERGE_UI], "the positive control: the open one WAS enriched");
+  assert.deepEqual(Object.keys(out[1].patchIds ?? {}), [MERGE_UI, AUTHORED.slice(0, 8)]);
+  assert.deepEqual([out[2], out[3]].map((p) => p.patchIds), [undefined, undefined]);
 });
 
-test("#2176 a REFUSED commit read leaves the pull request as it was -- never an empty chain", () => {
-  const refuse = () => { throw new Error("HTTP 403"); };
-  const [pr] = withCommitChains([readyPr(1, MERGE_UI)], refuse) as { commits?: unknown }[];
-  assert.equal(pr.commits, undefined);
-  assert.equal(readCommitChain(1, refuse), null);
-  assert.equal(readCommitChain(1, () => ""), null, "no commits is not a chain either");
-  assert.deepEqual(readCommitChain(1, () => `${JSON.stringify(commit(AUTHORED, "Fix"))}\n`),
-    [commit(AUTHORED, "Fix")]);
+test("#3045 a REFUSED read leaves the pull request as it was -- never an empty patch id", () => {
+  const refuse = () => { throw new Error("HTTP 406 diff too large"); };
+  const [pr] = withPatchIds([readyPr(1, MERGE_UI)], refuse) as { patchIds?: unknown }[];
+  assert.equal(pr.patchIds, undefined);
+  assert.equal(readPatchId(MERGE_UI, "main", refuse), null);
+  assert.equal(readPatchId(MERGE_UI, "main", () => ""), patchIdOfDiff(""), "an empty diff is a real patch, not an unread one");
+  assert.deepEqual(readCommitShas(1, refuse), null);
+  assert.equal(readCommitShas(1, () => ""), null, "no commits is not a list either");
+  assert.deepEqual(readCommitShas(1, () => `${AUTHORED}\n${MERGE_UI}\n`), [AUTHORED, MERGE_UI]);
 });
 
-test("#2176 the commit read is counted in GH_READS", () => {
+test("#3045 the patch read is counted in GH_READS", () => {
+  assert.match(GH_READS.conditionalOnUnreviewedGreenPr, /compare\/\{base\}\.\.\.\{head\}/);
   assert.match(GH_READS.conditionalOnUnreviewedGreenPr, /pulls\/\{n\}\/commits/);
 });
 
@@ -5348,17 +5333,19 @@ test("#2365 when both apply, a DRAFT's next act is `draft-convinced-not-ready`, 
     ["verdict-comment-unreviewed"]);
 });
 
-test("#2365 a head advanced only by a merge from main keeps the SAME causeKey; an authored commit moves it", () => {
+test("#3045 #2365: a head with the same patch keeps the SAME causeKey; a changed patch moves it", () => {
   const keyOf = (pr: unknown) => unreviewed(pr)[0].causeKey;
-  const base = keyOf(commentOnly(9999, AUTHORED, { commits: [commit(AUTHORED, "Fix the thing")] }));
-  const merged = commentOnly(9999, MERGE_UI, { comments: [verdictAt(9999, AUTHORED, "convinced")],
-    commits: [commit(AUTHORED, "Fix the thing"), UPDATE_BRANCH(MERGE_UI)] });
+  const base = keyOf(commentOnly(9999, AUTHORED, patched({ [AUTHORED]: PATCH_A })));
+  const same = patched({ [AUTHORED]: PATCH_A, [MERGE_UI]: PATCH_A });
+  const merged = commentOnly(9999, MERGE_UI, { ...same, comments: [verdictAt(9999, AUTHORED, "convinced")] });
   assert.equal(keyOf(merged), base, "update-branch is a new head with no new work");
   // An approval AT THE AUTHORED HEAD still counts after the merge: it is the same work.
   assert.deepEqual(unreviewed({ ...merged, reviews: [approvalAt(AUTHORED)] }), []);
-  const authoredAfter = commentOnly(9999, AUTHORED_2, { comments: [verdictAt(9999, AUTHORED_2, "convinced")],
-    commits: [commit(AUTHORED, "Fix the thing"), UPDATE_BRANCH(MERGE_UI), commit(AUTHORED_2, "Address the review")] });
-  assert.notEqual(keyOf(authoredAfter), base, "THE CONTROL: without it the equalities above are a constant");
+  const changed = commentOnly(9999, AUTHORED_2, { comments: [verdictAt(9999, AUTHORED_2, "convinced")],
+    patchIds: { [AUTHORED]: PATCH_A, [AUTHORED_2]: PATCH_B } });
+  assert.notEqual(keyOf(changed), base, "THE CONTROL: without it the equalities above are a constant");
+  // ... and an approval at a head whose patch is NOT this one does not count.
+  assert.equal(unreviewed({ ...changed, reviews: [approvalAt(AUTHORED)] }).length, 1);
 });
 
 test("#2365 `readPrs` asks for `reviews` -- not `latestReviews`, whose commit oid is empty -- on the one list call", () => {
