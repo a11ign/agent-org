@@ -29,9 +29,14 @@ export const REPLIES = Object.freeze({
 // Zero-width and soft-hyphen characters carry no meaning and would split a word the patterns look for ("de<ZWSP>lete").
 const INVISIBLE = /[­​-‏⁠﻿]/g;
 
-/** @param {string} text @returns {string} the text a pattern is matched against: compatibility-folded, no invisibles, one-space whitespace */
+// NFKC folds the full-width hyphen-minus (U+FF0D) and the small one (U+FE63) and NOT these: the hyphen, non-breaking hyphen, figure dash,
+// en and em dash, horizontal bar and the minus sign (U+2010-2015, U+2212), nor the two-em and three-em dashes. All of them LOOK like the
+// "-" in "force-push" and "rm -rf", so each is made one before a pattern is matched.
+const DASHES = /[\u2010-\u2015\u2212\u2E3A\u2E3B\uFE58]/g;
+
+/** @param {string} text @returns {string} the text a pattern is matched against: compatibility-folded, no invisibles, one hyphen, one-space whitespace */
 function normalise(text) {
-  return text.normalize("NFKC").replace(INVISIBLE, "").replace(/\s+/g, " ").trim();
+  return text.normalize("NFKC").replace(INVISIBLE, "").replace(DASHES, "-").replace(/\s+/g, " ").trim();
 }
 
 // ---- secrets ------------------------------------------------------------------------------------------------------------------------

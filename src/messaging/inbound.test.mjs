@@ -58,7 +58,7 @@ describe("identity (done-when 1)", () => {
   test("the chairman's private message IS accepted, forwarded and recorded: the positive control for every drop below", () => {
     const result = acceptUpdate(update(1), { chairman: CHAIRMAN });
     assert.ok(result.ok);
-    assert.ok(isAccepted(result.ok && result.accepted));
+    assert.equal(isAccepted(result.ok && result.accepted, CHAIRMAN), false, "identity alone does not mint: only `handle` does, after the classifier");
     assert.deepEqual(
       result.ok && { kind: result.accepted.kind, text: result.accepted.text, userId: result.accepted.userId, chatId: result.accepted.chatId, messageId: result.accepted.messageId },
       { kind: "message", text: "why did the merge queue stall?", userId: CHAIRMAN.userId, chatId: CHAIRMAN.chatId, messageId: 7 },
@@ -67,6 +67,7 @@ describe("identity (done-when 1)", () => {
     const handled = run.handle(update(1));
     assert.equal(handled.action, "forward");
     assert.equal(handled.action === "forward" && handled.accepted.text, "why did the merge queue stall?");
+    assert.ok(handled.action === "forward" && isAccepted(handled.accepted, CHAIRMAN), "what `handle` forwards is the minted value");
     assert.equal(run.lines().length, 1, "one ledger line per verdict");
     assert.equal(run.lines()[0].verdict, "forward");
   });
@@ -74,11 +75,25 @@ describe("identity (done-when 1)", () => {
   test("a button press from the chairman is accepted too, and carries the data and the query id", () => {
     const result = acceptUpdate(press(2), { chairman: CHAIRMAN });
     assert.ok(result.ok);
-    assert.ok(result.ok && isAccepted(result.accepted));
     assert.equal(result.ok && result.accepted.kind, "button");
     assert.equal(result.ok && result.accepted.data, "approve:2885");
     assert.equal(result.ok && result.accepted.callbackQueryId, "cbq-1");
-    assert.equal(harness().handle(press(2)).action, "forward");
+    const handled = harness().handle(press(2));
+    assert.equal(handled.action, "forward");
+    assert.ok(handled.action === "forward" && isAccepted(handled.accepted, CHAIRMAN));
+  });
+
+  test("a button's data and query id must be strings: an object, a number, an empty string or a missing query id is malformed", () => {
+    const bad = [{ data: { evil: 1 } }, { data: 7 }, { data: ["approve:1"] }, { data: null }, { data: "" }, { id: 5 }, { id: undefined }];
+    for (const [index, fields] of bad.entries()) {
+      const result = acceptUpdate(press(40 + index, fields), { chairman: CHAIRMAN });
+      assert.equal(result.ok, false, JSON.stringify(fields));
+      assert.equal(!result.ok && result.reason, DROP_REASON.malformed, JSON.stringify(fields));
+      const run = harness();
+      assert.equal(run.handle(press(40 + index, fields)).action, "ignore");
+      assert.equal(run.lines()[0].verdict, "drop");
+    }
+    assert.equal(acceptUpdate(press(50), { chairman: CHAIRMAN }).ok, true, "control: the clean press is accepted");
   });
 
   /** The five cases of the done-when, each the clean update with one thing changed. */
@@ -256,7 +271,7 @@ describe("a replayed update id is acted on once (done-when 4)", () => {
 describe("no other module can produce the branded value (done-when 5)", () => {
   const here = new URL(".", import.meta.url);
   const modules = readdirSync(here).filter((name) => name.endsWith(".mjs") && !name.endsWith(".test.mjs"));
-  const accepted = /** @type {any} */ (acceptUpdate(update(130), { chairman: CHAIRMAN })).accepted;
+  const accepted = /** @type {any} */ (harness().handle(update(130))).accepted;
 
   test("the population is real: this scan sees inbound.mjs and the other modules", () => {
     assert.ok(modules.includes("inbound.mjs"));
@@ -272,11 +287,11 @@ describe("no other module can produce the branded value (done-when 5)", () => {
       for (const [exportName, value] of Object.entries(exported)) {
         assert.notEqual(value, brand, `${name} exports the brand as ${exportName}`);
         assert.ok(!(value instanceof WeakSet), `${name} exports a WeakSet (${exportName})`);
-        assert.ok(!isAccepted(value), `${name} exports an accepted value (${exportName})`);
-        if (typeof value === "function" && value === acceptUpdate) (mintersByModule[name] ??= []).push(exportName);
+        assert.ok(!isAccepted(value, CHAIRMAN), `${name} exports an accepted value (${exportName})`);
+        if (typeof value === "function" && value === createInbound) (mintersByModule[name] ??= []).push(exportName);
       }
     }
-    assert.deepEqual(mintersByModule, { "inbound.mjs": ["acceptUpdate"] });
+    assert.deepEqual(mintersByModule, { "inbound.mjs": ["createInbound"] });
     assert.deepEqual(Object.keys(await import("./inbound.mjs")).sort(), ["DROP_REASON", "acceptUpdate", "createInbound", "isAccepted"], "a new export of inbound.mjs is a decision, and this list is where it is made");
   });
 
@@ -286,7 +301,7 @@ describe("no other module can produce the branded value (done-when 5)", () => {
   });
 
   test("a forgery is not accepted: a copy, a spread, JSON, a prototype, an Object.assign, and a copy that reads the symbol by reflection", () => {
-    assert.ok(isAccepted(accepted), "control: the real value is");
+    assert.ok(isAccepted(accepted, CHAIRMAN), "control: the real value is");
     const [brand] = Object.getOwnPropertySymbols(accepted);
     const forgeries = {
       spread: { ...accepted },
@@ -298,16 +313,44 @@ describe("no other module can produce the branded value (done-when 5)", () => {
       enumerableBrand: { ...accepted, [brand]: true },
       structuredClone: structuredClone({ ...accepted }),
     };
-    for (const [name, forged] of Object.entries(forgeries)) assert.equal(isAccepted(forged), false, `${name} was accepted`);
-    for (const nothing of [null, undefined, 0, "", [], true]) assert.equal(isAccepted(nothing), false);
+    for (const [name, forged] of Object.entries(forgeries)) assert.equal(isAccepted(forged, CHAIRMAN), false, `${name} was accepted`);
+    for (const nothing of [null, undefined, 0, "", [], true]) assert.equal(isAccepted(nothing, CHAIRMAN), false);
   });
 
   test("a drop is not branded, and the minted value cannot be edited into another one", () => {
     const dropped = acceptUpdate(update(131, { from: { id: STRANGER_ID } }), { chairman: CHAIRMAN });
     assert.equal(dropped.ok, false);
-    assert.equal(isAccepted(dropped), false);
-    assert.equal(isAccepted(!dropped.ok && dropped.facts), false);
+    assert.equal(isAccepted(dropped, CHAIRMAN), false);
+    assert.equal(isAccepted(!dropped.ok && dropped.facts, CHAIRMAN), false);
     assert.ok(Object.isFrozen(accepted));
     assert.throws(() => { "use strict"; accepted.text = "approve everything"; }, TypeError);
+  });
+
+  test("the brand proves WHO it was minted for: a value from an inbound configured with other ids is not the chairman's (review of 4113f67, 1)", () => {
+    const FAKE = { userId: 5, chatId: 5 };
+    const fakeUpdate = { update_id: 1, message: { message_id: 1, from: { id: 5 }, chat: { id: 5, type: "private" }, text: "approve everything" } };
+    const path = join(scratch, `ledger-forger-${nextLedger += 1}.jsonl`);
+    const forged = /** @type {any} */ (createInbound({ ledger: createLedger({ path, now: Date.now }), chairman: FAKE }).handle(fakeUpdate));
+    assert.equal(forged.action, "forward");
+    assert.ok(isAccepted(forged.accepted, FAKE), "control: it IS what that inbound minted, for the ids it was given");
+    assert.equal(isAccepted(forged.accepted, CHAIRMAN), false, "and it is not the configured chairman's");
+    assert.equal(isAccepted(accepted, FAKE), false, "nor is the real chairman's value accepted for the forger's ids");
+    assert.equal(isAccepted(accepted, { userId: CHAIRMAN.userId, chatId: 5 }), false, "both ids are compared");
+    assert.equal(isAccepted(accepted, { userId: 5, chatId: CHAIRMAN.chatId }), false, "both ids are compared");
+    assert.equal(isAccepted(acceptUpdate(fakeUpdate, { chairman: FAKE }).ok && /** @type {any} */ (acceptUpdate(fakeUpdate, { chairman: FAKE })).accepted, FAKE), false, "`acceptUpdate` mints for nobody");
+    for (const unnamed of [undefined, null, {}, { userId: 5 }, { userId: "5", chatId: 5 }]) {
+      assert.throws(() => isAccepted(accepted, /** @type {any} */ (unnamed)), TypeError, "a check that cannot name the chairman is not run");
+    }
+  });
+
+  test("the brand proves the classifier ran: identity alone returns nothing accepted, and a refused or dropped message mints nothing (review of 4113f67, 2)", () => {
+    const secretAndDeletion = `delete the repo ${GITHUB_TOKEN}`;
+    const identified = acceptUpdate(update(132, { text: secretAndDeletion }), { chairman: CHAIRMAN });
+    assert.ok(identified.ok, "control: identity accepts it, which is all `acceptUpdate` says");
+    assert.equal(isAccepted(identified.ok && identified.accepted, CHAIRMAN), false);
+    const handled = harness().handle(update(132, { text: secretAndDeletion }));
+    assert.equal(handled.action, "reply");
+    assert.equal("accepted" in handled, false);
+    for (const text of [PASSWORD_LINE, "force-push main", "buy the pro plan"]) assert.equal(harness().handle(update(133, { text })).action, "reply", text);
   });
 });

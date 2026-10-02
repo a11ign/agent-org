@@ -71,6 +71,17 @@ describe("deletions and force-pushes are refused (done-when 3)", () => {
     }
   });
 
+  test("a hyphen that is not U+002D is still a hyphen: NFKC does not fold the Unicode dashes, so they are folded here (review of 4113f67, 3)", () => {
+    const dashes = { hyphen: "\u2010", nonBreaking: "\u2011", figure: "\u2012", en: "\u2013", em: "\u2014", bar: "\u2015", minus: "\u2212", twoEm: "\u2E3A", smallEm: "\uFE58" };
+    assert.equal(verdictOf("force-push main"), VERDICT.refuse, "control: the ASCII hyphen is refused");
+    for (const [name, dash] of Object.entries(dashes)) {
+      assert.equal(classifyText(`force${dash}push main`).reason, REASON.deletion, `force${name}push`);
+      assert.equal(classifyText(`git push ${dash}${dash}force origin main`).reason, REASON.deletion, `push ${name}${name}force`);
+      assert.equal(classifyText(`rm ${dash}rf runs`).reason, REASON.deletion, `rm ${name}rf`);
+    }
+    assert.equal(verdictOf("a well\u2010known \u2014 and ordinary \u2013 sentence"), VERDICT.forward, "control: a dash in prose is not a refusal");
+  });
+
   test("a verb on each thing the design names: repository, branch, row, data, file", () => {
     const refused = [
       "delete the repository", "please delete the branch agent/foo-1", "remove row 2885", "wipe all the data", "erase that file",

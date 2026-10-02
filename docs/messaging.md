@@ -49,8 +49,9 @@ decision 8).
   (reason, ids, length, hash). The bot leaves any chat that is not theirs.
 - **(b) Chairman -> `ceo` only.** An accepted message is queued for `ceo` through the existing `prompt:session` queue, with a sender
   the listener alone supplies (`chairman via Telegram`); `resolveSender` derives every other sender from a workspace id, so no agent
-  session can produce it. **There is no code path from a chat message to a worker.** `acceptUpdate` returns a value branded with a
-  module-private symbol, and the only function that writes a chairman-attributed row comment accepts nothing else.
+  session can produce it. **There is no code path from a chat message to a worker.** `createInbound(...).handle` forwards a value branded with a
+  module-private symbol (after the classifier, for the configured chairman), and the only function that writes a chairman-attributed
+  row comment accepts nothing else.
 - **(c) GitHub is the record.** A button press or reply to a request writes a row comment quoting it with provenance (Telegram
   message ref, time, "verified id"), removes `needs:chairman` (taking the label off IS the act of answering) and sets `answer:ceo`,
   so `ceo` is woken with the answer as data. A conversational ruling is recorded by `ceo` on the row it concerns before it acts.
@@ -155,7 +156,7 @@ What the design defends, and against whom:
 | Anyone forwarding or editing | Put third-party words in the chairman's mouth, or change a message after it was judged | A forward and an edit are dropped | same |
 | An update with a missing or doubled field | Make `undefined === undefined` accept it | A chairman with a missing id refuses to start; an update without an integer `update_id`, a sender, or exactly one payload is `malformed` | same |
 | A replayed or duplicated batch | Act on one instruction twice | Dedupe by the provider's update id, remembered in the ledger so it survives a restart | "a replayed update id" |
-| Code in this repository | Mint an "accepted" value for text that came from somewhere other than the chairman | The value is branded with a module-private Symbol AND registered in a module-private WeakSet; `isAccepted` needs both | "no other module can produce the branded value" |
+| Code in this repository | Forge an "accepted" value: by hand, by copying one, by minting one for other ids (`createInbound` with a chairman of its own), or by skipping the classifier (`acceptUpdate` alone) | The value is branded with a module-private Symbol AND registered, with the ids it was minted for, in a module-private WeakMap. Only `handle` mints, and only after the classifier said forward; `acceptUpdate` returns a plain value that is not accepted. **`isAccepted(value, chairman)` makes the caller name the chairman it is configured with** and compares both ids | "no other module can produce the branded value" |
 | The chairman's own slip | Paste a credential, delete a repository, spend money from a phone | The classifier, below | `classify.test.mjs` |
 | A reader of the delivery log | Recover what was said | A line holds ids, a reason, a length and a sha256: never the text, and no hash at all for a secret | "a clean message's line" |
 
@@ -213,4 +214,15 @@ Each is a decision a later row may revisit, and each is pinned by a test.
   say anything. The token is a secret on the host (decision 1), and the ledger's update ids let the chairman check their own chat
   against what the organisation believes they said.
 - **The branded value is not cryptographic** (see "What this design CANNOT promise"): code that can edit this module can mint one.
-  The scan test shows that no OTHER module exports a way to, today.
+  The scan test shows that no OTHER module exports a way to, today (`createInbound` is the only one, and `isAccepted` makes a value it
+  minted for other ids useless to a caller that names the real chairman).
+- **What the brand proves, and what it does not.** It proves THIS module's identity check and classifier ran, for the ids the value is
+  registered against. It does not prove those ids are the chairman's: code in this process that knows the chairman's two ids (they are
+  configuration, not secrets) can still call `createInbound` with them and a made-up update. Nothing in-process can stop that; the
+  defence is that row 9 reads the ids from its own configuration, passes them to `isAccepted`, and that the listener (row 8) is the
+  only caller of `handle`.
+- **Findings of ceo's review of 4113f67 not fixed in this row** (non-blocking, for rows 8 and 9 or a follow-up): false negatives
+  (`gh repo delete`, `git branch -D`, `git push origin :main`, `upgrade to pro`, `password hunter2`, `pw:`, a bare `BEGIN RSA PRIVATE
+  KEY` header, combining accents and homoglyphs); false positives (a 40-hex SHA is read as a secret and deleted, `how do I remove a
+  label from a row?` is refused); the content of a group or forwarded message is hashed before the identity check (at odds with "no
+  hash of a secret"); and a stranger can grow the ledger by one line per update.

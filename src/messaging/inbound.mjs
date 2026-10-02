@@ -10,11 +10,15 @@
 //   3. `createInbound({ ledger, chairman }).handle(update)` -- the two above, plus DEDUPE by the provider's update id, plus ONE ledger line
 //      per verdict. It returns what the caller (the listener, row 8) must do; it does none of it.
 //
-// **THE ACCEPTED VALUE IS BRANDED AND NO OTHER MODULE CAN MAKE ONE.** (b): "there is no code path from a chat message to a worker", and
-// the function that writes a chairman-attributed row comment (row 9) accepts only what `isAccepted` says this module minted. Two
-// mechanisms, because each alone has a hole: a module-private Symbol is the brand (a copy made with `{ ...value }` or a JSON round trip
-// does not carry it), and a WeakSet of what was minted is the registry (the symbol can be read off a value with reflection, and a
-// value built around it is still not in the set). The brand and the registry are not exported.
+// **THE ACCEPTED VALUE IS BRANDED, AND ONLY `handle` MINTS ONE.** (b): "there is no code path from a chat message to a worker", and the
+// function that writes a chairman-attributed row comment (row 9) accepts only what `isAccepted(value, chairman)` says this module minted
+// FOR THAT CHAIRMAN. Three things carry that, and each closes a hole the one before leaves:
+//   * a module-private Symbol is the brand (a copy made with `{ ...value }` or a JSON round trip does not carry it), and a module-private
+//     registry is what was minted (the symbol can be read off a value with reflection, and a value built around it is not registered);
+//   * THE REGISTRY HOLDS THE IDS the value was minted for, and `isAccepted` makes the caller name the chairman it is configured with. The
+//     brand alone proves "this module's checks ran", not "against the right person": any code can call `createInbound` with ids of its own;
+//   * the value is minted only AFTER the classifier said forward. `acceptUpdate` is identity alone, and what it returns is a plain
+//     object that is NOT accepted, so a value that skipped the classifier cannot be mistaken for one that did not.
 //
 // **THE LEDGER LINE NEVER HOLDS THE TEXT** (decision 1): ids, a reason, a length and a sha256. A dropped message is attacker-chosen text,
 // and a refused one may have been a secret the classifier half-recognised. For a SECRET verdict the sha256 is also left out (null): a
@@ -25,8 +29,8 @@ import { createHash } from "node:crypto";
 import { classifyText, VERDICT } from "./classify.mjs";
 
 const BRAND = Symbol("chairman-accepted-update");
-/** @type {WeakSet<object>} */
-const MINTED = new WeakSet();
+/** @type {WeakMap<object, {userId: number, chatId: number}>} what was minted, and for whom */
+const MINTED = new WeakMap();
 
 /** The reasons an update is dropped on identity or shape. Distinct, so a ledger reader can tell a stranger from an edit. */
 export const DROP_REASON = Object.freeze({
@@ -102,20 +106,30 @@ function chatDrop(chat, chairman) {
 }
 
 /**
- * The accepted value. Frozen, branded, registered.
+ * The accepted value. Frozen, branded, registered against the chairman it was minted for. Called only by `handle`, after the classifier.
  *
- * @param {Record<string, unknown>} fields @returns {Readonly<Record<string, any>>}
+ * @param {Record<string, unknown>} fields @param {{userId: number, chatId: number}} chairman @returns {Readonly<Record<string, any>>}
  */
-function mint(fields) {
+function mint(fields, { userId, chatId }) {
   const value = { ...fields };
   Object.defineProperty(value, BRAND, { value: true, enumerable: false });
-  MINTED.add(value);
+  MINTED.set(value, { userId, chatId });
   return Object.freeze(value);
 }
 
-/** @param {unknown} value @returns {boolean} whether THIS module minted it: the check the chairman-attributed writer makes */
-export function isAccepted(value) {
-  return isObject(value) && MINTED.has(value) && /** @type {any} */ (value)[BRAND] === true;
+/**
+ * The check the chairman-attributed writer makes: this module minted it, after classifying it, for THIS chairman.
+ *
+ * @param {unknown} value
+ * @param {{userId: number, chatId: number}} chairman  the ids the CALLER is configured with, never read off the value
+ * @returns {boolean}
+ * @throws {TypeError} when the chairman's ids are not both safe integers: a check that cannot say who it checks for is not run
+ */
+export function isAccepted(value, chairman) {
+  const { userId, chatId } = checkedChairman({ chairman });
+  if (!isObject(value)) return false;
+  const minted = MINTED.get(value);
+  return minted !== undefined && minted.userId === userId && minted.chatId === chatId && /** @type {any} */ (value)[BRAND] === true;
 }
 
 /**
@@ -125,7 +139,8 @@ export function isAccepted(value) {
  */
 
 /**
- * Identity, and nothing else: whether this update is the chairman speaking in the chairman's own private chat.
+ * Identity, and nothing else: whether this update is the chairman speaking in the chairman's own private chat. **Not the classifier, and
+ * what it returns is NOT `isAccepted`**: only `createInbound(...).handle` mints, and only after the classifier has said forward.
  *
  * Dropped, each with its own reason: a message from anyone but the chairman; the chairman in a group, supergroup or channel; the
  * chairman in a private chat that is not the paired one; an edit; a forward; a channel post; and every other update type.
@@ -152,18 +167,18 @@ export function acceptUpdate(update, options) {
     chatType: isObject(chat) && KNOWN_CHAT_TYPES.has(chat.type) ? chat.type : null,
     ...describeContent(kind === "button" ? payload.data : payload.text),
   });
-  const reason = identityDrop({ sender, chat, message, kind, chairman });
+  const reason = identityDrop({ sender, chat, message, payload, kind, chairman });
   if (reason !== null) return { ok: false, reason, facts };
   const content = kind === "button" ? { data: payload.data, callbackQueryId: payload.id } : { text: payload.text };
-  const accepted = mint({ kind, updateId, userId: chairman.userId, chatId: chairman.chatId, messageId: safeId(message.message_id), ...content });
+  const accepted = Object.freeze({ kind, updateId, userId: chairman.userId, chatId: chairman.chatId, messageId: safeId(message.message_id), ...content });
   return { ok: true, accepted, facts };
 }
 
 /**
- * @param {{sender: unknown, chat: unknown, message: unknown, kind: string, chairman: {userId: number, chatId: number}}} parts
+ * @param {{sender: unknown, chat: unknown, message: unknown, payload: Record<string, any>, kind: string, chairman: {userId: number, chatId: number}}} parts
  * @returns {string | null} why this is not the chairman, or null when it is
  */
-function identityDrop({ sender, chat, message, kind, chairman }) {
+function identityDrop({ sender, chat, message, payload, kind, chairman }) {
   if (!isObject(sender) || safeId(sender.id) === null) return DROP_REASON.noSender;
   if (sender.id !== chairman.userId) return DROP_REASON.wrongUser;
   if (!isObject(chat)) return DROP_REASON.malformed;
@@ -172,6 +187,8 @@ function identityDrop({ sender, chat, message, kind, chairman }) {
   if (!isObject(message)) return DROP_REASON.malformed;
   if (FORWARD_FIELDS.some((field) => field in message)) return DROP_REASON.forwarded;
   if (kind === "message" && (typeof message.text !== "string" || message.text === "")) return DROP_REASON.notText;
+  // A button's data and query id are what row 9 acts on and answers, so a press whose either is not a string (`{evil: 1}`) is not one.
+  if (kind === "button" && (typeof payload.data !== "string" || payload.data === "" || typeof payload.id !== "string")) return DROP_REASON.malformed;
   return null;
 }
 
@@ -215,7 +232,7 @@ export function createInbound({ ledger, chairman }) {
     const result = accepted.kind === "button" ? { verdict: VERDICT.forward } : classifyText(accepted.text);
     if (result.verdict === VERDICT.forward) {
       record(facts, { verdict: VERDICT.forward, reason: null });
-      return { action: "forward", accepted };
+      return { action: "forward", accepted: mint(accepted, chairman) };
     }
     const secret = result.verdict === VERDICT.drop;
     record(facts, { verdict: result.verdict, reason: result.reason, hashed: !secret });
