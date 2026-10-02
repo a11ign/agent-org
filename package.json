@@ -5,6 +5,9 @@
   "type": "module",
   "license": "Apache-2.0",
   "description": "The AI agent organisation that develops this repo: rows, claims, the board, the merge queue and the wake gate. Ships nothing; runs nowhere but this project.",
+  "scripts": {
+    "messaging:watch": "node src/messaging/watch.mjs"
+  },
   "files": [
     "src",
     "LICENSE"

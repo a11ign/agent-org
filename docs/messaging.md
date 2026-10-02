@@ -87,9 +87,26 @@ code path, a sender nobody else can derive, a branded value) and made DETECTABLE
 chairman can check against their own chat. It is not cryptographic**, and an agent with shell access could write a comment saying
 anything. The classifier in 2(d) is a heuristic.
 
-## What exists so far (row 1 of 13)
+## What exists so far (rows 1 to 5b and 7, merged; read 2026-10-02)
 
-The core, the provider contract and its conformance test, with **no provider**: nothing here sends a message to anyone.
+| Row | What it is | Where |
+|---|---|---|
+| 1 | The provider-free core, the delivery log, the provider contract and its conformance test | `core.mjs`, `ledger.mjs`, `rate-limit.mjs`, `provider-contract.mjs`, `fake-provider.mjs` |
+| 2 | The `messaging` key, `messaging:check`, and the `chairman-watch` unit pair (optional, off without the key) | `config.mjs`, `check.mjs`, `host/chairman-watch.*.in` |
+| 3 | The Telegram provider | `providers/telegram/` |
+| 4 | The one-shot program the timer runs, and the request and summary sources | `watch.mjs`, `sources/requests.mjs`, `sources/summary.mjs` |
+| 5 | The stall and incident sources, every read injected | `sources/stall.mjs`, `sources/incidents.mjs` |
+| **5b** | **The real reads for row 5, wired into `watch.mjs`, and the `messaging:watch` package script** | `sources/readers.mjs`, `watch.mjs`, `package.json` |
+| 7 | Stage 2's inbound core (identity, the classifier, the branded value) | `inbound.mjs`, `classify.mjs` |
+
+**Not built:** row 6 (a host act: install the units, read back; nothing sends until it is done), the listener (rows 8 and 9), conversation
+(rows 10 to 12) and the first week's reading (row 13). The one `messaging:watch` script exists in this repository's `package.json`; **the unit
+runs `pnpm run messaging:watch` in the PROJECT's checkout** (`WorkingDirectory=@@checkout@@`), so row 6 must make that name resolve there and say
+which it read back.
+
+### Row 1: the core, the provider contract and its conformance test
+
+Nothing in this row sends a message to anyone.
 
 | File | What it is |
 |---|---|
@@ -132,6 +149,62 @@ Each is a decision a later row may revisit, and each is pinned by a test.
   identifiers in an error message, which is the safe direction.
 - **Events come from watchers that do not exist yet** (rows 4 and 5), so `firstSeenAt` is whatever a watcher supplies: the
   hold-down is only as honest as that timestamp.
+
+## Rows 5 and 5b: the stall and incident sources, and what reads for them
+
+`sources/stall.mjs` and `sources/incidents.mjs` decide; `sources/readers.mjs` reads. Each reader throws on a failed call and the source turns the
+throw into `cannot-ask`: no event, one log line, never a "cleared".
+
+| Reader | What it reads | Feeds |
+|---|---|---|
+| `readLastMerge` | the newest `merged_at` among the 30 most recently updated closed pull requests into `main` (not the newest commit: `main` carries "Merge origin/main into <branch>" commits) | `stall:no-merge` |
+| `readTrunkRuns` | the last 20 runs of `trunk.yml` on `main` | `incident:trunk-red` |
+| `readCiRuns` | the last 20 completed runs of every workflow, each failed run with its failed jobs' annotations | `incident:ci-permission` |
+| `readGateUnit` | `systemctl --user show <prefix>work-tick.service`: `ActiveState`, and `InactiveEnterTimestamp` as the gate's last run | `incident:gate-crash` |
+| `readFleetState` | `runs/fleet-watch-state.json` in the project checkout, and its modification time; **only the worker's name is kept, never its address** | `incident:fleet-down` |
+| `readTicks` | this watcher's own samples, newest first | `stall:all-idle` |
+
+**Decisions this row made that the design did not spell out:**
+
+- **There is no tick record, so the gate's last run is systemd's.** The row asked for "the newest tick record's time"; the work tick writes nothing a
+  reader can use (`wake-ledger` is one line per order delivered, and a quiet tick appends none) and `work-gate.mjs` / `wake.mjs` may not be edited
+  (#2867). A unit that is `failed`, or whose last run ended more than three ticks ago, is the incident.
+- **`readTicks` is a history the watcher keeps.** Each run first takes a SAMPLE (the time, every seat's state from `herdr --session org workspace list`,
+  the rows waiting) and appends it to `~/.local/state/agent-org/messaging/samples.jsonl`: a week of them (2,016), compacted once a day. One sample alone
+  never makes `stall:all-idle`; it needs a streak of ten minutes, so **the timer's period (five minutes) must stay under that**. A sample whose seats or rows
+  could not be read is not written, and the source then reads a history that stopped growing, which is `cannot-ask` once it is more than three ticks old.
+- **A row is "waiting" when it is open, labelled `ready`, and carries none of `blocked`, `hold*`, `answer:*`.** That approximates the gate's own order list,
+  which this program may not call: a row held by a `Not-before` date still counts, and a pull request awaiting a reviewer does not.
+- **`fleet-watch` runs hourly, so its file is up to an hour old on a healthy host.** `incidents.mjs`'s 30-minute default would have read half of every
+  hour as "the watcher stopped"; `watch.mjs` passes 130 minutes (two missed firings and a margin).
+- **A failed run's annotations are read once.** A completed run's never change, so they are kept by run id in `ci-annotations.json`, six runs per
+  watcher run at most. **A failed run not yet read makes `readCiRuns` throw** (`cannot-ask`), because an unread run is not a clear one. A run that
+  fails to START (`startup_failure`) has no job to carry an annotation and is not read: a permission refusal of that shape is not seen.
+
+**The `gh` calls one run makes, all `gh api` on the CORE pool and none on GraphQL** (the label sources' `gh issue list` / `gh pr list` calls spend
+GraphQL and are not counted here):
+
+| Call | Per run |
+|---|---|
+| `issues?labels=ready` (the sample's waiting rows) | 1 |
+| `pulls?state=closed&base=main` (`readLastMerge`) | 1 |
+| `actions/workflows/trunk.yml/runs` (`readTrunkRuns`) | 1 |
+| `actions/runs?status=completed` (`readCiRuns`) | 1 |
+| `actions/runs/<id>/jobs`, then `check-runs/<id>/annotations` per failed job | only for a failed run not read before: at most 6 runs, each ONCE ever |
+
+**Four calls per run when nothing new has failed** (`readers.test.mjs` pins the list), so 1,152 a day at the five-minute timer: about 48 an hour, about 1%
+of the account's 5,000-point core pool. Measured once on 2026-10-02 against the live repository: a double sample plus one asking of every source made 8
+calls, the 5 above and 3 annotation calls, which are not repeated. The account is the unit's declared `GH_CONFIG_DIR`, never
+a person's (#1967); `assertReadOnlyGh` admits `gh api <path>` for six REST paths and nothing after the path, so no flag can turn the read into a write.
+
+**What the first week's reading (row 13) counts:** how many `stall:no-merge` events fired while the queue was EMPTY. The ruling on #2904 keeps that event
+unconditional, and the count is what would change it. The queue at each moment is the `orders` of the sample at that time (`samples.jsonl`, a week deep);
+the events are the delivery log's `stall:no-merge` lines. **Read it from the host, not from a checkout: neither file is in a repository.**
+
+**Limits of what this row can show:** the tests hand each reader a recording and a failure; none runs `gh`, `systemctl` or `herdr`. The live reading was one
+hand-run of the readers against this host (read-only), not a unit run, because the unit is row 6's. On that run `incident:fleet-down` was open with 15
+workers not ready, the oldest since 2026-09-30 per `fleet-watch`'s own file, so the first thing row 6 will send is that incident unless it is expected (a fleet switched
+off on purpose reads as non-ready to `fleet-watch`); whether it should is `orchestrator`'s to say.
 
 ## Stage 2, the inbound core (row 7 of 13)
 
