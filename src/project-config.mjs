@@ -17,9 +17,11 @@
 //
 // The module imports only `node:fs` and `node:path`: `scripts/repo-identity.mjs` imports it, and it in turn is imported by 31
 // files of this package, so anything heavier here is paid by every one of them (`api-pool.mjs` says why that matters).
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
 
 export const PROJECT_DECLARATION_PATH = ".agent-org/project.json";
 /** The only `schema` this reader understands. An unknown one REFUSES: it is the one version coupling (ADR 0040, decision 3). */
@@ -246,19 +248,68 @@ function primaryCheckout(hostPath) {
 }
 
 /**
- * The checkout the tool serves. `$AGENT_ORG_HOST` set (and non-empty, as `hostConfigPath` reads it) names the host file, and the
- * answer is its primary project's checkout (ADR 0040, decision 3): the only form that works once the tool is installed beside the
- * projects it serves, where `src` up three is not one. UNSET answers the product's own tree -- `packages/agent-org/src` up three, `beside` --
- * ONLY WHEN THAT TREE HOLDS THE DECLARATION. Anywhere else (the tool's own checkout, where `beside` is the home directory) it REFUSES
- * naming the variable (#3039, measured 2026-10-02 15:23Z to about 17:40Z: 63 ticks died on `ENOENT: open '<home>/.agent-org/project.json'`,
- * a file nobody wrote, with the variable that was missing nowhere in the message). The same rule the set-but-unusable case already
- * keeps (chairman, 2026-09-24: no fallback) -- the unset case was the one place it had not been applied.
- * @param {{ env?: Record<string, string | undefined>, beside?: string }} [where]
+ * Is the tool running from a package manager's `node_modules`? That is the INSTALLED layout (`pnpm add -D github:a11ign/agent-org#...`), and the
+ * only one whose directory says nothing about the project: pnpm links the package from a store path
+ * (`<project>/node_modules/.pnpm/agent-org@<hash>/node_modules/agent-org/src`), so `src` up three is a directory inside the store. Read off the
+ * path and not off a flag, because a flag is one more thing a unit could forget to set.
+ * @param {string} toolDir the directory the tool's modules are in @returns {boolean}
+ */
+const isInstalled = (toolDir) => toolDir.split(sep).includes("node_modules");
+
+/**
+ * The root of the git repository `cwd` is inside, or `null` when it is inside none. `git` exits 128 for "not a repository", and that is an
+ * ANSWER; anything else (git absent, a signal) is a failure and is rethrown with its cause. `GIT_*` is stripped so a hook's exported `GIT_DIR`
+ * cannot make the answer be somebody else's checkout.
+ * @param {string} cwd @returns {string | null}
+ */
+function gitToplevel(cwd) {
+  try {
+    return execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8", env: sandboxGitEnv(), stdio: ["ignore", "pipe", "pipe"] }).trim();
+  } catch (cause) {
+    const notARepository = cause instanceof Error && /** @type {{ status?: number }} */ (cause).status === NOT_A_REPOSITORY_STATUS;
+    if (notARepository) return null;
+    throw new ProjectDeclarationRefusal("(cwd)", `\`git rev-parse --show-toplevel\` could not run in \`${cwd}\``, "the tool's checkout resolution", { cause });
+  }
+}
+const NOT_A_REPOSITORY_STATUS = 128;
+
+/**
+ * The project of an INSTALLED tool: the repository the command is run in. Nothing is guessed from where the tool sits, and a directory
+ * with no declaration is REFUSED naming the file and where it was looked for.
+ * @param {string} cwd @returns {string}
+ */
+function installedProject(cwd) {
+  const top = gitToplevel(cwd);
+  const looked = top ?? cwd;
+  if (existsSync(join(looked, PROJECT_DECLARATION_PATH))) return looked;
+  const where = top === null ? `\`${cwd}\`, which is not inside a git repository` : `\`${top}\`, the git repository \`${cwd}\` is in`;
+  throw new ProjectDeclarationRefusal(PROJECT_DECLARATION_PATH, `the tool is installed, so the project is the repository it is run in, and ${where}, holds no \`${PROJECT_DECLARATION_PATH}\``
+    + " (declare the project there, or set `AGENT_ORG_HOST` to a host file whose primary is the project)", "the tool's checkout resolution");
+}
+
+/**
+ * The checkout the tool serves, by LAYOUT. `$AGENT_ORG_HOST` set (and non-empty, as `hostConfigPath` reads it) wins in every layout and names the
+ * host file; the answer is its primary project's checkout (ADR 0040, decision 3). Unset, the layout decides:
+ *   - INSTALLED (`node_modules` in the tool's path; the project's own `pnpm add -D`): the git repository the command is run in (#3068). It must
+ *     hold the declaration, or the refusal names the file and the directory looked in.
+ *   - MONOREPO (`packages/agent-org/src`): `src` up three, `beside`, which is the product's tree.
+ *   - STANDALONE (the tool's own checkout): the same `beside`, which is the home directory and holds no declaration, so it REFUSES naming the
+ *     variable (#3039, measured 2026-10-02 15:23Z to about 17:40Z: 63 ticks died on `ENOENT: open '<home>/.agent-org/project.json'`, a file nobody
+ *     wrote, with the variable that was missing nowhere in the message). The same rule the set-but-unusable case already keeps (chairman,
+ *     2026-09-24: no fallback).
+ * `packaging/installed-layout.test.ts` carries one table: which layout answers what.
+ * @param {{ env?: Record<string, string | undefined>, toolDir?: string, beside?: string, cwd?: string }} [where]
  * @returns {string}
  */
-export function resolveHomeCheckout({ env = process.env, beside = resolve(dirname(fileURLToPath(import.meta.url)), "../../..") } = {}) {
+export function resolveHomeCheckout({
+  env = process.env,
+  toolDir = dirname(fileURLToPath(import.meta.url)),
+  beside = resolve(dirname(fileURLToPath(import.meta.url)), "../../.."),
+  cwd = process.cwd(),
+} = {}) {
   const host = env[HOST_ENV];
   if (host !== undefined && host !== "") return primaryCheckout(host);
+  if (isInstalled(toolDir)) return installedProject(cwd);
   if (existsSync(join(beside, PROJECT_DECLARATION_PATH))) return beside;
   throw new ProjectDeclarationRefusal(HOST_ENV, `it is ${host === undefined ? "unset" : "empty"}, and the checkout it would have guessed, \`${beside}\`, holds no \`${PROJECT_DECLARATION_PATH}\``
     + " (the tool is not inside a project). Set it in the unit (`Environment=AGENT_ORG_HOST=<checkout>/.agent-org/host.json`, which `host:install` writes), or in the shell that runs the tool",
