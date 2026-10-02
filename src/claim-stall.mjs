@@ -341,7 +341,7 @@ export function workAtRisk(io, { worktree, branch, repo }) {
  *   | { kind: "idle-watch", since: number }
  *   | { kind: "vacating", since: number }
  *   | { kind: "release", why: "stalled" | "blocked" | "merged" | "gone", lastMoveAt: number | null, idleMs: number | null,
- *       nudgedAt: number | null, edges?: number[], mergedPr?: number, since?: number, idle?: boolean }
+ *       nudgedAt: number | null, edges?: number[], mergedPr?: number, openPrs?: number[], since?: number, idle?: boolean }
  *   | { kind: "holding", why: string, expected?: boolean }} Reading
  */
 
@@ -396,7 +396,10 @@ function rememberedNudge(facts, ctx) {
  *
  * ORDER IS THE DESIGN. A row with an OPEN PULL REQUEST is not this cause's: the PR-stage causes (`draft-awaiting-verdict`,
  * `pr-review-blocked`, `pr-green-unarmed`, `pr-merge-conflict`, `awaiting-evidence-stale`) each wake the author for an
- * actionable state, and a PR waiting on somebody else is not the holder stalling. A merged pull request whose row stayed
+ * actionable state, and a PR waiting on somebody else is not the holder stalling. THE ONE EXCEPTION IS A HOLDER THAT IS GONE (#3048): "owned
+ * by a pull request" is not "owned by somebody", and the PR-stage causes wake an author who no longer exists, so every order to it is
+ * `UNDELIVERED` on every tick for good. {@link goneWithOpenPrReading} releases it, and the row is HELD for `product-manager`, not returned to
+ * the pool. A merged pull request whose row stayed
  * open is (10). An open `blockedBy` edge is (8) and NOT a wait to be respected, because a holder with nothing built has
  * nothing to protect. Only then a DECLARED wait (`answer:<session>`, a future `Not-before`, `needs:chairman`) -- data the
  * org already reads, so the row said why it is quiet. THE SESSION'S OWN STATUS IS NOT AN INPUT, and that is #2407's case:
@@ -416,7 +419,7 @@ function rememberedNudge(facts, ctx) {
  */
 function clockReading(facts, ctx) {
   const interval = ctx.intervalMs ?? STALL_INTERVAL_MS;
-  if (facts.openPrs > 0) return { kind: "pr-owned" };
+  if (facts.openPrs > 0) return goneWithOpenPrReading(facts, ctx) ?? { kind: "pr-owned" };
   const landed = mergedReading(facts);
   if (landed !== null) return landed;
   const gone = goneReading(facts, ctx);
@@ -450,6 +453,25 @@ function secondReading(facts, ctx, lastMoveAt) {
     return { kind: "release", why: "stalled", lastMoveAt, idleMs: ctx.now - lastMoveAt, nudgedAt, ...(idle ? { idle } : {}) };
   }
   return { kind: "nudged", nudgedAt, deliveredAt, lastMoveAt, ...(idle ? { idle } : {}) };
+}
+
+/**
+ * (#3048) A claim whose holder is GONE, on a row with an OPEN pull request of its own: {@link goneReading}'s reading (a `vacating` one, or the
+ * `gone` release once {@link GONE_CONFIRM_MS} has passed) with the open PRs NAMED on the release, or `null` for a holder that is still there.
+ *
+ * WHAT BECOMES OF THE ROW IS RULED, NOT ASSUMED (`product-manager`, 2026-10-02): it is HELD FOR `product-manager` and NOT returned to the pool.
+ * The claim labels come off and the PR and the kept worktree stay, but `ready` is not restored and `answer:product-manager` is set (the
+ * release order's `answer`, which `decline` turns into that label), so `product-manager` reads the PR and rules: adopt it (a fresh `worker-<row>`
+ * onto the existing branch) or close it and re-promote. A fresh claimant from the pool would build the row from its brief BESIDE a PR that
+ * already carries the work: the ownerless-duplicate shape #2031 holds for a branch with no PR, where B4's file-overlap refusal would be an
+ * incidental brake and not the design. A MERGED pull request is not this reading's (it keeps `pr-owned`, so `mergedReading` is not pre-empted).
+ * @param {ClaimFacts} facts @param {Parameters<typeof claimReading>[1]} ctx @returns {Reading | null}
+ */
+function goneWithOpenPrReading(facts, ctx) {
+  if (facts.mergedPr !== null) return null;
+  const gone = goneReading(facts, ctx);
+  if (gone === null || gone.kind !== "release") return gone;
+  return { ...gone, openPrs: (facts.ownPrs ?? []).map((pr) => pr.number) };
 }
 
 /**
@@ -698,7 +720,7 @@ const minutes = (ms) => Math.round(ms / MINUTE_MS);
 /**
  * @typedef {{ row: number, session: string, why: "stalled" | "blocked" | "merged" | "gone", branch: string | null,
  *   worktree: string | null, idleMinutes: number | null, nudgedAt: number | null, edges?: number[],
- *   mergedPr?: number, answer?: string }} ReleaseRequest
+ *   mergedPr?: number, openPrs?: number[], answer?: string }} ReleaseRequest
  * @typedef {{ session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string,
  *   title?: string, release?: ReleaseRequest, resume?: boolean }} StallOrder
  */
@@ -790,11 +812,14 @@ function releaseOrder(facts, reading) {
   const release = { row: facts.row, session: facts.session, why: reading.why, branch: facts.branch, worktree: facts.worktree,
     idleMinutes: reading.idleMs === null ? null : minutes(reading.idleMs), nudgedAt: reading.nudgedAt,
     ...(reading.edges === undefined ? {} : { edges: reading.edges }),
-    ...(reading.mergedPr === undefined ? {} : { mergedPr: reading.mergedPr, answer: "product-manager" }) };
+    ...(reading.mergedPr === undefined ? {} : { mergedPr: reading.mergedPr, answer: "product-manager" }),
+    // HELD, NOT POOLED (#3048): a gone holder's open PR is the work, so the row goes to `product-manager` and `ready` is not restored.
+    ...(reading.openPrs === undefined || reading.openPrs.length === 0 ? {} : { openPrs: reading.openPrs, answer: "product-manager" }) };
   const said = reading.why === "stalled" && reading.idle ? `idle with no wait field and nothing moved for ${release.idleMinutes} minutes, and the nudge was not answered`
     : reading.why === "stalled" ? `nothing moved for ${release.idleMinutes} minutes and the nudge was not answered`
     : reading.why === "blocked" ? `blocked by ${(reading.edges ?? []).map((n) => `#${n}`).join(", ")} and the holder holds nothing`
-    : reading.why === "gone" ? `${facts.session} no longer exists in herdr's own listing`
+    : reading.why === "gone" ? `${facts.session} no longer exists in herdr's own listing${release.openPrs === undefined ? ""
+      : `, and ${release.openPrs.map((n) => `#${n}`).join(", ")} is still open (the row is held for product-manager, not returned to the pool)`}`
     : `#${reading.mergedPr} merged and the row stayed open`;
   return {
     session: facts.session, cause: "claim-stalled", subject: `row-${facts.row}`, discriminator: `release-${reading.why}`,
