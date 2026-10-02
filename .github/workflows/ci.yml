@@ -19,10 +19,14 @@ name: ci
 # modules and fixtures that were not extracted. The job copies those siblings (never a test) from the project beside the tests, without overwriting
 # anything this repository has.
 #
+# NODE IS PINNED TO 22.22.1, NOT `22`: on 22.23.3 (what `22` resolved to on 2026-10-02) the suite's one tree-walking observer, `walk-scope.mjs`, sees
+# tsx probe `<name>.mts` beside every `<name>.mjs` it imports and fails `board-reported-data-integrity.test.ts` for reads outside its declared scope
+# (reproduced locally on both versions, 22.22.1 green and 22.23.3 red, same tree). Move the pin only by re-running the suite on the new version.
+#
 # NAMING A PATH THAT LIVES IN THE PROJECT: `workflow-paths.mjs` refuses a workflow path (`packages/...`, `scripts/...`) that is not in THIS
 # repository, so a path in the project is written with the `project/` prefix, or carries the marker `# in-project` at the end of its line.
 #
-# EXCLUDED, BY NAME, EACH WITH ITS REASON (node's --test-skip-pattern, which drops a test from the run's `tests` count rather than reporting it skipped):
+# EXCLUDED, BY NAME, EACH WITH ITS REASON (node's --test-skip-pattern; the run reports them skipped or leaves them out of its count, by node version):
 #   - "#1449: this guard reads the token charge's ONE spawn regex": its regex asserts the import spelling `agent-org/src/acceptance-commands.mjs`,
 #     which the extraction rewrote to `../acceptance-commands.mjs`.
 #   - "the count of non-test files in": its recorded count predates `src/messaging/` (which this
@@ -55,7 +59,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.22.1
       - name: Every path a workflow names exists in this repository
         run: node .github/scripts/workflow-paths.mjs
       - name: Leak scan -- refuses a private LAN IPv4 address or a named SSH key file anywhere in the tree
