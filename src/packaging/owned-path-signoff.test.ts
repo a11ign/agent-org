@@ -107,7 +107,7 @@ test("CONTRADICTING states for the same fact across two lines is a real finding,
 
 test("real body: #584 (guest-paths-are-measured) states all four owned-path-facts on packages/nvda-worker/", () => {
   const body = readFileSync(
-    fileURLToPath(new URL("../../../../packages/lab/src/packaging/fixtures/pr-584-body.md", import.meta.url)),
+    fileURLToPath(new URL("./fixtures/pr-584-body.md", import.meta.url)),
     "utf8");
   const real = loadFacts();
   assert.ok(real);
@@ -119,7 +119,7 @@ test("real body: #584 (guest-paths-are-measured) states all four owned-path-fact
 
 test("real body: #613 (profile-identity-is-a-key) states all four owned-path-facts on packages/nvda-worker/", () => {
   const body = readFileSync(
-    fileURLToPath(new URL("../../../../packages/lab/src/packaging/fixtures/pr-613-body.md", import.meta.url)),
+    fileURLToPath(new URL("./fixtures/pr-613-body.md", import.meta.url)),
     "utf8");
   const real = loadFacts();
   assert.ok(real);

@@ -209,7 +209,23 @@ test("a refusal for one field is not a refusal for another (each mutation fires 
 });
 
 /**
- * The non-test files under `packages/agent-org/src` that carry the repository's name literally. A directory walk rather than
+ * A directory the walk does not read: it holds DATA the tests feed the tool (a recorded PR body, say), not a surface the tool runs, and it is copied in
+ * from the project that hosts the tests -- so whether it names the repository says nothing about the tool.
+ */
+const FIXTURE_DIRECTORY = "fixtures";
+
+/**
+ * A line that is only a comment. `src/messaging/` names `a11ign/a11ign` in its comments, as the issue (`a11ign/a11ign#2900`) a decision was
+ * recorded on; that is a reference to the tracker, not a place the tool reads the repository's name from, which is what #2616 forbids.
+ */
+const COMMENT_LINE = /^\s*(?:\/\/|\/\*|\*|#)/;
+
+function namesTheRepositoryInCode(text: string): boolean {
+  return text.split("\n").some((line) => !COMMENT_LINE.test(line) && line.includes(A11IGN_LITERAL));
+}
+
+/**
+ * The non-test files under `packages/agent-org/src` that carry the repository's name literally IN CODE. A directory walk rather than
  * `git ls-files`, so the test spawns nothing and counts a file added in this very change before it is tracked.
  */
 function filesCarryingTheLiteral(): string[] {
@@ -218,8 +234,8 @@ function filesCarryingTheLiteral(): string[] {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (entry.name !== "node_modules") walk(path);
-      } else if (!/\.test\./.test(entry.name) && readFileSync(path, "utf8").includes(A11IGN_LITERAL)) {
+        if (entry.name !== "node_modules" && entry.name !== FIXTURE_DIRECTORY) walk(path);
+      } else if (!/\.test\./.test(entry.name) && namesTheRepositoryInCode(readFileSync(path, "utf8"))) {
         found.push(relative(HOME_CHECKOUT, path));
       }
     }
@@ -246,4 +262,12 @@ test("the count of non-test files in packages/agent-org/src carrying the literal
   );
   assert.ok(carriers.length <= RECORDED_CARRIERS.length, `${carriers.length} > ${RECORDED_CARRIERS.length}`);
   assert.deepEqual(carriers, RECORDED_CARRIERS, "one moved: shrink RECORDED_CARRIERS with it, so the ceiling follows the count down");
+});
+
+test("the scan reads CODE: a comment naming the tracker's issue does not carry the literal, and a fallback in code does", () => {
+  assert.equal(namesTheRepositoryInCode("// recorded on a11ign/a11ign#2900\nconst x = 1;"), false);
+  assert.equal(namesTheRepositoryInCode(" * see a11ign/a11ign#2900"), false);
+  assert.equal(namesTheRepositoryInCode("# keeps a11ign/a11ign\nREPO=other"), false);
+  assert.equal(namesTheRepositoryInCode('const repo = env.REPO ?? "a11ign/a11ign"; // fallback'), true);
+  assert.equal(namesTheRepositoryInCode('REPO="${GH_REPO:-a11ign/a11ign}"'), true);
 });

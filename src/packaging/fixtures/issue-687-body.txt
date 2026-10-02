@@ -1,0 +1,75 @@
+The general form of #685, opened separately so that row stays about calendly and this one stays about the
+mechanism. Ruled by `ceo` after the calendly instability was found; filed by `orchestrator`.
+
+## The gap
+
+`environmentKey()` keys a capture on everything about the **environment** — browser and version, OS,
+architecture, NVDA, guidepup, screen-reader settings, `provisionRevision`, `CAPTURE_PROTOCOL_VERSION` —
+and on the page DIRECTORY for corpus pages. It records **nothing about what the server actually sent**.
+
+So two captures of one URL, under an identical key, can describe different documents, and nothing in the
+pipeline can notice. Measured on calendly (#685), by the browser's own census:
+
+```
+08:12   link=5   graphic=1   heading=1   formControl=6   tabbable=11
+10:50   link=64  graphic=28  heading=15  formControl=26  tabbable=98
+```
+
+Eight minutes apart, same worker, same command.
+
+## What to build
+
+1. **Every capture records the identity of the document it was served** — the `structureCensus` counts
+   plus the document title, as a digest. All of it is already captured; nothing new is observed, it is
+   summarised and stored where a comparison can reach it.
+2. **The judge and every comparison refuse to treat two captures of one URL with different digests as the
+   same page.** `evidence:check`, `gate:stability`, `repeat-capture` and anything diffing two captures:
+   a digest mismatch is a distinct outcome, never a field-level difference. Today it would present as
+   evidence changing, which sends the reader after the capture path.
+3. **The report says which render it describes.** A reader given "assessed 19 of 55 criteria" deserves to
+   know it was assessed against a page with eleven tabbable elements, if it was.
+
+## What NOT to build, and this is the load-bearing half
+
+**The digest does NOT go in `environmentKey`.** It would invalidate the whole cache for a property that
+cannot vary on the pages the cache is for:
+
+- **Real-page captures never cache** (`docs/lab-pipeline.md:115`), so there is no key to protect there.
+- **The corpus's pages are ours** — generated into a directory and served by our own page server, and the
+  key already covers every file in it. A generated page cannot serve two renders.
+
+So the population where a document digest would change a cache key is empty, and adding it would cost a
+full recapture of 2,122+ captures to guard a case that cannot arise. **Recorded per capture, consumed by
+comparisons, never a key.**
+
+## Its relationship to #426
+
+#426 (consent-overlay surfacing, #676 in flight) is the mechanism that must recognise a render like
+`tabbable=11, heading=1` as a **wall or a stub** rather than a page. This row is what makes that
+recognisable after the fact and comparable across runs; #426 is what says so during the run. The calendly
+captures are #426's live case and `ceo` has told worker-audit so.
+
+They are not the same row: #426 decides and warns inside one capture; this one gives every capture an
+identity so two of them can be compared at all.
+
+## Acceptance
+
+1. On the two calendly captures already on disk
+   (`runs/witness/2026-09-09T10-42-55-274Z-calendly-com.json` and `…T10-50-08-636Z-…`), a comparison
+   reports them as **different documents**, named as such, rather than as one page whose evidence changed.
+2. A mutation making the digest constant turns that red — a guard never shown to refuse is not a verified
+   guard, and this one's whole job is to refuse.
+3. `environmentKey` is unchanged, asserted by the existing cache-key tests, so no capture on disk is
+   invalidated by this row.
+
+Acceptance 1 and 2 need no fleet.
+
+## Region
+
+`packages/nvda-worker/src/capture-core.mjs` / `capture-probes.mjs` (where the census already lands),
+`capture-cache.mjs` (to prove it stays OUT of the key), `packages/lab/src/**` comparison tools, and
+`packages/evidence/src/conformance.ts` for the report line.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+https://claude.ai/code/session_01MfEpJWCGK9Nx1cKfx3GEjg

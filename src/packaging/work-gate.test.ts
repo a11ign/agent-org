@@ -4552,12 +4552,22 @@ test("#2174: the gate does NOT import host-units.mjs -- the spawn is the fence, 
     "the same walker DOES find host-units.mjs's own edges");
 });
 
+/**
+ * The test files that derive a `history` requirement, as pinned when this row measured them in the monorepo, where every one of them sat in the same
+ * directory. Not all of them are held HERE: `documents-extraction` and the `pre-push-*` tests exercise the project's own hooks and its `packages/pdf`,
+ * and were not extracted with the tool. The test compares what this directory holds against the pinned names THIS directory holds -- so a name that
+ * is pinned and absent is somebody else's, and a file that joins the population from this directory still fails, which is the point of the pin.
+ */
+const HISTORY_REQUIREMENT_POPULATION = ["documents-extraction.test.ts", "host-project-paths.test.ts", "host-tool-install.test.ts", "host-units.test.ts",
+  "pre-push-resolve-toward-main.test.ts", "pre-push-stale-base.test.ts", "shadow-window-arm.test.ts", "work-gate.test.ts"];
+
 test("#2174: the history-requirement population is unchanged by this row", () => {
   const dir = fileURLToPath(new URL("./", import.meta.url));
-  const charged = readdirSync(dir).filter((f) => f.endsWith(".test.ts"))
+  const held = readdirSync(dir).filter((f) => f.endsWith(".test.ts"));
+  const charged = held
     .filter((f) => {
       try {
-        return deriveClosureRequirements(join("packages/lab/src/packaging", f))
+        return deriveClosureRequirements(join(dir, f))
           .some((r: { requirement: string }) => r.requirement === "history");
       } catch { return false; }
     }).sort();
@@ -4572,10 +4582,14 @@ test("#2174: the history-requirement population is unchanged by this row", () =>
   // #2705 added `documents-extraction.test.ts`: checked -- it asks `--is-shallow-repository` before reading `git log -p` over `packages/pdf`
   // (the history `filter-repo` carries across is part of the first commit's leak scan), so it genuinely needs history, and its pull request
   // declares `History: full`.
-  assert.deepEqual(charged, ["documents-extraction.test.ts", "host-project-paths.test.ts", "host-tool-install.test.ts", "host-units.test.ts",
-    "pre-push-resolve-toward-main.test.ts", "pre-push-stale-base.test.ts", "shadow-window-arm.test.ts", "work-gate.test.ts"],
-  "adding a `history` reader to the gate's import closure taxes every test file that reaches it -- if "
-  + "this list grew, check what was imported rather than editing the list");
+  const expected = HISTORY_REQUIREMENT_POPULATION.filter((f) => held.includes(f)).sort();
+  // The positive control for the emptiness this comparison could otherwise pass on: two files this directory certainly holds and that certainly
+  // derive the requirement, so an empty `charged` (every derivation throwing into the `catch`) is a failure and not a match with an empty list.
+  assert.ok(expected.includes("work-gate.test.ts") && expected.includes("host-units.test.ts"),
+    "the pinned population must name the files this directory holds that reach `git log --all`");
+  assert.deepEqual(charged, expected,
+    "adding a `history` reader to the gate's import closure taxes every test file that reaches it -- if "
+    + "this list grew, check what was imported rather than editing the list");
 });
 
 /**

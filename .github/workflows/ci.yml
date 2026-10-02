@@ -15,9 +15,9 @@ name: ci
 # project's declaration -- and the project moves on its own, so a red `gate` can be the project's change and not the pull request's. Pin
 # PROJECT_REF to a commit to separate the two.
 #
-# THE TESTS' SIBLINGS COME FROM THE PROJECT: the tool's tests were extracted from the project's lab package (`project/packages/lab/src/packaging/`), where they sat beside helper
-# modules and fixtures that were not extracted. The job copies those siblings (never a test) from the project beside the tests, without overwriting
-# anything this repository has.
+# THE TESTS' HELPERS AND FIXTURES LIVE HERE (a11ign/a11ign#3002): the tests were extracted from the project's lab package, where they sat beside a few helper
+# modules and fixtures, and those now sit beside them in `src/packaging/` (`rules-files.ts`, `check-run-fixtures.ts`, `fixtures/`, ...). The job copies
+# NOTHING in from the project's lab package, so the tool's suite does not depend on lab files that the cut-over may delete.
 #
 # NODE IS PINNED TO 22.22.1, NOT `22`: on 22.23.3 (what `22` resolved to on 2026-10-02) the suite's one tree-walking observer, `walk-scope.mjs`, sees
 # tsx probe `<name>.mts` beside every `<name>.mjs` it imports and fails `board-reported-data-integrity.test.ts` for reads outside its declared scope
@@ -26,15 +26,9 @@ name: ci
 # NAMING A PATH THAT LIVES IN THE PROJECT: `workflow-paths.mjs` refuses a workflow path (`packages/...`, `scripts/...`) that is not in THIS
 # repository, so a path in the project is written with the `project/` prefix, or carries the marker `# in-project` at the end of its line.
 #
-# EXCLUDED, BY NAME, EACH WITH ITS REASON (node's --test-skip-pattern; the run reports them as skipped, 5 in all with the one test that skips itself):
-#   - "#1449: this guard reads the token charge's ONE spawn regex": its regex asserts the import spelling `agent-org/src/acceptance-commands.mjs`,
-#     which the extraction rewrote to `../acceptance-commands.mjs`.
-#   - "the count of non-test files in": its recorded count predates `src/messaging/` (which this
-#     repository added) and counts the copied-in fixture `pr-584-body.md`.
-#   - "#2619 ACCEPTANCE, MUTATION TARGET": it walks the tool's source in the project and finds the copied-in sibling `prefix-pins.mjs`, which is a lab file.
-#   - "#2174: the history-requirement population is unchanged by this row": its expected list names lab tests that were not extracted.
-# Each is a test whose premise is the monorepo's directory layout and not a defect in the tool; the row that removes each exclusion is named on
-# a11ign/a11ign#2973.
+# NOTHING IS EXCLUDED BY NAME: an exclusion is a test that does not run, and the four that were (an import spelling, a recorded count, a walked directory
+# and an expected file list, each premised on the monorepo's layout) were fixed in the tests instead (a11ign/a11ign#3002). The run reports `skipped 1`:
+# the one test that skips itself when no Chrome is installed, which is not an exclusion.
 
 env:
   # The project the tool is tested against. `main` follows the project; a commit hash holds it still.
@@ -77,21 +71,11 @@ jobs:
         run: |
           npm install --no-save --no-package-lock "tsx@^4.22.4" "yaml@^2.9.0" "typescript@^6.0.3"
           mv node_modules project/node_modules
-      - name: Put this checkout's tool where the tool lives in a project, and the tests' siblings beside the tests
+      - name: Put this checkout's tool where the tool lives in a project
         run: |
           rm -rf project/packages/agent-org
           mkdir project/packages/agent-org
           cp -r src host package.json LICENSE project/packages/agent-org/
-          rsync -a --ignore-existing --exclude='*.test.ts' --exclude='*.test.mjs' project/packages/lab/src/packaging/ project/packages/agent-org/src/packaging/
       - name: The tool's whole suite -- every *.test.ts and *.test.mjs, run from the project's root
         working-directory: project
-        run: |
-          skipped=(
-            "#1449: this guard reads the token charge's ONE spawn regex"
-            "the count of non-test files in"
-            "#2619 ACCEPTANCE, MUTATION TARGET"
-            "#2174: the history-requirement population is unchanged by this row"
-          )
-          flags=()
-          for name in "${skipped[@]}"; do flags+=("--test-skip-pattern=${name}"); done
-          node --import tsx --test "${flags[@]}" "packages/agent-org/src/**/*.test.ts" "packages/agent-org/src/**/*.test.mjs" # in-project
+        run: node --import tsx --test "packages/agent-org/src/**/*.test.ts" "packages/agent-org/src/**/*.test.mjs" # in-project
