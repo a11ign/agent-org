@@ -26,7 +26,9 @@
 # Usage: pr-review-verdict <pr-number> <convinced|not-convinced> <verdict-comment-file>
 # Exit:  0  the review posted (attribution is best-effort and never changes this)
 #        2  a malformed call, or an environment failure offered as a verdict (nothing was sent to `gh` for either)
-#        3  REFUSED: the pull request already has a review at an equal patch (a11ign#3050). Nothing was posted, and the
+#        3  REFUSED: the pull request already has a verdict at an equal patch (a11ign#3050) -- an APPROVED or CHANGES_REQUESTED review whose
+#           body opens `**Review of #<n> at ` and whose commit is the head or has the head's patch id; a review that opens any other way, such
+#           as a code owner's scoped approval, is not counted (a11ign#3087). Nothing was posted, and the
 #           message names the review that stands. A refusal that is wrong goes to `product-manager`, never to a second review.
 #        4  COULD NOT TELL whether it has one (a `gh` read failed). Nothing was posted; the door is safe to run again.
 # Env:   A11Y_REVIEWER_SESSION  the org session name posting this review (`reviewer-<n>` for pull request n, #2401).
@@ -164,9 +166,12 @@ refuse_second_review() {
   local pr head base reviews when state commit url head_pid pid differing=" "
   pr="$(gh api "repos/$REPO/pulls/$n" --jq '[.head.sha, .base.ref] | @tsv')" || undetermined "the pull request would not read"
   IFS=$'\t' read -r head base <<<"$pr"
-  # ONLY THE TWO STATES THIS DOOR POSTS. A DISMISSED review no longer stands, and a COMMENTED one is not a verdict.
+  # ONLY A REVIEW THE DOOR COULD HAVE POSTED: one of the two states it posts, AND a body that opens as a verdict (the same opener the
+  # door itself requires above). A DISMISSED review no longer stands, a COMMENTED one is not a verdict, and a code owner's hand-written
+  # approval of one path (agent-org#66: "approved for the workflow change only") opens some other way and is not the duplicate
+  # a11ign#3050 exists to stop. `$n` is digits by now, so it is safe inside the jq program.
   reviews="$(gh api "repos/$REPO/pulls/$n/reviews?per_page=100" --paginate \
-      --jq '.[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED") | [.submitted_at, .state, .commit_id, .html_url] | @tsv' \
+      --jq '.[] | select((.state == "APPROVED" or .state == "CHANGES_REQUESTED") and ((.body // "") | startswith("**Review of #'"$n"' at "))) | [.submitted_at, .state, .commit_id, .html_url] | @tsv' \
       | sort -r)" || undetermined "its reviews would not read"
   [[ -n "$reviews" ]] || return 0
   while IFS=$'\t' read -r when state commit url; do

@@ -52,10 +52,15 @@ const DIFFS: Record<string, string> = {
   [NEW_WORK]: diffOf({ hunkStart: 1, index: "1111111..3333333", added: ["two", "five"] }),
 };
 
-interface Review { when: string; state: string; commit: string }
-const reviewAt = (commit: string, state: string, when: string): Review => ({ commit, state, when });
-
 const OPENER = "**Review of #7 at `c7764afb`, by reviewer-7: convinced (CI run 41)**";
+
+/** A code owner's hand-written approval of one path (agent-org#66): a review, but not one that opens as a verdict. */
+const SCOPED_APPROVAL = "ceo, as code owner of `.github/`: **approved for the workflow change only**. I did not review `src/`.";
+
+interface Review { when: string; state: string; commit: string; body: string | null }
+/** A review the door could have posted, unless `body` says otherwise: its body opens with the verdict line. */
+const reviewAt = (commit: string, state: string, when: string, body: string | null = `${OPENER}\n\nbody`): Review =>
+  ({ commit, state, when, body });
 
 interface Run { status: number | null; calls: string[]; stderr: string }
 interface Scenario {
@@ -77,7 +82,7 @@ function runDoor(scenario: Scenario): Run {
     writeFileSync(join(dir, "verdict.md"), `${opener}\n\nbody\n`);
     writeFileSync(join(dir, "pr.json"), JSON.stringify({ head: { sha: scenario.head }, base: { ref: "main" } }));
     writeFileSync(join(dir, "reviews.json"), JSON.stringify((scenario.reviews ?? []).map((r) => ({
-      submitted_at: r.when, state: r.state, commit_id: r.commit, html_url: `https://example/pull/7#review-${r.when}`, body: "earlier" }))));
+      submitted_at: r.when, state: r.state, commit_id: r.commit, html_url: `https://example/pull/7#review-${r.when}`, body: r.body }))));
     for (const [sha, diff] of Object.entries(DIFFS)) writeFileSync(join(dir, `diff-${sha}`), diff);
     if (scenario.failing === "reviews") writeFileSync(join(dir, "fail-reviews"), "");
     if (scenario.failing === "compare") writeFileSync(join(dir, "fail-compare"), "");
@@ -191,6 +196,62 @@ test("a read that fails is COULD-NOT-TELL, not `no review`: nothing is posted an
     assert.deepEqual(posted(calls), [], failing);
     assert.match(stderr, /could not tell whether #7 already has a review/, failing);
   }
+});
+
+// --- a11ign#3087: a review counts only when it opens as a verdict ---------------------------------------------------------------
+
+test("3087: a code owner's scoped APPROVED at the head, which does not open as a verdict, lets the door post", () => {
+  const { status, calls, stderr } = runDoor({
+    head: AFTER_MERGE_OF_MAIN,
+    reviews: [reviewAt(AFTER_MERGE_OF_MAIN, "APPROVED", "2026-10-02T21:57:19Z", SCOPED_APPROVAL)],
+  });
+  assert.equal(status, 0, stderr);
+  assert.equal(posted(calls).length, 1, "the reviewer's verdict was posted once");
+  assert.match(posted(calls)[0], /--approve/);
+});
+
+test("3087: the same with CHANGES_REQUESTED, and with an empty or absent body", () => {
+  for (const [state, body] of [["CHANGES_REQUESTED", SCOPED_APPROVAL], ["APPROVED", ""], ["APPROVED", null]] as const) {
+    const { status, calls, stderr } = runDoor({ head: AFTER_MERGE_OF_MAIN, reviews: [reviewAt(AFTER_MERGE_OF_MAIN, state, "2026-10-02T21:57:19Z", body)] });
+    assert.equal(status, 0, `${state} ${JSON.stringify(body)}: ${stderr}`);
+    assert.equal(posted(calls).length, 1, state);
+  }
+});
+
+test("3087 CONTROL: a scoped approval beside a verdict-opening one at the head still refuses, and names the verdict", () => {
+  const { status, calls, stderr } = runDoor({
+    head: AFTER_MERGE_OF_MAIN,
+    reviews: [
+      reviewAt(AFTER_MERGE_OF_MAIN, "APPROVED", "2026-10-02T18:00:00Z"),
+      reviewAt(AFTER_MERGE_OF_MAIN, "APPROVED", "2026-10-02T21:57:19Z", SCOPED_APPROVAL),
+    ],
+  });
+  assert.equal(status, EXIT_SECOND_REVIEW, stderr);
+  assert.match(stderr, /APPROVED at 2026-10-02T18:00:00Z/, "the verdict stands, not the newer scoped approval");
+  assert.deepEqual(posted(calls), []);
+});
+
+test("3087 CONTROL: an opener naming ANOTHER pull request is not this one's verdict", () => {
+  const other = "**Review of #8 at `c7764afb`, by reviewer-8: convinced (CI run 41)**";
+  const { status } = runDoor({ head: AFTER_MERGE_OF_MAIN, reviews: [reviewAt(AFTER_MERGE_OF_MAIN, "APPROVED", "2026-10-02T18:00:00Z", other)] });
+  assert.equal(status, 0);
+});
+
+test("3087 CONTROL: a verdict-opening review at a DIFFERENT commit with an equal patch still refuses, though a scoped approval stands at the head", () => {
+  const { status, calls } = runDoor({
+    head: AFTER_MERGE_OF_MAIN,
+    reviews: [
+      reviewAt(FIRST, "CHANGES_REQUESTED", "2026-10-02T17:48:57Z"),
+      reviewAt(AFTER_MERGE_OF_MAIN, "APPROVED", "2026-10-02T21:57:19Z", SCOPED_APPROVAL),
+    ],
+  });
+  assert.equal(status, EXIT_SECOND_REVIEW);
+  assert.deepEqual(posted(calls), []);
+});
+
+test("3087 CONTROL: a failing read is still exit 4 when the only review is a scoped approval", () => {
+  const { status } = runDoor({ head: AFTER_MERGE_OF_MAIN, reviews: [reviewAt(FIRST, "APPROVED", "2026-10-02T21:57:19Z", SCOPED_APPROVAL)], failing: "reviews" });
+  assert.equal(status, EXIT_UNDETERMINED);
 });
 
 // --- done-when 3: an environment failure is not a verdict -----------------------------------------------------------------------
