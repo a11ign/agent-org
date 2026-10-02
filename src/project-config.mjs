@@ -17,7 +17,7 @@
 //
 // The module imports only `node:fs` and `node:path`: `scripts/repo-identity.mjs` imports it, and it in turn is imported by 31
 // files of this package, so anything heavier here is paid by every one of them (`api-pool.mjs` says why that matters).
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -248,14 +248,21 @@ function primaryCheckout(hostPath) {
 /**
  * The checkout the tool serves. `$AGENT_ORG_HOST` set (and non-empty, as `hostConfigPath` reads it) names the host file, and the
  * answer is its primary project's checkout (ADR 0040, decision 3): the only form that works once the tool is installed beside the
- * projects it serves, where `src` up three is not one. UNSET is the form every live unit still runs in: the product's own tree,
- * so the declaration is the one beside it, `packages/agent-org/src` up three.
+ * projects it serves, where `src` up three is not one. UNSET answers the product's own tree -- `packages/agent-org/src` up three, `beside` --
+ * ONLY WHEN THAT TREE HOLDS THE DECLARATION. Anywhere else (the tool's own checkout, where `beside` is the home directory) it REFUSES
+ * naming the variable (#3039, measured 2026-10-02 15:23Z to about 17:40Z: 63 ticks died on `ENOENT: open '<home>/.agent-org/project.json'`,
+ * a file nobody wrote, with the variable that was missing nowhere in the message). The same rule the set-but-unusable case already
+ * keeps (chairman, 2026-09-24: no fallback) -- the unset case was the one place it had not been applied.
  * @param {{ env?: Record<string, string | undefined>, beside?: string }} [where]
  * @returns {string}
  */
 export function resolveHomeCheckout({ env = process.env, beside = resolve(dirname(fileURLToPath(import.meta.url)), "../../..") } = {}) {
   const host = env[HOST_ENV];
-  return host !== undefined && host !== "" ? primaryCheckout(host) : beside;
+  if (host !== undefined && host !== "") return primaryCheckout(host);
+  if (existsSync(join(beside, PROJECT_DECLARATION_PATH))) return beside;
+  throw new ProjectDeclarationRefusal(HOST_ENV, `it is ${host === undefined ? "unset" : "empty"}, and the checkout it would have guessed, \`${beside}\`, holds no \`${PROJECT_DECLARATION_PATH}\``
+    + " (the tool is not inside a project). Set it in the unit (`Environment=AGENT_ORG_HOST=<checkout>/.agent-org/host.json`, which `host:install` writes), or in the shell that runs the tool",
+  "the tool's checkout resolution");
 }
 
 /** The checkout this process serves, resolved once at import (see `resolveHomeCheckout`). */

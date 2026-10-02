@@ -117,12 +117,12 @@ test("the scratch tree really is the standalone layout: nothing within three lev
   assert.equal(resolve(src, "../../.."), dirname(dirname(dirname(src))));
 });
 
-test("POSITIVE CONTROL: the same tree with $AGENT_ORG_HOST unset fails with the ENOENT refusal this row fixes", () => {
+test("POSITIVE CONTROL: the same tree with $AGENT_ORG_HOST unset REFUSES naming the variable, not an ENOENT on a file nobody wrote (#3039)", () => {
   const reading = readIn(standaloneTree(), undefined);
   assert.notEqual(reading.status, 0);
   assert.match(reading.stderr, /ProjectDeclarationRefusal/);
-  assert.match(reading.stderr, /\.agent-org\/project\.json/);
-  assert.match(reading.stderr, /ENOENT/);
+  assert.match(reading.stderr, /AGENT_ORG_HOST/);
+  assert.doesNotMatch(reading.stderr, /ENOENT/);
 });
 
 test("a host file whose primary holds a fixture project gives THE FIXTURE's labels and none of a11ign's", () => {
@@ -193,8 +193,9 @@ for (const refusal of REFUSALS) {
 }
 
 test("an EMPTY $AGENT_ORG_HOST is unset, as `hostConfigPath` reads it", () => {
-  assert.equal(resolveHomeCheckout({ env: { [HOST_ENV]: "" }, beside: "/beside" }), "/beside");
-  assert.equal(resolveHomeCheckout({ env: {}, beside: "/beside" }), "/beside");
+  const beside = fixtureProject();
+  assert.equal(resolveHomeCheckout({ env: { [HOST_ENV]: "" }, beside }), beside);
+  assert.equal(resolveHomeCheckout({ env: {}, beside }), beside);
 });
 
 test("the two modules that name the variable agree, and this process (variable unset) resolved the tree it is in", () => {
