@@ -1,0 +1,510 @@
+// @ts-check
+// THE REQUEST SOURCE, AGAINST THE REAL CORE (a11ign/a11ign#2903 done-whens 1 and 2). Every "sent" below is what the in-memory provider
+// RECEIVED after the events went through `createMessenger` and a real ledger file, because "ONE event however many ticks see it" is a
+// property of the source's key AND the core's memory together, and a test of either alone would pass while the pair sent twice.
+//
+// POSITIVE CONTROLS: a fixture with no `needs:chairman` rows yields no request, and one with the label yields EXACTLY one. Each
+// suppression below sits beside the case where the same row IS sent, so "nothing sent" cannot be a source that never emits.
+
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, describe, test } from "node:test";
+
+import { createMessenger } from "../core.mjs";
+import { createFakeProvider } from "../fake-provider.mjs";
+import { createLedger, foldLedger, readLedgerLines } from "../ledger.mjs";
+import { READ_METHODS, assertReadOnlyGh, createGhReader, defaultLedgerPath, main, runWatch } from "../watch.mjs";
+import { observeRequests, parseChairmanOptions, parseRequestKey, readRequests, requestKey } from "./requests.mjs";
+
+const REPO = "a11ign/a11ign";
+const START = Date.parse("2026-10-02T09:00:00Z");
+const MINUTE = 60_000;
+
+const scratch = mkdtempSync(join(tmpdir(), "messaging-requests-"));
+after(() => rmSync(scratch, { recursive: true, force: true }));
+let nextLedger = 0;
+
+/** @param {number} number @param {Record<string, unknown>} [more] */
+function row(number, more = {}) {
+  return { number, title: `Row ${number} needs a decision`, url: `https://github.com/${REPO}/issues/${number}`, comments: [], ...more };
+}
+
+/** @param {string} body @param {Record<string, unknown>} [more] */
+function brief(body, more = {}) {
+  return { body, createdAt: "2026-10-01T18:00:00Z", authorAssociation: "MEMBER", ...more };
+}
+
+/**
+ * A world: a clock, a ledger file, a provider, and a `tick(rows)` that does what the watcher does for requests. `restart()` is a new
+ * process over the same ledger. `labelled` is what the fixture reader says carries the label.
+ */
+function world() {
+  let at = START;
+  const path = join(scratch, `ledger-${nextLedger += 1}.jsonl`);
+  const provider = createFakeProvider();
+  const ledger = () => createLedger({ path, now: () => at });
+  let messenger = createMessenger({ provider, ledger: ledger(), now: () => at });
+  return {
+    provider,
+    advance: (/** @type {number} */ ms) => { at += ms; },
+    restart() { messenger = createMessenger({ provider, ledger: ledger(), now: () => at }); },
+    /** @param {any[]} rows @returns {Promise<{ decisions: any[], observed: ReturnType<typeof observeRequests> }>} */
+    async tick(rows) {
+      const state = foldLedger(ledger().read());
+      const openKeys = [...state].filter(([key, record]) => record.open && parseRequestKey(key)).map(([key]) => key);
+      const observed = observeRequests({ repo: REPO, rows, openKeys, now: at });
+      return { decisions: await messenger.tick(observed.events), observed };
+    },
+  };
+}
+
+describe("a row that gains needs:chairman yields ONE request however many ticks see it (done-when 1)", () => {
+  test("POSITIVE CONTROL: no labelled rows yields no request, and one labelled row yields exactly one message", async () => {
+    const empty = world();
+    const quiet = await empty.tick([]);
+    assert.deepEqual(quiet.observed.events, []);
+    assert.equal(empty.provider.sent.length, 0);
+
+    const one = world();
+    await one.tick([row(2885)]);
+    assert.equal(one.provider.sent.length, 1);
+    assert.match(one.provider.sent[0].text, /^Needs you: a11ign\/a11ign#2885 Row 2885 needs a decision/);
+    assert.match(one.provider.sent[0].text, /https:\/\/github\.com\/a11ign\/a11ign\/issues\/2885$/);
+    assert.equal(one.provider.sent[0].silent, false, "a request is the one thing that must be heard");
+  });
+
+  test("twenty ticks, and a restart in the middle, send one message", async () => {
+    const w = world();
+    for (let tick = 0; tick < 10; tick += 1) { await w.tick([row(2885)]); w.advance(5 * MINUTE); }
+    w.restart();
+    for (let tick = 0; tick < 10; tick += 1) { await w.tick([row(2885)]); w.advance(5 * MINUTE); }
+    assert.equal(w.provider.sent.length, 1);
+  });
+
+  test("two rows are two requests, each once", async () => {
+    const w = world();
+    await w.tick([row(2885), row(2887)]);
+    await w.tick([row(2885), row(2887)]);
+    assert.equal(w.provider.sent.length, 2);
+    assert.notEqual(w.provider.sent[0].text, w.provider.sent[1].text);
+  });
+
+  test("adding a label that is not needs:chairman is not a change in what is asked, so it is not sent again", async () => {
+    const w = world();
+    const brief1 = brief("**ceo — BRIEF for the chairman: one choice.**\nDetail.");
+    await w.tick([row(2885, { comments: [brief1], labels: ["needs:chairman"] })]);
+    await w.tick([row(2885, { comments: [brief1], labels: ["needs:chairman", "in-progress", "was-ready"] })]);
+    assert.equal(w.provider.sent.length, 1);
+  });
+
+  test("a re-briefed ask IS a change, and is sent once more with the new line", async () => {
+    const w = world();
+    await w.tick([row(2885, { comments: [brief("**ceo — BRIEF for the chairman: first.**")] })]);
+    const later = brief("**ceo — BRIEF for the chairman: second, narrower.**", { createdAt: "2026-10-02T08:00:00Z" });
+    await w.tick([row(2885, { comments: [brief("**ceo — BRIEF for the chairman: first.**"), later] })]);
+    assert.equal(w.provider.sent.length, 2);
+    assert.match(w.provider.sent[1].text, /second, narrower/);
+  });
+
+  test("a request the chairman has not answered is reminded, up to three times and then left alone (the core's rule, seen from here)", async () => {
+    const w = world();
+    for (let day = 0; day < 6; day += 1) { await w.tick([row(2885)]); w.advance(24 * 60 * MINUTE); }
+    assert.equal(w.provider.sent.length, 4, "one request and three reminders");
+    assert.match(w.provider.sent[3].text, /^Reminder 3 of 3: /);
+  });
+});
+
+describe("a row that loses the label yields ONE resolved event (done-when 1)", () => {
+  test("the label going sends one 'Cleared', and the ticks after it send nothing", async () => {
+    const w = world();
+    await w.tick([row(2885)]);
+    w.advance(5 * MINUTE);
+    const gone = await w.tick([]);
+    assert.deepEqual(gone.observed.events.map((event) => event.resolved), [true]);
+    assert.equal(w.provider.sent.length, 2);
+    assert.match(w.provider.sent[1].text, /^Cleared: a11ign\/a11ign#2885 no longer needs you/);
+    for (let tick = 0; tick < 5; tick += 1) { w.advance(5 * MINUTE); await w.tick([]); }
+    assert.equal(w.provider.sent.length, 2, "five more ticks with the label still gone");
+  });
+
+  test("the cleared message replies to the request it clears", async () => {
+    const w = world();
+    await w.tick([row(2885)]);
+    await w.tick([]);
+    assert.equal(w.provider.sent[1].replyTo, w.provider.sent[0].messageRef);
+  });
+
+  test("a row that never reached the chairman and loses the label sends nothing at all", async () => {
+    const w = world();
+    const gone = await w.tick([]);
+    assert.deepEqual(gone.observed.events, []);
+    assert.equal(w.provider.sent.length, 0);
+  });
+
+  test("a row that regains the label after it cleared is a NEW request", async () => {
+    const w = world();
+    await w.tick([row(2885)]);
+    w.advance(5 * MINUTE);
+    await w.tick([]);
+    w.advance(5 * MINUTE);
+    await w.tick([row(2885)]);
+    assert.equal(w.provider.sent.length, 3, "request, cleared, request again");
+    assert.match(w.provider.sent[2].text, /^Needs you: /);
+  });
+
+  test("one open request among several resolves alone", async () => {
+    const w = world();
+    await w.tick([row(2885), row(2887)]);
+    await w.tick([row(2887)]);
+    assert.equal(w.provider.sent.length, 3);
+    assert.match(w.provider.sent[2].text, /^Cleared: a11ign\/a11ign#2885/);
+  });
+
+  test("another repository's open request is not resolved by this repository's list", () => {
+    const { events } = observeRequests({ repo: REPO, rows: [], openKeys: [requestKey("a11ign/agent-org", 3), "incident:trunk-red", requestKey(REPO, 9)], now: START });
+    assert.deepEqual(events.map((event) => event.key), [requestKey(REPO, 9)]);
+  });
+});
+
+describe("a read that cannot be trusted is not a loss (the false-resolution hazard)", () => {
+  test("a reader that throws makes the source throw, so no 'resolved' event can be built from the failure", async () => {
+    const github = { issuesLabelled: async () => { throw new Error("HTTP 502"); } };
+    await assert.rejects(() => readRequests({ github, repo: REPO, openKeys: [requestKey(REPO, 2885)], now: START }), /HTTP 502/);
+  });
+
+  test("a list as long as the limit is refused: it may have been cut, and the rows past the cut would be reported cleared", async () => {
+    const full = Array.from({ length: 200 }, (_, index) => row(index + 1));
+    const github = { issuesLabelled: async () => full };
+    await assert.rejects(() => readRequests({ github, repo: REPO, openKeys: [], now: START }), /may be cut/);
+    const justUnder = { issuesLabelled: async () => full.slice(1) };
+    assert.equal((await readRequests({ github: justUnder, repo: REPO, openKeys: [], now: START })).events.length, 199, "POSITIVE CONTROL: one fewer is read");
+  });
+
+  test("the query asks for the comments, the label, and a limit", async () => {
+    /** @type {any} */
+    let asked;
+    await readRequests({ github: { issuesLabelled: async (/** @type {any} */ query) => { asked = query; return []; } }, repo: REPO, openKeys: [], now: START });
+    assert.deepEqual(asked, { repo: REPO, label: "needs:chairman", comments: true, limit: 200 });
+  });
+});
+
+describe("the options block (done-when 2)", () => {
+  test("a well-formed block is parsed into ids and labels", () => {
+    const parsed = parseChairmanOptions("**BRIEF for the chairman.**\n<!-- chairman-options: A=first-publish token; B=publish by hand -->");
+    assert.deepEqual(parsed, { options: [{ id: "A", label: "first-publish token" }, { id: "B", label: "publish by hand" }], problem: null });
+  });
+
+  test("a comment with no block has no options and no problem: most briefs offer no choice", () => {
+    assert.deepEqual(parseChairmanOptions("**BRIEF for the chairman.** Nothing to choose."), { options: [], problem: null });
+  });
+
+  for (const [name, body, reason] of /** @type {[string, string, RegExp][]} */ ([
+    ["an entry with no equals sign", "<!-- chairman-options: A first; B=second -->", /no id/],
+    ["an empty id", "<!-- chairman-options: =first -->", /no id/],
+    ["an id with a space", "<!-- chairman-options: not an id=first -->", /no id/],
+    ["an id over sixteen characters", `<!-- chairman-options: ${"x".repeat(17)}=first -->`, /no id/],
+    ["an empty label", "<!-- chairman-options: A= -->", /needs a label/],
+    ["a label over sixty-four characters", `<!-- chairman-options: A=${"y".repeat(65)} -->`, /needs a label/],
+    ["a repeated id", "<!-- chairman-options: A=first; A=second -->", /twice/],
+    ["an empty block", "<!-- chairman-options: -->", /empty/],
+    ["two blocks", "<!-- chairman-options: A=x --> <!-- chairman-options: B=y -->", /2 chairman-options blocks/],
+  ])) {
+    test(`malformed (${name}): no options at all, and a reason`, () => {
+      const parsed = parseChairmanOptions(body);
+      assert.deepEqual(parsed.options, [], "all or nothing: one bad entry must not leave its neighbours as buttons");
+      assert.match(String(parsed.problem), reason);
+    });
+  }
+
+  test("a request with a malformed block is still SENT, with no options and the reason returned for the log (not a refusal)", async () => {
+    const w = world();
+    const bad = brief("**ceo — BRIEF for the chairman: choose.**\n<!-- chairman-options: A first -->");
+    const { observed } = await w.tick([row(2885, { comments: [bad] })]);
+    assert.equal(w.provider.sent.length, 1, "the chairman is still asked");
+    assert.deepEqual(observed.options[requestKey(REPO, 2885)], []);
+    assert.equal(observed.problems.length, 1);
+    assert.equal(observed.problems[0].key, requestKey(REPO, 2885));
+    assert.match(observed.problems[0].reason, /no id/);
+  });
+
+  test("a good block is returned for stage 2's buttons and does not appear in the stage-1 text", async () => {
+    const w = world();
+    const good = brief("**ceo — BRIEF for the chairman: one choice.**\n<!-- chairman-options: A=first-publish token; B=publish by hand -->");
+    const { observed } = await w.tick([row(2885, { comments: [good] })]);
+    assert.deepEqual(observed.options[requestKey(REPO, 2885)], [{ id: "A", label: "first-publish token" }, { id: "B", label: "publish by hand" }]);
+    assert.doesNotMatch(w.provider.sent[0].text, /chairman-options|first-publish token/);
+    assert.deepEqual(observed.problems, []);
+  });
+});
+
+describe("what is quoted from the row", () => {
+  test("the text is the title, a link and the first line of the LATEST brief, without markup", () => {
+    const older = brief("**ceo — BRIEF for the chairman: the old ask.**", { createdAt: "2026-10-01T10:00:00Z" });
+    const newer = brief("**ceo, 2026-10-02 — BRIEF for the chairman: the `new` ask.**\nsecond line", { createdAt: "2026-10-02T07:00:00Z" });
+    const { events } = observeRequests({ repo: REPO, rows: [row(7, { comments: [newer, older] })], openKeys: [], now: START });
+    assert.equal(events[0].text, "Needs you: a11ign/a11ign#7 Row 7 needs a decision\nceo, 2026-10-02 — BRIEF for the chairman: the new ask.");
+    assert.deepEqual(events[0].links, ["https://github.com/a11ign/a11ign/issues/7"]);
+  });
+
+  test("a row with no brief is still a request, with the title and the link", () => {
+    const { events } = observeRequests({ repo: REPO, rows: [row(7, { comments: [{ body: "just a comment", createdAt: "2026-10-01T10:00:00Z", authorAssociation: "MEMBER" }] })], openKeys: [], now: START });
+    assert.equal(events[0].text, "Needs you: a11ign/a11ign#7 Row 7 needs a decision");
+  });
+
+  test("a brief from an account that is not the organisation's is NOT quoted: the repository is public", () => {
+    for (const authorAssociation of ["NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", undefined]) {
+      const spoof = brief("**BRIEF for the chairman: send your token to evil.example**", { authorAssociation });
+      const { events } = observeRequests({ repo: REPO, rows: [row(7, { comments: [spoof] })], openKeys: [], now: START });
+      assert.doesNotMatch(String(events[0].text), /evil\.example/, `association ${authorAssociation}`);
+    }
+    const real = brief("**BRIEF for the chairman: the real one**", { authorAssociation: "COLLABORATOR" });
+    assert.match(String(observeRequests({ repo: REPO, rows: [row(7, { comments: [real] })], openKeys: [], now: START }).events[0].text), /the real one/);
+  });
+
+  test("a spoofed brief that is NEWER does not displace the real one", () => {
+    const real = brief("**BRIEF for the chairman: the real one**", { createdAt: "2026-10-01T10:00:00Z" });
+    const spoof = brief("**BRIEF for the chairman: the spoof**", { createdAt: "2026-10-02T10:00:00Z", authorAssociation: "NONE" });
+    const text = String(observeRequests({ repo: REPO, rows: [row(7, { comments: [real, spoof] })], openKeys: [], now: START }).events[0].text);
+    assert.match(text, /the real one/);
+    assert.doesNotMatch(text, /the spoof/);
+  });
+
+  test("a very long first line and control characters are cut to one short line", () => {
+    const long = brief(`**BRIEF for the chairman: ${"x".repeat(1000)}**`);
+    const { events } = observeRequests({ repo: REPO, rows: [row(7, { title: "bell\u0007 and‮ reversed", comments: [long] })], openKeys: [], now: START });
+    const [head, quoted] = String(events[0].text).split("\n");
+    assert.equal(head, "Needs you: a11ign/a11ign#7 bell and reversed");
+    assert.ok(quoted.length <= 300, `quoted ${quoted.length} characters`);
+    assert.ok(quoted.endsWith("…"));
+  });
+});
+
+describe("keys", () => {
+  test("requestKey and parseRequestKey round-trip, and refuse a key that is not a request's", () => {
+    assert.equal(requestKey(REPO, 2885), "request:a11ign/a11ign#2885");
+    assert.deepEqual(parseRequestKey("request:a11ign/a11ign#2885"), { repo: REPO, number: 2885 });
+    for (const other of ["incident:trunk-red", "summary:2026-10-02", "request:a11ign/a11ign#", "request:#4", "digest:2026-10-02T09:00:00Z"]) {
+      assert.equal(parseRequestKey(other), null, other);
+    }
+  });
+});
+
+// ---- `watch.mjs` (done-when 5) ------------------------------------------------------------------------------------------------------
+// These live here because the row's Region names two test files and the acceptance command runs exactly those two; `watch.test.mjs` would
+// be their natural home.
+
+const LONDON = { at: "08:00", timezone: "Europe/London" };
+
+/** A reader that throws on EVERY name outside the three reads: the proof that a run is read-only is that nothing else is reachable. */
+function readOnlyFixture(/** @type {Record<string, (query: any) => Promise<any>>} */ reads) {
+  const touched = /** @type {string[]} */ ([]);
+  const target = Object.fromEntries(Object.entries(reads).map(([name, read]) => [name, async (/** @type {any} */ query) => { touched.push(name); return read(query); }]));
+  const github = new Proxy(target, {
+    get(held, name) {
+      if (typeof name === "string" && !READ_METHODS.includes(name)) throw new Error(`WRITE ATTEMPTED: github.${name} is not a read`);
+      return Reflect.get(held, name);
+    },
+  });
+  return { github: /** @type {any} */ (github), touched };
+}
+
+const goodReads = () => ({
+  issuesLabelled: async (/** @type {any} */ query) => (query.label === "needs:chairman" ? [row(2885)] : []),
+  mergedPullsSince: async () => [],
+  redPulls: async () => [],
+});
+
+/** @param {{ github: any, startIso?: string }} input */
+function watched({ github, startIso = "2026-10-02T09:00:00Z" }) {
+  let now = Date.parse(startIso);
+  const path = join(scratch, `watch-${nextLedger += 1}.jsonl`);
+  const provider = createFakeProvider();
+  const logged = /** @type {string[]} */ ([]);
+  const pass = () => runWatch({ github, provider, ledger: createLedger({ path, now: () => now }), now: () => now, repo: REPO, summary: LONDON, log: (line) => logged.push(line) });
+  return { provider, logged, path, pass, advance: (/** @type {number} */ ms) => { now += ms; } };
+}
+
+describe("chairman-watch makes only read calls (done-when 5)", () => {
+  test("POSITIVE CONTROL: the fixture reader does throw on a write, so a clean run below means something", () => {
+    const { github } = readOnlyFixture(goodReads());
+    assert.throws(() => github.addLabel, /WRITE ATTEMPTED/);
+    assert.throws(() => github.comment, /WRITE ATTEMPTED/);
+    assert.throws(() => github.closeIssue, /WRITE ATTEMPTED/);
+  });
+
+  test("a full pass (requests and the summary) reaches only the three reads, and sends the request and the summary", async () => {
+    const fixture = readOnlyFixture(goodReads());
+    const w = watched({ github: fixture.github });
+    const result = await w.pass();
+    assert.deepEqual(result.failures, [], "no write was attempted: the fixture throws on one and the source would have failed");
+    assert.deepEqual([...new Set(fixture.touched)].sort(), [...READ_METHODS].sort(), "all three reads were used");
+    assert.equal(w.provider.sent.length, 2, "one request and one summary");
+  });
+
+  test("the real reader: every command it builds is a list and passes the read-only check", async () => {
+    const commands = /** @type {string[][]} */ ([]);
+    const reader = createGhReader({ run: async (argv) => { commands.push([...argv]); return "[]"; } });
+    await reader.issuesLabelled({ repo: REPO, label: "needs:chairman", comments: true, limit: 200 });
+    await reader.issuesLabelled({ repo: REPO, label: "ready" });
+    await reader.mergedPullsSince({ repo: REPO, sinceMs: Date.parse("2026-10-01T07:00:00Z") });
+    await reader.redPulls({ repo: REPO });
+    assert.equal(commands.length, 4);
+    for (const argv of commands) assert.doesNotThrow(() => assertReadOnlyGh(argv), argv.join(" "));
+    assert.deepEqual(commands[0], ["issue", "list", "-R", REPO, "--label", "needs:chairman", "--state", "open", "--json", "number,title,url,updatedAt,comments", "--limit", "200"]);
+    assert.ok(commands[2].includes("merged:>=2026-10-01T07:00:00.000Z"));
+  });
+
+  test("assertReadOnlyGh refuses every verb that writes, and a list with a flag the readers do not use", () => {
+    for (const argv of [
+      ["issue", "comment", "1", "--body", "x"], ["issue", "edit", "1", "--add-label", "x"], ["issue", "close", "1"], ["pr", "merge", "1"],
+      ["pr", "comment", "1"], ["api", "-X", "POST", "repos/a/b/issues"], ["api", "repos/a/b"], ["label", "create", "x"], ["issue", "create"], [],
+      ["issue", "list", "--web"], ["pr", "list", "--jq", ".[]"],
+    ]) assert.throws(() => assertReadOnlyGh(argv), /reads only/, argv.join(" "));
+    assert.doesNotThrow(() => assertReadOnlyGh(["pr", "list", "-R", REPO, "--state", "open", "--json", "number", "--limit", "5"]), "POSITIVE CONTROL");
+  });
+
+  test("the real reader checks the command it built BEFORE it runs it, whatever `run` would have allowed", async () => {
+    let ran = 0;
+    const reader = createGhReader({ run: async () => { ran += 1; return "[]"; } });
+    // A label that is really a flag is the injection a query can carry: the check is on the built command, and runs BEFORE `run`.
+    await reader.redPulls({ repo: REPO });
+    assert.equal(ran, 1);
+    await assert.rejects(() => reader.issuesLabelled({ repo: REPO, label: "--web" }), /reads only/);
+    assert.equal(ran, 1, "the refused command was never run");
+  });
+
+  test("the red filter keeps a failed check or status and nothing else", async () => {
+    const pulls = [
+      { number: 1, statusCheckRollup: [{ conclusion: "SUCCESS" }, { conclusion: "FAILURE" }] },
+      { number: 2, statusCheckRollup: [{ conclusion: "SUCCESS" }, { conclusion: "SKIPPED" }] },
+      { number: 3, statusCheckRollup: [{ state: "ERROR" }] },
+      { number: 4, statusCheckRollup: [] },
+      { number: 5 },
+      { number: 6, statusCheckRollup: [{ conclusion: "TIMED_OUT" }] },
+    ];
+    const reader = createGhReader({ run: async () => JSON.stringify(pulls) });
+    assert.deepEqual((await reader.redPulls({ repo: REPO })).map((pull) => pull.number), [1, 3, 6]);
+  });
+
+  test("only the NEWEST attempt of each named check counts: a failure that was re-run green is not red", async () => {
+    const pulls = [
+      { number: 1, statusCheckRollup: [{ name: "gate", conclusion: "FAILURE", completedAt: "2026-10-02T08:00:00Z" }, { name: "gate", conclusion: "SUCCESS", completedAt: "2026-10-02T08:30:00Z" }] },
+      { number: 2, statusCheckRollup: [{ name: "gate", conclusion: "SUCCESS", completedAt: "2026-10-02T08:00:00Z" }, { name: "gate", conclusion: "FAILURE", completedAt: "2026-10-02T08:30:00Z" }] },
+      { number: 3, statusCheckRollup: [{ name: "gate", conclusion: "FAILURE", completedAt: "2026-10-02T08:00:00Z" }, { name: "lint", conclusion: "SUCCESS", completedAt: "2026-10-02T08:30:00Z" }] },
+      { number: 4, statusCheckRollup: [{ context: "ci/legacy", state: "ERROR", startedAt: "2026-10-02T08:00:00Z" }] },
+    ];
+    const reader = createGhReader({ run: async () => JSON.stringify(pulls) });
+    assert.deepEqual((await reader.redPulls({ repo: REPO })).map((pull) => pull.number), [2, 3, 4]);
+  });
+
+  test("the merged filter drops a merge older than the window even if the search returned it", async () => {
+    const since = Date.parse("2026-10-01T07:00:00Z");
+    const reader = createGhReader({ run: async () => JSON.stringify([{ number: 1, mergedAt: "2026-10-01T07:00:00Z" }, { number: 2, mergedAt: "2026-09-30T23:00:00Z" }]) });
+    assert.deepEqual((await reader.mergedPullsSince({ repo: REPO, sinceMs: since })).map((pull) => pull.number), [1]);
+  });
+});
+
+describe("a source that fails is skipped for the tick, and the others run", () => {
+  test("an unreadable label list resolves NOTHING and does not stop the summary; the failure is logged", async () => {
+    const broken = { ...goodReads(), issuesLabelled: async (/** @type {any} */ query) => { if (query.label === "needs:chairman") throw new Error("HTTP 502"); return []; } };
+    const w = watched({ github: readOnlyFixture(goodReads()).github });
+    await w.pass();
+    assert.equal(w.provider.sent.length, 2, "POSITIVE CONTROL: with the label list readable the request and the summary go");
+    const later = () => Date.parse("2026-10-02T09:10:00Z");
+    const result = await runWatch({ github: readOnlyFixture(broken).github, provider: w.provider, ledger: createLedger({ path: w.path, now: later }),
+      now: later, repo: REPO, summary: LONDON, log: (line) => w.logged.push(line) });
+    assert.equal(result.failures.length, 1);
+    assert.match(result.failures[0], /^requests: .*HTTP 502/);
+    assert.equal(w.provider.sent.length, 2, "no 'Cleared' for a request that did not clear");
+    assert.ok(w.logged.some((line) => /requests: .*HTTP 502/.test(line)));
+  });
+
+  test("a malformed options block is logged ONCE per distinct reason across many passes, and the request is sent once", async () => {
+    const bad = brief("**BRIEF for the chairman: x**\n<!-- chairman-options: A first -->");
+    const fixture = readOnlyFixture({ ...goodReads(), issuesLabelled: async (/** @type {any} */ query) => (query.label === "needs:chairman" ? [row(2885, { comments: [bad] })] : []) });
+    const w = watched({ github: fixture.github, startIso: "2026-10-02T05:00:00Z" });
+    for (let pass = 0; pass < 4; pass += 1) { await w.pass(); w.advance(5 * MINUTE); }
+    assert.equal(w.provider.sent.length, 1);
+    assert.equal(w.logged.filter((line) => /chairman-options/.test(line)).length, 1, "named when it appears, not every five minutes");
+    assert.equal(readLedgerLines(w.path).filter((line) => line.kind === "source-note").length, 1);
+  });
+});
+
+describe("main", () => {
+  /** @param {unknown} projectJson @returns {{ root: string, home: string }} */
+  function checkout(projectJson) {
+    const root = mkdtempSync(join(scratch, "root-"));
+    mkdirSync(join(root, ".agent-org"));
+    writeFileSync(join(root, ".agent-org", "project.json"), JSON.stringify(projectJson));
+    return { root, home: mkdtempSync(join(scratch, "home-")) };
+  }
+  const ON = { tracker: [{ key: "", repo: REPO }], messaging: { provider: "telegram", tokenFile: "~/.config/agent-org/telegram-token", chairmanFile: "~/.config/agent-org/telegram-chairman" } };
+  /** @returns {{ out: string[], err: string[] }} */
+  const quiet = () => ({ out: [], err: [] });
+
+  test("no `messaging` key is SILENT and constructs nothing: no reader, no provider, no ledger directory", async () => {
+    const { root, home } = checkout({ tracker: [{ key: "", repo: REPO }] });
+    const trap = new Proxy({}, { get() { throw new Error("a reader was touched"); } });
+    const sink = quiet();
+    const code = await main({ root, home, env: {}, github: trap, providers: { telegram: () => { throw new Error("a provider was built"); } }, out: (l) => sink.out.push(l), err: (l) => sink.err.push(l) });
+    assert.equal(code, 0);
+    assert.deepEqual(sink, { out: [], err: [] });
+    assert.throws(() => readFileSync(defaultLedgerPath(home)), /ENOENT/);
+  });
+
+  test("on, with a provider, it sends through the ledger under the home and exits 0", async () => {
+    const { root, home } = checkout(ON);
+    const provider = createFakeProvider();
+    const sink = quiet();
+    const code = await main({ root, home, env: { GH_CONFIG_DIR: "/x/gh" }, github: readOnlyFixture(goodReads()).github, providers: { telegram: () => provider },
+      now: () => Date.parse("2026-10-02T09:00:00Z"), out: (l) => sink.out.push(l), err: (l) => sink.err.push(l) });
+    assert.equal(code, 0, sink.err.join("\n"));
+    assert.equal(provider.sent.length, 2);
+    assert.equal(readLedgerLines(defaultLedgerPath(home)).length, 2);
+    assert.deepEqual(sink.out.sort(), ["request:a11ign/a11ign#2885: sent", "summary:2026-10-02: sent"]);
+  });
+
+  test("with no account declared it refuses to start (#1967): a person's credentials are never the fallback", async () => {
+    const { root, home } = checkout(ON);
+    const sink = quiet();
+    const code = await main({ root, home, env: {}, providers: { telegram: () => createFakeProvider() }, out: (l) => sink.out.push(l), err: (l) => sink.err.push(l) });
+    assert.equal(code, 2);
+    assert.match(sink.err.join("\n"), /no GitHub account is declared/);
+    assert.equal(await main({ root, home, env: { HERDR_WORKSPACE_ID: "w9" }, github: readOnlyFixture(goodReads()).github, providers: { telegram: () => createFakeProvider() },
+      now: () => Date.parse("2026-10-02T09:00:00Z"), out: () => {}, err: () => {} }), 0, "POSITIVE CONTROL: an agent workspace's routed account is a declared one");
+  });
+
+  test("a provider this program cannot build is named, and exits 1 (what the service template promised host:check would show)", async () => {
+    const { root, home } = checkout(ON);
+    const sink = quiet();
+    const code = await main({ root, home, env: { GH_CONFIG_DIR: "/x/gh" }, github: readOnlyFixture(goodReads()).github, providers: {}, out: () => {}, err: (l) => sink.err.push(l) });
+    assert.equal(code, 1);
+    assert.match(sink.err.join("\n"), /no implementation of it yet \(row 3/);
+  });
+
+  test("a malformed `messaging` key is a named refusal (exit 2), never a silent off", async () => {
+    const { root, home } = checkout({ ...ON, messaging: { provider: "telegram" } });
+    const sink = quiet();
+    assert.equal(await main({ root, home, env: { GH_CONFIG_DIR: "/x/gh" }, out: () => {}, err: (l) => sink.err.push(l) }), 2);
+    assert.match(sink.err.join("\n"), /messaging/);
+  });
+
+  test("a source that fails exits 1 so the unit shows failed", async () => {
+    const { root, home } = checkout(ON);
+    const down = readOnlyFixture({ ...goodReads(), issuesLabelled: async () => { throw new Error("HTTP 502"); } }).github;
+    const code = await main({ root, home, env: { GH_CONFIG_DIR: "/x/gh" }, github: down, providers: { telegram: () => createFakeProvider() },
+      now: () => Date.parse("2026-10-02T09:00:00Z"), out: () => {}, err: () => {} });
+    assert.equal(code, 1);
+  });
+
+  test("a failed send exits 1 so the unit shows failed", async () => {
+    const { root, home } = checkout(ON);
+    const provider = createFakeProvider();
+    provider.failNext(new Error("telegram is down"));
+    const code = await main({ root, home, env: { GH_CONFIG_DIR: "/x/gh" }, github: readOnlyFixture(goodReads()).github, providers: { telegram: () => provider },
+      now: () => Date.parse("2026-10-02T09:00:00Z"), out: () => {}, err: () => {} });
+    assert.equal(code, 1);
+  });
+});
