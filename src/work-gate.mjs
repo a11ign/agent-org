@@ -110,7 +110,7 @@ import { BACKLOG_LABEL, NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, OUT_OF_RELEASE_L
 import { PROJECT_NUMBER } from "./board-snapshot-scope.mjs";
 // #2356: A RED `main` WAKES A FIXER. Imports only `node:*`, `parent-recheck-summary.mjs` and the repo identity,
 // so the gate keeps the property its own header states -- it runs before any `npm ci` or build.
-import { readTrunkRed, trunkRedOrders } from "./trunk-red.mjs";
+import { readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "./trunk-red.mjs";
 // #2163: FREE BYTES AND FREE INODES. Imports only `node:*`, so the gate keeps the property its own header states.
 import { diskHeadroom, MIN_FREE_FRACTION } from "./disk-headroom.mjs";
 // #2470: A CLAIM THAT DOES NOT MOVE. A leaf, like every import above, so the gate keeps the property its own header states.
@@ -317,6 +317,9 @@ export const GH_READS = Object.freeze({
     // #2936: ONE REST CALL on the core pool -- the 20 newest-updated closed pull requests, of which the latest `merged_at` is the last merge.
     "api repos/{repo}/pulls?state=closed&sort=updated (readLastMergedAt -- org-health's no-merge-while-work-exists)"],
   conditionalOnEmptyShelf: "issue list --label epic (readEpics)",
+  // #3079: ONE REST CALL PER NON-PRIMARY CODE REPOSITORY, every tick -- the newest push runs of its `ci.yml` on `main` -- and three more on a tick that finds
+  // it red. None for one declared project, which is why it is not in `unconditional`: that list is the primary's own.
+  perOtherCodeRepository: "api repos/{repo}/actions/workflows/ci.yml/runs (readTrunkRed -- trunk-red for a declared code repository)",
   // ONE call, and it needs no admin (#2331). It used to be two -- the admin-only protection endpoint, then
   // `branches/main` as the discriminator for its 404 (#2106, #2022) -- and the discriminator's only job
   // was to explain the admin-only 404, which `branches/main` does not give a non-admin credential. Conditional on a settled-red check.
@@ -6182,8 +6185,8 @@ function repositoryNote(scope) {
  * stays where it is, so one declared project makes the calls it made before and the orders it made before.
  *
  * WHAT IT DOES NOT ASK, and why (each is the primary project's, or a later row's): the local git reads (`rowBranches`, claim
- * stalls) look at THIS checkout and its worktrees; `hostDrift`, `trunkRed`, the disk and the reviewer's credentials are
- * facts about the host or about the primary's `main`; and Project-1 membership names a board, which 3d and 3f make a
+ * stalls) look at THIS checkout and its worktrees; `hostDrift`, the disk and the reviewer's credentials are
+ * facts about the host; the scope's OWN `main` is asked (`codeReadings`' `trunkRed`, #3079) and the primary's is not; and Project-1 membership names a board, which 3d and 3f make a
  * declaration's. Each is passed as `undefined`, which `decide` reads as "not asked", so nothing here invents a reading.
  * @param {Scope} scope @param {boolean} drain
  * @param {ReturnType<typeof readLanes>} [read] the lanes, when the caller has already asked
@@ -6199,7 +6202,7 @@ export function scopeTick(scope, drain, read = readLanes(scope), readings = { co
   const openPrs = prs ?? [];
   const rows = readyRows ?? [];
   const allOpen = openRows ?? [];
-  const code = inRepo(read.codeRepo, () => readings.code(openPrs));
+  const code = inRepo(read.codeRepo, () => readings.code(openPrs, scope));
   const tracker = inRepo(read.trackerRepo, () => readings.tracker({ rows, allOpen }));
   const prFiles = comparablePrFiles(openPrs);
   // WHAT THE TRACKER READINGS RETURN IS TAGGED HERE, not inside them: an epic or a closed row that carried no key would make `epic-7` and
@@ -6208,21 +6211,31 @@ export function scopeTick(scope, drain, read = readLanes(scope), readings = { co
   const orders = decide({ prs: code.prs, readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required: code.required, baseTip: code.baseTip,
     epics: mark(tracker.epics), answerOwed: rowsOwingAnswers({ openRows: allOpen, openPrs, closedRows: mark(tracker.closedRows) }),
-    openRows: allOpen, claimedComments: tracker.claimedComments, unarmed: code.unarmed, closings: tracker.closings,
+    openRows: allOpen, claimedComments: tracker.claimedComments, unarmed: code.unarmed, closings: tracker.closings, trunkRed: code.trunkRed,
     key: scope.key, repo: scope.code?.repo ?? scope.tracker?.repo });
   return { orders: orders.map((order) => ({ ...order, prompt: `${order.prompt}${repositoryNote(scope)}` })),
     blocked: partitionUnclaimed(rows, prFiles, { rowBranches: null, openRows: allOpen }).blocked, refused };
 }
 
 /**
- * The reads about a scope's PULL REQUESTS that are made per tick beyond the list itself. Run inside `inRepo` for the code repository.
- * @param {any[]} openPrs
+ * The reads about a scope's PULL REQUESTS that are made per tick beyond the list itself, and about its `main` (#3079). Run inside `inRepo` for the code repository.
+ * `trunkRed` is `undefined` for a scope with no code repository, and `null` for a green or an unreadable `main`: neither emits an order.
+ * @param {any[]} openPrs @param {Scope} scope
  */
-function codeReadings(openPrs) {
+function codeReadings(openPrs, scope) {
   const required = requiredWhenRed(openPrs);
   const split = readEjections(readUnarmed(shouldBeMerging(openPrs, required)));
   return { prs: withEjections(withEvidenceLabelAges(withPatchIds(openPrs)), split?.ejections), required, baseTip: baseTipWhenRed(openPrs),
-    unarmed: split === null ? null : split.unarmed };
+    unarmed: split === null ? null : split.unarmed,
+    trunkRed: readScopeTrunkRed(scope) };
+}
+
+/**
+ * Whether a scope's own `main` is red, as `readTrunkRed` says it -- `undefined` for a scope with no code repository, which has no `main` to ask.
+ * @param {Scope} scope @param {(args: string[]) => string} [run]
+ */
+export function readScopeTrunkRed(scope, run) {
+  return scope.code === null ? undefined : readTrunkRed(run, trunkOfCodeRepository(scope.key, scope.code.repo));
 }
 
 /**
