@@ -31,12 +31,11 @@ import { createMessenger } from "./core.mjs";
 import { createLedger, describeError, foldLedger } from "./ledger.mjs";
 import { observeSummary } from "./sources/summary.mjs";
 import { parseRequestKey, readRequests } from "./sources/requests.mjs";
+import { isBrokenRed } from "../red-pr.mjs";
 
 const execFileAsync = promisify(execFile);
 const GH_TIMEOUT_MS = 60_000;
 const GH_MAX_BUFFER = 64_000_000;
-const FAILING_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "STARTUP_FAILURE"]);
-const FAILING_STATES = new Set(["FAILURE", "ERROR"]);
 const IDLE_ACTIONS = new Set(["duplicate", "held", "already-cleared", "resolved-before-sent"]);
 const EXIT = Object.freeze({ ok: 0, failed: 1, refused: 2 });
 
@@ -61,35 +60,6 @@ export function assertReadOnlyGh(argv) {
 async function runGh(argv) {
   const { stdout } = await execFileAsync("gh", [...argv], { timeout: GH_TIMEOUT_MS, maxBuffer: GH_MAX_BUFFER, encoding: "utf8" });
   return stdout;
-}
-
-/** @typedef {{ name?: string, context?: string, conclusion?: string, state?: string, startedAt?: string, completedAt?: string }} Check */
-
-/** @param {Check} check @returns {number} when the check last moved, for ordering attempts of the same check */
-function checkTime(check) {
-  return Date.parse(check.completedAt ?? check.startedAt ?? "") || 0;
-}
-
-/**
- * The rollup unions every attempt ever made, so a check that failed and was re-run green is still in it as a failure. A raw read would
- * call that pull request red; only the NEWEST attempt of each named check counts (a check run has `name`, a commit status `context`).
- *
- * @param {Check[]} rollup @returns {Check[]}
- */
-function newestPerName(rollup) {
-  /** @type {Map<string, Check>} */
-  const newest = new Map();
-  for (const [index, check] of rollup.entries()) {
-    const name = check.name ?? check.context ?? `unnamed-${index}`;
-    const held = newest.get(name);
-    if (held === undefined || checkTime(check) >= checkTime(held)) newest.set(name, check);
-  }
-  return [...newest.values()];
-}
-
-/** @param {{ statusCheckRollup?: Check[] }} pull @returns {boolean} */
-function isRed(pull) {
-  return newestPerName(pull.statusCheckRollup ?? []).some((check) => FAILING_CONCLUSIONS.has(String(check.conclusion)) || FAILING_STATES.has(String(check.state)));
 }
 
 /**
@@ -126,9 +96,14 @@ export function createGhReader({ run = runGh } = {}) {
       // The search qualifier is the filter and this is the check on it: a count of "merged in 24 h" must not include a merge from last week.
       return pulls.filter((pull) => Date.parse(pull.mergedAt) >= sinceMs);
     },
-    /** @param {{ repo: string, limit?: number }} query */
+    /**
+     * The chairman's red-PR count is `red-pr.mjs`'s `isBrokenRed` and nothing of this file's own (#3014, the sixth decider #2956 stopped): `labels`
+     * is fetched so a `hold:<session>` PR whose only red is the hold's own jobs is not reported as broken. A commit STATUS in `FAILURE`/`ERROR`
+     * does not count here, as it counts nowhere else; this org posts none (`pr-review-verdict.sh` posts `success` whatever the verdict).
+     * @param {{ repo: string, limit?: number }} query
+     */
     async redPulls({ repo, limit = 100 }) {
-      return (await list(["pr", "list", "-R", repo, "--state", "open", "--json", "number,statusCheckRollup", "--limit", String(limit)])).filter(isRed);
+      return (await list(["pr", "list", "-R", repo, "--state", "open", "--json", "number,labels,statusCheckRollup", "--limit", String(limit)])).filter(isBrokenRed);
     },
   };
 }
