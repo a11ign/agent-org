@@ -3322,6 +3322,105 @@ export function endedRuns(emitted, path, { read = readFileSync, write = writeFil
 }
 
 /**
+ * HOW LONG A BUSY SEAT MAY KEEP AN ORDER WAITING BEFORE THE ORDER IS "NOWHERE TO GO" AFTER ALL (#3029): ONE HOUR.
+ *
+ * MEASURED 2026-10-02 from `journalctl --user -u a11ign-work-tick --since "7 days ago"` (2026-09-25T15:26+01:00 onward, 7,089 `UNDELIVERED`
+ * lines): every run of consecutive ticks refusing one causeKey with `"<seat>" is working` (a gap over 10 minutes ends a run), kept only if a
+ * `WOKE <seat>` followed within 6 minutes, i.e. the wait ENDED in a delivery and so was a real turn rather than a stuck seat. Of 263 such runs
+ * for the standing seats (`ceo`, `product-manager`, `orchestrator`): p50 0 min, p90 10, p99 40, MAX 50 (`orchestrator/fleet-batch-due/2734`,
+ * 2026-09-28); the longest for `ceo` was 36 min and for `product-manager` 40. A tick is 2 minutes, so each is good to +-2. One hour is the
+ * first round number above the standing seats' maximum. The row-working seats are not the population this is sized for and run longer
+ * (`worker-capture` 103 min, 3 of 308 runs over an hour): their order is reported as `nowhere to go` after an hour, which for a seat that has
+ * been `working` that long is the line's own meaning, "no session is taking this work".
+ */
+export const BUSY_SEAT_DEFERRAL_MS = 60 * 60 * 1000;
+
+/** `<causeKey>: "<seat>" is working`, which is `route`'s own refusal for a seat mid-turn, with `routeWithFallback`'s second half when the order had one. */
+const BUSY_SEAT_REFUSAL = /^(\S+): ("[^"]+" is working(?:; and the fallback "[^"]+": "[^"]+" is working)?)$/;
+
+/**
+ * Which of a tick's refusals are a seat WAITING ITS TURN and which are an order that has no way to arrive (#3029).
+ *
+ * ONE SUMMARY LINE FOR BOTH IS WHAT KEPT `N order(s) had nowhere to go` IN THE JOURNAL FOR 30 TICKS: `ceo` was `working` on a 24-minute turn
+ * and held two queued orders, so 103 of the window's 188 refusals were that, and the 85 that were faults (a refused start, a handoff for a
+ * reviewer whose PR had merged, a B4 offer with no taker) shared its line and could not be told from it.
+ *
+ * @param {string[]} refused every `<causeKey>: <reason>` line the tick refused
+ * @returns {{ busy: {key: string, reason: string, line: string}[], faults: string[] }}
+ */
+export function splitRefusals(refused) {
+  /** @type {{key: string, reason: string, line: string}[]} */
+  const busy = [];
+  /** @type {string[]} */
+  const faults = [];
+  for (const line of refused) {
+    const match = BUSY_SEAT_REFUSAL.exec(line);
+    if (match) busy.push({ key: match[1], reason: match[2], line });
+    else faults.push(line);
+  }
+  return { busy, faults };
+}
+
+/**
+ * When each currently-deferred causeKey was FIRST deferred, remembered across ticks in `path` (`key<TAB>ms`, one per line, beside the ledger).
+ *
+ * A derived order has no queue time to read an age from (the gate re-derives it every tick), so the age of a busy-seat wait is the time since
+ * this file first saw it. A key no longer deferred is DROPPED, so an order that was delivered and later deferred again starts a new wait rather
+ * than inheriting the old one. A missing file is no history; an unreadable or malformed one is NOT (`endedRuns`' rule): a wrong age would either
+ * hide a stuck order or accuse a healthy one.
+ *
+ * @param {string} path @param {string[]} keys the causeKeys deferred THIS tick @param {number} now
+ * @param {{ read?: typeof readFileSync, write?: typeof writeFileSync }} [io]
+ * @returns {Map<string, number>} each of `keys` to how long (ms) it has been deferred, 0 for one first seen now
+ */
+export function deferralAges(path, keys, now, { read = readFileSync, write = writeFileSync } = {}) {
+  /** @type {Map<string, number>} */
+  const since = new Map();
+  try {
+    for (const line of String(read(path, "utf8")).split("\n")) {
+      if (line.trim() === "") continue;
+      const [key, at] = line.split("\t");
+      if (!/^\d+$/.test(at ?? "")) throw new Error(`wake: ${path} has a line that is not "<causeKey>\\t<ms>": ${line.slice(0, 120)}`);
+      since.set(key, Number(at));
+    }
+  } catch (err) {
+    if (/** @type {any} */ (err)?.code !== "ENOENT") throw err;
+  }
+  const kept = new Map(keys.map((key) => [key, since.get(key) ?? now]));
+  mkdirSync(dirname(path), { recursive: true });
+  write(path, [...kept].map(([key, at]) => `${key}\t${at}\n`).join(""));
+  return new Map(keys.map((key) => [key, now - /** @type {number} */ (kept.get(key))]));
+}
+
+/**
+ * What a tick says about its refusals, and whether any of them is a fault (#3029).
+ *
+ * A busy seat's order is `DEFERRED`, with its age, and is NOT counted: it is waiting its turn, which is what the queue is for. Past
+ * {@link BUSY_SEAT_DEFERRAL_MS} it is a fault like the rest, because a seat `working` for hours IS "no session is taking this work". Every other
+ * refusal is `UNDELIVERED` and counted, and only those make the tick exit ATTENTION.
+ *
+ * @param {string[]} refused @param {(keys: string[]) => Map<string, number>} ageOf each key's wait so far, in ms
+ * @returns {{ deferred: string[], undelivered: string[], summary: string | null }} `summary` is null when nothing was a fault
+ */
+export function refusalReport(refused, ageOf) {
+  const { busy, faults } = splitRefusals(refused);
+  const ages = ageOf(busy.map((b) => b.key));
+  /** @param {string} key */
+  const minutes = (key) => Math.round((ages.get(key) ?? 0) / 60_000);
+  const isOverdue = (/** @type {{key: string}} */ b) => (ages.get(b.key) ?? 0) > BUSY_SEAT_DEFERRAL_MS;
+  const overdue = busy.filter(isOverdue);
+  const waiting = busy.filter((b) => !isOverdue(b));
+  const undelivered = [...faults, ...overdue.map((b) => `${b.line} (deferred ${minutes(b.key)} min, over the ${BUSY_SEAT_DEFERRAL_MS / 60_000}-minute limit for a seat mid-turn)`)];
+  return {
+    deferred: waiting.map((b) => `${b.key}: ${b.reason} (waiting ${minutes(b.key)} min; retried next tick)`),
+    undelivered,
+    summary: undelivered.length === 0 ? null : `${undelivered.length} order(s) had nowhere to go. A derived cause is NOT in the `
+      + "ledger and an authored one is still in the queue, so both are retried on the next tick; if this "
+      + "repeats, no session is taking this work.\n",
+  };
+}
+
+/**
  * How long a run of deliveries may stand before a quiet spell ends it by itself.
  *
  * THE RESET THAT `endedRuns` CANNOT GIVE A STANDING ROW. A run ends when a cause STOPS BEING EMITTED --
@@ -5680,7 +5779,7 @@ function claimerFor(spares, ledgerPath, hostLayout) {
  *   outaged: string[], ledgerPath: string, unavailable: (label: string) => string | null }} outcome
  * @returns {never}
  */
-function finishTick({ handed, sent, gateRefused, stuck, outaged, ledgerPath, unavailable }) {
+export function finishTick({ handed, sent, gateRefused, stuck, outaged, ledgerPath, unavailable }) {
   const refused = [...handed.refused, ...gateRefused];
   for (const line of [...handed.sent, ...sent]) process.stdout.write(`WOKE ${line}\n`);
   for (const line of stuck) process.stderr.write(`STUCK ${line}\n`);
@@ -5701,11 +5800,12 @@ function finishTick({ handed, sent, gateRefused, stuck, outaged, ledgerPath, una
       + `${outaged.join(", ")}.\n`);
     process.exit(EXIT.ATTENTION);
   }
-  if (refused.length > 0) {
-    for (const line of refused) process.stderr.write(`UNDELIVERED ${line}\n`);
-    process.stderr.write(`${refused.length} order(s) had nowhere to go. A derived cause is NOT in the `
-      + "ledger and an authored one is still in the queue, so both are retried on the next tick; if this "
-      + "repeats, no session is taking this work.\n");
+  // #3029: A SEAT MID-TURN IS DEFERRED, NOT UNDELIVERED. Only what has no way to arrive makes the tick exit ATTENTION, and the summary counts only that.
+  const report = refusalReport(refused, (keys) => deferralAges(`${dirname(ledgerPath)}/wake-deferred`, keys, Date.now()));
+  for (const line of report.deferred) process.stderr.write(`DEFERRED ${line}\n`);
+  for (const line of report.undelivered) process.stderr.write(`UNDELIVERED ${line}\n`);
+  if (report.summary !== null) {
+    process.stderr.write(report.summary);
     process.exit(EXIT.ATTENTION);
   }
   process.exit(EXIT.QUIET);
