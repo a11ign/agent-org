@@ -217,7 +217,7 @@ function beforeTicksOf(host, read) {
 const WORK_TICK_TEMPLATE = "work-tick.service.in";
 
 /** The tool checkout's own update command, run from its `WorkingDirectory`: the analogue of `npm run primary:update`. */
-export const TOOL_UPDATE_EXEC = "/usr/bin/node src/update-tool.mjs";
+export const TOOL_UPDATE_EXEC = "/usr/bin/node --import=./src/lib/crash-exit.mjs src/update-tool.mjs";
 
 /**
  * DECISION 3'S FORM OF THE `work-tick` UNIT: exactly three lines change, and nothing else in the text does. `WorkingDirectory` becomes
@@ -244,7 +244,7 @@ export function workTickToolForm(rendered, tool, beforeTicks) {
   return [
     [/^WorkingDirectory=.*$/m, `WorkingDirectory=${tool}`],
     [/^ExecStartPre=.*$/m, steps.join("\n")],
-    [/^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/work-tick\.mjs$/m, "ExecStart=/usr/bin/node src/work-tick.mjs"],
+    [/^ExecStart=\/usr\/bin\/node --import=\.\/packages\/agent-org\/src\/lib\/crash-exit\.mjs packages\/agent-org\/src\/work-tick\.mjs$/m, "ExecStart=/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.mjs"],
   ].reduce((text, [anchor, line]) => replaceOnce(text, /** @type {RegExp} */ (anchor), /** @type {string} */ (line)), rendered);
 }
 
@@ -594,9 +594,11 @@ export function programCandidates(command, { repoRoot = REPO_ROOT,
     for (const stage of String(text).split(/\|\||&&|[|;]/)) {
       const argv = stage.trim().split(/\s+/).filter(Boolean);
       const tool = basename(argv[0] ?? "");
-      if ((tool === "node" || SHELLS.has(tool)) && isPath(argv[1])) {
-        entries.push(resolve(repoRoot, argv[1]));
-        if (cwd !== undefined) entries.push(resolve(cwd, argv[1]));
+      // node's own leading options (`--import=<preload>`, #3038) are not the script; `bash -c` stays unread, as `isPath` says.
+      const script = tool === "node" ? argv.slice(1).find((arg) => !arg.startsWith("-")) : argv[1];
+      if ((tool === "node" || SHELLS.has(tool)) && isPath(script)) {
+        entries.push(resolve(repoRoot, script));
+        if (cwd !== undefined) entries.push(resolve(cwd, script));
       }
       else if (PACKAGE_RUNNERS.has(tool) && argv[1] === "run" && argv[2]) followScript(argv[2]);
     }
