@@ -417,7 +417,7 @@ const defaultSpawn = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", 
 /**
  * `git`'s leading arguments for every read about the PROJECT: `-C <the project checkout>`. #3091: the tick's
  * `WorkingDirectory` is this TOOL's checkout since the cut-over, so a bare `git ls-remote --heads origin` asked
- * `a11ign/agent-org` about `a11ign/a11ign`'s rows -- an agent-org branch ending `-3064` shelved row #3064 for 88
+ * the TOOL's repository about the PROJECT's rows -- a tool branch ending `-3064` shelved row #3064 for 88
  * ticks. `HOME_CHECKOUT` is what every other project-file read in the tool already asks.
  */
 const PROJECT_GIT = Object.freeze(["-C", HOME_CHECKOUT]);
