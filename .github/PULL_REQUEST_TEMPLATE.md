@@ -10,6 +10,14 @@ Row: a11ign/a11ign#
 
 <!-- The why matters more than the what; the diff shows the what. -->
 
+## Platform first, deleting first
+
+<!-- Two chairman rules (2026-10-02, a11ign/a11ign#3021). A PR that reimplements a platform feature is refused, and so is one that grows this repository without a reason. -->
+
+platform: <!-- what you checked: does GitHub, pnpm, systemd or git already do this? -->
+
+Net lines: <!-- non-test lines added minus removed; if positive, why removing or reusing could not do it -->
+
 ## How you verified it
 
 <!-- The command and what it printed. A number without its command is a claim, not a reading. -->
