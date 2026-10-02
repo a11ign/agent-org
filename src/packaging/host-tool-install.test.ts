@@ -36,7 +36,7 @@ import { sandboxGitEnv, withGitSandbox } from "../lib/git-sandbox.ts";
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
 /** The digest of the `work-tick` unit the host runs today: the one `host-project-paths.test.ts` pins as `TODAYS_TEXT`, restated so this file's claim is checkable alone. */
-const TODAYS_WORK_TICK_SHA = "1c388b269625507de8067d4620f3bd5a92dd7f94ea06a21516b18061352aa7dd";
+const TODAYS_WORK_TICK_SHA = "d8491bba933fc01de08375aafc8a9666a18aac93ceb488e345f2e22929a9ede8";
 
 /**
  * a11ign's host with its `tool` taken out. #2974 (cut-over 3 of 6) SET `tool` in a11ign's `host.json`, so the real host now renders the tool
@@ -167,14 +167,14 @@ test("#2793 + #2974: with `tool` set, THREE lines are decision 3's, ONE is the h
     assert.deepEqual(linesOnlyIn(plain, installed), [
       "WorkingDirectory=" + dirs.widgets,
       "ExecStartPre=-%h/.local/bin/pnpm run primary:update",
-      "ExecStart=/usr/bin/node packages/agent-org/src/work-tick.mjs",
+      "ExecStart=/usr/bin/node --import=./packages/agent-org/src/lib/crash-exit.mjs packages/agent-org/src/work-tick.mjs",
     ], "the three lines that leave");
     assert.deepEqual(linesOnlyIn(installed, plain), [
       "WorkingDirectory=" + dirs.tool,
       `Environment=AGENT_ORG_HOST=${dirs.widgets}/.agent-org/host.json`,
       "ExecStartPre=-" + TOOL_UPDATE_EXEC,
       `ExecStartPre=-/usr/bin/env -C ${dirs.widgets} npm run widgets:update`,
-      "ExecStart=/usr/bin/node src/work-tick.mjs",
+      "ExecStart=/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.mjs",
     ], "the tool's path, then the tool update and THEN the declared beforeTick, then the shorter ExecStart");
     const order = installed.split("\n").filter((line) => line.startsWith("ExecStartPre="));
     assert.deepEqual(order, ["ExecStartPre=-" + TOOL_UPDATE_EXEC, `ExecStartPre=-/usr/bin/env -C ${dirs.widgets} npm run widgets:update`],
@@ -183,7 +183,7 @@ test("#2793 + #2974: with `tool` set, THREE lines are decision 3's, ONE is the h
 });
 
 test("#2793: the tool update the rendered ExecStartPre names EXISTS, at the path it names relative to the tool's `src/`", () => {
-  const script = /node (src\/update-tool\.mjs)$/.exec(TOOL_UPDATE_EXEC)?.[1];
+  const script = /node --import=\.\/src\/lib\/crash-exit\.mjs (src\/update-tool\.mjs)$/.exec(TOOL_UPDATE_EXEC)?.[1];
   assert.equal(script, "src/update-tool.mjs", "POSITIVE CONTROL: the command names a script, so the existence check below is of something");
   assert.ok(existsSync(join(SHIPPED_DIR, "..", script ?? "")), "the monorepo keeps the tool's `src/` at packages/agent-org/src");
 });

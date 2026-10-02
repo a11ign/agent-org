@@ -82,7 +82,7 @@ export const TOOL_ENTRIES = Object.freeze([
   "shadow-window.service.in", "shadow-window.timer.in",
   // #2901: the chairman-messaging watcher's pair, OPTIONAL (`OPTIONAL_UNITS`): classified here so it is never "unclassified", listed and installed only when asked for.
   "chairman-watch.service.in", "chairman-watch.timer.in",
-  // #2907: the listener's service, the watcher's long-running half. Optional on the same key; it has no timer, because it is never started by a clock.
+  // #3025: the listener's service, the watcher's long-running half. Optional on the same key; it has no timer, because no clock starts it.
   "chairman-listen.service.in",
 ]);
 
@@ -96,6 +96,19 @@ export const OPTIONAL_UNITS = /** @type {Readonly<Record<string, string>>} */ (O
   "chairman-watch.service.in": "messaging", "chairman-watch.timer.in": "messaging",
   "chairman-listen.service.in": "messaging",
 }));
+
+/**
+ * SERVICES NO CLOCK STARTS (#3025): templates whose unit is a LONG-RUNNING `Type=simple` process, so `enable --now` on the SERVICE is the only thing
+ * that runs it. Everything else this file asks "enabled? active?" of is a timer; these get the same two questions, and the same remedy.
+ * Named here rather than read off an `[Install]` section because `work-tick.service` carries one too and is a oneshot its timer starts.
+ */
+export const LONG_RUNNING_TEMPLATES = Object.freeze(["chairman-listen.service.in"]);
+
+/** @param {string} unit an installed unit name @param {string} prefix the project's unit prefix */
+const isLongRunning = (unit, prefix) => LONG_RUNNING_TEMPLATES.some((template) => renderedName(template, prefix) === unit);
+
+/** The units `enable --now` starts: every timer, and every long-running service. @param {string} unit @param {string} prefix */
+const startedByEnable = (unit, prefix) => unit.endsWith(".timer") || isLongRunning(unit, prefix);
 
 /**
  * The top-level keys the project's declaration holds. UNREADABLE IS A THROW, never "none": an optional unit silently dropped because the file that
@@ -204,7 +217,7 @@ function beforeTicksOf(host, read) {
 const WORK_TICK_TEMPLATE = "work-tick.service.in";
 
 /** The tool checkout's own update command, run from its `WorkingDirectory`: the analogue of `npm run primary:update`. */
-export const TOOL_UPDATE_EXEC = "/usr/bin/node src/update-tool.mjs";
+export const TOOL_UPDATE_EXEC = "/usr/bin/node --import=./src/lib/crash-exit.mjs src/update-tool.mjs";
 
 /**
  * DECISION 3'S FORM OF THE `work-tick` UNIT: exactly three lines change, and nothing else in the text does. `WorkingDirectory` becomes
@@ -231,7 +244,7 @@ export function workTickToolForm(rendered, tool, beforeTicks) {
   return [
     [/^WorkingDirectory=.*$/m, `WorkingDirectory=${tool}`],
     [/^ExecStartPre=.*$/m, steps.join("\n")],
-    [/^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/work-tick\.mjs$/m, "ExecStart=/usr/bin/node src/work-tick.mjs"],
+    [/^ExecStart=\/usr\/bin\/node --import=\.\/packages\/agent-org\/src\/lib\/crash-exit\.mjs packages\/agent-org\/src\/work-tick\.mjs$/m, "ExecStart=/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.mjs"],
   ].reduce((text, [anchor, line]) => replaceOnce(text, /** @type {RegExp} */ (anchor), /** @type {string} */ (line)), rendered);
 }
 
@@ -581,9 +594,11 @@ export function programCandidates(command, { repoRoot = REPO_ROOT,
     for (const stage of String(text).split(/\|\||&&|[|;]/)) {
       const argv = stage.trim().split(/\s+/).filter(Boolean);
       const tool = basename(argv[0] ?? "");
-      if ((tool === "node" || SHELLS.has(tool)) && isPath(argv[1])) {
-        entries.push(resolve(repoRoot, argv[1]));
-        if (cwd !== undefined) entries.push(resolve(cwd, argv[1]));
+      // node's own leading options (`--import=<preload>`, #3038) are not the script; `bash -c` stays unread, as `isPath` says.
+      const script = tool === "node" ? argv.slice(1).find((arg) => !arg.startsWith("-")) : argv[1];
+      if ((tool === "node" || SHELLS.has(tool)) && isPath(script)) {
+        entries.push(resolve(repoRoot, script));
+        if (cwd !== undefined) entries.push(resolve(cwd, script));
       }
       else if (PACKAGE_RUNNERS.has(tool) && argv[1] === "run" && argv[2]) followScript(argv[2]);
     }
@@ -988,11 +1003,13 @@ export function unitState(unit, deps = {}) {
   // findings with different remedies, and collapsing them would report the missing unit twice.
   const current = present ? shippedText !== null && shippedText === installedText : null;
   const identityRevert = installedOnlyIdentity(shippedText, installedText);
-  if (!unit.endsWith(".timer")) {
+  if (!startedByEnable(unit, unitPrefix(deps))) {
     return { unit, present, current, identityRevert, enabled: null, active: null };
   }
-  return { unit, present, current, identityRevert, enabled: ask(systemctl, "is-enabled", unit),
-    active: ask(systemctl, "is-active", unit), windowEnded: windowEnd(unit, deps) };
+  const asked = { enabled: ask(systemctl, "is-enabled", unit), active: ask(systemctl, "is-active", unit) };
+  // Only a TIMER can end itself on purpose (#2971); a listener that is off is off by accident or by deleting the key.
+  if (!unit.endsWith(".timer")) return { unit, present, current, identityRevert, ...asked };
+  return { unit, present, current, identityRevert, ...asked, windowEnded: windowEnd(unit, deps) };
 }
 
 /**
@@ -1144,9 +1161,9 @@ export function unitDrift(states) {
         detail: "the installed copy differs from the one in the repository -- these are copies, not "
           + "symlinks, so a merged edit does NOT reach the host until it is reinstalled." }];
     }
-    if (!s.unit.endsWith(".timer")) return [];
     if (s.enabled === null && s.active === null) return [];
     if (endedOnPurpose(s)) return [];
+    if (!s.unit.endsWith(".timer")) return longRunningDrift(s);
     if (s.enabled !== "enabled") {
       return [{ unit: s.unit, problem: "NOT ENABLED",
         detail: `systemd says \`${s.enabled}\` -- it will not come back after a reboot.` }];
@@ -1160,6 +1177,25 @@ export function unitDrift(states) {
     }
     return [];
   });
+}
+
+/**
+ * A LONG-RUNNING SERVICE THAT IS NOT RUNNING (#3025), in words that say what it MEANS: no firing is missed when it is off, a conversation is.
+ * The two states a timer reports apart stay apart (`enabled` and `active` are different questions), and `activating` is NOT read as running:
+ * for a `Restart=on-failure` service it is the wait between a crash and the next start, which is a crash loop and not a listener.
+ * @param {ReturnType<typeof unitState>} s @returns {Finding[]}
+ */
+function longRunningDrift(s) {
+  if (s.enabled !== "enabled") {
+    return [{ unit: s.unit, problem: "LISTENER NOT ENABLED",
+      detail: `systemd says \`${s.enabled}\` -- no clock starts this service, so nothing will start it after a reboot, `
+        + "and `host:install` is what runs `enable --now` on it." }];
+  }
+  if (s.active === "active") return [];
+  return [{ unit: s.unit, problem: "LISTENER ENABLED BUT NOT RUNNING",
+    detail: `systemd says \`${s.active}\` -- messages sent to the bot are not being read. \`activating\` is a crash-restart loop and \`failed\` after `
+      + "exit 2 is a refusal (config, secrets, nobody paired, lock held, a second poller): `journalctl --user -u " + s.unit + "` says which, and "
+      + "`host:install` will not fix a refusal." }];
 }
 
 /**
@@ -1982,12 +2018,12 @@ function writeShippedUnits(units, deps) {
 }
 
 /**
- * Copy every shipped unit into place and start every timer. IDEMPOTENT -- re-running it on a correct
+ * Copy every shipped unit into place and start every timer AND every long-running service (#3025). IDEMPOTENT -- re-running it on a correct
  * host changes nothing, which is what lets it be the single remedy every message here names.
  *
  * `enable --now`, NEVER a bare `enable`: the bare form is what left `a11ign-corpus-snapshot.timer`
  * enabled and dead for nine days, and an installer that can reproduce the bug it exists to fix is not
- * an installer.
+ * an installer. For the listener the SERVICE is what is enabled: no timer starts it, so a bare `enable` would leave it dead until a reboot.
  * @param {ShippedDeps & { installedDir?: string, systemctl?: (args: string[]) => string,
  *           write?: typeof writeFileSync, mkdir?: typeof mkdirSync, rm?: typeof rmSync,
  *           git?: (args: string[]) => string, out?: (line: string) => void }} [deps]
@@ -2010,14 +2046,14 @@ export function hostUnitsInstall(deps = {}) {
   // dangling want is a warning on every subsequent `daemon-reload` -- noise that trains an operator to
   // ignore this command's output.
   for (const { unit } of orphanedUnits({ ...deps, shippedDir, installedDir, readDir, git })) {
-    if (unit.endsWith(".timer")) systemctl(["disable", "--now", unit]);
+    if (startedByEnable(unit, unitPrefix(deps))) systemctl(["disable", "--now", unit]);
     rm(join(installedDir, unit), { force: true });
     out(`REMOVED ${unit} -- no longer shipped by this repository\n`);
   }
   systemctl(["daemon-reload"]);
-  for (const timer of units.filter((u) => u.endsWith(".timer"))) {
-    systemctl(["enable", "--now", timer]);
-    out(`enabled --now ${timer}\n`);
+  for (const started of units.filter((u) => startedByEnable(u, unitPrefix(deps)))) {
+    systemctl(["enable", "--now", started]);
+    out(`enabled --now ${started}\n`);
   }
   return units;
 }

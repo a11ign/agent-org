@@ -50,7 +50,8 @@ const REPO = "/home/agent/repos/a11y-witness";
 const WT = "/home/agent/repos/wt-2407";
 
 type Comment = { body: string; createdAt: string; author: { login: string } };
-type Release = { row: number; session: string; why: string; idleMinutes?: number | null; edges?: number[]; answer?: string; mergedPr?: number };
+type Release = { row: number; session: string; why: string; idleMinutes?: number | null; edges?: number[]; answer?: string; mergedPr?: number;
+  openPrs?: number[] };
 type Order = { session: string; cause: string; causeKey: string; prompt: string; release?: Release; resume?: boolean };
 type Facts = Parameters<typeof claimReading>[0];
 type Stalls = NonNullable<Parameters<typeof decide>[0]["claimStalls"]>;
@@ -526,6 +527,58 @@ test("#2863 a PARTIAL listing with the holder agentless still proves nothing: li
   assert.deepEqual(stale.orders, [], "and nothing confirmed either");
 });
 
+// --- (#3048) a GONE holder with an OPEN pull request: released, and HELD for `product-manager`, never returned to the pool --------------------
+
+const OPEN_PR = { number: 9, headRefName: BRANCH };
+const goneFor = (minutes: number) => ({ 2407: { session: "worker-7", goneSince: ago(minutes) } });
+/** `claimReading`'s facts for a row with ONE open pull request of its own and nothing else going on. */
+const withOpenPr = (): Facts => ({ row: 2407, session: "worker-7", claimedAt: ago(1000), branch: BRANCH, worktree: WT, comment: null, commit: null,
+  push: null, file: () => null, work: () => ({ state: "none", dirty: 0, unpushed: 0 }), openPrs: 1, ownPrs: [OPEN_PR], mergedPr: null, waiting: null,
+  blockedBy: [] } as Facts);
+const readWith = (agents: Agent[], goneSince: number | null) => claimReading(withOpenPr(),
+  { now: NOW, restartAt: null, nudge: null, agents, goneSince });
+
+test("#3048 a holder GONE from a COMPLETE listing for GONE_CONFIRM_MS, with an open PR and no merge, is a `gone` release that NAMES the PR", () => {
+  const reading = readWith(GONE_LISTING, NOW - GONE_CONFIRM_MS);
+  assert.deepEqual(reading, { kind: "release", why: "gone", lastMoveAt: null, idleMs: null, nudgedAt: null, since: NOW - GONE_CONFIRM_MS, openPrs: [9] });
+});
+
+test("#3048 POSITIVE CONTROLS: a PRESENT holder (any live status) is still `pr-owned`; an INCOMPLETE listing and a short absence do not release", () => {
+  for (const status of ["idle", "working", "done", "blocked"]) {
+    const present = [...CEO_ORCH, { label: "worker-7", status }];
+    // `idle` is the #2999 overlay's own business (an `idle-watch`), which is why this asks "not gone" rather than "exactly `pr-owned`".
+    assert.ok(!["release", "vacating"].includes(readWith(present, NOW - GONE_CONFIRM_MS).kind), `${status}: presence is positive evidence, whatever goneSince says`);
+  }
+  assert.equal(readWith([...CEO_ORCH, { label: "worker-7", status: "working" }], NOW - GONE_CONFIRM_MS).kind, "pr-owned");
+  assert.equal(readWith(PARTIAL_LISTING, null).kind, "pr-owned", "partial listing, nothing remembered: nothing learned");
+  assert.notEqual(readWith(PARTIAL_LISTING, NOW - 999 * MIN).kind, "release", "partial listing, however stale the memory: never confirms");
+  assert.deepEqual(readWith(GONE_LISTING, NOW - GONE_CONFIRM_MS + 1), { kind: "vacating", since: NOW - GONE_CONFIRM_MS + 1 }, "one millisecond short");
+  assert.deepEqual(readWith(GONE_LISTING, null), { kind: "vacating", since: NOW }, "first sighting starts the clock");
+  assert.equal(readWith(null as unknown as Agent[], NOW - GONE_CONFIRM_MS).kind, "pr-owned", "herdr could not be asked: silence is never gone");
+});
+
+test("#3048 a gone holder with NO open PR releases exactly as #2747 pinned: no `openPrs` on the reading, no answer on the order", () => {
+  const none = { ...withOpenPr(), openPrs: 0, ownPrs: [] } as Facts;
+  const reading = claimReading(none, { now: NOW, restartAt: null, nudge: null, agents: GONE_LISTING, goneSince: NOW - GONE_CONFIRM_MS });
+  assert.deepEqual(reading, { kind: "release", why: "gone", lastMoveAt: null, idleMs: null, nudgedAt: null, since: NOW - GONE_CONFIRM_MS });
+  const [order] = claimStalledOrders([{ facts: none, reading }], NOW);
+  assert.equal(order.release!.answer, undefined, "it goes back to the pool by the ordinary decline");
+  assert.equal("openPrs" in order.release!, false);
+});
+
+test("#3048 the tick: the order carries the PR and the ANSWER, and the claim is remembered as gone until it lands", () => {
+  const memory = () => goneFor(GONE_CONFIRM_MS / MIN); // `tickWith` rewrites the memory it is given, so each call gets its own
+  const tick = tickWith({}, [claim(600)], { agents: GONE_LISTING, memory: memory(), prs: [OPEN_PR] });
+  assert.equal(tick.orders.length, 1, "released, not `pr-owned`");
+  assert.deepEqual([tick.orders[0].release!.why, tick.orders[0].release!.answer, tick.orders[0].release!.openPrs], ["gone", "product-manager", [9]]);
+  assert.match(tick.orders[0].prompt, /RELEASE the claim on #2407 held by worker-7: worker-7 no longer exists in herdr's own listing, and #9 is still open/);
+  assert.deepEqual(tick.memory[2407], { session: "worker-7", goneSince: ago(GONE_CONFIRM_MS / MIN) }, "the clock is carried, as for any gone claim");
+  const present = tickWith({}, [claim(600)], { agents: PRESENT_LISTING, memory: memory(), prs: [OPEN_PR] });
+  assert.deepEqual(present.orders, [], "CONTROL: the same fixture with the holder listed is `pr-owned`, and says nothing");
+  const noPr = tickWith({}, [claim(600)], { agents: GONE_LISTING, memory: memory() });
+  assert.equal(noPr.orders[0].release!.answer, undefined, "CONTROL: the same fixture with no PR is the pool release");
+});
+
 // --- the reading, directly ---------------------------------------------------------------------------------------------------------
 
 test("#2470 claimReading is pure in its inputs: an UNDELIVERED `nudged` row keeps offering its key, a delivered one goes quiet", () => {
@@ -972,8 +1025,10 @@ function releaseHost(o: { world?: World; spare?: boolean; agents?: { label: stri
     execs.push({ cmd, args, cwd: opts.cwd });
     if (ROW_CLAIM_MJS.test(args[0] ?? "") && args[1] === "decline") {
       const status = o.declineStatus ?? 0;
+      const answer = args.find((a) => a.startsWith("--answer="))?.slice("--answer=".length);
       return { status, output: status === 0
-        ? `DECLINED -- #2407 is unclaimed again ${o.wasNotReady ? "(was not `ready` before the claim -- not restored)" : "and restored to `ready`"}\n`
+        ? `DECLINED -- #2407 is unclaimed again ${answer ? `and labelled \`answer:${answer}\` (NOT returned to \`ready\`)`
+          : o.wasNotReady ? "(was not `ready` before the claim -- not restored)" : "and restored to `ready`"}\n`
         : "NOT DECLINED: the row is held by someone else\n" };
     }
     return { status: 0, output: "" };
@@ -1091,6 +1146,22 @@ test("#2747 a GONE release is NOT refused when the holder holds work -- unlike b
     "dirty work is KEPT, exactly like a stalled release; #2748: herdr's own listing has no record of the session at all, which is "
     + "the strongest of the two confirmed-gone readings, so the release may attest it");
   assert.match(r.comment(), /worker-7` no longer exists in herdr's own workspace listing \(#2747\), not merely quiet/);
+});
+
+test("#3048 a GONE release with an open PR is HELD for `product-manager`: `--answer` rides the decline, NOT `ready`, and the comment names the PR", () => {
+  const r = releaseHost({ world: { unpushed: 2 }, agents: [] });
+  const got = performRelease({ ...STALL, why: "gone", idleMinutes: null, nudgedAt: null, openPrs: [3044], answer: "product-manager" }, r.deps);
+  assert.equal(got.released, true, JSON.stringify(got));
+  assert.deepEqual(r.decline()!.args.slice(1), ["decline", "2407", "--session=worker-7", "--keep-worktree", "--predecessor-gone", "--answer=product-manager"],
+    "the claim labels come off, the worktree stays, and the row goes to `answer:product-manager` -- `decline` then does not restore `ready`");
+  assert.match(r.comment(), /#3044 is OPEN/);
+  assert.match(r.comment(), /NOT back in the pool.*`answer:product-manager` is set.*adopt it.*close it and re-promote/s);
+  assert.doesNotMatch(r.comment(), /was NOT `ready` before it was claimed/, "a row that WAS ready must not be told it was not");
+  assert.doesNotMatch(r.comment(), /fresh instance takes it/);
+  const control = releaseHost({ world: { unpushed: 2 }, agents: [] });
+  performRelease({ ...STALL, why: "gone", idleMinutes: null, nudgedAt: null }, control.deps);
+  assert.equal(control.decline()!.args.some((a) => a.startsWith("--answer")), false, "CONTROL: a gone claim with no PR is declined WITHOUT it, and goes back to the pool");
+  assert.match(control.comment(), /back in the pool/);
 });
 
 test("#2470 (10) a merged release sets the answer at the merge (`--answer`), says which PR merged, and ends the instance", () => {

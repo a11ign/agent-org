@@ -132,7 +132,7 @@ function conflictOrder(pr, { session, standing, ownership }) {
 
 /**
  * #2968: THE REASON A PULL REQUEST IS NOT MERGING, as a TOTAL classifier -- every open pull request gets exactly one
- * of seven answers, and there is no "other".
+ * of eight answers, and there is no "other".
  *
  * WHY IT EXISTS. #2950 sat a DRAFT, `DIRTY`, with an EMPTY `statusCheckRollup` for 7.5 hours and no order of any kind
  * reached its owner: the conflict order was fed by `greenUnheldPrs` ("not a draft, settled GREEN"), and a branch that
@@ -157,7 +157,11 @@ function conflictOrder(pr, { session, standing, ownership }) {
  *   5. `awaiting-author-draft`  green, but still a draft: the author owes "ready", or the rework a verdict named.
  *   6. `awaiting-review`   green, ready, and GitHub's own `reviewDecision` blocks (`reviewStateOf`; an ABSENT field
  *                          is not accused, which is that function's rule).
- *   7. `unarmed`           green, ready, review not blocking, and `pr.armed === false`. `armed` is stamped by the
+ *   7. `ejected`           green, ready, review not blocking, and the merge queue REMOVED it for `failed_checks` with its
+ *                          head unmoved since (#3019): `pr.ejection` is stamped by the caller from the timeline
+ *                          (`queueEjectionOf`). BEFORE `unarmed`, because an ejected PR reads `armed === false` too and
+ *                          "arm it by hand" re-enters the queue and fails the same red run again.
+ *   8. `unarmed`           green, ready, review not blocking, and `pr.armed === false`. `armed` is stamped by the
  *                          caller from a queue read; ABSENT IS NOT `false`, so an unread arming is never an accusation.
  *
  * A reason is not an order: `STALL_REASONS_WITHOUT_A_CAUSE` says which ones `decide` sends, and why only that one.
@@ -173,16 +177,18 @@ export function stallReasonOf(pr, required = null) {
   if (settled !== true) return STALL_REASON.PROGRESSING;
   if (pr?.isDraft === true) return STALL_REASON.AWAITING_AUTHOR_DRAFT;
   if (BLOCKING_REVIEW_STATES.includes(reviewStateOf(pr).code)) return STALL_REASON.AWAITING_REVIEW;
+  if (pr?.ejection) return STALL_REASON.EJECTED;
   return pr?.armed === false ? STALL_REASON.UNARMED : STALL_REASON.PROGRESSING;
 }
 
-/** The seven answers of `stallReasonOf`. Only `PROGRESSING` and `HELD_ON_PURPOSE` produce no order. */
+/** The eight answers of `stallReasonOf`. Only `PROGRESSING` and `HELD_ON_PURPOSE` produce no order. */
 export const STALL_REASON = Object.freeze({
   PROGRESSING: "progressing",
   RED: "red",
   CONFLICTED: "conflicted",
   AWAITING_REVIEW: "awaiting-review",
   AWAITING_AUTHOR_DRAFT: "awaiting-author-draft",
+  EJECTED: "ejected",
   UNARMED: "unarmed",
   HELD_ON_PURPOSE: "held-on-purpose",
 });
@@ -207,9 +213,11 @@ function settledChecksOf(pr, required) {
  * sends. `red` has `pr-checks-failing` (to `ownerOfPr`), `awaiting-review` has `pr-review-blocked`, `unarmed` has
  * `pr-green-unarmed` (deliberately to `product-manager`, #1969) and a green draft has `draft-awaiting-verdict`; a second
  * order for each would wake one session twice about one fact. `conflicted` had a cause and no way to reach a draft or a
- * pull request with no checks, which is what #2968 closes.
+ * pull request with no checks, which is what #2968 closes. `ejected` (#3019) is a red the PR's own checks never showed --
+ * the `merge_group` run failed -- so `pr-checks-failing`'s population (settled red ON THE HEAD) cannot contain it, and
+ * the only other order about it was `pr-green-unarmed`'s wrong one, which it now leaves.
  */
-export const STALL_REASONS_WITHOUT_A_CAUSE = Object.freeze([STALL_REASON.CONFLICTED]);
+export const STALL_REASONS_WITHOUT_A_CAUSE = Object.freeze([STALL_REASON.CONFLICTED, STALL_REASON.EJECTED]);
 
 /**
  * The cause a stalled pull request's order is filed under. NO NEW CAUSE, on purpose: a cause is declared in
@@ -219,6 +227,7 @@ export const STALL_REASONS_WITHOUT_A_CAUSE = Object.freeze([STALL_REASON.CONFLIC
  */
 const CAUSE_OF_STALL = Object.freeze({
   [STALL_REASON.RED]: "pr-checks-failing",
+  [STALL_REASON.EJECTED]: "pr-checks-failing", // #3019: a red build, one the queue found rather than the PR's own run
   [STALL_REASON.CONFLICTED]: "pr-merge-conflict",
   [STALL_REASON.AWAITING_REVIEW]: "pr-review-blocked",
   [STALL_REASON.AWAITING_AUTHOR_DRAFT]: "draft-awaiting-verdict",
@@ -246,14 +255,33 @@ export function stallOrderOf(pr, required = null) {
     return conflictOrder(pr, { session: owner.session, standing: standingOf(pr, required), ownership: ownershipOf(pr, owner.source, "rebase") });
   }
   const ref = `pr-${subjectRef(pr.repoKey, pr.number)}`;
+  const sentence = reason === STALL_REASON.EJECTED ? ejectedSentence(pr.ejection) : /** @type {Record<string, string>} */ (REASON_SENTENCE)[reason];
   return {
     session: owner.session,
     cause,
     subject: ref,
     discriminator: reason,
-    prompt: `${subjectMention(pr)} is STALLED: ${/** @type {Record<string, string>} */ (REASON_SENTENCE)[reason]} ${ownershipOf(pr, owner.source, "fix")}`,
-    causeKey: `${owner.session}/${cause}/${ref}/${reason}`,
+    prompt: `${subjectMention(pr)} is STALLED: ${sentence} ${ownershipOf(pr, owner.source, "fix")}`,
+    // An ejection is KEYED ON WHEN IT HAPPENED: a push that fails the queue again is a new fact and must wake the owner
+    // again, while the same unanswered ejection stays one order. The other reasons are keyed on the reason alone.
+    causeKey: `${owner.session}/${cause}/${ref}/${reason}${reason === STALL_REASON.EJECTED ? `/${pr.ejection?.removedAt ?? ""}` : ""}`,
   };
+}
+
+/**
+ * #3019: THE WORDS OF AN `ejected` ORDER. It says what the queue did, names the run and the subtests it failed, and says
+ * in words that re-arming without a push fails the same way -- because the order it replaces told `product-manager` to
+ * do exactly that. A run or a subtest list the read could not get is SAID to be unread, never left out and never guessed.
+ * @param {{ removedAt?: string | null, runId?: number | null, failingTests?: string[] | null } | undefined} ejection
+ */
+function ejectedSentence(ejection) {
+  const run = ejection?.runId ? `run ${ejection.runId}` : "its `merge_group` run (the run id could NOT be read)";
+  const tests = ejection?.failingTests?.length
+    ? ` Failing subtests: ${ejection.failingTests.join("; ")}.` : " The failing subtests could NOT be read from the log.";
+  return `it was ARMED (auto-arm worked) and the merge queue then EJECTED it${ejection?.removedAt ? ` at ${ejection.removedAt}` : ""} with `
+    + `reason \`failed_checks\`: the \`merge_group\` run of \`gate\` was red -- ${run}.${tests} It was green on its own head, so the `
+    + "red is the queue's merge with `main`, not your last push. RE-ARMING IT WITHOUT A PUSH WILL FAIL THE SAME WAY, and a failing entry "
+    + "makes the entries behind it rebuild: fix what that run names, push, and auto-arm re-enters it.";
 }
 
 /** What each non-conflict stall means, in the one sentence an owner needs. */

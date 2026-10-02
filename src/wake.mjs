@@ -5150,6 +5150,21 @@ function releaseHeadline(request) {
 }
 
 /**
+ * Why a released row did NOT go back to the pool. A row released with an open pull request (#3048, a GONE holder) was `ready` before the
+ * claim and is held on purpose, so it must not be told it was never `ready`: `answer:product-manager` is set, and the PR and the kept worktree stay.
+ * @param {ReleaseRequest} request @returns {string}
+ */
+function notInThePool(request) {
+  const prs = request.openPrs ?? [];
+  if (prs.length === 0) {
+    return `The row was NOT \`${READY_LABEL}\` before it was claimed, so it is NOT back in the pool: \`product-manager\` promotes it again when it should be taken.`;
+  }
+  return `${prs.map((n) => `#${n}`).join(", ")} is OPEN and carries the work, so the row is NOT back in the pool (a fresh instance would build it beside that pull request): `
+    + `\`${ANSWER_PREFIX}${request.answer}\` is set, and \`${request.answer}\` reads the pull request and rules -- adopt it (a fresh \`worker-<row>\` is `
+    + "started on the existing branch) or close it and re-promote the row.";
+}
+
+/**
  * The comment a release leaves ON THE ROW: what happened, what was kept and where, and what happens next. The row is the state, and the
  * machine-readable half (labels, the claim record) is written by `decline`; this is the half a person reads.
  * @param {ReleaseRequest} request @param {{ keep: boolean, work: ReturnType<typeof workAtRisk>, onOrigin: boolean, restored?: boolean }} plan @returns {string}
@@ -5161,8 +5176,7 @@ function releaseComment(request, plan) {
     : "Nothing was left on this host worth keeping, so no worktree was kept.";
   const next = request.why === "merged"
     ? `\`${ANSWER_PREFIX}${request.answer}\` is set: whether the row is finished, or needs re-scoping, is theirs to rule. If more work is needed a fresh \`worker-<row>\` is started.`
-    : plan.restored === false
-      ? `The row was NOT \`${READY_LABEL}\` before it was claimed, so it is NOT back in the pool: \`product-manager\` promotes it again when it should be taken.`
+    : plan.restored === false ? notInThePool(request)
       : plan.onOrigin
       ? "The row is back in the pool, BUT its branch is on `origin` with no pull request, so #2031's `row-branch-unshipped` holds it for `product-manager` "
         + "to read first (open the PR, delete the branch, or rename it); the kept worktree waits, and the respawn adopts it once the row is offered."

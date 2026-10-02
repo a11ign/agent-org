@@ -23,7 +23,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
-import { regionRefusalReason, declaresRelease, outOfReleaseArgv, labelsOutOfRelease, OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE }
+import { bareKeyedRegionReason, regionRefusalReason, declaresRelease, outOfReleaseArgv, labelsOutOfRelease, OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE }
   from "../row-file.mjs";
 import { declaredRegionFiles, NOT_A_COMMIT } from "../region-paths.mjs";
 import { startability, subjectAndRegionFacts } from "../row-reachability.mjs";
@@ -119,6 +119,58 @@ test("a null body (no --body/--body-file found) is refused with its own distinct
   const reason = fileRefusalReason(null);
   assert.ok(reason);
   assert.match(reason as string, /no --body or --body-file/);
+});
+
+// --- #3056: a Region in a keyed repository spells its key ---
+
+const KEYED_CODE = [{ key: "", repo: "a11ign/a11ign" }, { key: "agent-org", repo: "a11ign/agent-org" }];
+const KEYED_REGION_BODY = (region: string, statement = "The repository is **`a11ign/agent-org`**; paths are relative to its root.") =>
+  `## What it is\n\n${statement}\n\n## Region\n\n\`\`\`\n${region}\n\`\`\`\n\n`
+  + "## Acceptance\n\n```\nnpx tsx --test x\n```\n\n## Open-check\n\n```\ngh issue view 3056 --json state\n```\n";
+
+test("#3056: a body naming a11ign/agent-org as its repository with a BARE Region is refused, naming the spelling", () => {
+  const reason = fileRefusalReason(KEYED_REGION_BODY("docs/a.md\ndocs/b.md"));
+  assert.ok(reason, "a bare Region of a keyed repository was filed");
+  assert.match(reason as string, /agent-org:docs\/a\.md/);
+  assert.match(reason as string, /2 `## Region` entr/);
+});
+
+test("#3056: the same body with `agent-org:`-prefixed entries is filed", () => {
+  assert.equal(fileRefusalReason(KEYED_REGION_BODY("agent-org:docs/a.md\nagent-org:docs/b.md")), null);
+});
+
+test("#3056: a body naming no repository (the project's own) with bare paths is filed unchanged", () => {
+  // `docs/a.md` exists in this tree, so `declaredRegionFiles` keeps it: COMPLETE_BODY's lab path does not, which would test the
+  // empty-Region refusal rather than this one.
+  const own = KEYED_REGION_BODY("docs/a.md", "This row changes the tool.");
+  assert.equal(fileRefusalReason(own), null);
+  assert.equal(bareKeyedRegionReason(own, { code: KEYED_CODE }), null);
+});
+
+test("#3056: a MIXED Region is refused for its bare entries only, and the prefixed ones are not named", () => {
+  const reason = bareKeyedRegionReason(KEYED_REGION_BODY("agent-org:docs/a.md\ndocs/b.md"), { code: KEYED_CODE }) as string;
+  assert.match(reason, /1 `## Region` entr\(ies\) are spelled bare: docs\/b\.md\./);
+  assert.doesNotMatch(reason, /docs\/a\.md/);
+});
+
+test("#3056: a stated repository that is the project's FIRST (empty key) or not declared is not refused", () => {
+  const own = KEYED_REGION_BODY("docs/x.md", "The repository is **`a11ign/a11ign`**.");
+  const unknown = KEYED_REGION_BODY("docs/x.md", "The repository is **`someone/else`**.");
+  assert.equal(bareKeyedRegionReason(own, { code: KEYED_CODE }), null);
+  assert.equal(bareKeyedRegionReason(unknown, { code: KEYED_CODE }), null);
+});
+
+test("#3056: the statement is read with or without bold, and a prose MENTION of the repository does not state it", () => {
+  const plain = KEYED_REGION_BODY("docs/x.md", "the repository is `a11ign/agent-org`");
+  const mention = KEYED_REGION_BODY("docs/x.md", "This follows a11ign/agent-org#35, which was opened in `a11ign/agent-org`.");
+  assert.match(bareKeyedRegionReason(plain, { code: KEYED_CODE }) as string, /agent-org:docs\/x\.md/);
+  assert.equal(bareKeyedRegionReason(mention, { code: KEYED_CODE }), null);
+});
+
+test("#3056: the declaration is read when none is passed: the real project declares agent-org as a keyed code repository", () => {
+  // The positive control for the whole file's reading of `homeProjectDeclaration().code`: were it to lose the keyed
+  // entry, every case above would still pass on their injected `code`, and this one would not.
+  assert.match(bareKeyedRegionReason(KEYED_REGION_BODY("docs/x.md")) as string, /agent-org:docs\/x\.md/);
 });
 
 // --- #771: sessionFromArgv / appendFiledBy / withFiledBy ---
