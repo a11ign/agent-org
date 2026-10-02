@@ -170,6 +170,40 @@ describe("identity (done-when 1)", () => {
   });
 });
 
+describe("the reply target travels in the minted value (a11ign/a11ign#3062 done-whens 1 and 4)", () => {
+  /** @param {unknown} u @returns {Record<string, any>} */
+  const minted = (u) => {
+    const handled = harness().handle(u);
+    assert.equal(handled.action, "forward", `the update was not forwarded: ${JSON.stringify(handled)}`);
+    return handled.action === "forward" ? handled.accepted : {};
+  };
+
+  test("a reply to bot message 501 IS minted with replyToMessageId 501: the positive control, so a value that drops it fails here", () => {
+    const accepted = minted(update(1, { reply_to_message: { message_id: 501 } }));
+    assert.equal(accepted.replyToMessageId, 501);
+    assert.ok(isAccepted(accepted, CHAIRMAN), "the field rides on the branded value, not on a copy of it");
+  });
+
+  test("everything that is not a reply to a message is null, never undefined and never what the sender wrote", () => {
+    for (const [what, input] of /** @type {[string, unknown][]} */ ([
+      ["a plain message", update(2)],
+      ["a button press", press(3, { message: message({ reply_to_message: { message_id: 501 } }) })],
+      ["a reply whose target is not an integer", update(4, { reply_to_message: { message_id: "501" } })],
+      ["a reply whose target is a float", update(5, { reply_to_message: { message_id: 5.5 } })],
+      ["a reply that is not an object", update(6, { reply_to_message: "501" })],
+      ["a reply with no id", update(7, { reply_to_message: {} })],
+    ])) {
+      assert.equal(minted(input).replyToMessageId, null, what);
+    }
+  });
+
+  test("the target is not in the ledger line: ids and a verdict only, as for every other field", () => {
+    const run = harness();
+    run.handle(update(8, { reply_to_message: { message_id: 501 } }));
+    assert.ok(!run.raw().includes("replyToMessageId"), run.raw());
+  });
+});
+
 describe("secrets and refusals (done-whens 2 and 3), through `handle`", () => {
   const SECRET_TEXT = `token ${GITHUB_TOKEN}\n${PRIVATE_KEY_HEADER}\n${PASSWORD_LINE}`;
 

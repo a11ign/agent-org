@@ -39,14 +39,15 @@ const ORIGIN = "converse";
 /**
  * @typedef {{ queueOrLose: (order: Record<string, any>) => number, attributed: (text: string, sender: string | null) => string,
  *   handoffId: (session: string, prompt: string) => string, readHandoffs: (path: string) => {id: string, session: string, prompt: string}[],
- *   EXIT: {OK: number, REFUSED: number, QUEUED: number}, STANCE: Record<string, string> }} QueuePort
+ *   EXIT: {OK: number, REFUSED: number, QUEUED: number}, STANCE: Record<string, string>, defaultQueuePath?: () => string }} QueuePort
  */
 
 /** @returns {Promise<QueuePort>} the real queue: `prompt:session`'s and the gate's own, imported only when a message arrives */
 async function realQueue() {
   const [session, wake] = await Promise.all([import("../prompt-session.mjs"), import("../wake.mjs")]);
   const { queueOrLose, attributed, EXIT, STANCE } = session;
-  return { queueOrLose, attributed, EXIT, STANCE, handoffId: wake.handoffId, readHandoffs: wake.readHandoffs };
+  // The queue file `prompt:session` and the gate resolve from no `--ledger`: asked of `wake.mjs`, so the file's name is defined once, there.
+  return { queueOrLose, attributed, EXIT, STANCE, handoffId: wake.handoffId, readHandoffs: wake.readHandoffs, defaultQueuePath: () => wake.handoffQueuePath(wake.ledgerPathFrom([])) };
 }
 
 /**
@@ -96,21 +97,28 @@ function withinLimit(text, limit) {
 }
 
 /**
- * @param {{ chairman: {userId: number, chatId: number}, queuePath: string,
+ * @param {{ chairman: {userId: number, chatId: number}, queuePath?: string,
  *   ledger: {append: (entry: Record<string, unknown>) => Record<string, any>},
  *   send: (message: {text: string, replyTo?: string}) => Promise<{messageRef: string}>, maxText?: number,
  *   agents?: () => {label: string, status: string}[] | null, now?: () => number, queue?: QueuePort }} options
- *   `send` is the provider's; `agents` is herdr's roster (the queue refuses a session herdr does not know); `queue` is the port, real by default.
+ *   `queuePath` is left out by the listener, so the port names it (the real queue's own file); a test gives one. `send` is the provider's; `agents` is herdr's roster (the queue refuses a session herdr does not know); `queue` is the port, real by default.
  */
 export function createConverse({ chairman, queuePath, ledger, send, maxText = 4096, agents = readAgents, now = Date.now, queue }) {
   /** @type {Promise<QueuePort> | undefined} */
   let loaded;
   const port = () => (queue ? Promise.resolve(queue) : (loaded ??= realQueue()));
 
+  /** @param {QueuePort} q @returns {string} */
+  function pathOf(q) {
+    const path = queuePath ?? q.defaultQueuePath?.();
+    if (path === undefined) throw new Error("converse: no queue path was given and the queue port names none");
+    return path;
+  }
+
   /** @param {QueuePort} q @param {string} text @returns {{ code: number, stderr: string }} the queue's verdict, and what it said */
   function enqueue(q, text) {
     const { value, stderr } = capturingStderr(() => q.queueOrLose({
-      label: RECIPIENT, text, why: "the chairman wrote to ceo", agents: agents(), path: queuePath, stance: q.STANCE.UNDECLARED, sender: CHAIRMAN_SENDER,
+      label: RECIPIENT, text, why: "the chairman wrote to ceo", agents: agents(), path: pathOf(q), stance: q.STANCE.UNDECLARED, sender: CHAIRMAN_SENDER,
     }));
     return { code: value, stderr };
   }
@@ -118,7 +126,7 @@ export function createConverse({ chairman, queuePath, ledger, send, maxText = 40
   /** @param {QueuePort} q @param {string} text @returns {string | null} the id of the entry, read back from the queue file; null when it is not there */
   function verifiedEntry(q, text) {
     const id = q.handoffId(RECIPIENT, q.attributed(text, CHAIRMAN_SENDER));
-    return q.readHandoffs(queuePath).some((entry) => entry.id === id && entry.session === RECIPIENT) ? id : null;
+    return q.readHandoffs(pathOf(q)).some((entry) => entry.id === id && entry.session === RECIPIENT) ? id : null;
   }
 
   /** @param {QueuePort} q @param {string} text @returns {{ verdict: string, say: string, handoff: string | null }} */

@@ -11,9 +11,12 @@
 // (`Restart=on-failure` restarts the unit with the old file still there) or a reboot that gave the pid to somebody else, the lock is
 // recognised as stale and taken over.
 //
-// **NOTHING IS SENT TO A WORKER FROM HERE.** `handle` says `forward` for an accepted message and this file's default consumer only
-// records that it arrived: the row that writes a chairman-attributed comment (#2908) and the queue to `ceo` (#2909) are separate rows,
-// and each takes the accepted value through `onForward` and checks it with `isAccepted`.
+// **NOTHING IS SENT TO A WORKER FROM HERE.** `handle` says `forward` for an accepted message and `createForwarder` hands it to `answers.mjs`
+// (#2908), which checks it with `isAccepted` and writes the chairman-attributed comment and the labels; the chairman is told what happened.
+// What is NOT an answer (a message that replies to nothing the organisation asked) goes to row 10's `converse`, which queues it for `ceo` and nobody else.
+//
+// **THE GITHUB WRITES ARE THE UNIT'S ACCOUNT, NEVER THE PERSON'S (#1967).** This is the one program here that writes to GitHub, so it refuses to
+// start where no account is declared, as `watch.mjs` does for its reads.
 //
 // EXIT CODES: 0 stopped when told to (or messaging is off), 1 failed while running, 2 REFUSED to start or told to stop by Telegram (config,
 // secrets, no chairman paired yet, the lock, a 409). The unit does not restart a 2: a refusal does not mend itself, and restarting one
@@ -24,12 +27,16 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { ANSWER_PREFIX } from "../project-vocabulary.mjs";
+import { createAnswers } from "./answers.mjs";
 import { MessagingConfigRefusal, readMessagingConfig } from "./config.mjs";
+import { createConverse } from "./converse.mjs";
+import { createGithubWriter } from "./github-writer.mjs";
 import { createInbound } from "./inbound.mjs";
 import { createLedger } from "./ledger.mjs";
 import { createOffsetStore, createTelegramPollingProvider, PollConflictError, runListener } from "./providers/telegram/poll.mjs";
 import { readSecretFile, secretFileProblem, SecretFileRefusal } from "./secret.mjs";
-import { defaultLedgerPath } from "./watch.mjs";
+import { accountIsDeclared, defaultLedgerPath } from "./watch.mjs";
 
 export const EXIT = Object.freeze({ ok: 0, failed: 1, refused: 2 });
 const LOCK_FILE = "listener.lock";
@@ -39,6 +46,10 @@ const STATE_DIRECTORY_MODE = 0o700;
 /** Field 22 of `/proc/<pid>/stat` is the start time. Everything up to the command's closing parenthesis is skipped, since a command may hold spaces, so the
  * array begins at field 3 (the state) and field 22 is index 22 - 3 = 19. It was 20, which is field 23, the virtual size: a different number that passed every test that injects it. */
 const START_TIME_FIELD = 19;
+
+/** The label that wakes `ceo` with the answer: the vocabulary's answer prefix and the session, never a literal (`project-vocabulary.test.ts` refuses one). */
+const ANSWER_LABEL = `${ANSWER_PREFIX}ceo`;
+const WRITE_FAILED_TEXT = "Could not reach GitHub to record that. Nothing was written; do it again to retry.";
 
 /** The lock is held by a live listener. `holder` is its pid. */
 export class ListenerLockHeld extends Error {
@@ -164,6 +175,9 @@ const DEFAULT_DEPS = () => ({
   sleep: (/** @type {number} */ ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
   out: (/** @type {string} */ line) => console.log(line), err: (/** @type {string} */ line) => console.error(line),
   onForward: /** @type {(accepted: Readonly<Record<string, any>>) => Promise<void> | void} */ (undefined),
+  converse: /** @type {((accepted: Readonly<Record<string, any>>) => Promise<void> | void) | undefined} */ (undefined),
+  github: /** @type {import("./answers.mjs").GithubWriter | undefined} */ (undefined),
+  env: /** @type {Record<string, string | undefined>} */ (process.env),
 });
 
 /** @param {AbortSignal | undefined} given @returns {AbortSignal} one that also aborts on SIGTERM and SIGINT, so `systemctl stop` ends a long poll at once */
@@ -178,21 +192,51 @@ function stoppableBy(given) {
 }
 
 /**
+ * What the listener does with an accepted value: it answers a request on its row and tells the chairman what happened, and hands anything else to
+ * `converse`. `send` speaks to the chairman's chat, so a reply needs no chat id, and a button press is NOT answered again here: `runListener` stops
+ * the spinner of every press before the core sees it, and Telegram takes one answer per query.
+ *
+ * @param {{ answers: { answer: (accepted: unknown) => Promise<import("./answers.mjs").Answered> }, send: (message: { text: string }) => Promise<unknown>,
+ *   converse: (accepted: Readonly<Record<string, any>>) => Promise<void> | void, log: (line: string) => void }} parts
+ * @returns {(accepted: Readonly<Record<string, any>>) => Promise<void>}
+ */
+export function createForwarder({ answers, send, converse, log }) {
+  return async (accepted) => {
+    /** @type {import("./answers.mjs").Answered | null} */
+    let result = null;
+    try {
+      result = await answers.answer(accepted);
+    } catch (error) {
+      // The update is in the ledger already, so it will not come again; the chairman is told, and the next press resumes from the last step recorded.
+      log(`messaging:listen: update ${accepted.updateId} could not be answered: ${error instanceof Error ? error.message : String(error)}`);
+      await send({ text: WRITE_FAILED_TEXT });
+      return;
+    }
+    if (result.action === "reply") await send({ text: result.text });
+    else await converse(accepted);
+  };
+}
+
+/**
  * @param {Parameters<typeof main>[0]} deps @param {{ tokenFile: string, chairmanFile: string }} config @returns {Promise<void>}
  */
 async function listen(deps, config) {
-  const { home, now, fetch: fetchImpl, sleep, err, onForward } = { ...DEFAULT_DEPS(), ...deps };
+  const { home, now, fetch: fetchImpl, sleep, err, onForward, converse, github } = { ...DEFAULT_DEPS(), ...deps };
   const chairman = readChairman(config.chairmanFile);
   const token = readSecretFile(config.tokenFile);
   const state = stateDirectory(/** @type {string} */ (home));
   const lock = acquireLock(join(state, LOCK_FILE));
   try {
-    const inbound = createInbound({ ledger: createLedger({ path: defaultLedgerPath(/** @type {string} */ (home)), now }), chairman });
+    const ledger = createLedger({ path: defaultLedgerPath(/** @type {string} */ (home)), now });
+    const inbound = createInbound({ ledger, chairman });
     const provider = createTelegramPollingProvider({ token, chatId: chairman.chatId, fetch: fetchImpl, sleep, log: err });
+    const answers = createAnswers({ ledger, github: github ?? createGithubWriter(), chairman, answerLabel: ANSWER_LABEL, now });
+    const send = (/** @type {{ text: string, replyTo?: string }} */ message) => provider.send(message);
+    // The queue is `prompt:session`'s own, at the path it and the gate resolve from no `--ledger`: a message for `ceo` lands where `ceo`'s next wake reads it.
+    const conversation = createConverse({ chairman, ledger, send, now });
     await runListener({
       provider, inbound, offsets: createOffsetStore(join(state, OFFSET_FILE), { log: err }), chairman, sleep, log: err, signal: stoppableBy(deps.signal),
-      // Until rows 9 and 10 consume it, an accepted message is recorded in the ledger by `handle` and goes no further: say so, never drop it silently.
-      onForward: onForward ?? ((accepted) => err(`messaging:listen: update ${accepted.updateId} (${accepted.kind}) was accepted and has no consumer yet; it is in the ledger and nothing acts on it`)),
+      onForward: onForward ?? createForwarder({ answers, send, converse: converse ?? conversation.forward, log: err }),
     });
   } finally {
     lock.release();
@@ -207,17 +251,23 @@ function exitCodeFor(error) {
 
 /**
  * @param {{ root?: string, home?: string, now?: () => number, fetch?: typeof fetch, signal?: AbortSignal, sleep?: (ms: number) => Promise<void>,
- *   out?: (line: string) => void, err?: (line: string) => void, onForward?: (accepted: Readonly<Record<string, any>>) => Promise<void> | void }} [deps]
+ *   out?: (line: string) => void, err?: (line: string) => void, onForward?: (accepted: Readonly<Record<string, any>>) => Promise<void> | void,
+ *   converse?: (accepted: Readonly<Record<string, any>>) => Promise<void> | void, github?: import("./answers.mjs").GithubWriter,
+ *   env?: Record<string, string | undefined> }} [deps]
  * @returns {Promise<number>} the exit code
  */
 export async function main(deps = {}) {
-  const { root, home, out, err } = { ...DEFAULT_DEPS(), ...deps };
+  const { root, home, out, err, env, github } = { ...DEFAULT_DEPS(), ...deps };
   try {
     const config = readMessagingConfig(root, { home });
     // OFF IS SILENT AND CONSTRUCTS NOTHING: no secret is read, no lock taken, no directory made.
     if (!config.enabled) {
       out("messaging: OFF (no `messaging` key in .agent-org/project.json); nothing to listen for");
       return EXIT.ok;
+    }
+    if (github === undefined && !accountIsDeclared(env)) {
+      err("messaging:listen: no GitHub account is declared (GH_CONFIG_DIR, or an agent workspace); refusing to write as whoever `gh` last logged in as (#1967)");
+      return EXIT.refused;
     }
     await listen(deps, config);
     return EXIT.ok;

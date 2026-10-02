@@ -170,8 +170,20 @@ export function acceptUpdate(update, options) {
   const reason = identityDrop({ sender, chat, message, payload, kind, chairman });
   if (reason !== null) return { ok: false, reason, facts };
   const content = kind === "button" ? { data: payload.data, callbackQueryId: payload.id } : { text: payload.text };
-  const accepted = Object.freeze({ kind, updateId, userId: chairman.userId, chatId: chairman.chatId, messageId: safeId(message.message_id), ...content });
+  const accepted = Object.freeze({
+    kind, updateId, userId: chairman.userId, chatId: chairman.chatId, messageId: safeId(message.message_id), replyToMessageId: replyTarget(kind, message), ...content,
+  });
   return { ok: true, accepted, facts };
+}
+
+/**
+ * The bot message a chairman's reply points at, so the answer to a request is routed from the value alone. Only a MESSAGE can be a reply: a press
+ * sits under its message and says so with `messageId`. A target that is not a safe integer is attacker-shaped text and is null, as in `safeId`.
+ *
+ * @param {string} kind @param {Record<string, any>} message @returns {number | null}
+ */
+function replyTarget(kind, message) {
+  return kind === "message" && isObject(message.reply_to_message) ? safeId(message.reply_to_message.message_id) : null;
 }
 
 /**
