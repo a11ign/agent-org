@@ -53,7 +53,7 @@ const sha256 = (text: string) => createHash("sha256").update(text).digest("hex")
 
 test("#2620: no home-directory literal remains in the tool's sources, its templates or its scripts", () => {
   const files = toolFiles();
-  assert.equal(files.length, 3 + 12, "POSITIVE CONTROL: fifteen files are scanned (three sources, twelve host entries -- the two the shadow window added, #2867, and the two chairman-watch templates, #2901, included), so an emptiness below is not a scan of nothing");
+  assert.equal(files.length, 3 + 13, "POSITIVE CONTROL: sixteen files are scanned (three sources, thirteen host entries -- the two the shadow window added, #2867, the two chairman-watch templates, #2901, and the listener's, #2907, included), so an emptiness below is not a scan of nothing");
   const offenders = files.filter((file) => HOME_LITERAL.test(readFileSync(file, "utf8")));
   assert.deepEqual(offenders, [], "each of these names a host path the tool must read from host.json instead");
 });
@@ -123,7 +123,7 @@ test("#2620: NO UNIT IS RENAMED -- the installed names are the fourteen there we
 
 // --- 3. the partition of the seventeen ---------------------------------------------------------------------------------------------
 
-test("#2620: the 17 entries are classified 8 tool, 8 project, 1 host data -- asserted against the files, plus the shadow window's two tool entries (#2867) and the chairman watcher's two (#2901)", () => {
+test("#2620: the 17 entries are classified 8 tool, 8 project, 1 host data -- asserted against the files, plus the shadow window's two tool entries (#2867), the chairman watcher's two (#2901) and the listener's one (#2907)", () => {
   const inTool = readdirSync(SHIPPED_DIR).sort();
   const inProject = readdirSync(PROJECT_UNITS_DIR).sort();
   const hostData = Object.keys(HOST_DATA_ENTRIES);
@@ -131,10 +131,12 @@ test("#2620: the 17 entries are classified 8 tool, 8 project, 1 host data -- ass
   assert.equal(shadowPair.length, 2, "POSITIVE CONTROL: #2867's pair is two of them, so the 8 below is the original eight and the pair");
   const chairmanPair = inTool.filter((name) => name.startsWith("chairman-watch."));
   assert.equal(chairmanPair.length, 2, "POSITIVE CONTROL: #2901's optional pair is two more, so the 8 below is still the original eight");
-  assert.equal(inTool.length - shadowPair.length - chairmanPair.length, 8, "POSITIVE CONTROL: eight entries stay in the tool's host directory");
+  const chairmanListener = inTool.filter((name) => name === "chairman-listen.service.in");
+  assert.equal(chairmanListener.length, 1, "POSITIVE CONTROL: #2907's listener service is one more, with no timer, so the 8 below is still the original eight");
+  assert.equal(inTool.length - shadowPair.length - chairmanPair.length - chairmanListener.length, 8, "POSITIVE CONTROL: eight entries stay in the tool's host directory");
   assert.equal(inProject.length, 8, "POSITIVE CONTROL: eight moved to the project's `.agent-org/units/`");
   assert.equal(hostData.length, 1, "POSITIVE CONTROL: one is host data");
-  assert.equal(inTool.length - shadowPair.length - chairmanPair.length + inProject.length + hostData.length, 17, "the host directory held seventeen entries");
+  assert.equal(inTool.length - shadowPair.length - chairmanPair.length - chairmanListener.length + inProject.length + hostData.length, 17, "the host directory held seventeen entries");
   assert.deepEqual(inTool, [...TOOL_ENTRIES].sort(), "the tool's directory holds exactly what the tool records");
   assert.deepEqual(inProject, [...units.own].sort(), "the project's directory holds exactly what its declaration lists");
   for (const name of hostData) {

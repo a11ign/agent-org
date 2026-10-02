@@ -2404,19 +2404,25 @@ test("#2332: a shipped unit that changes the account is a reviewed change, NOT '
 // PROJECT, so the day `messaging` is configured here (row 6) none of them goes red: the one assertion about the real project is a biconditional.
 
 const isChairmanWatch = (unit: string) => unit.startsWith("a11ign-chairman-watch.");
+// #2907: the listener is the pair's third unit (a service with no timer), on the same key, so "the messaging units" is both.
+const isChairmanListen = (unit: string) => unit === "a11ign-chairman-listen.service";
+const isChairmanMessaging = (unit: string) => isChairmanWatch(unit) || isChairmanListen(unit);
 const WITHOUT_MESSAGING = new Set(["causes", "units"]);
 const WITH_MESSAGING = new Set(["causes", "units", "messaging"]);
 
-test("#2901: the chairman-watch pair is listed only when the project declares `messaging`, and nothing else moves", () => {
+test("#2901: the chairman-watch pair and the listener are listed only when the project declares `messaging`, and nothing else moves", () => {
   const without = shippedUnits(SHIPPED_DIR, { declaredKeys: WITHOUT_MESSAGING });
   const withKey = shippedUnits(SHIPPED_DIR, { declaredKeys: WITH_MESSAGING });
   assert.deepEqual(withKey.filter(isChairmanWatch), ["a11ign-chairman-watch.service", "a11ign-chairman-watch.timer"],
     "POSITIVE CONTROL: with the key the pair IS listed, so the absence below is the key's doing and not a pair that never ships");
   assert.deepEqual(without.filter(isChairmanWatch), []);
-  assert.deepEqual(withKey.filter((unit) => !isChairmanWatch(unit)), without, "the key adds the pair and changes nothing else");
-  assert.deepEqual(Object.values(OPTIONAL_UNITS), ["messaging", "messaging"], "both templates are asked for by the one key");
-  assert.equal(shippedUnits().some(isChairmanWatch), declaredProjectKeys().has("messaging"),
-    "and the real project gets the pair exactly when its declaration holds the key");
+  assert.deepEqual(withKey.filter(isChairmanListen), ["a11ign-chairman-listen.service"],
+    "POSITIVE CONTROL (#2907): with the key the listener's service IS listed too, and it has no timer");
+  assert.deepEqual(without.filter(isChairmanListen), []);
+  assert.deepEqual(withKey.filter((unit) => !isChairmanMessaging(unit)), without, "the key adds the trio and changes nothing else");
+  assert.deepEqual(Object.values(OPTIONAL_UNITS), ["messaging", "messaging", "messaging"], "all three templates are asked for by the one key");
+  assert.equal(shippedUnits().some(isChairmanMessaging), declaredProjectKeys().has("messaging"),
+    "and the real project gets the trio exactly when its declaration holds the key");
 });
 
 test("#2901: `declaredProjectKeys` reads presence, and an unreadable declaration is a throw, never 'none'", () => {
