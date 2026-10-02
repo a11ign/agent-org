@@ -3018,7 +3018,8 @@ export const REPO_CHECKOUT = HOME_CHECKOUT;
  * a drain window exists to stop.
  *
  * @param {{number?: number, title?: string, subIssuesSummary?: {total?: number},
- *          body?: string, blockedBy?: {nodes?: {number?: number, state?: string}[]}}[]} epics
+ *          body?: string, labels?: {name?: string}[],
+ *          blockedBy?: {nodes?: {number?: number, state?: string}[]}}[]} epics
  * @param {string} [today]
  */
 export function unfiledEpics(epics, today = todayIso()) {
@@ -3031,7 +3032,15 @@ export function unfiledEpics(epics, today = todayIso()) {
     // on the open release milestone", RECORDED THAT AS A REAL `blockedBy` EDGE -- doing exactly what the
     // rule asks -- and was asked again anyway, because `unfiledEpics` only ever looked at sub-issues.
     // From outside, a session correctly declining and a session ignoring its orders look identical.
-    .filter((e) => waitingOn(e, today) === null);
+    .filter((e) => waitingOn(e, today) === null)
+    // `parked` AND `needs:chairman` ARE WAITS THAT `waitingOn` DOES NOT READ, AND THIS IS THE FIFTH READER OF THAT
+    // GAP (#2583, #2604, #2653 and #2780 each taught one population; `epicOrders` was one none of them reached).
+    // MEASURED 2026-10-02: #2628 (the documents axis, `parked` by `ceo` on 2026-09-26, the lift `ceo`'s when
+    // `v2 — SaaS depth` closes) was ordered to `product-manager` THREE TIMES IN ONE DAY, and each answer was the
+    // same comment ("left WHOLE", the reason already on the row). Dropped HERE, beside the `waitingOn` filter, and
+    // not taught to `waitingOn`, which every reader of that function would then inherit. Removing the label puts
+    // the epic back, so the lift clears itself.
+    .filter((e) => !labelsOf(e).some((/** @type {string} */ n) => n === PARKED_LABEL || n === CHAIRMAN_LABEL));
 }
 
 /**
