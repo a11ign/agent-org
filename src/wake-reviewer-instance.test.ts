@@ -573,12 +573,13 @@ function section(text: string, heading: RegExp): string {
 }
 
 test("#2498 (3): `reviewer.md` pins the rule for a verdict whose Acceptance did not execute -- environmental is never "
-  + "`not runnable`, and a `convinced` names the CI run it relies on or is `not convinced (environment)`", () => {
+  + "`not runnable`, a `convinced` names the CI run it relies on, and an environment that still fails posts NO review (#3049)", () => {
   const doc = readFileSync(fileURLToPath(new URL("../../../.agent-org/roles/reviewer.md", import.meta.url)), "utf8");
   const rule = section(doc, /^## A verdict whose Acceptance did not execute/m).replace(/\s+/g, " ");
   assert.match(rule, /never says the Acceptance is "not runnable" for an ENVIRONMENTAL reason/);
-  assert.match(rule, /A `convinced` verdict whose Acceptance did not execute names the CI run it relies on \(run id or job URL\) in the verdict line/);
-  assert.match(rule, /Without one it is `not convinced \(environment\)`/);
+  assert.match(rule, /A `convinced` verdict whose Acceptance did not execute for you may rely on a named CI run\*\* \(run id or job URL\) in the verdict line/);
+  assert.match(rule, /If it still does not execute, post NO review/);
+  assert.doesNotMatch(rule, /not convinced \(environment\) —/);
 });
 
 // --- DONE-WHEN 8: `reviewer-<n>` reviews PR n and NOTHING ELSE ---------------------------------------------------
