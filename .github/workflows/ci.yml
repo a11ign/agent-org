@@ -75,7 +75,7 @@ jobs:
         run: |
           rm -rf project/packages/agent-org
           mkdir project/packages/agent-org
-          cp -r src host package.json LICENSE README.md project/packages/agent-org/
+          cp -r src host .github CHANGELOG.md package.json LICENSE README.md project/packages/agent-org/
           rsync -a --ignore-existing --exclude='*.test.ts' --exclude='*.test.mjs' project/packages/lab/src/packaging/ project/packages/agent-org/src/packaging/
       - name: pnpm, which `packaging/installed-layout.test.ts` installs the tool through as a project would (a runner image carries npm, not pnpm)
         run: npm install --global pnpm@10.34.5

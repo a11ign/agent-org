@@ -1,0 +1,129 @@
+name: release
+
+# A RELEASE IS A GIT TAG, AND NOTHING ELSE (a11ign/a11ign#3069; chairman, a11ign/a11ign#928, 2026-10-02). agent-org is published to NO registry: a project takes
+# `github:a11ign/agent-org#semver:^0.1.0`, which pnpm resolves against the tags of this repository (measured on pnpm 10.34.5 against a scratch repository: both
+# `v0.1.0` and `0.1.0` resolve; this file cuts `v<version>`). So this workflow creates the tag `v<version>` and a GitHub Release carrying the CHANGELOG entry, holds
+# `contents: write` and nothing else, and has no npm, no OIDC and no registry token. If a registry is ever wanted that is a later decision under a name the
+# chairman owns, and it is a different workflow.
+#
+# SIX THINGS must hold before a tag exists. They are independent on purpose (the shape is the monorepo's `release.yml`; its npm, provenance and NVDA guards are not
+# copied). `src/packaging/release-safety.test.ts` pins each, and fails on a copy of this file with it removed.
+#
+#   1. `workflow_dispatch` only. No push, tag or schedule trigger, so nothing starts it by accident.
+#   2. `dry-run` defaults to true. The default path does every check below and stops before the tag.
+#   3. `confirm` must be typed exactly; a boolean can be clicked by mistake.
+#   4. `gate` -- ci.yml's required check -- must have SUCCEEDED on the exact sha dispatched, and the dispatch must be on `main`. The result is READ, not re-run: the
+#      suite takes minutes and ci.yml already ran it on this sha when it merged (workflow_call would need ci.yml to change, which is outside this row).
+#   5. The tag must not already exist. A tag that moved changes what a pinned project gets, so a tag is never moved or deleted once a project can have pinned it.
+#      An unreadable remote is a refusal too: "could not look" is not "absent".
+#   6. The tag is `v` plus the `package.json` version, and CHANGELOG.md must hold an entry for that version. The version is bumped and the entry written by
+#      `pnpm run changeset version` in an ordinary pull request (see .changeset/README.md); this workflow only reads them, so it never writes to `main`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Run every check and say which tag would be cut -- cut nothing. Leave true unless you are releasing.
+        type: boolean
+        default: true
+      confirm:
+        description: 'To cut the tag for real, type: publish-for-real'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+# Two dispatches at once could both pass the existing-tag check.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    # Not named `gate`: the check-run this job creates would otherwise answer the query it runs.
+    name: ci gate result on this sha
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - name: Refuse unless dispatched on main
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::dispatched on $GITHUB_REF; a release is cut from main only"
+            exit 1
+          fi
+      - name: ci.yml's gate must have succeeded on this sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          conclusion=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=gate&filter=latest" \
+            --jq '.check_runs | map(select(.app.slug == "github-actions")) | first | .conclusion // "none"')
+          echo "gate on $GITHUB_SHA: $conclusion"
+          if [ "$conclusion" != success ]; then
+            echo "::error::ci.yml's gate on $GITHUB_SHA is '$conclusion', not 'success'"
+            exit 1
+          fi
+
+  release:
+    needs: [gate]
+    runs-on: ubuntu-latest
+    permissions:
+      # The tag and the Release are the only writes. No `id-token`, and no registry token anywhere.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: The version, and the tag it names
+        id: version
+        run: |
+          version=$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::package.json version '$version' is not MAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+      - name: Refuse a tag that already exists
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          status=0
+          git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null || status=$?
+          case "$status" in
+            0)
+              echo "::error::tag $TAG already exists; a tag is never moved or deleted once a project can have pinned it. Bump the version."
+              exit 1 ;;
+            2) echo "tag $TAG does not exist" ;;
+            *)
+              echo "::error::could not read the remote's tags (git ls-remote exited $status); not assuming $TAG is free"
+              exit 1 ;;
+          esac
+      - name: The CHANGELOG entry for this version becomes the Release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          awk -v v="$VERSION" '/^## / { keep = ($2 == v); next } keep' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md"; then
+            echo "::error::CHANGELOG.md has no entry for $VERSION; run 'pnpm run changeset version' in a pull request first"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/notes.md"
+      - name: Say what this run cuts
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: echo "dry-run=$DRY_RUN: the tag $TAG at $GITHUB_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Cut the tag and the Release
+        if: inputs.confirm == 'publish-for-real' && inputs.dry-run == false
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md" --latest
+          cut=$(git ls-remote --tags origin "refs/tags/$TAG" | cut -f1)
+          if [ "$cut" != "$GITHUB_SHA" ]; then
+            echo "::error::$TAG resolves to '$cut', not $GITHUB_SHA"
+            exit 1
+          fi
+          echo "cut $TAG at $GITHUB_SHA" | tee -a "$GITHUB_STEP_SUMMARY"

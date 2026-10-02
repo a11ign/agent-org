@@ -18,6 +18,7 @@
     "typescript": "^6.0.3"
   },
   "scripts": {
+    "changeset": "pnpm dlx @changesets/cli@3.0.1",
     "messaging:listen": "node src/messaging/listen.mjs",
     "messaging:watch": "node src/messaging/watch.mjs",
     "messaging:pair": "node src/messaging/providers/telegram/pair.mjs",
