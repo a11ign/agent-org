@@ -4,7 +4,9 @@ whole tree; it does NOT run the tool's test suite yet (see the header of ci.yml 
 the change works. The repository is PUBLIC: nothing in this body or the diff may carry a private address, a key path or a token.
 -->
 
-Row: a11ign/a11ign#
+Closes a11ign/a11ign#
+
+<!-- The row lives in a11ign/a11ign, so name it in the full form: the short one points at an issue of THIS repository. A PR that finishes no row replaces the line with the opt-out and a reason (`pr-open` names the exact words). -->
 
 ## What changes, and why
 
