@@ -1,7 +1,9 @@
 // COPIED FROM `packages/guards/src/changed-packages.mjs` at 598e883cc (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
-// CHANGED FROM THE ORIGINAL, 1 NAMED LINE:
+// CHANGED FROM THE ORIGINAL, 3 NAMED LINES:
 // - its import of cli-flags.mjs, now the tool's own copy beside it
+// - `REPO`, now the project's checkout (`HOME_CHECKOUT`) and not `src/lib` up three, which is `packages/` from here (#2884)
+// - its import of `fileURLToPath`, which `REPO` was the only user of
 // ==== end of copy header ====
 // @ts-check
 // command: list which packages/<name> directories a branch touched against origin/main
@@ -30,7 +32,7 @@
 // see `scripts/git-hooks/pre-push`'s use of this. An empty result here is not the same claim as "nothing to
 // verify".
 import { execFileSync } from "node:child_process";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { sandboxGitEnv } from "./git-env.mjs";
 import { changedFiles } from "./changed-files.mjs";
@@ -45,7 +47,10 @@ import { changedFiles } from "./changed-files.mjs";
 // not need `node_modules` — the file is plain JS, so importing straight from `src` costs nothing.
 import { refuseUnknownFlags } from "./cli-flags.mjs";
 
-const REPO = fileURLToPath(new URL("../../../", import.meta.url));
+import { HOME_CHECKOUT } from "../project-config.mjs";
+
+// The PROJECT's checkout, which `$AGENT_ORG_HOST` names; the tool's own `src/lib` up three is `packages/`, one level short of any checkout.
+const REPO = HOME_CHECKOUT;
 
 /**
  * `packages/<name>` for every changed path, deduped and sorted -- pure, given the diff's own output.
