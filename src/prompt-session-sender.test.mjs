@@ -1,3 +1,4 @@
+// no-token: clearBeforeOrder -- this file calls only the pure `senderName` and `resolveSender` (herdr is an injected stub); `clearBeforeOrder` is imported with the module and never run
 // #3060: A WORKSPACE LABEL IS CHOSEN BY WHOEVER CREATES THE WORKSPACE, so `senderName` must refuse a label no session name looks like.
 // #2909 queues a chairman message under the sender `chairman via Telegram` and relies on that being a value no session can derive;
 // a label returned verbatim would let any session that can run `herdr workspace rename` claim it.
