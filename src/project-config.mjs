@@ -35,7 +35,9 @@ const ENDS_IN_DIGITS = /-\d+$/;
  * @typedef {{ key: string, repo: string }} CodeRepository
  * @typedef {{ key: string, repo: string, board: { owner: string, number: number } }} Tracker
  * @typedef {{ name: string, pattern: string }} LeakPattern one thing this project's public prose must never carry: the name a refusal quotes, and a regular expression's SOURCE (no slashes, no flags)
- * @typedef {{ schema: number, tracker: Tracker[], code: CodeRepository[], leakPatterns: LeakPattern[], repo: string, boardOwner: string, boardNumber: number }} ProjectDeclaration
+ * @typedef {{ kind: "npm", package: string } | { kind: "tag" }} DoraRelease where a repository's releases are read: a published npm version (the registry's `time` map), or a `v*` tag with a GitHub Release
+ * @typedef {{ repo: string, release: DoraRelease, releasablePaths: string[] }} DoraRepository one repository the daily DORA reading covers (`dora.mjs`)
+ * @typedef {{ schema: number, tracker: Tracker[], code: CodeRepository[], leakPatterns: LeakPattern[], dora: DoraRepository[], repo: string, boardOwner: string, boardNumber: number }} ProjectDeclaration
  */
 
 /** A refusal that carries the field it is about, so a caller (and a test) can tell WHICH rule fired and not merely that one did. */
@@ -166,6 +168,51 @@ function readLeakPatterns(declaration, source) {
   });
 }
 
+/** @param {Record<string, unknown>} entry @param {string} at @param {string} source @returns {DoraRelease} */
+function readDoraRelease(entry, at, source) {
+  const release = requiredField(entry, "release", `${at}.`, source);
+  if (!isObject(release)) throw new ProjectDeclarationRefusal(`${at}.release`, `it must be an object, not ${describe(release)}`, source);
+  const kind = requiredString(release, "kind", `${at}.release.`, source);
+  if (kind === "tag") return { kind };
+  if (kind !== "npm") throw new ProjectDeclarationRefusal(`${at}.release.kind`, `\`${kind}\` is not \`npm\` or \`tag\``, source);
+  const name = requiredString(release, "package", `${at}.release.`, source);
+  if (name === "") throw new ProjectDeclarationRefusal(`${at}.release.package`, "it is empty", source);
+  return { kind, package: name };
+}
+
+/** @param {Record<string, unknown>} entry @param {string} at @param {string} source @returns {string[]} */
+function readReleasablePaths(entry, at, source) {
+  const paths = requiredField(entry, "releasablePaths", `${at}.`, source);
+  if (!Array.isArray(paths) || paths.length === 0 || paths.some((path) => typeof path !== "string" || path === "")) {
+    throw new ProjectDeclarationRefusal(`${at}.releasablePaths`, "it must be a non-empty list of path prefixes (a pull request touching none of them is not a releasable change)", source);
+  }
+  return paths;
+}
+
+/**
+ * The repositories the daily DORA reading covers (`dora.mjs`), and where each one's releases are read. `agent-org` names no project, so which
+ * repositories and where is DECLARED here. An ABSENT field reads as an empty list, for the reason `leakPatterns` does: it adds a report and answers
+ * no question about WHICH project this is. A PRESENT entry is held to the same rule as every other, and a repository declared twice is refused.
+ * @param {Record<string, unknown>} declaration @param {string} source
+ * @returns {DoraRepository[]}
+ */
+function readDora(declaration, source) {
+  if (!Object.hasOwn(declaration, "dora")) return [];
+  const list = declaration.dora;
+  if (!Array.isArray(list)) throw new ProjectDeclarationRefusal("dora", `it must be a list, not ${describe(list)}`, source);
+  /** @type {Set<string>} */
+  const seen = new Set();
+  return list.map((entry, index) => {
+    const at = `dora[${index}]`;
+    if (!isObject(entry)) throw new ProjectDeclarationRefusal(at, `it must be an object, not ${describe(entry)}`, source);
+    const repo = requiredString(entry, "repo", `${at}.`, source);
+    checkRepo(`${at}.repo`, repo, source);
+    if (seen.has(repo)) throw new ProjectDeclarationRefusal(`${at}.repo`, `\`${repo}\` is declared twice in \`dora\``, source);
+    seen.add(repo);
+    return { repo, release: readDoraRelease(entry, at, source), releasablePaths: readReleasablePaths(entry, at, source) };
+  });
+}
+
 /**
  * Parse one declaration's text. PURE: no file is read, so a test drives every refusal with a string.
  * The FIRST tracker and the FIRST code repository are the project's own (decision 2: the empty key belongs to the primary
@@ -193,6 +240,7 @@ export function parseProjectDeclaration(text, source = PROJECT_DECLARATION_PATH)
     tracker,
     code,
     leakPatterns: readLeakPatterns(parsed, source),
+    dora: readDora(parsed, source),
     repo: code[0].repo,
     boardOwner: tracker[0].board.owner,
     boardNumber: tracker[0].board.number,
