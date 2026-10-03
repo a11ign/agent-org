@@ -54,7 +54,9 @@ function declare(box: GitSandbox, lines: string[]): void {
 
 /** `main` holds `SEED`, each declared with a reason, and a total of 3. */
 function seed(box: GitSandbox): void {
-  box.run(["init", "-q", "-b", "main"]);
+  // The sandbox has already run `git init`, and a RE-init ignores `-b` ("ignored --initial-branch"), so where
+  // `init.defaultBranch` is unset (CI) the unborn branch stays `master` and `checkout -b x main` has no `main`.
+  box.run(["symbolic-ref", "HEAD", "refs/heads/main"]);
   for (const name of SEED) write(box, `pop/${name}`, "");
   declare(box, SEED.map((name) => `${name}: reason for ${name}`));
   write(box, "count.txt", "3\n");
