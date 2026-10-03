@@ -159,6 +159,8 @@ function keyedFs(files: Record<string, string>, dirs: string[]) {
   return { fs: fs as never, made };
 }
 const manifest = (extra: Record<string, unknown>) => ({ "/t/package.json": JSON.stringify({ name: "agent-org", ...extra }) });
+/** The same, with the CLONE holding a manifest too: `pnpm install --no-lockfile` is the remedy only where the clone has one to read (#3264 names the clone without). */
+const withCloneManifest = (extra: Record<string, unknown>) => ({ ...manifest(extra), "/c/package.json": "{}" });
 const CI_PINS = { tsx: "^4.22.4", yaml: "^2.9.0", typescript: "^6.0.3" };
 
 test("(2) a keyed tree links no `packages/`: a clone with every declared dependency is linked plainly, as before", () => {
@@ -181,7 +183,7 @@ test("(2) a repository that declares nothing still yields a tree: no `node_modul
 
 test("(2) a declared dependency missing from the clone's `node_modules` is a REFUSAL naming it and the command that supplies it, not `null`", () => {
   // The #3110 clone: the manifest declares three packages and the clone holds one of them.
-  const partial = keyedFs(manifest({ devDependencies: CI_PINS }), ["/c/node_modules", "/c/node_modules/typescript"]);
+  const partial = keyedFs(withCloneManifest({ devDependencies: CI_PINS }), ["/c/node_modules", "/c/node_modules/typescript"]);
   const reason = String(linkKeyedDependencies({ path: "/t", repoRoot: "/c", fs: partial.fs }));
   assert.match(reason, /`tsx` and `yaml`/, "names what is missing");
   assert.doesNotMatch(reason, /`typescript`/, "and only what is missing");
@@ -189,10 +191,10 @@ test("(2) a declared dependency missing from the clone's `node_modules` is a REF
   assert.doesNotMatch(reason, /\bnpm\b/, "and no npm spelling of it (#2896)");
   assert.deepEqual(partial.made, [], "nothing is linked into a tree that cannot run");
   // No `node_modules` at all is the same refusal -- the exact shape that killed agent-org#86's reviewer on `tsx`.
-  const none = keyedFs(manifest({ devDependencies: CI_PINS }), []);
+  const none = keyedFs(withCloneManifest({ devDependencies: CI_PINS }), []);
   assert.match(String(linkKeyedDependencies({ path: "/t", repoRoot: "/c", fs: none.fs })), /`tsx`, `yaml` and `typescript`/);
   // A scoped package is looked for under its scope, and `dependencies` are read as well as `devDependencies`.
-  const scoped = keyedFs(manifest({ dependencies: { "@a/b": "^1.0.0" } }), ["/c/node_modules", "/c/node_modules/@a"]);
+  const scoped = keyedFs(withCloneManifest({ dependencies: { "@a/b": "^1.0.0" } }), ["/c/node_modules", "/c/node_modules/@a"]);
   assert.match(String(linkKeyedDependencies({ path: "/t", repoRoot: "/c", fs: scoped.fs })), /`@a\/b`/);
   // A manifest that cannot be read is not "declares nothing".
   const broken = keyedFs({ "/t/package.json": "{ not json" }, ["/c/node_modules"]);
