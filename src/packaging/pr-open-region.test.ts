@@ -57,6 +57,9 @@ function drive(argv: string[], { rows, changed, rowBody, origin }: { rows?: Reco
     rowBody: rowBody ?? ((n: number) => { if (rows?.[n] === undefined) throw new Error(`no row ${n}`); return rows[n]; }),
     rootFiles: NO_ROOT_FILES,
     owner: () => null,
+    // The login is named, never read from `gh api user`: a project whose lanes file marks a lane `reviewOnly` (#3254) asks it
+    // for any diff touching that lane, and this suite must not answer by whichever account the machine happens to hold.
+    login: () => "a11ign-ai-workers",
     out: (l: string) => { out.push(l); },
     err: (l: string) => { err.push(l); },
   });
