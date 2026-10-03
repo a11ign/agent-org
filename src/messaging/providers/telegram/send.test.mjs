@@ -12,7 +12,7 @@ import { test } from "node:test";
 
 import { runProviderConformance } from "../../provider-contract.mjs";
 import { createSecret } from "../../secret.mjs";
-import { MAX_PARTS, TELEGRAM_MAX_MESSAGE, TelegramSendError, createTelegramProvider, splitText } from "./send.mjs";
+import { MAX_PARTS, REQUEST_TIMEOUT_MS, TELEGRAM_MAX_MESSAGE, TelegramSendError, createTelegramProvider, splitText } from "./send.mjs";
 
 const TOKEN = "123456789:AAFk3x9Q-test_token_value_ZZ";
 const CHAT_ID = 4242;
@@ -20,7 +20,7 @@ const RETRY_AFTER_SECONDS = 7;
 const MS = 1000;
 
 /** @typedef {{ url: string, body: Record<string, any> }} Request */
-/** @typedef {{ status?: number, body?: Record<string, any>, headers?: Record<string, string> } | Error} Reply */
+/** @typedef {{ status?: number, body?: Record<string, any>, headers?: Record<string, string> } | Error | "hang"} Reply `"hang"` never answers, and rejects only when the request's own signal aborts, as a real fetch does */
 
 /**
  * A fetch that answers from a script, then with success. `requests` is what was sent; each success carries a fresh message id.
@@ -30,10 +30,11 @@ function fakeTelegram(script = []) {
   /** @type {Request[]} */
   const requests = [];
   let nextMessageId = 100;
-  const fetchImpl = /** @type {typeof fetch} */ (/** @type {unknown} */ (async (/** @type {string} */ url, /** @type {{ body: string }} */ init) => {
+  const fetchImpl = /** @type {typeof fetch} */ (/** @type {unknown} */ (async (/** @type {string} */ url, /** @type {{ body: string, signal: AbortSignal }} */ init) => {
     requests.push({ url, body: JSON.parse(init.body) });
     const reply = script.shift();
     if (reply instanceof Error) throw reply;
+    if (reply === "hang") return new Promise((_, reject) => { init.signal.addEventListener("abort", () => reject(init.signal.reason)); });
     const status = reply?.status ?? 200;
     const body = reply?.body ?? { ok: true, result: { message_id: nextMessageId += 1 } };
     const headers = reply?.headers ?? {};
@@ -49,11 +50,14 @@ function harness({ script, token = TOKEN } = {}) {
   const sleeps = [];
   /** @type {string[]} */
   const logged = [];
+  /** The injected request clock: one controller per request, each aborted by the test when it wants that request's time to be up. @type {{ ms: number, controller: AbortController }[]} */
+  const deadlines = [];
   const provider = createTelegramProvider({
     token: createSecret(token), chatId: CHAT_ID, fetch: telegram.fetch,
     sleep: async (ms) => { sleeps.push(ms); }, log: (line) => { logged.push(line); },
+    deadline: (ms) => { const controller = new AbortController(); deadlines.push({ ms, controller }); return controller.signal; },
   });
-  return { provider, requests: telegram.requests, sleeps, logged };
+  return { provider, requests: telegram.requests, sleeps, logged, deadlines };
 }
 
 /** @param {() => Promise<unknown>} action @returns {Promise<any>} what it rejected with, failing if it did not */
@@ -148,6 +152,47 @@ test("a part that fails after earlier parts went says so, so a retried send's du
   assert.ok(error instanceof TelegramSendError);
   assert.match(error.message, /part 2 of 3; the 1 before it WERE delivered/);
   assert.equal(requests.length, 2, "the third part was sent after the second failed");
+});
+
+test("a fetch that rejects on part 2 is annotated with how many parts were delivered, and logged", async () => {
+  const { provider, requests, logged } = harness({ script: [{}, new TypeError("fetch failed")] });
+  const error = await rejection(() => provider.send({ text: NINE_THOUSAND }));
+  assert.ok(error instanceof TelegramSendError);
+  assert.match(error.message, /fetch failed.*part 2 of 3; the 1 before it WERE delivered/);
+  assert.equal(logged.length, 1);
+  assert.match(logged[0], /fetch failed/);
+  assert.equal(requests.length, 2, "the third part was sent after the second failed");
+});
+
+test("POSITIVE CONTROL: a fetch that rejects on part 1 is logged and NOT annotated, nothing having been delivered", async () => {
+  const { provider, requests, logged } = harness({ script: [new TypeError("fetch failed")] });
+  const error = await rejection(() => provider.send({ text: NINE_THOUSAND }));
+  assert.match(error.message, /fetch failed/);
+  assert.doesNotMatch(error.message, /WERE delivered|part \d of/);
+  assert.equal(logged.length, 1);
+  assert.equal(requests.length, 1);
+});
+
+test("a send whose fetch never settles is abandoned when its deadline passes, as a logged failure and not a hang", async () => {
+  const { provider, logged, deadlines } = harness({ script: ["hang"] });
+  const sending = rejection(() => provider.send({ text: "hello" }));
+  await new Promise((resolve) => { setImmediate(resolve); });
+  assert.equal(deadlines.length, 1);
+  assert.equal(deadlines[0].ms, REQUEST_TIMEOUT_MS, "the request was given a bounded time");
+  deadlines[0].controller.abort(new DOMException(`The operation was aborted due to timeout (https://api.telegram.org/bot${TOKEN}/sendMessage)`, "TimeoutError"));
+  const error = await sending;
+  assert.ok(error instanceof TelegramSendError);
+  assert.match(error.message, /no response: .*TimeoutError/);
+  assert.match(logged[0] ?? "", /no response/);
+  assert.deepEqual(leaking([error.message, String(error), error.stack ?? "", ...logged]), [], "the token is in no string on the timeout path");
+});
+
+test("the token is in no string when a part after the first fails to get an answer", async () => {
+  const failure = new TypeError(`fetch failed for https://api.telegram.org/bot${TOKEN}/sendMessage`);
+  const { provider, logged } = harness({ script: [{}, failure] });
+  const error = await rejection(() => provider.send({ text: NINE_THOUSAND }));
+  assert.deepEqual(leaking([error.message, String(error), error.stack ?? "", ...logged]), []);
+  assert.match(error.message, /redacted.*WERE delivered/, "the scrub ran and the annotation is there, so 'no token' is not 'nothing was said'");
 });
 
 test("done-when 4: a 429 with retry_after 7 waits 7 seconds on the injected clock and sends once more", async () => {

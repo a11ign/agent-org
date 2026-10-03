@@ -30,6 +30,9 @@ const PART_SPACING_MS = 1000;
 /** A `retry_after` longer than this is not waited for inside a tick: the send fails, the ledger records it, and the next tick tries. */
 const MAX_RETRY_WAIT_SECONDS = 60;
 
+/** A request with no answer by then is abandoned and reported as a failure: without it a hung connection holds the send until the process is killed. */
+export const REQUEST_TIMEOUT_MS = 30_000;
+
 const NEWLINE = "\n";
 
 export class TelegramSendError extends Error {
@@ -96,9 +99,9 @@ function retryAfterOf(body, response) {
 
 /**
  * @param {{ token: import("../../secret.mjs").Secret, chatId: number | string, fetch?: typeof fetch, sleep?: (ms: number) => Promise<void>,
- *   log?: (line: string) => void, apiBase?: string }} options
+ *   log?: (line: string) => void, apiBase?: string, deadline?: (ms: number) => AbortSignal }} options `deadline` is the request's clock, injected like `sleep`
  */
-export function createTelegramProvider({ token, chatId, fetch: fetchImpl = globalThis.fetch, sleep = defaultSleep, log = defaultLog, apiBase = TELEGRAM_API }) {
+export function createTelegramProvider({ token, chatId, fetch: fetchImpl = globalThis.fetch, sleep = defaultSleep, log = defaultLog, apiBase = TELEGRAM_API, deadline = AbortSignal.timeout }) {
   if (typeof token?.reveal !== "function") throw new TypeError("createTelegramProvider: token must be a Secret (createSecret / readSecretFile)");
   if (chatId === undefined || chatId === null || chatId === "") throw new TypeError("createTelegramProvider: chatId is required");
   const guardedFetch = redactingFetch(fetchImpl, token);
@@ -107,11 +110,19 @@ export function createTelegramProvider({ token, chatId, fetch: fetchImpl = globa
 
   /** One HTTP attempt. @param {Record<string, unknown>} payload @returns {Promise<{ ok: true, messageRef: string } | { ok: false, error: TelegramSendError }>} */
   async function attempt(payload) {
-    const response = await guardedFetch(`${apiBase}/bot${token.reveal()}/sendMessage`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    let response;
+    try {
+      response = await guardedFetch(`${apiBase}/bot${token.reveal()}/sendMessage`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: deadline(REQUEST_TIMEOUT_MS),
+      });
+    } catch (error) {
+      // A request that never got an answer is a send failure like any other, so it is logged (`refused`) and annotated (`partial`).
+      const reason = error instanceof Error ? error.message : String(error);
+      return { ok: false, error: new TelegramSendError(token.scrub(`telegram sendMessage failed: no response: ${reason}`)) };
+    }
     const body = await readBody(response);
     if (response.ok && body.ok === true && Number.isSafeInteger(body.result?.message_id)) return { ok: true, messageRef: String(body.result.message_id) };
     const status = Number(body.error_code ?? response.status);
