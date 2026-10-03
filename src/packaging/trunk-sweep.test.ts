@@ -9,13 +9,15 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { needsGateSweep, EXIT } from "../trunk-sweep.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
-const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-const SCRIPT = `${REPO}/packages/agent-org/src/trunk-sweep.mjs`;
+// The tool's own script (not the project's frozen copy of it); the workflows below are the PROJECT's.
+const SCRIPT = fileURLToPath(new URL("../trunk-sweep.mjs", import.meta.url));
+const workflow = (name: string) => join(HOME_CHECKOUT, ".github/workflows", name);
 
 // --- needsGateSweep: the pure decision ---
 
@@ -65,7 +67,7 @@ test("#417's sweep is hourly on nightly.yml's :37 cron since #909, and also runs
   // scheduled: every push/pull_request trigger it could ride is exactly what a token-suppressed merge or a
   // missed scheduler tick leaves unfired. It lives in nightly.yml, NOT trunk.yml, because a schedule on the
   // trunk workflow would expose the watchdogs and the revert to GitHub's 60-day schedule-disable.
-  const doc = parseYaml(readFileSync(`${REPO}/.github/workflows/nightly.yml`, "utf8")) as {
+  const doc = parseYaml(readFileSync(workflow("nightly.yml"), "utf8")) as {
     on: { schedule?: Array<{ cron: string }>, workflow_dispatch?: unknown },
     jobs: Record<string, { if?: string, needs?: string | string[], steps: Array<Record<string, unknown>> }>,
   };
@@ -86,7 +88,7 @@ test("#417's sweep is hourly on nightly.yml's :37 cron since #909, and also runs
 });
 
 test("trunk.yml carries workflow_dispatch, so nightly.yml's gateSweep can trigger a real gate run", () => {
-  const doc = parseYaml(readFileSync(`${REPO}/.github/workflows/trunk.yml`, "utf8")) as {
+  const doc = parseYaml(readFileSync(workflow("trunk.yml"), "utf8")) as {
     on: { push?: unknown, workflow_dispatch?: unknown },
   };
   assert.ok("push" in doc.on, "the original push trigger must still be there -- this ADDS a path, it "
@@ -97,7 +99,7 @@ test("trunk.yml carries workflow_dispatch, so nightly.yml's gateSweep can trigge
 
 test("trunk.yml's trunkRecheck falls back to a computed before-sha when github.event.before is "
   + "absent -- the workflow_dispatch case this PR adds", () => {
-  const text = readFileSync(`${REPO}/.github/workflows/trunk.yml`, "utf8");
+  const text = readFileSync(workflow("trunk.yml"), "utf8");
   assert.match(text, /git rev-parse HEAD\^1/,
     "github.event.before only exists on a real push event; without a fallback, a sweep-triggered run "
     + "would recheck against an empty parent, which reads as `unknown` at best and a wrong parent at worst");

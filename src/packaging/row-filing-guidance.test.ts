@@ -17,11 +17,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 
 import { declaredRegionFiles } from "../region-paths.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
-const GUIDANCE = fileURLToPath(new URL("../../../../docs/row-filing.md", import.meta.url));
+const GUIDANCE = join(HOME_CHECKOUT, "docs/row-filing.md");
 const guidance = () => readFileSync(GUIDANCE, "utf8");
 
 /**

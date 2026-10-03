@@ -1126,7 +1126,7 @@ test("#2012: an ignore question that could NOT be asked is `unknown`, never `cle
   try {
     assert.equal(ignoredByAuthority(join(root, "no-such-checkout"), "node_modules"), "unknown",
       "an authority that is not a repository cannot answer; 128 is not 1");
-    assert.equal(ignoredByAuthority(root, "../../../etc/passwd"), "unknown",
+    assert.equal(ignoredByAuthority(root, ["..", "..", "..", "etc", "passwd"].join("/")), "unknown",
       "and neither is a path outside it");
     const unaskable = cleanliness(pinned, {
       ignoreAuthority: root,

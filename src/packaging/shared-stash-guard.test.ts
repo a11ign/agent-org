@@ -21,14 +21,13 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, copyFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 
 import { ownerOf, stashLines } from "../stash-whose.mjs";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
-const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-const HOOK = join(REPO, "scripts/git-hooks/reference-transaction");
+const HOOK = join(HOME_CHECKOUT, "scripts/git-hooks/reference-transaction");
 
 /**
  * Run git in `cwd`, returning `{code, stderr}` rather than throwing — the refusal IS the result here.

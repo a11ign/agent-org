@@ -14,13 +14,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-
+import { join } from "node:path";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 import { gateVerdicts, isConformanceGate, latestVerdictGate, worstVerdict } from "../board-gates.mjs";
 
 type Gate = { command: string; at: string; output: string; reportedBy?: string };
-const GATES = new URL("../../../../docs/board/reported/gates/", import.meta.url);
-const record = (name: string): Gate => JSON.parse(readFileSync(fileURLToPath(new URL(name, GATES)), "utf8"));
+const GATES = join(HOME_CHECKOUT, "docs/board/reported/gates");
+const record = (name: string): Gate => JSON.parse(readFileSync(join(GATES, name), "utf8"));
 
 const FAIL_0907 = record("npm-run-lab-job-e-job-rules-real-pages-e-ref-main-b43b4151.json");
 const RELEASE_GATE_0914 = record("npm-run-lab-job-e-job-release-gate-e-ref-8efe61c413bab57a3b0-97866055.json");

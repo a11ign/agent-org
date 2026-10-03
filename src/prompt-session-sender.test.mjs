@@ -9,13 +9,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 
-const SRC = dirname(fileURLToPath(import.meta.url));
 const PROJECT = process.env.A11IGN_CHECKOUT ?? "/home/agent/repos/a11y-witness";
-if (!process.env.AGENT_ORG_HOST && !existsSync(resolve(SRC, "../../../.agent-org/project.json"))) {
-  process.env.AGENT_ORG_HOST = join(PROJECT, ".agent-org/host.json");
+// The project is found through the host file, never by counting directories up from `src`, which is the HOME directory in this repository.
+// Default it only when the file is there: a CI runner has no primary checkout, and a host path that does not exist throws at import.
+const PROJECT_HOST = join(PROJECT, ".agent-org/host.json");
+if (!process.env.AGENT_ORG_HOST && existsSync(PROJECT_HOST)) {
+  process.env.AGENT_ORG_HOST = PROJECT_HOST;
 }
 const { senderName, resolveSender } = await import("./prompt-session.mjs");
 

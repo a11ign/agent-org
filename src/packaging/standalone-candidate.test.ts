@@ -25,7 +25,10 @@ import { fileURLToPath } from "node:url";
 import { HOME_CHECKOUT, HOST_ENV, resolveHomeCheckout } from "../project-config.mjs";
 import { HOST_CONFIG_ENV } from "../host-config.mjs";
 
-const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
+// The PROJECT's checkout (its declaration is what the labels are read from), and the TOOL's own `src`, which are two trees (the tool is not
+// inside the project here), so neither is found by counting directories up from this file.
+const REPO = HOME_CHECKOUT;
+const TOOL_SRC = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
 const CHILD_TIMEOUT_MS = 30_000;
 const UP_THREE = 3;
 
@@ -53,7 +56,7 @@ test.after(() => {
 /** `src` copied as the standalone repository lays it out, tests left behind: `<scratch>/tool/src`. */
 function standaloneTree(): string {
   const src = join(scratch(), "tool", "src");
-  cpSync(join(REPO, "packages/agent-org/src"), src, { recursive: true, filter: (from) => !/\.test\.[mc]?[jt]s$/.test(from) });
+  cpSync(TOOL_SRC, src, { recursive: true, filter: (from) => !/\.test\.[mc]?[jt]s$/.test(from) });
   return src;
 }
 
@@ -142,12 +145,22 @@ test("`primary` picks the project: a second declared project is not the one read
 });
 
 test("POSITIVE CONTROL: a host file whose primary is a11ign's checkout gives a11ign's labels from the standalone tree", () => {
-  const host = writeHost(scratch(), { primary: "a11ign", projects: [{ id: "a11ign", checkout: REPO.replace(/\/$/, "") }] });
+  const host = writeHost(scratch(), { primary: "a11ign", projects: [{ id: "a11ign", checkout: REPO }] });
   assert.deepEqual(labelsOf(readIn(standaloneTree(), host)), A11IGN_LABELS);
 });
 
+/** The product tree's layout: `src` at `packages/agent-org/src` with the project's declaration three directories above it. */
+function productTree(): string {
+  const root = scratch();
+  const src = join(root, "packages/agent-org/src");
+  cpSync(TOOL_SRC, src, { recursive: true, filter: (from) => !/\.test\.[mc]?[jt]s$/.test(from) });
+  mkdirSync(join(root, ".agent-org"), { recursive: true });
+  cpSync(join(REPO, ".agent-org/project.json"), join(root, ".agent-org/project.json"));
+  return src;
+}
+
 test("$AGENT_ORG_HOST unset, in the product tree, still gives a11ign's own labels", () => {
-  assert.deepEqual(labelsOf(readIn(join(REPO, "packages/agent-org/src"), undefined)), A11IGN_LABELS);
+  assert.deepEqual(labelsOf(readIn(productTree(), undefined)), A11IGN_LABELS);
 });
 
 type Refusal = { name: string; make: () => string; reason: RegExp };
@@ -200,5 +213,6 @@ test("an EMPTY $AGENT_ORG_HOST is unset, as `hostConfigPath` reads it", () => {
 
 test("the two modules that name the variable agree, and this process (variable unset) resolved the tree it is in", () => {
   assert.equal(HOST_ENV, HOST_CONFIG_ENV);
-  if (process.env[HOST_ENV] === undefined) assert.equal(HOME_CHECKOUT, REPO.replace(/\/$/, ""));
+  // Unset, the process can only be in the product layout, where the tool is `packages/agent-org` of the project it resolved.
+  if (process.env[HOST_ENV] === undefined) assert.equal(join(HOME_CHECKOUT, "packages/agent-org/src"), TOOL_SRC);
 });

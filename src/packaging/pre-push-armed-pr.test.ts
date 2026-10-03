@@ -30,10 +30,10 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { racesAnArmedMerge, lookupArmedPrStatus } from "../merge-guard.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
-const HOOK_PATH = fileURLToPath(new URL("../../../../scripts/git-hooks/pre-push", import.meta.url));
+const HOOK_PATH = join(HOME_CHECKOUT, "scripts/git-hooks/pre-push");
 
 /** The exact `#386` block, extracted between its own markers -- never retyped. */
 function armedPrGuardBlock(): string {

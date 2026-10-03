@@ -31,14 +31,14 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { writeFileSync, mkdtempSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { withGitSandbox, sandboxGitEnv } from "../lib/git-sandbox.ts";
 import type { GitSandbox } from "../lib/git-sandbox.ts";
 import { updatePrimary } from "../update-primary.mjs";
 import { UPDATE_PRIMARY_ARGV } from "./update-primary-argv.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
-const PRE_COMMIT = fileURLToPath(new URL("../../../../scripts/git-hooks/pre-commit", import.meta.url));
-const POST_CHECKOUT = fileURLToPath(new URL("../../../../scripts/git-hooks/post-checkout", import.meta.url));
+const PRE_COMMIT = join(HOME_CHECKOUT, "scripts/git-hooks/pre-commit");
+const POST_CHECKOUT = join(HOME_CHECKOUT, "scripts/git-hooks/post-checkout");
 
 type Verdict = { status: number; stderr: string };
 

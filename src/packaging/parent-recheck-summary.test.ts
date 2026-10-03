@@ -23,7 +23,8 @@ import { fileURLToPath } from "node:url";
 import { summarizeTestLog } from "../parent-recheck-summary.mjs";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 
-const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
+// The tool's OWN script (this file sits in src/packaging), not the project's copy of it.
+const CLI = fileURLToPath(new URL("../parent-recheck-summary.mjs", import.meta.url));
 
 /**
  * A REALISTIC node:test TAP log shape: a failure near the TOP (this is the whole point -- #718's own
@@ -106,7 +107,7 @@ function withTempLog(content: string, fn: (path: string) => void) {
 
 test("CLI: a real failing log prints the not-ok lines, the fail count, and RECHECK_RESULT=fail", () => {
   withTempLog(tapLogWithEarlyFailure(), (logPath) => {
-    const out = execFileSync("node", [realpathSync(`${REPO}packages/agent-org/src/parent-recheck-summary.mjs`), logPath],
+    const out = execFileSync("node", [realpathSync(CLI), logPath],
       { encoding: "utf8" });
     assert.match(out, /^# fail 1$/m);
     assert.match(out, /not ok 7 - the summary states WHEN it was written/);
@@ -116,7 +117,7 @@ test("CLI: a real failing log prints the not-ok lines, the fail count, and RECHE
 
 test("CLI: an undeterminable log prints UNKNOWN and RECHECK_RESULT=unknown, never RECHECK_RESULT=fail", () => {
   withTempLog("a crash with no TAP shape at all\n", (logPath) => {
-    const out = execFileSync("node", [realpathSync(`${REPO}packages/agent-org/src/parent-recheck-summary.mjs`), logPath],
+    const out = execFileSync("node", [realpathSync(CLI), logPath],
       { encoding: "utf8" });
     assert.match(out, /^UNKNOWN:/m);
     assert.match(out, /^RECHECK_RESULT=unknown$/m);

@@ -53,8 +53,6 @@ import { fetchOpenIssuesChecked, fetchReportedOpenIssueNumbers, labellessRows, o
 import { fetchRemoteBranchesChecked, branchPrefixCensus, renderBranchPrefixes }
   from "../queue-table.mjs";
 
-const repoPath = (relative: string) => fileURLToPath(new URL(`../../../../${relative}`, import.meta.url));
-
 /**
  * THIS FILE'S OWN VACUITY GUARD: every mechanism the table above cites, for a key this row calls FIXED or
  * ALREADY THE MODEL, must still exist and still be the shape described -- so a rename or a later
@@ -71,7 +69,7 @@ test("#790: every 'already fixed' or 'already the model' row on this file's own 
   assert.equal(typeof fetchRemoteBranchesChecked, "function");
   assert.equal(typeof branchPrefixCensus, "function");
   assert.equal(typeof renderBranchPrefixes, "function");
-  assert.ok(existsSync(repoPath("packages/lab/src/packaging/board-reported-data-integrity.test.ts")),
+  assert.ok(existsSync(new URL("./board-reported-data-integrity.test.ts", import.meta.url)),
     "the 'reported/ kinds' row cites board-reported-data-integrity.test.ts as the model -- it must still exist");
 });
 

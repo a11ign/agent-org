@@ -37,6 +37,7 @@
 import { execFileSync } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { realpathSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 // RELATIVE, NOT the `@a11ign/screenreader-fleet/cli-flags` package specifier: that export map
 // points at `dist/`, so it needs both `node_modules` AND a completed build. This file is reachable
 // from a pre-install entry (see `pre-install-import-graph.test.ts`, which derives that population
@@ -44,6 +45,7 @@ import { realpathSync, readFileSync } from "node:fs";
 import { proseBlockers } from "./waiting-condition.mjs";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { REPO } from "./project-identity.mjs";
+import { HOME_CHECKOUT } from "./project-config.mjs";
 import { fetchBoardItems, PROJECT_NUMBER } from "./board-snapshot.mjs";
 // `claimsFromEvents`/`describeClaims` are no longer imported: a row that reaches the report has NO claim
 // events by construction, so describing them printed "no session ever claimed this row" every time --
@@ -2214,14 +2216,19 @@ export function guidanceDrift(doc, description) {
 
 const ROW_FILING_DOC = "docs/row-filing.md";
 
+/**
+ * The project's filing guidance, read from the PROJECT's checkout. It read `../docs/row-filing.md` until 2026-09-18 and had been failing since the
+ * package split moved this file (#1641) -- `COULD NOT AUDIT filing guidance: ENOENT`, reported every night and read by nobody, because a partial
+ * audit still exits with its other twelve checks green. Counting directories up from `src` was the repair then, and is the HOME directory in
+ * this repository (#3074).
+ */
+export function readRowFilingDoc() {
+  return readFileSync(join(HOME_CHECKOUT, ROW_FILING_DOC), "utf8");
+}
+
 /** The live half: read both copies, compare them through `guidanceDrift`, print what drifted. */
 function reportGuidanceDrift() {
-  // THREE LEVELS, NOT ONE: this file lives at `packages/agent-org/src/`, so `../` reaches
-  // `packages/agent-org/` and the doc is at the REPOSITORY ROOT. It read `../docs/row-filing.md`
-  // until 2026-09-18 and had been failing since the package split moved this file (#1641) --
-  // `COULD NOT AUDIT filing guidance: ENOENT`, reported every night and read by nobody, because a
-  // partial audit still exits with its other twelve checks green.
-  const doc = readFileSync(new URL(`../../../${ROW_FILING_DOC}`, import.meta.url), "utf8");
+  const doc = readRowFilingDoc();
   let description = null;
   try {
     const milestones = JSON.parse(defaultRun("gh",

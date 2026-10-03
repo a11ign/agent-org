@@ -27,6 +27,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homeHostConfig, stateEntryPath } from "../host-config.mjs";
+import { HOME_CHECKOUT, HOST_ENV } from "../project-config.mjs";
 
 const SRC = fileURLToPath(new URL("../", import.meta.url));
 const FIXTURE_HOME = "/home/fixture";
@@ -35,7 +36,7 @@ const FIXTURE_STATE_DIR = "/srv/acme/state";
 /** The fixture project's checkout. It does not exist, and `project-config.mjs` now reads `project.json` from the primary's checkout
  * (#2873), so `readFourUnder` swaps in a checkout that does: this file reads the four paths, not the vocabulary. */
 const FIXTURE_CHECKOUT = "/srv/acme/repos/widgets";
-const REAL_CHECKOUT = fileURLToPath(new URL("../../../../", import.meta.url)).replace(/\/$/, "");
+const REAL_CHECKOUT = HOME_CHECKOUT;
 const STDERR_EXCERPT = 400;
 /** The directory (twice: the reviewer state and the shadow gate's live directory), the drain marker and the ledger. */
 const DISTINCT_PATHS = 3;
@@ -63,7 +64,8 @@ const READER = `
 function readFourUnder(hostJson: string | null) {
   const dir = mkdtempSync(join(tmpdir(), "state-dir-wiring-"));
   try {
-    const env: Record<string, string | undefined> = { ...process.env, HOME: FIXTURE_HOME, AGENT_ORG_HOST: undefined };
+    // `null` reads the host file this process itself found the project through (unset in the project's own CI, where the tool sits inside the project).
+    const env: Record<string, string | undefined> = { ...process.env, HOME: FIXTURE_HOME, AGENT_ORG_HOST: hostJson === null ? process.env[HOST_ENV] : undefined };
     if (hostJson !== null) {
       const file = join(dir, "host.json");
       writeFileSync(file, hostJson.replace(FIXTURE_CHECKOUT, REAL_CHECKOUT));
