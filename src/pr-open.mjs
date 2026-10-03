@@ -56,6 +56,7 @@ import { worktreeOwner } from "./worktree-owner.mjs";
 import { isLiveSession } from "./arm-pr.mjs";
 import { laneAuthorshipRefusal, loadLanes, reviewOnlyPathsIn } from "./lane-ownership.mjs";
 import { declarationRefusal } from "./hand-fix-ledger.mjs";
+import { VERIFY_STATE, readVerifyStamp, verifyRefusalLine } from "./verify-stamp.mjs";
 
 // The header's EXIT CODES, named because 1 and 3 ask a caller for opposite next steps.
 export const EXIT_NOTHING_SENT = 1;
@@ -618,6 +619,8 @@ const defaultPrHead = (repo, number) => JSON.parse(execFileSync("gh",
  */
 const defaultRowBody = (number, repo = REPO) =>
   execFileSync("gh", ["api", `repos/${repo}/issues/${number}`, "--jq", ".body"], { encoding: "utf8" });
+/** #3215: the stamp of the tree `pr-open` runs from, read against the body being sent. @param {string} body */
+const defaultVerifyStamp = (body) => readVerifyStamp({ dir: defaultGit(["rev-parse", "--show-toplevel"]), body });
 /** `sandboxGitEnv()` CALLED: git exports GIT_DIR into every hook environment. @param {string[]} args */
 const defaultGit = (args) =>
   execFileSync("git", args, { encoding: "utf8", env: sandboxGitEnv() }).trim();
@@ -653,6 +656,27 @@ function regionStep(body, rest, { git, rowBody, rootFiles, code, out, err }) {
 }
 
 /**
+ * #3215: A READY pull request is opened only on a green verify stamp for this head and this body; a DRAFT opens without one, because it is
+ * where CI starts and work is shared, and refusing it would put the cost on the one step that cannot be re-run cheaply. `edit` opens nothing.
+ * A project that declares no verify script is not refused, and the line says so by name (`verify-stamp.mjs`). WIRED IN THE ENTRY BLOCK like
+ * `rowBody`: the tests call `main` directly, and in CI's plain clone a refusal inside it would refuse them. `null` is "go on".
+ * @param {string} mode @param {string[]} rest @param {string} body
+ * @param {{ verifyStamp?: (body: string) => import("./verify-stamp.mjs").VerifyReading, out: (line: string) => void, err: (line: string) => void }} io
+ * @returns {number | null}
+ */
+function verifyStampStep(mode, rest, body, { verifyStamp, out, err }) {
+  if (mode !== "create" || rest.includes("--draft") || !verifyStamp) return null;
+  const reading = verifyStamp(body);
+  if (reading.state === VERIFY_STATE.NO_VERIFY) {
+    out(`pr-open: no verify declared for ${reading.project} -- a ready pull request is not checked against a verify stamp here.\n`);
+    return null;
+  }
+  if (reading.state === VERIFY_STATE.GREEN) return null;
+  err(`${verifyRefusalLine(reading, { bodyFile: flagAfter(rest, "--body-file") })}\n`);
+  return EXIT_NOTHING_SENT;
+}
+
+/**
  * The CLI, returning the header's exit code, with every spawn injectable so the path that matters most, a
  * write that landed and a step after it that failed, is driven end to end (#1479).
  * @param {string[]} [argv]
@@ -661,11 +685,12 @@ function regionStep(body, rest, { git, rowBody, rootFiles, code, out, err }) {
  *           runAcceptance?: (command: string) => number, runMutation?: (command: string) => number,
  *           owner?: () => string | null, rowBody?: (number: number, repo?: string) => string, rootFiles?: Set<string>,
  *           code?: readonly { key: string, repo: string }[], login?: () => string, lanes?: {lanes: import("./lane-ownership.mjs").Lane[]} | null,
+ *           verifyStamp?: (body: string) => import("./verify-stamp.mjs").VerifyReading,
  *           out?: (line: string) => void, err?: (line: string) => void }} [deps]
  * @returns {number}
  */
 export function main(argv = process.argv.slice(2),
-  { run, git, prHead, runAcceptance, runMutation = runForReal, owner, rowBody, rootFiles, code, login, lanes, out = writeOut,
+  { run, git, prHead, runAcceptance, runMutation = runForReal, owner, rowBody, rootFiles, code, login, lanes, verifyStamp, out = writeOut,
     err = writeErr } = {}) {
   const [mode, ...rest] = argv;
   if (mode !== "create" && mode !== "edit") {
@@ -697,6 +722,9 @@ export function main(argv = process.argv.slice(2),
       + `gh pr ${mode} runs (nothing was sent to GitHub).\n`);
     return EXIT_NOTHING_SENT;
   }
+  // #3215: AFTER the body reports, which are knowable before the pull request exists and are all a DRAFT is refused for.
+  const unverified = verifyStampStep(mode, rest, body, { verifyStamp, out, err });
+  if (unverified !== null) return unverified;
   // #2307: only for a body that will be SENT, and never a reason not to send it.
   printMutationReport(body, runMutation, out);
   return sendToGitHub(mode, rest, { run, git, err, owner });
@@ -924,6 +952,6 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
   if (launchGate(`pr-open ${process.argv[2] ?? ""}`.trim())) {
     process.exitCode = EXIT_NOTHING_SENT;
   } else {
-    process.exitCode = main(undefined, { rowBody: defaultRowBody });
+    process.exitCode = main(undefined, { rowBody: defaultRowBody, verifyStamp: defaultVerifyStamp });
   }
 }
