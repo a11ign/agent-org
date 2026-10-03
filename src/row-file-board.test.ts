@@ -14,7 +14,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { boardArgvRefusal, boardFromArgv, boardRow } from "./row-file.mjs";
+import { boardArgvRefusal, boardFromArgv, boardRow, fetchIssueBoardStatus } from "./row-file.mjs";
 import { CLAIM_LABEL } from "./claim-labels.mjs";
 
 /** Region says the deliverable is not a commit, so the body passes the filing rule in any checkout. */
@@ -166,4 +166,43 @@ test("#3330: `--board=` takes no flag but --lane= and --session=, and a malforme
   const stray = board(["--board=3329", "--lane=any", "--label=ready"], fakeRow().deps);
   assert.equal(stray.code, 1);
   assert.match(stray.err, /FILES NOTHING/);
+});
+
+// --- fetchIssueBoardStatus pages (reviewer-agent-org-121's blocker on de971e06) ---
+
+const node = (number: number, status = "Ready") => ({ project: { number }, fieldValueByName: { name: status } });
+// Like GitHub, a LAST page still carries an `endCursor`; only `hasNextPage` says it is the last.
+const pageOf = (nodes: unknown[], hasNextPage: boolean) => JSON.stringify({ data: { repository: { issue: {
+  projectItems: { pageInfo: { hasNextPage, endCursor: hasNextPage ? "c1" : "last" }, nodes } } } } });
+const tenElsewhere = Array.from({ length: 10 }, (_, i) => node(100 + i, "Done"));
+
+test("#3330 BLOCKER: Project 1 AFTER ten other project items is found on the next page, not read as off-board", () => {
+  const afters: string[] = [];
+  const run = (_cmd: string, args: string[]) => {
+    const query = args[args.length - 1];
+    afters.push(/after: "([^"]+)"/.exec(query)?.[1] ?? "");
+    return afters.length === 1 ? pageOf(tenElsewhere, true) : pageOf([node(1, "In progress")], false);
+  };
+  assert.equal(fetchIssueBoardStatus(3329, { run }), "In progress");
+  assert.deepEqual(afters, ["", "c1"], "the second request carries the first page's cursor");
+});
+
+test("#3330 BLOCKER: boardRow leaves such a row alone -- no item-add, so no duplicate Project 1 item", () => {
+  const { row, deps } = fakeRow();
+  const pages = [pageOf(tenElsewhere, true), pageOf([node(1)], false)];
+  const run = deps.run;
+  const paged = { ...deps, fetchBoardStatus: fetchIssueBoardStatus, run: (cmd: string, args: string[]) =>
+    (args[0] === "api" && args[1] === "graphql" ? pages.shift() ?? "" : run(cmd, args)) };
+  const r = board(["--board=3329", "--lane=any"], paged as never);
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(row.writes, []);
+  assert.match(r.out, /already boarded/);
+});
+
+test("#3330: absent from EVERY page is null; a page that says there is more but gives no cursor throws", () => {
+  const pages = [pageOf(tenElsewhere, true), pageOf([node(7)], false)];
+  assert.equal(fetchIssueBoardStatus(3329, { run: () => pages.shift() ?? "" }), null);
+  const noCursor = JSON.stringify({ data: { repository: { issue: { projectItems: {
+    pageInfo: { hasNextPage: true, endCursor: null }, nodes: tenElsewhere } } } } });
+  assert.throws(() => fetchIssueBoardStatus(3329, { run: () => noCursor }), /no cursor/);
 });

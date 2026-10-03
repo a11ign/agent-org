@@ -1157,19 +1157,20 @@ export function unverifiedFilingFields(after, expected) {
   return missing;
 }
 
+/** #3330: project items asked for per request; `fetchIssueBoardStatus` pages past it rather than trusting it. */
+const PROJECT_ITEMS_PAGE = 100;
+
 /**
- * #844: is issue `issueNumber` on Project `PROJECT_NUMBER`, and what Status does it carry? A single
- * targeted GraphQL read of the one issue this filing just created -- never `board-snapshot.mjs`'s whole
- * `fetchBoardItems()` walk, which answers a different, much larger question (every item on the board) at
- * a cost this one-row check does not need to pay.
- * @param {number} issueNumber
- * @param {{ run?: typeof defaultRun }} [deps]
- * @returns {string | null} the Status option name, or `null` if the issue is not on this Project at all
+ * One page of the issue's `projectItems`. Throws, never guesses, on a failed call or an unexpected shape.
+ * @param {number} issueNumber @param {string | null} cursor @param {typeof defaultRun} run
+ * @returns {{ nodes: any[], hasNextPage: boolean, endCursor: string | null }}
  */
-export function fetchIssueBoardStatus(issueNumber, { run = defaultRun } = {}) {
+function projectItemsPage(issueNumber, cursor, run) {
   const [owner, name] = REPO.split("/");
+  const after = cursor === null ? "" : `, after: "${cursor}"`;
   const query = `query { repository(owner: "${owner}", name: "${name}") { issue(number: ${issueNumber}) `
-    + `{ projectItems(first: 10) { nodes { project { number } fieldValueByName(name: "Status") `
+    + `{ projectItems(first: ${PROJECT_ITEMS_PAGE}${after}) { pageInfo { hasNextPage endCursor } `
+    + `nodes { project { number } fieldValueByName(name: "Status") `
     + `{ ... on ProjectV2ItemFieldSingleSelectValue { name } } } } } } }`;
   /** @type {string} */
   let raw;
@@ -1187,13 +1188,43 @@ export function fetchIssueBoardStatus(issueNumber, { run = defaultRun } = {}) {
     throw new Error(`row-file: gh's Project-membership response for #${issueNumber} was not JSON -- `
       + `refusing to guess. First 200 chars: ${raw.slice(0, 200)}`, { cause });
   }
-  const nodes = /** @type {any} */ (parsed)?.data?.repository?.issue?.projectItems?.nodes;
-  if (!Array.isArray(nodes)) {
+  const items = /** @type {any} */ (parsed)?.data?.repository?.issue?.projectItems;
+  if (!Array.isArray(items?.nodes)) {
     throw new Error(`row-file: gh's Project-membership response for #${issueNumber} did not have the `
       + `expected shape -- refusing to guess. Got: ${JSON.stringify(parsed).slice(0, 300)}`);
   }
-  const onThisProject = nodes.find((/** @type {any} */ n) => n?.project?.number === PROJECT_NUMBER);
-  return onThisProject?.fieldValueByName?.name ?? null;
+  const endCursor = items.pageInfo?.endCursor ?? null;
+  const hasNextPage = items.pageInfo?.hasNextPage === true;
+  if (hasNextPage && endCursor === null) {
+    throw new Error(`row-file: gh reports more Project items for #${issueNumber} but no cursor to read them `
+      + "-- refusing to guess whether it is on the Project.");
+  }
+  return { nodes: items.nodes, hasNextPage, endCursor };
+}
+
+/**
+ * #844: is issue `issueNumber` on Project `PROJECT_NUMBER`, and what Status does it carry? A single
+ * targeted GraphQL read of the one issue this filing just created -- never `board-snapshot.mjs`'s whole
+ * `fetchBoardItems()` walk, which answers a different, much larger question (every item on the board) at
+ * a cost this one-row check does not need to pay.
+ *
+ * #3330: PAGED. `null` means "not among ALL the issue's project items", because `--board=` writes on it: a
+ * `first: 10` read returned `null` for an issue on Project 1 at position 11, and boarding on that
+ * duplicated the item. Stops at the first page that holds Project 1.
+ * @param {number} issueNumber
+ * @param {{ run?: typeof defaultRun }} [deps]
+ * @returns {string | null} the Status option name, or `null` if the issue is not on this Project at all
+ */
+export function fetchIssueBoardStatus(issueNumber, { run = defaultRun } = {}) {
+  /** @type {string | null} */
+  let cursor = null;
+  do {
+    const page = projectItemsPage(issueNumber, cursor, run);
+    const onThisProject = page.nodes.find((n) => n?.project?.number === PROJECT_NUMBER);
+    if (onThisProject) return onThisProject.fieldValueByName?.name ?? null;
+    cursor = page.hasNextPage ? page.endCursor : null;
+  } while (cursor !== null);
+  return null;
 }
 
 /**
