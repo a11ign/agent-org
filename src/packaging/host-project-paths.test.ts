@@ -121,7 +121,8 @@ test("#2620: the three tool units, the wrapper and the leads list render to TODA
 });
 
 test("#2620: NO UNIT IS RENAMED -- the installed names are the fourteen there were, and the shadow window's two (#2867)", () => {
-  assert.deepEqual(shippedUnits(), [
+  // `declaredKeys` handed, so the optional chairman-messaging trio (#2901) is not this population whether or not the real project asks for it (#3142).
+  assert.deepEqual(shippedUnits(SHIPPED_DIR, { declaredKeys: new Set(["causes", "units"]) }), [
     "a11ign-board-report.service", "a11ign-board-report.timer",
     "a11ign-corpus-release-nightly.service", "a11ign-corpus-release-nightly.timer",
     "a11ign-corpus-snapshot.service", "a11ign-corpus-snapshot.timer",
@@ -215,7 +216,7 @@ test("#2620: a fixture project's paths and prefix change the units, the wrapper 
   assert.match(work, /^Environment=PATH=\/srv\/ci\/bin:/m);
   assert.match(work, /^Environment=HOME=\/srv\/ci$/m);
   assert.match(shippedUnitText("acme-work-tick.timer", ACME) ?? "", /^Requires=acme-work-tick\.service$/m);
-  assert.deepEqual(shippedUnits(SHIPPED_DIR, { projectUnitsDir: null, prefix: "acme-" }).filter((u) => u.endsWith(".service")),
+  assert.deepEqual(shippedUnits(SHIPPED_DIR, { projectUnitsDir: null, prefix: "acme-", declaredKeys: new Set() }).filter((u) => u.endsWith(".service")),
     ["acme-board-report.service", "acme-shadow-window.service", "acme-work-tick.service", "acme-worktree-prune.service"], "the prefix names the tool's units");
   for (const text of [work, shippedScriptText("gh", ACME) ?? ""]) assert.doesNotMatch(text, /\/home\/agent/, "and none of a11ign's host survives");
   assert.match(shippedScriptText("gh", ACME) ?? "", /A11Y_GH_REAL:-\/srv\/ci\/bin\/gh-real/);

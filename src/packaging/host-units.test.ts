@@ -41,6 +41,13 @@ import { DECLARED_CLAUDE_MODELS, PROFILES, CLAUDE_EFFORTS } from "../worker-prof
 import { homeHostConfig } from "../host-config.mjs";
 
 /**
+ * The keys of a project that has NOT turned the chairman-messaging units on (#2901). The tests that pin "the units a11ign ships" hand it as `declaredKeys`
+ * instead of reading the real `.agent-org/project.json`, so the day a project declares `messaging` (a11ign/a11ign#3142) none of them goes red for it:
+ * the optional trio has its own tests below, and a pin that reads the real declaration is a pin on somebody else's file.
+ */
+const WITHOUT_MESSAGING = new Set(["causes", "units"]);
+
+/**
  * a11ign's host AS THE TEMPLATES RENDER FOR IT, whether or not its `host.json` names a `tool` (#2974: the cut sets it). The tests below that
  * pin what a template says -- its `ExecStart`, its working directory, its schedule -- read it through this, so they keep asking the template
  * and not the host's install form; `host-tool-install.test.ts` is where the tool form of every unit is asserted.
@@ -193,6 +200,7 @@ test("#1858: the installer uses `enable --now`, never a bare `enable`", () => {
   // which is exactly what the first version of this test did.
   hostUnitsInstall({
     installedDir: "/installed",
+    declaredKeys: WITHOUT_MESSAGING,
     systemctl: ((args: string[]) => { calls.push(args); return ""; }) as never,
     write: ((to: string) => { copied.push(String(to)); }) as never,
     mkdir: (() => undefined) as never,
@@ -470,9 +478,9 @@ test("#2458: every shipped service puts the compile cache under a home's .cache"
   const listed = [...readdirSync(SHIPPED_DIR).filter((f) => f.endsWith(".service.in") && !Object.hasOwn(OPTIONAL_UNITS, f)).map((f) => `a11ign-${f.slice(0, -".in".length)}`),
     ...readdirSync(PROJECT_UNITS_DIR).filter((f) => f.endsWith(".service"))].sort();
   const services = listed;
-  assert.deepEqual(services, shippedUnits().filter((unit) => unit.endsWith(".service")));
+  assert.deepEqual(services, shippedUnits(SHIPPED_DIR, { declaredKeys: WITHOUT_MESSAGING }).filter((unit) => unit.endsWith(".service")));
   assert.notDeepEqual(services, [], "nothing ships, so the emptiness below would prove nothing");
-  assert.deepEqual(compileCacheDrift(), []);
+  assert.deepEqual(compileCacheDrift({ declaredKeys: WITHOUT_MESSAGING }), []);
   for (const service of services) {
     assert.equal(declaredCompileCache(shippedText(service)),
       "%h/.cache/node-compile-cache", `${service} declares a different directory from the others`);
@@ -869,7 +877,7 @@ test("#1974: every shipped unit that spawns `gh` declares which account -- over 
   // package.json whose scripts do not resolve, or a glob that matches nothing all yield an EMPTY
   // population, and an empty population has no undeclared members. The assertion below would pass over a
   // check that had stopped working, which is the failure this repository keeps re-learning.
-  const spending = unitsSpendingGh();
+  const spending = unitsSpendingGh({ declaredKeys: WITHOUT_MESSAGING });
   assert.ok(spending.length >= 3,
     `the population must not be empty or this check passes vacuously; found ${JSON.stringify(spending)}`);
   // THE FLOOR IS RAISED RATHER THAN LEFT WHERE IT WAS (#1993). `>= 2` held at 2 and would have held at
@@ -882,7 +890,7 @@ test("#1974: every shipped unit that spawns `gh` declares which account -- over 
       "a11ign-worktree-prune.service"],
     "every shipped .service that can reach `gh` -- including the one whose ExecStart this repository "
     + "cannot read, which is charged on UNKNOWN rather than excused on it");
-  assert.deepEqual(identityDrift(), [],
+  assert.deepEqual(identityDrift({ declaredKeys: WITHOUT_MESSAGING }), [],
     "a unit reaching a `gh` spawn with no Environment=GH_CONFIG_DIR= line inherits `~/.config/gh` -- a "
     + "person's account -- and spends a human's rate limit until it runs out");
 });
@@ -1294,7 +1302,7 @@ test("#2000: no shipped timer pairs `Persistent=` with monotonic-only triggers",
 // the prune. This test is what makes adding it to a fifth timer a decision somebody makes rather than a
 // consequence nobody reads.
 test("#2000: which shipped timers run their service at `host:install`, and which do not", () => {
-  const timers = shippedUnits().filter((u) => u.endsWith(".timer"));
+  const timers = shippedUnits(SHIPPED_DIR, { declaredKeys: WITHOUT_MESSAGING }).filter((u) => u.endsWith(".timer"));
   const requiring = timers
     .filter((unit) => /^Requires=/m.test(shippedText(unit))).sort();
   // NEITHER SIDE OF THIS PARTITION IS AN EMPTINESS ASSERTION, which is why it needs no fixture control:
@@ -2454,7 +2462,6 @@ const isChairmanWatch = (unit: string) => unit.startsWith("a11ign-chairman-watch
 // #2907: the listener is the pair's third unit (a service with no timer), on the same key, so "the messaging units" is both.
 const isChairmanListen = (unit: string) => unit === "a11ign-chairman-listen.service";
 const isChairmanMessaging = (unit: string) => isChairmanWatch(unit) || isChairmanListen(unit);
-const WITHOUT_MESSAGING = new Set(["causes", "units"]);
 const WITH_MESSAGING = new Set(["causes", "units", "messaging"]);
 
 test("#2901: the chairman-watch pair and the listener are listed only when the project declares `messaging`, and nothing else moves", () => {
