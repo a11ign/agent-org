@@ -43,8 +43,8 @@ import {
   parityOwner, parityViolationsOnCommit, reviewingSession,
 } from "../review-attribution.mjs";
 
-const REPO_ROOT = fileURLToPath(new URL("../../../..", import.meta.url));
-const DOOR = join(REPO_ROOT, "packages/agent-org/src/reviewer/pr-review-verdict.sh");
+// The tool's OWN script (this file sits in src/packaging), not the project's copy of it.
+const DOOR = fileURLToPath(new URL("../reviewer/pr-review-verdict.sh", import.meta.url));
 
 /** A review on #2105, whose owner is `reviewer-2105` (#2401); `reviewer-2` posted it under the old odd/even rule. */
 const REVIEW_2105_APPROVAL = {

@@ -29,13 +29,14 @@ import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writ
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HOST_ENV } from "../project-config.mjs";
+import { HOME_CHECKOUT, HOST_ENV } from "../project-config.mjs";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { changedFiles } from "../lib/changed-files.mjs";
 import { snapshotDirFor } from "../board-snapshot-scope.mjs";
 
-const REPO = fileURLToPath(new URL("../../../../", import.meta.url)).replace(/\/$/, "");
-const SRC = join(REPO, "packages/agent-org/src");
+// Two trees: the PROJECT's checkout, which the fixtures copy from, and the TOOL's own `src`, which is what is scanned and copied.
+const REPO = HOME_CHECKOUT;
+const SRC = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
 const CHILD_TIMEOUT_MS = 60_000;
 
 /** The one file allowed to spell it: `resolveHomeCheckout`'s `beside`, the in-tree answer when `$AGENT_ORG_HOST` is unset. */
@@ -66,7 +67,8 @@ test("POSITIVE CONTROL: the scan flags a fixture string of each of the three sha
   assert.equal(upThreeSpellings('const R = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");'), true);
   assert.equal(upThreeSpellings('const R = new URL("../../..", import.meta.url).pathname;'), true);
   assert.equal(upThreeSpellings('const R = fileURLToPath(new URL("../../..", import.meta.url));'), true);
-  assert.equal(upThreeSpellings('const R = fileURLToPath(new URL("../../../", import.meta.url));'), true, "the trailing-slash shape (#2879)");
+  // Built, not spelled: this file must not itself carry the three-up spelling it tests for in the tree-wide grep.
+  assert.equal(upThreeSpellings(`const R = fileURLToPath(new URL("${"../".repeat(3)}", import.meta.url));`), true, "the trailing-slash shape (#2879)");
   assert.equal(upThreeSpellings('const own = new URL("../host/", import.meta.url);'), false, "one level up is the tool's own directory");
   assert.equal(upThreeSpellings('const own = new URL("./board-report.mjs", import.meta.url);'), false, "a path inside src is the tool's own location");
   assert.equal(upThreeSpellings('const R = HOME_CHECKOUT;'), false);
@@ -214,7 +216,9 @@ for (const module of MODULES) {
     assert.notDeepEqual(got, aboveTool, "that is the up-three answer");
   });
 
-  test(`${module.name}: with the variable unset the in-tree value is unchanged`, () => {
-    assert.deepEqual(readIn(SRC, module, undefined), module.expectedInTree);
+  // The product layout runs with the variable unset and the module finds the project beside it; the standalone tool is run with it set to the real
+  // host file. Either way the module is read the way this process was launched, and must answer the project's own values.
+  test(`${module.name}: read as this process was launched ($AGENT_ORG_HOST as it is here), the in-tree value is unchanged`, () => {
+    assert.deepEqual(readIn(SRC, module, process.env[HOST_ENV]), module.expectedInTree);
   });
 }

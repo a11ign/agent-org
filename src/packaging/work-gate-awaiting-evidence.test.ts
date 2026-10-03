@@ -13,15 +13,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { decide, CAUSES, JUDGMENT_CAUSES, START_CAUSES, GH_READS, withPatchIds, reviewBlocked,
   readEvidenceLabelledAt, withEvidenceLabelAges, awaitingEvidenceStaleOrders, AWAITING_EVIDENCE_LABEL,
   AWAITING_EVIDENCE_QUIET_MS } from "../work-gate.mjs";
 import { PROFILES } from "../worker-profile.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const RULES = join(HERE, "../../../../.claude/rules/org-routing-and-timers.md");
+const RULES = join(HOME_CHECKOUT, ".claude/rules/org-routing-and-timers.md");
 
 const GREEN = [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }];
 const RED = [{ name: "ci", status: "COMPLETED", conclusion: "FAILURE" }];

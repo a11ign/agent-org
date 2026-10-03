@@ -31,7 +31,9 @@ const pr = (number: number, files: string[]) => ({ number, files, changedFiles: 
 const regionOf = (...files: string[]) => declaredRegionFiles(rowBody(...files), { rootFiles: new Set() }) ?? [];
 
 test("#2542: the module the row moves the orders into exists, and is a path a Region can name", () => {
-  assert.ok(existsSync(new URL(`../../../../${MODULE}`, import.meta.url)), `${MODULE} must exist or the Regions below name nothing`);
+  // MODULE is spelled the way a Region names it (the project's tree); the file itself is the tool's own, one directory up from here.
+  const inTool = new URL(`../${MODULE.replace(/^packages\/agent-org\/src\//, "")}`, import.meta.url);
+  assert.ok(existsSync(inTool), `${MODULE} must exist or the Regions below name nothing`);
   assert.deepEqual(regionOf(MODULE), [MODULE], "the fenced Region parses to the module's own path");
 });
 

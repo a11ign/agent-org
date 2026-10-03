@@ -35,13 +35,13 @@ import { declareWalkScope } from "../lib/walk-scope.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
 import { EXIT, daysSince, livenessVerdict, newestEditionDay }
   from "../board-schedule-liveness.mjs";
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
+const REPO_ROOT = HOME_CHECKOUT;
 const NOW = new Date("2026-09-20T09:00:00Z");
 
 /** No summary was ever written — the gate would refuse every day. */
@@ -132,7 +132,7 @@ test("the check does NOT run on a schedule, which is the property it exists for"
     + "60 days of inactivity, so a scheduled watchdog dies in the same breath as the jobs it guards. It "
     + "runs on push, which cannot be disabled by inactivity because a push IS the activity");
   assert.match(workflow, /^\s*push:/m, "it must run on push -- the trigger that inactivity cannot silence");
-  assert.match(workflow, /run: node packages\/agent-org\/src\/board-schedule-liveness\.mjs --post --issue=20/,
+  assert.match(workflow, /run: pnpm exec agent-org board:liveness --post --issue=20/,
     "the board watchdog step must still be in trunk.yml -- a watchdog in no workflow has silently stopped");
   const nightly = readFileSync(path.join(REPO_ROOT, ".github/workflows/nightly.yml"), "utf8");
   assert.doesNotMatch(nightly, /board-schedule-liveness\.mjs/,

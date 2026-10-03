@@ -21,12 +21,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync, readdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname, resolve } from "node:path";
+import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { localImports } from "../lib/local-import-closure.mjs";
 import { SPAWNS_GH } from "../acceptance-commands.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
-const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+const REPO = HOME_CHECKOUT;
 const CI = join(REPO, ".github/workflows/ci.yml");
 
 /** A `gh` spawn, not the two letters: the token charge's own regex, imported rather than retyped (#1449). */

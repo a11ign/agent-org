@@ -14,12 +14,13 @@ import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync, chmodSync, r
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { join, dirname, relative } from "node:path";
+import { join, dirname } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
-import { localImports } from "../lib/local-import-closure.mjs";
 import { oneRowReason } from "../row-claim/runner-rule.mjs";
 import { claimRow } from "../row-claim.mjs";
 import { sparePathsFrom } from "../wake.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
+import { copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";
 
 const ROW = 2407;
 const REFUSAL = /one instance, one row/;
@@ -91,7 +92,6 @@ test("#2407 (3) POSITIVE CONTROLS through `claimRow`: a fresh spare claims, a st
 // when it cannot ask whether its rule is current, and the acceptance job's clone has no `origin/main`. The copy is of
 // the WORKING TREE, so a mutation made there is the one under test.
 const ROW_CLAIM_ENTRY = fileURLToPath(new URL("../row-claim.mjs", import.meta.url));
-const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const SESSIONS_JSON = ".agent-org/roles/sessions.json";
 // `HELD_ROWS` is what `gh issue list --label session:<me>` answers: the rows the instance holds NOW.
 const GH_READY_ROW = `#!/bin/sh
@@ -124,27 +124,13 @@ function removeFixture(dir: string): void {
   }
 }
 
-function copyClosureAsRepo(copyRoot: string): string {
-// #2616: the tool now reads the project's declaration from beside it, so a copied tree must carry it or the reader REFUSES (correctly).
-// #2621: the declaration now points at a PLUGIN (`.agent-org/plugins/causes.mjs`), imported DYNAMICALLY by
-// `cause-declaration.mjs` -- invisible to `localImports`'s static walk, so it is carried for the same reason.
-// #2799: and the host's, because the drain marker, the reviewer state and the ledger default now read its `stateDir` at import.
-  const files = new Set<string>([join(REPO_ROOT, SESSIONS_JSON), join(REPO_ROOT, ".agent-org/project.json"),
-    join(REPO_ROOT, ".agent-org/plugins/causes.mjs"), join(REPO_ROOT, ".agent-org/host.json")]);
-  const visit = (file: string): void => {
-    if (files.has(file)) return;
-    files.add(file);
-    for (const next of localImports(file)) visit(next);
-  };
-  visit(ROW_CLAIM_ENTRY);
-  for (const name of readdirSync(join(REPO_ROOT, "packages/agent-org/src/row-claim"))) {
-    visit(join(REPO_ROOT, "packages/agent-org/src/row-claim", name));
-  }
-  for (const file of files) {
-    const target = join(copyRoot, relative(REPO_ROOT, file));
-    mkdirSync(dirname(target), { recursive: true });
-    copyFileSync(file, target);
-  }
+function copyClosureAsRepo(copyRoot: string): { entry: string; env: Record<string, string> } {
+  // The rule directory is reached by a string `localImports` cannot read (see `copied-tool-fixture.ts` for the project's side).
+  const rules = readdirSync(toolFile("src/row-claim")).map((name) => toolFile(`src/row-claim/${name}`));
+  const copy = copyToolAndProject(ROW_CLAIM_ENTRY, importClosure(ROW_CLAIM_ENTRY, rules), copyRoot);
+  // The roster is the project's (a copy of its real one): the CLI reads it, and the project declaration and host come from the helper.
+  mkdirSync(join(copyRoot, dirname(SESSIONS_JSON)), { recursive: true });
+  copyFileSync(join(HOME_CHECKOUT, SESSIONS_JSON), join(copyRoot, SESSIONS_JSON));
   const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args],
     { cwd: copyRoot, env: sandboxGitEnv(), stdio: "pipe" });
   git("init", "--quiet");
@@ -153,7 +139,7 @@ function copyClosureAsRepo(copyRoot: string): string {
   git("add", "-A");
   git("commit", "--quiet", "-m", "copy");
   git("update-ref", "refs/remotes/origin/main", "HEAD");
-  return join(copyRoot, relative(REPO_ROOT, ROW_CLAIM_ENTRY));
+  return copy;
 }
 
 /** `row-claim claim 2407` as `session`, with the registry beside a wake ledger under HOME and `held` labelled on GitHub. */
@@ -166,10 +152,10 @@ function claimProcess(session: string, { registry = null, held = [] }: { registr
       mkdirSync(join(dir, ".cache/a11ign"), { recursive: true });
       writeFileSync(sparePathsFrom(join(dir, ".cache/a11ign/wake-ledger")).registry, `${JSON.stringify(registry)}\n`);
     }
-    const entry = copyClosureAsRepo(join(dir, "checkout"));
+    const { entry, env } = copyClosureAsRepo(join(dir, "checkout"));
     return spawnSync(process.execPath, [entry, "claim", String(ROW), `--session=${session}`], {
       encoding: "utf8",
-      env: { ...sandboxGitEnv(), HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, A11Y_POLICY_LAUNCH_REASON: "#2407 drives the CLI",
+      env: { ...sandboxGitEnv(), ...env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, A11Y_POLICY_LAUNCH_REASON: "#2407 drives the CLI",
         HELD_ROWS: JSON.stringify(held.map((number) => ({ number }))) },
     });
   } finally {
@@ -209,7 +195,7 @@ test("#2606 POSITIVE CONTROL: teardown completes while a writer is still creatin
 test("#2606: the fixture repo is created with auto-maintenance OFF, so no detached git child outlives its commit", () => {
   const dir = mkdtempSync(join(tmpdir(), "row-claim-one-row-"));
   try {
-    const entry = copyClosureAsRepo(join(dir, "checkout"));
+    const { entry } = copyClosureAsRepo(join(dir, "checkout"));
     const config = (key: string) => execFileSync("git", ["config", "--get", key], { cwd: join(dir, "checkout"), env: sandboxGitEnv(), encoding: "utf8" }).trim();
     assert.ok(entry.startsWith(dir), "the copy is the one this test built");
     assert.equal(config("maintenance.auto"), "false");

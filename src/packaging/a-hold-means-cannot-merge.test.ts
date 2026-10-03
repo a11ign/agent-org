@@ -57,6 +57,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { armabilityOf, holdersOf, disarmVerdict, HOLD_PREFIX } from "../pr-hold-state.mjs";
 import { mergeSafetyVerdict } from "../merge-guard.mjs";
 
@@ -64,9 +65,12 @@ import { mergeSafetyVerdict } from "../merge-guard.mjs";
 const HEAD = "1c81c2076c750203a1b49b152736e1fa57269b68";
 import { sweepDecision } from "../auto-arm-sweep.mjs";
 import { armDecision } from "../arm-pr.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
-const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
-const read = (path: string) => readFileSync(`${REPO}${path}`, "utf8");
+/** A file of the PROJECT (its workflows), found through its checkout. */
+const read = (path: string) => readFileSync(join(HOME_CHECKOUT, path), "utf8");
+/** A file of the TOOL's own tree, `src` up one from here. The project's `packages/agent-org` is the frozen old copy. */
+const readTool = (file: string) => readFileSync(fileURLToPath(new URL(`../${file}`, import.meta.url)), "utf8");
 
 test("THE ORDINARY CASE IS UNTOUCHED -- an unheld PR with check runs still arms, exactly as today. A "
   + "hold that fires routinely is one that gets routed around, which is what `A11Y_SKIP_VERIFY=1` "
@@ -106,20 +110,20 @@ test("ONE PREDICATE, TWO CALLERS -- the hole opened because `is this PR held` wa
   // Both readers agree by construction, because there is only one of them.
   assert.equal(sweepDecision({ labels: ["hold:x"], checkRunCount: 9 }).arm,
     armabilityOf({ labels: ["hold:x"] }).arm);
-  assert.match(read("packages/agent-org/src/auto-arm-sweep.mjs"), /from "\.\/pr-hold-state\.mjs"/);
-  assert.match(read("packages/agent-org/src/arm-pr.mjs"), /from "\.\/pr-hold-state\.mjs"/);
-  assert.equal(/labels\.filter\(\(l\) => l\.startsWith\("session:"\)\)/.test(read("packages/agent-org/src/auto-arm-sweep.mjs")),
+  assert.match(readTool("auto-arm-sweep.mjs"), /from "\.\/pr-hold-state\.mjs"/);
+  assert.match(readTool("arm-pr.mjs"), /from "\.\/pr-hold-state\.mjs"/);
+  assert.equal(/labels\.filter\(\(l\) => l\.startsWith\("session:"\)\)/.test(readTool("auto-arm-sweep.mjs")),
     false, "the sweep must not carry its own copy of the predicate any more");
 });
 
 test("THE PER-PR ARM PATH GOES THROUGH THE PREDICATE -- it is the path that merged #625, and it ran "
   + "`gh pr merge --auto` from three lines of bash that read nothing", () => {
   const workflow = read(".github/workflows/auto-arm.yml");
-  assert.match(workflow, /node packages\/agent-org\/src\/arm-pr\.mjs/,
+  assert.match(workflow, /pnpm exec agent-org arm-pr\b/,
     "the `arm` job must call the script that reads the hold");
   assert.equal(/gh pr merge --auto --merge "\$\{\{ github\.event\.pull_request\.number/.test(workflow), false,
     "the unconditional bash arm must be gone, not merely accompanied");
-  assert.match(workflow, /uses: actions\/checkout@v4[\s\S]*?arm-pr\.mjs/,
+  assert.match(workflow, /uses: actions\/checkout@v4[\s\S]*?agent-org arm-pr\b/,
     "a job that runs a repository script needs a checkout -- this one did not have one before");
 });
 

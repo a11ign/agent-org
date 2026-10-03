@@ -12,9 +12,10 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 import { reasonKind } from "../merge-guard/reason-kind.mjs";
 
-const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
+const REPO = HOME_CHECKOUT;
 
 /**
  * Every `.test.*` specifier a source imports from. Named so the sweep's CONTROL can drive the same
@@ -348,8 +349,9 @@ test("#1101: this file's reported test count equals what it declares", () => {
   // The row's own acceptance, asserted on one file by RUNNING it rather than by reading the rule above.
   // `--test-reporter=tap` is forced deliberately: this asserts a COUNT, and node's default reporter
   // differs by version (#1089), so pinning the format is what makes the number readable at all.
-  const file = "packages/lab/src/packaging/workflow-run-liveness.test.ts";
-  const declared = readFileSync(join(REPO, file), "utf8").split("\n")
+  // The TOOL's own test (it travelled here from the project's lab package), next to this one; the runner is the PROJECT's.
+  const file = fileURLToPath(new URL("./workflow-run-liveness.test.ts", import.meta.url));
+  const declared = readFileSync(file, "utf8").split("\n")
     .filter((line) => line.startsWith("test(")).length;
   // `NODE_TEST_CONTEXT` MUST GO, and I hit this an hour after reviewing #1089 for the same defect. The
   // test runner sets it for its own children, and a child that sees it emits the **v8 serialiser**
@@ -360,12 +362,12 @@ test("#1101: this file's reported test count equals what it declares", () => {
   const { NODE_TEST_CONTEXT, ...env } = process.env;
   void NODE_TEST_CONTEXT;
   const run = spawnSync(process.execPath,
-    [join(REPO, "node_modules/tsx/dist/cli.mjs"), "--test", "--test-reporter=tap", join(REPO, file)],
+    [join(REPO, "node_modules/tsx/dist/cli.mjs"), "--test", "--test-reporter=tap", file],
     { encoding: "utf8", env });
   const reported = /^# tests (\d+)$/m.exec(`${run.stdout}${run.stderr}`);
   assert.ok(reported, `could not read a TAP test count from the run:\n${run.stdout.slice(0, 300)}`);
   assert.equal(Number(reported[1]), declared,
-    `${file} declares ${declared} tests and reports ${reported[1]}. A gap means it is running somebody `
+    `workflow-run-liveness.test.ts declares ${declared} tests and reports ${reported[1]}. A gap means it is running somebody `
     + "else's -- which is what importing a `.test.ts` does");
 });
 

@@ -27,11 +27,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { racesAnArmedMerge, lookupArmedPrStatus } from "../merge-guard.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
-const HOOK_PATH = fileURLToPath(new URL("../../../../scripts/git-hooks/pre-push", import.meta.url));
+const HOOK_PATH = join(HOME_CHECKOUT, "scripts/git-hooks/pre-push");
 
 /** The exact `#386` block, extracted between its own markers -- never retyped. */
 function armedPrGuardBlock(): string {
@@ -44,25 +46,42 @@ function armedPrGuardBlock(): string {
 type Verdict = { status: number; stdout: string; stderr: string };
 
 /**
- * Runs ONLY the extracted block, with a shell FUNCTION named `node` shadowing the real binary --
+ * A tree the block can run in: the guard asks `[ -e node_modules/.bin/agent-org ]` (the tool is a pinned dependency, #2975), so a
+ * test that means the guard to RUN needs that file to exist in its working directory, and one that means it to skip needs it absent.
+ */
+function withTree<T>(installed: boolean, run: (tree: string) => T): T {
+  const tree = mkdtempSync(join(tmpdir(), "armed-pr-guard-"));
+  try {
+    if (installed) {
+      mkdirSync(join(tree, "node_modules/.bin"), { recursive: true });
+      writeFileSync(join(tree, "node_modules/.bin/agent-org"), "");
+    }
+    return run(tree);
+  } finally {
+    rmSync(tree, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Runs ONLY the extracted block, with a shell FUNCTION named `pnpm` shadowing the real binary --
  * standard bash technique for stubbing a command a script calls by name, and the only way to drive the
  * bash-side wiring (the override env var, the message, the exit code) deterministically: the real
- * `node packages/agent-org/src/merge-guard.mjs --armed-check=` needs a live GitHub PR in the exact armed-and-green
+ * `pnpm exec agent-org merge-guard --armed-check=` needs a live GitHub PR in the exact armed-and-green
  * state to exercise the refuse path for real, which this repository's own PRs were observed NOT to hold
  * for longer than the merge queue takes to drain it (#386's whole premise). `BRANCH` is exported so the
  * block's own `$BRANCH` reference resolves without re-deriving it from a real git repo.
  */
 function runArmedGuardBlock(branch: string, stubExitCode: number, stubOut: string,
-  env: Record<string, string> = {}): Verdict {
+  { env = {}, installed = true }: { env?: Record<string, string>, installed?: boolean } = {}): Verdict {
   const script = `set -euo pipefail\nfailed=()\nskipped=()\nBRANCH="${branch}"\n`
-    + `node() { echo '${stubOut.replace(/'/g, "'\\''")}'; exit ${stubExitCode}; }\n`
-    + `${armedPrGuardBlock()}\necho A11Y_REACHED_END`;
+    + `pnpm() { echo '${stubOut.replace(/'/g, "'\\''")}'; exit ${stubExitCode}; }\n`
+    + `${armedPrGuardBlock()}\necho A11Y_REACHED_END\nprintf '%s\\n' "\${skipped[@]:-}" >&2`;
   // `spawnSync`, never `execFileSync` -- the latter's success return is stdout ALONE, with stderr only
   // ever populated in the thrown error on a NON-zero exit. That asymmetry is exactly what hid a real bug
   // here: the "allowed" assertions below need stderr on the exit-0 path too (the override message prints
   // to stderr and still exits 0), which `execFileSync`'s try branch cannot see at all.
-  const result = spawnSync("bash", ["-c", script],
-    { encoding: "utf8", env: { PATH: process.env.PATH ?? "", ...env } });
+  const result = withTree(installed, (cwd) => spawnSync("bash", ["-c", script],
+    { encoding: "utf8", cwd, env: { PATH: process.env.PATH ?? "", ...env } }));
   return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
 
@@ -111,7 +130,7 @@ test("`null` (could not ask) is ALLOWED -- a convenience guard against a race mu
 });
 
 // --- bash wiring: the override env var, the message, and the exit code, driven against a STUBBED
-// `node packages/agent-org/src/merge-guard.mjs --armed-check=` -- see runArmedGuardBlock's own comment for why a live
+// `pnpm exec agent-org merge-guard --armed-check=` -- see runArmedGuardBlock's own comment for why a live
 // armed+green PR cannot be relied on to exist for the length of a test run. ---
 
 test("WIRING: the CLI refusing (non-zero) makes the hook exit non-zero, printing the CLI's own message", () => {
@@ -130,9 +149,16 @@ test("WIRING: the CLI allowing (exit 0) lets the hook continue past the guard", 
 test("WIRING: A11Y_ALLOW_ARMED_PUSH skips the lookup entirely and prints the reason", () => {
   // The stub would exit 1 if called -- proving the override short-circuits BEFORE the CLI ever runs,
   // not merely that its refusal is ignored afterward.
-  const result = runArmedGuardBlock("agent/some-branch", 1, "REFUSING", { A11Y_ALLOW_ARMED_PUSH: "confirmed with dispatcher" });
+  const result = runArmedGuardBlock("agent/some-branch", 1, "REFUSING", { env: { A11Y_ALLOW_ARMED_PUSH: "confirmed with dispatcher" } });
   assert.equal(result.status, 0, `expected the override to skip the check entirely, got: ${result.stderr}`);
   assert.match(result.stderr, /armed-pr-push-guard overridden: confirmed with dispatcher/);
+  assert.match(result.stdout, /A11Y_REACHED_END/);
+});
+
+test("WIRING: a tree without the pinned tool installed SKIPS the guard, naming why -- never a refusal that reads as 'this branch is armed'", () => {
+  const result = runArmedGuardBlock("agent/some-branch", 1, "REFUSING", { installed: false });
+  assert.equal(result.status, 0, `expected the missing tool to skip, got: ${result.stderr}`);
+  assert.match(result.stderr, /agent-org is not installed in this tree/);
   assert.match(result.stdout, /A11Y_REACHED_END/);
 });
 

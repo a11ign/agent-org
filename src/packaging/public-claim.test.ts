@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import path from "node:path";
 // REUSED, NOT RE-DERIVED. `reported()` already picks the single most-recently-recorded gate entry --
 // the same one `board-data.mjs`'s own consumers (the daily report, the weekly document) treat as the
 // current status. A second re-implementation of "which entry is current" here would be the fact-stated-
 // twice shape this repo keeps paying for.
 import { reported } from "../board-data.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
 /* THE PUBLIC CLAIM CANNOT OUTLIVE ITS MEASUREMENT.
  *
@@ -27,7 +27,7 @@ import { reported } from "../board-data.mjs";
  * tidied away later -- it is the honest state, and it is what the sentence should say until a run says
  * otherwise.
  */
-const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
+const REPO = HOME_CHECKOUT;
 
 /* EVERY file that states the measurement publicly, not just the one somebody remembered.
  *

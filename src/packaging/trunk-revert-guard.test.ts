@@ -42,7 +42,6 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
 import { readFileSync, rmSync } from "node:fs";
 // #2154: the clone (and the two empty directories below) go through the #2158 helper, so a full `/tmp`
 // reports the HOST as the cause instead of a bare `Disk quota exceeded` from inside `git clone`.
@@ -53,9 +52,12 @@ import {
   unexplainedDeletions, mergeParents, deletedPaths, branchTouchedPaths, EXIT,
 } from "../trunk-revert-guard.mjs";
 import { trunkRedOrders } from "../trunk-red.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
-const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-const SCRIPT = `${REPO}/packages/agent-org/src/trunk-revert-guard.mjs`;
+// The PROJECT's checkout: its history holds the two real merges below, and its workflows are what the structure tests read.
+const REPO = HOME_CHECKOUT;
+// The tool's own script, found from this file: the project's `packages/agent-org` is the old frozen copy.
+const SCRIPT = fileURLToPath(new URL("../trunk-revert-guard.mjs", import.meta.url));
 
 /**
  * A LOCAL CLONE WITH ITS OWN `origin`, BECAUSE THIS SCRIPT REALLY FETCHES.
@@ -306,7 +308,7 @@ test("trunk.yml runs trunk-revert-guard.mjs INSIDE trunkGate, not as a separate 
     jobs: Record<string, { steps: Array<Record<string, unknown>> }>,
   };
   const trunkGateRuns = (doc.jobs.trunkGate.steps ?? []).map((s) => String(s.run ?? "")).join("\n");
-  assert.match(trunkGateRuns, /node packages\/agent-org\/src\/trunk-revert-guard\.mjs/,
+  assert.match(trunkGateRuns, /pnpm exec agent-org trunk-revert-guard\b/,
     "the guard must run as a step inside trunkGate -- a refusal there is what makes trunkRecheck's own "
     + "`if: needs.trunkGate.result == 'failure'` fire and the gate's `trunk-red` cause wake a fixer. A "
     + "separate job would need its own wiring, which ceo's ruling says not to build.");
@@ -328,7 +330,7 @@ test("C3 ACCEPTANCE: trunk-revert-guard.mjs's step has no continue-on-error -- i
     jobs: Record<string, { steps: Array<Record<string, unknown>> }>,
   };
   const guardStep = doc.jobs.trunkGate.steps.find((s) =>
-    String(s.run ?? "").includes("trunk-revert-guard.mjs"));
+    String(s.run ?? "").includes("agent-org trunk-revert-guard"));
   assert.ok(guardStep, "the step running the guard must exist");
   assert.equal(guardStep!["continue-on-error"], undefined,
     "continue-on-error on this step would make a REFUSE verdict invisible to trunkRecheck -- the exact "

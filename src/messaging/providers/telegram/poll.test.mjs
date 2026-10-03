@@ -35,6 +35,7 @@ const STRANGER = 9001;
 const GROUP_ID = -1001234;
 const MS = 1000;
 const PASSWORD_LINE = "password: hunter2";
+// The tool's OWN unit template (`host/` at this repository's root, `src/messaging/providers/telegram` up four), not a project file.
 const UNIT = fileURLToPath(new URL("../../../../host/chairman-listen.service.in", import.meta.url));
 
 const scratch = mkdtempSync(join(tmpdir(), "messaging-poll-"));

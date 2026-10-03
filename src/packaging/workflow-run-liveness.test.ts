@@ -20,13 +20,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { commitLiveness, EXIT } from "../workflow-run-liveness.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 import { LIVE_SHAPE } from "./check-run-fixtures.ts";
-
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
 
 const SHA = "a1b2c3d4e5f6789012345678901234567890abcd";
 const REQUIRED = ["changed", "ts", "python", "ansible", "docs", "changeset"];
@@ -113,12 +111,12 @@ test("the workflow that runs this has no schedule key -- it must fire on push, n
   // The exact reason `board-liveness.test.ts` and `npm-token-liveness.test.ts` pin the same thing: a
   // watchdog that is itself scheduled is disabled by the same 60-day inactivity rule it exists to catch.
   // #901: a step in trunk.yml's watchdogs job since 2026-09-10, not a workflow of its own.
-  const workflow = readFileSync(path.join(REPO_ROOT, ".github/workflows/trunk.yml"), "utf8");
+  const workflow = readFileSync(path.join(HOME_CHECKOUT, ".github/workflows/trunk.yml"), "utf8");
   assert.doesNotMatch(workflow, /^\s*schedule:/m,
     "trunk.yml must never gain a `schedule:` trigger -- see its own header for why a watchdog "
     + "cannot be a cron");
   assert.match(workflow, /^\s*push:/m, "it must trigger on push, which cannot be disabled by inactivity");
-  const step = /- name: Was the pull request that produced this commit actually tested\?[^]*?run: node packages\/agent-org\/src\/workflow-run-liveness\.mjs --sha=/.exec(workflow);
+  const step = /- name: Was the pull request that produced this commit actually tested\?[^]*?run: pnpm exec agent-org workflow:liveness --sha=/.exec(workflow);
   assert.ok(step, "the workflow-run watchdog step must still be in trunk.yml");
   assert.match(step![0], /continue-on-error:\s*true/,
     "this step's finding is about a commit that already merged -- it must never fail the push that "

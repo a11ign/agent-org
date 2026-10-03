@@ -34,6 +34,16 @@ const DAY_MS = 86_400_000;
 export const WINDOW_DAYS = 14;
 
 /**
+ * THE MOST A WINDOW MAY LEAVE UNREAD BEFORE ITS COUNT IS NOT A READING (#3096). An unread change is neither counted nor
+ * clean, so the true count lies between `count` and `count + unread`: at this share of everything examined, the unread
+ * part alone can move the number by a tenth of the population, which is more than the day-to-day movement the report
+ * compares it with. Above it the count is a figure for whatever happened to resolve, and it is `unknown`.
+ * It is a judgment between two measured readings that a sound bound must separate: 18 of 650 (2.8%, the host's read at
+ * 2026-10-03T00:02Z) and 280 of 305 (91.8%, the retrospective that ran at the same `now`, which printed `25` anyway).
+ */
+export const UNREAD_SHARE_BOUND = 0.1;
+
+/**
  * The org's own accounts (the three the row names), by login. NOT read off `gh-identity.mjs`: that module answers
  * which account THE CURRENT PROCESS acts as and deliberately names none, and a ledger over history needs the names of
  * accounts that are not the current one. A renamed account reads as a human until this list moves, which RAISES the
@@ -218,6 +228,18 @@ export function trendOf(previous, current) {
 }
 
 /**
+ * The refusal for a window that left too much unread, or null when its count can be stood behind.
+ * @param {ReturnType<typeof buildLedger>} ledger @param {string} which the window, named so the report says which one
+ * @returns {string | null}
+ */
+function unreadRefusal(ledger, which) {
+  if (ledger.unread.length <= UNREAD_SHARE_BOUND * ledger.examined) return null;
+  const share = (100 * ledger.unread.length / ledger.examined).toFixed(1);
+  return `${ledger.unread.length} of ${ledger.examined} changes (${share}%) in the ${which} window are UNREAD (an author resolves `
+    + `to no account), above the ${100 * UNREAD_SHARE_BOUND}% bound, so no count is printed`;
+}
+
+/**
  * THE READING: this window's count and the window before it, or `unknown` with the reason when the read was refused.
  * `read` is the seam -- a function from a time range to the changes in it -- so a refusal is a thrown error here, and
  * reaches the report as "unknown", never as a zero.
@@ -238,6 +260,12 @@ export function readLedger({ read, now = new Date(), days = WINDOW_DAYS, lists }
   }
   const current = buildLedger(inWindow(changes, { from: mid, to }), lists);
   const before = buildLedger(inWindow(changes, { from, to: mid }), lists);
+  // BOTH windows: the trend compares them, so a count beside a previous one that cannot be read is no comparison either.
+  const untrusted = unreadRefusal(current, "current") ?? unreadRefusal(before, "previous");
+  if (untrusted !== null) {
+    return { status: /** @type {const} */ ("unknown"), count: null, previous: null, trend: /** @type {const} */ ("unknown"),
+      why: untrusted, days, current: null };
+  }
   return { status: /** @type {const} */ ("read"), count: current.count, previous: before.count,
     trend: trendOf(before.count, current.count), why: null, days, current };
 }
@@ -341,6 +369,20 @@ function pullRequestNumber({ subject, parents }) {
 }
 
 /**
+ * A READ AGAINST A STALE BASE IS NOT A READING (#3096). `base` is a ref in the checkout that ran the gate, and the tick's
+ * `primary:update` is `ExecStartPre=-`, so a failed update is ignored and the log is read as of whenever it last worked,
+ * while the logins come live. Throws, naming both shas, when `base` is not the head `main` has now.
+ * @param {{ git: Run, gh: Run, repo: string, base: string }} where
+ */
+export function assertBaseIsLive({ git, gh: runGh, repo, base }) {
+  const local = git(["rev-parse", base]).trim();
+  const live = runGh(["api", `repos/${repo}/commits/main`, "--jq", ".sha"]).trim();
+  if (local !== live) {
+    throw new Error(`the base ref ${base} is ${local} but main is ${live} on GitHub: this checkout is stale, so the log it reads is not main's`);
+  }
+}
+
+/**
  * THE READ over git and GitHub: one Change per merged pull request (its author plus every non-merge commit it carried)
  * and one per commit that no merge groups. The commits a merge carries are `<first parent>..<second parent>`, read
  * locally; their LOGINS come from the commits API.
@@ -349,6 +391,7 @@ function pullRequestNumber({ subject, parents }) {
  */
 export function gatherChanges({ git = defaultGit, gh: runGh = defaultGh, repo = REPO, base = "origin/main" } = {}) {
   return ({ from }) => {
+    assertBaseIsLive({ git, gh: runGh, repo, base });
     const prs = mergedPullRequests(runGh, repo, from);
     const logins = loginsBySha(runGh, repo, from);
     /** @type {Map<string, Change>} */

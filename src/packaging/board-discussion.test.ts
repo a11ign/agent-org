@@ -16,8 +16,10 @@ import { fileURLToPath } from "node:url";
 import {
   categoryIdFor, editionDay, editionFor, editionTitle, publishEdition, todaysEditionExists, EDITION_CATEGORY_SLUG,
 } from "../board-discussion.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
-const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
+/** The TOOL's own `src`, one up from here: the edition scripts are the tool's, and the project's `packages/agent-org` is the frozen old copy. */
+const TOOL_SRC = fileURLToPath(new URL("..", import.meta.url));
 const DAY = "2026-09-14";
 const BODY = "# Board report — 2026-09-14\n\nThe edition's Markdown, carried verbatim.";
 
@@ -136,14 +138,14 @@ test("todaysEditionExists: a lookup that cannot be asked answers YES, and says w
 
 /** The workflow with YAML comments removed, so prose about the old path cannot satisfy or fail a check. */
 function workflowCode(): string {
-  const text = readFileSync(join(REPO, ".github/workflows/board-report.yml"), "utf8");
+  const text = readFileSync(join(HOME_CHECKOUT, ".github/workflows/board-report.yml"), "utf8");
   return text.split("\n").filter((line) => !line.trim().startsWith("#"))
     .map((line) => line.replace(/\s+#.*$/, "")).join("\n");
 }
 
 test("board-report.yml publishes the Discussion, and its token CANNOT create a release", () => {
   const code = workflowCode();
-  assert.match(code, /node packages\/agent-org\/src\/board-document\.mjs --discussion\b/);
+  assert.match(code, /pnpm exec agent-org board:document --discussion\b/);
   assert.match(code, /^\s*discussions:\s*write\s*$/m);
   assert.match(code, /^\s*contents:\s*read\s*$/m,
     "contents: read is what a checkout needs; write is what a release draft needs, and this job makes none");
@@ -153,7 +155,7 @@ test("board-report.yml publishes the Discussion, and its token CANNOT create a r
 });
 
 test("the republish precondition asks for today's DISCUSSION through the one lookup, not a release", () => {
-  assert.match(workflowCode(), /node packages\/agent-org\/src\/board-discussion\.mjs --exists\b/);
+  assert.match(workflowCode(), /pnpm exec agent-org board-discussion --exists\b/);
 });
 
 // --- #1302: the edition's day is LONDON's, decided once ---
@@ -171,7 +173,7 @@ test("#1302: editionDay is LONDON's date -- 23:30Z in BST files under the NEXT d
 
 test("#1302: no edition script computes its own day -- each imports editionDay, so the zone cannot split again", () => {
   // Code only, comments stripped, so prose about the old UTC slice can neither satisfy nor fail this.
-  const code = (file: string) => readFileSync(join(REPO, file), "utf8").split("\n")
+  const code = (file: string) => readFileSync(join(TOOL_SRC, file), "utf8").split("\n")
     .filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line)).map((line) => line.replace(/\s\/\/.*$/, "")).join("\n");
   // #1355: THE TWO SPELLINGS OF AN OWN DAY ARE ASKED SEPARATELY, because one file needs one exemption and no more.
   const LONDON_DAY = /timeZone:\s*"Europe\/London",\s*year:/;
@@ -180,13 +182,13 @@ test("#1302: no edition script computes its own day -- each imports editionDay, 
   // slices each back out: zone-free date arithmetic, examined on #1355 and not a copy. Only that function's body is
   // removed, so a UTC slice anywhere else in the file -- the scheduled runs' days, today's day -- still goes red.
   const MISSED_DAYS = /^export function missedDays\(.*\n(?:.*\n)*?\}\n/m;
-  const liveness = code("packages/agent-org/src/board-schedule-liveness.mjs");
+  const liveness = code("board-schedule-liveness.mjs");
   assert.match(liveness, MISSED_DAYS, "missedDays is where #1355 examined it -- if it moved, re-examine the exemption");
   const withoutMissedDays = liveness.replace(MISSED_DAYS, "");
   assert.doesNotMatch(withoutMissedDays, /\bfunction missedDays\(/, "the exemption removed missedDays and only it");
-  const edition = (file: string) => file === "packages/agent-org/src/board-schedule-liveness.mjs" ? withoutMissedDays : code(file);
+  const edition = (file: string) => file === "board-schedule-liveness.mjs" ? withoutMissedDays : code(file);
   const editionScripts = [
-    "packages/agent-org/src/board-document.mjs", "packages/agent-org/src/board-summary-check.mjs", "packages/agent-org/src/board-schedule-liveness.mjs", "packages/agent-org/src/board-report.mjs",
+    "board-document.mjs", "board-summary-check.mjs", "board-schedule-liveness.mjs", "board-report.mjs",
   ];
   for (const file of editionScripts) {
     assert.doesNotMatch(edition(file), LONDON_DAY, `${file} computes a London day of its own instead of importing editionDay`);
@@ -196,16 +198,16 @@ test("#1302: no edition script computes its own day -- each imports editionDay, 
   // A THIRD COPY ANYWHERE IN THE BOARD SCRIPTS: a day of its own, in EITHER spelling, in any `scripts/board-*.mjs` but the
   // definition. Until #1442 only the London half could be globbed, because board-report.mjs:290 titled the edition with a
   // UTC slice; it takes editionDay now, so both halves are, and `missedDays` keeps its one exemption through `edition()`.
-  const boardScripts = readdirSync(join(REPO, "packages/agent-org/src")).filter((f) => /^board-.*\.mjs$/.test(f) && f !== "board-discussion.mjs");
+  const boardScripts = readdirSync(TOOL_SRC).filter((f) => /^board-.*\.mjs$/.test(f) && f !== "board-discussion.mjs");
   assert.ok(["board-schedule-liveness.mjs", "board-summary-check.mjs", "board-report.mjs"].every((f) => boardScripts.includes(f)),
     `POSITIVE CONTROL: the glob reaches the files named above -- it found ${boardScripts.join(", ")}`);
   for (const file of boardScripts) {
-    const path = `packages/agent-org/src/${file}`;
+    const path = `${file}`;
     assert.doesNotMatch(edition(path), LONDON_DAY, `${path} computes a London day of its own`);
     assert.doesNotMatch(edition(path), UTC_DAY, `${path} computes a UTC day of its own`);
   }
   // POSITIVE CONTROLS for both patterns: the one definition matches the London half, and the UTC half matches the
   // spelling it names, so a regex that matches nothing cannot make the loops above pass.
-  assert.match(code("packages/agent-org/src/board-discussion.mjs"), LONDON_DAY);
+  assert.match(code("board-discussion.mjs"), LONDON_DAY);
   assert.match("const day = new Date(t).toISOString().slice(0, 10);", UTC_DAY);
 });

@@ -16,14 +16,14 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { survey, render, DEFAULT_READ_LIMIT } from "../survey.mjs";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 
-const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-const SURVEY_CLI = join(REPO, "packages/agent-org/src/survey.mjs");
+// The tool's own CLI, found from this file and not through the project's checkout, where `packages/agent-org` is the old frozen copy.
+const SURVEY_CLI = fileURLToPath(new URL("../survey.mjs", import.meta.url));
 
 /**
  * A real, throwaway git WORKING TREE -- `git grep` (no `--cached`) reads the working tree, so nothing here

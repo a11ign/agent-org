@@ -17,9 +17,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 import { stampWorktree, worktreeOwner, whoseWorktree, OWNER_FILE } from "../worktree-owner.mjs";
 
-const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
+// The PROJECT's checkout: the stamp file is ignored by the project's `.gitignore` (the "reads CLEAN" test below depends on it), and the worktrees are
+// the project's.
+const REPO = HOME_CHECKOUT;
 const git = (...args: string[]) =>
   execFileSync("git", args, { cwd: REPO, env: sandboxGitEnv(), encoding: "utf8" });
 
@@ -84,7 +87,7 @@ test("#1128: an empty stamp file is UNSTAMPED, not an owner named the empty stri
 
 /** The CLI, run the way a session runs it -- argv and env, never the exported functions. */
 function cli(args: string[], env: Record<string, string | undefined>) {
-  const result = spawnSync(process.execPath, [join(REPO, "packages/agent-org/src/worktree-owner.mjs"), ...args],
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL("../worktree-owner.mjs", import.meta.url)), ...args],
     { encoding: "utf8", env: { ...process.env, ...sandboxGitEnv(), ...env } });
   return { status: result.status, out: result.stdout, err: result.stderr };
 }

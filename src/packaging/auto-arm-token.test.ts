@@ -28,15 +28,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 import { parse as parseYaml } from "yaml";
 import { SECRET_NAME, SECRET_HOLDER, PERSONAL_ACCOUNTS, NOT_CI_ACCOUNTS } from "./auto-arm-identity.ts";
 import { runArmPr, EXIT, looksPoolRefused, refusalScope } from "../arm-pr.mjs";
 import { shouldBeMerging, readUnarmed, greenUnarmedOrders, CAUSES }
   from "../work-gate.mjs";
 
-const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
-const WORKFLOW = `${REPO}.github/workflows/auto-arm.yml`;
+const WORKFLOWS = join(HOME_CHECKOUT, ".github/workflows");
+const WORKFLOW = join(WORKFLOWS, "auto-arm.yml");
 
 /** @param {{ jobs: Record<string, { steps: Array<{ env?: Record<string,string>, run?: string }> }> }} doc */
 function jobRunText(doc: { jobs: Record<string, { steps: Array<{ run?: string }> }> }, jobName: string): string {
@@ -151,7 +152,7 @@ test("issues: write is NOT added for this -- #333 already measured that granting
 
 /** Every `secrets.X` a workflow reads, so a step that reads a DIFFERENT secret is visible by name. */
 function secretsRead(workflow: string): string[] {
-  const text = readFileSync(`${REPO}.github/workflows/${workflow}`, "utf8");
+  const text = readFileSync(join(WORKFLOWS, workflow), "utf8");
   return [...text.matchAll(/secrets\.([A-Z0-9_]+)/g)].map((m) => m[1]);
 }
 

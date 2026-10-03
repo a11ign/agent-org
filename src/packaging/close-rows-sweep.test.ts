@@ -10,9 +10,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 import { mergedPrsInWindow, DEFAULT_WINDOW_MINUTES, closeOnePr, sweepExit, EXIT } from "../close-rows-sweep.mjs";
 import { closurePlan } from "../close-rows-for-merged-pr.mjs";
 import { refusalCause } from "../settle-closed-status.mjs";
@@ -27,8 +28,8 @@ const refusal = (row: number, message: string) => ({ row, cause: refusalCause(me
 const refuseOnly = (row: number, message: string) => (n: number) =>
   (n === row ? { settled: false, refused: [refusal(n, message)] } : { settled: true, refused: [] });
 
-const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-const SCRIPT = `${REPO}/packages/agent-org/src/close-rows-sweep.mjs`;
+// The script is the TOOL's own, `src` up one; the workflow it is read against is the PROJECT's.
+const SCRIPT = fileURLToPath(new URL("../close-rows-sweep.mjs", import.meta.url));
 
 // --- mergedPrsInWindow: the query, driven with an injected gh ---
 
@@ -123,7 +124,7 @@ test("close-rows-sweep.mjs refuses to run without GITHUB_REPOSITORY -- CANNOT AS
 // completed with the A11IGN_BOT_TOKEN PAT and does fire push (every merge today ran trunk.yml), so the
 // original design is correct again. The scheduled backstop half lives in nightly.yml (trunk-sweep.test.ts).
 test("#909: close-rows-sweep.mjs IS wired to trunk.yml's push, as the closeRows job, with a dispatch path for one PR", () => {
-  const doc = parseYaml(readFileSync(`${REPO}/.github/workflows/trunk.yml`, "utf8")) as {
+  const doc = parseYaml(readFileSync(join(HOME_CHECKOUT, ".github/workflows/trunk.yml"), "utf8")) as {
     on: { push?: { branches: string[] }, workflow_dispatch?: { inputs?: Record<string, { required?: boolean }> } },
     jobs: Record<string, { needs?: unknown, permissions?: Record<string, string>, steps: Array<{ run?: string }> }>,
   };
@@ -135,8 +136,8 @@ test("#909: close-rows-sweep.mjs IS wired to trunk.yml's push, as the closeRows 
   assert.ok(job, "trunk.yml carries a closeRows job");
   assert.ok(!job.needs, "closeRows does not wait on the gate: a red push still closes the rows its PR declared");
   const run = job.steps.map((s) => s.run ?? "").join("\n");
-  assert.match(run, /node packages\/agent-org\/src\/close-rows-sweep\.mjs --window=60/, "the push path sweeps the last hour, idempotently");
-  assert.match(run, /node packages\/agent-org\/src\/close-rows-for-merged-pr\.mjs "\$DISPATCH_PR"/, "the dispatch path closes the named PR's rows");
+  assert.match(run, /pnpm exec agent-org close-rows-sweep --window=60/, "the push path sweeps the last hour, idempotently");
+  assert.match(run, /pnpm exec agent-org close-rows-for-merged-pr "\$DISPATCH_PR"/, "the dispatch path closes the named PR's rows");
   assert.match(run, /if \[ -n "\$DISPATCH_PR" \]/, "and the two are chosen by whether a pr was given");
 });
 

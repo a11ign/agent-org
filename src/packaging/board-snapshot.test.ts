@@ -32,6 +32,7 @@ import { chmodSync, mkdtempSync, mkdirSync as mkdirOnDisk, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { dirname as dirOf, join as joinPath } from "node:path";
 import { fileURLToPath as pathOf } from "node:url";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 
 /** One page of a real `gh api graphql` response, shaped exactly like the live schema returns it. */
@@ -880,8 +881,8 @@ test("#1352: a relative gitdir resolves against the worktree, a gitdir with no c
 });
 
 test("#1352: the REAL SNAPSHOT_DIR is the git common dir's checkout plus runs/board-snapshots -- asked of git itself", () => {
-  const repoRoot = pathOf(new URL("../../../../", import.meta.url));
-  const common = execFileSync("git", ["-C", repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+  // SNAPSHOT_DIR is derived from the project's checkout, so git is asked about that checkout.
+  const common = execFileSync("git", ["-C", HOME_CHECKOUT, "rev-parse", "--path-format=absolute", "--git-common-dir"],
     { encoding: "utf8", env: sandboxGitEnv() }).trim();
   assert.equal(SNAPSHOT_DIR, joinPath(dirOf(common), "runs", "board-snapshots"),
     "a second derivation: git's own answer, not this module's reading of git's files");

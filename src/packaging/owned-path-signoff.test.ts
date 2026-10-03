@@ -19,9 +19,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 
 import { signoffVerdict, isOwned, loadFacts } from "../owned-path-signoff.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
 const FACTS = {
   owned: ["packages/nvda-worker/", "packages/scorer/models/"],
@@ -106,9 +107,7 @@ test("CONTRADICTING states for the same fact across two lines is a real finding,
 // --- verified against REAL PR bodies, not synthesised fixtures (#584, #613) ---
 
 test("real body: #584 (guest-paths-are-measured) states all four owned-path-facts on packages/nvda-worker/", () => {
-  const body = readFileSync(
-    fileURLToPath(new URL("../../../../packages/lab/src/packaging/fixtures/pr-584-body.md", import.meta.url)),
-    "utf8");
+  const body = readFileSync(join(HOME_CHECKOUT, "packages/lab/src/packaging/fixtures/pr-584-body.md"), "utf8");
   const real = loadFacts();
   assert.ok(real);
   const v = signoffVerdict({
@@ -118,9 +117,7 @@ test("real body: #584 (guest-paths-are-measured) states all four owned-path-fact
 });
 
 test("real body: #613 (profile-identity-is-a-key) states all four owned-path-facts on packages/nvda-worker/", () => {
-  const body = readFileSync(
-    fileURLToPath(new URL("../../../../packages/lab/src/packaging/fixtures/pr-613-body.md", import.meta.url)),
-    "utf8");
+  const body = readFileSync(join(HOME_CHECKOUT, "packages/lab/src/packaging/fixtures/pr-613-body.md"), "utf8");
   const real = loadFacts();
   assert.ok(real);
   const v = signoffVerdict({
