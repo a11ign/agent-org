@@ -125,9 +125,21 @@ after(() => {
   for (const dir of scratchDirs) rmSync(dir, { recursive: true, force: true });
 });
 
-/** The directory `tsx` and `yaml` resolve from: the project's root holds them in CI, where the tool's own `node_modules` is moved there. */
-function dependenciesDir(): string {
-  return realpathSync(dirname(dirname(createRequire(import.meta.url).resolve("tsx/package.json"))));
+/** What the laid-out project's tests import beyond Node itself: `typescript` is read by the classifier's scan and `yaml` by the workflow readers. */
+const DEPENDENCIES: readonly string[] = ["tsx", "typescript", "yaml"];
+
+/**
+ * Links each dependency into the project's `node_modules` from wherever THIS checkout resolves it. CI's `gate` job moves the tool's flat
+ * `node_modules` to the project's root, so one directory held all three; under pnpm (the agent host, and `pnpm run verify`'s staged copy) `tsx` sits
+ * alone in `.pnpm/tsx@x/node_modules`, so linking that directory's parent gave a project with no `typescript`, and the four `acceptance-commands`
+ * tests that parse a source with it were red at both commits (#3329).
+ */
+function linkDependencies(project: string): void {
+  const modules = join(project, "node_modules");
+  if (existsSync(modules)) return;
+  mkdirSync(modules);
+  const require = createRequire(import.meta.url);
+  for (const name of DEPENDENCIES) symlinkSync(realpathSync(dirname(require.resolve(`${name}/package.json`))), join(modules, name));
 }
 
 function cloneAt(ref: string): string {
@@ -149,7 +161,7 @@ function layOutTool(project: string): void {
   for (const entry of ["host", ".github", "CHANGELOG.md", "package.json", "LICENSE", "README.md"]) cpSync(join(TOOL_ROOT, entry), join(tool, entry), { recursive: true });
   const siblings = join(project, "packages/lab/src/packaging");
   if (existsSync(siblings)) cpSync(siblings, join(tool, "src/packaging"), { recursive: true, force: false, filter: (path) => !isTest(path) });
-  if (!existsSync(join(project, "node_modules"))) symlinkSync(dependenciesDir(), join(project, "node_modules"));
+  linkDependencies(project);
   execFileSync("git", ["add", "--force", "--intent-to-add", "packages/agent-org"], { cwd: project, env: sandboxGitEnv(), stdio: "ignore" });
 }
 
