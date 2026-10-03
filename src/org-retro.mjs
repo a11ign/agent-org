@@ -58,7 +58,7 @@ export const TICK_MINUTES = 2;
 const JOURNAL_LINE = /^(\d{4}-\d\d-\d\dT[\d:]+(?:[+-]\d\d:?\d\d|Z)) \S+ [^:]+: (.*)$/;
 const TICK_START = /^Starting a11ign-work-tick\.service/;
 /** A ready row was offered and no engineer could take it: the org's idle capacity next to claimable work. */
-const IDLE_OFFER = /^UNDELIVERED \S*\/?ready-row-unclaimed\//;
+const IDLE_OFFER = /^(?:UNDELIVERED|DEFERRED) \S*\/?ready-row-unclaimed\//;
 /** A claim the org took back from its holder. `merged` is the ordinary end of a row, every other reason is a claim that stopped. */
 const RELEASE = /^RELEASED #(\d+) \(([^,)]+), ([^)]+)\)/;
 
@@ -117,8 +117,9 @@ export function journalLines(text, { since, until }) {
 
 /**
  * IDLE MINUTES WHILE A CLAIMABLE ROW EXISTED, and what that means precisely: the ticks in which a `ready-row-unclaimed` offer
- * went `UNDELIVERED` (the gate offered a Ready row, and no engineer was idle and allowed to take it), each counted as
- * `TICK_MINUTES`. INFERRED FROM THE JOURNAL, NOT MEASURED PER SESSION: it says a claimable row waited through a tick, not how
+ * went `UNDELIVERED` or `DEFERRED` (the gate offered a Ready row, and no engineer was idle and allowed to take it; `DEFERRED` is the
+ * wait for a seat that is merely busy, which `wake.mjs` stopped counting as a fault in a11ign/a11ign#3266 and which is still idle
+ * capacity beside claimable work), each counted as `TICK_MINUTES`. INFERRED FROM THE JOURNAL, NOT MEASURED PER SESSION: it says a claimable row waited through a tick, not how
  * many sessions sat idle in it -- so it is a floor on lost time, and the number to read it against is the day before.
  * @param {{ at: number, message: string }[]} lines
  * @returns {{ ticksWithIdleOffer: number, idleMinutes: number, ticks: number }}
