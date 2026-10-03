@@ -214,7 +214,7 @@ test("#1384 ACCEPTANCE: a move that changed the lockfile runs pnpm install, BEFO
     "the question is asked of the commit the checkout LEFT and the one it ARRIVED at, for the root lockfile");
   assert.equal(git.some((argv) => argv[0] === "diff"), false,
     "#939: the paths come from packages/guards/src/changed-files.mjs, never from a second spelling of the diff");
-  assert.deepEqual(npmCalls, [["pnpm", "install", "--frozen-lockfile"], ["npm", "run", "build"]],
+  assert.deepEqual(npmCalls, [["pnpm", "install", "--frozen-lockfile"], ["pnpm", "run", "build"]],
     "install first: a build before it compiles the new source against the old node_modules");
 });
 
@@ -223,7 +223,7 @@ test("#1384 CONTROL: a move that did NOT change the lockfile asks the question a
   assert.equal(thrown, undefined);
   assert.equal(asked.length, 1,
     "the positive control for the absence below: the lockfile question WAS asked, and answered no");
-  assert.deepEqual(npmCalls, [["npm", "run", "build"]]);
+  assert.deepEqual(npmCalls, [["pnpm", "run", "build"]]);
 });
 
 test("#1384 the install is NEVER npm ci -- it would delete node_modules from under every worktree", () => {
@@ -245,12 +245,12 @@ test("#1384 a HEAD that did not move asks no lockfile question at all", () => {
       (range, pathspec) => { asked.push({ range, pathspec }); return ["pnpm-lock.yaml"]; });
   } finally { rmSync(root, { recursive: true, force: true }); }
   assert.deepEqual(asked, [], "a range from a commit to itself is empty by construction, so it is not asked");
-  assert.deepEqual(npmCalls, [["npm", "run", "build"]]);
+  assert.deepEqual(npmCalls, [["pnpm", "run", "build"]]);
 });
 
 test("#1384 the lockfile is matched BY NAME: a nested pnpm-lock.yaml in the answer does not install", () => {
   const { npmCalls } = driveMove(["packages/x/pnpm-lock.yaml"]);
-  assert.deepEqual(npmCalls, [["npm", "run", "build"]]);
+  assert.deepEqual(npmCalls, [["pnpm", "run", "build"]]);
 });
 
 test("#1384 a FAILED install throws naming the stale node_modules, skips the build, and rolls nothing back", () => {

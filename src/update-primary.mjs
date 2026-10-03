@@ -5,7 +5,7 @@
 // else: no merge, no rebase, no branch, because the primary is read-only except fast-forward and the
 // `post-checkout` hook will otherwise immediately undo anything this script leaves it on.
 //
-//   npm run primary:update
+//   pnpm run primary:update
 //
 // Refuses outside the primary — running this in a worktree would detach it from whatever branch it holds,
 // which is never what a worktree is for. `isPrimaryWorktree` is the same `.git`-is-a-directory check
@@ -16,7 +16,7 @@ import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
-import { npmCliInvocation, pnpmCliInvocation } from "./lib/npm-cli-executable.mjs";
+import { pnpmCliInvocation } from "./lib/npm-cli-executable.mjs";
 import { changedFiles } from "./lib/changed-files.mjs";
 import { HOME_CHECKOUT } from "./project-config.mjs";
 
@@ -99,7 +99,7 @@ export function lockfileMoved(changed, before, after) {
 /**
  * @param {string} [root]
  * @param {(args: string[]) => string} [run]
- * @param {(root: string, argv: string[]) => void} [runAt] runs `argv` (its first element names the tool, `npm` or `pnpm`) in `root`; throws on a non-zero exit
+ * @param {(root: string, argv: string[]) => void} [runAt] runs `argv` (its first element names the tool, always `pnpm`) in `root`; throws on a non-zero exit
  * @param {(range: string[], pathspec: string[]) => string[]} [changed] the paths a range touched
  */
 export function updatePrimary(root = PRIMARY_CHECKOUT, run = (args) =>
@@ -227,31 +227,31 @@ function installAt(root, runAt) {
  * strictly better than silently reverting a checkout somebody else may already be reading.
  *
  * THE WRAPPING LIVES HERE, NOT IN `runAt`, because what a failed build MEANS is a fact about this
- * checkout's relationship to every worktree -- true whichever npm runner ran, and the reason a caller
+ * checkout's relationship to every worktree -- true whichever package manager ran, and the reason a caller
  * needs the message at all.
  *
  * @param {string} root @param {(root: string, argv: string[]) => void} runAt
  */
 function buildAt(root, runAt) {
   try {
-    runAt(root, ["npm", "run", "build"]);
+    runAt(root, ["pnpm", "run", "build"]);
   } catch (error) {
-    throw new Error(`the primary moved, but \`npm run build\` failed (exit ${exitOf(error)}). Every `
+    throw new Error(`the primary moved, but \`pnpm run build\` failed (exit ${exitOf(error)}). Every `
       + "worktree resolves THIS checkout's dist, so they are now compiling against a source this dist "
       + "does not match. Fix the build here before trusting a cross-package import anywhere.", { cause: error });
   }
 }
 
 /**
- * Runs `argv` in `root`, its first element naming the tool: `pnpm` installs, `npm run` runs the scripts (every
- * script here is spelled `npm run`, and the installer is not what runs them).
+ * Runs `argv` in `root`, its first element naming the tool, which is always `pnpm`: it installs and it runs the scripts.
  * @param {string} root @param {string[]} argv
  */
 function runTool(root, argv) {
-  // `npmCliInvocation`/`pnpmCliInvocation`, never a bare `npm` -- #? : a bare npm/npx spawn is unsafe on Windows and this
-  // repository's own guard refuses one anywhere in the tree. Same call shape as every other site.
+  // `pnpmCliInvocation`, never a bare `pnpm` -- a bare spawn is unsafe on Windows, and this repository's own guard
+  // (`no-npm-spawn.test.ts`) refuses one anywhere in the tree. Same call shape as every other site.
   const [tool, ...args] = argv;
-  const invocation = tool === "pnpm" ? pnpmCliInvocation(args) : npmCliInvocation("npm", args);
+  if (tool !== "pnpm") throw new Error(`update-primary runs pnpm and nothing else, not \`${tool}\``);
+  const invocation = pnpmCliInvocation(args);
   execFileSync(invocation.command, invocation.args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
 }
 
