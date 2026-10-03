@@ -372,6 +372,7 @@ test("#2401 (7e): the checkout is REAL git, not only a fake -- fetched from `ref
     writeFileSync(join(origin, "a.txt"), "one\n");
     mkdirSync(join(origin, "packages", "a"), { recursive: true });
     writeFileSync(join(origin, "packages", "a", "index.js"), "// package a\n");
+    writeFileSync(join(origin, "packages", "a", "package.json"), JSON.stringify({ name: "@a11ign/a" })); // linked by NAME since #3201
     git(origin, "add", "."); git(origin, "commit", "-q", "-m", "one");
     const first = git(origin, "rev-parse", "HEAD");
     git(origin, "update-ref", "refs/pull/7/head", first);
@@ -421,7 +422,7 @@ test("#2401 (7f): the path is named for the INSTANCE, so two pull requests can n
 // are writable, `~/.npm` and the checkout's parent are not, and `npx` in a tree with NO `node_modules` died with `rofs` writing
 // `~/.npm/_logs` -- #2376's "0/4; `npx` failed before execution". With the tree's dependencies linked in, the same `npx` runs.
 
-const realFs = { existsSync, mkdirSync, readdirSync, lstatSync, readlinkSync, symlinkSync, rmSync: removeSync };
+const realFs = { existsSync, readFileSync, mkdirSync, readdirSync, lstatSync, readlinkSync, symlinkSync, rmSync: removeSync };
 
 /** A tick checkout with dependencies and a review tree with two packages, on a real disk, so a link is a real link. */
 function depsWorld() {
@@ -432,8 +433,23 @@ function depsWorld() {
     mkdirSync(join(primary, d), { recursive: true });
   }
   writeFileSync(join(primary, "node_modules", ".package-lock.json"), "{}");
-  for (const p of ["a", "b"]) mkdirSync(join(tree, "packages", p), { recursive: true });
+  for (const p of ["a", "b"]) writePackage(tree, p, `@a11ign/${p}`);
   return { dir, primary, tree, modules: join(tree, "node_modules") };
+}
+/** A package directory of `tree` whose manifest declares `name` (#3201: the link is made by the NAME, so a fixture without one links nothing). */
+function writePackage(tree: string, dir: string, name: string) {
+  mkdirSync(join(tree, "packages", dir), { recursive: true });
+  writeFileSync(join(tree, "packages", dir, "package.json"), JSON.stringify({ name }));
+}
+/** The live shape (#3201): directories that are NOT their names, an unscoped package, a `README.md` beside them, and the primary's own `a11ign` link. */
+function renamedWorld() {
+  const w = depsWorld();
+  for (const [dir, name] of [["nvda-worker", "@a11ign/screenreader-worker"], ["worker-fleet", "@a11ign/screenreader-fleet"],
+    ["pdf", "@a11ign/documents"], ["cli", "a11ign"]]) writePackage(w.tree, dir, name);
+  writeFileSync(join(w.tree, "packages", "README.md"), "# packages");
+  mkdirSync(join(w.primary, "packages", "cli"), { recursive: true });
+  symlinkSync("../packages/cli", join(w.primary, "node_modules", "a11ign"));
+  return w;
 }
 /** `realFs` that counts what it WROTE, so a second run can be shown to write nothing. */
 function countingFs(writes: string[]) {
@@ -495,7 +511,7 @@ test("#2498 (1d): it is IDEMPOTENT, follows a PR that adds or removes a package,
     assert.deepEqual(writes, [], "a second run on a right tree writes nothing: it runs on every push");
 
     removeSync(join(w.tree, "packages", "b"), { recursive: true });
-    mkdirSync(join(w.tree, "packages", "c"));
+    writePackage(w.tree, "c", "@a11ign/c");
     linkReviewDependencies({ path: w.tree, repoRoot: w.primary });
     assert.deepEqual(readdirSync(join(w.modules, "@a11ign")).sort(), ["a", "c"], "b's link is gone, c's is there");
 
@@ -510,6 +526,94 @@ test("#2498 (1d): it is IDEMPOTENT, follows a PR that adds or removes a package,
   }
 });
 
+const SCOPE = "@a11ign";
+const RENAMED = ["documents", "screenreader-fleet", "screenreader-worker"];
+
+test("#3201 (1): each package is linked under the name its `package.json` DECLARES, into THIS tree -- scoped under `@a11ign`, unscoped directly", () => {
+  const w = renamedWorld();
+  try {
+    assert.equal(linkReviewDependencies({ path: w.tree, repoRoot: w.primary }), null);
+    assert.deepEqual(readdirSync(join(w.modules, SCOPE)).sort(), ["a", "b", ...RENAMED].sort(), "by name, and the directory names are not among them");
+    assert.equal(readlinkSync(join(w.modules, SCOPE, "screenreader-worker")), join(w.tree, "packages", "nvda-worker"));
+    assert.equal(readlinkSync(join(w.modules, SCOPE, "screenreader-fleet")), join(w.tree, "packages", "worker-fleet"));
+    assert.equal(readlinkSync(join(w.modules, SCOPE, "documents")), join(w.tree, "packages", "pdf"));
+    assert.equal(readlinkSync(join(w.modules, "a11ign")), join(w.tree, "packages", "cli"), "the unscoped package lands directly in `node_modules/`");
+    assert.equal(existsSync(join(w.modules, SCOPE, "cli")), false, "and not as `@a11ign/cli`");
+    assert.equal(existsSync(join(w.modules, "a11ign", "package.json")), true, "POSITIVE: the link resolves to a real package of this tree");
+  } finally {
+    removeSync(w.dir, { recursive: true, force: true });
+  }
+});
+
+test("#3201 (2): an entry with no readable manifest is SKIPPED -- no link, no reason, no throw", () => {
+  const w = renamedWorld();
+  try {
+    mkdirSync(join(w.tree, "packages", "no-manifest"));
+    mkdirSync(join(w.tree, "packages", "broken-json"));
+    writeFileSync(join(w.tree, "packages", "broken-json", "package.json"), "{ not json");
+    writePackage(w.tree, "nameless", undefined as never);
+    writePackage(w.tree, "numeric", 42 as never);
+    writePackage(w.tree, "foreign-scope", "@other/x");
+    writePackage(w.tree, "traversal", "../escape");
+    assert.equal(linkReviewDependencies({ path: w.tree, repoRoot: w.primary }), null, "a tree that is otherwise right is still given its dependencies");
+    assert.deepEqual(readdirSync(join(w.modules, SCOPE)).sort(), ["a", "b", ...RENAMED].sort(), "none of them, and not `README.md`");
+    assert.deepEqual(readdirSync(w.modules).sort(), [".bin", SCOPE, "a11ign", "left-pad"], "nor anything beside the scope");
+    assert.equal(existsSync(join(w.tree, "escape")) || existsSync(join(w.dir, "reviews", "escape")), false);
+    assert.equal(existsSync(join(w.modules, SCOPE, "screenreader-worker")), true, "CONTROL: the entries around the skipped ones were linked");
+  } finally {
+    removeSync(w.dir, { recursive: true, force: true });
+  }
+});
+
+test("#3201 (3): the unscoped link is THIS tree's, never the primary's -- even over a wrong one an earlier run made", () => {
+  const w = renamedWorld();
+  try {
+    assert.equal(lstatSync(join(w.primary, "node_modules", "a11ign")).isSymbolicLink(), true, "CONTROL: the primary holds an `a11ign` the first loop would relink");
+    mkdirSync(w.modules, { recursive: true });
+    symlinkSync(join(w.primary, "node_modules", "a11ign"), join(w.modules, "a11ign"));
+    assert.equal(linkReviewDependencies({ path: w.tree, repoRoot: w.primary }), null);
+    assert.equal(readlinkSync(join(w.modules, "a11ign")), join(w.tree, "packages", "cli"), "the tree's `packages/cli`, never the tick's checkout");
+    assert.equal(readlinkSync(join(w.primary, "node_modules", "a11ign")), "../packages/cli", "and the primary's own link is untouched");
+  } finally {
+    removeSync(w.dir, { recursive: true, force: true });
+  }
+});
+
+test("#3201 (4): a link whose package is gone or was renamed is REMOVED, `node_modules/a11ign` included; a second run on a right tree writes nothing", () => {
+  const w = renamedWorld();
+  try {
+    mkdirSync(join(w.modules, SCOPE), { recursive: true });
+    symlinkSync(join(w.tree, "packages", "nvda-worker"), join(w.modules, SCOPE, "nvda-worker"));
+    linkReviewDependencies({ path: w.tree, repoRoot: w.primary });
+    assert.equal(lstatSync(join(w.modules, SCOPE, "nvda-worker"), { throwIfNoEntry: false }), undefined,
+      "a stale `@a11ign/nvda-worker` from an earlier run does not survive");
+    const writes: string[] = [];
+    assert.equal(linkReviewDependencies({ path: w.tree, repoRoot: w.primary, fs: countingFs(writes) as never }), null);
+    assert.deepEqual(writes, [], "(d) a second run on a right tree writes nothing, the primary's `a11ign` and the renamed packages included");
+
+    writeFileSync(join(w.tree, "packages", "pdf", "package.json"), JSON.stringify({ name: "@a11ign/pdf-renamed" }));
+    removeSync(join(w.tree, "packages", "cli"), { recursive: true });
+    linkReviewDependencies({ path: w.tree, repoRoot: w.primary });
+    assert.deepEqual(readdirSync(join(w.modules, SCOPE)).sort(), ["a", "b", "pdf-renamed", "screenreader-fleet", "screenreader-worker"],
+      "the old name `documents` is gone and the new one is there");
+    assert.equal(lstatSync(join(w.modules, "a11ign"), { throwIfNoEntry: false }), undefined, "the package is gone, so is its link, and the primary's is not put in its place");
+    assert.equal(readdirSync(w.modules).includes("left-pad"), true, "CONTROL: third-party links are not mistaken for stale ones");
+  } finally {
+    removeSync(w.dir, { recursive: true, force: true });
+  }
+});
+
+test("#3201 (5c): a tree whose directories ARE their names links as it always did", () => {
+  const w = depsWorld();
+  try {
+    assert.equal(linkReviewDependencies({ path: w.tree, repoRoot: w.primary }), null);
+    assert.deepEqual(readdirSync(join(w.modules, SCOPE)).sort(), ["a", "b"]);
+    assert.equal(readlinkSync(join(w.modules, SCOPE, "a")), join(w.tree, "packages", "a"));
+  } finally {
+    removeSync(w.dir, { recursive: true, force: true });
+  }
+});
+
 test("#2498 (1e): it answers WHY, never throws -- no dependencies in the tick's checkout, no `packages/`, or a write that fails", () => {
   const w = depsWorld();
   try {
@@ -517,7 +621,7 @@ test("#2498 (1e): it answers WHY, never throws -- no dependencies in the tick's 
       /nowhere\/node_modules does not exist: the tick's own checkout has no dependencies to link/);
     removeSync(join(w.tree, "packages"), { recursive: true });
     assert.match(String(linkReviewDependencies({ path: w.tree, repoRoot: w.primary })), /could not link dependencies into .*node_modules: ENOENT/);
-    mkdirSync(join(w.tree, "packages", "a"), { recursive: true });
+    writePackage(w.tree, "a", "@a11ign/a");
     const broken = { ...realFs, symlinkSync: () => { throw new Error("EROFS: read-only file system\nmore"); } };
     assert.match(String(linkReviewDependencies({ path: w.tree, repoRoot: w.primary, fs: broken as never })),
       /could not link dependencies into .*node_modules: EROFS: read-only file system$/);
@@ -780,7 +884,7 @@ echo "$*" >> ${join(dir, "git-calls")}
 case "$*" in
   *"rev-parse --verify"*) echo 0123456789abcdef0123456789abcdef01234567 ;;
   *"rev-parse HEAD"*) echo 0123456789abcdef0123456789abcdef01234567 ;;
-  *"worktree add"*) for a; do p2=$p1; p1=$a; done; mkdir -p "$p2/packages/a" ;;
+  *"worktree add"*) for a; do p2=$p1; p1=$a; done; mkdir -p "$p2/packages/a" && echo '{"name":"@a11ign/a"}' > "$p2/packages/a/package.json" ;;
   *"worktree remove"*) for a; do last=$a; done; rm -rf "$last" ;;
   *) : ;;
 esac
