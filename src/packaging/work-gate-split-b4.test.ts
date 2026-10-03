@@ -63,3 +63,50 @@ test("#2542: a Region naming the SHIM still collides with a PR on the shim, and 
   assert.equal(fileOverlapReason(regionOf(SHIM), [pr(2604, regionOf(MODULE))]).reason, null,
     "but a fix to the shim and a fix to an order in the module do NOT wait for each other");
 });
+
+// ---- #2898: THE NEGATIVE HALF #2542 DEFERRED, now that the shim has more than one family module beside it.
+// Measured on #2898 (the pairs of pull requests that waited on B4 for `work-gate.mjs`): after #2621, 27 of 55 pairs touched disjoint
+// definitions, and six rows waited behind ONE pull request that edited only the row-call-count orders. A Region naming the family
+// module its fix lives in is what lets a fix to another family go past it.
+
+/** Every family module under `work-gate/`, spelled the way a Region names it (the project's tree, as MODULE above). */
+const FAMILIES = ["pr-orders", "lab-job-orders", "org-health", "pr-owners", "row-call-count-orders", "claim-stall-tick"]
+  .map((name) => `packages/agent-org/src/work-gate/${name}.mjs`);
+
+test("#2898: every family module exists, and a Region names it as itself", () => {
+  for (const family of FAMILIES) {
+    const inTool = new URL(`../${family.replace(/^packages\/agent-org\/src\//, "")}`, import.meta.url);
+    assert.ok(existsSync(inTool), `${family} must exist or the Regions below name nothing`);
+    assert.deepEqual(regionOf(family), [family], `the fenced Region parses to ${family}'s own path`);
+  }
+});
+
+test("#2898 DONE-WHEN 2, THE NEGATIVE: Regions naming two DIFFERENT family modules do NOT collide", () => {
+  let compared = 0;
+  for (const mine of FAMILIES) {
+    for (const theirs of FAMILIES) {
+      if (mine === theirs) continue;
+      compared++;
+      assert.equal(fileOverlapReason(regionOf(mine), [pr(2900 + compared, regionOf(theirs))]).reason, null,
+        `a fix to ${mine} must not wait behind a fix to ${theirs}`);
+    }
+  }
+  // The positive control of THIS loop's emptiness: it compared every ordered pair, so a list that shrank to one module would fail here.
+  assert.equal(compared, FAMILIES.length * (FAMILIES.length - 1));
+  assert.ok(FAMILIES.length >= 6, "the split has at least the five families #2542 and #2898 moved, plus the lab-job orders");
+});
+
+test("#2898, POSITIVE CONTROL for the negative above: the SAME family module on both sides collides, for each family", () => {
+  for (const family of FAMILIES) {
+    const { reason } = fileOverlapReason(regionOf(family), [pr(2950, regionOf(family))]);
+    assert.ok(reason, `two fixes to ${family} must still serialise: the control is not a function that never refuses`);
+    assert.match(reason as string, new RegExp(family.split("/").at(-1)!.replace(".", "\\.")));
+  }
+});
+
+test("#2898: the shim and any family module do NOT wait for each other, in either direction", () => {
+  for (const family of FAMILIES) {
+    assert.equal(fileOverlapReason(regionOf(SHIM), [pr(2960, regionOf(family))]).reason, null, `a fix to the shim must not wait behind a fix to ${family}`);
+    assert.equal(fileOverlapReason(regionOf(family), [pr(2961, regionOf(SHIM))]).reason, null, `a fix to ${family} must not wait behind a fix to the shim`);
+  }
+});
