@@ -58,15 +58,22 @@ const EXEMPT: Record<string, string> = {
   "control": "a layer repository (#2612) whose issues live on a11ign/a11ign; 0 pull requests measured 2026-10-02",
   "lab": "a layer repository (#2612) whose issues live on a11ign/a11ign; 0 pull requests measured 2026-10-02",
   "screenreader-fleet": "a layer repository (#2612) whose issues live on a11ign/a11ign; 0 pull requests measured 2026-10-02",
-  "screenreader-worker": "a layer repository (#2612) whose issues live on a11ign/a11ign; 0 pull requests measured 2026-10-02",
   "auth-capture-check": "a private test bed (#2561) whose pull requests are workflow-run vehicles, NOT work to review or merge; 7 open on "
     + "2026-10-02, which is the same class and is routed to product-manager on #2969 rather than declared here",
 };
-const EXEMPTION_CEILING = 7;
+const EXEMPTION_CEILING = 6;
+/**
+ * A repository the project's declaration is ABOUT TO GAIN (a11ign/a11ign#3190, #2701): declared or exempt, and either is accepted, because the
+ * tool's suite runs against whatever declaration the project has on the day, and a test that wanted exactly one would turn the OTHER
+ * repository's merge red. Delete the entry, and `undeclared` accepting it, once a11ign/a11ign#3190 has merged.
+ */
+const EITHER_UNTIL_DECLARED: Record<string, string> = {
+  "screenreader-worker": "a layer repository (#2612); declared by a11ign/a11ign#3190 (#2701), 0 pull requests of its own measured 2026-10-02",
+};
 
 /** The non-archived repositories of `organisation` that are neither a declared scope nor exempt: the offenders. */
 function undeclared(organisation: { name: string, isArchived: boolean }[], declared: Set<string>, exempt: Record<string, string>) {
-  return organisation.filter((r) => !r.isArchived && !declared.has(r.name) && !(r.name in exempt)).map((r) => r.name);
+  return organisation.filter((r) => !r.isArchived && !declared.has(r.name) && !(r.name in exempt) && !(r.name in EITHER_UNTIL_DECLARED)).map((r) => r.name);
 }
 
 const declaredNames = () => {
@@ -90,6 +97,12 @@ test("(1) every non-archived repository in the organisation is a declared scope 
     assert.equal(declared.has(name), false, `${name} is declared: delete its exemption`);
   }
   assert.ok(Object.keys(EXEMPT).length <= EXEMPTION_CEILING, "the exemption list is shrink-only");
+  // The transitional entries are held to the same account: a reason, a repository that exists, and never BOTH exempt and an entry here.
+  for (const [name, reason] of Object.entries(EITHER_UNTIL_DECLARED)) {
+    assert.ok(reason.length > 20, `${name} needs a reason`);
+    assert.ok(RECORDED_ORGANISATION.some((r) => r.name === name), `${name} is in no recording: delete the entry`);
+    assert.equal(name in EXEMPT, false, `${name} is exempt AND transitional: keep one`);
+  }
 });
 
 test("(1) the declaration reads `agent-org` as a CODE scope with no tracker of its own, and the primary stays first", () => {
@@ -97,7 +110,9 @@ test("(1) the declaration reads `agent-org` as a CODE scope with no tracker of i
   assert.equal(scopes[0].key, "", "the primary is first");
   const keyed = scopes.find((s) => s.key === "agent-org");
   assert.deepEqual(keyed, { key: "agent-org", code: { repo: "a11ign/agent-org" }, tracker: null });
-  assert.equal(scopes.length, 2, "and nothing else is declared");
+  // `screenreader-worker` is the one declaration this suite accepts either way (a11ign/a11ign#3190): nothing ELSE is declared.
+  const rest = scopes.slice(1).map((s) => s.key).filter((key) => !(key in EITHER_UNTIL_DECLARED));
+  assert.deepEqual(rest, ["agent-org"], "and nothing else is declared");
 });
 
 // --- (2) THE ORDER, AND ITS CHECKOUT ----------------------------------------------------------------------------------------------
@@ -330,5 +345,7 @@ test("a consequence of declaring it: a claim's file-overlap lookup reads the ope
   const asked: string[] = [];
   const run = (args: string[]) => { asked.push(args[args.indexOf("--repo") + 1]); return "[]"; };
   assert.deepEqual(lookupOpenPrFiles({ run, log: () => {} }), []);
-  assert.deepEqual(asked, ["a11ign/a11ign", "a11ign/agent-org"], "the primary's first, then `agent-org`'s: one call each");
+  const declared = scopesOf([homeProjectDeclaration()]).flatMap((scope) => (scope.code ? [scope.code.repo] : []));
+  assert.deepEqual(asked.slice(0, 2), ["a11ign/a11ign", "a11ign/agent-org"], "the primary's first, then `agent-org`'s: one call each");
+  assert.deepEqual(asked, declared, "and every declared code repository after them, once, in declaration order");
 });

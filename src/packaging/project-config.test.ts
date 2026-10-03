@@ -73,7 +73,10 @@ test("a11ign's own declaration, read through the reader, gives exactly today's v
   assert.equal(declaration.repo, A11IGN_LITERAL);
   assert.equal(declaration.boardOwner, "a11ign");
   assert.equal(declaration.boardNumber, 1);
-  assert.deepEqual(declaration.code, [{ key: "", repo: A11IGN_LITERAL }, { key: "agent-org", repo: "a11ign/agent-org" }]); // #2969: the second is a repository the gate must read
+  // #2969: the second is a repository the gate must read. #2701's `screenreader-worker` may follow it, and either state is accepted: the tool's
+  // suite runs against whatever declaration the project has on the day, so a test that wanted one would redden the other repository's merge.
+  assert.deepEqual(declaration.code.slice(0, 2), [{ key: "", repo: A11IGN_LITERAL }, { key: "agent-org", repo: "a11ign/agent-org" }]);
+  assert.deepEqual(declaration.code.slice(2), declaration.code.length > 2 ? [{ key: "screenreader-worker", repo: "a11ign/screenreader-worker" }] : []);
   assert.deepEqual(declaration.tracker, [{ key: "", repo: A11IGN_LITERAL, board: { owner: "a11ign", number: 1 } }]);
 });
 
@@ -83,7 +86,7 @@ test("the constants every importer reads are the declaration's values, and the s
   assert.equal(PROJECT_OWNER, "a11ign");
   assert.equal(PROJECT_NUMBER, 1);
   assert.equal(declaration.tracker.length, 1);
-  assert.equal(declaration.code.length, 2, "the primary's repository and `agent-org` (#2969)");
+  assert.ok([2, 3].includes(declaration.code.length), "the primary's repository, `agent-org` (#2969), and perhaps `screenreader-worker` (#2701)");
 });
 
 test("POSITIVE CONTROL: a11ign's declaration is non-empty and holds the empty key exactly once in each list", () => {
