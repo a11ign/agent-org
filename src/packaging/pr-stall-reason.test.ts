@@ -13,8 +13,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { stallReasonOf, stallOrderOf, stalledPrOrders, ownerOfPr, STALL_REASON, STALL_REASONS_WITHOUT_A_CAUSE, decide, CAUSES }
+import { stallReasonOf, stallOrderOf, stalledPrOrders, ownerOfPr, STALL_REASON, STALL_REASONS_WITHOUT_A_CAUSE, decide, CAUSES, stalledPrFacts }
   from "../work-gate.mjs";
+import { hungCheckOf, CHECK_RUNNING_TOO_LONG_MINUTES } from "../work-gate/pr-orders.mjs";
 
 const REQUIRED = ["gate"];
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
@@ -63,14 +64,16 @@ const NOT_STALLS: string[] = [STALL_REASON.PROGRESSING, STALL_REASON.HELD_ON_PUR
 // #3019: `ejected` IS NOT A CELL OF THE CROSS PRODUCT. It is decided by `pr.ejection`, which the gate stamps from a queue-timeline
 // read and which none of the seven dimensions above models, so the cells can never reach it. ITS POSITIVE CONTROL IS
 // `queue-stalled.test.ts`'s #16 fixture, which classifies a PR as `ejected` and the same PR without the events as `unarmed`.
-const REASONS_OF_THE_CELLS: string[] = REASONS.filter((r) => r !== STALL_REASON.EJECTED);
+// #3120: `hung-check` IS NOT A CELL EITHER: no cell's rollup carries a `startedAt`, so none can be aged. ITS POSITIVE CONTROL IS THE
+// `#83` test at the foot of this file, which asserts the shape occurs and is classified `hung-check`.
+const REASONS_OF_THE_CELLS: string[] = REASONS.filter((r) => r !== STALL_REASON.EJECTED && r !== STALL_REASON.HUNG_CHECK);
 
 test("#2968 the population is the whole cross product, and it is not empty", () => {
   const size = DRAFT.length * MERGE_STATES.length * CHECKS.length * REVIEWS.length * HOLDS.length * ARMED.length * OWNERS.length;
   assert.equal(size, 2240, "the domain: 2 x 7 x 4 x 5 x 2 x 2 x 2");
   assert.equal(CELLS.length, size, "every cell was built; a loop that skipped one would pass every assertion below");
   assert.equal(STALL_REASON.PROGRESSING, "progressing");
-  assert.equal(REASONS.length, 8, "the seven answers #2968 names, and `ejected` (#3019)");
+  assert.equal(REASONS.length, 9, "the seven answers #2968 names, `ejected` (#3019) and `hung-check` (#3120)");
 });
 
 test("#2968 EVERY cell returns exactly one reason, and every stall has an order to its owner", () => {
@@ -156,8 +159,121 @@ test("#2968 an UNREAD arming or review decision is never an accusation", () => {
 });
 
 test("#2968 `decide` sends only the reason that has no cause of its own, so no session is woken twice for one fact", () => {
-  assert.deepEqual([...STALL_REASONS_WITHOUT_A_CAUSE], [STALL_REASON.CONFLICTED, STALL_REASON.EJECTED]);
+  assert.deepEqual([...STALL_REASONS_WITHOUT_A_CAUSE], [STALL_REASON.CONFLICTED, STALL_REASON.EJECTED, STALL_REASON.HUNG_CHECK]);
   const red = { number: 4, isDraft: false, headRefOid: HEAD, mergeStateStatus: "BLOCKED", statusCheckRollup: ROLLUPS.red, labels: [{ name: "session:worker-4" }] };
   const orders = decide({ prs: [red], readyRows: [], required: REQUIRED }) as { cause: string }[];
   assert.deepEqual(orders.map((o) => o.cause), ["pr-checks-failing"], "the red order is the existing one, once");
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// #3120: A CHECK THAT HAS RUN FOR HOURS ON A NON-DRAFT PULL REQUEST HELD FOR REVIEW IS NOT `progressing` (a11ign/agent-org#83 sat 4 h).
+// Every `now` here is an ARGUMENT: the classifier is pure, so no case depends on the wall clock.
+// ---------------------------------------------------------------------------------------------------------------------------------
+const STARTED = "2026-10-03T01:14:06Z";
+const AT = (iso: string) => Date.parse(iso);
+const HUNG_NOW = AT("2026-10-03T05:15:00Z");
+const gate = (over: Record<string, unknown> = {}) => ({ name: "gate", status: "IN_PROGRESS", conclusion: "", startedAt: STARTED,
+  detailsUrl: "https://github.com/a11ign/agent-org/actions/runs/37085299585/job/1", ...over });
+const arm = { name: "arm", status: "COMPLETED", conclusion: "SUCCESS", startedAt: STARTED };
+/** #83's shape: non-draft, no labels, `REVIEW_REQUIRED`, `gate` still running, `arm` settled. */
+const PR_83 = { number: 83, isDraft: false, reviewDecision: "REVIEW_REQUIRED", headRefOid: HEAD, labels: [], statusCheckRollup: [gate(), arm] };
+
+type Order = { session: string, cause: string, prompt: string, causeKey: string };
+const orders = (prs: Record<string, unknown>[], nowMs: number) => decide({ prs, readyRows: [], required: REQUIRED, nowMs }) as Order[];
+
+test("#3120 (5a, POSITIVE) #83's shape is `hung-check` and its owner is told -- and the case occurs in its own population", () => {
+  const population = [PR_83];
+  assert.equal(population.filter((p) => stallReasonOf(p, REQUIRED, HUNG_NOW) === STALL_REASON.HUNG_CHECK).length, 1, "the case occurs, so the negatives below cannot pass on an empty population");
+  assert.equal(stallReasonOf(PR_83, REQUIRED, HUNG_NOW), "hung-check");
+  assert.equal(stallReasonOf(PR_83, null, HUNG_NOW), "hung-check", "with the required list unread, every check blocks: the same answer");
+  const told = orders([PR_83], HUNG_NOW).filter((o) => o.causeKey.includes("hung-check"));
+  assert.equal(told.length, 1);
+  assert.equal(told[0].session, ownerOfPr(PR_83).session, "an unowned PR goes to ceo, as #2968 rules for every stall");
+  assert.equal(told[0].session, "ceo");
+  const owned = orders([{ ...PR_83, labels: [{ name: "session:worker-83" }] }], HUNG_NOW).filter((o) => o.causeKey.includes("hung-check"));
+  assert.deepEqual(owned.map((o) => o.session), ["worker-83"]);
+});
+
+test("#3120 (2) the order names the PR, the check, how long it has run and the run it is", () => {
+  const prompt = String(stallOrderOf(PR_83, REQUIRED, HUNG_NOW)?.prompt);
+  assert.match(prompt, /#83\b/);
+  assert.match(prompt, /`gate`/);
+  assert.match(prompt, /running for 240 minutes/, "01:14:06 to 05:15:00 is 240 min 54 s, floored");
+  assert.match(prompt, /actions\/runs\/37085299585/, "the run, as a link the engineer opens");
+  const noLink = String(stallOrderOf({ ...PR_83, statusCheckRollup: [gate({ detailsUrl: undefined }), arm] }, REQUIRED, HUNG_NOW)?.prompt);
+  assert.match(noLink, /NOT in the check rollup/, "a link the read did not carry is said to be missing, not guessed");
+});
+
+test("#3120 (5b, NEGATIVE) ten minutes in is still `progressing` with no order; and the threshold is exact", () => {
+  assert.equal(CHECK_RUNNING_TOO_LONG_MINUTES, 60, "measured: longest `ci` run in either repo was 12 min (see the constant)");
+  const early = AT(STARTED) + 10 * 60_000;
+  assert.equal(stallReasonOf(PR_83, REQUIRED, early), STALL_REASON.PROGRESSING);
+  assert.equal(stallOrderOf(PR_83, REQUIRED, early), null);
+  assert.equal(orders([PR_83], early).filter((o) => o.causeKey.includes("pr-83")).length, 0);
+  const limit = AT(STARTED) + CHECK_RUNNING_TOO_LONG_MINUTES * 60_000;
+  assert.equal(stallReasonOf(PR_83, REQUIRED, limit), STALL_REASON.PROGRESSING, "AT the limit is not past it");
+  assert.equal(stallReasonOf(PR_83, REQUIRED, limit + 1), STALL_REASON.HUNG_CHECK, "one millisecond past it is");
+});
+
+test("#3120 (5c, NEGATIVE) the same check COMPLETED is not hung, whatever it concluded or however long ago it started", () => {
+  assert.equal(stallReasonOf({ ...PR_83, statusCheckRollup: [gate({ status: "COMPLETED", conclusion: "SUCCESS" }), arm] }, REQUIRED, HUNG_NOW), STALL_REASON.AWAITING_REVIEW,
+    "settled green on a REVIEW_REQUIRED PR is `awaiting-review`, its own cause's subject");
+  assert.equal(stallReasonOf({ ...PR_83, statusCheckRollup: [gate({ status: "COMPLETED", conclusion: "FAILURE" }), arm] }, REQUIRED, HUNG_NOW), STALL_REASON.RED);
+});
+
+test("#3120 (5d, NEGATIVE) an older, superseded run of the same name still running beside a newer settled one does not count", () => {
+  const newer = gate({ status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-10-03T05:00:00Z", completedAt: "2026-10-03T05:03:00Z" });
+  const pr = { ...PR_83, reviewDecision: "APPROVED", armed: true, statusCheckRollup: [gate(), newer, arm] };
+  assert.equal(hungCheckOf(pr, REQUIRED, HUNG_NOW), null);
+  assert.equal(stallReasonOf(pr, REQUIRED, HUNG_NOW), STALL_REASON.PROGRESSING);
+});
+
+test("#3120 (5e, NEGATIVE) a DRAFT with the same hung check, and a held or awaiting-evidence PR, get no order", () => {
+  const draft = { ...PR_83, isDraft: true };
+  assert.equal(stallReasonOf(draft, REQUIRED, HUNG_NOW), STALL_REASON.PROGRESSING, "a hung check on a draft is its author's work in progress");
+  assert.equal(stallOrderOf(draft, REQUIRED, HUNG_NOW), null);
+  for (const label of ["hold:ceo", "awaiting-evidence"]) {
+    const held = { ...PR_83, labels: [{ name: label }] };
+    assert.equal(stallReasonOf(held, REQUIRED, HUNG_NOW), STALL_REASON.HELD_ON_PURPOSE, label);
+    assert.equal(stallOrderOf(held, REQUIRED, HUNG_NOW), null, label);
+  }
+});
+
+test("#3120 a check with no readable `startedAt`, or a NON-blocking one, is never accused", () => {
+  for (const startedAt of [undefined, "", "not a date"]) {
+    assert.equal(stallReasonOf({ ...PR_83, statusCheckRollup: [gate({ startedAt }), arm] }, REQUIRED, HUNG_NOW), STALL_REASON.PROGRESSING, `startedAt ${JSON.stringify(startedAt)}: absent is not an age`);
+  }
+  const optional = { ...PR_83, statusCheckRollup: [gate({ name: "lint-extra" }), { ...arm, name: "gate" }] };
+  assert.equal(stallReasonOf(optional, REQUIRED, HUNG_NOW), STALL_REASON.AWAITING_REVIEW, "only a required check can hold the PR, so only one is aged");
+  assert.equal(stallReasonOf({ ...PR_83, statusCheckRollup: [gate({ status: "QUEUED" }), arm] }, REQUIRED, HUNG_NOW), STALL_REASON.HUNG_CHECK, "queued for an hour is as stuck as running");
+});
+
+test("#3120 (3) a RE-RUN fires again; the same hang on a later tick does not", () => {
+  const key = (pr: Record<string, unknown>, nowMs: number) => stallOrderOf(pr, REQUIRED, nowMs)?.causeKey;
+  const first = key(PR_83, HUNG_NOW);
+  assert.ok(first?.endsWith(`/hung-check/${STARTED}`), String(first));
+  assert.equal(key(PR_83, HUNG_NOW + 30 * 60_000), first, "same hang, a later tick: same key, so no repeat while nothing changed");
+  const rerun = { ...PR_83, statusCheckRollup: [gate({ startedAt: "2026-10-03T05:15:04Z" }), arm] };
+  assert.equal(key(rerun, AT("2026-10-03T06:30:00Z")), first?.replace(STARTED, "2026-10-03T05:15:04Z"), "the same head hanging a second time is a NEW key");
+  assert.notEqual(key(rerun, AT("2026-10-03T06:30:00Z")), first);
+});
+
+test("#3120 (4) no new API call: the tick's own facts run no `gh` for the hung PR, and the order is filed under an existing declared cause", () => {
+  const calls: string[][] = [];
+  const run = (args: string[]) => { calls.push(args); return ""; };
+  // `stalledPrFacts` is the one reader of this classifier with an I/O seam. A PR with activity inside the quiet window pays no read there,
+  // so a recorded call would be one THIS change added; the PR is hung, so the case is in the population and not an empty one.
+  const recent = { ...PR_83, createdAt: new Date(HUNG_NOW - 60_000).toISOString() };
+  const facts = stalledPrFacts([recent], REQUIRED, { now: HUNG_NOW, run });
+  assert.deepEqual(facts.map((f: { reason: string }) => f.reason), [STALL_REASON.HUNG_CHECK]);
+  assert.deepEqual(calls.filter((c) => c[0] === "gh"), [], "the age is read off the rollup the gate already holds");
+  const order = stallOrderOf(PR_83, REQUIRED, HUNG_NOW);
+  assert.ok(order && CAUSES.includes(order.cause), "no new cause is declared");
+  assert.equal(order.cause, "pr-checks-failing");
+});
+
+test("#3120 (5f) the green, armed, clean PR is still `progressing`, and a PR whose CI never started stays `progressing` too", () => {
+  const clean = { number: 1, isDraft: false, mergeStateStatus: "CLEAN", reviewDecision: "APPROVED", armed: true, statusCheckRollup: ROLLUPS.green, labels: [{ name: "session:worker-1" }] };
+  assert.equal(stallReasonOf(clean, REQUIRED, HUNG_NOW), STALL_REASON.PROGRESSING);
+  assert.equal(stallReasonOf({ ...clean, statusCheckRollup: [] }, REQUIRED, HUNG_NOW), STALL_REASON.PROGRESSING, "no check, no `startedAt` to age: not this reason's");
 });

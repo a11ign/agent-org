@@ -150,40 +150,47 @@ function conflictOrder(pr, { session, standing, ownership }) {
  *   3. `conflicted`        BEFORE the green/pending/none question, which is the point: a conflict is code work whether
  *                          or not CI ran, and a conflicted head has stale or absent checks, so requiring green first is
  *                          how #2950 was missed.
- *   4. `progressing`       no settled-green check yet -- none, or still running -- so the next tick asks again.
- *                          A pull request whose CI never starts also reads here; that is an AGE question this pure
- *                          classifier cannot answer, and the health signal that wakes `ceo` (#2936's sibling) is the
- *                          reader of age.
- *   5. `awaiting-author-draft`  green, but still a draft: the author owes "ready", or the rework a verdict named.
- *   6. `awaiting-review`   green, ready, and GitHub's own `reviewDecision` blocks (`reviewStateOf`; an ABSENT field
+ *   4. `hung-check`        a blocking check STARTED more than `CHECK_RUNNING_TOO_LONG_MINUTES` ago and is still running,
+ *                          on a pull request that is not a draft (#3120). BEFORE `progressing`, because a running check
+ *                          is `progressing` for as long as it runs and a hung one never stops: a11ign/agent-org#83 sat
+ *                          4 h in `gate`, held for review that could not start, and nobody was told.
+ *   5. `progressing`       no settled-green check yet -- none, or still running -- so the next tick asks again.
+ *                          A pull request whose CI never STARTS also reads here: there is no `startedAt` to age, and
+ *                          the health signal that wakes `ceo` (#2936's sibling) is the reader of that.
+ *   6. `awaiting-author-draft`  green, but still a draft: the author owes "ready", or the rework a verdict named.
+ *   7. `awaiting-review`   green, ready, and GitHub's own `reviewDecision` blocks (`reviewStateOf`; an ABSENT field
  *                          is not accused, which is that function's rule).
- *   7. `ejected`           green, ready, review not blocking, and the merge queue REMOVED it for `failed_checks` with its
+ *   8. `ejected`           green, ready, review not blocking, and the merge queue REMOVED it for `failed_checks` with its
  *                          head unmoved since (#3019): `pr.ejection` is stamped by the caller from the timeline
  *                          (`queueEjectionOf`). BEFORE `unarmed`, because an ejected PR reads `armed === false` too and
  *                          "arm it by hand" re-enters the queue and fails the same red run again.
- *   8. `unarmed`           green, ready, review not blocking, and `pr.armed === false`. `armed` is stamped by the
+ *   9. `unarmed`           green, ready, review not blocking, and `pr.armed === false`. `armed` is stamped by the
  *                          caller from a queue read; ABSENT IS NOT `false`, so an unread arming is never an accusation.
  *
  * A reason is not an order: `STALL_REASONS_WITHOUT_A_CAUSE` says which ones `decide` sends, and why only that one.
  *
- * @param {any} pr @param {string[] | null} [required]
+ * `nowMs` is an argument so the classifier stays pure under test; the default is the one clock read, the way
+ * `awaitingEvidenceStaleOrders` takes its own, so a caller that has no tick time to hand over needs no change.
+ *
+ * @param {any} pr @param {string[] | null} [required] @param {number} [nowMs]
  * @returns {string} a `STALL_REASON` value
  */
-export function stallReasonOf(pr, required = null) {
+export function stallReasonOf(pr, required = null, nowMs = Date.now()) {
   if (!armabilityOf({ labels: labelsOf(pr) }).arm || awaitingEvidence(pr)) return STALL_REASON.HELD_ON_PURPOSE;
   const settled = settledChecksOf(pr, required);
   if (settled === false) return STALL_REASON.RED;
   if (conflictStateOf(pr) === CONFLICT_STATE.CONFLICTING) return STALL_REASON.CONFLICTED;
-  if (settled !== true) return STALL_REASON.PROGRESSING;
+  if (settled !== true) return hungCheckOf(pr, required, nowMs) ? STALL_REASON.HUNG_CHECK : STALL_REASON.PROGRESSING;
   if (pr?.isDraft === true) return STALL_REASON.AWAITING_AUTHOR_DRAFT;
   if (BLOCKING_REVIEW_STATES.includes(reviewStateOf(pr).code)) return STALL_REASON.AWAITING_REVIEW;
   if (pr?.ejection) return STALL_REASON.EJECTED;
   return pr?.armed === false ? STALL_REASON.UNARMED : STALL_REASON.PROGRESSING;
 }
 
-/** The eight answers of `stallReasonOf`. Only `PROGRESSING` and `HELD_ON_PURPOSE` produce no order. */
+/** The nine answers of `stallReasonOf`. Only `PROGRESSING` and `HELD_ON_PURPOSE` produce no order. */
 export const STALL_REASON = Object.freeze({
   PROGRESSING: "progressing",
+  HUNG_CHECK: "hung-check",
   RED: "red",
   CONFLICTED: "conflicted",
   AWAITING_REVIEW: "awaiting-review",
@@ -209,15 +216,49 @@ function settledChecksOf(pr, required) {
 }
 
 /**
+ * #3120: how long a blocking check may run before it is not `progressing`. MEASURED 2026-10-03 from `gh run list --workflow ci
+ * --status completed --limit 300` on a11ign/a11ign: of 193 success-or-failure runs the median was 7 min, p95 8, MAX 12; agent-org's
+ * 67 were 2 min median, 3 max. 60 is five times the longest `ci` run in either repository, and is `ceo`'s own figure (#3120).
+ */
+export const CHECK_RUNNING_TOO_LONG_MINUTES = 60;
+const RUNNING_STATUSES = Object.freeze(["IN_PROGRESS", "QUEUED"]);
+
+/**
+ * #3120: THE NEWEST RUN OF A BLOCKING CHECK THAT HAS BEEN RUNNING TOO LONG, or `null`. Read from the `statusCheckRollup` the gate
+ * already holds -- each check carries `startedAt` -- so it costs no call and no timer.
+ *
+ * `newestPerName` FIRST, so an older run of the same name still `in_progress` beside a newer settled one does not count. A DRAFT is
+ * never asked: a hung check on one is its author's work in progress. A check with NO readable `startedAt` is never accused --
+ * absent is not an age, and a run that cannot be aged stays `progressing` as it always did. Of several hung checks the one that
+ * started FIRST is named, so the order's key moves only when that check does.
+ *
+ * @param {any} pr @param {string[] | null} required @param {number} nowMs
+ * @returns {{ name: string, startedAt: string, runningMinutes: number, detailsUrl: string | null } | null}
+ */
+export function hungCheckOf(pr, required, nowMs) {
+  if (pr?.isDraft === true) return null;
+  const running = blockingChecks(newestPerName(pr?.statusCheckRollup ?? []), required)
+    .filter((check) => RUNNING_STATUSES.includes(String(check?.status ?? "").toUpperCase()))
+    .map((check) => ({ check, startedMs: Date.parse(check.startedAt ?? "") }))
+    .filter(({ startedMs }) => Number.isFinite(startedMs) && nowMs - startedMs > CHECK_RUNNING_TOO_LONG_MINUTES * MS_PER_MINUTE)
+    .sort((a, b) => a.startedMs - b.startedMs);
+  if (running.length === 0) return null;
+  const { check, startedMs } = running[0];
+  return { name: String(check.name), startedAt: String(check.startedAt), runningMinutes: Math.floor((nowMs - startedMs) / MS_PER_MINUTE),
+    detailsUrl: typeof check.detailsUrl === "string" && check.detailsUrl ? check.detailsUrl : null };
+}
+
+/**
  * The `stallReasonOf` answers that have NO dedicated cause already reaching the owner, and so the only ones `decide`
  * sends. `red` has `pr-checks-failing` (to `ownerOfPr`), `awaiting-review` has `pr-review-blocked`, `unarmed` has
  * `pr-green-unarmed` (deliberately to `product-manager`, #1969) and a green draft has `draft-awaiting-verdict`; a second
  * order for each would wake one session twice about one fact. `conflicted` had a cause and no way to reach a draft or a
  * pull request with no checks, which is what #2968 closes. `ejected` (#3019) is a red the PR's own checks never showed --
  * the `merge_group` run failed -- so `pr-checks-failing`'s population (settled red ON THE HEAD) cannot contain it, and
- * the only other order about it was `pr-green-unarmed`'s wrong one, which it now leaves.
+ * the only other order about it was `pr-green-unarmed`'s wrong one, which it now leaves. `hung-check` (#3120) is a check that is
+ * neither red nor green, so `pr-checks-failing`'s population (settled red) cannot contain it either.
  */
-export const STALL_REASONS_WITHOUT_A_CAUSE = Object.freeze([STALL_REASON.CONFLICTED, STALL_REASON.EJECTED]);
+export const STALL_REASONS_WITHOUT_A_CAUSE = Object.freeze([STALL_REASON.CONFLICTED, STALL_REASON.EJECTED, STALL_REASON.HUNG_CHECK]);
 
 /**
  * The cause a stalled pull request's order is filed under. NO NEW CAUSE, on purpose: a cause is declared in
@@ -228,6 +269,7 @@ export const STALL_REASONS_WITHOUT_A_CAUSE = Object.freeze([STALL_REASON.CONFLIC
 const CAUSE_OF_STALL = Object.freeze({
   [STALL_REASON.RED]: "pr-checks-failing",
   [STALL_REASON.EJECTED]: "pr-checks-failing", // #3019: a red build, one the queue found rather than the PR's own run
+  [STALL_REASON.HUNG_CHECK]: "pr-checks-failing", // #3120: a build that has not finished is the owner's to cancel or fix, as a red one is
   [STALL_REASON.CONFLICTED]: "pr-merge-conflict",
   [STALL_REASON.AWAITING_REVIEW]: "pr-review-blocked",
   [STALL_REASON.AWAITING_AUTHOR_DRAFT]: "draft-awaiting-verdict",
@@ -243,11 +285,14 @@ const CAUSE_OF_STALL = Object.freeze({
  * their owner) and the unlabelled fallback (`ownerOfPr`'s `ceo`, not `product-manager`, #2941). The other reasons are
  * keyed on the reason and never the head: a push that did not clear a stall must not re-wake the owner.
  *
- * @param {any} pr @param {string[] | null} [required]
+ * `hung-check` (#3120) is keyed on the check's `startedAt`, like an ejection on `removedAt`: a re-run keeps the head and is a new start,
+ * so the same head hanging twice is two orders, and the same hang on a later tick is one.
+ *
+ * @param {any} pr @param {string[] | null} [required] @param {number} [nowMs]
  * @returns {{session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string} | null}
  */
-export function stallOrderOf(pr, required = null) {
-  const reason = stallReasonOf(pr, required);
+export function stallOrderOf(pr, required = null, nowMs = Date.now()) {
+  const reason = stallReasonOf(pr, required, nowMs);
   const cause = /** @type {Record<string, string>} */ (CAUSE_OF_STALL)[reason];
   if (!cause) return null;
   const owner = ownerOfPr(pr);
@@ -255,7 +300,8 @@ export function stallOrderOf(pr, required = null) {
     return conflictOrder(pr, { session: owner.session, standing: standingOf(pr, required), ownership: ownershipOf(pr, owner.source, "rebase") });
   }
   const ref = `pr-${subjectRef(pr.repoKey, pr.number)}`;
-  const sentence = reason === STALL_REASON.EJECTED ? ejectedSentence(pr.ejection) : /** @type {Record<string, string>} */ (REASON_SENTENCE)[reason];
+  const hung = reason === STALL_REASON.HUNG_CHECK ? hungCheckOf(pr, required, nowMs) : null;
+  const sentence = hung ? hungSentence(hung) : reason === STALL_REASON.EJECTED ? ejectedSentence(pr.ejection) : /** @type {Record<string, string>} */ (REASON_SENTENCE)[reason];
   return {
     session: owner.session,
     cause,
@@ -263,9 +309,22 @@ export function stallOrderOf(pr, required = null) {
     discriminator: reason,
     prompt: `${subjectMention(pr)} is STALLED: ${sentence} ${ownershipOf(pr, owner.source, "fix")}`,
     // An ejection is KEYED ON WHEN IT HAPPENED: a push that fails the queue again is a new fact and must wake the owner
-    // again, while the same unanswered ejection stays one order. The other reasons are keyed on the reason alone.
-    causeKey: `${owner.session}/${cause}/${ref}/${reason}${reason === STALL_REASON.EJECTED ? `/${pr.ejection?.removedAt ?? ""}` : ""}`,
+    // again, while the same unanswered ejection stays one order. A hung check is keyed on when IT STARTED, for the same reason.
+    // The other reasons are keyed on the reason alone.
+    causeKey: `${owner.session}/${cause}/${ref}/${reason}${reason === STALL_REASON.EJECTED ? `/${pr.ejection?.removedAt ?? ""}` : ""}${hung ? `/${hung.startedAt}` : ""}`,
   };
+}
+
+/**
+ * #3120: THE WORDS OF A `hung-check` ORDER. It names the check, how long it has run and which run it is, so the engineer it wakes can
+ * open the run without reading anything else. A run the rollup carried no link for is SAID to be unfound, never guessed.
+ * @param {{ name: string, startedAt: string, runningMinutes: number, detailsUrl: string | null }} hung
+ */
+function hungSentence({ name, startedAt, runningMinutes, detailsUrl }) {
+  const run = detailsUrl ? `the run is ${detailsUrl}` : "the run link was NOT in the check rollup, so find it under the pull request's Checks tab";
+  return `its required check \`${name}\` has been running for ${runningMinutes} minutes (started ${startedAt}) and has not finished, `
+    + `so the pull request is neither green nor red and nothing will say so; ${run}. Open it, find the step that does not return, and `
+    + "CANCEL AND RE-RUN it if it is stuck, or fix what hangs it. A re-run is a new start: if it hangs again you are told again.";
 }
 
 /**
@@ -324,14 +383,14 @@ function ownershipOf(pr, source, task) {
  * PURE. #2968: the orders for every stalled pull request among `prs`, ascending by number. `reasons` narrows which
  * stall reasons are SENT (`STALL_REASONS_WITHOUT_A_CAUSE` is what `decide` passes); the default is all of them.
  *
- * @param {any[]} prs @param {{required?: string[] | null, reasons?: readonly string[] | null}} [asked]
+ * @param {any[]} prs @param {{required?: string[] | null, reasons?: readonly string[] | null, nowMs?: number}} [asked]
  */
-export function stalledPrOrders(prs, { required = null, reasons = null } = {}) {
+export function stalledPrOrders(prs, { required = null, reasons = null, nowMs = Date.now() } = {}) {
   return (prs ?? [])
     .filter((pr) => pr && Number.isFinite(Number(pr.number)))
-    .filter((pr) => reasons === null || reasons.includes(stallReasonOf(pr, required)))
+    .filter((pr) => reasons === null || reasons.includes(stallReasonOf(pr, required, nowMs)))
     .sort((a, b) => Number(a.number) - Number(b.number))
-    .map((pr) => stallOrderOf(pr, required))
+    .map((pr) => stallOrderOf(pr, required, nowMs))
     .filter((order) => order !== null);
 }
 
