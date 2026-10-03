@@ -137,7 +137,7 @@ function tasksFromArgv() {
 }
 
 function main() {
-  refuseUnknownFlags(["--tasks", "--repo"], { entry: import.meta.url, command: "npm run survey --" });
+  refuseUnknownFlags(["--tasks", "--repo"], { entry: import.meta.url, command: "pnpm run survey" });
   const cwd = flagValue(process.argv, "repo") ?? process.cwd();
   process.stdout.write(`${render(survey(tasksFromArgv(), { cwd }))}\n`);
 }

@@ -35,7 +35,7 @@
 // stranded -- distinguishing that from genuine stranded work needs a human reading the branch's own diff,
 // which is exactly why this NAMES candidates rather than asserting a finding.
 //
-//   npm run branches:stranded
+//   pnpm run branches:stranded
 //
 // Exit codes:
 //   0  OK           -- pushed branches examined, none are candidates

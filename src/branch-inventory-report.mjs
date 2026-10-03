@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // command: produce the #623 four-fact inventory of every branch on origin with no open PR and commits
-//          main lacks -- read-only, modifies nothing -- `npm run branches:inventory`
+//          main lacks -- read-only, modifies nothing -- `pnpm run branches:inventory`
 //
 // THE FETCHING HALF. The classification lives in `branch-inventory.mjs`, which spawns nothing, so the
 // row's acceptance runs in a job with no token (#1009). This file reads git and `gh` and therefore does
@@ -164,7 +164,7 @@ export function inventory({ run = defaultRun } = {}) {
 }
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "npm run branches:inventory" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "pnpm run branches:inventory" });
   const { counts, reconciliation, facts } = inventory();
   const drift = Object.entries(reconciliation.drift).filter(([, n]) => n !== 0)
     .map(([k, n]) => `${k} ${n > 0 ? "+" : ""}${n}`).join(", ");

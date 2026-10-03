@@ -16,7 +16,7 @@
 // per number, the previous reading, the delta and `better | worse | same | no baseline | unknown`. `NUMBERS` is the ONE table that says what each number
 // is and which way is better, so a number the report prints with no direction cannot be written (and a fixture that has one goes red).
 //
-// A LEAF, RELATIVE IMPORTS ONLY, like `repeating-lines.mjs`: `work-gate.mjs` imports it and runs before any `npm ci`/build.
+// A LEAF, RELATIVE IMPORTS ONLY, like `repeating-lines.mjs`: `work-gate.mjs` imports it and runs before any `pnpm install`/build.
 //
 // EVERY READ CAN BE REFUSED, AND A REFUSED READ IS `unknown`, NEVER 0 (#1286). A retrospective that printed "0 red PRs" because
 // the PR list could not be read would be the org's own health reported as good by an absence, which is the defect it exists to find.

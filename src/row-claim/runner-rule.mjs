@@ -127,7 +127,7 @@ export function drainReason(mySession, drained) {
     + "finishes the rows it holds and claims no NEW ones, so every new row goes through a spawned instance and "
     + "#1950's clean-cycle count is not fed by an engineer carrying history. Nothing is retired -- rework and "
     + "review orders on a row you hold still reach you. The drain lifts itself if the last `spare-cycles` line "
-    + "is not clean (`npm run spawn:cycles` prints it); removing the field ends it, and that is `ceo`'s.";
+    + "is not clean (`pnpm run spawn:cycles` prints it); removing the field ends it, and that is `ceo`'s.";
 }
 
 /**

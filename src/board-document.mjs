@@ -12,9 +12,9 @@
 // was due last month and the board is reading every edition as the answer to "when". So section 1 leads,
 // and A DATE IS NEVER STATED WITHOUT ITS REASON AND ITS CONFIDENCE. A bare date reads as a promise.
 //
-//   npm run board:document                 markdown to stdout
-//   npm run board:document -- --pdf        render a PDF and print its path
-//   npm run board:document -- --discussion post today's edition as a Discussion, or update it (#1290)
+//   pnpm run board:document                 markdown to stdout
+//   pnpm run board:document --pdf        render a PDF and print its path
+//   pnpm run board:document --discussion post today's edition as a Discussion, or update it (#1290)
 import { writeFileSync, mkdirSync, mkdtempSync, readFileSync, existsSync, realpathSync }
   from "node:fs";
 import { tmpdir } from "node:os";
@@ -1070,7 +1070,7 @@ export function resolveChromeBinary(deps = {}) {
 
 function main() {
   refuseUnknownFlags(["--pdf", "--since", "--out", "--allow-dirty-read-set", "--release",
-    "--late-edition", "--discussion"], { entry: import.meta.url, command: "npm run board:document" });
+    "--late-edition", "--discussion"], { entry: import.meta.url, command: "pnpm run board:document" });
 
   const argv = process.argv.slice(2);
   /** @type {(n: string) => string | undefined} */

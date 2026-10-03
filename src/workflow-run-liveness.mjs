@@ -5,7 +5,7 @@
 //
 // Three guards already prove CI is CONFIGURED -- `board-schedule.test.ts` (the crons exist),
 // `workflow-path-coverage.test.ts` (#70: every source directory is reachable by some filter), and
-// `npm test` (the code that decides is right). None of them asks whether a run any of that machinery
+// `pnpm test` (the code that decides is right). None of them asks whether a run any of that machinery
 // expected actually HAPPENED. On 2026-09-06 that gap was silent and real: two commits reached `main`
 // outside their PR, `ci.yml` arrived and `lint.yml` (retired the same day) went, and the local gate was
 // green throughout every one of the three guards above.

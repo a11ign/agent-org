@@ -4911,7 +4911,7 @@ test("#2283: an UNRECOGNISED decision stays at product-manager even on a labelle
 test("#2283: through `decide`, a labelled AWAITING_REVIEW PR reaches its session with the reviewer named", () => {
   const orders = decide({ prs: [labelled(2308, "worker-9", "REVIEW_REQUIRED")], readyRows: [], required: ["gate"] });
   assert.deepEqual(orders.map((o) => [o.cause, o.session]), [["pr-review-blocked", "worker-9"]]);
-  assert.match(orders[0].prompt, /prompt:session -- reviewer-2308/);
+  assert.match(orders[0].prompt, /prompt:session reviewer-2308/);
   assert.match(orders[0].prompt, /never entered the reviewer lane/);
 });
 

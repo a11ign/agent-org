@@ -87,7 +87,7 @@ export function snapshotDirFor(root, fs = LIVE_FS) {
 /** Resolved once, from the PROJECT's checkout (`HOME_CHECKOUT`) -- never from the directory a caller happened to launch in. */
 export const SNAPSHOT_DIR = snapshotDirFor(HOME_CHECKOUT);
 
-/** #1352: the local git config key `npm run primary:mark` sets on the fleet-driving checkout. */
+/** #1352: the local git config key `pnpm run primary:mark` sets on the fleet-driving checkout. */
 export const PRIMARY_MARK_KEY = "a11y.primaryCheckout";
 
 /**

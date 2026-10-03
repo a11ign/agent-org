@@ -35,8 +35,8 @@
 // helper that reimplements merging would be the cleverness the SRE Workbook note in CLAUDE.md warns about,
 // in the one place where being wrong reverts somebody's work.
 //
-//   npm run rescue:hunk -- --from=<branch> --file=<path>            # report only, writes nothing
-//   npm run rescue:hunk -- --from=<branch> --file=<path> --apply    # write the merged file
+//   pnpm run rescue:hunk --from=<branch> --file=<path>            # report only, writes nothing
+//   pnpm run rescue:hunk --from=<branch> --file=<path> --apply    # write the merged file
 //
 // A conflicted hunk -- one replacing a line main changed since the base -- is REFUSED, and the override
 // is `A11Y_RESCUE_REASON="<why>"`, which is PRINTED, so a deliberate override is in the log rather than in
@@ -95,7 +95,7 @@ export function decide({ conflicts, reason }) {
     why: `${conflicts} hunk(s) would replace a line main changed since the base. Read the region(s) above: `
       + "if main's side is a redaction, a rename or a correction, the branch's line is STALE and must not "
       + "win. To take the branch's side anyway, name why:\n"
-      + '  A11Y_RESCUE_REASON="<why>" npm run rescue:hunk -- --from=<branch> --file=<path> --apply',
+      + '  A11Y_RESCUE_REASON="<why>" pnpm run rescue:hunk --from=<branch> --file=<path> --apply',
   };
 }
 
@@ -147,7 +147,7 @@ export function linesGained(before, after) {
 
 function main() {
   refuseUnknownFlags(["--from=", "--file=", "--apply"],
-    { entry: import.meta.url, command: "npm run rescue:hunk --" });
+    { entry: import.meta.url, command: "pnpm run rescue:hunk" });
   const from = flagValue(process.argv, "from");
   const file = flagValue(process.argv, "file");
   if (!from || !file) {

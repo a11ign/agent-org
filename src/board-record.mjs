@@ -193,7 +193,7 @@ export function writeRecord(draft, dir, records = []) {
 
 function usage() {
   return "Usage:\n"
-    + "  npm run board:record -- --from=<draft.json>   validate, check the body cap, then write it\n"
+    + "  pnpm run board:record --from=<draft.json>   validate, check the body cap, then write it\n"
     + "\nThe draft is the record you intend to add, in the shape `docs/board/reported/achievements/`\n"
     + "already holds: claim, boardClaim, evidence, issue, reportedBy, at, order. It is written into that\n"
     + "directory only if the body still fits with it; otherwise nothing is written and the refusal names\n"

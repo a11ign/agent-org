@@ -33,7 +33,7 @@ import path from "node:path";
 import { REPO } from "./project-identity.mjs";
 import { HOME_CHECKOUT } from "./project-config.mjs";
 // A LEAF module with no imports of its own (#804), so this cannot form a cycle -- the same property that
-// let `close-rows-for-merged-pr.mjs` import it under the no-`npm ci` constraint.
+// let `close-rows-for-merged-pr.mjs` import it under the no-`pnpm install` constraint.
 import { READY_LABEL } from "./claim-labels.mjs";
 // The gate predicates live in `board-gates.mjs` (#429), a module with no process in it, so a test of the
 // selection runs where a test of this file cannot. Re-exported: no importer of this file changes.

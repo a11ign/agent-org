@@ -33,7 +33,7 @@
 // This audit REPORTS the debris; it does not strip it. The tracker's labels are `product-manager`'s, and
 // `ceo` has ruled that a bulk label mutation is their deliberate act, not a side effect of a script change.
 //
-//   npm run ready:audit           print every violation and exit 1, or exit 0 with the count
+//   pnpm run ready:audit           print every violation and exit 1, or exit 0 with the count
 import { execFileSync } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { realpathSync, readFileSync } from "node:fs";
@@ -1037,7 +1037,7 @@ export function statusLabelDisagreements(issues, boardItems) {
  * @param {number} number @param {string} kind
  */
 export function statusLabelRemedy(number, kind) {
-  const promote = `\`npm run row-file -- --promote=${number} --session=<you>\``;
+  const promote = `\`pnpm run row-file --promote=${number} --session=<you>\``;
   if (kind === STATUS_LABEL_KINDS.INTERRUPTED_PROMOTION) {
     return `an INTERRUPTED PROMOTION -- the act moves the Status first and writes the labels second, and the `
       + `label write did not land. Finish it: ${promote} (idempotent)`;

@@ -64,7 +64,7 @@
 // "arm the standing queue", and running the sweep anyway would answer a question nobody asked.
 //
 // THE IMPORT IS RELATIVE, never `@a11ign/screenreader-fleet/cli-flags`. The package specifier resolves to
-// `dist/cli-flags.mjs`, so it needs `npm ci` AND a build to have happened -- and this job deliberately has
+// `dist/cli-flags.mjs`, so it needs `pnpm install` AND a build to have happened -- and this job deliberately has
 // neither, only `actions/checkout`. #330 and #331 are what that circular bootstrap costs: a top-level
 // workspace import in `build-packages.mjs` took `main` down, and every worktree symlinking `node_modules`
 // to a sibling's inherited a stale `dist` and never saw it fail locally. `cli-flags.mjs` itself imports
@@ -126,7 +126,7 @@ export function decideAndWarn({ number, labels, checkRunCount }, { log = console
       ? `a \`${SESSION_PREFIX}\` label is OWNERSHIP, not a hold, since 2026-09-09`
       : "no code reads it";
     log(`SWEEP: #${number} carries \`${label}\`, which looks like a hold but is not one (${why}) -- a hold is `
-      + `\`npm run pr:hold -- ${number} --session=<name>\` (\`${HOLD_PREFIX}<name>\`)`);
+      + `\`pnpm run pr:hold ${number} --session=<name>\` (\`${HOLD_PREFIX}<name>\`)`);
   }
   return sweepDecision({ labels, checkRunCount });
 }
@@ -332,7 +332,7 @@ export function unarmedCandidates(nodes) {
  * state must be added in ONE place; this keeps the read that feeds it in one place too.
  *
  * `work-gate.mjs` is that second reader. It cannot import the CALL -- it injects its own `run` and must
- * keep working before any `npm ci` -- but it must not ask a different question either.
+ * keep working before any `pnpm install` -- but it must not ask a different question either.
  *
  * @param {string} repo `owner/name`
  * @returns {string[]}

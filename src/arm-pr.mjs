@@ -60,7 +60,7 @@ const gh = (args, run = defaultRun) => run("gh", args).trim();
 /**
  * MAY THIS PR BE ARMED? -- pure, so it can be driven with real shapes rather than asserted against the
  * text of this file. The first version of #645's tests checked that the workflow CALLS this script and
- * that this script MENTIONS the predicate, and `npm run mutate` reported THE GUARD DID NOT BITE when the
+ * that this script MENTIONS the predicate, and `pnpm run mutate` reported THE GUARD DID NOT BITE when the
  * hold check was disabled: asserting on wiring is not asserting on behaviour, which is the same defect
  * as a pin that watches the wrong half.
  *

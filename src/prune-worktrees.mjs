@@ -80,7 +80,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node
 import { join, relative } from "node:path";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 // RELATIVE for the same reason as `cli-flags.mjs` below (#1373): `row-claim.mjs` imports this file before
-// `npm ci`, where a package specifier dies.
+// `pnpm install`, where a package specifier dies.
 import { worktreeOwner } from "./worktree-owner.mjs";
 import { claimRefusal, recordRemoval } from "./worktree-removal.mjs";
 
@@ -578,7 +578,7 @@ export function unverifiedRecords(worktreePath, primaryPath, { hash = sha256OfFi
  *   - an UNSTAMPED tree, which is every tree made before #1128 and any made without the stamp. Measured
  *     here 2026-09-22: 6 of the 97 merged linked worktrees, one of them a live session's role tree.
  *     `worktree-owner.mjs` refuses to invent a stamp for a tree whose owner nobody recorded, and
- *     inventing one here would name whoever ran the prune; the remedy is `npm run worktree:stamp`.
+ *     inventing one here would name whoever ran the prune; the remedy is `pnpm run worktree:stamp`.
  *   - a stamped tree whose owner finished and never released it, which is now refused for ever. That is
  *     the cost, and it is bounded by measurement rather than by hope: on this host 8 of 129 linked trees
  *     are held, 83 of the 91 stamped-and-merged ones still remove. This is not "stop pruning" wearing a
@@ -1165,7 +1165,7 @@ async function main() {
   refuseUnknownFlags(["--apply"],
     { entry: import.meta.url, command: "node packages/agent-org/src/prune-worktrees.mjs" });
   // THE DEFAULT IS THE LISTING, AND IT IS THE WRONG WAY ROUND UNTIL IT IS NOT. Measured 2026-09-09: a
-  // session ran `npm run worktrees:prune` to READ its breakdown before writing a row about worktree
+  // session ran `pnpm run worktrees:prune` to READ its breakdown before writing a row about worktree
   // accounting, and it removed three worktrees belonging to three other sessions. No work was lost -- the
   // tool refuses anything dirty or unmerged -- but a command whose name reads as a report, on a host with
   // nine live sessions, is one somebody runs to look.
@@ -1189,7 +1189,7 @@ import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 // #1373: RELATIVE, not `@a11ign/screenreader-fleet/cli-flags` -- `row-claim.mjs` imports this file now, and
 // `close-rows-for-merged-pr.mjs`, `close-rows-sweep.mjs` and `workflow-run-liveness.mjs` run it before
-// `npm ci`, where a package specifier dies (`pre-install-import-graph.test.ts`).
+// `pnpm install`, where a package specifier dies (`pre-install-import-graph.test.ts`).
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
   main();

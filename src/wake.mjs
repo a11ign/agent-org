@@ -35,7 +35,7 @@ import { readFileSync, writeFileSync, mkdirSync, realpathSync, existsSync, readd
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { createHash } from "node:crypto";
-// RELATIVE, not the package specifier -- this must run before any `npm ci`/build, the same constraint
+// RELATIVE, not the package specifier -- this must run before any `pnpm install`/build, the same constraint
 // `work-gate.mjs` and `org-watch.mjs` state at their own imports.
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { profileFor, agentArgs } from "./worker-profile.mjs";
@@ -1213,9 +1213,8 @@ export function linkKeyedDependencies({ path, repoRoot, fs = REAL_LINK_FS }) {
   if ("unreadable" in declared) return declared.unreadable;
   const missing = Object.entries(declared.packages).filter(([name]) => !fs.existsSync(`${modules}/${name}`));
   if (missing.length > 0) {
-    const install = missing.map(([name, range]) => `"${name}@${range}"`).join(" ");
     return `${modules} lacks ${namedList(missing.map(([name]) => name))}, which ${path}/package.json declares; supply `
-      + `${missing.length === 1 ? "it" : "them"} with \`cd ${repoRoot} && npm install --no-save --no-package-lock ${install}\``;
+      + `${missing.length === 1 ? "it" : "them"} with \`cd ${repoRoot} && pnpm install --no-lockfile\`, which installs every declared dependency and writes no lockfile`;
   }
   if (!fs.existsSync(modules)) return null;
   try {
@@ -1393,7 +1392,7 @@ export function withReviewCheckout(order, checkout, pr) {
     + "sandbox cannot write `.git`, so `git checkout`, `git fetch` and `git worktree` are refused there: review from "
     + "this path and do not make another checkout.\n\n"
     + "Its dependencies are already linked in (`node_modules`, linked for you: do not install or link your own), so the pull "
-    + "request's Acceptance runs there as written, after `npm run build` when it needs `dist`. Your npm cache is "
+    + "request's Acceptance runs there as written, after `pnpm run build` when it needs `dist`. Your npm cache is "
     + `\`${checkout.path}/node_modules/.cache/npm\`, the one place npm can write: set \`npm_config_cache\` to it if your pane does not.\n\n`
     + `SIGN AS \`${order.session}\`: your pane may not hold \`A11Y_REVIEWER_SESSION\` (one started outside the tick does not), so `
     + `post the verdict as \`${doorEnvironment(order.session)} pr-review-verdict <n> <convinced|not-convinced> <file>\` `
@@ -1840,7 +1839,7 @@ export function parseOrders(text) {
 // which is why `deliver`'s refusal path can afford to drop a cause on the floor and `prompt-session.mjs`'s
 // could not.
 //
-// MEASURED 2026-09-22, `worker-tooling`, filing draft #1963 (#1966). `npm run prompt:session -- reviewer`
+// MEASURED 2026-09-22, `worker-tooling`, filing draft #1963 (#1966). `pnpm run prompt:session reviewer`
 // refused at 18:47:48Z, 18:49:19Z and 18:50:49Z -- `"reviewer" is working` -- and landed at 18:52:25Z only
 // because the author held a retry loop open inside its own turn. The three refusals left no trace on the
 // row, the PR, this ledger or any log. An author who calls the command ONCE, which is all
@@ -5623,7 +5622,7 @@ export function thrashEscalationPrompt(label) {
     + `${label} WAS NOT RESUMED: whatever filled its context is still there, unread, and "continue where you left off" would very `
     + "likely refill it and trip the same guard again -- the defect this exists to stop, not repeat.\n"
     + "READ ITS ROW AND ITS WORKTREE FIRST, then pick one: RELEASE the claim so a fresh instance starts clean in the same worktree "
-    + `(nothing built is lost); or, if it should keep the context it has, prompt it explicitly with \`npm run prompt:session -- `
+    + `(nothing built is lost); or, if it should keep the context it has, prompt it explicitly with \`pnpm run prompt:session `
     + `${label} "/clear, then re-read the row and continue"\` rather than a bare resume.`;
 }
 
@@ -5801,7 +5800,7 @@ function rowStateOf(row) {
 }
 
 /**
- * `npm run spawn:cycles`: print the current clean run and the ledger's last line, from the same ledger the
+ * `pnpm run spawn:cycles`: print the current clean run and the ledger's last line, from the same ledger the
  * teardown writes. Kept out of `main` so a `--cycles` call never reads the tick's stdin.
  * @param {string} ledgerPath
  */

@@ -3,8 +3,8 @@
 // command: say whether the board report's cron is still arriving, and comment once if not
 // HAS THE BOARD EDITION STOPPED ARRIVING? — the check that does not live inside the job being checked.
 //
-//   npm run board:liveness            say whether editions are still arriving
-//   npm run board:liveness -- --post  and comment ONCE on the report issue if they are not
+//   pnpm run board:liveness            say whether editions are still arriving
+//   pnpm run board:liveness --post  and comment ONCE on the report issue if they are not
 //
 // ## The gap this closes, and why the previous shape could not
 //
@@ -448,14 +448,14 @@ function postOnce(issue, verdict) {
     return;
   }
   gh(["issue", "comment", issue, "--repo", REPO, "--body",
-    `**${marker}**\n\n${verdict.detail}\n\n---\n\nReported by \`npm run board:liveness\`, which runs on `
+    `**${marker}**\n\n${verdict.detail}\n\n---\n\nReported by \`pnpm run board:liveness\`, which runs on `
     + "push rather than on a schedule: a watchdog that is itself scheduled is disabled by the same "
     + "inactivity it exists to detect."]);
 }
 
 function main() {
   refuseUnknownFlags(["--post", "--issue"],
-    { entry: import.meta.url, command: "npm run board:liveness" });
+    { entry: import.meta.url, command: "pnpm run board:liveness" });
   const argv = process.argv.slice(2);
   const issue = argv.find((a) => a.startsWith("--issue="))?.split("=")[1] ?? ISSUE;
 

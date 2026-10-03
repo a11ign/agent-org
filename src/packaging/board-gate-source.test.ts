@@ -70,6 +70,18 @@ test("#1539 NEGATIVES: promote, capture-only and rules-real-pages-update never t
   }
 });
 
+test("#2896: a release-gate record written by `pnpm run` -- the banner with the working directory after it -- still takes the slot", () => {
+  // pnpm 10.34.5 prints `> <package>@<version> <script> <cwd>` and then a second `> <script body>` line, where npm printed the first alone.
+  // A reader that knew only npm's shape saw NO banner in a pnpm record and kept the slot on an older reading, which is the safe direction and the wrong answer.
+  const banner = "> a11ign-monorepo@0.0.0 rules:real-pages";
+  const pnpm: Gate = { ...RELEASE_GATE_0914, at: LATER,
+    output: RELEASE_GATE_0914.output.replace(banner, `${banner} /home/agent/repos/a11y-witness\n> tsx packages/lab/scripts/check-real-page-findings.ts`) };
+  assert.ok(pnpm.output.includes(`${banner} /home/agent/repos/a11y-witness`), "the variant really carries pnpm's banner");
+  assert.equal(isConformanceGate(pnpm), true, "one pnpm banner naming rules:real-pages is the stage");
+  const another: Gate = { ...pnpm, output: pnpm.output.replace(banner, "> a11ign-monorepo@0.0.0 lint /home/agent/repos/a11y-witness") };
+  assert.equal(isConformanceGate(another), false, "THE CONTROL: the same shape naming another script is not, so the tail did not make every banner match");
+});
+
 test("#1539 NEGATIVES: a release-gate record that is not exactly one rules:real-pages stage with a verdict is excluded", () => {
   const banner = "> a11ign-monorepo@0.0.0 rules:real-pages";
   assert.ok(RELEASE_GATE_0914.output.includes(banner), "the variants below change this banner, so it must be there");

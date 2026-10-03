@@ -43,8 +43,8 @@
 // `extractClosesDeclaration`'s single `.exec()` reported only the first of two separate `Closes` lines,
 // silently truncating a fact GitHub itself still honoured in full. #540 was the second: `extractSection`'s
 // `lines.findIndex()` did the identical thing to a second `Acceptance:`/`Refutation:` header, except it
-// failed SILENTLY rather than truncating -- fed `"Acceptance: npm test\n\ntext\n\nAcceptance: npm run
-// lint"`, it reported `{commands: ["npm test"]}` with no trace the second header ever existed. Neither
+// failed SILENTLY rather than truncating -- fed `"Acceptance: pnpm test\n\ntext\n\nAcceptance: pnpm run
+// lint"`, it reported `{commands: ["pnpm test"]}` with no trace the second header ever existed. Neither
 // function chose "first" on purpose; it fell out of `findIndex`/`.exec()` being the obvious call, twice.
 //
 // #527 AND #540 CHOSE DIFFERENT REMEDIES, DELIBERATELY -- read `headerIndices`' own comment before
@@ -89,7 +89,7 @@ import { RESOURCES, FLEET_QUESTION, ACCEPTANCE_FIELD, CLOSES_FIELD } from "./pro
 // `corpus: false`.
 /** @typedef {{ history: boolean, token: boolean, fleet: boolean, corpus?: boolean }} JobCapabilities */
 
-// `npm run fleet:*` and its siblings -- the resource ban every worker/agent role file below `ceo` and
+// `pnpm run fleet:*` and its siblings -- the resource ban every worker/agent role file below `ceo` and
 // `orchestrator` carries, verbatim, elsewhere in this repo. A GitHub-hosted runner is not one of the
 // exceptions to it.
 // #1912: THE NAMED ENTRIES NAME A THING, where every other pattern names an INVOCATION. `fleet:status` in a
@@ -379,7 +379,7 @@ const CORPUS_PATTERNS = /** @type {[RegExp, string][]} */ ([
   [/\bscorer:shortcuts\b/, "reads runs/, which is gitignored and absent in CI"],
 ]);
 
-// #516: `npm run mutate` (`packages/guards/src/mutation-check.mjs`) AND `Refutation:` HAVE OPPOSITE EXIT CONVENTIONS.
+// #516: `pnpm run mutate` (`packages/guards/src/mutation-check.mjs`) AND `Refutation:` HAVE OPPOSITE EXIT CONVENTIONS.
 // `mutate`'s own contract (see that file's header) is exit 0 = the guard BITES -- the GOOD outcome.
 // `Refutation:` reads success as any NON-ZERO exit (#438) -- so a `Refutation:` line naming `mutate`
 // inverts the verdict, and the dangerous half is not the confusing red: a guard that DID NOT bite exits 1,
@@ -867,8 +867,8 @@ const fingerprint = (a, b) => a + b;
  * A STATIC import breaks two pre-install entries, and `pre-install-import-graph.test.ts` said so by name
  * rather than my assuming the CI ordering held everywhere: `arm-pr.mjs` and `workflow-run-liveness.mjs`
  * both reach this module for `extractClosesDeclaration` -- one function that touches none of this -- and
- * both run before `npm ci`, where a package specifier dies with ERR_MODULE_NOT_FOUND. The acceptance job
- * itself runs after `npm ci --ignore-scripts` and `npm run build`, so the parser is there when needed.
+ * both run before `pnpm install`, where a package specifier dies with ERR_MODULE_NOT_FOUND. The acceptance job
+ * itself runs after `pnpm install --ignore-scripts` and `pnpm run build`, so the parser is there when needed.
  *
  * AND WHEN IT IS NOT, THE FALLBACK OVER-CHARGES RATHER THAN UNDER-CHARGES: no parser means the old
  * full-text scan, which refuses more than it should. That is the safe direction for a guard whose other
@@ -915,7 +915,7 @@ function loadTypescript() {
  * is no reachability to read, so `referenced` is `null` and the walk follows every bound name -- the old
  * over-charge, the safe direction.
  *
- * PARSED, NOT BRACE-MATCHED. `typescript` is a declared devDependency and this script runs after `npm ci`
+ * PARSED, NOT BRACE-MATCHED. `typescript` is a declared devDependency and this script runs after `pnpm install`
  * in `reusable-acceptance.yml`, so the module's own statements come from `ts.createSourceFile`. A
  * hand-rolled brace matcher would have to survive template literals and regex literals containing braces,
  * and a wrong one fails in the direction that looks like success -- the #731 trap, one layer over.
@@ -1030,7 +1030,7 @@ const DECLARED_SPAWNS = [...CHARGED_SPAWNS, "npmCliInvocation"];
  * #1449: A `gh` SPAWN, NOT THE TWO LETTERS -- one of `CHARGED_SPAWNS` with `gh` as its whole quoted first argument.
  * The ONE copy: the token charge below uses it, and `gh-token-jobs.test.ts` imports it, so the spawns that make a
  * test need a token and the spawns that make a CI job need GH_TOKEN cannot drift apart. `execFile` joined it on #1449;
- * `npmCliInvocation` did not, because it runs only `npx` or `npm` (`npm-cli-executable.mjs`), never `gh`.
+ * `npmCliInvocation` did not, because it runs only npm's own CLIs (`npm-cli-executable.mjs`), never `gh`.
  */
 export const SPAWNS_GH = new RegExp(`(?:${CHARGED_SPAWNS.join("|")})\\s*\\(\\s*(['"\`])gh\\1`);
 
@@ -1364,7 +1364,7 @@ export function unmetRequirements(requirements, capabilities) {
  *
  * `unmetCommandRequirements` and `unmetCommandClosureRequirements` both opened with
  * `if (!/tsx --test/.test(command)) return []`, so they asked whether the command NAMED a file needing a
- * capability. `npm test` names none and runs them all.
+ * capability. `pnpm test` names none and runs them all.
  *
  * THAT IS THE ADJACENT-PROPERTY SHAPE AGAIN, and it cost the whole afternoon's PR checks. #513 split
  * `row-claim-live.test.ts` out precisely so a `tsx --test` command naming it could be refused, and that
@@ -1377,10 +1377,10 @@ export function unmetRequirements(requirements, capabilities) {
  * PR's author for a line they never wrote. Refused, it is green with a printed reason.
  *
  * A whole-suite command requires the UNION of what every file it runs requires -- so the predicate and
- * the population must answer about the SAME script, which until #2153 they did not. This said `npm test`
+ * the population must answer about the SAME script, which until #2153 they did not. This said `pnpm test`
  * runs "the recursive `.test.ts` glob under every package's `src`", and that premise stopped being true
  * when the org tooling was split out: `test:ts` globs eight product packages, `test:org` the four org
- * ones, `test:all` every package. Reading the wide glob for the narrow command charged `npm test` 419
+ * ones, `test:all` every package. Reading the wide glob for the narrow command charged `pnpm test` 419
  * files it cannot load and refused it for one of them; not knowing `test:org`/`test:all` by name let the
  * command that DOES run all of them through the gate having been charged nothing, which is the
  * 2026-09-09 failure above in the other direction. So this is no longer a bare yes/no: `suiteScriptsFor`
@@ -1405,34 +1405,34 @@ export function runsTheWholeSuite(command) {
  */
 export const SUITE_SCRIPTS = ["test:ts", "test:org", "test:all", "test"];
 
-// `(?![:\w-])` AND NOT `\b`: `\b` after `test` matches `npm run test:python`, whose population is the
+// `(?![:\w-])` AND NOT `\b`: `\b` after `test` matches `pnpm run test:python`, whose population is the
 // pytest tree rather than the `.test.ts` glob this function's callers walk. Refusing that command for a
 // requirement declared by a TypeScript file would be a refusal about a population it never runs.
 // `g` AND `matchAll` ONLY, NEVER `exec`/`test` (#2207): a chained command names more than one script,
 // and a global regex driven by `exec` carries `lastIndex` between calls, so the second caller would start
 // reading in the middle of a different command. `matchAll` works on a copy and leaves this one alone.
 const SUITE_COMMAND = new RegExp(
-  `(?:^|&&|\\|\\||;)\\s*npm\\s+(?:run\\s+)?(${SUITE_SCRIPTS.join("|")})(?![:\\w-])`, "g");
+  `(?:^|&&|\\|\\||;)\\s*p?npm\\s+(?:run\\s+)?(${SUITE_SCRIPTS.join("|")})(?![:\\w-])`, "g");
 
 /**
  * EVERY `package.json` script a command invokes, in the order it invokes them -- empty when it is not a
  * whole-suite command at all.
  *
- * THE RESOLUTION IS THE POINT (#2153). `npm test` and `npm run test:all` are not the same population and
+ * THE RESOLUTION IS THE POINT (#2153). `pnpm test` and `pnpm run test:all` are not the same population and
  * must not be charged the same one; naming the script is what lets `suiteTestFiles` read that script's
- * OWN glob instead of a single hard-wired one. `npm test` resolves to the `test` script, and
- * `suiteTestFiles` follows its `npm run` delegation from there -- this function does not decide that
+ * OWN glob instead of a single hard-wired one. `pnpm test` resolves to the `test` script, and
+ * `suiteTestFiles` follows its `pnpm run` delegation from there -- this function does not decide that
  * `test` means `test:ts`, because `package.json` already says so.
  *
  * PLURAL, AND #2207 IS WHY. This returned the FIRST match, from one non-global `exec`. The pattern's own
  * `(?:^|&&|\|\||;)` alternation exists to recognise a whole-suite call anywhere in a CHAIN, so
- * `npm run test:ts && npm run test:org` is a command this grammar accepts -- and it was charged
+ * `pnpm run test:ts && pnpm run test:org` is a command this grammar accepts -- and it was charged
  * `test:ts`'s 220 files while the shell ran both scripts' 641. The org half's token requirement went
  * unread and the chain classified `runnable` in a job with no token: the 2026-09-09 failure again, from
  * the direction #2153 left open. A command runs every script it names, so it is charged every script it
  * names, and the union is `testFilesRunBy`'s to take.
  *
- * Deduplicated, because `npm test && npm test` runs one population twice and requires it once.
+ * Deduplicated, because `pnpm test && pnpm test` runs one population twice and requires it once.
  *
  * @param {string} command
  * @returns {string[]}
@@ -1847,7 +1847,7 @@ export function labFetchPathReason(body, tool, deps = {}) {
 /**
  * #2099: THE SAME VERDICT, AT FILING TIME. `pr-open` already writes a refusal a reader can follow; what
  * it cannot do is write it before a builder has claimed the row and built the change. This is that
- * refusal moved to where the filer still has the context -- #879's shape, which `npm test` (see
+ * refusal moved to where the filer still has the context -- #879's shape, which `pnpm test` (see
  * `wholeSuiteAcceptanceReason`) has had since #1943 and `gh` has not.
  *
  * A DECLARATION, NEVER A BLANKET REFUSAL, and the ruling is `product-manager`'s on this row: #2084 is a
@@ -1912,7 +1912,7 @@ function suiteGlobsOf(scripts, name, seen = new Set()) {
  * Every test file ONE named suite script runs, FROM THAT SCRIPT'S OWN GLOB rather than a second copy of it.
  *
  * TAKES THE SCRIPT NAME, AND #2153 IS WHY. This used to read `test:all`'s glob for every caller while
- * `runsTheWholeSuite` recognised only `npm test`/`npm run test:ts` -- so the narrow commands were charged
+ * `runsTheWholeSuite` recognised only `pnpm test`/`pnpm run test:ts` -- so the narrow commands were charged
  * the wide population (419 of 641 files they never load, one of which refused them) and the wide ones
  * were not recognised at all and charged nothing. The predicate names the script now, and the population
  * comes from that same script: one fact, read once, in the file that already states it.
@@ -1922,7 +1922,7 @@ function suiteGlobsOf(scripts, name, seen = new Set()) {
  * cannot be read, or the named script resolves to no glob at all, this THROWS rather than returning `[]`:
  * an empty population would make that whole-suite command pass the capability gate, which is exactly the
  * hole this function was added to close -- and an unrecognised script name must reach that throw rather
- * than fall through to "this command names no test files", which is how `npm run test:all` used to pass.
+ * than fall through to "this command names no test files", which is how `pnpm run test:all` used to pass.
  *
  * @param {string} script a `package.json` script name, e.g. `test`, `test:ts`, `test:org`, `test:all`
  * @returns {string[]}
@@ -1934,7 +1934,7 @@ export function suiteTestFiles(script) {
   try {
     scripts = JSON.parse(readFileSync("package.json", "utf8")).scripts;
   } catch (cause) {
-    throw new Error("acceptance-commands: could not read package.json to find what `npm run " + script
+    throw new Error("acceptance-commands: could not read package.json to find what `pnpm run " + script
       + "` runs -- refusing to report a whole-suite command as needing nothing.", { cause });
   }
   const globs = suiteGlobsOf(scripts, script);
@@ -1969,12 +1969,12 @@ function testFilesRunBy(command) {
   return [...new Set([...scripts.flatMap((script) => suiteTestFiles(script)), ...named])];
 }
 
-// #2724: EVERY `npm run <script>` NAMED, whatever the script -- unlike `SUITE_COMMAND`, which only
+// #2724: EVERY `pnpm run <script>` NAMED, whatever the script -- unlike `SUITE_COMMAND`, which only
 // recognises the four names in `SUITE_SCRIPTS`. `board:settle` matches this and not that: it names no
 // `*.test.ts` glob, so `testFilesRunBy` returns nothing for it and `unmetCommandClosureRequirements` never
 // walked its module at all. `g`/`matchAll` for the same reason #2207 gives `SUITE_COMMAND` a global flag: a
 // chain names more than one script.
-const NPM_RUN_SCRIPT = /(?:^|&&|\|\||;)\s*npm\s+run\s+([\w:-]+)(?![:\w-])/g;
+const PACKAGE_SCRIPT_RUN = /(?:^|&&|\|\||;)\s*p?npm\s+run\s+([\w:-]+)(?![:\w-])/g;
 
 /**
  * #2724: the ONE file `scriptBody` runs, when it is nothing but a bare `node <file>` invocation -- optional
@@ -1983,7 +1983,7 @@ const NPM_RUN_SCRIPT = /(?:^|&&|\|\||;)\s*npm\s+run\s+([\w:-]+)(?![:\w-])/g;
  * is exactly this shape; a script that chains further commands, or does not invoke `node` at all, resolves
  * to `null` -- this only ever ADDS a file to check, never guesses one where the shape is ambiguous.
  *
- * #3063: `agent-org <command> [flags]` (also `pnpm exec agent-org`, `npx agent-org`) is the one exception to "the
+ * #3063: `agent-org <command> [flags]` (also `pnpm exec agent-org`) is the one exception to "the
  * file named is the file run": the project runs the tool through its `bin`, so the file is the PROGRAM the tool's
  * command table names for `<command>`, under the tool's `src/`. `commands` is that table (`commandTable`); a
  * command it does not name, or no table, resolves to `null`.
@@ -2003,7 +2003,7 @@ const SCRIPT_FILE = /\.[cm]?[jt]sx?$/;
 
 /**
  * The command name when `tokens` run the tool through its `bin` (`agent-org <command>`, `pnpm exec agent-org
- * <command>`, `npx agent-org <command>`), else null. A flag where the command should be is no command.
+ * <command>`, `pnpm exec agent-org <command>`), else null. A flag where the command should be is no command.
  * @param {string[]} tokens
  * @returns {string | null}
  */
@@ -2063,9 +2063,9 @@ function programFile(program) {
 }
 
 /**
- * #2724: every operational script's resolved entry file that `command` invokes via `npm run <script>` --
+ * #2724: every operational script's resolved entry file that `command` invokes via `pnpm run <script>` --
  * the `SPAWNS_GH`-through-a-script-name population #621's closure walk could reach for a `.test.ts` entry
- * but never for an arbitrary npm script name, because nothing before this asked `npm run <script>` what
+ * but never for an arbitrary package script name, because nothing before this asked `pnpm run <script>` what
  * file it runs. `SUITE_SCRIPTS` is excluded: those name a `*.test.ts` glob, already walked by
  * `testFilesRunBy`'s own suite-script branch, not a single module this function would resolve to one file.
  * @param {string} command
@@ -2079,7 +2079,7 @@ function operationalScriptEntries(command, commands) {
   } catch {
     return [];
   }
-  const names = [...command.trim().matchAll(NPM_RUN_SCRIPT)].map((match) => match[1])
+  const names = [...command.trim().matchAll(PACKAGE_SCRIPT_RUN)].map((match) => match[1])
     .filter((name) => !SUITE_SCRIPTS.includes(name));
   return [...new Set(names)]
     .map((name) => (typeof scripts[name] === "string" ? singleNodeInvocation(scripts[name], commands) : null))
@@ -2152,7 +2152,7 @@ function stripLeadingCd(command) {
 function tsxTestFileArgs(command) {
   const withoutTrailingComment = stripLeadingCd(command).replace(/(?:^|\s)#.*$/, "");
   const tokens = withoutTrailingComment.split(/\s+/).filter(Boolean);
-  // #3026: ONLY WHAT FOLLOWS `--test` IS THE RUNNER'S ARGUMENTS. The runner's own prefix (`pnpm exec`, `npx`, an
+  // #3026: ONLY WHAT FOLLOWS `--test` IS THE RUNNER'S ARGUMENTS. The runner's own prefix (`pnpm exec`, an
   // env assignment) is no file, and `testFileArgumentsResolve` reported `pnpm, exec` as "matched no file" for
   // the very spelling the engineer brief tells a row to use.
   const afterRunner = tokens.slice(tokens.indexOf("--test") + 1);
@@ -2271,8 +2271,8 @@ function proseFirstToken(token, exists) {
  * #446: A THIRD VERDICT, "prose", for a line that was never a command at all -- either its first token
  * resolves to no executable anywhere (`"full suite green, 3306 pass 0 fail"` -> no `full`), or it resolves
  * to one of a small set of builtins whose exit code can never verify anything (`echo`, `true`, `:`, `test`,
- * `time`, `[`). Checked AFTER the existing fleet/lab/corpus refusals, deliberately: `npm run fleet:deploy`
- * has a perfectly real executable (`npm`) as its first token, and must still be REFUSED for the reason
+ * `time`, `[`). Checked AFTER the existing fleet/lab/corpus refusals, deliberately: `pnpm run fleet:deploy`
+ * has a perfectly real executable (`pnpm`) as its first token, and must still be REFUSED for the reason
  * already named there, not reclassified as prose for having a valid executable.
  *
  * `commandExists` IS INJECTABLE (`deps.commandExists`), defaulting to the real, subprocess-free `$PATH`
@@ -2288,7 +2288,7 @@ function proseFirstToken(token, exists) {
  * (see `MUTATE_PATTERN`'s own comment) exists only under `Refutation:`. Checked FIRST, alongside the
  * fleet/lab/corpus refusals and with the identical verdict (`"refused"`, `ok: true`) -- #516's own stated
  * acceptance is that this is the SAME mechanism, a new pattern in the seam that already refuses a command
- * this job cannot honestly interpret, not a new one. `UNNEGATED` only: `! npm run mutate ...` already
+ * this job cannot honestly interpret, not a new one. `UNNEGATED` only: `! pnpm run mutate ...` already
  * un-inverts the exit code at the shell level, so it is left alone -- refusing it too would be enforcing
  * an opinion about the rejected #386/#440 idiom rather than catching the actual collision.
  *
@@ -2370,7 +2370,7 @@ function unparseableConstruct(command) {
 
 /**
  * DOES A `tsx --test` COMMAND'S FILE/GLOB ARGUMENT ACTUALLY MATCH ANYTHING? -- #353's fifth hazard, found
- * on #350 an hour before this shipped: `npx tsx --test "packages/lab/src/packaging/nothing-matches-*"`
+ * on #350 an hour before this shipped: `pnpm exec tsx --test "packages/lab/src/packaging/nothing-matches-*"`
  * exits 0 with NO diagnostic at all when the pattern matches nothing, and a typo'd path MIXED with one
  * real file exits 0 too -- so "the command exited 0" is not proof the tests it claims to run ever ran.
  * Checked BEFORE running, never inferred from the exit code, because the exit code is exactly the thing
@@ -2382,7 +2382,7 @@ function unparseableConstruct(command) {
  * that merely look like paths.
  *
  * #419: A TRAILING `# comment` IS NOT A FILE ARGUMENT. Bash itself already treats an unquoted `#` as
- * starting a comment, so `npx tsx --test foo.test.ts  # 2/2, pass` runs perfectly for real -- but this
+ * starting a comment, so `pnpm exec tsx --test foo.test.ts  # 2/2, pass` runs perfectly for real -- but this
  * check tokenised the whole line and read `#`, `2/2` and `pass` as file arguments nothing on disk could
  * ever match. Stripped for TOKEN EXTRACTION only, never from the command that actually runs: bash was
  * always going to ignore it, so removing it here only makes this check agree with what execution already
@@ -2396,7 +2396,7 @@ export function testFileArgumentsResolve(command) {
   // #728: WHAT THIS CANNOT PARSE, IT MUST NOT MAKE CLAIMS ABOUT.
   //
   // `tsxTestFileArgs` splits the WHOLE line on whitespace, so on
-  // `node packages/guards/src/tree-wide-guards.mjs | xargs npx tsx --test` it reported
+  // `node packages/guards/src/tree-wide-guards.mjs | xargs pnpm exec tsx --test` it reported
   // `matched no file: node, |, xargs` -- a claim about the filesystem, and a false one. `|` is not a
   // filename at all, and a reader following that message goes looking for missing test files.
   //
@@ -2430,7 +2430,7 @@ const SECTION_FIELD_NAMES = [ACCEPTANCE_FIELD, "Refutation", "Mutation"];
  * name, which is the one shape the inline-command form actually means (`Acceptance: <command>`, the shape
  * #353's own acceptance test uses). The single pattern this used to be could not tell the two apart: `##
  * Acceptance:?` and `(.*)` shared one capture group, so `## Acceptance -- old read vs new` and `##
- * Acceptance: npm test` produced the identical shape, and `extractSection` ran the FIRST as a command.
+ * Acceptance: pnpm test` produced the identical shape, and `extractSection` ran the FIRST as a command.
  * Caught live on PR #500: `## Acceptance — old read vs new, on the live queue` sent `— old read vs new, on
  * the live queue` to bash. Before #446 this would have been silently EXECUTED (a real word like `test` at
  * the front exits 0 on any non-empty string, a green acceptance that ran nothing -- #446's own defect,
@@ -2591,15 +2591,15 @@ export function extractMutationSection(body) {
 /**
  * #419: A BACKTICKED COMMAND IS STILL THE COMMAND. This repository's own prose convention wraps a command
  * in single backticks (`` `like this` ``), and that is exactly wrong for a line the extractor hands
- * verbatim to bash -- the backticks stayed attached, so the file check saw `` `npx `` as a token and
+ * verbatim to bash -- the backticks stayed attached, so the file check saw `` `pnpm `` as a token and
  * reported it missing for a command that runs perfectly. Stripped only when they wrap the WHOLE command
  * (start and end), never partial backticks inside one, which are the author's own quoting to preserve.
  *
  * #658: A CLOSING BACKTICK IS ALSO AN UNAMBIGUOUS END-OF-COMMAND MARKER ON ITS OWN, even when it is not
- * the LAST character of the line -- "`npx tsx --test x.test.ts` — 12/12 passing, was 7" used to fail the
+ * the LAST character of the line -- "`pnpm exec tsx --test x.test.ts` — 12/12 passing, was 7" used to fail the
  * whole-line-wrap test above (the backtick was no longer at the end), so the leading backtick stayed
- * attached and became part of the executable name: `is not a command (no executable "`npx")`, a message
- * that sends a reader to check whether npx is installed, never to suspect a stray backtick. A line that
+ * attached and became part of the executable name: `is not a command (no executable "`pnpm")`, a message
+ * that sends a reader to check whether pnpm is installed, never to suspect a stray backtick. A line that
  * OPENS with a backtick and has a later closing one is still exactly the #419 shape; everything after the
  * close is discarded the same way `extractSection`'s own inline-command form already discards everything
  * before a header's colon -- a boundary the author drew, not text this parser gets to keep by default.
@@ -2615,7 +2615,7 @@ function unwrapBackticks(command) {
 // #658: TRAILING PROSE AFTER AN EM-DASH (U+2014 "—", never the ASCII "--") IS COMMENTARY, NEVER PART OF
 // THE COMMAND -- for a BARE line with no backticks at all, which has no delimiter as unambiguous as a
 // closing backtick. Real Acceptance lines write their own result this way --
-// "npx tsx --test x.test.ts — 12/12 passing" -- and a BARE command in this shape used to classify
+// "pnpm exec tsx --test x.test.ts — 12/12 passing" -- and a BARE command in this shape used to classify
 // `runnable` with the prose going straight into argv: the command RAN, for real, with
 // "— 12/12 passing" as extra arguments, and failed on a file that does not exist -- a genuine command
 // failure that blames the test rather than the body that produced it, which is the more expensive half of
@@ -2630,7 +2630,7 @@ function unwrapBackticks(command) {
 //
 // The em-dash is the safe, unambiguous marker for THIS purpose: a real shell command practically never
 // contains that exact Unicode character, unlike the ASCII `--`, which is common, real flag syntax
-// (`npm run build -- --production`) and must NEVER be treated as a delimiter here -- truncating there
+// (`pnpm run build --production`) and must NEVER be treated as a delimiter here -- truncating there
 // would silently drop a command's own arguments.
 const TRAILING_COMMENTARY = /\s+—.*$/;
 
@@ -2663,15 +2663,15 @@ const WORD_ENDING_METACHARACTERS = new Set(["|", "&", ";", "(", ")", "<", ">", "
  * finished yet", and the reason it has to be scanned rather than matched by a regex.
  *
  * A regex counting quotes cannot tell an APOSTROPHE from an opening quote, and this repository's own
- * Acceptance lines are full of both: `npm run x # don't skip` is balanced and must never join, while
+ * Acceptance lines are full of both: `pnpm run x # don't skip` is balanced and must never join, while
  * `node -e 'const a = 1;` is not and must. Tracking state across the line answers both with one rule, and
  * it is bash's own rule -- inside `'`, nothing escapes and `"` is literal; inside `"`, `\` escapes the
  * next character and `'` is literal; outside both, `\` escapes and an unquoted `#` starting a word begins
  * a comment that runs to end of line, so a `'` inside it is text rather than syntax.
  *
- * #2088: THAT EXAMPLE USED TO BE STATED TOO BROADLY, and the overstatement was the defect. `npm run x #
+ * #2088: THAT EXAMPLE USED TO BE STATED TOO BROADLY, and the overstatement was the defect. `pnpm run x #
  * don't skip` is balanced ONLY because of the space before the `#`: the scanner asked whether the
- * previous character was WHITESPACE, so `npm run x;# don't skip` -- two commands to bash, one comment
+ * previous character was WHITESPACE, so `pnpm run x;# don't skip` -- two commands to bash, one comment
  * and an apostrophe inside it -- walked into the comment text, opened a quote on the `'`, never closed
  * it, and JOINED the next Acceptance command onto this one. `acceptance` then reported on a command
  * nobody wrote. A word begins after any of `WORD_ENDING_METACHARACTERS`, not after whitespace alone.
@@ -2713,8 +2713,8 @@ export function endsInsideQuote(text) {
 /**
  * #2178: DOES THIS TEXT END IN A SHELL OPERATOR THAT NEEDS A RIGHT-HAND SIDE? -- the third spelling of "this
  * command is not finished yet", and the least ambiguous: a line ending in `&&`, `||`, `|` or `|&` is never a
- * complete command, so the next line is its other half. Not joining it sent `npm run build &&` to bash as a
- * syntax error and ran `npm test` on its own, where it could pass -- with the condition the author wrote
+ * complete command, so the next line is its other half. Not joining it sent `pnpm run build &&` to bash as a
+ * syntax error and ran `pnpm test` on its own, where it could pass -- with the condition the author wrote
  * gone.
  *
  * A single trailing `&` is NOT here: it backgrounds the command, which is complete. An operator preceded by
@@ -2880,7 +2880,7 @@ function commandLinesAfter(lines, headerIndex) {
     // fenced block below it was never reached. Measured:
     //
     //     INSIDE  the section:  commands = ["History: full"]     <- the prose line, and nothing else
-    //     OUTSIDE the section:  commands = ["npx tsx --test …"]
+    //     OUTSIDE the section:  commands = ["pnpm exec tsx --test …"]
     //
     // The tool then reported "every command above was refused" (true, of a command the author never wrote
     // as one) and "`History: full` is declared, but no named test file declares `// requires: history`"
@@ -2945,7 +2945,7 @@ function runOneCommand(command, run, { prefix, isPass, commandExists: exists, ca
   }
   if (classification.verdict === "refused") {
     // A WHOLE-SUITE COMMAND IS THE ONE REFUSAL THAT FAILS. Every other REFUSED is a legitimate "not this
-    // job's to run": the author named a file, and this job cannot run that particular file. `npm test`
+    // job's to run": the author named a file, and this job cannot run that particular file. `pnpm test`
     // names nothing -- so a refusal of it means the PR has declared no acceptance this job can act on at
     // all, and reporting that as a pass is how "verified" comes to mean "unexamined" (ceo, 2026-09-09).
     // The message names the fix rather than the state, because a refusal a reader cannot follow is one
@@ -3097,7 +3097,7 @@ function runSectionCommands(commands, run, options) {
   // A REFUSED LINE PASSES ONLY BESIDE A RAN LINE. Refusing one named file while another actually runs is
   // a legitimate partial answer; refusing every one of them is no answer at all.
   // ACCEPTANCE ONLY, and the boundary is #516's rather than a convenience. `Refutation:` is optional and
-  // this repo's own rule tells authors to declare `npm run mutate` there, which the classifier refuses BY
+  // this repo's own rule tells authors to declare `pnpm run mutate` there, which the classifier refuses BY
   // DESIGN -- mutate's exit 0 means the guard BITES and `Refutation:` reads success as non-zero, so
   // running it would invert the verdict. Failing a section for executing nothing when the tree told the
   // author to write exactly that would refuse the body its own rule asks for. An Acceptance section has
@@ -3378,7 +3378,7 @@ export function mutationRecordReport({ body, diff }) {
   const named = tests.slice(0, MUTATION_FILES_NAMED);
   return { ok: false, line: `MUTATION: MISSING -- the diff changes ${tests.length} test file(s) (`
     + `${named.join(", ")}${tests.length > named.length ? ", ..." : ""}) and the body carries no `
-    + "`Mutation:` record. Write what you broke and that the test went red (`npm run mutate` makes it "
+    + "`Mutation:` record. Write what you broke and that the test went red (`pnpm run mutate` makes it "
     + "cheap), or `Mutation: none -- <reason>` (a reason is required)" };
 }
 
@@ -3407,7 +3407,7 @@ const MEASURED_HEADING = /^\s*#{1,6}\s*Measured\s*(?:[:\u2014\u2013-].*)?$/i;
 const ANY_HEADING = /^\s*#{1,6}\s+\S/;
 const FENCE_LINE = /^\s*```/;
 const PROMPTED_COMMAND = /^\s*\$\s+\S/;
-const UNPROMPTED_COMMAND = /^\s*(?:npx|npm|node|git|gh|grep|rg|sed|awk|cat|ls|find|python3?|bash|sh|wc)\b/;
+const UNPROMPTED_COMMAND = /^\s*(?:pnpm|npx|npm|node|git|gh|grep|rg|sed|awk|cat|ls|find|python3?|bash|sh|wc)\b/;
 
 /** @param {string | undefined} line @returns {boolean} */
 function looksLikeCommand(line) {
@@ -3511,7 +3511,7 @@ export function changedFilesOfThisPullRequest(cwd = process.cwd()) {
  * @param {string} command
  */
 function duplicatesTheTsJob(command) {
-  return /(?:^|&&|\|\||;)\s*npm\s+(?:run\s+)?(?:test|test:ts|test:org|test:all)(?![:\w-])/
+  return /(?:^|&&|\|\||;)\s*p?npm\s+(?:run\s+)?(?:test|test:ts|test:org|test:all)(?![:\w-])/
     .test(command.trim());
 }
 

@@ -4,7 +4,7 @@
 /**
  * WHOSE STASH IS THAT? — every entry with the branch it was made on (#290).
  *
- *   npm run stash:whose
+ *   pnpm run stash:whose
  *
  * `refs/stash` is in the COMMON git directory, so the pile is shared between every worktree, and
  * `git stash list` shows a position (`stash@{0}`) rather than an owner. In a repository where several
@@ -77,7 +77,7 @@ export function stashLines(entries) {
 }
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "npm run stash:whose" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "pnpm run stash:whose" });
   /** @type {string} */
   let raw;
   try {

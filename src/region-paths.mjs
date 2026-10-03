@@ -9,7 +9,7 @@
 // set of files to both tools, or the fact-stated-twice shape recurs with a second regex that can disagree
 // about what counts as a path -- but `row-reachability.mjs` itself imports
 // `@a11ign/screenreader-fleet/cli-flags` (a package specifier, fine for its own CLI parsing, fatal before
-// `npm ci`/`npm run build`) for its own `main()`. Importing `regionPathsFromBody` FROM that file would
+// `pnpm install`/`pnpm run build`) for its own `main()`. Importing `regionPathsFromBody` FROM that file would
 // have pulled that specifier into `row-claim.mjs`'s own import graph, which is reachable from a
 // pre-install entry: `pre-install-import-graph.test.ts` caught exactly this the first time it was tried.
 // `row-reachability.mjs` was also built to run as a SEPARATE PROCESS on purpose (see its own header on

@@ -3,7 +3,7 @@
 //
 // `readAgents` and `listingIsComplete` (the reviewer teardown's own "is this listing the whole org" check, #2465)
 // used to live only in `wake.mjs`. #2747 needs the SAME read from `claim-stall.mjs`, which is a LEAF (`node:*`, the
-// git-env scrubber and `claim-labels.mjs` only, so `work-gate.mjs` -- which runs before any `npm ci` -- and
+// git-env scrubber and `claim-labels.mjs` only, so `work-gate.mjs` -- which runs before any `pnpm install` -- and
 // `wake.mjs` can both import it without one importing the other). `wake.mjs` is not importable from a leaf: it
 // already imports `claim-stall.mjs` (line 76 there), and a leaf that imported its own importer would be a cycle.
 // So this file is the shared home instead: `node:*` only, importable from both.

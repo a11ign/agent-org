@@ -52,7 +52,7 @@
 // `Closes:` CANNOT SEE A ROW WHOSE DELIVERABLE IS A COMMIT **PLUS** A NON-COMMIT STEP -- #2026, and the
 // second reading `undelivered` now takes. Measured live 2026-09-22 21:47Z: `worker-judge` held #2000,
 // whose PR #2011 was OPEN and green on every required check, and was refused a claim on #2002. #2011
-// declares `Closes: none` and is RIGHT to -- #2000's done-when requires `npm run host:install` to have
+// declares `Closes: none` and is RIGHT to -- #2000's done-when requires `pnpm run host:install` to have
 // been RUN on the agent host, and a `Closes #2000` would auto-close the row on merge, discarding the very
 // step the row exists to guarantee. So the two declarations are in genuine conflict: `Closes: #2000`
 // loses the host step, `Closes: none` holds the author in build indefinitely, and no wording satisfies

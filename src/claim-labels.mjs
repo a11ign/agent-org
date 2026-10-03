@@ -4,7 +4,7 @@
 // Previously duplicated in three files: `row-claim.mjs` (CLAIM_LABEL/STARTED_LABEL, its own real owner),
 // `ready-label-audit.mjs` (READY_LABEL/WAS_READY_LABEL, its own real owner), and
 // `close-rows-for-merged-pr.mjs` (a THIRD copy of all four, "documented duplicates" added across #754 and
-// #782 to avoid a circular import -- that file runs with no `npm ci`/build, so importing `row-claim.mjs`'s
+// #782 to avoid a circular import -- that file runs with no `pnpm install`/build, so importing `row-claim.mjs`'s
 // heavy rule-set graph, or importing back FROM `ready-label-audit.mjs` once it needed `labelsToStrip`,
 // was each individually the wrong tradeoff).
 //
@@ -14,7 +14,7 @@
 // through it. `row-claim.mjs` and `ready-label-audit.mjs` now RE-EXPORT from here rather than declaring
 // their own copies (keeping every existing `import { X } from "./row-claim.mjs"` call site working
 // unchanged), and `close-rows-for-merged-pr.mjs` imports directly -- a leaf import, safe under the
-// identical no-`npm ci` constraint that made the local duplicates seem necessary in the first place.
+// identical no-`pnpm install` constraint that made the local duplicates seem necessary in the first place.
 export const READY_LABEL = "ready";
 
 // #449: THE RECORD THAT A ROW WAS `ready` IMMEDIATELY BEFORE A CLAIM REMOVED IT. `declineRow`

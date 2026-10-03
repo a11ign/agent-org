@@ -18,7 +18,7 @@ import { realpathSync } from "node:fs";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 
 /**
- * Pure. `text` is a `node:test` TAP log (`npm test`'s own stdout+stderr, redirected). Returns `fail` only
+ * Pure. `text` is a `node:test` TAP log (`pnpm test`'s own stdout+stderr, redirected). Returns `fail` only
  * when a real failing subtest can be NAMED; anything else -- a log with no TAP summary at all, a `# fail
  * N` line with N > 0 but no matching `not ok` (a truncated or malformed capture) -- is `unknown`, never
  * `fail`, because a verdict this function cannot back up must not be recorded as though it

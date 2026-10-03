@@ -15,7 +15,7 @@
 // property, and it is why this is a command rather than a file in the tree.
 //
 // Setting it is a decision about ONE machine, so it is a deliberate act rather than something provisioning
-// infers. `npm run doctor` reports an unmarked checkout, because "unmarked" and "safe" must not read the
+// infers. `pnpm run doctor` reports an unmarked checkout, because "unmarked" and "safe" must not read the
 // same — a guard nobody has switched on is the check-that-examined-nothing shape one layer down.
 import { execFileSync } from "node:child_process";
 import { statSync } from "node:fs";
@@ -88,7 +88,7 @@ function main() {
     : `This checkout is NOT marked as the primary (${KEY} unset).\n`
       + "  The primary-checkout guards are INERT here. That is correct for a worktree, the lab, a worker\n"
       + "  or a colleague's clone — and wrong for the machine that drives the fleet.\n"
-      + "  Mark it with:  npm run primary:mark -- --set\n");
+      + "  Mark it with:  pnpm run primary:mark --set\n");
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) main();

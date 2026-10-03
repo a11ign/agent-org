@@ -41,6 +41,7 @@ import { localImports, stripComments } from "./lib/local-import-closure.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { SPAWNS_GH, agentOrgCommand } from "./acceptance-commands.mjs";
 import { COMMANDS } from "./commands.mjs";
+import { pnpmDrift } from "./host-pnpm.mjs";
 import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "./project-config.mjs";
 import { CLAUDE_EFFORTS, DECLARED_CLAUDE_MODELS } from "./worker-profile.mjs";
 import { HostConfigRefusal, TEMPLATE_SUFFIX, homeHostConfig, leadsWorkspacesText, readBeforeTick, readUnitsDeclaration,
@@ -219,7 +220,7 @@ function beforeTicksOf(host, read) {
 /** The template whose three lines change when `host.json` names a `tool` (ADR 0040, decision 3; #2793). */
 const WORK_TICK_TEMPLATE = "work-tick.service.in";
 
-/** The tool checkout's own update command, run from its `WorkingDirectory`: the analogue of `npm run primary:update`. */
+/** The tool checkout's own update command, run from its `WorkingDirectory`: the analogue of `pnpm run primary:update`. */
 export const TOOL_UPDATE_EXEC = "/usr/bin/node --import=./src/lib/crash-exit.mjs src/update-tool.mjs";
 
 /**
@@ -537,12 +538,12 @@ export function execCommands(unitText) {
     .filter((command) => command !== "");
 }
 
-/** The repository's own npm scripts, which is how a unit's `npm run <name>` becomes a file path. */
+/** The repository's own npm scripts, which is how a unit's `pnpm run <name>` becomes a file path. */
 export function packageScripts(repoRoot = REPO_ROOT, read = readFileSync) {
   try {
     return /** @type {Record<string, string>} */ (JSON.parse(String(read(join(repoRoot, "package.json")))).scripts ?? {});
   } catch {
-    // NO SCRIPTS RESOLVE, so every `npm run` command yields no entry point and `unitsSpendingGh` comes
+    // NO SCRIPTS RESOLVE, so every `pnpm run` command yields no entry point and `unitsSpendingGh` comes
     // back empty. That is a SILENT PASS, and the only thing standing between it and a green suite is
     // the non-emptiness assertion on that population -- which is why that assertion is the control and
     // not a nicety.
@@ -551,8 +552,8 @@ export function packageScripts(repoRoot = REPO_ROOT, read = readFileSync) {
 }
 
 /**
- * THE FILES A SHELL COMMAND WOULD ACTUALLY RUN, following `npm run` through package.json.
- * `ExecStart=/usr/bin/npm run corpus:snapshot` is a path to `corpus-snapshot.mjs` with one hop in
+ * THE FILES A SHELL COMMAND WOULD ACTUALLY RUN, following `pnpm run` through package.json.
+ * `ExecStart=/usr/bin/pnpm run corpus:snapshot` is a path to `corpus-snapshot.mjs` with one hop in
  * between, and a check that stopped at the word `npm` would see no entry point at all and pass.
  *
  * A SHELL IS THE THIRD INTERPRETER AND IT ARRIVED LAST (#1998). `/usr/bin/bash <path>` is read exactly
@@ -678,7 +679,7 @@ const ANALYSABLE_TOOLS = new Set(["node", ...PACKAGE_RUNNERS]);
 
 /**
  * The interpreters that take the file to run as their first argument. NOT in `ANALYSABLE_TOOLS`, and the
- * split is the point: `npm run <name>` is followable because package.json answers it, while
+ * split is the point: `pnpm run <name>` is followable because package.json answers it, while
  * `/usr/bin/bash <path>` is followable only when the PATH lands inside this repository. A `bash` that
  * starts something out of tree is exactly as opaque as the bare path it replaced.
  */
@@ -688,7 +689,7 @@ const SHELLS = new Set(["bash", "sh", "dash"]);
  * AN `Exec*=` COMMAND THIS REPOSITORY CANNOT READ -- and NOT ASKED must not report as CLEAN (#1993).
  *
  * MEASURED 2026-09-22. `a11ign-board-report.service` starts `~/.local/bin/board-report-dispatch.sh`,
- * a host script this tree does not ship. `unitEntryPoints` follows `node <file>` and `npm run <script>`
+ * a host script this tree does not ship. `unitEntryPoints` follows `node <file>` and `pnpm run <script>`
  * and nothing else, so for this unit it returned the empty list -- and an empty list of entry points
  * reached no `gh` spawn, which `unitsSpendingGh` scored exactly as it scores a unit that genuinely
  * spawns nothing. The unit spends a human's REST pool daily on two `gh` subcommands.
@@ -697,7 +698,7 @@ const SHELLS = new Set(["bash", "sh", "dash"]);
  * one: a unit that starts something this repository cannot read must SAY which account it acts as,
  * because nothing here can ever work out whether it needs to.
  *
- * TWO WAYS TO NOT BE OPAQUE, and #1998 added the second. The first is the tool: `npm`/`npx`/`node` can
+ * TWO WAYS TO NOT BE OPAQUE, and #1998 added the second. The first is the tool: `pnpm`/`npm`/`npx`/`node` can
  * be followed by name. The second is the FILE: any command that resolves to something this repository
  * ships is readable whatever started it -- which is the only reading under which the board dispatch
  * stops being charged because its script was READ, rather than because the unit left the population.
@@ -766,16 +767,16 @@ export function shellSpawnsGh(text) {
 }
 
 /**
- * `npm run <script>` SPAWNED FROM CODE, which no import edge carries.
+ * `pnpm run <script>` SPAWNED FROM CODE, which no import edge carries.
  * `corpus-release-nightly.mjs` reaches `gh` only through `pnpmCliInvocation(["run", "corpus:release", ...])`
- * (`npmCliInvocation("npm", ["run", ...])` before #2889, and still the spelling in this package) -- an
+ * (`npmCliInvocation("npm", ["run", ...])` before #2889, still recognised here) -- an
  * import-closure walk alone reports it clean, and it is not. A `--silent` between `run` and the script is not handled.
  */
-const RUNS_NPM_SCRIPT = /(?:["'`]npm["'`]\s*,\s*|pnpmCliInvocation\(\s*)\[\s*["'`]run["'`]\s*,\s*["'`]([^"'`]+)["'`]/g;
+const RUNS_PACKAGE_SCRIPT = /(?:["'`]npm["'`]\s*,\s*|pnpmCliInvocation\(\s*)\[\s*["'`]run["'`]\s*,\s*["'`]([^"'`]+)["'`]/g;
 
 /**
  * DOES STARTING THIS FILE REACH A `gh` SPAWN? Two edge kinds, because the repository uses both: local
- * imports, and an `npm run` of another script. `SPAWNS_GH` is IMPORTED rather than retyped -- it is the
+ * imports, and an `pnpm run` of another script. `SPAWNS_GH` is IMPORTED rather than retyped -- it is the
  * one copy `acceptance-commands.mjs` and `gh-token-jobs.test.ts` already share, so the spawns that make
  * a CI job need a token and the spawns that make a unit need an identity cannot drift apart.
  *
@@ -809,8 +810,8 @@ export function ghSpawnReachedFrom(entry, { read = readFileSync, exists = exists
     const code = stripComments(text);
     if (SPAWNS_GH.test(code)) return file;
     pending.push(...imports(file));
-    for (const [, name] of code.matchAll(RUNS_NPM_SCRIPT)) {
-      pending.push(...entriesFromCommand(`npm run ${name}`, { repoRoot, scripts, exists }));
+    for (const [, name] of code.matchAll(RUNS_PACKAGE_SCRIPT)) {
+      pending.push(...entriesFromCommand(`pnpm run ${name}`, { repoRoot, scripts, exists }));
     }
   }
   return null;
@@ -907,7 +908,7 @@ function undeclaredIdentity(deps) {
 
 /**
  * EVERY SHIPPED `.service`, not only the ones that reach `gh`: a unit that declares the person's config and
- * spawns nothing today is one `npm run` away from spending it. The chairman's rule (#1950) is that no agent
+ * spawns nothing today is one `pnpm run` away from spending it. The chairman's rule (#1950) is that no agent
  * acts as them unless something explicitly asks, and a unit is an agent.
  * @param {Parameters<typeof unitsSpendingGh>[0] & { humanAllowed?: Record<string, string> }} deps
  * @returns {Finding[]}
@@ -933,8 +934,8 @@ function humanAccountDeclared(deps = {}) {
  * WHERE A UNIT'S NODE PROCESSES KEEP V8'S COMPILE CACHE (#2458). `tsc`, `eslint`, `rstest` and `changeset`
  * each call `module.enableCompileCache()` with no directory, and with `NODE_COMPILE_CACHE` unset Node then
  * writes `<os.tmpdir()>/node-compile-cache`. The entry is keyed by source text AND path, so the same file in
- * two worktrees is two entries: measured 895 files from one `npm run lint`, and 141,353 inodes in the
- * 2026-09-25 outage. A unit that runs any of them via `npm run` inherits its cache from the unit, never from
+ * two worktrees is two entries: measured 895 files from one `pnpm run lint`, and 141,353 inodes in the
+ * 2026-09-25 outage. A unit that runs any of them via `pnpm run` inherits its cache from the unit, never from
  * `~/.zshenv`, which only a login shell reads.
  */
 const COMPILE_CACHE_VARIABLE = "NODE_COMPILE_CACHE";
@@ -974,7 +975,7 @@ export function compileCacheDrift(deps = {}) {
 
 /**
  * @typedef {{unit: string, problem: string, detail: string, revertsIdentity?: boolean,
- *            manualFix?: boolean, removesUnit?: boolean, shippedOnRef?: string, supersededScript?: string,
+ *            manualFix?: boolean, hostProgram?: boolean, removesUnit?: boolean, shippedOnRef?: string, supersededScript?: string,
  *            missingProgram?: string, installedCopy?: InstalledCopyState}} Finding
  */
 
@@ -1158,7 +1159,7 @@ export function unitDrift(states) {
         return [{ unit: s.unit, problem: "STALE -- REINSTALLING WOULD REVERT AN IDENTITY",
           revertsIdentity: true,
           detail: `the installed copy carries \`${s.identityRevert.join("`, `")}\` and the repository's `
-            + "does not, so `npm run host:install` would DELETE that line. The unit would then inherit "
+            + "does not, so `pnpm run host:install` would DELETE that line. The unit would then inherit "
             + "whatever account `gh` falls back to -- on this host a person's -- and spend a human's "
             + "rate limit until it ran out, then refuse silently (#1974). Land the line in "
             + "packages/agent-org/host/ FIRST, then reinstall." }];
@@ -1369,8 +1370,8 @@ export const GLOBAL_ZSHENV = `${process.env.HOME ?? ""}/.zshenv`;
  */
 export const WORKERS_README = `# workers — the a11ign-ai-workers GitHub identity for agent sessions
 
-Owned by the repository (packages/agent-org/src/host-units.mjs): \`npm run host:install\` writes this file and
-\`npm run host:check\` reports it DIVERGED. Edit it there.
+Owned by the repository (packages/agent-org/src/host-units.mjs): \`pnpm run host:install\` writes this file and
+\`pnpm run host:check\` reports it DIVERGED. Edit it there.
 
 - \`gh/\` — GH_CONFIG_DIR for the machine account \`a11ign-ai-workers\` (device-flow login; token lives only in gh/hosts.yml, mode 600).
 - \`~/leads/\` — the same for \`a11ign-ai-leads\` (write, not admin; its own GraphQL pool). \`~/leads/workspaces.txt\` lists the herdr workspace ids that use it (w6 ceo, w2 product-manager, w5 orchestrator).
@@ -1516,7 +1517,7 @@ function zshenvCompileCache(text) {
  * WHETHER `~/.zshenv` EXPORTS A COMPILE CACHE UNDER THE HOME'S `.cache`, reported and NEVER a failure (#2552).
  * `compileCacheDrift` reads the shipped `.service` files; an interactive agent session reads no unit, only
  * this file, so a fresh host or a re-created account regresses to the system temp directory (`/tmp`, a
- * RAM-backed tmpfs: 895 files from one `npm run lint`) and nothing said so. Not a failure for
+ * RAM-backed tmpfs: 895 files from one `pnpm run lint`) and nothing said so. Not a failure for
  * `hostIdentityNotes`'s reason: the remedy is an edit to a person's dotfile that `host:install` must not make.
  * A file that cannot be read is a finding here too, since its absence is exactly the regression.
  * @param {{ zshenvPath?: string, home?: string, read?: typeof readFileSync }} [deps]
@@ -1709,7 +1710,7 @@ function orphanFinding(unit, origin) {
 function retiredFinding(unit) {
   return { unit, problem: "ORPHANED -- RETIRED HERE",
     detail: `installed on this host and NO LONGER SHIPPED by this repository: a commit deleted its `
-      + `unit file, so retiring it was the intent. ${STILL_RUNNING} \`npm run host:install\` removes it.` };
+      + `unit file, so retiring it was the intent. ${STILL_RUNNING} \`pnpm run host:install\` removes it.` };
 }
 
 /**
@@ -1729,10 +1730,10 @@ function unmergedRefFinding(unit, sha) {
     problem: `ORPHANED -- SHIPPED ON AN UNMERGED REF ${short}`,
     detail: `installed on this host and NOT in THIS checkout's tree -- but commit ${short} ADDS its unit `
       + "file on a ref this checkout has not merged, so this is not a hand-installed mystery: it is "
-      + `about to be ours. ${STILL_RUNNING} DO NOT reach for \`npm run host:install\` yet: that command `
+      + `about to be ours. ${STILL_RUNNING} DO NOT reach for \`pnpm run host:install\` yet: that command `
       + "copies this tree over the host, and the unit is not in this tree, so it would DELETE a unit "
       + `whose own pull request is open. \`git branch -a --contains ${short}\` names the ref carrying it; `
-      + "merge that and THEN run `npm run host:install`. The remedy here is to MERGE, not to read a "
+      + "merge that and THEN run `pnpm run host:install`. The remedy here is to MERGE, not to read a "
       + "journal and work out whether it is dead (#2013)." };
 }
 
@@ -1749,7 +1750,7 @@ function unknownOriginFinding(unit, never) {
       ? "NO COMMIT ON ANY REF HERE EVER SHIPPED IT, so it was installed by hand and this tree has never "
         + "been able to see what it does"
       : "this checkout's history could not be read, so whether it was ever ours is UNKNOWN"}. `
-      + `${STILL_RUNNING} DO NOT reach for \`npm run host:install\`: that command DELETES it, and a unit `
+      + `${STILL_RUNNING} DO NOT reach for \`pnpm run host:install\`: that command DELETES it, and a unit `
       + "the repository never had is exactly the kind that is still doing something nobody here knows "
       + "about (#1993 -- this is how the live daily board dispatch came to be offered for deletion). "
       + "Read the unit and its journal first; then either ship it under packages/agent-org/host/ or "
@@ -1792,7 +1793,7 @@ const defaultGit = (args) =>
  * never prints twice.
  *
  * WHAT IT CANNOT SEE, STATED. Only the three tools `programCandidates` can follow -- `node`, a shell, and
- * `npm`/`npx run` through the WorkingDirectory's own `package.json`. A `bash -c '...'`, an opaque binary
+ * `pnpm run` through the WorkingDirectory's own `package.json`. A `bash -c '...'`, an opaque binary
  * or an absolute path outside the repository yields no candidate and is silently fine here; that is
  * `opaqueCommands`'s territory and this function does not pretend otherwise. A unit with no
  * `WorkingDirectory=` line is SKIPPED rather than guessed at -- a relative path would then resolve
@@ -2068,7 +2069,8 @@ function unclassifiedInLiveTree(deps) {
  * `ExecStart` names -- resolved against the unit's OWN `WorkingDirectory`, a different tree again -- is
  * absent. "Installed and current" was never the same claim as "the program it names exists".
  * @param {Parameters<typeof unitState>[1] & Parameters<typeof supersededHostScripts>[0]
- *   & Parameters<typeof hostIdentityDrift>[0] & Parameters<typeof identityDrift>[0]} [deps]
+ *   & Parameters<typeof hostIdentityDrift>[0] & Parameters<typeof identityDrift>[0]
+ *   & { pnpm?: Parameters<typeof pnpmDrift>[0] }} [deps]
  */
 export function hostUnitDrift(deps = {}) {
   if (!systemdUserAvailable(deps.systemctl ?? defaultSystemctl)) return [];
@@ -2077,7 +2079,7 @@ export function hostUnitDrift(deps = {}) {
   // ignore this command, which would lose the timer finding along with it.
   return [...unclassifiedInLiveTree(deps), ...unitDrift(shippedUnitNames(deps).map((u) => unitState(u, deps))),
     ...orphanedUnits(deps), ...supersededHostScripts(deps), ...missingUnitPrograms(deps), ...unitsWithoutHostVariable(deps),
-    ...hostIdentityDrift(deps), ...identityDrift(deps), ...permissionModeDrift(deps), ...modelEffortDrift(deps)];
+    ...hostIdentityDrift(deps), ...identityDrift(deps), ...permissionModeDrift(deps), ...modelEffortDrift(deps), ...pnpmDrift({ repoRoot: REPO_ROOT, ...deps.pnpm })];
 }
 
 /** @param {string[]} args */
@@ -2379,7 +2381,7 @@ export function driftReport(drift, asked = true, notes = []) {
 /**
  * THE FINDINGS THE SHARED REMEDY DOES NOT FIX, said BEFORE the line that offers it (#1998).
  *
- * Every other finding here ends at `npm run host:install`, which is what makes the report actionable --
+ * Every other finding here ends at `pnpm run host:install`, which is what makes the report actionable --
  * and a reader who has been told that four times will read it the fifth time too. A superseded script
  * survives the remedy untouched, so the report has to say so in the same place the remedy is offered
  * rather than only in a `detail` line the reader already scrolled past.
@@ -2404,6 +2406,10 @@ function uncovered(drift) {
     + drift.filter((d) => d.manualFix)
       .map((d) => `  !! ${d.unit} is NOT fixed by the remedy below -- it is a person's dotfile and\n`
         + "     `host:install` writes no line of it. Change it by hand, as the finding says.\n").join("")
+    // #2896: A PROGRAM, NOT A FILE THIS REPOSITORY OWNS. `host:install` writes units and the identity files and installs no program.
+    + drift.filter((d) => d.hostProgram)
+      .map((d) => `  !! ${d.unit} is NOT fixed by the remedy below -- it is a program the host must have, and\n`
+        + "     `host:install` installs none. Install it as the finding says.\n").join("")
     + drift.filter((d) => d.missingProgram && d.installedCopy === "current")
       .map((d) => `  !! ${d.unit} is NOT fixed by the remedy below either -- it is already identical to\n`
         + `     the repository. The file it starts, ${d.missingProgram}, is what is missing, and\n`
@@ -2430,7 +2436,7 @@ function uncovered(drift) {
  * @param {Finding[]} drift @returns {string}
  */
 function remedy(drift) {
-  const line = `${uncovered(drift)}  Remedy for all of them: npm run host:install\n`;
+  const line = `${uncovered(drift)}  Remedy for all of them: pnpm run host:install\n`;
   const reverts = drift.filter((d) => d.revertsIdentity);
   const removes = drift.filter((d) => d.removesUnit);
   const pending = drift.filter((d) => d.shippedOnRef);
@@ -2464,7 +2470,7 @@ function remedy(drift) {
  *
  * A PROCESS BOUNDARY IS THE CHEAPER FENCE. It costs one node startup per tick and leaves the gate's
  * closure at 4. And it buys a property an import cannot: THE GATE AND THE HUMAN READ THE SAME
- * INSTRUMENT. The woken session runs `npm run host:check`; the gate runs the same file in the same tree,
+ * INSTRUMENT. The woken session runs `pnpm run host:check`; the gate runs the same file in the same tree,
  * so the two can never disagree about what drifted -- which is the failure mode a second reader of the
  * same question always eventually produces (`regionRefusalReason`'s header records one that disagreed in
  * BOTH directions).
@@ -2489,7 +2495,7 @@ function hostFindings() {
 }
 
 function main() {
-  refuseUnknownFlags(["--install", "--json"], { entry: import.meta.url, command: "npm run host:check" });
+  refuseUnknownFlags(["--install", "--json"], { entry: import.meta.url, command: "pnpm run host:check" });
   if (process.argv.slice(2).includes("--json")) {
     process.stdout.write(jsonReport());
     return;

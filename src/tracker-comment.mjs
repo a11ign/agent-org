@@ -143,8 +143,8 @@ export function editComment(id, { next, expect, run = defaultRun }) {
 
 function usage() {
   return "Usage:\n"
-    + "  npm run tracker:comment -- read <comment-id>\n"
-    + "  npm run tracker:comment -- edit <comment-id> --body-file=<f> --expect=<digest>\n"
+    + "  pnpm run tracker:comment read <comment-id>\n"
+    + "  pnpm run tracker:comment edit <comment-id> --body-file=<f> --expect=<digest>\n"
     + "\n`read` prints the body and, on stderr, the digest to pass back as --expect. The edit refuses "
     + "unless the comment still matches that digest, so a correction somebody else made in between is "
     + "never silently overwritten.\n";
@@ -152,7 +152,7 @@ function usage() {
 
 function main() {
   refuseUnknownFlags(["--body-file=", "--expect="],
-    { entry: import.meta.url, command: "npm run tracker:comment" });
+    { entry: import.meta.url, command: "pnpm run tracker:comment" });
   const argv = process.argv.slice(2);
   const [mode, idText] = argv;
   const id = Number(idText);
