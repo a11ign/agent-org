@@ -1900,6 +1900,14 @@ export function handRunAcceptanceReason(body, tool) {
 const suiteFilesCache = new Map();
 
 /**
+ * A script running another script: `pnpm run X`, or the same through a project's own passthrough, `node scripts/pnpm.mjs run X`
+ * (a11ign/a11ign#3151). A box with only `corepack pnpm` has no `pnpm` on PATH for a chain's second word, so a project that
+ * spells its chains through the passthrough would otherwise resolve to no glob and refuse every whole-suite acceptance.
+ * The passthrough is recognised by its file name, `pnpm.mjs`, wherever the project keeps it.
+ */
+const SCRIPT_DELEGATION = /\b(?:p?npm|node\s+\S*pnpm\.mjs)\s+run\s+([\w:-]+)/g;
+
+/**
  * Every `.test.ts` glob a `package.json` script runs, INCLUDING the ones it delegates to.
  *
  * `test` carries no glob of its own -- it is `pnpm run test:ts && pnpm run test:python` -- so resolving it
@@ -1920,7 +1928,7 @@ function suiteGlobsOf(scripts, name, seen = new Set()) {
   const script = scripts?.[name];
   if (typeof script !== "string") return [];
   const own = [...script.matchAll(/"([^"]*\*[^"]*\.test\.ts)"/g)].map((match) => match[1]);
-  const delegated = [...script.matchAll(/\bp?npm\s+run\s+([\w:-]+)/g)]
+  const delegated = [...script.matchAll(SCRIPT_DELEGATION)]
     .flatMap((match) => suiteGlobsOf(scripts, match[1], seen));
   return [...own, ...delegated];
 }
