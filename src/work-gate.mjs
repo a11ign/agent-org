@@ -98,6 +98,7 @@ import { ejectionQueryArgs, queueEjectionOf } from "./pr-armed-state.mjs";
 import { summarizeTestLog, testIdentity } from "./parent-recheck-summary.mjs";
 import { REPO } from "./project-identity.mjs";
 import { HOME_CHECKOUT, homeProjectDeclaration } from "./project-config.mjs";
+import { verifyCheckoutOf, withVerifyStamps } from "./verify-stamp.mjs"; // #3215
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "./cause-declaration.mjs";
 // #2619 (child 3d of #69): the rest of this file's vocabulary -- `backlog`, `needs:chairman`,
 // `out-of-release`, `blocked`, the `lane:`/`session:` prefixes and `lane:any`.
@@ -5882,7 +5883,7 @@ export function scopeTick(scope, drain, read = readLanes(scope), readings = { co
 function codeReadings(openPrs, scope) {
   const required = requiredWhenRed(openPrs);
   const split = readEjections(readUnarmed(shouldBeMerging(openPrs, required)));
-  return { prs: withEjections(withEvidenceLabelAges(withPatchIds(openPrs)), split?.ejections), required, baseTip: baseTipWhenRed(openPrs),
+  return { prs: withVerifyStamps(withEjections(withEvidenceLabelAges(withPatchIds(openPrs)), split?.ejections), { checkout: verifyCheckoutOf(scope.key) }), required, baseTip: baseTipWhenRed(openPrs),
     unarmed: split === null ? null : split.unarmed,
     trunkRed: readScopeTrunkRed(scope) };
 }
@@ -6105,7 +6106,7 @@ function main() {
   // pay for it twice on exactly the red tick this row is about.
   const required = requiredWhenRed(openPrs);
   const baseTip = baseTipWhenRed(openPrs), armingSplit = readEjections(readUnarmed(shouldBeMerging(openPrs, required))); // #3019: BEFORE the arguments -- ejected PRs are stamped onto `prs` and leave `unarmed`
-  const decideArgs = { primaryDrift, prs: withEjections(withPrOwners(withEvidenceLabelAges(withPatchIds(openPrs)), allOpen, stampLookup(), { agents: liveWorkspaceLabels, ended: endedSessionLabels }), armingSplit?.ejections), readyRows: rows, promotableRows: promotableRows ?? [],
+  const decideArgs = { primaryDrift, prs: withVerifyStamps(withEjections(withPrOwners(withEvidenceLabelAges(withPatchIds(openPrs)), allOpen, stampLookup(), { agents: liveWorkspaceLabels, ended: endedSessionLabels }), armingSplit?.ejections), { checkout: verifyCheckoutOf("") }), readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required, baseTip,
     epics: epicsWhenShelfEmpty(rows),
     answerOwed: rowsOwingAnswers({ openRows: allOpen, openPrs, closedRows: closedAnswerRows() }),

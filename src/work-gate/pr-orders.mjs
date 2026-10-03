@@ -23,6 +23,7 @@ import { NO_VERDICT } from "../merge-guard/checks-rule.mjs";
 import { armabilityOf } from "../pr-hold-state.mjs";
 import { isHeldRed } from "../red-pr.mjs";
 import { REPO } from "../project-identity.mjs";
+import { VERIFY_STATE } from "../verify-stamp.mjs";
 import { equivalentHeads } from "../review-verdict.mjs";
 // #2619 (child 3d of #69): the `session:` prefix and the `blocked` label, moved to the project's
 // declared vocabulary. (The `"ready"` action `kind` a few lines below is `gh pr ready`'s draft-status
@@ -1046,6 +1047,37 @@ function unreviewedConvincedOrder(pr, found, heads) {
 }
 
 /**
+ * #3215: THE READY-FLIP THE GATE WITHHOLDS, TOLD TO THE AUTHOR AND NOT TO `product-manager`. A pull request is marked ready only on a
+ * green verify stamp for its head and body (`verify-stamp.mjs`), and this is the draft that has everything else: settled green and a
+ * convinced verdict at this head from somebody who is not its author. It carries NO `action`, so `performActions` has no `gh pr ready`
+ * to run, and it is addressed to `ownerOfPr` because the fix -- `pnpm run verify` in their own worktree -- is theirs, and
+ * `product-manager` holds no worktree to run it in.
+ *
+ * THE KEY NAMES THE PATCH AND NOT THE REASONS, so a tick that finds the same missing stamp builds a byte-identical order and the waker's
+ * ledger delivers it ONCE, and a reason that changes between ticks (stale, then a failed step) does not wake the author again. A new
+ * patch is new work and is told again. When the author verifies, the next tick's order is `settledVerdictOrder`'s own, with its action.
+ *
+ * `pr.verifyStamp` is stamped by the caller; ABSENT IS NOT RED, so a pull request nobody read, and a project with no verify script
+ * (`no-verify`, stamped by name), keep the action they always had.
+ * @param {any} pr @param {{by: string | null}} found @param {ReviewHeads} heads
+ */
+function unverifiedReadyOrder(pr, found, { head8, key }) {
+  const owner = ownerOfPr(pr);
+  const reasons = pr.verifyStamp.reasons.join("; ");
+  return {
+    session: owner.session,
+    cause: "draft-convinced-not-ready",
+    subject: `pr-${subjectRef(pr.repoKey, pr.number)}`,
+    discriminator: key,
+    prompt: `Draft ${subjectMention(pr)} at \`${head8}\` is green and carries a CONVINCED verdict${found.by ? ` from ${found.by}` : ""}, and the gate `
+      + `WILL NOT mark it ready: verify is not green for this head and body -- ${reasons}. Run \`pnpm run verify -- --draft-body=<the body file>\` in your `
+      + "worktree, which stamps this head and this body; the next tick then marks it ready. A push or an edit of the body after the stamp makes it stale, "
+      + `so the thing marked ready is the thing that was verified. ${ownershipOf(pr, owner.source, "verify")}`,
+    causeKey: `${owner.session}/draft-convinced-not-ready/pr-${subjectRef(pr.repoKey, pr.number)}/${key}/no-green-stamp`,
+  };
+}
+
+/**
  * The follow-up a SETTLED verdict deserves, or `null` when it deserves none.
  *
  * A VERDICT IS NOT THE END OF THE WORK, AND READING IT AS ONE LEFT PULL REQUESTS ABANDONED. The gate used
@@ -1073,6 +1105,7 @@ function unreviewedConvincedOrder(pr, found, heads) {
 function settledVerdictOrder(pr, found, heads) {
   const { head8, key } = heads;
   if (found.verdict === "convinced" && pr.isDraft) {
+    if (found.byIsAuthor === false && pr.verifyStamp?.state === VERIFY_STATE.RED) return unverifiedReadyOrder(pr, found, heads);
     return {
       session: "product-manager",
       cause: "draft-convinced-not-ready",
