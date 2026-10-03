@@ -1895,6 +1895,31 @@ test("#2896: the whole-suite commands are recognised in pnpm's spelling too, and
   assert.deepEqual(suiteScriptsFor("pnpmx test"), [], "and a command that merely ends in pnpm is no pnpm");
 });
 
+/**
+ * a11ign/a11ign#3151 -- A DELEGATION THROUGH THE PROJECT'S PNPM PASSTHROUGH IS STILL A DELEGATION.
+ *
+ * A project whose jobs run `corepack pnpm run <script>` has no `pnpm` on PATH, so a chain such as `pnpm run test:ts && pnpm run
+ * test:python` fails at the shell's first word and the project spells it `node scripts/pnpm.mjs run test:ts && ...`. The resolver
+ * matched only `pnpm run`, found no glob behind the passthrough and threw, so the project could not change `test` without turning
+ * its own CI red (a11ign/a11ign#3141, nine tests).
+ */
+test("a script chained through `node scripts/pnpm.mjs run` resolves to the same files as the same chain through `pnpm run`", () => {
+  const scriptsPath = join(FIXTURE_PROJECT, "package.json");
+  const original = readFileSync(scriptsPath, "utf8");
+  const chain = (runner: string) => `${runner} run test:ts && ${runner} run test:python`;
+  try {
+    writeFileSync(scriptsPath, JSON.stringify({ scripts: {
+      ...FIXTURE_SCRIPTS, "test:chain": chain("node scripts/pnpm.mjs"), "test:chain-other": chain("node scripts/other.mjs"),
+    } }));
+    assert.deepEqual([...suiteTestFiles("test:chain")].sort(), [...TS_POPULATION].sort(),
+      "the passthrough's delegate `test:ts` was not followed, so the chain resolved to a different population or threw");
+    // THE COMPLEMENT: a runner that is not a pnpm passthrough is not followed, so the pattern is not satisfied by matching any `run`.
+    assert.throws(() => suiteTestFiles("test:chain-other"), /names no `\*\.test\.ts` glob/);
+  } finally {
+    writeFileSync(scriptsPath, original);
+  }
+});
+
 test("DIRECTION 1 -- `npm test` is charged the files it RUNS, never `test:all`'s wider glob", () => {
   const narrow = suiteTestFiles("test");
   const wide = suiteTestFiles("test:all");
