@@ -23,14 +23,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, mkdtempSync, realpathSync,
-  existsSync, writeFileSync } from "node:fs";
+  existsSync, writeFileSync, cpSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { shippedUnits } from "../host-units.mjs";
 import { HOME_CHECKOUT } from "../project-config.mjs";
-import { copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";
+import { TOOL_ROOT, copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";
+import { judgePin, type Declaration } from "../lib/pin-ratchet.mjs";
 import { deriveClosureRequirements } from "../acceptance-commands.mjs";
 import { patchIdOfDiff } from "../review-verdict.mjs";
 import { MAX_ROW_ORDERS_PER_TICK, readCommitShas, readPatchId, withPatchIds, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES,
@@ -4649,43 +4650,42 @@ test("#2174: the gate does NOT import host-units.mjs -- the spawn is the fence, 
     "the same walker DOES find host-units.mjs's own edges");
 });
 
-const PINNED_HISTORY_POPULATION = ["documents-extraction.test.ts", "home-checkout-refusal.test.ts", "host-project-paths.test.ts", "host-tool-install.test.ts", "host-units.test.ts",
-  "pre-push-resolve-toward-main.test.ts", "pre-push-stale-base.test.ts", "shadow-window-arm.test.ts", "work-gate.test.ts",
-  "work-tick-crash-exit.test.ts"];
+/**
+ * The test files charged with a `history` requirement, as a RATCHET against the base the change merges into (#3232, `lib/pin-ratchet.mjs`). The
+ * reason the population is policed stays (a file JOINING it is taxed with `History: full`, #497); what changed is HOW: a file this change ADDS to
+ * it is declared below with its reason, so two changes that each add one are each judged against their own base, and a file that leaves passes.
+ */
+const DECLARED_HISTORY_POPULATION: Declaration[] = [
+  { name: "home-checkout-refusal.test.ts", reason: "#3039: imports `host-units.mjs` for `hostUnitDrift` and `hostUnitsInstall`, the same edge `host-units.test.ts` has" },
+  { name: "host-project-paths.test.ts", reason: "#2620: imports `host-units.mjs` for the rendered unit texts, the same edge `host-units.test.ts` has; its pull request declares `History: full` (#497)" },
+  { name: "host-tool-install.test.ts", reason: "#2793: imports `host-units.mjs` for the rendered `work-tick` unit, the same edge; its pull request declares `History: full`" },
+  { name: "host-units.test.ts", reason: "tests `host-units.mjs`, which calls `git log --all`: the edge every other entry here shares" },
+  { name: "shadow-window-arm.test.ts", reason: "#2867: imports `host-units.mjs` for the rendered shadow-window unit texts and the installer, the same edge; declares `History: full`" },
+  { name: "work-gate.test.ts", reason: "this very file: it spawns the gate and reads commit history" },
+  { name: "work-tick-crash-exit.test.ts", reason: "#3038: imports `host-units.mjs` for the rendered `work-tick` unit's ExecStart, the same edge `host-tool-install.test.ts` has" },
+];
 
-test("#2174: the history-requirement population is unchanged by this row", () => {
-  const dir = fileURLToPath(new URL("./", import.meta.url));
-  const charged = readdirSync(dir).filter((f) => f.endsWith(".test.ts"))
+/** The `*.test.ts` files of `packagingDir` whose import closure derives a `history` requirement. */
+function historyChargedTests(packagingDir: string): string[] {
+  return readdirSync(packagingDir).filter((f) => f.endsWith(".test.ts"))
     .filter((f) => {
       try {
-        return deriveClosureRequirements(join(dir, f))
+        return deriveClosureRequirements(join(packagingDir, f))
           .some((r: { requirement: string }) => r.requirement === "history");
       } catch { return false; }
     }).sort();
-  // PINNED AS A SET AND NOT A COUNT, for `fleetBatchOrders`'s reason: a count collides two different
-  // populations of the same size, and the thing worth catching is a file JOINING this list.
-  // #2620 added `host-project-paths.test.ts`: checked, as this message asks -- it imports `host-units.mjs` for the rendered unit texts, the same
-  // edge `host-units.test.ts` has, and the row's own Acceptance names it, so its pull request declares `History: full` (#497).
-  // #2793 added `host-tool-install.test.ts`: checked -- it imports `host-units.mjs` for the rendered `work-tick` unit, the same edge, and the
-  // row's Acceptance names it, so its pull request declares `History: full`.
-  // #2867 added `shadow-window-arm.test.ts`: checked -- it imports `host-units.mjs` for the rendered shadow-window unit texts and the installer, the same
-  // edge, and its pull request declares `History: full`.
-  // #2705 added `documents-extraction.test.ts`: checked -- it asks `--is-shallow-repository` before reading `git log -p` over `packages/pdf`
-  // (the history `filter-repo` carries across is part of the first commit's leak scan), so it genuinely needs history, and its pull request
-  // declares `History: full`.
-  // #3038 added `work-tick-crash-exit.test.ts`: checked -- it imports `host-units.mjs` for the rendered `work-tick` unit's ExecStart, the same
-  // edge `host-tool-install.test.ts` has, so it is charged with `history` for that edge alone.
-  // #3039 added `home-checkout-refusal.test.ts`: checked -- it imports `host-units.mjs` for `hostUnitDrift` and `hostUnitsInstall`, the same edge
-  // `host-units.test.ts` has, so it is charged with `history` for that edge alone.
-  // The population is the pinned names THIS directory holds: the tool's tests were extracted from the project's lab package, and three of the
-  // pinned names (`documents-extraction`, `pre-push-resolve-toward-main`, `pre-push-stale-base`) are lab tests that stayed there, so a directory
-  // that does not hold one cannot charge it. A file JOINING the list still fails, which is what the pin is for.
-  const held = PINNED_HISTORY_POPULATION.filter((f) => existsSync(join(dir, f)));
-  // Positive control: the filter keeps the tests the directory holds, so an emptied list cannot pass for "unchanged".
-  assert.ok(held.includes("work-gate.test.ts"), "this very file is in the population, and the filter dropped it");
-  assert.deepEqual(charged, held,
-  "adding a `history` reader to the gate's import closure taxes every test file that reaches it -- if "
-  + "this list grew, check what was imported rather than editing the list");
+}
+
+test("#2174: no test file joins the history-requirement population without a declaration", () => {
+  const current = historyChargedTests(fileURLToPath(new URL("./", import.meta.url)));
+  // Positive control: the scan keeps the tests that really are charged, so an emptied population cannot pass for "none joined".
+  assert.ok(current.includes("work-gate.test.ts"), "this very file is in the population, and the scan dropped it");
+  const { undeclared, judged } = judgePin({
+    repo: TOOL_ROOT, paths: ["src"], scan: (root) => historyChargedTests(join(root, "src/packaging")), current, declared: DECLARED_HISTORY_POPULATION,
+  });
+  assert.deepEqual(undeclared, [],
+    `(judged ${judged}) adding a \`history\` reader to the gate's import closure taxes every test file that reaches it -- if a file joined `
+    + "this population, check what was imported, and declare the file in DECLARED_HISTORY_POPULATION only if it genuinely needs history");
 });
 
 /**
@@ -4708,8 +4708,14 @@ test("#2174: work-gate.mjs loads in a tree with NO node_modules, host-units edge
   assert.ok(closure.size > 10 && closure.has(toolFile("src/waiting-condition.mjs")),
     `the control: the closure must really be the gate's, got ${closure.size} file(s)`);
   const root = realpathSync(mkdtempSync(join(tmpdir(), "a11y-work-gate-no-modules-")));
-  // The project's declaration, its cause plugin and the host file the copy is told to use come with it (`copied-tool-fixture.ts`).
+  // THE COPY LIST BEYOND THE STATIC CLOSURE IS GENERATED, never hand-listed (#3232): the project's `.agent-org/` and the tool's `host/` go in WHOLE,
+  // so a new import edge that reads one more file of either (`roles.dir`'s briefs, a unit template) cannot fail this test for want of a list entry.
+  // `copied-tool-fixture.ts` then writes the host file the copy is told to use over the one copied here.
+  cpSync(join(HOME_CHECKOUT, ".agent-org"), join(root, ".agent-org"), { recursive: true });
+  cpSync(toolFile("host"), join(root, "packages/agent-org/host"), { recursive: true });
   const copy = copyToolAndProject(entry, closure, root);
+  assert.ok(existsSync(join(root, "packages/agent-org/host/work-tick.service.in")) && existsSync(join(root, ".agent-org/project.json")),
+    "the control: both directories really came across whole");
   assert.ok(!existsSync(join(root, "node_modules")), "the tree really has none -- the premise");
   const run = spawnSync(process.execPath, ["--input-type=module", "-e",
     `import(${JSON.stringify(pathToFileURL(copy.entry).href)})`
