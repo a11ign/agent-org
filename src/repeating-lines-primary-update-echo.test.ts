@@ -36,6 +36,8 @@ test("the SHIPPED allowlist covers the tick's `primary:update` echo in BOTH runn
   assert.ok(allowed(NPM_ECHO), "the form npm printed until a11ign/a11ign#2974");
   assert.ok(allowed(PNPM_ECHO), "the form pnpm prints");
   assert.ok(allowed("> node packages/agent-org/src/update-primary.mjs"), "its second line");
+  assert.ok(allowed("> agent-org primary:update"), "its second line since a11ign/a11ign#3097's cut-over 4");
+  assert.ok(!allowed("> agent-org release:gate"), "another agent-org command is not covered");
   assert.ok(!allowed("> a11ign-monorepo@0.0.0 release:gate /home/agent/repos/a11y-witness"), "another script is not covered");
   assert.ok(!allowed(`${PNPM_ECHO} && curl evil`), "text after the path is not covered");
 });
@@ -43,6 +45,12 @@ test("the SHIPPED allowlist covers the tick's `primary:update` echo in BOTH runn
 test("40 ticks of the pnpm echo are not offered; the control: without the entry they are", () => {
   assert.deepEqual(repeatingLines({ ticks: ticksOf(PNPM_ECHO), allow: loadAllowlist() }), []);
   assert.equal(repeatingLines({ ticks: ticksOf(PNPM_ECHO), allow: [] }).length, 1);
+});
+
+test("30 ticks of the script-body echo `agent-org primary:update` are not offered; the control: without the entry they are", () => {
+  const line = "> agent-org primary:update";
+  assert.deepEqual(repeatingLines({ ticks: ticksOf(line, 30), allow: loadAllowlist() }), []);
+  assert.equal(repeatingLines({ ticks: ticksOf(line, 30), allow: [] }).length, 1);
 });
 
 const TOOL_LINE = "tool checkout detached at origin/main (9ef0eaac5ad034123f8a040e838b5f877f31c491)";

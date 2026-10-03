@@ -19,8 +19,8 @@
       "reason": "update-primary.mjs states where the checkout is on every tick it runs; it is a position reading, not a fault. A failed update prints a different line, which is not allowlisted."
     },
     {
-      "pattern": "^> (aNign-monorepo@N\\.N\\.N primary:update( /\\S+)?|node packages/agent-org/src/update-primary\\.mjs)$",
-      "reason": "the package manager's echo of the ExecStartPre command, written on every tick by the runner itself. npm printed `> name@version script`; pnpm, which the tick unit runs since a11ign/a11ign#2974's cut-over 3, appends the checkout path (`... primary:update /home/agent/repos/a11y-witness`), and the entry's `$` anchor rejected that form: 75 consecutive ticks were offered to orchestrator on 2026-10-02."
+      "pattern": "^> (aNign-monorepo@N\\.N\\.N primary:update( /\\S+)?|node packages/agent-org/src/update-primary\\.mjs|agent-org primary:update)$",
+      "reason": "the package manager's echo of the ExecStartPre command, written on every tick by the runner itself. npm printed `> name@version script`; pnpm, which the tick unit runs since a11ign/a11ign#2974's cut-over 3, appends the checkout path (`... primary:update /home/agent/repos/a11y-witness`), and the entry's `$` anchor rejected that form: 75 consecutive ticks were offered to orchestrator on 2026-10-02. The SECOND line pnpm prints is the script body: `node packages/agent-org/src/update-primary.mjs` until a11ign/a11ign#3097's cut-over 4, `agent-org primary:update` since, and that body was offered after 30 ticks on 2026-10-03."
     },
     {
       "pattern": "^aNign-work-tick\\.service: Consumed ",
