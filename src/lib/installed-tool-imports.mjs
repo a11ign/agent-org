@@ -11,7 +11,7 @@
 // NOT a change to `local-import-closure.mjs`: that file is a pinned copy of the project's, and one walk of the identical shape is enough, so this
 // module adds the one edge kind it does not have and leaves its resolution of relative specifiers to it.
 import { readFileSync, statSync } from "node:fs";
-import { dirname, join, parse } from "node:path";
+import { dirname, join, parse, resolve } from "node:path";
 import { stripComments } from "./local-import-closure.mjs";
 
 const TOOL_PACKAGE = "agent-org";
@@ -20,13 +20,14 @@ const TOOL_IMPORT = new RegExp(String.raw`import\s+(?:([^;]*?)\s+from\s+)?['"]($
 
 /**
  * The file `specifier` (`agent-org/src/x.mjs`) names under the nearest `node_modules` above `from`, or `null` when no installed copy holds it.
- * Walks up the way node does, so a worktree with its own `node_modules` and a project with a hoisted one both resolve.
+ * Walks up the way node does, so a worktree with its own `node_modules` and a project with a hoisted one both resolve. `from` is made absolute first:
+ * callers pass entries relative to the cwd, and `dirname` of a relative path reaches `.` and stays there, which is a loop with no exit (#3103, the hung gate).
  * @param {string} from directory of the importing file
  * @param {string} specifier
  * @returns {string | null}
  */
 function installedFile(from, specifier) {
-  for (let dir = from; ; dir = dirname(dir)) {
+  for (let dir = resolve(from); ; dir = dirname(dir)) {
     const candidate = join(dir, "node_modules", specifier);
     if (statSync(candidate, { throwIfNoEntry: false })?.isFile()) return candidate;
     if (dir === parse(dir).root) return null;

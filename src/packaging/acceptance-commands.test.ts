@@ -1381,6 +1381,23 @@ test("#3103 deriveClosureRequirements: a reader reached ONLY through `agent-org/
   }
 });
 
+test("#3103 deriveClosureRequirements: a RELATIVE entry importing a tool module nobody installed terminates, with nothing derived", () => {
+  // The first version looped forever here: `dirname("sub/x.test.mjs")` reaches `.` and stays, and only a specifier NOT FOUND walks all the way up -- which is every
+  // project test whose tool is not installed beside it, and hung the tool's whole suite in CI. Every test above passed an absolute path or a specifier that
+  // resolved on the first step. Run in a child process with a timeout so a regression is a failure and not a hang.
+  const dir = mkdtempSync(join(tmpdir(), "acceptance-tool-reach-"));
+  try {
+    mkdirSync(join(dir, "sub"));
+    writeFileSync(join(dir, "sub", "x.test.mjs"), `import { q } from "${"agent-org" + "/src/nobody-installed.mjs"}";\nexport const x = q;\n`);
+    const script = `import { deriveClosureRequirements } from ${JSON.stringify(new URL("../acceptance-commands.mjs", import.meta.url).href)};`
+      + ` console.log(JSON.stringify(deriveClosureRequirements("sub/x.test.mjs")));`;
+    const out = execFileSync(process.execPath, ["--input-type=module", "-e", script], { cwd: dir, timeout: 30_000, encoding: "utf8" });
+    assert.deepEqual(JSON.parse(out), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("#3103 deriveClosureRequirements: the tool is followed through a dynamic import and a namespace import, and a package that is not the tool is not", () => {
   const dir = mkdtempSync(join(tmpdir(), "acceptance-tool-reach-"));
   try {
