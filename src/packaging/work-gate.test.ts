@@ -48,6 +48,7 @@ import { MAX_ROW_ORDERS_PER_TICK, readCommitShas, readPatchId, withPatchIds, dec
   CONSTRAINT_COMMENT_MARKER, CONSTRAINT_BODY_PREFIX,
   readEpics, answersOwed, answerOrders,
   readOpenRows, withAnswerLabel, rowsOwingAnswers, readClosedAnswerRows, withoutEndedAnswerSessions, endedSessionLabels,
+  withEndedLabels, withPrOwners, ownerOfPr,
   blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL, PARKED_LABEL,
   ANSWER_PREFIX, redOnlyBySupersededRun, cannotAskReport,
   readRowBranches, readWorktreeStamps, rowBranchOrders, GIT_READS,
@@ -5490,6 +5491,73 @@ test("#2609: `endedSessionLabels` reads a teardown's record, and a label that ST
 test("#2609: `closedAnswerRows` runs the ended-session filter on what `readClosedAnswerRows` returned", () => {
   const source = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
   assert.match(source, /function closedAnswerRows\(\) \{[^]*?return withoutEndedAnswerSessions\(rows\);/);
+});
+
+// --- #3093: ownerOfPr ordered a pull request to the session its LABEL names even when that session had ENDED ---
+
+/** Runs `withPrOwners` over one PR through the same seams `main` wires, with `live` workspaces and `ended` evidence. */
+const ownerAfterEndings = (pr: object, live: string[] | null, ended: Record<string, number> | Error, rows: unknown[] = []) => {
+  const said: string[] = [];
+  const [settled] = withPrOwners([pr], rows, () => null, { agents: () => live,
+    ended: () => { if (ended instanceof Error) throw ended; return new Map(Object.entries(ended)); },
+    say: (line: string) => said.push(line) });
+  return { owner: ownerOfPr(settled), said, settled };
+};
+const PR_55 = { number: 55, repoKey: "a11ign/agent-org", headRefName: "agent/some-branch", labels: [{ name: "session:worker-3064" }] };
+
+test("#3093: a PR labelled for an ENDED session (absent from herdr, teardown recorded) is ordered to ceo, never to the dead seat", () => {
+  const { owner, settled } = ownerAfterEndings(PR_55, ["ceo"], { "worker-3064": ENDED_AT });
+  assert.deepEqual(owner, { session: "ceo", source: "ceo" });
+  assert.equal(settled.labelEnded, true);
+});
+
+test("#3093: an ended label falls to the LOWER rungs first -- a live row owner is named, with source closing-row", () => {
+  const rows = [{ number: 3064, labels: [{ name: "in-progress" }, { name: "session:worker-3070" }] }];
+  const pr = { ...PR_55, closingIssuesReferences: [{ number: 3064 }] };
+  assert.deepEqual(ownerAfterEndings(pr, ["ceo"], { "worker-3064": ENDED_AT }, rows).owner, { session: "worker-3070", source: "closing-row" });
+});
+
+test("#3093 POSITIVE CONTROLS: a live label, an absent session with NO teardown record, a silent herdr and an unreadable ledger all KEEP the label", () => {
+  const kept = { session: "worker-3064", source: "label" };
+  assert.deepEqual(ownerAfterEndings(PR_55, ["worker-3064"], { "worker-3064": ENDED_AT }).owner, kept, "live wins: a reused label is not gone");
+  assert.deepEqual(ownerAfterEndings(PR_55, ["ceo"], { "worker-8": ENDED_AT }).owner, kept, "absent without a record is not ended");
+  const blip = ownerAfterEndings(PR_55, null, { "worker-3064": ENDED_AT });
+  assert.deepEqual(blip.owner, kept, "herdr silent classifies nothing");
+  assert.match(blip.said.join(""), /herdr did not answer/);
+  const unreadable = ownerAfterEndings(PR_55, ["ceo"], new Error("EACCES: permission denied"));
+  assert.deepEqual(unreadable.owner, kept, "evidence that cannot be read classifies nothing");
+  assert.match(unreadable.said.join(""), /could not be read \(EACCES/);
+});
+
+test("#3093: the `engineers` pool is never ended, and a PR with no label pays neither herdr nor the ledgers", () => {
+  assert.deepEqual(ownerAfterEndings({ ...PR_55, labels: [{ name: "session:engineers" }] }, [], { engineers: ENDED_AT }).owner,
+    { session: "engineers", source: "label" });
+  const boom = () => { throw new Error("must not be asked"); };
+  const unlabelled = [{ ...PR_55, labels: [] }];
+  assert.equal(withEndedLabels(unlabelled, { agents: boom, ended: boom, say: boom }), unlabelled);
+});
+
+test("#3093: a caller that names no source is not answered by this host -- withPrOwners without `io` classifies nothing", () => {
+  const [pr] = withPrOwners([PR_55], [], () => null);
+  assert.equal(pr.labelEnded, undefined);
+  assert.equal(ownerOfPr(pr).source, "label");
+});
+
+test("#3093: `main` hands withPrOwners the LIVE herdr and ledger readers", () => {
+  const source = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  assert.match(source, /withPrOwners\([^\n]*stampLookup\(\), \{ agents: liveWorkspaceLabels, ended: endedSessionLabels \}\)/);
+});
+
+test("#3093: the order for an ended-label PR goes to ceo, and says the label names an ENDED session and asks to re-lane or close", () => {
+  const [pr] = withPrOwners([{ ...draft(55, RED), isDraft: false, labels: [{ name: "session:worker-3064" }] }], [], () => null,
+    { agents: () => ["ceo"], ended: () => new Map([["worker-3064", ENDED_AT]]) });
+  const [order] = decide({ prs: [pr], readyRows: [] });
+  assert.equal(order.session, "ceo");
+  assert.match(order.prompt, /its `session:` label names `worker-3064`, which has ENDED/);
+  assert.match(order.prompt, /Re-lane it .*or close it/);
+  assert.doesNotMatch(order.prompt, /It carries your session label/);
+  const untouched = decide({ prs: [{ ...draft(55, RED), isDraft: false, labels: [{ name: "session:worker-3064" }] }], readyRows: [] });
+  assert.equal(untouched[0].session, "worker-3064", "THE CONTROL: with the label not ended, the same PR still orders to its owner");
 });
 
 // --- #2492: answer:<session> on a PULL REQUEST woke nobody, because `gh issue list` does not return PRs ---
