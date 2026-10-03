@@ -54,6 +54,7 @@ import { SESSION_PREFIX } from "./project-vocabulary.mjs";
 import { launchGate } from "./board-snapshot-scope.mjs";
 import { worktreeOwner } from "./worktree-owner.mjs";
 import { isLiveSession } from "./arm-pr.mjs";
+import { laneAuthorshipRefusal, loadLanes, reviewOnlyPathsIn } from "./lane-ownership.mjs";
 import { declarationRefusal } from "./hand-fix-ledger.mjs";
 
 // The header's EXIT CODES, named because 1 and 3 ask a caller for opposite next steps.
@@ -659,12 +660,12 @@ function regionStep(body, rest, { git, rowBody, rootFiles, code, out, err }) {
  *           prHead?: (repo: string, number: string) => { ref: string, oid: string } | null,
  *           runAcceptance?: (command: string) => number, runMutation?: (command: string) => number,
  *           owner?: () => string | null, rowBody?: (number: number, repo?: string) => string, rootFiles?: Set<string>,
- *           code?: readonly { key: string, repo: string }[],
+ *           code?: readonly { key: string, repo: string }[], login?: () => string, lanes?: {lanes: import("./lane-ownership.mjs").Lane[]} | null,
  *           out?: (line: string) => void, err?: (line: string) => void }} [deps]
  * @returns {number}
  */
 export function main(argv = process.argv.slice(2),
-  { run, git, prHead, runAcceptance, runMutation = runForReal, owner, rowBody, rootFiles, code, out = writeOut,
+  { run, git, prHead, runAcceptance, runMutation = runForReal, owner, rowBody, rootFiles, code, login, lanes, out = writeOut,
     err = writeErr } = {}) {
   const [mode, ...rest] = argv;
   if (mode !== "create" && mode !== "edit") {
@@ -681,7 +682,7 @@ export function main(argv = process.argv.slice(2),
   // #1344: BEFORE checkBody, because checkBody RUNS the Acceptance -- in this working tree, whatever --head says.
   // #2939: and a `Hand-fix:` line the ledger could not read, which it would silently not count. Pure, like the heads.
   const headRefused = headTreeRefusal(mode, rest, { git }) ?? editTreeRefusal(mode, rest, { git, prHead })
-    ?? declarationRefusal(body);
+    ?? declarationRefusal(body) ?? authorshipRefusal(mode, rest, { git, login, lanes });
   if (headRefused) {
     err(`${headRefused}\n`);
     return EXIT_NOTHING_SENT;
@@ -747,6 +748,38 @@ export function headTreeRefusal(mode, rest, { git = defaultGit } = {}) {
       + `the head GitHub opens; push or pull until they are the same commit. ${nothingRan}`;
   }
   return null;
+}
+
+/** The login `gh` will author the pull request as -- `gh pr create` runs under the same account and `GH_CONFIG_DIR`. */
+const defaultLogin = () => execFileSync("gh", ["api", "user", "--jq", ".login"], { encoding: "utf8" }).trim();
+
+/**
+ * #3254, #1756 RULING ITEM 7: A REVIEW-ONLY LANE'S OWNER DOES NOT OPEN A PULL REQUEST INTO IT -- refused before
+ * anything runs or is sent, the cheap early half of `arm-pr`'s refusal (which is the one a bare `gh pr create` cannot
+ * walk around: `arm-pr` runs in CI on the PR's own event, and this wrapper is only the door the org's sessions use).
+ *
+ * THE LOGIN IS ASKED ONLY WHEN THE DIFF TOUCHES A REVIEW-ONLY LANE, so an ordinary PR costs no call. A diff or a login
+ * that cannot be read refuses, for `headTreeRefusal`'s reason: the pass this would otherwise print is for a PR nobody
+ * checked. `edit` never refuses: it opens nothing, and `arm-pr` reads the PR's own author and files.
+ *
+ * @param {string} mode
+ * @param {string[]} rest the args handed to `gh pr <mode>`
+ * @param {{ git?: (args: string[]) => string, login?: () => string, lanes?: {lanes: import("./lane-ownership.mjs").Lane[]} | null }} [deps]
+ * @returns {string | null}
+ */
+export function authorshipRefusal(mode, rest, { git = defaultGit, login = defaultLogin, lanes = loadLanes() } = {}) {
+  if (mode !== "create") return null;
+  const diff = localDiffReading(rest, git);
+  if (!diff.ok) return `pr-open: REFUSED -- could not read the diff to check lane authorship (#3254): ${diff.why}. Nothing was sent.`;
+  if (reviewOnlyPathsIn(diff.files, lanes).length === 0) return null;
+  let author;
+  try {
+    author = login();
+  } catch (error) {
+    return `pr-open: REFUSED -- this diff touches a review-only lane and \`gh api user\` could not say who is opening it: ${messageOf(error).split("\n")[0]}. Nothing was sent (#3254).`;
+  }
+  const refusal = laneAuthorshipRefusal({ author, files: diff.files, lanes });
+  return refusal === null ? null : `pr-open: REFUSED -- ${refusal} Nothing was sent.`;
 }
 
 /**

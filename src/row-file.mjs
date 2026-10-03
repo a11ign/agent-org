@@ -1095,6 +1095,10 @@ function directoryTouchesLane(directory, paths) {
  */
 export function laneLabelsFor(regionFiles, lanes) {
   const owners = lanes.lanes
+    // #3254: a review-only lane protects its owner's REVIEW (CODEOWNERS carries that), not the right to author, so it
+    // derives no label. A Region that also touches another lane keeps that lane's label; one touching only this
+    // lane is `lane:any`. A row that needs a decision only the owner can make is labelled `lane:<owner>` by hand.
+    .filter((lane) => lane.reviewOnly !== true)
     .filter((lane) => regionFiles.some((f) => (f.endsWith("/") ? directoryTouchesLane(f, lane.paths)
       : inLane(f, lane.paths) && !inLane(f, lane.except ?? []))))
     .map((lane) => lane.owner);

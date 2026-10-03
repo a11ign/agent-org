@@ -18,6 +18,7 @@ import { pathToFileURL } from "node:url";
 import { readFileSync, realpathSync } from "node:fs";
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { armabilityOf } from "./pr-hold-state.mjs";
+import { authorshipVerdict } from "./lane-ownership.mjs";
 import { SESSION_PREFIX } from "./project-vocabulary.mjs";
 import { roleBriefPath } from "./project-roles.mjs";
 // #2046: THE ARMED PREDICATE, IMPORTED RATHER THAN RE-DECIDED -- the mirror of the `pr-hold-state.mjs`
@@ -38,7 +39,8 @@ import { newestVerdictRun, TRUNK_WORKFLOW } from "./trunk-red.mjs";
  * EXIT CODES ARE THE CONTRACT. `auto-arm.yml`'s `arm` step goes red on any non-zero, so each code's job is to tell the
  * reader of that red step what state the PR is actually in:
  * - `0` DONE: armed, or deliberately not armed (held, or already merged or closed).
- * - `1` REFUSED: a retired or unknown `session:*` label stopped the labelling (#1000). The arm line printed before it
+ * - `1` REFUSED: a pipeline-owner login authored a pull request into its review-only lane and nothing was armed (#3254);
+ *   or a retired or unknown `session:*` label stopped the labelling (#1000). The arm line printed before it
  *   says whether auto-merge was enabled. Node also exits 1 on an UNCAUGHT throw, which is why a failure after the arm
  *   must never escape as one: it would read as this refusal.
  * - `2` CANNOT_ASK: `--pr`/`--repo` were missing, or the PR could not be read. Nothing was written.
@@ -785,20 +787,20 @@ function armOrJump({ number, repo, prBody }, { run, sleep, log, error }) {
  * `null` when the read succeeded, so the two states stay as distinct here as `labels` keeps them.
  *
  * @param {{ number: string, repo: string, run: typeof defaultRun, error: (line: string) => void }} args
- * @returns {{ labels: string[] | null, prBody: string | null, state: string | null,
+ * @returns {{ labels: string[] | null, prBody: string | null, state: string | null, author?: string | null,
  *             failure: string | null }}
  */
 function readPr({ number, repo, run, error }) {
   try {
     // #1022: `state` rides along on the read that was already happening -- no extra `gh` call for the
     // common case, where the PR is plainly OPEN and this costs nothing.
-    const view = JSON.parse(gh(["pr", "view", number, "--repo", repo, "--json", "labels,body,state"], run));
+    const view = JSON.parse(gh(["pr", "view", number, "--repo", repo, "--json", "labels,body,state,author"], run));
     return { labels: view.labels.map((/** @type {{name: string}} */ l) => l.name), prBody: view.body,
-      state: typeof view.state === "string" ? view.state : null, failure: null };
+      state: typeof view.state === "string" ? view.state : null, author: view.author?.login ?? null, failure: null };
   } catch (cause) {
     const failure = /** @type {Error} */ (cause).message;
     error(`arm-pr: could not read #${number}'s labels: ${failure}`);
-    return { labels: null, prBody: null, state: null, failure };
+    return { labels: null, prBody: null, state: null, author: null, failure };
   }
 }
 
@@ -877,10 +879,11 @@ function labelsWanted({ repo, prBody, run }) {
  * so a test drives the path the workflow runs -- the order of the writes and the code the process exits with --
  * rather than the functions it happens to call.
  * @param {{ argv: string[], env: Record<string, string | undefined>, run?: typeof defaultRun,
- *   sleep?: typeof defaultSleep, log?: (line: string) => void, error?: (line: string) => void }} io
+ *   sleep?: typeof defaultSleep, log?: (line: string) => void, error?: (line: string) => void,
+ *   lanes?: {lanes: import("./lane-ownership.mjs").Lane[]} | null }} io
  * @returns {number} the exit code, one of `EXIT`
  */
-export function runArmPr({ argv, env, run = defaultRun, sleep = defaultSleep, log = console.log, error = console.error }) {
+export function runArmPr({ argv, env, run = defaultRun, sleep = defaultSleep, log = console.log, error = console.error, lanes }) {
   const number = flagValue(argv, "pr");
   const repo = flagValue(argv, "repo") ?? env.GITHUB_REPOSITORY;
   if (!number || !repo) {
@@ -888,7 +891,7 @@ export function runArmPr({ argv, env, run = defaultRun, sleep = defaultSleep, lo
       + "  REFUSING rather than guessing: arming the wrong PR is not recoverable by re-running.");
     return EXIT.CANNOT_ASK;
   }
-  const { labels, prBody, state, failure } = readPr({ number, repo, run, error });
+  const { labels, prBody, state, author, failure } = readPr({ number, repo, run, error });
   const verdict = armDecision(labels);
   if (labels === null) {
     error(`arm-pr: ${verdict.reason}.`);
@@ -909,6 +912,12 @@ export function runArmPr({ argv, env, run = defaultRun, sleep = defaultSleep, lo
   if (already) {
     log(`arm-pr: NOT arming #${number} -- ${already}, so there is nothing left to arm`);
     return EXIT.DONE;
+  }
+  // #3254: AFTER the held and settled exits, so it speaks only when this run is about to arm -- and with no way round it.
+  const authorship = authorshipVerdict({ number, repo, author, run: (args) => gh(args, run), lanes });
+  if (authorship.kind !== "clear") {
+    error(`arm-pr: NOT arming #${number} -- ${authorship.why}`);
+    return authorship.kind === "refused" ? EXIT.REFUSED : EXIT.CANNOT_ASK;
   }
   const { outcome, jumpFailure } = armOrJump({ number, repo, prBody }, { run, sleep, log, error });
   // #1478: WHAT LANDED IS SAID BEFORE THE NEXT STEP RUNS, so a failure in labelling cannot hide it.

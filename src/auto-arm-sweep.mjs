@@ -79,6 +79,7 @@ import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { armabilityOf, HOLD_PREFIX } from "./pr-hold-state.mjs";
+import { authorshipVerdict } from "./lane-ownership.mjs";
 // A LEAF (no imports), so this job's `actions/checkout`-only bootstrap still resolves it.
 import { PARITY } from "./review-attribution.mjs";
 import { SESSION_PREFIX, BLOCKED_LABEL } from "./project-vocabulary.mjs";
@@ -419,9 +420,10 @@ function main() {
 
   const failed = [];
   for (const number of candidates) {
-    let labels, head, checkRunCount;
+    let labels, head, checkRunCount, author;
     try {
       labels = JSON.parse(gh(["pr", "view", number, "--repo", repo, "--json", "labels", "-q", "[.labels[].name]"]));
+      author = gh(["pr", "view", number, "--repo", repo, "--json", "author", "-q", ".author.login"]);
       head = gh(["pr", "view", number, "--repo", repo, "--json", "headRefOid", "-q", ".headRefOid"]);
       checkRunCount = Number(gh(["api", `repos/${repo}/commits/${head}/check-runs`, "--jq", ".total_count"]));
     } catch (cause) {
@@ -432,6 +434,13 @@ function main() {
     }
 
     const { arm, reason } = decideAndWarn({ number, labels, checkRunCount });
+    // #3254: `arm-pr`'s refusal, asked again here, or this sweep would arm on the same event what `arm-pr` just refused.
+    const authorship = arm ? authorshipVerdict({ number, repo, author, run: gh }) : { kind: "clear" };
+    if (authorship.kind !== "clear") {
+      console.log(`SWEEP: #${number} SKIPPED -- ${authorship.why}`);
+      if (authorship.kind === "cannot-ask") failed.push(number);
+      continue;
+    }
     if (!arm) {
       console.log(`SWEEP: #${number} SKIPPED -- ${reason}`);
       continue;
