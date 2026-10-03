@@ -15,6 +15,10 @@
 // (#2908), which checks it with `isAccepted` and writes the chairman-attributed comment and the labels; the chairman is told what happened.
 // What is NOT an answer (a message that replies to nothing the organisation asked) goes to row 10's `converse`, which queues it for `ceo` and nobody else.
 //
+// **THE QUEUE LOADS ON THE FIRST MESSAGE, AND ONLY `converse.mjs` NAMES IT.** `prompt-session.mjs` and `wake.mjs` read the project's declaration when they are
+// imported and REFUSE without it (the `chairman-listen` unit sets `$AGENT_ORG_HOST`, #3064). A message `converse` could not queue for that reason is TOLD to the
+// chairman (a send) and ledgered `refused` by `tellingWhenUndelivered`, never dropped.
+//
 // **THE GITHUB WRITES ARE THE UNIT'S ACCOUNT, NEVER THE PERSON'S (#1967).** This is the one program here that writes to GitHub, so it refuses to
 // start where no account is declared, as `watch.mjs` does for its reads.
 //
@@ -33,7 +37,7 @@ import { MessagingConfigRefusal, readMessagingConfig } from "./config.mjs";
 import { createConverse } from "./converse.mjs";
 import { createGithubWriter } from "./github-writer.mjs";
 import { createInbound } from "./inbound.mjs";
-import { createLedger } from "./ledger.mjs";
+import { createLedger, describeError } from "./ledger.mjs";
 import { createOffsetStore, createTelegramPollingProvider, PollConflictError, runListener } from "./providers/telegram/poll.mjs";
 import { readSecretFile, SecretFileRefusal } from "./secret.mjs";
 import { accountIsDeclared, defaultLedgerPath, readChairman } from "./state.mjs";
@@ -170,6 +174,43 @@ function stoppableBy(given) {
 }
 
 /**
+ * A message `converse` could not take, because it threw before it wrote a ledger line of its own (the queue would not load, which is what a missing
+ * `$AGENT_ORG_HOST` looks like, or would not run), is TOLD to the chairman as not delivered and ledgered `refused`, then thrown. One `converse` did account
+ * for keeps its own line, and its throw stands: a second line would say the same message was refused after it was queued.
+ *
+ * @param {{ ledger: { read: () => Record<string, any>[], append: (entry: Record<string, unknown>) => unknown }, send: (message: { text: string, replyTo?: string }) => Promise<{ messageRef: string }>,
+ *   converse: (accepted: Readonly<Record<string, any>>) => Promise<unknown> | unknown }} parts
+ * @returns {(accepted: Readonly<Record<string, any>>) => Promise<void>}
+ */
+export function tellingWhenUndelivered({ ledger, send, converse }) {
+  /** @param {Readonly<Record<string, any>>} accepted @param {unknown} cause @returns {Promise<never>} */
+  async function refuse(accepted, cause) {
+    /** @type {{ ref: string | null, error: unknown }} */
+    let ack = { ref: null, error: null };
+    try {
+      ack = { ref: (await send({ text: `I could not queue that for ceo: ${describeError(cause)}. Treat it as NOT delivered.`, replyTo: String(accepted.messageId) })).messageRef, error: null };
+    } catch (error) {
+      ack = { ref: null, error };
+    }
+    ledger.append({
+      direction: "in", origin: "converse", updateId: accepted.updateId, messageRef: String(accepted.messageId), verdict: "refused", handoff: null,
+      ackRef: ack.ref, error: describeError(cause),
+    });
+    if (ack.error !== null) throw new Error("the queue could not be reached and the chairman could not be told", { cause: ack.error });
+    throw new Error(`the queue could not be reached (message update ${accepted.updateId})`, { cause });
+  }
+
+  return async (accepted) => {
+    try {
+      await converse(accepted);
+    } catch (cause) {
+      if (ledger.read().some((line) => line.origin === "converse" && line.updateId === accepted.updateId)) throw cause;
+      await refuse(accepted, cause);
+    }
+  };
+}
+
+/**
  * What the listener does with an accepted value: it answers a request on its row and tells the chairman what happened, and hands anything else to
  * `converse`. `send` speaks to the chairman's chat, so a reply needs no chat id, and a button press is NOT answered again here: `runListener` stops
  * the spinner of every press before the core sees it, and Telegram takes one answer per query.
@@ -214,7 +255,7 @@ async function listen(deps, config) {
     const conversation = createConverse({ chairman, ledger, send, now });
     await runListener({
       provider, inbound, offsets: createOffsetStore(join(state, OFFSET_FILE), { log: err }), chairman, sleep, log: err, signal: stoppableBy(deps.signal),
-      onForward: onForward ?? createForwarder({ answers, send, converse: converse ?? conversation.forward, log: err }),
+      onForward: onForward ?? createForwarder({ answers, send, converse: tellingWhenUndelivered({ ledger, send, converse: converse ?? conversation.forward }), log: err }),
     });
   } finally {
     lock.release();
