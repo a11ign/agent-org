@@ -6,12 +6,12 @@
  * The world is two repositories (one npm, one tag-only) with a LINEAR git history, so `contains` is "comes no later in the list" and a release cut from
  * an older commit (the backport) is a release that was published AFTER a change and does not contain it.
  *
- * POSITIVE CONTROLS: the world's release and merge counts are non-zero (the first test), and a reader that answers `[]` to everything is REFUSED as
- * `unknown` while the same repository with ONE non-empty answer is read (so the refusal is not "every repository with a thin history is unknown").
+ * POSITIVE CONTROLS: the world's release and merge counts are non-zero (the first test), and a reader that THROWS is `unknown` while the same repository
+ * answering `[]` is `no release yet` (a 404 on a declared npm package, an empty repository), so a refusal is not "no release yet" and an empty answer is not a refusal.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dora, measureRepository, renderDora, doraNumbers, doraDeclarations, metricState, DORA_METRICS, LOOKBACK_DAYS, MIN_RELEASES_FOR_A_RATE, UNKNOWN } from "../dora.mjs";
+import { dora, measureRepository, renderDora, doraNumbers, doraDeclarations, metricState, DORA_METRICS, LOOKBACK_DAYS, MIN_RELEASES_FOR_A_RATE, UNKNOWN, NEVER_PUBLISHED } from "../dora.mjs";
 import { buildReport, renderReport, compareReadings, cachedDora, DORA_CACHE_FILE } from "../org-retro.mjs";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -221,14 +221,52 @@ test("an unreadable ancestry is `unknown`, never `unreleased`", () => {
   assert.equal(measured.deploymentFrequency.value, 6, "and deployment frequency, which needs no ancestry, is still read");
 });
 
-test("POSITIVE CONTROL for the refusal: a reader that returns [] for everything is REFUSED as unknown; one non-empty answer makes the same repository readable", () => {
-  const nothing = dora({ repositories: [FRESH] as Any, readers: readersOf({ "acme/fresh": EMPTY_WORLD }) as Any, now: NOW });
-  assert.equal(nothing.repositories[0].status, "unknown");
-  assert.match(nothing.repositories[0].reason, /returned nothing at all/);
-  assert.ok(Object.values(doraNumbers(nothing)).every((n) => n === null));
-  assert.doesNotMatch(renderDora(nothing).join("\n"), /no release yet|0 releases/);
-  const oneMerge = dora({ repositories: [FRESH] as Any, readers: readersOf({ "acme/fresh": { ...EMPTY_WORLD, prs: [pr(40, "10-01T12:00", "f1", "lib/z.ts")], history: ["f1"] } }) as Any, now: NOW });
-  assert.equal(oneMerge.repositories[0].status, "no release yet");
+const neverPublished = () => { throw Object.assign(new Error("HTTP 404"), { code: NEVER_PUBLISHED }); };
+const UNPUBLISHED = { repo: "acme/unpublished", release: { kind: "npm", package: "@acme/unpublished" }, releasablePaths: ["lib/"] };
+const fresh = (repository: Any, readers: Any) => dora({ repositories: [repository], readers, now: NOW }).repositories[0];
+
+test("an npm package the registry answers 404 for is `no release yet`, with the age of its oldest unreleased merge (#3171)", () => {
+  const readers = { ...readersOf({ "acme/unpublished": FRESH_WORLD }), releases: neverPublished };
+  const measured = fresh(UNPUBLISHED, readers);
+  assert.equal(measured.status, "no release yet");
+  assert.equal(measured.reason, null);
+  assert.equal(measured.oldestUnreleasedMinutes, 2 * 24 * 60, "the older merge, #40, is two days old");
+  assert.match(renderDora({ date: "2026-10-03", now: NOW, repositories: [measured] } as Any).join("\n"), /- acme\/unpublished: no release yet; oldest unreleased merge is 2d00h old/);
+});
+
+test("a repository with no release and no merged pull request is `no release yet`, not `unknown` (#3171)", () => {
+  for (const repository of [FRESH, WIDGETS, UNPUBLISHED]) {
+    const measured = fresh(repository, readersOf({ [repository.repo]: EMPTY_WORLD }));
+    assert.equal(measured.status, "no release yet", repository.repo);
+    assert.equal(measured.oldestUnreleasedMinutes, null);
+  }
+  const printed = renderDora(dora({ repositories: [FRESH] as Any, readers: readersOf({ "acme/fresh": EMPTY_WORLD }) as Any, now: NOW })).join("\n");
+  assert.match(printed, /acme\/fresh: no release yet/);
+  assert.doesNotMatch(printed.split("\n").filter((line) => line.startsWith("- ")).join("\n"), /unknown/, "the head names the word; no repository's own line may");
+});
+
+test("POSITIVE CONTROL for the above: a refused read is still `unknown`, so the change did not turn every failure into `no release yet`", () => {
+  const empty = readersOf({ "acme/fresh": EMPTY_WORLD, "acme/widgets": EMPTY_WORLD, "acme/unpublished": EMPTY_WORLD });
+  const boom = () => { throw new Error("HTTP 503"); };
+  assert.equal(fresh(FRESH, { ...empty, releases: boom, mergedPrs: boom }).status, "unknown", "a reader that throws on both");
+  assert.equal(fresh(FRESH, { ...empty, releases: () => null, mergedPrs: () => null }).status, "unknown", "a reader that answers null on both");
+  assert.equal(fresh(UNPUBLISHED, { ...empty, releases: boom }).status, "unknown", "a network error on the registry is not a 404");
+  assert.equal(fresh(FRESH, { ...empty, releases: neverPublished }).status, "unknown", "a 404 means never published only for a declared npm package, not a tag repository");
+  const noMerges = fresh(UNPUBLISHED, { ...empty, releases: neverPublished, mergedPrs: boom });
+  assert.match(noMerges.reason, /merged pull requests could not be read/, "never published, and the merges unreadable: nothing to measure from");
+  assert.equal(noMerges.status, "unknown");
+  const oneMerge = fresh(FRESH, readersOf({ "acme/fresh": { ...EMPTY_WORLD, prs: [pr(40, "10-01T12:00", "f1", "lib/z.ts")], history: ["f1"] } }));
+  assert.equal(oneMerge.status, "no release yet");
+});
+
+test("the reading says which npm package it reads, ONE per repository, and prints nothing about a tag repository (#3171)", () => {
+  const printed = renderDora(REPORT).join("\n");
+  assert.match(printed, /npm releases are read from ONE package per repository .*: acme\/widgets reads `widgets`$/m);
+  assert.doesNotMatch(printed, /acme\/tool reads/);
+  const none = renderDora(dora({ repositories: [TOOL] as Any, readers: readersOf(WORLDS) as Any, now: NOW })).join("\n");
+  assert.doesNotMatch(none, /ONE package/, "no npm repository, no line");
+  const unreadable = dora({ repositories: [WIDGETS] as Any, readers: readersOf({ "acme/widgets": { ...WIDGETS_WORLD, releases: null } }) as Any, now: NOW });
+  assert.match(renderDora(unreadable).join("\n"), /acme\/widgets reads `widgets`/, "an unknown repository still names what it could not read");
 });
 
 test("every metric prints its direction, from ONE table that declares one", () => {

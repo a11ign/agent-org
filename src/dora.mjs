@@ -14,9 +14,13 @@
 //   3. Change failure rate: releases later deprecated, or followed within 24 hours by a release that closes a `regression` row, over releases.
 //   4. Time to restore: the opening of that `regression` row to the publish of the release that closes it (still-open rows at their current age).
 //
-// A REFUSED READ IS `unknown`, NEVER 0 (#1286), AND AN EMPTY ANSWER TO EVERYTHING IS A REFUSED READ: a repository with a history is never empty in both
-// its releases and its merged pull requests, so a reader that returns `[]` for both has read nothing. `undefined` is a third state, not a failure: a
-// metric with nothing to measure (no regression ever opened) is undefined, and is never printed as 0 either.
+// A REFUSED READ IS `unknown`, NEVER 0 (#1286): a reader that threw, or answered `null`, read nothing. AN EMPTY ANSWER IS AN ANSWER (#3171): a declared repository
+// with no release and no merged pull request is `no release yet`, and so is an npm package the registry answers 404 for (never published: the one refusal that
+// is an answer, and only on a package the declaration names). `undefined` is a third state, not a failure: a metric with nothing to measure (no regression
+// ever opened) is undefined, and is never printed as 0 either.
+//
+// ONE npm PACKAGE PER REPOSITORY IS READ (`release.package`), and `renderDora` says which: a release of another package in the same repository is not a
+// deployment in this reading. a11ign publishes four together in one version pull request, so it declares the command.
 //
 // A LEAF: it imports nothing from the tool, so `org-retro.mjs` can import it and the test can run it with injected readers and no network.
 import { execFileSync } from "node:child_process";
@@ -25,6 +29,9 @@ import { pathToFileURL } from "node:url";
 
 /** What an unreadable source prints. Never `0`. */
 export const UNKNOWN = "unknown";
+
+/** The `code` of the error a reader throws for an npm package the registry has no document for (HTTP 404): never published, which is an answer and not a refusal. */
+export const NEVER_PUBLISHED = "never-published";
 
 /** The trailing window every metric covers, and the unit of the baseline (a11ign: 1 release in 14 days at filing). */
 export const LOOKBACK_DAYS = 14;
@@ -45,6 +52,8 @@ const SHA_LENGTH = 40;
 /** An npm registry document for a long-lived package is large. */
 const MAX_BUFFER = 256 * 1024 * 1024;
 const READ_TIMEOUT_SECONDS = 60;
+const HTTP_OK = "200";
+const HTTP_NOT_FOUND = "404";
 
 /**
  * @typedef {{ repo: string, release: { kind: "npm", package: string } | { kind: "tag" }, releasablePaths: string[] }} Repository
@@ -73,6 +82,9 @@ function median(numbers) {
 
 /** @param {number} ms @returns {string} the UTC date, `YYYY-MM-DD` */
 const utcDate = (ms) => new Date(ms).toISOString().slice(0, 10);
+
+/** @param {string} name @returns {Error} */
+const neverPublished = (name) => Object.assign(new Error(`the registry has no package ${name}`), { code: NEVER_PUBLISHED });
 
 /** @template T @param {() => T | null} read @returns {T | null} a read that throws is a refused one */
 function attempt(read) {
@@ -231,9 +243,12 @@ function timeToRestore({ rows, windowStart, now }) {
     undefinedBecause: minutes.length === 0 ? `no regression row restored or still open in the last ${LOOKBACK_DAYS} days` : null };
 }
 
+/** @param {Repository} repository @returns {string | null} the one npm package this repository's releases are read from, `null` for a tag repository */
+const npmPackageOf = (repository) => (repository.release.kind === "npm" ? repository.release.package : null);
+
 /** @param {Repository} repository @param {string} reason */
 function unknownRepository(repository, reason) {
-  return { repo: repository.repo, status: /** @type {const} */ ("unknown"), reason, oldestUnreleasedMinutes: null, deploymentFrequency: null, leadTime: null, changeFailure: null, restore: null,
+  return { repo: repository.repo, npmPackage: npmPackageOf(repository), status: /** @type {const} */ ("unknown"), reason, oldestUnreleasedMinutes: null, deploymentFrequency: null, leadTime: null, changeFailure: null, restore: null,
     reasons: /** @type {Record<string, string>} */ ({}) };
 }
 
@@ -261,20 +276,32 @@ function oldestCommit({ releasable, regressions }) {
 }
 
 /**
- * The two reads every metric stands on, or WHY the repository is unknown. A repository with no release and no merged pull request has been read as
- * EMPTY IN BOTH, which no repository with a history is: that is a reader that found nothing because it read nothing, and it is refused.
+ * The releases, `[]` when the declared npm package was never published (the registry's 404), or `null` when the read was refused. A 404 is told from a
+ * network error by the reader's `NEVER_PUBLISHED` code, and only an npm repository can have one: a tag repository's 404 is a refusal like any other.
+ * @param {{ repository: Repository, readers: Readers, windowStart: number }} input @returns {Release[] | null}
+ */
+function readReleases({ repository, readers, windowStart }) {
+  try {
+    return readers.releases(repository, { since: new Date(windowStart).toISOString() });
+  } catch (/** @type {any} */ err) {
+    return err?.code === NEVER_PUBLISHED && repository.release.kind === "npm" ? [] : null;
+  }
+}
+
+/**
+ * The two reads every metric stands on, or WHY the repository is unknown. No release and no merged pull request is `no release yet`, as the row that
+ * declared the repository promised: the page shows it as unfinished. It is the readers' contract that makes that safe: a read that FAILED throws or
+ * answers `null`, and `[]` is only a read that found nothing.
  * @param {{ repository: Repository, readers: Readers, windowStart: number }} input
  * @returns {{ refusal: string } | { releases: (Release & { at: number })[], merged: MergedPr[] | null }}
  */
 function readSources({ repository, readers, windowStart }) {
-  const listed = attempt(() => readers.releases(repository, { since: new Date(windowStart).toISOString() }));
+  const listed = readReleases({ repository, readers, windowStart });
   if (listed === null) return { refusal: "its releases could not be read" };
   const releases = ordered(listed);
   if (releases === null) return { refusal: "a release has no publish time that can be read" };
   const merged = attempt(() => readers.mergedPrs(repository, { since: releases.length === 0 ? null : new Date(windowStart).toISOString() }));
-  if (releases.length > 0) return { releases, merged };
-  if (merged === null) return { refusal: "it has no release and its merged pull requests could not be read" };
-  if (merged.length === 0) return { refusal: "the readers returned nothing at all (no release and no merged pull request): a repository with a history is not empty in both, so nothing was read" };
+  if (releases.length === 0 && merged === null) return { refusal: "it has no release and its merged pull requests could not be read" };
   return { releases, merged };
 }
 
@@ -302,7 +329,7 @@ export function measureRepository(repository, readers, now) {
     ...(fixing.reason === null ? {} : { changeFailure: fixing.reason, restore: fixing.reason }),
   };
   return {
-    repo: repository.repo, status: noReleaseYet ? /** @type {const} */ ("no release yet") : /** @type {const} */ ("read"), reason: null,
+    repo: repository.repo, npmPackage: npmPackageOf(repository), status: noReleaseYet ? /** @type {const} */ ("no release yet") : /** @type {const} */ ("read"), reason: null,
     deploymentFrequency: frequency, leadTime: /** @type {any} */ (lead.block), oldestUnreleasedMinutes: /** @type {any} */ (lead.block)?.oldestUnreleasedMinutes ?? null,
     changeFailure: fixing.rows === null ? null : changeFailure({ inWindow: frequency.releases, fixes }),
     restore: fixing.rows === null ? null : timeToRestore({ rows: fixing.rows, windowStart, now }),
@@ -439,13 +466,23 @@ function repositoryLines(reading) {
 }
 
 /**
+ * Which npm package each npm repository's releases are read from: ONE, so a release of another package in it is not counted, and the page says so
+ * rather than leaving a reader to assume every package is. A report cached before this field existed names none, and prints no line.
+ * @param {DoraReport} report @returns {string[]}
+ */
+function packagesLine(report) {
+  const read = report.repositories.flatMap((reading) => (reading.npmPackage ? [`${reading.repo} reads \`${reading.npmPackage}\``] : []));
+  return read.length === 0 ? [] : [`- npm releases are read from ONE package per repository (a release of another is not a deployment here): ${read.join("; ")}`];
+}
+
+/**
  * The DORA block as the text `ceo` is handed and posts on #928.
  * @param {DoraReport} report @returns {string[]}
  */
 export function renderDora(report) {
   const head = `DORA ${report.date} -- the four metrics per repository, from the registry and GitHub, last ${LOOKBACK_DAYS} days (an unreadable source is "${UNKNOWN}", an empty one "undefined", neither is 0)`;
   if (report.repositories.length === 0) return [head, "- no repository is declared (`dora` in .agent-org/project.json is empty)"];
-  return [head, ...report.repositories.flatMap(repositoryLines)];
+  return [head, ...packagesLine(report), ...report.repositories.flatMap(repositoryLines)];
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -478,7 +515,13 @@ function resolveCommit({ publishedAt, since, known, repo, ref }) {
 /** @param {Repository & { release: { kind: "npm", package: string } }} repository @param {{ since: string }} window @returns {Release[]} */
 function npmReleases(repository, { since }) {
   const url = `https://registry.npmjs.org/${repository.release.package.replace("/", "%2f")}`;
-  const document = JSON.parse(run("curl", ["-fsS", "--max-time", String(READ_TIMEOUT_SECONDS), "-H", "Accept: application/json", url]));
+  // No `-f`: it would make a 404 (never published) and a failed read the same exit status. The status is the last line, after the document.
+  const answer = run("curl", ["-sS", "--max-time", String(READ_TIMEOUT_SECONDS), "-H", "Accept: application/json", "-w", "\n%{http_code}", url]);
+  const split = answer.lastIndexOf("\n");
+  const status = answer.slice(split + 1);
+  if (status === HTTP_NOT_FOUND) throw neverPublished(repository.release.package);
+  if (status !== HTTP_OK) throw new Error(`the registry answered HTTP ${status} for ${repository.release.package}`);
+  const document = JSON.parse(answer.slice(0, split));
   return Object.entries(document.versions ?? {}).map(([version, meta]) => ({
     id: version, publishedAt: document.time?.[version], deprecated: Boolean(/** @type {any} */ (meta).deprecated),
     commit: resolveCommit({ publishedAt: document.time?.[version], since, known: /** @type {any} */ (meta).gitHead, repo: repository.repo, ref: `v${version}` }),
@@ -494,6 +537,20 @@ function tagReleases(repository, { since }) {
   }));
 }
 
+/**
+ * The `regression` rows of a repository, `[]` for one whose issues are DISABLED (it has no rows and can have none: `gh issue list` refuses it, which would
+ * read as `unknown` for every metric of a repository that only exists to hold code, #3171). A failed read of the setting itself throws, and is refused.
+ * @param {string} repo @param {string} since @returns {Regression[]}
+ */
+function regressionRows(repo, since) {
+  if (ghJson(["repo", "view", repo, "--json", "hasIssuesEnabled"]).hasIssuesEnabled !== true) return [];
+  return ghJson(["issue", "list", "-R", repo, "--label", "regression", "--state", "all", "--limit", "200",
+    "--json", "number,createdAt,closedAt,closedByPullRequestsReferences"]).map((/** @type {any} */ row) => ({
+    number: row.number, openedAt: row.createdAt, closedAt: row.closedAt ?? null,
+    ...(row.closedAt && row.closedAt >= since ? fixOf(repo, row.closedByPullRequestsReferences ?? []) : { fixCommit: null, fixMergedAt: null }),
+  }));
+}
+
 /** @type {Readers} */
 export const githubReaders = {
   releases: (repository, window) => (repository.release.kind === "npm" ? npmReleases(/** @type {any} */ (repository), window) : tagReleases(repository, window)),
@@ -501,11 +558,7 @@ export const githubReaders = {
     "--limit", "1000", "--json", "number,mergedAt,mergeCommit,files"]).map((/** @type {any} */ pr) => ({
     number: pr.number, mergedAt: pr.mergedAt, mergeCommit: pr.mergeCommit?.oid ?? null, paths: Array.isArray(pr.files) ? pr.files.map((/** @type {any} */ f) => f.path) : null,
   })),
-  regressions: (repository, { since }) => ghJson(["issue", "list", "-R", repository.repo, "--label", "regression", "--state", "all", "--limit", "200",
-    "--json", "number,createdAt,closedAt,closedByPullRequestsReferences"]).map((/** @type {any} */ row) => ({
-    number: row.number, openedAt: row.createdAt, closedAt: row.closedAt ?? null,
-    ...(row.closedAt && row.closedAt >= since ? fixOf(repository.repo, row.closedByPullRequestsReferences ?? []) : { fixCommit: null, fixMergedAt: null }),
-  })),
+  regressions: (repository, { since }) => regressionRows(repository.repo, since),
   // `compare/<base>...<head>`, every page: `status` once, and the commits of `head` that `base` lacks.
   range: (repository, { base, head }) => {
     const pages = ghJson(["api", `repos/${repository.repo}/compare/${base}...${head}?per_page=100`, "--paginate", "--slurp"]);
