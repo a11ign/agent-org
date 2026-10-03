@@ -21,9 +21,20 @@ import { LANES_FILE_PATH } from "./project-vocabulary.mjs";
 const REPO = HOME_CHECKOUT;
 
 /**
+ * `reviewOnly` is `ceo`'s 2026-09-18 ruling (`_claimVsAuthorRuling`) as data: the lane protects REVIEW, not
+ * AUTHORSHIP, so a Region that touches only this lane is anybody's row (#3254) -- and the owner's own login is
+ * the one that may not author the PR.
+ *
  * @typedef {{lane: string, owner: string, branchPrefixes: string[], paths: string[], why: string,
- *   except?: string[], exceptWhy?: string}} Lane
+ *   except?: string[], exceptWhy?: string, reviewOnly?: boolean}} Lane
  */
+
+/**
+ * A lane's role-name owner, spelled as the GitHub login that authors that role's pull requests.
+ * `docs/lane-ownership.json` names the ROLE and never the account, so the mapping lives here; `work-gate.mjs` and
+ * `codeowners-lane-sync.test.ts` each re-assert their own copy (#3254 files the work-gate one).
+ */
+export const ROLE_LOGIN = Object.freeze({ ceo: "a11ign-ai-leads" });
 
 /**
  * The lanes, read from the file `ceo` owns.
@@ -74,3 +85,76 @@ export function inLane(changed, paths) {
  * @param {string} body @param {string} lane
  * @returns {string | null} the line, verbatim, so the caller can echo it
  */
+
+/**
+ * The paths among `files` that sit in a review-only lane and outside its `except` -- what a pull request must touch
+ * for `laneAuthorshipRefusal` to have anything to say, so a caller can ask it BEFORE it spends a call on the author.
+ * @param {readonly string[]} files @param {{lanes: Lane[]} | null} lanes
+ */
+export function reviewOnlyPathsIn(files, lanes) {
+  const owned = (lanes?.lanes ?? []).filter((lane) => lane.reviewOnly === true);
+  return files.filter((f) => owned.some((lane) => inLane(f, lane.paths) && !inLane(f, lane.except ?? [])));
+}
+
+/**
+ * Is this login the owner of a review-only lane -- the only population `laneAuthorshipRefusal` can refuse, so a caller
+ * asks it BEFORE paying for a file list.
+ * @param {string | null | undefined} author @param {{lanes: Lane[]} | null} lanes
+ */
+export function ownsReviewOnlyLane(author, lanes) {
+  return Boolean(author) && Boolean(lanes?.lanes.some(
+    (lane) => lane.reviewOnly === true && /** @type {Record<string, string>} */ (ROLE_LOGIN)[lane.owner] === author));
+}
+
+/**
+ * #3254, #1756 RULING ITEM 7: THE OWNER OF A REVIEW-ONLY LANE DOES NOT AUTHOR A PULL REQUEST INTO IT. Four PRs
+ * from `a11ign-ai-leads` touched `.github/workflows/` in about a day (#3238, #3196, #3109, #3066), and a practice
+ * breached four times in a day needs a refusal rather than a reminder. Pure: the caller looks up the author and
+ * the changed files, so a test drives real shapes.
+ *
+ * THERE IS NO OVERRIDE, AND THE ARGUMENT LIST SAYS SO: nothing here reads a PR body, a label or a flag, so a
+ * `Lane-exception:` line cannot reach it. `main-review-requirement.md`'s reason -- a mechanism that lets the
+ * account whose PRs the check gates skip it is decorative for exactly that population. The way out is the
+ * chairman's admin edit, which is logged.
+ *
+ * `except` is subtracted, so a PR touching only `consumer-gate.yml` is not this lane's. `lanes` null (the project
+ * declares no lanes file, as an outside contributor's checkout does not) answers `null`: there is no lane to refuse for.
+ *
+ * @param {{ author: string | null | undefined, files: readonly string[], lanes: {lanes: Lane[]} | null }} pr
+ * @returns {string | null} the refusal, naming the row and the ruling, or null when the PR may proceed
+ */
+export function laneAuthorshipRefusal({ author, files, lanes }) {
+  if (!author || !lanes) return null;
+  for (const lane of lanes.lanes) {
+    if (!ownsReviewOnlyLane(author, { lanes: [lane] })) continue;
+    const touched = files.filter((f) => inLane(f, lane.paths) && !inLane(f, lane.except ?? []));
+    if (touched.length === 0) continue;
+    return `\`${author}\` is \`${lane.owner}\`'s login, and the \`${lane.lane}\` lane is review-only: #1756 Ruling item 7 `
+      + `says \`${lane.owner}\` does not author a pull request touching it, and #3254 made that a refusal. `
+      + `It touches ${touched.slice(0, 3).join(", ")}${touched.length > 3 ? ` and ${touched.length - 3} more` : ""}. `
+      + "There is no override and no `Lane-exception:` form: the row is open to any engineer, so an engineer builds this change. "
+      + "A pipeline PR that must land while no engineer can author it needs the chairman's logged admin edit.";
+  }
+  return null;
+}
+
+/**
+ * #3254: THE AUTHORSHIP REFUSAL FOR ONE PR, WITH THE FILE LIST READ ONLY WHEN THE AUTHOR IS A LANE OWNER'S LOGIN --
+ * every other PR pays nothing. Shared by `arm-pr` and `auto-arm-sweep`, the two unattended doors that arm, so neither can arm what the other refuses; `run` is the caller's own `gh`.
+ * The list is paged (`gh pr view --json files` stops at 100, and a refusal that read a
+ * partial list could miss the path that mattered). A list that cannot be read answers `cannot-ask`, never "clear".
+ * @param {{ number: string, repo: string, author: string | null | undefined, run: (ghArgs: string[]) => string,
+ *   lanes?: {lanes: Lane[]} | null }} pr
+ * @returns {{ kind: "clear" } | { kind: "refused" | "cannot-ask", why: string }}
+ */
+export function authorshipVerdict({ number, repo, author, run, lanes = loadLanes() }) {
+  if (!ownsReviewOnlyLane(author, lanes)) return { kind: "clear" };
+  try {
+    const files = run(["api", "--paginate", `repos/${repo}/pulls/${number}/files`, "--jq", ".[].filename"])
+      .split("\n").filter(Boolean);
+    const why = laneAuthorshipRefusal({ author, files, lanes });
+    return why === null ? { kind: "clear" } : { kind: "refused", why };
+  } catch (cause) {
+    return { kind: "cannot-ask", why: `could not read #${number}'s changed files: ${/** @type {Error} */ (cause).message}` };
+  }
+}
