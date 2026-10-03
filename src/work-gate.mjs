@@ -113,8 +113,7 @@ import { readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "./trunk-red
 import { diskHeadroom, MIN_FREE_FRACTION } from "./disk-headroom.mjs";
 // #2470: A CLAIM THAT DOES NOT MOVE. A leaf, like every import above, so the gate keeps the property its own header states.
 import { STALL_STATE_FILE, claimFactsFrom, readClaim, claimStalledOrders, nextStallState, readStallState,
-  writeStallState, readHerdrRestart, gitRun, pathExists, statMtime, nudgeKey, nudgeDeliveredAt,
-  claimRecordOf, KEPT_CLAIMS_FILE, readJsonObject, writeJsonObject } from "./claim-stall.mjs";
+  writeStallState, readHerdrRestart, gitRun, pathExists, statMtime, nudgeKey, nudgeDeliveredAt, KEPT_CLAIMS_FILE, readJsonObject, writeJsonObject } from "./claim-stall.mjs";
 // #2845: WHO STAMPED A WORKTREE -- the reading a refused claim names. Imports only `node:*` and `lib/`, like the rest.
 import { worktreeOwner } from "./worktree-owner.mjs";
 // #2747: WHETHER A CLAIM'S SESSION STILL EXISTS AT ALL -- a DIFFERENT question from "who is free" (line 26-29
@@ -131,17 +130,18 @@ import { requiredWhenRed, perPullRequestOrders, greenUnarmedOrders, reviewBlocke
 export { redOnlyBySupersededRun, mergeConflictOrders, greenUnarmedOrders, reviewBlockedOrders, HOLD_RED_JOBS,
   stallReasonOf, stallOrderOf, stalledPrOrders, STALL_REASON, STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr,
   awaitingEvidenceStaleOrders } from "./work-gate/pr-orders.mjs";
-import { labJobFinishedOrders, readLabJobRecords, readDispatchedLabJobs } from "./work-gate/lab-job-orders.mjs"; // #2729, #3007
-// #2691: THE LIVE CALL-COUNT SIGNAL, reusing the parser rather than a second one -- `split-baseline.mjs`
-// already imports these two the same way. `token-audit.mjs` imports only `node:*` and `cli-flags.mjs`
-// (already here), so the gate keeps the property its own header states.
-import { claudeTurns, transcriptFiles } from "./token-audit.mjs";
+import { labJobFinishedOrders, readLabJobRecords, readDispatchedLabJobs } from "./work-gate/lab-job-orders.mjs";
 // #2898: THE ORG-HEALTH FACTS AND ORDERS live in `work-gate/org-health.mjs`, which imports the shared reads BACK from this file (the cycle `pr-orders.mjs` above describes);
 // every name it exported is re-exported here, so no caller of `work-gate.mjs` changes.
 import { orgHealthNow, rulingOrdersNow } from "./work-gate/org-health.mjs";
 // #2898: WHO OWNS A PULL REQUEST lives in `work-gate/pr-owners.mjs`, which imports the shared session reads BACK from this file (the cycle `pr-orders.mjs` above describes);
 // every name it exported is re-exported here, so no caller of `work-gate.mjs` changes.
 import { withPrOwners } from "./work-gate/pr-owners.mjs";
+// #2898: THE ROW-CALL-COUNT ORDERS live in `work-gate/row-call-count-orders.mjs`, which imports the shared claim reads BACK from this file (the cycle `pr-orders.mjs` above describes);
+// every name it exported is re-exported here, so no caller of `work-gate.mjs` changes.
+import { rowCallCountOrders, rowCallCountSignals, liveClaudeTurns } from "./work-gate/row-call-count-orders.mjs";
+export { ROW_CALL_COUNT_SPLIT_THRESHOLD, claimedRowSession, rowCallCountSignals, ROW_CALL_COUNT_ASSESSED_MARKER,
+  rowCallCountAssessedCalls, formatRowCallCountAssessment, rowCallCountOrders } from "./work-gate/row-call-count-orders.mjs";
 export { withClosingRowOwners, withNamedOwners, withPrOwners, withEndedLabels } from "./work-gate/pr-owners.mjs";
 export { FLEET_CAPTURES_LEDGER, readFleetCaptures, fleetWaitingFacts, readHeadCommittedAt, stalledPrFacts,
   MAX_WAIT_READS, refFactOf, readWaitRef, readWaitFacts, readRefFacts, waitTickFacts, staleWaitOrders,
@@ -3737,179 +3737,6 @@ function pipelineCodeownerReviewOrders(missing) {
       + "pull request is not a review and does not satisfy CODEOWNERS.",
     causeKey: `ceo/pr-codeowner-review-missing/${key}`,
   }];
-}
-
-/**
- * #2691: A CLAIMED ROW'S SESSION PAST THIS MANY CALLS on its OWN live transcript is a split CANDIDATE for
- * `product-manager`'s judgement, never an automatic split. The chairman's token-efficiency reading (#928,
- * 2026-09-27) measured p90 147 calls/session against a filing target of about 60.
- */
-export const ROW_CALL_COUNT_SPLIT_THRESHOLD = 100;
-
-/**
- * The session a still-open row is claimed by, from its own single `session:` label -- `null` for zero or
- * more than one, `readClaims`'s own refusal for the same reason: a row carrying an unexpected count is not
- * guessed at.
- * @param {any} row
- */
-export function claimedRowSession(row) {
-  const sessions = labelsOf(row).filter((/** @type {string} */ n) => n.startsWith(SESSION_PREFIX));
-  return sessions.length === 1 ? sessions[0].slice(SESSION_PREFIX.length) : null;
-}
-
-/**
- * The `{ row, session, at }` a claim record gives for every open row that carries one -- the raw material
- * `rowCallCountSignals` windows against, pulled out so that arithmetic has something to read rather than
- * re-deriving it inline. A row with no session label, or whose newest claim-record comment cannot be read
- * (none posted, or the newest one is a release) contributes nothing -- a window with nothing to anchor it
- * is never guessed at, `claimedRowSession`'s own rule for an ambiguous label count applied one step further.
- * @param {any[]} openRows @param {Map<number, any[]>} byRow
- * @returns {{ row: number, session: string, at: number }[]}
- */
-function claimedRowAnchors(openRows, byRow) {
-  const anchors = [];
-  for (const row of openRows) {
-    const session = claimedRowSession(row);
-    if (session === null) continue;
-    const record = claimRecordOf(byRow.get(Number(row.number)) ?? []);
-    if (record === null) continue;
-    anchors.push({ row: Number(row.number), session, at: record.at });
-  }
-  return anchors;
-}
-
-/**
- * When `anchor`'s window closes: `Infinity`, unless the SAME session claims ANOTHER open row later, in
- * which case that later claim ends this one's window. #2710's second half -- a standing seat holding row A
- * and then claiming row B while still holding A must not keep charging A for calls made after B was
- * claimed, or A and B never stop reporting overlapping totals for the same later work.
- * @param {{ session: string, at: number }} anchor @param {{ session: string, at: number }[]} anchors
- */
-function windowEnd(anchor, anchors) {
-  const laterOwnClaims = anchors.filter((a) => a.session === anchor.session && a.at > anchor.at).map((a) => a.at);
-  return laterOwnClaims.length > 0 ? Math.min(...laterOwnClaims) : Infinity;
-}
-
-/**
- * Every open row whose claimed session has passed `threshold` CALLS made WHILE HOLDING THAT ROW -- from
- * its own claim record's `createdAt` up to whichever comes first, now or the same session's NEXT claim,
- * never the claiming session's whole lifetime (#2710). A spawned engineer's transcript IS its one row's
- * work, so an unbounded, single-claim window changes nothing for it; a STANDING seat (`ceo`, `orchestrator`,
- * `product-manager`) holds several rows in sequence or at once, and its lifetime total kept climbing
- * regardless of which row it named -- the defect that reported the SAME figure on two different rows
- * `orchestrator` held at once.
- *
- * A SIGNAL, NOT A SPLIT (#2691): whether and how to split stays `product-manager`'s judgement, so this
- * reports the count and stops there. A row at or under the threshold is left out entirely -- this names
- * split CANDIDATES, not every claimed row.
- *
- * @param {any[]} openRows @param {import("./token-audit.mjs").Turn[]} turns every live turn, any session
- * @param {any[] | null} [claimedComments] the comments on every claimed row (`readClaimedRowComments`'s
- *   own shape, `{ number, comments }[]`), read once by the caller and reused rather than re-fetched here
- * @param {number} [threshold]
- * @returns {{ row: number, session: string, calls: number }[]} most calls first
- */
-export function rowCallCountSignals(openRows, turns, claimedComments = [], threshold = ROW_CALL_COUNT_SPLIT_THRESHOLD) {
-  const byRow = new Map((claimedComments ?? []).map((r) => [Number(r?.number), r?.comments ?? []]));
-  const anchors = claimedRowAnchors(openRows, byRow);
-  const signals = [];
-  for (const anchor of anchors) {
-    const end = windowEnd(anchor, anchors);
-    const calls = turns.filter((t) => t.session === anchor.session && t.at >= anchor.at && t.at < end).length;
-    if (calls <= threshold) continue;
-    const assessedAt = rowCallCountAssessedCalls(byRow.get(anchor.row) ?? []);
-    if (assessedAt !== null && calls < 2 * assessedAt) continue;
-    signals.push({ row: anchor.row, session: anchor.session, calls });
-  }
-  return signals.sort((a, b) => b.calls - a.calls);
-}
-
-/** The comment `product-manager` posts to record a "not split" verdict, carrying the call count it was
- * made at -- `CLAIM_RECORD_MARKER`'s shape, a structured marker rather than prose, because nothing
- * re-parses every comment on every tick to recover a number written in English. */
-export const ROW_CALL_COUNT_ASSESSED_MARKER = "<!-- row-call-count-signal: split assessment -->";
-const ASSESSED_CALLS = /\bcalls=(\d+)\b/;
-
-/**
- * The call count `product-manager` last assessed this row at, from the newest comment carrying
- * `ROW_CALL_COUNT_ASSESSED_MARKER` -- `null` for no such comment, or one whose count cannot be read
- * (`claimRecordOf`'s own rule: an assessment that cannot be read is never guessed at, so it signals again
- * rather than staying silent).
- * @param {any[]} comments
- * @returns {number | null}
- */
-export function rowCallCountAssessedCalls(comments) {
-  const newest = comments.filter((c) => String(c?.body ?? "").includes(ROW_CALL_COUNT_ASSESSED_MARKER)).at(-1);
-  if (newest === undefined) return null;
-  const match = ASSESSED_CALLS.exec(String(newest.body));
-  if (match === null) return null;
-  const n = Number(match[1]);
-  return Number.isFinite(n) ? n : null;
-}
-
-/**
- * The body of the verdict comment `product-manager` posts on a row-call-count signal (#2762): the WRITER the
- * marker and `rowCallCountAssessedCalls` were specified without, so the marker and `calls=N` were typed by
- * hand and a hand-typed verdict with neither left the doubling guard nothing to compare against.
- *
- * `calls=N` comes straight after the marker and BEFORE the free-text note: `ASSESSED_CALLS` takes the first
- * match, so a note that happens to quote another `calls=` figure cannot displace the real one. A count that
- * is not a non-negative integer throws rather than posting a comment the reader would read back as `null`.
- * @param {{ calls: number, split: boolean, note?: string }} verdict `calls` is the figure named in the signal's prompt
- * @returns {string}
- */
-export function formatRowCallCountAssessment({ calls, split, note = "" }) {
-  if (!Number.isInteger(calls) || calls < 0) throw new RangeError(`calls must be a non-negative integer, got ${calls}`);
-  const head = `${ROW_CALL_COUNT_ASSESSED_MARKER}\ncalls=${calls}\n${split ? "Split" : "One unit, not split"}.`;
-  return note.trim() === "" ? head : `${head} ${note.trim()}`;
-}
-
-/**
- * ONE ORDER NAMING EVERY ROW PAST THE THRESHOLD -- `pipelineCodeownerReviewOrders`'s shape and for its
- * reason: the set is what makes the cause self-clearing, keyed on WHICH rows are still over it, so a row
- * that splits or closes leaves it out of the next key.
- *
- * THE KEY NAMES THE SET, NOT THE COUNT (#2721). A claimed session's call count rises on nearly every one of
- * its own turns, so keying on the counts (as this did before #2721) minted a new `causeKey` on almost every
- * tick even though the SET of rows over threshold had not changed -- `product-manager` re-derived an
- * identical "not split" verdict from scratch, repeatedly, on the same unchanged row. The call counts still
- * reach the reader, in `prompt`; only the dedup key drops them.
- * @param {{ row: number, session: string, calls: number }[]} [signals]
- * @returns {{session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string}[]}
- */
-export function rowCallCountOrders(signals = []) {
-  if (signals.length === 0) return [];
-  const key = signals.map((s) => s.row).sort((a, b) => a - b).join(",");
-  const named = signals.map((s) => `${subjectMention({ number: s.row })} (${s.session}, ${s.calls} calls)`).join(", ");
-  return [{
-    session: "product-manager",
-    cause: "row-call-count-signal",
-    subject: "row-call-count-signal",
-    discriminator: key,
-    prompt: `${signals.length} claimed row(s) have passed ${ROW_CALL_COUNT_SPLIT_THRESHOLD} calls on their `
-      + `own session's live transcript, per the chairman's token-efficiency reading (#928, #2691): ${named}.\n`
-      + "This is a signal, not an automatic split -- the work may genuinely be one unit. Read each row and "
-      + "decide whether to split it; a row that is one unit says so in its own body rather than being split "
-      + "to hit a number.",
-    causeKey: `product-manager/row-call-count-signal/${key}`,
-  }];
-}
-
-/**
- * Every turn across every live `claude` transcript under `root` -- the SAME read `token-audit.mjs`'s own
- * CLI and `split-baseline.mjs` make, reused rather than duplicated. `[]` for a missing root or an
- * unreadable file: a session whose transcript cannot be read contributes no call to any row's count, which
- * under-reports rather than guesses -- `claudeTurns`'s own rule (a partial line is skipped, not fatal)
- * applied one level up.
- * @param {string} [root]
- */
-function liveClaudeTurns(root = join(process.env.HOME ?? "", ".claude", "projects")) {
-  const turns = [];
-  for (const file of transcriptFiles(root)) {
-    try { turns.push(...claudeTurns(readFileSync(file, "utf8"))); }
-    catch { /* unreadable: this row's count under-reports, never guessed at */ }
-  }
-  return turns;
 }
 
 /**
