@@ -2007,7 +2007,7 @@ const SCRIPT_FILE = /\.[cm]?[jt]sx?$/;
  * @param {string[]} tokens
  * @returns {string | null}
  */
-function agentOrgCommand(tokens) {
+export function agentOrgCommand(tokens) {
   const at = tokens[0] === "agent-org" ? 0
     : tokens[0] === "npx" && tokens[1] === "agent-org" ? 1
       : tokens[0] === "pnpm" && tokens[1] === "exec" && tokens[2] === "agent-org" ? 2 : -1;
