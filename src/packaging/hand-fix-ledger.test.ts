@@ -215,6 +215,7 @@ test("#2939 the MERGER is never read: a merge commit by the chairman's account o
   const OLD = "a".repeat(40);
   const BRANCH = "b".repeat(40);
   const git = (args: string[]) => {
+    if (args[0] === "rev-parse") return "h".repeat(40);
     if (args[0] === "log" && args.includes("--first-parent")) {
       return `${MERGE}\t${OLD} ${BRANCH}\t2026-09-30T10:00:00+00:00\tMerge pull request #77 from a11ign/agent/x\n`;
     }
@@ -222,6 +223,7 @@ test("#2939 the MERGER is never read: a merge commit by the chairman's account o
     throw new Error(`unexpected git ${args.join(" ")}`);
   };
   const fakeGh = (args: string[]) => {
+    if (args[0] === "api" && args[1] === "repos/o/r/commits/main") return "h".repeat(40);
     if (args[0] === "api") return `${MERGE}\tDanBeckDev\n${BRANCH}\ta11ign-ai-workers\n`;
     if (args[0] === "pr") return JSON.stringify([{ number: 77, author: { login: "a11ign-ai-workers" }, title: "x", body: "" }]);
     throw new Error(`unexpected gh ${args.join(" ")}`);
@@ -229,7 +231,7 @@ test("#2939 the MERGER is never read: a merge commit by the chairman's account o
   const changes = gatherChanges({ git, gh: fakeGh, repo: "o/r" })({ from: new Date("2026-09-03T00:00:00Z"), to: NOW });
   assert.deepEqual(changes.map((c) => [c.key, c.actors]), [["pr:77", ["a11ign-ai-workers", "a11ign-ai-workers"]]]);
   assert.equal(buildLedger(changes).count, 0);
-  const human = gatherChanges({ git, gh: (a) => (a[0] === "api" ? `${MERGE}\tDanBeckDev\n${BRANCH}\tDanBeckDev\n` : fakeGh(a)), repo: "o/r" })(
+  const human = gatherChanges({ git, gh: (a) => (a[0] === "api" && a[1] !== "repos/o/r/commits/main" ? `${MERGE}\tDanBeckDev\n${BRANCH}\tDanBeckDev\n` : fakeGh(a)), repo: "o/r" })(
     { from: new Date("2026-09-03T00:00:00Z"), to: NOW });
   assert.equal(buildLedger(human).count, 1, "positive control: the same change with a human commit on the branch IS counted");
 });
