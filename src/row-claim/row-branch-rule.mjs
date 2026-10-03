@@ -10,7 +10,7 @@
 // functions `row-claim.mjs` runs at claim time rather than reimplementing them.
 //
 // LEAF BY CONSTRUCTION -- this file imports NOTHING. `work-gate.mjs`'s header states that it must run
-// before any `npm ci` or build, and `pre-install-import-graph.test.ts` derives that population, so a rule
+// before any `pnpm install` or build, and `pre-install-import-graph.test.ts` derives that population, so a rule
 // the gate imports may not drag a module graph behind it.
 //
 // THE FAILURE POLICY IS DELIBERATELY NOT HERE, because the two callers differ and both are right.

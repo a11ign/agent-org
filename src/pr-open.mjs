@@ -350,7 +350,7 @@ function mutationVerdict(command, code) {
  * mutation edits a real file and a shared runner must not; here the file is the AUTHOR's, in the author's
  * tree, so that objection does not apply.
  *
- * ONLY `npm run mutate` LINES RUN. The template calls `Mutation:` a RECORD, so most of what sits under it is
+ * ONLY `pnpm run mutate` LINES RUN. The template calls `Mutation:` a RECORD, so most of what sits under it is
  * prose, and the section reader hands back every line as a "command". Nothing else in that section is gated
  * the way `Acceptance:` is, so nothing else in it is executed. The author names the mutation, as `reviewer.md`
  * already asks the reviewer to; no mutant is generated here.
@@ -366,7 +366,7 @@ export function mutationReport(body, run) {
   return { lines: verdicts.map((v) => v.line), warned: verdicts.some((v) => v.warned) };
 }
 
-const MUTATE_COMMAND = /^npm run mutate(?:\s|$)/;
+const MUTATE_COMMAND = /^p?npm run mutate(?:\s|$)/;
 
 /**
  * The body to check, read from the SAME flags `gh pr create`/`gh pr edit` themselves read -- never a

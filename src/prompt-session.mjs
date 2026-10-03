@@ -1,4 +1,4 @@
-// command: npm run prompt:session -- <label> "<text>"   (text may also come on stdin)
+// command: pnpm run prompt:session <label> "<text>"   (text may also come on stdin)
 //
 // PROMPT A SESSION THE WAY THE GATE DOES: CLEARED FIRST.
 //
@@ -252,7 +252,7 @@ export function queueOrLose({ label, text, why, agents, path, stance = STANCE.UN
     return EXIT.REFUSED;
   }
   process.stderr.write(`NOT PROMPTED NOW: ${why}.\n`
-    + `QUEUED ${entry.id} -- the next \`npm run work:tick\` delivers it to "${label}" once the gate judges `
+    + `QUEUED ${entry.id} -- the next \`pnpm run work:tick\` delivers it to "${label}" once the gate judges `
     + "that session between tasks. DO NOT RETRY: a retry that lands the instant it goes idle is a second "
     + "copy, and for a standing seat, which is cleared first, it also wipes whatever it was working on "
     + "(a per-row instance -- a spawned `worker-<n>`, a `reviewer-<n>` -- is never cleared).\n");
@@ -556,7 +556,7 @@ function main() {
   // substitution inside the very message it was quoting.
   const text = rest.join(" ") || readFileSync(0, "utf8").trim();
   if (!label || !text) {
-    process.stderr.write("usage: npm run prompt:session -- <label> \"<text>\"   (or text on stdin)\n");
+    process.stderr.write("usage: pnpm run prompt:session <label> \"<text>\"   (or text on stdin)\n");
     process.exit(EXIT.REFUSED);
   }
   const queue = handoffQueuePath(ledgerPathFrom(process.argv));

@@ -172,7 +172,7 @@ export function mergeSafetyVerdict({ pr, branchTip, prLabels = [] }) {
   if (holders.length > 0) {
     return { code: EXIT.REFUSED, reasons: [
       `#${pr.number ?? "?"} IS HELD by ${holders.join(", ")}, so it must not merge.\n`
-      + "  A hold is a decision somebody made by hand; releasing it is `npm run pr:release -- <n> "
+      + "  A hold is a decision somebody made by hand; releasing it is `pnpm run pr:release <n> "
       + `--session=<name>\`, which puts auto-merge back.\n  The label is \`${HOLD_PREFIX}<session>\`; a `
       + `\`${SESSION_PREFIX}<name>\` label is OWNERSHIP and is deliberately not read here.`,
     ] };

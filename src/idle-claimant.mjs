@@ -9,7 +9,7 @@
 // nudge woke three holders in 07:00Z-10:40Z, while #2968 and #2969 sat behind `pr-owned` for 171 and 233 minutes.
 //
 // THIS FILE IS THE PURE HALF AND A LEAF (`herdr-agents.mjs` and the vocabulary only), for the reason `claim-stall.mjs` is one:
-// `work-gate.mjs` runs before any `npm ci`. It DECIDES whether an idle holder has a wait the org can READ; `claim-stall.mjs` carries
+// `work-gate.mjs` runs before any `pnpm install`. It DECIDES whether an idle holder has a wait the org can READ; `claim-stall.mjs` carries
 // the decision as the nudge and, a second reading later, the release it already owned.
 //
 // A WAIT IS A FIELD, OR IT IS NOT A WAIT (`.claude/rules/waiting-conditions.md`). WAIT_FIELDS below is the whole list, and a kind is

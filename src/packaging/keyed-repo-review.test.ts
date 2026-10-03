@@ -218,7 +218,8 @@ test("(2) a declared dependency missing from the clone's `node_modules` is a REF
   const reason = String(linkKeyedDependencies({ path: "/t", repoRoot: "/c", fs: partial.fs }));
   assert.match(reason, /`tsx` and `yaml`/, "names what is missing");
   assert.doesNotMatch(reason, /`typescript`/, "and only what is missing");
-  assert.match(reason, /cd \/c && npm install --no-save --no-package-lock "tsx@\^4\.22\.4" "yaml@\^2\.9\.0"/, "and the command, at the versions the manifest declares");
+  assert.match(reason, /cd \/c && pnpm install --no-lockfile/, "and the command: pnpm, reading the versions the manifest declares, writing no lockfile into a shared clone");
+  assert.doesNotMatch(reason, /\bnpm\b/, "and no npm spelling of it (#2896)");
   assert.deepEqual(partial.made, [], "nothing is linked into a tree that cannot run");
   // No `node_modules` at all is the same refusal -- the exact shape that killed agent-org#86's reviewer on `tsx`.
   const none = keyedFs(manifest({ devDependencies: CI_PINS }), []);

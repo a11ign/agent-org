@@ -11,7 +11,7 @@
 // normalised, and a line present in K CONSECUTIVE complete ticks is OFFERED to `orchestrator` WITH its count and
 // first-seen time, which is `org-routing-and-timers.md`'s rule for a question: it goes in the gate, not in a cron.
 //
-// A LEAF, RELATIVE IMPORTS ONLY, like `work-gate.mjs` itself, which imports this: it runs before any `npm ci`/build.
+// A LEAF, RELATIVE IMPORTS ONLY, like `work-gate.mjs` itself, which imports this: it runs before any `pnpm install`/build.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";

@@ -7,7 +7,7 @@
 // read a claim going unmoved, and the one nudge that worked cost a `ceo` turn spent reading a pane.
 //
 // THIS FILE IS THE PURE HALF, AND A LEAF: it imports only `node:*`, the git-env scrubber, `claim-labels.mjs` and the
-// shared `herdr-agents.mjs` leaf, so `work-gate.mjs` (which runs before any `npm ci`) and `wake.mjs` can both import
+// shared `herdr-agents.mjs` leaf, so `work-gate.mjs` (which runs before any `pnpm install`) and `wake.mjs` can both import
 // it without one importing the other. It DECIDES; the gate carries the decision as an order and `wake.mjs` performs
 // the parts that need a pane.
 //

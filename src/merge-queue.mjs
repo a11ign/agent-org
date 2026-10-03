@@ -16,7 +16,7 @@
  * that cannot express a rule will break it, however well the rule is known: this is the repo's own "a
  * check that cannot express the fault" pointed at a procedure instead of a test.
  *
- * The local gate could not have caught it either. `npm test` does not run the workflows, so a CI-only
+ * The local gate could not have caught it either. `pnpm test` does not run the workflows, so a CI-only
  * change is invisible to every check run before a push -- the first CI-only blind spot named here.
  *
  * So the queue is asked for, never assembled:

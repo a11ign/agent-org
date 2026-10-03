@@ -1,7 +1,7 @@
 // command: print which session stamped a worktree, so a session can tell whose tree it is standing in
 //          before it moves HEAD, and where that tree's `@a11ign/*` resolve (#2181) --
-//          `npm run worktree:whose [-- <path>]`, and stamp the tree you just made with
-//          `npm run worktree:stamp [-- <path>]`
+//          `pnpm run worktree:whose [-- <path>]`, and stamp the tree you just made with
+//          `pnpm run worktree:stamp [-- <path>]`
 //
 // #1128: WHOSE WORKTREE IS THIS? The question the incident needed answered and nothing could.
 //
@@ -19,7 +19,7 @@
 // that are no longer running, and nothing can recover who made them -- `git worktree list` never
 // recorded it, which is the whole incident. They answer UNSTAMPED, and that is the honest answer rather
 // than a gap: a stamp invented for them now would name whoever ran the sweep. One is adopted
-// deliberately, by the session that knows it owns it, with `npm run worktree:stamp -- <path>`.
+// deliberately, by the session that knows it owns it, with `pnpm run worktree:stamp <path>`.
 //
 // ADVISORY, NOT ENFORCING, and that is the choice rather than the cheap option. A stamp answers "whose
 // tree is this"; it does not answer "is anyone using it", and those are different questions -- the
@@ -82,14 +82,14 @@ export function whoseWorktree(worktree, asking, { owner = worktreeOwner } = {}) 
 }
 
 /**
- * `npm run worktree:whose [-- <path>]` reads; `npm run worktree:stamp [-- <path>]` writes. Both default
+ * `pnpm run worktree:whose [-- <path>]` reads; `pnpm run worktree:stamp [-- <path>]` writes. Both default
  * to the tree you are standing in.
  */
 function main() {
   // ONE KNOWN FLAG, and the guard still runs for the reason #453 names: a typo'd `--stamp` falls through
   // to the READ, which prints a perfectly good answer and writes nothing -- the mode most likely to be
   // mistyped is the one that changes something.
-  refuseUnknownFlags(["--stamp"], { entry: import.meta.url, command: "npm run worktree:whose -- <path>" });
+  refuseUnknownFlags(["--stamp"], { entry: import.meta.url, command: "pnpm run worktree:whose <path>" });
   const args = process.argv.slice(2);
   const target = args.find((a) => !a.startsWith("--")) ?? process.cwd();
   const session = process.env.A11Y_SESSION;

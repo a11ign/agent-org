@@ -37,7 +37,7 @@ const flag = (name) => argv.find((a) => a.startsWith(`${name}=`))?.split("=").sl
  *
  * A comment-dense renderer runs to twice its code-line budget without that budget noticing:
  * `max-lines-per-function` sets `skipComments: true`, so it measures CODE lines while a board report is
- * mostly prose. This file's `render` reached 157 physical lines against a 90-line budget with `npm run lint`
+ * mostly prose. This file's `render` reached 157 physical lines against a 90-line budget with `pnpm run lint`
  * green throughout, because the physical budget was then a test (`function-size.test.ts`). It is a lint rule
  * now, `local/max-physical-lines-per-function` (#908), and it is the budget that actually holds here.
  *
@@ -576,7 +576,7 @@ export function render(d, now = new Date()) {
   const L = [];
   L.push(`# Board report — ${editionDay(now)}`);
   L.push("");
-  L.push(`Generated from GitHub and git by \`npm run board:report\`. Nothing here is taken from what an `
+  L.push(`Generated from GitHub and git by \`pnpm run board:report\`. Nothing here is taken from what an `
     + `agent said: issues and the milestone are read from the API, merges from \`git log main\`, and the `
     + `two figures neither can supply are quoted from \`docs/board/reported/\` with their measurer `
     + `named — or declared unreported. Window: ${sinceLabel}.`);
@@ -596,7 +596,7 @@ export function render(d, now = new Date()) {
 
 function main() {
   refuseUnknownFlags(["--post", "--issue", "--since", "--allow-dirty-read-set"],
-    { entry: import.meta.url, command: "npm run board:report" });
+    { entry: import.meta.url, command: "pnpm run board:report" });
   const post = argv.includes("--post");
 
   const since = flag("--since") ?? new Date(Date.now() - 24 * HOURS_MS).toISOString();

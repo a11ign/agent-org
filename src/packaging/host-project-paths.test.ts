@@ -106,6 +106,10 @@ const TODAYS_TEXT = {
 };
 const TODAYS_GH_WRAPPER = "9eba78303036eef62879b34b2a4df0727fdb5655f3ff4f4305de2329dd19ba5c";
 const TODAYS_LEADS_LIST = "e0843e1aa26def5bd9a447839ba242c57a011a5612715d21300f8846d5ce221a";
+// #2896 MOVED THIS ONE, deliberately: a11ign/a11ign's `.agent-org/host.json` header says `pnpm run host:install` / `pnpm run host:check` where it said
+// `npm run`. Two repositories cannot change in one commit and this suite reads a11ign at `main`, so it accepts the list before AND after that line, and
+// the first digest is deleted once a11ign's change is on main. The installed `~/leads/workspaces.txt` reads DIVERGED until `host:install` runs.
+const LEADS_LIST_SAYING_PNPM = "dbca070c4bb7934ff1e9cdc9505f9edee638d98fcff10963b18d5d3a743770a2";
 
 test("#2620: the three tool units, the wrapper and the leads list render to TODAY'S text for a11ign's values", () => {
   assert.equal(Object.keys(TODAYS_TEXT).length, 6, "POSITIVE CONTROL: six units (three services, three timers), not a subset");
@@ -113,7 +117,7 @@ test("#2620: the three tool units, the wrapper and the leads list render to TODA
     assert.equal(sha256(shippedUnitText(unit, { host: plainHost }) ?? ""), digest, `${unit} is not byte-identical to the unit the host runs`);
   }
   assert.equal(sha256(shippedScriptText("gh") ?? ""), TODAYS_GH_WRAPPER, "the wrapper installed at ~/.local/bin/gh");
-  assert.equal(sha256(leadsListText()), TODAYS_LEADS_LIST, "the leads list installed at ~/leads/workspaces.txt");
+  assert.ok([TODAYS_LEADS_LIST, LEADS_LIST_SAYING_PNPM].includes(sha256(leadsListText())), "the leads list installed at ~/leads/workspaces.txt, before or after #2896's wording");
 });
 
 test("#2620: NO UNIT IS RENAMED -- the installed names are the fourteen there were, and the shadow window's two (#2867)", () => {

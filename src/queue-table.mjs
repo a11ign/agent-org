@@ -797,7 +797,7 @@ export const ghHeaders = (args) => execFileSync("gh", args, { encoding: "utf8", 
  * fifty minutes to go and 4000 left with two are different states -- so the reset is always beside it.
  *
  * `poolFromHeaders` AND THIS TYPEDEF NOW LIVE IN `api-pool.mjs` (#2003). `work-gate.mjs`'s refusal path
- * needs the identical reading and cannot import this file -- it runs before any `npm ci`, and this one
+ * needs the identical reading and cannot import this file -- it runs before any `pnpm install`, and this one
  * reaches five other modules -- so the reader moved to a leaf and both callers import it. The move is why
  * there is still only one place that knows what "exhausted" looks like.
  *
@@ -886,7 +886,7 @@ const CONSUMERS_SHOWN = 5;
 /**
  * The five processes actually using the CPU, because **"contended" without the consumer is a verdict
  * without a cause** -- and the remedy differs completely depending on the answer. Nine sessions running
- * `npm test` at once is fixed by serialising pushes; Spotlight indexing 107 worktrees is fixed by pruning
+ * `pnpm test` at once is fixed by serialising pushes; Spotlight indexing 107 worktrees is fixed by pruning
  * and an exclusion file, and serialising pushes would do nothing at all.
  *
  * `ps -r`, NOT `top -l 1`. A single `top` sample has no interval to measure a percentage against, so it
@@ -923,12 +923,12 @@ const A_PERSON_IS_USING_THIS_MACHINE = /^(zoom\.us|Google Chrome|Safari|Firefox|
 
 /**
  * WHAT TO ACTUALLY DO, derived from WHO IS USING THE CPU -- because the remedies are disjoint and
- * picking the wrong one costs the whole cycle. Nine sessions running `npm test` at once is fixed by
+ * picking the wrong one costs the whole cycle. Nine sessions running `pnpm test` at once is fixed by
  * serialising pushes. `mds_stores` indexing 106 worktrees is fixed by pruning, and serialising pushes
  * would do nothing whatever. A virtual machine somebody else started is not ours to fix at all.
  *
  * Measured 2026-09-09T11:30Z, which is why this stopped being one fixed paragraph: the table said
- * "stop running `npm test` locally" while the top five were Docker's VM at 134%, Spotlight at 61%,
+ * "stop running `pnpm test` locally" while the top five were Docker's VM at 134%, Spotlight at 61%,
  * WindowServer at 51% and Zoom at 39% -- **not one of them ours**. Advice that names the wrong cause is
  * worse than none, because sessions act on it and the load does not move.
  *

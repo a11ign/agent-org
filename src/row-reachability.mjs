@@ -57,7 +57,7 @@ const gh = (args) => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignor
 // PATH extraction moved to `./region-paths.mjs` (#462, B4) -- a leaf module with no further imports, so
 // `row-claim/file-overlap-rule.mjs` can read the SAME extraction this file uses without dragging this
 // file's own `@a11ign/screenreader-fleet/cli-flags` import (fine for THIS file's `main()`, fatal before
-// `npm ci`/`npm run build` if reached from a pre-install entry) into its import graph.
+// `pnpm install`/`pnpm run build` if reached from a pre-install entry) into its import graph.
 
 /**
  * IDENTIFIERS THE ROW IS ABOUT — the subject, as opposed to the region.

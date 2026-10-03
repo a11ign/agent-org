@@ -24,7 +24,7 @@
  *
  * LEAF-SHAPED ON PURPOSE. This module imports nothing -- not `node:*`, not `cli-flags.mjs`. Both
  * callers state as a property of themselves that they run under a bare `actions/checkout` with no
- * `npm ci` and no build (`auto-arm-sweep.mjs`'s header records what the circular bootstrap cost in
+ * `pnpm install` and no build (`auto-arm-sweep.mjs`'s header records what the circular bootstrap cost in
  * #330/#331), and a shared predicate must not be the thing that takes that property away.
  */
 

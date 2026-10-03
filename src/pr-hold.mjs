@@ -4,10 +4,10 @@
 /**
  * TAKE OR RELEASE A HOLD ON A PULL REQUEST — the record `merge-guard` reads (#266).
  *
- *   npm run pr:hold -- <n> --session=<name>       # take it; prints who held it before
- *   npm run pr:release -- <n> --session=<name>    # give it back
- *   npm run pr:hold -- <n>                        # no --session: REPORTS who holds it, writes nothing
- *   npm run pr:hold -- <n> --session=<name> --until="closed #2867"
+ *   pnpm run pr:hold <n> --session=<name>       # take it; prints who held it before
+ *   pnpm run pr:release <n> --session=<name>    # give it back
+ *   pnpm run pr:hold <n>                        # no --session: REPORTS who holds it, writes nothing
+ *   pnpm run pr:hold <n> --session=<name> --until="closed #2867"
  *                                                 # take it AND say what it waits for: closed|merged <ref>,
  *                                                 # labelled|unlabelled <label> <ref>, or `manual` (#2996)
  *
@@ -158,7 +158,7 @@ function usage() {
 
 function main() {
   refuseUnknownFlags(["--session=", "--release", "--steal", "--until="],
-    { entry: import.meta.url, command: "npm run pr:hold" });
+    { entry: import.meta.url, command: "pnpm run pr:hold" });
   const number = Number(process.argv.slice(2).find((a) => /^\d+$/.test(a)));
   if (!Number.isInteger(number) || number <= 0) {
     process.stderr.write(usage());
@@ -348,7 +348,7 @@ function displaceThenTake(number, session, displaces) {
     return `#${number}: DISPLACED BUT NOT HELD (exit ${EXIT.DISPLACED_NOT_HELD}) -- removed ${removed.join(", ")}; `
       + `the next label write failed, so ${HOLD_PREFIX}${session} was NOT added: `
       + `${/** @type {Error} */ (error).message.trim()}\n`
-      + `  Read #${number}'s labels before acting, then take it again (\`npm run pr:hold -- ${number} `
+      + `  Read #${number}'s labels before acting, then take it again (\`pnpm run pr:hold ${number} `
       + `--session=${session} --steal\`) or tell the displaced session its hold is gone.\n`;
   }
 }
@@ -401,7 +401,7 @@ function takeHold(number, session, holders, { steal, until }) {
   // call sites, in the change that was about reading writes back.
   if (wasArmed && disarm.disarmed && !markForRearm(number)) {
     process.stderr.write(`#${number}: HELD AND DISARMED, but could not mark it \`${REARM_LABEL}\`.\n`
-      + "  `npm run pr:release` will therefore leave this PR UNARMED, and nothing on the PR will say so.\n"
+      + "  `pnpm run pr:release` will therefore leave this PR UNARMED, and nothing on the PR will say so.\n"
       + `  Add the label by hand (\`gh pr edit ${number} --add-label ${REARM_LABEL}\`, creating it first `
       + "if it does not exist), or re-arm by hand after releasing.\n");
     return EXIT.CANNOT_ASK;

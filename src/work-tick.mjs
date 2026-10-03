@@ -7,7 +7,7 @@
 // NOTHING to stdout when it cannot read GitHub and exits `CANNOT_ASK` (2), so `wake` reads an empty stdin,
 // finds no orders, and exits QUIET. A refused read would report as a quiet org -- the exact reading both
 // of those files spend a paragraph refusing to allow. `sh` keeps only the LAST exit status, so the gate's
-// 2 is gone before anything could act on it, and `pipefail` is not portable to the `sh` npm runs scripts
+// 2 is gone before anything could act on it, and `pipefail` is not portable to the `sh` pnpm runs scripts
 // with.
 //
 // So the tick is a program: it reads the gate's exit code, and a gate that could not ask stops the tick

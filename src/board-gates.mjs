@@ -80,13 +80,17 @@ export function isConformanceGate(gate) {
       && isRulesRealPagesStage(gate?.output));
 }
 
-/** npm's own banner for each script it runs: `> <package>@<version> <script>`, one line per `npm run`. */
-const NPM_SCRIPT_BANNER = /^> [^\s@]+@\S+ (\S+)$/gm;
+/**
+ * The banner each script prints as it starts: npm's `> <package>@<version> <script>`, and pnpm's same line with the
+ * working directory appended (measured with pnpm 10.34.5), one per `pnpm run`. Without the optional tail every pnpm banner
+ * went unread and a `rules:real-pages` stage was never recognised.
+ */
+const SCRIPT_BANNER = /^> [^\s@]+@\S+ (\S+)(?: \S.*)?$/gm;
 
 /**
  * PURE. #1539: is this output ONE `rules:real-pages` stage and nothing else?
  *
- * Read from npm's banner -- WHICH SCRIPT RAN, the same kind of fact the job name above is -- never from the
+ * Read from the script banner -- WHICH SCRIPT RAN, the same kind of fact the job name above is -- never from the
  * verdict's wording. Exactly one banner, and it names `rules:real-pages` (the whole name, so
  * `rules:real-pages-update` is not it). A whole multi-stage journal is refused rather than read: the appendix
  * renders `worstVerdict` over the ENTIRE output, so another stage's FAIL would be printed as the conformance
@@ -96,7 +100,7 @@ const NPM_SCRIPT_BANNER = /^> [^\s@]+@\S+ (\S+)$/gm;
  * @returns {boolean}
  */
 export function isRulesRealPagesStage(output) {
-  const scripts = [...String(output ?? "").matchAll(NPM_SCRIPT_BANNER)].map((m) => m[1]);
+  const scripts = [...String(output ?? "").matchAll(SCRIPT_BANNER)].map((m) => m[1]);
   return scripts.length === 1 && scripts[0] === "rules:real-pages";
 }
 

@@ -247,6 +247,9 @@ function fixtures() {
  * moved from the literal `packages/agent-org/docs/roles/engineer.md` to the project's declared `.agent-org/roles/engineer.md`,
  * 13 bytes shorter, which is the entire diff in the four prompts that name it -- re-run against the new code, not restated
  * by hand.
+ *
+ * #2896 RE-DERIVED the one `pr-review-blocked` entry (104): its prompt names `pnpm run prompt:session` where it named
+ * `npm run prompt:session --`, 2 bytes shorter, which is the entire diff in that prompt -- re-run against the new code, not restated by hand.
  */
 const RECORDED_BUSY = [
   { session: "ceo", cause: "answer-owed", subject: "row-301", discriminator: "301", causeKey: "ceo/answer-owed/row-301", promptSha256: "19dc374722c2083bccd5fa028196b6d0a4748cea5c41cb44a1ff0a2287e6af25", promptLength: 598 },
@@ -261,7 +264,7 @@ const RECORDED_BUSY = [
   { session: "ceo", cause: "ready-row-unclaimed", subject: "row-203", discriminator: "203", causeKey: "ceo/ready-row-unclaimed/203", title: "row 203", promptSha256: "0e18f3a9822097dcbc9d00096a326fbb9acfb7adae15a304f871bdcf96e256b6", promptLength: 339 },
   { session: "orchestrator", cause: "fleet-batch-due", subject: "fleet-batch", discriminator: "501", causeKey: "orchestrator/fleet-batch-due/501", promptSha256: "5d73451b5f55e4ab401c5bd6199d4a4e8283a0860dcf5218e4e869f20646560d", promptLength: 834 },
   { session: "product-manager", cause: "pr-green-unarmed", subject: "pr-green-unarmed", discriminator: "105", causeKey: "product-manager/pr-green-unarmed/105", promptSha256: "00b76232fa3df5a877ad5b40b8ce530e366010a6baeaf253de4ae315f24096dc", promptLength: 1446 },
-  { session: "product-manager", cause: "pr-review-blocked", subject: "pr-review-blocked", discriminator: "104:AWAITING_REVIEW", causeKey: "product-manager/pr-review-blocked/104:AWAITING_REVIEW", promptSha256: "aefffdcd3c8bcb4a1e6de8bb1977742ffcfde461ab2b4586c06c883a41c601f6", promptLength: 1444 },
+  { session: "product-manager", cause: "pr-review-blocked", subject: "pr-review-blocked", discriminator: "104:AWAITING_REVIEW", causeKey: "product-manager/pr-review-blocked/104:AWAITING_REVIEW", promptSha256: "647c913d72eb7e964bd8d779e7186e9e324ae0b783ee6f573e786d82e7f942ea", promptLength: 1442 },
   { session: "worker-y", cause: "pr-merge-conflict", subject: "pr-103", discriminator: "abc12345", causeKey: "worker-y/pr-merge-conflict/pr-103/abc12345", promptSha256: "4da17865611827c0c35f07130e2deb7961a324de3efdf325673ba95bbf75282d", promptLength: 554 },
 ];
 const RECORDED_EMPTY_SHELF = [

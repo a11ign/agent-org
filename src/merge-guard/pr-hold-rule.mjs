@@ -38,7 +38,7 @@
 //
 // NO `--allow-held` ESCAPE HATCH, unlike #249's `--allow-claimed-close`, and the asymmetry is the point:
 // a row you do not hold cannot be taken from its owner, so confirming and passing a flag is the only
-// route. A PR hold CAN be handed over -- `npm run pr:release` then `pr:hold` -- so a flag here would be a
+// route. A PR hold CAN be handed over -- `pnpm run pr:release` then `pr:hold` -- so a flag here would be a
 // silent bypass standing in for an action that leaves a record. The escape hatch is taking the hold.
 import { holdersOf, HOLD_PREFIX } from "../pr-hold-state.mjs";
 
@@ -56,5 +56,5 @@ export function prHoldReasons(pr, prLabels, session) {
   return [`#${pr.number} IS HELD by ${holders.join(", ")}${session ? `, and you are ${session}` : ""}.\n`
     + "  They are working on it now -- updating, rebasing or about to arm it. Pushing into a PR somebody\n"
     + "  else holds is how #258 nearly reverted a merged PR's content inside an unrelated branch.\n"
-    + "  Ask them to hand it back, or take it with `npm run pr:hold` once they have released it."];
+    + "  Ask them to hand it back, or take it with `pnpm run pr:hold` once they have released it."];
 }

@@ -27,7 +27,7 @@
 // (`.agent-org/roles/engineer.md`).
 //
 // A LEAF, like `api-pool.mjs` and `host-config.mjs`: `work-gate.mjs` reaches this on its refusal path,
-// which runs before any `npm ci` or build (`api-pool.mjs`'s header states the identical constraint for the
+// which runs before any `pnpm install` or build (`api-pool.mjs`'s header states the identical constraint for the
 // same reason), so this imports nothing but `node:fs`, `node:path`, and `host-config.mjs` -- itself a leaf.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";

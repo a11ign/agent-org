@@ -27,7 +27,7 @@
 // of its own) through it synchronously, so this whole file needs no top-level await either.)
 //
 // RELATIVE IMPORTS ONLY, like `work-gate.mjs` and `region-paths.mjs`: this module is on both files' import
-// graph and both state, at their own top, that they must run before any `npm ci`/build.
+// graph and both state, at their own top, that they must run before any `pnpm install`/build.
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";

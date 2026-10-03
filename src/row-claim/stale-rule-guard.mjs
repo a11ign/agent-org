@@ -24,7 +24,7 @@
 //
 // A LEAF MODULE: its only import is `local-import-closure.mjs`, which imports nothing but `node:` builtins.
 // `row-claim.mjs` is reachable from a pre-install entry, so a package specifier here would die with
-// ERR_MODULE_NOT_FOUND before `npm ci` -- `pre-install-import-graph.test.ts` is what proves it.
+// ERR_MODULE_NOT_FOUND before `pnpm install` -- `pre-install-import-graph.test.ts` is what proves it.
 import { execFileSync } from "node:child_process";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";

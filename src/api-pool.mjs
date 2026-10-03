@@ -4,7 +4,7 @@
 //
 // This started life inside `queue-table.mjs` as a module-private `poolFromHeaders`, and moving it here
 // (#2003) is not a style choice. `work-gate.mjs` needs the identical reading on its refusal path, and its
-// own header states the constraint that forbids importing the owner: **it must run before any `npm ci` or
+// own header states the constraint that forbids importing the owner: **it must run before any `pnpm install` or
 // build**. `queue-table.mjs` reaches `queue-stalled.mjs`, `newest-check-run.mjs`, `pr-hold-state.mjs`,
 // `repo-identity.mjs` and `git-env.mjs`; the gate runs 720 times a day and would pay that graph on every
 // one of them to use a function it calls only when already refusing. `region-paths.mjs`'s own header

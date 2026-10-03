@@ -21,7 +21,7 @@
 // and the refreshed real-page gate output -- and each was found by a person typing `git show
 // origin/main:...` by hand. None was found by a tool.
 //
-//   npm run board:summary-check            say whether TODAY's summary exists
+//   pnpm run board:summary-check            say whether TODAY's summary exists
 //
 // IT USED TO ASK ABOUT TOMORROW, AND THAT WAS RIGHT WHEN IT RAN AT 21:00. The board moved it on
 // 2026-09-08 (`2a1bdd92`), in its own words: "it should be 30 mins before as it should be as fresh
@@ -31,7 +31,7 @@
 // forecast's own hedge was an instruction addressed to a person who would not be there at 03:00.
 // So the evening run is RETIRED ON PURPOSE, not lost: do not restore it without taking that back
 // to the board. `board-summary-check-schedule.test.ts` pins the morning hours for this reason.
-//   npm run board:summary-check -- --post  and comment on the report issue if it does not
+//   pnpm run board:summary-check --post  and comment on the report issue if it does not
 import { existsSync, readFileSync, readdirSync} from "node:fs";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -279,7 +279,7 @@ export function summaryVerdict({ day, present, localText, remote }) {
 /**
  * WHICH ENTRIES DIFFER, never a bare "the file differs".
  *
- * *"reported.json has changed"* sends a reader to diff it themselves; *"gates[npm run
+ * *"reported.json has changed"* sends a reader to diff it themselves; *"gates[pnpm run
  * rules:real-pages] differs"* tells them whether it matters in one line. This repo's own rule -- a count
  * is where an investigation stops -- applied to a comparison.
  *
@@ -540,7 +540,7 @@ function postAbsence({ day, issue, reminder }) {
 
 function main() {
   refuseUnknownFlags(["--post", "--issue", "--day", "--reminder"],
-    { entry: import.meta.url, command: "npm run board:summary-check" });
+    { entry: import.meta.url, command: "pnpm run board:summary-check" });
   const argv = process.argv.slice(2);
   /** @type {(n: string) => string | undefined} */
   const flag = (n) => argv.find((a) => a.startsWith(`${n}=`))?.split("=").slice(1).join("=");

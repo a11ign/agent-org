@@ -1717,6 +1717,18 @@ test("the four suite script names are `package.json`'s OWN, not a retyped list",
     "`test:changed` has no fixed glob -- it is not a whole-suite command and must not be given one");
 });
 
+test("#2896: the whole-suite commands are recognised in pnpm's spelling too, and charged what npm's spelling is", () => {
+  // `docs/row-filing.md` says an acceptance must never be the whole suite, and a project that moved to pnpm writes `pnpm test`.
+  for (const name of SUITE_SCRIPTS) {
+    assert.deepEqual(suiteScriptsFor(`pnpm run ${name}`), suiteScriptsFor(`npm run ${name}`), `\`pnpm run ${name}\` is the same population as npm's`);
+  }
+  assert.deepEqual(suiteScriptsFor("pnpm test"), ["test"]);
+  assert.deepEqual(suiteScriptsFor("pnpm test:org"), ["test:org"], "pnpm runs a script by its bare name");
+  assert.deepEqual(suiteScriptsFor("pnpm run test:ts && pnpm run test:org"), ["test:ts", "test:org"], "and a chain names every script it runs");
+  assert.deepEqual(suiteScriptsFor("pnpm run test:python"), [], "THE COMPLEMENT: python's population is still not the `.test.ts` glob");
+  assert.deepEqual(suiteScriptsFor("pnpmx test"), [], "and a command that merely ends in pnpm is no pnpm");
+});
+
 test("DIRECTION 1 -- `npm test` is charged the files it RUNS, never `test:all`'s wider glob", () => {
   const narrow = suiteTestFiles("test");
   const wide = suiteTestFiles("test:all");

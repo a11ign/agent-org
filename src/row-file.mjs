@@ -351,7 +351,7 @@ export function bareKeyedRegionReason(body, { code = homeProjectDeclaration().co
 const ASSERTS_AN_OUTPUT = /\b(?:prints?|returns?|reads?|outputs?|gives?|yields?)\b[^.\n]{0,40}?[`'"]?-?\d/i;
 
 /** A line that looks like something being RUN rather than something it printed. */
-const LOOKS_LIKE_A_COMMAND = /^\s*(?:\$\s+)?(?:npx|npm|node|git|gh|grep|rg|sed|awk|cat|ls|find|python3?|bash|sh)\b/;
+const LOOKS_LIKE_A_COMMAND = /^\s*(?:\$\s+)?(?:pnpm|npx|npm|node|git|gh|grep|rg|sed|awk|cat|ls|find|python3?|bash|sh)\b/;
 
 /**
  * #1316: A `$ ` PROMPT MARKS A COMMAND, WHATEVER ITS FIRST WORD. The allowlist above decided alone until this row, so a
@@ -1860,7 +1860,7 @@ function writePromotionLabels(issueNumber, deps) {
       + `reads \`${BACKLOG_LABEL}\` and is still counted as promotable stock, exactly as before this ran. `
       + `It is NOT in the both-labels state this row is about. What is now inconsistent is the board: `
       + `Status "${READY_STATUS}" beside a \`${BACKLOG_LABEL}\` label.\n  The repair is this act: run `
-      + `\`npm run row-file -- --promote=${issueNumber} --session=<you>\` again. It is idempotent -- the `
+      + `\`pnpm run row-file --promote=${issueNumber} --session=<you>\` again. It is idempotent -- the `
       + "Status move is a no-op and the label write is the same one request." };
   }
   return null;
@@ -1955,7 +1955,7 @@ export function promoteRow(argv, deps = {}) {
 
 function main() {
   refuseUnknownFlags([...KNOWN_GH_ISSUE_CREATE_FLAGS, "--session=", READY_FLAG, PROMOTE_FLAG],
-    { entry: import.meta.url, command: "npm run row-file --" });
+    { entry: import.meta.url, command: "pnpm run row-file" });
   // #1352: from the primary checkout or a plain clone, refuse before filing anything -- exit 1, createIssue's own
   // "refused, nothing filed" code.
   if (launchGate("row-file")) {

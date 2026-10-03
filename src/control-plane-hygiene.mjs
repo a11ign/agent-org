@@ -76,15 +76,15 @@ export function workspacePackages(repoRoot) {
 }
 
 /** Does the REPO ROOT's own `prepare` script build every workspace package? #168: per-package
- * `prepare: tsc --build` scripts used to provide the "dist/ exists after a plain npm install" guarantee
- * this check verifies -- and they RACED against each other during `npm ci`, because three packages
+ * `prepare: tsc --build` scripts used to provide the "dist/ exists after a plain pnpm install" guarantee
+ * this check verifies -- and they RACED against each other during `pnpm install`, because three packages
  * (`cli`, `judge`, `scorer`) all reference `evidence` in their own `tsconfig.json`, so npm firing all
  * five workspaces' `prepare` scripts at once could start multiple CONCURRENT `tsc --build` processes all
  * writing to `packages/evidence/dist/*` -- reproducing exactly `ci/ts`'s "wcag.d.ts is not a module"
  * symptom, a declaration file caught mid-write by a second process. The guarantee now comes from ONE
- * place instead: the root's own `prepare` (which npm also runs automatically on `npm install`, the
+ * place instead: the root's own `prepare` (which npm also runs automatically on `pnpm install`, the
  * identical lifecycle hook, just at the top level rather than per-workspace) runs the SAME coordinated
- * `tsc --build` `npm run build` already uses everywhere else -- one process, so there is nothing left to
+ * `tsc --build` `pnpm run build` already uses everywhere else -- one process, so there is nothing left to
  * race with itself.
  * @param {string} repoRoot
  */
@@ -268,7 +268,7 @@ export function tmpQuotaRow(read = readTmpQuota) {
 }
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "npm run hygiene:report" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "pnpm run hygiene:report" });
 
   const trees = worktrees(REPO_ROOT);
   const nmStates = trees.map((t) => linkState(join(t, "node_modules")));
@@ -307,7 +307,7 @@ function main() {
       `${trap.exposed.length} of ${trap.importedByOthers} exposed (${trap.checked} packages checked)`,
       trap.protectedByRoot
         ? "VERIFIED, not assumed: the repo ROOT's own `prepare` script builds every package (#168) -- one "
-          + "coordinated `tsc --build`, run automatically by `npm install` the identical way a per-package "
+          + "coordinated `tsc --build`, run automatically by `pnpm install` the identical way a per-package "
           + "`prepare` used to, but as ONE process instead of five racing each other. That guarantee is "
           + "global, so no individual package can be exposed while it holds."
         : `RULE VIOLATED — the root's own prepare no longer builds everything (#168's own guarantee is `
@@ -315,7 +315,7 @@ function main() {
           + "by name elsewhere, with nothing left to build them at install time."],
     ["Local `runs/` copy", humanMb(runsBytes),
       "RULE (already the answer, restated so nobody re-derives it): KEEP — it is what lets this machine "
-      + "read the corpus at all. Staleness, not size, is the risk; `npm run lab:inventory` reports how "
+      + "read the corpus at all. Staleness, not size, is the risk; `pnpm run lab:inventory` reports how "
       + "stale a copy is. Never delete without `orchestrator` — it is a copy several tools read."],
     tmpQuotaRow(),
     ["Disk free", `${(diskFreeKb / (1024 * 1024)).toFixed(0)} GB`,

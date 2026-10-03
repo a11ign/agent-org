@@ -590,7 +590,7 @@ test("#1951: a unit the repository RETIRED is ORPHANED, and the message says why
     "the reader must learn that deleting the file was not enough -- that is the whole misconception");
   assert.match(f.detail, /both are now firing/,
     "and the consequence, which is worse than an idle leftover: a replacement running beside it");
-  assert.match(f.detail, /npm run host:install` removes it/,
+  assert.match(f.detail, /pnpm run host:install` removes it/,
     "and for a unit a commit deliberately deleted, the remedy IS the remedy");
   assert.notEqual(f.removesUnit, true, "this is the branch where deleting it is the intent");
 });
@@ -601,14 +601,14 @@ test("#1951: a unit the repository RETIRED is ORPHANED, and the message says why
 // 07:10 every morning since at least 2026-09-19 -- were hand-installed on 2026-09-18 and never
 // committed. `orphanedUnits` had ONE BIT, "installed and not in the tree", and spelled it *NO LONGER
 // SHIPPED*: an inference about the past that the bit cannot carry. So `host:check` printed the one
-// remedy it has, `npm run host:install`, which DELETES an orphan -- and nothing would have reported the
+// remedy it has, `pnpm run host:install`, which DELETES an orphan -- and nothing would have reported the
 // loss except a board edition that never arrived.
 
 test("#1993: a unit NO COMMIT HERE EVER SHIPPED is not a retirement, and must not be offered for deletion", () => {
   const [f] = orphanedUnits(dirs([], ["a11ign-board-report.timer"], NEVER_SHIPPED_HERE));
   assert.equal(f.problem, "ORPHANED -- NEVER SHIPPED HERE");
   assert.equal(f.removesUnit, true, "which is what puts the DELETION on the remedy line");
-  assert.match(f.detail, /DO NOT reach for `npm run host:install`/,
+  assert.match(f.detail, /DO NOT reach for `pnpm run host:install`/,
     "the one remedy this report has is the wrong one here, and saying so is the whole fix");
   assert.match(f.detail, /ship it under packages\/agent-org\/host\/ or\s+confirm it is dead/,
     "a refusal nobody can follow is a refusal nobody acts on: both exits are named");
@@ -711,7 +711,7 @@ test("#2013: it still says DO NOT RUN THE REMEDY -- `host:install` would delete 
   assert.doesNotMatch(report, /no record of ever\n\s+shipping it/,
     "the remedy line is where the careless reader ends up, so it is where the wrong claim did the "
     + "damage -- #1993 put it there deliberately and #2013 is why it needed a third paragraph");
-  assert.ok(report.indexOf("DO NOT RUN") < report.indexOf("npm run host:install\n"),
+  assert.ok(report.indexOf("DO NOT RUN") < report.indexOf("pnpm run host:install\n"),
     "ABOVE the command, as #1993's own is");
 });
 
@@ -1024,13 +1024,13 @@ test("#1974: the REMEDY LINE carries the warning, because the reader is there fo
   assert.match(report, /DO NOT RUN THE REMEDY YET/);
   assert.match(report, /a11ign-work-tick\.service is installed with a `GH_CONFIG_DIR`/,
     "and names WHICH unit, so a reader with three findings knows which one is the live wire");
-  assert.ok(report.indexOf("DO NOT RUN") < report.indexOf("npm run host:install\n"),
+  assert.ok(report.indexOf("DO NOT RUN") < report.indexOf("pnpm run host:install\n"),
     "ABOVE the command, not below it -- a warning under the thing it warns about is read afterwards");
 });
 
 test("#1974 POSITIVE CONTROL: ordinary findings still get the plain one-line remedy", () => {
   const report = driftReport([{ unit: "a11ign-x.timer", problem: "ORPHANED", detail: "no longer shipped." }]);
-  assert.match(report, /Remedy for all of them: npm run host:install/);
+  assert.match(report, /Remedy for all of them: pnpm run host:install/);
   assert.doesNotMatch(report, /DO NOT RUN/,
     "a warning on every report is a warning on no report");
 });
@@ -1042,7 +1042,7 @@ test("#1974 POSITIVE CONTROL: ordinary findings still get the plain one-line rem
 // and `git log --all -- 'packages/agent-org/host/a11ign-board-report*'` was EMPTY. Hand-installed on
 // 2026-09-18, never committed. Two consequences, and this row is both of them:
 //
-//   `host:check` read "installed and not shipped" as RETIRED and offered `npm run host:install`, which
+//   `host:check` read "installed and not shipped" as RETIRED and offered `pnpm run host:install`, which
 //   DELETES an orphan -- so the one remedy the report has would have stopped the daily edition, and the
 //   only thing that would ever have reported it is an edition that did not arrive.
 //
@@ -1099,7 +1099,7 @@ test("#1993: the REMEDY LINE names the DELETION, because that is what silently s
   assert.match(report, /DO NOT RUN THE REMEDY YET/);
   assert.match(report, /a11ign-board-report\.timer would be DELETED/,
     "and names WHICH unit -- a reader with three findings has to know which one is the live wire");
-  assert.ok(report.indexOf("DO NOT RUN") < report.indexOf("npm run host:install\n"),
+  assert.ok(report.indexOf("DO NOT RUN") < report.indexOf("pnpm run host:install\n"),
     "ABOVE the command, not below it -- a warning under the thing it warns about is read afterwards");
 });
 
@@ -1107,7 +1107,7 @@ test("#1993 POSITIVE CONTROL: a RETIRED orphan still gets the plain one-line rem
   // The warning has to be capable of not firing, or it is a warning on every report and therefore on
   // none. A unit a commit here deliberately deleted is exactly what `host:install` is for.
   const report = driftReport(orphanedUnits(dirs([], ["a11ign-fleet-gated-nightly.timer"], RETIRED_HERE)));
-  assert.match(report, /Remedy for all of them: npm run host:install/);
+  assert.match(report, /Remedy for all of them: pnpm run host:install/);
   assert.doesNotMatch(report, /DO NOT RUN/);
 });
 
@@ -1173,7 +1173,7 @@ test("#2000: the unit passes `--apply`, or the clock runs a REPORT and the backl
   // else: a unit running the bare script is installed, enabled, active, current, exits 0, writes a full
   // breakdown to the journal every hour and removes nothing. Every other check here would be green.
   //
-  // The dry run is the DEFAULT deliberately (2026-09-09: a session ran `npm run worktrees:prune` to read
+  // The dry run is the DEFAULT deliberately (2026-09-09: a session ran `pnpm run worktrees:prune` to read
   // the breakdown before writing a row about worktree accounting, and removed three other sessions'
   // trees), so the flag has to be in the unit, and something has to say that it is.
   const service = shippedText("a11ign-worktree-prune.service");
@@ -1624,7 +1624,7 @@ test("#1998: `host:check` ACTUALLY ASKS -- the check is wired, not merely writte
 
 test("#1998: the REMEDY LINE says the shared remedy does NOT fix it", () => {
   // The same seam #1974 and #1993 used, for the same reason: every other finding here ends at
-  // `npm run host:install`, and a reader told that four times reads it the fifth time too.
+  // `pnpm run host:install`, and a reader told that four times reads it the fifth time too.
   const report = driftReport(supersededHostScripts({
     shippedDir: "/shipped", scriptDir: "/home/agent/.local/bin",
     readDir: (() => ["board-report-dispatch.sh"]) as never,
@@ -1632,7 +1632,7 @@ test("#1998: the REMEDY LINE says the shared remedy does NOT fix it", () => {
     read: ((p: string) => (String(p).startsWith("/shipped") ? "a\n" : "b\n")) as never,
   }));
   assert.match(report, /is NOT fixed by the remedy below/);
-  assert.ok(report.indexOf("NOT fixed by the remedy") < report.indexOf("npm run host:install\n"),
+  assert.ok(report.indexOf("NOT fixed by the remedy") < report.indexOf("pnpm run host:install\n"),
     "ABOVE the command, not below it -- a warning under the thing it warns about is read afterwards");
   assert.match(report, /nothing in ~\/\.local\/bin/,
     "and says WHY `host:install` leaves it alone: this repository owns the a11ign-* units and owns "
@@ -1765,8 +1765,12 @@ const hostWithOneUnit = (installedSuffix: string) => {
   // PINNED SATISFIED TOO (#2332): the identity files are installed and the helper is the wrapper.
   const identity = identityHost({ shippedDir: dirs.shipped, scriptDir: dirs.bin, workersDir: dirs.workers,
     leadsDir: dirs.leads, gitConfigPath: join(root, "gitconfig") });
+  // PINNED SATISFIED TOO (#2896): a `pnpm` on the fixture PATH at the version the fixture project declares, so the real host's PATH is not read.
+  writeFileSync(join(dirs.bin, "pnpm"), "");
+  writeFileSync(join(dirs.repo, "package.json"), JSON.stringify({ packageManager: "pnpm@10.0.0" }));
   return { ...identity, installedDir: dirs.installed,
-    settingsPath, systemctl: SYSTEMD_OK, program: join(dirs.repo, "host/dispatch.sh") };
+    settingsPath, systemctl: SYSTEMD_OK, program: join(dirs.repo, "host/dispatch.sh"),
+    pnpm: { path: dirs.bin, repoRoot: dirs.repo, version: () => "10.0.0\n" } };
 };
 
 test("#2184 INTEGRATED CONTROL: a STALE unit whose program is missing gets BOTH findings, and the "
@@ -1788,8 +1792,17 @@ test("#2184 INTEGRATED CONTROL: a STALE unit whose program is missing gets BOTH 
   const report = driftReport(drift);
   assert.doesNotMatch(report, /NOT fixed by the remedy below either/,
     "`uncovered` must not warn a reader off `host:install` on the one shape where it may work");
-  assert.match(report, /Remedy for all of them: npm run host:install/,
+  assert.match(report, /Remedy for all of them: pnpm run host:install/,
     "and the remedy is still offered, which is what the paragraph above would have withdrawn");
+});
+
+test("#2896: a host with no `pnpm` on its PATH gets the finding through `hostUnitDrift`, and the matched host does not", () => {
+  const host = hostWithOneUnit("");
+  assert.equal(hostUnitDrift(host).some((d) => d.unit === "pnpm"), false, "the matched fixture has pnpm at the declared version: no finding");
+  const missing = hostUnitDrift({ ...host, pnpm: { ...host.pnpm, path: join(host.pnpm.repoRoot, "nowhere") } }).filter((d) => d.unit === "pnpm");
+  assert.deepEqual(missing.map((d) => d.problem), ["NOT ON THE PATH"], "the same host with the PATH moved is the one change that produces it");
+  assert.match(driftReport(missing), /pnpm is NOT fixed by the remedy below -- it is a program the host must have/,
+    "and the report says `host:install` does not fix it, as it says for the dotfile it also cannot write");
 });
 
 test("#2184 THE MATCHED PAIR: the same unit CURRENT keeps both the claim and the remedy warning", () => {
@@ -2188,7 +2201,7 @@ test("#2332: the report says a diverged global gitconfig is NOT fixed by the rem
     writeFileSync(where.gitConfigPath, helperFile(["", "!/usr/bin/gh auth git-credential"]));
     const report = driftReport(hostIdentityDrift(where));
     assert.match(report, /!! .*gitconfig is NOT fixed by the remedy below/);
-    assert.match(report, /Remedy for all of them: npm run host:install/);
+    assert.match(report, /Remedy for all of them: pnpm run host:install/);
     writeFileSync(join(where.scriptDir, "gh"), "stale\n");
     assert.doesNotMatch(driftReport(hostIdentityDrift(where).filter((d) => d.unit.endsWith("/gh"))),
       /NOT fixed by the remedy below/, "CONTROL: a copied file's finding does not carry the warning");

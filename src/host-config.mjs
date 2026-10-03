@@ -297,7 +297,7 @@ export function readUnitsDeclaration(root = HOME_CHECKOUT, read = readFileSync) 
 const NOT_A_COMMAND = /[\n\r%$;\\"'`|&<>]/;
 
 /**
- * The command a project asks the host to run before each tick, from its declaration -- `npm run primary:update` for a11ign, so its
+ * The command a project asks the host to run before each tick, from its declaration -- `pnpm run primary:update` for a11ign, so its
  * primary keeps moving now the tool no longer lives in it (ADR 0040, decision 3). ABSENT reads as `null` (a project may need none),
  * and a present value that is not a command is refused naming the field. PURE: the text is handed in.
  * @param {string} text @param {string} [source] @returns {string | null}

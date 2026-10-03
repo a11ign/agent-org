@@ -31,7 +31,7 @@
 // (`Not-before:`). This file implemented two, so the one whose referent is a SESSION -- the one reached
 // for when a DECISION rather than a dependency is outstanding -- was the one that did not hold a row.
 //
-// MEASURED LIVE AT 2026-09-22T20:49:41Z. `product-manager` put `answer:ceo` on #2002 (`npm run
+// MEASURED LIVE AT 2026-09-22T20:49:41Z. `product-manager` put `answer:ceo` on #2002 (`pnpm run
 // host:install`) at 20:47Z because the ruling it depends on was still open. The next tick promoted #2002
 // to `ready` while it carried that label, then emitted `WOKE worker-capture <- engineers/
 // ready-row-unclaimed/2002`. `worker-capture` was one turn from claiming a row whose whole point was

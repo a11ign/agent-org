@@ -55,7 +55,7 @@ export function allLeaksIn(text) {
  * #891: THE TRACKER'S OWN value-class exemption -- narrower than, and separate from, the tree's
  * `(file, value)` EXEMPT table (`tracked-source-leak-guard.test.ts:120-145`), which a tracker body cannot
  * use at all (it has no file to key on). UTM's local VM host-only bridge, documented TWICE in CLAUDE.md
- * as the `npm run capture:check -- --worker=http://192.168.64.x:8765` command, and reachable from nowhere
+ * as the `pnpm run capture:check --worker=http://192.168.64.x:8765` command, and reachable from nowhere
  * but the single Mac it runs on.
  *
  * `ceo`'s ruling, 2026-09-09: this ONE `/24`, and nothing broader. A value-class exemption is weaker than

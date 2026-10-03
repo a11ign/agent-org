@@ -491,7 +491,7 @@ function reviewBlockedSetOrder(blocked) {
       + "AWAITING_REVIEW is a PR nobody has reviewed. Since #2176 `draft-awaiting-verdict` covers a READY "
       + "pull request as well as a draft, so its reviewer, `reviewer-<n>` for pull request n, has normally "
       + "been ordered already (and started, if none was live) -- read the wake ledger before prompting: "
-      + "`npm run prompt:session -- reviewer-<n> \"#<n> ...\"`. A `QUEUED` exit 2 is delivery; do not "
+      + "`pnpm run prompt:session reviewer-<n> \"#<n> ...\"`. A `QUEUED` exit 2 is delivery; do not "
       + "retry it.\n"
       + "REFUSED is a reviewer's `CHANGES_REQUESTED`, and it does NOT clear by being pushed past. Decide "
       + `whether it stands: rework belongs to the session on the PR's \`${SESSION_PREFIX}\` label, and a newer `
@@ -529,7 +529,7 @@ function awaitingReviewPrompt(b) {
     + "It carries your session label, so chasing it is yours. You opened it ready and it never entered the "
     + `reviewer lane. Its reviewer is \`${reviewerSeat(b)}\`; since #2176 \`draft-awaiting-verdict\` has `
     + "normally ordered it already (and started one, if none was live), so read the wake ledger before "
-    + `prompting: \`npm run prompt:session -- ${reviewerSeat(b)} "${subjectMention(b)} ..."\`. A \`QUEUED\` exit 2 `
+    + `prompting: \`pnpm run prompt:session ${reviewerSeat(b)} "${subjectMention(b)} ..."\`. A \`QUEUED\` exit 2 `
     + "is delivery; do not retry it.\n"
     + "IF THIS PR SHOULD NOT MERGE YET, a `hold:` label removes it from this cause at once. One you merely "
     + "skip stays and this order returns unchanged.";
@@ -560,7 +560,7 @@ function refusedPrompt(b) {
   } else {
     fact = `The refusal was posted at \`${short(b.refusedAt)}\` and the head is now \`${short(head)}\`: `
       + "you pushed after it, and the refusal STILL STANDS. A push does not clear it; only a newer review "
-      + `does, so ask \`${reviewerSeat(b)}\` for a fresh look at the head (\`npm run prompt:session -- `
+      + `does, so ask \`${reviewerSeat(b)}\` for a fresh look at the head (\`pnpm run prompt:session `
       + `${reviewerSeat(b)} "${subjectMention(b)} ..."\`; a QUEUED exit 2 is delivery, do not retry).`;
   }
   return `${subjectMention(b)} is green on every required check and NOT held, and a reviewer's `

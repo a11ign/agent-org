@@ -32,7 +32,7 @@ import { createHash } from "node:crypto";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { realpathSync, existsSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-// RELATIVE, not the package specifier -- this must run before any `npm ci`/build, the same constraint
+// RELATIVE, not the package specifier -- this must run before any `pnpm install`/build, the same constraint
 // `org-watch.mjs` and `build-packages.mjs` state at their own imports.
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { READY_LABEL, CLAIM_LABEL, CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
@@ -46,7 +46,7 @@ import { reviewerInstance, subjectIdentity, subjectMention, subjectRef } from ".
 // B4, ASKED EARLY. These are the SAME two functions `row-claim.mjs` runs at claim time, imported
 // rather than reimplemented: `region-paths.mjs`'s own header records why a second copy of "what
 // counts as a path" is not allowed to exist. Both are leaf-shaped and relative, so the gate keeps the
-// property its own header states -- it runs before any `npm ci` or build.
+// property its own header states -- it runs before any `pnpm install` or build.
 import { declaredRegionFiles } from "./region-paths.mjs";
 import { declaredClosedRows, fileOverlapReason } from "./row-claim/file-overlap-rule.mjs";
 // #1959: THE ONE READER OF `docs/lane-ownership.json`, imported rather than re-parsed -- a lane's `paths`
@@ -56,7 +56,7 @@ import { loadLanes, inLane } from "./lane-ownership.mjs";
 // #2031, AND IMPORTED FOR THE SAME REASON THE TWO LINES ABOVE ARE. The trailing-`-<n>` rule is #2014's,
 // already exercised through `row-claim.mjs`'s own refusal; a second copy here is the drift that row's
 // filing named in so many words. `row-branch-rule.mjs` imports NOTHING, and `git-env.mjs` imports nothing
-// either, so the gate keeps the property its own header states -- it runs before any `npm ci` or build.
+// either, so the gate keeps the property its own header states -- it runs before any `pnpm install` or build.
 import { LS_REMOTE_ARGS, rowBranchesInListing } from "./row-claim/row-branch-rule.mjs";
 // #2791: THE RULE `row-claim.mjs` REFUSES A CLAIM ON, imported unchanged as `row-file` already does -- a second
 // copy of "which sections must a row state" is the drift this whole family of imports exists to prevent.
@@ -109,7 +109,7 @@ import { BACKLOG_LABEL, NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, OUT_OF_RELEASE_L
 // identity and `settle-closed-status.mjs`, so the gate keeps the property its own header states.
 import { PROJECT_NUMBER } from "./board-snapshot-scope.mjs";
 // #2356: A RED `main` WAKES A FIXER. Imports only `node:*`, `parent-recheck-summary.mjs` and the repo identity,
-// so the gate keeps the property its own header states -- it runs before any `npm ci` or build.
+// so the gate keeps the property its own header states -- it runs before any `pnpm install` or build.
 import { readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "./trunk-red.mjs";
 // #2163: FREE BYTES AND FREE INODES. Imports only `node:*`, so the gate keeps the property its own header states.
 import { diskHeadroom, MIN_FREE_FRACTION } from "./disk-headroom.mjs";
@@ -1453,7 +1453,7 @@ export function rowOffBoardOrders(facts, nowMs = Date.now()) {
  *
  * The shipped units are COPIES, not symlinks (`host-units.mjs` says so in its own header and explains
  * why), so every merge touching `packages/agent-org/host/` makes the agent host stale the instant it
- * lands and changes nothing on the host. The only instrument that can see it is `npm run host:check`,
+ * lands and changes nothing on the host. The only instrument that can see it is `pnpm run host:check`,
  * and until this cause NOTHING CALLED IT -- one file in `packages/agent-org/src` and the whole of
  * `.github/workflows` mentioned the drift reader, and that file was the one defining it.
  *
@@ -1466,7 +1466,7 @@ export function rowOffBoardOrders(facts, nowMs = Date.now()) {
  * merge that worked.
  *
  * THE GATE IS ALREADY STANDING IN THE RIGHT PLACE, which is the whole reason this is cheap.
- * `a11ign-work-tick.service` runs on the agent host every two minutes with `npm run primary:update` as
+ * `a11ign-work-tick.service` runs on the agent host every two minutes with `pnpm run primary:update` as
  * its `ExecStartPre`, so the tick reads a checkout at most one tick behind `main` FROM the one machine
  * that can also read `~/.config/systemd/user`. Both sides of the comparison are already under its hand.
  * It spends NO API pool -- a `readdir`, some `readFileSync` and one `systemctl` spawn per shipped timer,
@@ -1529,8 +1529,8 @@ export function hostDriftOrders(drift) {
       + "NOT go through the same reader, such as a diff of the installed `a11ign-*` set against "
       + "`packages/agent-org/host/` -- and say on the row what it said, whichever way it went. If that "
       + "reading disagrees with this one, STOP and report rather than running the remedy.\n"
-      + "Then `npm run host:install`, and post whether any `REMOVED` line appeared: not one is expected, "
-      + "and a `REMOVED` line is a finding rather than a step. `npm run host:check` answers it in the "
+      + "Then `pnpm run host:install`, and post whether any `REMOVED` line appeared: not one is expected, "
+      + "and a `REMOVED` line is a finding rather than a step. `pnpm run host:check` answers it in the "
       + "same minute -- `hostUnitsInstall` runs `daemon-reload` itself, so nothing waits for the next "
       + "firing.\n"
       + "A STALE UNIT IS NOT A COSMETIC DIFF. The unit files are copies, so a merged edit reaches this "
@@ -1585,12 +1585,12 @@ export function primaryStaleOrders(drift) {
     prompt: `The PRIMARY checkout is not at \`origin/main\`: it is at ${drift.sha.slice(0, 9)}, ${drift.behind} commit(s) behind `
       + `${drift.originSha.slice(0, 9)}${drift.ahead > 0 ? ` and carrying ${drift.ahead} commit(s) origin lacks` : ""}. Every order this gate gives `
       + "is given from THAT code, and every agent reads its role briefs and scripts out of it.\n"
-      + (dirty.length > 0 ? `${dirty.length} tracked path(s) carry uncommitted changes, which is what makes \`npm run primary:update\` refuse `
+      + (dirty.length > 0 ? `${dirty.length} tracked path(s) carry uncommitted changes, which is what makes \`pnpm run primary:update\` refuse `
         + `("would be overwritten by checkout"):\n${dirty.map((path) => `  ${path}`).join("\n")}\n` : "No tracked path is dirty, so the update itself "
-        + "is failing for another reason: run `npm run primary:update` and read its output.\n")
+        + "is failing for another reason: run `pnpm run primary:update` and read its output.\n")
       + "THE EDITS ARE NOT YOURS TO DISCARD UNREAD: an interactive session left them there (the 2026-09-28 cause), and no hook "
       + "refuses an uncommitted edit. Save `git diff` to `" + stateEntryPath("salvage") + "/primary-<date>.patch` first and say on #2781 "
-      + "where it went, then clear the tracked paths and run `npm run primary:update`. This order repeats until the primary is at `origin/main`.",
+      + "where it went, then clear the tracked paths and run `pnpm run primary:update`. This order repeats until the primary is at `origin/main`.",
     causeKey: `ceo/primary-stale/${key}`,
   }];
 }
@@ -4593,9 +4593,9 @@ export function unclaimableRowOrders(offerable, streaks) {
         + `refused it on ${seen.ticks} consecutive ticks. The refusal, quoted:\n\n> ${seen.reason}\n\n`
         + "Nobody can act on this but whoever stocks the queue, and nothing else will tell you: an offer the claim refuses is "
         + "logged and retried, and `ready-queue-empty` stays silent while the row sits in the pool.\n"
-        + "Find out whose tree it is (`npm run worktree:whose -- <path>`) and whether that session still holds the row. A "
+        + "Find out whose tree it is (`pnpm run worktree:whose <path>`) and whether that session still holds the row. A "
         + "live holder whose row lost its claim label needs the label back; a leftover tree whose work is merged and clean "
-        + "goes with `npm run worktrees:prune` (never `rm -rf`), which names and leaves any dirty one; a tree with unpushed "
+        + "goes with `pnpm run worktrees:prune` (never `rm -rf`), which names and leaves any dirty one; a tree with unpushed "
         + "work is that session's to finish. If none of that fits, take the row off the shelf (`" + BLOCKED_LABEL + "`, with what would "
         + "clear it) so the engineers stop being offered it.",
       causeKey: `product-manager/ready-row-unclaimable/${discriminator}`,
@@ -4955,7 +4955,7 @@ function backlogOrders(owner, mine) {
       + (laneOwnerOf(r) === name
         ? " It carries your lane: nobody else may promote it."
         : " It carries `fleet-gated`, which ROUTES rather than blocks -- the acceptance needs the fleet"
-          + " or the lab, which you run. Check the fleet is up (`npm run fleet:status`) first; this row"
+          + " or the lab, which you run. Check the fleet is up (`pnpm run fleet:status`) first; this row"
           + " is not waiting on hardware being broken.")
       + "\nPromote it if it is genuinely ready (a Region, an Acceptance, a done-when), answer it if it "
       + "waits on a decision, or say on the row why it should stay put -- leaving it and recording why "
@@ -5923,7 +5923,7 @@ export function diskHeadroomOrders(low) {
       + "What has filled it before: `/tmp/rv-*` review clones, `/tmp/claude-1000` session scratchpads, "
       + "`~/repos/wt-*` worktrees (each with a `node_modules`), and npm caches. `node "
       + "packages/agent-org/src/prune-tmp.mjs` classifies `/tmp` and removes NOTHING without `--apply`, and "
-      + "`--apply` waits for a named list one cycle first (#2243). `npm run worktrees:prune` is the worktree half.\n"
+      + "`--apply` waits for a named list one cycle first (#2243). `pnpm run worktrees:prune` is the worktree half.\n"
       + "IF YOUR OWN SHELL IS FAILING WITH ENOSPC you cannot fix this from here: label a row `" + CHAIRMAN_LABEL + "` and "
       + "@-mention `@DanBeckDev` in its brief (a GitHub write, and the label is what the gate reads). "
       + "The same reading is written on the tick's stderr before `wake` runs (`journalctl --user -u "
@@ -6061,7 +6061,7 @@ export function cannotAskReport({ run, identity }) {
  * to name one of them. A process boundary costs one node startup per tick and leaves the closure at 4.
  *
  * AND IT BUYS A PROPERTY THE IMPORT CANNOT. The session this cause wakes is told to run
- * `npm run host:check`; this spawns THE SAME FILE IN THE SAME TREE, so the gate and the human can never
+ * `pnpm run host:check`; this spawns THE SAME FILE IN THE SAME TREE, so the gate and the human can never
  * disagree about what drifted. Two readers of one question is the defect this repository keeps
  * re-finding one level up, and here there is exactly one.
  *
