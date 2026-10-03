@@ -3481,6 +3481,30 @@ export const BUSY_SEAT_DEFERRAL_MS = 60 * 60 * 1000;
 const BUSY_SEAT_REFUSAL = /^(\S+): ("[^"]+" is working(?:; and the fallback "[^"]+": "[^"]+" is working)?)$/;
 
 /**
+ * HOW LONG A READY ROW MAY WAIT FOR A FREE ENGINEER SEAT BEFORE IT IS "NOWHERE TO GO" AFTER ALL (a11ign/a11ign#3266): HALF AN HOUR.
+ *
+ * MEASURED 2026-10-03 from `journalctl --user -u a11ign-work-tick` over 2026-10-01T00:00+01:00 to 2026-10-03T15:30+01:00 (947 `ready-row-unclaimed`
+ * lines): every run of consecutive ticks refusing one row's offer in the capacity shape ({@link CAPACITY_REFUSAL}; a gap over 10 minutes ends a run),
+ * kept only if `WOKE <seat> <- engineers/ready-row-unclaimed/<row>` followed within 6 minutes, i.e. the wait ENDED in a claim. Of 67 such runs:
+ * p50 0 min, p90 7, p99 13, MAX 13 (`#3256`). A tick is 2 minutes, so each is good to +-2. Half an hour is the first round number above that
+ * maximum with a margin of more than twice: a ready row nobody could take for longer IS "no session is taking this work", and the answer then is
+ * more seats, which is `ceo`'s call and is reported there. SIZED SEPARATELY FROM {@link BUSY_SEAT_DEFERRAL_MS}: that is a seat mid-turn (50 min).
+ */
+export const CAPACITY_WAIT_LIMIT_MS = 30 * 60 * 1000;
+
+/** One seat as `route` writes it into a refusal when nothing is wrong with it but its load: `working`, or a spare that holds or has held its one row ({@link spentSeen}). */
+const LOADED_SEAT = String.raw`[\w.-]+=(?:working|has held #\d+(?:, #\d+)*: one instance, one row \(#2407\))`;
+
+/**
+ * `<causeKey>: no engineer is idle ... (<every seat LOADED>)`, which is `route`'s refusal for an engineer order when the roster is simply full, with
+ * `targetFor`'s second half when this tick had already spent its one spawn. ANCHORED AT BOTH ENDS and demanding at least one seat, every one of them
+ * loaded: an idle, drained, skipped-for-B2, `unknown`, `absent` or `blocked` seat is not capacity, and a `; no spawn: ...` tail is a failed claim, a
+ * B4 overlap or a refused prompt, each a fault with a cause of its own that this must not hide.
+ */
+const CAPACITY_REFUSAL = new RegExp(String.raw`^(\S+): (no engineer is idle(?: and allowed to claim)? \(${LOADED_SEAT}(?:, ${LOADED_SEAT})*\)`
+  + String.raw`(?:, and this tick has already started \d+ \(MAX_SPAWNS_PER_TICK is \d+\))?)$`);
+
+/**
  * Which of a tick's refusals are a seat WAITING ITS TURN and which are an order that has no way to arrive (#3029).
  *
  * ONE SUMMARY LINE FOR BOTH IS WHAT KEPT `N order(s) had nowhere to go` IN THE JOURNAL FOR 30 TICKS: `ceo` was `working` on a 24-minute turn
@@ -3488,16 +3512,22 @@ const BUSY_SEAT_REFUSAL = /^(\S+): ("[^"]+" is working(?:; and the fallback "[^"
  * reviewer whose PR had merged, a B4 offer with no taker) shared its line and could not be told from it.
  *
  * @param {string[]} refused every `<causeKey>: <reason>` line the tick refused
- * @returns {{ busy: {key: string, reason: string, line: string}[], faults: string[] }}
+ * A READY ROW WAITING FOR A FREE SEAT IS THE SAME KIND OF WAIT (#3266): every seat `working` or holding its one row, nobody idle to blame. It is
+ * deferred under its own, shorter limit, which is why each entry carries `limitMs` and `limitFor` (the clause that names it when it is overdue).
+ *
+ * @param {string[]} refused every `<causeKey>: <reason>` line the tick refused
+ * @returns {{ busy: {key: string, reason: string, line: string, limitMs: number, limitFor: string}[], faults: string[] }}
  */
 export function splitRefusals(refused) {
-  /** @type {{key: string, reason: string, line: string}[]} */
+  /** @type {{key: string, reason: string, line: string, limitMs: number, limitFor: string}[]} */
   const busy = [];
   /** @type {string[]} */
   const faults = [];
   for (const line of refused) {
-    const match = BUSY_SEAT_REFUSAL.exec(line);
-    if (match) busy.push({ key: match[1], reason: match[2], line });
+    const seat = BUSY_SEAT_REFUSAL.exec(line);
+    const capacity = CAPACITY_REFUSAL.exec(line);
+    if (seat) busy.push({ key: seat[1], reason: seat[2], line, limitMs: BUSY_SEAT_DEFERRAL_MS, limitFor: "a seat mid-turn" });
+    else if (capacity) busy.push({ key: capacity[1], reason: capacity[2], line, limitMs: CAPACITY_WAIT_LIMIT_MS, limitFor: "a free engineer seat" });
     else faults.push(line);
   }
   return { busy, faults };
@@ -3538,7 +3568,8 @@ export function deferralAges(path, keys, now, { read = readFileSync, write = wri
  * What a tick says about its refusals, and whether any of them is a fault (#3029).
  *
  * A busy seat's order is `DEFERRED`, with its age, and is NOT counted: it is waiting its turn, which is what the queue is for. Past
- * {@link BUSY_SEAT_DEFERRAL_MS} it is a fault like the rest, because a seat `working` for hours IS "no session is taking this work". Every other
+ * {@link BUSY_SEAT_DEFERRAL_MS} it is a fault like the rest, because a seat `working` for hours IS "no session is taking this work". A READY ROW
+ * WAITING FOR A FREE SEAT is the same, under {@link CAPACITY_WAIT_LIMIT_MS} (#3266). Every other
  * refusal is `UNDELIVERED` and counted, and only those make the tick exit ATTENTION.
  *
  * @param {string[]} refused @param {(keys: string[]) => Map<string, number>} ageOf each key's wait so far, in ms
@@ -3549,10 +3580,10 @@ export function refusalReport(refused, ageOf) {
   const ages = ageOf(busy.map((b) => b.key));
   /** @param {string} key */
   const minutes = (key) => Math.round((ages.get(key) ?? 0) / 60_000);
-  const isOverdue = (/** @type {{key: string}} */ b) => (ages.get(b.key) ?? 0) > BUSY_SEAT_DEFERRAL_MS;
+  const isOverdue = (/** @type {{key: string, limitMs: number}} */ b) => (ages.get(b.key) ?? 0) > b.limitMs;
   const overdue = busy.filter(isOverdue);
   const waiting = busy.filter((b) => !isOverdue(b));
-  const undelivered = [...faults, ...overdue.map((b) => `${b.line} (deferred ${minutes(b.key)} min, over the ${BUSY_SEAT_DEFERRAL_MS / 60_000}-minute limit for a seat mid-turn)`)];
+  const undelivered = [...faults, ...overdue.map((b) => `${b.line} (deferred ${minutes(b.key)} min, over the ${b.limitMs / 60_000}-minute limit for ${b.limitFor})`)];
   return {
     deferred: waiting.map((b) => `${b.key}: ${b.reason} (waiting ${minutes(b.key)} min; retried next tick)`),
     undelivered,
