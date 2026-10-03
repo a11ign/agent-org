@@ -746,20 +746,27 @@ export const labelsOf = (x) => (x?.labels ?? []).map((/** @type {any} */ l) => S
  * a row's own pull request from a competitor for its files. `body` is one more field on `readPrs`'s
  * existing call and costs no extra one.
  *
+ * #3095: THE LIST MAY HOLD THE PULL REQUESTS OF MORE THAN ONE DECLARED REPOSITORY, and a pull request `tagged` with its `repo` and
+ * `repoKey` keeps both, so `fileOverlapReason` compares a Region entry only with the files of the repository it is prefixed for and names
+ * the PR as `#7 in owner/repo`. Its `Closes #7` is read against ITS OWN repository (`prRepo`), as `lookupOpenPrFiles` does: a bare number
+ * in agent-org's PR body is agent-org's #7, never the tracker's row 7. An untagged PR (the primary's own) is exactly what it was.
+ *
  * @param {any[]} prs
  * #2493: `held` rides along too -- whether the PR carries a `hold:` label -- from `labels`, already on that call.
  *
- * @returns {{ number: number, files: string[], changedFiles: number, closes: number[], held: boolean }[]}
+ * @param {{ trackerRepo?: string }} [where] the tracker whose rows a `Closes` is read against; the project's first when omitted
+ * @returns {{ number: number, files: string[], changedFiles: number, closes: number[], held: boolean, repo?: string, repoKey?: string }[]}
  */
-export function comparablePrFiles(prs) {
+export function comparablePrFiles(prs, { trackerRepo } = {}) {
   return prs
     .map((p) => ({
       number: Number(p?.number),
       changedFiles: Number(p?.changedFiles),
       files: (p?.files ?? []).map((/** @type {any} */ f) => String(f?.path ?? f)),
-      closes: declaredClosedRows(p?.body),
+      closes: declaredClosedRows(p?.body, { ...(p?.repo === undefined ? {} : { prRepo: p.repo }), ...(trackerRepo === undefined ? {} : { trackerRepo }) }),
       // #2493: the other half of the exclusion `fileOverlapReason` reads -- a `hold:` label on the PR.
       held: holdersOf(labelsOf(p)).length > 0,
+      ...(p?.repo === undefined ? {} : { repo: String(p.repo), repoKey: String(p.repoKey ?? "") }),
     }))
     .filter((p) => Number.isInteger(p.changedFiles) && p.files.length === p.changedFiles);
 }
@@ -6252,7 +6259,8 @@ function repositoryNote(scope) {
  * facts about the host; the scope's OWN `main` is asked (`codeReadings`' `trunkRed`, #3079) and the primary's is not; and Project-1 membership names a board, which 3d and 3f make a
  * declaration's. Each is passed as `undefined`, which `decide` reads as "not asked", so nothing here invents a reading.
  * @param {Scope} scope @param {boolean} drain
- * @param {ReturnType<typeof readLanes>} [read] the lanes, when the caller has already asked
+ * @param {ReturnType<typeof readLanes> & { siblingPrs?: any[] }} [read] the lanes, when the caller has already asked. #3095: `siblingPrs` are the
+ *   open pull requests of the OTHER declared code repositories (already read, so the comparison costs no call), which B4 compares a row with too
  * @param {{ code: typeof codeReadings, tracker: typeof trackerReadings }} [readings] the per-tick reads beyond the lanes; a test hands stubs, so no `gh` is spawned
  * @returns {{ orders: any[], blocked: any[], refused: string[] }}
  */
@@ -6267,7 +6275,7 @@ export function scopeTick(scope, drain, read = readLanes(scope), readings = { co
   const allOpen = openRows ?? [];
   const code = inRepo(read.codeRepo, () => readings.code(openPrs, scope));
   const tracker = inRepo(read.trackerRepo, () => readings.tracker({ rows, allOpen }));
-  const prFiles = comparablePrFiles(openPrs);
+  const prFiles = comparablePrFiles([...openPrs, ...(read.siblingPrs ?? [])], { trackerRepo: scope.tracker?.repo });
   // WHAT THE TRACKER READINGS RETURN IS TAGGED HERE, not inside them: an epic or a closed row that carried no key would make `epic-7` and
   // `answer-owed/row-7` the primary's, whatever the reading that produced it.
   const mark = (/** @type {any[] | null} */ list) => tagged(list, scope.key, read.trackerRepo) ?? [];
@@ -6321,12 +6329,35 @@ function trackerReadings({ rows, allOpen }) {
 }
 
 /**
- * Every NON-PRIMARY scope the declaration lists, ticked. Empty for one project, which is what keeps one project's orders
- * identical to what they were.
- * @param {boolean} drain
+ * Every NON-PRIMARY scope the declaration lists, with its lanes read ONCE. Empty for one project, which is what keeps one project's orders
+ * identical to what they were. #3095: read BEFORE the primary's own B4 comparison, because that comparison needs these pull requests too,
+ * and handed on to `otherScopeTicks` so it is not a second read.
+ * @param {(args: string[], repo?: string) => string} [run]
+ * @returns {{ scope: Scope, read: ReturnType<typeof readLanes> }[]}
  */
-function otherScopeTicks(drain) {
-  return scopesOf([homeProjectDeclaration()]).filter((scope) => scope.key !== "").map((scope) => scopeTick(scope, drain));
+export function readOtherScopes(run = defaultRun) {
+  return scopesOf([homeProjectDeclaration()]).filter((scope) => scope.key !== "").map((scope) => ({ scope, read: readLanes(scope, run) }));
+}
+
+/**
+ * #3095: THE OPEN PULL REQUESTS OF EVERY DECLARED CODE REPOSITORY BUT ONE -- the one `skip` names (the primary's own, `undefined`, or a
+ * scope's key) -- each tagged with the repository it came from. B4 at the claim compares a row with ALL of them (`lookupOpenPrFiles`, #2617),
+ * so a gate that compares with fewer offers every tick what the claim refuses every tick. A lane that could not be read contributes nothing:
+ * THE GATE FAILS OPEN and the claim stays the authority, and `scopeTick`'s `refused` names the repository (`unreadLanes`).
+ * @param {{ scope: Scope, read: ReturnType<typeof readLanes> }[]} others @param {string} [skip] the key of the scope whose own list is not a sibling
+ * @returns {any[]}
+ */
+export function pullRequestsOfOthers(others, skip) {
+  return others.filter(({ scope }) => scope.key !== skip).flatMap(({ read }) => read.prs ?? []);
+}
+
+/**
+ * Every NON-PRIMARY scope, ticked from lanes already read. Each is told the pull requests of every OTHER declared code repository -- the
+ * primary's (`primaryPrs`) and its peers' -- for B4 (#3095).
+ * @param {boolean} drain @param {{ scope: Scope, read: ReturnType<typeof readLanes> }[]} others @param {any[]} primaryPrs
+ */
+function otherScopeTicks(drain, others, primaryPrs) {
+  return others.map(({ scope, read }) => scopeTick(scope, drain, { ...read, siblingPrs: [...primaryPrs, ...pullRequestsOfOthers(others, scope.key)] }));
 }
 
 /**
@@ -6778,7 +6809,8 @@ function main() {
   // a lane that could not be read, already reported as PARTIAL below, never a lane that is empty.
   const openPrs = prs ?? [];
   const rows = readyRows ?? [];
-  const prFiles = comparablePrFiles(openPrs);
+  const otherScopes = readOtherScopes(); // #3095: read here, once -- B4 below compares with their pull requests, and `otherScopeTicks` ticks them
+  const prFiles = comparablePrFiles([...openPrs, ...pullRequestsOfOthers(otherScopes)]);
   const drain = draining();
   // ONE READ, THREE CAUSES -- and the refusal is kept BESIDE the coalesced list rather than instead of
   // it. `decide`'s label-derived causes want a list to filter, and an empty one is the right degradation
@@ -6823,7 +6855,7 @@ function main() {
     // #2075: ONE GRAPHQL CALL, READ PER ISSUE. `null` (refused) emits nothing and is said on stderr below.
     // #2691's `callCountSignals` is beside it, costing no `GH_READS`; `claimedComments` (#2710's window anchor) is the SAME read made above.
     offBoard, callCountSignals: rowCallCountSignals(allOpen, liveClaudeTurns(), claimedComments), bareAnswerLabels: bareAnswerLabelOrders(withAnswerLabel([...allOpen, ...openPrs])), labJobs: labJobRecordsOrSay() }; const decided = withStalePrimaryNotice(decideAndTap(decideArgs), primaryDrift); // #2711, #2729; `main` is at its 90-line limit
-  const others = otherScopeTicks(drain); // #2618: the OTHER declared repositories -- none for one project, whose orders are what they were
+  const others = otherScopeTicks(drain, otherScopes, openPrs); // #2618: the OTHER declared repositories -- none for one project, whose orders are what they were
   const outageNow = outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows: openRowsRead, claimedComments, offBoard, others });
   const { delivered: orders, performed } = performActions(markOutageReads([...decided, ...others.flatMap((tick) => tick.orders)], outageNow));
   orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick(), ...orgHealthNow({ prsRead: prs, readyRead: readyRows, openRowsRead, decideArgs, decided }),
