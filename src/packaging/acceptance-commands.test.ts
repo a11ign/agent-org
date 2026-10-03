@@ -3440,17 +3440,23 @@ test("#2305: testFilesAmong finds every test-file shape this repo writes, and no
   assert.deepEqual(testFilesAmong(["a/test-support/helper.ts", "a/contest.ts", "a/latest.mjs"]), []);
 });
 
-test("#2305: THE ROW'S OWN FAILING TEST -- a diff with a test and an empty `Mutation:` is MISSING, and fails", () => {
+test("a11ign/a11ign#3282: a diff with a test and an empty `Mutation:` is MISSING, PRINTED, and does NOT fail", () => {
   for (const body of ["Closes #1\n\nMutation:\n\n## What changes", "Closes #1", "Mutation: none",
     "Mutation: <!-- what you broke -->"]) {
     const report = mutationRecordReport({ body, diff: TEST_DIFF });
-    assert.equal(report.ok, false, `${JSON.stringify(body)} must not pass`);
-    assert.match(report.line, /^MUTATION: MISSING/);
-    assert.match(report.line, /x\.test\.ts/, "names the test file that owes the record");
+    assert.equal(report.ok, true, `${JSON.stringify(body)} is paperwork, and paperwork no longer fails a pull request`);
+    assert.match(report.line, /^MUTATION: MISSING \(printed, not failing\)/);
+    assert.match(report.line, /x\.test\.ts/, "still names the test file that owes the record");
   }
 });
 
-test("#2305: a record, or `Mutation: none -- <reason>`, passes; the reason is required", () => {
+test("a11ign/a11ign#3282: the other direction -- a DUPLICATE `Mutation:` header still FAILS, because that is a malformed body", () => {
+  const report = mutationRecordReport({ body: "Mutation: npm run mutate\n\nMutation: none -- twice", diff: TEST_DIFF });
+  assert.equal(report.ok, false);
+  assert.match(report.line, /^MUTATION: DUPLICATE/);
+});
+
+test("#2305: a record, or `Mutation: none -- <reason>`, passes; a `none` with no reason is MISSING (printed)", () => {
   const record = mutationRecordReport({ body: "Mutation: npm run mutate -- --file x.mjs", diff: TEST_DIFF });
   assert.equal(record.ok, true);
   assert.match(record.line, /^MUTATION: RECORDED/);
@@ -3460,7 +3466,9 @@ test("#2305: a record, or `Mutation: none -- <reason>`, passes; the reason is re
   assert.deepEqual(none, { ok: true, line: "MUTATION: NONE -> a rename, no behaviour" });
   assert.equal(mutationRecordReport({ body: "Mutation: none -- a rename", diff: TEST_DIFF }).ok, true,
     "the ASCII spelling the row wrote is accepted too");
-  assert.equal(mutationRecordReport({ body: "Mutation: none", diff: TEST_DIFF }).ok, false);
+  const bare = mutationRecordReport({ body: "Mutation: none", diff: TEST_DIFF });
+  assert.match(bare.line, /^MUTATION: MISSING \(printed, not failing\)/, "a `none` with no reason is still not a record: it is the printed omission");
+  assert.equal(bare.ok, true, "and a11ign/a11ign#3282 stopped it failing");
 });
 
 test("#2305: a diff with no test file owes nothing, and a body with no `Mutation:` still passes it", () => {
@@ -3514,7 +3522,7 @@ test("#2305: a HEAD that is not a merge commit is UNREADABLE, never a diff of on
   });
 });
 
-test("#2305: `main()` is WIRED -- the job exits 1 on a missing record and 0 once it is written", () => {
+test("#2305: `main()` is WIRED -- a missing record is PRINTED and exits 0 (a11ign/a11ign#3282), a duplicate exits 1", () => {
   withGitSandbox(({ dir, run, commit }) => {
     mergedPullRequest(dir, run, commit);
     const job = (body: string) => spawnSync("node",
@@ -3522,11 +3530,14 @@ test("#2305: `main()` is WIRED -- the job exits 1 on a missing record and 0 once
       { cwd: dir, encoding: "utf8", env: sandboxGitEnv({ PR_BODY: body }) });
     const base = "Acceptance: none \u2014 the test is the check\n\nCloses: none \u2014 test\n";
     const missing = job(base);
-    assert.equal(missing.status, 1, missing.stdout + missing.stderr);
-    assert.match(missing.stdout, /MUTATION: MISSING/);
+    assert.equal(missing.status, 0, missing.stdout + missing.stderr);
+    assert.match(missing.stdout, /MUTATION: MISSING \(printed, not failing\)/);
     const written = job(`${base}\nMutation: none \u2014 a fixture rename\n`);
     assert.equal(written.status, 0, written.stdout + written.stderr);
     assert.match(written.stdout, /MUTATION: NONE/);
+    const twice = job(`${base}\nMutation: npm run mutate\n\nMutation: none \u2014 again\n`);
+    assert.equal(twice.status, 1, "POSITIVE CONTROL: the job still fails on a body it cannot read as one record");
+    assert.match(twice.stdout, /MUTATION: DUPLICATE/);
   });
 });
 

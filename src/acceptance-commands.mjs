@@ -3344,11 +3344,16 @@ export function closesReferences(declaration) {
 // test passes without testing its claim", each found by a reviewer running a mutant the author never ran.
 // The template already had the line and NOTHING READ IT.
 //
+// AMENDED (a11ign/a11ign#3282, decided on #3213): A MISSING RECORD IS PRINTED, NOT FAILING. A check that the line EXISTS is
+// paperwork, and it failed pull requests for it (8 of the 9 acceptance failures sampled on #928). The project now posts the
+// survivors of a machine-chosen mutant set as a comment. The line is still printed, so the omission stays visible; a
+// DUPLICATE header still fails, because that is a body this parser cannot read as one record.
+//
 // SHAPE, NOT EXECUTION. This job still never runs a `Mutation:` command (see the SCOPED TO `Acceptance:`
 // ONLY note above; `pr:open` runs it on the author's machine and only WARNS, #2307). What it certifies is
 // that the line EXISTS -- the cheap half. It cannot say a mutant ran, and must not be read as saying so.
 //
-// `Mutation: none -- <reason>` is the escape hatch and the reason is REQUIRED, the same rule as
+// `Mutation: none -- <reason>` is the escape hatch; a reasonless `none` reads as MISSING, the same distinction as
 // `Closes: none` and `Acceptance: none`: "nobody wrote one" and "deliberately none" stay different states.
 // `extractSection` already reads a reasonless `none` as MISSING, so this needs no dialect of its own.
 //
@@ -3369,10 +3374,15 @@ export function testFilesAmong(paths) {
 /** @typedef {{ ok: true, files: string[] } | { ok: false, why: string }} DiffReading */
 
 /**
- * THE VERDICT for `Mutation:`. Three outcomes and a fourth that is deliberately not a pass or a failure:
- * no test in the diff (nothing owed), a record present, a record MISSING/duplicated (fails), and a diff this
- * job COULD NOT READ -- UNCHECKED, loud, and not a failure, because a job that goes red on a git hiccup
- * blocks the queue for a reason no author can fix and trains them to reach for the escape hatch.
+ * THE VERDICT for `Mutation:`. Four outcomes, and a MISSING record is no longer one that fails (a11ign/a11ign#3282, decided
+ * on #3213): no test in the diff (nothing owed), a record present, a record MISSING (PRINTED, NOT FAILING), a duplicate
+ * header (fails: that is a malformed body, not an omission), and a diff this job COULD NOT READ -- UNCHECKED, loud, and
+ * not a failure, because a job that goes red on a git hiccup blocks the queue for a reason no author can fix and trains
+ * them to reach for the escape hatch.
+ *
+ * WHY MISSING STOPPED FAILING. It checked that a LINE EXISTED, never that a mutant ran, so it failed a pull request on
+ * paperwork. The project's `mutation-comment.yml` now runs a machine-chosen mutant set on the lines the pull request
+ * added and posts the survivors as a comment; the line stays, printed, so the omission is still visible to a reviewer.
  * @param {{ body: string | null | undefined, diff: DiffReading }} input
  * @returns {{ ok: boolean, line: string }}
  */
@@ -3393,10 +3403,10 @@ export function mutationRecordReport({ body, diff }) {
     return { ok: false, line: "MUTATION: DUPLICATE -- more than one `Mutation:` header; keep one" };
   }
   const named = tests.slice(0, MUTATION_FILES_NAMED);
-  return { ok: false, line: `MUTATION: MISSING -- the diff changes ${tests.length} test file(s) (`
+  return { ok: true, line: `MUTATION: MISSING (printed, not failing) -- the diff changes ${tests.length} test file(s) (`
     + `${named.join(", ")}${tests.length > named.length ? ", ..." : ""}) and the body carries no `
-    + "`Mutation:` record. Write what you broke and that the test went red (`pnpm run mutate` makes it "
-    + "cheap), or `Mutation: none -- <reason>` (a reason is required)" };
+    + "`Mutation:` record. Optional: write what you broke and that the test went red (`pnpm run mutate` makes it "
+    + "cheap), or `Mutation: none -- <reason>`. CI posts the survivors of a machine-chosen mutant set as a comment" };
 }
 
 // #2308: A NUMBER IN A PR BODY SITS UNDER A `## Measured` SECTION, WITH ITS COMMAND AND THE OUTPUT IT PRINTED.
