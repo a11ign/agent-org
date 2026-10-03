@@ -1197,6 +1197,23 @@ function namedList(names) {
 }
 
 /**
+ * THE COMMAND THAT SUPPLIES A KEYED CLONE'S MISSING PACKAGES, spelled for what the clone has. With a manifest it is `pnpm install` in the clone,
+ * which reads the versions it declares and writes no lockfile. WITHOUT ONE -- a repository whose FIRST pull request adds the root `package.json`, and
+ * the clone sits on `main` -- that command answers `ERR_PNPM_NO_PKG_MANIFEST`, so a remedy naming it cannot be carried out (#3264, found on
+ * `screenreader-worker#2`, where a reviewer was undelivered for 92 minutes). The manifest that exists is the TREE's, so the install is made there and
+ * what it makes is moved into the clone, which is the repair that worked. `--no-lockfile`, NOT `--frozen-lockfile`: the tree may have no
+ * lockfile (`a11ign/agent-org` has none, so a frozen install cannot run there, #113), and the with-manifest remedy already installs this way. The tick still does not fetch from a registry itself: the clone is shared.
+ * @param {{fs: LinkFs, path: string, repoRoot: string}} args @returns {string}
+ */
+function supplyCommand({ fs, path, repoRoot }) {
+  if (fs.existsSync(`${repoRoot}/package.json`)) {
+    return `\`cd ${repoRoot} && pnpm install --no-lockfile\`, which installs every declared dependency and writes no lockfile`;
+  }
+  return `\`cd ${path} && pnpm install --no-lockfile --ignore-scripts\` and then \`mv ${path}/node_modules ${repoRoot}/node_modules\` `
+    + `(${repoRoot} has no package.json, so \`pnpm install\` there answers ERR_PNPM_NO_PKG_MANIFEST; the tree's is the manifest that exists)`;
+}
+
+/**
  * A KEYED review tree takes its dependencies from the repository's own clone, and the tree's own `package.json` says which. A keyed
  * repository declares its own (`a11ign/agent-org`'s `devDependencies` are the three CI installs), so this is not {@link linkReviewDependencies}'s
  * hybrid link of `packages/*`: a clone that HAS every declared package is linked the plain way -- every entry, nothing of this tree's own
@@ -1214,7 +1231,7 @@ export function linkKeyedDependencies({ path, repoRoot, fs = REAL_LINK_FS }) {
   const missing = Object.entries(declared.packages).filter(([name]) => !fs.existsSync(`${modules}/${name}`));
   if (missing.length > 0) {
     return `${modules} lacks ${namedList(missing.map(([name]) => name))}, which ${path}/package.json declares; supply `
-      + `${missing.length === 1 ? "it" : "them"} with \`cd ${repoRoot} && pnpm install --no-lockfile\`, which installs every declared dependency and writes no lockfile`;
+      + `${missing.length === 1 ? "it" : "them"} with ${supplyCommand({ fs, path, repoRoot })}`;
   }
   if (!fs.existsSync(modules)) return null;
   try {
@@ -1525,11 +1542,11 @@ export function repointedForReviewer(order, checkout = {}) {
  *
  * @param {{session: string, cause?: string, causeKey?: string}} order @param {{label: string, status: string}[]} agents
  * @param {{run?: (args: string[]) => string, env?: Record<string, string>, cwd: string,
- *   registry?: Record<string, {spawnedAt: number}>}} deps `cwd` is the verified checkout
+ *   registry?: Record<string, {spawnedAt: number}>, codexConfig?: () => string | null}} deps `cwd` is the verified checkout
  * @returns {{label: string, workspace: string, profile: {kind: string, model: string, effort: string}}
  *   | {refusal: string}}
  */
-function spawnReviewer(order, agents, { run = defaultRun, env, cwd, registry }) {
+function spawnReviewer(order, agents, { run = defaultRun, env, cwd, registry, codexConfig }) {
   const reviewer = spawnableReviewer(order, agents, registry);
   if ("refusal" in reviewer) return reviewer;
   const pane = openPane(run, reviewer.session, reviewerEnvironment(reviewer.session, env, cwd), cwd);
@@ -1539,15 +1556,67 @@ function spawnReviewer(order, agents, { run = defaultRun, env, cwd, registry }) 
   try {
     run(invocation.args);
   } catch (err) {
-    return { refusal: `herdr refused to start "${reviewer.session}" (${herdrReason(err)})${closedNote(run, pane.workspace)}` };
+    return { refusal: `herdr refused to start "${reviewer.session}" (${herdrReason(err)})${codexTrustNote(reviewer.session, err, codexConfig)}`
+      + closedNote(run, pane.workspace) };
   }
   return { label: reviewer.session, workspace: pane.workspace, profile: invocation.profile };
+}
+
+/** Where codex reads its trust entries: `$CODEX_HOME/config.toml`, else `~/.codex/config.toml`. */
+const codexConfigPath = () => join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "config.toml");
+
+/** The codex config's text, or `null` when it cannot be read (absent is not the same as unreadable, and a note must not claim the first of the second). */
+function readCodexConfig() {
+  try {
+    return readFileSync(codexConfigPath(), "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Does `config` hold a `[projects."<dir>"]` table with `trust_level = "trusted"`? Read line by line, because a table's key is a quoted path and
+ * the file has no parser here: a header opens the table, any other header closes it, and only a `trust_level` INSIDE it counts.
+ * @param {string} config @param {string} dir @returns {boolean}
+ */
+function codexTrusts(config, dir) {
+  let inside = false;
+  for (const raw of config.split("\n")) {
+    const line = raw.trim();
+    const header = /^\[projects\.(?:"([^"]*)"|'([^']*)')\]\s*(?:#.*)?$/.exec(line);
+    if (header !== null) inside = (header[1] ?? header[2]) === dir;
+    else if (line.startsWith("[")) inside = false;
+    else if (inside && /^trust_level\s*=\s*["']trusted["']/.test(line)) return true;
+  }
+  return false;
+}
+
+/**
+ * WHAT A KEYED REVIEWER'S START REFUSAL IS MISSING when the cause is codex's trust (#3264). herdr answers `agent_not_ready ... is blocked during
+ * startup` for a codex that is waiting to be told it may work in a directory, and says nothing of the directory or the file. A worktree resolves
+ * its trust to the CLONE's root, so every new keyed clone needs its own entry in the reviewer's codex config; measured on `screenreader-worker#2`,
+ * 45 consecutive ticks said `nowhere to go` for 92 minutes before anybody added it. The note is added ONLY when the refusal says it was blocked
+ * during startup AND the config has no trusted entry for the clone, so a refusal for any other reason, and a clone that is trusted, read as before.
+ * THE PRIMARY'S INSTANCE GETS NONE BECAUSE IT HAS NO DECLARED CLONE ({@link reviewCloneOf} refuses key `""`), not because of a check of its own.
+ * The tick does not write the config: it is the reviewer's own authority, and an entry added by a tick is a permission nobody granted.
+ * @param {string} session @param {unknown} err @param {() => string | null} [read] the config's text, a seam for a test
+ * @returns {string} the sentence to append to the refusal, or `""`
+ */
+function codexTrustNote(session, err, read = readCodexConfig) {
+  const instance = reviewerInstance(session);
+  if (instance === null || !/blocked during startup/i.test(herdrReason(err, Number.MAX_SAFE_INTEGER))) return "";
+  const cloned = reviewCloneOf(instance.key);
+  if ("refusal" in cloned) return "";
+  const config = read();
+  if (config !== null && codexTrusts(config, cloned.clone)) return "";
+  return ` -- codex does not trust \`${cloned.clone}\` yet (${config === null ? `${codexConfigPath()} could not be read` : `${codexConfigPath()} has no trusted entry for it`}): add `
+    + `\`[projects."${cloned.clone}"]\` with \`trust_level = "trusted"\` to that file (a worktree resolves trust to the clone's root)`;
 }
 
 /**
  * @typedef {{run: (args: string[]) => string, reviewerEnv?: Record<string, string>, checkout?: CheckoutDeps,
  *   registry?: () => Record<string, {spawnedAt: number}>, registerReviewer?: (session: string) => void,
- *   memory?: () => string | null}} ReviewerDeps
+ *   memory?: () => string | null, codexConfig?: () => string | null}} ReviewerDeps `codexConfig` reads the reviewer's codex config, a seam so a test can hold either answer
  */
 
 /**
@@ -1601,7 +1670,7 @@ function reviewerTarget(order, live, deps) {
   const carried = withReviewCheckout(order, checkout, pr);
   if (!("refusal" in routed)) return { label: routed.label, reviewer: true, order: carried };
   const spawn = spawnReviewer(order, live, { run: deps.run, env: deps.reviewerEnv, cwd: checkout.path,
-    registry: deps.registry?.() });
+    registry: deps.registry?.(), codexConfig: deps.codexConfig });
   if ("refusal" in spawn) return { refusal: `${routed.refusal}; ${spawn.refusal}` };
   // REGISTERED BEFORE THE PROMPT, as the engineer path does: a refused prompt leaves the process running.
   deps.registerReviewer?.(spawn.label);
@@ -4226,7 +4295,7 @@ function recordCapped({ stuck, outaged }, order, already) {
  *   back now, which a spawn must not start into; `claimable` is the spawn's precheck ({@link spawnClaimability});
  *   `claimer` claims the row for a spawn before its pane opens ({@link spawnClaimer}); `memory` is the hold
  *   for a host short of memory, asked before either kind of NEW process (#2508); `launch` is what `addressed`
- *   asks about a standing session's worktree
+ *   asks about a standing session's worktree; `codexConfig` reads the reviewer's codex config for a keyed reviewer's trust note (#3264)
  * @returns {{sent: string[], refused: string[], stuck: string[], outaged: string[]}}
  *   `outaged` (#2685) is `stuck`'s OWN shape -- capped at `MAX_DELIVERIES`, not retried -- for a causeKey work-gate
  *   marked `outageNow`: several of THIS TICK's own reads were refused together, so several causes reaching the cap
@@ -4234,7 +4303,7 @@ function recordCapped({ stuck, outaged }, order, already) {
  */
 export function deliver(orders, agents, roster,
   { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer, memory,
-    launch, reviewerEnv, registerReviewer, checkout, registry, unavailable, sleep, contextRoot } = {}) {
+    launch, reviewerEnv, registerReviewer, checkout, registry, unavailable, sleep, contextRoot, codexConfig } = {}) {
   const sent = [];
   const refused = [];
   /** @type {string[]} */
@@ -4253,7 +4322,7 @@ export function deliver(orders, agents, roster,
       continue;
     }
     const target = targetFor(order, live, roster, { run, spawned, ineligibleReason, env, registerSpawn, drained,
-      claimable, claimer, memory, reviewerEnv, registerReviewer, checkout, registry });
+      claimable, claimer, memory, reviewerEnv, registerReviewer, checkout, registry, codexConfig });
     if ("refusal" in target) {
       refused.push(`${order.causeKey}: ${target.refusal}`);
       continue;
