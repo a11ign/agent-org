@@ -31,7 +31,7 @@ import { homeHostConfig } from "../host-config.mjs";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 
 const RUNNER = fileURLToPath(new URL("../shadow-window.mjs", import.meta.url));
-const REPO_SRC = fileURLToPath(new URL("../../../agent-org/src", import.meta.url));
+const REPO_SRC = fileURLToPath(new URL("..", import.meta.url));
 const MINUTE = 60_000;
 const TICK = 2 * MINUTE;
 const T0 = Date.parse("2026-10-02T12:00:00Z");
@@ -138,23 +138,23 @@ test("the rendered service carries memory and CPU caps, the swap cap that makes 
 
 const DECIDE = "(args) => args.rows.map((r) => ({ causeKey: `row:${r}`, cause: 'ready-row', session: 's', subject: r, discriminator: 'd', prompt: 'p' }))";
 
-type Rig = { root: string; live: string; copy: string; record: string; candidate: string; monorepo: string; stopped: string[] };
+type Rig = { root: string; live: string; copy: string; record: string; candidate: string; tool: string; stopped: string[] };
 
-/** A live state directory, a candidate checkout and a monorepo whose gate closure matches it, and a stub `disableTimer` that records its calls. */
+/** A live state directory, a candidate checkout and a tool whose gate closure matches it, and a stub `disableTimer` that records its calls. */
 function rig(): Rig {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "a11y-shadow-arm-")));
   const live = join(root, "live");
   mkdirSync(join(live, "shadow-reads"), { recursive: true });
   writeFileSync(join(live, "wake-ledger"), "line-1\n");
   const gate = `import { helper } from "./lib/helper.mjs";\nexport const decide = (args) => helper(${DECIDE})(args);\n`;
-  for (const base of [join(root, "candidate"), join(root, "monorepo", "packages", "agent-org")]) {
+  for (const base of [join(root, "candidate"), join(root, "runner")]) {
     mkdirSync(join(base, "src", "lib"), { recursive: true });
     writeFileSync(join(base, "src", "work-gate.mjs"), gate);
     writeFileSync(join(base, "src", "lib", "helper.mjs"), "export const helper = (decide) => decide;\n");
     writeFileSync(join(base, "src", "unrelated.mjs"), "export const x = 1;\n");
   }
   return { root, live, copy: join(root, "copy"), record: join(root, "out", "diff.jsonl"), candidate: join(root, "candidate", "src", "work-gate.mjs"),
-    monorepo: join(root, "monorepo"), stopped: [] };
+    tool: join(root, "runner"), stopped: [] };
 }
 
 function withRig(body: (r: Rig) => void) {
@@ -166,8 +166,8 @@ function withRig(body: (r: Rig) => void) {
   }
 }
 
-const arm = (r: Rig, now = new Date(T0)) => armWindow({ liveDir: r.live, copyDir: r.copy, recordPath: r.record, candidate: r.candidate, monorepoRoot: r.monorepo, now,
-  headOf: (root: string) => (root === r.monorepo ? "mono-sha" : "cand-sha") });
+const arm = (r: Rig, now = new Date(T0)) => armWindow({ liveDir: r.live, copyDir: r.copy, recordPath: r.record, candidate: r.candidate, toolRoot: r.tool, now,
+  headOf: (root: string) => (root === r.tool ? "tool-sha" : "cand-sha") });
 
 const writeTick = (live: string, tickMs: number) => writeFileSync(join(live, "shadow-reads", `${tickMs}.json`),
   JSON.stringify({ tick: tickMs, args: { rows: ["a"] }, orders: [{ causeKey: "row:a", cause: "ready-row", session: "s", subject: "a", discriminator: "d", prompt: "p" }] }));
@@ -183,7 +183,7 @@ const run = (r: Rig, now: Date, extra: { bootId?: string | null; disableTimer?: 
   liveDir: r.live, copyDir: r.copy, recordPath: r.record, candidate: r.candidate, timerUnit: TIMER, now, bootId: "boot-a",
   disableTimer: (unit: string) => void r.stopped.push(unit), ...extra });
 
-test("--arm creates the marker whose content is T0, T-end (1,440 ticks later) and the hard stop (52 hours), naming the candidate and monorepo commits", () => {
+test("--arm creates the marker whose content is T0, T-end (1,440 ticks later) and the hard stop (52 hours), naming the candidate and tool commits", () => {
   withRig((r) => {
     assert.equal(readWindowMarker(r.live), null, "no marker before arming: the window is not open");
     const armed = arm(r);
@@ -192,7 +192,7 @@ test("--arm creates the marker whose content is T0, T-end (1,440 ticks later) an
     assert.equal(armed.tEnd, "2026-10-04T12:00:00.000Z", "1,440 ticks at two minutes is 48 hours");
     assert.equal(armed.hardStop, new Date(T0 + HARD_STOP_MS).toISOString());
     assert.equal(armed.hardStop, "2026-10-04T16:00:00.000Z");
-    assert.deepEqual([armed.candidate.commit, armed.monorepo.commit], ["cand-sha", "mono-sha"], "the pair the arming comment names");
+    assert.deepEqual([armed.candidate.commit, armed.tool.commit], ["cand-sha", "tool-sha"], "the pair the arming comment names");
     assert.deepEqual(readWindowMarker(r.live), { t0: armed.t0, tEnd: armed.tEnd, hardStop: armed.hardStop });
     assert.ok(existsSync(join(r.live, SHADOW_WINDOW_MARKER)));
     assert.equal(readdirSync(r.live).filter((name) => name.endsWith(".tmp")).length, 0, "no temp file is left in the live directory");
@@ -224,7 +224,7 @@ test("--arm is refused when the candidate's closure differs, names the file, and
     assert.doesNotThrow(() => arm(r), "a file OUTSIDE the gate's import closure may differ: the closure is what the freeze covers");
   });
   withRig((r) => {
-    rmSync(join(r.monorepo, "packages", "agent-org", "src", "lib", "helper.mjs"));
+    rmSync(join(r.tool, "src", "lib", "helper.mjs"));
     assert.throws(() => arm(r), /lib\/helper\.mjs/, "a candidate file this checkout lacks is named too");
   });
 });
@@ -453,9 +453,10 @@ test("an ordinary windowed tick leaves the live directory's bytes alone, apart f
 
 // --- 4. the command line ------------------------------------------------------------------------------------------------------------
 
+/** The runner inherits `AGENT_ORG_HOST`: blanking it made the child resolve its project by counting directories up from `src`, which standalone is the home directory (#3098). */
 function cli(r: Rig, ...flags: string[]) {
   return spawnSync(process.execPath, [RUNNER, `--live-dir=${r.live}`, `--copy-dir=${r.copy}`, `--record=${r.record}`, `--candidate=${r.candidate}`, ...flags],
-    { encoding: "utf8", env: { ...process.env, AGENT_ORG_HOST: "" } });
+    { encoding: "utf8" });
 }
 
 test("the command line: a windowed run with no marker says NOT-OPEN and exits 0, and a refused one exits 2 and leaves a refused row", () => {
@@ -500,7 +501,7 @@ test("the command line: --arm over the REAL gate's closure prints T0, T-end, the
     assert.match(armed.stdout, new RegExp(`T0:\\s+${marker.t0}`));
     assert.match(armed.stdout, new RegExp(`T-end:\\s+${marker.tEnd}`));
     assert.match(armed.stdout, /Candidate: [0-9a-f]{40} /);
-    assert.match(armed.stdout, /Monorepo: {2}[0-9a-f]{40} /);
+    assert.match(armed.stdout, /Tool: {6}[0-9a-f]{40} /);
     assert.match(armed.stdout, new RegExp(`Stop:\\s+systemctl --user disable --now ${TIMER}`));
     assert.equal(cli(r, "--arm").status, 2, "armed once");
   });
