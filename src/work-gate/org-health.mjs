@@ -123,7 +123,7 @@ function listedActivityAt(pr) {
  * @returns {{ number: any, reason: string, owner: string | null, lastActivityAt: number | null }[]}
  */
 export function stalledPrFacts(prs, required, { now, run = defaultRun }) {
-  return prs.map((pr) => ({ pr, reason: stallReasonOf(pr, required) }))
+  return prs.map((pr) => ({ pr, reason: stallReasonOf(pr, required, now) }))
     .filter(({ reason }) => !REASONS_THAT_ARE_NOT_A_STALL.includes(reason))
     .map(({ pr, reason }) => {
       const owner = ownerOfPr(pr);

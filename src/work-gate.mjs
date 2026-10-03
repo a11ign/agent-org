@@ -5102,7 +5102,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   orders.push(...reviewBlockedOrders(reviewBlocked(prs, required)));
   // #2209: a conflicting PR is in no other cause's population, so it is told to its author here; a drain keeps it.
   // #2968: FED BY THE TOTAL CLASSIFIER, NOT BY "GREEN AND UNHELD": #2950, a conflicted draft, sat 7.5 h unheard.
-  orders.push(...stalledPrOrders(prs, { required, reasons: STALL_REASONS_WITHOUT_A_CAUSE }));
+  orders.push(...stalledPrOrders(prs, { required, reasons: STALL_REASONS_WITHOUT_A_CAUSE, nowMs }));
   orders.push(...pipelineCodeownerReviewOrders(pipelineCodeownerReviewMissing(prs, prFiles))); // #1959: beside the two above
 
   // #2174: AFTER the per-PR and per-row causes and BEFORE the chairman's, for `pr-green-unarmed`'s

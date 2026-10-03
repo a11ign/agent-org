@@ -506,6 +506,7 @@ test("pr-not-progressing: THE POPULATION IS THE CLASSIFIER'S -- every reason but
     [STALL_REASON.AWAITING_REVIEW]: { ...base, reviewDecision: "REVIEW_REQUIRED" },
     [STALL_REASON.EJECTED]: { ...base, armed: false, ejection: { removedAt: "2026-10-02T13:15:05Z", runId: 1, failingTests: null } },
     [STALL_REASON.UNARMED]: { ...base, armed: false },
+    [STALL_REASON.HUNG_CHECK]: { ...base, statusCheckRollup: [{ name: "gate", status: "IN_PROGRESS", conclusion: "", startedAt: iso(NOW - 2 * HOUR_MS) }] },
     [STALL_REASON.PROGRESSING]: { ...base, statusCheckRollup: [] },
     [STALL_REASON.HELD_ON_PURPOSE]: { ...base, labels: label("hold:ceo") },
   };
