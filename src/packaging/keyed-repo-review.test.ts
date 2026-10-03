@@ -17,6 +17,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { homeProjectDeclaration } from "../project-config.mjs";
 import { scopesOf, readLanes, scopeTick } from "../work-gate.mjs";
 import { ownerOfPr } from "../work-gate/pr-orders.mjs";
@@ -179,14 +182,79 @@ test("(2) the checkout is fetched from the DECLARED CLONE into a keyed ref, neve
   assert.deepEqual(none.calls, [], "nothing is fetched for the wrong repository");
 });
 
-test("(2) a keyed tree links no `packages/`: a clone with no `node_modules` needs nothing, one with it is linked plainly", () => {
+/** The filesystem `linkKeyedDependencies` reads, as a map of file contents and a list of directories; `made` records every symlink. */
+function keyedFs(files: Record<string, string>, dirs: string[]) {
   const made: string[] = [];
-  const fs = (modules: string[] | null) => ({ existsSync: () => modules !== null, mkdirSync: () => undefined, readdirSync: () => modules ?? [],
-    lstatSync: () => undefined, readlinkSync: () => "", symlinkSync: (target: string, link: string) => { made.push(`${link} -> ${target}`); }, rmSync: () => undefined });
-  assert.equal(linkKeyedDependencies({ path: "/t", repoRoot: "/c", fs: fs(null) as never }), null);
-  assert.deepEqual(made, [], "nothing to link");
-  assert.equal(linkKeyedDependencies({ path: "/t", repoRoot: "/c", fs: fs(["left-pad", ".cache", ".bin"]) as never }), null);
-  assert.deepEqual(made, ["/t/node_modules/left-pad -> /c/node_modules/left-pad", "/t/node_modules/.bin -> /c/node_modules/.bin"], "`.cache` is skipped, as it is for the primary");
+  const entriesOf = (dir: string) => dirs.filter((d) => d.startsWith(`${dir}/`) && !d.slice(dir.length + 1).includes("/")).map((d) => d.slice(dir.length + 1));
+  const fs = { existsSync: (p: string) => p in files || dirs.includes(p), readFileSync: (p: string) => files[p], mkdirSync: () => undefined,
+    readdirSync: (p: string) => entriesOf(p), lstatSync: () => undefined, readlinkSync: () => "",
+    symlinkSync: (target: string, link: string) => { made.push(`${link} -> ${target}`); }, rmSync: () => undefined };
+  return { fs: fs as never, made };
+}
+const manifest = (extra: Record<string, unknown>) => ({ "/t/package.json": JSON.stringify({ name: "agent-org", ...extra }) });
+const CI_PINS = { tsx: "^4.22.4", yaml: "^2.9.0", typescript: "^6.0.3" };
+
+test("(2) a keyed tree links no `packages/`: a clone with every declared dependency is linked plainly, as before", () => {
+  const { fs, made } = keyedFs(manifest({ devDependencies: CI_PINS }), ["/c/node_modules", "/c/node_modules/tsx", "/c/node_modules/yaml",
+    "/c/node_modules/typescript", "/c/node_modules/.cache", "/c/node_modules/.bin"]);
+  assert.equal(linkKeyedDependencies({ path: "/t", repoRoot: "/c", fs }), null);
+  assert.deepEqual(made, ["/t/node_modules/tsx -> /c/node_modules/tsx", "/t/node_modules/yaml -> /c/node_modules/yaml",
+    "/t/node_modules/typescript -> /c/node_modules/typescript", "/t/node_modules/.bin -> /c/node_modules/.bin"], "`.cache` is skipped, as it is for the primary");
+});
+
+test("(2) a repository that declares nothing still yields a tree: no `node_modules` and no manifest, or a manifest with only peers, need nothing", () => {
+  for (const files of [{}, manifest({}), manifest({ peerDependencies: { typescript: "^6.0.3" } })]) {
+    const { fs, made } = keyedFs(files, []);
+    assert.equal(linkKeyedDependencies({ path: "/t", repoRoot: "/c", fs }), null);
+    assert.deepEqual(made, [], "nothing to link");
+  }
+  // POSITIVE CONTROL for the refusals below: the SAME clone with a declaration is not a tree, so the three cases above are not vacuous.
+  assert.match(String(linkKeyedDependencies({ path: "/t", repoRoot: "/c", fs: keyedFs(manifest({ dependencies: { yaml: "^2.9.0" } }), []).fs })), /yaml/);
+});
+
+test("(2) a declared dependency missing from the clone's `node_modules` is a REFUSAL naming it and the command that supplies it, not `null`", () => {
+  // The #3110 clone: the manifest declares three packages and the clone holds one of them.
+  const partial = keyedFs(manifest({ devDependencies: CI_PINS }), ["/c/node_modules", "/c/node_modules/typescript"]);
+  const reason = String(linkKeyedDependencies({ path: "/t", repoRoot: "/c", fs: partial.fs }));
+  assert.match(reason, /`tsx` and `yaml`/, "names what is missing");
+  assert.doesNotMatch(reason, /`typescript`/, "and only what is missing");
+  assert.match(reason, /cd \/c && npm install --no-save --no-package-lock "tsx@\^4\.22\.4" "yaml@\^2\.9\.0"/, "and the command, at the versions the manifest declares");
+  assert.deepEqual(partial.made, [], "nothing is linked into a tree that cannot run");
+  // No `node_modules` at all is the same refusal -- the exact shape that killed agent-org#86's reviewer on `tsx`.
+  const none = keyedFs(manifest({ devDependencies: CI_PINS }), []);
+  assert.match(String(linkKeyedDependencies({ path: "/t", repoRoot: "/c", fs: none.fs })), /`tsx`, `yaml` and `typescript`/);
+  // A scoped package is looked for under its scope, and `dependencies` are read as well as `devDependencies`.
+  const scoped = keyedFs(manifest({ dependencies: { "@a/b": "^1.0.0" } }), ["/c/node_modules", "/c/node_modules/@a"]);
+  assert.match(String(linkKeyedDependencies({ path: "/t", repoRoot: "/c", fs: scoped.fs })), /`@a\/b`/);
+  // A manifest that cannot be read is not "declares nothing".
+  const broken = keyedFs({ "/t/package.json": "{ not json" }, ["/c/node_modules"]);
+  assert.match(String(linkKeyedDependencies({ path: "/t", repoRoot: "/c", fs: broken.fs })), /\/t\/package\.json cannot be read as a manifest/);
+});
+
+test("(2) `prepareReviewCheckout` hands a keyed reviewer no tree when the clone lacks a dependency the pull request's head declares", () => {
+  const dir = mkdtempSync(join(tmpdir(), "keyed-deps-"));
+  try {
+    const clone = join(dir, "clone");
+    mkdirSync(join(clone, "node_modules", "yaml"), { recursive: true });
+    const base = fakeGit();
+    // The tree's own manifest is the PULL REQUEST HEAD's: `worktree add` is where it appears, as it would in a real checkout.
+    const git = (cmd: string, args: string[]) => {
+      if (args.join(" ").includes("worktree add")) {
+        mkdirSync(args[args.length - 2], { recursive: true });
+        writeFileSync(join(args[args.length - 2], "package.json"), JSON.stringify({ devDependencies: { yaml: "^2.9.0", tsx: "^4.22.4" } }));
+      }
+      return base.seams.git(cmd, args);
+    };
+    const refused = prepareReviewCheckout({ pr: 6, session: SESSION, ...base.seams, git, root: join(dir, "reviews"), repoRoot: clone, link: undefined });
+    assert.match(String((refused as { refusal: string }).refusal), /no review dependencies for PR #6 .*`tsx`/);
+    // POSITIVE CONTROL: with `tsx` present the same call yields a tree, so the refusal above was the missing package and nothing else.
+    mkdirSync(join(clone, "node_modules", "tsx"));
+    base.trees.clear();
+    const made = prepareReviewCheckout({ pr: 6, session: SESSION, ...base.seams, git, root: join(dir, "reviews"), repoRoot: clone, link: undefined });
+    assert.deepEqual(made, { path: join(dir, "reviews", SESSION), head: HEAD });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("#2991: a live KEYED reviewer is re-pointed to the pull request's current head, from the clone into the keyed ref", () => {
