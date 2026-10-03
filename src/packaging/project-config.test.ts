@@ -10,24 +10,28 @@
  *      of a VALID base, so it is shown to fail for the named field and not an unrelated one, and the unmutated base is shown to
  *      pass (the positive control: a base that was itself invalid would make every refusal below true for the wrong reason).
  *
- * The count of non-test files under `packages/agent-org/src` that still carry the repository's name literally is recorded
- * and asserted NOT to grow: each is a surface a later row of #69 moves, and a new one is a surface it must move too.
+ * The non-test files of the tool's `src` that still carry the repository's name literally are a RATCHET against the base the change merges
+ * into (#3232, `lib/pin-ratchet.mjs`): each is a surface a later row of #69 moves, so a file this change ADDS to them must be declared with
+ * its reason, and a file that stops carrying it passes. Claims 1 and the constants test read a FIXTURE declaration, never the live one, which
+ * gains a repository whenever the project does (a11ign#2990 landed between one pull request's green run and its queue run).
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import {
   HOME_CHECKOUT,
+  HOST_ENV,
   PROJECT_DECLARATION_PATH,
   ProjectDeclarationRefusal,
   SUPPORTED_SCHEMA,
   parseProjectDeclaration,
   readProjectDeclaration,
 } from "../project-config.mjs";
-import { REPO } from "../project-identity.mjs";
-import { PROJECT_NUMBER, PROJECT_OWNER } from "../board-snapshot-scope.mjs";
+import { judgePin, type Declaration } from "../lib/pin-ratchet.mjs";
+import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 
 const A11IGN_LITERAL = "a11ign/a11ign";
 
@@ -67,26 +71,50 @@ function assertRefusedFor(text: string, field: string): void {
   assert.ok(refusal.message.includes(`\`${field}\``), `the message must name the field: ${refusal.message}`);
 }
 
-test("a11ign's own declaration, read through the reader, gives exactly today's values", () => {
-  const declaration = readProjectDeclaration(HOME_CHECKOUT);
-  assert.equal(declaration.schema, SUPPORTED_SCHEMA);
-  assert.equal(declaration.repo, A11IGN_LITERAL);
-  assert.equal(declaration.boardOwner, "a11ign");
-  assert.equal(declaration.boardNumber, 1);
-  // #2969: the second is a repository the gate must read. #2701's `screenreader-worker` may follow it, and either state is accepted: the tool's
-  // suite runs against whatever declaration the project has on the day, so a test that wanted one would redden the other repository's merge.
-  assert.deepEqual(declaration.code.slice(0, 2), [{ key: "", repo: A11IGN_LITERAL }, { key: "agent-org", repo: "a11ign/agent-org" }]);
-  assert.deepEqual(declaration.code.slice(2), declaration.code.length > 2 ? [{ key: "screenreader-worker", repo: "a11ign/screenreader-worker" }] : []);
-  assert.deepEqual(declaration.tracker, [{ key: "", repo: A11IGN_LITERAL, board: { owner: "a11ign", number: 1 } }]);
+/** A declaration shaped like a11ign's (two code repositories, one tracker with a board) and owned by this file, so no other repository's change can move it. */
+const A11IGN_SHAPED = {
+  schema: 1,
+  tracker: [{ key: "", repo: A11IGN_LITERAL, board: { owner: "a11ign", number: 1 } }],
+  code: [{ key: "", repo: A11IGN_LITERAL }, { key: "agent-org", repo: "a11ign/agent-org" }],
+};
+
+/** A project directory holding `declaration` and a host file naming it primary: the one way a process is told which project it serves. */
+function withFixtureProject<T>(declaration: unknown, run: (project: { dir: string; hostPath: string }) => T): T {
+  const dir = mkdtempSync(join(tmpdir(), "project-config-fixture-"));
+  try {
+    mkdirSync(join(dir, ".agent-org"));
+    writeFileSync(join(dir, PROJECT_DECLARATION_PATH), JSON.stringify(declaration));
+    const hostPath = join(dir, ".agent-org/host.json");
+    writeFileSync(hostPath, JSON.stringify({ primary: "fixture", projects: [{ id: "fixture", checkout: dir }] }));
+    return run({ dir, hostPath });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("a declaration shaped like a11ign's, read through the reader, gives exactly its values", () => {
+  withFixtureProject(A11IGN_SHAPED, ({ dir }) => {
+    const declaration = readProjectDeclaration(dir);
+    assert.equal(declaration.schema, SUPPORTED_SCHEMA);
+    assert.equal(declaration.repo, A11IGN_LITERAL);
+    assert.equal(declaration.boardOwner, "a11ign");
+    assert.equal(declaration.boardNumber, 1);
+    assert.deepEqual(declaration.code, A11IGN_SHAPED.code);
+    assert.deepEqual(declaration.tracker, A11IGN_SHAPED.tracker);
+  });
 });
 
-test("the constants every importer reads are the declaration's values, and the same as before the seam", () => {
-  const declaration = readProjectDeclaration(HOME_CHECKOUT);
-  assert.equal(REPO, A11IGN_LITERAL);
-  assert.equal(PROJECT_OWNER, "a11ign");
-  assert.equal(PROJECT_NUMBER, 1);
-  assert.equal(declaration.tracker.length, 1);
-  assert.ok([2, 3].includes(declaration.code.length), "the primary's repository, `agent-org` (#2969), and perhaps `screenreader-worker` (#2701)");
+test("the constants every importer reads are the declaration's values, read at import from the project the host file names", () => {
+  withFixtureProject(SECOND_PROJECT, ({ hostPath }) => {
+    // A child process, because the constants are read ONCE at import from the process's own project: a different project is a different process.
+    const read = spawnSync(process.execPath, ["--input-type=module", "-e",
+      `const { REPO } = await import(${JSON.stringify(new URL("../project-identity.mjs", import.meta.url).href)});`
+      + `const { PROJECT_OWNER, PROJECT_NUMBER } = await import(${JSON.stringify(new URL("../board-snapshot-scope.mjs", import.meta.url).href)});`
+      + "console.log(JSON.stringify({ REPO, PROJECT_OWNER, PROJECT_NUMBER }));"],
+    { encoding: "utf8", env: { ...process.env, [HOST_ENV]: hostPath } });
+    assert.equal(read.status, 0, read.stderr);
+    assert.deepEqual(JSON.parse(read.stdout), { REPO: "acme-corp/widgets", PROJECT_OWNER: "acme-corp", PROJECT_NUMBER: 7 });
+  });
 });
 
 test("POSITIVE CONTROL: a11ign's declaration is non-empty and holds the empty key exactly once in each list", () => {
@@ -228,10 +256,10 @@ function namesTheRepository(text: string): boolean {
 }
 
 /**
- * The non-test files under `packages/agent-org/src` that carry the repository's name literally. A directory walk rather than
+ * The non-test files under `srcDir` that carry the repository's name literally, as paths relative to it. A directory walk rather than
  * `git ls-files`, so the test spawns nothing and counts a file added in this very change before it is tracked.
  */
-function filesCarryingTheLiteral(): string[] {
+function filesCarryingTheLiteral(srcDir: string): string[] {
   const found: string[] = [];
   const walk = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -239,30 +267,28 @@ function filesCarryingTheLiteral(): string[] {
       if (entry.isDirectory()) {
         if (!NOT_THE_TOOL_DIRECTORIES.includes(entry.name)) walk(path);
       } else if (!/\.test\./.test(entry.name) && namesTheRepository(readFileSync(path, "utf8"))) {
-        found.push(relative(HOME_CHECKOUT, path));
+        found.push(relative(srcDir, path));
       }
     }
   };
-  walk(join(HOME_CHECKOUT, "packages/agent-org/src"));
+  walk(srcDir);
   return found.sort();
 }
 
-/** Measured 2026-09-26 at `d4da35a52` plus this change: 3. Each is a surface a later row of #69 moves (3f: units; 3e: the verdict script). */
-const RECORDED_CARRIERS = [
-  "packages/agent-org/src/host-units.mjs",
-  "packages/agent-org/src/org-watch.mjs",
-  "packages/agent-org/src/reviewer/pr-review-verdict.sh",
+/** Each is a surface a later row of #69 moves (3f: units; 3e: the verdict script). A file that joins them is declared HERE, beside its reason. */
+const DECLARED_CARRIERS: Declaration[] = [
+  { name: "host-units.mjs", reason: "the units' own templates name the repository; row 3f of #69 moves them" },
+  { name: "org-watch.mjs", reason: "a later row of #69 moves it" },
+  { name: "reviewer/pr-review-verdict.sh", reason: "the verdict script; row 3e of #69 moves it" },
 ];
 
-test("the count of non-test files in packages/agent-org/src carrying the literal is recorded and does NOT grow", () => {
-  const carriers = filesCarryingTheLiteral();
-  // Positive control: the scan finds what is known to be there, so an empty answer cannot pass for "none grew".
+test("a file that newly carries the literal is DECLARED with a reason, against the base this change merges into", () => {
+  const carriers = filesCarryingTheLiteral(join(TOOL_ROOT, "src"));
+  // Positive control: the scan finds what is known to be there, so an empty answer cannot pass for "none was added".
   assert.ok(carriers.length > 0, "the scan found nothing: it is reading the wrong tree");
-  assert.deepEqual(
-    carriers.filter((file) => !RECORDED_CARRIERS.includes(file)),
-    [],
-    "a NEW file carries the repository's name: read it from the declaration instead (#2616)",
-  );
-  assert.ok(carriers.length <= RECORDED_CARRIERS.length, `${carriers.length} > ${RECORDED_CARRIERS.length}`);
-  assert.deepEqual(carriers, RECORDED_CARRIERS, "one moved: shrink RECORDED_CARRIERS with it, so the ceiling follows the count down");
+  const { undeclared, judged } = judgePin({
+    repo: TOOL_ROOT, paths: ["src"], scan: (root) => filesCarryingTheLiteral(join(root, "src")), current: carriers, declared: DECLARED_CARRIERS,
+  });
+  assert.deepEqual(undeclared, [], `a file carries the repository's name that no declaration covers (judged ${judged}): read it from the declaration instead (#2616), `
+    + "or declare it in DECLARED_CARRIERS with the reason it must name the repository");
 });

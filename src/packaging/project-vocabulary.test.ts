@@ -7,12 +7,13 @@
  *   1. a11ign's declaration, read through the reader, gives EXACTLY today's values for every label,
  *      milestone, lane/session/answer prefix, template field, the `Fleet` question and every shared-resource
  *      pattern -- one assertion per constant, including each of the row's own nine labels.
- *   2. a walk of `packages/agent-org/src` finds NO quoted status word, `lane:`/`session:`/`answer:` prefix
+ *   2. a walk of the tool's `src` finds NO quoted status word, `lane:`/`session:`/`answer:` prefix
  *      or milestone title as a real CODE literal outside the vocabulary module -- the ratchet ADR 0040
  *      measured at 43 files and this row promised to end at 0. Comments are stripped first, this repo's own
  *      convention (`local-import-closure.mjs`'s `stripComments`): a comment MENTIONING a word is not the
- *      same defect as CODE reading it. A handful of exact, counted, reasoned collisions remain and are
- *      named below, never silently absorbed.
+ *      same defect as CODE reading it. The collisions that are not vocabulary are declared below with
+ *      their reasons, and since #3232 the invariant is judged against the base the change merges into:
+ *      a hit this change ADDS must be declared, and one it removes passes (`lib/pin-ratchet.mjs`).
  *   3. a SECOND project's vocabulary, run through the same reader, changes what `row-file.mjs` refuses (a
  *      milestone it does not have, a label outside its set), what `row-claim/runner-rule.mjs`'s lane rule
  *      reads, and, with an empty `resources` list, what `acceptance-commands.mjs` would let an Acceptance
@@ -33,6 +34,8 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { stripComments } from "../lib/local-import-closure.mjs";
+import { judgePin, type Declaration } from "../lib/pin-ratchet.mjs";
+import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 import {
   ACCEPTANCE_FIELD, ANSWER_PREFIX, BACKLOG_LABEL, BLOCKED_LABEL, CLAIM_LABEL, CLOSES_FIELD, FLEET_FIELD,
   FLEET_QUESTION, LANES_FILE_PATH, LANE_ANY_LABEL, LANE_PREFIX, NEEDS_CHAIRMAN_LABEL, OUT_OF_RELEASE_LABEL,
@@ -142,41 +145,45 @@ test("POSITIVE CONTROL: a comment MENTIONING a vocabulary word is not a CODE hit
   }
 });
 
+/** One entry per DISTINCT literal per file, named `<file relative to src> <literal>`: a repeat of a declared literal in the same file is the same finding. */
+const hitName = (file: string, literal: string): string => `${file} ${literal}`;
+
+const nonVocabulary = (file: string, literals: string[], reason: string): Declaration[] =>
+  literals.map((literal) => ({ name: hitName(file, literal), reason }));
+
 /**
- * Real collisions with the scan pattern that are NOT this project's vocabulary -- named here, not silently
- * absorbed, the same shape `project-config.test.ts`'s `RECORDED_CARRIERS` takes for surface 1. Each count is
- * EXACT, so a NEW collision is caught the moment it lands and an old one's removal is caught too (shrink the
- * count with it, so the ceiling follows it down).
+ * Real collisions with the scan pattern that are NOT this project's vocabulary -- named here with their reasons, never silently absorbed. They
+ * are a RATCHET since #3232 (the same shape `project-config.test.ts`'s `DECLARED_CARRIERS` takes): a hit a change ADDS must be declared on
+ * its own entry, so two changes that each add one are each judged against their own base, and a hit that goes away needs nothing edited.
  */
-const KNOWN_NON_VOCABULARY_HITS: Record<string, number> = {
-  // `messaging/sources/requests.mjs` (1: `needs:chairman`) and `summary.mjs` (3: `ready`, `in-progress`, `needs:chairman`): these ARE vocabulary
-  // labels, listed for the claim-labels reason below. Both sources are declared LEAF modules (they import nothing from the tool, so the
-  // messenger runs where the tool's declaration is not read), so they keep their own copy, and the test "the messaging sources' label
-  // literals equal the vocabulary's" pins each value equal to the vocabulary's, which is what stops the copy drifting.
-  "packages/agent-org/src/messaging/sources/requests.mjs": 1,
-  "packages/agent-org/src/messaging/sources/summary.mjs": 3,
-  // The four claim-lifecycle labels: `claim-labels.mjs` is a pinned, import-free LEAF (#804,
-  // `ready-label-audit.test.ts`) -- the one file this row does NOT move them out of. See this file's own
-  // header and `project-vocabulary.mjs`'s header for why: moving them would either break that leaf's
-  // no-import contract or state the same four facts twice, and `project-vocabulary.mjs` imports them from
-  // here instead (assertion 1, above, pins the values equal).
-  "packages/agent-org/src/claim-labels.mjs": 4,
-  // `claim-stall.mjs`'s own `why: "stalled" | "blocked" | "merged"` release-reading enum: a native
-  // `blockedBy` GRAPH EDGE outcome (`blockedReading`), never the `blocked` GitHub LABEL -- the same word,
-  // an unrelated fact this module invented for its own return type.
-  "packages/agent-org/src/claim-stall.mjs": 2,
-  // `wake.mjs`: an agent's own `herdr` STATUS (`blockedSessions`, unrelated to the `blocked` label) and
-  // `claim-stall.mjs`'s `why: "blocked"` consumed here (`releaseHeadline`) -- both the same non-vocabulary
-  // fact as above; plus prose that happens to start a string segment with the English word "answer:"
-  // (`REFUSED_CLAIM_IS_AN_ANSWER`: "...that is an answer: report it and stop...").
-  "packages/agent-org/src/wake.mjs": 3,
-  // `work-gate.mjs`: the same `herdr` STATUS mentioned in a report string, and `run(["pr", "ready", ...])`
-  // -- GitHub's own `gh pr ready` CLI verb, not the row `ready` label.
-  "packages/agent-org/src/work-gate.mjs": 2,
-  // `work-gate/pr-orders.mjs`: `{ kind: "ready", ... }` is the action kind for `gh pr ready` (GitHub's own
-  // draft -> ready-for-review CLI verb), not the row `ready` label.
-  "packages/agent-org/src/work-gate/pr-orders.mjs": 1,
-};
+const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
+  // `messaging/sources/requests.mjs` and `summary.mjs`: these ARE vocabulary labels, listed for the claim-labels reason below. Both sources are
+  // declared LEAF modules (they import nothing from the tool, so the messenger runs where the tool's declaration is not read), so they keep their
+  // own copy, and the test "the messaging sources' label literals equal the vocabulary's" pins each value equal to the vocabulary's, which is what
+  // stops the copy drifting.
+  ...nonVocabulary("messaging/sources/requests.mjs", ['"needs:chairman"'], "a leaf module's own copy of a vocabulary label, pinned equal to it below"),
+  ...nonVocabulary("messaging/sources/summary.mjs", ['"ready"', '"in-progress"', '"needs:chairman"'], "a leaf module's own copy of vocabulary labels, pinned equal to them below"),
+  // The four claim-lifecycle labels: `claim-labels.mjs` is a pinned, import-free LEAF (#804, `ready-label-audit.test.ts`) -- the one file this row
+  // does NOT move them out of. See this file's own header and `project-vocabulary.mjs`'s header for why: moving them would either break that
+  // leaf's no-import contract or state the same four facts twice, and `project-vocabulary.mjs` imports them from here instead (assertion 1, above,
+  // pins the values equal).
+  ...nonVocabulary("claim-labels.mjs", ['"ready"', '"was-ready"', '"in-progress"', '"started"'], "the import-free leaf the claim-lifecycle labels are defined in (#804)"),
+  // `claim-stall.mjs`'s own `why: "stalled" | "blocked" | "merged"` release-reading enum: a native `blockedBy` GRAPH EDGE outcome (`blockedReading`),
+  // never the `blocked` GitHub LABEL -- the same word, an unrelated fact this module invented for its own return type.
+  ...nonVocabulary("claim-stall.mjs", ['"blocked"'], "its own `why` enum: a `blockedBy` graph-edge outcome, never the `blocked` label"),
+  // `wake.mjs`: an agent's own `herdr` STATUS (`blockedSessions`, unrelated to the `blocked` label) and `claim-stall.mjs`'s `why: "blocked"`
+  // consumed here (`releaseHeadline`) -- both the same non-vocabulary fact as above; plus prose that happens to start a string segment with the
+  // English word "answer:" (`REFUSED_CLAIM_IS_AN_ANSWER`: "...that is an answer: report it and stop...").
+  ...nonVocabulary("wake.mjs", ['"blocked"'], "an agent's `herdr` status, and `claim-stall.mjs`'s `why: \"blocked\"` consumed (`releaseHeadline`)"),
+  ...nonVocabulary("wake.mjs", ['"answer:'], "prose that starts a string segment with the English word (`REFUSED_CLAIM_IS_AN_ANSWER`)"),
+  // `work-gate.mjs`: the same `herdr` STATUS mentioned in a report string, and `run(["pr", "ready", ...])` -- GitHub's own `gh pr ready` CLI verb,
+  // not the row `ready` label.
+  ...nonVocabulary("work-gate.mjs", ["`blocked`"], "the `herdr` status mentioned in a report string"),
+  ...nonVocabulary("work-gate.mjs", ['"ready"'], "GitHub's own `gh pr ready` CLI verb, not the row `ready` label"),
+  // `work-gate/pr-orders.mjs`: `{ kind: "ready", ... }` is the action kind for `gh pr ready` (GitHub's own draft -> ready-for-review CLI verb),
+  // not the row `ready` label.
+  ...nonVocabulary("work-gate/pr-orders.mjs", ['"ready"'], "the action kind for `gh pr ready`, GitHub's own verb"),
+];
 
 test("the messaging sources' label literals equal the vocabulary's", () => {
   assert.equal(NEEDS_CHAIRMAN, NEEDS_CHAIRMAN_LABEL);
@@ -192,23 +199,23 @@ test("the messaging sources' label literals equal the vocabulary's", () => {
  */
 const WALK_SKIPS = new Set(["project-vocabulary.mjs", "prefix-pins.mjs"]);
 
-test("#2619 ACCEPTANCE, MUTATION TARGET: a walk of packages/agent-org/src finds no vocabulary literal in "
-  + "CODE outside project-vocabulary.mjs and the exact, reasoned exceptions above", () => {
-  const found = walkForVocabularyHits(join(HOME_CHECKOUT, "packages/agent-org/src"), WALK_SKIPS);
-  const byRelativePath: Record<string, string[]> = {};
-  for (const [path, hits] of Object.entries(found)) byRelativePath[relative(HOME_CHECKOUT, path)] = hits;
+/** Every distinct (file, literal) the walk of `srcDir` finds, named relative to it. */
+function vocabularyEntries(srcDir: string): string[] {
+  const found = walkForVocabularyHits(srcDir, WALK_SKIPS);
+  return Object.entries(found).flatMap(([path, hits]) => [...new Set(hits)].map((hit) => hitName(relative(srcDir, path), hit))).sort();
+}
 
-  const unexpected = Object.fromEntries(Object.entries(byRelativePath)
-    .filter(([file, hits]) => hits.length !== (KNOWN_NON_VOCABULARY_HITS[file] ?? 0)));
-  assert.deepEqual(unexpected, {},
-    "a file carries a vocabulary literal in code this test does not expect -- read it from the vocabulary "
-    + "module, or add it to KNOWN_NON_VOCABULARY_HITS with the reason it is not vocabulary");
-
-  // The complement: every DECLARED exception must still be there, so a fixed one is caught by hand rather
-  // than the ceiling quietly drifting into slack (the same reciprocal check `RECORDED_CARRIERS` makes).
-  for (const [file, count] of Object.entries(KNOWN_NON_VOCABULARY_HITS)) {
-    assert.equal((byRelativePath[file] ?? []).length, count, `${file}: expected exactly ${count} known non-vocabulary hit(s)`);
-  }
+test("#2619 ACCEPTANCE, MUTATION TARGET: a walk of the tool's src finds no vocabulary literal in "
+  + "CODE outside project-vocabulary.mjs that this change ADDED without a declaration above", () => {
+  const current = vocabularyEntries(join(TOOL_ROOT, "src"));
+  // Positive control: the walk finds the declared leaf copies, so an empty answer cannot pass for "none was added".
+  assert.ok(current.includes(hitName("claim-labels.mjs", '"ready"')), "the walk did not find the claim-labels leaf: it is reading the wrong tree");
+  const { undeclared, judged } = judgePin({
+    repo: TOOL_ROOT, paths: ["src"], scan: (root) => vocabularyEntries(join(root, "src")), current, declared: DECLARED_NON_VOCABULARY_HITS,
+  });
+  assert.deepEqual(undeclared, [],
+    `a file carries a vocabulary literal in code that no declaration covers (judged ${judged}) -- read it from the vocabulary `
+    + "module, or add it to DECLARED_NON_VOCABULARY_HITS with the reason it is not vocabulary");
 });
 
 // --- 3. a SECOND project's vocabulary changes what row-file refuses, what the lane rule reads, and what an Acceptance may run ---
