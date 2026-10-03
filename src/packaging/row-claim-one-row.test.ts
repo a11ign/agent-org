@@ -165,13 +165,17 @@ function claimProcess(session: string, { registry = null, held = [] }: { registr
 
 // The writer is a separate process that keeps creating files under the fixture's `.git` for a while, which is the shape
 // of the detached maintenance child without depending on git's threshold. WITHOUT the whole-removal retry the bare `rmSync` throws ENOTEMPTY.
+// (#3256) The sub-directory is made WITHOUT `recursive`, which would re-create `objects`, `.git`, `checkout` and the fixture itself after
+// the removal under test had finished (the same defect #3233 fixed in wake-drain.test.ts), so the control failed when the machine was busy.
 const GIT_WRITER = `
   const { writeFileSync, mkdirSync } = require("node:fs");
   const dir = process.argv[1];
   const until = Date.now() + 600;
   for (let i = 0; Date.now() < until; i++) {
-    try { mkdirSync(dir + "/d" + (i % 7), { recursive: true }); writeFileSync(dir + "/d" + (i % 7) + "/w" + i, "x"); }
-    catch (error) { process.exit(0); }
+    try {
+      try { mkdirSync(dir + "/d" + (i % 7)); } catch (error) { if (error.code !== "EEXIST") throw error; }
+      writeFileSync(dir + "/d" + (i % 7) + "/w" + i, "x");
+    } catch (error) { process.exit(0); }
   }
 `;
 
