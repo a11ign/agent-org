@@ -476,7 +476,9 @@ const FENCE_LINE = /^\s*(?:```|~~~)/;
 // #2617: AN ITEM MAY NAME ANOTHER REPOSITORY OF THE PROJECT, `nvda-worker:src/x.ts` -- the prefix is that repository's declared KEY (ADR
 // 0040, decision 2; `project-config.mjs`'s `code[].key`). A bare path is the project's FIRST repository's, so every Region written before
 // this row reads exactly as it did. The prefixed form needs a `/` or a `.` after the colon, so a fenced line like `npm:test` is not a path.
-const FENCED_PATH_ITEM = /^(?:[-*+]\s+)?`?((?:[a-z0-9][a-z0-9-]*:(?=[^:]*[/.])[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*|[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+))`?$/;
+// #3149: A TRAILING PARENTHETICAL IS A NOTE, NOT PART OF THE PATH -- `agent-org:src/x.test.ts (new)` is what #3134 was filed with, and the template
+// says nothing against it. Read whole or not at all: `(new)` after the path, nothing else, so a line that is prose still declares nothing.
+const FENCED_PATH_ITEM = /^(?:[-*+]\s+)?`?((?:[a-z0-9][a-z0-9-]*:(?=[^:]*[/.])[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*|[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+))`?(?:\s+\([^()]*\))?$/;
 
 /**
  * Every path declared by a line inside a fenced block of `section`. Lines outside a fence are left to the
