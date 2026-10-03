@@ -33,7 +33,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { readFileSync, writeFileSync, mkdirSync, realpathSync, existsSync, readdirSync, openSync, readSync, closeSync,
   fstatSync, lstatSync, readlinkSync, symlinkSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 // RELATIVE, not the package specifier -- this must run before any `pnpm install`/build, the same constraint
 // `work-gate.mjs` and `org-watch.mjs` state at their own imports.
@@ -1254,6 +1254,72 @@ function relink(fs, target, link) {
   fs.symlinkSync(target, link);
 }
 
+/** How many links {@link pointsIntoPackages} follows: a review tree's link to the primary's link to its `packages/` is two. */
+const LINK_HOPS = 4;
+
+/** Where the symlink `link` points, absolute (`readlink` is relative to the link's own directory, and the primary's workspace links are); `null` when it is not one. */
+function linkTarget(fs, link) {
+  const found = fs.lstatSync(link, { throwIfNoEntry: false });
+  return found?.isSymbolicLink() ? resolve(dirname(link), fs.readlinkSync(link)) : null;
+}
+
+/** Does `link` lead, by symlinks alone, into one of `packagesDirs`: a workspace package rather than a third-party dependency? */
+function pointsIntoPackages(fs, link, packagesDirs) {
+  let at = link;
+  for (let hop = 0; hop < LINK_HOPS; hop++) {
+    const target = linkTarget(fs, at);
+    if (target === null) return false;
+    if (packagesDirs.some((dir) => target.startsWith(`${dir}/`))) return true;
+    at = target;
+  }
+  return false;
+}
+
+/** npm's name rule, narrowed to what a review tree may link: `a11ign`-scoped or unscoped. Another scope's directory is the primary's own symlink, so a write under it would land there. */
+const LINKABLE_NAME = /^(?:@a11ign\/)?[a-z0-9~-][a-z0-9._~-]*$/;
+
+/**
+ * The packages of `path`'s tree as `name -> directory`, where the name is the one `packages/<directory>/package.json` DECLARES (#3201): since the
+ * split the directory is not the name (`nvda-worker` is `@a11ign/screenreader-worker`, `cli` is the unscoped `a11ign`). An entry with no manifest, a
+ * manifest that does not parse, or one with no linkable name is SKIPPED and not an error: `packages/README.md` is the live case, and a tree that is
+ * otherwise right must still be given its dependencies.
+ * @param {LinkFs} fs @param {string} path @returns {Map<string, string>}
+ */
+function declaredLinks(fs, path) {
+  const links = new Map();
+  for (const dir of fs.readdirSync(`${path}/packages`)) {
+    const name = manifestName(fs, `${path}/packages/${dir}/package.json`);
+    if (name !== null && LINKABLE_NAME.test(name)) links.set(name, dir);
+  }
+  return links;
+}
+
+/** The `name` of the manifest at `file`, or `null` for one that is absent (a file where a directory was expected included), unparseable or nameless. */
+function manifestName(fs, file) {
+  try {
+    const { name } = JSON.parse(fs.readFileSync(file, "utf8"));
+    return typeof name === "string" ? name : null;
+  } catch {
+    return null; // the documented skip, not a swallowed fault: nothing here can say a package is wrong, only that it declares no name to link
+  }
+}
+
+/** Third-party entries and `.bin` to the tick's checkout, except the primary's OWN workspace packages: those are the tree's to link, by name. @param {LinkFs} fs @param {{primary: string, modules: string, packagesDirs: string[]}} where */
+function linkThirdParty(fs, { primary, modules, packagesDirs }) {
+  for (const entry of fs.readdirSync(primary)) {
+    const wanted = entry !== "@a11ign" && (entry === ".bin" || !entry.startsWith("."));
+    if (wanted && !pointsIntoPackages(fs, `${primary}/${entry}`, packagesDirs)) relink(fs, `${primary}/${entry}`, `${modules}/${entry}`);
+  }
+}
+
+/** Remove what an earlier run linked and `wanted` no longer names: a package the PR removed or renamed, and an unscoped workspace link (the primary's or this tree's). @param {LinkFs} fs @param {{modules: string, scope: string, packagesDirs: string[]}} where @param {Map<string, string>} wanted */
+function removeStaleLinks(fs, { modules, scope, packagesDirs }, wanted) {
+  for (const stale of fs.readdirSync(scope).filter((entry) => !wanted.has(`@a11ign/${entry}`))) fs.rmSync(`${scope}/${stale}`, { recursive: true, force: true });
+  for (const entry of fs.readdirSync(modules)) {
+    if (entry !== "@a11ign" && !wanted.has(entry) && pointsIntoPackages(fs, `${modules}/${entry}`, packagesDirs)) fs.rmSync(`${modules}/${entry}`, { force: true });
+  }
+}
+
 /**
  * GIVE `path`'s tree its dependencies, and answer `null` when it has them or WHY not (#2498). DONE BY THE TICK, NEVER BY THE
  * REVIEWER, for the reason {@link prepareReviewCheckout} is: measured 2026-09-25 under the reviewer's own sandbox, a tree with no
@@ -1261,27 +1327,29 @@ function relink(fs, target, link) {
  * Acceptance died before its first test (#2376: "0/4; `npx` failed before execution"). With the links below the same `npx` runs.
  *
  * THE HYBRID SHAPE `reviewer.md` teaches, chosen because the other two are worse. Third-party entries (and `.bin`) link to the tick's
- * checkout, so no install runs and no second copy is stored; `@a11ign/*` link to THIS tree's `packages/`, because a whole-tree link
+ * checkout, so no install runs and no second copy is stored; the tree's own packages link to THIS tree's `packages/`, because a whole-tree link
  * makes every `@a11ign/*` resolve to the PRIMARY's source and `assert-glob-not-empty --run` REFUSES that tree (#2378, #2218). Other
  * dot-entries are skipped, and `.cache` is the one that matters: it is where {@link reviewerEnvironment} points npm, and a link
  * there would send the instance's cache writes to the primary, which its sandbox cannot write. Idempotent, because it runs on every
- * head-changing push: a package the PR adds or removes is linked or unlinked, and one already right is left alone.
+ * head-changing push: a package the PR adds, removes or renames is linked or unlinked, and one already right is left alone.
+ *
+ * LINKED BY THE NAME THE MANIFEST DECLARES, NOT THE DIRECTORY (#3201): `@a11ign/x` lands in `node_modules/@a11ign/x`, the unscoped `a11ign` directly in
+ * `node_modules/`, and an entry with no readable manifest is skipped ({@link declaredLinks}). The unscoped one is the reason the third-party loop
+ * leaves the primary's workspace links alone: it would otherwise point `node_modules/a11ign` at the PRIMARY's `packages/cli`, the wrong-source tree again.
  *
  * @param {{path: string, repoRoot: string, fs?: LinkFs}} args @returns {string | null}
  */
 export function linkReviewDependencies({ path, repoRoot, fs = REAL_LINK_FS }) {
   const primary = `${repoRoot}/node_modules`;
   const modules = `${path}/node_modules`;
-  const scope = `${modules}/@a11ign`;
+  const where = { primary, modules, scope: `${modules}/@a11ign`, packagesDirs: [`${repoRoot}/packages`, `${path}/packages`] };
   if (!fs.existsSync(primary)) return `${primary} does not exist: the tick's own checkout has no dependencies to link`;
   try {
-    fs.mkdirSync(scope, { recursive: true });
-    for (const entry of fs.readdirSync(primary)) {
-      if (entry !== "@a11ign" && (entry === ".bin" || !entry.startsWith("."))) relink(fs, `${primary}/${entry}`, `${modules}/${entry}`);
-    }
-    const packages = fs.readdirSync(`${path}/packages`);
-    for (const name of packages) relink(fs, `${path}/packages/${name}`, `${scope}/${name}`);
-    for (const stale of fs.readdirSync(scope).filter((name) => !packages.includes(name))) fs.rmSync(`${scope}/${stale}`, { recursive: true, force: true });
+    fs.mkdirSync(where.scope, { recursive: true });
+    linkThirdParty(fs, where);
+    const wanted = declaredLinks(fs, path);
+    for (const [name, dir] of wanted) relink(fs, `${path}/packages/${dir}`, `${modules}/${name}`);
+    removeStaleLinks(fs, where, wanted);
     if (fs.existsSync(`${repoRoot}/.venv`)) relink(fs, `${repoRoot}/.venv`, `${path}/.venv`);
     return null;
   } catch (err) {
