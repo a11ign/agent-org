@@ -24,6 +24,13 @@
 # well as a comment (`verdictBearers` in review-verdict.mjs), which is what made the second write unnecessary.
 #
 # Usage: pr-review-verdict <pr-number> <convinced|not-convinced> <verdict-comment-file>
+# Exit:  0  the review posted (attribution is best-effort and never changes this)
+#        2  a malformed call, or an environment failure offered as a verdict (nothing was sent to `gh` for either)
+#        3  REFUSED: the pull request already has a verdict at an equal patch (a11ign#3050) -- an APPROVED or CHANGES_REQUESTED review whose
+#           body opens `**Review of #<n> at ` and whose commit is the head or has the head's patch id; a review that opens any other way, such
+#           as a code owner's scoped approval, is not counted (a11ign#3087). Nothing was posted, and the
+#           message names the review that stands. A refusal that is wrong goes to `product-manager`, never to a second review.
+#        4  COULD NOT TELL whether it has one (a `gh` read failed). Nothing was posted; the door is safe to run again.
 # Env:   A11Y_REVIEWER_SESSION  the org session name posting this review (`reviewer-<n>` for pull request n, #2401).
 #                               Unset, the door derives `reviewer-<n>` from the checkout it runs in when that checkout
 #                               IS `.../reviews/reviewer-<n>` for THIS pull request (#2528); where it cannot, the review
@@ -56,6 +63,14 @@ body="$(<"$file")"
 # THE OPENER IS STILL THE FIRST LINE, and it is the only part validated: the clock and the authors' timers parse it.
 opener="$(head -n 1 "$file")"
 [[ "$opener" == "**Review of #$n at "* ]] || { echo "pr-review-verdict: first line of '$file' is not the verdict line for #$n" >&2; exit 2; }
+
+# AN ENVIRONMENT FAILURE IS NOT A VERDICT (a11ign#3050, from #3033). A reviewer whose own checkout, toolchain or token is broken has learned
+# nothing about the author's change, and a request-changes made of that sends the author to fix what is not theirs. Refused HERE, before any
+# `gh` call, because the door is the one place every review passes. ONLY a refusal is held: `convinced` that names its evidence, as in
+# `(CI run <id>)`, is a verdict, and so is `convinced` that merely uses the word.
+if [[ "$verdict" == not-convinced ]] && grep -qiF '(environment)' <<<"$opener"; then
+  echo "pr-review-verdict: an environment failure is not a verdict: hand the row to orchestrator" >&2; exit 2
+fi
 
 # THE NAME, WHEN THE PANE WAS NOT GIVEN ONE (#2528). A pane herdr restores itself is not started by the tick, so it holds
 # no `A11Y_REVIEWER_SESSION` (`herdr.service` restarted at 12:01:57Z on 2026-09-25 and `reviewer-2485`'s `codex resume`
@@ -122,6 +137,58 @@ attribute() {
     return 1
   }
 }
+
+# THE LAST PLACE A SECOND REVIEW AT ONE PATCH CAN BE STOPPED (a11ign#3050). #3033 took six reviews for ONE authored commit: three approvals
+# at one head, two refusals at another that differed from it by a merge of `main`. The gate orders reviewers (a11ign#3045); this holds
+# even when it re-orders, because a review cannot be taken back and a reviewer's turn cannot be returned.
+EXIT_SECOND_REVIEW=3
+EXIT_UNDETERMINED=4
+
+# NOTHING WAS POSTED, AND "COULD NOT TELL" IS NOT "THERE IS NONE": a failed read refuses rather than posting, because the one outcome the door
+# cannot undo is the wrong write. The reviewer runs the door again.
+undetermined() {
+  echo "pr-review-verdict: could not tell whether #$n already has a review at this patch ($1); nothing was posted." \
+       "Run the door again, and if it keeps failing hand the row to product-manager." >&2
+  exit "$EXIT_UNDETERMINED"
+}
+
+# The patch id of the diff `merge-base(base, commit)..commit`, from the compare API's own diff, so no checkout is needed.
+# `--stable` ignores line numbers and whitespace, which is what lets a merge of `main` into the branch leave the id equal.
+patch_id_of() {
+  local diff pid
+  diff="$(gh api -H 'Accept: application/vnd.github.diff' "repos/$REPO/compare/$1...$2")" || return 1
+  pid="$(git patch-id --stable <<<"$diff" | cut -d' ' -f1)"
+  [[ -n "$pid" ]] || return 1  # an EMPTY diff has no id, and two empty diffs are not shown equal by saying nothing
+  echo "$pid"
+}
+
+refuse_second_review() {
+  local pr head base reviews when state commit url head_pid pid differing=" "
+  pr="$(gh api "repos/$REPO/pulls/$n" --jq '[.head.sha, .base.ref] | @tsv')" || undetermined "the pull request would not read"
+  IFS=$'\t' read -r head base <<<"$pr"
+  # ONLY A REVIEW THE DOOR COULD HAVE POSTED: one of the two states it posts, AND a body that opens as a verdict (the same opener the
+  # door itself requires above). A DISMISSED review no longer stands, a COMMENTED one is not a verdict, and a code owner's hand-written
+  # approval of one path (agent-org#66: "approved for the workflow change only") opens some other way and is not the duplicate
+  # a11ign#3050 exists to stop. `$n` is digits by now, so it is safe inside the jq program.
+  reviews="$(gh api "repos/$REPO/pulls/$n/reviews?per_page=100" --paginate \
+      --jq '.[] | select((.state == "APPROVED" or .state == "CHANGES_REQUESTED") and ((.body // "") | startswith("**Review of #'"$n"' at "))) | [.submitted_at, .state, .commit_id, .html_url] | @tsv' \
+      | sort -r)" || undetermined "its reviews would not read"
+  [[ -n "$reviews" ]] || return 0
+  while IFS=$'\t' read -r when state commit url; do
+    if [[ "$commit" != "$head" ]]; then
+      [[ "$differing" != *" $commit "* ]] || continue
+      head_pid="${head_pid:-$(patch_id_of "$base" "$head")}" || undetermined "the head's diff would not read"
+      pid="$(patch_id_of "$base" "$commit")" || undetermined "the diff at ${commit:0:8} would not read"
+      [[ "$pid" == "$head_pid" ]] || { differing+="$commit "; continue; }
+    fi
+    echo "pr-review-verdict: NOT POSTED. #$n already has a review at an equal patch: $state at $when ($url, commit ${commit:0:8}," \
+         "head ${head:0:8}). A second review at one patch is refused whatever its verdict; if this refusal is wrong, escalate to" \
+         "product-manager rather than posting again." >&2
+    exit "$EXIT_SECOND_REVIEW"
+  done <<<"$reviews"
+}
+
+refuse_second_review
 
 gh pr review "$n" --repo "$REPO" "$flag" --body "$body"
 attribute || true

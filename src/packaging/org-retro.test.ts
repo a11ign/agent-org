@@ -24,6 +24,7 @@ import { isBrokenRed, isHeldRed, HOLD_OWN_JOBS } from "../red-pr.mjs";
 import { readLedger as readHandFixLedger, ledgerLine as handFixLine } from "../hand-fix-ledger.mjs";
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, HOLD_RED_JOBS } from "../work-gate.mjs";
 import { PROFILES } from "../worker-profile.mjs";
+import { HOME_CHECKOUT, HOST_ENV } from "../project-config.mjs";
 
 const HOUR_MS = 3_600_000;
 const NOW = Date.parse("2026-10-02T00:00:00Z");
@@ -137,7 +138,7 @@ test("isBrokenRed: a hold's own two red jobs are HELD, not red; a real red besid
 });
 
 test("the hold's two jobs are the jobs ci.yml defines, and the same two the gate's own exemption uses", () => {
-  const ci = readFileSync(new URL("../../../../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const ci = readFileSync(join(HOME_CHECKOUT, ".github/workflows/ci.yml"), "utf8");
   assert.deepEqual([...HOLD_OWN_JOBS], [...HOLD_RED_JOBS], "red-pr.mjs is a leaf and cannot import pr-orders.mjs, so the copy is pinned here");
   for (const job of HOLD_OWN_JOBS) assert.match(ci, new RegExp(`\\n {2}${job}:\\n`), `${job} is a job in ci.yml`);
   const from = ci.indexOf("\n  deliberateRefusals:\n");
@@ -341,7 +342,7 @@ function section(markdown: string, heading: string): string | null {
   return lines.slice(start, end < 0 ? undefined : end).join("\n");
 }
 
-const CEO_ROLE = readFileSync(new URL("../../../../.agent-org/roles/ceo.md", import.meta.url), "utf8");
+const CEO_ROLE = readFileSync(join(HOME_CHECKOUT, ".agent-org/roles/ceo.md"), "utf8");
 
 test("ceo.md names the duty IN ITS OWN SECTION, not merely somewhere in the file", () => {
   const own = section(CEO_ROLE, "The daily retrospective");
@@ -505,8 +506,10 @@ test("a manual run of the CLI reads the previous line and writes nothing", () =>
   const path = join(stateDir, READINGS_FILE);
   writeFileSync(path, readingsText(YESTERDAY));
   // PATH is empty so `gh`, `journalctl` and `git` cannot be found: every read is refused, which is `unknown`, and nothing real is reached.
+  // The child finds the project the way this file does: through the host file, which a stripped environment would otherwise lose.
+  const host = process.env[HOST_ENV] === undefined ? {} : { [HOST_ENV]: process.env[HOST_ENV] };
   const out = execFileSync(process.execPath, [new URL("../org-retro.mjs", import.meta.url).pathname, "--now=2026-10-02T00:00:00Z"],
-    { encoding: "utf8", env: { HOME: home, PATH: "" } });
+    { encoding: "utf8", env: { HOME: home, PATH: "", ...host } });
   assert.match(out, /Against the previous reading, 2026-10-01:/, "it compared against the line");
   assert.equal(readFileSync(path, "utf8"), readingsText(YESTERDAY), "and wrote nothing");
   assert.deepEqual(readdirSync(stateDir), [READINGS_FILE], "not even another file");

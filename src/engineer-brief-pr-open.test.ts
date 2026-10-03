@@ -12,9 +12,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { HOME_CHECKOUT } from "./project-config.mjs";
 
-const BRIEF = fileURLToPath(new URL("../../../.agent-org/roles/engineer.md", import.meta.url));
+const BRIEF = join(HOME_CHECKOUT, ".agent-org/roles/engineer.md");
 
 // A forbidding line must sit on the same line as `pr:open`, so a stray mention of `gh pr create` elsewhere
 // (a quoted incident, say) cannot satisfy the forbid half on its own.

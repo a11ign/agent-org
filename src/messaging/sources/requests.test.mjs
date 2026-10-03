@@ -15,7 +15,8 @@ import { after, describe, test } from "node:test";
 import { createMessenger } from "../core.mjs";
 import { createFakeProvider } from "../fake-provider.mjs";
 import { createLedger, foldLedger, readLedgerLines } from "../ledger.mjs";
-import { READ_METHODS, assertReadOnlyGh, createGhReader, defaultLedgerPath, main, runWatch } from "../watch.mjs";
+import { READ_METHODS, assertReadOnlyGh, createGhReader, main, runWatch } from "../watch.mjs";
+import { defaultLedgerPath } from "../state.mjs";
 import { observeRequests, parseChairmanOptions, parseRequestKey, readRequests, requestKey } from "./requests.mjs";
 
 const REPO = "a11ign/a11ign";

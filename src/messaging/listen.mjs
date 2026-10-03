@@ -11,47 +11,49 @@
 // (`Restart=on-failure` restarts the unit with the old file still there) or a reboot that gave the pid to somebody else, the lock is
 // recognised as stale and taken over.
 //
-// **NOTHING IS SENT TO A WORKER FROM HERE.** `handle` says `forward` for an accepted value and `forwarding` below hands it to its consumer by
-// `kind`: a message to `converse` (queued for `ceo` and nobody else, #2909), a button press to `answers` (a chairman-attributed row comment,
-// #2908). Each checks it with `isAccepted` itself, so this file only chooses; it never builds an accepted value or writes to a row of its own.
+// **NOTHING IS SENT TO A WORKER FROM HERE.** `handle` says `forward` for an accepted message and `createForwarder` hands it to `answers.mjs`
+// (#2908), which checks it with `isAccepted` and writes the chairman-attributed comment and the labels; the chairman is told what happened.
+// What is NOT an answer (a message that replies to nothing the organisation asked) goes to row 10's `converse`, which queues it for `ceo` and nobody else.
 //
 // **THE QUEUE LOADS ON THE FIRST MESSAGE, AND ONLY `converse.mjs` NAMES IT.** `prompt-session.mjs` and `wake.mjs` read the project's declaration when they are
-// imported and REFUSE when it cannot be found, and `createConverse` imports them on first use. A message it could not queue because of that is TOLD to the
-// chairman (a send) and ledgered `refused`, never dropped. (This file's own imports reach the declaration through `watch.mjs` and `herdr-agents.mjs`, so without
-// `$AGENT_ORG_HOST` the listener does not start at all; the `chairman-listen` unit sets it.)
+// imported and REFUSE without it (the `chairman-listen` unit sets `$AGENT_ORG_HOST`, #3064). A message `converse` could not queue for that reason is TOLD to the
+// chairman (a send) and ledgered `refused` by `tellingWhenUndelivered`, never dropped.
+//
+// **THE GITHUB WRITES ARE THE UNIT'S ACCOUNT, NEVER THE PERSON'S (#1967).** This is the one program here that writes to GitHub, so it refuses to
+// start where no account is declared, as `watch.mjs` does for its reads.
 //
 // EXIT CODES: 0 stopped when told to (or messaging is off), 1 failed while running, 2 REFUSED to start or told to stop by Telegram (config,
 // secrets, no chairman paired yet, the lock, a 409). The unit does not restart a 2: a refusal does not mend itself, and restarting one
 // that is a 409 makes this listener the second poller in a fight.
 
-import { execFile } from "node:child_process";
 import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { promisify } from "node:util";
 
-import { stateEntryPath } from "../host-config.mjs";
 import { ANSWER_PREFIX } from "../project-vocabulary.mjs";
 import { createAnswers } from "./answers.mjs";
 import { MessagingConfigRefusal, readMessagingConfig } from "./config.mjs";
 import { createConverse } from "./converse.mjs";
+import { createGithubWriter } from "./github-writer.mjs";
 import { createInbound } from "./inbound.mjs";
 import { createLedger, describeError } from "./ledger.mjs";
 import { createOffsetStore, createTelegramPollingProvider, PollConflictError, runListener } from "./providers/telegram/poll.mjs";
-import { readSecretFile, secretFileProblem, SecretFileRefusal } from "./secret.mjs";
-import { defaultLedgerPath } from "./watch.mjs";
+import { readSecretFile, SecretFileRefusal } from "./secret.mjs";
+import { accountIsDeclared, defaultLedgerPath, readChairman } from "./state.mjs";
 
 export const EXIT = Object.freeze({ ok: 0, failed: 1, refused: 2 });
 const LOCK_FILE = "listener.lock";
 const OFFSET_FILE = "offset.json";
-/** The queue file's name beside the wake ledger: `wake.mjs`'s `HANDOFF_QUEUE_FILE`, which this file may not import (see `handoffQueueBeside`); the test pins the two equal. */
-const HANDOFF_QUEUE_FILE = "prompt-session-handoffs";
 const LOCK_FILE_MODE = 0o600;
 const STATE_DIRECTORY_MODE = 0o700;
 /** Field 22 of `/proc/<pid>/stat` is the start time. Everything up to the command's closing parenthesis is skipped, since a command may hold spaces, so the
  * array begins at field 3 (the state) and field 22 is index 22 - 3 = 19. It was 20, which is field 23, the virtual size: a different number that passed every test that injects it. */
 const START_TIME_FIELD = 19;
+
+/** The label that wakes `ceo` with the answer: the vocabulary's answer prefix and the session, never a literal (`project-vocabulary.test.ts` refuses one). */
+const ANSWER_LABEL = `${ANSWER_PREFIX}ceo`;
+const WRITE_FAILED_TEXT = "Could not reach GitHub to record that. Nothing was written; do it again to retry.";
 
 /** The lock is held by a live listener. `holder` is its pid. */
 export class ListenerLockHeld extends Error {
@@ -144,117 +146,45 @@ function releaseLock(path, pid) {
   if (readLock(path)?.pid === pid) unlinkSync(path);
 }
 
-/** @param {string} path @returns {Record<string, unknown>} the file's JSON object, or a refusal: a file that is not JSON is not mended by a restart */
-function parsedIds(path) {
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8"));
-    return parsed !== null && typeof parsed === "object" ? parsed : {};
-  } catch (cause) {
-    throw new SecretFileRefusal(path, "it is not valid JSON; pair again", { cause });
-  }
-}
-
-/**
- * The chairman's ids, from the file `messaging:pair` wrote. Permissions are checked before the content is read.
- * @param {string} path @returns {{ userId: number, chatId: number }}
- */
-export function readChairman(path) {
-  const problem = secretFileProblem(path);
-  if (problem !== null) throw new SecretFileRefusal(path, `the chairman file is not usable (${problem}); has \`messaging:pair\` been run?`);
-  const { userId, chatId } = parsedIds(path);
-  if (!Number.isSafeInteger(userId) || !Number.isSafeInteger(chatId)) throw new SecretFileRefusal(path, "it holds no integer userId and chatId; pair again");
-  return { userId, chatId };
-}
-
 /** @param {string} home @returns {string} where the listener keeps its lock and offset: beside the ledger it shares with the watcher */
 export function stateDirectory(home) {
   return dirname(defaultLedgerPath(home));
 }
 
-const execFileAsync = promisify(execFile);
-const GH_TIMEOUT_MS = 30_000;
-const GH_MAX_BUFFER = 8 * 1024 * 1024;
-/** The session a chairman's answer wakes. The label is this under the vocabulary's answer prefix: `ceo` is decision 2(c)'s, as `converse`'s recipient is 2(b)'s. */
-const ANSWER_SESSION = "ceo";
+/** What a caller may leave out. A spread and not parameter defaults, as `watch.mjs` does. */
+const DEFAULT_DEPS = () => ({
+  root: process.cwd(), home: homedir(), now: Date.now, fetch: globalThis.fetch, signal: /** @type {AbortSignal | undefined} */ (undefined),
+  sleep: (/** @type {number} */ ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
+  out: (/** @type {string} */ line) => console.log(line), err: (/** @type {string} */ line) => console.error(line),
+  onForward: /** @type {(accepted: Readonly<Record<string, any>>) => Promise<void> | void} */ (undefined),
+  converse: /** @type {((accepted: Readonly<Record<string, any>>) => Promise<void> | void) | undefined} */ (undefined),
+  github: /** @type {import("./answers.mjs").GithubWriter | undefined} */ (undefined),
+  env: /** @type {Record<string, string | undefined>} */ (process.env),
+});
 
-/** @param {readonly string[]} argv @returns {Promise<string>} what `gh` printed; the environment, and so the account, is the process's own (the unit declares `GH_CONFIG_DIR`) */
-async function runGh(argv) {
-  const { stdout } = await execFileAsync("gh", [...argv], { timeout: GH_TIMEOUT_MS, maxBuffer: GH_MAX_BUFFER, encoding: "utf8" });
-  return stdout;
+/** @param {AbortSignal | undefined} given @returns {AbortSignal} one that also aborts on SIGTERM and SIGINT, so `systemctl stop` ends a long poll at once */
+function stoppableBy(given) {
+  const controller = new AbortController();
+  const stop = () => controller.abort();
+  if (given?.aborted === true) stop();
+  given?.addEventListener("abort", stop, { once: true });
+  process.once("SIGTERM", stop);
+  process.once("SIGINT", stop);
+  return controller.signal;
 }
 
 /**
- * What `answers` needs of GitHub, over `gh` (the platform's own client, as `watch.mjs` reads through): one row read and three writes. A row is `{repo, number}`
- * from the request key the ledger holds, so `--repo` names it and nothing depends on the working directory. `gh issue edit --remove-label` succeeds when the
- * issue lacks the label, which is what a resumed answer needs of `removeLabel`.
+ * A message `converse` could not take, because it threw before it wrote a ledger line of its own (the queue would not load, which is what a missing
+ * `$AGENT_ORG_HOST` looks like, or would not run), is TOLD to the chairman as not delivered and ledgered `refused`, then thrown. One `converse` did account
+ * for keeps its own line, and its throw stands: a second line would say the same message was refused after it was queued.
  *
- * @param {{ run?: (argv: readonly string[]) => Promise<string> }} [deps] @returns {import("./answers.mjs").GithubWriter}
- */
-export function createGhWriter({ run = runGh } = {}) {
-  /** @param {{repo: string, number: number}} row @param {string} verb @param {string[]} rest */
-  const issue = (row, verb, rest) => run(["issue", verb, String(row.number), "--repo", row.repo, ...rest]);
-  return {
-    async readRow(row) {
-      const read = JSON.parse(await issue(row, "view", ["--json", "state,labels,comments"]));
-      return {
-        state: read.state, labels: read.labels.map((/** @type {{name: string}} */ label) => label.name),
-        comments: read.comments.map((/** @type {Record<string, string>} */ { body, createdAt, authorAssociation }) => ({ body, createdAt, authorAssociation })),
-      };
-    },
-    async comment(row, body) {
-      await issue(row, "comment", ["--body", body]);
-    },
-    async removeLabel(row, label) {
-      await issue(row, "edit", ["--remove-label", label]);
-    },
-    async addLabel(row, label) {
-      await issue(row, "edit", ["--add-label", label]);
-    },
-  };
-}
-
-/** @typedef {(message: { text: string, replyTo?: string }) => Promise<{ messageRef: string }>} Send */
-/** @typedef {{ converse: { forward: (accepted: Readonly<Record<string, any>>) => Promise<unknown> }, answers: { answer: (accepted: Readonly<Record<string, any>>) => Promise<{ text?: string }> } }} Consumers */
-
-/**
- * `wake.mjs`'s `handoffQueuePath(ledgerPathFrom([]))`, which is what the unit's `work:tick` reads. NOT imported from there: `converse.test.mjs` bounds the files that
- * name the queue's modules to `converse.mjs` alone, and this one has no business with the queue but where it is. `listen.test.mjs` pins the two together.
- * @param {string} wakeLedgerPath @returns {string}
- */
-export function handoffQueueBeside(wakeLedgerPath) {
-  return join(dirname(wakeLedgerPath), HANDOFF_QUEUE_FILE);
-}
-
-/**
- * The two consumers. `createConverse` loads the queue itself, on the first message, and that load is what refuses without `$AGENT_ORG_HOST`; so building it
- * here cannot fail, and a queue that will not load surfaces from `converse.forward`, where `forwarding` tells the chairman.
- *
- * @param {{ chairman: {userId: number, chatId: number}, ledger: ReturnType<typeof createLedger>, send: Send, now: () => number }} parts @returns {Consumers}
- */
-function createConsumers({ chairman, ledger, send, now }) {
-  const queuePath = handoffQueueBeside(stateEntryPath("wake-ledger"));
-  return {
-    converse: createConverse({ chairman, queuePath, ledger, send, now }),
-    answers: createAnswers({ ledger, github: createGhWriter(), chairman, answerLabel: `${ANSWER_PREFIX}${ANSWER_SESSION}`, now }),
-  };
-}
-
-/**
- * The listener's `onForward`: an accepted MESSAGE goes to `converse`, an accepted BUTTON PRESS to `answers`, and neither ever reaches the other. A kind
- * that is neither is an error and not a silent return, since an accepted update nobody acts on is the defect this exists to close.
- *
- * A message `converse` could not take, because it threw before it wrote a ledger line of its own (the queue would not load, or would not run), is TOLD to the
- * chairman as not delivered and ledgered `refused`. One `converse` did account for keeps its own line, and its throw stands.
- *
- * @param {{ ledger: ReturnType<typeof createLedger>, send: Send, consumers: Consumers }} parts
+ * @param {{ ledger: { read: () => Record<string, any>[], append: (entry: Record<string, unknown>) => unknown }, send: (message: { text: string, replyTo?: string }) => Promise<{ messageRef: string }>,
+ *   converse: (accepted: Readonly<Record<string, any>>) => Promise<unknown> | unknown }} parts
  * @returns {(accepted: Readonly<Record<string, any>>) => Promise<void>}
  */
-export function forwarding({ ledger, send, consumers }) {
-  /** @param {Readonly<Record<string, any>>} accepted @returns {boolean} whether `converse` ledgered this update before it failed */
-  const converseAccountedFor = (accepted) => ledger.read().some((line) => line.origin === "converse" && line.updateId === accepted.updateId);
-
-  /** @param {Readonly<Record<string, any>>} accepted @param {unknown} cause @returns {Promise<never>} always throws: a refusal is a failed forward as well as a told one */
-  async function refuseUndelivered(accepted, cause) {
+export function tellingWhenUndelivered({ ledger, send, converse }) {
+  /** @param {Readonly<Record<string, any>>} accepted @param {unknown} cause @returns {Promise<never>} */
+  async function refuse(accepted, cause) {
     /** @type {{ ref: string | null, error: unknown }} */
     let ack = { ref: null, error: null };
     try {
@@ -270,54 +200,47 @@ export function forwarding({ ledger, send, consumers }) {
     throw new Error(`the queue could not be reached (message update ${accepted.updateId})`, { cause });
   }
 
-  /** @param {Readonly<Record<string, any>>} accepted @returns {Promise<void>} */
-  async function forwardMessage(accepted) {
-    try {
-      await consumers.converse.forward(accepted);
-    } catch (cause) {
-      if (converseAccountedFor(accepted)) throw cause;
-      await refuseUndelivered(accepted, cause);
-    }
-  }
-
-  /** @param {Readonly<Record<string, any>>} accepted @returns {Promise<void>} */
-  async function forwardButton(accepted) {
-    const result = await consumers.answers.answer(accepted);
-    if (result.text !== undefined) await send({ text: result.text });
-  }
-
   return async (accepted) => {
-    if (accepted.kind === "message") await forwardMessage(accepted);
-    else if (accepted.kind === "button") await forwardButton(accepted);
-    else throw new Error(`update ${accepted.updateId} was accepted as a ${String(accepted.kind)}, which nothing consumes`);
+    try {
+      await converse(accepted);
+    } catch (cause) {
+      if (ledger.read().some((line) => line.origin === "converse" && line.updateId === accepted.updateId)) throw cause;
+      await refuse(accepted, cause);
+    }
   };
 }
 
-/** What a caller may leave out. A spread and not parameter defaults, as `watch.mjs` does. */
-const DEFAULT_DEPS = () => ({
-  root: process.cwd(), home: homedir(), now: Date.now, fetch: globalThis.fetch, signal: /** @type {AbortSignal | undefined} */ (undefined),
-  sleep: (/** @type {number} */ ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
-  out: (/** @type {string} */ line) => console.log(line), err: (/** @type {string} */ line) => console.error(line),
-  onForward: /** @type {(accepted: Readonly<Record<string, any>>) => Promise<void> | void} */ (undefined),
-  /** Replaces the real consumers, so a test drives the wiring without the queue or GitHub. @type {Consumers | undefined} */ consumers: undefined,
-});
-
-/** @param {AbortSignal | undefined} given @returns {AbortSignal} one that also aborts on SIGTERM and SIGINT, so `systemctl stop` ends a long poll at once */
-function stoppableBy(given) {
-  const controller = new AbortController();
-  const stop = () => controller.abort();
-  if (given?.aborted === true) stop();
-  given?.addEventListener("abort", stop, { once: true });
-  process.once("SIGTERM", stop);
-  process.once("SIGINT", stop);
-  return controller.signal;
+/**
+ * What the listener does with an accepted value: it answers a request on its row and tells the chairman what happened, and hands anything else to
+ * `converse`. `send` speaks to the chairman's chat, so a reply needs no chat id, and a button press is NOT answered again here: `runListener` stops
+ * the spinner of every press before the core sees it, and Telegram takes one answer per query.
+ *
+ * @param {{ answers: { answer: (accepted: unknown) => Promise<import("./answers.mjs").Answered> }, send: (message: { text: string }) => Promise<unknown>,
+ *   converse: (accepted: Readonly<Record<string, any>>) => Promise<void> | void, log: (line: string) => void }} parts
+ * @returns {(accepted: Readonly<Record<string, any>>) => Promise<void>}
+ */
+export function createForwarder({ answers, send, converse, log }) {
+  return async (accepted) => {
+    /** @type {import("./answers.mjs").Answered | null} */
+    let result = null;
+    try {
+      result = await answers.answer(accepted);
+    } catch (error) {
+      // The update is in the ledger already, so it will not come again; the chairman is told, and the next press resumes from the last step recorded.
+      log(`messaging:listen: update ${accepted.updateId} could not be answered: ${error instanceof Error ? error.message : String(error)}`);
+      await send({ text: WRITE_FAILED_TEXT });
+      return;
+    }
+    if (result.action === "reply") await send({ text: result.text });
+    else await converse(accepted);
+  };
 }
 
 /**
  * @param {Parameters<typeof main>[0]} deps @param {{ tokenFile: string, chairmanFile: string }} config @returns {Promise<void>}
  */
 async function listen(deps, config) {
-  const { home, now, fetch: fetchImpl, sleep, err, onForward, consumers } = { ...DEFAULT_DEPS(), ...deps };
+  const { home, now, fetch: fetchImpl, sleep, err, onForward, converse, github } = { ...DEFAULT_DEPS(), ...deps };
   const chairman = readChairman(config.chairmanFile);
   const token = readSecretFile(config.tokenFile);
   const state = stateDirectory(/** @type {string} */ (home));
@@ -326,10 +249,13 @@ async function listen(deps, config) {
     const ledger = createLedger({ path: defaultLedgerPath(/** @type {string} */ (home)), now });
     const inbound = createInbound({ ledger, chairman });
     const provider = createTelegramPollingProvider({ token, chatId: chairman.chatId, fetch: fetchImpl, sleep, log: err });
+    const answers = createAnswers({ ledger, github: github ?? createGithubWriter(), chairman, answerLabel: ANSWER_LABEL, now });
     const send = (/** @type {{ text: string, replyTo?: string }} */ message) => provider.send(message);
+    // The queue is `prompt:session`'s own, at the path it and the gate resolve from no `--ledger`: a message for `ceo` lands where `ceo`'s next wake reads it.
+    const conversation = createConverse({ chairman, ledger, send, now });
     await runListener({
       provider, inbound, offsets: createOffsetStore(join(state, OFFSET_FILE), { log: err }), chairman, sleep, log: err, signal: stoppableBy(deps.signal),
-      onForward: onForward ?? forwarding({ ledger, send, consumers: consumers ?? createConsumers({ chairman, ledger, send, now }) }),
+      onForward: onForward ?? createForwarder({ answers, send, converse: tellingWhenUndelivered({ ledger, send, converse: converse ?? conversation.forward }), log: err }),
     });
   } finally {
     lock.release();
@@ -345,17 +271,22 @@ function exitCodeFor(error) {
 /**
  * @param {{ root?: string, home?: string, now?: () => number, fetch?: typeof fetch, signal?: AbortSignal, sleep?: (ms: number) => Promise<void>,
  *   out?: (line: string) => void, err?: (line: string) => void, onForward?: (accepted: Readonly<Record<string, any>>) => Promise<void> | void,
- *   consumers?: Consumers }} [deps]
+ *   converse?: (accepted: Readonly<Record<string, any>>) => Promise<void> | void, github?: import("./answers.mjs").GithubWriter,
+ *   env?: Record<string, string | undefined> }} [deps]
  * @returns {Promise<number>} the exit code
  */
 export async function main(deps = {}) {
-  const { root, home, out, err } = { ...DEFAULT_DEPS(), ...deps };
+  const { root, home, out, err, env, github } = { ...DEFAULT_DEPS(), ...deps };
   try {
     const config = readMessagingConfig(root, { home });
     // OFF IS SILENT AND CONSTRUCTS NOTHING: no secret is read, no lock taken, no directory made.
     if (!config.enabled) {
       out("messaging: OFF (no `messaging` key in .agent-org/project.json); nothing to listen for");
       return EXIT.ok;
+    }
+    if (github === undefined && !accountIsDeclared(env)) {
+      err("messaging:listen: no GitHub account is declared (GH_CONFIG_DIR, or an agent workspace); refusing to write as whoever `gh` last logged in as (#1967)");
+      return EXIT.refused;
     }
     await listen(deps, config);
     return EXIT.ok;

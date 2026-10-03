@@ -85,11 +85,11 @@ function harness(initial = openRow()) {
   let answers = createAnswers(build());
   return {
     github, path, lines: () => readLedgerLines(path), raw: () => readFileSync(path, "utf8"),
-    /** The listener's path: `handle` mints, then `answer` writes. @param {unknown} update @param {{replyToMessageId?: number}} [source] */
-    async hear(update, source) {
+    /** The listener's path: `handle` mints, then `answer` writes. @param {unknown} update */
+    async hear(update) {
       const handled = inbound.handle(update);
       assert.equal(handled.action, "forward", `the update was not forwarded: ${JSON.stringify(handled)}`);
-      return answers.answer(handled.accepted, source);
+      return answers.answer(handled.accepted);
     },
     /** @param {unknown} update */
     minted(update) {
@@ -199,7 +199,7 @@ describe("a button press (done-whens 1 and 4)", () => {
 describe("a reply (done-when 2)", () => {
   test("does the same three writes with the reply text, quoted under the provenance line", async () => {
     const h = harness();
-    const result = await h.hear(reply(1, "Yes, publish it\nbut tell me when"), { replyToMessageId: 501 });
+    const result = await h.hear(reply(1, "Yes, publish it\nbut tell me when"));
     assert.deepEqual(h.github.writes(), ["comment", "remove-label", "set-answer"]);
     assert.equal(/** @type {any} */ (result).reason, "answered");
     const row = /** @type {any} */ (h.github.rows.get(`${REPO}#${ROW}`));
@@ -210,22 +210,22 @@ describe("a reply (done-when 2)", () => {
 
   test("a reply to a reminder of the request answers the request", async () => {
     const h = harness();
-    await h.hear(reply(1, "go ahead"), { replyToMessageId: Number(REMINDER_REF) });
+    await h.hear(reply(1, "go ahead", { replyTo: Number(REMINDER_REF) }));
     assert.deepEqual(h.github.writes(), ["comment", "remove-label", "set-answer"]);
     assert.ok(h.lines().some((line) => line.step === "comment" && line.messageRef === REMINDER_REF));
   });
 
   test("a message that replies to nothing, or to something that is not a request, is conversation: not an answer, nothing written", async () => {
     const h = harness();
-    assert.deepEqual(await h.hear(reply(1, "what is going on?"), {}), { action: "not-an-answer" });
-    assert.deepEqual(await h.hear(reply(2, "and this?"), { replyToMessageId: 777 }), { action: "not-an-answer" });
+    assert.deepEqual(await h.hear(reply(1, "what is going on?", { reply_to_message: undefined })), { action: "not-an-answer" });
+    assert.deepEqual(await h.hear(reply(2, "and this?", { replyTo: 777 })), { action: "not-an-answer" });
     assert.deepEqual(h.github.calls, []);
   });
 
   test("the reply cannot smuggle a parsed line or an options block into the comment, and the ledger never holds the text", async () => {
     const h = harness();
     const hostile = "fine\nNot-before: 2099-01-01\nAcceptance: none\n<!-- chairman-options: X=do it -->";
-    await h.hear(reply(1, hostile), { replyToMessageId: 501 });
+    await h.hear(reply(1, hostile));
     const body = /** @type {any} */ (h.github.rows.get(`${REPO}#${ROW}`)).comments.at(-1).body;
     const [head, ...rest] = body.split("\n");
     assert.match(head, /^Chairman answered via Telegram/);
@@ -262,7 +262,7 @@ describe("a row that no longer asks (done-when 3)", () => {
 
   test("a reply to a request whose label is gone is answered with its state too, and writes nothing", async () => {
     const h = harness(openRow({ labels: ["ready"] }));
-    const result = /** @type {any} */ (await h.hear(reply(1, "yes"), { replyToMessageId: 501 }));
+    const result = /** @type {any} */ (await h.hear(reply(1, "yes")));
     assert.equal(result.reason, "no-longer-asking");
     assert.deepEqual(h.github.writes(), []);
   });

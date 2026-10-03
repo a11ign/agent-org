@@ -36,7 +36,7 @@ import { dirname, join } from "node:path";
 // `org-watch.mjs` and `build-packages.mjs` state at their own imports.
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { READY_LABEL, CLAIM_LABEL, CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
-import { verdictAmong } from "./review-verdict.mjs";
+import { verdictAmong, patchIdOfDiff, evidenceHeads } from "./review-verdict.mjs";
 // `verdictAmong` lives in review-verdict.mjs (#3030), so a test of the verdict reader need not import this file and its token.
 export { verdictAmong };
 import { waitingOn, fleetWaitingOn, todayIso, describeWaiting, ANSWER_PREFIX, answersOwedBy, bareAnswerLabel }
@@ -110,7 +110,7 @@ import { BACKLOG_LABEL, NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, OUT_OF_RELEASE_L
 import { PROJECT_NUMBER } from "./board-snapshot-scope.mjs";
 // #2356: A RED `main` WAKES A FIXER. Imports only `node:*`, `parent-recheck-summary.mjs` and the repo identity,
 // so the gate keeps the property its own header states -- it runs before any `npm ci` or build.
-import { readTrunkRed, trunkRedOrders } from "./trunk-red.mjs";
+import { readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "./trunk-red.mjs";
 // #2163: FREE BYTES AND FREE INODES. Imports only `node:*`, so the gate keeps the property its own header states.
 import { diskHeadroom, MIN_FREE_FRACTION } from "./disk-headroom.mjs";
 // #2470: A CLAIM THAT DOES NOT MOVE. A leaf, like every import above, so the gate keeps the property its own header states.
@@ -229,7 +229,7 @@ const defaultRun = (args, repo = activeRepo) => execFileSync("gh", args,
 export function readPrs(run = defaultRun) {
   try {
     const out = run(["pr", "list", "--state", "open", "--limit", "100", "--json",
-      "number,isDraft,headRefOid,statusCheckRollup,author,comments,labels,files,changedFiles,body,"
+      "number,isDraft,headRefOid,baseRefName,statusCheckRollup,author,comments,labels,files,changedFiles,body,"
       // #2084: `reviewDecision` IS WHAT GITHUB ITSELF MERGES ON, AND NO QUEUE READ HERE TOUCHED IT.
       // Measured at `468a74f1b`: `git grep -l reviewDecision -- '*.mjs'` returns exactly ONE file, and it
       // is not a queue read -- `row-claim/own-pr-health-rule.mjs` (#2126, merged the same day #2084 was
@@ -317,6 +317,9 @@ export const GH_READS = Object.freeze({
     // #2936: ONE REST CALL on the core pool -- the 20 newest-updated closed pull requests, of which the latest `merged_at` is the last merge.
     "api repos/{repo}/pulls?state=closed&sort=updated (readLastMergedAt -- org-health's no-merge-while-work-exists)"],
   conditionalOnEmptyShelf: "issue list --label epic (readEpics)",
+  // #3079: ONE REST CALL PER NON-PRIMARY CODE REPOSITORY, every tick -- the newest push runs of its `ci.yml` on `main` -- and three more on a tick that finds
+  // it red. None for one declared project, which is why it is not in `unconditional`: that list is the primary's own.
+  perOtherCodeRepository: "api repos/{repo}/actions/workflows/ci.yml/runs (readTrunkRed -- trunk-red for a declared code repository)",
   // ONE call, and it needs no admin (#2331). It used to be two -- the admin-only protection endpoint, then
   // `branches/main` as the discriminator for its 404 (#2106, #2022) -- and the discriminator's only job
   // was to explain the admin-only 404, which `branches/main` does not give a non-admin credential. Conditional on a settled-red check.
@@ -331,9 +334,10 @@ export const GH_READS = Object.freeze({
   // sites to find it. The condition is `shouldBeMerging` finding a green, unheld, non-draft PR -- which
   // on a healthy queue is the COMMON case, so unlike the two above this one is usually paid. It is still
   // conditional rather than unconditional: a tick with nothing green and unheld makes no call at all.
-  // #2176: ONE REST CALL PER GREEN PULL REQUEST WITH NO VERDICT AT ITS HEAD -- the ones the review question
-  // is genuinely asked of -- on the CORE pool. `commits` cannot ride on `pr list`: GraphQL refuses it.
-  conditionalOnUnreviewedGreenPr: "api repos/{repo}/pulls/{n}/commits (withCommitChains -- the last authored head)",
+  // #3045 (was #2176's commit chain): ONE REST CALL PER PULL REQUEST THE REVIEW QUESTION IS ASKED OF, plus one per older head a review or
+  // verdict names (at most MAX_EVIDENCE_HEADS), on the CORE pool; a pull request whose checks are running adds the commit list. `commits`
+  // cannot ride on `pr list`: GraphQL refuses it.
+  conditionalOnUnreviewedGreenPr: "api repos/{repo}/compare/{base}...{head} (withPatchIds -- the patch id), and pulls/{n}/commits while checks run",
   // #2416: ONE REST CALL PER OPEN PULL REQUEST CARRYING `awaiting-evidence`, and NONE when no open pull
   // request carries it -- the label's age is not on `pr list`, so the labelled ones are asked and only those.
   conditionalOnAwaitingEvidenceLabel: "api repos/{repo}/issues/{n}/events (readEvidenceLabelledAt -- awaiting-evidence-stale)",
@@ -411,6 +415,14 @@ export const GIT_READS = Object.freeze({
 const defaultSpawn = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", env: sandboxGitEnv() });
 
 /**
+ * `git`'s leading arguments for every read about the PROJECT: `-C <the project checkout>`. #3091: the tick's
+ * `WorkingDirectory` is this TOOL's checkout since the cut-over, so a bare `git ls-remote --heads origin` asked
+ * the TOOL's repository about the PROJECT's rows -- a tool branch ending `-3064` shelved row #3064 for 88
+ * ticks. `HOME_CHECKOUT` is what every other project-file read in the tool already asks.
+ */
+const PROJECT_GIT = Object.freeze(["-C", HOME_CHECKOUT]);
+
+/**
  * WHAT ORIGIN ACTUALLY HOLDS -- every branch whose name ends `-<digits>`, with that row number.
  *
  * #2031: THE GATE HAD NO WAY TO SEE PUSHED WORK, and `ready` with no `session:` label was the entire
@@ -437,7 +449,7 @@ const defaultSpawn = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", 
  */
 export function readRowBranches(run = defaultSpawn) {
   try {
-    return rowBranchesInListing(run("git", [...LS_REMOTE_ARGS]));
+    return rowBranchesInListing(run("git", [...PROJECT_GIT, ...LS_REMOTE_ARGS]));
   } catch {
     return null;
   }
@@ -1987,7 +1999,7 @@ export function answerOrders(rows) {
  * cross-reference too.
  *
  * `null` ON A REFUSED READ, NEVER `[]`: an empty timeline would read every outstanding `answer:` label on
- * it as bare, which is the false-positive direction a refused read must not produce (`readCommitChain`'s
+ * it as bare, which is the false-positive direction a refused read must not produce (`readCommitShas`'s
  * own rule, applied here).
  *
  * @param {number} number @param {(args: string[]) => string} run
@@ -2809,7 +2821,7 @@ function declaredWaitOf(row, holder) {
  * and only when some row is claimed. `null` (herdr could not be asked) never releases a claim as "gone"; see `goneReading`'s own doc.
  *
  * @param {{ rows: any[], claimedComments: any[] | null, openPrs: any[], mergedPrs: any[] | null,
- *   io?: import("./claim-stall.mjs").HostReads, repo?: string, now?: number, restartAt?: number | null,
+ *   elsewhere?: import("./claim-stall.mjs").ElsewherePrs, io?: import("./claim-stall.mjs").HostReads, repo?: string, now?: number, restartAt?: number | null,
  *   agents?: {label: string, status: string}[] | null,
  *   stateDir?: string, log?: (line: string) => void, ledger?: () => string,
  *   read?: typeof readStallState, write?: typeof writeStallState }} args
@@ -2828,11 +2840,11 @@ export function claimStallTick({ io = { git: gitRun, exists: pathExists, mtime: 
 /**
  * `claimStallTick`'s body, with every default resolved by its caller. NEVER CALLED WITHOUT THE CATCH ABOVE: a throw here is the tick's to report.
  * @param {{ rows: any[], claimedComments: any[] | null, openPrs: any[], mergedPrs: any[] | null, restartAt?: number | null,
- *   agents?: {label: string, status: string}[] | null,
+ *   elsewhere?: import("./claim-stall.mjs").ElsewherePrs, agents?: {label: string, status: string}[] | null,
  *   ledger?: () => string, io: import("./claim-stall.mjs").HostReads, repo: string, now: number, stateDir: string,
  *   log: (line: string) => void, read: typeof readStallState, write: typeof writeStallState }} args
  */
-function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, restartAt, agents, ledger, io, repo, now, stateDir, log, read, write }) {
+function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, elsewhere, restartAt, agents, ledger, io, repo, now, stateDir, log, read, write }) {
   const held = rows.filter((r) => labelsOf(r).includes(CLAIM_LABEL));
   if (held.length > 0 && claimedComments === null) {
     log("claim-stall: the comments on the claimed rows could not be read -- NO claim was evaluated this tick.\n");
@@ -2841,7 +2853,7 @@ function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, restartAt, 
   const statePath = `${stateDir}/${STALL_STATE_FILE}`;
   const before = read(statePath);
   const byRow = new Map((claimedComments ?? []).map((r) => [Number(r?.number), r?.comments ?? []]));
-  const readings = readClaims({ held, byRow, openPrs, mergedPrs, io, repo, now, before, log,
+  const readings = readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now, before, log,
     ledger: ledger ?? (() => ledgerText(`${stateDir}/wake-ledger`)), restart: restartFor(held, restartAt),
     agents: agentsFor(held, agents) });
   const after = nextStallState(before, readings, now);
@@ -2873,11 +2885,11 @@ function agentsFor(held, given) {
 
 /**
  * @param {{ held: any[], byRow: Map<number, any[]>, openPrs: any[], mergedPrs: any[] | null,
- *   io: import("./claim-stall.mjs").HostReads, repo: string, now: number, restart: number | null,
+ *   elsewhere?: import("./claim-stall.mjs").ElsewherePrs, io: import("./claim-stall.mjs").HostReads, repo: string, now: number, restart: number | null,
  *   agents: {label: string, status: string}[] | null,
  *   before: import("./claim-stall.mjs").StallState, log: (line: string) => void, ledger: () => string }} ctx
  */
-function readClaims({ held, byRow, openPrs, mergedPrs, io, repo, now, restart, agents, before, log, ledger }) {
+function readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now, restart, agents, before, log, ledger }) {
   /** @type {{ facts: import("./claim-stall.mjs").ClaimFacts, reading: import("./claim-stall.mjs").Reading }[]} */
   const readings = [];
   for (const row of held) {
@@ -2888,7 +2900,8 @@ function readClaims({ held, byRow, openPrs, mergedPrs, io, repo, now, restart, a
     }
     const session = sessions[0].slice(SESSION_PREFIX.length);
     const facts = claimFactsFrom({ row: row.number, title: row.title, session, waiting: declaredWait(row, session),
-      waitKind: declaredWaitOf(row, session)?.kind ?? null, blockedBy: openBlockers(row), comments: byRow.get(Number(row.number)) ?? [], openPrs: withChecksPending(openPrs), mergedPrs, repo }, io);
+      waitKind: declaredWaitOf(row, session)?.kind ?? null, blockedBy: openBlockers(row), comments: byRow.get(Number(row.number)) ?? [], openPrs: withChecksPending(openPrs), mergedPrs,
+      ...(elsewhere === undefined ? {} : { elsewhere: { ...elsewhere, open: elsewhere.open === null ? null : withChecksPending(elsewhere.open) } }), repo }, io);
     if ("skip" in facts) {
       log(`claim-stall: ${facts.skip} -- not evaluated.\n`);
       continue;
@@ -2945,16 +2958,36 @@ function ledgerText(path) {
  * missing nothing is evaluated and nothing is written. A refused pull-request read coalesced to "none open" would read a holder whose PR is in
  * review as one with no PR at all (nudged, or, with a `blockedBy` edge, released), and a refused row read would empty the nudge memory.
  * @param {any[] | null} rows @param {any[] | null} claimedComments @param {any[] | null} prs
- * @param {{ tick?: typeof claimStallTick, merged?: typeof readMergedPrs, log?: (line: string) => void }} [deps]
+ * @param {{ tick?: typeof claimStallTick, merged?: typeof readMergedPrs, elsewhere?: typeof readElsewherePrs, log?: (line: string) => void }} [deps]
  */
-export function claimStallsNow(rows, claimedComments, prs, { tick = claimStallTick, merged = readMergedPrs,
+export function claimStallsNow(rows, claimedComments, prs, { tick = claimStallTick, merged = readMergedPrs, elsewhere = readElsewherePrs,
   log = (line) => process.stderr.write(line) } = {}) {
   if (rows === null || prs === null) {
     log(`claim-stall: the ${rows === null ? "open rows" : "open pull requests"} could not be read -- NO claim was evaluated this tick.\n`);
     return [];
   }
   const anyClaimed = rows.some((r) => labelsOf(r).includes(CLAIM_LABEL));
-  return tick({ rows, claimedComments, openPrs: prs, mergedPrs: anyClaimed ? merged() : null });
+  return tick({ rows, claimedComments, openPrs: prs, mergedPrs: anyClaimed ? merged() : null, ...(anyClaimed ? { elsewhere: elsewhere() } : {}) });
+}
+
+/**
+ * (#3075) THE OTHER TRACKED CODE REPOSITORIES' OPEN AND MERGED PULL REQUESTS, for `claimFactsFrom`: a claim's work can be in a repository other than the
+ * one holding the row (`a11ign/agent-org`'s #38 for #3039), and a list of this repository's alone reads that holder as one with nothing built. Each lane
+ * is read by the readers the scope enumeration already uses (`readPrs`, `readMergedPrs`), aimed at the repository, and its members are tagged with the key.
+ * `undefined` for a project with one code repository, so its reads are exactly what they were. An OPEN list is `null` when ANY repository's was refused (the
+ * claim is then skipped); a merged one only when EVERY repository's was.
+ * @param {readonly Scope[]} [scopes] @param {(args: string[], repo?: string) => string} [run]
+ * @returns {{ open: any[] | null, merged: any[] | null } | undefined}
+ */
+export function readElsewherePrs(scopes = scopesOf([homeProjectDeclaration()]), run = defaultRun) {
+  const lanes = scopes.filter((scope) => scope.key !== "" && scope.code !== null).map((scope) => {
+    const repo = /** @type {ScopeRepository} */ (scope.code).repo;
+    const aimed = (/** @type {string[]} */ args) => run(args, repo);
+    return { open: tagged(readPrs(aimed), scope.key, repo), merged: tagged(readMergedPrs(aimed), scope.key, repo) };
+  });
+  if (lanes.length === 0) return undefined;
+  return { open: lanes.some((lane) => lane.open === null) ? null : lanes.flatMap((lane) => lane.open ?? []),
+    merged: lanes.every((lane) => lane.merged === null) ? null : lanes.flatMap((lane) => lane.merged ?? []) };
 }
 
 /** @param {string[]} args */
@@ -2993,7 +3026,8 @@ export const REPO_CHECKOUT = HOME_CHECKOUT;
  * a drain window exists to stop.
  *
  * @param {{number?: number, title?: string, subIssuesSummary?: {total?: number},
- *          body?: string, blockedBy?: {nodes?: {number?: number, state?: string}[]}}[]} epics
+ *          body?: string, labels?: {name?: string}[],
+ *          blockedBy?: {nodes?: {number?: number, state?: string}[]}}[]} epics
  * @param {string} [today]
  */
 export function unfiledEpics(epics, today = todayIso()) {
@@ -3006,7 +3040,15 @@ export function unfiledEpics(epics, today = todayIso()) {
     // on the open release milestone", RECORDED THAT AS A REAL `blockedBy` EDGE -- doing exactly what the
     // rule asks -- and was asked again anyway, because `unfiledEpics` only ever looked at sub-issues.
     // From outside, a session correctly declining and a session ignoring its orders look identical.
-    .filter((e) => waitingOn(e, today) === null);
+    .filter((e) => waitingOn(e, today) === null)
+    // `parked` AND `needs:chairman` ARE WAITS THAT `waitingOn` DOES NOT READ, AND THIS IS THE FIFTH READER OF THAT
+    // GAP (#2583, #2604, #2653 and #2780 each taught one population; `epicOrders` was one none of them reached).
+    // MEASURED 2026-10-02: #2628 (the documents axis, `parked` by `ceo` on 2026-09-26, the lift `ceo`'s when
+    // `v2 — SaaS depth` closes) was ordered to `product-manager` THREE TIMES IN ONE DAY, and each answer was the
+    // same comment ("left WHOLE", the reason already on the row). Dropped HERE, beside the `waitingOn` filter, and
+    // not taught to `waitingOn`, which every reader of that function would then inherit. Removing the label puts
+    // the epic back, so the lift clears itself.
+    .filter((e) => !labelsOf(e).some((/** @type {string} */ n) => n === PARKED_LABEL || n === CHAIRMAN_LABEL));
 }
 
 /**
@@ -3535,6 +3577,18 @@ function refusalCommitOf(pr) {
 }
 
 /**
+ * PURE. #3045: whether a pull request's patch at its current head equals its patch at `oid` -- the head a review was posted at. `null`
+ * when `oid` is absent or either patch was not read (`withPatchIds`), because absence of a reading is not a reading of change.
+ * @param {any} pr @param {string | null} oid @returns {boolean | null}
+ */
+function patchUnchangedSince(pr, oid) {
+  const ids = pr?.patchIds ?? {};
+  const now = ids[String(pr?.headRefOid ?? "")];
+  const then = oid ? ids[oid] : undefined;
+  return typeof now === "string" && typeof then === "string" ? now === then : null;
+}
+
+/**
  * PURE. #2084: the pull requests that LOOK like they should be merging and that GitHub's review
  * requirement is holding -- plus any whose decision could not be read at all.
  *
@@ -3551,14 +3605,17 @@ function refusalCommitOf(pr) {
  * the two commits let the order open with the comparison the #2084 diagnosis turns on.
  *
  * @param {any[]} prs @param {string[] | null} [required]
+ * `patchUnchanged` (#3045) is whether the pull request's patch is the one the refusing review was posted at: `true`, or `false`, or `null` when
+ * either patch was not read -- unread is not changed, and is not unchanged either.
+ *
  * @returns {{number: number, code: string, why: string, session: string | null, head: string,
- *            refusedAt: string | null}[]} ascending by PR number
+ *            refusedAt: string | null, patchUnchanged: boolean | null}[]} ascending by PR number
  */
 export function reviewBlocked(prs, required = null) {
   const byNumber = new Map(prs.map((pr) => [Number(pr.number), pr]));
   return mergeCandidates(prs, required)
     .map((pr) => ({ number: Number(pr.number), ...subjectIdentity(pr), ...reviewStateOf(pr), session: sessionOf(pr),
-      head: String(pr.headRefOid ?? ""), refusedAt: refusalCommitOf(pr) }))
+      head: String(pr.headRefOid ?? ""), refusedAt: refusalCommitOf(pr), patchUnchanged: patchUnchangedSince(pr, refusalCommitOf(pr)) }))
     .filter((r) => BLOCKING_REVIEW_STATES.includes(r.code))
     // #2416: `pr-review-blocked` is the third route into a review -- it tells `product-manager` to prompt the
     // reviewer for an AWAITING_REVIEW pull request. A labelled one is waiting for evidence, not a reviewer; a
@@ -3983,45 +4040,90 @@ export function reviewableHead(pr) {
 }
 
 /**
- * The commits of one pull request, oldest first, or `null` when the read was refused.
+ * #3045: THE PATCH ID OF ONE HEAD -- what the pull request changes relative to its base, hashed -- or `null` when the read was refused.
  *
- * REST, NOT THE LIST CALL, AND MEASURED: `commits` on `gh pr list --limit 100` is refused outright by
- * GraphQL ("requesting up to 1,000,000 possible nodes which exceeds the maximum limit of 500,000",
- * 2026-09-24) even with no other field beside it, so it cannot ride on `readPrs` however cheap it looks.
- * REST also spends the CORE pool, not the GRAPHQL one the list call already leans on, and returns every
- * commit rather than the first hundred -- `reviewChainOf` reads the END of the list.
+ * THE COMPARE API'S DIFF, `base...head`, because that is `merge-base(base, head)..head` and the gate holds no checkout. Reading it
+ * as a diff (not the JSON's per-file `patch`) is what keeps a large change whole: the JSON truncates a file's patch silently, and a
+ * truncated patch would hash two different changes to one id. A refusal -- including GitHub's own "diff too large" -- is `null`,
+ * which every caller reads as "the patch is not known", never as "the patch is empty".
  *
- * @param {number} number @param {(args: string[]) => string} run
- * @returns {{oid: string, messageHeadline: string, parents: number}[] | null}
+ * `head` MAY BE AN ABBREVIATION (a verdict's `at <head8>`): the compare API resolves it.
+ *
+ * @param {string} head @param {string} base @param {(args: string[]) => string} run @returns {string | null}
  */
-export function readCommitChain(number, run = defaultRun) {
+export function readPatchId(head, base, run = defaultRun) {
   try {
-    const out = run(["api", `repos/${repoNow()}/pulls/${number}/commits`, "--paginate", "--jq",
-      ".[] | {oid: .sha, parents: (.parents | length), messageHeadline: (.commit.message | split(\"\\n\")[0])}"]);
-    const commits = out.split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l));
-    return commits.length > 0 ? commits : null;
+    return patchIdOfDiff(run(["api", "-H", "Accept: application/vnd.github.diff", `repos/${repoNow()}/compare/${base}...${head}`]));
   } catch {
-    // A REFUSED READ LEAVES THE PULL REQUEST UNENRICHED, and `draftOrder` then reads the current head alone
-    // -- this gate's behaviour before #2176. Never an empty chain: that would claim "no commits".
     return null;
   }
 }
 
 /**
- * The pull requests, each with its `commits` attached WHERE THE REVIEW QUESTION NEEDS THEM -- green, and
- * with no verdict at the current head. Everything else is returned untouched, so a quiet queue pays no call
- * and a busy one pays one per unreviewed green pull request, not one per open one.
+ * #3045: The shas of one pull request's commits, oldest first, or `null` when the read was refused. REST, not the list call: `commits`
+ * on `gh pr list --limit 100` is refused outright by GraphQL ("requesting up to 1,000,000 possible nodes which exceeds the maximum
+ * limit of 500,000", 2026-09-24), and REST returns every commit rather than the first hundred.
+ *
+ * @param {number} number @param {(args: string[]) => string} run @returns {string[] | null}
+ */
+export function readCommitShas(number, run = defaultRun) {
+  try {
+    const out = run(["api", `repos/${repoNow()}/pulls/${number}/commits`, "--paginate", "--jq", ".[].sha"]);
+    const shas = out.split("\n").map((l) => l.trim()).filter((l) => l !== "");
+    return shas.length > 0 ? shas : null;
+  } catch {
+    // A REFUSED READ LEAVES THE PULL REQUEST UNENRICHED: the gate then reads the current head alone. Never an empty list, which would claim "no commits".
+    return null;
+  }
+}
+
+/**
+ * #3045: HOW THE REVIEW QUESTION STANDS FOR A PULL REQUEST -- `"settled"` (green, so a reviewer is asked now), `"running"` (checks not
+ * finished, which an update-branch causes on a head with no new work), or `null` (red or headless: not this question's). The one place
+ * the two readers of it, `withPatchIds` and `draftOrder`, can agree. The `awaiting-evidence` label is NOT read here: `draftOrder` still
+ * reads a verdict somebody posted on a labelled pull request, and only `withPatchIds` declines to spend calls on one.
+ *
+ * @param {any} pr @returns {"settled" | "running" | null}
+ */
+export function reviewWait(pr) {
+  if (!pr?.headRefOid) return null;
+  if (reviewableHead(pr)) return "settled";
+  return checksSettledGreen(newestPerName(pr?.statusCheckRollup)) === null ? "running" : null;
+}
+
+/**
+ * #3045: THE PULL REQUESTS, each with `patchIds` (oid -> patch id) WHERE THE REVIEW QUESTION NEEDS THEM, so a verdict, a review and a
+ * refusal can stand for the PATCH rather than for the head they were posted at. Everything else is returned untouched, so a red or
+ * labelled pull request pays no call.
+ *
+ * A `"settled"` pull request is read at its head and at every older head a review or verdict names (`evidenceHeads`). A `"running"`
+ * one is read at its head and its PREDECESSOR only: the question is whether the checks now running are for a head that adds nothing
+ * (an update-branch), and if so `draftOrder` keeps the order it already had instead of dropping it for the minutes CI takes -- which
+ * is what wrote a `RESET` and re-armed the order after each of #3033's four merges. A refused read leaves a pull request unenriched.
  *
  * @param {any[]} prs @param {(args: string[]) => string} [run]
  */
-export function withCommitChains(prs, run = defaultRun) {
+export function withPatchIds(prs, run = defaultRun) {
   return prs.map((pr) => {
-    const head = reviewableHead(pr);
-    // #2416: NO VERDICT WILL BE ASKED OF A LABELLED PULL REQUEST, so its commit chain is a call for nothing.
-    if (!head || awaitingEvidence(pr) || verdictAmong(pr, [head]).verdict !== null) return pr;
-    const commits = readCommitChain(Number(pr.number), run);
-    return commits ? { ...pr, commits } : pr;
+    const wait = awaitingEvidence(pr) ? null : reviewWait(pr);
+    if (wait === null) return pr;
+    const base = String(pr.baseRefName ?? "main");
+    const head = String(pr.headRefOid);
+    const others = wait === "settled" ? evidenceHeads(pr) : predecessorOf(pr, run);
+    const entries = [head, ...others].map((oid) => /** @type {const} */ ([oid, readPatchId(oid, base, run)]));
+    const known = entries.filter(([, id]) => id !== null);
+    return known.length > 0 ? { ...pr, patchIds: Object.fromEntries(known) } : pr;
   });
+}
+
+/**
+ * The commit before a pull request's head, as a one-element list, or none when the commits could not be read or do not end at the
+ * head (a push landed between the list and the commits).
+ * @param {any} pr @param {(args: string[]) => string} run @returns {string[]}
+ */
+function predecessorOf(pr, run) {
+  const shas = readCommitShas(Number(pr.number), run);
+  return shas && shas.length >= 2 && shas[shas.length - 1] === String(pr.headRefOid) ? [shas[shas.length - 2]] : [];
 }
 
 /** #2416: the PR label meaning "my done-when needs an external run, and the evidence is not posted yet". */
@@ -4160,7 +4262,7 @@ function sessionNamedByBranch(headRef, live) {
 export function readWorktreeStamps(run = defaultSpawn, owner = worktreeOwner) {
   try {
     const stamps = new Map();
-    for (const block of run("git", ["worktree", "list", "--porcelain"]).split(/\n\s*\n/)) {
+    for (const block of run("git", [...PROJECT_GIT, "worktree", "list", "--porcelain"]).split(/\n\s*\n/)) {
       const path = /^worktree (.+)$/m.exec(block)?.[1];
       const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1];
       const stamped = path && branch ? owner(path) : null;
@@ -6100,8 +6202,8 @@ function repositoryNote(scope) {
  * stays where it is, so one declared project makes the calls it made before and the orders it made before.
  *
  * WHAT IT DOES NOT ASK, and why (each is the primary project's, or a later row's): the local git reads (`rowBranches`, claim
- * stalls) look at THIS checkout and its worktrees; `hostDrift`, `trunkRed`, the disk and the reviewer's credentials are
- * facts about the host or about the primary's `main`; and Project-1 membership names a board, which 3d and 3f make a
+ * stalls) look at THIS checkout and its worktrees; `hostDrift`, the disk and the reviewer's credentials are
+ * facts about the host; the scope's OWN `main` is asked (`codeReadings`' `trunkRed`, #3079) and the primary's is not; and Project-1 membership names a board, which 3d and 3f make a
  * declaration's. Each is passed as `undefined`, which `decide` reads as "not asked", so nothing here invents a reading.
  * @param {Scope} scope @param {boolean} drain
  * @param {ReturnType<typeof readLanes>} [read] the lanes, when the caller has already asked
@@ -6117,7 +6219,7 @@ export function scopeTick(scope, drain, read = readLanes(scope), readings = { co
   const openPrs = prs ?? [];
   const rows = readyRows ?? [];
   const allOpen = openRows ?? [];
-  const code = inRepo(read.codeRepo, () => readings.code(openPrs));
+  const code = inRepo(read.codeRepo, () => readings.code(openPrs, scope));
   const tracker = inRepo(read.trackerRepo, () => readings.tracker({ rows, allOpen }));
   const prFiles = comparablePrFiles(openPrs);
   // WHAT THE TRACKER READINGS RETURN IS TAGGED HERE, not inside them: an epic or a closed row that carried no key would make `epic-7` and
@@ -6126,21 +6228,31 @@ export function scopeTick(scope, drain, read = readLanes(scope), readings = { co
   const orders = decide({ prs: code.prs, readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required: code.required, baseTip: code.baseTip,
     epics: mark(tracker.epics), answerOwed: rowsOwingAnswers({ openRows: allOpen, openPrs, closedRows: mark(tracker.closedRows) }),
-    openRows: allOpen, claimedComments: tracker.claimedComments, unarmed: code.unarmed, closings: tracker.closings,
+    openRows: allOpen, claimedComments: tracker.claimedComments, unarmed: code.unarmed, closings: tracker.closings, trunkRed: code.trunkRed,
     key: scope.key, repo: scope.code?.repo ?? scope.tracker?.repo });
   return { orders: orders.map((order) => ({ ...order, prompt: `${order.prompt}${repositoryNote(scope)}` })),
     blocked: partitionUnclaimed(rows, prFiles, { rowBranches: null, openRows: allOpen }).blocked, refused };
 }
 
 /**
- * The reads about a scope's PULL REQUESTS that are made per tick beyond the list itself. Run inside `inRepo` for the code repository.
- * @param {any[]} openPrs
+ * The reads about a scope's PULL REQUESTS that are made per tick beyond the list itself, and about its `main` (#3079). Run inside `inRepo` for the code repository.
+ * `trunkRed` is `undefined` for a scope with no code repository, and `null` for a green or an unreadable `main`: neither emits an order.
+ * @param {any[]} openPrs @param {Scope} scope
  */
-function codeReadings(openPrs) {
+function codeReadings(openPrs, scope) {
   const required = requiredWhenRed(openPrs);
   const split = readEjections(readUnarmed(shouldBeMerging(openPrs, required)));
-  return { prs: withEjections(withEvidenceLabelAges(withCommitChains(openPrs)), split?.ejections), required, baseTip: baseTipWhenRed(openPrs),
-    unarmed: split === null ? null : split.unarmed };
+  return { prs: withEjections(withEvidenceLabelAges(withPatchIds(openPrs)), split?.ejections), required, baseTip: baseTipWhenRed(openPrs),
+    unarmed: split === null ? null : split.unarmed,
+    trunkRed: readScopeTrunkRed(scope) };
+}
+
+/**
+ * Whether a scope's own `main` is red, as `readTrunkRed` says it -- `undefined` for a scope with no code repository, which has no `main` to ask.
+ * @param {Scope} scope @param {(args: string[]) => string} [run]
+ */
+export function readScopeTrunkRed(scope, run) {
+  return scope.code === null ? undefined : readTrunkRed(run, trunkOfCodeRepository(scope.key, scope.code.repo));
 }
 
 /**
@@ -6351,7 +6463,7 @@ export function fleetWaitingFacts(openRows, labJobs = []) {
 
 /**
  * WHEN THIS COMMIT WAS COMMITTED, as epoch ms, or `null`. The PR's PUSH TIME is not on `pr list` (`commits` is refused by GraphQL, see
- * `readCommitChain`), and the committer date of the head is the best REST has: a rebase, a merge of `main` and GitHub's "Update branch"
+ * `readCommitShas`), and the committer date of the head is the best REST has: a rebase, a merge of `main` and GitHub's "Update branch"
  * all make a head whose committer date is the push. `null` for a refused read, never "long ago".
  * @param {string} oid @param {(args: string[]) => string} run @returns {number | null}
  */
@@ -6638,7 +6750,7 @@ function main() {
   // pay for it twice on exactly the red tick this row is about.
   const required = requiredWhenRed(openPrs);
   const baseTip = baseTipWhenRed(openPrs), armingSplit = readEjections(readUnarmed(shouldBeMerging(openPrs, required))); // #3019: BEFORE the arguments -- ejected PRs are stamped onto `prs` and leave `unarmed`
-  const decideArgs = { primaryDrift, prs: withEjections(withPrOwners(withEvidenceLabelAges(withCommitChains(openPrs)), allOpen, stampLookup()), armingSplit?.ejections), readyRows: rows, promotableRows: promotableRows ?? [],
+  const decideArgs = { primaryDrift, prs: withEjections(withPrOwners(withEvidenceLabelAges(withPatchIds(openPrs)), allOpen, stampLookup()), armingSplit?.ejections), readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required, baseTip,
     epics: epicsWhenShelfEmpty(rows),
     answerOwed: rowsOwingAnswers({ openRows: allOpen, openPrs, closedRows: closedAnswerRows() }),

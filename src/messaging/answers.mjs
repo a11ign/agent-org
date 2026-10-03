@@ -22,9 +22,9 @@
 // new ask: those messages name the row, and the row is what is asking.
 //
 // WHAT THIS DOES NOT DO: send anything. It returns what the caller (the listener) must send, as `inbound.handle` does, and it is handed
-// a GitHub writer rather than reaching for `gh`. THE REPLY TARGET IS NOT IN THE BRANDED VALUE: `inbound.mjs` does not carry
-// `reply_to_message`, so the caller passes `replyToMessageId` from the raw update. That is the one unbranded input, and it can only
-// choose WHICH ledger-known request the chairman's verified text lands on, never widen what a verified answer may do.
+// a GitHub writer rather than reaching for `gh`. THE REPLY TARGET IS IN THE BRANDED VALUE (`replyToMessageId`, minted by `inbound.mjs`), so
+// there is no unbranded input: it can only choose WHICH ledger-known request the chairman's verified text lands on, never widen what a
+// verified answer may do.
 //
 // **THE CHAIRMAN'S TEXT IS QUOTED, NEVER PASTED.** Row comments are read by line-anchored parsers (`Not-before:`, `Acceptance:`) and by a
 // regex for the `chairman-options` HTML comment, so a reply is written as a blockquote with its HTML comment markers escaped.
@@ -151,10 +151,13 @@ export function createAnswers({ ledger, github, chairman, answerLabel, now }) {
     return null;
   }
 
-  /** @param {Readonly<Record<string, any>>} accepted @param {string | null} replyToMessageId @returns {Promise<Answered>} */
-  async function resolve(accepted, replyToMessageId) {
+  /** @param {number | null} id @returns {string | null} */
+  const refOf = (id) => (Number.isSafeInteger(id) ? String(id) : null);
+
+  /** @param {Readonly<Record<string, any>>} accepted @returns {Promise<Answered>} */
+  async function resolve(accepted) {
     const isButton = accepted.kind === "button";
-    const ref = isButton ? (accepted.messageId === null ? null : String(accepted.messageId)) : replyToMessageId;
+    const ref = refOf(isButton ? accepted.messageId : accepted.replyToMessageId);
     const lines = ledger.read();
     const request = ref === null ? null : requestOf(lines, ref);
     // A reply to something that is not a request is conversation (row 10); a button under something that is not one is the chairman's to be told.
@@ -183,15 +186,14 @@ export function createAnswers({ ledger, github, chairman, answerLabel, now }) {
   return {
     /**
      * @param {unknown} accepted  what `createInbound(...).handle` minted for THIS chairman; anything else is refused
-     * @param {{replyToMessageId?: number | null}} [source]  for a message: the id of the message it replies to, from the raw update
      * @returns {Promise<Answered>}
      * @throws {TypeError} for a value `inbound.mjs` did not mint for this chairman
      */
-    answer(accepted, { replyToMessageId = null } = {}) {
+    answer(accepted) {
       if (!isAccepted(accepted, chairman)) throw new TypeError("only a value minted by createInbound for this chairman may write to a row");
       const value = /** @type {Readonly<Record<string, any>>} */ (accepted);
       // One at a time: two presses of one button must not both read "nothing done yet".
-      const run = queue.then(() => resolve(value, Number.isSafeInteger(replyToMessageId) ? String(replyToMessageId) : null));
+      const run = queue.then(() => resolve(value));
       queue = run.then(() => undefined, () => undefined);
       return run;
     },

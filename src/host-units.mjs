@@ -1925,6 +1925,90 @@ export function workingDirectoryOf(unitText) {
 }
 
 /**
+ * The value `AGENT_ORG_HOST` has when a service manager starts the unit, or `null` when it has none: the unit's own `Environment=` lines
+ * and then its drop-ins', IN ORDER, because that is the order systemd applies them. LAST WINS for a repeated variable, and a bare
+ * `Environment=` RESETS the list, both systemd's rules and not ours. An EMPTY value is `null` too: `resolveHomeCheckout` reads empty as
+ * unset, so a unit that starts the tool with `AGENT_ORG_HOST=` starts it the way an unset one does.
+ * @param {string[]} texts the unit file, then each `<unit>.d/*.conf` in name order @returns {string | null}
+ */
+export function hostVariableAsRun(texts) {
+  /** @type {string | null} */
+  let value = null;
+  for (const line of texts.flatMap((text) => text.split("\n"))) {
+    const set = /^\s*Environment=(.*)$/.exec(line);
+    if (set === null) continue;
+    if (set[1].trim() === "") value = null;
+    for (const [, quoted, single, bare] of set[1].matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)) {
+      const assignment = quoted ?? single ?? bare;
+      if (assignment.startsWith(`${HOST_VARIABLE}=`)) value = assignment.slice(HOST_VARIABLE.length + 1) || null;
+    }
+  }
+  return value;
+}
+
+/**
+ * THE DROP-INS A UNIT RUNS WITH, which the chairman's own hand fix lives in (`a11ign-work-tick.service.d/agent-org-host.conf`): a check that read
+ * only the unit file would refuse the one host that works. An absent directory is no drop-ins; an unreadable one is not guessed at.
+ * @param {string} installedDir @param {string} unit @param {{ readDir: typeof readdirSync, read: typeof readFileSync }} deps @returns {string[]}
+ */
+function dropInTexts(installedDir, unit, { readDir, read }) {
+  const dir = join(installedDir, `${unit}.d`);
+  /** @type {string[]} */
+  let names;
+  try {
+    names = /** @type {string[]} */ (readDir(dir)).map(String);
+  } catch {
+    return [];
+  }
+  return names.filter((name) => name.endsWith(".conf")).sort().flatMap((name) => textOf(join(dir, name), read) ?? []);
+}
+
+/**
+ * #3039: A UNIT THAT WOULD START THE TOOL WITHOUT SAYING WHICH PROJECT IT SERVES. A unit whose `WorkingDirectory` is the declared `tool`
+ * checkout runs the tool outside the monorepo layout, where `resolveHomeCheckout` REFUSES an unset `AGENT_ORG_HOST` by name -- every tick
+ * of it, from the first, as the 63 on 2026-10-02 were. `host:check` said only `STALE` of that unit and never asked "would this start?".
+ * The question is asked of the unit AS IT WOULD RUN (`hostVariableAsRun`), and a unit whose working directory is anything else is not
+ * this check's: the monorepo form resolves its project from the tree it sits in.
+ * @param {{ unit: string, text: string, dropIns: string[], tool: string | undefined }} unit @returns {Finding[]}
+ */
+function unitWithoutHostVariable({ unit, text, dropIns, tool }) {
+  if (tool === undefined || workingDirectoryOf(text) !== tool) return [];
+  if (hostVariableAsRun([text, ...dropIns]) !== null) return [];
+  return [{ unit, problem: `WOULD NOT START: ${HOST_VARIABLE} IS UNSET`,
+    detail: `${unit} runs from the tool's checkout (${tool}) with no ${HOST_VARIABLE} in its Environment= lines or in ${unit}.d/*.conf, so the tool `
+      + `refuses to resolve its project and exits on every start. Add Environment=${HOST_VARIABLE}=<checkout>/.agent-org/host.json to the unit `
+      + `(\`host:install\` renders it from host.json's \`tool\`) or to ${unit}.d/*.conf.` }];
+}
+
+/**
+ * Every INSTALLED unit that would start without `AGENT_ORG_HOST`, read as the service manager would run it (#3039). An unreadable unit is
+ * `unitDrift`'s finding and is skipped here, and a host that names no `tool` has no unit this applies to.
+ * @param {ShippedDeps & { installedDir?: string }} [deps] @returns {Finding[]}
+ */
+export function unitsWithoutHostVariable(deps = {}) {
+  const { installedDir = INSTALLED_DIR, readDir = readdirSync, read = readFileSync } = deps;
+  const { tool } = shippedContext(deps).host();
+  return installedOrgUnits(installedDir, readDir, unitPrefix(deps)).flatMap((unit) => {
+    const text = textOf(join(installedDir, unit), read);
+    return text === null ? [] : unitWithoutHostVariable({ unit, text, dropIns: dropInTexts(installedDir, unit, { readDir, read }), tool });
+  });
+}
+
+/**
+ * The same question asked of what `host:install` is ABOUT TO WRITE: the shipped text, with the drop-ins already on the host (they are not
+ * ours to remove, and they are what is left running). Asked before any write, so a refusal leaves the host as it was.
+ * @param {ShippedDeps & { installedDir?: string }} deps @returns {Finding[]}
+ */
+function shippedUnitsWithoutHostVariable(deps) {
+  const { installedDir = INSTALLED_DIR, readDir = readdirSync, read = readFileSync } = deps;
+  const { tool } = shippedContext(deps).host();
+  return shippedUnitNames(deps).flatMap((unit) => {
+    const text = shippedUnitText(unit, deps);
+    return text === null ? [] : unitWithoutHostVariable({ unit, text, dropIns: dropInTexts(installedDir, unit, { readDir, read }), tool });
+  });
+}
+
+/**
  * #2620: THE EIGHTEENTH ENTRY. Every file in the tool's host directory must be one the tool records (`TOOL_ENTRIES`), and every unit in
  * the project's directory one its declaration lists (`units.own`); a file that is neither is REFUSED, named, rather than adopted by
  * whichever glob it happens to match -- `shippedUnits` matches on a suffix, so a stray `.service` would otherwise be installed as the
@@ -1986,7 +2070,7 @@ export function hostUnitDrift(deps = {}) {
   // posture is nobody's business either -- and a laptop told "ORG IS IN AUTO MODE" teaches its owner to
   // ignore this command, which would lose the timer finding along with it.
   return [...unclassifiedInLiveTree(deps), ...unitDrift(shippedUnitNames(deps).map((u) => unitState(u, deps))),
-    ...orphanedUnits(deps), ...supersededHostScripts(deps), ...missingUnitPrograms(deps),
+    ...orphanedUnits(deps), ...supersededHostScripts(deps), ...missingUnitPrograms(deps), ...unitsWithoutHostVariable(deps),
     ...hostIdentityDrift(deps), ...identityDrift(deps), ...permissionModeDrift(deps), ...modelEffortDrift(deps)];
 }
 
@@ -1997,6 +2081,13 @@ const defaultSystemctl = (args) =>
 /** An install REFUSES while an entry is classified nowhere: it would copy whatever a glob matched. @param {Parameters<typeof unclassifiedInLiveTree>[0]} deps */
 function refuseUnclassified(deps) {
   const refused = unclassifiedInLiveTree(deps);
+  if (refused.length === 0) return;
+  throw new Error(`cannot install: ${refused.map((f) => `${f.unit}: ${f.problem}`).join("; ")} -- ${refused[0].detail}`);
+}
+
+/** An install REFUSES a unit that would start without `AGENT_ORG_HOST` (#3039), before anything is written. @param {Parameters<typeof shippedUnitsWithoutHostVariable>[0]} deps */
+function refuseUnitsWithoutHostVariable(deps) {
+  const refused = shippedUnitsWithoutHostVariable(deps);
   if (refused.length === 0) return;
   throw new Error(`cannot install: ${refused.map((f) => `${f.unit}: ${f.problem}`).join("; ")} -- ${refused[0].detail}`);
 }
@@ -2034,6 +2125,7 @@ export function hostUnitsInstall(deps = {}) {
     out = (l) => process.stdout.write(l) } = deps;
   const { shippedDir = SHIPPED_DIR, readDir = readdirSync, git = defaultGit } = deps;
   refuseUnclassified(deps);
+  refuseUnitsWithoutHostVariable(deps);
   // `readDir` IS INJECTED THROUGH TO BOTH DISCOVERIES, and the first version of this hard-wired
   // `readdirSync` into the `orphanedUnits` call below. A test could not reach the removal path at all,
   // so deleting the ENTIRE removal loop killed zero tests -- it passed vacuously, which is the same

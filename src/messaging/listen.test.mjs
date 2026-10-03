@@ -1,14 +1,14 @@
 // @ts-check
-// THE LISTENER'S `onForward` (a11ign/a11ign#3064 done-whens 1 to 4): an accepted MESSAGE reaches `converse`, an accepted BUTTON PRESS reaches
-// `answers`, neither reaches the other; a queue that cannot load is TOLD to the chairman and ledgered; the unit sets `AGENT_ORG_HOST`; and the
-// "no consumer yet" line is gone.
+// THE LISTENER'S `onForward` (a11ign/a11ign#3064 done-whens 1 to 4): an accepted MESSAGE that is not an answer reaches `converse`, a BUTTON PRESS and a
+// REPLY TO A REQUEST reach `answers` and never `converse`; a queue that cannot load is TOLD to the chairman and ledgered; the unit sets `AGENT_ORG_HOST`;
+// and the "no consumer yet" line is gone. (`github-writer.test.mjs` drives the real `answers` through the same forwarder against a fixture `gh`.)
 //
 // EVERY ACCEPTED VALUE IS MINTED by the real `createInbound` over a real ledger file (never built by hand), and the consumers are recorders: the real
-// `converse` is its own file's test (`converse.test.mjs`) and queues to the host's real queue, which a test must not do. What is NOT stubbed is this
-// file's own choice: which consumer, what is sent, what is ledgered. `main()` is driven end to end once, over a fake `fetch`, so "the listener passes
-// its default `onForward` to the loop" is a reading of the running program and not of `forwarding` alone.
+// `converse` is its own file's test and queues to the host's real queue, which a test must not do. What is NOT stubbed is this file's own choice:
+// which consumer, what is sent, what is ledgered. `main()` is driven end to end once, over a fake `fetch`, so "the listener passes its default
+// `onForward` to the loop" is a reading of the running program and not of `createForwarder` alone.
 //
-// POSITIVE CONTROL: "neither reaches the other" is also what a recorder that records nothing reports, so each routing test first asserts the OWN
+// POSITIVE CONTROL: "never reaches the other" is also what a recorder that records nothing reports, so each routing test first asserts the OWN
 // consumer was called with the very value minted.
 
 import assert from "node:assert/strict";
@@ -22,13 +22,15 @@ import { fileURLToPath } from "node:url";
 const HOST_FILE = join(homedir(), "repos", "a11y-witness", ".agent-org", "host.json");
 if (!process.env.AGENT_ORG_HOST && existsSync(HOST_FILE)) process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { createGhWriter, forwarding, handoffQueueBeside, main, EXIT } = await import("./listen.mjs");
+const { createForwarder, tellingWhenUndelivered, main, EXIT } = await import("./listen.mjs");
 const { createConverse } = await import("./converse.mjs");
 const { createInbound } = await import("./inbound.mjs");
 const { createLedger, readLedgerLines } = await import("./ledger.mjs");
 const { createFakeProvider } = await import("./fake-provider.mjs");
 
 const CHAIRMAN = Object.freeze({ userId: 4242, chatId: 4242 });
+/** The message id of a request the organisation sent: a reply to it is an answer, and a reply to anything else is conversation. */
+const REQUEST_MESSAGE = 501;
 const SOURCE = readFileSync(fileURLToPath(new URL("./listen.mjs", import.meta.url)), "utf8");
 const UNIT = readFileSync(fileURLToPath(new URL("../../host/chairman-listen.service.in", import.meta.url)), "utf8");
 
@@ -36,11 +38,14 @@ const scratch = mkdtempSync(join(tmpdir(), "messaging-listen-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 let nextDir = 0;
 
-/** @param {number} id @param {string} text */
-const messageUpdate = (id, text) => ({ update_id: id, message: { message_id: 900 + id, from: { id: CHAIRMAN.userId }, chat: { id: CHAIRMAN.chatId, type: "private" }, text } });
+/** @param {number} id @param {string} text @param {number} [replyTo] */
+const messageUpdate = (id, text, replyTo) => ({
+  update_id: id,
+  message: { message_id: 900 + id, from: { id: CHAIRMAN.userId }, chat: { id: CHAIRMAN.chatId, type: "private" }, text, ...(replyTo === undefined ? {} : { reply_to_message: { message_id: replyTo } }) },
+});
 /** @param {number} id */
 const pressUpdate = (id) => ({
-  update_id: id, callback_query: { id: `cbq-${id}`, from: { id: CHAIRMAN.userId }, data: "ans:A", message: { message_id: 501, chat: { id: CHAIRMAN.chatId, type: "private" } } },
+  update_id: id, callback_query: { id: `cbq-${id}`, from: { id: CHAIRMAN.userId }, data: "ans:A", message: { message_id: REQUEST_MESSAGE, chat: { id: CHAIRMAN.chatId, type: "private" } } },
 });
 
 /** @returns {{ ledger: ReturnType<typeof createLedger>, inbound: ReturnType<typeof createInbound> }} a fresh ledger file and the real core over it */
@@ -57,60 +62,70 @@ function mint(inbound, update) {
   return /** @type {any} */ (handled).accepted;
 }
 
-/** Recorders for the two consumers; `converseText` is what `converse.forward` is made to do. */
+/** Recorders for the two consumers. `answers` takes a press and a reply to REQUEST_MESSAGE, as the real one does, and calls the rest not an answer. */
 function recorders() {
   /** @type {Record<string, any>[]} */ const toConverse = [];
   /** @type {Record<string, any>[]} */ const toAnswers = [];
-  const consumers = {
-    converse: { forward: async (/** @type {Record<string, any>} */ accepted) => { toConverse.push(accepted); return { outcome: "queued" }; } },
-    answers: { answer: async (/** @type {Record<string, any>} */ accepted) => { toAnswers.push(accepted); return { text: "Recorded on a11ign/a11ign#2885: ceo has it." }; } },
+  const answers = {
+    answer: async (/** @type {Record<string, any>} */ accepted) => {
+      toAnswers.push(accepted);
+      const takes = accepted.kind === "button" || accepted.replyToMessageId === REQUEST_MESSAGE;
+      return takes ? { action: "reply", text: "Recorded on a11ign/a11ign#2885: ceo has it." } : { action: "not-an-answer" };
+    },
   };
-  return { toConverse, toAnswers, consumers };
+  const converse = async (/** @type {Record<string, any>} */ accepted) => { toConverse.push(accepted); };
+  return { toConverse, toAnswers, answers, converse };
 }
 
-describe("routing by kind (done-when 1)", () => {
-  test("a message reaches converse with the minted value, and answers is not called", async () => {
-    const { ledger, inbound } = core();
-    const { toConverse, toAnswers, consumers } = recorders();
+/** @param {ReturnType<typeof recorders>} consumers @param {ReturnType<typeof createFakeProvider>} provider */
+const forwarderOver = (consumers, provider) => createForwarder({
+  answers: consumers.answers, converse: consumers.converse, send: (message) => provider.send(message), log: () => {},
+});
+
+describe("routing (done-when 1)", () => {
+  test("a message that is not an answer reaches converse with the minted value", async () => {
+    const { inbound } = core();
+    const consumers = recorders();
     const provider = createFakeProvider();
-    const accepted = mint(inbound, messageUpdate(1, "please look at #3064"));
-    await forwarding({ ledger, send: (message) => provider.send(message), consumers })(accepted);
-    assert.deepEqual(toConverse, [accepted]);
-    assert.equal(toConverse[0], accepted, "the very value the core minted, not a copy: `isAccepted` knows only that one");
-    assert.deepEqual(toAnswers, []);
+    const accepted = mint(inbound, messageUpdate(1, "how is the queue today?"));
+    await forwarderOver(consumers, provider)(accepted);
+    assert.deepEqual(consumers.toConverse, [accepted], "converse did not get the very value the core minted");
+    assert.deepEqual(provider.sent, [], "converse speaks for itself; the listener says nothing");
   });
 
   test("a button press reaches answers with the minted value, converse is not called, and what answers says is sent to the chairman", async () => {
-    const { ledger, inbound } = core();
-    const { toConverse, toAnswers, consumers } = recorders();
+    const { inbound } = core();
+    const consumers = recorders();
     const provider = createFakeProvider();
     const accepted = mint(inbound, pressUpdate(2));
-    await forwarding({ ledger, send: (message) => provider.send(message), consumers })(accepted);
-    assert.equal(toAnswers[0], accepted);
-    assert.deepEqual(toConverse, []);
+    await forwarderOver(consumers, provider)(accepted);
+    assert.deepEqual(consumers.toAnswers, [accepted]);
+    assert.deepEqual(consumers.toConverse, []);
     assert.deepEqual(provider.sent.map((message) => message.text), ["Recorded on a11ign/a11ign#2885: ceo has it."]);
   });
 
-  test("an accepted kind nothing consumes is an error, never a silent return", async () => {
-    const { ledger } = core();
-    const { toConverse, toAnswers, consumers } = recorders();
-    const forward = forwarding({ ledger, send: async () => ({ messageRef: "1" }), consumers });
-    await assert.rejects(forward({ kind: "edited_message", updateId: 3 }), /nothing consumes/);
-    assert.deepEqual([...toConverse, ...toAnswers], []);
+  test("a reply to a request reaches answers and NEVER converse (routing by kind alone would send it to conversation)", async () => {
+    const { inbound } = core();
+    const consumers = recorders();
+    const provider = createFakeProvider();
+    const accepted = mint(inbound, messageUpdate(3, "hold it until Monday", REQUEST_MESSAGE));
+    await forwarderOver(consumers, provider)(accepted);
+    assert.deepEqual(consumers.toAnswers, [accepted]);
+    assert.deepEqual(consumers.toConverse, [], "an answer the chairman gave was also queued for ceo as conversation");
+    assert.equal(provider.sent.length, 1);
   });
 });
 
 describe("a queue that cannot load is told, not dropped (done-when 2)", () => {
   const refusal = new Error("the declaration cannot be read: set AGENT_ORG_HOST");
-  /** What the real `converse.forward` does when its queue will not load: it rejects BEFORE it writes a ledger line of its own. */
-  const unqueueable = (/** @type {Consumers} */ working) => ({ ...working, converse: { forward: async () => { throw refusal; } } });
-  /** @typedef {ReturnType<typeof recorders>["consumers"]} Consumers */
+  const unqueueable = async () => { throw refusal; };
 
   test("a message: the chairman is SENT the reason, and the ledger line says refused", async () => {
     const { ledger, inbound } = core();
     const provider = createFakeProvider();
     const accepted = mint(inbound, messageUpdate(4, "are you there?"));
-    await assert.rejects(forwarding({ ledger, send: (message) => provider.send(message), consumers: unqueueable(recorders().consumers) })(accepted), /queue could not be reached/);
+    const forward = tellingWhenUndelivered({ ledger, send: (message) => provider.send(message), converse: unqueueable });
+    await assert.rejects(forward(accepted), /queue could not be reached/);
     assert.equal(provider.sent.length, 1);
     assert.match(provider.sent[0].text, /could not queue that for ceo.*AGENT_ORG_HOST.*NOT delivered/s);
     assert.equal(provider.sent[0].replyTo, String(accepted.messageId));
@@ -128,8 +143,7 @@ describe("a queue that cannot load is told, not dropped (done-when 2)", () => {
     const send = (/** @type {{ text: string, replyTo?: string }} */ message) => provider.send(message);
     const queue = /** @type {any} */ ({ queueOrLose: () => { throw refusal; }, STANCE: { UNDECLARED: "undeclared" }, EXIT: { QUEUED: 2 }, attributed: (/** @type {string} */ text) => text, handoffId: () => "h", readHandoffs: () => [] });
     const converse = createConverse({ chairman: CHAIRMAN, queuePath: join(scratch, "queue"), ledger, send, now: () => 1, agents: () => [], queue });
-    const consumers = { ...recorders().consumers, converse };
-    await assert.rejects(forwarding({ ledger, send, consumers })(mint(inbound, messageUpdate(7, "hello"))), /queue could not be reached/);
+    await assert.rejects(tellingWhenUndelivered({ ledger, send, converse: converse.forward })(mint(inbound, messageUpdate(7, "hello"))), /queue could not be reached/);
     assert.match(provider.sent[0].text, /NOT delivered/);
     assert.equal(readLedgerLines(ledger.path).filter((entry) => entry.origin === "converse").map((entry) => entry.verdict).join(), "refused");
   });
@@ -138,11 +152,11 @@ describe("a queue that cannot load is told, not dropped (done-when 2)", () => {
     const { ledger, inbound } = core();
     const provider = createFakeProvider();
     const accepted = mint(inbound, messageUpdate(8, "hello"));
-    const accounted = { ...recorders().consumers, converse: { forward: async () => {
+    const accounted = async () => {
       ledger.append({ direction: "in", origin: "converse", updateId: accepted.updateId, verdict: "queued" });
       throw new Error("converse: the message was queued but the acknowledgement could not be sent");
-    } } };
-    await assert.rejects(forwarding({ ledger, send: (message) => provider.send(message), consumers: accounted })(accepted), /acknowledgement could not be sent/);
+    };
+    await assert.rejects(tellingWhenUndelivered({ ledger, send: (message) => provider.send(message), converse: accounted })(accepted), /acknowledgement could not be sent/);
     assert.deepEqual(provider.sent, []);
     assert.equal(readLedgerLines(ledger.path).filter((entry) => entry.origin === "converse").length, 1);
   });
@@ -150,22 +164,13 @@ describe("a queue that cannot load is told, not dropped (done-when 2)", () => {
   test("when the chairman cannot be told either, that is the error, and the ledger line still says refused", async () => {
     const { ledger, inbound } = core();
     const accepted = mint(inbound, messageUpdate(6, "hello"));
-    const forward = forwarding({ ledger, send: async () => { throw new Error("telegram is down"); }, consumers: unqueueable(recorders().consumers) });
+    const forward = tellingWhenUndelivered({ ledger, send: async () => { throw new Error("telegram is down"); }, converse: unqueueable });
     await assert.rejects(forward(accepted), (error) => /could not be told/.test(/** @type {Error} */ (error).message) && /telegram is down/.test(String(/** @type {Error} */ (error).cause)));
     assert.equal(readLedgerLines(ledger.path).find((entry) => entry.origin === "converse")?.verdict, "refused");
   });
 });
 
-describe("the queue path this file computes is the one the queue uses", () => {
-  test("handoffQueueBeside(the wake ledger) is wake.mjs's handoffQueuePath, and the file name is wake.mjs's constant", async () => {
-    const wake = await import("../wake.mjs");
-    const ledgerPath = wake.ledgerPathFrom([]);
-    assert.equal(handoffQueueBeside(ledgerPath), wake.handoffQueuePath(ledgerPath));
-    assert.match(SOURCE, new RegExp(`const HANDOFF_QUEUE_FILE = "${wake.HANDOFF_QUEUE_FILE}";`));
-  });
-});
-
-describe("the default onForward, through main() (done-when 1, running)", () => {
+describe("the default onForward, through main() (done-when 1 and 2, running)", () => {
   /** A project root and home with messaging on, and the two secret files `listen` reads. */
   function installation() {
     nextDir += 1;
@@ -199,58 +204,33 @@ describe("the default onForward, through main() (done-when 1, running)", () => {
     return { fetch: /** @type {typeof globalThis.fetch} */ (/** @type {unknown} */ (fetch)), signal: controller.signal, said };
   }
 
-  test("an accepted message and an accepted press each reach their own consumer", async () => {
+  /** A GitHub that has no request the chairman's updates could answer, so `answers` calls a plain message not-an-answer and a press unresolvable. */
+  const github = /** @type {any} */ ({ readRow: async () => { throw new Error("no row is read for an update that answers nothing"); } });
+  const env = { GH_CONFIG_DIR: "/nowhere" };
+
+  test("an accepted message reaches converse, and a press reaches answers (which says so to the chairman) and not converse", async () => {
     const { home, root } = installation();
-    const { toConverse, toAnswers, consumers } = recorders();
+    /** @type {string[]} */ const toConverse = [];
     const wire = telegram([messageUpdate(10, "to ceo"), pressUpdate(11)]);
     /** @type {string[]} */ const lines = [];
-    const code = await main({ root, home, fetch: wire.fetch, signal: wire.signal, consumers, sleep: async () => {}, err: (line) => lines.push(line) });
+    const converse = async (/** @type {Record<string, any>} */ accepted) => { toConverse.push(accepted.text); };
+    const code = await main({ root, home, env, github, converse, fetch: wire.fetch, signal: wire.signal, sleep: async () => {}, err: (line) => lines.push(line) });
     assert.equal(code, EXIT.ok, lines.join("\n"));
-    assert.deepEqual(toConverse.map((accepted) => accepted.text), ["to ceo"]);
-    assert.deepEqual(toAnswers.map((accepted) => accepted.data), ["ans:A"]);
-    assert.deepEqual(wire.said, ["Recorded on a11ign/a11ign#2885: ceo has it."]);
+    assert.deepEqual(toConverse, ["to ceo"]);
+    assert.equal(wire.said.length, 1, "the press was answered: the message was conversation, and converse is a recorder here that says nothing");
+    assert.match(wire.said[0], /not a request I can resolve/);
     assert.deepEqual(lines.filter((line) => /consumer/.test(line)), []);
   });
 
-  test("a consumer that fails is logged and the next update is still handled", async () => {
+  test("a queue that will not load is told to the chairman through the running listener, and the next update is still handled", async () => {
     const { home, root } = installation();
-    const { toAnswers, consumers: working } = recorders();
-    const failing = { ...working, converse: { forward: async () => { throw new Error("queue is full"); } } };
     const wire = telegram([messageUpdate(20, "first"), pressUpdate(21)]);
     /** @type {string[]} */ const lines = [];
-    await main({ root, home, fetch: wire.fetch, signal: wire.signal, consumers: failing, sleep: async () => {}, err: (line) => lines.push(line) });
-    assert.equal(toAnswers.length, 1);
+    const converse = async () => { throw new Error("the declaration cannot be read: set AGENT_ORG_HOST"); };
+    await main({ root, home, env, github, converse, fetch: wire.fetch, signal: wire.signal, sleep: async () => {}, err: (line) => lines.push(line) });
+    assert.match(wire.said[0], /could not queue that for ceo.*AGENT_ORG_HOST.*NOT delivered/s);
+    assert.match(wire.said[1], /not a request I can resolve/, "the press after the refused message was still handled");
     assert.ok(lines.some((line) => /forward failed: the queue could not be reached/.test(line)), lines.join("\n"));
-  });
-});
-
-describe("the real GitHub writer (what answers writes through)", () => {
-  /** @param {string} stdout @returns {{ writer: ReturnType<typeof createGhWriter>, calls: (readonly string[])[] }} */
-  function writerOver(stdout = "") {
-    /** @type {(readonly string[])[]} */ const calls = [];
-    return { calls, writer: createGhWriter({ run: async (argv) => { calls.push(argv); return stdout; } }) };
-  }
-  const ROW = { repo: "a11ign/a11ign", number: 2885 };
-
-  test("the three writes are `gh issue` calls scoped to the row's repository, never the working directory's", async () => {
-    const { writer, calls } = writerOver();
-    await writer.comment(ROW, "Chairman answered via Telegram");
-    await writer.removeLabel(ROW, "needs:chairman");
-    await writer.addLabel(ROW, "answer:ceo");
-    assert.deepEqual(calls, [
-      ["issue", "comment", "2885", "--repo", "a11ign/a11ign", "--body", "Chairman answered via Telegram"],
-      ["issue", "edit", "2885", "--repo", "a11ign/a11ign", "--remove-label", "needs:chairman"],
-      ["issue", "edit", "2885", "--repo", "a11ign/a11ign", "--add-label", "answer:ceo"],
-    ]);
-  });
-
-  test("the row is read as state, label names and comments", async () => {
-    const view = { state: "OPEN", labels: [{ name: "ready" }, { name: "needs:chairman" }], comments: [{ body: "brief", createdAt: "2026-10-02T09:00:00Z", authorAssociation: "OWNER", id: "x" }] };
-    const { writer, calls } = writerOver(JSON.stringify(view));
-    assert.deepEqual(await writer.readRow(ROW), {
-      state: "OPEN", labels: ["ready", "needs:chairman"], comments: [{ body: "brief", createdAt: "2026-10-02T09:00:00Z", authorAssociation: "OWNER" }],
-    });
-    assert.deepEqual(calls, [["issue", "view", "2885", "--repo", "a11ign/a11ign", "--json", "state,labels,comments"]]);
   });
 });
 
@@ -262,6 +242,7 @@ describe("the unit and the source", () => {
 
   test("the default onForward no longer says nothing consumes the update (done-when 4)", () => {
     assert.ok(!/has no consumer yet/.test(SOURCE), "listen.mjs went back to dropping accepted updates with a log line");
-    assert.match(SOURCE, /onForward \?\? forwarding\(/, "the default onForward is no longer `forwarding`, so this test would pass on a listener that forwards nothing");
+    assert.match(SOURCE, /onForward \?\? createForwarder\(/, "the default onForward is no longer the forwarder, so this test would pass on a listener that forwards nothing");
+    assert.match(SOURCE, /converse: tellingWhenUndelivered\(/, "the converse path is no longer wrapped, so a queue that will not load is dropped again");
   });
 });

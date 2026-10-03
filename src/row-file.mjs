@@ -308,6 +308,13 @@ export function regionRefusalReason(body) {
 const STATED_REPOSITORY = /\brepository is\s+\*{0,2}`([\w.-]+\/[\w.-]+)`/i;
 
 /**
+ * #3083: THE REPOSITORY A ROW SAYS ITS PATHS ARE RELATIVE TO, or `undefined` when it says none. Exported so `pr-open` reads the
+ * sentence the filing check reads, and not a second copy of its shape that could disagree.
+ * @param {string} body @returns {string | undefined}
+ */
+export const statedRepository = (body) => STATED_REPOSITORY.exec(body)?.[1];
+
+/**
  * #3056: A REGION IN A KEYED REPOSITORY MUST SPELL ITS KEY, or `pr-open` refuses every path of the PR that finishes the row.
  *
  * `splitRegionEntry` reads a bare path as the project's FIRST repository's tree (ADR 0040, decision 2), so a row that says
@@ -325,7 +332,7 @@ const STATED_REPOSITORY = /\brepository is\s+\*{0,2}`([\w.-]+\/[\w.-]+)`/i;
  * @returns {string | null}
  */
 export function bareKeyedRegionReason(body, { code = homeProjectDeclaration().code } = {}) {
-  const stated = STATED_REPOSITORY.exec(body)?.[1];
+  const stated = statedRepository(body);
   const keyed = code.find((entry) => entry.key !== "" && entry.repo === stated);
   if (keyed === undefined) return null;
   const bare = (declaredRegionFiles(body) ?? []).filter((entry) => splitRegionEntry(entry).key === "");

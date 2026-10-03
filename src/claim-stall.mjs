@@ -27,6 +27,8 @@ import { dirname, resolve } from "node:path";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
 import { ANSWER_PREFIX } from "./project-vocabulary.mjs";
+// #3076: how a person is told a pull request's number -- `#38`, or `agent-org#38` for another tracked repository. A pure leaf, like the imports above.
+import { subjectMention } from "./review-attribution.mjs";
 // #2747: THE SAME "IS THIS LISTING THE WHOLE ORG" CHECK `wake.mjs`'s REVIEWER TEARDOWN USES (#2465) -- a leaf, so
 // this file stays one. A listing that lacks `ceo`/`orchestrator` is a PARTIAL one and proves nothing about who else
 // it left out; a session absent from a COMPLETE listing is real evidence, not yet a verdict (see `goneReading`).
@@ -330,7 +332,7 @@ export function workAtRisk(io, { worktree, branch, repo }) {
  *   comment: number | null, commit: number | null, push: number | null,
  *   file: () => number | null,
  *   work: () => ReturnType<typeof workAtRisk>,
- *   openPrs: number, mergedPr: { number: number, mergedAt: number } | null,
+ *   openPrs: number, mergedPr: { number: number, mergedAt: number, repoKey?: string } | null,
  *   waiting: string | null, blockedBy: number[],
  *   waitKind?: string | null, ownPrs?: import("./idle-claimant.mjs").IdlePr[],
  * }} ClaimFacts
@@ -341,7 +343,8 @@ export function workAtRisk(io, { worktree, branch, repo }) {
  *   | { kind: "idle-watch", since: number }
  *   | { kind: "vacating", since: number }
  *   | { kind: "release", why: "stalled" | "blocked" | "merged" | "gone", lastMoveAt: number | null, idleMs: number | null,
- *       nudgedAt: number | null, edges?: number[], mergedPr?: number, openPrs?: number[], since?: number, idle?: boolean }
+ *       nudgedAt: number | null, edges?: number[], mergedPr?: number, mergedPrRepoKey?: string, openPrs?: number[],
+ *       openPrRepoKeys?: (string | undefined)[], since?: number, idle?: boolean }
  *   | { kind: "holding", why: string, expected?: boolean }} Reading
  */
 
@@ -471,7 +474,9 @@ function goneWithOpenPrReading(facts, ctx) {
   if (facts.mergedPr !== null) return null;
   const gone = goneReading(facts, ctx);
   if (gone === null || gone.kind !== "release") return gone;
-  return { ...gone, openPrs: (facts.ownPrs ?? []).map((pr) => pr.number) };
+  const own = facts.ownPrs ?? [];
+  // The keys ride beside the numbers (which stay numbers) and only when a pull request is in another repository, so a home-only release is today's.
+  return { ...gone, openPrs: own.map((pr) => pr.number), ...(own.some((pr) => pr.repoKey) ? { openPrRepoKeys: own.map((pr) => pr.repoKey || undefined) } : {}) };
 }
 
 /**
@@ -484,9 +489,10 @@ function mergedReading(facts) {
   const work = facts.work();
   if (work.state !== "none") {
     return { kind: "holding", expected: work.state !== "unknown",
-      why: `#${facts.mergedPr.number} merged, but ${work.state === "unknown" ? "the worktree could not be read" : `the holder still has ${work.dirty} dirty file(s) and ${work.unpushed} unpushed commit(s)`}` };
+      why: `${prMention(facts.mergedPr.number, facts.mergedPr.repoKey)} merged, but ${work.state === "unknown" ? "the worktree could not be read" : `the holder still has ${work.dirty} dirty file(s) and ${work.unpushed} unpushed commit(s)`}` };
   }
-  return { kind: "release", why: "merged", lastMoveAt: null, idleMs: null, nudgedAt: null, mergedPr: facts.mergedPr.number };
+  return { kind: "release", why: "merged", lastMoveAt: null, idleMs: null, nudgedAt: null, mergedPr: facts.mergedPr.number,
+    ...(facts.mergedPr.repoKey ? { mergedPrRepoKey: facts.mergedPr.repoKey } : {}) };
 }
 
 /**
@@ -553,10 +559,33 @@ function blockedReading(facts) {
 // --- THE FACTS OF ONE ROW ---------------------------------------------------------------------------------------------
 
 /**
+ * @typedef {import("./idle-claimant.mjs").IdlePr & { headRefName?: string }} OpenPr
+ * @typedef {{ number: number, headRefName?: string, mergedAt?: string }} MergedPr
+ * @typedef {{ open: OpenPr[] | null, merged: MergedPr[] | null }} ElsewherePrs the OTHER tracked code repositories' lists (#3075), each member
+ *   tagged with the `repoKey` it came from. `open: null` is a read that was refused, and is never "none open".
  * @typedef {{ row: number, title?: string, session: string, waiting: string | null, blockedBy: number[],
- *   comments: RowComment[], openPrs: (import("./idle-claimant.mjs").IdlePr & { headRefName?: string })[],
- *   mergedPrs: { number: number, headRefName?: string, mergedAt?: string }[] | null, repo: string, waitKind?: string | null }} ClaimInput
+ *   comments: RowComment[], openPrs: OpenPr[], mergedPrs: MergedPr[] | null, elsewhere?: ElsewherePrs, repo: string,
+ *   waitKind?: string | null }} ClaimInput `openPrs` and `mergedPrs` are the HOME repository's; `elsewhere` is absent for a project with one code repository
  */
+
+/**
+ * (#3075) THE PULL REQUESTS A ROW'S WORK CAN BE IN, from every tracked code repository, by the ONE function every reader of "has this row got a pull
+ * request" goes through: (8)'s `canRelease`, `pr-owned`, the second reading's guard, the gone-holder release and the merged release (10) all read
+ * `facts.openPrs`, `facts.ownPrs` and `facts.mergedPr`, and all three are built from what this returns. `#3039`'s code was in `a11ign/agent-org`, its pull
+ * request approved there, and the claim was released as "holds nothing built" because only THIS repository's list was read.
+ *
+ * `null` when an OPEN list could not be read, and the caller skips the claim: a read that could not be made is not a count of zero, and "zero" is what
+ * (8) and the stalled release act on. A MERGED list only ever supplies positive evidence (the release (10) needs a hit), so one that is missing costs a
+ * release and cannot cause one: the lists that WERE read are used, and it is `null` only when none was.
+ * @param {ClaimInput} input @returns {{ open: OpenPr[], merged: MergedPr[] | null } | null}
+ */
+function pullRequestsAcrossRepos(input) {
+  const { elsewhere } = input;
+  if (elsewhere === undefined) return { open: input.openPrs, merged: input.mergedPrs };
+  if (elsewhere.open === null) return null;
+  const merged = input.mergedPrs === null && elsewhere.merged === null ? null : [...(input.mergedPrs ?? []), ...(elsewhere.merged ?? [])];
+  return { open: [...input.openPrs, ...elsewhere.open], merged };
+}
 
 /**
  * One claimed row's facts, or `{ skip }` saying why it is NOT EVALUATED this tick -- a row with no claim record cannot say
@@ -571,12 +600,17 @@ function blockedReading(facts) {
 export function claimFactsFrom(input, io) {
   const record = claimRecordOf(input.comments);
   if (record === null) return { skip: `#${input.row} carries session:${input.session} but no claim record names when or where` };
+  const prs = pullRequestsAcrossRepos(input);
+  if (prs === null) {
+    return { skip: `#${input.row}: the other tracked repository's open pull requests could not be read, so a holder with nothing built here cannot be told from one whose work is there` };
+  }
   const worktree = record.worktree === null ? null : resolve(input.repo, record.worktree);
   const dir = worktree !== null && io.exists(worktree) ? worktree : input.repo;
   try {
     const branch = record.branch;
     const own = (/** @type {string | undefined} */ head) => head !== undefined && (head === branch || head.endsWith(`-${input.row}`));
-    const merged = branch === null ? null : newestMergedAfter(input.mergedPrs ?? [], branch, record.at);
+    const ownPrs = prs.open.filter((p) => own(p.headRefName));
+    const merged = branch === null ? null : newestMergedAfter(prs.merged ?? [], branch, record.at);
     return { row: input.row, session: input.session, claimedAt: record.at, branch, worktree,
       ...(input.title === undefined ? {} : { title: input.title }),
       comment: commentMove(input.comments, record),
@@ -584,11 +618,11 @@ export function claimFactsFrom(input, io) {
       push: branch === null ? null : newestOwnCommit(io.git, dir, `origin/${branch}`),
       file: () => (worktree !== null && io.exists(worktree) ? fileMove(io, worktree) : null),
       work: () => workAtRisk(io, { worktree, branch, repo: input.repo }),
-      openPrs: input.openPrs.filter((p) => own(p.headRefName)).length,
-      mergedPr: merged === null ? null : { number: merged.number, mergedAt: Date.parse(String(merged.mergedAt)) },
+      openPrs: ownPrs.length,
+      mergedPr: merged === null ? null : { number: merged.number, mergedAt: Date.parse(String(merged.mergedAt)), ...(merged.repoKey ? { repoKey: merged.repoKey } : {}) },
       waiting: input.waiting, blockedBy: input.blockedBy,
       ...(input.waitKind === undefined ? {} : { waitKind: input.waitKind }),
-      ownPrs: input.openPrs.filter((p) => own(p.headRefName)) };
+      ownPrs };
   } catch (err) {
     if (err instanceof Unreadable) return { skip: `#${input.row}: ${err.message}` };
     throw err;
@@ -597,13 +631,13 @@ export function claimFactsFrom(input, io) {
 
 /**
  * The newest pull request MERGED from `branch` after `since`, or `null`: a merge before this claim is another instance's work on the row.
- * @param {{ number: number, headRefName?: string, mergedAt?: string }[]} merged @param {string} branch @param {number} since
- * @returns {{ number: number, mergedAt: string } | null}
+ * @param {{ number: number, headRefName?: string, mergedAt?: string, repoKey?: string }[]} merged @param {string} branch @param {number} since
+ * @returns {{ number: number, mergedAt: string, repoKey?: string } | null}
  */
 function newestMergedAfter(merged, branch, since) {
   const after = merged.filter((p) => p.headRefName === branch && Date.parse(String(p.mergedAt ?? "")) > since);
   const [newest] = after.sort((a, b) => Date.parse(String(b.mergedAt)) - Date.parse(String(a.mergedAt)));
-  return newest === undefined ? null : { number: newest.number, mergedAt: String(newest.mergedAt) };
+  return newest === undefined ? null : { number: newest.number, mergedAt: String(newest.mergedAt), repoKey: newest.repoKey };
 }
 
 /**
@@ -720,7 +754,7 @@ const minutes = (ms) => Math.round(ms / MINUTE_MS);
 /**
  * @typedef {{ row: number, session: string, why: "stalled" | "blocked" | "merged" | "gone", branch: string | null,
  *   worktree: string | null, idleMinutes: number | null, nudgedAt: number | null, edges?: number[],
- *   mergedPr?: number, openPrs?: number[], answer?: string }} ReleaseRequest
+ *   mergedPr?: number, mergedPrRepoKey?: string, openPrs?: number[], openPrRepoKeys?: (string | undefined)[], answer?: string }} ReleaseRequest
  * @typedef {{ session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string,
  *   title?: string, release?: ReleaseRequest, resume?: boolean }} StallOrder
  */
@@ -803,6 +837,26 @@ export function nudgeDeliveredAt(raw, key) {
 }
 
 /**
+ * (#3076) A PULL REQUEST'S NUMBER AS A PERSON READS IT: `#38` for the home repository, `agent-org#38` for another tracked one, because `#38` alone
+ * opens the home repository's. Every spelling of a release's pull request -- the order's prompt here, the comment `wake.mjs` leaves on the row --
+ * goes through this and the two below, so no sentence can name one without saying which repository it is in.
+ * @param {number} number @param {string | undefined} repoKey @returns {string}
+ */
+function prMention(number, repoKey) {
+  return subjectMention({ repoKey, number });
+}
+
+/** @param {{ mergedPr?: number, mergedPrRepoKey?: string }} release a release whose `why` is "merged" @returns {string} */
+export function mergedPrMention(release) {
+  return prMention(Number(release.mergedPr), release.mergedPrRepoKey);
+}
+
+/** @param {{ openPrs?: number[], openPrRepoKeys?: (string | undefined)[] }} release @returns {string} its open pull requests, comma-joined, each with its repository */
+export function openPrMentions(release) {
+  return (release.openPrs ?? []).map((n, i) => prMention(n, release.openPrRepoKeys?.[i])).join(", ");
+}
+
+/**
  * The release, as an order `wake.mjs` PERFORMS. It carries every fact the performer needs and the prompt is only what a
  * log line says: a release is not a question, and no session is asked anything.
  * @param {ClaimFacts} facts @param {Extract<Reading, { kind: "release" }>} reading @returns {StallOrder}
@@ -812,15 +866,17 @@ function releaseOrder(facts, reading) {
   const release = { row: facts.row, session: facts.session, why: reading.why, branch: facts.branch, worktree: facts.worktree,
     idleMinutes: reading.idleMs === null ? null : minutes(reading.idleMs), nudgedAt: reading.nudgedAt,
     ...(reading.edges === undefined ? {} : { edges: reading.edges }),
-    ...(reading.mergedPr === undefined ? {} : { mergedPr: reading.mergedPr, answer: "product-manager" }),
+    ...(reading.mergedPr === undefined ? {} : { mergedPr: reading.mergedPr, answer: "product-manager",
+      ...(reading.mergedPrRepoKey === undefined ? {} : { mergedPrRepoKey: reading.mergedPrRepoKey }) }),
     // HELD, NOT POOLED (#3048): a gone holder's open PR is the work, so the row goes to `product-manager` and `ready` is not restored.
-    ...(reading.openPrs === undefined || reading.openPrs.length === 0 ? {} : { openPrs: reading.openPrs, answer: "product-manager" }) };
+    ...(reading.openPrs === undefined || reading.openPrs.length === 0 ? {} : { openPrs: reading.openPrs, answer: "product-manager",
+      ...(reading.openPrRepoKeys === undefined ? {} : { openPrRepoKeys: reading.openPrRepoKeys }) }) };
   const said = reading.why === "stalled" && reading.idle ? `idle with no wait field and nothing moved for ${release.idleMinutes} minutes, and the nudge was not answered`
     : reading.why === "stalled" ? `nothing moved for ${release.idleMinutes} minutes and the nudge was not answered`
     : reading.why === "blocked" ? `blocked by ${(reading.edges ?? []).map((n) => `#${n}`).join(", ")} and the holder holds nothing`
     : reading.why === "gone" ? `${facts.session} no longer exists in herdr's own listing${release.openPrs === undefined ? ""
-      : `, and ${release.openPrs.map((n) => `#${n}`).join(", ")} is still open (the row is held for product-manager, not returned to the pool)`}`
-    : `#${reading.mergedPr} merged and the row stayed open`;
+      : `, and ${openPrMentions(release)} is still open (the row is held for product-manager, not returned to the pool)`}`
+    : `${mergedPrMention(release)} merged and the row stayed open`;
   return {
     session: facts.session, cause: "claim-stalled", subject: `row-${facts.row}`, discriminator: `release-${reading.why}`,
     prompt: `RELEASE the claim on #${facts.row} held by ${facts.session}: ${said}.`,
