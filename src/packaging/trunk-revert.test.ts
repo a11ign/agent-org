@@ -399,7 +399,7 @@ test("the revert script and its token test are GONE, and the guard that reverts 
     "despite the name it reverts nothing: it checks a push did not silently UNDO work already on main (#411)");
   assert.ok(existsSync(path.join(TOOL_SRC, "parent-recheck-summary.mjs")));
   const gate = (trunk.jobs.trunkGate.steps ?? []).map((s) => s.run ?? "").join("\n");
-  assert.match(gate, /trunk-revert-guard\.mjs/);
+  assert.match(gate, /pnpm exec agent-org trunk-revert-guard\b/);
 });
 
 test("no order a session can be handed tells it to revert -- only to NOT revert", () => {
