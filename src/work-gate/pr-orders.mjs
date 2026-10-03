@@ -1128,13 +1128,76 @@ function draftOrder(pr, required = null, baseTip = null) {
 }
 
 /**
- * Every order the open pull requests earn: each one's own (`draftOrder`), then the set-wide one for labelled
- * pull requests nobody has explained (#2416).
- * @param {any[]} prs @param {string[] | null} required @param {any} [baseTip]
+ * Every order the open pull requests earn: each one's own (`draftOrder`), the checkless ones (#3092), then the set-wide one for
+ * labelled pull requests nobody has explained (#2416).
+ * @param {any[]} prs @param {string[] | null} required @param {any} [baseTip] @param {number} [nowMs] omitted is `Date.now()`
  */
-export function perPullRequestOrders(prs, required, baseTip) {
+export function perPullRequestOrders(prs, required, baseTip, nowMs) {
   const own = prs.map((pr) => draftOrder(pr, required, baseTip)).filter((o) => o !== null);
-  return [...own, ...awaitingEvidenceStaleOrders(prs)];
+  return [...own, ...checklessPrOrders(prs, nowMs), ...awaitingEvidenceStaleOrders(prs)];
+}
+
+/**
+ * #3092: HOW LONG A PULL REQUEST MAY SIT WITH NO CHECKS AT ALL before its owner is told. A real run appears within a minute of a
+ * push, so this is not a race with CI; it is long enough that a quiet PR is a PR no workflow is coming for.
+ */
+export const CHECKLESS_QUIET_MINUTES = 30;
+
+/**
+ * PURE. #3092: THE PULL REQUESTS WHOSE ROLLUP IS EMPTY, QUIET FOR `CHECKLESS_QUIET_MINUTES`, AND NOT CONFLICTING -- the ones no other
+ * order can ever reach. `reviewableHead` asks for a SETTLED GREEN head and reads an empty rollup as `null` ("not knowable yet"), so
+ * `draftOrder` emitted nothing, `failingChecksOrder` needs red, and `stallReasonOf` files it `progressing`: nobody was ever told.
+ * Measured on a11ign/agent-org#58 (2026-10-02/03): opened on #56's branch, so `ci.yml` (`pull_request` on `branches: [main]`) never ran;
+ * #56 merged, GitHub retargeted it to `main` -- an `edited` event, not a default trigger -- and it sat REVIEW_REQUIRED with 0 checks.
+ *
+ * A CONFLICTING PULL REQUEST IS LEFT TO `pr-merge-conflict`, whose order says the same thing in better words (a conflicting branch gets no
+ * `pull_request` run, so the rebase it asks for is also what starts CI). ABSENT IS NOT EMPTY: an unread rollup, a missing head or an
+ * unparseable `updatedAt` is never an accusation. `updatedAt` IS THE AGE, because the list read has no push time and a push, a retarget
+ * and a label all move it: the failure it can have is DELAY (a chatty PR is asked only once it falls quiet), never an order sent to an
+ * author whose push CI has not picked up yet.
+ *
+ * FILED UNDER `pr-checks-failing`, no new cause, as `ejected` is (`CAUSE_OF_STALL`): same audience, same remedy-by-the-owner, and a cause is
+ * pinned by name in several guards. The key says `checkless`, so it never collides with a red head's.
+ *
+ * @param {any[]} prs @param {number} [nowMs]
+ */
+export function checklessPrOrders(prs, nowMs = Date.now()) {
+  return (prs ?? [])
+    .filter((pr) => pr && Number.isFinite(Number(pr.number)) && isCheckless(pr, nowMs))
+    .sort((a, b) => Number(a.number) - Number(b.number))
+    .map(checklessOrder);
+}
+
+/** @param {any} pr @param {number} nowMs */
+function isCheckless(pr, nowMs) {
+  if (!pr.headRefOid || !Array.isArray(pr.statusCheckRollup) || pr.statusCheckRollup.length > 0) return false;
+  if (conflictStateOf(pr) === CONFLICT_STATE.CONFLICTING) return false;
+  const quietSince = Date.parse(String(pr.updatedAt ?? ""));
+  return !Number.isNaN(quietSince) && nowMs - quietSince >= CHECKLESS_QUIET_MINUTES * MS_PER_MINUTE;
+}
+
+/** @param {any} pr */
+function checklessOrder(pr) {
+  const head8 = String(pr.headRefOid).slice(0, 8);
+  const { session, source } = ownerOfPr(pr);
+  const ref = `pr-${subjectRef(pr.repoKey, pr.number)}`;
+  const repoFlag = pr.repo ? ` --repo ${pr.repo}` : "";
+  const remedy = `\`gh pr close ${pr.number}${repoFlag} && gh pr reopen ${pr.number}${repoFlag}\` (\`reopened\` is a trigger \`edited\` is not), or push a commit`;
+  const what = `${subjectMention(pr)} at \`${head8}\` has NO CHECKS AT ALL, and has had none for ${CHECKLESS_QUIET_MINUTES} minutes of quiet: no workflow ran for this head, `
+    + "so it is neither red nor green and the gate will NEVER offer it to a reviewer, which asks only of a settled green head. THE USUAL CAUSE is a RETARGET: "
+    + "a pull request opened on another branch gets no `pull_request` run for `main`, and when that branch merges GitHub retargets it, "
+    + "an `edited` event that does not start CI. ";
+  return {
+    session,
+    ...(session === DEAD_OWNER_FALLBACK ? {}
+      : { fallback: DEAD_OWNER_FALLBACK, fallbackOnlyIfAbsent: true,
+        fallbackPrompt: `${what}Its owner, \`${session}\`, NO LONGER EXISTS (no workspace carries that label), so this order reached you. The remedy needs no code, so apply it: ${remedy}.` }),
+    cause: "pr-checks-failing",
+    subject: ref,
+    discriminator: `checkless-${head8}`,
+    prompt: `${what}REMEDY, and it fires CI without a code change: ${remedy}. ${ownershipOf(pr, source, "remedy")}`,
+    causeKey: `${session}/pr-checks-failing/${ref}/checkless/${head8}`,
+  };
 }
 
 /**

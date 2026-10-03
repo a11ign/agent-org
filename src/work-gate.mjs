@@ -5514,7 +5514,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // #2470/#2711/#2729: A CLAIM THAT DOES NOT MOVE, A BARE `answer:` LABEL ON IT, OR A LAB JOB IT DISPATCHED THAT HAS ENDED -- all address the row's own holder, so all outrank every cause offering NEW work.
   orders.push(...stallOrdersOrNone(claimStalls), ...bareAnswerOrdersOrNone(bareAnswerLabels), ...labJobFinishedOrders(openRows, labJobs, Date.now()));
 
-  orders.push(...perPullRequestOrders(prs, required, baseTip), ...closesUnresolvedOrders(prs)); // #2823 beside them
+  orders.push(...perPullRequestOrders(prs, required, baseTip, nowMs), ...closesUnresolvedOrders(prs)); // #2823 beside them; #3092 the checkless
   // #2031: AHEAD OF THE OFFER, AND IT IS THE SAME READING THAT WITHHELD IT. `partitionUnclaimed` shelves
   // the row on `rowBranches` and this emits the cause that names the branch -- one condition, one read,
   // said once as a withholding and once as a question. Ahead of `rowOrders` for the ordering reason the
