@@ -34,6 +34,18 @@ const OPTIONS_BLOCK = /<!--\s*chairman-options:([\s\S]*?)-->/g;
 const OPTION_ID = /^[A-Za-z0-9_-]{1,16}$/;
 const MAX_OPTION_LABEL = 64;
 const MAX_QUOTED_LINE = 300;
+/**
+ * **THE ALERT STATES THE ACT, OR IT IS NOT SENT (chairman, 2026-10-03, a11ign/a11ign#3335).** Nine alerts went out as a row title and nothing
+ * else, and four of the nine were cleared by a session without him. The newest org brief must carry all three lines, and all three are
+ * the message. `Checked:` is a claim the source cannot re-read (whether a machine is already switched on is a fact about the machine); what
+ * it can do is refuse an alert whose labeller did not say what they read.
+ */
+const BRIEF_LINES = ["Ask", "Only you because", "Checked"].map((label) => ({
+  label,
+  // A line of the brief, optionally a list item or quoted, the label optionally bold: `**Ask:** x`, `**Ask**: x`, `- Ask: x`.
+  // `[ \t]` and not `\s`, so a bare `Ask:` never takes the next line as its text.
+  pattern: new RegExp(`^[ \\t]*(?:[-*>][ \\t]+)?(?:\\*\\*|__)?${label}(?:\\*\\*|__)?[ \\t]*:[ \\t]*(?:\\*\\*|__)?[ \\t]*(\\S.*)$`, "im"),
+}));
 const ELLIPSIS = "…";
 const KEY_PATTERN = /^request:([^#\s]+)#(\d+)$/;
 const KEY_PREFIX = "request:";
@@ -97,10 +109,20 @@ function plainLine(text) {
   return flat.length <= MAX_QUOTED_LINE ? flat : `${flat.slice(0, MAX_QUOTED_LINE - 1)}${ELLIPSIS}`;
 }
 
-/** @param {string} body @returns {string} the first line that says something; the options block is a comment line and says nothing */
-function firstLine(body) {
-  const line = body.split(/\r?\n/).map((candidate) => candidate.trim()).find((candidate) => candidate !== "" && !candidate.startsWith("<!--"));
-  return plainLine(line ?? "");
+/**
+ * @param {string} body the whole comment
+ * @returns {{ lines: string[], missing: string[] }} each required line as one plain `Label: text` line; `missing` names every label with no text after it
+ */
+function readBriefLines(body) {
+  const lines = [];
+  const missing = [];
+  for (const { label, pattern } of BRIEF_LINES) {
+    const found = pattern.exec(body);
+    const text = found === null ? "" : plainLine(found[1]);
+    if (text === "") missing.push(label);
+    else lines.push(`${label}: ${text}`);
+  }
+  return { lines, missing };
 }
 
 /**
@@ -108,21 +130,31 @@ function firstLine(body) {
  * chairman an update each time a session adds `in-progress` or `was-ready` to a row that is waiting on them, which is the defect the
  * reminder rule exists to end. A re-briefed ask (a new first line or new options) IS a change worth telling them; a label is not.
  *
- * @param {string} brief @param {ChairmanOption[]} options @returns {string}
+ * @param {string[]} briefLines @param {ChairmanOption[]} options @returns {string}
  */
-function requestState(brief, options) {
-  return [brief, ...options.map((option) => `${option.id}=${option.label}`)].join("\n");
+function requestState(briefLines, options) {
+  return [...briefLines, ...options.map((option) => `${option.id}=${option.label}`)].join("\n");
+}
+
+/** @param {RowComment | null} brief @param {string[]} missing @returns {string} why no alert is sent, in words the log can show on its own */
+function refusalReason(brief, missing) {
+  if (brief === null) return `alert not sent: the row has no brief for the chairman from an org account, so nothing says what he is to do`;
+  return `alert not sent: the newest brief for the chairman has no ${missing.map((label) => `"${label}:"`).join(", ")} line`;
 }
 
 /**
+ * **NO EVENT IS A REFUSAL, AND THE REASON GOES THROUGH `problem`**, the channel the options block already uses: `watch.mjs` writes it to the
+ * ledger once per distinct reason and logs it, so a refused alert is on the record and not silent. The row is still labelled, so the caller
+ * must not read the missing event as the label going.
+ *
  * @param {{ repo: string, row: RequestRow, now: number }} input
- * @returns {{ event: Record<string, unknown>, options: ChairmanOption[], problem: string | null }}
+ * @returns {{ event: Record<string, unknown> | null, options: ChairmanOption[], problem: string | null }}
  */
 export function requestEvent({ repo, row, now }) {
   const brief = latestBrief(row.comments);
-  const quoted = brief ? firstLine(brief.body) : "";
-  const { options, problem } = brief ? parseChairmanOptions(brief.body) : { options: [], problem: null };
-  const title = plainLine(row.title);
+  const { lines, missing } = brief ? readBriefLines(brief.body) : { lines: [], missing: BRIEF_LINES.map(({ label }) => label) };
+  if (brief === null || missing.length > 0) return { event: null, options: [], problem: refusalReason(brief, missing) };
+  const { options, problem } = parseChairmanOptions(brief.body);
   return {
     event: {
       key: requestKey(repo, row.number),
@@ -131,10 +163,10 @@ export function requestEvent({ repo, row, now }) {
       // The moment this tick saw it. The request policy has no hold-down, so the only use of the time is the core's "already cleared"
       // guard, and for that a later time is the right one: a row that regains the label is a NEW episode.
       firstSeenAt: now,
-      text: quoted === "" ? `Needs you: ${repo}#${row.number} ${title}` : `Needs you: ${repo}#${row.number} ${title}\n${quoted}`,
+      text: [`Needs you: ${repo}#${row.number} ${plainLine(row.title)}`, ...lines].join("\n"),
       links: [row.url],
       resolved: false,
-      state: requestState(quoted, options),
+      state: requestState(lines, options),
     },
     options,
     problem,
@@ -171,9 +203,9 @@ export function observeRequests({ repo, rows, openKeys, now }) {
   const labelled = new Set();
   for (const row of rows) {
     const observed = requestEvent({ repo, row, now });
-    const key = /** @type {string} */ (observed.event.key);
+    const key = requestKey(repo, row.number);
     labelled.add(key);
-    events.push(observed.event);
+    if (observed.event !== null) events.push(observed.event);
     options[key] = observed.options;
     if (observed.problem !== null) problems.push({ key, reason: observed.problem });
   }
