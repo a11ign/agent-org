@@ -4635,10 +4635,13 @@ export function unclaimableRowOrders(offerable, streaks) {
  *        `readRowBranches`'s answer. `null` (the default) is "not asked or refused" and emits NOTHING:
  *        a tick that could not reach `origin` must not invent this condition, and must not report a
  *        false all-clear either -- it simply says nothing new, which is what it did before #2031.
+ * @param {{ number: number, headRefName?: string, labels?: any[] }[]} [openPrs] the open pull requests the tick already
+ *        read (#3010). A branch one of them is on is NOT unshipped, so its order names the PR and `--adopt` instead of
+ *        advising "open its pull request". Absent is none, and the order is exactly what #2031 wrote.
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
  */
-export function rowBranchOrders(readyRows, rowBranches = null) {
+export function rowBranchOrders(readyRows, rowBranches = null, openPrs = []) {
   if (!Array.isArray(rowBranches)) return [];
   const byRow = branchIndex(rowBranches);
   const orders = [];
@@ -4653,20 +4656,36 @@ export function rowBranchOrders(readyRows, rowBranches = null) {
     if (sessionOf(row) || labelsOf(row).includes(CLAIM_LABEL)) continue;
     const pushed = byRow.get(Number(row.number)) ?? [];
     if (pushed.length === 0) continue;
-    orders.push(unshippedOrder({ row, pushed }));
+    orders.push(unshippedOrder({ row, pushed, openPr: openPrOnBranch(pushed, openPrs) }));
     if (orders.length >= MAX_ROW_ORDERS_PER_TICK) break;
   }
   return orders;
 }
 
 /**
+ * #3010: THE OPEN PULL REQUEST, IF ANY, THAT ONE OF THESE BRANCHES IS ON. Read off the `pr list` the tick already made,
+ * so it spends no pool -- `readRowBranches` is API-free on purpose and a per-row `gh pr list --head` would undo that.
+ * @param {{ branch: string, head: string }[]} pushed
+ * @param {{ number: number, headRefName?: string, labels?: any[] }[] | null | undefined} openPrs
+ * @returns {{ number: number, branch: string, holder: string | null } | null}
+ */
+function openPrOnBranch(pushed, openPrs) {
+  for (const pr of Array.isArray(openPrs) ? openPrs : []) {
+    const found = pushed.find(({ branch }) => branch === pr.headRefName);
+    if (found) return { number: pr.number, branch: found.branch, holder: sessionOf(pr) };
+  }
+  return null;
+}
+
+/**
  * The order itself, split out so `rowBranchOrders` stays a walk over rows (the Stepdown Rule, and the
  * same seam `claimedRowAmendedOrders`/`amendedOrder` already use).
- * @param {{ row: any, pushed: { branch: string, head: string }[] }} found
+ * @param {{ row: any, pushed: { branch: string, head: string }[], openPr: { number: number, branch: string, holder: string | null } | null }} found
  */
-function unshippedOrder({ row, pushed }) {
+function unshippedOrder({ row, pushed, openPr }) {
   const owner = laneOwnerOf(row) ?? "product-manager";
-  const key = pushed.map(({ branch, head }) => `${branch}@${head}`).sort().join("+");
+  // THE PR IS PART OF THE KEY: an order already spent for the bare branch must not suppress the one that says a PR exists.
+  const key = pushed.map(({ branch, head }) => `${branch}@${head}`).sort().join("+") + (openPr ? `#pr${openPr.number}` : "");
   const first = pushed[0].branch;
   return {
     session: owner,
@@ -4678,19 +4697,41 @@ function unshippedOrder({ row, pushed }) {
       + `offering ${subjectMention(row)} as a fresh start -- so nobody will be routed into work that may already `
       + "exist. Measured 2026-09-22 on #2000: its branch sat pushed for 20 minutes while the row read "
       + `\`${READY_LABEL}\`, and a second session was routed into the same three Region paths.\n`
-      + "READ THE BRANCH FIRST. Both of these spend NO API pool: "
-      + `\`git fetch origin && git log --oneline origin/main..origin/${first}\` and `
-      + `\`git diff origin/main...origin/${first}\`.\n`
-      + "THEN ONE OF THREE, and this gate deliberately does not guess which: if the work is FINISHED, "
-      + "open its pull request (that is the act that makes the row look claimed, and it is what was "
-      + "missing); if it is ABANDONED, delete the branch on `origin` and the row goes back on offer "
-      + "unchanged; if the trailing number is a COINCIDENCE rather than this row's work, rename or "
-      + "delete that branch -- the match is on the name, which is all `ls-remote` can see.\n"
+      + (openPr ? openPrSentence({ row, openPr }) : unpushedSentence(first))
       + "IF IT NEEDS A WAIT INSTEAD, that goes in a FIELD and not a comment: `Not-before: YYYY-MM-DD` in "
       + `the body, \`gh issue edit ${row.number} --add-blocked-by <n>\`, or \`${ANSWER_PREFIX}<session>\`. `
       + "Each clears itself.",
     causeKey: `${owner}/row-branch-unshipped/row-${subjectRef(row.repoKey, row.number)}/${key}`,
   };
+}
+
+/** The #2031 body of the order, for a branch with NO pull request: read it, then one of three exits. @param {string} first */
+function unpushedSentence(first) {
+  return "READ THE BRANCH FIRST. Both of these spend NO API pool: "
+    + `\`git fetch origin && git log --oneline origin/main..origin/${first}\` and `
+    + `\`git diff origin/main...origin/${first}\`.\n`
+    + "THEN ONE OF THREE, and this gate deliberately does not guess which: if the work is FINISHED, "
+    + "open its pull request (that is the act that makes the row look claimed, and it is what was "
+    + "missing); if it is ABANDONED, delete the branch on `origin` and the row goes back on offer "
+    + "unchanged; if the trailing number is a COINCIDENCE rather than this row's work, rename or "
+    + "delete that branch -- the match is on the name, which is all `ls-remote` can see.\n";
+}
+
+/**
+ * #3010: the body of the order when the branch ALREADY HAS an open pull request. "Open its pull request" is wrong advice
+ * there and "delete the branch" is worse -- it closes the PR. Measured on #2981: PR #2987 was open for 4h while the row
+ * was re-offered the three exits above, and the only way to finish it, `claim --adopt`, was named nowhere.
+ * `claim`'s own refusal (#2014) is unchanged: it still refuses a row whose branch is on `origin`, and `--adopt` is the exit it leaves.
+ * @param {{ row: any, openPr: { number: number, branch: string, holder: string | null } }} found
+ */
+function openPrSentence({ row, openPr }) {
+  const holder = openPr.holder ?? "<the session on the PR's `session:` label>";
+  return `THE WORK IS NOT UNSHIPPED: \`${openPr.branch}\` already has OPEN pull request #${openPr.number}. `
+    + "DO NOT delete the branch (that closes the PR) and do not open another.\n"
+    + `TO FINISH IT, take the previous holder's worktree in place, from inside it: \`pnpm run row-claim claim ${row.number} `
+    + `--session=<you> --branch=${openPr.branch} --worktree=<that worktree> --adopt=${holder}\`. `
+    + "A plain claim is refused for as long as the branch is on `origin` (#2014), and that refusal is right: `--adopt` is the one "
+    + "claim that resumes a tree and its pull request rather than starting over.\n";
 }
 
 /**
@@ -5520,7 +5561,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // said once as a withholding and once as a question. Ahead of `rowOrders` for the ordering reason the
   // causes above use: work that already EXISTS outranks work nobody has started.
   const { offerable, blocked } = partitionUnclaimed(readyRows, prFiles, { rowBranches, openRows });
-  orders.push(...rowBranchOrders(readyRows, rowBranches), ...incompleteRowOrders(readyRows)); // #2791
+  orders.push(...rowBranchOrders(readyRows, rowBranches, prs), ...incompleteRowOrders(readyRows)); // #2791, #3010
   orders.push(...rowOrders(offerable), ...unclaimableRowOrders(offerable, claimRefusals)); // #2845: the offer, and its refusal
 
   // #2139: AHEAD OF BOTH BACKLOG SURVEYS AND BEHIND EVERY OFFER, because it is neither. It names ONE row

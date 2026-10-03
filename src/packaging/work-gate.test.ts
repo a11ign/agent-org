@@ -4370,6 +4370,34 @@ test("#2031: a Ready row whose branch is on origin gets its own cause, and is no
     "it must be in CAUSES or worker-profile refuses it at run time");
 });
 
+test("#3010: a branch an OPEN PR is on gets the order that names the PR and --adopt, not 'open its pull request'", () => {
+  const rows = [readyRow(2000)];
+  const branches = [{ branch: BRANCH_2000, head: SHA_2000, row: 2000 }];
+  const pr = { number: 2987, headRefName: BRANCH_2000, labels: [{ name: "session:worker-2000" }] };
+  const orders = decide({ prs: [pr], readyRows: rows, rowBranches: branches });
+  const mine = orders.filter((o) => o.cause === "row-branch-unshipped");
+  assert.equal(mine.length, 1, "still ONE order: the row is not silently dropped");
+  assert.ok(!/open its pull request/.test(mine[0].prompt), "the plain #2031 advice is wrong when a PR is open");
+  assert.ok(!/delete the branch on `origin`/.test(mine[0].prompt), "and so is the exit that would close the PR");
+  assert.ok(mine[0].prompt.includes("OPEN pull request #2987"), "it names the PR");
+  assert.ok(mine[0].prompt.includes(`--branch=${BRANCH_2000}`) && mine[0].prompt.includes("--adopt=worker-2000"),
+    "it names --adopt, the one route that resumes the tree, with the holder off the PR's session label");
+  assert.notEqual(mine[0].causeKey, rowBranchOrders(rows, branches)[0].causeKey,
+    "the PR is in the key, so an order already spent for the bare branch does not suppress this one");
+});
+
+test("#3010: POSITIVE CONTROL -- a branch with NO open PR (or one on another branch) still gets #2031's order unchanged", () => {
+  const rows = [readyRow(2000)];
+  const branches = [{ branch: BRANCH_2000, head: SHA_2000, row: 2000 }];
+  const elsewhere = { number: 7, headRefName: "agent/other-1", labels: [] };
+  for (const prs of [[], [elsewhere]]) {
+    const [order] = rowBranchOrders(rows, branches, prs);
+    assert.ok(/open its pull request/.test(order.prompt), "the three exits are still named");
+    assert.ok(!order.prompt.includes("--adopt"), "and --adopt is not");
+    assert.equal(order.causeKey, rowBranchOrders(rows, branches)[0].causeKey, "the key is #2031's");
+  }
+});
+
 test("#2031: the withheld row is SHELVED with its reason, never silently dropped", () => {
   const { offerable, blocked } = partitionUnclaimed([readyRow(2000), readyRow(2001)], [],
     { rowBranches: [{ branch: BRANCH_2000, head: SHA_2000, row: 2000 }] });
