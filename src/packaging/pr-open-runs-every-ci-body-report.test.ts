@@ -26,17 +26,21 @@ const noTests = { ok: true as const, files: ["src/example.mjs"] };
 const body = (...extra: string[]) => [ACCEPTANCE, CLOSES, ...extra].join("\n\n");
 const check = (text: string, diff: typeof withTest) => checkBody(text, { run: () => 0, diff });
 
-test("#3209 (1): a body with no `Mutation:` record over a diff that changes a test is REFUSED with CI's own line", () => {
+test("#3209 (1), as amended by a11ign/a11ign#3282: a body with no `Mutation:` record over a diff that changes a test prints CI's own line and OPENS", () => {
   const diff = withTest;
-  const refused = check(body(), diff);
+  const printed = check(body(), diff);
   const ciLine = mutationRecordReport({ body: body(), diff }).line;
-  assert.equal(refused.ok, false);
-  assert.match(ciLine, /^MUTATION: MISSING/, "the line under comparison is the refusal, not an empty match");
-  assert.ok(refused.lines.includes(ciLine), `checkBody prints the line the CI entry prints:\n${refused.lines.join("\n")}`);
+  assert.equal(printed.ok, true, "a missing record is paperwork, and CI no longer fails a pull request for it");
+  assert.match(ciLine, /^MUTATION: MISSING \(printed, not failing\)/, "the line under comparison is the printed omission, not an empty match");
+  assert.ok(printed.lines.includes(ciLine), `checkBody prints the line the CI entry prints:\n${printed.lines.join("\n")}`);
 
   const accepted = check(body("Mutation: none -- the example only renames a fixture"), diff);
-  assert.equal(accepted.ok, true, "POSITIVE CONTROL: the same body with `Mutation: none -- <reason>` passes");
+  assert.equal(accepted.ok, true);
   assert.ok(accepted.lines.some((line) => line.startsWith("MUTATION: NONE")));
+
+  const twice = check(body("Mutation: a", "Mutation: b"), diff);
+  assert.equal(twice.ok, false, "POSITIVE CONTROL: the report can still say no -- a duplicated header is refused");
+  assert.ok(twice.lines.some((line) => line.startsWith("MUTATION: DUPLICATE")));
 });
 
 test("#3209 (1): a diff with no test file owes no record, so the ordinary case still opens", () => {
@@ -109,8 +113,9 @@ test("#3209 (4): `pr:edit` is `pr-open.mjs edit`, and `main` runs the same `chec
   assert.deepEqual(FIXED_ARGS["pr:edit"], ["edit"]);
   assert.deepEqual(FIXED_ARGS["pr:open"], ["create"]);
 
-  for (const [mode, text, expected] of [["edit", body(), EXIT_NOTHING_SENT], ["create", body(), EXIT_NOTHING_SENT],
-    ["edit", body("Mutation: none -- the example only renames a fixture"), 0]] as const) {
+  const malformed = body("## Measured\n\nA claim with no command.");
+  for (const [mode, text, expected] of [["edit", malformed, EXIT_NOTHING_SENT], ["create", malformed, EXIT_NOTHING_SENT],
+    ["edit", body("Mutation: none -- the example only renames a fixture"), 0], ["edit", body(), 0]] as const) {
     const sent: string[][] = [];
     const err: string[] = [];
     const code = main([mode, ...(mode === "edit" ? ["7"] : ["--head", "agent/x"]), "--body", text], {
