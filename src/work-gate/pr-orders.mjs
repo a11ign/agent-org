@@ -33,6 +33,12 @@ import { labelsOf, sessionOf, conflictStateOf, CONFLICT_STATE, reviewStateOf, BL
   AWAITING_EVIDENCE_QUIET_HOURS, AWAITING_EVIDENCE_QUIET_MS, HOUR_MS, REVIEW_STATE } from "../work-gate.mjs";
 
 /**
+ * The verdict door as an order must spell it (#3316): `~/reviewer/bin` is on no PATH, so the bare name was `command not found`. Not
+ * imported from `wake.mjs`, a far heavier module for one string; `reviewer-door-install.test.ts` pins both to the installer's default.
+ */
+const REVIEWER_DOOR = "$HOME/reviewer/bin/pr-review-verdict";
+
+/**
  * PURE. Is every red among these blocking checks a CANCELLED one, while something else on the head still runs?
  *
  * #1916, #1007's shape a second time. `checks-rule.mjs` ruled in #1007 that a cancelled run is NO VERDICT -- the
@@ -1031,7 +1037,7 @@ function unreviewedConvincedOrder(pr, found, heads) {
     prompt: `Ready ${subjectMention(pr)} at \`${head8}\` is green and carries a CONVINCED verdict`
       + `${found.by ? ` from ${found.by}` : ""} as a COMMENT, and no APPROVED review at that head -- `
       + "so GitHub's `reviewDecision` is not APPROVED and it cannot merge. The comment did not become a "
-      + "review. Post the approving review with `pr-review-verdict` at the CURRENT head; its first line "
+      + `review. Post the approving review with \`${REVIEWER_DOOR}\` at the CURRENT head; its first line `
       + `must begin "**Review of #${pr.number} at " or the script refuses (after any comment was posted). `
       + "This is not a new review round: if your verdict stands, re-post it; do not re-read the diff."
       + authored,

@@ -4660,6 +4660,7 @@ const DECLARED_HISTORY_POPULATION: Declaration[] = [
   { name: "host-project-paths.test.ts", reason: "#2620: imports `host-units.mjs` for the rendered unit texts, the same edge `host-units.test.ts` has; its pull request declares `History: full` (#497)" },
   { name: "host-tool-install.test.ts", reason: "#2793: imports `host-units.mjs` for the rendered `work-tick` unit, the same edge; its pull request declares `History: full`" },
   { name: "host-units.test.ts", reason: "tests `host-units.mjs`, which calls `git log --all`: the edge every other entry here shares" },
+  { name: "reviewer-door-install.test.ts", reason: "#3316: imports `host-units.mjs` for `hostUnitDrift` and the door install, the same edge `host-units.test.ts` has; its pull request declares `History: full`" },
   { name: "shadow-window-arm.test.ts", reason: "#2867: imports `host-units.mjs` for the rendered shadow-window unit texts and the installer, the same edge; declares `History: full`" },
   { name: "work-gate.test.ts", reason: "this very file: it spawns the gate and reads commit history" },
   { name: "work-tick-crash-exit.test.ts", reason: "#3038: imports `host-units.mjs` for the rendered `work-tick` unit's ExecStart, the same edge `host-tool-install.test.ts` has" },

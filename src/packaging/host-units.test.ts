@@ -27,7 +27,7 @@ import { readFileSync, readdirSync, mkdirSync, mkdtempSync, realpathSync, rmSync
   existsSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { PROJECT_ROOT, TOOL_ROOT } from "./host-units-project.ts";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, systemdUserAvailable,
@@ -35,7 +35,7 @@ import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, syst
   entriesFromCommand, ghSpawnReachedFrom, identityDrift, unitsSpendingGh, opaqueCommands,
   retiredHere, addedOnSomeRef, orphanOrigin, shellCommandWords, shellSpawnsGh, shippedHostScripts,
   supersededHostScripts, unitEntryPoints, missingUnitPrograms, workingDirectoryOf,
-  programCandidates, hostIdentityDrift, hostIdentityNotes, hostIdentityInstall, ownedIdentityFiles, compileCacheNotes,
+  programCandidates, hostIdentityDrift, hostIdentityNotes, hostIdentityInstall, ownedIdentityFiles, reviewerDoorInstall, compileCacheNotes,
   WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift, declaredCompileCache, PROJECT_UNITS_DIR, shippedUnitText,
   shippedScriptText, leadsListText, modelEffortDrift, sessionModelDrift, sessionModelNotes, lastModelIn,
   liveClaudeSessions, OPTIONAL_UNITS, TOOL_ENTRIES, LONG_RUNNING_TEMPLATES, unclassifiedEntries, declaredProjectKeys, windowEnd, windowEndNotes } from "../host-units.mjs";
@@ -1581,9 +1581,12 @@ const identityHost = (where: { shippedDir: string, scriptDir: string, workersDir
   writeFileSync(join(where.shippedDir, "gh"), shippedScriptText("gh") as string);
   mkdirSync(where.scriptDir, { recursive: true });
   hostIdentityInstall({ ...where, out: () => {} });
+  // PINNED SATISFIED TOO (#3316): `hostUnitDrift` now compares the reviewers' door, and an unpinned one reads the real host's.
+  const reviewerBin = join(dirname(where.scriptDir), "reviewer-bin");
+  reviewerDoorInstall({ reviewerBin, out: () => {} });
   writeFileSync(where.gitConfigPath, `[credential "https://github.com"]\n\thelper = \n`
     + `\thelper = !${where.scriptDir}/gh auth git-credential\n`);
-  return where;
+  return { ...where, reviewerBin };
 };
 
 const UNIT_BODY = (workingDir: string) => "[Unit]\nDescription=board report\n[Service]\n"

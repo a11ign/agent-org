@@ -1585,6 +1585,74 @@ export function hostIdentityInstall({ mkdir = mkdirSync, write = writeFileSync, 
   });
 }
 
+// --- #3316: THE REVIEWERS' DOOR IS A COPY ON THE HOST, SO IT IS COMPARED AND INSTALLED LIKE THE WRAPPER ------
+//
+// MEASURED 2026-10-03 on #3311. `reviewer-3311` finished a review and could not post it: the installed
+// `~/reviewer/bin/pr-review-verdict` was 7,227 bytes against a 15,704-byte source. It PREDATED #3030 (one write per
+// verdict) and #3050/#3199 (refuse a second review at an equal patch), so the door the reviewers RAN was not the
+// one that was reviewed and tested. `install-reviewer-bin.sh` (#2193) existed and nothing called it; #2972's
+// cut-over moved the source out of the repository that carried the install and reopened the drift #2193 closed.
+
+/** The door as the repository ships it, and the installer that puts it where it runs. */
+export const REVIEWER_DOOR_SOURCE = fileURLToPath(new URL("./reviewer/pr-review-verdict.sh", import.meta.url));
+const REVIEWER_DOOR_INSTALLER = fileURLToPath(new URL("./reviewer/install-reviewer-bin.sh", import.meta.url));
+
+/**
+ * Where the door RUNS from: `$A11Y_REVIEWER_BIN` else `<home>/reviewer/bin`, the installer's own default, which a test reads out of
+ * the script. The directory the reviewers' execpolicy names.
+ * @param {ShippedDeps & { reviewerBin?: string }} [deps]
+ */
+export function reviewerDoorPath(deps = {}) {
+  const bin = deps.reviewerBin ?? process.env.A11Y_REVIEWER_BIN ?? join((deps.host ?? homeHostConfig()).home, "reviewer", "bin");
+  return join(bin, "pr-review-verdict");
+}
+
+/**
+ * Is the installed door the shipped one: `CURRENT`, `DRIFTED` (present and different), `NOT INSTALLED`, or `SOURCE UNREADABLE` --
+ * which is NOT the same as drifted, because two unreadable files must not compare equal.
+ * @param {Parameters<typeof reviewerDoorPath>[0] & { read?: typeof readFileSync, source?: string }} [deps]
+ * @returns {{ state: "CURRENT" | "DRIFTED" | "NOT INSTALLED" | "SOURCE UNREADABLE", target: string, shippedBytes: number, installedBytes: number | null }}
+ */
+export function reviewerDoorState(deps = {}) {
+  const { read = readFileSync, source = REVIEWER_DOOR_SOURCE } = deps;
+  const target = reviewerDoorPath(deps);
+  const shipped = textOf(source, read);
+  const installed = textOf(target, read);
+  const bytes = (/** @type {string | null} */ text) => (text === null ? null : Buffer.byteLength(text));
+  const state = shipped === null ? "SOURCE UNREADABLE" : installed === null ? "NOT INSTALLED" : installed === shipped ? "CURRENT" : "DRIFTED";
+  return { state, target, shippedBytes: bytes(shipped) ?? 0, installedBytes: bytes(installed) };
+}
+
+/**
+ * The door against the repository's: nothing when CURRENT. `host:install` runs the installer, so its remedy line is honest here.
+ * @param {Parameters<typeof reviewerDoorState>[0]} [deps]
+ * @returns {Finding[]}
+ */
+export function reviewerDoorDrift(deps = {}) {
+  const { state, target, shippedBytes, installedBytes } = reviewerDoorState(deps);
+  if (state === "CURRENT") return [];
+  const detail = {
+    "SOURCE UNREADABLE": "the repository's pr-review-verdict.sh could not be read, so the installed door cannot be compared to it.",
+    "NOT INSTALLED": `the repository ships the reviewers' door and this host has none at ${target}: a reviewer cannot post a verdict.`,
+    DRIFTED: `the installed door is ${installedBytes} bytes and the shipped one ${shippedBytes}: reviewers run a door that was not the one `
+      + "reviewed and tested (#3316). `host:install` runs install-reviewer-bin.sh, which keeps the previous copy beside it as `.bak-<stamp>`.",
+  }[state];
+  return [{ unit: target, problem: state, detail }];
+}
+
+/**
+ * Install the door by running the installer the repository ships, with the destination THIS file decided so the check and the install
+ * cannot name two places. The installer reads the copy back and fails unless it is byte-identical, which is why this does not reimplement it.
+ * @param {Parameters<typeof reviewerDoorPath>[0] & { run?: (file: string, args: string[]) => string, out?: (line: string) => void }} [deps]
+ * @returns {string} the path it installed
+ */
+export function reviewerDoorInstall(deps = {}) {
+  const { run = (file, args) => execFileSync("bash", [file, ...args], { encoding: "utf8" }), out = (l) => process.stdout.write(l) } = deps;
+  const target = reviewerDoorPath(deps);
+  out(run(REVIEWER_DOOR_INSTALLER, [target]));
+  return target;
+}
+
 /**
  * @typedef {{ state: "retired" | "never" | "unreadable" } | { state: "unmerged", sha: string }} OrphanOrigin
  */
@@ -2079,7 +2147,7 @@ export function hostUnitDrift(deps = {}) {
   // ignore this command, which would lose the timer finding along with it.
   return [...unclassifiedInLiveTree(deps), ...unitDrift(shippedUnitNames(deps).map((u) => unitState(u, deps))),
     ...orphanedUnits(deps), ...supersededHostScripts(deps), ...missingUnitPrograms(deps), ...unitsWithoutHostVariable(deps),
-    ...hostIdentityDrift(deps), ...identityDrift(deps), ...permissionModeDrift(deps), ...modelEffortDrift(deps), ...pnpmDrift({ repoRoot: REPO_ROOT, ...deps.pnpm })];
+    ...hostIdentityDrift(deps), ...reviewerDoorDrift(deps), ...identityDrift(deps), ...permissionModeDrift(deps), ...modelEffortDrift(deps), ...pnpmDrift({ repoRoot: REPO_ROOT, ...deps.pnpm })];
 }
 
 /** @param {string[]} args */
@@ -2371,7 +2439,7 @@ export function driftReport(drift, asked = true, notes = []) {
   const noted = notes.length === 0 ? "" : "notes (not failures):\n"
     + notes.map((d) => `  ${d.unit}: ${d.problem}\n    ${d.detail}\n`).join("");
   if (drift.length === 0) {
-    return `host units: every shipped unit is installed, current and running, and the gh identity files match.\n${noted}`;
+    return `host units: every shipped unit is installed, current and running, the gh identity files match, and the reviewer door is CURRENT.\n${noted}`;
   }
   return `host units: ${drift.length} problem(s).\n`
     + drift.map((d) => `  ${d.unit}: ${d.problem}\n    ${d.detail}\n`).join("")
@@ -2504,6 +2572,7 @@ function main() {
   if (process.argv.slice(2).includes("--install")) {
     hostUnitsInstall();
     hostIdentityInstall();
+    reviewerDoorInstall();
     process.stdout.write(driftReport(hostFindings(), asked, asked ? hostNotes() : []));
     return;
   }

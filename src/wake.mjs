@@ -1480,9 +1480,16 @@ export function withReviewCheckout(order, checkout, pr) {
     + "request's Acceptance runs there as written, after `pnpm run build` when it needs `dist`. Your npm cache is "
     + `\`${checkout.path}/node_modules/.cache/npm\`, the one place npm can write: set \`npm_config_cache\` to it if your pane does not.\n\n`
     + `SIGN AS \`${order.session}\`: your pane may not hold \`A11Y_REVIEWER_SESSION\` (one started outside the tick does not), so `
-    + `post the verdict as \`${doorEnvironment(order.session)} pr-review-verdict <n> <convinced|not-convinced> <file>\` `
+    + `post the verdict as \`${doorEnvironment(order.session)} ${REVIEWER_DOOR} <n> <convinced|not-convinced> <file>\` `
     + "and the verdict line's `by` names you." + doorRepositoryNote(order.session) };
 }
+
+/**
+ * The verdict door as an order must spell it. `~/reviewer/bin` is on no PATH, so the bare `pr-review-verdict` the orders used to print
+ * was `command not found` for `reviewer-3311` (#3316); this is the path `reviewer/install-reviewer-bin.sh` writes to by default, which
+ * `reviewer-door-install.test.ts` reads out of the script. The shell expands `$HOME`.
+ */
+export const REVIEWER_DOOR = "$HOME/reviewer/bin/pr-review-verdict";
 
 /** The variables the verdict door is run with for `session`: its signature, and for a keyed instance the repository too (#2969). @param {string} session */
 function doorEnvironment(session) {
