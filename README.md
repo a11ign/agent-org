@@ -37,13 +37,17 @@ with the project's compiler. Tested on Node 22.22.1.
 **A tag is the release.** `v<version>` on this repository, with a GitHub Release carrying the `CHANGELOG.md` entry, and nothing is published to a registry. **A tag is
 never moved or deleted once a project can have pinned it**: a moved tag changes what a pinned project gets, so a mistake is fixed by the next version.
 
-Cutting one:
+A release starts itself (a11ign/a11ign#3134); nobody dispatches anything:
 
-1. In a pull request, run `pnpm run changeset add` for the change and, when releasing, `pnpm run changeset version`. That bumps `package.json` and writes the
-   `CHANGELOG.md` entry; nobody writes either by hand. Merge it, and wait for `gate` on `main`.
-2. Dispatch **release** (Actions, or `gh workflow run release.yml`) on `main`. It defaults to a **dry run** that checks everything and says which tag it would cut.
-3. To cut it, dispatch with `dry-run` false and `confirm` set to `publish-for-real`. The workflow refuses if `gate` has not succeeded on that sha, if the tag exists,
-   or if `CHANGELOG.md` has no entry for the version. It holds `contents: write` and nothing else.
+1. A pull request that changes what a project gets carries a changeset (`pnpm run changeset add`). Merge it.
+2. On that push to `main`, **release** opens or updates the ONE **version pull request** (branch `changeset-release/main`), which holds the `package.json` bump and the
+   `CHANGELOG.md` entry `changeset version` wrote; nobody writes either by hand. A person closes and reopens it once, because GitHub starts no workflow from an event
+   its own token made, so `gate` and auto-arm do not run on it until then.
+3. On the push of its merge, when `package.json`'s version has no `v<version>` tag, **release** waits for `gate` to have succeeded on that sha and creates the tag and the
+   Release. It refuses if `CHANGELOG.md` has no entry for the version or the remote's tags cannot be read, and an existing tag is left alone. It holds `contents: write`
+   and `pull-requests: write` and nothing else.
+
+The tag is not a deploy: the host that runs the org tracks `main`, so a release changes what a project's CI installs and never what the running org does.
 
 A project bumps its pin by editing the range in its `package.json` (`github:a11ign/agent-org#semver:^0.1.0`) in an ordinary dependency pull request and reading the
 changelog it links. While the version is `0.x`, `^0.1.0` takes patches only, so a `minor` is the bump a project opts into.

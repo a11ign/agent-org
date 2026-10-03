@@ -1,40 +1,41 @@
 name: release
 
-# A RELEASE IS A GIT TAG, AND NOTHING ELSE (a11ign/a11ign#3069; chairman, a11ign/a11ign#928, 2026-10-02). agent-org is published to NO registry: a project takes
+# A RELEASE IS A GIT TAG, AND NOTHING ELSE (a11ign/a11ign#3069, #3134; chairman, a11ign/a11ign#928, 2026-10-03). agent-org is published to NO registry: a project takes
 # `github:a11ign/agent-org#semver:^0.1.0`, which pnpm resolves against the tags of this repository (measured on pnpm 10.34.5 against a scratch repository: both
-# `v0.1.0` and `0.1.0` resolve; this file cuts `v<version>`). So this workflow creates the tag `v<version>` and a GitHub Release carrying the CHANGELOG entry, holds
-# `contents: write` and nothing else, and has no npm, no OIDC and no registry token. If a registry is ever wanted that is a later decision under a name the
-# chairman owns, and it is a different workflow.
+# `v0.1.0` and `0.1.0` resolve; this file cuts `v<version>`). So this workflow creates the tag `v<version>` and a GitHub Release carrying the CHANGELOG entry, and has no
+# npm, no OIDC and no registry token. If a registry is ever wanted that is a later decision under a name the chairman owns, and it is a different workflow.
 #
-# SIX THINGS must hold before a tag exists. They are independent on purpose (the shape is the monorepo's `release.yml`; its npm, provenance and NVDA guards are not
-# copied). `src/packaging/release-safety.test.ts` pins each, and fails on a copy of this file with it removed.
+# THE TAG IS NOT A DEPLOY. The host that runs the org is not a consumer of the tag: its gate tracks `main` within two minutes (ADR 0040, decision 3). A release here
+# changes what a PROJECT's CI installs, never what the running org does.
 #
-#   1. `workflow_dispatch` only. No push, tag or schedule trigger, so nothing starts it by accident.
-#   2. `dry-run` defaults to true. The default path does every check below and stops before the tag.
-#   3. `confirm` must be typed exactly; a boolean can be clicked by mistake.
-#   4. `gate` -- ci.yml's required check -- must have SUCCEEDED on the exact sha dispatched, and the dispatch must be on `main`. The result is READ, not re-run: the
-#      suite takes minutes and ci.yml already ran it on this sha when it merged (workflow_call would need ci.yml to change, which is outside this row).
-#   5. The tag must not already exist. A tag that moved changes what a pinned project gets, so a tag is never moved or deleted once a project can have pinned it.
-#      An unreadable remote is a refusal too: "could not look" is not "absent".
-#   6. The tag is `v` plus the `package.json` version, and CHANGELOG.md must hold an entry for that version. The version is bumped and the entry written by
-#      `pnpm run changeset version` in an ordinary pull request (see .changeset/README.md); this workflow only reads them, so it never writes to `main`.
+# A MERGE TO `main` RELEASES ITSELF, IN TWO STEPS (a11ign/a11ign#3134). Both start on `push` to `main`, and nothing else starts this file:
+#   - `version-pr`: while a changeset is pending, run `changeset version` on the bot branch `changeset-release/main` and open or update the ONE pull request from it.
+#     Nothing here writes to `main`. That branch is rebuilt from `main` on every push, so it is force-pushed: it is the only ref this file ever force-pushes, and a tag
+#     is never one. Merging that pull request is what releases.
+#   - `release`: when `package.json`'s version has no `v<version>` tag, create the tag and the Release. On every other push the tag exists and the job does nothing.
+#
+# WHAT MUST HOLD BEFORE A TAG EXISTS stays, because it is about WHAT is tagged and not about who asked. `release-safety.test.ts` pins each, and fails on a copy of this
+# file with it removed:
+#   1. `gate` -- ci.yml's required check -- must have SUCCEEDED on the exact sha, read and waited for, not re-run (the suite takes minutes, and a push starts this file
+#      and ci.yml together). A sha on which it did not succeed is not tagged; the next push to `main` with the same version is.
+#   2. The tag must not already exist. A tag that moved changes what a pinned project gets, so a tag is NEVER moved or deleted once a project can have pinned it.
+#      An unreadable remote is a refusal: "could not look" is not "absent".
+#   3. The tag is `v` plus the `package.json` version, and CHANGELOG.md must hold an entry for that version.
+#
+# WHAT THE PLATFORM DOES NOT DO HERE, AND THE REMEDY IS A PERSON'S. Events made with GITHUB_TOKEN start no workflow, so the version pull request is opened with no `gate`
+# on it and `auto-arm` does not arm it. Closing and reopening it (a person's act, so a real event) starts both. The repository's "Allow GitHub Actions to create and
+# approve pull requests" setting must also be on, or the `Open or update` step fails with the platform's own message. No token is added to get past either: the design
+# is `contents: write` plus `pull-requests: write` and nothing broader (a11ign/a11ign#3134).
+#
+# A push that arrives while another run is waiting REPLACES the waiting run (GitHub keeps one). That is harmless: the newer push carries the same `package.json` version.
 
 on:
-  workflow_dispatch:
-    inputs:
-      dry-run:
-        description: Run every check and say which tag would be cut -- cut nothing. Leave true unless you are releasing.
-        type: boolean
-        default: true
-      confirm:
-        description: 'To cut the tag for real, type: publish-for-real'
-        type: string
-        default: ''
+  push:
+    branches: [main]
 
 permissions:
   contents: read
 
-# Two dispatches at once could both pass the existing-tag check.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -44,27 +45,42 @@ jobs:
     # Not named `gate`: the check-run this job creates would otherwise answer the query it runs.
     name: ci gate result on this sha
     runs-on: ubuntu-latest
+    timeout-minutes: 50
     permissions:
       contents: read
       checks: read
     steps:
-      - name: Refuse unless dispatched on main
+      - name: Refuse unless this is main
         run: |
           if [ "$GITHUB_REF" != refs/heads/main ]; then
-            echo "::error::dispatched on $GITHUB_REF; a release is cut from main only"
+            echo "::error::run on $GITHUB_REF; a release is cut from main only"
             exit 1
           fi
-      - name: ci.yml's gate must have succeeded on this sha
+      - name: ci.yml's gate must have succeeded on this sha, and is waited for
         env:
           GH_TOKEN: ${{ github.token }}
+          WAIT_SECONDS: '2700'
+          POLL_SECONDS: '20'
         run: |
-          conclusion=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=gate&filter=latest" \
-            --jq '.check_runs | map(select(.app.slug == "github-actions")) | first | .conclusion // "none"')
-          echo "gate on $GITHUB_SHA: $conclusion"
-          if [ "$conclusion" != success ]; then
-            echo "::error::ci.yml's gate on $GITHUB_SHA is '$conclusion', not 'success'"
-            exit 1
-          fi
+          waited=0
+          while :; do
+            conclusion=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=gate&filter=latest" \
+              --jq '.check_runs | map(select(.app.slug == "github-actions")) | first | if . == null then "none" else (.conclusion // "pending") end')
+            echo "gate on $GITHUB_SHA: $conclusion (waited ${waited}s)"
+            case "$conclusion" in
+              success) exit 0 ;;
+              none|pending) ;;
+              *)
+                echo "::error::ci.yml's gate on $GITHUB_SHA is '$conclusion', not 'success'"
+                exit 1 ;;
+            esac
+            if [ "$waited" -ge "$WAIT_SECONDS" ]; then
+              echo "::error::ci.yml's gate on $GITHUB_SHA was still '$conclusion' after ${WAIT_SECONDS}s"
+              exit 1
+            fi
+            sleep "$POLL_SECONDS"
+            waited=$((waited + POLL_SECONDS))
+          done
 
   release:
     needs: [gate]
@@ -84,22 +100,24 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
-      - name: Refuse a tag that already exists
+      - name: Does the tag exist? An existing one is left alone, an unreadable remote is a refusal
+        id: tag
         env:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           status=0
           git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null || status=$?
           case "$status" in
-            0)
-              echo "::error::tag $TAG already exists; a tag is never moved or deleted once a project can have pinned it. Bump the version."
-              exit 1 ;;
-            2) echo "tag $TAG does not exist" ;;
+            0) exists=true ;;
+            2) exists=false ;;
             *)
               echo "::error::could not read the remote's tags (git ls-remote exited $status); not assuming $TAG is free"
               exit 1 ;;
           esac
+          echo "exists=$exists" >> "$GITHUB_OUTPUT"
+          echo "tag $TAG at $GITHUB_SHA: exists=$exists" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: The CHANGELOG entry for this version becomes the Release notes
+        if: steps.tag.outputs.exists == 'false'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -109,15 +127,8 @@ jobs:
             exit 1
           fi
           cat "$RUNNER_TEMP/notes.md"
-      - name: Say what this run cuts
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-          DRY_RUN: ${{ inputs.dry-run }}
-        # A block scalar: a plain `run: echo "...: ..."` holds a `: ` and GitHub refuses the whole file as invalid YAML (the first merge of this workflow did).
-        run: |
-          echo "dry-run=$DRY_RUN: the tag $TAG at $GITHUB_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Cut the tag and the Release
-        if: inputs.confirm == 'publish-for-real' && inputs.dry-run == false
+        if: steps.tag.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
@@ -129,3 +140,57 @@ jobs:
             exit 1
           fi
           echo "cut $TAG at $GITHUB_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  version-pr:
+    name: the version pull request
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      BRANCH: changeset-release/main
+    steps:
+      - uses: actions/checkout@v4
+      - name: Is a changeset pending?
+        id: pending
+        run: |
+          count=$(find .changeset -maxdepth 1 -name '*.md' ! -name README.md | wc -l)
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "$count pending changeset(s)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-node@v4
+        if: steps.pending.outputs.count != '0'
+        with:
+          node-version: 22.22.1
+      - name: pnpm, which runs the `changeset` script as the README says (a runner image carries npm, not pnpm)
+        if: steps.pending.outputs.count != '0'
+        run: npm install --global pnpm@10.34.5
+      - name: changeset version, committed to the bot branch, which is rebuilt from main each time
+        if: steps.pending.outputs.count != '0'
+        run: |
+          pnpm run changeset version
+          version=$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$BRANCH"
+          git add -A
+          git commit -m "Version agent-org $version"
+          git push --force origin "HEAD:refs/heads/$BRANCH"
+      - name: Open or update the one version pull request
+        if: steps.pending.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")
+          title="Version agent-org $version"
+          body="Merging this cuts the tag \`v$version\` and a GitHub Release carrying the CHANGELOG entry, once \`gate\` has succeeded on the merge. Rebuilt from \`main\` on every push while a changeset is pending.
+
+          Closes: none — release bookkeeping, no row.
+
+          Acceptance: none — generated by \`changeset version\`; the diff is \`package.json\`, \`CHANGELOG.md\` and the consumed \`.changeset\` entries."
+          number=$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh pr edit "$number" --title "$title" --body "$body"
+            echo "updated #$number" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            gh pr create --base main --head "$BRANCH" --title "$title" --body "$body" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
