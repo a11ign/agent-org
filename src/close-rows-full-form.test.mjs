@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
 
 const SRC = dirname(fileURLToPath(import.meta.url));
 const PROJECT = process.env.A11IGN_CHECKOUT ?? "/home/agent/repos/a11y-witness";
@@ -124,7 +125,7 @@ if (args[0] === "issue") process.exit(0);
 console.error("NOT_FOUND (a11ign.projectV2): Could not resolve to a ProjectV2 with the number 1"); process.exit(1);
 `);
   chmodSync(join(dir, "bin/gh"), 0o755);
-  spawnSync("git", ["init", "-q", dir]);
+  spawnSync("git", ["init", "-q", dir], { env: sandboxGitEnv() });
   const run = spawnSync(process.execPath, [join(SRC, "close-rows-for-merged-pr.mjs"), "17"], { cwd: dir, encoding: "utf8",
     env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}`, GITHUB_REPOSITORY: LAYER } });
   const log = existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];

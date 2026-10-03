@@ -23,6 +23,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { sandboxGitEnv } from "../lib/git-env.mjs";
 
 const REPO = fileURLToPath(new URL("../../", import.meta.url));
 const WORKFLOW = readFileSync(`${REPO}.github/workflows/release.yml`, "utf8");
@@ -180,7 +181,7 @@ test("positive control: each mutation of release.yml is seen, and by the check t
 /** A scratch remote holding one commit, optionally tagged, and a clone of it: the shape `actions/checkout` leaves. Returns the clone. */
 function cloneOfRemote(root: string, tags: string[]): string {
   const git = (cwd: string, ...args: string[]) => {
-    const r = spawnSync("git", ["-c", "user.email=a@b.c", "-c", "user.name=n", ...args], { cwd, encoding: "utf8" });
+    const r = spawnSync("git", ["-c", "user.email=a@b.c", "-c", "user.name=n", ...args], { cwd, encoding: "utf8", env: sandboxGitEnv() });
     assert.equal(r.status, 0, `git ${args.join(" ")}: ${r.stderr}`);
   };
   mkdirSync(root, { recursive: true });
@@ -221,7 +222,7 @@ function refusalProblems(script: string): string[] {
       ["other tag only", runBash(script, taken, { TAG: "v1.2.4" }).status, 0],
     ] as const;
     for (const [label, got, want] of outcomes) if (got !== want) problems.push(`${label}: exit ${got}, wanted ${want}`);
-    spawnSync("git", ["remote", "set-url", "origin", join(root, "nowhere.git")], { cwd: lost });
+    spawnSync("git", ["remote", "set-url", "origin", join(root, "nowhere.git")], { cwd: lost, env: sandboxGitEnv() });
     if (runBash(script, lost, { TAG: "v1.2.3" }).status === 0) problems.push("an unreadable remote was taken for 'tag absent'");
     return problems;
   } finally {
