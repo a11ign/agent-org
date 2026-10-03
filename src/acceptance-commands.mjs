@@ -3558,25 +3558,61 @@ export function wholeSuiteNote(commands) {
     + "change), in which case say so on the row."];
 }
 
+/**
+ * @typedef {{ body: string, run: (command: string) => number, diff: DiffReading }} BodyReportInput
+ * @typedef {{ name: string, report: (input: BodyReportInput) => { ok: boolean, lines: string[] } }} BodyReport
+ */
+
+/**
+ * #3209: THE REPORTS CI'S ACCEPTANCE JOB RUNS OVER A PR BODY, AS ONE LIST. `main` below and `pr-open.mjs`'s
+ * `checkBody` both iterate THIS value, so a fifth body check reaches `pr:open` and `pr:edit` with no second edit.
+ * It was two spellings of one list: the CLI entry grew a `Mutation:` and a `## Measured` report and `checkBody`
+ * kept its copy of two, so a body passed `pr:open` and went red in CI on `MUTATION: MISSING` -- 8 of the 9
+ * acceptance failures sampled on #928, paperwork knowable before the pull request existed.
+ *
+ * ORDER IS THE ORDER CI PRINTS THEM IN, and `acceptance` is first because it is the one that RUNS something.
+ * Not frozen, so a test can add an entry and watch `checkBody` run it; nothing in the tree appends to it.
+ * @type {BodyReport[]}
+ */
+export const CI_BODY_REPORTS = [
+  { name: "acceptance", report: ({ body, run }) => {
+    const report = acceptanceReport(body, run);
+    const declared = extractAcceptanceSection(body);
+    const notes = declared.kind === "commands" ? wholeSuiteNote(declared.commands) : [];
+    return { ok: report.ok, lines: [...report.lines, ...notes] };
+  } },
+  { name: "closes", report: ({ body }) => oneLine(closesDeclarationReport(body)) },
+  { name: "mutation", report: ({ body, diff }) => oneLine(mutationRecordReport({ body, diff })) },
+  { name: "measured", report: ({ body }) => oneLine(measuredSectionReport(body)) },
+];
+
+/** @param {{ ok: boolean, line: string }} verdict */
+function oneLine({ ok, line }) {
+  return { ok, lines: [line] };
+}
+
+/**
+ * Every report in `reports`, run in order and ALL of them, so an author fixing a body is told every refusal at
+ * once rather than one per round trip. `reports` is read at call time, which is what lets a test see a
+ * report added to `CI_BODY_REPORTS` reach a caller that never named it.
+ * @param {BodyReportInput} input
+ * @param {BodyReport[]} [reports]
+ * @returns {{ ok: boolean, lines: string[] }}
+ */
+export function runCiBodyReports(input, reports = CI_BODY_REPORTS) {
+  const results = reports.map(({ report }) => report(input));
+  return { ok: results.every((result) => result.ok), lines: results.flatMap((result) => result.lines) };
+}
+
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/acceptance-commands.mjs" });
   // FROM AN ENV VAR, NEVER ARGV -- a PR body is adversarial input (anyone can open a PR), and passing it
   // as a shell argument would put it on a command line for something else to misinterpret. GitHub Actions'
   // own `env:` mapping is what keeps it a single opaque string here, never re-parsed as shell.
   const body = process.env.PR_BODY ?? "";
-  const report = acceptanceReport(body, runForReal);
-  for (const line of report.lines) console.log(line);
-  const declared = extractAcceptanceSection(body);
-  if (declared.kind === "commands") {
-    for (const line of wholeSuiteNote(declared.commands)) console.log(line);
-  }
-  const closes = closesDeclarationReport(body);
-  console.log(closes.line);
-  const mutation = mutationRecordReport({ body, diff: changedFilesOfThisPullRequest() });
-  console.log(mutation.line);
-  const measured = measuredSectionReport(body);
-  console.log(measured.line);
-  process.exit(report.ok && closes.ok && mutation.ok && measured.ok ? 0 : 1);
+  const result = runCiBodyReports({ body, run: runForReal, diff: changedFilesOfThisPullRequest() });
+  for (const line of result.lines) console.log(line);
+  process.exit(result.ok ? 0 : 1);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();
