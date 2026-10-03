@@ -26,8 +26,10 @@ const NO_ROOT_FILES = new Set<string>();
 const EM = "—";
 
 const regionBody = (paths: string[]) => `## What it is\n\nx\n\n## Region\n\n\`\`\`\n${paths.join("\n")}\n\`\`\`\n\n## Acceptance\n\nx\n`;
+// #3209: `main` now runs `Mutation:` too, and these drivers change `*.test.ts` paths, so the fixture body declares
+// none -- these tests drive the Region check and nothing here is a mutation record.
 const prBody = (closes: string, extra = "") =>
-  `## Acceptance\n\nnode -e "process.exit(0)"\n\n${closes}\n${extra}`;
+  `## Acceptance\n\nnode -e "process.exit(0)"\n\n${closes}\nMutation: none -- these tests drive the Region check\n${extra}`;
 
 /** A `git` that answers only what pr-open asks: the diff, and the head reads `edit` makes. */
 const gitFor = (changed: string[], origin = "deadbeef") => (args: string[]) => {

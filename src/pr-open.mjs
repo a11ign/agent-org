@@ -11,7 +11,7 @@
 // was right in all four cases -- the defect is only that its answer arrives four minutes and one CI round
 // after the mistake, instead of at the moment `gh pr create`/`gh pr edit` is about to send the body.
 //
-// NO SECOND PARSER. `checkBody` below calls `acceptanceReport`/`closesDeclarationReport` -- the exact
+// NO SECOND PARSER. `checkBody` below iterates `CI_BODY_REPORTS` (#3209) -- the exact
 // functions `packages/agent-org/src/acceptance-commands.mjs`'s own CLI entry (the "acceptance / run" CI job) calls --
 // never a local regex re-deriving "is this body valid". A second implementation of that question would
 // drift from the first, which is this repository's most-repeated defect and would produce the worst
@@ -42,7 +42,7 @@
 import { execFileSync, execSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { acceptanceReport, closesDeclarationReport, closesReferences, extractClosesDeclaration, extractMutationSection }
+import { closesReferences, extractClosesDeclaration, extractMutationSection, runCiBodyReports }
   from "./acceptance-commands.mjs";
 import { declaredRegionFiles, regionCovers, regionCoversIn, splitRegionEntry } from "./region-paths.mjs";
 import { homeProjectDeclaration } from "./project-config.mjs";
@@ -101,23 +101,25 @@ export function acceptanceEnv(env) {
 }
 
 /**
- * THE CHECK -- the tree's own `acceptanceReport` (Acceptance/Refutation) plus `closesDeclarationReport`
- * (Closes), composed exactly as `acceptance-commands.mjs`'s own CLI entry composes them. `ok: false` means
- * refuse; `lines` is exactly what the CI acceptance job itself would print for this body.
+ * THE CHECK -- every report CI's acceptance job runs over a body (`CI_BODY_REPORTS`: Acceptance, Closes, `Mutation:`,
+ * `## Measured`), through the SAME `runCiBodyReports` the CLI entry calls, so the two cannot be spelled apart again
+ * (#3209: a body passed here and went red in CI on `MUTATION: MISSING`). `ok: false` means refuse; `lines` is
+ * exactly what the CI acceptance job itself would print for this body.
+ *
+ * `diff` is what `mutationRecordReport` needs and the only thing a body check reads from the tree. A caller that has
+ * none gets `UNCHECKED`, which is loud and not a refusal, exactly as CI treats a diff it could not read.
  * @param {string} body
- * @param {{ run?: (command: string) => number }} [deps]
+ * @param {{ run?: (command: string) => number, diff?: import("./acceptance-commands.mjs").DiffReading }} [deps]
  * @returns {{ ok: boolean, lines: string[] }}
  */
-export function checkBody(body, { run = runForReal } = {}) {
+export function checkBody(body, { run = runForReal, diff = { ok: false, why: "no diff was handed to checkBody" } } = {}) {
   // #891: checked BEFORE anything else, and returned on its own -- `acceptanceReport` actually RUNS the
   // body's Acceptance command for real, and a body worth refusing for a leak is not worth running
   // anything from first. The same `allLeaksIn` predicate the tree-wide guards already drive, never
   // restated.
   const leak = leakRefusalReason(body);
   if (leak) return { ok: false, lines: [leak] };
-  const report = acceptanceReport(body, run);
-  const closes = closesDeclarationReport(body);
-  return { ok: report.ok && closes.ok, lines: [...report.lines, closes.line] };
+  return runCiBodyReports({ body, run, diff });
 }
 
 /**
@@ -337,6 +339,28 @@ export function checkRegion(body, rest, { git = defaultGit, rowBody, rootFiles, 
     return { refusal: regionRefusalText({ rows, outside, region: read.region, base, malformed }) + hint, note: null };
   }
   return { refusal: null, note: regionPassLine({ rows, changed, standing, base }) };
+}
+
+/**
+ * #3209: THE DIFF `mutationRecordReport` READS, taken from the local tree the way CI takes it from the merge commit:
+ * the files the PR adds or changes (`ACMR`, a deletion leaves no test to owe a mutant; `--no-renames`, so a moved test
+ * reads as delete + add and the add is kept, #939). Not the Region's read, which keeps deletions: a deleted file is
+ * still a path the row did not name. #1344/#1446 already require this tree to be the head being sent.
+ *
+ * UNREADABLE IS `ok: false`, NEVER AN EMPTY LIST: `mutationRecordReport` turns that into a loud `UNCHECKED` that does
+ * not refuse, because a git hiccup is not the author's to fix, while an empty list would read as "no test, nothing owed".
+ * @param {string[]} rest the args handed to `gh pr <mode>`
+ * @param {(args: string[]) => string} [git]
+ * @returns {import("./acceptance-commands.mjs").DiffReading}
+ */
+export function localDiffReading(rest, git = defaultGit) {
+  const base = `origin/${flagAfter(rest, "--base") ?? "main"}`;
+  try {
+    const files = git(["diff", "--name-only", "--no-renames", "--diff-filter=ACMR", "-z", `${base}...HEAD`]);
+    return { ok: true, files: files.split("\0").filter(Boolean) };
+  } catch (error) {
+    return { ok: false, why: `git said: ${messageOf(error).split("\n")[0]}` };
+  }
 }
 
 /**
@@ -665,7 +689,7 @@ export function main(argv = process.argv.slice(2),
   // #2417: before checkBody for the same reason, and before anything is sent.
   const outsideRegion = regionStep(body, rest, { git, rowBody, rootFiles, code, out, err });
   if (outsideRegion !== null) return outsideRegion;
-  const result = checkBody(body, { run: runAcceptance });
+  const result = checkBody(body, { run: runAcceptance, diff: localDiffReading(rest, git) });
   for (const line of result.lines) out(`${line}\n`);
   if (!result.ok) {
     err(`pr-open: REFUSED -- this body would fail CI's own acceptance job; fix it before `
