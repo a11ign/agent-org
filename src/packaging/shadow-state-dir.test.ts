@@ -30,13 +30,16 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { COPY_MARKER, READS_DIR, STATE_DIR_ENV, shadowTick } from "../shadow-window.mjs";
 import { SHADOW_COPY_MARKER, SHADOW_STATE_DIR_ENV } from "../host-config.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
 const SRC = fileURLToPath(new URL("../", import.meta.url));
 const FIXTURE_HOME = "/home/fixture";
 const STDERR_EXCERPT = 400;
 /** The fixture project's checkout must hold a `project.json`, because `project-config.mjs` reads it from the host's primary (#2873).
- * This file reads the four state paths, not the vocabulary, so a11ign's own checkout stands in for the fixture's. */
-const PRIMARY_CHECKOUT = fileURLToPath(new URL("../../../../", import.meta.url)).replace(/\/$/, "");
+ * This file reads the four state paths, not the vocabulary, so the checkout THIS process serves stands in for the fixture's: `HOME_CHECKOUT`,
+ * resolved the way the child will resolve it (`$AGENT_ORG_HOST` standalone, `project/packages/agent-org` in CI). Counting directories up from
+ * the test file named `/home/agent` standalone, which holds no declaration (#3100). */
+const PRIMARY_CHECKOUT = HOME_CHECKOUT;
 
 const READER = `
   const gate = await import(${JSON.stringify(`${SRC}work-gate.mjs`)});
@@ -60,18 +63,17 @@ function runnerCopy(root: string) {
   return copy;
 }
 
-/** Import the four readers with `shadowDir` as the variable (or unset), and a host that declares `stateDir` when `hostStateDir` is given. */
+/** Import the four readers with `shadowDir` as the variable (or unset). The host is ALWAYS named, because a tool checked out standalone refuses
+ * an unset `AGENT_ORG_HOST` (#3039); it declares `stateDir` only when `hostStateDir` is given. */
 function readFour(root: string, shadowDir: string | undefined, hostStateDir?: string) {
-  const env: Record<string, string | undefined> = { ...process.env, HOME: FIXTURE_HOME, AGENT_ORG_HOST: undefined, [SHADOW_STATE_DIR_ENV]: shadowDir };
-  if (hostStateDir !== undefined) {
-    const file = join(root, "host.json");
-    writeFileSync(file, JSON.stringify({
-      schema: 1, home: "/srv/acme", binDir: "/srv/acme/bin", primary: "widgets", stateDir: hostStateDir,
-      projects: [{ id: "widgets", checkout: PRIMARY_CHECKOUT }],
-      gh: { workers: "/srv/acme/workers", leads: "/srv/acme/leads", leadsHeader: ["acme leads"], leadsWorkspaces: [{ id: "w1", role: "lead" }] },
-    }));
-    env.AGENT_ORG_HOST = file;
-  }
+  const file = join(root, "host.json");
+  writeFileSync(file, JSON.stringify({
+    schema: 1, home: "/srv/acme", binDir: "/srv/acme/bin", primary: "widgets",
+    ...(hostStateDir === undefined ? {} : { stateDir: hostStateDir }),
+    projects: [{ id: "widgets", checkout: PRIMARY_CHECKOUT }],
+    gh: { workers: "/srv/acme/workers", leads: "/srv/acme/leads", leadsHeader: ["acme leads"], leadsWorkspaces: [{ id: "w1", role: "lead" }] },
+  }));
+  const env: Record<string, string | undefined> = { ...process.env, HOME: FIXTURE_HOME, AGENT_ORG_HOST: file, [SHADOW_STATE_DIR_ENV]: shadowDir };
   return spawnSync(process.execPath, ["--input-type=module", "-e", READER], { env: env as NodeJS.ProcessEnv, encoding: "utf8" });
 }
 
