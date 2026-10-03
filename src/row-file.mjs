@@ -1123,8 +1123,9 @@ export function issueNumberFromUrl(output) {
  * reader fixing a half-boarded row needs to know WHICH did not stick, not merely that something did not.
  * @param {{ labels: string[], body: string | null, boardStatus: string | null,
  *           milestone?: string | null }} after
- * @param {{ session: string, label: string, status: string, laneLabels: string[],
- *           milestone?: string | null, releaseLabel?: string | null }} expected
+ * @param {{ session: string | null, label: string, status: string, laneLabels: string[],
+ *           milestone?: string | null, releaseLabel?: string | null }} expected `session: null` is a
+ *   row someone else filed (`--board=`), whose Filed-by line this act did not write and does not assert
  * @returns {string[]} empty when everything is confirmed
  */
 export function unverifiedFilingFields(after, expected) {
@@ -1138,7 +1139,9 @@ export function unverifiedFilingFields(after, expected) {
   }
   const missingLanes = expected.laneLabels.filter((l) => !after.labels.includes(l));
   if (missingLanes.length > 0) missing.push(`${missingLanes.map((l) => `\`${l}\``).join("/")} label(s)`);
-  if (after.body === null || filedByLine(after.body) !== expected.session) missing.push("the Filed-by line");
+  if (expected.session !== null && (after.body === null || filedByLine(after.body) !== expected.session)) {
+    missing.push("the Filed-by line");
+  }
   // #1011: `gh` ACCEPTING `--milestone` is not evidence the field is set -- a flag nobody reads is this
   // repo's own recorded defect. Only a fresh read of the filed row says whether it landed.
   if (expected.milestone !== null && after.milestone !== expected.milestone) {
@@ -1154,19 +1157,20 @@ export function unverifiedFilingFields(after, expected) {
   return missing;
 }
 
+/** #3330: project items asked for per request; `fetchIssueBoardStatus` pages past it rather than trusting it. */
+const PROJECT_ITEMS_PAGE = 100;
+
 /**
- * #844: is issue `issueNumber` on Project `PROJECT_NUMBER`, and what Status does it carry? A single
- * targeted GraphQL read of the one issue this filing just created -- never `board-snapshot.mjs`'s whole
- * `fetchBoardItems()` walk, which answers a different, much larger question (every item on the board) at
- * a cost this one-row check does not need to pay.
- * @param {number} issueNumber
- * @param {{ run?: typeof defaultRun }} [deps]
- * @returns {string | null} the Status option name, or `null` if the issue is not on this Project at all
+ * One page of the issue's `projectItems`. Throws, never guesses, on a failed call or an unexpected shape.
+ * @param {number} issueNumber @param {string | null} cursor @param {typeof defaultRun} run
+ * @returns {{ nodes: any[], hasNextPage: boolean, endCursor: string | null }}
  */
-export function fetchIssueBoardStatus(issueNumber, { run = defaultRun } = {}) {
+function projectItemsPage(issueNumber, cursor, run) {
   const [owner, name] = REPO.split("/");
+  const after = cursor === null ? "" : `, after: "${cursor}"`;
   const query = `query { repository(owner: "${owner}", name: "${name}") { issue(number: ${issueNumber}) `
-    + `{ projectItems(first: 10) { nodes { project { number } fieldValueByName(name: "Status") `
+    + `{ projectItems(first: ${PROJECT_ITEMS_PAGE}${after}) { pageInfo { hasNextPage endCursor } `
+    + `nodes { project { number } fieldValueByName(name: "Status") `
     + `{ ... on ProjectV2ItemFieldSingleSelectValue { name } } } } } } }`;
   /** @type {string} */
   let raw;
@@ -1184,13 +1188,43 @@ export function fetchIssueBoardStatus(issueNumber, { run = defaultRun } = {}) {
     throw new Error(`row-file: gh's Project-membership response for #${issueNumber} was not JSON -- `
       + `refusing to guess. First 200 chars: ${raw.slice(0, 200)}`, { cause });
   }
-  const nodes = /** @type {any} */ (parsed)?.data?.repository?.issue?.projectItems?.nodes;
-  if (!Array.isArray(nodes)) {
+  const items = /** @type {any} */ (parsed)?.data?.repository?.issue?.projectItems;
+  if (!Array.isArray(items?.nodes)) {
     throw new Error(`row-file: gh's Project-membership response for #${issueNumber} did not have the `
       + `expected shape -- refusing to guess. Got: ${JSON.stringify(parsed).slice(0, 300)}`);
   }
-  const onThisProject = nodes.find((/** @type {any} */ n) => n?.project?.number === PROJECT_NUMBER);
-  return onThisProject?.fieldValueByName?.name ?? null;
+  const endCursor = items.pageInfo?.endCursor ?? null;
+  const hasNextPage = items.pageInfo?.hasNextPage === true;
+  if (hasNextPage && endCursor === null) {
+    throw new Error(`row-file: gh reports more Project items for #${issueNumber} but no cursor to read them `
+      + "-- refusing to guess whether it is on the Project.");
+  }
+  return { nodes: items.nodes, hasNextPage, endCursor };
+}
+
+/**
+ * #844: is issue `issueNumber` on Project `PROJECT_NUMBER`, and what Status does it carry? A single
+ * targeted GraphQL read of the one issue this filing just created -- never `board-snapshot.mjs`'s whole
+ * `fetchBoardItems()` walk, which answers a different, much larger question (every item on the board) at
+ * a cost this one-row check does not need to pay.
+ *
+ * #3330: PAGED. `null` means "not among ALL the issue's project items", because `--board=` writes on it: a
+ * `first: 10` read returned `null` for an issue on Project 1 at position 11, and boarding on that
+ * duplicated the item. Stops at the first page that holds Project 1.
+ * @param {number} issueNumber
+ * @param {{ run?: typeof defaultRun }} [deps]
+ * @returns {string | null} the Status option name, or `null` if the issue is not on this Project at all
+ */
+export function fetchIssueBoardStatus(issueNumber, { run = defaultRun } = {}) {
+  /** @type {string | null} */
+  let cursor = null;
+  do {
+    const page = projectItemsPage(issueNumber, cursor, run);
+    const onThisProject = page.nodes.find((n) => n?.project?.number === PROJECT_NUMBER);
+    if (onThisProject) return onThisProject.fieldValueByName?.name ?? null;
+    cursor = page.hasNextPage ? page.endCursor : null;
+  } while (cursor !== null);
+  return null;
 }
 
 /**
@@ -1423,11 +1457,11 @@ export function createIssue(argv, deps = {}) {
  * three parts. Reported by worker-capture on #1250 -- the first #1249 fix reached the Status rung, which
  * is the one the FILING author hit, and left this one, which is the rung the reviewer's own filing hit.
  * @param {{ issueNumber: number, url: string, boarding: { status: string, label: string },
- *           allLabels: string[], repairLabels: string }} row
+ *           allLabels: string[], repairLabels: string, lead: string }} row
  * @param {unknown} error
  */
-function boardAddRefusal({ issueNumber, url, boarding, allLabels, repairLabels }, error) {
-  return `FILED as #${issueNumber}, but could NOT add it to Project ${PROJECT_NUMBER} -- refusing to `
+function boardAddRefusal({ issueNumber, url, boarding, allLabels, repairLabels, lead }, error) {
+  return `${lead}, but could NOT add it to Project ${PROJECT_NUMBER} -- refusing to `
     + `report success for a row nothing else can find. ${/** @type {Error} */ (error).message}\n  `
     + `AND neither the Status "${boarding.status}" nor ${allLabels.map((l) => `\`${l}\``).join("/")} `
     + `were applied, because both steps sit behind the board add and neither ran. Adding it by hand `
@@ -1453,16 +1487,19 @@ function boardAddRefusal({ issueNumber, url, boarding, allLabels, repairLabels }
  * no reader (including this filing's own next step) ever sees `ready` without a Status: the row is
  * either not yet labelled `ready` at all (invisible to that floor, same as an ordinary unlabelled issue)
  * or fully consistent (labelled AND Statused) by the time anything could ask.
+ * `--board=` (a row somebody else filed) calls this too: `session: null` skips the Filed-by read-back and
+ * `lead` replaces the "FILED as #n" every refusal opens with, which would be false of a row that already existed.
  * @param {{ issueNumber: number, url: string, boarding: { label: string, status: string },
- *   session: string, laneLabels: string[], milestone: string | null,
- *   releaseLabel?: string | null }} filed
+ *   session: string | null, laneLabels: string[], milestone: string | null,
+ *   releaseLabel?: string | null, lead?: string }} filed
  * @param {{ run: typeof defaultRun, fetchBoardStatus: typeof fetchIssueBoardStatus,
  *   fetchLabels: typeof fetchIssueLabels, moveStatus: typeof moveProjectStatus,
  *   ensureLabels: typeof ensureLabelsExist }} deps
  * @returns {{ ok: true } | { ok: false, message: string }}
  */
 export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels, milestone,
-  releaseLabel = null }, { run, fetchBoardStatus, fetchLabels, moveStatus, ensureLabels }) {
+  releaseLabel = null, lead = `FILED as #${issueNumber}` },
+{ run, fetchBoardStatus, fetchLabels, moveStatus, ensureLabels }) {
   // #1249: `allLabels` is derived HERE, above the first step that can fail, so every refusal below can
   // name the labels it skipped. An operator cannot derive them -- they come from the Region -- so a
   // message that says "the labels" instead of `backlog`/`lane:any` is one they have to reconstruct.
@@ -1478,7 +1515,7 @@ export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels
     // ladder exists to refuse, one rung up. Reported by worker-capture on #1250, whose point was that
     // the first fix reached the rung MY filing hit and not the rung THEIRS did.
     return { ok: false,
-      message: boardAddRefusal({ issueNumber, url, boarding, allLabels, repairLabels }, error) };
+      message: boardAddRefusal({ issueNumber, url, boarding, allLabels, repairLabels, lead }, error) };
   }
   const statusResult = moveStatus(issueNumber, boarding.status, { run });
   if (!statusResult.moved) {
@@ -1493,7 +1530,7 @@ export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels
     // row on a Status failure, which is friendlier -- but it makes the Status the partial half instead,
     // and the board is what the org reads for what is claimable. A report that describes ALL of what is
     // missing is what must survive, whichever half is written first.
-    return { ok: false, message: `FILED as #${issueNumber} and added to Project ${PROJECT_NUMBER}, but `
+    return { ok: false, message: `${lead} and added to Project ${PROJECT_NUMBER}, but `
       + `its Status could not be set to "${boarding.status}" -- ${statusResult.reason}\n  `
       + `AND ${allLabels.map((l) => `\`${l}\``).join("/")} were NOT applied, because the Status failed `
       + `first and the label step never ran. Fixing only the Status leaves this row unlabelled and `
@@ -1508,7 +1545,7 @@ export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels
     run("gh", ["issue", "edit", String(issueNumber), "--repo", REPO,
       ...allLabels.flatMap((l) => ["--add-label", l])]);
   } catch (error) {
-    return { ok: false, message: `FILED as #${issueNumber}, boarded with Status "${boarding.status}", `
+    return { ok: false, message: `${lead}, boarded with Status "${boarding.status}", `
       + `but ${allLabels.map((l) => `\`${l}\``).join("/")} could not be added -- `
       + `${/** @type {Error} */ (error).message}` };
   }
@@ -1538,7 +1575,7 @@ export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels
   const missing = unverifiedFilingFields(after,
     { session, label: boarding.label, status: boarding.status, laneLabels, milestone, releaseLabel });
   if (missing.length > 0) {
-    return { ok: false, message: `FILED as #${issueNumber}, but the read-back does not confirm it -- `
+    return { ok: false, message: `${lead}, but the read-back does not confirm it -- `
       + `missing: ${missing.join(", ")}. Refusing to report success for a row it could not fully board.` };
   }
   return { ok: true };
@@ -1957,8 +1994,140 @@ export function promoteRow(argv, deps = {}) {
   return 0;
 }
 
+// ---------------------------------------------------------------------------------------------------
+// #3330: BOARDING -- the THIRD act this file owns, for a row that EXISTS and is on no board.
+//
+// `a11ign/a11ign#3328`'s host timer sweeps open `regression` rows the outsider job filed under
+// `github.token`, which cannot resolve Project 1: each exists with no Project item, no Status, no `ready`
+// and no lane label. Filing boards (`boardAndVerify`) but is reachable only from `gh issue create`;
+// `--promote` takes an existing number but only moves the Status, and `gh` answers "is not an item in
+// project" for an issue never added. This is `boardAndVerify` reached from an existing number.
+// ---------------------------------------------------------------------------------------------------
+
+/** #3330: the flag that makes this invocation a BOARD of an existing row. */
+const BOARD_FLAG = "--board=";
+
+/**
+ * The row to board, or `null` when `--board=` is empty or not a positive integer. `main` routes on the
+ * flag's PRESENCE, so `null` can only mean the value is unusable -- and must refuse, never file.
+ * @param {string[]} argv
+ * @returns {number | null}
+ */
+export function boardFromArgv(argv) {
+  const value = (flagValue(argv, "board") ?? "").trim();
+  return /^[1-9]\d*$/.test(value) ? Number(value) : null;
+}
+
+/**
+ * #3330: every argument but `--board=`, `--lane=` and `--session=` refused, for `promoteArgvRefusal`'s
+ * reason: boarding files nothing, and a `--title` or `--label` silently ignored on the path you are on is
+ * the defect `refuseUnknownFlags` exists to end.
+ * @param {string[]} argv
+ * @returns {string | null}
+ */
+export function boardArgvRefusal(argv) {
+  const stray = argv.filter((a) => !["--board=", "--lane=", "--session="].some((f) => a.startsWith(f)));
+  if (stray.length === 0) return null;
+  return `row-file: REFUSING to board -- \`${BOARD_FLAG}<n>\` takes no argument but \`--lane=<owner>\` and `
+    + `\`--session=<name>\`, and ${stray.length} other(s) were given: ${stray.join(", ")}. Boarding FILES `
+    + "NOTHING: it adds an existing row to the Project as Ready with a lane label. Nothing was changed.";
+}
+
+/**
+ * The `lane:<owner>` label `--lane=` names, or a refusal. Checked against the lanes file (`any` is always
+ * a lane) because `ensureLabels` would otherwise MINT `lane:typo` and board the row under it.
+ * @param {string[]} argv @param {typeof loadLanes} loadLanesConfig
+ * @returns {{ label: string } | { refusal: string }}
+ */
+function boardLane(argv, loadLanesConfig) {
+  const owner = (flagValue(argv, "lane") ?? "").trim();
+  if (owner === "") {
+    return { refusal: "row-file: REFUSING to board -- `--lane=<owner>` is required: a Ready row with no lane "
+      + "is the state this act exists to end. Use `--lane=any` for a row no lane owns. Nothing was changed." };
+  }
+  const lanes = loadLanesConfig();
+  const known = lanes === null ? null : lanes.lanes.map((l) => l.owner);
+  if (lanes === null || (owner !== "any" && !known?.includes(owner))) {
+    return { refusal: lanes === null
+      ? `row-file: could not read ${LANES_FILE_PATH} -- refusing to guess whether \`${owner}\` is a lane. `
+        + "Nothing was changed."
+      : `row-file: REFUSING to board -- \`${owner}\` is not a lane owner in ${LANES_FILE_PATH} `
+        + `(${["any", ...(known ?? [])].join(", ")}). Nothing was changed.` };
+  }
+  return { label: `${LANE_PREFIX}${owner}` };
+}
+
+/**
+ * #3330: board an existing OPEN row as Ready, or leave it alone. The board is read FIRST, so a row already
+ * on it in ANY Status (Backlog, Ready, In progress) costs one request and no write -- the sweep calls this
+ * for every open `regression` row on every fire. An unreadable board REFUSES: absent and unreadable are
+ * different states, and boarding on a guess could move a row that was already in flight.
+ * Then `promoteGate`'s claimability rules, then `boardAndVerify` (additive labels, never the full-set PUT:
+ * this row is not being promoted from `backlog` and keeps `regression`, `out-of-release` and the rest).
+ * @param {string[]} argv
+ * @param {{ run: typeof defaultRun, fetchBoardStatus: typeof fetchIssueBoardStatus,
+ *   fetchLabels: typeof fetchIssueLabels, moveStatus: typeof moveProjectStatus,
+ *   ensureLabels: typeof ensureLabelsExist, loadLanesConfig: typeof loadLanes }} deps
+ * @returns {{ ok: true, message: string } | { ok: false, code: number, message: string }}
+ */
+function boardExisting(argv, deps) {
+  const issueNumber = boardFromArgv(argv);
+  if (issueNumber === null) {
+    return { ok: false, code: 1, message: `row-file: \`${BOARD_FLAG}<n>\` needs a row number -- `
+      + `\`${BOARD_FLAG}3329\`. Nothing was changed.` };
+  }
+  const lane = boardLane(argv, deps.loadLanesConfig);
+  if ("refusal" in lane) return { ok: false, code: 1, message: lane.refusal };
+  /** @type {string | null} */
+  let status;
+  try {
+    status = deps.fetchBoardStatus(issueNumber, { run: deps.run });
+  } catch (error) {
+    return { ok: false, code: 1, message: `row-file: REFUSING to board #${issueNumber} -- whether it is already `
+      + `on Project ${PROJECT_NUMBER} could not be read, and boarding a row that may be in flight on a guess `
+      + `could move it. ${/** @type {Error} */ (error).message} Nothing was changed.` };
+  }
+  if (status !== null) {
+    return { ok: true, message: `#${issueNumber} is already boarded on Project ${PROJECT_NUMBER} `
+      + `(Status "${status}"): left alone, nothing written.` };
+  }
+  const gate = promoteGate(issueNumber, deps);
+  if (gate.refusal !== null) {
+    return { ok: false, code: 1, message: `row-file: \`${BOARD_FLAG}${issueNumber}\` is refused by the same `
+      + `claimability rules as \`${PROMOTE_FLAG}\`:\n${gate.refusal}` };
+  }
+  const result = boardAndVerify({ issueNumber, url: `https://github.com/${REPO}/issues/${issueNumber}`,
+    boarding: { label: READY_LABEL, status: READY_STATUS }, session: null, laneLabels: [lane.label],
+    milestone: null, lead: `Row #${issueNumber} (filed by somebody else)` }, deps);
+  if (!result.ok) return { ok: false, code: 2, message: `row-file: ${result.message}` };
+  return { ok: true, message: `#${issueNumber} boarded: Project ${PROJECT_NUMBER} item, Status `
+    + `"${READY_STATUS}", \`${READY_LABEL}\` + \`${lane.label}\` added beside its other labels.` };
+}
+
+/**
+ * #3330: the CLI's board path. Exit 1 is REFUSED with nothing changed; exit 2 is something written and not
+ * confirmed (`promoteRow`'s own two codes); exit 0 is boarded OR already boarded, which the line says.
+ * @param {string[]} argv
+ * @param {{ run?: typeof defaultRun, fetchBoardStatus?: typeof fetchIssueBoardStatus,
+ *   fetchLabels?: typeof fetchIssueLabels, moveStatus?: typeof moveProjectStatus,
+ *   ensureLabels?: typeof ensureLabelsExist, loadLanesConfig?: typeof loadLanes }} [deps]
+ * @returns {number} the process exit code
+ */
+export function boardRow(argv, deps = {}) {
+  const merged = { run: defaultRun, fetchBoardStatus: fetchIssueBoardStatus, fetchLabels: fetchIssueLabels,
+    moveStatus: moveProjectStatus, ensureLabels: ensureLabelsExist, loadLanesConfig: loadLanes, ...deps };
+  const stray = boardArgvRefusal(argv);
+  const result = stray ? { ok: false, code: 1, message: stray } : boardExisting(argv, merged);
+  if (!result.ok) {
+    process.stderr.write(`${result.message}\n`);
+    return /** @type {number} */ (result.code);
+  }
+  process.stdout.write(`${result.message}\n`);
+  return 0;
+}
+
 function main() {
-  refuseUnknownFlags([...KNOWN_GH_ISSUE_CREATE_FLAGS, "--session=", READY_FLAG, PROMOTE_FLAG],
+  refuseUnknownFlags([...KNOWN_GH_ISSUE_CREATE_FLAGS, "--session=", READY_FLAG, PROMOTE_FLAG, BOARD_FLAG, "--lane="],
     { entry: import.meta.url, command: "pnpm run row-file" });
   // #1352: from the primary checkout or a plain clone, refuse before filing anything -- exit 1, createIssue's own
   // "refused, nothing filed" code.
@@ -1967,9 +2136,12 @@ function main() {
     return;
   }
   // #2111: routed on the flag's PRESENCE, never on its value -- a `--promote=` naming something unusable
-  // must reach `promoteRow`'s own refusal rather than fall through and try to FILE a row.
+  // must reach `promoteRow`'s own refusal rather than fall through and try to FILE a row. `--board=` (#3330)
+  // routes the same way, and first: it is the act that takes an existing number AND a lane.
   const argv = process.argv.slice(2);
-  process.exitCode = argv.some((a) => a.startsWith(PROMOTE_FLAG)) ? promoteRow(argv) : createIssue(argv);
+  const present = (/** @type {string} */ flag) => argv.some((a) => a.startsWith(flag));
+  if (present(BOARD_FLAG)) process.exitCode = boardRow(argv);
+  else process.exitCode = present(PROMOTE_FLAG) ? promoteRow(argv) : createIssue(argv);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();
