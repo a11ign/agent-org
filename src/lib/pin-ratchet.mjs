@@ -14,6 +14,10 @@
  * `origin/main` otherwise. A tree whose base cannot be read (the gate lays the tool into a project's tree, which has no repository of its
  * own: `resolveBase` says so) is judged STRICTLY, with nothing grandfathered, so every entry must be declared. That is never a skip: the
  * stricter form runs, and the reason it is the one that ran is returned for the message.
+ *
+ * THE TOOL'S REPOSITORY (#3245): `ci.yml`'s `gate` lays the tool out WITHOUT its `.git`, so the directory a pin scans is not a repository.
+ * `AGENT_ORG_TOOL_REPO` names the checkout the tool was laid out FROM (`$GITHUB_WORKSPACE`); `judgePin` reads the base and the base's files
+ * there, and nowhere else reads the variable. Unset, or naming something that is not a repository of its own, the strict form runs as before.
  */
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
@@ -25,6 +29,8 @@ import { sandboxGitEnv } from "./git-env.mjs";
 /** @typedef {{ ref: string } | { unreadable: string }} Base */
 
 const MERGE_GROUP = "merge_group";
+/** The checkout a laid-out copy of the tool came from, for the one reader that needs a repository (`judgePin`). */
+export const TOOL_REPO_ENV = "AGENT_ORG_TOOL_REPO";
 /** An archive of `src` is a few MB; node's 1 MiB default would truncate it into a tar error that names nothing. */
 const ARCHIVE_BUFFER_BYTES = 256 * 1024 * 1024;
 
@@ -81,12 +87,14 @@ export function undeclaredGrowth({ current, base, declared }) {
 /**
  * The whole ratchet for one pinned population.
  * @param {{ repo: string, paths: string[], scan: (root: string) => string[], current: string[], declared: Declaration[], env?: NodeJS.ProcessEnv }} pin
- *   `scan(root)` lists the population under a tree laid out as `repo` is (`root/<path>`); `current` is what the live tree holds.
+ *   `scan(root)` lists the population under a tree laid out as `repo` is (`root/<path>`); `current` is what the live tree holds. `repo` is
+ *   the tool's directory; `env[TOOL_REPO_ENV]`, where set, replaces it as the repository the base is read from.
  * @returns {{ undeclared: string[], judged: string }} `judged` says WHICH form ran, for the assertion message
  */
 export function judgePin({ repo, paths, scan, current, declared, env = process.env }) {
-  const base = resolveBase(repo, env);
+  const repository = env[TOOL_REPO_ENV] || repo;
+  const base = resolveBase(repository, env);
   if ("unreadable" in base) return { undeclared: undeclaredGrowth({ current, base: null, declared }), judged: `strictly, with nothing grandfathered (${base.unreadable})` };
-  const atBase = scanAtBase({ repo, ref: base.ref, paths, scan });
+  const atBase = scanAtBase({ repo: repository, ref: base.ref, paths, scan });
   return { undeclared: undeclaredGrowth({ current, base: atBase, declared }), judged: `as a ratchet against ${base.ref.slice(0, 9)}` };
 }

@@ -13,14 +13,17 @@
  *   - POSITIVE CONTROLS: an UNDECLARED entry is red under the ratchet, an entry whose declaration has no reason is red, and a branch that
  *     REMOVES one is green (`LEGACY_EXACT` is red on it, which is the second fault the ratchet drops);
  *   - the base is READ: an entry held at the base with no declaration passes only where a base was readable, so a green ratchet is not
- *     the strict form wearing its name.
+ *     the strict form wearing its name;
+ *   - (#3245) `ci.yml`'s `gate` lays the tool out WITHOUT its `.git`: `AGENT_ORG_TOOL_REPO` names the checkout it came from, and the ratchet runs
+ *     there. Unset, empty, absent or not a repository of its own, the strict form runs. The last test reads the variable `gate` really sets.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { judgePin, resolveBase, type Declaration } from "../lib/pin-ratchet.mjs";
+import { judgePin, resolveBase, TOOL_REPO_ENV, type Declaration } from "../lib/pin-ratchet.mjs";
 import { withGitSandbox, type GitSandbox } from "../lib/git-sandbox.ts";
+import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 
 const QUEUE = { GITHUB_EVENT_NAME: "merge_group" };
 const SEED = ["b", "m", "y"];
@@ -214,4 +217,40 @@ test("resolveBase: HEAD^1 on merge_group, the merge-base with origin/main on a p
     const unreadable = resolveBase(box.dir, {});
     assert.ok("unreadable" in unreadable && /origin\/main/.test(unreadable.unreadable), JSON.stringify(unreadable));
   });
+});
+
+/** A pin whose tool directory is NOT a repository (it sits inside `box`'s, as the gate's laid-out copy sits inside the project's), judged under `env`. */
+function judgedFromLaidOutCopy(box: GitSandbox, env: NodeJS.ProcessEnv) {
+  const laidOut = join(box.dir, "pop");
+  return judgePin({ repo: laidOut, paths: ["pop"], scan, current: scan(box.dir), declared: declarationsIn(box.dir), env: { ...QUEUE, ...env } });
+}
+
+test("#3245: where AGENT_ORG_TOOL_REPO names the checkout, a laid-out copy is judged as a ratchet and the base grandfathers what it held", () => {
+  withGitSandbox((box) => {
+    legacyEntryHeldAtBase(box);
+    const ratchet = judgedFromLaidOutCopy(box, { [TOOL_REPO_ENV]: box.dir });
+    assert.match(ratchet.judged, /^as a ratchet against /);
+    assert.deepEqual(ratchet.undeclared, [], "an entry the base held is not demanded a declaration, which only a read base can say");
+  });
+});
+
+test("POSITIVE CONTROL (#3245): the variable unset, empty, absent or naming a directory inside another repository leaves the STRICT form, with its reason", () => {
+  withGitSandbox((box) => {
+    legacyEntryHeldAtBase(box);
+    const missing = join(box.dir, "no-such-directory");
+    const inside = join(box.dir, "pop");
+    for (const [label, env] of [["unset", {}], ["empty", { [TOOL_REPO_ENV]: "" }], ["absent", { [TOOL_REPO_ENV]: missing }], ["inside another repository", { [TOOL_REPO_ENV]: inside }]] as const) {
+      const strict = judgedFromLaidOutCopy(box, env);
+      assert.match(strict.judged, /^strictly, with nothing grandfathered \(/, label);
+      assert.ok(strict.undeclared.includes("legacy-entry"), `${label}: nothing is grandfathered where no base was read`);
+    }
+  });
+});
+
+test("#3245: the tool's real tree, under the environment this run was given, reads a base in `gate` (and prints which form ran elsewhere)", () => {
+  const real = judgePin({ repo: TOOL_ROOT, paths: ["src"], scan: () => [], current: [], declared: [] });
+  console.log(`# pin-ratchet judged: ${real.judged}`);
+  // `gate` sets the variable and checks out the whole history; there, a strict reading is the defect this row closed. Off CI the form depends on where
+  // the checkout lives (a worktree has `origin/main`, an exported tree does not), so only the CI case is asserted: it is the one with a cause.
+  if (process.env.GITHUB_ACTIONS === "true") assert.match(real.judged, /^as a ratchet against /, `${TOOL_REPO_ENV}=${process.env[TOOL_REPO_ENV] ?? "(unset)"}`);
 });
