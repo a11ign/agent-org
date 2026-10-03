@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { staleRuleReason, ruleFiles, rulePathspec, ruleDirOf, workTreeOf }
+import { staleRuleReason, ruleFiles, rulePathspec, ruleDirOf, workTreeOf, installedLayoutOf }
   from "../row-claim/stale-rule-guard.mjs";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 
@@ -274,4 +274,90 @@ test("#1014: the refusal names what ORIGIN/MAIN moved, never the author's own ed
       "and NOT the author's own commit -- three-dot diffs from the merge base, so the message is about "
       + "the tree they are behind, not about them");
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+/**
+ * THE INSTALLED LAYOUT (#3188), in the shape that broke: a consumer repository that tracks NOTHING under `node_modules/`, holding the tool at
+ * pnpm's real path, which is where `import.meta.url` points. The guard files are written, never committed -- a committed copy would make the
+ * pathspec match a tracked file and hide the defect this test exists for.
+ */
+const SHA = "fdb27f9190678ff9ab77806a839915c15011717c";
+const PNPM_DIR = (sha: string) => `node_modules/.pnpm/agent-org@https+++codeload.github.com+a11ign+agent-org+tar.gz+${sha}_typescript@6.0.3/node_modules/agent-org`;
+
+async function guardInstalled(dir: string = PNPM_DIR(SHA)) {
+  const { root, commit } = syntheticRepo();
+  setRef(root, "refs/remotes/origin/main", commit("package.json", "{}\n"));
+  const source = (rel: string) => readFileSync(join(TOOL_ROOT, rel), "utf8");
+  const files = { "src/row-claim/stale-rule-guard.mjs": source("src/row-claim/stale-rule-guard.mjs"),
+    "src/lib/local-import-closure.mjs": source("src/lib/local-import-closure.mjs"), "src/lib/git-env.mjs": source("src/lib/git-env.mjs"),
+    "src/row-claim/own-pr-health-rule.mjs": "export const inBuildReason = () => null;\n",
+    "src/row-claim.mjs": 'import { inBuildReason } from "./row-claim/own-pr-health-rule.mjs";\nexport { inBuildReason };\n' };
+  for (const [rel, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, dir, rel)), { recursive: true });
+    writeFileSync(join(root, dir, rel), text);
+  }
+  const guard = await import(`${join(root, dir, "src/row-claim/stale-rule-guard.mjs")}?installed=${encodeURIComponent(root)}`);
+  return { root, guard };
+}
+
+const RULE = "src/row-claim/own-pr-health-rule.mjs";
+
+test("#3188: the installed layout names the install and never answers 'matches no tracked file'", async () => {
+  const { root, guard } = await guardInstalled();
+  try {
+    const asked: string[] = [];
+    const level = guard.staleRuleReason({ compare: (sha: string) => { asked.push(sha); return { status: "identical", files: [] }; } });
+    assert.equal(level, null, "POSITIVE CONTROL: an install level with main is the PASS, and it is reachable from a layout git does not track");
+    assert.deepEqual(asked, [SHA], "the question put to GitHub is about the commit the install directory names");
+
+    const unreadable = guard.staleRuleReason({ compare: () => null });
+    assert.match(unreadable, /CANNOT ASK/);
+    assert.match(unreadable, /INSTALLED copy/);
+    assert.doesNotMatch(unreadable, /matches no tracked file/, "the refusal this row exists to remove");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#3188: POSITIVE CONTROL -- an installed pin BEHIND main on a rule file is REFUSED as stale, naming the file and the commit", async () => {
+  const { root, guard } = await guardInstalled();
+  try {
+    const reason = guard.staleRuleReason({ compare: () => ({ status: "ahead", files: [RULE, "src/dora.mjs"] }) });
+    assert.ok(reason, "a pin behind main on a rule module must not produce a verdict");
+    assert.match(reason, /INSTALLED COPY OF THE RULE/);
+    assert.match(reason, new RegExp(SHA.slice(0, 12)));
+    assert.match(reason, /src\/row-claim\/own-pr-health-rule\.mjs/, "naming what moved");
+    assert.doesNotMatch(reason, /dora\.mjs/, "and only the rule files, not everything main changed");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#3188: an installed pin behind main on UNRELATED files is current -- not a blanket refusal", async () => {
+  const { root, guard } = await guardInstalled();
+  try {
+    assert.equal(guard.staleRuleReason({ compare: () => ({ status: "ahead", files: ["src/dora.mjs", "README.md"] }) }), null);
+    assert.equal(guard.staleRuleReason({ compare: () => ({ status: "behind", files: [] }) }), null, "an install AHEAD of main is not stale");
+    assert.ok(guard.staleRuleReason({ compare: () => ({ status: "ahead", files: ["src/row-claim.mjs"] }) }), "the entry file itself is a rule file");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#3188: a compare list at GitHub's cap may have been cut, so it cannot clear the pin", async () => {
+  const { root, guard } = await guardInstalled();
+  try {
+    const files = Array.from({ length: 300 }, (_, i) => `src/other-${i}.mjs`);
+    assert.match(guard.staleRuleReason({ compare: () => ({ status: "ahead", files }) }), /BEHIND/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#3188: an install directory that names no commit is CANNOT ASK by name, not a pathspec refusal", async () => {
+  const { root, guard } = await guardInstalled("node_modules/agent-org");
+  try {
+    const reason = guard.staleRuleReason({ compare: () => ({ status: "identical", files: [] }) });
+    assert.match(reason, /CANNOT ASK/);
+    assert.match(reason, /names no commit/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#3188: installedLayoutOf reads the sha off pnpm's directory and says 'not installed' for a checkout", () => {
+  assert.deepEqual(installedLayoutOf(`/c/${PNPM_DIR(SHA)}/src/row-claim.mjs`),
+    { installed: true, sha: SHA, packageRoot: `/c/${PNPM_DIR(SHA)}` });
+  assert.equal(installedLayoutOf("/r/src/row-claim.mjs").installed, false);
+  assert.equal(installedLayoutOf("/r/packages/agent-org/src/row-claim.mjs").installed, false);
 });
