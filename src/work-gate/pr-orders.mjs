@@ -314,8 +314,7 @@ function standingOf(pr, required) {
  */
 function ownershipOf(pr, source, task) {
   if (source === "ceo") {
-    return "NOBODY COULD BE NAMED as its owner (no session label, no live session holding a row it closes or its branch names, "
-      + `and none stamped its worktree). You are the last answer: re-lane it to the session that should ${task} it (\`${SESSION_PREFIX}<name>\` on the PR), or close it if it was abandoned.`;
+    return `NOBODY COULD BE NAMED as its owner (${nobodyBasis(pr, "no session label, no live session holding a row it closes or its branch names, and none stamped its worktree")}). You are the last answer: re-lane it to the session that should ${task} it (\`${SESSION_PREFIX}<name>\` on the PR), or close it if it was abandoned.`;
   }
   if (source === "label") return `It carries your session label, so the ${task} is yours.`;
   return `The ${task} is yours: ${notConvincedBasis(pr, source)}.`;
@@ -628,7 +627,9 @@ export const DEAD_OWNER_FALLBACK = "product-manager";
  * different question (who a ROW is routed to).
  *
  * THE ORDER, and each rung reads a fact somebody else put on the PR object (`withPrOwners`), so this is pure:
- *   1. `label`        its own `session:` label. Never outranked.
+ *   1. `label`        its own `session:` label. Never outranked -- except by the label itself being DEAD (#3093): a PR whose
+ *                     `session:` label names a session recorded as ENDED (`withEndedLabels` puts `labelEnded` on it) is read
+ *                     as unlabelled, because an order to a seat that is gone is refused on every tick, for ever.
  *   2. `closing-row`  the live session holding the one row it closes (#2882).
  *   3. `branch-row`   the live session holding the row its branch suffix `agent/<slug>-<n>` names (#2928).
  *   4. `branch-name`  a live session the head ref itself names: `agent/<session>` or a `worker-<n>` token.
@@ -643,11 +644,22 @@ export const DEAD_OWNER_FALLBACK = "product-manager";
  */
 export function ownerOfPr(pr) {
   const label = sessionOf(pr);
-  if (label) return { session: label, source: "label" };
+  if (label && !pr?.labelEnded) return { session: label, source: "label" };
   if (pr?.rowOwner) return { session: pr.rowOwner.session, source: pr.rowOwner.source === "branch" ? "branch-row" : "closing-row" };
   if (pr?.branchOwner) return { session: pr.branchOwner.session, source: "branch-name" };
   if (pr?.stampOwner) return { session: pr.stampOwner.session, source: "stamp" };
   return { session: UNOWNED_PR_SESSION, source: "ceo" };
+}
+
+/**
+ * WHY NOBODY COULD BE NAMED, in the words of the `ceo` rung (#3093). A label that names an ENDED session is not "no session
+ * label": saying so would send `ceo` looking for a label that is on the PR, and hide that the fix is to replace it.
+ * @param {any} pr @param {string} unlabelled the clause for a PR that carries no label at all
+ */
+function nobodyBasis(pr, unlabelled) {
+  if (!pr?.labelEnded) return unlabelled;
+  return `its \`${SESSION_PREFIX}\` label names \`${sessionOf(pr)}\`, which has ENDED (absent from herdr, and a teardown recorded its ending), `
+    + "and no live session holds a row it closes, its branch names or stamped its worktree";
 }
 
 /**
@@ -678,8 +690,8 @@ function unownedSentence(pr, { blocking, nowMs }) {
   const started = failingRunStartedAt(blocking);
   const age = started === null ? "for an UNKNOWN time (no check carried a start time)"
     : `since ${started} (${Math.max(0, Math.round((nowMs - Date.parse(started)) / MS_PER_MINUTE))} min ago)`;
-  return `NOBODY COULD BE NAMED as its owner: no session label, no live session holding a row it closes or its branch \`${pr.headRefName}\` `
-    + `names, and no live session stamped its worktree. You are the last answer, so it is yours to route. ${subjectMention(pr)} is red on ${names || "an unnamed check"} ${age}. `
+  const basis = nobodyBasis(pr, `no session label, no live session holding a row it closes or its branch \`${pr.headRefName}\` names, and no live session stamped its worktree`);
+  return `NOBODY COULD BE NAMED as its owner: ${basis}. You are the last answer, so it is yours to route. ${subjectMention(pr)} is red on ${names || "an unnamed check"} ${age}. `
     + `Re-lane it to the session that should fix it (\`${SESSION_PREFIX}<name>\` on the PR), or close it if it is abandoned.`;
 }
 
@@ -849,8 +861,7 @@ function notConvincedOrder(pr, found, { head8, key }) {
   const from = found.by ? ` from ${found.by}` : "";
   const verdict = `${subjectMention(pr)} at \`${head8}\` carries a NOT CONVINCED verdict${from}`;
   const prompt = source === "ceo"
-    ? `${verdict} and NOBODY COULD BE NAMED as its owner (no session label, no live session holding a row it closes, `
-      + "its branch names or stamped its worktree). You are the last answer: read the verdict, route the rework to the "
+    ? `${verdict} and NOBODY COULD BE NAMED as its owner (${nobodyBasis(pr, "no session label, no live session holding a row it closes, its branch names or stamped its worktree")}). You are the last answer: read the verdict, route the rework to the `
       + `session that should do it (\`${SESSION_PREFIX}<name>\` on the PR), or close the PR if the work was abandoned.`
     : `${verdict} and ${notConvincedBasis(pr, source)}, `
       + "so the rework is yours. Read the verdict, fix what it names on that branch and push. If "
