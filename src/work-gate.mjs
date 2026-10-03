@@ -4725,7 +4725,7 @@ function unpushedSentence(first) {
  * @param {{ row: any, openPr: { number: number, branch: string, holder: string | null } }} found
  */
 function openPrSentence({ row, openPr }) {
-  const holder = openPr.holder ?? "<the session on the PR's `session:` label>";
+  const holder = openPr.holder ?? `<the session on the PR's \`${SESSION_PREFIX}\` label>`;
   return `THE WORK IS NOT UNSHIPPED: \`${openPr.branch}\` already has OPEN pull request #${openPr.number}. `
     + "DO NOT delete the branch (that closes the PR) and do not open another.\n"
     + `TO FINISH IT, take the previous holder's worktree in place, from inside it: \`pnpm run row-claim claim ${row.number} `
