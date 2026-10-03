@@ -396,7 +396,7 @@ test("#2781 the CLI `--drift` only READS: from a worktree it answers asked:false
 });
 
 test("#2781 done-when 3: the `-` on ExecStartPre may stay ONLY while the gate reads the primary and has a cause for it", () => {
-  const unit = readFileSync(fileURLToPath(new URL("../../../agent-org/host/work-tick.service.in", import.meta.url)), "utf8");
+  const unit = readFileSync(fileURLToPath(new URL("../../host/work-tick.service.in", import.meta.url)), "utf8");
   const silent = /^ExecStartPre=-.*primary:update/m.test(unit);
   const gate = readFileSync(fileURLToPath(new URL("../work-gate.mjs", import.meta.url)), "utf8");
   assert.ok(/^ExecStartPre=.*primary:update/m.test(unit), "control: the unit still runs the update, so this test is asking about something");

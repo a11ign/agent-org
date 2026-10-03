@@ -32,9 +32,11 @@ import { attributionOf, failingTestsFromJobLog, newestVerdictRun, readTrunkRed, 
   from "../trunk-red.mjs";
 import { decide, CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "../work-gate.mjs";
 import { routeWithFallback } from "../wake.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
-const WORKFLOWS = path.join(REPO_ROOT, ".github/workflows");
+// The workflows are the PROJECT's; the scripts they run are the tool's, which is this checkout's `src` (the project's `packages/agent-org` is the old frozen copy).
+const TOOL_SRC = fileURLToPath(new URL("..", import.meta.url));
+const WORKFLOWS = path.join(HOME_CHECKOUT, ".github/workflows");
 const TRUNK = readFileSync(path.join(WORKFLOWS, "trunk.yml"), "utf8");
 
 const SHA = "a1b2c3d4e5f6789012345678901234567890abcd";
@@ -391,11 +393,11 @@ test("NO WORKFLOW calls `git revert`, pushes or opens a `revert/` branch, or nam
 });
 
 test("the revert script and its token test are GONE, and the guard that reverts nothing is still wired", () => {
-  assert.ok(!existsSync(path.join(REPO_ROOT, "packages/agent-org/src", DELETED_SCRIPT)));
-  assert.ok(!existsSync(path.join(REPO_ROOT, "packages/lab/src/packaging/trunk-revert-token.test.ts")));
-  assert.ok(existsSync(path.join(REPO_ROOT, "packages/agent-org/src/trunk-revert-guard.mjs")),
+  assert.ok(!existsSync(path.join(TOOL_SRC, DELETED_SCRIPT)));
+  assert.ok(!existsSync(path.join(HOME_CHECKOUT, "packages/lab/src/packaging/trunk-revert-token.test.ts")));
+  assert.ok(existsSync(path.join(TOOL_SRC, "trunk-revert-guard.mjs")),
     "despite the name it reverts nothing: it checks a push did not silently UNDO work already on main (#411)");
-  assert.ok(existsSync(path.join(REPO_ROOT, "packages/agent-org/src/parent-recheck-summary.mjs")));
+  assert.ok(existsSync(path.join(TOOL_SRC, "parent-recheck-summary.mjs")));
   const gate = (trunk.jobs.trunkGate.steps ?? []).map((s) => s.run ?? "").join("\n");
   assert.match(gate, /trunk-revert-guard\.mjs/);
 });

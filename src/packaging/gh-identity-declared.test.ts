@@ -45,15 +45,15 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname, relative, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { join, relative } from "node:path";
 import { declaredGhAccount } from "../gh-identity.mjs";
 import { homeHostConfig } from "../host-config.mjs";
 import { localImports, stripComments } from "../lib/local-import-closure.mjs";
 import { SPAWNS_GH } from "../acceptance-commands.mjs";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
-const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+const REPO = HOME_CHECKOUT;
 
 /** A `hosts.yml` shaped exactly like `gh auth login` writes one, with an obviously-fake token. */
 function hostsYaml(login: string): string {
@@ -275,7 +275,7 @@ test("#1984: an unreadable host declaration degrades to UNKNOWN rather than cras
   // exists (#2873): `project-config.mjs` reads that first, and a path with no file at all is refused THERE, at import, before
   // this module is reached -- covered by `standalone-candidate.test.ts`.
   const script = `
-    import(${JSON.stringify(pathToFileURL(join(REPO, "packages/agent-org/src/gh-identity.mjs")).href)}).then((m) => {
+    import(${JSON.stringify(new URL("../gh-identity.mjs", import.meta.url).href)}).then((m) => {
       const account = m.declaredGhAccount({ env: {} });
       process.stdout.write(JSON.stringify(account));
     });

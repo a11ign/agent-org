@@ -35,13 +35,13 @@ import { declareWalkScope } from "../lib/walk-scope.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
 import { EXIT, daysSince, livenessVerdict, newestEditionDay }
   from "../board-schedule-liveness.mjs";
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
+const REPO_ROOT = HOME_CHECKOUT;
 const NOW = new Date("2026-09-20T09:00:00Z");
 
 /** No summary was ever written — the gate would refuse every day. */

@@ -43,6 +43,7 @@ import { fileURLToPath } from "node:url";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 // The declaration's parser lives apart, so the selector can read declarations without installing this.
 import { inScope, parseWalkScope } from "./walk-scope-declaration.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
 export { inScope, parseWalkScope };
 
@@ -60,7 +61,8 @@ const nodeTest = require("node:test");
 const moduleApi = require("node:module");
 
 // REAL, because every comparison below is against a real path: on macOS `/tmp` is a link to `/private/tmp`.
-export const REPO_ROOT = fs.realpathSync.native(resolve(fileURLToPath(new URL("../../../../", import.meta.url))));
+// The tree a declared scope is relative to is the PROJECT's (`HOME_CHECKOUT`), not `src/lib` up four, which is the HOME directory in this repository (#3074).
+export const REPO_ROOT = fs.realpathSync.native(HOME_CHECKOUT);
 
 /** A read that cannot be bounded to a subtree -- a whole-repository walk. Never inside any declared scope. */
 export const WHOLE_REPOSITORY = "(the whole repository)";

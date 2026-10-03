@@ -15,9 +15,10 @@ import { declareWalkScope } from "../lib/walk-scope.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 // A plain `.mjs`, and `scripts/**` IS in the typecheck program (#189), so this resolves and is checked.
 import { extractAcceptanceSection, acceptanceReport } from "../acceptance-commands.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
 // #929: THIS GUARD READS ONLY `scripts`, `.github/PULL_REQUEST_TEMPLATE.md`, so a diff that cannot reach it need not run this file.
 // Undeclared means unbounded, which is why the selector runs 173 always-run guards on every pull
@@ -30,8 +31,7 @@ import { extractAcceptanceSection, acceptanceReport } from "../acceptance-comman
 export const WALK_SCOPE = ["scripts",".github/PULL_REQUEST_TEMPLATE.md", ".agent-org"];
 await declareWalkScope(import.meta.url);
 
-const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
-const TEMPLATE = `${REPO}.github/PULL_REQUEST_TEMPLATE.md`;
+const TEMPLATE = join(HOME_CHECKOUT, ".github/PULL_REQUEST_TEMPLATE.md");
 const body = () => readFileSync(TEMPLATE, "utf8");
 
 test("the UNFILLED template fails the acceptance gate — it must never pass by default", () => {

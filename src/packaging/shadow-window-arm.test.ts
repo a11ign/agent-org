@@ -31,7 +31,8 @@ import { homeHostConfig } from "../host-config.mjs";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 
 const RUNNER = fileURLToPath(new URL("../shadow-window.mjs", import.meta.url));
-const REPO_SRC = fileURLToPath(new URL("../../../agent-org/src", import.meta.url));
+// The tool's OWN src (this file sits in src/packaging): the closure this test copies and drifts is the tool's.
+const REPO_SRC = fileURLToPath(new URL("../", import.meta.url));
 const MINUTE = 60_000;
 const TICK = 2 * MINUTE;
 const T0 = Date.parse("2026-10-02T12:00:00Z");
@@ -455,7 +456,8 @@ test("an ordinary windowed tick leaves the live directory's bytes alone, apart f
 
 function cli(r: Rig, ...flags: string[]) {
   return spawnSync(process.execPath, [RUNNER, `--live-dir=${r.live}`, `--copy-dir=${r.copy}`, `--record=${r.record}`, `--candidate=${r.candidate}`, ...flags],
-    { encoding: "utf8", env: { ...process.env, AGENT_ORG_HOST: "" } });
+    // The child finds the project the way this process did (the host file, when one is set); a standalone tool refuses an EMPTY one.
+    { encoding: "utf8", env: process.env });
 }
 
 test("the command line: a windowed run with no marker says NOT-OPEN and exits 0, and a refused one exits 2 and leaves a refused row", () => {

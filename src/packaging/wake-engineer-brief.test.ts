@@ -16,9 +16,10 @@ import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { addressed, deliver, engineerRoles, ENGINEER_BRIEF } from "../wake.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
-const ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
-const read = (repoPath: string) => readFileSync(`${ROOT}${repoPath}`, "utf8");
+const ROOT = HOME_CHECKOUT;
+const read = (repoPath: string) => readFileSync(`${ROOT}/${repoPath}`, "utf8");
 const SESSIONS = JSON.parse(read(".agent-org/roles/sessions.json")) as {
   live: { name: string; role: string; brief: string | null; family?: { prefix: string; from: number } }[];
   retired: { name: string }[];
@@ -31,7 +32,7 @@ const BRIEF_LINE = new RegExp(ENGINEER_BRIEF.replaceAll(".", "\\."));
 
 test("an engineer label's first message names the engineer brief", () => {
   assert.equal(ENGINEER_BRIEF, `${ROLES_DIR}/engineer.md`);
-  assert.ok(existsSync(`${ROOT}${ENGINEER_BRIEF}`), "the file the line names exists");
+  assert.ok(existsSync(`${ROOT}/${ENGINEER_BRIEF}`), "the file the line names exists");
   const message = addressed(ORDER, "worker-6", { engineers: ["worker-6"] });
   assert.match(message, BRIEF_LINE);
   assert.match(message, /claim row 1 as `worker-6`/, "and the order's own text, with <you> substituted, survives");
@@ -132,7 +133,7 @@ test("#2505: the two briefs the ban was derived from are GONE, and the engineer 
   // The positive control for the deletion: the two files were the source until #2505, and a test that read a missing
   // file would crash rather than say so. That they are absent is asserted, not assumed.
   for (const gone of ["worker-capture.md", "worker-judge.md"]) {
-    assert.ok(!existsSync(`${ROOT}${ROLES_DIR}/${gone}`), `${gone} was deleted by the retirement row`);
+    assert.ok(!existsSync(`${ROOT}/${ROLES_DIR}/${gone}`), `${gone} was deleted by the retirement row`);
   }
   const brief = read(ENGINEER_BRIEF);
   const derived = families(banBlock(brief));
@@ -162,7 +163,7 @@ test("the family points at the engineer brief, and every live engineer's brief e
   assert.equal(SESSIONS.live.filter((s) => s.family !== undefined).length, 1,
     "the positive control: the family entry is the one `worker-<n>` was read from");
   for (const s of SESSIONS.live.filter((e) => e.role === "engineer")) {
-    assert.ok(s.brief !== null && existsSync(`${ROOT}${s.brief}`), `${s.name}'s brief exists`);
+    assert.ok(s.brief !== null && existsSync(`${ROOT}/${s.brief}`), `${s.name}'s brief exists`);
   }
 });
 
@@ -205,7 +206,7 @@ for (const { file, heading, governs } of NESTED) {
     assert.ok(at >= 0, `the section exists in ${file}`);
     const head = text.slice(at).split("\n").slice(0, 4).join("\n");
     for (const path of governs) {
-      assert.ok(existsSync(`${ROOT}${path}`), `${path} is a real path`);
+      assert.ok(existsSync(`${ROOT}/${path}`), `${path} is a real path`);
       assert.ok(head.includes(path), `the section's first lines name ${path}`);
     }
   });

@@ -24,10 +24,11 @@
 // is ever weakened, this stops being true and that is the guard's problem to refuse, not this file's to
 // duplicate.
 import { readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+// The product's manifest is the PROJECT's file. This used to be `src/lib` up four, which is the monorepo's root and is the HOME directory in this repository (#3074).
+const REPO_ROOT = HOME_CHECKOUT;
 
 /** The package that IS the product -- `a11ign`, the CLI a stranger installs. */
 const PRODUCT_PACKAGE = "packages/cli/package.json";

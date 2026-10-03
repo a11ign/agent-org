@@ -11,8 +11,8 @@ import { declareWalkScope } from "../lib/walk-scope.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
 // #929: THIS GUARD READS ONLY `docs`, so a diff that cannot reach it need not run this file.
 // Undeclared means unbounded, which is why the selector runs 173 always-run guards on every pull
@@ -24,7 +24,7 @@ import path from "node:path";
 export const WALK_SCOPE = ["docs", ".agent-org"];
 await declareWalkScope(import.meta.url);
 
-const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
+const REPO = HOME_CHECKOUT;
 
 /* ONE ENTRY, ONE FILE — AND NOTHING ENFORCED IT UNTIL THIS TEST.
  *
