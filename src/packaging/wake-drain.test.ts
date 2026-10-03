@@ -351,11 +351,11 @@ test("#2324 (6): THE COMMAND -- `wake.mjs --cycles` on an empty ledger exits non
   }
 });
 
-// The script is the PROJECT's (its `package.json`), and where the project keeps the tool is moving (#2974), so the path before `wake.mjs` is not pinned.
+// The script is the PROJECT's (its `package.json`), and the project runs the tool through its one bin (#2975), so the command is pinned, not a path to `wake.mjs`.
 test("#2324: `npm run spawn:cycles` is wired to that command", () => {
   const scripts = (JSON.parse(readFileSync(join(HOME_CHECKOUT, "package.json"), "utf8")) as
     { scripts: Record<string, string> }).scripts;
-  assert.match(scripts["spawn:cycles"] ?? "", /^node \S*wake\.mjs --cycles$/);
+  assert.equal(scripts["spawn:cycles"], "agent-org spawn:cycles");
 });
 
 // --- #2324: A DRAINED ROLE IS REFUSED A NEW ROW, WITH A REASON THAT NAMES THE DRAIN ---

@@ -39,7 +39,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { localImports, stripComments } from "./lib/local-import-closure.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
-import { SPAWNS_GH } from "./acceptance-commands.mjs";
+import { SPAWNS_GH, agentOrgCommand } from "./acceptance-commands.mjs";
+import { COMMANDS } from "./commands.mjs";
 import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "./project-config.mjs";
 import { CLAUDE_EFFORTS, DECLARED_CLAUDE_MODELS } from "./worker-profile.mjs";
 import { HostConfigRefusal, TEMPLATE_SUFFIX, homeHostConfig, leadsWorkspacesText, readBeforeTick, readUnitsDeclaration,
@@ -57,6 +58,8 @@ export const SHIPPED_DIR = fileURLToPath(new URL("../host/", import.meta.url));
  * beside the project it serves only when `$AGENT_ORG_HOST` says so (#2879).
  */
 export const REPO_ROOT = HOME_CHECKOUT;
+// The tool's own `src/`, where `commands.mjs`'s programs live: known from where this module runs, never from the project's layout.
+const TOOL_SRC = dirname(fileURLToPath(import.meta.url));
 
 /**
  * Where the PROJECT keeps the units that are its own -- a11ign's corpus and fleet clocks -- read beside the tool's, so `host:check`
@@ -596,7 +599,10 @@ export function programCandidates(command, { repoRoot = REPO_ROOT,
       const tool = basename(argv[0] ?? "");
       // node's own leading options (`--import=<preload>`, #3038) are not the script; `bash -c` stays unread, as `isPath` says.
       const script = tool === "node" ? argv.slice(1).find((arg) => !arg.startsWith("-")) : argv[1];
-      if ((tool === "node" || SHELLS.has(tool)) && isPath(script)) {
+      // The project's scripts run the tool through its one bin (`agent-org worktrees:prune`, #2975), which is the table's program, not a path.
+      const command = agentOrgCommand([tool, ...argv.slice(1)]);
+      if (command !== null && Object.hasOwn(COMMANDS, command)) entries.push(resolve(TOOL_SRC, COMMANDS[command]));
+      else if ((tool === "node" || SHELLS.has(tool)) && isPath(script)) {
         entries.push(resolve(repoRoot, script));
         if (cwd !== undefined) entries.push(resolve(cwd, script));
       }

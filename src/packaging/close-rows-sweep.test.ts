@@ -135,8 +135,8 @@ test("#909: close-rows-sweep.mjs IS wired to trunk.yml's push, as the closeRows 
   assert.ok(job, "trunk.yml carries a closeRows job");
   assert.ok(!job.needs, "closeRows does not wait on the gate: a red push still closes the rows its PR declared");
   const run = job.steps.map((s) => s.run ?? "").join("\n");
-  assert.match(run, /node packages\/agent-org\/src\/close-rows-sweep\.mjs --window=60/, "the push path sweeps the last hour, idempotently");
-  assert.match(run, /node packages\/agent-org\/src\/close-rows-for-merged-pr\.mjs "\$DISPATCH_PR"/, "the dispatch path closes the named PR's rows");
+  assert.match(run, /pnpm exec agent-org close-rows-sweep --window=60/, "the push path sweeps the last hour, idempotently");
+  assert.match(run, /pnpm exec agent-org close-rows-for-merged-pr "\$DISPATCH_PR"/, "the dispatch path closes the named PR's rows");
   assert.match(run, /if \[ -n "\$DISPATCH_PR" \]/, "and the two are chosen by whether a pr was given");
 });
 

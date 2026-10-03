@@ -22,6 +22,11 @@ Environment=HOME=@@home@@
 # V8'S COMPILE CACHE GOES UNDER THE HOME, NOT /tmp -- #2458; `host-units.test.ts` pins it on every shipped service.
 Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache
 
+# WHERE THE PROJECT'S DECLARATION IS (#3064): the listener's own imports, the queue `converse` writes and the vocabulary `answers` reads all load it when
+# they are IMPORTED and REFUSE without this, as every other unit that runs the tool does (#2974). A listener started without it dies at import; one whose
+# queue will not load tells the chairman so on their first message rather than dropping it.
+Environment=AGENT_ORG_HOST=@@checkout@@/.agent-org/host.json
+
 # THE WORKERS ACCOUNT, AND NEVER THE PERSON'S (#1974, #1950): the answers rows 9 and 10 write go to GitHub, and a unit with no `HERDR_WORKSPACE_ID`
 # falls back to a person's stored credentials unless it says otherwise.
 Environment=GH_CONFIG_DIR=@@workersDir@@/gh

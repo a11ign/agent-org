@@ -47,8 +47,8 @@ export const COPY_MARKER = SHADOW_COPY_MARKER;
 export const STATE_DIR_ENV = SHADOW_STATE_DIR_ENV;
 
 const SELF = fileURLToPath(import.meta.url);
-/** The checkout this runner runs from: `--arm` compares the candidate against it. Not imported from `host-units.mjs`, whose closure needs git history. */
-const REPO_ROOT = resolve(dirname(SELF), "../../..");
+/** The tool this runner runs from (its `src/..`), wherever it is checked out: `--arm` compares the candidate against it. Not imported from `host-units.mjs`, whose closure needs git history. */
+const TOOL_ROOT = resolve(dirname(SELF), "..");
 /** A candidate that has not answered in this long is recorded as failed; it must not hold the next tick's turn. */
 const CANDIDATE_TIMEOUT_MS = 120_000;
 const CANDIDATE_MAX_BUFFER = 32 * 1024 * 1024;
@@ -419,15 +419,16 @@ export function candidateClosure(entry) {
 }
 
 /**
- * THE CORRESPONDENCE `ceo` ruled on #2867: the candidate checkout's package root (its `src/..`) against this checkout's `packages/agent-org`, file by
- * file over the candidate gate's import closure. A candidate file that differs or is absent here is NAMED; an empty list is the only "corresponds".
- * @param {{ candidate: string, monorepoRoot: string }} where @returns {{ files: number, differing: string[] }}
+ * THE CORRESPONDENCE `ceo` ruled on #2867: the candidate checkout's package root (its `src/..`) against the tool this runner runs from (its own
+ * `src/..`, #3098: in the monorepo that is `packages/agent-org`, standalone it is the checkout itself), file by file over the candidate gate's import
+ * closure. A candidate file that differs or is absent here is NAMED; an empty list is the only "corresponds".
+ * @param {{ candidate: string, toolRoot: string }} where @returns {{ files: number, differing: string[] }}
  */
-export function closureCorrespondence({ candidate, monorepoRoot }) {
+export function closureCorrespondence({ candidate, toolRoot }) {
   const candidateRoot = dirname(dirname(resolve(candidate)));
   const files = candidateClosure(candidate);
   const differing = files.filter((file) => {
-    const mine = join(monorepoRoot, "packages", "agent-org", relative(candidateRoot, file));
+    const mine = join(toolRoot, relative(candidateRoot, file));
     return !existsSync(mine) || readFileSync(mine, "utf8") !== readFileSync(file, "utf8");
   }).map((file) => relative(candidateRoot, file).split(sep).join("/"));
   return { files: files.length, differing };
@@ -436,26 +437,26 @@ export function closureCorrespondence({ candidate, monorepoRoot }) {
 /**
  * ARM THE WINDOW, ONCE: create the marker whose content is T0, and nothing else. REFUSES an armed window (naming its T0), a record that already
  * holds rows (a stopped window's record is evidence, so move it aside), a copy or record inside the live directory, and a candidate whose closure
- * does not match this checkout's. Atomic (a temp name, then `rename`), so the live tap never sees half a marker.
- * @param {{ liveDir?: string, copyDir: string, recordPath: string, candidate: string, monorepoRoot?: string, now?: Date, headOf?: (root: string) => string | null }} job
+ * does not match this tool's. Atomic (a temp name, then `rename`), so the live tap never sees half a marker.
+ * @param {{ liveDir?: string, copyDir: string, recordPath: string, candidate: string, toolRoot?: string, now?: Date, headOf?: (root: string) => string | null }} job
  */
-export function armWindow({ liveDir = LIVE_STATE_DIR, copyDir, recordPath, candidate, monorepoRoot = REPO_ROOT, now = new Date(), headOf: head = headOf }) {
+export function armWindow({ liveDir = LIVE_STATE_DIR, copyDir, recordPath, candidate, toolRoot = TOOL_ROOT, now = new Date(), headOf: head = headOf }) {
   refuseBeforeReading({ liveDir, copyDir, recordPath });
   const armed = readWindowMarker(liveDir);
   if (armed !== null) throw new Error(`REFUSING: the window is already armed (T0 ${armed.t0}); it is armed once, and a stop declares it not-started before a new T0.`);
   if (readRecordRows(recordPath).length > 0) throw new Error(`REFUSING: the diff record ${recordPath} already holds rows; a stopped window's record is evidence, so move it aside before a new T0.`);
-  const { files, differing } = closureCorrespondence({ candidate, monorepoRoot });
+  const { files, differing } = closureCorrespondence({ candidate, toolRoot });
   if (differing.length > 0) {
     throw new Error(`REFUSING: the candidate does not correspond to this checkout; ${differing.length} of ${files} files in its import closure differ or are absent: ${differing.join(", ")}`);
   }
-  const commits = { candidate: head(dirname(dirname(resolve(candidate)))), monorepo: head(monorepoRoot) };
-  if (commits.candidate === null || commits.monorepo === null) {
-    throw new Error(`REFUSING: the ${commits.candidate === null ? "candidate checkout" : "monorepo checkout"} has no readable HEAD, and the arming comment names the pair of commits.`);
+  const commits = { candidate: head(dirname(dirname(resolve(candidate)))), tool: head(toolRoot) };
+  if (commits.candidate === null || commits.tool === null) {
+    throw new Error(`REFUSING: the ${commits.candidate === null ? "candidate checkout" : "tool checkout"} has no readable HEAD, and the arming comment names the pair of commits.`);
   }
   const t0 = now.toISOString();
   const marker = { schema: 1, t0, tEnd: new Date(now.getTime() + WINDOW_TICKS * TICK_INTERVAL_MS).toISOString(),
     hardStop: new Date(now.getTime() + HARD_STOP_MS).toISOString(), tickLimit: WINDOW_TICKS,
-    candidate: { module: resolve(candidate), commit: commits.candidate }, monorepo: { root: monorepoRoot, commit: commits.monorepo } };
+    candidate: { module: resolve(candidate), commit: commits.candidate }, tool: { root: toolRoot, commit: commits.tool } };
   const temp = join(liveDir, `.${SHADOW_WINDOW_MARKER}.tmp`);
   writeFileSync(temp, `${JSON.stringify(marker, null, 2)}\n`);
   renameSync(temp, join(liveDir, SHADOW_WINDOW_MARKER));
@@ -470,10 +471,10 @@ function windowReport({ status, cause, record, ticks }) {
 }
 
 /** @param {ReturnType<typeof armWindow>} armed @param {string | undefined} timer */
-function armReport({ t0, tEnd, hardStop, candidate, monorepo, files }, timer) {
+function armReport({ t0, tEnd, hardStop, candidate, tool, files }, timer) {
   return [`ARMED: the shadow window's marker is created (the live gate's tap is on)`,
     `T0:        ${t0}`, `T-end:     ${tEnd}  (T0 + ${WINDOW_TICKS} ticks at two minutes)`, `Hard stop: ${hardStop}  (T0 + 52 hours, whichever comes first)`,
-    `Candidate: ${candidate.commit} (${candidate.module})`, `Monorepo:  ${monorepo.commit} (${monorepo.root})`,
+    `Candidate: ${candidate.commit} (${candidate.module})`, `Tool:      ${tool.commit} (${tool.root})`,
     `Closure:   ${files} files, byte-identical`,
     ...(timer === undefined ? [] : [`Stop:      systemctl --user disable --now ${timer}`])].join("\n") + "\n";
 }
