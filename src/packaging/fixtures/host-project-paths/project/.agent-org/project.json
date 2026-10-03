@@ -1,0 +1,65 @@
+{
+  "_what": "(#3233) A RECORDED, MINIMAL project declaration for host-project-paths.test.ts: the shape a11ign's has (tracker, code, roles, vocabulary) and its `units` block as it stood at 95cb57e3 -- the prefix, the board-report workflow and the eight units the PROJECT keeps. A fixture, never a11ign's live file.",
+  "schema": 1,
+  "tracker": [
+    {
+      "key": "",
+      "repo": "a11ign/a11ign",
+      "board": {
+        "owner": "a11ign",
+        "number": 1
+      }
+    }
+  ],
+  "code": [
+    {
+      "key": "",
+      "repo": "a11ign/a11ign"
+    },
+    {
+      "key": "agent-org",
+      "repo": "a11ign/agent-org"
+    }
+  ],
+  "roles": {
+    "dir": ".agent-org/roles"
+  },
+  "vocabulary": {
+    "labels": {
+      "backlog": "backlog",
+      "needsChairman": "needs:chairman",
+      "outOfRelease": "out-of-release",
+      "blocked": "blocked"
+    },
+    "prefixes": {
+      "lane": "lane:",
+      "session": "session:",
+      "answer": "answer:"
+    },
+    "milestones": {
+      "roadToVersionOne": "Road to version one",
+      "outOfRelease": "Out of release"
+    },
+    "lanesFile": "docs/lane-ownership.json",
+    "templateFields": {
+      "acceptance": "Acceptance",
+      "closes": "Closes",
+      "fleet": "Fleet"
+    },
+    "fleetQuestion": "Does the acceptance need the fleet or the lab"
+  },
+  "units": {
+    "prefix": "a11ign-",
+    "boardReportWorkflow": "board-report.yml",
+    "own": [
+      "a11ign-corpus-release-nightly.service",
+      "a11ign-corpus-release-nightly.timer",
+      "a11ign-corpus-snapshot.service",
+      "a11ign-corpus-snapshot.timer",
+      "a11ign-fleet-watch.service",
+      "a11ign-fleet-watch.timer",
+      "a11ign-lab-watch.service",
+      "a11ign-lab-watch.timer"
+    ]
+  }
+}

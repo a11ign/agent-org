@@ -1,0 +1,5 @@
+// @ts-check
+// (#3233) A RECORDED STAND-IN for a second original, whose copy changes nothing but its header: the pair that stays clean while another one trips.
+export function parseFlags(argv) {
+  return argv.filter((arg) => arg.startsWith("--"));
+}

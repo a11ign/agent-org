@@ -1,0 +1,42 @@
+{
+  "_what": "(#3233) a11ign's HOST declaration as it stood at 95cb57e3, RECORDED with its `tool` key and prose dropped: the values the three tool units, the `gh` wrapper and the leads list render from. host-project-paths.test.ts pins the bytes those templates produce FOR THESE VALUES; that a11ign's live host.json still says them is a11ign's invariant (#3233).",
+  "schema": 1,
+  "home": "/home/agent",
+  "binDir": "/home/agent/.local/bin",
+  "primary": "a11ign",
+  "projects": [
+    {
+      "id": "a11ign",
+      "checkout": "/home/agent/repos/a11y-witness"
+    }
+  ],
+  "clones": {
+    "agent-org": "/home/agent/repos/agent-org",
+    "screenreader-worker": "/home/agent/repos/screenreader-worker"
+  },
+  "gh": {
+    "workers": "/home/agent/workers",
+    "leads": "/home/agent/leads",
+    "leadsHeader": [
+      "The gh wrapper (packages/agent-org/host/gh) reads this: a workspace id on a line BY ITSELF below acts as",
+      "a11ign-ai-leads (write, not admin; its own GraphQL pool). Every other agent workspace gets",
+      "a11ign-ai-workers, and NO agent workspace acts as the human account. Comment lines never match an id.",
+      "Installed by `pnpm run host:install` to ~/leads/workspaces.txt; `pnpm run host:check` reports DIVERGED",
+      "when the installed copy differs. Chairman's identity ruling, 2026-09-24 (#1950, #2332, #2333)."
+    ],
+    "leadsWorkspaces": [
+      {
+        "id": "w6",
+        "role": "ceo"
+      },
+      {
+        "id": "w2",
+        "role": "product-manager"
+      },
+      {
+        "id": "w5",
+        "role": "orchestrator"
+      }
+    ]
+  }
+}

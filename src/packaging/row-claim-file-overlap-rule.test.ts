@@ -6,12 +6,43 @@
  * gate is usually silent (4 open PRs, 23 files, ZERO pairwise overlap, measured 2026-09-08T04:48:51Z), so
  * ITS OWN ACCEPTANCE MUST BE A CONSTRUCTED OVERLAP -- passing by never firing proves nothing.
  */
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import {
-  declaredClosedRows, fileOverlapReason, lookupBlockersOf, lookupMyRegionFiles, lookupOpenPrFiles,
-} from "../row-claim/file-overlap-rule.mjs";
-import { declaredRegionFiles } from "../region-paths.mjs";
+import { execFileSync } from "node:child_process";
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { sandboxGitEnv } from "../lib/git-env.mjs";
+
+// --- (#3233) THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE, NOT A11IGN'S CHECKOUT ---
+//
+// The rule's defaults -- which tracker a row's `Closes` is read against, which repository `lookupBlockersOf` asks -- come from the project the tool serves,
+// and `declaredRegionFiles` asks that project's git for its root files. With no `$AGENT_ORG_HOST` the layout answers a11ign's live checkout, so a11ign
+// changing its declaration or its root changed this file's verdict. The host file is set FIRST and the tool imported AFTER it, dynamically; the project is
+// `fixtures/row-claim-file-overlap-rule/project`, copied to a temp directory that is made a git repository with no commit (so the root files read as none, whatever
+// a11ign holds). `trackedTopLevelDirs` asks `git ls-files` of the PROCESS'S working directory, which under CI was a11ign's root and is now the project: the
+// Region's `packages/` and `scripts/` are recognised as paths because THIS tree tracks them, not because a11ign does.
+const TRACKED_DIRS = ["packages", "scripts", "docs", ".github", ".claude"];
+const SCRATCH = mkdtempSync(join(tmpdir(), "row-claim-file-overlap-"));
+after(() => rmSync(SCRATCH, { recursive: true, force: true }));
+const PROJECT = join(SCRATCH, "project");
+cpSync(fileURLToPath(new URL("./fixtures/row-claim-file-overlap-rule/project", import.meta.url)), PROJECT, { recursive: true });
+const HOST_FILE = join(SCRATCH, "host.json");
+writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join(SCRATCH, "bin"), primary: "fixture",
+  projects: [{ id: "fixture", checkout: PROJECT }],
+  gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
+process.env.AGENT_ORG_HOST = HOST_FILE;
+for (const dir of TRACKED_DIRS) {
+  mkdirSync(join(PROJECT, dir), { recursive: true });
+  writeFileSync(join(PROJECT, dir, "tracked"), "");
+}
+execFileSync("git", ["init", "--quiet"], { cwd: PROJECT, env: sandboxGitEnv() });
+execFileSync("git", ["add", "-A"], { cwd: PROJECT, env: sandboxGitEnv() });
+process.chdir(PROJECT);
+
+const { declaredClosedRows, fileOverlapReason, lookupBlockersOf, lookupMyRegionFiles, lookupOpenPrFiles } = await import("../row-claim/file-overlap-rule.mjs");
+const { declaredRegionFiles } = await import("../region-paths.mjs");
 
 /** An open PR whose list is COMPLETE: its count is its list's length (#1419 compares the two). */
 const pr = (number: number, files: string[]) => ({ number, files, changedFiles: files.length });

@@ -1,0 +1,14 @@
+[Unit]
+Description=a11ign: the fixture project's own nightly (a clock the tool does not ship)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/agent/repos/fixture-project
+Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=/home/agent
+Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache
+Environment=GH_CONFIG_DIR=/home/agent/leads/gh
+ExecStart=%h/.local/bin/pnpm run corpus:release-nightly
+
+[Install]
+WantedBy=default.target

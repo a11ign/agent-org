@@ -1,0 +1,58 @@
+{
+  "_what": "(#3233) THE ROSTER AS IT WAS BEFORE #2505, as wake-drain.test.ts built it from a11ign's file: the three decision-holders, the three standing engineers marked `drain: true` as they stood at 90b65b787 (`role: engineer`, in file order, before the spare family), and the spare family `worker-<n>` from 4. The test drives every reader of the drain through a file that marks it, because a11ign's live roster retired the three and marks no role drained; that the live roster marks none is a11ign's invariant, not this suite's.",
+  "live": [
+    {
+      "name": "ceo",
+      "role": "ceo",
+      "brief": ".agent-org/roles/ceo.md",
+      "started": "2026-09-13T14:31:55Z"
+    },
+    {
+      "name": "product-manager",
+      "role": "product-manager",
+      "brief": ".agent-org/roles/product-manager.md",
+      "started": "2026-09-13T13:48:55Z"
+    },
+    {
+      "name": "orchestrator",
+      "role": "orchestrator",
+      "brief": ".agent-org/roles/orchestrator.md",
+      "started": "2026-09-13T14:24:38Z"
+    },
+    {
+      "name": "worker-capture",
+      "role": "engineer",
+      "drain": true,
+      "brief": ".agent-org/roles/engineer.md"
+    },
+    {
+      "name": "worker-judge",
+      "role": "engineer",
+      "drain": true,
+      "brief": ".agent-org/roles/engineer.md"
+    },
+    {
+      "name": "worker-tooling",
+      "role": "engineer",
+      "drain": true,
+      "brief": ".agent-org/roles/engineer.md"
+    },
+    {
+      "name": "worker-<n>",
+      "role": "engineer",
+      "spare": true,
+      "family": {
+        "prefix": "worker-",
+        "from": 4
+      },
+      "brief": ".agent-org/roles/engineer.md",
+      "started": "2026-09-24T09:42:00Z"
+    }
+  ],
+  "retired": [
+    {
+      "name": "dispatcher",
+      "retiredBy": "#913"
+    }
+  ]
+}

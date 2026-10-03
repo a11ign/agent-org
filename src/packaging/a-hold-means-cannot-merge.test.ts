@@ -35,9 +35,9 @@
  * is why it is written down rather than merely fixed.
  *
  * The remedy is the same each time: **drive the decision, do not read the file that contains it.**
- * `armDecision` and `armabilityOf` are exported and called with real shapes below; the two remaining
- * text assertions are about the WORKFLOW, which cannot be imported, and they are deliberately paired
- * with behavioural ones rather than standing alone.
+ * `armDecision` and `armabilityOf` are exported and called with real shapes below. The two assertions
+ * about the project's WORKFLOWS (`auto-arm.yml` calls `arm-pr`, `ci.yml` re-runs on `labeled`) are the
+ * project's to make, not the tool's, and left this file with #3233.
  *
  * And the ordinary case must be untouched. A hold that fires routinely is routed around; this
  * repository's own record of that is `A11Y_SKIP_VERIFY=1` reached for six times in one evening.
@@ -57,7 +57,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
 import { armabilityOf, holdersOf, disarmVerdict, HOLD_PREFIX } from "../pr-hold-state.mjs";
 import { mergeSafetyVerdict } from "../merge-guard.mjs";
 
@@ -65,11 +64,8 @@ import { mergeSafetyVerdict } from "../merge-guard.mjs";
 const HEAD = "1c81c2076c750203a1b49b152736e1fa57269b68";
 import { sweepDecision } from "../auto-arm-sweep.mjs";
 import { armDecision } from "../arm-pr.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
 
-/** A file of the PROJECT (its workflows), found through its checkout. */
-const read = (path: string) => readFileSync(join(HOME_CHECKOUT, path), "utf8");
-/** A file of the TOOL's own tree, `src` up one from here. The project's `packages/agent-org` is the frozen old copy. */
+/** A file of the TOOL's own tree, `src` up one from here. */
 const readTool = (file: string) => readFileSync(fileURLToPath(new URL(`../${file}`, import.meta.url)), "utf8");
 
 test("THE ORDINARY CASE IS UNTOUCHED -- an unheld PR with check runs still arms, exactly as today. A "
@@ -114,17 +110,6 @@ test("ONE PREDICATE, TWO CALLERS -- the hole opened because `is this PR held` wa
   assert.match(readTool("arm-pr.mjs"), /from "\.\/pr-hold-state\.mjs"/);
   assert.equal(/labels\.filter\(\(l\) => l\.startsWith\("session:"\)\)/.test(readTool("auto-arm-sweep.mjs")),
     false, "the sweep must not carry its own copy of the predicate any more");
-});
-
-test("THE PER-PR ARM PATH GOES THROUGH THE PREDICATE -- it is the path that merged #625, and it ran "
-  + "`gh pr merge --auto` from three lines of bash that read nothing", () => {
-  const workflow = read(".github/workflows/auto-arm.yml");
-  assert.match(workflow, /pnpm exec agent-org arm-pr\b/,
-    "the `arm` job must call the script that reads the hold");
-  assert.equal(/gh pr merge --auto --merge "\$\{\{ github\.event\.pull_request\.number/.test(workflow), false,
-    "the unconditional bash arm must be gone, not merely accompanied");
-  assert.match(workflow, /uses: actions\/checkout@v4[\s\S]*?agent-org arm-pr\b/,
-    "a job that runs a repository script needs a checkout -- this one did not have one before");
 });
 
 test("THE PER-PR PATH'S OWN DECISION, driven rather than read -- a held PR is refused and an unheld one "
@@ -229,24 +214,6 @@ test("MUTATION: UNREADABLE LABELS ARE CANNOT_ASK, NOT UNHELD -- and the message 
   assert.match(v.reasons[0], /labels could not be read/);
   assert.match(v.reasons[0], /INCONCLUSIVE, not unheld/);
   assert.doesNotMatch(v.reasons[0], /IS HELD by/);
-});
-
-/**
- * THE HALF THAT MAKES THE OTHER HALF TRUE. A hold is placed by adding a label, which changes no file and
- * moves no commit. Without `labeled`/`unlabeled` in `ci.yml`'s `pull_request` types, a hold placed on a
- * GREEN PR never re-runs the check that would refuse it, and auto-merge takes it -- so the refusal above
- * would protect only PRs that happen to be pushed to afterwards.
- *
- * `edited` is the precedent, one field along: it was added because `acceptance` reads the PR BODY and no
- * default type fires on a body edit, which deadlocked the queue for eight hours.
- */
-test("ci.yml re-runs on `labeled` and `unlabeled`, or the gate's hold refusal never fires on a green PR", () => {
-  const ci = read(".github/workflows/ci.yml");
-  const types = /^\s*types: \[([^\]]*)\]/m.exec(ci)?.[1] ?? "";
-  assert.ok(types.length > 0, "the pull_request types list must be findable, or this asserts nothing");
-  for (const type of ["labeled", "unlabeled", "edited", "opened", "synchronize", "reopened"]) {
-    assert.ok(types.includes(type), `\`${type}\` is missing from ci.yml's pull_request types: ${types}`);
-  }
 });
 
 /**

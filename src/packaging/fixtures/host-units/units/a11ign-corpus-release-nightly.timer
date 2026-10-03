@@ -1,0 +1,10 @@
+[Unit]
+Description=a11ign: run the fixture project's nightly
+Requires=a11ign-corpus-release-nightly.service
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

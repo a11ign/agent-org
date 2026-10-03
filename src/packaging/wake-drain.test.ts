@@ -8,21 +8,36 @@
  */
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, chmodSync, readdirSync, copyFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, chmodSync, readdirSync, cpSync } from "node:fs";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
-import { HOME_CHECKOUT, homeProjectDeclaration } from "../project-config.mjs";
-import { copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";
-import { deliver as settlingDeliver, route, withSpareInstances, engineerRoles, engineerEligibility, spawnableRole, EXIT }
-  from "../wake.mjs";
-import { activeDrain, drainedRoles, drainInForce, cyclesReport, spawnClaimability, rowOfOrder, DRAINED_SEEN,
-  CLEAN_CYCLES_TARGET, readSpareCycles, sparePathsFrom, spareRoles }
-  from "../wake.mjs";
-import { drainReason } from "../row-claim/runner-rule.mjs";
-import { claimRow } from "../row-claim.mjs";
+
+// --- (#3233) THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE, NOT A11IGN'S CHECKOUT ---
+//
+// Every reader below resolves the project it serves from `$AGENT_ORG_HOST` AT IMPORT (`HOME_CHECKOUT`), and without it the layout answers a11ign's live
+// checkout: its `sessions.json`, its declaration, its `package.json`. A verdict that moves when a11ign merges is not a verdict about this tool (agent-org #77
+// and #79). So the host file is set FIRST and the tool is imported AFTER it, dynamically, and the project is `fixtures/wake-drain/project`, copied into a
+// temp directory so no `git` the tool asks resolves to the repository this file sits in. The children it spawns inherit the variable.
+const FIXTURE_DIR = mkdtempSync(join(tmpdir(), "wake-drain-roster-"));
+after(() => rmSync(FIXTURE_DIR, { recursive: true, force: true }));
+const PROJECT = join(FIXTURE_DIR, "project");
+cpSync(fileURLToPath(new URL("./fixtures/wake-drain/project", import.meta.url)), PROJECT, { recursive: true });
+const HOST_FILE = join(FIXTURE_DIR, "host.json");
+writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: FIXTURE_DIR, binDir: join(FIXTURE_DIR, "bin"), primary: "fixture",
+  projects: [{ id: "fixture", checkout: PROJECT }],
+  gh: { workers: join(FIXTURE_DIR, "workers"), leads: join(FIXTURE_DIR, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
+process.env.AGENT_ORG_HOST = HOST_FILE;
+
+const { homeProjectDeclaration } = await import("../project-config.mjs");
+const { copyToolAndProject, importClosure, toolFile } = await import("./copied-tool-fixture.ts");
+const { deliver: settlingDeliver, route, withSpareInstances, engineerRoles, engineerEligibility, spawnableRole, EXIT,
+  activeDrain, drainedRoles, drainInForce, cyclesReport, spawnClaimability, rowOfOrder, DRAINED_SEEN,
+  CLEAN_CYCLES_TARGET, readSpareCycles, sparePathsFrom, spareRoles } = await import("../wake.mjs");
+const { drainReason } = await import("../row-claim/runner-rule.mjs");
+const { claimRow } = await import("../row-claim.mjs");
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
 const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: noSettle });
@@ -63,27 +78,18 @@ const NOBODY = agents({ ceo: "working", "product-manager": "working" });
 // fixture with ONE thing changed each -- the field, the ledger line, the edge -- so the thing that flipped the
 // outcome is named by the test and not inferred from it.
 
-const REAL_SESSIONS = join(HOME_CHECKOUT, ".agent-org/roles/sessions.json");
+const SESSIONS_JSON = ".agent-org/roles/sessions.json";
 
 /**
  * THE ROSTER AS IT WAS BEFORE #2505, AS A FIXTURE. The drain mechanism outlived its only user: #2505 retired the three
- * standing engineers, so the real file marks NO role `drain` and every test below that needs a drained role would have
- * nothing to drain. The fixture is the real file plus the three standing engineers as they stood at `90b65b787` --
+ * standing engineers, so a11ign's real file marks NO role `drain` and every test below that needs a drained role would have
+ * nothing to drain. The fixture project's roster is that file as it stood at `90b65b787` -- the three standing engineers
  * `role: "engineer"`, `drain: true`, in file order, before the spare family -- so `engineerRoles`, `drainedRoles`,
  * `activeDrain` and the row-claim CLI are each driven through the READER of a file that marks them, not through a
- * literal list. The real file's own state is pinned by the first test.
+ * literal list. That a11ign's own file marks none is a11ign's invariant (#3233), not this suite's.
  */
-const FIXTURE_DIR = mkdtempSync(join(tmpdir(), "wake-drain-roster-"));
-after(() => rmSync(FIXTURE_DIR, { recursive: true, force: true }));
-const DRAINED_SESSIONS_TEXT = (() => {
-  const file = JSON.parse(readFileSync(REAL_SESSIONS, "utf8")) as { live: Record<string, unknown>[] };
-  const standing = STANDING.map((name) => ({ name, role: "engineer", drain: true, brief: ".agent-org/roles/engineer.md" }));
-  const at = file.live.findIndex((e) => e.family !== undefined);
-  file.live.splice(at, 0, ...standing);
-  return JSON.stringify(file);
-})();
-const DRAINED_SESSIONS = join(FIXTURE_DIR, "sessions-drained.json");
-writeFileSync(DRAINED_SESSIONS, DRAINED_SESSIONS_TEXT);
+const DRAINED_SESSIONS = join(PROJECT, SESSIONS_JSON);
+const DRAINED_SESSIONS_TEXT = readFileSync(DRAINED_SESSIONS, "utf8");
 /** What `engineerRoles` reads from the fixture: the standing three, as `wake` offered work to them. */
 const DRAINED_ROSTER = engineerRoles(DRAINED_SESSIONS);
 // #2407: a line carries `rows`, and only a clean line with exactly ONE row counts -- a fixture without it is legacy.
@@ -107,16 +113,23 @@ function withoutDrainField(dir: string): string {
   return path;
 }
 
-test("#2505: the real sessions.json marks NO role drained, and the reader still finds the mark in a file that has one", () => {
-  assert.deepEqual(drainedRoles(), [], "the three standing engineers are retired, so nothing is being drained");
-  // The positive control for that emptiness: the same reader over the roster as it was before #2505.
-  assert.deepEqual(drainedRoles(DRAINED_SESSIONS), STANDING, "the fixture marks exactly the three standing engineers");
-  assert.deepEqual(DRAINED_ROSTER, STANDING, "and lists them, in file order, ahead of the family");
+test("#2505: the drain reader finds the mark in a roster that has one, and finds none in the same roster without it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "wake-drain-reader-"));
+  try {
+    assert.deepEqual(drainedRoles(DRAINED_SESSIONS), STANDING, "the fixture marks exactly the three standing engineers");
+    // The positive control for the emptiness below: the very reader that found three finds none once the field is gone.
+    assert.deepEqual(drainedRoles(withoutDrainField(dir)), []);
+    assert.deepEqual(DRAINED_ROSTER, STANDING, "and lists them, in file order, ahead of the family");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("#2324: a spare is never marked drained", () => {
-  assert.deepEqual(spareRoles().filter((r) => drainedRoles(DRAINED_SESSIONS).includes(r)), [],
-    "a spare is disposable and is ended by the teardown; draining one would leave no role to spawn into");
+  const spares = (JSON.parse(DRAINED_SESSIONS_TEXT) as { live: { name: string, spare?: boolean }[] }).live.filter((e) => e.spare === true).map((e) => e.name);
+  assert.ok(spares.length > 0, "POSITIVE CONTROL: the roster has a spare, or the emptiness below is two empty lists agreeing");
+  assert.deepEqual(spares.filter((r) => drainedRoles(DRAINED_SESSIONS).includes(r)), [], "a spare is disposable and is ended by the teardown; draining one would leave no role to spawn into");
+  assert.deepEqual(spareRoles(DRAINED_SESSIONS).filter((r) => drainedRoles(DRAINED_SESSIONS).includes(r)), []);
 });
 
 test("#2324 (1) ACCEPTANCE: all three standing engineers IDLE and drained -> `deliver` starts a spare, prompting no standing one", () => {
@@ -351,13 +364,6 @@ test("#2324 (6): THE COMMAND -- `wake.mjs --cycles` on an empty ledger exits non
   }
 });
 
-// The script is the PROJECT's (its `package.json`), and the project runs the tool through its one bin (#2975), so the command is pinned, not a path to `wake.mjs`.
-test("#2324: `npm run spawn:cycles` is wired to that command", () => {
-  const scripts = (JSON.parse(readFileSync(join(HOME_CHECKOUT, "package.json"), "utf8")) as
-    { scripts: Record<string, string> }).scripts;
-  assert.equal(scripts["spawn:cycles"], "agent-org spawn:cycles");
-});
-
 // --- #2324: A DRAINED ROLE IS REFUSED A NEW ROW, WITH A REASON THAT NAMES THE DRAIN ---
 //
 // `wake.mjs` stops OFFERING the standing three new rows; this is the other half, because an engineer that finishes
@@ -427,7 +433,6 @@ test("#2324 (3) POSITIVE CONTROLS through `claimRow`: a spare claims, an empty d
 // (so a mutation made there is the one under test), is its own one-commit repo, and its `origin/main` is that
 // commit -- a truthful "up to date", made in a directory nothing else reads.
 const ROW_CLAIM_ENTRY = fileURLToPath(new URL("../row-claim.mjs", import.meta.url));
-const SESSIONS_JSON = ".agent-org/roles/sessions.json";
 const GH_READY_ROW = `#!/bin/sh
 case "$*" in
   *number,title,labels,state*) printf '%s' '{"number":2324,"title":"A row","state":"OPEN","labels":[{"name":"ready"}]}' ;;

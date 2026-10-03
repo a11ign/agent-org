@@ -1,0 +1,2 @@
+// (#3233) A file of the tool's lib/ that is no copy: it carries no copy header, so discovery skips it.
+export const PLAIN = true;

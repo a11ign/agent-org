@@ -2,11 +2,10 @@
 /**
  * #1290: the board edition publishes as a GitHub Discussion, not a PDF on a draft release.
  *
- * TWO HALVES, AND THE SECOND FAILS SILENTLY. The edition must BE a Discussion, and the release path must have
- * STOPPED. A Discussion appearing is not evidence of the second, so this file asserts both: the carrier's
- * behaviour against a fake `gh` (asserted on the argv it was handed, not on what it returned), and the
- * workflow's own text, where a re-added `--release` or `contents: write` would restart the release path with
- * every run still green.
+ * The carrier's behaviour is asserted against a fake `gh`, on the argv it was handed rather than on what it
+ * returned. The other half -- that `board-report.yml` carries no `--release` and no `contents: write`, so the
+ * release path has STOPPED -- is an invariant of the project's workflow, not of the tool, and left this file
+ * with #3233.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -16,7 +15,6 @@ import { fileURLToPath } from "node:url";
 import {
   categoryIdFor, editionDay, editionFor, editionTitle, publishEdition, todaysEditionExists, EDITION_CATEGORY_SLUG,
 } from "../board-discussion.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
 
 /** The TOOL's own `src`, one up from here: the edition scripts are the tool's, and the project's `packages/agent-org` is the frozen old copy. */
 const TOOL_SRC = fileURLToPath(new URL("..", import.meta.url));
@@ -132,30 +130,6 @@ test("todaysEditionExists: a lookup that cannot be asked answers YES, and says w
   assert.equal(todaysEditionExists({ day: DAY, run: fakeGh({ editions: [yesterday] }).run, warn }), false);
   assert.equal(todaysEditionExists({ day: DAY, run: fakeGh({ editions: [today("D_today")] }).run, warn }), true);
   assert.equal(warnings.length, 2, "a real answer warns about nothing");
-});
-
-// --- the workflow: the release path has stopped ---
-
-/** The workflow with YAML comments removed, so prose about the old path cannot satisfy or fail a check. */
-function workflowCode(): string {
-  const text = readFileSync(join(HOME_CHECKOUT, ".github/workflows/board-report.yml"), "utf8");
-  return text.split("\n").filter((line) => !line.trim().startsWith("#"))
-    .map((line) => line.replace(/\s+#.*$/, "")).join("\n");
-}
-
-test("board-report.yml publishes the Discussion, and its token CANNOT create a release", () => {
-  const code = workflowCode();
-  assert.match(code, /pnpm exec agent-org board:document --discussion\b/);
-  assert.match(code, /^\s*discussions:\s*write\s*$/m);
-  assert.match(code, /^\s*contents:\s*read\s*$/m,
-    "contents: read is what a checkout needs; write is what a release draft needs, and this job makes none");
-  assert.doesNotMatch(code, /^\s*contents:\s*write\s*$/m);
-  assert.doesNotMatch(code, /--release\b/);
-  assert.doesNotMatch(code, /\bgh release\b/);
-});
-
-test("the republish precondition asks for today's DISCUSSION through the one lookup, not a release", () => {
-  assert.match(workflowCode(), /pnpm exec agent-org board-discussion --exists\b/);
 });
 
 // --- #1302: the edition's day is LONDON's, decided once ---

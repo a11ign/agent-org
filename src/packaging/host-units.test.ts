@@ -4,8 +4,9 @@
 // `unitDrift` and `driftReport` all take their filesystem and their `systemctl` injected;
 // `hostUnitsInstall` takes its copier; `orphanedUnits` takes its `git` (#1993), so a stub directory
 // never reaches a real `git` and is never answered about a path outside the repository. The real reads
-// are of `packages/agent-org/host/`, this repository's own directory, and of a two-commit git
-// repository this file BUILDS in a temp directory and deletes -- never of this checkout's own history,
+// are of `host/`, the tool's own directory, of a fixture PROJECT (`host-units-project.ts`, #3233: the project's units,
+// its `package.json` and its declaration) and of a two-commit git repository this file BUILDS in a temp directory
+// and deletes -- never of a11ign's checkout, which changes under it, and never of any checkout's own history,
 // which is as deep as whoever cloned chose to make it.
 
 /**
@@ -22,73 +23,43 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, statSync,
+import { readFileSync, readdirSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, statSync,
   existsSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { PROJECT_ROOT, TOOL_ROOT } from "./host-units-project.ts";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
-import { shippedUnits, unitState as real_unitState, unitDrift, driftReport, hostUnitsInstall as real_hostUnitsInstall, systemdUserAvailable,
-  hostUnitDrift as real_hostUnitDrift, permissionModeDrift, orphanedUnits, SHIPPED_DIR, REPO_ROOT, execCommands,
-  entriesFromCommand, ghSpawnReachedFrom, identityDrift as real_identityDrift, unitsSpendingGh as real_unitsSpendingGh, opaqueCommands,
+import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, systemdUserAvailable,
+  hostUnitDrift, permissionModeDrift, orphanedUnits, SHIPPED_DIR, execCommands,
+  entriesFromCommand, ghSpawnReachedFrom, identityDrift, unitsSpendingGh, opaqueCommands,
   retiredHere, addedOnSomeRef, orphanOrigin, shellCommandWords, shellSpawnsGh, shippedHostScripts,
   supersededHostScripts, unitEntryPoints, missingUnitPrograms, workingDirectoryOf,
   programCandidates, hostIdentityDrift, hostIdentityNotes, hostIdentityInstall, ownedIdentityFiles, compileCacheNotes,
-  WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift as real_compileCacheDrift, declaredCompileCache, PROJECT_UNITS_DIR, shippedUnitText as real_shippedUnitText,
+  WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift, declaredCompileCache, PROJECT_UNITS_DIR, shippedUnitText,
   shippedScriptText, leadsListText, modelEffortDrift, sessionModelDrift, sessionModelNotes, lastModelIn,
-  liveClaudeSessions, OPTIONAL_UNITS, TOOL_ENTRIES, LONG_RUNNING_TEMPLATES, unclassifiedEntries, declaredProjectKeys, windowEnd as real_windowEnd, windowEndNotes as real_windowEndNotes } from "../host-units.mjs";
+  liveClaudeSessions, OPTIONAL_UNITS, TOOL_ENTRIES, LONG_RUNNING_TEMPLATES, unclassifiedEntries, declaredProjectKeys, windowEnd, windowEndNotes } from "../host-units.mjs";
 import { DECLARED_CLAUDE_MODELS, PROFILES, CLAUDE_EFFORTS } from "../worker-profile.mjs";
-import { homeHostConfig } from "../host-config.mjs";
 
 /**
- * The keys of a project that has NOT turned the chairman-messaging units on (#2901). The tests that pin "the units a11ign ships" hand it as `declaredKeys`
- * instead of reading the real `.agent-org/project.json`, so the day a project declares `messaging` (a11ign/a11ign#3142) none of them goes red for it:
+ * The keys of a project that has NOT turned the chairman-messaging units on (#2901). The tests that pin "the units the tool ships" hand it as `declaredKeys`
+ * instead of reading the fixture project's `project.json`, so the day the fixture declares `messaging` none of them goes red for it:
  * the optional trio has its own tests below, and a pin that reads the real declaration is a pin on somebody else's file.
  */
 const WITHOUT_MESSAGING = new Set(["causes", "units"]);
-
-/**
- * a11ign's host AS THE TEMPLATES RENDER FOR IT, whether or not its `host.json` names a `tool` (#2974: the cut sets it). The tests below that
- * pin what a template says -- its `ExecStart`, its working directory, its schedule -- read it through this, so they keep asking the template
- * and not the host's install form; `host-tool-install.test.ts` is where the tool form of every unit is asserted.
- */
-const PLAIN_A11IGN_HOST = (() => {
-  const plain: Record<string, unknown> = { ...homeHostConfig() };
-  delete plain.tool;
-  return Object.freeze(plain);
-})();
-
-/**
- * The nine readers that consult the HOST's declaration, defaulted to the plain a11ign host. Once `host.json` names a `tool` the install form
- * reads each project's `.agent-org/project.json` through the host's ABSOLUTE `checkout`, a path that exists on the agents host and on no CI
- * runner (#3027: ten of these failed there and passed here). A test that passes its own `host` still wins.
- */
-type HostDeps = { host?: unknown } & Record<string, unknown>;
-const onPlainHost = <F extends (...args: never[]) => unknown>(real: F, depsAt: number): F =>
-  ((...args: unknown[]) => {
-    const withHost = [...args];
-    withHost[depsAt] = { host: PLAIN_A11IGN_HOST, ...(args[depsAt] as HostDeps | undefined) };
-    return (real as unknown as (...a: unknown[]) => unknown)(...withHost);
-  }) as unknown as F;
-const hostUnitsInstall = onPlainHost(real_hostUnitsInstall, 0);
-const shippedUnitText = onPlainHost(real_shippedUnitText, 1);
-const identityDrift = onPlainHost(real_identityDrift, 0);
-const unitsSpendingGh = onPlainHost(real_unitsSpendingGh, 0);
-const hostUnitDrift = onPlainHost(real_hostUnitDrift, 0);
-const compileCacheDrift = onPlainHost(real_compileCacheDrift, 0);
-const unitState = onPlainHost(real_unitState, 1);
-const windowEnd = onPlainHost(real_windowEnd, 1);
-const windowEndNotes = onPlainHost(real_windowEndNotes, 0);
 
 /**
  * #2620: ONE SHIPPED UNIT AS IT INSTALLS -- the tool's three are rendered from `host/*.in` templates and the project's own are read
  * verbatim from `.agent-org/units/`, so a test that wants a unit's text asks for it by its installed name and not by a directory.
  */
 const shippedText = (unit: string): string => {
-  const text = shippedUnitText(unit, { host: PLAIN_A11IGN_HOST as never });
+  const text = shippedUnitText(unit);
   assert.ok(text !== null, `nothing ships a unit named ${unit}`);
   return text;
 };
+
+/** Whether a unit holds this exact line: the fixture project's checkout is a temp path, so a line naming it is matched whole and not as a pattern. */
+const hasLine = (unit: string, line: string): boolean => unit.split("\n").includes(line);
 
 const SYSTEMD_OK = () => "LANG=C\n";
 const NO_SYSTEMD = () => { throw new Error("systemctl: command not found"); };
@@ -219,8 +190,9 @@ test("#1858: the installer uses `enable --now`, never a bare `enable`", () => {
 test("#1858: every unit this repository ships is discovered -- against the real directory", () => {
   const units = shippedUnits();
   assert.ok(units.includes("a11ign-work-tick.timer"), "the tick timer is the one known-good unit");
+  // (#3233) The project's own unit is the fixture's: a project clock was listed beside the tool's, which is what this check caught on its first day.
   assert.ok(units.includes("a11ign-corpus-release-nightly.timer"),
-    "and the corpus release nightly, which this check caught shipped-but-uninstalled on its first day");
+    "and the project's own nightly, read from `.agent-org/units/` beside the tool's templates");
   // #1941 RETIRED `a11ign-fleet-gated-nightly.*`, which this test originally named as its second example
   // (it was #1858's own case: shipped by #1844 and never installed). Its question -- are there
   // fleet-gated rows to dispatch? -- moved into `work-gate.mjs` as `fleet-batch-due`, because it is a
@@ -447,13 +419,6 @@ test("#1863: a machine with no user systemd is not told its permissions are wron
   // Same gate as the timers, and for the same reason: a laptop told "ORG IS IN AUTO MODE" teaches its
   // owner to ignore this command, which loses the timer finding along with it.
   assert.deepEqual(hostUnitDrift({ systemctl: NO_SYSTEMD as never }), []);
-});
-
-test("#1911: the corpus-release unit reads fleet.env, the only place a unit can get A11Y_PVE_KEY", () => {
-  // `~/.zshenv` exported it for every shell and for no unit, so the nightly failed every firing. The `-`
-  // leaves a missing file to corpus-release-nightly.mjs's own refusal, which names it.
-  const unit = shippedText("a11ign-corpus-release-nightly.service");
-  assert.match(unit, /^EnvironmentFile=-%h\/\.config\/a11ign\/fleet\.env$/m);
 });
 
 // --- #2458: the compile cache is written under the system temp directory unless a unit says otherwise -----
@@ -872,6 +837,8 @@ test("#1951: the installer REMOVES an orphan, disabling the timer before deletin
 // repository could not see the choice being made at all: `GH_CONFIG_DIR` appeared nowhere in this tree.
 
 test("#1974: every shipped unit that spawns `gh` declares which account -- over the units on disk", () => {
+  // (#3233) THE UNITS ON DISK are the tool's three templates and the FIXTURE project's one: the walk's own behaviour is the tool's, and whether
+  // a11ign's units declare an account is a question about a11ign's tree and is asked there.
   // THE POSITIVE CONTROL COMES FIRST, and it is load-bearing rather than decorative. `identityDrift()`
   // derives its population from a real directory walk and a real import closure: a wrong `shippedDir`, a
   // package.json whose scripts do not resolve, or a glob that matches nothing all yield an EMPTY
@@ -885,11 +852,10 @@ test("#1974: every shipped unit that spawns `gh` declares which account -- over 
   // units it names are the assertion that it did: a floor is a bound on the count, and these are the
   // members.
   assert.deepEqual(spending.map((u) => u.unit).sort(),
-    ["a11ign-board-report.service", "a11ign-corpus-release-nightly.service",
-      "a11ign-fleet-watch.service", "a11ign-lab-watch.service", "a11ign-work-tick.service",
+    ["a11ign-board-report.service", "a11ign-corpus-release-nightly.service", "a11ign-work-tick.service",
       "a11ign-worktree-prune.service"],
-    "every shipped .service that can reach `gh` -- including the one whose ExecStart this repository "
-    + "cannot read, which is charged on UNKNOWN rather than excused on it");
+    "every shipped .service that can reach `gh` -- the project's own, which reaches it only through the script it spawns, "
+    + "and the dispatcher's, which was charged on UNKNOWN until its script was shipped");
   assert.deepEqual(identityDrift({ declaredKeys: WITHOUT_MESSAGING }), [],
     "a unit reaching a `gh` spawn with no Environment=GH_CONFIG_DIR= line inherits `~/.config/gh` -- a "
     + "person's account -- and spends a human's rate limit until it runs out");
@@ -969,16 +935,16 @@ test("#2892: `pnpm run <script>` is followed exactly as `npm run` is, so a unit 
 });
 
 test("#1974: the `npm run` edge inside CODE is followed -- an import walk alone reports this unit clean", () => {
-  // corpus-release-nightly.mjs reaches `gh` ONLY through `npmCliInvocation("npm", ["run",
-  // "corpus:release"])`. There is no import edge to follow, so a closure walk that knew only about
-  // imports returned NO gh for it -- measured, before this edge existed -- and the nightly would have
-  // shipped undeclared while the check said it was fine.
-  const nightly = join(REPO_ROOT, "packages/lab/scripts/corpus-release-nightly.mjs");
+  // A nightly reaches `gh` ONLY through `spawnSync("npm", ["run", "corpus:release"])`. There is no import
+  // edge to follow, so a closure walk that knew only about imports returned NO gh for it -- measured,
+  // before this edge existed -- and the nightly would have shipped undeclared while the check said it was
+  // fine. (#3233) The fixture project's nightly has that shape, so the walk is read on a file this file owns.
+  const nightly = join(PROJECT_ROOT, "scripts/release-nightly.mjs");
   const hit = ghSpawnReachedFrom(nightly);
   assert.ok(hit, "the nightly reaches a `gh` spawn");
-  assert.match(String(hit), /corpus-release\.mjs$/,
+  assert.match(String(hit), /release\.mjs$/,
     "through the script it SPAWNS, which no import of its own names");
-  assert.equal(ghSpawnReachedFrom(join(REPO_ROOT, "packages/agent-org/src/worktree-owner.mjs")), null,
+  assert.equal(ghSpawnReachedFrom(join(TOOL_ROOT, "src/worktree-owner.mjs")), null,
     "POSITIVE CONTROL: a unit entry point that does NOT touch `gh` is not charged for one");
 });
 
@@ -1130,8 +1096,8 @@ test("#1993: the board dispatch is SHIPPED, and faithful to the pair that actual
     "#1998: the SHIPPED program, named the way the other code-running units name theirs. It read "
     + "`/home/agent/.local/bin/board-report-dispatch.sh` until then -- 31 lines of bash carried by no "
     + "commit anywhere, so every property above was a property of a file nobody here could read");
-  assert.match(service, /^WorkingDirectory=\/home\/agent\/repos\/a11y-witness$/m,
-    "and the checkout that repository-relative path resolves against, or systemd starts nothing");
+  assert.ok(hasLine(service, `WorkingDirectory=${PROJECT_ROOT}`),
+    "and the checkout that repository-relative path resolves against (the project's, from `host.json`), or systemd starts nothing");
   assert.match(timer, /^OnCalendar=\*-\*-\* 07:10:00 Europe\/London$/m,
     "London in the expression, not resolved once into a UTC hour that drifts at each BST boundary");
   assert.match(timer, /^Persistent=true$/m, "a host asleep at 07:10 still publishes");
@@ -1187,10 +1153,10 @@ test("#2000: the unit passes `--apply`, or the clock runs a REPORT and the backl
   const service = shippedText("a11ign-worktree-prune.service");
   assert.match(service, /^ExecStart=%h\/\.local\/bin\/pnpm run worktrees:prune -- --apply$/m);
   assert.deepEqual(entriesFromCommand(execCommands(service)[0]),
-    [join(REPO_ROOT, "packages/agent-org/src/prune-worktrees.mjs")],
+    [join(TOOL_ROOT, "src/prune-worktrees.mjs")],
     "and the command resolves through package.json to the script itself -- a renamed npm script leaves "
     + "the unit syntactically perfect and starting nothing");
-  assert.match(service, /^WorkingDirectory=\/home\/agent\/repos\/a11y-witness$/m,
+  assert.ok(hasLine(service, `WorkingDirectory=${PROJECT_ROOT}`),
     "the PRIMARY checkout: `pruneWorktrees` identifies the tree it must never remove structurally, as "
     + "the one whose `.git` is a directory, so pointed at a linked worktree it would protect that one "
     + "and offer the fleet-driving checkout up instead");
@@ -1206,10 +1172,10 @@ test("#2782: the prune's API spend is ONE claim read per removable tree, declare
   // fact that could have stopped it is the `session:` label on the row, which is on GitHub. The second half stands -- no model
   // turn, no judgment -- and that is the half that puts it on a clock. This test is the collision the previous version of
   // itself predicted ("THIS ASSERTION IS MEANT TO COLLIDE"), resolved by reading what the spend IS instead of deleting the check.
-  const entry = join(REPO_ROOT, "packages/agent-org/src/prune-worktrees.mjs");
+  const entry = join(TOOL_ROOT, "src/prune-worktrees.mjs");
   // THE POSITIVE CONTROL, and it is the whole reason a non-null below means anything: the same function, on a file known not
   // to reach `gh`, answers null -- so the walk can tell the two apart.
-  assert.equal(ghSpawnReachedFrom(join(REPO_ROOT, "packages/agent-org/src/worktree-owner.mjs")), null,
+  assert.equal(ghSpawnReachedFrom(join(TOOL_ROOT, "src/worktree-owner.mjs")), null,
     "control: the import walk answers null for a closure that is clean, so the answer below is a reading");
   assert.match(String(ghSpawnReachedFrom(entry)), /worktree-removal\.mjs$/,
     "the spend is in the ONE file every remover asks, so it is a single, nameable read rather than a scatter of `gh` calls");
@@ -1298,7 +1264,7 @@ test("#2000: no shipped timer pairs `Persistent=` with monotonic-only triggers",
 //
 // AND IT IS A CLASS RATHER THAN THIS UNIT'S QUIRK. `hostUnitsInstall` runs `enable --now` over EVERY
 // shipped `.timer`, so `Requires=` in a timer silently appends "and runs once at every `host:install`" to
-// its service's contract -- true today of the corpus snapshot and the corpus release nightly as much as of
+// its service's contract -- true of a project's own nightly (the fixture's, #3233) as much as of
 // the prune. This test is what makes adding it to a fifth timer a decision somebody makes rather than a
 // consequence nobody reads.
 test("#2000: which shipped timers run their service at `host:install`, and which do not", () => {
@@ -1310,7 +1276,6 @@ test("#2000: which shipped timers run their service at `host:install`, and which
   // working fails both halves rather than passing vacuously.
   assert.deepEqual(requiring, [
     "a11ign-corpus-release-nightly.timer",
-    "a11ign-corpus-snapshot.timer",
     // #2867: the shadow window's timer. Its service runs once at `host:install` and is a DORMANT NO-OP until `shadow-window.mjs --arm` creates the
     // marker (no marker, nothing read, exit 0), which the unit's own comments say; that is why a fifth entry here is a decision made and not one missed.
     "a11ign-shadow-window.timer",
@@ -1322,13 +1287,10 @@ test("#2000: which shipped timers run their service at `host:install`, and which
     + "and check it is a run you want unattended at an operator's keystroke");
   assert.deepEqual(timers.filter((u) => !requiring.includes(u)), [
     "a11ign-board-report.timer",
-    "a11ign-fleet-watch.timer",
-    "a11ign-lab-watch.timer",
   ], "THE CONTROL, and a measured one rather than a fixture: at the 2026-09-22 21:03Z `host:install` the "
     + "four above each started their service in that second and board-report did not, though the same run "
-    + "reinstalled it. It activates its service by name alone -- and #2230's two watchers are written the "
-    + "same way ON PURPOSE: each `--post`s, so a firing at every `host:install` would put a comment on "
-    + "#928 whenever the host is in ATTENTION, at an operator's keystroke rather than on the clock");
+    + "reinstalled it. It activates its service by name alone, ON PURPOSE: it dispatches a board edition, "
+    + "and a firing at every `host:install` would publish one at an operator's keystroke rather than on the clock");
   // AND THE INSTALL-TIME START IS NOT HYPOTHETICAL. The partition above only matters because the installer
   // really does issue that start job for every shipped timer; asserted through the same injected
   // `systemctl` the #1858 test uses, against the REAL shipped directory.
@@ -1347,136 +1309,8 @@ test("#2000: which shipped timers run their service at `host:install`, and which
   }
 });
 
-// --- #2230: TWO WATCHERS BUILT TO RUN UNATTENDED, AND NOTHING RAN EITHER ------------------------------
-//
-// #866 and #1815 both closed on a script that was correct, tested and unreachable. `lab-watch.mjs` had an
-// npm script and no scheduler; `fleet-watch.mjs` had no invoker in the tree at all. `agent-practices.md`
-// told every session that #928 is where "`org-watch.mjs`, `fleet-watch.mjs` and `lab-watch.mjs` already
-// post" -- two thirds untrue. `org-watch.mjs` is the third, and it alone was wired (`nightly.yml`), because
-// it reads GitHub and nothing else; the two that needed the lab's credential are host units.
-
-const WATCH_UNITS = ["lab", "fleet"].flatMap((name) =>
-  [`a11ign-${name}-watch.service`, `a11ign-${name}-watch.timer`]);
-
-test("#2230: each watcher ships as a pair, so `host:install` has something to install", () => {
-  const units = shippedUnits();
-  for (const unit of WATCH_UNITS) {
-    assert.ok(units.includes(unit), `${unit} must ship: a script nothing schedules is the state #2230 ended`);
-  }
-});
-
-test("#2230: each service runs its watcher WITH `--post`, and the command resolves to the script", () => {
-  // THE HIGHEST-VALUE ASSERTION HERE, for the reason #2000's `--apply` one was: without `--post` the unit
-  // is installed, enabled, active, current, exits 0 or 1 every hour and writes to the journal alone. Every
-  // other check in this file would be green over a watcher that tells nobody.
-  const expected = { lab: "packages/control/src/lab-watch.mjs", fleet: "packages/control/src/fleet-watch.mjs" };
-  for (const [name, script] of Object.entries(expected)) {
-    const service = shippedText(`a11ign-${name}-watch.service`);
-    assert.match(service, new RegExp(`^ExecStart=%h/\\.local/bin/pnpm run ${name}:watch -- --post$`, "m"));
-    assert.deepEqual(entriesFromCommand(execCommands(service).find((c) => c.includes("watch")) as string),
-      [join(REPO_ROOT, script)],
-      "a renamed or missing npm script leaves the unit syntactically perfect and starting nothing");
-    // THE EXIT CONTRACT, docs/gate-exit-codes.md: ATTENTION (1) is a posted finding, not a failed unit;
-    // CANNOT_ASK (2) must stay a failed one, or a watcher that could not read its source reads as clean.
-    assert.match(service, /^SuccessExitStatus=0 1$/m, `${name}: 0 and 1 are success, and NOT 2`);
-    assert.match(service, /^Environment=GH_CONFIG_DIR=\/home\/agent\/workers\/gh$/m,
-      `${name}: it posts as the workers account, declared rather than inherited (#1974)`);
-    assert.doesNotMatch(service, /^\[Install\]$/m,
-      `${name}: no [Install] -- WantedBy=default.target would fire it at every boot`);
-  }
-  // IT IS READ, NOT ASSUMED, THAT THESE SPEND A POOL: both are charged for an identity by the same
-  // reader that charges the other units, so the GH_CONFIG_DIR line above is demanded and not decorative.
-  const spending = unitsSpendingGh().map((u) => u.unit);
-  assert.ok(spending.includes("a11ign-lab-watch.service") && spending.includes("a11ign-fleet-watch.service"),
-    `both watchers reach a gh spawn; charged: ${JSON.stringify(spending)}`);
-});
-
-test("#2230: the watcher timers are CALENDAR timers, hourly, and off the org-watch minute", () => {
-  const minutes: Record<string, string> = {};
-  for (const name of ["lab", "fleet"]) {
-    const timer = shippedText(`a11ign-${name}-watch.timer`);
-    const [, minute] = timer.match(/^OnCalendar=\*-\*-\* \*:(\d\d):00$/m) ?? [];
-    assert.ok(minute, `${name}: an hourly calendar expression`);
-    minutes[name] = minute;
-    assert.match(timer, /^Persistent=true$/m, `${name}: a missed hour is read at next opportunity`);
-  }
-  // `nightly.yml` runs org-watch at :37 and the three would otherwise share a minute; :00 is where every
-  // other clock fires (#965).
-  assert.equal(new Set([...Object.values(minutes), "37"]).size, 3, `three distinct minutes: ${JSON.stringify(minutes)}`);
-  assert.ok(!Object.values(minutes).includes("00"));
-});
-
-/**
- * EVERY SCRIPT THAT POSTS ON THE ORG'S READING ISSUE. Exporting `ORG_READING_ISSUE` is what "this file
- * posts on #928" already looks like in this tree.
- *
- * IT FINDS TWO OF THE THREE WATCHERS, NOT THREE -- #2230's body said all three export it, and MEASURED at
- * this commit `org-watch.mjs` does not: it never names #928 at all, `nightly.yml` posts its output with
- * `gh issue comment 928`. So the discriminator sees the two host-unit watchers, which are the ones that
- * had no caller, and cannot see a workflow-posted one. Widening it would need a change to `org-watch.mjs`,
- * which this row's Region excludes; the population below is pinned so the gap is stated, not silent.
- */
-function orgReadingWatchers(dirs: string[]): string[] {
-  return dirs.flatMap((dir) => readdirSync(dir)
-    .filter((f) => f.endsWith(".mjs"))
-    .map((f) => join(dir, f))
-    .filter((path) => /^export const ORG_READING_ISSUE\b/m.test(readFileSync(path, "utf8"))))
-    .sort();
-}
-
-/** The watchers that no shipped unit starts and no workflow step invokes -- the state #2230 found. */
-function watchersWithNoCaller(watchers: string[], { unitTexts, workflowTexts }:
-  { unitTexts: string[]; workflowTexts: string[] }): string[] {
-  const startedByUnit = new Set(unitTexts.flatMap((text) => unitEntryPoints(text)));
-  const workflowLines = workflowTexts.flatMap((text) => text.split("\n"))
-    .filter((line) => !line.trim().startsWith("#"));
-  const startedByWorkflow = (path: string) => workflowLines.some((line) =>
-    line.includes(basename(path))
-    || entriesFromCommand(line.replace(/^\s*(-\s*)?run:\s*/, "").trim()).includes(path));
-  return watchers.filter((path) => !startedByUnit.has(path) && !startedByWorkflow(path));
-}
-
-const realCallers = () => ({
-  unitTexts: shippedUnits().map((u) => shippedText(u)),
-  workflowTexts: readdirSync(join(REPO_ROOT, ".github/workflows")).filter((f) => f.endsWith(".yml"))
-    .map((f) => readFileSync(join(REPO_ROOT, ".github/workflows", f), "utf8")),
-});
-
-test("#2230: every script that posts on #928 has a caller -- a watcher nothing runs is not a watcher", () => {
-  const watchers = orgReadingWatchers(
-    ["packages/control/src", "packages/agent-org/src"].map((d) => join(REPO_ROOT, d)));
-  // THE POPULATION'S OWN CONTROL: an emptiness assertion over "watchers with no caller" passes when the
-  // glob finds no watchers at all, so the population is pinned to the two it is known to contain.
-  assert.deepEqual(watchers.map((w) => basename(w)), ["fleet-watch.mjs", "lab-watch.mjs"],
-    "a new --posting watcher is welcome, and this list is where it says so. org-watch.mjs is NOT in it: "
-    + "it does not export ORG_READING_ISSUE (see orgReadingWatchers)");
-  assert.deepEqual(watchersWithNoCaller(watchers, realCallers()), [],
-    "each must be started by a shipped host unit or a workflow step -- these two need the lab's "
-    + "credential, so they are host units");
-});
-
-test("#2230: POSITIVE CONTROL -- the guard flags a watcher with no unit and no workflow step", () => {
-  // THE NAMED CONTROL for the emptiness above. A fixture watcher exporting ORG_READING_ISSUE, in a temp
-  // directory the repository's real units and workflows cannot name, must be FLAGGED; and the same guard
-  // over the same fixture WITH a unit that starts it must not be, or "flagged" means nothing.
-  const dir = mkdtempSync(join(tmpdir(), "watcher-guard-"));
-  try {
-    const orphan = join(dir, "orphan-watch.mjs");
-    writeFileSync(orphan, "export const ORG_READING_ISSUE = 928;\n");
-    writeFileSync(join(dir, "not-a-watcher.mjs"), "export const OTHER = 1;\n");
-    assert.deepEqual(orgReadingWatchers([dir]), [orphan], "discriminated by the export, not the directory");
-    assert.deepEqual(watchersWithNoCaller([orphan], realCallers()), [orphan],
-      "no shipped unit and no workflow step names it, so it is the finding");
-    assert.deepEqual(watchersWithNoCaller([orphan], {
-      unitTexts: [`[Service]\nExecStart=/usr/bin/node ${orphan}\n`], workflowTexts: [] }), [],
-      "and a unit that starts it clears it");
-    assert.deepEqual(watchersWithNoCaller([orphan], {
-      unitTexts: [], workflowTexts: ["      # node orphan-watch.mjs\n"] }), [orphan],
-      "a COMMENT naming it in a workflow is not a caller");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
+// (#3233) The #2230 tests -- a11ign's two watcher units ship as pairs, run with `--post`, fire hourly off the org-watch minute, and every script
+// exporting `ORG_READING_ISSUE` has a caller in a unit or a workflow -- asserted a11ign's own units, scripts and workflows, and left this file.
 
 // --- #1998: the unit shipped here and the program it starts did not ----------------------------------
 //
@@ -1498,7 +1332,16 @@ test("#2230: POSITIVE CONTROL -- the guard flags a watcher with no unit and no w
 // the next firing. A second copy would re-create #1858's own defect one level down. What that leaves is
 // the leftover at `~/.local/bin`, which `supersededHostScripts` reports until somebody removes it.
 
+/**
+ * WHERE THE UNIT'S RELATIVE `ExecStart` PATH LANDS in the project the file runs against (#3233): the project holds the tool at `packages/agent-org`,
+ * so the dispatcher is read through that link. The first assertion below is the link's own control -- that this path IS the shipped file -- so
+ * every comparison against it is a comparison against the tool under test.
+ */
+const DISPATCH = join(PROJECT_ROOT, "packages/agent-org/host/board-report-dispatch.sh");
+
 test("#1998: the dispatch ships here, and it is the program that actually runs", () => {
+  assert.equal(realpathSync(DISPATCH), join(SHIPPED_DIR, "board-report-dispatch.sh"),
+    "the project's `packages/agent-org` is this tool, so the path the unit names is the file this tool ships");
   assert.ok(shippedHostScripts().includes("board-report-dispatch.sh"),
     "in the same directory as the unit that starts it -- the whole row in one assertion");
   const script = shippedText("board-report-dispatch.sh");
@@ -1524,7 +1367,7 @@ test("#1998: the board dispatch's `gh` is READ, not merely not-ruled-out", () =>
     + "this assertion could pass while the row is undone");
   assert.equal(board.opaque, false, "the `gh` spawn was read out of the script, not inferred from a "
     + "path this repository cannot follow");
-  assert.equal(board.via, join(SHIPPED_DIR, "board-report-dispatch.sh"),
+  assert.equal(board.via, DISPATCH,
     "and `via` names the file it was read from -- the entry point RESOLVED, which is the reason the "
     + "opaque branch stopped firing");
   assert.equal(board.declared, true, "#1993's identity line still stands");
@@ -1536,9 +1379,9 @@ test("#1998: the board dispatch's `gh` is READ, not merely not-ruled-out", () =>
 
 test("#1998: `unitEntryPoints` follows a shell interpreter exactly as it follows `node`", () => {
   const service = shippedText("a11ign-board-report.service");
-  assert.deepEqual(unitEntryPoints(service), [join(SHIPPED_DIR, "board-report-dispatch.sh")]);
+  assert.deepEqual(unitEntryPoints(service), [DISPATCH]);
   assert.deepEqual(entriesFromCommand("/usr/bin/bash packages/agent-org/host/board-report-dispatch.sh"),
-    [join(SHIPPED_DIR, "board-report-dispatch.sh")],
+    [DISPATCH],
     "RELATIVE TO THIS CHECKOUT and not to the `WorkingDirectory` the unit names, or the answer would be "
     + "right in the primary checkout and wrong in every worktree and in CI");
   assert.deepEqual(entriesFromCommand("/usr/bin/bash -c 'gh workflow run x'"), [],
@@ -2005,7 +1848,8 @@ const wrapperHost = ({ workers = true, leads = true, list = true } = {}) => {
     mkdirSync(join(dir, "gh"));
     writeFileSync(join(dir, "gh", "hosts.yml"), "github.com: {}\n");
   }
-  // THE SHIPPED LIST, not a fixture of one: the file under review is the file that decides.
+  // THE RENDERED LIST, not a fixture of one: the file under review is the file that decides. (#3233) It is rendered from the fixture host's
+  // `gh.leadsWorkspaces`, the same renderer `host:install` writes `~/leads/workspaces.txt` with.
   if (list) writeFileSync(join(leadsDir, "workspaces.txt"), LEADS_LIST_TEXT);
   const run = (env: Record<string, string>, ...args: string[]) => {
     const r = spawnSync("sh", [WRAPPER, ...args], { encoding: "utf8", env: {
@@ -2100,10 +1944,11 @@ test("#2332: the list is matched by WHOLE LINE, and a missing list fails toward 
   } finally { rmSync(noList.root, { recursive: true, force: true }); }
 });
 
-test("#2332: the shipped leads list holds EXACTLY the three decision-holders, each with its role, and no exception", () => {
+test("#2332: the leads list renders EXACTLY the declared decision-holders, each with its role, and no exception", () => {
+  // (#3233) The fixture host declares three, so this is the renderer's behaviour; that a11ign's own `host.json` declares exactly its three is
+  // an assertion about a11ign's tree, and a fourth id there needs a ruling, not an edit.
   const text = LEADS_LIST_TEXT;
-  assert.deepEqual(listedIds(text), ["w6", "w2", "w5"],
-    "a fourth id is a fourth session on the leads account: it needs a ruling, not an edit");
+  assert.deepEqual(listedIds(text), ["w6", "w2", "w5"], "every declared workspace, in the order declared, and no other");
   for (const [id, role] of [["w6", "ceo"], ["w2", "product-manager"], ["w5", "orchestrator"]]) {
     assert.match(text, new RegExp(`^# ${id} ${role}\\n${id}$`, "m"), `${id} carries its role on the line above it`);
   }
@@ -2287,14 +2132,14 @@ test("#2332: END TO END -- `host:install` then `host:check --json` on a temp HOM
       + "[user]\n\tname = Dan Beck\n");
     writeFileSync(join(home, ".zshenv"), 'export NODE_COMPILE_CACHE="$HOME/.cache/node-compile-cache"\n');
     // #2620: THE MACHINE'S PATHS COME FROM `host.json`, so a temp HOME needs a temp host declaration -- `AGENT_ORG_HOST` says which. Without
-    // it this test would install a11ign's real `~/leads/workspaces.txt` and `~/workers/README.md` from a "temp" run.
-    const declared = JSON.parse(readFileSync(join(REPO_ROOT, ".agent-org/host.json"), "utf8"));
+    // it this test would install the host's real `~/leads/workspaces.txt` and `~/workers/README.md` from a "temp" run.
+    const declared = JSON.parse(readFileSync(join(PROJECT_ROOT, ".agent-org/host.json"), "utf8"));
     const hostFile = join(home, "host.json");
     writeFileSync(hostFile, JSON.stringify({ ...declared, home, binDir: join(home, ".local/bin"),
-      projects: [{ id: declared.primary, checkout: REPO_ROOT.replace(/\/$/, "") }],
+      projects: [{ id: declared.primary, checkout: PROJECT_ROOT }],
       gh: { ...declared.gh, workers: join(home, "workers"), leads: join(home, "leads") } }));
     const env = { PATH: `${bin}:${process.env.PATH}`, HOME: home, AGENT_ORG_HOST: hostFile };
-    const entry = join(REPO_ROOT, "packages/agent-org/src/host-units.mjs");
+    const entry = join(TOOL_ROOT, "src/host-units.mjs");
     const run = (...args: string[]) => {
       const done = spawnSync(process.execPath, [entry, ...args], { encoding: "utf8", env });
       assert.notEqual(done.stdout, "", `host-units.mjs ${args.join(" ")} wrote nothing; stderr: ${done.stderr}`);
@@ -2336,12 +2181,7 @@ const oneUnit = (body: string, extra: Record<string, unknown> = {}) => ({
   ...extra,
 });
 
-test("#2332: the corpus release runs as the LEADS account, and nothing shipped declares the person's", () => {
-  const service = shippedText("a11ign-corpus-release-nightly.service");
-  assert.match(service, /^Environment=GH_CONFIG_DIR=\/home\/agent\/leads\/gh$/m,
-    "a11ign-ai-leads has push (not admin) on a11ign/corpus-backups, which is all `gh release create` needs");
-  assert.doesNotMatch(service, /THE HUMAN ONE, AND THAT IS THE RIGHT ANSWER/,
-    "the comment that argued for the person's account must not survive beside the line that removed it");
+test("#2332: nothing shipped declares the person's account", () => {
   // THE POPULATION, NAMED: the emptiness assertion below is only worth what this says about its input.
   const declared = shippedUnits().filter((f) => f.endsWith(".service"))
     .map((f) => [f, /^Environment=GH_CONFIG_DIR=(.*)$/m.exec(shippedText(f))?.[1] ?? null]);
@@ -2455,8 +2295,8 @@ test("#2332: a shipped unit that changes the account is a reviewed change, NOT '
 // --- #2901: THE CHAIRMAN-MESSAGING WATCHER IS OPTIONAL, AND OFF BY DEFAULT ----------------------------------------------------------
 //
 // A template that ships only when `.agent-org/project.json` carries the key that asks for it. Absent, `host:check` is silent about it and
-// `host:install` writes nothing; present, it is installed like any other. EVERY TEST BELOW HANDS `declaredKeys` RATHER THAN READING THE REAL
-// PROJECT, so the day `messaging` is configured here (row 6) none of them goes red: the one assertion about the real project is a biconditional.
+// `host:install` writes nothing; present, it is installed like any other. EVERY TEST BELOW HANDS `declaredKeys` RATHER THAN READING THE PROJECT,
+// so the day a project configures `messaging` none of them goes red: the one assertion about the project's own declaration is a biconditional.
 
 const isChairmanWatch = (unit: string) => unit.startsWith("a11ign-chairman-watch.");
 // #2907: the listener is the pair's third unit (a service with no timer), on the same key, so "the messaging units" is both.
@@ -2475,8 +2315,9 @@ test("#2901: the chairman-watch pair and the listener are listed only when the p
   assert.deepEqual(without.filter(isChairmanListen), []);
   assert.deepEqual(withKey.filter((unit) => !isChairmanMessaging(unit)), without, "the key adds the trio and changes nothing else");
   assert.deepEqual(Object.values(OPTIONAL_UNITS), ["messaging", "messaging", "messaging"], "all three templates are asked for by the one key");
+  assert.equal(declaredProjectKeys().has("units"), true, "CONTROL (#3233): the default reads the fixture project's declaration, so the answer below is a reading of it");
   assert.equal(shippedUnits().some(isChairmanMessaging), declaredProjectKeys().has("messaging"),
-    "and the real project gets the trio exactly when its declaration holds the key");
+    "and the project the tool serves gets the trio exactly when its declaration holds the key");
 });
 
 test("#2901: `declaredProjectKeys` reads presence, and an unreadable declaration is a throw, never 'none'", () => {
