@@ -37,15 +37,16 @@ with the project's compiler. Tested on Node 22.22.1.
 **A tag is the release.** `v<version>` on this repository, with a GitHub Release carrying the `CHANGELOG.md` entry, and nothing is published to a registry. **A tag is
 never moved or deleted once a project can have pinned it**: a moved tag changes what a pinned project gets, so a mistake is fixed by the next version.
 
-A release starts itself (a11ign/a11ign#3134); nobody dispatches anything:
+A release starts itself, on the merge that carries a changeset, and no pull request stands between the merge and the tag (a11ign/a11ign#3134, #3187); nobody dispatches anything:
 
 1. A pull request that changes what a project gets carries a changeset (`pnpm run changeset add`). Merge it.
-2. On that push to `main`, **release** opens or updates the ONE **version pull request** (branch `changeset-release/main`), which holds the `package.json` bump and the
-   `CHANGELOG.md` entry `changeset version` wrote; nobody writes either by hand. A person closes and reopens it once, because GitHub starts no workflow from an event
-   its own token made, so `gate` and auto-arm do not run on it until then.
-3. On the push of its merge, when `package.json`'s version has no `v<version>` tag, **release** waits for `gate` to have succeeded on that sha and creates the tag and the
-   Release. It refuses if `CHANGELOG.md` has no entry for the version or the remote's tags cannot be read, and an existing tag is left alone. It holds `contents: write`
-   and `pull-requests: write` and nothing else.
+2. On that push to `main`, **release** waits for `gate` to have succeeded on that sha, then reads which changesets the last tag already consumed (the ones its commit deleted
+   from its parent). If any other is pending it builds a **release commit** on top of the merge, carrying the last tag's version and `CHANGELOG.md` with `changeset version`
+   run over the unreleased changesets, and pushes it as the tag `v<version>` with a Release carrying the changelog entry. The release commit is on no branch, so nothing is
+   written to `main`, and nothing else is needed: no pull request per release, no token beyond the job's own. It refuses if `CHANGELOG.md` has no entry for the version or the
+   remote's tags cannot be read, never forces the push, and holds `contents: write` and nothing else.
+3. **`main`'s `package.json` version and `CHANGELOG.md` lag the last tag**, and are left to: a project pins the tag's tree, which holds both, and the next version is computed
+   from the tag. A later merge with no unreleased changeset cuts nothing, and the next one that carries a changeset is a different, later tag.
 
 The tag is not a deploy: the host that runs the org tracks `main`, so a release changes what a project's CI installs and never what the running org does.
 
