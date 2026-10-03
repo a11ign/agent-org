@@ -30,7 +30,8 @@ const PRACTICES = readLoadedRules();
 const GATE = ["work-gate.mjs", "work-gate/pr-orders.mjs", "work-gate/lab-job-orders.mjs", "trunk-red.mjs", "claim-stall.mjs",
   "repeating-lines.mjs", // #2848: the repeating-line order is built beside the journal reading, not in the gate
   "org-health.mjs", // #2936: the org-health order beside its four readings
-  "org-retro.mjs"] // #2938: and the daily retrospective's beside the numbers it carries
+  "org-retro.mjs", // #2938: and the daily retrospective's beside the numbers it carries
+  "work-gate/row-call-count-orders.mjs"] // #2898: and `row-call-count-signal`'s order, moved out of the gate with its readings
   .map((f) => readFileSync(new URL(`../${f}`, import.meta.url), "utf8")).join("\n");
 
 /** The two shapes `profileFor` and `spawnInvocation` return, and narrowing that ASSERTS rather than casts. */
