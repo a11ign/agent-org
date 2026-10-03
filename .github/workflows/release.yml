@@ -192,5 +192,7 @@ jobs:
             gh pr edit "$number" --title "$title" --body "$body"
             echo "updated #$number" | tee -a "$GITHUB_STEP_SUMMARY"
           else
-            gh pr create --base main --head "$BRANCH" --title "$title" --body "$body" | tee -a "$GITHUB_STEP_SUMMARY"
+            # Captured, then printed: the runner's shell is `bash -e` WITHOUT pipefail, so `gh pr create | tee` took tee's exit status and a create that failed read as success (#3174).
+            url=$(gh pr create --base main --head "$BRANCH" --title "$title" --body "$body")
+            echo "$url" | tee -a "$GITHUB_STEP_SUMMARY"
           fi

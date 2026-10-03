@@ -44,8 +44,17 @@ function stepScript(job: string, name: RegExp, workflow: Workflow = PARSED): str
 
 /** A script that does not end in SCRIPT_TIMEOUT_MS is killed and has `status` null, which no check here accepts: a mutant that never gives up must fail, not hang. */
 const SCRIPT_TIMEOUT_MS = 8_000;
+/**
+ * The shell the runner gives a `run:` with no `shell:`, spelled as the job log prints it (`shell: /usr/bin/bash -e {0}`, a11ign/a11ign#3174). It has NO `pipefail`, so a pipeline
+ * takes the status of its last command: a test shell stricter than this one certified a `gh pr create | tee` that fails open on the platform, and four green runs followed.
+ */
+const PLATFORM_SHELL_ARGS = ["-e"];
 const runBash = (script: string, cwd: string, env: Record<string, string>) =>
-  spawnSync("bash", ["-eo", "pipefail", "-c", script], { cwd, env: { PATH: process.env.PATH ?? "", HOME: tmpdir(), ...env }, encoding: "utf8", timeout: SCRIPT_TIMEOUT_MS });
+  scratch("release-script-", (scriptDir) => {
+    const file = join(scriptDir, "step.sh");
+    writeFileSync(file, script);
+    return spawnSync("bash", [...PLATFORM_SHELL_ARGS, file], { cwd, env: { PATH: process.env.PATH ?? "", HOME: tmpdir(), ...env }, encoding: "utf8", timeout: SCRIPT_TIMEOUT_MS });
+  });
 
 const scratch = <T>(prefix: string, use: (dir: string) => T): T => {
   const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -273,4 +282,68 @@ test("the real CHANGELOG.md carries an entry for the package.json version, and t
   const releases = README.slice(README.indexOf("## Releases"));
   for (const phrase of ["never moved or deleted", "version pull request", "changeset", "#semver:", "not a deploy"]) assert.ok(releases.includes(phrase), `README's Releases section lacks "${phrase}"`);
   for (const gone of ["publish-for-real", "dry run", "gh workflow run"]) assert.ok(!releases.includes(gone), `README's Releases section still says "${gone}", which the workflow no longer has`);
+});
+
+// ---- the shell is the platform's, and the version pull request step fails when it cannot be opened (a11ign/a11ign#3174) ------------
+
+test("the shell these steps run under is the platform's: `bash -e`, whose pipeline takes the status of its LAST command", () => {
+  assert.ok(!PLATFORM_SHELL_ARGS.some((a) => /pipefail/.test(a)), "a test shell with pipefail is stricter than the runner and certifies what the platform lets through");
+  const r = runBash("false | true\necho reached", tmpdir(), {});
+  assert.deepEqual([r.status, r.stdout.trim()], [0, "reached"], "positive control: under this shell a failing left side of a pipeline is hidden, which is the defect's mechanism");
+});
+
+const OPEN_OR_UPDATE = /Open or update the one version pull request/;
+const PR_URL = "https://github.com/o/r/pull/7";
+
+/** Runs the step with a stand-in `gh`: `pr list` answers `existing` (a number, or nothing), `pr create` exits `createStatus` after printing the URL, `pr edit` succeeds. */
+function openOrUpdateRun(script: string, { existing, createStatus }: { existing: string; createStatus: number }): { status: number | null; summary: string } {
+  return scratch("release-open-", (dir) => {
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "gh"), [
+      "#!/bin/bash",
+      'case "$1 $2" in',
+      `  "pr list") echo "${existing}" ;;`,
+      '  "pr edit") ;;',
+      `  "pr create") if [ ${createStatus} -ne 0 ]; then echo "GraphQL: GitHub Actions is not permitted to create or approve pull requests" >&2; exit ${createStatus}; fi; echo ${PR_URL} ;;`,
+      "esac",
+    ].join("\n"));
+    chmodSync(join(bin, "gh"), 0o755);
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "agent-org", version: "1.2.3" }));
+    writeFileSync(join(dir, "summary"), "");
+    const r = runBash(script, dir, { PATH: `${bin}:${process.env.PATH ?? ""}`, BRANCH: "changeset-release/main", GH_TOKEN: "x", GITHUB_STEP_SUMMARY: join(dir, "summary") });
+    return { status: r.status, summary: readFileSync(join(dir, "summary"), "utf8") };
+  });
+}
+
+test("the version pull request step fails when the pull request cannot be created, and still prints the URL when it can", () => {
+  const script = stepScript("version-pr", OPEN_OR_UPDATE);
+  assert.notEqual(openOrUpdateRun(script, { existing: "", createStatus: 1 }).status, 0, "a create that failed must fail the step");
+  assert.deepEqual(openOrUpdateRun(script, { existing: "", createStatus: 0 }), { status: 0, summary: `${PR_URL}\n` });
+  assert.deepEqual(openOrUpdateRun(script, { existing: "42", createStatus: 1 }), { status: 0, summary: "updated #42\n" }, "the update path never creates");
+});
+
+/** The pre-fix step: `gh pr create` piped into `tee`. Built by undoing the fix in the real script, so the control follows the workflow rather than a copy of it. */
+const preFix = (script: string): string => {
+  const reverted = script.replace(/ *# Captured, then printed.*\n *url=\$\((gh pr create .*)\)\n *echo "\$url" \| tee/, "            $1 | tee");
+  assert.notEqual(reverted, script, "the fix this control undoes was not found");
+  return reverted;
+};
+
+test("positive control: the pre-fix step (`gh pr create | tee`) exits 0 under `bash -e` when the create fails", () => {
+  const script = preFix(stepScript("version-pr", OPEN_OR_UPDATE));
+  assert.equal(openOrUpdateRun(script, { existing: "", createStatus: 1 }).status, 0);
+});
+
+/** Every pipeline into `tee` in a `run:` whose left side is not `echo` or `printf`: those cannot fail, anything else has its failure hidden by `bash -e` without pipefail. */
+function hiddenTeeFailures(workflow: Workflow): string[] {
+  const lines = Object.values(workflow.jobs).flatMap((job) => job.steps).flatMap((s) => (s.run ?? "").split("\n"));
+  return lines.filter((l) => /\|\s*tee\b/.test(l) && !/^\s*(#|echo\b|printf\b)/.test(l)).map((l) => l.trim());
+}
+
+test("no `run:` in release.yml pipes a command that can fail into tee, and the scan sees the pre-fix file", () => {
+  assert.deepEqual(hiddenTeeFailures(PARSED), []);
+  const steps = PARSED.jobs["version-pr"]?.steps ?? [];
+  const mutated: Workflow = { jobs: { ...PARSED.jobs, "version-pr": { steps: steps.map((s) => (OPEN_OR_UPDATE.test(s.name ?? "") ? { ...s, run: preFix(s.run ?? "") } : s)) } } };
+  assert.equal(hiddenTeeFailures(mutated).length, 1, "positive control: the scan finds the one pre-fix site");
 });
