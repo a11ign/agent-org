@@ -262,6 +262,30 @@ function treeKeyOf(rest, code = homeProjectDeclaration().code) {
 }
 
 /**
+ * #3149: WHICH DECLARED REPOSITORY THIS CHECKOUT IS, said when `--repo` was not passed -- or "" when nothing needs saying. `treeKeyOf` reads
+ * the flag only, so a session in another repository's worktree who left it off had that tree read as the first repository's and was refused
+ * its own paths, in words that never named the flag; and followed the refusal's remedy (`Outside-Region:`) into false statements. The hint
+ * is a line on the refusal, not an inference: `gh pr` picks its repository from the same remote, but WHICH TREE the Region is read against
+ * stays a thing the caller says.
+ * @param {string[]} rest @param {string} prRepo the repository the PR is read as opened in
+ * @param {{ git: (args: string[]) => string, code?: readonly { key: string, repo: string }[] }} deps
+ * @returns {string}
+ */
+function repoFlagHint(rest, prRepo, { git, code = homeProjectDeclaration().code }) {
+  if (flagAfter(rest, "--repo") !== null) return "";
+  let remote;
+  try {
+    remote = /github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\s*$/.exec(git(["remote", "get-url", "origin"]))?.[1];
+  } catch (error) {
+    void error; // no origin to read is "cannot say", and a hint is the only thing lost
+    return "";
+  }
+  if (remote === undefined || remote === prRepo || !code.some((entry) => entry.repo === remote)) return "";
+  return `\nThis checkout's origin is ${remote}, a repository of the project, and \`--repo\` was not passed, so these paths were read as ${prRepo}'s tree. `
+    + `If the PR is for ${remote}, pass \`--repo ${remote}\` BEFORE writing any Outside-Region line (#3149).`;
+}
+
+/**
  * THE REGION CHECK (#2417), pure over its seams: the row's body (`rowBody`, GitHub) and the diff (`git`, the local tree,
  * which #1344/#1446 already require to be the head being sent). `refusal` is the whole text to refuse with, `note` the
  * one line to print when nothing is refused. Both are null only when there is nothing to say: a body whose `Closes` is
@@ -309,7 +333,8 @@ export function checkRegion(body, rest, { git = defaultGit, rowBody, rootFiles, 
   const standing = changed.map((file) => standingAgainstRegion(file, { region: read.region, declared, treeKey }));
   const outside = changed.filter((_file, index) => standing[index] === "outside");
   if (outside.length > 0) {
-    return { refusal: regionRefusalText({ rows, outside, region: read.region, base, malformed }), note: null };
+    const hint = repoFlagHint(rest, prRepo, { git, code });
+    return { refusal: regionRefusalText({ rows, outside, region: read.region, base, malformed }) + hint, note: null };
   }
   return { refusal: null, note: regionPassLine({ rows, changed, standing, base }) };
 }

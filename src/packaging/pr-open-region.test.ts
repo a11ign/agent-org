@@ -17,6 +17,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { declaredRegionFiles } from "../region-paths.mjs";
 import { main, checkRegion, outsideRegionDeclarations, standingAgainstRegion, REGION_EXEMPT, EXIT_NOTHING_SENT }
   from "../pr-open.mjs";
 
@@ -29,8 +30,9 @@ const prBody = (closes: string, extra = "") =>
   `## Acceptance\n\nnode -e "process.exit(0)"\n\n${closes}\n${extra}`;
 
 /** A `git` that answers only what pr-open asks: the diff, and the head reads `edit` makes. */
-const gitFor = (changed: string[]) => (args: string[]) => {
+const gitFor = (changed: string[], origin = "deadbeef") => (args: string[]) => {
   if (args[0] === "diff") return changed.join("\0");
+  if (args[0] === "remote") return origin;
   if (args.includes("--abbrev-ref")) return "agent/x";
   if (args.includes("--short")) return "abc1234";
   return "deadbeef";
@@ -39,15 +41,15 @@ const gitFor = (changed: string[]) => (args: string[]) => {
 interface Drive { code: number; sent: string[][]; acceptance: number; out: string; err: string }
 
 /** `main` with every seam injected: rows by number, the diff, and a `run` that records what would have been sent. */
-function drive(argv: string[], { rows, changed, rowBody }: { rows?: Record<number, string>, changed: string[],
-  rowBody?: (n: number) => string }): Drive {
+function drive(argv: string[], { rows, changed, rowBody, origin }: { rows?: Record<number, string>, changed: string[],
+  rowBody?: (n: number) => string, origin?: string }): Drive {
   const sent: string[][] = [];
   let acceptance = 0;
   const out: string[] = [];
   const err: string[] = [];
   const code = main(argv, {
     run: (args: string[]) => { sent.push(args); },
-    git: gitFor(changed),
+    git: gitFor(changed, origin),
     prHead: () => ({ ref: "agent/x", oid: "deadbeef" }),
     runAcceptance: () => { acceptance += 1; return 0; },
     rowBody: rowBody ?? ((n: number) => { if (rows?.[n] === undefined) throw new Error(`no row ${n}`); return rows[n]; }),
@@ -310,4 +312,57 @@ test("#3083 done-when 1: a row of the home repository is read byte for byte as b
 test("#3083 WIRING: the sentence is read by the one `statedRepository` in row-file.mjs, never a second copy of its pattern in pr-open", () => {
   assert.match(PR_OPEN_SOURCE, /statedRepository/);
   assert.doesNotMatch(PR_OPEN_SOURCE, /repository is\\s/i, "no second reading of the sentence");
+});
+
+// --- #3149: the refusal names `--repo` when this checkout is another repository of the project, and `(new)` is a note ----------------
+
+const AGENT_ORG_ORIGINS = ["https://github.com/a11ign/agent-org", "https://github.com/a11ign/agent-org.git", "git@github.com:a11ign/agent-org.git\n"];
+const PREFIXED_PATHS = ["agent-org:src/pr-open.mjs", "agent-org:src/packaging/pr-open-region.test.ts"];
+const PREFIXED_ROW = regionBody(PREFIXED_PATHS);
+const CLOSES_3149 = prBody("Closes a11ign/a11ign#3149");
+const FILE_PATHS = ["src/pr-open.mjs", "src/packaging/pr-open-region.test.ts"];
+
+for (const origin of AGENT_ORG_ORIGINS) {
+  test(`#3149 done-when 1: from an agent-org checkout (origin ${JSON.stringify(origin)}) WITHOUT --repo, the refusal names \`--repo a11ign/agent-org\``, () => {
+    const r = drive(create(CLOSES_3149), { rows: { 3149: PREFIXED_ROW }, changed: FILE_PATHS, origin });
+    assert.equal(r.code, EXIT_NOTHING_SENT);
+    assert.match(r.err, /--repo a11ign\/agent-org/);
+    assert.match(r.err, /BEFORE writing any Outside-Region line/);
+  });
+}
+
+test("#3149 done-when 1: the hint is for a checkout that LEFT THE FLAG OFF -- with --repo passed, the same diff passes and prints none", () => {
+  const r = drive(inAgentOrg(prBody("Closes a11ign/a11ign#3149")), { rows: { 3149: PREFIXED_ROW }, changed: FILE_PATHS, origin: AGENT_ORG_ORIGINS[0] });
+  assert.equal(r.code, 0, r.err);
+  const refused = drive(inAgentOrg(CLOSES_3149), { rows: { 3149: PREFIXED_ROW }, changed: [...FILE_PATHS, "src/wake.mjs"], origin: AGENT_ORG_ORIGINS[0] });
+  assert.equal(refused.code, EXIT_NOTHING_SENT);
+  assert.doesNotMatch(refused.err, /--repo was not passed|`--repo` was not passed/, "the flag WAS passed, so it is not claimed missing");
+});
+
+test("#3149 done-when 1: no hint when origin is the project's own repository, is not a declared repository, or cannot be read", () => {
+  for (const origin of ["https://github.com/a11ign/a11ign", "https://github.com/someone/else", "deadbeef"]) {
+    const r = drive(create(prBody("Closes #2417")), { rows: ROW, changed: [...IN_REGION, "docs/x.md"], origin });
+    assert.equal(r.code, EXIT_NOTHING_SENT);
+    assert.doesNotMatch(r.err, /was not passed/, origin);
+  }
+  const unreadable = checkRegion(CLOSES_3149, [], { rowBody: () => PREFIXED_ROW, rootFiles: NO_ROOT_FILES,
+    git: (args) => { if (args[0] === "remote") throw new Error("no origin"); return FILE_PATHS.join("\0"); } });
+  assert.match(unreadable.refusal ?? "", /changed outside/, "an unreadable origin loses the hint and keeps the refusal");
+  assert.doesNotMatch(unreadable.refusal ?? "", /was not passed/);
+});
+
+test("#3149 done-when 2: a Region path written with a trailing `(new)` is read as the path, prefixed or bare, and a prose line still declares nothing", () => {
+  const body = regionBody(["agent-org:src/packaging/x.test.ts (new)", "- `packages/lab/src/y.ts` (new file)", "agent-org:src/z.mjs",
+    "agent-org:src/w.mjs is the file to change (new)"]);
+  const declared = declaredRegionFiles(body, { rootFiles: NO_ROOT_FILES }) ?? [];
+  assert.deepEqual([...declared].sort(), ["agent-org:src/packaging/x.test.ts", "agent-org:src/z.mjs", "packages/lab/src/y.ts"]);
+});
+
+test("#3149 done-when 2: the row #3134 was filed with is read whole -- its `(new)` path is INSIDE, not refused", () => {
+  const row = regionBody(["agent-org:.github/workflows/release.yml", "agent-org:src/packaging/release-safety.test.ts",
+    "agent-org:src/packaging/release-triggers-itself.test.ts (new)"]);
+  const changed = [".github/workflows/release.yml", "src/packaging/release-safety.test.ts", "src/packaging/release-triggers-itself.test.ts"];
+  const r = drive(inAgentOrg(prBody("Closes a11ign/a11ign#3134")), { rows: { 3134: row }, changed });
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /3 inside, 0 exempt, 0 cleared/);
 });
