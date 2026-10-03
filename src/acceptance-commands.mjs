@@ -73,6 +73,7 @@ import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { changedFiles } from "./lib/changed-files.mjs";
 import { localImports, importedNamesFor, stripComments } from "./lib/local-import-closure.mjs";
+import { toolImports } from "./lib/installed-tool-imports.mjs";
 import { resolveTypescript } from "./lib/resolve-typescript.mjs";
 // #2619 (child 3d of #69): the shared-resource ban and the template's field/question names -- a
 // project's own values, moved out of this file's `FLEET_LAB_PATTERNS`/`FLEET_QUESTION`.
@@ -1134,8 +1135,24 @@ function lineNumberOf(text, index) {
  * @returns {Set<string>}
  */
 function reachedNames(file, next, referenced) {
-  const bound = importedNamesFor(file, next);
+  return keepReferenced(importedNamesFor(file, next), referenced);
+}
+
+/** @param {string[]} bound @param {Set<string> | null} referenced @returns {Set<string>} */
+function keepReferenced(bound, referenced) {
   return new Set(referenced === null ? bound : bound.filter((name) => referenced.has(name)));
+}
+
+/**
+ * Every file `file` imports that the closure walk follows, with the names it reaches in each: the relative imports, and (#3103) the tool's own
+ * `agent-org/src/...` ones, which a project reaches it through and `localImports` cannot see.
+ * @param {string} file @param {Set<string> | null} referenced
+ * @returns {{ target: string, names: Set<string> }[]}
+ */
+function closureEdges(file, referenced) {
+  const relative = localImports(file).map((target) => ({ target, names: reachedNames(file, target, referenced) }));
+  const viaTool = toolImports(file).map(({ target, names }) => ({ target, names: keepReferenced(names, referenced) }));
+  return [...relative, ...viaTool];
 }
 
 /**
@@ -1244,7 +1261,7 @@ export function deriveClosureRequirements(entry) {
       const match = pattern.exec(requirement === "corpus" ? corpusScope : codeOnly);
       if (match) recordHit({ requirement, file, text, codeOnly, match, chain: hereChain });
     }
-    for (const next of localImports(file)) walk(next, hereChain, seen, reachedNames(file, next, referenced));
+    for (const { target, names: edgeNames } of closureEdges(file, referenced)) walk(target, hereChain, seen, edgeNames);
   };
   walk(entry, [], new Map(), new Set());
   return [...found.values()];
