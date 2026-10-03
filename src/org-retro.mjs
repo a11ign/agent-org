@@ -21,7 +21,7 @@
 // EVERY READ CAN BE REFUSED, AND A REFUSED READ IS `unknown`, NEVER 0 (#1286). A retrospective that printed "0 red PRs" because
 // the PR list could not be read would be the org's own health reported as good by an absence, which is the defect it exists to find.
 import { execFileSync } from "node:child_process";
-import { appendFileSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { appendFileSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { stateEntryPath } from "./host-config.mjs";
@@ -32,6 +32,9 @@ import { brokenChecks, redChecks as redChecksOf, isBrokenRed, isHeldRed, holdsOn
 import { gatherChanges, readLedger as readHandFixLedger, ledgerLine as handFixLine } from "./hand-fix-ledger.mjs";
 import { claudeTurns, codexTurns, transcriptFiles } from "./token-audit.mjs";
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
+// THE DORA BLOCK (a11ign/a11ign#3135): measured from the registry and GitHub, per declared repository, by its own leaf module.
+import { readDora, renderDora, doraNumbers, doraDeclarations } from "./dora.mjs";
+import { homeProjectDeclaration } from "./project-config.mjs";
 
 /** The cause this file feeds (`cause-declaration.mjs` declares it), addressed to `ceo`. */
 export const RETRO_CAUSE = "org-retrospective";
@@ -236,7 +239,8 @@ export function tokenStats(turns, { since, until }) {
  * Every number, each `unknown` when its source was refused. `reads` holds the RAW reads (`null` for a refused one), so what is
  * computed here is pure and a test drives it with a fixture window whose answers are checked by hand.
  * @param {{ merged: any[] | null, openPrs: any[] | null, journal: string | null, ledger: string | null,
- *   turns: any[] | null, handFixes: ReturnType<typeof readHandFixLedger> | null, readings?: Readings }} reads
+ *   turns: any[] | null, handFixes: ReturnType<typeof readHandFixLedger> | null, readings?: Readings, dora?: ReturnType<typeof readDora> | null }} reads
+ * `dora` absent is a read nobody asked for (no block); `dora: null` is one that was REFUSED, which prints `unknown`.
  * @param {number} now
  */
 export function buildReport(reads, now) {
@@ -252,9 +256,10 @@ export function buildReport(reads, now) {
     red: redPrStats(reads.openPrs, now),
     tokens: tokenStats(reads.turns, window),
     handFixes: reads.handFixes,
+    dora: reads.dora,
   };
   // `readings` absent is a read nobody made, which says `unknown` and never `no baseline`: only a read that found no file may say that.
-  return { ...report, numbers: readingNumbers(report), previous: previousReading(reads.readings, report.date) };
+  return { ...report, numbers: { ...readingNumbers(report), ...doraNumbers(report.dora) }, previous: previousReading(reads.readings, report.date) };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -346,7 +351,7 @@ export function previousReading(readings, date) {
   return latest === undefined ? { status: "none" } : { status: "read", date: latest.date, numbers: latest.numbers };
 }
 
-/** @typedef {"better" | "worse" | "same" | "no baseline" | "unknown"} Verdict */
+/** @typedef {"better" | "worse" | "same" | "no baseline" | "unknown" | "undefined"} Verdict `undefined` is a metric with nothing to measure today (no regression opened), which is neither a failure to read nor a 0 */
 
 /**
  * `unknown` is a number or a previous file that could not be read; `no baseline` is a read that found nothing earlier. Neither is `same`, and
@@ -364,14 +369,17 @@ export function verdictFor({ better, previous, id, current }) {
 
 /**
  * Each number the report holds against the previous reading. The population is the REPORT's own `numbers`, so a number with no declared direction
- * is found here, in the report, and printed as a defect.
+ * is found here, in the report, and printed as a defect. `declarations` are the numbers whose direction is decided at run time: the DORA metrics
+ * of the repositories the project declares (`dora.mjs`'s own table), each of which may be `undefinedToday`.
  * @param {Record<string, number | null>} numbers @param {ReturnType<typeof previousReading>} previous
+ * @param {readonly { id: string, label: string, better: "lower" | "higher", undefinedToday?: boolean }[]} [declarations]
  */
-export function compareReadings(numbers, previous) {
+export function compareReadings(numbers, previous, declarations = []) {
   return Object.entries(numbers).map(([id, current]) => {
-    const declared = NUMBERS.find((n) => n.id === id);
+    const declared = NUMBERS.find((n) => n.id === id) ?? declarations.find((n) => n.id === id);
     const before = previous.status === "read" ? (previous.numbers[id] ?? null) : null;
-    const verdict = declared === undefined ? /** @type {const} */ ("undeclared") : verdictFor({ better: declared.better, previous, id, current });
+    const verdict = declared === undefined ? /** @type {const} */ ("undeclared")
+      : "undefinedToday" in declared && declared.undefinedToday ? /** @type {const} */ ("undefined") : verdictFor({ better: declared.better, previous, id, current });
     const delta = current !== null && before !== null ? current - before : null;
     return { id, label: declared?.label ?? id, current, previous: before, delta, verdict };
   });
@@ -381,9 +389,10 @@ export function compareReadings(numbers, previous) {
 const shown = (n) => (n === null ? UNKNOWN : grouped(n));
 
 /** @param {ReturnType<typeof buildReport>} report @returns {string[]} */
-function trendLines({ numbers, previous }) {
+function trendLines({ numbers, previous, dora }) {
   const against = previous.status === "read" ? `the previous reading, ${previous.date}` : previous.status === "none" ? "the previous reading (none yet)" : `the previous reading (${UNKNOWN}: ${READINGS_FILE} could not be read)`;
-  const lines = compareReadings(numbers, previous).map((c) => {
+  const lines = compareReadings(numbers, previous, doraDeclarations(dora)).map((c) => {
+    if (c.verdict === "undefined") return `- ${c.label}: undefined (nothing to measure today; not 0)`;
     if (c.verdict === "undeclared") return `- ${c.label}: NO DIRECTION DECLARED -- a defect in org-retro.mjs's NUMBERS table, not a reading (now ${shown(c.current)})`;
     const was = c.previous === null || previous.status !== "read" ? "" : `, previous ${shown(c.previous)} on ${previous.date}${c.delta === null ? "" : `, delta ${c.delta > 0 ? "+" : ""}${grouped(c.delta)}`}`;
     return `- ${c.label}: ${c.verdict} (now ${shown(c.current)}${was})`;
@@ -465,6 +474,13 @@ function spendLines({ tokens, merged, handFixes }) {
     handFix];
 }
 
+/** @param {ReturnType<typeof buildReport>["dora"]} report @returns {string[]} nothing when no DORA read was asked for; `unknown` when it was refused */
+function doraLines(report) {
+  if (report === undefined) return [];
+  if (report === null) return ["", `DORA: ${UNKNOWN} (the declaration or the DORA reader could not be read)`];
+  return ["", ...renderDora(report)];
+}
+
 /**
  * The report as the text `ceo` is handed and posts on #928.
  * @param {ReturnType<typeof buildReport>} report @returns {string}
@@ -473,7 +489,7 @@ export function renderReport(report) {
   const from = new Date(report.window.since).toISOString();
   const to = new Date(report.window.until).toISOString();
   return [`ORG RETROSPECTIVE ${report.date} -- the 24 hours ${from} to ${to}`, "",
-    ...mergedLines(report.merged), ...stallLines(report), ...journalDerivedLines(report), ...redLines(report.red), ...spendLines(report), ...trendLines(report), ""].join("\n");
+    ...mergedLines(report.merged), ...stallLines(report), ...journalDerivedLines(report), ...redLines(report.red), ...spendLines(report), ...doraLines(report.dora), ...trendLines(report), ""].join("\n");
 }
 
 /**
@@ -540,6 +556,33 @@ function ghJson(args) {
   }
 }
 
+/** @template T @param {() => T} read @returns {T | null} `null` for a refused read (a declaration that will not parse included) */
+function attemptDora(read) {
+  try { return read(); } catch { return null; }
+}
+
+/** @param {number} now @returns {ReturnType<typeof readDora>} every repository the project declares, through the real readers */
+const readDeclaredDora = (now) => readDora({ repositories: homeProjectDeclaration().dora, now });
+
+/** The day's DORA reading, kept so that a retrospective offered tick after tick (until the wake delivers it) reads the registry and GitHub ONCE. */
+export const DORA_CACHE_FILE = "dora-reading.json";
+
+/**
+ * THE DORA READING FOR `now`'s UTC DATE, read once. Measured 2026-10-03: two repositories took 40 seconds through the real readers, and `retrospectiveTick`
+ * runs inside the work gate on every tick until the offer is delivered. One file, overwritten daily; a cache that cannot be read or written is a cache miss and never an error.
+ * ONLY THE GATE'S TICK KEEPS IT (`retrospectiveTick`): a manual `org-retro` run writes nothing, which a test pins.
+ * @param {{ stateDir: string, now: number, read?: (now: number) => ReturnType<typeof readDora> | null }} input
+ */
+export function cachedDora({ stateDir, now, read = readDeclaredDora }) {
+  const path = join(stateDir, DORA_CACHE_FILE);
+  const date = utcDate(now);
+  const kept = attemptDora(() => JSON.parse(readFileSync(path, "utf8")));
+  if (kept?.date === date && kept.report) return kept.report;
+  const report = read(now);
+  if (report) attemptDora(() => writeFileSync(path, JSON.stringify({ date, report })));
+  return report;
+}
+
 /** @param {string} path @returns {string | null} */
 function readText(path) {
   try { return readFileSync(path, "utf8"); } catch { return null; }
@@ -584,10 +627,13 @@ function readJournal(unit) {
 /**
  * Every read the report wants, once. `stateDir` holds the wake ledger. THE HAND-FIX COUNT IS NOT A FILE IN IT: `hand-fix-ledger.mjs` derives
  * it from git and gh (#2939), and this line read a path nothing wrote for as long as the report existed (#2954). `readHandFixes` is the seam.
- * @param {{ now: number, stateDir: string, unit?: string, readHandFixes?: (now: number) => ReturnType<typeof readHandFixLedger> }} where
+ * THE DORA READ IS THE DECLARATION'S (`dora.mjs`): the repositories `.agent-org/project.json` lists, read from the registry and GitHub. `readDoraReport` is its seam.
+ * @param {{ now: number, stateDir: string, unit?: string, readHandFixes?: (now: number) => ReturnType<typeof readHandFixLedger>,
+ *   readDoraReport?: (now: number) => ReturnType<typeof readDora> | null }} where
  */
 export function readAll({ now, stateDir, unit = "a11ign-work-tick.service",
-  readHandFixes = (at) => readHandFixLedger({ read: gatherChanges(), now: new Date(at) }) }) {
+  readHandFixes = (at) => readHandFixLedger({ read: gatherChanges(), now: new Date(at) }),
+  readDoraReport = readDeclaredDora }) {
   const since = now - WINDOW_MS;
   return {
     merged: ghJson(["pr", "list", "--state", "merged", "--search", `merged:>=${new Date(since).toISOString()}`, "--limit", "200", "--json", "number,createdAt,mergedAt"]),
@@ -597,6 +643,7 @@ export function readAll({ now, stateDir, unit = "a11ign-work-tick.service",
     turns: readTurns(since),
     readings: readReadings(join(stateDir, READINGS_FILE)),
     handFixes: readHandFixes(now), // a refused read is a reading that says so (`status: "unknown"`), never a throw and never a 0
+    dora: attemptDora(() => readDoraReport(now)),
   };
 }
 
@@ -626,7 +673,8 @@ export function recordReading({ stateDir, date, numbers }) {
  *   record?: typeof recordReading }} [seams]
  * @returns {ReturnType<typeof retrospectiveOrder>[]}
  */
-export function retrospectiveTick({ now = Date.now(), stateDir = stateEntryPath(""), log = (line) => process.stderr.write(line), read = readAll,
+export function retrospectiveTick({ now = Date.now(), stateDir = stateEntryPath(""), log = (line) => process.stderr.write(line),
+  read = (where) => readAll({ ...where, readDoraReport: (at) => cachedDora({ stateDir: where.stateDir, now: at }) }),
   readLedger = (dir) => readText(`${dir}/wake-ledger`), record = recordReading } = {}) {
   try {
     const date = retrospectiveDue(now, readLedger(stateDir));

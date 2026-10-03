@@ -21,6 +21,7 @@ export const COMMANDS = {
   "branches:inventory": "branch-inventory-report.mjs",
   "branches:stranded": "stranded-branches.mjs",
   "chairman:reply": "messaging/reply-cli.mjs",
+  "dora": "dora.mjs",
   "fleet:batch-now": "fleet-gated-nightly.mjs",
   "host:check": "host-units.mjs",
   "host:install": "host-units.mjs",
