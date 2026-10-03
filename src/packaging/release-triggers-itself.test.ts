@@ -2,23 +2,26 @@
 // a11ign/a11ign#3134: this file parses release.yml as YAML and reads what its steps WOULD run; the `gh` in the workflow text and in the assertion messages is what
 // charged it, and nothing here spawns `gh` or needs the network.
 /**
- * A MERGE TO `main` RELEASES ITSELF, AND THE WAYS THAT COULD GO WRONG ARE EACH A PROPERTY OF `release.yml` (a11ign/a11ign#3134; chairman, #928, 2026-10-03).
+ * A MERGE TO `main` THAT CARRIES A CHANGESET RELEASES ITSELF, AND THE WAYS THAT COULD GO WRONG ARE EACH A PROPERTY OF `release.yml` (a11ign/a11ign#3134, #3187; ceo,
+ * a11ign/a11ign#3175; chairman, #928, 2026-10-03).
  *
- * `release.yml` starts on `push` to `main`, opens or updates ONE version pull request while a changeset is pending, and on the push of that pull request's merge
- * creates the tag and the Release. The ruling keeps every guard that is about WHAT is tagged and removes the typed confirmation, so what must be pinned is that
- * nothing started by a push can do more than that. Each property below is a function over the PARSED workflow returning what is wrong with it, and each is ALSO run on
- * a fixture with exactly that thing broken (an emptiness assertion passes on an empty population, and "no step pushes to main" passes on a workflow with no push):
+ * `release.yml` starts on `push` to `main` and, when a changeset no tag has consumed is present, builds a release commit on top of the merge and pushes it as the tag and
+ * creates the Release. The ruling keeps every guard that is about WHAT is tagged and removes both the typed confirmation and the version pull request, so what must be pinned
+ * is that nothing started by a push can do more than that. Each property below is a function over the PARSED workflow returning what is wrong with it, and each is ALSO run
+ * on a fixture with exactly that thing broken (an emptiness assertion passes on an empty population, and "no step pushes to main" passes on a workflow with no push):
  *   - triggers: `push` on `main` and nothing else;
- *   - writes: no step pushes to `main` or to a tag, by `git push` or by `gh api`; the one push names the bot branch;
+ *   - writes: the one push is of `HEAD` to the tag the job computed, never forced, never to a branch; no `gh api` call writes;
  *   - the tag step runs only when `v<version>` does not exist, judged by a step that READS the remote's tags;
  *   - the guards about what is tagged are in the job that tags: `gate` needed, the version-named tag, the CHANGELOG entry;
- *   - permissions: `contents: write` and `pull-requests: write` and nothing broader, no `id-token`;
+ *   - permissions: `contents: write` and nothing broader (no `pull-requests`), no `id-token`;
  *   - nothing reaches a registry, an OIDC provider or a secret, and nothing deletes or force-moves a tag.
+ * What the steps DO across two merges is `release-tag-on-merge.test.ts`.
  *
- * What `release-safety.test.ts` keeps is how the steps BEHAVE when run. Of the six pins it held for the dispatch-only workflow it DROPPED three, because the ruling
+ * What `release-safety.test.ts` keeps is how the steps BEHAVE when run. Of the six pins it held for the dispatch-only workflow it DROPPED three at #3134, because the ruling
  * removed what they were about: "`workflow_dispatch` only" (replaced by the trigger property here), "`dry-run` defaults to true" and "the cut needs the typed
  * confirmation" (there is neither input now). It KEPT the gate on the exact sha, the refusal of an existing tag (now: left alone, and never moved) and the
- * `v<version>` plus CHANGELOG-entry pair.
+ * `v<version>` plus CHANGELOG-entry pair. #3187 moved this file's pins on the version pull request: the bot-branch push is gone (the one push is the tag's), and
+ * `pull-requests: write` is now REFUSED where it was required.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -33,8 +36,8 @@ interface Workflow { on: unknown; permissions?: Record<string, string> | string;
 const REPO = fileURLToPath(new URL("../../", import.meta.url));
 const REAL = parse(readFileSync(`${REPO}.github/workflows/release.yml`, "utf8")) as Workflow;
 
-const BOT_BRANCH_PREFIX = "refs/heads/changeset-release/";
-const WRITABLE = ["contents", "pull-requests"];
+const TAG_PUSH = 'origin HEAD:refs/tags/$TAG';
+const WRITABLE = ["contents"];
 const READABLE = ["contents", "checks"];
 
 const clone = (w: Workflow): Workflow => structuredClone(w);
@@ -57,20 +60,22 @@ function triggerProblems(w: Workflow): string[] {
   return problems;
 }
 
-/** The refspec a `git push` line names, with `$BRANCH` taken from the job's env; undefined when the line names none. */
-function pushTarget(line: string, env: Record<string, string>): string | undefined {
-  const refspec = line.split(/\s+/).find((word) => word.startsWith("\"HEAD:") || word.startsWith("HEAD:"));
-  return refspec?.replace(/^"/, "").replace(/"$/, "").replace(/^HEAD:/, "").replace(/\$\{?BRANCH\}?/, env.BRANCH ?? "");
+/** What a `git push` line names besides its flags: the remote and the refspecs, quotes removed. */
+function pushArguments(line: string): string[] {
+  const words = line.slice(line.search(/\bgit\s+push\b/)).split(/\s+/).slice(2);
+  return words.filter((word) => !word.startsWith("-")).map((word) => word.replace(/^"/, "").replace(/"$/, ""));
 }
 
-/** Nothing pushes to `main` or a tag; the pushes there are, each, to the bot branch; no `gh api` call writes (it could move a ref). */
+/** The only push is of `HEAD` to the tag the job computed, with no force and no flag that reaches other refs; no `gh api` call writes (it could move a ref). */
 function writeProblems(w: Workflow): string[] {
   const problems: string[] = [];
   for (const { job, line } of allLines(w)) {
     if (/\bgit\s+push\b/.test(line)) {
-      const target = pushTarget(line, w.jobs[job]?.env ?? {});
-      if (target === undefined || !`refs/heads/${target.replace(/^refs\/heads\//, "")}`.startsWith(BOT_BRANCH_PREFIX)) problems.push(`${job}: a push to ${target ?? "no named refspec"}, not the bot branch: ${line}`);
-      if (/--tags|--mirror|--delete|\s-d\s|refs\/tags|\s:\S/.test(line)) problems.push(`${job}: a push that can reach a tag or delete a ref: ${line}`);
+      const named = pushArguments(line);
+      if (named.length < 2) problems.push(`${job}: a push naming no refspec: ${line}`);
+      else if (named.join(" ") !== TAG_PUSH) problems.push(`${job}: a push to [${named.slice(1)}], not only the release tag: ${line}`);
+      if (/--force|-f\b|--mirror|--delete|\s-d\s/.test(line)) problems.push(`${job}: a forced push, which can move a tag, or one that can delete a ref: ${line}`);
+      if (/--tags/.test(line)) problems.push(`${job}: a push that can reach every tag: ${line}`);
     }
     if (/\bgh\s+api\b/.test(line) && /(?:-X|--method)\s*\S*(?:POST|PATCH|PUT|DELETE)|\s-[fF]\s|--field|--raw-field/i.test(line)) problems.push(`${job}: a \`gh api\` call that writes: ${line}`);
   }
@@ -113,12 +118,13 @@ function guardProblems(w: Workflow): string[] {
   if (!gateScripts.includes('"$GITHUB_REF" != refs/heads/main')) problems.push("the gate job does not refuse a ref other than main");
   const text = job.steps.map((s) => s.run ?? "").join("\n");
   if (!text.includes('"tag=v$version"')) problems.push(`${name} does not name the tag v plus the package.json version`);
-  const changelog = job.steps.find((s) => /CHANGELOG\.md/.test(s.run ?? ""));
+  // The step that READS the entry (the release commit step also names CHANGELOG.md, to carry the last tag's forward, and refuses nothing).
+  const changelog = job.steps.find((s) => /awk[^\n]*CHANGELOG\.md/.test(s.run ?? ""));
   if (!changelog || !/\bexit 1\b/.test(changelog.run ?? "")) problems.push(`${name} does not refuse a version with no CHANGELOG entry`);
   return problems;
 }
 
-/** Write access is `contents` and `pull-requests` only, both present; reads add `checks`; `id-token` and the shorthand `write-all` never. */
+/** Write access is `contents` only, and present; reads add `checks`; `pull-requests`, `id-token` and the shorthand `write-all` never. */
 function permissionProblems(w: Workflow): string[] {
   const blocks: Array<[string, Record<string, string> | string | undefined]> = [["workflow", w.permissions], ...Object.entries(w.jobs).map(([n, j]): [string, Job["permissions"]] => [n, j.permissions])];
   const problems: string[] = [];
@@ -127,7 +133,7 @@ function permissionProblems(w: Workflow): string[] {
     if (typeof perms === "string") problems.push(`${where}: permissions is the shorthand "${perms}"`);
     for (const [key, level] of Object.entries(typeof perms === "object" ? perms : {})) {
       if (key === "id-token") problems.push(`${where}: an id-token permission (${level})`);
-      else if (level === "write" && !WRITABLE.includes(key)) problems.push(`${where}: ${key}: write is broader than contents and pull-requests`);
+      else if (level === "write" && !WRITABLE.includes(key)) problems.push(`${where}: ${key}: write is broader than contents`);
       else if (level !== "write" && ![...READABLE, ...WRITABLE].includes(key)) problems.push(`${where}: ${key}: ${level} is not one of ${[...READABLE, ...WRITABLE]}`);
       if (level === "write") written.add(key);
     }
@@ -166,12 +172,12 @@ test("the real release.yml has no trigger, write, tag-guard, guard, permission o
   for (const [label, check] of PROPERTIES) assert.deepEqual(check(REAL), [], label);
 });
 
-test("positive control: the properties are about something (one push, one tag-creating step, a version pull request that can write)", () => {
-  assert.equal(allLines(REAL).filter(({ line }) => /\bgit\s+push\b/.test(line)).length, 1, "the real workflow pushes the bot branch once, so the write check ran on a push");
+test("positive control: the properties are about something (one push, one tag-creating step, a release commit made by `changeset version`)", () => {
+  assert.equal(allLines(REAL).filter(({ line }) => /\bgit\s+push\b/.test(line)).length, 1, "the real workflow pushes the tag once, so the write check ran on a push");
   assert.equal(publishing(REAL).creators.length, 1);
   assert.equal(publishing(REAL).name, "release");
-  assert.deepEqual(Object.keys(REAL.jobs).sort(), ["gate", "release", "version-pr"]);
-  assert.match(JSON.stringify(REAL.jobs["version-pr"]), /changeset version/);
+  assert.deepEqual(Object.keys(REAL.jobs).sort(), ["gate", "release"]);
+  assert.match(JSON.stringify(REAL.jobs.release), /changeset version/);
 });
 
 function mutated(edit: (w: Workflow) => void): Workflow {
@@ -194,11 +200,15 @@ test("positive control: each fixture with ONE thing broken is refused by the pro
     ["push on every branch", mutated((w) => { w.on = { push: { branches: ["**"] } }; }), triggerProblems, /not limited to branches/],
     ["push on tags too", mutated((w) => { w.on = { push: { branches: ["main"], tags: ["v*"] } }; }), triggerProblems, /not limited to branches/],
     ["`on: [push]`", mutated((w) => { w.on = ["push"]; }), triggerProblems, /not a mapping/],
-    ["a push to main", mutated((w) => { step(w, "version-pr", /git push/).run = 'git push origin HEAD:refs/heads/main'; }), writeProblems, /not the bot branch/],
-    ["a push of HEAD:main by the short name", mutated((w) => { step(w, "version-pr", /git push/).run = 'git push origin HEAD:main'; }), writeProblems, /not the bot branch/],
-    ["a push naming no refspec", mutated((w) => { step(w, "version-pr", /git push/).run = "git push"; }), writeProblems, /no named refspec/],
-    ["a push that deletes a tag", mutated((w) => { step(w, "release", /Cut the tag/).run += '\ngit push origin :refs/tags/v0.1.0\n'; }), writeProblems, /not the bot branch|tag or delete/],
-    ["a push of every tag", mutated((w) => { step(w, "version-pr", /git push/).run += '\ngit push --tags origin "HEAD:refs/heads/$BRANCH"\n'; }), writeProblems, /reach a tag/],
+    ["a push to main", mutated((w) => { step(w, "release", /git push/).run = 'git push origin HEAD:refs/heads/main'; }), writeProblems, /not only the release tag/],
+    ["a push to main beside the tag's", mutated((w) => { step(w, "release", /git push/).run = 'git push origin "HEAD:refs/tags/$TAG" HEAD:refs/heads/main'; }), writeProblems, /not only the release tag/],
+    ["a push of the tag with --force", mutated((w) => { step(w, "release", /git push/).run = 'git push --force origin "HEAD:refs/tags/$TAG"'; }), writeProblems, /forced push/],
+    ["a push of the tag with a leading plus", mutated((w) => { step(w, "release", /git push/).run = 'git push origin "+HEAD:refs/tags/$TAG"'; }), writeProblems, /not only the release tag/],
+    ["a push of a tag other than the computed one", mutated((w) => { step(w, "release", /git push/).run = 'git push origin "HEAD:refs/tags/v0.1.0"'; }), writeProblems, /not only the release tag/],
+    ["a push of HEAD:main by the short name", mutated((w) => { step(w, "release", /git push/).run = 'git push origin HEAD:main'; }), writeProblems, /not only the release tag/],
+    ["a push naming no refspec", mutated((w) => { step(w, "release", /git push/).run = "git push"; }), writeProblems, /naming no refspec/],
+    ["a push that deletes a tag", mutated((w) => { step(w, "release", /Cut the tag/).run += '\ngit push origin :refs/tags/v0.1.0\n'; }), writeProblems, /not only the release tag/],
+    ["a push of every tag", mutated((w) => { step(w, "release", /git push/).run += '\ngit push --tags origin\n'; }), writeProblems, /reach every tag/],
     ["a gh api call that moves a ref", mutated((w) => { step(w, "release", /Cut the tag/).run += '\ngh api -X PATCH repos/o/r/git/refs/tags/v0.1.0 -f sha=abc\n'; }), writeProblems, /gh api. call that writes/],
     ["the tag-exists guard removed", mutated((w) => { delete step(w, "release", /Cut the tag/).if; }), tagGuardProblems, /tag-exists guard/],
     ["a guard on something other than the tag's absence", mutated((w) => { step(w, "release", /Cut the tag/).if = "github.ref == 'refs/heads/main'"; }), tagGuardProblems, /tag-exists guard/],
@@ -215,7 +225,8 @@ test("positive control: each fixture with ONE thing broken is refused by the pro
     ["checks: write", mutated((w) => { w.jobs.gate!.permissions = { contents: "read", checks: "write" }; }), permissionProblems, /checks: write is broader/],
     ["an unlisted read permission", mutated((w) => { w.jobs.gate!.permissions = { contents: "read", "security-events": "read" }; }), permissionProblems, /security-events: read is not one of/],
     ["write-all", mutated((w) => { w.permissions = "write-all"; }), permissionProblems, /shorthand/],
-    ["no pull-requests: write anywhere", mutated((w) => { w.jobs["version-pr"]!.permissions = { contents: "write" }; }), permissionProblems, /no job holds pull-requests: write/],
+    ["a pull-requests: write permission", mutated((w) => { w.jobs.release!.permissions = { contents: "write", "pull-requests": "write" }; }), permissionProblems, /pull-requests: write is broader/],
+    ["no contents: write anywhere", mutated((w) => { w.jobs.release!.permissions = { contents: "read" }; }), permissionProblems, /no job holds contents: write/],
     ["npm publish", mutated((w) => { step(w, "release", /Cut the tag/).run += "\nnpm publish\n"; }), reachProblems, /publish command/],
     ["a registry token", mutated((w) => { step(w, "release", /Cut the tag/).env!.NPM_TOKEN = "x"; }), reachProblems, /registry token/],
     ["a secret", mutated((w) => { step(w, "release", /Cut the tag/).env!.GH_TOKEN = "${{ secrets.A11IGN_BOT_TOKEN }}"; }), reachProblems, /secret other than/],
@@ -226,9 +237,10 @@ test("positive control: each fixture with ONE thing broken is refused by the pro
   for (const [label, fixture, check, expected] of cases) assert.match(check(fixture).join("\n"), expected, `${label}: the owning property did not notice`);
 });
 
-test("positive control, the other direction: a fixture that DOES push the bot branch with --force, and a read-only `gh api`, are not refused", () => {
-  const w = mutated((fixture) => { step(fixture, "version-pr", /git push/).run += '\ngit push --force origin "HEAD:refs/heads/changeset-release/other"\n'; });
+test("positive control, the other direction: the real push of the tag and a read-only `gh api` are not refused, and neither is a second push of the same tag", () => {
+  const w = mutated((fixture) => { step(fixture, "release", /git push/).run += '\ngit push origin "HEAD:refs/tags/$TAG"\n'; });
   assert.deepEqual(writeProblems(w), []);
   assert.deepEqual(writeProblems(REAL), []);
+  assert.ok(allLines(REAL).some(({ line }) => /\bgit\s+push\b/.test(line)), "the tag's own push is in the population the write check looked at");
   assert.ok(allLines(REAL).some(({ line }) => /\bgh\s+api\b/.test(line)), "the gate's own `gh api` read is in the population the write check looked at");
 });
