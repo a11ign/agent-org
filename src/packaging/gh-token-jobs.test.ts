@@ -19,18 +19,12 @@
 // most-recorded shape; see that module's header for why `pre-install-import-graph.test.ts` keeps its own.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync, readdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { localImports } from "../lib/local-import-closure.mjs";
 import { SPAWNS_GH } from "../acceptance-commands.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
-
-const REPO = HOME_CHECKOUT;
-const CI = join(REPO, ".github/workflows/ci.yml");
-
-/** A `gh` spawn, not the two letters: the token charge's own regex, imported rather than retyped (#1449). */
 
 /** Can a `gh` spawn be reached from this file, through any depth of local imports? */
 function reachesGh(entry: string, seen = new Set<string>()): boolean {
@@ -40,28 +34,29 @@ function reachesGh(entry: string, seen = new Set<string>()): boolean {
   return localImports(entry).some((next) => reachesGh(next, seen));
 }
 
-/** The files a shell glob like `packages/lab/src/packaging/board-*.test.ts` would match. */
-function filesMatching(glob: string): string[] {
-  const dir = join(REPO, dirname(glob));
+/** The files a shell glob like `packages/lab/src/packaging/board-*.test.ts` would match, under `root`. */
+function filesMatching(root: string, glob: string): string[] {
+  const dir = join(root, dirname(glob));
   if (!existsSync(dir)) return [];
   const pattern = new RegExp(`^${dirname(glob) === glob ? glob : glob.slice(dirname(glob).length + 1)}$`
     .replace(/\*/g, "[^/]*").replace(/\./g, "\\.").replace(/\[\^\/\]\\\*/g, "[^/]*"));
   return readdirSync(dir).filter((f) => pattern.test(f)).map((f) => join(dir, f));
 }
 
+type Job = { name: string; globs: string[]; hasToken: boolean };
+
 /**
- * Each ci.yml job, its literal test globs, and whether it declares GH_TOKEN.
+ * Each job of a ci.yml, its literal test globs, and whether it declares GH_TOKEN.
  *
  * Parsed by indentation rather than with a YAML library, the same way `lab-job.mjs` slices its catalogue
  * and for the same reason: this package may not take a YAML dependency (ADR 0004). The ANTI-VACUITY
  * assertion below is what makes that safe — a parse that finds no jobs FAILS rather than passing over an
  * empty set, which is this repository's most-recorded defect and the one a source scrape invites.
  */
-function jobs(): { name: string; globs: string[]; hasToken: boolean }[] {
-  const lines = readFileSync(CI, "utf8").split("\n");
-  const found: { name: string; globs: string[]; hasToken: boolean }[] = [];
-  let cur: { name: string; globs: string[]; hasToken: boolean } | null = null;
-  for (const line of lines) {
+function jobs(ciText: string): Job[] {
+  const found: Job[] = [];
+  let cur: Job | null = null;
+  for (const line of ciText.split("\n")) {
     const head = line.match(/^ {2}([a-zA-Z][\w-]*):\s*$/);
     if (head) { if (cur) found.push(cur); cur = { name: head[1], globs: [], hasToken: false }; continue; }
     if (!cur) continue;
@@ -72,44 +67,85 @@ function jobs(): { name: string; globs: string[]; hasToken: boolean }[] {
   return found;
 }
 
-test("ci.yml parses into real jobs — a scrape that finds nothing must FAIL, not pass vacuously", () => {
-  const parsed = jobs();
-  assert.ok(parsed.length >= 5, `only ${parsed.length} job(s) parsed out of ci.yml; the scrape has broken`);
-  assert.ok(parsed.some((j) => j.name === "board"), "the `board` job must be found by name");
-  assert.ok(parsed.some((j) => j.name === "ts"), "the `ts` job must be found by name");
-});
-
-test("board-document-chrome-resolver.test.ts reaches `gh` only TRANSITIVELY — the premise this guard rests on", () => {
-  // board-style.test.ts (the original example, imported packages/agent-org/src/board-data.mjs's collect()) retired
-  // 2026-09-10 in guard triage 4 of 6. This file makes the identical claim through a different import:
-  // it takes `resolveChromeBinary` from `packages/agent-org/src/board-document.mjs`, which shells to `gh release`
-  // directly a few hundred lines further down the same module -- the same "no `gh` in the test file
-  // itself, only in what it transitively imports" shape.
-  const entry = join(REPO, "packages/lab/src/packaging/board-document-chrome-resolver.test.ts");
-  assert.ok(existsSync(entry),
-    "board-document-chrome-resolver.test.ts must exist for this guard to mean anything");
-  assert.doesNotMatch(readFileSync(entry, "utf8"), SPAWNS_GH,
-    "board-document-chrome-resolver.test.ts names a `gh` spawn directly — if that is now true, a test "
-    + "grepping the test files alone would suffice and this walker's reason for existing has changed");
-  assert.ok(reachesGh(entry),
-    "board-document-chrome-resolver.test.ts must reach a `gh` spawn through its local imports; if it no "
-    + "longer does, this guard is protecting nothing and should be re-scoped");
-});
-
-test("every ci.yml job whose tests can reach a `gh` spawn declares GH_TOKEN", () => {
+/** The jobs of the project at `root` whose tests can reach a `gh` spawn and declare no GH_TOKEN. */
+function offendersAt(root: string): string[] {
   const offenders: string[] = [];
-  for (const job of jobs()) {
-    const entries = job.globs.flatMap(filesMatching);
-    if (entries.length === 0) continue;
+  for (const job of jobs(readFileSync(join(root, ".github/workflows/ci.yml"), "utf8"))) {
+    const entries = job.globs.flatMap((glob) => filesMatching(root, glob));
     const reaching = entries.filter((f) => reachesGh(f));
     if (reaching.length > 0 && !job.hasToken) {
-      offenders.push(`${job.name} (via ${reaching.map((f) => f.slice(REPO.length + 1)).join(", ")})`);
+      offenders.push(`${job.name} (via ${reaching.map((f) => f.slice(root.length + 1)).join(", ")})`);
     }
   }
-  assert.deepEqual(offenders, [],
-    "these ci.yml jobs run tests that can reach a `gh` spawn and declare no GH_TOKEN. `gh` fails in "
-    + "Actions without it, and the failure names the env var rather than the test, so it reads as a "
-    + "broken test. Add `env: { GH_TOKEN: ${{ github.token }} }` to the job.");
+  return offenders;
+}
+
+/** The spawn of `command`, spelled so that THIS file does not itself contain a charged `gh` spawn. */
+const spawnOf = (command: string[]) =>
+  `import { execFile } from "node:child_process";\nexecFile("${command[0]}", ${JSON.stringify(command.slice(1))}, () => {});\n`;
+const GH = ["g", "h"].join("");
+
+/** (#3233) A project built here, not a11ign's checkout: the verdict is about the walker, not about a11ign's jobs. */
+function fixtureProject(boardEnv: string): string {
+  const root = mkdtempSync(join(tmpdir(), "gh-token-jobs-project-"));
+  const tests = join(root, "packages/lab/src/packaging");
+  mkdirSync(tests, { recursive: true });
+  mkdirSync(join(root, ".github/workflows"), { recursive: true });
+  // `board-x.test.ts` names no spawn itself; the one in `deep.mjs` is two local imports away.
+  writeFileSync(join(tests, "board-x.test.ts"), 'import "./helper.mjs";\n');
+  writeFileSync(join(tests, "helper.mjs"), 'import "./deep.mjs";\n');
+  writeFileSync(join(tests, "deep.mjs"), spawnOf([GH, "issue", "list"]));
+  writeFileSync(join(tests, "plain.test.ts"), spawnOf(["git", "status"]));
+  writeFileSync(join(root, ".github/workflows/ci.yml"), [
+    "jobs:",
+    "  board:",
+    ...boardEnv ? ["    env:", `      ${boardEnv}`] : [],
+    "    steps:",
+    "      - run: node --test \"packages/lab/src/packaging/board-*.test.ts\"",
+    "  ts:",
+    "    steps:",
+    "      - run: node --test \"packages/lab/src/packaging/plain.test.ts\"",
+    "",
+  ].join("\n"));
+  return root;
+}
+
+/** Runs `check` against a fixture project and removes it, whatever `check` does. */
+function withFixture(boardEnv: string, check: (root: string) => void): void {
+  const root = fixtureProject(boardEnv);
+  try { check(root); } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+test("a ci.yml parses into its real jobs — a scrape that finds nothing must FAIL, not pass vacuously", () => {
+  withFixture("", (root) => {
+    const parsed = jobs(readFileSync(join(root, ".github/workflows/ci.yml"), "utf8"));
+    assert.deepEqual(parsed.map((j) => j.name), ["board", "ts"], "both jobs are found by name");
+    assert.deepEqual(parsed[0].globs, ["packages/lab/src/packaging/board-*.test.ts"]);
+    assert.equal(parsed[0].hasToken, false);
+  });
+});
+
+test("a test reaches `gh` only TRANSITIVELY — the premise this guard rests on", () => {
+  // A test file naming no `gh` spawn, whose imports do: grepping the test files alone would find nothing,
+  // which is why the walk follows local imports to any depth. (The same shape, in a11ign's own
+  // board-document-chrome-resolver.test.ts, was the premise of this guard; its home is a11ign's #3233 row.)
+  withFixture("", (root) => {
+    const entry = join(root, "packages/lab/src/packaging/board-x.test.ts");
+    assert.doesNotMatch(readFileSync(entry, "utf8"), SPAWNS_GH, "the entry names no spawn directly");
+    assert.ok(reachesGh(entry), "the spawn two imports away must be reached");
+  });
+});
+
+test("a job whose tests can reach a `gh` spawn is an offender until it declares GH_TOKEN", () => {
+  withFixture("", (root) => {
+    assert.deepEqual(offendersAt(root), ["board (via packages/lab/src/packaging/board-x.test.ts)"],
+      "`ts` reaches no spawn and is not named; `board` reaches one and declares nothing");
+  });
+  // POSITIVE CONTROL, same fixture but for the one env line: the emptiness below is the walker's verdict, not a
+  // walk that found nothing, because the run above found `board`.
+  withFixture("GH_TOKEN: ${{ github.token }}", (root) => {
+    assert.deepEqual(offendersAt(root), []);
+  });
 });
 
 test("#1449: the walker reaches a gh spawn made through `execFile`, and not an `execFile` of another command", () => {

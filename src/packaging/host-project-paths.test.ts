@@ -12,46 +12,63 @@
  * knows is now `.agent-org/host.json` (`host-config.mjs` reads it), what a project knows is its `.agent-org/project.json`, and the tool's
  * three units and its `gh` wrapper are TEMPLATES rendered from the two.
  *
- * WHAT THIS FILE OWES, in the row's words: no home-directory literal in the tool's own files; a11ign's `host.json` reproducing every path
- * the tool used to name; the 17 entries the host directory held classified exactly once (8 tool, 8 project, 1 host data) and an
- * eighteenth REFUSED; the three tool units rendered from templates to today's bytes; and a project with different paths changing what
- * the readers use. NO UNIT IS RENAMED AND NONE IS REINSTALLED BY THIS ROW: the rendered names are asserted equal to the installed ones,
+ * WHAT THIS FILE OWES, in the row's words: no home-directory literal in the tool's own files; a host's `host.json` reproducing every path
+ * the tool used to name; the entries the host directory held classified exactly once (tool, project, host data) and an
+ * unclassified one REFUSED; the three tool units rendered from templates to today's bytes; and a project with different paths changing what
+ * the readers use. (#3233) THE PARTS THAT READ A11IGN'S LIVE TREE MOVED TO A11IGN -- its `host.json` saying those paths, its `.agent-org/units/` being the eight
+ * `units.own` lists and naming what it names, `wake.mjs`'s two constants equalling its `host.json` -- and what is left runs over a recorded host and project.
+ * NO UNIT IS RENAMED AND NONE IS REINSTALLED BY THIS ROW: the rendered names are asserted equal to the installed ones,
  * and rows 4 and 5 (the shadow run and the extraction) are where an install happens.
  *
  * WHAT IT DOES NOT COVER, said so it cannot be read as covered. `wake.mjs`, `work-gate.mjs` and `lib/worktree-resolution.mjs` still name
- * `/home/agent` (two constants and some prose); they belong to rows 3b and 3c, whose Regions those files are, and the constants are
- * tied to `host.json` below so they cannot drift from it in the meantime.
+ * `/home/agent` (two constants and some prose); they belong to rows 3b and 3c, whose Regions those files are. That the constants equal a11ign's
+ * `host.json` was asserted here until #3233, and is a11ign's to assert.
  */
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { PROJECT_UNITS_DIR, REPO_ROOT, SHIPPED_DIR, TOOL_ENTRIES, HOST_DATA_ENTRIES, hostUnitDrift, identityDrift,
-  leadsListText, ownedIdentityFiles, shippedScriptText, shippedUnitText, shippedUnits, unclassifiedEntries }
-  from "../host-units.mjs";
-import { HostConfigRefusal, homeHostConfig, hostConfigPath, leadsWorkspacesText, parseHostConfig, parseUnitsDeclaration,
-  readUnitsDeclaration, renderTemplate, renderedName, templateValues } from "../host-config.mjs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const checkout = REPO_ROOT.replace(/\/$/, "");
-const host = homeHostConfig();
-const units = readUnitsDeclaration();
-/** a11ign's host with no `tool`: what the TEMPLATES render for it, whether or not the cut (#2974) has set the key. The tool form is asserted in `host-tool-install.test.ts`. */
-const plainHost = (() => {
-  const plain: Record<string, unknown> = { ...host };
-  delete plain.tool;
-  return Object.freeze(plain);
-})() as never;
+// --- (#3233) THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE, AND A11IGN'S VALUES ARE A RECORDED HOST ---
+//
+// Two things in a11ign's tree fed this file: the project the tool serves (`HOME_CHECKOUT`, resolved at import, which the defaults of `host-units.mjs` and
+// `host-config.mjs` read -- `package.json`, `.agent-org/units/`, `host.json`) and a11ign's own `host.json`, whose values the units are rendered from and whose
+// bytes were pinned. A verdict that moved when a11ign edited either was not about this tool (agent-org #77 and #79). So the host file is set FIRST and the tool
+// imported AFTER it, dynamically, over `fixtures/host-project-paths/project` copied to a temp directory; and a11ign's host values are `a11ign-host.json`, a
+// recording passed to every call that renders from them. That a11ign's LIVE `host.json` says what the recording says is a11ign's invariant, and moved there.
+const SCRATCH = mkdtempSync(join(tmpdir(), "host-project-paths-"));
+after(() => rmSync(SCRATCH, { recursive: true, force: true }));
+const FIXTURES = fileURLToPath(new URL("./fixtures/host-project-paths/", import.meta.url));
+const PROJECT = join(SCRATCH, "project");
+cpSync(join(FIXTURES, "project"), PROJECT, { recursive: true });
+const HOST_FILE = join(SCRATCH, "host.json");
+writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join(SCRATCH, "bin"), primary: "fixture", projects: [{ id: "fixture", checkout: PROJECT }],
+  gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
+process.env.AGENT_ORG_HOST = HOST_FILE;
+
+const { SHIPPED_DIR, TOOL_ENTRIES, HOST_DATA_ENTRIES, hostUnitDrift, identityDrift, leadsListText, ownedIdentityFiles, shippedScriptText, shippedUnitText, shippedUnits,
+  unclassifiedEntries } = await import("../host-units.mjs");
+const { HostConfigRefusal, hostConfigPath, leadsWorkspacesText, parseHostConfig, parseUnitsDeclaration, readUnitsDeclaration, renderTemplate, renderedName, templateValues } =
+  await import("../host-config.mjs");
+
+/** a11ign's host values, RECORDED: what the templates are rendered from, with no `tool` (the cut, #2974): the tool form is asserted in `host-tool-install.test.ts`. */
+const A11IGN_TEXT = readFileSync(join(FIXTURES, "a11ign-host.json"), "utf8");
+const host = parseHostConfig(A11IGN_TEXT, "fixtures/host-project-paths/a11ign-host.json");
+const units = readUnitsDeclaration(PROJECT);
+const plainHost = host as never;
+/** The directory the tool's own sources sit in, read from this file's location and never from a project's layout. */
+const TOOL_SRC = fileURLToPath(new URL("../", import.meta.url));
 
 /** A home-directory path, however it continues: what "the tool names a host" means in text. */
 const HOME_LITERAL = /\/home\/[A-Za-z_][\w.-]*/;
 
 /** The three files of the tool's own source this row edited, and every entry of the tool's host directory. */
-const TOOL_SOURCES = ["packages/agent-org/src/host-units.mjs", "packages/agent-org/src/host-config.mjs",
-  "packages/agent-org/src/board-snapshot-scope.mjs"];
-const toolFiles = () => [...TOOL_SOURCES.map((path) => join(checkout, path)), ...TOOL_ENTRIES.map((name) => join(SHIPPED_DIR, name))];
+const TOOL_SOURCES = ["host-units.mjs", "host-config.mjs", "board-snapshot-scope.mjs"];
+const toolFiles = () => [...TOOL_SOURCES.map((name) => join(TOOL_SRC, name)), ...TOOL_ENTRIES.map((name) => join(SHIPPED_DIR, name))];
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
@@ -64,16 +81,17 @@ test("#2620: no home-directory literal remains in the tool's sources, its templa
   assert.deepEqual(offenders, [], "each of these names a host path the tool must read from host.json instead");
 });
 
-test("#2620: the scan CAN see the literal -- the project's own units carry it, and the matcher matches a plain path", () => {
+test("#2620: the scan CAN see the literal -- the matcher matches a plain path, and a unit that names its host is found by it", () => {
+  // (#3233) The project's own four services naming `/home/agent` was a reading of a11ign's `.agent-org/units/`; it is a11ign's invariant now. The control the
+  // scan needs is the matcher itself, on text that carries the literal and on text that does not.
   assert.match("Environment=HOME=/home/agent", HOME_LITERAL);
-  const carrying = readdirSync(PROJECT_UNITS_DIR).filter((name) => HOME_LITERAL.test(readFileSync(join(PROJECT_UNITS_DIR, name), "utf8")));
-  assert.deepEqual(carrying.sort(), units.own.filter((name) => name.endsWith(".service")).sort(),
-    "the project's four services still name their own host (a timer names none), which is where the literal belongs");
+  assert.match("Environment=GH_CONFIG_DIR=/home/other-user/workers/gh", HOME_LITERAL);
+  assert.doesNotMatch("Environment=HOME=%h\nWorkingDirectory=@@checkout@@", HOME_LITERAL, "a template that names no host is not flagged");
 });
 
-// --- 2. a11ign's host.json reproduces every current path ---------------------------------------------------------------------------
+// --- 2. a host's values are what the templates render from, and the rendered text is today's ----------------------------------------
 
-test("#2620: a11ign's host.json says every path the tool used to hard-code", () => {
+test("#2620: a host.json's values are what `templateValues` hands the templates, and the recorded a11ign host reproduces every path the tool used to hard-code", () => {
   assert.deepEqual(templateValues(host, units), {
     home: "/home/agent", binDir: "/home/agent/.local/bin", checkout: "/home/agent/repos/a11y-witness",
     workersDir: "/home/agent/workers", leadsDir: "/home/agent/leads", prefix: "a11ign-",
@@ -81,15 +99,8 @@ test("#2620: a11ign's host.json says every path the tool used to hard-code", () 
   assert.deepEqual(host.gh.leadsWorkspaces.map((w) => w.id), ["w6", "w2", "w5"], "the leads list is the file it replaced");
 });
 
-test("#2620: the constants `wake.mjs` still spells out (rows 3b and 3c) equal what host.json says", () => {
-  const wake = readFileSync(join(checkout, "packages/agent-org/src/wake.mjs"), "utf8");
-  const constant = (name: string) => new RegExp(`export const ${name} = "([^"]+)"`).exec(wake)?.[1];
-  assert.equal(constant("WORKERS_GH_CONFIG_DIR"), `${host.gh.workers}/gh`);
-  assert.equal(constant("HOST_REPOS"), dirname(templateValues(host, units).checkout));
-});
-
 // Sha-256 of the texts as they stood at commit 1b5176697, BEFORE the row: the bytes `host:check` compares the live host against. A
-// rendering that differs by one byte reports every installed unit STALE, so this is the guard on "a11ign's values are unchanged".
+// rendering that differs by one byte reports every installed unit STALE, so this is the guard on "a11ign's values are unchanged" -- FOR THE RECORDED VALUES.
 const TODAYS_TEXT = {
   // #2781 MOVED THIS ONE, deliberately: the unit gained a comment saying the `-` on `primary:update` is covered by the gate reading the primary.
   // #2974 MOVED THIS ONE, deliberately: the cut-over moved its `primary:update` line from `/usr/bin/npm` to the pnpm shim and its header comment off the monorepo path (`units-run-pnpm.test.ts`).
@@ -105,40 +116,35 @@ const TODAYS_TEXT = {
   "a11ign-board-report.timer": "6edd74ab8a7d4117197dddd448e30a2ab63ab9972799dd90f5f500c067f033f1",
 };
 const TODAYS_GH_WRAPPER = "9eba78303036eef62879b34b2a4df0727fdb5655f3ff4f4305de2329dd19ba5c";
-const TODAYS_LEADS_LIST = "e0843e1aa26def5bd9a447839ba242c57a011a5612715d21300f8846d5ce221a";
-// #2896 MOVED THIS ONE, deliberately: a11ign/a11ign's `.agent-org/host.json` header says `pnpm run host:install` / `pnpm run host:check` where it said
-// `npm run`. Two repositories cannot change in one commit and this suite reads a11ign at `main`, so it accepts the list before AND after that line, and
-// the first digest is deleted once a11ign's change is on main. The installed `~/leads/workspaces.txt` reads DIVERGED until `host:install` runs.
-const LEADS_LIST_SAYING_PNPM = "dbca070c4bb7934ff1e9cdc9505f9edee638d98fcff10963b18d5d3a743770a2";
+// #2896 MOVED THIS ONE, deliberately: the recorded host's header says `pnpm run host:install` / `pnpm run host:check` where it said `npm run`.
+const TODAYS_LEADS_LIST = "dbca070c4bb7934ff1e9cdc9505f9edee638d98fcff10963b18d5d3a743770a2";
 
-test("#2620: the three tool units, the wrapper and the leads list render to TODAY'S text for a11ign's values", () => {
+test("#2620: the three tool units, the wrapper and the leads list render to TODAY'S text for the recorded a11ign values", () => {
   assert.equal(Object.keys(TODAYS_TEXT).length, 6, "POSITIVE CONTROL: six units (three services, three timers), not a subset");
+  const rendering = { host: plainHost, units, projectUnitsDir: null };
   for (const [unit, digest] of Object.entries(TODAYS_TEXT)) {
-    assert.equal(sha256(shippedUnitText(unit, { host: plainHost }) ?? ""), digest, `${unit} is not byte-identical to the unit the host runs`);
+    assert.equal(sha256(shippedUnitText(unit, rendering) ?? ""), digest, `${unit} is not byte-identical to the unit the host runs`);
   }
-  assert.equal(sha256(shippedScriptText("gh") ?? ""), TODAYS_GH_WRAPPER, "the wrapper installed at ~/.local/bin/gh");
-  assert.ok([TODAYS_LEADS_LIST, LEADS_LIST_SAYING_PNPM].includes(sha256(leadsListText())), "the leads list installed at ~/leads/workspaces.txt, before or after #2896's wording");
+  assert.equal(sha256(shippedScriptText("gh", rendering) ?? ""), TODAYS_GH_WRAPPER, "the wrapper installed at ~/.local/bin/gh");
+  assert.equal(sha256(leadsListText(rendering)), TODAYS_LEADS_LIST, "the leads list installed at ~/leads/workspaces.txt");
 });
 
-test("#2620: NO UNIT IS RENAMED -- the installed names are the fourteen there were, and the shadow window's two (#2867)", () => {
-  // `declaredKeys` handed, so the optional chairman-messaging trio (#2901) is not this population whether or not the real project asks for it (#3142).
-  assert.deepEqual(shippedUnits(SHIPPED_DIR, { declaredKeys: new Set(["causes", "units"]) }), [
+test("#2620: NO UNIT IS RENAMED -- the tool's units carry the names they had, and the shadow window's two (#2867)", () => {
+  // `declaredKeys` handed, so the optional chairman-messaging trio (#2901) is not this population whether or not a project asks for it (#3142), and `projectUnitsDir:
+  // null`, so only the TOOL'S templates are named: what a11ign's own eight units are called (`.agent-org/units/`) is a11ign's to pin (#3233).
+  assert.deepEqual(shippedUnits(SHIPPED_DIR, { projectUnitsDir: null, prefix: "a11ign-", declaredKeys: new Set(["causes", "units"]) }), [
     "a11ign-board-report.service", "a11ign-board-report.timer",
-    "a11ign-corpus-release-nightly.service", "a11ign-corpus-release-nightly.timer",
-    "a11ign-corpus-snapshot.service", "a11ign-corpus-snapshot.timer",
-    "a11ign-fleet-watch.service", "a11ign-fleet-watch.timer",
-    "a11ign-lab-watch.service", "a11ign-lab-watch.timer",
     "a11ign-shadow-window.service", "a11ign-shadow-window.timer",
     "a11ign-work-tick.service", "a11ign-work-tick.timer",
     "a11ign-worktree-prune.service", "a11ign-worktree-prune.timer",
   ]);
 });
 
-// --- 3. the partition of the seventeen ---------------------------------------------------------------------------------------------
+// --- 3. the tool's own entries are classified ---------------------------------------------------------------------------------------
 
-test("#2620: the 17 entries are classified 8 tool, 8 project, 1 host data -- asserted against the files, plus the shadow window's two tool entries (#2867), the chairman watcher's two (#2901) and the listener's one (#2907)", () => {
+test("#2620: the tool's 13 entries are classified -- the original 8, the shadow window's two (#2867), the chairman watcher's two (#2901) and the listener's one (#2907) -- and the host-data entry is host.json's, not a file", () => {
+  // (#3233) The row also counted eight entries in the PROJECT's `.agent-org/units/` and asserted them equal to a11ign's `units.own`: that is a11ign's tree, and moved there.
   const inTool = readdirSync(SHIPPED_DIR).sort();
-  const inProject = readdirSync(PROJECT_UNITS_DIR).sort();
   const hostData = Object.keys(HOST_DATA_ENTRIES);
   const shadowPair = inTool.filter((name) => name.startsWith("shadow-window."));
   assert.equal(shadowPair.length, 2, "POSITIVE CONTROL: #2867's pair is two of them, so the 8 below is the original eight and the pair");
@@ -147,19 +153,13 @@ test("#2620: the 17 entries are classified 8 tool, 8 project, 1 host data -- ass
   const chairmanListener = inTool.filter((name) => name === "chairman-listen.service.in");
   assert.equal(chairmanListener.length, 1, "POSITIVE CONTROL: #2907's listener service is one more, with no timer, so the 8 below is still the original eight");
   assert.equal(inTool.length - shadowPair.length - chairmanPair.length - chairmanListener.length, 8, "POSITIVE CONTROL: eight entries stay in the tool's host directory");
-  assert.equal(inProject.length, 8, "POSITIVE CONTROL: eight moved to the project's `.agent-org/units/`");
   assert.equal(hostData.length, 1, "POSITIVE CONTROL: one is host data");
-  assert.equal(inTool.length - shadowPair.length - chairmanPair.length - chairmanListener.length + inProject.length + hostData.length, 17, "the host directory held seventeen entries");
   assert.deepEqual(inTool, [...TOOL_ENTRIES].sort(), "the tool's directory holds exactly what the tool records");
-  assert.deepEqual(inProject, [...units.own].sort(), "the project's directory holds exactly what its declaration lists");
-  for (const name of hostData) {
-    assert.ok(!existsSync(join(SHIPPED_DIR, name)) && !existsSync(join(PROJECT_UNITS_DIR, name)), `${name} is host.json's now, not a file`);
-    assert.ok(host.gh.leadsWorkspaces.length > 0, "and `host.json` carries the data");
-  }
-  assert.deepEqual(unclassifiedEntries(), [], "and nothing is classified nowhere");
+  for (const name of hostData) assert.ok(!existsSync(join(SHIPPED_DIR, name)), `${name} is host.json's now, not a file`);
+  assert.deepEqual(unclassifiedEntries({ shippedDir: SHIPPED_DIR, projectUnitsDir: null, units, host: plainHost }), [], "and nothing in it is classified nowhere");
 });
 
-/** A tool directory and a project directory holding exactly the classified entries, in a temp directory. */
+/** A tool directory and a project directory holding exactly the classified entries (the tool's, and the fixture project's declared `units.own`), in a temp directory. */
 function classifiedFixture() {
   const root = mkdtempSync(join(tmpdir(), "host-partition-2620-"));
   const tool = join(root, "host");
@@ -171,10 +171,10 @@ function classifiedFixture() {
   return { root, tool, project, deps: { shippedDir: tool, projectUnitsDir: project, units, host: plainHost } };
 }
 
-test("#2620: an EIGHTEENTH entry classified nowhere is REFUSED, in either directory, and the classified fixture reads clean", () => {
+test("#2620: an entry classified nowhere is REFUSED, in either directory, and the classified fixture reads clean", () => {
   const { root, tool, project, deps } = classifiedFixture();
   try {
-    assert.deepEqual(unclassifiedEntries(deps), [], "MATCHED PAIR: exactly the seventeen classified read clean, so the refusal below is not a check that always fires");
+    assert.deepEqual(unclassifiedEntries(deps), [], "MATCHED PAIR: exactly the classified entries read clean, so the refusal below is not a check that always fires");
     writeFileSync(join(tool, "stray.service"), "");
     assert.deepEqual(unclassifiedEntries(deps).map((f) => f.unit), ["stray.service"]);
     rmSync(join(tool, "stray.service"));
@@ -188,7 +188,7 @@ test("#2620: an EIGHTEENTH entry classified nowhere is REFUSED, in either direct
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("#2620: `host:check` carries the refusal -- the eighteenth entry is a FINDING, and the clean fixture has none", () => {
+test("#2620: `host:check` carries the refusal -- an unclassified entry is a FINDING, and the clean fixture has none", () => {
   const { root, tool, deps } = classifiedFixture();
   try {
     const asked = { ...deps, systemctl: (() => "LANG=C\n") as never, installedDir: join(root, "installed"), git: (() => "") as never };
@@ -233,13 +233,13 @@ test("#2620: which spelling of the home is 'the person's' comes from host.json, 
     const shipped = { shippedDir: root, projectUnitsDir: null };
     const human = (deps: object) => identityDrift({ ...shipped, ...deps }).filter((f: { problem: string }) => f.problem === "DECLARES THE HUMAN ACCOUNT");
     assert.equal(human({ host: ACME_HOST, units: ACME_UNITS }).length, 1, "/srv/ci/.config/gh IS the person's on a host whose home is /srv/ci");
-    assert.deepEqual(human({ units: ACME_UNITS }), [], "CONTROL: on a11ign's host the same line is somebody else's directory, so nothing is flagged");
+    assert.deepEqual(human({ host: plainHost, units: ACME_UNITS }), [], "CONTROL: on the recorded a11ign host (home /home/agent) the same line is somebody else's directory, so nothing is flagged");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 // --- 5. host-config's own refusals -----------------------------------------------------------------------------------------------------
 
-const VALID_HOST = JSON.parse(readFileSync(join(checkout, ".agent-org/host.json"), "utf8"));
+const VALID_HOST = JSON.parse(A11IGN_TEXT);
 const refusalOf = (change: (h: Record<string, unknown>) => void) => {
   const copy = structuredClone(VALID_HOST);
   change(copy);
@@ -288,9 +288,7 @@ function dispatch(cwd: string) {
 }
 
 test("#2620: the dispatcher dispatches the workflow the project declares, on the repository it declares", () => {
-  const home = dispatch(checkout);
-  assert.equal(home.status, 0, home.stderr);
-  assert.equal(home.calls[0], "workflow run board-report.yml --repo a11ign/a11ign", "a11ign's own values are unchanged");
+  // (#3233) The first assertion here ran the dispatcher in a11ign's checkout and expected `board-report.yml` on `a11ign/a11ign`: a11ign's declaration, not the tool's.
   const root = mkdtempSync(join(tmpdir(), "dispatch-project-2620-"));
   try {
     mkdirSync(join(root, ".agent-org"));

@@ -6,7 +6,9 @@
  * `.agent-org/project.json` declared one code repository and nothing ticks, reviews or watches the others. Four things were missing, and
  * each is pinned below by a test that goes red when it is taken away:
  *
- *   (1) the DECLARATION  `agent-org` is a code scope, and every repository the organisation has is a declared scope or a named exemption
+ *   (1) the DECLARATION  a declared code repository with a key is a scope of its own, with no tracker, the primary first. THAT EVERY REPOSITORY THE
+ *                        ORGANISATION HAS IS DECLARED OR EXEMPT IS A11IGN'S INVARIANT, not this tool's, and it moved there (#3233): it compared a
+ *                        recording of GitHub's repository list with a11ign's live declaration, so a repository a11ign opened turned this suite red
  *   (2) the CHECKOUT     `noReviewCheckoutFor` is `null` for a declared key whose clone the host names, and the fetch is made FROM that clone
  *   (3) the DOOR         the keyed reviewer's order and environment carry `GH_REPO=<repo>`
  *   (4) the OWNER        a keyed pull request nobody owns falls to `ownerOfPr`'s last rung, `ceo`, never to nobody
@@ -15,104 +17,54 @@
  *
  * POSITIVE CONTROLS ARE IN THIS FILE, each next to the assertion it serves (`.claude/rules/guards-and-assertions.md`).
  */
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { homeProjectDeclaration } from "../project-config.mjs";
-import { scopesOf, readLanes, scopeTick } from "../work-gate.mjs";
-import { ownerOfPr } from "../work-gate/pr-orders.mjs";
-import { lookupOpenPrFiles } from "../row-claim/file-overlap-rule.mjs";
-import { deliver, noReviewCheckoutFor, prepareReviewCheckout, removeReviewCheckout, reviewCloneOf, reviewerEnvironment,
-  linkKeyedDependencies, withReviewCheckout, repointedForReviewer, REPO_ROOT } from "../wake.mjs";
+import { fileURLToPath } from "node:url";
+
+const CLONE = "/home/agent/repos/agent-org";
+
+// --- (#3233) THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE, NOT A11IGN'S CHECKOUT ---
+//
+// The readers below take the project they serve from `$AGENT_ORG_HOST` AT IMPORT, and without it the layout answers a11ign's live checkout: its declaration
+// (which repositories it has, which it has a clone of) changed this file's verdict whenever a11ign gained one. So the host file is set FIRST and the tool is
+// imported AFTER it, dynamically; the project is `fixtures/keyed-repo-review/project`, copied to a temp directory. Its host names the clone `CLONE`, which is
+// what `reviewCloneOf` reads back.
+const SCRATCH = mkdtempSync(join(tmpdir(), "keyed-repo-review-"));
+after(() => rmSync(SCRATCH, { recursive: true, force: true }));
+const PROJECT = join(SCRATCH, "project");
+cpSync(fileURLToPath(new URL("./fixtures/keyed-repo-review/project", import.meta.url)), PROJECT, { recursive: true });
+const HOST_FILE = join(SCRATCH, "host.json");
+writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join(SCRATCH, "bin"), primary: "fixture", clones: { "agent-org": CLONE },
+  projects: [{ id: "fixture", checkout: PROJECT }],
+  gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
+process.env.AGENT_ORG_HOST = HOST_FILE;
+
+const { homeProjectDeclaration } = await import("../project-config.mjs");
+const { scopesOf, readLanes, scopeTick } = await import("../work-gate.mjs");
+const { ownerOfPr } = await import("../work-gate/pr-orders.mjs");
+const { lookupOpenPrFiles } = await import("../row-claim/file-overlap-rule.mjs");
+const { deliver, noReviewCheckoutFor, prepareReviewCheckout, removeReviewCheckout, reviewCloneOf, reviewerEnvironment,
+  linkKeyedDependencies, withReviewCheckout, repointedForReviewer, REPO_ROOT } = await import("../wake.mjs");
 
 const SESSION = "reviewer-agent-org-6";
-const CLONE = "/home/agent/repos/agent-org";
 /** The refusal of a `{ clone } | { refusal }` answer, or `undefined` when it was a clone. */
 const refusalOf = (answer: { clone: string } | { refusal: string }) => ("refusal" in answer ? answer.refusal : undefined);
 /** A host declaration `host-config.mjs` accepts, with `extra` laid over it: `reviewCloneOf` reads through that reader (#2991), so a bare `{ clones }` is no host file. */
 const hostFile = (extra: Record<string, unknown>) => JSON.stringify({ schema: 1, home: "/h", binDir: "/h/bin", primary: "p",
   projects: [{ id: "p", checkout: "/h/p" }], gh: { workers: "/h/w", leads: "/h/l", leadsHeader: [], leadsWorkspaces: [] }, ...extra });
 
-// --- (1) THE POPULATION, FROM THE API ---------------------------------------------------------------------------------------------
-
-/**
- * `gh repo list a11ign --limit 100 --json name,isArchived`, RECORDED 2026-10-02 (read-only, as `a11ign-ai-workers`). A recording and not a
- * list written here: the point is that the organisation's repositories are a fact GitHub holds and a declaration is checked AGAINST it.
- */
-const RECORDED_ORGANISATION = [
-  { name: "a11ign", isArchived: false }, { name: "agent-org", isArchived: false }, { name: "corpus-backups", isArchived: false },
-  { name: "auth-capture-check", isArchived: false }, { name: "documents", isArchived: false }, { name: "control", isArchived: false },
-  { name: "lab", isArchived: false }, { name: "screenreader-fleet", isArchived: false }, { name: "screenreader-worker", isArchived: false },
-];
-
-/**
- * THE SHRINK-ONLY EXEMPTION LIST: a repository that is not a declared scope, and why. An entry leaves when the repository is declared (a
- * declared one is refused here as redundant) and never joins without a reason; the ceiling below is the count it was recorded at, so a
- * longer list fails and a shorter one is the only edit that needs no argument.
- */
-const EXEMPT: Record<string, string> = {
-  "corpus-backups": "release storage only: 0 pull requests, all or open (measured 2026-10-02, `gh pr list -R a11ign/corpus-backups --state all`)",
-  "documents": "a layer repository (#2612) whose issues live on a11ign/a11ign; 0 pull requests measured 2026-10-02",
-  "control": "a layer repository (#2612) whose issues live on a11ign/a11ign; 0 pull requests measured 2026-10-02",
-  "lab": "a layer repository (#2612) whose issues live on a11ign/a11ign; 0 pull requests measured 2026-10-02",
-  "screenreader-fleet": "a layer repository (#2612) whose issues live on a11ign/a11ign; 0 pull requests measured 2026-10-02",
-  "auth-capture-check": "a private test bed (#2561) whose pull requests are workflow-run vehicles, NOT work to review or merge; 7 open on "
-    + "2026-10-02, which is the same class and is routed to product-manager on #2969 rather than declared here",
-};
-const EXEMPTION_CEILING = 6;
-/**
- * A repository the project's declaration is ABOUT TO GAIN (a11ign/a11ign#3190, #2701): declared or exempt, and either is accepted, because the
- * tool's suite runs against whatever declaration the project has on the day, and a test that wanted exactly one would turn the OTHER
- * repository's merge red. Delete the entry, and `undeclared` accepting it, once a11ign/a11ign#3190 has merged.
- */
-const EITHER_UNTIL_DECLARED: Record<string, string> = {
-  "screenreader-worker": "a layer repository (#2612); declared by a11ign/a11ign#3190 (#2701), 0 pull requests of its own measured 2026-10-02",
-};
-
-/** The non-archived repositories of `organisation` that are neither a declared scope nor exempt: the offenders. */
-function undeclared(organisation: { name: string, isArchived: boolean }[], declared: Set<string>, exempt: Record<string, string>) {
-  return organisation.filter((r) => !r.isArchived && !declared.has(r.name) && !(r.name in exempt) && !(r.name in EITHER_UNTIL_DECLARED)).map((r) => r.name);
-}
-
-const declaredNames = () => {
-  const declaration = homeProjectDeclaration();
-  return new Set([...declaration.code, ...declaration.tracker].map(({ repo }) => repo).filter((repo) => repo.startsWith("a11ign/")).map((repo) => repo.slice("a11ign/".length)));
-};
-
-test("(1) every non-archived repository in the organisation is a declared scope or a named exemption, and `agent-org` is a scope", () => {
-  const declared = declaredNames();
-  // POSITIVE CONTROLS: the fixture holds `agent-org`, and the declaration reads it -- or "nobody is undeclared" is two empty lists agreeing.
-  assert.ok(RECORDED_ORGANISATION.some((r) => r.name === "agent-org"), "the recording holds agent-org");
-  assert.ok(declared.has("agent-org") && declared.has("a11ign"), "and the declaration names both");
-  assert.deepEqual(undeclared(RECORDED_ORGANISATION, declared, EXEMPT), []);
-  // NEGATIVE CONTROL: a repository nobody declared goes red -- through the same function, so the check is not vacuous.
-  assert.deepEqual(undeclared([...RECORDED_ORGANISATION, { name: "nobody-declared", isArchived: false }], declared, EXEMPT), ["nobody-declared"]);
-  assert.deepEqual(undeclared([{ name: "nobody-declared", isArchived: true }], declared, EXEMPT), [], "an ARCHIVED one is not asked about");
-  // THE LIST ONLY SHRINKS: every exemption has a reason, names a repository that exists, is not also declared, and the count is a ceiling.
-  for (const [name, reason] of Object.entries(EXEMPT)) {
-    assert.ok(reason.length > 20, `${name} needs a reason`);
-    assert.ok(RECORDED_ORGANISATION.some((r) => r.name === name), `${name} is exempt but is in no recording: delete the entry`);
-    assert.equal(declared.has(name), false, `${name} is declared: delete its exemption`);
-  }
-  assert.ok(Object.keys(EXEMPT).length <= EXEMPTION_CEILING, "the exemption list is shrink-only");
-  // The transitional entries are held to the same account: a reason, a repository that exists, and never BOTH exempt and an entry here.
-  for (const [name, reason] of Object.entries(EITHER_UNTIL_DECLARED)) {
-    assert.ok(reason.length > 20, `${name} needs a reason`);
-    assert.ok(RECORDED_ORGANISATION.some((r) => r.name === name), `${name} is in no recording: delete the entry`);
-    assert.equal(name in EXEMPT, false, `${name} is exempt AND transitional: keep one`);
-  }
-});
+// --- (1) THE DECLARATION ---------------------------------------------------------------------------------------------------------
 
 test("(1) the declaration reads `agent-org` as a CODE scope with no tracker of its own, and the primary stays first", () => {
   const scopes = scopesOf([homeProjectDeclaration()]);
   assert.equal(scopes[0].key, "", "the primary is first");
   const keyed = scopes.find((s) => s.key === "agent-org");
   assert.deepEqual(keyed, { key: "agent-org", code: { repo: "a11ign/agent-org" }, tracker: null });
-  // `screenreader-worker` is the one declaration this suite accepts either way (a11ign/a11ign#3190): nothing ELSE is declared.
-  const rest = scopes.slice(1).map((s) => s.key).filter((key) => !(key in EITHER_UNTIL_DECLARED));
-  assert.deepEqual(rest, ["agent-org"], "and nothing else is declared");
+  // The fixture declares one keyed repository, so "nothing else" is a claim about the reader and a second one would be seen.
+  assert.deepEqual(scopes.slice(1).map((s) => s.key), ["agent-org"], "and nothing else is declared");
 });
 
 // --- (2) THE ORDER, AND ITS CHECKOUT ----------------------------------------------------------------------------------------------

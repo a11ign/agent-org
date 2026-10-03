@@ -1,0 +1,40 @@
+{
+  "_what": "(#3233) A RECORDED, MINIMAL roster for org-health.test.ts: the three decision-holders and the spare family `worker-<n>` from 4, in the shape a11ign's `.agent-org/roles/sessions.json` has. A fixture, never a11ign's live file.",
+  "live": [
+    {
+      "name": "ceo",
+      "role": "ceo",
+      "brief": ".agent-org/roles/ceo.md",
+      "started": "2026-09-13T14:31:55Z"
+    },
+    {
+      "name": "product-manager",
+      "role": "product-manager",
+      "brief": ".agent-org/roles/product-manager.md",
+      "started": "2026-09-13T13:48:55Z"
+    },
+    {
+      "name": "orchestrator",
+      "role": "orchestrator",
+      "brief": ".agent-org/roles/orchestrator.md",
+      "started": "2026-09-13T14:24:38Z"
+    },
+    {
+      "name": "worker-<n>",
+      "role": "engineer",
+      "spare": true,
+      "family": {
+        "prefix": "worker-",
+        "from": 4
+      },
+      "brief": ".agent-org/roles/engineer.md",
+      "started": "2026-09-24T09:42:00Z"
+    }
+  ],
+  "retired": [
+    {
+      "name": "dispatcher",
+      "retiredBy": "#913"
+    }
+  ]
+}

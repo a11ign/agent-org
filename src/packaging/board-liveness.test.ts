@@ -34,14 +34,10 @@
 import { declareWalkScope } from "../lib/walk-scope.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { HOME_CHECKOUT } from "../project-config.mjs";
 
 import { EXIT, daysSince, livenessVerdict, newestEditionDay }
   from "../board-schedule-liveness.mjs";
 
-const REPO_ROOT = HOME_CHECKOUT;
 const NOW = new Date("2026-09-20T09:00:00Z");
 
 /** No summary was ever written — the gate would refuse every day. */
@@ -113,32 +109,6 @@ test("daysSince counts whole days, so 'today' is 0 and does not read as stale", 
   assert.equal(daysSince("2026-09-17", NOW), 3);
 });
 
-// #901: the watchdog is a step in `trunk.yml`'s `watchdogs` job since 2026-09-10, not a workflow of
-// #909 (2026-09-12): the no-`schedule:` assertion below is on the WHOLE file, so it also covers `trunkRecheck`
-// and `closeRows`, which live in `trunk.yml` as tenants -- measured by worker-capture on #1145: a cron added to
-// trunk.yml fails this test AND the identical assertions in npm-token-liveness.test.ts and
-// workflow-run-liveness.test.ts (measured by ceo, each file run alone: 1 red in all three). Three guards hold
-// the constraint; a run that names only one of them has left the other two out of its set.
-// its own -- same trigger, same script, no workflow run of its own. The pin follows it there.
-const TRUNK_GUARD = path.join(REPO_ROOT, ".github/workflows/trunk.yml");
-
-test("the check does NOT run on a schedule, which is the property it exists for", () => {
-  // PINNED, because it is the one design decision that cannot be recovered by reading the script: a
-  // watchdog moved onto a cron is disabled by the same repository inactivity it watches for, and the
-  // change would look like tidying a push-triggered step into the nightly file.
-  const workflow = readFileSync(TRUNK_GUARD, "utf8");
-  assert.ok(!/^\s*schedule:/m.test(workflow),
-    "trunk.yml must not be scheduled. GitHub disables scheduled workflows repository-wide after "
-    + "60 days of inactivity, so a scheduled watchdog dies in the same breath as the jobs it guards. It "
-    + "runs on push, which cannot be disabled by inactivity because a push IS the activity");
-  assert.match(workflow, /^\s*push:/m, "it must run on push -- the trigger that inactivity cannot silence");
-  assert.match(workflow, /run: pnpm exec agent-org board:liveness --post --issue=20/,
-    "the board watchdog step must still be in trunk.yml -- a watchdog in no workflow has silently stopped");
-  const nightly = readFileSync(path.join(REPO_ROOT, ".github/workflows/nightly.yml"), "utf8");
-  assert.doesNotMatch(nightly, /board-schedule-liveness\.mjs/,
-    "the board watchdog must not ALSO be in nightly.yml -- a cron copy would look like it covers the gap");
-});
-
 // ---------------------------------------------------------------------------------------------------
 // #590: THE HEADER CLAIMED TWO WORKFLOWS AND THE CODE GUARDED ONE.
 //
@@ -148,34 +118,20 @@ test("the check does NOT run on a schedule, which is the property it exists for"
 // stopped running for nineteen hours, nothing said so, and the first anyone knew was the next morning,
 // when the missing summary turned main's own tip red and blocked every PR in the repository.
 // ---------------------------------------------------------------------------------------------------
-import { GUARDED_WORKFLOWS, missedTodaysWindow } from "../board-schedule-liveness.mjs";
+import { missedTodaysWindow } from "../board-schedule-liveness.mjs";
 import { hostWorkflowFile, hoursSincePreviousRun, watchdogSilenceLine }
   from "../board-schedule-liveness.mjs";
 
-// #929: THIS GUARD READS ONLY `docs`, `.github/workflows`, so a diff that cannot reach it need not run this file.
+// #929: THIS GUARD READS ONLY `.agent-org`, so a diff that cannot reach it need not run this file.
+// (#3233: it read `docs` and `.github/workflows` too, to pin trunk.yml's triggers; those pins are the project's now.)
 // Undeclared means unbounded, which is why the selector runs 173 always-run guards on every pull
 // request. The declaration is ENFORCED rather than trusted: `declareWalkScope` observes what this
 // file actually reads and fails it here if anything lands outside the scope -- so a scope that is
 // too narrow is loud, never a guard that silently stopped running.
 // #2616: `.agent-org` IS IN THE SCOPE because importing `repo-identity.mjs` now reads the project's declaration, `.agent-org/project.json`;
 // the read is real, so a change to it correctly reaches this file.
-export const WALK_SCOPE = ["docs",".github/workflows", ".agent-org"];
+export const WALK_SCOPE = [".agent-org"];
 await declareWalkScope(import.meta.url);
-
-test("#590 every workflow the watchdog's HEADER names is one its code actually guards", () => {
-  // DERIVED FROM THE HEADER, never a second hand-written list -- a second list is exactly what the first
-  // constant became. If the header stops naming a workflow, or starts naming a third, this fails until
-  // somebody decides which of the two is wrong.
-  const header = readFileSync(TRUNK_GUARD, "utf8")
-    .split("\n").filter((l) => l.trimStart().startsWith("#")).join("\n");
-  const named = [...new Set([...header.matchAll(/`(board-[a-z-]+\.yml)`/g)].map((m) => m[1]))];
-  assert.ok(named.length >= 2, `the header must still name the workflows it guards; found ${named.length}`);
-  for (const workflow of named) {
-    assert.ok(GUARDED_WORKFLOWS.includes(workflow),
-      `${workflow} is named in trunk.yml's header but is not in GUARDED_WORKFLOWS -- the header `
-      + "claiming more than the code guards is the defect #590 was filed for");
-  }
-});
 
 test("#590 NOT A STALENESS THRESHOLD: 'not yet' and 'did not' stay different answers", () => {
   const today = "2026-09-09";

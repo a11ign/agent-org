@@ -6,12 +6,12 @@
  * actually executed, exit code is the verdict), REFUSED (needs the fleet/lab/runs/, named, never gates),
  * MISSING (no acceptance line at all -- must FAIL, never read as a pass).
  */
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { execFileSync, spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -35,13 +35,24 @@ import {
 } from "../acceptance-commands.mjs";
 import { withGitSandbox, sandboxGitEnv } from "../lib/git-sandbox.ts";
 
-// A file known to exist, relative to the repo root -- where every real invocation of this command runs
-// from. This test file names itself, so it cannot go stale independently of being renamed.
+// THE PROJECT THE CLASSIFIER READS IS BUILT BELOW, NOT BORROWED (#3233). Every command here is classified against the cwd's
+// `package.json`, its test files and its git index, and this file used to read a11ign's: which test declares `// requires:`, what
+// `board:settle` runs, how many files `test:all` globs. Those are facts about a11ign's tree at whatever commit CI checked out, so
+// the tool's merge queue went red for a change that touched none of them. The tool's behaviour is the subject; a project test that
+// happens to ask the question today is not.
+const THIS_FILE = fileURLToPath(import.meta.url);
+const TOOL_SRC = resolve(THIS_FILE, "..", "..");
+
+// Matches acceptance-commands.mjs's own `fingerprint` -- concatenated so the resolver's name never
+// appears contiguously in this file's own source.
+const spell = (a: string, b: string) => a + b;
+
+// A file known to exist, relative to the project root -- where every real invocation of this command runs
+// from. The fixture project holds a stand-in at this path; the one test that must walk THIS file reads THIS_FILE.
 const REAL_FILE = "packages/agent-org/src/packaging/acceptance-commands.test.ts";
 
-// The REAL fixture #510/#497 exist for: `pre-push-resolve-toward-main.test.ts` genuinely carries
-// `// requires: history` (its own `shallowHere()`/`t.skip()` guards need full git history), so testing
-// against it exercises the actual mechanism rather than an invented stand-in.
+// The fixture `pre-push-resolve-toward-main.test.ts` stands for: a test that genuinely carries `// requires: history`
+// after a long doc-comment header, so testing against it exercises the actual header mechanism (#510/#497).
 const HISTORY_FIXTURE = "packages/lab/src/packaging/pre-push-resolve-toward-main.test.ts";
 
 const NO_HISTORY = { history: false, token: false, fleet: false };
@@ -68,6 +79,7 @@ const WITH_TOKEN = { history: true, token: true, fleet: true, corpus: true };
  * rather than guessing a line.
  */
 const BOARD_DOCUMENT = "packages/agent-org/src/board-document.mjs";
+const TOOL_BOARD_DOCUMENT = join(TOOL_SRC, "board-document.mjs");
 function spawnLineOf(source: string): number | null {
   const lines = source.split("\n");
   const start = lines.findIndex((line) => /^function publishToDraftRelease\(/.test(line));
@@ -79,11 +91,99 @@ function spawnLineOf(source: string): number | null {
   return inFunction >= 0 && inFunction === inFile ? inFunction + 1 : null;
 }
 const boardDocumentSpawnLine = (): number => {
-  const line = spawnLineOf(readFileSync(BOARD_DOCUMENT, "utf8"));
+  const line = spawnLineOf(readFileSync(TOOL_BOARD_DOCUMENT, "utf8"));
   assert.ok(line !== null, "board-document.mjs's first gh spawn is no longer inside publishToDraftRelease -- "
     + "re-locate the #621 fixture rather than pin a line");
   return line;
 };
+
+// --- the fixture project (#3233) ---
+
+const SETTLE_SCRIPT = "packages/agent-org/src/settle-closed-rows.mjs";
+const GLOB_RUNNER = "node packages/guards/src/assert-glob-not-empty.mjs";
+const FIXTURE_SCRIPTS: Record<string, string> = {
+  lint: "eslint .",
+  build: "tsc --noEmit",
+  test: "pnpm run test:ts && pnpm run test:python",
+  "test:ts": `${GLOB_RUNNER} "packages/{alpha,beta}/src/**/*.test.ts" --min=2 --run --runner=rstest`,
+  "test:org": `${GLOB_RUNNER} "packages/{agent-org,lab,gamma}/src/**/*.test.ts" --min=2 --run --runner=rstest`,
+  "test:all": `${GLOB_RUNNER} "packages/*/src/**/*.test.ts" --min=2 --run --runner=rstest`,
+  "test:python": "if [ -x .venv/bin/pytest ]; then .venv/bin/pytest packages/*/tests -q; fi",
+  "test:changed": "node scripts/test-changed.mjs",
+  "board:settle": `node ${SETTLE_SCRIPT}`,
+};
+
+// The populations the scripts above resolve to, by construction: `test` runs `test:ts`, `test:org` is the rest of the packages that
+// hold tests, and the two together are `test:all`. Each file is here because a test below needs it to declare or derive something.
+const TS_POPULATION = ["packages/alpha/src/needs-history.test.ts", "packages/alpha/src/reads-corpus.test.ts", "packages/beta/src/plain.test.ts"];
+const ORG_POPULATION = [REAL_FILE, "packages/gamma/src/needs-token.test.ts", "packages/lab/src/dataset-paths.test.ts", BOARD_STYLE_FIXTURE,
+  HISTORY_FIXTURE, "packages/lab/src/packaging/lab-fetch-paths.test.ts"];
+
+/** What a project's tests and scripts are, as far as the classifier's readers can tell: headers, imports, spawns and globs. */
+function fixtureProjectFiles(): Record<string, string> {
+  return {
+    "package.json": JSON.stringify({ scripts: FIXTURE_SCRIPTS }),
+    [REAL_FILE]: "export {};\n",
+    [HISTORY_FIXTURE]: ["/**", " * A RESOLUTION THAT KEPT ITS OWN SIDE PASSED EVERY CHECK -- a doc comment as long as the real ones, which put",
+      " * the header below it, so a reader that looks only at the first lines of a file misses it.", " */",
+      "// requires: history", "export {};", ""].join("\n"),
+    "packages/alpha/src/needs-history.test.ts": "// requires: history\nexport {};\n",
+    "packages/alpha/src/reads-corpus.test.ts": `import { CORPUS_DIR } from "../../lab/src/dataset-paths.mjs";\nexport const dir = CORPUS_DIR;\n`,
+    "packages/beta/src/plain.test.ts": "export {};\n",
+    "packages/gamma/src/needs-token.test.ts": "// requires: token\nexport {};\n",
+    "packages/guards/src/assert-glob-not-empty.mjs": "export {};\n",
+    "scripts/rstest/rstest.config.mjs": "// requires: history\nexport default {};\n",
+    ...labFixtureFiles(),
+    ...boardFixtureFiles(),
+  };
+}
+
+/** The lab package: the corpus-root resolver, a module reaching it through an import, and two tests that name it in their own text. */
+function labFixtureFiles(): Record<string, string> {
+  return {
+    "packages/lab/src/dataset-paths.mjs": [`import { join } from "node:path";`,
+      `export function ${spell("runsRo", "ot")}() { return "runs"; }`,
+      `export const CORPUS_DIR = join(${spell("runsRo", "ot()")}, "corpus");`, ""].join("\n"),
+    "packages/lab/src/training/corpus-settled.mjs": `import { CORPUS_DIR } from "../dataset-paths.mjs";\nexport const settled = CORPUS_DIR;\n`,
+    "packages/lab/src/dataset-paths.test.ts": `import { runsRoot } from "./dataset-paths.mjs";\nexport const root = ${spell("runsRo", "ot()")};\n`,
+    "packages/lab/src/packaging/lab-fetch-paths.test.ts": `export const root = process.env.${spell("A11Y_RUNS_R", "OOT")};\n`,
+  };
+}
+
+/** The board: a script that spawns `gh`, and a test that reaches `resolveChromeBinary` in a copy of the tool's own `board-document.mjs`. */
+function boardFixtureFiles(): Record<string, string> {
+  return {
+    [BOARD_DOCUMENT]: readFileSync(TOOL_BOARD_DOCUMENT, "utf8"),
+    [SETTLE_SCRIPT]: `import { execFileSync } from "node:child_process";\nexecFileSync("${spell("g", "h")}", ["issue", "list"]);\n`,
+    // The import line is spelled in two halves: this file is itself walked (the self-reference test below), and an import written whole
+    // inside a string is a real edge to the scanner.
+    [BOARD_STYLE_FIXTURE]: [`import { test } from "node:test";`,
+      spell("import { resolveChromeBinary } fr", `om "../../../agent-org/src/board-document.mjs";`),
+      `test("finds a browser", () => { resolveChromeBinary(); });`, ""].join("\n"),
+  };
+}
+
+function writeProject(root: string, files: Record<string, string>): void {
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), text);
+  }
+}
+
+/** The project is a git checkout, so the readers that ask the index (`git ls-files`) are answered by the fixture too. */
+function trackInGit(root: string): void {
+  for (const args of [["init", "-q"], ["add", "-A"]]) execFileSync("git", args, { cwd: root, env: sandboxGitEnv() });
+}
+
+const FIXTURE_PROJECT = mkdtempSync(join(tmpdir(), "acceptance-project-"));
+const LAUNCH_DIRECTORY = process.cwd();
+writeProject(FIXTURE_PROJECT, fixtureProjectFiles());
+trackInGit(FIXTURE_PROJECT);
+process.chdir(FIXTURE_PROJECT);
+after(() => {
+  process.chdir(LAUNCH_DIRECTORY);
+  rmSync(FIXTURE_PROJECT, { recursive: true, force: true });
+});
 
 // --- classifyCommand ---
 
@@ -1192,7 +1292,6 @@ test("#2724 singleNodeInvocation: a non-`node` executable resolves to nothing --
 // bin spawns nothing itself, so a script resolved to it would be charged for nothing: `npm run board:settle` would
 // read `runnable` against a job with no token. The command -> program mapping is the tool's command table
 // (`src/commands.mjs`, #3068, not built yet), so these cases hand the resolver a table of THE SHAPE IT READS.
-const TOOL_SRC = resolve(fileURLToPath(import.meta.url), "..", "..");
 const TABLE = { "board:settle": "settle-closed-rows.mjs", "messaging:listen": "messaging/listen.mjs",
   "escapes": "../package.json.mjs", "no-file": "notes.txt" };
 const COMMAND_BODY = "agent-org board:settle";
@@ -1314,7 +1413,7 @@ test("#621 SELF-REFERENCE REGRESSION: acceptance-commands.mjs describes the thre
   + "and separately from its own regex-literal SOURCE TEXT (comment-stripping cannot fix that half -- the "
   + "fingerprint is real code). Both classes are fixed; this pins zero derived requirements for the file "
   + "that defines them.", () => {
-  const hits = deriveClosureRequirements(REAL_FILE);
+  const hits = deriveClosureRequirements(THIS_FILE);
   assert.deepEqual(hits, [], `acceptance-commands.test.ts must derive NOTHING from its own closure -- `
     + `found: ${hits.map((h) => closureRequirementMessage(h)).join("; ")}`);
 });
@@ -1434,9 +1533,6 @@ test("#3103 deriveClosureRequirements: the tool is followed through a dynamic im
 // `fingerprint()` builds its own patterns in acceptance-commands.mjs. ---
 
 const REAL_JOB_CAPABILITIES = jobCapabilities("History: full");
-// Matches acceptance-commands.mjs's own `fingerprint` -- concatenated so the resolver's name never
-// appears contiguously in this file's own source.
-const spell = (a: string, b: string) => a + b;
 
 /**
  * A SYNTHETIC git-fixture-cache.mjs-SHAPED writer -- the general case #718 was the specific instance of: a
@@ -1738,20 +1834,22 @@ test("CONTROL: a command that merely mentions the word test is not a whole-suite
  * examined nothing -- the failure this whole mechanism exists to prevent, reintroduced one layer up.
  *
  * `suiteTestFiles` throws rather than returning `[]` for the same reason, and this proves the glob it
- * reads out of `package.json` actually resolves against this tree. PER SCRIPT since #2153, because the
+ * reads out of `package.json` actually resolves, against the fixture project's tree (#3233). PER SCRIPT since #2153, because the
  * floor is now four populations rather than one, and a floor asserted on only the widest of them would
  * be met by three empty ones.
  */
 test("every suite script's population is real -- a floor, because every check above passes vacuously "
   + "over an empty one", () => {
+  const expected: Record<string, string[]> = {
+    test: TS_POPULATION, "test:ts": TS_POPULATION, "test:org": ORG_POPULATION, "test:all": [...TS_POPULATION, ...ORG_POPULATION],
+  };
   for (const script of SUITE_SCRIPTS) {
     const files = suiteTestFiles(script);
-    assert.ok(files.length >= 180,
-      `\`${script}\` resolved to only ${files.length} test file(s); the narrowest of these scripts `
-      + "asserts --min=180 for itself, so fewer means the glob no longer resolves and this gate is "
-      + "answering about a population it never examined");
+    assert.ok(files.length > 0, `\`${script}\` resolved to no test file; this gate would be answering about a population it never examined`);
+    assert.deepEqual([...files].sort(), [...expected[script]].sort(),
+      `\`${script}\` must resolve to exactly the files its glob names, or the glob no longer resolves as written`);
   }
-  assert.ok(suiteTestFiles("test:all").some((f: string) => f.endsWith("row-claim-live.test.ts")),
+  assert.ok(suiteTestFiles("test:all").some((f: string) => f.endsWith("needs-token.test.ts")),
     "the file whose token requirement started this must be IN the population, or the gate cannot have "
     + "caught it");
 });
@@ -1766,17 +1864,15 @@ test("every suite script's population is real -- a floor, because every check ab
  * into three words that are not files, and were handed to the runner having been charged nothing.
  *
  * MEASURED: at the head this landed on, `test:ts` resolved 220 files and `test:all` 641.
+ *
+ * #3233: the test below also asserted that a11ign's own `package.json` defines each of the four names. That is a fact about a11ign's tree, so it is
+ * not asserted here; what the tool owns is what remains -- the list and the pattern built from it agree, and the near misses are not in it.
  */
-test("the four suite script names are `package.json`'s OWN, not a retyped list", () => {
-  const scripts = JSON.parse(readFileSync("package.json", "utf8")).scripts as Record<string, string>;
+test("the four suite script names each resolve to themselves, and the scripts that are not a `.test.ts` glob resolve to nothing", () => {
   assert.equal(SUITE_SCRIPTS.length, 4,
     "four spellings run a whole `.test.ts` suite here, and DROPPING one is the defect this row fixed -- "
     + "an unrecognised whole-suite command is charged nothing at all, not charged less");
   for (const name of SUITE_SCRIPTS) {
-    assert.ok(typeof scripts[name] === "string",
-      `\`${name}\` is not a script in package.json -- this list decides which commands the capability `
-      + "gate charges, so a name that no longer exists charges nothing and reads as a command that needs "
-      + "nothing");
     assert.deepEqual(suiteScriptsFor(`npm run ${name}`), [name],
       `\`npm run ${name}\` must resolve to \`${name}\`, or the list and the pattern built from it disagree`);
   }
@@ -2277,8 +2373,11 @@ test("#1036: the tolerance is for the WRAPPER, never for surrounding text -- a r
 // A GUARD MESSAGE MUST BE FOLLOWABLE. This one said what was wrong without saying what to do.
 // ---------------------------------------------------------------------------------------------------
 
+/** The tool's own test that reaches `gh` through `mergeReadiness`: absolute, because the fixture project is the cwd and the tool is not in it. */
+const MERGE_GUARD_TEST = join(TOOL_SRC, "packaging", "merge-guard.test.ts");
+
 test("#1116: a closure refusal names `// no-token:` when that declaration would actually hold", () => {
-  const hits = deriveClosureRequirements("packages/agent-org/src/packaging/merge-guard.test.ts");
+  const hits = deriveClosureRequirements(MERGE_GUARD_TEST);
   const token = hits.find((h: { requirement: string }) => h.requirement === "token");
   assert.ok(token, "merge-guard.test.ts reaches `gh` through mergeReadiness -- if this is empty the "
     + "fixture has changed and the rest of this test proves nothing");
@@ -2299,7 +2398,7 @@ test("#1116: the remedy is NOT offered on a declaration already judged wrong", (
   // future edit could start doing exactly that. Driven over the shape rather than a real file, because
   // no tracked file carries a wrong declaration and one planted here would be a fixture of the defect.
   const wrong = { requirement: "token" as const, file: "x.mjs", line: 1, wrongDeclaration: true,
-    chain: ["packages/agent-org/src/packaging/merge-guard.test.ts", "packages/agent-org/src/merge-guard.mjs"] };
+    chain: [MERGE_GUARD_TEST, join(TOOL_SRC, "merge-guard.mjs")] };
   const message = closureRequirementMessage(wrong);
   assert.match(message, /DOES call/, "the wrong-declaration refusal itself is unchanged");
   assert.doesNotMatch(message, /may declare/,
@@ -2312,7 +2411,7 @@ test("#1116: the remedy names the DISCRIMINATING condition, not only the mechani
   // injected and `gh` never executed, so "if every input it passes is injected" was SATISFIED and the
   // declaration would still have been wrong. The mechanical precondition does not discriminate the case
   // it needs to discriminate.
-  const token = deriveClosureRequirements("packages/agent-org/src/packaging/merge-guard.test.ts")
+  const token = deriveClosureRequirements(MERGE_GUARD_TEST)
     .find((h: { requirement: string }) => h.requirement === "token");
   assert.ok(token, "the fixture must still reach `gh`, or this proves nothing");
   const message = closureRequirementMessage(token);
@@ -2327,7 +2426,7 @@ test("#1116: the remedy is offered only when it would HOLD — advice a reader c
   // #1059's shape: `doctor`'s `next:` line once sent a reader to a script that had just refused them.
   // The suggestion is checked against the entry's own comment-stripped code before it is made, so a file
   // that really does call the function is never told to declare that it does not.
-  const already = deriveClosureRequirements("packages/agent-org/src/wake-orphaned-handoff.test.ts");
+  const already = deriveClosureRequirements(join(TOOL_SRC, "wake-orphaned-handoff.test.ts"));
   assert.deepEqual(already, [],
     "this file already declares `// no-token: gh`, so it has no token requirement to be advised about -- "
     + "the control that the advice is not simply appended to everything");
@@ -2373,14 +2472,14 @@ test("#728 THE CONTROL: the guard #419 built still discriminates -- this must no
   const missing = testFileArgumentsResolve("npx tsx --test packages/lab/src/definitely-not-here.test.ts");
   assert.deepEqual(missing, { ok: false, missing: ["packages/lab/src/definitely-not-here.test.ts"] },
     "a genuinely missing file must still be named");
-  assert.deepEqual(testFileArgumentsResolve("npx tsx --test packages/agent-org/src/acceptance-commands.mjs"), { ok: true },
+  assert.deepEqual(testFileArgumentsResolve(`npx tsx --test ${REAL_FILE}`), { ok: true },
     "and a real file must still pass");
 });
 
 test("#728: an ordinary command with no relocating construct is untouched", () => {
   // The list is the constructs that RELOCATE the arguments, not everything unfamiliar. A guard that
   // refused what it did not recognise would refuse every ordinary command the moment a flag was added.
-  assert.deepEqual(testFileArgumentsResolve("npx tsx --test --test-concurrency=4 packages/agent-org/src/acceptance-commands.mjs"),
+  assert.deepEqual(testFileArgumentsResolve(`npx tsx --test --test-concurrency=4 ${REAL_FILE}`),
     { ok: true });
   assert.deepEqual(testFileArgumentsResolve("npm run lint"), { ok: true },
     "and a line with no `tsx --test` is never inspected at all");
@@ -2486,7 +2585,7 @@ function withBoardDocumentTree<T>(boardDocument: string, body: (entry: string) =
 
 test("#1458 CONTROL: lines inserted above publishToDraftRelease move the shape lookup, the derived hit and the "
   + "message together", () => {
-  const real = readFileSync(BOARD_DOCUMENT, "utf8");
+  const real = readFileSync(TOOL_BOARD_DOCUMENT, "utf8");
   const moved = real.replace(/^function publishToDraftRelease\(/m, "// #1458 padding\n".repeat(PADDING_LINES) + "function publishToDraftRelease(");
   assert.notEqual(moved, real, "the insertion must land");
   const realLine = spawnLineOf(real);
@@ -2506,7 +2605,7 @@ test("#1458 CONTROL: lines inserted above publishToDraftRelease move the shape l
 
 test("#1458 CONTROL: the shape lookup finds nothing when the function's spawns are gone, or when an earlier spawn "
   + "precedes the function -- a location that cannot be followed refuses rather than guesses", () => {
-  const real = readFileSync(BOARD_DOCUMENT, "utf8");
+  const real = readFileSync(TOOL_BOARD_DOCUMENT, "utf8");
   const gh = spell("g", "h");
   const spawnsGone = real.replace(new RegExp(SPAWNS_GH.source, "g"), `execFileSync("${spell("tr", "ue")}"`)
     + `\nfunction laterSpawn() { return execFileSync("${gh}", []); }\n`;
@@ -2578,7 +2677,7 @@ test("#1465: EVERY header line is verified -- a wrong SECOND declaration is name
 });
 
 test("#1465: the one real header with a reason, row-claim-stale-rule.test.ts:1, derives no requirement and is not refused", () => {
-  const f = "packages/agent-org/src/packaging/row-claim-stale-rule.test.ts";
+  const f = join(TOOL_SRC, "packaging", "row-claim-stale-rule.test.ts");
   assert.match(readFileSync(f, "utf8").split("\n")[0], /^\/\/ no-token: gh -- /, "the fixture's premise: its header carries a reason");
   assert.deepEqual(deriveClosureRequirements(f), []);
 });
@@ -2987,15 +3086,8 @@ test("#2099: #2084's REAL Acceptance -- the live correct-row case -- files clean
   assert.equal(handRunAcceptanceReason(`${real}\nHand-run: ${HAND_RUN_REASON}\n`, "row-file"), null);
 });
 
-test("#2099: the row template DECLARES the field -- the open-check that opened this row read `grep -ci token "
-  + "backlog-row.yml` as 0, and a mechanism no filer is told about is the prose it replaced", () => {
-  const template = readFileSync(".github/ISSUE_TEMPLATE/backlog-row.yml", "utf8");
-  assert.match(template, /Hand-run: <who runs it and why>/);
-  assert.match(template, /acceptance job/i);
-  // #2118: and it names where the output goes, for the identical reason -- the filer is told about the
-  // requirement in the one document they are actually reading when they write the Acceptance.
-  assert.match(template, /## Hand-run output/);
-});
+// #3233: the test that read the row template's `Hand-run:` wording (`.github/ISSUE_TEMPLATE/backlog-row.yml`) is not here any more -- that
+// file is a11ign's, so whether it names the field is a11ign's to assert, not this tool's.
 
 // --- #2118: THE OTHER HALF OF #2099 -- the declaration was required, the OUTPUT was not ---
 //
@@ -3225,8 +3317,8 @@ test("#2118: the evidence is NOT overridable through `deps` -- it is the field t
 // -- the spelling every row is now required to write -- was charged nothing: the same corpus-requiring
 // file was refused via `npm test` and handed to the runner when named. ---
 
-/** The file the row's own probe used: it reaches the corpus, and declares nothing. Real, so `existsSync` holds. */
-const CORPUS_FILE = "packages/lab/src/abstention-regression.test.ts";
+/** The fixture project's file that reaches the corpus and declares nothing: the shape the row's own probe used, and it exists, so `existsSync` holds. */
+const CORPUS_FILE = "packages/alpha/src/reads-corpus.test.ts";
 const RSTEST = "npx rstest run --config scripts/rstest/rstest.config.mjs";
 /** Every spelling of "run this one file" that this repo's rows, scripts and CI use. */
 const NAMING_SPELLINGS: Record<string, (file: string) => string> = {
@@ -3245,11 +3337,11 @@ test("#2221 THE CONTROL THIS ROW EXISTS FOR: a corpus-requiring file is REFUSED 
     const unmet = unmetCommandClosureRequirements(command(CORPUS_FILE), NO_CAPABILITIES);
     assert.equal(unmet.length, 1, `${spelling}: expected one refusal, got ${JSON.stringify(unmet)}`);
     assert.equal(unmet[0].requirement, "corpus", spelling);
-    assert.match(unmet[0].message, /^abstention-regression\.test\.ts requires corpus via /, spelling);
+    assert.match(unmet[0].message, /^reads-corpus\.test\.ts requires corpus via /, spelling);
     const verdict = classifyCommand(command(CORPUS_FILE), { capabilities: NO_CAPABILITIES });
     assert.equal(verdict.verdict, "refused", spelling);
     assert.match(String((verdict as { reason?: string }).reason),
-      /needs `corpus`, which this job does not have -- abstention-regression\.test\.ts requires corpus/,
+      /needs `corpus`, which this job does not have -- reads-corpus\.test\.ts requires corpus/,
       spelling);
   }
 });
@@ -3326,8 +3418,9 @@ test("#2221: a header-declared `// requires:` is charged for a named rstest file
 test("#2221: a command that names no test file is still never inspected, and one that names a file which "
   + "does not exist is skipped rather than throwing -- `testFileArgumentsResolve` owns that question", () => {
   assert.deepEqual(unmetCommandClosureRequirements("npm run lint", NO_CAPABILITIES), []);
-  assert.deepEqual(unmetCommandClosureRequirements(
-    "npx rstest run --include packages/lab/src/training/abstention-regression.test.ts", NO_CAPABILITIES), [],
+  const elsewhere = CORPUS_FILE.replace("/src/", "/src/training/");
+  assert.equal(existsSync(elsewhere), false, "the control's path must not exist, or it proves nothing");
+  assert.deepEqual(unmetCommandClosureRequirements(`npx rstest run --include ${elsewhere}`, NO_CAPABILITIES), [],
     "a path that does not exist reads 0 for a reason that is NOT the hole -- the row's own first probe");
 });
 
@@ -3495,7 +3588,7 @@ test("#2308: two `## Measured` sections fail rather than pick one", () => {
 });
 
 test("#2308: the CLI reads the verdict -- a malformed section exits 1 and prints its line", () => {
-  const run = (body: string) => spawnSync(process.execPath, ["packages/agent-org/src/acceptance-commands.mjs"],
+  const run = (body: string) => spawnSync(process.execPath, [join(TOOL_SRC, "acceptance-commands.mjs")],
     { encoding: "utf8", env: { ...process.env, PR_BODY: body } });
   const bad = run(`Closes #1\n\nAcceptance: none \u2014 nothing to run\n\n${measuredBody("$ git ls-files | wc -l")}`);
   assert.match(bad.stdout, /MEASURED: MALFORMED/);
@@ -3587,7 +3680,7 @@ test("#2192: a path that EXISTS is never refused for having a twin", () => {
 /**
  * A test file the project tracks right now, and where its basename is NOT spelled at `packages/agent-org/src/`.
  * Found rather than named: the file this test used to name travelled out of the project (#2975, #3094), and a
- * path named here would go stale the next time the project moves a test.
+ * path named here would go stale the next time the project moves a test. The project is the fixture's git checkout (#3233).
  */
 function trackedTestFileWithAbsentTypo() {
   const tracked = execFileSync("git", ["ls-files"], { encoding: "utf8", env: sandboxGitEnv() }).split("\n");
@@ -3597,8 +3690,8 @@ function trackedTestFileWithAbsentTypo() {
   return { twin, typo: `packages/agent-org/src/${basename(twin)}` };
 }
 
-test("#2192: on the REAL tree, #2068's own body is refused and names the real test file", () => {
-  assert.ok(existsSync(REAL_FILE), "this test reads the real tree with repo-relative paths, so it runs from the repository root");
+test("#2192: on a REAL tree, #2068's own body is refused and names the real test file", () => {
+  assert.ok(existsSync(REAL_FILE), "this test reads a real tree with repo-relative paths, so it runs from the project root");
   const { twin, typo } = trackedTestFileWithAbsentTypo();
   const reason = acceptancePathsReason(copiedIntoBoth(typo), "row-file", { regionEntries: [typo] });
   assert.ok(reason?.includes(twin), `the refusal must name the tracked twin ${twin}; got ${reason}`);

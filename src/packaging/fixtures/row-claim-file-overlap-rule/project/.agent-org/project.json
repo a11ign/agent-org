@@ -1,0 +1,51 @@
+{
+  "_what": "(#3233) A RECORDED, MINIMAL project declaration for row-claim-file-overlap-rule.test.ts, in the shape a11ign's has (tracker, two code repositories, the roles directory, the vocabulary). A fixture, never a11ign's live file: a11ign adding a repository or a field must not move this suite's verdict.",
+  "schema": 1,
+  "tracker": [
+    {
+      "key": "",
+      "repo": "a11ign/a11ign",
+      "board": {
+        "owner": "a11ign",
+        "number": 1
+      }
+    }
+  ],
+  "code": [
+    {
+      "key": "",
+      "repo": "a11ign/a11ign"
+    },
+    {
+      "key": "agent-org",
+      "repo": "a11ign/agent-org"
+    }
+  ],
+  "roles": {
+    "dir": ".agent-org/roles"
+  },
+  "vocabulary": {
+    "labels": {
+      "backlog": "backlog",
+      "needsChairman": "needs:chairman",
+      "outOfRelease": "out-of-release",
+      "blocked": "blocked"
+    },
+    "prefixes": {
+      "lane": "lane:",
+      "session": "session:",
+      "answer": "answer:"
+    },
+    "milestones": {
+      "roadToVersionOne": "Road to version one",
+      "outOfRelease": "Out of release"
+    },
+    "lanesFile": "docs/lane-ownership.json",
+    "templateFields": {
+      "acceptance": "Acceptance",
+      "closes": "Closes",
+      "fleet": "Fleet"
+    },
+    "fleetQuestion": "Does the acceptance need the fleet or the lab"
+  }
+}

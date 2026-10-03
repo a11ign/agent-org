@@ -12,17 +12,40 @@
  * its own account has commented on. Both are OFFERED, through the same entry every "is NOT offered" below goes through. Every clear and every unknown is only worth
  * anything because these two trip.
  */
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, chmodSync, readFileSync, readdirSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync, chmodSync, readFileSync, readdirSync, cpSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NO_MERGE_HOURS, RED_PR_MINUTES, REFUSED_TICKS, PRIMARY_STALE_MINUTES, SIGNALS, noMergeReading, redPrReading, refusedRowReading,
-  primaryReading, primaryStandingSince, readLastMergedAt, PR_NOT_PROGRESSING_MINUTES, REASONS_THAT_ARE_NOT_A_STALL, prNotProgressingReading, orgHealthReadings, orgHealthOrders, orgHealthTick } from "../org-health.mjs";
-import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, GH_READS, UNCLAIMABLE_AFTER_TICKS, decide, withPrOwners, redPrFacts, stalledPrFacts, stallReasonOf, STALL_REASON } from "../work-gate.mjs";
-import { profileFor } from "../worker-profile.mjs";
+import { sandboxGitEnv } from "../lib/git-env.mjs";
+
+// --- (#3233) THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE, NOT A11IGN'S CHECKOUT ---
+//
+// The gate decides who owns a PR from the project's roster (`session:worker-7` is an owner only if the roster has that address) and reads its git and its
+// declaration, and `work-gate.mjs` run as a process does the same from its working directory. With no `$AGENT_ORG_HOST` the layout answers a11ign's live
+// checkout, so a11ign editing its roster or its tree changed this file's verdict (agent-org #77 and #79). The host file is set FIRST and the tool imported AFTER
+// it, dynamically; the project is `fixtures/org-health/project`, copied to a temp directory that is made a git repository with no commit, and it is the
+// working directory of this process and of the gates it spawns, which inherit both.
+const PROJECT_SCRATCH = mkdtempSync(join(tmpdir(), "org-health-project-"));
+after(() => rmSync(PROJECT_SCRATCH, { recursive: true, force: true }));
+const PROJECT = join(PROJECT_SCRATCH, "project");
+cpSync(fileURLToPath(new URL("./fixtures/org-health/project", import.meta.url)), PROJECT, { recursive: true });
+const HOST_FILE = join(PROJECT_SCRATCH, "host.json");
+writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: PROJECT_SCRATCH, binDir: join(PROJECT_SCRATCH, "bin"), primary: "fixture",
+  projects: [{ id: "fixture", checkout: PROJECT }],
+  gh: { workers: join(PROJECT_SCRATCH, "workers"), leads: join(PROJECT_SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
+process.env.AGENT_ORG_HOST = HOST_FILE;
+execFileSync("git", ["init", "--quiet"], { cwd: PROJECT, env: sandboxGitEnv() });
+process.chdir(PROJECT);
+
+const { NO_MERGE_HOURS, RED_PR_MINUTES, REFUSED_TICKS, PRIMARY_STALE_MINUTES, SIGNALS, noMergeReading, redPrReading, refusedRowReading,
+  primaryReading, primaryStandingSince, readLastMergedAt, PR_NOT_PROGRESSING_MINUTES, REASONS_THAT_ARE_NOT_A_STALL, prNotProgressingReading, orgHealthReadings,
+  orgHealthOrders, orgHealthTick } = await import("../org-health.mjs");
+const { CAUSES, JUDGMENT_CAUSES, START_CAUSES, GH_READS, UNCLAIMABLE_AFTER_TICKS, decide, withPrOwners, redPrFacts, stalledPrFacts, stallReasonOf, STALL_REASON } =
+  await import("../work-gate.mjs");
+const { profileFor } = await import("../worker-profile.mjs");
 
 const GATE_ENTRY = fileURLToPath(new URL("../work-gate.mjs", import.meta.url));
 const STUB_MODE = 0o755;

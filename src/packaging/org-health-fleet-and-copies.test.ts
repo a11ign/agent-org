@@ -5,9 +5,11 @@
  *
  * THE THRESHOLD IS WRITTEN OUT AS 24 HOURS HERE, NEVER AS `FLEET_IDLE_HOURS`: a test built from the constant moves with it (`org-health.test.ts`'s rule, for its reason).
  *
- * POSITIVE CONTROLS. The idle fleet is replayed as the chairman described it: zero captures for 4.9 days with a `fleet-gated` row waiting. The copies' control is the REAL
- * `isolation-gate.mjs` pair, read from this checkout, with ONE BYTE changed: every "does not trip" below is only worth anything because that does. The real pairs
- * are read clean first, so the control is not true for the wrong reason.
+ * POSITIVE CONTROLS. The idle fleet is replayed as the chairman described it: zero captures for 4.9 days with a `fleet-gated` row waiting. The copies' control is a
+ * RECORDED `isolation-gate.mjs` pair (`fixtures/org-health-fleet-and-copies/`, the shape of the real one -- a header naming two import lines -- under a `.txt` suffix, so no tool that walks the tree's modules reads it as one), with ONE BYTE changed: every
+ * "does not trip" below is only worth anything because that does. The pairs are read clean first, so the control is not true for the wrong reason. THAT THE REAL
+ * `lib/` COPIES MATCH A11IGN'S ORIGINALS IS A11IGN'S INVARIANT (its `agent-org-outward-edges.test.ts` applies each sanctioned edit exactly), and moved there (#3233):
+ * read against a11ign's live tree, an edit to an original turned this suite red for a change that touched neither side.
  *
  * MUTATIONS, each run by hand and each recorded on the row: drop the `something is waiting` condition from `fleetIdleReading` (the idle-nobody-needs test goes red and
  * only it), and compare a pair with itself in `judgePair` (the control goes red, and the "differs" test with it).
@@ -23,9 +25,12 @@ import {
 
 const HOUR_MS = 3_600_000;
 const NOW = Date.parse("2026-10-02T12:00:00Z");
-const ISOLATION = "src/lib/isolation-gate.mjs";
-/** The tool's own `lib/`, found from THIS file's location and not from a layout (#3041): `src/packaging/../lib` in the tool, in the project's tree and in the standalone repository alike. */
-const TOOL_LIB = fileURLToPath(new URL("../lib/", import.meta.url));
+const ISOLATION = "src/lib/isolation-gate.mjs.txt";
+/** A recorded project and tool tree holding two copied files and their originals, and one file of `lib/` that is no copy (#3233). */
+const FIXTURE = fileURLToPath(new URL("./fixtures/org-health-fleet-and-copies/", import.meta.url));
+const FIXTURE_PROJECT = join(FIXTURE, "project");
+const FIXTURE_TOOL = join(FIXTURE, "tool");
+const FIXTURE_LIB = join(FIXTURE_TOOL, "src/lib");
 
 const WAITING = { rows: [2870], labJobs: [] as string[] };
 const NOTHING_WAITING = { rows: [] as (number | string)[], labJobs: [] as string[] };
@@ -40,7 +45,7 @@ const pairOf = (over: Partial<Pair> = {}): Pair => ({
   copyText: `${header(": NOTHING but this header.")}one\ntwo\nthree\n`, allowedLines: 0, ...over,
 });
 
-const realPairs = () => readDeclaredCopies() as Pair[];
+const recordedPairs = () => readDeclaredCopies({ root: FIXTURE_PROJECT, toolRoot: FIXTURE_TOOL }) as Pair[];
 
 // --- the constant is the row's -------------------------------------------------------------------------------------------
 
@@ -148,32 +153,35 @@ test("copies: an unreadable original, an unreadable directory and an EMPTY disco
   assert.equal(mixed.status, "tripped");
 });
 
-// --- the positive control: the REAL pair ----------------------------------------------------------------------------------
+// --- the positive control: a RECORDED pair ---------------------------------------------------------------------------------
 
-test("control: the real tree's declared copies are discovered, every original is readable, and the pair set is CLEAN", () => {
-  const pairs = realPairs();
+test("control: the recorded tree's declared copies are discovered, every original is readable, and the pair set is CLEAN", () => {
+  const pairs = recordedPairs();
   // The count is derived a second way, by a plain scan for a line opening with the header's first words, and asserted EQUAL: a floor is satisfied by 19, by 58 and by 157 (reported-counts.test.ts).
-  const headed = readdirSync(TOOL_LIB).filter((name) => readFileSync(join(TOOL_LIB, name), "utf8").match(/^\/\/ COPIED FROM `/m));
+  const files = readdirSync(FIXTURE_LIB);
+  const headed = files.filter((name) => readFileSync(join(FIXTURE_LIB, name), "utf8").match(/^\/\/ COPIED FROM `/m));
   assert.equal(pairs.length, headed.length, `discovery found ${pairs.length} pairs and a scan of lib/ finds ${headed.length} headed files`);
-  assert.ok(headed.length > 0, "the scan is not empty: the tree's copies are what the control compares");
-  assert.ok(pairs.some((pair) => pair.copy === ISOLATION && pair.original === "packages/guards/src/isolation-gate.mjs"), "the pair #2921 edited by hand");
+  assert.equal(headed.length, 2, "the scan is not empty: the recorded copies are what the control compares");
+  assert.ok(files.length > headed.length, "and a file of lib/ with no header is in the directory, so discovery SKIPPING it is what the count above shows");
+  assert.ok(pairs.some((pair) => pair.copy === ISOLATION && pair.original === "packages/guards/src/isolation-gate.mjs.txt"), "the pair with a header naming two lines");
   assert.deepEqual(pairs.filter((pair) => pair.originalText === null).map((pair) => pair.copy), [], "an unreadable original would make 'clean' mean 'not asked'");
   assert.equal(copyDriftReading({ pairs }).status, "clear", copyDriftReading({ pairs }).detail);
 });
 
-test("control: the REAL isolation-gate pair with ONE BYTE changed in the original trips, naming both paths -- and the same byte in the copy trips too", () => {
-  const pairs = realPairs();
+test("control: the recorded isolation-gate pair with ONE BYTE changed in the original trips, naming both paths -- and the same byte in the copy trips too", () => {
+  const pairs = recordedPairs();
   const real = pairs.find((pair) => pair.copy === ISOLATION) as Pair;
   assert.ok(real.originalText !== null && real.originalText.includes("const "), "the byte this mutates must exist");
   const original = real.originalText as string;
   const changedOriginal = pairs.map((pair) => (pair === real ? { ...pair, originalText: original.replace("const ", "cnst ") } : pair));
   const reading = copyDriftReading({ pairs: changedOriginal });
   assert.equal(reading.status, "tripped");
-  assert.match(reading.detail, /src\/lib\/isolation-gate\.mjs against packages\/guards\/src\/isolation-gate\.mjs/);
+  assert.match(reading.detail, /src\/lib\/isolation-gate\.mjs\.txt against packages\/guards\/src\/isolation-gate\.mjs\.txt/);
   const changedCopy = pairs.map((pair) => (pair === real ? { ...pair, copyText: pair.copyText.replace("const ", "cnst ") } : pair));
   assert.equal(copyDriftReading({ pairs: changedCopy }).status, "tripped");
-  assert.equal(copyDriftReading({ pairs: changedCopy.filter((pair) => pair !== changedCopy.find((p) => p.copy === ISOLATION)) }).status, "clear",
-    "the other eighteen are untouched, so the trip is the one pair's");
+  const untouched = changedCopy.filter((pair) => pair !== changedCopy.find((p) => p.copy === ISOLATION));
+  assert.equal(untouched.length, 1, "POSITIVE CONTROL: one other pair is left, so the `clear` below is a reading and not 'none was compared'");
+  assert.equal(copyDriftReading({ pairs: untouched }).status, "clear", "the other pair is untouched, so the trip is the one pair's");
 });
 
 // --- discovery ------------------------------------------------------------------------------------------------------------

@@ -14,8 +14,9 @@
  *      gone; inherited goes straight to `engineers`, because nothing about it is the merged PR's own.
  *   3. It is the FIRST order `decide` emits, and a drain does not withhold it.
  *   4. THE POLICY that was asked to be decided is written down (`RED_TRUNK_POLICY`) and pinned here.
- *   5. NO WORKFLOW opens a `revert/` branch or pull request, calls `git revert`, or holds the grants one
- *      would need, and the script that did is gone.
+ *   5. The script that reverted is gone from the tool. That no project WORKFLOW opens a `revert/` branch, calls
+ *      `git revert` or holds the grants one would need, and what the parent re-check runs, are the project's
+ *      to assert, and left this file with #3233.
  *
  * The two real near-misses the old decision was built around still matter, now as attribution rather than as
  * a gate on action: 13 of 19 PRs read red on one bad commit and none was at fault (#316), and a parent
@@ -23,21 +24,16 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { parse as parseYaml } from "yaml";
 import { attributionOf, failingTestsFromJobLog, newestVerdictRun, readTrunkRed, recheckFromAnnotations,
-  trunkRedOrders, RED_TRUNK_POLICY, RECHECK_JOB, RECHECK_ANNOTATION_TITLE, MAX_RECORDED_PARENT_FAILURES }
+  trunkRedOrders, RED_TRUNK_POLICY, RECHECK_JOB, RECHECK_ANNOTATION_TITLE }
   from "../trunk-red.mjs";
 import { decide, CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "../work-gate.mjs";
 import { routeWithFallback } from "../wake.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
 
-// The workflows are the PROJECT's; the scripts they run are the tool's, which is this checkout's `src` (the project's `packages/agent-org` is the old frozen copy).
 const TOOL_SRC = fileURLToPath(new URL("..", import.meta.url));
-const WORKFLOWS = path.join(HOME_CHECKOUT, ".github/workflows");
-const TRUNK = readFileSync(path.join(WORKFLOWS, "trunk.yml"), "utf8");
 
 const SHA = "a1b2c3d4e5f6789012345678901234567890abcd";
 const TEST = "the README's quickstart workflow is one a stranger can actually paste";
@@ -282,70 +278,6 @@ test("failingTestsFromJobLog reads a REAL gh run view --log-failed excerpt, time
     "a job with no lines is null, never an empty array read as 'no failure'");
 });
 
-// --- the workflow and the contract it shares with the gate ---
-
-const trunk = parseYaml(TRUNK) as { jobs: Record<string, { permissions?: Record<string, string>; needs?: string[];
-  if?: string; steps?: { name?: string; run?: string; env?: Record<string, string>; if?: string }[] }> };
-
-test("trunk.yml's job and annotation are the names the gate reads (one contract, two files)", () => {
-  assert.ok(trunk.jobs[RECHECK_JOB], `trunk.yml must carry a job named ${RECHECK_JOB}`);
-  const writes = (trunk.jobs[RECHECK_JOB].steps ?? []).map((s) => s.run ?? "").join("\n");
-  assert.ok(writes.includes(`::notice title=${RECHECK_ANNOTATION_TITLE}::`),
-    "the annotation title the workflow writes must be the one the gate looks for");
-  assert.ok(writes.includes("RECHECK_RESULT="), "and the key the gate parses");
-  assert.ok(writes.includes(`head -${MAX_RECORDED_PARENT_FAILURES}`), "and the bound on how many parent failures ride along");
-});
-
-test("the recheck job READS: no write grant, no PAT, and it runs on either job's failure only", () => {
-  const job = trunk.jobs[RECHECK_JOB];
-  assert.deepEqual(job.permissions, { contents: "read" },
-    "it pushes nothing and opens nothing: a job that only reads must not hold a scope that could");
-  assert.doesNotMatch(JSON.stringify(job), /A11IGN_BOT_TOKEN|secrets\./,
-    "the PAT existed to open a revert pull request, and this job has nothing to open");
-  assert.match(String(job.if), /needs\.trunkGate\.result == 'failure' \|\| needs\.trunkBuildTest\.result == 'failure'/);
-});
-
-test("the answer is recorded even when an earlier step died, and an unreadable answer is `unknown`", () => {
-  const step = (trunk.jobs[RECHECK_JOB].steps ?? []).find((s) => (s.run ?? "").includes("::notice title="));
-  assert.ok(step);
-  assert.equal(step.if, "always()", "an earlier failure must still leave an answer");
-  assert.match(step.run ?? "", /\*\) RECHECK_RESULT=unknown/, "anything that is not pass|fail|unknown is unknown");
-});
-
-// --- the parent re-check asks the question the RED job asked (#2389 review) ---
-
-const REUSABLE = parseYaml(readFileSync(path.join(WORKFLOWS, "reusable-build-test.yml"), "utf8")) as
-  { jobs: Record<string, { steps: { run?: string; name?: string }[] }> };
-
-/** The commands `trunkBuildTest` runs for its verdict, read from the workflow it calls, not retyped here. */
-const RED_JOB_BATTERY = Object.values(REUSABLE.jobs).flatMap((j) => j.steps).map((s) => (s.run ?? "").trim())
-  .filter((run) => /^(pnpm run (lint|typecheck|test:all)|PYTHONDONTWRITEBYTECODE=1 pytest\b.*)$/.test(run));
-
-/** lint, typecheck, the unscoped suite, pytest. */
-const RED_JOB_COMMAND_COUNT = 4;
-
-const PARENT_STEP = (trunk.jobs[RECHECK_JOB].steps ?? []).find((s) => s.name?.includes("parent fail the same check"))?.run ?? "";
-/** The step's COMMANDS: its comments name `npm test` to explain why it is gone, and must not count as running it. */
-const PARENT_COMMANDS = PARENT_STEP.split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
-
-test("POSITIVE CONTROL: the red job's battery was found, all four commands, and so was the parent step", () => {
-  assert.equal(RED_JOB_BATTERY.length, RED_JOB_COMMAND_COUNT, `found: ${JSON.stringify(RED_JOB_BATTERY)}`);
-  assert.ok(RED_JOB_BATTERY.includes("pnpm run test:all"), "the unscoped suite is the one that covers agent-org and lab");
-  assert.ok(PARENT_STEP.length > 0);
-});
-
-test("the parent re-check runs EVERY command the red job ran, so a red in agent-org or lab cannot re-check green", () => {
-  for (const command of RED_JOB_BATTERY) {
-    assert.ok(PARENT_COMMANDS.includes(command), `the parent re-check does not run \`${command}\` -- it would answer a narrower question`);
-  }
-  assert.doesNotMatch(PARENT_COMMANDS, /\bp?npm test\b/, "`pnpm test` is `test:ts`, whose glob excludes packages/agent-org and packages/lab");
-});
-
-test("a parent that does not build is UNKNOWN, never a pass: the build's failure is not swallowed", () => {
-  assert.match(PARENT_COMMANDS, /if ! pnpm run build[^\n]*; then[\s\S]*?result=unknown/);
-  assert.doesNotMatch(PARENT_COMMANDS, /pnpm run build[^\n]*\|\| true/);
-});
-
 // --- 4. the policy asked for on the row, pinned ---
 
 test("THE POLICY: other PRs keep merging onto a red main; the fix goes first by its ORDER; no queue jump is built", () => {
@@ -357,49 +289,15 @@ test("THE POLICY: other PRs keep merging onto a red main; the fix goes first by 
 
 // --- 5. nothing reverts ---
 
-/** Every workflow file, and a positive control that there ARE some: an emptiness assertion over a walk that found nothing passes. */
-const WORKFLOW_FILES = readdirSync(WORKFLOWS).filter((f) => /\.ya?ml$/.test(f));
-
-test("POSITIVE CONTROL: the workflow walk found the workflows, trunk.yml among them", () => {
-  assert.ok(WORKFLOW_FILES.length >= 5, "the walk found too few workflows for an emptiness assertion over it to mean anything");
-  assert.ok(WORKFLOW_FILES.includes("trunk.yml"));
-});
-
-// THE DELETED NAMES ARE SPELT IN PIECES, ON PURPOSE: the row's own open-check is a `git grep` for them over
-// `.github packages docs` that must print nothing, and a test that named them whole would be the one thing it found.
+// THE DELETED NAME IS SPELT IN PIECES, ON PURPOSE: the row's own open-check is a `git grep` for it over
+// `.github packages docs` that must print nothing, and a test that named it whole would be the one thing it found.
 const DELETED_SCRIPT = ["trunk-revert", ".mjs"].join("");
-const DELETED_JOB = ["decide", "Revert"].join("");
-const DELETED_NAMES = new RegExp(`${DELETED_SCRIPT.replace(".", "\\.")}|${DELETED_JOB}`);
 
-test("POSITIVE CONTROL: the deleted-names pattern matches the names it spells in pieces, and not the guard beside them", () => {
-  assert.ok(DELETED_NAMES.test(`run: node packages/agent-org/src/${DELETED_SCRIPT}`));
-  assert.ok(DELETED_NAMES.test(`${DELETED_JOB}:`));
-  assert.ok(!DELETED_NAMES.test("run: node packages/agent-org/src/trunk-revert-guard.mjs"),
-    "the guard reverts nothing and is still wired -- matching it would make the walk below refuse trunk.yml");
-});
-
-test("NO WORKFLOW calls `git revert`, pushes or opens a `revert/` branch, or names the deleted script", () => {
-  const offenders: string[] = [];
-  for (const file of WORKFLOW_FILES) {
-    // Comments are HISTORY and may name the retired thing; only what a step would RUN counts.
-    const code = readFileSync(path.join(WORKFLOWS, file), "utf8").split("\n")
-      .filter((line) => !/^\s*#/.test(line)).join("\n");
-    if (/git\s+revert\b/.test(code)) offenders.push(`${file}: git revert`);
-    if (/revert\/[\w$-]/.test(code)) offenders.push(`${file}: a revert/ branch`);
-    if (/gh\s+pr\s+create[^\n]*revert/i.test(code)) offenders.push(`${file}: a revert pull request`);
-    if (DELETED_NAMES.test(code)) offenders.push(`${file}: the deleted revert path`);
-  }
-  assert.deepEqual(offenders, []);
-});
-
-test("the revert script and its token test are GONE, and the guard that reverts nothing is still wired", () => {
+test("the revert script is GONE from the tool, and the guard that reverts nothing is still there", () => {
   assert.ok(!existsSync(path.join(TOOL_SRC, DELETED_SCRIPT)));
-  assert.ok(!existsSync(path.join(HOME_CHECKOUT, "packages/lab/src/packaging/trunk-revert-token.test.ts")));
   assert.ok(existsSync(path.join(TOOL_SRC, "trunk-revert-guard.mjs")),
     "despite the name it reverts nothing: it checks a push did not silently UNDO work already on main (#411)");
   assert.ok(existsSync(path.join(TOOL_SRC, "parent-recheck-summary.mjs")));
-  const gate = (trunk.jobs.trunkGate.steps ?? []).map((s) => s.run ?? "").join("\n");
-  assert.match(gate, /pnpm exec agent-org trunk-revert-guard\b/);
 });
 
 test("no order a session can be handed tells it to revert -- only to NOT revert", () => {
