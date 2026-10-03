@@ -1347,6 +1347,59 @@ test("#621 anyCommandUsesHistory (via acceptanceReport): a closure-derived histo
   }
 });
 
+// --- a11ign/a11ign#3103: a project test reaches the tool as `agent-org/src/<module>.mjs`, a bare specifier the relative walk cannot see, so
+// a test whose only route to a reader was through the tool was derived as needing NOTHING. The fixture is built by the test: a reader module under
+// an installed `node_modules/agent-org`, and the same reader beside the test for the relative control. ---
+
+/** A project tree with `reader.mjs` asking the history question, installed as the tool AND sitting beside the entry; returns both entries. */
+function toolReachFixture(dir: string, importLine: (relative: string, bare: string) => string): { viaTool: string; viaRelative: string } {
+  const reader = `export const q = ["rev-parse", "${spell("--is-shallow-repo", "sitory")}"];\n`;
+  mkdirSync(join(dir, "node_modules", "agent-org", "src"), { recursive: true });
+  writeFileSync(join(dir, "node_modules", "agent-org", "src", "reader.mjs"), reader);
+  writeFileSync(join(dir, "reader.mjs"), reader);
+  const bare = "agent-org" + "/src/reader.mjs";
+  const viaTool = join(dir, "via-tool.test.mjs");
+  const viaRelative = join(dir, "via-relative.test.mjs");
+  writeFileSync(viaTool, importLine("./reader.mjs", bare).replace("./reader.mjs", bare));
+  writeFileSync(viaRelative, importLine("./reader.mjs", bare));
+  return { viaTool, viaRelative };
+}
+
+test("#3103 deriveClosureRequirements: a reader reached ONLY through `agent-org/src/...` derives the requirement the relative path derives", () => {
+  const dir = mkdtempSync(join(tmpdir(), "acceptance-tool-reach-"));
+  try {
+    const { viaTool, viaRelative } = toolReachFixture(dir, (rel) => `import { q } from "${rel}";\nexport const x = q;\n`);
+    // THE CONTROL: the relative form derives `history`, so the tool form's answer is a comparison and not an absence.
+    assert.deepEqual(deriveClosureRequirements(viaRelative).map((h) => h.requirement), ["history"]);
+    const hits = deriveClosureRequirements(viaTool);
+    assert.deepEqual(hits.map((h) => h.requirement), ["history"]);
+    const installed = join(dir, "node_modules", "agent-org", "src", "reader.mjs");
+    assert.equal(hits[0].file, installed);
+    assert.deepEqual(hits[0].chain, [viaTool, installed], "the chain names the hop, as a relative one does");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#3103 deriveClosureRequirements: the tool is followed through a dynamic import and a namespace import, and a package that is not the tool is not", () => {
+  const dir = mkdtempSync(join(tmpdir(), "acceptance-tool-reach-"));
+  try {
+    const { viaTool } = toolReachFixture(dir, (rel) => `const m = await import("${rel}");\nexport const x = m;\n`);
+    assert.deepEqual(deriveClosureRequirements(viaTool).map((h) => h.requirement), ["history"]);
+    const namespaced = join(dir, "namespaced.test.mjs");
+    writeFileSync(namespaced, `import * as reader from "${"agent-org" + "/src/reader.mjs"}";\nexport const x = reader;\n`);
+    assert.deepEqual(deriveClosureRequirements(namespaced).map((h) => h.requirement), ["history"]);
+    // Out of scope by design (`installed-tool-imports.mjs`'s header): another package's code is not charged to the project.
+    mkdirSync(join(dir, "node_modules", "other-pkg"), { recursive: true });
+    writeFileSync(join(dir, "node_modules", "other-pkg", "reader.mjs"), `export const q = ["${spell("--is-shallow-repo", "sitory")}"];\n`);
+    const other = join(dir, "other.test.mjs");
+    writeFileSync(other, 'import { q } from "other-pkg/reader.mjs";\nexport const x = q;\n');
+    assert.deepEqual(deriveClosureRequirements(other), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // --- #731: `runsRoot` (the corpus-location resolver) means TWO things -- reading evidence, and choosing a
 // writable location -- and the closure walk above could only ask one question of a call to it. #718
 // (git-fixture-cache.mjs, a real file that called it to pick a cache location it creates itself) was the
