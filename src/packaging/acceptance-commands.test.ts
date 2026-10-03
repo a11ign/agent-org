@@ -7,11 +7,11 @@
  * MISSING (no acceptance line at all -- must FAIL, never read as a pass).
  */
 import { test } from "node:test";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -37,7 +37,7 @@ import { withGitSandbox, sandboxGitEnv } from "../lib/git-sandbox.ts";
 
 // A file known to exist, relative to the repo root -- where every real invocation of this command runs
 // from. This test file names itself, so it cannot go stale independently of being renamed.
-const REAL_FILE = "packages/lab/src/packaging/acceptance-commands.test.ts";
+const REAL_FILE = "packages/agent-org/src/packaging/acceptance-commands.test.ts";
 
 // The REAL fixture #510/#497 exist for: `pre-push-resolve-toward-main.test.ts` genuinely carries
 // `// requires: history` (its own `shallowHere()`/`t.skip()` guards need full git history), so testing
@@ -493,14 +493,14 @@ test("#658 THE MORE EXPENSIVE HALF -- a BARE command with trailing em-dash comme
 
 test("#658 a BARE command with trailing prose, naming a REAL file, runs with the prose stripped from argv", () => {
   let seen = null;
-  const body = "Acceptance: npx tsx --test packages/lab/src/packaging/acceptance-commands.test.ts — 12/12 passing";
+  const body = `Acceptance: npx tsx --test ${REAL_FILE} — 12/12 passing`;
   const report = acceptanceReport(body, (cmd) => { seen = cmd; return 0; });
-  assert.equal(seen, "npx tsx --test packages/lab/src/packaging/acceptance-commands.test.ts",
+  assert.equal(seen, `npx tsx --test ${REAL_FILE}`,
     "the em-dash and everything after it must never reach argv");
   assert.equal(report.ok, true);
   // The REPORTED line still shows the ORIGINAL text, em-dash and all -- an author sees exactly what they
   // wrote, not a silently-edited version, even though a different string was what actually ran.
-  assert.match(report.lines[0], /RAN npx tsx --test packages\/lab\/src\/packaging\/acceptance-commands\.test\.ts — 12\/12 passing -> pass/);
+  assert.match(report.lines[0], /RAN npx tsx --test packages\/agent-org\/src\/packaging\/acceptance-commands\.test\.ts — 12\/12 passing -> pass/);
 });
 
 test("#658 CONTROL: heading-title-not-command.test.ts's own em-dash fixture is unaffected -- a bare "
@@ -2103,7 +2103,7 @@ test("#967: a template literal full of braces does not confuse the scan -- why t
 // declares it on line 13). One placement, two messages, neither naming it -- and it cost three checks of
 // things that were already right before I read the parser instead of the message.
 
-const HISTORY_CMD = "npx tsx --test packages/lab/src/packaging/acceptance-commands.test.ts";
+const HISTORY_CMD = "npx tsx --test packages/agent-org/src/packaging/acceptance-commands.test.ts";
 
 test("#1035 ACCEPTANCE: a bare `History: full` INSIDE the section leaves the real command intact", () => {
   const body = `## Acceptance\n\nHistory: full\n\n\`\`\`bash\n${HISTORY_CMD}\n\`\`\`\n`;
@@ -2196,7 +2196,7 @@ test("#1036: the tolerance is for the WRAPPER, never for surrounding text -- a r
 // ---------------------------------------------------------------------------------------------------
 
 test("#1116: a closure refusal names `// no-token:` when that declaration would actually hold", () => {
-  const hits = deriveClosureRequirements("packages/lab/src/packaging/merge-guard.test.ts");
+  const hits = deriveClosureRequirements("packages/agent-org/src/packaging/merge-guard.test.ts");
   const token = hits.find((h: { requirement: string }) => h.requirement === "token");
   assert.ok(token, "merge-guard.test.ts reaches `gh` through mergeReadiness -- if this is empty the "
     + "fixture has changed and the rest of this test proves nothing");
@@ -2217,7 +2217,7 @@ test("#1116: the remedy is NOT offered on a declaration already judged wrong", (
   // future edit could start doing exactly that. Driven over the shape rather than a real file, because
   // no tracked file carries a wrong declaration and one planted here would be a fixture of the defect.
   const wrong = { requirement: "token" as const, file: "x.mjs", line: 1, wrongDeclaration: true,
-    chain: ["packages/lab/src/packaging/merge-guard.test.ts", "packages/agent-org/src/merge-guard.mjs"] };
+    chain: ["packages/agent-org/src/packaging/merge-guard.test.ts", "packages/agent-org/src/merge-guard.mjs"] };
   const message = closureRequirementMessage(wrong);
   assert.match(message, /DOES call/, "the wrong-declaration refusal itself is unchanged");
   assert.doesNotMatch(message, /may declare/,
@@ -2230,7 +2230,7 @@ test("#1116: the remedy names the DISCRIMINATING condition, not only the mechani
   // injected and `gh` never executed, so "if every input it passes is injected" was SATISFIED and the
   // declaration would still have been wrong. The mechanical precondition does not discriminate the case
   // it needs to discriminate.
-  const token = deriveClosureRequirements("packages/lab/src/packaging/merge-guard.test.ts")
+  const token = deriveClosureRequirements("packages/agent-org/src/packaging/merge-guard.test.ts")
     .find((h: { requirement: string }) => h.requirement === "token");
   assert.ok(token, "the fixture must still reach `gh`, or this proves nothing");
   const message = closureRequirementMessage(token);
@@ -2496,7 +2496,7 @@ test("#1465: EVERY header line is verified -- a wrong SECOND declaration is name
 });
 
 test("#1465: the one real header with a reason, row-claim-stale-rule.test.ts:1, derives no requirement and is not refused", () => {
-  const f = "packages/lab/src/packaging/row-claim-stale-rule.test.ts";
+  const f = "packages/agent-org/src/packaging/row-claim-stale-rule.test.ts";
   assert.match(readFileSync(f, "utf8").split("\n")[0], /^\/\/ no-token: gh -- /, "the fixture's premise: its header carries a reason");
   assert.deepEqual(deriveClosureRequirements(f), []);
 });
@@ -3429,7 +3429,7 @@ test("#2308: the CLI reads the verdict -- a malformed section exits 1 and prints
 // ---------------------------------------------------------------------------------------------------------
 
 const TYPO = "packages/agent-org/src/acceptance-commands.test.ts";
-const REAL_TWIN = "packages/lab/src/packaging/acceptance-commands.test.ts";
+const REAL_TWIN = "packages/agent-org/src/packaging/acceptance-commands.test.ts";
 
 /** A row whose Region and Acceptance BOTH carry `path` -- the copy-paste shape the row is about. */
 function copiedIntoBoth(path: string, extra = "") {
@@ -3502,11 +3502,24 @@ test("#2192: a path that EXISTS is never refused for having a twin", () => {
     { ...NOTHING_EXISTS, exists: () => true, trackedFiles: [REAL_TWIN] }), null);
 });
 
+/**
+ * A test file the project tracks right now, and where its basename is NOT spelled at `packages/agent-org/src/`.
+ * Found rather than named: the file this test used to name travelled out of the project (#2975, #3094), and a
+ * path named here would go stale the next time the project moves a test.
+ */
+function trackedTestFileWithAbsentTypo() {
+  const tracked = execFileSync("git", ["ls-files"], { encoding: "utf8", env: sandboxGitEnv() }).split("\n");
+  const twin = tracked.find((file) => /^packages\/(lab|guards|control)\/.*\.test\.ts$/.test(file)
+    && existsSync(file) && !existsSync(`packages/agent-org/src/${basename(file)}`));
+  assert.ok(twin, "POSITIVE CONTROL: the project tracks at least one test file under lab, guards or control");
+  return { twin, typo: `packages/agent-org/src/${basename(twin)}` };
+}
+
 test("#2192: on the REAL tree, #2068's own body is refused and names the real test file", () => {
   assert.ok(existsSync(REAL_FILE), "this test reads the real tree with repo-relative paths, so it runs from the repository root");
-  assert.ok(!existsSync(TYPO), "the typo is only a control while the file is genuinely absent");
-  const reason = acceptancePathsReason(copiedIntoBoth(TYPO), "row-file", { regionEntries: [TYPO] });
-  assert.ok(reason?.includes(REAL_TWIN));
+  const { twin, typo } = trackedTestFileWithAbsentTypo();
+  const reason = acceptancePathsReason(copiedIntoBoth(typo), "row-file", { regionEntries: [typo] });
+  assert.ok(reason?.includes(twin), `the refusal must name the tracked twin ${twin}; got ${reason}`);
 });
 
 /**
