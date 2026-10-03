@@ -190,7 +190,7 @@ test("#2127: a status that is not an attribution is not read as one", () => {
 // --- the door: the one place the identity still exists ------------------------------------------
 
 /**
- * A `gh` on `PATH` that records its argv and answers the one read the door makes. `reviewsJson` is what
+ * A `gh` on `PATH` that records its argv and answers the reads the door makes. `reviewsJson` is what
  * `gh api .../reviews --jq ...` prints -- the door asks for a tab-separated `[html_url, commit_id, body]`.
  */
 function fakeGh(bin: string, tsvLine: string, { failStatus = false } = {}) {
@@ -207,6 +207,9 @@ function fakeGh(bin: string, tsvLine: string, { failStatus = false } = {}) {
     // A multi-line review body must stay ONE log line, so a newline is logged as `\u23ce` (#3030).
     `a="$*"; printf '%s\\n' "\${a//$'\\n'/\u23ce}" >> ${JSON.stringify(log)}`,
     `if [[ "$1" == "api" && "$2" == --method ]]; then exit ${failStatus ? 1 : 0}; fi`,
+    // The door reads the pull request and its standing reviews BEFORE it posts (a11ign#3050): the head, and no review yet.
+    `if [[ "$*" == *"/pulls/2105 "* ]]; then printf 'e1b8b7bc0000000000000000000000000000abcd\\tmain\\n'; exit 0; fi`,
+    `if [[ "$*" == *"select("* ]]; then exit 0; fi`,
     `if [[ "$1" == "api" ]]; then cat ${JSON.stringify(answer)}; fi`,
     "exit 0",
   ].join("\n"));

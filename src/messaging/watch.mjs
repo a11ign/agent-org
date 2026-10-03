@@ -24,15 +24,15 @@
 // service template promised `host:check` would show.
 
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
-import { MessagingConfigRefusal, PROJECT_FILE, readMessagingConfig } from "./config.mjs";
+import { MessagingConfigRefusal, readMessagingConfig } from "./config.mjs";
 import { createMessenger } from "./core.mjs";
 import { createLedger, describeError, foldLedger } from "./ledger.mjs";
+import { accountIsDeclared, defaultLedgerPath, trackerRepo } from "./state.mjs";
 import { observeIncidents } from "./sources/incidents.mjs";
 import { createReaders } from "./sources/readers.mjs";
 import { observeStalls } from "./sources/stall.mjs";
@@ -277,24 +277,6 @@ export async function runWatch({ github, provider, ledger, now, repo, readers, s
   const decisions = await messenger.tick(events);
   for (const failure of failures) log(failure);
   return { decisions, failures };
-}
-
-/** @param {string} root @returns {string} the first tracker's repository: the rows the chairman is asked about are filed there */
-export function trackerRepo(root) {
-  const path = join(root, PROJECT_FILE);
-  const declared = JSON.parse(readFileSync(path, "utf8"))?.tracker?.[0]?.repo;
-  if (typeof declared !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(declared)) throw new Error(`${path}: tracker[0].repo is not an owner/name`);
-  return declared;
-}
-
-/** @param {string} home @returns {string} where the delivery log lives: state, not configuration, so apart from the secrets' directory */
-export function defaultLedgerPath(home) {
-  return join(home, ".local", "state", "agent-org", "messaging", "ledger.jsonl");
-}
-
-/** @param {Record<string, string | undefined>} env @returns {boolean} some account is DECLARED, so `gh` will not fall back to a person's */
-function accountIsDeclared(env) {
-  return Boolean(env.GH_CONFIG_DIR) || Boolean(env.HERDR_WORKSPACE_ID);
 }
 
 /** @param {string} root @param {string} home @param {(line: string) => void} err @returns {ReturnType<typeof readMessagingConfig> | null} null after saying why */

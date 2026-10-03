@@ -347,10 +347,9 @@ const SELF = "red-pr.mjs";
 const EXEMPT: Record<string, string> = {
   "merge-queue.mjs": "decides whether ONE queued PR may merge from its required checks; counts and ages nothing",
   "queue-stalled.mjs": "reads the gate verdict of an ARMED PR to tell a stalled queue from a slow one",
-  "update-branch-sweep.mjs": "skips a PR whose gate is failing when deciding whom to update; a gate verdict, not a red count",
   "work-gate/pr-orders.mjs": "the order logic (`redOnlyFromAHold` asks `isHeldRed`, #2993; the rest is who is asked, not how many are red), `HOLD_RED_JOBS` pinned equal to red-pr.mjs's in org-retro.test.ts",
 };
-const EXEMPT_CEILING = 4;
+const EXEMPT_CEILING = 3;
 
 /** Code with every `//`, `/* *\/` comment removed, so a header that NAMES `statusCheckRollup` does not enlist its file. */
 const codeOf = (source: string) => source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/\s\/\/\s.*$/gm, "");

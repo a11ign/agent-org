@@ -13,8 +13,8 @@
  *
  * ## It has been fixed FOUR TIMES at four call sites
  *
- * `update-branch-sweep.mjs` (#500, then again at #517), the since-retired revert script (#582), `queue-table.mjs`
- * (which is where this function was, with a header naming the other three). **That is this repository's
+ * the since-retired update-branch sweep (#500, then again at #517), the since-retired revert script (#582),
+ * `queue-table.mjs` (which is where this function was, with a header naming the other three). **That is this repository's
  * most expensive recurring shape — a remedy applied where the fault was noticed rather than everywhere
  * the behaviour reaches — and a fifth call site had never had it**: `merge-queue.mjs`'s
  * `checksBlocking`, which decides whether a PR is mergeable, filtered the RAW rollup and would report
@@ -114,4 +114,61 @@ export function newestPerName(rollup) {
 export function newestConclusionOf(rollup, name) {
   const newest = newestPerName(rollup).find((c) => c.name === name);
   return newest ? (newest.conclusion || null) : null;
+}
+
+/**
+ * The one spelling of success, in the normalised vocabulary -- lower case, like every other conclusion.
+ *
+ * EXPORTED because `queue-stalled.mjs` compares a normalised conclusion in several places, and a literal there
+ * is a copy of a fact that file learns the vocabulary for from here.
+ */
+export const SUCCESS = "success";
+
+/**
+ * #1100: ONE VOCABULARY, normalised at every edge that reads a conclusion.
+ *
+ * **Two APIs spell the same verdict differently.** `gh pr list --json statusCheckRollup` says
+ * `COMPLETED / SUCCESS / FAILURE / ""`; `gh api .../check-runs` says `completed / success / null`. So a
+ * comparison against the lowercase literal never matches an uppercase `CANCELLED`, the branch is dead, and the
+ * file reads as though it were closed -- worse than two honest copies, because it looks like reconciliation.
+ * `gh` spells absence three ways across its own sources (`null`, `""`, UPPER CASE), and a population read
+ * across them sums correctly and reports wrongly.
+ *
+ * @param {string | null | undefined} conclusion
+ * @returns {string | null} lower-cased, with every spelling of absence collapsed to `null`
+ */
+export function normaliseConclusion(conclusion) {
+  return conclusion ? conclusion.toLowerCase() : null;
+}
+
+/**
+ * The newest run of `name` on this head, chosen by `isAtLeastAsNew` -- or `null`.
+ *
+ * ONE SCAN, so a conclusion and the run that produced it can never come from two derivations of "newest" that
+ * disagree on a head whose runs tie or carry no stamps (#1126).
+ *
+ * @param {{name?: string, conclusion?: string | null, completedAt?: string | null,
+ *          startedAt?: string | null, detailsUrl?: string | null}[] | null | undefined} runs
+ * @param {string} name
+ * @returns {{conclusion?: string | null, completedAt?: string | null, startedAt?: string | null,
+ *   detailsUrl?: string | null} | null}
+ */
+export function newestRun(runs, name) {
+  const matching = (runs ?? []).filter((run) => run?.name === name);
+  if (matching.length === 0) return null;
+  return matching.reduce((best, run) => (isAtLeastAsNew(run, best) ? run : best));
+}
+
+/**
+ * The newest `name` run's conclusion, normalised -- or `null` for a run still in flight, which GitHub reports as
+ * `conclusion: ""` (#488), and for a name with no run at all.
+ *
+ * @param {{name?: string, conclusion?: string | null, completedAt?: string | null,
+ *          startedAt?: string | null}[] | null | undefined} runs
+ * @param {string} name
+ * @returns {string | null}
+ */
+export function newestConclusion(runs, name) {
+  const newest = newestRun(runs, name);
+  return newest === null ? null : normaliseConclusion(newest.conclusion);
 }

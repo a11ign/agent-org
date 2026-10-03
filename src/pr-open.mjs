@@ -44,8 +44,9 @@ import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { acceptanceReport, closesDeclarationReport, closesReferences, extractClosesDeclaration, extractMutationSection }
   from "./acceptance-commands.mjs";
-import { declaredRegionFiles, regionCovers, regionCoversIn } from "./region-paths.mjs";
+import { declaredRegionFiles, regionCovers, regionCoversIn, splitRegionEntry } from "./region-paths.mjs";
 import { homeProjectDeclaration } from "./project-config.mjs";
+import { statedRepository } from "./row-file.mjs";
 import { leakRefusalReason } from "./lib/leak-patterns.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { REPO } from "./project-identity.mjs";
@@ -216,10 +217,12 @@ function regionPassLine({ rows, changed, standing, base }) {
  * `rowBody` is called with the repository only for a qualified row -- a bare one is asked exactly as before. `row` in a `no-section` is the
  * row as written (`#7`, `owner/repo#7`).
  * @param {import("./acceptance-commands.mjs").ClosesReference[]} references
- * @param {{ rowBody: (number: number, repo?: string) => string, rootFiles?: Set<string> }} deps
+ * #3083: a row that STATES its repository (`statedRepository`) and is opened in THAT repository's tree (`tree.repo`, the `--repo`) wrote its
+ * bare paths relative to that root, so they are read as its key's; stated or opened elsewhere, a bare path is the first repository's as ever.
+ * @param {{ rowBody: (number: number, repo?: string) => string, rootFiles?: Set<string>, tree: { key: string, repo: string | undefined } }} deps
  * @returns {{ kind: "region", region: string[] } | { kind: "unread", why: string } | { kind: "no-section", row: string }}
  */
-function readRegions(references, { rowBody, rootFiles }) {
+function readRegions(references, { rowBody, rootFiles, tree }) {
   /** @type {Set<string>} */
   const union = new Set();
   for (const reference of references) {
@@ -233,7 +236,8 @@ function readRegions(references, { rowBody, rootFiles }) {
     // `declaredRegionFiles` reads `origin/main`'s root files by default; an injected set spares a test that git call.
     const declared = declaredRegionFiles(text, rootFiles ? { rootFiles } : undefined);
     if (declared === null) return { kind: "no-section", row: name };
-    for (const path of declared) union.add(path);
+    const keyBare = tree.key !== "" && statedRepository(text) === tree.repo;
+    for (const path of declared) union.add(keyBare && splitRegionEntry(path).key === "" ? `${tree.key}:${path}` : path);
   }
   return { kind: "region", region: [...union] };
 }
@@ -283,7 +287,8 @@ export function checkRegion(body, rest, { git = defaultGit, rowBody, rootFiles, 
   const bare = prRepo === REPO ? undefined : references.find((reference) => reference.repo === null);
   if (bare) return { refusal: `pr-open: REFUSED -- \`Closes #${bare.number}\` names an issue of ${prRepo}, not a row of ${REPO}. Write \`Closes ${REPO}#${bare.number}\`. Nothing was sent (#2995).`, note: null };
   const rows = references.map(referenceName).join(", ");
-  const read = readRegions(references, { rowBody, rootFiles });
+  const treeKey = treeKeyOf(rest, code);
+  const read = readRegions(references, { rowBody, rootFiles, tree: { key: treeKey, repo: prRepo } });
   if (read.kind === "no-section") {
     return { refusal: null, note: `REGION: not checked -- row ${read.row} has no Region section to read.` };
   }
@@ -301,7 +306,6 @@ export function checkRegion(body, rest, { git = defaultGit, rowBody, rootFiles, 
       + `so ${rows}'s Region cannot be checked. Nothing was sent to GitHub (#2417).`, note: null };
   }
   const { declared, malformed } = outsideRegionDeclarations(body);
-  const treeKey = treeKeyOf(rest, code);
   const standing = changed.map((file) => standingAgainstRegion(file, { region: read.region, declared, treeKey }));
   const outside = changed.filter((_file, index) => standing[index] === "outside");
   if (outside.length > 0) {

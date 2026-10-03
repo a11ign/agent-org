@@ -400,12 +400,12 @@ export function armedState(pr, queue) {
  * of the defect. A second-API check settles only the states its sample was in.
  *
  * THE RAW DERIVATIONS OF THE SAME PREDICATE ELSEWHERE, classified (#2245 done-when 4; counted at
- * `c06bc5cc3` by grepping for `autoMergeRequest != null`). Three of the four read a GraphQL field and
+ * `c06bc5cc3` by grepping for `autoMergeRequest != null`; a fourth, the update-branch sweep, was deleted in #3047). Three of the four read a GraphQL field and
  * still miss the queue, so "use GraphQL" was never the lesson -- ask the ONE predicate is. None is
  * changed here, this row's Region being this file:
  *
  *   queue-stalled.mjs `examinePr`         a queued PR is not armed -> not green -> `examined: false`, so the
- *                                         conflict and armed-behind stall checks never run on it. SILENTLY
+ *                                         conflict stall check never runs on it. SILENTLY
  *                                         UNEXAMINED. Not a one-line swap: `ageMs` reads
  *                                         `autoMergeRequest.enabledAt`, which a queued PR does not have, and
  *                                         whether the queue owns "behind" for a queued PR is a ruling.
@@ -413,11 +413,6 @@ export function armedState(pr, queue) {
  *                                         OPEN, by that file's own design ("a convenience guard is not a
  *                                         correctness gate"), so it is a decision to revisit rather than a
  *                                         defect to fix.
- *   update-branch-sweep.mjs `sweepPrs`    two readers of one expression. The SKIP is correct (a queued PR is
- *                                         not this job's concern). `armedCount`, #1257's "is the arming layer
- *                                         working" reading, UNDERCOUNTS, worst when the queue is busiest --
- *                                         a false negative that sends a session to investigate a healthy
- *                                         layer. That is the one BEHAVIOUR CHANGE, and `ceo` named it on #2245.
  *
  * The injected `run` exists so a test can pin WHICH calls this makes and not only what it does with the
  * answers: a fixture-only fix passes every assertion and leaves the payload without the queue key.

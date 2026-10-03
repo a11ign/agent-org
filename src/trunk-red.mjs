@@ -17,11 +17,32 @@
 // green when measured and red when asked again). Neither is a reason to stay silent now -- `main` is red
 // either way and somebody must fix it -- but both decide WHO IS TOLD AND WHAT THEY ARE TOLD, so the order
 // says which of three it is and never blames a merge for a failure it did not cause.
+//
+// A DECLARED CODE REPOSITORY'S `main` WAKES SOMEBODY TOO (#3079). agent-org's `main` was red 57 minutes on 2026-10-02 with every session
+// idle, because this file read ONE workflow of ONE repository. THREE DECISIONS, each argued here where the code is:
+//   1. WHAT "RED" IS WITHOUT `trunk.yml`. A repository that is not the primary has no `trunk.yml` and no `trunkBuildTest / run` or `trunkRecheck`
+//      job, and giving it a `trunk.yml` would be a second workflow doing what its `ci.yml` already says on `push: branches: [main]` ("so
+//      green on main is a run"). So the reader takes WHAT TO READ AS DATA (`TrunkSource`): the newest `success`/`failure` push run of
+//      `ci.yml`, a cancelled or in-flight one looked through exactly as `newestVerdictRun` does. `event=push` is asked for, because
+//      `ci.yml` also runs on `pull_request` and `merge_group`, and only a run on `main` itself says anything about `main`. There is no
+//      parent re-check there, so the attribution is `unknown` and the order says so: it never blames a merge, and agent-org's `gate`
+//      tests the tool against a11ign at `main`, which moves on its own, so a red there may be the project's change and no merge's.
+//   2. WHO RECEIVES IT. The primary's order goes to the merging PR's session with `engineers` as the way out. For another repository the merging
+//      session is usually a released `worker-N`, and an engineer refuses an order that is not its own row's (#2407), so that fallback reaches
+//      nobody. `product-manager` is a standing seat and the first reader for rows and process, so it is both the way out AND the
+//      addressee when no merge is known or the failure is not the merge's. It is told to FILE A `ready` ROW and not to fix the red itself:
+//      the `ready-row-unclaimed` order then reaches an engineer who can claim it, which is the one path that reaches somebody who can act.
+//   3. WHAT IT COSTS THE PRIMARY. NOTHING: `readTrunkRed()` with no argument is the call it always was, and its order is byte for byte
+//      what it was. The other repositories' reads are made by `scopeTick` (`work-gate.mjs`), which one declared project never runs.
+// WHAT THIS DOES NOT DO: escalate a stuck agent-org red to `answer:ceo`. `stuckRowOf` reads a `pr-<n>` subject as a row of the PRIMARY, and
+// labelling a11ign's #56 for agent-org's would be wrong, so a keyed subject (`pr-agent-org#56`) names no row and is reported, not labelled.
 import { execFileSync } from "node:child_process";
 import { summarizeTestLog, testIdentity } from "./parent-recheck-summary.mjs";
+import { READY_LABEL } from "./claim-labels.mjs";
 import { REPO } from "./project-identity.mjs";
+import { subjectRef } from "./review-attribution.mjs";
 // #2619 (child 3d of #69): the `session:` prefix, moved to the project's declared vocabulary.
-import { SESSION_PREFIX } from "./project-vocabulary.mjs";
+import { LANE_PREFIX, SESSION_PREFIX } from "./project-vocabulary.mjs";
 
 /** The workflow whose newest run on `main` says whether `main` is red. */
 export const TRUNK_WORKFLOW = "trunk.yml";
@@ -36,6 +57,24 @@ export const RECHECK_ANNOTATION_TITLE = "trunk-recheck";
 
 /** `trunkBuildTest` is a reusable-workflow call, so GitHub names its inner job `<caller> / <callee>`. */
 const BUILD_TEST_JOB = "trunkBuildTest / run";
+
+/**
+ * WHAT TO READ TO KNOW WHETHER A REPOSITORY'S `main` IS RED (#3079). `recheckJob` is `null` where no workflow re-runs the suite at the parent.
+ * @typedef {{ repo: string, repoKey: string, workflow: string, testJob: string, recheckJob: string | null, pushOnly: boolean }} TrunkSource
+ */
+
+/** The primary project's: `trunk.yml` in `REPO`, read exactly as it always was. */
+export const PRIMARY_TRUNK = Object.freeze({ repo: REPO, repoKey: "", workflow: TRUNK_WORKFLOW, testJob: BUILD_TEST_JOB,
+  recheckJob: RECHECK_JOB, pushOnly: false });
+
+/**
+ * A declared code repository's: its `ci.yml`, whose one job `gate` is the required check and runs the suite. A repository declared with no
+ * `ci.yml` answers 404, which is a refused read (`null`, nothing emitted) and never a red.
+ * @param {string} repoKey @param {string} repo @returns {TrunkSource}
+ */
+export function trunkOfCodeRepository(repoKey, repo) {
+  return { repo, repoKey, workflow: "ci.yml", testJob: "gate", recheckJob: null, pushOnly: true };
+}
 
 /** The most parent failures the recheck records: an annotation is bounded, and a parent this broken is named by its first few. */
 export const MAX_RECORDED_PARENT_FAILURES = 30;
@@ -130,33 +169,41 @@ export function failingTestsFromJobLog(logFailedOutput, jobName) {
  * not be asked. `null` IS NEVER "GREEN AND NEVER 'RED'": a refused read reports nothing, which is what the
  * gate does for every lane it cannot read (#1286), and the tick's PARTIAL exit is unchanged by it.
  *
- * ONE CALL WHEN `main` IS HEALTHY. The unconditional read is the newest runs of `trunk.yml` on `main`; the
- * four that follow are paid only by a tick that found a red. Each is a single REST call on the core pool,
+ * ONE CALL WHEN `main` IS HEALTHY. The unconditional read is the newest runs of the source's workflow on `main`; the
+ * four that follow are paid only by a tick that found a red (three where there is no re-check job). Each is a single REST call on the core pool,
  * and each may be refused independently -- a refused one degrades that FACT to `null`/`unknown`, and the
  * order is still sent, because a red `main` with an unnamed test is still a red `main`.
  *
  * @param {(args: string[]) => string} [run]
+ * @param {TrunkSource} [source] omitted for the primary project, whose calls are then exactly what they were
  * @returns {{ runId: number, url: string, sha: string, failedJobs: string[], failingTests: string[] | null,
  *   recheck: "pass" | "fail" | "unknown", parentFailingTests: string[] | null,
- *   originPr: { number: number, title: string, session: string | null } | null } | null}
+ *   originPr: { number: number, title: string, session: string | null } | null,
+ *   repo?: string, repoKey?: string } | null}
  */
-export function readTrunkRed(run = defaultRun) {
-  const runs = tryParse(() => run(["api", "--method", "GET", `repos/${REPO}/actions/workflows/${TRUNK_WORKFLOW}/runs`,
-    "-f", "branch=main", "-f", "per_page=10"]));
+export function readTrunkRed(run = defaultRun, source = PRIMARY_TRUNK) {
+  const { repo } = source;
+  const runs = tryParse(() => run(["api", "--method", "GET", `repos/${repo}/actions/workflows/${source.workflow}/runs`,
+    "-f", "branch=main", ...(source.pushOnly ? ["-f", "event=push"] : []), "-f", "per_page=10"]));
   const newest = newestVerdictRun(runs);
   if (newest === null || newest.conclusion !== "failure") return null;
 
-  const jobs = tryParse(() => run(["api", `repos/${REPO}/actions/runs/${newest.id}/jobs?per_page=100`]))?.jobs ?? [];
+  const jobs = tryParse(() => run(["api", `repos/${repo}/actions/runs/${newest.id}/jobs?per_page=100`]))?.jobs ?? [];
   const failedJobs = jobs.filter((/** @type {any} */ j) => j.conclusion === "failure").map((/** @type {any} */ j) => String(j.name));
-  const recheckJob = jobs.find((/** @type {any} */ j) => j.name === RECHECK_JOB);
-  const annotations = recheckJob
-    ? tryParse(() => run(["api", `repos/${REPO}/check-runs/${recheckJob.id}/annotations`]))
-    : null;
-  const recheck = recheckFromAnnotations(Array.isArray(annotations) ? annotations : null);
-  const failingTests = failedJobs.includes(BUILD_TEST_JOB) ? readFailingTests(run, newest.id) : null;
-  return { runId: newest.id, url: newest.html_url, sha: newest.head_sha, failedJobs, failingTests,
+  const recheck = recheckOf(run, source, jobs);
+  const failingTests = failedJobs.includes(source.testJob) ? readFailingTests(run, source, newest.id) : null;
+  const facts = { runId: newest.id, url: newest.html_url, sha: newest.head_sha, failedJobs, failingTests,
     recheck: recheck.result, parentFailingTests: recheck.parentFailingTests,
-    originPr: readOriginPr(run, newest.head_sha) };
+    originPr: readOriginPr(run, repo, newest.head_sha) };
+  // The primary's facts carry no `repo`/`repoKey`, so they stay what they were.
+  return source.repoKey === "" ? facts : { ...facts, repo, repoKey: source.repoKey };
+}
+
+/** @param {(args: string[]) => string} run @param {TrunkSource} source @param {any[]} jobs */
+function recheckOf(run, source, jobs) {
+  const job = source.recheckJob === null ? undefined : jobs.find((j) => j.name === source.recheckJob);
+  const annotations = job ? tryParse(() => run(["api", `repos/${source.repo}/check-runs/${job.id}/annotations`])) : null;
+  return recheckFromAnnotations(Array.isArray(annotations) ? annotations : null);
 }
 
 /** @param {() => string} read @returns {any} the parsed body, or `null` when the read or the parse failed */
@@ -169,10 +216,10 @@ function tryParse(read) {
   }
 }
 
-/** @param {(args: string[]) => string} run @param {number} runId @returns {string[] | null} */
-function readFailingTests(run, runId) {
+/** @param {(args: string[]) => string} run @param {TrunkSource} source @param {number} runId @returns {string[] | null} */
+function readFailingTests(run, source, runId) {
   try {
-    return failingTestsFromJobLog(run(["run", "view", String(runId), "--repo", REPO, "--log-failed"]), BUILD_TEST_JOB);
+    return failingTestsFromJobLog(run(["run", "view", String(runId), "--repo", source.repo, "--log-failed"]), source.testJob);
   } catch {
     return null;
   }
@@ -181,11 +228,11 @@ function readFailingTests(run, runId) {
 /**
  * Which merged PR introduced `sha`, and which session it carried -- resolved by GitHub itself (the commit's
  * associated-PR list), never parsed out of the merge message.
- * @param {(args: string[]) => string} run @param {string} sha
+ * @param {(args: string[]) => string} run @param {string} repo @param {string} sha
  * @returns {{ number: number, title: string, session: string | null } | null}
  */
-function readOriginPr(run, sha) {
-  const pulls = tryParse(() => run(["api", `repos/${REPO}/commits/${sha}/pulls`]));
+function readOriginPr(run, repo, sha) {
+  const pulls = tryParse(() => run(["api", `repos/${repo}/commits/${sha}/pulls`]));
   if (!Array.isArray(pulls) || pulls.length === 0) return null;
   const labels = (pulls[0].labels ?? []).map((/** @type {{ name: string }} */ l) => String(l.name));
   const session = labels.find((/** @type {string} */ n) => n.startsWith(SESSION_PREFIX));
@@ -261,34 +308,83 @@ export function trunkRedOrders(red) {
   const sha8 = red.sha.slice(0, 8);
   const attribution = attributionOf({ recheck: red.recheck, pushFailingTests: red.failingTests,
     parentFailingTests: red.parentFailingTests });
-  const owner = red.originPr?.session ?? null;
-  const session = attribution.kind === "inherited" || owner === null ? "engineers" : owner;
-  const subject = red.originPr ? `pr-${red.originPr.number}` : `trunk-${sha8}`;
+  const { session, fallback } = addressee(red, attribution);
+  const subject = subjectOf(red, sha8);
   const merged = red.originPr ? `#${red.originPr.number} ("${red.originPr.title}")` : `\`${sha8}\` (no pull request could be identified)`;
   const tests = red.failingTests === null
     ? "no failing test could be named from the log -- read the run"
     : red.failingTests.map((n) => `\`${n}\``).join("; ");
+  const keyed = isKeyed(red);
   return [{
     session,
-    ...(session === "engineers" ? {} : { fallback: "engineers" }),
+    ...(fallback === undefined ? {} : { fallback }),
     cause: "trunk-red",
     subject,
     discriminator: sha8,
-    prompt: `**MAIN IS RED. FIX FORWARD -- DO NOT REVERT.** This is the top of every queue: put down what you are doing.\n`
+    prompt: `**MAIN IS RED${keyed ? ` IN \`${red.repo}\`` : ""}. FIX FORWARD -- DO NOT REVERT.** This is the top of every queue: put down what you are doing.\n`
       + `The merge is ${merged}, at \`${sha8}\`. The failing job(s): ${red.failedJobs.map((j) => `\`${j}\``).join(", ") || "not readable"}.\n`
       + `The failing test(s): ${tests}.\n`
       + `The run: ${red.url}\n`
-      + `${attributionParagraph(attribution)}\n`
-      + "THE RULING (chairman, 2026-09-24): the org always fixes forward. Nothing reverts a merge, no CI job "
-      + "and no session -- not a `revert/` branch, not `git revert`, not \"revert as a fallback after N minutes\". "
-      + "#2341 would have removed a correct doc for a two-entry map miss in a test, and the fix was smaller "
-      + "than the re-land.\n"
-      + "SO: read the failing test, find the smallest change that makes it true, and open THAT as a pull "
-      + "request now, naming this merge in it. Other pull requests KEEP MERGING while you do (a red main "
-      + "already stops the ones that touch the break, and `trunkGate` still refuses a merge that silently "
-      + "undoes work); the fix goes first because this order outranks every other, not because the queue stops.\n"
-      + "If you cannot tell what to fix, say so on the merged pull request and route it -- but say it there, "
-      + "do not hold this order in silence. It is offered again every twenty minutes until `main` is green.",
+      + `${keyed ? NO_RECHECK_PARAGRAPH : attributionParagraph(attribution)}\n`
+      + RULING_PARAGRAPH
+      + (keyed ? ROUTED_INSTRUCTIONS : OWN_INSTRUCTIONS),
     causeKey: `${session}/trunk-red/${subject}/${sha8}`,
   }];
 }
+
+/** @param {{ repoKey?: string }} red a repository other than the primary's carries its key */
+const isKeyed = (red) => (red.repoKey ?? "") !== "";
+
+/**
+ * WHO OWES IT (decision 2 of the header). The primary's own: the merged PR's session, else `engineers`, and `engineers` as the way out.
+ * @param {NonNullable<ReturnType<typeof readTrunkRed>>} red @param {ReturnType<typeof attributionOf>} attribution
+ * @returns {{ session: string, fallback?: string }}
+ */
+function addressee(red, attribution) {
+  const owner = red.originPr?.session ?? null;
+  if (isKeyed(red)) {
+    // `product-manager` has no way out of its own: a seat that cannot be woken is reported by the wake, never routed to a pool that refuses.
+    return owner === null || owner === ROUTER ? { session: ROUTER } : { session: owner, fallback: ROUTER };
+  }
+  const session = attribution.kind === "inherited" || owner === null ? "engineers" : owner;
+  return session === "engineers" ? { session } : { session, fallback: "engineers" };
+}
+
+/** The standing seat that reads rows and process first (`.claude/rules/org-routing-and-timers.md`), and the receiver of a red in a repository that is not the primary. */
+const ROUTER = "product-manager";
+
+/**
+ * THE SUBJECT IS THE MERGED PR WHEN KNOWN (`pr-<n>`), else the sha. A keyed repository's carries its key (`pr-agent-org#56`), which `stuckRowOf`
+ * reads as NO row: its number is that repository's, and `pr-56` would have the breaker label a11ign's #56.
+ * @param {NonNullable<ReturnType<typeof readTrunkRed>>} red @param {string} sha8
+ */
+function subjectOf(red, sha8) {
+  const key = red.repoKey ?? "";
+  if (red.originPr) return `pr-${subjectRef(key, red.originPr.number)}`;
+  return isKeyed(red) ? `trunk-${key}-${sha8}` : `trunk-${sha8}`;
+}
+
+/** What a repository with no parent re-check can say (decision 1 of the header): never that a merge is to blame. */
+const NO_RECHECK_PARAGRAPH = "NO PARENT RE-CHECK RUNS FOR THIS REPOSITORY, so this cannot say whether the merge is the cause. Its `gate` "
+  + "tests the tool against the project at `main`, which moves on its own: the failure may be the project's change and not this merge's. "
+  + "Treat it as nobody's until you have read the run and shown otherwise.";
+
+const RULING_PARAGRAPH = "THE RULING (chairman, 2026-09-24): the org always fixes forward. Nothing reverts a merge, no CI job "
+  + "and no session -- not a `revert/` branch, not `git revert`, not \"revert as a fallback after N minutes\". "
+  + "#2341 would have removed a correct doc for a two-entry map miss in a test, and the fix was smaller "
+  + "than the re-land.\n";
+
+const OWN_INSTRUCTIONS = "SO: read the failing test, find the smallest change that makes it true, and open THAT as a pull "
+  + "request now, naming this merge in it. Other pull requests KEEP MERGING while you do (a red main "
+  + "already stops the ones that touch the break, and `trunkGate` still refuses a merge that silently "
+  + "undoes work); the fix goes first because this order outranks every other, not because the queue stops.\n"
+  + "If you cannot tell what to fix, say so on the merged pull request and route it -- but say it there, "
+  + "do not hold this order in silence. It is offered again every twenty minutes until `main` is green.";
+
+/** For the receiver that is not an engineer: it files the work, and the gate's own `ready-row-unclaimed` order carries it to one who can claim. */
+const ROUTED_INSTRUCTIONS = "SO, AND YOU ARE NOT ASKED TO FIX IT YOURSELF: read the run, then FILE ONE "
+  + `\`${READY_LABEL}\`, \`${LANE_PREFIX}any\` row (\`pnpm run row-file\`; `
+  + "rows for this repository are tracked in the primary's tracker) naming the run above, the failing job and this sha, with the failing file "
+  + "as its Region and the fix-forward as its done-when. An engineer claims it from the gate's `ready-row-unclaimed` order. If a row for "
+  + "this red is already open, say so on it and stop. Other pull requests KEEP MERGING meanwhile. "
+  + "It is offered again every twenty minutes until `main` is green.";

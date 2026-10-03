@@ -21,16 +21,17 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, chmodSync, copyFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { join, dirname, relative } from "node:path";
+import { join, dirname } from "node:path";
 import { route, undelivered, parseOrders, readLedger, deliver as settlingDeliver, readAgents, WAKEABLE, EXIT,
   WAKE_TTL_MS, JUDGMENT_TTL_MS, MAX_DELIVERIES, deliveryCounts, endedRuns, RESET,
   blockedSessions }
   from "../wake.mjs";
-import { localImports } from "../lib/local-import-closure.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
+import { copyToolAndProject, importClosure } from "./copied-tool-fixture.ts";
 import { isLiveSession } from "../arm-pr.mjs";
 import { afterGate, GATE, EXIT as TICK_EXIT } from "../work-tick.mjs";
 import { spawnInvocation, addressed, clearContext, CLEAR_TIMEOUT_MS, CLEAR_SETTLE_MS,
@@ -441,7 +442,7 @@ test("#2279 / #2505: the roster is sessions.json's engineer addresses -- NONE si
   assert.deepEqual(REAL_ROSTER, [],
     "#2505: the three standing engineers are retired, so no address is listed and every engineer is a spare");
   const live = (JSON.parse(readFileSync(
-    new URL("../../../../.agent-org/roles/sessions.json", import.meta.url), "utf8",
+    join(HOME_CHECKOUT, ".agent-org/roles/sessions.json"), "utf8",
   )) as { live: { name: string; role: string; brief: string | null; spare?: boolean;
     family?: { prefix: string; from: number } }[] }).live;
   const families = live.filter((s) => s.family !== undefined);
@@ -2032,13 +2033,15 @@ test("#2226 (5): the recipient rides AFTER the key, so no reader counts it as a 
 
 // THE WIRING, AS A PROCESS: `deliver` is handed `engineerEligibility()` by `main`, and an injected seam is
 // exactly what a deleted call goes around (see the header of the tick section above). `gh` and `herdr` are
-// stubs on PATH; `worker-judge` is the only engineer, idle, holding #1926 -- a row in build.
+// stubs on PATH; `worker-judge` is the only engineer, idle, holding #1926 -- a row in build. The Region names a path under `docs/`,
+// a directory both this repository and a11ign's tree track: `declaredRegionFiles` recognises only tracked ones, and a row
+// declaring no file is not in build (#3073).
 const GH_STUB = `#!/bin/sh
 case "$*" in
   "issue list"*"session:worker-judge"*) printf '%s' '[{"number":1926}]' ;;
   "issue list"*) printf '%s' '[]' ;;
   "api graphql"*) printf '%s' '{"data":{"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":[]}}}}}' ;;
-  "issue view"*) printf '%s' '{"body":"## Region\\n\\n- packages/agent-org/src/wake.mjs\\n"}' ;;
+  "issue view"*) printf '%s' '{"body":"## Region\\n\\n- docs/messaging.md\\n"}' ;;
   "api repos/"*"/sub_issues") printf '%s' '[]' ;;
   *) exit 1 ;;
 esac
@@ -2047,45 +2050,24 @@ esac
 /** A cycle line that FAILED: the drain lifts itself on it (#2324), so a tick given this offers a standing engineer. */
 const FAILED_CYCLE = `${JSON.stringify({ role: "worker-4", row: 2131, at: 1, clean: false, why: "fixture" })}\n`;
 
-const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const SESSIONS_JSON = ".agent-org/roles/sessions.json";
 
 /**
  * `wake.mjs` and its local-import closure, copied under `copyRoot` with a `sessions.json` that MARKS `worker-judge`
  * DRAINED. The real file marks nobody since #2505 retired the standing three, and `wake.mjs` reads the roster from
- * beside itself with no seam, so the drain's WIRING (`main` handing `deliver` the drain) can only be driven as a process
- * against a copy. The roster is the real file plus the three standing engineers as they stood at `90b65b787`, before the
- * spare family -- the same fixture `wake-drain.test.ts` builds. Returns the copied entry.
+ * the project's checkout with no seam, so the drain's WIRING (`main` handing `deliver` the drain) can only be driven as a process
+ * against a copy whose project is the copy. The roster is the real file plus the three standing engineers as they stood at `90b65b787`, before the
+ * spare family -- the same fixture `wake-drain.test.ts` builds. Returns the copied entry and the environment that points it at the copy.
  */
-function copyWakeWithDrainedRoster(copyRoot: string): string {
-  const entry = join(REPO_ROOT, "packages/agent-org/src/wake.mjs");
-  const files = new Set<string>();
-  const visit = (file: string): void => {
-    if (files.has(file)) return;
-    files.add(file);
-    for (const next of localImports(file)) visit(next);
-  };
-  visit(entry);
-  // #2616: the tool now reads the project's declaration from beside it, so a copied tree must carry it or the reader REFUSES (correctly).
-  files.add(join(REPO_ROOT, ".agent-org/project.json"));
-  // #2799: and the host's, because the drain marker, the reviewer state and the ledger default now read its `stateDir` at import.
-  files.add(join(REPO_ROOT, ".agent-org/host.json"));
-  // #2621: the declaration now points at a PLUGIN (`.agent-org/plugins/causes.mjs`), imported DYNAMICALLY
-  // by `cause-declaration.mjs` -- invisible to `localImports`'s static walk, so it is added for the
-  // identical reason `project.json` is a line above.
-  files.add(join(REPO_ROOT, ".agent-org/plugins/causes.mjs"));
-  for (const file of files) {
-    const target = join(copyRoot, relative(REPO_ROOT, file));
-    mkdirSync(dirname(target), { recursive: true });
-    copyFileSync(file, target);
-  }
-  const sessions = JSON.parse(readFileSync(join(REPO_ROOT, SESSIONS_JSON), "utf8")) as { live: Record<string, unknown>[] };
+function copyWakeWithDrainedRoster(copyRoot: string): { entry: string; env: Record<string, string> } {
+  const copy = copyToolAndProject(WAKE_ENTRY, importClosure(WAKE_ENTRY), copyRoot);
+  const sessions = JSON.parse(readFileSync(join(HOME_CHECKOUT, SESSIONS_JSON), "utf8")) as { live: Record<string, unknown>[] };
   const standing = ["worker-capture", "worker-judge", "worker-tooling"]
     .map((name) => ({ name, role: "engineer", drain: true, brief: ".agent-org/roles/engineer.md" }));
   sessions.live.splice(sessions.live.findIndex((e) => e.family !== undefined), 0, ...standing);
   mkdirSync(join(copyRoot, dirname(SESSIONS_JSON)), { recursive: true });
   writeFileSync(join(copyRoot, SESSIONS_JSON), JSON.stringify(sessions));
-  return join(copyRoot, relative(REPO_ROOT, entry));
+  return copy;
 }
 
 function runPoolTick(ghStub: string | null, { cycles = FAILED_CYCLE as string | null, drainedRoster = false } = {}) {
@@ -2096,7 +2078,7 @@ function runPoolTick(ghStub: string | null, { cycles = FAILED_CYCLE as string | 
     // that must SEE the drain runs a copy whose roster does (`drainedRoster`). Without it a ledger line is unneeded;
     // with it, a failed cycle is the drain's own release, not a bypass of it.
     if (cycles !== null) writeFileSync(sparePathsFrom(ledger).cycles, cycles);
-    const entry = drainedRoster ? copyWakeWithDrainedRoster(join(dir, "checkout")) : WAKE_ENTRY;
+    const { entry, env: copyEnv } = drainedRoster ? copyWakeWithDrainedRoster(join(dir, "checkout")) : { entry: WAKE_ENTRY, env: {} };
     writeFileSync(join(dir, "herdr"), herdrStub("idle").replace("product-manager", "worker-judge"));
     writeFileSync(join(dir, "gh"), ghStub ?? "#!/bin/sh\nexit 1\n");
     chmodSync(join(dir, "herdr"), STUB_MODE);
@@ -2104,7 +2086,7 @@ function runPoolTick(ghStub: string | null, { cycles = FAILED_CYCLE as string | 
     const order = JSON.stringify({ ...ROW_ORDER, session: "engineers" });
     const ran = spawnSync(process.execPath, [entry, `--ledger=${ledger}`, "--roster=worker-judge"], {
       input: `${order}\n`, encoding: "utf8",
-      env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` },
+      env: { ...process.env, ...copyEnv, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` },
     });
     let written = "";
     try { written = readFileSync(ledger, "utf8"); } catch { written = ""; }

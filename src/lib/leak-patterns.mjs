@@ -19,17 +19,9 @@
 // for a reason that has nothing to do with the test.
 
 import { homeProjectDeclaration } from "../project-config.mjs";
+import { GENERIC_LEAK_PATTERNS } from "./generic-leak-patterns.mjs";
 
-/**
- * The two patterns true of any public repository. The IPv4 branches each spell a FULL four-octet shape: an earlier form required only three
- * for the bare-`10` branch and matched an Intel driver INF's platform-version decoration and ordinary npm semver, neither of which is an address.
- * @type {ReadonlyArray<{ name: string; pattern: RegExp }>}
- */
-export const GENERIC_LEAK_PATTERNS = Object.freeze([
-  { name: "private LAN IPv4 address", pattern:
-    /\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})\b/ },
-  { name: "a named SSH private key file", pattern: /~?\/?\.ssh\/[\w.-]+_ed25519\b|~?\/?\.ssh\/id_\w+\b/ },
-]);
+export { GENERIC_LEAK_PATTERNS };
 
 /**
  * EVERY pattern this project's prose is held to: the tool's generic two, then the project's own from its declaration.
