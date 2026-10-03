@@ -249,7 +249,7 @@ test("#2991: an UNDECLARED key is returned unchanged and nothing is fetched", ()
 test("(3) the keyed reviewer's order and environment carry `GH_REPO=a11ign/agent-org`, the primary's carry none", () => {
   const checkout = { path: `/reviews-root/${SESSION}`, head: HEAD };
   const keyed = withReviewCheckout({ session: SESSION, prompt: "p" }, checkout, 6).prompt;
-  assert.match(keyed, /`GH_REPO=a11ign\/agent-org A11Y_REVIEWER_SESSION=reviewer-agent-org-6 pr-review-verdict <n> <convinced\|not-convinced> <file>`/);
+  assert.match(keyed, /`GH_REPO=a11ign\/agent-org A11Y_REVIEWER_SESSION=reviewer-agent-org-6 \$HOME\/reviewer\/bin\/pr-review-verdict <n> <convinced\|not-convinced> <file>`/);
   assert.match(keyed, /every `gh` call and the door itself need `GH_REPO=a11ign\/agent-org`/);
   assert.equal(reviewerEnvironment(SESSION).GH_REPO, "a11ign/agent-org");
   assert.equal(reviewerEnvironment(SESSION, { GH_REPO: "x/y" }).GH_REPO, "x/y", "an override still wins, key by key");
@@ -267,7 +267,7 @@ test("(3) end to end: `deliver` makes the keyed tree from the clone, starts the 
   assert.deepEqual(out.refused, []);
   assert.deepEqual(registered, [SESSION], "POSITIVE CONTROL: an instance was started");
   assert.deepEqual(git.calls.find((args) => args.includes("fetch")), ["-C", CLONE, "fetch", "--quiet", "origin", "+refs/pull/6/head:refs/review/agent-org/pr-6"]);
-  assert.ok(sent.some((args) => args.join(" ").includes("GH_REPO=a11ign/agent-org A11Y_REVIEWER_SESSION=reviewer-agent-org-6 pr-review-verdict")),
+  assert.ok(sent.some((args) => args.join(" ").includes("GH_REPO=a11ign/agent-org A11Y_REVIEWER_SESSION=reviewer-agent-org-6 $HOME/reviewer/bin/pr-review-verdict")),
     "the order that was typed names the door with the repository");
 });
 
@@ -280,7 +280,7 @@ test("the primary's instance is byte-identical to before: seat, fetch root, ref,
   prepareReviewCheckout({ pr: 6, session: "reviewer-6", ...git.seams });
   assert.deepEqual(git.calls.find((args) => args.includes("fetch")), ["-C", REPO_ROOT, "fetch", "--quiet", "origin", "+refs/pull/6/head:refs/review/pr-6"]);
   const prompt = withReviewCheckout({ session: "reviewer-6", prompt: "p" }, { path: "/r/reviewer-6", head: HEAD }, 6).prompt;
-  assert.ok(prompt.endsWith("post the verdict as `A11Y_REVIEWER_SESSION=reviewer-6 pr-review-verdict <n> <convinced|not-convinced> <file>` "
+  assert.ok(prompt.endsWith("post the verdict as `A11Y_REVIEWER_SESSION=reviewer-6 $HOME/reviewer/bin/pr-review-verdict <n> <convinced|not-convinced> <file>` "
     + "and the verdict line's `by` names you."), "the door line is the one it always was, with nothing after it");
   assert.deepEqual(Object.keys(reviewerEnvironment("reviewer-6")).sort(), ["A11Y_REVIEWER_SESSION", "GH_CONFIG_DIR", "npm_config_cache"]);
 });

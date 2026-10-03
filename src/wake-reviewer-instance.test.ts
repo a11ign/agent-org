@@ -37,6 +37,18 @@ import { REMOVAL_LOG_ENV } from "./worktree-removal.mjs";
 // #2827: `removeReviewCheckout` now writes #2782's removal log, and a test must not write the host's real record.
 process.env[REMOVAL_LOG_ENV] = join(mkdtempSync(join(tmpdir(), "review-removal-log-")), "worktree-removals");
 
+/**
+ * The door's spelling as the INSTALLER writes it (`${A11Y_REVIEWER_BIN:-$HOME/reviewer/bin}/pr-review-verdict`), read from the script and not
+ * restated and not imported from `wake.mjs`: a pin that reads the order's own constant agrees with whatever the order prints (#3316).
+ */
+const DOOR_SPELLING = (() => {
+  const line = readFileSync(fileURLToPath(new URL("./reviewer/install-reviewer-bin.sh", import.meta.url)), "utf8").split("\n").find((l) => l.startsWith("dest="));
+  const spelled = /\$\{A11Y_REVIEWER_BIN:-([^}]+)\}\/(pr-review-verdict)\}?"?$/.exec(line ?? "");
+  assert.ok(spelled, `could not read the installer's default out of: ${line}`);
+  return `${spelled[1]}/${spelled[2]}`;
+})();
+const escapedForRegex = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));
 /** `engineerRoles()` since #2505: the three standing engineers are retired and the spares are a FAMILY, so no address is listed. */
@@ -642,7 +654,7 @@ test("#2498 (2a): `A11Y_REVIEWER_SESSION` reaches the pane by EVERY path the tic
   const live = world();
   deliver([reviewOrder(2398)], agents({ "reviewer-2398": "idle" }), ROSTER, live.deps);
   const [typed] = live.h.said("agent prompt reviewer-2398");
-  assert.match(typed, /A11Y_REVIEWER_SESSION=reviewer-2398 pr-review-verdict/,
+  assert.ok(typed.includes(`A11Y_REVIEWER_SESSION=reviewer-2398 ${DOOR_SPELLING} `),
     "a pane the tick did not start (herdr's restore of a live agent after a restart) holds no variable, so the ORDER carries the name: it is the one thing every path delivers");
   assert.match(typed, /node_modules\/\.cache\/npm/, "and the cache path, for the same pane");
 });
@@ -663,7 +675,7 @@ test("#2498 (2c): the order names the dependencies, the cache and the session fo
   const order = withReviewCheckout({ prompt: "P", session: "reviewer-7" }, { path: "/r/reviewer-7", head: "a".repeat(40) }, 7).prompt;
   assert.match(order, /already linked in \(`node_modules`/);
   assert.match(order, /`\/r\/reviewer-7\/node_modules\/\.cache\/npm`, the one place npm can write: set `npm_config_cache` to it/);
-  assert.match(order, /SIGN AS `reviewer-7`.*`A11Y_REVIEWER_SESSION=reviewer-7 pr-review-verdict <n> <convinced\|not-convinced> <file>`/);
+  assert.match(order, new RegExp("SIGN AS `reviewer-7`.*`A11Y_REVIEWER_SESSION=reviewer-7 " + escapedForRegex(DOOR_SPELLING) + " <n> <convinced\\|not-convinced> <file>`"));
 });
 
 // --- #2498 Done-when 3: `reviewer.md` says what a verdict that did not execute must say -----------------------------------------
