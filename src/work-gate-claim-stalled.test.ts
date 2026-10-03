@@ -1867,6 +1867,60 @@ test("#3075 (10) a PR MERGED in the other repository releases like a home one, a
     "and the home list that WAS read still counts when the other one was not");
 });
 
+// --- #3076: a release names a pull request in another tracked repository by its KEY and number ------------------------------------------------
+
+/** A key is the repository's, and `#38` alone is read as the HOME repository's: `agent-org#38` has `#38` inside it, so the bare form is "not preceded by a key". */
+const BARE = (n: number) => new RegExp(`(^|[^\\w-])#${n}\\b`);
+const MERGED_ELSEWHERE = [{ number: 38, headRefName: BRANCH, mergedAt: iso(ago(30)), repoKey: "agent-org", repo: "a11ign/agent-org" }];
+const goneWith = (ownPrs: object[]) => {
+  const facts = { ...withOpenPr(), openPrs: ownPrs.length, ownPrs } as Facts;
+  const reading = claimReading(facts, { now: NOW, restartAt: null, nudge: null, agents: GONE_LISTING, goneSince: NOW - GONE_CONFIRM_MS });
+  return claimStalledOrders([{ facts, reading }], NOW)[0];
+};
+
+test("#3076 a MERGED release for a pull request in another repository reads `agent-org#38` in the order's prompt, and the number stays a number", () => {
+  const { orders } = tickWith({ commit: 40, push: 40 }, [claim(600)], { merged: [], elsewhere: { open: [], merged: MERGED_ELSEWHERE } });
+  assert.match(orders[0].prompt, /agent-org#38 merged and the row stayed open/);
+  assert.doesNotMatch(orders[0].prompt, BARE(38), "no bare `#38`, which is a pull request of the HOME repository");
+  assert.equal(orders[0].release!.mergedPr, 38);
+});
+
+test("#3076 CONTROL: a MERGED release for a HOME pull request is byte-identical to today's, with no repository field on it", () => {
+  const merged = [{ number: 2497, headRefName: BRANCH, mergedAt: iso(ago(30)) }];
+  const { orders } = tickWith({ commit: 40, push: 40 }, [claim(600)], { merged, elsewhere: { open: [], merged: [] } });
+  assert.match(orders[0].prompt, /held by worker-7: #2497 merged and the row stayed open\.$/);
+  assert.equal("mergedPrRepoKey" in orders[0].release!, false);
+  assert.deepEqual(orders[0].release!.mergedPr, 2497);
+});
+
+test("#3076 a GONE release with open pull requests names each by its key, a home one as it always was, and `openPrs` stays numbers", () => {
+  const elsewhere = { number: 38, headRefName: BRANCH, repoKey: "agent-org", repo: "a11ign/agent-org" };
+  const only = goneWith([elsewhere]);
+  assert.match(only.prompt, /agent-org#38 is still open/);
+  assert.doesNotMatch(only.prompt, BARE(38));
+  assert.deepEqual(only.release!.openPrs, [38]);
+  const both = goneWith([OPEN_PR, elsewhere]);
+  assert.match(both.prompt, /#9, agent-org#38 is still open/, "the home number keeps its bare spelling beside the qualified one");
+  assert.deepEqual(both.release!.openPrs, [9, 38]);
+  const home = goneWith([OPEN_PR]);
+  assert.match(home.prompt, /and #9 is still open/);
+  assert.equal("openPrRepoKeys" in home.release!, false, "CONTROL: a home-only release carries no key field, so it is today's order");
+});
+
+test("#3076 the release COMMENT wake.mjs writes carries the key for a merged and for an open pull request elsewhere, and is today's for a home one", () => {
+  const merged = releaseHost();
+  performRelease({ ...STALL, why: "merged", mergedPr: 38, mergedPrRepoKey: "agent-org", answer: "product-manager" }, merged.deps);
+  assert.match(merged.comment(), /agent-org#38 MERGED and this row stayed open/);
+  assert.doesNotMatch(merged.comment(), BARE(38));
+  const home = releaseHost();
+  performRelease({ ...STALL, why: "merged", mergedPr: 2497, answer: "product-manager" }, home.deps);
+  assert.match(home.comment(), /and #2497 MERGED and this row stayed open/);
+  const open = releaseHost({ labels: ["in-progress", "session:worker-7"], wasNotReady: true });
+  performRelease({ ...STALL, why: "gone", idleMinutes: null, nudgedAt: null, openPrs: [9, 38], openPrRepoKeys: [undefined, "agent-org"], answer: "product-manager" }, open.deps);
+  assert.match(open.comment(), /#9, agent-org#38 is OPEN/);
+  assert.doesNotMatch(open.comment(), BARE(38));
+});
+
 test("#3075 the gate reads the other repositories ONCE, by the scope enumeration's own readers, tagged with the key, and `null` when one was refused", () => {
   const scopes = [{ key: "", code: { repo: "a11ign/a11ign" }, tracker: { repo: "a11ign/a11ign" } }, { key: "agent-org", code: { repo: "a11ign/agent-org" }, tracker: null }];
   const asked: (string | undefined)[] = [];
