@@ -1174,14 +1174,49 @@ function reviewTreeSource(session, given, link) {
 }
 
 /**
- * A KEYED review tree has no dependencies to link, and says so. {@link linkReviewDependencies} hybrid-links the primary's `node_modules`
- * and this tree's `packages/*`, which is a11ign's shape; a keyed repository declares its own, and `a11ign/agent-org`'s `package.json`
- * carries none (measured 2026-10-02: no `dependencies`, no `devDependencies`, and a clone with no `node_modules`). So a clone that HAS a
- * `node_modules` is linked the plain way -- every entry, nothing of this tree's own replaced -- and one that has none needs nothing.
+ * The packages `path`'s `package.json` declares as `dependencies` or `devDependencies` (not `peerDependencies`, which the installer of
+ * a package supplies), by name with the range declared. A tree with NO manifest declares nothing; one whose manifest cannot be read is
+ * not "declares nothing" -- that is a refusal, so an unreadable file never passes as a repository that needs no packages.
+ * @param {LinkFs} fs @param {string} path @returns {{packages: Record<string, string>} | {unreadable: string}}
+ */
+function declaredPackages(fs, path) {
+  const file = `${path}/package.json`;
+  if (!fs.existsSync(file)) return { packages: {} };
+  try {
+    const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
+    return { packages: { ...manifest.devDependencies, ...manifest.dependencies } };
+  } catch (err) {
+    return { unreadable: `${file} cannot be read as a manifest (${firstLine(err)})` };
+  }
+}
+
+/** "`a`", "`a` and `b`", "`a`, `b` and `c`". @param {string[]} names @returns {string} */
+function namedList(names) {
+  const quoted = names.map((name) => `\`${name}\``);
+  return quoted.length < 2 ? quoted.join("") : `${quoted.slice(0, -1).join(", ")} and ${quoted[quoted.length - 1]}`;
+}
+
+/**
+ * A KEYED review tree takes its dependencies from the repository's own clone, and the tree's own `package.json` says which. A keyed
+ * repository declares its own (`a11ign/agent-org`'s `devDependencies` are the three CI installs), so this is not {@link linkReviewDependencies}'s
+ * hybrid link of `packages/*`: a clone that HAS every declared package is linked the plain way -- every entry, nothing of this tree's own
+ * replaced -- and a declared package the clone lacks is a REFUSAL naming it and the command that supplies it (#3110: a reviewer
+ * whose tests run under `node --import tsx` died on `ERR_MODULE_NOT_FOUND` because a clone with no `node_modules` read as "nothing
+ * to link, nothing wrong"). The tree's manifest and not the clone's, because the tree is the pull request's head: a pull request that
+ * adds a dependency is the one a clone from before it cannot review. A repository that declares nothing needs no `node_modules`.
+ * It REFUSES rather than installs: the tick would be fetching from a registry into a clone every reviewer shares.
  * @param {{path: string, repoRoot: string, fs?: LinkFs}} args @returns {string | null}
  */
 export function linkKeyedDependencies({ path, repoRoot, fs = REAL_LINK_FS }) {
   const modules = `${repoRoot}/node_modules`;
+  const declared = declaredPackages(fs, path);
+  if ("unreadable" in declared) return declared.unreadable;
+  const missing = Object.entries(declared.packages).filter(([name]) => !fs.existsSync(`${modules}/${name}`));
+  if (missing.length > 0) {
+    const install = missing.map(([name, range]) => `"${name}@${range}"`).join(" ");
+    return `${modules} lacks ${namedList(missing.map(([name]) => name))}, which ${path}/package.json declares; supply `
+      + `${missing.length === 1 ? "it" : "them"} with \`cd ${repoRoot} && npm install --no-save --no-package-lock ${install}\``;
+  }
   if (!fs.existsSync(modules)) return null;
   try {
     fs.mkdirSync(`${path}/node_modules`, { recursive: true });
@@ -1202,11 +1237,11 @@ export function linkKeyedDependencies({ path, repoRoot, fs = REAL_LINK_FS }) {
 
 /**
  * The filesystem calls {@link linkReviewDependencies} makes, so a test can hand it a fake; the default is the real one.
- * @typedef {Pick<typeof import("node:fs"), "existsSync" | "mkdirSync" | "readdirSync" | "lstatSync" | "readlinkSync" | "symlinkSync"
- *   | "rmSync">} LinkFs
+ * @typedef {Pick<typeof import("node:fs"), "existsSync" | "readFileSync" | "mkdirSync" | "readdirSync" | "lstatSync" | "readlinkSync"
+ *   | "symlinkSync" | "rmSync">} LinkFs
  */
 /** @type {LinkFs} */
-const REAL_LINK_FS = { existsSync, mkdirSync, readdirSync, lstatSync, readlinkSync, symlinkSync, rmSync };
+const REAL_LINK_FS = { existsSync, readFileSync, mkdirSync, readdirSync, lstatSync, readlinkSync, symlinkSync, rmSync };
 
 /**
  * Make `link` a symlink to `target`: nothing when it already is one, a replacement for anything else. Only ever called with a
