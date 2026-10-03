@@ -145,7 +145,8 @@ function refusalReason(brief, missing) {
 /**
  * **NO EVENT IS A REFUSAL, AND THE REASON GOES THROUGH `problem`**, the channel the options block already uses: `watch.mjs` writes it to the
  * ledger once per distinct reason and logs it, so a refused alert is on the record and not silent. The row is still labelled, so the caller
- * must not read the missing event as the label going.
+ * must not read the missing event as the label going. **A problem NAMES ITSELF**: a refusal begins `alert not sent:` and an options-block problem
+ * begins `chairman-options:`, because the watcher adds no prefix and a grep for either finds only its own kind (#3344).
  *
  * @param {{ repo: string, row: RequestRow, now: number }} input
  * @returns {{ event: Record<string, unknown> | null, options: ChairmanOption[], problem: string | null }}
@@ -169,7 +170,7 @@ export function requestEvent({ repo, row, now }) {
       state: requestState(lines, options),
     },
     options,
-    problem,
+    problem: problem === null ? null : `chairman-options: ${problem}`,
   };
 }
 
