@@ -235,3 +235,113 @@ test("#3045 (4) CONTROL: a refusal at an older head with a CHANGED patch still c
   // And an UNREAD patch is not an unchanged one: the old sentence, which is what the gate said before the patch was read.
   assert.match(blockedPrompt(refused(MERGES[0]), refusingGh), /for a fresh look/);
 });
+
+// --- a11ign#3199: A REFUSAL POSTED FOR A FAILING CHECK DOES NOT STAND AT AN EQUAL PATCH ONCE THE CHECK IS GREEN ----------------------------
+//
+// #3154 (Dependabot): refused at AUTHORED while `ts / run` failed on a defect in `main`, `main` was fixed, the rebase made MERGES[0] with the SAME
+// patch. The gate read "the PATCH is unchanged ... the rework is yours" and asked nobody to look again; the door refused the follow-up. Both now ask
+// `refusalLifted`, which reads check-run CONCLUSIONS at the two commits. Each negative differs from the positive by exactly one fact.
+
+/** `fakeGh` that also answers the check-runs read: the failing names by commit, one per line as `gh --jq` prints them. `calls` logs every read. */
+function fakeGhWithChecks(failing: Record<string, string[]>, calls: string[] = [], unreadable = false) {
+  const patches = fakeGh({ [AUTHORED]: PATCH_A(), [MERGES[0]]: PATCH_A("-40,3 +41,3", "main moved") });
+  return (args: string[]): string => {
+    const path = args.find((a) => a.includes("/check-runs"));
+    if (path === undefined) return patches(args);
+    calls.push(path);
+    if (unreadable) throw new Error("HTTP 403");
+    const sha = path.split("/commits/")[1].split("/")[0];
+    return (failing[sha] ?? []).join("\n");
+  };
+}
+const RED_AT_AUTHORED = { [AUTHORED]: ["ts / run", "gate"] };
+
+/** #3154's own shape: an unlabelled dependency PR, the refusal a review (not a comment) at the older head. */
+const dependabot = (head: string, state = "CHANGES_REQUESTED", word = "not convinced", extra: Pr = {}): Pr => pr(3154, head, {
+  author: { login: "dependabot[bot]" }, labels: [], comments: [], reviewDecision: state,
+  reviews: [{ state, commit: { oid: AUTHORED }, submittedAt: "2026-10-03T10:02:16Z", body: `**Review of #3154 at \`${AUTHORED.slice(0, 8)}\`, by reviewer-3154: ${word}.**` }],
+  ...extra,
+});
+const causes = (orders: Order[]) => orders.map((o) => o.cause);
+
+test("#3199 (2) POSITIVE: the refusal posted for a failing check, equal patch, green head: the reviewer seat is ordered and no rework is assigned", () => {
+  const orders = ordersOf(dependabot(MERGES[0]), fakeGhWithChecks(RED_AT_AUTHORED));
+  assert.equal(awaiting(orders).length, 1, "the PR is offered to its reviewer seat for a fresh look");
+  assert.equal(awaiting(orders)[0].session, "reviewer-3154");
+  assert.ok(!causes(orders).includes("verdict-not-convinced"), "no order says the verdict stands");
+  for (const o of orders) assert.doesNotMatch(o.prompt, /rework is yours/, `${o.cause} tells nobody the rework is theirs`);
+});
+
+test("#3199 (5b) NEGATIVE: the refused commit's checks were all green (the #3033 shape): the refusal STANDS and there is no fresh look", () => {
+  const orders = ordersOf(dependabot(MERGES[0]), fakeGhWithChecks({}));
+  assert.deepEqual(awaiting(orders), []);
+  assert.ok(causes(orders).includes("verdict-not-convinced"));
+});
+
+test("#3199 (5c) NEGATIVE: the head still fails a check: the refusal STANDS", () => {
+  const orders = ordersOf(dependabot(MERGES[0]), fakeGhWithChecks({ ...RED_AT_AUTHORED, [MERGES[0]]: ["ts / run"] }));
+  assert.deepEqual(awaiting(orders), []);
+  assert.ok(causes(orders).includes("verdict-not-convinced"));
+});
+
+test("#3199 (5d) NEGATIVE: the earlier verdict was an APPROVAL, however red the older commit: it stands, and no check is even read", () => {
+  const calls: string[] = [];
+  const approved = dependabot(MERGES[0], "APPROVED", "convinced");
+  assert.deepEqual(awaiting(ordersOf(approved, fakeGhWithChecks(RED_AT_AUTHORED, calls))), []);
+  assert.deepEqual(calls, []);
+});
+
+test("#3199 (5e) NEGATIVE: a check-runs read that fails is not a green check: the refusal STANDS", () => {
+  const calls: string[] = [];
+  const orders = ordersOf(dependabot(MERGES[0]), fakeGhWithChecks(RED_AT_AUTHORED, calls, true));
+  assert.deepEqual(awaiting(orders), []);
+  assert.ok(causes(orders).includes("verdict-not-convinced"));
+  assert.ok(calls.length > 0, "the read WAS attempted: the standing refusal is the failure's doing and not an unread branch");
+});
+
+test("#3199 (3) the fresh verdict at the head is what stands afterwards, so the order stops once the reviewer has answered", () => {
+  const answered = dependabot(MERGES[0], "CHANGES_REQUESTED", "not convinced", {
+    reviews: [
+      { state: "CHANGES_REQUESTED", commit: { oid: AUTHORED }, submittedAt: "2026-10-03T10:02:16Z", body: `**Review of #3154 at \`${AUTHORED.slice(0, 8)}\`, by reviewer-3154: not convinced.**` },
+      { state: "APPROVED", commit: { oid: MERGES[0] }, submittedAt: "2026-10-03T11:04:23Z", body: `**Review of #3154 at \`${MERGES[0].slice(0, 8)}\`, by reviewer-3154: convinced.**` },
+    ],
+  });
+  assert.deepEqual(awaiting(ordersOf(answered, fakeGhWithChecks(RED_AT_AUTHORED))), []);
+  assert.ok(!causes(ordersOf(answered, fakeGhWithChecks(RED_AT_AUTHORED))).includes("verdict-not-convinced"));
+});
+
+test("#3199 (4) cost: only an equal-patch refusal reads check runs, one per commit compared, and the head only after a failure was found", () => {
+  const read = (p: Pr, failing: Record<string, string[]>) => {
+    const calls: string[] = [];
+    ordersOf(p, fakeGhWithChecks(failing, calls));
+    return calls;
+  };
+  assert.deepEqual(read(pr(3033, MERGES[0], { comments: [verdictAt(3033, AUTHORED, "convinced")] }), RED_AT_AUTHORED), [], "a verdict that is not a refusal");
+  assert.deepEqual(read(pr(3033, MERGES[0]), RED_AT_AUTHORED), [], "no verdict at all: the common path adds no call");
+  const refusedPatchChanged = dependabot(MERGES[0]);
+  const changed = (args: string[]) => (args.some((a) => a.includes("/check-runs")) ? assert.fail("a CHANGED patch reads no check run") : fakeGh({ [AUTHORED]: PATCH_A(), [MERGES[0]]: PATCH_B })(args));
+  ordersOf(refusedPatchChanged, changed);
+  const lifted = read(dependabot(MERGES[0]), RED_AT_AUTHORED);
+  assert.equal(lifted.length, 2, "the refused commit and the head, though the commit is named twice (its full oid and the opener's abbreviation)");
+  assert.ok(lifted[0].includes(AUTHORED) && lifted[1].includes(MERGES[0]));
+  assert.equal(read(dependabot(MERGES[0]), {}).length, 1, "an all-green refused commit: the head is not read");
+});
+
+test("#3199 (2) `pr-review-blocked`: a lifted refusal never says the rework is the author's, for a labelled PR or the unlabelled set", () => {
+  const owned = { ...refused(MERGES[0]), statusCheckRollup: [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }] };
+  const ownedPrompt = blockedPrompt(owned, fakeGhWithChecks(RED_AT_AUTHORED));
+  assert.match(ownedPrompt, /what it refused was not in this patch, so there is no rework to do/);
+  assert.match(ownedPrompt, /ask `reviewer-2049` for a fresh look at the head/);
+  assert.doesNotMatch(ownedPrompt, /the rework is yours/);
+  // THE CONTROL: the same PR whose refused commit was all green keeps the sentence the #3045 test pins.
+  assert.match(blockedPrompt(owned, fakeGhWithChecks({})), /the refusal stands at the same work/);
+  const unowned = { ...owned, labels: [] };
+  const [setOrder] = ordersOf(unowned, fakeGhWithChecks(RED_AT_AUTHORED), { required: ["gate"] }).filter((o) => o.cause === "pr-review-blocked");
+  assert.match(setOrder.prompt, /\[LIFTED: posted while a check failed/);
+  const [kept] = ordersOf(unowned, fakeGhWithChecks({}), { required: ["gate"] }).filter((o) => o.cause === "pr-review-blocked");
+  assert.doesNotMatch(kept.prompt, /LIFTED/, "THE CONTROL: no lift, no note");
+});
+
+test("#3199 the check-run read is declared in GH_READS", () => {
+  assert.match(GH_READS.conditionalOnEqualPatchRefusal, /commits\/\{sha\}\/check-runs/);
+});

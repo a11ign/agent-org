@@ -19,6 +19,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { refusalLifted } from "../review-verdict.mjs";
 
 const DOOR = fileURLToPath(new URL("../reviewer/pr-review-verdict.sh", import.meta.url));
 
@@ -30,6 +31,8 @@ const EXIT_UNDETERMINED = 4;
 const FIRST = "f3879426aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const AFTER_MERGE_OF_MAIN = "c7764afbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const NEW_WORK = "9d41e0cccccccccccccccccccccccccccccccccc";
+/** A third commit whose patch equals FIRST's (another merge of `main`), for a refusal that follows the lifted one. */
+const NEW_WORK_EQUAL = "5a5a5adddddddddddddddddddddddddddddddddd";
 
 /** A real diff. `index` and the hunk's line numbers are what a merge of `main` moves; the patch is what it leaves. */
 const diffOf = ({ hunkStart, index, added }: { hunkStart: number; index: string; added: string[] }): string =>
@@ -50,6 +53,7 @@ const DIFFS: Record<string, string> = {
   [FIRST]: diffOf({ hunkStart: 1, index: "1111111..2222222", added: ["two"] }),
   [AFTER_MERGE_OF_MAIN]: diffOf({ hunkStart: 41, index: "aaaaaaa..bbbbbbb", added: ["two"] }),
   [NEW_WORK]: diffOf({ hunkStart: 1, index: "1111111..3333333", added: ["two", "five"] }),
+  [NEW_WORK_EQUAL]: diffOf({ hunkStart: 77, index: "ccccccc..ddddddd", added: ["two"] }),
 };
 
 const OPENER = "**Review of #7 at `c7764afb`, by reviewer-7: convinced (CI run 41)**";
@@ -69,7 +73,9 @@ interface Scenario {
   verdict?: "convinced" | "not-convinced";
   opener?: string;
   /** A `gh` read that fails, named by what it was reading. */
-  failing?: "reviews" | "compare";
+  failing?: "reviews" | "compare" | "checks";
+  /** The check runs that concluded `failure`, by commit (a11ign#3199). A commit absent here has only a passing check run. */
+  failedChecks?: Record<string, string[]>;
 }
 
 /** The door's `gh` calls that WRITE. Everything else it asks is a read. */
@@ -86,6 +92,12 @@ function runDoor(scenario: Scenario): Run {
     for (const [sha, diff] of Object.entries(DIFFS)) writeFileSync(join(dir, `diff-${sha}`), diff);
     if (scenario.failing === "reviews") writeFileSync(join(dir, "fail-reviews"), "");
     if (scenario.failing === "compare") writeFileSync(join(dir, "fail-compare"), "");
+    if (scenario.failing === "checks") writeFileSync(join(dir, "fail-checks"), "");
+    // A passing run beside the failing ones, so the door's own `select(.conclusion == "failure")` is what picks them out.
+    for (const sha of Object.keys(DIFFS)) {
+      const runs = [{ name: "lint", conclusion: "success" }, ...(scenario.failedChecks?.[sha] ?? []).map((name) => ({ name, conclusion: "failure" }))];
+      writeFileSync(join(dir, `checks-${sha}`), JSON.stringify({ check_runs: runs }));
+    }
     // ONE LOG LINE PER CALL, argv joined. A read answers by running the door's OWN `--jq` over the API-shaped JSON in the directory, as
     // `gh` does, so the door's `select` and `@tsv` are what is under test and not a stub that returns the answer. The read-back is that
     // list plus the review the door just sent, so the attribution is reached and a posted review is a full run.
@@ -96,6 +108,8 @@ jq_arg=""; prev=""
 for x in "$@"; do [[ "$prev" == --jq ]] && jq_arg="$x"; prev="$x"; done
 case "$a" in
   "pr review"*|*"--method POST"*) exit 0 ;;
+  *"/check-runs"*) [[ ! -f "$D/fail-checks" ]] || exit 1
+    sha="\${a#*commits/}"; sha="\${sha%%/*}"; jq -r "$jq_arg" "$D/checks-$sha" ;;
   *"/compare/"*) [[ ! -f "$D/fail-compare" ]] || exit 1
     sha="\${a##*...}"; sha="\${sha%% *}"; cat "$D/diff-$sha" ;;
   *"/pulls/7/reviews?"*"select("*) [[ ! -f "$D/fail-reviews" ]] || exit 1; jq -r "$jq_arg" "$D/reviews.json" ;;
@@ -196,6 +210,104 @@ test("a read that fails is COULD-NOT-TELL, not `no review`: nothing is posted an
     assert.deepEqual(posted(calls), [], failing);
     assert.match(stderr, /could not tell whether #7 already has a review/, failing);
   }
+});
+
+// --- a11ign#3199: A REFUSAL POSTED FOR A FAILING CHECK DOES NOT BAR A NEWER REVIEW ONCE THE CHECK IS GREEN AT AN EQUAL PATCH --------------
+//
+// #3154's shape: CHANGES_REQUESTED at FIRST (four check runs failed there, one a defect in `main`), then the same patch at AFTER_MERGE_OF_MAIN
+// with nothing failing. Each refusal below differs from this allowed case by exactly ONE fact.
+
+const READ_CHECKS = (calls: string[]) => calls.filter((c) => c.includes("/check-runs"));
+const REFUSED_AT_FIRST = [reviewAt(FIRST, "CHANGES_REQUESTED", "2026-10-03T10:02:16Z")];
+const RED_AT_FIRST = { [FIRST]: ["ts / run", "gate"] };
+
+test("3199 (1)(a) POSITIVE: a CHANGES_REQUESTED at an older commit, equal patch, a failing check there and none at the head, posts either verdict", () => {
+  for (const verdict of ["convinced", "not-convinced"] as const) {
+    const { status, calls, stderr } = runDoor({ head: AFTER_MERGE_OF_MAIN, reviews: REFUSED_AT_FIRST, failedChecks: RED_AT_FIRST, verdict });
+    assert.equal(status, 0, `${verdict}: ${stderr}`);
+    assert.equal(posted(calls).length, 1, verdict);
+    assert.match(posted(calls)[0], verdict === "convinced" ? /--approve/ : /--request-changes/);
+    assert.equal(calls.filter((c) => c.includes("/compare/")).length, 2, "the case IS in the equal-patch population: both diffs were compared and equal");
+  }
+});
+
+test("3199 (3) no human dismissal is in the path: the door posts the approval and never calls a `dismissals` endpoint", () => {
+  const { status, calls, stderr } = runDoor({ head: AFTER_MERGE_OF_MAIN, reviews: REFUSED_AT_FIRST, failedChecks: RED_AT_FIRST });
+  assert.equal(status, 0, stderr);
+  assert.match(posted(calls)[0], /--approve/);
+  assert.deepEqual(calls.filter((c) => /dismiss/i.test(c)), [], "no review was dismissed by anyone");
+});
+
+test("3199 (5b) NEGATIVE: the older commit's checks were all green (the #3033 shape) is refused", () => {
+  const { status, calls, stderr } = runDoor({ head: AFTER_MERGE_OF_MAIN, reviews: REFUSED_AT_FIRST, failedChecks: {} });
+  assert.equal(status, EXIT_SECOND_REVIEW, stderr);
+  assert.deepEqual(posted(calls), []);
+});
+
+test("3199 (5c) NEGATIVE: the head still fails a check is refused", () => {
+  const { status, calls, stderr } = runDoor({ head: AFTER_MERGE_OF_MAIN, reviews: REFUSED_AT_FIRST,
+    failedChecks: { ...RED_AT_FIRST, [AFTER_MERGE_OF_MAIN]: ["ts / run"] } });
+  assert.equal(status, EXIT_SECOND_REVIEW, stderr);
+  assert.deepEqual(posted(calls), []);
+});
+
+test("3199 (5d) NEGATIVE: the earlier verdict was APPROVED, however red the older commit, is refused", () => {
+  const { status, calls, stderr } = runDoor({ head: AFTER_MERGE_OF_MAIN, reviews: [reviewAt(FIRST, "APPROVED", "2026-10-03T10:02:16Z")], failedChecks: RED_AT_FIRST });
+  assert.equal(status, EXIT_SECOND_REVIEW, stderr);
+  assert.deepEqual(posted(calls), []);
+  assert.deepEqual(READ_CHECKS(calls), [], "an approval is refused without reading a check: nothing could lift it");
+});
+
+test("3199 (5e) NEGATIVE: a check-runs read that fails is COULD-NOT-TELL, exit 4, and nothing is posted", () => {
+  const { status, calls, stderr } = runDoor({ head: AFTER_MERGE_OF_MAIN, reviews: REFUSED_AT_FIRST, failedChecks: RED_AT_FIRST, failing: "checks" });
+  assert.equal(status, EXIT_UNDETERMINED, stderr);
+  assert.deepEqual(posted(calls), []);
+  assert.match(stderr, /could not tell whether #7 already has a review/);
+});
+
+test("3199 (5) a refusal that is lifted does not hide a LATER review at the same patch: a newer CHANGES_REQUESTED at an all-green commit still refuses", () => {
+  const { status, calls } = runDoor({
+    head: AFTER_MERGE_OF_MAIN,
+    reviews: [...REFUSED_AT_FIRST, reviewAt(NEW_WORK_EQUAL, "CHANGES_REQUESTED", "2026-10-03T10:30:00Z")],
+    failedChecks: RED_AT_FIRST,
+  });
+  assert.equal(status, EXIT_SECOND_REVIEW);
+  assert.deepEqual(posted(calls), []);
+});
+
+test("3199 (4) cost: the common path adds no call, and the equal-patch path reads one run list per commit compared", () => {
+  assert.deepEqual(READ_CHECKS(runDoor({ head: AFTER_MERGE_OF_MAIN }).calls), [], "no review at all");
+  assert.deepEqual(READ_CHECKS(runDoor({ head: NEW_WORK, reviews: REFUSED_AT_FIRST, failedChecks: RED_AT_FIRST }).calls), [],
+    "a review at a DIFFERENT patch: no equal-patch refusal, so no check read");
+  assert.deepEqual(READ_CHECKS(runDoor({ head: AFTER_MERGE_OF_MAIN, reviews: [reviewAt(AFTER_MERGE_OF_MAIN, "CHANGES_REQUESTED", "2026-10-03T10:02:16Z")] }).calls), [],
+    "a refusal AT the head itself: same commit, same checks, nothing to compare");
+  const lifted = READ_CHECKS(runDoor({ head: AFTER_MERGE_OF_MAIN, reviews: REFUSED_AT_FIRST, failedChecks: RED_AT_FIRST }).calls);
+  assert.equal(lifted.length, 2, "the refused commit, then the head");
+  assert.ok(lifted[0].includes(FIRST) && lifted[1].includes(AFTER_MERGE_OF_MAIN), lifted.join("\n"));
+  assert.equal(READ_CHECKS(runDoor({ head: AFTER_MERGE_OF_MAIN, reviews: REFUSED_AT_FIRST, failedChecks: {} }).calls).length, 1,
+    "an all-green refused commit is the #3033 shape: the head is not read");
+  const twice = READ_CHECKS(runDoor({ head: AFTER_MERGE_OF_MAIN, failedChecks: RED_AT_FIRST,
+    reviews: [...REFUSED_AT_FIRST, reviewAt(FIRST, "CHANGES_REQUESTED", "2026-10-03T10:10:00Z")] }).calls);
+  assert.equal(twice.length, 2, "two refusals at ONE commit are one commit compared");
+});
+
+test("3199 the door and the gate share ONE decider: every case of the table gets the same answer from `refusalLifted` and from the door", () => {
+  const table: { name: string; state: string; failingThen: string[]; failingNow: string[] }[] = [
+    { name: "#3154", state: "CHANGES_REQUESTED", failingThen: ["ts / run", "gate"], failingNow: [] },
+    { name: "#3033, all green", state: "CHANGES_REQUESTED", failingThen: [], failingNow: [] },
+    { name: "head still failing", state: "CHANGES_REQUESTED", failingThen: ["ts / run"], failingNow: ["ts / run"] },
+    { name: "an approval", state: "APPROVED", failingThen: ["ts / run"], failingNow: [] },
+  ];
+  const outcomes = table.map(({ name, state, failingThen, failingNow }) => {
+    const { status } = runDoor({ head: AFTER_MERGE_OF_MAIN, reviews: [reviewAt(FIRST, state, "2026-10-03T10:02:16Z")],
+      failedChecks: { [FIRST]: failingThen, [AFTER_MERGE_OF_MAIN]: failingNow } });
+    const lifted = refusalLifted({ refused: state === "CHANGES_REQUESTED", failingThen, failingNow });
+    assert.equal(status === 0, lifted, `${name}: the door ${status === 0 ? "posts" : "refuses"} and the decider says lifted=${lifted}`);
+    return lifted;
+  });
+  assert.deepEqual(outcomes, [true, false, false, false], "the positive control occurs in its own population, and each negative is its own fact");
+  assert.equal(refusalLifted({ refused: true, failingThen: null, failingNow: [] }), false, "an unread refused commit is not a green one");
+  assert.equal(refusalLifted({ refused: true, failingThen: ["x"], failingNow: undefined }), false, "an unread head is not a green one");
 });
 
 // --- a11ign#3087: a review counts only when it opens as a verdict ---------------------------------------------------------------
