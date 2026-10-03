@@ -77,6 +77,15 @@ jobs:
           mkdir project/packages/agent-org
           cp -r src host .github CHANGELOG.md package.json LICENSE README.md project/packages/agent-org/
           rsync -a --ignore-existing --exclude='*.test.ts' --exclude='*.test.mjs' project/packages/lab/src/packaging/ project/packages/agent-org/src/packaging/
+          # Two compensations for the project having deleted `project/packages/agent-org` (a11ign/a11ign#2976), the same words as the project's own `agentOrg` job so the two cannot drift.
+          # The project imports the tool by name, as a dependency. The tool's own tests read this fixture's imports as relative paths into
+          # `project/packages/agent-org`, where the tool lived when #2976 removed it, so this runner (and no committed file) spells the import that way.
+          # The `grep -q` is the proof: a `sed` that matched nothing must fail the step, not pass it.
+          fixture=project/packages/lab/src/packaging/board-document-chrome-resolver.test.ts
+          sed -i 's#from "agent-org/src/board-document.mjs"#from "../../../agent-org/src/board-document.mjs"#' "$fixture"
+          grep -q 'from "../../../agent-org/src/board-document.mjs"' "$fixture"
+          # The tool's tests list the project's files with `git ls-files`. The laid-out copy joins the project checkout's index so they see the tool as they did when it was tracked.
+          git -C project add --force --intent-to-add packages/agent-org # in-project
       - name: pnpm, which `packaging/installed-layout.test.ts` installs the tool through as a project would (a runner image carries npm, not pnpm)
         run: npm install --global pnpm@10.34.5
       - name: The tool's whole suite -- every *.test.ts and *.test.mjs, run from the project's root
