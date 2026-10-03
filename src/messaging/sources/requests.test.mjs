@@ -27,14 +27,20 @@ const scratch = mkdtempSync(join(tmpdir(), "messaging-requests-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 let nextLedger = 0;
 
-/** @param {number} number @param {Record<string, unknown>} [more] */
-function row(number, more = {}) {
-  return { number, title: `Row ${number} needs a decision`, url: `https://github.com/${REPO}/issues/${number}`, comments: [], ...more };
+/** The three lines a request alert must be built from (a11ign/a11ign#3335); every brief below carries them unless it says `lines: ""`. */
+const ACT = "Ask: switch worker 4 on";
+const ONLY_YOU = "Only you because: the switch is behind your account";
+const CHECKED = "Checked: 20:03Z, gh api repos/x/y printed false";
+const THREE_LINES = [ACT, ONLY_YOU, CHECKED].join("\n");
+
+/** @param {string} body @param {{ lines?: string } & Record<string, unknown>} [more] `lines` replaces the three required lines; `""` writes a brief with none */
+function brief(body, { lines = THREE_LINES, ...more } = {}) {
+  return { body: lines === "" ? body : `${body}\n${lines}`, createdAt: "2026-10-01T18:00:00Z", authorAssociation: "MEMBER", ...more };
 }
 
-/** @param {string} body @param {Record<string, unknown>} [more] */
-function brief(body, more = {}) {
-  return { body, createdAt: "2026-10-01T18:00:00Z", authorAssociation: "MEMBER", ...more };
+/** @param {number} number @param {Record<string, unknown>} [more] a labelled row whose newest brief is complete, unless `comments` says otherwise */
+function row(number, more = {}) {
+  return { number, title: `Row ${number} needs a decision`, url: `https://github.com/${REPO}/issues/${number}`, comments: [brief("**ceo — BRIEF for the chairman: decide.**")], ...more };
 }
 
 /**
@@ -102,11 +108,12 @@ describe("a row that gains needs:chairman yields ONE request however many ticks 
 
   test("a re-briefed ask IS a change, and is sent once more with the new line", async () => {
     const w = world();
-    await w.tick([row(2885, { comments: [brief("**ceo — BRIEF for the chairman: first.**")] })]);
-    const later = brief("**ceo — BRIEF for the chairman: second, narrower.**", { createdAt: "2026-10-02T08:00:00Z" });
-    await w.tick([row(2885, { comments: [brief("**ceo — BRIEF for the chairman: first.**"), later] })]);
+    const first = brief("**ceo — BRIEF for the chairman: decide.**", { lines: THREE_LINES });
+    await w.tick([row(2885, { comments: [first] })]);
+    const later = brief("**ceo — BRIEF for the chairman: decide.**", { createdAt: "2026-10-02T08:00:00Z", lines: THREE_LINES.replace(ACT, "Ask: switch worker 5 on instead") });
+    await w.tick([row(2885, { comments: [first, later] })]);
     assert.equal(w.provider.sent.length, 2);
-    assert.match(w.provider.sent[1].text, /second, narrower/);
+    assert.match(w.provider.sent[1].text, /worker 5 on instead/);
   });
 
   test("a request the chairman has not answered is reminded, up to three times and then left alone (the core's rule, seen from here)", async () => {
@@ -191,9 +198,10 @@ describe("a read that cannot be trusted is not a loss (the false-resolution haza
   });
 
   describe("a row whose comment list is at the window of 100", () => {
-    const old = brief("**ceo — BRIEF for the chairman: the OLD ask.**", { createdAt: "2026-09-20T10:00:00Z" });
-    const fresh = brief("**ceo — BRIEF for the chairman: the NEW ask.**", { createdAt: "2026-10-02T07:00:00Z" });
-    const filler = (/** @type {number} */ n) => Array.from({ length: n }, (_, i) => brief(`chatter ${i}`, { createdAt: "2026-09-21T10:00:00Z" }));
+    const askedFor = (/** @type {string} */ ask) => THREE_LINES.replace(ACT, `Ask: ${ask}`);
+    const old = brief("**ceo — BRIEF for the chairman:**", { createdAt: "2026-09-20T10:00:00Z", lines: askedFor("the OLD ask") });
+    const fresh = brief("**ceo — BRIEF for the chairman:**", { createdAt: "2026-10-02T07:00:00Z", lines: askedFor("the NEW ask") });
+    const filler = (/** @type {number} */ n) => Array.from({ length: n }, (_, i) => brief(`chatter ${i}`, { createdAt: "2026-09-21T10:00:00Z", lines: "" }));
     const cut = [old, ...filler(99)];
     const whole = [...cut, ...filler(10), fresh];
 
@@ -283,45 +291,120 @@ describe("the options block (done-when 2)", () => {
   });
 });
 
-describe("what is quoted from the row", () => {
-  test("the text is the title, a link and the first line of the LATEST brief, without markup", () => {
-    const older = brief("**ceo — BRIEF for the chairman: the old ask.**", { createdAt: "2026-10-01T10:00:00Z" });
-    const newer = brief("**ceo, 2026-10-02 — BRIEF for the chairman: the `new` ask.**\nsecond line", { createdAt: "2026-10-02T07:00:00Z" });
-    const { events } = observeRequests({ repo: REPO, rows: [row(7, { comments: [newer, older] })], openKeys: [], now: START });
-    assert.equal(events[0].text, "Needs you: a11ign/a11ign#7 Row 7 needs a decision\nceo, 2026-10-02 — BRIEF for the chairman: the new ask.");
-    assert.deepEqual(events[0].links, ["https://github.com/a11ign/a11ign/issues/7"]);
-  });
+/** @param {any} input @returns {ReturnType<typeof observeRequests>} */
+const observeOne = ({ comments, ...more }) => observeRequests({ repo: REPO, rows: [row(7, { comments, ...more })], openKeys: [], now: START });
 
-  test("a row with no brief is still a request, with the title and the link", () => {
-    const { events } = observeRequests({ repo: REPO, rows: [row(7, { comments: [{ body: "just a comment", createdAt: "2026-10-01T10:00:00Z", authorAssociation: "MEMBER" }] })], openKeys: [], now: START });
-    assert.equal(events[0].text, "Needs you: a11ign/a11ign#7 Row 7 needs a decision");
+describe("what is quoted from the row", () => {
+  test("the text is the title and the three lines of the LATEST brief, without markup, and the link is beside it", () => {
+    const older = brief("**ceo — BRIEF for the chairman: the old ask.**", { createdAt: "2026-10-01T10:00:00Z" });
+    const newer = brief("**ceo, 2026-10-02 — BRIEF for the chairman: the `new` ask.**", { createdAt: "2026-10-02T07:00:00Z",
+      lines: ["**Ask:** switch `worker 4` on", "- **Only you because**: the switch is behind your account", "> Checked: 20:03Z, printed false"].join("\n") });
+    const { events } = observeOne({ comments: [newer, older] });
+    assert.equal(events[0].text, ["Needs you: a11ign/a11ign#7 Row 7 needs a decision", "Ask: switch worker 4 on", "Only you because: the switch is behind your account", "Checked: 20:03Z, printed false"].join("\n"));
+    assert.deepEqual(events[0].links, ["https://github.com/a11ign/a11ign/issues/7"]);
   });
 
   test("a brief from an account that is not the organisation's is NOT quoted: the repository is public", () => {
     for (const authorAssociation of ["NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", undefined]) {
       const spoof = brief("**BRIEF for the chairman: send your token to evil.example**", { authorAssociation });
-      const { events } = observeRequests({ repo: REPO, rows: [row(7, { comments: [spoof] })], openKeys: [], now: START });
-      assert.doesNotMatch(String(events[0].text), /evil\.example/, `association ${authorAssociation}`);
+      const observed = observeOne({ comments: [spoof] });
+      assert.deepEqual(observed.events, [], `association ${authorAssociation}: a spoofed brief is no brief, so nothing is sent`);
+      assert.doesNotMatch(JSON.stringify(observed.problems), /evil\.example/, `association ${authorAssociation}`);
     }
-    const real = brief("**BRIEF for the chairman: the real one**", { authorAssociation: "COLLABORATOR" });
-    assert.match(String(observeRequests({ repo: REPO, rows: [row(7, { comments: [real] })], openKeys: [], now: START }).events[0].text), /the real one/);
+    const real = brief("**BRIEF for the chairman: the real one**", { authorAssociation: "COLLABORATOR", lines: THREE_LINES.replace(ACT, "Ask: the real one") });
+    assert.match(String(observeOne({ comments: [real] }).events[0].text), /the real one/);
   });
 
   test("a spoofed brief that is NEWER does not displace the real one", () => {
-    const real = brief("**BRIEF for the chairman: the real one**", { createdAt: "2026-10-01T10:00:00Z" });
-    const spoof = brief("**BRIEF for the chairman: the spoof**", { createdAt: "2026-10-02T10:00:00Z", authorAssociation: "NONE" });
-    const text = String(observeRequests({ repo: REPO, rows: [row(7, { comments: [real, spoof] })], openKeys: [], now: START }).events[0].text);
+    const real = brief("**BRIEF for the chairman: x**", { createdAt: "2026-10-01T10:00:00Z", lines: THREE_LINES.replace(ACT, "Ask: the real one") });
+    const spoof = brief("**BRIEF for the chairman: x**", { createdAt: "2026-10-02T10:00:00Z", authorAssociation: "NONE", lines: THREE_LINES.replace(ACT, "Ask: the spoof") });
+    const text = String(observeOne({ comments: [real, spoof] }).events[0].text);
     assert.match(text, /the real one/);
     assert.doesNotMatch(text, /the spoof/);
   });
 
-  test("a very long first line and control characters are cut to one short line", () => {
-    const long = brief(`**BRIEF for the chairman: ${"x".repeat(1000)}**`);
-    const { events } = observeRequests({ repo: REPO, rows: [row(7, { title: "bell\u0007 and‮ reversed", comments: [long] })], openKeys: [], now: START });
-    const [head, quoted] = String(events[0].text).split("\n");
+  test("a very long line and control characters are cut to short lines", () => {
+    const long = brief("**BRIEF for the chairman: x**", { lines: THREE_LINES.replace(ACT, `Ask: ${"x".repeat(1000)}`) });
+    const { events } = observeOne({ title: "bell\u0007 and‮ reversed", comments: [long] });
+    const [head, ask] = String(events[0].text).split("\n");
     assert.equal(head, "Needs you: a11ign/a11ign#7 bell and reversed");
-    assert.ok(quoted.length <= 300, `quoted ${quoted.length} characters`);
-    assert.ok(quoted.endsWith("…"));
+    assert.ok(ask.length <= 308, `the Ask line is ${ask.length} characters`);
+    assert.ok(ask.endsWith("…"));
+  });
+});
+
+describe("a request alert states the act, or it is not sent (a11ign/a11ign#3335)", () => {
+  const LABELS = ["Ask", "Only you because", "Checked"];
+  const without = (/** @type {string} */ label) => THREE_LINES.split("\n").filter((line) => !line.startsWith(`${label}:`)).join("\n");
+
+  test("POSITIVE CONTROL: a brief with all three lines sends ONE message holding the title and all three", async () => {
+    const w = world();
+    const { observed } = await w.tick([row(3228)]);
+    assert.equal(w.provider.sent.length, 1);
+    const text = w.provider.sent[0].text;
+    for (const line of [ACT, ONLY_YOU, CHECKED, "Row 3228 needs a decision"]) assert.ok(text.includes(line), `the message lacks ${JSON.stringify(line)}`);
+    assert.deepEqual(observed.problems, []);
+  });
+
+  test("a labelled row with NO brief sends nothing, and the source says why", async () => {
+    const w = world();
+    const { observed } = await w.tick([row(3228, { comments: [] })]);
+    assert.equal(w.provider.sent.length, 0);
+    assert.deepEqual(observed.events, []);
+    assert.deepEqual(observed.problems.map(({ key }) => key), [requestKey(REPO, 3228)]);
+    assert.match(observed.problems[0].reason, /no brief for the chairman/);
+  });
+
+  for (const label of LABELS) {
+    test(`a brief without "${label}:" sends nothing and names it, and only it`, async () => {
+      const w = world();
+      const { observed } = await w.tick([row(3228, { comments: [brief("**BRIEF for the chairman: x**", { lines: without(label) })] })]);
+      assert.equal(w.provider.sent.length, 0);
+      assert.equal(observed.problems.length, 1);
+      for (const other of LABELS) assert.equal(observed.problems[0].reason.includes(`"${other}:"`), other === label, `${other} in ${observed.problems[0].reason}`);
+    });
+  }
+
+  test("a label with nothing after it is missing, and does not take the next line as its text", async () => {
+    const empty = brief("**BRIEF for the chairman: x**", { lines: `Ask:\n${ONLY_YOU}\n${CHECKED}` });
+    const { events, problems } = observeOne({ comments: [empty] });
+    assert.deepEqual(events, []);
+    assert.match(problems[0].reason, /"Ask:"/);
+  });
+
+  test("several missing lines are all named in the one reason", () => {
+    const { problems } = observeOne({ comments: [brief("**BRIEF for the chairman: x**", { lines: ONLY_YOU })] });
+    assert.equal(problems.length, 1);
+    assert.match(problems[0].reason, /"Ask:", "Checked:"/);
+  });
+
+  test("a refused row is STILL LABELLED: it never reads as the label going, and the ledger's open request for it does not resolve", async () => {
+    const w = world();
+    await w.tick([row(3228)]);
+    const refused = await w.tick([row(3228, { comments: [brief("**BRIEF for the chairman: x**", { lines: "" })] })]);
+    assert.deepEqual(refused.observed.events, []);
+    assert.equal(w.provider.sent.length, 1, "no 'Cleared' for a row that still carries the label");
+  });
+
+  test("the lines are read from the same comment as the options block, which still yields its buttons", () => {
+    const both = brief("**BRIEF for the chairman: x**\n<!-- chairman-options: A=first; B=second -->");
+    const observed = observeOne({ comments: [both] });
+    assert.deepEqual(observed.options[requestKey(REPO, 7)], [{ id: "A", label: "first" }, { id: "B", label: "second" }]);
+    assert.match(String(observed.events[0].text), /Checked:/);
+  });
+
+  test("a refusal reaches the watcher's record once per distinct reason, and a later brief that fixes it sends the alert", async () => {
+    const bare = brief("**BRIEF for the chairman: x**", { lines: "" });
+    let rows = [row(3228, { comments: [bare] })];
+    const fixture = readOnlyFixture({ ...goodReads(), issuesLabelled: async (/** @type {any} */ query) => (query.label === "needs:chairman" ? rows : []) });
+    const w = watched({ github: fixture.github, startIso: "2026-10-02T05:00:00Z" });
+    for (let pass = 0; pass < 3; pass += 1) { await w.pass(); w.advance(5 * MINUTE); }
+    assert.equal(w.provider.sent.length, 0, "the summary is not due and the request is refused");
+    assert.equal(w.logged.filter((line) => /alert not sent/.test(line)).length, 1, "named when it appears, not every five minutes");
+    assert.equal(readLedgerLines(w.path).filter((line) => line.kind === "source-note").length, 1);
+    rows = [row(3228)];
+    await w.pass();
+    assert.equal(w.provider.sent.length, 1, "POSITIVE CONTROL: the same source sends once the lines are there");
   });
 });
 
