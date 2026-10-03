@@ -50,7 +50,11 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     steps:
+      # The WHOLE history: `lib/pin-ratchet.mjs` reads the base with git from this checkout (a11ign/a11ign#3245). A `merge_group` run needs `HEAD^1`, which a depth-1
+      # checkout cuts, and a pull request needs `origin/main` to take the merge-base with.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22.22.1
@@ -90,4 +94,8 @@ jobs:
         run: npm install --global pnpm@10.34.5
       - name: The tool's whole suite -- every *.test.ts and *.test.mjs, run from the project's root
         working-directory: project
+        env:
+          # The copy above has no `.git`, so a pinned population cannot read its base from where it sits. This is the checkout it was copied from, and the one place
+          # that names it (`TOOL_REPO_ENV` in `lib/pin-ratchet.mjs`); without it the pins are judged STRICTLY, every entry declared and nothing grandfathered.
+          AGENT_ORG_TOOL_REPO: ${{ github.workspace }}
         run: node --import tsx --test "packages/agent-org/src/**/*.test.ts" "packages/agent-org/src/**/*.test.mjs" # in-project
