@@ -56,7 +56,8 @@ test("(1) a clone with NO `package.json` is not told to `pnpm install` there: th
   const reason = String(linkKeyedDependencies({ path: "/t", repoRoot: "/c", fs: linkFs(TREE_MANIFEST, []) }));
   assert.match(reason, /`tsx`, which \/t\/package\.json declares/, "it still names what is missing and where it is declared");
   assert.doesNotMatch(reason, OLD_REMEDY, "FAILING CONTROL (3a): the old text, which the clone cannot carry out");
-  assert.match(reason, /cd \/t && pnpm install --frozen-lockfile --ignore-scripts/, "it names the install that works, in the TREE, which has the manifest");
+  assert.match(reason, /cd \/t && pnpm install --no-lockfile --ignore-scripts/, "it names the install that works, in the TREE, which has the manifest");
+  assert.doesNotMatch(reason, /--frozen-lockfile/, "and never a frozen install, which needs a lockfile the repository may not have: agent-org has none (#113)");
   assert.match(reason, /mv \/t\/node_modules \/c\/node_modules/, "and the move that puts the result where the next tick looks");
   assert.match(reason, /ERR_PNPM_NO_PKG_MANIFEST/, "and says why, so the next operator does not 'simplify' it back");
   assert.doesNotMatch(reason, /\bnpm\b/, "and no npm spelling of it (#2896)");
@@ -67,7 +68,7 @@ test("(1) a clone WITH a manifest still gets the old text, unchanged", () => {
   const reason = String(linkKeyedDependencies({ path: "/t", repoRoot: "/c", fs: linkFs(files, []) }));
   assert.match(reason, OLD_REMEDY, "POSITIVE CONTROL (3b): the old remedy, present where it works");
   assert.match(reason, /which installs every declared dependency and writes no lockfile$/);
-  assert.doesNotMatch(reason, /--frozen-lockfile|ERR_PNPM_NO_PKG_MANIFEST/, "and none of the new one");
+  assert.doesNotMatch(reason, /--ignore-scripts|ERR_PNPM_NO_PKG_MANIFEST/, "and none of the new one");
   // And the manifest is what decides it: the same fixture without `/c/package.json` is the no-manifest case above, so neither assertion is vacuous.
   assert.doesNotMatch(String(linkKeyedDependencies({ path: "/t", repoRoot: "/c", fs: linkFs(TREE_MANIFEST, []) })), OLD_REMEDY);
 });

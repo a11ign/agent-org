@@ -1201,14 +1201,15 @@ function namedList(names) {
  * which reads the versions it declares and writes no lockfile. WITHOUT ONE -- a repository whose FIRST pull request adds the root `package.json`, and
  * the clone sits on `main` -- that command answers `ERR_PNPM_NO_PKG_MANIFEST`, so a remedy naming it cannot be carried out (#3264, found on
  * `screenreader-worker#2`, where a reviewer was undelivered for 92 minutes). The manifest that exists is the TREE's, so the install is made there and
- * what it makes is moved into the clone, which is the repair that worked. The tick still does not fetch from a registry itself: the clone is shared.
+ * what it makes is moved into the clone, which is the repair that worked. `--no-lockfile`, NOT `--frozen-lockfile`: the tree may have no
+ * lockfile (`a11ign/agent-org` has none, so a frozen install cannot run there, #113), and the with-manifest remedy already installs this way. The tick still does not fetch from a registry itself: the clone is shared.
  * @param {{fs: LinkFs, path: string, repoRoot: string}} args @returns {string}
  */
 function supplyCommand({ fs, path, repoRoot }) {
   if (fs.existsSync(`${repoRoot}/package.json`)) {
     return `\`cd ${repoRoot} && pnpm install --no-lockfile\`, which installs every declared dependency and writes no lockfile`;
   }
-  return `\`cd ${path} && pnpm install --frozen-lockfile --ignore-scripts\` and then \`mv ${path}/node_modules ${repoRoot}/node_modules\` `
+  return `\`cd ${path} && pnpm install --no-lockfile --ignore-scripts\` and then \`mv ${path}/node_modules ${repoRoot}/node_modules\` `
     + `(${repoRoot} has no package.json, so \`pnpm install\` there answers ERR_PNPM_NO_PKG_MANIFEST; the tree's is the manifest that exists)`;
 }
 
