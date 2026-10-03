@@ -152,7 +152,8 @@ const REQUESTS = {
   name: "requests",
   async observe({ github, repo, now, openKeys }) {
     const { events, problems } = await readRequests({ github, repo, openKeys, now });
-    return { events, notes: problems.map(({ key, reason }) => ({ key, reason: `chairman-options: ${reason}` })) };
+    // Each problem names itself (`requests.mjs`): a refused alert is not an options-block problem, and a prefix added here would say it was.
+    return { events, notes: problems };
   },
 };
 

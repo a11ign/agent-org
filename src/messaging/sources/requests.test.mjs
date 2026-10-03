@@ -401,6 +401,8 @@ describe("a request alert states the act, or it is not sent (a11ign/a11ign#3335)
     for (let pass = 0; pass < 3; pass += 1) { await w.pass(); w.advance(5 * MINUTE); }
     assert.equal(w.provider.sent.length, 0, "the summary is not due and the request is refused");
     assert.equal(w.logged.filter((line) => /alert not sent/.test(line)).length, 1, "named when it appears, not every five minutes");
+    assert.equal(w.logged.filter((line) => /chairman-options/.test(line)).length, 0, "a refusal is not an options-block problem, and its log line must not say so (#3344)");
+    assert.ok(readLedgerLines(w.path).every((line) => !/chairman-options/.test(JSON.stringify(line))), "nor does the ledger record");
     assert.equal(readLedgerLines(w.path).filter((line) => line.kind === "source-note").length, 1);
     rows = [row(3228)];
     await w.pass();
@@ -588,6 +590,8 @@ describe("a source that fails is skipped for the tick, and the others run", () =
     for (let pass = 0; pass < 4; pass += 1) { await w.pass(); w.advance(5 * MINUTE); }
     assert.equal(w.provider.sent.length, 1);
     assert.equal(w.logged.filter((line) => /chairman-options/.test(line)).length, 1, "named when it appears, not every five minutes");
+    assert.equal(w.logged.filter((line) => /chairman-options: .*no id/.test(line)).length, 1, "the options problem carries its own prefix, once, now that the watcher adds none (#3344)");
+    assert.equal(w.logged.filter((line) => /alert not sent/.test(line)).length, 0, "POSITIVE CONTROL for the refusal test: a sent alert is not logged as refused");
     assert.equal(readLedgerLines(w.path).filter((line) => line.kind === "source-note").length, 1);
   });
 });
