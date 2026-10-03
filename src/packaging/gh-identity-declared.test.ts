@@ -111,9 +111,13 @@ test("#1984: declaredGhAccount reads an explicit GH_CONFIG_DIR off its OWN hosts
     const dir = configDir(join(root, "explicit"), "a-declared-login");
     const account = declaredGhAccount({ env: { GH_CONFIG_DIR: dir, HERDR_WORKSPACE_ID: "w6" }, host: FAKE_HOST(root) });
     assert.equal(account.login, "a-declared-login");
-    assert.match(account.source, /GH_CONFIG_DIR/);
-    assert.ok(!account.source.includes("w6"),
-      "an explicit GH_CONFIG_DIR wins BEFORE HERDR_WORKSPACE_ID is ever consulted -- the wrapper's own `-z` check");
+    // The WHOLE string, never a substring of it: `source` embeds `dir`, a `mkdtempSync` path whose random
+    // suffix contains the fixture's workspace id `w6` about once in 770 runs (#3234), so "does not include w6"
+    // was red by luck of the temp name. Equality with what the explicit branch builds, and not the HERDR
+    // branch's wording, is the same claim -- "wins BEFORE HERDR_WORKSPACE_ID is ever consulted, the
+    // wrapper's own `-z` check" -- with no dependency on the path's characters.
+    assert.equal(account.source, `declared via GH_CONFIG_DIR=${dir}`);
+    assert.doesNotMatch(account.source, /HERDR_WORKSPACE_ID/);
 
     // NEVER THE OAUTH TOKEN. The fixture's token is deliberately distinctive; this asserts the whole
     // returned shape, not just `login`, never contains it.
@@ -300,9 +304,9 @@ test("#1984: an unreadable host declaration degrades to UNKNOWN rather than cras
 
 // --- done-when 3: THE POPULATION, AND THE LIVE GUARD -------------------------------------------------
 
-/** Every non-test `.mjs`/`.ts` this repository tracks -- never a glob that could silently match nothing. */
-function trackedSourceFiles(): string[] {
-  return execFileSync("git", ["ls-files"], { cwd: REPO, encoding: "utf8", env: sandboxGitEnv() })
+/** Every non-test `.mjs`/`.ts` `root` tracks -- never a glob that could silently match nothing. */
+function trackedSourceFiles(root: string): string[] {
+  return execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8", env: sandboxGitEnv() })
     .split("\n")
     .filter((f) => f !== "" && (f.endsWith(".mjs") || f.endsWith(".ts")) && !f.includes(".test."));
 }
@@ -339,38 +343,77 @@ function ghSpawnReachedFromLocally(entry: string, seen = new Set<string>()): str
   return null;
 }
 
-/** Every tracked file that reaches a `gh` spawn, with WHERE it reaches one and WHICH environment it runs in. */
-function ghSpawningScripts(): { file: string; via: string; environment: ReturnType<typeof environmentOf> }[] {
-  return trackedSourceFiles()
-    .map((file) => ({ file, hit: ghSpawnReachedFromLocally(join(REPO, file)) }))
+/** Every file `root` tracks that reaches a `gh` spawn, with WHERE it reaches one and WHICH environment it runs in. */
+function ghSpawningScripts(root: string): { file: string; via: string; environment: ReturnType<typeof environmentOf> }[] {
+  return trackedSourceFiles(root)
+    .map((file) => ({ file, hit: ghSpawnReachedFromLocally(join(root, file)) }))
     .filter((r): r is { file: string; hit: string } => r.hit !== null)
-    .map(({ file, hit }) => ({ file, via: relative(REPO, hit), environment: environmentOf(file) }));
+    .map(({ file, hit }) => ({ file, via: relative(root, hit), environment: environmentOf(file) }));
 }
 
-// The row measured 32 at `92717acb2` with a narrower grep; a floor well under that, rather than an exact
-// pin, is what survives new files joining the population without this test needing to move every time.
-const MEASURED_POPULATION_FLOOR = 20;
+const SPAWN = 'import { execFileSync } from "node:child_process";\nexecFileSync("gh", ["api", "user"]);\n';
+
+/**
+ * A tiny git repository whose gh-spawning population is KNOWN, so the walk is tested against an answer and
+ * not against the size of whichever tree runs the suite (#3234): the old floor of 20 read `HOME_CHECKOUT`,
+ * which is a11ign's tree here and went red (`only 7 file(s)`) when `packages/agent-org` left that monorepo.
+ * Each file is one case the walk must get right: a direct spawn in each environment, a spawn reached only
+ * through an import, and the two that must NOT count -- a spawn that exists only in a comment, and no spawn.
+ */
+function fixtureRepo(): string {
+  const root = mkdtempSync(join(tmpdir(), "gh-population-"));
+  const files: Record<string, string> = {
+    "packages/cli/src/action/post-comment.ts": SPAWN,
+    "packages/control/src/corpus-release.mjs": SPAWN,
+    "packages/lab/src/lab-spawn.mjs": SPAWN,
+    "scripts/direct.mjs": SPAWN,
+    "scripts/via-import.mjs": 'import "./helper.mjs";\n',
+    "scripts/helper.mjs": SPAWN,
+    "scripts/commented.mjs": '// execFileSync("gh", ["api", "user"]) -- prose, not a spawn\n',
+    "scripts/no-gh.mjs": "export const x = 1;\n",
+    "scripts/ignored.test.ts": SPAWN,
+  };
+  for (const [file, body] of Object.entries(files)) {
+    mkdirSync(join(root, file, ".."), { recursive: true });
+    writeFileSync(join(root, file), body);
+  }
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: root, env: sandboxGitEnv() });
+  git("init", "-q");
+  git("add", "-A");
+  return root;
+}
+
+/** The fixture's population, read through the same walk the live tree would use; `fixtureRepo` is removed after. */
+function fixturePopulation() {
+  const root = fixtureRepo();
+  try {
+    return ghSpawningScripts(root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
 
 test("#1984: the gh-spawning population is real -- a walk that matched nothing must FAIL, not pass vacuously", () => {
-  const population = ghSpawningScripts();
-  assert.ok(population.length >= MEASURED_POPULATION_FLOOR,
-    `only ${population.length} file(s) reach a gh spawn; the row measured 32 at 92717acb2 -- this walk has broken`);
+  const population = fixturePopulation();
+  // The EXACT set, which is the positive control the old floor was standing in for: a walk that has broken
+  // finds fewer (or more -- the comment and the test file are the negative controls) and says which.
+  assert.deepEqual(population.map((p) => p.file).sort(), [
+    "packages/cli/src/action/post-comment.ts",
+    "packages/control/src/corpus-release.mjs",
+    "packages/lab/src/lab-spawn.mjs",
+    "scripts/direct.mjs",
+    "scripts/helper.mjs",
+    "scripts/via-import.mjs",
+  ]);
+  assert.equal(population.find((p) => p.file === "scripts/via-import.mjs")?.via, "scripts/helper.mjs");
 
-  const agentHost = population.filter((p) => p.environment === "agent-host");
-  assert.ok(agentHost.length > 0,
+  const environments = Object.fromEntries(population.map((p) => [p.file, p.environment]));
+  assert.equal(environments["packages/cli/src/action/post-comment.ts"], "github-actions");
+  assert.equal(environments["packages/control/src/corpus-release.mjs"], "control-plane");
+  assert.equal(environments["packages/lab/src/lab-spawn.mjs"], "lab");
+  assert.equal(environments["scripts/direct.mjs"], "agent-host",
     "the environments already excluded must not have swallowed the whole population -- if they did, the "
     + "classifier is over-broad and this guard is protecting nothing");
-
-  // The row's own two named examples, pinned so the boundary itself is checked and not only counted.
-  const postComment = population.find((p) => p.file === "packages/cli/src/action/post-comment.ts");
-  assert.ok(postComment, "packages/cli/src/action/post-comment.ts must still spawn gh, or this example is stale");
-  assert.equal(postComment?.environment, "github-actions");
-
-  const corpusRelease = population.find((p) => p.file.endsWith("/corpus-release.mjs"));
-  assert.ok(corpusRelease, "corpus-release.mjs must still be found, or this example is stale");
-  assert.notEqual(corpusRelease?.environment, "agent-host",
-    "corpus-release.mjs runs on the control plane (the row's own text) and must not be counted against the "
-    + "population `declaredGhAccount` is answerable for");
 });
 
 test("#1984: declaredGhAccount resolves BOTH agent-host routing branches from this host's own leads list", () => {
@@ -384,7 +427,7 @@ test("#1984: declaredGhAccount resolves BOTH agent-host routing branches from th
   // `/home/agent/workers/gh` at all, exactly as a developer's laptop or a fresh clone would not. A CI-run
   // unit test must hold on every machine it runs on, so the directory's PRESENCE is faked here; that this
   // host's real directories are in fact populated is MEASURED, not asserted -- see the row's own PR body.
-  const agentHost = ghSpawningScripts().filter((p) => p.environment === "agent-host");
+  const agentHost = fixturePopulation().filter((p) => p.environment === "agent-host");
   assert.ok(agentHost.length > 0, "positive control: see the population test above");
 
   const host = homeHostConfig();
