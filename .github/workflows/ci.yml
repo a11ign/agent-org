@@ -36,7 +36,7 @@ env:
   # repointed the project's workflows, units and hook from `packages/agent-org/src/*.mjs` to `pnpm exec agent-org`, and 16 of this suite's tests
   # read those files by their old text. Measured: merge_group run 37083324475 (PR #79, `main` at 268dd20) failed 16 and passed 4636; the same
   # suite against this ref, in the CI layout, failed none (4655 pass, 1 skipped). Unpin by teaching those 16 tests the new wiring, never by
-  # moving the pin forward past #3097 -- the follow-up row is named on a11ign/a11ign#3100.
+  # moving the pin forward past #3097 -- the follow-up row is a11ign/a11ign#3104.
   PROJECT_REF: fa359250ee9ba58545960978f2f8bc4df1ebcdbf
 
 on:
