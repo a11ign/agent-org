@@ -227,18 +227,84 @@ export function headMatches(stated, actual) {
 }
 
 /**
+ * a11ign#3199: DOES A REFUSAL STILL APPLY -- the one decider the door (`reviewer/pr-review-verdict.sh`) and the gate (`verdictAmong`,
+ * `refusedPrompt`) both ask, so they cannot disagree about whether a refusal stands.
+ *
+ * A VERDICT IS VALID FOR A PATCH ON A BASE, NOT FOR A PATCH ALONE. `patchIdOfDiff` hashes only what a pull request adds and removes, so
+ * it cannot see that what a review refused lay somewhere else: a11ign#3154 was refused for `ts / run` failing on a defect in `main`, `main`
+ * was fixed, Dependabot rebased, the patch was byte-for-byte the same, and both the door ("a second review at an equal patch") and the gate
+ * ("the PATCH is unchanged ... the rework is yours") held the refusal in place for 18 minutes, until a human dismissed it.
+ *
+ * THE DISCRIMINATING FACT IS A CHECK RUN, NEVER THE REVIEW'S PROSE: a refusal is LIFTED when it is a refusal, at least one check run
+ * concluded `failure` at the commit it was posted at, and none does at the current head. Nothing here reads comments, and a reviewer's
+ * word "blocker" is not a field. The #3033 shape (a merge of `main`, every check green at both commits) stays refused, so does a head that
+ * still fails, and so does an APPROVAL however red the older commit was: a second approval is exactly what #3050 exists to stop.
+ *
+ * AN UNREAD CHECK IS NOT A GREEN ONE. `null`/`undefined` (the read was refused, or never made) is never an empty list, so a lift needs both
+ * lists READ: absence of a reading is not a reading of change.
+ *
+ * @param {{ refused: boolean, failingThen: readonly string[] | null | undefined, failingNow: readonly string[] | null | undefined }} q
+ *   `failingThen`: the names of the check runs that concluded `failure` at the commit the refusal was posted at; `failingNow`: at the head.
+ * @returns {boolean}
+ */
+export function refusalLifted({ refused, failingThen, failingNow }) {
+  return refused === true
+    && Array.isArray(failingThen) && failingThen.length > 0
+    && Array.isArray(failingNow) && failingNow.length === 0;
+}
+
+/**
+ * a11ign#3199: whether the refusal posted at `oid` is lifted at this pull request's current head, from `pr.failingChecks` (oid -> the names
+ * of the check runs that concluded `failure` there, attached by `withFailingChecks` for the equal-patch refusals only). A commit nobody read
+ * is absent from it, and absent is not green (`refusalLifted`).
+ * @param {any} pr @param {string | null | undefined} oid @returns {boolean}
+ */
+export function refusalLiftedAt(pr, oid) {
+  const checks = pr?.failingChecks ?? {};
+  // BY PREFIX, as heads compare everywhere here: a verdict's `at <head8>` and a review's full oid are one commit, and the read was made at one of them.
+  const at = (/** @type {string | null | undefined} */ sha) => {
+    const key = sha ? Object.keys(checks).find((k) => headMatches(k, sha)) : undefined;
+    return key === undefined ? null : checks[key];
+  };
+  return refusalLifted({ refused: true, failingThen: at(oid), failingNow: at(String(pr?.headRefOid ?? "")) });
+}
+
+/**
  * The verdict this pull request carries, looked for at EVERY head whose patch equals the current one's
  * (`equivalentHeads`, #3045). A reviewer who wrote `at <head8>` before an update-branch or a rebase wrote it at
  * THAT sha, so reading only the current one would re-summon a reviewer who had answered.
+ *
+ * A REFUSAL AT AN OLDER HEAD THAT `refusalLifted` says no longer applies IS NOT A VERDICT HERE (a11ign#3199): the pull request is then
+ * as unreviewed as at a head nobody answered, so the reviewer is asked for a fresh look instead of the author being told the work is theirs.
  * @param {any} pr @param {string[]} heads
  */
 export function verdictAmong(pr, heads) {
   // #3030: comments AND review bodies, since the door posts the verdict as a review alone.
   const bearers = verdictBearers(pr);
-  let found = verdictAtHead({ comments: bearers, head: heads[0], prAuthor: pr.author?.login ?? null });
+  const at = (/** @type {string} */ head) => verdictAtHead({ comments: bearers, head, prAuthor: pr.author?.login ?? null });
+  let found = at(heads[0]);
   for (const head of heads.slice(1)) {
     if (found.verdict !== null) break;
-    found = verdictAtHead({ comments: bearers, head, prAuthor: pr.author?.login ?? null });
+    const here = at(head);
+    if (here.verdict === "not-convinced" && refusalLiftedAt(pr, head)) continue;
+    found = here;
+  }
+  return found;
+}
+
+/**
+ * a11ign#3199: THE OLDER EQUAL-PATCH HEADS AT WHICH A REFUSAL STANDS -- the only commits whose check runs are worth a read, so the common
+ * path (no refusal at an equal patch) makes no call. Newest verdict per head, as `verdictAmong` reads it.
+ * @param {any} pr @returns {string[]}
+ */
+export function refusalHeads(pr) {
+  const bearers = verdictBearers(pr);
+  /** @type {string[]} */
+  const found = [];
+  for (const head of equivalentHeads(pr).slice(1)) {
+    // ONE READ PER COMMIT: a review's full oid and a verdict's `at <head8>` are the same commit, and `evidenceHeads` keeps both spellings.
+    if (found.some((seen) => headMatches(seen, head))) continue;
+    if (verdictAtHead({ comments: bearers, head, prAuthor: pr.author?.login ?? null }).verdict === "not-convinced") found.push(head);
   }
   return found;
 }

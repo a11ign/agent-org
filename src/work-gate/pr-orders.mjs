@@ -530,8 +530,19 @@ function ownedBy(/** @type {{code: string, session?: string | null}} */ b) {
 }
 
 /**
+ * a11ign#3199: THE SENTENCE A LIFTED REFUSAL ADDS TO ITS LINE. Nobody owes rework for it (it was posted for a check that has since cleared at an equal
+ * patch, a defect that was in the base), so the set order must not read as one more refusal to chase: its reviewer seat is asked by `draft-awaiting-verdict`.
+ * @param {{refusalLifted?: boolean}} b
+ */
+function liftedNote(b) {
+  return b.refusalLifted === true
+    ? " [LIFTED: posted while a check failed, and none fails at this head with the same patch; no rework is owed -- a fresh review from its reviewer seat is the remedy]"
+    : "";
+}
+
+/**
  * The unlabelled set, and every UNRECOGNISED one: ONE order for `product-manager`, exactly as #2084 built it.
- * @param {{number: number, repoKey?: string, code: string, why: string}[]} blocked
+ * @param {{number: number, repoKey?: string, code: string, why: string, refusalLifted?: boolean}[]} blocked
  */
 function reviewBlockedSetOrder(blocked) {
   if (blocked.length === 0) return [];
@@ -543,7 +554,7 @@ function reviewBlockedSetOrder(blocked) {
     discriminator: key,
     prompt: `${blocked.length} pull request(s) are green on every required check and NOT held, and `
       + "GitHub's own `reviewDecision` is holding them:\n"
-      + blocked.map((b) => `  ${subjectMention(b)}  ${b.code} -- ${b.why}`).join("\n") + "\n"
+      + blocked.map((b) => `  ${subjectMention(b)}  ${b.code} -- ${b.why}${liftedNote(b)}`).join("\n") + "\n"
       + "NO QUEUE READ IN THIS REPOSITORY TOUCHED THIS FIELD BEFORE #2084 -- only `row-claim`'s own "
       + "claim refusal -- which is why a pull request in this state read as healthy everywhere: #2049 "
       + "was green and armed and unmergeable for over seven hours, and no org read could say why.\n"
@@ -598,7 +609,8 @@ function awaitingReviewPrompt(b) {
  * THE FIRST FACT IS THE COMPARISON, and it decides what the rest means (#2084: #2049 sat seven hours on a
  * refusal posted at a head the author had already fixed). Three readings, and the third is not the first:
  * the refusal is at the current head, at an OLDER head, or the payload named no commit at all.
- * @param {{number: number, repo?: string, repoKey?: string, head?: string, refusedAt?: string | null, patchUnchanged?: boolean | null}} b
+ * @param {{number: number, repo?: string, repoKey?: string, head?: string, refusedAt?: string | null, patchUnchanged?: boolean | null,
+ *          refusalLifted?: boolean}} b
  */
 function refusedPrompt(b) {
   const head = b.head ?? "";
@@ -610,6 +622,13 @@ function refusedPrompt(b) {
       + "before doing anything.";
   } else if (b.refusedAt === head) {
     fact = `The refusal was posted AT the current head \`${short(head)}\`: it is live and the rework is yours.`;
+  } else if (b.refusalLifted === true) {
+    // a11ign#3199: A VERDICT IS VALID FOR A PATCH ON A BASE. The refusal was posted while a check failed, and none fails at this head, so what it
+    // refused was not in the patch (a11ign#3154: a defect on `main`). There is no rework to do and nobody to do it: a fresh look is the only thing that lifts it.
+    fact = `The refusal was posted at \`${short(b.refusedAt)}\` while a check was failing, and the head is now \`${short(head)}\` with none failing: `
+      + "what it refused was not in this patch, so there is no rework to do. Only a newer review lifts it, so "
+      + `ask \`${reviewerSeat(b)}\` for a fresh look at the head (\`pnpm run prompt:session ${reviewerSeat(b)} "${subjectMention(b)} ..."\`; `
+      + "a QUEUED exit 2 is delivery, do not retry).";
   } else if (b.patchUnchanged === true) {
     // #3045: A HEAD WITH THE SAME PATCH IS THE SAME WORK. The refusal stands at it exactly as at the head it was posted at, so there is no
     // new work for `reviewer-<n>` to look at and nothing to ask for: the rework is the author's.
@@ -622,11 +641,13 @@ function refusedPrompt(b) {
       + `does, so ask \`${reviewerSeat(b)}\` for a fresh look at the head (\`pnpm run prompt:session `
       + `${reviewerSeat(b)} "${subjectMention(b)} ..."\`; a QUEUED exit 2 is delivery, do not retry).`;
   }
+  const ownership = b.refusalLifted === true && b.refusedAt !== head
+    ? "It carries your session label, so asking is yours."
+    : "It carries your session label, so the rework is yours. Read what the review names and fix that. "
+      + "If you believe the refusal is wrong, that is an escalation to `product-manager`, not a call you make here.";
   return `${subjectMention(b)} is green on every required check and NOT held, and a reviewer's `
     + "`CHANGES_REQUESTED` is holding it.\n"
-    + `${fact}\n`
-    + "It carries your session label, so the rework is yours. Read what the review names and fix that. "
-    + "If you believe the refusal is wrong, that is an escalation to `product-manager`, not a call you make here.";
+    + `${fact}\n${ownership}`;
 }
 
 /**

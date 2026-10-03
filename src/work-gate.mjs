@@ -36,7 +36,7 @@ import { dirname, join } from "node:path";
 // `org-watch.mjs` and `build-packages.mjs` state at their own imports.
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { READY_LABEL, CLAIM_LABEL, CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
-import { verdictAmong, patchIdOfDiff, evidenceHeads } from "./review-verdict.mjs";
+import { verdictAmong, patchIdOfDiff, evidenceHeads, refusalHeads, refusalLiftedAt } from "./review-verdict.mjs";
 // `verdictAmong` lives in review-verdict.mjs (#3030), so a test of the verdict reader need not import this file and its token.
 export { verdictAmong };
 import { waitingOn, fleetWaitingOn, todayIso, describeWaiting, ANSWER_PREFIX, answersOwedBy, bareAnswerLabel }
@@ -344,6 +344,9 @@ export const GH_READS = Object.freeze({
   // verdict names (at most MAX_EVIDENCE_HEADS), on the CORE pool; a pull request whose checks are running adds the commit list. `commits`
   // cannot ride on `pr list`: GraphQL refuses it.
   conditionalOnUnreviewedGreenPr: "api repos/{repo}/compare/{base}...{head} (withPatchIds -- the patch id), and pulls/{n}/commits while checks run",
+  // a11ign#3199: ONE REST CALL PER COMMIT COMPARED, and only for a pull request with a refusal at an older head whose patch equals the head's
+  // (`refusalHeads`): each such commit, then the head when one of them had a failing check. A pull request with no such refusal pays none.
+  conditionalOnEqualPatchRefusal: "api repos/{repo}/commits/{sha}/check-runs (withFailingChecks -- does the refusal still apply)",
   // #2416: ONE REST CALL PER OPEN PULL REQUEST CARRYING `awaiting-evidence`, and NONE when no open pull
   // request carries it -- the label's age is not on `pr list`, so the labelled ones are asked and only those.
   conditionalOnAwaitingEvidenceLabel: "api repos/{repo}/issues/{n}/events (readEvidenceLabelledAt -- awaiting-evidence-stale)",
@@ -3431,14 +3434,18 @@ function patchUnchangedSince(pr, oid) {
  * `patchUnchanged` (#3045) is whether the pull request's patch is the one the refusing review was posted at: `true`, or `false`, or `null` when
  * either patch was not read -- unread is not changed, and is not unchanged either.
  *
+ * `refusalLifted` (a11ign#3199) is whether the refusal was posted for a check that failed at that commit and fails at none now, at an equal
+ * patch (`refusalLiftedAt`, the decider the door asks): a refusal that only a fresh review can lift and that no rework could.
+ *
  * @returns {{number: number, code: string, why: string, session: string | null, head: string,
- *            refusedAt: string | null, patchUnchanged: boolean | null}[]} ascending by PR number
+ *            refusedAt: string | null, patchUnchanged: boolean | null, refusalLifted: boolean}[]} ascending by PR number
  */
 export function reviewBlocked(prs, required = null) {
   const byNumber = new Map(prs.map((pr) => [Number(pr.number), pr]));
   return mergeCandidates(prs, required)
     .map((pr) => ({ number: Number(pr.number), ...subjectIdentity(pr), ...reviewStateOf(pr), session: sessionOf(pr),
-      head: String(pr.headRefOid ?? ""), refusedAt: refusalCommitOf(pr), patchUnchanged: patchUnchangedSince(pr, refusalCommitOf(pr)) }))
+      head: String(pr.headRefOid ?? ""), refusedAt: refusalCommitOf(pr), patchUnchanged: patchUnchangedSince(pr, refusalCommitOf(pr)),
+      refusalLifted: refusalLiftedAt(pr, refusalCommitOf(pr)) }))
     .filter((r) => BLOCKING_REVIEW_STATES.includes(r.code))
     // #2416: `pr-review-blocked` is the third route into a review -- it tells `product-manager` to prompt the
     // reviewer for an AWAITING_REVIEW pull request. A labelled one is waiting for evidence, not a reviewer; a
@@ -3762,8 +3769,51 @@ export function withPatchIds(prs, run = defaultRun) {
     const others = wait === "settled" ? evidenceHeads(pr) : predecessorOf(pr, run);
     const entries = [head, ...others].map((oid) => /** @type {const} */ ([oid, readPatchId(oid, base, run)]));
     const known = entries.filter(([, id]) => id !== null);
-    return known.length > 0 ? { ...pr, patchIds: Object.fromEntries(known) } : pr;
+    return known.length > 0 ? withFailingChecks({ ...pr, patchIds: Object.fromEntries(known) }, run) : pr;
   });
+}
+
+/**
+ * a11ign#3199: THE NAMES OF THE CHECK RUNS THAT CONCLUDED `failure` AT ONE COMMIT, or `null` when the read was refused. `[]` is a real answer
+ * (nothing failed there) and `null` is "not known": a refusal is never read as green, because a refusal lifted on an unread check would
+ * hand a refused pull request back to a reviewer on a guess.
+ *
+ * `commit` MAY BE AN ABBREVIATION (a verdict's `at <head8>`): the commits endpoint resolves it, as the compare API does.
+ *
+ * @param {string} commit @param {(args: string[]) => string} run @returns {string[] | null}
+ */
+export function readFailingChecks(commit, run = defaultRun) {
+  try {
+    const out = run(["api", `repos/${repoNow()}/commits/${commit}/check-runs?per_page=100`, "--paginate",
+      "--jq", '.check_runs[] | select(.conclusion == "failure") | .name']);
+    return [...new Set(out.split("\n").map((l) => l.trim()).filter((l) => l !== ""))];
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * a11ign#3199: A PULL REQUEST WITH `failingChecks` (oid -> names of the check runs that concluded `failure` there) FOR THE ONE QUESTION THAT NEEDS
+ * THEM: does a refusal at an older head with an equal patch still apply (`refusalLifted`, the decider the door asks too)? Only a pull request
+ * with such a refusal pays anything, and then one read per commit compared: each refusal head, and the current head only when one of those
+ * had a failure, since a refusal at an all-green commit is the #3033 shape and stays standing whatever the head looks like. A refused read
+ * leaves the commit out, and absent is not green.
+ *
+ * @param {any} pr @param {(args: string[]) => string} run
+ */
+function withFailingChecks(pr, run) {
+  const refused = refusalHeads(pr);
+  if (refused.length === 0) return pr;
+  /** @type {Record<string, string[]>} */
+  const failing = {};
+  for (const oid of refused) {
+    const names = readFailingChecks(oid, run);
+    if (names !== null) failing[oid] = names;
+  }
+  const head = String(pr.headRefOid);
+  const now = Object.keys(failing).length > 0 && Object.values(failing).some((names) => names.length > 0) ? readFailingChecks(head, run) : null;
+  if (now !== null) failing[head] = now;
+  return Object.keys(failing).length > 0 ? { ...pr, failingChecks: failing } : pr;
 }
 
 /**

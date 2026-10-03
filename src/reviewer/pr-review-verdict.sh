@@ -30,6 +30,7 @@
 #           body opens `**Review of #<n> at ` and whose commit is the head or has the head's patch id; a review that opens any other way, such
 #           as a code owner's scoped approval, is not counted (a11ign#3087). Nothing was posted, and the
 #           message names the review that stands. A refusal that is wrong goes to `product-manager`, never to a second review.
+#           A CHANGES_REQUESTED posted while a check run failed at its commit, when none fails at the head, does not stand (a11ign#3199).
 #        4  COULD NOT TELL whether it has one (a `gh` read failed). Nothing was posted; the door is safe to run again.
 # Env:   A11Y_REVIEWER_SESSION  the org session name posting this review (`reviewer-<n>` for pull request n, #2401).
 #                               Unset, the door derives `reviewer-<n>` from the checkout it runs in when that checkout
@@ -162,6 +163,38 @@ patch_id_of() {
   echo "$pid"
 }
 
+# The names of the check runs that concluded `failure` at a commit, one per line, nothing when none did. Non-zero when the read failed: an unread
+# check is not a green one. An abbreviated sha resolves, as it does in the compare read above.
+failing_checks_at() {
+  gh api "repos/$REPO/commits/$1/check-runs?per_page=100" --paginate \
+    --jq '.check_runs[] | select(.conclusion == "failure") | .name'
+}
+
+# A REFUSAL THAT NO LONGER APPLIES IS A NEW QUESTION (a11ign#3199, from #3154). A verdict is valid for a patch ON A BASE, and the patch id hashes only
+# what the pull request adds and removes: #3154 was refused for `ts / run` failing on a defect in `main`, `main` was fixed, Dependabot rebased, the
+# patch was byte-for-byte the same and this door refused the follow-up for 18 minutes, until a human dismissed the review. The fact that tells that
+# case from #3033 (a merge of `main`, nothing failing) is in check runs the door can already read, never in the review's prose: LIFTED when the review
+# is a CHANGES_REQUESTED, a check run concluded `failure` at its commit, and none does at the head. `refusalLifted` in review-verdict.mjs is the same
+# rule for the gate, and `door-refuses-second-review.test.ts` runs one table through both so they cannot drift. One read per commit compared, and none
+# unless an equal-patch refusal is found; a read that fails is COULD-NOT-TELL, never green.
+LIFTED=" "
+STANDING=" "
+head_failing=""
+head_read=""
+refusal_lifted() {
+  local commit="$1" head="$2" failed_then
+  [[ "$STANDING" != *" $commit "* ]] || return 1
+  [[ "$LIFTED" != *" $commit "* ]] || return 0
+  failed_then="$(failing_checks_at "$commit")" || undetermined "the check runs at ${commit:0:8} would not read"
+  if [[ -n "$failed_then" && -z "$head_read" ]]; then
+    head_failing="$(failing_checks_at "$head")" || undetermined "the check runs at the head would not read"
+    head_read=1
+  fi
+  if [[ -n "$failed_then" && -z "$head_failing" ]]; then LIFTED+="$commit "; return 0; fi
+  STANDING+="$commit "
+  return 1
+}
+
 refuse_second_review() {
   local pr head base reviews when state commit url head_pid pid differing=" "
   pr="$(gh api "repos/$REPO/pulls/$n" --jq '[.head.sha, .base.ref] | @tsv')" || undetermined "the pull request would not read"
@@ -180,6 +213,8 @@ refuse_second_review() {
       head_pid="${head_pid:-$(patch_id_of "$base" "$head")}" || undetermined "the head's diff would not read"
       pid="$(patch_id_of "$base" "$commit")" || undetermined "the diff at ${commit:0:8} would not read"
       [[ "$pid" == "$head_pid" ]] || { differing+="$commit "; continue; }
+      # An equal patch at ANOTHER commit: a refusal posted for a check that has since cleared no longer applies. An approval always does (#3033).
+      if [[ "$state" == CHANGES_REQUESTED ]] && refusal_lifted "$commit" "$head"; then continue; fi
     fi
     echo "pr-review-verdict: NOT POSTED. #$n already has a review at an equal patch: $state at $when ($url, commit ${commit:0:8}," \
          "head ${head:0:8}). A second review at one patch is refused whatever its verdict; if this refusal is wrong, escalate to" \
