@@ -4,7 +4,7 @@
 // CHANGED FROM THE ORIGINAL, 3 NAMED LINES:
 // - its dynamic import of select-changed-tests.mjs, now the tool's own copy beside it
 // - its dynamic import of ci-changed.mjs, now the tool's own copy beside it
-// - its REPO_ROOT computation, one directory level deeper than the original
+// - its REPO_ROOT computation, now the project's checkout (`HOME_CHECKOUT`) and not a count of directories up from `src` (#3074)
 // ==== end of copy header ====
 // @ts-check
 // A TREE-WALKING GUARD DECLARES THE SUBTREE IT WALKS, AND ITS OWN RUN PROVES IT -- #929.
