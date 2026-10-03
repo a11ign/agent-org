@@ -415,6 +415,14 @@ export const GIT_READS = Object.freeze({
 const defaultSpawn = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", env: sandboxGitEnv() });
 
 /**
+ * `git`'s leading arguments for every read about the PROJECT: `-C <the project checkout>`. #3091: the tick's
+ * `WorkingDirectory` is this TOOL's checkout since the cut-over, so a bare `git ls-remote --heads origin` asked
+ * the TOOL's repository about the PROJECT's rows -- a tool branch ending `-3064` shelved row #3064 for 88
+ * ticks. `HOME_CHECKOUT` is what every other project-file read in the tool already asks.
+ */
+const PROJECT_GIT = Object.freeze(["-C", HOME_CHECKOUT]);
+
+/**
  * WHAT ORIGIN ACTUALLY HOLDS -- every branch whose name ends `-<digits>`, with that row number.
  *
  * #2031: THE GATE HAD NO WAY TO SEE PUSHED WORK, and `ready` with no `session:` label was the entire
@@ -441,7 +449,7 @@ const defaultSpawn = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", 
  */
 export function readRowBranches(run = defaultSpawn) {
   try {
-    return rowBranchesInListing(run("git", [...LS_REMOTE_ARGS]));
+    return rowBranchesInListing(run("git", [...PROJECT_GIT, ...LS_REMOTE_ARGS]));
   } catch {
     return null;
   }
@@ -4254,7 +4262,7 @@ function sessionNamedByBranch(headRef, live) {
 export function readWorktreeStamps(run = defaultSpawn, owner = worktreeOwner) {
   try {
     const stamps = new Map();
-    for (const block of run("git", ["worktree", "list", "--porcelain"]).split(/\n\s*\n/)) {
+    for (const block of run("git", [...PROJECT_GIT, "worktree", "list", "--porcelain"]).split(/\n\s*\n/)) {
       const path = /^worktree (.+)$/m.exec(block)?.[1];
       const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1];
       const stamped = path && branch ? owner(path) : null;

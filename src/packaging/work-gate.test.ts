@@ -50,7 +50,7 @@ import { MAX_ROW_ORDERS_PER_TICK, readCommitShas, readPatchId, withPatchIds, dec
   readOpenRows, withAnswerLabel, rowsOwingAnswers, readClosedAnswerRows, withoutEndedAnswerSessions, endedSessionLabels,
   blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL, PARKED_LABEL,
   ANSWER_PREFIX, redOnlyBySupersededRun, cannotAskReport,
-  readRowBranches, rowBranchOrders, GIT_READS,
+  readRowBranches, readWorktreeStamps, rowBranchOrders, GIT_READS,
   reviewStateOf, reviewBlocked, reviewBlockedOrders, REVIEW_STATE, HOLD_RED_JOBS, reviewableHead,
   readRowsOffBoard, rowsOffBoard, rowOffBoardOrders, rowsOffBoardOrSay, ROW_OFF_BOARD_GRACE_MS,
   refusedReadCount, SHARED_OUTAGE_READS, sharedReadOutage, markOutageReads,
@@ -4391,7 +4391,7 @@ test("#2031: the detection makes NO `gh` call -- the pool is gone in the outage 
     calls.push([cmd, args]);
     return LISTING;
   });
-  assert.deepEqual(calls, [["git", ["ls-remote", "--heads", "origin"]]],
+  assert.deepEqual(calls, [["git", ["-C", HOME_CHECKOUT, "ls-remote", "--heads", "origin"]]],
     "one local git call, and `gh` is never spawned -- a detector that spent GraphQL would be blind in "
     + "the exhausted-pool outage that produces the staleness it detects");
   assert.deepEqual(found, [{ branch: BRANCH_2000, head: SHA_2000, row: 2000 }],
@@ -4400,6 +4400,29 @@ test("#2031: the detection makes NO `gh` call -- the pool is gone in the outage 
   assert.ok(GIT_READS.unconditional.some((r: string) => r.includes("ls-remote")),
     "and the free read is COUNTED rather than left out because it is free -- `GH_READS`'s own header "
     + "records what happened last time a read went unwritten-down");
+});
+
+test("#3091: the row-branch scan asks the PROJECT's origin, so a branch only the tool repository holds shelves nothing", () => {
+  // THE TICK'S `WorkingDirectory` IS THE TOOL'S CHECKOUT, so a bare `git ls-remote --heads origin` read
+  // `a11ign/agent-org` and an agent-org branch ending `-3064` shelved project row #3064 for 88 ticks. The
+  // seam cannot show which repository a real git would answer from, so the pin is on the ARGUMENTS: `-C` first.
+  const seen: string[][] = [];
+  const projectOrigin = (_cmd: string, args: string[]) => {
+    seen.push(args);
+    return args[0] === "-C" && args[1] === HOME_CHECKOUT ? LISTING : `${SHA_2000.replace(/./g, "f")}\trefs/heads/agent/tool-only-3064\n`;
+  };
+  assert.deepEqual(readRowBranches(projectOrigin),
+    [{ branch: BRANCH_2000, head: SHA_2000, row: 2000 }],
+    "positive control: a branch on the PROJECT's origin is still listed");
+  assert.deepEqual(seen[0].slice(0, 2), ["-C", HOME_CHECKOUT], "git is pointed at the project checkout before it asks");
+  const toolOnly = readRowBranches((_cmd: string, args: string[]) => (args[0] === "-C" ? "" : `${SHA_2000}\trefs/heads/agent/tool-only-3064\n`));
+  assert.deepEqual(toolOnly, [], "a branch only the tool repository holds is not the project's, so nothing is shelved");
+});
+
+test("#3091: the worktree-stamp read has the same defect and the same remedy -- the tool's `worktree list` names the tool's trees", () => {
+  const asked: string[][] = [];
+  readWorktreeStamps((_cmd: string, args: string[]) => { asked.push(args); return ""; });
+  assert.deepEqual(asked, [["-C", HOME_CHECKOUT, "worktree", "list", "--porcelain"]]);
 });
 
 test("#2031: a refused listing is `null`, and the gate then behaves exactly as it did before", () => {
