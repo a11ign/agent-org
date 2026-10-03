@@ -19,9 +19,10 @@
 // the core pool through `gh api`, systemd, herdr and the fleet-watch state file) and `runWatch` asks them after the two label sources. The `gh api` calls a
 // run makes are listed in `docs/messaging.md`; the allowlist admits only a GET of the six REST paths they use.
 //
-// **THE PROVIDER IS INJECTED, AND NONE IS REGISTERED YET.** The Telegram provider is row 3 (#2902) and its going live is row 6 (#2905). Until
-// then a configured `messaging` key names a provider this program cannot construct, and it says so and exits 1, which is what the
-// service template promised `host:check` would show.
+// **THE DEFAULT REGISTRY HOLDS THE REAL PROVIDER, AND A TEST MAY STILL INJECT ITS OWN (a11ign/a11ign#3164).** It was written and never registered:
+// every test injected a fake, so none could see that the shipped composition had no provider and the `chairman-watch` unit failed on its first
+// firing. `watch-provider.test.mjs` runs `main` with NO `providers` argument, so "configured but cannot send" cannot pass CI again. A provider that
+// cannot be BUILT (a token file at the wrong mode, an unpaired chairman) ends the run with a line naming the file and exit 1, never a stack trace.
 
 import { execFile } from "node:child_process";
 import { homedir } from "node:os";
@@ -32,7 +33,9 @@ import { promisify } from "node:util";
 import { MessagingConfigRefusal, readMessagingConfig } from "./config.mjs";
 import { createMessenger } from "./core.mjs";
 import { createLedger, describeError, foldLedger } from "./ledger.mjs";
-import { accountIsDeclared, defaultLedgerPath, trackerRepo } from "./state.mjs";
+import { createTelegramProvider } from "./providers/telegram/send.mjs";
+import { readSecretFile, SecretFileRefusal } from "./secret.mjs";
+import { accountIsDeclared, defaultLedgerPath, readChairman, trackerRepo } from "./state.mjs";
 import { observeIncidents } from "./sources/incidents.mjs";
 import { createReaders } from "./sources/readers.mjs";
 import { observeStalls } from "./sources/stall.mjs";
@@ -340,19 +343,48 @@ function hostReaders({ root, home, now, err, github }) {
   });
 }
 
+/**
+ * The Telegram provider for a `messaging` key that is on: the token and the chairman's chat id are read HERE, at the moment of building, so a file that has gone
+ * wrong since `messaging:check` is refused on the run that needed it. `listen.mjs` reads the same two files the same way.
+ *
+ * @param {import("./config.mjs").MessagingOn} config
+ * @param {{ fetch: typeof fetch, log: (line: string) => void }} context
+ */
+function telegramProvider(config, { fetch: fetchImpl, log }) {
+  const token = readSecretFile(config.tokenFile);
+  const { chatId } = readChairman(config.chairmanFile);
+  return createTelegramProvider({ token, chatId, fetch: fetchImpl, log });
+}
+
+/**
+ * @param {{ config: import("./config.mjs").MessagingOn, providers: Record<string, (config: any, context: any) => any>, fetch: typeof fetch, err: (line: string) => void }} input
+ * @returns {Promise<unknown | null>} the provider, or null after saying why it could not be built (the line names the file and never holds a secret)
+ */
+async function buildProvider({ config, providers, fetch: fetchImpl, err }) {
+  try {
+    return await providers[config.provider](config, { fetch: fetchImpl, log: err });
+  } catch (error) {
+    if (!(error instanceof SecretFileRefusal)) throw error;
+    err(`messaging:watch: ${error.message}`);
+    return null;
+  }
+}
+
 /** What a caller may leave out. A spread and not parameter defaults: each default is a branch, and `main` was past the complexity limit. */
 const DEFAULT_DEPS = () => ({
-  root: process.cwd(), env: process.env, home: homedir(), now: Date.now, github: /** @type {any} */ (undefined), readers: /** @type {any} */ (undefined), providers: /** @type {Record<string, (config: any) => any>} */ ({}),
+  root: process.cwd(), env: process.env, home: homedir(), now: Date.now, github: /** @type {any} */ (undefined), readers: /** @type {any} */ (undefined),
+  providers: /** @type {Record<string, (config: any, context: { fetch: typeof fetch, log: (line: string) => void }) => any>} */ ({ telegram: telegramProvider }), fetch: globalThis.fetch,
   out: (/** @type {string} */ line) => console.log(line), err: (/** @type {string} */ line) => console.error(line),
 });
 
 /**
  * @param {{ root?: string, env?: Record<string, string | undefined>, home?: string, now?: () => number, github?: any, readers?: Record<string, any>,
- *           providers?: Record<string, (config: any) => any>, out?: (line: string) => void, err?: (line: string) => void }} [deps]
+ *           providers?: Record<string, (config: any, context: { fetch: typeof fetch, log: (line: string) => void }) => any>, fetch?: typeof fetch,
+ *           out?: (line: string) => void, err?: (line: string) => void }} [deps]
  * @returns {Promise<number>} the exit code: 0 done (or off), 1 something failed this tick, 2 refused to start
  */
 export async function main(deps = {}) {
-  const { root, env, home, now, github, readers, providers, out, err } = { ...DEFAULT_DEPS(), ...deps };
+  const { root, env, home, now, github, readers, providers, fetch: fetchImpl, out, err } = { ...DEFAULT_DEPS(), ...deps };
   const config = loadConfig(root, home, err);
   if (config === null) return EXIT.refused;
   // OFF IS SILENT AND CONSTRUCTS NOTHING: no reader, no provider, no ledger directory.
@@ -362,9 +394,11 @@ export async function main(deps = {}) {
     err(`messaging:watch: ${refusal.message}`);
     return refusal.code;
   }
+  const provider = await buildProvider({ config, providers, fetch: fetchImpl, err });
+  if (provider === null) return EXIT.failed;
   const reader = github ?? createGhReader();
   const result = await runWatch({
-    github: reader, provider: await providers[config.provider](config), repo: trackerRepo(root), summary: config.summary,
+    github: reader, provider, repo: trackerRepo(root), summary: config.summary,
     readers: readers ?? (github === undefined ? hostReaders({ root, home, now, err, github: reader }) : undefined),
     ledger: createLedger({ path: defaultLedgerPath(home), now }), now, log: err,
   });
