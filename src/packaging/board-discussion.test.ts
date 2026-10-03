@@ -143,7 +143,7 @@ function workflowCode(): string {
 
 test("board-report.yml publishes the Discussion, and its token CANNOT create a release", () => {
   const code = workflowCode();
-  assert.match(code, /node packages\/agent-org\/src\/board-document\.mjs --discussion\b/);
+  assert.match(code, /pnpm exec agent-org board:document --discussion\b/);
   assert.match(code, /^\s*discussions:\s*write\s*$/m);
   assert.match(code, /^\s*contents:\s*read\s*$/m,
     "contents: read is what a checkout needs; write is what a release draft needs, and this job makes none");
@@ -153,7 +153,7 @@ test("board-report.yml publishes the Discussion, and its token CANNOT create a r
 });
 
 test("the republish precondition asks for today's DISCUSSION through the one lookup, not a release", () => {
-  assert.match(workflowCode(), /node packages\/agent-org\/src\/board-discussion\.mjs --exists\b/);
+  assert.match(workflowCode(), /pnpm exec agent-org board-discussion --exists\b/);
 });
 
 // --- #1302: the edition's day is LONDON's, decided once ---

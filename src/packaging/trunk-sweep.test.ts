@@ -78,9 +78,9 @@ test("#417's sweep is hourly on nightly.yml's :37 cron since #909, and also runs
     assert.ok(!doc.jobs[job].needs, "the two halves are independent -- one failing must not block the other");
   }
   const gateRuns = doc.jobs.gateSweep.steps.map((s) => String(s.run ?? "")).join("\n");
-  assert.match(gateRuns, /node packages\/agent-org\/src\/trunk-sweep\.mjs/);
+  assert.match(gateRuns, /pnpm exec agent-org trunk-sweep\b/);
   const closeRuns = doc.jobs.closeRowsSweep.steps.map((s) => String(s.run ?? "")).join("\n");
-  assert.match(closeRuns, /node packages\/agent-org\/src\/close-rows-sweep\.mjs --window=120/,
+  assert.match(closeRuns, /pnpm exec agent-org close-rows-sweep --window=120/,
     "a 120-minute window against an hourly schedule is DELIBERATE overlap, so a single missed tick cannot lose "
     + "a row; this pins the number so a future edit cannot narrow it to the schedule interval");
 });
