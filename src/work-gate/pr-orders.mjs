@@ -217,7 +217,7 @@ function settledChecksOf(pr, required) {
 
 /**
  * #3120: how long a blocking check may run before it is not `progressing`. MEASURED 2026-10-03 from `gh run list --workflow ci
- * --status completed --limit 300` on a11ign/a11ign: of 193 success-or-failure runs the median was 7 min, p95 8, MAX 12; agent-org's
+ * --status completed --limit 300` on the project's own repository: of 193 success-or-failure runs the median was 7 min, p95 8, MAX 12; agent-org's
  * 67 were 2 min median, 3 max. 60 is five times the longest `ci` run in either repository, and is `ceo`'s own figure (#3120).
  */
 export const CHECK_RUNNING_TOO_LONG_MINUTES = 60;
