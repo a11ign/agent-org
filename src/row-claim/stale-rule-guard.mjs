@@ -168,6 +168,84 @@ export function trackedFileCount({ repoRoot, files, run }) {
   }
 }
 
+/**
+ * The commit an INSTALLED copy of this tool was built from, read off the package manager's own directory name -- or `null` when `entry` is not in
+ * an installed layout, or is but names no commit (#3188).
+ *
+ * pnpm installs a GitHub dependency at `node_modules/.pnpm/agent-org@https+++codeload.github.com+a11ign+agent-org+tar.gz+<sha>_<peers>/node_modules/agent-org/`,
+ * and the module's real path is that one. The sha is the answer to "which pin is this", and no file inside the package carries it.
+ * @param {string} entry absolute real path to `row-claim.mjs`
+ * @returns {{ installed: boolean, sha: string | null, packageRoot: string | null }}
+ */
+export function installedLayoutOf(entry) {
+  const parts = entry.split(sep);
+  const at = parts.lastIndexOf("node_modules");
+  if (at === -1) return { installed: false, sha: null, packageRoot: null };
+  const packageRoot = parts.slice(0, at + 2).join(sep);
+  const sha = /\+tar\.gz\+([0-9a-f]{40})(?:_|\/|$)/.exec(entry)?.[1] ?? null;
+  return { installed: true, sha, packageRoot };
+}
+
+const REPOSITORY = "a11ign/agent-org";
+
+/**
+ * What changed in `a11ign/agent-org` between the installed commit and its `main`: GitHub's own compare, one call, nothing cloned. `null` when GitHub
+ * cannot say (no `gh`, no token, offline, an unknown sha) -- CANNOT ASK, and never "nothing changed".
+ * @param {string} sha
+ * @returns {{ status: string, files: string[] } | null}
+ */
+function compareWithMain(sha) {
+  try {
+    const out = execFileSync("gh", ["api", `repos/${REPOSITORY}/compare/${sha}...main`, "--jq",
+      "{status: .status, files: [.files[].filename]}"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    const parsed = JSON.parse(out);
+    return typeof parsed.status === "string" && Array.isArray(parsed.files) ? parsed : null;
+  } catch (error) {
+    void error; // CANNOT ASK is reported by the caller, by name
+    return null;
+  }
+}
+
+/** GitHub's compare lists at most 300 files: a list that long may have been cut, and a cut list cannot clear anything. */
+const COMPARE_FILE_CAP = 300;
+
+/**
+ * Does a changed path fall under the rule pathspec? Entries ending `/` are directories, the rest are files.
+ * @param {string} file
+ * @param {string[]} spec
+ */
+const underPathspec = (file, spec) => spec.some((entry) => (entry.endsWith("/") ? file.startsWith(entry) : file === entry));
+
+/**
+ * @param {string} entry
+ * @param {string} why
+ */
+const cannotAskInstalled = (entry, why) => `CANNOT ASK whether the INSTALLED copy of the rule (${entry}) is current: ${why}\n`
+  + "  This refuses rather than assuming it is up to date.";
+
+/**
+ * THE INSTALLED LAYOUT (#3188): the tool lives under `node_modules/`, so the consumer's repository holds no copy of the rule and `git rev-list HEAD..origin/main`
+ * there asks about a path it does not contain. The question is the same one -- has the rule moved since this copy was made -- put to the repository the copy
+ * came from: the commit pnpm installed against `a11ign/agent-org` `main`, narrowed to the rule files exactly as the other layouts are.
+ *
+ * Not a blanket refusal either: `main` moving on anything but the rule leaves the installed copy current, which is why this compares files and not tips.
+ * @param {{ entry: string, sha: string | null, packageRoot: string, compare?: (sha: string) => { status: string, files: string[] } | null }} options
+ * @returns {string | null}
+ */
+export function installedStaleReason({ entry, sha, packageRoot, compare }) {
+  if (sha === null) return cannotAskInstalled(entry, "the install directory names no commit, so there is nothing to compare with `main`.");
+  const result = (compare ?? compareWithMain)(sha);
+  if (result === null) return cannotAskInstalled(entry, `GitHub could not compare ${sha.slice(0, 12)} with ${REPOSITORY}'s main (offline, no \`gh\` token, or an unknown commit).`);
+  if (result.status === "identical" || result.status === "behind") return null; // installed IS main, or is ahead of it
+  const spec = rulePathspec(entry, packageRoot);
+  const moved = result.files.filter((file) => underPathspec(file, spec));
+  if (moved.length === 0 && result.files.length < COMPARE_FILE_CAP) return null;
+  return `THE INSTALLED COPY OF THE RULE (${REPOSITORY}@${sha.slice(0, 12)}) IS BEHIND \`main\`.\n`
+    + `  Moved: ${moved.length > 0 ? moved.join(", ") : `${COMPARE_FILE_CAP}+ files, too many to tell which are rule files`}\n`
+    + "  The pin in `package.json` resolved to this commit and `main` has changed the rule since. Bump the pin\n"
+    + "  (`pnpm update agent-org`) and ask again.";
+}
+
 /** @param {string} dir */
 const cannotAskNoTree = (dir) => `CANNOT ASK whether this checkout's copy of the rule is current: ${dir} is not inside a git work tree, so there is\n`
   + "  no repository to compare against `origin/main`. This refuses rather than assuming it is up to date.";
@@ -184,11 +262,16 @@ const cannotAskNothingTracked = (root, spec) => `CANNOT ASK whether this checkou
  * The refusal, or `null` when this checkout's copy of the rule is the current one.
  *
  * @param {{ repoRoot?: string, entry?: string, run?: (args: string[]) => string,
- *           files?: string[] }} [options] `files` is for tests: a real list, never a stub of git
+ *           files?: string[], compare?: (sha: string) => { status: string, files: string[] } | null }} [options]
+ *   `files` is for tests: a real list, never a stub of git. `compare` is the installed layout's GitHub question, injectable for the same reason.
  * @returns {string | null}
  */
-export function staleRuleReason({ repoRoot, entry, run, files } = {}) {
+export function staleRuleReason({ repoRoot, entry, run, files, compare } = {}) {
   const here = dirname(fileURLToPath(import.meta.url));
+  const installed = installedLayoutOf(entry ?? resolve(here, "..", "row-claim.mjs"));
+  if (installed.installed && repoRoot === undefined && files === undefined) {
+    return installedStaleReason({ entry: entry ?? resolve(here, "..", "row-claim.mjs"), sha: installed.sha, packageRoot: /** @type {string} */ (installed.packageRoot), compare });
+  }
   const root = repoRoot ?? workTreeOf(here);
   if (root === null) return cannotAskNoTree(here);
   const spec = files ?? rulePathspec(entry ?? resolve(here, "..", "row-claim.mjs"), root);
