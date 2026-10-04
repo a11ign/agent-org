@@ -188,7 +188,7 @@ describe("a reader that cannot read yields cannot-ask and NO event (done-when 4)
   });
 });
 
-describe("a sent stall says what it MEANS and what is being done (a11ign/a11ign#3424)", () => {
+describe("a sent stall says what it MEANS and what is being DONE (a11ign/a11ign#3424, #3419)", () => {
   const stalled = { readTicks: () => history(IDLE_FOR_THIRTY_MINUTES, { seats: seats("idle"), orders: rows(2) }), readLastMerge: () => NOW - 7 * HOUR };
   const IMPACTS = { "stall:all-idle": "Impact: Rows are waiting and no seat is working on them.", "stall:no-merge": "Impact: No change has reached main." };
   const observeWith = (/** @type {Record<string, unknown>} */ more) => observeStalls({ now: () => NOW, log: () => {}, readers: { ...stalled, ...more } });
@@ -200,30 +200,34 @@ describe("a sent stall says what it MEANS and what is being done (a11ign/a11ign#
     for (const event of events) assert.equal(lineOf(event, "Impact"), IMPACTS[/** @type {keyof typeof IMPACTS} */ (String(event.key))], String(event.key));
   });
 
-  test("(2) with a fix row open, Doing names that row and its holder", async () => {
-    const { events } = await observeWith({ readFixRow: () => ({ number: 3500, holder: "worker-3500" }) });
-    for (const event of events) assert.equal(lineOf(event, "Doing"), "Doing: row #3500 is open for this, held by worker-3500.");
+  test("(2) with an open row and an org comment, Being done quotes the comment with its age", async () => {
+    const at = NOW - 40 * MINUTE;
+    const { events } = await observeWith({ readFixRow: () => ({ number: 3500, comment: { author: "a11ign-ai-leads", at, text: "promoted; waiting for a seat" } }) });
+    for (const event of events) assert.equal(lineOf(event, "Being done"), 'Being done: row #3500, a11ign-ai-leads 40m ago: "promoted; waiting for a seat".');
   });
 
-  test("(3) with no row open, Doing says `no row is open for this yet`", async () => {
+  test("(3) with no row open, Being done says `nobody has picked this up yet`", async () => {
     const { events } = await observeWith({ readFixRow: () => null });
-    for (const event of events) assert.equal(lineOf(event, "Doing"), "Doing: no row is open for this yet.");
+    for (const event of events) assert.equal(lineOf(event, "Being done"), "Being done: nobody has picked this up yet.");
   });
 
-  test("(4) a failed, unwired or malformed fix-row read says `not known`, and the stall is still reported", async () => {
+  test("(5) a failed, unwired or malformed row read says `I could not read it`, and the stall is still reported", async () => {
     for (const readers of [{ readFixRow: () => { throw new Error("gh: HTTP 502"); } }, {}, { readFixRow: () => ({ number: 0 }) }]) {
       const { events, cannotAsk } = await observeWith(readers);
       assert.equal(events.length, 2);
-      for (const event of events) assert.equal(lineOf(event, "Doing"), "Doing: not known.");
+      for (const event of events) assert.equal(lineOf(event, "Being done"), "Being done: I could not read it.");
       assert.deepEqual(cannotAsk, []);
     }
   });
 
-  test("(5) the cleared event's text is byte-for-byte what it was", async () => {
+  test("(4) the cleared event carries how long it lasted, and does not ask for the row", async () => {
     let asked = 0;
     const recovered = { readTicks: () => history(IDLE_FOR_THIRTY_MINUTES, { seats: seats("busy"), orders: rows(2) }), readLastMerge: () => NOW - HOUR };
-    const { events } = await observeWith({ ...recovered, readFixRow: () => { asked += 1; return null; } });
-    assert.deepEqual(events.map((event) => event.text).sort(), ["A merge landed on main.", "Seats are no longer all idle with rows waiting."]);
+    const { events } = await observeWith({ ...recovered, readFixRow: () => { asked += 1; return null; }, readEpisodeStart: () => NOW - 7 * HOUR - 5 * MINUTE });
+    assert.deepEqual(events.map((event) => event.text).sort(), [
+      "A merge landed on main.\nLasted: at least 7h 05m (counted from the message that told you).",
+      "Seats are no longer all idle with rows waiting.\nLasted: at least 7h 05m (counted from the message that told you).",
+    ]);
     assert.ok(events.every((event) => event.resolved === true), "positive control: both are resolved events");
     assert.equal(asked, 0);
   });
@@ -237,6 +241,6 @@ describe("a sent stall says what it MEANS and what is being done (a11ign/a11ign#
     await run.tick([meant]);
     await run.tick([meant]);
     assert.equal(run.provider.sent.length, 1);
-    assert.match(run.provider.sent[0].text, /Impact: No change has reached main\.\nDoing: no row is open for this yet\./);
+    assert.match(run.provider.sent[0].text, /Impact: No change has reached main\.\nBeing done: nobody has picked this up yet\./);
   });
 });

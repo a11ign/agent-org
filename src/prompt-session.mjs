@@ -31,7 +31,7 @@ import { realpathSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
-import { clearBeforeOrder, keepsContext, isPersistentRole, readAgents, WAKEABLE, queueHandoff, handoffQueuePath, ledgerPathFrom,
+import { prepareContext, orderClockIn, CONTEXT_ACTION, readAgents, WAKEABLE, queueHandoff, handoffQueuePath, ledgerPathFrom,
   handoffBacklog, readHandoffs, waitedFor, addressed, repointedForReviewer } from "./wake.mjs";
 // #2619 (child 3d of #69): the `answer:` prefix these two advisory notes name, moved to the project's
 // declared vocabulary.
@@ -161,10 +161,11 @@ export function attributed(text, sender) {
  * A SESSION NOT CLEARED FIRST is a per-row instance mid-row (#2483), whose window already holds the first-contact preamble, so
  * `followUp` gives it the one-line header instead (#2538); a standing seat, cleared, gets the whole of it.
  *
- * @param {string} label @param {string} text @param {string | null} sender @param {{followUp?: boolean}} [how]
+ * @param {string} label @param {string} text @param {string | null} sender
+ * @param {{followUp?: boolean, context?: string}} [how] `context` is what {@link prepareContext} did to the window (#3440)
  */
-export function deliveredText(label, text, sender, { followUp = false } = {}) {
-  return addressed({ session: label, prompt: attributed(text, sender) }, label, { followUp });
+export function deliveredText(label, text, sender, { followUp = false, context } = {}) {
+  return addressed({ session: label, prompt: attributed(text, sender) }, label, { followUp, context });
 }
 
 /** Prefix on {@link clearThenPrompt}'s return value when the PROMPT ITSELF failed -- the order never
@@ -173,30 +174,45 @@ export function deliveredText(label, text, sender, { followUp = false } = {}) {
 export const PROMPT_REFUSED_PREFIX = "prompt refused: ";
 
 /**
- * Clear, then prompt -- the clear only for a standing seat ({@link clearBeforeOrder}; a per-row instance keeps its
- * context, and may instead be `/compact`ed over threshold, #2483/#2688). Returns what to report, or `null`
- * when the prompt landed.
+ * Prepare the window, then prompt -- {@link prepareContext} decides: a standing seat is cleared unless its previous order was recent
+ * (#3440), a per-row instance or a persistent seat keeps its context and may instead be `/compact`ed over threshold (#2483/#2688/#3415).
+ * Returns what was done to the window and what to report (`null` when the prompt landed).
  *
  * THE PROMPT IS {@link deliveredText}: clearing strips everything the session knew, so what it wakes to
  * must say who it is and who asked. `sender` is `null` (the default) for a caller that is not a known
  * session -- a systemd unit such as the nightly firing is named as unidentified, never guessed.
  *
  * @param {(args: string[]) => string} run @param {string} label @param {string} text
- * @param {{sender?: string | null, sleep?: (ms: number) => void, contextRoot?: string, sessions?: string | URL}} [options] `sleep` is
- *   the clear's settle ({@link clearBeforeOrder}): real by default, injected only by a test that is not about
+ * @param {{sender?: string | null, sleep?: (ms: number) => void, contextRoot?: string, sessions?: string | URL,
+ *   clock?: import("./wake.mjs").OrderClock}} [options] `clock` is the seat's last-order record and the time (#3440); `sleep` is
+ *   the clear's settle ({@link prepareContext}): real by default, injected only by a test that is not about
  *   the delay (#2546); `contextRoot` is the compact check's transcript root (#2688), and `sessions` the roster
  *   a persistent seat is read from (#3415), both the same way
  */
-export function clearThenPrompt(run, label, text, { sender = null, sleep, contextRoot, sessions } = {}) {
-  const { sent, refusal: clearRefusal } = clearBeforeOrder(run, label, sleep, contextRoot, sessions);
+export function clearThenPrompt(run, label, text, options = {}) {
+  return promptWithContext(run, label, text, options).report;
+}
+
+/**
+ * {@link clearThenPrompt} AND WHAT IT DID TO THE WINDOW (#3440), for a caller that SAYS what happened to its own sender: `action` is a
+ * {@link CONTEXT_ACTION} value, `report` is `clearThenPrompt`'s return. Same arguments.
+ * @param {(args: string[]) => string} run @param {string} label @param {string} text
+ * @param {Parameters<typeof clearThenPrompt>[3]} [options]
+ * @returns {{action: string, report: string | null}}
+ */
+export function promptWithContext(run, label, text, { sender = null, sleep, contextRoot, sessions, clock } = {}) {
+  const { action, refusal } = prepareContext(run, label, { sleep, contextRoot, sessions, clock });
+  const followUp = action !== CONTEXT_ACTION.CLEARED;
   try {
-    run(["--session", "org", "agent", "prompt", label, deliveredText(label, text, sender, { followUp: !sent })]);
+    run(["--session", "org", "agent", "prompt", label, deliveredText(label, text, sender, { followUp, context: action })]);
   } catch (/** @type {any} */ err) {
-    return `${PROMPT_REFUSED_PREFIX}${String(err?.message ?? err).split("\n")[0].slice(0, 120)}`;
+    return { action, report: `${PROMPT_REFUSED_PREFIX}${String(err?.message ?? err).split("\n")[0].slice(0, 120)}` };
   }
+  // THE TIME IS WRITTEN ONLY ONCE THE PROMPT LANDED (#3440): the next order's keep-or-clear reads it.
+  clock?.recordOrder(label);
   // A REFUSED CLEAR IS NOT A REFUSED PROMPT (`clearContext`'s own rule): the text went, on a context that
   // is more expensive than it should be, and saying so is strictly better than silence.
-  return clearRefusal;
+  return { action, report: refusal };
 }
 
 /**
@@ -255,8 +271,9 @@ export function queueOrLose({ label, text, why, agents, path, stance = STANCE.UN
   process.stderr.write(`NOT PROMPTED NOW: ${why}.\n`
     + `QUEUED ${entry.id} -- the next \`pnpm run work:tick\` delivers it to "${label}" once the gate judges `
     + "that session between tasks. DO NOT RETRY: a retry that lands the instant it goes idle is a second "
-    + "copy, and for a standing seat, which is cleared first, it also wipes whatever it was working on "
-    + "(a per-row instance -- a spawned `worker-<n>`, a `reviewer-<n>` -- is never cleared).\n");
+    + "copy, and for a standing seat whose previous order was NOT recent, which is cleared first, it also wipes whatever it was "
+    + "working on (a per-row instance -- a spawned `worker-<n>`, a `reviewer-<n>` -- is never cleared, and a seat whose previous order "
+    + "was under 30 minutes ago is kept or compacted, not cleared).\n");
   process.stderr.write(stanceNote(stance));
   process.stderr.write(queueDepthNote(label, path));
   return EXIT.QUEUED;
@@ -495,6 +512,13 @@ export function recordDirectDelivery(queuePath, { label, text, sender, cleared, 
   }
 }
 
+/** What `prompt:session` tells its sender the window now is, per {@link CONTEXT_ACTION} (#3440): said of THIS delivery, never of the seat's kind. */
+const CONTEXT_WORDS = Object.freeze({
+  [CONTEXT_ACTION.KEPT]: "context kept (not cleared)",
+  [CONTEXT_ACTION.COMPACTED]: "context compacted (not cleared; a summary of the window remains)",
+  [CONTEXT_ACTION.CLEARED]: "on a cleared context",
+});
+
 /**
  * Deliver the order if the session is between tasks, queue it if not. Returns the exit code.
  *
@@ -503,11 +527,11 @@ export function recordDirectDelivery(queuePath, { label, text, sender, cleared, 
  *
  * @param {{run: (args: string[]) => string, label: string, text: string, agents: {label: string, status: string}[] | null,
  *          path: string, stance: Stance, sender: string | null, sleep?: (ms: number) => void,
- *          checkout?: import("./wake.mjs").CheckoutDeps}} order
- *   `sleep` is the clear's settle, passed to {@link clearThenPrompt} (#2546); `checkout` is {@link repointedForReviewer}'s seams
+ *          checkout?: import("./wake.mjs").CheckoutDeps, contextRoot?: string, clock?: import("./wake.mjs").OrderClock}} order
+ *   `clock` is the seat's last-order record, beside the queue by default (#3440), and `contextRoot` the transcript root it is read against; `sleep` is the clear's settle, passed to {@link clearThenPrompt} (#2546); `checkout` is {@link repointedForReviewer}'s seams
  * @returns {number}
  */
-export function promptOrQueue({ run, label, text, agents, path, stance, sender, sleep, checkout }) {
+export function promptOrQueue({ run, label, text, agents, path, stance, sender, sleep, checkout, contextRoot, clock = orderClockIn(`${dirname(path)}/last-order`) }) {
   const why = promptable(label, agents);
   if (why) return queueOrLose({ label, text, why, agents, path, stance, sender });
 
@@ -519,21 +543,19 @@ export function promptOrQueue({ run, label, text, agents, path, stance, sender, 
   // one the routing rule tells an author to make after a push, and the reviewer's sandbox cannot move its own tree. Only here, on
   // the idle path: a reviewer mid-turn keeps its files, and a QUEUED order moves nothing here (see `repointedForReviewer` for what the tick does with one).
   const { prompt } = repointedForReviewer({ session: label, prompt: text }, checkout);
-  const report = clearThenPrompt(run, label, prompt, { sender, sleep });
+  const { action, report } = promptWithContext(run, label, prompt, { sender, sleep, contextRoot, clock });
   // A PROMPT REFUSED AT THE LAST MOMENT IS THE SAME LOSS ONE STEP LATER. `promptable` said idle and herdr
   // said no, which means the session went to work in between -- the race the queue exists for. A refused
   // CLEAR is not this: the text went, on a bloated context, and re-queueing it would deliver it twice.
   if (report?.startsWith(PROMPT_REFUSED_PREFIX)) {
     return queueOrLose({ label, text, why: report, agents, path, stance, sender });
   }
-  recordDirectDelivery(path, { label, text, sender, cleared: !keepsContext(label) && !report });
+  recordDirectDelivery(path, { label, text, sender, cleared: action === CONTEXT_ACTION.CLEARED && !report });
   if (report) {
     process.stderr.write(`${report}\n`);
     return EXIT.REFUSED;
   }
-  process.stdout.write(keepsContext(label)
-    ? `PROMPTED ${label}, context kept (${isPersistentRole(label) ? "a persistent seat" : "a per-row instance"} is never cleared)\n`
-    : `PROMPTED ${label}, on a cleared context\n`);
+  process.stdout.write(`PROMPTED ${label}, ${CONTEXT_WORDS[action]}\n`);
   return EXIT.OK;
 }
 

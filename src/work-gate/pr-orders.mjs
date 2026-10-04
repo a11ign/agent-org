@@ -2,7 +2,7 @@
 // module: the pull-request orders -- what `work-gate.mjs` says to a session about a PR's own state (#2542)
 //
 // MOVED OUT OF `work-gate.mjs`, NOT REWRITTEN (#2542, the first split of #928's lever 2a): `draftOrder`,
-// `failingChecksOrder`, `settledVerdictOrder`, `requiredWhenRed`, `redOnlyFromAHold` and the order builders
+// `failingChecksOrder`, `settledVerdictOrder`, `requiredWhenNeeded`, `redOnlyFromAHold` and the order builders
 // for `pr-green-unarmed`, `pr-review-blocked`, `pr-merge-conflict` and `awaiting-evidence-stale`, with the
 // helpers only they use. Sixty-two of 417 merges edited that one file and B4 serialised them; a fix to one
 // of these orders now names THIS file in its Region.
@@ -61,17 +61,23 @@ export function redOnlyBySupersededRun(blocking, head) {
 }
 
 /**
- * PAID ONLY BY A RED TICK. A healthy queue never asks what is required, so the UNCONDITIONAL read count
- * is unchanged -- see `GH_READS` for what that count actually is, and for the correction that had to be
- * made to this very comment.
+ * PAID BY A RED TICK, OR BY ONE HOLDING A GREEN DRAFT (#3448). A healthy queue of ready pull requests never asks what is required, so
+ * the UNCONDITIONAL read count is unchanged -- see `GH_READS` for what that count actually is, and for the correction that had to be
+ * made to this very comment. A green DRAFT is the other asker: it is the pull request the ready-flip reaches, and the flip over a red
+ * verify stamp is allowed only on a list of required checks that was actually read (`stampWithholdsReady`).
  *
  * (Extracted from `main`, which reached `complexity` 17 with the ternary inline -- the same seam the
  * dead man's switch took, and for the same reason: `main` is about delivering what the gate found.)
  *
- * @param {any[]} prs
+ * @param {any[]} prs @param {() => string[] | null} [read] the required-checks read, a seam so a test can count the calls
  */
-export function requiredWhenRed(prs) {
-  return anyChecksRed(prs) ? requiredCheckNames() : null;
+export function requiredWhenNeeded(prs, read = requiredCheckNames) {
+  return anyChecksRed(prs) || anyGreenDraft(prs) ? read() : null;
+}
+
+/** @param {any[]} prs */
+function anyGreenDraft(prs) {
+  return prs.some((pr) => pr?.isDraft === true && checksSettledGreen(newestPerName(pr?.statusCheckRollup ?? [])) === true);
 }
 
 /**
@@ -1078,6 +1084,27 @@ function unverifiedReadyOrder(pr, found, { head8, key }) {
 }
 
 /**
+ * #3448: DOES THE VERIFY STAMP STILL WITHHOLD THE READY-FLIP? Only a RED stamp withholds it, and not when the project's own CI has already
+ * said what verify would: every REQUIRED check settled green at the head this verdict stands for. A stamp is a worktree's reading, and the
+ * gate reads it on the host that holds the author's worktree; a draft whose author works elsewhere is stamped RED ("no worktree ... is at
+ * head") for ever, so the order to the author was an order nobody could obey. Measured 2026-10-04: #3406 sat green, approved and a draft
+ * for hours behind `orchestrator`, whose seat was busy.
+ *
+ * THE LIST MUST HAVE BEEN READ (`required !== null`). `null` is "could not read", and `blockingChecks` then counts EVERY check, which is the
+ * fail-open reading of a question this one answers the other way: green on checks nobody said were required is not green on the ones that
+ * are. So an unread list leaves the stamp the rule, exactly as before. `settledChecksOf` is `null` for no required check on the head, or one
+ * still running, and `false` for a red one, so each of those withholds. The rollup is the CURRENT head's by construction, so checks green
+ * only at an older head never reach it.
+ *
+ * `pr-open` is unchanged: a pull request is still never OPENED ready without a green stamp.
+ * @param {any} pr @param {string[] | null} required
+ */
+function stampWithholdsReady(pr, required) {
+  if (pr.verifyStamp?.state !== VERIFY_STATE.RED) return false;
+  return required === null || settledChecksOf(pr, required) !== true;
+}
+
+/**
  * The follow-up a SETTLED verdict deserves, or `null` when it deserves none.
  *
  * A VERDICT IS NOT THE END OF THE WORK, AND READING IT AS ONE LEFT PULL REQUESTS ABANDONED. The gate used
@@ -1100,12 +1127,12 @@ function unverifiedReadyOrder(pr, found, { head8, key }) {
  * because rework is owed whatever state the pull request is in.
  *
  * @param {any} pr @param {{verdict: string | null, by: string | null,
- *        byIsAuthor: boolean | null}} found @param {ReviewHeads} heads
+ *        byIsAuthor: boolean | null}} found @param {ReviewHeads} heads @param {string[] | null} [required]
  */
-function settledVerdictOrder(pr, found, heads) {
+function settledVerdictOrder(pr, found, heads, required = null) {
   const { head8, key } = heads;
   if (found.verdict === "convinced" && pr.isDraft) {
-    if (found.byIsAuthor === false && pr.verifyStamp?.state === VERIFY_STATE.RED) return unverifiedReadyOrder(pr, found, heads);
+    if (found.byIsAuthor === false && stampWithholdsReady(pr, required)) return unverifiedReadyOrder(pr, found, heads);
     return {
       session: "product-manager",
       cause: "draft-convinced-not-ready",
@@ -1126,6 +1153,10 @@ function settledVerdictOrder(pr, found, heads) {
       // the one case where a human should look. Automating the attributed case and waking on the rest
       // keeps `ceo`'s one-in-five spot-check pointed at the verdicts that can actually be wrong.
       ...(found.byIsAuthor === false ? { action: { kind: "ready", pr: Number(pr.number), ...(pr.repo === undefined ? {} : { repo: pr.repo }) } } : {}),
+      // #3465: THE SAME CONDITION DECLARES THE ORDER RE-LANEABLE, and for the same reason: an attributed verdict by someone who is not the author is a
+      // finishing act ANY session can carry out, so a `product-manager` busy past the bound (#3448) does not hold it. A self-signed or unattributed
+      // verdict is the one a human should look at (above), and re-laning it to whichever engineer is idle would hand that look to the wrong reader.
+      ...(found.byIsAuthor === false ? { mayRelane: true } : {}),
     };
   }
   if (found.verdict === "convinced") return unreviewedConvincedOrder(pr, found, heads);
@@ -1223,13 +1254,20 @@ function draftOrder(pr, required = null, baseTip = null) {
   // (#1244). Waking anyway would re-prompt a reviewer who has already answered; the cost of being wrong
   // the other way is one author-written verdict going unchallenged, which `ceo`'s spot-check of one
   // verdict in five is the control for.
-  if (found.verdict !== null) return wait === "settled" ? settledVerdictOrder(pr, found, heads) : null;
+  if (found.verdict !== null) return wait === "settled" ? settledVerdictOrder(pr, found, heads, required) : null;
   // #2416: A PULL REQUEST WAITING FOR AN EXTERNAL RUN IS NOT ASKED FOR A VERDICT, and this is the gate's half of
   // the two routes into a review (the author's is a sentence in `org-routing-and-timers.md`). It sits AFTER
   // the settled-verdict read on purpose: a verdict somebody prompted by hand is still read and acted on, so
   // the label removes the MACHINERY's order and never the reviewer's ability to answer, and it sits after the
   // red-checks order because a red build is the author's work whether or not evidence is pending.
   if (awaitingEvidence(pr)) return null;
+  // #3476: A PULL REQUEST THAT CONFLICTS WITH ITS BASE IS NOT ASKED FOR A FIRST LOOK. Its next move is the rebase, which
+  // `pr-merge-conflict` orders the owner to make and which changes the head, so a verdict now is paid for and then outlived:
+  // #148 was approved 7m42s after #145 made it DIRTY, at a head the rebase replaced. It sits AFTER the settled-verdict read on
+  // purpose, as `awaitingEvidence` does: a verdict already given (rework owed, a convinced draft not yet ready) is still acted on,
+  // and only the REQUEST is withheld. After the rebase the head is new, `reviewHeadsOf` keys a new discriminator, and the review is
+  // asked once, at the head that can merge. `UNREAD` is not `CONFLICTING`: an unknown state is never an accusation.
+  if (conflictStateOf(pr) === CONFLICT_STATE.CONFLICTING) return null;
 
   // PULL REQUEST n IS `reviewer-<n>`'S (#2401; the odd/even split it replaced is retired). The name is
   // herdr's, and `wake.mjs` starts the instance when none is live. The arithmetic lives in

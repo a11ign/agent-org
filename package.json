@@ -29,7 +29,10 @@
     "messaging:pair": "node src/messaging/providers/telegram/pair.mjs",
     "ruling:record": "node src/ruling-record.mjs",
     "messaging:measure": "node src/messaging/measure.mjs",
-    "chairman:reply": "node src/messaging/reply-cli.mjs"
+    "chairman:reply": "node src/messaging/reply-cli.mjs",
+    "chairman:record": "node src/messaging/record.mjs",
+    "chairman:correct": "node src/messaging/correct.mjs",
+    "chairman:ask-ceo": "node src/messaging/ask-ceo.mjs"
   },
   "files": [
     "src",

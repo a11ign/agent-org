@@ -16,7 +16,8 @@ import { after, describe, test } from "node:test";
 import { pathToFileURL } from "node:url";
 
 import { createLedger, readLedgerLines } from "./ledger.mjs";
-import { acceptUpdate, createInbound, DROP_REASON, isAccepted } from "./inbound.mjs";
+import { acceptUpdate, actionData, BUTTON_ACTIONS, createInbound, DROP_REASON, isAccepted, optionData, parseButtonData } from "./inbound.mjs";
+import { parseChairmanOptions } from "./sources/requests.mjs";
 
 // The scan of the module graph below imports modules that reach the project's declaration when they load, so it must be findable: the same fallback
 // `listen.test.mjs` makes, because the Acceptance of this row runs the two files in separate processes and only that one set it.
@@ -47,7 +48,7 @@ function update(id, more = {}) {
 
 /** @param {number} id @param {Record<string, any>} [more] a button press under one of the bot's messages */
 function press(id, more = {}) {
-  return { update_id: id, callback_query: { id: "cbq-1", from: { id: CHAIRMAN.userId }, data: "approve:2885", message: message({ text: "row 2885 needs you" }), ...more } };
+  return { update_id: id, callback_query: { id: "cbq-1", from: { id: CHAIRMAN.userId }, data: "ans:A", message: message({ text: "row 2885 needs you" }), ...more } };
 }
 
 /** An inbound over a fresh ledger file. `restart()` is a NEW process over the SAME file. */
@@ -81,7 +82,7 @@ describe("identity (done-when 1)", () => {
     const result = acceptUpdate(press(2), { chairman: CHAIRMAN });
     assert.ok(result.ok);
     assert.equal(result.ok && result.accepted.kind, "button");
-    assert.equal(result.ok && result.accepted.data, "approve:2885");
+    assert.equal(result.ok && result.accepted.data, "ans:A");
     assert.equal(result.ok && result.accepted.callbackQueryId, "cbq-1");
     const handled = harness().handle(press(2));
     assert.equal(handled.action, "forward");
@@ -354,7 +355,7 @@ describe("no other module can produce the branded value (done-when 5)", () => {
       }
     }
     assert.deepEqual(mintersByModule, { "inbound.mjs": ["createInbound"] });
-    assert.deepEqual(Object.keys(await import("./inbound.mjs")).sort(), ["DROP_REASON", "acceptUpdate", "createInbound", "isAccepted"], "a new export of inbound.mjs is a decision, and this list is where it is made");
+    assert.deepEqual(Object.keys(await import("./inbound.mjs")).sort(), ["BUTTON_ACTIONS", "DROP_REASON", "acceptUpdate", "actionData", "createInbound", "isAccepted", "optionData", "parseButtonData"], "a new export of inbound.mjs is a decision, and this list is where it is made");
   });
 
   test("only inbound.mjs names the brand: no other source can mint, or even spell, it", () => {
@@ -414,5 +415,48 @@ describe("no other module can produce the branded value (done-when 5)", () => {
     assert.equal(handled.action, "reply");
     assert.equal("accepted" in handled, false);
     for (const text of [PASSWORD_LINE, "force-push main", "buy the pro plan"]) assert.equal(harness().handle(update(133, { text })).action, "reply", text);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// A BUTTON'S DATA IS A CLOSED VOCABULARY (a11ign/a11ign#3423 done-when 3). POSITIVE CONTROL: `ans:A` and every fixed word are forwarded in the same
+// harness, so "dropped" below is the vocabulary refusing and not a harness that refuses every button.
+
+describe("a button's callback_data is a closed vocabulary", () => {
+  test("the control: an option id and each of the six fixed words are forwarded, and each parses to what it names", () => {
+    const run = harness();
+    const forwarded = [optionData("A"), ...BUTTON_ACTIONS.map((name) => actionData(name))];
+    assert.deepEqual(BUTTON_ACTIONS, ["approve", "done", "stuck", "later", "explain", "forme"], "the set is the chairman's point 5, and this pins it");
+    for (const [index, data] of forwarded.entries()) {
+      assert.equal(run.handle(press(300 + index, { data })).action, "forward", data);
+    }
+    assert.deepEqual(parseButtonData("ans:A"), { kind: "option", id: "A" });
+    assert.deepEqual(parseButtonData("act:later"), { kind: "action", name: "later" });
+  });
+
+  test("anything else is dropped with its own reason and a hash of the data, and is never forwarded", () => {
+    const unknown = ["approve:2885", "ans:", "ans:A B", `ans:${"A".repeat(17)}`, "ANS:A", "act:", "act:rm", "act:Approve", "later", "ans:A\n", "ans: A", "ans:<!--", "x"];
+    const run = harness();
+    for (const [index, data] of unknown.entries()) {
+      const handled = run.handle(press(400 + index, { data }));
+      assert.equal(handled.action, "ignore", JSON.stringify(data));
+      assert.equal(/** @type {any} */ (handled).reason, DROP_REASON.unknownCallbackData, JSON.stringify(data));
+    }
+    const lines = run.lines();
+    assert.equal(lines.length, unknown.length, "one ledger line per press");
+    for (const line of lines) {
+      assert.equal(line.verdict, "drop");
+      assert.equal(line.reason, "unknown-callback-data");
+      assert.match(line.sha256, /^[0-9a-f]{64}$/, "logged with a hash");
+    }
+    assert.ok(!run.raw().includes("approve:2885") && !run.raw().includes("act:rm"), "and never with the data itself");
+  });
+
+  test("the option-id shape is the one a brief's options block accepts: they cannot drift, because this module cannot import it", () => {
+    const ids = ["A", "B", "a-1", "x_y", "0", "A".repeat(16), "A".repeat(17), "", "a b", "a;b", "é", "a.b"];
+    for (const id of ids) {
+      const parsedByBrief = parseChairmanOptions(`<!-- chairman-options: ${id}=label -->`).options.length === 1;
+      assert.equal(parseButtonData(optionData(id)) !== null, parsedByBrief, JSON.stringify(id));
+    }
   });
 });

@@ -30,6 +30,8 @@ export const DEFAULT_CONFIG = Object.freeze({
     stall: Object.freeze({ holdDownMs: 0, remind: true, silent: false }),
     // No quiet hours: the summary is the only silent message (decision 1).
     summary: Object.freeze({ holdDownMs: 0, remind: false, silent: true }),
+    // A release is told once and never reminded or cleared: it is a fact that happened, not a condition that stands. Not silent: it is news.
+    release: Object.freeze({ holdDownMs: 0, remind: false, silent: false }),
     // A milestone is told once and never reminded or cleared: it is a declared moment that happened, not a condition that stands. Not silent: it is news.
     milestone: Object.freeze({ holdDownMs: 0, remind: false, silent: false }),
   }),
@@ -120,6 +122,18 @@ export function composeText(event, plan, maxText, reminderMax) {
 }
 
 /**
+ * The buttons a message carries: the event's own, on a message that still asks something, and only for a provider that draws them. A cleared notice asks
+ * nothing, so it carries none: a button under it would answer a request that is already gone. The key is ABSENT (not empty) otherwise, so a provider
+ * that never heard of `actions` is handed the message it always was.
+ *
+ * @param {import("./event.mjs").MessagingEvent} event @param {Extract<Plan, {action: "send"}>} plan @param {{buttons?: boolean}} capabilities
+ * @returns {{actions?: {label: string, data: string}[]}}
+ */
+export function buttonsFor(event, plan, capabilities) {
+  return plan.kind !== "cleared" && capabilities.buttons === true && event.actions.length > 0 ? { actions: [...event.actions] } : {};
+}
+
+/**
  * The ONE digest line for everything the hourly cap held back. When the entries do not all fit in `maxText` the last line says how
  * many more there are; every one of them is still covered by this digest, so none is lost.
  *
@@ -202,6 +216,7 @@ export function createMessenger({ provider, ledger, now, config: overrides }) {
       text,
       silent: config.kinds[event.kind].silent,
       replyTo: plan.kind === "cleared" && provider.capabilities.replies && known?.messageRef ? known.messageRef : undefined,
+      ...buttonsFor(event, plan, provider.capabilities),
     };
     // The ledger keeps the text AS SENT, link and all: what the chairman was shown is the one thing a later reading must not have to rebuild.
     const extra = { kind: plan.kind, stateHash: stateFingerprint(event), reminder: plan.reminder ?? null, text };

@@ -143,6 +143,29 @@ export function poolFromHeaders(args, run) {
 }
 
 /**
+ * #3448: THE GRAPHQL POOL, READ FROM A QUERY THE CALLER WAS SENDING ANYWAY. A query that carries `viewer { login }` and `rateLimit { limit remaining resetAt }`
+ * names the account and its budget in the answer it already returns, for no point (`rateLimit` is never charged), where `gh pr list` discards the headers and
+ * {@link GRAPHQL_POOL_PROBE} spends one. It is a real call's own answer and so is not `/rate_limit`, which has reported a full pool during a total outage (#1967).
+ *
+ * `null` when the answer has no usable `rateLimit` (an `errors` answer, a schema change): "could not ask" and "nothing is left" stay apart, as in
+ * {@link poolFromResponse}. `account` is `null` when the answer named none.
+ *
+ * @param {any} data a parsed GraphQL response's `data`
+ * @returns {{ account: string | null, resource: string, remaining: number, limit: number, resetAt: string | null } | null}
+ */
+export function poolFromRateLimitField(data) {
+  const field = data?.rateLimit;
+  if (!Number.isInteger(field?.remaining) || !Number.isInteger(field?.limit)) return null;
+  return {
+    account: typeof data?.viewer?.login === "string" ? data.viewer.login : null,
+    resource: "graphql",
+    remaining: field.remaining,
+    limit: field.limit,
+    resetAt: typeof field.resetAt === "string" ? field.resetAt : null,
+  };
+}
+
+/**
  * The login a `gh ... -i` response names, or `null`.
  *
  * TWO SPELLINGS BECAUSE A RESPONSE MAY COME FROM EITHER API: GraphQL answers `{data:{viewer:{login}}}`

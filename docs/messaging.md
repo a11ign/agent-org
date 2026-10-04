@@ -163,17 +163,29 @@ throw into `cannot-ask`: no event, one log line, never a "cleared".
 | `readGateUnit` | `systemctl --user show <prefix>work-tick.service`: `ActiveState` and `InactiveEnterTimestamp` (when the unit last RAN), and the tick's own completion record (when a tick last COMPLETED) | `incident:gate-crash` |
 | `readFleetState` | `runs/fleet-watch-state.json` in the project checkout, and its modification time; **only the worker's name is kept, never its address** | `incident:fleet-down` |
 | `readTicks` | this watcher's own samples, newest first | `stall:all-idle` |
-| `readFixRow(key)` | the open row that holds the fix for an incident or stall: `issues?labels=<key>&state=open`, the oldest, its `session:<name>` label as the holder. **`null` only when GitHub answered and none is open; a failed call throws** | the `Doing` line of every SENT incident and stall |
+| `readFixRow(key)` | the open row OR PULL REQUEST that holds the fix for an incident or stall, and the org's newest word on it: `issues?labels=incident&state=open` filtered to the item whose body carries an `Incident: <key>` line (the oldest; its `session:` label is returned as `holder`), then the newest comment by an org account from `issues/<n>/comments` (the page the listing's `comments` count names). **`null` only when GitHub answered and no item names the key; a failed call throws** | the `Being done` line of every SENT incident and stall |
+| `readEpisodeStart(key)` | when the chairman was TOLD of the episode open now: the ledger's first delivered line since the last clear. No `gh` call. A floor on how long it stood, never the start itself | the `Lasted` line of every CLEARED incident and stall |
 
 **Decisions this row made that the design did not spell out:**
 
-- **A fix row says which incident it fixes by a LABEL NAMED FOR THE EVENT KEY (`incident:trunk-red`, `stall:no-merge`; a11ign/a11ign#3439).** Whoever opens the
-  fix adds that one label (the REST add-labels call creates it on first use), and `readFixRow` reads it back. Not a `Fixes-incident: <key>` body line: the issues
-  listing filters on a label exactly and on the pool `readWaitingRows` already spends, where a body line needs the search API, which matches words not lines and
-  has its own smaller pool. No incident row carried either marker when this was chosen (the existing ones, such as the `trunk-red` fixes, say it only in their
-  titles), so the choice follows the org's other conditions, which are fields: `answer:<session>`, `session:<name>`. The holder is the row's `session:` label, absent while nobody holds it,
-  and several open rows for one key name the oldest. **Opening the row is not this program's job**; until one carries the label a sent event reads "no row is open
-  for this yet", which is true of every incident filed before the label existed.
+- **A fix row says which incident it fixes by a body line, `Incident: <key>`, on a row labelled `incident` (a11ign/a11ign#3419, replacing the per-key label of #3439).**
+  The chairman's row names that shape, and one label for every kind is one listing call instead of one per key. The listing returns bodies, so the key is matched here
+  and the search API (a separate, smaller pool that matches words, not lines) is not touched. Several open rows for one key name the oldest. **Opening the row is not this
+  program's job**; until one carries the line a sent event reads `Being done: nobody has picked this up yet`, which is the useful fact.
+- **The reader accepts an open PULL REQUEST, and the own-path order does not ask for a second artefact (a11ign/a11ign#3449).** `trunkRedOrders` tells the fixer to open a
+  pull request, and the issues listing returns pull requests with the same `labels=` filter, so the choice was between the reader skipping them (which hid the fix exactly while
+  it was open: the first real `incident:trunk-red` would have been sent with `nobody has picked this up yet` beside an open fix PR) and the order also asking for a row whose only
+  job is to be read, which nobody would remember to open. The reader changed; the item's `session:` label comes back as `holder` (rendering it belongs to the `Doing` line, not
+  here). **Both orders (own path, routed path) carry one sentence** telling the fixer to label what it opens `incident` and put `Incident: incident:trunk-red` on a line of its
+  own in the body; `src/trunk-red.test.ts` follows that sentence through `readFixRow`, so the two cannot drift apart. The `incident` label is not created by anything: the
+  sentence says to `gh label create incident` first when `gh` reports it missing. **The other keys (`incident:gate-crash`, `incident:fleet-down`, `incident:ci-permission`, `stall:*`)
+  have no standing order that opens a fix, so no instruction of theirs can carry the sentence: label it by hand until one exists.**
+- **What is being done is the newest comment by an ORG account on that row, quoted with its age** (`readers.mjs`'s `ORG_LOGINS`, restated from `hand-fix-ledger.mjs` because
+  the sources are a leaf). A comment from anyone else is not the org's word. A row the org has not commented on says so, which is not `nobody has picked this up yet`; a read that
+  failed says `I could not read it`, and the event is still sent. The path `issues/<n>/comments` was added to `watch.mjs`'s `READ_API_PATH`: without it every live read
+  would be refused and every message would say `I could not read it`.
+- **A cleared message says how long it lasted, as `at least` the time since the chairman was told.** The sources keep no state and a resolved reading no longer holds when the
+  thing began, so the only memory of an episode is the ledger, and what it holds is the send. The floor is honest; a start it cannot know is `not known`, never a short one.
 
 - **The gate's last COMPLETED tick is a record the tick writes, not systemd's timestamp (#3040).** `InactiveEnterTimestamp` answers "did the unit run", and a tick
   that died at import moves it exactly as a good one: on 2026-10-02 it advanced on every one of 63 crashed ticks. `work-tick.mjs` writes
@@ -202,13 +214,14 @@ GraphQL and are not counted here):
 | `pulls?state=closed&base=main` (`readLastMerge`) | 1 |
 | `actions/workflows/trunk.yml/runs` (`readTrunkRuns`) | 1 |
 | `actions/runs?status=completed` (`readCiRuns`) | 1 |
-| `issues?labels=<key>&state=open` (`readFixRow`) | one per event that is about to be SENT, none otherwise |
+| `issues?labels=incident&state=open`, then `issues/<n>/comments` (`readFixRow`) | one or two per event that is about to be SENT (the second only when the fix row has comments), none otherwise |
 | `actions/runs/<id>/jobs`, then `check-runs/<id>/annotations` per failed job | only for a failed run not read before: at most 6 runs, each ONCE ever |
+| `releases?per_page=100` (the `releases` source, a11ign/a11ign#3413) | one per declared code repository (four for this project) |
 
 **Four calls per run when nothing new has failed and nothing is sent** (`readers.test.mjs` pins the list), so 1,152 a day at the five-minute timer: about 48 an hour, about 1%
-of the account's 5,000-point core pool. Measured once on 2026-10-02 against the live repository: a double sample plus one asking of every source made 8
+of the account's 5,000-point core pool. **The `releases` source adds one call per declared code repository on top** (four here, so eight a run, 2,304 a day, about 2%: computed from the table, not measured). Measured once on 2026-10-02 against the live repository: a double sample plus one asking of every source made 8
 calls, the 5 above and 3 annotation calls, which are not repeated. The account is the unit's declared `GH_CONFIG_DIR`, never
-a person's (#1967); `assertReadOnlyGh` admits `gh api <path>` for six REST paths and nothing after the path, so no flag can turn the read into a write.
+a person's (#1967); `assertReadOnlyGh` admits `gh api <path>` for seven REST paths and nothing after the path, so no flag can turn the read into a write.
 
 **What the first week's reading (row 13) counts:** how many `stall:no-merge` events fired while the queue was EMPTY. The ruling on #2904 keeps that event
 unconditional, and the count is what would change it. The queue at each moment is the `orders` of the sample at that time (`samples.jsonl`, a week deep);
@@ -221,6 +234,19 @@ off on purpose (`orchestrator`, ruling on #3008, 2026-10-02), and `fleet-watch` 
 and row 6 is blocked by it, so the unit is not installed while the alarm would fire. After it lands the state file lists no worker while the fleet is off.
 **What stays uncovered, for row 13's first-week reading to look for:** a fleet that is genuinely dead (power cut, switch down) reads the same as one that is off, so
 `incident:fleet-down` will not fire for it. `fleet:wake` is the cover, at the next capture window; catching a dead fleet between windows needs a different signal and its own row.
+
+## The releases source (a11ign/a11ign#3413, chairman point 2 of #3409)
+
+A release of a declared package is told in one line, `<package> <version> is out: <first sentence of the release notes>`, the release page last. `sources/releases.mjs` reads
+`gh api repos/<repo>/releases?per_page=100` for every `code` repository `project.json` declares and emits `release:<repo>@<tag>` for each PUBLISHED release not yet seen, oldest first.
+The core's kind `release` has no hold-down, never reminds, is not silent and is never cleared: a release is a thing that happened, not a condition that stands.
+
+- **The first read of a repository tells nothing.** It records every release it finds as seen and a `release-baseline:<repo>` marker, as `source-note` ledger lines (the only memory the
+  watcher keeps), and the log says so once. **The marker, not a count, says "not the first run"**: a repository with no release yet records none, and its first real release must not read as history.
+- **A read that failed records nothing** (`cannot-ask`), so that repository is the first run again when it answers. A draft and a pre-release are neither told nor recorded; one promoted later is told then.
+- **The sentence is read from the notes, never written for them.** Changesets' markdown has its heading, list marker, commit-hash prefix, backticks and link addresses removed, and is cut at 240 characters.
+  Empty notes say `(no summary was written)`.
+- **A burst** (three releases in 75 minutes, as on 2026-10-04) is collapsed by the core's rate limit, whose overflow is one digest line. Nothing here adds a limit.
 
 ## Stage 2, the inbound core (row 7 of 13)
 
@@ -285,8 +311,16 @@ Each is a decision a later row may revisit, and each is pinned by a test.
   not text. So a stranger's DM is `wrong-user` (its chat is also wrong, and the user is what they got wrong first), and the chairman
   in a group is `not-private-chat`.
 - **A button press is held to the same identity**, with its chat read from the message the button sits under; a press with no
-  message (inline mode) has no chat to check and is dropped. A button's `data` is **not classified**: the organisation chose what each
-  button says, and row 9 validates it against the requests it has pending.
+  message (inline mode) has no chat to check and is dropped. A button's `data` is **not classified as text**: it is held to a **closed
+  vocabulary** instead (a11ign/a11ign#3423): `ans:<option id>` (the shape a brief's options block accepts) or `act:<word>` for one of
+  `approve`, `done`, `stuck`, `later`, `explain`, `forme`. Anything else is dropped as `unknown-callback-data`, with a hash of the data in
+  its ledger line, and is never forwarded. The press is then routed by the ledger-known message it sits under, never by the data
+  (`answers.mjs`): an option, `approve` or `done` resolves the request; `later` snoozes its reminders for 24 hours (one ledger line, the label
+  stays, so it is not an answer, and the watcher does not observe the request until the snooze ends, or the request is answered or cleared);
+  `explain` and `stuck` each queue ONE order for the `liaison` (through `converse.mjs`, the only module that queues); `forme` is D1's and is
+  told "not available". A press on a message whose request is answered or no longer asking is told so and its keyboard is taken off
+  (`editMessageReplyMarkup`). The Telegram provider draws `actions` as `reply_markup.inline_keyboard`, one button per row, on the first part of
+  a split message only; a request with more options than fit (6) carries no keyboard, since a partial one is a quieter wrong than none.
 - **A secret's ledger line has no sha256.** The design says every verdict carries one; for this verdict a hash of a short password is
   a dictionary attack away from the password, and the update id and the length already say what a reader needs about a message that
   was thrown away.
@@ -323,3 +357,31 @@ Each is a decision a later row may revisit, and each is pinned by a test.
   KEY` header, combining accents and homoglyphs); false positives (a 40-hex SHA is read as a secret and deleted, `how do I remove a
   label from a row?` is refused); the content of a group or forwarded message is hashed before the identity check (at odds with "no
   hash of a secret"); and a stranger can grow the ledger by one line per update.
+
+## The liaison's commands: `chairman:record`, `chairman:correct`, `chairman:ask-ceo` (a11ign/a11ign#3417, #3490)
+
+The liaison acts for the chairman through three commands and no others; each takes a `--message=<ref>` that must be an accepted inbound line in the ledger, and each says in its
+own text that the liaison wrote it. `record` and `correct` write to a row (their source headers hold the rules: a closed set of three verbs, `needs:chairman` the only label removed).
+`ask-ceo` writes to no row: it asks `ceo` for a ruling.
+
+### `chairman:ask-ceo`: what "names something that clears it" is
+
+```
+pnpm run chairman:ask-ceo -- --row=3333 --message=45      (the question on stdin)
+```
+
+It is `prompt:session ceo --needs-decision` with two refusals in front, both before anything is sent: the ref is not in the ledger, or **the question carries no `Waiting-for:` line
+that the gate reads**. The predicate is `parseWaits` (`wait-condition.mjs`), the parser `work:tick` and `org-health` run, asked whether any wait in the text is `closed`, `merged`,
+`labelled` or `unlabelled` on a row. So `Waiting-for: unlabelled answer:ceo #3490` passes (the label coming off the row is the answer), and `Waiting-for: soon`, `Waiting-for: manual`,
+a bare `#3490` in a sentence and a `Waiting-for:` line inside a code fence do not.
+
+**Why this one of the candidates.** A waiting condition is data, not a sentence: a ruling asked in prose has nothing that ends the wait, so it is queued and left to stall. The
+candidates were a row reference plus the decision asked (prose, which no reader of the gate parses), or a named field the answer would set. The second is chosen, and it is
+the `Waiting-for:` grammar and not a new field, because that is the one the gate already reads and already reports as `wait-without-reason` when it cannot. What passes here is therefore
+what the gate can later find true. It is not a promise that the condition is a good one, or that the row named exists: `ask-ceo` checks the grammar and not the tracker.
+
+**The target is `ceo` and nothing else** (`RECIPIENT`; `parseArgs` is strict, so a `--to` is refused). **The order is sent by running `prompt:session`, not by importing its queue**, so it has
+the same refusals, the same `decision: true` entry and a sender derived from the caller's herdr workspace, which is `liaison` only when it is run in the liaison's seat; the order's first line
+names the liaison either way. **Exit `2` of `prompt:session` is QUEUED, reported as queued and never retried.** One consequence to know: `converse.test.mjs` bounds the callers of the queue under
+`src/messaging/` by scanning for the queue's functions and `prompt-session.mjs`, and `ask-ceo.mjs` runs the command by name, so the scan does not see it. It is a second sender to a session
+other than the liaison, from a command the liaison runs and not from a chat message, which is the path that scan exists to bound; `ask-ceo.test.mjs` pins its own single target.

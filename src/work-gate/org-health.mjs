@@ -22,6 +22,7 @@ import { holdersOf, holdExcused } from "../pr-hold-state.mjs";
 import { withoutHold } from "../red-pr.mjs";
 import { subjectRef, subjectMention } from "../review-attribution.mjs";
 import { readRulings, unreadableLine, rulingTick } from "../ruling-record.mjs";
+import { homeProjectDeclaration } from "../project-config.mjs";
 import { referencesOf, waitItemOf, staleWaits, bareWaits, manualWaits, parseWaits, liftableHolds } from "../wait-condition.mjs";
 import { stallReasonOf, ownerOfPr } from "./pr-orders.mjs";
 import { readFileSync } from "node:fs";
@@ -205,13 +206,14 @@ export function readWaitFacts({ items, open, run, limit = MAX_WAIT_READS }) {
 export function readRefFacts({ refs, open, run, limit = MAX_WAIT_READS }) {
   /** @type {Record<string, import("../wait-condition.mjs").RefFact>} */
   const known = {};
-  for (const raw of open) known[`#${Number(raw.number)}`] = { state: "open", labels: (raw.labels ?? []).map((/** @type {any} */ l) => String(l?.name ?? l)),
+  // An item of another repository is held under `owner/repo#n`, so `#148` of `agent-org` cannot answer for `#148` of the first repository (#3479).
+  for (const raw of open) known[raw.repoKey && raw.repo ? `${raw.repo}#${Number(raw.number)}` : `#${Number(raw.number)}`] = { state: "open", labels: (raw.labels ?? []).map((/** @type {any} */ l) => String(l?.name ?? l)),
     resolvedAt: null, changedAt: epochOrNull(raw.updatedAt) };
   /** @type {Record<string, import("../wait-condition.mjs").RefFact>} */
   const items_ = {};
   let spent = 0;
   for (const ref of refs) {
-    const held = ref.repo === null && Object.hasOwn(known, ref.key) ? known[ref.key] : null;
+    const held = Object.hasOwn(known, ref.key) ? known[ref.key] : null;
     const fact = held ?? (spent++ < limit ? readWaitRef(ref, run) : null);
     if (fact) items_[ref.key] = fact;
   }
@@ -234,6 +236,10 @@ export function waitTickFacts({ prsRead, openRowsRead, now, run = defaultRun }) 
  * THE SETTER'S ORDER, one per stale wait (capped like every row order): the item, the condition that is now true, and the exact fields to
  * remove. IT IS THE `org-health` CAUSE, addressed to the setter and not to `ceo`: a cause of its own would be declared in
  * `cause-declaration.mjs`, outside #2996's Region, and the profile (judgment, high) is the right one for an order to look and remove.
+ *
+ * INCIDENT BEHIND THE ORDER'S TEXT (moved out of it, #3444: the agent reading the order cannot use it):
+ * chairman, 2026-10-02: a freeze ended at 06:50Z and the waits it caused stood four hours.
+ *
  * @param {import("../wait-condition.mjs").StaleWait[]} stale
  */
 export function staleWaitOrders(stale) {
@@ -242,7 +248,7 @@ export function staleWaitOrders(stale) {
     return { session: setter, cause: "org-health", subject: `stale-wait-${subjectRef(item.repoKey, item.number)}`, discriminator,
       prompt: `A WAIT YOU SET HAS OUTLIVED ITS REASON. ${subjectMention(item)} declares \`Waiting-for: ${wait.text}\` and that condition is now TRUE, `
         + `so nothing is being waited for -- and the wait still stands. REMOVE: ${remove.join("; ")}. A wait whose reason is gone is a stall, not `
-        + "proof of health (the chairman, 2026-10-02: a freeze ended at 06:50Z and its waits stood four hours). If the wait should stand for "
+        + "proof of health. If the wait should stand for "
         + "a different reason, say so by writing the new `Waiting-for:` condition on it. Unanswered, `ceo` is told after 30 minutes.",
       causeKey: `${setter}/org-health/stale-wait-order@${discriminator}` };
   });
@@ -254,25 +260,31 @@ const PR_HOLD_ENTRY = fileURLToPath(new URL("../pr-hold.mjs", import.meta.url));
  * #3364: RELEASE ONE SESSION'S HOLD THROUGH THE MODULE THAT OWNS IT, `pr-hold.mjs --release`, which removes the label AND re-arms a pull request that carried
  * `rearm-on-release` (a bare label removal leaves it unarmed: "Lifting a hold does not arm"). A child process rather than an import, because the module is a
  * CLI whose `main` runs on load. Exit `0` is DONE; `2` (released but the re-arm could not be proven) is NOT done, so the order still goes to a session.
- * @param {number} number @param {string} session @returns {boolean} whether the release reported done
+ * #3479: `repoKey` AIMS IT at the pull request's repository, and the first repository's call is exactly what it was (no flag).
+ * @param {number} number @param {string} session @param {string} [repoKey] @returns {boolean} whether the release reported done
  */
-export function releaseHoldViaModule(number, session) {
-  const result = spawnSync(process.execPath, [PR_HOLD_ENTRY, String(number), `--session=${session}`, "--release"], { encoding: "utf8" });
-  if (result.status !== 0) process.stderr.write(`COULD NOT lift hold:${session} on pr-${number} (exit ${result.status}): ${String(result.stderr).trim()}\n`);
+export function releaseHoldViaModule(number, session, repoKey) {
+  const aim = repoKey ? [`--repo-key=${repoKey}`] : [];
+  const result = spawnSync(process.execPath, [PR_HOLD_ENTRY, String(number), `--session=${session}`, "--release", ...aim], { encoding: "utf8" });
+  if (result.status !== 0) process.stderr.write(`COULD NOT lift hold:${session} on pr-${subjectRef(repoKey, number)} (exit ${result.status}): ${String(result.stderr).trim()}\n`);
   return result.status === 0;
 }
+
+/** #3479: the keys of the repositories the project declares for code, the first's empty key left out. @returns {Set<string>} */
+const declaredRepoKeys = () => new Set(homeProjectDeclaration().code.map((entry) => entry.key).filter((key) => key !== ""));
 
 /**
  * #3364: THE GATE LIFTS A HOLD WHOSE `Waiting-for: merged|closed` IS TRUE, instead of ordering a session to remove one label. Returns the stale waits that STILL
  * need a session: those `liftableHolds` leaves, and those whose release failed (so a failure falls back to today's order, as `performActions` does for a
  * refused `gh pr ready`, and says so on stderr). A lifted hold carries no label, so the next tick finds no stale wait for it.
- * @param {import("../wait-condition.mjs").StaleWait[]} stale @param {{ now: number, release?: typeof releaseHoldViaModule, log?: (line: string) => void }} io
+ * #3479: a pull request of a repository the project declares is lifted too, released WITH its key; `declared` is the test's seam for which keys those are.
+ * @param {import("../wait-condition.mjs").StaleWait[]} stale @param {{ now: number, release?: typeof releaseHoldViaModule, log?: (line: string) => void, declared?: ReadonlySet<string> }} io
  * @returns {import("../wait-condition.mjs").StaleWait[]}
  */
-export function liftResolvedHolds(stale, { now, release = releaseHoldViaModule, log = (line) => process.stderr.write(line) }) {
-  const { lifts, remaining } = liftableHolds(stale, now);
-  const failed = lifts.filter(({ item, holders }) => !holders.map((session) => release(item.number, session)).every(Boolean));
-  for (const { item, holders } of lifts.filter((l) => !failed.includes(l))) log(`DID lift-hold pr-${item.number} (${holders.join(", ")}) -- its Waiting-for is true; no session woken\n`);
+export function liftResolvedHolds(stale, { now, release = releaseHoldViaModule, log = (line) => process.stderr.write(line), declared = declaredRepoKeys() }) {
+  const { lifts, remaining } = liftableHolds(stale, now, declared);
+  const failed = lifts.filter(({ item, holders }) => !holders.map((session) => release(item.number, session, item.repoKey)).every(Boolean));
+  for (const { item, holders } of lifts.filter((l) => !failed.includes(l))) log(`DID lift-hold pr-${subjectRef(item.repoKey, item.number)} (${holders.join(", ")}) -- its Waiting-for is true; no session woken\n`);
   return [...remaining, ...failed.flatMap((l) => l.stale)];
 }
 
@@ -313,13 +325,14 @@ export function rulingOrdersNow({ prsRead, openRowsRead, now }, { stateDir = REV
  * #2980: THE FLEET FACTS ARE PASSED, because `orgHealthReadings` reads an OMITTED `fleet` as "this caller does not ask" -- silent -- so
  * a gate that never passed them had the idle-fleet signal dead for as long as nobody noticed. `openRowsRead` is the raw read for the
  * same reason as `prsRead`. `io` is for the test: the clock, the last merge, the ledger and the log, so nothing here needs a token.
- * @param {{ prsRead: any[] | null, readyRead: any[] | null, openRowsRead: any[] | null, decideArgs: any, decided: any[] }} tick
+ * #3448: `pools` IS THE API BUDGETS THIS TICK'S OWN READS NAMED (`readRowsOffBoard` leaves the GraphQL one); EMPTY IS A REFUSED READ AND THE SIGNAL SAYS IT WAS NOT READ, never clear.
+ * @param {{ prsRead: any[] | null, readyRead: any[] | null, openRowsRead: any[] | null, decideArgs: any, decided: any[], pools?: import("../org-health.mjs").PoolReading[] }} tick
  * @param {{ now?: number, lastMergedAt?: () => number | null, readCaptures?: (now: number) => ReturnType<typeof readFleetCaptures>,
  *           log?: (line: string) => void, readCopies?: () => null, readLabJobs?: () => string[] | null, readWaits?: typeof waitTickFacts,
  *           release?: typeof releaseHoldViaModule }} [io] `readWaits` (#2996) is the test's seam for the
  *           referenced items, so nothing here needs a token; `release` (#3364) is its seam for the hold release, so nothing here runs `pr-hold.mjs`
  */
-export function orgHealthNow({ prsRead, readyRead, openRowsRead, decideArgs, decided },
+export function orgHealthNow({ prsRead, readyRead, openRowsRead, decideArgs, decided, pools },
   { now = Date.now(), lastMergedAt = () => readLastMergedAt(defaultRun, repoNow()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies,
     readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release } = {}) {
   const { prs, required, primaryDrift, claimRefusals } = decideArgs;
@@ -339,6 +352,7 @@ export function orgHealthNow({ prsRead, readyRead, openRowsRead, decideArgs, dec
     fleet: readCaptures(now),
     waiting: fleetWaitingFacts(openRowsRead, readLabJobs()),
     waits,
+    ...(pools !== undefined && { pools: pools.length > 0 ? pools : null }),
   }, { ...(log && { log }), ...(readCopies && { readCopies }) });
   return [...readings, ...staleWaitOrders(stale)];
 }

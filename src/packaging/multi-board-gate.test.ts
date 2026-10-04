@@ -119,7 +119,7 @@ test("the collision holds over EVERY cause: the same fixture in two repositories
     openRows: tag(input.openRows, key), key, repo: `acme/${key}` });
   const primary = asOrders(decide(BUSY_INPUT));
   const other = asOrders(decide(asKey(BUSY_INPUT, "other") as Parameters<typeof decide>[0]));
-  assert.equal(primary.length, RECORDED_BUSY.length, "POSITIVE CONTROL: the fixture emits exactly the recorded orders -- fourteen, across eight causes, not a handful");
+  assert.equal(primary.length, RECORDED_BUSY.length, "POSITIVE CONTROL: the fixture emits exactly the recorded orders -- thirteen, across eight causes, not a handful");
   assert.equal(other.length, primary.length, "the same causes fire for the same facts, in either repository");
   const primaryKeys = new Set(primary.map((o) => o.causeKey));
   const shared = other.filter((o) => primaryKeys.has(o.causeKey)).map((o) => o.causeKey);
@@ -248,15 +248,17 @@ function fixtures() {
  * 13 bytes shorter, which is the entire diff in the four prompts that name it -- re-run against the new code, not restated
  * by hand.
  *
+ * #3476 REMOVED the `draft-awaiting-verdict` entry for pr-103, the fixture's DIRTY / CONFLICTING pull request: it recorded the defect (a
+ * reviewer asked to read a head that cannot merge). Its `pr-merge-conflict` entry stays, and the other three review entries are unchanged.
+ *
  * #2896 RE-DERIVED the one `pr-review-blocked` entry (104): its prompt names `pnpm run prompt:session` where it named
  * `npm run prompt:session --`, 2 bytes shorter, which is the entire diff in that prompt -- re-run against the new code, not restated by hand.
  */
 const RECORDED_BUSY = [
-  { session: "ceo", cause: "answer-owed", subject: "row-301", discriminator: "301", causeKey: "ceo/answer-owed/row-301", promptSha256: "19dc374722c2083bccd5fa028196b6d0a4748cea5c41cb44a1ff0a2287e6af25", promptLength: 598 },
-  { session: "product-manager", cause: "answer-owed", subject: "row-302", discriminator: "302", causeKey: "product-manager/answer-owed/row-302", promptSha256: "46129b1b1472975bb72ccb0d1fbd382f55ddbba3885110c1417e4c99330b102f", promptLength: 643 },
+  { session: "ceo", cause: "answer-owed", subject: "row-301", discriminator: "301", causeKey: "ceo/answer-owed/row-301", promptSha256: "b420fd28ac165d27c42ec3d38c43c6de9bb80d173925247446f1711ca6bc445e", promptLength: 512 },
+  { session: "product-manager", cause: "answer-owed", subject: "row-302", discriminator: "302", causeKey: "product-manager/answer-owed/row-302", promptSha256: "e07bbd685428471fa8b38152345645bc00d2be843bf8e4406060502910d98d2f", promptLength: 557 },
   { session: "reviewer-101", cause: "draft-awaiting-verdict", subject: "pr-101", discriminator: "abc12345", causeKey: "reviewer-101/draft-awaiting-verdict/pr-101/abc12345", promptSha256: "39ebb471c3b4bc9287a48459d7d5c4bdb6936693ef03e0cea25687209613afff", promptLength: 166 },
   { session: "worker-x", cause: "pr-checks-failing", subject: "pr-102", discriminator: "abc12345", causeKey: "worker-x/pr-checks-failing/pr-102/abc12345", promptSha256: "4b867314bbbbbb5b63129a0cd85357157ec328118500592a7819f0da60438313", promptLength: 668 },
-  { session: "reviewer-103", cause: "draft-awaiting-verdict", subject: "pr-103", discriminator: "abc12345", causeKey: "reviewer-103/draft-awaiting-verdict/pr-103/abc12345", promptSha256: "0473ecf3537e3d9e7d53224f2307a80377c9c6242d9227b6849e82934844282e", promptLength: 180 },
   { session: "reviewer-104", cause: "draft-awaiting-verdict", subject: "pr-104", discriminator: "abc12345", causeKey: "reviewer-104/draft-awaiting-verdict/pr-104/abc12345", promptSha256: "2cfd74cea471f3a9b8bba72b2b1c1376558a142580a3522f139fad2f59d7aa8c", promptLength: 180 },
   { session: "reviewer-105", cause: "draft-awaiting-verdict", subject: "pr-105", discriminator: "abc12345", causeKey: "reviewer-105/draft-awaiting-verdict/pr-105/abc12345", promptSha256: "4c1bb79eb40777da555e29a8e29dad386c7567bc5c73b94bc6e29e231da78b86", promptLength: 180 },
   { session: "engineers", cause: "ready-row-unclaimed", subject: "row-202", discriminator: "202", causeKey: "engineers/ready-row-unclaimed/202", title: "row 202", promptSha256: "db0b62244a043edc9bf8e6a6188a20e0ed2b385346ac5d666c56c63f5aa600a5", promptLength: 339 },
@@ -268,10 +270,10 @@ const RECORDED_BUSY = [
   { session: "worker-y", cause: "pr-merge-conflict", subject: "pr-103", discriminator: "abc12345", causeKey: "worker-y/pr-merge-conflict/pr-103/abc12345", promptSha256: "4da17865611827c0c35f07130e2deb7961a324de3efdf325673ba95bbf75282d", promptLength: 554 },
 ];
 const RECORDED_EMPTY_SHELF = [
-  { session: "product-manager", cause: "ready-queue-empty", subject: "ready-queue", discriminator: "2", causeKey: "product-manager/ready-queue-empty/2", promptSha256: "b736cb78be7634b1bf246e7fbc4e3953237e941cf31f70f3bc33e1b8e9ac0a30", promptLength: 1554 },
+  { session: "product-manager", cause: "ready-queue-empty", subject: "ready-queue", discriminator: "2", causeKey: "product-manager/ready-queue-empty/2", promptSha256: "886a07ed1bf3905e4cf4329a2e2fc0ede4aff33739f4a473c99f95e48cf26554", promptLength: 1189 },
   { session: "product-manager", cause: "epic-unfiled", subject: "epic-601", discriminator: "601", causeKey: "product-manager/epic-unfiled/epic-601", promptSha256: "f888877ea2db03faabac02a31b132bca2be67b9e38eec5927ac3235c09e0245f", promptLength: 896 },
-  { session: "product-manager", cause: "epic-finished", subject: "epic-602", discriminator: "602", causeKey: "product-manager/epic-finished/epic-602", promptSha256: "42e41d96798173186beb8d2d9fc1289d926568e5c73dd1b79654923ac22a689c", promptLength: 932 },
-  { session: "product-manager", cause: "blocked-unexaminable", subject: "row-502", discriminator: "502", causeKey: "product-manager/blocked-unexaminable/row-502", promptSha256: "84f0ad969fcbda8ec7c718e573171d73fa0dae38b549c117bb516d85dbe2a512", promptLength: 2127 },
+  { session: "product-manager", cause: "epic-finished", subject: "epic-602", discriminator: "602", causeKey: "product-manager/epic-finished/epic-602", promptSha256: "01b3b3158a77b1a3a242481bc962fcc6360d342a7ef4b266cb92347d1e4c19ab", promptLength: 842 },
+  { session: "product-manager", cause: "blocked-unexaminable", subject: "row-502", discriminator: "502", causeKey: "product-manager/blocked-unexaminable/row-502", promptSha256: "6a6e94cdfbfb3416f70f571414c10e2e35170ed4ad25a7f4b1af913da85ac20d", promptLength: 1615 },
   { session: "orchestrator", cause: "fleet-batch-due", subject: "fleet-batch", discriminator: "501", causeKey: "orchestrator/fleet-batch-due/501", promptSha256: "5d73451b5f55e4ab401c5bd6199d4a4e8283a0860dcf5218e4e869f20646560d", promptLength: 834 },
 ];
 

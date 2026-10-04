@@ -72,7 +72,7 @@ import { sandboxGitEnv } from "./lib/git-env.mjs";
 // THE REFUSAL PATH ONLY, and a LEAF import so this file keeps the property its own header states. The
 // reader lived in `queue-table.mjs` until #2003; importing THAT would have pulled five modules into the
 // graph of a script that runs 720 times a day, to use a function it calls only when already refusing.
-import { poolDiagnosis, refusalPoolLine } from "./api-pool.mjs";
+import { poolDiagnosis, refusalPoolLine, poolFromRateLimitField } from "./api-pool.mjs";
 import { declaredGhAccount } from "./gh-identity.mjs";
 import { stateEntryPath } from "./host-config.mjs"; // #2799
 // #2848: THE REPEATING-LINE QUESTION, in its own leaf for the reason `disk-headroom.mjs` is one: it reads the journal, not GitHub.
@@ -122,7 +122,7 @@ import { worktreeOwner } from "./worktree-owner.mjs";
 // `work-gate/pr-orders.mjs`, which imports the shared PR facts BACK from this file. The cycle is safe because
 // nothing there reads an import at load time (only inside a function), and this file stays the entry point:
 // every name that module exported is re-exported here, so no caller of `work-gate.mjs` changes.
-import { requiredWhenRed, perPullRequestOrders, greenUnarmedOrders, reviewBlockedOrders,
+import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, reviewBlockedOrders,
   stalledPrOrders, STALL_REASONS_WITHOUT_A_CAUSE, HOLD_RED_JOBS, ownerOfPr } from "./work-gate/pr-orders.mjs";
 export { redOnlyBySupersededRun, mergeConflictOrders, greenUnarmedOrders, reviewBlockedOrders, HOLD_RED_JOBS,
   stallReasonOf, stallOrderOf, stalledPrOrders, STALL_REASON, STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr,
@@ -409,6 +409,7 @@ export const GH_READS = Object.freeze({
   // ONE call, and it needs no admin (#2331). It used to be two -- the admin-only protection endpoint, then
   // `branches/main` as the discriminator for its 404 (#2106, #2022) -- and the discriminator's only job
   // was to explain the admin-only 404, which `branches/main` does not give a non-admin credential. Conditional on a settled-red check.
+  // #3448: AND ON A GREEN DRAFT, which the ready-flip over a red verify stamp needs the required list for (`requiredWhenNeeded`).
   conditionalOnRed: "api branches/main (requiredCheckNames)",
   // #2117: ONE MORE CORE READ ON THE SAME RED TICK -- `main`'s tip commit, so the `pr-checks-failing` prompt can
   // say whether `main` moved after the failing run started. `branches/main` already carries that commit, but
@@ -1207,8 +1208,8 @@ export function sessionOf(pr) {
 }
 
 /**
- * PAID ONLY BY A RED TICK, and by the same condition as `requiredWhenRed`, so the two reads ride together
- * and a healthy queue pays neither (#2117). Extracted from `main` for `requiredWhenRed`'s reason, and
+ * PAID ONLY BY A RED TICK, the condition `requiredWhenNeeded` had before a green draft also asked it (#3448), so a healthy
+ * queue pays neither this nor the base-tip read (#2117). Extracted from `main` for `requiredWhenNeeded`'s reason, and
  * exported with a `run` seam so a test can assert a healthy tick makes NO call.
  *
  * @param {any[]} prs @param {(args: string[]) => string} [run]
@@ -1219,7 +1220,7 @@ export function baseTipWhenRed(prs, run = defaultRun) {
 }
 
 /**
- * PAID ONLY BY A TICK THAT CAN SEE A CLAIM. The `requiredWhenRed`/`epicsWhenShelfEmpty` shape: the
+ * PAID ONLY BY A TICK THAT CAN SEE A CLAIM. The `requiredWhenNeeded`/`epicsWhenShelfEmpty` shape: the
  * condition is derived from rows already in hand, so an org holding nothing makes no call.
  *
  * Extracted rather than written inline in `main` for the reason the two above it were -- `main`'s job is
@@ -1513,6 +1514,9 @@ export function fleetBatchOrders(rows, clock = {}) {
  */
 export const ROW_OFF_BOARD_QUERY = `
   query($owner: String!, $name: String!, $after: String) {
+    # #3448: THE ACCOUNT AND ITS GRAPHQL BUDGET, IN AN ANSWER THIS TICK ALREADY PAYS FOR. \`rateLimit\` is never charged, so the pool-low signal costs no point.
+    viewer { login }
+    rateLimit { limit remaining resetAt }
     repository(owner: $owner, name: $name) {
       issues(states: OPEN, first: 100, after: $after) {
         pageInfo { hasNextPage endCursor }
@@ -1559,10 +1563,14 @@ function boardFactsOf(node) {
  * with empty stdout, and an empty answer would read as a clean board. `errors` beside `data` is refused too (#555), and so is
  * a list still paging at `ROW_OFF_BOARD_MAX_PAGES`.
  *
+ * #3448: THE GRAPHQL POOL THE ANSWER NAMES IS PUSHED ONTO `pools` (the first page's: one budget, read once), so the tick learns its own account's budget from the
+ * read it was making. A refused read pushes nothing, and the pool-low signal then says it was not read.
+ *
  * @param {(args: string[]) => string} [run]
+ * @param {import("./org-health.mjs").PoolReading[]} [pools]
  * @returns {BoardFacts[] | null}
  */
-export function readRowsOffBoard(run = defaultRun) {
+export function readRowsOffBoard(run = defaultRun, pools = []) {
   const [owner, name] = repoNow().split("/");
   /** @type {BoardFacts[]} */
   const facts = [];
@@ -1574,6 +1582,8 @@ export function readRowsOffBoard(run = defaultRun) {
       const parsed = JSON.parse(run(args));
       const issues = parsed?.errors ? null : parsed?.data?.repository?.issues;
       if (!Array.isArray(issues?.nodes)) return null;
+      const pool = page === 0 ? poolFromRateLimitField(parsed.data) : null;
+      if (pool !== null) pools.push(pool);
       facts.push(...issues.nodes.map(boardFactsOf));
       if (issues.pageInfo?.hasNextPage !== true) return facts;
       after = issues.pageInfo.endCursor;
@@ -1764,6 +1774,9 @@ const HOST_DRIFT_SESSION = "orchestrator";
  *
  * `null`/omitted emit NOTHING and are not a clean reading: a linked worktree, CI or a repository with no `origin/main` cannot be asked.
  *
+ * INCIDENT BEHIND THE ORDER'S TEXT (moved out of it, #3444: the agent reading the order cannot use it):
+ * the 2026-09-28 stale primary was an interactive session's uncommitted edits, which no hook refuses.
+ *
  * @param {import("./update-primary.mjs").PrimaryDrift | null | undefined} drift
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
@@ -1783,7 +1796,7 @@ export function primaryStaleOrders(drift) {
       + (dirty.length > 0 ? `${dirty.length} tracked path(s) carry uncommitted changes, which is what makes \`pnpm run primary:update\` refuse `
         + `("would be overwritten by checkout"):\n${dirty.map((path) => `  ${path}`).join("\n")}\n` : "No tracked path is dirty, so the update itself "
         + "is failing for another reason: run `pnpm run primary:update` and read its output.\n")
-      + "THE EDITS ARE NOT YOURS TO DISCARD UNREAD: an interactive session left them there (the 2026-09-28 cause), and no hook "
+      + "THE EDITS ARE NOT YOURS TO DISCARD UNREAD: an interactive session left them there, and no hook "
       + "refuses an uncommitted edit. Save `git diff` to `" + stateEntryPath("salvage") + "/primary-<date>.patch` first and say on #2781 "
       + "where it went, then clear the tracked paths and run `pnpm run primary:update`. This order repeats until the primary is at `origin/main`.",
     causeKey: `ceo/primary-stale/${key}`,
@@ -2022,6 +2035,12 @@ export function blockedWithoutReferent(rows, today = todayIso()) {
  * ONLY WHEN THE SHELF IS EMPTY, like `epic-unfiled`: a stale `blocked` label while claimable work exists
  * is untidy; with the queue empty it is the only thing between the org and a full shelf.
  *
+ * INCIDENT BEHIND THE ORDER'S TEXT (moved out of it, #3444: the agent reading the order cannot use it):
+ * until 2026-09-21 this prompt said a comment alone was fine. #1520 -- a measurement waiting for a run count to reach 20, which is neither
+ * a row, a date nor a person -- was then correctly re-answered FOUR TIMES IN NINE HOURS (23:43, 01:44, 05:45, 08:21), each a full turn
+ * reaching the identical conclusion, because nothing could record that the question had been answered.
+ * On 2026-09-20 eleven rows carried the `blocked` label with the queue empty behind them, one (#1731) about code fixed the day before.
+ *
  * @param {any[]} rows @param {any[]} readyRows @param {string} [today]
  */
 export function blockedReferentOrders(rows, readyRows, today = todayIso()) {
@@ -2044,21 +2063,16 @@ export function blockedReferentOrders(rows, readyRows, today = todayIso()) {
         + "or, if the wait is real and none of those three can express it, say on the row IN ONE LINE "
         + "what would clear it and who would notice, AND ADD A `Not-before:` FOR WHEN IT SHOULD NEXT BE "
         + "RE-CHECKED -- a week out is usually right.\n"
-        + "THE `Not-before:` IS NOT OPTIONAL ON THAT LAST OPTION, and the reason is measured. Until "
-        + "2026-09-21 this prompt said a comment alone was fine and that being re-asked was deliberate. "
-        + "#1520 -- a measurement waiting for a run count to reach 20, which is neither a row, a date "
-        + "nor a person -- was then correctly re-answered FOUR TIMES IN NINE HOURS (23:43, 01:44, 05:45, "
-        + "08:21), each a full turn reaching the identical conclusion, because nothing could record that "
-        + "the question had been answered. An explanation with no horizon is not a terminal state; it is "
-        + "a loop the org has been instructed to run.\n"
+        + "THE `Not-before:` IS NOT OPTIONAL ON THAT LAST OPTION: nothing can record that the question "
+        + "was answered, so an explanation with no horizon is not a terminal state; it is a loop the org "
+        + "has been instructed to run.\n"
         + "A HORIZON IS ALSO THE HONEST ANSWER TO ROT. An unexaminable wait is exactly the kind that "
         + "quietly becomes true -- so it should go quiet for a while and then be asked ONCE more, not go "
         + "quiet forever and not be asked every two hours. Pick the date by when you would want to know "
         + "if nothing had changed.\n"
         + "Before reaching for that option at all, ask whether the wait is really on a person -- most "
         + `are, and \`${CHAIRMAN_LABEL}\` is then the honest answer.\n`
-        + "THE CONDITION HAS OFTEN ALREADY CLEARED. On 2026-09-20 eleven rows carried this label with the "
-        + "queue empty behind them, one of them (#1731) about code that had been fixed the day before.",
+        + "THE CONDITION HAS OFTEN ALREADY CLEARED: check that first.",
       causeKey: `product-manager/blocked-unexaminable/row-${subjectRef(r.repoKey, r.number)}`,
     }));
 }
@@ -2167,6 +2181,9 @@ function closedNote(row, subject) {
  * GitHub numbers issues and pull requests in ONE namespace, so `row-<n>` still names exactly one thing and
  * the key needs no second spelling; only the WORDS change, so the reader looks where the question is.
  *
+ * INCIDENT BEHIND THE ORDER'S TEXT (moved out of it, #3444: the agent reading the order cannot use it):
+ * on 2026-09-20 a question sat unread for 6.5 hours while the session that asked it re-posted five times.
+ *
  * @param {any[]} rows
  */
 export function answerOrders(rows) {
@@ -2186,8 +2203,7 @@ export function answerOrders(rows) {
           + `ANSWER ON THE ${subject.toUpperCase()}, then remove its \`${ANSWER_PREFIX}${session}\` label: taking the label `
           + "off IS the act of answering, and it is the only thing that stops this being asked again.\n"
           + "\"I cannot answer this\" is an answer -- say so, say who can, and re-label it to them. "
-          + "What is not an answer is silence: on 2026-09-20 a question sat unread for 6.5 hours while "
-          + "the session that asked it re-posted five times, because nothing in this org reads comments.",
+          + "What is not an answer is silence: nothing in this org reads comments, so the asker cannot move.",
         causeKey: `${session}/answer-owed/row-${subjectRef(row.repoKey, row.number)}`,
       });
     }
@@ -2380,6 +2396,10 @@ export function holderWaitingOn(row, today, nowMs) {
  * same six deliveries from zero. WITHOUT `closings` (`null`, or an old caller) every ask is the unstaged
  * first one, which is the behaviour before this backoff existed and what a refused read must fall back to.
  *
+ * INCIDENT BEHIND THE ORDER'S TEXT (moved out of it, #3444: the agent reading the order cannot use it):
+ * no other cause addresses a session that already holds a row. On 2026-09-22 #1908's last blocker closed at 21:26:02Z, the next tick said
+ * nothing to `worker-capture`, and six rows sat behind it until a label meant for something else was applied by hand.
+ *
  * @param {any[]} rows every open row
  * @param {string} [today]
  * @param {number} [nowMs] the clock a timestamped hold is read against, injected so a test moves time
@@ -2414,15 +2434,10 @@ export function blockerClearedOrders(rows, today = todayIso(), nowMs = Date.now(
       discriminator: key,
       prompt: `${subjectMention(row)} IS YOURS AND IS NO LONGER BLOCKED. Every row it declared a dependency on `
         + `is now closed: ${cleared.map((n) => `#${n}`).join(", ")}.\n`
-        + "PICK IT BACK UP -- you already hold the claim, so nothing else will offer it to anyone and no "
-        + "other cause in this gate addresses a session that already holds a row. That is why this "
-        + "exists: on 2026-09-22 #1908's last blocker closed at 21:26:02Z, the next tick said nothing to "
-        + "`worker-capture`, and six rows sat behind it until a label meant for something else was "
-        + "applied by hand.\n"
-        + "IF IT IS STILL NOT RUNNABLE, that is an answer and it goes in a FIELD, not a comment: "
+        + "PICK IT BACK UP; you already hold the claim, so nothing else will offer it.\n"
+        + "IF IT IS STILL NOT RUNNABLE, say so in a FIELD, not a comment: "
         + `\`gh issue edit ${row.number} --add-blocked-by <n>\`, a \`Not-before: YYYY-MM-DD\` line, or `
-        + `\`${ANSWER_PREFIX}<session>\` if you are waiting on somebody to decide. Each clears itself, `
-        + "and each stops this being asked again.",
+        + `\`${ANSWER_PREFIX}<session>\` if you wait on a decision. Each clears itself.`,
       causeKey: `${session}/blocker-cleared/row-${subjectRef(row.repoKey, row.number)}/${key}${window.suffix}`,
     });
     if (orders.length >= MAX_ROW_ORDERS_PER_TICK) break;
@@ -2655,6 +2670,10 @@ export function unclaimedClearings(rows, today = todayIso(), nowMs = Date.now())
  * ANSWER -- which row, what cleared, and what still hides it -- because a woken turn that has to survey
  * the tracker is a tick with extra steps.
  *
+ * INCIDENT BEHIND THE ORDER'S TEXT (moved out of it, #3444: the agent reading the order cannot use it):
+ * a shelf with four rows on it is why six rows sat runnable for up to 16h09m on 2026-09-23 with three engineers idle.
+ * #1561's `blockedBy` cleared at 2026-09-23T08:28:00Z exactly as designed and the row sat another 4h30m behind a hand-set `blocked` label.
+ *
  * @param {any} row @param {number[]} cleared
  * @param {string} [suffix] which re-ask this is -- `""` for the first, `@6h` for the one due six hours on
  */
@@ -2672,8 +2691,7 @@ function promotionOrder(row, cleared, suffix = "") {
       + `Every row it declared a dependency on is now closed: ${cleared.map((n) => `#${n}`).join(", ")}.\n`
       + "NOTHING ELSE IN THIS ORG WILL SAY SO. `blocker-cleared` addresses the session HOLDING a row and "
       + "nobody holds this one; `lane-backlog-unpromoted` addresses a lane OWNER; `ready-queue-empty` "
-      + "fires only when the Ready shelf is EMPTY, and a shelf with four rows on it is why six rows sat "
-      + "runnable for up to 16h09m on 2026-09-23 with three engineers idle. Depth is not throughput.\n"
+      + "fires only when the Ready shelf is EMPTY. Depth is not throughput.\n"
       + `PROMOTE IT, OR RECORD WHY NOT AS DATA. A \`${READY_LABEL}\` label is the promotion; anything else goes in a `
       + `FIELD and not a comment -- \`gh issue edit ${row.number} --add-blocked-by <n>\`, a `
       + `\`Not-before: YYYY-MM-DDTHH:MM:SSZ\` line in the body, or \`${ANSWER_PREFIX}<session>\` if it `
@@ -2681,9 +2699,8 @@ function promotionOrder(row, cleared, suffix = "") {
       + "org reads comments.\n"
       + (hiding.length > 0
         ? `IT STILL CARRIES ${hiding.map((n) => `\`${n}\``).join(", ")}, AND THAT IS WHAT NOW HIDES IT `
-          + "-- the edge cleared itself and the label did not. #1561's `blockedBy` cleared at "
-          + "2026-09-23T08:28:00Z exactly as designed and the row sat another 4h30m behind a hand-set "
-          + `\`${BLOCKED_LABEL}\`. Take the label off if its condition has become true; if the wait is real, it is `
+          + "-- the edge cleared itself and the label did not. "
+          + `Take the label off if its condition has become true; if the wait is real, it is `
           + "one of the three fields above, which is the whole difference between a condition that "
           + "clears itself and one only a person re-reading the row can lift.\n"
         : "")
@@ -2904,6 +2921,11 @@ export function claimedRowAmendedOrders(rows, claimedComments = []) {
 /**
  * The order itself, split out so `claimedRowAmendedOrders` stays a walk over rows (the Stepdown Rule, and
  * `max-lines-per-function`).
+ *
+ * INCIDENT BEHIND THE ORDER'S TEXT (moved out of it, #3444: the agent reading the order cannot use it):
+ * on 2026-09-23 a ruling reached #2099 six minutes AFTER the build was finished and 28 minutes after the claim; it was honoured only because
+ * a human read the thread, and this gate said nothing to the session that held the row.
+ *
  * @param {{row: any, session: string, markers: {kind: string, id: string, says: string}[]}} found
  */
 function amendedOrder({ row, session, markers }) {
@@ -2916,9 +2938,8 @@ function amendedOrder({ row, session, markers }) {
     prompt: `${subjectMention(row)} IS YOURS AND IT HAS CHANGED UNDER YOU. It now carries `
       + `${markers.map((m) => m.says).join(" and ")}.\n`
       + "GO AND READ IT BEFORE YOU WRITE ANOTHER LINE, and if you have already built, check the diff "
-      + "against it rather than your memory of the brief. On 2026-09-23 a ruling reached #2099 six "
-      + "minutes AFTER the build was finished and 28 minutes after the claim; it was honoured only "
-      + "because a human read the thread, and this gate said nothing to the session that held the row.\n"
+      + "against it rather than your memory of the brief: a ruling can arrive after the build is "
+      + "finished, and nothing else tells the session that holds the row.\n"
       + "THEN SAY WHAT YOU DID ABOUT IT, on the row. If the constraint makes the row unbuildable as "
       + `written, that is an answer and it goes in a FIELD: \`${ANSWER_PREFIX}<session>\` for a ruling, `
       + `\`gh issue edit ${row.number} --add-blocked-by <n>\` for a row you must wait on, a `
@@ -3164,6 +3185,9 @@ export function finishedEpics(epics, today = todayIso()) {
  * moment the shelf is empty. A padded backlog misleads all the time; it only MISLEADS ABOUT ANYTHING
  * THAT MATTERS when the queue has run dry.
  *
+ * INCIDENT BEHIND THE ORDER'S TEXT (moved out of it, #3444: the agent reading the order cannot use it):
+ * measured 2026-09-21, nine of the org's thirteen open epics were finished and the backlog read three times deeper than it was.
+ *
  * @param {any[]} epics @param {any[]} readyRows
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
@@ -3183,9 +3207,8 @@ export function finishedEpicOrders(epics, readyRows) {
       + "NOT PICKABLE. File those rows (a Region, an Acceptance, a done-when) with "
       + `\`gh issue edit <child> --parent ${e.number}\`.\n`
       + "WHY THIS IS NOT BOOKKEEPING: a finished epic left open is counted as backlog by everything that "
-      + "counts backlog. Measured 2026-09-21, nine of the org's thirteen open epics were in this state "
-      + "and the backlog read three times deeper than it was -- which is how the org ran out of work "
-      + "without anyone noticing.\n"
+      + "counts backlog, so the backlog reads deeper than it is -- which is how the org runs out of "
+      + "work without anyone noticing.\n"
       + "RECORD THE ANSWER ON THE EPIC either way, and READ ITS OWN RECENT COMMENTS FIRST: a durable "
       + "reason recorded there stands until something about THIS epic changes.",
     causeKey: `product-manager/epic-finished/epic-${subjectRef(e.repoKey, e.number)}`,
@@ -3266,7 +3289,7 @@ const BRANCH_JQ = "{protected, contexts: .protection.required_status_checks.cont
  * and nothing said so. A read that fails open must announce it, or "fails open" is indistinguishable from
  * "never worked"; silence is what this repository's diagnostics model exists to refuse.
  *
- * ONCE PER TICK, because `requiredWhenRed` is the only caller and calls this at most once.
+ * ONCE PER TICK, because `requiredWhenNeeded` is the only caller and calls this at most once.
  *
  * @param {(args: string[]) => string} [run]
  * @param {(line: string) => void} [log]
@@ -4412,6 +4435,11 @@ function openPrOnBranch(pushed, openPrs) {
 /**
  * The order itself, split out so `rowBranchOrders` stays a walk over rows (the Stepdown Rule, and the
  * same seam `claimedRowAmendedOrders`/`amendedOrder` already use).
+ *
+ * INCIDENT BEHIND THE ORDER'S TEXT (moved out of it, #3444: the agent reading the order cannot use it):
+ * measured 2026-09-22 on #2000: its branch sat pushed for 20 minutes while the row read `ready`, and a second session was routed into the
+ * same three Region paths.
+ *
  * @param {{ row: any, pushed: { branch: string, head: string }[], openPr: { number: number, branch: string, holder: string | null } | null }} found
  */
 function unshippedOrder({ row, pushed, openPr }) {
@@ -4426,9 +4454,7 @@ function unshippedOrder({ row, pushed, openPr }) {
     discriminator: key,
     prompt: `Row ${subjectMention(row)} reads \`${READY_LABEL}\` and unclaimed, but ${branchesText(pushed)}.\n`
       + "THE BOARD IS SAYING SOMETHING THAT IS NOT TRUE, and until this is settled the gate has STOPPED "
-      + `offering ${subjectMention(row)} as a fresh start -- so nobody will be routed into work that may already `
-      + "exist. Measured 2026-09-22 on #2000: its branch sat pushed for 20 minutes while the row read "
-      + `\`${READY_LABEL}\`, and a second session was routed into the same three Region paths.\n`
+      + `offering ${subjectMention(row)} as a fresh start -- so nobody will be routed into work that may already exist.\n`
       + (openPr ? openPrSentence({ row, openPr }) : unpushedSentence(first))
       + "IF IT NEEDS A WAIT INSTEAD, that goes in a FIELD and not a comment: `Not-before: YYYY-MM-DD` in "
       + `the body, \`gh issue edit ${row.number} --add-blocked-by <n>\`, or \`${ANSWER_PREFIX}<session>\`. `
@@ -4478,6 +4504,10 @@ function openPrSentence({ row, openPr }) {
  * A JUDGMENT CAUSE for `row-branch-unshipped`'s reason -- the answer is durable, so an action cause's expiry
  * would re-ask an unchanged row.
  *
+ * INCIDENT BEHIND THE ORDER'S TEXT (moved out of it, #3444: the agent reading the order cannot use it):
+ * measured 2026-09-30 on #2729 and #2730: both sat `ready` for ~38h behind exactly that refusal while the queue read as stocked and
+ * `ready-queue-empty` never fired.
+ *
  * @param {any[]} readyRows the `ready` rows (`readReadyRows`)
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
@@ -4498,9 +4528,8 @@ export function incompleteRowOrders(readyRows) {
       discriminator: missing.join("+"),
       prompt: `Row ${subjectMention(row)} reads \`${READY_LABEL}\` and unclaimed, but ${templateGapText(missing)}, `
         + "so `row-claim` REFUSES every claim on it (`NOT CLAIMED: ... is missing <section>`). The gate has "
-        + "STOPPED offering it and no longer counts it as Ready stock -- measured 2026-09-30 on #2729 and #2730, "
-        + `which sat \`${READY_LABEL}\` for ~38h behind exactly that refusal while the queue read as stocked and `
-        + "`ready-queue-empty` never fired.\n"
+        + "STOPPED offering it and no longer counts it as Ready stock, so a row stuck behind this "
+        + "refusal cannot make the queue read as stocked.\n"
         + "ADD THE SECTION, or take the label off: a `## <Field>` heading with real content under it "
         + "(`Region`, `Acceptance`, `Open-check`). This order stops by itself once the body is complete.",
       causeKey: `${owner}/ready-row-incomplete/${subject}/${missing.join("+")}`,
@@ -4854,6 +4883,11 @@ function chairmanOrders(chairmanBlocked, nowMs = Date.now()) {
  * #1397 and #1320 all declare `.github/workflows/release.yml` and all sat behind draft #1695, so
  * re-laning them to `lane:any` would have handed an engineer the identical refusal.
  *
+ * INCIDENT BEHIND THE ORDER'S TEXT (moved out of it, #3444: the agent reading the order cannot use it):
+ * measured 2026-09-21: this cause's own audit examined #1731, concluded correctly that it had no Region, no Acceptance and no done-when, and
+ * declined to promote it -- while the defect it describes had been fixed 17 HOURS EARLIER by #1764, with 30 sweep runs since and zero
+ * failures. It was the only row between the queue and empty, and it was already done.
+ *
  * @param {{ offerable: any[], blocked: { number: number, owner: string | null, reason: string }[],
  *           promotable: number, key?: string }} state `key` is the tracker's key, so two trackers' counts are two ledger keys
  */
@@ -4892,11 +4926,7 @@ function emptyShelfOrder({ offerable, blocked, promotable, key }) {
           + "PR only moves that particular refusal.\n"
         : "")
       + "ASK OF EACH ROW: IS IT STILL TRUE? -- before asking whether it is promotable. A row can fail "
-      + "every promotion test and still be FINISHED, and nothing else in this org checks. Measured "
-      + "2026-09-21: this cause's own audit examined #1731 carefully, concluded correctly that it had "
-      + "no Region, no Acceptance and no done-when, and declined to promote it -- while the defect it "
-      + "describes had been fixed 17 HOURS EARLIER by #1764, with 30 sweep runs since and zero "
-      + "failures. It was the only row between the queue and empty, and it was already done.\n"
+      + "every promotion test and still be FINISHED, and nothing else in this org checks.\n"
       + "Promote what is genuinely ready -- a row with a Region, an Acceptance and a done-when -- and "
       + "leave the rest. This is deliberately NOT a request to reach a count: #ready:audit records "
       + "`dispatcher` labelling two rows ready to hit a floor, one disputed and one with neither field, "
@@ -5677,6 +5707,9 @@ function describeLow(f) {
  * that reaches `ceo` at once. The cost, stated: 9% and 0% free are the same key, so a disk getting worse does not
  * re-page inside the window; the stderr line below is written every tick and does.
  *
+ * INCIDENT BEHIND THE ORDER'S TEXT (moved out of it, #3444: the agent reading the order cannot use it):
+ * on 2026-09-25 `/tmp` ran out of INODES at 73% of its bytes and every session failed with ENOSPC for about six hours.
+ *
  * @param {import("./disk-headroom.mjs").LowFinding[]} low
  * @returns {{session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string}[]}
  */
@@ -5690,8 +5723,8 @@ export function diskHeadroomOrders(low) {
     discriminator: key,
     prompt: `DISK HEADROOM IS LOW on this host (a resource is low below ${MIN_FREE_FRACTION * 100}% free):\n`
       + low.map((f) => `  ${describeLow(f)}`).join("\n") + "\n"
-      + "BYTES AND INODES ARE JUDGED SEPARATELY, and `df -h` shows only bytes. On 2026-09-25 `/tmp` ran out of "
-      + "INODES at 73% of its bytes and every session failed with ENOSPC for about six hours. Read both: "
+      + "BYTES AND INODES ARE JUDGED SEPARATELY, and `df -h` shows only bytes. A filesystem can run out of "
+      + "INODES with bytes to spare, and every session then fails with ENOSPC. Read both: "
       + "`df -h / /tmp` and `df -i / /tmp`.\n"
       + "What has filled it before: `/tmp/rv-*` review clones, `/tmp/claude-1000` session scratchpads, "
       + "`~/repos/wt-*` worktrees (each with a `node_modules`), and npm caches. `node "
@@ -5893,10 +5926,10 @@ export function dispatchedLabJobsOrSay(read = readDispatchedLabJobs) {
 /**
  * `readRowsOffBoard`, saying on stderr when it could not ask (split out of `main`, which sits on `complexity`'s limit).
  * A refused read emits no order and MUST NOT read as a clean board, so the difference is written where the tick log reads.
- * @param {(line: string) => void} [log]
+ * @param {(line: string) => void} [log] @param {import("./org-health.mjs").PoolReading[]} [pools] where the read leaves the GraphQL pool it saw (#3448)
  */
-export function rowsOffBoardOrSay(log = (line) => process.stderr.write(line)) {
-  const facts = readRowsOffBoard();
+export function rowsOffBoardOrSay(log = (line) => process.stderr.write(line), pools = []) {
+  const facts = readRowsOffBoard(defaultRun, pools);
   if (facts === null) {
     log("CANNOT ASK which open rows are off Project 1: the read was refused. row-off-board was NOT evaluated "
       + "this tick, and that silence is not a clean board.\n");
@@ -6067,7 +6100,7 @@ export function scopeTick(scope, drain, read = readLanes(scope), readings = { co
  * @param {any[]} openPrs @param {Scope} scope
  */
 function codeReadings(openPrs, scope) {
-  const required = requiredWhenRed(openPrs);
+  const required = requiredWhenNeeded(openPrs);
   const split = readEjections(readUnarmed(shouldBeMerging(openPrs, required)));
   return { prs: withVerifyStamps(withEjections(withEvidenceLabelAges(withPatchIds(openPrs)), split?.ejections), { checkout: verifyCheckoutOf(scope.key) }), required, baseTip: baseTipWhenRed(openPrs),
     unarmed: split === null ? null : split.unarmed,
@@ -6288,11 +6321,12 @@ function main() {
   // #2031: A LOCAL git CALL, NOT AN API ONE -- it adds nothing to `GH_READS` and cannot be refused by an
   // exhausted pool, which is the whole reason the detection can exist. `GIT_READS` counts it.
   const rowBranches = readRowBranches();
-  const offBoard = rowsOffBoardOrSay(), primaryDrift = readPrimaryDriftNow(); // #2781: local git, once; it feeds `decide` and banners its orders
+  const pools = []; // #3448: the GraphQL budget the off-board read names, handed to the org-health tick
+  const offBoard = rowsOffBoardOrSay(undefined, pools), primaryDrift = readPrimaryDriftNow(); // #2781: local git, once; it feeds `decide` and banners its orders
   // #1969: NAMED RATHER THAN CALLED TWICE. `shouldBeMerging` needs the same answer `decide` does, and
-  // `requiredWhenRed` makes a `gh` call when anything is red -- calling it inline in both places would
+  // `requiredWhenNeeded` makes a `gh` call when anything is red -- calling it inline in both places would
   // pay for it twice on exactly the red tick this row is about.
-  const required = requiredWhenRed(openPrs);
+  const required = requiredWhenNeeded(openPrs);
   const baseTip = baseTipWhenRed(openPrs), armingSplit = readEjections(readUnarmed(shouldBeMerging(openPrs, required))); // #3019: BEFORE the arguments -- ejected PRs are stamped onto `prs` and leave `unarmed`
   const decideArgs = { primaryDrift, prs: withVerifyStamps(withEjections(withPrOwners(withEvidenceLabelAges(withPatchIds(openPrs)), allOpen, stampLookup(), { agents: liveWorkspaceLabels, ended: endedSessionLabels }), armingSplit?.ejections), { checkout: verifyCheckoutOf("") }), readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required, baseTip,
@@ -6324,7 +6358,7 @@ function main() {
   const others = otherScopeTicks(drain, otherScopes, openPrs); // #2618: the OTHER declared repositories -- none for one project, whose orders are what they were
   const outageNow = outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows: openRowsRead, claimedComments, offBoard, others });
   const { delivered: orders, performed } = performActions(markOutageReads([...decided, ...others.flatMap((tick) => tick.orders)], outageNow));
-  orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick(), ...orgHealthNow({ prsRead: prs, readyRead: readyRows, openRowsRead, decideArgs, decided }),
+  orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick(), ...orgHealthNow({ prsRead: prs, readyRead: readyRows, openRowsRead, decideArgs, decided, pools }),
     ...rulingOrdersNow({ prsRead: prs, openRowsRead, now: Date.now() })); // #2848, #2936, #2997: before the dead man's switch -- a repeating line, a stuck org: something found
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so
   // on a full disk the tick can end partway. The order that says the disk is full must not be the one behind it.

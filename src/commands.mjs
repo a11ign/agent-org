@@ -46,6 +46,7 @@ export const COMMANDS = {
   "stash:whose": "stash-whose.mjs",
   "survey": "survey.mjs",
   "tracker:comment": "tracker-comment.mjs",
+  "wakes:per-row": "wakes-per-row.mjs",
   "work:gate": "work-gate.mjs",
   "work:profile": "worker-profile.mjs",
   "work:tick": "work-tick.mjs",

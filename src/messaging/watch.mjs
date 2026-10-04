@@ -17,24 +17,30 @@
 //
 // **THE STALL AND INCIDENT SOURCES RUN HERE TOO (a11ign/a11ign#3008)**, over the readers in `sources/readers.mjs`: `main` builds them for a real host (GitHub on
 // the core pool through `gh api`, systemd, herdr and the fleet-watch state file) and `runWatch` asks them after the two label sources. The `gh api` calls a
-// run makes are listed in `docs/messaging.md`; the allowlist admits only a GET of the six REST paths they use.
+// run makes are listed in `docs/messaging.md`; the allowlist admits only a GET of the REST paths they use.
 //
 // **THE DEFAULT REGISTRY HOLDS THE REAL PROVIDER, AND A TEST MAY STILL INJECT ITS OWN (a11ign/a11ign#3164).** It was written and never registered:
 // every test injected a fake, so none could see that the shipped composition had no provider and the `chairman-watch` unit failed on its first
 // firing. `watch-provider.test.mjs` runs `main` with NO `providers` argument, so "configured but cannot send" cannot pass CI again. A provider that
 // cannot be BUILT (a token file at the wrong mode, an unpaired chairman) ends the run with a line naming the file and exit 1, never a stack trace.
 //
+// **THE RELEASES SOURCE READS EVERY DECLARED CODE REPOSITORY'S RELEASES (a11ign/a11ign#3413)**, through `github.api`, and is asked only for a real host (`main` with
+// no injected `github`), as the host sources are: a test's fixture reader has no `api` and must not be asked. `sources/releases.mjs` holds the rules; what is
+// HERE is the wiring, and the memory (`history`): its first-run baseline is ledger `source-note` lines, which `recordNotes` already writes once each.
+//
 // **THE MILESTONES SOURCE READS THE PROJECT'S OWN DECLARATION (a11ign/a11ign#3414)**: `messaging.milestones` names the file, the source is constructed only when it is
 // set, and the file is read and validated INSIDE the source, so a malformed one costs that source its tick (logged, exit 1) and not the requests beside it. Its
-// first-run baseline is ledger `source-note` lines, which `recordNotes` already writes once each. It reads three REST lookups, admitted by `MILESTONE_API_PATH`.
+// first-run baseline is ledger `source-note` lines, which `recordNotes` already writes once each. It reads one issue, one pull request or the releases of a repository, each admitted by `READ_API_PATH` or `MILESTONE_API_PATH`.
 
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
-import { MessagingConfigRefusal, readMessagingConfig } from "./config.mjs";
+import { MessagingConfigRefusal, PROJECT_FILE, readMessagingConfig } from "./config.mjs";
+import { requestActions, snoozedUntil } from "./answers.mjs";
 import { createMessenger } from "./core.mjs";
 import { createLedger, describeError, foldLedger } from "./ledger.mjs";
 import { createTelegramProvider } from "./providers/telegram/send.mjs";
@@ -43,6 +49,7 @@ import { accountIsDeclared, defaultLedgerPath, readChairman, trackerRepo } from 
 import { observeIncidents } from "./sources/incidents.mjs";
 import { createReaders } from "./sources/readers.mjs";
 import { observeMilestones, readMilestonesFile, seenMilestoneKeys } from "./sources/milestones.mjs";
+import { observeReleases, seenKeys } from "./sources/releases.mjs";
 import { observeStalls } from "./sources/stall.mjs";
 import { observeSummary } from "./sources/summary.mjs";
 import { parseRequestKey, readRequests } from "./sources/requests.mjs";
@@ -63,10 +70,9 @@ export const READ_METHODS = Object.freeze(["issuesLabelled", "issueComments", "m
 const ALLOWED_VERBS = new Set(["issue list", "issue view", "pr list"]);
 const ALLOWED_FLAGS = new Set(["-R", "--label", "--state", "--search", "--json", "--limit"]);
 /** The REST paths `gh api` may be given, after `repos/<owner>/<name>/`: the ones `sources/readers.mjs` reads, each a listing or a lookup. */
-const READ_API_PATH = /^repos\/[\w.-]+\/[\w.-]+\/(pulls|issues|actions\/runs|actions\/workflows\/[\w.-]+\/runs|actions\/runs\/\d+\/jobs|check-runs\/\d+\/annotations)(\?[\w=&.,%:-]*)?$/;
-/** The three lookups the milestones source makes, after `repos/<owner>/<name>/`: one issue, one pull request, one listing of releases. A NUMBER, never a search. */
-const MILESTONE_API_PATH = /^repos\/[\w.-]+\/[\w.-]+\/((issues|pulls)\/\d+|releases(\?per_page=\d+)?)$/;
-const RELEASES_PER_PAGE = 100;
+const READ_API_PATH = /^repos\/[\w.-]+\/[\w.-]+\/(pulls|issues|issues\/\d+\/comments|actions\/runs|actions\/workflows\/[\w.-]+\/runs|actions\/runs\/\d+\/jobs|releases|check-runs\/\d+\/annotations)(\?[\w=&.,%:-]*)?$/;
+/** The two lookups the milestones source makes beyond `READ_API_PATH`, after `repos/<owner>/<name>/`: one issue, one pull request. A NUMBER, never a search. */
+const MILESTONE_API_PATH = /^repos\/[\w.-]+\/[\w.-]+\/(issues|pulls)\/\d+$/;
 
 /**
  * `gh api <path>` and nothing after the path: a GET is the default and every flag that would change it (`-X`, `-f`, `-F`, `--input`) is a token this refuses.
@@ -153,16 +159,31 @@ export function createGhReader({ run = runGh } = {}) {
 /** @typedef {{ reason: string, key?: string }} Note  A `key` marks a note about one thing, logged once per distinct reason and not once per tick. */
 
 /** @typedef {{ github: any, repo: string, now: number, openKeys: string[], summary: { at: string, timezone: string } | null, readers: Record<string, any>,
- *           history: Record<string, any>[], milestonesPath: string | null }} SourceContext */
+ *           history: Record<string, any>[], releaseRepos: readonly string[], milestonesPath: string | null }} SourceContext */
 /** @typedef {{ name: string, observe: (context: SourceContext) => Promise<{ events: Record<string, unknown>[], notes: Note[] }> }} Source */
+
+/**
+ * A request that still asks carries the buttons the chairman may press under it (a11ign/a11ign#3423): its options, or Approve, then Explain more and Later.
+ * A request that no longer asks (`resolved`) carries none: it becomes a cleared notice, and a button under one would answer a request that is gone.
+ *
+ * @param {Record<string, unknown>[]} events @param {Record<string, { id: string, label: string }[]>} options keyed by event key
+ * @returns {Record<string, unknown>[]}
+ */
+function withButtons(events, options) {
+  return events.map((event) => {
+    if (event.kind !== "request" || event.resolved === true) return event;
+    const actions = requestActions(options[/** @type {string} */ (event.key)] ?? []);
+    return actions.length === 0 ? event : { ...event, actions };
+  });
+}
 
 /** @type {Source} */
 const REQUESTS = {
   name: "requests",
   async observe({ github, repo, now, openKeys }) {
-    const { events, problems } = await readRequests({ github, repo, openKeys, now });
+    const { events, options, problems } = await readRequests({ github, repo, openKeys, now });
     // Each problem names itself (`requests.mjs`): a refused alert is not an options-block problem, and a prefix added here would say it was.
-    return { events, notes: problems };
+    return { events: withButtons(events, options), notes: problems };
   },
 };
 
@@ -215,6 +236,20 @@ const INCIDENTS = {
   },
 };
 
+/**
+ * A release is told once. The repositories are the ones `project.json` declares as code (`declaredCodeRepos`), and the reader is the same `gh api` on the core pool.
+ * @type {Source}
+ */
+export const RELEASES = {
+  name: "releases",
+  async observe({ github, history, releaseRepos }) {
+    const { events, notes, cannotAsk } = await observeReleases({
+      repos: releaseRepos, listReleases: (repo) => github.api(`repos/${repo}/releases?per_page=${RELEASES_PER_PAGE}`), seen: seenKeys(history), log: () => {},
+    });
+    return { events, notes: [...notes, ...observed({ events: [], cannotAsk }).notes] };
+  },
+};
+
 /** @type {Source} */
 export const MILESTONES = {
   name: "milestones",
@@ -239,21 +274,37 @@ export const DEFAULT_SOURCES = Object.freeze([REQUESTS]);
 /** The sources that read the host (systemd, herdr, files) as well as GitHub, asked only when the caller hands over the `readers` they need. */
 export const HOST_SOURCES = Object.freeze([STALLS, INCIDENTS]);
 
+/** The most one `gh api` call returns (GitHub's own cap), so a first read of a repository with a long history records all of it in one call. */
+const RELEASES_PER_PAGE = 100;
+
 /**
  * THE SUMMARY SOURCE EXISTS ONLY WHEN DECLARED (chairman, 2026-10-04): an absent `messaging.summary` constructs none, so nothing is read for it and
  * nothing is sent. The source also answers nothing on a `null` summary, so a caller that hands one over in `sources` cannot send one either.
+ * THE RELEASES SOURCE EXISTS ONLY FOR A HOST THAT DECLARES REPOSITORIES TO READ (`releaseRepos`), and `main` hands none to a caller that injected its own `github`.
  * THE MILESTONES SOURCE EXISTS ONLY WHEN `messaging.milestones` NAMES A FILE, and a caller that names none constructs none and reads nothing for it.
- * @param {{ summary: { at: string, timezone: string } | null, readers: Record<string, any> | undefined, milestonesPath: string | null }} input @returns {readonly Source[]}
+ * @param {{ summary: { at: string, timezone: string } | null, readers: Record<string, any> | undefined, releaseRepos: readonly string[], milestonesPath: string | null }} input @returns {readonly Source[]}
  */
-function sourcesFor({ summary, readers, milestonesPath }) {
+function sourcesFor({ summary, readers, releaseRepos, milestonesPath }) {
   const declared = summary === null ? DEFAULT_SOURCES : [...DEFAULT_SOURCES, SUMMARY];
-  const withMilestones = milestonesPath === null ? declared : [...declared, MILESTONES];
+  const withReleases = releaseRepos.length === 0 ? declared : [...declared, RELEASES];
+  const withMilestones = milestonesPath === null ? withReleases : [...withReleases, MILESTONES];
   return readers === undefined ? withMilestones : [...withMilestones, ...HOST_SOURCES];
 }
 
 /** @param {Map<string, import("./ledger.mjs").KeyRecord>} state @returns {string[]} the request keys the chairman has been told about and not told cleared */
 function openRequestKeys(state) {
   return [...state].filter(([key, record]) => record.open && parseRequestKey(key) !== null).map(([key]) => key);
+}
+
+/**
+ * THE SNOOZE (`later`, a11ign/a11ign#3423): a request the chairman pressed Later on is not observed for 24 hours, so the core sends it nothing, a reminder or
+ * a changed ask included (the core has no notion of a snooze, and the watcher is where an event is chosen). A request that stopped asking is never held back:
+ * its cleared notice is how the chairman learns it is gone. `snoozedUntil` ends a snooze at the answer or the clearing, so a re-ask is not swallowed.
+ *
+ * @param {Record<string, unknown>[]} events @param {{ history: Record<string, any>[], nowMs: number }} context @returns {Record<string, unknown>[]}
+ */
+function withoutSnoozed(events, { history, nowMs }) {
+  return events.filter((event) => event.kind !== "request" || event.resolved === true || typeof event.key !== "string" || snoozedUntil(history, event.key, nowMs) === null);
 }
 
 /** @param {Record<string, any>[]} history @param {Note} note @returns {boolean} whether this exact note about this key is already on the record */
@@ -309,21 +360,32 @@ async function gather(context, sources) {
  * NOT asked, which is a caller that has no host to read (a test's), never a production run: `main` always hands them over.
  *
  * @param {{ github: any, provider: any, ledger: ReturnType<typeof createLedger>, now: () => number, repo: string, readers?: Record<string, any>,
- *           summary: { at: string, timezone: string } | null, milestonesPath?: string | null, log?: (line: string) => void, sources?: readonly Source[],
+ *           summary: { at: string, timezone: string } | null, releaseRepos?: readonly string[], milestonesPath?: string | null, log?: (line: string) => void, sources?: readonly Source[],
  *           coreConfig?: object }} input
  * @returns {Promise<{ decisions: { key: string, action: string }[], failures: string[] }>}
  */
 export async function runWatch({
-  github, provider, ledger, now, repo, readers, summary, milestonesPath = null, log = () => {}, sources = sourcesFor({ summary, readers, milestonesPath }), coreConfig,
+  github, provider, ledger, now, repo, readers, summary, releaseRepos = [], milestonesPath = null, log = () => {},
+  sources = sourcesFor({ summary, readers, releaseRepos, milestonesPath }), coreConfig,
 }) {
   const history = ledger.read();
   const openKeys = openRequestKeys(foldLedger(history));
-  const { events, notes, failures } = await gather({ github, repo, now: now(), openKeys, summary, readers: readers ?? {}, history, milestonesPath }, sources);
+  const { events, notes, failures } = await gather({ github, repo, now: now(), openKeys, summary, readers: readers ?? {}, history, releaseRepos, milestonesPath }, sources);
   recordNotes({ notes, ledger, history, log });
   const messenger = createMessenger({ provider, ledger, now, config: /** @type {any} */ (coreConfig) });
-  const decisions = await messenger.tick(events);
+  const decisions = await messenger.tick(withoutSnoozed(events, { history, nowMs: now() }));
   for (const failure of failures) log(failure);
   return { decisions, failures };
+}
+
+/**
+ * Every repository the project declares as code, each once: the packages whose releases the chairman is told about.
+ * @param {string} root @returns {string[]}
+ */
+export function declaredCodeRepos(root) {
+  const declared = JSON.parse(readFileSync(join(root, PROJECT_FILE), "utf8"))?.code;
+  const repos = Array.isArray(declared) ? declared.map((entry) => entry?.repo).filter((repo) => typeof repo === "string" && /^[\w.-]+\/[\w.-]+$/.test(repo)) : [];
+  return [...new Set(repos)];
 }
 
 /** @param {string} root @param {string} home @param {(line: string) => void} err @returns {ReturnType<typeof readMessagingConfig> | null} null after saying why */
@@ -442,7 +504,7 @@ export async function main(deps = {}) {
   if (provider === null) return EXIT.failed;
   const reader = github ?? createGhReader();
   const result = await runWatch({
-    github: reader, provider, repo: trackerRepo(root), summary: config.summary, milestonesPath: config.milestones,
+    github: reader, provider, repo: trackerRepo(root), summary: config.summary, releaseRepos: github === undefined ? declaredCodeRepos(root) : [], milestonesPath: config.milestones,
     readers: readers ?? (github === undefined ? hostReaders({ root, home, now, err, github: reader }) : undefined),
     ledger: createLedger({ path: defaultLedgerPath(home), now }), now, log: err,
   });

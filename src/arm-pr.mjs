@@ -24,7 +24,7 @@ import { roleBriefPath } from "./project-roles.mjs";
 // #2046: THE ARMED PREDICATE, IMPORTED RATHER THAN RE-DECIDED -- the mirror of the `pr-hold-state.mjs`
 // line above, and for the reason this file's own header already gives about that one. Leaf-shaped:
 // `pr-armed-state.mjs` imports nothing at all, so the `actions/checkout`-only property holds.
-import { armedQueryArgs, armedReason } from "./pr-armed-state.mjs";
+import { armedQueryArgs, armedReason, ejectionVerdict } from "./pr-armed-state.mjs";
 import { extractClosesDeclaration } from "./acceptance-commands.mjs";
 // #1969: THE REFUSAL'S SCOPE, and a LEAF import for the reason `api-pool.mjs`'s own header gives. The
 // reading is not reimplemented here -- a second copy of "how to read a pool" is the one place two readers
@@ -918,6 +918,13 @@ export function runArmPr({ argv, env, run = defaultRun, sleep = defaultSleep, lo
   if (authorship.kind !== "clear") {
     error(`arm-pr: NOT arming #${number} -- ${authorship.why}`);
     return authorship.kind === "refused" ? EXIT.REFUSED : EXIT.CANNOT_ASK;
+  }
+  // #3487: AFTER the authorship exit and before any write. A refusal is a DONE, as a hold is: the PR is waiting for a push, not failing.
+  const ejection = ejectionVerdict({ number, repo, run: (args) => gh(args, run) });
+  if (ejection.kind !== "clear") {
+    const cannotAsk = ejection.kind === "cannot-ask";
+    (cannotAsk ? error : log)(`arm-pr: NOT arming #${number} -- ${ejection.why}`);
+    return cannotAsk ? EXIT.CANNOT_ASK : EXIT.DONE;
   }
   const { outcome, jumpFailure } = armOrJump({ number, repo, prBody }, { run, sleep, log, error });
   // #1478: WHAT LANDED IS SAID BEFORE THE NEXT STEP RUNS, so a failure in labelling cannot hide it.

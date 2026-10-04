@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+The chairman's request message now carries buttons (a11ign/a11ign#3423). The Telegram provider declares `buttons: true` and draws `actions` as `reply_markup.inline_keyboard`, and `messaging:watch` hands each `needs:chairman` request its options (or Approve), Explain more and Later; the answers path read `callback_data` and the brief offered options, but nothing had ever drawn a button, so the chairman could only type. A button's `callback_data` is a closed vocabulary (`ans:<option id>`, or `act:` plus `approve`, `done`, `stuck`, `later`, `explain`, `forme`): anything else is dropped with a hash and never forwarded. A press resolves the request (an option, `approve`, `done`), snoozes its reminders for 24 hours (`later`; the label stays), or queues one order for the `liaison` (`explain`, `stuck`); a press on an answered message is told so and its keyboard is removed. Events gain an optional `actions` list that the core hands to a provider that declares `buttons`, and never to a cleared notice. `converse.mjs` queues for the `liaison` as well as `ceo`, through the same single call.

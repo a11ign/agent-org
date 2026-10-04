@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+A standing lead (`ceo`, `product-manager`, `orchestrator`) is no longer `/clear`ed before every order: when its previous order landed 30 minutes ago or less and its window reads at or under 100k cache-read tokens (50% of 200k) it keeps the window and is typed the follow-up shape; recent and over that it is `/compact`ed; older, or whenever the previous order's time or the transcript cannot be read, it is cleared and typed the whole first-contact order as before. Both numbers are unmeasured starting constants (`KEEP_WITHIN_MS`, `KEEP_FILL_TOKENS`, `wake.mjs`). `deliver` and `clearThenPrompt` take the one decision (`prepareContext`), the time of each landed order is kept beside the ledger (`last-order/`), and a kept lead's follow-up says what its window holds from earlier turns is a reading at a moment. The batched-wake header and `prompt:session`'s output and queued-order notice say what THIS delivery did (kept, compacted or cleared) instead of the sentence that was true only of a clear. Reviewers, spawned workers and persistent seats are unchanged (a11ign/a11ign#3440).

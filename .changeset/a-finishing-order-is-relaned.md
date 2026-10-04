@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+A finishing order that has waited past the deferral bound goes to a free engineer where its cause allows (a11ign/a11ign#3465, follow-up of #3448). An order now declares `mayRelane: true` when any session can carry it out, and the only declaration today is `draft-convinced-not-ready` with an attributed verdict (the ready-flip the gate also performs itself); a self-signed or unattributed verdict, and every other cause, stays queued for its owner and is raised to `ceo` as before. When a declared order has been deferred for more than `ORDER_STALL_MINUTES` (15) and an engineer is free (`route`'s own test, `ineligibleReason` included), the tick prompts that engineer with the order under a line saying why, and the ledger records the recipient. It never starts a process for it: with nobody free the order stays queued and its refusal says `not re-laned: <why>`, still in the busy-seat shape so its age keeps counting. An unreadable deferral record re-lanes nothing and says so.

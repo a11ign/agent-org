@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+A reviewer workspace that herdr brings back after its ending is looked at again, and a pane stopped at an interactive prompt is reported (a11ign/a11ign#3458). The reviewer teardown walked the registry's keys and nothing else, and an ending deletes the key, so when herdr restarted in the same second and restored the closed workspaces of `reviewer-agent-org-35` and `-36` (2026-10-02) they sat at Codex's working-directory picker for two days. The sweep now also takes every workspace on the listing that carries an instance's label and has no registry key, asks its pull request's own repository, and ends it with the same ledger line when that is closed or merged; an open or unreadable state, a working pane, `reviewer-1` and `reviewer-2`, and a label held by two workspaces are left. A new `org-health` signal, `pane-stopped-at-a-prompt`, offers `ceo` any pane that is not working and has shown Codex's picker or a trust prompt for over fifteen minutes, naming the session, the pane and how long; the first sighting is kept in `pane-prompts` beside the ledger because herdr stamps no time on a screen.

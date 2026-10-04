@@ -1,6 +1,10 @@
 // @ts-check
 // THE TELEGRAM PROVIDER, SEND ONLY (a11ign/a11ign#2902; docs/messaging.md decision 1). It passes `runProviderConformance`, so it is a
-// provider by the only definition there is. `poll` and `actions` are rows 8 and 9, and are declared absent rather than half-built.
+// provider by the only definition there is. `poll` is the polling provider's (./poll.mjs).
+//
+// **BUTTONS ARE DRAWN HERE (a11ign/a11ign#3423).** `actions` become `reply_markup.inline_keyboard`, one button per row, on the FIRST part of a split
+// message only: the first part's id is the `messageRef` the ledger keeps, and a press is routed by the message it sits under. The provider draws
+// what it is handed and decides nothing about which presses mean what; the closed vocabulary is `inbound.mjs`'s, where a press is received.
 //
 // **PLAIN TEXT, NO `parse_mode`.** A message body is quoted from a row title or a comment, which anybody may have written. Under
 // Markdown or HTML a stray `_` or `<` makes Telegram refuse the whole message (a corrupted alert), and a crafted one injects markup
@@ -23,6 +27,7 @@ export const MAX_PARTS = 5;
 
 const MS_PER_SECOND = 1000;
 const TOO_MANY_REQUESTS = 429;
+const BAD_REQUEST = 400;
 const CLIENT_ERROR_FLOOR = 400;
 const SERVER_ERROR_FLOOR = 500;
 /** Telegram asks for 1 message per second per chat; the parts of one `send` keep to it, so a long body does not provoke a 429 of its own. */
@@ -34,6 +39,13 @@ const MAX_RETRY_WAIT_SECONDS = 60;
 export const REQUEST_TIMEOUT_MS = 30_000;
 
 const NEWLINE = "\n";
+
+/** Telegram refuses `callback_data` over 64 BYTES (not characters), and refuses a keyboard of more than 100 buttons; one message needs far fewer. */
+export const MAX_CALLBACK_DATA_BYTES = 64;
+export const MAX_BUTTONS = 8;
+export const MAX_BUTTON_LABEL = 64;
+/** What Telegram answers when the markup it is asked to remove is already gone: the keyboard is off, which is what was wanted. */
+const NOT_MODIFIED = /message is not modified/i;
 
 export class TelegramSendError extends Error {
   /** @param {string} message already scrubbed @param {{ status?: number, retryAfter?: number }} [details] */
@@ -108,11 +120,11 @@ export function createTelegramProvider({ token, chatId, fetch: fetchImpl = globa
   // Every string that reaches `log` is either a number-only line or a `TelegramSendError` message, scrubbed where it is built (`attempt`).
   const note = log;
 
-  /** One HTTP attempt. @param {Record<string, unknown>} payload @returns {Promise<{ ok: true, messageRef: string } | { ok: false, error: TelegramSendError }>} */
-  async function attempt(payload) {
+  /** One HTTP attempt. @param {string} method the Bot API method @param {Record<string, unknown>} payload @returns {Promise<{ ok: true, result: Record<string, any> } | { ok: false, error: TelegramSendError }>} */
+  async function attempt(method, payload) {
     let response;
     try {
-      response = await guardedFetch(`${apiBase}/bot${token.reveal()}/sendMessage`, {
+      response = await guardedFetch(`${apiBase}/bot${token.reveal()}/${method}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
@@ -121,27 +133,45 @@ export function createTelegramProvider({ token, chatId, fetch: fetchImpl = globa
     } catch (error) {
       // A request that never got an answer is a send failure like any other, so it is logged (`refused`) and annotated (`partial`).
       const reason = error instanceof Error ? error.message : String(error);
-      return { ok: false, error: new TelegramSendError(token.scrub(`telegram sendMessage failed: no response: ${reason}`)) };
+      return { ok: false, error: new TelegramSendError(token.scrub(`telegram ${method} failed: no response: ${reason}`)) };
     }
     const body = await readBody(response);
-    if (response.ok && body.ok === true && Number.isSafeInteger(body.result?.message_id)) return { ok: true, messageRef: String(body.result.message_id) };
+    if (response.ok && body.ok === true) return { ok: true, result: body.result ?? {} };
     const status = Number(body.error_code ?? response.status);
     const description = typeof body.description === "string" ? body.description : "no description";
-    const error = new TelegramSendError(token.scrub(`telegram sendMessage failed: ${status} ${description}`), { status, retryAfter: retryAfterOf(body, response) });
+    const error = new TelegramSendError(token.scrub(`telegram ${method} failed: ${status} ${description}`), { status, retryAfter: retryAfterOf(body, response) });
     return { ok: false, error };
   }
 
-  /** One part, retried ONCE and only when Telegram says 429 and says when. @param {Record<string, unknown>} payload @returns {Promise<string>} the messageRef */
-  async function sendPart(payload) {
-    const first = await attempt(payload);
-    if (first.ok) return first.messageRef;
+  /** One call, retried ONCE and only when Telegram says 429 and says when. @param {string} method @param {Record<string, unknown>} payload @returns {Promise<Record<string, any>>} Telegram's `result` */
+  async function callOnce(method, payload) {
+    const first = await attempt(method, payload);
+    if (first.ok) return first.result;
     const { status, retryAfter } = first.error;
     if (status !== TOO_MANY_REQUESTS || retryAfter === undefined || retryAfter > MAX_RETRY_WAIT_SECONDS) throw refused(first.error, { retried: false });
     note(`telegram: 429, waiting ${retryAfter}s as Telegram asked, then sending once more`);
     await sleep(retryAfter * MS_PER_SECOND);
-    const second = await attempt(payload);
-    if (second.ok) return second.messageRef;
+    const second = await attempt(method, payload);
+    if (second.ok) return second.result;
     throw refused(second.error, { retried: true });
+  }
+
+  /** One part of a message. @param {Record<string, unknown>} payload @returns {Promise<string>} the messageRef */
+  async function sendPart(payload) {
+    const result = await callOnce("sendMessage", payload);
+    if (!Number.isSafeInteger(result.message_id)) throw refused(new TelegramSendError("telegram sendMessage failed: no message_id in the reply"), { retried: false });
+    return String(result.message_id);
+  }
+
+  /** @param {string} messageRef @returns {Promise<void>} takes the keyboard off a message; one that has none is already what was asked for */
+  async function clearKeyboard(messageRef) {
+    const messageId = /^\d+$/.test(messageRef) ? Number(messageRef) : NaN;
+    if (!Number.isSafeInteger(messageId) || messageId === 0) throw new TypeError(`telegram: ${JSON.stringify(messageRef)} is not a message id`);
+    try {
+      await callOnce("editMessageReplyMarkup", { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } });
+    } catch (error) {
+      if (!(error instanceof TelegramSendError && error.status === BAD_REQUEST && NOT_MODIFIED.test(error.message))) throw error;
+    }
   }
 
   /** Logs a failure, with whether the one retry was spent, and hands the error back to throw. @param {TelegramSendError} error @param {{ retried: boolean }} spent */
@@ -155,19 +185,21 @@ export function createTelegramProvider({ token, chatId, fetch: fetchImpl = globa
   return {
     id: "telegram",
     capabilities: Object.freeze({
-      silent: true, buttons: false, replies: true, conversation: false,
+      silent: true, buttons: true, replies: true, conversation: false,
       maxText: TELEGRAM_MAX_MESSAGE * MAX_PARTS, ratePerSecond: 1,
     }),
+    clearKeyboard,
     /** @param {{ text: string, silent?: boolean, actions?: unknown[], replyTo?: string }} message @returns {Promise<{ messageRef: string, silent: boolean, messageRefs: string[] }>} */
     async send(message) {
       const parts = partsOf(message?.text);
+      const keyboard = keyboardOf(message.actions);
       const silent = message.silent === true;
       /** @type {string[]} */
       const messageRefs = [];
       for (const [index, part] of parts.entries()) {
         if (index > 0) await sleep(PART_SPACING_MS);
         try {
-          messageRefs.push(await sendPart(payloadFor({ chatId, text: part, silent, replyTo: index === 0 ? message.replyTo : undefined })));
+          messageRefs.push(await sendPart(payloadFor({ chatId, text: part, silent, replyTo: index === 0 ? message.replyTo : undefined, keyboard: index === 0 ? keyboard : undefined })));
         } catch (error) {
           throw partial(error, { index, total: parts.length });
         }
@@ -188,12 +220,30 @@ function partsOf(text) {
 }
 
 /**
- * @param {{ chatId: number | string, text: string, silent: boolean, replyTo?: string }} fields
- * @returns {Record<string, unknown>} `disable_notification` is present ONLY when silent: an ordinary message carries no such key
+ * `actions` as Telegram's inline keyboard, one button per row, or `undefined` for none: a message with no action carries no `reply_markup`.
+ * A malformed action is refused whole, before any part is sent: a keyboard missing the button the chairman meant to press is a quieter wrong than none.
+ *
+ * @param {unknown} actions @returns {{ text: string, callback_data: string }[][] | undefined}
  */
-function payloadFor({ chatId, text, silent, replyTo }) {
+function keyboardOf(actions) {
+  if (actions === undefined || (Array.isArray(actions) && actions.length === 0)) return undefined;
+  if (!Array.isArray(actions) || actions.length > MAX_BUTTONS) throw new RangeError(`telegram: actions must be a list of at most ${MAX_BUTTONS}`);
+  return actions.map((action) => {
+    const { label, data } = action ?? {};
+    if (typeof label !== "string" || label === "" || label.length > MAX_BUTTON_LABEL) throw new RangeError(`telegram: an action needs a label of 1-${MAX_BUTTON_LABEL} characters`);
+    if (typeof data !== "string" || data === "" || Buffer.byteLength(data, "utf8") > MAX_CALLBACK_DATA_BYTES) throw new RangeError(`telegram: an action needs data of 1-${MAX_CALLBACK_DATA_BYTES} bytes`);
+    return [{ text: label, callback_data: data }];
+  });
+}
+
+/**
+ * @param {{ chatId: number | string, text: string, silent: boolean, replyTo?: string, keyboard?: { text: string, callback_data: string }[][] }} fields
+ * @returns {Record<string, unknown>} `disable_notification` is present ONLY when silent: an ordinary message carries no such key; `reply_markup` ONLY with a keyboard
+ */
+function payloadFor({ chatId, text, silent, replyTo, keyboard }) {
   const payload = { chat_id: chatId, text };
   if (silent) Object.assign(payload, { disable_notification: true });
+  if (keyboard !== undefined) Object.assign(payload, { reply_markup: { inline_keyboard: keyboard } });
   if (replyTo !== undefined && Number.isSafeInteger(Number(replyTo))) {
     Object.assign(payload, { reply_parameters: { message_id: Number(replyTo), allow_sending_without_reply: true } });
   }

@@ -94,8 +94,9 @@ test("#2538 an UNCLEARED instance's order is one header line and the order, and 
     // A reviewer's order also says its tree was re-pointed (#2771); nothing else rides along for anyone.
     const repointed = label.startsWith("reviewer-")
       ? `\n\nYour checkout of #2537, \`/fake-reviews/${label}\`, has just been re-pointed to the pull request's current head \`${FAKE_HEAD.slice(0, 8)}\`.` : "";
-    assert.equal(typed, `You are \`${label}\` -- a follow-up order to your session: your first order and its brief still stand.\n\n${ORDER_TEXT}${repointed}`,
+    assert.equal(typed, `You are \`${label}\` -- a follow-up order to your session.\n\n${ORDER_TEXT}${repointed}`,
       `${label}: exactly the header, a blank line and the order, pinned whole`);
+    assert.ok(!typed.includes("still stand"), `${label}: the header no longer says what the window already holds (#3444)`);
     assert.ok(typed.length < ORDER_TEXT.length + repointed.length + 150, `${label}: nothing else rode along (${typed.length} chars)`);
   }
 });

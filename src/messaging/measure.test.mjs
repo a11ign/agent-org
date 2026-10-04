@@ -62,6 +62,22 @@ describe("(1) per message: seconds to acknowledge, and seconds to the first repl
     assert.match(out, /message 8 received 2026-10-04T10:00:00.000Z: acknowledged after 3 s; unanswered$/m);
   });
 
+  test("a converse line with `ackAt` is timed from `ackAt`, not from its later `ts`; one without `ackAt` still from `ts`; one with no `ackRef` from neither", () => {
+    const received = line("2026-10-04T09:00:00.000Z", { direction: "in", updateId: 1, verdict: "forward", reason: null, kind: "message" });
+    const converse = (/** @type {string} */ ts, /** @type {Record<string, unknown>} */ fields) => line(ts, { direction: "in", origin: "converse", verdict: "queued", ...fields });
+    const { out } = measureOver([
+      received,
+      converse("2026-10-04T09:00:07.000Z", { updateId: 1, messageRef: "6", ackRef: "61", ackAt: "2026-10-04T09:00:02.000Z" }),
+      line("2026-10-04T10:00:00.000Z", { direction: "in", updateId: 2, verdict: "forward", reason: null, kind: "message" }),
+      converse("2026-10-04T10:00:03.000Z", { updateId: 2, messageRef: "8", ackRef: "81" }),
+      line("2026-10-04T11:00:00.000Z", { direction: "in", updateId: 3, verdict: "forward", reason: null, kind: "message" }),
+      converse("2026-10-04T11:00:04.000Z", { updateId: 3, messageRef: "9", ackRef: null, ackAt: "2026-10-04T11:00:01.000Z" }),
+    ]);
+    assert.match(out, /message 6 .*: acknowledged after 2 s;/);
+    assert.match(out, /message 8 .*: acknowledged after 3 s;/);
+    assert.match(out, /message 9 .*: not acknowledged;/);
+  });
+
   test("a reply that names no message (`replyTo: null`) answers none of them", () => {
     const { out } = measureOver([...TWO_MESSAGES, line("2026-10-04T10:05:00.000Z", { direction: "reply", replyTo: null, status: "replied" })]);
     assert.match(out, /message 8 .*unanswered$/m);

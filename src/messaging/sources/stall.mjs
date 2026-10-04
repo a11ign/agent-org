@@ -100,9 +100,11 @@ export const IMPACT = Object.freeze({
 });
 
 const NOT_KNOWN = "not known";
+const QUOTE_LIMIT = 200;
 
 /**
- * @typedef {{ number: number, holder?: string }} FixRow  the open row that holds the fix, and who holds it (absent: nobody yet)
+ * @typedef {{ number: number, comment?: { author: string, at: number | string, text: string } }} FixRow
+ *   the open row that holds the fix, and the newest comment an org account left on it (absent: the org has said nothing there yet)
  * @typedef {(key: string) => Promise<FixRow | null> | FixRow | null} FixRowReader  by the event's key; `null` is "no row is open", a throw is "could not ask"
  * @typedef {{ status: "row", row: FixRow } | { status: "none" } | { status: "unknown" }} FixReading
  */
@@ -119,41 +121,70 @@ async function readFix(readers, key, log) {
     const row = await readers.readFixRow(key);
     if (row === null) return { status: "none" };
     if (row === undefined || typeof row !== "object" || !Number.isInteger(row.number) || row.number <= 0) throw new TypeError(`not a row: ${JSON.stringify(row)?.slice(0, 80)}`);
-    return { status: "row", row: { number: row.number, holder: typeof row.holder === "string" && row.holder !== "" ? row.holder : undefined } };
+    if (row.comment === undefined) return { status: "row", row: { number: row.number } };
+    const { author, at, text } = row.comment;
+    return { status: "row", row: { number: row.number, comment: { author: String(author), at: instant(at, "comment.at"), text: String(text) } } };
   } catch (error) {
     log(`cannot-ask fix-row ${key}: ${describeError(error)}`);
     return { status: "unknown" };
   }
 }
 
-/** @param {FixReading} fix @returns {string} */
-function doingLine(fix) {
-  if (fix.status === "none") return "no row is open for this yet";
-  if (fix.status === "unknown") return NOT_KNOWN;
-  const { number, holder } = fix.row;
-  return holder === undefined ? `row #${number} is open for this and nobody holds it yet` : `row #${number} is open for this, held by ${holder}`;
+/** @param {string} text @returns {string} the comment on one line, cut where a message must stop: a quote, not the comment */
+function quoted(text) {
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length <= QUOTE_LIMIT ? line : `${line.slice(0, QUOTE_LIMIT - 1)}\u2026`;
+}
+
+/** @param {FixReading} fix @param {number} now @returns {string} */
+function beingDoneLine(fix, now) {
+  if (fix.status === "none") return "nobody has picked this up yet";
+  if (fix.status === "unknown") return "I could not read it";
+  const { number, comment } = fix.row;
+  if (comment === undefined) return `row #${number} is open for this and the org has not commented on it yet`;
+  return `row #${number}, ${comment.author} ${span(now - /** @type {number} */ (comment.at))} ago: "${quoted(comment.text)}"`;
 }
 
 /**
- * The two lines a SENT event carries beyond what started. A pure function of the key and one reading, so a test hands it a fixture.
- * @param {string} key @param {FixReading} fix @returns {string}
+ * The two lines a SENT event carries beyond what started. A pure function of the key, one reading and the clock, so a test hands it a fixture.
+ * @param {string} key @param {FixReading} fix @param {number} now @returns {string}
  */
-export function meaningLines(key, fix) {
-  return `Impact: ${IMPACT[/** @type {keyof typeof IMPACT} */ (key)] ?? NOT_KNOWN}\nDoing: ${doingLine(fix)}.`;
+export function meaningLines(key, fix, now) {
+  return `Impact: ${IMPACT[/** @type {keyof typeof IMPACT} */ (key)] ?? NOT_KNOWN}\nBeing done: ${beingDoneLine(fix, now)}.`;
 }
 
 /**
- * Append Impact and Doing to every event that says something STARTED. A `resolved` event is returned untouched: the "cleared" message is not
- * about what it means, and its text stays what it was. The key, `firstSeenAt` and everything else the core reads are not touched either, so the
- * hold-down and the dedupe see the same event as before. A failed fix-row read is `not known` on the Doing line and never costs the event.
+ * How long a sent event stood. `readEpisodeStart(key)` answers with when the chairman was TOLD (the ledger's first send of the open episode), because the
+ * source keeps no state of its own and a resolved reading no longer holds when the thing began. So it is a floor, and the line says `at least`.
+ * `null` or a throw is `not known`: a duration nobody could read is never a short one.
  *
- * @param {Record<string, unknown>[]} events @param {Record<string, unknown>} readers @param {(line: string) => void} log
+ * @param {Record<string, unknown>} readers @param {string} key @param {number} now @param {(line: string) => void} log @returns {Promise<string>}
+ */
+async function lastedLine(readers, key, now, log) {
+  if (typeof readers.readEpisodeStart !== "function") return `Lasted: ${NOT_KNOWN}.`;
+  try {
+    const told = await readers.readEpisodeStart(key);
+    if (told === null) return `Lasted: ${NOT_KNOWN}.`;
+    return `Lasted: at least ${span(now - instant(told, "episode start"))} (counted from the message that told you).`;
+  } catch (error) {
+    log(`cannot-ask episode-start ${key}: ${describeError(error)}`);
+    return `Lasted: ${NOT_KNOWN}.`;
+  }
+}
+
+/**
+ * Append Impact and Being done to every event that says something STARTED, and Lasted to every one that says it ENDED. The key, `firstSeenAt` and
+ * everything else the core reads are not touched, so the hold-down and the dedupe see the same event as before. A failed read is said on its own line
+ * (`I could not read it`, `not known`) and never costs the event.
+ *
+ * @param {Record<string, unknown>[]} events @param {Record<string, unknown>} readers @param {(line: string) => void} log @param {number} now
  * @returns {Promise<Record<string, unknown>[]>}
  */
-export async function withMeaning(events, readers, log) {
+export async function withMeaning(events, readers, log, now) {
   return Promise.all(events.map(async (event) => {
-    if (event.resolved === true) return event;
-    return { ...event, text: `${event.text}\n${meaningLines(String(event.key), await readFix(readers, String(event.key), log))}` };
+    const key = String(event.key);
+    const more = event.resolved === true ? await lastedLine(readers, key, now, log) : meaningLines(key, await readFix(readers, key, log), now);
+    return { ...event, text: `${event.text}\n${more}` };
   }));
 }
 
@@ -220,14 +251,15 @@ export function noMergeEvents(lastMergeAt, now, config) {
 
 /**
  * @param {{ now: () => number, config?: Partial<typeof DEFAULT_STALL_CONFIG>, log?: (line: string) => void,
- *   readers: { readTicks?: () => Promise<TickRecord[]> | TickRecord[], readLastMerge?: () => Promise<number | string> | number | string, readFixRow?: FixRowReader } }} options
+ *   readers: { readTicks?: () => Promise<TickRecord[]> | TickRecord[], readLastMerge?: () => Promise<number | string> | number | string, readFixRow?: FixRowReader,
+ *   readEpisodeStart?: (key: string) => Promise<number | null> | number | null } }} options
  * @returns {Promise<Observation>} both stall kinds, each independently able to fail to ask
  */
 export async function observeStalls({ now, config: overrides = {}, log = console.error, readers }) {
   const config = { ...DEFAULT_STALL_CONFIG, ...overrides };
   const parts = await Promise.all([
-    observe("stall:all-idle", async () => withMeaning(allIdleEvents(await requireReader(readers, "readTicks")(), now(), config), readers, log), log),
-    observe("stall:no-merge", async () => withMeaning(noMergeEvents(await requireReader(readers, "readLastMerge")(), now(), config), readers, log), log),
+    observe("stall:all-idle", async () => withMeaning(allIdleEvents(await requireReader(readers, "readTicks")(), now(), config), readers, log, now()), log),
+    observe("stall:no-merge", async () => withMeaning(noMergeEvents(await requireReader(readers, "readLastMerge")(), now(), config), readers, log, now()), log),
   ]);
   return { events: parts.flatMap((part) => part.events), cannotAsk: parts.flatMap((part) => part.cannotAsk) };
 }

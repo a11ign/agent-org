@@ -146,10 +146,10 @@ export function conditionHolds(wait, facts) {
 }
 
 /**
- * @typedef {{ kind: "pr" | "row", number: number, repoKey?: string, labels: string[], body: string,
+ * @typedef {{ kind: "pr" | "row", number: number, repoKey?: string, repo?: string, labels: string[], body: string,
  *             comments: { body: string, createdAt: number }[], openBlockers: number, updatedAt: number | null }} WaitItem
  * One open row or pull request as the wait readers see it. `updatedAt` is epoch ms and the QUIET SINCE of the item, `null` when it
- * was not read.
+ * was not read. `repoKey` and `repo` are set for an item of a repository other than the first (`owner/repo`, as the gate tagged it).
  */
 
 /** @param {any} label @returns {string} `gh --json labels` gives `{ name }` objects; fixtures give strings */
@@ -168,7 +168,7 @@ const openBlockersOf = (raw) => (raw?.blockedBy?.nodes ?? []).filter((/** @type 
 export function waitItemOf(raw, kind) {
   const updated = Date.parse(raw?.updatedAt ?? "");
   return {
-    kind, number: Number(raw?.number), ...(raw?.repoKey && { repoKey: String(raw.repoKey) }),
+    kind, number: Number(raw?.number), ...(raw?.repoKey && { repoKey: String(raw.repoKey) }), ...(raw?.repoKey && raw?.repo && { repo: String(raw.repo) }),
     labels: (raw?.labels ?? []).map(labelName), body: String(raw?.body ?? ""), comments: commentsOf(raw), openBlockers: openBlockersOf(raw),
     updatedAt: Number.isFinite(updated) ? updated : null,
   };
@@ -196,13 +196,24 @@ export function waitFieldsOf(item, now) {
 }
 
 /**
+ * A BARE `#n` NAMES THE ITEM'S OWN REPOSITORY, not the first one's (#3479): `merged #148` on an `agent-org` pull request means `agent-org#148`, whose state differs
+ * from `a11ign/a11ign#148`'s, and reading it against the first would lift or keep a hold on the wrong repository's answer. An item of the first repository carries no
+ * `repo`, so its waits read exactly as before.
+ * @param {WaitItem} item @param {Wait} wait @returns {Wait}
+ */
+function ownedBy(item, wait) {
+  if (item.repo === undefined || wait.state === "manual" || wait.state === "unreadable" || wait.repo !== null) return wait;
+  return { ...wait, repo: item.repo, key: `${item.repo}#${wait.number}` };
+}
+
+/**
  * THE WAITS AN ITEM DECLARES: the newest hold-marker comment's if it has one (the PR's hold, said at the time it was taken, and
  * newer than the body), else the body's. @param {WaitItem} item @returns {{ waits: Wait[], markedAt: number | null }}
  */
 export function declaredWaitsOf(item) {
   const marked = item.comments.filter((c) => c.body.includes(WAIT_MARKER)).sort((a, b) => b.createdAt - a.createdAt)[0];
-  if (marked) return { waits: parseWaits(marked.body), markedAt: Number.isFinite(marked.createdAt) ? marked.createdAt : null };
-  return { waits: parseWaits(item.body), markedAt: null };
+  if (marked) return { waits: parseWaits(marked.body).map((wait) => ownedBy(item, wait)), markedAt: Number.isFinite(marked.createdAt) ? marked.createdAt : null };
+  return { waits: parseWaits(item.body).map((wait) => ownedBy(item, wait)), markedAt: null };
 }
 
 /**
@@ -258,30 +269,31 @@ const needsRemoving = (kind) => WAIT_FIELDS.find((w) => w.kind === kind)?.selfCl
 
 /**
  * #3364: THE STALE WAITS THE GATE ENDS ITSELF, AND THE ONES IT LEAVES TO A SESSION. A stale wait is lifted by the gate only when removing the
- * `hold:*` label(s) IS the whole remedy, which is when ALL of these hold: the item is a PULL REQUEST of this repository (`pr-hold.mjs` is the
- * release and it is bound to one); EVERY `Waiting-for:` it declares is `merged` or `closed` and true (one still open, a label condition, or a
+ * `hold:*` label(s) IS the whole remedy, which is when ALL of these hold: the item is a PULL REQUEST of the first repository or of one the project
+ * DECLARES (`pr-hold.mjs` is the release, and it is aimed at the repository by key, #3479); EVERY `Waiting-for:` it declares is `merged` or `closed` and true (one still open, a label condition, or a
  * line the gate could not read keeps the hold, because the hold may be waiting for that one); and the only wait fields that need removing are
  * `hold:*` (an `answer:*` label's removal IS the answer, and `blocked` has no referent, so an item carrying either stays with a session whole).
  * @param {StaleWait[]} stale @param {number} now
+ * @param {ReadonlySet<string>} [declared] the repository keys the project declares besides the first; none by default, so a keyed item is not lifted unless the caller says it is declared
  * @returns {{ lifts: HoldLift[], remaining: StaleWait[] }}
  */
-export function liftableHolds(stale, now) {
+export function liftableHolds(stale, now, declared = new Set()) {
   /** @type {Map<WaitItem, StaleWait[]>} */
   const byItem = new Map();
   for (const entry of stale) byItem.set(entry.item, [...(byItem.get(entry.item) ?? []), entry]);
   /** @type {HoldLift[]} */
   const lifts = [];
   for (const [item, group] of byItem) {
-    const holders = gateLiftHolders(item, group, now);
+    const holders = gateLiftHolders(item, group, { now, declared });
     if (holders.length > 0) lifts.push({ item, holders, stale: group });
   }
   const lifted = new Set(lifts.map((l) => l.item));
   return { lifts, remaining: stale.filter((entry) => !lifted.has(entry.item)) };
 }
 
-/** @param {WaitItem} item @param {StaleWait[]} group @param {number} now @returns {string[]} the sessions to release, empty when the gate must not lift this item */
-function gateLiftHolders(item, group, now) {
-  if (item.kind !== "pr" || item.repoKey !== undefined) return [];
+/** @param {WaitItem} item @param {StaleWait[]} group @param {{ now: number, declared: ReadonlySet<string> }} io @returns {string[]} the sessions to release, empty when the gate must not lift this item */
+function gateLiftHolders(item, group, { now, declared }) {
+  if (item.kind !== "pr" || (item.repoKey !== undefined && !declared.has(item.repoKey))) return [];
   const everyWaitResolved = declaredWaitsOf(item).waits.length === group.length && group.every((s) => s.wait.state === "merged" || s.wait.state === "closed");
   const fields = waitFieldsOf(item, now).filter((f) => needsRemoving(f.kind));
   if (!everyWaitResolved || !fields.every((f) => f.kind === "hold:*")) return [];

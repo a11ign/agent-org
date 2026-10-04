@@ -44,7 +44,7 @@ import { COMMANDS } from "./commands.mjs";
 import { pnpmDrift } from "./host-pnpm.mjs";
 import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "./project-config.mjs";
 import { CLAUDE_EFFORTS, DECLARED_CLAUDE_MODELS } from "./worker-profile.mjs";
-import { HostConfigRefusal, TEMPLATE_SUFFIX, homeHostConfig, leadsWorkspacesText, readBeforeTick, readUnitsDeclaration,
+import { HostConfigRefusal, LONG_RUNNING_TEMPLATES, TEMPLATE_SUFFIX, homeHostConfig, leadsWorkspacesText, readBeforeTick, readUnitsDeclaration,
   renderTemplate, renderedName, stateEntryPath, templateValues } from "./host-config.mjs";
 
 /**
@@ -101,12 +101,9 @@ export const OPTIONAL_UNITS = /** @type {Readonly<Record<string, string>>} */ (O
   "chairman-listen.service.in": "messaging",
 }));
 
-/**
- * SERVICES NO CLOCK STARTS (#3025): templates whose unit is a LONG-RUNNING `Type=simple` process, so `enable --now` on the SERVICE is the only thing
- * that runs it. Everything else this file asks "enabled? active?" of is a timer; these get the same two questions, and the same remedy.
- * Named here rather than read off an `[Install]` section because `work-tick.service` carries one too and is a oneshot its timer starts.
- */
-export const LONG_RUNNING_TEMPLATES = Object.freeze(["chairman-listen.service.in"]);
+// SERVICES NO CLOCK STARTS (#3025): see `LONG_RUNNING_TEMPLATES`, which lives in `host-config.mjs` (#3443: `update-tool.mjs` restarts them, and must not import this
+// file to name them, since its history readers would put them in the closure of the test that runs `update-tool`).
+export { LONG_RUNNING_TEMPLATES };
 
 /** @param {string} unit an installed unit name @param {string} prefix the project's unit prefix */
 const isLongRunning = (unit, prefix) => LONG_RUNNING_TEMPLATES.some((template) => renderedName(template, prefix) === unit);
@@ -298,6 +295,15 @@ const OTHER_TOOL_FORMS = Object.freeze({
   "board-report.service.in": [
     [/^ExecStart=\/usr\/bin\/bash packages\/agent-org\/host\/board-report-dispatch\.sh$/m,
       "Environment=AGENT_ORG_PROJECT=$CHECKOUT/.agent-org/project.json\nExecStart=/usr/bin/bash host/board-report-dispatch.sh"],
+  ],
+  // THE CHAIRMAN-MESSAGING PAIR (#3443): they ran `pnpm run messaging:*` from the PROJECT's checkout, which is the version the project's lockfile pins and not the
+  // tool checkout's, so the host ran two versions of one tool and the older one ran everything the chairman touches. The scripts are `package.json`'s own
+  // (`messaging:listen` -> `src/messaging/listen.mjs`, `messaging:watch` -> `src/messaging/watch.mjs`), run directly, which is the form `worktree-prune` has.
+  "chairman-listen.service.in": [
+    [/^ExecStart=%h\/\.local\/bin\/pnpm run messaging:listen$/m, "ExecStart=/usr/bin/node src/messaging/listen.mjs"],
+  ],
+  "chairman-watch.service.in": [
+    [/^ExecStart=%h\/\.local\/bin\/pnpm run messaging:watch$/m, "ExecStart=/usr/bin/node src/messaging/watch.mjs"],
   ],
   "shadow-window.service.in": [
     [/^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/shadow-window\.mjs /m, "ExecStart=/usr/bin/node src/shadow-window.mjs "],
@@ -1559,8 +1565,8 @@ export function windowEndNotes(deps = {}) {
   return shippedUnitNames(deps).filter((unit) => unit.endsWith(".timer")).map((unit) => unitState(unit, deps))
     .filter(endedOnPurpose).map((s) => ({ unit: s.unit, problem: "EXPECTED DISABLED -- ITS WINDOW ENDED",
       detail: `its window record holds a \`stop\` row (${s.windowEnded?.cause}, ${s.windowEnded?.ticks} ticks, ${s.windowEnded?.at}) `
-        + "and no marker newer than it, so `disabled` is where it was meant to end. Not a failure: `host:install` would restart it, "
-        + "and it is armed again by `shadow-window.mjs --arm`, after which this note goes and `NOT ENABLED` returns if it is still off." }));
+        + "and no marker newer than it, so `disabled` is where it was meant to end. Not a failure: `host:install` skips it "
+        + "(`SKIPPED -- its window ended`), and it is armed again by `shadow-window.mjs --arm`, after which this note goes and `NOT ENABLED` returns if it is still off." }));
 }
 
 /**
@@ -2220,10 +2226,27 @@ export function hostUnitsInstall(deps = {}) {
   }
   systemctl(["daemon-reload"]);
   for (const started of units.filter((u) => startedByEnable(u, unitPrefix(deps)))) {
+    const ended = windowEndedOnPurpose(started, { ...deps, installedDir, systemctl });
+    if (ended !== null) {
+      out(`SKIPPED ${started} -- its window ended (${ended.cause}, ${ended.ticks} ticks, ${ended.at}); arm it with shadow-window.mjs --arm\n`);
+      continue;
+    }
     systemctl(["enable", "--now", started]);
     out(`enabled --now ${started}\n`);
   }
   return units;
+}
+
+/**
+ * The window end the installer must NOT undo (#3484): the same reading `windowEndNotes` calls `EXPECTED DISABLED`, so the checker and the
+ * installer cannot disagree about one unit. Only a timer systemd reports `disabled` WITH a `stop` row is declined: a timer disabled with no
+ * record, or one whose stop a later marker superseded, is somebody's deliberate stop or a re-armed window and keeps `enable --now`, and an
+ * enabled one is enabled again as before (idempotent, and what restarts one that is enabled but dead -- #1858).
+ * @param {string} unit @param {Parameters<typeof unitState>[1]} deps @returns {WindowEnd | null}
+ */
+function windowEndedOnPurpose(unit, deps) {
+  const state = unitState(unit, deps);
+  return endedOnPurpose(state) ? state.windowEnded ?? null : null;
 }
 
 /**

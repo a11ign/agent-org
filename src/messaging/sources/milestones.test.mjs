@@ -308,7 +308,7 @@ describe("the watcher may read a row, a pull request and the releases, and nothi
   });
   test("refused: a number's sub-resource, a search, a flag after the path and a path outside a repository", () => {
     for (const argv of [
-      ["api", `repos/${TRACKER}/issues/2701/comments`], ["api", `repos/${TRACKER}/issues/2701/labels`], ["api", "search/issues?q=x"],
+      ["api", `repos/${TRACKER}/pulls/7/merge`], ["api", `repos/${TRACKER}/issues/2701/labels`], ["api", "search/issues?q=x"],
       ["api", `repos/${TRACKER}/pulls/7`, "-X", "DELETE"], ["api", `repos/${TRACKER}/releases/tags/v1`], ["api", "user"],
     ]) assert.throws(() => assertReadOnlyGh(argv), /reads only/, argv.join(" "));
   });

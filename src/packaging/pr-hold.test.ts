@@ -212,13 +212,13 @@ test("#822's two writes are verified the SAME WAY -- the source proves the marke
     fileURLToPath(new URL("../pr-hold.mjs", import.meta.url)), "utf8");
   const marker = src.slice(src.indexOf("function markForRearm"));
   const body = marker.slice(0, marker.indexOf("\n}"));
-  assert.match(body, /prLabels\(number\)/,
+  assert.match(body, /prLabels\(pr\.number, pr\.repo\)/,
     "it must ASK the PR what it now carries -- an exit code says the request was accepted");
   assert.match(body, /includes\(REARM_LABEL\)/);
   assert.doesNotMatch(body, /return true;\s*$/,
     "no path may report success without the read");
 
-  assert.match(src, /!markForRearm\(number\)/,
+  assert.match(src, /!markForRearm\(pr\)/,
     "and takeHold must ACT on the answer: an unverified marker is a re-arm that silently will not happen");
   const takeHold = src.slice(src.indexOf("function takeHold"));
   assert.match(takeHold.slice(0, takeHold.indexOf("\n}")), /could not mark it/,
