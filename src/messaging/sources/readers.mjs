@@ -318,22 +318,37 @@ async function newestOrgComment({ github, repo, number, count }) {
  * the key is matched here and no search call is made. What is being done is the newest comment from an ORG account (`ORG_LOGINS`) on that row: a comment from
  * anyone else is not the org's word.
  *
- * Returns `null` ONLY when GitHub answered and no open row names the key; a failed call, or a key that is not an incident or stall key, THROWS, because "could
- * not ask" and "nobody has picked it up" are different readings and the message tells the chairman which. Several open rows: the oldest, the one first
- * opened for it. Pull requests are skipped (the issues listing returns both). A row with no org comment is `{ number }`.
+ * **An open pull request carrying the same label and line counts (#3449).** The trunk-red order tells the fixer to open a PULL REQUEST, and the issues listing
+ * returns both kinds, so skipping pull requests made the fix invisible exactly while it was open. `holder` is the `session:` label's name when one is on it.
  *
- * @param {Repo & { key: string }} deps @returns {Promise<import("./stall.mjs").FixRow | null>}
+ * Returns `null` ONLY when GitHub answered and no open item names the key; a failed call, or a key that is not an incident or stall key, THROWS, because "could
+ * not ask" and "nobody has picked it up" are different readings and the message tells the chairman which. Several: the oldest, the one first opened for it. An item
+ * with no org comment is `{ number }`.
+ *
+ * @param {Repo & { key: string }} deps @returns {Promise<(import("./stall.mjs").FixRow & { holder?: string }) | null>}
  */
 export async function readFixRow({ github, repo, key }) {
   if (!FIX_ROW_KEY.test(key)) throw new TypeError(`readFixRow: ${JSON.stringify(key)} is not an incident or stall key`);
   const issues = asArray(await github.api(`repos/${repo}/issues?labels=${INCIDENT_LABEL}&state=open&per_page=100`), "issues");
   const named = incidentLine(key);
-  const rows = issues.filter((issue) => issue?.pull_request === undefined && Number.isInteger(issue?.number) && named.test(String(issue.body ?? "")));
+  const rows = issues.filter((issue) => Number.isInteger(issue?.number) && named.test(String(issue.body ?? "")));
   if (rows.length === 0) return null;
   const oldest = rows.reduce((first, issue) => (issue.number < first.number ? issue : first));
   const count = Number.isInteger(oldest.comments) ? oldest.comments : 0;
   const comment = count === 0 ? null : await newestOrgComment({ github, repo, number: oldest.number, count });
-  return comment === null ? { number: oldest.number } : { number: oldest.number, comment };
+  const holder = await holderOf(oldest);
+  return { number: oldest.number, ...(holder === undefined ? {} : { holder }), ...(comment === null ? {} : { comment }) };
+}
+
+/**
+ * @param {{ labels?: unknown }} issue @returns {Promise<string | undefined>} the session named by the item's `session:` label, if it carries one. The prefix is the
+ * vocabulary's, imported when asked (as `correct.mjs` does) so this file still loads outside a configured host, and `project-vocabulary.test.ts` refuses a copy in code.
+ */
+async function holderOf(issue) {
+  const { SESSION_PREFIX } = await import("../../project-vocabulary.mjs");
+  const labels = Array.isArray(issue.labels) ? issue.labels : [];
+  const names = labels.map((label) => String(label?.name ?? "")).filter((name) => name.startsWith(SESSION_PREFIX) && name.length > SESSION_PREFIX.length);
+  return names.length === 0 ? undefined : names[0].slice(SESSION_PREFIX.length);
 }
 
 /**
