@@ -341,10 +341,12 @@ function installedProject(cwd) {
  *   - INSTALLED (`node_modules` in the tool's path; the project's own `pnpm add -D`): the git repository the command is run in (#3068). It must
  *     hold the declaration, or the refusal names the file and the directory looked in.
  *   - MONOREPO (`packages/agent-org/src`): `src` up three, `beside`, which is the product's tree.
- *   - STANDALONE (the tool's own checkout): the same `beside`, which is the home directory and holds no declaration, so it REFUSES naming the
- *     variable (#3039, measured 2026-10-02 15:23Z to about 17:40Z: 63 ticks died on `ENOENT: open '<home>/.agent-org/project.json'`, a file nobody
- *     wrote, with the variable that was missing nowhere in the message). The same rule the set-but-unusable case already keeps (chairman,
- *     2026-09-24: no fallback).
+ *   - STANDALONE (the tool's own checkout): the same `beside`, which is the home directory and holds no declaration. Then the repository the
+ *     command is run in, IF it holds the declaration (#3532: the installed layout's rule, #3068, given to this layout, so `agent-org <cmd>` from
+ *     a linked worktree serves that worktree as `pnpm run <alias>` did). Otherwise it REFUSES naming the variable (#3039, measured 2026-10-02
+ *     15:23Z to about 17:40Z: 63 ticks died on `ENOENT: open '<home>/.agent-org/project.json'`, a file nobody wrote, with the variable that was
+ *     missing nowhere in the message). The same rule the set-but-unusable case already keeps (chairman, 2026-09-24: no fallback): only a
+ *     repository that HOLDS the declaration answers, and nothing is guessed from where the tool sits.
  * `packaging/installed-layout.test.ts` carries one table: which layout answers what.
  * @param {{ env?: Record<string, string | undefined>, toolDir?: string, beside?: string, cwd?: string }} [where]
  * @returns {string}
@@ -359,8 +361,11 @@ export function resolveHomeCheckout({
   if (host !== undefined && host !== "") return primaryCheckout(host);
   if (isInstalled(toolDir)) return installedProject(cwd);
   if (existsSync(join(beside, PROJECT_DECLARATION_PATH))) return beside;
+  const top = gitToplevel(cwd);
+  if (top !== null && existsSync(join(top, PROJECT_DECLARATION_PATH))) return top;
   throw new ProjectDeclarationRefusal(HOST_ENV, `it is ${host === undefined ? "unset" : "empty"}, and the checkout it would have guessed, \`${beside}\`, holds no \`${PROJECT_DECLARATION_PATH}\``
-    + " (the tool is not inside a project). Set it in the unit (`Environment=AGENT_ORG_HOST=<checkout>/.agent-org/host.json`, which `host:install` writes), or in the shell that runs the tool",
+    + ` (the tool is not inside a project, and \`${cwd}\` is not inside a repository that holds one).`
+    + " Set it in the unit (`Environment=AGENT_ORG_HOST=<checkout>/.agent-org/host.json`, which `host:install` writes), or in the shell that runs the tool",
   "the tool's checkout resolution");
 }
 

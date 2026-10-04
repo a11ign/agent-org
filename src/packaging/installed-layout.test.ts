@@ -216,6 +216,7 @@ const standaloneParent = scratch();
 const standaloneTool = join(standaloneParent, "agent-org", "src");
 const installedTool = join(installed.project, "node_modules", ".pnpm", "agent-org@git+file+x", "node_modules", "agent-org", "src");
 const hostsProject = projectRepository();
+const standaloneProject = projectRepository();
 
 /** One row per layout and where the command is run: what answers when `$AGENT_ORG_HOST` is unset. */
 const UNSET_TABLE = [
@@ -223,6 +224,9 @@ const UNSET_TABLE = [
   { layout: "installed (node_modules/.pnpm/.../agent-org/src), run in the project", toolDir: installedTool, cwd: installed.project, answers: installed.project },
   { layout: "installed, run in a subdirectory of the project", toolDir: installedTool, cwd: join(installed.project, "docs"), answers: installed.project },
   { layout: "installed, run in a repository that declares another project", toolDir: installedTool, cwd: monorepo, answers: monorepo },
+  // #3532: the installed layout's rule given to the standalone layout, so `agent-org <cmd>` serves the repository it is run in.
+  { layout: "standalone (the tool's own checkout), run in a repository that declares a project", toolDir: standaloneTool, cwd: standaloneProject, answers: standaloneProject },
+  { layout: "standalone, run in a subdirectory of a repository that declares a project", toolDir: standaloneTool, cwd: join(standaloneProject, "docs", "deep"), answers: standaloneProject },
 ] as const;
 
 for (const row of UNSET_TABLE) {
@@ -232,12 +236,25 @@ for (const row of UNSET_TABLE) {
   });
 }
 
-test(`layout table, ${HOST_VARIABLE} unset: the tool's own checkout REFUSES naming the variable (#3039), and the installed form never answers inside node_modules`, () => {
-  assert.throws(() => resolveHomeCheckout({ env: {}, toolDir: standaloneTool, beside: upThree(standaloneTool), cwd: installed.project }), (error: unknown) => {
-    assert.ok(error instanceof ProjectDeclarationRefusal);
-    assert.equal(error.field, HOST_VARIABLE);
-    return true;
+/** Where a standalone tool is run and holds no declaration: the tool's own checkout (a repository with none), a directory in no repository (the home directory). */
+const STANDALONE_REFUSED = [
+  { where: "the tool's own checkout, a repository that declares nothing", cwd: () => bareRepository() },
+  { where: "a directory inside that checkout", cwd: () => { const sub = join(bareRepository(), "src"); mkdirSync(sub); return sub; } },
+  { where: "a directory in no git repository (the home directory's case)", cwd: () => scratch() },
+] as const;
+
+for (const row of STANDALONE_REFUSED) {
+  test(`layout table, ${HOST_VARIABLE} unset: the tool's own checkout run in ${row.where} still REFUSES naming the variable (#3039)`, () => {
+    assert.throws(() => resolveHomeCheckout({ env: {}, toolDir: standaloneTool, beside: upThree(standaloneTool), cwd: row.cwd() }), (error: unknown) => {
+      assert.ok(error instanceof ProjectDeclarationRefusal);
+      assert.equal(error.field, HOST_VARIABLE);
+      assert.ok(error.message.includes(PROJECT_FILE), error.message);
+      return true;
+    });
   });
+}
+
+test("layout table, installed form never answers inside node_modules", () => {
   const answer = resolveHomeCheckout({ env: {}, toolDir: installedTool, beside: upThree(installedTool), cwd: installed.project });
   assert.ok(!answer.split("/").includes("node_modules"), `the installed form answered a directory inside node_modules: ${answer}`);
 });

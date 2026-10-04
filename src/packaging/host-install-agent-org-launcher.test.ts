@@ -189,18 +189,18 @@ function resolvedRoot(project: ReturnType<typeof projectWithLinkedWorktree>, arg
 }
 
 /**
- * MEASURED 2026-10-04 at this tool's `main`, and it is the finding of #3532's point 4: THE LAUNCHER DOES NOT RESOLVE THE PROJECT THE WAY `pnpm run` DID.
+ * #3532 POINT 4: FROM A LINKED WORKTREE THE LAUNCHER RESOLVES THE PROJECT THE WAY `pnpm run <alias>` DID, AND THE RULE IT ANSWERS BY IS NAMED HERE.
  *
- *   - the project's own bin (the tool in `node_modules`): the INSTALLED layout, so the git repository of the working directory, the LINKED worktree;
- *   - the launcher, `AGENT_ORG_HOST` unset: the tool's checkout is the STANDALONE layout, which refuses by name (#3039: no guessing a project);
- *   - the launcher, `AGENT_ORG_HOST` set: that host file's PRIMARY project's checkout, the main checkout and not the worktree.
+ * Measured 2026-10-04 before `resolveHomeCheckout` gave the standalone layout the installed layout's rule, the launcher refused (unset) or answered the
+ * main checkout (`AGENT_ORG_HOST` set), and the row's ruling (`product-manager`, option (a)) widened the Region to close it. The three readings now:
  *
- * So the row's "(4) the same resolved project root" is NOT MET by a launcher alone: no `AGENT_ORG_HOST` value names a linked worktree (a host file's
- * `checkout` is one absolute path), and the rule that would, "the working directory's repository", is `project-config.mjs`'s and is reserved to the
- * installed layout by a path test (`node_modules` in the tool's path). That file is outside this row's Region. This test pins the three readings so the
- * gap is data, and it goes red the day the rule is added, which is the signal to turn the last assertion into an equality.
+ *   - the project's own bin (the tool in `node_modules`): the INSTALLED layout, the git repository of the working directory, the LINKED worktree;
+ *   - the launcher, `AGENT_ORG_HOST` unset: the STANDALONE layout, which now answers by THE SAME RULE: the working directory's repository, when it holds
+ *     the declaration (and still refuses by name when it does not: `installed-layout.test.ts` and `home-checkout-refusal.test.ts` pin that);
+ *   - the launcher, `AGENT_ORG_HOST` set: the OTHER rule, that host file's PRIMARY project's checkout, the main checkout and not the worktree. It is
+ *     the explicit override and it wins; no value of it can name a linked worktree, so it is not what `agent-org <cmd>` is run with from one.
  */
-test("4. MEASURED: from a linked worktree the project's own bin resolves the worktree; the launcher refuses, or resolves the main checkout", () => {
+test("4. from a linked worktree the launcher and the project's own bin resolve the same project root, by the working directory's repository", () => {
   const project = projectWithLinkedWorktree();
   hostIdentityInstall(where(join(project.root, "bin"), TOOL_ROOT) as never);
   const launcher = join(project.root, "bin/agent-org");
@@ -209,7 +209,7 @@ test("4. MEASURED: from a linked worktree the project's own bin resolves the wor
   const unset = resolvedRoot(project, [launcher, command]);
   const declared = resolvedRoot(project, [launcher, command], { [HOST_VARIABLE]: project.hostFile });
   assert.equal(own, `ROOT ${project.linked}`, "the rule `pnpm run` answered by: the working directory's repository");
-  assert.equal(unset, "REFUSED ProjectDeclarationRefusal", "the launcher with no AGENT_ORG_HOST: the standalone layout refuses by name");
-  assert.equal(declared, `ROOT ${project.main}`, "the launcher with AGENT_ORG_HOST: the primary's checkout");
-  assert.notEqual(declared, own, "THE GAP: the main checkout is not the linked worktree; #3532 point 4 asked for these to be equal");
+  assert.equal(unset, own, "the launcher with no AGENT_ORG_HOST: the same rule, so the same root");
+  assert.equal(declared, `ROOT ${project.main}`, "POSITIVE CONTROL: the other rule, AGENT_ORG_HOST's primary, is a different root, so the equality above is not vacuous");
+  assert.notEqual(declared, unset, "the two rules are told apart by this reading");
 });
