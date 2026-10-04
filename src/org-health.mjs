@@ -91,6 +91,14 @@ export const ORDER_STALL_MINUTES = 15;
  */
 export const POOL_LOW_FRACTION = 0.2;
 
+/**
+ * A PANE STOPPED AT AN INTERACTIVE PROMPT FOR THIS LONG IS A STALL, NOT AN IDLE SESSION (#3458): the same quarter hour as {@link ORDER_STALL_MINUTES},
+ * which is the chairman's ruling about waiting on a seat (#3448) and NOT a percentile of how long a prompt takes to answer. Codex's "Working directory"
+ * picker held two restored reviewers for two days (2026-10-02, agent-org #35 and #36) and no signal in the org could see it, because a pane that has not
+ * started an agent reports no work and no failure.
+ */
+export const PANE_PROMPT_MINUTES = ORDER_STALL_MINUTES;
+
 const MS_PER_MINUTE = 60_000;
 const MINUTES_PER_HOUR = 60;
 const MS_PER_HOUR = MINUTES_PER_HOUR * MS_PER_MINUTE;
@@ -140,6 +148,7 @@ export const SIGNALS = Object.freeze({
   WAIT_WITHOUT_REASON: "wait-without-reason",
   ORDER_STALLED: "order-deferred-too-long",
   POOL_LOW: "api-pool-low",
+  PANE_AT_PROMPT: "pane-stopped-at-a-prompt",
 });
 
 /**
@@ -450,6 +459,33 @@ export function orderStallReading({ now, stalled }) {
 }
 
 /**
+ * @typedef {{ session: string, pane: string, prompt: string, since: number }} PromptPane
+ * One pane whose visible screen is an interactive prompt: the session it belongs to, herdr's pane id, WHICH prompt it is, and the tick that FIRST saw it
+ * (`since`, epoch ms -- herdr stamps no time on a screen, so the waker keeps the first sighting).
+ */
+
+/**
+ * SIGNAL 12: A PANE HAS STOPPED AT AN INTERACTIVE PROMPT FOR OVER `PANE_PROMPT_MINUTES` (#3458). Codex's working-directory picker and a trust prompt wait for a
+ * human at a terminal nobody reads, and the pane reports no failure: it is a session that never started. `panes` is `null` when herdr's panes could not be read,
+ * which is a stated unknown and never a clear. A pane that reads as idle WITH NO PROMPT is not in `panes` at all, so it is never raised here.
+ *
+ * STRICTLY OVER, as {@link orderStallReading} is. Keyed on the set of sessions and panes, so one stuck pane is one signal however many ticks it lasts.
+ * @param {{ now: number, panes: PromptPane[] | null }} input
+ * @returns {Reading}
+ */
+export function panePromptReading({ now, panes }) {
+  if (panes === null) return unknown(SIGNALS.PANE_AT_PROMPT, "herdr's panes could not be read");
+  const over = panes.filter((p) => now - p.since > PANE_PROMPT_MINUTES * MS_PER_MINUTE).sort((a, b) => a.since - b.since || a.session.localeCompare(b.session));
+  if (over.length === 0) return clear(SIGNALS.PANE_AT_PROMPT);
+  const named = over.slice(0, MAX_NAMED).map((p) => `${p.session} (pane ${p.pane}, ${p.prompt}, ${ageText(p.since, now)})`);
+  const more = over.length > MAX_NAMED ? `, and ${over.length - MAX_NAMED} more` : "";
+  const key = over.map((p) => `${p.session}:${p.pane}`).sort().join(",");
+  return { signal: SIGNALS.PANE_AT_PROMPT, status: "tripped", firstTrippedAt: over[0].since + PANE_PROMPT_MINUTES * MS_PER_MINUTE,
+    discriminator: `${SIGNALS.PANE_AT_PROMPT}@${key}`,
+    detail: `${over.length} pane(s) have stood at an interactive prompt for over ${PANE_PROMPT_MINUTES} min: ${named.join("; ")}${more}` };
+}
+
+/**
  * @typedef {{ account: string | null, resource: string, remaining: number, limit: number, resetAt: string | null }} PoolReading
  * One API budget as a real call's answer gave it (`poolFromHeaders`, or a `rateLimit` field in a query the gate was sending anyway), NEVER `/rate_limit`, which
  * has reported a full pool during a total outage (#1967). `account` is the login the call ran as, `null` when the answer did not name one.
@@ -694,6 +730,11 @@ const REMEDY = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
   [SIGNALS.POOL_LOW]: "An API pool is nearly spent. Every session on that account is about to sleep on its reset. READ WHICH CALLS SPENT IT before the "
     + "reset (a `gh` read is 1 point or more; `gh project item-*` and the board snapshot read the whole Project), prefer `gh api` REST reads for polling, "
     + "and do NOT switch to another account's `gh` config to get past it: which account a write is attributed to is `ceo`'s, and the pool comes back.",
+  [SIGNALS.PANE_AT_PROMPT]: "Each pane named is waiting for a person to answer a prompt (Codex's working-directory picker, or a trust prompt), so the session in it has "
+    + "not started and will not: the pane reports no failure. READ THE PANE (`herdr --session org pane read <pane> --source visible`), then answer it "
+    + "if the session is still wanted (`herdr --session org pane send-keys <pane> Enter`), or close the workspace if it is not -- a reviewer whose pull "
+    + "request is closed or merged is the second (`reviewer teardown` ends those by itself when it can see them). A trust prompt on a clone is the "
+    + "reviewer's own codex config to edit, not a tick's.",
   [SIGNALS.WAIT_WITHOUT_REASON]: "Each item named holds a wait (`hold:*`, `" + ANSWER_PREFIX + "*` or the blocked label) that says nothing about what it waits for, and nothing "
     + "has moved on it for hours. A wait nobody can check is how the 2026-10-02 freeze stood four hours after it ended. Ask its setter what ends it and write "
     + "`Waiting-for: <closed|merged|labelled <label>|unlabelled <label>> <#n>` on it, or remove the wait.",
