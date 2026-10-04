@@ -22,6 +22,7 @@ import { reviewerSeat, subjectMention, subjectRef } from "../review-attribution.
 import { NO_VERDICT } from "../merge-guard/checks-rule.mjs";
 import { armabilityOf } from "../pr-hold-state.mjs";
 import { isHeldRed } from "../red-pr.mjs";
+import { sharedFileOrders } from "./shared-file-orders.mjs";
 import { REPO } from "../project-identity.mjs";
 import { VERIFY_STATE } from "../verify-stamp.mjs";
 import { equivalentHeads } from "../review-verdict.mjs";
@@ -1285,13 +1286,13 @@ function draftOrder(pr, required = null, baseTip = null) {
 }
 
 /**
- * Every order the open pull requests earn: each one's own (`draftOrder`), the checkless ones (#3092), then the set-wide one for
- * labelled pull requests nobody has explained (#2416).
+ * Every order the open pull requests earn: each one's own (`draftOrder`), the checkless ones (#3092), the later one of each pair that
+ * changes one file (#3480), then the set-wide one for labelled pull requests nobody has explained (#2416).
  * @param {any[]} prs @param {string[] | null} required @param {any} [baseTip] @param {number} [nowMs] omitted is `Date.now()`
  */
 export function perPullRequestOrders(prs, required, baseTip, nowMs) {
   const own = prs.map((pr) => draftOrder(pr, required, baseTip)).filter((o) => o !== null);
-  return [...own, ...checklessPrOrders(prs, nowMs), ...awaitingEvidenceStaleOrders(prs)];
+  return [...own, ...checklessPrOrders(prs, nowMs), ...sharedFileOrders(prs), ...awaitingEvidenceStaleOrders(prs)];
 }
 
 /**
