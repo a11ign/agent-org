@@ -39,6 +39,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { localImports, stripComments } from "./lib/local-import-closure.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { agreement, agreementReport, memoFile, readFacts } from "./lib/tool-version-agreement.mjs";
 import { SPAWNS_GH, agentOrgCommand } from "./acceptance-commands.mjs";
 import { COMMANDS, FIXED_ARGS } from "./commands.mjs";
 import { pnpmDrift } from "./host-pnpm.mjs";
@@ -1015,7 +1016,7 @@ export function compileCacheDrift(deps = {}) {
 }
 
 /**
- * @typedef {{unit: string, problem: string, detail: string, revertsIdentity?: boolean,
+ * @typedef {{unit: string, problem: string, detail: string, revertsIdentity?: boolean, runnerVersions?: boolean,
  *            manualFix?: boolean, hostProgram?: boolean, removesUnit?: boolean, shippedOnRef?: string, supersededScript?: string,
  *            missingProgram?: string, installedCopy?: InstalledCopyState}} Finding
  */
@@ -1585,6 +1586,30 @@ function zshenvNote(unit, why) {
     detail: `${why}, so \`tsc\`/\`eslint\`/\`rstest\` in an agent session write the compile cache under /tmp, one `
       + "entry per file per checkout path. Not a failure, and `host:install` will not change it: add "
       + "`export NODE_COMPILE_CACHE=\"$HOME/.cache/node-compile-cache\"` to it (#2458, docs/known-gaps.md §50)." };
+}
+
+/**
+ * #3533: WHICH `agent-org` RELEASE EVERY RUNNER RUNS, read from the machine: the tool checkout, each worktree's resolved copy and the last `ci.yml` run, against the newest release tag of the
+ * tool's remote. `null` is a host that declares no tool (nothing to compare). It is NOT part of `--json`: that is the gate's instrument and the org-health tick reads the same comparison itself
+ * (`readToolAgreement`), so a finding here would wake a session twice for one fact. Both call `lib/tool-version-agreement.mjs`, so the two print one reading.
+ * @param {{ host?: HostConfig, now?: number, facts?: ReturnType<typeof readFacts> }} [deps] @returns {{ now: number, result: ReturnType<typeof agreement> } | null}
+ */
+export function readToolVersionAgreement({ host = homeHostConfig(), now = Date.now(), facts } = {}) {
+  if (host.tool === undefined) return null;
+  const memo = memoFile(stateEntryPath("tool-version-ci-logs.json", { host }));
+  return { now, result: agreement(facts ?? readFacts({ tool: host.tool, primary: host.primary, projects: host.projects }, { now, memo })) };
+}
+
+/** The finding when some runner is behind, which is the signal. @param {ReturnType<typeof readToolVersionAgreement>} reading @returns {Finding[]} */
+export function toolVersionFindings(reading) {
+  if (reading === null || reading.result.signals.length === 0) return [];
+  return [{ unit: "agent-org versions", problem: "RUNNERS NOT ON THE NEWEST RELEASE", runnerVersions: true, detail: agreementReport(reading.result, reading.now) }];
+}
+
+/** The reading when no runner is behind: reported, never a failure, and never silent (an unreadable runner is named). @param {ReturnType<typeof readToolVersionAgreement>} reading @returns {Finding[]} */
+export function toolVersionNotes(reading) {
+  if (reading === null || reading.result.signals.length > 0) return [];
+  return [{ unit: "agent-org versions", problem: "READING", detail: agreementReport(reading.result, reading.now) }];
 }
 
 /** Every note `host:check` reports beside its findings; none of them is a failure. @returns {Finding[]} */
@@ -2514,7 +2539,10 @@ export function driftReport(drift, asked = true, notes = []) {
  * @param {Finding[]} drift @returns {string}
  */
 function uncovered(drift) {
-  return drift.filter((d) => d.supersededScript)
+  return drift.filter((d) => d.runnerVersions)
+    .map((d) => `  !! ${d.unit} is NOT fixed by the remedy below -- it reports which \`agent-org\` release each runner runs, and\n`
+      + "     `host:install` moves none of them. The finding names the runners and what moves each kind.\n").join("")
+    + drift.filter((d) => d.supersededScript)
     .map((d) => `  !! ${d.supersededScript} is NOT fixed by the remedy below. This repository owns the\n`
       + "     a11ign-* units in ~/.config/systemd/user and nothing in ~/.local/bin, which also holds\n"
       + "     `gh`, `gh-real` and `herdr` -- so read it against packages/agent-org/host/ and `rm` it\n"
@@ -2634,8 +2662,9 @@ function main() {
     process.stdout.write(driftReport(hostFindings(), asked, asked ? hostNotes() : []));
     return;
   }
-  const drift = hostFindings();
-  process.stdout.write(driftReport(drift, asked, asked ? hostNotes() : []));
+  const versions = readToolVersionAgreement();
+  const drift = [...hostFindings(), ...toolVersionFindings(versions)];
+  process.stdout.write(driftReport(drift, asked, asked ? [...hostNotes(), ...toolVersionNotes(versions)] : []));
   if (drift.length > 0) process.exitCode = 1;
 }
 

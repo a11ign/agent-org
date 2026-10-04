@@ -112,6 +112,8 @@ const MAX_REASON_CHARS = 160;
 const MINUTES_PER_TICK = 2.1;
 /** How many PRs or rows one prompt names before it says "and N more". */
 const MAX_NAMED = 5;
+/** The child that reads every runner's version gets this long: a `git ls-remote`, about a hundred small file reads and one REST call. */
+const AGREEMENT_READ_MS = 90_000;
 /** No capture on the fleet for this long, with work that needs it waiting, is the idle fleet the chairman found (#2937). */
 export const FLEET_IDLE_HOURS = 24;
 /** Where the declared copies sit, relative to the TOOL's root: its own `lib/`, each file headed by what it was copied from (#3041: this was the monorepo's `packages/agent-org/src/lib`, which in the standalone tool is `src/lib`). */
@@ -156,6 +158,7 @@ export const SIGNALS = Object.freeze({
   ORDER_STALLED: "order-deferred-too-long",
   POOL_LOW: "api-pool-low",
   PANE_AT_PROMPT: "pane-stopped-at-a-prompt",
+  TOOL_VERSION: "runner-behind-newest-release",
 });
 
 /**
@@ -164,6 +167,8 @@ export const SIGNALS = Object.freeze({
  * `detail` is one line: for `unknown` it is WHY, for `tripped` the numbers. `firstTrippedAt` is epoch ms, or `null` when the
  * signal's own source carries no time.
  */
+
+/** @typedef {import("./lib/tool-version-agreement.mjs").Agreement} ToolAgreement */
 
 /** @param {number} ms @returns {string} the UTC hour a time falls in, `2026-10-01T07`: the discriminator's resolution */
 const hourOf = (ms) => new Date(ms).toISOString().slice(0, 13);
@@ -528,6 +533,44 @@ export function poolLowReading({ pools }) {
  * changed (`null` when the header says none), the original's text (`null` when it could not be read) and the copy's text.
  */
 
+/**
+ * SIGNAL (#3533): A RUNNER OF `agent-org` THAT IS NOT ON THE NEWEST RELEASE FOR LONGER THAN ONE RELEASE CYCLE, whichever of the three kinds it is (the tool checkout, a worktree's resolved
+ * copy, the last `ci.yml` run on `main`). The comparison is `lib/tool-version-agreement.mjs`'s, which `host:check` calls too; THIS only turns its result into a reading. `agreement` is `undefined`
+ * when the caller does not ask (a host that declares no tool), `null` when the read was refused, else what the child read returned (`{ result }`). Keyed on the newest tag: one release, one signal,
+ * and the next release is a new one. A runner the read could not say anything about is an `unknown` and never a clear.
+ * @param {{ agreement: { result: ToolAgreement } | null }} input @returns {Reading}
+ */
+export function toolVersionReading({ agreement }) {
+  if (agreement === null) return unknown(SIGNALS.TOOL_VERSION, "the read of which `agent-org` version every runner runs did not return");
+  const { result } = agreement;
+  if (result.unreadable !== null) return unknown(SIGNALS.TOOL_VERSION, result.unreadable);
+  if (result.signals.length === 0) {
+    const unsaid = result.readings.filter((r) => r.verdict === "unknown" || r.verdict === "unread");
+    if (unsaid.length === 0) return clear(SIGNALS.TOOL_VERSION);
+    return unknown(SIGNALS.TOOL_VERSION, `no runner is behind ${result.newest}, but ${unsaid.length} could not be read: ${unsaid.slice(0, MAX_NAMED).map((r) => `${r.runner} (${r.detail})`).join("; ")}`);
+  }
+  const named = result.signals.slice(0, MAX_NAMED).map((s) => `${s.kind} ${s.runner} runs ${s.version ?? "no release"}`).join("; ");
+  const more = result.signals.length > MAX_NAMED ? `; and ${result.signals.length - MAX_NAMED} more` : "";
+  const firstTrippedAt = result.newestCutAt === null ? null : result.newestCutAt + result.cycleMs;
+  return { signal: SIGNALS.TOOL_VERSION, status: "tripped", firstTrippedAt, discriminator: `${SIGNALS.TOOL_VERSION}@${result.newest}`,
+    detail: `${result.signals.length} runner(s) are not on ${result.newest}, which was cut over one release cycle ago: ${named}${more}` };
+}
+
+/**
+ * THE READ, in a CHILD: `lib/tool-version-agreement.mjs --json` asks the tool's remote for its tags, each worktree for its resolved copy and GitHub for the last CI run, and a gate that imported
+ * those readers would carry the history readers into every test that reaches the tick (`host-units.mjs`'s `jsonReport` is the precedent for the fence). `undefined` is "not asked" (a host that
+ * declares no tool); `null` is a read that failed, which the reading says. NEVER THROWS.
+ * @param {(args: string[]) => string} [run] @returns {{ now: number, result: ToolAgreement } | null | undefined}
+ */
+export function readToolAgreement(run = (args) => execFileSync(process.execPath, args, { encoding: "utf8", timeout: AGREEMENT_READ_MS, stdio: ["ignore", "pipe", "pipe"], env: process.env })) {
+  try {
+    const parsed = JSON.parse(run([resolve(TOOL_ROOT, "src/lib/tool-version-agreement.mjs"), "--json"]));
+    return parsed.asked === false ? undefined : parsed;
+  } catch {
+    return null;
+  }
+}
+
 /** @param {string} text @returns {{ body: string, complete: boolean }} the text with the copy header block removed, wherever it sits */
 function withoutCopyHeader(text) {
   const lines = text.split("\n");
@@ -693,7 +736,7 @@ export function readLastMergedAt(run, repo) {
  *           drift: { behind: number, ahead: number, dirty: string[] } | null, primarySince: number | null,
  *           fleet?: FleetCaptures | null, waiting?: FleetWaiting | null, copies?: CopyPair[] | null, overdue?: { items: OverdueCandidate[] | null, unread?: string[] },
  *           waits?: { stale: Parameters<typeof staleWaitReading>[0]["stale"], bare: Parameters<typeof waitWithoutReasonReading>[0]["bare"], manual: number } | null,
- *           pools?: PoolReading[] | null }} facts `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
+ *           pools?: PoolReading[] | null, toolAgreement?: { result: ToolAgreement } | null }} facts `toolAgreement` (#3533) is `readToolAgreement()`'s answer, OMITTED when the caller does not ask; `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
  * @returns {Reading[]}
  */
 export function orgHealthReadings(facts) {
@@ -707,6 +750,7 @@ export function orgHealthReadings(facts) {
       waitWithoutReasonReading({ now: facts.now, bare: facts.waits?.bare ?? null, manual: facts.waits?.manual }));
   }
   if (facts.pools !== undefined) readings.push(poolLowReading({ pools: facts.pools }));
+  if (facts.toolAgreement !== undefined) readings.push(toolVersionReading({ agreement: facts.toolAgreement }));
   return readings;
 }
 
@@ -747,6 +791,10 @@ const REMEDY = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
     + "if the session is still wanted (`herdr --session org pane send-keys <pane> Enter`), or close the workspace if it is not -- a reviewer whose pull "
     + "request is closed or merged is the second (`reviewer teardown` ends those by itself when it can see them). A trust prompt on a clone is the "
     + "reviewer's own codex config to edit, not a tick's.",
+  [SIGNALS.TOOL_VERSION]: "Each runner named has run an older `agent-org` than the newest release for longer than one release cycle (the tick's interval, the tag lag and one more tick), so \"the org runs the latest\" "
+    + "is not true of it. READ `node src/lib/tool-version-agreement.mjs` (or `host:check`) in the tool checkout for the whole list. A `tool` runner is the work-tick's `update-tool`, which should have moved the checkout to "
+    + "the newest tag: read the tick's first journal line and why it did not. A `worktree` runner resolves a COPY of the dependency through its `node_modules`: until the removal row (#3534) merges it is the pin, "
+    + "and after it a copy that is still there is stale (`pnpm install` in that worktree, or remove it). A `ci` runner names the version the last `ci.yml` run on `main` used: its lockfile's, or the tag its resolver step printed.",
   [SIGNALS.WAIT_WITHOUT_REASON]: "Each item named holds a wait (`hold:*`, `" + ANSWER_PREFIX + "*` or the blocked label) that says nothing about what it waits for, and nothing "
     + "has moved on it for hours. A wait nobody can check is how the 2026-10-02 freeze stood four hours after it ended. Ask its setter what ends it and write "
     + "`Waiting-for: <closed|merged|labelled <label>|unlabelled <label>> <#n>` on it, or remove the wait.",

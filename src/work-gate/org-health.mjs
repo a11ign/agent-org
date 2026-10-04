@@ -439,12 +439,13 @@ export function rulingOrdersNow({ prsRead, openRowsRead, now }, { stateDir = REV
  * @param {{ prsRead: any[] | null, readyRead: any[] | null, openRowsRead: any[] | null, claimedComments?: any[] | null, decideArgs: any, decided: any[], pools?: import("../org-health.mjs").PoolReading[] }} tick
  * @param {{ now?: number, lastMergedAt?: () => number | null, readCaptures?: (now: number) => ReturnType<typeof readFleetCaptures>,
  *           log?: (line: string) => void, readCopies?: () => null, readLabJobs?: () => string[] | null, readWaits?: typeof waitTickFacts,
- *           release?: typeof releaseHoldViaModule }} [io] `readWaits` (#2996) is the test's seam for the
+ *           release?: typeof releaseHoldViaModule, readToolAgreement?: typeof import("../org-health.mjs").readToolAgreement }} [io] `readToolAgreement` (#3533) is `undefined` WHEN THE CALLER DOES NOT ASK, which is every test
+ *           and the gate's call site passes the real one, so no test reaches a remote; `readWaits` (#2996) is the test's seam for the
  *           referenced items, so nothing here needs a token; `release` (#3364) is its seam for the hold release, so nothing here runs `pr-hold.mjs`
  */
 export function orgHealthNow({ prsRead, readyRead, openRowsRead, claimedComments, decideArgs, decided, pools },
   { now = Date.now(), lastMergedAt = () => readLastMergedAt(defaultRun, repoNow()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies,
-    readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release, readHolderAgents = readAgents } = {}) {
+    readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release, readHolderAgents = readAgents, readToolAgreement = () => undefined } = {}) {
   const { prs, required, primaryDrift, claimRefusals, claimFacts } = decideArgs;
   // #2996: THE WAITS ARE READ BEFORE THE READINGS, because a hold's excuse is now a question about its condition. `null` is a refused
   // list: the hold then keeps its label-only excuse (the old behaviour) and the two wait readings say unknown.
@@ -464,9 +465,16 @@ export function orgHealthNow({ prsRead, readyRead, openRowsRead, claimedComments
     waiting: fleetWaitingFacts(openRowsRead, readLabJobs()),
     waits,
     ...(pools !== undefined && { pools: pools.length > 0 ? pools : null }),
+    ...toolAgreementFact(readToolAgreement()),
   }, { ...(log && { log }), ...(readCopies && { readCopies }) });
   return [...readings, ...staleWaitOrders(stale)];
 }
+
+/**
+ * #3533: THE FACT, OR NOTHING. `undefined` is a caller that does not ask (and a host that declares no tool): the key is then left out, and `orgHealthReadings` reads an omitted one as silent.
+ * @param {ReturnType<typeof import("../org-health.mjs").readToolAgreement>} read @returns {{ toolAgreement?: { now: number, result: any } | null }}
+ */
+const toolAgreementFact = (read) => (read === undefined ? {} : { toolAgreement: read });
 
 /**
  * #3364: THE WAIT READ AFTER THE GATE HAS LIFTED WHAT IT CAN, so the readings and the orders see only the stale waits a session still owes. `null` stays `null`.
