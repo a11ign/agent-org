@@ -26,6 +26,7 @@ export const TICK_INTERVAL_MS = 126_000;
 const STALE_TICKS = 3;
 const MINUTES_PER_HOUR = 60;
 
+/** Typed wide: frozen literals would infer `noMergeHours: 6`, and a caller overriding the threshold is the point of it being config. @type {Readonly<{ noMergeHours: number, allIdleAfterMs: number, idleStates: readonly string[], maxTickAgeMs: number }>} */
 export const DEFAULT_STALL_CONFIG = Object.freeze({
   /** No merge on `main` for this long is a stall (the row's default). */
   noMergeHours: 6,

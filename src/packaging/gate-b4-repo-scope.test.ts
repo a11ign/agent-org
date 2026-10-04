@@ -57,8 +57,10 @@ function fakeGh(rows: unknown[], prs: PrsByRepo) {
   };
 }
 
+/** A fake of the per-tick reads, deliberately partial: the real ones return more fields than these tests read. */
+type Readings = NonNullable<Parameters<typeof scopeTick>[3]>;
 const NO_READINGS = { code: (prs: unknown[]) => ({ prs, required: null, baseTip: null, unarmed: null }),
-  tracker: () => ({ claimedComments: [], epics: [], closedRows: [], closings: null }) };
+  tracker: () => ({ claimedComments: [], epics: [], closedRows: [], closings: null }) } as unknown as Readings;
 
 type Order = { cause: string, discriminator: string };
 

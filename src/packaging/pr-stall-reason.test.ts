@@ -258,15 +258,12 @@ test("#3120 (3) a RE-RUN fires again; the same hang on a later tick does not", (
   assert.notEqual(key(rerun, AT("2026-10-03T06:30:00Z")), first);
 });
 
-test("#3120 (4) no new API call: the tick's own facts run no `gh` for the hung PR, and the order is filed under an existing declared cause", () => {
-  const calls: string[][] = [];
-  const run = (args: string[]) => { calls.push(args); return ""; };
-  // `stalledPrFacts` is the one reader of this classifier with an I/O seam. A PR with activity inside the quiet window pays no read there,
-  // so a recorded call would be one THIS change added; the PR is hung, so the case is in the population and not an empty one.
+test("#3120 (4) the hung PR is read from the tick's own facts, and the order is filed under an existing declared cause", () => {
+  // `stalledPrFacts` takes `{ now }` and nothing else (#3486 made the age free), so it has no seam through which to call `gh`; this once recorded the calls and asserted none, which
+  // could no longer fail. The PR is hung, so the case is in the population and not an empty one.
   const recent = { ...PR_83, createdAt: new Date(HUNG_NOW - 60_000).toISOString() };
-  const facts = stalledPrFacts([recent], REQUIRED, { now: HUNG_NOW, run });
+  const facts = stalledPrFacts([recent], REQUIRED, { now: HUNG_NOW });
   assert.deepEqual(facts.map((f: { reason: string }) => f.reason), [STALL_REASON.HUNG_CHECK]);
-  assert.deepEqual(calls.filter((c) => c[0] === "gh"), [], "the age is read off the rollup the gate already holds");
   const order = stallOrderOf(PR_83, REQUIRED, HUNG_NOW);
   assert.ok(order && CAUSES.includes(order.cause), "no new cause is declared");
   assert.equal(order.cause, "pr-checks-failing");

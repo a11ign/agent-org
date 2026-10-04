@@ -105,7 +105,7 @@ test("a refused `gh` is reported and NOT recorded, so the next tick tries again"
   const refuse = () => { throw new Error("HTTP 502"); };
   escalateStuck([`${MERGED}: x`], refuse, (l: string) => log.push(l), { repoOf: declared, record: (k: string) => recorded.push(k) });
   assert.match(log.join(""), /COULD NOT ESCALATE agent-org#56: HTTP 502/);
-  assert.deepEqual(recorded, []);
+  assert.deepEqual<string[]>(recorded, []); // typed, or the assertion narrows `recorded` to `never[]` for the push that follows
   escalateStuck([`${MERGED}: x`], (a: string[]) => (a[1] === "list" ? "[]" : ISSUE_URL), () => {}, { repoOf: declared, record: (k: string) => recorded.push(k) });
   assert.deepEqual(recorded, [MERGED], "CONTROL: a gh that answers records the key");
 });

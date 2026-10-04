@@ -2156,7 +2156,8 @@ export function b4Lines(myFiles, otherPrFiles, rowNumber = null) {
  * @param {{ write?: (s: string) => void,
  *   repo?: string,
  *   mine?: (n: number, where?: { repo?: string }) => string[] | null,
- *   others?: (where?: { trackerRepo?: string }) => { number: number, files: string[], changedFiles: number, closes?: number[] }[] | null }} [deps]
+ *   others?: (where?: { trackerRepo?: string }) => { number: number, files: string[], changedFiles: number, closes?: number[] }[] | null,
+ *   claimed?: (where?: { repo?: string }) => { number: number, files: string[], blockedBy: number[] }[] | null }} [deps]
  */
 export function reportB4(issueNumber, deps = {}) {
   const write = deps.write ?? ((/** @type {string} */ text) => process.stdout.write(text));

@@ -70,7 +70,8 @@ function recorders() {
   /** @type {Record<string, any>[]} */ const toConverse = [];
   /** @type {Record<string, any>[]} */ const toAnswers = [];
   const answers = {
-    answer: async (/** @type {Record<string, any>} */ accepted) => {
+    /** @param {Record<string, any>} accepted @returns {Promise<any>} a deliberately partial `Answered`: only the fields the forwarder reads */
+    answer: async (accepted) => {
       toAnswers.push(accepted);
       const takes = accepted.kind === "button" || accepted.replyToMessageId === REQUEST_MESSAGE;
       return takes ? { action: "reply", text: "Recorded on a11ign/a11ign#2885: ceo has it." } : { action: "not-an-answer" };
@@ -257,7 +258,7 @@ describe("#3442: a credential reaches neither the queue, the answers path, the l
     return {
       calls,
       port: {
-        EXIT: { OK: 0, REFUSED: 1, QUEUED: 2 }, STANCE: { UNDECLARED: "undeclared" }, attributed: (/** @type {string} */ text) => text,
+        EXIT: { OK: 0, REFUSED: 1, QUEUED: 2 }, STANCE: /** @type {const} */ ({ DECISION: "decision", FYI: "fyi", UNDECLARED: "undeclared" }), attributed: (/** @type {string} */ text) => text,
         handoffId: () => "handoff/liaison/recorded", readHandoffs: () => [{ id: "handoff/liaison/recorded", session: "liaison", prompt: "" }],
         queueOrLose(/** @type {Record<string, any>} */ order) { calls.push(order); return 2; },
       },
@@ -279,11 +280,11 @@ describe("#3442: a credential reaches neither the queue, the answers path, the l
     };
     const send = (/** @type {{ text: string, replyTo?: string }} */ message) => provider.send(message);
     const conversation = createConverse({ chairman: CHAIRMAN, ledger, send, queue: queue.port, queuePath: "/nowhere/queue.jsonl", agents: () => [{ label: "liaison", status: "idle" }] });
-    const answers = { answer: async (/** @type {Record<string, any>} */ accepted) => { toAnswers.push(accepted); return { action: "not-an-answer" }; } };
-    const offsets = /** @type {ReturnType<typeof createOffsetStore>} */ ({ read: () => undefined, write: () => {} });
+    const answers = { answer: /** @param {Record<string, any>} accepted @returns {Promise<any>} a deliberately partial `Answered` */ async (accepted) => { toAnswers.push(accepted); return { action: "not-an-answer" }; } };
+    const offsets = { path: "/nowhere/offset", read: () => undefined, write: () => {} };
     await runListener({
       provider: /** @type {any} */ (provider), inbound, offsets, chairman: CHAIRMAN, sleep: async () => {}, signal: controller.signal,
-      onForward: createForwarder({ answers, send, converse: conversation.forward, log: () => {} }),
+      onForward: createForwarder({ answers, send, converse: async (accepted) => { await conversation.forward(accepted); }, log: () => {} }),
     });
     return { queue: queue.calls, toAnswers, wire, ledgerText: readFileSync(path, "utf8") };
   }

@@ -86,7 +86,7 @@ const press = (id, data, messageId) => ({
 /** @param {ReturnType<typeof watcher>} w @param {Record<string, any>} github @returns {{ press: (data: string, id: number) => Promise<any> }} the listener's half, over the same ledger */
 function listener(w, github) {
   const inbound = createInbound({ ledger: w.ledger(), chairman: CHAIRMAN });
-  const answers = createAnswers({ ledger: w.ledger(), github, chairman: CHAIRMAN, answerLabel: "answer:ceo", now: w.now });
+  const answers = createAnswers({ ledger: w.ledger(), github: /** @type {import("./answers.mjs").GithubWriter} */ (github), chairman: CHAIRMAN, answerLabel: "answer:ceo", now: w.now });
   return {
     async press(data, id) {
       const messageId = w.lines().find((line) => line.key === KEY && line.status === "sent")?.providerMessageId;

@@ -115,7 +115,7 @@ type Agent = { label: string; status: string };
 function tickWith(world: World, comments: Comment[], { rows = [row(2407)], memory = {} as Record<string, unknown>, prs = [] as object[],
   merged = null as object[] | null, restartAt = null as number | null, now = NOW, blockedBy = [] as number[], ledger = "",
   // #3075: the OTHER tracked code repository's lists. Absent is a project with ONE code repository, which is every test above this line.
-  elsewhere = undefined as { open: object[] | null; merged: object[] | null } | undefined,
+  elsewhere = undefined as import("./claim-stall.mjs").ElsewherePrs | undefined,
   // `null` by default, same as `restartAt`: the gate is asked about the row's SESSION only when a test gives a listing,
   // never against the real `herdr` on whatever host runs the suite (`agentsFor`'s own doc says why -- CI must not depend on it).
   agents = null as Agent[] | null } = {}) {

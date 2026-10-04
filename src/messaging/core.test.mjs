@@ -206,7 +206,9 @@ describe("a request is reminded at 24, 48 and 72 hours, then never until its sta
     const summaries = run.provider.sent.filter((message) => /yesterday/.test(message.text));
     assert.equal(summaries.length, 1);
     assert.equal(summaries[0].silent, true);
-    assert.equal(run.provider.sent.find((message) => /row 13/.test(message.text)).silent, false, "no quiet hours: everything else notifies");
+    const request13 = run.provider.sent.find((message) => /row 13/.test(message.text));
+    assert.ok(request13, "the request was sent");
+    assert.equal(request13.silent, false, "no quiet hours: everything else notifies");
   });
 });
 
@@ -286,6 +288,7 @@ describe("thirteen events in an hour send 12 messages and ONE digest naming the 
     run.clock.set(START + HOUR + MINUTE);
     await run.tick([]);
     const digest = run.provider.sent.find((message) => /held back/.test(message.text));
+    assert.ok(digest, "the held-back digest was sent");
     assert.match(digest.text, /row 403/);
     assert.equal(digest.text.includes("row 402"), false);
   });
@@ -332,7 +335,8 @@ describe("every attempt is one ledger line (done-when 4)", () => {
 
   test("a provider that returns no messageRef is a failure the core records, not a send", async () => {
     const run = harness();
-    run.provider.send = async () => ({ silent: false });
+    // deliberately breaks the port's contract (no `messageRef`): the point of the test is that the core notices
+    run.provider.send = /** @type {any} */ (async () => ({ silent: false }));
     const [decision] = await run.tick([request(702)]);
     assert.equal(decision.action, "failed");
     assert.match(run.lines()[0].error, /no messageRef/);
@@ -409,7 +413,7 @@ describe("a ledger the core cannot read", () => {
 
 describe("the planner and the composers", () => {
   const config = resolveConfig();
-  const event = { key: "k", kind: "request", severity: "info", firstSeenAt: START, text: "t", links: [], resolved: false, state: "" };
+  const event = { key: "k", kind: "request", severity: "info", firstSeenAt: START, text: "t", links: [], resolved: false, state: "", actions: [] };
 
   test("planNotification is pure: the same inputs give the same plan and touch nothing", () => {
     const first = planNotification(event, undefined, START, config);

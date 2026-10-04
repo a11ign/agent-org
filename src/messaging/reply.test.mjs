@@ -40,8 +40,8 @@ function fixtureReaders(overrides = {}) {
     calls[name] = (calls[name] ?? 0) + 1;
     return read(...args);
   };
-  /** @type {import("./placeholders.mjs").Readers} */
-  const readers = {
+  // Deliberately partial: fleet, gate and release exist only where a case passes them in `overrides`.
+  const readers = /** @type {import("./placeholders.mjs").Readers} */ ({
     issue: counted("issue", async (/** @type {number} */ number) => ({ number, state: "open", labels: ["ready", "lane:any", "in-progress"] })),
     pr: counted("pr", async (/** @type {number} */ number) => ({ number, state: "merged", review: "APPROVED" })),
     run: counted("run", async () => ({ conclusion: "failure" })),
@@ -50,7 +50,7 @@ function fixtureReaders(overrides = {}) {
     unit: counted("unit", async () => ({ state: "active" })),
     comment: counted("comment", async () => ({ body: "Ruled: hold.\nUntil Monday.", url: `https://github.com/${REPO}/issues/2910#issuecomment-5` })),
     ...Object.fromEntries(Object.entries(overrides).map(([name, read]) => [name, counted(name, /** @type {Function} */ (read))])),
-  };
+  });
   return { readers, calls };
 }
 

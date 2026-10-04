@@ -249,7 +249,7 @@ describe("readGateUnit", () => {
   test("an ABSENT or UNREADABLE completion record is a thrown TypeError, never a clean reading", async () => {
     const running = systemdShow({ ActiveState: "inactive", StateChangeTimestamp: `@${RAN}`, InactiveEnterTimestamp: `@${RAN}` });
     await assert.rejects(ask(running, { recordPath: recordIn(null) }).read, (error) => error instanceof TypeError && /no work-tick completion record/.test(error.message));
-    for (const [content, why] of [["not json", /is not JSON/], ["{}", /numeric `at`/], ['{"at":"soon","exit":0}', /numeric `at`/], ['{"at":1}', /integer `exit`/]]) {
+    for (const [content, why] of /** @type {[string, RegExp][]} */ ([["not json", /is not JSON/], ["{}", /numeric `at`/], ['{"at":"soon","exit":0}', /numeric `at`/], ['{"at":1}', /integer `exit`/]])) {
       const recordPath = recordIn(null);
       writeFileSync(recordPath, content);
       await assert.rejects(ask(running, { recordPath }).read, (error) => error instanceof TypeError && why.test(error.message), content);

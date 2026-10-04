@@ -190,23 +190,27 @@ describe("a row that loses the label yields ONE resolved event (done-when 1)", (
 });
 
 describe("a read that cannot be trusted is not a loss (the false-resolution hazard)", () => {
+  // These rows sit under the comment window, so the full-comments half of the port is never reached and the fake leaves it out.
+  /** @param {{ issuesLabelled: (query: any) => Promise<any> }} listOnly @returns {Parameters<typeof readRequests>[0]["github"]} */
+  const asPort = (listOnly) => /** @type {Parameters<typeof readRequests>[0]["github"]} */ (/** @type {unknown} */ (listOnly));
+
   test("a reader that throws makes the source throw, so no 'resolved' event can be built from the failure", async () => {
     const github = { issuesLabelled: async () => { throw new Error("HTTP 502"); } };
-    await assert.rejects(() => readRequests({ github, repo: REPO, openKeys: [requestKey(REPO, 2885)], now: START }), /HTTP 502/);
+    await assert.rejects(() => readRequests({ github: asPort(github), repo: REPO, openKeys: [requestKey(REPO, 2885)], now: START }), /HTTP 502/);
   });
 
   test("a list as long as the limit is refused: it may have been cut, and the rows past the cut would be reported cleared", async () => {
     const full = Array.from({ length: 200 }, (_, index) => row(index + 1));
     const github = { issuesLabelled: async () => full };
-    await assert.rejects(() => readRequests({ github, repo: REPO, openKeys: [], now: START }), /may be cut/);
+    await assert.rejects(() => readRequests({ github: asPort(github), repo: REPO, openKeys: [], now: START }), /may be cut/);
     const justUnder = { issuesLabelled: async () => full.slice(1) };
-    assert.equal((await readRequests({ github: justUnder, repo: REPO, openKeys: [], now: START })).events.length, 199, "POSITIVE CONTROL: one fewer is read");
+    assert.equal((await readRequests({ github: asPort(justUnder), repo: REPO, openKeys: [], now: START })).events.length, 199, "POSITIVE CONTROL: one fewer is read");
   });
 
   test("the query asks for the comments, the label, and a limit", async () => {
     /** @type {any} */
     let asked;
-    await readRequests({ github: { issuesLabelled: async (/** @type {any} */ query) => { asked = query; return []; } }, repo: REPO, openKeys: [], now: START });
+    await readRequests({ github: asPort({ issuesLabelled: async (/** @type {any} */ query) => { asked = query; return []; } }), repo: REPO, openKeys: [], now: START });
     assert.deepEqual(asked, { repo: REPO, label: "needs:chairman", comments: true, limit: 200 });
   });
 
@@ -633,7 +637,7 @@ describe("the red-PR read decides red through the one decider (#3014, #2956)", (
   });
 
   test("the red read ASKS for `labels`: without them no hold can be seen, and `gh` would not send them (#3014)", async () => {
-    const asked = [];
+    const asked = /** @type {(readonly string[])[]} */ ([]);
     const reader = createGhReader({ run: async (argv) => { asked.push(argv); return "[]"; } });
     await reader.redPulls({ repo: REPO });
     assert.match(asked[0][asked[0].indexOf("--json") + 1], /(^|,)labels(,|$)/);
