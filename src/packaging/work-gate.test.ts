@@ -3539,7 +3539,8 @@ test("#2139: a row hidden by a NOT_PICKABLE label is REPORTED with the label nam
   assert.ok(order, "excluding it is how #1561 sat 4h30m after its own edge cleared");
   assert.match(order?.prompt ?? "", /IT STILL CARRIES `blocked`/,
     "the order must not report a row that nothing will pick up as free");
-  assert.match(order?.prompt ?? "", /4h30m/, "and it names what that cost, so the answer is one edit");
+  assert.match(order?.prompt ?? "", /Take the label off if its condition has become true/, "and it names the one edit that answers it");
+  assert.doesNotMatch(order?.prompt ?? "", /4h30m|2026-09-23/, "the cost of the 2026-09-23 incident lives in the builder's comment, not the order (#3444)");
   const clean = unclaimedBlockerClearedOrders([backlogRow(1998, blockedByClosed)], TODAY);
   assert.doesNotMatch(clean[0]?.prompt ?? "", /IT STILL CARRIES/,
     "POSITIVE CONTROL on the sentence: a row with nothing hiding it does not carry the warning, so the "
