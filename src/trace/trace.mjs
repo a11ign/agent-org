@@ -16,7 +16,7 @@ import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, r
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { measure, mergedRows, parseLedger, readInstances, readMergedPulls, readTranscripts, rowsClosedBy } from "../wakes-per-row.mjs";
+import { measure, mergedRows, parseLedger, readInstances, readTranscripts, rowsClosedBy } from "../wakes-per-row.mjs";
 import { aggregate, claimsOf, renderAggregate, weekStart } from "./aggregate.mjs";
 import { eventsOfCodexSession } from "./codex-turns.mjs";
 import { countingGh, readGithubEvents } from "./github-events.mjs";
@@ -34,6 +34,9 @@ const MS_PER_SECOND = 1000;
 const SECONDS_PER_MINUTE = 60;
 const GH_MAX_BUFFER = 64 * 1024 * 1024;
 const SEARCH_PAGE = 100;
+const SEARCH_RESULT_CAP = 1000; // GitHub's search returns no more than this many results of one query, however many pages are asked for
+const LIST_MAX_PAGES = 30;
+const BUDGET_SPENT = "GH_CALLS_SPENT";
 const COST_DECIMALS = 4;
 const SHORT_SHA = 7;
 const CODEX_DEPTH = 3; // sessions/<year>/<month>/<day>/rollout-*.jsonl
@@ -381,38 +384,138 @@ export function render({ number, rows, prs, events, ingest: ingested, github, he
 }
 
 /**
- * What the aggregate reads of GitHub: for the merged rows, their own events (the claim, which gives the wall-clock) and those of the pull requests that closed them, repository
- * by repository (a keyed repository's pull request is tagged with its short name, which is how the store keeps `repo`). OLDEST MERGE FIRST, and it STOPS at `budget` calls: a
- * backfill of three weeks is about nine thousand REST calls, and the pool is the whole org's. A merged pull request and a closed row do not change, so what the store already
- * holds of one is not read again: a second run continues where the first stopped. What was not read is returned, so a week that depends on it is marked PARTIAL.
- * @param {{ pulls: import("../wakes-per-row.mjs").PullRequest[], rowRepo: string, held: import("./store.mjs").TraceEvent[], budget: number, gh: ReturnType<typeof countingGh> }} input
+ * `gh` that makes at most `budget` calls and counts every one (a failed call is still a call). The (budget+1)th THROWS, before it is made, with `code: GH_CALLS_SPENT`: the budget is
+ * checked per CALL, because one pull request costs several (the issue, each page of its timeline, a check-runs list per head), so a check per pull request can be overshot by all of them.
+ * @param {{ gh: (args: string[]) => any, budget: number }} input
+ * @returns {((args: string[]) => any) & { calls: number }}
  */
-function githubEventsOfMerged({ pulls, rowRepo, held, budget, gh }) {
+export function budgetedGh({ gh, budget }) {
+  const counted = countingGh(gh);
+  const bounded = (/** @type {string[]} */ args) => {
+    if (counted.calls >= budget) throw Object.assign(new Error(`--calls ${budget} is spent`), { code: BUDGET_SPENT });
+    return counted(args);
+  };
+  return /** @type {any} */ (Object.defineProperty(bounded, "calls", { get: () => counted.calls }));
+}
+
+/** @param {any} error */
+const isSpent = (error) => error?.code === BUDGET_SPENT;
+
+/**
+ * Merged pull requests of one repository in the window, one counted call per page of the search API. Past GitHub's 1000-result cap the list would be CUT SHORT without saying so
+ * (`gh api --paginate` stops there silently), and a week missing its pull requests prints as a smaller week: so that is refused, and `--since` is narrowed instead.
+ * @param {{ repo: string, window: { from: number, to: number }, gh: (args: string[]) => any }} input
+ * @returns {import("../wakes-per-row.mjs").PullRequest[]}
+ */
+export function listMergedPulls({ repo, window, gh }) {
+  const range = `${new Date(window.from).toISOString()}..${new Date(window.to).toISOString()}`;
+  /** @type {import("../wakes-per-row.mjs").PullRequest[]} */
+  const pulls = [];
+  for (let page = 1; page <= SEARCH_RESULT_CAP / SEARCH_PAGE; page += 1) {
+    const reply = gh(["-X", "GET", "search/issues", "-f", `q=repo:${repo} is:pr is:merged merged:${range}`, "-f", `per_page=${SEARCH_PAGE}`, "-f", `page=${page}`]);
+    const items = reply.items ?? [];
+    pulls.push(...items.map((/** @type {any} */ item) => ({ repo, number: item.number, createdAt: item.created_at, mergedAt: item.pull_request?.merged_at, body: item.body ?? "" })));
+    if (pulls.length >= reply.total_count || items.length < SEARCH_PAGE) return pulls;
+  }
+  throw new Error(`${repo} has more merged pull requests since ${new Date(window.from).toISOString()} than GitHub's search returns (${SEARCH_RESULT_CAP}); a list cut short would print smaller weeks, so narrow --since`);
+}
+
+/** The rows GitHub says are open now, one counted call per page, pull requests (which the issues endpoint also lists) left out. @param {{ rowRepo: string, gh: (args: string[]) => any }} input @returns {number[]} */
+export function listOpenRows({ rowRepo, gh }) {
+  /** @type {number[]} */
+  const rows = [];
+  for (let page = 1; page <= LIST_MAX_PAGES; page += 1) {
+    const items = gh(["-X", "GET", `repos/${rowRepo}/issues`, "-f", "state=open", "-f", `per_page=${SEARCH_PAGE}`, "-f", `page=${page}`]);
+    if (!Array.isArray(items)) throw new Error(`gh api repos/${rowRepo}/issues: the reply carried no list where one was expected`);
+    rows.push(...items.filter((item) => !item.pull_request).map((item) => item.number));
+    if (items.length < SEARCH_PAGE) return rows;
+  }
+  throw new Error(`gh api repos/${rowRepo}/issues: more than ${LIST_MAX_PAGES} pages; refusing to call a row open on part of the list`);
+}
+
+/**
+ * What the run must know before it can place a single week: the merged pull requests of every code repository, then which rows are open. Both are counted calls. Without the pull
+ * requests there is no list of merged rows, so a budget that cannot list them is an ERROR (a partial list would print smaller weeks); the open rows are optional, and a budget
+ * spent before them leaves them unknown (`null`, printed `not asked`).
+ * @param {{ repos: string[], rowRepo: string, window: { from: number, to: number }, gh: ReturnType<typeof budgetedGh>, budget: number }} input
+ */
+export function readListings({ repos, rowRepo, window, gh, budget }) {
+  try {
+    const pulls = repos.flatMap((repo) => listMergedPulls({ repo, window, gh }));
+    return { pulls, openRows: openRowsWithin({ rowRepo, gh }) };
+  } catch (cause) {
+    if (!isSpent(cause)) throw cause;
+    throw new Error(`--calls ${budget} is too small to list the merged pull requests (${gh.calls} made): no week can be placed without that list, and a part of it would print smaller weeks; raise --calls`, { cause });
+  }
+}
+
+/** @param {{ rowRepo: string, gh: ReturnType<typeof budgetedGh> }} input @returns {number[] | null} */
+function openRowsWithin({ rowRepo, gh }) {
+  try {
+    return listOpenRows({ rowRepo, gh });
+  } catch (error) {
+    if (isSpent(error)) return null;
+    throw error;
+  }
+}
+
+/** One pull request's own events, tagged with its repository's short name when it is a keyed repository's (how the store keeps `repo`). @param {{ pull: import("../wakes-per-row.mjs").PullRequest, rowRepo: string, gh: (args: string[]) => any }} input */
+function pullEventsOf({ pull, rowRepo, gh }) {
+  const events = readGithubEvents({ rows: [], prs: [pull.number], repo: pull.repo, gh });
+  return pull.repo === rowRepo ? events : events.map((event) => ({ ...event, repo: pull.repo.split("/")[1] }));
+}
+
+/**
+ * Read what `pending` names of one pull request and the rows it closes, until the budget is spent. A subject whose reading the budget cut off is NOT stored (its events come back only
+ * from a whole reading); what finished before it is. Returns what is still pending, which is non-empty only when the budget stopped it.
+ * @param {{ pull: import("../wakes-per-row.mjs").PullRequest, pending: { pull: boolean, rows: number[] }, rowRepo: string, gh: (args: string[]) => any }} input
+ */
+function readPull({ pull, pending, rowRepo, gh }) {
+  /** @type {import("./store.mjs").TraceEvent[]} */
+  const events = [];
+  const left = { ...pending };
+  try {
+    if (left.pull) {
+      events.push(...pullEventsOf({ pull, rowRepo, gh }));
+      left.pull = false;
+    }
+    if (left.rows.length > 0) {
+      events.push(...readGithubEvents({ rows: left.rows, prs: [], repo: rowRepo, gh }));
+      left.rows = [];
+    }
+  } catch (error) {
+    if (!isSpent(error)) throw error;
+  }
+  return { events, left };
+}
+
+/**
+ * What the aggregate reads of GitHub: for the merged rows, their own events (the claim, which gives the wall-clock) and those of the pull requests that closed them. OLDEST MERGE
+ * FIRST, and it STOPS when `gh` (budgeted: see `budgetedGh`) refuses a call: a backfill of three weeks is about nine thousand REST calls, and the pool is the whole org's. A merged pull
+ * request and a closed row do not change, so what the store already holds of one is not read again: a second run continues where the first stopped. What was not read is
+ * returned, so a week that depends on it is marked PARTIAL.
+ * @param {{ pulls: import("../wakes-per-row.mjs").PullRequest[], rowRepo: string, held: import("./store.mjs").TraceEvent[], gh: (args: string[]) => any }} input
+ */
+export function githubEventsOfMerged({ pulls, rowRepo, held, gh }) {
   const merged = new Set(held.filter((event) => event.kind === "merged" && event.pr !== null).map((event) => `${event.repo ?? "primary"}#${event.pr}`));
   const closed = new Set(held.filter((event) => event.kind === "closed" && event.row !== null).map((event) => event.row));
   /** @type {import("./store.mjs").TraceEvent[]} */
   const events = [];
   /** @type {number[]} */
   const unreadRows = [];
+  let stopped = false;
   for (const pull of [...pulls].sort((a, b) => Date.parse(a.mergedAt) - Date.parse(b.mergedAt))) {
     const closes = rowsClosedBy(pull.body ?? "", rowRepo);
-    if (gh.calls >= budget) {
-      unreadRows.push(...closes.filter((row) => !closed.has(row)));
-      continue;
+    let left = { pull: !merged.has(`${pull.repo === rowRepo ? "primary" : pull.repo.split("/")[1]}#${pull.number}`), rows: closes.filter((row) => !closed.has(row)) };
+    if (!stopped) {
+      const read = readPull({ pull, pending: left, rowRepo, gh });
+      events.push(...read.events);
+      left = read.left;
+      stopped = left.pull || left.rows.length > 0;
     }
-    const short = pull.repo === rowRepo ? null : pull.repo.split("/")[1];
-    const pullEvents = merged.has(`${short ?? "primary"}#${pull.number}`) ? [] : readGithubEvents({ rows: [], prs: [pull.number], repo: pull.repo, gh });
-    events.push(...(short === null ? pullEvents : pullEvents.map((event) => ({ ...event, repo: short }))));
-    events.push(...readGithubEvents({ rows: closes.filter((row) => !closed.has(row)), prs: [], repo: rowRepo, gh }));
+    if (left.pull || left.rows.length > 0) unreadRows.push(...closes);
   }
   return { events, unreadRows };
-}
-
-/** The rows GitHub says are open now: one paginated list on the REST pool, pull requests (which the issues endpoint also lists) left out. @param {string} rowRepo @returns {number[]} */
-function readOpenRows(rowRepo) {
-  const out = execFileSync("gh", ["api", "--paginate", `repos/${rowRepo}/issues?state=open&per_page=${SEARCH_PAGE}`, "--jq", ".[] | select(.pull_request | not) | .number"],
-    { encoding: "utf8", maxBuffer: GH_MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"] });
-  return out.split("\n").filter(Boolean).map(Number);
 }
 
 /** wakes-per-row's reading of each week, from the same pulls, so its counts are the ones the aggregate compares its own with. @param {{ starts: number[], pulls: import("../wakes-per-row.mjs").PullRequest[], rowRepo: string, claims: Map<number, number>, ledger: import("../wakes-per-row.mjs").LedgerEntry[], cache: string }} input */
@@ -433,14 +536,14 @@ async function mainAggregate() {
   const now = Date.now();
   const ledger = parseLedger(readFileSync(join(cache, "wake-ledger"), "utf8"));
   const { store, report: ingested } = ingestTranscripts({ root: join(homedir(), ".claude", "projects"), codexRoot: join(homedir(), ".codex", "sessions"), since, ledger, rowRepo, storePath, now });
-  const pulls = declaration.code.flatMap((code) => readMergedPulls(code.repo, { from: since, to: now }));
-  const gh = countingGh(ghApi);
-  const { events: seen, unreadRows } = githubEventsOfMerged({ pulls, rowRepo, held: store.events, budget, gh });
+  const gh = budgetedGh({ gh: ghApi, budget });
+  const { pulls, openRows } = readListings({ repos: declaration.code.map((code) => code.repo), rowRepo, window: { from: since, to: now }, gh, budget });
+  const { events: seen, unreadRows } = githubEventsOfMerged({ pulls, rowRepo, held: store.events, gh });
   const github = { calls: gh.calls, read: seen.length, added: appendToStore(store, seen).added };
   const starts = Array.from({ length: Math.floor((weekStart(now) - since) / (WEEK_DAYS * MS_PER_DAY)) + 1 }, (_, week) => since + week * WEEK_DAYS * MS_PER_DAY);
   const { readings, unreadable } = wakesPerRowByWeek({ starts, pulls, rowRepo, claims: claimsOf(store.events), ledger, cache });
   const held = { from: ingested.firstRunSince, basis: `the ingest state's first run, ${new Date(ingested.firstRunAt).toISOString()}, over transcripts modified after that time` };
-  const result = aggregate({ events: store.events, pulls, rowRepo, now, since, held, readings, unreadable: [...new Set([...ingested.failed, ...unreadable])], unreadRows, openRows: readOpenRows(rowRepo) });
+  const result = aggregate({ events: store.events, pulls, rowRepo, now, since, held, readings, unreadable: [...new Set([...ingested.failed, ...unreadable])], unreadRows, openRows });
   console.log(json ? JSON.stringify(result, null, 2) : renderAggregate(result, { ingestFooter: ["", ...ingestLines(ingested), `GitHub: ${github.calls} REST calls (gh api, budget ${budget}); ${github.read} events read, ${github.added} new to the store; rows whose GitHub events are not yet read: ${unreadRows.length}`, NOT_HELD] }));
 }
 

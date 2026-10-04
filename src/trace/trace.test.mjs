@@ -10,7 +10,7 @@ import { test } from "node:test";
 import { parseLedger } from "../wakes-per-row.mjs";
 import { appendEvents, appendToStore, costOf, eventsForRow, eventsOfTranscript, openStore, PRICES, readStore, subjectOf, subjectsOf, tokensOf, touchesOf } from "./store.mjs";
 import { weekStart } from "./aggregate.mjs";
-import { isAggregate, NOT_HELD, parseAggregateArgs, parseArgs, render, resolveSubject } from "./trace.mjs";
+import { budgetedGh, githubEventsOfMerged, isAggregate, listMergedPulls, listOpenRows, NOT_HELD, parseAggregateArgs, parseArgs, readListings, render, resolveSubject } from "./trace.mjs";
 
 const ROW_REPO = "a11ign/a11ign";
 const at = (iso) => Date.parse(iso);
@@ -303,4 +303,96 @@ test("REPORT: the totals are per actor, a Codex reviewer is its own actor, and t
   assert.match(text, /reviewer \(codex\)\s+held from 2026-10-04T11:00Z/);
   assert.match(text, /product-manager\s+held from 2026-10-04T12:28Z/);
   assert.doesNotMatch(text, /NOT IN THIS STORE YET[^\n]*Codex/);
+});
+
+/** A `gh api` that counts what reaches it, and answers a search, the open-issue list, an issue and an empty timeline the way GitHub does. */
+function listingGh({ merged = [], open = [] } = {}) {
+  const seen = [];
+  const gh = (args) => {
+    seen.push(args.join(" "));
+    const field = (name) => args.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1);
+    const page = Number(field("page") ?? 1);
+    const slice = (list) => list.slice((page - 1) * 100, page * 100);
+    if (args.includes("search/issues")) return { total_count: merged.length, items: slice(merged) };
+    if (args.some((arg) => /\/issues$/.test(arg))) return slice(open);
+    if (/\/timeline\?/.test(args[0])) return [];
+    return { created_at: "2026-09-29T10:00:00Z", user: { login: "someone" } };
+  };
+  return Object.assign(gh, { seen });
+}
+const mergedItem = (number, body = "") => ({ number, created_at: "2026-09-29T09:00:00Z", body, pull_request: { merged_at: "2026-09-29T11:00:00Z" } });
+
+test("BUDGET: the (budget+1)th call is refused BEFORE it is made, every call is counted, and the refusal says why", () => {
+  const underlying = listingGh();
+  const gh = budgetedGh({ gh: underlying, budget: 2 });
+  gh(["a"]);
+  gh(["b"]);
+  assert.throws(() => gh(["c"]), { code: "GH_CALLS_SPENT", message: /--calls 2 is spent/ });
+  assert.deepEqual(underlying.seen, ["a", "b"], "the third call never reached gh");
+  assert.equal(gh.calls, 2);
+  const failing = budgetedGh({ gh: () => { throw new Error("HTTP 500"); }, budget: 5 });
+  assert.throws(() => failing(["x"]), /HTTP 500/);
+  assert.equal(failing.calls, 1, "a call that failed was still a call");
+});
+
+test("BUDGET: --calls 0 makes NO gh call at all, and says the list of merged pull requests cannot be had rather than printing smaller weeks", () => {
+  const underlying = listingGh({ merged: [mergedItem(1)] });
+  const gh = budgetedGh({ gh: underlying, budget: 0 });
+  assert.throws(() => readListings({ repos: ["a11ign/a11ign"], rowRepo: "a11ign/a11ign", window: { from: at("2026-09-28T00:00:00Z"), to: at("2026-10-05T00:00:00Z") }, gh, budget: 0 }),
+    (error) => /--calls 0 is too small to list the merged pull requests \(0 made\)/.test(error.message) && error.cause.code === "GH_CALLS_SPENT");
+  assert.deepEqual(underlying.seen, [], "not the merged-PR search, not the open-row list");
+});
+
+test("BUDGET: the merged-PR search and the open-row list are COUNTED, page by page; a budget spent before the open rows leaves them unknown, not empty", () => {
+  const merged = Array.from({ length: 150 }, (_, index) => mergedItem(index + 1, `Closes a11ign/a11ign#${1000 + index}`));
+  const open = [{ number: 7 }, { number: 8, pull_request: {} }, { number: 9 }];
+  const window = { from: at("2026-09-28T00:00:00Z"), to: at("2026-10-05T00:00:00Z") };
+  const whole = listingGh({ merged, open });
+  const gh = budgetedGh({ gh: whole, budget: 10 });
+  const listings = readListings({ repos: ["a11ign/a11ign"], rowRepo: "a11ign/a11ign", window, gh, budget: 10 });
+  assert.equal(listings.pulls.length, 150, "both pages of the search");
+  assert.deepEqual(listings.pulls[0], { repo: "a11ign/a11ign", number: 1, createdAt: "2026-09-29T09:00:00Z", mergedAt: "2026-09-29T11:00:00Z", body: "Closes a11ign/a11ign#1000" });
+  assert.deepEqual(listings.openRows, [7, 9], "a pull request the issues endpoint lists is not an open row");
+  assert.equal(gh.calls, 3, "two search pages and one issues page, each a counted call");
+  const tight = listingGh({ merged, open });
+  const short = readListings({ repos: ["a11ign/a11ign"], rowRepo: "a11ign/a11ign", window, gh: budgetedGh({ gh: tight, budget: 2 }), budget: 2 });
+  assert.equal(short.pulls.length, 150);
+  assert.equal(short.openRows, null, "unknown is null (printed `not asked`), never an empty list that calls nothing open");
+  assert.equal(tight.seen.length, 2);
+});
+
+test("BUDGET: a search that holds more than GitHub returns is REFUSED, not cut short; and a list on one page is read in one call", () => {
+  const window = { from: at("2026-09-14T00:00:00Z"), to: at("2026-10-05T00:00:00Z") };
+  const cap = Array.from({ length: 1000 }, (_, index) => mergedItem(index + 1));
+  const fits = listingGh({ merged: cap });
+  assert.equal(listMergedPulls({ repo: "a11ign/a11ign", window, gh: fits }).length, 1000, "exactly the cap is all of it");
+  const over = (args) => ({ total_count: 1001, items: listingGh({ merged: cap })(args).items });
+  assert.throws(() => listMergedPulls({ repo: "a11ign/a11ign", window, gh: over }), /more merged pull requests since 2026-09-14T00:00:00.000Z than GitHub's search returns \(1000\).*narrow --since/);
+  const one = listingGh({ open: [{ number: 3 }] });
+  assert.deepEqual(listOpenRows({ rowRepo: "a11ign/a11ign", gh: one }), [3]);
+  assert.equal(one.seen.length, 1);
+});
+
+test("BUDGET: a pull request costs several calls, and the budget is checked per CALL: it is never overshot, and what it cut off is named unread", () => {
+  const pull = (repo, number, row, mergedAt) => ({ repo, number, createdAt: "2026-09-29T09:00:00Z", mergedAt, body: `Closes a11ign/a11ign#${row}` });
+  const pulls = [pull("a11ign/a11ign", 30, 3, "2026-09-29T13:00:00Z"), pull("a11ign/agent-org", 10, 1, "2026-09-29T11:00:00Z"), pull("a11ign/a11ign", 20, 2, "2026-09-29T12:00:00Z")];
+  const underlying = listingGh();
+  const gh = budgetedGh({ gh: underlying, budget: 5 });
+  const { events, unreadRows } = githubEventsOfMerged({ pulls, rowRepo: "a11ign/a11ign", held: [], gh });
+  assert.equal(gh.calls, 5, "exactly the budget: the sixth call was refused before it was made");
+  assert.equal(underlying.seen.length, 5);
+  assert.deepEqual(unreadRows, [2, 3], "the oldest merge was read whole (its pull request, 2 calls, and its row, 2); the next stopped at its timeline, and nothing after it was tried");
+  assert.deepEqual(events.map((event) => [event.id, event.repo]), [
+    ["gh:a11ign/agent-org#10:opened:once", "agent-org"],
+    ["gh:a11ign/a11ign#1:filed:once", null],
+  ], "what finished is kept, a keyed repository's pull request carries its short name, and the cut-off subject stores nothing");
+});
+
+test("BUDGET: a failure that is not the budget is not swallowed, and a pull request the store already holds costs no call", () => {
+  const pulls = [{ repo: "a11ign/a11ign", number: 20, createdAt: "2026-09-29T09:00:00Z", mergedAt: "2026-09-29T12:00:00Z", body: "Closes a11ign/a11ign#2" }];
+  const broken = budgetedGh({ gh: () => { throw new Error("HTTP 502"); }, budget: 50 });
+  assert.throws(() => githubEventsOfMerged({ pulls, rowRepo: "a11ign/a11ign", held: [], gh: broken }), /HTTP 502/);
+  const held = [{ kind: "merged", pr: 20, repo: null }, { kind: "closed", row: 2 }];
+  const idle = budgetedGh({ gh: listingGh(), budget: 0 });
+  assert.deepEqual(githubEventsOfMerged({ pulls, rowRepo: "a11ign/a11ign", held, gh: idle }), { events: [], unreadRows: [] }, "nothing to read, so even a budget of 0 reads and marks nothing");
 });
