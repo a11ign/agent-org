@@ -15,6 +15,10 @@
       "reason": "update-tool.mjs states where the tool's own checkout is on every tick it runs (the work-tick unit's first ExecStartPre); it is a position reading, the twin of the primary's line below, and was offered to orchestrator after 30 ticks on 2026-10-02. A failed update throws and prints a different line (`has uncommitted changes to tracked files`, `is not a primary checkout`), which is not allowlisted."
     },
     {
+      "pattern": "^agent-org vN\\.N\\.N( \\(H\\))?$",
+      "reason": "the tick's version banner (a11ign/a11ign#3443): update-tool.mjs prints `agent-org vX.Y.Z (<sha>)` and work-tick.mjs prints `agent-org vX.Y.Z` on EVERY tick so a journal read says which release made each decision. It is a position reading, the twin of the checkout lines below, and 37 consecutive ticks of it were offered to orchestrator on 2026-10-04 (a11ign/a11ign#3497). The faulting forms print different lines, `agent-org (at no release tag: <sha>)` and `agent-org (version unreadable: ...)`, and neither is allowlisted."
+    },
+    {
       "pattern": "^primary checkout detached at origin/main \\(H\\)$",
       "reason": "update-primary.mjs states where the checkout is on every tick it runs; it is a position reading, not a fault. A failed update prints a different line, which is not allowlisted."
     },
