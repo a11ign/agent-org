@@ -119,8 +119,8 @@ jobs:
         run: npm install --no-package-lock
       - name: tsc --noEmit over tsconfig.json
         run: npm run typecheck
-      # THE PROGRAM MUST NOT SHRINK QUIETLY: a typecheck that passes because `exclude` grew, or `include` stopped matching, is a check that checks nothing. 428 files were in the
-      # program when this job was added (201 of the 226 `*.test.ts`, 194 of the 218 `@ts-check` `.mjs`); the floor is below that so a deletion does not trip it, and an `exclude` that
+      # THE PROGRAM MUST NOT SHRINK QUIETLY: a typecheck that passes because `exclude` grew, or `include` stopped matching, is a check that checks nothing. 427 files were in the
+      # program when this job was added (200 of the 226 `*.test.ts`, 194 of the 218 `@ts-check` `.mjs`); the floor is below that so a deletion does not trip it, and an `exclude` that
       # swallows a hundred files does. Raise it as the list shrinks.
       - name: The program still holds the files it was added to check
         run: |
