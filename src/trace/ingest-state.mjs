@@ -15,13 +15,13 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-export const STATE_VERSION = 1;
+export const STATE_VERSION = 2;
 
 /** The first bytes hashed to tell a rewritten file from a grown one. Small, so that checking a grown file costs next to nothing. */
 export const HEAD_BYTES = 256;
 
 /**
- * @typedef {{ session: string | null, owner: { at: number, id: string, row: number | null, pr: number | null, repo: string | null, cause: string | null, causeKey: string | null } | null,
+ * @typedef {{ session: string | null, owner: { at: number, id: string, row: number | null, pr: number | null, repo: string | null, rows?: number[], prs?: number[], cause: string | null, causeKey: string | null } | null,
  *   lastAt: number | null, used: { at: number, key: string }[] }} Carry
  * @typedef {{ offset: number, size: number, mtimeMs: number, headBytes: number, headHash: string, firstReadAt: number, settleAt: number | null, carry: Carry }} FileState
  * @typedef {{ version: number, firstRunAt: number, firstRunSince: number, storeBytes: number, files: Record<string, FileState> }} IngestState

@@ -4,10 +4,10 @@
 //
 // `agent-org trace -- <row-or-pr> [--since <ISO>] [--store <path>] [--json 1]`
 //
-// It does three things in order: INGEST the Claude transcripts and the wake ledger, INGEST what GitHub saw of the row and its pull requests (`github-events.mjs`),
+// It does three things in order: INGEST the Claude transcripts, the Codex reviewers' sessions and the wake ledger, INGEST what GitHub saw of the row and its pull requests (`github-events.mjs`),
 // then PRINT the events about the row. Each ingest appends only the events the store does not have, so running it twice, or for two rows, adds nothing the first did
-// not. What the store does NOT hold is named in the footer of every report so the absence is not read as "nothing happened": the `gh` call ledger, deferral spans,
-// and Codex reviewer turns.
+// not. What the store does NOT hold is named in the footer of every report so the absence is not read as "nothing happened": the `gh` call ledger and deferral spans,
+// and from when each kind of actor's transcripts are held.
 //
 // GITHUB IS READ THROUGH `gh api` ONLY (the REST pool), to learn which rows a pull request closes and which pull requests close a row, and then for the events
 // themselves. The calls are counted and the report says how many were made.
@@ -17,6 +17,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseLedger, rowsClosedBy } from "../wakes-per-row.mjs";
+import { eventsOfCodexSession } from "./codex-turns.mjs";
 import { countingGh, readGithubEvents } from "./github-events.mjs";
 import { fingerprint, HEAD_BYTES, loadState, planRead, saveState, stateFileFor } from "./ingest-state.mjs";
 import { appendToStore, DEFINITIONS, eventsForRow, eventsOfTranscript, openStore, readStore } from "./store.mjs";
@@ -33,9 +34,10 @@ const GH_MAX_BUFFER = 64 * 1024 * 1024;
 const SEARCH_PAGE = 100;
 const COST_DECIMALS = 4;
 const SHORT_SHA = 7;
+const CODEX_DEPTH = 3; // sessions/<year>/<month>/<day>/rollout-*.jsonl
 
 /** What this slice does not hold. Printed under every report. */
-export const NOT_HELD = "NOT IN THIS STORE YET: the gh call ledger, the gate's deferral spans, Codex reviewer turns.";
+export const NOT_HELD = "NOT IN THIS STORE YET: the gh call ledger, the gate's deferral spans, the transcripts of Claude Code subagents (`<session>/subagents/`, one level below the sessions read).";
 
 /** @param {string[]} argv */
 export function parseArgs(argv) {
@@ -51,7 +53,7 @@ export function parseArgs(argv) {
 }
 
 /**
- * @typedef {{ read: number, unchanged: number, bytesRead: number, unreadableLines: number, failed: string[], reread: string[], heldBack: number, added: number,
+ * @typedef {{ read: number, codexRead: number, unchanged: number, bytesRead: number, unreadableLines: number, failed: string[], reread: string[], heldBack: number, added: number,
  *   coldStart: string | null, firstRunAt: number, firstRunSince: number }} IngestReport
  */
 
@@ -68,33 +70,55 @@ function readRange(file, start, end, meter) {
   return buffer;
 }
 
-/** @param {string} root @param {number} since @returns {{ file: string, stat: import("node:fs").Stats }[]} the transcripts modified since `since`; a file that vanishes mid-listing is not one */
-function transcriptsSince(root, since) {
+/** A file that vanished between the listing and the stat is not a transcript to read; any other failure is real and throws. @param {string} path */
+function statOrNull(path) {
+  try {
+    return statSync(path);
+  } catch (cause) {
+    if (/** @type {NodeJS.ErrnoException} */ (cause).code === "ENOENT") return null;
+    throw cause;
+  }
+}
+
+/**
+ * The `.jsonl` files exactly `depth` directories under `root`, modified since `since`. Claude Code keeps a session at `projects/<project>/<id>.jsonl` (depth 1, and its
+ * `<id>/subagents/` files, deeper, are not read); Codex at `sessions/<year>/<month>/<day>/rollout-*.jsonl` (depth 3).
+ * @param {string} root @param {number} since @param {number} depth
+ * @returns {{ file: string, stat: import("node:fs").Stats }[]}
+ */
+function transcriptsSince(root, since, depth) {
   /** @type {{ file: string, stat: import("node:fs").Stats }[]} */
   const found = [];
-  for (const dir of readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory())) {
-    for (const name of readdirSync(join(root, dir.name)).filter((file) => file.endsWith(".jsonl"))) {
-      const file = join(root, dir.name, name);
-      const stat = statSync(file);
-      if (stat.mtimeMs >= since) found.push({ file, stat });
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (depth > 0 && entry.isDirectory()) found.push(...transcriptsSince(path, since, depth - 1));
+    if (depth === 0 && entry.name.endsWith(".jsonl")) {
+      const stat = statOrNull(path);
+      if (stat && stat.mtimeMs >= since) found.push({ file: path, stat });
     }
   }
   return found;
 }
 
+/** The two kinds of session file, and how each is read: a Codex session has no wake, no ledger line and no message held back. */
+const READERS = {
+  claude: ({ text, file, ledger, rowRepo, carry, now }) => eventsOfTranscript({ text, file, ledger, rowRepo, carry, now }),
+  codex: ({ text, file, rowRepo, carry }) => ({ ...eventsOfCodexSession({ text, file, rowRepo, carry }), held: 0, settleAt: null, namedLate: false }),
+};
+
 /**
  * Read one transcript from where the state says to, and say what the state becomes: `null` when nothing is to be read. A transcript the state cannot be trusted for
  * is read from byte 0 and `reread` says why.
- * @param {{ file: string, stat: { size: number, mtimeMs: number }, entry: FileState | undefined, ledger: import("../wakes-per-row.mjs").LedgerEntry[], rowRepo: string,
- *   now: number }} input @param {{ bytes: number }} meter
+ * @param {{ file: string, kind: keyof typeof READERS, stat: { size: number, mtimeMs: number }, entry: FileState | undefined, ledger: import("../wakes-per-row.mjs").LedgerEntry[],
+ *   rowRepo: string, now: number }} input @param {{ bytes: number }} meter
  */
-function readTranscript({ file, stat, entry, ledger, rowRepo, now }, meter) {
+function readTranscript({ file, kind, stat, entry, ledger, rowRepo, now }, meter) {
   const headMatches = () => !entry || fingerprint(readRange(file, 0, entry.headBytes, meter)) === entry.headHash;
   const plan = planRead({ entry, stat, now, headMatches });
   if (plan.action === "skip") return null;
   const readFrom = (/** @type {number} */ start, /** @type {Carry | null} */ carry) => {
     const bytes = readRange(file, start, stat.size, meter);
-    return { bytes, start, result: eventsOfTranscript({ text: bytes.toString("utf8"), file, ledger, rowRepo, carry, now }) };
+    return { bytes, start, result: /** @type {any} */ (READERS[kind])({ text: bytes.toString("utf8"), file, ledger, rowRepo, carry, now }) };
   };
   let reread = plan.reason;
   let pass = plan.action === "resume" && entry ? readFrom(entry.offset, entry.carry) : readFrom(0, null);
@@ -114,11 +138,11 @@ function readTranscript({ file, stat, entry, ledger, rowRepo, now }, meter) {
  * Ingest the transcripts modified since `since` that gained bytes since the state last saw them. Their events are appended to the open store as ONE batch, and the
  * state returned is to be saved AFTER that append: a run killed in between leaves a state older than the store, which costs a re-read and no more. A file that cannot
  * be read is listed, never skipped quietly.
- * @param {{ root: string, since: number, ledger: import("../wakes-per-row.mjs").LedgerEntry[], rowRepo: string, store: ReturnType<typeof openStore>, state: IngestState,
- *   coldStart?: string | null, now?: number }} input
+ * @param {{ root: string, codexRoot?: string | null, since: number, ledger: import("../wakes-per-row.mjs").LedgerEntry[], rowRepo: string, store: ReturnType<typeof openStore>,
+ *   state: IngestState, coldStart?: string | null, now?: number }} input
  * @returns {IngestReport & { state: IngestState }}
  */
-export function ingest({ root, since, ledger, rowRepo, store, state, coldStart = null, now = Date.now() }) {
+export function ingest({ root, codexRoot = null, since, ledger, rowRepo, store, state, coldStart = null, now = Date.now() }) {
   const meter = { bytes: 0 };
   const files = { ...state.files };
   /** @type {import("./store.mjs").TraceEvent[]} */
@@ -127,10 +151,12 @@ export function ingest({ root, since, ledger, rowRepo, store, state, coldStart =
   const failed = [];
   /** @type {string[]} */
   const reread = [];
-  const counts = { read: 0, unchanged: 0, unreadableLines: 0, heldBack: 0 };
-  for (const { file, stat } of transcriptsSince(root, since)) {
+  const counts = { read: 0, unchanged: 0, unreadableLines: 0, heldBack: 0, codexRead: 0 };
+  const sources = [{ kind: /** @type {const} */ ("claude"), files: transcriptsSince(root, since, 1) },
+    ...(codexRoot && existsSync(codexRoot) ? [{ kind: /** @type {const} */ ("codex"), files: transcriptsSince(codexRoot, since, CODEX_DEPTH) }] : [])];
+  for (const { kind, file, stat } of sources.flatMap((source) => source.files.map((found) => ({ kind: source.kind, ...found })))) {
     try {
-      const done = readTranscript({ file, stat, entry: state.files[file], ledger, rowRepo, now }, meter);
+      const done = readTranscript({ file, kind, stat, entry: state.files[file], ledger, rowRepo, now }, meter);
       if (!done) {
         counts.unchanged += 1;
         continue;
@@ -141,6 +167,7 @@ export function ingest({ root, since, ledger, rowRepo, store, state, coldStart =
       if (done.reread) reread.push(done.reread);
       files[file] = done.next;
       counts.read += 1;
+      if (kind === "codex") counts.codexRead += 1;
     } catch (cause) {
       failed.push(`${file}: ${/** @type {Error} */ (cause).message}`);
     }
@@ -152,14 +179,14 @@ export function ingest({ root, since, ledger, rowRepo, store, state, coldStart =
 /**
  * One run's transcript half: open the store (the one read of it), load the state, ingest, and save the state once the events are in. The state is saved even when a
  * file failed, because the files that did not fail were read.
- * @param {{ root: string, since: number, ledger: import("../wakes-per-row.mjs").LedgerEntry[], rowRepo: string, storePath: string, now?: number }} input
+ * @param {{ root: string, codexRoot?: string | null, since: number, ledger: import("../wakes-per-row.mjs").LedgerEntry[], rowRepo: string, storePath: string, now?: number }} input
  * @param {(path: string) => import("./store.mjs").TraceEvent[]} [readEvents] a parameter so a test can count the reads of the store
  */
-export function ingestTranscripts({ root, since, ledger, rowRepo, storePath, now = Date.now() }, readEvents = readStore) {
+export function ingestTranscripts({ root, codexRoot = null, since, ledger, rowRepo, storePath, now = Date.now() }, readEvents = readStore) {
   const store = openStore(storePath, readEvents);
   const statePath = stateFileFor(storePath);
   const { state, coldStart } = loadState({ statePath, storePath, now, since });
-  const { state: next, ...report } = ingest({ root, since, ledger, rowRepo, store, state, coldStart, now });
+  const { state: next, ...report } = ingest({ root, codexRoot, since, ledger, rowRepo, store, state, coldStart, now });
   saveState(statePath, { ...next, storeBytes: existsSync(storePath) ? statSync(storePath).size : 0 });
   return { store, report };
 }
@@ -246,11 +273,51 @@ function line(event) {
   return `${when}  ${who} COMPACTION`;
 }
 
+/** @param {import("./store.mjs").TraceEvent} event the session as one line of the totals: `reviewer-3406` run by Codex is not `reviewer-3406` run by Claude Code */
+const actorOf = (event) => `${event.session}${event.harness === "codex" ? " (codex)" : ""}`;
+
+/** The KIND of actor, for "since when do we hold its transcripts": a worker or reviewer per row is one kind. @param {import("./store.mjs").TraceEvent} event */
+function kindOfActor(event) {
+  const kind = /^(worker|reviewer)-/.test(event.session) ? event.session.split("-")[0] : event.session.replace(/^unnamed:.*/, "unnamed (no order named it)").replace(/^codex:.*/, "other directory");
+  return `${kind}${event.harness === "codex" ? " (codex)" : ""}`;
+}
+
+/** One line per actor of the row: its turns, its priced cost, and its output tokens. @param {import("./store.mjs").TraceEvent[]} turns */
+function actorTotals(turns) {
+  /** @type {Map<string, { turns: number, priced: number, cost: number, output: number }>} */
+  const byActor = new Map();
+  for (const turn of turns) {
+    const total = byActor.get(actorOf(turn)) ?? { turns: 0, priced: 0, cost: 0, output: 0 };
+    total.turns += 1;
+    total.output += turn.tokens?.output ?? 0;
+    if (typeof turn.costUsd === "number") {
+      total.priced += 1;
+      total.cost += turn.costUsd;
+    }
+    byActor.set(actorOf(turn), total);
+  }
+  return [...byActor].map(([actor, t]) => `  ${actor.padEnd(26)} ${String(t.turns).padStart(4)} turns  $${t.cost.toFixed(COST_DECIMALS)} over ${t.priced} priced  out ${t.output}`);
+}
+
+/** The earliest turn or wake the store holds, per kind of actor, over the whole store: an absence before it is "not read", never "nothing happened". @param {import("./store.mjs").TraceEvent[]} everything */
+function heldFrom(everything) {
+  /** @type {Map<string, number>} */
+  const first = new Map();
+  for (const event of everything) {
+    if (event.source === "github") continue;
+    const kind = kindOfActor(event);
+    first.set(kind, Math.min(first.get(kind) ?? Number.POSITIVE_INFINITY, event.at));
+  }
+  const iso = (/** @type {number} */ ms) => new Date(ms).toISOString().slice(0, "YYYY-MM-DDTHH:MM".length);
+  return [...first].sort(([, a], [, b]) => a - b).map(([kind, at]) => `  ${kind.padEnd(28)} held from ${iso(at)}Z`);
+}
+
 /** The transcript half of the footer: what this run read, and from when the state holds the transcripts, so an absence before that is not read as "nothing happened". @param {IngestReport} ingested */
 function ingestLines(ingested) {
   const iso = (/** @type {number} */ ms) => new Date(ms).toISOString().slice(0, "YYYY-MM-DDTHH:MM".length);
   const lines = [`ingested ${ingested.read} transcripts (${ingested.bytesRead} bytes read; ${ingested.unchanged} unchanged since the last run); ${ingested.unreadableLines} unreadable lines; `
     + `${ingested.failed.length} files failed${ingested.failed.map((f) => `\n  ${f}`).join("")}`];
+  lines.push(`${ingested.codexRead} of those were Codex reviewer sessions (read from ~/.codex/sessions, never written)`);
   if (ingested.coldStart) lines.push(`COLD START (every transcript in the window read from its first byte): ${ingested.coldStart}`);
   for (const reason of ingested.reread) lines.push(`read again from byte 0: ${reason}`);
   if (ingested.heldBack > 0) lines.push(`${ingested.heldBack} messages written in the last 5 minutes are held back to the next run (a message may still be gaining blocks, and its turn is built from the last)`);
@@ -262,9 +329,9 @@ function ingestLines(ingested) {
 /**
  * The report for one row's events, as text.
  * @param {{ number: number, rows: number[], prs: number[], events: import("./store.mjs").TraceEvent[], ingest?: IngestReport,
- *   github?: { calls: number, read: number, added: number } }} input
+ *   github?: { calls: number, read: number, added: number }, held?: import("./store.mjs").TraceEvent[] }} input `held` is every event of the store, for the footer's "held from"
  */
-export function render({ number, rows, prs, events, ingest: ingested, github }) {
+export function render({ number, rows, prs, events, ingest: ingested, github, held }) {
   const turns = events.filter((event) => event.kind === "turn");
   const priced = turns.filter((event) => typeof event.costUsd === "number");
   const total = priced.reduce((sum, event) => sum + (event.costUsd ?? 0), 0);
@@ -276,7 +343,9 @@ export function render({ number, rows, prs, events, ingest: ingested, github }) 
   for (const event of events) out.push(line(event));
   out.push("", `${events.length} events (${fromGithub} from GitHub), ${turns.length} turns across ${sessions.length} sessions (${sessions.join(", ")})`);
   out.push(`cost $${total.toFixed(COST_DECIMALS)} over ${priced.length} priced turns; ${turns.length - priced.length} turns have a model with no price and are NOT in that total`);
+  if (turns.length > 0) out.push("per actor on this row:", ...actorTotals(turns));
   if (ingested) out.push(...ingestLines(ingested));
+  if (held) out.push("TRANSCRIPTS HELD, per actor (the earliest turn or wake in the store; Claude Code sessions and Codex reviewer sessions):", ...heldFrom(held));
   if (github) out.push(`GitHub: ${github.calls} REST calls (gh api); ${github.read} events read, ${github.added} new to the store`);
   out.push(NOT_HELD, "", ...DEFINITIONS);
   return out.join("\n");
@@ -287,13 +356,13 @@ async function main() {
   const { homeProjectDeclaration } = await import("../project-config.mjs");
   const rowRepo = homeProjectDeclaration().tracker[0].repo;
   const cache = join(homedir(), ".cache", "a11ign");
-  const { store, report: ingested } = ingestTranscripts({ root: join(homedir(), ".claude", "projects"), since, ledger: parseLedger(readFileSync(join(cache, "wake-ledger"), "utf8")), rowRepo, storePath });
+  const { store, report: ingested } = ingestTranscripts({ root: join(homedir(), ".claude", "projects"), codexRoot: join(homedir(), ".codex", "sessions"), since, ledger: parseLedger(readFileSync(join(cache, "wake-ledger"), "utf8")), rowRepo, storePath });
   const gh = countingGh(ghApi);
   const { rows, prs } = resolveSubject(number, rowRepo, gh);
   const seen = readGithubEvents({ rows, prs, repo: rowRepo, gh });
   const github = { calls: gh.calls, read: seen.length, added: appendToStore(store, seen).added };
   const events = eventsForRow(store.events, { rows, prs });
-  console.log(json ? JSON.stringify({ number, rows, prs, github, events }, null, 2) : render({ number, rows, prs, events, ingest: ingested, github }));
+  console.log(json ? JSON.stringify({ number, rows, prs, github, events }, null, 2) : render({ number, rows, prs, events, ingest: ingested, github, held: store.events }));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) await main();
