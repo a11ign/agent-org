@@ -11,7 +11,7 @@
  * `Environment=` lines BACK, and starts that `ExecStart` as a child process from that directory with exactly that environment. The mutant is the
  * pre-fix tool: a copy of the tool whose root is `process.cwd()` again, which must exit 2 and name the declaration it looked for under the tool directory.
  *
- * The module resolves `HOME_CHECKOUT` at import (see `home-checkout-refusal.test.ts`), so the variable is seeded with a scratch host first when the ambient one has none.
+ * `toolForm` is rendered in a child (see `RENDER`) so this file does not import `host-units.mjs`, which would charge it with a `history` requirement it has no use for.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -19,7 +19,7 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const TOOL_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const NODE = "/usr/bin/node";
@@ -71,18 +71,37 @@ function scratchHost(): Scratch {
   return { home, project, hostFile };
 }
 
-if (process.env.AGENT_ORG_HOST === undefined) process.env.AGENT_ORG_HOST = scratchHost().hostFile;
-const { SHIPPED_DIR, toolForm } = await import("../host-units.mjs");
-const { parseHostConfig, renderTemplate, templateValues } = await import("../host-config.mjs");
 const { localImports } = await import("../lib/local-import-closure.mjs");
+
+const SRC = fileURLToPath(new URL("..", import.meta.url));
+
+/**
+ * Run in a CHILD, not imported: `host-units.mjs` calls `git log --all`, so a test that imports it derives a `history` requirement (#2174, `work-gate.test.ts`'s
+ * ratchet) and its pull request owes `History: full` (#497). This file never reaches git: it needs only `toolForm`'s rendering, which is the real one run here.
+ * The child resolves the tool's modules at import, so `AGENT_ORG_HOST` is the scratch host's.
+ */
+const RENDER = `
+const [, , hostUnits, hostConfig, name, hostFile, project, tool] = process.argv;
+const { readFileSync } = await import("node:fs");
+const { join } = await import("node:path");
+const { SHIPPED_DIR, toolForm } = await import(hostUnits);
+const { parseHostConfig, renderTemplate, templateValues } = await import(hostConfig);
+const host = parseHostConfig(readFileSync(hostFile, "utf8"), "scratch host.json");
+const template = readFileSync(join(SHIPPED_DIR, name + ".service.in"), "utf8");
+const values = templateValues(host, { prefix: "acme-", boardReportWorkflow: "board.yml", own: [] });
+process.stdout.write(toolForm(name + ".service.in", renderTemplate(template, values, name), { tool, checkout: project, beforeTicks: [] }));
+`;
 
 /** @returns the shipped template `name` as a unit of THIS host, in tool form for `tool` (the real `toolForm`, not a copy of its lines) */
 function renderedToolForm(name: string, host: Scratch, tool: string): string {
-  const parsed = parseHostConfig(readFileSync(host.hostFile, "utf8"), "scratch host.json");
-  const template = readFileSync(join(SHIPPED_DIR, `${name}.service.in`), "utf8");
-  const values = templateValues(parsed, { prefix: "acme-", boardReportWorkflow: "board.yml", own: [] as string[] });
-  const rendered = renderTemplate(template, values, name);
-  return toolForm(`${name}.service.in`, rendered, { tool, checkout: host.project, beforeTicks: [] });
+  const modules = ["host-units.mjs", "host-config.mjs"].map((file) => pathToFileURL(join(SRC, file)).href);
+  // A script FILE and not `-e`: the tool's modules guard their CLI half on `process.argv[1]` being a path, which under `-e` is the first argument.
+  const script = join(dirname(host.project), "render.mjs");
+  writeFileSync(script, RENDER);
+  const run = spawnSync(process.execPath, [script, ...modules, name, host.hostFile, host.project, tool],
+    { env: { AGENT_ORG_HOST: host.hostFile }, encoding: "utf8", timeout: CHILD_TIMEOUT_MS });
+  assert.equal(run.status, 0, `rendering ${name} in tool form failed: ${run.stderr}`);
+  return run.stdout;
 }
 
 type Started = { workingDirectory: string; execStart: string; env: Record<string, string>; status: number | null; stdout: string; stderr: string };
